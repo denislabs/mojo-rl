@@ -18,7 +18,7 @@ Differences vs the slab version (deliberate):
   by tests/physics3d/test_fk_fields.mojo).
 """
 
-from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
@@ -483,24 +483,52 @@ def _fk_sites_fields[
 ):
     """site_xpos = xpos[body] + rotate(site_pos, xquat[body])."""
     for site_idx in range(NSITE):
-        var s_body = Int(rebind[Scalar[DTYPE]](sites[site_idx, SITE_IDX_BODY]))
-        var sp_x = rebind[Scalar[DTYPE]](sites[site_idx, SITE_IDX_POS_X])
-        var sp_y = rebind[Scalar[DTYPE]](sites[site_idx, SITE_IDX_POS_Y])
-        var sp_z = rebind[Scalar[DTYPE]](sites[site_idx, SITE_IDX_POS_Z])
-        var bqx = rebind[Scalar[DTYPE]](xquat[env, s_body * 4 + 0])
-        var bqy = rebind[Scalar[DTYPE]](xquat[env, s_body * 4 + 1])
-        var bqz = rebind[Scalar[DTYPE]](xquat[env, s_body * 4 + 2])
-        var bqw = rebind[Scalar[DTYPE]](xquat[env, s_body * 4 + 3])
-        var rot = gpu_quat_rotate(bqx, bqy, bqz, bqw, sp_x, sp_y, sp_z)
-        site_xpos[env, site_idx * 3 + 0] = (
-            rebind[Scalar[DTYPE]](xpos[env, s_body * 3 + 0]) + rot[0]
+        _fk_site_fields[DTYPE, NBODY, NSITE, BATCH](
+            env, site_idx, sites, xpos, xquat, site_xpos
         )
-        site_xpos[env, site_idx * 3 + 1] = (
-            rebind[Scalar[DTYPE]](xpos[env, s_body * 3 + 1]) + rot[1]
-        )
-        site_xpos[env, site_idx * 3 + 2] = (
-            rebind[Scalar[DTYPE]](xpos[env, s_body * 3 + 2]) + rot[2]
-        )
+
+
+@always_inline
+def _fk_site_fields[
+    DTYPE: DType,
+    NBODY: Int,
+    NSITE: Int,
+    BATCH: Int,
+](
+    env: Int,
+    site_idx: Int,
+    sites: LayoutTensor[
+        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+    ],
+    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    site_xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NSITE * 3), MutAnyOrigin
+    ],
+):
+    """One site's world position (extracted verbatim from the
+    `_fk_sites_fields` loop body so the serial and _mt schedules share the
+    identical arithmetic)."""
+    var s_body = Int(rebind[Scalar[DTYPE]](sites[site_idx, SITE_IDX_BODY]))
+    var sp_x = rebind[Scalar[DTYPE]](sites[site_idx, SITE_IDX_POS_X])
+    var sp_y = rebind[Scalar[DTYPE]](sites[site_idx, SITE_IDX_POS_Y])
+    var sp_z = rebind[Scalar[DTYPE]](sites[site_idx, SITE_IDX_POS_Z])
+    var bqx = rebind[Scalar[DTYPE]](xquat[env, s_body * 4 + 0])
+    var bqy = rebind[Scalar[DTYPE]](xquat[env, s_body * 4 + 1])
+    var bqz = rebind[Scalar[DTYPE]](xquat[env, s_body * 4 + 2])
+    var bqw = rebind[Scalar[DTYPE]](xquat[env, s_body * 4 + 3])
+    var rot = gpu_quat_rotate(bqx, bqy, bqz, bqw, sp_x, sp_y, sp_z)
+    site_xpos[env, site_idx * 3 + 0] = (
+        rebind[Scalar[DTYPE]](xpos[env, s_body * 3 + 0]) + rot[0]
+    )
+    site_xpos[env, site_idx * 3 + 1] = (
+        rebind[Scalar[DTYPE]](xpos[env, s_body * 3 + 1]) + rot[1]
+    )
+    site_xpos[env, site_idx * 3 + 2] = (
+        rebind[Scalar[DTYPE]](xpos[env, s_body * 3 + 2]) + rot[2]
+    )
 
 
 # ── Launchable kernels ────────────────────────────────────────────────────
@@ -574,6 +602,155 @@ def _fk_fields_sites_kernel[
     )
 
 
+# ── Cooperative (_mt) kernels: one block per env, N_THREADS cooperate ─────
+# Schedule ported verbatim from the legacy `forward_kinematics_gpu_mt`
+# (kinematics/forward_kinematics.mojo): bodies are processed level by level
+# (tree depth, derived from parents in one forward sweep); bodies within a
+# level are striped across threads; one barrier per level. The per-body
+# arithmetic is the SAME `_fk_body_fields` helper the serial kernel calls,
+# so outputs are bit-exact vs the serial fields kernel. Unlike the legacy
+# mt (which lived inside a packed 2D stage block), the grid here is exact —
+# one block per env, no invalid envs — so the legacy `valid_env` guards are
+# dropped; barriers stay unconditional (every thread reaches every one).
+
+
+@always_inline
+def _fk_env_mt_fields[
+    DTYPE: DType,
+    NQ: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    BATCH: Int,
+    N_THREADS: Int,
+](
+    env: Int,
+    tid: Int,
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    xipos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+):
+    """Level-parallel FK for one env (all block threads must call this —
+    it contains barriers)."""
+    # Body tree depth (level): model-only reads, identical in every thread
+    # -> identical max_level -> identical barrier count.
+    var level = InlineArray[Int, NBODY](fill=0)
+    var max_level = 0
+    for b in range(1, NBODY):
+        var p = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
+        level[b] = level[p] + 1
+        if level[b] > max_level:
+            max_level = level[b]
+
+    # Worldbody (index 0): identity pose. One writer, publish via barrier.
+    if tid == 0:
+        xpos[env, 0] = Scalar[DTYPE](0)
+        xpos[env, 1] = Scalar[DTYPE](0)
+        xpos[env, 2] = Scalar[DTYPE](0)
+        xquat[env, 0] = Scalar[DTYPE](0)
+        xquat[env, 1] = Scalar[DTYPE](0)
+        xquat[env, 2] = Scalar[DTYPE](0)
+        xquat[env, 3] = Scalar[DTYPE](1)
+        xipos[env, 0] = Scalar[DTYPE](0)
+        xipos[env, 1] = Scalar[DTYPE](0)
+        xipos[env, 2] = Scalar[DTYPE](0)
+    barrier()
+
+    # Process bodies level by level; within a level, stripe across threads.
+    for lvl in range(1, max_level + 1):
+        for body in range(1 + tid, NBODY, N_THREADS):
+            if level[body] == lvl:
+                _fk_body_fields[DTYPE, NQ, NBODY, NJOINT, BATCH](
+                    env, body, qpos, bodies, joints, xpos, xquat, xipos
+                )
+        barrier()
+
+
+def _fk_fields_mt_kernel[
+    DTYPE: DType,
+    NQ: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    BATCH: Int,
+    N_THREADS: Int,
+](
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    xipos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+):
+    var env = Int(block_idx.x)
+    var tid = Int(thread_idx.x)
+    _fk_env_mt_fields[DTYPE, NQ, NBODY, NJOINT, BATCH, N_THREADS](
+        env, tid, qpos, bodies, joints, xpos, xquat, xipos
+    )
+
+
+def _fk_fields_sites_mt_kernel[
+    DTYPE: DType,
+    NQ: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    NSITE: Int,
+    BATCH: Int,
+    N_THREADS: Int,
+](
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    sites: LayoutTensor[
+        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+    ],
+    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    xipos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    site_xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NSITE * 3), MutAnyOrigin
+    ],
+):
+    var env = Int(block_idx.x)
+    var tid = Int(thread_idx.x)
+    _fk_env_mt_fields[DTYPE, NQ, NBODY, NJOINT, BATCH, N_THREADS](
+        env, tid, qpos, bodies, joints, xpos, xquat, xipos
+    )
+    # Body poses published by the level loop's final barrier; sites are
+    # independent per site -> stripe across threads (same `_fk_site_fields`
+    # helper as the serial kernel; no legacy sites-mt exists, the legacy mt
+    # runs NSITE=0 only — striping independent writes stays bit-exact).
+    for site_idx in range(tid, NSITE, N_THREADS):
+        _fk_site_fields[DTYPE, NBODY, NSITE, BATCH](
+            env, site_idx, sites, xpos, xquat, site_xpos
+        )
+
+
 # ── Public single-source dispatcher ───────────────────────────────────────
 def forward_kinematics_fields[
     target: StaticString,
@@ -590,6 +767,7 @@ def forward_kinematics_fields[
     NEXCLUDE: Int = 0,
     NMESH_VERTS: Int = 0,
     BATCH: Int = 1,
+    PARALLEL: Bool = False,
 ](
     mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: ModelFields[
@@ -607,8 +785,10 @@ def forward_kinematics_fields[
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Forward kinematics qpos -> xpos/xquat/xipos (+ site_xpos) over
-    per-field tensors. CPU: loop over envs; GPU: one thread per env. Both
-    run the same `_fk_env_fields` body."""
+    per-field tensors. CPU: loop over envs; GPU: one thread per env, or —
+    with PARALLEL=True — one block per env with NV cooperating threads
+    (level-parallel, bit-exact vs the serial kernel). CPU ignores
+    PARALLEL."""
     comptime L_QPOS = Layout.row_major(BATCH, NQ)
     comptime L_XPOS = Layout.row_major(BATCH, NBODY * 3)
     comptime L_XQUAT = Layout.row_major(BATCH, NBODY * 4)
@@ -635,6 +815,42 @@ def forward_kinematics_fields[
                 _fk_sites_fields[DTYPE, NBODY, NSITE, BATCH](
                     e, sites_v, xpos_v, xquat_v, sitex_v
                 )
+    elif PARALLEL:
+        # Cooperative within-env schedule (legacy STEP_THREADS = NV).
+        var c = ctx.value()
+        comptime MT_T = NV
+        comptime if NSITE > 0:
+            comptime L_SITE_REC = Layout.row_major(NSITE, MODEL_SITE_SIZE)
+            comptime L_SITE_X = Layout.row_major(BATCH, NSITE * 3)
+            c.enqueue_function[
+                _fk_fields_sites_mt_kernel[
+                    DTYPE, NQ, NBODY, NJOINT, NSITE, BATCH, MT_T
+                ]
+            ](
+                d.qpos.lt["gpu", L_QPOS](),
+                m.bodies.lt["gpu", L_BODY](),
+                m.joints.lt["gpu", L_JOINT](),
+                m.sites.lt["gpu", L_SITE_REC](),
+                d.xpos.lt["gpu", L_XPOS](),
+                d.xquat.lt["gpu", L_XQUAT](),
+                d.xipos.lt["gpu", L_XPOS](),
+                d.site_xpos.lt["gpu", L_SITE_X](),
+                grid_dim=(BATCH,),
+                block_dim=(MT_T,),
+            )
+        else:
+            c.enqueue_function[
+                _fk_fields_mt_kernel[DTYPE, NQ, NBODY, NJOINT, BATCH, MT_T]
+            ](
+                d.qpos.lt["gpu", L_QPOS](),
+                m.bodies.lt["gpu", L_BODY](),
+                m.joints.lt["gpu", L_JOINT](),
+                d.xpos.lt["gpu", L_XPOS](),
+                d.xquat.lt["gpu", L_XQUAT](),
+                d.xipos.lt["gpu", L_XPOS](),
+                grid_dim=(BATCH,),
+                block_dim=(MT_T,),
+            )
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + FK_TPB - 1) // FK_TPB
@@ -882,6 +1098,69 @@ def _body_velocities_fields_kernel[
     )
 
 
+# ── Cooperative (_mt) kernel — schedule from the legacy
+# `compute_body_velocities_gpu_mt`: worldbody zeroed by tid 0, then bodies
+# level by level, striped across threads, one barrier per level. Per-body
+# arithmetic is the SAME `_vel_body_fields` helper as the serial kernel.
+# Only body 0 needs zeroing (bodies 1..NBODY-1 are overwritten). Grid is
+# exact (one block per env) -> legacy valid_env guards dropped.
+def _body_velocities_fields_mt_kernel[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    BATCH: Int,
+    N_THREADS: Int,
+](
+    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    xipos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    xvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xangvel: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+):
+    var env = Int(block_idx.x)
+    var tid = Int(thread_idx.x)
+
+    var level = InlineArray[Int, NBODY](fill=0)
+    var max_level = 0
+    for b in range(1, NBODY):
+        var p = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
+        level[b] = level[p] + 1
+        if level[b] > max_level:
+            max_level = level[b]
+
+    # Worldbody (index 0): zero velocity (root). One writer, then barrier.
+    if tid == 0:
+        xvel[env, 0] = Scalar[DTYPE](0)
+        xvel[env, 1] = Scalar[DTYPE](0)
+        xvel[env, 2] = Scalar[DTYPE](0)
+        xangvel[env, 0] = Scalar[DTYPE](0)
+        xangvel[env, 1] = Scalar[DTYPE](0)
+        xangvel[env, 2] = Scalar[DTYPE](0)
+    barrier()
+
+    for lvl in range(1, max_level + 1):
+        for body in range(1 + tid, NBODY, N_THREADS):
+            if level[body] == lvl:
+                _vel_body_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+                    env, body, qvel, xquat, xipos, bodies, joints, xvel,
+                    xangvel,
+                )
+        barrier()
+
+
 def compute_body_velocities_fields[
     target: StaticString,
     DTYPE: DType,
@@ -897,6 +1176,7 @@ def compute_body_velocities_fields[
     NEXCLUDE: Int = 0,
     NMESH_VERTS: Int = 0,
     BATCH: Int = 1,
+    PARALLEL: Bool = False,
 ](
     mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: ModelFields[
@@ -914,7 +1194,8 @@ def compute_body_velocities_fields[
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Body world velocities qvel -> xvel/xangvel (needs FK products), both
-    targets, one body."""
+    targets, one body. PARALLEL=True (GPU only): level-parallel cooperative
+    kernel, bit-exact vs serial. CPU ignores PARALLEL."""
     comptime L_NV = Layout.row_major(BATCH, NV)
     comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
     comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
@@ -934,6 +1215,24 @@ def compute_body_velocities_fields[
                 e, qvel_v, xquat_v, xipos_v, bodies_v, joints_v, xvel_v,
                 xangvel_v,
             )
+    elif PARALLEL:
+        var c = ctx.value()
+        comptime MT_T = NV
+        c.enqueue_function[
+            _body_velocities_fields_mt_kernel[
+                DTYPE, NV, NBODY, NJOINT, BATCH, MT_T
+            ]
+        ](
+            d.qvel.lt["gpu", L_NV](),
+            d.xquat.lt["gpu", L_B4](),
+            d.xipos.lt["gpu", L_B3](),
+            m.bodies.lt["gpu", L_BODY](),
+            m.joints.lt["gpu", L_JOINT](),
+            d.xvel.lt["gpu", L_B3](),
+            d.xangvel.lt["gpu", L_B3](),
+            grid_dim=(BATCH,),
+            block_dim=(MT_T,),
+        )
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + FK_TPB - 1) // FK_TPB

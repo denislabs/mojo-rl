@@ -8,7 +8,7 @@ world-frame inertia, subtree mask) stays in InlineArrays.
 Operands: xquat, xipos, subtree_com + body/joint records + cdof -> M
 (7 operands). `num_joints` is the comptime NJOINT (no metadata read)."""
 
-from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
@@ -42,7 +42,7 @@ def _ensure_positive[N: Int]() -> Int:
 
 
 @always_inline
-def _mass_matrix_env_fields[
+def _mm_setup_env_fields[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -53,28 +53,20 @@ def _mass_matrix_env_fields[
     xquat: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
     ],
-    xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
-    ],
-    subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
-    ],
     bodies: LayoutTensor[
         DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
     ],
     joints: LayoutTensor[
         DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
-    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    mut dof_body: InlineArray[Int, _ensure_positive[NV]()],
+    mut I_world: InlineArray[Scalar[DTYPE], _ensure_positive[NBODY * 6]()],
+    mut subtree_mask: InlineArray[Bool, _ensure_positive[NBODY * NBODY]()],
 ):
-    """Full NV x NV mass matrix for one env (arithmetic verbatim from
-    compute_mass_matrix_full_gpu)."""
-    for i in range(NV * NV):
-        M[env, i] = 0
-
-    comptime NV_SAFE = _ensure_positive[NV]()
-    var dof_body = InlineArray[Int, NV_SAFE](uninitialized=True)
+    """CRBA setup (dof->body map, per-body world inertia, subtree mask).
+    Extracted verbatim from `_mass_matrix_env_fields` so the serial and _mt
+    schedules share identical arithmetic (model + FK-state reads only ->
+    every thread computes the same values)."""
     for i in range(NV):
         dof_body[i] = 0
 
@@ -96,8 +88,6 @@ def _mass_matrix_env_fields[
             dof_body[dof_adr + d] = body_id
 
     # Per-body world-frame inertia tensor
-    comptime I_WORLD_SIZE = _ensure_positive[NBODY * 6]()
-    var I_world = InlineArray[Scalar[DTYPE], I_WORLD_SIZE](uninitialized=True)
     for b in range(NBODY):
         var Ixx_l = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IXX])
         var Iyy_l = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IYY])
@@ -147,8 +137,6 @@ def _mass_matrix_env_fields[
         )
 
     # Subtree membership mask (O(1) lookups in the inner loop)
-    comptime MASK_SIZE = _ensure_positive[NBODY * NBODY]()
-    var subtree_mask = InlineArray[Bool, MASK_SIZE](fill=False)
     for k in range(NBODY):
         subtree_mask[k * NBODY + k] = True
         var current = k
@@ -159,17 +147,43 @@ def _mass_matrix_env_fields[
             subtree_mask[k * NBODY + parent] = True
             current = parent
 
-    # M[i,j] via direct body summation with subtree mask lookup
-    for i in range(NV):
-        var body_i = dof_body[i]
-        var ai0 = cdof[env, i * 6 + 0]
-        var ai1 = cdof[env, i * 6 + 1]
-        var ai2 = cdof[env, i * 6 + 2]
-        var li0 = cdof[env, i * 6 + 3]
-        var li1 = cdof[env, i * 6 + 4]
-        var li2 = cdof[env, i * 6 + 5]
 
-        for j in range(i, NV):
+@always_inline
+def _mm_row_env_fields[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    BATCH: Int,
+](
+    env: Int,
+    i: Int,
+    xipos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    subtree_com: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    dof_body: InlineArray[Int, _ensure_positive[NV]()],
+    I_world: InlineArray[Scalar[DTYPE], _ensure_positive[NBODY * 6]()],
+    subtree_mask: InlineArray[Bool, _ensure_positive[NBODY * NBODY]()],
+):
+    """One CRBA row i (M[i,j] for j>=i + symmetric writes). Extracted
+    verbatim from the `_mass_matrix_env_fields` row loop so serial and _mt
+    share identical arithmetic."""
+    var body_i = dof_body[i]
+    var ai0 = cdof[env, i * 6 + 0]
+    var ai1 = cdof[env, i * 6 + 1]
+    var ai2 = cdof[env, i * 6 + 2]
+    var li0 = cdof[env, i * 6 + 3]
+    var li1 = cdof[env, i * 6 + 4]
+    var li2 = cdof[env, i * 6 + 5]
+
+    for j in range(i, NV):
             var body_j = dof_body[j]
             var aj0 = cdof[env, j * 6 + 0]
             var aj1 = cdof[env, j * 6 + 1]
@@ -249,6 +263,124 @@ def _mass_matrix_env_fields[
                 M[env, j * NV + i] = mij
 
 
+@always_inline
+def _mass_matrix_env_fields[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    BATCH: Int,
+](
+    env: Int,
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    xipos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    subtree_com: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+):
+    """Full NV x NV mass matrix for one env (arithmetic verbatim from
+    compute_mass_matrix_full_gpu; setup/row bodies now live in the shared
+    `_mm_setup_env_fields` / `_mm_row_env_fields` helpers — pure refactor,
+    gated bit-exact by tests/physics3d/test_fk_fields.mojo)."""
+    for i in range(NV * NV):
+        M[env, i] = 0
+
+    comptime NV_SAFE = _ensure_positive[NV]()
+    comptime I_WORLD_SIZE = _ensure_positive[NBODY * 6]()
+    comptime MASK_SIZE = _ensure_positive[NBODY * NBODY]()
+    var dof_body = InlineArray[Int, NV_SAFE](uninitialized=True)
+    var I_world = InlineArray[Scalar[DTYPE], I_WORLD_SIZE](uninitialized=True)
+    var subtree_mask = InlineArray[Bool, MASK_SIZE](fill=False)
+    _mm_setup_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+        env, xquat, bodies, joints, dof_body, I_world, subtree_mask
+    )
+
+    # M[i,j] via direct body summation with subtree mask lookup
+    for i in range(NV):
+        _mm_row_env_fields[DTYPE, NV, NBODY, BATCH](
+            env, i, xipos, subtree_com, bodies, cdof, M,
+            dof_body, I_world, subtree_mask,
+        )
+
+
+# ── Cooperative (_mt) kernel — schedule from the legacy
+# `compute_mass_matrix_full_gpu_mt` (dynamics/mass_matrix.mojo): every
+# thread redundantly computes the setup (model/FK-state reads only), then
+# rows are striped i = tid, tid+n, ... Per-row arithmetic is the SAME
+# `_mm_row_env_fields` helper as the serial kernel -> bit-exact. One
+# barrier after the distributed zero-init (the legacy variant relied on
+# caller-side barriers; here the kernel is standalone). Grid is exact ->
+# no valid_env guards. NOTE: this ports the DENSE full-CRBA schedule, not
+# `compute_mass_matrix_treewalk_gpu_mt` — the treewalk is a different
+# algorithm (composite-inertia ancestor walk), only float-tolerance-equal
+# to the dense serial kernel, so it cannot satisfy the bit-exact gate.
+def _mass_matrix_fields_mt_kernel[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    BATCH: Int,
+    N_THREADS: Int,
+](
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    xipos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    subtree_com: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+):
+    var env = Int(block_idx.x)
+    var tid = Int(thread_idx.x)
+
+    # Zero M — distributed across threads, published before the row sweep
+    # (every entry is overwritten by the sweep; the barrier just orders the
+    # dead zero-stores before the live writes).
+    for i in range(tid, NV * NV, N_THREADS):
+        M[env, i] = 0
+    barrier()
+
+    # Setup redundantly per thread (identical values in every thread).
+    comptime NV_SAFE = _ensure_positive[NV]()
+    comptime I_WORLD_SIZE = _ensure_positive[NBODY * 6]()
+    comptime MASK_SIZE = _ensure_positive[NBODY * NBODY]()
+    var dof_body = InlineArray[Int, NV_SAFE](uninitialized=True)
+    var I_world = InlineArray[Scalar[DTYPE], I_WORLD_SIZE](uninitialized=True)
+    var subtree_mask = InlineArray[Bool, MASK_SIZE](fill=False)
+    _mm_setup_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+        env, xquat, bodies, joints, dof_body, I_world, subtree_mask
+    )
+
+    # Each thread handles rows i where i % N_THREADS == tid.
+    for i in range(tid, NV, N_THREADS):
+        _mm_row_env_fields[DTYPE, NV, NBODY, BATCH](
+            env, i, xipos, subtree_com, bodies, cdof, M,
+            dof_body, I_world, subtree_mask,
+        )
+
+
 def _mass_matrix_fields_kernel[
     DTYPE: DType,
     NV: Int,
@@ -297,6 +429,7 @@ def compute_mass_matrix_fields[
     NEXCLUDE: Int = 0,
     NMESH_VERTS: Int = 0,
     BATCH: Int = 1,
+    PARALLEL: Bool = False,
 ](
     mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: ModelFields[
@@ -315,7 +448,9 @@ def compute_mass_matrix_fields[
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """CRBA mass matrix from FK products + cdof, both targets, one body.
-    Reads `scratch.cdof`, writes `scratch.M`."""
+    Reads `scratch.cdof`, writes `scratch.M`. PARALLEL=True (GPU only):
+    cooperative row-striped kernel, bit-exact vs serial. CPU ignores
+    PARALLEL."""
     comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
     comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
     comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
@@ -335,6 +470,24 @@ def compute_mass_matrix_fields[
             _mass_matrix_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
                 e, xquat_v, xipos_v, stcom_v, bodies_v, joints_v, cdof_v, M_v
             )
+    elif PARALLEL:
+        var c = ctx.value()
+        comptime MT_T = NV
+        c.enqueue_function[
+            _mass_matrix_fields_mt_kernel[
+                DTYPE, NV, NBODY, NJOINT, BATCH, MT_T
+            ]
+        ](
+            d.xquat.lt["gpu", L_B4](),
+            d.xipos.lt["gpu", L_B3](),
+            d.subtree_com.lt["gpu", L_B3](),
+            m.bodies.lt["gpu", L_BODY](),
+            m.joints.lt["gpu", L_JOINT](),
+            scratch.cdof.lt["gpu", L_CDOF](),
+            scratch.M.lt["gpu", L_M](),
+            grid_dim=(BATCH,),
+            block_dim=(MT_T,),
+        )
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + MM_TPB - 1) // MM_TPB

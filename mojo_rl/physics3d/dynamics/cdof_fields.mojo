@@ -9,7 +9,7 @@ Operands: qpos, xpos, xquat, subtree_com + body/joint records -> cdof
 (7 operands). One formula body for both targets. As with FK, `num_joints`
 is the comptime NJOINT (no metadata read)."""
 
-from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
@@ -372,6 +372,54 @@ def _cdof_fields_kernel[
     )
 
 
+# ── Cooperative (_mt) kernel — schedule from the legacy
+# `compute_cdof_gpu_mt` (dynamics/jacobian.mojo): bodies are independent
+# (each writes only its own DOFs from FK state), so threads stripe over
+# bodies with no level ordering; one barrier between the zero-init and the
+# body sweep. Per-body arithmetic is the SAME `_cdof_body_fields` helper as
+# the serial kernel -> bit-exact. Grid is exact (one block per env) ->
+# legacy valid_env guards dropped; the legacy trailing barrier is dropped
+# too (kernel end is the sync point in this standalone launch).
+def _cdof_fields_mt_kernel[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    BATCH: Int,
+    N_THREADS: Int,
+](
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    subtree_com: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+):
+    var env = Int(block_idx.x)
+    var tid = Int(thread_idx.x)
+
+    # Zero cdof (NV*6), distributed across threads.
+    for i in range(tid, NV * 6, N_THREADS):
+        cdof[env, i] = 0
+    barrier()
+
+    # Per-body, independent -> stripe across threads, no per-body barrier.
+    for body in range(1 + tid, NBODY, N_THREADS):
+        _cdof_body_fields[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
+            env, body, qpos, xpos, xquat, subtree_com, bodies, joints, cdof
+        )
+
+
 def compute_cdof_fields[
     target: StaticString,
     DTYPE: DType,
@@ -387,6 +435,7 @@ def compute_cdof_fields[
     NEXCLUDE: Int = 0,
     NMESH_VERTS: Int = 0,
     BATCH: Int = 1,
+    PARALLEL: Bool = False,
 ](
     mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: ModelFields[
@@ -405,7 +454,8 @@ def compute_cdof_fields[
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """cdof from FK products, both targets, one body. Output goes to the
-    owned `scratch.cdof` tensor."""
+    owned `scratch.cdof` tensor. PARALLEL=True (GPU only): cooperative
+    flat-parallel kernel, bit-exact vs serial. CPU ignores PARALLEL."""
     comptime L_QPOS = Layout.row_major(BATCH, NQ)
     comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
     comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
@@ -425,6 +475,22 @@ def compute_cdof_fields[
             _cdof_env_fields[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
                 e, qpos_v, xpos_v, xquat_v, stcom_v, bodies_v, joints_v, cdof_v
             )
+    elif PARALLEL:
+        var c = ctx.value()
+        comptime MT_T = NV
+        c.enqueue_function[
+            _cdof_fields_mt_kernel[DTYPE, NQ, NV, NBODY, NJOINT, BATCH, MT_T]
+        ](
+            d.qpos.lt["gpu", L_QPOS](),
+            d.xpos.lt["gpu", L_B3](),
+            d.xquat.lt["gpu", L_B4](),
+            d.subtree_com.lt["gpu", L_B3](),
+            m.bodies.lt["gpu", L_BODY](),
+            m.joints.lt["gpu", L_JOINT](),
+            scratch.cdof.lt["gpu", L_CDOF](),
+            grid_dim=(BATCH,),
+            block_dim=(MT_T,),
+        )
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + CDOF_TPB - 1) // CDOF_TPB

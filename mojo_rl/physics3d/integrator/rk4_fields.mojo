@@ -393,12 +393,17 @@ struct RK4IntegratorFields[
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     BATCH: Int = 1,
     SOLVER: StaticString = "pgs",
+    PARALLEL_GPU: Bool = False,
 ](Movable):
     """Owns its scratch; steps RK4 dynamics on either target. With
     CONTACTS=True (default), each stage is followed by contact detection +
     the PGS contact solve (joint limits inside, legacy position) — matching
     the legacy per-stage solver launch. CONTACTS=False = unconstrained
-    stages (the original contact-free pilot gates)."""
+    stages (the original contact-free pilot gates).
+    PARALLEL_GPU=True: the GPU FK / body-velocity / cdof / CRBA /
+    LDL-factor / M^-1 / RNE stages run their cooperative within-env (_mt)
+    kernels (bit-exact vs serial; other stages stay serial). CPU ignores
+    it."""
 
     var scratch: DynamicsScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
     var rk4: Rk4Scratch[Self.DTYPE, Self.NQ, Self.NV, Self.BATCH]
@@ -446,11 +451,13 @@ struct RK4IntegratorFields[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
+            PARALLEL = Self.PARALLEL_GPU,
         ](d, m, ctx)
         compute_body_velocities_fields[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
+            PARALLEL = Self.PARALLEL_GPU,
         ](d, m, ctx)
         compute_subtree_com_fields[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
@@ -461,11 +468,13 @@ struct RK4IntegratorFields[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
+            PARALLEL = Self.PARALLEL_GPU,
         ](d, m, self.scratch, ctx)
         compute_mass_matrix_fields[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
+            PARALLEL = Self.PARALLEL_GPU,
         ](d, m, self.scratch, ctx)
 
         comptime L_JOINT = Layout.row_major(Self.NJOINT, MODEL_JOINT_SIZE)
@@ -494,15 +503,18 @@ struct RK4IntegratorFields[
             )
 
         ldl_factor_fields[
-            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
+            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH,
+            PARALLEL = Self.PARALLEL_GPU,
         ](self.scratch, ctx)
         compute_m_inv_fields[
-            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
+            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH,
+            PARALLEL = Self.PARALLEL_GPU,
         ](self.scratch, ctx)
         compute_bias_forces_rne_fields[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
+            PARALLEL = Self.PARALLEL_GPU,
         ](d, m, self.scratch, ctx)
 
         # 9 + 9b. fnet = qfrc - bias - damping - stiffness - frictionloss
