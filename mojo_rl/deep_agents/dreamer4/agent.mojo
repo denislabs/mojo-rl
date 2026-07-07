@@ -930,7 +930,11 @@ struct Dreamer4Agent[
         self.dyn.set_grad_h(ghp, Self.BF)
         Self._dyn_vjp_gpu[Self.BF](self.dyn, self.ztil, self.grad_zhat, dctx)
 
-        # 4. dedicated near-clean forward (σ_bc) WITH action tokens, on device
+        # 4. dedicated CLEAN forward WITH action tokens, on device. sig_bc MUST
+        #    match the CPU path (=1.0, clean z1): the heads are queried in
+        #    imagination on fully-clean latents at sig_idx=KMAX-1, so training
+        #    their h_t on a σ<1 corrupted frame is a train/inference shift that
+        #    kills the imagined reward stream. See the CPU-path note above.
         self.dyn.set_indices(
             _mao(self.clean_sig.unsafe_ptr()),
             _mao(self.clean_step.unsafe_ptr()),
@@ -938,7 +942,7 @@ struct Dreamer4Agent[
         )
         self.dyn.set_actions(atk, amk, Self.BF)
         self.dyn.set_agent_in(agp, Self.BF)
-        var sig_bc = Float64(Self.KMAX - 1) / Float64(Self.KMAX)
+        var sig_bc = 1.0                       # clean latent (match imagination + CPU)
         for i in range(Self.BF * Self.ND):
             self.bc_in[i] = Scalar[DT](
                 sig_bc * Float64(z1[i]) + (1.0 - sig_bc) * Float64(z0[i])
