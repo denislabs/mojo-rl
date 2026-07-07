@@ -29,10 +29,15 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import (
 from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
     forward_kinematics_fields,
 )
-from mojo_rl.physics3d.dynamics.jacobian import compute_subtree_com_gpu
+from mojo_rl.physics3d.dynamics.jacobian import (
+    compute_subtree_com_gpu,
+    compute_cdof_gpu,
+)
 from mojo_rl.physics3d.dynamics.subtree_com_fields import (
     compute_subtree_com_fields,
 )
+from mojo_rl.physics3d.dynamics.cdof_fields import compute_cdof_fields
+from mojo_rl.physics3d.fields import DynamicsScratch
 from mojo_rl.physics3d.gpu.constants import (
     state_size,
     model_size_with_invweight,
@@ -42,6 +47,8 @@ from mojo_rl.physics3d.gpu.constants import (
     xipos_offset,
     site_xpos_offset,
     subtree_com_offset,
+    integrator_workspace_size,
+    ws_cdof_offset,
     model_body_offset,
     model_joint_offset,
     model_metadata_offset,
@@ -135,6 +142,29 @@ def _legacy_stcom_kernel[
     compute_subtree_com_gpu[
         DTYPE, NQ_, NV_, NBODY_, NJOINT_, MC_, SS_, MS_, B_
     ](env, state, model)
+
+
+def _legacy_cdof_kernel[
+    NQ_: Int,
+    NV_: Int,
+    NBODY_: Int,
+    NJOINT_: Int,
+    MC_: Int,
+    SS_: Int,
+    MS_: Int,
+    B_: Int,
+    WS_: Int,
+](
+    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_), MutAnyOrigin],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_), MutAnyOrigin],
+    workspace: LayoutTensor[DTYPE, Layout.row_major(B_, WS_), MutAnyOrigin],
+):
+    var env = Int(block_idx.x)
+    if env >= B_:
+        return
+    compute_cdof_gpu[
+        DTYPE, NQ_, NV_, NBODY_, NJOINT_, MC_, SS_, MS_, B_, WS_
+    ](env, state, model, workspace)
 
 
 def _quat_err(
@@ -349,6 +379,61 @@ def test_walker2d() raises:
     if worst_st > POS_TOL:
         raise Error("walker2d subtree_com fields-CPU tolerance exceeded")
     print("  PASS: subtree_com fields-CPU within 1e-4")
+
+    # 4. cdof chained on FK + subtree_com (first workspace-array port:
+    #    output lives in DynamicsScratch.cdof, not a ws slab).
+    comptime WS = integrator_workspace_size[NV, NBODY]()
+    var ws_t = TensorImpl[DTYPE].alloc(BATCH * WS)
+    ws_t.upload(ctx)
+    ctx.enqueue_function[
+        _legacy_cdof_kernel[
+            NQ, NV, NBODY, NJOINT, MAX_CONTACTS, SS, MS, BATCH, WS
+        ]
+    ](
+        slab_t.lt["gpu", Layout.row_major(BATCH, SS)](),
+        model_t.lt["gpu", Layout.row_major(1, MS)](),
+        ws_t.lt["gpu", Layout.row_major(BATCH, WS)](),
+        grid_dim=(BATCH,),
+        block_dim=(1,),
+    )
+    ws_t.download(ctx)
+
+    var scratch = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    scratch.upload_all(ctx)
+    compute_cdof_fields[
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+        0, 0, 0, 0, 0, BATCH,
+    ](d, mf, scratch, ctx)
+    scratch.cdof.download(ctx)
+    comptime O_CDOF = ws_cdof_offset()
+    var bad_cd = 0
+    for e in range(BATCH):
+        for j in range(NV * 6):
+            if (
+                scratch.cdof.data[e * NV * 6 + j]
+                != ws_t.data[e * WS + O_CDOF + j]
+            ):
+                bad_cd += 1
+    if bad_cd != 0:
+        raise Error("walker2d cdof fields-GPU vs legacy-GPU mismatch")
+    print("  PASS: cdof fields-GPU == legacy-GPU bit-exact")
+
+    var scratch_c = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    compute_cdof_fields[
+        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+        0, 0, 0, 0, 0, BATCH,
+    ](dc, mf, scratch_c)
+    var worst_cd = Float64(0)
+    for i in range(BATCH * NV * 6):
+        var err = abs(
+            Float64(scratch_c.cdof.data[i]) - Float64(scratch.cdof.data[i])
+        )
+        if err > worst_cd:
+            worst_cd = err
+    print("  cdof fields-CPU vs fields-GPU worst err:", worst_cd)
+    if worst_cd > POS_TOL:
+        raise Error("walker2d cdof fields-CPU tolerance exceeded")
+    print("  PASS: cdof fields-CPU within 1e-4")
 
 
 def test_synthetic_sites() raises:
