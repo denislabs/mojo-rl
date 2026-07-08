@@ -14,6 +14,7 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_euler_fields.mojo
 from std.math import abs
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
+from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.core.tensor import TensorImpl
@@ -327,10 +328,23 @@ def main() raises:
                 "  => fields-GPU MATCHES fields-CPU: fields-GPU is correct; the"
                 " LEGACY-GPU reference is the one diverging on this device."
             )
+    # CORRECTNESS gate (all devices): fields-GPU must match fields-CPU.
     if worst > 1e-3:
         raise Error("fields-CPU tolerance exceeded")
+    # BIT-EXACT-vs-legacy-GPU gate: Apple-only. legacy-GPU miscomputes on NVIDIA
+    # (self-aliasing MutAnyOrigin RAW in the legacy slab kernels), so this is
+    # only a valid regression guard on non-NVIDIA.
     if gpu_mismatch:
-        raise Error("fields-GPU != legacy-GPU (see MISMATCH + discriminator above)")
+        if has_nvidia_gpu_accelerator():
+            print(
+                "  NOTE: fields-GPU != legacy-GPU on NVIDIA is EXPECTED (known"
+                " legacy slab-aliasing miscompile); fields-GPU is validated"
+                " against fields-CPU above."
+            )
+        else:
+            raise Error(
+                "fields-GPU != legacy-GPU (Apple bit-exact regression)"
+            )
     print("  PASS: fields-CPU within 1e-3 after", N_STEPS, "steps")
 
     print("test_euler_fields: ALL PASS")
