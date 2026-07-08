@@ -1046,7 +1046,8 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
     var term_dev = DriverScratch["hd_term", N_ENVS, 1].make["gpu"](ctx=ctx)
 
     var per_env_returns = List[Scalar[DT]](
-        length=N_ENVS, fill=Scalar[DT](0.0),
+        length=N_ENVS,
+        fill=Scalar[DT](0.0),
     )
 
     # CPU env: ctx ignored. Wrap in Optional(None) for the trait sig.
@@ -1086,7 +1087,8 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
 
         # ── 4. Step CPU envs (multi-core; writes host obs/reward/done/term).
         env.step_batch[N_ENVS](
-            ctx=None, rng_seed=rng_seed + UInt64(iter_idx + 1),
+            ctx=None,
+            rng_seed=rng_seed + UInt64(iter_idx + 1),
         )
 
         # ── 5. H2D next-obs / reward / terminated, then GPU replay push.
@@ -1128,7 +1130,8 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
 
         # ── 8. Selective env reset (host, multi-core).
         env.selective_reset_batch[N_ENVS](
-            ctx=None, rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
+            ctx=None,
+            rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
         )
 
         step_idx += N_ENVS
@@ -1227,17 +1230,15 @@ def run_offpolicy_discrete_eval_cpu_env_gpu_agent[
     Returns the mean completed-episode return (0 if none completed).
     """
     comptime OBS = A.AGENT_OBS_DIM
-    comptime assert E.ENV_TARGET == "cpu", (
-        "run_offpolicy_discrete_eval_cpu_env_gpu_agent: env must be CPU"
-    )
+    comptime assert (
+        E.ENV_TARGET == "cpu"
+    ), "run_offpolicy_discrete_eval_cpu_env_gpu_agent: env must be CPU"
     comptime assert (
         E.OBS_DIM == OBS
     ), "eval_env OBS_DIM must match trainer AGENT_OBS_DIM"
 
     var obs_dev = DriverScratch["hde_obs", N_ENVS, OBS].make["gpu"](ctx=ctx)
-    var action_dev = DriverScratch["hde_action", N_ENVS, 1].make["gpu"](
-        ctx=ctx
-    )
+    var action_dev = DriverScratch["hde_action", N_ENVS, 1].make["gpu"](ctx=ctx)
 
     trainer.set_noise_scale(Scalar[DT](0.0))  # deterministic mean weights
 

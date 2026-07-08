@@ -1007,9 +1007,7 @@ def run_offpolicy_train_batched[
     comptime if env_target == "gpu":
         if ctx:
             ep_ring = Optional(
-                EpisodeReturnRing[N_ENVS].make(
-                    ctx.value(), episode_sync_every
-                )
+                EpisodeReturnRing[N_ENVS].make(ctx.value(), episode_sync_every)
             )
 
     env.reset_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed)
