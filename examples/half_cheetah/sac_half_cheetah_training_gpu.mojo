@@ -176,11 +176,18 @@ def main() raises:
         print("Starting GPU training...")
         print("-" * 70)
         var t_start = perf_counter_ns()
+        # USE_ENV_CUDA_GRAPH=False: the fields path solves PYRAMIDAL contacts
+        # with the one-env-per-block blocked Newton kernel on NVIDIA, and
+        # capturing/replaying that (shared-memory cooperative) step in a CUDA
+        # graph illegal-addresses on replay (confirmed on humanoid; HalfCheetah
+        # uses the same blocked solver). Eager env stepping is correct; only the
+        # per-step launch-collapse speedup is lost. Re-enable if the blocked
+        # kernel is made capture-safe.
         _ = agent.train[
             BatchedEnvT,
             N_ENVS=N_ENVS,
             USE_TRAIN_CUDA_GRAPH=True,
-            USE_ENV_CUDA_GRAPH=True,
+            USE_ENV_CUDA_GRAPH=False,
             L=RemoteLogger,
         ](
             env,
