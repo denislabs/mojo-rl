@@ -41,8 +41,9 @@ from mojo_rl.physics3d.model.model_renderer import ModelRenderer
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
-from mojo_rl.physics3d.gpu.buffer_utils import copy_model_to_buffer
+from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
 from mojo_rl.physics3d.gpu.constants import model_size_with_invweight
+from mojo_rl.nn.core.tensor import TensorImpl
 
 from .phyics3d_env_config import Phyics3dEnvConfig
 
@@ -131,23 +132,23 @@ struct Phyics3dEnvFields[
         Self.NSITE,
         1,
     ]
-    var integ: RK4IntegratorFields[
-        Self.DTYPE,
-        Self.NQ,
-        Self.NV,
-        Self.NBODY,
-        Self.NJOINT,
-        Self.MAX_CONTACTS,
-        Self.NGEOM,
-        Self.MODEL_DEF.MAX_EQUALITY,
-        Self.MODEL_DEF.MAX_TENDON,
-        Self.NSITE,
-        0,
-        0,
-        Self.MODEL_DEF.CONE_TYPE,
-        1,
-        SOLVER = Self.SOLVER,
+    # Both integrators are held (host scratch only on the CPU path — cheap);
+    # the step comptime-dispatches on CONFIG.INTEGRATOR. HalfCheetah/Pusher/
+    # MetaWorld configure Euler+Newton; the other 9 envs use RK4+Newton.
+    comptime IntegRK4 = RK4IntegratorFields[
+        Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
+        Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
+        Self.MODEL_DEF.MAX_TENDON, Self.NSITE, 0, 0,
+        Self.MODEL_DEF.CONE_TYPE, 1, SOLVER = Self.SOLVER,
     ]
+    comptime IntegEuler = EulerIntegratorFields[
+        Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
+        Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
+        Self.MODEL_DEF.MAX_TENDON, Self.NSITE, 0, 0,
+        Self.MODEL_DEF.CONE_TYPE, 1, SOLVER = Self.SOLVER,
+    ]
+    var integ_rk4: Self.IntegRK4
+    var integ_euler: Self.IntegEuler
 
     var max_steps: Int
     var current_step: Int
@@ -182,22 +183,23 @@ struct Phyics3dEnvFields[
         self.data = type_of(self.data)()
         Self.MODEL_DEF.setup_model_and_data(self.model, self.data)
 
-        # Bridge the static model into record tensors via the existing
-        # flattening (bit-identical by construction; direct parser fill
-        # lands at sunset).
-        var hb = ctx.enqueue_create_host_buffer[Self.DTYPE](Self.MS)
-        ctx.synchronize()
-        copy_model_to_buffer(self.model, hb)
-        var flat = List[Scalar[Self.DTYPE]](
-            length=Self.MS, fill=Scalar[Self.DTYPE](0)
-        )
-        for i in range(Self.MS):
-            flat[i] = hb[i]
+        # Build the model record tensors through the SAME GPU serialization
+        # the batched facade + the fields tests use: `init_model_gpu` also
+        # computes dof_invweight0 (the constraint inverse-weight the contact
+        # solver scales impulses by). The old `copy_model_to_buffer` path left
+        # invweight0 at 0, which silently zeroed ALL contact forces — every
+        # contact env fell straight through the floor. Direct parser fill lands
+        # at sunset.
+        var model_slab = TensorImpl[Self.DTYPE].alloc(Self.MS)
+        model_slab.upload(ctx)
+        Self.MODEL_DEF.init_model_gpu(ctx, model_slab.dev.value())
+        model_slab.download(ctx)
         self.mf = type_of(self.mf)()
-        self.mf.load_from_slab(flat)
+        self.mf.load_from_slab(model_slab.data)
 
         self.d = type_of(self.d)()
-        self.integ = type_of(self.integ)()
+        self.integ_rk4 = Self.IntegRK4()
+        self.integ_euler = Self.IntegEuler()
 
         self._sync_fields_from_bridge()
         Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
@@ -306,12 +308,16 @@ struct Phyics3dEnvFields[
         for i in range(Self.NV):
             self.d.qfrc.data[i] = self.data.qfrc[i]
 
-        # Physics: fields RK4 with per-stage contact/limit solving.
+        # Physics: fields integrator (RK4 or Euler per CONFIG.INTEGRATOR) with
+        # per-substep contact/limit solving.
         for _ in range(self.frame_skip):
             try:
                 # CPU target: cannot actually raise (the `raises` on the
                 # dispatchers exists for the GPU branch's ctx handling).
-                self.integ.step["cpu"](self.d, self.mf)
+                comptime if Self.CONFIG.INTEGRATOR == "euler":
+                    self.integ_euler.step["cpu"](self.d, self.mf)
+                else:
+                    self.integ_rk4.step["cpu"](self.d, self.mf)
             except e:
                 print("Phyics3dEnvFields.step: physics error:", e)
 

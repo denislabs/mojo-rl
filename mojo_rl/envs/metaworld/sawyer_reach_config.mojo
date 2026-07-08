@@ -68,7 +68,8 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
     comptime OBS_DIM: Int = SAWYER_REACH_OBS_DIM
     comptime ACTION_DIM: Int = SAWYER_REACH_ACTION_DIM
 
-    comptime INTEGRATOR_WS_EXTRA: Int = 0  # Euler doesn't need extra workspace
+    comptime INTEGRATOR_WS_EXTRA: Int = 0  # Euler doesn't need extra
+    comptime INTEGRATOR: StaticString = "euler"  # matches physics_substep (Euler+Newton) workspace
 
     # === CPU: Integrator step ===
     @staticmethod

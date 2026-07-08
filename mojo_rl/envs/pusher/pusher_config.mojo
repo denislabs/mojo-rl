@@ -40,6 +40,7 @@ struct PusherConfig(Phyics3dEnvConfig):
     comptime FRAME_SKIP: Int = 5
     comptime MAX_STEPS: Int = 100
     comptime INTEGRATOR_WS_EXTRA: Int = 0  # EulerIntegrator needs no extra workspace
+    comptime INTEGRATOR: StaticString = "euler"  # matches physics_substep (Euler+Newton)
 
     # Reward weights (Gymnasium v5 defaults)
     comptime REWARD_DIST_WEIGHT = 1.0  # ||object - goal||

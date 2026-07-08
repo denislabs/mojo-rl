@@ -22,6 +22,12 @@ trait Phyics3dEnvConfig:
     comptime FRAME_SKIP: Int
     comptime MAX_STEPS: Int
     comptime INTEGRATOR_WS_EXTRA: Int  # 0 for RK4/Euler, >0 for ImplicitFast
+    # Which fields integrator the P5+ facades use. MUST match the integrator
+    # this config's `physics_substep`/`physics_substep_gpu` call (the CPU/GPU
+    # pair are always the same scheme). Default "rk4" = the trait-default
+    # physics_substep (RK4+Newton, 9/12 envs); envs that override the substep
+    # to Euler (HalfCheetah, Pusher, MetaWorld) MUST override this to "euler".
+    comptime INTEGRATOR: StaticString = "rk4"
 
     # === CPU: Integrator step ===
     @staticmethod

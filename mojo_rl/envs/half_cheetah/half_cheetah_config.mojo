@@ -22,6 +22,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
     comptime FRAME_SKIP: Int = 5
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = 0  # EulerIntegrator needs no extra workspace
+    comptime INTEGRATOR: StaticString = "euler"  # matches physics_substep (Euler+Newton)
 
     # Reward
     comptime FORWARD_REWARD_WEIGHT = 1.0

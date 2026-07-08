@@ -47,6 +47,7 @@ from mojo_rl.deep_agents.training.batched_env import BatchedEnv
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
+from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics_gpu,
 )
@@ -259,25 +260,26 @@ struct Phyics3dBatchedEnvFields[
         Self.MODEL_DEF.MAX_TENDON,
         Self.NSITE,
     ]
-    var integ: RK4IntegratorFields[
-        DT,
-        Self.NQ,
-        Self.NV,
-        Self.NBODY,
-        Self.NJOINT,
-        Self.MC,
-        Self.NGEOM,
-        Self.MODEL_DEF.MAX_EQUALITY,
-        Self.MODEL_DEF.MAX_TENDON,
-        Self.NSITE,
-        0,
-        0,
-        Self.MODEL_DEF.CONE_TYPE,
-        Self.N_ENVS,
-        SOLVER = Self.SOLVER,
-        PARALLEL_GPU = Self.PARALLEL_GPU,
+    # Both integrators are held; the step comptime-dispatches on
+    # CONFIG.INTEGRATOR (HalfCheetah/Pusher/MetaWorld = Euler+Newton, the
+    # other 9 envs = RK4+Newton). Only the SELECTED one is `prepare_gpu`'d, so
+    # the unused one allocates NO device memory.
+    comptime IntegRK4 = RK4IntegratorFields[
+        DT, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MC, Self.NGEOM,
+        Self.MODEL_DEF.MAX_EQUALITY, Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
+        0, 0, Self.MODEL_DEF.CONE_TYPE, Self.N_ENVS,
+        SOLVER = Self.SOLVER, PARALLEL_GPU = Self.PARALLEL_GPU,
         CRBA_TREEWALK = Self.CRBA_TREEWALK,
     ]
+    comptime IntegEuler = EulerIntegratorFields[
+        DT, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MC, Self.NGEOM,
+        Self.MODEL_DEF.MAX_EQUALITY, Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
+        0, 0, Self.MODEL_DEF.CONE_TYPE, Self.N_ENVS,
+        SOLVER = Self.SOLVER, PARALLEL_GPU = Self.PARALLEL_GPU,
+        CRBA_TREEWALK = Self.CRBA_TREEWALK,
+    ]
+    var integ_rk4: Self.IntegRK4
+    var integ_euler: Self.IntegEuler
 
     # Hooks adapter (transitional): device state slab + legacy model slab.
     var _slab: TensorImpl[DT]
@@ -318,8 +320,14 @@ struct Phyics3dBatchedEnvFields[
 
         self.d = type_of(self.d)()
         self.d.upload_all(ctx)
-        self.integ = type_of(self.integ)()
-        self.integ.prepare_gpu(ctx)
+        # Construct both (host scratch); prepare only the selected integrator so
+        # the unused one allocates no device buffers.
+        self.integ_rk4 = Self.IntegRK4()
+        self.integ_euler = Self.IntegEuler()
+        comptime if Self.CONFIG.INTEGRATOR == "euler":
+            self.integ_euler.prepare_gpu(ctx)
+        else:
+            self.integ_rk4.prepare_gpu(ctx)
 
         self._obs = ctx.enqueue_create_buffer[DT](Self.N_ENVS * Self.OBS_DIM)
         self._action = ctx.enqueue_create_buffer[DT](
@@ -650,9 +658,13 @@ struct Phyics3dBatchedEnvFields[
         # 3) Hand qpos/qvel (fresh after any reset) + qfrc to the fields.
         self._sync_slab_to_fields(c)
 
-        # 4) Physics: fields RK4 with per-stage contact/limit solving.
+        # 4) Physics: fields integrator (RK4 or Euler per CONFIG.INTEGRATOR)
+        #    with per-substep contact/limit solving.
         for _ in range(Self.CONFIG.FRAME_SKIP):
-            self.integ.step["gpu"](self.d, self.mf, ctx)
+            comptime if Self.CONFIG.INTEGRATOR == "euler":
+                self.integ_euler.step["gpu"](self.d, self.mf, ctx)
+            else:
+                self.integ_rk4.step["gpu"](self.d, self.mf, ctx)
 
         # 5) Publish stepped state to the slab for the hooks, then the
         #    derived quantities the reward hooks may read.
