@@ -33,15 +33,23 @@ from std.time import perf_counter_ns
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
+from std.gpu.host import DeviceContext
+
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.humanoid import Humanoid
+from mojo_rl.envs.phyics3d_env_fields import Phyics3dEnvFields
+from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
+from mojo_rl.envs.humanoid.humanoid_config import HumanoidConfig
 
 
 # =============================================================================
 # Architecture
 # =============================================================================
 
-comptime EnvT = Humanoid[DT, TERMINATE_ON_UNHEALTHY=True]
+# Per-field tensor physics path (migration P5+): single-env fields facade,
+# CPU stepping (SOLVER="newton" = the legacy env default physics).
+comptime EnvT = Phyics3dEnvFields[
+    HumanoidModel, HumanoidConfig, DT, TERMINATE_ON_UNHEALTHY=True
+]
 comptime OBS_DIM = EnvT.OBS_DIM  # 45
 comptime ACT_DIM = EnvT.ACTION_DIM  # 17
 comptime HIDDEN = 256
@@ -110,7 +118,8 @@ def main() raises:
         window_size=100,
         initial_episode_fill=0.0,
     )
-    var env = EnvT()
+    var ctx = DeviceContext()  # fields facade: host staging for the model bridge
+    var env = EnvT(ctx)
 
     # ─── Single train() call — auto-flush + auto-checkpoint ──────────────
     var t_start = perf_counter_ns()

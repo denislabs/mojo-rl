@@ -56,8 +56,8 @@ from mojo_rl.nn.primitives.linear_relu import LinearReLU
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
+from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
 
 
 # =============================================================================
@@ -81,8 +81,12 @@ comptime PRINT_EVERY = 50_000  # driver-cadence verbose + env/mean_ret emit
 comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 
 
-comptime EnvT = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]
-comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
+# Per-field tensor physics path (migration P5+): the batched fields facade is
+# a `BatchedEnv` that runs the LEGACY PRODUCTION physics bundle by default
+# (RK4 + Newton, parallel _mt schedules, treewalk CRBA, auto broadphase).
+comptime BatchedEnvT = Phyics3dBatchedEnvFields[
+    HalfCheetahModel, HalfCheetahConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=False
+]
 
 comptime ActorNet = StochasticActor[
     OBS_DIM,

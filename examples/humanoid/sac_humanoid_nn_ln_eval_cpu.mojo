@@ -34,14 +34,21 @@ from mojo_rl.nn.primitives.layer_norm import LayerNorm
 from mojo_rl.deep_agents.sac import SACAgent, SACActorNet
 from mojo_rl.deep_agents.training.blocks import ReplaySampleStep
 from mojo_rl.deep_agents.data.any_replay import AnyReplay
-from mojo_rl.envs.humanoid import Humanoid
+from std.gpu.host import DeviceContext
+from mojo_rl.envs.phyics3d_env_fields import Phyics3dEnvFields
+from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
+from mojo_rl.envs.humanoid.humanoid_config import HumanoidConfig
 
 
 # =============================================================================
 # Architecture — MUST match the LayerNorm-critic trainer exactly
 # =============================================================================
 
-comptime EnvT = Humanoid[DT, TERMINATE_ON_UNHEALTHY=True]
+# Per-field tensor physics path (migration P5+): the fields facade renders
+# via the same physics3d ModelRenderer, driven by the bridge FK poses.
+comptime EnvT = Phyics3dEnvFields[
+    HumanoidModel, HumanoidConfig, DT, TERMINATE_ON_UNHEALTHY=True
+]
 comptime OBS_DIM = EnvT.OBS_DIM  # 45
 comptime ACT_DIM = EnvT.ACTION_DIM  # 17
 # HIDDEN + CHECKPOINT_PATH MUST match the trainer (LayerNorm critic, HIDDEN=256).
@@ -118,7 +125,8 @@ def main() raises:
     # init_renderer / per-step render+delay / quit / close handling and returns
     # the mean episode return. Falls back to headless if no renderer.
     print("-" * 70)
-    var env = EnvT()
+    var ctx = DeviceContext()  # fields facade: host staging for the model bridge
+    var env = EnvT(ctx)
     var avg_reward = Float64(
         agent.eval_render[EnvT](
             env,

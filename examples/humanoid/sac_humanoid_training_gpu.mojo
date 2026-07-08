@@ -52,17 +52,17 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.humanoid import Humanoid
+from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
+from mojo_rl.envs.humanoid.humanoid_config import HumanoidConfig
 
 
 # =============================================================================
 # Architecture
 # =============================================================================
 
-comptime EnvT = Humanoid[DT, TERMINATE_ON_UNHEALTHY=True]
-comptime OBS_DIM = EnvT.OBS_DIM  # 45
-comptime ACT_DIM = EnvT.ACTION_DIM  # 17
+comptime OBS_DIM = HumanoidModel.OBS_DIM  # 45
+comptime ACT_DIM = HumanoidModel.ACTION_DIM  # 17
 comptime HIDDEN = 256
 
 # Off-policy GPU training parameters (mirror the legacy GPU script).
@@ -100,8 +100,15 @@ comptime EVAL_EVERY = 250_000  # env-steps between eval passes (~40 over 10M)
 comptime EVAL_EPISODES = 16  # <= EVAL_ENVS → completes in one eval window
 
 
-comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
-comptime EvalEnvT = BatchedGpuEnv[EnvT, EVAL_ENVS, OBS_DIM, ACT_DIM]
+# Per-field tensor physics path (migration P5+): the batched fields facade is
+# a `BatchedEnv` running the LEGACY PRODUCTION physics bundle by default
+# (RK4 + Newton, parallel _mt schedules, treewalk CRBA, auto broadphase).
+comptime BatchedEnvT = Phyics3dBatchedEnvFields[
+    HumanoidModel, HumanoidConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=True
+]
+comptime EvalEnvT = Phyics3dBatchedEnvFields[
+    HumanoidModel, HumanoidConfig, EVAL_ENVS, TERMINATE_ON_UNHEALTHY=True
+]
 
 # Actor + twin critics come from the `SAC[...]` preset (deep_agents.sac),
 # which bundles the canonical fused-`LinearReLU` `SACActorNet` /

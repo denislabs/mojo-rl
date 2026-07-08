@@ -26,15 +26,18 @@ Scope (mirrors what the fields path supports today):
   (`BatchedEnv`-style, driver-owned IO buffers) is the follow-up slice.
 """
 
+from std.collections import InlineArray
+from std.memory import alloc
 from std.random import random_float64
 from std.gpu.host import DeviceContext
 
-from mojo_rl.core.env_traits import BoxContinuousActionEnv
+from mojo_rl.core.env_traits import BoxContinuousActionEnv, RenderableEnv
 from mojo_rl.core.obs_state import ObsState
 from mojo_rl.core.cont_action import ContAction
 
 from mojo_rl.physics3d.types import Model, Data
 from mojo_rl.physics3d.model.model_def import ModelDefLike
+from mojo_rl.physics3d.model.model_renderer import ModelRenderer
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
@@ -50,7 +53,7 @@ struct Phyics3dEnvFields[
     DTYPE: DType = DType.float64,
     TERMINATE_ON_UNHEALTHY: Bool = False,
     SOLVER: StaticString = "newton",
-](BoxContinuousActionEnv):
+](BoxContinuousActionEnv, RenderableEnv):
     """Generic MuJoCo env, physics on the per-field tensor path. See module
     docstring for the bridge design and scope.
 
@@ -152,6 +155,13 @@ struct Phyics3dEnvFields[
     var _last_terminated: Bool
     var prev_x: Scalar[Self.DTYPE]
 
+    # Renderer (optional; RenderableEnv). Reads the bridge `self.data` FK
+    # products, which the fields step re-syncs every frame.
+    var _renderer: Optional[
+        UnsafePointer[ModelRenderer[Self.MODEL_DEF], MutUntrackedOrigin]
+    ]
+    var _renderer_initialized: Bool
+
     def __init__(
         out self,
         ctx: DeviceContext,
@@ -165,6 +175,8 @@ struct Phyics3dEnvFields[
         self.frame_skip = frame_skip
         self.prev_x = Scalar[Self.DTYPE](0.0)
         self._last_terminated = False
+        self._renderer = None
+        self._renderer_initialized = False
 
         self.model = type_of(self.model)()
         self.data = type_of(self.data)()
@@ -330,6 +342,112 @@ struct Phyics3dEnvFields[
 
     def close(mut self):
         pass
+
+    # ── Render accessors (read the bridge `self.data`) ────────────────────
+    def get_xpos(self, idx: Int) -> Scalar[Self.DTYPE]:
+        return self.data.xpos[idx]
+
+    def get_xquat(self, idx: Int) -> Scalar[Self.DTYPE]:
+        return self.data.xquat[idx]
+
+    def get_x_velocity(self) -> Scalar[Self.DTYPE]:
+        return self.data.qvel[0]
+
+    # ── RenderableEnv (mirrors Phyics3dEnv; renders the fields physics via
+    #    the bridge poses) ──────────────────────────────────────────────────
+    def init_renderer(mut self) raises -> Bool:
+        return self._init_renderer(show_velocity=True)
+
+    def init_renderer(mut self, show_velocity: Bool) raises -> Bool:
+        return self._init_renderer(show_velocity=show_velocity)
+
+    def _init_renderer(mut self, show_velocity: Bool) raises -> Bool:
+        if self._renderer_initialized:
+            return True
+
+        self._renderer = alloc[ModelRenderer[Self.MODEL_DEF]](1)
+
+        var renderer = ModelRenderer[Self.MODEL_DEF](
+            width=1280,
+            height=720,
+            visual_radius_scale=1.0,
+            axes_offset=1.5,
+            vel_arrow_height=0.15,
+            vel_arrow_scale=0.1,
+            show_velocity=show_velocity,
+        )
+        renderer.init()
+
+        self._renderer.value().init_pointee_move(renderer^)
+        self._renderer_initialized = True
+        return True
+
+    def render_frame(mut self) raises -> None:
+        if not self._renderer_initialized:
+            return
+        if not self._renderer.value()[].is_open():
+            return
+
+        var xpos = InlineArray[Scalar[Self.DTYPE], Self.MODEL_DEF.NBODY * 3](
+            uninitialized=True
+        )
+        var xquat = InlineArray[Scalar[Self.DTYPE], Self.MODEL_DEF.NBODY * 4](
+            uninitialized=True
+        )
+        for i in range(Self.MODEL_DEF.NBODY * 3):
+            xpos[i] = self.get_xpos(i)
+        for i in range(Self.MODEL_DEF.NBODY * 4):
+            xquat[i] = self.get_xquat(i)
+        self._renderer.value()[].render_from_body_state(
+            xpos,
+            xquat,
+            Self.MODEL_DEF.NBODY,
+            vel_x=Float64(self.get_x_velocity()),
+        )
+
+    def close_renderer(mut self) raises -> None:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].close()
+        self._renderer.value().free()
+        self._renderer_initialized = False
+
+    def is_renderer_open(self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return self._renderer.value()[].is_open()
+
+    def check_renderer_quit(mut self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return self._renderer.value()[].check_quit()
+
+    def renderer_delay(self, ms: Int) -> None:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].delay(ms)
+
+    def renderer_is_paused(self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return self._renderer.value()[].renderer.is_paused
+
+    def renderer_step_once(self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return self._renderer.value()[].renderer.step_once
+
+    def start_recording(
+        mut self, filename: String, fps: Int = 30, skip: Int = 1
+    ) raises:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].renderer.start_recording(filename, fps, skip)
+
+    def stop_recording(mut self) raises:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].renderer.stop_recording()
 
     # ── ContinuousStateEnv ────────────────────────────────────────────────
     def get_obs_list(self) -> List[Scalar[Self.dtype]]:
