@@ -33,8 +33,8 @@ from mojo_rl.nn.constants import DT
 def accumulate_episode_returns[
     N_ENVS: Int
 ](
-    rewards_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    dones_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    rewards: HostBuffer[DT],
+    dones: HostBuffer[DT],
     mut per_env: List[Scalar[DT]],
     mut completed: List[Scalar[DT]],
 ):
@@ -42,8 +42,8 @@ def accumulate_episode_returns[
     return accumulators; on done (> 0.5), append the finished return to
     `completed` (env order) and zero that env's accumulator."""
     for e in range(N_ENVS):
-        per_env[e] = per_env[e] + rewards_ptr[e]
-        if dones_ptr[e] > Scalar[DT](0.5):
+        per_env[e] = per_env[e] + rewards[e]
+        if dones[e] > Scalar[DT](0.5):
             completed.append(per_env[e])
             per_env[e] = Scalar[DT](0.0)
 
@@ -72,9 +72,7 @@ struct EpisodeReturnRing[N_ENVS: Int](Movable):
             ring_done=rd^,
             pending=0,
             sync_every=se,
-            per_env=List[Scalar[DT]](
-                length=Self.N_ENVS, fill=Scalar[DT](0.0)
-            ),
+            per_env=List[Scalar[DT]](length=Self.N_ENVS, fill=Scalar[DT](0.0)),
         )
 
     def enqueue(
@@ -112,8 +110,8 @@ struct EpisodeReturnRing[N_ENVS: Int](Movable):
         ctx.synchronize()
         for s in range(self.pending):
             accumulate_episode_returns[Self.N_ENVS](
-                self.ring_reward[s].unsafe_ptr(),
-                self.ring_done[s].unsafe_ptr(),
+                self.ring_reward[s],
+                self.ring_done[s],
                 self.per_env,
                 completed,
             )
