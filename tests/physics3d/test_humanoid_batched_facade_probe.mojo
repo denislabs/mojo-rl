@@ -33,7 +33,17 @@ def main() raises:
     env.reset_batch[N](ctx, UInt64(0))
     ctx.synchronize()
     print("reset_batch ok")
-    for s in range(3):
+    for s in range(5):
         print("--- step", s, "---")
         env._step_impl[N, True](ctx, UInt64(s + 1))
-    print("=== BATCHED FACADE STEPS OK ===")
+    # Humanoid falls fast under warmup actions -> some envs terminate, so the
+    # training hits selective_reset early. Exercise it (the driver path the
+    # plain step probe skips).
+    print("--- selective_reset_batch ---")
+    env.selective_reset_batch[N](ctx, UInt64(99))
+    ctx.synchronize()
+    print("selective_reset_batch ok")
+    for s in range(3):
+        print("--- post-reset step", s, "---")
+        env._step_impl[N, True](ctx, UInt64(s + 100))
+    print("=== BATCHED FACADE STEPS + RESET OK ===")
