@@ -109,7 +109,13 @@ from ..gpu.constants import (
     JOINT_IDX_SOLIMP_LIMIT_4,
 )
 
-comptime NS_TPB: Int = 64
+# One env per BLOCK (not 64 threads/block). The per-env Newton solve stack-
+# allocates a large local frame (~ ME*NV + 3*MC*NV + several NV*NV, ~60KB for
+# humanoid). With a wide block every thread — including the idle ones past
+# BATCH — reserves that frame, and CUDA reserves it for max residency across
+# the device, which OOMs at humanoid scale (Metal doesn't pre-reserve). One
+# thread per block keeps the reservation to the envs actually running.
+comptime NS_TPB: Int = 1
 
 
 # =============================================================================
