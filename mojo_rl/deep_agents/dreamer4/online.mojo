@@ -560,23 +560,31 @@ def run_online_dreamer4[
             print("  [rl]", step, "/", total_env_steps,
                   " wm_video=", last_video, " wm_bc=", last_bc,
                   " imag_v=", last_v, " eval=", last_eval_return)
+            # Reward/value calibration means (cheap _mmm) — computed here so they
+            # go to BOTH the CSV logger and the diag print. `imag_value`/
+            # `imag_policy` above are the value/policy LOSSES (twohot CE / PMPO),
+            # NOT the value magnitude — these means are the magnitudes. If
+            # imag_rew_mean ≫ real_rew_mean (or imag_val_mean is wildly optimistic
+            # vs eval_return), the reward/value heads hallucinate → the WM/heads
+            # are the bottleneck; if they match but the policy doesn't improve, the
+            # bug is the policy update (PMPO advantage/weighting).
+            var rr = _mmm(_mao(rew.data.unsafe_ptr()), BATCH)
+            var ir = _mmm(agent.im_rew_ptr(), BATCH)
+            var iv = _mmm(agent.im_val_ptr(), BATCH)
+            var lr = _mmm(agent.im_ret_ptr(), B * (T - 1))
             # metric logging at the SAME cadence (not per train/imag step — that
             # floods the remote logger with thousands of points).
             if logger.is_active():
                 logger.log_scalar(String("online/wm_video"), last_video, step)
                 logger.log_scalar(String("online/wm_bc"), last_bc, step)
-                logger.log_scalar(String("online/imag_value"), last_v, step)
-                logger.log_scalar(String("online/imag_policy"), last_p, step)
+                logger.log_scalar(String("online/imag_value_loss"), last_v, step)
+                logger.log_scalar(String("online/imag_policy_loss"), last_p, step)
+                # NEW — reward/value calibration (the decisive columns):
+                logger.log_scalar(String("online/real_rew_mean"), rr[0], step)
+                logger.log_scalar(String("online/imag_rew_mean"), ir[0], step)
+                logger.log_scalar(String("online/imag_val_mean"), iv[0], step)
+                logger.log_scalar(String("online/lambda_ret_mean"), lr[0], step)
             if diag:
-                # Is imagination seeing phantom rewards/values? Compare the REAL
-                # batch rewards to the reward head's IMAGINED rewards, the value
-                # head's imagined values, and the λ-returns. If imag_rew mean is
-                # far above real_rew mean (or imag_val is wildly optimistic), the
-                # WM/heads are the bottleneck, not the policy.
-                var rr = _mmm(_mao(rew.data.unsafe_ptr()), BATCH)
-                var ir = _mmm(agent.im_rew_ptr(), BATCH)
-                var iv = _mmm(agent.im_val_ptr(), BATCH)
-                var lr = _mmm(agent.im_ret_ptr(), B * (T - 1))
                 print("  [diag] real_rew(mean/min/max)=", rr[0], rr[1], rr[2],
                       " imag_rew=", ir[0], ir[1], ir[2],
                       " imag_val=", iv[0], iv[1], iv[2],
