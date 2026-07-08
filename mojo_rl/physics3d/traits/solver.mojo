@@ -10,7 +10,7 @@ before the solver is called. Solvers are pure iterative algorithms.
 
 from layout import LayoutTensor, Layout
 
-from ..types import Model, Data
+from ..types import Model, Data, ConeType
 from ..constraints.constraint_data import ConstraintData
 
 

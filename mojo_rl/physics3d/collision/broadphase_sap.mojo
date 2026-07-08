@@ -115,6 +115,7 @@ from ..gpu.constants import (
     model_mesh_vert_offset,
     MODEL_MESH_META_SIZE,
 )
+from ..types import ConeType
 from .contact_detection import (
     _geom_world_pos,
     _geom_world_pos_gpu,

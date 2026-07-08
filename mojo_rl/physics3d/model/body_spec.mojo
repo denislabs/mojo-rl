@@ -37,6 +37,7 @@ from ..gpu.constants import (
 )
 from std.gpu.host import HostBuffer
 from mojo_rl.render import Color
+from ..types import ConeType
 
 # =============================================================================
 # BodySpec Trait

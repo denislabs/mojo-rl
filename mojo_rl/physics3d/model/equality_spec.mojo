@@ -14,7 +14,7 @@ Usage:
     comptime MyWeld = WeldConstraint[body_a=2, body_b=3, anchor_a_z=0.1]
 """
 
-from ..types import EQ_CONNECT, EQ_WELD, EqualityConstraintDef
+from ..types import EQ_CONNECT, EQ_WELD, EqualityConstraintDef, ConeType
 
 
 trait EqualitySpec:

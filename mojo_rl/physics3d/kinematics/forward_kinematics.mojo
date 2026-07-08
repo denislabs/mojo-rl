@@ -34,7 +34,7 @@ from .quat_math import (
     gpu_quat_normalize,
     gpu_axis_angle_to_quat,
 )
-from ..types import Model, Data
+from ..types import Model, Data, ConeType
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
 from ..gpu.constants import (
     qpos_offset,

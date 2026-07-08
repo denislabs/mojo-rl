@@ -17,7 +17,7 @@ from std.math import sqrt
 from std.gpu import barrier
 from layout import LayoutTensor, Layout
 from ..gpu.constants import ws_cdof_offset
-from ..types import Model, Data, _max_one
+from ..types import Model, Data, _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..kinematics.quat_math import quat_rotate, quat_mul, axis_angle_to_quat
 from ..gpu.constants import (

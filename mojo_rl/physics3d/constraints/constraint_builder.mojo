@@ -20,6 +20,7 @@ from ..types import (
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..dynamics.jacobian import compute_contact_jacobian_row
 from ..kinematics.quat_math import quat_mul, quat_conjugate, quat_rotate
+from ..types import ConeType
 from .constraint_data import (
     ConstraintRow,
     ConstraintData,

@@ -24,6 +24,7 @@ Usage:
     comptime MyCap = Capsule[body_idx=1, radius=0.046, friction=0.4]
 """
 from std.math import sqrt
+from ..types import ConeType
 from ..constants import (
     GEOM_PLANE,
     GEOM_SPHERE,

@@ -89,6 +89,7 @@ from ..gpu.constants import (
     contacts_offset,
     metadata_offset,
 )
+from ..types import ConeType
 from ..collision.collision_primitives import (
     sphere_sphere,
     capsule_sphere,

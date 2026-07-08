@@ -51,6 +51,7 @@ from .integrator import (
 from .solver import PGSSolver, NewtonSolver, CGSolver
 
 # Collision
+from .types import ConeType
 from .collision import (
     sphere_sphere,
     sphere_plane,

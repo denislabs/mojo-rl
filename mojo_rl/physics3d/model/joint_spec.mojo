@@ -51,6 +51,7 @@ from std.gpu.host import HostBuffer
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JointDef
 from ..model.defaults_spec import ModelDefaults, _resolve_f64, _resolve_int
 from std.random.philox import Random as PhiloxRandom
+from ..types import ConeType
 
 # Sentinel value for "use model default"
 comptime _UNSET_F64: Float64 = -1.0

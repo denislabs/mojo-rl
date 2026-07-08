@@ -178,6 +178,7 @@ from ..model.texture_spec import TexturesLike, _EmptyTextures
 from ..model.material_spec import MaterialsLike, _EmptyMaterials
 from ..model.camera_spec import CamerasLike, _EmptyCameras
 from ..model.site_spec import SitesLike, _EmptySites
+from ..types import ConeType
 
 
 comptime _RVec3 = _Vec3G[DType.float64]
