@@ -154,20 +154,31 @@ def main() raises:
     ](
         agent, tok, backbone, env, logger,
         warmup_steps=5_000,
-        tok_pretrain_steps=20_000,  # 2_000 was FAR too few — the tokenizer recon
-                                  # barely moved (0.26→0.23 masked-MSE ≈ RMSE 0.48)
-                                  # and its RECON was pure noise, so every latent
-                                  # downstream was meaningless (nothing could
-                                  # learn). The tokenizer is the GATE. With the
-                                  # SCALE=True positional fix it should learn far
-                                  # faster; watch the `[tok] .. recon=` curve and
-                                  # the post-pretrain RECON GIF — raise this (or
-                                  # tokenizer capacity) until RECON is sharp.
+        tok_pretrain_steps=4_000,  # With perc_weight=0.0 (pure masked-MSE) the
+                                  # tokenizer reconstructs REAL CarRacing frames to
+                                  # MSE ~0.001 (PSNR ~30) by ~step 400 — isolated
+                                  # diagnostics (scratch tok_diag_*) confirm the
+                                  # encoder/decoder/MAE/vjp are all correct on CPU
+                                  # AND GPU. The old 20_000 + "tokenizer is the
+                                  # GATE / needs capacity" story was WRONG: the
+                                  # 0.22 plateau came entirely from perc_weight>0
+                                  # (see below), not undertraining or capacity.
+                                  # 4_000 is generous headroom over the ~400 needed.
         total_env_steps=200_000,
         train_every=4,
         imag_every=8,
         eval_every=10_000,
-        perc_weight=0.2,          # paper eq. 5: MSE + 0.2·perceptual (GPU backbone)
+        perc_weight=0.0,          # paper eq. 5 is MSE + 0.2·LPIPS, but our LPIPS
+                                  # SURROGATE (frozen CIFAR ResNet-20) is net
+                                  # HARMFUL here: CarRacing frames are far OOD for a
+                                  # CIFAR net, so its feature-MSE gradient points
+                                  # away from pixel reconstruction and DOMINATES the
+                                  # true MSE grad. Isolated diagnostic (real frames,
+                                  # components logged separately): pure MSE → 0.001;
+                                  # +0.2·perceptual → spikes to 0.22 at step 40 with
+                                  # pred pinned ≈0 (THE plateau), then only recovers
+                                  # to 0.023 (23× worse). Pure MSE gives sharp recon
+                                  # on this simple env; revisit only with real LPIPS.
         eval_max_steps=1_000,
         num_eval_episodes=8,      # average greedy return over 8 random tracks —
                                   # single-episode eval is dominated by which track
