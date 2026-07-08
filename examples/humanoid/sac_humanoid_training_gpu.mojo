@@ -187,7 +187,7 @@ def main() raises:
             N_ENVS=N_ENVS,
             L=RemoteLogger,
             USE_TRAIN_CUDA_GRAPH=True,
-            USE_ENV_CUDA_GRAPH=True,
+            USE_ENV_CUDA_GRAPH=False,
             EE=EvalEnvT,
             EVAL_ENVS=EVAL_ENVS,
         ](
