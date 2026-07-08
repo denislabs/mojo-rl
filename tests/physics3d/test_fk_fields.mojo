@@ -324,6 +324,9 @@ def test_walker2d() raises:
     comptime O_XPOS = xpos_offset[NQ, NV, NBODY]()
     comptime O_XQUAT = xquat_offset[NQ, NV, NBODY]()
     comptime O_XIPOS = xipos_offset[NQ, NV, NBODY]()
+    # DIAGNOSTIC: don't abort on the GPU-vs-GPU mismatch — let part 2
+    # (fields-CPU vs fields-GPU) run so we learn WHICH GPU path is wrong.
+    var gpu_mismatch = False
     var bad = 0
     var worst = Float64(0)
     var w_e = -1
@@ -390,8 +393,9 @@ def test_walker2d() raises:
             w_i,
         )
         print("    fields-GPU=", w_fv, " legacy-GPU=", w_lv)
-        raise Error("walker2d fields-GPU vs legacy-GPU: not bit-exact")
-    print("  PASS: fields-GPU == legacy-GPU bit-exact (xpos/xquat/xipos)")
+        gpu_mismatch = True
+    else:
+        print("  PASS: fields-GPU == legacy-GPU bit-exact (xpos/xquat/xipos)")
 
     # 2. fields-CPU (same body) vs fields-GPU + legacy-CPU.
     var dc = DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, 0, BATCH]()
@@ -459,8 +463,27 @@ def test_walker2d() raises:
         "  fields-CPU worst err: vs fields-GPU=", worst_gpu,
         " vs legacy-CPU=", worst_cpu,
     )
+    # DISCRIMINATOR: worst_gpu is |fields-CPU - fields-GPU|. Large => the fields
+    # GPU kernel miscomputes on this device; ~0 => fields-GPU is correct and the
+    # legacy-GPU reference is the one diverging.
+    if gpu_mismatch:
+        if worst_gpu > QUAT_TOL:
+            print(
+                "  => fields-GPU disagrees with fields-CPU: the FIELDS GPU path"
+                " miscomputes on this device."
+            )
+        else:
+            print(
+                "  => fields-GPU MATCHES fields-CPU: fields-GPU is correct; the"
+                " LEGACY-GPU reference is the one diverging on this device."
+            )
     if worst_gpu > QUAT_TOL or worst_cpu > QUAT_TOL:
         raise Error("walker2d fields-CPU tolerance exceeded")
+    if gpu_mismatch:
+        raise Error(
+            "walker2d fields-GPU != legacy-GPU (see MISMATCH + discriminator"
+            " above)"
+        )
     print("  PASS: fields-CPU within 1e-4 of fields-GPU and legacy-CPU")
 
     # 3. subtree_com chained on the FK products (legacy slab still holds FK

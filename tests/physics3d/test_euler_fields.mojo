@@ -154,6 +154,10 @@ def main() raises:
     comptime O_META_M = model_metadata_offset[NBODY, NJOINT]()
     var dt = model_t.data[O_META_M + MODEL_META_IDX_TIMESTEP]
 
+    # DIAGNOSTIC: don't abort on the first GPU-vs-GPU mismatch — keep stepping
+    # so the fields-CPU-vs-fields-GPU comparison below can run and tell us WHICH
+    # GPU path is wrong (fields-GPU miscompiles vs legacy-GPU is the odd one out).
+    var gpu_mismatch = False
     for step in range(N_STEPS):
         # Legacy: step_kernel + limits + finalize (contact-free but
         # limit-AWARE — the thigh=0.5 config violates walker2d's (-150,0)deg
@@ -290,14 +294,18 @@ def main() raises:
                 w_i,
             )
             print("    fields-GPU=", w_fv, " legacy-GPU=", w_lv)
-            raise Error("step " + String(step) + ": fields-GPU != legacy-GPU")
-        print(
-            "  step", step,
-            ": fields-GPU == legacy-GPU BIT-EXACT"
-            " (qpos/qvel/qacc/xvel/xangvel)",
-        )
+            gpu_mismatch = True
+        else:
+            print(
+                "  step", step,
+                ": fields-GPU == legacy-GPU BIT-EXACT"
+                " (qpos/qvel/qacc/xvel/xangvel)",
+            )
 
-    # fields-CPU vs fields-GPU after N_STEPS.
+    # fields-CPU vs fields-GPU after N_STEPS. This is the DISCRIMINATOR: a small
+    # err means fields-GPU == fields-CPU (so fields-GPU is correct and the
+    # legacy-GPU path is the one diverging on this device); a large err means
+    # fields-GPU itself miscomputes on the GPU.
     var worst = Float64(0)
     for i in range(BATCH * NQ):
         var err = abs(Float64(dc.qpos.data[i]) - Float64(d.qpos.data[i]))
@@ -308,8 +316,21 @@ def main() raises:
         if err > worst:
             worst = err
     print("  fields-CPU vs fields-GPU after", N_STEPS, "steps, worst err:", worst)
+    if gpu_mismatch:
+        if worst > 1e-3:
+            print(
+                "  => fields-GPU disagrees with fields-CPU too: the FIELDS GPU"
+                " path miscomputes on this device."
+            )
+        else:
+            print(
+                "  => fields-GPU MATCHES fields-CPU: fields-GPU is correct; the"
+                " LEGACY-GPU reference is the one diverging on this device."
+            )
     if worst > 1e-3:
         raise Error("fields-CPU tolerance exceeded")
+    if gpu_mismatch:
+        raise Error("fields-GPU != legacy-GPU (see MISMATCH + discriminator above)")
     print("  PASS: fields-CPU within 1e-3 after", N_STEPS, "steps")
 
     print("test_euler_fields: ALL PASS")
