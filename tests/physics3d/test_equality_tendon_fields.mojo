@@ -327,33 +327,45 @@ def _part_a_tendon(ctx: DeviceContext) raises:
         qvel_step0.append(Scalar[DTYPE](0))
 
     for step in range(N_STEPS_A):
-        ctx.enqueue_function[_legacy_step_kernel_a[BATCH]](
-            slab_t.lt["gpu", Layout.row_major(BATCH, SS_A)](),
-            model_t.lt["gpu", Layout.row_major(1, MS_A)](),
-            ws_t.lt["gpu", Layout.row_major(BATCH, WS_A)](),
-            grid_dim=(BATCH,),
-            block_dim=(1,),
-        )
-        ctx.enqueue_function[_legacy_detect_kernel_a[BATCH]](
-            slab_t.lt["gpu", Layout.row_major(BATCH, SS_A)](),
-            model_t.lt["gpu", Layout.row_major(1, MS_A)](),
-            grid_dim=(BATCH,),
-            block_dim=(1,),
-        )
-        ctx.enqueue_function[_legacy_pgs_kernel_a[BATCH]](
-            slab_t.lt["gpu", Layout.row_major(BATCH, SS_A)](),
-            model_t.lt["gpu", Layout.row_major(1, MS_A)](),
-            ws_t.lt["gpu", Layout.row_major(BATCH, WS_A)](),
-            grid_dim=(BATCH,),
-            block_dim=(1, MC_A),
-        )
-        ctx.enqueue_function[_legacy_finalize_kernel_a[BATCH]](
-            slab_t.lt["gpu", Layout.row_major(BATCH, SS_A)](),
-            model_t.lt["gpu", Layout.row_major(1, MS_A)](),
-            ws_t.lt["gpu", Layout.row_major(BATCH, WS_A)](),
-            grid_dim=(BATCH,),
-            block_dim=(1,),
-        )
+        # Legacy slab-GPU reference: illegal-addresses on CUDA for
+        # FREE-joint models; Apple-only (bit-exact gate guarded below).
+        if not has_nvidia_gpu_accelerator():
+            ctx.enqueue_function[_legacy_step_kernel_a[BATCH]](
+                slab_t.lt["gpu", Layout.row_major(BATCH, SS_A)](),
+                model_t.lt["gpu", Layout.row_major(1, MS_A)](),
+                ws_t.lt["gpu", Layout.row_major(BATCH, WS_A)](),
+                grid_dim=(BATCH,),
+                block_dim=(1,),
+            )
+        # Legacy slab-GPU reference: illegal-addresses on CUDA for
+        # FREE-joint models; Apple-only (bit-exact gate guarded below).
+        if not has_nvidia_gpu_accelerator():
+            ctx.enqueue_function[_legacy_detect_kernel_a[BATCH]](
+                slab_t.lt["gpu", Layout.row_major(BATCH, SS_A)](),
+                model_t.lt["gpu", Layout.row_major(1, MS_A)](),
+                grid_dim=(BATCH,),
+                block_dim=(1,),
+            )
+        # Legacy slab-GPU reference: illegal-addresses on CUDA for
+        # FREE-joint models; Apple-only (bit-exact gate guarded below).
+        if not has_nvidia_gpu_accelerator():
+            ctx.enqueue_function[_legacy_pgs_kernel_a[BATCH]](
+                slab_t.lt["gpu", Layout.row_major(BATCH, SS_A)](),
+                model_t.lt["gpu", Layout.row_major(1, MS_A)](),
+                ws_t.lt["gpu", Layout.row_major(BATCH, WS_A)](),
+                grid_dim=(BATCH,),
+                block_dim=(1, MC_A),
+            )
+        # Legacy slab-GPU reference: illegal-addresses on CUDA for
+        # FREE-joint models; Apple-only (bit-exact gate guarded below).
+        if not has_nvidia_gpu_accelerator():
+            ctx.enqueue_function[_legacy_finalize_kernel_a[BATCH]](
+                slab_t.lt["gpu", Layout.row_major(BATCH, SS_A)](),
+                model_t.lt["gpu", Layout.row_major(1, MS_A)](),
+                ws_t.lt["gpu", Layout.row_major(BATCH, WS_A)](),
+                grid_dim=(BATCH,),
+                block_dim=(1,),
+            )
         integ.step["gpu"](d, mf, ctx)
         integ_c.step["cpu"](dc, mf)
 
@@ -689,33 +701,45 @@ def _part_b_equality(ctx: DeviceContext) raises:
         qvel_step0.append(Scalar[DTYPE](0))
 
     for step in range(N_STEPS_B):
-        ctx.enqueue_function[_legacy_step_kernel_b[BATCH]](
-            slab_t.lt["gpu", Layout.row_major(BATCH, SS_B)](),
-            model_t.lt["gpu", Layout.row_major(1, MS_B)](),
-            ws_t.lt["gpu", Layout.row_major(BATCH, WS_B)](),
-            grid_dim=(BATCH,),
-            block_dim=(1,),
-        )
-        ctx.enqueue_function[_legacy_detect_kernel_b[BATCH]](
-            slab_t.lt["gpu", Layout.row_major(BATCH, SS_B)](),
-            model_t.lt["gpu", Layout.row_major(1, MS_B)](),
-            grid_dim=(BATCH,),
-            block_dim=(1,),
-        )
-        ctx.enqueue_function[_legacy_pgs_kernel_b[BATCH]](
-            slab_t.lt["gpu", Layout.row_major(BATCH, SS_B)](),
-            model_t.lt["gpu", Layout.row_major(1, MS_B)](),
-            ws_t.lt["gpu", Layout.row_major(BATCH, WS_B)](),
-            grid_dim=(BATCH,),
-            block_dim=(1, MC_B),
-        )
-        ctx.enqueue_function[_legacy_finalize_kernel_b[BATCH]](
-            slab_t.lt["gpu", Layout.row_major(BATCH, SS_B)](),
-            model_t.lt["gpu", Layout.row_major(1, MS_B)](),
-            ws_t.lt["gpu", Layout.row_major(BATCH, WS_B)](),
-            grid_dim=(BATCH,),
-            block_dim=(1,),
-        )
+        # Legacy slab-GPU reference: illegal-addresses on CUDA for
+        # FREE-joint models; Apple-only (bit-exact gate guarded below).
+        if not has_nvidia_gpu_accelerator():
+            ctx.enqueue_function[_legacy_step_kernel_b[BATCH]](
+                slab_t.lt["gpu", Layout.row_major(BATCH, SS_B)](),
+                model_t.lt["gpu", Layout.row_major(1, MS_B)](),
+                ws_t.lt["gpu", Layout.row_major(BATCH, WS_B)](),
+                grid_dim=(BATCH,),
+                block_dim=(1,),
+            )
+        # Legacy slab-GPU reference: illegal-addresses on CUDA for
+        # FREE-joint models; Apple-only (bit-exact gate guarded below).
+        if not has_nvidia_gpu_accelerator():
+            ctx.enqueue_function[_legacy_detect_kernel_b[BATCH]](
+                slab_t.lt["gpu", Layout.row_major(BATCH, SS_B)](),
+                model_t.lt["gpu", Layout.row_major(1, MS_B)](),
+                grid_dim=(BATCH,),
+                block_dim=(1,),
+            )
+        # Legacy slab-GPU reference: illegal-addresses on CUDA for
+        # FREE-joint models; Apple-only (bit-exact gate guarded below).
+        if not has_nvidia_gpu_accelerator():
+            ctx.enqueue_function[_legacy_pgs_kernel_b[BATCH]](
+                slab_t.lt["gpu", Layout.row_major(BATCH, SS_B)](),
+                model_t.lt["gpu", Layout.row_major(1, MS_B)](),
+                ws_t.lt["gpu", Layout.row_major(BATCH, WS_B)](),
+                grid_dim=(BATCH,),
+                block_dim=(1, MC_B),
+            )
+        # Legacy slab-GPU reference: illegal-addresses on CUDA for
+        # FREE-joint models; Apple-only (bit-exact gate guarded below).
+        if not has_nvidia_gpu_accelerator():
+            ctx.enqueue_function[_legacy_finalize_kernel_b[BATCH]](
+                slab_t.lt["gpu", Layout.row_major(BATCH, SS_B)](),
+                model_t.lt["gpu", Layout.row_major(1, MS_B)](),
+                ws_t.lt["gpu", Layout.row_major(BATCH, WS_B)](),
+                grid_dim=(BATCH,),
+                block_dim=(1,),
+            )
         integ.step["gpu"](d, mf, ctx)
         integ_c.step["cpu"](dc, mf)
 
