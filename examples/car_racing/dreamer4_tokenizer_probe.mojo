@@ -56,12 +56,14 @@ def main() raises:
     # ── CAPACITY TEST TOGGLE ──
     # The probe showed the tokenizer plateaus at masked≈no-mask≈0.02 on the real
     # (diverse) warmup data — only ~15% of pixel variance, blurry. BIG bumps the
-    # tokenizer's INTERNAL depth+width (D/HID/DEPTH). These do NOT touch the
-    # L·D_BOT=256 bottleneck, so they cost nothing on the agent side (the agent's
-    # ND=NSP·DSP=256 is unchanged). If BIG drops well below 0.02 → depth/width is
-    # the lever (raise it in the tokenizer only). If BIG also sticks ~0.02 → the
-    # 256-dim bottleneck itself is the limit (that one DOES ripple into the agent).
-    comptime BIG = True
+    # tokenizer's INTERNAL depth+width (D/HID/DEPTH), NOT the L·D_BOT=256
+    # bottleneck (so no agent-side cost).
+    # ⚠ RESULT (NVIDIA): BIG=True @ lr_tok=2e-3 COLLAPSED — MSE→0.25 flat by step
+    # 200, masked==no-mask (decoder output became input-independent, constant
+    # ≈0.86). Depth-4 diverged at the depth-2 learning rate. A real bigger
+    # tokenizer needs LR warmup + lower lr + many more steps; do NOT ship BIG as-is.
+    # Kept False (the stable depth-2 baseline).
+    comptime BIG = False
 
     comptime DP = 64
     comptime TOK_D = 256 if BIG else 128
