@@ -25,11 +25,12 @@ uses `deep_agents.core.agents.DeepSACAgent.train_gpu`). Uses the new
 transition: each driver iteration steps all `N_ENVS` envs once and runs
 `N_ENVS` gradient updates.
 
-NOTE on checkpointing: the facade's `save`/`load` are CPU-only (they write a
-`nn-ckpt v2` envelope from host-resident params), and the batched `train`
-entry point has no inline checkpoint/diag cadence (those live on
-`train_single`). This GPU example therefore trains + summarizes only; for
-mid-run checkpointing use the CPU example or the single-env cross-target path.
+Checkpointing: the batched `train` entry point auto-saves the SAC
+weights+optimizers (one-file `nn-ckpt v2`) every `CHECKPOINT_EVERY` env-steps
+and once at the end (a host-side D2H between iterations, safe with the CUDA-
+graph capture). It writes `CHECKPOINT_PATH` (`sac_half_cheetah_nn.ckpt`) —
+render it with `sac_half_cheetah_nn_eval_cpu.mojo`, which rebuilds the same
+fused-`LinearReLU` architecture via the `SAC[...]` preset.
 
 HalfCheetah (Phyics3dEnv, MuJoCo-style):
   * 17D observation (qpos + qvel excluding rootx and head)
@@ -79,6 +80,10 @@ comptime NUM_STEPS = 600_000
 comptime WARMUP_STEPS = 10_000
 comptime PRINT_EVERY = 50_000  # driver-cadence verbose + env/mean_ret emit
 comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
+comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
+# Written by the batched trainer; loaded by `sac_half_cheetah_nn_eval_cpu.mojo`
+# (same fused-`LinearReLU` architecture, so the param layout matches).
+comptime CHECKPOINT_PATH = "sac_half_cheetah_nn.ckpt"
 
 
 # Per-field tensor physics path (migration P5+): the batched fields facade is
@@ -186,6 +191,9 @@ def main() raises:
             verbose=True,
             logger=logger_ptr,
             diag_every=DIAG_EVERY,
+            episode_sync_every=32,
+            checkpoint_every=CHECKPOINT_EVERY,
+            checkpoint_path=CHECKPOINT_PATH,
         )
         var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
         logger.close()
