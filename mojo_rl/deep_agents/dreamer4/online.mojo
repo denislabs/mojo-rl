@@ -147,6 +147,15 @@ def _push_frame[
     return new_n
 
 
+def _default_collect[
+    E: BoxDiscreteActionEnv
+](mut env: E, step: Int) capturing raises -> Int:
+    """No-op collect action (never called when SCRIPTED=False); the default so
+    the `COLLECT_ACTION` param is optional. Overridden with a real driver in
+    offline mode."""
+    return 0
+
+
 def _step_repeat[
     E: BoxDiscreteActionEnv, IMG_DIM: Int
 ](
@@ -269,6 +278,17 @@ def run_online_dreamer4[
     # "cpu" (default) or "gpu" — runs the dynamics transformer on device (the
     # heavy WM compute); heads + tokenizer + backbone stay on host regardless.
     DYN_TARGET: StaticString = "cpu",
+    # OFFLINE-validation mode: when True, BOTH warmup and ongoing collection pick
+    # actions via `collect_action` (e.g. a scripted decent driver) instead of
+    # random / the learned policy, so the WM + BC heads train on GOOD data. The
+    # policy is still trained ONLY in imagination and greedy-eval'd. This is the
+    # paper's offline setting (fixed decent dataset), the setting Dreamer 4 is
+    # designed for — vs online-from-scratch where random rewards make PMPO's
+    # sign-of-advantage signal pure noise.
+    SCRIPTED: Bool = False,
+    # Action provider for SCRIPTED mode (comptime fn param, like other drivers).
+    # Typed over env E; (env, step) → discrete action. Ignored when SCRIPTED=False.
+    COLLECT_ACTION: def (mut E, Int) capturing raises -> Int = _default_collect[E],
 ](
     mut agent: Dreamer4Agent[
         DSP, NSP, D, NH, T, NREG, HID, DEPTH, KMAX, NAGENT, NTASK, HHID,
@@ -389,13 +409,18 @@ def run_online_dreamer4[
     for i in range(IMG_DIM):
         cur[i] = Scalar[DT](Float64(ob0[i]))
 
-    # ── Stage 0: warmup collect (random actions) ────────────────────────
-    print("[dreamer4-online] Stage 0: warmup collect —", warmup_steps, "env steps")
+    # ── Stage 0: warmup collect (random, or scripted in offline mode) ────
+    print("[dreamer4-online] Stage 0: warmup collect —", warmup_steps,
+          "env steps", " (scripted)" if SCRIPTED else " (random)")
     var collected = 0
     while collected < warmup_steps:
-        var a = Int(rng.uniform() * Float64(NACT))
-        if a >= NACT:
-            a = NACT - 1
+        var a: Int
+        comptime if SCRIPTED:
+            a = COLLECT_ACTION(env, collected)
+        else:
+            a = Int(rng.uniform() * Float64(NACT))
+            if a >= NACT:
+                a = NACT - 1
         var rd = _step_repeat[E, IMG_DIM](env, a, frame_repeat, nxt)
         var r = Scalar[DT](rd[0])
         var d = rd[1]
@@ -589,26 +614,32 @@ def run_online_dreamer4[
                       " imag_rew=", ir[0], ir[1], ir[2],
                       " imag_val=", iv[0], iv[1], iv[2],
                       " lambda_ret=", lr[0], lr[1], lr[2])
-        win_n = _push_frame[IN_CH, IMG, TGT, PATCH, T, NP, DP](
-            _mao(cur.unsafe_ptr()), fr1, pa1, win_patch, win_act,
-            win_n, last_action,
-        )
-        # encode the window (B'=1, T frames) → win_z [T*ND]
-        # (zero the unused tail frames so the encode is deterministic)
-        for i in range(win_n * NP * DP, T * NP * DP):
-            win_patch.data[i] = Scalar[DT](0.0)
-        _encode[T, DYN_TARGET](tok.enc, win_patch, win_z, dctx)
-        # action history one-hots leading into frames 1..win_n-1
-        for i in range(T * ADIM):
-            act_hist[i] = Scalar[DT](0.0)
-        for fr in range(1, win_n):
-            var ap = win_act[fr]
-            if ap >= 0 and ap < ADIM:
-                act_hist[fr * ADIM + ap] = Scalar[DT](1.0)
-        var a = agent.act_from_latents(
-            _mao(win_z.data.unsafe_ptr()), win_n,
-            _mao(act_hist.unsafe_ptr()), 0, True, rng.uniform(), dctx,
-        )
+        var a: Int
+        comptime if SCRIPTED:
+            # Offline collection: act with the decent driver (data stays good);
+            # the learned policy is trained ONLY in imagination + greedy-eval'd.
+            a = COLLECT_ACTION(env, step)
+        else:
+            win_n = _push_frame[IN_CH, IMG, TGT, PATCH, T, NP, DP](
+                _mao(cur.unsafe_ptr()), fr1, pa1, win_patch, win_act,
+                win_n, last_action,
+            )
+            # encode the window (B'=1, T frames) → win_z [T*ND]
+            # (zero the unused tail frames so the encode is deterministic)
+            for i in range(win_n * NP * DP, T * NP * DP):
+                win_patch.data[i] = Scalar[DT](0.0)
+            _encode[T, DYN_TARGET](tok.enc, win_patch, win_z, dctx)
+            # action history one-hots leading into frames 1..win_n-1
+            for i in range(T * ADIM):
+                act_hist[i] = Scalar[DT](0.0)
+            for fr in range(1, win_n):
+                var ap = win_act[fr]
+                if ap >= 0 and ap < ADIM:
+                    act_hist[fr * ADIM + ap] = Scalar[DT](1.0)
+            a = agent.act_from_latents(
+                _mao(win_z.data.unsafe_ptr()), win_n,
+                _mao(act_hist.unsafe_ptr()), 0, True, rng.uniform(), dctx,
+            )
 
         var rd = _step_repeat[E, IMG_DIM](env, a, frame_repeat, nxt)
         var r = Scalar[DT](rd[0])
