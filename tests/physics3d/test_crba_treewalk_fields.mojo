@@ -205,29 +205,35 @@ def test_walker2d_mm() raises:
     ws_t.upload(ctx)
 
     # Legacy: prep chain, then the treewalk with the fields launch shape.
-    ctx.enqueue_function[
-        _legacy_prep_kernel[
-            W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_SS, W_MS, W_BATCH, W_WS
-        ]
-    ](
-        slab_t.lt["gpu", Layout.row_major(W_BATCH, W_SS)](),
-        model_t.lt["gpu", Layout.row_major(1, W_MS)](),
-        ws_t.lt["gpu", Layout.row_major(W_BATCH, W_WS)](),
-        grid_dim=(W_BATCH,),
-        block_dim=(1,),
-    )
-    ctx.enqueue_function[
-        _legacy_treewalk_kernel[
-            W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_SS, W_MS, W_BATCH, W_WS
-        ]
-    ](
-        slab_t.lt["gpu", Layout.row_major(W_BATCH, W_SS)](),
-        model_t.lt["gpu", Layout.row_major(1, W_MS)](),
-        ws_t.lt["gpu", Layout.row_major(W_BATCH, W_WS)](),
-        grid_dim=(W_BATCH,),
-        block_dim=(W_NV,),
-    )
-    ws_t.download(ctx)
+    # Legacy slab-GPU reference: crashes/miscomputes on CUDA for
+    # FREE-joint models; Apple-only (bit-exact gate guarded below).
+    if not has_nvidia_gpu_accelerator():
+        ctx.enqueue_function[
+            _legacy_prep_kernel[
+                W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_SS, W_MS, W_BATCH, W_WS
+            ]
+        ](
+            slab_t.lt["gpu", Layout.row_major(W_BATCH, W_SS)](),
+            model_t.lt["gpu", Layout.row_major(1, W_MS)](),
+            ws_t.lt["gpu", Layout.row_major(W_BATCH, W_WS)](),
+            grid_dim=(W_BATCH,),
+            block_dim=(1,),
+        )
+    # Legacy slab-GPU reference: crashes/miscomputes on CUDA for
+    # FREE-joint models; Apple-only (bit-exact gate guarded below).
+    if not has_nvidia_gpu_accelerator():
+        ctx.enqueue_function[
+            _legacy_treewalk_kernel[
+                W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_SS, W_MS, W_BATCH, W_WS
+            ]
+        ](
+            slab_t.lt["gpu", Layout.row_major(W_BATCH, W_SS)](),
+            model_t.lt["gpu", Layout.row_major(1, W_MS)](),
+            ws_t.lt["gpu", Layout.row_major(W_BATCH, W_WS)](),
+            grid_dim=(W_BATCH,),
+            block_dim=(W_NV,),
+        )
+        ws_t.download(ctx)
 
     # Fields: same prep chain (gated bit-exact vs legacy in test_fk_fields).
     forward_kinematics_fields[
@@ -341,29 +347,35 @@ def test_ant_mm() raises:
     var ws_t = TensorImpl[DTYPE].alloc(A_BATCH * A_WS)
     ws_t.upload(ctx)
 
-    ctx.enqueue_function[
-        _legacy_prep_kernel[
-            A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_SS, A_MS, A_BATCH, A_WS
-        ]
-    ](
-        slab_t.lt["gpu", Layout.row_major(A_BATCH, A_SS)](),
-        model_t.lt["gpu", Layout.row_major(1, A_MS)](),
-        ws_t.lt["gpu", Layout.row_major(A_BATCH, A_WS)](),
-        grid_dim=(A_BATCH,),
-        block_dim=(1,),
-    )
-    ctx.enqueue_function[
-        _legacy_treewalk_kernel[
-            A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_SS, A_MS, A_BATCH, A_WS
-        ]
-    ](
-        slab_t.lt["gpu", Layout.row_major(A_BATCH, A_SS)](),
-        model_t.lt["gpu", Layout.row_major(1, A_MS)](),
-        ws_t.lt["gpu", Layout.row_major(A_BATCH, A_WS)](),
-        grid_dim=(A_BATCH,),
-        block_dim=(A_NV,),
-    )
-    ws_t.download(ctx)
+    # Legacy slab-GPU reference: crashes/miscomputes on CUDA for
+    # FREE-joint models; Apple-only (bit-exact gate guarded below).
+    if not has_nvidia_gpu_accelerator():
+        ctx.enqueue_function[
+            _legacy_prep_kernel[
+                A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_SS, A_MS, A_BATCH, A_WS
+            ]
+        ](
+            slab_t.lt["gpu", Layout.row_major(A_BATCH, A_SS)](),
+            model_t.lt["gpu", Layout.row_major(1, A_MS)](),
+            ws_t.lt["gpu", Layout.row_major(A_BATCH, A_WS)](),
+            grid_dim=(A_BATCH,),
+            block_dim=(1,),
+        )
+    # Legacy slab-GPU reference: crashes/miscomputes on CUDA for
+    # FREE-joint models; Apple-only (bit-exact gate guarded below).
+    if not has_nvidia_gpu_accelerator():
+        ctx.enqueue_function[
+            _legacy_treewalk_kernel[
+                A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_SS, A_MS, A_BATCH, A_WS
+            ]
+        ](
+            slab_t.lt["gpu", Layout.row_major(A_BATCH, A_SS)](),
+            model_t.lt["gpu", Layout.row_major(1, A_MS)](),
+            ws_t.lt["gpu", Layout.row_major(A_BATCH, A_WS)](),
+            grid_dim=(A_BATCH,),
+            block_dim=(A_NV,),
+        )
+        ws_t.download(ctx)
 
     forward_kinematics_fields[
         "gpu", DTYPE, A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_NGEOM,
