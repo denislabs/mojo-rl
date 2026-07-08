@@ -325,22 +325,71 @@ def test_walker2d() raises:
     comptime O_XQUAT = xquat_offset[NQ, NV, NBODY]()
     comptime O_XIPOS = xipos_offset[NQ, NV, NBODY]()
     var bad = 0
+    var worst = Float64(0)
+    var w_e = -1
+    var w_i = -1
+    var w_f = String("")
+    var w_fv = Float64(0)
+    var w_lv = Float64(0)
     for e in range(BATCH):
         for j in range(NBODY * 3):
-            if d.xpos.data[e * NBODY * 3 + j] != slab_t.data[e * SS + O_XPOS + j]:
+            var pv = Float64(d.xpos.data[e * NBODY * 3 + j])
+            var plv = Float64(slab_t.data[e * SS + O_XPOS + j])
+            if pv != plv:
                 bad += 1
-            if (
-                d.xipos.data[e * NBODY * 3 + j]
-                != slab_t.data[e * SS + O_XIPOS + j]
-            ):
+                var dd = pv - plv
+                if dd < 0:
+                    dd = -dd
+                if dd > worst:
+                    worst = dd
+                    w_e = e
+                    w_i = j
+                    w_f = "xpos"
+                    w_fv = pv
+                    w_lv = plv
+            var iv = Float64(d.xipos.data[e * NBODY * 3 + j])
+            var ilv = Float64(slab_t.data[e * SS + O_XIPOS + j])
+            if iv != ilv:
                 bad += 1
+                var dd = iv - ilv
+                if dd < 0:
+                    dd = -dd
+                if dd > worst:
+                    worst = dd
+                    w_e = e
+                    w_i = j
+                    w_f = "xipos"
+                    w_fv = iv
+                    w_lv = ilv
         for j in range(NBODY * 4):
-            if (
-                d.xquat.data[e * NBODY * 4 + j]
-                != slab_t.data[e * SS + O_XQUAT + j]
-            ):
+            var qv = Float64(d.xquat.data[e * NBODY * 4 + j])
+            var qlv = Float64(slab_t.data[e * SS + O_XQUAT + j])
+            if qv != qlv:
                 bad += 1
+                var dd = qv - qlv
+                if dd < 0:
+                    dd = -dd
+                if dd > worst:
+                    worst = dd
+                    w_e = e
+                    w_i = j
+                    w_f = "xquat"
+                    w_fv = qv
+                    w_lv = qlv
     if bad != 0:
+        print(
+            "  MISMATCH: bad_elems=",
+            bad,
+            " worst|delta|=",
+            worst,
+            " field=",
+            w_f,
+            " env=",
+            w_e,
+            " flat_idx=",
+            w_i,
+        )
+        print("    fields-GPU=", w_fv, " legacy-GPU=", w_lv)
         raise Error("walker2d fields-GPU vs legacy-GPU: not bit-exact")
     print("  PASS: fields-GPU == legacy-GPU bit-exact (xpos/xquat/xipos)")
 

@@ -194,27 +194,102 @@ def main() raises:
         comptime O_XVEL = xvel_offset[NQ, NV, NBODY]()
         comptime O_XANG = xangvel_offset[NQ, NV, NBODY]()
         var bad = 0
+        var worst = Float64(0)
+        var w_e = -1
+        var w_i = -1
+        var w_f = String("")
+        var w_fv = Float64(0)
+        var w_lv = Float64(0)
         for e in range(BATCH):
             for i in range(NQ):
-                if d.qpos.data[e * NQ + i] != slab_t.data[e * SS + O_QPOS + i]:
+                var fv = Float64(d.qpos.data[e * NQ + i])
+                var lv = Float64(slab_t.data[e * SS + O_QPOS + i])
+                if fv != lv:
                     bad += 1
+                    var dd = fv - lv
+                    if dd < 0:
+                        dd = -dd
+                    if dd > worst:
+                        worst = dd
+                        w_e = e
+                        w_i = i
+                        w_f = "qpos"
+                        w_fv = fv
+                        w_lv = lv
             for i in range(NV):
-                if d.qvel.data[e * NV + i] != slab_t.data[e * SS + O_QVEL + i]:
+                var fv = Float64(d.qvel.data[e * NV + i])
+                var lv = Float64(slab_t.data[e * SS + O_QVEL + i])
+                if fv != lv:
                     bad += 1
-                if d.qacc.data[e * NV + i] != slab_t.data[e * SS + O_QACC + i]:
+                    var dd = fv - lv
+                    if dd < 0:
+                        dd = -dd
+                    if dd > worst:
+                        worst = dd
+                        w_e = e
+                        w_i = i
+                        w_f = "qvel"
+                        w_fv = fv
+                        w_lv = lv
+                var av = Float64(d.qacc.data[e * NV + i])
+                var alv = Float64(slab_t.data[e * SS + O_QACC + i])
+                if av != alv:
                     bad += 1
+                    var dd = av - alv
+                    if dd < 0:
+                        dd = -dd
+                    if dd > worst:
+                        worst = dd
+                        w_e = e
+                        w_i = i
+                        w_f = "qacc"
+                        w_fv = av
+                        w_lv = alv
             for i in range(NBODY * 3):
-                if (
-                    d.xvel.data[e * NBODY * 3 + i]
-                    != slab_t.data[e * SS + O_XVEL + i]
-                ):
+                var xv = Float64(d.xvel.data[e * NBODY * 3 + i])
+                var xlv = Float64(slab_t.data[e * SS + O_XVEL + i])
+                if xv != xlv:
                     bad += 1
-                if (
-                    d.xangvel.data[e * NBODY * 3 + i]
-                    != slab_t.data[e * SS + O_XANG + i]
-                ):
+                    var dd = xv - xlv
+                    if dd < 0:
+                        dd = -dd
+                    if dd > worst:
+                        worst = dd
+                        w_e = e
+                        w_i = i
+                        w_f = "xvel"
+                        w_fv = xv
+                        w_lv = xlv
+                var gv = Float64(d.xangvel.data[e * NBODY * 3 + i])
+                var glv = Float64(slab_t.data[e * SS + O_XANG + i])
+                if gv != glv:
                     bad += 1
+                    var dd = gv - glv
+                    if dd < 0:
+                        dd = -dd
+                    if dd > worst:
+                        worst = dd
+                        w_e = e
+                        w_i = i
+                        w_f = "xangvel"
+                        w_fv = gv
+                        w_lv = glv
         if bad != 0:
+            print(
+                "  MISMATCH @ step",
+                step,
+                ": bad_elems=",
+                bad,
+                " worst|delta|=",
+                worst,
+                " field=",
+                w_f,
+                " env=",
+                w_e,
+                " idx=",
+                w_i,
+            )
+            print("    fields-GPU=", w_fv, " legacy-GPU=", w_lv)
             raise Error("step " + String(step) + ": fields-GPU != legacy-GPU")
         print(
             "  step", step,
