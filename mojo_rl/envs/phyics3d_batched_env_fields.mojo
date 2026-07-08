@@ -619,6 +619,12 @@ struct Phyics3dBatchedEnvFields[
     def step_batch[
         BATCH: Int
     ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
+        # Trait-conforming entry; delegates to the instrumentable impl.
+        self._step_impl[BATCH, False](ctx, rng_seed)
+
+    def _step_impl[
+        BATCH: Int, DEBUG: Bool = False
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
         comptime assert BATCH == Self.N_ENVS, (
             "Phyics3dBatchedEnvFields: step_batch BATCH must match N_ENVS"
         )
@@ -648,15 +654,24 @@ struct Phyics3dBatchedEnvFields[
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
+        comptime if DEBUG:
+            c.synchronize()
+            print("[step_batch] 1 pre_step ok")
 
         # 2) Actions -> qfrc via the comptime actuator logic (slab).
         var sbuf = self._slab.dev.value()
         Self.MODEL_DEF.apply_actions_kernel_gpu[
             DT, Self.N_ENVS, Self.SS, Self.ACT_DIM
         ](c, sbuf, self._action)
+        comptime if DEBUG:
+            c.synchronize()
+            print("[step_batch] 2 apply_actions ok")
 
         # 3) Hand qpos/qvel (fresh after any reset) + qfrc to the fields.
         self._sync_slab_to_fields(c)
+        comptime if DEBUG:
+            c.synchronize()
+            print("[step_batch] 3 slab_to_fields ok")
 
         # 4) Physics: fields integrator (RK4 or Euler per CONFIG.INTEGRATOR)
         #    with per-substep contact/limit solving.
@@ -665,10 +680,16 @@ struct Phyics3dBatchedEnvFields[
                 self.integ_euler.step["gpu"](self.d, self.mf, ctx)
             else:
                 self.integ_rk4.step["gpu"](self.d, self.mf, ctx)
+        comptime if DEBUG:
+            c.synchronize()
+            print("[step_batch] 4 physics step ok")
 
         # 5) Publish stepped state to the slab for the hooks, then the
         #    derived quantities the reward hooks may read.
         self._sync_fields_to_slab(c)
+        comptime if DEBUG:
+            c.synchronize()
+            print("[step_batch] 5a fields_to_slab ok")
         compute_cfrc_ext_gpu[
             DT,
             Self.N_ENVS,
@@ -680,6 +701,9 @@ struct Phyics3dBatchedEnvFields[
             Self.MC,
             Self.NSITE,
         ](c, sbuf, self._model.dev.value())
+        comptime if DEBUG:
+            c.synchronize()
+            print("[step_batch] 5b compute_cfrc_ext ok")
         compute_cvel_gpu[
             DT,
             Self.N_ENVS,
@@ -690,9 +714,15 @@ struct Phyics3dBatchedEnvFields[
             Self.MC,
             Self.NSITE,
         ](c, sbuf)
+        comptime if DEBUG:
+            c.synchronize()
+            print("[step_batch] 5c compute_cvel ok")
 
         # 6) Obs + reward + done/terminated (CONFIG hooks).
         self._extract_obs_rewards_dones(c)
+        comptime if DEBUG:
+            c.synchronize()
+            print("[step_batch] 6 extract_obs_rewards_dones ok")
 
     def selective_reset_batch[
         BATCH: Int
