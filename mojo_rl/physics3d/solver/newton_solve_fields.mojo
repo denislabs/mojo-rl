@@ -49,8 +49,10 @@ The legacy `ws_fnet_offset` comptime was declared but never read — dropped.
 """
 
 from std.math import sqrt, pow, abs
-from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.memory import AddressSpace
 from std.gpu.host import DeviceContext
+from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor
 
 from ..types import _max_one, ConeType
@@ -116,6 +118,205 @@ from ..gpu.constants import (
 # the device, which OOMs at humanoid scale (Metal doesn't pre-reserve). One
 # thread per block keeps the reservation to the envs actually running.
 comptime NS_TPB: Int = 1
+
+
+# =============================================================================
+# Cooperative (one-env-per-block) helpers — verbatim ports of the shared-memory
+# helpers in newton_solver.mojo (chol_factor_coop_gpu:174, matvec_mv_jve_coop:484,
+# recompute_jfq_coop:546). They operate purely on SHARED-memory LayoutTensors, so
+# the port is a straight copy — no slab/field addressing appears in them. @no_inline
+# keeps their nested loops OUT of the giant blocked kernel (Mojo inline-explosion
+# guard). Used only by the PYRAMIDAL blocked path.
+# =============================================================================
+
+
+@no_inline
+def _chol_factor_coop_fields[
+    DTYPE: DType,
+    NV: Int,
+    M_SIZE: Int,
+](
+    tid: Int,
+    n_threads: Int,
+    H_sh: LayoutTensor[
+        DTYPE,
+        Layout.row_major(M_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ],
+    L_sh: LayoutTensor[
+        DTYPE,
+        Layout.row_major(M_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ],
+    ctrl_sh: LayoutTensor[
+        DTYPE,
+        Layout.row_major(3),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ],
+):
+    """Cooperative column-parallel Cholesky of shared H_sh -> L_sh (verbatim
+    from chol_factor_coop_gpu). Bit-identical to chol_factor_inline."""
+    for _attempt in range(2):
+        if tid == 0:
+            ctrl_sh[2] = Scalar[DTYPE](0)
+        for k in range(tid, NV * NV, n_threads):
+            L_sh[k] = Scalar[DTYPE](0)
+        barrier()
+        for j in range(NV):
+            if tid == 0:
+                var s_d: Scalar[DTYPE] = 0
+                for k in range(j):
+                    var ljk = rebind[Scalar[DTYPE]](L_sh[j * NV + k])
+                    s_d += ljk * ljk
+                var diag = rebind[Scalar[DTYPE]](H_sh[j * NV + j]) - s_d
+                if diag < Scalar[DTYPE](1e-10):
+                    ctrl_sh[2] = Scalar[DTYPE](1)
+                    diag = Scalar[DTYPE](1e-10)
+                L_sh[j * NV + j] = sqrt(diag)
+            barrier()
+            var ljj = rebind[Scalar[DTYPE]](L_sh[j * NV + j])
+            for i in range(j + 1 + tid, NV, n_threads):
+                var s: Scalar[DTYPE] = 0
+                for k in range(j):
+                    s += rebind[Scalar[DTYPE]](L_sh[i * NV + k]) * rebind[
+                        Scalar[DTYPE]
+                    ](L_sh[j * NV + k])
+                L_sh[i * NV + j] = (
+                    rebind[Scalar[DTYPE]](H_sh[i * NV + j]) - s
+                ) / ljj
+            barrier()
+        if Int(rebind[Scalar[DTYPE]](ctrl_sh[2])) == 0:
+            break
+        # Rank-deficient: add 1e-6 to the H diagonal and refactor once.
+        if tid == 0:
+            for i in range(NV):
+                H_sh[i * NV + i] += Scalar[DTYPE](1e-6)
+        barrier()
+
+
+@no_inline
+def _matvec_mv_jve_coop_fields[
+    DTYPE: DType,
+    NV: Int,
+    V_SIZE: Int,
+    M_SIZE: Int,
+    ME: Int,
+](
+    tid: Int,
+    n_threads: Int,
+    num_edges: Int,
+    M_sh: LayoutTensor[
+        DTYPE,
+        Layout.row_major(M_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ],
+    Je_sh: LayoutTensor[
+        DTYPE,
+        Layout.row_major(ME * V_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ],
+    search_sh: LayoutTensor[
+        DTYPE,
+        Layout.row_major(V_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ],
+    Mv_sh: LayoutTensor[
+        DTYPE,
+        Layout.row_major(V_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ],
+    Jv_e_sh: LayoutTensor[
+        DTYPE,
+        Layout.row_major(ME),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ],
+):
+    """Cooperative Mv = M·search and Jv_e = Je·search (verbatim from
+    matvec_mv_jve_coop). Ascending inner sums → bit-identical."""
+    for i in range(tid, NV, n_threads):
+        var s: Scalar[DTYPE] = 0
+        for j in range(NV):
+            s += rebind[Scalar[DTYPE]](M_sh[i * NV + j]) * rebind[
+                Scalar[DTYPE]
+            ](search_sh[j])
+        Mv_sh[i] = s
+    for e in range(tid, num_edges, n_threads):
+        var s: Scalar[DTYPE] = 0
+        for i in range(NV):
+            s += rebind[Scalar[DTYPE]](Je_sh[e * NV + i]) * rebind[
+                Scalar[DTYPE]
+            ](search_sh[i])
+        Jv_e_sh[e] = s
+
+
+@no_inline
+def _recompute_jfq_coop_fields[
+    DTYPE: DType,
+    NV: Int,
+    V_SIZE: Int,
+    ME: Int,
+](
+    tid: Int,
+    n_threads: Int,
+    num_edges: Int,
+    Je_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME * V_SIZE), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    De_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    bias_e_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    qacc_sh: LayoutTensor[
+        DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    jar_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    force_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    qfrc_sh: LayoutTensor[
+        DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+):
+    """Cooperative jar/force/qfrc recompute (verbatim from recompute_jfq_coop).
+    Two phases separated by a barrier; ascending inner sums → bit-identical."""
+    for e in range(tid, num_edges, n_threads):
+        var j = rebind[Scalar[DTYPE]](bias_e_sh[e])
+        for i in range(NV):
+            j += rebind[Scalar[DTYPE]](Je_sh[e * NV + i]) * rebind[
+                Scalar[DTYPE]
+            ](qacc_sh[i])
+        jar_sh[e] = j
+        if j >= Scalar[DTYPE](0):
+            force_sh[e] = Scalar[DTYPE](0)
+        else:
+            force_sh[e] = -rebind[Scalar[DTYPE]](De_sh[e]) * j
+    barrier()
+    for i in range(tid, NV, n_threads):
+        var q: Scalar[DTYPE] = 0
+        for e in range(num_edges):
+            q += rebind[Scalar[DTYPE]](Je_sh[e * NV + i]) * rebind[
+                Scalar[DTYPE]
+            ](force_sh[e])
+        qfrc_sh[i] = q
 
 
 # =============================================================================
@@ -1845,23 +2046,1003 @@ def solve_newton_fields[
                 cdof_v, M_v, mi_v, qc_v, sol_v,
             )
     else:
+        # GPU. PYRAMIDAL (the production default cone) on NVIDIA uses the
+        # one-env-per-block cooperative solver: the big Newton matrices live in
+        # SHARED memory + the device workspace instead of a ~60KB per-thread
+        # local frame, which fixes the humanoid-scale local-memory OOM. That
+        # kernel's threadgroup memory exceeds Metal's 32 KB limit, so Metal —
+        # and the ELLIPTIC cone on any device — keep the one-thread-per-env
+        # kernel (which only OOMs on NVIDIA, where PYRAMIDAL never takes it).
+        var used_blocked = False
+        comptime if CONE_TYPE == ConeType.PYRAMIDAL:
+            if has_nvidia_gpu_accelerator():
+                solve_newton_blocked_fields[
+                    "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+                    NEQUALITY, NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, CONE_TYPE,
+                    BATCH,
+                ](d, m, scratch, cscratch, ctx)
+                used_blocked = True
+        if not used_blocked:
+            var c = ctx.value()
+            comptime BLOCKS = (BATCH + NS_TPB - 1) // NS_TPB
+            c.enqueue_function[
+                _newton_solve_fields_kernel[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    NGEOM,
+                    NEQUALITY,
+                    NTENDON,
+                    NSITE,
+                    CONE_TYPE,
+                    BATCH,
+                    SOLVER_WS,
+                ]
+            ](
+                d.qpos.lt["gpu", L_QPOS](),
+                d.qvel.lt["gpu", L_NV](),
+                d.xpos.lt["gpu", L_B3](),
+                d.xquat.lt["gpu", L_B4](),
+                d.subtree_com.lt["gpu", L_B3](),
+                d.contacts.lt["gpu", L_CON](),
+                d.meta.lt["gpu", L_SMETA](),
+                m.joints.lt["gpu", L_JOINT](),
+                m.bodies.lt["gpu", L_BODY](),
+                m.meta.lt["gpu", L_MMETA](),
+                m.equality.lt["gpu", L_EQ](),
+                m.tendons.lt["gpu", L_TEN](),
+                m.sites.lt["gpu", L_SITE](),
+                m.body_invweight0.lt["gpu", L_BW](),
+                m.dof_invweight0.lt["gpu", L_DW](),
+                scratch.cdof.lt["gpu", L_CDOF](),
+                scratch.M.lt["gpu", L_M](),
+                scratch.m_inv.lt["gpu", L_M](),
+                scratch.qacc_constrained.lt["gpu", L_NV](),
+                cscratch.solver.lt["gpu", L_SOLVER](),
+                grid_dim=(BLOCKS,),
+                block_dim=(NS_TPB,),
+            )
+
+
+# =============================================================================
+# PYRAMIDAL blocked Newton solve — ONE ENV PER BLOCK, cooperative across
+# MAX_CONTACTS threads (fields port of NewtonSolver.solve_gpu_blocked,
+# newton_solver.mojo:2748). The big Newton matrices live in SHARED memory + the
+# device `solver` workspace instead of a per-thread local frame, so the
+# per-thread local reservation stays tiny — this is what avoids the humanoid-
+# scale OOM the one-thread-per-env kernel hits on NVIDIA. Arithmetic, iteration
+# order, constants and cooperative thread distribution are VERBATIM from the
+# legacy; only slab addressing → DataFields/ModelFields/scratch tensors changes.
+# SOLVE_COOP_NEWTON / SOLVE_COOP_RECOMPUTE are both True in the legacy production
+# default, so only those cooperative code paths are ported (the tid-0 serial
+# "oracle" branches are dead in production and dropped).
+# =============================================================================
+
+
+def _newton_blocked_fields_kernel[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int,
+    NEQUALITY: Int,
+    NTENDON: Int,
+    NSITE: Int,
+    CONE_TYPE: Int,
+    BATCH: Int,
+    SOLVER_WS: Int,
+](
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    subtree_com: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    contacts: LayoutTensor[
+        DTYPE,
+        Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    smeta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+    ],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    mmeta: LayoutTensor[
+        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+    ],
+    equality: LayoutTensor[
+        DTYPE, Layout.row_major(NEQUALITY, MODEL_EQ_SIZE), MutAnyOrigin
+    ],
+    tendons: LayoutTensor[
+        DTYPE, Layout.row_major(NTENDON, MODEL_TENDON_SIZE), MutAnyOrigin
+    ],
+    sites: LayoutTensor[
+        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+    ],
+    body_invweight0: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
+    ],
+    dof_invweight0: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    m_inv: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin
+    ],
+    qacc_constrained: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+    ],
+    solver: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, SOLVER_WS), MutAnyOrigin
+    ],
+):
+    var env = Int(block_idx.x)
+    var tid = Int(thread_idx.x)
+    var contact_tid = tid
+    var valid_env = env < BATCH
+
+    comptime MC = _max_one[MAX_CONTACTS]()
+    comptime V_SIZE = _max_one[NV]()
+    comptime M_SIZE = _max_one[NV * NV]()
+    comptime THREADS = _max_one[MAX_CONTACTS]()
+
+    # Common normal block offsets (row-relative; the legacy `solver_ws_idx`
+    # base is 0 in the fields solver tensor)
+    comptime ws_J_n_idx = 15 * MC
+
+    # Primal-specific offsets (after common normal block)
+    comptime PRIMAL_START = 15 * MC + 2 * MC * NV
+    comptime ws_Jt1_idx = PRIMAL_START + 0 * MC * NV
+    comptime ws_Jt2_idx = PRIMAL_START + 1 * MC * NV
+    comptime ws_MinvJt1_idx = PRIMAL_START + 2 * MC * NV
+    comptime ws_MinvJt2_idx = PRIMAL_START + 3 * MC * NV
+    comptime SC = PRIMAL_START + 4 * MC * NV
+    comptime ws_mu_idx = SC + 0 * MC
+    comptime ws_D_n_idx = SC + 1 * MC
+    comptime ws_D_f_idx = SC + 2 * MC
+    comptime ws_bt1_idx = SC + 3 * MC
+    comptime ws_bt2_idx = SC + 4 * MC
+    comptime CVS = SC + 5 * MC
+    comptime ws_jar_n_idx = CVS + 0 * MC
+    comptime ws_jar_t1_idx = CVS + 1 * MC
+    comptime ws_jar_t2_idx = CVS + 2 * MC
+    comptime ws_fn_idx = CVS + 3 * MC
+    comptime ws_ft1_idx = CVS + 4 * MC
+    comptime ws_ft2_idx = CVS + 5 * MC
+    comptime ws_cstate_idx = CVS + 6 * MC
+    comptime pyr_sc = ws_Jt1_idx + 4 * MC * NV
+
+    # === PARALLEL: Initialize common normal workspace (one thread/contact) ===
+    if valid_env:
+        _init_common_normal_ws_fields[
+            DTYPE, NV, MAX_CONTACTS, BATCH, SOLVER_WS
+        ](env, contact_tid, solver)
+        if contact_tid < MC:
+            for d in range(NV):
+                solver[env, ws_Jt1_idx + contact_tid * NV + d] = 0
+                solver[env, ws_Jt2_idx + contact_tid * NV + d] = 0
+                solver[env, ws_MinvJt1_idx + contact_tid * NV + d] = 0
+                solver[env, ws_MinvJt2_idx + contact_tid * NV + d] = 0
+            solver[env, ws_mu_idx + contact_tid] = 0
+            solver[env, ws_D_n_idx + contact_tid] = 0
+            solver[env, ws_D_f_idx + contact_tid] = 0
+            solver[env, ws_bt1_idx + contact_tid] = 0
+            solver[env, ws_bt2_idx + contact_tid] = 0
+            solver[env, ws_jar_n_idx + contact_tid] = 0
+            solver[env, ws_jar_t1_idx + contact_tid] = 0
+            solver[env, ws_jar_t2_idx + contact_tid] = 0
+            solver[env, ws_fn_idx + contact_tid] = 0
+            solver[env, ws_ft1_idx + contact_tid] = 0
+            solver[env, ws_ft2_idx + contact_tid] = 0
+            solver[env, ws_cstate_idx + contact_tid] = 0
+
+    # === Read metadata (all threads; legacy `dt` read dropped — unused) ===
+    var nc = 0
+    var K_spring: Scalar[DTYPE] = 0
+    var B_damp: Scalar[DTYPE] = 0
+    var si_dmin: Scalar[DTYPE] = 0
+    var si_dmax: Scalar[DTYPE] = 0
+    var si_width: Scalar[DTYPE] = 1
+    var si_midpoint: Scalar[DTYPE] = Scalar[DTYPE](0.5)
+    var si_power: Scalar[DTYPE] = Scalar[DTYPE](2.0)
+    var impratio: Scalar[DTYPE] = Scalar[DTYPE](1.0)
+
+    if valid_env:
+        nc = Int(rebind[Scalar[DTYPE]](smeta[env, META_IDX_NUM_CONTACTS]))
+        if nc > MAX_CONTACTS:
+            nc = MAX_CONTACTS
+        var sr_tc = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLREF_CONTACT_0]
+        )
+        var sr_dr = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLREF_CONTACT_1]
+        )
+        si_dmin = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLIMP_CONTACT_0])
+        si_dmax = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLIMP_CONTACT_1])
+        si_width = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLIMP_CONTACT_2])
+        si_midpoint = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLIMP_CONTACT_3]
+        )
+        si_power = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLIMP_CONTACT_4])
+        if si_width < Scalar[DTYPE](1e-6):
+            si_width = Scalar[DTYPE](1e-6)
+        if si_dmax < Scalar[DTYPE](1e-4):
+            si_dmax = Scalar[DTYPE](1e-4)
+        K_spring = Scalar[DTYPE](1.0) / (
+            si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
+        )
+        B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
+        impratio = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_IMPRATIO])
+        if impratio < Scalar[DTYPE](1e-6):
+            impratio = Scalar[DTYPE](1.0)
+
+    # === PARALLEL PHASE 1: each thread precomputes one contact's normal data ==
+    if valid_env:
+        _precompute_contact_normal_fields[
+            DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, BATCH, SOLVER_WS
+        ](
+            env, contact_tid, nc, qvel, subtree_com, contacts, joints, bodies,
+            mmeta, body_invweight0, cdof, m_inv, qacc_constrained, solver,
+            K_spring, B_damp, si_dmin, si_dmax, si_width, si_midpoint,
+            si_power,
+        )
+
+    barrier()
+
+    # === PARALLEL PHASE 2: tangent frame + friction data ===
+    if valid_env and contact_tid < nc:
+        _precompute_contact_friction_fields[
+            DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, BATCH, SOLVER_WS,
+            CONE_TYPE,
+        ](
+            env, contact_tid, nc, qvel, subtree_com, contacts, joints, bodies,
+            mmeta, cdof, solver, B_damp, impratio, K_spring, ws_Jt1_idx,
+            ws_Jt2_idx, ws_mu_idx, ws_D_n_idx, ws_D_f_idx, ws_bt1_idx,
+            ws_bt2_idx,
+        )
+
+    barrier()
+
+    comptime NEWTON_ITER_GPU: Int = 200
+    comptime NEWTON_TOL_GPU: Float64 = 1e-8
+    comptime LINESEARCH_ITER: Int = 20
+    comptime PRIMAL_MINVAL_GPU: Float64 = 1e-12
+
+    # PYRAMIDAL-only blocked solver. (Non-PYRAMIDAL never routes here.)
+    comptime NE = 4  # edges per contact
+    comptime MAX_LIM = _max_one[2 * NJOINT]()
+    comptime ME = NE * MC + MAX_LIM  # contact edges + limit edges
+
+    # === SHARED memory (per-block == per-env) ===
+    var M_sh = LayoutTensor[
+        DTYPE, Layout.row_major(M_SIZE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var H_sh = LayoutTensor[
+        DTYPE, Layout.row_major(M_SIZE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var Je_sh = LayoutTensor[
+        DTYPE, Layout.row_major(ME * V_SIZE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var De_sh = LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var bias_e_sh = LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var force_sh = LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var L_sh = LayoutTensor[
+        DTYPE, Layout.row_major(M_SIZE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var search_sh = LayoutTensor[
+        DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var Mv_sh = LayoutTensor[
+        DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var Jv_e_sh = LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var qacc_sh = LayoutTensor[
+        DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var jar_sh = LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var qfrc_sh = LayoutTensor[
+        DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    # Scalar shared state: [0]=num_edges, [1]=done flag, [2]=Cholesky
+    # rank-deficient flag.
+    var ctrl_sh = LayoutTensor[
+        DTYPE, Layout.row_major(3), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # === COOPERATIVE LOAD: M into shared ===
+    if valid_env:
+        for k in range(tid, NV * NV, THREADS):
+            M_sh[k] = rebind[Scalar[DTYPE]](M[env, k])
+
+        # Cooperative load of contact edges (Je/De/bias_e) into shared. One
+        # thread per contact (contact_tid == c), matching serial load order
+        # (c ascending, e ascending).
+        if contact_tid < nc:
+            var c = contact_tid
+            for e in range(NE):
+                var idx = c * NE + e
+                for i in range(NV):
+                    Je_sh[idx * NV + i] = rebind[Scalar[DTYPE]](
+                        solver[env, ws_Jt1_idx + e * MC * NV + c * NV + i]
+                    )
+                De_sh[idx] = rebind[Scalar[DTYPE]](
+                    solver[env, pyr_sc + e * MC + c]
+                )
+                bias_e_sh[idx] = rebind[Scalar[DTYPE]](
+                    solver[env, pyr_sc + 4 * MC + e * MC + c]
+                )
+
+    barrier()
+
+    # === THREAD 0: joint-limit edge detection + initial setup ===
+    var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var qacc_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var f_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var jar = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+    var grad = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var search = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var Mv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var Jv_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+    var qfrc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var old_qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var old_Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var old_jar = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+    var old_force = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+    var old_qfrc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var old_cost: Scalar[DTYPE] = 0
+    var scale: Scalar[DTYPE] = 0
+    var num_edges = 0
+
+    if valid_env and tid == 0:
+        num_edges = nc * NE
+
+        # Model-level defaults for fallback
+        var lr_tc_def = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLREF_LIMIT_0]
+        )
+        var lr_dr_def = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLREF_LIMIT_1]
+        )
+        var li_dmin_def = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLIMP_LIMIT_0]
+        )
+        var li_dmax_def = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLIMP_LIMIT_1]
+        )
+        var li_width_def = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLIMP_LIMIT_2]
+        )
+        var li_midpoint_def = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLIMP_LIMIT_3]
+        )
+        var li_power_def = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLIMP_LIMIT_4]
+        )
+
+        for j in range(NJOINT):
+            var jtype = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
+            if jtype != JNT_HINGE and jtype != JNT_SLIDE:
+                continue
+            var dof = Int(
+                rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR])
+            )
+            var qpos_adr = Int(
+                rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_QPOS_ADR])
+            )
+            var rmin = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_RANGE_MIN])
+            var rmax = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_RANGE_MAX])
+            if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
+                continue
+            var lr_tc = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_SOLREF_LIMIT_0]
+            )
+            var lr_dr = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_SOLREF_LIMIT_1]
+            )
+            if lr_tc <= Scalar[DTYPE](0):
+                lr_tc = lr_tc_def
+            if lr_dr <= Scalar[DTYPE](0):
+                lr_dr = lr_dr_def
+            var li_dmin = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_SOLIMP_LIMIT_0]
+            )
+            var li_dmax = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_SOLIMP_LIMIT_1]
+            )
+            var li_width = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_SOLIMP_LIMIT_2]
+            )
+            var li_midpoint = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_SOLIMP_LIMIT_3]
+            )
+            var li_power = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_SOLIMP_LIMIT_4]
+            )
+            if li_dmax <= Scalar[DTYPE](0) and li_width <= Scalar[DTYPE](0):
+                li_dmin = li_dmin_def
+                li_dmax = li_dmax_def
+                li_width = li_width_def
+                li_midpoint = li_midpoint_def
+                li_power = li_power_def
+            if li_width < Scalar[DTYPE](1e-6):
+                li_width = Scalar[DTYPE](1e-6)
+            if li_dmax < Scalar[DTYPE](1e-4):
+                li_dmax = Scalar[DTYPE](1e-4)
+            var l_K_spring = Scalar[DTYPE](1.0) / (
+                li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr
+            )
+            var l_B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
+
+            var pos = rebind[Scalar[DTYPE]](qpos[env, qpos_adr])
+            # Lower limit
+            var dist_lo = pos - rmin
+            if dist_lo < Scalar[DTYPE](0) and num_edges < ME:
+                var sign = Scalar[DTYPE](1)
+                var K_lim = rebind[Scalar[DTYPE]](m_inv[env, dof * NV + dof])
+                if K_lim < Scalar[DTYPE](1e-10):
+                    K_lim = Scalar[DTYPE](1e-10)
+                var pen = -dist_lo
+                var v_lim = sign * rebind[Scalar[DTYPE]](qvel[env, dof])
+                var imp_lim: Scalar[DTYPE]
+                if li_dmin == li_dmax or li_width <= Scalar[DTYPE](0):
+                    imp_lim = Scalar[DTYPE](0.5) * (li_dmin + li_dmax)
+                else:
+                    var x_l = pen / li_width
+                    if x_l <= Scalar[DTYPE](0):
+                        imp_lim = li_dmin
+                    elif x_l >= Scalar[DTYPE](1):
+                        imp_lim = li_dmax
+                    else:
+                        var y_l: Scalar[DTYPE]
+                        if li_power == Scalar[DTYPE](1):
+                            y_l = x_l
+                        elif x_l <= li_midpoint:
+                            y_l = pow(x_l, li_power) / pow(
+                                li_midpoint, li_power - Scalar[DTYPE](1)
+                            )
+                        else:
+                            y_l = Scalar[DTYPE](1) - pow(
+                                Scalar[DTYPE](1) - x_l, li_power
+                            ) / pow(
+                                Scalar[DTYPE](1) - li_midpoint,
+                                li_power - Scalar[DTYPE](1),
+                            )
+                        imp_lim = li_dmin + y_l * (li_dmax - li_dmin)
+                if imp_lim < Scalar[DTYPE](1e-6):
+                    imp_lim = Scalar[DTYPE](1e-6)
+                var diag_lim = rebind[Scalar[DTYPE]](dof_invweight0[dof])
+                if diag_lim < Scalar[DTYPE](1e-10):
+                    diag_lim = K_lim
+                var R_lim = (
+                    (Scalar[DTYPE](1) - imp_lim) / imp_lim * diag_lim
+                )
+                if R_lim < Scalar[DTYPE](1e-14):
+                    R_lim = Scalar[DTYPE](1e-14)
+                for i in range(NV):
+                    Je_sh[num_edges * NV + i] = Scalar[DTYPE](0)
+                Je_sh[num_edges * NV + dof] = sign
+                var inv_K_lim = Scalar[DTYPE](1) / (K_lim + R_lim)
+                var R_recov = Scalar[DTYPE](1) / inv_K_lim - K_lim
+                if R_recov < Scalar[DTYPE](1e-14):
+                    R_recov = Scalar[DTYPE](1e-14)
+                De_sh[num_edges] = Scalar[DTYPE](1) / R_recov
+                bias_e_sh[num_edges] = (
+                    l_B_damp * v_lim - l_K_spring * imp_lim * pen
+                )
+                num_edges += 1
+
+            # Upper limit
+            var dist_hi = rmax - pos
+            if dist_hi < Scalar[DTYPE](0) and num_edges < ME:
+                var sign = Scalar[DTYPE](-1)
+                var K_lim = rebind[Scalar[DTYPE]](m_inv[env, dof * NV + dof])
+                if K_lim < Scalar[DTYPE](1e-10):
+                    K_lim = Scalar[DTYPE](1e-10)
+                var pen = -dist_hi
+                var v_lim = sign * rebind[Scalar[DTYPE]](qvel[env, dof])
+                var imp_lim: Scalar[DTYPE]
+                if li_dmin == li_dmax or li_width <= Scalar[DTYPE](0):
+                    imp_lim = Scalar[DTYPE](0.5) * (li_dmin + li_dmax)
+                else:
+                    var x_l = pen / li_width
+                    if x_l <= Scalar[DTYPE](0):
+                        imp_lim = li_dmin
+                    elif x_l >= Scalar[DTYPE](1):
+                        imp_lim = li_dmax
+                    else:
+                        var y_l: Scalar[DTYPE]
+                        if li_power == Scalar[DTYPE](1):
+                            y_l = x_l
+                        elif x_l <= li_midpoint:
+                            y_l = pow(x_l, li_power) / pow(
+                                li_midpoint, li_power - Scalar[DTYPE](1)
+                            )
+                        else:
+                            y_l = Scalar[DTYPE](1) - pow(
+                                Scalar[DTYPE](1) - x_l, li_power
+                            ) / pow(
+                                Scalar[DTYPE](1) - li_midpoint,
+                                li_power - Scalar[DTYPE](1),
+                            )
+                        imp_lim = li_dmin + y_l * (li_dmax - li_dmin)
+                if imp_lim < Scalar[DTYPE](1e-6):
+                    imp_lim = Scalar[DTYPE](1e-6)
+                var diag_lim = rebind[Scalar[DTYPE]](dof_invweight0[dof])
+                if diag_lim < Scalar[DTYPE](1e-10):
+                    diag_lim = K_lim
+                var R_lim = (
+                    (Scalar[DTYPE](1) - imp_lim) / imp_lim * diag_lim
+                )
+                if R_lim < Scalar[DTYPE](1e-14):
+                    R_lim = Scalar[DTYPE](1e-14)
+                for i in range(NV):
+                    Je_sh[num_edges * NV + i] = Scalar[DTYPE](0)
+                Je_sh[num_edges * NV + dof] = sign
+                var inv_K_lim = Scalar[DTYPE](1) / (K_lim + R_lim)
+                var R_recov = Scalar[DTYPE](1) / inv_K_lim - K_lim
+                if R_recov < Scalar[DTYPE](1e-14):
+                    R_recov = Scalar[DTYPE](1e-14)
+                De_sh[num_edges] = Scalar[DTYPE](1) / R_recov
+                bias_e_sh[num_edges] = (
+                    l_B_damp * v_lim - l_K_spring * imp_lim * pen
+                )
+                num_edges += 1
+
+        # Publish num_edges to shared for all threads.
+        ctrl_sh[0] = Scalar[DTYPE](num_edges)
+
+        # Initialize qacc/qacc_smooth from workspace
+        for i in range(NV):
+            var q_i = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
+            qacc[i] = q_i
+            qacc_smooth[i] = q_i
+        # Ma = M * qacc (read from M_sh)
+        for i in range(NV):
+            Ma[i] = Scalar[DTYPE](0)
+            for j in range(NV):
+                Ma[i] += rebind[Scalar[DTYPE]](M_sh[i * NV + j]) * qacc[j]
+        for i in range(NV):
+            f_smooth[i] = Ma[i]
+        # Scale for convergence check
+        for i in range(NV):
+            scale += rebind[Scalar[DTYPE]](M_sh[i * NV + i])
+        if scale > Scalar[DTYPE](1e-10):
+            scale = Scalar[DTYPE](1.0) / scale
+        else:
+            scale = Scalar[DTYPE](1.0)
+
+        # Initial jar + force + qfrc; publish force to force_sh
+        for i in range(NV):
+            qfrc[i] = Scalar[DTYPE](0)
+        for e_idx in range(num_edges):
+            jar[e_idx] = rebind[Scalar[DTYPE]](bias_e_sh[e_idx])
+            for i in range(NV):
+                jar[e_idx] += (
+                    rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i]) * qacc[i]
+                )
+            var f_e: Scalar[DTYPE]
+            if jar[e_idx] >= Scalar[DTYPE](0):
+                f_e = Scalar[DTYPE](0)
+            else:
+                f_e = -rebind[Scalar[DTYPE]](De_sh[e_idx]) * jar[e_idx]
+            force_sh[e_idx] = f_e
+            for i in range(NV):
+                qfrc[i] += rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i]) * f_e
+
+    # Make num_edges + force_sh visible to all threads.
+    barrier()
+    var num_edges_b = Int(rebind[Scalar[DTYPE]](ctrl_sh[0]))
+
+    # === Newton iterations — ALL threads execute the loop ===
+    for iter_n in range(NEWTON_ITER_GPU):
+        # --- Thread 0: gradient + convergence check ---
+        if valid_env and tid == 0:
+            var grad_norm: Scalar[DTYPE] = 0
+            for i in range(NV):
+                grad[i] = Ma[i] - f_smooth[i] - qfrc[i]
+                grad_norm += grad[i] * grad[i]
+            if scale * sqrt(grad_norm) < Scalar[DTYPE](NEWTON_TOL_GPU):
+                ctrl_sh[1] = Scalar[DTYPE](1)  # done
+            else:
+                ctrl_sh[1] = Scalar[DTYPE](0)
+        barrier()
+        if Int(rebind[Scalar[DTYPE]](ctrl_sh[1])) == 1:
+            break
+
+        # --- ALL threads: parallel Hessian assembly (inner edge-sum ascending
+        # → bit-identical to the serial build) ---
+        if valid_env:
+            for idx in range(tid, NV * NV, THREADS):
+                var i = idx // NV
+                var j = idx % NV
+                var h = rebind[Scalar[DTYPE]](M_sh[idx])
+                for e in range(num_edges_b):
+                    if rebind[Scalar[DTYPE]](force_sh[e]) > Scalar[DTYPE](0):
+                        h += (
+                            rebind[Scalar[DTYPE]](De_sh[e])
+                            * rebind[Scalar[DTYPE]](Je_sh[e * NV + i])
+                            * rebind[Scalar[DTYPE]](Je_sh[e * NV + j])
+                        )
+                H_sh[idx] = h
+        barrier()
+
+        # --- Cooperative Cholesky factor of H into L_sh ---
+        _chol_factor_coop_fields[DTYPE, NV, M_SIZE](
+            tid, THREADS, H_sh, L_sh, ctrl_sh
+        )
+
+        # --- Thread 0: Cholesky solve + negate search + publish ---
+        if valid_env and tid == 0:
+            var L_chol = InlineArray[Scalar[DTYPE], M_SIZE](
+                uninitialized=True
+            )
+            for k in range(NV * NV):
+                L_chol[k] = rebind[Scalar[DTYPE]](L_sh[k])
+            chol_solve_inline[DTYPE, NV, M_SIZE, V_SIZE](L_chol, grad, search)
+            for i in range(NV):
+                search[i] = -search[i]
+            # Publish search; Mv/Jv_e computed cooperatively below.
+            for i in range(NV):
+                search_sh[i] = search[i]
+
+        # --- Cooperative Mv = M·search and Jv_e = Je·search ---
+        barrier()
+        _matvec_mv_jve_coop_fields[DTYPE, NV, V_SIZE, M_SIZE, ME](
+            tid, THREADS, num_edges_b, M_sh, Je_sh, search_sh, Mv_sh, Jv_e_sh
+        )
+        barrier()
+        if valid_env and tid == 0:
+            for i in range(NV):
+                Mv[i] = rebind[Scalar[DTYPE]](Mv_sh[i])
+            for e_idx in range(num_edges_b):
+                Jv_e[e_idx] = rebind[Scalar[DTYPE]](Jv_e_sh[e_idx])
+
+        # --- Thread 0: gauss / p0 / line search / update / cost ---
+        if valid_env and tid == 0:
+            var gauss_a: Scalar[DTYPE] = 0
+            var gauss_b: Scalar[DTYPE] = 0
+            for i in range(NV):
+                gauss_a += Mv[i] * search[i]
+                gauss_b += (Ma[i] - f_smooth[i]) * search[i]
+
+            var p0_d1 = gauss_b
+            var p0_d2 = gauss_a
+            for e_idx in range(num_edges_b):
+                if jar[e_idx] < Scalar[DTYPE](0):
+                    p0_d1 += (
+                        rebind[Scalar[DTYPE]](De_sh[e_idx])
+                        * jar[e_idx]
+                        * Jv_e[e_idx]
+                    )
+                    p0_d2 += (
+                        rebind[Scalar[DTYPE]](De_sh[e_idx])
+                        * Jv_e[e_idx]
+                        * Jv_e[e_idx]
+                    )
+            if p0_d2 < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                p0_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+
+            var alpha: Scalar[DTYPE] = 0
+            if p0_d1 < Scalar[DTYPE](0):
+                alpha = -p0_d1 / p0_d2
+
+                var old_cost_ls: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    old_cost_ls += (
+                        Scalar[DTYPE](0.5)
+                        * (Ma[i] - f_smooth[i])
+                        * (qacc[i] - qacc_smooth[i])
+                    )
+                for e_idx in range(num_edges_b):
+                    if jar[e_idx] < Scalar[DTYPE](0):
+                        old_cost_ls += (
+                            Scalar[DTYPE](0.5)
+                            * rebind[Scalar[DTYPE]](De_sh[e_idx])
+                            * jar[e_idx]
+                            * jar[e_idx]
+                        )
+
+                for _ in range(LINESEARCH_ITER):
+                    var trial_cost: Scalar[DTYPE] = 0
+                    for i in range(NV):
+                        var qa_t = qacc[i] + alpha * search[i]
+                        var Ma_t = Ma[i] + alpha * Mv[i]
+                        trial_cost += (
+                            Scalar[DTYPE](0.5)
+                            * (Ma_t - f_smooth[i])
+                            * (qa_t - qacc_smooth[i])
+                        )
+                    for e_idx in range(num_edges_b):
+                        var jar_t = jar[e_idx] + alpha * Jv_e[e_idx]
+                        if jar_t < Scalar[DTYPE](0):
+                            trial_cost += (
+                                Scalar[DTYPE](0.5)
+                                * rebind[Scalar[DTYPE]](De_sh[e_idx])
+                                * jar_t
+                                * jar_t
+                            )
+                    if trial_cost <= old_cost_ls:
+                        break
+                    alpha *= Scalar[DTYPE](0.5)
+
+            if alpha < Scalar[DTYPE](1e-10):
+                ctrl_sh[1] = Scalar[DTYPE](1)  # done (break next iter)
+            else:
+                ctrl_sh[1] = Scalar[DTYPE](0)
+
+                # Save old state for revert.
+                for i in range(NV):
+                    old_qacc[i] = qacc[i]
+                    old_Ma[i] = Ma[i]
+                    old_qfrc[i] = qfrc[i]
+                for e_idx in range(num_edges_b):
+                    old_jar[e_idx] = jar[e_idx]
+                    old_force[e_idx] = rebind[Scalar[DTYPE]](force_sh[e_idx])
+
+                old_cost = Scalar[DTYPE](0)
+                for i in range(NV):
+                    old_cost += (
+                        Scalar[DTYPE](0.5)
+                        * (Ma[i] - f_smooth[i])
+                        * (qacc[i] - qacc_smooth[i])
+                    )
+                for e_idx in range(num_edges_b):
+                    if jar[e_idx] < Scalar[DTYPE](0):
+                        old_cost += (
+                            Scalar[DTYPE](0.5)
+                            * rebind[Scalar[DTYPE]](De_sh[e_idx])
+                            * jar[e_idx]
+                            * jar[e_idx]
+                        )
+
+                for i in range(NV):
+                    qacc[i] += alpha * search[i]
+                    Ma[i] += alpha * Mv[i]
+
+            # Publish qacc unconditionally. When alpha<1e-10 qacc is unchanged,
+            # so the cooperative recompute reproduces identical jar/force/qfrc.
+            for i in range(NV):
+                qacc_sh[i] = qacc[i]
+
+        # Cooperative jar/force/qfrc recompute, then tid 0 reads back and
+        # finishes the accept/revert.
+        barrier()
+        _recompute_jfq_coop_fields[DTYPE, NV, V_SIZE, ME](
+            tid, THREADS, num_edges_b, Je_sh, De_sh, bias_e_sh, qacc_sh,
+            jar_sh, force_sh, qfrc_sh,
+        )
+        barrier()
+        if valid_env and tid == 0:
+            for e_idx in range(num_edges_b):
+                jar[e_idx] = rebind[Scalar[DTYPE]](jar_sh[e_idx])
+            for i in range(NV):
+                qfrc[i] = rebind[Scalar[DTYPE]](qfrc_sh[i])
+            if Int(rebind[Scalar[DTYPE]](ctrl_sh[1])) == 0:
+                var new_cost: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    new_cost += (
+                        Scalar[DTYPE](0.5)
+                        * (Ma[i] - f_smooth[i])
+                        * (qacc[i] - qacc_smooth[i])
+                    )
+                for e_idx in range(num_edges_b):
+                    if jar[e_idx] < Scalar[DTYPE](0):
+                        new_cost += (
+                            Scalar[DTYPE](0.5)
+                            * rebind[Scalar[DTYPE]](De_sh[e_idx])
+                            * jar[e_idx]
+                            * jar[e_idx]
+                        )
+
+                var improvement = scale * (old_cost - new_cost)
+                if (
+                    improvement < Scalar[DTYPE](NEWTON_TOL_GPU)
+                    and iter_n > 0
+                ):
+                    if improvement < Scalar[DTYPE](0):
+                        for i in range(NV):
+                            qacc[i] = old_qacc[i]
+                            Ma[i] = old_Ma[i]
+                            qfrc[i] = old_qfrc[i]
+                        for e_idx in range(num_edges_b):
+                            jar[e_idx] = old_jar[e_idx]
+                            force_sh[e_idx] = old_force[e_idx]
+                    ctrl_sh[1] = Scalar[DTYPE](1)  # done
+
+        # force_sh updated; make visible for next assembly.
+        barrier()
+        if Int(rebind[Scalar[DTYPE]](ctrl_sh[1])) == 1:
+            break
+
+    # === THREAD 0: write back + reconstruct forces + equality/tendon ===
+    if not valid_env or tid != 0:
+        return
+
+    for i in range(NV):
+        qacc_constrained[env, i] = qacc[i]
+
+    for c in range(nc):
+        var fn_c: Scalar[DTYPE] = 0
+        var ft1_c: Scalar[DTYPE] = 0
+        var ft2_c: Scalar[DTYPE] = 0
+        var mu_c = rebind[Scalar[DTYPE]](solver[env, pyr_sc + 8 * MC + c])
+        var safe_mu = mu_c
+        if safe_mu < Scalar[DTYPE](1e-8):
+            safe_mu = Scalar[DTYPE](1e-8)
+        var f_e0 = rebind[Scalar[DTYPE]](force_sh[c * NE + 0])
+        var f_e1 = rebind[Scalar[DTYPE]](force_sh[c * NE + 1])
+        var f_e2 = rebind[Scalar[DTYPE]](force_sh[c * NE + 2])
+        var f_e3 = rebind[Scalar[DTYPE]](force_sh[c * NE + 3])
+        fn_c = (f_e0 + f_e1 + f_e2 + f_e3) / Scalar[DTYPE](2.0)
+        ft1_c = (f_e0 - f_e1) * safe_mu
+        ft2_c = (f_e2 - f_e3) * safe_mu
+        var c_off = c * CONTACT_SIZE
+        contacts[env, c_off + CONTACT_IDX_FORCE_N] = fn_c
+        contacts[env, c_off + CONTACT_IDX_FORCE_T1] = ft1_c
+        contacts[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_c
+
+    # Joint limits are handled as edges above; equality/tendon remain as a
+    # separate post-solve step (mirrors the PYRAMIDAL per-env path's gating).
+    comptime SOLVER_ITER_GPU: Int = 50
+    comptime if NEQUALITY > 0:
+        _equality_env_fields[
+            DTYPE, NV, NBODY, NJOINT, NEQUALITY, NTENDON, NSITE, V_SIZE,
+            BATCH, SOLVER_ITER_GPU,
+        ](
+            env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+            equality, tendons, sites, body_invweight0, dof_invweight0, cdof,
+            m_inv, qacc_constrained,
+        )
+    comptime if NTENDON > 0:
+        _tendon_env_fields[
+            DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
+            SOLVER_ITER_GPU,
+        ](
+            env, qpos, qvel, joints, mmeta, tendons, sites, body_invweight0,
+            dof_invweight0, m_inv, qacc_constrained,
+        )
+
+
+def solve_newton_blocked_fields[
+    target: StaticString,
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
+    NEXCLUDE: Int = 0,
+    NMESH_VERTS: Int = 0,
+    CONE_TYPE: Int = ConeType.PYRAMIDAL,
+    BATCH: Int = 1,
+](
+    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: ModelFields[
+        DTYPE,
+        NV,
+        NBODY,
+        NJOINT,
+        NGEOM,
+        NEQUALITY,
+        NTENDON,
+        NSITE,
+        NEXCLUDE,
+        NMESH_VERTS,
+    ],
+    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """PYRAMIDAL-only ONE-ENV-PER-BLOCK Newton contact solve (fields port of
+    NewtonSolver.solve_gpu_blocked). Cooperative across MAX_CONTACTS threads,
+    big matrices in shared memory — the OOM-safe path at humanoid scale.
+
+    Writes into `scratch.qacc_constrained` (+ solved forces into `d.contacts`).
+    Same signature family as `solve_newton_fields`. Only the GPU (blocked)
+    launch is meaningful; the CPU branch falls back to the single-source per-env
+    body (`_newton_solve_env_fields`, identical PYRAMIDAL math) for parity.
+    """
+    comptime MC = _max_one[MAX_CONTACTS]()
+    comptime SOLVER_WS = 81 * MC + 12 * MC * NV
+
+    comptime L_NV = Layout.row_major(BATCH, NV)
+    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
+    comptime L_CON = Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE)
+    comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
+    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
+    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
+    comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
+    comptime L_EQ = Layout.row_major(NEQUALITY, MODEL_EQ_SIZE)
+    comptime L_TEN = Layout.row_major(NTENDON, MODEL_TENDON_SIZE)
+    comptime L_SITE = Layout.row_major(NSITE, MODEL_SITE_SIZE)
+    comptime L_BW = Layout.row_major(NBODY, 2)
+    comptime L_CDOF = Layout.row_major(BATCH, NV * 6)
+    comptime L_M = Layout.row_major(BATCH, NV * NV)
+    comptime L_SOLVER = Layout.row_major(BATCH, SOLVER_WS)
+
+    comptime L_QPOS = Layout.row_major(BATCH, NQ)
+    comptime L_DW = Layout.row_major(NV)
+
+    comptime if target == "cpu":
+        var qpos_v = d.qpos.lt["cpu", L_QPOS]()
+        var qvel_v = d.qvel.lt["cpu", L_NV]()
+        var xpos_v = d.xpos.lt["cpu", L_B3]()
+        var xquat_v = d.xquat.lt["cpu", L_B4]()
+        var stcom_v = d.subtree_com.lt["cpu", L_B3]()
+        var con_v = d.contacts.lt["cpu", L_CON]()
+        var smeta_v = d.meta.lt["cpu", L_SMETA]()
+        var joints_v = m.joints.lt["cpu", L_JOINT]()
+        var bodies_v = m.bodies.lt["cpu", L_BODY]()
+        var mmeta_v = m.meta.lt["cpu", L_MMETA]()
+        var eq_v = m.equality.lt["cpu", L_EQ]()
+        var ten_v = m.tendons.lt["cpu", L_TEN]()
+        var site_v = m.sites.lt["cpu", L_SITE]()
+        var bw_v = m.body_invweight0.lt["cpu", L_BW]()
+        var dw_v = m.dof_invweight0.lt["cpu", L_DW]()
+        var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
+        var M_v = scratch.M.lt["cpu", L_M]()
+        var mi_v = scratch.m_inv.lt["cpu", L_M]()
+        var qc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
+        var sol_v = cscratch.solver.lt["cpu", L_SOLVER]()
+        for e in range(BATCH):
+            _newton_solve_env_fields[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
+                NTENDON, NSITE, CONE_TYPE, BATCH, SOLVER_WS,
+            ](
+                e, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
+                joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, bw_v, dw_v,
+                cdof_v, M_v, mi_v, qc_v, sol_v,
+            )
+    else:
         var c = ctx.value()
-        comptime BLOCKS = (BATCH + NS_TPB - 1) // NS_TPB
         c.enqueue_function[
-            _newton_solve_fields_kernel[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                NGEOM,
-                NEQUALITY,
-                NTENDON,
-                NSITE,
-                CONE_TYPE,
-                BATCH,
-                SOLVER_WS,
+            _newton_blocked_fields_kernel[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
+                NTENDON, NSITE, CONE_TYPE, BATCH, SOLVER_WS,
             ]
         ](
             d.qpos.lt["gpu", L_QPOS](),
@@ -1884,6 +3065,6 @@ def solve_newton_fields[
             scratch.m_inv.lt["gpu", L_M](),
             scratch.qacc_constrained.lt["gpu", L_NV](),
             cscratch.solver.lt["gpu", L_SOLVER](),
-            grid_dim=(BLOCKS,),
-            block_dim=(NS_TPB,),
+            grid_dim=(BATCH,),
+            block_dim=(MC,),
         )
