@@ -2,10 +2,10 @@
 
 Loads a checkpoint from `dreamerv3_atari_pong_training.mojo` and plays the real
 Atari 2600 Pong ROM (6502/TIA/RIOT emulation) in an SDL3 window. The agent sees
-the same 4×96×96 grayscale frame stack it trained on (OBS_MODE=4); the window
-renders the emulator's native 160×210 display (the `raw_frame_b` the step
-rendered is blitted straight into the AtariRenderer — no extra emulation). The
-agent sees a 4×96×96 grayscale STACK (OBS_MODE=4, MUST match training).
+the same single 96×96 grayscale frame it trained on (OBS_MODE=3 — the RSSM
+carries temporal state, no stacking); the window renders the emulator's native
+160×210 display (the `raw_frame_b` the step rendered is blitted straight into
+the AtariRenderer — no extra emulation).
 
 DreamerV3 is a closed-loop policy: each step the encoder+RSSM update a posterior
 belief from the real frame, then the actor acts on it. So we `reset_belief()` at
@@ -15,8 +15,9 @@ the deterministic mode degenerates early in training; sampling reflects true
 on-policy behavior. The env's internal frame-skip=4 means one decision = 4 ROM
 frames (real Atari speed at ~15 decisions/s).
 
-The agent identity below MUST match the training script (arch + DETER). Requires
-the Pong ROM at `roms/pong.bin` (`pixi run setup-roms`).
+The agent identity below MUST match the training script — same TIER, pool conv
+geometry, and raw-token width — or the checkpoint will not load. Requires the
+Pong ROM at `roms/pong.bin` (`pixi run setup-roms`).
 
 Window controls: P pauses, ESC/Q or window-close quits.
 
@@ -34,46 +35,51 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
 from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
-    DreamerEncoderCNN,
-    DreamerDecoderCNN,
+    DreamerEncoderCNNPool,
+    DreamerDecoderCNNPool,
 )
 from mojo_rl.envs.atari import AtariEnv
 from mojo_rl.envs.atari.games.registry import AtariGame
 from mojo_rl.envs.atari.frame_render import FRAME_BUF_SIZE
 from mojo_rl.envs.atari.renderer import AtariRenderer
 
-# ── arch (MUST match dreamerv3_atari_pong_training.mojo) ──
-comptime C = 4  # 4-frame grayscale stack (MUST match training)
+# ── arch (MUST match dreamerv3_atari_pong_training.mojo, incl. TIER) ──
+comptime C = 1  # single grayscale frame (reference parity — no stacking)
 comptime IMG = 96
-comptime BASE = 48
-comptime OBS = C * IMG * IMG  # 36864
+comptime TIER = "50m"  # "200m" | "50m" — checkpoints are tier-specific
+comptime BASE = 64 if TIER == "200m" else 32
+comptime OBS = C * IMG * IMG  # 9216
 comptime ACT = 6
-comptime DETER = 2048  # MUST match training (checkpoint compatibility)
-comptime H = 256
+comptime DETER = 8192 if TIER == "200m" else 4096
+comptime H = 1024 if TIER == "200m" else 512
 comptime STOCH = 32
-comptime CLASSES = 32
+comptime CLASSES = 64 if TIER == "200m" else 32
 comptime BLOCKS = 8
-comptime TOKEN = 1024
-comptime DEC_U = 1024
-comptime HU = 256
-comptime VU = 256
-comptime PU = 256
+comptime TOKEN = 4 * BASE * (IMG // 16) * (IMG // 16)  # raw conv tokens
+comptime UNITS = H
+comptime DEC_U = H
+comptime HU = H
+comptime VU = H
+comptime PU = H
 comptime BINS = 255
 comptime B = 16
-comptime T = 16
+comptime T = 16  # eval only → small replay window (params load from ckpt)
 comptime T_IMAG = 15
-comptime CAP = 256  # eval only → tiny replay (params load from ckpt)
+comptime CAP = 256  # eval only → tiny replay
 
 comptime FEATIN = STOCH * CLASSES + DETER
-comptime ENC = DreamerEncoderCNN[C, IMG, IMG, BASE, TOKEN, SwishOp]
-comptime DEC = DreamerDecoderCNN[FEATIN, C, IMG, IMG, BASE, SwishOp]
+comptime ENC = DreamerEncoderCNNPool[C, IMG, IMG, BASE, SwishOp]
+comptime DEC = DreamerDecoderCNNPool[
+    FEATIN, DETER, C, IMG, IMG, BASE, UNITS, SwishOp
+]
 
 comptime Ag = DreamerV3Agent[
     "gpu", OBS, ACT, DETER, H, STOCH, CLASSES, BLOCKS, TOKEN, DEC_U, HU, VU,
     PU, BINS, B, T, T_IMAG, CAP, True, ENC, DEC,  # DISCRETE=True
-    # RECON_SIGMOID left default — eval never decodes, so it has no effect here.
+    RECON_SIGMOID=True,  # must match training (decode = sigmoid)
+    # OUT_INIT/NET_INIT left default: eval-only — ckpt load overwrites params.
 ]
-comptime Env = AtariEnv[4, DT]  # OBS_MODE=4 (gray-96 4-frame stack)
+comptime Env = AtariEnv[3, DT]  # OBS_MODE=3 (gray-96 single frame)
 
 comptime CHECKPOINT_PATH = "dreamerv3_atari_pong_gpu.ckpt"
 comptime EVAL_EPISODES = 5
@@ -95,6 +101,7 @@ def main() raises:
     print("DreamerV3 Atari Pong — checkpoint eval (live SDL, CPU emulator)")
     print("=" * 70)
     print("  Checkpoint:", CHECKPOINT_PATH, "  Episodes:", EVAL_EPISODES)
+    print("  TIER:", TIER, " DETER:", DETER, " TOKEN:", TOKEN)
     print()
 
     with DeviceContext() as ctx:
