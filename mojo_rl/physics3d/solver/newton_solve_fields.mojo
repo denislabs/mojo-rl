@@ -58,6 +58,7 @@ from layout import Layout, LayoutTensor
 from ..types import _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE
 from .cholesky import chol_factor_inline, chol_solve_inline
+from .primal_fields import pyramidal_edge_forces
 from ..constraints.contact_solve_fields import (
     _init_common_normal_ws_fields,
     _precompute_contact_normal_fields,
@@ -860,18 +861,9 @@ def _newton_solve_env_fields[
 
         # Initial jar + force + qfrc
         var qfrc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-        for i in range(NV):
-            qfrc[i] = Scalar[DTYPE](0)
-        for e_idx in range(num_edges):
-            jar[e_idx] = bias_e[e_idx]
-            for i in range(NV):
-                jar[e_idx] += Je[e_idx * NV + i] * qacc[i]
-            if jar[e_idx] >= Scalar[DTYPE](0):
-                force[e_idx] = Scalar[DTYPE](0)
-            else:
-                force[e_idx] = -De[e_idx] * jar[e_idx]
-            for i in range(NV):
-                qfrc[i] += Je[e_idx * NV + i] * force[e_idx]
+        pyramidal_edge_forces[DTYPE, NV, ME, V_SIZE](
+            num_edges, Je, De, bias_e, qacc, jar, force, qfrc
+        )
 
         # Newton iterations
         for iter_n in range(NEWTON_ITER_GPU):
@@ -1036,18 +1028,9 @@ def _newton_solve_env_fields[
                 Ma[i] += alpha * Mv[i]
 
             # Recompute jar, force, qfrc
-            for i in range(NV):
-                qfrc[i] = Scalar[DTYPE](0)
-            for e_idx in range(num_edges):
-                jar[e_idx] = bias_e[e_idx]
-                for i in range(NV):
-                    jar[e_idx] += Je[e_idx * NV + i] * qacc[i]
-                if jar[e_idx] >= Scalar[DTYPE](0):
-                    force[e_idx] = Scalar[DTYPE](0)
-                else:
-                    force[e_idx] = -De[e_idx] * jar[e_idx]
-                for i in range(NV):
-                    qfrc[i] += Je[e_idx * NV + i] * force[e_idx]
+            pyramidal_edge_forces[DTYPE, NV, ME, V_SIZE](
+                num_edges, Je, De, bias_e, qacc, jar, force, qfrc
+            )
 
             # Compute new cost and check improvement
             var new_cost: Scalar[DTYPE] = 0
