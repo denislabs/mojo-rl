@@ -53,15 +53,10 @@ def main() raises:
     )
     var ctx = DeviceContext()
 
-    var model_t = TensorImpl[DTYPE].alloc(MS)
-    model_t.upload(ctx)
-    HumanoidModel.init_model_gpu(ctx, model_t.dev.value())
-    model_t.download(ctx)
     var mf = ModelFields[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL
+        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
     ]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
 
     var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     # LOW pose so the humanoid is in ground contact — exercises SAP + the

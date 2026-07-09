@@ -36,6 +36,10 @@ comptime NBODY = AntModel.NBODY
 comptime NJOINT = AntModel.NJOINT
 comptime NGEOM = AntModel.NGEOM
 comptime MC = AntModel.MAX_CONTACTS
+comptime NEQ = AntModel.MAX_EQUALITY
+comptime NTD = AntModel.MAX_TENDON
+comptime NSITE = AntModel.NSITE
+comptime NEXCL = AntModel.NEXCLUDE
 comptime BATCH = 2
 comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 
@@ -48,15 +52,10 @@ def main() raises:
     )
     var ctx = DeviceContext()
 
-    var model_t = TensorImpl[DTYPE].alloc(MS)
-    model_t.upload(ctx)
-    AntModel.init_model_gpu(ctx, model_t.dev.value())
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    AntModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
+    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     # nonzero free-joint translation + torso quat + a couple joint angles
     for e in range(BATCH):
         d.qpos.data[e * NQ + 2] = Scalar[DTYPE](0.55)  # free z
@@ -70,28 +69,28 @@ def main() raises:
 
     print("[1] forward_kinematics_fields (serial) ...")
     forward_kinematics_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
     ctx.synchronize()
     print("    [1] FK ok")
 
     print("[2] compute_subtree_com_fields (serial) ...")
     compute_subtree_com_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
     ctx.synchronize()
     print("    [2] subtree_com ok")
 
     print("[3] compute_cdof_fields (serial) ...")
     compute_cdof_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, ctx)
     ctx.synchronize()
     print("    [3] cdof ok")
 
     print("[4] compute_mass_matrix_fields PARALLEL=True (dense _mt) ...")
     compute_mass_matrix_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
         PARALLEL=True,
     ](d, mf, scratch, ctx)
     ctx.synchronize()
@@ -99,7 +98,7 @@ def main() raises:
 
     print("[5] compute_mass_matrix_fields PARALLEL=True TREEWALK=True ...")
     compute_mass_matrix_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
         PARALLEL=True, TREEWALK=True,
     ](d, mf, scratch, ctx)
     ctx.synchronize()
@@ -108,7 +107,7 @@ def main() raises:
     # Also exercise the PARALLEL FK / cdof (the humanoid *training* config).
     print("[6] forward_kinematics_fields PARALLEL=True (_mt) ...")
     forward_kinematics_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
         PARALLEL=True,
     ](d, mf, ctx)
     ctx.synchronize()
@@ -116,7 +115,7 @@ def main() raises:
 
     print("[7] compute_cdof_fields PARALLEL=True (_mt) ...")
     compute_cdof_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
         PARALLEL=True,
     ](d, mf, scratch, ctx)
     ctx.synchronize()

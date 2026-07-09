@@ -37,6 +37,7 @@ comptime MAX_CONTACTS = AntModel.MAX_CONTACTS
 comptime NSITE = AntModel.NSITE
 comptime NEQ = AntModel.MAX_EQUALITY
 comptime NTEN = AntModel.MAX_TENDON
+comptime NEXCL = AntModel.NEXCLUDE
 comptime MS = model_size_with_invweight[
     NBODY, NJOINT, NV, NGEOM, NEQ, NTEN, NSITE
 ]()
@@ -77,14 +78,10 @@ def _tumbling_qvel() -> InlineArray[Float64, NV]:
 
 def _make_model_fields(
     ctx: DeviceContext,
-) raises -> ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE]:
+) raises -> ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]:
     """Build the model into ModelFields via the model-def init + flattening."""
-    var model_t = TensorImpl[DTYPE].alloc(MS)
-    model_t.upload(ctx)
-    AntModel.init_model_gpu(ctx, model_t.dev.value())
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE]()
-    mf.load_from_slab(model_t.data)
+    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]()
+    AntModel.init_fields[DTYPE, 0](ctx, mf)
     return mf^
 
 

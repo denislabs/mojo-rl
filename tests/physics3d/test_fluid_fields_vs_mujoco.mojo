@@ -54,6 +54,7 @@ comptime MC = SwimmerModel.MAX_CONTACTS
 comptime NEQ = SwimmerModel.MAX_EQUALITY
 comptime NTD = SwimmerModel.MAX_TENDON
 comptime NSITE = SwimmerModel.NSITE
+comptime NEXCL = SwimmerModel.NEXCLUDE
 comptime CONE = SwimmerModel.CONE_TYPE
 comptime BATCH = 1
 comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
@@ -69,15 +70,10 @@ def main() raises:
     var ctx = DeviceContext()
 
     # === Fields model + data ===
-    var model_t = TensorImpl[DT].alloc(MS)
-    model_t.upload(ctx)
-    SwimmerModel.init_model_gpu(ctx, model_t.dev.value())
-    model_t.download(ctx)
-    var mf = ModelFields[DT, NV, NBODY, NJOINT, NGEOM]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    SwimmerModel.init_fields[DT, 0](ctx, mf)
 
-    var d = DataFields[DT, NQ, NV, NBODY, MC, 0, BATCH]()
+    var d = DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DT]((i * 3) % 5 - 2) / 20.0
     for i in range(NV):
@@ -89,16 +85,16 @@ def main() raises:
 
     # Kinematics chain that populates the fluid inputs (GPU).
     forward_kinematics_fields[
-        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
     compute_body_velocities_fields[
-        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
     compute_subtree_com_fields[
-        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
     compute_cdof_fields[
-        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, ctx)
 
     # Zero fnet, apply fluid (GPU).
@@ -106,7 +102,7 @@ def main() raises:
         scratch.fnet.data[i] = 0
     scratch.fnet.upload(ctx)
     compute_fluid_forces_fields[
-        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, ctx)
     scratch.fnet.download(ctx)
 
@@ -168,7 +164,7 @@ def main() raises:
     for i in range(NV):
         scratch.fnet.data[i] = 0
     compute_fluid_forces_fields[
-        "cpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "cpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, None)
     var worst_b = Float64(0)
     for i in range(NV):
