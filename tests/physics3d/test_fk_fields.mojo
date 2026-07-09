@@ -82,6 +82,10 @@ comptime NBODY = Walker2dModel.NBODY  # 8
 comptime NJOINT = Walker2dModel.NJOINT  # 9
 comptime NGEOM = Walker2dModel.NGEOM  # 8
 comptime MAX_CONTACTS = Walker2dModel.MAX_CONTACTS  # 20
+comptime NEQ = Walker2dModel.MAX_EQUALITY
+comptime NTD = Walker2dModel.MAX_TENDON
+comptime NSITE = Walker2dModel.NSITE
+comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime BATCH = 3
 comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 
@@ -137,13 +141,8 @@ def test_walker2d() raises:
     print("--- A. Walker2D fields FK + dynamics chain, BATCH=", BATCH, "---")
     var ctx = DeviceContext()
 
-    var model_t = TensorImpl[DTYPE].alloc(MS)
-    model_t.upload(ctx)
-    Walker2dModel.init_model_gpu(ctx, model_t.dev.value())
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     var qcfg = List[List[Float64]]()
     var q1 = List[Float64](length=NQ, fill=0.0)
@@ -166,8 +165,8 @@ def test_walker2d() raises:
     q3[8] = -0.6
     qcfg.append(q3^)
 
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, 0, BATCH]()
-    var dc = DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, 0, BATCH]()
+    var d = DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]()
+    var dc = DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             d.qpos.data[e * NQ + i] = Scalar[DTYPE](qcfg[e][i])
@@ -177,12 +176,12 @@ def test_walker2d() raises:
     # 1. FK.
     forward_kinematics_fields[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        0, 0, 0, 0, 0, BATCH,
+        NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
     d.download_all(ctx)
     forward_kinematics_fields[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        0, 0, 0, 0, 0, BATCH,
+        NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](dc, mf)
     var worst_fk = Float64(0)
     for e in range(BATCH):
@@ -213,12 +212,12 @@ def test_walker2d() raises:
     # 2. subtree_com.
     compute_subtree_com_fields[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        0, 0, 0, 0, 0, BATCH,
+        NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
     d.subtree_com.download(ctx)
     compute_subtree_com_fields[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        0, 0, 0, 0, 0, BATCH,
+        NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](dc, mf)
     var worst_st = Float64(0)
     for i in range(BATCH * NBODY * 3):
@@ -237,12 +236,12 @@ def test_walker2d() raises:
     var scratch_c = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
     compute_cdof_fields[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        0, 0, 0, 0, 0, BATCH,
+        NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, ctx)
     scratch.cdof.download(ctx)
     compute_cdof_fields[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        0, 0, 0, 0, 0, BATCH,
+        NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](dc, mf, scratch_c)
     var worst_cd = Float64(0)
     for i in range(BATCH * NV * 6):
@@ -258,12 +257,12 @@ def test_walker2d() raises:
     # 4. CRBA mass matrix.
     compute_mass_matrix_fields[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        0, 0, 0, 0, 0, BATCH,
+        NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, ctx)
     scratch.M.download(ctx)
     compute_mass_matrix_fields[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        0, 0, 0, 0, 0, BATCH,
+        NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](dc, mf, scratch_c)
     var worst_mm = Float64(0)
     for i in range(BATCH * NV * NV):
@@ -307,12 +306,12 @@ def test_walker2d() raises:
     d.qvel.upload(ctx)
     compute_bias_forces_rne_fields[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        0, 0, 0, 0, 0, BATCH,
+        NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, ctx)
     scratch.bias.download(ctx)
     compute_bias_forces_rne_fields[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        0, 0, 0, 0, 0, BATCH,
+        NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](dc, mf, scratch_c)
     var worst_rne = Float64(0)
     for i in range(BATCH * NV):
