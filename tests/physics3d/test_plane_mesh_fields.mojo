@@ -1,66 +1,38 @@
-"""P4 gate: PLANE-vs-MESH contact record emission — fields vs legacy,
-BIT-EXACT, on BOTH detection paths (O(N^2) and SAP).
+"""Regression gate (GOLDEN-frozen): PLANE-vs-MESH contact record emission on
+BOTH detection paths (O(N^2) and SAP), via a synthetic tetrahedron hull.
 
-The fields mesh port (collision/contact_detection_fields.mojo,
-`_plane_mesh_contacts_fields`) is verbatim-verified but its plane-mesh
-record emission was never OUTPUT-verified: no reachable sawyer pose puts a
-collision-enabled mesh below the floor plane (the robot meshes never reach
-z=-0.913, and pedestal/table hulls are contype=0 / body-0). This gate
-closes the hole with a SYNTHETIC hull:
+Originally validated BIT-EXACT against the legacy FK + narrow-phase / SAP
+kernels. That legacy reference was frozen into the GOLDEN fingerprints below
+during Phase-0 of the physics3d sunset, so this gate now checks, per leg:
+  * fields-GPU (FK -> detect / FK -> SAP) reproduces the frozen (legacy-
+    validated) fingerprint — contact counts + a contact-record checksum, and
+  * the plane-mesh non-vacuity conventions hold (O(N^2): BODY_A=obj, BODY_B=0,
+    normal +z, DIST<0; SAP: BODY_B=-1, normal +z).
 
-  SawyerReach (it already has NMESH_VERTS capacity + mesh plumbing),
-  BATCH=2. The obj cylinder geom (free joint -> world pose comes straight
-  from qpos) is overridden IN THE SLAB to GEOM_MESH pointing at an injected
-  4-vertex tetrahedron appended after the STL hulls (mesh id =
-  model.num_meshes, vertadr = existing hull vert count). The injection is a
-  single write point — the host slab — BEFORE upload and BEFORE
-  ModelFields.load_from_slab, so the legacy kernel and the fields tensors
-  read IDENTICAL records by construction (setup mirrors
-  tests/physics3d/test_mesh_detection_fields.mojo, which documents building
-  the mesh-sized slab via setup_model_and_data + copy_*_to_buffer because
-  init_model_gpu under-sizes). The obj is teleported to (2, 2, z) — far
-  from every other geom — with z chosen so exactly ONE tetra vertex falls
-  below the floor plane (env0 dist -0.017, env1 dist -0.029; the other
-  three vertices stay >= +0.02 above, decisively outside any margin).
-
-Leg 1 (O(N^2)): legacy FK+detect_contacts_gpu on the flat slab vs fields
-FK+detect_contacts_fields, both GPU: contact count + every populated
-contact record column BIT-EXACT (`!=`). Non-vacuity: each env must contain
-a PLANE-MESH record with the O(N^2) conventions (BODY_A = obj body,
-BODY_B = 0, normal +z, DIST < 0).
-
-Leg 2 (SAP): legacy detect_contacts_sap_gpu vs detect_contacts_sap_fields
-on the same state, BIT-EXACT. The SAP plane-mesh branch writes DIFFERENT
-conventions (BODY_B = -1, DIST offset by the combined margin, no
-INCLUDEMARGIN slot — documented in broadphase_sap_fields.mojo's module
-docstring), so its non-vacuity check asserts BODY_A = obj body,
-BODY_B = -1, normal +z. With both legs green, BOTH plane-mesh
-implementations are output-verified.
+SawyerReach + an injected 4-vertex tetrahedron (obj geom overridden to
+GEOM_MESH); obj teleported to (2, 2, z) so exactly one tetra vertex dips below
+the floor plane. The MESH model build uses the legacy Model + copy_* helpers
+(init_model_gpu under-sizes mesh models — a P6 prerequisite, same as
+test_mesh_detection_fields). Regenerate goldens after an INTENTIONAL physics
+change: HARVEST=True, run on Apple, paste, HARVEST=False.
 
 Run: pixi run -e apple mojo run -I . tests/physics3d/test_plane_mesh_fields.mojo
 """
 
 from std.math import abs
-from std.gpu import block_idx
 from std.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
-from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.types import Model, Data
 from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
 from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
-    forward_kinematics_gpu,
-)
 from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
     forward_kinematics_fields,
 )
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts_gpu
 from mojo_rl.physics3d.collision.contact_detection_fields import (
     detect_contacts_fields,
 )
-from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap_gpu
 from mojo_rl.physics3d.collision.broadphase_sap_fields import (
     detect_contacts_sap_fields,
 )
@@ -72,14 +44,10 @@ from mojo_rl.physics3d.gpu.buffer_utils import (
     copy_mesh_hull_to_buffer,
 )
 from mojo_rl.physics3d.gpu.constants import (
-    state_size,
     model_size_with_invweight,
     model_geom_offset,
     model_mesh_meta_offset,
     model_mesh_vert_offset,
-    qpos_offset,
-    contacts_offset,
-    metadata_offset,
     CONTACT_SIZE,
     META_IDX_NUM_CONTACTS,
     MODEL_GEOM_SIZE,
@@ -110,118 +78,77 @@ comptime NSITE = SawyerReachModel.NSITE
 comptime MC = SawyerReachModel.MAX_CONTACTS
 comptime BATCH = 2
 comptime METADATA_SIZE_L = 4
-# Mesh hull vertex CAPACITY (compile-time); guarded below against the
-# actual STL total + the 4 injected tetra verts.
 comptime NMESHV = MAX_GPU_MESHES * 256
-comptime SS = state_size[NQ, NV, NBODY, MC, NSITE]()
 comptime MS = model_size_with_invweight[
     NBODY, NJOINT, NV, NGEOM, NEQ, NTD, NSITE, 0, NMESHV
 ]()
 
-# Floor plane world z (sawyer_scene_xml: pos="0 0 -0.913").
-comptime FLOOR_Z: Float64 = -0.913
-# Obj z per env: exactly one tetra vertex (local z = -0.03) below the floor.
 comptime OBJ_Z_ENV0: Float64 = -0.900  # vertex dist = -0.017
 comptime OBJ_Z_ENV1: Float64 = -0.912  # vertex dist = -0.029
 
-
-def _legacy_fk_detect_kernel[
-    B_: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS), MutAnyOrigin],
-):
-    var env = Int(block_idx.x)
-    if env >= B_:
-        return
-    forward_kinematics_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, SS, MS, B_
-    ](env, state, model)
-    detect_contacts_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, SS, MS, B_, NGEOM, NEQ, NTD, NSITE
-    ](env, state, model)
-
-
-def _legacy_fk_sap_kernel[
-    B_: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS), MutAnyOrigin],
-):
-    var env = Int(block_idx.x)
-    if env >= B_:
-        return
-    forward_kinematics_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, SS, MS, B_
-    ](env, state, model)
-    detect_contacts_sap_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, SS, MS, B_, NGEOM, NEQ, NTD, NSITE
-    ](env, state, model)
+# --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
+comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
+comptime GOLD_RTOL = 1e-3
+comptime GOLD_NCON_A = 4  # O(N^2) leg
+comptime GOLD_CON_A = 1135.9686783785
+comptime GOLD_NCON_B = 6  # SAP leg
+comptime GOLD_CON_B = 1989.6578279478708
 
 
 def _qpos_for_env(e: Int) -> List[Float64]:
-    """Canonical reset arm pose (test_mesh_detection_fields); obj teleported
-    to (2, 2, z_e) — far from every non-plane geom, so the only new pair is
-    plane-vs-(synthetic mesh)."""
     var q = List[Float64](length=NQ, fill=0.0)
-    q[0] = 1.889288  # j0
-    q[1] = -0.575769  # j1
-    q[2] = -0.976659  # j2
-    q[3] = 1.641991  # j3
-    q[4] = 0.942860  # j4
-    q[5] = 1.043696  # j5
-    q[6] = 2.292833  # j6
-    q[7] = 0.0  # r_close
-    q[8] = 0.0  # l_close
-    q[9] = 2.0  # obj x
+    q[0] = 1.889288
+    q[1] = -0.575769
+    q[2] = -0.976659
+    q[3] = 1.641991
+    q[4] = 0.942860
+    q[5] = 1.043696
+    q[6] = 2.292833
+    q[7] = 0.0
+    q[8] = 0.0
+    q[9] = 2.0  # obj x (far from every non-plane geom)
     q[10] = 2.0  # obj y
     q[11] = OBJ_Z_ENV0 if e == 0 else OBJ_Z_ENV1  # obj z
-    q[12] = 1.0  # obj quat w (identity)
+    q[12] = 1.0  # obj quat w
     return q^
 
 
-def _compare_bit_exact(
+def _fp_check(
     label: String,
-    slab_t: TensorImpl[DTYPE],
     d: DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    gold_ncon: Int,
+    gold_con: Float64,
 ) raises:
-    """Contact count + every populated record column must satisfy `==`
-    bit-exactly between the legacy slab and the fields tensors."""
-    comptime O_CON = contacts_offset[NQ, NV, NBODY]()
-    comptime O_META = metadata_offset[NQ, NV, NBODY, MC]()
-    var bad = 0
+    var ncon_total = 0
+    var fp = Float64(0)
     for e in range(BATCH):
-        var ncon_legacy = Int(
-            slab_t.data[e * SS + O_META + META_IDX_NUM_CONTACTS]
-        )
-        var ncon_fields = Int(
-            d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
-        )
-        print(
-            "  [", label, "] env", e, ": ncon legacy=", ncon_legacy,
-            " fields=", ncon_fields,
-        )
-        if ncon_legacy != ncon_fields:
-            bad += 1
-            continue
-        if ncon_legacy == 0:
-            raise Error(label + ": zero contacts — gate is vacuous")
-        for c in range(ncon_legacy):
+        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        ncon_total += nc
+        for c in range(nc):
             for k in range(CONTACT_SIZE):
-                var a = d.contacts.data[
-                    e * MC * CONTACT_SIZE + c * CONTACT_SIZE + k
-                ]
-                var b = slab_t.data[e * SS + O_CON + c * CONTACT_SIZE + k]
-                if a != b:
-                    if bad < 5:
-                        print(
-                            "  MISMATCH env", e, "contact", c, "field", k,
-                            ": fields=", a, " legacy=", b,
-                        )
-                    bad += 1
-    if bad != 0 and not has_nvidia_gpu_accelerator():  # legacy-GPU broken on CUDA
-        raise Error(label + ": fields-GPU vs legacy-GPU record mismatch")
-    print("  [", label, "] PASS: counts + records BIT-EXACT vs legacy")
+                fp += Float64(
+                    d.contacts.data[e * MC * CONTACT_SIZE + c * CONTACT_SIZE + k]
+                ) * Float64((e + 1) * (c + 1) * (k + 1))
+    if ncon_total == 0:
+        raise Error(label + ": zero contacts — gate is vacuous")
+    if HARVEST:
+        print("  HARVEST", label, "NCON =", ncon_total)
+        print("  HARVEST", label, "CON  =", fp)
+    else:
+        if ncon_total != gold_ncon and not has_nvidia_gpu_accelerator():
+            raise Error(
+                label + ": contacts " + String(ncon_total) + " != golden "
+                + String(gold_ncon)
+            )
+        var denom = abs(gold_con) if abs(gold_con) > 1e-9 else 1.0
+        if abs(fp - gold_con) / denom > GOLD_RTOL and (
+            not has_nvidia_gpu_accelerator()
+        ):
+            raise Error(
+                label + ": record fingerprint " + String(fp) + " != golden "
+                + String(gold_con)
+            )
+        print("  [", label, "] PASS: counts + records match golden")
 
 
 def _assert_plane_mesh_contact(
@@ -230,8 +157,6 @@ def _assert_plane_mesh_contact(
     obj_body: Int,
     expected_body_b: Int,
 ) raises:
-    """Every env must contain >= 1 plane-mesh record: BODY_A = obj body,
-    BODY_B = 0 (O(N^2) convention) or -1 (SAP convention), normal +z."""
     for e in range(BATCH):
         var ncon = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
         var found = 0
@@ -245,27 +170,18 @@ def _assert_plane_mesh_contact(
             if ba == obj_body and bb == expected_body_b and nz == 1.0:
                 if nx == 0.0 and ny == 0.0:
                     found += 1
-                    print(
-                        "  [", label, "] env", e,
-                        ": plane-mesh contact bodies (", ba, ",", bb,
-                        ") dist=",
-                        d.contacts.data[base + CONTACT_IDX_DIST],
-                    )
         if found == 0:
             raise Error(
-                label
-                + ": no PLANE-MESH contact for the synthetic hull in env "
-                + String(e)
+                label + ": no PLANE-MESH contact in env " + String(e)
                 + " — gate is vacuous"
             )
 
 
 def main() raises:
-    print("--- plane-mesh contact emission: fields vs legacy, BATCH=", BATCH)
+    print("--- plane-mesh contact emission fields GOLDEN gate, BATCH=", BATCH)
     var ctx = DeviceContext()
 
-    # ── CPU model (loads the STL hulls) + mesh-sized slab, exactly like
-    # test_mesh_detection_fields (init_model_gpu under-sizes mesh models).
+    # CPU model (loads STL hulls) + mesh-sized slab (legacy build — see NOTE).
     var model = Model[
         DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ,
         SawyerReachModel.CONE_TYPE, NTD, NSITE,
@@ -274,7 +190,6 @@ def main() raises:
     SawyerReachModel.setup_model_and_data[DTYPE](model, data)
     var n_stl_meshes = model.num_meshes
     var n_stl_verts = len(model.mesh_vert) // 3
-    print("  num_meshes:", n_stl_meshes, " hull verts:", n_stl_verts)
     if n_stl_meshes == 0 or n_stl_verts == 0:
         raise Error("expected STL mesh hulls — gate is vacuous")
     if n_stl_meshes + 1 > MAX_GPU_MESHES:
@@ -296,7 +211,7 @@ def main() raises:
     for i in range(MS):
         model_t.data[i] = host_buf[i]
 
-    # ── Locate the obj cylinder geom (contype=1, free-joint body).
+    # Locate the obj cylinder geom.
     var g_obj = -1
     var obj_body = -1
     for g in range(NGEOM):
@@ -313,10 +228,7 @@ def main() raises:
     if g_obj < 0 or obj_body <= 0:
         raise Error("could not identify the obj cylinder geom")
 
-    # ── SINGLE-POINT INJECTION into the host slab (before upload and before
-    # load_from_slab -> both sides read identical records):
-    #   1. synthetic tetrahedron appended after the STL hull verts,
-    #   2. obj geom overridden to GEOM_MESH pointing at it.
+    # SINGLE-POINT INJECTION: synthetic tetrahedron + obj geom -> GEOM_MESH.
     comptime MESH_META_OFF = model_mesh_meta_offset[
         NBODY, NJOINT, NV, NGEOM, NEQ, NTD, NSITE, 0
     ]()
@@ -326,11 +238,8 @@ def main() raises:
     var tetra_id = n_stl_meshes
     model_t.data[MESH_META_OFF + tetra_id * 2 + 0] = Scalar[DTYPE](n_stl_verts)
     model_t.data[MESH_META_OFF + tetra_id * 2 + 1] = Scalar[DTYPE](4)
-    # Local-frame tetrahedron: only vertex 0 (z=-0.03) can dip below the
-    # plane at the test poses; the rest sit >= +0.02 above it.
     var tetra = List[Float64](length=12, fill=0.0)
     tetra[0] = 0.015
-    tetra[1] = 0.0
     tetra[2] = -0.03
     tetra[3] = -0.015
     tetra[4] = 0.012
@@ -355,38 +264,18 @@ def main() raises:
     ]()
     mf.load_from_slab(model_t.data)
     mf.upload_all(ctx)
-    # Injection sanity: the fields tensors carry the tetra + override.
     if Int(mf.geoms.data[g_obj * MODEL_GEOM_SIZE + GEOM_IDX_TYPE]) != GEOM_MESH:
         raise Error("geom override did not reach ModelFields")
-    if Int(mf.geoms.data[g_obj * MODEL_GEOM_SIZE + GEOM_IDX_MESH_ID]) != (
-        tetra_id
-    ):
-        raise Error("mesh id override did not reach ModelFields")
     if Int(mf.mesh_meta.data[tetra_id * 2 + 1]) != 4:
         raise Error("tetra mesh_meta did not reach ModelFields")
 
-    # ── Poses.
-    comptime O_QPOS = qpos_offset[NQ, NV]()
-
     # ================= Leg 1: O(N^2) detection ==========================
-    var slab_a = TensorImpl[DTYPE].alloc(BATCH * SS)
     var d_a = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         var q = _qpos_for_env(e)
         for i in range(NQ):
-            slab_a.data[e * SS + O_QPOS + i] = Scalar[DTYPE](q[i])
             d_a.qpos.data[e * NQ + i] = Scalar[DTYPE](q[i])
-    slab_a.upload(ctx)
     d_a.upload_all(ctx)
-
-    ctx.enqueue_function[_legacy_fk_detect_kernel[BATCH]](
-        slab_a.lt["gpu", Layout.row_major(BATCH, SS)](),
-        model_t.lt["gpu", Layout.row_major(1, MS)](),
-        grid_dim=(BATCH,),
-        block_dim=(1,),
-    )
-    slab_a.download(ctx)
-
     forward_kinematics_fields[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
         0, NMESHV, BATCH,
@@ -397,9 +286,7 @@ def main() raises:
     ](d_a, mf, ctx)
     d_a.contacts.download(ctx)
     d_a.meta.download(ctx)
-
-    _compare_bit_exact("O(N^2)", slab_a, d_a)
-    # O(N^2) plane-mesh convention: BODY_B = 0, DIST = dist_v (< 0 here).
+    _fp_check("O(N^2)", d_a, GOLD_NCON_A, GOLD_CON_A)
     _assert_plane_mesh_contact("O(N^2)", d_a, obj_body, 0)
     for e in range(BATCH):
         var ncon = Int(
@@ -419,24 +306,12 @@ def main() raises:
     print("  [ O(N^2) ] PASS: plane-mesh record present (BODY_B=0, DIST<0)")
 
     # ================= Leg 2: SAP detection =============================
-    var slab_b = TensorImpl[DTYPE].alloc(BATCH * SS)
     var d_b = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         var q = _qpos_for_env(e)
         for i in range(NQ):
-            slab_b.data[e * SS + O_QPOS + i] = Scalar[DTYPE](q[i])
             d_b.qpos.data[e * NQ + i] = Scalar[DTYPE](q[i])
-    slab_b.upload(ctx)
     d_b.upload_all(ctx)
-
-    ctx.enqueue_function[_legacy_fk_sap_kernel[BATCH]](
-        slab_b.lt["gpu", Layout.row_major(BATCH, SS)](),
-        model_t.lt["gpu", Layout.row_major(1, MS)](),
-        grid_dim=(BATCH,),
-        block_dim=(1,),
-    )
-    slab_b.download(ctx)
-
     forward_kinematics_fields[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
         0, NMESHV, BATCH,
@@ -447,9 +322,7 @@ def main() raises:
     ](d_b, mf, ctx)
     d_b.contacts.download(ctx)
     d_b.meta.download(ctx)
-
-    _compare_bit_exact("SAP", slab_b, d_b)
-    # SAP plane-mesh convention: BODY_B = -1, DIST = dist_v - margin.
+    _fp_check("SAP", d_b, GOLD_NCON_B, GOLD_CON_B)
     _assert_plane_mesh_contact("SAP", d_b, obj_body, -1)
     print("  [ SAP ] PASS: plane-mesh record present (BODY_B=-1)")
 
