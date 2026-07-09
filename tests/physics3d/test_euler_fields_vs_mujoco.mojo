@@ -8,7 +8,6 @@ sunset: the active-limit sub-test now checks the fields-CPU trajectory against a
 frozen GOLDEN fingerprint (it previously compared to the legacy CPU Euler step),
 so this gate survives deletion of the legacy Model/Data slab.
 
-Model build routes through init_model_gpu/load_from_slab (P6 re-homes it).
 Regenerate the active-limit golden after an INTENTIONAL physics change:
 HARVEST=True, run on Apple, paste, HARVEST=False.
 

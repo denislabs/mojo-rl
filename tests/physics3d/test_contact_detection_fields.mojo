@@ -10,7 +10,6 @@ slab/kernels. It checks:
   * fields-CPU == fields-GPU on count + records (independent CPU oracle).
 
 Walker2D (floor plane + 7 body capsules), BATCH=2 penetrating poses. Model build
-still routes through init_model_gpu/load_from_slab (P6 re-homes it). Regenerate
 goldens after an INTENTIONAL physics change: HARVEST=True, run on Apple, paste,
 HARVEST=False.
 

@@ -12,7 +12,6 @@ sunset, so this gate survives deletion of the legacy slab/kernels. It checks:
     so the contact/limit-free comparison is provably valid).
 
 Walker2D, BATCH=3 (distinct qpos/qvel/qfrc per env), free-flight (rootz=2.0),
-3 consecutive steps. Model build still routes through init_model_gpu/
 load_from_slab (P6 re-homes it). Regenerate goldens after an INTENTIONAL physics
 change: set HARVEST=True, run once on Apple, paste the values, set HARVEST=False.
 

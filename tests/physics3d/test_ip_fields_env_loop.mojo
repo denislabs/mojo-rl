@@ -12,7 +12,6 @@ reference was frozen during Phase-0 of the physics3d sunset, so this gate now:
 
 InvertedPendulum: contact-free (contype=0), damping=1, slide limits +-1, single
 motor (gear=100, ctrlrange +-3), obs = qpos||qvel (OBS_DIM=4), FRAME_SKIP=2.
-Model build routes through init_model_gpu/load_from_slab (P6 re-homes it).
 Regenerate goldens after an INTENTIONAL physics change: HARVEST=True, run on
 Apple, paste, HARVEST=False.
 

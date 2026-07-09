@@ -11,7 +11,6 @@ deletion of the legacy slab/kernels. It checks:
 
 Walker2D, BATCH=3 (distinct qpos/qvel/qfrc per env), 3 consecutive steps; the
 thigh config violates walker2d's hinge range so the limit path is exercised.
-Model build still routes through init_model_gpu/load_from_slab (P6 re-homes it).
 Regenerate goldens after an INTENTIONAL physics change: set HARVEST=True, run
 once on Apple, paste the printed values, set HARVEST=False.
 

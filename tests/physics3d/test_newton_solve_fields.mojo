@@ -15,7 +15,6 @@ Walker2D dropped onto the floor (rootz=1.10, feet penetrating), BATCH=2,
 limited hinge pushed past its upper range so the joint-limit rows activate
 (non-vacuity asserted host-side from the model ranges); env 0 stays mid-range.
 
-Model build still routes through init_model_gpu/load_from_slab (P6 re-homes it).
 Regenerate goldens after an INTENTIONAL physics change: set HARVEST=True, run
 once on Apple, paste the printed values, set HARVEST=False.
 

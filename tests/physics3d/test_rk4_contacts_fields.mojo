@@ -12,7 +12,6 @@ checks:
 
 Walker2D on the floor (rootz=1.10, feet penetrating), BATCH=2, 3 full RK4 steps
 (per-stage detection + serialized solve with limits inside). Model build still
-routes through init_model_gpu/load_from_slab (P6 re-homes it). Regenerate goldens
 after an INTENTIONAL physics change: HARVEST=True, run on Apple, paste, False.
 
 Run: pixi run -e apple mojo run -I . tests/physics3d/test_rk4_contacts_fields.mojo

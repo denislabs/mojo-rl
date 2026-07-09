@@ -12,7 +12,6 @@ slab/kernels. It checks:
 
 Walker2D dropped onto the floor (rootz=1.10, feet penetrating), BATCH=2,
 3 consecutive full steps (detection -> serialized contact PGS -> limits ->
-finalize). Model build still routes through init_model_gpu/load_from_slab (P6
 re-homes it). Regenerate goldens after an INTENTIONAL physics change:
 HARVEST=True, run on Apple, paste, HARVEST=False.
 

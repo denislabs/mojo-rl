@@ -14,7 +14,6 @@ The fingerprint is an absolute anchor: it catches shared-logic regressions that
 the CPU-vs-GPU tolerance check (both paths moving together) would miss.
 
 Walker2D on the floor (rootz=1.10, feet penetrating), BATCH=2, 3 full RK4 steps.
-Model build still routes through init_model_gpu/load_from_slab (P6 re-homes it).
 To regenerate the golden after an INTENTIONAL physics change: set HARVEST=True,
 run once on Apple, paste the printed values below, set HARVEST=False.
 
