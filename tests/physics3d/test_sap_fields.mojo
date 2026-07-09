@@ -102,6 +102,10 @@ comptime NBODY_W = Walker2dModel.NBODY
 comptime NJOINT_W = Walker2dModel.NJOINT
 comptime NGEOM_W = Walker2dModel.NGEOM
 comptime MC_W = Walker2dModel.MAX_CONTACTS
+comptime NEQ_W = Walker2dModel.MAX_EQUALITY
+comptime NTD_W = Walker2dModel.MAX_TENDON
+comptime NSITE_W = Walker2dModel.NSITE
+comptime NEXCL_W = Walker2dModel.NEXCLUDE
 comptime MS_W = model_size_with_invweight[NBODY_W, NJOINT_W, NV_W, NGEOM_W]()
 
 
@@ -141,17 +145,11 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     print("  humanoid NGEOM=", NGEOM_H, " SAP_THRESHOLD=", SAP_THRESHOLD)
     comptime assert NGEOM_H >= SAP_THRESHOLD, "humanoid must route to SAP"
 
-    var model_t = TensorImpl[DTYPE].alloc(MS_H)
-    model_t.upload(ctx)
-    var mbuf = model_t.dev.value()
-    HumanoidModel.init_model_gpu(ctx, mbuf)
-    model_t.download(ctx)
     var mf = ModelFields[
         DTYPE, NV_H, NBODY_H, NJOINT_H, NGEOM_H, NEQ_H, NTD_H, NSITE_H,
         NEXCL_H, 0,
     ]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
 
     var d = DataFields[DTYPE, NQ_H, NV_H, NBODY_H, MC_H, NSITE_H, BATCH]()
     for e in range(BATCH):
@@ -523,14 +521,8 @@ def _part_c_walker(ctx: DeviceContext) raises:
     print("  walker2d NGEOM=", NGEOM_W)
     comptime assert NGEOM_W < SAP_THRESHOLD, "walker2d must route to O(N^2)"
 
-    var model_t = TensorImpl[DTYPE].alloc(MS_W)
-    model_t.upload(ctx)
-    var mbuf = model_t.dev.value()
-    Walker2dModel.init_model_gpu(ctx, mbuf)
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, NV_W, NBODY_W, NJOINT_W, NGEOM_W]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DTYPE, NV_W, NBODY_W, NJOINT_W, NGEOM_W, NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0]()
+    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Poses from test_contact_detection_fields (floor penetration).
     var qcfg = List[List[Float64]]()
@@ -545,8 +537,8 @@ def _part_c_walker(ctx: DeviceContext) raises:
     q1[7] = -0.9
     qcfg.append(q1^)
 
-    var d1 = DataFields[DTYPE, NQ_W, NV_W, NBODY_W, MC_W, 0, BATCH]()
-    var d2 = DataFields[DTYPE, NQ_W, NV_W, NBODY_W, MC_W, 0, BATCH]()
+    var d1 = DataFields[DTYPE, NQ_W, NV_W, NBODY_W, MC_W, NSITE_W, BATCH]()
+    var d2 = DataFields[DTYPE, NQ_W, NV_W, NBODY_W, MC_W, NSITE_W, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_W):
             d1.qpos.data[e * NQ_W + i] = Scalar[DTYPE](qcfg[e][i])
@@ -556,19 +548,19 @@ def _part_c_walker(ctx: DeviceContext) raises:
 
     forward_kinematics_fields[
         "gpu", DTYPE, NQ_W, NV_W, NBODY_W, NJOINT_W, MC_W, NGEOM_W,
-        0, 0, 0, 0, 0, BATCH,
+        NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0, BATCH,
     ](d1, mf, ctx)
     detect_contacts_fields[
         "gpu", DTYPE, NQ_W, NV_W, NBODY_W, NJOINT_W, MC_W, NGEOM_W,
-        0, 0, 0, 0, 0, BATCH,
+        NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0, BATCH,
     ](d1, mf, ctx)
     forward_kinematics_fields[
         "gpu", DTYPE, NQ_W, NV_W, NBODY_W, NJOINT_W, MC_W, NGEOM_W,
-        0, 0, 0, 0, 0, BATCH,
+        NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0, BATCH,
     ](d2, mf, ctx)
     detect_contacts_auto_fields[
         "gpu", DTYPE, NQ_W, NV_W, NBODY_W, NJOINT_W, MC_W, NGEOM_W,
-        0, 0, 0, 0, 0, BATCH,
+        NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0, BATCH,
     ](d2, mf, ctx)
     d1.contacts.download(ctx)
     d1.meta.download(ctx)
