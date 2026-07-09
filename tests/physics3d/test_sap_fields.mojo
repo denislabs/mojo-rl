@@ -1,4 +1,4 @@
-"""P4 gate: SAP broadphase in fields contact detection vs legacy SAP kernel.
+"""Regression gate (GOLDEN-frozen): SAP broadphase in fields contact detection.
 
 Part A — Humanoid (NGEOM=18 >= SAP_THRESHOLD=16, floor plane + 17 body
 geoms, MAX_CONTACTS=50), BATCH=2 with penetrating poses (feet touching and
@@ -23,25 +23,16 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_sap_fields.mojo
 """
 
 from std.math import abs
-from std.gpu import block_idx
 from std.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
-from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.types import Model, Data
 from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
 from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
-    forward_kinematics_gpu,
-)
 from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
     forward_kinematics_fields,
 )
-from mojo_rl.physics3d.collision.broadphase_sap import (
-    detect_contacts_sap_gpu,
-    SAP_THRESHOLD,
-)
+from mojo_rl.physics3d.collision.broadphase_sap import SAP_THRESHOLD
 from mojo_rl.physics3d.collision.broadphase_sap_fields import (
     detect_contacts_sap_fields,
     detect_contacts_auto_fields,
@@ -49,6 +40,12 @@ from mojo_rl.physics3d.collision.broadphase_sap_fields import (
 from mojo_rl.physics3d.collision.contact_detection_fields import (
     detect_contacts_fields,
 )
+
+# NOTE (sunset): Part B (sawyer mesh SAP) still builds its model via the legacy
+# Model + copy_* helpers (init_model_gpu under-sizes mesh models — a P6
+# prerequisite, same as test_mesh_detection_fields). The SAP comparison itself
+# is golden-frozen (legacy FK/SAP reference kernels dropped).
+from mojo_rl.physics3d.types import Model, Data
 from mojo_rl.physics3d.gpu.buffer_utils import (
     copy_model_to_buffer,
     copy_geoms_to_buffer,
@@ -57,11 +54,7 @@ from mojo_rl.physics3d.gpu.buffer_utils import (
     copy_mesh_hull_to_buffer,
 )
 from mojo_rl.physics3d.gpu.constants import (
-    state_size,
     model_size_with_invweight,
-    qpos_offset,
-    contacts_offset,
-    metadata_offset,
     CONTACT_SIZE,
     META_IDX_NUM_CONTACTS,
     MODEL_GEOM_SIZE,
@@ -79,6 +72,14 @@ comptime DTYPE = DType.float32
 comptime BATCH = 2
 comptime METADATA_SIZE_L = 4
 
+# --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
+comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
+comptime GOLD_RTOL = 1e-3
+comptime GOLD_NCON_H = 14  # Part A humanoid SAP: total contacts
+comptime GOLD_CON_H = 7711.957039542147
+comptime GOLD_NCON_S = 6  # Part B sawyer SAP: total contacts
+comptime GOLD_CON_S = 2258.0145981857786
+
 # ── Humanoid (Part A) ────────────────────────────────────────────────────
 comptime NQ_H = HumanoidModel.NQ  # 24
 comptime NV_H = HumanoidModel.NV  # 23
@@ -90,7 +91,6 @@ comptime NEQ_H = HumanoidModel.MAX_EQUALITY  # 0
 comptime NTD_H = HumanoidModel.MAX_TENDON  # 2
 comptime NSITE_H = HumanoidModel.NSITE  # 0
 comptime NEXCL_H = HumanoidModel.nexclude  # 0
-comptime SS_H = state_size[NQ_H, NV_H, NBODY_H, MC_H, NSITE_H]()
 comptime MS_H = model_size_with_invweight[
     NBODY_H, NJOINT_H, NV_H, NGEOM_H, NEQ_H, NTD_H, NSITE_H, NEXCL_H
 ]()
@@ -106,7 +106,6 @@ comptime NTD_S = SawyerReachModel.MAX_TENDON
 comptime NSITE_S = SawyerReachModel.NSITE
 comptime MC_S = SawyerReachModel.MAX_CONTACTS
 comptime NMESHV_S = MAX_GPU_MESHES * 256
-comptime SS_S = state_size[NQ_S, NV_S, NBODY_S, MC_S, NSITE_S]()
 comptime MS_S = model_size_with_invweight[
     NBODY_S, NJOINT_S, NV_S, NGEOM_S, NEQ_S, NTD_S, NSITE_S, 0, NMESHV_S
 ]()
@@ -118,44 +117,7 @@ comptime NBODY_W = Walker2dModel.NBODY
 comptime NJOINT_W = Walker2dModel.NJOINT
 comptime NGEOM_W = Walker2dModel.NGEOM
 comptime MC_W = Walker2dModel.MAX_CONTACTS
-comptime SS_W = state_size[NQ_W, NV_W, NBODY_W, MC_W, 0]()
 comptime MS_W = model_size_with_invweight[NBODY_W, NJOINT_W, NV_W, NGEOM_W]()
-
-
-def _legacy_fk_sap_kernel_h[
-    B_: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_H), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_H), MutAnyOrigin],
-):
-    var env = Int(block_idx.x)
-    if env >= B_:
-        return
-    forward_kinematics_gpu[
-        DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, SS_H, MS_H, B_
-    ](env, state, model)
-    detect_contacts_sap_gpu[
-        DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, SS_H, MS_H, B_,
-        NGEOM_H, NEQ_H, NTD_H, NSITE_H,
-    ](env, state, model)
-
-
-def _legacy_fk_sap_kernel_s[
-    B_: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_S), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_S), MutAnyOrigin],
-):
-    var env = Int(block_idx.x)
-    if env >= B_:
-        return
-    forward_kinematics_gpu[
-        DTYPE, NQ_S, NV_S, NBODY_S, NJOINT_S, MC_S, SS_S, MS_S, B_
-    ](env, state, model)
-    detect_contacts_sap_gpu[
-        DTYPE, NQ_S, NV_S, NBODY_S, NJOINT_S, MC_S, SS_S, MS_S, B_,
-        NGEOM_S, NEQ_S, NTD_S, NSITE_S,
-    ](env, state, model)
 
 
 def _humanoid_qpos(e: Int, i: Int) -> Scalar[DTYPE]:
@@ -190,7 +152,7 @@ def _humanoid_qpos(e: Int, i: Int) -> Scalar[DTYPE]:
 
 
 def _part_a_humanoid(ctx: DeviceContext) raises:
-    print("--- Part A: humanoid SAP fields vs legacy, BATCH=", BATCH)
+    print("--- Part A: humanoid SAP fields GOLDEN, BATCH=", BATCH)
     print("  humanoid NGEOM=", NGEOM_H, " SAP_THRESHOLD=", SAP_THRESHOLD)
     comptime assert NGEOM_H >= SAP_THRESHOLD, "humanoid must route to SAP"
 
@@ -206,24 +168,11 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     mf.load_from_slab(model_t.data)
     mf.upload_all(ctx)
 
-    comptime O_QPOS = qpos_offset[NQ_H, NV_H]()
-    var slab_t = TensorImpl[DTYPE].alloc(BATCH * SS_H)
     var d = DataFields[DTYPE, NQ_H, NV_H, NBODY_H, MC_H, NSITE_H, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_H):
-            slab_t.data[e * SS_H + O_QPOS + i] = _humanoid_qpos(e, i)
             d.qpos.data[e * NQ_H + i] = _humanoid_qpos(e, i)
-    slab_t.upload(ctx)
     d.upload_all(ctx)
-
-    # Legacy: FK + SAP detection in one launch.
-    ctx.enqueue_function[_legacy_fk_sap_kernel_h[BATCH]](
-        slab_t.lt["gpu", Layout.row_major(BATCH, SS_H)](),
-        model_t.lt["gpu", Layout.row_major(1, MS_H)](),
-        grid_dim=(BATCH,),
-        block_dim=(1,),
-    )
-    slab_t.download(ctx)
 
     # Fields: FK + SAP detection.
     forward_kinematics_fields[
@@ -237,41 +186,39 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     d.contacts.download(ctx)
     d.meta.download(ctx)
 
-    comptime O_CON = contacts_offset[NQ_H, NV_H, NBODY_H]()
-    comptime O_META = metadata_offset[NQ_H, NV_H, NBODY_H, MC_H]()
-    var bad = 0
+    var ncon_h = 0
+    var fp_h = Float64(0)
     for e in range(BATCH):
-        var ncon_legacy = Int(
-            slab_t.data[e * SS_H + O_META + META_IDX_NUM_CONTACTS]
-        )
-        var ncon_fields = Int(
-            d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
-        )
-        print(
-            "  env", e, ": ncon legacy-SAP=", ncon_legacy,
-            " fields-SAP=", ncon_fields,
-        )
-        if ncon_legacy != ncon_fields:
-            bad += 1
-            continue
-        if ncon_legacy == 0:
-            raise Error("expected contacts in this pose — gate is vacuous")
-        for c in range(ncon_legacy):
+        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        ncon_h += nc
+        for c in range(nc):
             for k in range(CONTACT_SIZE):
-                var a = d.contacts.data[
-                    e * MC_H * CONTACT_SIZE + c * CONTACT_SIZE + k
-                ]
-                var b = slab_t.data[e * SS_H + O_CON + c * CONTACT_SIZE + k]
-                if a != b:
-                    if bad < 5:
-                        print(
-                            "  MISMATCH env", e, "contact", c, "field", k,
-                            ": fields=", a, " legacy=", b,
-                        )
-                    bad += 1
-    if bad != 0 and not has_nvidia_gpu_accelerator():  # legacy-GPU broken on CUDA
-        raise Error("SAP fields-GPU vs legacy-GPU mismatch (humanoid)")
-    print("  PASS: SAP contact records + counts BIT-EXACT vs legacy")
+                fp_h += Float64(
+                    d.contacts.data[
+                        e * MC_H * CONTACT_SIZE + c * CONTACT_SIZE + k
+                    ]
+                ) * Float64((e + 1) * (c + 1) * (k + 1))
+    if ncon_h == 0:
+        raise Error("humanoid SAP: no contacts — gate is vacuous")
+    print("  humanoid fields-SAP total contacts:", ncon_h)
+    if HARVEST:
+        print("  HARVEST GOLD_NCON_H =", ncon_h)
+        print("  HARVEST GOLD_CON_H  =", fp_h)
+    else:
+        if ncon_h != GOLD_NCON_H and not has_nvidia_gpu_accelerator():
+            raise Error(
+                "humanoid SAP contacts " + String(ncon_h) + " != golden "
+                + String(GOLD_NCON_H)
+            )
+        var denom = abs(GOLD_CON_H) if abs(GOLD_CON_H) > 1e-9 else 1.0
+        if abs(fp_h - GOLD_CON_H) / denom > GOLD_RTOL and (
+            not has_nvidia_gpu_accelerator()
+        ):
+            raise Error(
+                "humanoid SAP fingerprint " + String(fp_h) + " != golden "
+                + String(GOLD_CON_H)
+            )
+        print("  PASS: humanoid fields-SAP matches golden fingerprint")
 
     # Non-vacuity for the SWEEP itself: env1 must contain a body-body
     # contact (BODY_B > 0) — plane contacts come from the direct plane
@@ -448,7 +395,7 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
 
 
 def _part_b_sawyer(ctx: DeviceContext) raises:
-    print("--- Part B: sawyer SAP mesh leg, fields vs legacy, BATCH=", BATCH)
+    print("--- Part B: sawyer SAP mesh leg fields GOLDEN, BATCH=", BATCH)
     print("  sawyer NGEOM=", NGEOM_S)
 
     # Build the CPU model (loads STL hulls) and serialize to a slab that
@@ -542,24 +489,11 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
         q[15] = 0.0
         qcfg.append(q^)
 
-    comptime O_QPOS = qpos_offset[NQ_S, NV_S]()
-    var slab_t = TensorImpl[DTYPE].alloc(BATCH * SS_S)
     var d = DataFields[DTYPE, NQ_S, NV_S, NBODY_S, MC_S, NSITE_S, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_S):
-            slab_t.data[e * SS_S + O_QPOS + i] = Scalar[DTYPE](qcfg[e][i])
             d.qpos.data[e * NQ_S + i] = Scalar[DTYPE](qcfg[e][i])
-    slab_t.upload(ctx)
     d.upload_all(ctx)
-
-    # Legacy: FK + SAP detection in one launch.
-    ctx.enqueue_function[_legacy_fk_sap_kernel_s[BATCH]](
-        slab_t.lt["gpu", Layout.row_major(BATCH, SS_S)](),
-        model_t.lt["gpu", Layout.row_major(1, MS_S)](),
-        grid_dim=(BATCH,),
-        block_dim=(1,),
-    )
-    slab_t.download(ctx)
 
     # Fields: FK + SAP detection.
     forward_kinematics_fields[
@@ -573,41 +507,39 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
     d.contacts.download(ctx)
     d.meta.download(ctx)
 
-    comptime O_CON = contacts_offset[NQ_S, NV_S, NBODY_S]()
-    comptime O_META = metadata_offset[NQ_S, NV_S, NBODY_S, MC_S]()
-    var bad = 0
+    var ncon_s = 0
+    var fp_s = Float64(0)
     for e in range(BATCH):
-        var ncon_legacy = Int(
-            slab_t.data[e * SS_S + O_META + META_IDX_NUM_CONTACTS]
-        )
-        var ncon_fields = Int(
-            d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
-        )
-        print(
-            "  env", e, ": ncon legacy-SAP=", ncon_legacy,
-            " fields-SAP=", ncon_fields,
-        )
-        if ncon_legacy != ncon_fields:
-            bad += 1
-            continue
-        if ncon_legacy == 0:
-            raise Error("expected contacts in this pose — gate is vacuous")
-        for c in range(ncon_legacy):
+        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        ncon_s += nc
+        for c in range(nc):
             for k in range(CONTACT_SIZE):
-                var a = d.contacts.data[
-                    e * MC_S * CONTACT_SIZE + c * CONTACT_SIZE + k
-                ]
-                var b = slab_t.data[e * SS_S + O_CON + c * CONTACT_SIZE + k]
-                if a != b:
-                    if bad < 5:
-                        print(
-                            "  MISMATCH env", e, "contact", c, "field", k,
-                            ": fields=", a, " legacy=", b,
-                        )
-                    bad += 1
-    if bad != 0 and not has_nvidia_gpu_accelerator():  # legacy-GPU broken on CUDA
-        raise Error("SAP mesh fields-GPU vs legacy-GPU mismatch (sawyer)")
-    print("  PASS: SAP contact records + counts BIT-EXACT vs legacy")
+                fp_s += Float64(
+                    d.contacts.data[
+                        e * MC_S * CONTACT_SIZE + c * CONTACT_SIZE + k
+                    ]
+                ) * Float64((e + 1) * (c + 1) * (k + 1))
+    if ncon_s == 0:
+        raise Error("sawyer SAP: no contacts — gate is vacuous")
+    print("  sawyer fields-SAP total contacts:", ncon_s)
+    if HARVEST:
+        print("  HARVEST GOLD_NCON_S =", ncon_s)
+        print("  HARVEST GOLD_CON_S  =", fp_s)
+    else:
+        if ncon_s != GOLD_NCON_S and not has_nvidia_gpu_accelerator():
+            raise Error(
+                "sawyer SAP contacts " + String(ncon_s) + " != golden "
+                + String(GOLD_NCON_S)
+            )
+        var denom = abs(GOLD_CON_S) if abs(GOLD_CON_S) > 1e-9 else 1.0
+        if abs(fp_s - GOLD_CON_S) / denom > GOLD_RTOL and (
+            not has_nvidia_gpu_accelerator()
+        ):
+            raise Error(
+                "sawyer SAP fingerprint " + String(fp_s) + " != golden "
+                + String(GOLD_CON_S)
+            )
+        print("  PASS: sawyer fields-SAP matches golden fingerprint")
 
     # Non-vacuity: env1 must have a contact between a mesh-geom body and
     # the obj body (GJK/EPA mesh fallback through the SAP sweep).
