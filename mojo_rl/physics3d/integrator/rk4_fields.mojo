@@ -62,6 +62,7 @@ from ..dynamics.ldl_fields import (
 )
 from ..types import ConeType
 from ..dynamics.rne_fields import compute_bias_forces_rne_fields
+from ..dynamics.fluid_forces_fields import compute_fluid_forces_fields
 from ..constraints.contact_solve_fields import solve_contacts_fields
 from ..solver.newton_solve_fields import solve_newton_fields
 from ..solver.cg_solve_fields import solve_cg_fields
@@ -559,6 +560,14 @@ struct RK4IntegratorFields[
                 block_dim=(EU_TPB,),
             )
 
+        # Fluid drag into fnet, per RK4 stage (no-op unless meta
+        # density/viscosity > 0).
+        compute_fluid_forces_fields[
+            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
+            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
+            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
+        ](d, m, self.scratch, ctx)
+
         ldl_solve_fields[
             target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ](self.scratch, ctx)
@@ -663,16 +672,6 @@ struct RK4IntegratorFields[
     ) raises:
         """One full RK4 step (4 stages [+ per-stage contact/limit solve] +
         combine)."""
-        # Fluid forces are not ported yet — refuse rather than silently
-        # diverge from the legacy step.
-        if (
-            m.meta.data[MODEL_META_IDX_DENSITY] != 0
-            or m.meta.data[MODEL_META_IDX_VISCOSITY] != 0
-        ):
-            raise Error(
-                "RK4IntegratorFields: fluid forces (density/viscosity) not"
-                " ported yet"
-            )
         var dt = m.meta.data[MODEL_META_IDX_TIMESTEP]
 
         comptime for s in range(4):

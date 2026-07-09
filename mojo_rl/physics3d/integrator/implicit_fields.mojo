@@ -43,6 +43,7 @@ from ..dynamics.subtree_com_fields import compute_subtree_com_fields
 from ..dynamics.cdof_fields import compute_cdof_fields
 from ..dynamics.mass_matrix_fields import compute_mass_matrix_fields
 from ..dynamics.rne_fields import compute_bias_forces_rne_fields
+from ..dynamics.fluid_forces_fields import compute_fluid_forces_fields
 from ..dynamics.lu_fields import (
     lu_factor_fields,
     lu_solve_fields,
@@ -317,14 +318,6 @@ struct ImplicitIntegratorFields[
         ctx: Optional[DeviceContext] = None,
     ) raises:
         """One full implicit step."""
-        if (
-            m.meta.data[MODEL_META_IDX_DENSITY] != 0
-            or m.meta.data[MODEL_META_IDX_VISCOSITY] != 0
-        ):
-            raise Error(
-                "ImplicitIntegratorFields: fluid forces (density/viscosity)"
-                " not ported yet"
-            )
         var dt = m.meta.data[MODEL_META_IDX_TIMESTEP]
         var njoint = Int(m.meta.data[MODEL_META_IDX_NJOINT])
 
@@ -472,6 +465,13 @@ struct ImplicitIntegratorFields[
                 grid_dim=(BLOCKS,),
                 block_dim=(IM_TPB,),
             )
+
+        # Fluid drag into fnet (no-op unless meta density/viscosity > 0).
+        compute_fluid_forces_fields[
+            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
+            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
+            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
+        ](d, m, self.scratch, ctx)
 
         # ── LU solve: qacc_ws = M_hat^-1 fnet ────────────────────────────
         lu_solve_fields[

@@ -47,6 +47,7 @@ from ..solver.island_pgs_solve_fields import solve_island_pgs_fields
 from ..collision.broadphase_sap_fields import detect_contacts_auto_fields
 from ..types import ConeType
 from ..dynamics.rne_fields import compute_bias_forces_rne_fields
+from ..dynamics.fluid_forces_fields import compute_fluid_forces_fields
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
 from ..fields import DataFields, ModelFields, DynamicsScratch, ContactScratch
 from ..gpu.constants import (
@@ -438,16 +439,6 @@ struct EulerIntegratorFields[
         ctx: Optional[DeviceContext] = None,
     ) raises:
         """One full contact-free Euler step."""
-        # Fluid forces are not ported yet — refuse rather than silently
-        # diverge from the legacy step.
-        if (
-            m.meta.data[MODEL_META_IDX_DENSITY] != 0
-            or m.meta.data[MODEL_META_IDX_VISCOSITY] != 0
-        ):
-            raise Error(
-                "EulerIntegratorFields: fluid forces (density/viscosity) not"
-                " ported yet"
-            )
         var dt = m.meta.data[MODEL_META_IDX_TIMESTEP]
 
         forward_kinematics_fields[
@@ -545,6 +536,13 @@ struct EulerIntegratorFields[
                 grid_dim=(BLOCKS,),
                 block_dim=(EU_TPB,),
             )
+
+        # 8c. Fluid drag into fnet (no-op unless meta density/viscosity > 0).
+        compute_fluid_forces_fields[
+            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
+            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
+            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
+        ](d, m, self.scratch, ctx)
 
         ldl_solve_fields[
             target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
