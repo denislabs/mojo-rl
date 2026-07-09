@@ -58,7 +58,7 @@ from layout import Layout, LayoutTensor
 from ..types import _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE
 from .cholesky import chol_factor_inline, chol_solve_inline
-from .primal_fields import pyramidal_edge_forces
+from .primal_fields import pyramidal_edge_forces, pyramidal_linesearch
 from ..constraints.contact_solve_fields import (
     _init_common_normal_ws_fields,
     _precompute_contact_normal_fields,
@@ -909,76 +909,12 @@ def _newton_solve_env_fields[
                     Mv[i] += M_local[i * NV + j] * search[j]
 
             # Analytical Newton linesearch (matches CPU primal_linesearch_with_D)
-            # Precompute Jv_e = Je · search for each edge
-            var Jv_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
-            for e_idx in range(num_edges):
-                Jv_e[e_idx] = Scalar[DTYPE](0)
-                for i in range(NV):
-                    Jv_e[e_idx] += Je[e_idx * NV + i] * search[i]
-
-            # Analytical Newton linesearch (matching CPU primal_linesearch_with_D)
-            var gauss_a: Scalar[DTYPE] = 0
-            var gauss_b: Scalar[DTYPE] = 0
-            for i in range(NV):
-                gauss_a += Mv[i] * search[i]
-                gauss_b += (Ma[i] - f_smooth[i]) * search[i]
-
-            # Evaluate d1, d2 at alpha=0
-            var p0_d1 = gauss_b
-            var p0_d2 = gauss_a
-            for e_idx in range(num_edges):
-                if jar[e_idx] < Scalar[DTYPE](0):
-                    p0_d1 += De[e_idx] * jar[e_idx] * Jv_e[e_idx]
-                    p0_d2 += De[e_idx] * Jv_e[e_idx] * Jv_e[e_idx]
-            if p0_d2 < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                p0_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-
-            var alpha: Scalar[DTYPE] = 0
-            if p0_d1 < Scalar[DTYPE](0):
-                # Analytical initial alpha, then cost-based halving
-                alpha = -p0_d1 / p0_d2
-
-                # Compute old cost for acceptance check
-                # Gauss cost = 0.5*(Ma-f_smooth)·(qacc-qacc_smooth)
-                var old_cost: Scalar[DTYPE] = 0
-                for i in range(NV):
-                    old_cost += (
-                        Scalar[DTYPE](0.5)
-                        * (Ma[i] - f_smooth[i])
-                        * (qacc[i] - qacc_smooth[i])
-                    )
-                for e_idx in range(num_edges):
-                    if jar[e_idx] < Scalar[DTYPE](0):
-                        old_cost += (
-                            Scalar[DTYPE](0.5)
-                            * De[e_idx]
-                            * jar[e_idx]
-                            * jar[e_idx]
-                        )
-
-                # Try alpha, halve if cost doesn't decrease
-                for _ in range(LINESEARCH_ITER):
-                    var trial_cost: Scalar[DTYPE] = 0
-                    for i in range(NV):
-                        var qa_t = qacc[i] + alpha * search[i]
-                        var Ma_t = Ma[i] + alpha * Mv[i]
-                        trial_cost += (
-                            Scalar[DTYPE](0.5)
-                            * (Ma_t - f_smooth[i])
-                            * (qa_t - qacc_smooth[i])
-                        )
-                    for e_idx in range(num_edges):
-                        var jar_t = jar[e_idx] + alpha * Jv_e[e_idx]
-                        if jar_t < Scalar[DTYPE](0):
-                            trial_cost += (
-                                Scalar[DTYPE](0.5)
-                                * De[e_idx]
-                                * jar_t
-                                * jar_t
-                            )
-                    if trial_cost <= old_cost:
-                        break
-                    alpha *= Scalar[DTYPE](0.5)
+            var alpha = pyramidal_linesearch[
+                DTYPE, NV, ME, V_SIZE, LINESEARCH_ITER, PRIMAL_MINVAL_GPU
+            ](
+                num_edges, Je, De, search, Mv, Ma, f_smooth, qacc,
+                qacc_smooth, jar,
+            )
 
             if alpha < Scalar[DTYPE](1e-10):
                 break
