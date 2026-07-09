@@ -42,6 +42,7 @@ from ..dynamics.ldl_fields import (
 from ..constraints.limits_fields import solve_limits_fields
 from ..constraints.contact_solve_fields import solve_contacts_fields
 from ..solver.newton_solve_fields import solve_newton_fields
+from ..solver.cg_solve_fields import solve_cg_fields
 from ..collision.broadphase_sap_fields import detect_contacts_auto_fields
 from ..types import ConeType
 from ..dynamics.rne_fields import compute_bias_forces_rne_fields
@@ -583,9 +584,11 @@ struct EulerIntegratorFields[
                 Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
                 Self.BATCH,
             ](d, m, ctx)
-            comptime assert Self.SOLVER == "pgs" or Self.SOLVER == (
-                "newton"
-            ), "EulerIntegratorFields: SOLVER must be 'pgs' or 'newton'"
+            comptime assert (
+                Self.SOLVER == "pgs"
+                or Self.SOLVER == "newton"
+                or Self.SOLVER == "cg"
+            ), "EulerIntegratorFields: SOLVER must be 'pgs', 'newton', or 'cg'"
             comptime if Self.SOLVER == "newton":
                 solve_newton_fields[
                     target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
@@ -594,12 +597,22 @@ struct EulerIntegratorFields[
                     Self.NMESH_VERTS, Self.CONE_TYPE, Self.BATCH,
                 ](d, m, self.scratch, self.cscratch, ctx)
             else:
-                solve_contacts_fields[
-                    target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                    Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
-                    Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
-                    Self.NMESH_VERTS, Self.CONE_TYPE, Self.BATCH,
-                ](d, m, self.scratch, self.cscratch, ctx)
+                comptime if Self.SOLVER == "cg":
+                    solve_cg_fields[
+                        target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
+                        Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
+                        Self.NEQUALITY, Self.NTENDON, Self.NSITE,
+                        Self.NEXCLUDE, Self.NMESH_VERTS, Self.CONE_TYPE,
+                        Self.BATCH,
+                    ](d, m, self.scratch, self.cscratch, ctx)
+                else:
+                    solve_contacts_fields[
+                        target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
+                        Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
+                        Self.NEQUALITY, Self.NTENDON, Self.NSITE,
+                        Self.NEXCLUDE, Self.NMESH_VERTS, Self.CONE_TYPE,
+                        Self.BATCH,
+                    ](d, m, self.scratch, self.cscratch, ctx)
         else:
             solve_limits_fields[
                 target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
