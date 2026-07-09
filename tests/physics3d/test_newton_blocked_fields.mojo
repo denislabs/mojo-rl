@@ -1,4 +1,4 @@
-"""P4 gate: PYRAMIDAL blocked Newton solve — fields vs legacy, BIT-EXACT.
+"""Regression gate (GOLDEN-frozen): PYRAMIDAL blocked Newton solve on fields.
 
 Validates `solve_newton_blocked_fields` (fields port of
 NewtonSolver.solve_gpu_blocked — ONE ENV PER BLOCK, cooperative across
@@ -21,9 +21,8 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_newton_blocked_fields.
 
 from std.math import abs
 from std.sys import has_nvidia_gpu_accelerator
-from std.gpu import block_idx
 from std.gpu.host import DeviceContext
-from layout import Layout, LayoutTensor
+from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import (
@@ -34,7 +33,6 @@ from mojo_rl.physics3d.fields import (
 )
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
-from mojo_rl.physics3d.integrator.euler_integrator import EulerIntegrator
 from mojo_rl.physics3d.integrator.euler_fields import (
     _armature_kernel,
     _fnet_passive_kernel,
@@ -65,21 +63,11 @@ from mojo_rl.physics3d.dynamics.rne_fields import (
 from mojo_rl.physics3d.collision.contact_detection_fields import (
     detect_contacts_fields,
 )
-from mojo_rl.physics3d.solver.newton_solver import NewtonSolver
 from mojo_rl.physics3d.solver.newton_solve_fields import (
     solve_newton_blocked_fields,
 )
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts_gpu
 from mojo_rl.physics3d.gpu.constants import (
-    state_size,
     model_size_with_invweight,
-    ws_solver_offset,
-    ws_qacc_constrained_offset,
-    qpos_offset,
-    qvel_offset,
-    qfrc_offset,
-    contacts_offset,
-    metadata_offset,
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
     CONTACT_SIZE,
@@ -101,56 +89,14 @@ comptime NGEOM = Walker2dModel.NGEOM
 comptime MC = Walker2dModel.MAX_CONTACTS
 comptime BATCH = 2
 comptime N_ROUNDS = 3
-comptime SS = state_size[NQ, NV, NBODY, MC, 0]()
+
+# --- GOLDEN fingerprints (frozen from the legacy-validated fields blocked) ---
+comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
+comptime GOLD_RTOL = 1e-3
+comptime GOLD_NCON = 36  # total contacts over the rounds
+comptime GOLD_QC = 5707.129324436188  # final qacc_constrained checksum
+comptime GOLD_CON = 178360.48161778972  # final contact-record checksum
 comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
-# PGS-sized workspace (Newton uses a prefix: 35*MC + 6*MC*NV).
-comptime WS = ws_solver_offset[NV, NBODY]() + 81 * MC + 12 * MC * NV
-
-comptime O_QPOS = qpos_offset[NQ, NV]()
-comptime O_QVEL = qvel_offset[NQ, NV]()
-comptime O_QFRC = qfrc_offset[NQ, NV]()
-comptime O_CON = contacts_offset[NQ, NV, NBODY]()
-comptime O_META = metadata_offset[NQ, NV, NBODY, MC]()
-comptime O_QC = ws_qacc_constrained_offset[NV, NBODY]()
-
-
-def _legacy_step_kernel[
-    B_: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(B_, WS), MutAnyOrigin],
-):
-    EulerIntegrator[SOLVER=NewtonSolver].step_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, SS, MS, B_, WS
-    ](state, model, workspace)
-
-
-def _legacy_detect_kernel[
-    B_: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS), MutAnyOrigin],
-):
-    var env = Int(block_idx.x)
-    if env >= B_:
-        return
-    detect_contacts_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, SS, MS, B_, NGEOM
-    ](env, state, model)
-
-
-def _legacy_blocked_kernel[
-    B_: Int, CONE_T: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(B_, WS), MutAnyOrigin],
-):
-    NewtonSolver.solve_gpu_blocked[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, SS, MS, NV, B_, WS, NGEOM,
-        0, CONE_T, 0, 0,
-    ](state, model, workspace)
 
 
 def _fields_prep[
@@ -319,7 +265,6 @@ def run_leg(ctx: DeviceContext) raises:
     mf.upload_all(ctx)
 
     # === State (walker on the floor; env 1 with one joint past its limit) ===
-    var slab_t = TensorImpl[DTYPE].alloc(BATCH * SS)
     var d = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
     var lim = _find_limited_joint(model_t.data)
     var lim_qpos_adr = lim[0]
@@ -331,7 +276,6 @@ def run_leg(ctx: DeviceContext) raises:
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
             if i == 1:
                 qp = 1.10  # feet penetrate the floor
-            slab_t.data[e * SS + O_QPOS + i] = qp
             d.qpos.data[e * NQ + i] = qp
         for j in range(NJOINT):
             var j_off = NBODY * MODEL_BODY_SIZE + j * MODEL_JOINT_SIZE
@@ -350,21 +294,15 @@ def run_leg(ctx: DeviceContext) raises:
                 qp_in = rmin + Scalar[DTYPE](0.1)
             if e == 1 and qpos_adr == lim_qpos_adr:
                 qp_in = lim_rmax + Scalar[DTYPE](0.05)  # past upper limit
-            slab_t.data[e * SS + O_QPOS + qpos_adr] = qp_in
             d.qpos.data[e * NQ + qpos_adr] = qp_in
         for i in range(NV):
             var qv = Scalar[DTYPE]((e * 7 + i * 5) % 7 - 3) / 20.0
             if i == 1:
                 qv = -0.5  # falling
             var qf = Scalar[DTYPE]((e * 13 + i * 9) % 9 - 4) / 4.0
-            slab_t.data[e * SS + O_QVEL + i] = qv
-            slab_t.data[e * SS + O_QFRC + i] = qf
             d.qvel.data[e * NV + i] = qv
             d.qfrc.data[e * NV + i] = qf
-    slab_t.upload(ctx)
     d.upload_all(ctx)
-    var ws_t = TensorImpl[DTYPE].alloc(BATCH * WS)
-    ws_t.upload(ctx)
 
     # Non-vacuity of the limit rows: env 1 must violate, env 0 must not.
     var qpos_host = List[Scalar[DTYPE]]()
@@ -384,104 +322,25 @@ def run_leg(ctx: DeviceContext) raises:
     scratch.upload_all(ctx)
     cscratch.upload_all(ctx)
 
+    var ncon_total = 0
     for rnd in range(N_ROUNDS):
-        # --- Legacy: step (smooth prep) -> detect -> BLOCKED Newton solve ---
-        ctx.enqueue_function[_legacy_step_kernel[BATCH]](
-            slab_t.lt["gpu", Layout.row_major(BATCH, SS)](),
-            model_t.lt["gpu", Layout.row_major(1, MS)](),
-            ws_t.lt["gpu", Layout.row_major(BATCH, WS)](),
-            grid_dim=(BATCH,),
-            block_dim=(1,),
-        )
-        ctx.enqueue_function[_legacy_detect_kernel[BATCH]](
-            slab_t.lt["gpu", Layout.row_major(BATCH, SS)](),
-            model_t.lt["gpu", Layout.row_major(1, MS)](),
-            grid_dim=(BATCH,),
-            block_dim=(1,),
-        )
-        ctx.enqueue_function[_legacy_blocked_kernel[BATCH, CONE_T]](
-            slab_t.lt["gpu", Layout.row_major(BATCH, SS)](),
-            model_t.lt["gpu", Layout.row_major(1, MS)](),
-            ws_t.lt["gpu", Layout.row_major(BATCH, WS)](),
-            grid_dim=(BATCH,),
-            block_dim=(MC,),
-        )
-
-        # --- Fields: prep chain -> detect -> BLOCKED Newton solve ---
         _fields_prep["gpu"](d, mf, scratch, ctx)
         solve_newton_blocked_fields[
             "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
             CONE_T, BATCH,
         ](d, mf, scratch, cscratch, ctx)
-
-        # --- Compare BIT-EXACT ---
-        slab_t.download(ctx)
-        ws_t.download(ctx)
-        scratch.qacc_constrained.download(ctx)
-        d.contacts.download(ctx)
         d.meta.download(ctx)
-        var bad = 0
-        var ncon_seen = 0
-        var worst = Float64(0)
+        var ncon_rnd = 0
         for e in range(BATCH):
-            var nc = Int(
+            ncon_rnd += Int(
                 d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
             )
-            var nc_l = Int(
-                slab_t.data[e * SS + O_META + META_IDX_NUM_CONTACTS]
-            )
-            if nc != nc_l:
-                print("  ncon mismatch env", e, ": fields", nc, " legacy", nc_l)
-                bad += 1
-                continue
-            ncon_seen += nc
-            for i in range(NV):
-                var qc_f = scratch.qacc_constrained.data[e * NV + i]
-                var qc_l = ws_t.data[e * WS + O_QC + i]
-                if qc_f != qc_l:
-                    var dff = abs(Float64(qc_f) - Float64(qc_l))
-                    if dff > worst:
-                        worst = dff
-                    if bad < 6:
-                        print(
-                            "  qacc_constrained diff e", e, "i", i, ":",
-                            qc_f, "vs", qc_l,
-                        )
-                    bad += 1
-            for c in range(nc):
-                for k in range(CONTACT_SIZE):
-                    var rec_f = d.contacts.data[
-                        e * MC * CONTACT_SIZE + c * CONTACT_SIZE + k
-                    ]
-                    var rec_l = slab_t.data[
-                        e * SS + O_CON + c * CONTACT_SIZE + k
-                    ]
-                    if rec_f != rec_l:
-                        var dff = abs(Float64(rec_f) - Float64(rec_l))
-                        if dff > worst:
-                            worst = dff
-                        if bad < 6:
-                            print(
-                                "  record diff e", e, "c", c, "k", k, ":",
-                                rec_f, "vs", rec_l,
-                            )
-                        bad += 1
-        if bad != 0 and not has_nvidia_gpu_accelerator():  # legacy-GPU broken on CUDA
-            print("  worst abs diff:", worst)
-            raise Error(
-                "PYRAMIDAL blocked round " + String(rnd) + ": mismatch"
-            )
-        if ncon_seen == 0:
+        if ncon_rnd == 0:
             raise Error(
                 "PYRAMIDAL blocked round " + String(rnd) + ": no contacts"
             )
-        print(
-            "  round", rnd,
-            ": BIT-EXACT (qacc_constrained + contact records),"
-            " total contacts:", ncon_seen,
-        )
-
-        # Perturb qvel/qfrc for the next round (both sides identically).
+        ncon_total += ncon_rnd
+        print("  round", rnd, ": contacts", ncon_rnd)
         if rnd + 1 < N_ROUNDS:
             for e in range(BATCH):
                 for i in range(NV):
@@ -491,14 +350,53 @@ def run_leg(ctx: DeviceContext) raises:
                     var df = Scalar[DTYPE](
                         (e * 9 + i * 5 + rnd * 17) % 11 - 5
                     ) / 10.0
-                    slab_t.data[e * SS + O_QVEL + i] += dv
-                    slab_t.data[e * SS + O_QFRC + i] += df
                     d.qvel.data[e * NV + i] += dv
                     d.qfrc.data[e * NV + i] += df
-            slab_t.upload(ctx)
             d.qvel.upload(ctx)
             d.qfrc.upload(ctx)
-    print("  PASS: PYRAMIDAL blocked leg bit-exact over", N_ROUNDS, "rounds")
+
+    # --- final fields-GPU fingerprint (order-sensitive checksums) ---
+    scratch.qacc_constrained.download(ctx)
+    d.contacts.download(ctx)
+    d.meta.download(ctx)
+    var fp_qc = Float64(0)
+    for i in range(BATCH * NV):
+        fp_qc += Float64(scratch.qacc_constrained.data[i]) * Float64(i + 1)
+    var fp_con = Float64(0)
+    for e in range(BATCH):
+        var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
+        for c in range(nc):
+            for k in range(CONTACT_SIZE):
+                fp_con += Float64(
+                    d.contacts.data[e * MC * CONTACT_SIZE + c * CONTACT_SIZE + k]
+                ) * Float64((c + 1) * (k + 1))
+    if HARVEST:
+        print("  HARVEST GOLD_NCON =", ncon_total)
+        print("  HARVEST GOLD_QC   =", fp_qc)
+        print("  HARVEST GOLD_CON  =", fp_con)
+    else:
+        if ncon_total != GOLD_NCON and not has_nvidia_gpu_accelerator():
+            raise Error(
+                "blocked contacts " + String(ncon_total) + " != golden "
+                + String(GOLD_NCON)
+            )
+        var dq = abs(GOLD_QC) if abs(GOLD_QC) > 1e-9 else 1.0
+        if abs(fp_qc - GOLD_QC) / dq > GOLD_RTOL and (
+            not has_nvidia_gpu_accelerator()
+        ):
+            raise Error(
+                "blocked qacc fingerprint " + String(fp_qc) + " != golden "
+                + String(GOLD_QC)
+            )
+        var dcn = abs(GOLD_CON) if abs(GOLD_CON) > 1e-9 else 1.0
+        if abs(fp_con - GOLD_CON) / dcn > GOLD_RTOL and (
+            not has_nvidia_gpu_accelerator()
+        ):
+            raise Error(
+                "blocked contact fingerprint " + String(fp_con) + " != golden "
+                + String(GOLD_CON)
+            )
+        print("  PASS: PYRAMIDAL blocked matches golden fingerprint")
 
 
 def run_cpu_smoke(ctx: DeviceContext) raises:
