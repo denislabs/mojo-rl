@@ -82,8 +82,10 @@ from mojo_rl.physics3d.gpu.buffer_utils import (
     copy_geoms_to_buffer,
     copy_invweight0_to_buffer,
     copy_tendons_to_buffer,
+    copy_equality_to_buffer,
     copy_mesh_hull_to_buffer,
 )
+from mojo_rl.physics3d.fields import ModelFields
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from .full_parser import parse_xml_full
 from .xml_parser import (
@@ -493,6 +495,88 @@ struct ModelDefFromXML[
         # Copy to GPU (invweight0 already computed correctly by CPU's
         # compute_body_invweight0 via setup_model_and_data)
         ctx.enqueue_copy(model_buf, host_buf)
+
+    @staticmethod
+    def init_fields[
+        DTYPE: DType, NMESHV: Int = 0
+    ](
+        ctx: DeviceContext,
+        mut mf: ModelFields[
+            DTYPE,
+            Self.NV,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.MAX_TENDON,
+            Self.NSITE,
+            Self.nexclude,
+            NMESHV,
+        ],
+    ) raises:
+        """P6 fields-native model build: populate every ModelFields record
+        tensor directly, no separate device slab kept by the caller.
+
+        Fixes the two `init_model_gpu` bugs: the build buffer is sized WITH
+        NMESH_VERTS (init_model_gpu under-sized mesh models), and
+        `copy_equality_to_buffer` IS called (init_model_gpu never serialized
+        equality records). Currently reuses the copy_*_to_buffer serializers +
+        `load_from_slab`; a follow-up (B1) swaps the internals to offset-free
+        packed writes so `gpu/constants` offset tables + `load_from_slab` can
+        be deleted at sunset — transparently to callers of `init_fields`.
+        """
+        comptime BUF_SIZE = model_size_with_invweight[
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NV,
+            Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.MAX_TENDON,
+            Self.NSITE,
+            Self.nexclude,
+            NMESHV,
+        ]()
+        var host_buf = ctx.enqueue_create_host_buffer[DTYPE](BUF_SIZE)
+        ctx.synchronize()
+        for i in range(BUF_SIZE):
+            host_buf[i] = Scalar[DTYPE](0)
+
+        var model = Model[
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.MAX_CONTACTS,
+            Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.CONE_TYPE,
+            Self.MAX_TENDON,
+            Self.NSITE,
+        ]()
+        var data = Data[
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.MAX_CONTACTS,
+            Self.NSITE,
+        ]()
+        Self.setup_model_and_data[DTYPE](model, data)
+
+        copy_model_to_buffer(model, host_buf)
+        copy_geoms_to_buffer(model, host_buf)
+        copy_tendons_to_buffer(model, host_buf)
+        copy_equality_to_buffer(model, host_buf)  # init_model_gpu never did
+        copy_invweight0_to_buffer(model, host_buf)
+        copy_mesh_hull_to_buffer(model, host_buf)  # buffer now NMESHV-sized
+
+        var flat = List[Scalar[DTYPE]](length=BUF_SIZE, fill=Scalar[DTYPE](0))
+        for i in range(BUF_SIZE):
+            flat[i] = host_buf[i]
+        mf.load_from_slab(flat)
+        mf.upload_all(ctx)
 
     # =========================================================================
     # GPU: _compute_invweight0_gpu (duplicated from ModelDef, dims from params)

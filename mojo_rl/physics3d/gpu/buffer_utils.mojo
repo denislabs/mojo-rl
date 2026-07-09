@@ -620,9 +620,13 @@ def copy_equality_to_buffer[
     MAX_CONTACTS: Int,
     NGEOM: Int,
     MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     model: Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY,
+        CONE_TYPE, MAX_TENDON, NSITE,
     ],
     buffer: HostBuffer[DTYPE],
 ):
