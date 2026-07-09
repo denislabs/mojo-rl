@@ -706,6 +706,7 @@ def run_online_dreamer4[
                 agent.ph.zero_grad["cpu"](None)
                 agent.rh.zero_grad["cpu"](None)
                 agent.te.zero_grad["cpu"](None)   # te is not a Module
+                agent.ph_prior.zero_grad["cpu"](None)  # BC-trained anchor
                 var losses = agent.acwm_train_step_gpu(
                     _mao(z1.data.unsafe_ptr()), _mao(z0n.data.unsafe_ptr()),
                     _mao(sigma.data.unsafe_ptr()), _mao(sig_idx.data.unsafe_ptr()),
@@ -723,6 +724,7 @@ def run_online_dreamer4[
                 agent.ph.for_each_param["cpu"](hopt, None)
                 agent.rh.for_each_param["cpu"](hopt, None)
                 agent.te.for_each_param["cpu"](hopt, None)
+                agent.ph_prior.for_each_param["cpu"](hopt, None)  # BC anchor
                 last_video = losses[0]
                 last_bc = losses[1]
 
@@ -749,7 +751,9 @@ def run_online_dreamer4[
 
         # ── imagination-RL update (frozen WM) ──
         if imag_every > 0 and step % imag_every == 0 and buf.count() >= BATCH:
-            agent.snapshot_prior()
+            # ph_prior is now a BC-trained anchor (updated in acwm), NOT a
+            # self-snapshot — so DON'T copy ph into it here. The reverse-KL to
+            # this diverse BC prior is what prevents PMPO policy mode-collapse.
             buf.sample_reward_window_batch[B, T](
                 pix.data.unsafe_ptr(), act_oh.data.unsafe_ptr(),
                 rew.data.unsafe_ptr(), done_b.data.unsafe_ptr(),

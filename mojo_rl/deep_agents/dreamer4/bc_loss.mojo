@@ -168,3 +168,79 @@ def bc_mtp_loss[
     for i in range(BT * DIN):
         grad_h[i] = grad_h[i] + grad_h_tmp[i]
     return loss
+
+
+def bc_policy_only_loss[
+    PH: Module,
+    B: Int,
+    T: Int,
+    NMTP: Int,
+    NACT: Int,
+    D_IN: Int,
+    actions_o: Origin[mut=True],
+](
+    mut ph: PH,
+    h: UnsafePointer[Scalar[DT], MutAnyOrigin],          # [B*T, D_IN] = h_t
+    actions: UnsafePointer[Scalar[DT], actions_o],       # [B*T] class ids (fp)
+    plog: UnsafePointer[Scalar[DT], MutAnyOrigin],       # scratch [B*T, NMTP*NACT]
+    gpl: UnsafePointer[Scalar[DT], MutAnyOrigin],        # scratch [B*T, NMTP*NACT]
+    grad_h: UnsafePointer[Scalar[DT], MutAnyOrigin],     # THROWAWAY [B*T, D_IN]
+    unimix: Scalar[DT] = Scalar[DT](0.0),
+    policy_weight: Scalar[DT] = Scalar[DT](1.0),
+) raises -> Float64:
+    """POLICY-ONLY BC (the policy half of `bc_mtp_loss`) — MTP action NLL through
+    a single policy head. Accumulates `ph`'s PARAM grads and returns the loss.
+    `grad_h` is a THROWAWAY: the caller does NOT feed it to the dynamics. Used to
+    BC-train a frozen behavioral-prior head (`ph_prior`) that must stay a diverse
+    anchor for the imagination reverse-KL WITHOUT perturbing the world-model
+    gradient (vs the old self-snapshot prior, which collapsed with the policy)."""
+    comptime BT = B * T
+    comptime PLOG = NMTP * NACT
+    comptime DIN = D_IN
+
+    var n_valid = bc_n_valid(B, T, NMTP)
+    var inv = Scalar[DT](1.0) / Scalar[DT](n_valid)
+
+    var h_t = Tensor.alloc(BT * DIN)
+    for i in range(BT * DIN):
+        h_t.data[i] = h[i]
+    var plog_t = Tensor.alloc(BT * PLOG)
+    call_forward["cpu", BT](ph, TensorRefs[PH.ARITY](h_t), plog_t, None)
+    for i in range(BT * PLOG):
+        plog[i] = plog_t.data[i]
+
+    for i in range(BT * PLOG):
+        gpl[i] = Scalar[DT](0.0)
+
+    var sm = alloc[Scalar[DT]](NACT)
+    var pp = alloc[Scalar[DT]](NACT)
+    var loss: Float64 = 0.0
+    for b in range(B):
+        for j in range(T):
+            var bt = b * T + j
+            for n in range(NMTP):
+                var tgt = j + n
+                if tgt >= T:
+                    break
+                var pos = b * T + tgt
+                var pbase = bt * PLOG + n * NACT
+                var k = Int(Float64(actions[pos]) + 0.5)
+                var lp_ent = cat_fwd[NACT](plog, pbase, unimix, k, sm, pp)
+                loss += -Float64(lp_ent[0]) * Float64(policy_weight * inv)
+                cat_bwd[NACT](
+                    sm, pp, unimix, k,
+                    -policy_weight * inv, Scalar[DT](0.0), gpl, pbase,
+                )
+    sm.free()
+    pp.free()
+
+    var gpl_t = Tensor.alloc(BT * PLOG)
+    for i in range(BT * PLOG):
+        gpl_t.data[i] = gpl[i]
+    var grad_h_t = Tensor.alloc(BT * DIN)
+    call_vjp["cpu", BT](
+        ph, TensorRefs[PH.ARITY](h_t), gpl_t, TensorRefs[PH.ARITY](grad_h_t), None
+    )
+    for i in range(BT * DIN):
+        grad_h[i] = grad_h_t.data[i]
+    return loss

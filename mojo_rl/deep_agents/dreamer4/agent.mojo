@@ -53,7 +53,7 @@ from .heads import (
     Dreamer4ContinueHead,
 )
 from .shortcut_loss import dynamics_pretrain_loss, _mao
-from .bc_loss import bc_mtp_loss
+from .bc_loss import bc_mtp_loss, bc_policy_only_loss
 from .imag_rollout import imagine_rollout, _fwd_window
 from ..dreamerv3.dists_discrete import cat_sample, UNIMIX
 from .imag_rl_loss import (
@@ -326,8 +326,13 @@ struct Dreamer4Agent[
         self.rh.for_each_param[target, V](visitor, ctx, join_name(prefix, "rh"))
         self.vh.for_each_param[target, V](visitor, ctx, join_name(prefix, "vh"))
         self.ch.for_each_param[target, V](visitor, ctx, join_name(prefix, "ch"))
-        # NOTE: `ph_prior` is the FROZEN behavioral prior — never optimized, so
-        # it is deliberately excluded from the param walk.
+        # `ph_prior` is the behavioral prior: BC-trained (in acwm), FROZEN during
+        # imagination (the reverse-KL anchor). It IS optimized by the acwm step, so
+        # it joins the whole-agent param walk (CPU path). It is NOT touched by the
+        # imagination optimizer (which walks vh + ph only).
+        self.ph_prior.for_each_param[target, V](
+            visitor, ctx, join_name(prefix, "ph_prior")
+        )
 
     def zero_grad[target: StaticString](
         mut self, ctx: Optional[DeviceContext]
@@ -342,6 +347,7 @@ struct Dreamer4Agent[
         self.rh.zero_grad[target](ctx)
         self.vh.zero_grad[target](ctx)
         self.ch.zero_grad[target](ctx)
+        self.ph_prior.zero_grad[target](ctx)   # BC-trained anchor (acwm)
 
     # ── checkpoint (params only; the frozen ph_prior + Adam moments are not
     #    saved). ONE combined file `<base>.ckpt` holding the tokenizer + agent
@@ -674,6 +680,32 @@ struct Dreamer4Agent[
             reward_weight=reward_weight,
         )
 
+    def _train_prior_bc(
+        mut self,
+        ht: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B*T, AGD] clean h_t
+        actions: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B*T] class ids
+        policy_weight: Scalar[DT] = Scalar[DT](1.0),
+    ) raises:
+        """BC-train the behavioral prior `ph_prior` (policy-only) on the SAME
+        clean h_t + real actions as the `ph` BC. Fills `ph_prior`'s param grads
+        (the caller's acwm optimizer steps it). This makes `ph_prior` a diverse
+        BC anchor — never touched by PMPO — so the imagination reverse-KL keeps
+        the learned policy `ph` from mode-collapsing (the old self-snapshot prior
+        collapsed together with `ph`, providing no resistance). Self-contained
+        scratch (own Tensors); the grad-wrt-h is a throwaway (does NOT feed the
+        dynamics)."""
+        var plog = Tensor.alloc(Self.BF * Self.PLOG)
+        var gpl = Tensor.alloc(Self.BF * Self.PLOG)
+        var gh = Tensor.alloc(Self.BF * Self.AGD)   # throwaway grad-wrt-h
+        _ = bc_policy_only_loss[
+            Self.PH, Self.B, Self.T, Self.NMTP, Self.NACT, Self.AGD
+        ](
+            self.ph_prior, ht, actions,
+            _mao(plog.data.unsafe_ptr()), _mao(gpl.data.unsafe_ptr()),
+            _mao(gh.data.unsafe_ptr()),
+            Scalar[DT](0.0), policy_weight,
+        )
+
     # ── one joint BC + video-prediction training step (fills all grads) ──
     def bc_train_step(
         mut self,
@@ -911,6 +943,10 @@ struct Dreamer4Agent[
             self.dyn.agent_out_ptr_cpu(), actions, rsh, bins,
             policy_weight, reward_weight,
         )
+        # 5b. BC-train the behavioral prior on the SAME clean h_t (policy-only).
+        self._train_prior_bc(
+            self.dyn.agent_out_ptr_cpu(), actions, policy_weight
+        )
 
         # 6. BC vjp through the clean forward (zero flow grad) → dyn + act-MLP
         #    grads; then the task-embedder grad.
@@ -1026,6 +1062,10 @@ struct Dreamer4Agent[
         var loss_bc = self._run_bc_loss(
             self.dyn.agent_out_ptr_cpu(), actions, rsh, bins,
             policy_weight, reward_weight,
+        )
+        # 5b. BC-train the behavioral prior on the SAME clean h_t (policy-only).
+        self._train_prior_bc(
+            self.dyn.agent_out_ptr_cpu(), actions, policy_weight
         )
 
         # 6. BC vjp through the clean forward (zero flow grad) → dyn + act-MLP
