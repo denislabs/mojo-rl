@@ -83,10 +83,8 @@ comptime WARMUP_STEPS = 25_000
 comptime PRINT_EVERY = 50_000
 comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
-# LayerNorm critic changes PARAM_SIZE → NOT loadable by the preset-based eval
-# script; render with `sac_humanoid_nn_ln_eval_cpu.mojo` (HIDDEN=256, same
-# critic). Distinct path preserves the 6006 plain-critic baseline ckpt.
-comptime CHECKPOINT_PATH = "sac_humanoid_nn_ln.ckpt"
+# render with `sac_humanoid_nn_eval_cpu.mojo` (HIDDEN=256).
+comptime CHECKPOINT_PATH = "sac_humanoid_nn.ckpt"
 
 # Periodic DETERMINISTIC eval (greedy, no exploration noise) on an isolated set
 # of `EVAL_ENVS` parallel envs — the deployable-policy signal. The always-on
