@@ -70,6 +70,10 @@ comptime W_NBODY = Walker2dModel.NBODY  # 8
 comptime W_NJOINT = Walker2dModel.NJOINT  # 9
 comptime W_NGEOM = Walker2dModel.NGEOM  # 8
 comptime W_MC = Walker2dModel.MAX_CONTACTS  # 20
+comptime W_NEQ = Walker2dModel.MAX_EQUALITY
+comptime W_NTD = Walker2dModel.MAX_TENDON
+comptime W_NSITE = Walker2dModel.NSITE
+comptime W_NEXCL = Walker2dModel.NEXCLUDE
 comptime W_CONE = Walker2dModel.CONE_TYPE
 comptime W_BATCH = 2
 comptime W_MS = model_size_with_invweight[W_NBODY, W_NJOINT, W_NV, W_NGEOM]()
@@ -81,6 +85,10 @@ comptime A_NBODY = AntModel.NBODY  # 14
 comptime A_NJOINT = AntModel.NJOINT  # 9
 comptime A_NGEOM = AntModel.NGEOM  # 15
 comptime A_MC = AntModel.MAX_CONTACTS  # 40
+comptime A_NEQ = AntModel.MAX_EQUALITY
+comptime A_NTD = AntModel.MAX_TENDON
+comptime A_NSITE = AntModel.NSITE
+comptime A_NEXCL = AntModel.NEXCLUDE
 comptime A_BATCH = 2
 comptime A_MS = model_size_with_invweight[A_NBODY, A_NJOINT, A_NV, A_NGEOM]()
 
@@ -92,14 +100,8 @@ def test_walker2d_mm() raises:
     print("--- Walker2D treewalk CRBA, BATCH=", W_BATCH, "---")
     var ctx = DeviceContext()
 
-    var model_t = TensorImpl[DTYPE].alloc(W_MS)
-    model_t.upload(ctx)
-    var mbuf = model_t.dev.value()
-    Walker2dModel.init_model_gpu(ctx, mbuf)
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, W_NV, W_NBODY, W_NJOINT, W_NGEOM]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DTYPE, W_NV, W_NBODY, W_NJOINT, W_NGEOM, W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0]()
+    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Two distinct qpos configs (from the walker2d FK gate).
     var qcfg = List[List[Float64]]()
@@ -120,7 +122,7 @@ def test_walker2d_mm() raises:
     q2[8] = -0.6
     qcfg.append(q2^)
 
-    var d = DataFields[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, 0, W_BATCH]()
+    var d = DataFields[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, W_NSITE, W_BATCH]()
     for e in range(W_BATCH):
         for i in range(W_NQ):
             d.qpos.data[e * W_NQ + i] = Scalar[DTYPE](qcfg[e][i])
@@ -129,23 +131,23 @@ def test_walker2d_mm() raises:
     # Fields: prep chain (gated bit-exact vs legacy in test_fk_fields).
     forward_kinematics_fields[
         "gpu", DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM,
-        0, 0, 0, 0, 0, W_BATCH,
+        W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0, W_BATCH,
     ](d, mf, ctx)
     compute_subtree_com_fields[
         "gpu", DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM,
-        0, 0, 0, 0, 0, W_BATCH,
+        W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0, W_BATCH,
     ](d, mf, ctx)
     var scratch = DynamicsScratch[DTYPE, W_NV, W_NBODY, W_BATCH]()
     scratch.upload_all(ctx)
     compute_cdof_fields[
         "gpu", DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM,
-        0, 0, 0, 0, 0, W_BATCH,
+        W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0, W_BATCH,
     ](d, mf, scratch, ctx)
 
     # Fields DENSE first (stash M), then TREEWALK into the same slot.
     compute_mass_matrix_fields[
         "gpu", DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM,
-        0, 0, 0, 0, 0, W_BATCH, PARALLEL=True,
+        W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0, W_BATCH, PARALLEL=True,
     ](d, mf, scratch, ctx)
     scratch.M.download(ctx)
     var dense = List[Scalar[DTYPE]](
@@ -156,7 +158,7 @@ def test_walker2d_mm() raises:
 
     compute_mass_matrix_fields[
         "gpu", DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM,
-        0, 0, 0, 0, 0, W_BATCH, PARALLEL=True, TREEWALK=True,
+        W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0, W_BATCH, PARALLEL=True, TREEWALK=True,
     ](d, mf, scratch, ctx)
     scratch.M.download(ctx)
 
@@ -172,14 +174,8 @@ def test_ant_mm() raises:
     print("--- Ant treewalk CRBA (FREE joint), BATCH=", A_BATCH, "---")
     var ctx = DeviceContext()
 
-    var model_t = TensorImpl[DTYPE].alloc(A_MS)
-    model_t.upload(ctx)
-    var mbuf = model_t.dev.value()
-    AntModel.init_model_gpu(ctx, mbuf)
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, A_NV, A_NBODY, A_NJOINT, A_NGEOM]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DTYPE, A_NV, A_NBODY, A_NJOINT, A_NGEOM, A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0]()
+    AntModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Two configs from the legacy ant treewalk gate: default init_qpos and
     # nonzero translation + joint angles (+30deg-rotated torso mixed in).
@@ -208,7 +204,7 @@ def test_ant_mm() raises:
     q2[14] = 0.4
     qcfg.append(q2^)
 
-    var d = DataFields[DTYPE, A_NQ, A_NV, A_NBODY, A_MC, 0, A_BATCH]()
+    var d = DataFields[DTYPE, A_NQ, A_NV, A_NBODY, A_MC, A_NSITE, A_BATCH]()
     for e in range(A_BATCH):
         for i in range(A_NQ):
             d.qpos.data[e * A_NQ + i] = Scalar[DTYPE](qcfg[e][i])
@@ -216,22 +212,22 @@ def test_ant_mm() raises:
 
     forward_kinematics_fields[
         "gpu", DTYPE, A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_NGEOM,
-        0, 0, 0, 0, 0, A_BATCH,
+        A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0, A_BATCH,
     ](d, mf, ctx)
     compute_subtree_com_fields[
         "gpu", DTYPE, A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_NGEOM,
-        0, 0, 0, 0, 0, A_BATCH,
+        A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0, A_BATCH,
     ](d, mf, ctx)
     var scratch = DynamicsScratch[DTYPE, A_NV, A_NBODY, A_BATCH]()
     scratch.upload_all(ctx)
     compute_cdof_fields[
         "gpu", DTYPE, A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_NGEOM,
-        0, 0, 0, 0, 0, A_BATCH,
+        A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0, A_BATCH,
     ](d, mf, scratch, ctx)
 
     compute_mass_matrix_fields[
         "gpu", DTYPE, A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_NGEOM,
-        0, 0, 0, 0, 0, A_BATCH, PARALLEL=True,
+        A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0, A_BATCH, PARALLEL=True,
     ](d, mf, scratch, ctx)
     scratch.M.download(ctx)
     var dense = List[Scalar[DTYPE]](
@@ -242,7 +238,7 @@ def test_ant_mm() raises:
 
     compute_mass_matrix_fields[
         "gpu", DTYPE, A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_NGEOM,
-        0, 0, 0, 0, 0, A_BATCH, PARALLEL=True, TREEWALK=True,
+        A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0, A_BATCH, PARALLEL=True, TREEWALK=True,
     ](d, mf, scratch, ctx)
     scratch.M.download(ctx)
 
@@ -340,18 +336,12 @@ def test_rk4_integrator_treewalk() raises:
     )
     var ctx = DeviceContext()
 
-    var model_t = TensorImpl[DTYPE].alloc(W_MS)
-    model_t.upload(ctx)
-    var mbuf = model_t.dev.value()
-    Walker2dModel.init_model_gpu(ctx, mbuf)
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, W_NV, W_NBODY, W_NJOINT, W_NGEOM]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DTYPE, W_NV, W_NBODY, W_NJOINT, W_NGEOM, W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0]()
+    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Same on-the-floor init as test_rk4_contacts_fields (feet penetrating).
-    var d_dn = DataFields[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, 0, W_BATCH]()
-    var d_tw = DataFields[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, 0, W_BATCH]()
+    var d_dn = DataFields[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, W_NSITE, W_BATCH]()
+    var d_tw = DataFields[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, W_NSITE, W_BATCH]()
     for e in range(W_BATCH):
         for i in range(W_NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -372,12 +362,12 @@ def test_rk4_integrator_treewalk() raises:
     d_tw.upload_all(ctx)
 
     var integ_dn = RK4IntegratorFields[
-        DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM, 0, 0, 0, 0, 0,
+        DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM, W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0,
         W_CONE, BATCH=W_BATCH, PARALLEL_GPU=True,
     ]()
     integ_dn.prepare_gpu(ctx)
     var integ_tw = RK4IntegratorFields[
-        DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM, 0, 0, 0, 0, 0,
+        DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM, W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0,
         W_CONE, BATCH=W_BATCH, PARALLEL_GPU=True, CRBA_TREEWALK=True,
     ]()
     integ_tw.prepare_gpu(ctx)
