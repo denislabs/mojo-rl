@@ -515,32 +515,20 @@ struct ModelDefFromXML[
         ],
     ) raises:
         """P6 fields-native model build: populate every ModelFields record
-        tensor directly, no separate device slab kept by the caller.
+        tensor DIRECTLY from the CPU `Model`, offset-free (B3).
 
-        Fixes the two `init_model_gpu` bugs: the build buffer is sized WITH
-        NMESH_VERTS (init_model_gpu under-sized mesh models), and
-        `copy_equality_to_buffer` IS called (init_model_gpu never serialized
-        equality records). Currently reuses the copy_*_to_buffer serializers +
-        `load_from_slab`; a follow-up (B1) swaps the internals to offset-free
-        packed writes so `gpu/constants` offset tables + `load_from_slab` can
-        be deleted at sunset — transparently to callers of `init_fields`.
+        No flat model slab, no `gpu/constants` cross-family offset tables, no
+        `load_from_slab` round-trip — `mf.load_from_model` writes each record
+        at `i * MODEL_<KIND>_SIZE + <KIND>_IDX_*` inside its own packed tensor.
+        The slab layer and its `copy_*_to_buffer` serializers survive only for
+        the legacy `init_model_gpu` path and die at sunset; this build does not
+        touch them.
+
+        Fixes the two `init_model_gpu` bugs by construction: mesh vertices are
+        written up to the tensor's own `NMESH_VERTS` capacity (init_model_gpu
+        under-sized mesh models), and equality records ARE serialized
+        (init_model_gpu never wrote them).
         """
-        comptime BUF_SIZE = model_size_with_invweight[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NV,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.MAX_TENDON,
-            Self.NSITE,
-            Self.nexclude,
-            NMESHV,
-        ]()
-        var host_buf = ctx.enqueue_create_host_buffer[DTYPE](BUF_SIZE)
-        ctx.synchronize()
-        for i in range(BUF_SIZE):
-            host_buf[i] = Scalar[DTYPE](0)
-
         var model = Model[
             DTYPE,
             Self.NQ,
@@ -565,17 +553,7 @@ struct ModelDefFromXML[
         ]()
         Self.setup_model_and_data[DTYPE](model, data)
 
-        copy_model_to_buffer(model, host_buf)
-        copy_geoms_to_buffer(model, host_buf)
-        copy_tendons_to_buffer(model, host_buf)
-        copy_equality_to_buffer(model, host_buf)  # init_model_gpu never did
-        copy_invweight0_to_buffer(model, host_buf)
-        copy_mesh_hull_to_buffer(model, host_buf)  # buffer now NMESHV-sized
-
-        var flat = List[Scalar[DTYPE]](length=BUF_SIZE, fill=Scalar[DTYPE](0))
-        for i in range(BUF_SIZE):
-            flat[i] = host_buf[i]
-        mf.load_from_slab(flat)
+        mf.load_from_model[Self.NQ, Self.MAX_CONTACTS, Self.CONE_TYPE](model)
         mf.upload_all(ctx)
 
     # =========================================================================

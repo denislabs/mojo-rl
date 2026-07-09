@@ -22,9 +22,13 @@ from mojo_rl.physics3d.gpu.constants import (
     model_size_with_invweight,
     MODEL_MESH_META_SIZE,
     MAX_GPU_MESHES,
+    MODEL_META_IDX_NTENDON,
+    MODEL_META_IDX_NEQUALITY,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel
+from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
+from mojo_rl.envs.ant.ant_xml import AntModel
 
 comptime DT = DType.float32
 
@@ -113,5 +117,94 @@ def main() raises:
     if num_meshes == 0 or nonzero_verts == 0:
         raise Error("Part B: mesh not populated by init_fields (sizing bug?)")
     print("  Part B PASS: SawyerReach mesh populated + correctly sized")
+
+    # ── Part C: Humanoid — the heaviest records (native tendons + equality +
+    # sites). Proves load_from_model is model-agnostic-correct beyond Walker2D,
+    # so every Humanoid fields gate can swap to init_fields safely. Build-only,
+    # NO physics kernels (no blocked Newton) — light on Apple. ────────────────
+    comptime H_NV = HumanoidModel.NV
+    comptime H_NBODY = HumanoidModel.NBODY
+    comptime H_NJOINT = HumanoidModel.NJOINT
+    comptime H_NGEOM = HumanoidModel.NGEOM
+    comptime H_NEQ = HumanoidModel.MAX_EQUALITY
+    comptime H_NTD = HumanoidModel.MAX_TENDON
+    comptime H_NSITE = HumanoidModel.NSITE
+    comptime H_NEXCL = HumanoidModel.nexclude
+    comptime H_MS = model_size_with_invweight[
+        H_NBODY, H_NJOINT, H_NV, H_NGEOM, H_NEQ, H_NTD, H_NSITE, H_NEXCL
+    ]()
+
+    var hf_new = ModelFields[
+        DT, H_NV, H_NBODY, H_NJOINT, H_NGEOM, H_NEQ, H_NTD, H_NSITE, H_NEXCL, 0
+    ]()
+    HumanoidModel.init_fields[DT, 0](ctx, hf_new)
+
+    var hmodel_t = TensorImpl[DT].alloc(H_MS)
+    hmodel_t.upload(ctx)
+    HumanoidModel.init_model_gpu(ctx, hmodel_t.dev.value())
+    hmodel_t.download(ctx)
+    var hf_old = ModelFields[
+        DT, H_NV, H_NBODY, H_NJOINT, H_NGEOM, H_NEQ, H_NTD, H_NSITE, H_NEXCL, 0
+    ]()
+    hf_old.load_from_slab(hmodel_t.data)
+
+    var hbad = 0
+    hbad += _cmp("H.bodies", hf_new.bodies.data, hf_old.bodies.data)
+    hbad += _cmp("H.joints", hf_new.joints.data, hf_old.joints.data)
+    hbad += _cmp("H.geoms", hf_new.geoms.data, hf_old.geoms.data)
+    hbad += _cmp("H.meta", hf_new.meta.data, hf_old.meta.data)
+    hbad += _cmp("H.equality", hf_new.equality.data, hf_old.equality.data)
+    hbad += _cmp("H.tendons", hf_new.tendons.data, hf_old.tendons.data)
+    hbad += _cmp("H.sites", hf_new.sites.data, hf_old.sites.data)
+    hbad += _cmp("H.excludes", hf_new.excludes.data, hf_old.excludes.data)
+    hbad += _cmp("H.body_invw0", hf_new.body_invweight0.data, hf_old.body_invweight0.data)
+    hbad += _cmp("H.dof_invw0", hf_new.dof_invweight0.data, hf_old.dof_invweight0.data)
+    if hbad != 0:
+        raise Error("Humanoid init_fields != legacy path (" + String(hbad) + ")")
+    print(
+        "  Part C PASS: Humanoid init_fields == legacy path BIT-EXACT",
+        "(ntendon=", Int(hf_new.meta.data[MODEL_META_IDX_NTENDON]),
+        " neq=", Int(hf_new.meta.data[MODEL_META_IDX_NEQUALITY]), ")",
+    )
+
+    # ── Part D: Ant — free-joint (7-DOF) model, exercises the FREE joint
+    # serialization path + invweight0 for a floating base. Build-only. ────────
+    comptime A_NV = AntModel.NV
+    comptime A_NBODY = AntModel.NBODY
+    comptime A_NJOINT = AntModel.NJOINT
+    comptime A_NGEOM = AntModel.NGEOM
+    comptime A_NEQ = AntModel.MAX_EQUALITY
+    comptime A_NTD = AntModel.MAX_TENDON
+    comptime A_NSITE = AntModel.NSITE
+    comptime A_NEXCL = AntModel.nexclude
+    comptime A_MS = model_size_with_invweight[
+        A_NBODY, A_NJOINT, A_NV, A_NGEOM, A_NEQ, A_NTD, A_NSITE, A_NEXCL
+    ]()
+
+    var af_new = ModelFields[
+        DT, A_NV, A_NBODY, A_NJOINT, A_NGEOM, A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0
+    ]()
+    AntModel.init_fields[DT, 0](ctx, af_new)
+
+    var amodel_t = TensorImpl[DT].alloc(A_MS)
+    amodel_t.upload(ctx)
+    AntModel.init_model_gpu(ctx, amodel_t.dev.value())
+    amodel_t.download(ctx)
+    var af_old = ModelFields[
+        DT, A_NV, A_NBODY, A_NJOINT, A_NGEOM, A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0
+    ]()
+    af_old.load_from_slab(amodel_t.data)
+
+    var abad = 0
+    abad += _cmp("A.bodies", af_new.bodies.data, af_old.bodies.data)
+    abad += _cmp("A.joints", af_new.joints.data, af_old.joints.data)
+    abad += _cmp("A.geoms", af_new.geoms.data, af_old.geoms.data)
+    abad += _cmp("A.meta", af_new.meta.data, af_old.meta.data)
+    abad += _cmp("A.excludes", af_new.excludes.data, af_old.excludes.data)
+    abad += _cmp("A.body_invw0", af_new.body_invweight0.data, af_old.body_invweight0.data)
+    abad += _cmp("A.dof_invw0", af_new.dof_invweight0.data, af_old.dof_invweight0.data)
+    if abad != 0:
+        raise Error("Ant init_fields != legacy path (" + String(abad) + ")")
+    print("  Part D PASS: Ant (free-joint) init_fields == legacy path BIT-EXACT")
 
     print("test_init_fields: ALL PASS")
