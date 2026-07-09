@@ -28,7 +28,7 @@ from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
 from mojo_rl.physics3d.gpu.constants import (
     model_size_with_invweight,
-    model_joint_offset,
+    MODEL_JOINT_SIZE,
     JOINT_IDX_TYPE,
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_RANGE_MIN,
@@ -44,6 +44,10 @@ comptime NBODY = Walker2dModel.NBODY
 comptime NJOINT = Walker2dModel.NJOINT
 comptime NGEOM = Walker2dModel.NGEOM
 comptime MAX_CONTACTS = Walker2dModel.MAX_CONTACTS
+comptime NEQ = Walker2dModel.MAX_EQUALITY
+comptime NTD = Walker2dModel.MAX_TENDON
+comptime NSITE = Walker2dModel.NSITE
+comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime BATCH = 3
 comptime N_STEPS = 3
 comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
@@ -93,16 +97,11 @@ def main() raises:
     print("--- RK4 full-step GOLDEN gate: walker2d BATCH=", BATCH)
     var ctx = DeviceContext()
 
-    var model_t = TensorImpl[DTYPE].alloc(MS)
-    model_t.upload(ctx)
-    Walker2dModel.init_model_gpu(ctx, model_t.dev.value())
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, 0, BATCH]()
-    var dc = DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, 0, BATCH]()
+    var d = DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]()
+    var dc = DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = _init_qpos(e, i)
@@ -119,12 +118,12 @@ def main() raises:
 
     var integ = RK4IntegratorFields[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        0, 0, 0, 0, 0, BATCH=BATCH,
+        NEQ, NTD, NSITE, NEXCL, 0, BATCH=BATCH,
     ]()
     integ.prepare_gpu(ctx)
     var integ_c = RK4IntegratorFields[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        0, 0, 0, 0, 0, BATCH=BATCH,
+        NEQ, NTD, NSITE, NEXCL, 0, BATCH=BATCH,
     ]()
 
     for step in range(N_STEPS):
@@ -138,15 +137,15 @@ def main() raises:
 
     # No joint-limit violations in the final pose (limits provably inactive).
     for j in range(NJOINT):
-        var jo = model_joint_offset[NBODY](j)
-        var jt = Int(model_t.data[jo + JOINT_IDX_TYPE])
+        var jo = j * MODEL_JOINT_SIZE
+        var jt = Int(mf.joints.data[jo + JOINT_IDX_TYPE])
         if jt != JNT_HINGE and jt != JNT_SLIDE:
             continue
-        var rmin = model_t.data[jo + JOINT_IDX_RANGE_MIN]
-        var rmax = model_t.data[jo + JOINT_IDX_RANGE_MAX]
+        var rmin = mf.joints.data[jo + JOINT_IDX_RANGE_MIN]
+        var rmax = mf.joints.data[jo + JOINT_IDX_RANGE_MAX]
         if not (rmin < rmax):
             continue  # unlimited joint
-        var qadr = Int(model_t.data[jo + JOINT_IDX_QPOS_ADR])
+        var qadr = Int(mf.joints.data[jo + JOINT_IDX_QPOS_ADR])
         for e in range(BATCH):
             var qp = d.qpos.data[e * NQ + qadr]
             if qp <= rmin or qp >= rmax:
