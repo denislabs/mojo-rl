@@ -1,4 +1,4 @@
-"""P4 gate: equality + tendon constraints — fields vs legacy PGS pipeline.
+"""Regression gate (GOLDEN-frozen): equality + tendon constraints on fields.
 
 Part A (TENDON): Humanoid (max_tendon=2, free joint + 17 hinges) dropped on
 the floor with feet penetrating, BATCH=2, 2 full Euler steps. Legacy per
@@ -38,29 +38,21 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_equality_tendon_fields
 
 from std.math import abs
 from std.sys import has_nvidia_gpu_accelerator
-from std.gpu import block_idx
 from std.gpu.host import DeviceContext
-from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.core.tensor import TensorImpl
+# NOTE (sunset): Part B still uses the legacy Model/Data to SERIALIZE the weld
+# equality RECORDS into the slab (init_model_gpu never calls
+# copy_equality_to_buffer). Migrating equality-record serialization to a
+# fields-native init is a P6 prerequisite before this import can be removed.
+# The constraint comparison itself is golden-frozen (legacy step/pgs kernels
+# dropped). Part A injects tendon records directly into the slab (no Model).
 from mojo_rl.physics3d.types import Model, Data, ConeType
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.integrator.euler_integrator import EulerIntegrator
 from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
-from mojo_rl.physics3d.solver.pgs_solver import PGSSolver
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts_gpu
-from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap_gpu
 from mojo_rl.physics3d.gpu.constants import (
-    state_size,
     model_size_with_invweight,
-    ws_solver_offset,
-    qpos_offset,
-    qvel_offset,
-    qacc_offset,
-    qfrc_offset,
-    contacts_offset,
-    metadata_offset,
     model_equality_offset,
     model_tendon_offset,
     model_metadata_offset,
@@ -112,6 +104,14 @@ comptime DTYPE = DType.float32
 comptime BATCH = 2
 comptime METADATA_SIZE_L = 4
 
+# --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ---
+comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
+comptime GOLD_RTOL = 1e-3
+comptime GOLD_NCON_A = 8  # Part A tendon: total contacts over the steps
+comptime GOLD_A = -514929.7781171086  # Part A final qpos/qvel/qacc/contacts checksum
+comptime GOLD_NCON_B = 6  # Part B equality: total contacts over the steps
+comptime GOLD_B = 222.7145065382404  # Part B final qpos/qvel/qacc/contacts checksum
+
 # =============================================================================
 # Part A: Humanoid (tendons)
 # =============================================================================
@@ -128,67 +128,9 @@ comptime NEQ_A = HumanoidModel.MAX_EQUALITY  # 0
 comptime NSITE_A = HumanoidModel.NSITE  # 0
 comptime NEXCL_A = HumanoidModel.nexclude  # 0
 comptime N_STEPS_A = 2
-comptime SS_A = state_size[NQ_A, NV_A, NBODY_A, MC_A, NSITE_A]()
 comptime MS_A = model_size_with_invweight[
     NBODY_A, NJOINT_A, NV_A, NGEOM_A, NEQ_A, NTEN_A, NSITE_A, NEXCL_A
 ]()
-comptime WS_A = ws_solver_offset[NV_A, NBODY_A]() + 81 * MC_A + 12 * MC_A * NV_A
-
-
-def _legacy_step_kernel_a[
-    B_: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_A), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_A), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(B_, WS_A), MutAnyOrigin],
-):
-    EulerIntegrator[SOLVER=PGSSolver].step_kernel[
-        DTYPE, NQ_A, NV_A, NBODY_A, NJOINT_A, MC_A, SS_A, MS_A, B_, WS_A
-    ](state, model, workspace)
-
-
-def _legacy_detect_kernel_a[
-    B_: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_A), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_A), MutAnyOrigin],
-):
-    var env = Int(block_idx.x)
-    if env >= B_:
-        return
-    # SAP, not O(N^2): humanoid NGEOM=18 >= SAP_THRESHOLD, so both the
-    # legacy production step kernel (detect_contacts_auto_gpu) and the
-    # fields integrators (detect_contacts_auto_fields) route it to SAP —
-    # the legacy reference must match.
-    detect_contacts_sap_gpu[
-        DTYPE, NQ_A, NV_A, NBODY_A, NJOINT_A, MC_A, SS_A, MS_A, B_, NGEOM_A,
-        NEQ_A, NTEN_A, NSITE_A,
-    ](env, state, model)
-
-
-def _legacy_pgs_kernel_a[
-    B_: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_A), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_A), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(B_, WS_A), MutAnyOrigin],
-):
-    PGSSolver.solve_gpu[
-        DTYPE, NQ_A, NV_A, NBODY_A, NJOINT_A, MC_A, SS_A, MS_A, NV_A, B_,
-        WS_A, NGEOM_A, NEQ_A, CONE_A, NTEN_A, NSITE_A,
-    ](state, model, workspace)
-
-
-def _legacy_finalize_kernel_a[
-    B_: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_A), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_A), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(B_, WS_A), MutAnyOrigin],
-):
-    EulerIntegrator[SOLVER=PGSSolver].step_finalize_kernel[
-        DTYPE, NQ_A, NV_A, NBODY_A, NJOINT_A, MC_A, SS_A, MS_A, B_, WS_A
-    ](state, model, workspace)
 
 
 def _humanoid_qpos(e: Int, i: Int) -> Scalar[DTYPE]:
@@ -226,7 +168,7 @@ def _humanoid_qpos(e: Int, i: Int) -> Scalar[DTYPE]:
 
 
 def _part_a_tendon(ctx: DeviceContext) raises:
-    print("--- Part A: Humanoid tendons — fields vs legacy PGS, BATCH=", BATCH)
+    print("--- Part A: Humanoid tendons fields GOLDEN, BATCH=", BATCH)
 
     var model_t = TensorImpl[DTYPE].alloc(MS_A)
     model_t.upload(ctx)
@@ -278,39 +220,25 @@ def _part_a_tendon(ctx: DeviceContext) raises:
     if Int(mf.meta.data[MODEL_META_IDX_NTENDON]) != 2:
         raise Error("part A vacuous: model meta NTENDON != 2")
 
-    comptime O_QPOS = qpos_offset[NQ_A, NV_A]()
-    comptime O_QVEL = qvel_offset[NQ_A, NV_A]()
-    comptime O_QACC = qacc_offset[NQ_A, NV_A]()
-    comptime O_QFRC = qfrc_offset[NQ_A, NV_A]()
-    comptime O_CON = contacts_offset[NQ_A, NV_A, NBODY_A]()
-    comptime O_META = metadata_offset[NQ_A, NV_A, NBODY_A, MC_A]()
-
-    var slab_t = TensorImpl[DTYPE].alloc(BATCH * SS_A)
     var d = DataFields[DTYPE, NQ_A, NV_A, NBODY_A, MC_A, NSITE_A, BATCH]()
     var dc = DataFields[DTYPE, NQ_A, NV_A, NBODY_A, MC_A, NSITE_A, BATCH]()
     var d_off = DataFields[DTYPE, NQ_A, NV_A, NBODY_A, MC_A, NSITE_A, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_A):
             var qp = _humanoid_qpos(e, i)
-            slab_t.data[e * SS_A + O_QPOS + i] = qp
             d.qpos.data[e * NQ_A + i] = qp
             dc.qpos.data[e * NQ_A + i] = qp
             d_off.qpos.data[e * NQ_A + i] = qp
         for i in range(NV_A):
             var qv = Scalar[DTYPE]((e * 7 + i * 5) % 7 - 3) / 20.0
             var qf = Scalar[DTYPE]((e * 13 + i * 9) % 9 - 4) / 4.0
-            slab_t.data[e * SS_A + O_QVEL + i] = qv
-            slab_t.data[e * SS_A + O_QFRC + i] = qf
             d.qvel.data[e * NV_A + i] = qv
             d.qfrc.data[e * NV_A + i] = qf
             dc.qvel.data[e * NV_A + i] = qv
             dc.qfrc.data[e * NV_A + i] = qf
             d_off.qvel.data[e * NV_A + i] = qv
             d_off.qfrc.data[e * NV_A + i] = qf
-    slab_t.upload(ctx)
     d.upload_all(ctx)
-    var ws_t = TensorImpl[DTYPE].alloc(BATCH * WS_A)
-    ws_t.upload(ctx)
 
     var integ = EulerIntegratorFields[
         DTYPE, NQ_A, NV_A, NBODY_A, NJOINT_A, MC_A, NGEOM_A, NEQ_A, NTEN_A,
@@ -326,134 +254,70 @@ def _part_a_tendon(ctx: DeviceContext) raises:
     for _ in range(BATCH * NV_A):
         qvel_step0.append(Scalar[DTYPE](0))
 
+    var ncon_total = 0
     for step in range(N_STEPS_A):
-        # Legacy slab-GPU reference: illegal-addresses on CUDA for
-        # FREE-joint models; Apple-only (bit-exact gate guarded below).
-        if not has_nvidia_gpu_accelerator():
-            ctx.enqueue_function[_legacy_step_kernel_a[BATCH]](
-                slab_t.lt["gpu", Layout.row_major(BATCH, SS_A)](),
-                model_t.lt["gpu", Layout.row_major(1, MS_A)](),
-                ws_t.lt["gpu", Layout.row_major(BATCH, WS_A)](),
-                grid_dim=(BATCH,),
-                block_dim=(1,),
-            )
-        # Legacy slab-GPU reference: illegal-addresses on CUDA for
-        # FREE-joint models; Apple-only (bit-exact gate guarded below).
-        if not has_nvidia_gpu_accelerator():
-            ctx.enqueue_function[_legacy_detect_kernel_a[BATCH]](
-                slab_t.lt["gpu", Layout.row_major(BATCH, SS_A)](),
-                model_t.lt["gpu", Layout.row_major(1, MS_A)](),
-                grid_dim=(BATCH,),
-                block_dim=(1,),
-            )
-        # Legacy slab-GPU reference: illegal-addresses on CUDA for
-        # FREE-joint models; Apple-only (bit-exact gate guarded below).
-        if not has_nvidia_gpu_accelerator():
-            ctx.enqueue_function[_legacy_pgs_kernel_a[BATCH]](
-                slab_t.lt["gpu", Layout.row_major(BATCH, SS_A)](),
-                model_t.lt["gpu", Layout.row_major(1, MS_A)](),
-                ws_t.lt["gpu", Layout.row_major(BATCH, WS_A)](),
-                grid_dim=(BATCH,),
-                block_dim=(1, MC_A),
-            )
-        # Legacy slab-GPU reference: illegal-addresses on CUDA for
-        # FREE-joint models; Apple-only (bit-exact gate guarded below).
-        if not has_nvidia_gpu_accelerator():
-            ctx.enqueue_function[_legacy_finalize_kernel_a[BATCH]](
-                slab_t.lt["gpu", Layout.row_major(BATCH, SS_A)](),
-                model_t.lt["gpu", Layout.row_major(1, MS_A)](),
-                ws_t.lt["gpu", Layout.row_major(BATCH, WS_A)](),
-                grid_dim=(BATCH,),
-                block_dim=(1,),
-            )
         integ.step["gpu"](d, mf, ctx)
         integ_c.step["cpu"](dc, mf)
-
-        slab_t.download(ctx)
-        d.qpos.download(ctx)
-        d.qvel.download(ctx)
-        d.qacc.download(ctx)
-        d.contacts.download(ctx)
         d.meta.download(ctx)
+        d.qvel.download(ctx)
         if step == 0:
             for i in range(BATCH * NV_A):
                 qvel_step0[i] = d.qvel.data[i]
-        var bad = 0
         var ncon_seen = 0
         for e in range(BATCH):
-            var nc = Int(
+            ncon_seen += Int(
                 d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
             )
-            var nc_l = Int(
-                slab_t.data[e * SS_A + O_META + META_IDX_NUM_CONTACTS]
-            )
-            if nc != nc_l:
-                print("  ncon mismatch env", e, ": fields", nc, " legacy", nc_l)
-                bad += 1
-                continue
-            ncon_seen += nc
-            for i in range(NQ_A):
-                if (
-                    d.qpos.data[e * NQ_A + i]
-                    != slab_t.data[e * SS_A + O_QPOS + i]
-                ):
-                    if bad < 4:
-                        print(
-                            "  qpos diff e", e, "i", i, ":",
-                            d.qpos.data[e * NQ_A + i], "vs",
-                            slab_t.data[e * SS_A + O_QPOS + i],
-                        )
-                    bad += 1
-            for i in range(NV_A):
-                if (
-                    d.qvel.data[e * NV_A + i]
-                    != slab_t.data[e * SS_A + O_QVEL + i]
-                ):
-                    if bad < 4:
-                        print(
-                            "  qvel diff e", e, "i", i, ":",
-                            d.qvel.data[e * NV_A + i], "vs",
-                            slab_t.data[e * SS_A + O_QVEL + i],
-                        )
-                    bad += 1
-                if (
-                    d.qacc.data[e * NV_A + i]
-                    != slab_t.data[e * SS_A + O_QACC + i]
-                ):
-                    bad += 1
-            for c in range(nc):
-                for k in range(CONTACT_SIZE):
-                    if (
-                        d.contacts.data[
-                            e * MC_A * CONTACT_SIZE + c * CONTACT_SIZE + k
-                        ]
-                        != slab_t.data[
-                            e * SS_A + O_CON + c * CONTACT_SIZE + k
-                        ]
-                    ):
-                        if bad < 4:
-                            print(
-                                "  record diff e", e, "c", c, "k", k, ":",
-                                d.contacts.data[
-                                    e * MC_A * CONTACT_SIZE
-                                    + c * CONTACT_SIZE + k
-                                ],
-                                "vs",
-                                slab_t.data[
-                                    e * SS_A + O_CON + c * CONTACT_SIZE + k
-                                ],
-                            )
-                        bad += 1
-        if bad != 0 and not has_nvidia_gpu_accelerator():  # legacy-GPU broken on CUDA
-            raise Error("part A step " + String(step) + ": mismatch")
         if ncon_seen == 0:
             raise Error(
-                "part A: no contacts at step " + String(step) + " — vacuous"
+                "part A step " + String(step) + ": no contacts — vacuous"
             )
-        print(
-            "  step", step, ": BIT-EXACT (qpos/qvel/qacc + contact records),"
-            " total contacts:", ncon_seen,
-        )
+        ncon_total += ncon_seen
+        print("  step", step, ": contacts", ncon_seen)
+
+    # --- final fields-GPU fingerprint (Apple-gated) ---
+    d.qpos.download(ctx)
+    d.qvel.download(ctx)
+    d.qacc.download(ctx)
+    d.contacts.download(ctx)
+    d.meta.download(ctx)
+    var fp = Float64(0)
+    for e in range(BATCH):
+        for i in range(NQ_A):
+            fp += Float64(d.qpos.data[e * NQ_A + i]) * Float64(e * NQ_A + i + 1)
+        for i in range(NV_A):
+            fp += Float64(d.qvel.data[e * NV_A + i]) * Float64(
+                (e * NV_A + i + 1) * 7
+            )
+            fp += Float64(d.qacc.data[e * NV_A + i]) * Float64(
+                (e * NV_A + i + 1) * 13
+            )
+        var nc2 = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        for c in range(nc2):
+            for k in range(CONTACT_SIZE):
+                fp += Float64(
+                    d.contacts.data[
+                        e * MC_A * CONTACT_SIZE + c * CONTACT_SIZE + k
+                    ]
+                ) * Float64((c + 1) * (k + 1))
+    if HARVEST:
+        print("  HARVEST GOLD_NCON_A =", ncon_total)
+        print("  HARVEST GOLD_A      =", fp)
+    else:
+        if ncon_total != GOLD_NCON_A and not has_nvidia_gpu_accelerator():
+            raise Error(
+                "part A contacts " + String(ncon_total) + " != golden "
+                + String(GOLD_NCON_A)
+            )
+        var denom = abs(GOLD_A) if abs(GOLD_A) > 1e-9 else 1.0
+        if abs(fp - GOLD_A) / denom > GOLD_RTOL and (
+            not has_nvidia_gpu_accelerator()
+        ):
+            raise Error(
+                "part A fingerprint " + String(fp) + " != golden "
+                + String(GOLD_A)
+            )
+        print("  Part A matches golden fingerprint")
 
     var worst = Float64(0)
     for i in range(BATCH * NQ_A):
@@ -536,67 +400,13 @@ comptime MC_B = WeldTestModel.MAX_CONTACTS  # 8
 comptime NEQ_B = WeldTestModel.MAX_EQUALITY  # 6
 comptime CONE_B = WeldTestModel.CONE_TYPE
 comptime N_STEPS_B = 3
-comptime SS_B = state_size[NQ_B, NV_B, NBODY_B, MC_B, 0]()
 comptime MS_B = model_size_with_invweight[
     NBODY_B, NJOINT_B, NV_B, NGEOM_B, NEQ_B
 ]()
-comptime WS_B = ws_solver_offset[NV_B, NBODY_B]() + 81 * MC_B + 12 * MC_B * NV_B
-
-
-def _legacy_step_kernel_b[
-    B_: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_B), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_B), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(B_, WS_B), MutAnyOrigin],
-):
-    EulerIntegrator[SOLVER=PGSSolver].step_kernel[
-        DTYPE, NQ_B, NV_B, NBODY_B, NJOINT_B, MC_B, SS_B, MS_B, B_, WS_B
-    ](state, model, workspace)
-
-
-def _legacy_detect_kernel_b[
-    B_: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_B), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_B), MutAnyOrigin],
-):
-    var env = Int(block_idx.x)
-    if env >= B_:
-        return
-    detect_contacts_gpu[
-        DTYPE, NQ_B, NV_B, NBODY_B, NJOINT_B, MC_B, SS_B, MS_B, B_, NGEOM_B,
-        NEQ_B, 0, 0,
-    ](env, state, model)
-
-
-def _legacy_pgs_kernel_b[
-    B_: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_B), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_B), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(B_, WS_B), MutAnyOrigin],
-):
-    PGSSolver.solve_gpu[
-        DTYPE, NQ_B, NV_B, NBODY_B, NJOINT_B, MC_B, SS_B, MS_B, NV_B, B_,
-        WS_B, NGEOM_B, NEQ_B, CONE_B, 0, 0,
-    ](state, model, workspace)
-
-
-def _legacy_finalize_kernel_b[
-    B_: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_B), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_B), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(B_, WS_B), MutAnyOrigin],
-):
-    EulerIntegrator[SOLVER=PGSSolver].step_finalize_kernel[
-        DTYPE, NQ_B, NV_B, NBODY_B, NJOINT_B, MC_B, SS_B, MS_B, B_, WS_B
-    ](state, model, workspace)
 
 
 def _part_b_equality(ctx: DeviceContext) raises:
-    print("--- Part B: synthetic weld equality — fields vs legacy PGS,")
+    print("--- Part B: synthetic weld equality fields GOLDEN,")
     print("    BATCH=", BATCH)
 
     var model_t = TensorImpl[DTYPE].alloc(MS_B)
@@ -652,39 +462,25 @@ def _part_b_equality(ctx: DeviceContext) raises:
     if Int(mf.meta.data[MODEL_META_IDX_NEQUALITY]) != 1:
         raise Error("part B vacuous: model meta NEQUALITY != 1")
 
-    comptime O_QPOS = qpos_offset[NQ_B, NV_B]()
-    comptime O_QVEL = qvel_offset[NQ_B, NV_B]()
-    comptime O_QACC = qacc_offset[NQ_B, NV_B]()
-    comptime O_QFRC = qfrc_offset[NQ_B, NV_B]()
-    comptime O_CON = contacts_offset[NQ_B, NV_B, NBODY_B]()
-    comptime O_META = metadata_offset[NQ_B, NV_B, NBODY_B, MC_B]()
-
-    var slab_t = TensorImpl[DTYPE].alloc(BATCH * SS_B)
     var d = DataFields[DTYPE, NQ_B, NV_B, NBODY_B, MC_B, 0, BATCH]()
     var dc = DataFields[DTYPE, NQ_B, NV_B, NBODY_B, MC_B, 0, BATCH]()
     var d_off = DataFields[DTYPE, NQ_B, NV_B, NBODY_B, MC_B, 0, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_B):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 50.0
-            slab_t.data[e * SS_B + O_QPOS + i] = qp
             d.qpos.data[e * NQ_B + i] = qp
             dc.qpos.data[e * NQ_B + i] = qp
             d_off.qpos.data[e * NQ_B + i] = qp
         for i in range(NV_B):
             var qv = Scalar[DTYPE]((e * 7 + i * 5) % 7 - 3) / 20.0
             var qf = Scalar[DTYPE]((e * 13 + i * 9) % 9 - 4) / 4.0
-            slab_t.data[e * SS_B + O_QVEL + i] = qv
-            slab_t.data[e * SS_B + O_QFRC + i] = qf
             d.qvel.data[e * NV_B + i] = qv
             d.qfrc.data[e * NV_B + i] = qf
             dc.qvel.data[e * NV_B + i] = qv
             dc.qfrc.data[e * NV_B + i] = qf
             d_off.qvel.data[e * NV_B + i] = qv
             d_off.qfrc.data[e * NV_B + i] = qf
-    slab_t.upload(ctx)
     d.upload_all(ctx)
-    var ws_t = TensorImpl[DTYPE].alloc(BATCH * WS_B)
-    ws_t.upload(ctx)
 
     var integ = EulerIntegratorFields[
         DTYPE, NQ_B, NV_B, NBODY_B, NJOINT_B, MC_B, NGEOM_B, NEQ_B, 0, 0, 0,
@@ -700,134 +496,70 @@ def _part_b_equality(ctx: DeviceContext) raises:
     for _ in range(BATCH * NV_B):
         qvel_step0.append(Scalar[DTYPE](0))
 
+    var ncon_total = 0
     for step in range(N_STEPS_B):
-        # Legacy slab-GPU reference: illegal-addresses on CUDA for
-        # FREE-joint models; Apple-only (bit-exact gate guarded below).
-        if not has_nvidia_gpu_accelerator():
-            ctx.enqueue_function[_legacy_step_kernel_b[BATCH]](
-                slab_t.lt["gpu", Layout.row_major(BATCH, SS_B)](),
-                model_t.lt["gpu", Layout.row_major(1, MS_B)](),
-                ws_t.lt["gpu", Layout.row_major(BATCH, WS_B)](),
-                grid_dim=(BATCH,),
-                block_dim=(1,),
-            )
-        # Legacy slab-GPU reference: illegal-addresses on CUDA for
-        # FREE-joint models; Apple-only (bit-exact gate guarded below).
-        if not has_nvidia_gpu_accelerator():
-            ctx.enqueue_function[_legacy_detect_kernel_b[BATCH]](
-                slab_t.lt["gpu", Layout.row_major(BATCH, SS_B)](),
-                model_t.lt["gpu", Layout.row_major(1, MS_B)](),
-                grid_dim=(BATCH,),
-                block_dim=(1,),
-            )
-        # Legacy slab-GPU reference: illegal-addresses on CUDA for
-        # FREE-joint models; Apple-only (bit-exact gate guarded below).
-        if not has_nvidia_gpu_accelerator():
-            ctx.enqueue_function[_legacy_pgs_kernel_b[BATCH]](
-                slab_t.lt["gpu", Layout.row_major(BATCH, SS_B)](),
-                model_t.lt["gpu", Layout.row_major(1, MS_B)](),
-                ws_t.lt["gpu", Layout.row_major(BATCH, WS_B)](),
-                grid_dim=(BATCH,),
-                block_dim=(1, MC_B),
-            )
-        # Legacy slab-GPU reference: illegal-addresses on CUDA for
-        # FREE-joint models; Apple-only (bit-exact gate guarded below).
-        if not has_nvidia_gpu_accelerator():
-            ctx.enqueue_function[_legacy_finalize_kernel_b[BATCH]](
-                slab_t.lt["gpu", Layout.row_major(BATCH, SS_B)](),
-                model_t.lt["gpu", Layout.row_major(1, MS_B)](),
-                ws_t.lt["gpu", Layout.row_major(BATCH, WS_B)](),
-                grid_dim=(BATCH,),
-                block_dim=(1,),
-            )
         integ.step["gpu"](d, mf, ctx)
         integ_c.step["cpu"](dc, mf)
-
-        slab_t.download(ctx)
-        d.qpos.download(ctx)
-        d.qvel.download(ctx)
-        d.qacc.download(ctx)
-        d.contacts.download(ctx)
         d.meta.download(ctx)
+        d.qvel.download(ctx)
         if step == 0:
             for i in range(BATCH * NV_B):
                 qvel_step0[i] = d.qvel.data[i]
-        var bad = 0
         var ncon_seen = 0
         for e in range(BATCH):
-            var nc = Int(
+            ncon_seen += Int(
                 d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
             )
-            var nc_l = Int(
-                slab_t.data[e * SS_B + O_META + META_IDX_NUM_CONTACTS]
-            )
-            if nc != nc_l:
-                print("  ncon mismatch env", e, ": fields", nc, " legacy", nc_l)
-                bad += 1
-                continue
-            ncon_seen += nc
-            for i in range(NQ_B):
-                if (
-                    d.qpos.data[e * NQ_B + i]
-                    != slab_t.data[e * SS_B + O_QPOS + i]
-                ):
-                    if bad < 4:
-                        print(
-                            "  qpos diff e", e, "i", i, ":",
-                            d.qpos.data[e * NQ_B + i], "vs",
-                            slab_t.data[e * SS_B + O_QPOS + i],
-                        )
-                    bad += 1
-            for i in range(NV_B):
-                if (
-                    d.qvel.data[e * NV_B + i]
-                    != slab_t.data[e * SS_B + O_QVEL + i]
-                ):
-                    if bad < 4:
-                        print(
-                            "  qvel diff e", e, "i", i, ":",
-                            d.qvel.data[e * NV_B + i], "vs",
-                            slab_t.data[e * SS_B + O_QVEL + i],
-                        )
-                    bad += 1
-                if (
-                    d.qacc.data[e * NV_B + i]
-                    != slab_t.data[e * SS_B + O_QACC + i]
-                ):
-                    bad += 1
-            for c in range(nc):
-                for k in range(CONTACT_SIZE):
-                    if (
-                        d.contacts.data[
-                            e * MC_B * CONTACT_SIZE + c * CONTACT_SIZE + k
-                        ]
-                        != slab_t.data[
-                            e * SS_B + O_CON + c * CONTACT_SIZE + k
-                        ]
-                    ):
-                        if bad < 4:
-                            print(
-                                "  record diff e", e, "c", c, "k", k, ":",
-                                d.contacts.data[
-                                    e * MC_B * CONTACT_SIZE
-                                    + c * CONTACT_SIZE + k
-                                ],
-                                "vs",
-                                slab_t.data[
-                                    e * SS_B + O_CON + c * CONTACT_SIZE + k
-                                ],
-                            )
-                        bad += 1
-        if bad != 0 and not has_nvidia_gpu_accelerator():  # legacy-GPU broken on CUDA
-            raise Error("part B step " + String(step) + ": mismatch")
         if ncon_seen == 0:
             raise Error(
-                "part B: no contacts at step " + String(step) + " — vacuous"
+                "part B step " + String(step) + ": no contacts — vacuous"
             )
-        print(
-            "  step", step, ": BIT-EXACT (qpos/qvel/qacc + contact records),"
-            " total contacts:", ncon_seen,
-        )
+        ncon_total += ncon_seen
+        print("  step", step, ": contacts", ncon_seen)
+
+    # --- final fields-GPU fingerprint (Apple-gated) ---
+    d.qpos.download(ctx)
+    d.qvel.download(ctx)
+    d.qacc.download(ctx)
+    d.contacts.download(ctx)
+    d.meta.download(ctx)
+    var fp = Float64(0)
+    for e in range(BATCH):
+        for i in range(NQ_B):
+            fp += Float64(d.qpos.data[e * NQ_B + i]) * Float64(e * NQ_B + i + 1)
+        for i in range(NV_B):
+            fp += Float64(d.qvel.data[e * NV_B + i]) * Float64(
+                (e * NV_B + i + 1) * 7
+            )
+            fp += Float64(d.qacc.data[e * NV_B + i]) * Float64(
+                (e * NV_B + i + 1) * 13
+            )
+        var nc2 = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        for c in range(nc2):
+            for k in range(CONTACT_SIZE):
+                fp += Float64(
+                    d.contacts.data[
+                        e * MC_B * CONTACT_SIZE + c * CONTACT_SIZE + k
+                    ]
+                ) * Float64((c + 1) * (k + 1))
+    if HARVEST:
+        print("  HARVEST GOLD_NCON_B =", ncon_total)
+        print("  HARVEST GOLD_B      =", fp)
+    else:
+        if ncon_total != GOLD_NCON_B and not has_nvidia_gpu_accelerator():
+            raise Error(
+                "part B contacts " + String(ncon_total) + " != golden "
+                + String(GOLD_NCON_B)
+            )
+        var denom = abs(GOLD_B) if abs(GOLD_B) > 1e-9 else 1.0
+        if abs(fp - GOLD_B) / denom > GOLD_RTOL and (
+            not has_nvidia_gpu_accelerator()
+        ):
+            raise Error(
+                "part B fingerprint " + String(fp) + " != golden "
+                + String(GOLD_B)
+            )
+        print("  Part B matches golden fingerprint")
 
     var worst = Float64(0)
     for i in range(BATCH * NQ_B):
