@@ -203,20 +203,8 @@ struct Phyics3dEnvFields[
 
         self._sync_fields_from_bridge()
         Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
-
-        # Fluid guard once here (the trait step() is non-raising).
-        from mojo_rl.physics3d.gpu.constants import (
-            MODEL_META_IDX_DENSITY,
-            MODEL_META_IDX_VISCOSITY,
-        )
-        if (
-            self.mf.meta.data[MODEL_META_IDX_DENSITY] != 0
-            or self.mf.meta.data[MODEL_META_IDX_VISCOSITY] != 0
-        ):
-            raise Error(
-                "Phyics3dEnvFields: fluid forces not ported to the fields"
-                " path yet"
-            )
+        # Fluid forces (density/viscosity > 0) are applied inside the fields
+        # integrator step (dynamics/fluid_forces_fields.mojo); no guard needed.
 
     # ── bridge sync (transitional; O(NQ+NV+NBODY) scalars) ───────────────
     def _sync_fields_from_bridge(mut self):

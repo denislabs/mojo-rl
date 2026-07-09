@@ -25,10 +25,13 @@ from mojo_rl.envs.ant import AntModel, AntConfig
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
 
-# NOTE: Swimmer is intentionally OMITTED — it relies on fluid (drag) forces
-# which are not ported to the fields path yet (the facade raises
-# "fluid forces not ported to the fields path yet"). Re-add it here once fluid
-# forces land on fields; until then Swimmer cannot sunset its legacy path.
+# Swimmer (fluid drag) is now supported — fluid forces are applied inside the
+# fields integrator step (Stage A). Humanoid exercises tendons + sites on the
+# facade.
+from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
+from mojo_rl.envs.swimmer.swimmer_config import SwimmerConfig
+from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
+from mojo_rl.envs.humanoid.humanoid_config import HumanoidConfig
 from mojo_rl.envs.inverted_double_pendulum.inverted_double_pendulum_xml import (
     InvertedDoublePendulumModel,
 )
@@ -111,5 +114,21 @@ def main() raises:
     ]
     var re = RE(ctx)
     _smoke[RE, RE.OBS_DIM](re, "Reacher")
+
+    # Swimmer: fluid drag active (density=4000, viscosity=0.1) — exercises the
+    # Stage-A fluid path through the facade.
+    comptime SW = Phyics3dEnvFields[
+        SwimmerModel, SwimmerConfig, DT, TERMINATE_ON_UNHEALTHY=False
+    ]
+    var sw = SW(ctx)
+    _smoke[SW, SW.OBS_DIM](sw, "Swimmer")
+
+    # Humanoid: tendons (max_tendon=2) + sites, threaded through the fields
+    # integrator/solver.
+    comptime HU = Phyics3dEnvFields[
+        HumanoidModel, HumanoidConfig, DT, TERMINATE_ON_UNHEALTHY=True
+    ]
+    var hu = HU(ctx)
+    _smoke[HU, HU.OBS_DIM](hu, "Humanoid")
 
     print("test_env_fields_mujoco_roundtrip: ALL PASS")
