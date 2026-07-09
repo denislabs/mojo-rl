@@ -40,6 +40,10 @@ comptime NBODY = Walker2dModel.NBODY
 comptime NJOINT = Walker2dModel.NJOINT
 comptime NGEOM = Walker2dModel.NGEOM
 comptime MC = Walker2dModel.MAX_CONTACTS
+comptime NEQ = Walker2dModel.MAX_EQUALITY
+comptime NTD = Walker2dModel.MAX_TENDON
+comptime NSITE = Walker2dModel.NSITE
+comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime CONE = Walker2dModel.CONE_TYPE
 comptime BATCH = 2
 comptime N_STEPS = 3
@@ -70,16 +74,11 @@ def main() raises:
     print("--- Euler WITH CONTACTS fields GOLDEN gate: Walker2D BATCH=", BATCH)
     var ctx = DeviceContext()
 
-    var model_t = TensorImpl[DTYPE].alloc(MS)
-    model_t.upload(ctx)
-    Walker2dModel.init_model_gpu(ctx, model_t.dev.value())
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
-    var dc = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
+    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dc = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -99,11 +98,11 @@ def main() raises:
     d.upload_all(ctx)
 
     var integ = EulerIntegratorFields[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, CONE, BATCH,
+        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
     ]()
     integ.prepare_gpu(ctx)
     var integ_c = EulerIntegratorFields[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, CONE, BATCH,
+        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
     ]()
 
     for step in range(N_STEPS):

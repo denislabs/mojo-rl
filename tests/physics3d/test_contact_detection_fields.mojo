@@ -43,6 +43,10 @@ comptime NBODY = Walker2dModel.NBODY
 comptime NJOINT = Walker2dModel.NJOINT
 comptime NGEOM = Walker2dModel.NGEOM
 comptime MC = Walker2dModel.MAX_CONTACTS
+comptime NEQ = Walker2dModel.MAX_EQUALITY
+comptime NTD = Walker2dModel.MAX_TENDON
+comptime NSITE = Walker2dModel.NSITE
+comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime BATCH = 2
 comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 comptime METADATA_SIZE_L = 4
@@ -58,16 +62,11 @@ def main() raises:
     print("--- contact detection fields GOLDEN gate: walker2d BATCH=", BATCH)
     var ctx = DeviceContext()
 
-    var model_t = TensorImpl[DTYPE].alloc(MS)
-    model_t.upload(ctx)
-    Walker2dModel.init_model_gpu(ctx, model_t.dev.value())
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Poses: env0 slight floor penetration; env1 heavy penetration + bent legs.
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
+    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     var qcfg = List[List[Float64]]()
     var q0 = List[Float64](length=NQ, fill=0.0)
     q0[1] = 1.18  # rootz slightly below standing -> feet penetrate
@@ -86,10 +85,10 @@ def main() raises:
 
     # Fields GPU: FK + detection.
     forward_kinematics_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
     detect_contacts_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
     d.contacts.download(ctx)
     d.meta.download(ctx)
@@ -128,15 +127,15 @@ def main() raises:
         print("  PASS: fields-GPU matches golden fingerprint")
 
     # --- independent CPU oracle: fields-CPU == fields-GPU (count + records) ---
-    var dc = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
+    var dc = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             dc.qpos.data[e * NQ + i] = Scalar[DTYPE](qcfg[e][i])
     forward_kinematics_fields[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](dc, mf)
     detect_contacts_fields[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](dc, mf)
     var worst = Float64(0)
     for e in range(BATCH):

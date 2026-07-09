@@ -29,6 +29,10 @@ comptime NBODY = SwimmerModel.NBODY
 comptime NJOINT = SwimmerModel.NJOINT
 comptime NGEOM = SwimmerModel.NGEOM
 comptime MC = SwimmerModel.MAX_CONTACTS
+comptime NEQ = SwimmerModel.MAX_EQUALITY
+comptime NTD = SwimmerModel.MAX_TENDON
+comptime NSITE = SwimmerModel.NSITE
+comptime NEXCL = SwimmerModel.NEXCLUDE
 comptime CONE = SwimmerModel.CONE_TYPE
 comptime BATCH = 1
 comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
@@ -36,20 +40,15 @@ comptime N_STEPS = 3
 
 
 def _load_model(ctx: DeviceContext) raises -> ModelFields[
-    DT, NV, NBODY, NJOINT, NGEOM, 0, 0, 0, 0, 0
+    DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0
 ]:
-    var model_t = TensorImpl[DT].alloc(MS)
-    model_t.upload(ctx)
-    SwimmerModel.init_model_gpu(ctx, model_t.dev.value())
-    model_t.download(ctx)
-    var mf = ModelFields[DT, NV, NBODY, NJOINT, NGEOM]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    SwimmerModel.init_fields[DT, 0](ctx, mf)
     return mf^
 
 
-def _fresh_data() raises -> DataFields[DT, NQ, NV, NBODY, MC, 0, BATCH]:
-    var d = DataFields[DT, NQ, NV, NBODY, MC, 0, BATCH]()
+def _fresh_data() raises -> DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]:
+    var d = DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DT]((i * 3) % 5 - 2) / 20.0
     for i in range(NV):
@@ -58,7 +57,7 @@ def _fresh_data() raises -> DataFields[DT, NQ, NV, NBODY, MC, 0, BATCH]:
 
 
 def _check_finite(
-    mut d: DataFields[DT, NQ, NV, NBODY, MC, 0, BATCH], ctx: DeviceContext, name: String
+    mut d: DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH], ctx: DeviceContext, name: String
 ) raises:
     d.qpos.download(ctx)
     d.qvel.download(ctx)
@@ -81,7 +80,7 @@ def main() raises:
     var dE = _fresh_data()
     dE.upload_all(ctx)
     var integE = EulerIntegratorFields[
-        DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, CONE, BATCH,
+        DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
     ]()
     integE.prepare_gpu(ctx)
     for _s in range(N_STEPS):
@@ -93,7 +92,7 @@ def main() raises:
     var dI = _fresh_data()
     dI.upload_all(ctx)
     var integI = ImplicitIntegratorFields[
-        DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, CONE, BATCH,
+        DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
     ]()
     integI.prepare_gpu(ctx)
     for _s in range(N_STEPS):
@@ -105,7 +104,7 @@ def main() raises:
     var dR = _fresh_data()
     dR.upload_all(ctx)
     var integR = RK4IntegratorFields[
-        DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, CONE, BATCH,
+        DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
     ]()
     integR.prepare_gpu(ctx)
     for _s in range(N_STEPS):
