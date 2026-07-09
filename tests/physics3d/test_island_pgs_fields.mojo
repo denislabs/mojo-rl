@@ -84,6 +84,10 @@ comptime NBODY = Walker2dModel.NBODY
 comptime NJOINT = Walker2dModel.NJOINT
 comptime NGEOM = Walker2dModel.NGEOM
 comptime MC = Walker2dModel.MAX_CONTACTS
+comptime NEQ = Walker2dModel.MAX_EQUALITY
+comptime NTD = Walker2dModel.MAX_TENDON
+comptime NSITE = Walker2dModel.NSITE
+comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime CONE = ConeType.ELLIPTIC
 comptime BATCH = 2
 comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
@@ -92,27 +96,27 @@ comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 def _fields_prep[
     target: StaticString
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH],
-    mut mf: ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, 0, 0, 0, 0, 0],
+    mut d: DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    mut mf: ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
     """Smooth-dynamics prep + detection up to the constraint seam (copied
     from test_cg_fields / test_newton_solve_fields)."""
     forward_kinematics_fields[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
     compute_body_velocities_fields[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
     compute_subtree_com_fields[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
     compute_cdof_fields[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, ctx)
     compute_mass_matrix_fields[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, ctx)
 
     comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
@@ -128,7 +132,7 @@ def _fields_prep[
         ldl_factor_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
         compute_m_inv_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
         compute_bias_forces_rne_fields[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
             BATCH,
         ](d, mf, scratch, ctx)
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
@@ -160,7 +164,7 @@ def _fields_prep[
         ldl_factor_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
         compute_m_inv_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
         compute_bias_forces_rne_fields[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
             BATCH,
         ](d, mf, scratch, ctx)
         ctx.value().enqueue_function[
@@ -187,11 +191,11 @@ def _fields_prep[
         )
 
     detect_contacts_fields[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
 
 
-def _init_state(mut d: DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]):
+def _init_state(mut d: DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]):
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -208,15 +212,10 @@ def _init_state(mut d: DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]):
 
 
 def _load_model(ctx: DeviceContext) raises -> ModelFields[
-    DTYPE, NV, NBODY, NJOINT, NGEOM, 0, 0, 0, 0, 0
+    DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0
 ]:
-    var model_t = TensorImpl[DTYPE].alloc(MS)
-    model_t.upload(ctx)
-    Walker2dModel.init_model_gpu(ctx, model_t.dev.value())
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
     return mf^
 
 
@@ -224,8 +223,8 @@ def part_a(ctx: DeviceContext) raises:
     print("--- Part A: fields-GPU IslandPGS vs fields-GPU PGS (ELLIPTIC)")
     var mf = _load_model(ctx)
 
-    var dP = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
-    var dI = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
+    var dP = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dI = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     _init_state(dP)
     _init_state(dI)
     dP.upload_all(ctx)
@@ -242,13 +241,13 @@ def part_a(ctx: DeviceContext) raises:
 
     _fields_prep["gpu"](dP, mf, scP, ctx)
     solve_contacts_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         CONE, BATCH,
     ](dP, mf, scP, csP, ctx)
 
     _fields_prep["gpu"](dI, mf, scI, ctx)
     solve_island_pgs_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         CONE, BATCH,
     ](dI, mf, scI, csI, ctx)
 
@@ -281,8 +280,8 @@ def part_b(ctx: DeviceContext) raises:
     print("--- Part B: fields-CPU IslandPGS vs fields-GPU IslandPGS")
     var mf = _load_model(ctx)
 
-    var dg = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
-    var dc = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
+    var dg = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dc = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     _init_state(dg)
     _init_state(dc)
     dg.upload_all(ctx)
@@ -296,13 +295,13 @@ def part_b(ctx: DeviceContext) raises:
 
     _fields_prep["gpu"](dg, mf, scg, ctx)
     solve_island_pgs_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         CONE, BATCH,
     ](dg, mf, scg, csg, ctx)
 
     _fields_prep["cpu"](dc, mf, scc, None)
     solve_island_pgs_fields[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         CONE, BATCH,
     ](dc, mf, scc, csc, None)
 
@@ -323,12 +322,12 @@ def part_b(ctx: DeviceContext) raises:
 def part_c(ctx: DeviceContext) raises:
     print("--- Part C: EulerIntegratorFields[SOLVER='island'] step (finite)")
     var mf = _load_model(ctx)
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
+    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     _init_state(d)
     d.upload_all(ctx)
 
     var integ = EulerIntegratorFields[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, CONE, BATCH,
+        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
         SOLVER="island",
     ]()
     integ.prepare_gpu(ctx)
