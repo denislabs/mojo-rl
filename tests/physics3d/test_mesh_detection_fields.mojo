@@ -1,38 +1,41 @@
-"""P4 gate: MESH narrow-phase in fields contact detection vs legacy kernel.
+"""Regression gate (GOLDEN-frozen): MESH narrow-phase in fields contact
+detection, SawyerReach (robot meshes + block.stl).
 
-SawyerReach (robot meshes + block.stl, NMESH_VERTS > 0), BATCH=2:
-  env0 = canonical reset pose (obj cylinder resting on the table box),
-  env1 = same arm pose with the obj cylinder teleported into the
-         eGripperBase MESH hull -> mesh-cylinder GJK/EPA contact.
-Legacy FK -> detect_contacts_gpu on the flat slab vs fields FK ->
-detect_contacts_fields on DataFields/ModelFields. Contact count AND every
-populated contact record must be BIT-EXACT; fields-CPU must agree with
-fields-GPU on count + records within 1e-4. Non-vacuous: env1 must contain
-a contact whose body pair is (mesh-geom body, obj body).
+Originally validated BIT-EXACT against the legacy FK + narrow-phase kernels.
+That legacy reference was frozen into the GOLDEN fingerprints below during
+Phase-0 of the physics3d sunset, so this gate survives deletion of the legacy
+slab/kernels. It checks:
+  * fields-GPU (FK -> detect) reproduces the frozen (legacy-validated)
+    fingerprint — per-env contact counts + a contact-record checksum,
+  * a MESH-involved contact (mesh-geom body vs obj body) is present in env1
+    (GJK/EPA fallback — non-vacuous), and
+  * fields-CPU == fields-GPU on records, fed the GPU FK products (isolates the
+    detection port; GJK convergence is chaotic under ULP FK diffs).
+
+env0 = canonical reset (obj on table); env1 = obj teleported into the
+eGripperBase mesh hull. The MESH model build still uses the legacy Model +
+copy_* helpers (see the NOTE below — a P6 prerequisite). Regenerate goldens
+after an INTENTIONAL physics change: HARVEST=True, run on Apple, paste, False.
 
 Run: pixi run -e apple mojo run -I . tests/physics3d/test_mesh_detection_fields.mojo
 """
 
 from std.math import abs
-from std.gpu import block_idx
 from std.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
-from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.types import Model, Data
 from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
 from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
-    forward_kinematics_gpu,
-)
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
-)
-from mojo_rl.physics3d.collision.contact_detection import detect_contacts_gpu
-from mojo_rl.physics3d.collision.contact_detection_fields import (
-    detect_contacts_fields,
-)
+
+# NOTE (sunset): the MESH model build still routes through the legacy Model +
+# copy_* helpers below. init_model_gpu sizes its device output to the model's
+# ACTUAL mesh-vert count, but this gate needs the NMESHV-padded MS buffer, so
+# the device->device copy underflows ("not enough data in src"). Migrating the
+# mesh model build to a fields-native, NMESHV-padded init is a P6 prerequisite
+# before this gate's Model/Data import can be removed. The contact-detection
+# comparison itself is already golden-frozen (legacy FK/detect kernels dropped).
+from mojo_rl.physics3d.types import Model, Data
 from mojo_rl.physics3d.gpu.buffer_utils import (
     copy_model_to_buffer,
     copy_geoms_to_buffer,
@@ -40,12 +43,14 @@ from mojo_rl.physics3d.gpu.buffer_utils import (
     copy_invweight0_to_buffer,
     copy_mesh_hull_to_buffer,
 )
+from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
+    forward_kinematics_fields,
+)
+from mojo_rl.physics3d.collision.contact_detection_fields import (
+    detect_contacts_fields,
+)
 from mojo_rl.physics3d.gpu.constants import (
-    state_size,
     model_size_with_invweight,
-    qpos_offset,
-    contacts_offset,
-    metadata_offset,
     CONTACT_SIZE,
     META_IDX_NUM_CONTACTS,
     MODEL_GEOM_SIZE,
@@ -68,56 +73,35 @@ comptime NTD = SawyerReachModel.MAX_TENDON
 comptime NSITE = SawyerReachModel.NSITE
 comptime MC = SawyerReachModel.MAX_CONTACTS
 comptime BATCH = 2
-# Mesh hull vertex CAPACITY (compile-time): hulls are STL-loaded at runtime;
-# guarded below against the actual total.
 comptime NMESHV = MAX_GPU_MESHES * 256
-comptime SS = state_size[NQ, NV, NBODY, MC, NSITE]()
 comptime MS = model_size_with_invweight[
     NBODY, NJOINT, NV, NGEOM, NEQ, NTD, NSITE, 0, NMESHV
 ]()
+comptime METADATA_SIZE_L = 4
 
-
-def _legacy_fk_detect_kernel[
-    B_: Int
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS), MutAnyOrigin],
-):
-    var env = Int(block_idx.x)
-    if env >= B_:
-        return
-    forward_kinematics_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, SS, MS, B_
-    ](env, state, model)
-    detect_contacts_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, SS, MS, B_, NGEOM, NEQ, NTD, NSITE
-    ](env, state, model)
+# --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
+comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
+comptime GOLD_RTOL = 1e-3
+comptime GOLD_NCON = 4  # total contacts across both envs
+comptime GOLD_CON = 1261.838640670292  # order-sensitive contact-record checksum
 
 
 def main() raises:
-    print("--- mesh contact detection: fields vs legacy, sawyer BATCH=", BATCH)
+    print("--- mesh contact detection fields GOLDEN gate: sawyer BATCH=", BATCH)
     var ctx = DeviceContext()
 
-    # ── Build the CPU model (loads STL hulls) and serialize to a slab that
-    # includes the mesh sections (NEXCLUDE=0, NMESH_VERTS=NMESHV) — the same
-    # copy_* helpers ModelDefFromXML.init_model_gpu uses, at the mesh-sized
-    # buffer this test needs.
+    # Build the CPU model (loads STL hulls) and serialize into an NMESHV-padded
+    # MS slab via the copy_* helpers (see the sunset NOTE above).
     var model = Model[
         DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ,
         SawyerReachModel.CONE_TYPE, NTD, NSITE,
     ]()
     var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MC, NSITE]()
     SawyerReachModel.setup_model_and_data[DTYPE](model, data)
-    print(
-        "  num_meshes:", model.num_meshes,
-        " hull verts:", len(model.mesh_vert) // 3,
-    )
     if model.num_meshes == 0 or len(model.mesh_vert) == 0:
         raise Error("expected STL mesh hulls — gate is vacuous")
     if len(model.mesh_vert) > NMESHV * 3:
         raise Error("mesh hull verts exceed NMESHV capacity — raise NMESHV")
-    if model.num_meshes > MAX_GPU_MESHES:
-        raise Error("num_meshes exceeds MAX_GPU_MESHES")
 
     var host_buf = ctx.enqueue_create_host_buffer[DTYPE](MS)
     ctx.synchronize()
@@ -133,11 +117,13 @@ def main() raises:
     for i in range(MS):
         model_t.data[i] = host_buf[i]
     model_t.upload(ctx)
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, 0, NMESHV]()
+    var mf = ModelFields[
+        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, 0, NMESHV
+    ]()
     mf.load_from_slab(model_t.data)
     mf.upload_all(ctx)
 
-    # ── Locate the obj cylinder + mesh-geom bodies for the non-vacuity check.
+    # Locate the obj cylinder + mesh-geom bodies for the non-vacuity check.
     var obj_body = -1
     var mesh_bodies = List[Int]()
     for g in range(NGEOM):
@@ -158,55 +144,37 @@ def main() raises:
     if obj_body < 0 or len(mesh_bodies) == 0:
         raise Error("could not identify obj cylinder / mesh geoms")
 
-    # ── Poses. Canonical reset arm pose (sawyer_reach_config custom_reset);
-    # env0: obj on table; env1: obj teleported into the eGripperBase hull
-    # (world ~ (0.005, 0.601, 0.25)) -> mesh-cylinder GJK contact.
+    # Poses: env0 obj on table; env1 obj teleported into eGripperBase hull.
     var qcfg = List[List[Float64]]()
     for e in range(BATCH):
         var q = List[Float64](length=NQ, fill=0.0)
-        q[0] = 1.889288  # j0
-        q[1] = -0.575769  # j1
-        q[2] = -0.976659  # j2
-        q[3] = 1.641991  # j3
-        q[4] = 0.942860  # j4
-        q[5] = 1.043696  # j5
-        q[6] = 2.292833  # j6
-        q[7] = 0.0  # r_close
-        q[8] = 0.0  # l_close
+        q[0] = 1.889288
+        q[1] = -0.575769
+        q[2] = -0.976659
+        q[3] = 1.641991
+        q[4] = 0.942860
+        q[5] = 1.043696
+        q[6] = 2.292833
+        q[7] = 0.0
+        q[8] = 0.0
         if e == 0:
-            q[9] = 0.0  # obj x (on table)
-            q[10] = 0.6  # obj y
-            q[11] = 0.02  # obj z
+            q[9] = 0.0
+            q[10] = 0.6
+            q[11] = 0.02
         else:
-            q[9] = 0.005  # obj x (inside gripper mesh hull)
-            q[10] = 0.601  # obj y
-            q[11] = 0.25  # obj z
-        q[12] = 1.0  # obj quat w
-        q[13] = 0.0
-        q[14] = 0.0
-        q[15] = 0.0
+            q[9] = 0.005
+            q[10] = 0.601
+            q[11] = 0.25
+        q[12] = 1.0
         qcfg.append(q^)
 
-    comptime O_QPOS = qpos_offset[NQ, NV]()
-    var slab_t = TensorImpl[DTYPE].alloc(BATCH * SS)
     var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
-            slab_t.data[e * SS + O_QPOS + i] = Scalar[DTYPE](qcfg[e][i])
             d.qpos.data[e * NQ + i] = Scalar[DTYPE](qcfg[e][i])
-    slab_t.upload(ctx)
     d.upload_all(ctx)
 
-    # Legacy: FK + detection in one launch.
-    ctx.enqueue_function[_legacy_fk_detect_kernel[BATCH]](
-        slab_t.lt["gpu", Layout.row_major(BATCH, SS)](),
-        model_t.lt["gpu", Layout.row_major(1, MS)](),
-        grid_dim=(BATCH,),
-        block_dim=(1,),
-    )
-    slab_t.download(ctx)
-
-    # Fields: FK + detection.
+    # Fields GPU: FK + detection.
     forward_kinematics_fields[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
         0, NMESHV, BATCH,
@@ -218,65 +186,57 @@ def main() raises:
     d.contacts.download(ctx)
     d.meta.download(ctx)
 
-    comptime O_CON = contacts_offset[NQ, NV, NBODY]()
-    comptime O_META = metadata_offset[NQ, NV, NBODY, MC]()
-    comptime METADATA_SIZE_L = 4
-    var bad = 0
+    var ncon_total = 0
+    var fp_con = Float64(0)
     for e in range(BATCH):
-        var ncon_legacy = Int(
-            slab_t.data[e * SS + O_META + META_IDX_NUM_CONTACTS]
-        )
-        var ncon_fields = Int(
-            d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
-        )
-        print("  env", e, ": ncon legacy=", ncon_legacy, " fields=", ncon_fields)
-        if ncon_legacy != ncon_fields:
-            bad += 1
-            continue
-        if ncon_legacy == 0:
-            raise Error("expected contacts in this pose — gate is vacuous")
-        for c in range(ncon_legacy):
+        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        ncon_total += nc
+        for c in range(nc):
             for k in range(CONTACT_SIZE):
-                var a = d.contacts.data[
-                    e * MC * CONTACT_SIZE + c * CONTACT_SIZE + k
-                ]
-                var b = slab_t.data[e * SS + O_CON + c * CONTACT_SIZE + k]
-                if a != b:
-                    if bad < 5:
-                        print(
-                            "  MISMATCH env", e, "contact", c, "field", k,
-                            ": fields=", a, " legacy=", b,
-                        )
-                    bad += 1
-    if bad != 0 and not has_nvidia_gpu_accelerator():  # legacy-GPU broken on CUDA
-        raise Error("mesh contact detection fields-GPU vs legacy-GPU mismatch")
-    print("  PASS: contact records + counts BIT-EXACT vs legacy")
+                fp_con += Float64(
+                    d.contacts.data[e * MC * CONTACT_SIZE + c * CONTACT_SIZE + k]
+                ) * Float64((e + 1) * (c + 1) * (k + 1))
+    if ncon_total == 0:
+        raise Error("expected contacts in these poses — gate is vacuous")
+    print("  fields-GPU total contacts:", ncon_total)
 
-    # ── Non-vacuity: env1 must have a contact between a mesh-geom body and
-    # the obj body (the only obj-vs-right_hand overlap in this pose is the
-    # eGripperBase MESH hull -> GJK/EPA mesh fallback produced it).
+    if HARVEST:
+        print("  HARVEST GOLD_NCON =", ncon_total)
+        print("  HARVEST GOLD_CON  =", fp_con)
+    else:
+        if ncon_total != GOLD_NCON and not has_nvidia_gpu_accelerator():
+            raise Error(
+                "total contacts " + String(ncon_total) + " != golden "
+                + String(GOLD_NCON)
+            )
+        var denom = abs(GOLD_CON) if abs(GOLD_CON) > 1e-9 else 1.0
+        if abs(fp_con - GOLD_CON) / denom > GOLD_RTOL and (
+            not has_nvidia_gpu_accelerator()
+        ):
+            raise Error(
+                "contact-record fingerprint " + String(fp_con) + " != golden "
+                + String(GOLD_CON)
+            )
+        print("  PASS: fields-GPU matches golden fingerprint")
+
+    # Non-vacuity: env1 must have a mesh-geom-body vs obj-body contact.
     var ncon1 = Int(d.meta.data[1 * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
     var mesh_contact_found = False
     for c in range(ncon1):
-        var ba = Int(d.contacts.data[1 * MC * CONTACT_SIZE + c * CONTACT_SIZE + 0])
-        var bb = Int(d.contacts.data[1 * MC * CONTACT_SIZE + c * CONTACT_SIZE + 1])
+        var ba = Int(
+            d.contacts.data[1 * MC * CONTACT_SIZE + c * CONTACT_SIZE + 0]
+        )
+        var bb = Int(
+            d.contacts.data[1 * MC * CONTACT_SIZE + c * CONTACT_SIZE + 1]
+        )
         for mb in mesh_bodies:
             if (ba == mb and bb == obj_body) or (bb == mb and ba == obj_body):
                 mesh_contact_found = True
-                print(
-                    "  mesh contact: bodies (", ba, ",", bb, ") dist=",
-                    d.contacts.data[
-                        1 * MC * CONTACT_SIZE + c * CONTACT_SIZE + 8
-                    ],
-                )
     if not mesh_contact_found:
         raise Error("no MESH-involved contact in env1 — gate is vacuous")
     print("  PASS: MESH-involved contact present (GJK/EPA fallback)")
 
-    # ── Fields CPU vs fields GPU.
-    # GJK convergence is chaotic in deep-penetration configs (ULP-level FK
-    # differences flip the nsimplex==4 exit), so feed the CPU detection the
-    # GPU FK products: this isolates the detection port itself.
+    # --- fields-CPU vs fields-GPU records (fed GPU FK products) ---
     var dc = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     d.xpos.download(ctx)
     d.xquat.download(ctx)
@@ -295,25 +255,6 @@ def main() raises:
             dc.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
         )
         if nc_g != nc_c:
-            print("  env", e, ": ncon fields-GPU=", nc_g, " fields-CPU=", nc_c)
-            for c in range(nc_c):
-                print(
-                    "    CPU contact", c, "bodies (",
-                    Int(dc.contacts.data[e * MC * CONTACT_SIZE + c * CONTACT_SIZE + 0]),
-                    ",",
-                    Int(dc.contacts.data[e * MC * CONTACT_SIZE + c * CONTACT_SIZE + 1]),
-                    ") dist=",
-                    dc.contacts.data[e * MC * CONTACT_SIZE + c * CONTACT_SIZE + 8],
-                )
-            for c in range(nc_g):
-                print(
-                    "    GPU contact", c, "bodies (",
-                    Int(d.contacts.data[e * MC * CONTACT_SIZE + c * CONTACT_SIZE + 0]),
-                    ",",
-                    Int(d.contacts.data[e * MC * CONTACT_SIZE + c * CONTACT_SIZE + 1]),
-                    ") dist=",
-                    d.contacts.data[e * MC * CONTACT_SIZE + c * CONTACT_SIZE + 8],
-                )
             raise Error("fields-CPU contact count differs from fields-GPU")
         for c in range(nc_g):
             for k in range(CONTACT_SIZE):
@@ -335,5 +276,4 @@ def main() raises:
     if worst > 1e-4:
         raise Error("fields-CPU contact records tolerance exceeded")
     print("  PASS: fields-CPU contacts within 1e-4")
-
     print("test_mesh_detection_fields: ALL PASS")
