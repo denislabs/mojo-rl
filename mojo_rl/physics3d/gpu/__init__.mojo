@@ -103,5 +103,5 @@ from ..dynamics.bias_forces import compute_bias_forces_gpu
 from ..dynamics.jacobian import compute_composite_inertia_gpu
 
 # Phase-2 post-substep GPU kernels
-from .cfrc_ext_gpu import compute_cfrc_ext_gpu
+from .cfrc_ext_gpu import compute_cfrc_ext_gpu, compute_cfrc_ext_fields
 from .cvel_gpu import compute_cvel_gpu
