@@ -13,11 +13,11 @@ survives deletion of the legacy slab/kernels. It checks:
 
 A. Walker2D (NQ=9, NBODY=8), BATCH=3 distinct qpos configs.
 B. Synthetic 2-body hinge model with NSITE=2 (covers the sites FK variant +
-   site_xpos), BATCH=2 — built directly into a fields model slab.
+   site_xpos), BATCH=2 — records written DIRECTLY into the per-field tensors.
 
-Model build routes through init_model_gpu/load_from_slab (P6 re-homes it).
-Regenerate goldens after an INTENTIONAL physics change: HARVEST=True, run on
-Apple, paste, HARVEST=False.
+Model build is offset-free (Part A = init_fields; Part B = direct per-field
+record writes) — no slab, no load_from_slab. Regenerate goldens after an
+INTENTIONAL physics change: HARVEST=True, run on Apple, paste, HARVEST=False.
 
 Run: pixi run -e apple mojo run -I . tests/physics3d/test_fk_fields.mojo
 """
@@ -47,11 +47,9 @@ from mojo_rl.physics3d.dynamics.rne_fields import (
     compute_bias_forces_rne_fields,
 )
 from mojo_rl.physics3d.gpu.constants import (
-    model_size_with_invweight,
-    model_body_offset,
-    model_joint_offset,
-    model_metadata_offset,
-    model_site_offset,
+    MODEL_BODY_SIZE,
+    MODEL_JOINT_SIZE,
+    MODEL_SITE_SIZE,
     MODEL_META_IDX_NBODY,
     MODEL_META_IDX_NJOINT,
     BODY_IDX_PARENT,
@@ -87,7 +85,6 @@ comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime BATCH = 3
-comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 
 # ── Synthetic sites model dims ─────────────────────────────────────────────
 comptime S_NQ = 1
@@ -97,9 +94,6 @@ comptime S_NJOINT = 1
 comptime S_NSITE = 2
 comptime S_MC = 1
 comptime S_BATCH = 2
-comptime S_MS = model_size_with_invweight[
-    S_NBODY, S_NJOINT, S_NV, 0, 0, 0, S_NSITE
-]()
 
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
@@ -341,34 +335,31 @@ def test_synthetic_sites() raises:
     print("--- B. Synthetic hinge model with NSITE=2, BATCH=", S_BATCH, "---")
     var ctx = DeviceContext()
 
-    # Hand-built fields model slab: worldbody + 1 hinge body, 2 sites.
-    var flat = List[Scalar[DTYPE]](length=S_MS, fill=Scalar[DTYPE](0))
-    flat[model_body_offset(0) + BODY_IDX_QUAT_W] = 1.0
-    var b1 = model_body_offset(1)
-    flat[b1 + BODY_IDX_PARENT] = 0.0
-    flat[b1 + BODY_IDX_POS_X] = 0.1
-    flat[b1 + BODY_IDX_POS_Y] = 0.2
-    flat[b1 + BODY_IDX_POS_Z] = 1.0
-    flat[b1 + BODY_IDX_QUAT_W] = 1.0
-    flat[b1 + BODY_IDX_IPOS_Z] = -0.25
-    var j0 = model_joint_offset[S_NBODY](0)
-    flat[j0 + JOINT_IDX_TYPE] = Scalar[DTYPE](JNT_HINGE)
-    flat[j0 + JOINT_IDX_BODY_ID] = 1.0
-    flat[j0 + JOINT_IDX_QPOS_ADR] = 0.0
-    flat[j0 + JOINT_IDX_POS_Z] = 0.5
-    flat[j0 + JOINT_IDX_AXIS_Y] = 1.0
-    var mo = model_metadata_offset[S_NBODY, S_NJOINT]()
-    flat[mo + MODEL_META_IDX_NBODY] = Scalar[DTYPE](S_NBODY)
-    flat[mo + MODEL_META_IDX_NJOINT] = Scalar[DTYPE](S_NJOINT)
-    var s0 = model_site_offset[S_NBODY, S_NJOINT, 0, 0, 0](0)
-    flat[s0 + SITE_IDX_BODY] = 1.0
-    flat[s0 + SITE_IDX_POS_Z] = -0.5
-    var s1 = model_site_offset[S_NBODY, S_NJOINT, 0, 0, 0](1)
-    flat[s1 + SITE_IDX_BODY] = 0.0
-    flat[s1 + SITE_IDX_POS_X] = 1.0
-
+    # Hand-built fields model, records written DIRECTLY into the per-field
+    # tensors (no offset slab, no load_from_slab): worldbody + 1 hinge body,
+    # 2 sites. Each record family packs as `record_idx * MODEL_<KIND>_SIZE +
+    # <KIND>_IDX_*`; meta is a standalone tensor.
     var mf = ModelFields[DTYPE, S_NV, S_NBODY, S_NJOINT, 0, 0, 0, S_NSITE]()
-    mf.load_from_slab(flat)
+    mf.bodies.data[0 * MODEL_BODY_SIZE + BODY_IDX_QUAT_W] = 1.0
+    var b1 = 1 * MODEL_BODY_SIZE
+    mf.bodies.data[b1 + BODY_IDX_PARENT] = 0.0
+    mf.bodies.data[b1 + BODY_IDX_POS_X] = 0.1
+    mf.bodies.data[b1 + BODY_IDX_POS_Y] = 0.2
+    mf.bodies.data[b1 + BODY_IDX_POS_Z] = 1.0
+    mf.bodies.data[b1 + BODY_IDX_QUAT_W] = 1.0
+    mf.bodies.data[b1 + BODY_IDX_IPOS_Z] = -0.25
+    var j0 = 0 * MODEL_JOINT_SIZE
+    mf.joints.data[j0 + JOINT_IDX_TYPE] = Scalar[DTYPE](JNT_HINGE)
+    mf.joints.data[j0 + JOINT_IDX_BODY_ID] = 1.0
+    mf.joints.data[j0 + JOINT_IDX_QPOS_ADR] = 0.0
+    mf.joints.data[j0 + JOINT_IDX_POS_Z] = 0.5
+    mf.joints.data[j0 + JOINT_IDX_AXIS_Y] = 1.0
+    mf.meta.data[MODEL_META_IDX_NBODY] = Scalar[DTYPE](S_NBODY)
+    mf.meta.data[MODEL_META_IDX_NJOINT] = Scalar[DTYPE](S_NJOINT)
+    mf.sites.data[0 * MODEL_SITE_SIZE + SITE_IDX_BODY] = 1.0
+    mf.sites.data[0 * MODEL_SITE_SIZE + SITE_IDX_POS_Z] = -0.5
+    mf.sites.data[1 * MODEL_SITE_SIZE + SITE_IDX_BODY] = 0.0
+    mf.sites.data[1 * MODEL_SITE_SIZE + SITE_IDX_POS_X] = 1.0
     mf.upload_all(ctx)
 
     var angles = List[Float64]()

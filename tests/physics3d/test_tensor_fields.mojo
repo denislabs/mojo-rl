@@ -1,6 +1,11 @@
 """P1 gates for the per-field tensor containers (fields/DataFields,
 fields/ModelFields — docs/PHYSICS3D_TENSOR_MIGRATION_SCOPE.md).
 
+P6 NOTE: this gate's SUBJECT is the slab bridge itself — the load_from_slab ->
+store_to_slab round-trips + the cvel-vs-legacy-slab-kernel check. It is not
+convertible off load_from_slab (that IS what it tests); it is DELETED at P6
+along with the slab bridge / compute_cvel_gpu it validates.
+
 1. DataFields slab round-trip: load_from_slab -> store_to_slab is
    bit-identical over every region/offset (host only).
 2. DataFields device round-trip: upload_all -> scramble host ->

@@ -12,13 +12,13 @@ behavior is declared intended, and this gate validates it against MuJoCo
 
 Setup: Humanoid at float64, FLOATING (torso z=3 -> zero contacts), right
 elbow pushed past its lower range (-1.62 rad vs -pi/2) with a closing
-velocity -> exactly ONE active limit row. The humanoid slab carries
-NTENDON=0 (tendon XML parsing was removed from the parser), so the two
-hip-knee tendon records + the meta NTENDON count are injected into the
-slab before ModelFields.load_from_slab, mirroring
-tests/physics3d/test_equality_tendon_fields.mojo Part A (fields side only —
-this gate has no legacy leg). The MuJoCo reference gets the matching
-physics via an <equality><tendon> block appended to the Gymnasium
+velocity -> exactly ONE active limit row. No XML model carries tendon
+records (tendon XML parsing was removed from the parser), so the two
+hip-knee tendon records + the meta NTENDON count are injected DIRECTLY into
+the per-field tendon tensor after init_fields (no slab, no load_from_slab),
+mirroring tests/physics3d/test_equality_tendon_fields.mojo Part A (fields
+side only — this gate has no legacy leg). The MuJoCo reference gets the
+matching physics via an <equality><tendon> block appended to the Gymnasium
 humanoid.xml (its <fixed> tendons are dynamically inert on their own; our
 tendon record is a bilateral length constraint ten_length - length_ref = 0,
 which is MuJoCo's mjEQ_TENDON with a single tendon:
@@ -54,14 +54,11 @@ from std.math import abs
 from std.collections import InlineArray
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
 from mojo_rl.physics3d.gpu.constants import (
-    model_size_with_invweight,
-    model_metadata_offset,
-    model_tendon_offset,
+    MODEL_TENDON_SIZE,
     MODEL_META_IDX_NTENDON,
     MODEL_JOINT_SIZE,
     JOINT_IDX_TYPE,
@@ -102,9 +99,6 @@ comptime NTEN = HumanoidModel.MAX_TENDON  # 2
 comptime NSITE = HumanoidModel.NSITE  # 0
 comptime NEXCL = HumanoidModel.nexclude  # 0
 comptime CONE = HumanoidModel.CONE_TYPE
-comptime MS = model_size_with_invweight[
-    NBODY, NJOINT, NV, NGEOM, NEQ, NTEN, NSITE, NEXCL
-]()
 comptime METADATA_SIZE_L = 4
 
 # Tendon length at the test pose (hip_y=0, knee=-0.15; L = -hip_y + knee):
@@ -124,56 +118,50 @@ comptime QVEL_ABS_TOL: Float64 = 1e-2
 comptime QVEL_REL_TOL: Float64 = 1e-2
 
 
-def _build_flat_slab(ctx: DeviceContext) raises -> List[Scalar[DTYPE]]:
-    """CPU Model -> tendon-sized slab (bodies/joints/meta/geoms/invweight0),
-    then inject meta NTENDON=2 + the two hip-knee tendon records exactly as
-    test_equality_tendon_fields Part A does (the parser never emits tendon
-    records, so injection is the only way any model carries them)."""
-    var model_t = TensorImpl[DTYPE].alloc(MS)
-    model_t.upload(ctx)
-    HumanoidModel.init_model_gpu(ctx, model_t.dev.value())
-    model_t.download(ctx)
-    var flat = List[Scalar[DTYPE]](length=MS, fill=Scalar[DTYPE](0))
-    for i in range(MS):
-        flat[i] = model_t.data[i]
-
-    # Inject the two hip-knee tendons: right = r_hip_y (joint 6) + r_knee
-    # (joint 7); left = l_hip_y (joint 10) + l_knee (joint 11);
-    # coef -1 * hip_y + 1 * knee, MuJoCo-default solref/solimp.
-    comptime META_OFF = model_metadata_offset[NBODY, NJOINT]()
-    flat[META_OFF + MODEL_META_IDX_NTENDON] = Scalar[DTYPE](2)
-    for t_i in range(2):
-        var t_off = model_tendon_offset[NBODY, NJOINT, NGEOM, NEQ](t_i)
-        var j0 = 6 if t_i == 0 else 10
-        flat[t_off + TENDON_IDX_NUM_JOINTS] = Scalar[DTYPE](2)
-        flat[t_off + TENDON_IDX_JOINT_0] = Scalar[DTYPE](j0)
-        flat[t_off + TENDON_IDX_JOINT_1] = Scalar[DTYPE](j0 + 1)
-        flat[t_off + TENDON_IDX_JOINT_2] = Scalar[DTYPE](-1)
-        flat[t_off + TENDON_IDX_JOINT_3] = Scalar[DTYPE](-1)
-        flat[t_off + TENDON_IDX_COEF_0] = Scalar[DTYPE](-1)
-        flat[t_off + TENDON_IDX_COEF_1] = Scalar[DTYPE](1)
-        flat[t_off + TENDON_IDX_COEF_2] = Scalar[DTYPE](0)
-        flat[t_off + TENDON_IDX_COEF_3] = Scalar[DTYPE](0)
-        flat[t_off + TENDON_IDX_LENGTH_REF] = Scalar[DTYPE](TENDON_LENGTH_REF)
-        flat[t_off + TENDON_IDX_SOLREF_0] = Scalar[DTYPE](0.02)
-        flat[t_off + TENDON_IDX_SOLREF_1] = Scalar[DTYPE](1)
-        flat[t_off + TENDON_IDX_SOLIMP_0] = Scalar[DTYPE](0.9)
-        flat[t_off + TENDON_IDX_SOLIMP_1] = Scalar[DTYPE](0.95)
-        flat[t_off + TENDON_IDX_SOLIMP_2] = Scalar[DTYPE](0.001)
-        flat[t_off + TENDON_IDX_SOLIMP_3] = Scalar[DTYPE](0.5)
-        flat[t_off + TENDON_IDX_SOLIMP_4] = Scalar[DTYPE](2)
-    return flat^
-
-
-def _load_model_fields(
-    flat: List[Scalar[DTYPE]],
+def _build_model_fields(
+    ctx: DeviceContext,
 ) raises -> ModelFields[
     DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
 ]:
+    """Offset-free init_fields build, then inject meta NTENDON=2 + the two
+    hip-knee tendon records DIRECTLY into the per-field tendon tensor
+    (record layout t_i * MODEL_TENDON_SIZE + TENDON_IDX_*) exactly as
+    test_equality_tendon_fields Part A does — the parser never emits tendon
+    records, so injection is the only way any model carries them. No slab,
+    no load_from_slab."""
     var mf = ModelFields[
         DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
     ]()
-    mf.load_from_slab(flat)
+    HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
+
+    # right = r_hip_y (joint 6) + r_knee (joint 7); left = l_hip_y (joint 10)
+    # + l_knee (joint 11); coef -1 * hip_y + 1 * knee, MuJoCo-default
+    # solref/solimp.
+    mf.meta.data[MODEL_META_IDX_NTENDON] = Scalar[DTYPE](2)
+    for t_i in range(2):
+        var t_off = t_i * MODEL_TENDON_SIZE
+        var j0 = 6 if t_i == 0 else 10
+        mf.tendons.data[t_off + TENDON_IDX_NUM_JOINTS] = Scalar[DTYPE](2)
+        mf.tendons.data[t_off + TENDON_IDX_JOINT_0] = Scalar[DTYPE](j0)
+        mf.tendons.data[t_off + TENDON_IDX_JOINT_1] = Scalar[DTYPE](j0 + 1)
+        mf.tendons.data[t_off + TENDON_IDX_JOINT_2] = Scalar[DTYPE](-1)
+        mf.tendons.data[t_off + TENDON_IDX_JOINT_3] = Scalar[DTYPE](-1)
+        mf.tendons.data[t_off + TENDON_IDX_COEF_0] = Scalar[DTYPE](-1)
+        mf.tendons.data[t_off + TENDON_IDX_COEF_1] = Scalar[DTYPE](1)
+        mf.tendons.data[t_off + TENDON_IDX_COEF_2] = Scalar[DTYPE](0)
+        mf.tendons.data[t_off + TENDON_IDX_COEF_3] = Scalar[DTYPE](0)
+        mf.tendons.data[t_off + TENDON_IDX_LENGTH_REF] = Scalar[DTYPE](
+            TENDON_LENGTH_REF
+        )
+        mf.tendons.data[t_off + TENDON_IDX_SOLREF_0] = Scalar[DTYPE](0.02)
+        mf.tendons.data[t_off + TENDON_IDX_SOLREF_1] = Scalar[DTYPE](1)
+        mf.tendons.data[t_off + TENDON_IDX_SOLIMP_0] = Scalar[DTYPE](0.9)
+        mf.tendons.data[t_off + TENDON_IDX_SOLIMP_1] = Scalar[DTYPE](0.95)
+        mf.tendons.data[t_off + TENDON_IDX_SOLIMP_2] = Scalar[DTYPE](0.001)
+        mf.tendons.data[t_off + TENDON_IDX_SOLIMP_3] = Scalar[DTYPE](0.5)
+        mf.tendons.data[t_off + TENDON_IDX_SOLIMP_4] = Scalar[DTYPE](2)
+    mf.tendons.upload(ctx)
+    mf.meta.upload(ctx)
     return mf^
 
 
@@ -239,8 +227,7 @@ def _compare_vs_mujoco(num_steps: Int) raises:
         "steps ---",
     )
     var ctx = DeviceContext()
-    var flat = _build_flat_slab(ctx)
-    var mf = _load_model_fields(flat)
+    var mf = _build_model_fields(ctx)
     var elbow = _find_elbow_joint(mf)
     var elbow_dof = elbow[1]
 
@@ -402,9 +389,8 @@ def test_limit_off_rerun_differs() raises:
     proves the limit row genuinely shaped the gated trajectory."""
     print("--- non-vacuity: elbow limit on vs off, 1 fields step ---")
     var ctx = DeviceContext()
-    var flat = _build_flat_slab(ctx)
-    var mf = _load_model_fields(flat)
-    var mf_off = _load_model_fields(flat)
+    var mf = _build_model_fields(ctx)
+    var mf_off = _build_model_fields(ctx)
     var elbow = _find_elbow_joint(mf)
     var elbow_j = elbow[0]
     mf_off.joints.data[

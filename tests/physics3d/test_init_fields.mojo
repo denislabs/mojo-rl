@@ -1,5 +1,11 @@
 """Stage-B gate: MODEL_DEF.init_fields (fields-native model build) parity.
 
+P6 NOTE: this gate is a DELIBERATE slab-vs-fields cross-check — Parts A/C/D
+compare init_fields against the legacy init_model_gpu -> load_from_slab path,
+so it is the one gate that MUST keep the slab bridge (its reference IS the
+slab). It is not convertible; it is DELETED (or Part B's mesh check kept as a
+standalone init_fields smoke) at P6 when the slab bridge is removed.
+
 Part A (Walker2D, non-mesh): init_fields must produce field tensors BIT-EXACT
 to the legacy init_model_gpu -> load_from_slab path (same records, no slab kept
 by the caller).

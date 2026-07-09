@@ -6,11 +6,12 @@ step: step_kernel -> detect_contacts_gpu (O(N^2)) -> PGSSolver.solve_gpu
 (with MAX_TENDON=2) -> finalize. Fields: EulerIntegratorFields.step
 (detection -> serialized contact PGS with limits + tendons inside).
 qpos/qvel/qacc + solved contact records must be BIT-EXACT per step.
-The two hip-knee tendon RECORDS are injected into the slab by the test:
-<tendon> XML parsing was removed from the parser, so no XML model ever
-carries tendon records — the legacy tendon path is only reachable with
-manually populated records, which this gate provides identically to both
-sides.
+The two hip-knee tendon RECORDS are injected DIRECTLY into the per-field
+tendon tensor by the test (init_fields, then mf.tendons/mf.meta writes —
+no slab, no load_from_slab): <tendon> XML parsing was removed from the
+parser, so no XML model ever carries tendon records — the tendon path is
+only reachable with manually populated records, which this gate provides
+(the golden was frozen from the legacy-validated run of the same records).
 Joint poses are chosen strictly INSIDE all joint ranges so the joint-limit
 pass stays inactive: the legacy limit builder reads dof_invweight0 through
 a MAX_TENDON-less offset (a pre-existing misread on tendon models) which
@@ -21,16 +22,12 @@ Non-vacuous: model meta NTENDON must be 2, and a rerun with meta NTENDON
 zeroed must change qvel after one step.
 
 Part B (EQUALITY): synthetic 2-link chain + jointed anchor body with a
-<equality><weld> between link2 and anchor (task-allowed fallback: Sawyer's
-GPU slab path has pre-existing serialization inconsistencies — mesh hull
-writes past the NMESH_VERTS-less buffer, `copy_equality_to_buffer` is never
-called by init_model_gpu, and the invweight0 writer/ModelFields-loader
-disagree for NSITE>0 — so it cannot form a meaningful bit-exact gate).
-Capsules penetrate the floor (contacts + weld together, matching the legacy
-solve order: contacts -> limits -> equality). Equality records are
-serialized into the slab by the test (mirroring the uncalled
-copy_equality_to_buffer) before ModelFields.load_from_slab, so legacy and
-fields read identical records. BIT-EXACT per step; non-vacuous via meta
+<equality><weld> between link2 and anchor. The model is built offset-free
+via init_fields, which serializes the weld equality records (Stage B fixed
+copy_equality_to_buffer — the legacy init_model_gpu never called it, so the
+slab path could not form a meaningful gate). Capsules penetrate the floor
+(contacts + weld together, matching the solve order: contacts -> limits ->
+equality). BIT-EXACT per step vs the golden; non-vacuous via meta
 NEQUALITY == 1 + a NEQUALITY-zeroed rerun differing.
 
 Run: pixi run -e apple mojo run -I . tests/physics3d/test_equality_tendon_fields.mojo
@@ -47,9 +44,7 @@ from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
 from mojo_rl.physics3d.gpu.constants import (
     model_size_with_invweight,
-    model_equality_offset,
-    model_tendon_offset,
-    model_metadata_offset,
+    MODEL_TENDON_SIZE,
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_NTENDON,
     MODEL_META_IDX_NEQUALITY,
@@ -122,9 +117,6 @@ comptime NEQ_A = HumanoidModel.MAX_EQUALITY  # 0
 comptime NSITE_A = HumanoidModel.NSITE  # 0
 comptime NEXCL_A = HumanoidModel.nexclude  # 0
 comptime N_STEPS_A = 2
-comptime MS_A = model_size_with_invweight[
-    NBODY_A, NJOINT_A, NV_A, NGEOM_A, NEQ_A, NTEN_A, NSITE_A, NEXCL_A
-]()
 
 
 def _humanoid_qpos(e: Int, i: Int) -> Scalar[DTYPE]:
@@ -164,52 +156,44 @@ def _humanoid_qpos(e: Int, i: Int) -> Scalar[DTYPE]:
 def _part_a_tendon(ctx: DeviceContext) raises:
     print("--- Part A: Humanoid tendons fields GOLDEN, BATCH=", BATCH)
 
-    var model_t = TensorImpl[DTYPE].alloc(MS_A)
-    model_t.upload(ctx)
-    var mbuf = model_t.dev.value()
-    HumanoidModel.init_model_gpu(ctx, mbuf)
-    model_t.download(ctx)
-
-    # <tendon><fixed> XML parsing was removed from the parser (see
-    # model_def_from_xml.mojo), so the slab never carries tendon records —
-    # the legacy tendon path is only reachable via manual population.
-    # Inject the Humanoid's two hip-knee tendons (coef -1 * hip_y +
-    # 1 * knee, MuJoCo-default solref/solimp) into the slab so BOTH the
-    # legacy kernel and ModelFields read identical, active records.
-    comptime META_OFF_A = model_metadata_offset[NBODY_A, NJOINT_A]()
-    model_t.data[META_OFF_A + MODEL_META_IDX_NTENDON] = Scalar[DTYPE](2)
-    for t_i in range(2):
-        var t_off = model_tendon_offset[NBODY_A, NJOINT_A, NGEOM_A, NEQ_A](
-            t_i
-        )
-        # right: r_hip_y (joint 6) + r_knee (joint 7);
-        # left: l_hip_y (joint 10) + l_knee (joint 11)
-        var j0 = 6 if t_i == 0 else 10
-        model_t.data[t_off + TENDON_IDX_NUM_JOINTS] = Scalar[DTYPE](2)
-        model_t.data[t_off + TENDON_IDX_JOINT_0] = Scalar[DTYPE](j0)
-        model_t.data[t_off + TENDON_IDX_JOINT_1] = Scalar[DTYPE](j0 + 1)
-        model_t.data[t_off + TENDON_IDX_JOINT_2] = Scalar[DTYPE](-1)
-        model_t.data[t_off + TENDON_IDX_JOINT_3] = Scalar[DTYPE](-1)
-        model_t.data[t_off + TENDON_IDX_COEF_0] = Scalar[DTYPE](-1)
-        model_t.data[t_off + TENDON_IDX_COEF_1] = Scalar[DTYPE](1)
-        model_t.data[t_off + TENDON_IDX_COEF_2] = Scalar[DTYPE](0)
-        model_t.data[t_off + TENDON_IDX_COEF_3] = Scalar[DTYPE](0)
-        model_t.data[t_off + TENDON_IDX_LENGTH_REF] = Scalar[DTYPE](0.05)
-        model_t.data[t_off + TENDON_IDX_SOLREF_0] = Scalar[DTYPE](0.02)
-        model_t.data[t_off + TENDON_IDX_SOLREF_1] = Scalar[DTYPE](1)
-        model_t.data[t_off + TENDON_IDX_SOLIMP_0] = Scalar[DTYPE](0.9)
-        model_t.data[t_off + TENDON_IDX_SOLIMP_1] = Scalar[DTYPE](0.95)
-        model_t.data[t_off + TENDON_IDX_SOLIMP_2] = Scalar[DTYPE](0.001)
-        model_t.data[t_off + TENDON_IDX_SOLIMP_3] = Scalar[DTYPE](0.5)
-        model_t.data[t_off + TENDON_IDX_SOLIMP_4] = Scalar[DTYPE](2)
-    model_t.upload(ctx)
-
     var mf = ModelFields[
         DTYPE, NV_A, NBODY_A, NJOINT_A, NGEOM_A, NEQ_A, NTEN_A, NSITE_A,
         NEXCL_A, 0,
     ]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
+
+    # <tendon><fixed> XML parsing was removed from the parser (see
+    # model_def_from_xml.mojo), so no XML model carries tendon records —
+    # the tendon path is only reachable via manual population. Inject the
+    # Humanoid's two hip-knee tendons (coef -1 * hip_y + 1 * knee,
+    # MuJoCo-default solref/solimp) DIRECTLY into the per-field tendon tensor
+    # (record layout t_i * MODEL_TENDON_SIZE + TENDON_IDX_*) + meta NTENDON,
+    # then re-upload those two tensors.
+    mf.meta.data[MODEL_META_IDX_NTENDON] = Scalar[DTYPE](2)
+    for t_i in range(2):
+        var t_off = t_i * MODEL_TENDON_SIZE
+        # right: r_hip_y (joint 6) + r_knee (joint 7);
+        # left: l_hip_y (joint 10) + l_knee (joint 11)
+        var j0 = 6 if t_i == 0 else 10
+        mf.tendons.data[t_off + TENDON_IDX_NUM_JOINTS] = Scalar[DTYPE](2)
+        mf.tendons.data[t_off + TENDON_IDX_JOINT_0] = Scalar[DTYPE](j0)
+        mf.tendons.data[t_off + TENDON_IDX_JOINT_1] = Scalar[DTYPE](j0 + 1)
+        mf.tendons.data[t_off + TENDON_IDX_JOINT_2] = Scalar[DTYPE](-1)
+        mf.tendons.data[t_off + TENDON_IDX_JOINT_3] = Scalar[DTYPE](-1)
+        mf.tendons.data[t_off + TENDON_IDX_COEF_0] = Scalar[DTYPE](-1)
+        mf.tendons.data[t_off + TENDON_IDX_COEF_1] = Scalar[DTYPE](1)
+        mf.tendons.data[t_off + TENDON_IDX_COEF_2] = Scalar[DTYPE](0)
+        mf.tendons.data[t_off + TENDON_IDX_COEF_3] = Scalar[DTYPE](0)
+        mf.tendons.data[t_off + TENDON_IDX_LENGTH_REF] = Scalar[DTYPE](0.05)
+        mf.tendons.data[t_off + TENDON_IDX_SOLREF_0] = Scalar[DTYPE](0.02)
+        mf.tendons.data[t_off + TENDON_IDX_SOLREF_1] = Scalar[DTYPE](1)
+        mf.tendons.data[t_off + TENDON_IDX_SOLIMP_0] = Scalar[DTYPE](0.9)
+        mf.tendons.data[t_off + TENDON_IDX_SOLIMP_1] = Scalar[DTYPE](0.95)
+        mf.tendons.data[t_off + TENDON_IDX_SOLIMP_2] = Scalar[DTYPE](0.001)
+        mf.tendons.data[t_off + TENDON_IDX_SOLIMP_3] = Scalar[DTYPE](0.5)
+        mf.tendons.data[t_off + TENDON_IDX_SOLIMP_4] = Scalar[DTYPE](2)
+    mf.tendons.upload(ctx)
+    mf.meta.upload(ctx)
 
     if Int(mf.meta.data[MODEL_META_IDX_NTENDON]) != 2:
         raise Error("part A vacuous: model meta NTENDON != 2")

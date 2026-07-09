@@ -28,13 +28,13 @@ from std.sys import has_nvidia_gpu_accelerator
 from std.gpu.host import DeviceContext
 from layout import Layout
 
-from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import (
     DataFields,
     ModelFields,
     DynamicsScratch,
     ContactScratch,
 )
+from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.integrator.euler_fields import (
     _armature_kernel,
@@ -68,7 +68,6 @@ from mojo_rl.physics3d.collision.contact_detection_fields import (
 )
 from mojo_rl.physics3d.solver.newton_solve_fields import solve_newton_fields
 from mojo_rl.physics3d.gpu.constants import (
-    model_size_with_invweight,
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
     MODEL_JOINT_SIZE,
@@ -194,25 +193,32 @@ def _prep[
     ](d, mf, ctx)
 
 
-def _validate[
-    NQ: Int, NV: Int, NBODY: Int, NJOINT: Int, NGEOM: Int, MC: Int,
-    NEQ: Int, NTEN: Int, NSITE: Int, NEXCL: Int,
-](
+def _validate[MODEL: ModelDefLike](
     ctx: DeviceContext,
     name: String,
-    mut model_t: TensorImpl[DTYPE],
     torso_z: Float64,
 ) raises -> Bool:
     """Returns True if GPU==CPU within tolerance (solver correct)."""
+    # Dims as local comptime aliases OFF the model spec so the mf type
+    # structurally matches init_fields' signature (a literal/explicit param
+    # would not unify with MODEL.NV etc — the Stage-E threading pattern).
+    comptime NQ = MODEL.NQ
+    comptime NV = MODEL.NV
+    comptime NBODY = MODEL.NBODY
+    comptime NJOINT = MODEL.NJOINT
+    comptime NGEOM = MODEL.NGEOM
+    comptime MC = MODEL.MAX_CONTACTS
+    comptime NEQ = MODEL.MAX_EQUALITY
+    comptime NTEN = MODEL.MAX_TENDON
+    comptime NSITE = MODEL.NSITE
+    comptime NEXCL = MODEL.NEXCLUDE
     print("--- ", name, " (NV=", NV, ") gentle floor contact ---")
-    comptime MS = model_size_with_invweight[
-        NBODY, NJOINT, NV, NGEOM, NEQ, NTEN, NSITE, NEXCL
-    ]()
+    # Offset-free build straight from the compile-time model spec — no slab,
+    # no init_model_gpu / load_from_slab.
     var mf = ModelFields[
         DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
     ]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    MODEL.init_fields[DTYPE, 0](ctx, mf)
 
     # Gentle pose: torso lowered so feet lightly touch (not deep penetration).
     var d_g = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
@@ -291,42 +297,14 @@ def main() raises:
     var all_ok = True
 
     # ── Ant (free joint, NV=14) ────────────────────────────────────────────
-    comptime A_MS = model_size_with_invweight[
-        AntModel.NBODY, AntModel.NJOINT, AntModel.NV, AntModel.NGEOM,
-        AntModel.MAX_EQUALITY, AntModel.MAX_TENDON, AntModel.NSITE,
-    ]()
-    var a_model = TensorImpl[DTYPE].alloc(A_MS)
-    a_model.upload(ctx)
-    AntModel.init_model_gpu(ctx, a_model.dev.value())
-    a_model.download(ctx)
-    all_ok = _validate[
-        AntModel.NQ, AntModel.NV, AntModel.NBODY, AntModel.NJOINT,
-        AntModel.NGEOM, AntModel.MAX_CONTACTS, AntModel.MAX_EQUALITY,
-        AntModel.MAX_TENDON, AntModel.NSITE, AntModel.nexclude,
-    ](ctx, "Ant", a_model, 0.28) and all_ok
+    all_ok = _validate[AntModel](ctx, "Ant", 0.28) and all_ok
 
     # ── Humanoid (free joint, NV=23) — the production blocked model ─────────
     # On NVIDIA this exercises the exact blocked kernel humanoid training uses.
     # Comptime-excluded on Apple (blocked-humanoid overflows Metal's 32KB at
     # COMPILE time) — set INCLUDE_HUMANOID=True on the NVIDIA box.
     comptime if INCLUDE_HUMANOID:
-        comptime H_MS = model_size_with_invweight[
-            HumanoidModel.NBODY, HumanoidModel.NJOINT, HumanoidModel.NV,
-            HumanoidModel.NGEOM, HumanoidModel.MAX_EQUALITY,
-            HumanoidModel.MAX_TENDON, HumanoidModel.NSITE,
-            HumanoidModel.nexclude,
-        ]()
-        var h_model = TensorImpl[DTYPE].alloc(H_MS)
-        h_model.upload(ctx)
-        HumanoidModel.init_model_gpu(ctx, h_model.dev.value())
-        h_model.download(ctx)
-        all_ok = _validate[
-            HumanoidModel.NQ, HumanoidModel.NV, HumanoidModel.NBODY,
-            HumanoidModel.NJOINT, HumanoidModel.NGEOM,
-            HumanoidModel.MAX_CONTACTS, HumanoidModel.MAX_EQUALITY,
-            HumanoidModel.MAX_TENDON, HumanoidModel.NSITE,
-            HumanoidModel.nexclude,
-        ](ctx, "Humanoid", h_model, 1.0) and all_ok
+        all_ok = _validate[HumanoidModel](ctx, "Humanoid", 1.0) and all_ok
     else:
         print("--- Humanoid: SKIPPED on Apple (NVIDIA-only blocked path) ---")
 
