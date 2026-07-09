@@ -65,6 +65,7 @@ from ..dynamics.rne_fields import compute_bias_forces_rne_fields
 from ..constraints.contact_solve_fields import solve_contacts_fields
 from ..solver.newton_solve_fields import solve_newton_fields
 from ..solver.cg_solve_fields import solve_cg_fields
+from ..solver.island_pgs_solve_fields import solve_island_pgs_fields
 from ..collision.broadphase_sap_fields import detect_contacts_auto_fields
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
 from ..fields import DataFields, ModelFields, DynamicsScratch, ContactScratch, Rk4Scratch
@@ -695,7 +696,11 @@ struct RK4IntegratorFields[
                     Self.SOLVER == "pgs"
                     or Self.SOLVER == "newton"
                     or Self.SOLVER == "cg"
-                ), "RK4IntegratorFields: SOLVER must be 'pgs', 'newton', or 'cg'"
+                    or Self.SOLVER == "island"
+                ), (
+                    "RK4IntegratorFields: SOLVER must be 'pgs', 'newton',"
+                    " 'cg', or 'island'"
+                )
                 comptime if Self.SOLVER == "newton":
                     solve_newton_fields[
                         target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
@@ -714,13 +719,22 @@ struct RK4IntegratorFields[
                             Self.BATCH,
                         ](d, m, self.scratch, self.cscratch, ctx)
                     else:
-                        solve_contacts_fields[
-                            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                            Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
-                            Self.NEQUALITY, Self.NTENDON, Self.NSITE,
-                            Self.NEXCLUDE, Self.NMESH_VERTS, Self.CONE_TYPE,
-                            Self.BATCH,
-                        ](d, m, self.scratch, self.cscratch, ctx)
+                        comptime if Self.SOLVER == "island":
+                            solve_island_pgs_fields[
+                                target, Self.DTYPE, Self.NQ, Self.NV,
+                                Self.NBODY, Self.NJOINT, Self.MAX_CONTACTS,
+                                Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
+                                Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
+                                Self.CONE_TYPE, Self.BATCH,
+                            ](d, m, self.scratch, self.cscratch, ctx)
+                        else:
+                            solve_contacts_fields[
+                                target, Self.DTYPE, Self.NQ, Self.NV,
+                                Self.NBODY, Self.NJOINT, Self.MAX_CONTACTS,
+                                Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
+                                Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
+                                Self.CONE_TYPE, Self.BATCH,
+                            ](d, m, self.scratch, self.cscratch, ctx)
 
         comptime L_JOINT = Layout.row_major(Self.NJOINT, MODEL_JOINT_SIZE)
         comptime L_NV = Layout.row_major(Self.BATCH, Self.NV)
