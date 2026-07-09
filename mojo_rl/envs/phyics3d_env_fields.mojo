@@ -122,6 +122,8 @@ struct Phyics3dEnvFields[
         Self.MODEL_DEF.MAX_EQUALITY,
         Self.MODEL_DEF.MAX_TENDON,
         Self.NSITE,
+        Self.MODEL_DEF.NEXCLUDE,
+        0,  # NMESH_VERTS
     ]
     var d: DataFields[
         Self.DTYPE,
@@ -138,13 +140,13 @@ struct Phyics3dEnvFields[
     comptime IntegRK4 = RK4IntegratorFields[
         Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
         Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
-        Self.MODEL_DEF.MAX_TENDON, Self.NSITE, 0, 0,
+        Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0,
         Self.MODEL_DEF.CONE_TYPE, 1, SOLVER = Self.SOLVER,
     ]
     comptime IntegEuler = EulerIntegratorFields[
         Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
         Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
-        Self.MODEL_DEF.MAX_TENDON, Self.NSITE, 0, 0,
+        Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0,
         Self.MODEL_DEF.CONE_TYPE, 1, SOLVER = Self.SOLVER,
     ]
     var integ_rk4: Self.IntegRK4
@@ -183,19 +185,15 @@ struct Phyics3dEnvFields[
         self.data = type_of(self.data)()
         Self.MODEL_DEF.setup_model_and_data(self.model, self.data)
 
-        # Build the model record tensors through the SAME GPU serialization
-        # the batched facade + the fields tests use: `init_model_gpu` also
-        # computes dof_invweight0 (the constraint inverse-weight the contact
-        # solver scales impulses by). The old `copy_model_to_buffer` path left
-        # invweight0 at 0, which silently zeroed ALL contact forces — every
-        # contact env fell straight through the floor. Direct parser fill lands
-        # at sunset.
-        var model_slab = TensorImpl[Self.DTYPE].alloc(Self.MS)
-        model_slab.upload(ctx)
-        Self.MODEL_DEF.init_model_gpu(ctx, model_slab.dev.value())
-        model_slab.download(ctx)
+        # Build the model record tensors offset-free, directly from the CPU
+        # `Model` (P6 fields-native build): no flat slab, no cross-family offset
+        # tables, no load_from_slab round-trip. `init_fields` runs the same
+        # setup_model_and_data (so dof_invweight0 — the constraint inverse-weight
+        # the contact solver scales impulses by — is populated) and writes every
+        # record tensor via load_from_model. Fixes the two init_model_gpu bugs
+        # (mesh under-sizing, equality never serialized) by construction.
         self.mf = type_of(self.mf)()
-        self.mf.load_from_slab(model_slab.data)
+        Self.MODEL_DEF.init_fields[Self.DTYPE, 0](ctx, self.mf)
 
         self.d = type_of(self.d)()
         self.integ_rk4 = Self.IntegRK4()

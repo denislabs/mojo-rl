@@ -191,6 +191,7 @@ struct ModelDefFromXML[
     comptime MAX_CONTACTS: Int = Self.max_contacts
     comptime MAX_TENDON: Int = Self.max_tendon
     comptime NSITE: Int = Self.nsite
+    comptime NEXCLUDE: Int = Self.nexclude
     comptime OBS_DIM: Int = Self.obs_dim_override if Self.obs_dim_override > 0 else (
         Self.nq - Self.obs_qpos_skip + Self.nv
     )
@@ -496,65 +497,10 @@ struct ModelDefFromXML[
         # compute_body_invweight0 via setup_model_and_data)
         ctx.enqueue_copy(model_buf, host_buf)
 
-    @staticmethod
-    def init_fields[
-        DTYPE: DType, NMESHV: Int = 0
-    ](
-        ctx: DeviceContext,
-        mut mf: ModelFields[
-            DTYPE,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.MAX_TENDON,
-            Self.NSITE,
-            Self.nexclude,
-            NMESHV,
-        ],
-    ) raises:
-        """P6 fields-native model build: populate every ModelFields record
-        tensor DIRECTLY from the CPU `Model`, offset-free (B3).
-
-        No flat model slab, no `gpu/constants` cross-family offset tables, no
-        `load_from_slab` round-trip — `mf.load_from_model` writes each record
-        at `i * MODEL_<KIND>_SIZE + <KIND>_IDX_*` inside its own packed tensor.
-        The slab layer and its `copy_*_to_buffer` serializers survive only for
-        the legacy `init_model_gpu` path and die at sunset; this build does not
-        touch them.
-
-        Fixes the two `init_model_gpu` bugs by construction: mesh vertices are
-        written up to the tensor's own `NMESH_VERTS` capacity (init_model_gpu
-        under-sized mesh models), and equality records ARE serialized
-        (init_model_gpu never wrote them).
-        """
-        var model = Model[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-            Self.MAX_TENDON,
-            Self.NSITE,
-        ]()
-        var data = Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-        ]()
-        Self.setup_model_and_data[DTYPE](model, data)
-
-        mf.load_from_model[Self.NQ, Self.MAX_CONTACTS, Self.CONE_TYPE](model)
-        mf.upload_all(ctx)
+    # `init_fields` (the offset-free fields-native model build) is inherited
+    # from the `ModelDefLike` trait default — it uses `Self.NEXCLUDE`
+    # (= Self.nexclude) so it applies to XML models verbatim. No per-type
+    # override needed here.
 
     # =========================================================================
     # GPU: _compute_invweight0_gpu (duplicated from ModelDef, dims from params)

@@ -53,6 +53,7 @@ from ..types import (
     EQ_WELD,
     ConeType,
 )
+from ..fields import ModelFields
 from ..joint_types import JNT_HINGE, JNT_SLIDE
 from std.math import sqrt
 from ..constants import (
@@ -199,6 +200,7 @@ trait ModelDefLike:
     comptime MAX_CONTACTS: Int
     comptime MAX_TENDON: Int
     comptime NSITE: Int
+    comptime NEXCLUDE: Int
     comptime OBS_DIM: Int
     comptime ACTION_DIM: Int
     comptime TIMESTEP: Float64
@@ -321,6 +323,59 @@ trait ModelDefLike:
         DTYPE: DType
     ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE],) raises:
         ...
+
+    # === Fields-native model build (offset-free; P6) ===
+    @staticmethod
+    def init_fields[
+        DTYPE: DType, NMESHV: Int = 0
+    ](
+        ctx: DeviceContext,
+        mut mf: ModelFields[
+            DTYPE,
+            Self.NV,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.MAX_TENDON,
+            Self.NSITE,
+            Self.NEXCLUDE,
+            NMESHV,
+        ],
+    ) raises:
+        """Offset-free fields-native model build: populate every ModelFields
+        record tensor DIRECTLY from the CPU `Model` — no flat slab, no
+        `gpu/constants` cross-family offset tables, no `load_from_slab`
+        round-trip. `setup_model_and_data` computes invweight0 (CPU) and
+        `load_from_model` writes every record (incl. body/dof invweight0) into
+        the packed tensors. Fixes the two `init_model_gpu` bugs (mesh
+        under-sizing, equality never serialized) by construction. Default trait
+        impl — `ModelDefFromXML` overrides it; `ModelDef` inherits this one."""
+        var model = Model[
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.MAX_CONTACTS,
+            Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.CONE_TYPE,
+            Self.MAX_TENDON,
+            Self.NSITE,
+        ]()
+        var data = Data[
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.MAX_CONTACTS,
+            Self.NSITE,
+        ]()
+        Self.setup_model_and_data[DTYPE](model, data)
+        mf.load_from_model[Self.NQ, Self.MAX_CONTACTS, Self.CONE_TYPE](model)
+        mf.upload_all(ctx)
 
     # === GPU: Joints/Actuators kernel delegates ===
     @staticmethod
@@ -490,6 +545,7 @@ struct ModelDef[
     comptime MAX_CONTACTS: Int = Self.max_contacts
     comptime MAX_TENDON: Int = Self.max_tendon
     comptime NSITE: Int = Self.Sites.N
+    comptime NEXCLUDE: Int = 0  # ModelDef has no <exclude> support
     comptime TIMESTEP: Float64 = Self.Defaults.TIMESTEP
 
     # Derived from components (only meaningful when J is not _EmptyJoints)
