@@ -41,18 +41,6 @@ from mojo_rl.physics3d.collision.contact_detection_fields import (
     detect_contacts_fields,
 )
 
-# NOTE (sunset): Part B (sawyer mesh SAP) still builds its model via the legacy
-# Model + copy_* helpers (init_model_gpu under-sizes mesh models — a P6
-# prerequisite, same as test_mesh_detection_fields). The SAP comparison itself
-# is golden-frozen (legacy FK/SAP reference kernels dropped).
-from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.gpu.buffer_utils import (
-    copy_model_to_buffer,
-    copy_geoms_to_buffer,
-    copy_tendons_to_buffer,
-    copy_invweight0_to_buffer,
-    copy_mesh_hull_to_buffer,
-)
 from mojo_rl.physics3d.gpu.constants import (
     model_size_with_invweight,
     CONTACT_SIZE,
@@ -106,9 +94,6 @@ comptime NTD_S = SawyerReachModel.MAX_TENDON
 comptime NSITE_S = SawyerReachModel.NSITE
 comptime MC_S = SawyerReachModel.MAX_CONTACTS
 comptime NMESHV_S = MAX_GPU_MESHES * 256
-comptime MS_S = model_size_with_invweight[
-    NBODY_S, NJOINT_S, NV_S, NGEOM_S, NEQ_S, NTD_S, NSITE_S, 0, NMESHV_S
-]()
 
 # ── Walker2d (Part C) ────────────────────────────────────────────────────
 comptime NQ_W = Walker2dModel.NQ
@@ -398,47 +383,12 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
     print("--- Part B: sawyer SAP mesh leg fields GOLDEN, BATCH=", BATCH)
     print("  sawyer NGEOM=", NGEOM_S)
 
-    # Build the CPU model (loads STL hulls) and serialize to a slab that
-    # includes the mesh sections (NEXCLUDE=0, NMESH_VERTS=NMESHV_S) — the
-    # same copy_* helpers ModelDefFromXML.init_model_gpu uses, at the
-    # mesh-sized buffer this test needs.
-    var model = Model[
-        DTYPE, NQ_S, NV_S, NBODY_S, NJOINT_S, MC_S, NGEOM_S, NEQ_S,
-        SawyerReachModel.CONE_TYPE, NTD_S, NSITE_S,
-    ]()
-    var data = Data[DTYPE, NQ_S, NV_S, NBODY_S, NJOINT_S, MC_S, NSITE_S]()
-    SawyerReachModel.setup_model_and_data[DTYPE](model, data)
-    print(
-        "  num_meshes:", model.num_meshes,
-        " hull verts:", len(model.mesh_vert) // 3,
-    )
-    if model.num_meshes == 0 or len(model.mesh_vert) == 0:
-        raise Error("expected STL mesh hulls — gate is vacuous")
-    if len(model.mesh_vert) > NMESHV_S * 3:
-        raise Error("mesh hull verts exceed NMESHV capacity — raise NMESHV")
-    if model.num_meshes > MAX_GPU_MESHES:
-        raise Error("num_meshes exceeds MAX_GPU_MESHES")
-
-    var host_buf = ctx.enqueue_create_host_buffer[DTYPE](MS_S)
-    ctx.synchronize()
-    for i in range(MS_S):
-        host_buf[i] = Scalar[DTYPE](0)
-    copy_model_to_buffer(model, host_buf)
-    copy_geoms_to_buffer(model, host_buf)
-    copy_tendons_to_buffer(model, host_buf)
-    copy_invweight0_to_buffer(model, host_buf)
-    copy_mesh_hull_to_buffer(model, host_buf)
-
-    var model_t = TensorImpl[DTYPE].alloc(MS_S)
-    for i in range(MS_S):
-        model_t.data[i] = host_buf[i]
-    model_t.upload(ctx)
+    # Fields-native model build (STL hulls, NMESHV_S-padded — Stage B).
     var mf = ModelFields[
         DTYPE, NV_S, NBODY_S, NJOINT_S, NGEOM_S, NEQ_S, NTD_S, NSITE_S,
         0, NMESHV_S,
     ]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    SawyerReachModel.init_fields[DTYPE, NMESHV_S](ctx, mf)
 
     # Locate the obj cylinder + mesh-geom bodies for the non-vacuity check.
     var obj_body = -1
