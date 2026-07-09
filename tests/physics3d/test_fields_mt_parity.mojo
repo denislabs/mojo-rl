@@ -55,6 +55,10 @@ comptime NBODY = Walker2dModel.NBODY  # 8
 comptime NJOINT = Walker2dModel.NJOINT  # 9
 comptime NGEOM = Walker2dModel.NGEOM  # 8
 comptime MC = Walker2dModel.MAX_CONTACTS  # 20
+comptime NEQ = Walker2dModel.MAX_EQUALITY
+comptime NTD = Walker2dModel.MAX_TENDON
+comptime NSITE = Walker2dModel.NSITE
+comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime CONE = Walker2dModel.CONE_TYPE
 comptime BATCH = 2
 comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
@@ -100,18 +104,12 @@ def test_walker2d_per_op() raises:
     print("--- A. Walker2D per-op _mt parity, BATCH=", BATCH, "---")
     var ctx = DeviceContext()
 
-    var model_t = TensorImpl[DTYPE].alloc(MS)
-    model_t.upload(ctx)
-    var mbuf = model_t.dev.value()
-    Walker2dModel.init_model_gpu(ctx, mbuf)
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Pseudo-random qpos/qvel (standard harness pattern; rootz lifted).
-    var ds = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
-    var dp = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
+    var ds = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dp = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -133,10 +131,10 @@ def test_walker2d_per_op() raises:
 
     # 1. FK
     forward_kinematics_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](ds, mf, ctx)
     forward_kinematics_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
         PARALLEL=True,
     ](dp, mf, ctx)
     ds.xpos.download(ctx)
@@ -151,10 +149,10 @@ def test_walker2d_per_op() raises:
 
     # 2. Body velocities
     compute_body_velocities_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](ds, mf, ctx)
     compute_body_velocities_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
         PARALLEL=True,
     ](dp, mf, ctx)
     ds.xvel.download(ctx)
@@ -166,10 +164,10 @@ def test_walker2d_per_op() raises:
 
     # 3. subtree_com (no _mt variant — serial on both chains, sanity check)
     compute_subtree_com_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](ds, mf, ctx)
     compute_subtree_com_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](dp, mf, ctx)
     ds.subtree_com.download(ctx)
     dp.subtree_com.download(ctx)
@@ -180,10 +178,10 @@ def test_walker2d_per_op() raises:
 
     # 4. cdof
     compute_cdof_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](ds, mf, ss, ctx)
     compute_cdof_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
         PARALLEL=True,
     ](dp, mf, sp, ctx)
     ss.cdof.download(ctx)
@@ -192,10 +190,10 @@ def test_walker2d_per_op() raises:
 
     # 5. CRBA mass matrix
     compute_mass_matrix_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](ds, mf, ss, ctx)
     compute_mass_matrix_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
         PARALLEL=True,
     ](dp, mf, sp, ctx)
     ss.M.download(ctx)
@@ -223,10 +221,10 @@ def test_walker2d_per_op() raises:
 
     # 8. RNE bias forces
     compute_bias_forces_rne_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](ds, mf, ss, ctx)
     compute_bias_forces_rne_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, BATCH,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
         PARALLEL=True,
     ](dp, mf, sp, ctx)
     ss.bias.download(ctx)
@@ -271,17 +269,11 @@ def test_humanoid_fk_bodyvel() raises:
     print("--- B. Humanoid FK/bodyvel _mt parity (NBODY=", H_NBODY, ") ---")
     var ctx = DeviceContext()
 
-    var model_t = TensorImpl[DTYPE].alloc(H_MS)
-    model_t.upload(ctx)
-    var mbuf = model_t.dev.value()
-    HumanoidModel.init_model_gpu(ctx, mbuf)
-    model_t.download(ctx)
     var mf = ModelFields[
         DTYPE, H_NV, H_NBODY, H_NJOINT, H_NGEOM, H_NEQ, H_NTEN, H_NSITE,
-        H_NEXCL,
+        H_NEXCL, 0,
     ]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
 
     var ds = DataFields[DTYPE, H_NQ, H_NV, H_NBODY, H_MC, H_NSITE, H_BATCH]()
     var dp = DataFields[DTYPE, H_NQ, H_NV, H_NBODY, H_MC, H_NSITE, H_BATCH]()
@@ -339,17 +331,11 @@ def test_rk4_integrator_parallel() raises:
     print("--- C. RK4IntegratorFields PARALLEL_GPU parity WITH CONTACTS ---")
     var ctx = DeviceContext()
 
-    var model_t = TensorImpl[DTYPE].alloc(MS)
-    model_t.upload(ctx)
-    var mbuf = model_t.dev.value()
-    Walker2dModel.init_model_gpu(ctx, mbuf)
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var ds = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
-    var dp = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
+    var ds = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dp = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -370,12 +356,12 @@ def test_rk4_integrator_parallel() raises:
     dp.upload_all(ctx)
 
     var integ_s = RK4IntegratorFields[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, CONE,
+        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE,
         BATCH=BATCH,
     ]()
     integ_s.prepare_gpu(ctx)
     var integ_p = RK4IntegratorFields[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0, CONE,
+        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE,
         BATCH=BATCH, PARALLEL_GPU=True,
     ]()
     integ_p.prepare_gpu(ctx)
