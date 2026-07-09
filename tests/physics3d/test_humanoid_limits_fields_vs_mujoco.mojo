@@ -54,16 +54,10 @@ from std.math import abs
 from std.collections import InlineArray
 from std.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
-from mojo_rl.physics3d.gpu.buffer_utils import (
-    copy_model_to_buffer,
-    copy_geoms_to_buffer,
-    copy_tendons_to_buffer,
-    copy_invweight0_to_buffer,
-)
 from mojo_rl.physics3d.gpu.constants import (
     model_size_with_invweight,
     model_metadata_offset,
@@ -135,24 +129,13 @@ def _build_flat_slab(ctx: DeviceContext) raises -> List[Scalar[DTYPE]]:
     then inject meta NTENDON=2 + the two hip-knee tendon records exactly as
     test_equality_tendon_fields Part A does (the parser never emits tendon
     records, so injection is the only way any model carries them)."""
-    var model = Model[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, CONE, NTEN, NSITE
-    ]()
-    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MC, NSITE]()
-    HumanoidModel.setup_model_and_data(model, data)
-
-    var hb = ctx.enqueue_create_host_buffer[DTYPE](MS)
-    ctx.synchronize()
-    for i in range(MS):
-        hb[i] = Scalar[DTYPE](0)
-    copy_model_to_buffer(model, hb)
-    copy_geoms_to_buffer(model, hb)
-    copy_tendons_to_buffer(model, hb)
-    copy_invweight0_to_buffer(model, hb)
-
+    var model_t = TensorImpl[DTYPE].alloc(MS)
+    model_t.upload(ctx)
+    HumanoidModel.init_model_gpu(ctx, model_t.dev.value())
+    model_t.download(ctx)
     var flat = List[Scalar[DTYPE]](length=MS, fill=Scalar[DTYPE](0))
     for i in range(MS):
-        flat[i] = hb[i]
+        flat[i] = model_t.data[i]
 
     # Inject the two hip-knee tendons: right = r_hip_y (joint 6) + r_knee
     # (joint 7); left = l_hip_y (joint 10) + l_knee (joint 11);

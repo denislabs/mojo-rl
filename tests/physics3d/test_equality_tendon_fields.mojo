@@ -41,13 +41,7 @@ from std.sys import has_nvidia_gpu_accelerator
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
-# NOTE (sunset): Part B still uses the legacy Model/Data to SERIALIZE the weld
-# equality RECORDS into the slab (init_model_gpu never calls
-# copy_equality_to_buffer). Migrating equality-record serialization to a
-# fields-native init is a P6 prerequisite before this import can be removed.
-# The constraint comparison itself is golden-frozen (legacy step/pgs kernels
-# dropped). Part A injects tendon records directly into the slab (no Model).
-from mojo_rl.physics3d.types import Model, Data, ConeType
+from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
@@ -409,56 +403,15 @@ def _part_b_equality(ctx: DeviceContext) raises:
     print("--- Part B: synthetic weld equality fields GOLDEN,")
     print("    BATCH=", BATCH)
 
-    var model_t = TensorImpl[DTYPE].alloc(MS_B)
-    model_t.upload(ctx)
-    var mbuf = model_t.dev.value()
-    WeldTestModel.init_model_gpu(ctx, mbuf)
-    model_t.download(ctx)
-
-    # init_model_gpu never serializes equality RECORDS (copy_equality_to_
-    # buffer has no callers) — only the meta count. Serialize them here on
-    # the host slab, mirroring copy_equality_to_buffer, so BOTH the legacy
-    # kernel and ModelFields read real records.
-    var cpu_model = Model[
-        DTYPE, NQ_B, NV_B, NBODY_B, NJOINT_B, MC_B, NGEOM_B, NEQ_B, CONE_B,
-        0, 0,
+    # Fields-native build — init_fields serializes the weld equality records
+    # (Stage B fixed copy_equality_to_buffer, which init_model_gpu never called).
+    var mf = ModelFields[
+        DTYPE, NV_B, NBODY_B, NJOINT_B, NGEOM_B, NEQ_B,
+        WeldTestModel.MAX_TENDON, WeldTestModel.NSITE, WeldTestModel.nexclude, 0,
     ]()
-    var cpu_data = Data[DTYPE, NQ_B, NV_B, NBODY_B, NJOINT_B, MC_B, 0]()
-    WeldTestModel.setup_model_and_data[DTYPE](cpu_model, cpu_data)
-    if cpu_model.num_equality != 1:
-        raise Error(
-            "part B: expected 1 weld constraint, got "
-            + String(cpu_model.num_equality)
-        )
-    for e_i in range(cpu_model.num_equality):
-        var eq = cpu_model.equality_constraints[e_i]
-        var off = model_equality_offset[NBODY_B, NJOINT_B, NGEOM_B](e_i)
-        model_t.data[off + EQ_IDX_TYPE] = Scalar[DTYPE](eq.eq_type)
-        model_t.data[off + EQ_IDX_BODY_A] = Scalar[DTYPE](eq.body_a)
-        model_t.data[off + EQ_IDX_BODY_B] = Scalar[DTYPE](eq.body_b)
-        model_t.data[off + EQ_IDX_ANCHOR_AX] = eq.anchor_a_x
-        model_t.data[off + EQ_IDX_ANCHOR_AY] = eq.anchor_a_y
-        model_t.data[off + EQ_IDX_ANCHOR_AZ] = eq.anchor_a_z
-        model_t.data[off + EQ_IDX_ANCHOR_BX] = eq.anchor_b_x
-        model_t.data[off + EQ_IDX_ANCHOR_BY] = eq.anchor_b_y
-        model_t.data[off + EQ_IDX_ANCHOR_BZ] = eq.anchor_b_z
-        model_t.data[off + EQ_IDX_RELPOSE_X] = eq.relpose_x
-        model_t.data[off + EQ_IDX_RELPOSE_Y] = eq.relpose_y
-        model_t.data[off + EQ_IDX_RELPOSE_Z] = eq.relpose_z
-        model_t.data[off + EQ_IDX_RELPOSE_W] = eq.relpose_w
-        model_t.data[off + EQ_IDX_SOLREF_0] = eq.solref_0
-        model_t.data[off + EQ_IDX_SOLREF_1] = eq.solref_1
-        model_t.data[off + EQ_IDX_SOLIMP_0] = eq.solimp_0
-        model_t.data[off + EQ_IDX_SOLIMP_1] = eq.solimp_1
-        model_t.data[off + EQ_IDX_SOLIMP_2] = eq.solimp_2
-        model_t.data[off + EQ_IDX_SOLIMP_3] = eq.solimp_3
-        model_t.data[off + EQ_IDX_SOLIMP_4] = eq.solimp_4
-    model_t.upload(ctx)
+    WeldTestModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var mf = ModelFields[DTYPE, NV_B, NBODY_B, NJOINT_B, NGEOM_B, NEQ_B]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
-
+    # Non-vacuity: init_fields must have serialized the weld (meta + record).
     if Int(mf.meta.data[MODEL_META_IDX_NEQUALITY]) != 1:
         raise Error("part B vacuous: model meta NEQUALITY != 1")
 
