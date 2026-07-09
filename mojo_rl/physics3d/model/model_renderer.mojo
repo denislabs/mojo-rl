@@ -67,6 +67,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         follow: Bool = True,
         show_velocity: Bool = True,
         show_sites: Bool = False,
+        show_fog: Bool = False,
         title: String = String("Model Environment"),
     ) raises:
         # Setup all cameras from spec (fallback to default if none defined)
@@ -122,8 +123,12 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             for ci in range(len(self.cameras)):
                 # Camera stores fov in radians already, near is Float64
                 self.cameras[ci].near = znear
-            fog_start = Float32(vis[1])
-            fog_end = Float32(vis[2])
+            # MuJoCo defines fog map params (<map fogstart fogend/>) but does
+            # NOT render fog unless the mjVIS_FOG flag is enabled (off by
+            # default). Mirror that: keep fog disabled unless explicitly asked.
+            if show_fog:
+                fog_start = Float32(vis[1])
+                fog_end = Float32(vis[2])
             shadow_size = Int(vis[3])
             # Headlight ambient: add to all lights
             var has_hl = vis[7] > 0.5
