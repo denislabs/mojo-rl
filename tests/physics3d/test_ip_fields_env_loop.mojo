@@ -43,6 +43,7 @@ comptime MC = IPM.MAX_CONTACTS
 comptime NSITE = IPM.NSITE
 comptime NEQ = IPM.MAX_EQUALITY
 comptime NTEN = IPM.MAX_TENDON
+comptime NEXCL = IPM.NEXCLUDE
 comptime BATCH = 2
 comptime OBS_DIM = NQ + NV  # obs_qpos_skip=0
 comptime FRAME_SKIP = 2
@@ -79,13 +80,8 @@ def main() raises:
     )
     var ctx = DeviceContext()
 
-    var model_t = TensorImpl[DTYPE].alloc(MS)
-    model_t.upload(ctx)
-    IPM.init_model_gpu(ctx, model_t.dev.value())
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]()
+    IPM.init_fields[DTYPE, 0](ctx, mf)
 
     var pole0 = List[Float64]()
     pole0.append(0.05)
@@ -97,7 +93,7 @@ def main() raises:
     d.upload_all(ctx)
 
     var integ = EulerIntegratorFields[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, 0, 0,
+        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
         BATCH=BATCH,
     ]()
     integ.prepare_gpu(ctx)
@@ -167,7 +163,7 @@ def main() raises:
     for e in range(BATCH):
         dc.qpos.data[e * NQ + 1] = Scalar[DTYPE](pole0[e])
     var integ_c = EulerIntegratorFields[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, 0, 0,
+        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
         BATCH=BATCH,
     ]()
     var obs_c = TensorImpl[DTYPE].alloc(BATCH * OBS_DIM)
