@@ -87,6 +87,10 @@ comptime NBODY = Walker2dModel.NBODY
 comptime NJOINT = Walker2dModel.NJOINT
 comptime NGEOM = Walker2dModel.NGEOM
 comptime MC = Walker2dModel.MAX_CONTACTS
+comptime NEQ = Walker2dModel.MAX_EQUALITY
+comptime NTD = Walker2dModel.MAX_TENDON
+comptime NSITE = Walker2dModel.NSITE
+comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime BATCH = 2
 comptime N_ROUNDS = 3
 
@@ -102,31 +106,31 @@ comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 def _fields_prep[
     target: StaticString
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH],
-    mut mf: ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, 0, 0, 0, 0, 0],
+    mut d: DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    mut mf: ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
     """Smooth-dynamics prep + detection, mirroring EulerIntegratorFields.step
     up to the constraint seam (order verbatim)."""
     forward_kinematics_fields[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         BATCH,
     ](d, mf, ctx)
     compute_body_velocities_fields[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         BATCH,
     ](d, mf, ctx)
     compute_subtree_com_fields[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         BATCH,
     ](d, mf, ctx)
     compute_cdof_fields[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         BATCH,
     ](d, mf, scratch, ctx)
     compute_mass_matrix_fields[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         BATCH,
     ](d, mf, scratch, ctx)
 
@@ -143,7 +147,7 @@ def _fields_prep[
         ldl_factor_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
         compute_m_inv_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
         compute_bias_forces_rne_fields[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
             BATCH,
         ](d, mf, scratch, ctx)
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
@@ -175,7 +179,7 @@ def _fields_prep[
         ldl_factor_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
         compute_m_inv_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
         compute_bias_forces_rne_fields[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
             BATCH,
         ](d, mf, scratch, ctx)
         ctx.value().enqueue_function[
@@ -202,7 +206,7 @@ def _fields_prep[
         )
 
     detect_contacts_fields[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         BATCH,
     ](d, mf, ctx)
 
@@ -212,7 +216,7 @@ def _find_limited_joint(
 ) -> Tuple[Int, Scalar[DTYPE]]:
     """First HINGE/SLIDE joint with a finite range: (qpos_adr, rmax)."""
     for j in range(NJOINT):
-        var j_off = NBODY * MODEL_BODY_SIZE + j * MODEL_JOINT_SIZE
+        var j_off = j * MODEL_JOINT_SIZE
         var jtype = Int(model_data[j_off + JOINT_IDX_TYPE])
         if jtype != JNT_HINGE and jtype != JNT_SLIDE:
             continue
@@ -233,7 +237,7 @@ def _count_violated_limits(
     """Host-side count of active joint-limit rows for one env."""
     var count = 0
     for j in range(NJOINT):
-        var j_off = NBODY * MODEL_BODY_SIZE + j * MODEL_JOINT_SIZE
+        var j_off = j * MODEL_JOINT_SIZE
         var jtype = Int(model_data[j_off + JOINT_IDX_TYPE])
         if jtype != JNT_HINGE and jtype != JNT_SLIDE:
             continue
@@ -255,18 +259,12 @@ def run_leg(ctx: DeviceContext) raises:
     print("--- Newton BLOCKED solve leg: PYRAMIDAL (BATCH=", BATCH, ")")
 
     # === Model ===
-    var model_t = TensorImpl[DTYPE].alloc(MS)
-    model_t.upload(ctx)
-    var mbuf = model_t.dev.value()
-    Walker2dModel.init_model_gpu(ctx, mbuf)
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # === State (walker on the floor; env 1 with one joint past its limit) ===
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
-    var lim = _find_limited_joint(model_t.data)
+    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var lim = _find_limited_joint(mf.joints.data)
     var lim_qpos_adr = lim[0]
     var lim_rmax = lim[1]
     if lim_qpos_adr < 0:
@@ -278,15 +276,15 @@ def run_leg(ctx: DeviceContext) raises:
                 qp = 1.10  # feet penetrate the floor
             d.qpos.data[e * NQ + i] = qp
         for j in range(NJOINT):
-            var j_off = NBODY * MODEL_BODY_SIZE + j * MODEL_JOINT_SIZE
-            var jtype = Int(model_t.data[j_off + JOINT_IDX_TYPE])
+            var j_off = j * MODEL_JOINT_SIZE
+            var jtype = Int(mf.joints.data[j_off + JOINT_IDX_TYPE])
             if jtype != JNT_HINGE and jtype != JNT_SLIDE:
                 continue
-            var rmin = model_t.data[j_off + JOINT_IDX_RANGE_MIN]
-            var rmax = model_t.data[j_off + JOINT_IDX_RANGE_MAX]
+            var rmin = mf.joints.data[j_off + JOINT_IDX_RANGE_MIN]
+            var rmax = mf.joints.data[j_off + JOINT_IDX_RANGE_MAX]
             if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
                 continue
-            var qpos_adr = Int(model_t.data[j_off + JOINT_IDX_QPOS_ADR])
+            var qpos_adr = Int(mf.joints.data[j_off + JOINT_IDX_QPOS_ADR])
             var qp_in = d.qpos.data[e * NQ + qpos_adr]
             if qp_in > rmax - Scalar[DTYPE](0.1):
                 qp_in = rmax - Scalar[DTYPE](0.1)
@@ -309,8 +307,8 @@ def run_leg(ctx: DeviceContext) raises:
     for e in range(BATCH):
         for i in range(NQ):
             qpos_host.append(d.qpos.data[e * NQ + i])
-    var nlim0 = _count_violated_limits(model_t.data, qpos_host, 0)
-    var nlim1 = _count_violated_limits(model_t.data, qpos_host, 1)
+    var nlim0 = _count_violated_limits(mf.joints.data, qpos_host, 0)
+    var nlim1 = _count_violated_limits(mf.joints.data, qpos_host, 1)
     if nlim0 != 0:
         raise Error("env 0 unexpectedly violates a joint limit")
     if nlim1 < 1:
@@ -326,7 +324,7 @@ def run_leg(ctx: DeviceContext) raises:
     for rnd in range(N_ROUNDS):
         _fields_prep["gpu"](d, mf, scratch, ctx)
         solve_newton_blocked_fields[
-            "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+            "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
             CONE_T, BATCH,
         ](d, mf, scratch, cscratch, ctx)
         d.meta.download(ctx)
@@ -403,17 +401,11 @@ def run_cpu_smoke(ctx: DeviceContext) raises:
     """Single-source CPU fallback smoke: blocked-fields CPU (per-env
     PYRAMIDAL body) close to blocked-fields GPU."""
     print("--- Newton BLOCKED fields-CPU vs fields-GPU smoke (PYRAMIDAL)")
-    var model_t = TensorImpl[DTYPE].alloc(MS)
-    model_t.upload(ctx)
-    var mbuf = model_t.dev.value()
-    Walker2dModel.init_model_gpu(ctx, mbuf)
-    model_t.download(ctx)
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM]()
-    mf.load_from_slab(model_t.data)
-    mf.upload_all(ctx)
+    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
-    var dc = DataFields[DTYPE, NQ, NV, NBODY, MC, 0, BATCH]()
+    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dc = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -441,12 +433,12 @@ def run_cpu_smoke(ctx: DeviceContext) raises:
 
     _fields_prep["gpu"](d, mf, scratch, ctx)
     solve_newton_blocked_fields[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         ConeType.PYRAMIDAL, BATCH,
     ](d, mf, scratch, cscratch, ctx)
     _fields_prep["cpu"](dc, mf, scratch_c, None)
     solve_newton_blocked_fields[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, 0, 0, 0, 0, 0,
+        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         ConeType.PYRAMIDAL, BATCH,
     ](dc, mf, scratch_c, cscratch_c, None)
 
