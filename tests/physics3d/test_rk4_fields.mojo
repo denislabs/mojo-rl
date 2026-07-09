@@ -11,8 +11,9 @@ sunset, so this gate survives deletion of the legacy slab/kernels. It checks:
   * the final pose stays strictly inside all joint ranges (limits inactive,
     so the contact/limit-free comparison is provably valid).
 
-Walker2D, BATCH=3 (distinct qpos/qvel/qfrc per env), free-flight (rootz=2.0),
-load_from_slab (P6 re-homes it). Regenerate goldens after an INTENTIONAL physics
+Walker2D, BATCH=3 (distinct qpos/qvel/qfrc per env), free-flight (rootz=2.0).
+Model build routes through the offset-free init_fields (Stage E). Regenerate
+goldens after an INTENTIONAL physics
 change: set HARVEST=True, run once on Apple, paste the values, set HARVEST=False.
 
 Run: pixi run -e apple mojo run -I . tests/physics3d/test_rk4_fields.mojo
