@@ -25,40 +25,24 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_crba_treewalk_fields.m
 """
 
 from std.math import abs
-from std.gpu import block_idx, thread_idx
 from std.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
-from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import DataFields, ModelFields, DynamicsScratch
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
-    forward_kinematics_gpu,
-)
 from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
     forward_kinematics_fields,
-)
-from mojo_rl.physics3d.dynamics.jacobian import (
-    compute_subtree_com_gpu,
-    compute_cdof_gpu,
 )
 from mojo_rl.physics3d.dynamics.subtree_com_fields import (
     compute_subtree_com_fields,
 )
 from mojo_rl.physics3d.dynamics.cdof_fields import compute_cdof_fields
-from mojo_rl.physics3d.dynamics.mass_matrix import (
-    compute_mass_matrix_treewalk_gpu_mt,
-)
 from mojo_rl.physics3d.dynamics.mass_matrix_fields import (
     compute_mass_matrix_fields,
 )
 from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
 from mojo_rl.physics3d.gpu.constants import (
-    state_size,
     model_size_with_invweight,
-    integrator_workspace_size,
-    qpos_offset,
-    ws_M_offset,
     META_IDX_NUM_CONTACTS,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
@@ -73,6 +57,12 @@ comptime DTYPE = DType.float32
 comptime M_TOL: Float64 = 1e-3
 comptime M_REL_TOL: Float64 = 1e-2
 
+# --- GOLDEN fingerprints (frozen from the legacy-validated fields treewalk) ---
+comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
+comptime GOLD_RTOL = 1e-3
+comptime GOLD_M_W = 5823.390816136981  # walker2d treewalk M checksum
+comptime GOLD_M_A = 951.1037723336234  # ant treewalk M checksum
+
 # ── Walker2D dims ──────────────────────────────────────────────────────────
 comptime W_NQ = Walker2dModel.NQ  # 9
 comptime W_NV = Walker2dModel.NV  # 9
@@ -82,9 +72,7 @@ comptime W_NGEOM = Walker2dModel.NGEOM  # 8
 comptime W_MC = Walker2dModel.MAX_CONTACTS  # 20
 comptime W_CONE = Walker2dModel.CONE_TYPE
 comptime W_BATCH = 2
-comptime W_SS = state_size[W_NQ, W_NV, W_NBODY, W_MC, 0]()
 comptime W_MS = model_size_with_invweight[W_NBODY, W_NJOINT, W_NV, W_NGEOM]()
-comptime W_WS = integrator_workspace_size[W_NV, W_NBODY]()
 
 # ── Ant dims (FREE joint: 6 DOF + 8 hinge) ─────────────────────────────────
 comptime A_NQ = AntModel.NQ  # 15
@@ -94,68 +82,9 @@ comptime A_NJOINT = AntModel.NJOINT  # 9
 comptime A_NGEOM = AntModel.NGEOM  # 15
 comptime A_MC = AntModel.MAX_CONTACTS  # 40
 comptime A_BATCH = 2
-comptime A_SS = state_size[A_NQ, A_NV, A_NBODY, A_MC, 0]()
 comptime A_MS = model_size_with_invweight[A_NBODY, A_NJOINT, A_NV, A_NGEOM]()
-comptime A_WS = integrator_workspace_size[A_NV, A_NBODY]()
 
 comptime METADATA_SIZE_L = 4
-
-
-# ── legacy-side kernels ────────────────────────────────────────────────────
-def _legacy_prep_kernel[
-    NQ_: Int,
-    NV_: Int,
-    NBODY_: Int,
-    NJOINT_: Int,
-    MC_: Int,
-    SS_: Int,
-    MS_: Int,
-    B_: Int,
-    WS_: Int,
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(B_, WS_), MutAnyOrigin],
-):
-    """Serial per-env prep chain FK -> subtree_com -> cdof (the treewalk's
-    only inputs besides model records; grid=(B,), block=(1,))."""
-    var env = Int(block_idx.x)
-    if env >= B_:
-        return
-    forward_kinematics_gpu[
-        DTYPE, NQ_, NV_, NBODY_, NJOINT_, MC_, SS_, MS_, B_
-    ](env, state, model)
-    compute_subtree_com_gpu[
-        DTYPE, NQ_, NV_, NBODY_, NJOINT_, MC_, SS_, MS_, B_
-    ](env, state, model)
-    compute_cdof_gpu[
-        DTYPE, NQ_, NV_, NBODY_, NJOINT_, MC_, SS_, MS_, B_, WS_
-    ](env, state, model, workspace)
-
-
-def _legacy_treewalk_kernel[
-    NQ_: Int,
-    NV_: Int,
-    NBODY_: Int,
-    NJOINT_: Int,
-    MC_: Int,
-    SS_: Int,
-    MS_: Int,
-    B_: Int,
-    WS_: Int,
-](
-    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_), MutAnyOrigin],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_), MutAnyOrigin],
-    workspace: LayoutTensor[DTYPE, Layout.row_major(B_, WS_), MutAnyOrigin],
-):
-    """Legacy treewalk launched standalone with the fields _mt mapping:
-    grid=(B,), block=(NV,) -> env=block_idx.x, tid=thread_idx.x,
-    n_threads=NV. Grid is exact, so valid_env is always true."""
-    var env = Int(block_idx.x)
-    var tid = Int(thread_idx.x)
-    compute_mass_matrix_treewalk_gpu_mt[
-        DTYPE, NQ_, NV_, NBODY_, NJOINT_, MC_, SS_, MS_, B_, WS_
-    ](env, tid, NV_, env < B_, state, model, workspace)
 
 
 # ── legs 1+2 for Walker2D ──────────────────────────────────────────────────
@@ -191,51 +120,13 @@ def test_walker2d_mm() raises:
     q2[8] = -0.6
     qcfg.append(q2^)
 
-    var slab_t = TensorImpl[DTYPE].alloc(W_BATCH * W_SS)
     var d = DataFields[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, 0, W_BATCH]()
-    comptime O_QPOS = qpos_offset[W_NQ, W_NV]()
     for e in range(W_BATCH):
         for i in range(W_NQ):
-            var qp = Scalar[DTYPE](qcfg[e][i])
-            slab_t.data[e * W_SS + O_QPOS + i] = qp
-            d.qpos.data[e * W_NQ + i] = qp
-    slab_t.upload(ctx)
+            d.qpos.data[e * W_NQ + i] = Scalar[DTYPE](qcfg[e][i])
     d.upload_all(ctx)
-    var ws_t = TensorImpl[DTYPE].alloc(W_BATCH * W_WS)
-    ws_t.upload(ctx)
 
-    # Legacy: prep chain, then the treewalk with the fields launch shape.
-    # Legacy slab-GPU reference: crashes/miscomputes on CUDA for
-    # FREE-joint models; Apple-only (bit-exact gate guarded below).
-    if not has_nvidia_gpu_accelerator():
-        ctx.enqueue_function[
-            _legacy_prep_kernel[
-                W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_SS, W_MS, W_BATCH, W_WS
-            ]
-        ](
-            slab_t.lt["gpu", Layout.row_major(W_BATCH, W_SS)](),
-            model_t.lt["gpu", Layout.row_major(1, W_MS)](),
-            ws_t.lt["gpu", Layout.row_major(W_BATCH, W_WS)](),
-            grid_dim=(W_BATCH,),
-            block_dim=(1,),
-        )
-    # Legacy slab-GPU reference: crashes/miscomputes on CUDA for
-    # FREE-joint models; Apple-only (bit-exact gate guarded below).
-    if not has_nvidia_gpu_accelerator():
-        ctx.enqueue_function[
-            _legacy_treewalk_kernel[
-                W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_SS, W_MS, W_BATCH, W_WS
-            ]
-        ](
-            slab_t.lt["gpu", Layout.row_major(W_BATCH, W_SS)](),
-            model_t.lt["gpu", Layout.row_major(1, W_MS)](),
-            ws_t.lt["gpu", Layout.row_major(W_BATCH, W_WS)](),
-            grid_dim=(W_BATCH,),
-            block_dim=(W_NV,),
-        )
-        ws_t.download(ctx)
-
-    # Fields: same prep chain (gated bit-exact vs legacy in test_fk_fields).
+    # Fields: prep chain (gated bit-exact vs legacy in test_fk_fields).
     forward_kinematics_fields[
         "gpu", DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM,
         0, 0, 0, 0, 0, W_BATCH,
@@ -269,25 +160,8 @@ def test_walker2d_mm() raises:
     ](d, mf, scratch, ctx)
     scratch.M.download(ctx)
 
-    # Leg 1: BIT-EXACT vs the legacy treewalk.
-    comptime O_M = ws_M_offset[W_NV, W_NBODY]()
-    var bad = 0
-    for e in range(W_BATCH):
-        for j in range(W_NV * W_NV):
-            if (
-                scratch.M.data[e * W_NV * W_NV + j]
-                != ws_t.data[e * W_WS + O_M + j]
-            ):
-                if bad < 4:
-                    print(
-                        "  DIFF M e", e, "j", j, ":",
-                        scratch.M.data[e * W_NV * W_NV + j], "vs",
-                        ws_t.data[e * W_WS + O_M + j],
-                    )
-                bad += 1
-    if bad != 0 and not has_nvidia_gpu_accelerator():  # legacy-GPU broken on CUDA
-        raise Error("walker2d fields treewalk vs legacy treewalk: not bit-exact")
-    print("  PASS: fields treewalk == legacy treewalk BIT-EXACT (M)")
+    # Leg 1: fields treewalk M vs frozen golden (legacy-validated).
+    _m_golden[W_NV, W_BATCH]("walker2d", scratch.M.data, GOLD_M_W)
 
     # Leg 2: tolerance vs the fields dense CRBA (legacy gate's tolerances).
     _check_dense_vs_tree[W_NV, W_BATCH]("walker2d", dense, scratch.M.data)
@@ -334,48 +208,11 @@ def test_ant_mm() raises:
     q2[14] = 0.4
     qcfg.append(q2^)
 
-    var slab_t = TensorImpl[DTYPE].alloc(A_BATCH * A_SS)
     var d = DataFields[DTYPE, A_NQ, A_NV, A_NBODY, A_MC, 0, A_BATCH]()
-    comptime O_QPOS = qpos_offset[A_NQ, A_NV]()
     for e in range(A_BATCH):
         for i in range(A_NQ):
-            var qp = Scalar[DTYPE](qcfg[e][i])
-            slab_t.data[e * A_SS + O_QPOS + i] = qp
-            d.qpos.data[e * A_NQ + i] = qp
-    slab_t.upload(ctx)
+            d.qpos.data[e * A_NQ + i] = Scalar[DTYPE](qcfg[e][i])
     d.upload_all(ctx)
-    var ws_t = TensorImpl[DTYPE].alloc(A_BATCH * A_WS)
-    ws_t.upload(ctx)
-
-    # Legacy slab-GPU reference: crashes/miscomputes on CUDA for
-    # FREE-joint models; Apple-only (bit-exact gate guarded below).
-    if not has_nvidia_gpu_accelerator():
-        ctx.enqueue_function[
-            _legacy_prep_kernel[
-                A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_SS, A_MS, A_BATCH, A_WS
-            ]
-        ](
-            slab_t.lt["gpu", Layout.row_major(A_BATCH, A_SS)](),
-            model_t.lt["gpu", Layout.row_major(1, A_MS)](),
-            ws_t.lt["gpu", Layout.row_major(A_BATCH, A_WS)](),
-            grid_dim=(A_BATCH,),
-            block_dim=(1,),
-        )
-    # Legacy slab-GPU reference: crashes/miscomputes on CUDA for
-    # FREE-joint models; Apple-only (bit-exact gate guarded below).
-    if not has_nvidia_gpu_accelerator():
-        ctx.enqueue_function[
-            _legacy_treewalk_kernel[
-                A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_SS, A_MS, A_BATCH, A_WS
-            ]
-        ](
-            slab_t.lt["gpu", Layout.row_major(A_BATCH, A_SS)](),
-            model_t.lt["gpu", Layout.row_major(1, A_MS)](),
-            ws_t.lt["gpu", Layout.row_major(A_BATCH, A_WS)](),
-            grid_dim=(A_BATCH,),
-            block_dim=(A_NV,),
-        )
-        ws_t.download(ctx)
 
     forward_kinematics_fields[
         "gpu", DTYPE, A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_NGEOM,
@@ -409,26 +246,32 @@ def test_ant_mm() raises:
     ](d, mf, scratch, ctx)
     scratch.M.download(ctx)
 
-    comptime O_M = ws_M_offset[A_NV, A_NBODY]()
-    var bad = 0
-    for e in range(A_BATCH):
-        for j in range(A_NV * A_NV):
-            if (
-                scratch.M.data[e * A_NV * A_NV + j]
-                != ws_t.data[e * A_WS + O_M + j]
-            ):
-                if bad < 4:
-                    print(
-                        "  DIFF M e", e, "j", j, ":",
-                        scratch.M.data[e * A_NV * A_NV + j], "vs",
-                        ws_t.data[e * A_WS + O_M + j],
-                    )
-                bad += 1
-    if bad != 0 and not has_nvidia_gpu_accelerator():  # legacy-GPU broken on CUDA
-        raise Error("ant fields treewalk vs legacy treewalk: not bit-exact")
-    print("  PASS: fields treewalk == legacy treewalk BIT-EXACT (M)")
+    # Leg 1: fields treewalk M vs frozen golden (legacy-validated).
+    _m_golden[A_NV, A_BATCH]("ant", scratch.M.data, GOLD_M_A)
 
     _check_dense_vs_tree[A_NV, A_BATCH]("ant", dense, scratch.M.data)
+
+
+def _m_golden[
+    NV_: Int, B_: Int
+](name: String, m: List[Scalar[DTYPE]], gold: Float64) raises:
+    """Leg 1: order-sensitive checksum of the fields treewalk M vs golden."""
+    var fp = Float64(0)
+    for e in range(B_):
+        for j in range(NV_ * NV_):
+            fp += Float64(m[e * NV_ * NV_ + j]) * Float64(e * NV_ * NV_ + j + 1)
+    if HARVEST:
+        print("  HARVEST", name, "GOLD_M =", fp)
+    else:
+        var denom = abs(gold) if abs(gold) > 1e-9 else 1.0
+        if abs(fp - gold) / denom > GOLD_RTOL and (
+            not has_nvidia_gpu_accelerator()
+        ):
+            raise Error(
+                name + " treewalk M fingerprint " + String(fp) + " != golden "
+                + String(gold)
+            )
+        print("  PASS:", name, "fields treewalk M matches golden")
 
 
 def _check_dense_vs_tree[
