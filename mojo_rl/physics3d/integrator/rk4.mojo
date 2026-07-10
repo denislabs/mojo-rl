@@ -1,6 +1,6 @@
 """Stateful RK4 integrator over per-field tensors (migration P2).
 
-`RK4IntegratorFields` is the stateful replacement for the stateless
+`RK4Integrator` is the stateful replacement for the stateless
 `RK4Integrator.step_gpu` + caller-provided workspace slab: the struct OWNS
 its `DynamicsScratch` + `Rk4Scratch` and sequences the single-source
 per-stage functions into a full contact-free RK4 step (MuJoCo
@@ -27,7 +27,7 @@ mj_RungeKutta tableau, exactly as the legacy `rk4_stage_kernel` /
 
 Staging/combine arithmetic is verbatim from the legacy `rk4_stage_kernel`
 (:1232) / `rk4_combine_kernel` (:2140) / `_integrate_pos_gpu` (:151);
-armature/fnet/writeback env bodies are shared with `euler_fields` (the
+armature/fnet/writeback env bodies are shared with `euler` (the
 legacy RK4 stage steps 6b/9/9b are byte-identical to the Euler ones —
 verified against both sources). Unlike Euler's finalize, RK4 does NO
 implicit-damping re-solve: damping is explicit in fnet, and the combine
@@ -38,7 +38,7 @@ Deliberately NOT yet ported (raise / absent by design):
 - contacts AND limits: legacy RK4 handles both inside the per-stage
   constraint-SOLVER launch (`step_gpu` = 4 x (stage + solver) + combine);
   the contact-free legacy path (stage kernels only, no solver launches)
-  never touches limits — so unlike `EulerIntegratorFields` there is no
+  never touches limits — so unlike `EulerIntegrator` there is no
   CONTACTS param and no standalone limits stage here. Contacts-in-RK4
   (solver seam per stage) is a later slice.
 """
@@ -48,28 +48,28 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_integrate, quat_normalize
-from ..kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
-    compute_body_velocities_fields,
+from ..kinematics.forward_kinematics import (
+    forward_kinematics,
+    compute_body_velocities,
 )
-from ..dynamics.subtree_com_fields import compute_subtree_com_fields
-from ..dynamics.cdof_fields import compute_cdof_fields
-from ..dynamics.mass_matrix_fields import compute_mass_matrix_fields
-from ..dynamics.ldl_fields import (
-    ldl_factor_fields,
-    ldl_solve_fields,
-    compute_m_inv_fields,
+from ..dynamics.subtree_com import compute_subtree_com
+from ..dynamics.cdof import compute_cdof
+from ..dynamics.mass_matrix import compute_mass_matrix
+from ..dynamics.ldl import (
+    ldl_factor,
+    ldl_solve,
+    compute_m_inv,
 )
 from ..types import ConeType
-from ..dynamics.rne_fields import compute_bias_forces_rne_fields
-from ..dynamics.fluid_forces_fields import compute_fluid_forces_fields
-from ..constraints.contact_solve_fields import solve_contacts_fields
-from ..solver.newton_solve_fields import solve_newton_fields
-from ..solver.cg_solve_fields import solve_cg_fields
-from ..solver.island_pgs_solve_fields import solve_island_pgs_fields
-from ..collision.broadphase_sap_fields import detect_contacts_auto_fields
+from ..dynamics.rne import compute_bias_forces_rne
+from ..dynamics.fluid_forces import compute_fluid_forces
+from ..constraints.contact_solve import solve_contacts
+from ..solver.newton_solve import solve_newton
+from ..solver.cg_solve import solve_cg
+from ..solver.island_pgs_solve import solve_island_pgs
+from ..collision.broadphase_sap import detect_contacts_auto
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
-from ..fields import DataFields, ModelFields, DynamicsScratch, ContactScratch, Rk4Scratch
+from ..fields import Data, Model, DynamicsScratch, ContactScratch, Rk4Scratch
 from ..gpu.constants import (
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
@@ -79,13 +79,13 @@ from ..gpu.constants import (
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_DOF_ADR,
 )
-from .euler_fields import (
+from .euler import (
     EU_TPB,
-    _armature_env_fields,
+    _armature_env,
     _armature_kernel,
-    _fnet_passive_env_fields,
+    _fnet_passive_env,
     _fnet_passive_kernel,
-    _qacc_writeback_env_fields,
+    _qacc_writeback_env,
     _qacc_writeback_kernel,
 )
 
@@ -94,7 +94,7 @@ from .euler_fields import (
 # (verbatim legacy _integrate_pos_gpu :151; num_joints -> comptime NJOINT,
 #  ws rk4 regions -> per-field q0/vel tensors, state qpos -> qpos tensor)
 @always_inline
-def _rk4_integrate_pos_env_fields[
+def _rk4_integrate_pos_env[
     DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int
 ](
     env: Int,
@@ -147,7 +147,7 @@ def _rk4_integrate_pos_env_fields[
 
 # ── per-stage setup (verbatim rk4_stage_kernel pre-stage block :1316) ─────
 @always_inline
-def _rk4_stage_setup_env_fields[
+def _rk4_stage_setup_env[
     DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int, STAGE: Int
 ](
     env: Int,
@@ -182,7 +182,7 @@ def _rk4_stage_setup_env_fields[
             A0[env, i] = qacc_constrained[env, i]
         # Set intermediate state: qpos = q0 + dt/2 * v0 (C[0] = v0)
         # qvel = v0 + dt/2 * A[0]
-        _rk4_integrate_pos_env_fields[DTYPE, NQ, NV, NJOINT, BATCH](
+        _rk4_integrate_pos_env[DTYPE, NQ, NV, NJOINT, BATCH](
             env, half_dt, joints, q0, v0, qpos
         )
         for i in range(NV):
@@ -200,7 +200,7 @@ def _rk4_stage_setup_env_fields[
             C1[env, i] = v0_i + half_dt * a0_i
         # Set intermediate state: qpos = q0 + dt/2 * C[1]
         # qvel = v0 + dt/2 * A[1]
-        _rk4_integrate_pos_env_fields[DTYPE, NQ, NV, NJOINT, BATCH](
+        _rk4_integrate_pos_env[DTYPE, NQ, NV, NJOINT, BATCH](
             env, half_dt, joints, q0, C1, qpos
         )
         for i in range(NV):
@@ -218,7 +218,7 @@ def _rk4_stage_setup_env_fields[
             C2[env, i] = v0_i + half_dt * a1_i
         # Set intermediate state: qpos = q0 + dt * C[2]
         # qvel = v0 + dt * A[2]
-        _rk4_integrate_pos_env_fields[DTYPE, NQ, NV, NJOINT, BATCH](
+        _rk4_integrate_pos_env[DTYPE, NQ, NV, NJOINT, BATCH](
             env, dt, joints, q0, C2, qpos
         )
         for i in range(NV):
@@ -229,7 +229,7 @@ def _rk4_stage_setup_env_fields[
 
 # ── combine: RK4 weights + integrate (verbatim rk4_combine_kernel :2140) ──
 @always_inline
-def _rk4_combine_env_fields[
+def _rk4_combine_env[
     DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int
 ](
     env: Int,
@@ -314,7 +314,7 @@ def _rk4_combine_env_fields[
 
     # Second pass: integrate position using v_combined (quaternion-aware);
     # v_combined lives in the A0 slot.
-    _rk4_integrate_pos_env_fields[DTYPE, NQ, NV, NJOINT, BATCH](
+    _rk4_integrate_pos_env[DTYPE, NQ, NV, NJOINT, BATCH](
         env, dt, joints, q0, A0, qpos
     )
 
@@ -343,13 +343,13 @@ def _rk4_stage_setup_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _rk4_stage_setup_env_fields[DTYPE, NQ, NV, NJOINT, BATCH, STAGE](
+    _rk4_stage_setup_env[DTYPE, NQ, NV, NJOINT, BATCH, STAGE](
         env, dt, joints, qpos, qvel, qacc_constrained,
         q0, v0, A0, A1, A2, C1, C2,
     )
 
 
-def _rk4_combine_kernel_fields[
+def _rk4_combine_kernel[
     DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int
 ](
     dt: Scalar[DTYPE],
@@ -373,14 +373,14 @@ def _rk4_combine_kernel_fields[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _rk4_combine_env_fields[DTYPE, NQ, NV, NJOINT, BATCH](
+    _rk4_combine_env[DTYPE, NQ, NV, NJOINT, BATCH](
         env, dt, joints, qpos, qvel, qacc, qacc_constrained,
         q0, v0, A0, A1, A2, C1, C2,
     )
 
 
 # ── the stateful integrator ───────────────────────────────────────────────
-struct RK4IntegratorFields[
+struct RK4Integrator[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -421,7 +421,7 @@ struct RK4IntegratorFields[
 
     def __init__(out self) raises:
         comptime assert Self.PARALLEL_GPU or (not Self.CRBA_TREEWALK), (
-            "RK4IntegratorFields: CRBA_TREEWALK requires PARALLEL_GPU (the"
+            "RK4Integrator: CRBA_TREEWALK requires PARALLEL_GPU (the"
             " tree-walk CRBA is inherently cooperative)"
         )
         self.scratch = DynamicsScratch[
@@ -442,11 +442,11 @@ struct RK4IntegratorFields[
         target: StaticString
     ](
         mut self,
-        mut d: DataFields[
+        mut d: Data[
             Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.MAX_CONTACTS,
             Self.NSITE, Self.BATCH,
         ],
-        mut m: ModelFields[
+        mut m: Model[
             Self.DTYPE, Self.NV, Self.NBODY, Self.NJOINT, Self.NGEOM,
             Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
             Self.NMESH_VERTS,
@@ -459,30 +459,30 @@ struct RK4IntegratorFields[
         RNE -> fnet passive (all explicit) -> LDL solve -> qacc writeback).
         Legacy also runs contact DETECTION here; contact-free slice skips
         it (detection writes only contact state, never qpos/qvel/qacc)."""
-        forward_kinematics_fields[
+        forward_kinematics[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
             PARALLEL = Self.PARALLEL_GPU,
         ](d, m, ctx)
-        compute_body_velocities_fields[
+        compute_body_velocities[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
             PARALLEL = Self.PARALLEL_GPU,
         ](d, m, ctx)
-        compute_subtree_com_fields[
+        compute_subtree_com[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
         ](d, m, ctx)
-        compute_cdof_fields[
+        compute_cdof[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
             PARALLEL = Self.PARALLEL_GPU,
         ](d, m, self.scratch, ctx)
-        compute_mass_matrix_fields[
+        compute_mass_matrix[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
@@ -502,7 +502,7 @@ struct RK4IntegratorFields[
             var joints_v = m.joints.lt["cpu", L_JOINT]()
             var M_v = self.scratch.M.lt["cpu", L_M]()
             for e in range(Self.BATCH):
-                _armature_env_fields[
+                _armature_env[
                     Self.DTYPE, Self.NV, Self.NJOINT, Self.BATCH
                 ](e, joints_v, M_v)
         else:
@@ -515,15 +515,15 @@ struct RK4IntegratorFields[
                 block_dim=(EU_TPB,),
             )
 
-        ldl_factor_fields[
+        ldl_factor[
             target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH,
             PARALLEL = Self.PARALLEL_GPU,
         ](self.scratch, ctx)
-        compute_m_inv_fields[
+        compute_m_inv[
             target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH,
             PARALLEL = Self.PARALLEL_GPU,
         ](self.scratch, ctx)
-        compute_bias_forces_rne_fields[
+        compute_bias_forces_rne[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
@@ -541,7 +541,7 @@ struct RK4IntegratorFields[
             var bias_v = self.scratch.bias.lt["cpu", L_NV]()
             var fnet_v = self.scratch.fnet.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
-                _fnet_passive_env_fields[
+                _fnet_passive_env[
                     Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH
                 ](e, qpos_v, qvel_v, qfrc_v, joints_v2, bias_v, fnet_v)
         else:
@@ -562,13 +562,13 @@ struct RK4IntegratorFields[
 
         # Fluid drag into fnet, per RK4 stage (no-op unless meta
         # density/viscosity > 0).
-        compute_fluid_forces_fields[
+        compute_fluid_forces[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
         ](d, m, self.scratch, ctx)
 
-        ldl_solve_fields[
+        ldl_solve[
             target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ](self.scratch, ctx)
 
@@ -577,7 +577,7 @@ struct RK4IntegratorFields[
             var qacc_v = d.qacc.lt["cpu", L_NV]()
             var qacc_c_v = self.scratch.qacc_constrained.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
-                _qacc_writeback_env_fields[Self.DTYPE, Self.NV, Self.BATCH](
+                _qacc_writeback_env[Self.DTYPE, Self.NV, Self.BATCH](
                     e, qacc_ws_v, qacc_v, qacc_c_v
                 )
         else:
@@ -596,11 +596,11 @@ struct RK4IntegratorFields[
     ](
         mut self,
         dt: Scalar[Self.DTYPE],
-        mut d: DataFields[
+        mut d: Data[
             Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.MAX_CONTACTS,
             Self.NSITE, Self.BATCH,
         ],
-        mut m: ModelFields[
+        mut m: Model[
             Self.DTYPE, Self.NV, Self.NBODY, Self.NJOINT, Self.NGEOM,
             Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
             Self.NMESH_VERTS,
@@ -625,7 +625,7 @@ struct RK4IntegratorFields[
             var C1_v = self.rk4.C1.lt["cpu", L_NV]()
             var C2_v = self.rk4.C2.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
-                _rk4_stage_setup_env_fields[
+                _rk4_stage_setup_env[
                     Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH,
                     STAGE,
                 ](
@@ -659,11 +659,11 @@ struct RK4IntegratorFields[
         target: StaticString, CONTACTS: Bool = True
     ](
         mut self,
-        mut d: DataFields[
+        mut d: Data[
             Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.MAX_CONTACTS,
             Self.NSITE, Self.BATCH,
         ],
-        mut m: ModelFields[
+        mut m: Model[
             Self.DTYPE, Self.NV, Self.NBODY, Self.NJOINT, Self.NGEOM,
             Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
             Self.NMESH_VERTS,
@@ -685,7 +685,7 @@ struct RK4IntegratorFields[
                 # kernel calls detect_contacts_auto_gpu): SAP for
                 # NGEOM >= 16, O(N^2) otherwise — routing is bit-identical
                 # for every existing gate model (all NGEOM < 16).
-                detect_contacts_auto_fields[
+                detect_contacts_auto[
                     target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                     Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
                     Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
@@ -697,11 +697,11 @@ struct RK4IntegratorFields[
                     or Self.SOLVER == "cg"
                     or Self.SOLVER == "island"
                 ), (
-                    "RK4IntegratorFields: SOLVER must be 'pgs', 'newton',"
+                    "RK4Integrator: SOLVER must be 'pgs', 'newton',"
                     " 'cg', or 'island'"
                 )
                 comptime if Self.SOLVER == "newton":
-                    solve_newton_fields[
+                    solve_newton[
                         target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                         Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
                         Self.NEQUALITY, Self.NTENDON, Self.NSITE,
@@ -710,7 +710,7 @@ struct RK4IntegratorFields[
                     ](d, m, self.scratch, self.cscratch, ctx)
                 else:
                     comptime if Self.SOLVER == "cg":
-                        solve_cg_fields[
+                        solve_cg[
                             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                             Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
                             Self.NEQUALITY, Self.NTENDON, Self.NSITE,
@@ -719,7 +719,7 @@ struct RK4IntegratorFields[
                         ](d, m, self.scratch, self.cscratch, ctx)
                     else:
                         comptime if Self.SOLVER == "island":
-                            solve_island_pgs_fields[
+                            solve_island_pgs[
                                 target, Self.DTYPE, Self.NQ, Self.NV,
                                 Self.NBODY, Self.NJOINT, Self.MAX_CONTACTS,
                                 Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
@@ -727,7 +727,7 @@ struct RK4IntegratorFields[
                                 Self.CONE_TYPE, Self.BATCH,
                             ](d, m, self.scratch, self.cscratch, ctx)
                         else:
-                            solve_contacts_fields[
+                            solve_contacts[
                                 target, Self.DTYPE, Self.NQ, Self.NV,
                                 Self.NBODY, Self.NJOINT, Self.MAX_CONTACTS,
                                 Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
@@ -754,7 +754,7 @@ struct RK4IntegratorFields[
             var C1_v = self.rk4.C1.lt["cpu", L_NV]()
             var C2_v = self.rk4.C2.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
-                _rk4_combine_env_fields[
+                _rk4_combine_env[
                     Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH
                 ](
                     e, dt, joints_v, qpos_v, qvel_v, qacc_v, qacc_c_v,
@@ -762,7 +762,7 @@ struct RK4IntegratorFields[
                 )
         else:
             ctx.value().enqueue_function[
-                _rk4_combine_kernel_fields[
+                _rk4_combine_kernel[
                     Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH
                 ]
             ](

@@ -14,7 +14,7 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import gpu_quat_mul
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import DataFields, ModelFields, DynamicsScratch
+from ..fields import Data, Model, DynamicsScratch
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -42,7 +42,7 @@ def _ensure_positive[N: Int]() -> Int:
 
 
 @always_inline
-def _mm_setup_env_fields[
+def _mm_setup_env[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -64,7 +64,7 @@ def _mm_setup_env_fields[
     mut subtree_mask: InlineArray[Bool, _ensure_positive[NBODY * NBODY]()],
 ):
     """CRBA setup (dof->body map, per-body world inertia, subtree mask).
-    Extracted verbatim from `_mass_matrix_env_fields` so the serial and _mt
+    Extracted verbatim from `_mass_matrix_env` so the serial and _mt
     schedules share identical arithmetic (model + FK-state reads only ->
     every thread computes the same values)."""
     for i in range(NV):
@@ -149,7 +149,7 @@ def _mm_setup_env_fields[
 
 
 @always_inline
-def _mm_row_env_fields[
+def _mm_row_env[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -173,7 +173,7 @@ def _mm_row_env_fields[
     subtree_mask: InlineArray[Bool, _ensure_positive[NBODY * NBODY]()],
 ):
     """One CRBA row i (M[i,j] for j>=i + symmetric writes). Extracted
-    verbatim from the `_mass_matrix_env_fields` row loop so serial and _mt
+    verbatim from the `_mass_matrix_env` row loop so serial and _mt
     share identical arithmetic."""
     var body_i = dof_body[i]
     var ai0 = cdof[env, i * 6 + 0]
@@ -264,7 +264,7 @@ def _mm_row_env_fields[
 
 
 @always_inline
-def _mass_matrix_env_fields[
+def _mass_matrix_env[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -292,7 +292,7 @@ def _mass_matrix_env_fields[
 ):
     """Full NV x NV mass matrix for one env (arithmetic verbatim from
     compute_mass_matrix_full_gpu; setup/row bodies now live in the shared
-    `_mm_setup_env_fields` / `_mm_row_env_fields` helpers — pure refactor,
+    `_mm_setup_env` / `_mm_row_env` helpers — pure refactor,
     gated bit-exact by tests/physics3d/test_fk_fields.mojo)."""
     for i in range(NV * NV):
         M[env, i] = 0
@@ -303,13 +303,13 @@ def _mass_matrix_env_fields[
     var dof_body = InlineArray[Int, NV_SAFE](uninitialized=True)
     var I_world = InlineArray[Scalar[DTYPE], I_WORLD_SIZE](uninitialized=True)
     var subtree_mask = InlineArray[Bool, MASK_SIZE](fill=False)
-    _mm_setup_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+    _mm_setup_env[DTYPE, NV, NBODY, NJOINT, BATCH](
         env, xquat, bodies, joints, dof_body, I_world, subtree_mask
     )
 
     # M[i,j] via direct body summation with subtree mask lookup
     for i in range(NV):
-        _mm_row_env_fields[DTYPE, NV, NBODY, BATCH](
+        _mm_row_env[DTYPE, NV, NBODY, BATCH](
             env, i, xipos, subtree_com, bodies, cdof, M,
             dof_body, I_world, subtree_mask,
         )
@@ -319,7 +319,7 @@ def _mass_matrix_env_fields[
 # `compute_mass_matrix_full_gpu_mt` (dynamics/mass_matrix.mojo): every
 # thread redundantly computes the setup (model/FK-state reads only), then
 # rows are striped i = tid, tid+n, ... Per-row arithmetic is the SAME
-# `_mm_row_env_fields` helper as the serial kernel -> bit-exact. One
+# `_mm_row_env` helper as the serial kernel -> bit-exact. One
 # barrier after the distributed zero-init (the legacy variant relied on
 # caller-side barriers; here the kernel is standalone). Grid is exact ->
 # no valid_env guards. NOTE: this ports the DENSE full-CRBA schedule, not
@@ -372,13 +372,13 @@ def _mass_matrix_fields_mt_kernel[
     var dof_body = InlineArray[Int, NV_SAFE](uninitialized=True)
     var I_world = InlineArray[Scalar[DTYPE], I_WORLD_SIZE](uninitialized=True)
     var subtree_mask = InlineArray[Bool, MASK_SIZE](fill=False)
-    _mm_setup_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+    _mm_setup_env[DTYPE, NV, NBODY, NJOINT, BATCH](
         env, xquat, bodies, joints, dof_body, I_world, subtree_mask
     )
 
     # Each thread handles rows i where i % N_THREADS == tid.
     for i in range(tid, NV, N_THREADS):
-        _mm_row_env_fields[DTYPE, NV, NBODY, BATCH](
+        _mm_row_env[DTYPE, NV, NBODY, BATCH](
             env, i, xipos, subtree_com, bodies, cdof, M,
             dof_body, I_world, subtree_mask,
         )
@@ -615,12 +615,12 @@ def _mass_matrix_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _mass_matrix_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+    _mass_matrix_env[DTYPE, NV, NBODY, NJOINT, BATCH](
         env, xquat, xipos, subtree_com, bodies, joints, cdof, M
     )
 
 
-def compute_mass_matrix_fields[
+def compute_mass_matrix[
     target: StaticString,
     DTYPE: DType,
     NQ: Int,
@@ -638,8 +638,8 @@ def compute_mass_matrix_fields[
     PARALLEL: Bool = False,
     TREEWALK: Bool = False,
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: ModelFields[
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: Model[
         DTYPE,
         NV,
         NBODY,
@@ -663,7 +663,7 @@ def compute_mass_matrix_fields[
     the dense kernels, NOT bit-exact vs them. CPU ignores TREEWALK too
     (mirrors legacy production: CPU dense, GPU treewalk)."""
     comptime assert not (TREEWALK and not PARALLEL), (
-        "compute_mass_matrix_fields: TREEWALK requires PARALLEL (the"
+        "compute_mass_matrix: TREEWALK requires PARALLEL (the"
         " treewalk is inherently cooperative; CPU and serial GPU stay dense)"
     )
     comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
@@ -682,7 +682,7 @@ def compute_mass_matrix_fields[
         var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
         var M_v = scratch.M.lt["cpu", L_M]()
         for e in range(BATCH):
-            _mass_matrix_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+            _mass_matrix_env[DTYPE, NV, NBODY, NJOINT, BATCH](
                 e, xquat_v, xipos_v, stcom_v, bodies_v, joints_v, cdof_v, M_v
             )
     elif PARALLEL and TREEWALK:

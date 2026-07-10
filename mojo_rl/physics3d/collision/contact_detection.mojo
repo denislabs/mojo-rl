@@ -8,7 +8,7 @@ writes packed contact records into `d.contacts` and the contact count into
 
 Operands (10): xpos, xquat (data) + geoms, bodies, mmeta, excludes,
 mesh_meta, mesh_verts (model) + contacts, smeta (data outputs). Mesh
-collision (plane-mesh vertex scans + GJK/EPA fallback via gjk_fields) is
+collision (plane-mesh vertex scans + GJK/EPA fallback via gjk) is
 compiled in only when NMESH_VERTS > 0; zero-mesh models keep today's
 branch structure (mesh branches degrade to `continue`)."""
 
@@ -25,7 +25,7 @@ from ..constants import (
     GEOM_CYLINDER,
     GEOM_MESH,
 )
-from ..fields import DataFields, ModelFields
+from ..fields import Data, Model
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_GEOM_SIZE,
@@ -93,13 +93,13 @@ from .collision_primitives import (
     cylinder_cylinder,
     cylinder_box,
 )
-from .gjk_fields import gjk_epa_fields
+from .gjk import gjk_epa
 
 comptime CD_TPB: Int = 64
 
 
 @always_inline
-def _geom_world_pos_fields[
+def _geom_world_pos[
     DTYPE: DType,
     NBODY: Int,
     NGEOM: Int,
@@ -178,7 +178,7 @@ def _geom_world_pos_fields[
 
 
 @always_inline
-def _plane_mesh_contacts_fields[
+def _plane_mesh_contacts[
     DTYPE: DType,
     MAX_CONTACTS: Int,
     NGEOM: Int,
@@ -270,7 +270,7 @@ def _plane_mesh_contacts_fields[
 
 
 @always_inline
-def _detect_contacts_env_fields[
+def _detect_contacts_env[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -414,7 +414,7 @@ def _detect_contacts_env_fields[
             var qi_y: Scalar[DTYPE] = 0
             var qi_z: Scalar[DTYPE] = 0
             var qi_w: Scalar[DTYPE] = 1
-            _geom_world_pos_fields[DTYPE, NBODY, NGEOM, BATCH](
+            _geom_world_pos[DTYPE, NBODY, NGEOM, BATCH](
                 env,
                 gi,
                 geoms,
@@ -435,7 +435,7 @@ def _detect_contacts_env_fields[
             var qj_y: Scalar[DTYPE] = 0
             var qj_z: Scalar[DTYPE] = 0
             var qj_w: Scalar[DTYPE] = 1
-            _geom_world_pos_fields[DTYPE, NBODY, NGEOM, BATCH](
+            _geom_world_pos[DTYPE, NBODY, NGEOM, BATCH](
                 env,
                 gj,
                 geoms,
@@ -785,7 +785,7 @@ def _detect_contacts_env_fields[
                 elif gj_type == GEOM_MESH:
                     # Plane-mesh: scan hull vertices below plane
                     comptime if NMESH_VERTS > 0:
-                        _plane_mesh_contacts_fields[
+                        _plane_mesh_contacts[
                             DTYPE, MAX_CONTACTS, NGEOM, NMESH_VERTS, BATCH
                         ](
                             env,
@@ -1071,7 +1071,7 @@ def _detect_contacts_env_fields[
                         num_contacts += 1
                 elif gi_type == GEOM_MESH:
                     comptime if NMESH_VERTS > 0:
-                        _plane_mesh_contacts_fields[
+                        _plane_mesh_contacts[
                             DTYPE, MAX_CONTACTS, NGEOM, NMESH_VERTS, BATCH
                         ](
                             env,
@@ -1470,7 +1470,7 @@ def _detect_contacts_env_fields[
                     if mj_id >= 0:
                         va2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 0]))
                         mnv2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 1]))
-                    var result = gjk_epa_fields[DTYPE, NMESH_VERTS](
+                    var result = gjk_epa[DTYPE, NMESH_VERTS](
                         gi_type,
                         pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
                         ri, hli, hxi, hyi, hzi,
@@ -1579,7 +1579,7 @@ def _detect_contacts_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _detect_contacts_env_fields[
+    _detect_contacts_env[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEXCLUDE,
         NMESH_VERTS, BATCH,
     ](
@@ -1588,7 +1588,7 @@ def _detect_contacts_fields_kernel[
     )
 
 
-def detect_contacts_fields[
+def detect_contacts[
     target: StaticString,
     DTYPE: DType,
     NQ: Int,
@@ -1604,8 +1604,8 @@ def detect_contacts_fields[
     NMESH_VERTS: Int = 0,
     BATCH: Int = 1,
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: ModelFields[
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: Model[
         DTYPE,
         NV,
         NBODY,
@@ -1647,7 +1647,7 @@ def detect_contacts_fields[
         var contacts_v = d.contacts.lt["cpu", L_CONTACTS]()
         var smeta_v = d.meta.lt["cpu", L_SMETA]()
         for e in range(BATCH):
-            _detect_contacts_env_fields[
+            _detect_contacts_env[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
                 NEXCLUDE, NMESH_VERTS, BATCH,
             ](

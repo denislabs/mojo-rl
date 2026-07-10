@@ -2,7 +2,7 @@
 
 Verifies the arm doesn't diverge to NaN over 500 steps of random actions.
 State reads go through the fields facade (`env.d`); the mesh-collision
-diagnostics read the ModelFields records (`env.mf`).
+diagnostics read the Model records (`env.mf`).
 """
 
 from std.testing import assert_true, TestSuite
@@ -11,7 +11,7 @@ from std.random import seed, random_float64
 from mojo_rl.envs.metaworld import SawyerReach
 from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel
 from std.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import ModelFields
+from mojo_rl.physics3d.fields import Model
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
@@ -44,7 +44,7 @@ def test_sawyer_no_nan() raises:
     var nan_step = -1
     comptime ACTION_DIM = 4
 
-    # Mesh collision diagnostics from the env's ModelFields records (the
+    # Mesh collision diagnostics from the env's Model records (the
     # legacy CPU Model build was deleted at G4).
     comptime M = SawyerReachModel
     for m in range(16):
@@ -63,9 +63,9 @@ def test_sawyer_no_nan() raises:
 
     # Print eGripperBase mesh hull extent (mesh 11, geom 27). The facade's
     # mf is built with NMESH_VERTS=0 (mesh verts unused on the CPU step
-    # path), so build a diagnostics-only ModelFields with full mesh capacity.
+    # path), so build a diagnostics-only Model with full mesh capacity.
     var ctx = DeviceContext()
-    var mfd = ModelFields[
+    var mfd = Model[
         DType.float64, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
         M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 16 * 256,
     ]()

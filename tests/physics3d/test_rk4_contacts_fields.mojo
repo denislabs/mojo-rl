@@ -22,8 +22,8 @@ from std.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
+from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     CONTACT_SIZE,
@@ -70,11 +70,11 @@ def main() raises:
     print("--- RK4 WITH CONTACTS fields GOLDEN gate: Walker2D BATCH=", BATCH)
     var ctx = DeviceContext()
 
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dc = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -93,12 +93,12 @@ def main() raises:
             dc.qfrc.data[e * NV + i] = qf
     d.upload_all(ctx)
 
-    var integ = RK4IntegratorFields[
+    var integ = RK4Integrator[
         DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE,
         BATCH=BATCH,
     ]()
     integ.prepare_gpu(ctx)
-    var integ_c = RK4IntegratorFields[
+    var integ_c = RK4Integrator[
         DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE,
         BATCH=BATCH,
     ]()

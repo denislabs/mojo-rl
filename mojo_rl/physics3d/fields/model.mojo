@@ -1,6 +1,6 @@
 """Per-record tensor container for static model config (migration P1).
 
-`ModelFields` is the end-state replacement for the flat GPU model slab: each
+`Model` is the end-state replacement for the flat GPU model slab: each
 record FAMILY becomes one owned packed tensor (`bodies [NBODY, 25]`,
 `joints [NJOINT, 26]`, `geoms [NGEOM, 30]`, …) rather than one giant buffer.
 Column indices are the existing `BODY_IDX_*` / `JOINT_IDX_*` / … constants —
@@ -48,7 +48,7 @@ def _at_least_one(n: Int) -> Int:
     return n if n > 0 else 1
 
 
-struct ModelFields[
+struct Model[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,

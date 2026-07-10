@@ -7,7 +7,7 @@ branch structure verbatim. Standalone solver entry only — NOT wired into
 the fields integrators (later slice).
 
 Structural transformation (the only deviation, identical to
-constraints/contact_solve_fields.mojo): the legacy kernel is 2D-threaded
+constraints/contact_solve.mojo): the legacy kernel is 2D-threaded
 (thread_y = contact slot) with barriers; this port SERIALIZES it per env.
 The init + normal-precompute parallel phases become
 `for contact_tid in range(MC)` loops (matching the legacy launch with
@@ -19,16 +19,16 @@ value-identical. The entire Newton core after the legacy
 single-thread and is ported as-is.
 
 Setup phases reuse the already-ported shared constraint-builder helpers
-from contact_solve_fields.mojo (`_init_common_normal_ws_fields`,
-`_precompute_contact_normal_fields`, `_precompute_contact_friction_fields`
+from contact_solve.mojo (`_init_common_normal_ws`,
+`_precompute_contact_normal`, `_precompute_contact_friction`
 — the latter two are the shared CG/Newton builders, verbatim ports of
 `precompute_contact_normal_gpu` / `precompute_contact_friction_gpu`).
 
 Cone-dependent tails at the exact legacy positions with the legacy
 iteration count (SOLVER_ITER_GPU=50):
-- ELLIPTIC: after the Newton core, `_limits_env_fields` (port of
-  `detect_and_solve_limits_gpu`) then `_equality_env_fields` /
-  `_tendon_env_fields`.
+- ELLIPTIC: after the Newton core, `_limits_env` (port of
+  `detect_and_solve_limits_gpu`) then `_equality_env` /
+  `_tendon_env`.
 - PYRAMIDAL: joint limits are edge rows INSIDE the Newton optimization
   (part of the verbatim core); equality/tendon after.
 Equality/tendon are call-site gated `comptime if NEQUALITY > 0` /
@@ -43,7 +43,7 @@ offsets into the fields `ContactScratch.solver` tensor, which is sized for
 PGS (81*MC + 12*MC*NV) — strictly larger, so Newton uses a PREFIX of it
 (no new scratch struct).
 
-Operands (20): the 19 of `solve_contacts_fields` + `M` (the Newton core
+Operands (20): the 19 of `solve_contacts` + `M` (the Newton core
 reads the mass matrix for the Gauss term / Hessian; legacy `ws_M_offset`).
 The legacy `ws_fnet_offset` comptime was declared but never read — dropped.
 """
@@ -58,18 +58,18 @@ from layout import Layout, LayoutTensor
 from ..types import _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE
 from .cholesky import chol_factor_inline, chol_solve_inline
-from .primal_fields import pyramidal_edge_forces, pyramidal_linesearch
-from ..constraints.contact_solve_fields import (
-    _init_common_normal_ws_fields,
-    _precompute_contact_normal_fields,
-    _precompute_contact_friction_fields,
+from .primal import pyramidal_edge_forces, pyramidal_linesearch
+from ..constraints.contact_solve import (
+    _init_common_normal_ws,
+    _precompute_contact_normal,
+    _precompute_contact_friction,
 )
-from ..constraints.limits_fields import _limits_env_fields
-from ..constraints.equality_tendon_fields import (
-    _equality_env_fields,
-    _tendon_env_fields,
+from ..constraints.limits import _limits_env
+from ..constraints.equality_tendon import (
+    _equality_env,
+    _tendon_env,
 )
-from ..fields import DataFields, ModelFields, DynamicsScratch, ContactScratch
+from ..fields import Data, Model, DynamicsScratch, ContactScratch
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -132,7 +132,7 @@ comptime NS_TPB: Int = 1
 
 
 @no_inline
-def _chol_factor_coop_fields[
+def _chol_factor_coop[
     DTYPE: DType,
     NV: Int,
     M_SIZE: Int,
@@ -199,7 +199,7 @@ def _chol_factor_coop_fields[
 
 
 @no_inline
-def _matvec_mv_jve_coop_fields[
+def _matvec_mv_jve_coop[
     DTYPE: DType,
     NV: Int,
     V_SIZE: Int,
@@ -259,7 +259,7 @@ def _matvec_mv_jve_coop_fields[
 
 
 @no_inline
-def _recompute_jfq_coop_fields[
+def _recompute_jfq_coop[
     DTYPE: DType,
     NV: Int,
     V_SIZE: Int,
@@ -327,7 +327,7 @@ def _recompute_jfq_coop_fields[
 
 
 @always_inline
-def _newton_solve_env_fields[
+def _newton_solve_env[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -432,7 +432,7 @@ def _newton_solve_env_fields[
     # === Initialize workspace (legacy: parallel, one thread per slot; the
     # legacy `contact_tid < MC` guard is vacuous with block_dim.y = MC) ===
     for contact_tid in range(MC):
-        _init_common_normal_ws_fields[
+        _init_common_normal_ws[
             DTYPE, NV, MAX_CONTACTS, BATCH, SOLVER_WS
         ](env, contact_tid, solver)
         # Zero primal workspace for this contact slot
@@ -497,7 +497,7 @@ def _newton_solve_env_fields[
     # === PHASE 1: normal precompute (legacy: parallel, one thread per
     # contact slot; internal `contact_tid < nc` guard kept in the helper) ===
     for contact_tid in range(MC):
-        _precompute_contact_normal_fields[
+        _precompute_contact_normal[
             DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, BATCH, SOLVER_WS
         ](
             env,
@@ -526,7 +526,7 @@ def _newton_solve_env_fields[
     # === PHASE 2: Tangent frame + friction data (legacy launch guard
     # `contact_tid < nc`) ===
     for contact_tid in range(nc):
-        _precompute_contact_friction_fields[
+        _precompute_contact_friction[
             DTYPE,
             NV,
             NBODY,
@@ -1031,7 +1031,7 @@ def _newton_solve_env_fields[
         # Only equality constraints remain as a separate post-solve step.
         comptime SOLVER_ITER_GPU: Int = 50
         comptime if NEQUALITY > 0:
-            _equality_env_fields[
+            _equality_env[
                 DTYPE, NV, NBODY, NJOINT, NEQUALITY, NTENDON, NSITE, V_SIZE,
                 BATCH, SOLVER_ITER_GPU,
             ](
@@ -1040,7 +1040,7 @@ def _newton_solve_env_fields[
                 cdof, m_inv, qacc_constrained,
             )
         comptime if NTENDON > 0:
-            _tendon_env_fields[
+            _tendon_env[
                 DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
                 SOLVER_ITER_GPU,
             ](
@@ -1737,13 +1737,13 @@ def _newton_solve_env_fields[
         contacts[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_arr[c]
 
     comptime SOLVER_ITER_GPU: Int = 50
-    _limits_env_fields[DTYPE, NQ, NV, NJOINT, BATCH, SOLVER_ITER_GPU](
+    _limits_env[DTYPE, NQ, NV, NJOINT, BATCH, SOLVER_ITER_GPU](
         env, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
         qacc_constrained,
     )
 
     comptime if NEQUALITY > 0:
-        _equality_env_fields[
+        _equality_env[
             DTYPE, NV, NBODY, NJOINT, NEQUALITY, NTENDON, NSITE, V_SIZE,
             BATCH, SOLVER_ITER_GPU,
         ](
@@ -1753,7 +1753,7 @@ def _newton_solve_env_fields[
         )
 
     comptime if NTENDON > 0:
-        _tendon_env_fields[
+        _tendon_env[
             DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
             SOLVER_ITER_GPU,
         ](
@@ -1833,7 +1833,7 @@ def _newton_solve_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _newton_solve_env_fields[
+    _newton_solve_env[
         DTYPE,
         NQ,
         NV,
@@ -1854,7 +1854,7 @@ def _newton_solve_fields_kernel[
     )
 
 
-def solve_newton_fields[
+def solve_newton[
     target: StaticString,
     DTYPE: DType,
     NQ: Int,
@@ -1871,8 +1871,8 @@ def solve_newton_fields[
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     BATCH: Int = 1,
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: ModelFields[
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: Model[
         DTYPE,
         NV,
         NBODY,
@@ -1891,7 +1891,7 @@ def solve_newton_fields[
     """Primal Newton contact solve into `scratch.qacc_constrained` (+ solved
     forces back into `d.contacts` for warm-starting/display), both targets,
     one body. Standalone entry — same signature family as
-    `solve_contacts_fields` so callers can swap solvers later.
+    `solve_contacts` so callers can swap solvers later.
 
     ELLIPTIC: joint limits, equality constraints, and fixed tendons run
     INSIDE at the legacy position (after the Newton core, 50 iterations).
@@ -1945,7 +1945,7 @@ def solve_newton_fields[
         var qc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
         var sol_v = cscratch.solver.lt["cpu", L_SOLVER]()
         for e in range(BATCH):
-            _newton_solve_env_fields[
+            _newton_solve_env[
                 DTYPE,
                 NQ,
                 NV,
@@ -1975,7 +1975,7 @@ def solve_newton_fields[
         var used_blocked = False
         comptime if CONE_TYPE == ConeType.PYRAMIDAL:
             if has_nvidia_gpu_accelerator():
-                solve_newton_blocked_fields[
+                solve_newton_blocked[
                     "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
                     NEQUALITY, NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, CONE_TYPE,
                     BATCH,
@@ -2034,7 +2034,7 @@ def solve_newton_fields[
 # per-thread local reservation stays tiny — this is what avoids the humanoid-
 # scale OOM the one-thread-per-env kernel hits on NVIDIA. Arithmetic, iteration
 # order, constants and cooperative thread distribution are VERBATIM from the
-# legacy; only slab addressing → DataFields/ModelFields/scratch tensors changes.
+# legacy; only slab addressing → Data/Model/scratch tensors changes.
 # SOLVE_COOP_NEWTON / SOLVE_COOP_RECOMPUTE are both True in the legacy production
 # default, so only those cooperative code paths are ported (the tid-0 serial
 # "oracle" branches are dead in production and dropped).
@@ -2147,7 +2147,7 @@ def _newton_blocked_fields_kernel[
 
     # === PARALLEL: Initialize common normal workspace (one thread/contact) ===
     if valid_env:
-        _init_common_normal_ws_fields[
+        _init_common_normal_ws[
             DTYPE, NV, MAX_CONTACTS, BATCH, SOLVER_WS
         ](env, contact_tid, solver)
         if contact_tid < MC:
@@ -2211,7 +2211,7 @@ def _newton_blocked_fields_kernel[
 
     # === PARALLEL PHASE 1: each thread precomputes one contact's normal data ==
     if valid_env:
-        _precompute_contact_normal_fields[
+        _precompute_contact_normal[
             DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, BATCH, SOLVER_WS
         ](
             env, contact_tid, nc, qvel, subtree_com, contacts, joints, bodies,
@@ -2224,7 +2224,7 @@ def _newton_blocked_fields_kernel[
 
     # === PARALLEL PHASE 2: tangent frame + friction data ===
     if valid_env and contact_tid < nc:
-        _precompute_contact_friction_fields[
+        _precompute_contact_friction[
             DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, BATCH, SOLVER_WS,
             CONE_TYPE,
         ](
@@ -2625,7 +2625,7 @@ def _newton_blocked_fields_kernel[
         barrier()
 
         # --- Cooperative Cholesky factor of H into L_sh ---
-        _chol_factor_coop_fields[DTYPE, NV, M_SIZE](
+        _chol_factor_coop[DTYPE, NV, M_SIZE](
             tid, THREADS, H_sh, L_sh, ctrl_sh
         )
 
@@ -2645,7 +2645,7 @@ def _newton_blocked_fields_kernel[
 
         # --- Cooperative Mv = M·search and Jv_e = Je·search ---
         barrier()
-        _matvec_mv_jve_coop_fields[DTYPE, NV, V_SIZE, M_SIZE, ME](
+        _matvec_mv_jve_coop[DTYPE, NV, V_SIZE, M_SIZE, ME](
             tid, THREADS, num_edges_b, M_sh, Je_sh, search_sh, Mv_sh, Jv_e_sh
         )
         barrier()
@@ -2765,7 +2765,7 @@ def _newton_blocked_fields_kernel[
         # Cooperative jar/force/qfrc recompute, then tid 0 reads back and
         # finishes the accept/revert.
         barrier()
-        _recompute_jfq_coop_fields[DTYPE, NV, V_SIZE, ME](
+        _recompute_jfq_coop[DTYPE, NV, V_SIZE, ME](
             tid, THREADS, num_edges_b, Je_sh, De_sh, bias_e_sh, qacc_sh,
             jar_sh, force_sh, qfrc_sh,
         )
@@ -2843,7 +2843,7 @@ def _newton_blocked_fields_kernel[
     # separate post-solve step (mirrors the PYRAMIDAL per-env path's gating).
     comptime SOLVER_ITER_GPU: Int = 50
     comptime if NEQUALITY > 0:
-        _equality_env_fields[
+        _equality_env[
             DTYPE, NV, NBODY, NJOINT, NEQUALITY, NTENDON, NSITE, V_SIZE,
             BATCH, SOLVER_ITER_GPU,
         ](
@@ -2852,7 +2852,7 @@ def _newton_blocked_fields_kernel[
             m_inv, qacc_constrained,
         )
     comptime if NTENDON > 0:
-        _tendon_env_fields[
+        _tendon_env[
             DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
             SOLVER_ITER_GPU,
         ](
@@ -2861,7 +2861,7 @@ def _newton_blocked_fields_kernel[
         )
 
 
-def solve_newton_blocked_fields[
+def solve_newton_blocked[
     target: StaticString,
     DTYPE: DType,
     NQ: Int,
@@ -2878,8 +2878,8 @@ def solve_newton_blocked_fields[
     CONE_TYPE: Int = ConeType.PYRAMIDAL,
     BATCH: Int = 1,
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: ModelFields[
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: Model[
         DTYPE,
         NV,
         NBODY,
@@ -2900,9 +2900,9 @@ def solve_newton_blocked_fields[
     big matrices in shared memory — the OOM-safe path at humanoid scale.
 
     Writes into `scratch.qacc_constrained` (+ solved forces into `d.contacts`).
-    Same signature family as `solve_newton_fields`. Only the GPU (blocked)
+    Same signature family as `solve_newton`. Only the GPU (blocked)
     launch is meaningful; the CPU branch falls back to the single-source per-env
-    body (`_newton_solve_env_fields`, identical PYRAMIDAL math) for parity.
+    body (`_newton_solve_env`, identical PYRAMIDAL math) for parity.
     """
     comptime MC = _max_one[MAX_CONTACTS]()
     comptime SOLVER_WS = 81 * MC + 12 * MC * NV
@@ -2948,7 +2948,7 @@ def solve_newton_blocked_fields[
         var qc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
         var sol_v = cscratch.solver.lt["cpu", L_SOLVER]()
         for e in range(BATCH):
-            _newton_solve_env_fields[
+            _newton_solve_env[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
                 NTENDON, NSITE, CONE_TYPE, BATCH, SOLVER_WS,
             ](

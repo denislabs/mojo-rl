@@ -7,7 +7,7 @@ GPU successor of `sac_walker2d_training.mojo` and counterpart of the legacy
   * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
     off-policy driver. All optimizers, the replay buffer, and the SAC
     train-step pipeline run on-device.
-  * `Phyics3dBatchedEnvFields[Walker2dModel, Walker2dConfig, N_ENVS]` — the env
+  * `Phyics3dBatchedEnv[Walker2dModel, Walker2dConfig, N_ENVS]` — the env
     (`GPUContinuousEnv`) into a `BatchedEnv`.
   * `RemoteLogger` — streams `avg_reward` + `episodes` at `print_every`, AND
     (via `diag_every`) the full SAC metric bundle (`actor_loss`,
@@ -44,7 +44,7 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
 
@@ -74,7 +74,7 @@ comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
 comptime CHECKPOINT_PATH = "sac_walker2d_nn.ckpt"
 
 
-comptime BatchedEnvT = Phyics3dBatchedEnvFields[
+comptime BatchedEnvT = Phyics3dBatchedEnv[
     Walker2dModel, Walker2dConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=True
 ]
 

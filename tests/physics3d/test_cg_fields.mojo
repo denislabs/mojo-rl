@@ -1,5 +1,5 @@
-"""Stage-S gate: fields CG contact solve (solve_cg_fields) vs the
-golden-validated fields Newton solve (solve_newton_fields), ELLIPTIC cone.
+"""Stage-S gate: fields CG contact solve (solve_cg) vs the
+golden-validated fields Newton solve (solve_newton), ELLIPTIC cone.
 
 CG and Newton minimize the SAME convex primal cost (elliptic 3-zone friction
 cone, identical contact setup, qfrc_smooth = M·qacc_smooth) — CG via an
@@ -25,44 +25,44 @@ from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import (
-    DataFields,
-    ModelFields,
+    Data,
+    Model,
     DynamicsScratch,
     ContactScratch,
 )
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.integrator.euler_fields import (
+from mojo_rl.physics3d.integrator.euler import (
     _armature_kernel,
     _fnet_passive_kernel,
     _qacc_writeback_kernel,
-    _armature_env_fields,
-    _fnet_passive_env_fields,
-    _qacc_writeback_env_fields,
+    _armature_env,
+    _fnet_passive_env,
+    _qacc_writeback_env,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
-    compute_body_velocities_fields,
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
+    compute_body_velocities,
 )
-from mojo_rl.physics3d.dynamics.subtree_com_fields import (
-    compute_subtree_com_fields,
+from mojo_rl.physics3d.dynamics.subtree_com import (
+    compute_subtree_com,
 )
-from mojo_rl.physics3d.dynamics.cdof_fields import compute_cdof_fields
-from mojo_rl.physics3d.dynamics.mass_matrix_fields import (
-    compute_mass_matrix_fields,
+from mojo_rl.physics3d.dynamics.cdof import compute_cdof
+from mojo_rl.physics3d.dynamics.mass_matrix import (
+    compute_mass_matrix,
 )
-from mojo_rl.physics3d.dynamics.ldl_fields import (
-    ldl_factor_fields,
-    ldl_solve_fields,
-    compute_m_inv_fields,
+from mojo_rl.physics3d.dynamics.ldl import (
+    ldl_factor,
+    ldl_solve,
+    compute_m_inv,
 )
-from mojo_rl.physics3d.dynamics.rne_fields import (
-    compute_bias_forces_rne_fields,
+from mojo_rl.physics3d.dynamics.rne import (
+    compute_bias_forces_rne,
 )
-from mojo_rl.physics3d.collision.contact_detection_fields import (
-    detect_contacts_fields,
+from mojo_rl.physics3d.collision.contact_detection import (
+    detect_contacts,
 )
-from mojo_rl.physics3d.solver.newton_solve_fields import solve_newton_fields
-from mojo_rl.physics3d.solver.cg_solve_fields import solve_cg_fields
+from mojo_rl.physics3d.solver.newton_solve import solve_newton
+from mojo_rl.physics3d.solver.cg_solve import solve_cg
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
@@ -89,27 +89,27 @@ comptime BATCH = 2
 def _fields_prep[
     target: StaticString
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
-    mut mf: ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
+    mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    mut mf: Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
-    """Smooth-dynamics prep + detection, mirroring EulerIntegratorFields.step
+    """Smooth-dynamics prep + detection, mirroring EulerIntegrator.step
     up to the constraint seam (order verbatim; copied from
     test_newton_solve_fields)."""
-    forward_kinematics_fields[
+    forward_kinematics[
         target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
-    compute_body_velocities_fields[
+    compute_body_velocities[
         target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
-    compute_subtree_com_fields[
+    compute_subtree_com[
         target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
-    compute_cdof_fields[
+    compute_cdof[
         target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, ctx)
-    compute_mass_matrix_fields[
+    compute_mass_matrix[
         target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, ctx)
 
@@ -122,10 +122,10 @@ def _fields_prep[
         var joints_v = mf.joints.lt["cpu", L_JOINT]()
         var M_v = scratch.M.lt["cpu", L_M]()
         for e in range(BATCH):
-            _armature_env_fields[DTYPE, NV, NJOINT, BATCH](e, joints_v, M_v)
-        ldl_factor_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_m_inv_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_bias_forces_rne_fields[
+            _armature_env[DTYPE, NV, NJOINT, BATCH](e, joints_v, M_v)
+        ldl_factor[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        compute_m_inv[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        compute_bias_forces_rne[
             target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
             BATCH,
         ](d, mf, scratch, ctx)
@@ -135,15 +135,15 @@ def _fields_prep[
         var bias_v = scratch.bias.lt["cpu", L_NV]()
         var fnet_v = scratch.fnet.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _fnet_passive_env_fields[DTYPE, NQ, NV, NJOINT, BATCH](
+            _fnet_passive_env[DTYPE, NQ, NV, NJOINT, BATCH](
                 e, qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v
             )
-        ldl_solve_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        ldl_solve[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
         var qacc_ws_v = scratch.qacc_ws.lt["cpu", L_NV]()
         var qacc_v = d.qacc.lt["cpu", L_NV]()
         var qacc_c_v = scratch.qacc_constrained.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _qacc_writeback_env_fields[DTYPE, NV, BATCH](
+            _qacc_writeback_env[DTYPE, NV, BATCH](
                 e, qacc_ws_v, qacc_v, qacc_c_v
             )
     else:
@@ -155,9 +155,9 @@ def _fields_prep[
             grid_dim=(BATCH,),
             block_dim=(1,),
         )
-        ldl_factor_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_m_inv_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_bias_forces_rne_fields[
+        ldl_factor[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        compute_m_inv[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        compute_bias_forces_rne[
             target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
             BATCH,
         ](d, mf, scratch, ctx)
@@ -173,7 +173,7 @@ def _fields_prep[
             grid_dim=(BATCH,),
             block_dim=(1,),
         )
-        ldl_solve_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        ldl_solve[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
         ctx.value().enqueue_function[
             _qacc_writeback_kernel[DTYPE, NV, BATCH]
         ](
@@ -184,12 +184,12 @@ def _fields_prep[
             block_dim=(1,),
         )
 
-    detect_contacts_fields[
+    detect_contacts[
         target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
 
 
-def _init_state(mut d: DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]):
+def _init_state(mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]):
     """Fallen Walker2D (feet penetrating the floor) — deterministic."""
     for e in range(BATCH):
         for i in range(NQ):
@@ -206,15 +206,15 @@ def _init_state(mut d: DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]):
             d.qfrc.data[e * NV + i] = qf
 
 
-def _load_model(ctx: DeviceContext) raises -> ModelFields[
+def _load_model(ctx: DeviceContext) raises -> Model[
     DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0
 ]:
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
     return mf^
 
 
-def _ncon(mut d: DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]) -> Int:
+def _ncon(mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]) -> Int:
     var n = 0
     for e in range(BATCH):
         n += Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
@@ -226,8 +226,8 @@ def part_a(ctx: DeviceContext) raises:
     var mf = _load_model(ctx)
 
     # Independent Newton + CG data/scratch, identical initial state.
-    var dN = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dC = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dN = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dC = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     _init_state(dN)
     _init_state(dC)
     dN.upload_all(ctx)
@@ -243,13 +243,13 @@ def part_a(ctx: DeviceContext) raises:
     csC.upload_all(ctx)
 
     _fields_prep["gpu"](dN, mf, scN, ctx)
-    solve_newton_fields[
+    solve_newton[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         ConeType.ELLIPTIC, BATCH,
     ](dN, mf, scN, csN, ctx)
 
     _fields_prep["gpu"](dC, mf, scC, ctx)
-    solve_cg_fields[
+    solve_cg[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         ConeType.ELLIPTIC, BATCH,
     ](dC, mf, scC, csC, ctx)
@@ -281,8 +281,8 @@ def part_b(ctx: DeviceContext) raises:
     print("--- Part B: fields-CPU CG vs fields-GPU CG (ELLIPTIC)")
     var mf = _load_model(ctx)
 
-    var dg = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dc = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dg = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     _init_state(dg)
     _init_state(dc)
     dg.upload_all(ctx)
@@ -295,13 +295,13 @@ def part_b(ctx: DeviceContext) raises:
     csg.upload_all(ctx)
 
     _fields_prep["gpu"](dg, mf, scg, ctx)
-    solve_cg_fields[
+    solve_cg[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         ConeType.ELLIPTIC, BATCH,
     ](dg, mf, scg, csg, ctx)
 
     _fields_prep["cpu"](dc, mf, scc, None)
-    solve_cg_fields[
+    solve_cg[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         ConeType.ELLIPTIC, BATCH,
     ](dc, mf, scc, csc, None)
@@ -321,7 +321,7 @@ def part_b(ctx: DeviceContext) raises:
 
 
 def main() raises:
-    print("=== Stage-S solve_cg_fields vs Newton: Walker2D ELLIPTIC ===")
+    print("=== Stage-S solve_cg vs Newton: Walker2D ELLIPTIC ===")
     var ctx = DeviceContext()
     part_a(ctx)
     part_b(ctx)

@@ -1,10 +1,10 @@
 """Generic physics3d environment on the PER-FIELD tensor path (migration P5).
 
-`Phyics3dEnvFields[MODEL_DEF, CONFIG]` is the generic single-env CPU MuJoCo
+`Phyics3dEnv[MODEL_DEF, CONFIG]` is the generic single-env CPU MuJoCo
 environment: MODEL_DEF/CONFIG parameterization over the
 `BoxContinuousActionEnv` surface (drop-in for the CPU training drivers), with
-the PHYSICS running through `RK4IntegratorFields` over `DataFields` /
-`ModelFields` — no state slab, no workspace slab, no offsets.
+the PHYSICS running through `RK4Integrator` over `Data` /
+`Model` — no state slab, no workspace slab, no offsets.
 
 G2: the legacy `Model`/`Data` hooks-adapter bridge is GONE — every CPU hook
 (`MODEL_DEF.reset_data` / `apply_actions` / `extract_obs` and the CONFIG
@@ -22,7 +22,7 @@ Scope (full parity with the legacy CPU env):
   the hand track the target). Validated in `test_sawyer_fields_parity`.
 - Fluid forces (Swimmer) applied inside the fields integrator step.
 - CPU target (single-env driver ABI). The GPU-batched facade is
-  `phyics3d_batched_env_fields`.
+  `phyics3d_batched_env`.
 """
 
 from std.collections import InlineArray
@@ -36,12 +36,12 @@ from mojo_rl.core.cont_action import ContAction
 
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.physics3d.model.model_renderer import ModelRenderer
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
 )
-from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
-from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
+from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
+from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
@@ -51,7 +51,7 @@ from mojo_rl.nn.core.tensor import TensorImpl
 from .phyics3d_env_config import Phyics3dEnvConfig
 
 
-struct Phyics3dEnvFields[
+struct Phyics3dEnv[
     MODEL_DEF: ModelDefLike,
     CONFIG: Phyics3dEnvConfig,
     DTYPE: DType = DType.float64,
@@ -70,7 +70,7 @@ struct Phyics3dEnvFields[
     comptime dtype = Self.DTYPE
     comptime StateType = ObsState[Self.MODEL_DEF.OBS_DIM]
     comptime ActionType = ContAction[Self.MODEL_DEF.ACTION_DIM]
-    comptime NAME: String = "Physics3dEnvFields"
+    comptime NAME: String = "Physics3dEnv"
 
     comptime OBS_DIM: Int = Self.MODEL_DEF.OBS_DIM
     comptime ACTION_DIM: Int = Self.MODEL_DEF.ACTION_DIM
@@ -83,7 +83,7 @@ struct Phyics3dEnvFields[
     comptime NSITE: Int = Self.MODEL_DEF.NSITE
 
     # Fields path (the physics state; hooks read/write it directly)
-    var mf: ModelFields[
+    var mf: Model[
         Self.DTYPE,
         Self.NV,
         Self.NBODY,
@@ -95,7 +95,7 @@ struct Phyics3dEnvFields[
         Self.MODEL_DEF.NEXCLUDE,
         0,  # NMESH_VERTS
     ]
-    var d: DataFields[
+    var d: Data[
         Self.DTYPE,
         Self.NQ,
         Self.NV,
@@ -107,13 +107,13 @@ struct Phyics3dEnvFields[
     # Both integrators are held (host scratch only on the CPU path — cheap);
     # the step comptime-dispatches on CONFIG.INTEGRATOR. HalfCheetah/Pusher/
     # MetaWorld configure Euler+Newton; the other 9 envs use RK4+Newton.
-    comptime IntegRK4 = RK4IntegratorFields[
+    comptime IntegRK4 = RK4Integrator[
         Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
         Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
         Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0,
         Self.MODEL_DEF.CONE_TYPE, 1, SOLVER = Self.SOLVER,
     ]
-    comptime IntegEuler = EulerIntegratorFields[
+    comptime IntegEuler = EulerIntegrator[
         Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
         Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
         Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0,
@@ -182,7 +182,7 @@ struct Phyics3dEnvFields[
         self._fields_fk()
         Self.CONFIG.pre_step_cpu(self.d, self.prev_x)
         # Fluid forces (density/viscosity > 0) are applied inside the fields
-        # integrator step (dynamics/fluid_forces_fields.mojo); no guard needed.
+        # integrator step (dynamics/fluid_forces.mojo); no guard needed.
 
     # ── kinematics / mocap helpers ─────────────────────────────────────────
     def _fields_fk(mut self):
@@ -192,14 +192,14 @@ struct Phyics3dEnvFields[
         try:
             # CPU target: cannot actually raise (the `raises` exists for the
             # GPU branch's ctx handling).
-            forward_kinematics_fields[
+            forward_kinematics[
                 "cpu", Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
                 Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
                 Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
                 Self.MODEL_DEF.NEXCLUDE, 0, 1,
             ](self.d, self.mf, None)
         except e:
-            print("Phyics3dEnvFields._fields_fk: FK error:", e)
+            print("Phyics3dEnv._fields_fk: FK error:", e)
 
     def _sync_mocap_to_fields(mut self):
         """Mocap actuation: the CONFIG hooks write the mocap target into
@@ -304,7 +304,7 @@ struct Phyics3dEnvFields[
                 else:
                     self.integ_rk4.step["cpu"](self.d, self.mf)
             except e:
-                print("Phyics3dEnvFields.step: physics error:", e)
+                print("Phyics3dEnv.step: physics error:", e)
 
         self.current_step += 1
 

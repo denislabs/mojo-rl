@@ -3,7 +3,7 @@
 Part A (TENDON): Humanoid (max_tendon=2, free joint + 17 hinges) dropped on
 the floor with feet penetrating, BATCH=2, 2 full Euler steps. Legacy per
 step: step_kernel -> detect_contacts_gpu (O(N^2)) -> PGSSolver.solve_gpu
-(with MAX_TENDON=2) -> finalize. Fields: EulerIntegratorFields.step
+(with MAX_TENDON=2) -> finalize. Fields: EulerIntegrator.step
 (detection -> serialized contact PGS with limits + tendons inside).
 qpos/qvel/qacc + solved contact records must be BIT-EXACT per step.
 The two hip-knee tendon RECORDS are injected DIRECTLY into the per-field
@@ -15,9 +15,9 @@ only reachable with manually populated records, which this gate provides
 Joint poses are chosen strictly INSIDE all joint ranges so the joint-limit
 pass stays inactive: the legacy limit builder reads dof_invweight0 through
 a MAX_TENDON-less offset (a pre-existing misread on tendon models) which
-limits_fields does NOT reproduce — with no active limits that value is
+limits does NOT reproduce — with no active limits that value is
 never read. The tendon builder's identical misread IS reproduced by
-_tendon_env_fields (_legacy_invw_read), which this gate locks in.
+_tendon_env (_legacy_invw_read), which this gate locks in.
 Non-vacuous: model meta NTENDON must be 2, and a rerun with meta NTENDON
 zeroed must change qvel after one step.
 
@@ -40,8 +40,8 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
+from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_TENDON_SIZE,
     META_IDX_NUM_CONTACTS,
@@ -155,7 +155,7 @@ def _humanoid_qpos(e: Int, i: Int) -> Scalar[DTYPE]:
 def _part_a_tendon(ctx: DeviceContext) raises:
     print("--- Part A: Humanoid tendons fields GOLDEN, BATCH=", BATCH)
 
-    var mf = ModelFields[
+    var mf = Model[
         DTYPE, NV_A, NBODY_A, NJOINT_A, NGEOM_A, NEQ_A, NTEN_A, NSITE_A,
         NEXCL_A, 0,
     ]()
@@ -197,9 +197,9 @@ def _part_a_tendon(ctx: DeviceContext) raises:
     if Int(mf.meta.data[MODEL_META_IDX_NTENDON]) != 2:
         raise Error("part A vacuous: model meta NTENDON != 2")
 
-    var d = DataFields[DTYPE, NQ_A, NV_A, NBODY_A, MC_A, NSITE_A, BATCH]()
-    var dc = DataFields[DTYPE, NQ_A, NV_A, NBODY_A, MC_A, NSITE_A, BATCH]()
-    var d_off = DataFields[DTYPE, NQ_A, NV_A, NBODY_A, MC_A, NSITE_A, BATCH]()
+    var d = Data[DTYPE, NQ_A, NV_A, NBODY_A, MC_A, NSITE_A, BATCH]()
+    var dc = Data[DTYPE, NQ_A, NV_A, NBODY_A, MC_A, NSITE_A, BATCH]()
+    var d_off = Data[DTYPE, NQ_A, NV_A, NBODY_A, MC_A, NSITE_A, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_A):
             var qp = _humanoid_qpos(e, i)
@@ -217,12 +217,12 @@ def _part_a_tendon(ctx: DeviceContext) raises:
             d_off.qfrc.data[e * NV_A + i] = qf
     d.upload_all(ctx)
 
-    var integ = EulerIntegratorFields[
+    var integ = EulerIntegrator[
         DTYPE, NQ_A, NV_A, NBODY_A, NJOINT_A, MC_A, NGEOM_A, NEQ_A, NTEN_A,
         NSITE_A, NEXCL_A, 0, CONE_A, BATCH,
     ]()
     integ.prepare_gpu(ctx)
-    var integ_c = EulerIntegratorFields[
+    var integ_c = EulerIntegrator[
         DTYPE, NQ_A, NV_A, NBODY_A, NJOINT_A, MC_A, NGEOM_A, NEQ_A, NTEN_A,
         NSITE_A, NEXCL_A, 0, CONE_A, BATCH,
     ]()
@@ -385,7 +385,7 @@ def _part_b_equality(ctx: DeviceContext) raises:
 
     # Fields-native build — init_fields serializes the weld equality records
     # (Stage B fixed copy_equality_to_buffer, which init_model_gpu never called).
-    var mf = ModelFields[
+    var mf = Model[
         DTYPE, NV_B, NBODY_B, NJOINT_B, NGEOM_B, NEQ_B,
         WeldTestModel.MAX_TENDON, WeldTestModel.NSITE, WeldTestModel.nexclude, 0,
     ]()
@@ -395,9 +395,9 @@ def _part_b_equality(ctx: DeviceContext) raises:
     if Int(mf.meta.data[MODEL_META_IDX_NEQUALITY]) != 1:
         raise Error("part B vacuous: model meta NEQUALITY != 1")
 
-    var d = DataFields[DTYPE, NQ_B, NV_B, NBODY_B, MC_B, 0, BATCH]()
-    var dc = DataFields[DTYPE, NQ_B, NV_B, NBODY_B, MC_B, 0, BATCH]()
-    var d_off = DataFields[DTYPE, NQ_B, NV_B, NBODY_B, MC_B, 0, BATCH]()
+    var d = Data[DTYPE, NQ_B, NV_B, NBODY_B, MC_B, 0, BATCH]()
+    var dc = Data[DTYPE, NQ_B, NV_B, NBODY_B, MC_B, 0, BATCH]()
+    var d_off = Data[DTYPE, NQ_B, NV_B, NBODY_B, MC_B, 0, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_B):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 50.0
@@ -415,12 +415,12 @@ def _part_b_equality(ctx: DeviceContext) raises:
             d_off.qfrc.data[e * NV_B + i] = qf
     d.upload_all(ctx)
 
-    var integ = EulerIntegratorFields[
+    var integ = EulerIntegrator[
         DTYPE, NQ_B, NV_B, NBODY_B, NJOINT_B, MC_B, NGEOM_B, NEQ_B, 0, 0, 0,
         0, CONE_B, BATCH,
     ]()
     integ.prepare_gpu(ctx)
-    var integ_c = EulerIntegratorFields[
+    var integ_c = EulerIntegrator[
         DTYPE, NQ_B, NV_B, NBODY_B, NJOINT_B, MC_B, NGEOM_B, NEQ_B, 0, 0, 0,
         0, CONE_B, BATCH,
     ]()

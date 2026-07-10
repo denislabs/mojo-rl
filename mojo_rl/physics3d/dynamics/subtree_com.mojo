@@ -9,7 +9,7 @@ from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import DataFields, ModelFields
+from ..fields import Data, Model
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -25,7 +25,7 @@ def _max_one[N: Int]() -> Int:
 
 
 @always_inline
-def _subtree_com_env_fields[
+def _subtree_com_env[
     DTYPE: DType,
     NBODY: Int,
     BATCH: Int,
@@ -112,12 +112,12 @@ def _subtree_com_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _subtree_com_env_fields[DTYPE, NBODY, BATCH](
+    _subtree_com_env[DTYPE, NBODY, BATCH](
         env, bodies, xipos, subtree_com
     )
 
 
-def compute_subtree_com_fields[
+def compute_subtree_com[
     target: StaticString,
     DTYPE: DType,
     NQ: Int,
@@ -133,8 +133,8 @@ def compute_subtree_com_fields[
     NMESH_VERTS: Int = 0,
     BATCH: Int = 1,
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: ModelFields[
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: Model[
         DTYPE,
         NV,
         NBODY,
@@ -157,7 +157,7 @@ def compute_subtree_com_fields[
         var xipos_v = d.xipos.lt["cpu", L_B3]()
         var stcom_v = d.subtree_com.lt["cpu", L_B3]()
         for e in range(BATCH):
-            _subtree_com_env_fields[DTYPE, NBODY, BATCH](
+            _subtree_com_env[DTYPE, NBODY, BATCH](
                 e, bodies_v, xipos_v, stcom_v
             )
     else:

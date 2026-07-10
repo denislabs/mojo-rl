@@ -1,17 +1,17 @@
 """GPU-batched physics3d environment on the PER-FIELD tensor path.
 
-`Phyics3dBatchedEnvFields[MODEL_DEF, CONFIG, N_ENVS]` is the fields-path
+`Phyics3dBatchedEnv[MODEL_DEF, CONFIG, N_ENVS]` is the fields-path
 counterpart of `BatchedGpuEnv[Phyics3dEnv[...]]`: it implements the
 `BatchedEnv` driver ABI directly as a STATEFUL struct (it owns
-`DataFields` / `ModelFields` / `RK4IntegratorFields` plus the driver IO
+`Data` / `Model` / `RK4Integrator` plus the driver IO
 buffers), so the off-policy GPU drivers (`run_offpolicy_train_batched`,
 i.e. `SACAgent.train[...]` etc.) train against fields-path physics with
 zero driver changes.
 
 Model: fully on the fields path — the model is built offset-free via
 `MODEL_DEF.init_fields` (spec-direct, offset-free),
-and the three former model-slab consumers now read `ModelFields` directly:
-reset FK -> `forward_kinematics_fields`, `compute_cfrc_ext_fields` (reads
+and the three former model-slab consumers now read `Model` directly:
+reset FK -> `forward_kinematics`, `compute_cfrc_ext` (reads
 `mf.bodies`), and the reward hook's curriculum params (fed `mf.curriculum`
 as a `[1, MODEL_CURRICULUM_SIZE]` view with offset 0 — the CONFIG hook is
 generic over MODEL_SIZE + curriculum_offset, so it is UNCHANGED).
@@ -20,13 +20,13 @@ G5: the state slab is GONE. Every GPU hook (`MODEL_DEF.reset_env_gpu` /
 `apply_actions_kernel_gpu` / `extract_obs_gpu` and the CONFIG
 `pre_step_gpu` / `init_qpos_gpu` / `custom_extract_obs_gpu` /
 `compute_reward_and_done_gpu`) takes the per-field tensors it needs, and
-`compute_cfrc_ext_fields` / `compute_cvel_fields` read/write the DataFields
+`compute_cfrc_ext` / `compute_cvel` read/write the Data
 cfrc_ext/cvel tensors directly. Hook state (step_count / prev_x) lives in
 `d.meta` alongside num_contacts (detection writes ONLY the num_contacts
 slot). The hook arithmetic is unchanged — only the addressing moved from
 slab+offset to field tensors.
 
-Scope (mirrors `Phyics3dEnvFields`): contacts + joint limits via the
+Scope (mirrors `Phyics3dEnv`): contacts + joint limits via the
 per-stage RK4 PGS/Newton solve — hopper/walker-class locomotion in scope;
 fluid-force models (Swimmer) run via the integrators' passive seam
 (Stage A). Mesh-collision models are not in scope.
@@ -44,13 +44,13 @@ from mojo_rl.nn.core.target_storage import require_ctx
 from mojo_rl.deep_agents.training.batched_env import BatchedEnv
 
 from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
-from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
+from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
+from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
 )
-from mojo_rl.physics3d.gpu import compute_cfrc_ext_fields, compute_cvel_fields
+from mojo_rl.physics3d.gpu import compute_cfrc_ext, compute_cvel
 from mojo_rl.physics3d.gpu.constants import (
     TPB,
     METADATA_SIZE,
@@ -80,7 +80,7 @@ def _rng_counter_bump_kernel(
 # ──────────────────────────────────────────────────────────────────────
 
 
-struct Phyics3dBatchedEnvFields[
+struct Phyics3dBatchedEnv[
     MODEL_DEF: ModelDefLike,
     CONFIG: Phyics3dEnvConfig,
     N_ENVS: Int,
@@ -115,10 +115,10 @@ struct Phyics3dBatchedEnvFields[
     comptime BLOCKS: Int = (Self.N_ENVS + TPB - 1) // TPB
 
     # Fields path (the actual physics state)
-    var d: DataFields[
+    var d: Data[
         DT, Self.NQ, Self.NV, Self.NBODY, Self.MC, Self.NSITE, Self.N_ENVS
     ]
-    var mf: ModelFields[
+    var mf: Model[
         DT,
         Self.NV,
         Self.NBODY,
@@ -133,14 +133,14 @@ struct Phyics3dBatchedEnvFields[
     # CONFIG.INTEGRATOR (HalfCheetah/Pusher/MetaWorld = Euler+Newton, the
     # other 9 envs = RK4+Newton). Only the SELECTED one is `prepare_gpu`'d, so
     # the unused one allocates NO device memory.
-    comptime IntegRK4 = RK4IntegratorFields[
+    comptime IntegRK4 = RK4Integrator[
         DT, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MC, Self.NGEOM,
         Self.MODEL_DEF.MAX_EQUALITY, Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
         Self.MODEL_DEF.NEXCLUDE, 0, Self.MODEL_DEF.CONE_TYPE, Self.N_ENVS,
         SOLVER = Self.SOLVER, PARALLEL_GPU = Self.PARALLEL_GPU,
         CRBA_TREEWALK = Self.CRBA_TREEWALK,
     ]
-    comptime IntegEuler = EulerIntegratorFields[
+    comptime IntegEuler = EulerIntegrator[
         DT, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MC, Self.NGEOM,
         Self.MODEL_DEF.MAX_EQUALITY, Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
         Self.MODEL_DEF.NEXCLUDE, 0, Self.MODEL_DEF.CONE_TYPE, Self.N_ENVS,
@@ -166,7 +166,7 @@ struct Phyics3dBatchedEnvFields[
         self.mf = type_of(self.mf)()
         Self.MODEL_DEF.init_fields[DT, 0](ctx, self.mf)
         # Fluid forces (density/viscosity) are handled by the fields
-        # integrators' passive seam (Stage A: compute_fluid_forces_fields), so
+        # integrators' passive seam (Stage A: compute_fluid_forces), so
         # no guard — Swimmer runs on this facade.
 
         self.d = type_of(self.d)()
@@ -198,10 +198,10 @@ struct Phyics3dBatchedEnvFields[
     # ── kinematics ────────────────────────────────────────────────────
 
     def _run_fields_fk(mut self, c: DeviceContext) raises:
-        """Fields FK over the whole batch (mf -> DataFields xpos/xquat/xipos
+        """Fields FK over the whole batch (mf -> Data xpos/xquat/xipos
         [+ site_xpos]). Replaces the legacy slab `forward_kinematics_gpu` in
         the reset paths so reset no longer reads the model slab."""
-        forward_kinematics_fields[
+        forward_kinematics[
             "gpu", DT, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MC,
             Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
             Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0,
@@ -407,10 +407,10 @@ struct Phyics3dBatchedEnvFields[
         BATCH: Int
     ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
         comptime assert BATCH == Self.N_ENVS, (
-            "Phyics3dBatchedEnvFields: reset_batch BATCH must match"
+            "Phyics3dBatchedEnv: reset_batch BATCH must match"
             " N_ENVS"
         )
-        var c = require_ctx["Phyics3dBatchedEnvFields.reset_batch"](ctx)
+        var c = require_ctx["Phyics3dBatchedEnv.reset_batch"](ctx)
 
         # Reset every lane on the field tensors (joint noise + CONFIG qpos +
         # hook metadata), then FK for the reset observation.
@@ -464,10 +464,10 @@ struct Phyics3dBatchedEnvFields[
         BATCH: Int, DEBUG: Bool = False
     ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
         comptime assert BATCH == Self.N_ENVS, (
-            "Phyics3dBatchedEnvFields: step_batch BATCH must match N_ENVS"
+            "Phyics3dBatchedEnv: step_batch BATCH must match N_ENVS"
         )
         _ = rng_seed
-        var c = require_ctx["Phyics3dBatchedEnvFields.step_batch"](ctx)
+        var c = require_ctx["Phyics3dBatchedEnv.step_batch"](ctx)
 
         # 1) CONFIG pre-step hook (save prev_x etc. into d.meta).
         @parameter
@@ -533,7 +533,7 @@ struct Phyics3dBatchedEnvFields[
 
         # 4) Derived quantities the reward hooks may read (cfrc_ext / cvel),
         #    straight on the field tensors.
-        compute_cfrc_ext_fields[DT, Self.N_ENVS, Self.NBODY, Self.MC](
+        compute_cfrc_ext[DT, Self.N_ENVS, Self.NBODY, Self.MC](
             c,
             self.d.xipos.lt["gpu", type_of(self.d).L_B3](),
             self.d.contacts.lt["gpu", type_of(self.d).L_CONTACTS](),
@@ -544,7 +544,7 @@ struct Phyics3dBatchedEnvFields[
         comptime if DEBUG:
             c.synchronize()
             print("[step_batch] 5b compute_cfrc_ext ok")
-        compute_cvel_fields[DT, Self.N_ENVS, Self.NBODY](
+        compute_cvel[DT, Self.N_ENVS, Self.NBODY](
             c,
             self.d.xpos.lt["gpu", type_of(self.d).L_B3](),
             self.d.xvel.lt["gpu", type_of(self.d).L_B3](),
@@ -566,12 +566,12 @@ struct Phyics3dBatchedEnvFields[
         BATCH: Int
     ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
         comptime assert BATCH == Self.N_ENVS, (
-            "Phyics3dBatchedEnvFields: selective_reset_batch BATCH must"
+            "Phyics3dBatchedEnv: selective_reset_batch BATCH must"
             " match N_ENVS"
         )
         _ = rng_seed  # device counter drives reset randomness (capture-safe)
         var c = require_ctx[
-            "Phyics3dBatchedEnvFields.selective_reset_batch"
+            "Phyics3dBatchedEnv.selective_reset_batch"
         ](ctx)
         var cnt_t = LayoutTensor[DType.uint64, Layout.row_major(1)](
             self._env_rng_counter

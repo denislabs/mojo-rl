@@ -3,7 +3,7 @@
 `Rk4Scratch` is the stateful replacement for the RK4-extra region of the
 flat workspace slab (`rk4_extra_workspace_size` = NQ + 7*NV, addressed via
 `ws_rk4_*_offset` in gpu/constants.mojo): one owned `TensorImpl` per
-logical region, allocated once by `RK4IntegratorFields` and reused every
+logical region, allocated once by `RK4Integrator` and reused every
 step. Region inventory mirrors the legacy layout exactly:
 
     q0 (NQ)  — qpos saved at stage 0 (all stages integrate FROM q0)

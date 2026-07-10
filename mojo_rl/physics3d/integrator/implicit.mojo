@@ -1,6 +1,6 @@
 """Stateful full-Implicit integrator over per-field tensors (Stage-I).
 
-`ImplicitIntegratorFields` is the fields-native port of the legacy
+`ImplicitIntegrator` is the fields-native port of the legacy
 `ImplicitIntegrator`: like Euler/ImplicitFast up through the mass matrix, but
 it forms the FULL non-symmetric
 
@@ -8,8 +8,8 @@ it forms the FULL non-symmetric
 
 where `qDeriv = d(qfrc_bias)/d(qvel)` includes BOTH the passive damping
 diagonal (`qDeriv[i,i] = -damping[i]`) AND the dense RNE velocity derivative
-(Coriolis/centrifugal, `qderiv_fields`). Because `M_hat` is non-symmetric it
-uses LU (`lu_fields`), not LDL. Damping is also explicit in the force
+(Coriolis/centrifugal, `qderiv`). Because `M_hat` is non-symmetric it
+uses LU (`lu`), not LDL. Damping is also explicit in the force
 (`fnet -= damping*qvel`), exactly like the legacy step — that is the standard
 implicit linearization, not double counting.
 
@@ -25,7 +25,7 @@ implicit terms already live in `M_hat` (this matches the legacy CPU Implicit
 step; the legacy GPU path re-used ImplicitFast's finalize, an asymmetry this
 single-source port drops in favour of CPU==GPU consistency).
 
-Reuses euler_fields' tested per-stage helpers (armature / fnet / qacc
+Reuses euler' tested per-stage helpers (armature / fnet / qacc
 writeback); the M_hat-forming, damping-diagonal, and implicit-finalize
 kernels are new here. Deliberately NOT ported yet (raise on use): fluid
 forces (density/viscosity > 0)."""
@@ -35,42 +35,42 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_integrate, quat_normalize
-from ..kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
-    compute_body_velocities_fields,
+from ..kinematics.forward_kinematics import (
+    forward_kinematics,
+    compute_body_velocities,
 )
-from ..dynamics.subtree_com_fields import compute_subtree_com_fields
-from ..dynamics.cdof_fields import compute_cdof_fields
-from ..dynamics.mass_matrix_fields import compute_mass_matrix_fields
-from ..dynamics.rne_fields import compute_bias_forces_rne_fields
-from ..dynamics.fluid_forces_fields import compute_fluid_forces_fields
-from ..dynamics.lu_fields import (
-    lu_factor_fields,
-    lu_solve_fields,
-    compute_m_inv_from_lu_fields,
+from ..dynamics.subtree_com import compute_subtree_com
+from ..dynamics.cdof import compute_cdof
+from ..dynamics.mass_matrix import compute_mass_matrix
+from ..dynamics.rne import compute_bias_forces_rne
+from ..dynamics.fluid_forces import compute_fluid_forces
+from ..dynamics.lu import (
+    lu_factor,
+    lu_solve,
+    compute_m_inv_from_lu,
 )
-from ..dynamics.qderiv_fields import compute_rne_vel_derivative_fields
-from ..constraints.limits_fields import solve_limits_fields
-from ..constraints.contact_solve_fields import solve_contacts_fields
-from ..solver.newton_solve_fields import solve_newton_fields
-from ..solver.cg_solve_fields import solve_cg_fields
-from ..solver.island_pgs_solve_fields import solve_island_pgs_fields
-from ..collision.broadphase_sap_fields import detect_contacts_auto_fields
+from ..dynamics.qderiv import compute_rne_vel_derivative
+from ..constraints.limits import solve_limits
+from ..constraints.contact_solve import solve_contacts
+from ..solver.newton_solve import solve_newton
+from ..solver.cg_solve import solve_cg
+from ..solver.island_pgs_solve import solve_island_pgs
+from ..collision.broadphase_sap import detect_contacts_auto
 from ..types import ConeType
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
 from ..fields import (
-    DataFields,
-    ModelFields,
+    Data,
+    Model,
     DynamicsScratch,
     ContactScratch,
     ImplicitScratch,
 )
-from .euler_fields import (
-    _armature_env_fields,
+from .euler import (
+    _armature_env,
     _armature_kernel,
-    _fnet_passive_env_fields,
+    _fnet_passive_env,
     _fnet_passive_kernel,
-    _qacc_writeback_env_fields,
+    _qacc_writeback_env,
     _qacc_writeback_kernel,
 )
 from ..gpu.constants import (
@@ -90,7 +90,7 @@ comptime IM_TPB: Int = 64
 
 # ── qDeriv damping diagonal init: zero, then qDeriv[i,i] = -damping[i] ─────
 @always_inline
-def _qderiv_damping_env_fields[
+def _qderiv_damping_env[
     DTYPE: DType, NV: Int, NJOINT: Int, BATCH: Int
 ](
     env: Int,
@@ -118,7 +118,7 @@ def _qderiv_damping_env_fields[
 
 # ── M_hat: M -= dt * qDeriv (full, non-symmetric) ─────────────────────────
 @always_inline
-def _msub_qderiv_env_fields[
+def _msub_qderiv_env[
     DTYPE: DType, NV: Int, BATCH: Int
 ](
     env: Int,
@@ -134,7 +134,7 @@ def _msub_qderiv_env_fields[
 
 # ── implicit finalize: v += dt*qacc ; integrate qpos (quat-aware) ─────────
 @always_inline
-def _implicit_finalize_env_fields[
+def _implicit_finalize_env[
     DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int
 ](
     env: Int,
@@ -211,7 +211,7 @@ def _qderiv_damping_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _qderiv_damping_env_fields[DTYPE, NV, NJOINT, BATCH](
+    _qderiv_damping_env[DTYPE, NV, NJOINT, BATCH](
         env, joints, njoint, qderiv
     )
 
@@ -226,7 +226,7 @@ def _msub_qderiv_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _msub_qderiv_env_fields[DTYPE, NV, BATCH](env, dt, M, qderiv)
+    _msub_qderiv_env[DTYPE, NV, BATCH](env, dt, M, qderiv)
 
 
 def _implicit_finalize_kernel[
@@ -246,13 +246,13 @@ def _implicit_finalize_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _implicit_finalize_env_fields[DTYPE, NQ, NV, NJOINT, BATCH](
+    _implicit_finalize_env[DTYPE, NQ, NV, NJOINT, BATCH](
         env, dt, qpos, qvel, qacc, joints, qacc_constrained
     )
 
 
 # ── the stateful integrator ───────────────────────────────────────────────
-struct ImplicitIntegratorFields[
+struct ImplicitIntegrator[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -274,7 +274,7 @@ struct ImplicitIntegratorFields[
     """Owns its scratch (dynamics + contact + implicit); steps full-implicit
     dynamics on either target. See module docstring for the algorithm and
     what is not yet ported. PARALLEL_GPU / CRBA_TREEWALK behave as in
-    EulerIntegratorFields for the shared FK/CRBA/RNE stages; the LU + qDeriv
+    EulerIntegrator for the shared FK/CRBA/RNE stages; the LU + qDeriv
     stages are serial per-env."""
 
     var scratch: DynamicsScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
@@ -285,7 +285,7 @@ struct ImplicitIntegratorFields[
 
     def __init__(out self) raises:
         comptime assert Self.PARALLEL_GPU or (not Self.CRBA_TREEWALK), (
-            "ImplicitIntegratorFields: CRBA_TREEWALK requires PARALLEL_GPU"
+            "ImplicitIntegrator: CRBA_TREEWALK requires PARALLEL_GPU"
         )
         self.scratch = DynamicsScratch[
             Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
@@ -306,11 +306,11 @@ struct ImplicitIntegratorFields[
         target: StaticString, CONTACTS: Bool = True
     ](
         mut self,
-        mut d: DataFields[
+        mut d: Data[
             Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.MAX_CONTACTS,
             Self.NSITE, Self.BATCH,
         ],
-        mut m: ModelFields[
+        mut m: Model[
             Self.DTYPE, Self.NV, Self.NBODY, Self.NJOINT, Self.NGEOM,
             Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
             Self.NMESH_VERTS,
@@ -322,30 +322,30 @@ struct ImplicitIntegratorFields[
         var njoint = Int(m.meta.data[MODEL_META_IDX_NJOINT])
 
         # ── kinematics + composite inertia + mass matrix (as euler) ──────
-        forward_kinematics_fields[
+        forward_kinematics[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
             PARALLEL = Self.PARALLEL_GPU,
         ](d, m, ctx)
-        compute_body_velocities_fields[
+        compute_body_velocities[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
             PARALLEL = Self.PARALLEL_GPU,
         ](d, m, ctx)
-        compute_subtree_com_fields[
+        compute_subtree_com[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
         ](d, m, ctx)
-        compute_cdof_fields[
+        compute_cdof[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
             PARALLEL = Self.PARALLEL_GPU,
         ](d, m, self.scratch, ctx)
-        compute_mass_matrix_fields[
+        compute_mass_matrix[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
@@ -364,7 +364,7 @@ struct ImplicitIntegratorFields[
             var joints_v = m.joints.lt["cpu", L_JOINT]()
             var M_v = self.scratch.M.lt["cpu", L_M]()
             for e in range(Self.BATCH):
-                _armature_env_fields[
+                _armature_env[
                     Self.DTYPE, Self.NV, Self.NJOINT, Self.BATCH
                 ](e, joints_v, M_v)
         else:
@@ -382,7 +382,7 @@ struct ImplicitIntegratorFields[
             var joints_v = m.joints.lt["cpu", L_JOINT]()
             var qd_v = self.iscratch.qderiv.lt["cpu", L_M]()
             for e in range(Self.BATCH):
-                _qderiv_damping_env_fields[
+                _qderiv_damping_env[
                     Self.DTYPE, Self.NV, Self.NJOINT, Self.BATCH
                 ](e, joints_v, njoint, qd_v)
         else:
@@ -397,7 +397,7 @@ struct ImplicitIntegratorFields[
                 grid_dim=(BLOCKS,),
                 block_dim=(IM_TPB,),
             )
-        compute_rne_vel_derivative_fields[
+        compute_rne_vel_derivative[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
@@ -408,7 +408,7 @@ struct ImplicitIntegratorFields[
             var M_v = self.scratch.M.lt["cpu", L_M]()
             var qd_v = self.iscratch.qderiv.lt["cpu", L_M]()
             for e in range(Self.BATCH):
-                _msub_qderiv_env_fields[Self.DTYPE, Self.NV, Self.BATCH](
+                _msub_qderiv_env[Self.DTYPE, Self.NV, Self.BATCH](
                     e, dt, M_v, qd_v
                 )
         else:
@@ -423,15 +423,15 @@ struct ImplicitIntegratorFields[
             )
 
         # ── LU factor M_hat (+ M^-1 for the constraint solver) ───────────
-        lu_factor_fields[
+        lu_factor[
             target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ](self.scratch, ctx)
-        compute_m_inv_from_lu_fields[
+        compute_m_inv_from_lu[
             target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ](self.scratch, ctx)
 
         # ── RNE bias forces ──────────────────────────────────────────────
-        compute_bias_forces_rne_fields[
+        compute_bias_forces_rne[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
@@ -447,7 +447,7 @@ struct ImplicitIntegratorFields[
             var bias_v = self.scratch.bias.lt["cpu", L_NV]()
             var fnet_v = self.scratch.fnet.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
-                _fnet_passive_env_fields[
+                _fnet_passive_env[
                     Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH
                 ](e, qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v)
         else:
@@ -467,14 +467,14 @@ struct ImplicitIntegratorFields[
             )
 
         # Fluid drag into fnet (no-op unless meta density/viscosity > 0).
-        compute_fluid_forces_fields[
+        compute_fluid_forces[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
         ](d, m, self.scratch, ctx)
 
         # ── LU solve: qacc_ws = M_hat^-1 fnet ────────────────────────────
-        lu_solve_fields[
+        lu_solve[
             target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ](self.scratch, ctx)
 
@@ -484,7 +484,7 @@ struct ImplicitIntegratorFields[
             var qacc_v = d.qacc.lt["cpu", L_NV]()
             var qacc_c_v = self.scratch.qacc_constrained.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
-                _qacc_writeback_env_fields[Self.DTYPE, Self.NV, Self.BATCH](
+                _qacc_writeback_env[Self.DTYPE, Self.NV, Self.BATCH](
                     e, qacc_ws_v, qacc_v, qacc_c_v
                 )
         else:
@@ -500,7 +500,7 @@ struct ImplicitIntegratorFields[
 
         # ── constraint seam (mirrors euler; uses M^-1 of M_hat) ──────────
         comptime if CONTACTS:
-            detect_contacts_auto_fields[
+            detect_contacts_auto[
                 target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                 Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
                 Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
@@ -512,11 +512,11 @@ struct ImplicitIntegratorFields[
                 or Self.SOLVER == "cg"
                 or Self.SOLVER == "island"
             ), (
-                "ImplicitIntegratorFields: SOLVER must be 'pgs', 'newton',"
+                "ImplicitIntegrator: SOLVER must be 'pgs', 'newton',"
                 " 'cg', or 'island'"
             )
             comptime if Self.SOLVER == "newton":
-                solve_newton_fields[
+                solve_newton[
                     target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                     Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
                     Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
@@ -524,7 +524,7 @@ struct ImplicitIntegratorFields[
                 ](d, m, self.scratch, self.cscratch, ctx)
             else:
                 comptime if Self.SOLVER == "cg":
-                    solve_cg_fields[
+                    solve_cg[
                         target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                         Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
                         Self.NEQUALITY, Self.NTENDON, Self.NSITE,
@@ -533,7 +533,7 @@ struct ImplicitIntegratorFields[
                     ](d, m, self.scratch, self.cscratch, ctx)
                 else:
                     comptime if Self.SOLVER == "island":
-                        solve_island_pgs_fields[
+                        solve_island_pgs[
                             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                             Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
                             Self.NEQUALITY, Self.NTENDON, Self.NSITE,
@@ -541,7 +541,7 @@ struct ImplicitIntegratorFields[
                             Self.BATCH,
                         ](d, m, self.scratch, self.cscratch, ctx)
                     else:
-                        solve_contacts_fields[
+                        solve_contacts[
                             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                             Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
                             Self.NEQUALITY, Self.NTENDON, Self.NSITE,
@@ -549,7 +549,7 @@ struct ImplicitIntegratorFields[
                             Self.BATCH,
                         ](d, m, self.scratch, self.cscratch, ctx)
         else:
-            solve_limits_fields[
+            solve_limits[
                 target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                 Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
                 Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
@@ -564,7 +564,7 @@ struct ImplicitIntegratorFields[
             var joints_v = m.joints.lt["cpu", L_JOINT]()
             var qacc_c_v = self.scratch.qacc_constrained.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
-                _implicit_finalize_env_fields[
+                _implicit_finalize_env[
                     Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH
                 ](e, dt, qpos_v, qvel_v, qacc_v, joints_v, qacc_c_v)
         else:

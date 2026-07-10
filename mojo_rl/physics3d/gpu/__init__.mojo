@@ -59,5 +59,5 @@ from ..kinematics.quat_math import (
 # Legacy GPU mass_matrix/jacobian (CRBA/LDL) deleted at the fields sunset.
 
 # Phase-2 post-substep GPU kernels
-from .cfrc_ext_gpu import compute_cfrc_ext_fields
-from .cvel_gpu import compute_cvel_fields
+from .cfrc_ext_gpu import compute_cfrc_ext
+from .cvel_gpu import compute_cvel

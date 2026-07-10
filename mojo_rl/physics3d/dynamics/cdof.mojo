@@ -19,7 +19,7 @@ from ..kinematics.quat_math import (
     gpu_axis_angle_to_quat,
 )
 from ..joint_types import JNT_FREE, JNT_SLIDE, JNT_HINGE
-from ..fields import DataFields, ModelFields, DynamicsScratch
+from ..fields import Data, Model, DynamicsScratch
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -49,7 +49,7 @@ comptime CDOF_TPB: Int = 64
 
 
 @always_inline
-def _cdof_body_fields[
+def _cdof_body[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -305,7 +305,7 @@ def _cdof_body_fields[
 
 
 @always_inline
-def _cdof_env_fields[
+def _cdof_env[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -335,7 +335,7 @@ def _cdof_env_fields[
         cdof[env, i] = 0
 
     for body in range(1, NBODY):
-        _cdof_body_fields[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
+        _cdof_body[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
             env, body, qpos, xpos, xquat, subtree_com, bodies, joints, cdof
         )
 
@@ -367,7 +367,7 @@ def _cdof_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _cdof_env_fields[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
+    _cdof_env[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
         env, qpos, xpos, xquat, subtree_com, bodies, joints, cdof
     )
 
@@ -376,7 +376,7 @@ def _cdof_fields_kernel[
 # `compute_cdof_gpu_mt` (dynamics/jacobian.mojo): bodies are independent
 # (each writes only its own DOFs from FK state), so threads stripe over
 # bodies with no level ordering; one barrier between the zero-init and the
-# body sweep. Per-body arithmetic is the SAME `_cdof_body_fields` helper as
+# body sweep. Per-body arithmetic is the SAME `_cdof_body` helper as
 # the serial kernel -> bit-exact. Grid is exact (one block per env) ->
 # legacy valid_env guards dropped; the legacy trailing barrier is dropped
 # too (kernel end is the sync point in this standalone launch).
@@ -415,12 +415,12 @@ def _cdof_fields_mt_kernel[
 
     # Per-body, independent -> stripe across threads, no per-body barrier.
     for body in range(1 + tid, NBODY, N_THREADS):
-        _cdof_body_fields[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
+        _cdof_body[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
             env, body, qpos, xpos, xquat, subtree_com, bodies, joints, cdof
         )
 
 
-def compute_cdof_fields[
+def compute_cdof[
     target: StaticString,
     DTYPE: DType,
     NQ: Int,
@@ -437,8 +437,8 @@ def compute_cdof_fields[
     BATCH: Int = 1,
     PARALLEL: Bool = False,
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: ModelFields[
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: Model[
         DTYPE,
         NV,
         NBODY,
@@ -472,7 +472,7 @@ def compute_cdof_fields[
         var joints_v = m.joints.lt["cpu", L_JOINT]()
         var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
         for e in range(BATCH):
-            _cdof_env_fields[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
+            _cdof_env[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
                 e, qpos_v, xpos_v, xquat_v, stcom_v, bodies_v, joints_v, cdof_v
             )
     elif PARALLEL:

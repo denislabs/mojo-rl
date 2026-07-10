@@ -1,4 +1,4 @@
-"""GPU-batched fields env gate (GOLDEN-frozen): Phyics3dBatchedEnvFields on
+"""GPU-batched fields env gate (GOLDEN-frozen): Phyics3dBatchedEnv on
 Walker2D (contacts), pinned to the PGS + serial + dense config.
 
 Originally validated BIT-EXACT against the legacy Phyics3dEnv slab pipeline
@@ -22,7 +22,7 @@ from std.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
 from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
@@ -39,7 +39,7 @@ comptime METADATA_SIZE_L = 4
 comptime RESET_SEED = UInt64(123)
 
 # Pinned to PGS + serial + dense (the config this gate's legacy reference used).
-comptime FieldsEnv = Phyics3dBatchedEnvFields[
+comptime FieldsEnv = Phyics3dBatchedEnv[
     Walker2dModel,
     Walker2dConfig,
     BATCH,

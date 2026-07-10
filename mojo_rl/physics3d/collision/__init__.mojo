@@ -13,5 +13,5 @@ from .collision_primitives import (
     rotate_vector_by_quat_inverse,
 )
 # Legacy slab collision (contact_detection + broadphase_sap) was deleted at the
-# P6 fields sunset. The fields collision lives in `contact_detection_fields` /
-# `broadphase_sap_fields`; `collision_primitives` (above) is the shared leaf.
+# P6 fields sunset. The fields collision lives in `contact_detection` /
+# `broadphase_sap`; `collision_primitives` (above) is the shared leaf.

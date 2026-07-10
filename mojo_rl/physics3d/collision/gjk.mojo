@@ -3,7 +3,7 @@
 Per-field port of gjk_gpu.mojo — arithmetic verbatim. The only change is
 the mesh-vertex operand: instead of the flat model slab
 (`model[0, mesh_vert_buf_off + i*3 + k]`) the functions take the
-`mesh_verts` record tensor (`[NMESH_VERTS, 3]`, see ModelFields) and a
+`mesh_verts` record tensor (`[NMESH_VERTS, 3]`, see Model) and a
 vertex START index (`vert_adr`, MuJoCo `mesh_vertadr`) so reads become
 `mesh_verts[vert_adr + i, k]`. Same floats, same iteration order.
 """
@@ -50,7 +50,7 @@ def _dot3[
 
 
 @always_inline
-def _support_mesh_fields[
+def _support_mesh[
     DTYPE: DType,
     NMESH_VERTS: Int,
 ](
@@ -102,7 +102,7 @@ def _support_mesh_fields[
 
 
 @always_inline
-def _support_fields[
+def _support[
     DTYPE: DType,
     NMESH_VERTS: Int,
 ](
@@ -180,7 +180,7 @@ def _support_fields[
             half_length,
         )
     elif geom_type == GEOM_MESH:
-        return _support_mesh_fields[DTYPE, NMESH_VERTS](
+        return _support_mesh[DTYPE, NMESH_VERTS](
             dir_x,
             dir_y,
             dir_z,
@@ -203,7 +203,7 @@ def _support_fields[
 
 
 @always_inline
-def _minkowski_support_fields[
+def _minkowski_support[
     DTYPE: DType,
     NMESH_VERTS: Int,
 ](
@@ -254,7 +254,7 @@ def _minkowski_support_fields[
     Scalar[DTYPE],
     Scalar[DTYPE],
 ]:
-    var s1 = _support_fields[DTYPE, NMESH_VERTS](
+    var s1 = _support[DTYPE, NMESH_VERTS](
         type1,
         p1x,
         p1y,
@@ -275,7 +275,7 @@ def _minkowski_support_fields[
         dir_y,
         dir_z,
     )
-    var s2 = _support_fields[DTYPE, NMESH_VERTS](
+    var s2 = _support[DTYPE, NMESH_VERTS](
         type2,
         p2x,
         p2y,
@@ -309,7 +309,7 @@ def _minkowski_support_fields[
     )
 
 
-def gjk_epa_fields[
+def gjk_epa[
     DTYPE: DType,
     NMESH_VERTS: Int,
 ](
@@ -374,7 +374,7 @@ def gjk_epa_fields[
     dy /= dlen
     dz /= dlen
 
-    var s = _minkowski_support_fields[DTYPE, NMESH_VERTS](
+    var s = _minkowski_support[DTYPE, NMESH_VERTS](
         type1,
         p1x,
         p1y,
@@ -435,7 +435,7 @@ def gjk_epa_fields[
         var ndy = -vy * inv_vlen
         var ndz = -vz * inv_vlen
 
-        var sn = _minkowski_support_fields[DTYPE, NMESH_VERTS](
+        var sn = _minkowski_support[DTYPE, NMESH_VERTS](
             type1,
             p1x,
             p1y,
@@ -558,7 +558,7 @@ def gjk_epa_fields[
         fallback_nz /= fallback_len
 
     # Estimate penetration depth from support points along normal
-    var s_fwd = _minkowski_support_fields[DTYPE, NMESH_VERTS](
+    var s_fwd = _minkowski_support[DTYPE, NMESH_VERTS](
         type1,
         p1x,
         p1y,

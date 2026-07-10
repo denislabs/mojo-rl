@@ -13,7 +13,7 @@ Unified constraint representation:
 """
 
 # Legacy slab solvers (PGS/Newton/CG/IslandPGS + island detection) were deleted
-# at the P6 fields sunset. The fields solvers live in `newton_solve_fields` /
-# `cg_solve_fields` / `contact_solve_fields` / `island_pgs_solve_fields` and are
+# at the P6 fields sunset. The fields solvers live in `newton_solve` /
+# `cg_solve` / `contact_solve` / `island_pgs_solve` and are
 # imported directly. `cholesky` and `qcqp` (leaf helpers) remain — the fields
 # solvers import them by submodule.

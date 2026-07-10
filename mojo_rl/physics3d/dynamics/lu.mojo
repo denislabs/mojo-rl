@@ -3,7 +3,7 @@ Stage-I, single-source). Per-field ports of `lu_factor_gpu`,
 `lu_solve_workspace_gpu`, `compute_M_inv_from_lu_gpu`
 (dynamics/lu_factorization.mojo) — arithmetic verbatim.
 
-Used by the fields `ImplicitIntegratorFields`, where
+Used by the fields `ImplicitIntegrator`, where
 `M_hat = M + armature - dt*qDeriv` is NON-symmetric (the dense RNE velocity
 derivative) so LDL cannot be used. Reuses the same `DynamicsScratch` tensors
 as the LDL path — `factor` reads `scratch.M`, writes the LU factors into
@@ -31,7 +31,7 @@ def _ensure_positive[N: Int]() -> Int:
 
 
 @always_inline
-def _lu_factor_env_fields[
+def _lu_factor_env[
     DTYPE: DType,
     NV: Int,
     BATCH: Int,
@@ -90,7 +90,7 @@ def _lu_factor_env_fields[
 
 
 @always_inline
-def _lu_solve_env_fields[
+def _lu_solve_env[
     DTYPE: DType,
     NV: Int,
     BATCH: Int,
@@ -134,7 +134,7 @@ def _lu_solve_env_fields[
 
 
 @always_inline
-def _lu_m_inv_col_env_fields[
+def _lu_m_inv_col_env[
     DTYPE: DType,
     NV: Int,
     BATCH: Int,
@@ -187,7 +187,7 @@ def _lu_m_inv_col_env_fields[
 
 
 @always_inline
-def _lu_m_inv_env_fields[
+def _lu_m_inv_env[
     DTYPE: DType,
     NV: Int,
     BATCH: Int,
@@ -199,7 +199,7 @@ def _lu_m_inv_env_fields[
 ):
     """Full dense M^-1 via per-column LU solves."""
     for j_col in range(NV):
-        _lu_m_inv_col_env_fields[DTYPE, NV, BATCH](env, j_col, L, D, m_inv)
+        _lu_m_inv_col_env[DTYPE, NV, BATCH](env, j_col, L, D, m_inv)
 
 
 # ── launchable kernels (serial: one thread per env) ───────────────────────
@@ -215,7 +215,7 @@ def _lu_factor_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _lu_factor_env_fields[DTYPE, NV, BATCH](env, M, L, D)
+    _lu_factor_env[DTYPE, NV, BATCH](env, M, L, D)
 
 
 def _lu_solve_fields_kernel[
@@ -231,7 +231,7 @@ def _lu_solve_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _lu_solve_env_fields[DTYPE, NV, BATCH](env, L, D, b, x)
+    _lu_solve_env[DTYPE, NV, BATCH](env, L, D, b, x)
 
 
 def _lu_m_inv_fields_kernel[
@@ -246,11 +246,11 @@ def _lu_m_inv_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _lu_m_inv_env_fields[DTYPE, NV, BATCH](env, L, D, m_inv)
+    _lu_m_inv_env[DTYPE, NV, BATCH](env, L, D, m_inv)
 
 
-# ── single-body dispatch wrappers (mirror ldl_fields) ─────────────────────
-def lu_factor_fields[
+# ── single-body dispatch wrappers (mirror ldl) ─────────────────────
+def lu_factor[
     target: StaticString,
     DTYPE: DType,
     NV: Int,
@@ -269,7 +269,7 @@ def lu_factor_fields[
         var L_v = scratch.L.lt["cpu", L_M]()
         var D_v = scratch.D.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _lu_factor_env_fields[DTYPE, NV, BATCH](e, M_v, L_v, D_v)
+            _lu_factor_env[DTYPE, NV, BATCH](e, M_v, L_v, D_v)
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LU_TPB - 1) // LU_TPB
@@ -282,7 +282,7 @@ def lu_factor_fields[
         )
 
 
-def lu_solve_fields[
+def lu_solve[
     target: StaticString,
     DTYPE: DType,
     NV: Int,
@@ -302,7 +302,7 @@ def lu_solve_fields[
         var b_v = scratch.fnet.lt["cpu", L_NV]()
         var x_v = scratch.qacc_ws.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _lu_solve_env_fields[DTYPE, NV, BATCH](e, L_v, D_v, b_v, x_v)
+            _lu_solve_env[DTYPE, NV, BATCH](e, L_v, D_v, b_v, x_v)
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LU_TPB - 1) // LU_TPB
@@ -316,7 +316,7 @@ def lu_solve_fields[
         )
 
 
-def compute_m_inv_from_lu_fields[
+def compute_m_inv_from_lu[
     target: StaticString,
     DTYPE: DType,
     NV: Int,
@@ -335,7 +335,7 @@ def compute_m_inv_from_lu_fields[
         var D_v = scratch.D.lt["cpu", L_NV]()
         var mi_v = scratch.m_inv.lt["cpu", L_M]()
         for e in range(BATCH):
-            _lu_m_inv_env_fields[DTYPE, NV, BATCH](e, L_v, D_v, mi_v)
+            _lu_m_inv_env[DTYPE, NV, BATCH](e, L_v, D_v, mi_v)
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LU_TPB - 1) // LU_TPB

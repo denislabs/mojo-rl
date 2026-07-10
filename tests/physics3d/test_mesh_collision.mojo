@@ -5,15 +5,15 @@ correct distance computation. Isolates the bug where GJK reports deep
 penetration for clearly separated shapes.
 
 G4: ported from the legacy `gjk.gjk_epa` (List-based mesh verts) to
-`gjk_fields.gjk_epa_fields` (shared `[NMESH_VERTS, 3]` LayoutTensor + vert-adr
-offsets — the production signature used by contact_detection_fields /
-broadphase_sap_fields).
+`gjk.gjk_epa` (shared `[NMESH_VERTS, 3]` LayoutTensor + vert-adr
+offsets — the production signature used by contact_detection /
+broadphase_sap).
 """
 
 from std.math import sqrt
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.collision.gjk_fields import gjk_epa_fields
+from mojo_rl.physics3d.collision.gjk import gjk_epa
 from mojo_rl.physics3d.collision.gjk_support import (
     support_sphere,
     support_box,
@@ -37,7 +37,7 @@ def test_box_box_separated() raises:
     """Two boxes clearly separated — should report positive distance."""
     print("=== Test: box-box separated ===")
     var mv = _mv_tensor(List[Float64]())
-    var result = gjk_epa_fields[DType.float64, NMV](
+    var result = gjk_epa[DType.float64, NMV](
         GEOM_BOX,
         0.0, 0.0, 2.0,  # box1 at z=2
         0.0, 0.0, 0.0, 1.0,  # identity quat
@@ -62,7 +62,7 @@ def test_box_box_overlapping() raises:
     """Two overlapping boxes — should report negative distance."""
     print("=== Test: box-box overlapping ===")
     var mv = _mv_tensor(List[Float64]())
-    var result = gjk_epa_fields[DType.float64, NMV](
+    var result = gjk_epa[DType.float64, NMV](
         GEOM_BOX,
         0.0, 0.0, 0.3,  # box1 at z=0.3
         0.0, 0.0, 0.0, 1.0,
@@ -97,7 +97,7 @@ def test_sphere_mesh_separated() raises:
                 cube_verts.append(Float64(sz) - 0.5)  # z: -0.5 to 0.5
 
     var mv = _mv_tensor(cube_verts)
-    var result = gjk_epa_fields[DType.float64, NMV](
+    var result = gjk_epa[DType.float64, NMV](
         GEOM_SPHERE,
         0.0, 0.0, 3.0,  # sphere at z=3
         0.0, 0.0, 0.0, 1.0,
@@ -135,7 +135,7 @@ def test_mesh_box_sawyer_case() raises:
     var mv = _mv_tensor(mesh_verts)
     # Mesh geom: body_pos = (0, 0.6, 0.2), geom_local_offset = (0, 0, 0.03)
     # World pos ≈ (0, 0.6, 0.23)
-    var result = gjk_epa_fields[DType.float64, NMV](
+    var result = gjk_epa[DType.float64, NMV](
         GEOM_MESH,
         0.0, 0.6, 0.23,  # mesh world pos
         0.0, 0.0, 0.0, 1.0,  # identity quat
@@ -176,7 +176,7 @@ def test_mesh_box_touching() raises:
 
     var mv = _mv_tensor(mesh_verts)
     # Mesh at z=0.02 (bottom at z=0.0 = box top)
-    var result = gjk_epa_fields[DType.float64, NMV](
+    var result = gjk_epa[DType.float64, NMV](
         GEOM_MESH,
         0.0, 0.0, 0.02,  # mesh at z=0.02
         0.0, 0.0, 0.0, 1.0,
@@ -214,7 +214,7 @@ def test_mesh_box_rotated() raises:
     var mv = _mv_tensor(mesh_verts)
     # Mesh at z=0.23 with 90° rotation (quat = [0.707, 0, 0, 0.707])
     var sq2 = 0.7071067811865476
-    var result = gjk_epa_fields[DType.float64, NMV](
+    var result = gjk_epa[DType.float64, NMV](
         GEOM_MESH,
         0.0, 0.6, 0.23,
         sq2, 0.0, 0.0, sq2,  # 90° rotation around X
@@ -251,7 +251,7 @@ def test_mesh_box_asymmetric() raises:
 
     var mv = _mv_tensor(mesh_verts)
     # Very large box (table: 1.4m × 0.8m × 0.92m)
-    var result = gjk_epa_fields[DType.float64, NMV](
+    var result = gjk_epa[DType.float64, NMV](
         GEOM_MESH,
         0.0, 0.6, 0.23,
         0.0, 0.0, 0.0, 1.0,
@@ -296,7 +296,7 @@ def test_mesh_box_actual_sawyer() raises:
     # But _geom_world_pos also composes quaternions...
     # Let me use the approximate world position
     var sq2 = 0.7071067811865476
-    var result = gjk_epa_fields[DType.float64, NMV](
+    var result = gjk_epa[DType.float64, NMV](
         GEOM_MESH,
         0.0, 0.57, 0.2,  # approximate world pos after rotation
         sq2, 0.0, 0.0, sq2,  # body 23 quat: 90° around X
@@ -413,7 +413,7 @@ def test_exact_sawyer_runtime() raises:
     print("  mesh world pos:", wx, wy, wz)
     print("  mesh world quat:", bqx, bqy, bqz, bqw)
 
-    var result = gjk_epa_fields[DType.float64, NMV](
+    var result = gjk_epa[DType.float64, NMV](
         GEOM_MESH,
         wx, wy, wz,
         bqx, bqy, bqz, bqw,

@@ -7,7 +7,7 @@ Per-field ports of `build_and_solve_equality_gpu`
 they call (dynamics/jacobian.mojo: `compute_weld_jacobian_row_gpu`,
 `compute_angular_jacobian_row_gpu`) — arithmetic verbatim. Both are per-env
 functions called by the fields PGS contact solve
-(constraints/contact_solve_fields.mojo) at the exact legacy position: after
+(constraints/contact_solve.mojo) at the exact legacy position: after
 the joint-limits pass, before the friction phase, with the legacy
 PGS_ITERATIONS iteration count.
 
@@ -143,7 +143,7 @@ def _legacy_invw_read[
 
 
 @always_inline
-def _weld_jacobian_row_fields[
+def _weld_jacobian_row[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -291,7 +291,7 @@ def _weld_jacobian_row_fields[
 
 
 @always_inline
-def _angular_jacobian_row_eq_fields[
+def _angular_jacobian_row_eq[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -319,7 +319,7 @@ def _angular_jacobian_row_eq_fields[
 ):
     """Angular-only Jacobian row (verbatim from
     compute_angular_jacobian_row_gpu; duplicate of
-    contact_solve_fields._angular_jacobian_row_fields — that module imports
+    contact_solve._angular_jacobian_row — that module imports
     THIS one, so importing back would be circular).
 
     J[dof] = cdof_angular[dof] . dir (bilateral: body_a - body_b).
@@ -406,7 +406,7 @@ def _angular_jacobian_row_eq_fields[
 
 
 @always_inline
-def _equality_env_fields[
+def _equality_env[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -635,7 +635,7 @@ def _equality_env_fields[
             # Each body's Jacobian uses its OWN anchor point (MuJoCo convention)
             for i in range(V_SIZE):
                 J_row[i] = 0
-            _weld_jacobian_row_fields[
+            _weld_jacobian_row[
                 DTYPE, NV, NBODY, NJOINT, V_SIZE, BATCH
             ](
                 env,
@@ -810,7 +810,7 @@ def _equality_env_fields[
                 # Angular Jacobian
                 for i in range(V_SIZE):
                     J_row[i] = 0
-                _angular_jacobian_row_eq_fields[
+                _angular_jacobian_row_eq[
                     DTYPE, NV, NBODY, NJOINT, V_SIZE, BATCH
                 ](
                     env,
@@ -958,7 +958,7 @@ def _equality_env_fields[
 
 
 @always_inline
-def _tendon_env_fields[
+def _tendon_env[
     DTYPE: DType,
     NQ: Int,
     NV: Int,

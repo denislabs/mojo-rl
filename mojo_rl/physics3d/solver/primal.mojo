@@ -1,7 +1,7 @@
 """Shared primal-solver fragments over InlineArray working sets (Stage-S
 refactor). These are the reusable leaf computations extracted VERBATIM from
-the inlined fields-Newton kernel (`solver/newton_solve_fields.mojo`) so the
-CG primal solver (`cg_solve_fields`) can reuse them instead of copying the
+the inlined fields-Newton kernel (`solver/newton_solve.mojo`) so the
+CG primal solver (`cg_solve`) can reuse them instead of copying the
 Newton kernel body.
 
 All helpers are `@always_inline` and operate on the per-env InlineArray

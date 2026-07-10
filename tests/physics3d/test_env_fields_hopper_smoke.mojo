@@ -1,4 +1,4 @@
-"""P5 smoke: SAC trains against Phyics3dEnvFields[Hopper] — a CONTACT
+"""P5 smoke: SAC trains against Phyics3dEnv[Hopper] — a CONTACT
 locomotion env entirely on the fields path (per-stage RK4 contact + limit
 solving). Integration smoke, not convergence: 2k CPU steps, asserts the
 loop completes, episodes terminate via the health check, and rewards flow
@@ -12,10 +12,10 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_env_fields import Phyics3dEnvFields
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.envs.hopper import HopperModel, HopperConfig
 
-comptime EnvT = Phyics3dEnvFields[
+comptime EnvT = Phyics3dEnv[
     HopperModel, HopperConfig, DT, TERMINATE_ON_UNHEALTHY=True
 ]
 comptime OBS_DIM = EnvT.OBS_DIM  # 11
@@ -25,7 +25,7 @@ comptime NUM_STEPS = 2_000
 
 def main() raises:
     seed(11)
-    print("--- SAC smoke on Phyics3dEnvFields[Hopper] (contacts, CPU) ---")
+    print("--- SAC smoke on Phyics3dEnv[Hopper] (contacts, CPU) ---")
     var ctx = DeviceContext()
     var env = EnvT(ctx)
     var agent = SAC["cpu", OBS_DIM, ACT_DIM, 32, 10_000, 64](

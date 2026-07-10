@@ -4,7 +4,7 @@ Port of legacy `dynamics/mass_matrix.compute_body_invweight0` (MuJoCo
 `mj_setConst`) onto the per-field tensors — a ONE-TIME CPU build step run by the
 fields model build (`init_fields`), replacing the CPU-`Model` invweight0 path.
 
-Given a `DataFields` already at the reference pose (`d.qpos` set), it runs the
+Given a `Data` already at the reference pose (`d.qpos` set), it runs the
 fields FK → subtree_com → cdof → CRBA(+armature) → LDL → M^-1 pipeline, then:
   body_invweight0[2i]   = avg(A[0,0], A[1,1], A[2,2])   (translation)
   body_invweight0[2i+1] = avg(A[3,3], A[4,4], A[5,5])   (rotation)
@@ -16,20 +16,20 @@ float-tolerance-equal to the legacy routine (gated in test_invweight0_fields).
 CPU-only (build-time); no GPU kernels needed.
 """
 
-from mojo_rl.physics3d.fields import DataFields, ModelFields, DynamicsScratch
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
 )
-from mojo_rl.physics3d.dynamics.subtree_com_fields import (
-    compute_subtree_com_fields,
+from mojo_rl.physics3d.dynamics.subtree_com import (
+    compute_subtree_com,
 )
-from mojo_rl.physics3d.dynamics.cdof_fields import compute_cdof_fields
-from mojo_rl.physics3d.dynamics.mass_matrix_fields import (
-    compute_mass_matrix_fields,
+from mojo_rl.physics3d.dynamics.cdof import compute_cdof
+from mojo_rl.physics3d.dynamics.mass_matrix import (
+    compute_mass_matrix,
 )
-from mojo_rl.physics3d.dynamics.ldl_fields import (
-    ldl_factor_fields,
-    ldl_solve_fields,
+from mojo_rl.physics3d.dynamics.ldl import (
+    ldl_factor,
+    ldl_solve,
 )
 from mojo_rl.physics3d.joint_types import JNT_FREE, JNT_BALL
 from mojo_rl.physics3d.gpu.constants import (
@@ -44,7 +44,7 @@ from mojo_rl.physics3d.gpu.constants import (
 )
 
 
-def compute_invweight0_fields[
+def compute_invweight0[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -58,8 +58,8 @@ def compute_invweight0_fields[
     NEXCLUDE: Int = 0,
     NMESH_VERTS: Int = 0,
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
-    mut mf: ModelFields[
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    mut mf: Model[
         DTYPE, NV, NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE, NEXCLUDE,
         NMESH_VERTS,
     ],
@@ -68,19 +68,19 @@ def compute_invweight0_fields[
     """Compute mf.body_invweight0 / mf.dof_invweight0 from `d` (at the reference
     pose) — see module docstring. Build-time, single-env (BATCH=1)."""
     # ── fields pipeline: FK -> subtree_com -> cdof -> CRBA -> +armature -> LDL -> M^-1
-    forward_kinematics_fields[
+    forward_kinematics[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
         NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1,
     ](d, mf, None)
-    compute_subtree_com_fields[
+    compute_subtree_com[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
         NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1,
     ](d, mf, None)
-    compute_cdof_fields[
+    compute_cdof[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
         NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1,
     ](d, mf, sc, None)
-    compute_mass_matrix_fields[
+    compute_mass_matrix[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
         NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1,
     ](d, mf, sc, None)
@@ -99,7 +99,7 @@ def compute_invweight0_fields[
         for dd in range(ndof):
             sc.M.data[(dof_adr + dd) * NV + (dof_adr + dd)] += arm
 
-    ldl_factor_fields["cpu", DTYPE, NV, NBODY, 1](sc)
+    ldl_factor["cpu", DTYPE, NV, NBODY, 1](sc)
 
     # ── dof->body map (matches legacy :461-476) ──────────────────────────────
     var dof_body = List[Int](length=NV, fill=0)
@@ -154,7 +154,7 @@ def compute_invweight0_fields[
                 var lin_z = sc.cdof.data[dd * 6 + 5]
 
                 # Fields cdof.lin is referenced at subtree_com[rootid[b]]
-                # (MuJoCo convention, cdof_fields.mojo:108), so shift the CoM
+                # (MuJoCo convention, cdof.mojo:108), so shift the CoM
                 # Jacobian from THAT point — not the body CoM.
                 var rb = Int(
                     mf.bodies.data[b * MODEL_BODY_SIZE + BODY_IDX_ROOTID]
@@ -180,7 +180,7 @@ def compute_invweight0_fields[
             # legacy compute_body_invweight0 arithmetic bit-for-bit).
             for q in range(NV):
                 sc.fnet.data[q] = J_row[q]
-            ldl_solve_fields["cpu", DTYPE, NV, NBODY, 1](sc)
+            ldl_solve["cpu", DTYPE, NV, NBODY, 1](sc)
             var dot_val = Scalar[DTYPE](0)
             for q in range(NV):
                 dot_val += J_row[q] * sc.qacc_ws.data[q]
@@ -200,5 +200,5 @@ def compute_invweight0_fields[
     for dd in range(NV):
         for q in range(NV):
             sc.fnet.data[q] = Scalar[DTYPE](1) if q == dd else Scalar[DTYPE](0)
-        ldl_solve_fields["cpu", DTYPE, NV, NBODY, 1](sc)
+        ldl_solve["cpu", DTYPE, NV, NBODY, 1](sc)
         mf.dof_invweight0.data[dd] = sc.qacc_ws.data[dd]

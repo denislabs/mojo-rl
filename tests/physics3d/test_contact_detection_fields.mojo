@@ -21,12 +21,12 @@ from std.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
+from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
 )
-from mojo_rl.physics3d.collision.contact_detection_fields import (
-    detect_contacts_fields,
+from mojo_rl.physics3d.collision.contact_detection import (
+    detect_contacts,
 )
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
@@ -59,11 +59,11 @@ def main() raises:
     print("--- contact detection fields GOLDEN gate: walker2d BATCH=", BATCH)
     var ctx = DeviceContext()
 
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Poses: env0 slight floor penetration; env1 heavy penetration + bent legs.
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     var qcfg = List[List[Float64]]()
     var q0 = List[Float64](length=NQ, fill=0.0)
     q0[1] = 1.18  # rootz slightly below standing -> feet penetrate
@@ -81,10 +81,10 @@ def main() raises:
     d.upload_all(ctx)
 
     # Fields GPU: FK + detection.
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
-    detect_contacts_fields[
+    detect_contacts[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
     d.contacts.download(ctx)
@@ -124,14 +124,14 @@ def main() raises:
         print("  PASS: fields-GPU matches golden fingerprint")
 
     # --- independent CPU oracle: fields-CPU == fields-GPU (count + records) ---
-    var dc = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             dc.qpos.data[e * NQ + i] = Scalar[DTYPE](qcfg[e][i])
-    forward_kinematics_fields[
+    forward_kinematics[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](dc, mf)
-    detect_contacts_fields[
+    detect_contacts[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](dc, mf)
     var worst = Float64(0)

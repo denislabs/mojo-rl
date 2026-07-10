@@ -1,5 +1,5 @@
 """Stage-I gate: full-implicit integrator over fields tensors
-(ImplicitIntegratorFields) — fields self-consistency smoke.
+(ImplicitIntegrator) — fields self-consistency smoke.
 
 Runs N contact-free passive steps (qfrc=0: gravity + Coriolis + damping only)
 on a FREE-FLIGHT Walker2D (rootz high → no floor contact) with nonzero qvel
@@ -17,9 +17,9 @@ from std.math import abs
 from std.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
-from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.integrator.implicit_fields import (
-    ImplicitIntegratorFields,
+from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.integrator.implicit import (
+    ImplicitIntegrator,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 
@@ -63,20 +63,20 @@ def _init_qvel(i: Int) -> Scalar[DT]:
 
 
 def main() raises:
-    print("=== Stage-I ImplicitIntegratorFields self-consistency: Walker2D ===")
+    print("=== Stage-I ImplicitIntegrator self-consistency: Walker2D ===")
     var ctx = DeviceContext()
 
-    var mf = ModelFields[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
     Walker2dModel.init_fields[DT, 0](ctx, mf)
 
-    var d = DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for i in range(NQ):
         d.qpos.data[i] = _init_qpos(i)
     for i in range(NV):
         d.qvel.data[i] = _init_qvel(i)
     # qfrc stays 0 → pure passive dynamics.
 
-    var integ = ImplicitIntegratorFields[
+    var integ = ImplicitIntegrator[
         DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE,
         BATCH, SOLVER="pgs",
     ]()
@@ -100,7 +100,7 @@ def main() raises:
     for i in range(NV):
         vcpu[i] = d.qvel.data[i]
 
-    var dg = DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dg = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for i in range(NQ):
         dg.qpos.data[i] = _init_qpos(i)
     for i in range(NV):

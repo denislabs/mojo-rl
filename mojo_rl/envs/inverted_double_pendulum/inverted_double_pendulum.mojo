@@ -1,14 +1,14 @@
-"""InvertedDoublePendulum Environment - thin wrapper over Phyics3dEnvFields[InvertedDoublePendulumModel, InvertedDoublePendulumConfig]."""
+"""InvertedDoublePendulum Environment - thin wrapper over Phyics3dEnv[InvertedDoublePendulumModel, InvertedDoublePendulumConfig]."""
 
 from .inverted_double_pendulum_xml import InvertedDoublePendulumModel
 from .inverted_double_pendulum_config import InvertedDoublePendulumConfig
-from ..phyics3d_env_fields import Phyics3dEnvFields
+from ..phyics3d_env import Phyics3dEnv
 
 
 comptime InvertedDoublePendulum[
     DTYPE: DType = DType.float64,
     TERMINATE_ON_UNHEALTHY: Bool = True,
-] = Phyics3dEnvFields[
+] = Phyics3dEnv[
     InvertedDoublePendulumModel,
     InvertedDoublePendulumConfig,
     DTYPE,

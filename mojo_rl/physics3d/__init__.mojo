@@ -1,7 +1,7 @@
 """Physics3D - MuJoCo-inspired generalized coordinates physics engine.
 
 Constraint-based contact solving with joint-space dynamics.
-ModelFields/DataFields (per-field tensors) + the fields integrators/solvers.
+Model/Data (per-field tensors) + the fields integrators/solvers.
 """
 
 from .constants import TILE, TPB, PhysicsConstants
@@ -11,7 +11,7 @@ from .constants import GEOM_PLANE, GEOM_SPHERE
 from .types import _max_one, ConeType
 from .joint_types import JointDef, JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
 
-# Kinematics (fields FK lives in kinematics/forward_kinematics_fields)
+# Kinematics (fields FK lives in kinematics/forward_kinematics)
 from .kinematics.quat_math import (
     quat_mul,
     quat_conjugate,

@@ -1,8 +1,8 @@
 """Physics3D shared type leaves.
 
 The legacy struct-of-Lists `Model`/`Data` (MuJoCo-style CPU engine state) were
-deleted at the G4 fields sunset — the engine state is `fields.ModelFields` /
-`fields.DataFields` (packed per-record tensors). What remains here are the
+deleted at the G4 fields sunset — the engine state is `fields.Model` /
+`fields.Data` (packed per-record tensors). What remains here are the
 tiny shared leaves: `_max_one`, the equality-constraint type codes, and
 `ConeType`.
 """

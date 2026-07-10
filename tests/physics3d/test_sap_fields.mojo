@@ -3,21 +3,21 @@
 Part A — Humanoid (NGEOM=18 >= SAP_THRESHOLD=16, floor plane + 17 body
 geoms, MAX_CONTACTS=50), BATCH=2 with penetrating poses (feet touching and
 deep crouch): legacy FK -> detect_contacts_sap_gpu on the flat slab vs
-fields FK -> detect_contacts_sap_fields on DataFields/ModelFields. Contact
+fields FK -> detect_contacts_sap on Data/Model. Contact
 count AND every populated contact record must be BIT-EXACT. Cross-check:
-fields-SAP vs fields-O(N^2) (detect_contacts_fields) as SETS (emission
+fields-SAP vs fields-O(N^2) (detect_contacts) as SETS (emission
 order differs — SAP sweeps sorted by aabb_min_x, and conventions differ:
 SAP plane contacts write BODY_B=-1 vs 0, no INCLUDEMARGIN slot), matched
 by unordered body pair + position/dist within 1e-4. Auto dispatcher must
-route humanoid to SAP (bit-equal to detect_contacts_sap_fields).
+route humanoid to SAP (bit-equal to detect_contacts_sap).
 
 Part B — SawyerReach (robot meshes + block.stl, NEXCLUDE==0), BATCH=2:
 env1 teleports the obj cylinder into the eGripperBase MESH hull so a
 GJK/EPA mesh contact appears through the SAP path. Legacy-SAP vs
 fields-SAP BIT-EXACT + non-vacuity (mesh-body/obj-body contact present).
 
-Part C — Walker2d (NGEOM=8 < 16): detect_contacts_auto_fields must route
-to detect_contacts_fields, results bit-equal.
+Part C — Walker2d (NGEOM=8 < 16): detect_contacts_auto must route
+to detect_contacts, results bit-equal.
 
 Run: pixi run -e apple mojo run -I . tests/physics3d/test_sap_fields.mojo
 """
@@ -28,17 +28,17 @@ from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
-from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
+from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
 )
-from mojo_rl.physics3d.collision.broadphase_sap_fields import (
+from mojo_rl.physics3d.collision.broadphase_sap import (
     SAP_THRESHOLD,
-    detect_contacts_sap_fields,
-    detect_contacts_auto_fields,
+    detect_contacts_sap,
+    detect_contacts_auto,
 )
-from mojo_rl.physics3d.collision.contact_detection_fields import (
-    detect_contacts_fields,
+from mojo_rl.physics3d.collision.contact_detection import (
+    detect_contacts,
 )
 
 from mojo_rl.physics3d.gpu.constants import (
@@ -140,24 +140,24 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     print("  humanoid NGEOM=", NGEOM_H, " SAP_THRESHOLD=", SAP_THRESHOLD)
     comptime assert NGEOM_H >= SAP_THRESHOLD, "humanoid must route to SAP"
 
-    var mf = ModelFields[
+    var mf = Model[
         DTYPE, NV_H, NBODY_H, NJOINT_H, NGEOM_H, NEQ_H, NTD_H, NSITE_H,
         NEXCL_H, 0,
     ]()
     HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var d = DataFields[DTYPE, NQ_H, NV_H, NBODY_H, MC_H, NSITE_H, BATCH]()
+    var d = Data[DTYPE, NQ_H, NV_H, NBODY_H, MC_H, NSITE_H, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_H):
             d.qpos.data[e * NQ_H + i] = _humanoid_qpos(e, i)
     d.upload_all(ctx)
 
     # Fields: FK + SAP detection.
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
         NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
     ](d, mf, ctx)
-    detect_contacts_sap_fields[
+    detect_contacts_sap[
         "gpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
         NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
     ](d, mf, ctx)
@@ -214,15 +214,15 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
         raise Error("no sweep-emitted body-body contact — sweep leg vacuous")
 
     # Fields CPU vs fields GPU.
-    var dc = DataFields[DTYPE, NQ_H, NV_H, NBODY_H, MC_H, NSITE_H, BATCH]()
+    var dc = Data[DTYPE, NQ_H, NV_H, NBODY_H, MC_H, NSITE_H, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_H):
             dc.qpos.data[e * NQ_H + i] = _humanoid_qpos(e, i)
-    forward_kinematics_fields[
+    forward_kinematics[
         "cpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
         NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
     ](dc, mf)
-    detect_contacts_sap_fields[
+    detect_contacts_sap[
         "cpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
         NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
     ](dc, mf)
@@ -264,16 +264,16 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     # world normalized to 0) + pos/dist within 1e-4. Same-type body-body
     # pairs may be visited with operands swapped by the sweep (pos then
     # differs at float rounding level), hence the tolerance.
-    var dn = DataFields[DTYPE, NQ_H, NV_H, NBODY_H, MC_H, NSITE_H, BATCH]()
+    var dn = Data[DTYPE, NQ_H, NV_H, NBODY_H, MC_H, NSITE_H, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_H):
             dn.qpos.data[e * NQ_H + i] = _humanoid_qpos(e, i)
     dn.upload_all(ctx)
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
         NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
     ](dn, mf, ctx)
-    detect_contacts_fields[
+    detect_contacts[
         "gpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
         NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
     ](dn, mf, ctx)
@@ -335,16 +335,16 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     print("  PASS: fields-SAP == fields-O(N^2) as contact SETS")
 
     # ── Auto dispatcher: humanoid must route to SAP (bit-equal).
-    var da = DataFields[DTYPE, NQ_H, NV_H, NBODY_H, MC_H, NSITE_H, BATCH]()
+    var da = Data[DTYPE, NQ_H, NV_H, NBODY_H, MC_H, NSITE_H, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_H):
             da.qpos.data[e * NQ_H + i] = _humanoid_qpos(e, i)
     da.upload_all(ctx)
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
         NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
     ](da, mf, ctx)
-    detect_contacts_auto_fields[
+    detect_contacts_auto[
         "gpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
         NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
     ](da, mf, ctx)
@@ -377,7 +377,7 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
     print("  sawyer NGEOM=", NGEOM_S)
 
     # Fields-native model build (STL hulls, NMESHV_S-padded — Stage B).
-    var mf = ModelFields[
+    var mf = Model[
         DTYPE, NV_S, NBODY_S, NJOINT_S, NGEOM_S, NEQ_S, NTD_S, NSITE_S,
         0, NMESHV_S,
     ]()
@@ -432,18 +432,18 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
         q[15] = 0.0
         qcfg.append(q^)
 
-    var d = DataFields[DTYPE, NQ_S, NV_S, NBODY_S, MC_S, NSITE_S, BATCH]()
+    var d = Data[DTYPE, NQ_S, NV_S, NBODY_S, MC_S, NSITE_S, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_S):
             d.qpos.data[e * NQ_S + i] = Scalar[DTYPE](qcfg[e][i])
     d.upload_all(ctx)
 
     # Fields: FK + SAP detection.
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DTYPE, NQ_S, NV_S, NBODY_S, NJOINT_S, MC_S, NGEOM_S,
         NEQ_S, NTD_S, NSITE_S, 0, NMESHV_S, BATCH,
     ](d, mf, ctx)
-    detect_contacts_sap_fields[
+    detect_contacts_sap[
         "gpu", DTYPE, NQ_S, NV_S, NBODY_S, NJOINT_S, MC_S, NGEOM_S,
         NEQ_S, NTD_S, NSITE_S, 0, NMESHV_S, BATCH,
     ](d, mf, ctx)
@@ -516,7 +516,7 @@ def _part_c_walker(ctx: DeviceContext) raises:
     print("  walker2d NGEOM=", NGEOM_W)
     comptime assert NGEOM_W < SAP_THRESHOLD, "walker2d must route to O(N^2)"
 
-    var mf = ModelFields[DTYPE, NV_W, NBODY_W, NJOINT_W, NGEOM_W, NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0]()
+    var mf = Model[DTYPE, NV_W, NBODY_W, NJOINT_W, NGEOM_W, NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Poses from test_contact_detection_fields (floor penetration).
@@ -532,8 +532,8 @@ def _part_c_walker(ctx: DeviceContext) raises:
     q1[7] = -0.9
     qcfg.append(q1^)
 
-    var d1 = DataFields[DTYPE, NQ_W, NV_W, NBODY_W, MC_W, NSITE_W, BATCH]()
-    var d2 = DataFields[DTYPE, NQ_W, NV_W, NBODY_W, MC_W, NSITE_W, BATCH]()
+    var d1 = Data[DTYPE, NQ_W, NV_W, NBODY_W, MC_W, NSITE_W, BATCH]()
+    var d2 = Data[DTYPE, NQ_W, NV_W, NBODY_W, MC_W, NSITE_W, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_W):
             d1.qpos.data[e * NQ_W + i] = Scalar[DTYPE](qcfg[e][i])
@@ -541,19 +541,19 @@ def _part_c_walker(ctx: DeviceContext) raises:
     d1.upload_all(ctx)
     d2.upload_all(ctx)
 
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DTYPE, NQ_W, NV_W, NBODY_W, NJOINT_W, MC_W, NGEOM_W,
         NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0, BATCH,
     ](d1, mf, ctx)
-    detect_contacts_fields[
+    detect_contacts[
         "gpu", DTYPE, NQ_W, NV_W, NBODY_W, NJOINT_W, MC_W, NGEOM_W,
         NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0, BATCH,
     ](d1, mf, ctx)
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DTYPE, NQ_W, NV_W, NBODY_W, NJOINT_W, MC_W, NGEOM_W,
         NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0, BATCH,
     ](d2, mf, ctx)
-    detect_contacts_auto_fields[
+    detect_contacts_auto[
         "gpu", DTYPE, NQ_W, NV_W, NBODY_W, NJOINT_W, MC_W, NGEOM_W,
         NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0, BATCH,
     ](d2, mf, ctx)
@@ -571,7 +571,7 @@ def _part_c_walker(ctx: DeviceContext) raises:
         )
         print("  env", e, ": ncon direct=", nc_1, " auto=", nc_2)
         if nc_1 != nc_2:
-            raise Error("auto(walker2d) != detect_contacts_fields count")
+            raise Error("auto(walker2d) != detect_contacts count")
         if nc_1 == 0:
             raise Error("expected contacts in this pose — gate is vacuous")
         for c in range(nc_1):
@@ -583,7 +583,7 @@ def _part_c_walker(ctx: DeviceContext) raises:
                     e * MC_W * CONTACT_SIZE + c * CONTACT_SIZE + k
                 ]
                 if a != b:
-                    raise Error("auto(walker2d) != detect_contacts_fields")
+                    raise Error("auto(walker2d) != detect_contacts")
     print("  PASS: auto dispatcher routes walker2d to O(N^2), bit-equal")
 
 

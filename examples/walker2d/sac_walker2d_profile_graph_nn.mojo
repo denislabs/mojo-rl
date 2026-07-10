@@ -39,7 +39,7 @@ from mojo_rl.nn.primitives.linear_relu import LinearReLU
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
-from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
 
@@ -59,7 +59,7 @@ comptime N_ENVS = 4
 comptime NUM_STEPS = 50_000
 comptime WARMUP_STEPS = 1_000
 
-comptime BatchedEnvT = Phyics3dBatchedEnvFields[
+comptime BatchedEnvT = Phyics3dBatchedEnv[
     Walker2dModel, Walker2dConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=True
 ]
 comptime ActorNet = StochasticActor[

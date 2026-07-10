@@ -25,12 +25,12 @@ from std.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
-from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
+from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
 )
-from mojo_rl.physics3d.collision.contact_detection_fields import (
-    detect_contacts_fields,
+from mojo_rl.physics3d.collision.contact_detection import (
+    detect_contacts,
 )
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
@@ -70,7 +70,7 @@ def main() raises:
     var ctx = DeviceContext()
 
     # Fields-native model build (loads STL hulls, NMESHV-padded — Stage B).
-    var mf = ModelFields[
+    var mf = Model[
         DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, 0, NMESHV
     ]()
     SawyerReachModel.init_fields[DTYPE, NMESHV](ctx, mf)
@@ -120,18 +120,18 @@ def main() raises:
         q[12] = 1.0
         qcfg.append(q^)
 
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             d.qpos.data[e * NQ + i] = Scalar[DTYPE](qcfg[e][i])
     d.upload_all(ctx)
 
     # Fields GPU: FK + detection.
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
         0, NMESHV, BATCH,
     ](d, mf, ctx)
-    detect_contacts_fields[
+    detect_contacts[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
         0, NMESHV, BATCH,
     ](d, mf, ctx)
@@ -189,14 +189,14 @@ def main() raises:
     print("  PASS: MESH-involved contact present (GJK/EPA fallback)")
 
     # --- fields-CPU vs fields-GPU records (fed GPU FK products) ---
-    var dc = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     d.xpos.download(ctx)
     d.xquat.download(ctx)
     for i in range(BATCH * NBODY * 3):
         dc.xpos.data[i] = d.xpos.data[i]
     for i in range(BATCH * NBODY * 4):
         dc.xquat.data[i] = d.xquat.data[i]
-    detect_contacts_fields[
+    detect_contacts[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
         0, NMESHV, BATCH,
     ](dc, mf)

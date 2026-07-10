@@ -14,11 +14,11 @@ direction as -M⁻¹grad + β·search_old (β via Polak-Ribiere). The contact
 setup (normal + friction precompute), the 3-zone cone force update, and the
 limits/equality/tendon tail are SHARED with the fields-Newton elliptic path,
 so this port reuses the exact same helpers
-(`_precompute_contact_normal_fields` / `_precompute_contact_friction_fields`
-/ `_limits_env_fields` / `_equality_env_fields` / `_tendon_env_fields`) that
+(`_precompute_contact_normal` / `_precompute_contact_friction`
+/ `_limits_env` / `_equality_env` / `_tendon_env`) that
 the golden-validated fields-Newton solve uses.
 
-Structural transformation (same as newton_solve_fields.mojo): the legacy
+Structural transformation (same as newton_solve.mojo): the legacy
 kernel is 2D-threaded (thread_y = contact slot) with barriers; this port
 SERIALIZES it per env. The init + normal-precompute parallel phases become
 `for contact_tid in range(MC)` loops; the friction phase becomes
@@ -39,7 +39,7 @@ Workspace: uses a PREFIX (35*MC + 6*MC*NV) of the PGS-sized `cscratch.solver`
 tensor (81*MC + 12*MC*NV), exactly as the fields-Newton solve does.
 
 ELLIPTIC cone only — the legacy `CGSolver` has no pyramidal path. CONE_TYPE
-is kept in the signature for parity with `solve_newton_fields`; the friction
+is kept in the signature for parity with `solve_newton`; the friction
 precompute is invoked with it (the shared builder branches internally).
 """
 
@@ -51,17 +51,17 @@ from layout import Layout, LayoutTensor
 
 from ..types import _max_one, ConeType
 from .cholesky import chol_factor_inline, chol_solve_inline
-from ..constraints.contact_solve_fields import (
-    _init_common_normal_ws_fields,
-    _precompute_contact_normal_fields,
-    _precompute_contact_friction_fields,
+from ..constraints.contact_solve import (
+    _init_common_normal_ws,
+    _precompute_contact_normal,
+    _precompute_contact_friction,
 )
-from ..constraints.limits_fields import _limits_env_fields
-from ..constraints.equality_tendon_fields import (
-    _equality_env_fields,
-    _tendon_env_fields,
+from ..constraints.limits import _limits_env
+from ..constraints.equality_tendon import (
+    _equality_env,
+    _tendon_env,
 )
-from ..fields import DataFields, ModelFields, DynamicsScratch, ContactScratch
+from ..fields import Data, Model, DynamicsScratch, ContactScratch
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -85,13 +85,13 @@ from ..gpu.constants import (
     MODEL_META_IDX_IMPRATIO,
 )
 
-# One env per block (see newton_solve_fields.mojo:115): the per-env CG solve
+# One env per block (see newton_solve.mojo:115): the per-env CG solve
 # stack-allocates a modest local frame (a handful of V_SIZE/M_SIZE arrays),
 # so one thread per block keeps the local reservation tight.
 comptime CG_TPB: Int = 1
 
 
-def _cg_solve_env_fields[
+def _cg_solve_env[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -167,7 +167,7 @@ def _cg_solve_env_fields[
     comptime M_SIZE = _max_one[NV * NV]()
 
     # Common normal block offsets (row-relative; the legacy `solver_ws_idx`
-    # base is gone — same layout as newton_solve_fields.mojo)
+    # base is gone — same layout as newton_solve.mojo)
     comptime ws_c_dist_idx = 2 * MC
     comptime ws_pos_bias_idx = 11 * MC
     comptime ws_J_n_idx = 15 * MC
@@ -195,7 +195,7 @@ def _cg_solve_env_fields[
 
     # === Initialize workspace (legacy: parallel, one thread per slot) ===
     for contact_tid in range(MC):
-        _init_common_normal_ws_fields[
+        _init_common_normal_ws[
             DTYPE, NV, MAX_CONTACTS, BATCH, SOLVER_WS
         ](env, contact_tid, solver)
         for d in range(NV):
@@ -252,7 +252,7 @@ def _cg_solve_env_fields[
 
     # === PHASE 1: normal precompute (shared with Newton) ===
     for contact_tid in range(MC):
-        _precompute_contact_normal_fields[
+        _precompute_contact_normal[
             DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, BATCH, SOLVER_WS
         ](
             env,
@@ -280,7 +280,7 @@ def _cg_solve_env_fields[
 
     # === PHASE 2: Tangent frame + friction data (shared with Newton) ===
     for contact_tid in range(nc):
-        _precompute_contact_friction_fields[
+        _precompute_contact_friction[
             DTYPE,
             NV,
             NBODY,
@@ -725,13 +725,13 @@ def _cg_solve_env_fields[
 
     # === Post-solve: limits, equality, tendon (shared with Newton elliptic) ===
     comptime SOLVER_ITER_GPU: Int = 50
-    _limits_env_fields[DTYPE, NQ, NV, NJOINT, BATCH, SOLVER_ITER_GPU](
+    _limits_env[DTYPE, NQ, NV, NJOINT, BATCH, SOLVER_ITER_GPU](
         env, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
         qacc_constrained,
     )
 
     comptime if NEQUALITY > 0:
-        _equality_env_fields[
+        _equality_env[
             DTYPE, NV, NBODY, NJOINT, NEQUALITY, NTENDON, NSITE, V_SIZE,
             BATCH, SOLVER_ITER_GPU,
         ](
@@ -741,7 +741,7 @@ def _cg_solve_env_fields[
         )
 
     comptime if NTENDON > 0:
-        _tendon_env_fields[
+        _tendon_env[
             DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
             SOLVER_ITER_GPU,
         ](
@@ -821,7 +821,7 @@ def _cg_solve_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _cg_solve_env_fields[
+    _cg_solve_env[
         DTYPE,
         NQ,
         NV,
@@ -842,7 +842,7 @@ def _cg_solve_fields_kernel[
     )
 
 
-def solve_cg_fields[
+def solve_cg[
     target: StaticString,
     DTYPE: DType,
     NQ: Int,
@@ -859,8 +859,8 @@ def solve_cg_fields[
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     BATCH: Int = 1,
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: ModelFields[
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: Model[
         DTYPE,
         NV,
         NBODY,
@@ -878,7 +878,7 @@ def solve_cg_fields[
 ) raises:
     """Primal CG contact solve into `scratch.qacc_constrained` (+ solved
     forces back into `d.contacts`), both targets, one body. Same signature
-    family as `solve_newton_fields`/`solve_contacts_fields` so callers can
+    family as `solve_newton`/`solve_contacts` so callers can
     swap solvers.
 
     ELLIPTIC cone only. Joint limits, equality constraints and fixed tendons
@@ -931,7 +931,7 @@ def solve_cg_fields[
         var qc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
         var sol_v = cscratch.solver.lt["cpu", L_SOLVER]()
         for e in range(BATCH):
-            _cg_solve_env_fields[
+            _cg_solve_env[
                 DTYPE,
                 NQ,
                 NV,

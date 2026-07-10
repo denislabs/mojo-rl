@@ -6,7 +6,7 @@ GPU successor of `sac_ant_training.mojo`. Mirrors
   * `SAC[target, OBS, ACT, BATCH, CAP, HIDDEN]` — preset facade over the GPU
     `SACTrainer` + the batched off-policy driver. All optimizers, the replay
     buffer, and the SAC train-step pipeline run on-device.
-  * `Phyics3dBatchedEnvFields[AntModel, AntConfig, N_ENVS]` — the physics3d env
+  * `Phyics3dBatchedEnv[AntModel, AntConfig, N_ENVS]` — the physics3d env
     (`GPUContinuousEnv`) into a `BatchedEnv`.
   * `RemoteLogger` — streams `env/mean_ret` and `env/ep_count`.
 
@@ -32,7 +32,7 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.ant import AntModel, AntConfig
 
 
@@ -58,7 +58,7 @@ comptime WARMUP_STEPS = 10_000
 comptime PRINT_EVERY = 50_000
 
 
-comptime BatchedEnvT = Phyics3dBatchedEnvFields[
+comptime BatchedEnvT = Phyics3dBatchedEnv[
     AntModel, AntConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=True
 ]
 

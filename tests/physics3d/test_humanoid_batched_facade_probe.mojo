@@ -14,12 +14,12 @@ Run: MODULAR_DEBUG=device-sync-mode pixi run -e nvidia mojo run -I . \
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
 from mojo_rl.envs.humanoid.humanoid_config import HumanoidConfig
 
 comptime N = 2
-comptime E = Phyics3dBatchedEnvFields[
+comptime E = Phyics3dBatchedEnv[
     HumanoidModel, HumanoidConfig, N, TERMINATE_ON_UNHEALTHY=True
 ]
 

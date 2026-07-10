@@ -1,4 +1,4 @@
-"""Driver smoke: SAC (GPU) trains against Phyics3dBatchedEnvFields[Hopper]
+"""Driver smoke: SAC (GPU) trains against Phyics3dBatchedEnv[Hopper]
 through the real batched off-policy driver (`run_offpolicy_train_batched`
 via the `SAC[...]` facade) — the NVIDIA-relevant training path, with the
 physics entirely on the per-field tensor GPU path.
@@ -16,11 +16,11 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.hopper import HopperModel, HopperConfig
 
 comptime N_ENVS = 4
-comptime EnvT = Phyics3dBatchedEnvFields[
+comptime EnvT = Phyics3dBatchedEnv[
     HopperModel, HopperConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=True
 ]
 comptime OBS_DIM = EnvT.OBS_DIM  # 11
@@ -30,7 +30,7 @@ comptime NUM_STEPS = 1_500
 
 def main() raises:
     seed(11)
-    print("--- SAC (GPU) smoke on Phyics3dBatchedEnvFields[Hopper] ---")
+    print("--- SAC (GPU) smoke on Phyics3dBatchedEnv[Hopper] ---")
     with DeviceContext() as ctx:
         var agent = SAC["gpu", OBS_DIM, ACT_DIM, 64, 20_000, 64](
             ctx=ctx,

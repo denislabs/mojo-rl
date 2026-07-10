@@ -30,7 +30,7 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_rotate
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import DataFields, ModelFields, DynamicsScratch
+from ..fields import Data, Model, DynamicsScratch
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -51,7 +51,7 @@ from ..gpu.constants import (
 comptime FLUID_TPB: Int = 64
 
 
-def _fluid_forces_env_fields[
+def _fluid_forces_env[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -287,13 +287,13 @@ def _fluid_forces_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _fluid_forces_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+    _fluid_forces_env[DTYPE, NV, NBODY, NJOINT, BATCH](
         env, xvel, xangvel, xquat, xipos, subtree_com, bodies, joints, mmeta,
         cdof, fnet,
     )
 
 
-def compute_fluid_forces_fields[
+def compute_fluid_forces[
     target: StaticString,
     DTYPE: DType,
     NQ: Int,
@@ -309,8 +309,8 @@ def compute_fluid_forces_fields[
     NMESH_VERTS: Int = 0,
     BATCH: Int = 1,
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: ModelFields[
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: Model[
         DTYPE,
         NV,
         NBODY,
@@ -349,7 +349,7 @@ def compute_fluid_forces_fields[
         var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
         var fnet_v = scratch.fnet.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _fluid_forces_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+            _fluid_forces_env[DTYPE, NV, NBODY, NJOINT, BATCH](
                 e, xvel_v, xangvel_v, xquat_v, xipos_v, stcom_v, bodies_v,
                 joints_v, meta_v, cdof_v, fnet_v,
             )

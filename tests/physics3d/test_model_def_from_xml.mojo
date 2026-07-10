@@ -22,7 +22,7 @@ from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser import parse_xml_full
 from mojo_rl.physics3d.parser.xml_parser import parse_xml_model_data
 from std.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import DataFields, ModelFields
+from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_POS_Z,
@@ -179,7 +179,7 @@ def test_model_def_from_xml() raises:
     # =========================================================================
     print("=== fields model build ===")
     var ctx = DeviceContext()
-    var mf = ModelFields[
+    var mf = Model[
         DType.float64, pm.NV, pm.NBODY, pm.NJOINT, pm.NGEOM,
         XmlModel.MAX_EQUALITY, XmlModel.MAX_TENDON, XmlModel.NSITE,
         XmlModel.NEXCLUDE, 0,
@@ -202,7 +202,7 @@ def test_model_def_from_xml() raises:
     # Step 5: reset_data + extract_obs (fields-native hooks; G2)
     # =========================================================================
     print("=== reset_data + extract_obs ===")
-    var d = DataFields[DType.float64, pm.NQ, pm.NV, pm.NBODY, 10, 0, 1]()
+    var d = Data[DType.float64, pm.NQ, pm.NV, pm.NBODY, 10, 0, 1]()
     XmlModel.reset_data[DType.float64](d)
     print("reset_data succeeded (qpos=0, qvel=0)")
 

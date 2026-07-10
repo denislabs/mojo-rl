@@ -5,7 +5,7 @@ Why this gate exists: the legacy joint-limit builder
 (detect_and_solve_limits_gpu, constraints/constraint_builder_gpu.mojo:984)
 computes its dof_invweight0 model offset with NTENDON/NSITE defaulted to 0,
 so on models whose slab carries tendon records (Humanoid MAX_TENDON=2) it
-reads UNRELATED slots. The fields port (constraints/limits_fields.mojo)
+reads UNRELATED slots. The fields port (constraints/limits.mojo)
 reads the correct per-field tensor. Decision: fix-forward — the fields
 behavior is declared intended, and this gate validates it against MuJoCo
 (the ground truth) instead of against the legacy misread.
@@ -28,7 +28,7 @@ the test pose, so the tendon rows start at zero residual and stay small —
 they must be present (that is what shifts the legacy limit builder's
 misread) but the row under test is the elbow LIMIT.
 
-Both sides step RK4 (fields RK4IntegratorFields[SOLVER="newton"], CPU,
+Both sides step RK4 (fields RK4Integrator[SOLVER="newton"], CPU,
 BATCH=1, matching the legacy humanoid gate's RK4+Newton, vs mujoco.mj_step
 with opt.integrator=1, solver=2 Newton, cone=1 — the exact option set of
 tests/physics3d/test_humanoid_full_step_vs_mujoco.mojo), and qpos/qvel are
@@ -54,8 +54,8 @@ from std.math import abs
 from std.collections import InlineArray
 from std.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
+from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_TENDON_SIZE,
@@ -118,9 +118,9 @@ comptime QVEL_ABS_TOL: Float64 = 1e-2
 comptime QVEL_REL_TOL: Float64 = 1e-2
 
 
-def _build_model_fields(
+def _build_model(
     ctx: DeviceContext,
-) raises -> ModelFields[
+) raises -> Model[
     DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
 ]:
     """Offset-free init_fields build, then inject meta NTENDON=2 + the two
@@ -129,7 +129,7 @@ def _build_model_fields(
     test_equality_tendon_fields Part A does — the parser never emits tendon
     records, so injection is the only way any model carries them. No slab,
     no load_from_slab."""
-    var mf = ModelFields[
+    var mf = Model[
         DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
     ]()
     HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
@@ -166,7 +166,7 @@ def _build_model_fields(
 
 
 def _find_elbow_joint(
-    mf: ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0],
+    mf: Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0],
 ) raises -> Tuple[Int, Int]:
     """Locate the right-elbow joint record (qpos_adr == 20) and return
     (joint index, dof_adr); assert its range is the expected [-90, 50] deg."""
@@ -227,7 +227,7 @@ def _compare_vs_mujoco(num_steps: Int) raises:
         "steps ---",
     )
     var ctx = DeviceContext()
-    var mf = _build_model_fields(ctx)
+    var mf = _build_model(ctx)
     var elbow = _find_elbow_joint(mf)
     var elbow_dof = elbow[1]
 
@@ -272,12 +272,12 @@ def _compare_vs_mujoco(num_steps: Int) raises:
     )
 
     # ── Fields path (f64, CPU, BATCH=1, RK4 + Newton like the legacy gate).
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]()
+    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):
         d.qvel.data[i] = Scalar[DTYPE](qvel_init[i])
-    var integ = RK4IntegratorFields[
+    var integ = RK4Integrator[
         DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
         CONE,
         BATCH=1,
@@ -389,8 +389,8 @@ def test_limit_off_rerun_differs() raises:
     proves the limit row genuinely shaped the gated trajectory."""
     print("--- non-vacuity: elbow limit on vs off, 1 fields step ---")
     var ctx = DeviceContext()
-    var mf = _build_model_fields(ctx)
-    var mf_off = _build_model_fields(ctx)
+    var mf = _build_model(ctx)
+    var mf_off = _build_model(ctx)
     var elbow = _find_elbow_joint(mf)
     var elbow_j = elbow[0]
     mf_off.joints.data[
@@ -399,8 +399,8 @@ def test_limit_off_rerun_differs() raises:
 
     var qpos_init = _pose_qpos()
     var qvel_init = _pose_qvel()
-    var d_on = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]()
-    var d_off = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]()
+    var d_on = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]()
+    var d_off = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]()
     for i in range(NQ):
         d_on.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
         d_off.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
@@ -409,13 +409,13 @@ def test_limit_off_rerun_differs() raises:
         d_off.qvel.data[i] = Scalar[DTYPE](qvel_init[i])
         d_on.qfrc.data[i] = Scalar[DTYPE](0)
         d_off.qfrc.data[i] = Scalar[DTYPE](0)
-    var integ_on = RK4IntegratorFields[
+    var integ_on = RK4Integrator[
         DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
         CONE,
         BATCH=1,
         SOLVER="newton",
     ]()
-    var integ_off = RK4IntegratorFields[
+    var integ_off = RK4Integrator[
         DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
         CONE,
         BATCH=1,

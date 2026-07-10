@@ -13,14 +13,14 @@ Run: MODULAR_DEBUG=device-sync-mode pixi run -e nvidia mojo run -I . \
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
+from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
 )
-from mojo_rl.physics3d.collision.broadphase_sap_fields import (
-    detect_contacts_auto_fields,
+from mojo_rl.physics3d.collision.broadphase_sap import (
+    detect_contacts_auto,
 )
-from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
+from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
 )
@@ -49,12 +49,12 @@ def main() raises:
     )
     var ctx = DeviceContext()
 
-    var mf = ModelFields[
+    var mf = Model[
         DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
     ]()
     HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     # LOW pose so the humanoid is in ground contact — exercises SAP + the
     # Newton contact solve (the path a falling humanoid hits during training).
     for e in range(BATCH):
@@ -62,16 +62,16 @@ def main() raises:
         d.qpos.data[e * NQ + 3] = Scalar[DTYPE](1.0)  # quat w
     d.upload_all(ctx)
 
-    print("[1] forward_kinematics_fields PARALLEL=True (_mt) ...")
-    forward_kinematics_fields[
+    print("[1] forward_kinematics PARALLEL=True (_mt) ...")
+    forward_kinematics[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE,
         NEXCL, 0, BATCH, PARALLEL=True,
     ](d, mf, ctx)
     ctx.synchronize()
     print("    [1] FK _mt ok")
 
-    print("[2] detect_contacts_auto_fields (SAP, NGEOM>=16) ...")
-    detect_contacts_auto_fields[
+    print("[2] detect_contacts_auto (SAP, NGEOM>=16) ...")
+    detect_contacts_auto[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE,
         NEXCL, 0, BATCH,
     ](d, mf, ctx)
@@ -82,7 +82,7 @@ def main() raises:
           d.meta.data[META_IDX_NUM_CONTACTS])
 
     print("[3] RK4+Newton+treewalk full step (production config) ...")
-    var integ = RK4IntegratorFields[
+    var integ = RK4Integrator[
         DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
         CONE, BATCH, SOLVER="newton", PARALLEL_GPU=True, CRBA_TREEWALK=True,
     ]()

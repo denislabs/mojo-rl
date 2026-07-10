@@ -4,7 +4,7 @@ Single-source port of the default physics3d observation — `qpos` (with an
 optional leading skip, e.g. hiding rootx) concatenated with `qvel` — which
 is what `ModelDefFromXML.extract_obs` produces on CPU and the generic env
 obs kernel produces on GPU. One formula body, both targets, reading
-`DataFields.qpos/qvel` and writing a caller-owned obs tensor
+`Data.qpos/qvel` and writing a caller-owned obs tensor
 `[BATCH, OBS_DIM]` (OBS_DIM = NQ - OBS_QPOS_SKIP + NV).
 
 Env configs with custom obs (xpos/cvel features etc.) get their own fields
@@ -16,7 +16,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import DataFields
+from mojo_rl.physics3d.fields import Data
 
 comptime OBS_TPB: Int = 64
 
@@ -68,7 +68,7 @@ def _obs_qpos_qvel_kernel[
     )
 
 
-def extract_obs_qpos_qvel_fields[
+def extract_obs_qpos_qvel[
     target: StaticString,
     DTYPE: DType,
     NQ: Int,
@@ -79,7 +79,7 @@ def extract_obs_qpos_qvel_fields[
     OBS_QPOS_SKIP: Int = 0,
     BATCH: Int = 1,
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut obs: TensorImpl[DTYPE],
     ctx: Optional[DeviceContext] = None,
 ) raises:

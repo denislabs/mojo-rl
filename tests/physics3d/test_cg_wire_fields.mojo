@@ -3,11 +3,11 @@
 
 Validates that the CG solver is dispatchable from the integrator seams and
 produces sane physics:
-  * Part A: EulerIntegratorFields[SOLVER="cg"] vs [SOLVER="newton"] over N
+  * Part A: EulerIntegrator[SOLVER="cg"] vs [SOLVER="newton"] over N
     contact steps on a fallen Walker2D — both solve the same convex contact
     problem each step, so the trajectories stay close (loose tol; per-step
     CG-vs-Newton residual ~1e-3 integrates over the steps). Finite.
-  * Part B: ImplicitIntegratorFields[SOLVER="cg"] and RK4IntegratorFields[
+  * Part B: ImplicitIntegrator[SOLVER="cg"] and RK4Integrator[
     SOLVER="cg"] each take one contact step and stay finite (this forces
     their CG-branch wiring to compile + run).
 
@@ -19,13 +19,13 @@ from std.sys import has_nvidia_gpu_accelerator
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import DataFields, ModelFields
+from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
-from mojo_rl.physics3d.integrator.implicit_fields import (
-    ImplicitIntegratorFields,
+from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from mojo_rl.physics3d.integrator.implicit import (
+    ImplicitIntegrator,
 )
-from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
+from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 
 comptime DT = DType.float32
@@ -44,7 +44,7 @@ comptime BATCH = 2
 comptime N_STEPS = 3
 
 
-def _init_state(mut d: DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]):
+def _init_state(mut d: Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]):
     """Fallen Walker2D (feet penetrating the floor)."""
     for e in range(BATCH):
         for i in range(NQ):
@@ -59,10 +59,10 @@ def _init_state(mut d: DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]):
             d.qvel.data[e * NV + i] = qv
 
 
-def _load_model(ctx: DeviceContext) raises -> ModelFields[
+def _load_model(ctx: DeviceContext) raises -> Model[
     DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0
 ]:
-    var mf = ModelFields[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
     Walker2dModel.init_fields[DT, 0](ctx, mf)
     return mf^
 
@@ -71,18 +71,18 @@ def part_a(ctx: DeviceContext) raises:
     print("--- Part A: Euler SOLVER='cg' vs 'newton' (", N_STEPS, "steps)")
     var mf = _load_model(ctx)
 
-    var dN = DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dC = DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dN = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dC = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
     _init_state(dN)
     _init_state(dC)
     dN.upload_all(ctx)
     dC.upload_all(ctx)
 
-    var integN = EulerIntegratorFields[
+    var integN = EulerIntegrator[
         DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
         SOLVER="newton",
     ]()
-    var integC = EulerIntegratorFields[
+    var integC = EulerIntegrator[
         DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
         SOLVER="cg",
     ]()
@@ -126,18 +126,18 @@ def part_b(ctx: DeviceContext) raises:
     print("--- Part B: Implicit + RK4 SOLVER='cg' compile + step (finite)")
     var mf = _load_model(ctx)
 
-    var dImp = DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dRk4 = DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dImp = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dRk4 = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
     _init_state(dImp)
     _init_state(dRk4)
     dImp.upload_all(ctx)
     dRk4.upload_all(ctx)
 
-    var integImp = ImplicitIntegratorFields[
+    var integImp = ImplicitIntegrator[
         DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
         SOLVER="cg",
     ]()
-    var integRk4 = RK4IntegratorFields[
+    var integRk4 = RK4Integrator[
         DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
         SOLVER="cg",
     ]()

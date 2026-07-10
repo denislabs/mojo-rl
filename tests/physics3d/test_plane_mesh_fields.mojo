@@ -24,15 +24,15 @@ from std.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
-from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
+from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
 )
-from mojo_rl.physics3d.collision.contact_detection_fields import (
-    detect_contacts_fields,
+from mojo_rl.physics3d.collision.contact_detection import (
+    detect_contacts,
 )
-from mojo_rl.physics3d.collision.broadphase_sap_fields import (
-    detect_contacts_sap_fields,
+from mojo_rl.physics3d.collision.broadphase_sap import (
+    detect_contacts_sap,
 )
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_MESH_META_SIZE,
@@ -100,7 +100,7 @@ def _qpos_for_env(e: Int) -> List[Float64]:
 
 def _fp_check(
     label: String,
-    d: DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
     gold_ncon: Int,
     gold_con: Float64,
 ) raises:
@@ -138,7 +138,7 @@ def _fp_check(
 
 def _assert_plane_mesh_contact(
     label: String,
-    d: DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
     obj_body: Int,
     expected_body_b: Int,
 ) raises:
@@ -167,7 +167,7 @@ def main() raises:
     var ctx = DeviceContext()
 
     # Fields-native build (loads STL hulls, NMESHV-padded — Stage B).
-    var mf = ModelFields[
+    var mf = Model[
         DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, 0, NMESHV
     ]()
     SawyerReachModel.init_fields[DTYPE, NMESHV](ctx, mf)
@@ -235,22 +235,22 @@ def main() raises:
     mf.mesh_verts.upload(ctx)
     mf.geoms.upload(ctx)
     if Int(mf.geoms.data[g_obj * MODEL_GEOM_SIZE + GEOM_IDX_TYPE]) != GEOM_MESH:
-        raise Error("geom override did not reach ModelFields")
+        raise Error("geom override did not reach Model")
     if Int(mf.mesh_meta.data[tetra_id * MODEL_MESH_META_SIZE + 1]) != 4:
-        raise Error("tetra mesh_meta did not reach ModelFields")
+        raise Error("tetra mesh_meta did not reach Model")
 
     # ================= Leg 1: O(N^2) detection ==========================
-    var d_a = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d_a = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         var q = _qpos_for_env(e)
         for i in range(NQ):
             d_a.qpos.data[e * NQ + i] = Scalar[DTYPE](q[i])
     d_a.upload_all(ctx)
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
         0, NMESHV, BATCH,
     ](d_a, mf, ctx)
-    detect_contacts_fields[
+    detect_contacts[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
         0, NMESHV, BATCH,
     ](d_a, mf, ctx)
@@ -276,17 +276,17 @@ def main() raises:
     print("  [ O(N^2) ] PASS: plane-mesh record present (BODY_B=0, DIST<0)")
 
     # ================= Leg 2: SAP detection =============================
-    var d_b = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d_b = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         var q = _qpos_for_env(e)
         for i in range(NQ):
             d_b.qpos.data[e * NQ + i] = Scalar[DTYPE](q[i])
     d_b.upload_all(ctx)
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
         0, NMESHV, BATCH,
     ](d_b, mf, ctx)
-    detect_contacts_sap_fields[
+    detect_contacts_sap[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
         0, NMESHV, BATCH,
     ](d_b, mf, ctx)

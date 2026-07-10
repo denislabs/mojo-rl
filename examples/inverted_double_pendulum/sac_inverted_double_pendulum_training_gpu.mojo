@@ -7,7 +7,7 @@ of the legacy `sac_inverted_double_pendulum_training_gpu.mojo`. Mirrors
   * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
     off-policy driver. All optimizers, the replay buffer, and the SAC
     train-step pipeline run on-device.
-  * `Phyics3dBatchedEnvFields[InvertedDoublePendulumModel,
+  * `Phyics3dBatchedEnv[InvertedDoublePendulumModel,
     InvertedDoublePendulumConfig, N_ENVS]` — the
     physics3d env (`GPUContinuousEnv`) into a `BatchedEnv`.
   * `RemoteLogger` — streams `env/mean_ret` and `env/ep_count`.
@@ -33,7 +33,7 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.inverted_double_pendulum.inverted_double_pendulum_xml import (
     InvertedDoublePendulumModel,
 )
@@ -62,7 +62,7 @@ comptime WARMUP_STEPS = 5_000
 comptime PRINT_EVERY = 25_000
 
 
-comptime BatchedEnvT = Phyics3dBatchedEnvFields[
+comptime BatchedEnvT = Phyics3dBatchedEnv[
     InvertedDoublePendulumModel, InvertedDoublePendulumConfig, N_ENVS,
     TERMINATE_ON_UNHEALTHY=True,
 ]

@@ -12,13 +12,13 @@ from std.math import abs
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import DataFields, ModelFields
+from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
-from mojo_rl.physics3d.integrator.implicit_fields import (
-    ImplicitIntegratorFields,
+from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from mojo_rl.physics3d.integrator.implicit import (
+    ImplicitIntegrator,
 )
-from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
+from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
 
 comptime DT = DType.float32
@@ -37,16 +37,16 @@ comptime BATCH = 1
 comptime N_STEPS = 3
 
 
-def _load_model(ctx: DeviceContext) raises -> ModelFields[
+def _load_model(ctx: DeviceContext) raises -> Model[
     DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0
 ]:
-    var mf = ModelFields[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
     SwimmerModel.init_fields[DT, 0](ctx, mf)
     return mf^
 
 
-def _fresh_data() raises -> DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]:
-    var d = DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+def _fresh_data() raises -> Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]:
+    var d = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DT]((i * 3) % 5 - 2) / 20.0
     for i in range(NV):
@@ -55,7 +55,7 @@ def _fresh_data() raises -> DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]:
 
 
 def _check_finite(
-    mut d: DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH], ctx: DeviceContext, name: String
+    mut d: Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH], ctx: DeviceContext, name: String
 ) raises:
     d.qpos.download(ctx)
     d.qvel.download(ctx)
@@ -77,7 +77,7 @@ def main() raises:
     # Euler
     var dE = _fresh_data()
     dE.upload_all(ctx)
-    var integE = EulerIntegratorFields[
+    var integE = EulerIntegrator[
         DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
     ]()
     integE.prepare_gpu(ctx)
@@ -89,7 +89,7 @@ def main() raises:
     # Implicit
     var dI = _fresh_data()
     dI.upload_all(ctx)
-    var integI = ImplicitIntegratorFields[
+    var integI = ImplicitIntegrator[
         DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
     ]()
     integI.prepare_gpu(ctx)
@@ -101,7 +101,7 @@ def main() raises:
     # RK4 (Swimmer's native integrator)
     var dR = _fresh_data()
     dR.upload_all(ctx)
-    var integR = RK4IntegratorFields[
+    var integR = RK4Integrator[
         DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
     ]()
     integR.prepare_gpu(ctx)

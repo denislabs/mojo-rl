@@ -2,12 +2,12 @@
 single-source). Per-field port of `compute_rne_vel_derivative`
 (dynamics/velocity_derivatives.mojo) — the dense NV×NV
 `qDeriv = d(qfrc_bias)/d(qvel)` (Coriolis/centrifugal velocity sensitivity)
-that the fields `ImplicitIntegratorFields` SUBTRACTS to form the
+that the fields `ImplicitIntegrator` SUBTRACTS to form the
 non-symmetric `M_hat = M + armature - dt*qDeriv`.
 
 Arithmetic is VERBATIM from the legacy CPU function (subtree-COM convention,
 matching MuJoCo `mjd_rne_vel_dense`); only the accessors change: model/data
-reads come from the packed `ModelFields`/`DataFields` tensors, `cdof` from
+reads come from the packed `Model`/`Data` tensors, `cdof` from
 `DynamicsScratch`, and the big cross-body intermediates
 (cinert/cdof_sc/cvel_sc/cdof_dot/Dcvel/Dcdofdot/Dcacc/Dcfrcbody) live in the
 owned `ImplicitScratch` tensors rather than per-thread InlineArrays — so the
@@ -24,7 +24,7 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_mul
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from ..fields import DataFields, ModelFields, DynamicsScratch, ImplicitScratch
+from ..fields import Data, Model, DynamicsScratch, ImplicitScratch
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -228,7 +228,7 @@ def _matmul_6x6_x_6x6[
 
 
 @always_inline
-def _rne_vel_derivative_env_fields[
+def _rne_vel_derivative_env[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -793,13 +793,13 @@ def _rne_vel_derivative_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _rne_vel_derivative_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+    _rne_vel_derivative_env[DTYPE, NV, NBODY, NJOINT, BATCH](
         env, njoint, bodies, joints, xipos, xquat, qvel, cdof, cinert,
         cdof_sc, cvel_sc, cdof_dot, dcvel, dcdofdot, dcacc, dcfrcbody, qderiv,
     )
 
 
-def compute_rne_vel_derivative_fields[
+def compute_rne_vel_derivative[
     target: StaticString,
     DTYPE: DType,
     NQ: Int,
@@ -815,8 +815,8 @@ def compute_rne_vel_derivative_fields[
     NMESH_VERTS: Int,
     BATCH: Int,
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: ModelFields[
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: Model[
         DTYPE, NV, NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE, NEXCLUDE,
         NMESH_VERTS,
     ],
@@ -858,7 +858,7 @@ def compute_rne_vel_derivative_fields[
         var dcfrcbody_v = iscratch.dcfrcbody.lt["cpu", L_DCVEL]()
         var qderiv_v = iscratch.qderiv.lt["cpu", L_QD]()
         for e in range(BATCH):
-            _rne_vel_derivative_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+            _rne_vel_derivative_env[DTYPE, NV, NBODY, NJOINT, BATCH](
                 e, njoint, bodies_v, joints_v, xipos_v, xquat_v, qvel_v,
                 cdof_v, cinert_v, cdof_sc_v, cvel_sc_v, cdof_dot_v, dcvel_v,
                 dcdofdot_v, dcacc_v, dcfrcbody_v, qderiv_v,

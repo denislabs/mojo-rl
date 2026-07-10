@@ -1,4 +1,4 @@
-"""Facade production-default gate: Phyics3dBatchedEnvFields' default
+"""Facade production-default gate: Phyics3dBatchedEnv' default
 physics bundle (SOLVER="newton" + PARALLEL_GPU=True + CRBA_TREEWALK=True,
 the legacy GPU production configuration) vs the same facade with the
 dense CRBA.
@@ -22,7 +22,7 @@ from std.math import abs
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
 from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
@@ -35,11 +35,11 @@ comptime RESET_SEED = UInt64(123)
 comptime METADATA_SIZE_L = 4
 
 # The facade DEFAULT — the legacy production bundle.
-comptime EnvProd = Phyics3dBatchedEnvFields[
+comptime EnvProd = Phyics3dBatchedEnv[
     Walker2dModel, Walker2dConfig, BATCH, TERMINATE_ON_UNHEALTHY=True
 ]
 # Same config with dense CRBA — the only knob that is not bit-identical.
-comptime EnvDense = Phyics3dBatchedEnvFields[
+comptime EnvDense = Phyics3dBatchedEnv[
     Walker2dModel,
     Walker2dConfig,
     BATCH,

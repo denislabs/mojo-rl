@@ -1,4 +1,4 @@
-"""Stage-I gate: RNE velocity derivative over fields tensors (qderiv_fields) —
+"""Stage-I gate: RNE velocity derivative over fields tensors (qderiv) —
 fields self-check (no legacy reference; the legacy `velocity_derivatives` was
 deleted at the P6 sunset — bit-exact-vs-legacy was validated in git `a6804ab4`).
 
@@ -19,20 +19,20 @@ from std.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.physics3d.fields import (
-    DataFields,
-    ModelFields,
+    Data,
+    Model,
     DynamicsScratch,
     ImplicitScratch,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
 )
-from mojo_rl.physics3d.dynamics.subtree_com_fields import (
-    compute_subtree_com_fields,
+from mojo_rl.physics3d.dynamics.subtree_com import (
+    compute_subtree_com,
 )
-from mojo_rl.physics3d.dynamics.cdof_fields import compute_cdof_fields
-from mojo_rl.physics3d.dynamics.qderiv_fields import (
-    compute_rne_vel_derivative_fields,
+from mojo_rl.physics3d.dynamics.cdof import compute_cdof
+from mojo_rl.physics3d.dynamics.qderiv import (
+    compute_rne_vel_derivative,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 
@@ -52,13 +52,13 @@ comptime BATCH = 1
 
 
 def main() raises:
-    print("=== Stage-I qderiv_fields parity: Walker2D NV=", NV, " ===")
+    print("=== Stage-I qderiv parity: Walker2D NV=", NV, " ===")
     var ctx = DeviceContext()
 
-    var mf = ModelFields[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
     Walker2dModel.init_fields[DT, 0](ctx, mf)
 
-    var d = DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
     # Standing-ish pose + nonzero velocities so Coriolis/centrifugal is active.
     d.qpos.data[1] = 1.25  # rootz
     d.qpos.data[3] = -0.3
@@ -72,18 +72,18 @@ def main() raises:
     var isc = ImplicitScratch[DT, NV, NBODY, BATCH]()
 
     # ── fields CPU pipeline: FK -> subtree_com -> cdof -> qderiv ──────────
-    forward_kinematics_fields[
+    forward_kinematics[
         "cpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](d, mf, None)
-    compute_subtree_com_fields[
+    compute_subtree_com[
         "cpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](d, mf, None)
-    compute_cdof_fields[
+    compute_cdof[
         "cpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](d, mf, sc, None)
     for i in range(NV * NV):
         isc.qderiv.data[i] = 0
-    compute_rne_vel_derivative_fields[
+    compute_rne_vel_derivative[
         "cpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](d, mf, sc, isc, None)
 
@@ -109,20 +109,20 @@ def main() raises:
     sc.upload_all(ctx)
     isc.upload_all(ctx)
     # Re-run FK/subtree/cdof on GPU so xipos/xquat/cdof live on device.
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](d, mf, ctx)
-    compute_subtree_com_fields[
+    compute_subtree_com[
         "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](d, mf, ctx)
-    compute_cdof_fields[
+    compute_cdof[
         "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](d, mf, sc, ctx)
     # zero qderiv on device then compute
     for i in range(NV * NV):
         isc.qderiv.data[i] = 0
     isc.qderiv.upload(ctx)
-    compute_rne_vel_derivative_fields[
+    compute_rne_vel_derivative[
         "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](d, mf, sc, isc, ctx)
     isc.qderiv.download(ctx)

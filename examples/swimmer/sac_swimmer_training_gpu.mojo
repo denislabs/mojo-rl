@@ -6,7 +6,7 @@ GPU successor of `sac_swimmer_training.mojo`. Mirrors
   * `SAC["gpu", ...]` — preset facade over the GPU `SACTrainer` + the batched
     off-policy driver (`run_offpolicy_train_batched`). All optimizers, the
     replay buffer, and the SAC train-step pipeline run on-device.
-  * `Phyics3dBatchedEnvFields[SwimmerModel, SwimmerConfig, N_ENVS]` — the Swimmer
+  * `Phyics3dBatchedEnv[SwimmerModel, SwimmerConfig, N_ENVS]` — the Swimmer
     physics3d env (`GPUContinuousEnv`) into a `BatchedEnv`.
   * `RemoteLogger` — streams `env/mean_ret` and `env/ep_count` at the driver's
     `print_every` cadence.
@@ -36,7 +36,7 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
 from mojo_rl.envs.swimmer.swimmer_config import SwimmerConfig
 
@@ -63,7 +63,7 @@ comptime PRINT_EVERY = 50_000
 comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 
 
-comptime BatchedEnvT = Phyics3dBatchedEnvFields[
+comptime BatchedEnvT = Phyics3dBatchedEnv[
     SwimmerModel, SwimmerConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=False
 ]
 

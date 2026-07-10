@@ -1,4 +1,4 @@
-"""Hopper Environment - thin wrapper over Phyics3dEnvFields[HopperModel,
+"""Hopper Environment - thin wrapper over Phyics3dEnv[HopperModel,
 HopperConfig] (per-field tensor engine).
 """
 
@@ -7,7 +7,7 @@ from .hopper_xml import (
     HopperModel,
 )
 from .hopper_config import HopperConfig
-from ..phyics3d_env_fields import Phyics3dEnvFields
+from ..phyics3d_env import Phyics3dEnv
 
 
 # =============================================================================
@@ -17,7 +17,7 @@ from ..phyics3d_env_fields import Phyics3dEnvFields
 comptime Hopper[
     DTYPE: DType = DType.float64,
     TERMINATE_ON_UNHEALTHY: Bool = True,
-] = Phyics3dEnvFields[
+] = Phyics3dEnv[
     HopperModel,
     HopperConfig,
     DTYPE,

@@ -19,7 +19,7 @@ Humanoid, which uses 0.4). The greedy action is `a = tanh(μ) · action_scale`,
 so this eval constructs the agent with `action_scale=1.0` to reproduce the
 trained policy's torques.
 
-Physics: the env is `Phyics3dEnvFields` (per-field tensor path, migration
+Physics: the env is `Phyics3dEnv` (per-field tensor path, migration
 P5+) with `TERMINATE_ON_UNHEALTHY=False` — HalfCheetah has no early
 termination; episodes run the full `MAX_STEPS`. Rendering is driven off the
 bridge FK poses the fields step re-syncs each frame.
@@ -37,7 +37,7 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_env_fields import Phyics3dEnvFields
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
 
 
@@ -47,7 +47,7 @@ from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
 
 # Per-field tensor physics path (migration P5+): the fields facade renders
 # via the same physics3d ModelRenderer, driven by the bridge FK poses.
-comptime EnvT = Phyics3dEnvFields[
+comptime EnvT = Phyics3dEnv[
     HalfCheetahModel, HalfCheetahConfig, DT, TERMINATE_ON_UNHEALTHY=False
 ]
 comptime OBS_DIM = EnvT.OBS_DIM  # 17

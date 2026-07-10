@@ -4,7 +4,7 @@
 section of the flat workspace slab (`ws_solver_offset` in
 gpu/constants.mojo): one owned `TensorImpl` holding the per-env PGS contact
 workspace, allocated once and reused every step. All offsets in the
-consumers (constraints/contact_solve_fields.mojo) are relative to the row
+consumers (constraints/contact_solve.mojo) are relative to the row
 start — the legacy `solver_idx` base is gone.
 """
 

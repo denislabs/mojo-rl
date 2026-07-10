@@ -20,9 +20,9 @@ from std.math import abs
 from std.collections import InlineArray
 
 from std.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
+from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
 )
 from mojo_rl.envs.ant.ant_xml import AntModel
 
@@ -58,12 +58,12 @@ def compare_fk(
 
     # === Our engine (fields; legacy Model/Data FK deleted at G4) ===
     var ctx = DeviceContext()
-    var mf = ModelFields[
+    var mf = Model[
         DTYPE, NV, NBODY, NJOINT, NGEOM, AntModel.MAX_EQUALITY,
         AntModel.MAX_TENDON, AntModel.NSITE, AntModel.NEXCLUDE, 0,
     ]()
     AntModel.init_fields[DTYPE, 0](ctx, mf)
-    var d = DataFields[
+    var d = Data[
         DTYPE, NQ, NV, NBODY, MAX_CONTACTS, AntModel.NSITE, 1
     ]()
 
@@ -72,7 +72,7 @@ def compare_fk(
         d.qpos.data[i] = Scalar[DTYPE](qpos_values[i])
 
     # Run our FK (fields, CPU)
-    forward_kinematics_fields[
+    forward_kinematics[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
         AntModel.MAX_EQUALITY, AntModel.MAX_TENDON, AntModel.NSITE,
         AntModel.NEXCLUDE, 0, 1,

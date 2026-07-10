@@ -4,7 +4,7 @@
 `ImplicitScratch` is the stateful replacement for the `ws_implicit_*` region
 of the legacy workspace slab (`implicit_extra_workspace_size` in
 gpu/constants.mojo): one owned `TensorImpl` per intermediate array of
-`compute_rne_vel_derivative`, allocated once by `ImplicitIntegratorFields`
+`compute_rne_vel_derivative`, allocated once by `ImplicitIntegrator`
 and reused every step.
 
 These are stored as tensors (not per-thread InlineArrays) on PURPOSE: the

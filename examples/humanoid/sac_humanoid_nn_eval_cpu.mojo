@@ -31,7 +31,7 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_env_fields import Phyics3dEnvFields
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
 from mojo_rl.envs.humanoid.humanoid_config import HumanoidConfig
 
@@ -42,7 +42,7 @@ from mojo_rl.envs.humanoid.humanoid_config import HumanoidConfig
 
 # Per-field tensor physics path (migration P5+): the fields facade renders
 # via the same physics3d ModelRenderer, driven by the bridge FK poses.
-comptime EnvT = Phyics3dEnvFields[
+comptime EnvT = Phyics3dEnv[
     HumanoidModel, HumanoidConfig, DT, TERMINATE_ON_UNHEALTHY=True
 ]
 comptime OBS_DIM = EnvT.OBS_DIM  # 45

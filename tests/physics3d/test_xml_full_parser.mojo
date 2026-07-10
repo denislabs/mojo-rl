@@ -27,10 +27,10 @@ Expected output:
 from mojo_rl.physics3d.parser import ParsedModel, parse_xml
 from mojo_rl.physics3d.parser import FlatModelDef
 from mojo_rl.physics3d.parser import parse_xml_full
-from mojo_rl.physics3d.fields import DataFields, ModelFields
+from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
 )
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
@@ -191,7 +191,7 @@ def test_xml_full_parser() raises:
     # Step 3: Full round-trip — spec-direct fields build + fields FK (G4)
     # =========================================================================
     print("=== FK round-trip (fields) ===")
-    var mf = ModelFields[
+    var mf = Model[
         DType.float64, pm.NV, pm.NBODY, pm.NJOINT, pm.NGEOM, 0, 0, 0, 0, 0,
     ]()
     build_model_fields_from_flat[
@@ -217,8 +217,8 @@ def test_xml_full_parser() raises:
         " (expected 0.7)",
     )
 
-    var d = DataFields[DType.float64, pm.NQ, pm.NV, pm.NBODY, 10, 0, 1]()
-    forward_kinematics_fields[
+    var d = Data[DType.float64, pm.NQ, pm.NV, pm.NBODY, 10, 0, 1]()
+    forward_kinematics[
         "cpu", DType.float64, pm.NQ, pm.NV, pm.NBODY, pm.NJOINT, 10, pm.NGEOM,
         0, 0, 0, 0, 0, 1,
     ](d, mf, None)

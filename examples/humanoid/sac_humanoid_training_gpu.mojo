@@ -7,7 +7,7 @@ GPU successor of `sac_humanoid_training.mojo` and counterpart of the legacy
   * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
     off-policy driver. All optimizers, the replay buffer, and the SAC
     train-step pipeline run on-device.
-  * `Phyics3dBatchedEnvFields[HumanoidModel, HumanoidConfig, N_ENVS]` — the physics3d env
+  * `Phyics3dBatchedEnv[HumanoidModel, HumanoidConfig, N_ENVS]` — the physics3d env
     (`GPUContinuousEnv`) into a `BatchedEnv`.
   * `RemoteLogger` — streams `env/mean_ret` and `env/ep_count`.
 
@@ -52,7 +52,7 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
 from mojo_rl.envs.humanoid.humanoid_config import HumanoidConfig
 
@@ -101,10 +101,10 @@ comptime EVAL_EPISODES = 16  # <= EVAL_ENVS → completes in one eval window
 # Per-field tensor physics path (migration P5+): the batched fields facade is
 # a `BatchedEnv` running the LEGACY PRODUCTION physics bundle by default
 # (RK4 + Newton, parallel _mt schedules, treewalk CRBA, auto broadphase).
-comptime BatchedEnvT = Phyics3dBatchedEnvFields[
+comptime BatchedEnvT = Phyics3dBatchedEnv[
     HumanoidModel, HumanoidConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=True
 ]
-comptime EvalEnvT = Phyics3dBatchedEnvFields[
+comptime EvalEnvT = Phyics3dBatchedEnv[
     HumanoidModel, HumanoidConfig, EVAL_ENVS, TERMINATE_ON_UNHEALTHY=True
 ]
 

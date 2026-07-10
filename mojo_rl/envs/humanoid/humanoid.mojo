@@ -1,14 +1,14 @@
-"""Humanoid Environment - thin wrapper over Phyics3dEnvFields[HumanoidModel, HumanoidConfig]."""
+"""Humanoid Environment - thin wrapper over Phyics3dEnv[HumanoidModel, HumanoidConfig]."""
 
 from .humanoid_xml import HumanoidModel
 from .humanoid_config import HumanoidConfig
-from ..phyics3d_env_fields import Phyics3dEnvFields
+from ..phyics3d_env import Phyics3dEnv
 
 
 comptime Humanoid[
     DTYPE: DType = DType.float64,
     TERMINATE_ON_UNHEALTHY: Bool = True,
-] = Phyics3dEnvFields[
+] = Phyics3dEnv[
     HumanoidModel,
     HumanoidConfig,
     DTYPE,

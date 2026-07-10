@@ -2,7 +2,7 @@
 
 Declares the compile-time dimensions, the CPU state hooks (fields-native:
 `reset_data` / `extract_obs` / `enforce_limits` / `apply_actions` over
-`DataFields`), the spec-direct fields model build (`init_fields`), the GPU
+`Data`), the spec-direct fields model build (`init_fields`), the GPU
 kernel delegates, and the render hooks. Sole implementer: `ModelDefFromXML`
 (the spec-based `ModelDef` compositor was deleted at the G2 fields sunset;
 the legacy CPU `Model`/`Data` build at G4).
@@ -11,7 +11,7 @@ the legacy CPU `Model`/`Data` build at G4).
 from mojo_rl.render import Renderer3D, Light, Camera3D
 from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
-from ..fields import ModelFields, DataFields
+from ..fields import Model, Data
 
 # GPU imports
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -59,7 +59,7 @@ trait ModelDefLike:
     def reset_data[
         DTYPE: DType
     ](
-        mut d: DataFields[
+        mut d: Data[
             DTYPE,
             Self.NQ,
             Self.NV,
@@ -75,7 +75,7 @@ trait ModelDefLike:
     def extract_obs[
         DTYPE: DType
     ](
-        d: DataFields[
+        d: Data[
             DTYPE,
             Self.NQ,
             Self.NV,
@@ -92,7 +92,7 @@ trait ModelDefLike:
     def enforce_limits[
         DTYPE: DType
     ](
-        mut d: DataFields[
+        mut d: Data[
             DTYPE,
             Self.NQ,
             Self.NV,
@@ -108,7 +108,7 @@ trait ModelDefLike:
     def apply_actions[
         DTYPE: DType
     ](
-        mut d: DataFields[
+        mut d: Data[
             DTYPE,
             Self.NQ,
             Self.NV,
@@ -129,7 +129,7 @@ trait ModelDefLike:
         DTYPE: DType, NMESHV: Int = 0
     ](
         ctx: DeviceContext,
-        mut mf: ModelFields[
+        mut mf: Model[
             DTYPE,
             Self.NV,
             Self.NBODY,
@@ -142,7 +142,7 @@ trait ModelDefLike:
             NMESHV,
         ],
     ) raises:
-        """Build the ModelFields record tensors + fields-native invweight0
+        """Build the Model record tensors + fields-native invweight0
         and upload. Implemented spec-direct by `ModelDefFromXML`
         (parse_xml_full -> fields_build.build_model_fields_from_flat)."""
         ...

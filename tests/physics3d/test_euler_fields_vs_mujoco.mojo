@@ -1,8 +1,8 @@
 """Behavioral gate: the per-field Euler step vs LIVE MuJoCo (tumbling free-flight
 Ant, contact-free, float64, opt.integrator=0).
 
-Drives the per-field path `EulerIntegratorFields.step["cpu"]` over
-DataFields/ModelFields. The MuJoCo comparison is the primary (golden) reference.
+Drives the per-field path `EulerIntegrator.step["cpu"]` over
+Data/Model. The MuJoCo comparison is the primary (golden) reference.
 The former legacy-CPU cross-check was replaced during Phase-0 of the physics3d
 sunset: the active-limit sub-test now checks the fields-CPU trajectory against a
 frozen GOLDEN fingerprint (it previously compared to the legacy CPU Euler step),
@@ -21,8 +21,8 @@ from std.collections import InlineArray
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
-from mojo_rl.physics3d.fields import DataFields, ModelFields
+from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.envs.ant.ant_xml import AntModel
 
 comptime DTYPE = DType.float64
@@ -71,11 +71,11 @@ def _tumbling_qvel() -> InlineArray[Float64, NV]:
     return qvel
 
 
-def _make_model_fields(
+def _make_model(
     ctx: DeviceContext,
-) raises -> ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]:
-    """Build the model into ModelFields via the model-def init + flattening."""
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]()
+) raises -> Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]:
+    """Build the model into Model via the model-def init + flattening."""
+    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]()
     AntModel.init_fields[DTYPE, 0](ctx, mf)
     return mf^
 
@@ -89,15 +89,15 @@ def _compare_vs_mujoco(
     var qpos_init = _tumbling_qpos()
     var qvel_init = _tumbling_qvel()
     var ctx = DeviceContext()
-    var mf = _make_model_fields(ctx)
+    var mf = _make_model(ctx)
 
     # Fields path (f64, CPU target, BATCH=1).
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]()
+    var d = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):
         d.qvel.data[i] = Scalar[DTYPE](qvel_init[i])
-    var integ = EulerIntegratorFields[
+    var integ = EulerIntegrator[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQ, NTEN, NSITE,
         0, 0, BATCH=1,
     ]()
@@ -173,14 +173,14 @@ def test_fields_euler_active_limits_golden() raises:
         qpos_init[8 + 2 * k] = 0.0  # ankles back to 0 -> limits ACTIVE
     var qvel_init = _tumbling_qvel()
     var ctx = DeviceContext()
-    var mf = _make_model_fields(ctx)
+    var mf = _make_model(ctx)
 
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]()
+    var d = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):
         d.qvel.data[i] = Scalar[DTYPE](qvel_init[i])
-    var integ = EulerIntegratorFields[
+    var integ = EulerIntegrator[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQ, NTEN, NSITE,
         0, 0, BATCH=1,
     ]()

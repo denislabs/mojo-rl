@@ -1,6 +1,6 @@
 """Stateful Euler integrator over per-field tensors (migration P2 pilot).
 
-`EulerIntegratorFields` is the stateful replacement for the stateless
+`EulerIntegrator` is the stateful replacement for the stateless
 `EulerIntegrator.step_gpu` + caller-provided workspace slab: the struct OWNS
 its `DynamicsScratch` (allocated once, reused every step) and sequences the
 single-source stage ports into a full contact-free step:
@@ -25,31 +25,31 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_integrate, quat_normalize
-from ..kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
-    compute_body_velocities_fields,
+from ..kinematics.forward_kinematics import (
+    forward_kinematics,
+    compute_body_velocities,
 )
-from ..dynamics.subtree_com_fields import compute_subtree_com_fields
-from ..dynamics.cdof_fields import compute_cdof_fields
-from ..dynamics.mass_matrix_fields import compute_mass_matrix_fields
-from ..dynamics.ldl_fields import (
-    ldl_factor_fields,
-    ldl_solve_fields,
-    compute_m_inv_fields,
-    _ldl_factor_env_fields,
-    _ldl_solve_env_fields,
+from ..dynamics.subtree_com import compute_subtree_com
+from ..dynamics.cdof import compute_cdof
+from ..dynamics.mass_matrix import compute_mass_matrix
+from ..dynamics.ldl import (
+    ldl_factor,
+    ldl_solve,
+    compute_m_inv,
+    _ldl_factor_env,
+    _ldl_solve_env,
 )
-from ..constraints.limits_fields import solve_limits_fields
-from ..constraints.contact_solve_fields import solve_contacts_fields
-from ..solver.newton_solve_fields import solve_newton_fields
-from ..solver.cg_solve_fields import solve_cg_fields
-from ..solver.island_pgs_solve_fields import solve_island_pgs_fields
-from ..collision.broadphase_sap_fields import detect_contacts_auto_fields
+from ..constraints.limits import solve_limits
+from ..constraints.contact_solve import solve_contacts
+from ..solver.newton_solve import solve_newton
+from ..solver.cg_solve import solve_cg
+from ..solver.island_pgs_solve import solve_island_pgs
+from ..collision.broadphase_sap import detect_contacts_auto
 from ..types import ConeType
-from ..dynamics.rne_fields import compute_bias_forces_rne_fields
-from ..dynamics.fluid_forces_fields import compute_fluid_forces_fields
+from ..dynamics.rne import compute_bias_forces_rne
+from ..dynamics.fluid_forces import compute_fluid_forces
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
-from ..fields import DataFields, ModelFields, DynamicsScratch, ContactScratch
+from ..fields import Data, Model, DynamicsScratch, ContactScratch
 from ..gpu.constants import (
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
@@ -70,7 +70,7 @@ comptime EU_TPB: Int = 64
 
 # ── armature: M diagonal += armature (verbatim step_kernel 6b) ────────────
 @always_inline
-def _armature_env_fields[
+def _armature_env[
     DTYPE: DType, NV: Int, NJOINT: Int, BATCH: Int
 ](
     env: Int,
@@ -97,7 +97,7 @@ def _armature_env_fields[
 # ── fnet assembly: qfrc - bias - damping - stiffness - friction ───────────
 # (verbatim step_kernel 9 + 8b; fluid 8c NOT ported — guarded at step())
 @always_inline
-def _fnet_passive_env_fields[
+def _fnet_passive_env[
     DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int
 ](
     env: Int,
@@ -172,7 +172,7 @@ def _fnet_passive_env_fields[
 
 # ── qacc writeback: state qacc + qacc_constrained = qacc_ws ───────────────
 @always_inline
-def _qacc_writeback_env_fields[
+def _qacc_writeback_env[
     DTYPE: DType, NV: Int, BATCH: Int
 ](
     env: Int,
@@ -190,7 +190,7 @@ def _qacc_writeback_env_fields[
 
 # ── finalize: implicit-damping re-solve + integrate (verbatim :2140) ──────
 @always_inline
-def _finalize_env_fields[
+def _finalize_env[
     DTYPE: DType, NQ: Int, NV: Int, NJOINT: Int, BATCH: Int
 ](
     env: Int,
@@ -234,8 +234,8 @@ def _finalize_env_fields[
                 M[env, (dof_adr + d) * NV + (dof_adr + d)] += dt * damp
 
     # Step 3+4: re-factor M_hat, solve qacc_final = M_hat^{-1} * rhs
-    _ldl_factor_env_fields[DTYPE, NV, BATCH](env, M, L, D)
-    _ldl_solve_env_fields[DTYPE, NV, BATCH](env, L, D, fnet, qacc_ws)
+    _ldl_factor_env[DTYPE, NV, BATCH](env, M, L, D)
+    _ldl_solve_env[DTYPE, NV, BATCH](env, L, D, fnet, qacc_ws)
 
     # Step 5: v_new = v_old + dt * qacc_final (NaN guard + clamp)
     for i in range(NV):
@@ -303,7 +303,7 @@ def _armature_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _armature_env_fields[DTYPE, NV, NJOINT, BATCH](env, joints, M)
+    _armature_env[DTYPE, NV, NJOINT, BATCH](env, joints, M)
 
 
 def _fnet_passive_kernel[
@@ -321,7 +321,7 @@ def _fnet_passive_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _fnet_passive_env_fields[DTYPE, NQ, NV, NJOINT, BATCH](
+    _fnet_passive_env[DTYPE, NQ, NV, NJOINT, BATCH](
         env, qpos, qvel, qfrc, joints, bias, fnet
     )
 
@@ -338,7 +338,7 @@ def _qacc_writeback_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _qacc_writeback_env_fields[DTYPE, NV, BATCH](
+    _qacc_writeback_env[DTYPE, NV, BATCH](
         env, qacc_ws, qacc, qacc_constrained
     )
 
@@ -365,14 +365,14 @@ def _finalize_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _finalize_env_fields[DTYPE, NQ, NV, NJOINT, BATCH](
+    _finalize_env[DTYPE, NQ, NV, NJOINT, BATCH](
         env, dt, qpos, qvel, qacc, joints, M, L, D, fnet, qacc_ws,
         qacc_constrained,
     )
 
 
 # ── the stateful integrator ───────────────────────────────────────────────
-struct EulerIntegratorFields[
+struct EulerIntegrator[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -408,7 +408,7 @@ struct EulerIntegratorFields[
 
     def __init__(out self) raises:
         comptime assert Self.PARALLEL_GPU or (not Self.CRBA_TREEWALK), (
-            "EulerIntegratorFields: CRBA_TREEWALK requires PARALLEL_GPU (the"
+            "EulerIntegrator: CRBA_TREEWALK requires PARALLEL_GPU (the"
             " tree-walk CRBA is inherently cooperative)"
         )
         self.scratch = DynamicsScratch[
@@ -427,11 +427,11 @@ struct EulerIntegratorFields[
         target: StaticString, CONTACTS: Bool = True
     ](
         mut self,
-        mut d: DataFields[
+        mut d: Data[
             Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.MAX_CONTACTS,
             Self.NSITE, Self.BATCH,
         ],
-        mut m: ModelFields[
+        mut m: Model[
             Self.DTYPE, Self.NV, Self.NBODY, Self.NJOINT, Self.NGEOM,
             Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
             Self.NMESH_VERTS,
@@ -441,30 +441,30 @@ struct EulerIntegratorFields[
         """One full contact-free Euler step."""
         var dt = m.meta.data[MODEL_META_IDX_TIMESTEP]
 
-        forward_kinematics_fields[
+        forward_kinematics[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
             PARALLEL = Self.PARALLEL_GPU,
         ](d, m, ctx)
-        compute_body_velocities_fields[
+        compute_body_velocities[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
             PARALLEL = Self.PARALLEL_GPU,
         ](d, m, ctx)
-        compute_subtree_com_fields[
+        compute_subtree_com[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
         ](d, m, ctx)
-        compute_cdof_fields[
+        compute_cdof[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
             PARALLEL = Self.PARALLEL_GPU,
         ](d, m, self.scratch, ctx)
-        compute_mass_matrix_fields[
+        compute_mass_matrix[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
@@ -482,7 +482,7 @@ struct EulerIntegratorFields[
             var joints_v = m.joints.lt["cpu", L_JOINT]()
             var M_v = self.scratch.M.lt["cpu", L_M]()
             for e in range(Self.BATCH):
-                _armature_env_fields[
+                _armature_env[
                     Self.DTYPE, Self.NV, Self.NJOINT, Self.BATCH
                 ](e, joints_v, M_v)
         else:
@@ -495,15 +495,15 @@ struct EulerIntegratorFields[
                 block_dim=(EU_TPB,),
             )
 
-        ldl_factor_fields[
+        ldl_factor[
             target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH,
             PARALLEL = Self.PARALLEL_GPU,
         ](self.scratch, ctx)
-        compute_m_inv_fields[
+        compute_m_inv[
             target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH,
             PARALLEL = Self.PARALLEL_GPU,
         ](self.scratch, ctx)
-        compute_bias_forces_rne_fields[
+        compute_bias_forces_rne[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
@@ -518,7 +518,7 @@ struct EulerIntegratorFields[
             var bias_v = self.scratch.bias.lt["cpu", L_NV]()
             var fnet_v = self.scratch.fnet.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
-                _fnet_passive_env_fields[
+                _fnet_passive_env[
                     Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH
                 ](e, qpos_v, qvel_v, qfrc_v, joints_v2, bias_v, fnet_v)
         else:
@@ -538,13 +538,13 @@ struct EulerIntegratorFields[
             )
 
         # 8c. Fluid drag into fnet (no-op unless meta density/viscosity > 0).
-        compute_fluid_forces_fields[
+        compute_fluid_forces[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
         ](d, m, self.scratch, ctx)
 
-        ldl_solve_fields[
+        ldl_solve[
             target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ](self.scratch, ctx)
 
@@ -553,7 +553,7 @@ struct EulerIntegratorFields[
             var qacc_v = d.qacc.lt["cpu", L_NV]()
             var qacc_c_v = self.scratch.qacc_constrained.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
-                _qacc_writeback_env_fields[Self.DTYPE, Self.NV, Self.BATCH](
+                _qacc_writeback_env[Self.DTYPE, Self.NV, Self.BATCH](
                     e, qacc_ws_v, qacc_v, qacc_c_v
                 )
         else:
@@ -577,7 +577,7 @@ struct EulerIntegratorFields[
             # Auto broadphase = legacy production (SAP for NGEOM >= 16,
             # O(N^2) otherwise; same routing as the legacy step kernel's
             # detect_contacts_auto_gpu call).
-            detect_contacts_auto_fields[
+            detect_contacts_auto[
                 target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                 Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
                 Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
@@ -589,11 +589,11 @@ struct EulerIntegratorFields[
                 or Self.SOLVER == "cg"
                 or Self.SOLVER == "island"
             ), (
-                "EulerIntegratorFields: SOLVER must be 'pgs', 'newton', 'cg',"
+                "EulerIntegrator: SOLVER must be 'pgs', 'newton', 'cg',"
                 " or 'island'"
             )
             comptime if Self.SOLVER == "newton":
-                solve_newton_fields[
+                solve_newton[
                     target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                     Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
                     Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
@@ -601,7 +601,7 @@ struct EulerIntegratorFields[
                 ](d, m, self.scratch, self.cscratch, ctx)
             else:
                 comptime if Self.SOLVER == "cg":
-                    solve_cg_fields[
+                    solve_cg[
                         target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                         Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
                         Self.NEQUALITY, Self.NTENDON, Self.NSITE,
@@ -610,7 +610,7 @@ struct EulerIntegratorFields[
                     ](d, m, self.scratch, self.cscratch, ctx)
                 else:
                     comptime if Self.SOLVER == "island":
-                        solve_island_pgs_fields[
+                        solve_island_pgs[
                             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                             Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
                             Self.NEQUALITY, Self.NTENDON, Self.NSITE,
@@ -618,7 +618,7 @@ struct EulerIntegratorFields[
                             Self.BATCH,
                         ](d, m, self.scratch, self.cscratch, ctx)
                     else:
-                        solve_contacts_fields[
+                        solve_contacts[
                             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                             Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
                             Self.NEQUALITY, Self.NTENDON, Self.NSITE,
@@ -626,7 +626,7 @@ struct EulerIntegratorFields[
                             Self.BATCH,
                         ](d, m, self.scratch, self.cscratch, ctx)
         else:
-            solve_limits_fields[
+            solve_limits[
                 target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                 Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
                 Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
@@ -645,7 +645,7 @@ struct EulerIntegratorFields[
             var qacc_ws_v3 = self.scratch.qacc_ws.lt["cpu", L_NV]()
             var qacc_c_v3 = self.scratch.qacc_constrained.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
-                _finalize_env_fields[
+                _finalize_env[
                     Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH
                 ](
                     e, dt, qpos_v3, qvel_v3, qacc_v3, joints_v3, M_v3, L_v3,

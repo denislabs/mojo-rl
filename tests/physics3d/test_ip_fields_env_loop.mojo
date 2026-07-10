@@ -23,9 +23,9 @@ from std.sys import has_nvidia_gpu_accelerator
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
-from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.envs.phyics3d_obs_fields import extract_obs_qpos_qvel_fields
+from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.envs.phyics3d_obs import extract_obs_qpos_qvel
 from mojo_rl.envs.inverted_pendulum.inverted_pendulum_xml import (
     InvertedPendulumModel,
 )
@@ -75,19 +75,19 @@ def main() raises:
     )
     var ctx = DeviceContext()
 
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]()
     IPM.init_fields[DTYPE, 0](ctx, mf)
 
     var pole0 = List[Float64]()
     pole0.append(0.05)
     pole0.append(-0.12)
 
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         d.qpos.data[e * NQ + 1] = Scalar[DTYPE](pole0[e])
     d.upload_all(ctx)
 
-    var integ = EulerIntegratorFields[
+    var integ = EulerIntegrator[
         DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
         BATCH=BATCH,
     ]()
@@ -98,7 +98,7 @@ def main() raises:
     var total_reward = List[Float64](length=BATCH, fill=0.0)
     var max_angle = List[Float64](length=BATCH, fill=0.0)
     for step in range(N_CTRL_STEPS):
-        extract_obs_qpos_qvel_fields[
+        extract_obs_qpos_qvel[
             "gpu", DTYPE, NQ, NV, NBODY, MC, NSITE, 0, BATCH
         ](d, obs_t, ctx)
         obs_t.download(ctx)
@@ -154,16 +154,16 @@ def main() raises:
         print("  PASS: fields-GPU matches golden fingerprint")
 
     # --- independent CPU oracle: fields-CPU closed loop == fields-GPU ---
-    var dc = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         dc.qpos.data[e * NQ + 1] = Scalar[DTYPE](pole0[e])
-    var integ_c = EulerIntegratorFields[
+    var integ_c = EulerIntegrator[
         DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
         BATCH=BATCH,
     ]()
     var obs_c = TensorImpl[DTYPE].alloc(BATCH * OBS_DIM)
     for _ in range(N_CTRL_STEPS):
-        extract_obs_qpos_qvel_fields[
+        extract_obs_qpos_qvel[
             "cpu", DTYPE, NQ, NV, NBODY, MC, NSITE, 0, BATCH
         ](dc, obs_c)
         for e in range(BATCH):

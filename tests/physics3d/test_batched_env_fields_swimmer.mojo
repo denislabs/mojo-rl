@@ -2,8 +2,8 @@
 
 Swimmer is the only env with fluid forces (<option density=4000 viscosity=0.1>).
 The batched facade used to RAISE at construction ("fluid not ported"); Stage A
-wired compute_fluid_forces_fields into the integrators' passive seam, so the
-guard was removed and Swimmer now runs on Phyics3dBatchedEnvFields. This checks:
+wired compute_fluid_forces into the integrators' passive seam, so the
+guard was removed and Swimmer now runs on Phyics3dBatchedEnv. This checks:
   * construction + reset + a short step loop + a selective reset run clean, and
   * the state stays finite (fluid drag is dissipative — velocities must not blow
     up) and non-trivial (the swimmer actually moves).
@@ -18,14 +18,14 @@ from std.math import abs
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
 from mojo_rl.envs.swimmer.swimmer_config import SwimmerConfig
 
 comptime N = 4
 comptime OBS_DIM = SwimmerModel.OBS_DIM
 comptime N_STEPS = 12
-comptime EnvT = Phyics3dBatchedEnvFields[SwimmerModel, SwimmerConfig, N]
+comptime EnvT = Phyics3dBatchedEnv[SwimmerModel, SwimmerConfig, N]
 
 
 def main() raises:

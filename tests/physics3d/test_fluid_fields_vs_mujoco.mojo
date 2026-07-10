@@ -1,4 +1,4 @@
-"""Fluid-forces fields gate (compute_fluid_forces_fields) on Swimmer
+"""Fluid-forces fields gate (compute_fluid_forces) on Swimmer
 (density=4000, viscosity=0.1 — the only env with fluid enabled).
 
 The legacy `compute_fluid_forces` reference was deleted at the G4 fields
@@ -19,20 +19,20 @@ from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import (
-    DataFields,
-    ModelFields,
+    Data,
+    Model,
     DynamicsScratch,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
-    compute_body_velocities_fields,
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
+    compute_body_velocities,
 )
-from mojo_rl.physics3d.dynamics.subtree_com_fields import (
-    compute_subtree_com_fields,
+from mojo_rl.physics3d.dynamics.subtree_com import (
+    compute_subtree_com,
 )
-from mojo_rl.physics3d.dynamics.cdof_fields import compute_cdof_fields
-from mojo_rl.physics3d.dynamics.fluid_forces_fields import (
-    compute_fluid_forces_fields,
+from mojo_rl.physics3d.dynamics.cdof import compute_cdof
+from mojo_rl.physics3d.dynamics.fluid_forces import (
+    compute_fluid_forces,
 )
 from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
 
@@ -61,10 +61,10 @@ def main() raises:
     var ctx = DeviceContext()
 
     # === Fields model + data ===
-    var mf = ModelFields[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
     SwimmerModel.init_fields[DT, 0](ctx, mf)
 
-    var d = DataFields[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DT]((i * 3) % 5 - 2) / 20.0
     for i in range(NV):
@@ -75,16 +75,16 @@ def main() raises:
     scratch.upload_all(ctx)
 
     # Kinematics chain that populates the fluid inputs (GPU).
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
-    compute_body_velocities_fields[
+    compute_body_velocities[
         "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
-    compute_subtree_com_fields[
+    compute_subtree_com[
         "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
-    compute_cdof_fields[
+    compute_cdof[
         "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, ctx)
 
@@ -92,7 +92,7 @@ def main() raises:
     for i in range(NV):
         scratch.fnet.data[i] = 0
     scratch.fnet.upload(ctx)
-    compute_fluid_forces_fields[
+    compute_fluid_forces[
         "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, ctx)
     scratch.fnet.download(ctx)
@@ -125,7 +125,7 @@ def main() raises:
     # === Part B: fields-CPU vs fields-GPU ===
     for i in range(NV):
         scratch.fnet.data[i] = 0
-    compute_fluid_forces_fields[
+    compute_fluid_forces[
         "cpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, None)
     var worst_b = Float64(0)

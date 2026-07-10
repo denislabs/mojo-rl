@@ -1,13 +1,13 @@
 """Per-field tensor container for batched simulation state (migration P1).
 
-`DataFields` is the end-state replacement for the flat GPU state slab
+`Data` is the end-state replacement for the flat GPU state slab
 `[BATCH, STATE_SIZE]`: every state region becomes its own `TensorImpl`
 (host `List` + optional device buffer), owned by this struct. Kernels take
 exactly the field tensors they touch as `LayoutTensor` operands (via
 `t.lt["gpu", Self.L_*]()`), instead of one giant slab plus offset math.
 
 Coexistence (P1..P5): the flat-slab path stays untouched and running; newly
-ported kernels consume `DataFields`. The `load_from_slab` / `store_to_slab`
+ported kernels consume `Data`. The `load_from_slab` / `store_to_slab`
 bridges convert between the two at pipeline boundaries and in A/B gates —
 they are TRANSITIONAL and die with the slab at sunset (P6), taking the
 `gpu/constants.mojo` offset imports below with them.
@@ -31,7 +31,7 @@ from mojo_rl.nn.core.tensor import TensorImpl
 from ..gpu.constants import CONTACT_SIZE, METADATA_SIZE
 
 
-struct DataFields[
+struct Data[
     DTYPE: DType,
     NQ: Int,
     NV: Int,

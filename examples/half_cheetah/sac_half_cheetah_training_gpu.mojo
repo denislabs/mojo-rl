@@ -8,7 +8,7 @@ uses `deep_agents.core.agents.DeepSACAgent.train_gpu`). Uses the new
   * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
     off-policy driver (`run_offpolicy_train_batched`). All optimizers, the
     replay buffer, and the SAC train-step pipeline run on-device.
-  * `Phyics3dBatchedEnvFields[HalfCheetahModel, HalfCheetahConfig, N_ENVS]` — the
+  * `Phyics3dBatchedEnv[HalfCheetahModel, HalfCheetahConfig, N_ENVS]` — the
     HalfCheetah physics3d env (which conforms to `GPUContinuousEnv`) into a
     `BatchedEnv`. Steps/resets/obs-extraction all dispatch HalfCheetah's
     native GPU physics kernels — the exact same kernels the legacy
@@ -57,7 +57,7 @@ from mojo_rl.nn.primitives.linear_relu import LinearReLU
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
-from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
 
 
@@ -89,7 +89,7 @@ comptime CHECKPOINT_PATH = "sac_half_cheetah_nn.ckpt"
 # Per-field tensor physics path (migration P5+): the batched fields facade is
 # a `BatchedEnv` that runs the LEGACY PRODUCTION physics bundle by default
 # (RK4 + Newton, parallel _mt schedules, treewalk CRBA, auto broadphase).
-comptime BatchedEnvT = Phyics3dBatchedEnvFields[
+comptime BatchedEnvT = Phyics3dBatchedEnv[
     HalfCheetahModel, HalfCheetahConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=False
 ]
 

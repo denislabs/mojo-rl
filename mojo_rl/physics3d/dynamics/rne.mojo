@@ -16,7 +16,7 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import gpu_quat_mul
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import DataFields, ModelFields, DynamicsScratch
+from ..fields import Data, Model, DynamicsScratch
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -48,7 +48,7 @@ def _max_one[N: Int]() -> Int:
 
 
 @always_inline
-def _rne_fwd_body_fields[
+def _rne_fwd_body[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -287,7 +287,7 @@ def _rne_fwd_body_fields[
 
 
 @always_inline
-def _rne_cinert_body_fields[
+def _rne_cinert_body[
     DTYPE: DType,
     NBODY: Int,
     BATCH: Int,
@@ -309,7 +309,7 @@ def _rne_cinert_body_fields[
     mut cinert_g: InlineArray[Scalar[DTYPE], _max_one[NBODY * 10]()],
 ):
     """One body's cinert (spatial inertia at subtree_com, mj_inertCom).
-    Extracted verbatim from the `_rne_env_fields` step-0 loop body so
+    Extracted verbatim from the `_rne_env` step-0 loop body so
     serial and _mt schedules share identical arithmetic."""
     var Ixx_local = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IXX])
     var Iyy_local = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_IYY])
@@ -387,7 +387,7 @@ def _rne_cinert_body_fields[
 
 
 @always_inline
-def _rne_cfrc_body_fields[
+def _rne_cfrc_body[
     DTYPE: DType,
     NBODY: Int,
     BATCH: Int,
@@ -406,7 +406,7 @@ def _rne_cfrc_body_fields[
     ],
 ):
     """One body's spatial force cfrc = I*cacc + cvel x* (I*cvel). Extracted
-    verbatim from the `_rne_env_fields` step-2 loop body. Reads only this
+    verbatim from the `_rne_env` step-2 loop body. Reads only this
     body's cinert_g slot (callers must use the same body->thread mapping
     for cinert and cfrc, like the legacy _mt)."""
     var wx = rebind[Scalar[DTYPE]](crb[env, b * 6 + 0])
@@ -463,7 +463,7 @@ def _rne_cfrc_body_fields[
 
 
 @always_inline
-def _rne_backward_env_fields[
+def _rne_backward_env[
     DTYPE: DType,
     NBODY: Int,
     BATCH: Int,
@@ -477,7 +477,7 @@ def _rne_backward_env_fields[
     ],
 ):
     """Backward cfrc accumulation (leaves to root; strictly sequential, one
-    caller thread). Extracted verbatim from `_rne_env_fields` step 3."""
+    caller thread). Extracted verbatim from `_rne_env` step 3."""
     for b in range(NBODY - 1, 0, -1):
         var parent = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
         if parent > 0:
@@ -488,7 +488,7 @@ def _rne_backward_env_fields[
 
 
 @always_inline
-def _rne_project_joint_fields[
+def _rne_project_joint[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -508,7 +508,7 @@ def _rne_project_joint_fields[
 ):
     """Project one joint's DOFs to joint space:
     bias[d] = cdof[d] . cfrc[body_of_dof]. Extracted verbatim from the
-    `_rne_env_fields` step-4 loop body (joints own disjoint DOFs ->
+    `_rne_env` step-4 loop body (joints own disjoint DOFs ->
     striping joints across threads is race-free)."""
     var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
     var body = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID]))
@@ -532,7 +532,7 @@ def _rne_project_joint_fields[
 
 
 @always_inline
-def _rne_env_fields[
+def _rne_env[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -591,7 +591,7 @@ def _rne_env_fields[
 
     # Step 0: cinert — spatial inertia at subtree_com (mj_inertCom)
     for b in range(NBODY):
-        _rne_cinert_body_fields[DTYPE, NBODY, BATCH](
+        _rne_cinert_body[DTYPE, NBODY, BATCH](
             env, b, xquat, xipos, subtree_com, bodies, cinert_g
         )
 
@@ -601,22 +601,22 @@ def _rne_env_fields[
 
     # Step 1: Forward pass — cvel and cacc (root to leaves)
     for b in range(1, NBODY):
-        _rne_fwd_body_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+        _rne_fwd_body[DTYPE, NV, NBODY, NJOINT, BATCH](
             env, b, gx, gy, gz, qvel, bodies, joints, cdof, crb, rne_cacc
         )
 
     # Step 2: Spatial forces per body: cfrc = I*cacc + cvel x* (I*cvel)
     for b in range(NBODY):
-        _rne_cfrc_body_fields[DTYPE, NBODY, BATCH](
+        _rne_cfrc_body[DTYPE, NBODY, BATCH](
             env, b, cinert_g, crb, rne_cacc, rne_cfrc
         )
 
     # Step 3: Backward pass — simple addition
-    _rne_backward_env_fields[DTYPE, NBODY, BATCH](env, bodies, rne_cfrc)
+    _rne_backward_env[DTYPE, NBODY, BATCH](env, bodies, rne_cfrc)
 
     # Step 4: Project to joint space: bias[d] = cdof[d] . cfrc[body_of_dof]
     for j in range(NJOINT):
-        _rne_project_joint_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+        _rne_project_joint[DTYPE, NV, NBODY, NJOINT, BATCH](
             env, j, joints, cdof, rne_cfrc, bias
         )
 
@@ -660,7 +660,7 @@ def _rne_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _rne_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+    _rne_env[DTYPE, NV, NBODY, NJOINT, BATCH](
         env, qvel, xquat, xipos, subtree_com, bodies, joints, meta,
         cdof, crb, rne_cacc, rne_cfrc, bias,
     )
@@ -669,7 +669,7 @@ def _rne_fields_kernel[
 # ── Cooperative (_mt) kernel — schedule from the legacy
 # `compute_bias_forces_rne_gpu_mt` (dynamics/bias_forces.mojo): striped
 # init; cinert flat-striped into a PER-THREAD InlineArray; forward
-# cvel/cacc level-parallel (same `_rne_fwd_body_fields` helper, barrier per
+# cvel/cacc level-parallel (same `_rne_fwd_body` helper, barrier per
 # level); cfrc flat-striped with the SAME body->thread mapping as cinert
 # (so cinert_g[b] is thread-local); backward pass serial on tid 0; joint
 # projection flat-striped (joints own disjoint DOFs). All helpers are the
@@ -744,7 +744,7 @@ def _rne_fields_mt_kernel[
         uninitialized=True
     )
     for b in range(tid, NBODY, N_THREADS):
-        _rne_cinert_body_fields[DTYPE, NBODY, BATCH](
+        _rne_cinert_body[DTYPE, NBODY, BATCH](
             env, b, xquat, xipos, subtree_com, bodies, cinert_g
         )
 
@@ -752,7 +752,7 @@ def _rne_fields_mt_kernel[
     for lvl in range(1, max_level + 1):
         for b in range(1 + tid, NBODY, N_THREADS):
             if level[b] == lvl:
-                _rne_fwd_body_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+                _rne_fwd_body[DTYPE, NV, NBODY, NJOINT, BATCH](
                     env, b, gx, gy, gz, qvel, bodies, joints, cdof, crb,
                     rne_cacc,
                 )
@@ -760,24 +760,24 @@ def _rne_fields_mt_kernel[
 
     # Step 2: cfrc (flat, SAME mapping as cinert so cinert_g[b] is local).
     for b in range(tid, NBODY, N_THREADS):
-        _rne_cfrc_body_fields[DTYPE, NBODY, BATCH](
+        _rne_cfrc_body[DTYPE, NBODY, BATCH](
             env, b, cinert_g, crb, rne_cacc, rne_cfrc
         )
     barrier()
 
     # Step 3: backward cfrc accumulation (cheap, tid 0 serial).
     if tid == 0:
-        _rne_backward_env_fields[DTYPE, NBODY, BATCH](env, bodies, rne_cfrc)
+        _rne_backward_env[DTYPE, NBODY, BATCH](env, bodies, rne_cfrc)
     barrier()
 
     # Step 4: qfrc projection (flat per joint; disjoint DOFs).
     for j in range(tid, NJOINT, N_THREADS):
-        _rne_project_joint_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+        _rne_project_joint[DTYPE, NV, NBODY, NJOINT, BATCH](
             env, j, joints, cdof, rne_cfrc, bias
         )
 
 
-def compute_bias_forces_rne_fields[
+def compute_bias_forces_rne[
     target: StaticString,
     DTYPE: DType,
     NQ: Int,
@@ -794,8 +794,8 @@ def compute_bias_forces_rne_fields[
     BATCH: Int = 1,
     PARALLEL: Bool = False,
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: ModelFields[
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: Model[
         DTYPE,
         NV,
         NBODY,
@@ -838,7 +838,7 @@ def compute_bias_forces_rne_fields[
         var cfrc_v = scratch.rne_cfrc.lt["cpu", L_B6]()
         var bias_v = scratch.bias.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _rne_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+            _rne_env[DTYPE, NV, NBODY, NJOINT, BATCH](
                 e, qvel_v, xquat_v, xipos_v, stcom_v, bodies_v, joints_v,
                 meta_v, cdof_v, crb_v, cacc_v, cfrc_v, bias_v,
             )

@@ -28,44 +28,44 @@ from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import (
-    DataFields,
-    ModelFields,
+    Data,
+    Model,
     DynamicsScratch,
     ContactScratch,
 )
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
-from mojo_rl.physics3d.integrator.euler_fields import (
+from mojo_rl.physics3d.integrator.euler import (
     _armature_kernel,
     _fnet_passive_kernel,
     _qacc_writeback_kernel,
-    _armature_env_fields,
-    _fnet_passive_env_fields,
-    _qacc_writeback_env_fields,
+    _armature_env,
+    _fnet_passive_env,
+    _qacc_writeback_env,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
-    compute_body_velocities_fields,
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
+    compute_body_velocities,
 )
-from mojo_rl.physics3d.dynamics.subtree_com_fields import (
-    compute_subtree_com_fields,
+from mojo_rl.physics3d.dynamics.subtree_com import (
+    compute_subtree_com,
 )
-from mojo_rl.physics3d.dynamics.cdof_fields import compute_cdof_fields
-from mojo_rl.physics3d.dynamics.mass_matrix_fields import (
-    compute_mass_matrix_fields,
+from mojo_rl.physics3d.dynamics.cdof import compute_cdof
+from mojo_rl.physics3d.dynamics.mass_matrix import (
+    compute_mass_matrix,
 )
-from mojo_rl.physics3d.dynamics.ldl_fields import (
-    ldl_factor_fields,
-    ldl_solve_fields,
-    compute_m_inv_fields,
+from mojo_rl.physics3d.dynamics.ldl import (
+    ldl_factor,
+    ldl_solve,
+    compute_m_inv,
 )
-from mojo_rl.physics3d.dynamics.rne_fields import (
-    compute_bias_forces_rne_fields,
+from mojo_rl.physics3d.dynamics.rne import (
+    compute_bias_forces_rne,
 )
-from mojo_rl.physics3d.collision.contact_detection_fields import (
-    detect_contacts_fields,
+from mojo_rl.physics3d.collision.contact_detection import (
+    detect_contacts,
 )
-from mojo_rl.physics3d.solver.newton_solve_fields import solve_newton_fields
+from mojo_rl.physics3d.solver.newton_solve import solve_newton
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
@@ -119,30 +119,30 @@ def _check(name: String, got: Float64, gold: Float64) raises:
 def _fields_prep[
     target: StaticString
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
-    mut mf: ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
+    mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    mut mf: Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
-    """Smooth-dynamics prep + detection, mirroring EulerIntegratorFields.step
+    """Smooth-dynamics prep + detection, mirroring EulerIntegrator.step
     up to the constraint seam (order verbatim)."""
-    forward_kinematics_fields[
+    forward_kinematics[
         target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         BATCH,
     ](d, mf, ctx)
-    compute_body_velocities_fields[
+    compute_body_velocities[
         target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         BATCH,
     ](d, mf, ctx)
-    compute_subtree_com_fields[
+    compute_subtree_com[
         target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         BATCH,
     ](d, mf, ctx)
-    compute_cdof_fields[
+    compute_cdof[
         target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         BATCH,
     ](d, mf, scratch, ctx)
-    compute_mass_matrix_fields[
+    compute_mass_matrix[
         target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         BATCH,
     ](d, mf, scratch, ctx)
@@ -156,10 +156,10 @@ def _fields_prep[
         var joints_v = mf.joints.lt["cpu", L_JOINT]()
         var M_v = scratch.M.lt["cpu", L_M]()
         for e in range(BATCH):
-            _armature_env_fields[DTYPE, NV, NJOINT, BATCH](e, joints_v, M_v)
-        ldl_factor_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_m_inv_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_bias_forces_rne_fields[
+            _armature_env[DTYPE, NV, NJOINT, BATCH](e, joints_v, M_v)
+        ldl_factor[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        compute_m_inv[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        compute_bias_forces_rne[
             target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
             BATCH,
         ](d, mf, scratch, ctx)
@@ -169,15 +169,15 @@ def _fields_prep[
         var bias_v = scratch.bias.lt["cpu", L_NV]()
         var fnet_v = scratch.fnet.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _fnet_passive_env_fields[DTYPE, NQ, NV, NJOINT, BATCH](
+            _fnet_passive_env[DTYPE, NQ, NV, NJOINT, BATCH](
                 e, qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v
             )
-        ldl_solve_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        ldl_solve[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
         var qacc_ws_v = scratch.qacc_ws.lt["cpu", L_NV]()
         var qacc_v = d.qacc.lt["cpu", L_NV]()
         var qacc_c_v = scratch.qacc_constrained.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _qacc_writeback_env_fields[DTYPE, NV, BATCH](
+            _qacc_writeback_env[DTYPE, NV, BATCH](
                 e, qacc_ws_v, qacc_v, qacc_c_v
             )
     else:
@@ -189,9 +189,9 @@ def _fields_prep[
             grid_dim=(BATCH,),
             block_dim=(1,),
         )
-        ldl_factor_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_m_inv_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_bias_forces_rne_fields[
+        ldl_factor[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        compute_m_inv[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        compute_bias_forces_rne[
             target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
             BATCH,
         ](d, mf, scratch, ctx)
@@ -207,7 +207,7 @@ def _fields_prep[
             grid_dim=(BATCH,),
             block_dim=(1,),
         )
-        ldl_solve_fields[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        ldl_solve[target, DTYPE, NV, NBODY, BATCH](scratch, ctx)
         ctx.value().enqueue_function[
             _qacc_writeback_kernel[DTYPE, NV, BATCH]
         ](
@@ -218,7 +218,7 @@ def _fields_prep[
             block_dim=(1,),
         )
 
-    detect_contacts_fields[
+    detect_contacts[
         target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         BATCH,
     ](d, mf, ctx)
@@ -279,11 +279,11 @@ def run_leg[
     print("--- Newton solve leg:", leg, "(BATCH=", BATCH, ")")
 
     # === Model ===
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # === State (walker on the floor; env 1 with one joint past its limit) ===
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     var lim = _find_limited_joint(mf.joints.data)
     var lim_qpos_adr = lim[0]
     var lim_rmax = lim[1]
@@ -343,7 +343,7 @@ def run_leg[
     var ncon_total = 0
     for rnd in range(N_ROUNDS):
         _fields_prep["gpu"](d, mf, scratch, ctx)
-        solve_newton_fields[
+        solve_newton[
             "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
             CONE_T, BATCH,
         ](d, mf, scratch, cscratch, ctx)
@@ -409,11 +409,11 @@ def run_cpu_smoke(ctx: DeviceContext) raises:
     """Single-source CPU path smoke: fields-CPU Newton solve close to
     fields-GPU (iterative solver -> loose cross-target tolerance)."""
     print("--- Newton solve fields-CPU vs fields-GPU smoke (ELLIPTIC)")
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dc = DataFields[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -440,12 +440,12 @@ def run_cpu_smoke(ctx: DeviceContext) raises:
     var cscratch_c = ContactScratch[DTYPE, NV, MC, BATCH]()
 
     _fields_prep["gpu"](d, mf, scratch, ctx)
-    solve_newton_fields[
+    solve_newton[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         ConeType.ELLIPTIC, BATCH,
     ](d, mf, scratch, cscratch, ctx)
     _fields_prep["cpu"](dc, mf, scratch_c, None)
-    solve_newton_fields[
+    solve_newton[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
         ConeType.ELLIPTIC, BATCH,
     ](dc, mf, scratch_c, cscratch_c, None)

@@ -3,7 +3,7 @@
 from std.testing import assert_equal, assert_true, TestSuite
 from std.gpu.host import DeviceContext
 from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel, pm
-from mojo_rl.physics3d.fields import ModelFields
+from mojo_rl.physics3d.fields import Model
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
@@ -53,7 +53,7 @@ def test_sawyer_reach_dimensions() raises:
     comptime DTYPE = DType.float64
     comptime M = SawyerReachModel
     var ctx = DeviceContext()
-    var mf = ModelFields[
+    var mf = Model[
         DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
         M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 16 * 256,
     ]()

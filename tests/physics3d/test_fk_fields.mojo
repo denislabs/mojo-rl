@@ -28,23 +28,23 @@ from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.joint_types import JNT_HINGE
-from mojo_rl.physics3d.fields import DataFields, ModelFields, DynamicsScratch
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
 )
-from mojo_rl.physics3d.dynamics.subtree_com_fields import (
-    compute_subtree_com_fields,
+from mojo_rl.physics3d.dynamics.subtree_com import (
+    compute_subtree_com,
 )
-from mojo_rl.physics3d.dynamics.cdof_fields import compute_cdof_fields
-from mojo_rl.physics3d.dynamics.mass_matrix_fields import (
-    compute_mass_matrix_fields,
+from mojo_rl.physics3d.dynamics.cdof import compute_cdof
+from mojo_rl.physics3d.dynamics.mass_matrix import (
+    compute_mass_matrix,
 )
-from mojo_rl.physics3d.dynamics.ldl_fields import (
-    ldl_factor_fields,
-    ldl_solve_fields,
+from mojo_rl.physics3d.dynamics.ldl import (
+    ldl_factor,
+    ldl_solve,
 )
-from mojo_rl.physics3d.dynamics.rne_fields import (
-    compute_bias_forces_rne_fields,
+from mojo_rl.physics3d.dynamics.rne import (
+    compute_bias_forces_rne,
 )
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
@@ -135,7 +135,7 @@ def test_walker2d() raises:
     print("--- A. Walker2D fields FK + dynamics chain, BATCH=", BATCH, "---")
     var ctx = DeviceContext()
 
-    var mf = ModelFields[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     var qcfg = List[List[Float64]]()
@@ -159,8 +159,8 @@ def test_walker2d() raises:
     q3[8] = -0.6
     qcfg.append(q3^)
 
-    var d = DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]()
-    var dc = DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]()
+    var d = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]()
+    var dc = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             d.qpos.data[e * NQ + i] = Scalar[DTYPE](qcfg[e][i])
@@ -168,12 +168,12 @@ def test_walker2d() raises:
     d.upload_all(ctx)
 
     # 1. FK.
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
         NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
     d.download_all(ctx)
-    forward_kinematics_fields[
+    forward_kinematics[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
         NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](dc, mf)
@@ -204,12 +204,12 @@ def test_walker2d() raises:
         raise Error("walker2d FK fields-CPU tolerance exceeded")
 
     # 2. subtree_com.
-    compute_subtree_com_fields[
+    compute_subtree_com[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
         NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, ctx)
     d.subtree_com.download(ctx)
-    compute_subtree_com_fields[
+    compute_subtree_com[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
         NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](dc, mf)
@@ -228,12 +228,12 @@ def test_walker2d() raises:
     var scratch = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
     scratch.upload_all(ctx)
     var scratch_c = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    compute_cdof_fields[
+    compute_cdof[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
         NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, ctx)
     scratch.cdof.download(ctx)
-    compute_cdof_fields[
+    compute_cdof[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
         NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](dc, mf, scratch_c)
@@ -249,12 +249,12 @@ def test_walker2d() raises:
         raise Error("walker2d cdof fields-CPU tolerance exceeded")
 
     # 4. CRBA mass matrix.
-    compute_mass_matrix_fields[
+    compute_mass_matrix[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
         NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, ctx)
     scratch.M.download(ctx)
-    compute_mass_matrix_fields[
+    compute_mass_matrix[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
         NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](dc, mf, scratch_c)
@@ -274,11 +274,11 @@ def test_walker2d() raises:
             scratch.fnet.data[e * NV + i] = f
             scratch_c.fnet.data[e * NV + i] = f
     scratch.fnet.upload(ctx)
-    ldl_factor_fields["gpu", DTYPE, NV, NBODY, BATCH](scratch, ctx)
-    ldl_solve_fields["gpu", DTYPE, NV, NBODY, BATCH](scratch, ctx)
+    ldl_factor["gpu", DTYPE, NV, NBODY, BATCH](scratch, ctx)
+    ldl_solve["gpu", DTYPE, NV, NBODY, BATCH](scratch, ctx)
     scratch.qacc_ws.download(ctx)
-    ldl_factor_fields["cpu", DTYPE, NV, NBODY, BATCH](scratch_c)
-    ldl_solve_fields["cpu", DTYPE, NV, NBODY, BATCH](scratch_c)
+    ldl_factor["cpu", DTYPE, NV, NBODY, BATCH](scratch_c)
+    ldl_solve["cpu", DTYPE, NV, NBODY, BATCH](scratch_c)
     var worst_ld = Float64(0)
     for i in range(BATCH * NV):
         var err = abs(
@@ -298,12 +298,12 @@ def test_walker2d() raises:
             d.qvel.data[e * NV + i] = v
             dc.qvel.data[e * NV + i] = v
     d.qvel.upload(ctx)
-    compute_bias_forces_rne_fields[
+    compute_bias_forces_rne[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
         NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](d, mf, scratch, ctx)
     scratch.bias.download(ctx)
-    compute_bias_forces_rne_fields[
+    compute_bias_forces_rne[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
         NEQ, NTD, NSITE, NEXCL, 0, BATCH,
     ](dc, mf, scratch_c)
@@ -339,7 +339,7 @@ def test_synthetic_sites() raises:
     # tensors (no offset slab, no load_from_slab): worldbody + 1 hinge body,
     # 2 sites. Each record family packs as `record_idx * MODEL_<KIND>_SIZE +
     # <KIND>_IDX_*`; meta is a standalone tensor.
-    var mf = ModelFields[DTYPE, S_NV, S_NBODY, S_NJOINT, 0, 0, 0, S_NSITE]()
+    var mf = Model[DTYPE, S_NV, S_NBODY, S_NJOINT, 0, 0, 0, S_NSITE]()
     mf.bodies.data[0 * MODEL_BODY_SIZE + BODY_IDX_QUAT_W] = 1.0
     var b1 = 1 * MODEL_BODY_SIZE
     mf.bodies.data[b1 + BODY_IDX_PARENT] = 0.0
@@ -366,19 +366,19 @@ def test_synthetic_sites() raises:
     angles.append(0.7)
     angles.append(-1.2)
 
-    var d = DataFields[DTYPE, S_NQ, S_NV, S_NBODY, S_MC, S_NSITE, S_BATCH]()
-    var dc = DataFields[DTYPE, S_NQ, S_NV, S_NBODY, S_MC, S_NSITE, S_BATCH]()
+    var d = Data[DTYPE, S_NQ, S_NV, S_NBODY, S_MC, S_NSITE, S_BATCH]()
+    var dc = Data[DTYPE, S_NQ, S_NV, S_NBODY, S_MC, S_NSITE, S_BATCH]()
     for e in range(S_BATCH):
         d.qpos.data[e * S_NQ + 0] = Scalar[DTYPE](angles[e])
         dc.qpos.data[e * S_NQ + 0] = Scalar[DTYPE](angles[e])
     d.upload_all(ctx)
 
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DTYPE, S_NQ, S_NV, S_NBODY, S_NJOINT, S_MC, 0,
         0, 0, S_NSITE, 0, 0, S_BATCH,
     ](d, mf, ctx)
     d.download_all(ctx)
-    forward_kinematics_fields[
+    forward_kinematics[
         "cpu", DTYPE, S_NQ, S_NV, S_NBODY, S_NJOINT, S_MC, 0,
         0, 0, S_NSITE, 0, 0, S_BATCH,
     ](dc, mf)

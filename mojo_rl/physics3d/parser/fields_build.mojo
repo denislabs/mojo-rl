@@ -1,7 +1,7 @@
-"""Spec-direct ModelFields build: FlatModelDef → packed record tensors (G4).
+"""Spec-direct Model build: FlatModelDef → packed record tensors (G4).
 
 Replaces the legacy two-hop build (`FlatModelDef.setup_model` → CPU `Model` →
-`ModelFields.load_from_model`) with ONE pass that writes the packed record
+`Model.load_from_model`) with ONE pass that writes the packed record
 tensors directly. Every derived quantity the legacy path computed is ported
 verbatim:
 
@@ -25,7 +25,7 @@ local pos). `load_from_model` never wrote them — sites were silently
 all-zero on the fields path.
 
 invweight0 is NOT computed here — `init_fields` runs the fields-native
-`compute_invweight0_fields` (G1) after this build.
+`compute_invweight0` (G1) after this build.
 
 Only the BODY mass/inertia block is staged in host Lists (inertiafromgeom +
 settotalmass mutate it); all other records are written straight into `mf`.
@@ -48,7 +48,7 @@ from mojo_rl.physics3d.constants import (
     GEOM_CYLINDER,
     GEOM_MESH,
 )
-from mojo_rl.physics3d.fields import ModelFields
+from mojo_rl.physics3d.fields import Model
 from mojo_rl.physics3d.collision.convex_hull import (
     load_mesh_hull,
     compute_bounding_radius_at,
@@ -444,7 +444,7 @@ def build_model_fields_from_flat[
     NSITE_P: Int,
     NEQ: Int,
     NEXCLUDE_P: Int,
-    # ModelFields dims (record capacities)
+    # Model dims (record capacities)
     MAX_EQUALITY: Int,
     MAX_TENDON: Int,
     NSITE: Int,
@@ -471,7 +471,7 @@ def build_model_fields_from_flat[
         NEQ,
         NEXCLUDE_P,
     ],
-    mut mf: ModelFields[
+    mut mf: Model[
         DTYPE,
         NV,
         NBODY,

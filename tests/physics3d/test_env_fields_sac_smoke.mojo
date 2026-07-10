@@ -1,4 +1,4 @@
-"""P5 smoke: deep SAC trains against Phyics3dEnvFields end-to-end.
+"""P5 smoke: deep SAC trains against Phyics3dEnv end-to-end.
 
 The point is INTEGRATION, not convergence (Apple = smoke only): the
 `deep_agents.sac` facade + single-env off-policy driver run a real training
@@ -16,7 +16,7 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_env_fields import Phyics3dEnvFields
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.envs.inverted_pendulum.inverted_pendulum_xml import (
     InvertedPendulumModel,
 )
@@ -24,7 +24,7 @@ from mojo_rl.envs.inverted_pendulum.inverted_pendulum_config import (
     InvertedPendulumConfig,
 )
 
-comptime EnvT = Phyics3dEnvFields[
+comptime EnvT = Phyics3dEnv[
     InvertedPendulumModel,
     InvertedPendulumConfig,
     DT,
@@ -40,7 +40,7 @@ comptime NUM_STEPS = 2_000
 
 def main() raises:
     seed(7)
-    print("--- SAC smoke on Phyics3dEnvFields[InvertedPendulum] (CPU) ---")
+    print("--- SAC smoke on Phyics3dEnv[InvertedPendulum] (CPU) ---")
     var ctx = DeviceContext()
     var env = EnvT(ctx)
     var agent = SAC["cpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN](

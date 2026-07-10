@@ -1,8 +1,8 @@
 """Forward kinematics over per-field tensors (migration P2, single-source).
 
 The per-field port of `forward_kinematics_gpu`/`fk_body_gpu`: ONE formula
-body (`_fk_body_fields`, arithmetic verbatim from `fk_body_gpu`) consumed by
-BOTH targets through `forward_kinematics_fields[target]` — the CPU path
+body (`_fk_body`, arithmetic verbatim from `fk_body_gpu`) consumed by
+BOTH targets through `forward_kinematics[target]` — the CPU path
 loops envs over `.lt["cpu"]` views of the same tensors the GPU kernel binds.
 This is the single-source pattern the migration converges on: no flat slab,
 no offset math — operands are exactly the fields FK touches (qpos, body
@@ -29,7 +29,7 @@ from .quat_math import (
     gpu_axis_angle_to_quat,
 )
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
-from ..fields import DataFields, ModelFields
+from ..fields import Data, Model
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
@@ -67,7 +67,7 @@ comptime FK_TPB: Int = 64
 
 
 @always_inline
-def _fk_body_fields[
+def _fk_body[
     DTYPE: DType,
     NQ: Int,
     NBODY: Int,
@@ -430,7 +430,7 @@ def _fk_body_fields[
 
 
 @always_inline
-def _fk_env_fields[
+def _fk_env[
     DTYPE: DType,
     NQ: Int,
     NBODY: Int,
@@ -466,13 +466,13 @@ def _fk_env_fields[
     xipos[env, 2] = Scalar[DTYPE](0)
 
     for body in range(1, NBODY):
-        _fk_body_fields[DTYPE, NQ, NBODY, NJOINT, BATCH](
+        _fk_body[DTYPE, NQ, NBODY, NJOINT, BATCH](
             env, body, qpos, bodies, joints, xpos, xquat, xipos
         )
 
 
 @always_inline
-def _fk_sites_fields[
+def _fk_sites[
     DTYPE: DType,
     NBODY: Int,
     NSITE: Int,
@@ -492,13 +492,13 @@ def _fk_sites_fields[
 ):
     """site_xpos = xpos[body] + rotate(site_pos, xquat[body])."""
     for site_idx in range(NSITE):
-        _fk_site_fields[DTYPE, NBODY, NSITE, BATCH](
+        _fk_site[DTYPE, NBODY, NSITE, BATCH](
             env, site_idx, sites, xpos, xquat, site_xpos
         )
 
 
 @always_inline
-def _fk_site_fields[
+def _fk_site[
     DTYPE: DType,
     NBODY: Int,
     NSITE: Int,
@@ -518,7 +518,7 @@ def _fk_site_fields[
     ],
 ):
     """One site's world position (extracted verbatim from the
-    `_fk_sites_fields` loop body so the serial and _mt schedules share the
+    `_fk_sites` loop body so the serial and _mt schedules share the
     identical arithmetic)."""
     var s_body = Int(rebind[Scalar[DTYPE]](sites[site_idx, SITE_IDX_BODY]))
     var sp_x = rebind[Scalar[DTYPE]](sites[site_idx, SITE_IDX_POS_X])
@@ -566,7 +566,7 @@ def _fk_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _fk_env_fields[DTYPE, NQ, NBODY, NJOINT, BATCH](
+    _fk_env[DTYPE, NQ, NBODY, NJOINT, BATCH](
         env, qpos, bodies, joints, xpos, xquat, xipos
     )
 
@@ -603,10 +603,10 @@ def _fk_fields_sites_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _fk_env_fields[DTYPE, NQ, NBODY, NJOINT, BATCH](
+    _fk_env[DTYPE, NQ, NBODY, NJOINT, BATCH](
         env, qpos, bodies, joints, xpos, xquat, xipos
     )
-    _fk_sites_fields[DTYPE, NBODY, NSITE, BATCH](
+    _fk_sites[DTYPE, NBODY, NSITE, BATCH](
         env, sites, xpos, xquat, site_xpos
     )
 
@@ -616,7 +616,7 @@ def _fk_fields_sites_kernel[
 # (kinematics/forward_kinematics.mojo): bodies are processed level by level
 # (tree depth, derived from parents in one forward sweep); bodies within a
 # level are striped across threads; one barrier per level. The per-body
-# arithmetic is the SAME `_fk_body_fields` helper the serial kernel calls,
+# arithmetic is the SAME `_fk_body` helper the serial kernel calls,
 # so outputs are bit-exact vs the serial fields kernel. Unlike the legacy
 # mt (which lived inside a packed 2D stage block), the grid here is exact —
 # one block per env, no invalid envs — so the legacy `valid_env` guards are
@@ -624,7 +624,7 @@ def _fk_fields_sites_kernel[
 
 
 @always_inline
-def _fk_env_mt_fields[
+def _fk_env_mt[
     DTYPE: DType,
     NQ: Int,
     NBODY: Int,
@@ -679,7 +679,7 @@ def _fk_env_mt_fields[
     for lvl in range(1, max_level + 1):
         for body in range(1 + tid, NBODY, N_THREADS):
             if level[body] == lvl:
-                _fk_body_fields[DTYPE, NQ, NBODY, NJOINT, BATCH](
+                _fk_body[DTYPE, NQ, NBODY, NJOINT, BATCH](
                     env, body, qpos, bodies, joints, xpos, xquat, xipos
                 )
         barrier()
@@ -710,7 +710,7 @@ def _fk_fields_mt_kernel[
 ):
     var env = Int(block_idx.x)
     var tid = Int(thread_idx.x)
-    _fk_env_mt_fields[DTYPE, NQ, NBODY, NJOINT, BATCH, N_THREADS](
+    _fk_env_mt[DTYPE, NQ, NBODY, NJOINT, BATCH, N_THREADS](
         env, tid, qpos, bodies, joints, xpos, xquat, xipos
     )
 
@@ -747,21 +747,21 @@ def _fk_fields_sites_mt_kernel[
 ):
     var env = Int(block_idx.x)
     var tid = Int(thread_idx.x)
-    _fk_env_mt_fields[DTYPE, NQ, NBODY, NJOINT, BATCH, N_THREADS](
+    _fk_env_mt[DTYPE, NQ, NBODY, NJOINT, BATCH, N_THREADS](
         env, tid, qpos, bodies, joints, xpos, xquat, xipos
     )
     # Body poses published by the level loop's final barrier; sites are
-    # independent per site -> stripe across threads (same `_fk_site_fields`
+    # independent per site -> stripe across threads (same `_fk_site`
     # helper as the serial kernel; no legacy sites-mt exists, the legacy mt
     # runs NSITE=0 only — striping independent writes stays bit-exact).
     for site_idx in range(tid, NSITE, N_THREADS):
-        _fk_site_fields[DTYPE, NBODY, NSITE, BATCH](
+        _fk_site[DTYPE, NBODY, NSITE, BATCH](
             env, site_idx, sites, xpos, xquat, site_xpos
         )
 
 
 # ── Public single-source dispatcher ───────────────────────────────────────
-def forward_kinematics_fields[
+def forward_kinematics[
     target: StaticString,
     DTYPE: DType,
     NQ: Int,
@@ -778,8 +778,8 @@ def forward_kinematics_fields[
     BATCH: Int = 1,
     PARALLEL: Bool = False,
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: ModelFields[
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: Model[
         DTYPE,
         NV,
         NBODY,
@@ -812,7 +812,7 @@ def forward_kinematics_fields[
         var xquat_v = d.xquat.lt["cpu", L_XQUAT]()
         var xipos_v = d.xipos.lt["cpu", L_XPOS]()
         for e in range(BATCH):
-            _fk_env_fields[DTYPE, NQ, NBODY, NJOINT, BATCH](
+            _fk_env[DTYPE, NQ, NBODY, NJOINT, BATCH](
                 e, qpos_v, bodies_v, joints_v, xpos_v, xquat_v, xipos_v
             )
         comptime if NSITE > 0:
@@ -821,7 +821,7 @@ def forward_kinematics_fields[
             var sites_v = m.sites.lt["cpu", L_SITE_REC]()
             var sitex_v = d.site_xpos.lt["cpu", L_SITE_X]()
             for e in range(BATCH):
-                _fk_sites_fields[DTYPE, NBODY, NSITE, BATCH](
+                _fk_sites[DTYPE, NBODY, NSITE, BATCH](
                     e, sites_v, xpos_v, xquat_v, sitex_v
                 )
     elif PARALLEL:
@@ -903,7 +903,7 @@ def forward_kinematics_fields[
 
 
 @always_inline
-def _vel_body_fields[
+def _vel_body[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -1034,7 +1034,7 @@ def _vel_body_fields[
 
 
 @always_inline
-def _body_velocities_env_fields[
+def _body_velocities_env[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -1069,7 +1069,7 @@ def _body_velocities_env_fields[
         xangvel[env, body * 3 + 2] = Scalar[DTYPE](0)
 
     for body in range(1, NBODY):
-        _vel_body_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+        _vel_body[DTYPE, NV, NBODY, NJOINT, BATCH](
             env, body, qvel, xquat, xipos, bodies, joints, xvel, xangvel
         )
 
@@ -1102,7 +1102,7 @@ def _body_velocities_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _body_velocities_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+    _body_velocities_env[DTYPE, NV, NBODY, NJOINT, BATCH](
         env, qvel, xquat, xipos, bodies, joints, xvel, xangvel
     )
 
@@ -1110,7 +1110,7 @@ def _body_velocities_fields_kernel[
 # ── Cooperative (_mt) kernel — schedule from the legacy
 # `compute_body_velocities_gpu_mt`: worldbody zeroed by tid 0, then bodies
 # level by level, striped across threads, one barrier per level. Per-body
-# arithmetic is the SAME `_vel_body_fields` helper as the serial kernel.
+# arithmetic is the SAME `_vel_body` helper as the serial kernel.
 # Only body 0 needs zeroing (bodies 1..NBODY-1 are overwritten). Grid is
 # exact (one block per env) -> legacy valid_env guards dropped.
 def _body_velocities_fields_mt_kernel[
@@ -1163,14 +1163,14 @@ def _body_velocities_fields_mt_kernel[
     for lvl in range(1, max_level + 1):
         for body in range(1 + tid, NBODY, N_THREADS):
             if level[body] == lvl:
-                _vel_body_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+                _vel_body[DTYPE, NV, NBODY, NJOINT, BATCH](
                     env, body, qvel, xquat, xipos, bodies, joints, xvel,
                     xangvel,
                 )
         barrier()
 
 
-def compute_body_velocities_fields[
+def compute_body_velocities[
     target: StaticString,
     DTYPE: DType,
     NQ: Int,
@@ -1187,8 +1187,8 @@ def compute_body_velocities_fields[
     BATCH: Int = 1,
     PARALLEL: Bool = False,
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: ModelFields[
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: Model[
         DTYPE,
         NV,
         NBODY,
@@ -1220,7 +1220,7 @@ def compute_body_velocities_fields[
         var xvel_v = d.xvel.lt["cpu", L_B3]()
         var xangvel_v = d.xangvel.lt["cpu", L_B3]()
         for e in range(BATCH):
-            _body_velocities_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+            _body_velocities_env[DTYPE, NV, NBODY, NJOINT, BATCH](
                 e, qvel_v, xquat_v, xipos_v, bodies_v, joints_v, xvel_v,
                 xangvel_v,
             )

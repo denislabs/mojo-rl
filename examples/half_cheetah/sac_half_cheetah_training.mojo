@@ -49,7 +49,7 @@ from mojo_rl.nn.primitives.activations import ReLU
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
-from mojo_rl.envs.phyics3d_env_fields import Phyics3dEnvFields
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
 
 
@@ -63,7 +63,7 @@ comptime HIDDEN = 256
 
 # Per-field tensor physics path (migration P5+): single-env fields facade,
 # CPU stepping (SOLVER="newton" = the legacy env default physics).
-comptime EnvT = Phyics3dEnvFields[
+comptime EnvT = Phyics3dEnv[
     HalfCheetahModel, HalfCheetahConfig, DT, TERMINATE_ON_UNHEALTHY=False
 ]
 comptime BATCH = 64

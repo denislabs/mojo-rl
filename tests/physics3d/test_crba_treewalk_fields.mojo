@@ -1,4 +1,4 @@
-"""Gate for the fields TREE-WALK CRBA (compute_mass_matrix_fields[...,
+"""Gate for the fields TREE-WALK CRBA (compute_mass_matrix[...,
 PARALLEL=True, TREEWALK=True]) — the legacy PRODUCTION mass-matrix
 algorithm ported verbatim to per-field tensors.
 
@@ -12,7 +12,7 @@ algorithm ported verbatim to per-field tensors.
    dense-vs-treewalk relationship, with the exact tolerances of
    tests/physics3d/test_mass_matrix_treewalk_ant.mojo (abs<1e-3 OR
    rel<1e-2 per element). Non-vacuous: max |off-diagonal| asserted > 1e-3.
-3. Integrator-level: RK4IntegratorFields[..., PARALLEL_GPU=True,
+3. Integrator-level: RK4Integrator[..., PARALLEL_GPU=True,
    CRBA_TREEWALK=True] vs [..., CRBA_TREEWALK=False], Walker2D WITH
    CONTACTS, 3 steps: qpos within 1e-3, contacts asserted > 0.
    (No legacy STEP_THREADS=NV leg: the legacy parallel RNE
@@ -29,18 +29,18 @@ from std.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import DataFields, ModelFields, DynamicsScratch
-from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
-    forward_kinematics_fields,
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
 )
-from mojo_rl.physics3d.dynamics.subtree_com_fields import (
-    compute_subtree_com_fields,
+from mojo_rl.physics3d.dynamics.subtree_com import (
+    compute_subtree_com,
 )
-from mojo_rl.physics3d.dynamics.cdof_fields import compute_cdof_fields
-from mojo_rl.physics3d.dynamics.mass_matrix_fields import (
-    compute_mass_matrix_fields,
+from mojo_rl.physics3d.dynamics.cdof import compute_cdof
+from mojo_rl.physics3d.dynamics.mass_matrix import (
+    compute_mass_matrix,
 )
-from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
+from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
 )
@@ -97,7 +97,7 @@ def test_walker2d_mm() raises:
     print("--- Walker2D treewalk CRBA, BATCH=", W_BATCH, "---")
     var ctx = DeviceContext()
 
-    var mf = ModelFields[DTYPE, W_NV, W_NBODY, W_NJOINT, W_NGEOM, W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0]()
+    var mf = Model[DTYPE, W_NV, W_NBODY, W_NJOINT, W_NGEOM, W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Two distinct qpos configs (from the walker2d FK gate).
@@ -119,30 +119,30 @@ def test_walker2d_mm() raises:
     q2[8] = -0.6
     qcfg.append(q2^)
 
-    var d = DataFields[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, W_NSITE, W_BATCH]()
+    var d = Data[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, W_NSITE, W_BATCH]()
     for e in range(W_BATCH):
         for i in range(W_NQ):
             d.qpos.data[e * W_NQ + i] = Scalar[DTYPE](qcfg[e][i])
     d.upload_all(ctx)
 
     # Fields: prep chain (gated bit-exact vs legacy in test_fk_fields).
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM,
         W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0, W_BATCH,
     ](d, mf, ctx)
-    compute_subtree_com_fields[
+    compute_subtree_com[
         "gpu", DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM,
         W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0, W_BATCH,
     ](d, mf, ctx)
     var scratch = DynamicsScratch[DTYPE, W_NV, W_NBODY, W_BATCH]()
     scratch.upload_all(ctx)
-    compute_cdof_fields[
+    compute_cdof[
         "gpu", DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM,
         W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0, W_BATCH,
     ](d, mf, scratch, ctx)
 
     # Fields DENSE first (stash M), then TREEWALK into the same slot.
-    compute_mass_matrix_fields[
+    compute_mass_matrix[
         "gpu", DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM,
         W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0, W_BATCH, PARALLEL=True,
     ](d, mf, scratch, ctx)
@@ -153,7 +153,7 @@ def test_walker2d_mm() raises:
     for i in range(W_BATCH * W_NV * W_NV):
         dense[i] = scratch.M.data[i]
 
-    compute_mass_matrix_fields[
+    compute_mass_matrix[
         "gpu", DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM,
         W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0, W_BATCH, PARALLEL=True, TREEWALK=True,
     ](d, mf, scratch, ctx)
@@ -171,7 +171,7 @@ def test_ant_mm() raises:
     print("--- Ant treewalk CRBA (FREE joint), BATCH=", A_BATCH, "---")
     var ctx = DeviceContext()
 
-    var mf = ModelFields[DTYPE, A_NV, A_NBODY, A_NJOINT, A_NGEOM, A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0]()
+    var mf = Model[DTYPE, A_NV, A_NBODY, A_NJOINT, A_NGEOM, A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0]()
     AntModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Two configs from the legacy ant treewalk gate: default init_qpos and
@@ -201,28 +201,28 @@ def test_ant_mm() raises:
     q2[14] = 0.4
     qcfg.append(q2^)
 
-    var d = DataFields[DTYPE, A_NQ, A_NV, A_NBODY, A_MC, A_NSITE, A_BATCH]()
+    var d = Data[DTYPE, A_NQ, A_NV, A_NBODY, A_MC, A_NSITE, A_BATCH]()
     for e in range(A_BATCH):
         for i in range(A_NQ):
             d.qpos.data[e * A_NQ + i] = Scalar[DTYPE](qcfg[e][i])
     d.upload_all(ctx)
 
-    forward_kinematics_fields[
+    forward_kinematics[
         "gpu", DTYPE, A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_NGEOM,
         A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0, A_BATCH,
     ](d, mf, ctx)
-    compute_subtree_com_fields[
+    compute_subtree_com[
         "gpu", DTYPE, A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_NGEOM,
         A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0, A_BATCH,
     ](d, mf, ctx)
     var scratch = DynamicsScratch[DTYPE, A_NV, A_NBODY, A_BATCH]()
     scratch.upload_all(ctx)
-    compute_cdof_fields[
+    compute_cdof[
         "gpu", DTYPE, A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_NGEOM,
         A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0, A_BATCH,
     ](d, mf, scratch, ctx)
 
-    compute_mass_matrix_fields[
+    compute_mass_matrix[
         "gpu", DTYPE, A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_NGEOM,
         A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0, A_BATCH, PARALLEL=True,
     ](d, mf, scratch, ctx)
@@ -233,7 +233,7 @@ def test_ant_mm() raises:
     for i in range(A_BATCH * A_NV * A_NV):
         dense[i] = scratch.M.data[i]
 
-    compute_mass_matrix_fields[
+    compute_mass_matrix[
         "gpu", DTYPE, A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_NGEOM,
         A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0, A_BATCH, PARALLEL=True, TREEWALK=True,
     ](d, mf, scratch, ctx)
@@ -328,17 +328,17 @@ def _check_dense_vs_tree[
 # ── leg 3: integrator-level, Walker2D WITH CONTACTS ────────────────────────
 def test_rk4_integrator_treewalk() raises:
     print(
-        "--- RK4IntegratorFields CRBA_TREEWALK vs dense, WITH CONTACTS,"
+        "--- RK4Integrator CRBA_TREEWALK vs dense, WITH CONTACTS,"
         " BATCH=", W_BATCH, "---"
     )
     var ctx = DeviceContext()
 
-    var mf = ModelFields[DTYPE, W_NV, W_NBODY, W_NJOINT, W_NGEOM, W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0]()
+    var mf = Model[DTYPE, W_NV, W_NBODY, W_NJOINT, W_NGEOM, W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Same on-the-floor init as test_rk4_contacts_fields (feet penetrating).
-    var d_dn = DataFields[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, W_NSITE, W_BATCH]()
-    var d_tw = DataFields[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, W_NSITE, W_BATCH]()
+    var d_dn = Data[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, W_NSITE, W_BATCH]()
+    var d_tw = Data[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, W_NSITE, W_BATCH]()
     for e in range(W_BATCH):
         for i in range(W_NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -358,12 +358,12 @@ def test_rk4_integrator_treewalk() raises:
     d_dn.upload_all(ctx)
     d_tw.upload_all(ctx)
 
-    var integ_dn = RK4IntegratorFields[
+    var integ_dn = RK4Integrator[
         DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM, W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0,
         W_CONE, BATCH=W_BATCH, PARALLEL_GPU=True,
     ]()
     integ_dn.prepare_gpu(ctx)
-    var integ_tw = RK4IntegratorFields[
+    var integ_tw = RK4Integrator[
         DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM, W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0,
         W_CONE, BATCH=W_BATCH, PARALLEL_GPU=True, CRBA_TREEWALK=True,
     ]()

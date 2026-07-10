@@ -42,4 +42,4 @@ GPU Profiling:
 
 # Legacy slab integrators (Euler/RK4/Implicit/ImplicitFast + DefaultIntegrator)
 # were deleted at the P6 fields sunset. The fields integrators live in
-# `euler_fields` / `rk4_fields` / `implicit_fields` and are imported directly.
+# `euler` / `rk4` / `implicit` and are imported directly.

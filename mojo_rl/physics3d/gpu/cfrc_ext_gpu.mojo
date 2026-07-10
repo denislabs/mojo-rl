@@ -47,7 +47,7 @@ from .constants import (
 )
 
 
-def compute_cfrc_ext_fields[
+def compute_cfrc_ext[
     DTYPE: DType,
     BATCH_SIZE: Int,
     NBODY: Int,
@@ -75,8 +75,8 @@ def compute_cfrc_ext_fields[
     """Per-field cfrc_ext (G5 — no state slab): contact forces accumulated
     into per-root-subtree spatial force records, arithmetic verbatim from the
     legacy slab kernel. body_mass / body_parent come from the packed
-    `ModelFields.bodies` records; xipos/contacts/meta/cfrc_ext are the
-    DataFields tensors.
+    `Model.bodies` records; xipos/contacts/meta/cfrc_ext are the
+    Data tensors.
     """
     comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 

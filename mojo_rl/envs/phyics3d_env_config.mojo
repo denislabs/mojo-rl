@@ -12,7 +12,7 @@ and termination — no hardcoded assumptions about which joints matter.
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.fields import DataFields
+from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
@@ -39,7 +39,7 @@ trait Phyics3dEnvConfig:
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut prev_x: Scalar[DTYPE],
     ):
         """Save per-env state before physics step.
@@ -60,7 +60,7 @@ trait Phyics3dEnvConfig:
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,
@@ -91,7 +91,7 @@ trait Phyics3dEnvConfig:
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
     ):
         """Custom reset logic (e.g., set initial mocap position, pin goal
         joints). The facade runs the fields FK after this hook, so writes to
@@ -108,7 +108,7 @@ trait Phyics3dEnvConfig:
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """Extract observations from data. Return True if handled, False for default.
@@ -128,7 +128,7 @@ trait Phyics3dEnvConfig:
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         actions: List[Float64],
     ) -> Bool:
         """Apply actions to data. Return True if handled, False for default.

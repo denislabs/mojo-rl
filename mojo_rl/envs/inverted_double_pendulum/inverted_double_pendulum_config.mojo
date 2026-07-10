@@ -4,7 +4,7 @@ from std.math import sin, cos
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.fields import DataFields
+from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
     METADATA_SIZE,
@@ -42,7 +42,7 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         # OBS_DIM=9: [cart_x, sin(q1), sin(q2), cos(q1), cos(q2),
@@ -72,7 +72,7 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut prev_x: Scalar[DTYPE],
     ):
         # Save cart x position (qpos[0]) — unused for reward but required by trait
@@ -88,7 +88,7 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,

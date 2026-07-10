@@ -17,7 +17,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..joint_types import JNT_HINGE, JNT_SLIDE
-from ..fields import DataFields, ModelFields, DynamicsScratch
+from ..fields import Data, Model, DynamicsScratch
 from ..gpu.constants import (
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
@@ -44,7 +44,7 @@ def _max_one[N: Int]() -> Int:
 
 
 @always_inline
-def _limits_env_fields[
+def _limits_env[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -245,12 +245,12 @@ def _limits_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _limits_env_fields[DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS](
+    _limits_env[DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS](
         env, qpos, qvel, joints, meta, dof_invweight0, m_inv, qacc_constrained
     )
 
 
-def solve_limits_fields[
+def solve_limits[
     target: StaticString,
     DTYPE: DType,
     NQ: Int,
@@ -267,8 +267,8 @@ def solve_limits_fields[
     BATCH: Int = 1,
     NUM_ITERATIONS: Int = 50,
 ](
-    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: ModelFields[
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: Model[
         DTYPE,
         NV,
         NBODY,
@@ -302,7 +302,7 @@ def solve_limits_fields[
         var mi_v = scratch.m_inv.lt["cpu", L_M]()
         var qc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _limits_env_fields[DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS](
+            _limits_env[DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS](
                 e, qpos_v, qvel_v, joints_v, meta_v, dw_v, mi_v, qc_v
             )
     else:

@@ -1,4 +1,4 @@
-"""Coverage gate: single-env `Phyics3dEnvFields` round-trip smoke over the
+"""Coverage gate: single-env `Phyics3dEnv` round-trip smoke over the
 MuJoCo envs that previously had only KERNEL-level fields coverage (FK, contact,
 integrator kernels) but no facade-level test. For each env we reset, drive N
 steps with a deterministic sinusoidal action, and assert:
@@ -19,7 +19,7 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
-from mojo_rl.envs.phyics3d_env_fields import Phyics3dEnvFields
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
 from mojo_rl.envs.ant import AntModel, AntConfig
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
@@ -79,28 +79,28 @@ def _smoke[E: BoxContinuousActionEnv, OBS: Int](
 
 
 def main() raises:
-    print("--- Phyics3dEnvFields facade round-trip smoke (5 MuJoCo envs) ---")
+    print("--- Phyics3dEnv facade round-trip smoke (5 MuJoCo envs) ---")
     var ctx = DeviceContext()
 
-    comptime HC = Phyics3dEnvFields[
+    comptime HC = Phyics3dEnv[
         HalfCheetahModel, HalfCheetahConfig, DT, TERMINATE_ON_UNHEALTHY=False
     ]
     var hc = HC(ctx)
     _smoke[HC, HC.OBS_DIM](hc, "HalfCheetah")
 
-    comptime AN = Phyics3dEnvFields[
+    comptime AN = Phyics3dEnv[
         AntModel, AntConfig, DT, TERMINATE_ON_UNHEALTHY=True
     ]
     var an = AN(ctx)
     _smoke[AN, AN.OBS_DIM](an, "Ant")
 
-    comptime WK = Phyics3dEnvFields[
+    comptime WK = Phyics3dEnv[
         Walker2dModel, Walker2dConfig, DT, TERMINATE_ON_UNHEALTHY=True
     ]
     var wk = WK(ctx)
     _smoke[WK, WK.OBS_DIM](wk, "Walker2d")
 
-    comptime IDP = Phyics3dEnvFields[
+    comptime IDP = Phyics3dEnv[
         InvertedDoublePendulumModel,
         InvertedDoublePendulumConfig,
         DT,
@@ -109,7 +109,7 @@ def main() raises:
     var idp = IDP(ctx)
     _smoke[IDP, IDP.OBS_DIM](idp, "InvertedDoublePendulum")
 
-    comptime RE = Phyics3dEnvFields[
+    comptime RE = Phyics3dEnv[
         ReacherModel, ReacherConfig, DT, TERMINATE_ON_UNHEALTHY=False
     ]
     var re = RE(ctx)
@@ -117,7 +117,7 @@ def main() raises:
 
     # Swimmer: fluid drag active (density=4000, viscosity=0.1) — exercises the
     # Stage-A fluid path through the facade.
-    comptime SW = Phyics3dEnvFields[
+    comptime SW = Phyics3dEnv[
         SwimmerModel, SwimmerConfig, DT, TERMINATE_ON_UNHEALTHY=False
     ]
     var sw = SW(ctx)
@@ -125,7 +125,7 @@ def main() raises:
 
     # Humanoid: tendons (max_tendon=2) + sites, threaded through the fields
     # integrator/solver.
-    comptime HU = Phyics3dEnvFields[
+    comptime HU = Phyics3dEnv[
         HumanoidModel, HumanoidConfig, DT, TERMINATE_ON_UNHEALTHY=True
     ]
     var hu = HU(ctx)

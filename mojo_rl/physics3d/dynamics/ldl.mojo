@@ -20,7 +20,7 @@ def _ensure_positive[N: Int]() -> Int:
 
 
 @always_inline
-def _ldl_factor_env_fields[
+def _ldl_factor_env[
     DTYPE: DType,
     NV: Int,
     BATCH: Int,
@@ -55,7 +55,7 @@ def _ldl_factor_env_fields[
 
 
 @always_inline
-def _ldl_solve_env_fields[
+def _ldl_solve_env[
     DTYPE: DType,
     NV: Int,
     BATCH: Int,
@@ -103,7 +103,7 @@ def _ldl_factor_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _ldl_factor_env_fields[DTYPE, NV, BATCH](env, M, L, D)
+    _ldl_factor_env[DTYPE, NV, BATCH](env, M, L, D)
 
 
 # ── Cooperative (_mt) kernel — schedule from the legacy `ldl_factor_gpu_mt`
@@ -112,7 +112,7 @@ def _ldl_factor_fields_kernel[
 # rows i = j+1+tid, j+1+tid+n, ... Each thread recomputes d_j locally (same
 # reads, same k-ascending reduction -> identical to the serial D[j]); tid 0
 # commits D[j]. One barrier per column. Expressions are copied verbatim from
-# `_ldl_factor_env_fields` (the legacy _mt duplicates them the same way) ->
+# `_ldl_factor_env` (the legacy _mt duplicates them the same way) ->
 # bit-exact. Grid is exact (one block per env) -> no valid_env guards.
 def _ldl_factor_fields_mt_kernel[
     DTYPE: DType,
@@ -170,10 +170,10 @@ def _ldl_solve_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _ldl_solve_env_fields[DTYPE, NV, BATCH](env, L, D, b, x)
+    _ldl_solve_env[DTYPE, NV, BATCH](env, L, D, b, x)
 
 
-def ldl_factor_fields[
+def ldl_factor[
     target: StaticString,
     DTYPE: DType,
     NV: Int,
@@ -195,7 +195,7 @@ def ldl_factor_fields[
         var L_v = scratch.L.lt["cpu", L_M]()
         var D_v = scratch.D.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _ldl_factor_env_fields[DTYPE, NV, BATCH](e, M_v, L_v, D_v)
+            _ldl_factor_env[DTYPE, NV, BATCH](e, M_v, L_v, D_v)
     elif PARALLEL:
         var c = ctx.value()
         comptime MT_T = NV
@@ -220,7 +220,7 @@ def ldl_factor_fields[
         )
 
 
-def ldl_solve_fields[
+def ldl_solve[
     target: StaticString,
     DTYPE: DType,
     NV: Int,
@@ -240,7 +240,7 @@ def ldl_solve_fields[
         var b_v = scratch.fnet.lt["cpu", L_NV]()
         var x_v = scratch.qacc_ws.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _ldl_solve_env_fields[DTYPE, NV, BATCH](e, L_v, D_v, b_v, x_v)
+            _ldl_solve_env[DTYPE, NV, BATCH](e, L_v, D_v, b_v, x_v)
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LDL_TPB - 1) // LDL_TPB
@@ -256,7 +256,7 @@ def ldl_solve_fields[
 
 # ── M^-1 from LDL factors (per-field port of compute_M_inv_from_ldl_gpu) ──
 @always_inline
-def _m_inv_col_env_fields[
+def _m_inv_col_env[
     DTYPE: DType,
     NV: Int,
     BATCH: Int,
@@ -268,7 +268,7 @@ def _m_inv_col_env_fields[
     m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
 ):
     """One column j of M^-1 (triangular solve on e_j). Extracted verbatim
-    from the `_m_inv_env_fields` column loop so serial and _mt schedules
+    from the `_m_inv_env` column loop so serial and _mt schedules
     share identical arithmetic."""
     comptime V_SIZE = _ensure_positive[NV]()
     var e = InlineArray[L.element_type, V_SIZE](uninitialized=True)
@@ -304,7 +304,7 @@ def _m_inv_col_env_fields[
 
 
 @always_inline
-def _m_inv_env_fields[
+def _m_inv_env[
     DTYPE: DType,
     NV: Int,
     BATCH: Int,
@@ -315,10 +315,10 @@ def _m_inv_env_fields[
     m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
 ):
     """Full dense M^-1 via per-column LDL solves (arithmetic verbatim;
-    column body now lives in the shared `_m_inv_col_env_fields` helper —
+    column body now lives in the shared `_m_inv_col_env` helper —
     pure refactor)."""
     for j in range(NV):
-        _m_inv_col_env_fields[DTYPE, NV, BATCH](env, j, L, D, m_inv)
+        _m_inv_col_env[DTYPE, NV, BATCH](env, j, L, D, m_inv)
 
 
 def _m_inv_fields_kernel[
@@ -333,13 +333,13 @@ def _m_inv_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _m_inv_env_fields[DTYPE, NV, BATCH](env, L, D, m_inv)
+    _m_inv_env[DTYPE, NV, BATCH](env, L, D, m_inv)
 
 
 # ── Cooperative (_mt) kernel — schedule from the legacy
 # `compute_M_inv_from_ldl_gpu_mt`: each column j of M^-1 is an independent
 # triangular solve, so thread tid handles columns j % N_THREADS == tid.
-# Per-column arithmetic is the SAME `_m_inv_col_env_fields` helper as the
+# Per-column arithmetic is the SAME `_m_inv_col_env` helper as the
 # serial kernel -> bit-exact. No barriers needed (columns independent; the
 # LDL factors are inputs from a previous launch).
 def _m_inv_fields_mt_kernel[
@@ -355,10 +355,10 @@ def _m_inv_fields_mt_kernel[
     var env = Int(block_idx.x)
     var tid = Int(thread_idx.x)
     for j in range(tid, NV, N_THREADS):
-        _m_inv_col_env_fields[DTYPE, NV, BATCH](env, j, L, D, m_inv)
+        _m_inv_col_env[DTYPE, NV, BATCH](env, j, L, D, m_inv)
 
 
-def compute_m_inv_fields[
+def compute_m_inv[
     target: StaticString,
     DTYPE: DType,
     NV: Int,
@@ -380,7 +380,7 @@ def compute_m_inv_fields[
         var D_v = scratch.D.lt["cpu", L_NV]()
         var mi_v = scratch.m_inv.lt["cpu", L_M]()
         for e in range(BATCH):
-            _m_inv_env_fields[DTYPE, NV, BATCH](e, L_v, D_v, mi_v)
+            _m_inv_env[DTYPE, NV, BATCH](e, L_v, D_v, mi_v)
     elif PARALLEL:
         var c = ctx.value()
         comptime MT_T = NV

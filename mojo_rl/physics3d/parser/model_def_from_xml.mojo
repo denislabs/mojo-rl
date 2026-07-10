@@ -38,9 +38,9 @@ from mojo_rl.physics3d.joint_types import (
 from mojo_rl.physics3d.gpu.constants import (
     TPB,
 )
-from mojo_rl.physics3d.fields import ModelFields, DataFields, DynamicsScratch
-from mojo_rl.physics3d.dynamics.invweight_fields import (
-    compute_invweight0_fields,
+from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch
+from mojo_rl.physics3d.dynamics.invweight import (
+    compute_invweight0,
 )
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from .fields_build import build_model_fields_from_flat
@@ -177,7 +177,7 @@ struct ModelDefFromXML[
     def reset_data[
         DTYPE: DType
     ](
-        mut d: DataFields[
+        mut d: Data[
             DTYPE,
             Self.NQ,
             Self.NV,
@@ -221,7 +221,7 @@ struct ModelDefFromXML[
     def extract_obs[
         DTYPE: DType
     ](
-        d: DataFields[
+        d: Data[
             DTYPE,
             Self.NQ,
             Self.NV,
@@ -242,7 +242,7 @@ struct ModelDefFromXML[
     def enforce_limits[
         DTYPE: DType
     ](
-        mut d: DataFields[
+        mut d: Data[
             DTYPE,
             Self.NQ,
             Self.NV,
@@ -270,7 +270,7 @@ struct ModelDefFromXML[
     def apply_actions[
         DTYPE: DType
     ](
-        mut d: DataFields[
+        mut d: Data[
             DTYPE,
             Self.NQ,
             Self.NV,
@@ -311,7 +311,7 @@ struct ModelDefFromXML[
         DTYPE: DType, NMESHV: Int = 0
     ](
         ctx: DeviceContext,
-        mut mf: ModelFields[
+        mut mf: Model[
             DTYPE,
             Self.NV,
             Self.NBODY,
@@ -376,7 +376,7 @@ struct ModelDefFromXML[
         ](fmd, mf)
 
         # Reference pose + fields-native invweight0 (G1).
-        var d_inv = DataFields[
+        var d_inv = Data[
             DTYPE,
             Self.NQ,
             Self.NV,
@@ -387,7 +387,7 @@ struct ModelDefFromXML[
         ]()
         Self.reset_data[DTYPE](d_inv)
         var sc_inv = DynamicsScratch[DTYPE, Self.NV, Self.NBODY, 1]()
-        compute_invweight0_fields[
+        compute_invweight0[
             DTYPE,
             Self.NQ,
             Self.NV,

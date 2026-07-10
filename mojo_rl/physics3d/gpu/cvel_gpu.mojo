@@ -22,7 +22,7 @@ from layout import Layout, LayoutTensor
 from .constants import TPB
 
 
-def compute_cvel_fields[
+def compute_cvel[
     DTYPE: DType,
     BATCH_SIZE: Int,
     NBODY: Int,

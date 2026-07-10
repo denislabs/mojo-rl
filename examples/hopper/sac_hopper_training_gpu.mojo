@@ -8,7 +8,7 @@ counterpart of the legacy `sac_hopper_training_gpu.mojo` (which uses
   * `SAC["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
     off-policy driver (`run_offpolicy_train_batched`). All optimizers, the
     replay buffer, and the SAC train-step pipeline run on-device.
-  * `Phyics3dBatchedEnvFields[HopperModel, HopperConfig, N_ENVS]` — the Hopper
+  * `Phyics3dBatchedEnv[HopperModel, HopperConfig, N_ENVS]` — the Hopper
     physics3d env (which conforms to `GPUContinuousEnv`) into a `BatchedEnv`.
     Steps/resets/obs-extraction all dispatch Hopper's native GPU physics
     kernels — including `selective_reset_kernel_gpu` for the per-env early
@@ -39,7 +39,7 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.hopper import HopperModel, HopperConfig
 
 
@@ -64,7 +64,7 @@ comptime PRINT_EVERY = 50_000  # driver-cadence verbose + env/mean_ret emit
 comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 
 
-comptime BatchedEnvT = Phyics3dBatchedEnvFields[
+comptime BatchedEnvT = Phyics3dBatchedEnv[
     HopperModel, HopperConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=True
 ]
 

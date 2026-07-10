@@ -1,8 +1,8 @@
-"""Stage-I gate: dense LU factor/solve over per-field tensors (lu_fields) —
+"""Stage-I gate: dense LU factor/solve over per-field tensors (lu) —
 fields self-check against ground truth (no legacy reference; the legacy
 `lu_factorization` was deleted at the P6 sunset).
 
-LU is the non-symmetric linear solve the fields `ImplicitIntegratorFields`
+LU is the non-symmetric linear solve the fields `ImplicitIntegrator`
 needs (M_hat = M + armature - dt*qDeriv is asymmetric). This gate feeds a
 deterministic, diagonally-dominant non-symmetric NV×NV system per env into the
 fields helpers and checks ground-truth invariants:
@@ -22,10 +22,10 @@ from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout
 
 from mojo_rl.physics3d.fields import DynamicsScratch
-from mojo_rl.physics3d.dynamics.lu_fields import (
-    lu_factor_fields,
-    lu_solve_fields,
-    compute_m_inv_from_lu_fields,
+from mojo_rl.physics3d.dynamics.lu import (
+    lu_factor,
+    lu_solve,
+    compute_m_inv_from_lu,
 )
 
 comptime DT = DType.float32
@@ -50,7 +50,7 @@ def _fill_b(e: Int, i: Int) -> Scalar[DT]:
 
 
 def main() raises:
-    print("=== Stage-I lu_fields parity (NV=", NV, " BATCH=", BATCH, ") ===")
+    print("=== Stage-I lu parity (NV=", NV, " BATCH=", BATCH, ") ===")
     var ctx = DeviceContext()
 
     var sc = DynamicsScratch[DT, NV, NBODY, BATCH]()
@@ -61,9 +61,9 @@ def main() raises:
             sc.fnet.data[e * V_SIZE + i] = _fill_b(e, i)
 
     # ── fields-CPU factor + solve + M^-1 ──────────────────────────────────
-    lu_factor_fields["cpu", DT, NV, NBODY, BATCH](sc)
-    lu_solve_fields["cpu", DT, NV, NBODY, BATCH](sc)
-    compute_m_inv_from_lu_fields["cpu", DT, NV, NBODY, BATCH](sc)
+    lu_factor["cpu", DT, NV, NBODY, BATCH](sc)
+    lu_solve["cpu", DT, NV, NBODY, BATCH](sc)
+    compute_m_inv_from_lu["cpu", DT, NV, NBODY, BATCH](sc)
 
     # snapshot fields-CPU results (M/fnet are untouched by factor/solve)
     var xf_cpu = List[Scalar[DT]](length=BATCH * V_SIZE, fill=0)
@@ -110,9 +110,9 @@ def main() raises:
 
     # ── fields-GPU factor + solve + M^-1 vs fields-CPU ────────────────────
     sc.upload_all(ctx)  # push host M/fnet (+ all) to device
-    lu_factor_fields["gpu", DT, NV, NBODY, BATCH](sc, ctx)
-    lu_solve_fields["gpu", DT, NV, NBODY, BATCH](sc, ctx)
-    compute_m_inv_from_lu_fields["gpu", DT, NV, NBODY, BATCH](sc, ctx)
+    lu_factor["gpu", DT, NV, NBODY, BATCH](sc, ctx)
+    lu_solve["gpu", DT, NV, NBODY, BATCH](sc, ctx)
+    compute_m_inv_from_lu["gpu", DT, NV, NBODY, BATCH](sc, ctx)
     sc.qacc_ws.download(ctx)
     sc.m_inv.download(ctx)
 

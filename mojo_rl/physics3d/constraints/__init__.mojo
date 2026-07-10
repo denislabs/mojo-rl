@@ -14,6 +14,6 @@ from .constraint_data import (
 )
 # Legacy slab constraint builders (constraint_builder[_gpu]) were deleted at the
 # P6 fields sunset — the fields path builds constraints inside
-# `contact_solve_fields` / `equality_tendon_fields` / `limits_fields`.
+# `contact_solve` / `equality_tendon` / `limits`.
 # `ConstraintData` (above) is kept: the shared `traits/solver` trait (used by
 # physics2d) references it.
