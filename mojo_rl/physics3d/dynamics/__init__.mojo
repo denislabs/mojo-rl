@@ -7,16 +7,9 @@ This module computes:
 - LU factorization for non-symmetric systems
 """
 
-from .mass_matrix import (
-    compute_mass_matrix,
-    compute_mass_matrix_full,
-    ldl_factor,
-    ldl_solve,
-    compute_M_inv_from_ldl,
-    compute_body_invweight0,
-)
 from .bias_forces import compute_bias_forces
-from .jacobian import compute_cdof, compute_contact_jacobian_row, compute_composite_inertia
-# Legacy slab `velocity_derivatives` + `lu_factorization` deleted at the P6
-# sunset — the fields path uses `qderiv_fields` / `lu_fields`.
+# Legacy CRBA/LDL/CoM-Jacobian/invweight0 (`mass_matrix`, `jacobian`) +
+# `velocity_derivatives`/`lu_factorization` were deleted at the fields sunset —
+# the fields path uses mass_matrix_fields / ldl_fields / cdof_fields /
+# invweight_fields / qderiv_fields / lu_fields.
 from .cfrc_ext import compute_cfrc_ext

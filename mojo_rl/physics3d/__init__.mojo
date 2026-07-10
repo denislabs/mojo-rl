@@ -36,7 +36,6 @@ from .kinematics.quat_math import (
 )
 
 # Dynamics
-from .dynamics.mass_matrix import compute_mass_matrix, solve_linear_diagonal
 from .dynamics.bias_forces import compute_bias_forces
 from .dynamics.cfrc_ext import compute_cfrc_ext
 
