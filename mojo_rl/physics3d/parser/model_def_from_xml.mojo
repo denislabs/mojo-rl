@@ -463,20 +463,15 @@ struct ModelDefFromXML[
             )
 
     # =========================================================================
-    # Model build
+    # Model build (spec-direct; G4)
     # =========================================================================
-
-    # `init_fields` (the offset-free fields-native model build) is inherited
-    # from the `ModelDefLike` trait default — it uses `Self.NEXCLUDE`
-    # (= Self.nexclude) so it applies to XML models verbatim. No per-type
-    # override needed here.
 
     # =========================================================================
     # GPU: _compute_invweight0_gpu (duplicated from ModelDef, dims from params)
     # =========================================================================
 
     @staticmethod
-    def init_fields_v2[
+    def init_fields[
         DTYPE: DType, NMESHV: Int = 0
     ](
         ctx: DeviceContext,
@@ -498,8 +493,8 @@ struct ModelDefFromXML[
         (`fields_build.build_model_fields_from_flat`) — no CPU `Model`/`Data`
         staging, no `setup_model_and_data`, no `load_from_model`. invweight0
         is computed fields-natively (G1) from the reference pose given by the
-        fields `reset_data`. Replaces the legacy trait-default `init_fields`
-        (deleted with the legacy CPU model build)."""
+        fields `reset_data`. The legacy trait-default (setup_model_and_data →
+        load_from_model) was deleted at G4."""
         var fmd = parse_xml_full[
             Self.NBODY,
             Self.NJOINT,

@@ -13,8 +13,7 @@ from mojo_rl.render import Renderer3D, Light, Camera3D
 from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
 from ..types import Model, Data
-from ..fields import ModelFields, DataFields, DynamicsScratch
-from ..dynamics.invweight_fields import compute_invweight0_fields
+from ..fields import ModelFields, DataFields
 
 # GPU imports
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -156,7 +155,7 @@ trait ModelDefLike:
 
     # === CPU: Float getters (can't use Float64 as comptime in traits) ===
 
-    # === Fields-native model build (offset-free; P6) ===
+    # === Fields-native model build (spec-direct; G4) ===
     @staticmethod
     def init_fields[
         DTYPE: DType, NMESHV: Int = 0
@@ -175,56 +174,10 @@ trait ModelDefLike:
             NMESHV,
         ],
     ) raises:
-        """Offset-free fields-native model build: populate every ModelFields
-        record tensor DIRECTLY from the CPU `Model` — no flat slab, no
-        `gpu/constants` cross-family offset tables, no `load_from_slab`
-        round-trip. `setup_model_and_data` computes invweight0 (CPU) and
-        `load_from_model` writes every record (incl. body/dof invweight0) into
-        the packed tensors. Fixes the two `init_model_gpu` bugs (mesh
-        under-sizing, equality never serialized) by construction. Default trait
-        impl — `ModelDefFromXML` overrides it; `ModelDef` inherits this one."""
-        var model = Model[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-            Self.MAX_TENDON,
-            Self.NSITE,
-        ]()
-        var data = Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-        ]()
-        Self.setup_model_and_data[DTYPE](model, data)
-        mf.load_from_model[Self.NQ, Self.MAX_CONTACTS, Self.CONE_TYPE](model)
-
-        # G1: compute invweight0 FIELDS-natively (overwrites the CPU-Model
-        # values load_from_model just copied). Reference pose = data.qpos (the
-        # reset_data pose setup_model_and_data used). Walker2D/Ant bit-exact vs
-        # legacy; Humanoid ~1.5e-5 (upstream CRBA/LDL roundoff). See
-        # test_invweight0_fields.
-        var d_inv = DataFields[
-            DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.MAX_CONTACTS, Self.NSITE, 1
-        ]()
-        for qi in range(Self.NQ):
-            d_inv.qpos.data[qi] = data.qpos[qi]
-        var sc_inv = DynamicsScratch[DTYPE, Self.NV, Self.NBODY, 1]()
-        compute_invweight0_fields[
-            DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MAX_CONTACTS,
-            Self.NGEOM, Self.MAX_EQUALITY, Self.MAX_TENDON, Self.NSITE,
-            Self.NEXCLUDE, NMESHV,
-        ](d_inv, mf, sc_inv)
-        mf.upload_all(ctx)
+        """Build the ModelFields record tensors + fields-native invweight0
+        and upload. Implemented spec-direct by `ModelDefFromXML`
+        (parse_xml_full -> fields_build.build_model_fields_from_flat)."""
+        ...
 
     # === GPU: Joints/Actuators kernel delegates ===
     @staticmethod
