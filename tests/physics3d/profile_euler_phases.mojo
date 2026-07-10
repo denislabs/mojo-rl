@@ -57,8 +57,8 @@ from mojo_rl.physics3d.dynamics.bias_forces import (
 from mojo_rl.physics3d.solver.newton_solver import NewtonSolver
 from mojo_rl.physics3d.integrator.euler_integrator import EulerIntegrator
 
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv  # legacy static kernels (P6)
 from mojo_rl.envs.half_cheetah import (
-    HalfCheetah,
     HalfCheetahConfig,
     HalfCheetahModel,
 )
@@ -121,7 +121,7 @@ def main() raises:
         HalfCheetahModel.init_model_gpu(ctx, model_buf)
 
         # Reset state (sets qpos to home position, zeros qvel)
-        HalfCheetah[dtype].reset_kernel_gpu[BATCH, STATE_SIZE](ctx, state_buf)
+        Phyics3dEnv[HalfCheetahModel, HalfCheetahConfig, dtype].reset_kernel_gpu[BATCH, STATE_SIZE](ctx, state_buf)
 
         # Zero workspace
         ctx.enqueue_memset(workspace_buf, 0)

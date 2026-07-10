@@ -1,14 +1,14 @@
-"""Pusher Environment - thin wrapper around Phyics3dEnv[PusherModel, PusherConfig]."""
+"""Pusher Environment - thin wrapper over Phyics3dEnvFields[PusherModel, PusherConfig]."""
 
 from .pusher_xml import PusherModel
 from .pusher_config import PusherConfig
-from ..phyics3d_env import Phyics3dEnv
+from ..phyics3d_env_fields import Phyics3dEnvFields
 
 
 comptime Pusher[
     DTYPE: DType = DType.float64,
     TERMINATE_ON_UNHEALTHY: Bool = True,
-] = Phyics3dEnv[
+] = Phyics3dEnvFields[
     PusherModel,
     PusherConfig,
     DTYPE,

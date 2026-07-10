@@ -62,7 +62,9 @@ from mojo_rl.physics3d.dynamics.bias_forces import (
 )
 from mojo_rl.physics3d.solver.newton_solver import NewtonSolver
 
-from mojo_rl.envs.humanoid import Humanoid
+# Legacy engine kept on purpose: this profiler drives the legacy static GPU
+# kernels (reset_kernel_gpu); the fields facade has none. Dies with legacy at P6.
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
 from mojo_rl.envs.humanoid.humanoid_config import HumanoidConfig
 
@@ -152,7 +154,9 @@ def main() raises:
         HumanoidModel.init_model_gpu(ctx, model_buf)
 
         # Reset state (sets qpos to home position, zeros qvel)
-        Humanoid[dtype].reset_kernel_gpu[BATCH, STATE_SIZE](ctx, state_buf)
+        Phyics3dEnv[HumanoidModel, HumanoidConfig, dtype].reset_kernel_gpu[
+            BATCH, STATE_SIZE
+        ](ctx, state_buf)
 
         # Zero workspace
         ctx.enqueue_memset(workspace_buf, 0)

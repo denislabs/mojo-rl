@@ -33,7 +33,11 @@ from mojo_rl.physics3d.gpu.constants import (
     qfrc_offset,
 )
 from mojo_rl.physics3d.gpu.buffer_utils import create_state_buffer
-from mojo_rl.envs.inverted_double_pendulum import InvertedDoublePendulum
+# Legacy engine kept here on purpose: this CPU-vs-GPU diagnostic exercises the
+# legacy static GPU kernels (step_kernel_gpu); the fields facade has none. Dies
+# with the legacy engine at P6.
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv
+from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.envs.inverted_double_pendulum.inverted_double_pendulum_xml import (
     InvertedDoublePendulumModel,
 )
@@ -215,9 +219,9 @@ def main() raises:
     comptime ENV_WS_SIZE = MODEL_SIZE + GPU_BATCH * WS_SIZE
     var env_ws_buf = ctx.enqueue_create_buffer[DTYPE](ENV_WS_SIZE)
     # Initialize model into workspace
-    InvertedDoublePendulum[DTYPE].init_step_workspace_gpu[GPU_BATCH](
-        ctx, env_ws_buf
-    )
+    Phyics3dEnv[
+        InvertedDoublePendulumModel, InvertedDoublePendulumConfig, DTYPE
+    ].init_step_workspace_gpu[GPU_BATCH](ctx, env_ws_buf)
     ctx.synchronize()
 
     # Predefined actions: alternate between small positive and negative
@@ -272,7 +276,9 @@ def main() raises:
         gpu_actions_host[0] = Scalar[DTYPE](action)
         ctx.enqueue_copy(gpu_actions_buf, gpu_actions_host.unsafe_ptr())
 
-        InvertedDoublePendulum[DTYPE].step_kernel_gpu[
+        Phyics3dEnv[
+            InvertedDoublePendulumModel, InvertedDoublePendulumConfig, DTYPE
+        ].step_kernel_gpu[
             GPU_BATCH,
             STATE_SIZE,
             OBS_DIM,
@@ -286,7 +292,7 @@ def main() raises:
             gpu_terminated_buf,
             gpu_obs_buf,
             rng_seed=UInt64(step + 1),
-            workspace_ptr=env_ws_buf.unsafe_ptr(),
+            workspace_ptr=mptr(env_ws_buf.unsafe_ptr()),
         )
         ctx.synchronize()
 

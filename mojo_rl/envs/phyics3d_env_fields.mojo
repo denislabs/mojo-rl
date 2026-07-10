@@ -164,6 +164,17 @@ struct Phyics3dEnvFields[
         UnsafePointer[ModelRenderer[Self.MODEL_DEF], MutUntrackedOrigin]
     ]
     var _renderer_initialized: Bool
+    # Owned device context: the model-record tensors upload to it once at build
+    # (init_fields). Kept for the env's lifetime so the mf device buffers stay
+    # valid (the CPU step path never reads them). The no-arg ctor creates one so
+    # `Ant()` / `Hopper()` etc. work without the caller threading a ctx.
+    var _ctx: DeviceContext
+
+    def __init__(out self) raises:
+        """Convenience ctor — owns a fresh `DeviceContext` (single-env CPU
+        facade: one env, one context). Lets the `Ant()`/`Hopper()` API stay
+        ctx-free when the alias points at this fields facade."""
+        self = Self(DeviceContext())
 
     def __init__(
         out self,
@@ -171,8 +182,10 @@ struct Phyics3dEnvFields[
         max_steps: Int = Self.CONFIG.MAX_STEPS,
         frame_skip: Int = Self.CONFIG.FRAME_SKIP,
     ) raises:
-        """`ctx` is used ONCE, for the host staging buffer of the model
-        flattening bridge (no device work on the CPU path)."""
+        """`ctx` is used ONCE, for the model-record device upload at build
+        (no device work on the CPU step path); it is stored to keep the mf
+        device buffers valid for the env's lifetime."""
+        self._ctx = ctx
         self.max_steps = max_steps
         self.current_step = 0
         self.frame_skip = frame_skip

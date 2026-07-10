@@ -7,7 +7,7 @@ GPU successor of `sac_humanoid_training.mojo` and counterpart of the legacy
   * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
     off-policy driver. All optimizers, the replay buffer, and the SAC
     train-step pipeline run on-device.
-  * `BatchedGpuEnv[Humanoid[DT], N_ENVS, OBS, ACT]` — wraps the physics3d env
+  * `Phyics3dBatchedEnvFields[HumanoidModel, HumanoidConfig, N_ENVS]` — the physics3d env
     (`GPUContinuousEnv`) into a `BatchedEnv`.
   * `RemoteLogger` — streams `env/mean_ret` and `env/ep_count`.
 

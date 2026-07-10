@@ -65,7 +65,10 @@ from mojo_rl.physics3d.dynamics.bias_forces import (
 )
 from mojo_rl.physics3d.solver.newton_solver import NewtonSolver
 
-from mojo_rl.envs.half_cheetah import HalfCheetah
+# Legacy engine on purpose: this profiler drives the legacy static GPU kernels
+# (reset_kernel_gpu) + legacy solvers/integrators; dies with legacy at P6.
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv
+from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
 from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
 
 
@@ -126,7 +129,7 @@ def main() raises:
         var workspace_buf = ctx.enqueue_create_buffer[dtype](BATCH * WS_SIZE)
 
         HalfCheetahModel.init_model_gpu(ctx, model_buf)
-        HalfCheetah[dtype].reset_kernel_gpu[BATCH, STATE_SIZE](ctx, state_buf)
+        Phyics3dEnv[HalfCheetahModel, HalfCheetahConfig, dtype].reset_kernel_gpu[BATCH, STATE_SIZE](ctx, state_buf)
         ctx.enqueue_memset(workspace_buf, 0)
         ctx.synchronize()
 

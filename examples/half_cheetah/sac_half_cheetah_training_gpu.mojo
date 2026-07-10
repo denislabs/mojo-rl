@@ -8,7 +8,7 @@ uses `deep_agents.core.agents.DeepSACAgent.train_gpu`). Uses the new
   * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
     off-policy driver (`run_offpolicy_train_batched`). All optimizers, the
     replay buffer, and the SAC train-step pipeline run on-device.
-  * `BatchedGpuEnv[HalfCheetah[DT], N_ENVS, OBS, ACT]` — wraps the
+  * `Phyics3dBatchedEnvFields[HalfCheetahModel, HalfCheetahConfig, N_ENVS]` — the
     HalfCheetah physics3d env (which conforms to `GPUContinuousEnv`) into a
     `BatchedEnv`. Steps/resets/obs-extraction all dispatch HalfCheetah's
     native GPU physics kernels — the exact same kernels the legacy
