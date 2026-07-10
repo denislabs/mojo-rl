@@ -15,15 +15,16 @@ already computed) between the bridge and the field tensors — O(NQ+NV+NBODY)
 scalars, negligible next to the physics. Zero changes to any MODEL_DEF or
 CONFIG.
 
-Scope (mirrors what the fields path supports today):
-- Contacts + joint limits: `RK4IntegratorFields` runs detection + the PGS
-  contact solve (limits inside) after every stage — hopper/walker-class
-  locomotion envs are in scope. Equality/tendon-constrained models are not.
-- Fluid-force models raise (same guard as the integrators).
-- cvel/cfrc_ext-based rewards (ant contact cost) not synced — contact envs
-  are out of scope anyway.
-- CPU target (single-env driver ABI). The GPU-batched facade
-  (`BatchedEnv`-style, driver-owned IO buffers) is the follow-up slice.
+Scope (full parity with the legacy CPU env):
+- Contacts + joint limits: the integrator runs detection + the constraint
+  solve (limits inside) after every stage.
+- Equality/tendon constraints: solved by the SOLVER (newton) — Humanoid
+  tendons, and SawyerReach's weld-equality mocap control (the mocap body pose
+  is preset via `_sync_mocap_to_fields` and skipped in FK; the weld solve makes
+  the hand track the target). Validated in `test_sawyer_fields_parity`.
+- Fluid forces (Swimmer) applied inside the fields integrator step.
+- CPU target (single-env driver ABI). The GPU-batched facade is
+  `phyics3d_batched_env_fields`.
 """
 
 from std.collections import InlineArray
@@ -213,6 +214,7 @@ struct Phyics3dEnvFields[
         self.integ_euler = Self.IntegEuler()
 
         self._sync_fields_from_bridge()
+        self._sync_mocap_to_fields()
         Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
         # Fluid forces (density/viscosity > 0) are applied inside the fields
         # integrator step (dynamics/fluid_forces_fields.mojo); no guard needed.
@@ -241,6 +243,26 @@ struct Phyics3dEnvFields[
             for i in range(Self.NSITE * 3):
                 self.data.site_xpos[i] = self.d.site_xpos.data[i]
 
+    def _sync_mocap_to_fields(mut self):
+        """Mocap actuation bridge: the CONFIG hooks write the mocap target into
+        the legacy `self.data.mocap_pos/quat` (per step / on reset); preset the
+        corresponding fields-body world pose so the fields FK — which SKIPS
+        mocap bodies — leaves the target in place and the weld/equality solve
+        (SOLVER=newton) tracks it. Zero-cost for non-mocap models (MAX_EQUALITY
+        gate + the `body_mocap` flag is False everywhere else)."""
+        comptime if Self.MODEL_DEF.MAX_EQUALITY > 0:
+            for b in range(Self.NBODY):
+                if not self.model.body_mocap[b]:
+                    continue
+                for k in range(3):
+                    var p = self.data.mocap_pos[b * 3 + k]
+                    self.d.xpos.data[b * 3 + k] = p
+                    self.d.xipos.data[b * 3 + k] = p
+                for k in range(4):
+                    self.d.xquat.data[b * 4 + k] = self.data.mocap_quat[
+                        b * 4 + k
+                    ]
+
     # ── state management ─────────────────────────────────────────────────
     def _reset_state(mut self):
         """Legacy reset semantics (qpos0 + uniform noise + custom hook),
@@ -265,6 +287,7 @@ struct Phyics3dEnvFields[
         self._last_terminated = False
         Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
         self._sync_fields_from_bridge()
+        self._sync_mocap_to_fields()
 
     def set_state(mut self, qpos: List[Float64], qvel: List[Float64]):
         """Deterministic state injection (tests / eval)."""
@@ -274,6 +297,7 @@ struct Phyics3dEnvFields[
             self.data.qvel[i] = Scalar[Self.dtype](qvel[i])
         forward_kinematics(self.model, self.data)
         self._sync_fields_from_bridge()
+        self._sync_mocap_to_fields()
 
     def _get_obs(self) -> ObsState[Self.MODEL_DEF.OBS_DIM]:
         var obs_list = List[Scalar[Self.DTYPE]](capacity=Self.OBS_DIM)
@@ -306,6 +330,9 @@ struct Phyics3dEnvFields[
             Self.MODEL_DEF.apply_actions(self.data, action_list)
         for i in range(Self.NV):
             self.d.qfrc.data[i] = self.data.qfrc[i]
+        # Mocap-controlled models (SawyerReach): push the updated mocap target
+        # into the fields body poses before the step so the weld solve tracks it.
+        self._sync_mocap_to_fields()
 
         # Physics: fields integrator (RK4 or Euler per CONFIG.INTEGRATOR) with
         # per-substep contact/limit solving.

@@ -12,8 +12,8 @@ State buffer layout per environment:
    cfrc_ext: NBODY*6 | cvel: NBODY*6 | cinert: NBODY*10 | qfrc_actuator: NV]
 
 Model buffer (static, same for all environments):
-  Per body (MODEL_BODY_SIZE=25): [mass, inv_mass, inertia(3), inv_inertia(3),
-    pos(3), quat(4), parent, ipos(3), iquat(4), rootid, weldid]
+  Per body (MODEL_BODY_SIZE=26): [mass, inv_mass, inertia(3), inv_inertia(3),
+    pos(3), quat(4), parent, ipos(3), iquat(4), rootid, weldid, mocap]
   Per joint (MODEL_JOINT_SIZE=26): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss,
     solref_limit(2), solimp_limit(5), qpos0]
@@ -265,7 +265,7 @@ def state_size[
 # Model Buffer Layout - Per Body
 # =============================================================================
 
-comptime MODEL_BODY_SIZE: Int = 25
+comptime MODEL_BODY_SIZE: Int = 26
 
 comptime BODY_IDX_MASS: Int = 0
 comptime BODY_IDX_INV_MASS: Int = 1
@@ -292,6 +292,7 @@ comptime BODY_IDX_IQUAT_Z: Int = 21
 comptime BODY_IDX_IQUAT_W: Int = 22
 comptime BODY_IDX_ROOTID: Int = 23  # Root body index (child of worldbody)
 comptime BODY_IDX_WELDID: Int = 24  # Weld body index (MuJoCo body_weldid)
+comptime BODY_IDX_MOCAP: Int = 25  # 1.0 if body pose is externally set (mocap)
 
 
 def model_body_offset(body_idx: Int) -> Int:

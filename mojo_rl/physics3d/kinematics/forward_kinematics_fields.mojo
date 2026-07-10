@@ -32,6 +32,7 @@ from ..joint_types import JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
 from ..fields import DataFields, ModelFields
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
+    BODY_IDX_MOCAP,
     MODEL_JOINT_SIZE,
     MODEL_SITE_SIZE,
     BODY_IDX_PARENT,
@@ -93,6 +94,14 @@ def _fk_body_fields[
     """One body's world pose from its parent (arithmetic verbatim from
     `fk_body_gpu`; only the addressing is per-field). Requires the parent's
     pose already written (topological order)."""
+    # Mocap body: world pose is an EXTERNAL input, preset into xpos/xquat/xipos
+    # before the step (facade `_sync_mocap_to_fields`). Skip the parent-chain FK
+    # so the target persists across substeps — verbatim semantics of the legacy
+    # `forward_kinematics` mocap override. Flag is 0 for every non-mocap env, so
+    # this is an exact no-op there.
+    if rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_MOCAP]) != 0:
+        return
+
     var parent = Int(rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_PARENT]))
 
     var body_pos_x = rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_POS_X])

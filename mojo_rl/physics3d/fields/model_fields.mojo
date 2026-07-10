@@ -86,6 +86,7 @@ from ..gpu.constants import (
     BODY_IDX_IQUAT_W,
     BODY_IDX_ROOTID,
     BODY_IDX_WELDID,
+    BODY_IDX_MOCAP,
     JOINT_IDX_TYPE,
     JOINT_IDX_BODY_ID,
     JOINT_IDX_QPOS_ADR,
@@ -670,6 +671,9 @@ struct ModelFields[
             )
             self.bodies.data[o + BODY_IDX_WELDID] = Scalar[Self.DTYPE](
                 model.body_weldid[b]
+            )
+            self.bodies.data[o + BODY_IDX_MOCAP] = Scalar[Self.DTYPE](
+                1.0 if model.body_mocap[b] else 0.0
             )
 
         # ── joints ──────────────────────────────────────────────────────
