@@ -12,8 +12,14 @@ from std.math import abs
 from std.collections import InlineArray
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.types import Model, Data, _max_one
-from mojo_rl.physics3d.model.inertia_from_geom import compute_inertia_from_geoms
+from std.gpu.host import DeviceContext
+from mojo_rl.physics3d.fields import ModelFields
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    BODY_IDX_MASS,
+    BODY_IDX_IXX,
+    BODY_IDX_IPOS_X,
+)
 
 from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
 from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
@@ -48,38 +54,15 @@ def test_half_cheetah() raises:
     comptime NGEOM = HalfCheetahModel.NGEOM
     comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS
 
-    # Build model with inertiafromgeom enabled
-    var model = Model[
-        DTYPE,
-        NQ,
-        NV,
-        NBODY,
-        NJOINT,
-        MAX_CONTACTS,
-        NGEOM,
-        HalfCheetahModel.MAX_EQUALITY,
-        HalfCheetahModel.CONE_TYPE,
-        HalfCheetahModel.MAX_TENDON,
-        HalfCheetahModel.NSITE,
+    # Spec-direct fields build — <compiler inertiafromgeom> + settotalmass
+    # run inside init_fields (fields_build; G4).
+    var ctx = DeviceContext()
+    var mf = ModelFields[
+        DTYPE, NV, NBODY, NJOINT, NGEOM, HalfCheetahModel.MAX_EQUALITY,
+        HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE,
+        HalfCheetahModel.NEXCLUDE, 0,
     ]()
-    var _data_hc = Data[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HalfCheetahModel.NSITE
-    ]()
-    HalfCheetahModel.setup_model_and_data[DTYPE](model, _data_hc)
-
-    # Run inertiafromgeom (overwrite body mass/inertia/ipos from geoms)
-    compute_inertia_from_geoms(model)
-
-    # Apply settotalmass=14
-    var total_mass = Scalar[DTYPE](0)
-    for i in range(1, NBODY):
-        total_mass += model.body_mass[i]
-    if total_mass > 0:
-        var scale = Scalar[DTYPE](14.0) / total_mass
-        for i in range(1, NBODY):
-            model.body_mass[i] *= scale
-            for k in range(3):
-                model.body_inertia[i * 3 + k] *= scale
+    HalfCheetahModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Get MuJoCo reference
     var mujoco = Python.import_module("mujoco")
@@ -94,7 +77,7 @@ def test_half_cheetah() raises:
 
     for i in range(1, NBODY):
         # Mass
-        var our_mass = Float64(model.body_mass[i])
+        var our_mass = Float64(mf.bodies.data[i * MODEL_BODY_SIZE + BODY_IDX_MASS])
         var mj_mass = Float64(py=mj_model.body_mass[i])
         var mass_err = abs(our_mass - mj_mass)
         if mass_err > max_mass_err:
@@ -114,7 +97,7 @@ def test_half_cheetah() raises:
 
         # Inertia (3 principal moments)
         for k in range(3):
-            var our_I = Float64(model.body_inertia[i * 3 + k])
+            var our_I = Float64(mf.bodies.data[i * MODEL_BODY_SIZE + BODY_IDX_IXX + k])
             var mj_I = Float64(py=mj_model.body_inertia[i][k])
             var I_err = abs(our_I - mj_I)
             if I_err > max_inertia_err:
@@ -136,7 +119,7 @@ def test_half_cheetah() raises:
 
         # ipos (CoM offset from body origin)
         for k in range(3):
-            var our_ipos = Float64(model.body_ipos[i * 3 + k])
+            var our_ipos = Float64(mf.bodies.data[i * MODEL_BODY_SIZE + BODY_IDX_IPOS_X + k])
             var mj_ipos = Float64(py=mj_model.body_ipos[i][k])
             var ipos_err = abs(our_ipos - mj_ipos)
             if ipos_err > max_ipos_err:
@@ -183,30 +166,14 @@ def test_hopper() raises:
     comptime NJOINT = HopperModel.NJOINT
     comptime NGEOM = HopperModel.NGEOM
 
-    # Build model with inertiafromgeom enabled
-    comptime HOPPER_MAX_CONTACTS = 20
-    var model = Model[
-        DTYPE,
-        NQ,
-        NV,
-        NBODY,
-        NJOINT,
-        HOPPER_MAX_CONTACTS,
-        NGEOM,
-        HopperModel.MAX_EQUALITY,
-        HopperModel.CONE_TYPE,
-        HopperModel.MAX_TENDON,
-        HopperModel.NSITE,
+    # Spec-direct fields build — <compiler inertiafromgeom> runs inside
+    # init_fields (fields_build; G4). Hopper has no settotalmass.
+    var ctx = DeviceContext()
+    var mf = ModelFields[
+        DTYPE, NV, NBODY, NJOINT, NGEOM, HopperModel.MAX_EQUALITY,
+        HopperModel.MAX_TENDON, HopperModel.NSITE, HopperModel.NEXCLUDE, 0,
     ]()
-    var _data_hopper = Data[
-        DTYPE, NQ, NV, NBODY, NJOINT, HOPPER_MAX_CONTACTS, HopperModel.NSITE
-    ]()
-    HopperModel.setup_model_and_data[DTYPE](model, _data_hopper)
-
-    # Run inertiafromgeom (overwrite body mass/inertia/ipos from geoms)
-    compute_inertia_from_geoms(model)
-
-    # Hopper has no settotalmass
+    HopperModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Get MuJoCo reference
     var mujoco = Python.import_module("mujoco")
@@ -221,7 +188,7 @@ def test_hopper() raises:
 
     for i in range(1, NBODY):
         # Mass
-        var our_mass = Float64(model.body_mass[i])
+        var our_mass = Float64(mf.bodies.data[i * MODEL_BODY_SIZE + BODY_IDX_MASS])
         var mj_mass = Float64(py=mj_model.body_mass[i])
         var mass_err = abs(our_mass - mj_mass)
         if mass_err > max_mass_err:
@@ -241,7 +208,7 @@ def test_hopper() raises:
 
         # Inertia (3 principal moments)
         for k in range(3):
-            var our_I = Float64(model.body_inertia[i * 3 + k])
+            var our_I = Float64(mf.bodies.data[i * MODEL_BODY_SIZE + BODY_IDX_IXX + k])
             var mj_I = Float64(py=mj_model.body_inertia[i][k])
             var I_err = abs(our_I - mj_I)
             if I_err > max_inertia_err:
@@ -263,7 +230,7 @@ def test_hopper() raises:
 
         # ipos (CoM offset from body origin)
         for k in range(3):
-            var our_ipos = Float64(model.body_ipos[i * 3 + k])
+            var our_ipos = Float64(mf.bodies.data[i * MODEL_BODY_SIZE + BODY_IDX_IPOS_X + k])
             var mj_ipos = Float64(py=mj_model.body_ipos[i][k])
             var ipos_err = abs(our_ipos - mj_ipos)
             if ipos_err > max_ipos_err:

@@ -290,7 +290,7 @@ struct Phyics3dBatchedEnvFields[
     def __init__(out self, ctx: DeviceContext) raises:
         # Offset-free fields-native model build (no model slab, no
         # init_model_gpu / load_from_slab). init_fields runs
-        # setup_model_and_data + load_from_model and uploads every record
+        # the spec-direct fields build and uploads every record
         # tensor (bodies/joints/meta/curriculum/…) — the reset FK, cfrc_ext,
         # and reward-curriculum hooks now read those directly.
         self.mf = type_of(self.mf)()

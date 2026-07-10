@@ -1,8 +1,16 @@
 """Test: Sawyer Reach-v3 XML parses correctly and model dimensions are sane."""
 
 from std.testing import assert_equal, assert_true, TestSuite
+from std.gpu.host import DeviceContext
 from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel, pm
-from mojo_rl.physics3d.types import Model, Data, ConeType
+from mojo_rl.physics3d.fields import ModelFields
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    BODY_IDX_MOCAP,
+    MODEL_META_IDX_GRAVITY_Z,
+    MODEL_META_IDX_TIMESTEP,
+    MODEL_META_IDX_NEQUALITY,
+)
 
 
 def test_sawyer_reach_dimensions() raises:
@@ -41,40 +49,34 @@ def test_sawyer_reach_dimensions() raises:
     # 3 sites: endEffector + rightEndEffector + leftEndEffector + goal
     assert_true(pm.NSITE >= 3, "Expected >= 3 sites")
 
-    print("\n=== Model Setup Test ===")
-    # Test that the model can be instantiated
+    print("\n=== Model Setup Test (spec-direct fields build; G4) ===")
     comptime DTYPE = DType.float64
-    var model = Model[
-        DTYPE,
-        pm.NQ, pm.NV, pm.NBODY, pm.NJOINT,
-        30,  # max_contacts
-        pm.NGEOM,
-        6,  # max_equality (1 weld = 6 rows)
-        ConeType.ELLIPTIC,
-        0,  # max_tendon
-        pm.NSITE,
+    comptime M = SawyerReachModel
+    var ctx = DeviceContext()
+    var mf = ModelFields[
+        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
+        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 16 * 256,
     ]()
-    var data = Data[DTYPE, pm.NQ, pm.NV, pm.NBODY, pm.NJOINT, 30, pm.NSITE]()
-    SawyerReachModel.setup_model_and_data[DTYPE](model, data)
+    M.init_fields[DTYPE, 16 * 256](ctx, mf)
 
-    print("Model created successfully!")
-    print("Gravity Z:", model.gravity[2])
-    print("Timestep:", model.timestep)
-    print("Num equality:", model.num_equality)
+    print("Model built successfully!")
+    print("Gravity Z:", mf.meta.data[MODEL_META_IDX_GRAVITY_Z])
+    print("Timestep:", mf.meta.data[MODEL_META_IDX_TIMESTEP])
+    print("Num equality:", mf.meta.data[MODEL_META_IDX_NEQUALITY])
 
     # Verify gravity
     assert_true(
-        Float64(model.gravity[2]) < -9.0,
+        Float64(mf.meta.data[MODEL_META_IDX_GRAVITY_Z]) < -9.0,
         "Expected negative gravity"
     )
 
     # Verify weld constraint was set up
-    assert_equal(model.num_equality, 1)
+    assert_equal(Int(mf.meta.data[MODEL_META_IDX_NEQUALITY]), 1)
 
     # Verify mocap body was detected
     var found_mocap = False
     for i in range(pm.NBODY):
-        if model.body_mocap[i]:
+        if mf.bodies.data[i * MODEL_BODY_SIZE + BODY_IDX_MOCAP] != 0:
             found_mocap = True
             print("Mocap body index:", i)
             break

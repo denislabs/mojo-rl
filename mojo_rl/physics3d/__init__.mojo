@@ -1,30 +1,17 @@
 """Physics3D - MuJoCo-inspired generalized coordinates physics engine.
 
 Constraint-based contact solving with joint-space dynamics.
-- Model: Static simulation configuration (kinematic tree, masses, etc.)
-- Data: Mutable simulation state (qpos, qvel, computed xpos/xquat)
-- EulerIntegrator[SOLVER]: Configurable constraint solver integrator
+ModelFields/DataFields (per-field tensors) + the fields integrators/solvers.
 """
 
 from .constants import TILE, TPB, PhysicsConstants
 from .constants import GEOM_PLANE, GEOM_SPHERE
 
 # Types
-from .types import (
-    Model,
-    Data,
-    ContactInfo,
-    compute_capsule_inertia,
-    _max_one,
-    ConeType,
-)
+from .types import _max_one, ConeType
 from .joint_types import JointDef, JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
 
-# Kinematics
-from .kinematics.forward_kinematics import (
-    forward_kinematics,
-    compute_body_velocities,
-)
+# Kinematics (fields FK lives in kinematics/forward_kinematics_fields)
 from .kinematics.quat_math import (
     quat_mul,
     quat_conjugate,

@@ -2,8 +2,7 @@
 
 Verifies the arm doesn't diverge to NaN over 500 steps of random actions.
 State reads go through the fields facade (`env.d`); the mesh-collision
-diagnostics build a local legacy `Model` via `setup_model_and_data` (the
-legacy CPU model build survives until G4).
+diagnostics read the ModelFields records (`env.mf`).
 """
 
 from std.testing import assert_true, TestSuite
@@ -11,7 +10,25 @@ from std.math import isnan
 from std.random import seed, random_float64
 from mojo_rl.envs.metaworld import SawyerReach
 from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel
-from mojo_rl.physics3d.types import Model, Data
+from std.gpu.host import DeviceContext
+from mojo_rl.physics3d.fields import ModelFields
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_GEOM_SIZE,
+    GEOM_IDX_TYPE,
+    GEOM_IDX_BODY,
+    GEOM_IDX_POS_X,
+    GEOM_IDX_POS_Y,
+    GEOM_IDX_POS_Z,
+    GEOM_IDX_QUAT_X,
+    GEOM_IDX_QUAT_Y,
+    GEOM_IDX_QUAT_Z,
+    GEOM_IDX_QUAT_W,
+    GEOM_IDX_RADIUS,
+    GEOM_IDX_HALF_LENGTH,
+    GEOM_IDX_CONTYPE,
+    GEOM_IDX_MESH_ID,
+    GEOM_IDX_RBOUND,
+)
 from mojo_rl.core import ContAction
 
 
@@ -27,45 +44,35 @@ def test_sawyer_no_nan() raises:
     var nan_step = -1
     comptime ACTION_DIM = 4
 
-    # Mesh collision diagnostics from a locally built legacy Model.
-    var model = Model[
-        DType.float64,
-        SawyerReachModel.NQ,
-        SawyerReachModel.NV,
-        SawyerReachModel.NBODY,
-        SawyerReachModel.NJOINT,
-        SawyerReachModel.MAX_CONTACTS,
-        SawyerReachModel.NGEOM,
-        SawyerReachModel.MAX_EQUALITY,
-        SawyerReachModel.CONE_TYPE,
-        SawyerReachModel.MAX_TENDON,
-        SawyerReachModel.NSITE,
-    ]()
-    var data = Data[
-        DType.float64,
-        SawyerReachModel.NQ,
-        SawyerReachModel.NV,
-        SawyerReachModel.NBODY,
-        SawyerReachModel.NJOINT,
-        SawyerReachModel.MAX_CONTACTS,
-        SawyerReachModel.NSITE,
-    ]()
-    SawyerReachModel.setup_model_and_data(model, data)
+    # Mesh collision diagnostics from the env's ModelFields records (the
+    # legacy CPU Model build was deleted at G4).
+    comptime M = SawyerReachModel
+    for m in range(16):
+        var vnum = Int(env.mf.mesh_meta.data[m * 2 + 1])
+        if vnum > 0:
+            print("  mesh", m, ": verts=", vnum)
+    for g in range(M.NGEOM):
+        var go = g * MODEL_GEOM_SIZE
+        var mid = Int(env.mf.geoms.data[go + GEOM_IDX_MESH_ID])
+        if mid >= 0:
+            print("  geom", g, "body=",
+                  Int(env.mf.geoms.data[go + GEOM_IDX_BODY]),
+                  "mesh_id=", mid,
+                  "contype=", Int(env.mf.geoms.data[go + GEOM_IDX_CONTYPE]),
+                  "rbound=", Float64(env.mf.geoms.data[go + GEOM_IDX_RBOUND]))
 
-    print("num_meshes:", model.num_meshes)
-    for m in range(model.num_meshes):
-        print("  mesh", m, ": verts=", model.mesh_vertnum[m])
-    for g in range(len(model.geom_mesh_id)):
-        if model.geom_mesh_id[g] >= 0:
-            print("  geom", g, "body=", model.geom_body[g],
-                  "mesh_id=", model.geom_mesh_id[g],
-                  "contype=", model.geom_contype[g],
-                  "rbound=", Float64(model.geom_rbound[g]))
-
-    # Print eGripperBase mesh hull extent (mesh 11, geom 27)
-    if model.num_meshes > 11:
-        var vadr = model.mesh_vertadr[11]
-        var vnum = model.mesh_vertnum[11]
+    # Print eGripperBase mesh hull extent (mesh 11, geom 27). The facade's
+    # mf is built with NMESH_VERTS=0 (mesh verts unused on the CPU step
+    # path), so build a diagnostics-only ModelFields with full mesh capacity.
+    var ctx = DeviceContext()
+    var mfd = ModelFields[
+        DType.float64, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
+        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 16 * 256,
+    ]()
+    M.init_fields[DType.float64, 16 * 256](ctx, mfd)
+    if Int(mfd.mesh_meta.data[11 * 2 + 1]) > 0:
+        var vadr = Int(mfd.mesh_meta.data[11 * 2 + 0])
+        var vnum = Int(mfd.mesh_meta.data[11 * 2 + 1])
         var min_x = Float64(1e10)
         var max_x = Float64(-1e10)
         var min_y = Float64(1e10)
@@ -73,9 +80,9 @@ def test_sawyer_no_nan() raises:
         var min_z = Float64(1e10)
         var max_z = Float64(-1e10)
         for v in range(vnum):
-            var vx = Float64(model.mesh_vert[vadr + v * 3 + 0])
-            var vy = Float64(model.mesh_vert[vadr + v * 3 + 1])
-            var vz = Float64(model.mesh_vert[vadr + v * 3 + 2])
+            var vx = Float64(mfd.mesh_verts.data[(vadr + v) * 3 + 0])
+            var vy = Float64(mfd.mesh_verts.data[(vadr + v) * 3 + 1])
+            var vz = Float64(mfd.mesh_verts.data[(vadr + v) * 3 + 2])
             if vx < min_x:
                 min_x = vx
             if vx > max_x:
@@ -93,12 +100,17 @@ def test_sawyer_no_nan() raises:
         print("  y:", min_y, "to", max_y)
         print("  z:", min_z, "to", max_z)
 
-    # Print geom 27 (eGripperBase) world position
-    print("geom 27 local pos:", Float64(model.geom_pos[27*3+0]),
-          Float64(model.geom_pos[27*3+1]), Float64(model.geom_pos[27*3+2]))
-    print("geom 27 local quat:", Float64(model.geom_quat[27*4+0]),
-          Float64(model.geom_quat[27*4+1]), Float64(model.geom_quat[27*4+2]),
-          Float64(model.geom_quat[27*4+3]))
+    # Print geom 27 (eGripperBase) local pose from the records
+    comptime g27 = 27 * MODEL_GEOM_SIZE
+    print("geom 27 local pos:",
+          Float64(env.mf.geoms.data[g27 + GEOM_IDX_POS_X]),
+          Float64(env.mf.geoms.data[g27 + GEOM_IDX_POS_Y]),
+          Float64(env.mf.geoms.data[g27 + GEOM_IDX_POS_Z]))
+    print("geom 27 local quat:",
+          Float64(env.mf.geoms.data[g27 + GEOM_IDX_QUAT_X]),
+          Float64(env.mf.geoms.data[g27 + GEOM_IDX_QUAT_Y]),
+          Float64(env.mf.geoms.data[g27 + GEOM_IDX_QUAT_Z]),
+          Float64(env.mf.geoms.data[g27 + GEOM_IDX_QUAT_W]))
     print("body 23 xpos:", Float64(env.d.xpos.data[23*3+0]),
           Float64(env.d.xpos.data[23*3+1]), Float64(env.d.xpos.data[23*3+2]))
     print("body 23 xquat:", Float64(env.d.xquat.data[23*4+0]),
@@ -106,14 +118,14 @@ def test_sawyer_no_nan() raises:
           Float64(env.d.xquat.data[23*4+3]))
 
     # Print object geom details
-    for g in range(len(model.geom_type)):
-        var gb = model.geom_body[g]
-        if gb == 33:
+    for g in range(M.NGEOM):
+        var go = g * MODEL_GEOM_SIZE
+        if Int(env.mf.geoms.data[go + GEOM_IDX_BODY]) == 33:
             print("  obj geom", g,
-                  "type=", model.geom_type[g],
-                  "hl=", Float64(model.geom_half_length[g]),
-                  "r=", Float64(model.geom_radius[g]),
-                  "rbound=", Float64(model.geom_rbound[g]))
+                  "type=", Int(env.mf.geoms.data[go + GEOM_IDX_TYPE]),
+                  "hl=", Float64(env.mf.geoms.data[go + GEOM_IDX_HALF_LENGTH]),
+                  "r=", Float64(env.mf.geoms.data[go + GEOM_IDX_RADIUS]),
+                  "rbound=", Float64(env.mf.geoms.data[go + GEOM_IDX_RBOUND]))
 
     for step in range(500):
         var action = ContAction[ACTION_DIM]()

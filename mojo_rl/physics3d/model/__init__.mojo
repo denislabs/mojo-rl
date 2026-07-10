@@ -1,95 +1,14 @@
-"""Model definition package for compile-time body/joint/geom/actuator specifications.
+"""Physics3D model layer.
 
-Provides BodySpec, JointSpec, GeomSpec, and ActuatorSpec traits with concrete
-implementations and variadic containers (Bodies, Joints, Geoms, Actuators)
-plus the ModelDefLike trait (implemented by ModelDefFromXML).
+`ModelDefLike` (the model-definition trait; sole implementer =
+`parser.ModelDefFromXML`), the inertia-from-geom pure-math helpers used by
+the spec-direct fields build, and the generic `ModelRenderer`.
+
+The compile-time spec layer (BodySpec/JointSpec/GeomSpec/ActuatorSpec/... +
+the `ModelDef` compositor) was deleted at the G2/G4 fields sunset — every
+model is XML-parsed.
 """
 
-from .body_spec import (
-    BodySpec,
-    CapsuleBody,
-    SphereBody,
-    BoxBody,
-    BodiesLike,
-    _EmptyBodies,
-    Bodies,
-)
-from .joint_spec import (
-    JointSpec,
-    HingeJoint,
-    SlideJoint,
-    JointsLike,
-    _EmptyJoints,
-    Joints,
-)
-from .geom_spec import (
-    GeomSpec,
-    Plane,
-    Sphere,
-    Box,
-    Capsule,
-    FromToCapsule,
-    GeomsLike,
-    _EmptyGeoms,
-    Geoms,
-)
-from .light_spec import (
-    LightSpec,
-    DirectionalLight,
-    LIGHT_DIRECTIONAL,
-    LIGHT_POINT,
-    LightsLike,
-    _EmptyLights,
-    Lights,
-)
-from .defaults_spec import (
-    ModelDefaultsLike,
-    ModelDefaults,
-)
-from .texture_spec import (
-    TextureSpec,
-    CheckerTexture,
-    FlatTexture,
-    GradientTexture,
-    TEX_CHECKER,
-    TEX_FLAT,
-    TEX_GRADIENT,
-    TexturesLike,
-    _EmptyTextures,
-    Textures,
-)
-from .material_spec import (
-    MaterialSpec,
-    Material,
-    DefaultMaterial,
-    PlaneMaterial,
-    GeomMaterial,
-    MaterialsLike,
-    _EmptyMaterials,
-    Materials,
-)
-from .equality_spec import EqualitySpec, ConnectConstraint, WeldConstraint
-from .site_spec import SiteSpec, Site, SitesLike, _EmptySites, Sites
-from .actuator_spec import (
-    ActuatorSpec,
-    MotorActuator,
-    PositionActuator,
-    VelocityActuator,
-    GeneralActuator,
-    ActuatorsLike,
-    _EmptyActuators,
-    Actuators,
-)
-from .camera_spec import (
-    CameraSpec,
-    TrackCamera,
-    FixedCamera,
-    CAM_TRACKCOM,
-    CAM_FIXED,
-    CamerasLike,
-    _EmptyCameras,
-    Cameras,
-)
 from .model_def import ModelDefLike
-from .inertia_from_geom import compute_inertia_from_geoms
+from .inertia_from_geom import geom_volume, geom_effective_mass, geom_inertia
 from .model_renderer import ModelRenderer

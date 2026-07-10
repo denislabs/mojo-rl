@@ -21,9 +21,13 @@ Expected output:
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser import parse_xml_full
 from mojo_rl.physics3d.parser.xml_parser import parse_xml_model_data
-from mojo_rl.physics3d.types import Model, Data, ConeType
-from mojo_rl.physics3d.fields import DataFields
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from std.gpu.host import DeviceContext
+from mojo_rl.physics3d.fields import DataFields, ModelFields
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    BODY_IDX_POS_Z,
+    MODEL_META_IDX_GRAVITY_Z,
+)
 from std.testing import assert_true, TestSuite
 
 
@@ -171,31 +175,27 @@ def test_model_def_from_xml() raises:
     print()
 
     # =========================================================================
-    # Step 4: CPU setup_model_and_data + FK round-trip
+    # Step 4: spec-direct fields build (init_fields; G4)
     # =========================================================================
-    print("=== CPU setup + FK round-trip ===")
-    var model = Model[
-        DType.float64,
-        pm.NQ,
-        pm.NV,
-        pm.NBODY,
-        pm.NJOINT,
-        10,
-        pm.NGEOM,
-        0,
-        XmlModel.CONE_TYPE,
-        0,
-        0,
+    print("=== fields model build ===")
+    var ctx = DeviceContext()
+    var mf = ModelFields[
+        DType.float64, pm.NV, pm.NBODY, pm.NJOINT, pm.NGEOM,
+        XmlModel.MAX_EQUALITY, XmlModel.MAX_TENDON, XmlModel.NSITE,
+        XmlModel.NEXCLUDE, 0,
     ]()
-    var data = Data[DType.float64, pm.NQ, pm.NV, pm.NBODY, pm.NJOINT, 10, 0]()
-
-    XmlModel.setup_model_and_data[DType.float64](model, data)
-    print("setup_model_and_data succeeded")
-    print("gravity_z     =", Float64(model.gravity[2]), " (expected -9.81)")
+    XmlModel.init_fields[DType.float64, 0](ctx, mf)
+    print("init_fields succeeded")
     print(
-        "torso pos_z   =", Float64(model.body_pos[1 * 3 + 2]), " (expected 0.7)"
+        "gravity_z     =",
+        Float64(mf.meta.data[MODEL_META_IDX_GRAVITY_Z]),
+        " (expected -9.81)",
     )
-    print("torso xpos_z  =", Float64(data.xpos[1 * 3 + 2]), " (expected ~0.7)")
+    print(
+        "torso pos_z   =",
+        Float64(mf.bodies.data[1 * MODEL_BODY_SIZE + BODY_IDX_POS_Z]),
+        " (expected 0.7)",
+    )
     print()
 
     # =========================================================================

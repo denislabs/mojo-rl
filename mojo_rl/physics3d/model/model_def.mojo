@@ -2,17 +2,15 @@
 
 Declares the compile-time dimensions, the CPU state hooks (fields-native:
 `reset_data` / `extract_obs` / `enforce_limits` / `apply_actions` over
-`DataFields`), the legacy CPU model build (`setup_model_and_data`, dies at
-G4), the fields-native model build (`init_fields`, trait default), the GPU
+`DataFields`), the spec-direct fields model build (`init_fields`), the GPU
 kernel delegates, and the render hooks. Sole implementer: `ModelDefFromXML`
-(the spec-based `ModelDef` compositor was deleted at the G2 fields sunset —
-it had zero instantiation sites).
+(the spec-based `ModelDef` compositor was deleted at the G2 fields sunset;
+the legacy CPU `Model`/`Data` build at G4).
 """
 
 from mojo_rl.render import Renderer3D, Light, Camera3D
 from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
-from ..types import Model, Data
 from ..fields import ModelFields, DataFields
 
 # GPU imports
@@ -55,36 +53,6 @@ trait ModelDefLike:
     # comptime TEXTURES: TexturesLike
     # comptime MATERIALS: MaterialsLike
     # comptime CAMERAS: CamerasLike
-
-    # === CPU: Model setup (calls Bodies/Joints/Geoms/Defaults internally) ===
-    @staticmethod
-    def setup_model_and_data[
-        DTYPE: DType
-    ](
-        mut model: Model[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-            Self.MAX_TENDON,
-            Self.NSITE,
-        ],
-        mut data: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-        ],
-    ):
-        ...
 
     # === CPU: state hooks (fields-native; G2) ===
     @staticmethod

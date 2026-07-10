@@ -77,10 +77,6 @@ from ..kinematics.quat_math import (
     gpu_axis_angle_to_quat,
     gpu_quat_normalize,
 )
-from ..kinematics.forward_kinematics import (
-    forward_kinematics_gpu,
-    compute_body_velocities_gpu,
-)
 # Legacy GPU mass_matrix/jacobian (CRBA/LDL) deleted at the fields sunset.
 
 # Phase-2 post-substep GPU kernels

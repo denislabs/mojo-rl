@@ -28,16 +28,12 @@ from std.random.philox import Random as PhiloxRandom
 from mojo_rl.render import Color, Renderer3D, Light, Camera3D
 from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
-from mojo_rl.physics3d.types import Model, Data, ConeType
+from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.joint_types import (
     JNT_FREE,
     JNT_BALL,
     JNT_HINGE,
     JNT_SLIDE,
-)
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
-    forward_kinematics,
-    forward_kinematics_gpu,
 )
 from mojo_rl.physics3d.gpu.constants import (
     TPB,
@@ -96,7 +92,6 @@ from .xml_parser import (
     _xml_find_joint_dof_adr,
     _xml_find_joint_index,
 )
-from mojo_rl.physics3d.model.inertia_from_geom import compute_inertia_from_geoms
 
 # Type aliases matching model_def.mojo module scope (required for trait conformance)
 comptime _RVec3 = _Vec3G[DType.float64]
@@ -199,143 +194,10 @@ struct ModelDefFromXML[
     comptime _rcd: ComptimeRenderData = parse_xml_render_data(Self.xml)
 
     # =========================================================================
-    # CPU: Model setup
+    # CPU: state hooks (fields-native; G2). The legacy CPU model build
+    # (setup_model_and_data + _reset_data_legacy) was deleted at G4 — the
+    # model build is `init_fields` (spec-direct) below.
     # =========================================================================
-
-    @staticmethod
-    def setup_model_and_data[
-        DTYPE: DType
-    ](
-        mut model: Model[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-            Self.MAX_TENDON,
-            Self.NSITE,
-        ],
-        mut data: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-        ],
-    ):
-        """Parse XML, populate model struct, run FK and compute invweight0."""
-        comptime assert (
-            DTYPE.is_floating_point()
-        ), "DTYPE must be a floating point type"
-        var fmd = parse_xml_full[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NQ,
-            Self.NV,
-            Self.NGEOM,
-            Self.nact,
-            Self.ntex,
-            Self.nmat,
-            Self.nlight,
-            Self.ncam,
-            Self.NSITE,
-            Self.neq,
-            Self.nexclude,
-        ](Self.xml)
-        fmd.setup_model[
-            DTYPE,
-            Self.MAX_CONTACTS,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-            Self.MAX_TENDON,
-            Self.NSITE,  # MODEL_NSITE in setup_model's renamed param
-        ](model)
-        comptime ifg_mode = _xml_compiler_inertiafromgeom[Self.xml]()
-        comptime igr = _xml_compiler_inertiagrouprange[Self.xml]()
-        comptime if ifg_mode == 1:
-            compute_inertia_from_geoms[
-                INERTIA_GROUP_MIN=igr[0], INERTIA_GROUP_MAX=igr[1],
-            ](model)
-        comptime if ifg_mode == 2:
-            compute_inertia_from_geoms[
-                INERTIA_GROUP_MIN=igr[0], INERTIA_GROUP_MAX=igr[1],
-                AUTO_MODE=True,
-            ](model)
-        comptime if ifg_mode > 0:
-            comptime settotalmass = _xml_compiler_settotalmass[Self.xml]()
-            comptime if settotalmass > 0.0:
-                var total_mass = Scalar[DTYPE](0)
-                for i in range(1, Self.NBODY):
-                    total_mass += model.body_mass[i]
-                if total_mass > Scalar[DTYPE](0):
-                    var scale = Scalar[DTYPE](settotalmass) / total_mass
-                    for i in range(1, Self.NBODY):
-                        model.body_mass[i] *= scale
-                        model.body_inv_mass[i] = (
-                            Scalar[DTYPE](1.0) / model.body_mass[i]
-                        )
-                        for k in range(3):
-                            model.body_inertia[i * 3 + k] *= scale
-                            model.body_inv_inertia[i * 3 + k] = (
-                                Scalar[DTYPE](1.0)
-                                / model.body_inertia[i * 3 + k]
-                            )
-        # <tendon><fixed> parsing removed (was permanently disabled behind
-        # `comptime if False`): fixed tendons only define a kinematic length
-        # and produce no forces unless referenced by <equality><tendon>,
-        # which is unsupported. Re-add from git history if equality-tendon
-        # support ever lands.
-
-        # Initialize data.qpos from qpos0 (joint ref values) before FK.
-        # invweight0 is computed FIELDS-natively in `init_fields`
-        # (compute_invweight0_fields) — no CPU-Model invweight0 here (G1).
-        Self._reset_data_legacy(data)
-        forward_kinematics(model, data)
-
-    # =========================================================================
-    # CPU: state hooks (fields-native; G2)
-    # =========================================================================
-
-    @staticmethod
-    def _reset_data_legacy[
-        DTYPE: DType
-    ](
-        mut data: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-        ],
-    ):
-        """Legacy-`Data` twin of `reset_data`, used ONLY by
-        `setup_model_and_data` (the legacy CPU model build + the FK-vs-MuJoCo
-        tests rely on it leaving `data` at the reference pose). Dies with
-        `Data` at G4."""
-        comptime if Self._acd.nq > 0:
-            comptime for i in range(Self.NQ):
-                comptime if i < Self._acd.nq:
-                    comptime val = Self._acd.qpos0[i]
-                    data.qpos[i] = Scalar[DTYPE](val)
-                else:
-                    data.qpos[i] = Scalar[DTYPE](0)
-        else:
-            for i in range(Self.NQ):
-                data.qpos[i] = Scalar[DTYPE](0)
-            comptime if Self._acd.free_joint_qpos_adr >= 0:
-                data.qpos[Self._acd.free_joint_qpos_adr + 3] = Scalar[DTYPE](1)
-        for i in range(Self.NV):
-            data.qvel[i] = Scalar[DTYPE](0)
-            data.qacc[i] = Scalar[DTYPE](0)
-            data.qfrc[i] = Scalar[DTYPE](0)
 
     @staticmethod
     def reset_data[

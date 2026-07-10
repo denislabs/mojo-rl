@@ -11,9 +11,6 @@ from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from mojo_rl.render import Renderer3D, Camera3D, Color
 from mojo_rl.render.light import Light
 from mojo_rl.core import EnvRenderer3D
-from ..model.geom_spec import GeomSpec, GeomsLike
-from ..model.camera_spec import CamerasLike, _EmptyCameras
-from ..model.light_spec import LightsLike, _EmptyLights
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
