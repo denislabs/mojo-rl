@@ -13,14 +13,13 @@ kernels. Kernels bind one record tensor per entity kind and read columns —
 same addressing as today's record-strided slab, minus the cross-family
 offset math.
 
-Coexistence: `load_from_slab` / `store_to_slab` bridge to/from the flat
-model buffer produced by the existing `copy_model_to_buffer` hand-flattening
-(so the parser/setup path is reused verbatim and the bridge is gated
-bit-identically). Transitional; dies at P6.
+Build: `load_from_model` fills the record tensors DIRECTLY from the CPU
+`Model` (`i * MODEL_<KIND>_SIZE + <KIND>_IDX_*`), no flat slab. The
+transitional `load_from_slab` / `store_to_slab` bridges + the cross-family
+`model_*_offset` tables were deleted at the P6 sunset.
 
-Dtype note: all-`DTYPE` for bit-compatibility with the existing slab (int
-columns like `BODY_IDX_PARENT` are float-encoded there). Honest `int32`
-record tensors come after consumers stop round-tripping through slabs.
+Dtype note: all-`DTYPE` (int columns like `BODY_IDX_PARENT` are float-encoded).
+Honest `int32` record tensors are a later cleanup.
 """
 
 from std.gpu.host import DeviceContext
@@ -39,27 +38,12 @@ from ..gpu.constants import (
     MODEL_SITE_SIZE,
     MODEL_MESH_META_SIZE,
     MAX_GPU_MESHES,
-    model_body_offset,
-    model_joint_offset,
-    model_metadata_offset,
-    model_curriculum_offset,
-    model_geom_offset,
-    model_equality_offset,
-    model_tendon_offset,
-    model_site_offset,
-    model_body_invweight0_offset,
-    model_dof_invweight0_offset,
-    model_exclude_offset,
-    model_mesh_meta_offset,
-    model_mesh_vert_offset,
     model_size_with_invweight,
 )
 
-# Column-index constants for the offset-free `load_from_model` fill (B3). These
-# are per-record COLUMN offsets (not cross-family slab offsets): a body field is
-# at `body * MODEL_BODY_SIZE + BODY_IDX_*` inside the packed `bodies` tensor.
-# The cross-family `model_*_offset` functions above are used only by the
-# transitional slab bridges and die with them at sunset.
+# Column-index constants for the offset-free `load_from_model` fill. These are
+# per-record COLUMN offsets: a body field is at `body * MODEL_BODY_SIZE +
+# BODY_IDX_*` inside the packed `bodies` tensor.
 from ..gpu.constants import (
     BODY_IDX_MASS,
     BODY_IDX_INV_MASS,
@@ -218,22 +202,6 @@ def _at_least_one(n: Int) -> Int:
     return n if n > 0 else 1
 
 
-@always_inline
-def _block_in[
-    dt: DType
-](mut t: TensorImpl[dt], flat: List[Scalar[dt]], off: Int, width: Int):
-    for i in range(width):
-        t.data[i] = flat[off + i]
-
-
-@always_inline
-def _block_out[
-    dt: DType
-](t: TensorImpl[dt], mut flat: List[Scalar[dt]], off: Int, width: Int):
-    for i in range(width):
-        flat[off + i] = t.data[i]
-
-
 struct ModelFields[
     DTYPE: DType,
     NV: Int,
@@ -331,271 +299,6 @@ struct ModelFields[
         self.excludes.upload(ctx)
         self.mesh_meta.upload(ctx)
         self.mesh_verts.upload(ctx)
-
-    # ── Transitional slab bridges (die at P6 with gpu/constants.mojo) ────
-    def load_from_slab(mut self, flat: List[Scalar[Self.DTYPE]]):
-        """Fill all record tensors from a flat model buffer (the output of
-        the existing `copy_model_to_buffer` flattening)."""
-        # The legacy mesh serializers/readers compute their offsets AS IF
-        # NEXCLUDE == 0 (the model-slab tail grew without them being
-        # updated), while this loader uses the correct NEXCLUDE-aware
-        # offsets — so a slab-bridged NEXCLUDE>0 model with meshes would
-        # load garbage vertices (and legacy itself reads garbage there).
-        # No such model exists today; the constraint dies with this bridge
-        # at P6 (direct parser fill).
-        comptime assert not (Self.NEXCLUDE > 0 and Self.NMESH_VERTS > 0), (
-            "ModelFields.load_from_slab: NEXCLUDE>0 models with meshes are"
-            " not slab-bridgeable (legacy mesh offsets assume NEXCLUDE=0)"
-        )
-        _block_in(
-            self.bodies, flat, model_body_offset(0), Self.NBODY * MODEL_BODY_SIZE
-        )
-        _block_in(
-            self.joints,
-            flat,
-            model_joint_offset[Self.NBODY](0),
-            Self.NJOINT * MODEL_JOINT_SIZE,
-        )
-        _block_in(
-            self.meta,
-            flat,
-            model_metadata_offset[Self.NBODY, Self.NJOINT](),
-            MODEL_META_SIZE,
-        )
-        _block_in(
-            self.curriculum,
-            flat,
-            model_curriculum_offset[Self.NBODY, Self.NJOINT](),
-            MODEL_CURRICULUM_SIZE,
-        )
-        _block_in(
-            self.geoms,
-            flat,
-            model_geom_offset[Self.NBODY, Self.NJOINT](0),
-            Self.NGEOM * MODEL_GEOM_SIZE,
-        )
-        _block_in(
-            self.equality,
-            flat,
-            model_equality_offset[Self.NBODY, Self.NJOINT, Self.NGEOM](0),
-            Self.NEQUALITY * MODEL_EQ_SIZE,
-        )
-        _block_in(
-            self.tendons,
-            flat,
-            model_tendon_offset[
-                Self.NBODY, Self.NJOINT, Self.NGEOM, Self.NEQUALITY
-            ](0),
-            Self.NTENDON * MODEL_TENDON_SIZE,
-        )
-        _block_in(
-            self.sites,
-            flat,
-            model_site_offset[
-                Self.NBODY,
-                Self.NJOINT,
-                Self.NGEOM,
-                Self.NEQUALITY,
-                Self.NTENDON,
-            ](0),
-            Self.NSITE * MODEL_SITE_SIZE,
-        )
-        _block_in(
-            self.body_invweight0,
-            flat,
-            model_body_invweight0_offset[
-                Self.NBODY,
-                Self.NJOINT,
-                Self.NGEOM,
-                Self.NEQUALITY,
-                Self.NTENDON,
-                Self.NSITE,
-            ](),
-            Self.NBODY * 2,
-        )
-        _block_in(
-            self.dof_invweight0,
-            flat,
-            model_dof_invweight0_offset[
-                Self.NBODY,
-                Self.NJOINT,
-                Self.NGEOM,
-                Self.NEQUALITY,
-                Self.NTENDON,
-                Self.NSITE,
-            ](),
-            Self.NV,
-        )
-        _block_in(
-            self.excludes,
-            flat,
-            model_exclude_offset[
-                Self.NBODY,
-                Self.NJOINT,
-                Self.NV,
-                Self.NGEOM,
-                Self.NEQUALITY,
-                Self.NTENDON,
-                Self.NSITE,
-            ](),
-            Self.NEXCLUDE * 2,
-        )
-        _block_in(
-            self.mesh_meta,
-            flat,
-            model_mesh_meta_offset[
-                Self.NBODY,
-                Self.NJOINT,
-                Self.NV,
-                Self.NGEOM,
-                Self.NEQUALITY,
-                Self.NTENDON,
-                Self.NSITE,
-                Self.NEXCLUDE,
-            ](),
-            MAX_GPU_MESHES * MODEL_MESH_META_SIZE,
-        )
-        _block_in(
-            self.mesh_verts,
-            flat,
-            model_mesh_vert_offset[
-                Self.NBODY,
-                Self.NJOINT,
-                Self.NV,
-                Self.NGEOM,
-                Self.NEQUALITY,
-                Self.NTENDON,
-                Self.NSITE,
-                Self.NEXCLUDE,
-            ](),
-            Self.NMESH_VERTS * 3,
-        )
-
-    def store_to_slab(self, mut flat: List[Scalar[Self.DTYPE]]):
-        """Write all record tensors back into a flat model buffer."""
-        _block_out(
-            self.bodies, flat, model_body_offset(0), Self.NBODY * MODEL_BODY_SIZE
-        )
-        _block_out(
-            self.joints,
-            flat,
-            model_joint_offset[Self.NBODY](0),
-            Self.NJOINT * MODEL_JOINT_SIZE,
-        )
-        _block_out(
-            self.meta,
-            flat,
-            model_metadata_offset[Self.NBODY, Self.NJOINT](),
-            MODEL_META_SIZE,
-        )
-        _block_out(
-            self.curriculum,
-            flat,
-            model_curriculum_offset[Self.NBODY, Self.NJOINT](),
-            MODEL_CURRICULUM_SIZE,
-        )
-        _block_out(
-            self.geoms,
-            flat,
-            model_geom_offset[Self.NBODY, Self.NJOINT](0),
-            Self.NGEOM * MODEL_GEOM_SIZE,
-        )
-        _block_out(
-            self.equality,
-            flat,
-            model_equality_offset[Self.NBODY, Self.NJOINT, Self.NGEOM](0),
-            Self.NEQUALITY * MODEL_EQ_SIZE,
-        )
-        _block_out(
-            self.tendons,
-            flat,
-            model_tendon_offset[
-                Self.NBODY, Self.NJOINT, Self.NGEOM, Self.NEQUALITY
-            ](0),
-            Self.NTENDON * MODEL_TENDON_SIZE,
-        )
-        _block_out(
-            self.sites,
-            flat,
-            model_site_offset[
-                Self.NBODY,
-                Self.NJOINT,
-                Self.NGEOM,
-                Self.NEQUALITY,
-                Self.NTENDON,
-            ](0),
-            Self.NSITE * MODEL_SITE_SIZE,
-        )
-        _block_out(
-            self.body_invweight0,
-            flat,
-            model_body_invweight0_offset[
-                Self.NBODY,
-                Self.NJOINT,
-                Self.NGEOM,
-                Self.NEQUALITY,
-                Self.NTENDON,
-                Self.NSITE,
-            ](),
-            Self.NBODY * 2,
-        )
-        _block_out(
-            self.dof_invweight0,
-            flat,
-            model_dof_invweight0_offset[
-                Self.NBODY,
-                Self.NJOINT,
-                Self.NGEOM,
-                Self.NEQUALITY,
-                Self.NTENDON,
-                Self.NSITE,
-            ](),
-            Self.NV,
-        )
-        _block_out(
-            self.excludes,
-            flat,
-            model_exclude_offset[
-                Self.NBODY,
-                Self.NJOINT,
-                Self.NV,
-                Self.NGEOM,
-                Self.NEQUALITY,
-                Self.NTENDON,
-                Self.NSITE,
-            ](),
-            Self.NEXCLUDE * 2,
-        )
-        _block_out(
-            self.mesh_meta,
-            flat,
-            model_mesh_meta_offset[
-                Self.NBODY,
-                Self.NJOINT,
-                Self.NV,
-                Self.NGEOM,
-                Self.NEQUALITY,
-                Self.NTENDON,
-                Self.NSITE,
-                Self.NEXCLUDE,
-            ](),
-            MAX_GPU_MESHES * MODEL_MESH_META_SIZE,
-        )
-        _block_out(
-            self.mesh_verts,
-            flat,
-            model_mesh_vert_offset[
-                Self.NBODY,
-                Self.NJOINT,
-                Self.NV,
-                Self.NGEOM,
-                Self.NEQUALITY,
-                Self.NTENDON,
-                Self.NSITE,
-                Self.NEXCLUDE,
-            ](),
-            Self.NMESH_VERTS * 3,
-        )
 
     # ── Offset-free packed fill (B3): the sunset-surviving model build ───
     def load_from_model[

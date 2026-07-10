@@ -434,68 +434,8 @@ struct ModelDefFromXML[
             )
 
     # =========================================================================
-    # GPU: Model init
+    # Model build
     # =========================================================================
-
-    @staticmethod
-    def init_model_gpu[
-        DTYPE: DType
-    ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE],) raises:
-        """Serialize CPU model to GPU buffer, then compute invweight0 on GPU.
-
-        Creates a Model + Data on CPU, runs setup_model_and_data,
-        serializes to HostBuffer, copies to DeviceBuffer, then calls
-        _compute_invweight0_gpu to compute accurate invweight0 on GPU.
-        """
-        comptime BUF_SIZE = model_size_with_invweight[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NV,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.MAX_TENDON,
-            Self.NSITE,
-            Self.nexclude,
-        ]()
-        var host_buf = ctx.enqueue_create_host_buffer[DTYPE](BUF_SIZE)
-        for i in range(BUF_SIZE):
-            host_buf[i] = Scalar[DTYPE](0)
-
-        # Create CPU model + data, populate from XML
-        var model = Model[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-            Self.MAX_TENDON,
-            Self.NSITE,
-        ]()
-        var data = Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-        ]()
-        Self.setup_model_and_data[DTYPE](model, data)
-
-        # Serialize model to host buffer
-        copy_model_to_buffer(model, host_buf)
-        copy_geoms_to_buffer(model, host_buf)
-        copy_tendons_to_buffer(model, host_buf)
-        copy_invweight0_to_buffer(model, host_buf)
-        copy_mesh_hull_to_buffer(model, host_buf)
-
-        # Copy to GPU (invweight0 already computed correctly by CPU's
-        # compute_body_invweight0 via setup_model_and_data)
-        ctx.enqueue_copy(model_buf, host_buf)
 
     # `init_fields` (the offset-free fields-native model build) is inherited
     # from the `ModelDefLike` trait default — it uses `Self.NEXCLUDE`

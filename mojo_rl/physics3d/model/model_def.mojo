@@ -317,13 +317,6 @@ trait ModelDefLike:
 
     # === CPU: Float getters (can't use Float64 as comptime in traits) ===
 
-    # === GPU: Model init ===
-    @staticmethod
-    def init_model_gpu[
-        DTYPE: DType
-    ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE],) raises:
-        ...
-
     # === Fields-native model build (offset-free; P6) ===
     @staticmethod
     def init_fields[
@@ -730,96 +723,6 @@ struct ModelDef[
         Self.Sites.setup_model(model)
         Self.Joints.reset_data(data)
         Self.finalize(model, data)
-
-    # === GPU: Model init ===
-    @staticmethod
-    def init_model_gpu[
-        DTYPE: DType
-    ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE],) raises:
-        """Initialize GPU model buffer by writing directly to HostBuffer.
-
-        Bypasses creating a full Model struct on the stack (which causes
-        stack overflow for large robots like Ant). Instead writes body, joint,
-        geom, and metadata directly to the buffer using compile-time specs.
-        """
-        comptime BUF_SIZE = model_size_with_invweight[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NV,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.MAX_TENDON,
-            Self.NSITE,
-        ]()
-        var host_buf = ctx.enqueue_create_host_buffer[DTYPE](BUF_SIZE)
-        # Zero-initialize
-        for i in range(BUF_SIZE):
-            host_buf[i] = Scalar[DTYPE](0)
-
-        # Direct writes (no Model struct)
-        Self.Bodies.write_to_buffer[DTYPE, Self.NBODY](host_buf)
-        Self.Joints.write_to_buffer[DTYPE, Self.NBODY, Defaults=Self.Defaults](
-            host_buf
-        )
-
-        comptime if Self.NGEOM > 0:
-            Self.Geoms.write_to_buffer[
-                DTYPE, Self.NBODY, Self.NJOINT, Defaults=Self.Defaults
-            ](host_buf)
-
-        comptime if Self.NSITE > 0:
-            Self.Sites.write_to_buffer[
-                DTYPE,
-                Self.NBODY,
-                Self.NJOINT,
-                Self.NGEOM,
-                Self.MAX_EQUALITY,
-                Self.MAX_TENDON,
-            ](host_buf)
-        Self._write_metadata_to_buffer[DTYPE](host_buf)
-
-        # Derived computations on buffer
-        comptime if Self.Defaults.INERTIAFROMGEOM and Self.NGEOM > 0:
-            var geom_masses = Self.Geoms.compute_geom_masses[
-                DTYPE, Defaults=Self.Defaults
-            ]()
-            compute_inertia_from_geoms_buffer[
-                DTYPE, Self.NBODY, Self.NJOINT, Self.NGEOM
-            ](host_buf, geom_masses)
-
-        comptime if Self.Defaults.SETTOTALMASS > 0.0:
-            Self._settotalmass_buffer[DTYPE](host_buf)
-
-        # Compute invweight0 on CPU (the GPU kernel has a numerical divergence
-        # in translational body_invweight0 vs CPU, causing constraint force errors)
-        var model_tmp = Model[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            1,  # MAX_CONTACTS (minimal, only need for Model struct)
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-            Self.MAX_TENDON,
-            Self.NSITE,
-        ]()
-        var data_tmp = Data[
-            DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, 1, Self.NSITE
-        ]()
-        Self.Bodies.setup_model(model_tmp)
-        Self.Joints.setup_model[Defaults=Self.Defaults](model_tmp)
-        Self.Geoms.setup_model[Defaults=Self.Defaults](model_tmp)
-        Self.Sites.setup_model(model_tmp)
-        Self.Joints.reset_data(data_tmp)
-        Self.finalize(model_tmp, data_tmp)
-
-        # Copy CPU invweight0 to host buffer
-        copy_invweight0_to_buffer(model_tmp, host_buf)
-
-        # Copy to GPU
-        ctx.enqueue_copy(model_buf, host_buf)
 
     @staticmethod
     def _write_metadata_to_buffer[
