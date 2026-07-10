@@ -53,7 +53,8 @@ from ..types import (
     EQ_WELD,
     ConeType,
 )
-from ..fields import ModelFields
+from ..fields import ModelFields, DataFields, DynamicsScratch
+from ..dynamics.invweight_fields import compute_invweight0_fields
 from ..joint_types import JNT_HINGE, JNT_SLIDE
 from std.math import sqrt
 from ..constants import (
@@ -368,6 +369,23 @@ trait ModelDefLike:
         ]()
         Self.setup_model_and_data[DTYPE](model, data)
         mf.load_from_model[Self.NQ, Self.MAX_CONTACTS, Self.CONE_TYPE](model)
+
+        # G1: compute invweight0 FIELDS-natively (overwrites the CPU-Model
+        # values load_from_model just copied). Reference pose = data.qpos (the
+        # reset_data pose setup_model_and_data used). Walker2D/Ant bit-exact vs
+        # legacy; Humanoid ~1.5e-5 (upstream CRBA/LDL roundoff). See
+        # test_invweight0_fields.
+        var d_inv = DataFields[
+            DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.MAX_CONTACTS, Self.NSITE, 1
+        ]()
+        for qi in range(Self.NQ):
+            d_inv.qpos.data[qi] = data.qpos[qi]
+        var sc_inv = DynamicsScratch[DTYPE, Self.NV, Self.NBODY, 1]()
+        compute_invweight0_fields[
+            DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MAX_CONTACTS,
+            Self.NGEOM, Self.MAX_EQUALITY, Self.MAX_TENDON, Self.NSITE,
+            Self.NEXCLUDE, NMESHV,
+        ](d_inv, mf, sc_inv)
         mf.upload_all(ctx)
 
     # === GPU: Joints/Actuators kernel delegates ===
