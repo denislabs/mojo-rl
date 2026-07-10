@@ -6,7 +6,8 @@ from layout import Layout, LayoutTensor
 from mojo_rl.physics3d.fields import DataFields
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
-    qpos_offset,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
     rk4_extra_workspace_size,
 )
 
@@ -115,17 +116,18 @@ struct HumanoidConfig(Phyics3dEnvConfig):
     def pre_step_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
         env: Int,
-        meta_offset: Int,
     ):
         # Save free joint x position (qpos[0]) into META_IDX_PREV_X
-        comptime QPOS_OFF = qpos_offset[HumanoidModel.NQ, HumanoidModel.NV]()
-        states[env, meta_offset + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
+        meta[env, META_IDX_PREV_X] = qpos[env, 0]
 
     # === GPU inline: Reward + termination ===
     @always_inline
@@ -133,35 +135,47 @@ struct HumanoidConfig(Phyics3dEnvConfig):
     def compute_reward_and_done_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
         ACTION_DIM: Int,
-        MODEL_SIZE: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
-        model: LayoutTensor[
-            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
         ],
         actions: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
-        xpos_off: Int,
-        xipos_off: Int,
-        cfrc_ext_off: Int,
-        cvel_off: Int,
-        meta_offset: Int,
-        curriculum_offset: Int,
         step_count: Int,
         frame_skip: Int,
         timestep: Scalar[DTYPE],
     ) -> Tuple[Scalar[DTYPE], Bool]:
         # x velocity from free joint x position change
-        var x_after = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])
+        var x_after = rebind[Scalar[DTYPE]](qpos[env, 0])
         var prev_x = rebind[Scalar[DTYPE]](
-            states[env, meta_offset + META_IDX_PREV_X]
+            meta[env, META_IDX_PREV_X]
         )
         var effective_dt = timestep * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / effective_dt
@@ -178,7 +192,7 @@ struct HumanoidConfig(Phyics3dEnvConfig):
         var ctrl_cost = Scalar[DTYPE](0.1) * ctrl_cost_sum
 
         # Health check: torso world z = qpos[2] (after init_qpos_gpu added 1.4)
-        var z = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
+        var z = rebind[Scalar[DTYPE]](qpos[env, 2])
         var is_healthy = z >= Scalar[DTYPE](1.0) and z <= Scalar[DTYPE](2.0)
 
         # NaN guard
@@ -201,13 +215,12 @@ struct HumanoidConfig(Phyics3dEnvConfig):
     def init_qpos_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
     ):
         # No-op: free joint initial position (z=1.4, qw=1.0) is now handled
         # by reset_env_gpu via _acd.qpos0 (parsed from body pos in XML).

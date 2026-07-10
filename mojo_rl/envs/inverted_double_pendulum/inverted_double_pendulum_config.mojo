@@ -7,8 +7,8 @@ from layout import Layout, LayoutTensor
 from mojo_rl.physics3d.fields import DataFields
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
-    qpos_offset,
-    qvel_offset,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
     rk4_extra_workspace_size,
 )
 
@@ -142,19 +142,18 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
     def pre_step_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
         env: Int,
-        meta_offset: Int,
     ):
         # Save cart x position (qpos[0]) into META_IDX_PREV_X
-        comptime QPOS_OFF = qpos_offset[
-            InvertedDoublePendulumModel.NQ, InvertedDoublePendulumModel.NV
-        ]()
-        states[env, meta_offset + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
+        meta[env, META_IDX_PREV_X] = qpos[env, 0]
 
     # === GPU inline: Reward + termination ===
     @always_inline
@@ -162,27 +161,39 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
     def compute_reward_and_done_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
         ACTION_DIM: Int,
-        MODEL_SIZE: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
-        model: LayoutTensor[
-            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
         ],
         actions: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
-        xpos_off: Int,
-        xipos_off: Int,
-        cfrc_ext_off: Int,
-        cvel_off: Int,
-        meta_offset: Int,
-        curriculum_offset: Int,
         step_count: Int,
         frame_skip: Int,
         timestep: Scalar[DTYPE],
@@ -191,9 +202,9 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
             DTYPE.is_floating_point()
         ), "DTYPE must be floating point"
 
-        var q0 = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])  # cart x
-        var q1 = rebind[Scalar[DTYPE]](states[env, qpos_off + 1])  # pole1 angle
-        var q2 = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])  # pole2 angle
+        var q0 = rebind[Scalar[DTYPE]](qpos[env, 0])  # cart x
+        var q1 = rebind[Scalar[DTYPE]](qpos[env, 1])  # pole1 angle
+        var q2 = rebind[Scalar[DTYPE]](qpos[env, 2])  # pole2 angle
 
         # Tip position: analytical from joint angles
         var pole_len = Scalar[DTYPE](_POLE_LEN)
@@ -211,11 +222,8 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
             z_tip - Scalar[DTYPE](2.0)
         ) * (z_tip - Scalar[DTYPE](2.0))
 
-        comptime QVEL_OFF = qvel_offset[
-            InvertedDoublePendulumModel.NQ, InvertedDoublePendulumModel.NV
-        ]()
-        var v1 = rebind[Scalar[DTYPE]](states[env, QVEL_OFF + 1])
-        var v2 = rebind[Scalar[DTYPE]](states[env, QVEL_OFF + 2])
+        var v1 = rebind[Scalar[DTYPE]](qvel[env, 1])
+        var v2 = rebind[Scalar[DTYPE]](qvel[env, 2])
         var vel_penalty = (
             Scalar[DTYPE](1e-3) * v1 * v1 + Scalar[DTYPE](5e-3) * v2 * v2
         )
@@ -233,19 +241,24 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
     def custom_extract_obs_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
         OBS_DIM: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
-        qvel_off: Int,
-        xpos_off: Int,
     ) -> Bool:
         comptime assert (
             DTYPE.is_floating_point()
@@ -253,9 +266,9 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         # OBS_DIM=9: [cart_x, sin(q1), sin(q2), cos(q1), cos(q2),
         #              clip(qvel[0],-10,10), clip(qvel[1],-10,10), clip(qvel[2],-10,10),
         #              0.0]  # qfrc_constraint[0] not in state buffer → 0
-        var q0 = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])
-        var q1 = rebind[Scalar[DTYPE]](states[env, qpos_off + 1])
-        var q2 = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
+        var q0 = rebind[Scalar[DTYPE]](qpos[env, 0])
+        var q1 = rebind[Scalar[DTYPE]](qpos[env, 1])
+        var q2 = rebind[Scalar[DTYPE]](qpos[env, 2])
 
         obs[env, 0] = q0
         obs[env, 1] = Scalar[DTYPE](sin(q1))
@@ -264,7 +277,7 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         obs[env, 4] = Scalar[DTYPE](cos(q2))
 
         comptime for i in range(3):
-            var v = rebind[Scalar[DTYPE]](states[env, qvel_off + i])
+            var v = rebind[Scalar[DTYPE]](qvel[env, i])
             if v > Scalar[DTYPE](10.0):
                 v = Scalar[DTYPE](10.0)
             elif v < Scalar[DTYPE](-10.0):

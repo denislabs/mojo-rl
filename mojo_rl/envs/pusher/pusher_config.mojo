@@ -14,9 +14,8 @@ from layout import Layout, LayoutTensor
 from mojo_rl.physics3d.fields import DataFields
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
-    qpos_offset,
-    qvel_offset,
-    xpos_offset,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
 )
 
 from .pusher_xml import PusherModel
@@ -182,13 +181,15 @@ struct PusherConfig(Phyics3dEnvConfig):
     def pre_step_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
         env: Int,
-        meta_offset: Int,
     ):
         pass  # No pre-step state needed
 
@@ -198,49 +199,61 @@ struct PusherConfig(Phyics3dEnvConfig):
     def compute_reward_and_done_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
         ACTION_DIM: Int,
-        MODEL_SIZE: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
-        model: LayoutTensor[
-            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
         ],
         actions: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
-        xpos_off: Int,
-        xipos_off: Int,
-        cfrc_ext_off: Int,
-        cvel_off: Int,
-        meta_offset: Int,
-        curriculum_offset: Int,
         step_count: Int,
         frame_skip: Int,
         timestep: Scalar[DTYPE],
     ) -> Tuple[Scalar[DTYPE], Bool]:
         # Object - Goal distance
         var obj_x = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + OBJECT_BODY_IDX * 3 + 0]
+            xpos[env, OBJECT_BODY_IDX * 3 + 0]
         )
         var obj_y = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + OBJECT_BODY_IDX * 3 + 1]
+            xpos[env, OBJECT_BODY_IDX * 3 + 1]
         )
         var obj_z = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + OBJECT_BODY_IDX * 3 + 2]
+            xpos[env, OBJECT_BODY_IDX * 3 + 2]
         )
         var goal_x = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + GOAL_BODY_IDX * 3 + 0]
+            xpos[env, GOAL_BODY_IDX * 3 + 0]
         )
         var goal_y = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + GOAL_BODY_IDX * 3 + 1]
+            xpos[env, GOAL_BODY_IDX * 3 + 1]
         )
         var goal_z = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + GOAL_BODY_IDX * 3 + 2]
+            xpos[env, GOAL_BODY_IDX * 3 + 2]
         )
         var d2x = obj_x - goal_x
         var d2y = obj_y - goal_y
@@ -249,13 +262,13 @@ struct PusherConfig(Phyics3dEnvConfig):
 
         # Fingertip - Object distance
         var tip_x = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + TIPS_ARM_BODY_IDX * 3 + 0]
+            xpos[env, TIPS_ARM_BODY_IDX * 3 + 0]
         )
         var tip_y = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + TIPS_ARM_BODY_IDX * 3 + 1]
+            xpos[env, TIPS_ARM_BODY_IDX * 3 + 1]
         )
         var tip_z = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + TIPS_ARM_BODY_IDX * 3 + 2]
+            xpos[env, TIPS_ARM_BODY_IDX * 3 + 2]
         )
         var d1x = obj_x - tip_x
         var d1y = obj_y - tip_y
@@ -285,17 +298,16 @@ struct PusherConfig(Phyics3dEnvConfig):
     def init_qpos_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
     ):
         # Fix goal joints to 0 (goal stays at XML body position)
-        states[env, qpos_off + 9] = Scalar[DTYPE](0)
-        states[env, qpos_off + 10] = Scalar[DTYPE](0)
+        qpos[env, 9] = Scalar[DTYPE](0)
+        qpos[env, 10] = Scalar[DTYPE](0)
 
     # === GPU inline: Custom obs extraction (23D) ===
     @always_inline
@@ -303,59 +315,64 @@ struct PusherConfig(Phyics3dEnvConfig):
     def custom_extract_obs_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
         OBS_DIM: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
-        qvel_off: Int,
-        xpos_off: Int,
     ) -> Bool:
         # Arm joint positions [7]
         comptime for i in range(NUM_ARM_JOINTS):
-            obs[env, i] = rebind[Scalar[DTYPE]](states[env, qpos_off + i])
+            obs[env, i] = rebind[Scalar[DTYPE]](qpos[env, i])
 
         # Arm joint velocities [7]
         comptime for i in range(NUM_ARM_JOINTS):
-            obs[env, 7 + i] = rebind[Scalar[DTYPE]](states[env, qvel_off + i])
+            obs[env, 7 + i] = rebind[Scalar[DTYPE]](qvel[env, i])
 
         # Tips arm world position [3]
         obs[env, 14] = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + TIPS_ARM_BODY_IDX * 3 + 0]
+            xpos[env, TIPS_ARM_BODY_IDX * 3 + 0]
         )
         obs[env, 15] = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + TIPS_ARM_BODY_IDX * 3 + 1]
+            xpos[env, TIPS_ARM_BODY_IDX * 3 + 1]
         )
         obs[env, 16] = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + TIPS_ARM_BODY_IDX * 3 + 2]
+            xpos[env, TIPS_ARM_BODY_IDX * 3 + 2]
         )
 
         # Object world position [3]
         obs[env, 17] = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + OBJECT_BODY_IDX * 3 + 0]
+            xpos[env, OBJECT_BODY_IDX * 3 + 0]
         )
         obs[env, 18] = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + OBJECT_BODY_IDX * 3 + 1]
+            xpos[env, OBJECT_BODY_IDX * 3 + 1]
         )
         obs[env, 19] = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + OBJECT_BODY_IDX * 3 + 2]
+            xpos[env, OBJECT_BODY_IDX * 3 + 2]
         )
 
         # Goal world position [3]
         obs[env, 20] = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + GOAL_BODY_IDX * 3 + 0]
+            xpos[env, GOAL_BODY_IDX * 3 + 0]
         )
         obs[env, 21] = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + GOAL_BODY_IDX * 3 + 1]
+            xpos[env, GOAL_BODY_IDX * 3 + 1]
         )
         obs[env, 22] = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + GOAL_BODY_IDX * 3 + 2]
+            xpos[env, GOAL_BODY_IDX * 3 + 2]
         )
 
         return True

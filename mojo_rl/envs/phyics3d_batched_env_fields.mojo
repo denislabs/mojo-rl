@@ -9,34 +9,28 @@ i.e. `SACAgent.train[...]` etc.) train against fields-path physics with
 zero driver changes.
 
 Model: fully on the fields path — the model is built offset-free via
-`MODEL_DEF.init_fields` (no model slab, no init_model_gpu / load_from_slab),
+`MODEL_DEF.init_fields` (spec-direct, offset-free),
 and the three former model-slab consumers now read `ModelFields` directly:
 reset FK -> `forward_kinematics_fields`, `compute_cfrc_ext_fields` (reads
 `mf.bodies`), and the reward hook's curriculum params (fed `mf.curriculum`
 as a `[1, MODEL_CURRICULUM_SIZE]` view with offset 0 — the CONFIG hook is
 generic over MODEL_SIZE + curriculum_offset, so it is UNCHANGED).
 
-State bridge (transitional, dies at P6): ONE device state slab
-`[N_ENVS, STATE_SIZE]` is kept as the adapter for the obs/reward GPU hooks
-that still speak slab+offsets — `MODEL_DEF.reset_env_gpu` /
+G5: the state slab is GONE. Every GPU hook (`MODEL_DEF.reset_env_gpu` /
 `apply_actions_kernel_gpu` / `extract_obs_gpu` and the CONFIG
-`pre_step_gpu` / `init_qpos_gpu` / `compute_reward_and_done_gpu` hooks,
-plus `compute_cvel_gpu`. The PHYSICS never touches the slab: per step, one
-kernel copies qpos/qvel/qfrc slab->fields before the substeps and one
-copies the stepped state (qpos/qvel/qacc + FK products + contacts)
-fields->slab for the hooks. Zero changes to any MODEL_DEF or CONFIG; the
-hook arithmetic is the legacy `Phyics3dEnv` GPU code verbatim, so given
-bit-exact physics (gated in tests/physics3d/test_rk4_contacts_fields.mojo)
-the whole env is bit-exact vs the legacy slab pipeline.
+`pre_step_gpu` / `init_qpos_gpu` / `custom_extract_obs_gpu` /
+`compute_reward_and_done_gpu`) takes the per-field tensors it needs, and
+`compute_cfrc_ext_fields` / `compute_cvel_fields` read/write the DataFields
+cfrc_ext/cvel tensors directly. Hook state (step_count / prev_x) lives in
+`d.meta` alongside num_contacts (detection writes ONLY the num_contacts
+slot). The hook arithmetic is unchanged — only the addressing moved from
+slab+offset to field tensors.
 
 Scope (mirrors `Phyics3dEnvFields`): contacts + joint limits via the
 per-stage RK4 PGS/Newton solve — hopper/walker-class locomotion in scope;
 fluid-force models (Swimmer) run via the integrators' passive seam
 (Stage A). Mesh-collision models are not in scope.
 
-Metadata split: the slab metadata keeps step_count / prev_x (hook
-state); the fields `meta` tensor carries num_contacts (written by
-detection) and is the source of truth synced INTO the slab each step.
 """
 
 from std.gpu import thread_idx, block_idx, block_dim
@@ -45,7 +39,6 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.ptr import mptr
-from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.nn.core.target_storage import require_ctx
 
 from mojo_rl.deep_agents.training.batched_env import BatchedEnv
@@ -57,29 +50,12 @@ from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
 from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
     forward_kinematics_fields,
 )
-from mojo_rl.physics3d.gpu import compute_cfrc_ext_fields, compute_cvel_gpu
+from mojo_rl.physics3d.gpu import compute_cfrc_ext_fields, compute_cvel_fields
 from mojo_rl.physics3d.gpu.constants import (
     TPB,
-    CONTACT_SIZE,
     METADATA_SIZE,
-    META_IDX_NUM_CONTACTS,
     META_IDX_STEP_COUNT,
-    state_size,
     MODEL_CURRICULUM_SIZE,
-    qpos_offset,
-    qvel_offset,
-    qacc_offset,
-    qfrc_offset,
-    xpos_offset,
-    xquat_offset,
-    xipos_offset,
-    xvel_offset,
-    xangvel_offset,
-    contacts_offset,
-    metadata_offset,
-    site_xpos_offset,
-    cfrc_ext_offset,
-    cvel_offset,
 )
 
 from .phyics3d_env_config import Phyics3dEnvConfig
@@ -97,105 +73,6 @@ def _rng_counter_bump_kernel(
     reset randomness; mirrors the legacy `increment_env_rng_kernel`)."""
     if Int(thread_idx.x) == 0:
         counter[0] = counter[0] + UInt64(1)
-
-
-def _slab_to_fields_kernel[
-    dt: DType, NQ: Int, NV: Int, SS: Int, B: Int
-](
-    slab: LayoutTensor[dt, Layout.row_major(B, SS), MutAnyOrigin],
-    qpos: LayoutTensor[dt, Layout.row_major(B, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[dt, Layout.row_major(B, NV), MutAnyOrigin],
-    qfrc: LayoutTensor[dt, Layout.row_major(B, NV), MutAnyOrigin],
-):
-    """Hand the hook-side state (post reset / post apply_actions) to the
-    physics fields. Identity copy for lanes the hooks did not touch."""
-    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if env >= B:
-        return
-    comptime O_QPOS = qpos_offset[NQ, NV]()
-    comptime O_QVEL = qvel_offset[NQ, NV]()
-    comptime O_QFRC = qfrc_offset[NQ, NV]()
-    for i in range(NQ):
-        qpos[env, i] = rebind[Scalar[dt]](slab[env, O_QPOS + i])
-    for i in range(NV):
-        qvel[env, i] = rebind[Scalar[dt]](slab[env, O_QVEL + i])
-        qfrc[env, i] = rebind[Scalar[dt]](slab[env, O_QFRC + i])
-
-
-def _fields_to_slab_kernel[
-    dt: DType, NQ: Int, NV: Int, NBODY: Int, MC: Int, SS: Int, B: Int
-](
-    slab: LayoutTensor[dt, Layout.row_major(B, SS), MutAnyOrigin],
-    qpos: LayoutTensor[dt, Layout.row_major(B, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[dt, Layout.row_major(B, NV), MutAnyOrigin],
-    qacc: LayoutTensor[dt, Layout.row_major(B, NV), MutAnyOrigin],
-    xpos: LayoutTensor[dt, Layout.row_major(B, NBODY * 3), MutAnyOrigin],
-    xquat: LayoutTensor[dt, Layout.row_major(B, NBODY * 4), MutAnyOrigin],
-    xipos: LayoutTensor[dt, Layout.row_major(B, NBODY * 3), MutAnyOrigin],
-    xvel: LayoutTensor[dt, Layout.row_major(B, NBODY * 3), MutAnyOrigin],
-    xangvel: LayoutTensor[dt, Layout.row_major(B, NBODY * 3), MutAnyOrigin],
-    contacts: LayoutTensor[
-        dt, Layout.row_major(B, MC * CONTACT_SIZE), MutAnyOrigin
-    ],
-    meta: LayoutTensor[dt, Layout.row_major(B, METADATA_SIZE), MutAnyOrigin],
-):
-    """Publish the stepped physics state to the hook slab: joint state,
-    FK products (obs/reward inputs), contact records + num_contacts (the
-    cfrc_ext inputs). Slab step_count / prev_x metadata is hook-owned and
-    left untouched."""
-    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if env >= B:
-        return
-    comptime O_QPOS = qpos_offset[NQ, NV]()
-    comptime O_QVEL = qvel_offset[NQ, NV]()
-    comptime O_QACC = qacc_offset[NQ, NV]()
-    comptime O_XPOS = xpos_offset[NQ, NV, NBODY]()
-    comptime O_XQUAT = xquat_offset[NQ, NV, NBODY]()
-    comptime O_XIPOS = xipos_offset[NQ, NV, NBODY]()
-    comptime O_XVEL = xvel_offset[NQ, NV, NBODY]()
-    comptime O_XANG = xangvel_offset[NQ, NV, NBODY]()
-    comptime O_CON = contacts_offset[NQ, NV, NBODY]()
-    comptime O_META = metadata_offset[NQ, NV, NBODY, MC]()
-    for i in range(NQ):
-        slab[env, O_QPOS + i] = rebind[Scalar[dt]](qpos[env, i])
-    for i in range(NV):
-        slab[env, O_QVEL + i] = rebind[Scalar[dt]](qvel[env, i])
-        slab[env, O_QACC + i] = rebind[Scalar[dt]](qacc[env, i])
-    for i in range(NBODY * 3):
-        slab[env, O_XPOS + i] = rebind[Scalar[dt]](xpos[env, i])
-        slab[env, O_XIPOS + i] = rebind[Scalar[dt]](xipos[env, i])
-        slab[env, O_XVEL + i] = rebind[Scalar[dt]](xvel[env, i])
-        slab[env, O_XANG + i] = rebind[Scalar[dt]](xangvel[env, i])
-    for i in range(NBODY * 4):
-        slab[env, O_XQUAT + i] = rebind[Scalar[dt]](xquat[env, i])
-    for i in range(MC * CONTACT_SIZE):
-        slab[env, O_CON + i] = rebind[Scalar[dt]](contacts[env, i])
-    slab[env, O_META + META_IDX_NUM_CONTACTS] = rebind[Scalar[dt]](
-        meta[env, META_IDX_NUM_CONTACTS]
-    )
-
-
-def _sites_to_slab_kernel[
-    dt: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MC: Int,
-    NSITE: Int,
-    SS: Int,
-    B: Int,
-](
-    slab: LayoutTensor[dt, Layout.row_major(B, SS), MutAnyOrigin],
-    site_xpos: LayoutTensor[
-        dt, Layout.row_major(B, NSITE * 3), MutAnyOrigin
-    ],
-):
-    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if env >= B:
-        return
-    comptime O_SITE = site_xpos_offset[NQ, NV, NBODY, MC]()
-    for i in range(NSITE * 3):
-        slab[env, O_SITE + i] = rebind[Scalar[dt]](site_xpos[env, i])
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -235,9 +112,6 @@ struct Phyics3dBatchedEnvFields[
     comptime MC: Int = Self.MODEL_DEF.MAX_CONTACTS
     comptime NGEOM: Int = Self.MODEL_DEF.NGEOM
     comptime NSITE: Int = Self.MODEL_DEF.NSITE
-    comptime SS: Int = state_size[
-        Self.NQ, Self.NV, Self.NBODY, Self.MC, Self.NSITE
-    ]()
     comptime BLOCKS: Int = (Self.N_ENVS + TPB - 1) // TPB
 
     # Fields path (the actual physics state)
@@ -276,9 +150,6 @@ struct Phyics3dBatchedEnvFields[
     var integ_rk4: Self.IntegRK4
     var integ_euler: Self.IntegEuler
 
-    # Hooks adapter (transitional): device state slab for the obs/reward ABI.
-    var _slab: TensorImpl[DT]
-
     # Driver IO (env-owns-buffers per the BatchedEnv ABI)
     var _obs: DeviceBuffer[DT]
     var _action: DeviceBuffer[DT]
@@ -288,8 +159,7 @@ struct Phyics3dBatchedEnvFields[
     var _env_rng_counter: DeviceBuffer[DType.uint64]
 
     def __init__(out self, ctx: DeviceContext) raises:
-        # Offset-free fields-native model build (no model slab, no
-        # init_model_gpu / load_from_slab). init_fields runs
+        # Offset-free fields-native model build: init_fields runs
         # the spec-direct fields build and uploads every record
         # tensor (bodies/joints/meta/curriculum/…) — the reset FK, cfrc_ext,
         # and reward-curriculum hooks now read those directly.
@@ -298,9 +168,6 @@ struct Phyics3dBatchedEnvFields[
         # Fluid forces (density/viscosity) are handled by the fields
         # integrators' passive seam (Stage A: compute_fluid_forces_fields), so
         # no guard — Swimmer runs on this facade.
-
-        self._slab = TensorImpl[DT].alloc(Self.N_ENVS * Self.SS)
-        self._slab.upload(ctx)
 
         self.d = type_of(self.d)()
         self.d.upload_all(ctx)
@@ -328,55 +195,7 @@ struct Phyics3dBatchedEnvFields[
         self._env_rng_counter = ctx.enqueue_create_buffer[DType.uint64](1)
         self._env_rng_counter.enqueue_fill(UInt64(42))
 
-    # ── slab<->fields bridges ─────────────────────────────────────────
-
-    def _sync_slab_to_fields(mut self, c: DeviceContext) raises:
-        c.enqueue_function[
-            _slab_to_fields_kernel[DT, Self.NQ, Self.NV, Self.SS, Self.N_ENVS]
-        ](
-            self._slab.lt["gpu", Layout.row_major(Self.N_ENVS, Self.SS)](),
-            self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
-            self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
-            self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),
-            grid_dim=(Self.BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-    def _sync_fields_to_slab(mut self, c: DeviceContext) raises:
-        c.enqueue_function[
-            _fields_to_slab_kernel[
-                DT, Self.NQ, Self.NV, Self.NBODY, Self.MC, Self.SS,
-                Self.N_ENVS,
-            ]
-        ](
-            self._slab.lt["gpu", Layout.row_major(Self.N_ENVS, Self.SS)](),
-            self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
-            self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
-            self.d.qacc.lt["gpu", type_of(self.d).L_NV](),
-            self.d.xpos.lt["gpu", type_of(self.d).L_B3](),
-            self.d.xquat.lt["gpu", type_of(self.d).L_B4](),
-            self.d.xipos.lt["gpu", type_of(self.d).L_B3](),
-            self.d.xvel.lt["gpu", type_of(self.d).L_B3](),
-            self.d.xangvel.lt["gpu", type_of(self.d).L_B3](),
-            self.d.contacts.lt["gpu", type_of(self.d).L_CONTACTS](),
-            self.d.meta.lt["gpu", type_of(self.d).L_META](),
-            grid_dim=(Self.BLOCKS,),
-            block_dim=(TPB,),
-        )
-        comptime if Self.NSITE > 0:
-            c.enqueue_function[
-                _sites_to_slab_kernel[
-                    DT, Self.NQ, Self.NV, Self.NBODY, Self.MC, Self.NSITE,
-                    Self.SS, Self.N_ENVS,
-                ]
-            ](
-                self._slab.lt[
-                    "gpu", Layout.row_major(Self.N_ENVS, Self.SS)
-                ](),
-                self.d.site_xpos.lt["gpu", type_of(self.d).L_SITE](),
-                grid_dim=(Self.BLOCKS,),
-                block_dim=(TPB,),
-            )
+    # ── kinematics ────────────────────────────────────────────────────
 
     def _run_fields_fk(mut self, c: DeviceContext) raises:
         """Fields FK over the whole batch (mf -> DataFields xpos/xquat/xipos
@@ -392,17 +211,22 @@ struct Phyics3dBatchedEnvFields[
     # ── hook kernels (legacy Phyics3dEnv GPU code, verbatim) ──────────
 
     def _extract_obs_only(mut self, c: DeviceContext) raises:
-        """Obs from the slab: CONFIG custom extraction else MODEL_DEF
-        default qpos[skip:]+qvel (legacy `extract_obs_kernel_gpu`)."""
-        comptime QPOS_OFF = qpos_offset[Self.NQ, Self.NV]()
-        comptime QVEL_OFF = qvel_offset[Self.NQ, Self.NV]()
-        comptime XPOS_OFF = xpos_offset[Self.NQ, Self.NV, Self.NBODY]()
+        """Obs from the field tensors: CONFIG custom extraction else
+        MODEL_DEF default qpos[skip:]+qvel."""
 
         @parameter
         @always_inline
         def obs_kernel(
-            states: LayoutTensor[
-                DT, Layout.row_major(Self.N_ENVS, Self.SS), MutAnyOrigin
+            qpos: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NQ), MutAnyOrigin
+            ],
+            qvel: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+            ],
+            xpos: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 3),
+                MutAnyOrigin,
             ],
             obs: LayoutTensor[
                 DT,
@@ -414,44 +238,61 @@ struct Phyics3dBatchedEnvFields[
             if env >= Self.N_ENVS:
                 return
             if not Self.CONFIG.custom_extract_obs_gpu[
-                DT, Self.N_ENVS, Self.SS, Self.OBS_DIM
-            ](states, obs, env, QPOS_OFF, QVEL_OFF, XPOS_OFF):
+                DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY, Self.OBS_DIM
+            ](qpos, qvel, xpos, obs, env):
                 Self.MODEL_DEF.extract_obs_gpu[
-                    DT, Self.N_ENVS, Self.SS, Self.OBS_DIM
-                ](states, obs, env)
+                    DT, Self.N_ENVS, Self.OBS_DIM
+                ](qpos, qvel, obs, env)
 
         var obs_t = LayoutTensor[
             DT, Layout.row_major(Self.N_ENVS, Self.OBS_DIM)
         ](self._obs)
         c.enqueue_function[obs_kernel](
-            self._slab.lt["gpu", Layout.row_major(Self.N_ENVS, Self.SS)](),
+            self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
+            self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
+            self.d.xpos.lt["gpu", type_of(self.d).L_B3](),
             obs_t,
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
 
     def _extract_obs_rewards_dones(mut self, c: DeviceContext) raises:
-        """Step-count bump + obs + CONFIG reward/termination from the slab
-        (legacy `_extract_obs_rewards_dones_gpu`, verbatim)."""
-        comptime QPOS_OFF = qpos_offset[Self.NQ, Self.NV]()
-        comptime QVEL_OFF = qvel_offset[Self.NQ, Self.NV]()
-        comptime XPOS_OFF = xpos_offset[Self.NQ, Self.NV, Self.NBODY]()
-        comptime XIPOS_OFF = xipos_offset[Self.NQ, Self.NV, Self.NBODY]()
-        comptime META_OFF = metadata_offset[
-            Self.NQ, Self.NV, Self.NBODY, Self.MC
-        ]()
-        comptime CFRC_EXT_OFF = cfrc_ext_offset[
-            Self.NQ, Self.NV, Self.NBODY, Self.MC, Self.NSITE
-        ]()
-        comptime CVEL_OFF = cvel_offset[
-            Self.NQ, Self.NV, Self.NBODY, Self.MC, Self.NSITE
-        ]()
+        """Step-count bump + obs + CONFIG reward/termination from the field
+        tensors (hook arithmetic unchanged from the slab era)."""
 
         @parameter
         @always_inline
         def extract_kernel(
-            states: LayoutTensor[
-                DT, Layout.row_major(Self.N_ENVS, Self.SS), MutAnyOrigin
+            qpos: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NQ), MutAnyOrigin
+            ],
+            qvel: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+            ],
+            xpos: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 3),
+                MutAnyOrigin,
+            ],
+            xipos: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 3),
+                MutAnyOrigin,
+            ],
+            cfrc_ext: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 6),
+                MutAnyOrigin,
+            ],
+            cvel: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 6),
+                MutAnyOrigin,
+            ],
+            meta: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, METADATA_SIZE),
+                MutAnyOrigin,
             ],
             curriculum: LayoutTensor[
                 DT, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
@@ -481,40 +322,31 @@ struct Phyics3dBatchedEnvFields[
                 return
 
             var step_count = Int(
-                rebind[Scalar[DT]](
-                    states[env, META_OFF + META_IDX_STEP_COUNT]
-                )
+                rebind[Scalar[DT]](meta[env, META_IDX_STEP_COUNT])
             )
             step_count += 1
-            states[env, META_OFF + META_IDX_STEP_COUNT] = Scalar[DT](
-                step_count
-            )
+            meta[env, META_IDX_STEP_COUNT] = Scalar[DT](step_count)
 
             if not Self.CONFIG.custom_extract_obs_gpu[
-                DT, Self.N_ENVS, Self.SS, Self.OBS_DIM
-            ](states, obs, env, QPOS_OFF, QVEL_OFF, XPOS_OFF):
+                DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY, Self.OBS_DIM
+            ](qpos, qvel, xpos, obs, env):
                 Self.MODEL_DEF.extract_obs_gpu[
-                    DT, Self.N_ENVS, Self.SS, Self.OBS_DIM
-                ](states, obs, env)
+                    DT, Self.N_ENVS, Self.OBS_DIM
+                ](qpos, qvel, obs, env)
 
-            # The reward hook is generic over MODEL_SIZE + curriculum_offset;
-            # feed the packed ModelFields.curriculum tensor as a [1, K] view
-            # with offset 0, so `model[0, curriculum_offset + k]` reads
-            # curriculum[k] — no model slab, and the CONFIG hook is unchanged.
             var result = Self.CONFIG.compute_reward_and_done_gpu[
-                DT, Self.N_ENVS, Self.SS, Self.ACT_DIM, MODEL_CURRICULUM_SIZE
+                DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY, Self.ACT_DIM
             ](
-                states,
+                qpos,
+                qvel,
+                xpos,
+                xipos,
+                cfrc_ext,
+                cvel,
+                meta,
                 curriculum,
                 actions,
                 env,
-                QPOS_OFF,
-                XPOS_OFF,
-                XIPOS_OFF,
-                CFRC_EXT_OFF,
-                CVEL_OFF,
-                META_OFF,
-                0,
                 step_count,
                 Self.CONFIG.FRAME_SKIP,
                 Scalar[DT](Self.CONFIG.get_timestep()),
@@ -550,7 +382,13 @@ struct Phyics3dBatchedEnvFields[
             DT, Layout.row_major(Self.N_ENVS, Self.ACT_DIM)
         ](self._action)
         c.enqueue_function[extract_kernel](
-            self._slab.lt["gpu", Layout.row_major(Self.N_ENVS, Self.SS)](),
+            self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
+            self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
+            self.d.xpos.lt["gpu", type_of(self.d).L_B3](),
+            self.d.xipos.lt["gpu", type_of(self.d).L_B3](),
+            self.d.cfrc_ext.lt["gpu", type_of(self.d).L_B6](),
+            self.d.cvel.lt["gpu", type_of(self.d).L_B6](),
+            self.d.meta.lt["gpu", type_of(self.d).L_META](),
             self.mf.curriculum.lt[
                 "gpu", Layout.row_major(1, MODEL_CURRICULUM_SIZE)
             ](),
@@ -574,31 +412,46 @@ struct Phyics3dBatchedEnvFields[
         )
         var c = require_ctx["Phyics3dBatchedEnvFields.reset_batch"](ctx)
 
-        # Reset every lane on the slab (joint noise + CONFIG qpos + metadata).
+        # Reset every lane on the field tensors (joint noise + CONFIG qpos +
+        # hook metadata), then FK for the reset observation.
         @parameter
         @always_inline
         def reset_kernel(
-            states: LayoutTensor[
-                DT, Layout.row_major(Self.N_ENVS, Self.SS), MutAnyOrigin
+            qpos: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NQ), MutAnyOrigin
+            ],
+            qvel: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+            ],
+            qacc: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+            ],
+            qfrc: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+            ],
+            meta: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, METADATA_SIZE),
+                MutAnyOrigin,
             ],
             seed: Int,
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= Self.N_ENVS:
                 return
-            Self._reset_env_lane(states, i, seed)
+            Self._reset_env_lane(qpos, qvel, qacc, qfrc, meta, i, seed)
 
         c.enqueue_function[reset_kernel](
-            self._slab.lt["gpu", Layout.row_major(Self.N_ENVS, Self.SS)](),
+            self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
+            self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
+            self.d.qacc.lt["gpu", type_of(self.d).L_NV](),
+            self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),
+            self.d.meta.lt["gpu", type_of(self.d).L_META](),
             Int(rng_seed),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
-        # Reset qpos/qvel -> fields, FK on the fields, publish the FK products
-        # (xpos/xquat/xipos [+ sites]) back to the slab for the obs hooks.
-        self._sync_slab_to_fields(c)
         self._run_fields_fk(c)
-        self._sync_fields_to_slab(c)
         self._extract_obs_only(c)
 
     def step_batch[
@@ -615,27 +468,30 @@ struct Phyics3dBatchedEnvFields[
         )
         _ = rng_seed
         var c = require_ctx["Phyics3dBatchedEnvFields.step_batch"](ctx)
-        comptime META_OFF = metadata_offset[
-            Self.NQ, Self.NV, Self.NBODY, Self.MC
-        ]()
 
-        # 1) CONFIG pre-step hook (save prev_x etc. into slab metadata).
+        # 1) CONFIG pre-step hook (save prev_x etc. into d.meta).
         @parameter
         @always_inline
         def pre_step_kernel(
-            states: LayoutTensor[
-                DT, Layout.row_major(Self.N_ENVS, Self.SS), MutAnyOrigin
+            qpos: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NQ), MutAnyOrigin
+            ],
+            meta: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, METADATA_SIZE),
+                MutAnyOrigin,
             ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= Self.N_ENVS:
                 return
-            Self.CONFIG.pre_step_gpu[DT, Self.N_ENVS, Self.SS](
-                states, env, META_OFF
+            Self.CONFIG.pre_step_gpu[DT, Self.N_ENVS, Self.NQ](
+                qpos, meta, env
             )
 
         c.enqueue_function[pre_step_kernel](
-            self._slab.lt["gpu", Layout.row_major(Self.N_ENVS, Self.SS)](),
+            self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
+            self.d.meta.lt["gpu", type_of(self.d).L_META](),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
@@ -643,22 +499,28 @@ struct Phyics3dBatchedEnvFields[
             c.synchronize()
             print("[step_batch] 1 pre_step ok")
 
-        # 2) Actions -> qfrc via the comptime actuator logic (slab).
-        var sbuf = self._slab.dev.value()
+        # 2) Actions -> qfrc via the comptime actuator logic (field tensor).
+        var actions_t = LayoutTensor[
+            DT, Layout.row_major(Self.N_ENVS, Self.ACT_DIM)
+        ](self._action)
         Self.MODEL_DEF.apply_actions_kernel_gpu[
-            DT, Self.N_ENVS, Self.SS, Self.ACT_DIM
-        ](c, sbuf, self._action)
+            DT, Self.N_ENVS, Self.ACT_DIM
+        ](
+            c,
+            self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),
+            rebind[
+                LayoutTensor[
+                    DT,
+                    Layout.row_major(Self.N_ENVS, Self.ACT_DIM),
+                    MutAnyOrigin,
+                ]
+            ](actions_t),
+        )
         comptime if DEBUG:
             c.synchronize()
             print("[step_batch] 2 apply_actions ok")
 
-        # 3) Hand qpos/qvel (fresh after any reset) + qfrc to the fields.
-        self._sync_slab_to_fields(c)
-        comptime if DEBUG:
-            c.synchronize()
-            print("[step_batch] 3 slab_to_fields ok")
-
-        # 4) Physics: fields integrator (RK4 or Euler per CONFIG.INTEGRATOR)
+        # 3) Physics: fields integrator (RK4 or Euler per CONFIG.INTEGRATOR)
         #    with per-substep contact/limit solving.
         for _ in range(Self.CONFIG.FRAME_SKIP):
             comptime if Self.CONFIG.INTEGRATOR == "euler":
@@ -669,35 +531,27 @@ struct Phyics3dBatchedEnvFields[
             c.synchronize()
             print("[step_batch] 4 physics step ok")
 
-        # 5) Publish stepped state to the slab for the hooks, then the
-        #    derived quantities the reward hooks may read.
-        self._sync_fields_to_slab(c)
-        comptime if DEBUG:
-            c.synchronize()
-            print("[step_batch] 5a fields_to_slab ok")
-        compute_cfrc_ext_fields[
-            DT,
-            Self.N_ENVS,
-            Self.SS,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.MC,
-            Self.NSITE,
-        ](c, sbuf, self.mf.bodies.dev.value())
+        # 4) Derived quantities the reward hooks may read (cfrc_ext / cvel),
+        #    straight on the field tensors.
+        compute_cfrc_ext_fields[DT, Self.N_ENVS, Self.NBODY, Self.MC](
+            c,
+            self.d.xipos.lt["gpu", type_of(self.d).L_B3](),
+            self.d.contacts.lt["gpu", type_of(self.d).L_CONTACTS](),
+            self.d.meta.lt["gpu", type_of(self.d).L_META](),
+            self.d.cfrc_ext.lt["gpu", type_of(self.d).L_B6](),
+            self.mf.bodies.lt["gpu", type_of(self.mf).L_BODY](),
+        )
         comptime if DEBUG:
             c.synchronize()
             print("[step_batch] 5b compute_cfrc_ext ok")
-        compute_cvel_gpu[
-            DT,
-            Self.N_ENVS,
-            Self.SS,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.MC,
-            Self.NSITE,
-        ](c, sbuf)
+        compute_cvel_fields[DT, Self.N_ENVS, Self.NBODY](
+            c,
+            self.d.xpos.lt["gpu", type_of(self.d).L_B3](),
+            self.d.xvel.lt["gpu", type_of(self.d).L_B3](),
+            self.d.xangvel.lt["gpu", type_of(self.d).L_B3](),
+            self.d.xipos.lt["gpu", type_of(self.d).L_B3](),
+            self.d.cvel.lt["gpu", type_of(self.d).L_B6](),
+        )
         comptime if DEBUG:
             c.synchronize()
             print("[step_batch] 5c compute_cvel ok")
@@ -729,8 +583,22 @@ struct Phyics3dBatchedEnvFields[
         @parameter
         @always_inline
         def selective_reset_kernel(
-            states: LayoutTensor[
-                DT, Layout.row_major(Self.N_ENVS, Self.SS), MutAnyOrigin
+            qpos: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NQ), MutAnyOrigin
+            ],
+            qvel: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+            ],
+            qacc: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+            ],
+            qfrc: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+            ],
+            meta: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, METADATA_SIZE),
+                MutAnyOrigin,
             ],
             dones: LayoutTensor[
                 DT, Layout.row_major(Self.N_ENVS), MutAnyOrigin
@@ -744,7 +612,13 @@ struct Phyics3dBatchedEnvFields[
                 return
             if dones[i] > Scalar[DT](0.5):
                 Self._reset_env_lane(
-                    states, i, Int(rebind[Scalar[DType.uint64]](counter[0]))
+                    qpos,
+                    qvel,
+                    qacc,
+                    qfrc,
+                    meta,
+                    i,
+                    Int(rebind[Scalar[DType.uint64]](counter[0])),
                 )
                 dones[i] = Scalar[DT](0.0)
 
@@ -752,47 +626,52 @@ struct Phyics3dBatchedEnvFields[
             self._done
         )
         c.enqueue_function[selective_reset_kernel](
-            self._slab.lt["gpu", Layout.row_major(Self.N_ENVS, Self.SS)](),
+            self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
+            self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
+            self.d.qacc.lt["gpu", type_of(self.d).L_NV](),
+            self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),
+            self.d.meta.lt["gpu", type_of(self.d).L_META](),
             dones_t,
             cnt_t,
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
-        # FK on the fields for the batch (idempotent for the live lanes, whose
-        # fields state is unchanged since the last step), publish FK products
-        # to the slab, then refresh obs so reset lanes start their episode from
-        # the reset observation (identity for live lanes).
-        self._sync_slab_to_fields(c)
+        # FK for the batch (idempotent for the live lanes, whose state is
+        # unchanged since the last step), then refresh obs so reset lanes
+        # start their episode from the reset observation.
         self._run_fields_fk(c)
-        self._sync_fields_to_slab(c)
         self._extract_obs_only(c)
 
     @always_inline
     @staticmethod
     def _reset_env_lane(
-        states: LayoutTensor[
-            DT, Layout.row_major(Self.N_ENVS, Self.SS), MutAnyOrigin
+        qpos: LayoutTensor[
+            DT, Layout.row_major(Self.N_ENVS, Self.NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+        ],
+        qacc: LayoutTensor[
+            DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+        ],
+        qfrc: LayoutTensor[
+            DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DT, Layout.row_major(Self.N_ENVS, METADATA_SIZE), MutAnyOrigin
         ],
         env: Int,
         seed: Int,
     ):
-        """One env lane's reset on the slab (legacy `_reset_env_gpu`,
-        verbatim: joint reset noise + CONFIG qpos offsets + metadata)."""
+        """One env lane's reset on the field tensors (arithmetic verbatim
+        from the slab era: joint reset noise + CONFIG qpos + hook metadata)."""
         var RESET_NOISE = Scalar[DT](Self.CONFIG.get_reset_noise())
-        Self.MODEL_DEF.reset_env_gpu[DT, Self.N_ENVS, Self.SS](
-            states, env, RESET_NOISE, seed
+        Self.MODEL_DEF.reset_env_gpu[DT, Self.N_ENVS](
+            qpos, qvel, qacc, qfrc, env, RESET_NOISE, seed
         )
-        comptime QPOS_OFF = qpos_offset[Self.NQ, Self.NV]()
-        Self.CONFIG.init_qpos_gpu[DT, Self.N_ENVS, Self.SS](
-            states, env, QPOS_OFF
-        )
-        comptime META_OFF = metadata_offset[
-            Self.NQ, Self.NV, Self.NBODY, Self.MC
-        ]()
-        states[env, META_OFF + META_IDX_STEP_COUNT] = Scalar[DT](0.0)
-        Self.CONFIG.pre_step_gpu[DT, Self.N_ENVS, Self.SS](
-            states, env, META_OFF
-        )
+        Self.CONFIG.init_qpos_gpu[DT, Self.N_ENVS, Self.NQ](qpos, env)
+        meta[env, META_IDX_STEP_COUNT] = Scalar[DT](0.0)
+        Self.CONFIG.pre_step_gpu[DT, Self.N_ENVS, Self.NQ](qpos, meta, env)
 
     # ── pointer accessors ─────────────────────────────────────────────
 

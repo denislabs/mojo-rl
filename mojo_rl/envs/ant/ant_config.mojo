@@ -6,8 +6,8 @@ from layout import Layout, LayoutTensor
 from mojo_rl.physics3d.fields import DataFields
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
-    qpos_offset,
-    model_curriculum_offset,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
     rk4_extra_workspace_size,
 )
 
@@ -129,17 +129,18 @@ struct AntConfig(Phyics3dEnvConfig):
     def pre_step_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
         env: Int,
-        meta_offset: Int,
     ):
         # Save free joint x position into META_IDX_PREV_X
-        comptime QPOS_OFF = qpos_offset[AntModel.NQ, AntModel.NV]()
-        states[env, meta_offset + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
+        meta[env, META_IDX_PREV_X] = qpos[env, 0]
 
     # === GPU inline: Reward + termination ===
     @always_inline
@@ -147,35 +148,47 @@ struct AntConfig(Phyics3dEnvConfig):
     def compute_reward_and_done_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
         ACTION_DIM: Int,
-        MODEL_SIZE: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
-        model: LayoutTensor[
-            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
         ],
         actions: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
-        xpos_off: Int,
-        xipos_off: Int,
-        cfrc_ext_off: Int,
-        cvel_off: Int,
-        meta_offset: Int,
-        curriculum_offset: Int,
         step_count: Int,
         frame_skip: Int,
         timestep: Scalar[DTYPE],
     ) -> Tuple[Scalar[DTYPE], Bool]:
         # Compute x velocity from position change
-        var x_after = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])
+        var x_after = rebind[Scalar[DTYPE]](qpos[env, 0])
         var prev_x = rebind[Scalar[DTYPE]](
-            states[env, meta_offset + META_IDX_PREV_X]
+            meta[env, META_IDX_PREV_X]
         )
         var effective_dt = timestep * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / effective_dt
@@ -193,13 +206,13 @@ struct AntConfig(Phyics3dEnvConfig):
 
         # Health check — read curriculum parameters (min_height, max_height);
         # fall back to defaults when curriculum is not set (slots remain 0).
-        var min_height = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 0])
+        var min_height = rebind[Scalar[DTYPE]](curriculum[0, 0])
         if min_height <= Scalar[DTYPE](0.0):
             min_height = Scalar[DTYPE](Self.MIN_HEIGHT)
-        var max_height = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 1])
+        var max_height = rebind[Scalar[DTYPE]](curriculum[0, 1])
         if max_height <= Scalar[DTYPE](0.0):
             max_height = Scalar[DTYPE](Self.MAX_HEIGHT)
-        var z_height = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
+        var z_height = rebind[Scalar[DTYPE]](qpos[env, 2])
 
         var is_healthy = True
         if z_height < min_height or z_height > max_height:
@@ -241,13 +254,12 @@ struct AntConfig(Phyics3dEnvConfig):
     def init_qpos_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
     ):
         pass
 

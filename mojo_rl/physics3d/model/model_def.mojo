@@ -147,38 +147,20 @@ trait ModelDefLike:
         (parse_xml_full -> fields_build.build_model_fields_from_flat)."""
         ...
 
-    # === GPU: Joints/Actuators kernel delegates ===
+    # === GPU: kernel delegates (per-field tensors; G5) ===
     @staticmethod
     def apply_actions_kernel_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
         ACTION_DIM: Int,
     ](
         ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[DTYPE],
-        actions_buf: DeviceBuffer[DTYPE],
-    ) raises:
-        ...
-
-    @staticmethod
-    def enforce_limits_kernel_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[DTYPE]) raises:
-        ...
-
-    @staticmethod
-    def extract_obs_kernel_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-        OBS_DIM: Int,
-    ](
-        ctx: DeviceContext,
-        states_buf: DeviceBuffer[DTYPE],
-        mut obs_buf: DeviceBuffer[DTYPE],
+        qfrc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
     ) raises:
         ...
 
@@ -188,10 +170,18 @@ trait ModelDefLike:
     def reset_env_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+        ],
+        qacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+        ],
+        qfrc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
         ],
         env: Int,
         noise_scale: Scalar[DTYPE],
@@ -204,11 +194,13 @@ trait ModelDefLike:
     def extract_obs_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
         OBS_DIM: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin

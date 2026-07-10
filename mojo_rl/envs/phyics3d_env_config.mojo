@@ -13,6 +13,10 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import DataFields
+from mojo_rl.physics3d.gpu.constants import (
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
+)
 
 
 trait Phyics3dEnvConfig:
@@ -145,75 +149,78 @@ trait Phyics3dEnvConfig:
     def get_reset_noise() -> Float64:
         ...
 
-    # === GPU inline: Pre-step hook ===
+    # === GPU inline: Pre-step hook (per-field tensors; G5) ===
     @always_inline
     @staticmethod
     def pre_step_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
         env: Int,
-        meta_offset: Int,
     ):
         """Save per-env state before physics (GPU inline version).
 
-        Write to states[env, meta_offset + META_IDX_PREV_X] to persist
-        a value for use in compute_reward_and_done_gpu.
+        Write to meta[env, META_IDX_PREV_X] to persist a value for use in
+        compute_reward_and_done_gpu.
         """
         ...
 
-    # === GPU inline: Unified reward + termination ===
+    # === GPU inline: Unified reward + termination (per-field tensors; G5) ===
     @always_inline
     @staticmethod
     def compute_reward_and_done_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
         ACTION_DIM: Int,
-        MODEL_SIZE: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
         ],
-        model: LayoutTensor[
-            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
         ],
         actions: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
-        xpos_off: Int,
-        xipos_off: Int,
-        cfrc_ext_off: Int,
-        cvel_off: Int,
-        meta_offset: Int,
-        curriculum_offset: Int,
         step_count: Int,
         frame_skip: Int,
         timestep: Scalar[DTYPE],
     ) -> Tuple[Scalar[DTYPE], Bool]:
-        """Compute reward and early termination from full GPU state.
+        """Compute reward and early termination from the per-field GPU state.
 
-        Args:
-            states: Full state buffer (qpos, qvel, xpos, etc.).
-            model: Model buffer (includes curriculum parameters).
-            actions: Action buffer.
-            env: Environment index.
-            qpos_off: Offset to qpos in state buffer.
-            xpos_off: Offset to xpos (body world positions) in state buffer.
-            xipos_off: Offset to xipos (body CoM world positions) in state buffer.
-            cfrc_ext_off: Offset to cfrc_ext (contact forces per body) in state buffer.
-            cvel_off: Offset to cvel (body CoM spatial velocities) in state buffer.
-            meta_offset: Offset to metadata in state buffer.
-            curriculum_offset: Offset to curriculum params in model buffer.
-            step_count: Current step count.
-            frame_skip: Frame skip value.
-            timestep: Physics timestep.
+        The hook reads exactly the field tensors it needs (joint state, FK
+        products, contact forces, CoM velocities, hook metadata, curriculum
+        params) — the legacy `[BATCH, STATE_SIZE]` slab + offset ABI died at
+        the G5 fields sunset.
 
         Returns:
             (reward, terminated).
@@ -243,19 +250,18 @@ trait Phyics3dEnvConfig:
         """
         return False
 
-    # === GPU inline: Non-zero qpos init after reset ===
+    # === GPU inline: Non-zero qpos init after reset (per-field; G5) ===
     @always_inline
     @staticmethod
     def init_qpos_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
     ):
         """Apply non-zero initial qpos offsets after noise (default: no-op).
 
@@ -265,25 +271,30 @@ trait Phyics3dEnvConfig:
         """
         pass
 
-    # === GPU inline: Custom observation extraction ===
+    # === GPU inline: Custom observation extraction (per-field; G5) ===
     @always_inline
     @staticmethod
     def custom_extract_obs_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
         OBS_DIM: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
-        qvel_off: Int,
-        xpos_off: Int,
     ) -> Bool:
         """Custom observation extraction (default: False = use model default).
 

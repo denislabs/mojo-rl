@@ -37,32 +37,6 @@ from mojo_rl.physics3d.joint_types import (
 )
 from mojo_rl.physics3d.gpu.constants import (
     TPB,
-    qpos_offset,
-    qvel_offset,
-    qacc_offset,
-    qfrc_offset,
-    model_size_with_invweight,
-    state_size,
-    integrator_workspace_size,
-    model_metadata_offset,
-    model_body_offset,
-    model_body_invweight0_offset,
-    model_dof_invweight0_offset,
-    model_joint_offset,
-    MODEL_META_IDX_NBODY,
-    MODEL_META_IDX_NJOINT,
-    JOINT_IDX_TYPE,
-    JOINT_IDX_BODY_ID,
-    JOINT_IDX_DOF_ADR,
-    JOINT_IDX_ARMATURE,
-    ws_cdof_offset,
-    ws_M_offset,
-    ws_L_offset,
-    ws_D_offset,
-    BODY_IDX_PARENT,
-    xipos_offset,
-    xpos_offset,
-    xquat_offset,
 )
 from mojo_rl.physics3d.fields import ModelFields, DataFields, DynamicsScratch
 from mojo_rl.physics3d.dynamics.invweight_fields import (
@@ -437,41 +411,34 @@ struct ModelDefFromXML[
     def apply_actions_kernel_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
         ACTION_DIM: Int,
     ](
         ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[DTYPE],
-        actions_buf: DeviceBuffer[DTYPE],
+        qfrc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
     ) raises:
-        """GPU kernel: apply gear * action to qfrc for each actuator.
-
-        Uses comptime helpers to extract per-actuator gear and DOF address
-        from the embedded XML at compile time.
+        """GPU kernel: apply gear * clamp(action, ctrlrange) to qfrc for each
+        actuator, straight on the per-field qfrc tensor (G5 — no state slab).
         """
-        var states = LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf)
-        var actions = LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), ImmutAnyOrigin
-        ](actions_buf)
-
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @parameter
         @always_inline
         def apply_kernel(
-            states: LayoutTensor[
-                DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+            qfrc: LayoutTensor[
+                DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
             ],
             actions: LayoutTensor[
-                DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), ImmutAnyOrigin
+                DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
             ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
                 return
-            comptime qfrc_base = qfrc_offset[Self.NQ, Self.NV]()
 
             comptime for act_i in range(Self.nact):
                 comptime gear = Self._acd.motor_gears[act_i]
@@ -485,102 +452,11 @@ struct ModelDefFromXML[
                         ctrl = Scalar[DTYPE](c_max)
                     elif ctrl < Scalar[DTYPE](c_min):
                         ctrl = Scalar[DTYPE](c_min)
-                    states[env, qfrc_base + dof] = Scalar[DTYPE](gear) * ctrl
+                    qfrc[env, dof] = Scalar[DTYPE](gear) * ctrl
 
         ctx.enqueue_function[apply_kernel](
-            states,
+            qfrc,
             actions,
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-    @staticmethod
-    def enforce_limits_kernel_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[DTYPE]) raises:
-        """GPU kernel: clamp qpos to joint limits for limited joints."""
-        var states = LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf)
-
-        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-
-        @parameter
-        @always_inline
-        def limits_kernel(
-            states: LayoutTensor[
-                DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-            ],
-        ):
-            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if env >= BATCH_SIZE:
-                return
-            comptime qpos_base = qpos_offset[Self.NQ, Self.NV]()
-
-            comptime for j in range(Self.njoint):
-                comptime limited = Self._acd.joint_is_limited[j]
-
-                comptime if limited:
-                    comptime qp_adr = Self._acd.joint_qpos_adr[j]
-                    comptime rmin = Self._acd.joint_range_min[j]
-                    comptime rmax = Self._acd.joint_range_max[j]
-                    var qpos = rebind[Scalar[DTYPE]](
-                        states[env, qpos_base + qp_adr]
-                    )
-                    if qpos < Scalar[DTYPE](rmin):
-                        states[env, qpos_base + qp_adr] = Scalar[DTYPE](rmin)
-                    elif qpos > Scalar[DTYPE](rmax):
-                        states[env, qpos_base + qp_adr] = Scalar[DTYPE](rmax)
-
-        ctx.enqueue_function[limits_kernel](
-            states,
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-    @staticmethod
-    def extract_obs_kernel_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-        OBS_DIM: Int,
-    ](
-        ctx: DeviceContext,
-        states_buf: DeviceBuffer[DTYPE],
-        mut obs_buf: DeviceBuffer[DTYPE],
-    ) raises:
-        """GPU kernel: extract qpos[obs_qpos_skip:] + qvel[:] as observation."""
-        var states = LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
-        ](states_buf)
-        var obs = LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs_buf)
-
-        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-
-        @parameter
-        @always_inline
-        def obs_kernel(
-            states: LayoutTensor[
-                DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
-            ],
-            obs: LayoutTensor[
-                DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-            ],
-        ):
-            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if env >= BATCH_SIZE:
-                return
-            Self.extract_obs_gpu[DTYPE, BATCH_SIZE, STATE_SIZE, OBS_DIM](
-                states, obs, env
-            )
-
-        ctx.enqueue_function[obs_kernel](
-            states,
-            obs,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
@@ -594,20 +470,24 @@ struct ModelDefFromXML[
     def reset_env_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+        ],
+        qacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+        ],
+        qfrc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
         ],
         env: Int,
         noise_scale: Scalar[DTYPE],
         seed: Int,
     ):
-        """Reset a single env with small random noise around qpos=0, qvel=0."""
-        comptime qpos_base = qpos_offset[Self.NQ, Self.NV]()
-        comptime qvel_base = qvel_offset[Self.NQ, Self.NV]()
-        comptime qacc_base = qacc_offset[Self.NQ, Self.NV]()
-        comptime qfrc_base = qfrc_offset[Self.NQ, Self.NV]()
+        """Reset a single env with small random noise around qpos0, qvel=0."""
         comptime TOTAL_VALS = Self.NQ + Self.NV
         comptime NUM_BATCHES = (TOTAL_VALS + 3) // 4
 
@@ -628,37 +508,39 @@ struct ModelDefFromXML[
             var noise = Scalar[DTYPE](rand_vals[i] * 2.0 - 1.0) * noise_scale
             comptime if Self._acd.nq > 0 and i < Self._acd.nq:
                 comptime val = Self._acd.qpos0[i]
-                states[env, qpos_base + i] = Scalar[DTYPE](val) + noise
+                qpos[env, i] = Scalar[DTYPE](val) + noise
             else:
                 comptime if (
                     Self._acd.free_joint_qpos_adr >= 0
                     and i == Self._acd.free_joint_qpos_adr + 3
                 ):
                     # Free-joint qw: start from identity (1.0) + small noise.
-                    states[env, qpos_base + i] = Scalar[DTYPE](1) + noise
+                    qpos[env, i] = Scalar[DTYPE](1) + noise
                 else:
-                    states[env, qpos_base + i] = noise
+                    qpos[env, i] = noise
 
         comptime for i in range(Self.NV):
             var noise = (
                 Scalar[DTYPE](rand_vals[Self.NQ + i] * 2.0 - 1.0) * noise_scale
             )
-            states[env, qvel_base + i] = noise
+            qvel[env, i] = noise
 
         for i in range(Self.NV):
-            states[env, qacc_base + i] = Scalar[DTYPE](0)
-            states[env, qfrc_base + i] = Scalar[DTYPE](0)
+            qacc[env, i] = Scalar[DTYPE](0)
+            qfrc[env, i] = Scalar[DTYPE](0)
 
     @always_inline
     @staticmethod
     def extract_obs_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
         OBS_DIM: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
@@ -666,16 +548,11 @@ struct ModelDefFromXML[
         env: Int,
     ):
         """Extract obs = qpos[obs_qpos_skip:] + qvel[:] for a single env."""
-        comptime qpos_base = qpos_offset[Self.NQ, Self.NV]()
-        comptime qvel_base = qvel_offset[Self.NQ, Self.NV]()
-
         comptime for i in range(Self.NQ - Self.obs_qpos_skip):
-            obs[env, i] = states[env, qpos_base + Self.obs_qpos_skip + i]
+            obs[env, i] = qpos[env, Self.obs_qpos_skip + i]
 
         comptime for i in range(Self.NV):
-            obs[env, Self.NQ - Self.obs_qpos_skip + i] = states[
-                env, qvel_base + i
-            ]
+            obs[env, Self.NQ - Self.obs_qpos_skip + i] = qvel[env, i]
 
     # =========================================================================
     # Rendering — driven from parsed XML assets, lights, cameras, geoms

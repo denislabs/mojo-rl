@@ -11,60 +11,62 @@ For each body b:
   cvel[b*6 + 0..2] = omega
   cvel[b*6 + 3..5] = v_com
 
-No model buffer access required — pure state-buffer to state-buffer computation.
+G5: operates on the per-field tensors (the `[BATCH, STATE_SIZE]` hook slab
+died with the fields sunset). Arithmetic verbatim from the slab kernel.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext
 from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 
-from .constants import (
-    TPB,
-    state_size,
-    xpos_offset,
-    xvel_offset,
-    xangvel_offset,
-    xipos_offset,
-    cvel_offset,
-)
+from .constants import TPB
 
 
-def compute_cvel_gpu[
+def compute_cvel_fields[
     DTYPE: DType,
     BATCH_SIZE: Int,
-    STATE_SIZE: Int,
-    NQ: Int,
-    NV: Int,
     NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int = 0,
-](ctx: DeviceContext, mut states_buf: DeviceBuffer[DTYPE],) raises:
+](
+    ctx: DeviceContext,
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    xvel: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    xangvel: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    xipos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    cvel: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+    ],
+) raises:
     """Compute cvel (body CoM spatial velocities) for all environments on GPU.
 
-    Writes to cvel region of the state buffer. One thread per environment.
-
-    Args:
-        ctx: GPU device context.
-        states_buf: State buffer [BATCH_SIZE, STATE_SIZE] (read xvel/xangvel/xpos/xipos,
-                    write cvel).
+    One thread per environment; reads xvel/xangvel/xpos/xipos, writes cvel.
     """
-    var states = LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-    ](states_buf)
-
     comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-
-    comptime XPOS_OFF = xpos_offset[NQ, NV, NBODY]()
-    comptime XVEL_OFF = xvel_offset[NQ, NV, NBODY]()
-    comptime XANGVEL_OFF = xangvel_offset[NQ, NV, NBODY]()
-    comptime XIPOS_OFF = xipos_offset[NQ, NV, NBODY]()
-    comptime CVEL_OFF = cvel_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
 
     @parameter
     @always_inline
     def cvel_kernel(
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
         ],
     ):
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -73,24 +75,24 @@ def compute_cvel_gpu[
 
         for b in range(NBODY):
             # Angular velocity at body origin (world frame)
-            var ox = rebind[Scalar[DTYPE]](states[env, XANGVEL_OFF + b * 3 + 0])
-            var oy = rebind[Scalar[DTYPE]](states[env, XANGVEL_OFF + b * 3 + 1])
-            var oz = rebind[Scalar[DTYPE]](states[env, XANGVEL_OFF + b * 3 + 2])
+            var ox = rebind[Scalar[DTYPE]](xangvel[env, b * 3 + 0])
+            var oy = rebind[Scalar[DTYPE]](xangvel[env, b * 3 + 1])
+            var oz = rebind[Scalar[DTYPE]](xangvel[env, b * 3 + 2])
 
             # Linear velocity at body origin (world frame)
-            var vx = rebind[Scalar[DTYPE]](states[env, XVEL_OFF + b * 3 + 0])
-            var vy = rebind[Scalar[DTYPE]](states[env, XVEL_OFF + b * 3 + 1])
-            var vz = rebind[Scalar[DTYPE]](states[env, XVEL_OFF + b * 3 + 2])
+            var vx = rebind[Scalar[DTYPE]](xvel[env, b * 3 + 0])
+            var vy = rebind[Scalar[DTYPE]](xvel[env, b * 3 + 1])
+            var vz = rebind[Scalar[DTYPE]](xvel[env, b * 3 + 2])
 
             # Body origin world position
-            var px = rebind[Scalar[DTYPE]](states[env, XPOS_OFF + b * 3 + 0])
-            var py = rebind[Scalar[DTYPE]](states[env, XPOS_OFF + b * 3 + 1])
-            var pz = rebind[Scalar[DTYPE]](states[env, XPOS_OFF + b * 3 + 2])
+            var px = rebind[Scalar[DTYPE]](xpos[env, b * 3 + 0])
+            var py = rebind[Scalar[DTYPE]](xpos[env, b * 3 + 1])
+            var pz = rebind[Scalar[DTYPE]](xpos[env, b * 3 + 2])
 
             # Body CoM world position
-            var cx = rebind[Scalar[DTYPE]](states[env, XIPOS_OFF + b * 3 + 0])
-            var cy = rebind[Scalar[DTYPE]](states[env, XIPOS_OFF + b * 3 + 1])
-            var cz = rebind[Scalar[DTYPE]](states[env, XIPOS_OFF + b * 3 + 2])
+            var cx = rebind[Scalar[DTYPE]](xipos[env, b * 3 + 0])
+            var cy = rebind[Scalar[DTYPE]](xipos[env, b * 3 + 1])
+            var cz = rebind[Scalar[DTYPE]](xipos[env, b * 3 + 2])
 
             # CoM offset from body origin: d = com - ori
             var dx = cx - px
@@ -104,16 +106,20 @@ def compute_cvel_gpu[
             var vcz = vz + (ox * dy - oy * dx)
 
             # Write cvel[b*6]: [omega, v_com]
-            var cvel_base = CVEL_OFF + b * 6
-            states[env, cvel_base + 0] = ox
-            states[env, cvel_base + 1] = oy
-            states[env, cvel_base + 2] = oz
-            states[env, cvel_base + 3] = vcx
-            states[env, cvel_base + 4] = vcy
-            states[env, cvel_base + 5] = vcz
+            var cvel_base = b * 6
+            cvel[env, cvel_base + 0] = ox
+            cvel[env, cvel_base + 1] = oy
+            cvel[env, cvel_base + 2] = oz
+            cvel[env, cvel_base + 3] = vcx
+            cvel[env, cvel_base + 4] = vcy
+            cvel[env, cvel_base + 5] = vcz
 
     ctx.enqueue_function[cvel_kernel](
-        states,
+        xpos,
+        xvel,
+        xangvel,
+        xipos,
+        cvel,
         grid_dim=(BLOCKS,),
         block_dim=(TPB,),
     )

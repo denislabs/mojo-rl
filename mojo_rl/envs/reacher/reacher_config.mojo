@@ -13,9 +13,8 @@ from layout import Layout, LayoutTensor
 from mojo_rl.physics3d.fields import DataFields
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
-    qpos_offset,
-    qvel_offset,
-    xpos_offset,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
     rk4_extra_workspace_size,
 )
 
@@ -150,13 +149,15 @@ struct ReacherConfig(Phyics3dEnvConfig):
     def pre_step_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
         env: Int,
-        meta_offset: Int,
     ):
         pass  # No pre-step state needed
 
@@ -166,49 +167,61 @@ struct ReacherConfig(Phyics3dEnvConfig):
     def compute_reward_and_done_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
         ACTION_DIM: Int,
-        MODEL_SIZE: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
-        model: LayoutTensor[
-            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
         ],
         actions: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
-        xpos_off: Int,
-        xipos_off: Int,
-        cfrc_ext_off: Int,
-        cvel_off: Int,
-        meta_offset: Int,
-        curriculum_offset: Int,
         step_count: Int,
         frame_skip: Int,
         timestep: Scalar[DTYPE],
     ) -> Tuple[Scalar[DTYPE], Bool]:
         # Fingertip - target distance (3D)
         var ftip_x = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + FINGERTIP_BODY_IDX * 3 + 0]
+            xpos[env, FINGERTIP_BODY_IDX * 3 + 0]
         )
         var ftip_y = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + FINGERTIP_BODY_IDX * 3 + 1]
+            xpos[env, FINGERTIP_BODY_IDX * 3 + 1]
         )
         var ftip_z = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + FINGERTIP_BODY_IDX * 3 + 2]
+            xpos[env, FINGERTIP_BODY_IDX * 3 + 2]
         )
         var tgt_x = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + TARGET_BODY_IDX * 3 + 0]
+            xpos[env, TARGET_BODY_IDX * 3 + 0]
         )
         var tgt_y = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + TARGET_BODY_IDX * 3 + 1]
+            xpos[env, TARGET_BODY_IDX * 3 + 1]
         )
         var tgt_z = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + TARGET_BODY_IDX * 3 + 2]
+            xpos[env, TARGET_BODY_IDX * 3 + 2]
         )
         var dx = ftip_x - tgt_x
         var dy = ftip_y - tgt_y
@@ -235,13 +248,12 @@ struct ReacherConfig(Phyics3dEnvConfig):
     def init_qpos_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
     ):
         pass
 
@@ -251,25 +263,30 @@ struct ReacherConfig(Phyics3dEnvConfig):
     def custom_extract_obs_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
         OBS_DIM: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
-        qvel_off: Int,
-        xpos_off: Int,
     ) -> Bool:
         comptime assert (
             DTYPE.is_floating_point()
         ), "DTYPE must be floating point"
-        var q0 = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])
-        var q1 = rebind[Scalar[DTYPE]](states[env, qpos_off + 1])
+        var q0 = rebind[Scalar[DTYPE]](qpos[env, 0])
+        var q1 = rebind[Scalar[DTYPE]](qpos[env, 1])
 
         # cos(theta) [2]
         obs[env, 0] = cos(q0)
@@ -278,23 +295,23 @@ struct ReacherConfig(Phyics3dEnvConfig):
         obs[env, 2] = sin(q0)
         obs[env, 3] = sin(q1)
         # target joint positions (qpos[2:4]) [2]
-        obs[env, 4] = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
-        obs[env, 5] = rebind[Scalar[DTYPE]](states[env, qpos_off + 3])
+        obs[env, 4] = rebind[Scalar[DTYPE]](qpos[env, 2])
+        obs[env, 5] = rebind[Scalar[DTYPE]](qpos[env, 3])
         # joint velocities (qvel[0:2]) [2]
-        obs[env, 6] = rebind[Scalar[DTYPE]](states[env, qvel_off + 0])
-        obs[env, 7] = rebind[Scalar[DTYPE]](states[env, qvel_off + 1])
+        obs[env, 6] = rebind[Scalar[DTYPE]](qvel[env, 0])
+        obs[env, 7] = rebind[Scalar[DTYPE]](qvel[env, 1])
         # fingertip - target delta (x, y) [2]
         var ftip_x = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + FINGERTIP_BODY_IDX * 3 + 0]
+            xpos[env, FINGERTIP_BODY_IDX * 3 + 0]
         )
         var ftip_y = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + FINGERTIP_BODY_IDX * 3 + 1]
+            xpos[env, FINGERTIP_BODY_IDX * 3 + 1]
         )
         var tgt_x = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + TARGET_BODY_IDX * 3 + 0]
+            xpos[env, TARGET_BODY_IDX * 3 + 0]
         )
         var tgt_y = rebind[Scalar[DTYPE]](
-            states[env, xpos_off + TARGET_BODY_IDX * 3 + 1]
+            xpos[env, TARGET_BODY_IDX * 3 + 1]
         )
         obs[env, 8] = ftip_x - tgt_x
         obs[env, 9] = ftip_y - tgt_y
