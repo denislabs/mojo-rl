@@ -68,8 +68,12 @@ from mojo_rl.physics3d.gpu.constants import (
     xpos_offset,
     xquat_offset,
 )
-from mojo_rl.physics3d.fields import ModelFields, DataFields
+from mojo_rl.physics3d.fields import ModelFields, DataFields, DynamicsScratch
+from mojo_rl.physics3d.dynamics.invweight_fields import (
+    compute_invweight0_fields,
+)
 from mojo_rl.physics3d.model.model_def import ModelDefLike
+from .fields_build import build_model_fields_from_flat
 from .full_parser import parse_xml_full
 from .xml_parser import (
     _xml_nth_motor_gear,
@@ -470,6 +474,103 @@ struct ModelDefFromXML[
     # =========================================================================
     # GPU: _compute_invweight0_gpu (duplicated from ModelDef, dims from params)
     # =========================================================================
+
+    @staticmethod
+    def init_fields_v2[
+        DTYPE: DType, NMESHV: Int = 0
+    ](
+        ctx: DeviceContext,
+        mut mf: ModelFields[
+            DTYPE,
+            Self.NV,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.MAX_TENDON,
+            Self.NSITE,
+            Self.NEXCLUDE,
+            NMESHV,
+        ],
+    ) raises:
+        """Spec-direct fields model build (G4): parse the XML into a
+        FlatModelDef and write the packed record tensors DIRECTLY
+        (`fields_build.build_model_fields_from_flat`) — no CPU `Model`/`Data`
+        staging, no `setup_model_and_data`, no `load_from_model`. invweight0
+        is computed fields-natively (G1) from the reference pose given by the
+        fields `reset_data`. Replaces the legacy trait-default `init_fields`
+        (deleted with the legacy CPU model build)."""
+        var fmd = parse_xml_full[
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NQ,
+            Self.NV,
+            Self.NGEOM,
+            Self.nact,
+            Self.ntex,
+            Self.nmat,
+            Self.nlight,
+            Self.ncam,
+            Self.NSITE,
+            Self.neq,
+            Self.nexclude,
+        ](Self.xml)
+        comptime ifg_mode = _xml_compiler_inertiafromgeom[Self.xml]()
+        comptime igr = _xml_compiler_inertiagrouprange[Self.xml]()
+        comptime stm = _xml_compiler_settotalmass[Self.xml]()
+        build_model_fields_from_flat[
+            DTYPE,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NQ,
+            Self.NV,
+            Self.NGEOM,
+            Self.nact,
+            Self.ntex,
+            Self.nmat,
+            Self.nlight,
+            Self.ncam,
+            Self.NSITE,
+            Self.neq,
+            Self.nexclude,
+            Self.MAX_EQUALITY,
+            Self.MAX_TENDON,
+            Self.NSITE,
+            Self.NEXCLUDE,
+            NMESHV,
+            ifg_mode,
+            igr[0],
+            igr[1],
+            stm,
+        ](fmd, mf)
+
+        # Reference pose + fields-native invweight0 (G1).
+        var d_inv = DataFields[
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.MAX_CONTACTS,
+            Self.NSITE,
+            1,
+        ]()
+        Self.reset_data[DTYPE](d_inv)
+        var sc_inv = DynamicsScratch[DTYPE, Self.NV, Self.NBODY, 1]()
+        compute_invweight0_fields[
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.MAX_CONTACTS,
+            Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.MAX_TENDON,
+            Self.NSITE,
+            Self.NEXCLUDE,
+            NMESHV,
+        ](d_inv, mf, sc_inv)
+        mf.upload_all(ctx)
 
     # =========================================================================
     # GPU: Joints / Actuators kernel delegates
