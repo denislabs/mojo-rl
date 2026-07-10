@@ -40,17 +40,10 @@ from .dynamics.mass_matrix import compute_mass_matrix, solve_linear_diagonal
 from .dynamics.bias_forces import compute_bias_forces
 from .dynamics.cfrc_ext import compute_cfrc_ext
 
-# Integrator
-from .integrator import (
-    DefaultIntegrator,
-    EulerIntegrator,
-    ImplicitFastIntegrator,
-)
+# Legacy slab integrators + solvers were deleted at the P6 fields sunset; the
+# fields integrators/solvers are imported directly by module.
 
-# Solvers
-from .solver import PGSSolver, NewtonSolver, CGSolver
-
-# Collision
+# Collision primitives (shared leaves)
 from .types import ConeType
 from .collision import (
     sphere_sphere,
@@ -62,6 +55,4 @@ from .collision import (
     box_sphere,
     box_capsule,
     box_box,
-    detect_contacts,
-    normalize_qpos_quaternions,
 )

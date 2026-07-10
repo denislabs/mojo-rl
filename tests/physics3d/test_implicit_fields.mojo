@@ -1,15 +1,14 @@
 """Stage-I gate: full-implicit integrator over fields tensors
-(ImplicitIntegratorFields) vs the legacy ImplicitIntegrator.
+(ImplicitIntegratorFields) — fields self-consistency smoke.
 
 Runs N contact-free passive steps (qfrc=0: gravity + Coriolis + damping only)
 on a FREE-FLIGHT Walker2D (rootz high → no floor contact) with nonzero qvel
 (so the RNE velocity derivative in M_hat = M + armature - dt*qDeriv actually
 matters), poses strictly inside joint ranges (limits inactive). Checks:
-  * fields-CPU qpos/qvel/qacc ≈ legacy ImplicitIntegrator (tight tol; both
-    form the same M_hat, LU-solve, integrate — the FK/CRBA/RNE/qDeriv stages
-    are separately bit-exact-validated, so a full step matches to FP roundoff),
-  * fields-GPU ≈ fields-CPU (self-consistent single-source integrator),
-  * state stays finite (no NaN/blowup).
+  * fields-CPU step stays finite (no NaN/blowup),
+  * fields-GPU ≈ fields-CPU (self-consistent single-source integrator).
+(The legacy ImplicitIntegrator cross-check was dropped at the P6 sunset; the
+FK/CRBA/RNE/qDeriv stages remain bit-exact-validated by their own gates.)
 
 Run: pixi run -e apple mojo run -I . tests/physics3d/test_implicit_fields.mojo
 """
@@ -22,9 +21,6 @@ from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.integrator.implicit_fields import (
     ImplicitIntegratorFields,
 )
-from mojo_rl.physics3d.integrator.implicit_integrator import ImplicitIntegrator
-from mojo_rl.physics3d.solver.pgs_solver import PGSSolver
-from mojo_rl.physics3d.types import Model, Data
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 
 comptime DT = DType.float32
@@ -67,7 +63,7 @@ def _init_qvel(i: Int) -> Scalar[DT]:
 
 
 def main() raises:
-    print("=== Stage-I ImplicitIntegratorFields vs legacy: Walker2D ===")
+    print("=== Stage-I ImplicitIntegratorFields self-consistency: Walker2D ===")
     var ctx = DeviceContext()
 
     var mf = ModelFields[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
@@ -94,35 +90,7 @@ def main() raises:
         if v != v or abs(Float64(v)) > 1e6:
             raise Error("fields implicit produced non-finite qpos")
 
-    # ── legacy ImplicitIntegrator reference (contact-free free flight) ────
-    var model = Model[DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, CONE, NTD, NSITE]()
-    var ldata = Data[DT, NQ, NV, NBODY, NJOINT, MC, NSITE]()
-    Walker2dModel.setup_model_and_data[DT](model, ldata)
-    for i in range(NQ):
-        ldata.qpos[i] = _init_qpos(i)
-    for i in range(NV):
-        ldata.qvel[i] = _init_qvel(i)
-        ldata.qfrc[i] = 0
-    for _step in range(N_STEPS):
-        ImplicitIntegrator[SOLVER=PGSSolver].step[
-            NGEOM=NGEOM, MAX_EQUALITY=NEQ, CONE_TYPE=CONE, MAX_TENDON=NTD,
-            NSITE=NSITE,
-        ](model, ldata)
-
-    var worst_q = Float64(0)
-    for i in range(NQ):
-        var e = abs(Float64(d.qpos.data[i]) - Float64(ldata.qpos[i]))
-        if e > worst_q:
-            worst_q = e
-    var worst_v = Float64(0)
-    for i in range(NV):
-        var e = abs(Float64(d.qvel.data[i]) - Float64(ldata.qvel[i]))
-        if e > worst_v:
-            worst_v = e
-    print("  fields-CPU vs legacy worst qpos err:", worst_q, " qvel err:", worst_v)
-    if worst_q > 1e-3 or worst_v > 1e-3:
-        raise Error("fields implicit diverges from legacy ImplicitIntegrator")
-    print("  Part A PASS: fields-CPU implicit ≈ legacy ImplicitIntegrator")
+    print("  Part A PASS: fields-CPU implicit step finite (Walker2D free-flight)")
 
     # ── fields-GPU vs fields-CPU ─────────────────────────────────────────
     var qcpu = List[Scalar[DT]](length=NQ, fill=0)

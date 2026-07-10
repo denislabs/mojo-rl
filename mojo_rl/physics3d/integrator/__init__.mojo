@@ -40,11 +40,6 @@ GPU Profiling:
     timer.print_report("Physics Profile")
 """
 
-from .euler_integrator import EulerDefaultIntegrator, EulerIntegrator
-from .implicit_fast_integrator import ImplicitFastIntegrator
-from .implicit_integrator import ImplicitIntegrator
-from .rk4_integrator import RK4Integrator
-from ..solver.pgs_solver import PGSSolver
-
-# Default integrator uses implicit-fast (matches MuJoCo default)
-comptime DefaultIntegrator = ImplicitFastIntegrator[PGSSolver]
+# Legacy slab integrators (Euler/RK4/Implicit/ImplicitFast + DefaultIntegrator)
+# were deleted at the P6 fields sunset. The fields integrators live in
+# `euler_fields` / `rk4_fields` / `implicit_fields` and are imported directly.

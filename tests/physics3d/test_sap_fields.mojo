@@ -32,8 +32,8 @@ from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
     forward_kinematics_fields,
 )
-from mojo_rl.physics3d.collision.broadphase_sap import SAP_THRESHOLD
 from mojo_rl.physics3d.collision.broadphase_sap_fields import (
+    SAP_THRESHOLD,
     detect_contacts_sap_fields,
     detect_contacts_auto_fields,
 )
