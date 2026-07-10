@@ -48,8 +48,10 @@ from ..constraints.contact_solve_fields import (
     _precompute_contact_normal_fields,
     _warmstart_normals_fields,
 )
-from .island_detection import MAX_ISLANDS
-from .island_solver import ISLAND_CONVERGE_EPS
+# Island constants (relocated here at the P6 legacy sunset; formerly imported
+# from the deleted legacy `island_detection` / `island_solver`).
+comptime MAX_ISLANDS: Int = 64
+comptime ISLAND_CONVERGE_EPS: Float64 = 1e-6
 from ..fields import DataFields, ModelFields, DynamicsScratch, ContactScratch
 from ..gpu.constants import (
     MODEL_BODY_SIZE,

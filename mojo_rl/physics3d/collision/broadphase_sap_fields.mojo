@@ -99,9 +99,68 @@ from .contact_detection_fields import (
     _geom_world_pos_fields,
     detect_contacts_fields,
 )
-from .broadphase_sap import _aabb_half_extents, SAP_THRESHOLD
+
+# SAP broadphase activation threshold + AABB helper (relocated here at the P6
+# legacy sunset; formerly imported from the deleted legacy `broadphase_sap`).
+comptime SAP_THRESHOLD: Int = 16
 
 comptime SAP_TPB: Int = 64
+
+
+def _aabb_half_extents[
+    DTYPE: DType
+](
+    geom_type: Int,
+    qx: Scalar[DTYPE],
+    qy: Scalar[DTYPE],
+    qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
+    radius: Scalar[DTYPE],
+    half_length: Scalar[DTYPE],
+    half_x: Scalar[DTYPE],
+    half_y: Scalar[DTYPE],
+    half_z: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """Return (ex, ey, ez) — the AABB half-extents for one geom in world space.
+
+    The world-space AABB is [center - e, center + e] on each axis.
+    Planes are not handled here (they use infinite bounds, handled separately).
+    """
+    if geom_type == GEOM_SPHERE:
+        return (radius, radius, radius)
+
+    if geom_type == GEOM_CAPSULE or geom_type == GEOM_CYLINDER:
+        # World-space capsule/cylinder axis = rotate local Z (0,0,1) by quat.
+        # Derivation: v' = (2(qx*qz+qy*qw), 2(qy*qz-qx*qw), 1-2(qx²+qy²))
+        var two = Scalar[DTYPE](2)
+        var ax = two * (qx * qz + qy * qw)
+        var ay = two * (qy * qz - qx * qw)
+        var az = Scalar[DTYPE](1) - two * (qx * qx + qy * qy)
+        return (
+            abs(ax) * half_length + radius,
+            abs(ay) * half_length + radius,
+            abs(az) * half_length + radius,
+        )
+
+    if geom_type == GEOM_BOX:
+        # Tight AABB via rotation matrix: half_extent[k] = Σ |R[k][j]| * half[j]
+        var two = Scalar[DTYPE](2)
+        var r00 = Scalar[DTYPE](1) - two * (qy * qy + qz * qz)
+        var r01 = two * (qx * qy - qz * qw)
+        var r02 = two * (qx * qz + qy * qw)
+        var r10 = two * (qx * qy + qz * qw)
+        var r11 = Scalar[DTYPE](1) - two * (qx * qx + qz * qz)
+        var r12 = two * (qy * qz - qx * qw)
+        var r20 = two * (qx * qz - qy * qw)
+        var r21 = two * (qy * qz + qx * qw)
+        var r22 = Scalar[DTYPE](1) - two * (qx * qx + qy * qy)
+        var ex = abs(r00) * half_x + abs(r01) * half_y + abs(r02) * half_z
+        var ey = abs(r10) * half_x + abs(r11) * half_y + abs(r12) * half_z
+        var ez = abs(r20) * half_x + abs(r21) * half_y + abs(r22) * half_z
+        return (ex, ey, ez)
+
+    # Fallback (unknown geom type): use radius as conservative bound
+    return (radius, radius, radius)
 
 
 @always_inline
