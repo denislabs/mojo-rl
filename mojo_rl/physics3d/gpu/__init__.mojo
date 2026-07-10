@@ -1,27 +1,13 @@
-"""Physics3D GPU - Batched physics simulation on GPU."""
+"""Physics3D GPU layer: the fields record-layout constants (per-record
+sizes + column indices — the slab OFFSET tables died at the G5 sunset) and
+the cfrc_ext / cvel per-field kernels."""
 
 # Constants for buffer layout
 from .constants import (
     # GPU configuration
     TPB,
     TILE,
-    # State buffer layout
-    state_size,
-    qpos_offset,
-    qvel_offset,
-    qacc_offset,
-    qfrc_offset,
-    xpos_offset,
-    xquat_offset,
-    xvel_offset,
-    xangvel_offset,
-    contacts_offset,
-    metadata_offset,
-    model_size,
-    model_body_offset,
-    model_joint_offset,
-    model_metadata_offset,
-    # Buffer layout constants
+    # Record sizes + per-record column indices (the fields record layout)
     CONTACT_SIZE,
     METADATA_SIZE,
     MODEL_BODY_SIZE,
@@ -61,13 +47,6 @@ from .constants import (
     GEOM_IDX_FRICTION,
     GEOM_IDX_CONTYPE,
     GEOM_IDX_CONAFFINITY,
-    model_geom_offset,
-    # New phase-2 state buffer fields
-    site_xpos_offset,
-    cfrc_ext_offset,
-    cvel_offset,
-    cinert_offset,
-    qfrc_actuator_offset,
 )
 
 # GPU kernels colocated with CPU implementations

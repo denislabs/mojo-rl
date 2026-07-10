@@ -42,7 +42,6 @@ from mojo_rl.physics3d.collision.contact_detection_fields import (
 )
 
 from mojo_rl.physics3d.gpu.constants import (
-    model_size_with_invweight,
     CONTACT_SIZE,
     META_IDX_NUM_CONTACTS,
     MODEL_GEOM_SIZE,
@@ -79,9 +78,6 @@ comptime NEQ_H = HumanoidModel.MAX_EQUALITY  # 0
 comptime NTD_H = HumanoidModel.MAX_TENDON  # 2
 comptime NSITE_H = HumanoidModel.NSITE  # 0
 comptime NEXCL_H = HumanoidModel.nexclude  # 0
-comptime MS_H = model_size_with_invweight[
-    NBODY_H, NJOINT_H, NV_H, NGEOM_H, NEQ_H, NTD_H, NSITE_H, NEXCL_H
-]()
 
 # ── Sawyer (Part B) ──────────────────────────────────────────────────────
 comptime NQ_S = SawyerReachModel.NQ
@@ -106,7 +102,6 @@ comptime NEQ_W = Walker2dModel.MAX_EQUALITY
 comptime NTD_W = Walker2dModel.MAX_TENDON
 comptime NSITE_W = Walker2dModel.NSITE
 comptime NEXCL_W = Walker2dModel.NEXCLUDE
-comptime MS_W = model_size_with_invweight[NBODY_W, NJOINT_W, NV_W, NGEOM_W]()
 
 
 def _humanoid_qpos(e: Int, i: Int) -> Scalar[DTYPE]:

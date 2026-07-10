@@ -67,7 +67,6 @@ from mojo_rl.physics3d.collision.contact_detection_fields import (
 )
 from mojo_rl.physics3d.solver.newton_solve_fields import solve_newton_fields
 from mojo_rl.physics3d.gpu.constants import (
-    model_size_with_invweight,
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
     CONTACT_SIZE,
@@ -93,7 +92,6 @@ comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime BATCH = 2
 comptime N_ROUNDS = 3
-comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)

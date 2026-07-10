@@ -28,14 +28,7 @@ from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 
-from ..gpu.constants import (
-    CONTACT_SIZE,
-    METADATA_SIZE,
-    state_size,
-)
-# The per-region slab offsets + _region_in/_region_out bridge helpers were
-# deleted with load_from_slab/store_to_slab at the P6 sunset. `state_size` (the
-# total SS) is the only slab-layout query the fields DataFields still needs.
+from ..gpu.constants import CONTACT_SIZE, METADATA_SIZE
 
 
 struct DataFields[
@@ -49,10 +42,6 @@ struct DataFields[
 ](Movable):
     """Batched per-field simulation state (the 17 regions of the flat state
     slab, one owned tensor each). See module docstring."""
-
-    comptime SS = state_size[
-        Self.NQ, Self.NV, Self.NBODY, Self.MAX_CONTACTS, Self.NSITE
-    ]()
 
     # Per-field view layouts ([BATCH, F] row-major).
     comptime L_QPOS = Layout.row_major(Self.BATCH, Self.NQ)

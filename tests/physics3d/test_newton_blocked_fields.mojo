@@ -67,7 +67,6 @@ from mojo_rl.physics3d.solver.newton_solve_fields import (
     solve_newton_blocked_fields,
 )
 from mojo_rl.physics3d.gpu.constants import (
-    model_size_with_invweight,
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
     CONTACT_SIZE,
@@ -100,7 +99,6 @@ comptime GOLD_RTOL = 1e-3
 comptime GOLD_NCON = 36  # total contacts over the rounds
 comptime GOLD_QC = 5707.129324436188  # final qacc_constrained checksum
 comptime GOLD_CON = 178360.48161778972  # final contact-record checksum
-comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 
 
 def _fields_prep[

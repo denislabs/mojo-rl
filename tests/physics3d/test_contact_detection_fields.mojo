@@ -29,7 +29,6 @@ from mojo_rl.physics3d.collision.contact_detection_fields import (
     detect_contacts_fields,
 )
 from mojo_rl.physics3d.gpu.constants import (
-    model_size_with_invweight,
     CONTACT_SIZE,
     META_IDX_NUM_CONTACTS,
 )
@@ -47,7 +46,6 @@ comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime BATCH = 2
-comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 comptime METADATA_SIZE_L = 4
 
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----

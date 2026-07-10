@@ -64,7 +64,6 @@ from mojo_rl.physics3d.collision.contact_detection_fields import (
 from mojo_rl.physics3d.solver.newton_solve_fields import solve_newton_fields
 from mojo_rl.physics3d.solver.cg_solve_fields import solve_cg_fields
 from mojo_rl.physics3d.gpu.constants import (
-    model_size_with_invweight,
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
     MODEL_JOINT_SIZE,

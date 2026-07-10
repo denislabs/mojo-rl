@@ -56,54 +56,9 @@ comptime MAX_POS_CORRECTION_VEL: Float32 = 10.0  # Legacy, unused after accel-le
 #   qfrc: [NQ + 2*NV, NQ + 3*NV)
 
 
-def qpos_offset[NQ: Int, NV: Int]() -> Int:
-    """Offset to qpos array (always 0)."""
-    return 0
-
-
-def qvel_offset[NQ: Int, NV: Int]() -> Int:
-    """Offset to qvel array."""
-    return NQ
-
-
-def qacc_offset[NQ: Int, NV: Int]() -> Int:
-    """Offset to qacc array."""
-    return NQ + NV
-
-
-def qfrc_offset[NQ: Int, NV: Int]() -> Int:
-    """Offset to qfrc array."""
-    return NQ + 2 * NV
-
-
 # =============================================================================
 # State Buffer Layout - World Space (xpos, xquat, xvel, xangvel)
 # =============================================================================
-
-
-def xpos_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
-    """Offset to xpos array (body world positions)."""
-    return NQ + 3 * NV
-
-
-def xquat_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
-    """Offset to xquat array (body world orientations)."""
-    return NQ + 3 * NV + NBODY * 3
-
-
-def xipos_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
-    """Offset to xipos array (body CoM world positions)."""
-    return NQ + 3 * NV + NBODY * 3 + NBODY * 4
-
-
-def xvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
-    """Offset to xvel array (body world linear velocities)."""
-    return NQ + 3 * NV + NBODY * 3 + NBODY * 4 + NBODY * 3
-
-
-def xangvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
-    """Offset to xangvel array (body world angular velocities)."""
-    return NQ + 3 * NV + NBODY * 3 + NBODY * 4 + NBODY * 3 + NBODY * 3
 
 
 # =============================================================================
@@ -138,18 +93,6 @@ comptime CONTACT_IDX_FRAME_T1_Y: Int = 21
 comptime CONTACT_IDX_FRAME_T1_Z: Int = 22
 
 
-def contacts_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
-    """Offset to contacts array."""
-    return (
-        NQ + 3 * NV + NBODY * 3 + NBODY * 4 + NBODY * 3 + NBODY * 3 + NBODY * 3
-    )
-
-
-def contact_offset[NQ: Int, NV: Int, NBODY: Int](contact_idx: Int) -> Int:
-    """Offset to a specific contact."""
-    return contacts_offset[NQ, NV, NBODY]() + contact_idx * CONTACT_SIZE
-
-
 # =============================================================================
 # State Buffer Layout - Metadata
 # =============================================================================
@@ -162,103 +105,9 @@ comptime META_IDX_PREV_X: Int = 2  # Previous x position for velocity computatio
 comptime META_IDX_PREV_COM_X: Int = 3  # Reserved for prev CoM x (unused with cvel approach)
 
 
-def metadata_offset[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
-    """Offset to metadata."""
-    return contacts_offset[NQ, NV, NBODY]() + MAX_CONTACTS * CONTACT_SIZE
-
-
 # =============================================================================
 # Total State Size Computation
 # =============================================================================
-
-
-def site_xpos_offset[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
-    """Offset to site_xpos array (site world positions).
-
-    Placed after metadata at end of state buffer.
-    """
-    return metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]() + METADATA_SIZE
-
-
-def cfrc_ext_offset[
-    NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
-]() -> Int:
-    """Offset to cfrc_ext array (external contact forces per body).
-
-    Layout: [torque_x, torque_y, torque_z, force_x, force_y, force_z] per body.
-    Placed after site_xpos.
-    """
-    return site_xpos_offset[NQ, NV, NBODY, MAX_CONTACTS]() + NSITE * 3
-
-
-def cvel_offset[
-    NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
-]() -> Int:
-    """Offset to cvel array (body CoM spatial velocities).
-
-    Layout: [omega_x, omega_y, omega_z, v_x, v_y, v_z] per body.
-    Placed after cfrc_ext.
-    """
-    return cfrc_ext_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 6
-
-
-def cinert_offset[
-    NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
-]() -> Int:
-    """Offset to cinert array (composite rigid body inertia).
-
-    Layout: [m, cx, cy, cz, Ixx, Iyy, Izz, Ixy, Ixz, Iyz] per body.
-    Placed after cvel.
-    """
-    return cvel_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 6
-
-
-def subtree_com_offset[
-    NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
-]() -> Int:
-    """Offset to subtree_com array (subtree center of mass).
-
-    Layout: [x, y, z] per body. Placed after cinert.
-    """
-    return cinert_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 10
-
-
-def qfrc_actuator_offset[
-    NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
-]() -> Int:
-    """Offset to qfrc_actuator array (actuator force per DOF).
-
-    Captures gear * clamped_force before constraint solving.
-    Placed after subtree_com.
-    """
-    return subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 3
-
-
-def state_size[
-    NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
-]() -> Int:
-    """Compute total state buffer size per environment.
-
-    Returns:
-        Total size in number of scalars.
-    """
-    return (
-        NQ  # qpos
-        + 3 * NV  # qvel + qacc + qfrc
-        + NBODY * 3  # xpos
-        + NBODY * 4  # xquat
-        + NBODY * 3  # xipos (CoM world positions)
-        + NBODY * 3  # xvel
-        + NBODY * 3  # xangvel
-        + MAX_CONTACTS * CONTACT_SIZE
-        + METADATA_SIZE
-        + NSITE * 3  # site_xpos (site world positions)
-        + NBODY * 6  # cfrc_ext
-        + NBODY * 6  # cvel
-        + NBODY * 10  # cinert
-        + NBODY * 3  # subtree_com
-        + NV  # qfrc_actuator
-    )
 
 
 # =============================================================================
@@ -295,11 +144,6 @@ comptime BODY_IDX_WELDID: Int = 24  # Weld body index (MuJoCo body_weldid)
 comptime BODY_IDX_MOCAP: Int = 25  # 1.0 if body pose is externally set (mocap)
 
 
-def model_body_offset(body_idx: Int) -> Int:
-    """Offset to a specific body in model buffer."""
-    return body_idx * MODEL_BODY_SIZE
-
-
 # =============================================================================
 # Model Buffer Layout - Per Joint
 # =============================================================================
@@ -332,11 +176,6 @@ comptime JOINT_IDX_SOLIMP_LIMIT_2: Int = 22  # Per-joint limit solimp width
 comptime JOINT_IDX_SOLIMP_LIMIT_3: Int = 23  # Per-joint limit solimp midpoint
 comptime JOINT_IDX_SOLIMP_LIMIT_4: Int = 24  # Per-joint limit solimp power
 comptime JOINT_IDX_QPOS0: Int = 25  # Joint reference position (MuJoCo qpos0 / ref)
-
-
-def model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
-    """Offset to a specific joint in model buffer."""
-    return NBODY * MODEL_BODY_SIZE + joint_idx * MODEL_JOINT_SIZE
 
 
 # =============================================================================
@@ -380,11 +219,6 @@ comptime MODEL_META_IDX_NTENDON: Int = 24  # Number of fixed tendons
 comptime MODEL_META_IDX_NEXCLUDE: Int = 25  # Number of contact exclude pairs
 
 
-def model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
-    """Offset to model metadata."""
-    return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE
-
-
 # =============================================================================
 # Model Buffer Layout - Unified Geoms (body-attached + static)
 # =============================================================================
@@ -423,21 +257,6 @@ comptime GEOM_IDX_MARGIN: Int = 28  # Per-geom contact margin
 comptime GEOM_IDX_MESH_ID: Int = 29  # Mesh hull index (-1 if not mesh)
 
 
-def model_geom_offset[NBODY: Int, NJOINT: Int](geom_idx: Int) -> Int:
-    """Offset to a specific unified geom in model buffer.
-
-    Geoms are stored AFTER metadata+curriculum to avoid shifting metadata offsets.
-    Layout: [bodies | joints | metadata | curriculum | geoms | equality]
-    """
-    return (
-        NBODY * MODEL_BODY_SIZE
-        + NJOINT * MODEL_JOINT_SIZE
-        + MODEL_META_SIZE
-        + MODEL_CURRICULUM_SIZE
-        + geom_idx * MODEL_GEOM_SIZE
-    )
-
-
 # =============================================================================
 # Model Buffer Layout - Equality Constraints
 # =============================================================================
@@ -466,24 +285,6 @@ comptime EQ_IDX_SOLIMP_3: Int = 18  # solimp midpoint
 comptime EQ_IDX_SOLIMP_4: Int = 19  # solimp power
 
 
-def model_equality_offset[
-    NBODY: Int, NJOINT: Int, NGEOM: Int
-](eq_idx: Int) -> Int:
-    """Offset to a specific equality constraint in model buffer.
-
-    Equality stored AFTER geoms.
-    Layout: [bodies | joints | metadata | curriculum | geoms | equality]
-    """
-    return (
-        NBODY * MODEL_BODY_SIZE
-        + NJOINT * MODEL_JOINT_SIZE
-        + MODEL_META_SIZE
-        + MODEL_CURRICULUM_SIZE
-        + NGEOM * MODEL_GEOM_SIZE
-        + eq_idx * MODEL_EQ_SIZE
-    )
-
-
 # =============================================================================
 # Model Buffer Layout - Fixed Tendons
 # =============================================================================
@@ -509,25 +310,6 @@ comptime TENDON_IDX_SOLIMP_3: Int = 15  # solimp midpoint
 comptime TENDON_IDX_SOLIMP_4: Int = 16  # solimp power
 
 
-def model_tendon_offset[
-    NBODY: Int, NJOINT: Int, NGEOM: Int, NEQUALITY: Int = 0
-](tendon_idx: Int) -> Int:
-    """Offset to a specific tendon in model buffer.
-
-    Tendons are stored AFTER equality constraints.
-    Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons]
-    """
-    return (
-        NBODY * MODEL_BODY_SIZE
-        + NJOINT * MODEL_JOINT_SIZE
-        + MODEL_META_SIZE
-        + MODEL_CURRICULUM_SIZE
-        + NGEOM * MODEL_GEOM_SIZE
-        + NEQUALITY * MODEL_EQ_SIZE
-        + tendon_idx * MODEL_TENDON_SIZE
-    )
-
-
 # =============================================================================
 # Model Buffer Layout - Curriculum Parameters
 # =============================================================================
@@ -546,11 +328,6 @@ comptime CURRICULUM_IDX_PARAM_6: Int = 6
 comptime CURRICULUM_IDX_PARAM_7: Int = 7
 
 
-def model_curriculum_offset[NBODY: Int, NJOINT: Int]() -> Int:
-    """Offset to curriculum parameters in model buffer."""
-    return model_metadata_offset[NBODY, NJOINT]() + MODEL_META_SIZE
-
-
 # =============================================================================
 # Model Buffer Layout - Sites
 # =============================================================================
@@ -564,138 +341,7 @@ comptime SITE_IDX_POS_Y: Int = 2
 comptime SITE_IDX_POS_Z: Int = 3
 
 
-def model_site_offset[
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-](site_idx: Int) -> Int:
-    """Offset to a specific site in model buffer.
-
-    Sites are stored AFTER tendons.
-    Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons | sites]
-    """
-    return (
-        NBODY * MODEL_BODY_SIZE
-        + NJOINT * MODEL_JOINT_SIZE
-        + MODEL_META_SIZE
-        + MODEL_CURRICULUM_SIZE
-        + NGEOM * MODEL_GEOM_SIZE
-        + NEQUALITY * MODEL_EQ_SIZE
-        + NTENDON * MODEL_TENDON_SIZE
-        + site_idx * MODEL_SITE_SIZE
-    )
-
-
-def model_size[
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-]() -> Int:
-    """Total model buffer size (without invweight0 arrays).
-
-    Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons | sites]
-    """
-    return (
-        NBODY * MODEL_BODY_SIZE
-        + NJOINT * MODEL_JOINT_SIZE
-        + MODEL_META_SIZE
-        + MODEL_CURRICULUM_SIZE
-        + NGEOM * MODEL_GEOM_SIZE
-        + NEQUALITY * MODEL_EQ_SIZE
-        + NTENDON * MODEL_TENDON_SIZE
-        + NSITE * MODEL_SITE_SIZE
-    )
-
-
-def model_body_invweight0_offset[
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-]() -> Int:
-    """Offset to body_invweight0[NBODY*2] in model buffer.
-
-    Appended after geoms/equality/tendons/sites section.
-    """
-    return model_size[NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE]()
-
-
-def model_dof_invweight0_offset[
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-]() -> Int:
-    """Offset to dof_invweight0[NV] in model buffer.
-
-    Appended after body_invweight0[NBODY*2].
-    """
-    return (
-        model_body_invweight0_offset[
-            NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE
-        ]()
-        + NBODY * 2
-    )
-
-
-def model_size_with_invweight[
-    NBODY: Int,
-    NJOINT: Int,
-    NV: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
-]() -> Int:
-    """Total model buffer size including invweight0, exclude pairs, and mesh hulls.
-
-    Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons | sites |
-             body_invweight0(NBODY*2) | dof_invweight0(NV) | excludes(NEXCLUDE*2) |
-             mesh_meta(MAX_GPU_MESHES*2) | mesh_verts(NMESH_VERTS*3)]
-    """
-    return (
-        model_dof_invweight0_offset[
-            NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE
-        ]()
-        + NV
-        + NEXCLUDE * 2
-        + MAX_GPU_MESHES * MODEL_MESH_META_SIZE
-        + NMESH_VERTS * 3
-    )
-
-
-# Exclude pair section: stored as [body1_0, body2_0, body1_1, body2_1, ...]
-# after dof_invweight0
 comptime MODEL_EXCLUDE_PAIR_SIZE: Int = 2  # body1, body2
-
-
-def model_exclude_offset[
-    NBODY: Int,
-    NJOINT: Int,
-    NV: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-]() -> Int:
-    """Offset to exclude pairs section in model buffer."""
-    return (
-        model_dof_invweight0_offset[
-            NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE
-        ]()
-        + NV
-    )
 
 
 # =============================================================================
@@ -709,44 +355,6 @@ def model_exclude_offset[
 comptime MAX_HULL_VERTS_PER_MESH: Int = 256
 comptime MAX_GPU_MESHES: Int = 16
 comptime MODEL_MESH_META_SIZE: Int = 2  # vertadr, vertnum per mesh
-
-
-def model_mesh_meta_offset[
-    NBODY: Int,
-    NJOINT: Int,
-    NV: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-]() -> Int:
-    """Offset to mesh metadata [vertadr, vertnum] * MAX_GPU_MESHES."""
-    return (
-        model_exclude_offset[
-            NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE
-        ]()
-        + NEXCLUDE * 2
-    )
-
-
-def model_mesh_vert_offset[
-    NBODY: Int,
-    NJOINT: Int,
-    NV: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-]() -> Int:
-    """Offset to mesh hull vertex data."""
-    return (
-        model_mesh_meta_offset[
-            NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE, NEXCLUDE
-        ]()
-        + MAX_GPU_MESHES * MODEL_MESH_META_SIZE
-    )
 
 
 # =============================================================================
@@ -763,89 +371,6 @@ def model_mesh_vert_offset[
 #    bias: NV | f_net: NV | qacc_ws: NV | qacc_constrained: NV]
 
 
-def integrator_workspace_size[NV: Int, NBODY: Int]() -> Int:
-    """Total integrator temporaries size per environment.
-
-    Layout: cdof(NV*6) | crb(NBODY*10) | M(NV*NV) | L(NV*NV) | D(NV) | bias(NV) |
-            fnet(NV) | qacc_ws(NV) | qacc_constrained(NV) |
-            rne_cacc(NBODY*6) | rne_cfrc(NBODY*6)
-    The two rne_* slots back the RNE forward-pass spatial accel + body force so
-    the cooperative (level/flat-parallel) RNE threads can share them (cvel reuses
-    the crb slot). Appended at the end so M_inv/solver/rk4-extra offsets — all
-    derived from this size — shift consistently.
-    """
-    return NV * 6 + NBODY * 10 + 2 * NV * NV + 5 * NV + 2 * NBODY * 6
-
-
-def ws_rne_cacc_offset[NV: Int, NBODY: Int]() -> Int:
-    """Offset to RNE spatial acceleration cacc (NBODY*6) in workspace buffer."""
-    return NV * 6 + NBODY * 10 + 2 * NV * NV + 5 * NV
-
-
-def ws_rne_cfrc_offset[NV: Int, NBODY: Int]() -> Int:
-    """Offset to RNE spatial body force cfrc (NBODY*6) in workspace buffer."""
-    return NV * 6 + NBODY * 10 + 2 * NV * NV + 5 * NV + NBODY * 6
-
-
-def ws_cdof_offset() -> Int:
-    """Offset to cdof (NV*6) in workspace buffer."""
-    return 0
-
-
-def ws_crb_offset[NV: Int]() -> Int:
-    """Offset to crb (NBODY*10) in workspace buffer."""
-    return NV * 6
-
-
-def ws_M_offset[NV: Int, NBODY: Int]() -> Int:
-    """Offset to mass matrix M (NV*NV) in workspace buffer."""
-    return NV * 6 + NBODY * 10
-
-
-def ws_L_offset[NV: Int, NBODY: Int]() -> Int:
-    """Offset to LDL factor L (NV*NV) in workspace buffer."""
-    return NV * 6 + NBODY * 10 + NV * NV
-
-
-def ws_D_offset[NV: Int, NBODY: Int]() -> Int:
-    """Offset to LDL factor D (NV) in workspace buffer."""
-    return NV * 6 + NBODY * 10 + 2 * NV * NV
-
-
-def ws_bias_offset[NV: Int, NBODY: Int]() -> Int:
-    """Offset to bias forces (NV) in workspace buffer."""
-    return NV * 6 + NBODY * 10 + 2 * NV * NV + NV
-
-
-def ws_fnet_offset[NV: Int, NBODY: Int]() -> Int:
-    """Offset to f_net (NV) in workspace buffer."""
-    return NV * 6 + NBODY * 10 + 2 * NV * NV + 2 * NV
-
-
-def ws_qacc_ws_offset[NV: Int, NBODY: Int]() -> Int:
-    """Offset to qacc workspace (NV) in workspace buffer."""
-    return NV * 6 + NBODY * 10 + 2 * NV * NV + 3 * NV
-
-
-def ws_qacc_constrained_offset[NV: Int, NBODY: Int]() -> Int:
-    """Offset to qacc_constrained (NV) in workspace buffer.
-
-    This slot stores the acceleration vector that the constraint solver
-    modifies in-place (acceleration-level solving).
-    """
-    return NV * 6 + NBODY * 10 + 2 * NV * NV + 4 * NV
-
-
-def ws_m_inv_offset[NV: Int, NBODY: Int]() -> Int:
-    """Offset to M_inv (NV*NV) in workspace buffer (after integrator temps)."""
-    return integrator_workspace_size[NV, NBODY]()
-
-
-def ws_solver_offset[NV: Int, NBODY: Int]() -> Int:
-    """Offset to solver workspace (after integrator temps + M_inv)."""
-    return integrator_workspace_size[NV, NBODY]() + NV * NV
-
-
 # =============================================================================
 # Implicit Integrator Extra Workspace
 # =============================================================================
@@ -860,143 +385,8 @@ def ws_solver_offset[NV: Int, NBODY: Int]() -> Int:
 #    Dcacc: NBODY*6*NV | Dcfrcbody: NBODY*6*NV]
 
 
-def implicit_extra_workspace_size[NV: Int, NBODY: Int]() -> Int:
-    """Total implicit-extra workspace size per environment."""
-    return (
-        NV * NV  # qDeriv
-        + NV * 6  # cdof_origin
-        + NBODY * 6  # cvel_origin
-        + NBODY * 10  # cinert
-        + NV * 6  # cdof_dot
-        + NBODY * 6 * NV  # Dcvel
-        + NV * 6 * NV  # Dcdofdot
-        + NBODY * 6 * NV  # Dcacc
-        + NBODY * 6 * NV  # Dcfrcbody
-    )
-
-
-def ws_implicit_qderiv_offset(base: Int) -> Int:
-    """Offset to qDeriv (NV*NV) within implicit extra workspace."""
-    return base
-
-
-def ws_implicit_cdof_origin_offset[NV: Int](base: Int) -> Int:
-    """Offset to cdof_sc (NV*6) within implicit extra workspace (subtree-COM).
-    """
-    return base + NV * NV
-
-
-def ws_implicit_cvel_origin_offset[NV: Int](base: Int) -> Int:
-    """Offset to cvel_sc (NBODY*6) within implicit extra workspace (subtree-COM).
-    """
-    return base + NV * NV + NV * 6
-
-
-def ws_implicit_cinert_offset[NV: Int, NBODY: Int](base: Int) -> Int:
-    """Offset to cinert (NBODY*10) within implicit extra workspace."""
-    return base + NV * NV + NV * 6 + NBODY * 6
-
-
-def ws_implicit_cdof_dot_offset[NV: Int, NBODY: Int](base: Int) -> Int:
-    """Offset to cdof_dot (NV*6) within implicit extra workspace."""
-    return base + NV * NV + NV * 6 + NBODY * 6 + NBODY * 10
-
-
-def ws_implicit_dcvel_offset[NV: Int, NBODY: Int](base: Int) -> Int:
-    """Offset to Dcvel (NBODY*6*NV) within implicit extra workspace."""
-    return base + NV * NV + NV * 6 + NBODY * 6 + NBODY * 10 + NV * 6
-
-
-def ws_implicit_dcdofdot_offset[NV: Int, NBODY: Int](base: Int) -> Int:
-    """Offset to Dcdofdot (NV*6*NV) within implicit extra workspace."""
-    return (
-        base
-        + NV * NV
-        + NV * 6
-        + NBODY * 6
-        + NBODY * 10
-        + NV * 6
-        + NBODY * 6 * NV
-    )
-
-
-def ws_implicit_dcacc_offset[NV: Int, NBODY: Int](base: Int) -> Int:
-    """Offset to Dcacc (NBODY*6*NV) within implicit extra workspace."""
-    return (
-        base
-        + NV * NV
-        + NV * 6
-        + NBODY * 6
-        + NBODY * 10
-        + NV * 6
-        + NBODY * 6 * NV
-        + NV * 6 * NV
-    )
-
-
-def ws_implicit_dcfrcbody_offset[NV: Int, NBODY: Int](base: Int) -> Int:
-    """Offset to Dcfrcbody (NBODY*6*NV) within implicit extra workspace."""
-    return (
-        base
-        + NV * NV
-        + NV * 6
-        + NBODY * 6
-        + NBODY * 10
-        + NV * 6
-        + NBODY * 6 * NV
-        + NV * 6 * NV
-        + NBODY * 6 * NV
-    )
-
-
-# =============================================================================
-# RK4 Integrator Extra Workspace
-# =============================================================================
-# Additional workspace for the RK4 integrator's 4-stage pipeline.
-# Placed AFTER solver workspace so existing offsets are unchanged.
-#
-# Layout within RK4 extra section:
-#   [q0: NQ | v0: NV | A0: NV | A1: NV | A2: NV | A3: NV | C1: NV | C2: NV]
-#
-# Total: NQ + 7*NV
-
-
 def rk4_extra_workspace_size[NQ: Int, NV: Int]() -> Int:
     """Total RK4-extra workspace size per environment."""
     return NQ + 7 * NV
 
 
-def ws_rk4_q0_offset[NV: Int, NBODY: Int](solver_ws_size: Int) -> Int:
-    """Offset to saved initial qpos (NQ) in RK4 workspace.
-
-    Placed after integrator_temps + M_inv + solver_ws.
-    """
-    return ws_solver_offset[NV, NBODY]() + solver_ws_size
-
-
-def ws_rk4_v0_offset[
-    NV: Int, NBODY: Int, NQ: Int
-](solver_ws_size: Int,) -> Int:
-    """Offset to saved initial qvel (NV) in RK4 workspace."""
-    return ws_rk4_q0_offset[NV, NBODY](solver_ws_size) + NQ
-
-
-def ws_rk4_A_offset[
-    NV: Int, NBODY: Int, NQ: Int
-](solver_ws_size: Int, stage: Int) -> Int:
-    """Offset to A[stage] (NV) in RK4 workspace. stage in [0,3]."""
-    return ws_rk4_v0_offset[NV, NBODY, NQ](solver_ws_size) + NV + stage * NV
-
-
-def ws_rk4_C1_offset[
-    NV: Int, NBODY: Int, NQ: Int
-](solver_ws_size: Int,) -> Int:
-    """Offset to C1 velocity intermediate (NV) in RK4 workspace."""
-    return ws_rk4_v0_offset[NV, NBODY, NQ](solver_ws_size) + NV + 4 * NV
-
-
-def ws_rk4_C2_offset[
-    NV: Int, NBODY: Int, NQ: Int
-](solver_ws_size: Int,) -> Int:
-    """Offset to C2 velocity intermediate (NV) in RK4 workspace."""
-    return ws_rk4_C1_offset[NV, NBODY, NQ](solver_ws_size) + NV

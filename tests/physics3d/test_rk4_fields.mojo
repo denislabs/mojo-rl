@@ -27,7 +27,6 @@ from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
 from mojo_rl.physics3d.gpu.constants import (
-    model_size_with_invweight,
     MODEL_JOINT_SIZE,
     JOINT_IDX_TYPE,
     JOINT_IDX_QPOS_ADR,
@@ -50,7 +49,6 @@ comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime BATCH = 3
 comptime N_STEPS = 3
-comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)

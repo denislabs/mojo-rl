@@ -43,7 +43,6 @@ from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
 from mojo_rl.physics3d.gpu.constants import (
-    model_size_with_invweight,
     MODEL_TENDON_SIZE,
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_NTENDON,
@@ -378,9 +377,6 @@ comptime MC_B = WeldTestModel.MAX_CONTACTS  # 8
 comptime NEQ_B = WeldTestModel.MAX_EQUALITY  # 6
 comptime CONE_B = WeldTestModel.CONE_TYPE
 comptime N_STEPS_B = 3
-comptime MS_B = model_size_with_invweight[
-    NBODY_B, NJOINT_B, NV_B, NGEOM_B, NEQ_B
-]()
 
 
 def _part_b_equality(ctx: DeviceContext) raises:

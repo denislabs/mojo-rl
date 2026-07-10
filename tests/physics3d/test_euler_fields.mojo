@@ -24,7 +24,6 @@ from std.sys import has_nvidia_gpu_accelerator
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
-from mojo_rl.physics3d.gpu.constants import model_size_with_invweight
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 
 comptime DTYPE = DType.float32
@@ -40,7 +39,6 @@ comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime BATCH = 3
 comptime N_STEPS = 3
-comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)

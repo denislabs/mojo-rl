@@ -42,7 +42,6 @@ from mojo_rl.physics3d.dynamics.mass_matrix_fields import (
 )
 from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
 from mojo_rl.physics3d.gpu.constants import (
-    model_size_with_invweight,
     META_IDX_NUM_CONTACTS,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
@@ -76,7 +75,6 @@ comptime W_NSITE = Walker2dModel.NSITE
 comptime W_NEXCL = Walker2dModel.NEXCLUDE
 comptime W_CONE = Walker2dModel.CONE_TYPE
 comptime W_BATCH = 2
-comptime W_MS = model_size_with_invweight[W_NBODY, W_NJOINT, W_NV, W_NGEOM]()
 
 # ── Ant dims (FREE joint: 6 DOF + 8 hinge) ─────────────────────────────────
 comptime A_NQ = AntModel.NQ  # 15
@@ -90,7 +88,6 @@ comptime A_NTD = AntModel.MAX_TENDON
 comptime A_NSITE = AntModel.NSITE
 comptime A_NEXCL = AntModel.NEXCLUDE
 comptime A_BATCH = 2
-comptime A_MS = model_size_with_invweight[A_NBODY, A_NJOINT, A_NV, A_NGEOM]()
 
 comptime METADATA_SIZE_L = 4
 

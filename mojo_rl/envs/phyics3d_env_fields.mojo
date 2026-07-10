@@ -43,7 +43,6 @@ from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
 from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
 from mojo_rl.physics3d.gpu.constants import (
-    model_size_with_invweight,
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
 )
@@ -82,15 +81,6 @@ struct Phyics3dEnvFields[
     comptime MAX_CONTACTS: Int = Self.MODEL_DEF.MAX_CONTACTS
     comptime NGEOM: Int = Self.MODEL_DEF.NGEOM
     comptime NSITE: Int = Self.MODEL_DEF.NSITE
-    comptime MS: Int = model_size_with_invweight[
-        Self.NBODY,
-        Self.NJOINT,
-        Self.NV,
-        Self.NGEOM,
-        NEQUALITY=Self.MODEL_DEF.MAX_EQUALITY,
-        NTENDON=Self.MODEL_DEF.MAX_TENDON,
-        NSITE=Self.NSITE,
-    ]()
 
     # Fields path (the physics state; hooks read/write it directly)
     var mf: ModelFields[

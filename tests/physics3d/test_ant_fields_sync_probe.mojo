@@ -26,7 +26,6 @@ from mojo_rl.physics3d.dynamics.cdof_fields import compute_cdof_fields
 from mojo_rl.physics3d.dynamics.mass_matrix_fields import (
     compute_mass_matrix_fields,
 )
-from mojo_rl.physics3d.gpu.constants import model_size_with_invweight
 from mojo_rl.envs.ant.ant_xml import AntModel
 
 comptime DTYPE = DType.float32  # match the gate (Metal is fragile on float64)
@@ -41,7 +40,6 @@ comptime NTD = AntModel.MAX_TENDON
 comptime NSITE = AntModel.NSITE
 comptime NEXCL = AntModel.NEXCLUDE
 comptime BATCH = 2
-comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 
 
 def main() raises:

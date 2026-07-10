@@ -38,7 +38,6 @@ from ..gpu.constants import (
     MODEL_SITE_SIZE,
     MODEL_MESH_META_SIZE,
     MAX_GPU_MESHES,
-    model_size_with_invweight,
 )
 
 @always_inline
@@ -64,17 +63,6 @@ struct ModelFields[
     """Static model config as one packed tensor per record family (13
     tensors). See module docstring."""
 
-    comptime MS = model_size_with_invweight[
-        Self.NBODY,
-        Self.NJOINT,
-        Self.NV,
-        Self.NGEOM,
-        Self.NEQUALITY,
-        Self.NTENDON,
-        Self.NSITE,
-        Self.NEXCLUDE,
-        Self.NMESH_VERTS,
-    ]()
 
     # Record view layouts ([N_ENTITY, RECORD_SIZE] row-major; tails 1-D).
     comptime L_BODY = Layout.row_major(Self.NBODY, MODEL_BODY_SIZE)

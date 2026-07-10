@@ -23,7 +23,6 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
 from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.gpu.constants import model_size_with_invweight
 from mojo_rl.envs.ant.ant_xml import AntModel
 
 comptime DTYPE = DType.float64
@@ -37,9 +36,6 @@ comptime NSITE = AntModel.NSITE
 comptime NEQ = AntModel.MAX_EQUALITY
 comptime NTEN = AntModel.MAX_TENDON
 comptime NEXCL = AntModel.NEXCLUDE
-comptime MS = model_size_with_invweight[
-    NBODY, NJOINT, NV, NGEOM, NEQ, NTEN, NSITE
-]()
 
 # Same budgets as the legacy free-joint gate.
 comptime QPOS_ABS_TOL_1: Float64 = 1e-4

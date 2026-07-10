@@ -39,7 +39,6 @@ from mojo_rl.physics3d.dynamics.rne_fields import (
 )
 from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
 from mojo_rl.physics3d.gpu.constants import (
-    model_size_with_invweight,
     META_IDX_NUM_CONTACTS,
     CONTACT_SIZE,
 )
@@ -61,7 +60,6 @@ comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime CONE = Walker2dModel.CONE_TYPE
 comptime BATCH = 2
-comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 
 # ── Humanoid dims (deep tree: NBODY=14) ────────────────────────────────────
 comptime H_NQ = HumanoidModel.NQ  # 24
@@ -75,9 +73,6 @@ comptime H_NTEN = HumanoidModel.MAX_TENDON  # 2
 comptime H_NSITE = HumanoidModel.NSITE  # 0
 comptime H_NEXCL = HumanoidModel.nexclude
 comptime H_BATCH = 2
-comptime H_MS = model_size_with_invweight[
-    H_NBODY, H_NJOINT, H_NV, H_NGEOM, H_NEQ, H_NTEN, H_NSITE, H_NEXCL
-]()
 
 comptime METADATA_SIZE_L = 4
 

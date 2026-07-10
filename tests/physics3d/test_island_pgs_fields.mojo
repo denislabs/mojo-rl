@@ -70,7 +70,6 @@ from mojo_rl.physics3d.solver.island_pgs_solve_fields import (
     solve_island_pgs_fields,
 )
 from mojo_rl.physics3d.gpu.constants import (
-    model_size_with_invweight,
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
     MODEL_JOINT_SIZE,
@@ -90,7 +89,6 @@ comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime CONE = ConeType.ELLIPTIC
 comptime BATCH = 2
-comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 
 
 def _fields_prep[

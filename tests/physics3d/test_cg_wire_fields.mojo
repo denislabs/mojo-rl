@@ -26,7 +26,6 @@ from mojo_rl.physics3d.integrator.implicit_fields import (
     ImplicitIntegratorFields,
 )
 from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
-from mojo_rl.physics3d.gpu.constants import model_size_with_invweight
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 
 comptime DT = DType.float32
@@ -42,7 +41,6 @@ comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime CONE = ConeType.ELLIPTIC
 comptime BATCH = 2
-comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 comptime N_STEPS = 3
 
 

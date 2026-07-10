@@ -25,7 +25,6 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
 from mojo_rl.physics3d.fields import DataFields, ModelFields
-from mojo_rl.physics3d.gpu.constants import model_size_with_invweight
 from mojo_rl.envs.phyics3d_obs_fields import extract_obs_qpos_qvel_fields
 from mojo_rl.envs.inverted_pendulum.inverted_pendulum_xml import (
     InvertedPendulumModel,
@@ -49,9 +48,6 @@ comptime FRAME_SKIP = 2
 comptime N_CTRL_STEPS = 60
 comptime GEAR: Float64 = 100.0
 comptime CTRL_MAX: Float64 = 3.0
-comptime MS = model_size_with_invweight[
-    NBODY, NJOINT, NV, NGEOM, NEQ, NTEN, NSITE
-]()
 
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)

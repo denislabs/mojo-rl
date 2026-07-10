@@ -26,27 +26,17 @@ from .hopper import Hopper
 from .curriculum import HopperCurriculum
 from .hopper_xml import HopperModel
 from .hopper_def import (
-    # Params struct (new name)
     HopperParams,
-    HopperParamsCPU,
-    HopperParamsGPU,
-    # Backward-compat aliases
-    HopperConstants,
-    HopperConstantsCPU,
-    HopperConstantsGPU,
-    # Body indices
     BODY_TORSO,
     BODY_THIGH,
     BODY_LEG,
     BODY_FOOT,
-    # Joint indices
     JOINT_ROOTX,
     JOINT_ROOTZ,
     JOINT_ROOTY,
     JOINT_THIGH,
     JOINT_LEG,
     JOINT_FOOT,
-    # Body geometry
     TORSO_RADIUS,
     TORSO_HALF_LENGTH,
     THIGH_RADIUS,
@@ -55,12 +45,10 @@ from .hopper_def import (
     LEG_HALF_LENGTH,
     FOOT_RADIUS,
     FOOT_HALF_LENGTH,
-    # Body masses
     TORSO_MASS,
     THIGH_MASS,
     LEG_MASS,
     FOOT_MASS,
-    # Dimensions
     NQ,
     NV,
     NBODY,
@@ -69,7 +57,6 @@ from .hopper_def import (
     OBS_DIM,
     ACTION_DIM,
     NUM_BODIES,
-    # Physics parameters
     DT,
     FRAME_SKIP,
     EFFECTIVE_DT,
@@ -77,14 +64,11 @@ from .hopper_def import (
     INITIAL_Z,
     FRICTION,
     RESTITUTION,
-    # Reward parameters
     FORWARD_REWARD_WEIGHT,
     CTRL_COST_WEIGHT,
     HEALTHY_REWARD,
-    # Reset
     RESET_NOISE_SCALE,
     TORQUE_LIMIT,
-    # Joint limits
     THIGH_JOINT_MIN,
     THIGH_JOINT_MAX,
     LEG_JOINT_MIN,

@@ -22,7 +22,6 @@ from mojo_rl.physics3d.collision.broadphase_sap_fields import (
 )
 from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
 from mojo_rl.physics3d.gpu.constants import (
-    model_size_with_invweight,
     META_IDX_NUM_CONTACTS,
 )
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
@@ -40,9 +39,6 @@ comptime NEXCL = HumanoidModel.nexclude  # 0
 comptime CONE = HumanoidModel.CONE_TYPE
 comptime MC = HumanoidModel.MAX_CONTACTS  # 50
 comptime BATCH = 2
-comptime MS = model_size_with_invweight[
-    NBODY, NJOINT, NV, NGEOM, NEQUALITY=NEQ, NTENDON=NTEN, NSITE=NSITE
-]()
 
 
 def main() raises:

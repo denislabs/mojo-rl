@@ -34,7 +34,6 @@ from mojo_rl.physics3d.dynamics.cdof_fields import compute_cdof_fields
 from mojo_rl.physics3d.dynamics.fluid_forces_fields import (
     compute_fluid_forces_fields,
 )
-from mojo_rl.physics3d.gpu.constants import model_size_with_invweight
 from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
 
 comptime DT = DType.float32
@@ -50,7 +49,6 @@ comptime NSITE = SwimmerModel.NSITE
 comptime NEXCL = SwimmerModel.NEXCLUDE
 comptime CONE = SwimmerModel.CONE_TYPE
 comptime BATCH = 1
-comptime MS = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 
 
 def _qvel(i: Int) -> Scalar[DT]:
