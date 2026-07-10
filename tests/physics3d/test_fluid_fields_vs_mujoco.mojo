@@ -1,18 +1,13 @@
-"""Stage-A gate: fields inertia-box fluid forces (compute_fluid_forces_fields)
-vs the legacy compute_fluid_forces, ELLIPTIC, on Swimmer (density=4000,
-viscosity=0.1 — the only env with fluid enabled).
+"""Fluid-forces fields gate (compute_fluid_forces_fields) on Swimmer
+(density=4000, viscosity=0.1 — the only env with fluid enabled).
 
-Bit-exact strategy (like test_qderiv_fields): run the fields kinematics chain
-(FK → body velocities → subtree_com → cdof) to populate xvel/xangvel/xquat/
-xipos/subtree_com/cdof, then feed those SAME values into both the fields fluid
-routine (into a zeroed scratch.fnet) and the legacy compute_fluid_forces (into
-a zeroed f_net List, with the identical model). Identical inputs + verbatim
-arithmetic ⇒ the two accumulations match to FP roundoff.
-
-Checks:
-  * Part A: fields-GPU fluid fnet == legacy compute_fluid_forces (tight),
-  * Part B: fields-CPU fluid fnet == fields-GPU (single-source),
-  * fluid is non-trivial (max |fnet| well above zero — Swimmer swims).
+The legacy `compute_fluid_forces` reference was deleted at the G4 fields
+sunset — this gate was bit-exact vs legacy when both existed (Stage A), so the
+fields routine is its own ground truth now. Run the fields kinematics chain
+(FK → body velocities → subtree_com → cdof) to populate the fluid inputs, then:
+  * Part A: fields-GPU fluid fnet is NON-VACUOUS (max |fnet| well above zero —
+    Swimmer swims),
+  * Part B: fields-CPU fluid fnet == fields-GPU (single-source).
 
 Run: pixi run -e apple mojo run -I . tests/physics3d/test_fluid_fields_vs_mujoco.mojo
 """
@@ -28,7 +23,6 @@ from mojo_rl.physics3d.fields import (
     ModelFields,
     DynamicsScratch,
 )
-from mojo_rl.physics3d.types import Model, Data, ConeType
 from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
     forward_kinematics_fields,
     compute_body_velocities_fields,
@@ -40,7 +34,6 @@ from mojo_rl.physics3d.dynamics.cdof_fields import compute_cdof_fields
 from mojo_rl.physics3d.dynamics.fluid_forces_fields import (
     compute_fluid_forces_fields,
 )
-from mojo_rl.physics3d.dynamics.fluid_forces import compute_fluid_forces
 from mojo_rl.physics3d.gpu.constants import model_size_with_invweight
 from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
 
@@ -118,47 +111,18 @@ def main() raises:
     for i in range(NV):
         f_gpu[i] = scratch.fnet.data[i]
 
-    # === Legacy reference: same inputs, zeroed f_net ===
-    var model = Model[DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, CONE, NTD, NSITE]()
-    var ldata = Data[DT, NQ, NV, NBODY, NJOINT, MC, NSITE]()
-    SwimmerModel.setup_model_and_data[DT](model, ldata)
-    for b in range(NBODY):
-        for k in range(3):
-            ldata.xvel[b * 3 + k] = d.xvel.data[b * 3 + k]
-            ldata.xangvel[b * 3 + k] = d.xangvel.data[b * 3 + k]
-            ldata.xipos[b * 3 + k] = d.xipos.data[b * 3 + k]
-            ldata.subtree_com[b * 3 + k] = d.subtree_com.data[b * 3 + k]
-        for k in range(4):
-            ldata.xquat[b * 4 + k] = d.xquat.data[b * 4 + k]
-    ldata.has_subtree_com = True
-
-    var cdof_list = List[Scalar[DT]](length=NV * 6, fill=0)
-    for i in range(NV * 6):
-        cdof_list[i] = scratch.cdof.data[i]
-
-    var f_leg = List[Scalar[DT]](length=NV, fill=0)
-    compute_fluid_forces[
-        DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, CONE, NTD, NSITE,
-    ](model, ldata, cdof_list, f_leg)
-
-    # === Compare ===
-    var worst = Float64(0)
+    # === Part A: non-vacuous (Swimmer fluid actually produces forces) ===
+    # (Was a bit-exact A/B vs the legacy compute_fluid_forces before its G4
+    # deletion — the routines matched to FP roundoff while both existed.)
     var max_mag = Float64(0)
     for i in range(NV):
         var g = Float64(f_gpu[i])
-        var l = Float64(f_leg[i])
-        if abs(l) > max_mag:
-            max_mag = abs(l)
-        var e = abs(g - l) / (1.0 + abs(l))
-        if e > worst:
-            worst = e
-    print("  max |legacy fluid fnet|:", max_mag)
-    print("  fields-GPU vs legacy fluid fnet worst rel err:", worst)
+        if abs(g) > max_mag:
+            max_mag = abs(g)
+    print("  max |fields fluid fnet|:", max_mag)
     if max_mag < 1e-6:
         raise Error("fluid force is ~0 — Swimmer fluid not active / vacuous")
-    if worst > 1e-4 and not has_nvidia_gpu_accelerator():
-        raise Error("fields fluid diverges from legacy compute_fluid_forces")
-    print("  Part A PASS: fields-GPU fluid == legacy")
+    print("  Part A PASS: fields-GPU fluid non-vacuous")
 
     # === Part B: fields-CPU vs fields-GPU ===
     for i in range(NV):

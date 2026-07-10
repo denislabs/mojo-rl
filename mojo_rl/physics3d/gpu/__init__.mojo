@@ -70,17 +70,6 @@ from .constants import (
     qfrc_actuator_offset,
 )
 
-# Buffer utilities
-from .buffer_utils import (
-    create_state_buffer,
-    create_model_buffer,
-    copy_model_to_buffer,
-    copy_geoms_to_buffer,
-    copy_data_to_buffer,
-    copy_buffer_to_data,
-)
-
-
 # GPU kernels colocated with CPU implementations
 from ..kinematics.quat_math import (
     gpu_quat_mul,
@@ -92,7 +81,6 @@ from ..kinematics.forward_kinematics import (
     forward_kinematics_gpu,
     compute_body_velocities_gpu,
 )
-from ..dynamics.bias_forces import compute_bias_forces_gpu
 # Legacy GPU mass_matrix/jacobian (CRBA/LDL) deleted at the fields sunset.
 
 # Phase-2 post-substep GPU kernels

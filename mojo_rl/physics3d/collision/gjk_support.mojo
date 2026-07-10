@@ -223,3 +223,310 @@ def support_mesh[
     result[1] = pos_y + local_pt[1]
     result[2] = pos_z + local_pt[2]
     return result
+
+
+@always_inline
+def _dot3[
+    DTYPE: DType
+](
+    ax: Scalar[DTYPE],
+    ay: Scalar[DTYPE],
+    az: Scalar[DTYPE],
+    bx: Scalar[DTYPE],
+    by: Scalar[DTYPE],
+    bz: Scalar[DTYPE],
+) -> Scalar[DTYPE]:
+    return ax * bx + ay * by + az * bz
+
+
+@always_inline
+def _cross3[
+    DTYPE: DType
+](
+    ax: Scalar[DTYPE],
+    ay: Scalar[DTYPE],
+    az: Scalar[DTYPE],
+    bx: Scalar[DTYPE],
+    by: Scalar[DTYPE],
+    bz: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    return (ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx)
+
+
+def _closest_point_on_simplex[
+    DTYPE: DType
+](
+    mut simplex: InlineArray[Scalar[DTYPE], 36],
+    nsimplex: Int,
+) -> InlineArray[
+    Scalar[DTYPE], 4
+]:
+    """Find closest point on simplex to origin and reduce simplex.
+
+    Returns [vx, vy, vz, new_nsimplex].
+    Removes vertices that don't contribute to the closest feature.
+    """
+    var result = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+
+    if nsimplex == 1:
+        result[0] = simplex[0]
+        result[1] = simplex[1]
+        result[2] = simplex[2]
+        result[3] = Scalar[DTYPE](1)
+        return result
+
+    if nsimplex == 2:
+        # Line segment: project origin onto segment A→B
+        var ax = simplex[0]
+        var ay = simplex[1]
+        var az = simplex[2]
+        var bx = simplex[9]
+        var by = simplex[10]
+        var bz = simplex[11]
+        var abx = bx - ax
+        var aby = by - ay
+        var abz = bz - az
+        var t = -(ax * abx + ay * aby + az * abz) / (
+            abx * abx + aby * aby + abz * abz + Scalar[DTYPE](1e-30)
+        )
+        if t <= Scalar[DTYPE](0):
+            result[0] = ax
+            result[1] = ay
+            result[2] = az
+            result[3] = Scalar[DTYPE](1)
+            return result
+        elif t >= Scalar[DTYPE](1):
+            # Keep only B
+            for k in range(9):
+                simplex[k] = simplex[9 + k]
+            result[0] = bx
+            result[1] = by
+            result[2] = bz
+            result[3] = Scalar[DTYPE](1)
+            return result
+        else:
+            result[0] = ax + t * abx
+            result[1] = ay + t * aby
+            result[2] = az + t * abz
+            result[3] = Scalar[DTYPE](2)
+            return result
+
+    if nsimplex == 3:
+        # Triangle: find closest point to origin using Voronoi regions
+        var ax = simplex[0]
+        var ay = simplex[1]
+        var az = simplex[2]
+        var bx = simplex[9]
+        var by = simplex[10]
+        var bz = simplex[11]
+        var cx = simplex[18]
+        var cy = simplex[19]
+        var cz = simplex[20]
+
+        var abx = bx - ax
+        var aby = by - ay
+        var abz = bz - az
+        var acx = cx - ax
+        var acy = cy - ay
+        var acz = cz - az
+
+        # Barycentric coordinates of origin projection onto triangle plane
+        # Using the method from Real-Time Collision Detection (Ericson)
+        var d1 = _dot3[DTYPE](abx, aby, abz, -ax, -ay, -az)
+        var d2 = _dot3[DTYPE](acx, acy, acz, -ax, -ay, -az)
+        var d3 = _dot3[DTYPE](abx, aby, abz, -bx, -by, -bz)
+        var d4 = _dot3[DTYPE](acx, acy, acz, -bx, -by, -bz)
+        var d5 = _dot3[DTYPE](abx, aby, abz, -cx, -cy, -cz)
+        var d6 = _dot3[DTYPE](acx, acy, acz, -cx, -cy, -cz)
+
+        # Vertex region A
+        if d1 <= 0 and d2 <= 0:
+            result[0] = ax
+            result[1] = ay
+            result[2] = az
+            # Keep only vertex A
+            result[3] = Scalar[DTYPE](1)
+            return result
+
+        # Vertex region B
+        if d3 >= 0 and d4 <= d3:
+            # Keep only vertex B
+            for k in range(9):
+                simplex[k] = simplex[9 + k]
+            result[0] = bx
+            result[1] = by
+            result[2] = bz
+            result[3] = Scalar[DTYPE](1)
+            return result
+
+        # Edge region AB
+        var vc = d1 * d4 - d3 * d2
+        if vc <= 0 and d1 >= 0 and d3 <= 0:
+            var v = d1 / (d1 - d3)
+            result[0] = ax + v * abx
+            result[1] = ay + v * aby
+            result[2] = az + v * abz
+            # Keep A and B (simplex[0] and simplex[9])
+            result[3] = Scalar[DTYPE](2)
+            return result
+
+        # Vertex region C
+        if d6 >= 0 and d5 <= d6:
+            # Keep only vertex C
+            for k in range(9):
+                simplex[k] = simplex[18 + k]
+            result[0] = cx
+            result[1] = cy
+            result[2] = cz
+            result[3] = Scalar[DTYPE](1)
+            return result
+
+        # Edge region AC
+        var vb = d5 * d2 - d1 * d6
+        if vb <= 0 and d2 >= 0 and d6 <= 0:
+            var w = d2 / (d2 - d6)
+            result[0] = ax + w * acx
+            result[1] = ay + w * acy
+            result[2] = az + w * acz
+            # Keep A and C: move C to slot 1
+            for k in range(9):
+                simplex[9 + k] = simplex[18 + k]
+            result[3] = Scalar[DTYPE](2)
+            return result
+
+        # Edge region BC
+        var va = d3 * d6 - d5 * d4
+        if va <= 0 and (d4 - d3) >= 0 and (d5 - d6) >= 0:
+            var w = (d4 - d3) / ((d4 - d3) + (d5 - d6))
+            var bcx = cx - bx
+            var bcy = cy - by
+            var bcz = cz - bz
+            result[0] = bx + w * bcx
+            result[1] = by + w * bcy
+            result[2] = bz + w * bcz
+            # Keep B and C: move B to slot 0, C to slot 1
+            for k in range(9):
+                simplex[k] = simplex[9 + k]
+                simplex[9 + k] = simplex[18 + k]
+            result[3] = Scalar[DTYPE](2)
+            return result
+
+        # Inside triangle: project origin onto plane
+        var denom = va + vb + vc
+        if denom < Scalar[DTYPE](1e-30):
+            result[0] = ax
+            result[1] = ay
+            result[2] = az
+            result[3] = Scalar[DTYPE](1)
+            return result
+        var v = vb / denom
+        var w = vc / denom
+        result[0] = ax + abx * v + acx * w
+        result[1] = ay + aby * v + acy * w
+        result[2] = az + abz * v + acz * w
+        result[3] = Scalar[DTYPE](3)
+        return result
+
+    # nsimplex == 4: tetrahedron — check if origin is inside or find closest face
+    # For each of the 4 faces, check if origin is on the outside
+    # Face normals point outward (away from the opposite vertex)
+    # Face ABC: normal = (B-A)×(C-A), check sign of dot(normal, D-A)
+    # If dot(normal, -A) has OPPOSITE sign to dot(normal, D-A), origin is outside this face
+
+    # Face indices: (A,B,C, opposite D), (A,C,D, opposite B), (A,D,B, opposite C), (B,D,C, opposite A)
+    var face_v = InlineArray[Int, 16](fill=0)
+    face_v[0] = 0
+    face_v[1] = 9
+    face_v[2] = 18
+    face_v[3] = 27  # ABC, opp D
+    face_v[4] = 0
+    face_v[5] = 18
+    face_v[6] = 27
+    face_v[7] = 9   # ACD, opp B
+    face_v[8] = 0
+    face_v[9] = 27
+    face_v[10] = 9
+    face_v[11] = 18  # ADB, opp C
+    face_v[12] = 9
+    face_v[13] = 27
+    face_v[14] = 18
+    face_v[15] = 0   # BDC, opp A
+
+    var best_dist_sq: Scalar[DTYPE] = 1e30
+    var best_face = -1
+    var best_vx: Scalar[DTYPE] = 0
+    var best_vy: Scalar[DTYPE] = 0
+    var best_vz: Scalar[DTYPE] = 0
+
+    for f in range(4):
+        var i0 = face_v[f * 4 + 0]
+        var i1 = face_v[f * 4 + 1]
+        var i2 = face_v[f * 4 + 2]
+        var io = face_v[f * 4 + 3]  # opposite vertex
+
+        var f0x = simplex[i0]
+        var f0y = simplex[i0 + 1]
+        var f0z = simplex[i0 + 2]
+        var f1x = simplex[i1]
+        var f1y = simplex[i1 + 1]
+        var f1z = simplex[i1 + 2]
+        var f2x = simplex[i2]
+        var f2y = simplex[i2 + 1]
+        var f2z = simplex[i2 + 2]
+        var fox = simplex[io]
+        var foy = simplex[io + 1]
+        var foz = simplex[io + 2]
+
+        # Face normal
+        var e1x = f1x - f0x
+        var e1y = f1y - f0y
+        var e1z = f1z - f0z
+        var e2x = f2x - f0x
+        var e2y = f2y - f0y
+        var e2z = f2z - f0z
+        var face_n = _cross3[DTYPE](e1x, e1y, e1z, e2x, e2y, e2z)
+
+        # Sign check: is origin on the same side as the opposite vertex?
+        var dot_opp = _dot3[DTYPE](face_n[0], face_n[1], face_n[2], fox - f0x, foy - f0y, foz - f0z)
+        var dot_origin = _dot3[DTYPE](face_n[0], face_n[1], face_n[2], -f0x, -f0y, -f0z)
+
+        if dot_opp * dot_origin < 0:
+            # Origin is OUTSIDE this face — closest point is on this triangle
+            # Project origin onto this face plane
+            var n_dot_n = face_n[0] * face_n[0] + face_n[1] * face_n[1] + face_n[2] * face_n[2]
+            if n_dot_n > Scalar[DTYPE](1e-30):
+                var d = _dot3[DTYPE](f0x, f0y, f0z, face_n[0], face_n[1], face_n[2]) / n_dot_n
+                var proj_x = -d * face_n[0]
+                var proj_y = -d * face_n[1]
+                var proj_z = -d * face_n[2]
+                var d_sq = proj_x * proj_x + proj_y * proj_y + proj_z * proj_z
+                if d_sq < best_dist_sq:
+                    best_dist_sq = d_sq
+                    best_face = f
+                    best_vx = proj_x
+                    best_vy = proj_y
+                    best_vz = proj_z
+
+    if best_face >= 0:
+        # Origin is outside at least one face — reduce to that triangle
+        var i0 = face_v[best_face * 4 + 0]
+        var i1 = face_v[best_face * 4 + 1]
+        var i2 = face_v[best_face * 4 + 2]
+        for k in range(9):
+            simplex[k] = simplex[i0 + k]
+        for k in range(9):
+            simplex[9 + k] = simplex[i1 + k]
+        for k in range(9):
+            simplex[18 + k] = simplex[i2 + k]
+        result[0] = best_vx
+        result[1] = best_vy
+        result[2] = best_vz
+        result[3] = Scalar[DTYPE](3)
+        return result
+
+    # Origin is inside all faces — truly inside tetrahedron
+    result[0] = Scalar[DTYPE](0)
+    result[1] = Scalar[DTYPE](0)
+    result[2] = Scalar[DTYPE](0)
+    result[3] = Scalar[DTYPE](4)
+    return result

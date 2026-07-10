@@ -68,14 +68,6 @@ from mojo_rl.physics3d.gpu.constants import (
     xpos_offset,
     xquat_offset,
 )
-from mojo_rl.physics3d.gpu.buffer_utils import (
-    copy_model_to_buffer,
-    copy_geoms_to_buffer,
-    copy_invweight0_to_buffer,
-    copy_tendons_to_buffer,
-    copy_equality_to_buffer,
-    copy_mesh_hull_to_buffer,
-)
 from mojo_rl.physics3d.fields import ModelFields, DataFields
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from .full_parser import parse_xml_full

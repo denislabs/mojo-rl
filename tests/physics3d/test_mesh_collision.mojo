@@ -1,12 +1,19 @@
-"""Test: Mesh collision accuracy via GJK/EPA.
+"""Test: Mesh collision accuracy via GJK/EPA (fields path).
 
 Tests the GJK/EPA collision between a mesh geom and a box geom to verify
 correct distance computation. Isolates the bug where GJK reports deep
 penetration for clearly separated shapes.
+
+G4: ported from the legacy `gjk.gjk_epa` (List-based mesh verts) to
+`gjk_fields.gjk_epa_fields` (shared `[NMESH_VERTS, 3]` LayoutTensor + vert-adr
+offsets — the production signature used by contact_detection_fields /
+broadphase_sap_fields).
 """
 
 from std.math import sqrt
-from mojo_rl.physics3d.collision.gjk import gjk_epa
+from layout import Layout, LayoutTensor
+from mojo_rl.nn.core.tensor import TensorImpl
+from mojo_rl.physics3d.collision.gjk_fields import gjk_epa_fields
 from mojo_rl.physics3d.collision.gjk_support import (
     support_sphere,
     support_box,
@@ -14,24 +21,35 @@ from mojo_rl.physics3d.collision.gjk_support import (
 )
 from mojo_rl.physics3d.constants import GEOM_SPHERE, GEOM_BOX, GEOM_MESH
 
+comptime NMV = 8
+comptime L_MV = Layout.row_major(NMV, 3)
+
+
+def _mv_tensor(verts: List[Float64]) raises -> TensorImpl[DType.float64]:
+    """Pack a flat xyz vert List into the shared [NMV, 3] mesh-verts tensor."""
+    var t = TensorImpl[DType.float64].alloc(NMV * 3)
+    for i in range(min(len(verts), NMV * 3)):
+        t.data[i] = verts[i]
+    return t^
+
 
 def test_box_box_separated() raises:
     """Two boxes clearly separated — should report positive distance."""
     print("=== Test: box-box separated ===")
-    var empty = List[Float64]()
-    var result = gjk_epa[DType.float64](
+    var mv = _mv_tensor(List[Float64]())
+    var result = gjk_epa_fields[DType.float64, NMV](
         GEOM_BOX,
         0.0, 0.0, 2.0,  # box1 at z=2
         0.0, 0.0, 0.0, 1.0,  # identity quat
         0.0, 0.0,  # radius, half_length (unused for box)
         0.5, 0.5, 0.5,  # half-extents
-        empty, 0, 0,
+        mv.lt["cpu", L_MV](), 0, 0,
         GEOM_BOX,
         0.0, 0.0, 0.0,  # box2 at origin
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.5, 0.5, 0.5,
-        empty, 0, 0,
+        0, 0,
     )
     print("  dist=", Float64(result[0]), "(expected ~1.0)")
     if result[0] < 0:
@@ -43,20 +61,20 @@ def test_box_box_separated() raises:
 def test_box_box_overlapping() raises:
     """Two overlapping boxes — should report negative distance."""
     print("=== Test: box-box overlapping ===")
-    var empty = List[Float64]()
-    var result = gjk_epa[DType.float64](
+    var mv = _mv_tensor(List[Float64]())
+    var result = gjk_epa_fields[DType.float64, NMV](
         GEOM_BOX,
         0.0, 0.0, 0.3,  # box1 at z=0.3
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.5, 0.5, 0.5,
-        empty, 0, 0,
+        mv.lt["cpu", L_MV](), 0, 0,
         GEOM_BOX,
         0.0, 0.0, 0.0,  # box2 at origin
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.5, 0.5, 0.5,
-        empty, 0, 0,
+        0, 0,
     )
     print("  dist=", Float64(result[0]), "(expected ~-0.7)")
     if result[0] >= 0:
@@ -78,20 +96,20 @@ def test_sphere_mesh_separated() raises:
                 cube_verts.append(Float64(sy) - 0.5)  # y: -0.5 to 0.5
                 cube_verts.append(Float64(sz) - 0.5)  # z: -0.5 to 0.5
 
-    var empty = List[Float64]()
-    var result = gjk_epa[DType.float64](
+    var mv = _mv_tensor(cube_verts)
+    var result = gjk_epa_fields[DType.float64, NMV](
         GEOM_SPHERE,
         0.0, 0.0, 3.0,  # sphere at z=3
         0.0, 0.0, 0.0, 1.0,
         0.1, 0.0,  # radius=0.1
         0.0, 0.0, 0.0,
-        empty, 0, 0,
+        mv.lt["cpu", L_MV](), 0, 0,
         GEOM_MESH,
         0.0, 0.0, 0.0,  # mesh at origin
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.0, 0.0, 0.0,
-        cube_verts, 0, 8,
+        0, 8,
     )
     print("  dist=", Float64(result[0]), "(expected ~2.4)")
     if result[0] < 0:
@@ -114,22 +132,22 @@ def test_mesh_box_sawyer_case() raises:
                 mesh_verts.append((Float64(sy) - 0.5) * 0.06)
                 mesh_verts.append((Float64(sz) - 0.5) * 0.06)
 
-    var empty = List[Float64]()
+    var mv = _mv_tensor(mesh_verts)
     # Mesh geom: body_pos = (0, 0.6, 0.2), geom_local_offset = (0, 0, 0.03)
     # World pos ≈ (0, 0.6, 0.23)
-    var result = gjk_epa[DType.float64](
+    var result = gjk_epa_fields[DType.float64, NMV](
         GEOM_MESH,
         0.0, 0.6, 0.23,  # mesh world pos
         0.0, 0.0, 0.0, 1.0,  # identity quat
         0.0, 0.0,
         0.0, 0.0, 0.0,
-        mesh_verts, 0, 8,
+        mv.lt["cpu", L_MV](), 0, 8,
         GEOM_BOX,
         0.0, 0.6, -0.46,  # table box center
         0.0, 0.0, 0.0, 1.0,  # identity quat
         0.0, 0.0,
         0.7, 0.4, 0.46,  # half-extents
-        empty, 0, 0,
+        0, 0,
     )
     print("  dist=", Float64(result[0]),
           "contact_z=", Float64(result[3]),
@@ -156,21 +174,21 @@ def test_mesh_box_touching() raises:
                 mesh_verts.append((Float64(sy) - 0.5) * 0.04)
                 mesh_verts.append((Float64(sz) - 0.5) * 0.04)
 
-    var empty = List[Float64]()
+    var mv = _mv_tensor(mesh_verts)
     # Mesh at z=0.02 (bottom at z=0.0 = box top)
-    var result = gjk_epa[DType.float64](
+    var result = gjk_epa_fields[DType.float64, NMV](
         GEOM_MESH,
         0.0, 0.0, 0.02,  # mesh at z=0.02
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.0, 0.0, 0.0,
-        mesh_verts, 0, 8,
+        mv.lt["cpu", L_MV](), 0, 8,
         GEOM_BOX,
         0.0, 0.0, -0.5,  # box center at z=-0.5, half_z=0.5 → top at z=0.0
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         1.0, 1.0, 0.5,
-        empty, 0, 0,
+        0, 0,
     )
     print("  dist=", Float64(result[0]), "(expected ~0.0)")
     if result[0] < -0.01:
@@ -193,22 +211,22 @@ def test_mesh_box_rotated() raises:
                 mesh_verts.append((Float64(sy) - 0.5) * 0.06)
                 mesh_verts.append((Float64(sz) - 0.5) * 0.06)
 
-    var empty = List[Float64]()
+    var mv = _mv_tensor(mesh_verts)
     # Mesh at z=0.23 with 90° rotation (quat = [0.707, 0, 0, 0.707])
     var sq2 = 0.7071067811865476
-    var result = gjk_epa[DType.float64](
+    var result = gjk_epa_fields[DType.float64, NMV](
         GEOM_MESH,
         0.0, 0.6, 0.23,
         sq2, 0.0, 0.0, sq2,  # 90° rotation around X
         0.0, 0.0,
         0.0, 0.0, 0.0,
-        mesh_verts, 0, 8,
+        mv.lt["cpu", L_MV](), 0, 8,
         GEOM_BOX,
         0.0, 0.6, -0.46,
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.7, 0.4, 0.46,
-        empty, 0, 0,
+        0, 0,
     )
     print("  dist=", Float64(result[0]),
           "(expected ~0.2, mesh at z=0.23±0.03, box top at z=0.0)")
@@ -231,21 +249,21 @@ def test_mesh_box_asymmetric() raises:
                 mesh_verts.append((Float64(sy) - 0.5) * 0.03)
                 mesh_verts.append((Float64(sz) - 0.5) * 0.05)
 
-    var empty = List[Float64]()
+    var mv = _mv_tensor(mesh_verts)
     # Very large box (table: 1.4m × 0.8m × 0.92m)
-    var result = gjk_epa[DType.float64](
+    var result = gjk_epa_fields[DType.float64, NMV](
         GEOM_MESH,
         0.0, 0.6, 0.23,
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.0, 0.0, 0.0,
-        mesh_verts, 0, 8,
+        mv.lt["cpu", L_MV](), 0, 8,
         GEOM_BOX,
         0.0, 0.6, -0.46,
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.7, 0.4, 0.46,
-        empty, 0, 0,
+        0, 0,
     )
     print("  dist=", Float64(result[0]),
           "(expected ~0.205)")
@@ -271,26 +289,26 @@ def test_mesh_box_actual_sawyer() raises:
                 mesh_verts.append(ys[yi])
                 mesh_verts.append(zs[zi])
 
-    var empty = List[Float64]()
+    var mv = _mv_tensor(mesh_verts)
     # Body 23 at (0, 0.6, 0.2), quat (0.707, 0, 0, 0.707)
     # Geom local offset (0, 0, 0.03) → world pos via quat_rotate + body_pos
     # With 90° X rotation: local (0,0,0.03) → world (0, -0.03, 0) + body → (0, 0.57, 0.2)
     # But _geom_world_pos also composes quaternions...
     # Let me use the approximate world position
     var sq2 = 0.7071067811865476
-    var result = gjk_epa[DType.float64](
+    var result = gjk_epa_fields[DType.float64, NMV](
         GEOM_MESH,
         0.0, 0.57, 0.2,  # approximate world pos after rotation
         sq2, 0.0, 0.0, sq2,  # body 23 quat: 90° around X
         0.0, 0.0,
         0.0, 0.0, 0.0,
-        mesh_verts, 0, 8,
+        mv.lt["cpu", L_MV](), 0, 8,
         GEOM_BOX,
         0.0, 0.6, -0.46,  # table collision box
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.7, 0.4, 0.46,  # table half-extents
-        empty, 0, 0,
+        0, 0,
     )
     # After 90° X rotation: mesh local z becomes world y, local y becomes world -z
     # Hull z-range [-0.003, 0.051] → world y offset
@@ -314,7 +332,6 @@ def test_mesh_box_actual_sawyer() raises:
 def test_support_with_180_quat() raises:
     """Test mesh support with near-180° quaternion."""
     print("=== Test: mesh support with 180° quat ===")
-    from mojo_rl.physics3d.collision.gjk_support import support_mesh
     var mesh_verts = List[Float64]()
     var xs = [-0.024, 0.042]
     var ys = [-0.053, 0.053]
@@ -352,7 +369,6 @@ def test_support_with_180_quat() raises:
     print("  support(+Z) =", Float64(s2[0]), Float64(s2[1]), Float64(s2[2]))
 
     # Test box support for table along +Z (should be table top at z=0.0)
-    from mojo_rl.physics3d.collision.gjk_support import support_box
     var b = support_box[DType.float64](
         0.0, 0.0, 1.0,
         0.0, 0.6, -0.46,
@@ -378,7 +394,7 @@ def test_exact_sawyer_runtime() raises:
                 mesh_verts.append(ys[yi])
                 mesh_verts.append(zs[zi])
 
-    var empty = List[Float64]()
+    var mv = _mv_tensor(mesh_verts)
 
     # Body 23 runtime values:
     # xpos: (0.0053, 0.6013, 0.3151)
@@ -397,19 +413,19 @@ def test_exact_sawyer_runtime() raises:
     print("  mesh world pos:", wx, wy, wz)
     print("  mesh world quat:", bqx, bqy, bqz, bqw)
 
-    var result = gjk_epa[DType.float64](
+    var result = gjk_epa_fields[DType.float64, NMV](
         GEOM_MESH,
         wx, wy, wz,
         bqx, bqy, bqz, bqw,
         0.0, 0.0,
         0.0, 0.0, 0.0,
-        mesh_verts, 0, 8,
+        mv.lt["cpu", L_MV](), 0, 8,
         GEOM_BOX,
         0.0, 0.6, -0.46,  # table collision box
         0.0, 0.0, 0.0, 1.0,
         0.0, 0.0,
         0.7, 0.4, 0.46,  # table half-extents
-        empty, 0, 0,
+        0, 0,
     )
     print("  dist=", Float64(result[0]),
           "normal=", Float64(result[4]), Float64(result[5]), Float64(result[6]))

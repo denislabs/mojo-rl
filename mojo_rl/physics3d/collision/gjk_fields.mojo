@@ -10,7 +10,7 @@ vertex START index (`vert_adr`, MuJoCo `mesh_vertadr`) so reads become
 
 from std.math import sqrt, abs
 from layout import Layout, LayoutTensor
-from .gjk import _closest_point_on_simplex
+from .gjk_support import _closest_point_on_simplex
 from .gjk_support import (
     support_sphere,
     support_capsule,
