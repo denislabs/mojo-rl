@@ -1,13 +1,13 @@
-"""Stage-I gate: dense LU factor/solve over per-field tensors (lu_fields)
-bit-exact vs the legacy `lu_factor`/`lu_solve`/`compute_M_inv_from_lu`.
+"""Stage-I gate: dense LU factor/solve over per-field tensors (lu_fields) —
+fields self-check against ground truth (no legacy reference; the legacy
+`lu_factorization` was deleted at the P6 sunset).
 
 LU is the non-symmetric linear solve the fields `ImplicitIntegratorFields`
 needs (M_hat = M + armature - dt*qDeriv is asymmetric). This gate feeds a
-deterministic, diagonally-dominant non-symmetric NV×NV system per env into
-BOTH the fields helpers and the legacy `List`-based helpers and checks:
-  * fields-CPU solve == legacy solve BIT-EXACT (same arithmetic),
-  * fields-CPU M^-1 == legacy M^-1 BIT-EXACT,
-  * the solution actually solves the system (M @ x ≈ b residual),
+deterministic, diagonally-dominant non-symmetric NV×NV system per env into the
+fields helpers and checks ground-truth invariants:
+  * the solution actually solves the system (residual |M @ x - b| ≈ 0),
+  * the inverse is correct (|M @ M^-1 - I| ≈ 0),
   * fields-GPU == fields-CPU (tight tol; only asserted off-NVIDIA... the
     GPU path runs the identical per-env helper).
 
@@ -26,11 +26,6 @@ from mojo_rl.physics3d.dynamics.lu_fields import (
     lu_factor_fields,
     lu_solve_fields,
     compute_m_inv_from_lu_fields,
-)
-from mojo_rl.physics3d.dynamics.lu_factorization import (
-    lu_factor,
-    lu_solve,
-    compute_M_inv_from_lu,
 )
 
 comptime DT = DType.float32
@@ -78,31 +73,10 @@ def main() raises:
     for i in range(BATCH * M_SIZE):
         mi_cpu[i] = sc.m_inv.data[i]
 
-    # ── legacy List-based factor + solve + M^-1 (per env) ─────────────────
-    var bad_solve = 0
-    var bad_minv = 0
+    # ── fields-only ground truth: x solves the system + M·M^-1 = I (per env) ─
     var worst_resid = Float64(0)
+    var worst_minv = Float64(0)
     for e in range(BATCH):
-        var A = List[Scalar[DT]](length=M_SIZE, fill=0)
-        var b = List[Scalar[DT]](length=V_SIZE, fill=0)
-        for i in range(NV):
-            for j in range(NV):
-                A[i * NV + j] = sc.M.data[e * M_SIZE + i * NV + j]
-            b[i] = sc.fnet.data[e * V_SIZE + i]
-        var piv = List[Int](length=V_SIZE, fill=0)
-        var x = List[Scalar[DT]](length=V_SIZE, fill=0)
-        lu_factor[DT, NV, M_SIZE, V_SIZE](A, piv)
-        lu_solve[DT, NV, M_SIZE, V_SIZE](A, piv, b, x)
-        var Minv = List[Scalar[DT]](length=M_SIZE, fill=0)
-        compute_M_inv_from_lu[DT, NV, M_SIZE, V_SIZE](A, piv, Minv)
-
-        for i in range(NV):
-            if xf_cpu[e * V_SIZE + i] != x[i]:
-                bad_solve += 1
-        for i in range(M_SIZE):
-            if mi_cpu[e * M_SIZE + i] != Minv[i]:
-                bad_minv += 1
-
         # residual: original M @ x_fields - b
         for i in range(NV):
             var s = Float64(0)
@@ -113,20 +87,26 @@ def main() raises:
             var r = abs(s - Float64(sc.fnet.data[e * V_SIZE + i]))
             if r > worst_resid:
                 worst_resid = r
+        # M @ M^-1 == I
+        for i in range(NV):
+            for j in range(NV):
+                var s = Float64(0)
+                for k in range(NV):
+                    s += Float64(sc.M.data[e * M_SIZE + i * NV + k]) * Float64(
+                        mi_cpu[e * M_SIZE + k * NV + j]
+                    )
+                var expect = Float64(1) if i == j else Float64(0)
+                var d = abs(s - expect)
+                if d > worst_minv:
+                    worst_minv = d
 
-    if bad_solve != 0:
-        raise Error(
-            "fields-CPU LU solve != legacy (" + String(bad_solve) + " entries)"
-        )
-    if bad_minv != 0:
-        raise Error(
-            "fields-CPU LU M^-1 != legacy (" + String(bad_minv) + " entries)"
-        )
-    print("  fields-CPU LU solve + M^-1 == legacy BIT-EXACT")
     print("  worst residual |M x - b|:", worst_resid)
+    print("  worst |M M^-1 - I|:", worst_minv)
     if worst_resid > 1e-3:
         raise Error("LU solution residual too large — not solving the system")
-    print("  Part A PASS: LU solve is correct + matches legacy")
+    if worst_minv > 1e-3:
+        raise Error("LU M^-1 wrong — M @ M^-1 != I")
+    print("  Part A PASS: LU solve + M^-1 correct (fields self-check)")
 
     # ── fields-GPU factor + solve + M^-1 vs fields-CPU ────────────────────
     sc.upload_all(ctx)  # push host M/fnet (+ all) to device

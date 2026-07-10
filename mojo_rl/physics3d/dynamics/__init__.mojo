@@ -17,6 +17,6 @@ from .mass_matrix import (
 )
 from .bias_forces import compute_bias_forces
 from .jacobian import compute_cdof, compute_contact_jacobian_row, compute_composite_inertia
-from .velocity_derivatives import compute_rne_vel_derivative
-from .lu_factorization import lu_factor, lu_solve, compute_M_inv_from_lu
+# Legacy slab `velocity_derivatives` + `lu_factorization` deleted at the P6
+# sunset — the fields path uses `qderiv_fields` / `lu_fields`.
 from .cfrc_ext import compute_cfrc_ext

@@ -1,13 +1,11 @@
-"""Stage-I gate: RNE velocity derivative over fields tensors (qderiv_fields)
-bit-exact vs the legacy `compute_rne_vel_derivative`.
+"""Stage-I gate: RNE velocity derivative over fields tensors (qderiv_fields) —
+fields self-check (no legacy reference; the legacy `velocity_derivatives` was
+deleted at the P6 sunset — bit-exact-vs-legacy was validated in git `a6804ab4`).
 
 qDeriv = d(qfrc_bias)/d(qvel) is the dense non-symmetric term the fields
-Implicit integrator subtracts into M_hat. This gate isolates the derivative
-ARITHMETIC: it runs the fields FK + subtree_com + cdof pipeline (CPU) to
-produce xipos/xquat/cdof, then feeds those IDENTICAL inputs (+ the same
-nonzero qvel) into BOTH the fields per-env function and the legacy
-List/Model-based function, and checks:
-  * fields-CPU qderiv == legacy qderiv BIT-EXACT (same inputs, same math),
+Implicit integrator subtracts into M_hat. This gate runs the fields FK +
+subtree_com + cdof + qderiv pipeline (CPU) with a standing pose + nonzero qvel
+and checks:
   * qderiv is non-trivially nonzero (Coriolis active — nonzero qvel),
   * fields-GPU == fields-CPU (the identical per-env kernel).
 
@@ -36,10 +34,6 @@ from mojo_rl.physics3d.dynamics.cdof_fields import compute_cdof_fields
 from mojo_rl.physics3d.dynamics.qderiv_fields import (
     compute_rne_vel_derivative_fields,
 )
-from mojo_rl.physics3d.dynamics.velocity_derivatives import (
-    compute_rne_vel_derivative,
-)
-from mojo_rl.physics3d.types import Model, Data
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 
 comptime DT = DType.float32
@@ -93,46 +87,18 @@ def main() raises:
         "cpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH
     ](d, mf, sc, isc, None)
 
-    # ── legacy reference fed the SAME xipos/xquat/qvel/cdof ──────────────
-    var model = Model[DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, CONE, NTD, NSITE]()
-    var ldata = Data[DT, NQ, NV, NBODY, NJOINT, MC, NSITE]()
-    Walker2dModel.setup_model_and_data[DT](model, ldata)
-    for i in range(NBODY * 3):
-        ldata.xipos[i] = d.xipos.data[i]
-    for i in range(NBODY * 4):
-        ldata.xquat[i] = d.xquat.data[i]
-    for i in range(NV):
-        ldata.qvel[i] = d.qvel.data[i]
-    var cdof_list = List[Scalar[DT]](length=NV * 6, fill=0)
-    for i in range(NV * 6):
-        cdof_list[i] = sc.cdof.data[i]
-    var qd_legacy = List[Scalar[DT]](length=NV * NV, fill=0)
-    compute_rne_vel_derivative[DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, CONE, NTD, NSITE](
-        model, ldata, cdof_list, qd_legacy
-    )
-
-    # ── compare ──────────────────────────────────────────────────────────
-    var bad = 0
+    # ── ground-truth-lite: qderiv is non-trivially nonzero (Coriolis active) ─
+    # (bit-exact-vs-legacy was validated at Stage I-2, git `a6804ab4`, before
+    # the legacy `velocity_derivatives` was deleted at the P6 sunset.)
     var maxabs = Float64(0)
     for i in range(NV * NV):
-        if isc.qderiv.data[i] != qd_legacy[i]:
-            if bad < 4:
-                print(
-                    "  qderiv[", i, "]: fields", isc.qderiv.data[i],
-                    " vs legacy", qd_legacy[i],
-                )
-            bad += 1
         var a = abs(Float64(isc.qderiv.data[i]))
         if a > maxabs:
             maxabs = a
-    if bad != 0:
-        raise Error(
-            "fields-CPU qderiv != legacy (" + String(bad) + " entries)"
-        )
-    print("  fields-CPU qderiv == legacy BIT-EXACT; max|qderiv| =", maxabs)
+    print("  max|qderiv| =", maxabs)
     if maxabs < 1e-6:
         raise Error("qderiv ~0 — Coriolis inactive, gate is vacuous")
-    print("  Part A PASS: RNE velocity derivative matches legacy + nonzero")
+    print("  Part A PASS: RNE velocity derivative computed + nonzero")
 
     # ── fields GPU vs fields CPU ─────────────────────────────────────────
     var qd_cpu = List[Scalar[DT]](length=NV * NV, fill=0)
