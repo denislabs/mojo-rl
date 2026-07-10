@@ -1,180 +1,24 @@
-"""ModelDef compositor for compile-time model definitions.
+"""`ModelDefLike` — the trait every physics3d model definition implements.
 
-Composes Bodies and Joints into a ModelDef with auto-computed dimensions.
-Uses Variadic.types + comptimefor to iterate at compile time, following
-the same pattern as Sequential[*LAYERS: Model] in nn/model/sequential.mojo.
-
-Note: Bodies and Joints are standalone variadic containers. ModelDef takes
-concrete Int parameters because Mojo cannot resolve variadic type packs
-through multiple levels of nesting (accessing ModelDef.NQ would fail with
-"unbound parameter" if ModelDef contained Bodies/Joints directly).
-
-Usage:
-    comptime HalfCheetahBodies = Bodies[Torso, BThigh, ...]
-    comptime HalfCheetahJoints = Joints[RootX, RootZ, ...]
-    comptime HalfCheetahModel = ModelDef[
-        HalfCheetahBodies.N,
-        HalfCheetahJoints.N,
-        HalfCheetahJoints._sum_nq(),
-        HalfCheetahJoints._sum_nv(),
-    ]
+Declares the compile-time dimensions, the CPU state hooks (fields-native:
+`reset_data` / `extract_obs` / `enforce_limits` / `apply_actions` over
+`DataFields`), the legacy CPU model build (`setup_model_and_data`, dies at
+G4), the fields-native model build (`init_fields`, trait default), the GPU
+kernel delegates, and the render hooks. Sole implementer: `ModelDefFromXML`
+(the spec-based `ModelDef` compositor was deleted at the G2 fields sunset —
+it had zero instantiation sites).
 """
 
-from std.collections import InlineArray
-from std.random.philox import Random as PhiloxRandom
-from mojo_rl.render import Color, Renderer3D, Light, Camera3D
+from mojo_rl.render import Renderer3D, Light, Camera3D
 from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
-from .body_spec import BodySpec
-from .joint_spec import JointSpec
-from .geom_spec import GeomSpec
-from .equality_spec import EqualitySpec
-from .camera_spec import CameraSpec
-from .light_spec import LightSpec
-from .texture_spec import TextureSpec
-from .material_spec import MaterialSpec
-from .actuator_spec import (
-    ActuatorSpec,
-    DYN_NONE,
-    DYN_INTEGRATOR,
-    DYN_FILTER,
-    DYN_FILTEREXACT,
-    GAIN_FIXED,
-    GAIN_AFFINE,
-    BIAS_NONE,
-    BIAS_AFFINE,
-)
-from ..types import (
-    Model,
-    Data,
-    ActuatorDef,
-    EqualityConstraintDef,
-    EQ_CONNECT,
-    EQ_WELD,
-    ConeType,
-)
+from ..types import Model, Data
 from ..fields import ModelFields, DataFields, DynamicsScratch
 from ..dynamics.invweight_fields import compute_invweight0_fields
-from ..joint_types import JNT_HINGE, JNT_SLIDE
-from std.math import sqrt
-from ..constants import (
-    GEOM_SPHERE,
-    GEOM_CAPSULE,
-    GEOM_BOX,
-    GEOM_PLANE,
-    GEOM_CYLINDER,
-)
 
 # GPU imports
 from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
-from ..gpu.constants import (
-    TPB,
-    qpos_offset,
-    qvel_offset,
-    qacc_offset,
-    qfrc_offset,
-    model_size_with_invweight,
-    model_metadata_offset,
-    model_body_offset,
-    model_body_invweight0_offset,
-    model_dof_invweight0_offset,
-    MODEL_META_IDX_NBODY,
-    MODEL_META_IDX_NJOINT,
-    MODEL_META_IDX_GRAVITY_X,
-    MODEL_META_IDX_GRAVITY_Y,
-    MODEL_META_IDX_GRAVITY_Z,
-    MODEL_META_IDX_TIMESTEP,
-    MODEL_META_IDX_SOLREF_CONTACT_0,
-    MODEL_META_IDX_SOLREF_CONTACT_1,
-    MODEL_META_IDX_SOLIMP_CONTACT_0,
-    MODEL_META_IDX_SOLIMP_CONTACT_1,
-    MODEL_META_IDX_SOLIMP_CONTACT_2,
-    MODEL_META_IDX_SOLIMP_CONTACT_3,
-    MODEL_META_IDX_SOLIMP_CONTACT_4,
-    MODEL_META_IDX_SOLREF_LIMIT_0,
-    MODEL_META_IDX_SOLREF_LIMIT_1,
-    MODEL_META_IDX_SOLIMP_LIMIT_0,
-    MODEL_META_IDX_SOLIMP_LIMIT_1,
-    MODEL_META_IDX_SOLIMP_LIMIT_2,
-    MODEL_META_IDX_SOLIMP_LIMIT_3,
-    MODEL_META_IDX_SOLIMP_LIMIT_4,
-    MODEL_META_IDX_IMPRATIO,
-    MODEL_META_IDX_NEQUALITY,
-    MODEL_META_IDX_NTENDON,
-    MODEL_META_IDX_DENSITY,
-    MODEL_META_IDX_VISCOSITY,
-    BODY_IDX_MASS,
-    BODY_IDX_INV_MASS,
-    BODY_IDX_IXX,
-    BODY_IDX_IYY,
-    BODY_IDX_IZZ,
-    BODY_IDX_INV_IXX,
-    BODY_IDX_INV_IYY,
-    BODY_IDX_INV_IZZ,
-    MODEL_BODY_SIZE,
-    BODY_IDX_POS_X,
-    BODY_IDX_POS_Y,
-    BODY_IDX_POS_Z,
-    BODY_IDX_QUAT_X,
-    BODY_IDX_QUAT_Y,
-    BODY_IDX_QUAT_Z,
-    BODY_IDX_QUAT_W,
-    BODY_IDX_PARENT,
-    BODY_IDX_IPOS_X,
-    BODY_IDX_IPOS_Y,
-    BODY_IDX_IPOS_Z,
-    BODY_IDX_IQUAT_X,
-    BODY_IDX_IQUAT_Y,
-    BODY_IDX_IQUAT_Z,
-    BODY_IDX_IQUAT_W,
-    state_size,
-    model_size,
-    xpos_offset,
-    xquat_offset,
-    xipos_offset,
-    model_joint_offset,
-    MODEL_JOINT_SIZE,
-    JOINT_IDX_TYPE,
-    JOINT_IDX_BODY_ID,
-    JOINT_IDX_DOF_ADR,
-    JOINT_IDX_ARMATURE,
-    integrator_workspace_size,
-    ws_cdof_offset,
-    ws_M_offset,
-    ws_L_offset,
-    ws_D_offset,
-)
-from ..gpu.buffer_utils import (
-    copy_model_to_buffer,
-    copy_geoms_to_buffer,
-    copy_invweight0_to_buffer,
-    copy_tendons_to_buffer,
-    copy_mesh_hull_to_buffer,
-)
-from ..kinematics.forward_kinematics import (
-    forward_kinematics,
-    forward_kinematics_gpu,
-)
-from std.memory import UnsafePointer
-from .inertia_from_geom import (
-    geom_volume,
-    compute_inertia_from_geoms,
-    compute_inertia_from_geoms_buffer,
-)
-from std.gpu.host import HostBuffer
-from ..model.defaults_spec import ModelDefaults
-from ..model.body_spec import BodiesLike, _EmptyBodies
-from ..model.joint_spec import JointsLike, _EmptyJoints
-from ..model.geom_spec import GeomsLike, _EmptyGeoms
-from ..model.actuator_spec import ActuatorsLike, _EmptyActuators
-from ..model.light_spec import LightsLike, _EmptyLights
-from ..model.texture_spec import TexturesLike, _EmptyTextures
-from ..model.material_spec import MaterialsLike, _EmptyMaterials
-from ..model.camera_spec import CamerasLike, _EmptyCameras
-from ..model.site_spec import SitesLike, _EmptySites
-from ..types import ConeType
 
 
 comptime _RVec3 = _Vec3G[DType.float64]
@@ -243,19 +87,19 @@ trait ModelDefLike:
     ):
         ...
 
-    # === CPU: Joints/Actuators delegates ===
+    # === CPU: state hooks (fields-native; G2) ===
     @staticmethod
     def reset_data[
         DTYPE: DType
     ](
-        mut data: Data[
+        mut d: DataFields[
             DTYPE,
             Self.NQ,
             Self.NV,
             Self.NBODY,
-            Self.NJOINT,
             Self.MAX_CONTACTS,
             Self.NSITE,
+            1,
         ],
     ):
         ...
@@ -264,14 +108,14 @@ trait ModelDefLike:
     def extract_obs[
         DTYPE: DType
     ](
-        data: Data[
+        d: DataFields[
             DTYPE,
             Self.NQ,
             Self.NV,
             Self.NBODY,
-            Self.NJOINT,
             Self.MAX_CONTACTS,
             Self.NSITE,
+            1,
         ],
         mut obs: List[Scalar[DTYPE]],
     ):
@@ -281,14 +125,14 @@ trait ModelDefLike:
     def enforce_limits[
         DTYPE: DType
     ](
-        mut data: Data[
+        mut d: DataFields[
             DTYPE,
             Self.NQ,
             Self.NV,
             Self.NBODY,
-            Self.NJOINT,
             Self.MAX_CONTACTS,
             Self.NSITE,
+            1,
         ],
     ):
         ...
@@ -297,14 +141,14 @@ trait ModelDefLike:
     def apply_actions[
         DTYPE: DType
     ](
-        mut data: Data[
+        mut d: DataFields[
             DTYPE,
             Self.NQ,
             Self.NV,
             Self.NBODY,
-            Self.NJOINT,
             Self.MAX_CONTACTS,
             Self.NSITE,
+            1,
         ],
         actions: List[Float64],
     ):
@@ -510,534 +354,7 @@ trait ModelDefLike:
         ...
 
 
-@fieldwise_init
-struct ModelDef[
-    Bodies: BodiesLike = _EmptyBodies,
-    Joints: JointsLike = _EmptyJoints,
-    Geoms: GeomsLike = _EmptyGeoms,
-    Actuators: ActuatorsLike = _EmptyActuators,
-    Defaults: ModelDefaultsLike = ModelDefaults[],
-    Lights: LightsLike = _EmptyLights,
-    Textures: TexturesLike = _EmptyTextures,
-    Materials: MaterialsLike = _EmptyMaterials,
-    Cameras: CamerasLike = _EmptyCameras,
-    Sites: SitesLike = _EmptySites,
-    max_equality: Int = 0,
-    max_contacts: Int = 0,
-    cone_type: Int = ConeType.ELLIPTIC,
-    max_tendon: Int = 0,
-    # Embedded component types via trait bounds (optional, backward compatible)
-](ModelDefLike):
-    """Compile-time model definition with pre-computed dimensions.
-
-    Optionally embeds component types (Bodies, Joints, Geoms, Actuators, Defaults) for the full robot
-    definition — like a parsed MuJoCo XML. When component types are provided,
-    convenience methods (setup_all, reset_data, etc.) delegate to them.
-
-    Usage (full — with components):
-        comptime MyModel = ModelDef[
-            MyBodies, MyJoints, MyGeoms, MyActuators, MyDefaults,
-        ]
-    """
-
-    comptime NBODY: Int = Self.Bodies.N + 1  # +1 for worldbody at index 0
-    comptime NJOINT: Int = Self.Joints.N
-    comptime NQ: Int = Self.Joints.NQ
-    comptime NV: Int = Self.Joints.NV
-    comptime NGEOM: Int = Self.Geoms.N
-    comptime MAX_EQUALITY: Int = Self.max_equality
-    comptime CONE_TYPE: Int = Self.cone_type
-    comptime MAX_CONTACTS: Int = Self.max_contacts
-    comptime MAX_TENDON: Int = Self.max_tendon
-    comptime NSITE: Int = Self.Sites.N
-    comptime NEXCLUDE: Int = 0  # ModelDef has no <exclude> support
-    comptime TIMESTEP: Float64 = Self.Defaults.TIMESTEP
-
-    # Derived from components (only meaningful when J is not _EmptyJoints)
-    comptime OBS_DIM: Int = Self.Joints.OBS_DIM
-    comptime ACTION_DIM: Int = Self.Joints.ACTION_DIM
-    comptime CTRL_MIN: Float64 = Self.Defaults.MOTOR_CTRL_MIN
-    comptime CTRL_MAX: Float64 = Self.Defaults.MOTOR_CTRL_MAX
-
-    # comptime BODIES: BodiesLike = Self.Bodies
-    # comptime JOINTS: JointsLike = Self.Joints
-    # comptime GEOMS: GeomsLike = Self.Geoms
-    # comptime ACTUATORS: ActuatorsLike = Self.Actuators
-    # comptime DEFAULTS: ModelDefaultsLike = Self.Defaults
-    # comptime LIGHTS: LightsLike = Self.Lights
-    # comptime TEXTURES: TexturesLike = Self.Textures
-    # comptime MATERIALS: MaterialsLike = Self.Materials
-    # comptime CAMERAS: CamerasLike = Self.Cameras
-
-    # =========================================================================
-    # Model Creation Helpers
-    # =========================================================================
-
-    @staticmethod
-    def setup_solver_params[
-        DTYPE: DType,
-        MAX_CONTACTS: Int,
-    ](
-        mut model: Model[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-            Self.MAX_TENDON,
-            Self.NSITE,
-        ],
-    ):
-        """Set all solver impedance params on a Model from ModelDefaults.
-
-        Sets model-level solref/solimp for contacts and limits, plus impratio.
-        Per-geom and per-joint overrides are set in Geoms/Joints.setup_model.
-        """
-        model.solref_contact[0] = Scalar[DTYPE](Self.Defaults.GEOM_SOLREF_0)
-        model.solref_contact[1] = Scalar[DTYPE](Self.Defaults.GEOM_SOLREF_1)
-        model.solimp_contact[0] = Scalar[DTYPE](Self.Defaults.GEOM_SOLIMP_0)
-        model.solimp_contact[1] = Scalar[DTYPE](Self.Defaults.GEOM_SOLIMP_1)
-        model.solimp_contact[2] = Scalar[DTYPE](Self.Defaults.GEOM_SOLIMP_2)
-        model.solimp_contact[3] = Scalar[DTYPE](Self.Defaults.GEOM_SOLIMP_3)
-        model.solimp_contact[4] = Scalar[DTYPE](Self.Defaults.GEOM_SOLIMP_4)
-        model.solref_limit[0] = Scalar[DTYPE](
-            Self.Defaults.JOINT_SOLREF_LIMIT_0
-        )
-        model.solref_limit[1] = Scalar[DTYPE](
-            Self.Defaults.JOINT_SOLREF_LIMIT_1
-        )
-        model.solimp_limit[0] = Scalar[DTYPE](
-            Self.Defaults.JOINT_SOLIMP_LIMIT_0
-        )
-        model.solimp_limit[1] = Scalar[DTYPE](
-            Self.Defaults.JOINT_SOLIMP_LIMIT_1
-        )
-        model.solimp_limit[2] = Scalar[DTYPE](
-            Self.Defaults.JOINT_SOLIMP_LIMIT_2
-        )
-        model.solimp_limit[3] = Scalar[DTYPE](
-            Self.Defaults.JOINT_SOLIMP_LIMIT_3
-        )
-        model.solimp_limit[4] = Scalar[DTYPE](
-            Self.Defaults.JOINT_SOLIMP_LIMIT_4
-        )
-        model.impratio = Scalar[DTYPE](Self.Defaults.IMPRATIO)
-        model.gravity = SIMD[DTYPE, 4](
-            Scalar[DTYPE](Self.Defaults.GRAVITY_X),
-            Scalar[DTYPE](Self.Defaults.GRAVITY_Y),
-            Scalar[DTYPE](Self.Defaults.GRAVITY_Z),
-            Scalar[DTYPE](0),
-        )
-        model.timestep = Scalar[DTYPE](Self.Defaults.TIMESTEP)
-        model.opt_density = Scalar[DTYPE](Self.Defaults.OPT_DENSITY)
-        model.opt_viscosity = Scalar[DTYPE](Self.Defaults.OPT_VISCOSITY)
-
-    @staticmethod
-    def finalize[
-        DTYPE: DType,
-        MAX_CONTACTS: Int,
-    ](
-        mut model: Model[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-            Self.MAX_TENDON,
-            Self.NSITE,
-        ],
-        mut data: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            MAX_CONTACTS,
-            Self.NSITE,
-        ],
-    ):
-        """Run FK + compute_body_invweight0 in the correct order.
-
-        Must be called after Bodies/Joints/Geoms.setup_model and after
-        Joints.reset_data (or manual qpos initialization).
-
-        Order: inertiafromgeom → settotalmass → FK → invweight0
-
-        If Defaults.INERTIAFROMGEOM is True, computes body mass/inertia/ipos/iquat
-        from child geoms (overwriting any values set by Bodies.setup_model).
-
-        If Defaults.SETTOTALMASS > 0, rescales all body masses and inertias
-        so the total mass equals the target (MuJoCo <compiler settotalmass>).
-        """
-
-        # MuJoCo <compiler inertiafromgeom> — compute body inertia from geoms
-        comptime if Self.Defaults.INERTIAFROMGEOM and Self.NGEOM > 0:
-            compute_inertia_from_geoms(model)
-
-        # MuJoCo <compiler settotalmass> — rescale body masses/inertias
-        comptime if Self.Defaults.SETTOTALMASS > 0.0:
-            var total_mass = Scalar[DTYPE](0)
-            for i in range(1, Self.NBODY):
-                total_mass += model.body_mass[i]
-            if total_mass > 0:
-                var scale = (
-                    Scalar[DTYPE](Self.Defaults.SETTOTALMASS) / total_mass
-                )
-                for i in range(1, Self.NBODY):
-                    model.body_mass[i] *= scale
-                    model.body_inv_mass[i] /= scale
-                    for k in range(3):
-                        model.body_inertia[i * 3 + k] *= scale
-                        model.body_inv_inertia[i * 3 + k] /= scale
-
-        forward_kinematics(model, data)
-        # invweight0 is computed FIELDS-natively in `init_fields` (G1).
-
-    @staticmethod
-    def setup_model_and_data[
-        DTYPE: DType
-    ](
-        mut model: Model[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-            Self.MAX_TENDON,
-            Self.NSITE,
-        ],
-        mut data: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-        ],
-    ):
-        Self.setup_solver_params(model)
-        Self.Bodies.setup_model(model)
-        Self.Joints.setup_model[Defaults=Self.Defaults](model)
-        Self.Geoms.setup_model[Defaults=Self.Defaults](model)
-        Self.Sites.setup_model(model)
-        Self.Joints.reset_data(data)
-        Self.finalize(model, data)
-
-    @staticmethod
-    def _write_metadata_to_buffer[
-        DTYPE: DType,
-    ](buffer: HostBuffer[DTYPE]):
-        """Write model metadata directly to GPU HostBuffer."""
-        var off = model_metadata_offset[Self.NBODY, Self.NJOINT]()
-        buffer[off + MODEL_META_IDX_NBODY] = Scalar[DTYPE](Self.NBODY)
-        buffer[off + MODEL_META_IDX_NJOINT] = Scalar[DTYPE](Self.NJOINT)
-        buffer[off + MODEL_META_IDX_GRAVITY_X] = Scalar[DTYPE](
-            Self.Defaults.GRAVITY_X
-        )
-        buffer[off + MODEL_META_IDX_GRAVITY_Y] = Scalar[DTYPE](
-            Self.Defaults.GRAVITY_Y
-        )
-        buffer[off + MODEL_META_IDX_GRAVITY_Z] = Scalar[DTYPE](
-            Self.Defaults.GRAVITY_Z
-        )
-        buffer[off + MODEL_META_IDX_TIMESTEP] = Scalar[DTYPE](
-            Self.Defaults.TIMESTEP
-        )
-        buffer[off + MODEL_META_IDX_SOLREF_CONTACT_0] = Scalar[DTYPE](
-            Self.Defaults.GEOM_SOLREF_0
-        )
-        buffer[off + MODEL_META_IDX_SOLREF_CONTACT_1] = Scalar[DTYPE](
-            Self.Defaults.GEOM_SOLREF_1
-        )
-        buffer[off + MODEL_META_IDX_SOLIMP_CONTACT_0] = Scalar[DTYPE](
-            Self.Defaults.GEOM_SOLIMP_0
-        )
-        buffer[off + MODEL_META_IDX_SOLIMP_CONTACT_1] = Scalar[DTYPE](
-            Self.Defaults.GEOM_SOLIMP_1
-        )
-        buffer[off + MODEL_META_IDX_SOLIMP_CONTACT_2] = Scalar[DTYPE](
-            Self.Defaults.GEOM_SOLIMP_2
-        )
-        buffer[off + MODEL_META_IDX_SOLIMP_CONTACT_3] = Scalar[DTYPE](
-            Self.Defaults.GEOM_SOLIMP_3
-        )
-        buffer[off + MODEL_META_IDX_SOLIMP_CONTACT_4] = Scalar[DTYPE](
-            Self.Defaults.GEOM_SOLIMP_4
-        )
-        buffer[off + MODEL_META_IDX_SOLREF_LIMIT_0] = Scalar[DTYPE](
-            Self.Defaults.JOINT_SOLREF_LIMIT_0
-        )
-        buffer[off + MODEL_META_IDX_SOLREF_LIMIT_1] = Scalar[DTYPE](
-            Self.Defaults.JOINT_SOLREF_LIMIT_1
-        )
-        buffer[off + MODEL_META_IDX_SOLIMP_LIMIT_0] = Scalar[DTYPE](
-            Self.Defaults.JOINT_SOLIMP_LIMIT_0
-        )
-        buffer[off + MODEL_META_IDX_SOLIMP_LIMIT_1] = Scalar[DTYPE](
-            Self.Defaults.JOINT_SOLIMP_LIMIT_1
-        )
-        buffer[off + MODEL_META_IDX_SOLIMP_LIMIT_2] = Scalar[DTYPE](
-            Self.Defaults.JOINT_SOLIMP_LIMIT_2
-        )
-        buffer[off + MODEL_META_IDX_SOLIMP_LIMIT_3] = Scalar[DTYPE](
-            Self.Defaults.JOINT_SOLIMP_LIMIT_3
-        )
-        buffer[off + MODEL_META_IDX_SOLIMP_LIMIT_4] = Scalar[DTYPE](
-            Self.Defaults.JOINT_SOLIMP_LIMIT_4
-        )
-        buffer[off + MODEL_META_IDX_IMPRATIO] = Scalar[DTYPE](
-            Self.Defaults.IMPRATIO
-        )
-        buffer[off + MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](
-            Self.MAX_EQUALITY
-        )
-        buffer[off + MODEL_META_IDX_NTENDON] = Scalar[DTYPE](Self.MAX_TENDON)
-        buffer[off + MODEL_META_IDX_DENSITY] = Scalar[DTYPE](
-            Self.Defaults.OPT_DENSITY
-        )
-        buffer[off + MODEL_META_IDX_VISCOSITY] = Scalar[DTYPE](
-            Self.Defaults.OPT_VISCOSITY
-        )
-
-    @staticmethod
-    def _settotalmass_buffer[
-        DTYPE: DType,
-    ](buffer: HostBuffer[DTYPE]):
-        """Rescale body masses/inertias so total matches target (buffer version).
-        """
-        var total_mass = Scalar[DTYPE](0)
-        for i in range(1, Self.NBODY):
-            var off = model_body_offset(i)
-            total_mass += buffer[off + BODY_IDX_MASS]
-        if total_mass > Scalar[DTYPE](0):
-            var scale = Scalar[DTYPE](Self.Defaults.SETTOTALMASS) / total_mass
-            for i in range(1, Self.NBODY):
-                var off = model_body_offset(i)
-                buffer[off + BODY_IDX_MASS] *= scale
-                buffer[off + BODY_IDX_INV_MASS] /= scale
-                buffer[off + BODY_IDX_IXX] *= scale
-                buffer[off + BODY_IDX_IYY] *= scale
-                buffer[off + BODY_IDX_IZZ] *= scale
-                buffer[off + BODY_IDX_INV_IXX] /= scale
-                buffer[off + BODY_IDX_INV_IYY] /= scale
-                buffer[off + BODY_IDX_INV_IZZ] /= scale
-
-    # === CPU: Joints/Actuators delegates ===
-    @staticmethod
-    def reset_data[
-        DTYPE: DType
-    ](
-        mut data: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-        ],
-    ):
-        Self.Joints.reset_data(data)
-
-    @staticmethod
-    def extract_obs[
-        DTYPE: DType
-    ](
-        data: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-        ],
-        mut obs: List[Scalar[DTYPE]],
-    ):
-        Self.Joints.extract_obs(data, obs)
-
-    @staticmethod
-    def enforce_limits[
-        DTYPE: DType
-    ](
-        mut data: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-        ],
-    ):
-        Self.Joints.enforce_limits(data)
-
-    @staticmethod
-    def apply_actions[
-        DTYPE: DType
-    ](
-        mut data: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-        ],
-        actions: List[Float64],
-    ):
-        Self.Actuators.apply_actions(data, actions)
-
-    # === GPU: Joints/Actuators kernel delegates ===
-    @staticmethod
-    def apply_actions_kernel_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-        ACTION_DIM: Int,
-    ](
-        ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[DTYPE],
-        actions_buf: DeviceBuffer[DTYPE],
-    ) raises:
-        Self.Actuators.apply_actions_kernel_gpu[
-            DTYPE, BATCH_SIZE, STATE_SIZE, ACTION_DIM, Self.NQ, Self.NV
-        ](ctx, states_buf, actions_buf)
-
-    @staticmethod
-    def enforce_limits_kernel_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[DTYPE]) raises:
-        Self.Joints.enforce_limits_kernel_gpu[DTYPE, BATCH_SIZE, STATE_SIZE](
-            ctx, states_buf
-        )
-
-    @staticmethod
-    def extract_obs_kernel_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-        OBS_DIM: Int,
-    ](
-        ctx: DeviceContext,
-        states_buf: DeviceBuffer[DTYPE],
-        mut obs_buf: DeviceBuffer[DTYPE],
-    ) raises:
-        Self.Joints.extract_obs_kernel_gpu[
-            DTYPE, BATCH_SIZE, STATE_SIZE, OBS_DIM
-        ](ctx, states_buf, obs_buf)
-
-    # === GPU inline: Per-env delegates ===
-    @always_inline
-    @staticmethod
-    def reset_env_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-    ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ],
-        env: Int,
-        noise_scale: Scalar[DTYPE],
-        seed: Int,
-    ):
-        Self.Joints.reset_env_gpu[DTYPE, BATCH_SIZE, STATE_SIZE](
-            states, env, noise_scale, seed
-        )
-
-    @always_inline
-    @staticmethod
-    def extract_obs_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-        OBS_DIM: Int,
-    ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
-        ],
-        obs: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ],
-        env: Int,
-    ):
-        Self.Joints.extract_obs_gpu[DTYPE, BATCH_SIZE, STATE_SIZE, OBS_DIM](
-            states, obs, env
-        )
-
-    @staticmethod
-    def render_ground_geoms(
-        mut renderer: Renderer3D,
-        torso_x: Float64,
-        follow: Bool,
-        visual_radius_scale: Float64,
-    ) raises:
-        Self.Geoms.render_ground_geoms(
-            renderer, torso_x, follow, visual_radius_scale
-        )
-
-    @staticmethod
-    def render_body_geoms(
-        mut renderer: Renderer3D,
-        positions: List[_RVec3],
-        quaternions: List[_RQuat],
-        visual_radius_scale: Float64,
-    ) raises:
-        Self.Geoms.render_body_geoms(
-            renderer, positions, quaternions, visual_radius_scale
-        )
-
-    @staticmethod
-    def setup_lights() raises -> List[Light]:
-        return Self.Lights.setup_lights()
-
-    @staticmethod
-    def setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
-        return Self.Cameras.setup_cameras(width, height)
-
-    @staticmethod
-    def setup_camera_modes() raises -> List[Int]:
-        return Self.Cameras.setup_camera_modes()
-
-    @staticmethod
-    def get_skybox_colors() -> List[Float64]:
-        return Self.Textures.get_skybox_colors()
-
-    @staticmethod
-    def get_checker_colors() -> List[Float64]:
-        return Self.Textures.get_checker_colors()
-
-    @staticmethod
-    def get_ground_rgba() -> List[Float64]:
-        """Return [r, g, b] of the first plane geom's color, or empty list."""
-        return Self.Geoms.get_ground_rgba()
-
-    @staticmethod
-    def get_visual_settings() -> List[Float64]:
-        """ModelDef (non-XML) has no visual settings — return empty list."""
-        return List[Float64]()
-
-    @staticmethod
-    def render_sites(
-        mut renderer: Renderer3D,
-        positions: List[_RVec3],
-        quaternions: List[_RQuat],
-    ) raises:
-        Self.Sites.render_sites(renderer, positions, quaternions)
+# The spec-based `ModelDef` compositor struct (Bodies/Joints/Geoms/Actuators
+# cascade) was deleted at the G2 fields sunset: it had ZERO instantiation
+# sites — every env model is a `ModelDefFromXML`, the trait's only
+# implementer. The `ModelDefLike` trait above is the surviving surface.

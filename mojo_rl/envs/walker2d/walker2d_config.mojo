@@ -3,7 +3,7 @@
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.fields import DataFields
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,
@@ -41,14 +41,13 @@ struct Walker2dConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut prev_x: Scalar[DTYPE],
     ):
-        prev_x = data.qpos[0]  # Save rootx position
+        prev_x = d.qpos.data[0]  # Save rootx position
 
     # === CPU: Reward + termination ===
     @staticmethod
@@ -57,24 +56,23 @@ struct Walker2dConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,
         frame_skip: Int,
     ) -> Tuple[Scalar[DTYPE], Bool]:
         # x velocity from position change
-        var x_after = data.qpos[0]
+        var x_after = d.qpos.data[0]
         var dt = Scalar[DTYPE](Self.get_timestep()) * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / dt
 
         # Health check: qpos[1]=rootz, qpos[2]=rooty
-        var z = data.qpos[1]
-        var angle = data.qpos[2]
+        var z = d.qpos.data[1]
+        var angle = d.qpos.data[2]
         var abs_angle = angle if angle >= Scalar[DTYPE](0.0) else -angle
         var is_healthy = (
             z > Scalar[DTYPE](Self.MIN_Z)

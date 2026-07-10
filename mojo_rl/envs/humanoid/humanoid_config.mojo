@@ -3,7 +3,7 @@
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.fields import DataFields
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,
@@ -39,15 +39,14 @@ struct HumanoidConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut prev_x: Scalar[DTYPE],
     ):
         # Save free joint x position (qpos[0] = torso x translation)
-        prev_x = data.qpos[0]
+        prev_x = d.qpos.data[0]
 
     # === CPU: Reward + termination ===
     @staticmethod
@@ -56,18 +55,17 @@ struct HumanoidConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,
         frame_skip: Int,
     ) -> Tuple[Scalar[DTYPE], Bool]:
         # x velocity from free joint x position change
-        var x_after = data.qpos[0]
+        var x_after = d.qpos.data[0]
         var dt = Scalar[DTYPE](Self.get_timestep()) * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / dt
         var forward_reward = (
@@ -81,7 +79,7 @@ struct HumanoidConfig(Phyics3dEnvConfig):
         ctrl_cost = Scalar[DTYPE](Self.CTRL_COST_WEIGHT) * ctrl_cost
 
         # Health check: torso world z = qpos[2] (after init offsets applied at reset)
-        var z = data.qpos[2]
+        var z = d.qpos.data[2]
         var is_healthy = z >= Scalar[DTYPE](Self.MIN_Z) and z <= Scalar[DTYPE](
             Self.MAX_Z
         )
@@ -89,7 +87,7 @@ struct HumanoidConfig(Phyics3dEnvConfig):
         # NaN check
         if is_healthy:
             for i in range(NQ):
-                var q = data.qpos[i]
+                var q = d.qpos.data[i]
                 if q != q:
                     is_healthy = False
                     break

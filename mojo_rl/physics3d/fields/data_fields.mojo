@@ -88,6 +88,10 @@ struct DataFields[
     var cinert: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*10]
     var subtree_com: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*3]
     var qfrc_actuator: TensorImpl[Self.DTYPE]  # [BATCH, NV]
+    # Mocap body targets (world frame; hook-written, FK skips mocap bodies —
+    # the facades preset the mocap body pose from these before each step)
+    var mocap_pos: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*3]
+    var mocap_quat: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*4]
 
     def __init__(out self) raises:
         comptime B = Self.BATCH
@@ -110,6 +114,8 @@ struct DataFields[
         self.cinert = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 10)
         self.subtree_com = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 3)
         self.qfrc_actuator = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
+        self.mocap_pos = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 3)
+        self.mocap_quat = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 4)
 
     def upload_all(mut self, ctx: DeviceContext) raises:
         """Host -> device for every field (creates/replaces device buffers;
@@ -132,6 +138,8 @@ struct DataFields[
         self.cinert.upload(ctx)
         self.subtree_com.upload(ctx)
         self.qfrc_actuator.upload(ctx)
+        self.mocap_pos.upload(ctx)
+        self.mocap_quat.upload(ctx)
 
     def download_all(mut self, ctx: DeviceContext) raises:
         """Device -> host for every field."""
@@ -153,4 +161,6 @@ struct DataFields[
         self.cinert.download(ctx)
         self.subtree_com.download(ctx)
         self.qfrc_actuator.download(ctx)
+        self.mocap_pos.download(ctx)
+        self.mocap_quat.download(ctx)
 

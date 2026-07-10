@@ -4,7 +4,7 @@ from std.math import sin, cos
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.fields import DataFields
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,
@@ -39,22 +39,21 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         # OBS_DIM=9: [cart_x, sin(q1), sin(q2), cos(q1), cos(q2),
         #              clip(qvel[0:3], -10, 10), 0.0]
-        obs.append(data.qpos[0])
-        obs.append(Scalar[DTYPE](sin(Float64(data.qpos[1]))))
-        obs.append(Scalar[DTYPE](sin(Float64(data.qpos[2]))))
-        obs.append(Scalar[DTYPE](cos(Float64(data.qpos[1]))))
-        obs.append(Scalar[DTYPE](cos(Float64(data.qpos[2]))))
+        obs.append(d.qpos.data[0])
+        obs.append(Scalar[DTYPE](sin(Float64(d.qpos.data[1]))))
+        obs.append(Scalar[DTYPE](sin(Float64(d.qpos.data[2]))))
+        obs.append(Scalar[DTYPE](cos(Float64(d.qpos.data[1]))))
+        obs.append(Scalar[DTYPE](cos(Float64(d.qpos.data[2]))))
         for i in range(3):
-            var v = data.qvel[i]
+            var v = d.qvel.data[i]
             if v > Scalar[DTYPE](10.0):
                 v = Scalar[DTYPE](10.0)
             elif v < Scalar[DTYPE](-10.0):
@@ -70,15 +69,14 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut prev_x: Scalar[DTYPE],
     ):
         # Save cart x position (qpos[0]) — unused for reward but required by trait
-        prev_x = data.qpos[0]
+        prev_x = d.qpos.data[0]
 
     # === CPU: Reward + termination ===
     @staticmethod
@@ -87,19 +85,18 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,
         frame_skip: Int,
     ) -> Tuple[Scalar[DTYPE], Bool]:
-        var q0 = data.qpos[0]  # cart x
-        var q1 = data.qpos[1]  # pole1 angle
-        var q2 = data.qpos[2]  # pole2 angle
+        var q0 = d.qpos.data[0]  # cart x
+        var q1 = d.qpos.data[1]  # pole1 angle
+        var q2 = d.qpos.data[2]  # pole2 angle
 
         # Tip position (analytical from joint angles)
         var pole_len = Scalar[DTYPE](_POLE_LEN)
@@ -117,8 +114,8 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         var dist_penalty = Scalar[DTYPE](0.01) * x_tip * x_tip + (
             z_tip - Scalar[DTYPE](2.0)
         ) * (z_tip - Scalar[DTYPE](2.0))
-        var v1 = data.qvel[1]
-        var v2 = data.qvel[2]
+        var v1 = d.qvel.data[1]
+        var v2 = d.qvel.data[2]
         var vel_penalty = (
             Scalar[DTYPE](1e-3) * v1 * v1 + Scalar[DTYPE](5e-3) * v2 * v2
         )

@@ -11,7 +11,7 @@ from std.math import sqrt
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.fields import DataFields
 
 from .sawyer_reach_xml import SawyerReachModel
 
@@ -76,24 +76,23 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """Extract MetaWorld-style observation: hand + gripper + obj + goal."""
         # Hand position (3)
-        obs.append(data.xpos[HAND_BODY_IDX * 3 + 0])
-        obs.append(data.xpos[HAND_BODY_IDX * 3 + 1])
-        obs.append(data.xpos[HAND_BODY_IDX * 3 + 2])
+        obs.append(d.xpos.data[HAND_BODY_IDX * 3 + 0])
+        obs.append(d.xpos.data[HAND_BODY_IDX * 3 + 1])
+        obs.append(d.xpos.data[HAND_BODY_IDX * 3 + 2])
         # Gripper distance (1) — placeholder (needs finger pad site positions)
         obs.append(Scalar[DTYPE](0.0))
         # Object position (3)
-        obs.append(data.xpos[OBJ_BODY_IDX * 3 + 0])
-        obs.append(data.xpos[OBJ_BODY_IDX * 3 + 1])
-        obs.append(data.xpos[OBJ_BODY_IDX * 3 + 2])
+        obs.append(d.xpos.data[OBJ_BODY_IDX * 3 + 0])
+        obs.append(d.xpos.data[OBJ_BODY_IDX * 3 + 1])
+        obs.append(d.xpos.data[OBJ_BODY_IDX * 3 + 2])
         # Goal position (3)
         obs.append(Scalar[DTYPE](GOAL_X))
         obs.append(Scalar[DTYPE](GOAL_Y))
@@ -107,72 +106,44 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
-        NGEOM: Int,
-        MAX_EQUALITY: Int,
-        CONE_TYPE: Int,
-        MAX_TENDON: Int = 0,
         NSITE: Int = 0,
     ](
-        mut model: Model[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NGEOM,
-            MAX_EQUALITY,
-            CONE_TYPE,
-            MAX_TENDON,
-            NSITE,
-        ],
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
     ):
         # Set initial mocap position (MetaWorld hand_init_pos = [0, 0.6, 0.2])
-        data.set_mocap_pos(
-            MOCAP_BODY_IDX,
-            Scalar[DTYPE](0.0),
-            Scalar[DTYPE](0.6),
-            Scalar[DTYPE](0.2),
-        )
+        d.mocap_pos.data[MOCAP_BODY_IDX * 3 + 0] = Scalar[DTYPE](0.0)
+        d.mocap_pos.data[MOCAP_BODY_IDX * 3 + 1] = Scalar[DTYPE](0.6)
+        d.mocap_pos.data[MOCAP_BODY_IDX * 3 + 2] = Scalar[DTYPE](0.2)
         # Fixed orientation (MetaWorld: quat=[1,0,1,0] wxyz → [0,1,0,1] xyzw)
-        data.set_mocap_quat(
-            MOCAP_BODY_IDX,
-            Scalar[DTYPE](0),
-            Scalar[DTYPE](1),
-            Scalar[DTYPE](0),
-            Scalar[DTYPE](1),
-        )
+        d.mocap_quat.data[MOCAP_BODY_IDX * 4 + 0] = Scalar[DTYPE](0)
+        d.mocap_quat.data[MOCAP_BODY_IDX * 4 + 1] = Scalar[DTYPE](1)
+        d.mocap_quat.data[MOCAP_BODY_IDX * 4 + 2] = Scalar[DTYPE](0)
+        d.mocap_quat.data[MOCAP_BODY_IDX * 4 + 3] = Scalar[DTYPE](1)
 
         # Set initial arm qpos from MuJoCo reference (after _reset_hand warmup).
         # These values place the hand at approximately (0, 0.6, 0.2).
         # Obtained by running MetaWorld SawyerReachEnvV3.reset() in MuJoCo.
-        data.qpos[0] = Scalar[DTYPE](1.889288)  # j0
-        data.qpos[1] = Scalar[DTYPE](-0.575769)  # j1
-        data.qpos[2] = Scalar[DTYPE](-0.976659)  # j2
-        data.qpos[3] = Scalar[DTYPE](1.641991)  # j3
-        data.qpos[4] = Scalar[DTYPE](0.942860)  # j4
-        data.qpos[5] = Scalar[DTYPE](1.043696)  # j5
-        data.qpos[6] = Scalar[DTYPE](2.292833)  # j6
-        data.qpos[7] = Scalar[DTYPE](0.0)  # r_close
-        data.qpos[8] = Scalar[DTYPE](0.0)  # l_close
+        d.qpos.data[0] = Scalar[DTYPE](1.889288)  # j0
+        d.qpos.data[1] = Scalar[DTYPE](-0.575769)  # j1
+        d.qpos.data[2] = Scalar[DTYPE](-0.976659)  # j2
+        d.qpos.data[3] = Scalar[DTYPE](1.641991)  # j3
+        d.qpos.data[4] = Scalar[DTYPE](0.942860)  # j4
+        d.qpos.data[5] = Scalar[DTYPE](1.043696)  # j5
+        d.qpos.data[6] = Scalar[DTYPE](2.292833)  # j6
+        d.qpos.data[7] = Scalar[DTYPE](0.0)  # r_close
+        d.qpos.data[8] = Scalar[DTYPE](0.0)  # l_close
 
         # Object free joint (qpos 9-15): on table at z=0.02
         # (MuJoCo reference position from sawyer_reach_task_xml)
-        data.qpos[9] = Scalar[DTYPE](0.0)  # obj x
-        data.qpos[10] = Scalar[DTYPE](0.6)  # obj y
-        data.qpos[11] = Scalar[DTYPE](0.02)  # obj z (on table)
-        data.qpos[12] = Scalar[DTYPE](1.0)  # obj quat w
-        data.qpos[13] = Scalar[DTYPE](0.0)  # obj quat x
-        data.qpos[14] = Scalar[DTYPE](0.0)  # obj quat y
-        data.qpos[15] = Scalar[DTYPE](0.0)  # obj quat z
-
-        # Run FK to compute xpos from the initial qpos
-        from mojo_rl.physics3d.kinematics import forward_kinematics
-
-        forward_kinematics(model, data)
+        d.qpos.data[9] = Scalar[DTYPE](0.0)  # obj x
+        d.qpos.data[10] = Scalar[DTYPE](0.6)  # obj y
+        d.qpos.data[11] = Scalar[DTYPE](0.02)  # obj z (on table)
+        d.qpos.data[12] = Scalar[DTYPE](1.0)  # obj quat w
+        d.qpos.data[13] = Scalar[DTYPE](0.0)  # obj quat x
+        d.qpos.data[14] = Scalar[DTYPE](0.0)  # obj quat y
+        d.qpos.data[15] = Scalar[DTYPE](0.0)  # obj quat z
+        # (No FK here — the facade runs the fields FK right after this hook.)
 
     # === CPU: Pre-step hook ===
     @staticmethod
@@ -181,11 +152,10 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut prev_x: Scalar[DTYPE],
     ):
         pass
@@ -197,11 +167,10 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         actions: List[Float64],
     ) -> Bool:
         """Apply 4D action as mocap position delta + gripper control."""
@@ -220,26 +189,23 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
             gripper = actions[3]
 
         # Update mocap position (current + delta, clamped to workspace)
-        var cur_x = Float64(data.mocap_pos[MOCAP_BODY_IDX * 3 + 0])
-        var cur_y = Float64(data.mocap_pos[MOCAP_BODY_IDX * 3 + 1])
-        var cur_z = Float64(data.mocap_pos[MOCAP_BODY_IDX * 3 + 2])
+        var cur_x = Float64(d.mocap_pos.data[MOCAP_BODY_IDX * 3 + 0])
+        var cur_y = Float64(d.mocap_pos.data[MOCAP_BODY_IDX * 3 + 1])
+        var cur_z = Float64(d.mocap_pos.data[MOCAP_BODY_IDX * 3 + 2])
 
         var new_x = _clamp(cur_x + dx, MOCAP_LOW_X, MOCAP_HIGH_X)
         var new_y = _clamp(cur_y + dy, MOCAP_LOW_Y, MOCAP_HIGH_Y)
         var new_z = _clamp(cur_z + dz, MOCAP_LOW_Z, MOCAP_HIGH_Z)
 
-        data.set_mocap_pos(
-            MOCAP_BODY_IDX,
-            Scalar[DTYPE](new_x),
-            Scalar[DTYPE](new_y),
-            Scalar[DTYPE](new_z),
-        )
+        d.mocap_pos.data[MOCAP_BODY_IDX * 3 + 0] = Scalar[DTYPE](new_x)
+        d.mocap_pos.data[MOCAP_BODY_IDX * 3 + 1] = Scalar[DTYPE](new_y)
+        d.mocap_pos.data[MOCAP_BODY_IDX * 3 + 2] = Scalar[DTYPE](new_z)
 
         # Gripper: apply as qfrc to the gripper slide joints
         # r_close is DOF 7, l_close is DOF 8 (NOT NV-2/NV-1 which would be
         # the object free joint when an object is present in the model)
-        data.qfrc[7] = Scalar[DTYPE](gripper * 400.0)  # r_close
-        data.qfrc[8] = Scalar[DTYPE](-gripper * 400.0)  # l_close (mirrored)
+        d.qfrc.data[7] = Scalar[DTYPE](gripper * 400.0)  # r_close
+        d.qfrc.data[8] = Scalar[DTYPE](-gripper * 400.0)  # l_close (mirrored)
 
         return True  # Handled — skip MODEL_DEF.apply_actions
 
@@ -250,11 +216,10 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,
@@ -262,9 +227,9 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
     ) -> Tuple[Scalar[DTYPE], Bool]:
         """MetaWorld Reach-v2 reward: 10 * tolerance(reach_dist)."""
         # Hand position (TCP approximation via hand body xpos)
-        var hand_x = Float64(data.xpos[HAND_BODY_IDX * 3 + 0])
-        var hand_y = Float64(data.xpos[HAND_BODY_IDX * 3 + 1])
-        var hand_z = Float64(data.xpos[HAND_BODY_IDX * 3 + 2])
+        var hand_x = Float64(d.xpos.data[HAND_BODY_IDX * 3 + 0])
+        var hand_y = Float64(d.xpos.data[HAND_BODY_IDX * 3 + 1])
+        var hand_z = Float64(d.xpos.data[HAND_BODY_IDX * 3 + 2])
 
         # Distance to goal
         var gdx = hand_x - GOAL_X

@@ -10,7 +10,7 @@ from std.math import sin, cos, sqrt
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.fields import DataFields
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,
@@ -48,11 +48,10 @@ struct ReacherConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut prev_x: Scalar[DTYPE],
     ):
         pass  # No pre-step state needed for Reacher
@@ -64,17 +63,16 @@ struct ReacherConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """Gymnasium Reacher-v5 observation: cos/sin encoding + target pos + vel + delta.
         """
-        var q0 = Float64(data.qpos[0])
-        var q1 = Float64(data.qpos[1])
+        var q0 = Float64(d.qpos.data[0])
+        var q1 = Float64(d.qpos.data[1])
 
         # cos(theta) [2]
         obs.append(Scalar[DTYPE](cos(q0)))
@@ -83,16 +81,16 @@ struct ReacherConfig(Phyics3dEnvConfig):
         obs.append(Scalar[DTYPE](sin(q0)))
         obs.append(Scalar[DTYPE](sin(q1)))
         # target joint positions (qpos[2:4]) [2]
-        obs.append(data.qpos[2])
-        obs.append(data.qpos[3])
+        obs.append(d.qpos.data[2])
+        obs.append(d.qpos.data[3])
         # joint velocities (qvel[0:2]) [2]
-        obs.append(data.qvel[0])
-        obs.append(data.qvel[1])
+        obs.append(d.qvel.data[0])
+        obs.append(d.qvel.data[1])
         # fingertip - target world position delta (x, y only) [2]
-        var ftip_x = data.xpos[FINGERTIP_BODY_IDX * 3 + 0]
-        var ftip_y = data.xpos[FINGERTIP_BODY_IDX * 3 + 1]
-        var tgt_x = data.xpos[TARGET_BODY_IDX * 3 + 0]
-        var tgt_y = data.xpos[TARGET_BODY_IDX * 3 + 1]
+        var ftip_x = d.xpos.data[FINGERTIP_BODY_IDX * 3 + 0]
+        var ftip_y = d.xpos.data[FINGERTIP_BODY_IDX * 3 + 1]
+        var tgt_x = d.xpos.data[TARGET_BODY_IDX * 3 + 0]
+        var tgt_y = d.xpos.data[TARGET_BODY_IDX * 3 + 1]
         obs.append(ftip_x - tgt_x)
         obs.append(ftip_y - tgt_y)
         return True
@@ -104,25 +102,24 @@ struct ReacherConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,
         frame_skip: Int,
     ) -> Tuple[Scalar[DTYPE], Bool]:
         # Distance: fingertip to target (3D Euclidean norm)
-        var dx = Float64(data.xpos[FINGERTIP_BODY_IDX * 3 + 0]) - Float64(
-            data.xpos[TARGET_BODY_IDX * 3 + 0]
+        var dx = Float64(d.xpos.data[FINGERTIP_BODY_IDX * 3 + 0]) - Float64(
+            d.xpos.data[TARGET_BODY_IDX * 3 + 0]
         )
-        var dy = Float64(data.xpos[FINGERTIP_BODY_IDX * 3 + 1]) - Float64(
-            data.xpos[TARGET_BODY_IDX * 3 + 1]
+        var dy = Float64(d.xpos.data[FINGERTIP_BODY_IDX * 3 + 1]) - Float64(
+            d.xpos.data[TARGET_BODY_IDX * 3 + 1]
         )
-        var dz = Float64(data.xpos[FINGERTIP_BODY_IDX * 3 + 2]) - Float64(
-            data.xpos[TARGET_BODY_IDX * 3 + 2]
+        var dz = Float64(d.xpos.data[FINGERTIP_BODY_IDX * 3 + 2]) - Float64(
+            d.xpos.data[TARGET_BODY_IDX * 3 + 2]
         )
         var dist = sqrt(dx * dx + dy * dy + dz * dz)
         var reward_dist = -dist * Self.REWARD_DIST_WEIGHT

@@ -22,6 +22,7 @@ from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser import parse_xml_full
 from mojo_rl.physics3d.parser.xml_parser import parse_xml_model_data
 from mojo_rl.physics3d.types import Model, Data, ConeType
+from mojo_rl.physics3d.fields import DataFields
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from std.testing import assert_true, TestSuite
 
@@ -182,7 +183,7 @@ def test_model_def_from_xml() raises:
         10,
         pm.NGEOM,
         0,
-        ConeType.ELLIPTIC,
+        XmlModel.CONE_TYPE,
         0,
         0,
     ]()
@@ -198,14 +199,15 @@ def test_model_def_from_xml() raises:
     print()
 
     # =========================================================================
-    # Step 5: reset_data + extract_obs
+    # Step 5: reset_data + extract_obs (fields-native hooks; G2)
     # =========================================================================
     print("=== reset_data + extract_obs ===")
-    XmlModel.reset_data[DType.float64](data)
+    var d = DataFields[DType.float64, pm.NQ, pm.NV, pm.NBODY, 10, 0, 1]()
+    XmlModel.reset_data[DType.float64](d)
     print("reset_data succeeded (qpos=0, qvel=0)")
 
     var obs = List[Scalar[DType.float64]]()
-    XmlModel.extract_obs[DType.float64](data, obs)
+    XmlModel.extract_obs[DType.float64](d, obs)
     print("obs length =", len(obs), " (expected", XmlModel.OBS_DIM, ")")
     print("obs[0] =", Float64(obs[0]), " (expected 0.0, qpos[1]=rootz)")
     print("obs[7] =", Float64(obs[7]), " (expected 0.0, qvel[0]=rootx_dot)")
@@ -221,9 +223,9 @@ def test_model_def_from_xml() raises:
         actions.append(Float64(0.0))
     actions[0] = Float64(1.0)  # bthigh motor with gear=120
 
-    XmlModel.apply_actions[DType.float64](data, actions)
+    XmlModel.apply_actions[DType.float64](d, actions)
     # bthigh is joint 3 with dof_adr=3
-    print("qfrc[3] =", Float64(data.qfrc[3]), " (expected 120.0)")
+    print("qfrc[3] =", Float64(d.qfrc.data[3]), " (expected 120.0)")
     print()
 
     # =========================================================================
@@ -231,20 +233,20 @@ def test_model_def_from_xml() raises:
     # =========================================================================
     print("=== enforce_limits ===")
     # Set bthigh qpos[3] out of range (2.0 > 1.05), should be clamped to 1.05
-    data.qpos[3] = Scalar[DType.float64](2.0)
-    XmlModel.enforce_limits[DType.float64](data)
+    d.qpos.data[3] = Scalar[DType.float64](2.0)
+    XmlModel.enforce_limits[DType.float64](d)
     print(
         "bthigh qpos after clamp =",
-        Float64(data.qpos[3]),
+        Float64(d.qpos.data[3]),
         " (expected 1.05)",
     )
 
     # rootx (joint 0) is not limited, should not be clamped
-    data.qpos[0] = Scalar[DType.float64](100.0)
-    XmlModel.enforce_limits[DType.float64](data)
+    d.qpos.data[0] = Scalar[DType.float64](100.0)
+    XmlModel.enforce_limits[DType.float64](d)
     print(
         "rootx qpos after enforce =",
-        Float64(data.qpos[0]),
+        Float64(d.qpos.data[0]),
         " (expected 100.0, not clamped)",
     )
     print()

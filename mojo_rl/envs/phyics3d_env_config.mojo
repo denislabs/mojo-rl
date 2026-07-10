@@ -12,7 +12,7 @@ and termination — no hardcoded assumptions about which joints matter.
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.fields import DataFields
 
 
 trait Phyics3dEnvConfig:
@@ -32,11 +32,10 @@ trait Phyics3dEnvConfig:
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut prev_x: Scalar[DTYPE],
     ):
         """Save per-env state before physics step.
@@ -54,11 +53,10 @@ trait Phyics3dEnvConfig:
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,
@@ -67,7 +65,7 @@ trait Phyics3dEnvConfig:
         """Compute reward and early termination from full physics state.
 
         Args:
-            data: Physics data with qpos, qvel, etc.
+            d: Fields physics state with qpos, qvel, xpos, etc.
             prev_x: Value saved by pre_step_cpu (e.g., previous x position).
             actions: Clamped action values.
             step_count: Current step count (for truncation checking outside).
@@ -86,31 +84,14 @@ trait Phyics3dEnvConfig:
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
-        NGEOM: Int,
-        MAX_EQUALITY: Int,
-        CONE_TYPE: Int,
-        MAX_TENDON: Int = 0,
         NSITE: Int = 0,
     ](
-        mut model: Model[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NGEOM,
-            MAX_EQUALITY,
-            CONE_TYPE,
-            MAX_TENDON,
-            NSITE,
-        ],
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
     ):
-        """Custom reset logic (e.g., set initial mocap position, warmup steps).
-        Default: no-op."""
+        """Custom reset logic (e.g., set initial mocap position, pin goal
+        joints). The facade runs the fields FK after this hook, so writes to
+        qpos/mocap take effect before the first observation. Default: no-op."""
         pass
 
     # === CPU: Custom observation extraction (default: use MODEL_DEF.extract_obs) ===
@@ -120,11 +101,10 @@ trait Phyics3dEnvConfig:
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """Extract observations from data. Return True if handled, False for default.
@@ -141,11 +121,10 @@ trait Phyics3dEnvConfig:
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         actions: List[Float64],
     ) -> Bool:
         """Apply actions to data. Return True if handled, False for default.

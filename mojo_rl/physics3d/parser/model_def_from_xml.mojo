@@ -76,7 +76,7 @@ from mojo_rl.physics3d.gpu.buffer_utils import (
     copy_equality_to_buffer,
     copy_mesh_hull_to_buffer,
 )
-from mojo_rl.physics3d.fields import ModelFields
+from mojo_rl.physics3d.fields import ModelFields, DataFields
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from .full_parser import parse_xml_full
 from .xml_parser import (
@@ -299,15 +299,15 @@ struct ModelDefFromXML[
         # Initialize data.qpos from qpos0 (joint ref values) before FK.
         # invweight0 is computed FIELDS-natively in `init_fields`
         # (compute_invweight0_fields) — no CPU-Model invweight0 here (G1).
-        Self.reset_data(data)
+        Self._reset_data_legacy(data)
         forward_kinematics(model, data)
 
     # =========================================================================
-    # CPU: Joints / Actuators delegates
+    # CPU: state hooks (fields-native; G2)
     # =========================================================================
 
     @staticmethod
-    def reset_data[
+    def _reset_data_legacy[
         DTYPE: DType
     ](
         mut data: Data[
@@ -318,6 +318,41 @@ struct ModelDefFromXML[
             Self.NJOINT,
             Self.MAX_CONTACTS,
             Self.NSITE,
+        ],
+    ):
+        """Legacy-`Data` twin of `reset_data`, used ONLY by
+        `setup_model_and_data` (the legacy CPU model build + the FK-vs-MuJoCo
+        tests rely on it leaving `data` at the reference pose). Dies with
+        `Data` at G4."""
+        comptime if Self._acd.nq > 0:
+            comptime for i in range(Self.NQ):
+                comptime if i < Self._acd.nq:
+                    comptime val = Self._acd.qpos0[i]
+                    data.qpos[i] = Scalar[DTYPE](val)
+                else:
+                    data.qpos[i] = Scalar[DTYPE](0)
+        else:
+            for i in range(Self.NQ):
+                data.qpos[i] = Scalar[DTYPE](0)
+            comptime if Self._acd.free_joint_qpos_adr >= 0:
+                data.qpos[Self._acd.free_joint_qpos_adr + 3] = Scalar[DTYPE](1)
+        for i in range(Self.NV):
+            data.qvel[i] = Scalar[DTYPE](0)
+            data.qacc[i] = Scalar[DTYPE](0)
+            data.qfrc[i] = Scalar[DTYPE](0)
+
+    @staticmethod
+    def reset_data[
+        DTYPE: DType
+    ](
+        mut d: DataFields[
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.MAX_CONTACTS,
+            Self.NSITE,
+            1,
         ],
     ):
         """Reset qpos to initial pose, zero qvel/qacc/qfrc.
@@ -332,79 +367,85 @@ struct ModelDefFromXML[
             comptime for i in range(Self.NQ):
                 comptime if i < Self._acd.nq:
                     comptime val = Self._acd.qpos0[i]
-                    data.qpos[i] = Scalar[DTYPE](val)
+                    d.qpos.data[i] = Scalar[DTYPE](val)
                 else:
-                    data.qpos[i] = Scalar[DTYPE](0)
+                    d.qpos.data[i] = Scalar[DTYPE](0)
         else:
             # No init_qpos — zero everything, then fix free-joint quaternion.
             for i in range(Self.NQ):
-                data.qpos[i] = Scalar[DTYPE](0)
+                d.qpos.data[i] = Scalar[DTYPE](0)
             comptime if Self._acd.free_joint_qpos_adr >= 0:
                 # qpos[adr+3] is qw for a free joint (MuJoCo convention:
                 # [tx, ty, tz, qw, qx, qy, qz]).  Set qw=1 for identity.
-                data.qpos[Self._acd.free_joint_qpos_adr + 3] = Scalar[DTYPE](1)
+                d.qpos.data[Self._acd.free_joint_qpos_adr + 3] = Scalar[
+                    DTYPE
+                ](1)
         for i in range(Self.NV):
-            data.qvel[i] = Scalar[DTYPE](0)
-            data.qacc[i] = Scalar[DTYPE](0)
-            data.qfrc[i] = Scalar[DTYPE](0)
+            d.qvel.data[i] = Scalar[DTYPE](0)
+            d.qacc.data[i] = Scalar[DTYPE](0)
+            d.qfrc.data[i] = Scalar[DTYPE](0)
 
     @staticmethod
     def extract_obs[
         DTYPE: DType
     ](
-        data: Data[
+        d: DataFields[
             DTYPE,
             Self.NQ,
             Self.NV,
             Self.NBODY,
-            Self.NJOINT,
             Self.MAX_CONTACTS,
             Self.NSITE,
+            1,
         ],
         mut obs: List[Scalar[DTYPE]],
     ):
         """Extract observation: qpos[obs_qpos_skip:] followed by qvel[:]."""
         for i in range(Self.NQ - Self.obs_qpos_skip):
-            obs.append(data.qpos[Self.obs_qpos_skip + i])
+            obs.append(d.qpos.data[Self.obs_qpos_skip + i])
         for i in range(Self.NV):
-            obs.append(data.qvel[i])
+            obs.append(d.qvel.data[i])
 
     @staticmethod
     def enforce_limits[
         DTYPE: DType
     ](
-        mut data: Data[
+        mut d: DataFields[
             DTYPE,
             Self.NQ,
             Self.NV,
             Self.NBODY,
-            Self.NJOINT,
             Self.MAX_CONTACTS,
             Self.NSITE,
+            1,
         ],
     ):
         """Clamp qpos to joint range limits (limited joints only)."""
         for j in range(Self.NJOINT):
             if Self._acd.joint_is_limited[j]:
                 var qp_adr = Self._acd.joint_qpos_adr[j]
-                var v = data.qpos[qp_adr]
+                var v = d.qpos.data[qp_adr]
                 if v < Scalar[DTYPE](Self._acd.joint_range_min[j]):
-                    data.qpos[qp_adr] = Scalar[DTYPE](Self._acd.joint_range_min[j])
+                    d.qpos.data[qp_adr] = Scalar[DTYPE](
+                        Self._acd.joint_range_min[j]
+                    )
                 elif v > Scalar[DTYPE](Self._acd.joint_range_max[j]):
-                    data.qpos[qp_adr] = Scalar[DTYPE](Self._acd.joint_range_max[j])
+                    d.qpos.data[qp_adr] = Scalar[DTYPE](
+                        Self._acd.joint_range_max[j]
+                    )
 
     @staticmethod
     def apply_actions[
         DTYPE: DType
     ](
-        mut data: Data[
+        mut d: DataFields[
             DTYPE,
             Self.NQ,
             Self.NV,
             Self.NBODY,
-            Self.NJOINT,
             Self.MAX_CONTACTS,
             Self.NSITE,
+            1,
         ],
         actions: List[Float64],
     ):
@@ -421,7 +462,7 @@ struct ModelDefFromXML[
                 ctrl = Self._acd.motor_ctrl_max[i]
             elif ctrl < Self._acd.motor_ctrl_min[i]:
                 ctrl = Self._acd.motor_ctrl_min[i]
-            data.qfrc[dof_adr] = Scalar[DTYPE](
+            d.qfrc.data[dof_adr] = Scalar[DTYPE](
                 Self._acd.motor_gears[i] * ctrl
             )
 

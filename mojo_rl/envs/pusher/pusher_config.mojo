@@ -11,7 +11,7 @@ from std.math import sqrt
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.fields import DataFields
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,
@@ -52,11 +52,10 @@ struct PusherConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut prev_x: Scalar[DTYPE],
     ):
         pass  # No pre-step state needed for Pusher
@@ -68,20 +67,19 @@ struct PusherConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
-    ](mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],):
+    ](mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]):
         # Fix goal position: set goal slide joints to 0 (stays at XML body pos)
         # Goal joints are at indices 9 and 10 (goal_slidey, goal_slidex)
-        data.qpos[9] = Scalar[DTYPE](0)
-        data.qpos[10] = Scalar[DTYPE](0)
+        d.qpos.data[9] = Scalar[DTYPE](0)
+        d.qpos.data[10] = Scalar[DTYPE](0)
         # Zero goal velocities
-        data.qvel[9] = Scalar[DTYPE](0)
-        data.qvel[10] = Scalar[DTYPE](0)
+        d.qvel.data[9] = Scalar[DTYPE](0)
+        d.qvel.data[10] = Scalar[DTYPE](0)
         # Zero object velocities (object position gets noise from standard reset)
-        data.qvel[7] = Scalar[DTYPE](0)
-        data.qvel[8] = Scalar[DTYPE](0)
+        d.qvel.data[7] = Scalar[DTYPE](0)
+        d.qvel.data[8] = Scalar[DTYPE](0)
 
     # === CPU: Custom observation extraction ===
     @staticmethod
@@ -90,33 +88,32 @@ struct PusherConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """Gymnasium Pusher-v5 observation: qpos[:7] + qvel[:7] + 3 body positions.
         """
         # Arm joint positions [7]
         for i in range(NUM_ARM_JOINTS):
-            obs.append(data.qpos[i])
+            obs.append(d.qpos.data[i])
         # Arm joint velocities [7]
         for i in range(NUM_ARM_JOINTS):
-            obs.append(data.qvel[i])
+            obs.append(d.qvel.data[i])
         # Fingertip (tips_arm) world position [3]
-        obs.append(data.xpos[TIPS_ARM_BODY_IDX * 3 + 0])
-        obs.append(data.xpos[TIPS_ARM_BODY_IDX * 3 + 1])
-        obs.append(data.xpos[TIPS_ARM_BODY_IDX * 3 + 2])
+        obs.append(d.xpos.data[TIPS_ARM_BODY_IDX * 3 + 0])
+        obs.append(d.xpos.data[TIPS_ARM_BODY_IDX * 3 + 1])
+        obs.append(d.xpos.data[TIPS_ARM_BODY_IDX * 3 + 2])
         # Object world position [3]
-        obs.append(data.xpos[OBJECT_BODY_IDX * 3 + 0])
-        obs.append(data.xpos[OBJECT_BODY_IDX * 3 + 1])
-        obs.append(data.xpos[OBJECT_BODY_IDX * 3 + 2])
+        obs.append(d.xpos.data[OBJECT_BODY_IDX * 3 + 0])
+        obs.append(d.xpos.data[OBJECT_BODY_IDX * 3 + 1])
+        obs.append(d.xpos.data[OBJECT_BODY_IDX * 3 + 2])
         # Goal world position [3]
-        obs.append(data.xpos[GOAL_BODY_IDX * 3 + 0])
-        obs.append(data.xpos[GOAL_BODY_IDX * 3 + 1])
-        obs.append(data.xpos[GOAL_BODY_IDX * 3 + 2])
+        obs.append(d.xpos.data[GOAL_BODY_IDX * 3 + 0])
+        obs.append(d.xpos.data[GOAL_BODY_IDX * 3 + 1])
+        obs.append(d.xpos.data[GOAL_BODY_IDX * 3 + 2])
         return True
 
     # === CPU: Reward + termination ===
@@ -126,32 +123,31 @@ struct PusherConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,
         frame_skip: Int,
     ) -> Tuple[Scalar[DTYPE], Bool]:
         # Object - Goal distance
-        var obj_x = Float64(data.xpos[OBJECT_BODY_IDX * 3 + 0])
-        var obj_y = Float64(data.xpos[OBJECT_BODY_IDX * 3 + 1])
-        var obj_z = Float64(data.xpos[OBJECT_BODY_IDX * 3 + 2])
-        var goal_x = Float64(data.xpos[GOAL_BODY_IDX * 3 + 0])
-        var goal_y = Float64(data.xpos[GOAL_BODY_IDX * 3 + 1])
-        var goal_z = Float64(data.xpos[GOAL_BODY_IDX * 3 + 2])
+        var obj_x = Float64(d.xpos.data[OBJECT_BODY_IDX * 3 + 0])
+        var obj_y = Float64(d.xpos.data[OBJECT_BODY_IDX * 3 + 1])
+        var obj_z = Float64(d.xpos.data[OBJECT_BODY_IDX * 3 + 2])
+        var goal_x = Float64(d.xpos.data[GOAL_BODY_IDX * 3 + 0])
+        var goal_y = Float64(d.xpos.data[GOAL_BODY_IDX * 3 + 1])
+        var goal_z = Float64(d.xpos.data[GOAL_BODY_IDX * 3 + 2])
         var d2_x = obj_x - goal_x
         var d2_y = obj_y - goal_y
         var d2_z = obj_z - goal_z
         var dist_obj_goal = sqrt(d2_x * d2_x + d2_y * d2_y + d2_z * d2_z)
 
         # Fingertip - Object distance
-        var tip_x = Float64(data.xpos[TIPS_ARM_BODY_IDX * 3 + 0])
-        var tip_y = Float64(data.xpos[TIPS_ARM_BODY_IDX * 3 + 1])
-        var tip_z = Float64(data.xpos[TIPS_ARM_BODY_IDX * 3 + 2])
+        var tip_x = Float64(d.xpos.data[TIPS_ARM_BODY_IDX * 3 + 0])
+        var tip_y = Float64(d.xpos.data[TIPS_ARM_BODY_IDX * 3 + 1])
+        var tip_z = Float64(d.xpos.data[TIPS_ARM_BODY_IDX * 3 + 2])
         var d1_x = obj_x - tip_x
         var d1_y = obj_y - tip_y
         var d1_z = obj_z - tip_z

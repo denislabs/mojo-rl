@@ -1,19 +1,17 @@
 """Generic physics3d environment on the PER-FIELD tensor path (migration P5).
 
-`Phyics3dEnvFields[MODEL_DEF, CONFIG]` is the fields-path counterpart of
-`Phyics3dEnv`: same MODEL_DEF/CONFIG parameterization, same
-`BoxContinuousActionEnv` surface (drop-in for the CPU training drivers), but
-the PHYSICS runs through `RK4IntegratorFields` over `DataFields` /
+`Phyics3dEnvFields[MODEL_DEF, CONFIG]` is the generic single-env CPU MuJoCo
+environment: MODEL_DEF/CONFIG parameterization over the
+`BoxContinuousActionEnv` surface (drop-in for the CPU training drivers), with
+the PHYSICS running through `RK4IntegratorFields` over `DataFields` /
 `ModelFields` — no state slab, no workspace slab, no offsets.
 
-Bridge design (transitional, dies at P6): a legacy `Model`/`Data` pair is
-kept ONLY as an adapter for the existing comptime hooks that still speak
-struct-Data — `MODEL_DEF.reset_data` / `apply_actions` / `extract_obs` and
-the CONFIG reward/termination/pre-step hooks. Per step that costs copying
-qpos/qvel/qfrc (+ the FK products xpos/xquat/xipos, which the fields step
-already computed) between the bridge and the field tensors — O(NQ+NV+NBODY)
-scalars, negligible next to the physics. Zero changes to any MODEL_DEF or
-CONFIG.
+G2: the legacy `Model`/`Data` hooks-adapter bridge is GONE — every CPU hook
+(`MODEL_DEF.reset_data` / `apply_actions` / `extract_obs` and the CONFIG
+reward/termination/pre-step/custom hooks) is fields-native and reads/writes
+`self.d` directly. Mocap targets live in `d.mocap_pos`/`d.mocap_quat`
+(hook-written); `_sync_mocap_to_fields` presets the mocap body world pose
+from them before FK/stepping.
 
 Scope (full parity with the legacy CPU env):
 - Contacts + joint limits: the integrator runs detection + the constraint
@@ -36,14 +34,19 @@ from mojo_rl.core.env_traits import BoxContinuousActionEnv, RenderableEnv
 from mojo_rl.core.obs_state import ObsState
 from mojo_rl.core.cont_action import ContAction
 
-from mojo_rl.physics3d.types import Model, Data
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.physics3d.model.model_renderer import ModelRenderer
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
+    forward_kinematics_fields,
+)
 from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.integrator.rk4_fields import RK4IntegratorFields
 from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
-from mojo_rl.physics3d.gpu.constants import model_size_with_invweight
+from mojo_rl.physics3d.gpu.constants import (
+    model_size_with_invweight,
+    MODEL_BODY_SIZE,
+    BODY_IDX_MOCAP,
+)
 from mojo_rl.nn.core.tensor import TensorImpl
 
 from .phyics3d_env_config import Phyics3dEnvConfig
@@ -89,31 +92,7 @@ struct Phyics3dEnvFields[
         NSITE=Self.NSITE,
     ]()
 
-    # Legacy bridge (hooks adapter only — physics never touches it)
-    var model: Model[
-        Self.DTYPE,
-        Self.NQ,
-        Self.NV,
-        Self.NBODY,
-        Self.NJOINT,
-        Self.MAX_CONTACTS,
-        Self.NGEOM,
-        Self.MODEL_DEF.MAX_EQUALITY,
-        Self.MODEL_DEF.CONE_TYPE,
-        Self.MODEL_DEF.MAX_TENDON,
-        Self.NSITE,
-    ]
-    var data: Data[
-        Self.DTYPE,
-        Self.NQ,
-        Self.NV,
-        Self.NBODY,
-        Self.NJOINT,
-        Self.MAX_CONTACTS,
-        Self.NSITE,
-    ]
-
-    # Fields path (the actual physics state)
+    # Fields path (the physics state; hooks read/write it directly)
     var mf: ModelFields[
         Self.DTYPE,
         Self.NV,
@@ -159,8 +138,8 @@ struct Phyics3dEnvFields[
     var _last_terminated: Bool
     var prev_x: Scalar[Self.DTYPE]
 
-    # Renderer (optional; RenderableEnv). Reads the bridge `self.data` FK
-    # products, which the fields step re-syncs every frame.
+    # Renderer (optional; RenderableEnv). Reads the fields FK products
+    # (`self.d.xpos`/`xquat`), which the fields step refreshes every frame.
     var _renderer: Optional[
         UnsafePointer[ModelRenderer[Self.MODEL_DEF], MutUntrackedOrigin]
     ]
@@ -195,17 +174,10 @@ struct Phyics3dEnvFields[
         self._renderer = None
         self._renderer_initialized = False
 
-        self.model = type_of(self.model)()
-        self.data = type_of(self.data)()
-        Self.MODEL_DEF.setup_model_and_data(self.model, self.data)
-
-        # Build the model record tensors offset-free, directly from the CPU
-        # `Model` (P6 fields-native build): no flat slab, no cross-family offset
-        # tables, no load_from_slab round-trip. `init_fields` runs the same
-        # setup_model_and_data (so dof_invweight0 — the constraint inverse-weight
-        # the contact solver scales impulses by — is populated) and writes every
-        # record tensor via load_from_model. Fixes the two init_model_gpu bugs
-        # (mesh under-sizing, equality never serialized) by construction.
+        # Build the model record tensors offset-free (P6 fields-native build):
+        # no flat slab, no cross-family offset tables. `init_fields` writes
+        # every record tensor via load_from_model and computes invweight0
+        # fields-natively (G1).
         self.mf = type_of(self.mf)()
         Self.MODEL_DEF.init_fields[Self.DTYPE, 0](ctx, self.mf)
 
@@ -213,97 +185,96 @@ struct Phyics3dEnvFields[
         self.integ_rk4 = Self.IntegRK4()
         self.integ_euler = Self.IntegEuler()
 
-        self._sync_fields_from_bridge()
+        # Reference pose + fresh FK products so get_state()/renderer reads
+        # are valid before the first reset().
+        Self.MODEL_DEF.reset_data(self.d)
         self._sync_mocap_to_fields()
-        Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
+        self._fields_fk()
+        Self.CONFIG.pre_step_cpu(self.d, self.prev_x)
         # Fluid forces (density/viscosity > 0) are applied inside the fields
         # integrator step (dynamics/fluid_forces_fields.mojo); no guard needed.
 
-    # ── bridge sync (transitional; O(NQ+NV+NBODY) scalars) ───────────────
-    def _sync_fields_from_bridge(mut self):
-        for i in range(Self.NQ):
-            self.d.qpos.data[i] = self.data.qpos[i]
-        for i in range(Self.NV):
-            self.d.qvel.data[i] = self.data.qvel[i]
-
-    def _sync_bridge_from_fields(mut self):
-        for i in range(Self.NQ):
-            self.data.qpos[i] = self.d.qpos.data[i]
-        for i in range(Self.NV):
-            self.data.qvel[i] = self.d.qvel.data[i]
-            self.data.qacc[i] = self.d.qacc.data[i]
-        # FK products (already computed by the fields step) so extract_obs /
-        # reward hooks that read world poses see fresh values.
-        for i in range(Self.NBODY * 3):
-            self.data.xpos[i] = self.d.xpos.data[i]
-            self.data.xipos[i] = self.d.xipos.data[i]
-        for i in range(Self.NBODY * 4):
-            self.data.xquat[i] = self.d.xquat.data[i]
-        comptime if Self.NSITE > 0:
-            for i in range(Self.NSITE * 3):
-                self.data.site_xpos[i] = self.d.site_xpos.data[i]
+    # ── kinematics / mocap helpers ─────────────────────────────────────────
+    def _fields_fk(mut self):
+        """Fields FK (CPU): refresh xpos/xquat/xipos from qpos so obs/reward
+        hooks that read world poses see fresh values outside the integrator
+        step (ctor / reset / set_state). Skips mocap bodies."""
+        try:
+            # CPU target: cannot actually raise (the `raises` exists for the
+            # GPU branch's ctx handling).
+            forward_kinematics_fields[
+                "cpu", Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
+                Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
+                Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
+                Self.MODEL_DEF.NEXCLUDE, 0, 1,
+            ](self.d, self.mf, None)
+        except e:
+            print("Phyics3dEnvFields._fields_fk: FK error:", e)
 
     def _sync_mocap_to_fields(mut self):
-        """Mocap actuation bridge: the CONFIG hooks write the mocap target into
-        the legacy `self.data.mocap_pos/quat` (per step / on reset); preset the
-        corresponding fields-body world pose so the fields FK — which SKIPS
-        mocap bodies — leaves the target in place and the weld/equality solve
-        (SOLVER=newton) tracks it. Zero-cost for non-mocap models (MAX_EQUALITY
-        gate + the `body_mocap` flag is False everywhere else)."""
+        """Mocap actuation: the CONFIG hooks write the mocap target into
+        `d.mocap_pos`/`d.mocap_quat` (per step / on reset); preset the
+        corresponding body world pose so the fields FK — which SKIPS mocap
+        bodies — leaves the target in place and the weld/equality solve
+        (SOLVER=newton) tracks it. Zero-cost for non-mocap models
+        (MAX_EQUALITY gate + the body mocap flag is 0 everywhere else)."""
         comptime if Self.MODEL_DEF.MAX_EQUALITY > 0:
             for b in range(Self.NBODY):
-                if not self.model.body_mocap[b]:
+                if (
+                    self.mf.bodies.data[
+                        b * MODEL_BODY_SIZE + BODY_IDX_MOCAP
+                    ]
+                    == 0
+                ):
                     continue
                 for k in range(3):
-                    var p = self.data.mocap_pos[b * 3 + k]
+                    var p = self.d.mocap_pos.data[b * 3 + k]
                     self.d.xpos.data[b * 3 + k] = p
                     self.d.xipos.data[b * 3 + k] = p
                 for k in range(4):
-                    self.d.xquat.data[b * 4 + k] = self.data.mocap_quat[
+                    self.d.xquat.data[b * 4 + k] = self.d.mocap_quat.data[
                         b * 4 + k
                     ]
 
     # ── state management ─────────────────────────────────────────────────
     def _reset_state(mut self):
-        """Legacy reset semantics (qpos0 + uniform noise + custom hook),
-        then hand the state to the fields path."""
-        Self.MODEL_DEF.reset_data(self.data)
+        """Reset semantics (qpos0 + uniform noise + custom hook), all on the
+        fields state."""
+        Self.MODEL_DEF.reset_data(self.d)
         var noise_scale = Self.CONFIG.get_reset_noise()
         if noise_scale > 0.0:
             for i in range(Self.NQ):
                 var noise = Scalar[Self.dtype](
                     (random_float64() * 2.0 - 1.0) * noise_scale
                 )
-                self.data.qpos[i] = self.data.qpos[i] + noise
+                self.d.qpos.data[i] = self.d.qpos.data[i] + noise
             for i in range(Self.NV):
                 var noise = Scalar[Self.dtype](
                     (random_float64() * 2.0 - 1.0) * noise_scale
                 )
-                self.data.qvel[i] = self.data.qvel[i] + noise
-        Self.CONFIG.custom_reset_cpu(self.model, self.data)
-        forward_kinematics(self.model, self.data)  # fresh obs before step 1
+                self.d.qvel.data[i] = self.d.qvel.data[i] + noise
+        Self.CONFIG.custom_reset_cpu(self.d)
+        self._sync_mocap_to_fields()
+        self._fields_fk()  # fresh obs before step 1
         self.current_step = 0
         self.prev_x = Scalar[Self.dtype](0)
         self._last_terminated = False
-        Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
-        self._sync_fields_from_bridge()
-        self._sync_mocap_to_fields()
+        Self.CONFIG.pre_step_cpu(self.d, self.prev_x)
 
     def set_state(mut self, qpos: List[Float64], qvel: List[Float64]):
         """Deterministic state injection (tests / eval)."""
         for i in range(min(Self.NQ, len(qpos))):
-            self.data.qpos[i] = Scalar[Self.dtype](qpos[i])
+            self.d.qpos.data[i] = Scalar[Self.dtype](qpos[i])
         for i in range(min(Self.NV, len(qvel))):
-            self.data.qvel[i] = Scalar[Self.dtype](qvel[i])
-        forward_kinematics(self.model, self.data)
-        self._sync_fields_from_bridge()
+            self.d.qvel.data[i] = Scalar[Self.dtype](qvel[i])
         self._sync_mocap_to_fields()
+        self._fields_fk()
 
     def _get_obs(self) -> ObsState[Self.MODEL_DEF.OBS_DIM]:
         var obs_list = List[Scalar[Self.DTYPE]](capacity=Self.OBS_DIM)
-        var custom = Self.CONFIG.custom_extract_obs_cpu(self.data, obs_list)
+        var custom = Self.CONFIG.custom_extract_obs_cpu(self.d, obs_list)
         if not custom:
-            Self.MODEL_DEF.extract_obs(self.data, obs_list)
+            Self.MODEL_DEF.extract_obs(self.d, obs_list)
         var obs = ObsState[Self.MODEL_DEF.OBS_DIM]()
         for i in range(Self.OBS_DIM):
             obs.data[i] = Float64(obs_list[i])
@@ -317,19 +288,17 @@ struct Phyics3dEnvFields[
     def step(
         mut self, action: Self.ActionType, verbose: Bool = False
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
-        Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
+        Self.CONFIG.pre_step_cpu(self.d, self.prev_x)
 
-        # Actions via the existing comptime actuator logic (per-motor
-        # ctrlrange clamp + gear), then hand qfrc to the fields path.
+        # Actions via the comptime actuator logic (per-motor ctrlrange clamp
+        # + gear), written straight into the fields qfrc.
         var clamped_action = action.copy()
         var action_list = clamped_action.to_list()
         var custom_applied = Self.CONFIG.custom_apply_actions_cpu(
-            self.data, action_list
+            self.d, action_list
         )
         if not custom_applied:
-            Self.MODEL_DEF.apply_actions(self.data, action_list)
-        for i in range(Self.NV):
-            self.d.qfrc.data[i] = self.data.qfrc[i]
+            Self.MODEL_DEF.apply_actions(self.d, action_list)
         # Mocap-controlled models (SawyerReach): push the updated mocap target
         # into the fields body poses before the step so the weld solve tracks it.
         self._sync_mocap_to_fields()
@@ -347,11 +316,10 @@ struct Phyics3dEnvFields[
             except e:
                 print("Phyics3dEnvFields.step: physics error:", e)
 
-        self._sync_bridge_from_fields()
         self.current_step += 1
 
         var result = Self.CONFIG.compute_reward_and_done_cpu(
-            self.data,
+            self.d,
             self.prev_x,
             clamped_action.to_list(),
             self.current_step,
@@ -375,18 +343,17 @@ struct Phyics3dEnvFields[
     def close(mut self):
         pass
 
-    # ── Render accessors (read the bridge `self.data`) ────────────────────
+    # ── Render accessors (read the fields FK products) ────────────────────
     def get_xpos(self, idx: Int) -> Scalar[Self.DTYPE]:
-        return self.data.xpos[idx]
+        return self.d.xpos.data[idx]
 
     def get_xquat(self, idx: Int) -> Scalar[Self.DTYPE]:
-        return self.data.xquat[idx]
+        return self.d.xquat.data[idx]
 
     def get_x_velocity(self) -> Scalar[Self.DTYPE]:
-        return self.data.qvel[0]
+        return self.d.qvel.data[0]
 
-    # ── RenderableEnv (mirrors Phyics3dEnv; renders the fields physics via
-    #    the bridge poses) ──────────────────────────────────────────────────
+    # ── RenderableEnv (mirrors the legacy env; renders the fields poses) ──
     def init_renderer(mut self) raises -> Bool:
         return self._init_renderer(show_velocity=True)
 
@@ -484,9 +451,9 @@ struct Phyics3dEnvFields[
     # ── ContinuousStateEnv ────────────────────────────────────────────────
     def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         var obs = List[Scalar[Self.dtype]](capacity=Self.OBS_DIM)
-        var custom = Self.CONFIG.custom_extract_obs_cpu(self.data, obs)
+        var custom = Self.CONFIG.custom_extract_obs_cpu(self.d, obs)
         if not custom:
-            Self.MODEL_DEF.extract_obs(self.data, obs)
+            Self.MODEL_DEF.extract_obs(self.d, obs)
         return obs^
 
     def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:

@@ -3,7 +3,7 @@
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.fields import DataFields
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,
@@ -33,15 +33,14 @@ struct HumanoidStandupConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut prev_x: Scalar[DTYPE],
     ):
         # Save free joint x position (unused for uph reward, but required by trait)
-        prev_x = data.qpos[0]
+        prev_x = d.qpos.data[0]
 
     # === CPU: Reward + termination ===
     @staticmethod
@@ -50,11 +49,10 @@ struct HumanoidStandupConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,
@@ -62,7 +60,7 @@ struct HumanoidStandupConfig(Phyics3dEnvConfig):
     ) -> Tuple[Scalar[DTYPE], Bool]:
         # uph_cost: torso z position / timestep (height-velocity proxy)
         # qpos[2] = free joint z translation = world z of torso (after init adds 0.105)
-        var pos_after = data.qpos[2]
+        var pos_after = d.qpos.data[2]
         var timestep = Scalar[DTYPE](Self.get_timestep())
         var uph_cost = pos_after / timestep
 

@@ -2,7 +2,7 @@
 
 Provides BodySpec, JointSpec, GeomSpec, and ActuatorSpec traits with concrete
 implementations and variadic containers (Bodies, Joints, Geoms, Actuators)
-plus a ModelDef compositor.
+plus the ModelDefLike trait (implemented by ModelDefFromXML).
 """
 
 from .body_spec import (
@@ -90,6 +90,6 @@ from .camera_spec import (
     _EmptyCameras,
     Cameras,
 )
-from .model_def import ModelDef, ModelDefLike
+from .model_def import ModelDefLike
 from .inertia_from_geom import compute_inertia_from_geoms
 from .model_renderer import ModelRenderer
