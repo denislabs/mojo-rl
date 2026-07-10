@@ -12,8 +12,6 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.solver import NewtonSolver
-from mojo_rl.physics3d.integrator import EulerIntegrator
 
 from .sawyer_reach_xml import SawyerReachModel
 
@@ -70,39 +68,6 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
 
     comptime INTEGRATOR_WS_EXTRA: Int = 0  # Euler doesn't need extra
     comptime INTEGRATOR: StaticString = "euler"  # matches physics_substep (Euler+Newton) workspace
-
-    # === CPU: Integrator step ===
-    @staticmethod
-    def physics_substep[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        MAX_CONTACTS: Int,
-        NGEOM: Int,
-        MAX_EQUALITY: Int,
-        CONE_TYPE: Int,
-        MAX_TENDON: Int = 0,
-        NSITE: Int = 0,
-    ](
-        mut model: Model[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NGEOM,
-            MAX_EQUALITY,
-            CONE_TYPE,
-            MAX_TENDON,
-            NSITE,
-        ],
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-        verbose: Bool,
-    ):
-        EulerIntegrator[SOLVER=NewtonSolver].step(model, data, verbose=verbose)
 
     # === CPU: Custom observation extraction ===
     @staticmethod
@@ -333,28 +298,6 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         return 0.0  # MetaWorld uses specific reset, not noise
 
     # === GPU stubs (CPU-only for now) ===
-    @staticmethod
-    def physics_substep_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        MAX_CONTACTS: Int,
-        NGEOM: Int,
-        MAX_EQUALITY: Int,
-        CONE_TYPE: Int,
-        MAX_TENDON: Int = 0,
-        NSITE: Int = 0,
-    ](
-        ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[DTYPE],
-        mut model_buf: DeviceBuffer[DTYPE],
-        mut workspace_buf: DeviceBuffer[DTYPE],
-    ) raises:
-        pass
-
     @always_inline
     @staticmethod
     def pre_step_gpu[

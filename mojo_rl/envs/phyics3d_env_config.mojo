@@ -13,8 +13,6 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.integrator import RK4Integrator
-from mojo_rl.physics3d.solver import NewtonSolver
 
 
 trait Phyics3dEnvConfig:
@@ -22,57 +20,10 @@ trait Phyics3dEnvConfig:
     comptime FRAME_SKIP: Int
     comptime MAX_STEPS: Int
     comptime INTEGRATOR_WS_EXTRA: Int  # 0 for RK4/Euler, >0 for ImplicitFast
-    # Which fields integrator the P5+ facades use. MUST match the integrator
-    # this config's `physics_substep`/`physics_substep_gpu` call (the CPU/GPU
-    # pair are always the same scheme). Default "rk4" = the trait-default
-    # physics_substep (RK4+Newton, 9/12 envs); envs that override the substep
-    # to Euler (HalfCheetah, Pusher, MetaWorld) MUST override this to "euler".
+    # Which fields integrator the facades dispatch on ("rk4" | "euler"), with
+    # Newton as the solver. Default "rk4" (9/12 envs); HalfCheetah/Pusher/
+    # MetaWorld override to "euler".
     comptime INTEGRATOR: StaticString = "rk4"
-
-    # === CPU: Integrator step ===
-    @staticmethod
-    def physics_substep[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        MAX_CONTACTS: Int,
-        NGEOM: Int,
-        MAX_EQUALITY: Int,
-        CONE_TYPE: Int,
-        MAX_TENDON: Int = 0,
-        NSITE: Int = 0,
-    ](
-        mut model: Model[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NGEOM,
-            MAX_EQUALITY,
-            CONE_TYPE,
-            MAX_TENDON,
-            NSITE,
-        ],
-        mut data: Data[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NSITE,
-        ],
-        verbose: Bool,
-    ):
-        """One physics substep. DEFAULT = RK4 + Newton (what 9 of the 12
-        env configs used verbatim); envs on a different integrator (e.g.
-        HalfCheetah's Euler) override BOTH this and `physics_substep_gpu`
-        — the CPU/GPU pair must stay on the SAME integrator."""
-        RK4Integrator[SOLVER=NewtonSolver].step(model, data)
 
     # === CPU: Pre-step hook — save any per-env state before physics ===
     @staticmethod
@@ -214,45 +165,6 @@ trait Phyics3dEnvConfig:
     @staticmethod
     def get_reset_noise() -> Float64:
         ...
-
-    # === GPU: Integrator step ===
-    @staticmethod
-    def physics_substep_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        MAX_CONTACTS: Int,
-        NGEOM: Int,
-        MAX_EQUALITY: Int,
-        CONE_TYPE: Int,
-        MAX_TENDON: Int = 0,
-        NSITE: Int = 0,
-    ](
-        ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[DTYPE],
-        mut model_buf: DeviceBuffer[DTYPE],
-        mut workspace_buf: DeviceBuffer[DTYPE],
-    ) raises:
-        """GPU twin of `physics_substep` — DEFAULT = RK4 + Newton.
-        Override together with the CPU method (same integrator both
-        sides)."""
-        RK4Integrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            BATCH_SIZE,
-            NGEOM,
-            CONE_TYPE=CONE_TYPE,
-            MAX_TENDON=MAX_TENDON,
-            NSITE=NSITE,
-            STEP_THREADS=NV,
-        ](ctx, states_buf, model_buf, workspace_buf)
 
     # === GPU inline: Pre-step hook ===
     @always_inline
