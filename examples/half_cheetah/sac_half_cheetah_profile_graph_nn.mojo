@@ -33,8 +33,8 @@ from mojo_rl.nn.primitives.linear_relu import LinearReLU
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
+from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
 
 
 # ─── Profiling knobs ──────────────────────────────────────────────────────
@@ -42,7 +42,6 @@ comptime USE_TRAIN_CUDA_GRAPH = True
 comptime EPISODE_SYNC_EVERY = 32
 
 # ─── Sizing (mirrors sac_half_cheetah_profile_graph.mojo exactly) ──────────
-comptime EnvT = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
 comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM  # 6
 comptime HIDDEN = 256
@@ -52,7 +51,9 @@ comptime N_ENVS = 32
 comptime NUM_STEPS = 50_000
 comptime WARMUP_STEPS = 1_000
 
-comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
+comptime BatchedEnvT = Phyics3dBatchedEnvFields[
+    HalfCheetahModel, HalfCheetahConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=False
+]
 comptime ActorNet = StochasticActor[
     OBS_DIM,
     ACT_DIM,

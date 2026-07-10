@@ -8,7 +8,7 @@ counterpart of the legacy `sac_hopper_training_gpu.mojo` (which uses
   * `SAC["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
     off-policy driver (`run_offpolicy_train_batched`). All optimizers, the
     replay buffer, and the SAC train-step pipeline run on-device.
-  * `BatchedGpuEnv[Hopper[DT], N_ENVS, OBS, ACT]` — wraps the Hopper
+  * `Phyics3dBatchedEnvFields[HopperModel, HopperConfig, N_ENVS]` — the Hopper
     physics3d env (which conforms to `GPUContinuousEnv`) into a `BatchedEnv`.
     Steps/resets/obs-extraction all dispatch Hopper's native GPU physics
     kernels — including `selective_reset_kernel_gpu` for the per-env early
@@ -39,17 +39,16 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.hopper import Hopper
+from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.hopper import HopperModel, HopperConfig
 
 
 # =============================================================================
 # Architecture
 # =============================================================================
 
-comptime EnvT = Hopper[DT, TERMINATE_ON_UNHEALTHY=True]
-comptime OBS_DIM = EnvT.OBS_DIM  # 11
-comptime ACT_DIM = EnvT.ACTION_DIM  #  3
+comptime OBS_DIM = HopperModel.OBS_DIM  # 11
+comptime ACT_DIM = HopperModel.ACTION_DIM  #  3
 comptime HIDDEN = 256
 
 # Off-policy GPU training parameters (mirror the legacy GPU script).
@@ -65,7 +64,9 @@ comptime PRINT_EVERY = 50_000  # driver-cadence verbose + env/mean_ret emit
 comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 
 
-comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
+comptime BatchedEnvT = Phyics3dBatchedEnvFields[
+    HopperModel, HopperConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=True
+]
 
 # Actor + twin critics come from the `SAC[...]` preset (deep_agents.sac),
 # which bundles the canonical fused-`LinearReLU` `SACActorNet` /

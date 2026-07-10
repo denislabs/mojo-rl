@@ -30,9 +30,9 @@ bit-exact physics (gated in tests/physics3d/test_rk4_contacts_fields.mojo)
 the whole env is bit-exact vs the legacy slab pipeline.
 
 Scope (mirrors `Phyics3dEnvFields`): contacts + joint limits via the
-per-stage RK4 PGS solve — hopper/walker-class locomotion in scope;
-equality/tendon-constrained and mesh-collision models are not. Fluid
-force models raise at construction.
+per-stage RK4 PGS/Newton solve — hopper/walker-class locomotion in scope;
+fluid-force models (Swimmer) run via the integrators' passive seam
+(Stage A). Mesh-collision models are not in scope.
 
 Metadata split: the slab metadata keeps step_count / prev_x (hook
 state); the fields `meta` tensor carries num_contacts (written by
@@ -64,8 +64,6 @@ from mojo_rl.physics3d.gpu.constants import (
     METADATA_SIZE,
     META_IDX_NUM_CONTACTS,
     META_IDX_STEP_COUNT,
-    MODEL_META_IDX_DENSITY,
-    MODEL_META_IDX_VISCOSITY,
     state_size,
     MODEL_CURRICULUM_SIZE,
     qpos_offset,
@@ -297,16 +295,9 @@ struct Phyics3dBatchedEnvFields[
         # and reward-curriculum hooks now read those directly.
         self.mf = type_of(self.mf)()
         Self.MODEL_DEF.init_fields[DT, 0](ctx, self.mf)
-
-        # Fluid guard once here (the fields integrators don't model it).
-        if (
-            self.mf.meta.data[MODEL_META_IDX_DENSITY] != 0
-            or self.mf.meta.data[MODEL_META_IDX_VISCOSITY] != 0
-        ):
-            raise Error(
-                "Phyics3dBatchedEnvFields: fluid forces not ported to the"
-                " fields path yet"
-            )
+        # Fluid forces (density/viscosity) are handled by the fields
+        # integrators' passive seam (Stage A: compute_fluid_forces_fields), so
+        # no guard — Swimmer runs on this facade.
 
         self._slab = TensorImpl[DT].alloc(Self.N_ENVS * Self.SS)
         self._slab.upload(ctx)

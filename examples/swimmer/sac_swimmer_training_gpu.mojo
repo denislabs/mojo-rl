@@ -6,7 +6,7 @@ GPU successor of `sac_swimmer_training.mojo`. Mirrors
   * `SAC["gpu", ...]` — preset facade over the GPU `SACTrainer` + the batched
     off-policy driver (`run_offpolicy_train_batched`). All optimizers, the
     replay buffer, and the SAC train-step pipeline run on-device.
-  * `BatchedGpuEnv[Swimmer[DT], N_ENVS, OBS, ACT]` — wraps the Swimmer
+  * `Phyics3dBatchedEnvFields[SwimmerModel, SwimmerConfig, N_ENVS]` — the Swimmer
     physics3d env (`GPUContinuousEnv`) into a `BatchedEnv`.
   * `RemoteLogger` — streams `env/mean_ret` and `env/ep_count` at the driver's
     `print_every` cadence.
@@ -36,17 +36,17 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.swimmer import Swimmer
+from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
+from mojo_rl.envs.swimmer.swimmer_config import SwimmerConfig
 
 
 # =============================================================================
 # Architecture
 # =============================================================================
 
-comptime EnvT = Swimmer[DT, TERMINATE_ON_UNHEALTHY=False]
-comptime OBS_DIM = EnvT.OBS_DIM  # 8
-comptime ACT_DIM = EnvT.ACTION_DIM  # 2
+comptime OBS_DIM = SwimmerModel.OBS_DIM  # 8
+comptime ACT_DIM = SwimmerModel.ACTION_DIM  # 2
 comptime HIDDEN = 256
 
 # Off-policy GPU training parameters (mirror the legacy GPU script).
@@ -63,7 +63,9 @@ comptime PRINT_EVERY = 50_000
 comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 
 
-comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
+comptime BatchedEnvT = Phyics3dBatchedEnvFields[
+    SwimmerModel, SwimmerConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=False
+]
 
 # Actor + twin critics come from the `SAC[...]` preset (deep_agents.sac),
 # which bundles the canonical fused-`LinearReLU` `SACActorNet` /

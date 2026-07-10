@@ -7,7 +7,8 @@ legacy `sac_inverted_pendulum_training_gpu.mojo`. Mirrors
   * `SAC["gpu", ...]` preset — builds the `SACAgent` facade over the GPU
     `SACTrainer` + the batched off-policy driver. All optimizers, the replay
     buffer, and the SAC train-step pipeline run on-device.
-  * `BatchedGpuEnv[InvertedPendulum[DT], N_ENVS, OBS, ACT]` — wraps the
+  * `Phyics3dBatchedEnvFields[InvertedPendulumModel, InvertedPendulumConfig,
+    N_ENVS]` — the
     physics3d env (`GPUContinuousEnv`) into a `BatchedEnv`.
   * `RemoteLogger` — streams `env/mean_ret` and `env/ep_count`.
 
@@ -32,17 +33,21 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.inverted_pendulum import InvertedPendulum
+from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.inverted_pendulum.inverted_pendulum_xml import (
+    InvertedPendulumModel,
+)
+from mojo_rl.envs.inverted_pendulum.inverted_pendulum_config import (
+    InvertedPendulumConfig,
+)
 
 
 # =============================================================================
 # Architecture
 # =============================================================================
 
-comptime EnvT = InvertedPendulum[DT, TERMINATE_ON_UNHEALTHY=True]
-comptime OBS_DIM = EnvT.OBS_DIM  # 4
-comptime ACT_DIM = EnvT.ACTION_DIM  # 1
+comptime OBS_DIM = InvertedPendulumModel.OBS_DIM  # 4
+comptime ACT_DIM = InvertedPendulumModel.ACTION_DIM  # 1
 comptime HIDDEN = 256
 
 # Off-policy GPU training parameters (mirror the legacy GPU script).
@@ -57,7 +62,10 @@ comptime WARMUP_STEPS = 5_000
 comptime PRINT_EVERY = 25_000
 
 
-comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
+comptime BatchedEnvT = Phyics3dBatchedEnvFields[
+    InvertedPendulumModel, InvertedPendulumConfig, N_ENVS,
+    TERMINATE_ON_UNHEALTHY=True,
+]
 
 # Actor + twin critics come from the `SAC[...]` preset (deep_agents.sac),
 # which bundles the canonical fused-`LinearReLU` `SACActorNet` /

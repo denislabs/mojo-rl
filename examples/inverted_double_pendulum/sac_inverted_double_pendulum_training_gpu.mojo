@@ -7,7 +7,8 @@ of the legacy `sac_inverted_double_pendulum_training_gpu.mojo`. Mirrors
   * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
     off-policy driver. All optimizers, the replay buffer, and the SAC
     train-step pipeline run on-device.
-  * `BatchedGpuEnv[InvertedDoublePendulum[DT], N_ENVS, OBS, ACT]` — wraps the
+  * `Phyics3dBatchedEnvFields[InvertedDoublePendulumModel,
+    InvertedDoublePendulumConfig, N_ENVS]` — the
     physics3d env (`GPUContinuousEnv`) into a `BatchedEnv`.
   * `RemoteLogger` — streams `env/mean_ret` and `env/ep_count`.
 
@@ -32,17 +33,21 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.inverted_double_pendulum import InvertedDoublePendulum
+from mojo_rl.envs.phyics3d_batched_env_fields import Phyics3dBatchedEnvFields
+from mojo_rl.envs.inverted_double_pendulum.inverted_double_pendulum_xml import (
+    InvertedDoublePendulumModel,
+)
+from mojo_rl.envs.inverted_double_pendulum.inverted_double_pendulum_config import (
+    InvertedDoublePendulumConfig,
+)
 
 
 # =============================================================================
 # Architecture
 # =============================================================================
 
-comptime EnvT = InvertedDoublePendulum[DT, TERMINATE_ON_UNHEALTHY=True]
-comptime OBS_DIM = EnvT.OBS_DIM  # 9
-comptime ACT_DIM = EnvT.ACTION_DIM  # 1
+comptime OBS_DIM = InvertedDoublePendulumModel.OBS_DIM  # 9
+comptime ACT_DIM = InvertedDoublePendulumModel.ACTION_DIM  # 1
 comptime HIDDEN = 128
 
 # Off-policy GPU training parameters (mirror the legacy GPU script).
@@ -57,7 +62,10 @@ comptime WARMUP_STEPS = 5_000
 comptime PRINT_EVERY = 25_000
 
 
-comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
+comptime BatchedEnvT = Phyics3dBatchedEnvFields[
+    InvertedDoublePendulumModel, InvertedDoublePendulumConfig, N_ENVS,
+    TERMINATE_ON_UNHEALTHY=True,
+]
 
 # Actor + twin critics come from the `SAC[...]` preset (deep_agents.sac),
 # which bundles the canonical fused-`LinearReLU` `SACActorNet` /
