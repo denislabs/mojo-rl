@@ -11,7 +11,6 @@ Expected output for the inline HalfCheetah XML:
 """
 
 from mojo_rl.physics3d.parser import ParsedModel, parse_xml
-from std.io.file import open
 from std.testing import assert_true, TestSuite
 
 comptime half_cheetah_xml = """
@@ -80,18 +79,10 @@ comptime half_cheetah_xml = """
 """
 
 
-def read_file(path: String) -> String:
-    try:
-        return open(path, "r").read()
-    except Exception:
-        print("Error opening file")
-        return ""
-
-
 def test_parser_xml_compile() raises:
-    # Parse inline XML at comptime
-    comptime xml = read_file("envs/half_cheetah/half_cheetah.xml")
-    print(xml)
+    # Parse inline XML at comptime. (Reading the .xml from disk here is not
+    # possible — `open()` is an external FFI call and the comptime interpreter
+    # cannot execute it; see the note at the end of this test.)
     comptime model = parse_xml(half_cheetah_xml)
 
     print("=== Parsed from inline XML (comptime) ===")

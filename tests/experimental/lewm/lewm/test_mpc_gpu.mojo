@@ -8,13 +8,13 @@ finite.
 Run:  pixi run -e apple mojo run -I . tests/experimental/lewm/test_mpc_gpu.mojo
 """
 
-from std.memory import alloc
 from std.math import isnan, isinf
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.experimental.lewm.trainer import LeWMTrainer
 from mojo_rl.experimental.lewm.mpc import lewm_mpc_eval
 
@@ -91,7 +91,7 @@ def main() raises:
         _ = tr.train_step(pix_t, act_t)
 
     # host copy of expert actions for the eval
-    var act_host = alloc[Scalar[DT]](B * ACTIN)
+    var act_host = List[Scalar[DT]](length=B * ACTIN, fill=Scalar[DT](0))
     for k in range(B * ACTIN):
         act_host[k] = act_h.unsafe_ptr()[k]
 
@@ -101,15 +101,13 @@ def main() raises:
         ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,
         PRED_FF, DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, MPC_HORIZON,
         "gpu",
-    ](tr, pix_t, act_t, act_host, num_random=12, cem_iters=2, cem_samples=16,
+    ](tr, pix_t, act_t, mptr(act_host), num_random=12, cem_iters=2, cem_samples=16,
       cem_topk=4, ctx=ctx)
-
     assert_true(not (isnan(r[0]) or isinf(r[0])), "expert finite")
     assert_true(not (isnan(r[2]) or isinf(r[2])), "random_min finite")
     assert_true(not (isnan(r[3]) or isinf(r[3])), "cem finite")
     assert_true(r[2] <= r[1] + 1e-9, "random_min <= random_mean")
 
-    act_host.free()
     _ = tr^
     print("=" * 70)
     print("ALL PASSED")

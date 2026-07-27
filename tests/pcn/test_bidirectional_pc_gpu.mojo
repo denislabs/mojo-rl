@@ -135,7 +135,7 @@ def main() raises:
         up_params_host.unsafe_ptr()[i] = Scalar[dtype](0)
     var up_params_init_t = LayoutTensor[
         dtype, Layout.row_major(UP_PARAM_SIZE), MutAnyOrigin
-    ](up_params_host.unsafe_ptr())
+    ](up_params_host.unsafe_ptr().as_unsafe_any_origin())
     UP_NET.pc_init_params[PCXavier, dtype](up_params_init_t)
 
     var up_params_dbuf = ctx.enqueue_create_buffer[dtype](UP_PARAM_SIZE)
@@ -166,7 +166,7 @@ def main() raises:
         dn_params_host.unsafe_ptr()[i] = Scalar[dtype](0)
     var dn_params_init_t = LayoutTensor[
         dtype, Layout.row_major(DOWN_PARAM_SIZE), MutAnyOrigin
-    ](dn_params_host.unsafe_ptr())
+    ](dn_params_host.unsafe_ptr().as_unsafe_any_origin())
     DOWN_NET.pc_init_params[PCXavier, dtype](dn_params_init_t)
 
     var dn_params_dbuf = ctx.enqueue_create_buffer[dtype](DOWN_PARAM_SIZE)
@@ -225,28 +225,28 @@ def main() raises:
     # Per-block param sub-views (for individual PCBlock GPU calls)
     var up_p0_t = LayoutTensor[
         dtype, Layout.row_major(UB0_PARAM_SIZE), MutAnyOrigin
-    ](up_params_dbuf.unsafe_ptr())
+    ](up_params_dbuf.unsafe_ptr().as_unsafe_any_origin())
     var up_p1_t = LayoutTensor[
         dtype, Layout.row_major(UB1_PARAM_SIZE), MutAnyOrigin
-    ](up_params_dbuf.unsafe_ptr() + UB0_PARAM_SIZE)
+    ](up_params_dbuf.unsafe_ptr().as_unsafe_any_origin() + UB0_PARAM_SIZE)
     var up_g0_t = LayoutTensor[
         dtype, Layout.row_major(UB0_PARAM_SIZE), MutAnyOrigin
-    ](up_grads_dbuf.unsafe_ptr())
+    ](up_grads_dbuf.unsafe_ptr().as_unsafe_any_origin())
     var up_g1_t = LayoutTensor[
         dtype, Layout.row_major(UB1_PARAM_SIZE), MutAnyOrigin
-    ](up_grads_dbuf.unsafe_ptr() + UB0_PARAM_SIZE)
+    ](up_grads_dbuf.unsafe_ptr().as_unsafe_any_origin() + UB0_PARAM_SIZE)
     var dn_p0_t = LayoutTensor[
         dtype, Layout.row_major(DB0_PARAM_SIZE), MutAnyOrigin
-    ](dn_params_dbuf.unsafe_ptr())
+    ](dn_params_dbuf.unsafe_ptr().as_unsafe_any_origin())
     var dn_p1_t = LayoutTensor[
         dtype, Layout.row_major(DB1_PARAM_SIZE), MutAnyOrigin
-    ](dn_params_dbuf.unsafe_ptr() + DB0_PARAM_SIZE)
+    ](dn_params_dbuf.unsafe_ptr().as_unsafe_any_origin() + DB0_PARAM_SIZE)
     var dn_g0_t = LayoutTensor[
         dtype, Layout.row_major(DB0_PARAM_SIZE), MutAnyOrigin
-    ](dn_grads_dbuf.unsafe_ptr())
+    ](dn_grads_dbuf.unsafe_ptr().as_unsafe_any_origin())
     var dn_g1_t = LayoutTensor[
         dtype, Layout.row_major(DB1_PARAM_SIZE), MutAnyOrigin
-    ](dn_grads_dbuf.unsafe_ptr() + DB0_PARAM_SIZE)
+    ](dn_grads_dbuf.unsafe_ptr().as_unsafe_any_origin() + DB0_PARAM_SIZE)
 
     # ── Shared latent (GPU) ──────────────────────────────────────────────────
     var x_shared_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * HIDDEN)
@@ -366,10 +366,10 @@ def main() raises:
             # Per-batch input views into pre-uploaded MNIST data
             var image_t = LayoutTensor[
                 dtype, Layout.row_major(BATCH, 784), MutAnyOrigin
-            ](train_img_dbuf.unsafe_ptr() + batch_idx * BATCH * 784)
+            ](train_img_dbuf.unsafe_ptr().as_unsafe_any_origin() + batch_idx * BATCH * 784)
             var label_oh_t = LayoutTensor[
                 dtype, Layout.row_major(BATCH, 10), MutAnyOrigin
-            ](train_lbl_dbuf.unsafe_ptr() + batch_idx * BATCH * 10)
+            ](train_lbl_dbuf.unsafe_ptr().as_unsafe_any_origin() + batch_idx * BATCH * 10)
 
             # Init x_shared via UP forward sweep: x_shared = μ_up_0
             UB0.predict_gpu[BATCH, dtype](
@@ -423,7 +423,7 @@ def main() raises:
 
                 # Phase D: x_shared -= lr_x · (α_up·(ε_up_0 - z_up_1)
                 #                              + α_down·(ε_dn_0 - z_dn_1))
-                ctx.enqueue_function[k_dx, k_dx](
+                ctx.enqueue_function[k_dx](
                     x_shared_t,
                     up_eps0_t,
                     up_z1_t,
@@ -443,7 +443,7 @@ def main() raises:
             DB1.weight_grad_gpu[BATCH, dtype](ctx, dn_eps1_t, dn_a1_t, dn_g1_t)
 
             # Scale DOWN grads by alpha_down
-            ctx.enqueue_function[k_scale, k_scale](
+            ctx.enqueue_function[k_scale](
                 dn_grads_t,
                 alpha_down_s,
                 grid_dim=(scale_blocks,),
@@ -500,7 +500,7 @@ def main() raises:
     for tb in range(N_TEST_BATCHES):
         var test_img_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 784), MutAnyOrigin
-        ](test_img_dbuf.unsafe_ptr() + tb * BATCH * 784)
+        ](test_img_dbuf.unsafe_ptr().as_unsafe_any_origin() + tb * BATCH * 784)
         UP_NET.forward_eval_gpu[BATCH, dtype](
             ctx, test_img_t, up_params_t, pred_t, up_eval_mu_t, up_eval_a_t
         )

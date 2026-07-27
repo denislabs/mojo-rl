@@ -12,7 +12,6 @@ Anchor (seed 7, 56 train steps): 0.81461537 -> 0.21972585.
 Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_multitask_bit_identity.mojo`
 """
 
-from std.memory import alloc
 from std.random import random_float64, seed
 from std.math import isfinite, abs
 from std.testing import assert_true
@@ -45,8 +44,8 @@ def main() raises:
 
     var env = PendulumV2[DT]()
     var obs = env.reset_obs_list()
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var actbuf = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
 
     comptime TOTAL = 400
     comptime LEARN_START = 64
@@ -95,4 +94,3 @@ def main() raises:
     print("=" * 70)
     print("BIT-IDENTITY PASSED — single-task path unchanged by item C")
     print("=" * 70)
-    obsbuf.free(); actbuf.free()

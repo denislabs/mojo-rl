@@ -223,10 +223,10 @@ def main() raises:
     comptime offset_b1 = NET._param_offset[1]()
     var params_b0_t = LayoutTensor[
         dtype, Layout.row_major(NET.block_types[0].PARAM_SIZE), MutAnyOrigin
-    ](params_dbuf.unsafe_ptr())
+    ](params_dbuf.unsafe_ptr().as_unsafe_any_origin())
     var params_b1_t = LayoutTensor[
         dtype, Layout.row_major(NET.block_types[1].PARAM_SIZE), MutAnyOrigin
-    ](params_dbuf.unsafe_ptr() + offset_b1)
+    ](params_dbuf.unsafe_ptr().as_unsafe_any_origin() + offset_b1)
 
     # Eval feedforward scratch
     var z_pred_dbuf = ctx.enqueue_create_buffer[dtype](BATCH * HIDDEN)
@@ -266,7 +266,7 @@ def main() raises:
             params_init_host.unsafe_ptr()[i] = Scalar[dtype](0)
         var params_init_t = LayoutTensor[
             dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
-        ](params_init_host.unsafe_ptr())
+        ](params_init_host.unsafe_ptr().as_unsafe_any_origin())
         NET.pc_init_params[PCXavier, dtype](params_init_t)
         ctx.enqueue_copy(params_dbuf, params_init_host)
 
@@ -340,7 +340,7 @@ def main() raises:
                 ]
                 var cp_threads = BATCH * HIDDEN
                 var cp_blocks = (cp_threads + TPB - 1) // TPB
-                ctx.enqueue_function[cp_k, cp_k](
+                ctx.enqueue_function[cp_k](
                     lat_t,
                     x_in_t,
                     grid_dim=(cp_blocks,),
@@ -391,7 +391,7 @@ def main() raises:
         ]
         var cp_threads_recall = BATCH * HIDDEN
         var cp_blocks_recall = (cp_threads_recall + TPB - 1) // TPB
-        ctx.enqueue_function[cp_k_recall, cp_k_recall](
+        ctx.enqueue_function[cp_k_recall](
             lat_t,
             x_in_t,
             grid_dim=(cp_blocks_recall,),

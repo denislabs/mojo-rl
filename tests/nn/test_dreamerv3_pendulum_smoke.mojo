@@ -49,8 +49,8 @@ def main() raises:
     var tr = Tr.make(lr=Scalar[DT](1e-3), learning_starts=64, warmup_steps=0)
 
     var obs = env.reset_obs_list()
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var actbuf = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
 
     comptime TOTAL = 400
     comptime LEARN_START = 64
@@ -68,7 +68,7 @@ def main() raises:
         var res = env.step_continuous_vec[DT](act_list)
         var reward = res[1]
         var done = res[2]
-        tr.record(obsbuf, actbuf, reward, Scalar[DT](1.0) if done else Scalar[DT](0.0))
+        tr.record(obsbuf.as_unsafe_any_origin(), actbuf, reward, Scalar[DT](1.0) if done else Scalar[DT](0.0))
         obs = res[0].copy()
         if done:
             obs = env.reset_obs_list()

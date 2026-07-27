@@ -76,8 +76,8 @@ def main() raises:
     print("=" * 70)
 
     # fabricate (start, goal) pairs by rolling the env
-    var starts = alloc[Scalar[DT]](B * 5)
-    var goals = alloc[Scalar[DT]](B * 5)
+    var starts = alloc[Scalar[DT]](B * 5).as_unsafe_any_origin()
+    var goals = alloc[Scalar[DT]](B * 5).as_unsafe_any_origin()
     for b in range(B):
         var env = PushTEnv[DT](seed=UInt64(10 + b))
         _ = env.reset()
@@ -154,7 +154,7 @@ def main() raises:
     var n_checked = 0
     var n_bad = 0
     for e in after.items():
-        ref old = before[e.key]
+        var old = before[e.key].copy()
         var mx: Float64 = 0.0
         var nd = 0
         for i in range(len(e.value)):

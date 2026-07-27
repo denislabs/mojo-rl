@@ -8,7 +8,6 @@ decreases, greedy eval finite. (Full GPU convergence is a separate run.)
 Run: `pixi run -e apple mojo run -I . tests/deep_agents/test_tdmpc2_agent_gpu_smoke.mojo`
 """
 
-from std.memory import alloc
 from std.random import random_float64, seed
 from std.math import isfinite
 from std.testing import assert_true
@@ -49,8 +48,8 @@ def main() raises:
     )
 
     var obs = env.reset_obs_list()
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var actbuf = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
 
     comptime TOTAL = 300
     comptime LEARN_START = 64
@@ -111,4 +110,3 @@ def main() raises:
     print("=" * 70)
     print("SMOKE PASSED — TD-MPC2 agent trains end-to-end on GPU")
     print("=" * 70)
-    obsbuf.free(); actbuf.free()

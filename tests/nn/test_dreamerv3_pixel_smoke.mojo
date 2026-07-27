@@ -70,8 +70,8 @@ comptime TrainerGpuT = DreamerV3Trainer[
 
 def test_pixel_trainer_train_step() raises:
     var tr = TrainerT.make(learning_starts=8)
-    var obs = alloc[Scalar[DT]](OBS)
-    var act = alloc[Scalar[DT]](ACT)
+    var obs = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var act = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
     for s in range(64):
         for i in range(OBS):
             obs[i] = Scalar[DT](random_float64())  # pixels in [0,1]
@@ -114,8 +114,8 @@ def test_pixel_trainer_train_step() raises:
 
 def test_pixel_agent_select_action() raises:
     var ag = AgentT.make(learning_starts=8)
-    var obs = alloc[Scalar[DT]](OBS)
-    var out_action = alloc[Scalar[DT]](ACT)
+    var obs = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var out_action = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
     for i in range(OBS):
         obs[i] = Scalar[DT](random_float64())
     for j in range(ACT):
@@ -135,8 +135,8 @@ def test_pixel_agent_select_action() raises:
 
 def test_pixel_trainer_gpu(ctx: DeviceContext) raises:
     var tr = TrainerGpuT.make(ctx=ctx, lr=Scalar[DT](3e-3), learning_starts=0)
-    var ob = alloc[Scalar[DT]](OBS)
-    var ac = alloc[Scalar[DT]](ACT)
+    var ob = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var ac = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
     var s = UInt64(98765)
     for _t in range(80):
         for k in range(OBS):
@@ -147,7 +147,7 @@ def test_pixel_trainer_gpu(ctx: DeviceContext) raises:
             ac[k] = Scalar[DT](Float64((s >> 33)) / Float64(UInt64(1) << 31) - 1.0)
         s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
         var r = Scalar[DT](Float64((s >> 33)) / Float64(UInt64(1) << 31) - 1.0)
-        tr.record(ob, ac, r, Scalar[DT](0.0))
+        tr.record(ob.as_unsafe_any_origin(), ac, r, Scalar[DT](0.0))
     ob.free()
     ac.free()
     if not tr.can_train():

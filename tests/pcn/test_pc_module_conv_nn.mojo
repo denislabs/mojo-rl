@@ -36,6 +36,7 @@ from mojo_rl.experimental.pcn.pc_sequential import PCSequential
 from mojo_rl.experimental.pcn.pc_module import PCModule
 from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn.pc_module_trainer import pc_module_train_one_batch
+from mojo_rl.nn.core.ptr import mptr
 
 
 def main() raises:
@@ -67,7 +68,7 @@ def main() raises:
     for _ in range(BATCH * IN):
         x_s.append(Scalar[DT](random_float64() * 2.0 - 1.0))
     var x_in = LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin](
-        x_s.unsafe_ptr()
+        mptr(x_s)
     )
 
     # Teacher (random init) defines an exactly-representable target.
@@ -76,11 +77,11 @@ def main() raises:
     for _ in range(BATCH * OUT):
         y_s.append(Scalar[DT](0))
     var y_target = LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin](
-        y_s.unsafe_ptr()
+        mptr(y_s)
     )
     var teacher_params = LayoutTensor[
         DT, Layout.row_major(Seq.PARAM_SIZE), MutAnyOrigin
-    ](teacher.weights.val.data.unsafe_ptr())
+    ](mptr(teacher.weights.val.data))
     Seq.forward_eval[BATCH](x_in, teacher_params, y_target)
 
     # Student (different draws) trains to match.

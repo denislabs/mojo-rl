@@ -35,6 +35,7 @@ from mojo_rl.experimental.pcn.pc_module_trainer_gpu import (
     pc_module_train_one_batch_gpu,
     PCGpuWorkspace,
 )
+from mojo_rl.nn.core.ptr import mptr
 
 
 def main() raises:
@@ -68,17 +69,17 @@ def main() raises:
         y_s.append(Scalar[DT](random_float64() * 2.0 - 1.0))
 
     var x_cpu = LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin](
-        x_s.unsafe_ptr()
+        mptr(x_s)
     )
     var y_cpu = LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin](
-        y_s.unsafe_ptr()
+        mptr(y_s)
     )
 
     # CPU init; GPU starts from the SAME weights.
     var cpu_net = Net.make_pcn[PCXavier]()
     var gpu_net = Net.make_pcn_gpu[PCXavier](ctx)
     ctx.enqueue_copy(
-        gpu_net.weights.val.dev.value(), cpu_net.weights.val.data.unsafe_ptr()
+        gpu_net.weights.val.dev.value(), mptr(cpu_net.weights.val.data)
     )
     ctx.synchronize()
 
@@ -88,14 +89,14 @@ def main() raises:
     # Upload data.
     var x_dev_b = ctx.enqueue_create_buffer[DT](BATCH * IN)
     var y_dev_b = ctx.enqueue_create_buffer[DT](BATCH * OUT)
-    ctx.enqueue_copy(x_dev_b, x_s.unsafe_ptr())
-    ctx.enqueue_copy(y_dev_b, y_s.unsafe_ptr())
+    ctx.enqueue_copy(x_dev_b, mptr(x_s))
+    ctx.enqueue_copy(y_dev_b, mptr(y_s))
     ctx.synchronize()
     var x_dev = LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin](
-        x_dev_b.unsafe_ptr()
+        x_dev_b.unsafe_ptr().as_unsafe_any_origin()
     )
     var y_dev = LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin](
-        y_dev_b.unsafe_ptr()
+        y_dev_b.unsafe_ptr().as_unsafe_any_origin()
     )
 
     var ws = PCGpuWorkspace[BATCH, B0, B1].make(ctx)
@@ -110,7 +111,7 @@ def main() raises:
     ctx.synchronize()
 
     var gpu_host = List[Scalar[DT]](length=PSIZE, fill=Scalar[DT](0))
-    ctx.enqueue_copy(gpu_host.unsafe_ptr(), gpu_net.weights.val.dev.value())
+    ctx.enqueue_copy(mptr(gpu_host), gpu_net.weights.val.dev.value())
     ctx.synchronize()
 
     var max_diff = Float64(0.0)

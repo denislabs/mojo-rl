@@ -327,7 +327,7 @@ def test_ilqr_gpu_matches_lqr_first_action() raises:
     ctx.enqueue_copy(z0_buf, z0_host)
     var z0 = LayoutTensor[
         dtype, Layout.row_major(N_ENVS, LATENT_DIM), MutAnyOrigin
-    ](z0_buf.unsafe_ptr())
+    ](z0_buf.unsafe_ptr().as_unsafe_any_origin())
 
     var cb = LQ1DGPUCallback(A=A, B=B, Q=Q, R=R, Q_T=Q_T)
     planner.plan_gpu(ctx, cb, z0)

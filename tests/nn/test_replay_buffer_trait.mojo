@@ -42,7 +42,7 @@ def main() raises:
     drive(buf, state)
     assert_equal(buf.count(), 20)
     # mb_s should hold a sampled obs (each row's 3 dims equal, value in [0,19]).
-    var v0 = state.mb_s.cpu_ptr()[0]
+    var v0 = state.mb_s.data[0]
     assert_true(v0 >= 0.0 and v0 <= 19.0, "sampled obs out of range")
     print("  CPUReplay conforms: count=", buf.count(), " mb_s[0]=", v0)
 
@@ -53,7 +53,7 @@ def main() raises:
     drive(per, pstate)
     assert_equal(per.count(), 20)
     # PER sample_into must have filled IS weights (normalised, max==1).
-    var w0 = pstate.mb_w.cpu_ptr()[0]
+    var w0 = pstate.mb_w.data[0]
     assert_true(pstate.has_per, "PER sample_into must flip has_per")
     assert_true(w0 > 0.0 and w0 <= 1.0001, "IS weight out of range")
     print("  CPUPrioritizedReplay conforms: count=", per.count(), " w0=", w0)

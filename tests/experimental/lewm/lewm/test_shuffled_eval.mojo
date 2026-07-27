@@ -55,7 +55,7 @@ comptime Buffer = OfflineWindowBuffer[IMG_DIM, ACT, T]
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n)
+    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
 def main() raises:

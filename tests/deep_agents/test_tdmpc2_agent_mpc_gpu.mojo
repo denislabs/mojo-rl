@@ -9,7 +9,6 @@ warm-start). Launch-bound on Metal (slow); fast on NVIDIA.
 Run: `pixi run -e apple mojo run -I . tests/deep_agents/test_tdmpc2_agent_mpc_gpu.mojo`
 """
 
-from std.memory import alloc
 from std.random import seed
 from std.math import isfinite
 from std.testing import assert_true, TestSuite
@@ -53,11 +52,11 @@ def main() raises:
         ctx=ctx,
     )
 
-    var obs = alloc[Scalar[DT]](OBS)
+    var obs = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
     obs[0] = Scalar[DT](0.3)
     obs[1] = Scalar[DT](-0.5)
     obs[2] = Scalar[DT](1.2)
-    var act = alloc[Scalar[DT]](ACT)
+    var act = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
 
     ag.mpc_start_episode()
     ag.select_action_mpc(obs, act, explore=False)
@@ -70,4 +69,3 @@ def main() raises:
     print("=" * 70)
     print("SMOKE PASSED — agent select_action_mpc works on GPU")
     print("=" * 70)
-    obs.free(); act.free()

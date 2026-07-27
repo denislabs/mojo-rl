@@ -15,6 +15,7 @@ from mojo_rl.envs.pusht import (
     IMG_W,
     IMG_C,
 )
+from mojo_rl.nn.core.ptr import mptr
 
 
 def cpu_test() raises:
@@ -24,7 +25,7 @@ def cpu_test() raises:
     )
     var out_t = LayoutTensor[
         dtype, Layout.row_major(IMG_H, IMG_W, IMG_C), MutAnyOrigin
-    ](data.unsafe_ptr())
+    ](data.unsafe_ptr().unsafe_bitcast[Scalar[dtype]]().as_unsafe_any_origin())
     render_pixel_obs_single(
         Scalar[dtype](256.0),
         Scalar[dtype](256.0),
@@ -111,7 +112,7 @@ def gpu_test() raises:
     var host = List[Scalar[dtype]](capacity=BATCH * IMG_H * IMG_W * IMG_C)
     for _ in range(BATCH * IMG_H * IMG_W * IMG_C):
         host.append(Scalar[dtype](0.0))
-    ctx.enqueue_copy(host.unsafe_ptr(), pixels)
+    ctx.enqueue_copy(mptr(host), pixels)
     ctx.synchronize()
 
     # Count categories in env 0

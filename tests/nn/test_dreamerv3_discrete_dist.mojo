@@ -38,10 +38,10 @@ def main() raises:
     var a = Scalar[DT](0.7)     # ∂L/∂logp
     var b = Scalar[DT](-0.3)    # ∂L/∂entropy
 
-    var logits = alloc[Scalar[DT]](C)
-    var sm = alloc[Scalar[DT]](C)
-    var p = alloc[Scalar[DT]](C)
-    var grad = alloc[Scalar[DT]](C)
+    var logits = alloc[Scalar[DT]](C).as_unsafe_any_origin()
+    var sm = alloc[Scalar[DT]](C).as_unsafe_any_origin()
+    var p = alloc[Scalar[DT]](C).as_unsafe_any_origin()
+    var grad = alloc[Scalar[DT]](C).as_unsafe_any_origin()
 
     var max_rel: Scalar[DT] = 0.0
     for trial in range(6):

@@ -84,10 +84,10 @@ def main() raises:
     print("  [mnist] loaded:", MNIST.N_TRAIN, "train,", MNIST.N_TEST, "test")
 
     # ── Allocate UP params + Adam state ─────────────────────────────────────
-    var up_params_buf = alloc[Scalar[dtype]](UP_PARAM_SIZE)
-    var up_grads_buf = alloc[Scalar[dtype]](UP_PARAM_SIZE)
-    var up_opt_state_buf = alloc[Scalar[dtype]](UP_PARAM_SIZE * OPT.STATE_PER_PARAM)
-    var up_opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
+    var up_params_buf = alloc[Scalar[dtype]](UP_PARAM_SIZE).as_unsafe_any_origin()
+    var up_grads_buf = alloc[Scalar[dtype]](UP_PARAM_SIZE).as_unsafe_any_origin()
+    var up_opt_state_buf = alloc[Scalar[dtype]](UP_PARAM_SIZE * OPT.STATE_PER_PARAM).as_unsafe_any_origin()
+    var up_opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE).as_unsafe_any_origin()
     memset(up_params_buf, 0, UP_PARAM_SIZE)
     memset(up_grads_buf, 0, UP_PARAM_SIZE)
     memset(up_opt_state_buf, 0, UP_PARAM_SIZE * OPT.STATE_PER_PARAM)
@@ -99,10 +99,10 @@ def main() raises:
     UP_NET.pc_init_params[PCXavier, dtype](up_params)
 
     # ── Allocate DOWN params + Adam state ───────────────────────────────────
-    var dn_params_buf = alloc[Scalar[dtype]](DOWN_PARAM_SIZE)
-    var dn_grads_buf = alloc[Scalar[dtype]](DOWN_PARAM_SIZE)
-    var dn_opt_state_buf = alloc[Scalar[dtype]](DOWN_PARAM_SIZE * OPT.STATE_PER_PARAM)
-    var dn_opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
+    var dn_params_buf = alloc[Scalar[dtype]](DOWN_PARAM_SIZE).as_unsafe_any_origin()
+    var dn_grads_buf = alloc[Scalar[dtype]](DOWN_PARAM_SIZE).as_unsafe_any_origin()
+    var dn_opt_state_buf = alloc[Scalar[dtype]](DOWN_PARAM_SIZE * OPT.STATE_PER_PARAM).as_unsafe_any_origin()
+    var dn_opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE).as_unsafe_any_origin()
     memset(dn_params_buf, 0, DOWN_PARAM_SIZE)
     memset(dn_grads_buf, 0, DOWN_PARAM_SIZE)
     memset(dn_opt_state_buf, 0, DOWN_PARAM_SIZE * OPT.STATE_PER_PARAM)
@@ -114,8 +114,8 @@ def main() raises:
     DOWN_NET.pc_init_params[PCXavier, dtype](dn_params)
 
     # ── Shared latents x0, x1 (both HIDDEN-dim) ────────────────────────────
-    var x0_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var x1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
+    var x0_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var x1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
     memset(x0_buf, 0, BATCH * HIDDEN)
     memset(x1_buf, 0, BATCH * HIDDEN)
     var x0 = LayoutTensor[dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin](x0_buf)
@@ -123,37 +123,37 @@ def main() raises:
 
     # ── Per-block scratch buffers ───────────────────────────────────────────
     # UP: block_0 (784→256), block_1 (256→256), block_2 (256→10)
-    var up_mu0_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var up_eps0_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var up_a0_buf = alloc[Scalar[dtype]](BATCH * 784)
-    var up_mu1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var up_eps1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var up_a1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var up_mu2_buf = alloc[Scalar[dtype]](BATCH * 10)
-    var up_eps2_buf = alloc[Scalar[dtype]](BATCH * 10)
-    var up_a2_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var up_z1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)  # pull_back ε_up_1 → for x0
-    var up_z2_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)  # pull_back ε_up_2 → for x1
+    var up_mu0_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var up_eps0_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var up_a0_buf = alloc[Scalar[dtype]](BATCH * 784).as_unsafe_any_origin()
+    var up_mu1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var up_eps1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var up_a1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var up_mu2_buf = alloc[Scalar[dtype]](BATCH * 10).as_unsafe_any_origin()
+    var up_eps2_buf = alloc[Scalar[dtype]](BATCH * 10).as_unsafe_any_origin()
+    var up_a2_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var up_z1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()  # pull_back ε_up_1 → for x0
+    var up_z2_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()  # pull_back ε_up_2 → for x1
 
     # DOWN: block_0 (10→256), block_1 (256→256), block_2 (256→784)
-    var dn_mu0_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var dn_eps0_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var dn_a0_buf = alloc[Scalar[dtype]](BATCH * 10)
-    var dn_mu1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var dn_eps1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var dn_a1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var dn_mu2_buf = alloc[Scalar[dtype]](BATCH * 784)
-    var dn_eps2_buf = alloc[Scalar[dtype]](BATCH * 784)
-    var dn_a2_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var dn_z1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)  # pull_back ε_dn_1 → for x1
-    var dn_z2_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)  # pull_back ε_dn_2 → for x0
+    var dn_mu0_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var dn_eps0_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var dn_a0_buf = alloc[Scalar[dtype]](BATCH * 10).as_unsafe_any_origin()
+    var dn_mu1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var dn_eps1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var dn_a1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var dn_mu2_buf = alloc[Scalar[dtype]](BATCH * 784).as_unsafe_any_origin()
+    var dn_eps2_buf = alloc[Scalar[dtype]](BATCH * 784).as_unsafe_any_origin()
+    var dn_a2_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var dn_z1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()  # pull_back ε_dn_1 → for x1
+    var dn_z2_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()  # pull_back ε_dn_2 → for x0
 
-    var dx0_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var dx1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
+    var dx0_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var dx1_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
 
     # ── Per-batch input buffers ─────────────────────────────────────────────
-    var image_buf = alloc[Scalar[dtype]](BATCH * 784)
-    var label_oh_buf = alloc[Scalar[dtype]](BATCH * 10)
+    var image_buf = alloc[Scalar[dtype]](BATCH * 784).as_unsafe_any_origin()
+    var label_oh_buf = alloc[Scalar[dtype]](BATCH * 10).as_unsafe_any_origin()
     memset(image_buf, 0, BATCH * 784)
     memset(label_oh_buf, 0, BATCH * 10)
 
@@ -304,7 +304,7 @@ def main() raises:
 
         # End-of-epoch: quick accuracy check
         var correct: Int = 0
-        var pred_buf = alloc[Scalar[dtype]](BATCH * 10)
+        var pred_buf = alloc[Scalar[dtype]](BATCH * 10).as_unsafe_any_origin()
         memset(pred_buf, 0, BATCH * 10)
         var pred_t = LayoutTensor[dtype, Layout.row_major(BATCH, 10), MutAnyOrigin](pred_buf)
         for tb in range(N_TEST_BATCHES):
@@ -336,8 +336,8 @@ def main() raises:
     print("\n  total train time:", total_t, "s")
 
     # ── Generation: pass each one-hot label through DOWN forward_eval ───────
-    var gen_label_buf = alloc[Scalar[dtype]](BATCH * 10)
-    var gen_image_buf = alloc[Scalar[dtype]](BATCH * 784)
+    var gen_label_buf = alloc[Scalar[dtype]](BATCH * 10).as_unsafe_any_origin()
+    var gen_image_buf = alloc[Scalar[dtype]](BATCH * 784).as_unsafe_any_origin()
     memset(gen_label_buf, 0, BATCH * 10)
     memset(gen_image_buf, 0, BATCH * 784)
     for c in range(10):
@@ -363,8 +363,8 @@ def main() raises:
 
     # ── Visualize ───────────────────────────────────────────────────────────
     # Find one real test sample per class for comparison
-    var real_digits_buf = alloc[Scalar[dtype]](10 * 784)
-    var found = alloc[UInt8](10)
+    var real_digits_buf = alloc[Scalar[dtype]](10 * 784).as_unsafe_any_origin()
+    var found = alloc[UInt8](10).as_unsafe_any_origin()
     memset(found, 0, 10)
     var found_count: Int = 0
     for i in range(MNIST.N_TEST):
@@ -379,7 +379,7 @@ def main() raises:
     found.free()
 
     # Apply sigmoid to generated images (matches notebook: img.sigmoid())
-    var gen_sig_buf = alloc[Scalar[dtype]](10 * 784)
+    var gen_sig_buf = alloc[Scalar[dtype]](10 * 784).as_unsafe_any_origin()
     for i in range(10 * 784):
         var v = Float64(gen_image_buf[i])
         gen_sig_buf[i] = Scalar[dtype](1.0 / (1.0 + exp(-v)))
@@ -411,7 +411,7 @@ def main() raises:
 
     # ── Verdict ─────────────────────────────────────────────────────────────
     # Re-run final accuracy (already computed above but recompute clean)
-    var final_pred_buf = alloc[Scalar[dtype]](BATCH * 10)
+    var final_pred_buf = alloc[Scalar[dtype]](BATCH * 10).as_unsafe_any_origin()
     memset(final_pred_buf, 0, BATCH * 10)
     var final_pred_t = LayoutTensor[dtype, Layout.row_major(BATCH, 10), MutAnyOrigin](final_pred_buf)
     var final_correct: Int = 0

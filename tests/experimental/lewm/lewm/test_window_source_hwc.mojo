@@ -90,11 +90,11 @@ def main() raises:
         IMG_DIM, ACT, T, B, "gpu", MockHWC, C, FRAME
     ].make(MockHWC(), ctx=ctx)
     src_g.next_batch()
-    var host = alloc[Scalar[DT]](NPIX)
+    var host = alloc[Scalar[DT]](NPIX).as_unsafe_any_origin()
     var dev = DeviceBuffer[DT](ctx, src_g.pix_ptr(), NPIX, owning=False)
     ctx.enqueue_copy(host, dev)
     ctx.synchronize()
-    _check(host)
+    _check(host.as_unsafe_any_origin())
     host.free()
     print("   gpu ok")
 

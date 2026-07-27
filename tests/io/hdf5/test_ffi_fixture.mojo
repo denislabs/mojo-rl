@@ -54,7 +54,7 @@ def test_ep_len_int32() raises:
     assert_equal(ds.elem_size, 4, "ep_len elem_size")
     assert_equal(ds.signedness, H5T_SGN_2, "ep_len signedness")
 
-    var buf = alloc[Scalar[DType.int32]](3)
+    var buf = alloc[Scalar[DType.int32]](3).as_unsafe_any_origin()
     ds.read_all[DType.int32](buf)
     assert_equal(Int(buf[0]), 4, "ep_len[0]")
     assert_equal(Int(buf[1]), 3, "ep_len[1]")
@@ -72,7 +72,7 @@ def test_ep_offset_int64() raises:
     assert_equal(ds.elem_size, 8, "ep_offset elem_size")
     assert_equal(ds.signedness, H5T_SGN_2, "ep_offset signedness")
 
-    var buf = alloc[Scalar[DType.int64]](3)
+    var buf = alloc[Scalar[DType.int64]](3).as_unsafe_any_origin()
     ds.read_all[DType.int64](buf)
     assert_equal(Int(buf[0]), 0, "ep_offset[0]")
     assert_equal(Int(buf[1]), 4, "ep_offset[1]")
@@ -93,7 +93,7 @@ def test_action_float32() raises:
     assert_equal(ds.elem_size, 4, "action elem_size")
 
     var n = ds.n_elements()
-    var buf = alloc[Scalar[DType.float32]](n)
+    var buf = alloc[Scalar[DType.float32]](n).as_unsafe_any_origin()
     ds.read_all[DType.float32](buf)
     # action[t] = [t, t + 0.5]
     for t in range(N_TOTAL):
@@ -120,7 +120,7 @@ def test_pixels_uint8() raises:
     assert_equal(ds.signedness, H5T_SGN_NONE, "pixels unsigned")
 
     var n = ds.n_elements()
-    var buf = alloc[Scalar[DType.uint8]](n)
+    var buf = alloc[Scalar[DType.uint8]](n).as_unsafe_any_origin()
     ds.read_all[DType.uint8](buf)
     # pixels[t,*,*,*] = (t*7) % 256
     var stride = H * W * 3
@@ -139,7 +139,7 @@ def test_pixels_read_range() raises:
     var ds = f.open_dataset(String("pixels"))
 
     var stride = H * W * 3
-    var buf = alloc[Scalar[DType.uint8]](3 * stride)
+    var buf = alloc[Scalar[DType.uint8]](3 * stride).as_unsafe_any_origin()
     ds.read_range[DType.uint8](1, 4, buf)
 
     for k in range(3):
@@ -157,7 +157,7 @@ def test_action_read_strided() raises:
     var f = H5File(String(FIXTURE_PATH))
     var ds = f.open_dataset(String("action"))
 
-    var buf = alloc[Scalar[DType.float32]](3 * ACTION_DIM)
+    var buf = alloc[Scalar[DType.float32]](3 * ACTION_DIM).as_unsafe_any_origin()
     ds.read_strided[DType.float32](1, 3, 2, buf)
     # Expected: action[1] = [1, 1.5], action[3] = [3, 3.5], action[5] = [5, 5.5]
     var expected_t: List[Int] = [1, 3, 5]
@@ -184,7 +184,7 @@ def test_state_float32() raises:
     assert_equal(Int(ds.dims[1]), STATE_DIM, "state.shape[1]")
 
     var n = ds.n_elements()
-    var buf = alloc[Scalar[DType.float32]](n)
+    var buf = alloc[Scalar[DType.float32]](n).as_unsafe_any_origin()
     ds.read_all[DType.float32](buf)
     # state[t] = [t, 2t, 3t, 4t, 5t]
     for t in range(N_TOTAL):

@@ -11,15 +11,14 @@ Run:
     pixi run mojo run -I . tests/deep_agents/test_mz_sequence_replay.mojo
 """
 
-from std.memory import alloc
 from std.testing import assert_true, assert_equal
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.zero.sequence_replay_mcts import MCTSSequenceReplay
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
+def _a(n: Int) -> List[Scalar[DT]]:
+    return List[Scalar[DT]](length=n, fill=Scalar[DT](0))
 
 
 def _store_const_episode[
@@ -49,9 +48,6 @@ def _store_const_episode[
             p[i * ACT + k] = Scalar[DT](1.0) if k == 1 else Scalar[DT](0.0)
             lg[i * ACT + k] = Scalar[DT](1.0)
     rb.store_episode(o, a, r, p, v, tp, lg, length)
-    o.free(); a.free(); r.free(); p.free(); v.free(); tp.free(); lg.free()
-
-
 def main() raises:
     comptime OBS = 4
     comptime ACT = 2
@@ -125,7 +121,4 @@ def main() raises:
             finite = False
     assert_true(finite, "post-eviction sample produced NaN")
     print("eviction keeps residency bounded + samplable: OK")
-
-    obs0.free(); actions.free(); policy_tgt.free()
-    value_tgt.free(); reward_tgt.free()
     print("MuZero MCTS sequence replay: OK")

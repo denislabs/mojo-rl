@@ -66,14 +66,14 @@ def _read_flat(lines: List[String], name: String) raises -> List[Scalar[DT]]:
 
 
 def _buf(src: List[Scalar[DT]]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](len(src))
+    var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](len(src)).as_unsafe_any_origin()
     for i in range(len(src)):
         p[i] = src[i]
     return p
 
 
 def _ones(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](n)
+    var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](n).as_unsafe_any_origin()
     for i in range(n):
         p[i] = 1.0
     return p
@@ -101,7 +101,7 @@ def test_twohot_backward() raises:
     var logits = _buf(_read_flat(lines, "th.logits"))
     var target = _buf(_read_flat(lines, "th.target"))
     var n = BK * T
-    var grad = alloc[Scalar[DT]](n * BINS)
+    var grad = alloc[Scalar[DT]](n * BINS).as_unsafe_any_origin()
     for i in range(n * BINS):
         grad[i] = 0.0
     for i in range(n):
@@ -133,9 +133,9 @@ def test_imag_loss_backward() raises:
     var slowreg = _get_scalar(lines, "cfg.slowreg")
     var rscale = _get_scalar(lines, "il.rscale")
 
-    var g_vlogits = alloc[Scalar[DT]](BK * T * BINS)
-    var g_pmean = alloc[Scalar[DT]](BK * T * ACT)
-    var g_pstd = alloc[Scalar[DT]](BK * T * ACT)
+    var g_vlogits = alloc[Scalar[DT]](BK * T * BINS).as_unsafe_any_origin()
+    var g_pmean = alloc[Scalar[DT]](BK * T * ACT).as_unsafe_any_origin()
+    var g_pstd = alloc[Scalar[DT]](BK * T * ACT).as_unsafe_any_origin()
     var d_policy = _ones(BK * TM1)
     var d_value = _ones(BK * TM1)
     imag_loss_backward[BK, T, ACT, BINS](
@@ -170,7 +170,7 @@ def test_repl_loss_backward() raises:
     var lam = _get_scalar(lines, "cfg.lam")
     var slowreg = _get_scalar(lines, "cfg.slowreg")
 
-    var g_vlogits = alloc[Scalar[DT]](BK * T * BINS)
+    var g_vlogits = alloc[Scalar[DT]](BK * T * BINS).as_unsafe_any_origin()
     var d_repval = List[Scalar[DT]](length=BK * TM1, fill=Scalar[DT](1.0))
     repl_loss_backward[BK, T, BINS](
         last, term, rew, boot, vlogits, svlogits, bins,

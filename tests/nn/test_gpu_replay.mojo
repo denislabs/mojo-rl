@@ -54,9 +54,9 @@ def test_empty_buffer() raises:
 def test_add_and_size_tracking() raises:
     var ctx = DeviceContext()
     var rb = GPUReplay[OBS, ACT, CAP].new(ctx, batch_capacity=BATCH)
-    var obs_p = alloc[Scalar[DT]](OBS)
-    var act_p = alloc[Scalar[DT]](ACT)
-    var nxt_p = alloc[Scalar[DT]](OBS)
+    var obs_p = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var act_p = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
+    var nxt_p = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
 
     var n_adds = 64
     for step in range(n_adds):
@@ -85,9 +85,9 @@ def test_add_and_size_tracking() raises:
 def test_circular_wraparound() raises:
     var ctx = DeviceContext()
     var rb = GPUReplay[OBS, ACT, CAP].new(ctx, batch_capacity=BATCH)
-    var obs_p = alloc[Scalar[DT]](OBS)
-    var act_p = alloc[Scalar[DT]](ACT)
-    var nxt_p = alloc[Scalar[DT]](OBS)
+    var obs_p = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var act_p = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
+    var nxt_p = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
 
     # Add CAP + 25 transitions; verify wraparound semantics.
     var n_adds = CAP + 25
@@ -119,9 +119,9 @@ def test_sample_content() raises:
     sampled obs[d] should equal `step*10 + d` for some step in [0, n_adds))."""
     var ctx = DeviceContext()
     var rb = GPUReplay[OBS, ACT, CAP].new(ctx, batch_capacity=BATCH)
-    var obs_p = alloc[Scalar[DT]](OBS)
-    var act_p = alloc[Scalar[DT]](ACT)
-    var nxt_p = alloc[Scalar[DT]](OBS)
+    var obs_p = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var act_p = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
+    var nxt_p = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
 
     var n_adds = 50
     for step in range(n_adds):
@@ -147,11 +147,11 @@ def test_sample_content() raises:
     ctx.synchronize()
 
     # D2H download for validation.
-    var h_s = alloc[Scalar[DT]](BATCH * OBS)
-    var h_a = alloc[Scalar[DT]](BATCH * ACT)
-    var h_r = alloc[Scalar[DT]](BATCH)
-    var h_sp = alloc[Scalar[DT]](BATCH * OBS)
-    var h_d = alloc[Scalar[DT]](BATCH)
+    var h_s = alloc[Scalar[DT]](BATCH * OBS).as_unsafe_any_origin()
+    var h_a = alloc[Scalar[DT]](BATCH * ACT).as_unsafe_any_origin()
+    var h_r = alloc[Scalar[DT]](BATCH).as_unsafe_any_origin()
+    var h_sp = alloc[Scalar[DT]](BATCH * OBS).as_unsafe_any_origin()
+    var h_d = alloc[Scalar[DT]](BATCH).as_unsafe_any_origin()
     ctx.enqueue_copy(h_s, mb_s)
     ctx.enqueue_copy(h_a, mb_a)
     ctx.enqueue_copy(h_r, mb_r)

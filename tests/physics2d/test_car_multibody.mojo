@@ -23,6 +23,7 @@ from mojo_rl.physics2d.car.constants import (
     CTRL_STEERING, CTRL_GAS, CTRL_BRAKE,
 )
 from mojo_rl.physics2d.constants import BODY_STATE_SIZE
+from mojo_rl.nn.core.ptr import mptr
 
 # Compact validation layout (one car).
 comptime BOFF = 0
@@ -47,7 +48,7 @@ def run_scenario(
     for _ in range(SSZ):
         sbuf.append(Scalar[dtype](0.0))
     var state = LayoutTensor[dtype, Layout.row_major(1, SSZ), MutAnyOrigin](
-        sbuf.unsafe_ptr()
+        mptr(sbuf)
     )
 
     CarDynamicsMB.init_env[1, SSZ, BOFF, FOFF, JOFF, ROFF](
@@ -84,7 +85,7 @@ def run_spin_check(nsteps: Int) raises -> Tuple[Float64, Float64]:
     for _ in range(SSZ):
         sbuf.append(Scalar[dtype](0.0))
     var state = LayoutTensor[dtype, Layout.row_major(1, SSZ), MutAnyOrigin](
-        sbuf.unsafe_ptr()
+        mptr(sbuf)
     )
     CarDynamicsMB.init_env[1, SSZ, BOFF, FOFF, JOFF, ROFF](
         0, state, Scalar[dtype](0.0), Scalar[dtype](0.0), Scalar[dtype](0.0)

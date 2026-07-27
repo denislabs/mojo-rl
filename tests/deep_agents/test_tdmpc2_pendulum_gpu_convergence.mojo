@@ -9,7 +9,6 @@ docs/TDMPC2_NVIDIA_GRADIENT_INVESTIGATION).
 Run: `pixi run -e nvidia mojo run -I . tests/deep_agents/test_tdmpc2_pendulum_gpu_convergence.mojo`
 """
 
-from std.memory import alloc
 from std.random import random_float64, seed
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
@@ -45,8 +44,8 @@ comptime Ag = TDMPC2Agent[
 
 
 def _greedy_eval(mut ag: Ag, mut env: PendulumV2[DT]) raises -> Scalar[DT]:
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var actbuf = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
     var total: Scalar[DT] = 0.0
     for _ep in range(EVAL_EPS):
         var obs = env.reset_obs_list()
@@ -61,7 +60,6 @@ def _greedy_eval(mut ag: Ag, mut env: PendulumV2[DT]) raises -> Scalar[DT]:
             obs = r[0].copy()
             if r[2]:
                 break
-    obsbuf.free(); actbuf.free()
     return total / Scalar[DT](EVAL_EPS)
 
 
@@ -78,8 +76,8 @@ def main() raises:
     )
 
     var obs = env.reset_obs_list()
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var actbuf = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
     var best: Scalar[DT] = -1.0e9
 
     for step in range(TOTAL):
@@ -109,4 +107,3 @@ def main() raises:
 
     print("  FINAL best eval return =", best)
     assert_true(best > Scalar[DT](-600.0), "TD-MPC2 GPU must converge on Pendulum")
-    obsbuf.free(); actbuf.free()

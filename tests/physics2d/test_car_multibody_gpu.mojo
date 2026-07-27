@@ -18,6 +18,7 @@ from mojo_rl.physics2d.car.constants import (
     FRICTION_LIMIT, GRASS_FRICTION, ROAD_FRICTION,
     CTRL_STEERING, CTRL_GAS, CTRL_BRAKE,
 )
+from mojo_rl.nn.core.ptr import mptr
 
 comptime BATCH = 8
 comptime BOFF = 0
@@ -54,7 +55,7 @@ def main() raises:
     for _ in range(BATCH * SSZ):
         cbuf.append(Scalar[dtype](0.0))
     var cstate = LayoutTensor[dtype, Layout.row_major(BATCH, SSZ), MutAnyOrigin](
-        cbuf.unsafe_ptr()
+        mptr(cbuf)
     )
     init_all(cstate)
     for _ in range(K):
@@ -67,7 +68,7 @@ def main() raises:
     var host = ctx.enqueue_create_host_buffer[dtype](BATCH * SSZ)
     ctx.synchronize()
     var hstate = LayoutTensor[dtype, Layout.row_major(BATCH, SSZ), MutAnyOrigin](
-        host.unsafe_ptr()
+        host.unsafe_ptr().as_unsafe_any_origin()
     )
     init_all(hstate)
     var dev = ctx.enqueue_create_buffer[dtype](BATCH * SSZ)
@@ -82,7 +83,7 @@ def main() raises:
     ctx.enqueue_copy(gout, dev)
     ctx.synchronize()
     var gstate = LayoutTensor[dtype, Layout.row_major(BATCH, SSZ), MutAnyOrigin](
-        gout.unsafe_ptr()
+        gout.unsafe_ptr().as_unsafe_any_origin()
     )
 
     # --- compare hull body state across all envs ---------------------------

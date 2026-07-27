@@ -215,12 +215,12 @@ def main() raises:
     )
 
     # ── Allocate net params + Adam state ──────────────────────────────────────
-    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
+    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
+    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
     var opt_state_buf = alloc[Scalar[dtype]](
         NET.PARAM_SIZE * OPT.STATE_PER_PARAM
-    )
-    var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
+    ).as_unsafe_any_origin()
+    var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE).as_unsafe_any_origin()
     memset(params_buf, 0, NET.PARAM_SIZE)
     memset(grads_buf, 0, NET.PARAM_SIZE)
     memset(opt_state_buf, 0, NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
@@ -243,11 +243,11 @@ def main() raises:
     NET.pc_init_params[PCXavier, dtype](params)
 
     # Scratch buffers
-    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
-    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM)
-    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
+    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM).as_unsafe_any_origin()
+    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
     memset(lat_buf, 0, BATCH * NET.LATENT_DIM)
 
     var latents = LayoutTensor[
@@ -266,8 +266,8 @@ def main() raises:
         dtype, Layout.row_major(BATCH, NET.LATENT_DIM), MutAnyOrigin
     ](dx_buf_raw)
 
-    var x_in_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM)
-    var y_tgt_buf = alloc[Scalar[dtype]](BATCH * OBS_DIM)
+    var x_in_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM).as_unsafe_any_origin()
+    var y_tgt_buf = alloc[Scalar[dtype]](BATCH * OBS_DIM).as_unsafe_any_origin()
     memset(x_in_buf, 0, BATCH * AUG_DIM)
     memset(y_tgt_buf, 0, BATCH * OBS_DIM)
     var x_in = LayoutTensor[
@@ -278,8 +278,8 @@ def main() raises:
     ](y_tgt_buf)
 
     # Per-rollout actions/states scratch.
-    var actions_buf = alloc[Scalar[dtype]](BATCH * SEQ_LEN)
-    var obs_buf = alloc[Scalar[dtype]](BATCH * (SEQ_LEN + 1) * OBS_DIM)
+    var actions_buf = alloc[Scalar[dtype]](BATCH * SEQ_LEN).as_unsafe_any_origin()
+    var obs_buf = alloc[Scalar[dtype]](BATCH * (SEQ_LEN + 1) * OBS_DIM).as_unsafe_any_origin()
 
     # ── Train ────────────────────────────────────────────────────────────────
     print("\n  epoch | last_step_loss | wall_t (s)")
@@ -389,10 +389,10 @@ def main() raises:
     ](params_buf + offset_b1)
 
     # Eval feedforward scratch
-    var z_pred_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var a_z_pred_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM)
-    var s_pred_buf = alloc[Scalar[dtype]](BATCH * OBS_DIM)
-    var a_s_pred_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
+    var z_pred_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var a_z_pred_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM).as_unsafe_any_origin()
+    var s_pred_buf = alloc[Scalar[dtype]](BATCH * OBS_DIM).as_unsafe_any_origin()
+    var a_s_pred_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
     var z_pred = LayoutTensor[
         dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
     ](z_pred_buf)

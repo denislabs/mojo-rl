@@ -65,8 +65,8 @@ def _fill_replay(mut tr: Tr) raises:
     """Record NREC identical synthetic transitions (deterministic LCG) so both
     trainers' device replays hold the SAME data → identical sampled windows."""
     var s = UInt64(99887766)
-    var ob = alloc[Scalar[DT]](OBS)
-    var ac = alloc[Scalar[DT]](ACT)
+    var ob = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var ac = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
     for _t in range(NREC):
         for k in range(OBS):
             s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
@@ -76,7 +76,7 @@ def _fill_replay(mut tr: Tr) raises:
             ac[k] = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
         s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
         var r = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
-        tr.record(ob, ac, r, Scalar[DT](0.0))
+        tr.record(ob.as_unsafe_any_origin(), ac, r, Scalar[DT](0.0))
     ob.free(); ac.free()
 
 

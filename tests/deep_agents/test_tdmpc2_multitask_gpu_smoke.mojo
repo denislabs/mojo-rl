@@ -17,7 +17,6 @@ Random actions throughout (no `select_action`) keep the test focused on
 Run: `pixi run -e apple mojo run -I . tests/deep_agents/test_tdmpc2_multitask_gpu_smoke.mojo`
 """
 
-from std.memory import alloc
 from std.random import random_float64, seed
 from std.math import isfinite
 from std.testing import assert_true
@@ -50,8 +49,8 @@ def main() raises:
         ENC, LATENT, MLP, BINS,
     ](ctx=ctx, lr=Scalar[DT](1e-3), learning_starts=64)
 
-    var obsbuf = alloc[Scalar[DT]](MAX_OBS)
-    var actbuf = alloc[Scalar[DT]](MAX_ACT)
+    var obsbuf = List[Scalar[DT]](length=MAX_OBS, fill=Scalar[DT](0))
+    var actbuf = List[Scalar[DT]](length=MAX_ACT, fill=Scalar[DT](0))
 
     comptime TOTAL = 400
     comptime LEARN_START = 64
@@ -87,4 +86,3 @@ def main() raises:
     print("=" * 70)
     print("MT GPU SMOKE PASSED — MT td-target + policy train blocks run on GPU")
     print("=" * 70)
-    obsbuf.free(); actbuf.free()

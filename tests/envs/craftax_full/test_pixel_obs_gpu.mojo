@@ -67,7 +67,7 @@ def test_gpu_pixel_obs_matches_cpu(mut counts: List[Int]) raises:
 
         # Render via the GPU kernel.
         CraftaxFullPixelEnv[dtype]._render_kernel[BATCH, STATE_SIZE](
-            ctx, states, workspace.unsafe_ptr(), obs,
+            ctx, states, workspace.unsafe_ptr().as_unsafe_any_origin(), obs,
         )
 
         var host_obs = ctx.enqueue_create_host_buffer[dtype](

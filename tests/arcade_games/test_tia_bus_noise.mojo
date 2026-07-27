@@ -46,13 +46,13 @@ def test_haunted_house_boots() raises:
     # forever and every frame hits the 2x262 scanline cap.
     var rom_data = load_rom("roms/haunted_house.bin")
     var env = AtariEnvironment(
-        rom_data.data.value(), rom_data.size, frame_skip=1, max_frames=0
+        rom_data.data.value().as_unsafe_any_origin(), rom_data.size, frame_skip=1, max_frames=0
     )
     init_bank(env.state, env.rom_size, ROM_AUTO)
-    cpu_reset(env.state, env.rom, env.rom_size)
+    cpu_reset(env.state, env.rom.as_unsafe_any_origin(), env.rom_size)
     for _ in range(120):
         set_action(env.state, ACTION_NOOP)
-        run_frame(env.state, env.rom, env.rom_size)
+        run_frame(env.state, env.rom.as_unsafe_any_origin(), env.rom_size)
     var lines = Int(env.state.dbg_frame_lines)
     if lines > 400:
         raise Error(

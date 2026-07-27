@@ -17,6 +17,7 @@ from std.testing import assert_true, assert_equal
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.data.sequence_replay import SequenceReplay
+from mojo_rl.nn.core.ptr import mptr
 
 comptime OBS = 2
 comptime ACT = 1
@@ -37,7 +38,7 @@ def main() raises:
         s_buf[0] = Scalar[DT](i)
         s_buf[1] = Scalar[DT](i)
         off.record(
-            s_buf.unsafe_ptr(), a_buf.unsafe_ptr(),
+            mptr(s_buf), mptr(a_buf),
             Scalar[DT](0.0), Scalar[DT](0.0),
         )
     assert_equal(len(off.online_q), 0, "online off => empty queue")
@@ -49,7 +50,7 @@ def main() raises:
         s_buf[0] = Scalar[DT](i)
         s_buf[1] = Scalar[DT](100 + i)
         rep.record(
-            s_buf.unsafe_ptr(), a_buf.unsafe_ptr(),
+            mptr(s_buf), mptr(a_buf),
             Scalar[DT](i), Scalar[DT](0.0),
         )
     # first enqueue at append 5 (tick>=4 and size>=5), then 9, 13 → 3 queued
@@ -62,8 +63,8 @@ def main() raises:
     var dne_out = List[Scalar[DT]](length=B * T, fill=Scalar[DT](0))
     var fst_out = List[Scalar[DT]](length=B * (T + 1), fill=Scalar[DT](0))
     rep.sample_batch_fst[B, T](
-        obs_out.unsafe_ptr(), act_out.unsafe_ptr(), rew_out.unsafe_ptr(),
-        dne_out.unsafe_ptr(), fst_out.unsafe_ptr(),
+        mptr(obs_out), mptr(act_out), mptr(rew_out),
+        mptr(dne_out), mptr(fst_out),
     )
     # Queue order is FIFO: row 0 = window enqueued at append 5 (frames 0..4),
     # row 1 = window enqueued at append 9 (frames 4..8).
@@ -81,8 +82,8 @@ def main() raises:
     # Second sample drains the last queued window into row 0; the queue is
     # then empty and further samples are pure uniform.
     rep.sample_batch_fst[B, T](
-        obs_out.unsafe_ptr(), act_out.unsafe_ptr(), rew_out.unsafe_ptr(),
-        dne_out.unsafe_ptr(), fst_out.unsafe_ptr(),
+        mptr(obs_out), mptr(act_out), mptr(rew_out),
+        mptr(dne_out), mptr(fst_out),
     )
     for k in range(T + 1):
         assert_equal(

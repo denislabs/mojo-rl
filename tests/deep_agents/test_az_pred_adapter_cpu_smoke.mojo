@@ -12,6 +12,7 @@ Run: pixi run mojo run -I . tests/deep_agents/test_az_pred_adapter_cpu_smoke.moj
 from std.testing import assert_true
 
 from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.core.ptr import untracked
 from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
 from mojo_rl.deep_agents.zero.mcts_adapters_cpu import AZRepCPU, AZPredCPU
 from mojo_rl.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
@@ -28,9 +29,9 @@ def main() raises:
     _ = env.reset()
     var net = Net.make["cpu", Kaiming]()
 
-    var rep = AZRepCPU[Env, OBS](env=UnsafePointer(to=env))
+    var rep = AZRepCPU[Env, OBS](env=untracked(UnsafePointer(to=env)))
     var pred = AZPredCPU[Env, OBS, ACT, Net](
-        env=UnsafePointer(to=env), net=UnsafePointer(to=net)
+        env=untracked(UnsafePointer(to=env)), net=untracked(UnsafePointer(to=net))
     )
 
     # AZRepCPU snapshots the live env state into the latent the planner threads.

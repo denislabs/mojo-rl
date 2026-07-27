@@ -8,13 +8,13 @@ Apple — NOT the 84×84 model. Asserts the pipeline runs + scores finite.
 Run:  pixi run -e apple mojo run -I . tests/experimental/lewm/test_eval_gpu.mojo
 """
 
-from std.memory import alloc
 from std.math import isnan, isinf
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.experimental.lewm.trainer import LeWMTrainer
 from mojo_rl.experimental.lewm.eval import lewm_action_awareness_eval
 
@@ -92,8 +92,8 @@ def main() raises:
         _ = tr.train_step(pix_t, act_t)
 
     # eval expects HOST pixels + HOST actions (it uploads internally).
-    var pix_host = alloc[Scalar[DT]](B * PIX)
-    var act_host = alloc[Scalar[DT]](B * ACTIN)
+    var pix_host = List[Scalar[DT]](length=B * PIX, fill=Scalar[DT](0))
+    var act_host = List[Scalar[DT]](length=B * ACTIN, fill=Scalar[DT](0))
     for k in range(B * PIX):
         pix_host[k] = pix_h.unsafe_ptr()[k]
     for k in range(B * ACTIN):
@@ -104,7 +104,7 @@ def main() raises:
         IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
         ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,
         PRED_FF, DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu",
-    ](tr, pix_host, act_host, num_random=12, cem_iters=2, cem_samples=16,
+    ](tr, mptr(pix_host), mptr(act_host), num_random=12, cem_iters=2, cem_samples=16,
       cem_topk=4, ctx=ctx)
 
     assert_true(not (isnan(r[0]) or isinf(r[0])), "expert finite")
@@ -112,7 +112,6 @@ def main() raises:
     assert_true(not (isnan(r[3]) or isinf(r[3])), "cem finite")
     assert_true(r[2] <= r[1] + 1e-9, "random_min <= random_mean")
 
-    pix_host.free(); act_host.free()
     _ = tr^
     print("=" * 70)
     print("ALL PASSED")

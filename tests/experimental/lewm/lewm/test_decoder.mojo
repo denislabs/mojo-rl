@@ -35,7 +35,7 @@ comptime BATCH = 3
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n)
+    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
 def _p(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:

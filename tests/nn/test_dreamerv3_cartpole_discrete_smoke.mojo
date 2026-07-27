@@ -75,8 +75,8 @@ def main() raises:
     var ag = Ag.make(lr=Scalar[DT](1e-3), learning_starts=64, warmup_steps=0)
 
     var obs = env.reset_obs_list()
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var actbuf = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
 
     comptime TOTAL = 260
     comptime LEARN_START = 64
@@ -96,8 +96,8 @@ def main() raises:
             for a in range(ACT):
                 actbuf[a] = Scalar[DT](1.0) if a == idx else Scalar[DT](0.0)
         else:
-            ag.select_action(obsbuf, actbuf, explore=True)
-            if not _is_onehot(actbuf):
+            ag.select_action(obsbuf.as_unsafe_any_origin(), actbuf, explore=True)
+            if not _is_onehot(actbuf.as_unsafe_any_origin()):
                 all_onehot = False
             idx = _argmax(actbuf)
         var res = env.step_obs(idx)

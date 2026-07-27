@@ -25,8 +25,10 @@ tests/envs/test_car_racing_cpu.mojo
 tests/envs/procgen/test_bigfish_parity.mojo
 tests/arcade_games/test_pong_env.mojo
 
-# ── physics3d: CPU-only structural gate (vs_mujoco gates stay local) ──
-tests/physics3d/test_forward_kinematics.mojo
+# ── physics3d: golden-frozen FK + dynamics-prep gate (vs_mujoco gates stay
+# local). Replaces test_forward_kinematics.mojo, deleted with the legacy CPU
+# core in the physics3d sunset (e6043aca) — the manifest was never updated.
+tests/physics3d/test_fk_fields.mojo
 
 # NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
 #   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo

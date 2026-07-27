@@ -16,6 +16,7 @@ from std.memory import alloc
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.deep_agents.dreamerv3.twohot import (
     twohot_pred, twohot_loss, symexp_twohot_bins,
 )
@@ -73,7 +74,7 @@ def _read_flat(lines: List[String], name: String) raises -> List[Scalar[DT]]:
 
 
 def _buf(src: List[Scalar[DT]]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](len(src))
+    var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](len(src)).as_unsafe_any_origin()
     for i in range(len(src)):
         p[i] = src[i]
     return p
@@ -114,8 +115,8 @@ def test_twohot() raises:
     var target = _buf(_read_flat(lines, "th.target"))
     var n = BK * T
 
-    var pred = alloc[Scalar[DT]](n)
-    var loss = alloc[Scalar[DT]](n)
+    var pred = List[Scalar[DT]](length=n, fill=Scalar[DT](0))
+    var loss = List[Scalar[DT]](length=n, fill=Scalar[DT](0))
     for i in range(n):
         pred[i] = twohot_pred[BINS](logits, i * BINS, bins)
         loss[i] = twohot_loss[BINS](logits, i * BINS, bins, target[i])
@@ -128,7 +129,7 @@ def test_twohot() raises:
     # symexp bin generation (255). Bins span ±4.85e8 → use RELATIVE diff
     # (absolute float32 error at that magnitude is ~hundreds, but relative
     # ~5e-7).
-    var sbins: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](255)
+    var sbins: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](255).as_unsafe_any_origin()
     symexp_twohot_bins[255](sbins)
     var sref = _read_flat(lines, "sbins255")
     var dsr: Scalar[DT] = 0.0
@@ -157,8 +158,8 @@ def test_normal() raises:
     var act = _buf(_read_flat(lines, "nm.act"))
     var n = BK * T * ACT
 
-    var logp = alloc[Scalar[DT]](n)
-    var ent = alloc[Scalar[DT]](n)
+    var logp = List[Scalar[DT]](length=n, fill=Scalar[DT](0))
+    var ent = List[Scalar[DT]](length=n, fill=Scalar[DT](0))
     for i in range(n):
         var mean = bounded_mean(mean_raw[i])
         var std = bounded_std(std_raw[i], minstd, maxstd)
@@ -230,11 +231,11 @@ def test_repl_loss() raises:
     var lam = _get_scalar(lines, "cfg.lam")
     var slowreg = _get_scalar(lines, "cfg.slowreg")
 
-    var repval = alloc[Scalar[DT]](BK * TM1)
-    var ret = alloc[Scalar[DT]](BK * TM1)
+    var repval = List[Scalar[DT]](length=BK * TM1, fill=Scalar[DT](0))
+    var ret = List[Scalar[DT]](length=BK * TM1, fill=Scalar[DT](0))
     repl_loss_cpu[BK, T, BINS](
         last, term, rew, boot, vlogits, svlogits, bins,
-        horizon, lam, slowreg, repval, ret,
+        horizon, lam, slowreg, mptr(repval), mptr(ret),
     )
     var drv = _diff(repval, _read_flat(lines, "rl.repval"))
     var dret = _diff(ret, _read_flat(lines, "rl.ret"))

@@ -10,7 +10,6 @@ facade wires the real learning stack, not a stub.
 Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_config.mojo`
 """
 
-from std.memory import alloc
 from std.random import random_float64, seed
 from std.math import isfinite
 from std.testing import assert_true
@@ -66,8 +65,8 @@ def main() raises:
 
     var env = PendulumV2[DT]()
     var obs = env.reset_obs_list()
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var actbuf = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
 
     comptime TOTAL = 400
     comptime LEARN_START = 64
@@ -108,4 +107,3 @@ def main() raises:
     print("=" * 70)
     print("CONFIG FACADE PASSED — TDMPC2[...] preset builds + trains")
     print("=" * 70)
-    obsbuf.free(); actbuf.free()

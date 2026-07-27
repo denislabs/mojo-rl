@@ -52,12 +52,12 @@ def main() raises:
     print("  small=", CB.in_h, "x", CB.in_w, " big=", CB.out_h, "x", CB.out_w,
           " IN=", IN, " OUT=", OUT, " PARAM_SIZE=", PSZ)
 
-    var x_buf = alloc[Scalar[dtype]](BATCH * IN)
-    var y_buf = alloc[Scalar[dtype]](BATCH * OUT)
-    var params_buf = alloc[Scalar[dtype]](PSZ)
-    var mu_buf = alloc[Scalar[dtype]](BATCH * OUT)
-    var a_buf = alloc[Scalar[dtype]](BATCH * IN)
-    var z_buf = alloc[Scalar[dtype]](BATCH * IN)
+    var x_buf = alloc[Scalar[dtype]](BATCH * IN).as_unsafe_any_origin()
+    var y_buf = alloc[Scalar[dtype]](BATCH * OUT).as_unsafe_any_origin()
+    var params_buf = alloc[Scalar[dtype]](PSZ).as_unsafe_any_origin()
+    var mu_buf = alloc[Scalar[dtype]](BATCH * OUT).as_unsafe_any_origin()
+    var a_buf = alloc[Scalar[dtype]](BATCH * IN).as_unsafe_any_origin()
+    var z_buf = alloc[Scalar[dtype]](BATCH * IN).as_unsafe_any_origin()
 
     for i in range(BATCH * IN):
         x_buf[i] = Scalar[dtype](sin(Float32(i) * 0.7 + 0.2))
@@ -95,13 +95,13 @@ def main() raises:
     # ── 2. Finite-difference weight_grad ─────────────────────────────────────
     # E = ½‖x_above − μ‖² with x_above = y; grads must equal dE/dW.
     CB.predict[BATCH, dtype](x, params, mu, a)
-    var eps_buf = alloc[Scalar[dtype]](BATCH * OUT)
+    var eps_buf = alloc[Scalar[dtype]](BATCH * OUT).as_unsafe_any_origin()
     for i in range(BATCH * OUT):
         eps_buf[i] = y_buf[i] - mu_buf[i]
     var eps = LayoutTensor[dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin](
         eps_buf
     )
-    var grads_buf = alloc[Scalar[dtype]](PSZ)
+    var grads_buf = alloc[Scalar[dtype]](PSZ).as_unsafe_any_origin()
     var grads = LayoutTensor[dtype, Layout.row_major(PSZ), MutAnyOrigin](
         grads_buf
     )

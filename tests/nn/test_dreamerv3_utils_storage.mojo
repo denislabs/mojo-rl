@@ -233,8 +233,7 @@ def _normalize_ok() raises -> Bool:
     var sample = List[Scalar[DT]](length=N, fill=Scalar[DT](0))
     for i in range(N):
         sample[i] = Scalar[DT](i)  # 0..10
-    var sp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](sample.unsafe_ptr())
-    nrm.update(sp, N)
+    nrm.update(sample, N)
     _ = sample^
 
     var st = nrm.stats()

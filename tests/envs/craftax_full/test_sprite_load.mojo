@@ -97,7 +97,7 @@ def main() raises:
         SPR_ICON_INT,
     ]
     for slot in slots:
-        if _slot_has_content(sheet, slot):
+        if _slot_has_content(sheet.as_unsafe_any_origin(), slot):
             passed += 1
             print("  PASS slot", slot, "has content")
         else:

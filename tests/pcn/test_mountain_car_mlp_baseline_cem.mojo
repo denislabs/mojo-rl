@@ -298,12 +298,12 @@ def main() raises:
     )
 
     # ── Model params + Adam state ─────────────────────────────────────────────
-    var T_params_buf = alloc[Scalar[dtype]](T_PARAM_SIZE)
-    var T_grads_buf = alloc[Scalar[dtype]](T_PARAM_SIZE)
+    var T_params_buf = alloc[Scalar[dtype]](T_PARAM_SIZE).as_unsafe_any_origin()
+    var T_grads_buf = alloc[Scalar[dtype]](T_PARAM_SIZE).as_unsafe_any_origin()
     var T_opt_state_buf = alloc[Scalar[dtype]](
         T_PARAM_SIZE * OPT.STATE_PER_PARAM
-    )
-    var T_opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
+    ).as_unsafe_any_origin()
+    var T_opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE).as_unsafe_any_origin()
     memset(T_params_buf, 0, T_PARAM_SIZE)
     memset(T_grads_buf, 0, T_PARAM_SIZE)
     memset(T_opt_state_buf, 0, T_PARAM_SIZE * OPT.STATE_PER_PARAM)
@@ -322,12 +322,12 @@ def main() raises:
         dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin
     ](T_opt_global_buf)
 
-    var D_params_buf = alloc[Scalar[dtype]](D_PARAM_SIZE)
-    var D_grads_buf = alloc[Scalar[dtype]](D_PARAM_SIZE)
+    var D_params_buf = alloc[Scalar[dtype]](D_PARAM_SIZE).as_unsafe_any_origin()
+    var D_grads_buf = alloc[Scalar[dtype]](D_PARAM_SIZE).as_unsafe_any_origin()
     var D_opt_state_buf = alloc[Scalar[dtype]](
         D_PARAM_SIZE * OPT.STATE_PER_PARAM
-    )
-    var D_opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
+    ).as_unsafe_any_origin()
+    var D_opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE).as_unsafe_any_origin()
     memset(D_params_buf, 0, D_PARAM_SIZE)
     memset(D_grads_buf, 0, D_PARAM_SIZE)
     memset(D_opt_state_buf, 0, D_PARAM_SIZE * OPT.STATE_PER_PARAM)
@@ -346,12 +346,12 @@ def main() raises:
         dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin
     ](D_opt_global_buf)
 
-    var enc_params_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
-    var enc_grads_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
+    var enc_params_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE).as_unsafe_any_origin()
+    var enc_grads_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE).as_unsafe_any_origin()
     var enc_opt_state_buf = alloc[Scalar[dtype]](
         ENC_PARAM_SIZE * OPT.STATE_PER_PARAM
-    )
-    var enc_opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
+    ).as_unsafe_any_origin()
+    var enc_opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE).as_unsafe_any_origin()
     memset(enc_params_buf, 0, ENC_PARAM_SIZE)
     memset(enc_grads_buf, 0, ENC_PARAM_SIZE)
     memset(enc_opt_state_buf, 0, ENC_PARAM_SIZE * OPT.STATE_PER_PARAM)
@@ -373,11 +373,11 @@ def main() raises:
     ENC.xavier_init[dtype](enc_params, UInt64(123))
 
     # ── Training scratch (BATCH=32) ───────────────────────────────────────────
-    var enc_input_buf = alloc[Scalar[dtype]](BATCH * ENC_INPUT_DIM)
-    var enc_hpre_buf = alloc[Scalar[dtype]](BATCH * ENC_HIDDEN_DIM)
-    var enc_hact_buf = alloc[Scalar[dtype]](BATCH * ENC_HIDDEN_DIM)
-    var enc_output_buf = alloc[Scalar[dtype]](BATCH * ENC_OUTPUT_DIM)
-    var enc_dz_buf = alloc[Scalar[dtype]](BATCH * ENC_OUTPUT_DIM)
+    var enc_input_buf = alloc[Scalar[dtype]](BATCH * ENC_INPUT_DIM).as_unsafe_any_origin()
+    var enc_hpre_buf = alloc[Scalar[dtype]](BATCH * ENC_HIDDEN_DIM).as_unsafe_any_origin()
+    var enc_hact_buf = alloc[Scalar[dtype]](BATCH * ENC_HIDDEN_DIM).as_unsafe_any_origin()
+    var enc_output_buf = alloc[Scalar[dtype]](BATCH * ENC_OUTPUT_DIM).as_unsafe_any_origin()
+    var enc_dz_buf = alloc[Scalar[dtype]](BATCH * ENC_OUTPUT_DIM).as_unsafe_any_origin()
     var enc_input = LayoutTensor[
         dtype, Layout.row_major(BATCH, ENC_INPUT_DIM), MutAnyOrigin
     ](enc_input_buf)
@@ -395,24 +395,24 @@ def main() raises:
     ](enc_dz_buf)
 
     # x_aug = [z_t, a_t]; cache a_x_aug = tanh(x_aug); μ_z_next = a_x_aug @ W_T + b_T
-    var x_aug_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM)
-    var a_x_aug_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM)
-    var mu_z_next_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var a_z_next_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)  # tanh(μ_z_next)
-    var mu_obs_buf = alloc[Scalar[dtype]](BATCH * OBS_DIM)
-    var d_mu_obs_buf = alloc[Scalar[dtype]](BATCH * OBS_DIM)
-    var d_mu_z_next_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var d_x_aug_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM)
+    var x_aug_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM).as_unsafe_any_origin()
+    var a_x_aug_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM).as_unsafe_any_origin()
+    var mu_z_next_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var a_z_next_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()  # tanh(μ_z_next)
+    var mu_obs_buf = alloc[Scalar[dtype]](BATCH * OBS_DIM).as_unsafe_any_origin()
+    var d_mu_obs_buf = alloc[Scalar[dtype]](BATCH * OBS_DIM).as_unsafe_any_origin()
+    var d_mu_z_next_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var d_x_aug_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM).as_unsafe_any_origin()
 
-    var actions_buf = alloc[Scalar[dtype]](BATCH * SEQ_LEN)
-    var obs_buf = alloc[Scalar[dtype]](BATCH * (SEQ_LEN + 1) * OBS_DIM)
+    var actions_buf = alloc[Scalar[dtype]](BATCH * SEQ_LEN).as_unsafe_any_origin()
+    var obs_buf = alloc[Scalar[dtype]](BATCH * (SEQ_LEN + 1) * OBS_DIM).as_unsafe_any_origin()
 
     # ── Train ────────────────────────────────────────────────────────────────
     print("\n  epoch | last_step_loss | wall_t (s)")
     print("  ------+----------------+------------")
     var rng = PhiloxRandom(seed=UInt64(7), offset=UInt64(0))
     var step_num: Int = 0
-    var prev_z_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
+    var prev_z_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
     var t0 = perf_counter_ns()
 
     for epoch in range(EPOCHS):
@@ -577,13 +577,13 @@ def main() raises:
     print("\n  total train time:", total_t, "s")
 
     # ── CEM imagination scratch (BATCH=N_SAMPLES) ─────────────────────────────
-    var cem_z_buf = alloc[Scalar[dtype]](N_SAMPLES * HIDDEN)
-    var cem_x_aug_buf = alloc[Scalar[dtype]](N_SAMPLES * AUG_DIM)
-    var cem_a_x_aug_buf = alloc[Scalar[dtype]](N_SAMPLES * AUG_DIM)
-    var cem_mu_z_next_buf = alloc[Scalar[dtype]](N_SAMPLES * HIDDEN)
-    var cem_a_z_next_buf = alloc[Scalar[dtype]](N_SAMPLES * HIDDEN)
-    var cem_mu_obs_buf = alloc[Scalar[dtype]](N_SAMPLES * OBS_DIM)
-    var cem_actions_buf = alloc[Scalar[dtype]](N_SAMPLES * PLAN_HORIZON)
+    var cem_z_buf = alloc[Scalar[dtype]](N_SAMPLES * HIDDEN).as_unsafe_any_origin()
+    var cem_x_aug_buf = alloc[Scalar[dtype]](N_SAMPLES * AUG_DIM).as_unsafe_any_origin()
+    var cem_a_x_aug_buf = alloc[Scalar[dtype]](N_SAMPLES * AUG_DIM).as_unsafe_any_origin()
+    var cem_mu_z_next_buf = alloc[Scalar[dtype]](N_SAMPLES * HIDDEN).as_unsafe_any_origin()
+    var cem_a_z_next_buf = alloc[Scalar[dtype]](N_SAMPLES * HIDDEN).as_unsafe_any_origin()
+    var cem_mu_obs_buf = alloc[Scalar[dtype]](N_SAMPLES * OBS_DIM).as_unsafe_any_origin()
+    var cem_actions_buf = alloc[Scalar[dtype]](N_SAMPLES * PLAN_HORIZON).as_unsafe_any_origin()
 
     # CEM bookkeeping
     var cem_mu = List[Float64](capacity=PLAN_HORIZON)
@@ -600,7 +600,7 @@ def main() raises:
         cem_indices.append(0)
 
     # Persistent agent state for the planner.
-    var agent_z_buf = alloc[Scalar[dtype]](HIDDEN)
+    var agent_z_buf = alloc[Scalar[dtype]](HIDDEN).as_unsafe_any_origin()
 
     # ── Eval loop ────────────────────────────────────────────────────────────
     print("\n  === CEM planning evaluation (MLP baseline) ===")

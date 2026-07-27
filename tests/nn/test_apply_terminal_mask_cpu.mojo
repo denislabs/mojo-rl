@@ -19,6 +19,7 @@ Run: `pixi run mojo run -I . tests/nn/test_apply_terminal_mask_cpu.mojo`
 
 from std.memory import alloc
 from std.testing import assert_true
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.training.terminal_mask import apply_terminal_mask
@@ -30,9 +31,9 @@ def main() raises:
     print("=" * 70)
 
     comptime N = 4
-    var r: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
-    var term: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
-    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var r: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
+    var term: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
 
     # Per-sample (reward, termination, bootstrap-entering-y).
     var rew = InlineArray[Scalar[DT], N](fill=0)
@@ -47,7 +48,11 @@ def main() raises:
         term[i] = tm[i]
         y[i] = boot[i]  # y enters holding ONLY the bootstrap term
 
-    apply_terminal_mask["cpu", N](None, r, term, y)
+    # The helper takes `LayoutTensor` views, not raw pointers.
+    var r_t = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](r)
+    var term_t = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](term)
+    var y_t = LayoutTensor[DT, Layout.row_major(N, 1), MutAnyOrigin](y)
+    apply_terminal_mask["cpu", N](None, r_t, term_t, y_t)
 
     for i in range(N):
         if tm[i] == Scalar[DT](1.0):

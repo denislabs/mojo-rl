@@ -75,7 +75,7 @@ def main() raises:
     var ctx = DeviceContext()
 
     # ── Params (host init → device) ──────────────────────────────────────────
-    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
+    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
     memset(params_buf, 0, NET.PARAM_SIZE)
     var params_host_lt = LayoutTensor[
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin

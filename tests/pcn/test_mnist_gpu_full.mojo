@@ -80,7 +80,7 @@ def main() raises:
         params_host_init.unsafe_ptr()[i] = Scalar[dtype](0)
     var params_init_t = LayoutTensor[
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
-    ](params_host_init.unsafe_ptr())
+    ](params_host_init.unsafe_ptr().as_unsafe_any_origin())
     NET.pc_init_params[PCXavier, dtype](params_init_t)
 
     var params_dbuf = ctx.enqueue_create_buffer[dtype](NET.PARAM_SIZE)
@@ -191,7 +191,7 @@ def main() raises:
     for tb in range(N_TEST_BATCHES):
         var x_batch_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, NET.IN_DIM), MutAnyOrigin
-        ](test_img_dbuf.unsafe_ptr() + tb * BATCH * NET.IN_DIM)
+        ](test_img_dbuf.unsafe_ptr().as_unsafe_any_origin() + tb * BATCH * NET.IN_DIM)
         NET.forward_eval_gpu[BATCH, dtype](
             ctx, x_batch_t, params_t, eval_out_t, mu_eps_t, a_below_t
         )
@@ -224,10 +224,10 @@ def main() raises:
         for batch_idx in range(N_TRAIN_BATCHES):
             var x_batch_t = LayoutTensor[
                 dtype, Layout.row_major(BATCH, NET.IN_DIM), MutAnyOrigin
-            ](train_img_dbuf.unsafe_ptr() + batch_idx * BATCH * NET.IN_DIM)
+            ](train_img_dbuf.unsafe_ptr().as_unsafe_any_origin() + batch_idx * BATCH * NET.IN_DIM)
             var y_batch_t = LayoutTensor[
                 dtype, Layout.row_major(BATCH, NET.OUT_DIM), MutAnyOrigin
-            ](train_tgt_dbuf.unsafe_ptr() + batch_idx * BATCH * NET.OUT_DIM)
+            ](train_tgt_dbuf.unsafe_ptr().as_unsafe_any_origin() + batch_idx * BATCH * NET.OUT_DIM)
 
             TRAINER.compute_grads_only_gpu[BATCH](
                 ctx,
@@ -264,7 +264,7 @@ def main() raises:
         for tb in range(N_TEST_BATCHES):
             var x_batch_t = LayoutTensor[
                 dtype, Layout.row_major(BATCH, NET.IN_DIM), MutAnyOrigin
-            ](test_img_dbuf.unsafe_ptr() + tb * BATCH * NET.IN_DIM)
+            ](test_img_dbuf.unsafe_ptr().as_unsafe_any_origin() + tb * BATCH * NET.IN_DIM)
             NET.forward_eval_gpu[BATCH, dtype](
                 ctx, x_batch_t, params_t, eval_out_t, mu_eps_t, a_below_t
             )
@@ -295,7 +295,7 @@ def main() raises:
     for tb in range(N_TEST_BATCHES):
         var x_batch_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, NET.IN_DIM), MutAnyOrigin
-        ](test_img_dbuf.unsafe_ptr() + tb * BATCH * NET.IN_DIM)
+        ](test_img_dbuf.unsafe_ptr().as_unsafe_any_origin() + tb * BATCH * NET.IN_DIM)
         NET.forward_eval_gpu[BATCH, dtype](
             ctx, x_batch_t, params_t, eval_out_t, mu_eps_t, a_below_t
         )

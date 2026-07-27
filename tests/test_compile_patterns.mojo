@@ -66,13 +66,13 @@ def launch_pattern_a[
     """Launch Pattern A kernel."""
     var output = LayoutTensor[
         dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-    ](output_buf.unsafe_ptr())
+    ](output_buf.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]())
     var input = LayoutTensor[
         dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin
-    ](input_buf.unsafe_ptr())
+    ](input_buf.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]())
     var W = LayoutTensor[
         dtype, Layout.row_major(IN_DIM, OUT_DIM), MutAnyOrigin
-    ](W_buf.unsafe_ptr())
+    ](W_buf.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]())
 
     comptime grid_x = (OUT_DIM + TILE - 1) // TILE
     comptime grid_y = (BATCH + TILE - 1) // TILE
@@ -89,7 +89,7 @@ def launch_pattern_a[
     ):
         pattern_a_kernel[BATCH](output, input, W)
 
-    ctx.enqueue_function[wrapper, wrapper](
+    ctx.enqueue_function[wrapper](
         output,
         input,
         W,
@@ -145,12 +145,12 @@ def launch_pattern_b[
     comptime W_layout = Layout.row_major(IN_DIM, OUT_DIM)
 
     var output = LayoutTensor[dtype, out_layout, MutAnyOrigin](
-        output_buf.unsafe_ptr()
+        output_buf.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]()
     )
     var input = LayoutTensor[dtype, in_layout, MutAnyOrigin](
-        input_buf.unsafe_ptr()
+        input_buf.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]()
     )
-    var W = LayoutTensor[dtype, W_layout, MutAnyOrigin](W_buf.unsafe_ptr())
+    var W = LayoutTensor[dtype, W_layout, MutAnyOrigin](W_buf.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]())
 
     comptime grid_x = (OUT_DIM + TILE - 1) // TILE
     var grid_y = (actual_batch + TILE - 1) // TILE  # Runtime grid!
@@ -158,7 +158,7 @@ def launch_pattern_b[
     # Compile the kernel ONCE with fixed layouts
     comptime kernel = pattern_b_kernel[out_layout, in_layout, W_layout]
 
-    ctx.enqueue_function[kernel, kernel](
+    ctx.enqueue_function[kernel](
         output,
         input,
         W,

@@ -12,7 +12,6 @@ the per-task action masking applied at acting/record time (env wrapper +
 Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_multitask_mask.mojo`
 """
 
-from std.memory import alloc
 from std.random import random_float64, seed
 from std.math import abs, max
 from std.testing import assert_true
@@ -38,15 +37,15 @@ def main() raises:
     ](lr=Scalar[DT](1e-3))
 
     # task 0: both dims active; task 1: dim 1 masked off.
-    var m0 = alloc[Scalar[DT]](MAX_ACT)
+    var m0 = List[Scalar[DT]](length=MAX_ACT, fill=Scalar[DT](0))
     m0[0] = Scalar[DT](1.0); m0[1] = Scalar[DT](1.0)
-    var m1 = alloc[Scalar[DT]](MAX_ACT)
+    var m1 = List[Scalar[DT]](length=MAX_ACT, fill=Scalar[DT](0))
     m1[0] = Scalar[DT](1.0); m1[1] = Scalar[DT](0.0)
     ag.set_action_mask(0, m0)
     ag.set_action_mask(1, m1)
 
-    var obsbuf = alloc[Scalar[DT]](MAX_OBS)
-    var actbuf = alloc[Scalar[DT]](MAX_ACT)
+    var obsbuf = List[Scalar[DT]](length=MAX_OBS, fill=Scalar[DT](0))
+    var actbuf = List[Scalar[DT]](length=MAX_ACT, fill=Scalar[DT](0))
 
     var t1_dim1_max: Scalar[DT] = 0.0
     var t1_dim0_abs_sum: Scalar[DT] = 0.0
@@ -76,4 +75,3 @@ def main() raises:
     print("=" * 70)
     print("ACTION-MASK PASSED — per-task masking zeroes unused dims at acting")
     print("=" * 70)
-    m0.free(); m1.free(); obsbuf.free(); actbuf.free()

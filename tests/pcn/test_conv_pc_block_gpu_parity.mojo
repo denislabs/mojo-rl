@@ -58,13 +58,13 @@ def run_gpu_parity[
     comptime PSZ = CB.PARAM_SIZE
 
     # ── Host buffers + CPU reference ──────────────────────────────────────────
-    var x_buf = alloc[Scalar[dtype]](BATCH * IN)
-    var a_cpu = alloc[Scalar[dtype]](BATCH * IN)
-    var mu_cpu = alloc[Scalar[dtype]](BATCH * OUT)
-    var eps_buf = alloc[Scalar[dtype]](BATCH * OUT)
-    var params_buf = alloc[Scalar[dtype]](PSZ)
-    var z_cpu = alloc[Scalar[dtype]](BATCH * IN)
-    var grads_cpu = alloc[Scalar[dtype]](PSZ)
+    var x_buf = alloc[Scalar[dtype]](BATCH * IN).as_unsafe_any_origin()
+    var a_cpu = alloc[Scalar[dtype]](BATCH * IN).as_unsafe_any_origin()
+    var mu_cpu = alloc[Scalar[dtype]](BATCH * OUT).as_unsafe_any_origin()
+    var eps_buf = alloc[Scalar[dtype]](BATCH * OUT).as_unsafe_any_origin()
+    var params_buf = alloc[Scalar[dtype]](PSZ).as_unsafe_any_origin()
+    var z_cpu = alloc[Scalar[dtype]](BATCH * IN).as_unsafe_any_origin()
+    var grads_cpu = alloc[Scalar[dtype]](PSZ).as_unsafe_any_origin()
 
     for i in range(BATCH * IN):
         x_buf[i] = Scalar[dtype](sin(Float32(i) * 0.7 + 0.3) * 1.5)
@@ -146,10 +146,10 @@ def run_gpu_parity[
     ctx.enqueue_copy(g_gpu, grads_d)
     ctx.synchronize()
 
-    var d_predict = _max_abs_diff(mu_cpu, mu_gpu.unsafe_ptr(), BATCH * OUT)
-    var d_abelow = _max_abs_diff(a_cpu, a_gpu.unsafe_ptr(), BATCH * IN)
-    var d_pullback = _max_abs_diff(z_cpu, z_gpu.unsafe_ptr(), BATCH * IN)
-    var d_wgrad = _max_abs_diff(grads_cpu, g_gpu.unsafe_ptr(), PSZ)
+    var d_predict = _max_abs_diff(mu_cpu, mu_gpu.unsafe_ptr().as_unsafe_any_origin(), BATCH * OUT)
+    var d_abelow = _max_abs_diff(a_cpu, a_gpu.unsafe_ptr().as_unsafe_any_origin(), BATCH * IN)
+    var d_pullback = _max_abs_diff(z_cpu, z_gpu.unsafe_ptr().as_unsafe_any_origin(), BATCH * IN)
+    var d_wgrad = _max_abs_diff(grads_cpu, g_gpu.unsafe_ptr().as_unsafe_any_origin(), PSZ)
 
     print("── " + label + " ──")
     print("  predict     max|Δ| =", d_predict)

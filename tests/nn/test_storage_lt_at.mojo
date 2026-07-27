@@ -79,7 +79,7 @@ def main() raises:
             for m in range(BN):
                 var v = LayoutTensor[
                     DT, Layout.row_major(BDIM), MutAnyOrigin
-                ](tb.dev.value().unsafe_ptr() + m * BDIM)
+                ](tb.dev.value().unsafe_ptr().unsafe_offset(m * BDIM).as_unsafe_any_origin())
                 ctx.enqueue_function[_add_const_kernel[BDIM]](
                     v, tiny, grid_dim=bnblk, block_dim=TPB
                 )
@@ -89,7 +89,7 @@ def main() raises:
             for m in range(BN):
                 var v = LayoutTensor[
                     DT, Layout.row_major(BDIM), MutAnyOrigin
-                ](tb.dev.value().unsafe_ptr() + m * BDIM)
+                ](tb.dev.value().unsafe_ptr().unsafe_offset(m * BDIM).as_unsafe_any_origin())
                 ctx.enqueue_function[_add_const_kernel[BDIM]](
                     v, tiny, grid_dim=bnblk, block_dim=TPB
                 )

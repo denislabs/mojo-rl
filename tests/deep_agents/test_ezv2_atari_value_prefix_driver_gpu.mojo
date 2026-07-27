@@ -59,7 +59,7 @@ def main() raises:
     var ctx = DeviceContext()
     var rom = load_rom("roms/pong.bin")
     var env = Env(
-        AtariGame.PONG, rom.data.value(), rom.size,
+        AtariGame.PONG, rom.data.value().as_unsafe_any_origin(), rom.size,
         clip_reward=True, full_action_set=True,
     )
 

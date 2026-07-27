@@ -90,8 +90,8 @@ def main() raises:
     print("   set_state round-trip OK")
 
     # ── fabricate (start, goal) pairs by rolling the env ───────────────
-    var starts = alloc[Scalar[DT]](B * 5)
-    var goals = alloc[Scalar[DT]](B * 5)
+    var starts = alloc[Scalar[DT]](B * 5).as_unsafe_any_origin()
+    var goals = alloc[Scalar[DT]](B * 5).as_unsafe_any_origin()
     for b in range(B):
         var env = PushTEnv[DT](seed=UInt64(10 + b))
         _ = env.reset()

@@ -91,11 +91,11 @@ def main() raises:
     print("=" * 70)
     var ctx = DeviceContext()
 
-    var mb_obs = alloc[Scalar[DT]](B * (T + 1) * OBS)
-    var mb_act = alloc[Scalar[DT]](B * T * ACT)
-    var mb_rew = alloc[Scalar[DT]](B * T)
-    var mb_dne = alloc[Scalar[DT]](B * T)
-    var mb_fst = alloc[Scalar[DT]](B * (T + 1))
+    var mb_obs = alloc[Scalar[DT]](B * (T + 1) * OBS).as_unsafe_any_origin()
+    var mb_act = alloc[Scalar[DT]](B * T * ACT).as_unsafe_any_origin()
+    var mb_rew = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
+    var mb_dne = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
+    var mb_fst = alloc[Scalar[DT]](B * (T + 1)).as_unsafe_any_origin()
 
     # Two trainers with IDENTICAL initial weights (reseed before each make).
     seed(SEED)

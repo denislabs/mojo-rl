@@ -54,8 +54,8 @@ def main() raises:
     print("  SCRATCH_IN  =", NET.SCRATCH_IN_DIM)
 
     # ── params + grads ────────────────────────────────────────────────────────
-    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
+    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
+    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
     memset(params_buf, 0, NET.PARAM_SIZE)
     memset(grads_buf, 0, NET.PARAM_SIZE)
 
@@ -68,8 +68,8 @@ def main() raises:
     NET.pc_init_params[PCXavier, dtype](params)
 
     # ── input + target ────────────────────────────────────────────────────────
-    var x_in_buf = alloc[Scalar[dtype]](BATCH * NET.IN_DIM)
-    var y_tgt_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM)
+    var x_in_buf = alloc[Scalar[dtype]](BATCH * NET.IN_DIM).as_unsafe_any_origin()
+    var y_tgt_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM).as_unsafe_any_origin()
     memset(x_in_buf, 0, BATCH * NET.IN_DIM)
     memset(y_tgt_buf, 0, BATCH * NET.OUT_DIM)
 
@@ -89,11 +89,11 @@ def main() raises:
     ](y_tgt_buf)
 
     # ── latents + scratch buffers (allocated once, reused) ────────────────────
-    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
-    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM)
-    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
+    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM).as_unsafe_any_origin()
+    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
     memset(lat_buf, 0, BATCH * NET.LATENT_DIM)
     memset(mu_eps_buf_raw, 0, BATCH * NET.SCRATCH_OUT_DIM)
     memset(a_below_buf_raw, 0, BATCH * NET.SCRATCH_IN_DIM)

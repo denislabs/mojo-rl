@@ -92,7 +92,7 @@ def main() raises:
     print("  [mnist] loaded:", MNIST.N_TRAIN, "train")
 
     # ── Build a fixed clean sequence (one image per digit class 0..SEQ_LEN-1) ──
-    var seq_buf = alloc[Scalar[dtype]](SEQ_LEN * DATA_DIM)
+    var seq_buf = alloc[Scalar[dtype]](SEQ_LEN * DATA_DIM).as_unsafe_any_origin()
     memset(seq_buf, 0, SEQ_LEN * DATA_DIM)
     for digit in range(SEQ_LEN):
         var found_idx = -1
@@ -109,10 +109,10 @@ def main() raises:
     print("  [seq] built", SEQ_LEN, "clean images")
 
     # ── Allocate net params + Adam state (reused across phases via reinit) ────
-    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
-    var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
+    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
+    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
+    var opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT.STATE_PER_PARAM).as_unsafe_any_origin()
+    var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE).as_unsafe_any_origin()
 
     var params = LayoutTensor[
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
@@ -128,12 +128,12 @@ def main() raises:
     ](opt_global_buf)
 
     # ── Scratch buffers (reused) ──────────────────────────────────────────────
-    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
-    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM)
-    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
-    var noise_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
+    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM).as_unsafe_any_origin()
+    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var noise_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
 
     var latents = LayoutTensor[
         dtype, Layout.row_major(BATCH, NET.LATENT_DIM), MutAnyOrigin
@@ -155,8 +155,8 @@ def main() raises:
     ](noise_buf_raw)
 
     # ── Per-step input + (possibly noisy) target buffers ──────────────────────
-    var x_in_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var y_tgt_buf = alloc[Scalar[dtype]](BATCH * DATA_DIM)
+    var x_in_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var y_tgt_buf = alloc[Scalar[dtype]](BATCH * DATA_DIM).as_unsafe_any_origin()
     var x_in = LayoutTensor[
         dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
     ](x_in_buf)
@@ -165,11 +165,11 @@ def main() raises:
     ](y_tgt_buf)
 
     # ── Recall-only buffers (built once, reused) ──────────────────────────────
-    var recalls_buf = alloc[Scalar[dtype]](SEQ_LEN * DATA_DIM)
-    var z_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var a_z_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var x_pred_buf = alloc[Scalar[dtype]](BATCH * DATA_DIM)
-    var a_x_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
+    var recalls_buf = alloc[Scalar[dtype]](SEQ_LEN * DATA_DIM).as_unsafe_any_origin()
+    var z_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var a_z_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var x_pred_buf = alloc[Scalar[dtype]](BATCH * DATA_DIM).as_unsafe_any_origin()
+    var a_x_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
     var z_t_view = LayoutTensor[
         dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
     ](z_buf)
@@ -184,7 +184,7 @@ def main() raises:
     ](a_x_buf)
 
     # ── Fixed hidden_init ~ N(0, 0.5²), shared across phases ──────────────────
-    var hidden_init_buf = alloc[Scalar[dtype]](HIDDEN)
+    var hidden_init_buf = alloc[Scalar[dtype]](HIDDEN).as_unsafe_any_origin()
     var rng_init = PhiloxRandom(seed=UInt64(11), offset=UInt64(0))
     for i in range(HIDDEN):
         hidden_init_buf[i] = Scalar[dtype](0.5 * _gauss_n01(rng_init))

@@ -32,14 +32,14 @@ def main() raises:
     # so we can verify quantization round-trip.
     # ------------------------------------------------------------------
     var buf = PongOfflineBuffer(capacity=16)
-    var scratch = alloc[Scalar[dtype]](PONG_FRAME_BYTES)
+    var scratch = alloc[Scalar[dtype]](PONG_FRAME_BYTES).as_unsafe_any_origin()
     for i in range(12):
         var fill_val = Scalar[dtype](i * 20) / 255.0
         for k in range(PONG_FRAME_BYTES):
             scratch[k] = fill_val
         var done = (i == 5) or (i == 11)
         var act = i % 3
-        buf.add_step_fp32(scratch, act, done)
+        buf.add_step_fp32(scratch.as_unsafe_any_origin(), act, done)
 
     print("n_frames:", buf.n_frames)
     assert_eq(buf.n_frames, 12, "n_frames")
@@ -86,14 +86,18 @@ def main() raises:
     # ------------------------------------------------------------------
     comptime B = 4
     comptime T = 4
-    var pix_out = alloc[Scalar[dtype]](B * T * PONG_FRAME_BYTES)
-    var act_out = alloc[Scalar[dtype]](B * T * PONG_NUM_ACTIONS)
+    # Pixels now come back as raw uint8; the fp32 normalize moved onto the
+    # GPU (`pixels_uint8_to_fp32_kernel`), so the buffer hands out bytes.
+    var pix_out = alloc[Scalar[DType.uint8]](
+        B * T * PONG_FRAME_BYTES
+    ).as_unsafe_any_origin()
+    var act_out = alloc[Scalar[dtype]](B * T * PONG_NUM_ACTIONS).as_unsafe_any_origin()
     for i in range(B * T * PONG_FRAME_BYTES):
-        pix_out[i] = -1.0
+        pix_out[i] = 0
     for i in range(B * T * PONG_NUM_ACTIONS):
         act_out[i] = -1.0
 
-    loaded.sample_batch_fp32(B, T, pix_out, act_out)
+    loaded.sample_batch_uint8(B, T, pix_out, act_out)
 
     # Validate every action slot is one-hot (sums to 1.0).
     var bad_onehot = 0
@@ -116,8 +120,8 @@ def main() raises:
     # Validate pixels in [0, 1] and that within a single window, pixels
     # are roughly constant per timestep (each frame fills with a single
     # value).
-    var pix_min: Scalar[dtype] = 2.0
-    var pix_max: Scalar[dtype] = -1.0
+    var pix_min = Scalar[DType.uint8](255)
+    var pix_max = Scalar[DType.uint8](0)
     for i in range(B * T * PONG_FRAME_BYTES):
         var v = pix_out[i]
         if v < pix_min:
@@ -125,8 +129,8 @@ def main() raises:
         if v > pix_max:
             pix_max = v
     print("pixel range:", Float64(pix_min), "to", Float64(pix_max))
-    assert_in_range(pix_min, 0.0, 1.0, "pix_min")
-    assert_in_range(pix_max, 0.0, 1.0, "pix_max")
+    assert_in_range(Scalar[dtype](Float64(pix_min) / 255.0), 0.0, 1.0, "pix_min")
+    assert_in_range(Scalar[dtype](Float64(pix_max) / 255.0), 0.0, 1.0, "pix_max")
 
     pix_out.free()
     act_out.free()
@@ -137,12 +141,12 @@ def main() raises:
     # done, T=2 windows starting at even indices should be valid.
     # ------------------------------------------------------------------
     var buf2 = PongOfflineBuffer(capacity=10)
-    var scratch2 = alloc[Scalar[dtype]](PONG_FRAME_BYTES)
+    var scratch2 = alloc[Scalar[dtype]](PONG_FRAME_BYTES).as_unsafe_any_origin()
     for i in range(PONG_FRAME_BYTES):
         scratch2[i] = 0.5
     for i in range(10):
         var done = (i % 2 == 1)
-        buf2.add_step_fp32(scratch2, 0, done)
+        buf2.add_step_fp32(scratch2.as_unsafe_any_origin(), 0, done)
     scratch2.free()
 
     # _window_is_valid for T=2 means dones[start] == 0 (the only frame

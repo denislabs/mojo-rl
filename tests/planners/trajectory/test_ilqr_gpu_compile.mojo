@@ -136,7 +136,7 @@ def main() raises:
     z0_buf.enqueue_fill(0.0)
     var z0 = LayoutTensor[
         dtype, Layout.row_major(N_ENVS, LATENT_DIM), MutAnyOrigin
-    ](z0_buf.unsafe_ptr())
+    ](z0_buf.unsafe_ptr().as_unsafe_any_origin())
 
     var cb = DummyGPUCB(_placeholder=0)
     planner.plan_gpu(ctx, cb, z0)

@@ -68,11 +68,11 @@ def main() raises:
 
     # ── 1. Direct sample_batch_uint8 contract ───────────────────────────
     var sampler = Sampler.make(ScriptedPongPolicy(eps=0.3))
-    var pix = alloc[Scalar[DType.uint8]](NPIX)
-    var act = alloc[Scalar[DType.float32]](NACT)
-    sampler.sample_batch_uint8(B, T, pix, act)
+    var pix = alloc[Scalar[DType.uint8]](NPIX).as_unsafe_any_origin()
+    var act = alloc[Scalar[DType.float32]](NACT).as_unsafe_any_origin()
+    sampler.sample_batch_uint8(B, T, pix.as_unsafe_any_origin(), act)
 
-    _check_one_hot_fp32(act)
+    _check_one_hot_fp32(act.as_unsafe_any_origin())
     print("   [direct] actions one-hot OK")
 
     # Frames carry content (Pong renders paddles + ball → nonzero pixels).

@@ -57,8 +57,8 @@ def main() raises:
     )
 
     var obs = env.reset_obs_list()
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var actbuf = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
 
     comptime TOTAL = 220
     comptime LEARN_START = 64

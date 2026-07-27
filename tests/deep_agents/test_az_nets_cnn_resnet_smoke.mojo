@@ -13,7 +13,7 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor import Tensor, TensorImpl
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.alphazero.nets import (
@@ -27,17 +27,25 @@ def _forward_finite[NET: Module, OBS: Int, W: Int, B: Int](
     var net = NET.make["gpu", Kaiming](Optional(ctx))
     net.set_attr["training"](Scalar[DT](0.0))  # eval mode (BN running stats)
 
-    # A plausible canonical obs: a couple of one-hot planes set (storage Tensor).
-    var obs_t = Tensor.alloc(B * OBS)
+    # A plausible canonical obs: a couple of one-hot planes set (storage
+    # Tensor). Allocated in the net's own activation dtype — `forward`
+    # takes `TensorRefs[..., NET.ACT_DT]`, which the fp32 `Tensor` alias
+    # only satisfies for an fp32 net.
+    comptime ADT = NET.ACT_DT
+    var obs_t = TensorImpl[ADT].alloc(B * OBS)
     for b in range(B):
-        obs_t.data[b * OBS + 0] = Scalar[DT](1.0)       # mine @ cell0
-        obs_t.data[b * OBS + 9 + 1] = Scalar[DT](1.0)   # opp @ cell1
+        obs_t.data[b * OBS + 0] = Scalar[ADT](1.0)       # mine @ cell0
+        obs_t.data[b * OBS + 9 + 1] = Scalar[ADT](1.0)   # opp @ cell1
         for c in range(2, 9):
-            obs_t.data[b * OBS + 18 + c] = Scalar[DT](1.0)  # empty
+            obs_t.data[b * OBS + 18 + c] = Scalar[ADT](1.0)  # empty
     obs_t.upload(ctx)
 
-    var out_t = Tensor.alloc_gpu(ctx, B * W)
-    net.forward["gpu", B](TensorRefs[NET.ARITY](obs_t), out_t, Optional(ctx))
+    var out_t = TensorImpl[ADT].alloc_gpu(ctx, B * W)
+    # `TensorRefs`' ADT defaults to `DT`; `forward` wants the net's own
+    # activation dtype, which no longer unifies with the default implicitly.
+    net.forward["gpu", B](
+        TensorRefs[NET.ARITY, ADT=ADT](obs_t), out_t, Optional(ctx)
+    )
     out_t.download(ctx)
 
     var all_finite = True

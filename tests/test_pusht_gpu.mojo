@@ -91,7 +91,7 @@ def main() raises:
             terminated,
             obs,
             rng_seed=UInt64(step),
-            workspace_ptr=workspace.unsafe_ptr(),
+            workspace_ptr=workspace.unsafe_ptr().as_unsafe_any_origin(),
         )
         ctx.enqueue_copy(rew_host.unsafe_ptr(), rewards)
         ctx.enqueue_copy(done_host.unsafe_ptr(), dones)

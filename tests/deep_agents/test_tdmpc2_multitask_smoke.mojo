@@ -10,7 +10,6 @@ embedding table moved from its init (gradient flowed into it).
 Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_multitask_smoke.mojo`
 """
 
-from std.memory import alloc
 from std.random import random_float64, seed
 from std.math import isfinite, abs
 from std.testing import assert_true
@@ -42,12 +41,12 @@ def main() raises:
     ](lr=Scalar[DT](1e-3), learning_starts=64)
 
     # snapshot the embedding table to detect movement after training.
-    var emb0 = alloc[Scalar[DT]](NUM_TASKS * TASK_EMB)
+    var emb0 = List[Scalar[DT]](length=NUM_TASKS * TASK_EMB, fill=Scalar[DT](0))
     for i in range(NUM_TASKS * TASK_EMB):
-        emb0[i] = ag.task_emb.param[i]
+        emb0[i] = ag.task_emb.param.data[i]
 
-    var obsbuf = alloc[Scalar[DT]](MAX_OBS)
-    var actbuf = alloc[Scalar[DT]](MAX_ACT)
+    var obsbuf = List[Scalar[DT]](length=MAX_OBS, fill=Scalar[DT](0))
+    var actbuf = List[Scalar[DT]](length=MAX_ACT, fill=Scalar[DT](0))
 
     comptime TOTAL = 400
     comptime LEARN_START = 64
@@ -83,7 +82,7 @@ def main() raises:
     # embedding moved?
     var moved: Scalar[DT] = 0.0
     for i in range(NUM_TASKS * TASK_EMB):
-        moved += abs(ag.task_emb.param[i] - emb0[i])
+        moved += abs(ag.task_emb.param.data[i] - emb0[i])
 
     print("  trained", n_train, "steps; WM:", first_wm, "->", last_wm)
     print("  embedding L1 movement:", moved)
@@ -93,4 +92,3 @@ def main() raises:
     print("=" * 70)
     print("MULTI-TASK SMOKE PASSED — task-conditioned WM trains + embedding learns")
     print("=" * 70)
-    obsbuf.free(); actbuf.free(); emb0.free()

@@ -17,6 +17,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.experimental.pcn import PCSwish
+from mojo_rl.nn.core.ptr import mptr
 
 
 comptime BATCH = 1
@@ -71,16 +72,16 @@ def main() raises:
 
     var x_t = LayoutTensor[
         DType.float32, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](x_buf.unsafe_ptr())
+    ](mptr(x_buf))
     var a_t = LayoutTensor[
         DType.float32, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](a_buf.unsafe_ptr())
+    ](mptr(a_buf))
     var z_in_t = LayoutTensor[
         DType.float32, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](z_in_buf.unsafe_ptr())
+    ](mptr(z_in_buf))
     var z_out_t = LayoutTensor[
         DType.float32, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](z_out_buf.unsafe_ptr())
+    ](mptr(z_out_buf))
 
     PCSwish.apply[BATCH, DIM, DType.float32](x_t, a_t)
     PCSwish.apply_derivative_mul[BATCH, DIM, DType.float32](x_t, z_in_t, z_out_t)
@@ -126,16 +127,16 @@ def main() raises:
 
         var x_d_t = LayoutTensor[
             DType.float32, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ](x_dbuf.unsafe_ptr())
+        ](x_dbuf.unsafe_ptr().as_unsafe_any_origin())
         var a_d_t = LayoutTensor[
             DType.float32, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ](a_dbuf.unsafe_ptr())
+        ](a_dbuf.unsafe_ptr().as_unsafe_any_origin())
         var z_in_d_t = LayoutTensor[
             DType.float32, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ](z_in_dbuf.unsafe_ptr())
+        ](z_in_dbuf.unsafe_ptr().as_unsafe_any_origin())
         var z_out_d_t = LayoutTensor[
             DType.float32, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ](z_out_dbuf.unsafe_ptr())
+        ](z_out_dbuf.unsafe_ptr().as_unsafe_any_origin())
 
         PCSwish.apply_gpu[BATCH, DIM, DType.float32](ctx, x_d_t, a_d_t)
         PCSwish.apply_derivative_mul_gpu[BATCH, DIM, DType.float32](

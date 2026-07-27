@@ -112,10 +112,10 @@ def main() raises:
     print("  SGLD       : lr_x=", LR_X, " noise_var=", SGLD_NOISE_VAR)
 
     # ── Allocate net params + Adam state ──────────────────────────────────────
-    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
-    var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
+    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
+    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
+    var opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT.STATE_PER_PARAM).as_unsafe_any_origin()
+    var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE).as_unsafe_any_origin()
     memset(params_buf, 0, NET.PARAM_SIZE)
     memset(grads_buf, 0, NET.PARAM_SIZE)
     memset(opt_state_buf, 0, NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
@@ -136,12 +136,12 @@ def main() raises:
     NET.pc_init_params[PCXavier, dtype](params)
 
     # ── Training scratch (BATCH=32) ───────────────────────────────────────────
-    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
-    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM)
-    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
-    var noise_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
+    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM).as_unsafe_any_origin()
+    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var noise_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
     memset(lat_buf, 0, BATCH * NET.LATENT_DIM)
     memset(mu_eps_buf_raw, 0, BATCH * NET.SCRATCH_OUT_DIM)
     memset(a_below_buf_raw, 0, BATCH * NET.SCRATCH_IN_DIM)
@@ -169,8 +169,8 @@ def main() raises:
     ](noise_buf_raw)
 
     # Per-step input + target buffers (training).
-    var x_in_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM)
-    var y_tgt_buf = alloc[Scalar[dtype]](BATCH * DATA_DIM)
+    var x_in_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM).as_unsafe_any_origin()
+    var y_tgt_buf = alloc[Scalar[dtype]](BATCH * DATA_DIM).as_unsafe_any_origin()
     memset(x_in_buf, 0, BATCH * AUG_DIM)
     memset(y_tgt_buf, 0, BATCH * DATA_DIM)
     var x_in = LayoutTensor[
@@ -181,8 +181,8 @@ def main() raises:
     ](y_tgt_buf)
 
     # Per-rollout actions/states scratch (training).
-    var actions_buf = alloc[Scalar[dtype]](BATCH * SEQ_LEN)
-    var states_buf = alloc[Scalar[dtype]](BATCH * (SEQ_LEN + 1))
+    var actions_buf = alloc[Scalar[dtype]](BATCH * SEQ_LEN).as_unsafe_any_origin()
+    var states_buf = alloc[Scalar[dtype]](BATCH * (SEQ_LEN + 1)).as_unsafe_any_origin()
 
     # ── Train ────────────────────────────────────────────────────────────────
     print("\n  epoch | last_step_loss | wall_t (s)")
@@ -270,14 +270,14 @@ def main() raises:
     # Ground-truth analytical: s_t_mean = 0.1·t, s_t_var = t·σ_env².
     # Ground-truth Monte Carlo: simulate N_MC env rollouts with same actions.
     print("\n  [eval] Monte Carlo ground truth: N_MC=", N_MC)
-    var mc_mean = alloc[Float64](SEQ_LEN + 1)
-    var mc_var = alloc[Float64](SEQ_LEN + 1)
+    var mc_mean = alloc[Float64](SEQ_LEN + 1).as_unsafe_any_origin()
+    var mc_var = alloc[Float64](SEQ_LEN + 1).as_unsafe_any_origin()
     for t in range(SEQ_LEN + 1):
         mc_mean[t] = 0.0
         mc_var[t] = 0.0
 
     var mc_rng = PhiloxRandom(seed=UInt64(2026), offset=UInt64(0))
-    var mc_states = alloc[Float64](N_MC * (SEQ_LEN + 1))
+    var mc_states = alloc[Float64](N_MC * (SEQ_LEN + 1)).as_unsafe_any_origin()
     for n in range(N_MC):
         mc_states[n * (SEQ_LEN + 1) + 0] = 0.0
         for t in range(SEQ_LEN):
@@ -301,15 +301,15 @@ def main() raises:
     # ── Imagined rollouts ────────────────────────────────────────────────────
     print("\n  [eval] generating", EVAL_BATCH, "imagined rollouts via generate_samples per step")
 
-    var eval_lat_buf = alloc[Scalar[dtype]](EVAL_BATCH * NET.LATENT_DIM)
-    var eval_mu_eps_raw = alloc[Scalar[dtype]](EVAL_BATCH * NET.SCRATCH_OUT_DIM)
-    var eval_a_below_raw = alloc[Scalar[dtype]](EVAL_BATCH * NET.SCRATCH_IN_DIM)
-    var eval_z_below_raw = alloc[Scalar[dtype]](EVAL_BATCH * NET.SCRATCH_IN_DIM)
-    var eval_dx_raw = alloc[Scalar[dtype]](EVAL_BATCH * NET.LATENT_DIM)
-    var eval_noise_raw = alloc[Scalar[dtype]](EVAL_BATCH * NET.LATENT_DIM)
-    var eval_x_in_buf = alloc[Scalar[dtype]](EVAL_BATCH * AUG_DIM)
-    var eval_y_dummy_buf = alloc[Scalar[dtype]](EVAL_BATCH * DATA_DIM)
-    var eval_sample_buf = alloc[Scalar[dtype]](EVAL_BATCH * DATA_DIM)
+    var eval_lat_buf = alloc[Scalar[dtype]](EVAL_BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var eval_mu_eps_raw = alloc[Scalar[dtype]](EVAL_BATCH * NET.SCRATCH_OUT_DIM).as_unsafe_any_origin()
+    var eval_a_below_raw = alloc[Scalar[dtype]](EVAL_BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var eval_z_below_raw = alloc[Scalar[dtype]](EVAL_BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var eval_dx_raw = alloc[Scalar[dtype]](EVAL_BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var eval_noise_raw = alloc[Scalar[dtype]](EVAL_BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var eval_x_in_buf = alloc[Scalar[dtype]](EVAL_BATCH * AUG_DIM).as_unsafe_any_origin()
+    var eval_y_dummy_buf = alloc[Scalar[dtype]](EVAL_BATCH * DATA_DIM).as_unsafe_any_origin()
+    var eval_sample_buf = alloc[Scalar[dtype]](EVAL_BATCH * DATA_DIM).as_unsafe_any_origin()
     memset(eval_lat_buf, 0, EVAL_BATCH * NET.LATENT_DIM)
     memset(eval_mu_eps_raw, 0, EVAL_BATCH * NET.SCRATCH_OUT_DIM)
     memset(eval_a_below_raw, 0, EVAL_BATCH * NET.SCRATCH_IN_DIM)
@@ -349,7 +349,7 @@ def main() raises:
     ](eval_sample_buf)
 
     # Imagined trajectories: imagined[n, t] for t = 1..SEQ_LEN.
-    var imagined = alloc[Float64](EVAL_BATCH * SEQ_LEN)
+    var imagined = alloc[Float64](EVAL_BATCH * SEQ_LEN).as_unsafe_any_origin()
 
     var eval_offset: UInt64 = 5_000_000_000
     var eval_seed: UInt64 = 99

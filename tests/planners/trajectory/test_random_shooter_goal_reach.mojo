@@ -79,7 +79,7 @@ def test_shooter_finds_goal_reaching_plan() raises:
         horizon=HORIZON, num_samples=32,
     )
     var cb = GoalReachScoreCallback(goal_x=1.0, goal_y=1.0, goal_z=1.0)
-    var best_plan = alloc[Scalar[dtype]](BATCH * HORIZON * ACT_DIM)
+    var best_plan = alloc[Scalar[dtype]](BATCH * HORIZON * ACT_DIM).as_unsafe_any_origin()
     var best = shooter.optimize(cb, best_plan, verbose=False)
 
     assert_true(
@@ -114,7 +114,7 @@ def test_sample_scores_populated_for_stats() raises:
         horizon=HORIZON, num_samples=8,
     )
     var cb = GoalReachScoreCallback(goal_x=1.0, goal_y=1.0, goal_z=1.0)
-    var best_plan = alloc[Scalar[dtype]](BATCH * HORIZON * ACT_DIM)
+    var best_plan = alloc[Scalar[dtype]](BATCH * HORIZON * ACT_DIM).as_unsafe_any_origin()
     _ = shooter.optimize(cb, best_plan, verbose=False)
 
     # All slots must be set (scores are ≥ 0 since score = ‖z - goal‖²).

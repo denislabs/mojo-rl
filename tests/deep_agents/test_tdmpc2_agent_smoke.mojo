@@ -9,7 +9,6 @@ and the world model learns.)
 Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_agent_smoke.mojo`
 """
 
-from std.memory import alloc
 from std.random import random_float64, seed
 from std.math import isfinite
 from std.testing import assert_true
@@ -48,8 +47,8 @@ def main() raises:
     )
 
     var obs = env.reset_obs_list()
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var actbuf = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
 
     comptime TOTAL = 400
     comptime LEARN_START = 64
@@ -116,4 +115,3 @@ def main() raises:
     print("=" * 70)
     print("SMOKE PASSED — TD-MPC2 agent (MPC-off) trains end-to-end")
     print("=" * 70)
-    obsbuf.free(); actbuf.free()

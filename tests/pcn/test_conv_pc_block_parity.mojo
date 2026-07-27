@@ -148,17 +148,17 @@ def run_parity[
     comptime W_SIZE = OC * CB.col_size
 
     # ── Buffers ──────────────────────────────────────────────────────────────
-    var x_buf = alloc[Scalar[dtype]](BATCH * IN)
-    var a_buf = alloc[Scalar[dtype]](BATCH * IN)
-    var mu_buf = alloc[Scalar[dtype]](BATCH * OUT)
-    var eps_buf = alloc[Scalar[dtype]](BATCH * OUT)
-    var params_buf = alloc[Scalar[dtype]](PSZ)
-    var z_buf = alloc[Scalar[dtype]](BATCH * IN)
-    var grads_buf = alloc[Scalar[dtype]](PSZ)
+    var x_buf = alloc[Scalar[dtype]](BATCH * IN).as_unsafe_any_origin()
+    var a_buf = alloc[Scalar[dtype]](BATCH * IN).as_unsafe_any_origin()
+    var mu_buf = alloc[Scalar[dtype]](BATCH * OUT).as_unsafe_any_origin()
+    var eps_buf = alloc[Scalar[dtype]](BATCH * OUT).as_unsafe_any_origin()
+    var params_buf = alloc[Scalar[dtype]](PSZ).as_unsafe_any_origin()
+    var z_buf = alloc[Scalar[dtype]](BATCH * IN).as_unsafe_any_origin()
+    var grads_buf = alloc[Scalar[dtype]](PSZ).as_unsafe_any_origin()
 
-    var mu_oracle_buf = alloc[Scalar[dtype]](BATCH * OUT)
-    var gi_buf = alloc[Scalar[dtype]](BATCH * IN)
-    var gp_buf = alloc[Scalar[dtype]](PSZ)
+    var mu_oracle_buf = alloc[Scalar[dtype]](BATCH * OUT).as_unsafe_any_origin()
+    var gi_buf = alloc[Scalar[dtype]](BATCH * IN).as_unsafe_any_origin()
+    var gp_buf = alloc[Scalar[dtype]](PSZ).as_unsafe_any_origin()
 
     var x = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](x_buf)
     var a = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](a_buf)
@@ -199,7 +199,7 @@ def run_parity[
     var d_pullback = _max_abs_diff(z_buf, gi_buf, BATCH * IN)
 
     # weight_grad parity: ConvPCBlock grad == −(oracle grad). Negate oracle.
-    var neg_gp = alloc[Scalar[dtype]](PSZ)
+    var neg_gp = alloc[Scalar[dtype]](PSZ).as_unsafe_any_origin()
     for i in range(PSZ):
         neg_gp[i] = -gp_buf[i]
     var d_wgrad_W = _max_abs_diff(grads_buf, neg_gp, W_SIZE)

@@ -34,6 +34,7 @@ from mojo_rl.experimental.pcn.pc_sequential import PCSequential
 from mojo_rl.experimental.pcn.pc_module import PCModule
 from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn.pc_module_trainer import pc_module_train_one_batch
+from mojo_rl.nn.core.ptr import mptr
 
 
 def main() raises:
@@ -71,10 +72,10 @@ def main() raises:
                 acc += x_s[b * IN + i] * w_true[i * OUT + j]
             y_s[b * OUT + j] = acc
     var x_in = LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin](
-        x_s.unsafe_ptr()
+        mptr(x_s)
     )
     var y_target = LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin](
-        y_s.unsafe_ptr()
+        mptr(y_s)
     )
 
     # Train with AdamW (proves optimizer-generic trainer).
@@ -113,16 +114,16 @@ def main() raises:
     var o1 = List[Scalar[DT]](length=BATCH * OUT, fill=Scalar[DT](0))
     var o2 = List[Scalar[DT]](length=BATCH * OUT, fill=Scalar[DT](0))
     var p1 = LayoutTensor[DT, Layout.row_major(PSIZE), MutAnyOrigin](
-        net.weights.val.data.unsafe_ptr()
+        mptr(net.weights.val.data)
     )
     var p2 = LayoutTensor[DT, Layout.row_major(PSIZE), MutAnyOrigin](
-        net2.weights.val.data.unsafe_ptr()
+        mptr(net2.weights.val.data)
     )
     var out1 = LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin](
-        o1.unsafe_ptr()
+        mptr(o1)
     )
     var out2 = LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin](
-        o2.unsafe_ptr()
+        mptr(o2)
     )
     Seq.forward_eval[BATCH](x_in, p1, out1)
     Seq.forward_eval[BATCH](x_in, p2, out2)

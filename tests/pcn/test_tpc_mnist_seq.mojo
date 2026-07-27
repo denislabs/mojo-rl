@@ -88,7 +88,7 @@ def main() raises:
     print("  [mnist] loaded:", MNIST.N_TRAIN, "train")
 
     # ── Build sequence: one image of each of the first SEQ_LEN digits ────────
-    var seq_buf = alloc[Scalar[dtype]](SEQ_LEN * DATA_DIM)
+    var seq_buf = alloc[Scalar[dtype]](SEQ_LEN * DATA_DIM).as_unsafe_any_origin()
     memset(seq_buf, 0, SEQ_LEN * DATA_DIM)
     for digit in range(SEQ_LEN):
         # Find the first image of this digit class in train set
@@ -106,10 +106,10 @@ def main() raises:
     print("  [seq] built", SEQ_LEN, "images, one per digit")
 
     # ── Allocate net params + Adam state ─────────────────────────────────────
-    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
-    var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
+    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
+    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
+    var opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT.STATE_PER_PARAM).as_unsafe_any_origin()
+    var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE).as_unsafe_any_origin()
     memset(params_buf, 0, NET.PARAM_SIZE)
     memset(grads_buf, 0, NET.PARAM_SIZE)
     memset(opt_state_buf, 0, NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
@@ -130,11 +130,11 @@ def main() raises:
     NET.pc_init_params[PCXavier, dtype](params)
 
     # ── Scratch buffers ──────────────────────────────────────────────────────
-    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
-    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM)
-    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
+    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM).as_unsafe_any_origin()
+    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
     memset(lat_buf, 0, BATCH * NET.LATENT_DIM)
     memset(mu_eps_buf_raw, 0, BATCH * NET.SCRATCH_OUT_DIM)
     memset(a_below_buf_raw, 0, BATCH * NET.SCRATCH_IN_DIM)
@@ -158,8 +158,8 @@ def main() raises:
     ](dx_buf_raw)
 
     # ── Per-step input + target buffers ──────────────────────────────────────
-    var x_in_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var y_tgt_buf = alloc[Scalar[dtype]](BATCH * DATA_DIM)
+    var x_in_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var y_tgt_buf = alloc[Scalar[dtype]](BATCH * DATA_DIM).as_unsafe_any_origin()
     memset(x_in_buf, 0, BATCH * HIDDEN)
     memset(y_tgt_buf, 0, BATCH * DATA_DIM)
     var x_in = LayoutTensor[
@@ -172,7 +172,7 @@ def main() raises:
     # ── Generate fixed hidden_init ~ N(0, 0.5²) ──────────────────────────────
     # (Gaussian init like Bogacz's torch.randn, scaled smaller to keep tanh
     # away from saturation initially.)
-    var hidden_init_buf = alloc[Scalar[dtype]](HIDDEN)
+    var hidden_init_buf = alloc[Scalar[dtype]](HIDDEN).as_unsafe_any_origin()
     var rng = PhiloxRandom(seed=UInt64(11), offset=UInt64(0))
     for i in range(HIDDEN):
         var u1 = rng.step_uniform()[0]
@@ -246,16 +246,16 @@ def main() raises:
         x_in_buf[j] = lat_buf[j]
 
     # Steps 1..SEQ_LEN-1: feedforward only — predict next image from prev_hidden.
-    var recalls_buf = alloc[Scalar[dtype]](SEQ_LEN * DATA_DIM)
+    var recalls_buf = alloc[Scalar[dtype]](SEQ_LEN * DATA_DIM).as_unsafe_any_origin()
     memset(recalls_buf, 0, SEQ_LEN * DATA_DIM)
     # First image is just the input (recall starts at t=1).
     for j in range(DATA_DIM):
         recalls_buf[0 * DATA_DIM + j] = seq_buf[0 * DATA_DIM + j]
 
-    var z_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var a_z_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var x_pred_buf = alloc[Scalar[dtype]](BATCH * DATA_DIM)
-    var a_x_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
+    var z_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var a_z_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var x_pred_buf = alloc[Scalar[dtype]](BATCH * DATA_DIM).as_unsafe_any_origin()
+    var a_x_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
     var z_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
     ](z_buf)
