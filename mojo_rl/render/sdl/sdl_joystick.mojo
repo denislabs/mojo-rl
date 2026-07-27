@@ -51,6 +51,21 @@ the background, you should set the following hint before calling
 SDL_Init(): SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS
 """
 
+from . import (
+    _get_dylib_function,
+    ArrayHelper,
+    c_char,
+    c_float,
+    c_int,
+    lib,
+    Ptr,
+)
+from .sdl_error import get_error
+from .sdl_guid import GUID
+from .sdl_power import PowerState
+from .sdl_properties import PropertiesID
+from .sdl_sensor import SensorType
+
 
 @fieldwise_init
 struct Joystick(ImplicitlyCopyable, Movable):
@@ -549,11 +564,11 @@ struct VirtualJoystickDesc(ImplicitlyCopyable, Movable):
     var axis_mask: UInt32
     """A mask of which axes are valid for this controller
                                  e.g. (1 << SDL_GAMEPAD_AXIS_LEFTX)."""
-    var name: Ptr[c_char, ImmutUntrackedOrigin]
+    var name: Ptr[c_char, ImmUntrackedOrigin]
     """The name of the joystick."""
-    var touchpads: Ptr[VirtualJoystickTouchpadDesc, ImmutUntrackedOrigin]
+    var touchpads: Ptr[VirtualJoystickTouchpadDesc, ImmUntrackedOrigin]
     """A pointer to an array of touchpad descriptions, required if `ntouchpads` is > 0."""
-    var sensors: Ptr[VirtualJoystickSensorDesc, ImmutUntrackedOrigin]
+    var sensors: Ptr[VirtualJoystickSensorDesc, ImmUntrackedOrigin]
     """A pointer to an array of sensor descriptions, required if `nsensors` is > 0."""
 
     var userdata: Ptr[NoneType, MutUntrackedOrigin]

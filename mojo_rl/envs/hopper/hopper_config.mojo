@@ -15,6 +15,8 @@ from .hopper_xml import HopperModel
 
 from ..phyics3d_env_config import Phyics3dEnvConfig
 
+from . import HopperParams
+
 
 struct HopperConfig(Phyics3dEnvConfig):
     # === Physics ===

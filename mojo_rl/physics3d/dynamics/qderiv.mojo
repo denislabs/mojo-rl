@@ -824,7 +824,7 @@ def compute_rne_vel_derivative[
     mut iscratch: ImplicitScratch[DTYPE, NV, NBODY, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
-    """d(qfrc_bias)/d(qvel) SUBTRACTED into iscratch.qderiv (caller pre-loads
+    """`d(qfrc_bias)/d(qvel)` SUBTRACTED into iscratch.qderiv (caller pre-loads
     the damping diagonal). Reads FK products (d.xipos/xquat), d.qvel, and
     scratch.cdof; both targets. NJOINT>0 required (njoint read from meta)."""
     var njoint = Int(m.meta.data[MODEL_META_IDX_NJOINT])

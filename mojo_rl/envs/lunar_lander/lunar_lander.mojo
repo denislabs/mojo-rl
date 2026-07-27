@@ -374,38 +374,38 @@ struct LunarLander[
         self._renderer = None
         self._renderer_initialized = False
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor — transfers all state verbatim (buffers move, no
         reset). Resetting on move silently wiped mid-episode state whenever
         an env was returned from a factory or stored into a container."""
-        self.particles = take.particles^
-        self.physics = take.physics^
+        self.particles = move.particles^
+        self.physics = move.physics^
         self.config = PhysicsConfig(
-            gravity_x=take.config.gravity_x,
-            gravity_y=take.config.gravity_y,
-            dt=take.config.dt,
-            friction=take.config.friction,
-            restitution=take.config.restitution,
-            baumgarte=take.config.baumgarte,
-            slop=take.config.slop,
-            velocity_iterations=take.config.velocity_iterations,
-            position_iterations=take.config.position_iterations,
+            gravity_x=move.config.gravity_x,
+            gravity_y=move.config.gravity_y,
+            dt=move.config.dt,
+            friction=move.config.friction,
+            restitution=move.config.restitution,
+            baumgarte=move.config.baumgarte,
+            slop=move.config.slop,
+            velocity_iterations=move.config.velocity_iterations,
+            position_iterations=move.config.position_iterations,
         )
-        self.prev_shaping = take.prev_shaping
-        self.step_count = take.step_count
-        self.game_over = take.game_over
-        self.last_terminated = take.last_terminated
-        self.rng_seed = take.rng_seed
-        self.rng_counter = take.rng_counter
-        self.wind_idx = take.wind_idx
-        self.torque_idx = take.torque_idx
-        self.terrain_heights = take.terrain_heights^
-        self.edge_collision = take.edge_collision^
-        self.cached_state = take.cached_state
+        self.prev_shaping = move.prev_shaping
+        self.step_count = move.step_count
+        self.game_over = move.game_over
+        self.last_terminated = move.last_terminated
+        self.rng_seed = move.rng_seed
+        self.rng_counter = move.rng_counter
+        self.wind_idx = move.wind_idx
+        self.torque_idx = move.torque_idx
+        self.terrain_heights = move.terrain_heights^
+        self.edge_collision = move.edge_collision^
+        self.cached_state = move.cached_state
 
         # Transfer renderer ownership
-        self._renderer = take._renderer
-        self._renderer_initialized = take._renderer_initialized
+        self._renderer = move._renderer
+        self._renderer_initialized = move._renderer_initialized
 
     # =========================================================================
     # CPU Single-Environment Methods
@@ -1468,7 +1468,7 @@ struct LunarLander[
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.value().init_pointee_move(Renderer2D())
+        self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True
 

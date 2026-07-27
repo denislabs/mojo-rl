@@ -66,6 +66,12 @@ drop the first several frames (if not the first several _seconds_ worth of
 frames!) before using images from a camera.
 """
 
+from . import _get_dylib_function, c_char, c_int, lib, Ptr
+from .sdl_error import get_error
+from .sdl_pixels import Colorspace, PixelFormat
+from .sdl_properties import PropertiesID
+from .sdl_surface import Surface
+
 
 struct CameraID(Intable, TrivialRegisterPassable):
     """This is a unique ID for a camera device for the time it is connected to the

@@ -247,7 +247,7 @@ struct PrioritizedMCTSSequenceReplay[
                     0, (m - first) * Self.OBS
                 )
                 self.ctx.enqueue_copy(
-                    sub2, self._stage_u8.unsafe_ptr() + first * Self.OBS
+                    sub2, self._stage_u8.unsafe_ptr().unsafe_offset(first * Self.OBS)
                 )
             self.ctx.synchronize()  # staging reused next chunk
             done_steps += m

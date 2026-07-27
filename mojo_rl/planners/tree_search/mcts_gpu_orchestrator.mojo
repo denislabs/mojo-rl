@@ -224,17 +224,17 @@ struct GenericGPUMCTS[
         self.v_min = v_min
         self.v_max = v_max
 
-    def __init__(out self, *, deinit take: Self):
-        self.state = take.state^
-        self.actions_out = take.actions_out^
-        self.policies_out = take.policies_out^
-        self.root_value_out = take.root_value_out^
-        self.az_exp_dones = take.az_exp_dones^
-        self.az_exp_terminated = take.az_exp_terminated^
-        self.az_exp_obs = take.az_exp_obs^
-        self.gamma = take.gamma
-        self.v_min = take.v_min
-        self.v_max = take.v_max
+    def __init__(out self, *, deinit move: Self):
+        self.state = move.state^
+        self.actions_out = move.actions_out^
+        self.policies_out = move.policies_out^
+        self.root_value_out = move.root_value_out^
+        self.az_exp_dones = move.az_exp_dones^
+        self.az_exp_terminated = move.az_exp_terminated^
+        self.az_exp_obs = move.az_exp_obs^
+        self.gamma = move.gamma
+        self.v_min = move.v_min
+        self.v_max = move.v_max
 
     # ══════════════════════════════════════════════════════════════════════
     # Public API

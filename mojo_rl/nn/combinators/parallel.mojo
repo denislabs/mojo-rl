@@ -275,10 +275,10 @@ struct Parallel[*BRANCHES: Module](Module):
                 comptime W = CPU_SIMD_W
                 var k = 0
                 while k + W <= NIN:
-                    gp.store(k, gp.load[width=W](k) + ap.load[width=W](k))
+                    gp.unsafe_store(k, gp.unsafe_load[width=W](k) + ap.unsafe_load[width=W](k))
                     k += W
                 while k < NIN:
-                    gp[k] = gp[k] + ap[k]
+                    gp[unsafe_offset=k] = gp[unsafe_offset=k] + ap[unsafe_offset=k]
                     k += 1
             else:
                 var c = ctx.value()

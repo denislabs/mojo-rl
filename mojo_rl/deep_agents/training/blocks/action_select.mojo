@@ -90,7 +90,7 @@ def select_deterministic_batched[
     mut noise_rng_seed: UInt64,
     mut noise_rng_offset: UInt64,
 ) raises:
-    """action = clamp(actor(obs) + N(0, sigma), ±action_scale)."""
+    """`action = clamp(actor(obs) + N(0, sigma), ±action_scale)`."""
     comptime if target == "cpu":
         # Bridge LayoutTensor obs → owned Tensor (storage actor.forward
         # wants a Tensor).
@@ -170,7 +170,7 @@ def select_squashed_batched[
     action_scale: Scalar[DT],
     ctx: Optional[DeviceContext],
 ) raises:
-    """action = clamp(rsample(actor(obs)).action, ±action_scale) — the
+    """`action = clamp(rsample(actor(obs)).action, ±action_scale)` — the
     rsample output row is [action(ACT), log_prob], log-prob dropped."""
     comptime if target == "cpu":
         # Bridge LayoutTensor obs → owned Tensor; storage actor.forward

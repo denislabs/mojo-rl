@@ -31,9 +31,9 @@ struct ObsState[N: Int](Copyable, Movable, State):
         """Copy constructor."""
         self.data = copy.data.copy()
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self.data = take.data^
+        self.data = move.data^
 
     def __eq__(self, other: Self) -> Bool:
         """Check equality with another state."""

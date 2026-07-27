@@ -125,24 +125,24 @@ struct Renderer2D(Movable):
         self.recorder = VideoRecorder()
         self.recording_counter = 0
 
-    def __init__(out self, *, deinit take: Self):
-        self.window = take.window
-        self.sdl_renderer = take.sdl_renderer
-        self.screen_width = take.screen_width
-        self.screen_height = take.screen_height
-        self.fps = take.fps
-        self.title = take.title^
-        self.frame_delay = take.frame_delay
-        self.white = take.white
-        self.black = take.black
-        self.background_color = take.background_color
-        self.initialized = take.initialized
-        self.should_quit = take.should_quit
-        self.last_frame_time = take.last_frame_time
-        self.screenshot_requested = take.screenshot_requested
-        self.screenshot_counter = take.screenshot_counter
-        self.recorder = take.recorder^
-        self.recording_counter = take.recording_counter
+    def __init__(out self, *, deinit move: Self):
+        self.window = move.window
+        self.sdl_renderer = move.sdl_renderer
+        self.screen_width = move.screen_width
+        self.screen_height = move.screen_height
+        self.fps = move.fps
+        self.title = move.title^
+        self.frame_delay = move.frame_delay
+        self.white = move.white
+        self.black = move.black
+        self.background_color = move.background_color
+        self.initialized = move.initialized
+        self.should_quit = move.should_quit
+        self.last_frame_time = move.last_frame_time
+        self.screenshot_requested = move.screenshot_requested
+        self.screenshot_counter = move.screenshot_counter
+        self.recorder = move.recorder^
+        self.recording_counter = move.recording_counter
 
     def make_color(self, r: Int, g: Int, b: Int, a: Int = 255) -> SDL_Color:
         """Create an SDL color.

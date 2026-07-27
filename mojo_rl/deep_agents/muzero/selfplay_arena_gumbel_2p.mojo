@@ -185,8 +185,10 @@ def _mz_search_argmax[
     env into `actions_h`. The planner's gumbel_scale governs determinism (set 0
     at the call site for eval/arena)."""
     ctx.enqueue_copy(planner.legal_mask_view(), legal_dev)
+    # `obs_dev` is an immutable param; the planner ABI wants `MutAnyOrigin`.
+    # Read-only root observations — cast restores the pre-nightly typing.
     var obs_t = LayoutTensor[DT, Layout.row_major(N, RA.OBS_DIM), MutAnyOrigin](
-        obs_dev.unsafe_ptr().as_unsafe_any_origin()
+        obs_dev.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]()
     )
     planner.search_gpu[RA, DA, PA](
         ctx, rep_a, dyn_a, pred_a, obs_t,

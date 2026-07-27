@@ -67,7 +67,17 @@ comptime LeaperEnv = ProcgenEnv[LeaperGame]
 comptime LeaperGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[LeaperGame, DTYPE]
 comptime LeaperState = ProcgenState
 comptime LeaperAction = ProcgenAction
-from .miner import MinerGame, MinerAssets, BOULDER, DIAMOND, EXIT, DIRT
+# `EXIT` collides with heist's (heist=9, miner=6) — both are game-local tile ids.
+# Heist keeps the unqualified name (pre-existing consumers depend on it); miner's is
+# re-exported under a qualified name.
+from .miner import (
+    MinerGame,
+    MinerAssets,
+    BOULDER,
+    DIAMOND,
+    EXIT as MINER_EXIT,
+    DIRT,
+)
 comptime MinerEnv = ProcgenEnv[MinerGame]
 comptime MinerGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[MinerGame, DTYPE]
 comptime MinerState = ProcgenState

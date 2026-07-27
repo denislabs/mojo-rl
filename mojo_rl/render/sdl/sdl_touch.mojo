@@ -37,6 +37,9 @@ separately, they should ignore mouse events that have a `which` field of
 SDL_TOUCH_MOUSEID.
 """
 
+from . import _get_dylib_function, c_char, c_float, c_int, lib, Ptr
+from .sdl_error import get_error
+
 
 struct TouchID(Intable, TrivialRegisterPassable):
     """A unique ID for a touch device.

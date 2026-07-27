@@ -10,8 +10,8 @@ struct LunarLanderAction(Action, Copyable, ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.action_idx = copy.action_idx
 
-    def __init__(out self, *, deinit take: Self):
-        self.action_idx = take.action_idx
+    def __init__(out self, *, deinit move: Self):
+        self.action_idx = move.action_idx
 
     @staticmethod
     def nop() -> Self:

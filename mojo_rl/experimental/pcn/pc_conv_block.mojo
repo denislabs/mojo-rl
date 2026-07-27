@@ -74,7 +74,7 @@ struct ConvPCBlock[
     def __init__(out self, *, copy: Self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     # =========================================================================
@@ -210,7 +210,7 @@ struct ConvPCBlock[
             var Wp = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](params.ptr)
             for b in range(BATCH):
                 var col_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
-                    cache.unsafe_ptr() + b * Self.CACHE
+                    cache.unsafe_ptr().unsafe_offset(b * Self.CACHE)
                 )
                 var out_b = rebind[UnsafePointer[Float32, MutAnyOrigin]](
                     mu.ptr + b * Self.OUT_DIM
@@ -344,7 +344,7 @@ struct ConvPCBlock[
                     eps_above.ptr + b * Self.OUT_DIM
                 )
                 var dcol_b = rebind[UnsafePointer[Float32, MutAnyOrigin]](
-                    dcol.unsafe_ptr() + b * Self.CACHE
+                    dcol.unsafe_ptr().unsafe_offset(b * Self.CACHE)
                 )
                 try:
                     apple_sgemm_accum[transpose_a=True, transpose_b=False](
@@ -505,7 +505,7 @@ struct ConvPCBlock[
                     eps_above.ptr + b * Self.OUT_DIM
                 )
                 var col_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
-                    cache.unsafe_ptr() + b * Self.CACHE
+                    cache.unsafe_ptr().unsafe_offset(b * Self.CACHE)
                 )
                 try:
                     apple_sgemm_accum[transpose_a=False, transpose_b=False](

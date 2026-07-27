@@ -25,15 +25,15 @@ struct LunarLanderState[dtype: DType](
         self.left_leg_contact = 0.0
         self.right_leg_contact = 0.0
 
-    def __init__(out self, *, deinit take: Self):
-        self.x = take.x
-        self.y = take.y
-        self.vx = take.vx
-        self.vy = take.vy
-        self.angle = take.angle
-        self.angular_velocity = take.angular_velocity
-        self.left_leg_contact = take.left_leg_contact
-        self.right_leg_contact = take.right_leg_contact
+    def __init__(out self, *, deinit move: Self):
+        self.x = move.x
+        self.y = move.y
+        self.vx = move.vx
+        self.vy = move.vy
+        self.angle = move.angle
+        self.angular_velocity = move.angular_velocity
+        self.left_leg_contact = move.left_leg_contact
+        self.right_leg_contact = move.right_leg_contact
 
     def __init__(out self, *, copy: Self):
         self.x = copy.x

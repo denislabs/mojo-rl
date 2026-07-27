@@ -230,7 +230,7 @@ def ldl_solve[
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
-    """qacc_ws = M^-1 fnet via L/D (owned scratch), both targets."""
+    """`qacc_ws = M^-1 fnet` via L/D (owned scratch), both targets."""
     comptime L_M = Layout.row_major(BATCH, NV * NV)
     comptime L_NV = Layout.row_major(BATCH, NV)
 

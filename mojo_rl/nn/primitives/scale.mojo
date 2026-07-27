@@ -120,10 +120,10 @@ struct Scale[DIM_: Int](Module):
             var m_v = SIMD[DT, CPU_SIMD_W](self.multiplier)
             var k = 0
             while k + CPU_SIMD_W <= N:
-                out_p.store(k, in_p.load[width=CPU_SIMD_W](k) * m_v)
+                out_p.unsafe_store(k, in_p.unsafe_load[width=CPU_SIMD_W](k) * m_v)
                 k += CPU_SIMD_W
             while k < N:
-                out_p[k] = in_p[k] * self.multiplier
+                out_p[unsafe_offset=k] = in_p[unsafe_offset=k] * self.multiplier
                 k += 1
         else:
             var c = ctx.value()
@@ -171,10 +171,10 @@ struct Scale[DIM_: Int](Module):
             var m_v = SIMD[DT, CPU_SIMD_W](self.multiplier)
             var k = 0
             while k + CPU_SIMD_W <= N:
-                gi_p.store(k, go_p.load[width=CPU_SIMD_W](k) * m_v)
+                gi_p.unsafe_store(k, go_p.unsafe_load[width=CPU_SIMD_W](k) * m_v)
                 k += CPU_SIMD_W
             while k < N:
-                gi_p[k] = go_p[k] * self.multiplier
+                gi_p[unsafe_offset=k] = go_p[unsafe_offset=k] * self.multiplier
                 k += 1
         else:
             var c = ctx.value()

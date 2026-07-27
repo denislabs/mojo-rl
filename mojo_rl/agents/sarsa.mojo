@@ -33,14 +33,14 @@ struct SARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         self.epsilon_min = copy.epsilon_min
         self.num_actions = copy.num_actions
 
-    def __init__(out self, *, deinit take: Self):
-        self.q_table = take.q_table^
-        self.learning_rate = take.learning_rate
-        self.discount_factor = take.discount_factor
-        self.epsilon = take.epsilon
-        self.epsilon_decay = take.epsilon_decay
-        self.epsilon_min = take.epsilon_min
-        self.num_actions = take.num_actions
+    def __init__(out self, *, deinit move: Self):
+        self.q_table = move.q_table^
+        self.learning_rate = move.learning_rate
+        self.discount_factor = move.discount_factor
+        self.epsilon = move.epsilon
+        self.epsilon_decay = move.epsilon_decay
+        self.epsilon_min = move.epsilon_min
+        self.num_actions = move.num_actions
 
     def __init__(
         out self,

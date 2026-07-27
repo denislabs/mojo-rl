@@ -50,6 +50,29 @@ can guarantee that these events have a type that isn't in use by other
 parts of the system.
 """
 
+from . import (
+    _get_dylib_function,
+    ArrayHelper,
+    c_char,
+    c_float,
+    c_int,
+    lib,
+    Ptr,
+)
+from .sdl_audio import AudioDeviceID
+from .sdl_camera import CameraID
+from .sdl_error import get_error
+from .sdl_joystick import JoystickID
+from .sdl_keyboard import KeyboardID
+from .sdl_keycode import Keycode, Keymod
+from .sdl_mouse import MouseButtonFlags, MouseID, MouseWheelDirection
+from .sdl_pen import PenAxis, PenID, PenInputFlags
+from .sdl_power import PowerState
+from .sdl_scancode import Scancode
+from .sdl_sensor import SensorID
+from .sdl_touch import FingerID, TouchID
+from .sdl_video import DisplayID, Window, WindowID
+
 
 struct EventType(Indexer, Intable, TrivialRegisterPassable):
     """The types of events that can be delivered.
@@ -488,7 +511,7 @@ struct TextEditingEvent(ImplicitlyCopyable, Movable):
     """In nanoseconds, populated using SDL_GetTicksNS()."""
     var window_id: WindowID
     """The window with keyboard focus, if any."""
-    var text: Ptr[c_char, ImmutUntrackedOrigin]
+    var text: Ptr[c_char, ImmUntrackedOrigin]
     """The editing text."""
     var start: Int32
     """The start cursor of selected editing text, or -1 if not set."""
@@ -510,7 +533,7 @@ struct TextEditingCandidatesEvent(ImplicitlyCopyable, Movable):
     """In nanoseconds, populated using SDL_GetTicksNS()."""
     var window_id: WindowID
     """The window with keyboard focus, if any."""
-    var candidates: Ptr[c_char, ImmutUntrackedOrigin]
+    var candidates: Ptr[c_char, ImmUntrackedOrigin]
     """The list of candidates, or NULL if there are no candidates available."""
     var num_candidates: Int32
     """The number of strings in `candidates`."""
@@ -540,7 +563,7 @@ struct TextInputEvent(ImplicitlyCopyable, Movable):
     """In nanoseconds, populated using SDL_GetTicksNS()."""
     var window_id: WindowID
     """The window with keyboard focus, if any."""
-    var text: Ptr[c_char, ImmutUntrackedOrigin]
+    var text: Ptr[c_char, ImmUntrackedOrigin]
     """The input text, UTF-8 encoded."""
 
 
@@ -1169,9 +1192,9 @@ struct DropEvent(ImplicitlyCopyable, Movable):
     """X coordinate, relative to window (not on begin)."""
     var y: c_float
     """Y coordinate, relative to window (not on begin)."""
-    var source: Ptr[c_char, ImmutUntrackedOrigin]
+    var source: Ptr[c_char, ImmUntrackedOrigin]
     """The source app that sent this drop event, or NULL if that isn't available."""
-    var data: Ptr[c_char, ImmutUntrackedOrigin]
+    var data: Ptr[c_char, ImmUntrackedOrigin]
     """The text for SDL_EVENT_DROP_TEXT and the file name for SDL_EVENT_DROP_FILE, NULL for other events."""
 
 
@@ -1192,7 +1215,7 @@ struct ClipboardEvent(ImplicitlyCopyable, Movable):
     """Are we owning the clipboard (internal update)."""
     var num_mime_types: Int32
     """Number of mime types."""
-    var mime_types: Ptr[Ptr[c_char, ImmutUntrackedOrigin], ImmutUntrackedOrigin]
+    var mime_types: Ptr[Ptr[c_char, ImmUntrackedOrigin], ImmUntrackedOrigin]
     """Current mime types."""
 
 

@@ -514,23 +514,23 @@ struct GumbelGPUMCTS[
         self.gumbel_scale = gumbel_scale
         self.qnorm_per_node = qnorm_per_node
 
-    def __init__(out self, *, deinit take: Self):
-        self.state = take.state^
-        self.root_value_out = take.root_value_out^
-        self.actions_out = take.actions_out^
-        self.az_game_states = take.az_game_states^
-        self.az_expansion_states = take.az_expansion_states^
-        self.az_step_rewards = take.az_step_rewards^
-        self.az_step_dones = take.az_step_dones^
-        self.az_step_terminated = take.az_step_terminated^
-        self.az_exp_legal = take.az_exp_legal^
-        self.gamma = take.gamma
-        self.v_min = take.v_min
-        self.v_max = take.v_max
-        self.c_visit = take.c_visit
-        self.c_scale = take.c_scale
-        self.gumbel_scale = take.gumbel_scale
-        self.qnorm_per_node = take.qnorm_per_node
+    def __init__(out self, *, deinit move: Self):
+        self.state = move.state^
+        self.root_value_out = move.root_value_out^
+        self.actions_out = move.actions_out^
+        self.az_game_states = move.az_game_states^
+        self.az_expansion_states = move.az_expansion_states^
+        self.az_step_rewards = move.az_step_rewards^
+        self.az_step_dones = move.az_step_dones^
+        self.az_step_terminated = move.az_step_terminated^
+        self.az_exp_legal = move.az_exp_legal^
+        self.gamma = move.gamma
+        self.v_min = move.v_min
+        self.v_max = move.v_max
+        self.c_visit = move.c_visit
+        self.c_scale = move.c_scale
+        self.gumbel_scale = move.gumbel_scale
+        self.qnorm_per_node = move.qnorm_per_node
 
     # ══════════════════════════════════════════════════════════════════════
     # Views

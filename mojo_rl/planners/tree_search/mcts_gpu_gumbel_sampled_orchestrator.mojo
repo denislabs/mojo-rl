@@ -227,21 +227,21 @@ struct SampledGumbelGPUMCTS[
         self.c_visit = c_visit
         self.c_scale = c_scale
 
-    def __init__(out self, *, deinit take: Self):
-        self.state = take.state^
-        self.root_value_out = take.root_value_out^
-        self.gamma = take.gamma
-        self.v_min = take.v_min
-        self.v_max = take.v_max
-        self.reward_min = take.reward_min
-        self.reward_max = take.reward_max
-        self.max_action = take.max_action
-        self.min_std = take.min_std
-        self.std_magnification = take.std_magnification
-        self.soft_clamp = take.soft_clamp
-        self.init_std = take.init_std
-        self.c_visit = take.c_visit
-        self.c_scale = take.c_scale
+    def __init__(out self, *, deinit move: Self):
+        self.state = move.state^
+        self.root_value_out = move.root_value_out^
+        self.gamma = move.gamma
+        self.v_min = move.v_min
+        self.v_max = move.v_max
+        self.reward_min = move.reward_min
+        self.reward_max = move.reward_max
+        self.max_action = move.max_action
+        self.min_std = move.min_std
+        self.std_magnification = move.std_magnification
+        self.soft_clamp = move.soft_clamp
+        self.init_std = move.init_std
+        self.c_visit = move.c_visit
+        self.c_scale = move.c_scale
 
     # ══════════════════════════════════════════════════════════════════════
     # Views

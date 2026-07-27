@@ -959,14 +959,17 @@ struct BatchNorm2D[
                 var mom = Scalar[DT](Self.MOMENTUM)
                 var one_m = Scalar[DT](1.0) - mom
                 for c in range(Self.C_):
-                    var g = g_p[c]
-                    var bt = b_p[c]
+                    var g = g_p[unsafe_offset=c]
+                    var bt = b_p[unsafe_offset=c]
                     var mean: Scalar[DT] = 0.0
                     for b in range(B):
                         var bb = b * Self.FLAT_DIM
                         for s in range(Self.SPATIAL):
                             mean += in_p[
-                                bb + _bn_off[Self.LAYOUT, Self.C_, Self.SPATIAL](c, s)
+                                unsafe_offset=bb
+                                + _bn_off[Self.LAYOUT, Self.C_, Self.SPATIAL](
+                                    c, s
+                                )
                             ]
                     mean *= inv_n
                     var var_: Scalar[DT] = 0.0
@@ -975,10 +978,10 @@ struct BatchNorm2D[
                         for s in range(Self.SPATIAL):
                             var d = (
                                 in_p[
-                                    bb
-                                    + _bn_off[Self.LAYOUT, Self.C_, Self.SPATIAL](
-                                        c, s
-                                    )
+                                    unsafe_offset=bb
+                                    + _bn_off[
+                                        Self.LAYOUT, Self.C_, Self.SPATIAL
+                                    ](c, s)
                                 ]
                                 - mean
                             )
@@ -992,9 +995,9 @@ struct BatchNorm2D[
                             var off = bb + _bn_off[
                                 Self.LAYOUT, Self.C_, Self.SPATIAL
                             ](c, s)
-                            var xh = (in_p[off] - mean) * inv_std
-                            xhat_p[off] = xh
-                            out_p[off] = g * xh + bt
+                            var xh = (in_p[unsafe_offset=off] - mean) * inv_std
+                            xhat_p[unsafe_offset=off] = xh
+                            out_p[unsafe_offset=off] = g * xh + bt
                     rm_v[c] = one_m * rm_v[c] + mom * mean
                     rv_v[c] = one_m * rv_v[c] + mom * var_
                 self.cache_is_training = True
@@ -1014,17 +1017,17 @@ struct BatchNorm2D[
                     var rv = rv_v[c]
                     var inv_std = Scalar[DT](1.0) / sqrt(rv + eps)
                     inv_e[c] = inv_std
-                    var g = g_p[c]
-                    var bt = b_p[c]
+                    var g = g_p[unsafe_offset=c]
+                    var bt = b_p[unsafe_offset=c]
                     for b in range(B):
                         var bb = b * Self.FLAT_DIM
                         for s in range(Self.SPATIAL):
                             var off = bb + _bn_off[
                                 Self.LAYOUT, Self.C_, Self.SPATIAL
                             ](c, s)
-                            var xh = (in_p[off] - rm) * inv_std
-                            xhat_e[off] = xh
-                            out_p[off] = g * xh + bt
+                            var xh = (in_p[unsafe_offset=off] - rm) * inv_std
+                            xhat_e[unsafe_offset=off] = xh
+                            out_p[unsafe_offset=off] = g * xh + bt
                 self.cache_is_training = False
         else:
             var c = ctx.value()
@@ -1283,7 +1286,7 @@ struct BatchNorm2D[
                 # below which subtracts the m1/m2 batch reductions). γ/β grads are
                 # still accumulated (harmless for a frozen backbone).
                 for c in range(Self.C_):
-                    var g_e = g_p[c]
+                    var g_e = g_p[unsafe_offset=c]
                     var inv_e = inv_v[c]
                     var dg_e: Scalar[DT] = 0.0
                     var db_e: Scalar[DT] = 0.0
@@ -1293,16 +1296,16 @@ struct BatchNorm2D[
                             var off = bb + _bn_off[
                                 Self.LAYOUT, Self.C_, Self.SPATIAL
                             ](c, s)
-                            var dy = go_p[off]
-                            gi_p[off] = inv_e * dy * g_e
-                            dg_e += dy * xhat_p[off]
+                            var dy = go_p[unsafe_offset=off]
+                            gi_p[unsafe_offset=off] = inv_e * dy * g_e
+                            dg_e += dy * xhat_p[unsafe_offset=off]
                             db_e += dy
-                    dg_p[c] += dg_e
-                    db_p[c] += db_e
+                    dg_p[unsafe_offset=c] += dg_e
+                    db_p[unsafe_offset=c] += db_e
                 return
             var inv_n = Scalar[DT](1.0) / Scalar[DT](Float64(B * Self.SPATIAL))
             for c in range(Self.C_):
-                var g = g_p[c]
+                var g = g_p[unsafe_offset=c]
                 var inv_std = inv_v[c]
                 var sum_dxhat: Scalar[DT] = 0.0
                 var sum_dxhat_xhat: Scalar[DT] = 0.0
@@ -1314,8 +1317,8 @@ struct BatchNorm2D[
                         var off = bb + _bn_off[
                             Self.LAYOUT, Self.C_, Self.SPATIAL
                         ](c, s)
-                        var dy = go_p[off]
-                        var xh = xhat_p[off]
+                        var dy = go_p[unsafe_offset=off]
+                        var xh = xhat_p[unsafe_offset=off]
                         var dxhat = dy * g
                         sum_dxhat += dxhat
                         sum_dxhat_xhat += dxhat * xh
@@ -1329,12 +1332,12 @@ struct BatchNorm2D[
                         var off = bb + _bn_off[
                             Self.LAYOUT, Self.C_, Self.SPATIAL
                         ](c, s)
-                        var dy = go_p[off]
-                        var xh = xhat_p[off]
+                        var dy = go_p[unsafe_offset=off]
+                        var xh = xhat_p[unsafe_offset=off]
                         var dxhat = dy * g
-                        gi_p[off] = inv_std * (dxhat - m1 - xh * m2)
-                dg_p[c] += d_gamma
-                db_p[c] += d_beta
+                        gi_p[unsafe_offset=off] = inv_std * (dxhat - m1 - xh * m2)
+                dg_p[unsafe_offset=c] += d_gamma
+                db_p[unsafe_offset=c] += d_beta
         else:
             var c = ctx.value()
             gin.ensure_gpu(c, B * Self.FLAT_DIM)

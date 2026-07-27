@@ -64,13 +64,13 @@ struct PhysicsConfig(Copyable, Movable):
         self.velocity_iterations = copy.velocity_iterations
         self.position_iterations = copy.position_iterations
 
-    def __init__(out self, *, deinit take: Self):
-        self.gravity_x = take.gravity_x
-        self.gravity_y = take.gravity_y
-        self.dt = take.dt
-        self.friction = take.friction
-        self.restitution = take.restitution
-        self.baumgarte = take.baumgarte
-        self.slop = take.slop
-        self.velocity_iterations = take.velocity_iterations
-        self.position_iterations = take.position_iterations
+    def __init__(out self, *, deinit move: Self):
+        self.gravity_x = move.gravity_x
+        self.gravity_y = move.gravity_y
+        self.dt = move.dt
+        self.friction = move.friction
+        self.restitution = move.restitution
+        self.baumgarte = move.baumgarte
+        self.slop = move.slop
+        self.velocity_iterations = move.velocity_iterations
+        self.position_iterations = move.position_iterations

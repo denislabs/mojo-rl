@@ -34,8 +34,8 @@ struct GymLunarLanderState(Copyable, ImplicitlyCopyable, Movable, State):
     def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    def __init__(out self, *, deinit take: Self):
-        self.index = take.index
+    def __init__(out self, *, deinit move: Self):
+        self.index = move.index
 
     def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
@@ -50,8 +50,8 @@ struct GymLunarLanderAction(Action, Copyable, ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.action = copy.action
 
-    def __init__(out self, *, deinit take: Self):
-        self.action = take.action
+    def __init__(out self, *, deinit move: Self):
+        self.action = move.action
 
     @staticmethod
     def nothing() -> Self:
@@ -85,8 +85,8 @@ struct GymBipedalWalkerState(Copyable, ImplicitlyCopyable, Movable, State):
     def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    def __init__(out self, *, deinit take: Self):
-        self.index = take.index
+    def __init__(out self, *, deinit move: Self):
+        self.index = move.index
 
     def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
@@ -102,8 +102,8 @@ struct GymBipedalWalkerAction(Action, Copyable, ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    def __init__(out self, *, deinit take: Self):
-        self.index = take.index
+    def __init__(out self, *, deinit move: Self):
+        self.index = move.index
 
 
 # ============================================================================
@@ -120,8 +120,8 @@ struct GymCarRacingState(Copyable, ImplicitlyCopyable, Movable, State):
     def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    def __init__(out self, *, deinit take: Self):
-        self.index = take.index
+    def __init__(out self, *, deinit move: Self):
+        self.index = move.index
 
     def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
@@ -136,8 +136,8 @@ struct GymCarRacingAction(Action, Copyable, ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    def __init__(out self, *, deinit take: Self):
-        self.index = take.index
+    def __init__(out self, *, deinit move: Self):
+        self.index = move.index
 
 
 # ============================================================================
@@ -452,8 +452,8 @@ struct GymLunarLanderContinuousState(
     def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    def __init__(out self, *, deinit take: Self):
-        self.index = take.index
+    def __init__(out self, *, deinit move: Self):
+        self.index = move.index
 
     def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
@@ -468,8 +468,8 @@ struct GymLunarLanderContinuousAction(
     def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    def __init__(out self, *, deinit take: Self):
-        self.index = take.index
+    def __init__(out self, *, deinit move: Self):
+        self.index = move.index
 
 
 struct GymLunarLanderContinuousEnv(BoxContinuousActionEnv & RenderableEnv):

@@ -193,15 +193,15 @@ struct ConvRMSNorm[C_: Int, HW_: Int](Module):
                 for p in range(Self.HW_):
                     var sumsq: Scalar[DT] = 0.0
                     for c in range(Self.C_):
-                        var x = in_p[base + c * Self.HW_ + p]
+                        var x = in_p[unsafe_offset=base + c * Self.HW_ + p]
                         sumsq += x * x
                     var inv_rms = Scalar[DT](1.0) / sqrt(sumsq * inv_c + CRN_EPS)
-                    iv_p[b * Self.HW_ + p] = inv_rms
+                    iv_p[unsafe_offset=b * Self.HW_ + p] = inv_rms
                     for c in range(Self.C_):
                         var idx = base + c * Self.HW_ + p
-                        var n = in_p[idx] * inv_rms
-                        nm_p[idx] = n
-                        out_p[idx] = n * g_p[c]
+                        var n = in_p[unsafe_offset=idx] * inv_rms
+                        nm_p[unsafe_offset=idx] = n
+                        out_p[unsafe_offset=idx] = n * g_p[unsafe_offset=c]
         else:
             var cc = ctx.value()
             out.ensure_gpu(cc, B * DIM)
@@ -249,17 +249,17 @@ struct ConvRMSNorm[C_: Int, HW_: Int](Module):
             for b in range(B):
                 var base = b * DIM
                 for p in range(Self.HW_):
-                    var inv_rms = iv_p[b * Self.HW_ + p]
+                    var inv_rms = iv_p[unsafe_offset=b * Self.HW_ + p]
                     var R: Scalar[DT] = 0.0
                     for c in range(Self.C_):
                         var idx = base + c * Self.HW_ + p
-                        R += go_p[idx] * g_p[c] * nm_p[idx]
+                        R += go_p[unsafe_offset=idx] * g_p[unsafe_offset=c] * nm_p[unsafe_offset=idx]
                     for c in range(Self.C_):
                         var idx = base + c * Self.HW_ + p
-                        var go = go_p[idx]
-                        var n = nm_p[idx]
-                        gi_p[idx] = inv_rms * (go * g_p[c] - n * R * inv_c)
-                        gg_p[c] = gg_p[c] + go * n
+                        var go = go_p[unsafe_offset=idx]
+                        var n = nm_p[unsafe_offset=idx]
+                        gi_p[unsafe_offset=idx] = inv_rms * (go * g_p[unsafe_offset=c] - n * R * inv_c)
+                        gg_p[unsafe_offset=c] = gg_p[unsafe_offset=c] + go * n
         else:
             var cc = ctx.value()
             gin.ensure_gpu(cc, B * DIM)

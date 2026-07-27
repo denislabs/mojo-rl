@@ -1,4 +1,4 @@
-"""cdof (spatial motion axes per DOF) over per-field tensors (migration P2,
+"""`cdof` (spatial motion axes per DOF) over per-field tensors (migration P2,
 single-source). Per-field port of `cdof_body_gpu`/`compute_cdof_gpu`
 (dynamics/jacobian.mojo) — arithmetic verbatim; addressing per-field; the
 cdof output lives in an owned `DynamicsScratch.cdof` tensor instead of the
@@ -453,7 +453,7 @@ def compute_cdof[
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
-    """cdof from FK products, both targets, one body. Output goes to the
+    """`cdof` from FK products, both targets, one body. Output goes to the
     owned `scratch.cdof` tensor. PARALLEL=True (GPU only): cooperative
     flat-parallel kernel, bit-exact vs serial. CPU ignores PARALLEL."""
     comptime L_QPOS = Layout.row_major(BATCH, NQ)

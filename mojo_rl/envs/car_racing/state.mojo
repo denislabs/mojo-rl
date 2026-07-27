@@ -73,20 +73,20 @@ struct CarRacingState[DTYPE: DType](
         self.wheel_omega_rr = copy.wheel_omega_rr
         self.speed = copy.speed
 
-    def __init__(out self, *, deinit take: Self):
-        self.x = take.x
-        self.y = take.y
-        self.angle = take.angle
-        self.vx = take.vx
-        self.vy = take.vy
-        self.angular_velocity = take.angular_velocity
-        self.wheel_angle_fl = take.wheel_angle_fl
-        self.wheel_angle_fr = take.wheel_angle_fr
-        self.wheel_omega_fl = take.wheel_omega_fl
-        self.wheel_omega_fr = take.wheel_omega_fr
-        self.wheel_omega_rl = take.wheel_omega_rl
-        self.wheel_omega_rr = take.wheel_omega_rr
-        self.speed = take.speed
+    def __init__(out self, *, deinit move: Self):
+        self.x = move.x
+        self.y = move.y
+        self.angle = move.angle
+        self.vx = move.vx
+        self.vy = move.vy
+        self.angular_velocity = move.angular_velocity
+        self.wheel_angle_fl = move.wheel_angle_fl
+        self.wheel_angle_fr = move.wheel_angle_fr
+        self.wheel_omega_fl = move.wheel_omega_fl
+        self.wheel_omega_fr = move.wheel_omega_fr
+        self.wheel_omega_rl = move.wheel_omega_rl
+        self.wheel_omega_rr = move.wheel_omega_rr
+        self.speed = move.speed
 
     def __eq__(self, other: Self) -> Bool:
         return self.x == other.x and self.y == other.y

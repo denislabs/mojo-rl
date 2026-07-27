@@ -207,13 +207,13 @@ struct LSTMSeq[VOCAB: Int, HIDDEN: Int, SEQ: Int](Module):
             var hb = self.h_buf.data.unsafe_ptr()
             var cb = self.c_buf.data.unsafe_ptr()
             for i in range(B * H):  # zero initial h_0 / c_0
-                hb[i] = 0.0
-                cb[i] = 0.0
+                hb[unsafe_offset=i] = 0.0
+                cb[unsafe_offset=i] = 0.0
             for b in range(B):  # transpose input BSD → SBD
                 for t in range(Self.SEQ):
                     for d in range(V):
-                        xs[t * B * V + b * V + d] = ip[
-                            b * Self.SEQ * V + t * V + d
+                        xs[unsafe_offset=t * B * V + b * V + d] = ip[
+                            unsafe_offset=b * Self.SEQ * V + t * V + d
                         ]
             # unroll cell over SEQ via shared timestep-major buffers + offsets.
             # h / c are ONE Tensor each (read slab t, write slab t+1) — the
@@ -233,8 +233,8 @@ struct LSTMSeq[VOCAB: Int, HIDDEN: Int, SEQ: Int](Module):
             for b in range(B):
                 for t in range(Self.SEQ):
                     for d in range(H):
-                        op[b * Self.SEQ * H + t * H + d] = hb[
-                            (t + 1) * B * H + b * H + d
+                        op[unsafe_offset=b * Self.SEQ * H + t * H + d] = hb[
+                            unsafe_offset=(t + 1) * B * H + b * H + d
                         ]
         else:
             var c = ctx.value()
@@ -305,18 +305,18 @@ struct LSTMSeq[VOCAB: Int, HIDDEN: Int, SEQ: Int](Module):
             for b in range(B):
                 for t in range(Self.SEQ):
                     for d in range(H):
-                        dhs[t * B * H + b * H + d] = gop[
-                            b * Self.SEQ * H + t * H + d
+                        dhs[unsafe_offset=t * B * H + b * H + d] = gop[
+                            unsafe_offset=b * Self.SEQ * H + t * H + d
                         ]
             for i in range(B * H):
-                dh_rec[i] = 0.0
-                dc_rec[i] = 0.0
+                dh_rec[unsafe_offset=i] = 0.0
+                dc_rec[unsafe_offset=i] = 0.0
 
             for tt in range(Self.SEQ):
                 var t = Self.SEQ - 1 - tt
                 # dh_t = dh_seq[t] + dh_recur ; dc_t = dc_recur (passed directly).
                 for i in range(B * H):
-                    dh_tp[i] = dhs[t * B * H + i] + dh_rec[i]
+                    dh_tp[unsafe_offset=i] = dhs[unsafe_offset=t * B * H + i] + dh_rec[unsafe_offset=i]
                 self.cell.step_backward["cpu", B](
                     self.dh_t, self.dc_recur, self.x_seq, self.h_buf,
                     self.c_buf, self.cache_buf, self.dx_seq, self.dh_prev,
@@ -334,15 +334,15 @@ struct LSTMSeq[VOCAB: Int, HIDDEN: Int, SEQ: Int](Module):
                 )
                 # carry: dh_recur = dh_prev, dc_recur = dc_prev.
                 for i in range(B * H):
-                    dh_rec[i] = dh_pr[i]
-                    dc_rec[i] = dc_pr[i]
+                    dh_rec[unsafe_offset=i] = dh_pr[unsafe_offset=i]
+                    dc_rec[unsafe_offset=i] = dc_pr[unsafe_offset=i]
 
             # transpose dx_seq (SBD) → grad_input (BSD)
             for b in range(B):
                 for t in range(Self.SEQ):
                     for d in range(V):
-                        gip[b * Self.SEQ * V + t * V + d] = dxs[
-                            t * B * V + b * V + d
+                        gip[unsafe_offset=b * Self.SEQ * V + t * V + d] = dxs[
+                            unsafe_offset=t * B * V + b * V + d
                         ]
         else:
             var c = ctx.value()

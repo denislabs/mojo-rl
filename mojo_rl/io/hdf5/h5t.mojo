@@ -16,6 +16,9 @@ Flow used by ``reader.mojo``:
     sgn = H5Tget_sign(native_type)         # only meaningful for INTEGER
 """
 
+from . import _get_dylib_function, c_int, c_size_t, lib
+from .h5_types import herr_t, hid_t
+
 
 def h5t_get_class(type_id: hid_t) raises -> c_int:
     """``H5Tget_class(hid_t type_id) -> H5T_class_t``.

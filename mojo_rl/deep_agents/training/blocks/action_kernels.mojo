@@ -44,7 +44,7 @@ def offpolicy_copy2d_kernel[
     src: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
     dst: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
 ):
-    """dst[e,d] = src[e,d] — bridge the driver's obs view into the trainer's
+    """`dst[e,d] = src[e,d]` — bridge the driver's obs view into the trainer's
     owned device scratch the storage actor.forward consumes."""
     var i = Int(global_idx.x)
     var total = N_ENVS * D
@@ -85,7 +85,7 @@ def offpolicy_clamp_action_kernel[
     action: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
     scale: Scalar[DT],
 ):
-    """action[e,j] = clamp(alp[e,j], ±scale) — drop the trailing log-prob
+    """`action[e,j] = clamp(alp[e,j], ±scale)` — drop the trailing log-prob
     column of the rsample output and clamp the squashed action."""
     var i = Int(global_idx.x)
     var total = N_ENVS * ACT

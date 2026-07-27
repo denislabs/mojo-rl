@@ -9,12 +9,12 @@ repo (pending the `ASSET_LICENSES.md` check — see `docs/PROCGEN_PORT.md`).
 Bulk loader: the naive `Int(py=raw[i])` per-byte path is ~fine for a few small
 sprites but prohibitive for backgrounds (9×~500²). Instead we take numpy's
 contiguous buffer address (`ctypes.data`), wrap it in an `UnsafePointer` via
-`unsafe_from_address`, and `memcpy` the whole image in one shot. The numpy array
+`unsafe_from_address`, and `unsafe_memcpy` the whole image in one shot. The numpy array
 is kept alive until after the copy.
 """
 
 from std.python import Python, PythonObject
-from std.memory import memcpy
+from std.memory import unsafe_memcpy
 
 
 struct Sprite(Copyable, Movable):
@@ -51,7 +51,7 @@ def _load_rgba(pil: PythonObject, np: PythonObject, path: String) raises -> Spri
     s.w = w
     s.h = h
     s.rgba.resize(n, 0)
-    memcpy(dest=s.rgba.unsafe_ptr(), src=src, count=n)
+    unsafe_memcpy(dest=s.rgba.unsafe_ptr(), src=src, count=n)
     _ = arr  # keep the numpy buffer alive until after the copy
     return s^
 

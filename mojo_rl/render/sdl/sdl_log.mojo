@@ -68,6 +68,9 @@ Each log call is atomic, so you won't see log messages cut off one another
 when logging from multiple threads.
 """
 
+from . import _get_dylib_function, c_char, c_int, lib, Ptr
+from .sdl_error import get_error
+
 
 struct LogCategory(Indexer, Intable, TrivialRegisterPassable):
     """The predefined log categories.
@@ -264,7 +267,7 @@ def set_log_priority_prefix(priority: LogPriority, var prefix: String) raises:
         "SDL_SetLogPriorityPrefix",
         def(
             LogPriority,
-            Ptr[c_char, ImmutOrigin(origin_of(prefix))],
+            Ptr[c_char, ImmOrigin(origin_of(prefix))],
         ) thin -> Bool,
     ]()(priority, prefix.as_c_string_slice().unsafe_ptr())
     if not ret:

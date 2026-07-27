@@ -34,12 +34,12 @@ struct Transition(Copyable, ImplicitlyCopyable, Movable):
         self.next_state = copy.next_state
         self.done = copy.done
 
-    def __init__(out self, *, deinit take: Self):
-        self.state = take.state
-        self.action = take.action
-        self.reward = take.reward
-        self.next_state = take.next_state
-        self.done = take.done
+    def __init__(out self, *, deinit move: Self):
+        self.state = move.state
+        self.action = move.action
+        self.reward = move.reward
+        self.next_state = move.next_state
+        self.done = move.done
 
 
 struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
@@ -113,15 +113,15 @@ struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
         self.size = copy.size
         self.position = copy.position
 
-    def __init__(out self, *, deinit take: Self):
-        self.states = take.states^
-        self.actions = take.actions^
-        self.rewards = take.rewards^
-        self.next_states = take.next_states^
-        self.dones = take.dones^
-        self.capacity = take.capacity
-        self.size = take.size
-        self.position = take.position
+    def __init__(out self, *, deinit move: Self):
+        self.states = move.states^
+        self.actions = move.actions^
+        self.rewards = move.rewards^
+        self.next_states = move.next_states^
+        self.dones = move.dones^
+        self.capacity = move.capacity
+        self.size = move.size
+        self.position = move.position
 
     def push(
         mut self,
@@ -242,13 +242,13 @@ struct PrioritizedTransition(Copyable, ImplicitlyCopyable, Movable):
         self.done = copy.done
         self.weight = copy.weight
 
-    def __init__(out self, *, deinit take: Self):
-        self.state = take.state
-        self.action = take.action
-        self.reward = take.reward
-        self.next_state = take.next_state
-        self.done = take.done
-        self.weight = take.weight
+    def __init__(out self, *, deinit move: Self):
+        self.state = move.state
+        self.action = move.action
+        self.reward = move.reward
+        self.next_state = move.next_state
+        self.done = move.done
+        self.weight = move.weight
 
 
 struct PrioritizedReplayBuffer(Movable):
@@ -346,21 +346,21 @@ struct PrioritizedReplayBuffer(Movable):
             self.next_states.append(0)
             self.dones.append(False)
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self.states = take.states^
-        self.actions = take.actions^
-        self.rewards = take.rewards^
-        self.next_states = take.next_states^
-        self.dones = take.dones^
-        self.tree = take.tree^
-        self.capacity = take.capacity
-        self.size = take.size
-        self.position = take.position
-        self.alpha = take.alpha
-        self.beta = take.beta
-        self.epsilon = take.epsilon
-        self.max_priority = take.max_priority
+        self.states = move.states^
+        self.actions = move.actions^
+        self.rewards = move.rewards^
+        self.next_states = move.next_states^
+        self.dones = move.dones^
+        self.tree = move.tree^
+        self.capacity = move.capacity
+        self.size = move.size
+        self.position = move.position
+        self.alpha = move.alpha
+        self.beta = move.beta
+        self.epsilon = move.epsilon
+        self.max_priority = move.max_priority
 
     def _compute_priority(self, td_error: Float64) -> Float64:
         """Compute priority from TD error: (|δ| + ε)^α."""

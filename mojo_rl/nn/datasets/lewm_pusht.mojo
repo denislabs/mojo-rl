@@ -44,7 +44,7 @@ Typical usage::
         # buf.state   → [num_steps, state_dim] f32
 """
 
-from std.memory import alloc, memcpy
+from std.memory import alloc, unsafe_memcpy
 from std.python import Python, PythonObject
 
 from mojo_rl.io.hdf5 import (
@@ -499,7 +499,7 @@ struct LewmPushTExpert(Movable, Sized):
         var start_in_ep = Int(self.clip_start[idx])
         var g_start = Int(self.ep_offset[ep_idx]) + start_in_ep
 
-        # ── pixels: dense read then strided memcpy ───────────────────────
+        # ── pixels: dense read then strided unsafe_memcpy ───────────────────────
         # `H5Sselect_hyperslab` with stride>1 is pathologically slow in
         # libhdf5 (~15× the cost of a contiguous read of the same chunk
         # range, measured on the PushT 100-frame chunks). So we read the
@@ -513,7 +513,7 @@ struct LewmPushTExpert(Movable, Sized):
         )
         var pix_per_frame = self.pixel_h * self.pixel_w * 3
         for k in range(self.num_steps):
-            memcpy(
+            unsafe_memcpy(
                 dest=into.pixels + k * pix_per_frame,
                 src=into.pixels_dense + k * self.frameskip * pix_per_frame,
                 count=pix_per_frame,
@@ -555,9 +555,9 @@ struct LewmPushTExpert(Movable, Sized):
 
         Unlike ``sample_window`` this skips proprio/state and the
         ``LewmPushTWindow.pixels`` intermediate: pixels stream from
-        libhdf5 into ``dense_scratch`` then strided-memcpy directly
+        libhdf5 into ``dense_scratch`` then strided-unsafe_memcpy directly
         into the caller's batch slot in ``pixels_dst``; actions
-        memcpy in one shot from the already-slurped flat host buffer
+        unsafe_memcpy in one shot from the already-slurped flat host buffer
         into ``actions_dst``. Used by ``PushTOfflineSampler``.
 
         Args:
@@ -581,16 +581,16 @@ struct LewmPushTExpert(Movable, Sized):
         )
         var pix_per_frame = self.pixel_h * self.pixel_w * 3
         for k in range(self.num_steps):
-            memcpy(
+            unsafe_memcpy(
                 dest=pixels_dst + k * pix_per_frame,
                 src=dense_scratch + k * self.frameskip * pix_per_frame,
                 count=pix_per_frame,
             )
 
-        # Actions: contiguous fp32 memcpy from slurped host buffer.
+        # Actions: contiguous fp32 unsafe_memcpy from slurped host buffer.
         var act_total = self.span * self.action_dim
-        memcpy(
+        unsafe_memcpy(
             dest=actions_dst,
-            src=self.action_flat.unsafe_ptr() + g_start * self.action_dim,
+            src=self.action_flat.unsafe_ptr().unsafe_offset(g_start * self.action_dim),
             count=act_total,
         )

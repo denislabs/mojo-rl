@@ -22,7 +22,7 @@ Usage:
 
 from std.random import random_float64
 from mojo_rl.nn.core.ptr import untracked
-from std.memory import alloc, memset
+from std.memory import alloc, unsafe_memset
 from mojo_rl.nn.constants import LAYOUT_NCHW, LAYOUT_NHWC
 from mojo_rl.core import (
     State,

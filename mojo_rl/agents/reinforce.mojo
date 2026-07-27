@@ -143,19 +143,19 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         self.episode_actions = List[Int]()
         self.episode_rewards = List[Float64]()
 
-    def __init__(out self, *, deinit take: Self):
-        self.num_actions = take.num_actions
-        self.num_tiles = take.num_tiles
-        self.num_tilings = take.num_tilings
-        self.learning_rate = take.learning_rate
-        self.discount_factor = take.discount_factor
-        self.use_baseline = take.use_baseline
-        self.baseline_lr = take.baseline_lr
-        self.theta = take.theta^
-        self.baseline_weights = take.baseline_weights^
-        self.episode_tiles = take.episode_tiles^
-        self.episode_actions = take.episode_actions^
-        self.episode_rewards = take.episode_rewards^
+    def __init__(out self, *, deinit move: Self):
+        self.num_actions = move.num_actions
+        self.num_tiles = move.num_tiles
+        self.num_tilings = move.num_tilings
+        self.learning_rate = move.learning_rate
+        self.discount_factor = move.discount_factor
+        self.use_baseline = move.use_baseline
+        self.baseline_lr = move.baseline_lr
+        self.theta = move.theta^
+        self.baseline_weights = move.baseline_weights^
+        self.episode_tiles = move.episode_tiles^
+        self.episode_actions = move.episode_actions^
+        self.episode_rewards = move.episode_rewards^
 
     def _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences (logits) for given state.
@@ -585,20 +585,20 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
         self.episode_actions = List[Int]()
         self.episode_rewards = List[Float64]()
 
-    def __init__(out self, *, deinit take: Self):
-        self.num_actions = take.num_actions
-        self.num_tiles = take.num_tiles
-        self.num_tilings = take.num_tilings
-        self.learning_rate = take.learning_rate
-        self.discount_factor = take.discount_factor
-        self.entropy_coef = take.entropy_coef
-        self.use_baseline = take.use_baseline
-        self.baseline_lr = take.baseline_lr
-        self.theta = take.theta^
-        self.baseline_weights = take.baseline_weights^
-        self.episode_tiles = take.episode_tiles^
-        self.episode_actions = take.episode_actions^
-        self.episode_rewards = take.episode_rewards^
+    def __init__(out self, *, deinit move: Self):
+        self.num_actions = move.num_actions
+        self.num_tiles = move.num_tiles
+        self.num_tilings = move.num_tilings
+        self.learning_rate = move.learning_rate
+        self.discount_factor = move.discount_factor
+        self.entropy_coef = move.entropy_coef
+        self.use_baseline = move.use_baseline
+        self.baseline_lr = move.baseline_lr
+        self.theta = move.theta^
+        self.baseline_weights = move.baseline_weights^
+        self.episode_tiles = move.episode_tiles^
+        self.episode_actions = move.episode_actions^
+        self.episode_rewards = move.episode_rewards^
 
     def _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences."""

@@ -161,8 +161,8 @@ struct ObsNormStats[OBS_DIM: Int](Movable):
         self.var_buf = ctx.enqueue_create_buffer[gpu_dtype](Self.OBS_DIM)
         self.count_buf = ctx.enqueue_create_buffer[gpu_dtype](1)
 
-        # Mean → 0 via memset; var → 1 and count → count_prior require a
-        # host-side init (memset can't set a non-zero float pattern).
+        # Mean → 0 via unsafe_memset; var → 1 and count → count_prior require a
+        # host-side init (unsafe_memset can't set a non-zero float pattern).
         ctx.enqueue_memset(self.mean_buf, 0)
 
         var var_host = ctx.enqueue_create_host_buffer[gpu_dtype](Self.OBS_DIM)

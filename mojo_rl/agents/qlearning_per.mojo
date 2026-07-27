@@ -88,20 +88,20 @@ struct QLearningPERAgent(Copyable, Movable, TabularAgent):
         self.beta_start = copy.beta_start
         self.total_steps = copy.total_steps
 
-    def __init__(out self, *, deinit take: Self):
-        self.q_table = take.q_table^
-        self.learning_rate = take.learning_rate
-        self.discount_factor = take.discount_factor
-        self.epsilon = take.epsilon
-        self.epsilon_decay = take.epsilon_decay
-        self.epsilon_min = take.epsilon_min
-        self.num_actions = take.num_actions
-        self.num_states = take.num_states
-        self.buffer = take.buffer^
-        self.batch_size = take.batch_size
-        self.min_buffer_size = take.min_buffer_size
-        self.beta_start = take.beta_start
-        self.total_steps = take.total_steps
+    def __init__(out self, *, deinit move: Self):
+        self.q_table = move.q_table^
+        self.learning_rate = move.learning_rate
+        self.discount_factor = move.discount_factor
+        self.epsilon = move.epsilon
+        self.epsilon_decay = move.epsilon_decay
+        self.epsilon_min = move.epsilon_min
+        self.num_actions = move.num_actions
+        self.num_states = move.num_states
+        self.buffer = move.buffer^
+        self.batch_size = move.batch_size
+        self.min_buffer_size = move.min_buffer_size
+        self.beta_start = move.beta_start
+        self.total_steps = move.total_steps
 
     def __init__(
         out self,

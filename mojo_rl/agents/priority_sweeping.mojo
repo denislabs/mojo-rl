@@ -79,23 +79,23 @@ struct PrioritySweepingAgent(
         self.pq_size = copy.pq_size
         self.predecessors = copy.predecessors.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.q_table = take.q_table^
-        self.learning_rate = take.learning_rate
-        self.discount_factor = take.discount_factor
-        self.epsilon = take.epsilon
-        self.epsilon_decay = take.epsilon_decay
-        self.epsilon_min = take.epsilon_min
-        self.num_actions = take.num_actions
-        self.num_states = take.num_states
-        self.n_planning = take.n_planning
-        self.priority_threshold = take.priority_threshold
-        self.model_next_state = take.model_next_state^
-        self.model_reward = take.model_reward^
-        self.pq_priorities = take.pq_priorities^
-        self.pq_pairs = take.pq_pairs^
-        self.pq_size = take.pq_size
-        self.predecessors = take.predecessors^
+    def __init__(out self, *, deinit move: Self):
+        self.q_table = move.q_table^
+        self.learning_rate = move.learning_rate
+        self.discount_factor = move.discount_factor
+        self.epsilon = move.epsilon
+        self.epsilon_decay = move.epsilon_decay
+        self.epsilon_min = move.epsilon_min
+        self.num_actions = move.num_actions
+        self.num_states = move.num_states
+        self.n_planning = move.n_planning
+        self.priority_threshold = move.priority_threshold
+        self.model_next_state = move.model_next_state^
+        self.model_reward = move.model_reward^
+        self.pq_priorities = move.pq_priorities^
+        self.pq_pairs = move.pq_pairs^
+        self.pq_size = move.pq_size
+        self.predecessors = move.predecessors^
 
     def __init__(
         out self,

@@ -9,7 +9,7 @@ Black pieces: RGB(40,40,40) with 1px light outline RGB(200,200,200).
 Background: transparent (alpha=0).
 """
 
-from std.memory import UnsafePointer, memset, alloc
+from std.memory import UnsafePointer, unsafe_memset, alloc
 
 
 # Sprite sheet dimensions.
@@ -328,7 +328,7 @@ def create_sprite_sheet() -> UnsafePointer[UInt8, MutAnyOrigin]:
     Piece order: wK, wQ, wR, wB, wN, wP, bK, bQ, bR, bB, bN, bP.
     """
     var raw_pixels = alloc[UInt8](SHEET_BYTES)
-    memset(raw_pixels, 0, SHEET_BYTES)  # fully transparent
+    unsafe_memset(raw_pixels, 0, SHEET_BYTES)  # fully transparent
     var pixels = rebind[UnsafePointer[UInt8, MutAnyOrigin]](raw_pixels)
 
     # --- White pieces (indices 0-5) ---

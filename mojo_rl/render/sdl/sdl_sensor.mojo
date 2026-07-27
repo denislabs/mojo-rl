@@ -32,6 +32,10 @@ SDL_INIT_SENSOR flag. This causes SDL to scan the system for sensors, and
 load appropriate drivers.
 """
 
+from . import _get_dylib_function, c_char, c_float, c_int, lib, Ptr
+from .sdl_error import get_error
+from .sdl_properties import PropertiesID
+
 
 @fieldwise_init
 struct Sensor(ImplicitlyCopyable, Movable):

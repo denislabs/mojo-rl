@@ -78,6 +78,18 @@ https://en.wikipedia.org/wiki/Rec._709#Transfer_characteristics
 The matrix coefficients are used to convert between YCbCr and RGB colors.
 """
 
+from . import (
+    _get_dylib_function,
+    ArrayHelper,
+    c_char,
+    c_float,
+    c_int,
+    is_big_endian,
+    lib,
+    Ptr,
+)
+from .sdl_error import get_error
+
 
 struct PixelType(Indexer, Intable, TrivialRegisterPassable):
     """Pixel type.

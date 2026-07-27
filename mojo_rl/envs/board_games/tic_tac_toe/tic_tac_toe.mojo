@@ -317,7 +317,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.value().init_pointee_move(
+        self._renderer.value().unsafe_write(
             Renderer2D(width=400, height=450, fps=30, title="TicTacToe")
         )
         self._renderer_initialized = True

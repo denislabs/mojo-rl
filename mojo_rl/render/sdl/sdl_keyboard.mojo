@@ -31,6 +31,14 @@ best to accept keyboard input in various types of programs:
 https://wiki.libsdl.org/SDL3/BestKeyboardPractices
 """
 
+from . import _get_dylib_function, c_char, c_int, lib, Ptr
+from .sdl_error import get_error
+from .sdl_keycode import Keycode, Keymod
+from .sdl_properties import PropertiesID
+from .sdl_rect import Rect
+from .sdl_scancode import Scancode
+from .sdl_video import Window
+
 
 struct KeyboardID(Intable, TrivialRegisterPassable):
     """This is a unique ID for a keyboard for the time it is connected to the
@@ -336,7 +344,7 @@ def set_scancode_name(scancode: Scancode, var name: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetScancodeName",
-        def(Scancode, Ptr[c_char, ImmutOrigin(origin_of(name))]) thin -> Bool,
+        def(Scancode, Ptr[c_char, ImmOrigin(origin_of(name))]) thin -> Bool,
     ]()(scancode, name.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -395,7 +403,7 @@ def get_scancode_from_name(var name: String) raises -> Scancode:
     return _get_dylib_function[
         lib,
         "SDL_GetScancodeFromName",
-        def(Ptr[c_char, ImmutOrigin(origin_of(name))]) thin -> Scancode,
+        def(Ptr[c_char, ImmOrigin(origin_of(name))]) thin -> Scancode,
     ]()(name.as_c_string_slice().unsafe_ptr())
 
 
@@ -442,7 +450,7 @@ def get_key_from_name(var name: String) raises -> Keycode:
     return _get_dylib_function[
         lib,
         "SDL_GetKeyFromName",
-        def(Ptr[c_char, ImmutOrigin(origin_of(name))]) thin -> Keycode,
+        def(Ptr[c_char, ImmOrigin(origin_of(name))]) thin -> Keycode,
     ]()(name.as_c_string_slice().unsafe_ptr())
 
 

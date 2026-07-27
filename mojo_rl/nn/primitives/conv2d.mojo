@@ -882,7 +882,7 @@ struct Conv2D[
                 # to the portable gather-into-[OC,SO] path below.
                 comptime if IS_APPLE_F32 and Self.LAYOUT == LAYOUT_NCHW:
                     var cblas = get_cblas_f32_function()
-                    var go_b_p = god.data.unsafe_ptr() + go_base
+                    var go_b_p = god.data.unsafe_ptr().unsafe_offset(go_base)
                     # dW += go_b[OC,SO] @ col_b[SO,COL]  (beta=1, no temp)
                     cblas(
                         _CBLASOrder.ROW_MAJOR,

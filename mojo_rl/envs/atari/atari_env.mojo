@@ -24,7 +24,7 @@ Usage:
     var env2 = AtariEnv(AtariGame.PONG, rom.data.value(), rom.size)
 """
 
-from std.memory import alloc, memset
+from std.memory import alloc, unsafe_memset
 from std.random import random_float64
 from mojo_rl.core import State, Action, BoxDiscreteActionEnv
 from mojo_rl.nn.constants import LAYOUT_NCHW, LAYOUT_NHWC
@@ -95,8 +95,8 @@ struct AtariEnvState(Copyable, ImplicitlyCopyable, Movable, State):
     def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    def __init__(out self, *, deinit take: Self):
-        self.index = take.index
+    def __init__(out self, *, deinit move: Self):
+        self.index = move.index
 
     def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
@@ -111,8 +111,8 @@ struct AtariAction(Action, Copyable, ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.action_idx = copy.action_idx
 
-    def __init__(out self, *, deinit take: Self):
-        self.action_idx = take.action_idx
+    def __init__(out self, *, deinit move: Self):
+        self.action_idx = move.action_idx
 
 
 # ============================================================================
@@ -156,7 +156,7 @@ def _resize_160x210_to_84x84[
                 acc += src.load[width=W](sy * FRAME_WIDTH + x).cast[
                     DType.uint16
                 ]()
-            vsum.unsafe_ptr().store(x, acc)
+            vsum.unsafe_ptr().unsafe_store(x, acc)
 
         var cy = sy1 - sy0
         for ox in range(OBS_WIDTH):
@@ -389,6 +389,9 @@ struct AtariEnv[
             clip_reward: Emit sign(reward); see struct doc.
             episodic_life: Life loss = terminal; see struct doc.
             full_action_set: Expose full 18-action ALE set; see struct doc.
+            sticky_prob: Probability of repeating the previous action
+                (ALE sticky actions); 0.0 disables.
+            noop_max: Max random no-op actions at reset; 0 disables.
         """
         self.game = game
         comptime if Self.OBS_MODE >= 1:
@@ -434,7 +437,7 @@ struct AtariEnv[
             self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
             self.rgb_buf = None
             self.frame_idx = 0
-            memset(self.frame_stack.value(), 0, FRAME_STACK_SIZE)
+            unsafe_memset(self.frame_stack.value(), 0, FRAME_STACK_SIZE)
         elif Self.OBS_MODE == 2:
             self.frame_stack = alloc[UInt8](RGB_STACK_SIZE)
             self.raw_frame_a = alloc[UInt8](FRAME_BGRA_SIZE)
@@ -442,7 +445,7 @@ struct AtariEnv[
             self.gray_buf = None
             self.rgb_buf = alloc[UInt8](3 * RGB_SRC_PLANE)
             self.frame_idx = 0
-            memset(self.frame_stack.value(), 0, RGB_STACK_SIZE)
+            unsafe_memset(self.frame_stack.value(), 0, RGB_STACK_SIZE)
         elif Self.OBS_MODE == 3:
             # Grayscale-96 single frame: `frame_stack` holds ONE 96×96 frame
             # (no ring). Reuse gray_buf (160×210) as the maxpool scratch.
@@ -452,7 +455,7 @@ struct AtariEnv[
             self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
             self.rgb_buf = None
             self.frame_idx = 0
-            memset(self.frame_stack.value(), 0, GRAY96_SIZE)
+            unsafe_memset(self.frame_stack.value(), 0, GRAY96_SIZE)
         elif Self.OBS_MODE == 4:
             # Grayscale-96 4-frame stack: `frame_stack` is a 4-slot ring.
             self.frame_stack = alloc[UInt8](GRAY96_STACK_SIZE)
@@ -461,7 +464,7 @@ struct AtariEnv[
             self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
             self.rgb_buf = None
             self.frame_idx = 0
-            memset(self.frame_stack.value(), 0, GRAY96_STACK_SIZE)
+            unsafe_memset(self.frame_stack.value(), 0, GRAY96_STACK_SIZE)
         elif Self.OBS_MODE == 5:
             # Grayscale-64 single frame (reference DreamerV3 resolution):
             # one 64×64 slot, no ring; gray_buf as the maxpool scratch.
@@ -471,7 +474,7 @@ struct AtariEnv[
             self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
             self.rgb_buf = None
             self.frame_idx = 0
-            memset(self.frame_stack.value(), 0, GRAY64_SIZE)
+            unsafe_memset(self.frame_stack.value(), 0, GRAY64_SIZE)
         else:
             self.frame_stack = None
             self.raw_frame_a = None
@@ -480,27 +483,27 @@ struct AtariEnv[
             self.rgb_buf = None
             self.frame_idx = 0
 
-    def __init__(out self, *, deinit take: Self):
-        self.game = take.game
-        self.env = take.env^
-        self.episode_reward = take.episode_reward
-        self.done = take.done
-        self._steps = take._steps
-        self.clip_reward = take.clip_reward
-        self.episodic_life = take.episodic_life
-        self.full_action_set = take.full_action_set
-        self.sticky_prob = take.sticky_prob
-        self.noop_max = take.noop_max
-        self._last_ale_action = take._last_ale_action
-        self._prev_lives = take._prev_lives
-        self._was_real_done = take._was_real_done
-        self._life_lost = take._life_lost
-        self.frame_stack = take.frame_stack
-        self.frame_idx = take.frame_idx
-        self.raw_frame_a = take.raw_frame_a
-        self.raw_frame_b = take.raw_frame_b
-        self.gray_buf = take.gray_buf
-        self.rgb_buf = take.rgb_buf
+    def __init__(out self, *, deinit move: Self):
+        self.game = move.game
+        self.env = move.env^
+        self.episode_reward = move.episode_reward
+        self.done = move.done
+        self._steps = move._steps
+        self.clip_reward = move.clip_reward
+        self.episodic_life = move.episodic_life
+        self.full_action_set = move.full_action_set
+        self.sticky_prob = move.sticky_prob
+        self.noop_max = move.noop_max
+        self._last_ale_action = move._last_ale_action
+        self._prev_lives = move._prev_lives
+        self._was_real_done = move._was_real_done
+        self._life_lost = move._life_lost
+        self.frame_stack = move.frame_stack
+        self.frame_idx = move.frame_idx
+        self.raw_frame_a = move.raw_frame_a
+        self.raw_frame_b = move.raw_frame_b
+        self.gray_buf = move.gray_buf
+        self.rgb_buf = move.rgb_buf
 
     # ========================================================================
     # Pixel-mode helpers
@@ -900,7 +903,7 @@ struct AtariEnv[
         var ram = self.env.get_ram()
         for i in range(0, RAM_SIZE, W):
             obs_out.store(
-                i, ram.unsafe_ptr().load[width=W](i).cast[Self.dtype]() / 255.0
+                i, ram.unsafe_ptr().unsafe_load[width=W](i).cast[Self.dtype]() / 255.0
             )
 
     def get_obs_list(self) -> List[Scalar[Self.DTYPE]]:

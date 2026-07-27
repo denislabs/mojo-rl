@@ -28,6 +28,8 @@ standard modes for basic needs and a means to create custom modes,
 dictating what sort of math to do on what color components.
 """
 
+from . import _get_dylib_function, lib
+
 
 struct BlendMode(Intable, TrivialRegisterPassable):
     """A set of blend modes used in drawing operations.

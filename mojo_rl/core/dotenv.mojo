@@ -51,7 +51,10 @@ def load_dotenv(path: String = ".env") raises -> Dict[String, String]:
 
         # Skip export prefix
         if line.startswith("export "):
-            line = String(line[byte=7:])
+            # Temporary first: nightly rejects building a `String` from a slice
+            # of the string being assigned to.
+            var rest = String(line[byte=7:])
+            line = rest^
 
         # Find the = separator
         var eq_pos = line.find("=")
@@ -66,7 +69,8 @@ def load_dotenv(path: String = ".env") raises -> Dict[String, String]:
             if (val.startswith('"') and val.endswith('"')) or (
                 val.startswith("'") and val.endswith("'")
             ):
-                val = String(val[byte=1 : val.byte_length() - 1])
+                var unquoted = String(val[byte=1 : val.byte_length() - 1])
+                val = unquoted^
 
         result[key] = val
 

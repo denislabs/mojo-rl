@@ -53,7 +53,7 @@ struct IdentityAugmenter(Augmenter):
     def __init__(out self, *, copy: Self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     @staticmethod
@@ -130,7 +130,7 @@ struct CIFAR10CropFlipAugmenter(Augmenter):
     def __init__(out self, *, copy: Self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     @staticmethod
@@ -175,7 +175,7 @@ struct CIFAR10CropFlipAugmenterNHWC(Augmenter):
     def __init__(out self, *, copy: Self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     @staticmethod

@@ -24,10 +24,10 @@ struct TextureData(Movable):
         self.height = height
         self.pixels = pixels^
 
-    def __init__(out self, *, deinit take: Self):
-        self.pixels = take.pixels^
-        self.width = take.width
-        self.height = take.height
+    def __init__(out self, *, deinit move: Self):
+        self.pixels = move.pixels^
+        self.width = move.width
+        self.height = move.height
 
     def byte_size(self) -> Int:
         return self.width * self.height * 4  # RGBA8

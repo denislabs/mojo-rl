@@ -55,8 +55,8 @@ struct PendulumState(Copyable, ImplicitlyCopyable, Movable, State):
     def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    def __init__(out self, *, deinit take: Self):
-        self.index = take.index
+    def __init__(out self, *, deinit move: Self):
+        self.index = move.index
 
     def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
@@ -75,8 +75,8 @@ struct PendulumAction(Action, Copyable, ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.direction = copy.direction
 
-    def __init__(out self, *, deinit take: Self):
-        self.direction = take.direction
+    def __init__(out self, *, deinit move: Self):
+        self.direction = move.direction
 
     @staticmethod
     def left() -> Self:
@@ -176,26 +176,26 @@ struct PendulumEnv[DTYPE: DType](
         self._renderer = None
         self._renderer_initialized = False
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self.max_speed = take.max_speed
-        self.max_torque = take.max_torque
-        self.dt = take.dt
-        self.g = take.g
-        self.m = take.m
-        self.l = take.l
-        self.theta = take.theta
-        self.theta_dot = take.theta_dot
-        self.steps = take.steps
-        self.max_steps = take.max_steps
-        self.done = take.done
-        self.total_reward = take.total_reward
-        self.last_torque = take.last_torque
-        self.num_bins_angle = take.num_bins_angle
-        self.num_bins_velocity = take.num_bins_velocity
+        self.max_speed = move.max_speed
+        self.max_torque = move.max_torque
+        self.dt = move.dt
+        self.g = move.g
+        self.m = move.m
+        self.l = move.l
+        self.theta = move.theta
+        self.theta_dot = move.theta_dot
+        self.steps = move.steps
+        self.max_steps = move.max_steps
+        self.done = move.done
+        self.total_reward = move.total_reward
+        self.last_torque = move.last_torque
+        self.num_bins_angle = move.num_bins_angle
+        self.num_bins_velocity = move.num_bins_velocity
         # Transfer renderer ownership
-        self._renderer = take._renderer
-        self._renderer_initialized = take._renderer_initialized
+        self._renderer = move._renderer
+        self._renderer_initialized = move._renderer_initialized
 
     def __init__(
         out self, num_bins_angle: Int = 15, num_bins_velocity: Int = 15
@@ -795,7 +795,7 @@ struct PendulumEnv[DTYPE: DType](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.value().init_pointee_move(Renderer2D())
+        self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True
 

@@ -320,7 +320,6 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
             out.ensure(B * Self.OUT)
             var in_p = in0.data.unsafe_ptr()
             var out_p = out.data.unsafe_ptr()
-            var w_p = self.weight.val.data.unsafe_ptr()
             var b_p = self.bias.val.data.unsafe_ptr()
             comptime if Self.BLOCKS == 1:
                 # Plain dense matmul — input/output blocks ARE the full
@@ -334,7 +333,7 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                 for b in range(B):
                     var out_base = b * Self.OUT
                     for o2 in range(Self.OUT):
-                        out_p[out_base + o2] = out_p[out_base + o2] + b_p[o2]
+                        out_p[unsafe_offset=out_base + o2] = out_p[unsafe_offset=out_base + o2] + b_p[unsafe_offset=o2]
             else:
                 # BLOCKS independent matmuls. The block's input/output columns
                 # are STRIDED slices of [B, IN]/[B, OUT], so gather each
@@ -352,13 +351,16 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                         var xb_base = b * Self.IPB
                         var src_base = b * Self.IN + in_col0
                         for i in range(Self.IPB):
-                            xblk_list[xb_base + i] = in_p[src_base + i]
+                            xblk_list[xb_base + i] = in_p[unsafe_offset=src_base + i]
                     var w_blk = k * Self.IPB * Self.OPB
                     var xblk_tt = TileTensor(
                         xblk_list, row_major[B, Self.IPB](),
                     )
                     var kernel_k_tt = TileTensor(
-                        w_p + w_blk, row_major[Self.IPB, Self.OPB](),
+                        Span(self.weight.val.data)[
+                            w_blk : w_blk + Self.IPB * Self.OPB
+                        ],
+                        row_major[Self.IPB, Self.OPB](),
                     )
                     var oblk_tt = TileTensor(
                         oblk_list, row_major[B, Self.OPB](),
@@ -369,8 +371,8 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                         var ob_base = b * Self.OPB
                         var dst_base = b * Self.OUT + out_col0
                         for o2 in range(Self.OPB):
-                            out_p[dst_base + o2] = (
-                                oblk_list[ob_base + o2] + b_p[out_col0 + o2]
+                            out_p[unsafe_offset=dst_base + o2] = (
+                                oblk_list[ob_base + o2] + b_p[unsafe_offset=out_col0 + o2]
                             )
         else:
             var c = ctx.value()
@@ -448,7 +450,6 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
             var gw_p = self.weight.grd.data.unsafe_ptr()
             var gb_p = self.bias.grd.data.unsafe_ptr()
             var x_p = fin.data.unsafe_ptr()
-            var w_p = self.weight.val.data.unsafe_ptr()
             var gi_p = gin.data.unsafe_ptr()
             var grad_output_v = TileTensor(
                 grad_output.data, row_major[B, Self.OUT]()
@@ -458,8 +459,8 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
             for j in range(Self.OUT):
                 var accb: Scalar[DT] = 0.0
                 for b in range(B):
-                    accb += go_p[b * Self.OUT + j]
-                gb_p[j] += accb
+                    accb += go_p[unsafe_offset=b * Self.OUT + j]
+                gb_p[unsafe_offset=j] += accb
 
             # grad_weight[k] += x_blockᵀ @ go_block, via BLAS.
             comptime if Self.BLOCKS == 1:
@@ -471,14 +472,14 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                 )
                 for b in range(B):
                     for i in range(Self.IN):
-                        cT_list[i * B + b] = x_p[b * Self.IN + i]
+                        cT_list[i * B + b] = x_p[unsafe_offset=b * Self.IN + i]
                 var cT_tt = TileTensor(cT_list, row_major[Self.IN, B]())
                 var dW_tt = TileTensor(
                     dW_list, row_major[Self.IN, Self.OUT](),
                 )
                 max_matmul[target="cpu"](dW_tt, cT_tt, grad_output_v, None)
                 for idx in range(Self.IN * Self.OUT):
-                    gw_p[idx] = gw_p[idx] + dW_list[idx]
+                    gw_p[unsafe_offset=idx] = gw_p[unsafe_offset=idx] + dW_list[idx]
             else:
                 var xT_list = List[Scalar[DT]](
                     length=Self.IPB * B, fill=Scalar[DT](0)
@@ -495,11 +496,11 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                     for b in range(B):
                         var x_src = b * Self.IN + in_col0
                         for i in range(Self.IPB):
-                            xT_list[i * B + b] = x_p[x_src + i]
+                            xT_list[i * B + b] = x_p[unsafe_offset=x_src + i]
                         var go_src = b * Self.OUT + out_col0
                         var gob_dst = b * Self.OPB
                         for o2 in range(Self.OPB):
-                            gob_list[gob_dst + o2] = go_p[go_src + o2]
+                            gob_list[gob_dst + o2] = go_p[unsafe_offset=go_src + o2]
                     var xT_tt = TileTensor(xT_list, row_major[Self.IPB, B]())
                     var gob_tt = TileTensor(
                         gob_list, row_major[B, Self.OPB](),
@@ -510,7 +511,7 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                     max_matmul[target="cpu"](dW_tt, xT_tt, gob_tt, None)
                     var w_blk = k * Self.IPB * Self.OPB
                     for idx in range(Self.IPB * Self.OPB):
-                        gw_p[w_blk + idx] = gw_p[w_blk + idx] + dW_list[idx]
+                        gw_p[unsafe_offset=w_blk + idx] = gw_p[unsafe_offset=w_blk + idx] + dW_list[idx]
 
             # grad_x_block = go_block @ kernel[k]ᵀ
             comptime if Self.BLOCKS == 1:
@@ -534,13 +535,16 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                         var go_src = b * Self.OUT + out_col0
                         var gob_dst = b * Self.OPB
                         for o2 in range(Self.OPB):
-                            gob_list2[gob_dst + o2] = go_p[go_src + o2]
+                            gob_list2[gob_dst + o2] = go_p[unsafe_offset=go_src + o2]
                     var w_blk = k * Self.IPB * Self.OPB
                     var gob_tt = TileTensor(
                         gob_list2, row_major[B, Self.OPB](),
                     )
                     var kernel_k_tt = TileTensor(
-                        w_p + w_blk, row_major[Self.IPB, Self.OPB](),
+                        Span(self.weight.val.data)[
+                            w_blk : w_blk + Self.IPB * Self.OPB
+                        ],
+                        row_major[Self.IPB, Self.OPB](),
                     )
                     var gxb_tt = TileTensor(
                         gxb_list, row_major[B, Self.IPB](),
@@ -553,7 +557,7 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                         var gxb_src = b * Self.IPB
                         var dst = b * Self.IN + in_col0
                         for i in range(Self.IPB):
-                            gi_p[dst + i] = gxb_list[gxb_src + i]
+                            gi_p[unsafe_offset=dst + i] = gxb_list[gxb_src + i]
         else:
             var c = ctx.value()
             gin.ensure_gpu(c, B * Self.IN)

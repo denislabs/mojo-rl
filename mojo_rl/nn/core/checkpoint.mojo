@@ -33,7 +33,7 @@ download on save / upload on load.
 
 from std.ffi import external_call
 from std.gpu.host import DeviceContext
-from std.memory import memcpy
+from std.memory import unsafe_memcpy
 from std.sys.info import size_of
 
 from mojo_rl.nn.constants import DT
@@ -58,9 +58,9 @@ def _write_file_bytes(var path: String, content: List[UInt8]) raises:
             var take = len(content) - off
             if take > _CKPT_CHUNK:
                 take = _CKPT_CHUNK
-            f.write_bytes(
-                Span(ptr=content.unsafe_ptr() + off, length=take)
-            )
+            # Bounded slice rather than a raw pointer + separate length: the
+            # chunk bound is now checked against the buffer, not asserted.
+            f.write_bytes(Span(content)[off : off + take])
             off += take
     var rc = external_call["rename", Int32](
         tmp.as_c_string_slice().unsafe_ptr(),
@@ -82,8 +82,8 @@ def _read_file_bytes(path: String) raises -> List[UInt8]:
                 break
             var old = len(out)
             out.resize(old + len(chunk), 0)
-            memcpy(
-                dest=out.unsafe_ptr() + old,
+            unsafe_memcpy(
+                dest=out.unsafe_ptr().unsafe_offset(old),
                 src=chunk.unsafe_ptr(),
                 count=len(chunk),
             )
@@ -94,16 +94,16 @@ def _bytes_append_str(mut buf: List[UInt8], s: String):
     var sb = s.as_bytes()
     var old = len(buf)
     buf.resize(old + len(sb), 0)
-    memcpy(dest=buf.unsafe_ptr() + old, src=sb.unsafe_ptr(), count=len(sb))
+    unsafe_memcpy(dest=buf.unsafe_ptr().unsafe_offset(old), src=sb.unsafe_ptr(), count=len(sb))
 
 
 def _bytes_append_vals(mut buf: List[UInt8], t: Tensor, n: Int):
     comptime SB = size_of[Scalar[DT]]()
     var old = len(buf)
     buf.resize(old + n * SB, 0)
-    memcpy(
-        dest=buf.unsafe_ptr() + old,
-        src=t.data.unsafe_ptr().bitcast[UInt8](),
+    unsafe_memcpy(
+        dest=buf.unsafe_ptr().unsafe_offset(old),
+        src=t.data.unsafe_ptr().unsafe_bitcast[UInt8](),
         count=n * SB,
     )
 
@@ -237,7 +237,7 @@ struct CheckpointReader(ParamVisitor):
 
 
 struct BinaryCheckpointWriter(ParamVisitor):
-    """v3 twin of `CheckpointWriter`: text section headers, raw-byte payloads.
+    """V3 twin of `CheckpointWriter`: text section headers, raw-byte payloads.
     `mode`: 0 = Param (P, with optional moments), 1 = State (S)."""
     var content: List[UInt8]
     var mode: Int
@@ -279,7 +279,7 @@ struct BinaryCheckpointWriter(ParamVisitor):
 
 
 struct BinaryCheckpointReader(ParamVisitor):
-    """v3 twin of `CheckpointReader`: byte-cursor over the whole file, same
+    """V3 twin of `CheckpointReader`: byte-cursor over the whole file, same
     name/size/topology validation as v2."""
     var bytes: List[UInt8]
     var cur: Int
@@ -310,9 +310,9 @@ struct BinaryCheckpointReader(ParamVisitor):
         comptime SB = size_of[Scalar[DT]]()
         if self.cur + n * SB > len(self.bytes):
             raise Error("checkpoint: unexpected end of file")
-        memcpy(
-            dest=t.data.unsafe_ptr().bitcast[UInt8](),
-            src=self.bytes.unsafe_ptr() + self.cur,
+        unsafe_memcpy(
+            dest=t.data.unsafe_ptr().unsafe_bitcast[UInt8](),
+            src=self.bytes.unsafe_ptr().unsafe_offset(self.cur),
             count=n * SB,
         )
         self.cur += n * SB

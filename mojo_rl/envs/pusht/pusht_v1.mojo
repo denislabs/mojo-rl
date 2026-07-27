@@ -192,17 +192,17 @@ struct PushTEnv[DTYPE: DType](
         self._renderer = None
         self._renderer_initialized = False
 
-    def __init__(out self, *, deinit take: Self):
-        self.state_data = take.state_data
-        self.shapes_data = take.shapes_data
-        self.contacts_data = take.contacts_data
-        self.done = take.done
-        self.rng_seed = take.rng_seed
-        self.rng_counter = take.rng_counter
-        self.last_target_x = take.last_target_x
-        self.last_target_y = take.last_target_y
-        self._renderer = take._renderer
-        self._renderer_initialized = take._renderer_initialized
+    def __init__(out self, *, deinit move: Self):
+        self.state_data = move.state_data
+        self.shapes_data = move.shapes_data
+        self.contacts_data = move.contacts_data
+        self.done = move.done
+        self.rng_seed = move.rng_seed
+        self.rng_counter = move.rng_counter
+        self.last_target_x = move.last_target_x
+        self.last_target_y = move.last_target_y
+        self._renderer = move._renderer
+        self._renderer_initialized = move._renderer_initialized
 
     # =========================================================================
     # LayoutTensor views (rebuilt per call — pointer chasing is cheap)
@@ -234,7 +234,7 @@ struct PushTEnv[DTYPE: DType](
             dtype,
             Layout.row_major(PushTShapeBuf.NUM_SHAPES, SHAPE_MAX_SIZE),
             MutAnyOrigin,
-        ](self.shapes_data.unsafe_ptr().bitcast[Scalar[dtype]]().as_unsafe_any_origin())
+        ](self.shapes_data.unsafe_ptr().unsafe_bitcast[Scalar[dtype]]().as_unsafe_any_origin())
 
     @always_inline
     def _contacts_view(
@@ -772,7 +772,7 @@ struct PushTEnv[DTYPE: DType](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.value().init_pointee_move(
+        self._renderer.value().unsafe_write(
             Renderer2D(
                 width=Self.WINDOW_W,
                 height=Self.WINDOW_H,

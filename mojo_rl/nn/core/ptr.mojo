@@ -32,6 +32,23 @@ def mptr[
 
 
 @always_inline
+def mptr[
+    dt: DType
+](mut lst: List[Scalar[dt]]) -> UnsafePointer[Scalar[dt], MutAnyOrigin]:
+    """Erased base pointer of a host `List` — `mptr(buf)` instead of
+    `buf.unsafe_ptr()`.
+
+    As of the 2026-07 nightly `List.unsafe_ptr()` returns a *safe* pointer
+    (`_safe=True`) with a tracked origin, which no longer binds to the
+    `UnsafePointer[..., MutAnyOrigin]` parameters that the replay buffers,
+    batched envs, and kernel ABIs declare. `unsafe_bitcast` is the only
+    documented way back to the unsafe form; this keeps that step in one place
+    instead of spelling `.unsafe_bitcast[Scalar[dt]]().as_unsafe_any_origin()`
+    at every call site."""
+    return lst.unsafe_ptr().unsafe_bitcast[Scalar[dt]]().as_unsafe_any_origin()
+
+
+@always_inline
 def untracked[
     T: AnyType, o: Origin
 ](p: UnsafePointer[T, o]) -> UnsafePointer[T, MutUntrackedOrigin]:

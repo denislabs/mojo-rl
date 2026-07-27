@@ -5,7 +5,7 @@ for true 3D rendering with Blinn-Phong lighting, depth buffering, and procedural
 checkerboard ground.
 """
 
-from std.memory import UnsafePointer, memcpy, alloc
+from std.memory import UnsafePointer, unsafe_memcpy, alloc
 from std.math import sqrt, sin, cos
 from mojo_rl.math3d import (
     Vec3 as Vec3Generic,
@@ -234,11 +234,11 @@ struct LineColorEntry(Copyable, Movable):
         self.b = copy.b
         self.a = copy.a
 
-    def __init__(out self, *, deinit take: Self):
-        self.r = take.r
-        self.g = take.g
-        self.b = take.b
-        self.a = take.a
+    def __init__(out self, *, deinit move: Self):
+        self.r = move.r
+        self.g = move.g
+        self.b = move.b
+        self.a = move.a
 
     def to_inline_array(self) -> InlineArray[Float32, 4]:
         var out = InlineArray[Float32, 4](fill=Float32(0))
@@ -505,73 +505,73 @@ struct Renderer3D(Movable):
                 )
             )
 
-    def __init__(out self, *, deinit take: Self):
-        self.window = take.window^
-        self.device = take.device^
-        self.solid_pipeline = take.solid_pipeline^
-        self.ground_pipeline = take.ground_pipeline^
-        self.line_pipeline = take.line_pipeline^
-        self.shadow_pipeline = take.shadow_pipeline^
-        self.reflection_pipeline = take.reflection_pipeline^
-        self.skybox_pipeline = take.skybox_pipeline^
-        self.depth_texture = take.depth_texture^
-        self.shadow_map = take.shadow_map^
-        self.shadow_sampler = take.shadow_sampler^
-        self.shadow_uniforms = take.shadow_uniforms
-        self.ground_z = take.ground_z
-        self.sphere_mesh = take.sphere_mesh^
-        self.box_mesh = take.box_mesh^
-        self.ground_mesh = take.ground_mesh^
-        self.capsule_cache = take.capsule_cache^
-        self.cylinder_cache = take.cylinder_cache^
-        self.mesh_cache = take.mesh_cache^
-        self.texture_cache = take.texture_cache^
-        self.default_texture = take.default_texture^
-        self.default_tex_sampler = take.default_tex_sampler^
-        self.line_vertex_data = take.line_vertex_data^
-        self.line_colors = take.line_colors^
-        self.line_vertex_buffer = take.line_vertex_buffer^
-        self.line_transfer_buffer = take.line_transfer_buffer^
-        self.text_pipeline = take.text_pipeline^
-        self.font_atlas_tex = take.font_atlas_tex^
-        self.font_sampler = take.font_sampler^
-        self.text_vertex_buffer = take.text_vertex_buffer^
-        self.text_index_buffer = take.text_index_buffer^
-        self.text_transfer_buffer = take.text_transfer_buffer^
-        self.text_vertex_data = take.text_vertex_data^
-        self.text_uniforms = take.text_uniforms
-        self.solid_draws = take.solid_draws^
-        self.ground_uniforms = take.ground_uniforms
-        self.has_ground = take.has_ground
-        self.ground_texture_idx = take.ground_texture_idx
-        self.camera = take.camera^
-        self.width = take.width
-        self.height = take.height
-        self.background_color = take.background_color
-        self.scene_uniforms = take.scene_uniforms
-        self.skybox_uniforms = take.skybox_uniforms
-        self.draw_skybox = take.draw_skybox
-        self.swapchain_format = take.swapchain_format
-        self.lights = take.lights^
-        self.shadow_size = take.shadow_size
-        self.fog_start = take.fog_start
-        self.fog_end = take.fog_end
-        self.camera_switch_request = take.camera_switch_request
-        self.mouse_left_down = take.mouse_left_down
-        self.mouse_right_down = take.mouse_right_down
-        self.is_paused = take.is_paused
-        self.step_once = take.step_once
-        self.screenshot_requested = take.screenshot_requested
-        self.screenshot_counter = take.screenshot_counter
-        self.recorder = take.recorder^
-        self.recording_tb = take.recording_tb^
-        self.recording_tb_size = take.recording_tb_size
-        self.default_eye = take.default_eye
-        self.default_target = take.default_target
-        self.initialized = take.initialized
-        self.should_quit = take.should_quit
-        self.draw_grid = take.draw_grid
-        self.draw_axes = take.draw_axes
+    def __init__(out self, *, deinit move: Self):
+        self.window = move.window^
+        self.device = move.device^
+        self.solid_pipeline = move.solid_pipeline^
+        self.ground_pipeline = move.ground_pipeline^
+        self.line_pipeline = move.line_pipeline^
+        self.shadow_pipeline = move.shadow_pipeline^
+        self.reflection_pipeline = move.reflection_pipeline^
+        self.skybox_pipeline = move.skybox_pipeline^
+        self.depth_texture = move.depth_texture^
+        self.shadow_map = move.shadow_map^
+        self.shadow_sampler = move.shadow_sampler^
+        self.shadow_uniforms = move.shadow_uniforms
+        self.ground_z = move.ground_z
+        self.sphere_mesh = move.sphere_mesh^
+        self.box_mesh = move.box_mesh^
+        self.ground_mesh = move.ground_mesh^
+        self.capsule_cache = move.capsule_cache^
+        self.cylinder_cache = move.cylinder_cache^
+        self.mesh_cache = move.mesh_cache^
+        self.texture_cache = move.texture_cache^
+        self.default_texture = move.default_texture^
+        self.default_tex_sampler = move.default_tex_sampler^
+        self.line_vertex_data = move.line_vertex_data^
+        self.line_colors = move.line_colors^
+        self.line_vertex_buffer = move.line_vertex_buffer^
+        self.line_transfer_buffer = move.line_transfer_buffer^
+        self.text_pipeline = move.text_pipeline^
+        self.font_atlas_tex = move.font_atlas_tex^
+        self.font_sampler = move.font_sampler^
+        self.text_vertex_buffer = move.text_vertex_buffer^
+        self.text_index_buffer = move.text_index_buffer^
+        self.text_transfer_buffer = move.text_transfer_buffer^
+        self.text_vertex_data = move.text_vertex_data^
+        self.text_uniforms = move.text_uniforms
+        self.solid_draws = move.solid_draws^
+        self.ground_uniforms = move.ground_uniforms
+        self.has_ground = move.has_ground
+        self.ground_texture_idx = move.ground_texture_idx
+        self.camera = move.camera^
+        self.width = move.width
+        self.height = move.height
+        self.background_color = move.background_color
+        self.scene_uniforms = move.scene_uniforms
+        self.skybox_uniforms = move.skybox_uniforms
+        self.draw_skybox = move.draw_skybox
+        self.swapchain_format = move.swapchain_format
+        self.lights = move.lights^
+        self.shadow_size = move.shadow_size
+        self.fog_start = move.fog_start
+        self.fog_end = move.fog_end
+        self.camera_switch_request = move.camera_switch_request
+        self.mouse_left_down = move.mouse_left_down
+        self.mouse_right_down = move.mouse_right_down
+        self.is_paused = move.is_paused
+        self.step_once = move.step_once
+        self.screenshot_requested = move.screenshot_requested
+        self.screenshot_counter = move.screenshot_counter
+        self.recorder = move.recorder^
+        self.recording_tb = move.recording_tb^
+        self.recording_tb_size = move.recording_tb_size
+        self.default_eye = move.default_eye
+        self.default_target = move.default_target
+        self.initialized = move.initialized
+        self.should_quit = move.should_quit
+        self.draw_grid = move.draw_grid
+        self.draw_axes = move.draw_axes
 
     @staticmethod
     def _shader_format() -> GPUShaderFormat:
@@ -1527,13 +1527,13 @@ struct Renderer3D(Movable):
         var mapped_ptr = mapped.bitcast[UInt8]()
 
         # Copy vertices
-        memcpy(
+        unsafe_memcpy(
             dest=mapped_ptr,
             src=UnsafePointer(to=mesh_data.vertices[0]).bitcast[UInt8](),
             count=Int(vb_size),
         )
         # Copy indices after vertices
-        memcpy(
+        unsafe_memcpy(
             dest=mapped_ptr + Int(vb_size),
             src=UnsafePointer(to=mesh_data.indices[0]).bitcast[UInt8](),
             count=Int(ib_size),

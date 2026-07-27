@@ -376,7 +376,7 @@ struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.value().init_pointee_move(Renderer2D())
+        self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True
 

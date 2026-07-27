@@ -62,20 +62,20 @@ struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         self.visited_pairs = copy.visited_pairs.copy()
         self.num_visited = copy.num_visited
 
-    def __init__(out self, *, deinit take: Self):
-        self.q_table = take.q_table^
-        self.learning_rate = take.learning_rate
-        self.discount_factor = take.discount_factor
-        self.epsilon = take.epsilon
-        self.epsilon_decay = take.epsilon_decay
-        self.epsilon_min = take.epsilon_min
-        self.num_actions = take.num_actions
-        self.num_states = take.num_states
-        self.n_planning = take.n_planning
-        self.model_next_state = take.model_next_state^
-        self.model_reward = take.model_reward^
-        self.visited_pairs = take.visited_pairs^
-        self.num_visited = take.num_visited
+    def __init__(out self, *, deinit move: Self):
+        self.q_table = move.q_table^
+        self.learning_rate = move.learning_rate
+        self.discount_factor = move.discount_factor
+        self.epsilon = move.epsilon
+        self.epsilon_decay = move.epsilon_decay
+        self.epsilon_min = move.epsilon_min
+        self.num_actions = move.num_actions
+        self.num_states = move.num_states
+        self.n_planning = move.n_planning
+        self.model_next_state = move.model_next_state^
+        self.model_reward = move.model_reward^
+        self.visited_pairs = move.visited_pairs^
+        self.num_visited = move.num_visited
 
     def __init__(
         out self,

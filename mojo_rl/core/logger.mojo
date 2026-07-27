@@ -65,11 +65,11 @@ struct MetricEntry(Copyable, Movable):
         self.name = copy.name
         self.value = copy.value
 
-    def __init__(out self, *, deinit take: Self):
-        self.step = take.step
-        self.wall_time_ms = take.wall_time_ms
-        self.name = take.name^
-        self.value = take.value
+    def __init__(out self, *, deinit move: Self):
+        self.step = move.step
+        self.wall_time_ms = move.wall_time_ms
+        self.name = move.name^
+        self.value = move.value
 
 
 # =============================================================================
@@ -122,7 +122,7 @@ struct NoOpLogger(Logger):
     def __init__(out self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
@@ -163,7 +163,7 @@ struct CsvLogger(Logger):
     var file_path: String
     var entries: List[MetricEntry]
     var buffer_size: Int
-    var _start_ns: UInt
+    var _start_ns: Int
     var _file_header_written: Bool
     var _total_logged: Int
 
@@ -179,13 +179,13 @@ struct CsvLogger(Logger):
         self._file_header_written = False
         self._total_logged = 0
 
-    def __init__(out self, *, deinit take: Self):
-        self.file_path = take.file_path^
-        self.entries = take.entries^
-        self.buffer_size = take.buffer_size
-        self._start_ns = take._start_ns
-        self._file_header_written = take._file_header_written
-        self._total_logged = take._total_logged
+    def __init__(out self, *, deinit move: Self):
+        self.file_path = move.file_path^
+        self.entries = move.entries^
+        self.buffer_size = move.buffer_size
+        self._start_ns = move._start_ns
+        self._file_header_written = move._file_header_written
+        self._total_logged = move._total_logged
 
     def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
         if isnan(value) or isinf(value):
@@ -270,7 +270,7 @@ struct RemoteLogger(Logger):
     var api_key: String
     var entries: List[MetricEntry]
     var buffer_size: Int
-    var _start_ns: UInt
+    var _start_ns: Int
     var _config_keys: List[String]
     var _config_vals: List[String]
     var _run_registered: Bool
@@ -299,18 +299,18 @@ struct RemoteLogger(Logger):
         self._run_registered = False
         self._total_logged = 0
 
-    def __init__(out self, *, deinit take: Self):
-        self.run_id = take.run_id^
-        self.run_name = take.run_name^
-        self.server_url = take.server_url^
-        self.api_key = take.api_key^
-        self.entries = take.entries^
-        self.buffer_size = take.buffer_size
-        self._start_ns = take._start_ns
-        self._config_keys = take._config_keys^
-        self._config_vals = take._config_vals^
-        self._run_registered = take._run_registered
-        self._total_logged = take._total_logged
+    def __init__(out self, *, deinit move: Self):
+        self.run_id = move.run_id^
+        self.run_name = move.run_name^
+        self.server_url = move.server_url^
+        self.api_key = move.api_key^
+        self.entries = move.entries^
+        self.buffer_size = move.buffer_size
+        self._start_ns = move._start_ns
+        self._config_keys = move._config_keys^
+        self._config_vals = move._config_vals^
+        self._run_registered = move._run_registered
+        self._total_logged = move._total_logged
 
     def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
         if self.server_url.byte_length() == 0:
@@ -432,9 +432,9 @@ struct CompositeLogger[A: Logger, B: Logger](Logger):
         self.a = a.copy()
         self.b = b.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.a = take.a^
-        self.b = take.b^
+    def __init__(out self, *, deinit move: Self):
+        self.a = move.a^
+        self.b = move.b^
 
     def __init__(out self, *, copy: Self):
         self.a = copy.a.copy()

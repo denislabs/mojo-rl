@@ -28,8 +28,9 @@ def pyramidal_edge_forces[
     mut force: InlineArray[Scalar[DTYPE], ME],
     mut qfrc: InlineArray[Scalar[DTYPE], V_SIZE],
 ):
-    """Pyramidal edge constraint forces given the current qacc (verbatim from
-    the fields-Newton inline body):
+    """Pyramidal edge constraint forces given the current qacc.
+
+    Verbatim from the fields-Newton inline body:
 
         qfrc = 0
         for each active edge e:

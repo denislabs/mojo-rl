@@ -45,15 +45,15 @@ struct PerfTimer[ENABLED: Bool]:
         ENABLED: Whether timing is active. False = all no-ops.
     """
 
-    var accum_ns: List[UInt]
-    var counts: List[UInt]
+    var accum_ns: List[Int]
+    var counts: List[Int]
     var labels: List[String]
     var parents: List[Int]  # -1 = top-level, otherwise parent slot index
-    var _mark: UInt
+    var _mark: Int
 
     def __init__(out self):
-        self.accum_ns = List[UInt]()
-        self.counts = List[UInt]()
+        self.accum_ns = List[Int]()
+        self.counts = List[Int]()
         self.labels = List[String]()
         self.parents = List[Int]()
         self._mark = 0
@@ -101,9 +101,9 @@ struct PerfTimer[ENABLED: Bool]:
             self.accum_ns[idx] += now - self._mark
             self.counts[idx] += 1
 
-    def total(self) -> UInt:
+    def total(self) -> Int:
         """Sum all top-level accumulator slots."""
-        var s: UInt = 0
+        var s: Int = 0
         for i in range(len(self.accum_ns)):
             if self.parents[i] == -1:
                 s += self.accum_ns[i]
@@ -192,7 +192,7 @@ struct PerfTimer[ENABLED: Bool]:
             print("  Total:" + _pad_to(24 - "Total:".byte_length()) + _fmt_ms(total_ms))
             print(sep)
 
-    def _print_children(self, parent: Int, ref_ns: UInt, depth: Int):
+    def _print_children(self, parent: Int, ref_ns: Int, depth: Int):
         """Recursively print children of a slot with increasing indentation."""
         comptime if Self.ENABLED:
             for j in range(len(self.accum_ns)):
@@ -224,7 +224,7 @@ def _pad_to(n: Int) -> String:
     return s
 
 
-def _print_slot(label: String, ns: UInt, ref_ns: UInt, indent: Int):
+def _print_slot(label: String, ns: Int, ref_ns: Int, indent: Int):
     """Print a single slot line with proper formatting."""
     var ms = Float64(ns) / 1_000_000.0
     var pct: Float64 = 0.0

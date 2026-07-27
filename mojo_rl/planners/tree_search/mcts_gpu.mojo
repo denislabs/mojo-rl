@@ -237,7 +237,7 @@ def gpu_mcts_init_root_kernel[
     One thread per environment.
 
     IMPORTANT: Caller must zero visit_count, total_value, reward, total_visits
-    and set child_idx to -1 via memset BEFORE launching this kernel.
+    and set child_idx to -1 via unsafe_memset BEFORE launching this kernel.
     Prior is set here from softmax, so it doesn't need zeroing.
     """
     var e = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -2901,7 +2901,7 @@ struct GPUMCTSState[
         )
 
     def zero_tree(self, ctx: DeviceContext) raises:
-        """Zero all tree node data via GPU memset/fill.
+        """Zero all tree node data via GPU unsafe_memset/fill.
 
         Must be called before gpu_mcts_init_root_kernel to replace the
         serial zeroing loop that was previously in the kernel.
@@ -2912,30 +2912,30 @@ struct GPUMCTSState[
         ctx.enqueue_memset(self.total_visits, 0)
         self.child_idx.enqueue_fill(Scalar[dtype](-1.0))
 
-    def __init__(out self, *, deinit take: Self):
-        self.visit_count = take.visit_count^
-        self.total_value = take.total_value^
-        self.prior = take.prior^
-        self.reward = take.reward^
-        self.child_idx = take.child_idx^
-        self.total_visits = take.total_visits^
-        self.hidden_states = take.hidden_states^
-        self.game_states = take.game_states^
-        self.expansion_states = take.expansion_states^
-        self.expansion_legal_masks = take.expansion_legal_masks^
-        self.node_count = take.node_count^
-        self.min_q = take.min_q^
-        self.max_q = take.max_q^
-        self.pending_parent = take.pending_parent^
-        self.pending_action = take.pending_action^
-        self.search_paths = take.search_paths^
-        self.action_paths = take.action_paths^
-        self.path_lengths = take.path_lengths^
-        self.leaf_values = take.leaf_values^
-        self.dyn_input = take.dyn_input^
-        self.dyn_output = take.dyn_output^
-        self.pred_input = take.pred_input^
-        self.pred_output = take.pred_output^
-        self.actions_out = take.actions_out^
-        self.policies_out = take.policies_out^
-        self.legal_masks = take.legal_masks^
+    def __init__(out self, *, deinit move: Self):
+        self.visit_count = move.visit_count^
+        self.total_value = move.total_value^
+        self.prior = move.prior^
+        self.reward = move.reward^
+        self.child_idx = move.child_idx^
+        self.total_visits = move.total_visits^
+        self.hidden_states = move.hidden_states^
+        self.game_states = move.game_states^
+        self.expansion_states = move.expansion_states^
+        self.expansion_legal_masks = move.expansion_legal_masks^
+        self.node_count = move.node_count^
+        self.min_q = move.min_q^
+        self.max_q = move.max_q^
+        self.pending_parent = move.pending_parent^
+        self.pending_action = move.pending_action^
+        self.search_paths = move.search_paths^
+        self.action_paths = move.action_paths^
+        self.path_lengths = move.path_lengths^
+        self.leaf_values = move.leaf_values^
+        self.dyn_input = move.dyn_input^
+        self.dyn_output = move.dyn_output^
+        self.pred_input = move.pred_input^
+        self.pred_output = move.pred_output^
+        self.actions_out = move.actions_out^
+        self.policies_out = move.policies_out^
+        self.legal_masks = move.legal_masks^

@@ -221,21 +221,45 @@ struct AtariGpuBatchedEnv[
         ctx.enqueue_memset(self._done, 0)
         ctx.enqueue_memset(self._terminated, 0)
 
+    # These accessors borrow `self` immutably, so the buffer pointers now carry
+    # immutable origins; the GPU kernel ABI declares `MutAnyOrigin`. The device
+    # allocations are not tracked by Mojo's origin system, so the mut-cast just
+    # restores the pre-nightly typing — it grants no access the kernels did not
+    # already have.
     @always_inline
     def _states_p(self) -> UnsafePointer[AtariState, MutAnyOrigin]:
-        return self._states.unsafe_ptr().bitcast[AtariState]().as_unsafe_any_origin()
+        return (
+            self._states.unsafe_ptr()
+            .unsafe_bitcast[AtariState]()
+            .as_unsafe_any_origin()
+            .unsafe_mut_cast[True]()
+        )
 
     @always_inline
     def _s0_p(self) -> UnsafePointer[AtariState, MutAnyOrigin]:
-        return self._s0.unsafe_ptr().bitcast[AtariState]().as_unsafe_any_origin()
+        return (
+            self._s0.unsafe_ptr()
+            .unsafe_bitcast[AtariState]()
+            .as_unsafe_any_origin()
+            .unsafe_mut_cast[True]()
+        )
 
     @always_inline
     def _rom_p(self) -> UnsafePointer[UInt8, MutAnyOrigin]:
-        return self._rom.unsafe_ptr().as_unsafe_any_origin()
+        return (
+            self._rom.unsafe_ptr()
+            .as_unsafe_any_origin()
+            .unsafe_mut_cast[True]()
+        )
 
     @always_inline
     def _opt_p(self) -> UnsafePointer[OpcodeEntry, MutAnyOrigin]:
-        return self._optab.unsafe_ptr().bitcast[OpcodeEntry]().as_unsafe_any_origin()
+        return (
+            self._optab.unsafe_ptr()
+            .unsafe_bitcast[OpcodeEntry]()
+            .as_unsafe_any_origin()
+            .unsafe_mut_cast[True]()
+        )
 
     def reset_batch[BATCH: Int](
         mut self, ctx: Optional[DeviceContext], rng_seed: UInt64

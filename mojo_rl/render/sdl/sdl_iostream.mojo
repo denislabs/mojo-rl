@@ -31,6 +31,10 @@ SDL_IOStream is not related to the standard C++ iostream class, other than
 both are abstract interfaces to read/write data.
 """
 
+from . import _get_dylib_function, c_char, c_size_t, lib, Ptr
+from .sdl_error import get_error
+from .sdl_properties import PropertiesID
+
 
 struct IOStatus(Indexer, Intable, TrivialRegisterPassable):
     """SDL_IOStream status, set by a read or write operation.
@@ -292,8 +296,8 @@ def io_from_file(
         lib,
         "SDL_IOFromFile",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(file))],
-            Ptr[c_char, ImmutOrigin(origin_of(mode))],
+            Ptr[c_char, ImmOrigin(origin_of(file))],
+            Ptr[c_char, ImmOrigin(origin_of(mode))],
         ) thin -> Ptr[IOStream, MutAnyOrigin],
     ]()(
         file.as_c_string_slice().unsafe_ptr(),
@@ -854,7 +858,7 @@ def load_file(
         lib,
         "SDL_LoadFile",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(file))],
+            Ptr[c_char, ImmOrigin(origin_of(file))],
             Ptr[c_size_t, MutAnyOrigin],
         ) thin -> Ptr[NoneType, MutAnyOrigin],
     ]()(file.as_c_string_slice().unsafe_ptr(), datasize)
@@ -927,7 +931,7 @@ def save_file(
         lib,
         "SDL_SaveFile",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(file))],
+            Ptr[c_char, ImmOrigin(origin_of(file))],
             Ptr[NoneType, ImmutAnyOrigin],
             c_size_t,
         ) thin -> Bool,

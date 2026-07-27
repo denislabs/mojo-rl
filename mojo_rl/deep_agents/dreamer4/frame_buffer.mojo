@@ -44,14 +44,14 @@ struct Dreamer4FrameBuffer[C: Int, H: Int, W: Int, ACT: Int, CAP: Int](Movable):
         self.rewards = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0.0))
         self.rng = seed | 1
 
-    def __init__(out self, *, deinit take: Self):
-        self.pos = take.pos
-        self.size = take.size
-        self.frames = take.frames^
-        self.actions = take.actions^
-        self.dones = take.dones^
-        self.rewards = take.rewards^
-        self.rng = take.rng
+    def __init__(out self, *, deinit move: Self):
+        self.pos = move.pos
+        self.size = move.size
+        self.frames = move.frames^
+        self.actions = move.actions^
+        self.dones = move.dones^
+        self.rewards = move.rewards^
+        self.rng = move.rng
 
     @always_inline
     def _u64(mut self) -> UInt64:

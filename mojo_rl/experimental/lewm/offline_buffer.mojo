@@ -67,9 +67,9 @@ struct OfflineWindowBuffer[IMG_DIM: Int, ACT: Int, T: Int](
         comptime assert C * FH * FW == Self.IMG_DIM, (
             "set_frame_u8_hwc: C·FH·FW must equal IMG_DIM"
         )
-        var dst = self.frames.unsafe_ptr() + (
-            traj * self.traj_len + t
-        ) * Self.IMG_DIM
+        var dst = self.frames.unsafe_ptr().unsafe_offset(
+            (traj * self.traj_len + t) * Self.IMG_DIM
+        )
         u8_hwc_to_chw_norm["cpu", C, FH, FW, 1](hwc, dst)
 
     def _next(mut self) -> UInt64:

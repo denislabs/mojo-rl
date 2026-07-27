@@ -114,6 +114,18 @@ bool test_haptic(SDL_Joystick *joystick)
 Note that the SDL haptic subsystem is not thread-safe.
 """
 
+from . import (
+    _get_dylib_function,
+    ArrayHelper,
+    c_char,
+    c_float,
+    c_int,
+    lib,
+    Ptr,
+)
+from .sdl_error import get_error
+from .sdl_joystick import Joystick
+
 
 @fieldwise_init
 struct Haptic(ImplicitlyCopyable, Movable):

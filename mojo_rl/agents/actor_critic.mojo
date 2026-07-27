@@ -127,16 +127,16 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         self.theta = copy.theta.copy()
         self.critic_weights = copy.critic_weights.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.num_actions = take.num_actions
-        self.num_tiles = take.num_tiles
-        self.num_tilings = take.num_tilings
-        self.actor_lr = take.actor_lr
-        self.critic_lr = take.critic_lr
-        self.discount_factor = take.discount_factor
-        self.entropy_coef = take.entropy_coef
-        self.theta = take.theta^
-        self.critic_weights = take.critic_weights^
+    def __init__(out self, *, deinit move: Self):
+        self.num_actions = move.num_actions
+        self.num_tiles = move.num_tiles
+        self.num_tilings = move.num_tilings
+        self.actor_lr = move.actor_lr
+        self.critic_lr = move.critic_lr
+        self.discount_factor = move.discount_factor
+        self.entropy_coef = move.entropy_coef
+        self.theta = move.theta^
+        self.critic_weights = move.critic_weights^
 
     def _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences (logits).
@@ -526,19 +526,19 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
             self.critic_weights.append(copy.critic_weights[t])
             self.critic_traces.append(0.0)
 
-    def __init__(out self, *, deinit take: Self):
-        self.num_actions = take.num_actions
-        self.num_tiles = take.num_tiles
-        self.num_tilings = take.num_tilings
-        self.actor_lr = take.actor_lr
-        self.critic_lr = take.critic_lr
-        self.discount_factor = take.discount_factor
-        self.lambda_ = take.lambda_
-        self.entropy_coef = take.entropy_coef
-        self.theta = take.theta^
-        self.actor_traces = take.actor_traces^
-        self.critic_weights = take.critic_weights^
-        self.critic_traces = take.critic_traces^
+    def __init__(out self, *, deinit move: Self):
+        self.num_actions = move.num_actions
+        self.num_tiles = move.num_tiles
+        self.num_tilings = move.num_tilings
+        self.actor_lr = move.actor_lr
+        self.critic_lr = move.critic_lr
+        self.discount_factor = move.discount_factor
+        self.lambda_ = move.lambda_
+        self.entropy_coef = move.entropy_coef
+        self.theta = move.theta^
+        self.actor_traces = move.actor_traces^
+        self.critic_weights = move.critic_weights^
+        self.critic_traces = move.critic_traces^
 
     def _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences."""
@@ -956,20 +956,20 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_actions = List[Int]()
         self.buffer_rewards = List[Float64]()
 
-    def __init__(out self, *, deinit take: Self):
-        self.num_actions = take.num_actions
-        self.num_tiles = take.num_tiles
-        self.num_tilings = take.num_tilings
-        self.actor_lr = take.actor_lr
-        self.critic_lr = take.critic_lr
-        self.discount_factor = take.discount_factor
-        self.n_steps = take.n_steps
-        self.entropy_coef = take.entropy_coef
-        self.theta = take.theta^
-        self.critic_weights = take.critic_weights^
-        self.buffer_tiles = take.buffer_tiles^
-        self.buffer_actions = take.buffer_actions^
-        self.buffer_rewards = take.buffer_rewards^
+    def __init__(out self, *, deinit move: Self):
+        self.num_actions = move.num_actions
+        self.num_tiles = move.num_tiles
+        self.num_tilings = move.num_tilings
+        self.actor_lr = move.actor_lr
+        self.critic_lr = move.critic_lr
+        self.discount_factor = move.discount_factor
+        self.n_steps = move.n_steps
+        self.entropy_coef = move.entropy_coef
+        self.theta = move.theta^
+        self.critic_weights = move.critic_weights^
+        self.buffer_tiles = move.buffer_tiles^
+        self.buffer_actions = move.buffer_actions^
+        self.buffer_rewards = move.buffer_rewards^
 
     def _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences."""

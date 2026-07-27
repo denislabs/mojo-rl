@@ -60,20 +60,20 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         self.t = copy.t
         self.T = copy.T
 
-    def __init__(out self, *, deinit take: Self):
-        self.q_table = take.q_table^
-        self.learning_rate = take.learning_rate
-        self.discount_factor = take.discount_factor
-        self.epsilon = take.epsilon
-        self.epsilon_decay = take.epsilon_decay
-        self.epsilon_min = take.epsilon_min
-        self.num_actions = take.num_actions
-        self.n = take.n
-        self.states = take.states^
-        self.actions = take.actions^
-        self.rewards = take.rewards^
-        self.t = take.t
-        self.T = take.T
+    def __init__(out self, *, deinit move: Self):
+        self.q_table = move.q_table^
+        self.learning_rate = move.learning_rate
+        self.discount_factor = move.discount_factor
+        self.epsilon = move.epsilon
+        self.epsilon_decay = move.epsilon_decay
+        self.epsilon_min = move.epsilon_min
+        self.num_actions = move.num_actions
+        self.n = move.n
+        self.states = move.states^
+        self.actions = move.actions^
+        self.rewards = move.rewards^
+        self.t = move.t
+        self.T = move.T
 
     def __init__(
         out self,

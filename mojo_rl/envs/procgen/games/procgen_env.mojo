@@ -79,7 +79,7 @@ trait ProcgenGame(Copyable, Movable, ImplicitlyDeletable):
     def pg_render_obs_train(
         self, assets: Self.AssetsT, res: Int, ss: Int
     ) -> List[UInt8]:
-        """res×res×3 RGB observation with `ss`× supersampling."""
+        """`res×res×3` RGB observation with `ss`× supersampling."""
         ...
 
     def pg_render(self, assets: Self.AssetsT, res: Int) -> List[UInt8]:

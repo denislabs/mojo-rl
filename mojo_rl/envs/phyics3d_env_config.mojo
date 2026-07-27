@@ -304,12 +304,11 @@ trait Phyics3dEnvConfig:
         qpos[obs_qpos_skip:] + qvel[:] extraction.
 
         Args:
-            states: Full GPU state buffer.
+            qpos: Generalized positions, [BATCH_SIZE, NQ].
+            qvel: Generalized velocities, [BATCH_SIZE, NV].
+            xpos: Body world positions, [BATCH_SIZE, NBODY * 3].
             obs: Output observation buffer to write into.
             env: Environment index.
-            qpos_off: Offset to qpos in state buffer.
-            qvel_off: Offset to qvel in state buffer.
-            xpos_off: Offset to xpos (body world positions) in state buffer.
 
         Returns:
             True if custom extraction was performed (skip model default).

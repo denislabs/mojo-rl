@@ -25,7 +25,7 @@ def load_stl(path: String) raises -> MeshData:
     var raw_ptr = content.unsafe_ptr()
 
     # Parse number of triangles at offset 80
-    var num_triangles = Int((raw_ptr + 80).bitcast[UInt32]()[])
+    var num_triangles = Int((raw_ptr.unsafe_offset(80)).unsafe_bitcast[UInt32]()[])
 
     # Validate file size
     var expected_size = 84 + 50 * num_triangles
@@ -52,16 +52,16 @@ def load_stl(path: String) raises -> MeshData:
 
     var offset = 84
     for tri in range(num_triangles):
-        var np = (raw_ptr + offset).bitcast[Float32]()
-        var nx = np[0]
-        var ny = np[1]
-        var nz = np[2]
+        var np = (raw_ptr.unsafe_offset(offset)).unsafe_bitcast[Float32]()
+        var nx = np[unsafe_offset=0]
+        var ny = np[unsafe_offset=1]
+        var nz = np[unsafe_offset=2]
 
         for v in range(3):
-            var vp = (raw_ptr + offset + 12 + v * 12).bitcast[Float32]()
-            var px = vp[0]
-            var py = vp[1]
-            var pz = vp[2]
+            var vp = (raw_ptr.unsafe_offset(offset + 12 + v * 12)).unsafe_bitcast[Float32]()
+            var px = vp[unsafe_offset=0]
+            var py = vp[unsafe_offset=1]
+            var pz = vp[unsafe_offset=2]
 
             if px < min_x:
                 min_x = px

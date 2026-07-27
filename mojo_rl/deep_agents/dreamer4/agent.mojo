@@ -423,7 +423,7 @@ struct Dreamer4Agent[
     # whole-struct borrow aliasing them. CPU-only host world-model path.
     @staticmethod
     def _head_fwd[M: Module, NB: Int](
-        mut m: M, read inp: List[Scalar[DT]], mut out: List[Scalar[DT]]
+        mut m: M, imm inp: List[Scalar[DT]], mut out: List[Scalar[DT]]
     ) raises:
         comptime IN = M.IN_DIMS[0]
         comptime OUT = M.OUT_DIM
@@ -437,7 +437,7 @@ struct Dreamer4Agent[
 
     @staticmethod
     def _head_vjp[M: Module, NB: Int](
-        mut m: M, read fin: List[Scalar[DT]], read go: List[Scalar[DT]]
+        mut m: M, imm fin: List[Scalar[DT]], imm go: List[Scalar[DT]]
     ) raises:
         # grad wrt input discarded (heads-only imagination training).
         comptime IN = M.IN_DIMS[0]
@@ -455,7 +455,7 @@ struct Dreamer4Agent[
 
     @staticmethod
     def _dyn_fwd[NB: Int](
-        mut dyn: Self.DYN, read inp: List[Scalar[DT]], mut out: List[Scalar[DT]]
+        mut dyn: Self.DYN, imm inp: List[Scalar[DT]], mut out: List[Scalar[DT]]
     ) raises:
         comptime ND = Self.ND
         var in_t = Tensor.alloc(NB * ND)
@@ -468,7 +468,7 @@ struct Dreamer4Agent[
 
     @staticmethod
     def _dyn_vjp[NB: Int](
-        mut dyn: Self.DYN, read fin: List[Scalar[DT]], read go: List[Scalar[DT]]
+        mut dyn: Self.DYN, imm fin: List[Scalar[DT]], imm go: List[Scalar[DT]]
     ) raises:
         # forward_input = `fin` (the input of the preceding dyn forward, so the
         # spatial-proj grad recomputes correctly); dyn reuses the grid/tf_out/
@@ -487,7 +487,7 @@ struct Dreamer4Agent[
 
     @staticmethod
     def _dyn_fwd_gpu[NB: Int](
-        mut dyn: Self.DYN, read inp: List[Scalar[DT]], mut out: List[Scalar[DT]],
+        mut dyn: Self.DYN, imm inp: List[Scalar[DT]], mut out: List[Scalar[DT]],
         c: DeviceContext,
     ) raises:
         # GPU sibling of _dyn_fwd: upload input → device forward → download the
@@ -506,7 +506,7 @@ struct Dreamer4Agent[
 
     @staticmethod
     def _dyn_vjp_gpu[NB: Int](
-        mut dyn: Self.DYN, read fin: List[Scalar[DT]], read go: List[Scalar[DT]],
+        mut dyn: Self.DYN, imm fin: List[Scalar[DT]], imm go: List[Scalar[DT]],
         c: DeviceContext,
     ) raises:
         # GPU sibling of _dyn_vjp: forward_input `fin` + grad_output `go` uploaded

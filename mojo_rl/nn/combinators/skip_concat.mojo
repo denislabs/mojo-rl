@@ -163,10 +163,10 @@ struct SkipConcat[Inner: Module](Module):
             comptime W = CPU_SIMD_W
             var k = 0
             while k + W <= NIN:
-                gp.store(k, pp.load[width=W](k) + ip.load[width=W](k))
+                gp.unsafe_store(k, pp.unsafe_load[width=W](k) + ip.unsafe_load[width=W](k))
                 k += W
             while k < NIN:
-                gp[k] = pp[k] + ip[k]
+                gp[unsafe_offset=k] = pp[unsafe_offset=k] + ip[unsafe_offset=k]
                 k += 1
         else:
             var c = ctx.value()

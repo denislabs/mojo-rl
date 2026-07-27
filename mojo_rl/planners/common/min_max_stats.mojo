@@ -31,9 +31,9 @@ struct MinMaxStats(ImplicitlyCopyable, Movable):
         self.minimum = copy.minimum
         self.maximum = copy.maximum
 
-    def __init__(out self, *, deinit take: Self):
-        self.minimum = take.minimum
-        self.maximum = take.maximum
+    def __init__(out self, *, deinit move: Self):
+        self.minimum = move.minimum
+        self.maximum = move.maximum
 
     def update(mut self, value: Float64):
         if value < self.minimum:

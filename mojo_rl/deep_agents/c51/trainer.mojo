@@ -692,7 +692,7 @@ struct C51Trainer[
                 self._ensure_action_scratch[N_ENVS]()
                 var act_h = self._act_host.unsafe_ptr()
                 for i in range(N_ENVS):
-                    act_h[i] = Scalar[DT](Int(random_float64() * Float64(NA)))
+                    act_h[unsafe_offset=i] = Scalar[DT](Int(random_float64() * Float64(NA)))
                 var action_dev = DeviceBuffer[DT](
                     c, action_ptr, N_ENVS, owning=False,
                 )
@@ -717,9 +717,9 @@ struct C51Trainer[
             for i in range(N_ENVS):
                 var r = random_float64()
                 if r < Float64(self.epsilon):
-                    act_h[i] = Scalar[DT](Int(random_float64() * Float64(NA)))
+                    act_h[unsafe_offset=i] = Scalar[DT](Int(random_float64() * Float64(NA)))
                 else:
-                    act_h[i] = Scalar[DT](self._expected_q_argmax(i * NK))
+                    act_h[unsafe_offset=i] = Scalar[DT](self._expected_q_argmax(i * NK))
             var action_dev = DeviceBuffer[DT](
                 c, action_ptr, N_ENVS, owning=False,
             )
@@ -750,7 +750,7 @@ struct C51Trainer[
             var c = self.ctx.value()
             var act_h = self._act_host.unsafe_ptr()
             for i in range(N_ENVS):
-                act_h[i] = Scalar[DT](self._expected_q_argmax(i * NK))
+                act_h[unsafe_offset=i] = Scalar[DT](self._expected_q_argmax(i * NK))
             var action_dev = DeviceBuffer[DT](
                 c, action_ptr, N_ENVS, owning=False,
             )

@@ -236,6 +236,31 @@ def _scale_kernel(
         buf[i] = buf[i] * s
 
 
+def _gpt_scale_weight[target: StaticString, N: Int](
+    mut w: Tensor, s: Scalar[DT], ctx: Optional[DeviceContext]
+) raises:
+    """Scale one `[N]` weight slab in place by `s` (CPU loop or GPU kernel).
+
+    Takes the weight by `mut` so the caller can pass an interior reference
+    inline — the reference lives only for the duration of this call, which is
+    what keeps two such slabs from being borrowed simultaneously.
+
+    Args:
+        w: Weight storage cell to scale in place.
+        s: Scale factor.
+        ctx: Device context; required when `target` is not "cpu".
+    """
+    comptime if target == "cpu":
+        for i in range(N):
+            w.data[i] = w.data[i] * s
+    else:
+        var c = ctx.value()
+        c.enqueue_function[_scale_kernel](
+            w.dev.value(), N, s,
+            grid_dim=(N + TPB - 1) // TPB, block_dim=TPB,
+        )
+
+
 def gpt_scale_residual_proj[
     target: StaticString,
     vocab: Int,
@@ -262,34 +287,27 @@ def gpt_scale_residual_proj[
     var s = Scalar[DT](1.0 / sqrt(Float64(2 * n_layers)))
     comptime DD = embed_dim * embed_dim  # attn-out Linear[D, D]
     comptime FD = (ff_mult * embed_dim) * embed_dim  # FFN-out  Linear[F, D]
+    # Each weight is scaled through its own call so that only ONE interior
+    # reference into `net` is live at a time: nightly invalidates an interior
+    # `ref` as soon as a second one is formed from the same root, which the
+    # previous "bind a_w and f_w, then use both" shape tripped over.
     for L in range(n_layers):
         # attn-out c_proj: block.children[0] (Residual) .inner.children[1]
         # (MHADrop) .children[3] (Tok[Lin d,d]) .inner.weight
-        ref a_w = (
+        _gpt_scale_weight[target, DD](
             net.children[3].children[L].children[0]
-            .inner.children[1].children[3].inner.weight.val
+            .inner.children[1].children[3].inner.weight.val,
+            s,
+            ctx,
         )
         # FFN-out c_proj: block.children[1] (Residual) .inner.children[1]
         # (FFNDrop) .children[2] (Tok[Lin ff,d]) .inner.weight
-        ref f_w = (
+        _gpt_scale_weight[target, FD](
             net.children[3].children[L].children[1]
-            .inner.children[1].children[2].inner.weight.val
+            .inner.children[1].children[2].inner.weight.val,
+            s,
+            ctx,
         )
-        comptime if target == "cpu":
-            for i in range(DD):
-                a_w.data[i] = a_w.data[i] * s
-            for i in range(FD):
-                f_w.data[i] = f_w.data[i] * s
-        else:
-            var c = ctx.value()
-            ctx.value().enqueue_function[_scale_kernel](
-                a_w.dev.value(), DD, s,
-                grid_dim=(DD + TPB - 1) // TPB, block_dim=TPB,
-            )
-            c.enqueue_function[_scale_kernel](
-                f_w.dev.value(), FD, s,
-                grid_dim=(FD + TPB - 1) // TPB, block_dim=TPB,
-            )
 
 
 def gpt_wire_tie[

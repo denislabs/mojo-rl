@@ -73,16 +73,16 @@ struct AtariEnvironment(Movable):
         self.paddles = paddles
         self.natural_terminal = False
 
-    def __init__(out self, *, deinit take: Self):
-        self.state = take.state^
-        self.rom = take.rom
-        self.rom_size = take.rom_size
-        self.frame_skip = take.frame_skip
-        self.max_frames = take.max_frames
-        self.mapper = take.mapper
-        self.swap_ports = take.swap_ports
-        self.paddles = take.paddles
-        self.natural_terminal = take.natural_terminal
+    def __init__(out self, *, deinit move: Self):
+        self.state = move.state^
+        self.rom = move.rom
+        self.rom_size = move.rom_size
+        self.frame_skip = move.frame_skip
+        self.max_frames = move.max_frames
+        self.mapper = move.mapper
+        self.swap_ports = move.swap_ports
+        self.paddles = move.paddles
+        self.natural_terminal = move.natural_terminal
 
     def reset(mut self):
         """Reset the environment to initial state."""
@@ -321,9 +321,9 @@ struct RomData(Movable):
         self.data = None
         self.size = 0
 
-    def __init__(out self, *, deinit take: Self):
-        self.data = take.data
-        self.size = take.size
+    def __init__(out self, *, deinit move: Self):
+        self.data = move.data
+        self.size = move.size
 
 
 def load_rom(path: String) raises -> RomData:

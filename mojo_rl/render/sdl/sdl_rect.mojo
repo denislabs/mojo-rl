@@ -27,6 +27,9 @@ Some helper functions for managing rectangles and 2D points, in both
 integer and floating point versions.
 """
 
+from . import _get_dylib_function, c_float, c_int, lib, Ptr
+from .sdl_error import get_error
+
 
 @fieldwise_init
 struct Point(ImplicitlyCopyable, Movable):

@@ -661,12 +661,12 @@ struct PhysicsStateOwned[
         self.contact_counts = List[Scalar[dtype]](capacity=1)
         self.contact_counts.append(copy.contact_counts[0])
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self.state = take.state^
-        self.shapes = take.shapes^
-        self.contacts = take.contacts^
-        self.contact_counts = take.contact_counts^
+        self.state = move.state^
+        self.shapes = move.shapes^
+        self.contacts = move.contacts^
+        self.contact_counts = move.contact_counts^
 
     # =========================================================================
     # Tensor Views

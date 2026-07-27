@@ -111,10 +111,10 @@ struct GatherActionSlice[NA_: Int, K_: Int](Module):
             var v_p = values.data.unsafe_ptr()
             var i_p = idx.data.unsafe_ptr()
             for b in range(B):
-                var a = Int(i_p[b])
+                var a = Int(i_p[unsafe_offset=b])
                 var base = a * Self.K_
                 for k in range(Self.K_):
-                    out.data[b * Self.K_ + k] = v_p[b * Self.NA_ * Self.K_ + base + k]
+                    out.data[b * Self.K_ + k] = v_p[unsafe_offset=b * Self.NA_ * Self.K_ + base + k]
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.K_)

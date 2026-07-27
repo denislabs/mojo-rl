@@ -46,17 +46,17 @@ struct VideoRecorder(Movable):
         self._ctypes = None
         self._channel_idx = None
 
-    def __init__(out self, *, deinit take: Self):
-        self.is_recording = take.is_recording
-        self.frame_count = take.frame_count
-        self.fps = take.fps
-        self.filename = take.filename^
-        self.skip = take.skip
-        self._skip_counter = take._skip_counter
-        self._writer = take._writer^
-        self._np = take._np^
-        self._ctypes = take._ctypes^
-        self._channel_idx = take._channel_idx^
+    def __init__(out self, *, deinit move: Self):
+        self.is_recording = move.is_recording
+        self.frame_count = move.frame_count
+        self.fps = move.fps
+        self.filename = move.filename^
+        self.skip = move.skip
+        self._skip_counter = move._skip_counter
+        self._writer = move._writer^
+        self._np = move._np^
+        self._ctypes = move._ctypes^
+        self._channel_idx = move._channel_idx^
 
     def start(
         mut self, filename: String, fps: Int = 30, skip: Int = 1

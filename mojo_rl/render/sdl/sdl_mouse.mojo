@@ -55,6 +55,11 @@ care about touch/pen separately from mouse input should filter out events
 with a `which` field of SDL_TOUCH_MOUSEID/SDL_PEN_MOUSEID.
 """
 
+from . import _get_dylib_function, c_char, c_float, c_int, lib, Ptr
+from .sdl_error import get_error
+from .sdl_surface import Surface
+from .sdl_video import Window
+
 
 struct MouseID(Intable, TrivialRegisterPassable):
     """This is a unique ID for a mouse for the time it is connected to the system,

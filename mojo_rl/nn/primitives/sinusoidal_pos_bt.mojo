@@ -105,7 +105,7 @@ struct SinusoidalPosAddBT[
             for bt in range(B):
                 var t = bt % Self.T_
                 for i in range(Self.SD):
-                    out_t[bt, i] = inp[bt, i] + bp[t * Self.SD + i]
+                    out_t[bt, i] = inp[bt, i] + bp[unsafe_offset=t * Self.SD + i]
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.SD)

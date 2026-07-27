@@ -47,6 +47,10 @@ provide a _lot_ of information should look at the more-detailed
 SDL_SetAppMetadataProperty().
 """
 
+from . import _get_dylib_function, c_char, c_int, lib, Ptr
+from .sdl_error import get_error
+from .sdl_events import Event
+
 
 struct InitFlags(Intable, TrivialRegisterPassable):
     """Initialization flags for SDL_Init and/or SDL_InitSubSystem.
@@ -472,9 +476,9 @@ def set_app_metadata(
         lib,
         "SDL_SetAppMetadata",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(appname))],
-            Ptr[c_char, ImmutOrigin(origin_of(appversion))],
-            Ptr[c_char, ImmutOrigin(origin_of(appidentifier))],
+            Ptr[c_char, ImmOrigin(origin_of(appname))],
+            Ptr[c_char, ImmOrigin(origin_of(appversion))],
+            Ptr[c_char, ImmOrigin(origin_of(appidentifier))],
         ) thin -> Bool,
     ]()(
         appname.as_c_string_slice().unsafe_ptr(),
@@ -552,8 +556,8 @@ def set_app_metadata_property(var name: String, var value: String) raises:
         lib,
         "SDL_SetAppMetadataProperty",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(name))],
-            Ptr[c_char, ImmutOrigin(origin_of(value))],
+            Ptr[c_char, ImmOrigin(origin_of(name))],
+            Ptr[c_char, ImmOrigin(origin_of(value))],
         ) thin -> Bool,
     ]()(
         name.as_c_string_slice().unsafe_ptr(),
@@ -591,5 +595,5 @@ def get_app_metadata_property(
     return _get_dylib_function[
         lib,
         "SDL_GetAppMetadataProperty",
-        def(Ptr[c_char, ImmutOrigin(origin_of(name))]) thin -> Ptr[c_char, ImmutAnyOrigin],
+        def(Ptr[c_char, ImmOrigin(origin_of(name))]) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(name.as_c_string_slice().unsafe_ptr())

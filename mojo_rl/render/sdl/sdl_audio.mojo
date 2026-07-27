@@ -126,6 +126,19 @@ SDL_AudioStream can also be provided channel maps to change this ordering
 to whatever is necessary, in other audio processing scenarios.
 """
 
+from . import (
+    _get_dylib_function,
+    c_char,
+    c_float,
+    c_int,
+    is_little_endian,
+    lib,
+    Ptr,
+)
+from .sdl_error import get_error
+from .sdl_iostream import IOStream
+from .sdl_properties import PropertiesID
+
 
 struct AudioFormat(Indexer, Intable, TrivialRegisterPassable):
     """Audio format.
@@ -2491,7 +2504,7 @@ def load_wav(
         lib,
         "SDL_LoadWAV",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[c_char, ImmOrigin(origin_of(path))],
             Ptr[AudioSpec, MutAnyOrigin],
             Ptr[Ptr[UInt8, MutAnyOrigin], MutAnyOrigin],
             Ptr[UInt32, MutAnyOrigin],
@@ -2643,17 +2656,17 @@ def get_audio_format_name(
 
 
 def get_silence_value_for_format(format: AudioFormat) raises -> c_int:
-    """Get the appropriate memset value for silencing an audio format.
+    """Get the appropriate unsafe_memset value for silencing an audio format.
 
     The value returned by this function can be used as the second argument to
-    memset (or SDL_memset) to set an audio buffer in a specific format to
+    unsafe_memset (or SDL_memset) to set an audio buffer in a specific format to
     silence.
 
     Args:
         format: The audio data format to query.
 
     Returns:
-        A byte value that can be passed to memset.
+        A byte value that can be passed to unsafe_memset.
 
     Safety:
         It is safe to call this function from any thread.

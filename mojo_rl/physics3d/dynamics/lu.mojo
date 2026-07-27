@@ -292,7 +292,7 @@ def lu_solve[
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
-    """qacc_ws = A^-1 fnet via LU factors in L + pivots in D, both targets."""
+    """`qacc_ws = A^-1 fnet` via LU factors in L + pivots in D, both targets."""
     comptime L_M = Layout.row_major(BATCH, NV * NV)
     comptime L_NV = Layout.row_major(BATCH, NV)
 

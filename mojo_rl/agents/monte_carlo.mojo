@@ -42,18 +42,18 @@ struct MonteCarloAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         self.episode_actions = copy.episode_actions.copy()
         self.episode_rewards = copy.episode_rewards.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.q_table = take.q_table^
-        self.returns_sum = take.returns_sum^
-        self.returns_count = take.returns_count^
-        self.discount_factor = take.discount_factor
-        self.epsilon = take.epsilon
-        self.epsilon_decay = take.epsilon_decay
-        self.epsilon_min = take.epsilon_min
-        self.num_actions = take.num_actions
-        self.episode_states = take.episode_states^
-        self.episode_actions = take.episode_actions^
-        self.episode_rewards = take.episode_rewards^
+    def __init__(out self, *, deinit move: Self):
+        self.q_table = move.q_table^
+        self.returns_sum = move.returns_sum^
+        self.returns_count = move.returns_count^
+        self.discount_factor = move.discount_factor
+        self.epsilon = move.epsilon
+        self.epsilon_decay = move.epsilon_decay
+        self.epsilon_min = move.epsilon_min
+        self.num_actions = move.num_actions
+        self.episode_states = move.episode_states^
+        self.episode_actions = move.episode_actions^
+        self.episode_rewards = move.episode_rewards^
 
     def __init__(
         out self,

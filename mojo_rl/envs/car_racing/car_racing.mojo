@@ -238,22 +238,22 @@ struct CarRacing[DTYPE: DType](
         self._renderer = None
         self._renderer_initialized = False
 
-    def __init__(out self, *, deinit take: Self):
-        self.track = take.track^
-        self.state_buffer = take.state_buffer^
-        self.tiles_buffer = take.tiles_buffer^
-        self.step_count = take.step_count
-        self.total_reward = take.total_reward
-        self.done = take.done
-        self.truncated = take.truncated
-        self.tiles_visited = take.tiles_visited
-        self.max_steps = take.max_steps
-        self.lap_complete_percent = take.lap_complete_percent
-        self.domain_randomize = take.domain_randomize
-        self.cached_state = take.cached_state^
+    def __init__(out self, *, deinit move: Self):
+        self.track = move.track^
+        self.state_buffer = move.state_buffer^
+        self.tiles_buffer = move.tiles_buffer^
+        self.step_count = move.step_count
+        self.total_reward = move.total_reward
+        self.done = move.done
+        self.truncated = move.truncated
+        self.tiles_visited = move.tiles_visited
+        self.max_steps = move.max_steps
+        self.lap_complete_percent = move.lap_complete_percent
+        self.domain_randomize = move.domain_randomize
+        self.cached_state = move.cached_state^
         # Transfer renderer ownership
-        self._renderer = take._renderer
-        self._renderer_initialized = take._renderer_initialized
+        self._renderer = move._renderer
+        self._renderer_initialized = move._renderer_initialized
 
     # =========================================================================
     # Env Trait Methods
@@ -682,7 +682,7 @@ struct CarRacing[DTYPE: DType](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.value().init_pointee_move(Renderer2D())
+        self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True
 

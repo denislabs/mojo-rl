@@ -24,8 +24,8 @@ struct BipedalWalkerAction[DTYPE: DType](
         self.hip2 = copy.hip2
         self.knee2 = copy.knee2
 
-    def __init__(out self, *, deinit take: Self):
-        self.hip1 = take.hip1
-        self.knee1 = take.knee1
-        self.hip2 = take.hip2
-        self.knee2 = take.knee2
+    def __init__(out self, *, deinit move: Self):
+        self.hip1 = move.hip1
+        self.knee1 = move.knee1
+        self.hip2 = move.hip2
+        self.knee2 = move.knee2

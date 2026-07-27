@@ -367,7 +367,7 @@ struct Phyics3dEnv[
         )
         renderer.init()
 
-        self._renderer.value().init_pointee_move(renderer^)
+        self._renderer.value().unsafe_write(renderer^)
         self._renderer_initialized = True
         return True
 

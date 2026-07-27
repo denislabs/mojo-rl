@@ -210,27 +210,27 @@ struct SACAgent(Copyable, Movable):
             self.critic2_weights.append(copy.critic2_weights[i])
             self.target_critic2_weights.append(copy.target_critic2_weights[i])
 
-    def __init__(out self, *, deinit take: Self):
-        self.num_state_features = take.num_state_features
-        self.num_critic_features = take.num_critic_features
-        self.actor_lr = take.actor_lr
-        self.critic_lr = take.critic_lr
-        self.discount_factor = take.discount_factor
-        self.tau = take.tau
-        self.action_scale = take.action_scale
-        self.alpha = take.alpha
-        self.auto_alpha = take.auto_alpha
-        self.alpha_lr = take.alpha_lr
-        self.target_entropy = take.target_entropy
-        self.log_alpha = take.log_alpha
-        self.log_std_min = take.log_std_min
-        self.log_std_max = take.log_std_max
-        self.actor_mean_weights = take.actor_mean_weights^
-        self.actor_logstd_weights = take.actor_logstd_weights^
-        self.critic1_weights = take.critic1_weights^
-        self.target_critic1_weights = take.target_critic1_weights^
-        self.critic2_weights = take.critic2_weights^
-        self.target_critic2_weights = take.target_critic2_weights^
+    def __init__(out self, *, deinit move: Self):
+        self.num_state_features = move.num_state_features
+        self.num_critic_features = move.num_critic_features
+        self.actor_lr = move.actor_lr
+        self.critic_lr = move.critic_lr
+        self.discount_factor = move.discount_factor
+        self.tau = move.tau
+        self.action_scale = move.action_scale
+        self.alpha = move.alpha
+        self.auto_alpha = move.auto_alpha
+        self.alpha_lr = move.alpha_lr
+        self.target_entropy = move.target_entropy
+        self.log_alpha = move.log_alpha
+        self.log_std_min = move.log_std_min
+        self.log_std_max = move.log_std_max
+        self.actor_mean_weights = move.actor_mean_weights^
+        self.actor_logstd_weights = move.actor_logstd_weights^
+        self.critic1_weights = move.critic1_weights^
+        self.target_critic1_weights = move.target_critic1_weights^
+        self.critic2_weights = move.critic2_weights^
+        self.target_critic2_weights = move.target_critic2_weights^
 
     # ========================================================================
     # Actor (Stochastic Policy) Methods

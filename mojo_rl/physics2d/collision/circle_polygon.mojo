@@ -413,11 +413,11 @@ struct CirclePolygonCollision(ImplicitlyCopyable):
         self.circle_body_idx = copy.circle_body_idx
         self.poly_body_idx = copy.poly_body_idx
 
-    def __init__(out self, *, deinit take: Self):
-        self.circle_body_off = take.circle_body_off
-        self.poly_body_off = take.poly_body_off
-        self.circle_body_idx = take.circle_body_idx
-        self.poly_body_idx = take.poly_body_idx
+    def __init__(out self, *, deinit move: Self):
+        self.circle_body_off = move.circle_body_off
+        self.poly_body_off = move.poly_body_off
+        self.circle_body_idx = move.circle_body_idx
+        self.poly_body_idx = move.poly_body_idx
 
     # CPU detection — appends contacts for each env (does not reset counts).
     def detect[

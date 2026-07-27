@@ -159,8 +159,8 @@ struct AcrobotState(Copyable, ImplicitlyCopyable, Movable, State):
     def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    def __init__(out self, *, deinit take: Self):
-        self.index = take.index
+    def __init__(out self, *, deinit move: Self):
+        self.index = move.index
 
     def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
@@ -175,8 +175,8 @@ struct AcrobotAction(Action, Copyable, ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.torque_idx = copy.torque_idx
 
-    def __init__(out self, *, deinit take: Self):
-        self.torque_idx = take.torque_idx
+    def __init__(out self, *, deinit move: Self):
+        self.torque_idx = move.torque_idx
 
     @staticmethod
     def negative() -> Self:
@@ -371,35 +371,35 @@ struct AcrobotEnv[DTYPE: DType](
         self._renderer = None
         self._renderer_initialized = False
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move-init — required for `Movable` conformance, used by
-        `UnsafePointer.init_pointee_move(...)` in multi-env demos."""
-        self.gravity = take.gravity
-        self.link_length_1 = take.link_length_1
-        self.link_length_2 = take.link_length_2
-        self.link_mass_1 = take.link_mass_1
-        self.link_mass_2 = take.link_mass_2
-        self.link_com_pos_1 = take.link_com_pos_1
-        self.link_com_pos_2 = take.link_com_pos_2
-        self.link_moi = take.link_moi
-        self.max_vel_1 = take.max_vel_1
-        self.max_vel_2 = take.max_vel_2
-        self.avail_torque = take.avail_torque
-        self.torque_noise_max = take.torque_noise_max
-        self.dt = take.dt
-        self.theta1 = take.theta1
-        self.theta2 = take.theta2
-        self.theta1_dot = take.theta1_dot
-        self.theta2_dot = take.theta2_dot
-        self.steps = take.steps
-        self.max_steps = take.max_steps
-        self.done = take.done
-        self._last_terminated = take._last_terminated
-        self.total_reward = take.total_reward
-        self.num_bins = take.num_bins
-        self.use_book_dynamics = take.use_book_dynamics
-        self._renderer = take._renderer
-        self._renderer_initialized = take._renderer_initialized
+        `UnsafePointer.unsafe_write(...)` in multi-env demos."""
+        self.gravity = move.gravity
+        self.link_length_1 = move.link_length_1
+        self.link_length_2 = move.link_length_2
+        self.link_mass_1 = move.link_mass_1
+        self.link_mass_2 = move.link_mass_2
+        self.link_com_pos_1 = move.link_com_pos_1
+        self.link_com_pos_2 = move.link_com_pos_2
+        self.link_moi = move.link_moi
+        self.max_vel_1 = move.max_vel_1
+        self.max_vel_2 = move.max_vel_2
+        self.avail_torque = move.avail_torque
+        self.torque_noise_max = move.torque_noise_max
+        self.dt = move.dt
+        self.theta1 = move.theta1
+        self.theta2 = move.theta2
+        self.theta1_dot = move.theta1_dot
+        self.theta2_dot = move.theta2_dot
+        self.steps = move.steps
+        self.max_steps = move.max_steps
+        self.done = move.done
+        self._last_terminated = move._last_terminated
+        self.total_reward = move.total_reward
+        self.num_bins = move.num_bins
+        self.use_book_dynamics = move.use_book_dynamics
+        self._renderer = move._renderer
+        self._renderer_initialized = move._renderer_initialized
 
     # ========================================================================
     # DiscreteEnv trait methods
@@ -1019,7 +1019,7 @@ struct AcrobotEnv[DTYPE: DType](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.value().init_pointee_move(Renderer2D())
+        self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True
 

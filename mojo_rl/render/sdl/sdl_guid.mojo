@@ -29,6 +29,8 @@ identifiable by this value: "globally unique."
 SDL provides functions to convert a GUID to/from a string.
 """
 
+from . import _get_dylib_function, ArrayHelper, c_char, c_int, lib, Ptr
+
 
 @fieldwise_init
 struct GUID(ImplicitlyCopyable, Movable):
@@ -99,5 +101,5 @@ def string_to_guid(var pch_guid: String) raises -> GUID:
     return _get_dylib_function[
         lib,
         "SDL_StringToGUID",
-        def(Ptr[c_char, ImmutOrigin(origin_of(pch_guid))]) thin -> GUID,
+        def(Ptr[c_char, ImmOrigin(origin_of(pch_guid))]) thin -> GUID,
     ]()(pch_guid.as_c_string_slice().unsafe_ptr())

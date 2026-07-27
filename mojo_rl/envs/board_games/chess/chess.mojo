@@ -36,7 +36,7 @@ from mojo_rl.nn.core.ptr import untracked
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
-from std.memory import alloc, memset
+from std.memory import alloc, unsafe_memset
 from std.ffi import c_int, c_float
 from mojo_rl.core import (
     State,
@@ -265,10 +265,10 @@ struct Move(Copyable, ImplicitlyCopyable, Movable):
         self.to_sq = copy.to_sq
         self.promo = copy.promo
 
-    def __init__(out self, *, deinit take: Self):
-        self.from_sq = take.from_sq
-        self.to_sq = take.to_sq
-        self.promo = take.promo
+    def __init__(out self, *, deinit move: Self):
+        self.from_sq = move.from_sq
+        self.to_sq = move.to_sq
+        self.promo = move.promo
 
 
 # ============================================================================
@@ -1156,7 +1156,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.value().init_pointee_move(
+        self._renderer.value().unsafe_write(
             Renderer2D(width=536, height=586, fps=30, title="Chess")
         )
         self._renderer_initialized = True

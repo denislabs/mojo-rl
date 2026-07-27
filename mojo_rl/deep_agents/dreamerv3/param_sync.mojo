@@ -108,7 +108,7 @@ def apply_graph_params[
     target: StaticString, *DECLS: GraphDecl
 ](
     mut dst: ComputeGraph[*DECLS],
-    read snap: Dict[String, List[Scalar[DT]]],
+    imm snap: Dict[String, List[Scalar[DT]]],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Copy every shared-name param value from the snapshot into `dst` (skips

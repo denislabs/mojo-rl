@@ -108,11 +108,11 @@ struct TrackPoint[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
         self.x = copy.x
         self.y = copy.y
 
-    def __init__(out self, *, deinit take: Self):
-        self.alpha = take.alpha
-        self.beta = take.beta
-        self.x = take.x
-        self.y = take.y
+    def __init__(out self, *, deinit move: Self):
+        self.alpha = move.alpha
+        self.beta = move.beta
+        self.x = move.x
+        self.y = move.y
 
 
 # =============================================================================
@@ -142,10 +142,10 @@ struct Checkpoint[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
         self.x = copy.x
         self.y = copy.y
 
-    def __init__(out self, *, deinit take: Self):
-        self.alpha = take.alpha
-        self.x = take.x
-        self.y = take.y
+    def __init__(out self, *, deinit move: Self):
+        self.alpha = move.alpha
+        self.x = move.x
+        self.y = move.y
 
 
 struct TrackTile[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
@@ -205,21 +205,21 @@ struct TrackTile[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
         self.center_y = copy.center_y
         self.direction = copy.direction
 
-    def __init__(out self, *, deinit take: Self):
-        self.v0_x = take.v0_x
-        self.v0_y = take.v0_y
-        self.v1_x = take.v1_x
-        self.v1_y = take.v1_y
-        self.v2_x = take.v2_x
-        self.v2_y = take.v2_y
-        self.v3_x = take.v3_x
-        self.v3_y = take.v3_y
-        self.friction = take.friction
-        self.visited = take.visited
-        self.idx = take.idx
-        self.center_x = take.center_x
-        self.center_y = take.center_y
-        self.direction = take.direction
+    def __init__(out self, *, deinit move: Self):
+        self.v0_x = move.v0_x
+        self.v0_y = move.v0_y
+        self.v1_x = move.v1_x
+        self.v1_y = move.v1_y
+        self.v2_x = move.v2_x
+        self.v2_y = move.v2_y
+        self.v3_x = move.v3_x
+        self.v3_y = move.v3_y
+        self.friction = move.friction
+        self.visited = move.visited
+        self.idx = move.idx
+        self.center_x = move.center_x
+        self.center_y = move.center_y
+        self.direction = move.direction
 
     def to_buffer[
         MAX_TILES: Int
@@ -264,9 +264,9 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
         self.track = copy.track.copy()
         self.track_length = copy.track_length
 
-    def __init__(out self, *, deinit take: Self):
-        self.track = take.track^
-        self.track_length = take.track_length
+    def __init__(out self, *, deinit move: Self):
+        self.track = move.track^
+        self.track_length = move.track_length
 
     def generate_simple_track(mut self):
         """Generate a simple circular track.

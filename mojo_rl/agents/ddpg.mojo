@@ -197,24 +197,24 @@ struct DDPGAgent[DTYPE: DType](Copyable, Movable):
         for _ in range(self.num_critic_features):
             self._critic_features.append(0.0)
 
-    def __init__(out self, *, deinit take: Self):
-        self.num_state_features = take.num_state_features
-        self.num_critic_features = take.num_critic_features
-        self.actor_lr = take.actor_lr
-        self.critic_lr = take.critic_lr
-        self.discount_factor = take.discount_factor
-        self.tau = take.tau
-        self.noise_std = take.noise_std
-        self.noise_std_min = take.noise_std_min
-        self.noise_decay = take.noise_decay
-        self.action_scale = take.action_scale
-        self.reward_scale = take.reward_scale
-        self.updates_per_step = take.updates_per_step
-        self.actor_weights = take.actor_weights^
-        self.target_actor_weights = take.target_actor_weights^
-        self.critic_weights = take.critic_weights^
-        self.target_critic_weights = take.target_critic_weights^
-        self._critic_features = take._critic_features^
+    def __init__(out self, *, deinit move: Self):
+        self.num_state_features = move.num_state_features
+        self.num_critic_features = move.num_critic_features
+        self.actor_lr = move.actor_lr
+        self.critic_lr = move.critic_lr
+        self.discount_factor = move.discount_factor
+        self.tau = move.tau
+        self.noise_std = move.noise_std
+        self.noise_std_min = move.noise_std_min
+        self.noise_decay = move.noise_decay
+        self.action_scale = move.action_scale
+        self.reward_scale = move.reward_scale
+        self.updates_per_step = move.updates_per_step
+        self.actor_weights = move.actor_weights^
+        self.target_actor_weights = move.target_actor_weights^
+        self.critic_weights = move.critic_weights^
+        self.target_critic_weights = move.target_critic_weights^
+        self._critic_features = move._critic_features^
 
     # ========================================================================
     # Actor (Policy) Methods

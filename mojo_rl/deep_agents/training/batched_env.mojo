@@ -410,29 +410,29 @@ struct BatchedCpuDiscreteEnv[
 
         @parameter
         def reset_one(env_idx: Int):
-            if only_done and done_ptr[env_idx] <= Scalar[DT](0.5):
+            if only_done and done_ptr[unsafe_offset=env_idx] <= Scalar[DT](0.5):
                 return
-            var obs_list = envs_ptr[env_idx].reset_obs_list()
+            var obs_list = envs_ptr[unsafe_offset=env_idx].reset_obs_list()
             if noop_max > 0:
-                rc_ptr[env_idx] += 1
+                rc_ptr[unsafe_offset=env_idx] += 1
                 var k = Int(
                     _splitmix64(
                         rng_seed
                         ^ (UInt64(env_idx) * UInt64(0x9E3779B97F4A7C15))
-                        ^ (UInt64(rc_ptr[env_idx]) * UInt64(0xBF58476D1CE4E5B9))
+                        ^ (UInt64(rc_ptr[unsafe_offset=env_idx]) * UInt64(0xBF58476D1CE4E5B9))
                     )
                     % UInt64(noop_max + 1)
                 )
                 for _ in range(k):
-                    var res = envs_ptr[env_idx].step_obs(noop_action)
+                    var res = envs_ptr[unsafe_offset=env_idx].step_obs(noop_action)
                     if res[2]:
                         # Done during the no-op run (degenerate env) —
                         # re-reset and start the episode without no-ops.
-                        obs_list = envs_ptr[env_idx].reset_obs_list()
+                        obs_list = envs_ptr[unsafe_offset=env_idx].reset_obs_list()
                         break
                     obs_list = res[0].copy()
             for d in range(Self.OBS_DIM):
-                obs_ptr[env_idx * Self.OBS_DIM + d] = Scalar[DT](obs_list[d])
+                obs_ptr[unsafe_offset=env_idx * Self.OBS_DIM + d] = Scalar[DT](obs_list[d])
 
         parallelize[reset_one](Self.N_ENVS)
 
@@ -466,27 +466,27 @@ struct BatchedCpuDiscreteEnv[
                 # Allocation-free path: the env writes its obs lane in
                 # place (AtariEnv overrides `step_obs_into` to skip the
                 # 28K-element List the `step_obs` path materializes).
-                var res = envs_ptr[env_idx].step_obs_into(
-                    Int(action_ptr[env_idx]),
+                var res = envs_ptr[unsafe_offset=env_idx].step_obs_into(
+                    Int(action_ptr[unsafe_offset=env_idx]),
                     rebind[UnsafePointer[Scalar[Self.E.dtype], MutAnyOrigin]](
-                        obs_ptr + env_idx * Self.OBS_DIM
+                        obs_ptr.unsafe_offset(env_idx * Self.OBS_DIM)
                     ),
                 )
-                reward_ptr[env_idx] = rebind[Scalar[DT]](res[0])
-                done_ptr[env_idx] = Scalar[DT](1.0) if res[1] else Scalar[DT](
+                reward_ptr[unsafe_offset=env_idx] = rebind[Scalar[DT]](res[0])
+                done_ptr[unsafe_offset=env_idx] = Scalar[DT](1.0) if res[1] else Scalar[DT](
                     0.0
                 )
             else:
                 # Dtype-converting fallback (E.dtype != DT).
-                var res = envs_ptr[env_idx].step_obs(Int(action_ptr[env_idx]))
+                var res = envs_ptr[unsafe_offset=env_idx].step_obs(Int(action_ptr[unsafe_offset=env_idx]))
                 for d in range(Self.OBS_DIM):
-                    obs_ptr[env_idx * Self.OBS_DIM + d] = Scalar[DT](res[0][d])
-                reward_ptr[env_idx] = Scalar[DT](res[1])
-                done_ptr[env_idx] = Scalar[DT](1.0) if res[2] else Scalar[DT](
+                    obs_ptr[unsafe_offset=env_idx * Self.OBS_DIM + d] = Scalar[DT](res[0][d])
+                reward_ptr[unsafe_offset=env_idx] = Scalar[DT](res[1])
+                done_ptr[unsafe_offset=env_idx] = Scalar[DT](1.0) if res[2] else Scalar[DT](
                     0.0
                 )
-            term_ptr[env_idx] = Scalar[DT](1.0) if envs_ptr[
-                env_idx
+            term_ptr[unsafe_offset=env_idx] = Scalar[DT](1.0) if envs_ptr[
+                unsafe_offset=env_idx
             ].was_terminated() else Scalar[DT](0.0)
 
         parallelize[step_one](Self.N_ENVS)

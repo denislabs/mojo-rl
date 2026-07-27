@@ -7,6 +7,9 @@ Only the read-only subset is exposed since the LeWM PushT loader never
 writes. Property-list arguments are always passed as ``H5P_DEFAULT``.
 """
 
+from . import _get_dylib_function, c_char, c_uint, lib, Ptr
+from .h5_types import herr_t, hid_t
+
 
 def h5f_open(
     var path: String, flags: c_uint, fapl_id: hid_t
@@ -24,7 +27,7 @@ def h5f_open(
     return _get_dylib_function[
         lib,
         "H5Fopen",
-        def(Ptr[c_char, ImmutOrigin(origin_of(path))], c_uint, hid_t) thin -> hid_t,
+        def(Ptr[c_char, ImmOrigin(origin_of(path))], c_uint, hid_t) thin -> hid_t,
     ]()(path.as_c_string_slice().unsafe_ptr(), flags, fapl_id)
 
 

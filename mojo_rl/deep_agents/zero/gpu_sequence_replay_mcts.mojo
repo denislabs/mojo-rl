@@ -255,9 +255,14 @@ struct GPUMCTSSequenceReplay[
         + MCTS policy/value (host) for all ``N_ENVS`` envs, extending each env's
         open episode. ``reward``/``done`` arrive later via `record_outcome`."""
         var base = self.gtotal % Self.CAP
+        # `src_obs` is an immutable param, so its pointer now carries an
+        # immutable origin; the kernel ABI declares `MutAnyOrigin`. The device
+        # allocation is not owned by Mojo's origin system (cf. `enqueue_copy`
+        # into immutable `DeviceBuffer` params elsewhere), so the cast is sound
+        # — this view is read-only here regardless.
         var src_t = LayoutTensor[
             DT, Layout.row_major(Self.N_ENVS, Self.OBS), MutAnyOrigin
-        ](src_obs.unsafe_ptr().as_unsafe_any_origin())
+        ](src_obs.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]())
         var buf_t = LayoutTensor[
             Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
         ](self.obs_dev.unsafe_ptr().as_unsafe_any_origin())

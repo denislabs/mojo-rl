@@ -237,8 +237,9 @@ struct DreamerDecoderStem[
     DETER: Int, SC: Int, UNITS: Int, U: Int,
     A: ElementOp = GELUOp, BSPACE: Int = 8,
 ](Module):
-    """The reference decoder's `bspace` input stem (`rssm.py Decoder`,
-    bspace=8): feat = [deter | stoch] →
+    """The reference decoder's `bspace` input stem.
+
+    (`rssm.py Decoder`, bspace=8): feat = [deter | stoch] →
 
         x0 = BlockLinear[DETER → U, groups BSPACE](deter)
         x1 = Linear[SC → 2·UNITS] → RMSNorm → act → Linear[→ U](stoch)

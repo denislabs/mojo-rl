@@ -129,13 +129,13 @@ struct PongOfflineBuffer(Movable, OfflineBuffer):
             self.actions[i] = 0
             self.dones[i] = 0
 
-    def __init__(out self, *, deinit take: Self):
-        self.capacity = take.capacity
-        self.n_frames = take.n_frames
-        self.frames = take.frames
-        self.actions = take.actions
-        self.dones = take.dones
-        # `deinit` skips take.__del__, so the buffers won't be double-freed.
+    def __init__(out self, *, deinit move: Self):
+        self.capacity = move.capacity
+        self.n_frames = move.n_frames
+        self.frames = move.frames
+        self.actions = move.actions
+        self.dones = move.dones
+        # `deinit` skips move.__del__, so the buffers won't be double-freed.
 
     def __del__(deinit self):
         if Int(self.frames) != 0:

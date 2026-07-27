@@ -39,6 +39,9 @@ There are also useful macros to convert between time units, like
 SDL_SECONDS_TO_NS() and such.
 """
 
+from . import _get_dylib_function, lib, Ptr
+from .sdl_error import get_error
+
 
 def get_ticks() raises -> UInt64:
     """Get the number of milliseconds since SDL library initialization.

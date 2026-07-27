@@ -12,9 +12,9 @@ struct GridState(Copyable, ImplicitlyCopyable, Movable, State):
         self.x = copy.x
         self.y = copy.y
 
-    def __init__(out self, *, deinit take: Self):
-        self.x = take.x
-        self.y = take.y
+    def __init__(out self, *, deinit move: Self):
+        self.x = move.x
+        self.y = move.y
 
     def __eq__(self, other: Self) -> Bool:
         return self.x == other.x and self.y == other.y
@@ -32,8 +32,8 @@ struct GridAction(Action, Copyable, ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.direction = copy.direction
 
-    def __init__(out self, *, deinit take: Self):
-        self.direction = take.direction
+    def __init__(out self, *, deinit move: Self):
+        self.direction = move.direction
 
     @staticmethod
     def up() -> Self:

@@ -274,13 +274,13 @@ struct PushTV2[DTYPE: DType](
         self.rng_seed = copy.rng_seed
         self.rng_counter = copy.rng_counter
 
-    def __init__(out self, *, deinit take: Self):
-        self.state_data = take.state_data
-        self.shapes_data = take.shapes_data
-        self.contacts_data = take.contacts_data
-        self.done = take.done
-        self.rng_seed = take.rng_seed
-        self.rng_counter = take.rng_counter
+    def __init__(out self, *, deinit move: Self):
+        self.state_data = move.state_data
+        self.shapes_data = move.shapes_data
+        self.contacts_data = move.contacts_data
+        self.done = move.done
+        self.rng_seed = move.rng_seed
+        self.rng_counter = move.rng_counter
 
     # =========================================================================
     # CPU-side helpers (single env, delegates to shared substep)
@@ -309,7 +309,7 @@ struct PushTV2[DTYPE: DType](
             dtype,
             Layout.row_major(PushTShapeBuf.NUM_SHAPES, SHAPE_MAX_SIZE),
             MutAnyOrigin,
-        ](self.shapes_data.unsafe_ptr().bitcast[Scalar[dtype]]().as_unsafe_any_origin())
+        ](self.shapes_data.unsafe_ptr().unsafe_bitcast[Scalar[dtype]]().as_unsafe_any_origin())
 
     @always_inline
     def _contacts_view(
