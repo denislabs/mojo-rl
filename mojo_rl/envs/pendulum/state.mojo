@@ -35,10 +35,10 @@ struct PendulumV2State[DTYPE: DType](
         self.sin_theta = copy.sin_theta
         self.theta_dot = copy.theta_dot
 
-    def __init__(out self, *, deinit take: Self):
-        self.cos_theta = take.cos_theta
-        self.sin_theta = take.sin_theta
-        self.theta_dot = take.theta_dot
+    def __init__(out self, *, deinit move: Self):
+        self.cos_theta = move.cos_theta
+        self.sin_theta = move.sin_theta
+        self.theta_dot = move.theta_dot
 
     def __eq__(self, other: Self) -> Bool:
         return (

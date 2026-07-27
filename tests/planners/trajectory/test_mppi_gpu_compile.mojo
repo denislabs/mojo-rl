@@ -127,10 +127,10 @@ def test_mppi_gpu_plan_runs() raises:
     )
     var z0_tensor = LayoutTensor[
         dtype, Layout.row_major(N_ENVS, LATENT_DIM), MutAnyOrigin
-    ](z0_buf.unsafe_ptr())
+    ](z0_buf.unsafe_ptr().as_unsafe_any_origin())
     var out_act_tensor = LayoutTensor[
         dtype, Layout.row_major(N_ENVS * ACTION_DIM), MutAnyOrigin
-    ](out_act_buf.unsafe_ptr())
+    ](out_act_buf.unsafe_ptr().as_unsafe_any_origin())
 
     planner.plan_gpu(
         ctx,

@@ -50,16 +50,22 @@ struct _GradStash(ParamVisitor):
                     t.data[k] = grad.data[k]
             else:
                 t.ensure_gpu(ctx.value(), N)
-                ctx.value().enqueue_copy(t.dev.value(), grad.dev.value())
+                # Size-exact sub-buffer copy — `grad` may be larger than N
+                # (monotone ensure_gpu); whole-buffer copies error on the
+                # size mismatch. Mirrors compute_graph's fix.
+                var g_src = grad.dev.value().create_sub_buffer[DT](0, N)
+                var t_dst = t.dev.value().create_sub_buffer[DT](0, N)
+                ctx.value().enqueue_copy(t_dst, g_src)
             self.saved.append(t^)
         else:
             comptime if target == "cpu":
                 for k in range(N):
                     grad.data[k] = self.saved[self.idx].data[k]
             else:
-                ctx.value().enqueue_copy(
-                    grad.dev.value(), self.saved[self.idx].dev.value()
-                )
+                var s_src = self.saved[self.idx].dev.value(
+                ).create_sub_buffer[DT](0, N)
+                var g_dst = grad.dev.value().create_sub_buffer[DT](0, N)
+                ctx.value().enqueue_copy(g_dst, s_src)
             self.idx += 1
 
 

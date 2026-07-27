@@ -8,7 +8,7 @@ uses `deep_agents.core.agents.DeepSACAgent.train_gpu`). Uses the new
   * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
     off-policy driver (`run_offpolicy_train_batched`). All optimizers, the
     replay buffer, and the SAC train-step pipeline run on-device.
-  * `BatchedGpuEnv[HalfCheetah[DT], N_ENVS, OBS, ACT]` — wraps the
+  * `Phyics3dBatchedEnv[HalfCheetahModel, HalfCheetahConfig, N_ENVS]` — the
     HalfCheetah physics3d env (which conforms to `GPUContinuousEnv`) into a
     `BatchedEnv`. Steps/resets/obs-extraction all dispatch HalfCheetah's
     native GPU physics kernels — the exact same kernels the legacy
@@ -25,11 +25,12 @@ uses `deep_agents.core.agents.DeepSACAgent.train_gpu`). Uses the new
 transition: each driver iteration steps all `N_ENVS` envs once and runs
 `N_ENVS` gradient updates.
 
-NOTE on checkpointing: the facade's `save`/`load` are CPU-only (they write a
-`nn-ckpt v2` envelope from host-resident params), and the batched `train`
-entry point has no inline checkpoint/diag cadence (those live on
-`train_single`). This GPU example therefore trains + summarizes only; for
-mid-run checkpointing use the CPU example or the single-env cross-target path.
+Checkpointing: the batched `train` entry point auto-saves the SAC
+weights+optimizers (one-file `nn-ckpt v2`) every `CHECKPOINT_EVERY` env-steps
+and once at the end (a host-side D2H between iterations, safe with the CUDA-
+graph capture). It writes `CHECKPOINT_PATH` (`sac_half_cheetah_nn.ckpt`) —
+render it with `sac_half_cheetah_nn_eval_cpu.mojo`, which rebuilds the same
+fused-`LinearReLU` architecture via the `SAC[...]` preset.
 
 HalfCheetah (Phyics3dEnv, MuJoCo-style):
   * 17D observation (qpos + qvel excluding rootx and head)
@@ -56,8 +57,8 @@ from mojo_rl.nn.primitives.linear_relu import LinearReLU
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
 
 
 # =============================================================================
@@ -79,10 +80,18 @@ comptime NUM_STEPS = 600_000
 comptime WARMUP_STEPS = 10_000
 comptime PRINT_EVERY = 50_000  # driver-cadence verbose + env/mean_ret emit
 comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
+comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
+# Written by the batched trainer; loaded by `sac_half_cheetah_nn_eval_cpu.mojo`
+# (same fused-`LinearReLU` architecture, so the param layout matches).
+comptime CHECKPOINT_PATH = "sac_half_cheetah_nn.ckpt"
 
 
-comptime EnvT = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]
-comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
+# Per-field tensor physics path (migration P5+): the batched fields facade is
+# a `BatchedEnv` that runs the LEGACY PRODUCTION physics bundle by default
+# (RK4 + Newton, parallel _mt schedules, treewalk CRBA, auto broadphase).
+comptime BatchedEnvT = Phyics3dBatchedEnv[
+    HalfCheetahModel, HalfCheetahConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=False
+]
 
 comptime ActorNet = StochasticActor[
     OBS_DIM,
@@ -167,11 +176,18 @@ def main() raises:
         print("Starting GPU training...")
         print("-" * 70)
         var t_start = perf_counter_ns()
+        # USE_ENV_CUDA_GRAPH=False: the fields path solves PYRAMIDAL contacts
+        # with the one-env-per-block blocked Newton kernel on NVIDIA, and
+        # capturing/replaying that (shared-memory cooperative) step in a CUDA
+        # graph illegal-addresses on replay (confirmed on humanoid; HalfCheetah
+        # uses the same blocked solver). Eager env stepping is correct; only the
+        # per-step launch-collapse speedup is lost. Re-enable if the blocked
+        # kernel is made capture-safe.
         _ = agent.train[
             BatchedEnvT,
             N_ENVS=N_ENVS,
             USE_TRAIN_CUDA_GRAPH=True,
-            USE_ENV_CUDA_GRAPH=True,
+            USE_ENV_CUDA_GRAPH=False,
             L=RemoteLogger,
         ](
             env,
@@ -182,6 +198,9 @@ def main() raises:
             verbose=True,
             logger=logger_ptr,
             diag_every=DIAG_EVERY,
+            episode_sync_every=32,
+            checkpoint_every=CHECKPOINT_EVERY,
+            checkpoint_path=CHECKPOINT_PATH,
         )
         var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
         logger.close()

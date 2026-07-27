@@ -98,10 +98,10 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
             comptime W = CPU_SIMD_W
             var k = 0
             while k + W <= N:
-                op.store(k, ap.load[width=W](k) + bp.load[width=W](k))
+                op.unsafe_store(k, ap.unsafe_load[width=W](k) + bp.unsafe_load[width=W](k))
                 k += W
             while k < N:
-                op[k] = ap[k] + bp[k]
+                op[unsafe_offset=k] = ap[unsafe_offset=k] + bp[unsafe_offset=k]
                 k += 1
         else:
             var c = ctx.value()
@@ -151,10 +151,10 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
             comptime W = CPU_SIMD_W
             var k = 0
             while k + W <= NIN:
-                gp.store(k, ap.load[width=W](k) + bp.load[width=W](k))
+                gp.unsafe_store(k, ap.unsafe_load[width=W](k) + bp.unsafe_load[width=W](k))
                 k += W
             while k < NIN:
-                gp[k] = ap[k] + bp[k]
+                gp[unsafe_offset=k] = ap[unsafe_offset=k] + bp[unsafe_offset=k]
                 k += 1
         else:
             var c = ctx.value()

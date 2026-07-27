@@ -96,7 +96,10 @@ def main() raises:
     # deterministic eval (so eval resets never disturb the training rollout).
     var env = Env()
     var eval_env = Env()
-    var eval_env_ptr = UnsafePointer(to=eval_env)
+    # `.as_unsafe_any_origin()` — the facade takes
+    # Optional[UnsafePointer[EE, MutAnyOrigin]]; a tracked-origin pointer
+    # doesn't convert (same idiom as logger_ptr below).
+    var eval_env_ptr = UnsafePointer(to=eval_env).as_unsafe_any_origin()
 
     # Build through the Design-F preset (config.mojo): reads like a constructor,
     # applies the reference-tuned defaults (gamma 0.99 / tau 0.01 /

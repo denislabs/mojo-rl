@@ -29,7 +29,7 @@ Batched driver (Tier-3) deferred until a consumer needs it.
 """
 
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
@@ -38,6 +38,11 @@ from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 from .driver_scratch import DriverScratch
 from .batched_env import BatchedEnv
+from .blocks.episode_readback import (
+    EpisodeReturnRing,
+    accumulate_episode_returns,
+)
+from .blocks.cadence import DriverCadence
 from ..data.n_step_replay import GPUNStepBuffer
 
 
@@ -719,45 +724,37 @@ def run_offpolicy_discrete_train_gpu_batched[
 
     var prev_obs = DriverScratch["prev_obs", N_ENVS, OBS].make["gpu"](ctx=ctx)
 
-    var per_env_returns = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
     # `episode_sync_every` batches the per-iteration reward+done D2H: copies
     # land async into a host ring (one slot per pending iteration) and the
     # stream is drained with ONE `synchronize` only when the ring fills or a
-    # log/diag/ckpt/eval/end boundary is imminent. `sync_every == 1` reproduces
-    # the original per-iteration sync exactly. Mirrors the SAC GPU-env driver.
-    # The selective_reset uses the DEVICE done buffer, so it is unaffected.
-    var sync_every: Int = episode_sync_every if episode_sync_every >= 1 else 1
-    var ring_reward = List[HostBuffer[DT]]()
-    var ring_done = List[HostBuffer[DT]]()
-    var pending_eps: Int = 0
-    for _ in range(sync_every):
-        ring_reward.append(ctx.enqueue_create_host_buffer[DT](N_ENVS))
-        ring_done.append(ctx.enqueue_create_host_buffer[DT](N_ENVS))
+    # log/diag/ckpt/eval/end boundary is imminent (see `EpisodeReturnRing`;
+    # `episode_sync_every == 1` reproduces the original per-iteration sync
+    # exactly). Mirrors the SAC GPU-env driver. The selective_reset uses the
+    # DEVICE done buffer, so it is unaffected.
+    var ep_ring = EpisodeReturnRing[N_ENVS].make(ctx, episode_sync_every)
 
     env.reset_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed)
 
     var ep_returns = List[Scalar[DT]]()
-    var t_start = perf_counter_ns()
     var step_idx: Int = 0
     var iter_idx: Int = 0
-    var next_print: Int = print_every
-    # In-place progress bar between log lines (pure CPU, no GPU sync).
-    var prog = IntervalProgress(
-        print_every, min_stride=N_ENVS, label=progress_label, enabled=verbose
-    )
-    var next_log: Int = print_every
-    var next_diag: Int = diag_every if diag_every > 0 else total_env_steps + 1
-    var ckpt_on: Bool = (
-        checkpoint_every > 0 and checkpoint_path.byte_length() > 0
-    )
-    var next_ckpt: Int = checkpoint_every if ckpt_on else total_env_steps + 1
-    # Deterministic greedy-eval cadence. The training `avg_reward` above is
-    # the NOISY rollout (for ε=0 Noisy nets the acting policy IS the noisy
+    # Shared threshold-counter cadence state (see blocks/cadence.mojo).
+    # Deterministic greedy-eval cadence: the training `avg_reward` is the
+    # NOISY rollout (for ε=0 Noisy nets the acting policy IS the noisy
     # argmax), so it systematically under-reports the learned greedy policy.
     # When an isolated `eval_env` is supplied, run a noise-off greedy rollout
     # and log the true policy quality as `eval/mean_return`.
-    var eval_on: Bool = eval_every > 0 and Bool(eval_env)
-    var next_eval: Int = eval_every if eval_on else total_env_steps + 1
+    var cad = DriverCadence.make(
+        print_every,
+        min_stride=N_ENVS,
+        label=progress_label,
+        verbose=verbose,
+        diag_every=diag_every,
+        checkpoint_every=checkpoint_every,
+        ckpt_enabled=checkpoint_path.byte_length() > 0,
+        eval_every=eval_every,
+        eval_enabled=Bool(eval_env),
+    )
 
     # Lazily-captured train-step graph (USE_TRAIN_CUDA_GRAPH). Declared at
     # function scope so the binding survives across loop iterations; a no-op on
@@ -824,38 +821,16 @@ def run_offpolicy_discrete_train_gpu_batched[
         # when the ring fills or a log/diag/ckpt/eval/end boundary is imminent.
         # `step_idx` is pre-increment here, so the upcoming post-increment value
         # the cadence blocks test is `step_idx + N_ENVS`.
-        var reward_view = DeviceBuffer[DT](
-            ctx, env.reward_ptr(), N_ENVS, owning=False
-        )
-        var done_view = DeviceBuffer[DT](
-            ctx, env.done_ptr(), N_ENVS, owning=False
-        )
-        ctx.enqueue_copy(ring_reward[pending_eps], reward_view)
-        ctx.enqueue_copy(ring_done[pending_eps], done_view)
-        pending_eps += 1
+        ep_ring.enqueue(ctx, env.reward_ptr(), env.done_ptr())
 
-        var post_step = step_idx + N_ENVS
-        var emit_now = post_step >= total_env_steps
-        if print_every > 0 and post_step >= next_print:
-            emit_now = True
-        if diag_every > 0 and post_step >= next_diag:
-            emit_now = True
-        if ckpt_on and post_step >= next_ckpt:
-            emit_now = True
-        if eval_on and post_step >= next_eval:
-            emit_now = True
-        if pending_eps >= sync_every or emit_now:
-            ctx.synchronize()
-            for s in range(pending_eps):
-                var rewards_h = ring_reward[s].unsafe_ptr()
-                var dones_h = ring_done[s].unsafe_ptr()
-                for e in range(N_ENVS):
-                    per_env_returns[e] = per_env_returns[e] + rewards_h[e]
-                    if dones_h[e] > Scalar[DT](0.5):
-                        trainer.add_complete_return(per_env_returns[e])
-                        per_env_returns[e] = Scalar[DT](0.0)
-                        ep_returns.append(trainer.mean_return())
-            pending_eps = 0
+        var emit_now = cad.emit_boundary_imminent(
+            step_idx + N_ENVS, total_env_steps
+        )
+        if ep_ring.due(emit_now):
+            var completed = ep_ring.drain(ctx)
+            for i in range(len(completed)):
+                trainer.add_complete_return(completed[i])
+                ep_returns.append(trainer.mean_return())
 
         # ── 6. Selective reset of the done envs.
         env.selective_reset_batch[N_ENVS](
@@ -897,46 +872,32 @@ def run_offpolicy_discrete_train_gpu_batched[
 
         var abs_step = base_step + step_idx
 
-        prog.tick(step_idx, trainer.total_train_steps())
+        cad.tick(step_idx, trainer.total_train_steps())
 
-        if verbose and print_every > 0 and step_idx >= next_print:
-            prog.clear()
-            var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
-            print(
-                "[step ",
-                abs_step,
-                "] mean_ret(10)=",
-                trainer.mean_return(),
-                " ep=",
-                trainer.ep_count(),
-                " elapsed=",
-                elapsed,
-                "s",
+        if cad.print_due(step_idx):
+            cad.print_status(
+                abs_step, trainer.mean_return(), trainer.ep_count()
             )
-            next_print += print_every
+
+        # Logger emit WITH a live flush at the (rare) print cadence.
+        comptime if L.ENABLED:
+            if Bool(logger) and cad.log_due(step_idx):
+                cad.log_status[L, True](
+                    logger,
+                    abs_step,
+                    trainer.mean_return(),
+                    trainer.ep_count(),
+                )
 
         comptime if L.ENABLED:
-            if print_every > 0 and step_idx >= next_log and Bool(logger):
-                logger.value()[].log_scalar(
-                    "avg_reward", Float64(trainer.mean_return()), abs_step
-                )
-                logger.value()[].log_scalar(
-                    "episodes", Float64(trainer.ep_count()), abs_step
-                )
-                logger.value()[].flush()
-                next_log += print_every
-
-        comptime if L.ENABLED:
-            if diag_every > 0 and step_idx >= next_diag and Bool(logger):
+            if Bool(logger) and cad.diag_due(step_idx):
                 trainer.flush_metrics_through_logger[L](logger, abs_step)
-                next_diag += diag_every
 
-        if ckpt_on and step_idx >= next_ckpt:
+        if cad.ckpt_due(step_idx):
             trainer.save_state(checkpoint_path)
-            next_ckpt += checkpoint_every
 
         # Deterministic greedy eval on the isolated `eval_env` (noise off).
-        if eval_on and step_idx >= next_eval:
+        if cad.eval_due(step_idx):
             var eval_ret = run_offpolicy_discrete_eval_batched[A, E, N_ENVS](
                 ctx,
                 trainer,
@@ -952,17 +913,23 @@ def run_offpolicy_discrete_train_gpu_batched[
                     )
                     logger.value()[].flush()
             if verbose:
-                prog.clear()
+                cad.clear()
                 print(
                     "[step ",
                     abs_step,
                     "] eval/mean_return = ",
                     eval_ret,
                 )
-            next_eval += eval_every
 
-    if ckpt_on:
+    if cad.ckpt_on:
         trainer.save_state(checkpoint_path)
+
+    # Defensive final drain of any buffered episode readbacks — a no-op
+    # (and NO sync) when the last iteration hit an emit boundary.
+    var completed_final = ep_ring.drain(ctx)
+    for i in range(len(completed_final)):
+        trainer.add_complete_return(completed_final[i])
+        ep_returns.append(trainer.mean_return())
 
     return ep_returns^
 
@@ -1079,28 +1046,27 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
     var term_dev = DriverScratch["hd_term", N_ENVS, 1].make["gpu"](ctx=ctx)
 
     var per_env_returns = List[Scalar[DT]](
-        length=N_ENVS, fill=Scalar[DT](0.0),
+        length=N_ENVS,
+        fill=Scalar[DT](0.0),
     )
 
     # CPU env: ctx ignored. Wrap in Optional(None) for the trait sig.
     env.reset_batch[N_ENVS](ctx=None, rng_seed=rng_seed)
 
     var ep_returns = List[Scalar[DT]]()
-    var t_start = perf_counter_ns()
     var step_idx: Int = 0
     var iter_idx: Int = 0
-    var next_print: Int = print_every
-    var next_log: Int = print_every
-    var next_diag: Int = diag_every if diag_every > 0 else total_env_steps + 1
-    var ckpt_on: Bool = (
-        checkpoint_every > 0 and checkpoint_path.byte_length() > 0
-    )
-    var next_ckpt: Int = checkpoint_every if ckpt_on else total_env_steps + 1
-    var eval_on: Bool = eval_every > 0 and Bool(eval_env)
-    var next_eval: Int = eval_every if eval_on else total_env_steps + 1
-    # In-place progress bar between log lines (pure CPU, no GPU sync).
-    var prog = IntervalProgress(
-        print_every, min_stride=N_ENVS, label=progress_label, enabled=verbose
+    # Shared threshold-counter cadence state (see blocks/cadence.mojo).
+    var cad = DriverCadence.make(
+        print_every,
+        min_stride=N_ENVS,
+        label=progress_label,
+        verbose=verbose,
+        diag_every=diag_every,
+        checkpoint_every=checkpoint_every,
+        ckpt_enabled=checkpoint_path.byte_length() > 0,
+        eval_every=eval_every,
+        eval_enabled=Bool(eval_env),
     )
 
     while step_idx < total_env_steps:
@@ -1121,7 +1087,8 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
 
         # ── 4. Step CPU envs (multi-core; writes host obs/reward/done/term).
         env.step_batch[N_ENVS](
-            ctx=None, rng_seed=rng_seed + UInt64(iter_idx + 1),
+            ctx=None,
+            rng_seed=rng_seed + UInt64(iter_idx + 1),
         )
 
         # ── 5. H2D next-obs / reward / terminated, then GPU replay push.
@@ -1153,18 +1120,18 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
         ctx.synchronize()
 
         # ── 7. Per-env episode tracking (host reward + done).
-        var rewards_h = env.reward_ptr()
-        var dones_h = env.done_ptr()
-        for e in range(N_ENVS):
-            per_env_returns[e] = per_env_returns[e] + rewards_h[e]
-            if dones_h[e] > Scalar[DT](0.5):
-                trainer.add_complete_return(per_env_returns[e])
-                per_env_returns[e] = Scalar[DT](0.0)
-                ep_returns.append(trainer.mean_return())
+        var completed = List[Scalar[DT]]()
+        accumulate_episode_returns[N_ENVS](
+            env.reward_ptr(), env.done_ptr(), per_env_returns, completed
+        )
+        for i in range(len(completed)):
+            trainer.add_complete_return(completed[i])
+            ep_returns.append(trainer.mean_return())
 
         # ── 8. Selective env reset (host, multi-core).
         env.selective_reset_batch[N_ENVS](
-            ctx=None, rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
+            ctx=None,
+            rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
         )
 
         step_idx += N_ENVS
@@ -1176,46 +1143,32 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
 
         var abs_step = base_step + step_idx
 
-        prog.tick(step_idx, trainer.total_train_steps())
+        cad.tick(step_idx, trainer.total_train_steps())
 
-        if verbose and print_every > 0 and step_idx >= next_print:
-            prog.clear()
-            var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
-            print(
-                "[step ",
-                abs_step,
-                "] mean_ret(10)=",
-                trainer.mean_return(),
-                " ep=",
-                trainer.ep_count(),
-                " elapsed=",
-                elapsed,
-                "s",
+        if cad.print_due(step_idx):
+            cad.print_status(
+                abs_step, trainer.mean_return(), trainer.ep_count()
             )
-            next_print += print_every
+
+        # Logger emit WITH a live flush at the (rare) print cadence.
+        comptime if L.ENABLED:
+            if Bool(logger) and cad.log_due(step_idx):
+                cad.log_status[L, True](
+                    logger,
+                    abs_step,
+                    trainer.mean_return(),
+                    trainer.ep_count(),
+                )
 
         comptime if L.ENABLED:
-            if print_every > 0 and step_idx >= next_log and Bool(logger):
-                logger.value()[].log_scalar(
-                    "avg_reward", Float64(trainer.mean_return()), abs_step
-                )
-                logger.value()[].log_scalar(
-                    "episodes", Float64(trainer.ep_count()), abs_step
-                )
-                logger.value()[].flush()
-                next_log += print_every
-
-        comptime if L.ENABLED:
-            if diag_every > 0 and step_idx >= next_diag and Bool(logger):
+            if Bool(logger) and cad.diag_due(step_idx):
                 trainer.flush_metrics_through_logger[L](logger, abs_step)
-                next_diag += diag_every
 
-        if ckpt_on and step_idx >= next_ckpt:
+        if cad.ckpt_due(step_idx):
             trainer.save_state(checkpoint_path)
-            next_ckpt += checkpoint_every
 
         # Deterministic greedy eval on the isolated `eval_env` (noise off).
-        if eval_on and step_idx >= next_eval:
+        if cad.eval_due(step_idx):
             var eval_ret = run_offpolicy_discrete_eval_cpu_env_gpu_agent[
                 A, E, N_ENVS
             ](
@@ -1233,16 +1186,15 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
                     )
                     logger.value()[].flush()
             if verbose:
-                prog.clear()
+                cad.clear()
                 print(
                     "[step ",
                     abs_step,
                     "] eval/mean_return = ",
                     eval_ret,
                 )
-            next_eval += eval_every
 
-    if ckpt_on:
+    if cad.ckpt_on:
         trainer.save_state(checkpoint_path)
 
     return ep_returns^
@@ -1278,17 +1230,15 @@ def run_offpolicy_discrete_eval_cpu_env_gpu_agent[
     Returns the mean completed-episode return (0 if none completed).
     """
     comptime OBS = A.AGENT_OBS_DIM
-    comptime assert E.ENV_TARGET == "cpu", (
-        "run_offpolicy_discrete_eval_cpu_env_gpu_agent: env must be CPU"
-    )
+    comptime assert (
+        E.ENV_TARGET == "cpu"
+    ), "run_offpolicy_discrete_eval_cpu_env_gpu_agent: env must be CPU"
     comptime assert (
         E.OBS_DIM == OBS
     ), "eval_env OBS_DIM must match trainer AGENT_OBS_DIM"
 
     var obs_dev = DriverScratch["hde_obs", N_ENVS, OBS].make["gpu"](ctx=ctx)
-    var action_dev = DriverScratch["hde_action", N_ENVS, 1].make["gpu"](
-        ctx=ctx
-    )
+    var action_dev = DriverScratch["hde_action", N_ENVS, 1].make["gpu"](ctx=ctx)
 
     trainer.set_noise_scale(Scalar[DT](0.0))  # deterministic mean weights
 

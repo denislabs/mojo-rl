@@ -5,22 +5,6 @@ This file retains HopperParams and body/joint index constants
 needed by physics3d regression tests.
 """
 
-from mojo_rl.physics3d.gpu.constants import (
-    state_size,
-    model_size,
-    qpos_offset,
-    qvel_offset,
-    qacc_offset,
-    qfrc_offset,
-    xpos_offset,
-    xquat_offset,
-    metadata_offset,
-    model_body_offset,
-    model_joint_offset,
-    model_metadata_offset,
-    model_curriculum_offset,
-)
-
 from .hopper_xml import HopperModel
 
 
@@ -79,87 +63,6 @@ struct HopperParams[DTYPE: DType = DType.float64]:
 
     # Motor
     comptime TORQUE_LIMIT: Scalar[Self.DTYPE] = 200.0
-
-    # GPU layout sizes
-    comptime STATE_SIZE: Int = state_size[
-        Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
-    ]()
-    comptime MODEL_SIZE: Int = model_size[
-        Self.NUM_BODIES, Self.NUM_JOINTS, Self.NGEOM
-    ]()
-
-    # GPU layout helper methods
-    @staticmethod
-    @always_inline
-    def get_qpos_offset() -> Int:
-        return qpos_offset[Self.NQ, Self.NV]()
-
-    @staticmethod
-    @always_inline
-    def get_qvel_offset() -> Int:
-        return qvel_offset[Self.NQ, Self.NV]()
-
-    @staticmethod
-    @always_inline
-    def get_qacc_offset() -> Int:
-        return qacc_offset[Self.NQ, Self.NV]()
-
-    @staticmethod
-    @always_inline
-    def get_qfrc_offset() -> Int:
-        return qfrc_offset[Self.NQ, Self.NV]()
-
-    @staticmethod
-    @always_inline
-    def get_xpos_offset() -> Int:
-        return xpos_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
-
-    @staticmethod
-    @always_inline
-    def get_xquat_offset() -> Int:
-        return xquat_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
-
-    @staticmethod
-    @always_inline
-    def get_metadata_offset() -> Int:
-        return metadata_offset[
-            Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
-        ]()
-
-    @staticmethod
-    @always_inline
-    def get_model_body_offset(body_idx: Int) -> Int:
-        return model_body_offset(body_idx)
-
-    @staticmethod
-    @always_inline
-    def get_model_joint_offset(joint_idx: Int) -> Int:
-        return model_joint_offset[Self.NUM_BODIES](joint_idx)
-
-    @staticmethod
-    @always_inline
-    def get_model_metadata_offset() -> Int:
-        return model_metadata_offset[Self.NUM_BODIES, Self.NUM_JOINTS]()
-
-    @staticmethod
-    @always_inline
-    def get_model_curriculum_offset() -> Int:
-        return model_curriculum_offset[Self.NUM_BODIES, Self.NUM_JOINTS]()
-
-
-# Convenience type aliases
-comptime HopperParamsCPU = HopperParams[DType.float64]
-comptime HopperParamsGPU = HopperParams[DType.float32]
-
-# Backward-compatibility aliases (old name -> new name)
-comptime HopperConstants = HopperParams
-comptime HopperConstantsCPU = HopperParamsCPU
-comptime HopperConstantsGPU = HopperParamsGPU
-
-
-# =============================================================================
-# Body/Joint Index Constants (for backward compatibility)
-# =============================================================================
 
 comptime BODY_WORLDBODY: Int = 0
 comptime BODY_TORSO: Int = 1

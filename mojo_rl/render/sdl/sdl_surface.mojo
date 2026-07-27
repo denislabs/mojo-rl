@@ -38,6 +38,14 @@ SDL_image:
 https://github.com/libsdl-org/SDL_image
 """
 
+from . import _get_dylib_function, c_char, c_float, c_int, lib, Ptr
+from .sdl_blendmode import BlendMode
+from .sdl_error import get_error
+from .sdl_iostream import IOStream
+from .sdl_pixels import Colorspace, Palette, PixelFormat
+from .sdl_properties import PropertiesID
+from .sdl_rect import Rect
+
 
 struct SurfaceFlags(Intable, TrivialRegisterPassable):
     """The flags on an SDL_Surface.
@@ -741,7 +749,7 @@ def load_bmp(var file: String, out ret: Ptr[Surface, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_LoadBMP",
-        def(Ptr[c_char, ImmutOrigin(origin_of(file))]) thin -> Ptr[Surface, MutAnyOrigin],
+        def(Ptr[c_char, ImmOrigin(origin_of(file))]) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(file.as_c_string_slice().unsafe_ptr())
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -817,7 +825,7 @@ def save_bmp(surface: Ptr[Surface, MutAnyOrigin], var file: String) raises:
         "SDL_SaveBMP",
         def(
             Ptr[Surface, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(file))],
+            Ptr[c_char, ImmOrigin(origin_of(file))],
         ) thin -> Bool,
     ]()(surface, file.as_c_string_slice().unsafe_ptr())
     if not ret:

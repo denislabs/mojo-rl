@@ -175,8 +175,8 @@ struct CraftaxState(Copyable, ImplicitlyCopyable, Movable, State):
     def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    def __init__(out self, *, deinit take: Self):
-        self.index = take.index
+    def __init__(out self, *, deinit move: Self):
+        self.index = move.index
 
     def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
@@ -191,8 +191,8 @@ struct CraftaxAction(Action, Copyable, ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.value = copy.value
 
-    def __init__(out self, *, deinit take: Self):
-        self.value = take.value
+    def __init__(out self, *, deinit move: Self):
+        self.value = move.value
 
 
 # ============================================================================
@@ -266,7 +266,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
 
         # Generate world directly into the map section of state.
         # `generate_world_cpu` writes block IDs as Float32; cast to dtype.
-        var map_ptr = self.state.unsafe_ptr().bitcast[Float32]() + S_MAP_BASE
+        var map_ptr = self.state.unsafe_ptr().unsafe_bitcast[Float32]().unsafe_offset(S_MAP_BASE)
         var spawn = generate_world_cpu(
             seed, map_ptr.as_unsafe_any_origin(), always_diamond
         )
@@ -306,7 +306,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
         """Full Phase-3A step: crafting, do, place, move, plants, intrinsics."""
         self._rng_counter += 1
         var rng = PhiloxRandom(seed=self._rng_counter, offset=0)
-        var state_ptr = self.state.unsafe_ptr().bitcast[Float32]()
+        var state_ptr = self.state.unsafe_ptr().unsafe_bitcast[Float32]()
         var result = apply_step_inline(
             state_ptr.as_unsafe_any_origin(), action, rng
         )
@@ -345,10 +345,10 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
     def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         var obs_arr = InlineArray[Float32, OBS_DIM](fill=Float32(0.0))
         var obs_ptr = rebind[UnsafePointer[Float32, MutAnyOrigin]](
-            obs_arr.unsafe_ptr().bitcast[Float32]()
+            obs_arr.unsafe_ptr().unsafe_bitcast[Float32]()
         )
         var state_ptr = rebind[UnsafePointer[Float32, MutAnyOrigin]](
-            self.state.unsafe_ptr().bitcast[Float32]()
+            self.state.unsafe_ptr().unsafe_bitcast[Float32]()
         )
         extract_obs_inline(state_ptr, obs_ptr)
         var obs = List[Scalar[Self.dtype]](capacity=OBS_DIM)
@@ -884,7 +884,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.value().init_pointee_move(
+        self._renderer.value().unsafe_write(
             Renderer2D(
                 width=Self.WIN_PX_W,
                 height=Self.WIN_PX_H,

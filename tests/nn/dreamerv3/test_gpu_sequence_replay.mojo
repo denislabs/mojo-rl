@@ -79,8 +79,8 @@ def test_cpu() raises:
     assert_equal(buf.count(), 0, "fresh count")
     assert_true(not buf.can_sample[T](), "cannot sample empty")
 
-    var o = alloc[Scalar[DT]](OBS)
-    var a = alloc[Scalar[DT]](ACT)
+    var o = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var a = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
     # Record CAP transitions; slot i tagged with value i in every field.
     for i in range(CAP):
         for d in range(OBS):
@@ -91,10 +91,10 @@ def test_cpu() raises:
     assert_equal(buf.count(), CAP, "saturated count")
     assert_true(buf.can_sample[T](), "can sample when full")
 
-    var obs_out = alloc[Scalar[DT]](B * (T + 1) * OBS)
-    var act_out = alloc[Scalar[DT]](B * T * ACT)
-    var rew_out = alloc[Scalar[DT]](B * T)
-    var dne_out = alloc[Scalar[DT]](B * T)
+    var obs_out = alloc[Scalar[DT]](B * (T + 1) * OBS).as_unsafe_any_origin()
+    var act_out = alloc[Scalar[DT]](B * T * ACT).as_unsafe_any_origin()
+    var rew_out = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
+    var dne_out = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
     buf.sample_batch[B, T](obs_out, act_out, rew_out, dne_out)
     _check_window_contiguous[B, T](obs_out, act_out, rew_out, dne_out, "cpu")
     print("  OK  count=", buf.count(), " windows contiguous")
@@ -106,8 +106,8 @@ def test_gpu(ctx: DeviceContext) raises:
     assert_equal(buf.count(), 0, "fresh count")
     assert_true(not buf.can_sample[T](), "cannot sample empty")
 
-    var o = alloc[Scalar[DT]](OBS)
-    var a = alloc[Scalar[DT]](ACT)
+    var o = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var a = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
     for i in range(CAP):
         for d in range(OBS):
             o[d] = Scalar[DT](i)
@@ -119,10 +119,10 @@ def test_gpu(ctx: DeviceContext) raises:
     assert_true(buf.can_sample[T](), "can sample when full")
 
     # Host-bridge sample.
-    var obs_out = alloc[Scalar[DT]](B * (T + 1) * OBS)
-    var act_out = alloc[Scalar[DT]](B * T * ACT)
-    var rew_out = alloc[Scalar[DT]](B * T)
-    var dne_out = alloc[Scalar[DT]](B * T)
+    var obs_out = alloc[Scalar[DT]](B * (T + 1) * OBS).as_unsafe_any_origin()
+    var act_out = alloc[Scalar[DT]](B * T * ACT).as_unsafe_any_origin()
+    var rew_out = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
+    var dne_out = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
     buf.sample_batch[B, T](obs_out, act_out, rew_out, dne_out)
     _check_window_contiguous[B, T](
         obs_out, act_out, rew_out, dne_out, "gpu-bridge"
@@ -154,10 +154,10 @@ def test_gpu_record_batch(ctx: DeviceContext) raises:
     var s_act = ctx.enqueue_create_buffer[DT](N_ENVS * ACT)
     var s_rew = ctx.enqueue_create_buffer[DT](N_ENVS)
     var s_dne = ctx.enqueue_create_buffer[DT](N_ENVS)
-    var ho = alloc[Scalar[DT]](N_ENVS * OBS)
-    var ha = alloc[Scalar[DT]](N_ENVS * ACT)
-    var hr = alloc[Scalar[DT]](N_ENVS)
-    var hd = alloc[Scalar[DT]](N_ENVS)
+    var ho = alloc[Scalar[DT]](N_ENVS * OBS).as_unsafe_any_origin()
+    var ha = alloc[Scalar[DT]](N_ENVS * ACT).as_unsafe_any_origin()
+    var hr = alloc[Scalar[DT]](N_ENVS).as_unsafe_any_origin()
+    var hd = alloc[Scalar[DT]](N_ENVS).as_unsafe_any_origin()
     var rounds = (T + 2) // N_ENVS + 2  # enough to exceed T+1
     for rnd in range(rounds):
         for e in range(N_ENVS):
@@ -177,10 +177,10 @@ def test_gpu_record_batch(ctx: DeviceContext) raises:
     assert_equal(buf.count(), rounds * N_ENVS, "record_batch count")
     assert_true(buf.can_sample[T](), "can sample after record_batch")
 
-    var obs_out = alloc[Scalar[DT]](B * (T + 1) * OBS)
-    var act_out = alloc[Scalar[DT]](B * T * ACT)
-    var rew_out = alloc[Scalar[DT]](B * T)
-    var dne_out = alloc[Scalar[DT]](B * T)
+    var obs_out = alloc[Scalar[DT]](B * (T + 1) * OBS).as_unsafe_any_origin()
+    var act_out = alloc[Scalar[DT]](B * T * ACT).as_unsafe_any_origin()
+    var rew_out = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
+    var dne_out = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
     buf.sample_batch[B, T](obs_out, act_out, rew_out, dne_out)
     _check_window_contiguous[B, T](
         obs_out, act_out, rew_out, dne_out, "gpu-batch"
@@ -195,8 +195,8 @@ def test_gpu_fst(ctx: DeviceContext) raises:
     `fst_out[b,k]` must equal that rule keyed on the obs frame tag."""
     print("--- GPU fst / record_terminal / sample_batch_fst_dev ---")
     var buf = GPUSequenceReplay[OBS, ACT, CAP].make["gpu"](ctx=ctx)
-    var o = alloc[Scalar[DT]](OBS)
-    var a = alloc[Scalar[DT]](ACT)
+    var o = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var a = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
     for i in range(CAP):
         for d in range(OBS):
             o[d] = Scalar[DT](i)
@@ -207,7 +207,7 @@ def test_gpu_fst(ctx: DeviceContext) raises:
     ctx.synchronize()
 
     # (a) download the fst ring → expect 1 iff i%5==0.
-    var hf = alloc[Scalar[DT]](CAP)
+    var hf = alloc[Scalar[DT]](CAP).as_unsafe_any_origin()
     ctx.enqueue_copy(hf, buf.fst)
     ctx.synchronize()
     for i in range(CAP):
@@ -221,8 +221,8 @@ def test_gpu_fst(ctx: DeviceContext) raises:
     var d_dne = ctx.enqueue_create_buffer[DT](B * T)
     var d_fst = ctx.enqueue_create_buffer[DT](B * (T + 1))
     buf.sample_batch_fst_dev[B, T](ctx, d_obs, d_act, d_rew, d_dne, d_fst)
-    var obs_out = alloc[Scalar[DT]](B * (T + 1) * OBS)
-    var fst_out = alloc[Scalar[DT]](B * (T + 1))
+    var obs_out = alloc[Scalar[DT]](B * (T + 1) * OBS).as_unsafe_any_origin()
+    var fst_out = alloc[Scalar[DT]](B * (T + 1)).as_unsafe_any_origin()
     ctx.enqueue_copy(obs_out, d_obs)
     ctx.enqueue_copy(fst_out, d_fst)
     ctx.synchronize()
@@ -242,7 +242,7 @@ def test_gpu_fst(ctx: DeviceContext) raises:
     buf2.record_terminal(o)                               # slot1: fst=0
     buf2.record(o, a, Scalar[DT](0.0), Scalar[DT](0.0))  # slot2: fst=1 (armed)
     ctx.synchronize()
-    var hf2 = alloc[Scalar[DT]](CAP)
+    var hf2 = alloc[Scalar[DT]](CAP).as_unsafe_any_origin()
     ctx.enqueue_copy(hf2, buf2.fst)
     ctx.synchronize()
     assert_equal(hf2[0], Scalar[DT](1.0), "terminal seq fst[0]")
@@ -264,8 +264,8 @@ def test_gpu_large_obs(ctx: DeviceContext) raises:
     comptime BL = 4
     comptime TL = 3
     var buf = GPUSequenceReplay[OL, AL, CL].make["gpu"](ctx=ctx)
-    var o = alloc[Scalar[DT]](OL)
-    var a = alloc[Scalar[DT]](AL)
+    var o = alloc[Scalar[DT]](OL).as_unsafe_any_origin()
+    var a = alloc[Scalar[DT]](AL).as_unsafe_any_origin()
     for i in range(CL):
         for d in range(OL):
             o[d] = Scalar[DT](i)
@@ -281,7 +281,7 @@ def test_gpu_large_obs(ctx: DeviceContext) raises:
     var d_dne = ctx.enqueue_create_buffer[DT](BL * TL)
     var d_fst = ctx.enqueue_create_buffer[DT](BL * (TL + 1))
     buf.sample_batch_fst_dev[BL, TL](ctx, d_obs, d_act, d_rew, d_dne, d_fst)
-    var obs_out = alloc[Scalar[DT]](BL * (TL + 1) * OL)
+    var obs_out = alloc[Scalar[DT]](BL * (TL + 1) * OL).as_unsafe_any_origin()
     ctx.enqueue_copy(obs_out, d_obs)
     ctx.synchronize()
     # obs frame tags contiguous (+1 mod CL); check first AND last lane == tag

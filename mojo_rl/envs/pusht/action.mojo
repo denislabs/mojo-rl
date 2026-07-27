@@ -28,9 +28,9 @@ struct PushTAction[DTYPE: DType](
         self.target_x = copy.target_x
         self.target_y = copy.target_y
 
-    def __init__(out self, *, deinit take: Self):
-        self.target_x = take.target_x
-        self.target_y = take.target_y
+    def __init__(out self, *, deinit move: Self):
+        self.target_x = move.target_x
+        self.target_y = move.target_y
 
     @staticmethod
     def from_list(

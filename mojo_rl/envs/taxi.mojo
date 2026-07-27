@@ -19,11 +19,11 @@ struct TaxiState(Copyable, ImplicitlyCopyable, Movable, State):
         self.passenger_loc = copy.passenger_loc
         self.destination = copy.destination
 
-    def __init__(out self, *, deinit take: Self):
-        self.taxi_row = take.taxi_row
-        self.taxi_col = take.taxi_col
-        self.passenger_loc = take.passenger_loc
-        self.destination = take.destination
+    def __init__(out self, *, deinit move: Self):
+        self.taxi_row = move.taxi_row
+        self.taxi_col = move.taxi_col
+        self.passenger_loc = move.passenger_loc
+        self.destination = move.destination
 
     def __eq__(self, other: Self) -> Bool:
         return (
@@ -44,8 +44,8 @@ struct TaxiAction(Action, Copyable, ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.action = copy.action
 
-    def __init__(out self, *, deinit take: Self):
-        self.action = take.action
+    def __init__(out self, *, deinit move: Self):
+        self.action = move.action
 
     @staticmethod
     def south() -> Self:

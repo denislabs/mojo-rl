@@ -10,7 +10,6 @@ Solved-ish Pendulum return is roughly ≥ −300 (random ≈ −1200..−1600).
 Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_pendulum_convergence.mojo`
 """
 
-from std.memory import alloc
 from std.random import random_float64, seed
 from std.testing import assert_true
 
@@ -46,8 +45,8 @@ comptime Ag = TDMPC2Agent[
 
 
 def _greedy_eval(mut ag: Ag, mut env: PendulumV2[DT]) raises -> Scalar[DT]:
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var actbuf = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
     var total: Scalar[DT] = 0.0
     for _ep in range(EVAL_EPS):
         var obs = env.reset_obs_list()
@@ -62,7 +61,6 @@ def _greedy_eval(mut ag: Ag, mut env: PendulumV2[DT]) raises -> Scalar[DT]:
             obs = r[0].copy()
             if r[2]:
                 break
-    obsbuf.free(); actbuf.free()
     return total / Scalar[DT](EVAL_EPS)
 
 
@@ -81,8 +79,8 @@ def main() raises:
     )
 
     var obs = env.reset_obs_list()
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var actbuf = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
     var best: Scalar[DT] = -1.0e9
 
     for step in range(TOTAL):
@@ -115,5 +113,4 @@ def main() raises:
     # seed=0 solves to ~-126 by step 9k; gate at -600 leaves seed-variance
     # margin while still catching a real convergence regression.
     assert_true(best > Scalar[DT](-600.0), "TD-MPC2 must converge on Pendulum")
-    obsbuf.free(); actbuf.free()
     print("=" * 70)

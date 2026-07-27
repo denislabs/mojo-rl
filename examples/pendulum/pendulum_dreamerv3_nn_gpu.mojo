@@ -133,7 +133,7 @@ def main() raises:
     #     units=256) the WM should give a clean advantage, so default entropy.
     #     If the actor commits to a bad attractor (ret degrades, pmean→max like
     #     the under-capacity CPU run), raise to 1e-3.
-    #   - out_init_scale=0.0 (default) = paper zero-init (negative rewards).
+    #   - OUT_INIT=Zero (default) = paper zero-init (negative rewards).
     var ag = Ag.make(
         ctx=ctx, lr=Scalar[DT](4e-5), learning_starts=LEARN_START,
         action_scale=Scalar[DT](2.0), actent=Scalar[DT](3e-4), slowtar=True,

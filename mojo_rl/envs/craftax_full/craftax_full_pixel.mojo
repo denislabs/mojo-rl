@@ -706,7 +706,7 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
         self, mut obs: UnsafePointer[Scalar[Self.DTYPE], MutAnyOrigin]
     ):
         var state_ptr = rebind[UnsafePointer[Float32, MutAnyOrigin]](
-            self.inner.state.unsafe_ptr().bitcast[Float32]()
+            self.inner.state.unsafe_ptr().unsafe_bitcast[Float32]()
         )
         var atlas = self._atlas
         var floor = Int(state_ptr[S_PLAYER_LEVEL])
@@ -915,7 +915,11 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
         """One thread per output pixel — writes (R, G, B) for that pixel."""
         comptime PIX_TOTAL = BATCH_SIZE * OBS_PIX_H * OBS_PIX_W
         comptime PIX_BLOCKS = (PIX_TOTAL + Self.TPB - 1) // Self.TPB
-        var states_ptr = states_buf.unsafe_ptr()
+        # Borrowed immutably, so the pointer now carries an immutable
+        # origin; the kernel ABI declares `MutAnyOrigin`. Device
+        # allocations are outside origin tracking, so this only restores
+        # the pre-nightly typing.
+        var states_ptr = states_buf.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]()
         var obs_ptr = obs_buf.unsafe_ptr()
 
         @parameter
@@ -968,7 +972,7 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
         host.free()
 
         Self._render_kernel[BATCH_SIZE, STATE_SIZE](
-            ctx, states_buf, atlas_buf.unsafe_ptr().as_unsafe_any_origin(), obs_buf,
+            ctx, states_buf, atlas_buf.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True](), obs_buf,
         )
 
     @staticmethod
@@ -995,7 +999,7 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
         """Physics step → render the pixel obs. Atlas lives in the shared
         region of the workspace (offset 0)."""
         var states_ptr = states_buf.unsafe_ptr()
-        var actions_ptr = actions_buf.unsafe_ptr()
+        var actions_ptr = actions_buf.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]()
         var rewards_ptr = rewards_buf.unsafe_ptr()
         var dones_ptr = dones_buf.unsafe_ptr()
         var terminated_ptr = terminated_buf.unsafe_ptr()
@@ -1057,5 +1061,5 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
             ctx.synchronize()
             host.free()
             Self._render_kernel[BATCH_SIZE, STATE_SIZE](
-                ctx, states_buf, atlas_buf.unsafe_ptr().as_unsafe_any_origin(), obs_buf,
+                ctx, states_buf, atlas_buf.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True](), obs_buf,
             )

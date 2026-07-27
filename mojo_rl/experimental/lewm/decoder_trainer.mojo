@@ -20,6 +20,15 @@ from layout import Layout, TileTensor, row_major
 from mojo_rl.nn.constants import DT, TPB_REDUCE
 from mojo_rl.nn import Tensor, ParamVisitor, Kaiming, Adam
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.checkpoint import (
+    BinaryCheckpointWriter,
+    BinaryCheckpointReader,
+    CheckpointReader,
+    _write_file_bytes,
+    _read_file_bytes,
+    _is_v3_header,
+    _split_lines,
+)
 from .decoder import LeWMDecoderLossGraph
 
 from mojo_rl.deep_agents.loss.seed_grad_inv_batch import seed_grad_inv_batch
@@ -287,21 +296,55 @@ struct LeWMDecoderTrainer[
         comptime if Self.train_target == "gpu":
             self._loss_acc_dev.value().enqueue_fill(0.0)
 
-    def save_params(mut self, path: String) raises:
-        var v = _SaveVisitor()
-        self.graph.for_each_param[Self.train_target, _SaveVisitor](v, self.ctx)
-        var s = String()
-        s += String(len(v.vals)) + "\n"
-        for i in range(len(v.vals)):
-            s += String(Float64(v.vals[i])) + "\n"
-        with open(path, "w") as f:
-            f.write(s)
+    def save_params(mut self, path: String, save_moments: Bool = True) raises:
+        """Write a v3 binary named checkpoint (params + state; same format
+        as LeWMTrainer.save_params). Replaces the legacy positional flat
+        text; `load_params` still reads it."""
+        var w = BinaryCheckpointWriter(save_moments)
+        w.mode = 0
+        self.graph.for_each_param[Self.train_target, BinaryCheckpointWriter](
+            w, self.ctx
+        )
+        w.mode = 1
+        self.graph.for_each_state[Self.train_target, BinaryCheckpointWriter](
+            w, self.ctx
+        )
+        _write_file_bytes(path, w.content)
 
     def load_params(mut self, path: String) raises:
+        """Load a v3 binary / v2 named text / legacy flat-text checkpoint
+        (header-dispatched; see LeWMTrainer.load_params)."""
+        var bytes = _read_file_bytes(path)
+        if _is_v3_header(bytes):
+            var r = BinaryCheckpointReader(bytes^)
+            r.mode = 0
+            self.graph.for_each_param[
+                Self.train_target, BinaryCheckpointReader
+            ](r, self.ctx)
+            r.mode = 1
+            self.graph.for_each_state[
+                Self.train_target, BinaryCheckpointReader
+            ](r, self.ctx)
+            return
         var content: String
         with open(path, "r") as f:
             content = String(f.read())
-        var lines = content.split("\n")
+        var lines = _split_lines(content)
+        if len(lines) > 0 and lines[0].startswith("storage-ckpt"):
+            var body = List[String]()
+            for li in range(1, len(lines)):
+                body.append(lines[li])
+            var r2 = CheckpointReader(body^)
+            r2.mode = 0
+            self.graph.for_each_param[Self.train_target, CheckpointReader](
+                r2, self.ctx
+            )
+            r2.mode = 1
+            self.graph.for_each_state[Self.train_target, CheckpointReader](
+                r2, self.ctx
+            )
+            return
+        # Legacy positional flat text: "count\nval\n..." (params only).
         var n = Int(lines[0])
         var vals = List[Scalar[DT]]()
         for i in range(n):

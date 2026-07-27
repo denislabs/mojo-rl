@@ -118,19 +118,19 @@ struct Clamp[DIM_: Int](Module):
             var max_v = SIMD[DT, CPU_SIMD_W](self.max_val)
             var k = 0
             while k + CPU_SIMD_W <= N:
-                var v = in_p.load[width=CPU_SIMD_W](k)
+                var v = in_p.unsafe_load[width=CPU_SIMD_W](k)
                 # min(max(v, min_v), max_v)
                 v = v.gt(min_v).select(v, min_v)
                 v = v.lt(max_v).select(v, max_v)
-                out_p.store(k, v)
+                out_p.unsafe_store(k, v)
                 k += CPU_SIMD_W
             while k < N:
-                var v = in_p[k]
+                var v = in_p[unsafe_offset=k]
                 if v > self.max_val:
                     v = self.max_val
                 if v < self.min_val:
                     v = self.min_val
-                out_p[k] = v
+                out_p[unsafe_offset=k] = v
                 k += 1
         else:
             var c = ctx.value()
@@ -171,18 +171,18 @@ struct Clamp[DIM_: Int](Module):
             var zero = SIMD[DT, CPU_SIMD_W](0.0)
             var k = 0
             while k + CPU_SIMD_W <= N:
-                var x = x_p.load[width=CPU_SIMD_W](k)
-                var go = go_p.load[width=CPU_SIMD_W](k)
+                var x = x_p.unsafe_load[width=CPU_SIMD_W](k)
+                var go = go_p.unsafe_load[width=CPU_SIMD_W](k)
                 # in_range = (x > min_v) AND (x < max_v); else zero.
                 var in_range = x.gt(min_v) & x.lt(max_v)
-                gi_p.store(k, in_range.select(go, zero))
+                gi_p.unsafe_store(k, in_range.select(go, zero))
                 k += CPU_SIMD_W
             while k < N:
-                var x = x_p[k]
+                var x = x_p[unsafe_offset=k]
                 if x < self.min_val or x > self.max_val:
-                    gi_p[k] = Scalar[DT](0.0)
+                    gi_p[unsafe_offset=k] = Scalar[DT](0.0)
                 else:
-                    gi_p[k] = go_p[k]
+                    gi_p[unsafe_offset=k] = go_p[unsafe_offset=k]
                 k += 1
         else:
             var c = ctx.value()

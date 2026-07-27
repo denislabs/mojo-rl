@@ -72,12 +72,12 @@ struct ContinuousTransition[DTYPE: DType](
         self.next_state = copy.next_state.copy()
         self.done = copy.done
 
-    def __init__(out self, *, deinit take: Self):
-        self.state = take.state^
-        self.action = take.action
-        self.reward = take.reward
-        self.next_state = take.next_state^
-        self.done = take.done
+    def __init__(out self, *, deinit move: Self):
+        self.state = move.state^
+        self.action = move.action
+        self.reward = move.reward
+        self.next_state = move.next_state^
+        self.done = move.done
 
 
 struct ContinuousReplayBuffer[DTYPE: DType]:
@@ -375,13 +375,13 @@ struct PrioritizedContinuousTransition[DTYPE: DType](
         self.done = copy.done
         self.weight = copy.weight
 
-    def __init__(out self, *, deinit take: Self):
-        self.state = take.state^
-        self.action = take.action
-        self.reward = take.reward
-        self.next_state = take.next_state^
-        self.done = take.done
-        self.weight = take.weight
+    def __init__(out self, *, deinit move: Self):
+        self.state = move.state^
+        self.action = move.action
+        self.reward = move.reward
+        self.next_state = move.next_state^
+        self.done = move.done
+        self.weight = move.weight
 
 
 struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:

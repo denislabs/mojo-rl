@@ -1,4 +1,4 @@
-"""HumanoidStandup Environment - thin wrapper around Phyics3dEnv[HumanoidStandupModel, HumanoidStandupConfig]."""
+"""HumanoidStandup Environment - thin wrapper over Phyics3dEnv[HumanoidStandupModel, HumanoidStandupConfig]."""
 
 from .humanoid_standup_xml import HumanoidStandupModel
 from .humanoid_standup_config import HumanoidStandupConfig

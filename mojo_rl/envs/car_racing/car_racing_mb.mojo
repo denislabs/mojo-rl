@@ -178,22 +178,22 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False, PIX_RES: Int = 84](
         self._pixel_stack = copy._pixel_stack.copy()
         self._pixel_idx = copy._pixel_idx
 
-    def __init__(out self, *, deinit take: Self):
-        self.state_buffer = take.state_buffer^
-        self.tiles_buffer = take.tiles_buffer^
-        self.track = take.track^
-        self.step_count = take.step_count
-        self.total_reward = take.total_reward
-        self.done = take.done
-        self.truncated = take.truncated
-        self.tiles_visited = take.tiles_visited
-        self.max_steps = take.max_steps
-        self.lap_complete_percent = take.lap_complete_percent
-        self.reset_seed = take.reset_seed
-        self._renderer = take._renderer
-        self._renderer_initialized = take._renderer_initialized
-        self._pixel_stack = take._pixel_stack^
-        self._pixel_idx = take._pixel_idx
+    def __init__(out self, *, deinit move: Self):
+        self.state_buffer = move.state_buffer^
+        self.tiles_buffer = move.tiles_buffer^
+        self.track = move.track^
+        self.step_count = move.step_count
+        self.total_reward = move.total_reward
+        self.done = move.done
+        self.truncated = move.truncated
+        self.tiles_visited = move.tiles_visited
+        self.max_steps = move.max_steps
+        self.lap_complete_percent = move.lap_complete_percent
+        self.reset_seed = move.reset_seed
+        self._renderer = move._renderer
+        self._renderer_initialized = move._renderer_initialized
+        self._pixel_stack = move._pixel_stack^
+        self._pixel_idx = move._pixel_idx
 
     # --- internal tensor views -------------------------------------------
     def _state(self) -> LayoutTensor[
@@ -650,7 +650,7 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False, PIX_RES: Int = 84](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.value().init_pointee_move(
+        self._renderer.value().unsafe_write(
             Renderer2D(
                 CRConstants.WINDOW_W,
                 CRConstants.WINDOW_H,
@@ -687,6 +687,18 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False, PIX_RES: Int = 84](
         if not self._renderer_initialized:
             return
         self._renderer.value()[].renderer_delay(ms)
+
+    def start_recording(
+        mut self, filename: String, fps: Int = 30, skip: Int = 1
+    ) raises:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].start_recording(filename, fps, skip)
+
+    def stop_recording(mut self) raises:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].stop_recording()
 
     def render(mut self, mut renderer: Renderer2D):
         """Top-down rotating-camera view: grass bg, track, car."""

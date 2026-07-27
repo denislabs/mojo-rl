@@ -74,6 +74,9 @@ operating system will not ever attempt to change the string externally if
 it doesn't support a primary selection.
 """
 
+from . import _get_dylib_function, c_char, c_size_t, lib, Ptr
+from .sdl_error import get_error
+
 
 def set_clipboard_text(var text: String) raises:
     """Put UTF-8 text into the clipboard.
@@ -94,7 +97,7 @@ def set_clipboard_text(var text: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetClipboardText",
-        def(Ptr[c_char, ImmutOrigin(origin_of(text))]) thin -> Bool,
+        def(Ptr[c_char, ImmOrigin(origin_of(text))]) thin -> Bool,
     ]()(text.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -158,7 +161,7 @@ def set_primary_selection_text(var text: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetPrimarySelectionText",
-        def(Ptr[c_char, ImmutOrigin(origin_of(text))]) thin -> Bool,
+        def(Ptr[c_char, ImmOrigin(origin_of(text))]) thin -> Bool,
     ]()(text.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -346,7 +349,7 @@ def get_clipboard_data(
         lib,
         "SDL_GetClipboardData",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(mime_type))],
+            Ptr[c_char, ImmOrigin(origin_of(mime_type))],
             Ptr[c_size_t, MutAnyOrigin],
         ) thin -> Ptr[NoneType, MutAnyOrigin],
     ]()(mime_type.as_c_string_slice().unsafe_ptr(), size)
@@ -373,7 +376,7 @@ def has_clipboard_data(var mime_type: String) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_HasClipboardData",
-        def(Ptr[c_char, ImmutOrigin(origin_of(mime_type))]) thin -> Bool,
+        def(Ptr[c_char, ImmOrigin(origin_of(mime_type))]) thin -> Bool,
     ]()(mime_type.as_c_string_slice().unsafe_ptr())
 
 

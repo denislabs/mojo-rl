@@ -1,22 +1,9 @@
-"""Dynamics computation for Generalized Coordinates engine.
+"""Dynamics computation on the per-field tensor path.
 
-This module computes:
-- Mass matrix M(q) using CRBA (Composite Rigid Body Algorithm)
-- Bias forces C(q, qdot) + g(q) (Coriolis + gravity)
-- RNE velocity derivative d(bias)/d(qvel) for implicit integration
-- LU factorization for non-symmetric systems
+Fields modules (imported directly by module): mass_matrix (CRBA),
+rne (bias forces), cdof, ldl, lu, qderiv,
+subtree_com, fluid_forces, invweight. The legacy
+struct-Model/Data dynamics (`mass_matrix`, `jacobian`, `bias_forces`,
+`cfrc_ext`, `fluid_forces`, `velocity_derivatives`, `lu_factorization`) were
+deleted at the fields sunset (P6/G4).
 """
-
-from .mass_matrix import (
-    compute_mass_matrix,
-    compute_mass_matrix_full,
-    ldl_factor,
-    ldl_solve,
-    compute_M_inv_from_ldl,
-    compute_body_invweight0,
-)
-from .bias_forces import compute_bias_forces
-from .jacobian import compute_cdof, compute_contact_jacobian_row, compute_composite_inertia
-from .velocity_derivatives import compute_rne_vel_derivative
-from .lu_factorization import lu_factor, lu_solve, compute_M_inv_from_lu
-from .cfrc_ext import compute_cfrc_ext

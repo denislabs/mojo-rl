@@ -43,7 +43,12 @@ from mojo_rl.nn.primitives.rsample import RSample
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.optimizer.scalar_adam import ScalarAdam
 from mojo_rl.nn.core.checkpoint import (
-    CheckpointWriter, CheckpointReader, _split_lines,
+    CheckpointReader,
+    _is_v3_header,
+    _read_file_bytes,
+    _split_lines,
+    load_params_multi,
+    save_params_multi,
 )
 
 from mojo_rl.nn.core.log_bundle import log_bundle
@@ -56,6 +61,10 @@ from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.trainer_block import TrainerState
 from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.blocks import SampleBlock, TwinCriticStep, PolyakStep
+from ..training.blocks.action_select import (
+    select_squashed_batched,
+    warmup_uniform_batched,
+)
 from .target_y_block import TargetYBlock
 from .actor_loss import SACActorLoss
 from .blocks.alpha_update_step import AlphaUpdateStep
@@ -68,61 +77,6 @@ from .metrics import SACMetrics
 # storage actor/rsample surface (which take owned Tensors, so obs is
 # COPIED into the trainer's device scratch before the actor forward).
 # ──────────────────────────────────────────────────────────────────────
-
-
-def _sac_warmup_uniform_kernel[
-    N_ENVS: Int, ACT: Int
-](
-    action_dest: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
-    action_scale: Scalar[DT],
-    seed: UInt64,
-    offset_base: UInt64,
-):
-    """Per-lane Philox uniform → [N_ENVS, ACT] of Uniform(-scale, +scale)."""
-    var i = Int(global_idx.x)
-    var total = N_ENVS * ACT
-    if i >= total:
-        return
-    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
-    var u = Float32(philox.step_uniform()[0])
-    var s = Scalar[DT](2.0) * Scalar[DT](u) - Scalar[DT](1.0)
-    action_dest[i // ACT, i % ACT] = s * action_scale
-
-
-def _sac_copy2d_kernel[
-    N_ENVS: Int, D: Int
-](
-    src: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
-):
-    """dst[e,d] = src[e,d] — bridge the driver's obs view into the trainer's
-    owned device scratch the storage actor.forward consumes."""
-    var i = Int(global_idx.x)
-    var total = N_ENVS * D
-    if i < total:
-        dst[i // D, i % D] = rebind[Scalar[DT]](src[i // D, i % D])
-
-
-def _sac_clamp_action_kernel[
-    N_ENVS: Int, ACT: Int, ALP: Int
-](
-    alp: LayoutTensor[DT, Layout.row_major(N_ENVS, ALP), MutAnyOrigin],
-    action: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
-    scale: Scalar[DT],
-):
-    """action[e,j] = clamp(alp[e,j], ±scale) — drop the trailing log-prob
-    column of the rsample output and clamp the squashed action."""
-    var i = Int(global_idx.x)
-    var total = N_ENVS * ACT
-    if i < total:
-        var e = i // ACT
-        var j = i % ACT
-        var a = rebind[Scalar[DT]](alp[e, j])
-        if a > scale:
-            a = scale
-        elif a < -scale:
-            a = -scale
-        action[e, j] = a
 
 
 struct SACTrainer[
@@ -632,90 +586,34 @@ struct SACTrainer[
 
         # ── Warmup: uniform random action in [-action_scale, +scale].
         if step_idx < self.learning_starts:
-            comptime if Self.train_target == "cpu":
-                for env in range(N_ENVS):
-                    for j in range(ACT):
-                        var u = Scalar[DT](2.0 * random_float64() - 1.0)
-                        action[env, j] = u * self.action_scale
-                return
-            else:
-                var c = self.ctx.value()
-                comptime tot = N_ENVS * ACT
-                c.enqueue_function[_sac_warmup_uniform_kernel[N_ENVS, ACT]](
-                    action,
-                    self.action_scale,
-                    self._warmup_rng_seed,
-                    self._warmup_rng_offset,
-                    grid_dim=(tot + TPB - 1) // TPB,
-                    block_dim=TPB,
-                )
-                self._warmup_rng_offset += UInt64(N_ENVS * ACT * 2)
-                return
-
-        # ── Policy forward through the STORAGE surface.
-        comptime if Self.train_target == "cpu":
-            # Bridge LayoutTensor obs → owned Tensor; storage actor.forward
-            # wants a Tensor.
-            self._ob_scr.ensure(N_ENVS * OBS)
-            for env in range(N_ENVS):
-                for d in range(OBS):
-                    self._ob_scr.data[env * OBS + d] = rebind[Scalar[DT]](
-                        obs[env, d]
-                    )
-            self._ao_scr.ensure(N_ENVS * 2 * ACT)
-            self._alp_scr.ensure(N_ENVS * (ACT + 1))
-            call_forward["cpu", N_ENVS](
-                self.actor, TensorRefs[Self.ACTOR.ARITY](self._ob_scr),
-                self._ao_scr,
-            )
-            call_forward["cpu", N_ENVS](
-                self.sel, TensorRefs[1](self._ao_scr), self._alp_scr
-            )
-            for env in range(N_ENVS):
-                for j in range(ACT):
-                    var a = self._alp_scr.data[env * (ACT + 1) + j]
-                    if a > self.action_scale:
-                        a = self.action_scale
-                    elif a < -self.action_scale:
-                        a = -self.action_scale
-                    action[env, j] = a
-            # silence unused warnings on the driver-owned scratch views.
-            _ = ao_scratch
-            _ = alp_scratch
-        else:
-            # Bridge the driver's device obs view → owned device scratch
-            # (storage actor.forward consumes an owned Tensor), run actor →
-            # rsample on device, then clamp the squashed action out.
-            var c = self.ctx.value()
-            self._ob_scr.ensure_gpu(c, N_ENVS * OBS)
-            self._ao_scr.ensure_gpu(c, N_ENVS * 2 * ACT)
-            self._alp_scr.ensure_gpu(c, N_ENVS * (ACT + 1))
-            comptime tot_obs = N_ENVS * OBS
-            c.enqueue_function[_sac_copy2d_kernel[N_ENVS, OBS]](
-                obs,
-                self._ob_scr.lt["gpu", Layout.row_major(N_ENVS, OBS)](),
-                grid_dim=(tot_obs + TPB - 1) // TPB,
-                block_dim=TPB,
-            )
-            call_forward["gpu", N_ENVS](
-                self.actor, TensorRefs[Self.ACTOR.ARITY](self._ob_scr),
-                self._ao_scr, self.ctx,
-            )
-            call_forward["gpu", N_ENVS](
-                self.sel, TensorRefs[1](self._ao_scr), self._alp_scr, self.ctx
-            )
-            comptime tot_act = N_ENVS * ACT
-            c.enqueue_function[
-                _sac_clamp_action_kernel[N_ENVS, ACT, ACT + 1]
-            ](
-                self._alp_scr.lt["gpu", Layout.row_major(N_ENVS, ACT + 1)](),
+            warmup_uniform_batched[Self.train_target, N_ENVS, ACT](
                 action,
                 self.action_scale,
-                grid_dim=(tot_act + TPB - 1) // TPB,
-                block_dim=TPB,
+                self.ctx,
+                self._warmup_rng_seed,
+                self._warmup_rng_offset,
             )
-            _ = ao_scratch
-            _ = alp_scratch
+            return
+
+        # ── Policy: shared squashed-actor body (see
+        # training/blocks/action_select.mojo — one copy for
+        # sac/redq/redq_ofe/mbpo).
+        select_squashed_batched[
+            Self.ACTOR, Self.train_target, N_ENVS, OBS, ACT
+        ](
+            self.actor,
+            self.sel,
+            self._ob_scr,
+            self._ao_scr,
+            self._alp_scr,
+            obs,
+            action,
+            self.action_scale,
+            self.ctx,
+        )
+        # silence unused warnings on the driver-owned scratch views.
+        _ = ao_scratch
+        _ = alp_scratch
 
     def select_greedy_action(
         mut self,
@@ -1029,45 +927,61 @@ struct SACTrainer[
         self._update_count = 0
         return out
 
-    # ─── Checkpoint (ONE file: actor + twin critics in a v2 envelope) ──────
+    # ─── Checkpoint (ONE file: actor + twin critics, v3 binary) ────────────
     def save_state(mut self, path: String) raises:
-        """Write actor + the two ONLINE critics into a SINGLE `nn-ckpt v2`
-        file, sections name-prefixed `actor.` / `critic1.` / `critic2.` (one
-        shared `CheckpointWriter` → one header → one `open`). Optimizer moments
-        + α are NOT persisted (resume re-warms)."""
-        var w = CheckpointWriter(save_moments=False)
-        w.mode = 0
-        self.actor.for_each_param[Self.train_target](w, self.ctx, "actor")
-        self.pair1.online.for_each_param[Self.train_target](w, self.ctx, "critic1")
-        self.pair2.online.for_each_param[Self.train_target](w, self.ctx, "critic2")
-        w.mode = 1
-        self.actor.for_each_state[Self.train_target](w, self.ctx, "actor")
-        self.pair1.online.for_each_state[Self.train_target](w, self.ctx, "critic1")
-        self.pair2.online.for_each_state[Self.train_target](w, self.ctx, "critic2")
-        with open(path, "w") as f:
-            f.write(w.content)
+        """Write actor + the two ONLINE critics into a SINGLE v3 binary
+        checkpoint (chunked + atomic tmp-rename I/O — the old v2 text path
+        wrote the final file in one `f.write`, non-atomic and silently
+        truncated at the ~2 GiB write(2) cap). Optimizer moments + α are NOT
+        persisted (resume re-warms)."""
+        save_params_multi[Self.train_target](
+            path,
+            self.ctx,
+            False,
+            self.actor,
+            self.pair1.online,
+            self.pair2.online,
+        )
 
     def load_state(mut self, path: String) raises:
-        """Restore actor + twin online critics from the single envelope (same
-        walk order as `save_state`), then hard-copy online → target."""
-        var content: String
-        with open(path, "r") as f:
-            content = String(f.read())
-        var lines = _split_lines(content)
-        var body = List[String]()
-        for li in range(len(lines)):
-            if lines[li].startswith("storage-ckpt"):
-                continue
-            body.append(lines[li])
-        var r = CheckpointReader(body^)
-        r.mode = 0
-        self.actor.for_each_param[Self.train_target](r, self.ctx, "actor")
-        self.pair1.online.for_each_param[Self.train_target](r, self.ctx, "critic1")
-        self.pair2.online.for_each_param[Self.train_target](r, self.ctx, "critic2")
-        r.mode = 1
-        self.actor.for_each_state[Self.train_target](r, self.ctx, "actor")
-        self.pair1.online.for_each_state[Self.train_target](r, self.ctx, "critic1")
-        self.pair2.online.for_each_state[Self.train_target](r, self.ctx, "critic2")
+        """Restore actor + twin online critics (v3 binary, or the legacy
+        `actor.`/`critic1.`/`critic2.`-prefixed v2 text envelope this trainer
+        used to write), then hard-copy online → target."""
+        if _is_v3_header(_read_file_bytes(path)):
+            load_params_multi[Self.train_target](
+                path,
+                self.ctx,
+                self.actor,
+                self.pair1.online,
+                self.pair2.online,
+            )
+        else:
+            var content: String
+            with open(path, "r") as f:
+                content = String(f.read())
+            var lines = _split_lines(content)
+            var body = List[String]()
+            for li in range(len(lines)):
+                if lines[li].startswith("storage-ckpt"):
+                    continue
+                body.append(lines[li])
+            var r = CheckpointReader(body^)
+            r.mode = 0
+            self.actor.for_each_param[Self.train_target](r, self.ctx, "actor")
+            self.pair1.online.for_each_param[Self.train_target](
+                r, self.ctx, "critic1"
+            )
+            self.pair2.online.for_each_param[Self.train_target](
+                r, self.ctx, "critic2"
+            )
+            r.mode = 1
+            self.actor.for_each_state[Self.train_target](r, self.ctx, "actor")
+            self.pair1.online.for_each_state[Self.train_target](
+                r, self.ctx, "critic1"
+            )
+            self.pair2.online.for_each_state[Self.train_target](
+                r, self.ctx, "critic2"
+            )
         self.pair1.target_net.polyak_from[Self.train_target](
             self.pair1.online, Scalar[DT](1.0), self.ctx
         )

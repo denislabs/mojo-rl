@@ -1,4 +1,4 @@
-"""Walker2d Environment - thin wrapper around Phyics3dEnv[Walker2dModel, Walker2dConfig]."""
+"""Walker2d Environment - thin wrapper over Phyics3dEnv[Walker2dModel, Walker2dConfig]."""
 
 from .walker2d_xml import Walker2dModel
 from .walker2d_config import Walker2dConfig

@@ -22,8 +22,11 @@ from std.python import Python, PythonObject
 from std.math import abs
 from std.collections import InlineArray
 
-from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from std.gpu.host import DeviceContext
+from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
+)
 from mojo_rl.envs.inverted_double_pendulum.inverted_double_pendulum_xml import (
     InvertedDoublePendulumModel,
 )
@@ -58,35 +61,27 @@ def compare_fk(
     """Run FK in both engines with identical qpos, compare results."""
     print("--- Test:", test_name, "---")
 
-    # === Our engine ===
-    var model = Model[
-        DTYPE,
-        NQ,
-        NV,
-        NBODY,
-        NJOINT,
-        MAX_CONTACTS,
-        NGEOM,
-        InvertedDoublePendulumModel.MAX_EQUALITY,
-        InvertedDoublePendulumModel.CONE_TYPE,
-        InvertedDoublePendulumModel.MAX_TENDON,
-        InvertedDoublePendulumModel.NSITE,
+    # === Our engine (fields; legacy Model/Data FK deleted at G4) ===
+    var ctx = DeviceContext()
+    var mf = Model[
+        DTYPE, NV, NBODY, NJOINT, NGEOM, InvertedDoublePendulumModel.MAX_EQUALITY,
+        InvertedDoublePendulumModel.MAX_TENDON, InvertedDoublePendulumModel.NSITE, InvertedDoublePendulumModel.NEXCLUDE, 0,
     ]()
-    var data = Data[
-        DTYPE,
-        NQ,
-        NV,
-        NBODY,
-        NJOINT,
-        MAX_CONTACTS,
-        InvertedDoublePendulumModel.NSITE,
+    InvertedDoublePendulumModel.init_fields[DTYPE, 0](ctx, mf)
+    var d = Data[
+        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, InvertedDoublePendulumModel.NSITE, 1
     ]()
-    InvertedDoublePendulumModel.setup_model_and_data(model, data)
 
+    # Set qpos
     for i in range(NQ):
-        data.qpos[i] = Scalar[DTYPE](qpos_values[i])
+        d.qpos.data[i] = Scalar[DTYPE](qpos_values[i])
 
-    forward_kinematics(model, data)
+    # Run our FK (fields, CPU)
+    forward_kinematics[
+        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+        InvertedDoublePendulumModel.MAX_EQUALITY, InvertedDoublePendulumModel.MAX_TENDON, InvertedDoublePendulumModel.NSITE,
+        InvertedDoublePendulumModel.NEXCLUDE, 0, 1,
+    ](d, mf, None)
 
     # === MuJoCo reference via Python ===
     var mujoco = Python.import_module("mujoco")
@@ -121,9 +116,9 @@ def compare_fk(
         var mj_py = Float64(py=mj_xpos_flat[b * 3 + 1])
         var mj_pz = Float64(py=mj_xpos_flat[b * 3 + 2])
 
-        var our_px = Float64(data.xpos[b * 3 + 0])
-        var our_py = Float64(data.xpos[b * 3 + 1])
-        var our_pz = Float64(data.xpos[b * 3 + 2])
+        var our_px = Float64(d.xpos.data[b * 3 + 0])
+        var our_py = Float64(d.xpos.data[b * 3 + 1])
+        var our_pz = Float64(d.xpos.data[b * 3 + 2])
 
         var pos_err = (
             abs(our_px - mj_px) + abs(our_py - mj_py) + abs(our_pz - mj_pz)
@@ -138,10 +133,10 @@ def compare_fk(
             print("  OK   xpos ", bname, " err=", pos_err)
 
         # --- xquat (our: x,y,z,w — MuJoCo: w,x,y,z) ---
-        var our_qx = Float64(data.xquat[b * 4 + 0])
-        var our_qy = Float64(data.xquat[b * 4 + 1])
-        var our_qz = Float64(data.xquat[b * 4 + 2])
-        var our_qw = Float64(data.xquat[b * 4 + 3])
+        var our_qx = Float64(d.xquat.data[b * 4 + 0])
+        var our_qy = Float64(d.xquat.data[b * 4 + 1])
+        var our_qz = Float64(d.xquat.data[b * 4 + 2])
+        var our_qw = Float64(d.xquat.data[b * 4 + 3])
 
         var mj_qw = Float64(py=mj_xquat_flat[b * 4 + 0])
         var mj_qx = Float64(py=mj_xquat_flat[b * 4 + 1])
@@ -175,9 +170,9 @@ def compare_fk(
         var mj_xi_y = Float64(py=mj_xipos_flat[b * 3 + 1])
         var mj_xi_z = Float64(py=mj_xipos_flat[b * 3 + 2])
 
-        var our_xi_x = Float64(data.xipos[b * 3 + 0])
-        var our_xi_y = Float64(data.xipos[b * 3 + 1])
-        var our_xi_z = Float64(data.xipos[b * 3 + 2])
+        var our_xi_x = Float64(d.xipos.data[b * 3 + 0])
+        var our_xi_y = Float64(d.xipos.data[b * 3 + 1])
+        var our_xi_z = Float64(d.xipos.data[b * 3 + 2])
 
         var xipos_err = (
             abs(our_xi_x - mj_xi_x)

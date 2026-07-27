@@ -106,7 +106,12 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
         else:
             var c = ctx.value()
             dst.ensure_gpu(c, n)
-            c.enqueue_copy(dst.dev.value(), src.dev.value())
+            # Size-exact sub-buffer copy: either side may be larger than `n`
+            # (monotone ensure_gpu / reused pool slots); a whole-buffer copy
+            # errors on the size mismatch. Mirrors compute_graph's fix.
+            var src_sub = src.dev.value().create_sub_buffer[Self.ACT_DT](0, n)
+            var dst_sub = dst.dev.value().create_sub_buffer[Self.ACT_DT](0, n)
+            c.enqueue_copy(dst_sub, src_sub)
 
     @staticmethod
     def _accum_into[

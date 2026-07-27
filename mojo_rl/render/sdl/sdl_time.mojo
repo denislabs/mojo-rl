@@ -34,6 +34,9 @@ Much of the functionality is involved in converting those two types to
 other useful forms.
 """
 
+from . import _get_dylib_function, c_int, lib, Ptr
+from .sdl_error import get_error
+
 
 @fieldwise_init
 struct DateTime(ImplicitlyCopyable, Movable):

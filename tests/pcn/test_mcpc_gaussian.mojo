@@ -82,10 +82,10 @@ def main() raises:
     print("  Adam lr    :", ADAM_LR)
 
     # ── params + grads + Adam state (CPU) ────────────────────────────────────
-    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
-    var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
+    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
+    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
+    var opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT.STATE_PER_PARAM).as_unsafe_any_origin()
+    var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE).as_unsafe_any_origin()
     memset(params_buf, 0, NET.PARAM_SIZE)
     memset(grads_buf, 0, NET.PARAM_SIZE)
     memset(opt_state_buf, 0, NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
@@ -106,12 +106,12 @@ def main() raises:
     NET.pc_init_params[PCXavier, dtype](params)
 
     # ── scratch buffers ──────────────────────────────────────────────────────
-    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
-    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM)
-    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
-    var noise_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
+    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM).as_unsafe_any_origin()
+    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var noise_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
     memset(lat_buf, 0, BATCH * NET.LATENT_DIM)
     memset(mu_eps_buf_raw, 0, BATCH * NET.SCRATCH_OUT_DIM)
     memset(a_below_buf_raw, 0, BATCH * NET.SCRATCH_IN_DIM)
@@ -139,14 +139,14 @@ def main() raises:
     ](noise_buf_raw)
 
     # ── x_in is always 1.0 (pseudo-input — drives the bias-only block_0) ─────
-    var x_in_buf = alloc[Scalar[dtype]](BATCH * NET.IN_DIM)
+    var x_in_buf = alloc[Scalar[dtype]](BATCH * NET.IN_DIM).as_unsafe_any_origin()
     for i in range(BATCH * NET.IN_DIM):
         x_in_buf[i] = Scalar[dtype](1.0)
     var x_in = LayoutTensor[
         dtype, Layout.row_major(BATCH, NET.IN_DIM), MutAnyOrigin
     ](x_in_buf)
 
-    var y_data_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM)
+    var y_data_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM).as_unsafe_any_origin()
     var y_data = LayoutTensor[
         dtype, Layout.row_major(BATCH, NET.OUT_DIM), MutAnyOrigin
     ](y_data_buf)
@@ -210,15 +210,15 @@ def main() raises:
 
     # ── Generate samples (reuse training scratch — but with GEN_BATCH=1024
     #     we need bigger buffers, so allocate fresh). ─────────────────────────
-    var gen_lat_buf = alloc[Scalar[dtype]](GEN_BATCH * NET.LATENT_DIM)
-    var gen_mu_eps_buf_raw = alloc[Scalar[dtype]](GEN_BATCH * NET.SCRATCH_OUT_DIM)
-    var gen_a_below_buf_raw = alloc[Scalar[dtype]](GEN_BATCH * NET.SCRATCH_IN_DIM)
-    var gen_z_below_buf_raw = alloc[Scalar[dtype]](GEN_BATCH * NET.SCRATCH_IN_DIM)
-    var gen_dx_buf_raw = alloc[Scalar[dtype]](GEN_BATCH * NET.LATENT_DIM)
-    var gen_noise_buf_raw = alloc[Scalar[dtype]](GEN_BATCH * NET.LATENT_DIM)
-    var gen_sample_buf = alloc[Scalar[dtype]](GEN_BATCH * NET.OUT_DIM)
-    var gen_x_in_buf = alloc[Scalar[dtype]](GEN_BATCH * NET.IN_DIM)
-    var gen_y_dummy_buf = alloc[Scalar[dtype]](GEN_BATCH * NET.OUT_DIM)
+    var gen_lat_buf = alloc[Scalar[dtype]](GEN_BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var gen_mu_eps_buf_raw = alloc[Scalar[dtype]](GEN_BATCH * NET.SCRATCH_OUT_DIM).as_unsafe_any_origin()
+    var gen_a_below_buf_raw = alloc[Scalar[dtype]](GEN_BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var gen_z_below_buf_raw = alloc[Scalar[dtype]](GEN_BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var gen_dx_buf_raw = alloc[Scalar[dtype]](GEN_BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var gen_noise_buf_raw = alloc[Scalar[dtype]](GEN_BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var gen_sample_buf = alloc[Scalar[dtype]](GEN_BATCH * NET.OUT_DIM).as_unsafe_any_origin()
+    var gen_x_in_buf = alloc[Scalar[dtype]](GEN_BATCH * NET.IN_DIM).as_unsafe_any_origin()
+    var gen_y_dummy_buf = alloc[Scalar[dtype]](GEN_BATCH * NET.OUT_DIM).as_unsafe_any_origin()
     memset(gen_lat_buf, 0, GEN_BATCH * NET.LATENT_DIM)
     memset(gen_mu_eps_buf_raw, 0, GEN_BATCH * NET.SCRATCH_OUT_DIM)
     memset(gen_a_below_buf_raw, 0, GEN_BATCH * NET.SCRATCH_IN_DIM)

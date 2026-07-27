@@ -27,7 +27,6 @@ Run with:
 
 from mojo_rl.envs import FrozenLakeEnv
 from mojo_rl.agents import QLearningAgent, DoubleQLearningAgent
-from mojo_rl.render import Renderer2D
 
 
 def train_and_evaluate(
@@ -245,9 +244,8 @@ def main() raises:
     # Run a demo episode
     print("Demo episode:")
     var demo_env = FrozenLakeEnv(size=4, is_slippery=True)
-    var renderer = Renderer2D()
     _ = demo_env.reset()
-    demo_env.render(renderer)
+    demo_env.render_frame()  # FrozenLake renders text (RenderableEnv trait)
 
     for step in range(20):
         var state = demo_env.get_state()
@@ -257,7 +255,7 @@ def main() raises:
 
         print("Step", step + 1, "- Intended:", action_names[action_idx])
         var result = demo_env.step(action)
-        demo_env.render(renderer)
+        demo_env.render_frame()
 
         if result[2]:
             if result[1] > 0.5:

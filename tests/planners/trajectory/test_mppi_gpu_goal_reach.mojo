@@ -205,7 +205,7 @@ struct GoalReachGPUCallback[
             dtype,
             Layout.row_major(Self.N_ENVS, Self.LATENT_DIM),
             MutAnyOrigin,
-        ](self.goals_buf.unsafe_ptr())
+        ](self.goals_buf.unsafe_ptr().as_unsafe_any_origin())
         ctx.enqueue_function[kernel](
             z,
             a,
@@ -303,7 +303,7 @@ def test_mppi_gpu_converges_to_goal() raises:
     ctx.enqueue_copy(z0_buf, z0_host)
     var z0_tensor = LayoutTensor[
         dtype, Layout.row_major(N_ENVS_1, LATENT_DIM), MutAnyOrigin
-    ](z0_buf.unsafe_ptr())
+    ](z0_buf.unsafe_ptr().as_unsafe_any_origin())
 
     # Output action buffer.
     var out_act_buf = ctx.enqueue_create_buffer[dtype](
@@ -314,7 +314,7 @@ def test_mppi_gpu_converges_to_goal() raises:
     )
     var out_act_tensor = LayoutTensor[
         dtype, Layout.row_major(N_ENVS_1 * ACTION_DIM), MutAnyOrigin
-    ](out_act_buf.unsafe_ptr())
+    ](out_act_buf.unsafe_ptr().as_unsafe_any_origin())
 
     planner.plan_gpu(
         ctx,
@@ -399,14 +399,14 @@ def test_mppi_gpu_mean_converges_to_goal() raises:
     ctx.enqueue_copy(z0_buf, z0_host)
     var z0_tensor = LayoutTensor[
         dtype, Layout.row_major(N_ENVS_1, LATENT_DIM), MutAnyOrigin
-    ](z0_buf.unsafe_ptr())
+    ](z0_buf.unsafe_ptr().as_unsafe_any_origin())
 
     var out_act_buf = ctx.enqueue_create_buffer[dtype](
         N_ENVS_1 * ACTION_DIM
     )
     var out_act_tensor = LayoutTensor[
         dtype, Layout.row_major(N_ENVS_1 * ACTION_DIM), MutAnyOrigin
-    ](out_act_buf.unsafe_ptr())
+    ](out_act_buf.unsafe_ptr().as_unsafe_any_origin())
 
     planner.plan_gpu(
         ctx,
@@ -512,7 +512,7 @@ def test_mppi_gpu_at_goal_stays() raises:
     ctx.enqueue_copy(z0_buf, z0_host)
     var z0_tensor = LayoutTensor[
         dtype, Layout.row_major(N_ENVS_1, LATENT_DIM), MutAnyOrigin
-    ](z0_buf.unsafe_ptr())
+    ](z0_buf.unsafe_ptr().as_unsafe_any_origin())
 
     var out_act_buf = ctx.enqueue_create_buffer[dtype](
         N_ENVS_1 * ACTION_DIM
@@ -522,7 +522,7 @@ def test_mppi_gpu_at_goal_stays() raises:
     )
     var out_act_tensor = LayoutTensor[
         dtype, Layout.row_major(N_ENVS_1 * ACTION_DIM), MutAnyOrigin
-    ](out_act_buf.unsafe_ptr())
+    ](out_act_buf.unsafe_ptr().as_unsafe_any_origin())
 
     planner.plan_gpu(
         ctx,
@@ -609,7 +609,7 @@ def test_mppi_gpu_two_envs_distinct_goals() raises:
     ctx.enqueue_copy(z0_buf, z0_host)
     var z0_tensor = LayoutTensor[
         dtype, Layout.row_major(N_ENVS_2, LATENT_DIM), MutAnyOrigin
-    ](z0_buf.unsafe_ptr())
+    ](z0_buf.unsafe_ptr().as_unsafe_any_origin())
 
     var out_act_buf = ctx.enqueue_create_buffer[dtype](
         N_ENVS_2 * ACTION_DIM
@@ -619,7 +619,7 @@ def test_mppi_gpu_two_envs_distinct_goals() raises:
     )
     var out_act_tensor = LayoutTensor[
         dtype, Layout.row_major(N_ENVS_2 * ACTION_DIM), MutAnyOrigin
-    ](out_act_buf.unsafe_ptr())
+    ](out_act_buf.unsafe_ptr().as_unsafe_any_origin())
 
     planner.plan_gpu(
         ctx,

@@ -13,7 +13,7 @@ the BLOCK_* constants in `constants.mojo` for the 17 block types, so a
 block_id can be used directly as a sprite index without a translation table.
 """
 
-from std.memory import alloc, memset, UnsafePointer
+from std.memory import alloc, unsafe_memset, UnsafePointer
 from std.python import Python, PythonObject
 
 
@@ -143,7 +143,7 @@ def build_sprite_sheet(
     var sheet = alloc[UInt8](SHEET_BYTES)
     # Zero the sheet first so SPR_INVALID is transparent and SPR_OOB stays
     # at solid black-with-alpha (we set its alpha explicitly below).
-    memset(sheet, UInt8(0), SHEET_BYTES)
+    unsafe_memset(sheet, UInt8(0), SHEET_BYTES)
     # OOB sprite: opaque dark slate so it's clearly the void.
     for y in range(SPRITE_SIZE):
         for x in range(SPRITE_SIZE):

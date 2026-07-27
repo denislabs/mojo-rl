@@ -14,7 +14,7 @@ Block sprites occupy slots 0..36 so a `block_id` is its own sprite index
 (matches the BLOCK_* enum). Everything else follows the layout below.
 """
 
-from std.memory import alloc, memset, UnsafePointer
+from std.memory import alloc, unsafe_memset, UnsafePointer
 from std.python import Python, PythonObject
 
 
@@ -312,7 +312,7 @@ def build_sprite_sheet(
     var sheet = alloc[UInt8](SHEET_BYTES)
     # Default: fully transparent. BLOCK_INVALID (slot 0) and ITEM_NONE
     # (slot 37) inherit transparency this way without an explicit load.
-    memset(sheet, UInt8(0), SHEET_BYTES)
+    unsafe_memset(sheet, UInt8(0), SHEET_BYTES)
 
     # BLOCK_OUT_OF_BOUNDS (slot 1) — opaque dark slate (matches Classic).
     for y in range(SPRITE_SIZE):

@@ -242,3 +242,7 @@ skills-lock.json
 # Training artifacts (large; not source)
 checkpoints/
 *.mp4
+# Rendered media dropped at the repo root by demo/diagnostic scripts
+# (root-anchored on purpose - tracked images elsewhere stay addable)
+/*.png
+/*.gif

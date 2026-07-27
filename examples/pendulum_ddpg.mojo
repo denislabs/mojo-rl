@@ -39,17 +39,17 @@ def main() raises:
 
     # Create polynomial feature extractor (degree 2)
     # Observation: [cos(θ), sin(θ), θ_dot]
-    var features = PendulumEnv.make_poly_features(degree=2)
+    var features = PendulumEnv[DType.float64].make_poly_features(degree=2)
     print("Feature dimensionality:", features.get_num_features())
 
     # Create replay buffer
-    var buffer = ContinuousReplayBuffer(
+    var buffer = ContinuousReplayBuffer[DType.float64](
         capacity=100000,
         feature_dim=features.get_num_features(),
     )
 
     # Create DDPG agent
-    var agent = DDPGAgent(
+    var agent = DDPGAgent[DType.float64](
         num_state_features=features.get_num_features(),
         action_scale=2.0,  # Pendulum torque range: [-2, 2]
         actor_lr=0.001,
@@ -111,7 +111,9 @@ def main() raises:
             var action = agent.select_action(state_features)
 
             var result = env.step_continuous(action)
-            obs = result[0]
+            # step_continuous returns a List obs; copy into the SIMD view.
+            for k in range(3):
+                obs[k] = result[0][k]
             demo_reward += result[1]
 
             env.render(renderer)

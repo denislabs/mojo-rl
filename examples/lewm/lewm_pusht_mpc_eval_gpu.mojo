@@ -18,7 +18,7 @@ is the dataset-action reference. (NOTE: this is latent-space planning toward
 a goal latent, the continuous analogue of the Pong §10.9 MPC eval — not yet
 closed-loop control on the PushT simulator.)
 
-Loads the paper-width checkpoint `/tmp/lewm_pusht_paper_world_model.txt`.
+Loads the paper-width checkpoint `lewm_pusht_paper.ckpt`.
 Run (NVIDIA; 224² + ~9k host-synced rollouts — a heavy one-shot eval):
   pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_mpc_eval_gpu.mojo
 """
@@ -69,7 +69,7 @@ comptime NUM_RANDOM = 300
 comptime IMG_DIM = IN_CH * IMG * IMG
 comptime PIX = T * IMG_DIM
 comptime ACTIN = T * ACT
-comptime CKPT_PATH: String = "/tmp/lewm_pusht_paper_world_model.txt"
+comptime CKPT_PATH: String = "lewm_pusht_paper.ckpt"
 
 comptime Trainer = LeWMTrainer[
     IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,

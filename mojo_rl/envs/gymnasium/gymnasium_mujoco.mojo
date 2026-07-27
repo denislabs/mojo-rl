@@ -42,8 +42,8 @@ struct GymMuJoCoState(Copyable, ImplicitlyCopyable, Movable, State):
     def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    def __init__(out self, *, deinit take: Self):
-        self.index = take.index
+    def __init__(out self, *, deinit move: Self):
+        self.index = move.index
 
     def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
@@ -59,8 +59,8 @@ struct GymMuJoCoAction(Action, Copyable, ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    def __init__(out self, *, deinit take: Self):
-        self.index = take.index
+    def __init__(out self, *, deinit move: Self):
+        self.index = move.index
 
 
 # ============================================================================
@@ -172,23 +172,23 @@ struct GymMuJoCoEnv(
         self.episode_length = 0
         self._render_initialized = False
 
-    def __init__(out self, *, deinit take: Self):
-        """Movable conformance: takes ownership of `take`'s fields."""
-        self.env = take.env^
-        self.gym = take.gym^
-        self.np = take.np^
-        self.env_name = take.env_name^
-        self._obs_dim = take._obs_dim
-        self._action_dim = take._action_dim
-        self._action_low = take._action_low
-        self._action_high = take._action_high
-        self.current_obs = take.current_obs^
-        self.current_obs_4d = take.current_obs_4d
-        self.done = take.done
-        self.last_terminated = take.last_terminated
-        self.episode_reward = take.episode_reward
-        self.episode_length = take.episode_length
-        self._render_initialized = take._render_initialized
+    def __init__(out self, *, deinit move: Self):
+        """Movable conformance: takes ownership of `move`'s fields."""
+        self.env = move.env^
+        self.gym = move.gym^
+        self.np = move.np^
+        self.env_name = move.env_name^
+        self._obs_dim = move._obs_dim
+        self._action_dim = move._action_dim
+        self._action_low = move._action_low
+        self._action_high = move._action_high
+        self.current_obs = move.current_obs^
+        self.current_obs_4d = move.current_obs_4d
+        self.done = move.done
+        self.last_terminated = move.last_terminated
+        self.episode_reward = move.episode_reward
+        self.episode_length = move.episode_length
+        self._render_initialized = move._render_initialized
 
     # ========================================================================
     # Env base trait methods

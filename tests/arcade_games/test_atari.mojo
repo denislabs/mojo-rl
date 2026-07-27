@@ -188,7 +188,7 @@ def test_frame_render():
     state.colubk = 0x1E
 
     # Allocate frame buffer
-    var buf = alloc[UInt8](FRAME_BUF_SIZE)
+    var buf = alloc[UInt8](FRAME_BUF_SIZE).as_unsafe_any_origin()
 
     # Render a frame (just background, no objects active)
     render_frame_bgra(state, buf)
@@ -230,7 +230,7 @@ def test_frame_render_player():
     state.grp0 = 0xFF  # All 8 bits set
     state.pos_p0 = 80  # Position at center
 
-    var buf = alloc[UInt8](FRAME_BUF_SIZE)
+    var buf = alloc[UInt8](FRAME_BUF_SIZE).as_unsafe_any_origin()
     render_frame_bgra(state, buf)
 
     # Pixel at x=80 (player position) should have player color

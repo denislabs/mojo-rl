@@ -12,15 +12,8 @@ Unified constraint representation:
 - writeback_forces: Writes solved forces back for warm-starting
 """
 
-from .pgs_solver import PGSSolver
-from .newton_solver import NewtonSolver
-from .old_newton_solver import OldNewtonSolver
-from .cg_solver import CGSolver
-from .island_detection import (
-    detect_islands,
-    IslandData,
-    MAX_ISLANDS,
-    ISLAND_J_THRESH,
-)
-from .island_solver import solve_with_islands, ISLAND_CONVERGE_EPS
-from .island_pgs_solver import IslandPGSSolver
+# Legacy slab solvers (PGS/Newton/CG/IslandPGS + island detection) were deleted
+# at the P6 fields sunset. The fields solvers live in `newton_solve` /
+# `cg_solve` / `contact_solve` / `island_pgs_solve` and are
+# imported directly. `cholesky` and `qcqp` (leaf helpers) remain — the fields
+# solvers import them by submodule.

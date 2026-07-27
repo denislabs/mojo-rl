@@ -302,6 +302,14 @@ section of data that has already been referenced will produce unexpected
 results.
 """
 
+from . import _get_dylib_function, c_char, c_float, c_int, c_size_t, lib, Ptr
+from .sdl_error import get_error
+from .sdl_pixels import FColor
+from .sdl_properties import PropertiesID
+from .sdl_rect import Rect
+from .sdl_surface import FlipMode
+from .sdl_video import Window
+
 
 @fieldwise_init
 struct GPUDevice(ImplicitlyCopyable, Movable):
@@ -2388,9 +2396,9 @@ struct GPUComputePipelineCreateInfo(ImplicitlyCopyable, Movable):
 
     var code_size: c_size_t
     """The size in bytes of the compute shader code pointed to."""
-    var code: Ptr[UInt8, ImmutUntrackedOrigin]
+    var code: Ptr[UInt8, ImmUntrackedOrigin]
     """A pointer to compute shader code."""
-    var entrypoint: Ptr[c_char, ImmutUntrackedOrigin]
+    var entrypoint: Ptr[c_char, ImmUntrackedOrigin]
     """A pointer to a null-terminated UTF-8 string specifying the entry point function name for the shader."""
     var format: GPUShaderFormat
     """The format of the compute shader code."""
@@ -2653,7 +2661,7 @@ def gpu_supports_shader_formats(
         lib,
         "SDL_GPUSupportsShaderFormats",
         def(
-            GPUShaderFormat, Ptr[c_char, ImmutOrigin(origin_of(name))]
+            GPUShaderFormat, Ptr[c_char, ImmOrigin(origin_of(name))]
         ) thin -> Bool,
     ]()(format_flags, name.as_c_string_slice().unsafe_ptr())
 
@@ -2703,7 +2711,7 @@ def create_gpu_device(
         def(
             GPUShaderFormat,
             Bool,
-            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Ptr[c_char, ImmOrigin(origin_of(name))],
         ) thin -> Ptr[GPUDevice, MutAnyOrigin],
     ]()(format_flags, debug_mode, name.as_c_string_slice().unsafe_ptr())
     if Int(ret) == 0:
@@ -3308,7 +3316,7 @@ def set_gpu_buffer_name[_po0: MutOrigin, _po1: MutOrigin, //](
         def(
             Ptr[GPUDevice, MutAnyOrigin],
             Ptr[GPUBuffer, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(text))],
+            Ptr[c_char, ImmOrigin(origin_of(text))],
         ) thin -> None,
     ]()(device.as_unsafe_any_origin(), buffer.as_unsafe_any_origin(), text.as_c_string_slice().unsafe_ptr())
 
@@ -3342,7 +3350,7 @@ def set_gpu_texture_name[_po0: MutOrigin, _po1: MutOrigin, //](
         def(
             Ptr[GPUDevice, MutAnyOrigin],
             Ptr[GPUTexture, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(text))],
+            Ptr[c_char, ImmOrigin(origin_of(text))],
         ) thin -> None,
     ]()(device.as_unsafe_any_origin(), texture.as_unsafe_any_origin(), text.as_c_string_slice().unsafe_ptr())
 
@@ -3366,7 +3374,7 @@ def insert_gpu_debug_label[_po0: MutOrigin, //](
         "SDL_InsertGPUDebugLabel",
         def(
             Ptr[GPUCommandBuffer, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(text))],
+            Ptr[c_char, ImmOrigin(origin_of(text))],
         ) thin -> None,
     ]()(command_buffer.as_unsafe_any_origin(), text.as_c_string_slice().unsafe_ptr())
 
@@ -3399,7 +3407,7 @@ def push_gpu_debug_group[_po0: MutOrigin, //](
         "SDL_PushGPUDebugGroup",
         def(
             Ptr[GPUCommandBuffer, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Ptr[c_char, ImmOrigin(origin_of(name))],
         ) thin -> None,
     ]()(command_buffer.as_unsafe_any_origin(), name.as_c_string_slice().unsafe_ptr())
 

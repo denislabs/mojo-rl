@@ -35,6 +35,8 @@ fullscreen, or alert the user when the power is getting extremely low, so
 they can save their game.
 """
 
+from . import _get_dylib_function, c_int, lib, Ptr
+
 
 struct PowerState(Indexer, Intable, TrivialRegisterPassable):
     """The basic state for the system's power supply.

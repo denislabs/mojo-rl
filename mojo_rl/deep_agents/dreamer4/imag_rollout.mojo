@@ -210,13 +210,17 @@ def imagine_rollout[
     h_host.resize(BF * AGD, 0.0)
 
     # boundary Tensors for the dynamics forward (mirror shortcut_loss._run_fwd):
-    # CPU uses owned host storage; GPU upload/download through them.
-    var in_t = Tensor.make[FWD](BF * ND, dctx)
-    var out_t = Tensor.make[FWD](BF * ND, dctx)
+    # `_fwd_window` writes host `.data` then (gpu) uploads / downloads, so these
+    # need BOTH a host buffer AND (gpu) a device one — `Tensor.make["gpu"]` is
+    # device-ONLY, so alloc host then add the device buffer for the gpu path.
+    var in_t = Tensor.alloc(BF * ND)
+    var out_t = Tensor.alloc(BF * ND)
     # agent-out D2H staging (GPU only)
     var h_ag = Optional[HostBuffer[DT]](None)
     comptime if FWD == "gpu":
         var c = dctx.value()
+        in_t.ensure_gpu(c, BF * ND)
+        out_t.ensure_gpu(c, BF * ND)
         h_ag = c.enqueue_create_host_buffer[DT](BF * AGD)
 
     # boundary Tensors for the heads (always CPU)

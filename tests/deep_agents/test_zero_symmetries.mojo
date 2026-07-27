@@ -13,7 +13,6 @@ Run:
     pixi run mojo run -I . tests/deep_agents/test_zero_symmetries.mojo
 """
 
-from std.memory import alloc
 from std.testing import assert_equal, assert_true
 
 from mojo_rl.nn.constants import DT
@@ -22,8 +21,8 @@ from mojo_rl.deep_agents.zero.symmetries import (
 )
 
 
-def _ptr(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
+def _buf(n: Int) -> List[Scalar[DT]]:
+    return List[Scalar[DT]](length=n, fill=Scalar[DT](0))
 
 
 def main() raises:
@@ -35,10 +34,10 @@ def main() raises:
 
     # Position-encoded inputs: obs plane p, cell j → value (p*100 + j); policy
     # cell j → value j. Then aug must move values consistently.
-    var obs = _ptr(OBS)
-    var pol = _ptr(ACT)
-    var aobs = _ptr(OBS)
-    var apol = _ptr(ACT)
+    var obs = _buf(OBS)
+    var pol = _buf(ACT)
+    var aobs = _buf(OBS)
+    var apol = _buf(ACT)
     for p in range(PLANES):
         for j in range(ACT):
             obs[p * ACT + j] = Scalar[DT](p * 100 + j)
@@ -46,8 +45,8 @@ def main() raises:
         pol[j] = Scalar[DT](j)
 
     # Identity (sym 0): exact copy.
-    D4.augment_obs[OBS](obs, 0, aobs)
-    D4.augment_policy[ACT](pol, 0, apol)
+    D4.augment_obs[OBS](obs, 0, 0, aobs)
+    D4.augment_policy[ACT](pol, 0, 0, apol)
     for i in range(OBS):
         assert_equal(aobs[i], obs[i], "D4 identity obs not a copy")
     for j in range(ACT):
@@ -55,8 +54,8 @@ def main() raises:
 
     # All 8 D4 syms: permutation + obs/policy consistency.
     for s in range(8):
-        D4.augment_obs[OBS](obs, s, aobs)
-        D4.augment_policy[ACT](pol, s, apol)
+        D4.augment_obs[OBS](obs, 0, s, aobs)
+        D4.augment_policy[ACT](pol, 0, s, apol)
         # Plane 0 of obs is position-encoded == policy encoding → identical perm.
         for j in range(ACT):
             assert_equal(
@@ -74,17 +73,17 @@ def main() raises:
 
     # Involutions square to identity: 1 h-flip, 2 v-flip, 3 rot180, 6 transpose,
     # 7 anti-transpose.
-    var tmp = _ptr(ACT)
+    var tmp = _buf(ACT)
     for s_i in [1, 2, 3, 6, 7]:
         var s = s_i
-        D4.augment_policy[ACT](pol, s, apol)
-        D4.augment_policy[ACT](apol, s, tmp)
+        D4.augment_policy[ACT](pol, 0, s, apol)
+        D4.augment_policy[ACT](apol, 0, s, tmp)
         for j in range(ACT):
             assert_equal(tmp[j], pol[j], "D4 sym " + String(s) + " not involutive")
 
     # 90° (sym 4) and 270° (sym 5) are mutual inverses.
-    D4.augment_policy[ACT](pol, 4, apol)
-    D4.augment_policy[ACT](apol, 5, tmp)
+    D4.augment_policy[ACT](pol, 0, 4, apol)
+    D4.augment_policy[ACT](apol, 0, 5, tmp)
     for j in range(ACT):
         assert_equal(tmp[j], pol[j], "D4 rot90∘rot270 != identity")
 
@@ -96,22 +95,22 @@ def main() raises:
     comptime C_OBS = 3 * ROWS * COLS
     comptime HF = HFlipColumnAugmenter[ROWS, COLS, 3]
 
-    var cobs = _ptr(C_OBS)
-    var caobs = _ptr(C_OBS)
-    var ctmp = _ptr(C_OBS)
+    var cobs = _buf(C_OBS)
+    var caobs = _buf(C_OBS)
+    var ctmp = _buf(C_OBS)
     for i in range(C_OBS):
         cobs[i] = Scalar[DT](i)
     # h-flip is an involution on the obs.
-    HF.augment_obs[C_OBS](cobs, 1, caobs)
-    HF.augment_obs[C_OBS](caobs, 1, ctmp)
+    HF.augment_obs[C_OBS](cobs, 0, 1, caobs)
+    HF.augment_obs[C_OBS](caobs, 0, 1, ctmp)
     for i in range(C_OBS):
         assert_equal(ctmp[i], cobs[i], "HFlip obs not involutive")
 
-    var cpol = _ptr(COLS)
-    var capol = _ptr(COLS)
+    var cpol = _buf(COLS)
+    var capol = _buf(COLS)
     for c in range(COLS):
         cpol[c] = Scalar[DT](c)
-    HF.augment_policy[COLS](cpol, 1, capol)
+    HF.augment_policy[COLS](cpol, 0, 1, capol)
     for c in range(COLS):
         assert_equal(
             capol[c], cpol[COLS - 1 - c], "HFlip policy != column reversal"
@@ -119,8 +118,8 @@ def main() raises:
     print("HFlipColumnAugmenter: OK")
 
     # Identity augmenter sanity.
-    var ip = _ptr(ACT)
-    IdentityAugmenter.augment_policy[ACT](pol, 0, ip)
+    var ip = _buf(ACT)
+    IdentityAugmenter.augment_policy[ACT](pol, 0, 0, ip)
     for j in range(ACT):
         assert_equal(ip[j], pol[j], "IdentityAugmenter not a copy")
     print("zero symmetries: OK")

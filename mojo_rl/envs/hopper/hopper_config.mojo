@@ -3,19 +3,19 @@
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.integrator import RK4Integrator
-from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
-    qpos_offset,
-    model_curriculum_offset,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
     rk4_extra_workspace_size,
 )
 
 from .hopper_xml import HopperModel
 
 from ..phyics3d_env_config import Phyics3dEnvConfig
+
+from . import HopperParams
 
 
 struct HopperConfig(Phyics3dEnvConfig):
@@ -33,47 +33,6 @@ struct HopperConfig(Phyics3dEnvConfig):
         HopperModel.NQ, HopperModel.NV
     ]()
 
-    # === CPU: Integrator step ===
-    @staticmethod
-    def physics_substep[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        MAX_CONTACTS: Int,
-        NGEOM: Int,
-        MAX_EQUALITY: Int,
-        CONE_TYPE: Int,
-        MAX_TENDON: Int = 0,
-        NSITE: Int = 0,
-    ](
-        mut model: Model[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NGEOM,
-            MAX_EQUALITY,
-            CONE_TYPE,
-            MAX_TENDON,
-            NSITE,
-        ],
-        mut data: Data[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NSITE,
-        ],
-        verbose: Bool,
-    ):
-        RK4Integrator[SOLVER=NewtonSolver].step(model, data)
-
     # === CPU: Pre-step hook ===
     @staticmethod
     def pre_step_cpu[
@@ -81,14 +40,13 @@ struct HopperConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut prev_x: Scalar[DTYPE],
     ):
-        prev_x = data.qpos[0]  # Save rootx position
+        prev_x = d.qpos.data[0]  # Save rootx position
 
     # === CPU: Reward + termination ===
     @staticmethod
@@ -97,11 +55,10 @@ struct HopperConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,
@@ -110,7 +67,7 @@ struct HopperConfig(Phyics3dEnvConfig):
         comptime P = HopperParams[DType.float64]
 
         # Compute x velocity from position change
-        var x_after = data.qpos[0]
+        var x_after = d.qpos.data[0]
         var dt = Scalar[DTYPE](Self.get_timestep()) * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / dt
 
@@ -124,8 +81,8 @@ struct HopperConfig(Phyics3dEnvConfig):
         ctrl_cost = Scalar[DTYPE](P.CTRL_COST_WEIGHT) * ctrl_cost
 
         # Health check (matches Gymnasium Hopper-v5: strict inequalities)
-        var z_height = data.qpos[1]  # rootz
-        var y_angle = data.qpos[2]  # rooty
+        var z_height = d.qpos.data[1]  # rootz
+        var y_angle = d.qpos.data[2]  # rooty
         var min_height = Scalar[DTYPE](P.MIN_HEIGHT)
         var max_pitch = Scalar[DTYPE](P.MAX_PITCH)
         var is_healthy = z_height > min_height
@@ -135,11 +92,11 @@ struct HopperConfig(Phyics3dEnvConfig):
         # healthy_state_range: qpos[2:] and qvel must be in (-100, 100)
         # (matches Gymnasium Hopper-v5 strict inequalities)
         for k in range(2, NQ):
-            var qp = data.qpos[k]
+            var qp = d.qpos.data[k]
             if qp <= Scalar[DTYPE](-100.0) or qp >= Scalar[DTYPE](100.0):
                 is_healthy = False
         for k in range(NV):
-            var qv = data.qvel[k]
+            var qv = d.qvel.data[k]
             if qv <= Scalar[DTYPE](-100.0) or qv >= Scalar[DTYPE](100.0):
                 is_healthy = False
 
@@ -161,20 +118,19 @@ struct HopperConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         # qpos[1:6] → obs[0:5] (skip rootx)
         for k in range(1, 6):
-            obs.append(data.qpos[k])
+            obs.append(d.qpos.data[k])
 
         # qvel[0:6] → obs[5:11], clipped to [-10, 10]
         for k in range(6):
-            var v = data.qvel[k]
+            var v = d.qvel.data[k]
             if v > Scalar[DTYPE](10.0):
                 v = Scalar[DTYPE](10.0)
             elif v < Scalar[DTYPE](-10.0):
@@ -192,59 +148,24 @@ struct HopperConfig(Phyics3dEnvConfig):
     def get_reset_noise() -> Float64:
         return 0.005
 
-    # === GPU: Integrator step ===
-    @staticmethod
-    def physics_substep_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        MAX_CONTACTS: Int,
-        NGEOM: Int,
-        MAX_EQUALITY: Int,
-        CONE_TYPE: Int,
-        MAX_TENDON: Int = 0,
-        NSITE: Int = 0,
-    ](
-        ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[DTYPE],
-        mut model_buf: DeviceBuffer[DTYPE],
-        mut workspace_buf: DeviceBuffer[DTYPE],
-    ) raises:
-        RK4Integrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            BATCH_SIZE,
-            NGEOM,
-            CONE_TYPE=CONE_TYPE,
-            MAX_TENDON=MAX_TENDON,
-            NSITE=NSITE,
-            STEP_THREADS=NV,
-        ](ctx, states_buf, model_buf, workspace_buf)
-
     # === GPU inline: Pre-step hook ===
     @always_inline
     @staticmethod
     def pre_step_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
         env: Int,
-        meta_offset: Int,
     ):
         # Save rootx position into META_IDX_PREV_X
-        comptime QPOS_OFF = qpos_offset[HopperModel.NQ, HopperModel.NV]()
-        states[env, meta_offset + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
+        meta[env, META_IDX_PREV_X] = qpos[env, 0]
 
     # === GPU inline: Reward + termination ===
     @always_inline
@@ -252,35 +173,47 @@ struct HopperConfig(Phyics3dEnvConfig):
     def compute_reward_and_done_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
         ACTION_DIM: Int,
-        MODEL_SIZE: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
-        model: LayoutTensor[
-            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
         ],
         actions: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
-        xpos_off: Int,
-        xipos_off: Int,
-        cfrc_ext_off: Int,
-        cvel_off: Int,
-        meta_offset: Int,
-        curriculum_offset: Int,
         step_count: Int,
         frame_skip: Int,
         timestep: Scalar[DTYPE],
     ) -> Tuple[Scalar[DTYPE], Bool]:
         # Compute x velocity from position change
-        var x_after = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])
+        var x_after = rebind[Scalar[DTYPE]](qpos[env, 0])
         var prev_x = rebind[Scalar[DTYPE]](
-            states[env, meta_offset + META_IDX_PREV_X]
+            meta[env, META_IDX_PREV_X]
         )
         var effective_dt = timestep * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / effective_dt
@@ -298,14 +231,14 @@ struct HopperConfig(Phyics3dEnvConfig):
 
         # Health check — read curriculum parameters; fall back to defaults
         # when curriculum is not set (slots remain 0 without update_curriculum_gpu).
-        var min_height = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 0])
+        var min_height = rebind[Scalar[DTYPE]](curriculum[0, 0])
         if min_height <= Scalar[DTYPE](0.0):
             min_height = Scalar[DTYPE](Self.MIN_HEIGHT)
-        var max_pitch = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 1])
+        var max_pitch = rebind[Scalar[DTYPE]](curriculum[0, 1])
         if max_pitch <= Scalar[DTYPE](0.0):
             max_pitch = Scalar[DTYPE](Self.MAX_PITCH)
-        var z_height = rebind[Scalar[DTYPE]](states[env, qpos_off + 1])
-        var y_angle = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
+        var z_height = rebind[Scalar[DTYPE]](qpos[env, 1])
+        var y_angle = rebind[Scalar[DTYPE]](qpos[env, 2])
 
         var is_healthy = True
         # Gymnasium uses strict inequalities: z > min_height, -max < angle < max
@@ -316,13 +249,12 @@ struct HopperConfig(Phyics3dEnvConfig):
 
         # healthy_state_range check: all state elements (qpos[2:] + qvel[:])
         # must be in (-100, 100) — matches Gymnasium Hopper-v5
-        var qvel_off_local = qpos_off + 6  # NQ=6, qvel starts after qpos
         for k in range(2, 6):  # qpos[2:6] = rooty, thigh, leg, foot
-            var qp = rebind[Scalar[DTYPE]](states[env, qpos_off + k])
+            var qp = rebind[Scalar[DTYPE]](qpos[env, k])
             if qp <= Scalar[DTYPE](-100.0) or qp >= Scalar[DTYPE](100.0):
                 is_healthy = False
         for k in range(6):  # all qvel
-            var qv = rebind[Scalar[DTYPE]](states[env, qvel_off_local + k])
+            var qv = rebind[Scalar[DTYPE]](qvel[env, k])
             if qv <= Scalar[DTYPE](-100.0) or qv >= Scalar[DTYPE](100.0):
                 is_healthy = False
 
@@ -363,13 +295,12 @@ struct HopperConfig(Phyics3dEnvConfig):
     def init_qpos_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
     ):
         pass
 
@@ -380,27 +311,32 @@ struct HopperConfig(Phyics3dEnvConfig):
     def custom_extract_obs_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
         OBS_DIM: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
-        qvel_off: Int,
-        xpos_off: Int,
     ) -> Bool:
         # qpos[1:6] → obs[0:5] (skip rootx)
         for k in range(5):
-            obs[env, k] = states[env, qpos_off + 1 + k]
+            obs[env, k] = qpos[env, 1 + k]
 
         # qvel[0:6] → obs[5:11], clipped to [-10, 10]
         for k in range(6):
-            var v = rebind[Scalar[DTYPE]](states[env, qvel_off + k])
+            var v = rebind[Scalar[DTYPE]](qvel[env, k])
             if v > Scalar[DTYPE](10.0):
                 v = Scalar[DTYPE](10.0)
             elif v < Scalar[DTYPE](-10.0):

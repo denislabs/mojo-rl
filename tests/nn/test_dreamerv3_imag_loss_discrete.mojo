@@ -68,14 +68,14 @@ def main() raises:
     var actent = Scalar[DT](3e-4)
     var slowreg = Scalar[DT](1.0)
 
-    var act = alloc[Scalar[DT]](BK * T * ACT)
-    var rew = alloc[Scalar[DT]](BK * T)
-    var con = alloc[Scalar[DT]](BK * T)
-    var vlog = alloc[Scalar[DT]](BK * T * BINS)
-    var svlog = alloc[Scalar[DT]](BK * T * BINS)
-    var logits = alloc[Scalar[DT]](BK * T * ACT)
-    var pstd = alloc[Scalar[DT]](BK * T * ACT)   # unused in discrete
-    var bins = alloc[Scalar[DT]](BINS)
+    var act = alloc[Scalar[DT]](BK * T * ACT).as_unsafe_any_origin()
+    var rew = alloc[Scalar[DT]](BK * T).as_unsafe_any_origin()
+    var con = alloc[Scalar[DT]](BK * T).as_unsafe_any_origin()
+    var vlog = alloc[Scalar[DT]](BK * T * BINS).as_unsafe_any_origin()
+    var svlog = alloc[Scalar[DT]](BK * T * BINS).as_unsafe_any_origin()
+    var logits = alloc[Scalar[DT]](BK * T * ACT).as_unsafe_any_origin()
+    var pstd = alloc[Scalar[DT]](BK * T * ACT).as_unsafe_any_origin()   # unused in discrete
+    var bins = alloc[Scalar[DT]](BINS).as_unsafe_any_origin()
 
     for c in range(BINS):
         bins[c] = Scalar[DT](-3.0) + Scalar[DT](6.0) * Scalar[DT](c) / Scalar[DT](BINS - 1)
@@ -106,14 +106,14 @@ def main() raises:
         rn, pol, val, ret,
     )
     var rscale = rn.stats()[1]
-    var d_pol = alloc[Scalar[DT]](BK * TM1)
-    var d_val = alloc[Scalar[DT]](BK * TM1)
+    var d_pol = alloc[Scalar[DT]](BK * TM1).as_unsafe_any_origin()
+    var d_val = alloc[Scalar[DT]](BK * TM1).as_unsafe_any_origin()
     for i in range(BK * TM1):
         d_pol[i] = 1.0
         d_val[i] = 0.0
-    var g_vlog = alloc[Scalar[DT]](BK * T * BINS)
-    var g_logits = alloc[Scalar[DT]](BK * T * ACT)
-    var g_pstd = alloc[Scalar[DT]](BK * T * ACT)
+    var g_vlog = alloc[Scalar[DT]](BK * T * BINS).as_unsafe_any_origin()
+    var g_logits = alloc[Scalar[DT]](BK * T * ACT).as_unsafe_any_origin()
+    var g_pstd = alloc[Scalar[DT]](BK * T * ACT).as_unsafe_any_origin()
     imag_loss_backward[BK, T, ACT, BINS, True](
         act, rew, con, vlog, svlog, logits, pstd, bins,
         Scalar[DT](0.1), Scalar[DT](1.0), lam, actent, slowreg, rscale,

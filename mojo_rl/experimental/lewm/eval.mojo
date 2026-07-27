@@ -28,12 +28,14 @@ from layout import TileTensor, TensorLayout, row_major
 
 from mojo_rl.nn.constants import DT
 comptime dtype = DT                              # float32 (legacy nn.constants.dtype)
+from mojo_rl.nn.core.module import Module
 from mojo_rl.planners.trajectory import (
     CategoricalRandomShooter,
     CategoricalCEMOptimizer,
 )
 from mojo_rl.planners.trajectory.score_callback import ScorePlanCallback
 from .trainer import LeWMTrainer
+from .encoder import LeWMEncoder
 
 
 def _mse_latent[
@@ -191,12 +193,18 @@ def lewm_shuffled_eval[
     H: Int, N_PREDS: Int, PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int,
     PRED_PROJ_H: Int, SIG_PROJ: Int, SIG_KNOTS: Int,
     BATCH: Int, target: StaticString, PRED_DIM_HEAD: Int = 0,
+    # Trailing encoder type with dims-derived default — pass LeWMEncoderCLS
+    # for CLS/recipe WMs; existing callers (which omit it) stay unchanged.
+    ENC: Module = LeWMEncoder[
+        IN_CH, IMG, PATCH, (IMG // PATCH) * (IMG // PATCH), HIDDEN,
+        ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H, ENC_FF_MULT,
+    ],
 ](
     mut trainer: LeWMTrainer[
         IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
         ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,
         PRED_FF, DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, BATCH, target,
-        PRED_DIM_HEAD,
+        PRED_DIM_HEAD, ENC,
     ],
     pix_t: TileTensor[
         dtype=DT, address_space=AddressSpace.GENERIC,

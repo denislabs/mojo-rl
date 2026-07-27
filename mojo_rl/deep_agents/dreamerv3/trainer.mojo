@@ -23,15 +23,19 @@ action lives on `DreamerV3Agent`); imagination from the final posterior carry.
 
 from std.random import random_float64
 from std.math import exp
+from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Initializer, Kaiming, Zero
 from mojo_rl.nn.core.tensor import Tensor, TensorImpl
 from mojo_rl.nn.core.tensor_refs import TensorRefs, child_refs
 from mojo_rl.nn.core.checkpoint import (
     CheckpointWriter, CheckpointReader, _split_lines,
+    BinaryCheckpointWriter, BinaryCheckpointReader,
+    _write_file_bytes, _read_file_bytes, _is_v3_header,
 )
+from mojo_rl.nn.core.param import ParamVisitor
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.nn.optimizer.dreamer_opt import DreamerOpt
 from mojo_rl.nn.optimizer.schedules import LinearWarmupSchedule
@@ -50,9 +54,6 @@ from mojo_rl.deep_agents.dreamerv3.twohot import (
     DREAMER_REWARD_GRID_LO,
 )
 from mojo_rl.deep_agents.dreamerv3.normalize import PercentileNormalize
-from mojo_rl.deep_agents.dreamerv3.zero_init import (
-    scale_output_module, scale_output_graph,
-)
 from mojo_rl.deep_agents.dreamerv3.blocks import (
     DreamerState, WMStep, ParamSyncStep, ACStep,
 )
@@ -100,6 +101,18 @@ struct DreamerV3Trainer[
     # plain MSE vs raw [0,1] obs (decode = sigmoid). False (default) keeps the
     # symlog recon, correct for unbounded vector obs (CartPole/Pendulum).
     RECON_SIGMOID: Bool = False,
+    # Reward + value/slowvalue OUTPUT-layer initializer, declared structurally
+    # (InitWith in nets.mojo) — replaces the runtime `out_init_scale` post-hoc
+    # scaling (silent-on-miss name paths). Zero = the paper's zero-init (p.6,
+    # best for negative-reward tasks); Kaiming = full pre-zero-init optimism
+    # (helps POSITIVE-reward tasks like CartPole explore/solve faster). The
+    # policy head's reference outscale 0.01 is FIXED inside DreamerPolicyHead.
+    OUT_INIT: Initializer = Zero,
+    # Hidden-layer weight init for ALL networks. Kaiming (He-uniform,
+    # gain sqrt(6/fan_in)) is the historical default; the reference uses
+    # trunc_normal_in (sigma = sqrt(1/fan_in), sqrt(2) smaller) — pass
+    # `TruncNormalIn` for reference parity.
+    NET_INIT: Initializer = Kaiming,
 ](Movable & ImplicitlyDeletable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
@@ -113,9 +126,13 @@ struct DreamerV3Trainer[
         Self.SC, Self.DETER, Self.OBS, Self.DEC_U, SwishOp, Self.DEC,
         Self.RECON_SIGMOID,
     ]
-    comptime RewT = RewLossGraph[Self.DETER, Self.SC, Self.HU, Self.BINS, SwishOp]
+    comptime RewT = RewLossGraph[
+        Self.DETER, Self.SC, Self.HU, Self.BINS, SwishOp, Self.OUT_INIT
+    ]
     comptime ConT = ConLossGraph[Self.DETER, Self.SC, Self.HU, SwishOp]
-    comptime ValT = DreamerValue[Self.FEAT, Self.VU, Self.BINS, SwishOp]
+    comptime ValT = DreamerValue[
+        Self.FEAT, Self.VU, Self.BINS, SwishOp, Self.OUT_INIT
+    ]
     # discrete (categorical) actor → ACT logits; continuous → 2·ACT (mean,std)
     comptime PolT = DreamerPolicyHead[
         Self.FEAT, Self.PU, Self.ACT, Self.DISCRETE, SwishOp
@@ -138,7 +155,7 @@ struct DreamerV3Trainer[
     comptime WMBlk = WMStep[
         Self.OBS, Self.ACT, Self.DETER, Self.H, Self.STOCH, Self.CLASSES,
         Self.BLOCKS, Self.TOKEN, Self.DEC_U, Self.HU, Self.BINS, Self.B, Self.T,
-        Self.DISCRETE, Self.ENC, Self.DEC, Self.RECON_SIGMOID,
+        Self.DISCRETE, Self.ENC, Self.DEC, Self.RECON_SIGMOID, Self.OUT_INIT,
     ]
     comptime SyncBlk = ParamSyncStep[
         Self.DETER, Self.H, Self.STOCH, Self.CLASSES, Self.BLOCKS, Self.ACT,
@@ -147,7 +164,7 @@ struct DreamerV3Trainer[
     comptime ACBlk = ACStep[
         Self.OBS, Self.ACT, Self.DETER, Self.H, Self.STOCH, Self.CLASSES,
         Self.BLOCKS, Self.TOKEN, Self.HU, Self.VU, Self.PU, Self.BINS, Self.B,
-        Self.T, Self.T_IMAG, Self.DISCRETE,
+        Self.T, Self.T_IMAG, Self.DISCRETE, Self.OUT_INIT,
     ]
 
     var enc: Self.EncT
@@ -179,6 +196,15 @@ struct DreamerV3Trainer[
     var ctx: Optional[DeviceContext]
     var learning_starts: Int
     var train_steps: Int
+    # WM-maturation gate: actor-critic updates (sync + ACStep) are skipped
+    # until train_steps >= ac_start. The policy stays at its near-uniform init
+    # (outscale 0.01) → diverse on-policy replay while the WM matures, and the
+    # actor's first updates see dreams that contain real reward structure.
+    # Rationale (Pong forensics): the value head builds a self-fulfilling ridge
+    # over the policy's own imagined states within ~1.5-3k updates — long
+    # before the WM can even render the agent's paddle — and REINFORCE
+    # collapses onto it absorbingly. ac_start lets the WM win that race.
+    var ac_start: Int
     var warmup: LinearWarmupSchedule   # reference LR ramp 0→lr over warmup_steps
     # Lazily-captured discrete-GPU train-step graph (Stage 3 P5; `None` until the
     # first capture). Moved into a disjoint local for the `maybe_capture_replay`
@@ -196,45 +222,33 @@ struct DreamerV3Trainer[
         lr: Scalar[DT] = Scalar[DT](4e-5),
         learning_starts: Int = 200,
         warmup_steps: Int = 1000,
-        out_init_scale: Scalar[DT] = Scalar[DT](0.0),
         actent: Scalar[DT] = Scalar[DT](3e-4),
         slowtar: Bool = False,
         device_noise: Bool = True,
+        ac_start: Int = 0,
+        online: Bool = False,
     ) raises -> Self:
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
         ), "DreamerV3Trainer: train_target must be 'cpu' or 'gpu'"
-        var enc = Self.EncT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var core = Self.CoreT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var dec = Self.DecT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var rew = Self.RewT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var con = Self.ConT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var value = Self.ValT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var slowvalue = Self.ValT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var policy = Self.PolT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var imagine = Self.ImagT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
+        var enc = Self.EncT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var core = Self.CoreT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var dec = Self.DecT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var rew = Self.RewT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var con = Self.ConT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var value = Self.ValT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var slowvalue = Self.ValT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var policy = Self.PolT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var imagine = Self.ImagT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
 
-        # Finding 4 (paper p.6): scale the reward-predictor and critic OUTPUT
-        # layers toward ~0 at init. Otherwise large/biased initial reward+value
-        # predictions make the imagined λ-returns optimistic (even positive on
-        # negative-reward tasks like Pendulum), and the actor optimizes a reward
-        # landscape that doesn't exist. `out_init_scale=0.0` == the paper's hard
-        # zero-init (best for negative rewards). A small nonzero scale keeps a
-        # little Kaiming optimism, which empirically helps POSITIVE-reward tasks
-        # (CartPole) explore / solve faster without the full-Kaiming blow-up.
-        # The output Linear is Sequential child 3 (`nets.mojo` pins head MLP
-        # depth to 1); inside the reward ComputeGraph the head is node `rew`.
-        # slowvalue is scaled too — the value loss regularizes value TOWARD
-        # slowvalue (slowreg=1), so a non-neutral slowvalue would pull it back.
-        scale_output_graph[Self.train_target](
-            rew, String("rew.3.weight"), String("rew.3.bias"), out_init_scale, ctx
-        )
-        scale_output_module[Self.train_target, Self.ValT](
-            value, String("3.weight"), String("3.bias"), out_init_scale, ctx
-        )
-        scale_output_module[Self.train_target, Self.ValT](
-            slowvalue, String("3.weight"), String("3.bias"), out_init_scale, ctx
-        )
+        # Output-head inits are declared STRUCTURALLY in nets.mojo (InitWith):
+        # reward + value/slowvalue built with `OUT_INIT` (paper p.6 zero-init
+        # by default; Kaiming restores positive-reward optimism for CartPole),
+        # and the policy output with the reference's fixed outscale 0.01
+        # (ScaledKaiming[1,100]). No post-hoc name-path scaling — a mismatch
+        # is now a compile error instead of a silent no-op. slowvalue shares
+        # ValT, so it starts neutral too (the value loss regularizes TOWARD
+        # slowvalue with slowreg=1, so a non-neutral slowvalue would pull it).
 
         # Storage DreamerOpt is driven INSIDE the blocks (graph.for_each_param /
         # opt.step[target, M]); the trainer just constructs them with the lr.
@@ -286,6 +300,7 @@ struct DreamerV3Trainer[
             ctx=ctx,
             learning_starts=learning_starts,
             train_steps=0,
+            ac_start=ac_start,
             warmup=LinearWarmupSchedule.make(lr, warmup_steps),
             _train_graph=None,
             device_noise=device_noise,
@@ -299,6 +314,11 @@ struct DreamerV3Trainer[
             for c in range(Self.BINS):
                 s.ac_blk.bins_d.data[c] = s.bins[c]
             s.ac_blk.bins_d.upload(ctx.value())
+        # Reference replay `online: True`: every fresh T-window is guaranteed
+        # into a batch row exactly once, promptly (recency coverage on top of
+        # uniform sampling).
+        if online:
+            s.replay.set_online(Self.T)
         return s^
 
     def record(
@@ -383,6 +403,12 @@ struct DreamerV3Trainer[
     def dbg_val_loss(self) -> Scalar[DT]:
         return self.state.dbg_val_loss
 
+    def dbg_adv_act(self, a: Int) -> Scalar[DT]:
+        """Per-action mean imagination advantage E[adv | sampled action a]
+        (discrete; want_diag-refreshed). A steady inter-action gap while eval
+        is flat = the collapse driver (model exploitation)."""
+        return self.state.dbg_adv_act[a]
+
     def train_steps_done(self) -> Int:
         return self.train_steps
 
@@ -393,6 +419,56 @@ struct DreamerV3Trainer[
         self._device_step(want_diag)
         self.train_steps += 1
         return True
+
+    def _prof_sync(mut self) raises:
+        comptime if Self.train_target == "gpu":
+            self.ctx.value().synchronize()
+
+    def profile_sections(mut self) raises -> InlineArray[Float64, 5]:
+        """EAGER per-section wall times for ONE train step, in ms:
+        [0] draw+noise prologue, [1] WM-BPTT (fwd+bwd+opt), [2] core→imagine
+        sync, [3] imagination AC (+Polyak), [4] total. GPU: `synchronize()`
+        brackets each section so the wall time is real device time (the Pong
+        run is compute-bound — capture ≈ 0 gain — so eager ≈ captured steady
+        state). Trains normally (advances `train_steps`); the AC-gate is
+        ignored (both sections always run) so profile with ac_start=0."""
+        var out = InlineArray[Float64, 5](fill=0.0)
+        if not self.can_train():
+            return out
+        self._prof_sync()
+        var t0 = perf_counter_ns()
+        self.train_prologue(want_diag=False)
+        self._prof_sync()
+        var t1 = perf_counter_ns()
+        self.wm_blk.step[Self.train_target, Self.T_IMAG](
+            self.state, self.enc, self.core, self.dec, self.rew, self.con,
+            self.oe, self.ocore, self.odec, self.orew, self.ocon,
+            want_diag=False,
+        )
+        self._prof_sync()
+        var t2 = perf_counter_ns()
+        self.sync_blk.step[Self.train_target](
+            self.core, self.imagine, ctx=self.ctx
+        )
+        self._prof_sync()
+        var t3 = perf_counter_ns()
+        self.ac_blk.step[Self.train_target](
+            self.state, self.imagine, self.value, self.slowvalue, self.policy,
+            self.rew, self.con, self.oval, self.opol, self.retnorm,
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.bins.unsafe_ptr()
+            ),
+            False,
+        )
+        self._prof_sync()
+        var t4 = perf_counter_ns()
+        self.train_steps += 1
+        out[0] = Float64(t1 - t0) / 1e6
+        out[1] = Float64(t2 - t1) / 1e6
+        out[2] = Float64(t3 - t2) / 1e6
+        out[3] = Float64(t4 - t3) / 1e6
+        out[4] = Float64(t4 - t0) / 1e6
+        return out
 
     def train_prologue(mut self, want_diag: Bool) raises:
         """Eager per-step work that is NOT part of the captured device-kernel
@@ -565,6 +641,13 @@ struct DreamerV3Trainer[
             self.oe, self.ocore, self.odec, self.orew, self.ocon,
             want_diag=want_diag,
         )
+        # WM-maturation gate: skip the actor-critic while train_steps <
+        # ac_start (policy stays at near-uniform init → diverse replay; the
+        # value ridge can't form on an immature WM). The capture path stays
+        # EAGER until this gate opens (see train_step_captured), so the
+        # captured kernel sequence always includes the AC.
+        if self.train_steps < self.ac_start:
+            return
         # core/prior → imagine mirror
         self.sync_blk.step[Self.train_target](
             self.core, self.imagine, ctx=self.ctx
@@ -641,7 +724,13 @@ struct DreamerV3Trainer[
         # the WM/AC barely train → divergence (high WM loss, exploding return
         # scale). Train EAGERLY until warmup completes (lr constant), then
         # capture once the frozen lr == the steady-state lr.
-        if self.train_steps < self.warmup.warmup_steps:
+        # Also stay eager through the AC-delay phase (ac_start): the captured
+        # graph must include the AC kernel sequence, so capture only once the
+        # AC gate is open (and the lr is constant).
+        if (
+            self.train_steps < self.warmup.warmup_steps
+            or self.train_steps < self.ac_start
+        ):
             return self.train_step(want_diag=False)
         var ctx = self.ctx.value()
         # Eager prologue: refresh the FIXED device input buffers this step.
@@ -659,12 +748,14 @@ struct DreamerV3Trainer[
 
     # ─── Checkpoint (ONE file: the whole world model + actor-critic) ───────
     def save_state(mut self, path: String) raises:
-        """Write the full DreamerV3 network set into a SINGLE `nn-ckpt v2` file,
+        """Write the full DreamerV3 network set into a SINGLE v3 binary file,
         sections name-prefixed per module. `imagine` is NOT saved — it is a
         read-only mirror of `core` re-synced every train_step (and unused by the
         greedy/inference path). Optimizer moments are NOT persisted (resume
-        re-warms), matching the SAC checkpoint convention."""
-        var w = CheckpointWriter(save_moments=False)
+        re-warms), matching the SAC checkpoint convention. v3 binary is REQUIRED
+        at size200m: the v2 text format was ~5 GB per save and silently
+        truncated at the 2 GiB single-write(2) cap."""
+        var w = BinaryCheckpointWriter(save_moments=False)
         w.mode = 0
         self.enc.for_each_param[Self.train_target](w, self.ctx, "enc")
         self.core.for_each_param[Self.train_target](w, self.ctx, "core")
@@ -683,24 +774,45 @@ struct DreamerV3Trainer[
         self.value.for_each_state[Self.train_target](w, self.ctx, "value")
         self.slowvalue.for_each_state[Self.train_target](w, self.ctx, "slowvalue")
         self.policy.for_each_state[Self.train_target](w, self.ctx, "policy")
-        with open(path, "w") as f:
-            f.write(w.content)
+        _write_file_bytes(path, w.content)
 
     def load_state(mut self, path: String) raises:
         """Restore the full network set from the single envelope (same walk
-        order as `save_state`). `imagine` is re-synced from `core` on the next
-        `train_step`."""
-        var content: String
-        with open(path, "r") as f:
-            content = String(f.read())
-        var lines = _split_lines(content)
-        var body = List[String]()
-        for li in range(len(lines)):
-            if lines[li].startswith("storage-ckpt"):
-                continue
-            body.append(lines[li])
-        var r = CheckpointReader(body^)
-        r.mode = 0
+        order as `save_state`; v3 binary or legacy v2 text). `imagine` is
+        re-synced from `core` on the next `train_step`."""
+        var bytes = _read_file_bytes(path)
+        if _is_v3_header(bytes):
+            var rb = BinaryCheckpointReader(bytes^)
+            rb.mode = 0
+            self._load_walk_params(rb)
+            rb.mode = 1
+            self._load_walk_states(rb)
+        else:
+            var content: String
+            with open(path, "r") as f:
+                content = String(f.read())
+            var lines = _split_lines(content)
+            var body = List[String]()
+            for li in range(len(lines)):
+                if lines[li].startswith("storage-ckpt"):
+                    continue
+                body.append(lines[li])
+            var r = CheckpointReader(body^)
+            r.mode = 0
+            self._load_walk_params(r)
+            r.mode = 1
+            self._load_walk_states(r)
+        # Mirror the restored core into `imagine` IMMEDIATELY. `imagine` is not
+        # checkpointed; without this, a load followed by any prior rollout
+        # (openloop probes, imagination GIFs) before the first train_step would
+        # run the dynamics on the random init.
+        self.sync_blk.step[Self.train_target](
+            self.core, self.imagine, ctx=self.ctx
+        )
+
+    def _load_walk_params[V: ParamVisitor](mut self, mut r: V) raises:
+        """`load_state` Param walk (same order as `save_state`), shared by the
+        v3 and legacy-v2 readers. Caller sets the visitor's mode."""
         self.enc.for_each_param[Self.train_target](r, self.ctx, "enc")
         self.core.for_each_param[Self.train_target](r, self.ctx, "core")
         self.dec.for_each_param[Self.train_target](r, self.ctx, "dec")
@@ -709,7 +821,9 @@ struct DreamerV3Trainer[
         self.value.for_each_param[Self.train_target](r, self.ctx, "value")
         self.slowvalue.for_each_param[Self.train_target](r, self.ctx, "slowvalue")
         self.policy.for_each_param[Self.train_target](r, self.ctx, "policy")
-        r.mode = 1
+
+    def _load_walk_states[V: ParamVisitor](mut self, mut r: V) raises:
+        """`load_state` State walk (same order as `save_state`)."""
         self.enc.for_each_state[Self.train_target](r, self.ctx, "enc")
         self.core.for_each_state[Self.train_target](r, self.ctx, "core")
         self.dec.for_each_state[Self.train_target](r, self.ctx, "dec")
@@ -750,6 +864,13 @@ struct DreamerV3Trainer[
         """
         comptime assert Self.train_target == "cpu", (
             "openloop_report is CPU-only — run the diagnostic with a CPU agent"
+        )
+        # `imagine` is NOT in the checkpoint (normally re-synced from `core`
+        # each train_step) — after a bare `load_state` it still holds its random
+        # init, which silently corrupts the open-loop panel. Sync here so the
+        # probe is self-contained.
+        self.sync_blk.step[Self.train_target](
+            self.core, self.imagine, ctx=self.ctx
         )
         comptime D = Self.DETER
         comptime SCl = Self.SC
@@ -919,6 +1040,11 @@ struct DreamerV3Trainer[
         comptime assert Self.train_target == "cpu", (
             "openloop_trace is CPU-only — run the diagnostic with a CPU agent"
         )
+        # Self-contained probe: sync the `imagine` mirror from the trained core
+        # (it is not checkpointed — see openloop_report).
+        self.sync_blk.step[Self.train_target](
+            self.core, self.imagine, ctx=self.ctx
+        )
         comptime D = Self.DETER
         comptime SCl = Self.SC
         comptime TOK = Self.TOKEN
@@ -1044,6 +1170,204 @@ struct DreamerV3Trainer[
             for k in range(SCl):
                 tfs.data[k] = tsn_t.data[k]
 
+    def reset_ac(mut self) raises:
+        """Re-initialize the ACTOR-CRITIC — value / slowvalue / policy (fresh
+        params, hence fresh optimizer moments: storage moments live in the
+        Params), fresh opt step counters, fresh return normalizer — while
+        KEEPING the trained world model.
+
+        Purpose: pay the WM warmup wall-time ONCE. Load a WM-mature checkpoint,
+        call reset_ac(), and train with ac_start=0 → actor-from-step-1
+        experiments on a mature WM without re-running ~hours of WM-only
+        maturation per iteration (the saved value/policy in such a checkpoint
+        are collapsed and must not be reused).
+
+        Call BEFORE any CUDA-graph capture: this swaps module params (new
+        device buffers) — a previously captured train graph would replay onto
+        stale pointers. In the standard flow (load → reset_ac → train) the
+        first capture happens after lr-warmup, well past this call."""
+        self.value = Self.ValT.make[Self.train_target, INIT = Self.NET_INIT](
+            ctx=self.ctx
+        )
+        self.slowvalue = Self.ValT.make[Self.train_target, INIT = Self.NET_INIT](
+            ctx=self.ctx
+        )
+        self.policy = Self.PolT.make[Self.train_target, INIT = Self.NET_INIT](
+            ctx=self.ctx
+        )
+        self.oval = DreamerOpt(lr=self.oval.lr)
+        self.opol = DreamerOpt(lr=self.opol.lr)
+        self.retnorm = PercentileNormalize.make(
+            String("perc"), Scalar[DT](0.01), Scalar[DT](5.0),
+            Scalar[DT](95.0), Scalar[DT](1.0), False,
+        )
+        comptime if Self.train_target == "gpu":
+            # device-resident retnorm EMA state back to the make() init
+            self.ac_blk.retstate_d.data[0] = Scalar[DT](0.0)
+            self.ac_blk.retstate_d.data[1] = Scalar[DT](0.0)
+            self.ac_blk.retstate_d.upload(self.ctx.value())
+
+    def openloop_heads_gpu(
+        mut self,
+        real_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
+        real_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor)*ACT]
+        ctx_len: Int,
+        hor: Int,
+        out_ol_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [hor*OBS] decoded obs
+        out_heads: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [hor*3] = [rew_hat, val_hat, con_prob] per step
+    ) raises:
+        """Open-loop PRIOR rollout with HEAD decodes (exploit forensics).
+
+        Same belief-seeding + prior rollout as `openloop_decode_gpu`'s open-loop
+        half (no teacher-forced panel), but per imagined step also decodes what
+        the actor actually trains on: the reward head (twohot), the value head
+        (twohot), and the continue prob. Rolling this under counterfactual
+        held actions exposes WHICH head hands out a spurious advantage
+        (value ramp / reward blip / fake terminal) on the collapsed action's
+        branch. GPU-only; B=1 marshalling identical to openloop_decode_gpu.
+        """
+        comptime assert Self.train_target == "gpu", (
+            "openloop_heads_gpu is GPU-only"
+        )
+        # imagine mirror sync (not checkpointed; see openloop_decode_gpu).
+        self.sync_blk.step[Self.train_target](
+            self.core, self.imagine, ctx=self.ctx
+        )
+        comptime D = Self.DETER
+        comptime SCl = Self.SC
+        comptime TOK = Self.TOKEN
+        comptime OBSD = Self.OBS
+        comptime ACTD = Self.ACT
+        comptime FEATl = Self.FEAT
+        comptime BINSl = Self.BINS
+        comptime CARRY = 2 + D + SCl
+        var ctx = self.ctx.value()
+        var bins = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.bins.unsafe_ptr()
+        )
+
+        var bd = Tensor.make["gpu"](D, self.ctx); bd.ensure(D)
+        var bs = Tensor.make["gpu"](SCl, self.ctx); bs.ensure(SCl)
+        var pa = Tensor.make["gpu"](ACTD, self.ctx); pa.ensure(ACTD)
+        var obt = Tensor.make["gpu"](OBSD, self.ctx); obt.ensure(OBSD)
+        var dummyO = Tensor.make["gpu"](OBSD, self.ctx); dummyO.ensure(OBSD)
+        var dummy1 = Tensor.make["gpu"](1, self.ctx); dummy1.ensure(1)
+        var tok = Tensor.make["gpu"](TOK, self.ctx)
+        var carry_t = Tensor.make["gpu"](CARRY, self.ctx)
+        var feat_t = Tensor.make["gpu"](FEATl, self.ctx); feat_t.ensure(FEATl)
+        var loss_t = Tensor.make["gpu"](1, self.ctx)
+        var vscr = Tensor.make["gpu"](BINSl, self.ctx)
+        for k in range(OBSD):
+            dummyO.data[k] = 0.0
+        dummyO.upload(ctx)
+        dummy1.data[0] = 0.0
+        dummy1.upload(ctx)
+        for k in range(D):
+            bd.data[k] = 0.0
+        for k in range(SCl):
+            bs.data[k] = 0.0
+
+        # ── context: observe ctx_len real steps (prev-action convention) ──
+        for t in range(ctx_len):
+            if t == 0:
+                for k in range(ACTD):
+                    pa.data[k] = 0.0
+            else:
+                for k in range(ACTD):
+                    pa.data[k] = real_act[(t - 1) * ACTD + k]
+            for k in range(OBSD):
+                obt.data[k] = real_obs[t * OBSD + k]
+            obt.upload(ctx); bd.upload(ctx); bs.upload(ctx); pa.upload(ctx)
+            self.enc.forward["gpu", 1](
+                child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
+                rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
+                self.ctx,
+            )
+            self.core.set_input["deter", 1](bd, self.ctx)
+            self.core.set_input["stoch", 1](bs, self.ctx)
+            self.core.set_input["action", 1](pa, self.ctx)
+            self.core.set_input["tokens", 1](tok, self.ctx)
+            self.core.forward[1, "gpu"](carry_t, self.ctx)
+            ref nd = self.core.node_output["nd"]()
+            ref sn = self.core.node_output["stoch_new"]()
+            nd.download(ctx); sn.download(ctx)
+            for k in range(D):
+                bd.data[k] = nd.data[k]
+            for k in range(SCl):
+                bs.data[k] = sn.data[k]
+
+        var old = Tensor.make["gpu"](D, self.ctx); old.ensure(D)
+        var ols = Tensor.make["gpu"](SCl, self.ctx); ols.ensure(SCl)
+        var ond_t = Tensor.make["gpu"](D, self.ctx); ond_t.ensure(D)
+        var osn_t = Tensor.make["gpu"](SCl, self.ctx); osn_t.ensure(SCl)
+        for k in range(D):
+            old.data[k] = bd.data[k]
+        for k in range(SCl):
+            ols.data[k] = bs.data[k]
+
+        for h in range(hor):
+            var idx = ctx_len - 1 + h
+            for k in range(ACTD):
+                pa.data[k] = real_act[idx * ACTD + k]
+            pa.upload(ctx)
+            old.upload(ctx); ols.upload(ctx)
+            self.imagine.set_input["deter", 1](old, self.ctx)
+            self.imagine.set_input["stoch", 1](ols, self.ctx)
+            self.imagine.set_input["action", 1](pa, self.ctx)
+            self.imagine.forward[1, "gpu"](feat_t, self.ctx)
+            ref ond = self.imagine.node_output["nd"]()
+            ref osn = self.imagine.node_output["stoch_new"]()
+            ond.download(ctx); osn.download(ctx)
+            for k in range(D):
+                ond_t.data[k] = ond.data[k]
+            for k in range(SCl):
+                osn_t.data[k] = osn.data[k]
+            ond_t.upload(ctx); osn_t.upload(ctx)
+            # decoder → pixels
+            self.dec.set_input["stoch_new", 1](osn_t, self.ctx)
+            self.dec.set_input["nd", 1](ond_t, self.ctx)
+            self.dec.set_input["rtgt", 1](dummyO, self.ctx)
+            self.dec.forward[1, "gpu"](loss_t, self.ctx)
+            ref pred = self.dec.node_output["dec"]()
+            pred.download(ctx)
+            for k in range(OBSD):
+                out_ol_obs[h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](
+                    pred.data[k]
+                )
+            # reward head (twohot decode)
+            self.rew.set_input["nd", 1](ond_t, self.ctx)
+            self.rew.set_input["stoch_new", 1](osn_t, self.ctx)
+            self.rew.set_input["rtgt", 1](dummy1, self.ctx)
+            self.rew.forward[1, "gpu"](loss_t, self.ctx)
+            ref rl = self.rew.node_output["rew"]()
+            rl.download(ctx)
+            out_heads[h * 3 + 0] = twohot_pred[BINSl](_hp(rl), 0, bins)
+            # value head (twohot decode) on feat = [nd, stoch_new]
+            for k in range(D):
+                feat_t.data[k] = ond_t.data[k]
+            for k in range(SCl):
+                feat_t.data[D + k] = osn_t.data[k]
+            feat_t.upload(ctx)
+            self.value.forward["gpu", 1](
+                TensorRefs[1](feat_t), vscr, self.ctx
+            )
+            vscr.download(ctx)
+            out_heads[h * 3 + 1] = twohot_pred[BINSl](_hp(vscr), 0, bins)
+            # continue head → prob
+            self.con.set_input["nd", 1](ond_t, self.ctx)
+            self.con.set_input["stoch_new", 1](osn_t, self.ctx)
+            self.con.set_input["ctgt", 1](dummy1, self.ctx)
+            self.con.forward[1, "gpu"](loss_t, self.ctx)
+            ref ocon = self.con.node_output["con"]()
+            ocon.download(ctx)
+            out_heads[h * 3 + 2] = Scalar[DT](1.0) / (
+                Scalar[DT](1.0) + exp(-ocon.data[0])
+            )
+            for k in range(D):
+                old.data[k] = ond_t.data[k]
+            for k in range(SCl):
+                ols.data[k] = osn_t.data[k]
+
     def openloop_decode_gpu(
         mut self,
         real_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
@@ -1072,6 +1396,14 @@ struct DreamerV3Trainer[
         """
         comptime assert Self.train_target == "gpu", (
             "openloop_decode_gpu is GPU-only — use openloop_trace on CPU"
+        )
+        # Self-contained probe: sync the `imagine` mirror from the trained core.
+        # `imagine` is NOT checkpointed (normally re-synced each train_step), so
+        # a bare `load_state` → openloop_decode_gpu would roll the prior with a
+        # RANDOM dynamics net — the GIF's "IMAGINED" panel dissolves to the mean
+        # image while RECON stays sharp, misdiagnosing the world model.
+        self.sync_blk.step[Self.train_target](
+            self.core, self.imagine, ctx=self.ctx
         )
         comptime D = Self.DETER
         comptime SCl = Self.SC

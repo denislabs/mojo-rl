@@ -39,6 +39,7 @@ from mojo_rl.nn.primitives.ops.gelu_op import GELUOp
 from mojo_rl.nn.primitives.concat import Concat
 from mojo_rl.nn.core.element_op import ElementOp
 from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.initializer import Initializer, Zero
 from .rssm_ops import (
     ActionSquash, BlockGroupAssemble, GRUGate, StraightThroughSample,
 )
@@ -73,12 +74,15 @@ comptime DecLossGraph[
 ]
 
 
-comptime RewLossGraph[DETER: Int, SC: Int, HU: Int, BINS: Int, A: ElementOp = GELUOp] = ComputeGraph[
+comptime RewLossGraph[
+    DETER: Int, SC: Int, HU: Int, BINS: Int, A: ElementOp = GELUOp,
+    OUT_INIT: Initializer = Zero,  # reward-head output-layer init (nets.mojo)
+] = ComputeGraph[
     InputSlot["nd", DETER],
     InputSlot["stoch_new", SC],
     InputSlot["rtgt", 1],
     Node["feat", Concat[DETER, SC],                    "nd", "stoch_new"],
-    Node["rew",  DreamerRewardMLP[DETER + SC, HU, BINS, A], "feat"],
+    Node["rew",  DreamerRewardMLP[DETER + SC, HU, BINS, A, OUT_INIT], "feat"],
     Node["rewl", TwoHotLoss[BINS],                     "rew", "rtgt"],
 ]
 

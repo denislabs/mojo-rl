@@ -1,4 +1,4 @@
-"""Swimmer Environment - thin wrapper around Phyics3dEnv[SwimmerModel, SwimmerConfig]."""
+"""Swimmer Environment - thin wrapper over Phyics3dEnv[SwimmerModel, SwimmerConfig]."""
 
 from .swimmer_xml import SwimmerModel
 from .swimmer_config import SwimmerConfig

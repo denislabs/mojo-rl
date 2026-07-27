@@ -9,6 +9,9 @@ dataspaces, datatypes. Every ``H5*get_*`` call that returns an id
 that contract.
 """
 
+from . import _get_dylib_function, c_char, lib, Ptr
+from .h5_types import herr_t, hid_t
+
 
 def h5d_open2(
     loc_id: hid_t, var name: String, dapl_id: hid_t
@@ -20,7 +23,7 @@ def h5d_open2(
     return _get_dylib_function[
         lib,
         "H5Dopen2",
-        def(hid_t, Ptr[c_char, ImmutOrigin(origin_of(name))], hid_t) thin -> hid_t,
+        def(hid_t, Ptr[c_char, ImmOrigin(origin_of(name))], hid_t) thin -> hid_t,
     ]()(loc_id, name.as_c_string_slice().unsafe_ptr(), dapl_id)
 
 

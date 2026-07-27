@@ -1,4 +1,4 @@
-"""Humanoid Environment - thin wrapper around Phyics3dEnv[HumanoidModel, HumanoidConfig]."""
+"""Humanoid Environment - thin wrapper over Phyics3dEnv[HumanoidModel, HumanoidConfig]."""
 
 from .humanoid_xml import HumanoidModel
 from .humanoid_config import HumanoidConfig

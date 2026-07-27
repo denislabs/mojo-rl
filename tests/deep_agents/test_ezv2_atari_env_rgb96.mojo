@@ -43,7 +43,7 @@ def test_rgb96_obs_and_flags() raises:
     # OBS_MODE=2, EZv2 flags on.
     var env = AtariEnv[2, DT](
         AtariGame.PONG,
-        rom.data.value(),
+        rom.data.value().as_unsafe_any_origin(),
         rom.size,
         clip_reward=True,
         episodic_life=True,
@@ -122,7 +122,7 @@ def test_rgb96_obs_and_flags() raises:
 def test_defaults_minimal_actions() raises:
     print("test defaults (flags off) → Pong minimal action set ...")
     var rom = load_rom("roms/pong.bin")
-    var env = AtariEnv[2, DT](AtariGame.PONG, rom.data.value(), rom.size)
+    var env = AtariEnv[2, DT](AtariGame.PONG, rom.data.value().as_unsafe_any_origin(), rom.size)
     assert_equal(env.num_actions(), 6, "Pong minimal set has 6 actions")
     assert_equal(env.obs_dim(), RGB_STACK, "obs_dim still 110592 (mode 2)")
     var obs = env.reset_obs_list()
@@ -135,7 +135,7 @@ def test_defaults_minimal_actions() raises:
 def test_gray84_still_compiles() raises:
     print("test gray-84 path (OBS_MODE=1) unchanged + compiles ...")
     var rom = load_rom("roms/pong.bin")
-    var env = AtariEnv[1, DT](AtariGame.PONG, rom.data.value(), rom.size)
+    var env = AtariEnv[1, DT](AtariGame.PONG, rom.data.value().as_unsafe_any_origin(), rom.size)
     assert_equal(env.obs_dim(), 4 * 84 * 84, "gray obs_dim == 28224")
     assert_equal(env.num_actions(), 6, "gray Pong minimal set 6")
     var obs = env.reset_obs_list()
@@ -154,9 +154,9 @@ def test_rgb96_nhwc_parity() raises:
     print("test RGB-96 NHWC vs NCHW obs parity ...")
     comptime CH = 12
     var rn = load_rom("roms/pong.bin")
-    var en = AtariEnv[2, DT](AtariGame.PONG, rn.data.value(), rn.size)
+    var en = AtariEnv[2, DT](AtariGame.PONG, rn.data.value().as_unsafe_any_origin(), rn.size)
     var rh = load_rom("roms/pong.bin")
-    var eh = AtariEnv[2, DT, LAYOUT_NHWC](AtariGame.PONG, rh.data.value(), rh.size)
+    var eh = AtariEnv[2, DT, LAYOUT_NHWC](AtariGame.PONG, rh.data.value().as_unsafe_any_origin(), rh.size)
 
     var bad = 0
     var on = en.reset_obs_list()

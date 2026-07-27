@@ -101,8 +101,8 @@ struct GatherCols[NA_: Int](Module):
             var v_p = values.data.unsafe_ptr()
             var i_p = idx.data.unsafe_ptr()
             for b in range(B):
-                var a = Int(i_p[b])
-                out.data[b] = v_p[b * Self.NA_ + a]
+                var a = Int(i_p[unsafe_offset=b])
+                out.data[b] = v_p[unsafe_offset=b * Self.NA_ + a]
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B)

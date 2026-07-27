@@ -48,9 +48,9 @@ def test_u8_gather_bit_identical_to_f32() raises:
         ctx, batch_capacity=BATCH
     )
 
-    var obs = alloc[Scalar[DT]](OBS)
-    var act = alloc[Scalar[DT]](ACT)
-    var nxt = alloc[Scalar[DT]](OBS)
+    var obs = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var act = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
+    var nxt = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
     for step in range(24):
         for d in range(OBS):
             obs[d] = _obs_val(step, d)
@@ -77,11 +77,11 @@ def test_u8_gather_bit_identical_to_f32() raises:
     rb_f.sample[BATCH](ctx, mb_s_f, mb_a_f, mb_r_f, mb_sp_f, mb_d_f)
     rb_u.sample[BATCH](ctx, mb_s_u, mb_a_u, mb_r_u, mb_sp_u, mb_d_u)
 
-    var h_f = alloc[Scalar[DT]](BATCH * OBS)
-    var h_u = alloc[Scalar[DT]](BATCH * OBS)
-    var hp_f = alloc[Scalar[DT]](BATCH * OBS)
-    var hp_u = alloc[Scalar[DT]](BATCH * OBS)
-    var h_idx = alloc[Int32](BATCH)
+    var h_f = alloc[Scalar[DT]](BATCH * OBS).as_unsafe_any_origin()
+    var h_u = alloc[Scalar[DT]](BATCH * OBS).as_unsafe_any_origin()
+    var hp_f = alloc[Scalar[DT]](BATCH * OBS).as_unsafe_any_origin()
+    var hp_u = alloc[Scalar[DT]](BATCH * OBS).as_unsafe_any_origin()
+    var h_idx = alloc[Int32](BATCH).as_unsafe_any_origin()
     ctx.enqueue_copy(h_f, mb_s_f)
     ctx.enqueue_copy(h_u, mb_s_u)
     ctx.enqueue_copy(hp_f, mb_sp_f)
@@ -117,18 +117,18 @@ def test_u8_sequence_replay_round_trip() raises:
     var ctx = DeviceContext()
     var buf = GPUSequenceReplay[OBS, ACT, CAP, DType.uint8].new(ctx)
 
-    var s = alloc[Scalar[DT]](OBS)
-    var a = alloc[Scalar[DT]](ACT)
+    var s = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var a = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
     for slot in range(20):
         for d in range(OBS):
             s[d] = Scalar[DT](slot) / Scalar[DT](255.0)  # frame tag k/255
         a[0] = Scalar[DT](Float64(slot))
         buf.record(s, a, Scalar[DT](Float64(slot)), Scalar[DT](0.0))
 
-    var obs_out = alloc[Scalar[DT]](B * (T + 1) * OBS)
-    var act_out = alloc[Scalar[DT]](B * T * ACT)
-    var rew_out = alloc[Scalar[DT]](B * T)
-    var dne_out = alloc[Scalar[DT]](B * T)
+    var obs_out = alloc[Scalar[DT]](B * (T + 1) * OBS).as_unsafe_any_origin()
+    var act_out = alloc[Scalar[DT]](B * T * ACT).as_unsafe_any_origin()
+    var rew_out = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
+    var dne_out = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
     buf.sample_batch[B, T](obs_out, act_out, rew_out, dne_out)
 
     for b in range(B):

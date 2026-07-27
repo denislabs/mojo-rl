@@ -344,7 +344,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.value().init_pointee_move(
+        self._renderer.value().unsafe_write(
             Renderer2D(width=560, height=530, fps=30, title="ConnectFour")
         )
         self._renderer_initialized = True

@@ -31,6 +31,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
+from linalg.bmm import batched_matmul
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
@@ -142,6 +143,108 @@ def _bl_dx_kernel[
     grad_x[idx] = acc
 
 
+# ── batched-GEMM path helpers (Dreamer profile: the scalar kernels above are
+# ~40× off tensor-core speed — the imagination GRU's two BlockLinear forwards
+# alone were 21.2 ms + 14.9 ms/call ≈ the WHOLE 640 ms AC section at size200m.
+# The GEMM path gathers x/go into BLOCK-MAJOR scratch ([BLK, B, ·]) and runs
+# ONE `batched_matmul` over the BLK batch dim; `weight.val` is ALREADY the
+# [BLK, IPB, OPB] row-major bmm operand — zero weight repacking). ────────────
+
+
+def _bl_gather_x_kernel[
+    BATCH: Int, IN: Int, BLK: Int, TRANSPOSED: Bool
+](
+    x: LayoutTensor[DT, Layout.row_major(BATCH * IN), MutAnyOrigin],
+    xg: LayoutTensor[DT, Layout.row_major(BATCH * IN), MutAnyOrigin],
+):
+    """x[b, k·IPB+i] → xg[k, b, i] (TRANSPOSED=False, bmm A operand) or
+    xg[k, i, b] (TRANSPOSED=True, the xᵀ operand for the dW bmm)."""
+    comptime IPB = IN // BLK
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * IN:
+        return
+    var b = idx // IN
+    var col = idx % IN
+    var k = col // IPB
+    var i = col % IPB
+    comptime if TRANSPOSED:
+        xg[(k * IPB + i) * BATCH + b] = x[idx]
+    else:
+        xg[(k * BATCH + b) * IPB + i] = x[idx]
+
+
+def _bl_gather_go_kernel[
+    BATCH: Int, OUT: Int, BLK: Int
+](
+    go: LayoutTensor[DT, Layout.row_major(BATCH * OUT), MutAnyOrigin],
+    gog: LayoutTensor[DT, Layout.row_major(BATCH * OUT), MutAnyOrigin],
+):
+    """go[b, k·OPB+o] → gog[k, b, o]."""
+    comptime OPB = OUT // BLK
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * OUT:
+        return
+    var b = idx // OUT
+    var col = idx % OUT
+    var k = col // OPB
+    var o = col % OPB
+    gog[(k * BATCH + b) * OPB + o] = go[idx]
+
+
+def _bl_scatter_out_bias_kernel[
+    BATCH: Int, OUT: Int, BLK: Int
+](
+    og: LayoutTensor[DT, Layout.row_major(BATCH * OUT), MutAnyOrigin],
+    bias: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
+    out_buf: LayoutTensor[DT, Layout.row_major(BATCH * OUT), MutAnyOrigin],
+):
+    """og[k, b, o] + bias[k·OPB+o] → out[b, k·OPB+o]."""
+    comptime OPB = OUT // BLK
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * OUT:
+        return
+    var b = idx // OUT
+    var col = idx % OUT
+    var k = col // OPB
+    var o = col % OPB
+    out_buf[idx] = rebind[Scalar[DT]](
+        og[(k * BATCH + b) * OPB + o]
+    ) + rebind[Scalar[DT]](bias[col])
+
+
+def _bl_scatter_gx_kernel[
+    BATCH: Int, IN: Int, BLK: Int
+](
+    gxg: LayoutTensor[DT, Layout.row_major(BATCH * IN), MutAnyOrigin],
+    gin: LayoutTensor[DT, Layout.row_major(BATCH * IN), MutAnyOrigin],
+):
+    """gxg[k, b, i] → gin[b, k·IPB+i] (overwrite — matches the scalar path)."""
+    comptime IPB = IN // BLK
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * IN:
+        return
+    var b = idx // IN
+    var col = idx % IN
+    var k = col // IPB
+    var i = col % IPB
+    gin[idx] = rebind[Scalar[DT]](gxg[(k * BATCH + b) * IPB + i])
+
+
+def _bl_accum_dw_kernel[
+    W_SIZE: Int
+](
+    dwg: LayoutTensor[DT, Layout.row_major(W_SIZE), MutAnyOrigin],
+    grad_w: LayoutTensor[DT, Layout.row_major(W_SIZE), MutAnyOrigin],
+):
+    """grad_w += dwg (dwg is [BLK, IPB, OPB] — the exact weight layout)."""
+    var idx = Int(global_idx.x)
+    if idx >= W_SIZE:
+        return
+    grad_w[idx] = rebind[Scalar[DT]](grad_w[idx]) + rebind[Scalar[DT]](
+        dwg[idx]
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────
 # BlockLinear.
 # ──────────────────────────────────────────────────────────────────────
@@ -156,12 +259,32 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
     comptime W_SIZE = Self.BLOCKS * Self.IPB * Self.OPB
     comptime B_SIZE = Self.OUT
 
+    # GEMM path requires every bmm N-dim >= 2 (max_matmul/bmm silently
+    # MISCOMPUTES N=1 GEMMs on GPU — see feedback_max_matmul_n1_gpu_miscompute);
+    # degenerate block shapes keep the scalar kernels.
+    comptime USE_GEMM: Bool = Self.IPB >= 2 and Self.OPB >= 2
+
     var weight: Param["weight", True, Self.W_SIZE]
     var bias: Param["bias", False, Self.B_SIZE]
+    # GPU batched-GEMM scratch (block-major gathers; lazily ensure_gpu'd, so
+    # pointers are stable across calls → CUDA-graph capture-safe after the
+    # eager warmup steps).
+    var xg: Tensor
+    var og: Tensor
+    var gog: Tensor
+    var xt: Tensor
+    var gxg: Tensor
+    var dwg: Tensor
 
     def __init__(out self):
         self.weight = Param["weight", True, Self.W_SIZE]()
         self.bias = Param["bias", False, Self.B_SIZE]()
+        self.xg = Tensor()
+        self.og = Tensor()
+        self.gog = Tensor()
+        self.xt = Tensor()
+        self.gxg = Tensor()
+        self.dwg = Tensor()
 
     @staticmethod
     def make[
@@ -197,7 +320,6 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
             out.ensure(B * Self.OUT)
             var in_p = in0.data.unsafe_ptr()
             var out_p = out.data.unsafe_ptr()
-            var w_p = self.weight.val.data.unsafe_ptr()
             var b_p = self.bias.val.data.unsafe_ptr()
             comptime if Self.BLOCKS == 1:
                 # Plain dense matmul — input/output blocks ARE the full
@@ -211,7 +333,7 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                 for b in range(B):
                     var out_base = b * Self.OUT
                     for o2 in range(Self.OUT):
-                        out_p[out_base + o2] = out_p[out_base + o2] + b_p[o2]
+                        out_p[unsafe_offset=out_base + o2] = out_p[unsafe_offset=out_base + o2] + b_p[unsafe_offset=o2]
             else:
                 # BLOCKS independent matmuls. The block's input/output columns
                 # are STRIDED slices of [B, IN]/[B, OUT], so gather each
@@ -229,13 +351,16 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                         var xb_base = b * Self.IPB
                         var src_base = b * Self.IN + in_col0
                         for i in range(Self.IPB):
-                            xblk_list[xb_base + i] = in_p[src_base + i]
+                            xblk_list[xb_base + i] = in_p[unsafe_offset=src_base + i]
                     var w_blk = k * Self.IPB * Self.OPB
                     var xblk_tt = TileTensor(
                         xblk_list, row_major[B, Self.IPB](),
                     )
                     var kernel_k_tt = TileTensor(
-                        w_p + w_blk, row_major[Self.IPB, Self.OPB](),
+                        Span(self.weight.val.data)[
+                            w_blk : w_blk + Self.IPB * Self.OPB
+                        ],
+                        row_major[Self.IPB, Self.OPB](),
                     )
                     var oblk_tt = TileTensor(
                         oblk_list, row_major[B, Self.OPB](),
@@ -246,22 +371,61 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                         var ob_base = b * Self.OPB
                         var dst_base = b * Self.OUT + out_col0
                         for o2 in range(Self.OPB):
-                            out_p[dst_base + o2] = (
-                                oblk_list[ob_base + o2] + b_p[out_col0 + o2]
+                            out_p[unsafe_offset=dst_base + o2] = (
+                                oblk_list[ob_base + o2] + b_p[unsafe_offset=out_col0 + o2]
                             )
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.OUT)
-            comptime n_blk = (B * Self.OUT + TPB - 1) // TPB
-            comptime k_fwd = _bl_forward_kernel[B, Self.IN, Self.OUT, Self.BLOCKS]
-            c.enqueue_function[k_fwd](
-                in0.lt["gpu", Layout.row_major(B * Self.IN)](),
-                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                self.bias.val.lt["gpu", Layout.row_major(Self.OUT)](),
-                out.lt["gpu", Layout.row_major(B * Self.OUT)](),
-                grid_dim=n_blk,
-                block_dim=TPB,
-            )
+            comptime if Self.USE_GEMM:
+                # gather x → block-major, ONE batched GEMM over BLK, scatter+bias.
+                self.xg.ensure_gpu(c, B * Self.IN)
+                self.og.ensure_gpu(c, B * Self.OUT)
+                comptime n_gx = (B * Self.IN + TPB - 1) // TPB
+                c.enqueue_function[
+                    _bl_gather_x_kernel[B, Self.IN, Self.BLOCKS, False]
+                ](
+                    in0.lt["gpu", Layout.row_major(B * Self.IN)](),
+                    self.xg.lt["gpu", Layout.row_major(B * Self.IN)](),
+                    grid_dim=n_gx,
+                    block_dim=TPB,
+                )
+                var xg_tt = TileTensor(
+                    self.xg.dev.value(),
+                    row_major[Self.BLOCKS, B, Self.IPB](),
+                )
+                var w_tt = TileTensor(
+                    self.weight.val.dev.value(),
+                    row_major[Self.BLOCKS, Self.IPB, Self.OPB](),
+                )
+                var og_tt = TileTensor(
+                    self.og.dev.value(),
+                    row_major[Self.BLOCKS, B, Self.OPB](),
+                )
+                batched_matmul[target="gpu"](og_tt, xg_tt, w_tt, context=c)
+                comptime n_so = (B * Self.OUT + TPB - 1) // TPB
+                c.enqueue_function[
+                    _bl_scatter_out_bias_kernel[B, Self.OUT, Self.BLOCKS]
+                ](
+                    self.og.lt["gpu", Layout.row_major(B * Self.OUT)](),
+                    self.bias.val.lt["gpu", Layout.row_major(Self.OUT)](),
+                    out.lt["gpu", Layout.row_major(B * Self.OUT)](),
+                    grid_dim=n_so,
+                    block_dim=TPB,
+                )
+            else:
+                comptime n_blk = (B * Self.OUT + TPB - 1) // TPB
+                comptime k_fwd = _bl_forward_kernel[
+                    B, Self.IN, Self.OUT, Self.BLOCKS
+                ]
+                c.enqueue_function[k_fwd](
+                    in0.lt["gpu", Layout.row_major(B * Self.IN)](),
+                    self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                    self.bias.val.lt["gpu", Layout.row_major(Self.OUT)](),
+                    out.lt["gpu", Layout.row_major(B * Self.OUT)](),
+                    grid_dim=n_blk,
+                    block_dim=TPB,
+                )
 
     # ----- Backward --------------------------------------------------------
 
@@ -286,7 +450,6 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
             var gw_p = self.weight.grd.data.unsafe_ptr()
             var gb_p = self.bias.grd.data.unsafe_ptr()
             var x_p = fin.data.unsafe_ptr()
-            var w_p = self.weight.val.data.unsafe_ptr()
             var gi_p = gin.data.unsafe_ptr()
             var grad_output_v = TileTensor(
                 grad_output.data, row_major[B, Self.OUT]()
@@ -296,8 +459,8 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
             for j in range(Self.OUT):
                 var accb: Scalar[DT] = 0.0
                 for b in range(B):
-                    accb += go_p[b * Self.OUT + j]
-                gb_p[j] += accb
+                    accb += go_p[unsafe_offset=b * Self.OUT + j]
+                gb_p[unsafe_offset=j] += accb
 
             # grad_weight[k] += x_blockᵀ @ go_block, via BLAS.
             comptime if Self.BLOCKS == 1:
@@ -309,14 +472,14 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                 )
                 for b in range(B):
                     for i in range(Self.IN):
-                        cT_list[i * B + b] = x_p[b * Self.IN + i]
+                        cT_list[i * B + b] = x_p[unsafe_offset=b * Self.IN + i]
                 var cT_tt = TileTensor(cT_list, row_major[Self.IN, B]())
                 var dW_tt = TileTensor(
                     dW_list, row_major[Self.IN, Self.OUT](),
                 )
                 max_matmul[target="cpu"](dW_tt, cT_tt, grad_output_v, None)
                 for idx in range(Self.IN * Self.OUT):
-                    gw_p[idx] = gw_p[idx] + dW_list[idx]
+                    gw_p[unsafe_offset=idx] = gw_p[unsafe_offset=idx] + dW_list[idx]
             else:
                 var xT_list = List[Scalar[DT]](
                     length=Self.IPB * B, fill=Scalar[DT](0)
@@ -333,11 +496,11 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                     for b in range(B):
                         var x_src = b * Self.IN + in_col0
                         for i in range(Self.IPB):
-                            xT_list[i * B + b] = x_p[x_src + i]
+                            xT_list[i * B + b] = x_p[unsafe_offset=x_src + i]
                         var go_src = b * Self.OUT + out_col0
                         var gob_dst = b * Self.OPB
                         for o2 in range(Self.OPB):
-                            gob_list[gob_dst + o2] = go_p[go_src + o2]
+                            gob_list[gob_dst + o2] = go_p[unsafe_offset=go_src + o2]
                     var xT_tt = TileTensor(xT_list, row_major[Self.IPB, B]())
                     var gob_tt = TileTensor(
                         gob_list, row_major[B, Self.OPB](),
@@ -348,7 +511,7 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                     max_matmul[target="cpu"](dW_tt, xT_tt, gob_tt, None)
                     var w_blk = k * Self.IPB * Self.OPB
                     for idx in range(Self.IPB * Self.OPB):
-                        gw_p[w_blk + idx] = gw_p[w_blk + idx] + dW_list[idx]
+                        gw_p[unsafe_offset=w_blk + idx] = gw_p[unsafe_offset=w_blk + idx] + dW_list[idx]
 
             # grad_x_block = go_block @ kernel[k]ᵀ
             comptime if Self.BLOCKS == 1:
@@ -372,13 +535,16 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                         var go_src = b * Self.OUT + out_col0
                         var gob_dst = b * Self.OPB
                         for o2 in range(Self.OPB):
-                            gob_list2[gob_dst + o2] = go_p[go_src + o2]
+                            gob_list2[gob_dst + o2] = go_p[unsafe_offset=go_src + o2]
                     var w_blk = k * Self.IPB * Self.OPB
                     var gob_tt = TileTensor(
                         gob_list2, row_major[B, Self.OPB](),
                     )
                     var kernel_k_tt = TileTensor(
-                        w_p + w_blk, row_major[Self.IPB, Self.OPB](),
+                        Span(self.weight.val.data)[
+                            w_blk : w_blk + Self.IPB * Self.OPB
+                        ],
+                        row_major[Self.IPB, Self.OPB](),
                     )
                     var gxb_tt = TileTensor(
                         gxb_list, row_major[B, Self.IPB](),
@@ -391,21 +557,11 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                         var gxb_src = b * Self.IPB
                         var dst = b * Self.IN + in_col0
                         for i in range(Self.IPB):
-                            gi_p[dst + i] = gxb_list[gxb_src + i]
+                            gi_p[unsafe_offset=dst + i] = gxb_list[gxb_src + i]
         else:
             var c = ctx.value()
             gin.ensure_gpu(c, B * Self.IN)
-            # grad_weight
-            comptime n_w = (Self.W_SIZE + TPB - 1) // TPB
-            comptime k_dw = _bl_dweight_kernel[B, Self.IN, Self.OUT, Self.BLOCKS]
-            c.enqueue_function[k_dw](
-                fin.lt["gpu", Layout.row_major(B * Self.IN)](),
-                grad_output.lt["gpu", Layout.row_major(B * Self.OUT)](),
-                self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                grid_dim=n_w,
-                block_dim=TPB,
-            )
-            # grad_bias
+            # grad_bias (kept as the reduction kernel — tiny)
             comptime n_b = (Self.OUT + TPB - 1) // TPB
             comptime k_db = _bl_dbias_kernel[B, Self.OUT]
             c.enqueue_function[k_db](
@@ -414,16 +570,97 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                 grid_dim=n_b,
                 block_dim=TPB,
             )
-            # grad_x
-            comptime n_x = (B * Self.IN + TPB - 1) // TPB
-            comptime k_dx = _bl_dx_kernel[B, Self.IN, Self.OUT, Self.BLOCKS]
-            c.enqueue_function[k_dx](
-                grad_output.lt["gpu", Layout.row_major(B * Self.OUT)](),
-                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                gin.lt["gpu", Layout.row_major(B * Self.IN)](),
-                grid_dim=n_x,
-                block_dim=TPB,
-            )
+            comptime if Self.USE_GEMM:
+                self.gog.ensure_gpu(c, B * Self.OUT)
+                self.xt.ensure_gpu(c, B * Self.IN)
+                self.gxg.ensure_gpu(c, B * Self.IN)
+                self.dwg.ensure_gpu(c, Self.W_SIZE)
+                # gathers: go → gog[k,b,o]; x → xt[k,i,b] (the xᵀ bmm operand).
+                comptime n_gg = (B * Self.OUT + TPB - 1) // TPB
+                c.enqueue_function[
+                    _bl_gather_go_kernel[B, Self.OUT, Self.BLOCKS]
+                ](
+                    grad_output.lt["gpu", Layout.row_major(B * Self.OUT)](),
+                    self.gog.lt["gpu", Layout.row_major(B * Self.OUT)](),
+                    grid_dim=n_gg,
+                    block_dim=TPB,
+                )
+                comptime n_gt = (B * Self.IN + TPB - 1) // TPB
+                c.enqueue_function[
+                    _bl_gather_x_kernel[B, Self.IN, Self.BLOCKS, True]
+                ](
+                    fin.lt["gpu", Layout.row_major(B * Self.IN)](),
+                    self.xt.lt["gpu", Layout.row_major(B * Self.IN)](),
+                    grid_dim=n_gt,
+                    block_dim=TPB,
+                )
+                var gog_tt = TileTensor(
+                    self.gog.dev.value(),
+                    row_major[Self.BLOCKS, B, Self.OPB](),
+                )
+                # dW[k] = xᵀ[k] @ go[k]  →  += into weight.grd
+                var xt_tt = TileTensor(
+                    self.xt.dev.value(),
+                    row_major[Self.BLOCKS, Self.IPB, B](),
+                )
+                var dwg_tt = TileTensor(
+                    self.dwg.dev.value(),
+                    row_major[Self.BLOCKS, Self.IPB, Self.OPB](),
+                )
+                batched_matmul[target="gpu"](dwg_tt, xt_tt, gog_tt, context=c)
+                comptime n_aw = (Self.W_SIZE + TPB - 1) // TPB
+                c.enqueue_function[_bl_accum_dw_kernel[Self.W_SIZE]](
+                    self.dwg.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                    self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                    grid_dim=n_aw,
+                    block_dim=TPB,
+                )
+                # dx[k] = go[k] @ W[k]ᵀ  →  scatter back to [B, IN]
+                var w_tt = TileTensor(
+                    self.weight.val.dev.value(),
+                    row_major[Self.BLOCKS, Self.IPB, Self.OPB](),
+                )
+                var gxg_tt = TileTensor(
+                    self.gxg.dev.value(),
+                    row_major[Self.BLOCKS, B, Self.IPB](),
+                )
+                batched_matmul[transpose_b=True, target="gpu"](
+                    gxg_tt, gog_tt, w_tt, context=c
+                )
+                comptime n_sx = (B * Self.IN + TPB - 1) // TPB
+                c.enqueue_function[
+                    _bl_scatter_gx_kernel[B, Self.IN, Self.BLOCKS]
+                ](
+                    self.gxg.lt["gpu", Layout.row_major(B * Self.IN)](),
+                    gin.lt["gpu", Layout.row_major(B * Self.IN)](),
+                    grid_dim=n_sx,
+                    block_dim=TPB,
+                )
+            else:
+                # grad_weight
+                comptime n_w = (Self.W_SIZE + TPB - 1) // TPB
+                comptime k_dw = _bl_dweight_kernel[
+                    B, Self.IN, Self.OUT, Self.BLOCKS
+                ]
+                c.enqueue_function[k_dw](
+                    fin.lt["gpu", Layout.row_major(B * Self.IN)](),
+                    grad_output.lt["gpu", Layout.row_major(B * Self.OUT)](),
+                    self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                    grid_dim=n_w,
+                    block_dim=TPB,
+                )
+                # grad_x
+                comptime n_x = (B * Self.IN + TPB - 1) // TPB
+                comptime k_dx = _bl_dx_kernel[
+                    B, Self.IN, Self.OUT, Self.BLOCKS
+                ]
+                c.enqueue_function[k_dx](
+                    grad_output.lt["gpu", Layout.row_major(B * Self.OUT)](),
+                    self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                    gin.lt["gpu", Layout.row_major(B * Self.IN)](),
+                    grid_dim=n_x,
+                    block_dim=TPB,
+                )
 
     # for_each_param / zero_grad inherit the Module reflection defaults
     # (core/walkers.mojo auto-discovers the `weight` + `bias` Params).

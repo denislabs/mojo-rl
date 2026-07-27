@@ -382,26 +382,26 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             var c_off = b * H
             for col in range(H):
                 var rg = _sigmoid(
-                    ix_buf[g_off + col] + b_ih_p[col]
-                    + hx_buf[g_off + col] + b_hh_p[col]
+                    ix_buf[g_off + col] + b_ih_p[unsafe_offset=col]
+                    + hx_buf[g_off + col] + b_hh_p[unsafe_offset=col]
                 )
-                r_c[c_off + col] = rg
+                r_c[unsafe_offset=c_off + col] = rg
 
                 var zg = _sigmoid(
-                    ix_buf[g_off + H + col] + b_ih_p[H + col]
-                    + hx_buf[g_off + H + col] + b_hh_p[H + col]
+                    ix_buf[g_off + H + col] + b_ih_p[unsafe_offset=H + col]
+                    + hx_buf[g_off + H + col] + b_hh_p[unsafe_offset=H + col]
                 )
-                z_c[c_off + col] = zg
+                z_c[unsafe_offset=c_off + col] = zg
 
-                var in_pre = ix_buf[g_off + 2 * H + col] + b_ih_p[2 * H + col]
-                var hn_p = hx_buf[g_off + 2 * H + col] + b_hh_p[2 * H + col]
-                hn_c[c_off + col] = hn_p
+                var in_pre = ix_buf[g_off + 2 * H + col] + b_ih_p[unsafe_offset=2 * H + col]
+                var hn_p = hx_buf[g_off + 2 * H + col] + b_hh_p[unsafe_offset=2 * H + col]
+                hn_c[unsafe_offset=c_off + col] = hn_p
 
                 var ng = tanh(in_pre + rg * hn_p)
-                n_c[c_off + col] = ng
+                n_c[unsafe_offset=c_off + col] = ng
 
-                out_p[out_off + col] = (
-                    (Scalar[DT](1.0) - zg) * ng + zg * h_p[h_off + col]
+                out_p[unsafe_offset=out_off + col] = (
+                    (Scalar[DT](1.0) - zg) * ng + zg * h_p[unsafe_offset=h_off + col]
                 )
 
     # ------------------------------------------------------------------
@@ -564,12 +564,12 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             var c_off = b * H
             var g_off = b * THREE_H
             for col in range(H):
-                var dh_now = go_p[c_off + col]
-                var rg = r_c[c_off + col]
-                var zg = z_c[c_off + col]
-                var ng = n_c[c_off + col]
-                var hn_v = hn_c[c_off + col]
-                var h_val = h_p[c_off + col]
+                var dh_now = go_p[unsafe_offset=c_off + col]
+                var rg = r_c[unsafe_offset=c_off + col]
+                var zg = z_c[unsafe_offset=c_off + col]
+                var ng = n_c[unsafe_offset=c_off + col]
+                var hn_v = hn_c[unsafe_offset=c_off + col]
+                var h_val = h_p[unsafe_offset=c_off + col]
 
                 var dz = dh_now * (h_val - ng)
                 var dn = dh_now * (Scalar[DT](1.0) - zg)
@@ -587,12 +587,12 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
                 d_hx_buf[g_off + H + col]     = d_pre_z
                 d_hx_buf[g_off + 2 * H + col] = d_hn
 
-                db_ih_p[col]         += d_pre_r
-                db_ih_p[H + col]     += d_pre_z
-                db_ih_p[2 * H + col] += d_in_n
-                db_hh_p[col]         += d_pre_r
-                db_hh_p[H + col]     += d_pre_z
-                db_hh_p[2 * H + col] += d_hn
+                db_ih_p[unsafe_offset=col]         += d_pre_r
+                db_ih_p[unsafe_offset=H + col]     += d_pre_z
+                db_ih_p[unsafe_offset=2 * H + col] += d_in_n
+                db_hh_p[unsafe_offset=col]         += d_pre_r
+                db_hh_p[unsafe_offset=H + col]     += d_pre_z
+                db_hh_p[unsafe_offset=2 * H + col] += d_hn
 
         var d_ix_tt = TileTensor(d_ix_buf, row_major[B, THREE_H]())
         var d_hx_tt = TileTensor(d_hx_buf, row_major[B, THREE_H]())
@@ -605,9 +605,9 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         var hT_buf = List[Scalar[DT]](length=H * B, fill=Scalar[DT](0))
         for b in range(B):
             for k in range(Self.IN0_DIM):
-                xT_buf[k * B + b] = x_p[b * Self.IN0_DIM + k]
+                xT_buf[k * B + b] = x_p[unsafe_offset=b * Self.IN0_DIM + k]
             for k in range(H):
-                hT_buf[k * B + b] = h_p[b * H + k]
+                hT_buf[k * B + b] = h_p[unsafe_offset=b * H + k]
         var xT_tt = TileTensor(xT_buf, row_major[Self.IN0_DIM, B]())
         var hT_tt = TileTensor(hT_buf, row_major[H, B]())
         var dWih_buf = List[Scalar[DT]](
@@ -621,9 +621,9 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         max_matmul[target="cpu"](dWih_tt, xT_tt, d_ix_tt, None)
         max_matmul[target="cpu"](dWhh_tt, hT_tt, d_hx_tt, None)
         for i in range(Self.IN0_DIM * THREE_H):
-            dW_ih_p[i] += dWih_buf[i]
+            dW_ih_p[unsafe_offset=i] += dWih_buf[i]
         for i in range(H * THREE_H):
-            dW_hh_p[i] += dWhh_buf[i]
+            dW_hh_p[unsafe_offset=i] += dWhh_buf[i]
 
         # Input grads: dx = d_ix @ W_ihᵀ ; dh = d_hx @ W_hhᵀ + go⊙z.
         var W_ih_tt = TileTensor(
@@ -637,7 +637,7 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         for b in range(B):
             var c_off = b * H
             for col in range(H):
-                dh_p[c_off + col] += go_p[c_off + col] * z_c[c_off + col]
+                dh_p[unsafe_offset=c_off + col] += go_p[unsafe_offset=c_off + col] * z_c[unsafe_offset=c_off + col]
 
     # for_each_param / zero_grad inherit the Module reflection defaults
     # (core/walkers.mojo auto-discovers W_ih/W_hh/b_ih/b_hh).

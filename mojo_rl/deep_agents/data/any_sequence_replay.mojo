@@ -62,6 +62,15 @@ struct AnySequenceReplay[
         else:
             return self.gpu.value().count()
 
+    def set_online(mut self, every: Int):
+        """Enable the reference `online: True` queue on the active backend
+        (every fresh length-`every` window is sampled exactly once, promptly).
+        Pass the training window length T; 0 disables (the default)."""
+        comptime if Self.target == "cpu":
+            self.cpu.value().set_online(every)
+        else:
+            self.gpu.value().set_online(every)
+
     def record(
         mut self,
         s: UnsafePointer[Scalar[DT], MutAnyOrigin],

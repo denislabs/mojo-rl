@@ -196,35 +196,35 @@ struct EZV2GPUSampledMCTSState[
             Self.N_ENVS * Self.K_ROOT
         )
 
-    def __init__(out self, *, deinit take: Self):
-        self.visit_count = take.visit_count^
-        self.total_value = take.total_value^
-        self.log_prior = take.log_prior^
-        self.reward = take.reward^
-        self.child_idx = take.child_idx^
-        self.actions = take.actions^
-        self.total_visits = take.total_visits^
-        self.node_value = take.node_value^
-        self.active_k = take.active_k^
-        self.hidden_states = take.hidden_states^
-        self.node_count = take.node_count^
-        self.min_q = take.min_q^
-        self.max_q = take.max_q^
-        self.root_gumbels = take.root_gumbels^
-        self.root_active = take.root_active^
-        self.pending_parent = take.pending_parent^
-        self.pending_cand = take.pending_cand^
-        self.path_lengths = take.path_lengths^
-        self.leaf_values = take.leaf_values^
-        self.search_paths = take.search_paths^
-        self.cand_paths = take.cand_paths^
-        self.root_hidden = take.root_hidden^
-        self.dyn_input = take.dyn_input^
-        self.dyn_output = take.dyn_output^
-        self.pred_input = take.pred_input^
-        self.pred_output = take.pred_output^
-        self.chosen_actions = take.chosen_actions^
-        self.root_visits = take.root_visits^
+    def __init__(out self, *, deinit move: Self):
+        self.visit_count = move.visit_count^
+        self.total_value = move.total_value^
+        self.log_prior = move.log_prior^
+        self.reward = move.reward^
+        self.child_idx = move.child_idx^
+        self.actions = move.actions^
+        self.total_visits = move.total_visits^
+        self.node_value = move.node_value^
+        self.active_k = move.active_k^
+        self.hidden_states = move.hidden_states^
+        self.node_count = move.node_count^
+        self.min_q = move.min_q^
+        self.max_q = move.max_q^
+        self.root_gumbels = move.root_gumbels^
+        self.root_active = move.root_active^
+        self.pending_parent = move.pending_parent^
+        self.pending_cand = move.pending_cand^
+        self.path_lengths = move.path_lengths^
+        self.leaf_values = move.leaf_values^
+        self.search_paths = move.search_paths^
+        self.cand_paths = move.cand_paths^
+        self.root_hidden = move.root_hidden^
+        self.dyn_input = move.dyn_input^
+        self.dyn_output = move.dyn_output^
+        self.pred_input = move.pred_input^
+        self.pred_output = move.pred_output^
+        self.chosen_actions = move.chosen_actions^
+        self.root_visits = move.root_visits^
 
     def zero_tree(self, ctx: DeviceContext) raises:
         """Zero per-tree arrays + per-env scalars before each search."""

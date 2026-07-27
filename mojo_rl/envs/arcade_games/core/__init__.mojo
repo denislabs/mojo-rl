@@ -12,4 +12,3 @@ from .colors import (
     COLOR_GRAY,
 )
 from .gpu_renderer import draw_filled_rect, draw_hline, clear_frame
-from .preprocessing import resize_160x210_to_84x84, push_frame_stack

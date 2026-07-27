@@ -71,11 +71,11 @@ def main() raises:
         _ = envs[e].reset()
 
     # Batched staging buffers.
-    var obs_ptr      = alloc[Scalar[DT]](N_ENVS * OBS)
-    var action_ptr   = alloc[Scalar[DT]](N_ENVS * ACT)
-    var reward_ptr   = alloc[Scalar[DT]](N_ENVS)
-    var done_ptr     = alloc[Scalar[DT]](N_ENVS)
-    var next_obs_ptr = alloc[Scalar[DT]](N_ENVS * OBS)
+    var obs_ptr      = alloc[Scalar[DT]](N_ENVS * OBS).as_unsafe_any_origin()
+    var action_ptr   = alloc[Scalar[DT]](N_ENVS * ACT).as_unsafe_any_origin()
+    var reward_ptr   = alloc[Scalar[DT]](N_ENVS).as_unsafe_any_origin()
+    var done_ptr     = alloc[Scalar[DT]](N_ENVS).as_unsafe_any_origin()
+    var next_obs_ptr = alloc[Scalar[DT]](N_ENVS * OBS).as_unsafe_any_origin()
 
     # Populate initial obs.
     for e in range(N_ENVS):

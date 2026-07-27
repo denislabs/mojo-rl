@@ -1,0 +1,35 @@
+# Smoke manifest — the CI tier (`pixi run test-smoke`).
+#
+# Selection rules (keep it fast AND self-contained):
+#   * CPU-only (no *_gpu.mojo — GPU tests run locally via `test-gpu`)
+#   * no references/ (gitignored, absent on CI) → no *_vs_mujoco tests
+#   * no Atari ROMs (roms/ needs `pixi run setup-roms`)
+#   * each file is a full `mojo run -I .` compile+run; budget the TOTAL
+#     wall clock ≤ ~15 min on a 4-core CI runner (≈ half that locally).
+#
+# One line per test file; `#` comments and blank lines are skipped.
+
+# ── nn core: checkpoint format + optimizer state ──────────────────────
+tests/nn/test_checkpoint_v2_storage.mojo
+tests/nn/test_checkpoint_adam_storage.mojo
+
+# ── deep_agents: shared blocks + one fast convergence gate per family ─
+tests/deep_agents/test_storage_l0_trainer_state.mojo
+tests/deep_agents/test_storage_dqn_smoke.mojo
+tests/deep_agents/test_storage_sac_agent_pendulum.mojo
+tests/nn/test_a2c_cartpole_smoke.mojo
+
+# ── envs: parity/semantics gates (pure Mojo, golden values embedded) ──
+tests/envs/test_lunar_lander_copy_semantics.mojo
+tests/envs/test_car_racing_cpu.mojo
+tests/envs/procgen/test_bigfish_parity.mojo
+tests/arcade_games/test_pong_env.mojo
+
+# ── physics3d: golden-frozen FK + dynamics-prep gate (vs_mujoco gates stay
+# local). Replaces test_forward_kinematics.mojo, deleted with the legacy CPU
+# core in the physics3d sunset (e6043aca) — the manifest was never updated.
+tests/physics3d/test_fk_fields.mojo
+
+# NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
+#   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo
+#   pixi run -e apple mojo run -I . tests/envs/test_acrobot_cpu_vs_gpu_trajectory.mojo

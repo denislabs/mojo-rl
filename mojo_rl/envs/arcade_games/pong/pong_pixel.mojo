@@ -22,7 +22,7 @@ Usage:
 
 from std.random import random_float64
 from mojo_rl.nn.core.ptr import untracked
-from std.memory import alloc, memset
+from std.memory import alloc, unsafe_memset
 from mojo_rl.nn.constants import LAYOUT_NCHW, LAYOUT_NHWC
 from mojo_rl.core import (
     State,
@@ -346,10 +346,24 @@ struct PongPixelEnv[
     def step(
         mut self, action: ArcadeGameAction, verbose: Bool = False
     ) -> Tuple[ArcadeGameState, Scalar[Self.DTYPE], Bool]:
+        # FRAME_SKIP: repeat the action, accumulating rewards and stopping
+        # on done — matches the GPU `step_batch` kernel. The CPU path used
+        # to step ONCE regardless of FRAME_SKIP, so CPU eval of a
+        # GPU-trained agent saw different dynamics and reward scale.
+        # Render once per action, as on GPU.
         var result = self.inner.step(action, verbose)
+        var state = result[0]
+        var total_reward = result[1]
+        var done = result[2]
+        comptime for _skip in range(Self.FRAME_SKIP - 1):
+            if not done:
+                var r = self.inner.step(action, verbose)
+                state = r[0]
+                total_reward = total_reward + r[1]
+                done = r[2]
         self._render_to_buf()
         self._push_frame()
-        return result
+        return (state, total_reward, done)
 
     def get_state(self) -> ArcadeGameState:
         return self.inner.get_state()
@@ -404,10 +418,18 @@ struct PongPixelEnv[
     def step_obs(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.DTYPE]], Scalar[Self.DTYPE], Bool]:
+        # FRAME_SKIP loop mirrors `step` above (and the GPU kernel).
         var result = self.inner._step_impl(action)
+        var total_reward = result[0]
+        var done = result[1]
+        comptime for _skip in range(Self.FRAME_SKIP - 1):
+            if not done:
+                var r = self.inner._step_impl(action)
+                total_reward = total_reward + r[0]
+                done = r[1]
         self._render_to_buf()
         self._push_frame()
-        return (self.get_obs_list(), result[0], result[1])
+        return (self.get_obs_list(), total_reward, done)
 
     # ========================================================================
     # RenderableEnv — delegate to inner PongEnv

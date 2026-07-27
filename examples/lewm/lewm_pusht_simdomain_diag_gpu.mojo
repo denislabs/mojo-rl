@@ -16,7 +16,7 @@ transfers → closed-loop is worth building. If the reconstructions are garbage
 / mse is far higher, the encoder is out-of-distribution on the mojo renderer
 → closed-loop needs the WM retrained on sim frames (or the renderer matched).
 
-Loads `/tmp/lewm_pusht_paper_world_model.txt` + `/tmp/lewm_pusht_decoder.txt`.
+Loads `lewm_pusht_paper.ckpt` + `/tmp/lewm_pusht_decoder.txt`.
 Run (NVIDIA; 224² WM):
   pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_simdomain_diag_gpu.mojo
 """
@@ -62,7 +62,7 @@ comptime B = 16
 comptime IMG_DIM = IN_CH * IMG * IMG
 comptime PIX = T * IMG_DIM
 comptime ACTIN = T * ACT
-comptime WM_CKPT: String = "/tmp/lewm_pusht_paper_world_model.txt"
+comptime WM_CKPT: String = "lewm_pusht_paper.ckpt"
 
 # ── decoder config — must match lewm_pusht_decode_gpu.mojo ─────────────
 comptime PATCH_D = 16

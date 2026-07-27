@@ -180,26 +180,26 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs = List[Float64]()
         self.buffer_values = List[Float64]()
 
-    def __init__(out self, *, deinit take: Self):
-        self.num_actions = take.num_actions
-        self.num_tiles = take.num_tiles
-        self.num_tilings = take.num_tilings
-        self.actor_lr = take.actor_lr
-        self.critic_lr = take.critic_lr
-        self.discount_factor = take.discount_factor
-        self.gae_lambda = take.gae_lambda
-        self.clip_epsilon = take.clip_epsilon
-        self.entropy_coef = take.entropy_coef
-        self.value_loss_coef = take.value_loss_coef
-        self.num_epochs = take.num_epochs
-        self.normalize_advantages = take.normalize_advantages
-        self.theta = take.theta^
-        self.critic_weights = take.critic_weights^
-        self.buffer_tiles = take.buffer_tiles^
-        self.buffer_actions = take.buffer_actions^
-        self.buffer_rewards = take.buffer_rewards^
-        self.buffer_log_probs = take.buffer_log_probs^
-        self.buffer_values = take.buffer_values^
+    def __init__(out self, *, deinit move: Self):
+        self.num_actions = move.num_actions
+        self.num_tiles = move.num_tiles
+        self.num_tilings = move.num_tilings
+        self.actor_lr = move.actor_lr
+        self.critic_lr = move.critic_lr
+        self.discount_factor = move.discount_factor
+        self.gae_lambda = move.gae_lambda
+        self.clip_epsilon = move.clip_epsilon
+        self.entropy_coef = move.entropy_coef
+        self.value_loss_coef = move.value_loss_coef
+        self.num_epochs = move.num_epochs
+        self.normalize_advantages = move.normalize_advantages
+        self.theta = move.theta^
+        self.critic_weights = move.critic_weights^
+        self.buffer_tiles = move.buffer_tiles^
+        self.buffer_actions = move.buffer_actions^
+        self.buffer_rewards = move.buffer_rewards^
+        self.buffer_log_probs = move.buffer_log_probs^
+        self.buffer_values = move.buffer_values^
 
     def _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences (logits).
@@ -764,27 +764,27 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs = List[Float64]()
         self.buffer_values = List[Float64]()
 
-    def __init__(out self, *, deinit take: Self):
-        self.num_actions = take.num_actions
-        self.num_tiles = take.num_tiles
-        self.num_tilings = take.num_tilings
-        self.actor_lr = take.actor_lr
-        self.critic_lr = take.critic_lr
-        self.discount_factor = take.discount_factor
-        self.gae_lambda = take.gae_lambda
-        self.clip_epsilon = take.clip_epsilon
-        self.entropy_coef = take.entropy_coef
-        self.value_loss_coef = take.value_loss_coef
-        self.num_epochs = take.num_epochs
-        self.minibatch_size = take.minibatch_size
-        self.normalize_advantages = take.normalize_advantages
-        self.theta = take.theta^
-        self.critic_weights = take.critic_weights^
-        self.buffer_tiles = take.buffer_tiles^
-        self.buffer_actions = take.buffer_actions^
-        self.buffer_rewards = take.buffer_rewards^
-        self.buffer_log_probs = take.buffer_log_probs^
-        self.buffer_values = take.buffer_values^
+    def __init__(out self, *, deinit move: Self):
+        self.num_actions = move.num_actions
+        self.num_tiles = move.num_tiles
+        self.num_tilings = move.num_tilings
+        self.actor_lr = move.actor_lr
+        self.critic_lr = move.critic_lr
+        self.discount_factor = move.discount_factor
+        self.gae_lambda = move.gae_lambda
+        self.clip_epsilon = move.clip_epsilon
+        self.entropy_coef = move.entropy_coef
+        self.value_loss_coef = move.value_loss_coef
+        self.num_epochs = move.num_epochs
+        self.minibatch_size = move.minibatch_size
+        self.normalize_advantages = move.normalize_advantages
+        self.theta = move.theta^
+        self.critic_weights = move.critic_weights^
+        self.buffer_tiles = move.buffer_tiles^
+        self.buffer_actions = move.buffer_actions^
+        self.buffer_rewards = move.buffer_rewards^
+        self.buffer_log_probs = move.buffer_log_probs^
+        self.buffer_values = move.buffer_values^
 
     def _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences."""

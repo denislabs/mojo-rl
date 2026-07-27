@@ -129,3 +129,49 @@ def compute_shaping[
         + Scalar[T](10.0) * left_contact
         + Scalar[T](10.0) * right_contact
     )
+
+
+@always_inline
+def lunar_terminal_and_reward[
+    T: DType
+](
+    x_norm: Scalar[T],
+    lander_contact: Bool,
+    both_legs: Bool,
+    speed: Scalar[T],
+    abs_omega: Scalar[T],
+    reward_in: Scalar[T],
+) -> Tuple[Scalar[T], Bool]:
+    """SINGLE SOURCE of the natural-termination predicate + terminal reward
+    overrides — shared by the CPU `_compute_step_result` and BOTH GPU step
+    kernels (discrete + continuous). These were three hand-maintained copies;
+    the copies are exactly where CPU/GPU reward divergence shipped.
+
+    Evaluation order preserves the historical semantics:
+      1. out of bounds (|x_norm| >= 1)          -> terminated, reward = CRASH_PENALTY
+      2. lander body touching ground (crash)    -> terminated, reward = CRASH_PENALTY
+      3. landed (both legs down, at rest)       -> terminated, reward += LAND_REWARD
+
+    NOT here, by design (stay at the call sites): the step-cap TRUNCATION
+    (not a natural terminal) and the GPU-only too-high check (a documented
+    GPU-only deviation, applied before this call so the crash override
+    order is unchanged).
+
+    Returns (reward, terminated).
+    """
+    var reward = reward_in
+    var terminated = False
+    if x_norm >= Scalar[T](1.0) or x_norm <= Scalar[T](-1.0):
+        terminated = True
+        reward = Scalar[T](LLConstants.CRASH_PENALTY)
+    if lander_contact:
+        terminated = True
+        reward = Scalar[T](LLConstants.CRASH_PENALTY)
+    if (
+        both_legs
+        and speed < Scalar[T](0.01)
+        and abs_omega < Scalar[T](0.01)
+    ):
+        terminated = True
+        reward = reward + Scalar[T](LLConstants.LAND_REWARD)
+    return (reward, terminated)

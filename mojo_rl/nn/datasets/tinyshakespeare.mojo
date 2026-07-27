@@ -107,10 +107,10 @@ struct CharTokenizer(Movable):
                 self.id_to_byte.append(b)
         self.vocab_size = len(self.id_to_byte)
 
-    def __init__(out self, deinit existing: Self):
-        self.vocab_size = existing.vocab_size
-        self.id_to_byte = existing.id_to_byte^
-        self.byte_to_id = existing.byte_to_id^
+    def __init__(out self, *, deinit move: Self):
+        self.vocab_size = move.vocab_size
+        self.id_to_byte = move.id_to_byte^
+        self.byte_to_id = move.byte_to_id^
 
     def encode(self, text: String) -> List[Int]:
         var bytes = text.as_bytes()
@@ -145,9 +145,9 @@ struct DatasetSplit(Movable):
         self.train = train^
         self.val = val^
 
-    def __init__(out self, deinit existing: Self):
-        self.train = existing.train^
-        self.val = existing.val^
+    def __init__(out self, *, deinit move: Self):
+        self.train = move.train^
+        self.val = move.val^
 
 
 struct Minibatch(Movable):
@@ -164,9 +164,9 @@ struct Minibatch(Movable):
         self.inputs = inputs^
         self.targets = targets^
 
-    def __init__(out self, deinit existing: Self):
-        self.inputs = existing.inputs^
-        self.targets = existing.targets^
+    def __init__(out self, *, deinit move: Self):
+        self.inputs = move.inputs^
+        self.targets = move.targets^
 
 
 def train_val_split(

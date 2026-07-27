@@ -48,8 +48,8 @@ def main() raises:
     var tr = Tr.make(ctx=ctx, lr=Scalar[DT](3e-3), learning_starts=0)
 
     var s = UInt64(12345)
-    var ob = alloc[Scalar[DT]](OBS)
-    var ac = alloc[Scalar[DT]](ACT)
+    var ob = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var ac = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
     for _t in range(120):
         for k in range(OBS):
             s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
@@ -59,7 +59,7 @@ def main() raises:
             ac[k] = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
         s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
         var r = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
-        tr.record(ob, ac, r, Scalar[DT](0.0))
+        tr.record(ob.as_unsafe_any_origin(), ac, r, Scalar[DT](0.0))
     ob.free(); ac.free()
 
     assert_true(tr.can_train(), "replay should be trainable")

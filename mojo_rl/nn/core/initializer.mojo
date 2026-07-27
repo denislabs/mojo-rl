@@ -101,6 +101,45 @@ struct ScaledKaiming[NUM: Int, DEN: Int](Initializer):
         _zero_bias[target](b, n, ctx)
 
 
+struct TruncNormalIn(Initializer):
+    """The DreamerV3 reference default winit (`trunc_normal_in`,
+    embodied/jax/nets.py Initializer): z ~ N(0,1) truncated to |z| <= 2, then
+    scaled by 1.1368·sqrt(1/fan_in) (1.1368 restores unit variance after the
+    ±2 truncation → effective σ = sqrt(1/fan_in)). Note this is √2 SMALLER
+    than Kaiming's ReLU gain — a real init-scale difference on every hidden
+    layer. Box-Muller with rejection; zero bias."""
+
+    @staticmethod
+    def init_weight[target: StaticString](
+        mut w: Tensor, n: Int, fan_in: Int, fan_out: Int,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        var scale = 1.1368 * fsqrt(1.0 / Float64(fan_in))
+        var i = 0
+        while i < n:
+            var u1 = random_float64()
+            var u2 = random_float64()
+            if u1 < 1e-12:
+                u1 = 1e-12
+            var r = fsqrt(-2.0 * log(u1))
+            var z1 = r * cos(_TWO_PI * u2)
+            var z2 = r * sin(_TWO_PI * u2)
+            if z1 > -2.0 and z1 < 2.0:
+                w.data[i] = Scalar[DT](z1 * scale)
+                i += 1
+            if i < n and z2 > -2.0 and z2 < 2.0:
+                w.data[i] = Scalar[DT](z2 * scale)
+                i += 1
+        comptime if target == "gpu":
+            w.upload(ctx.value())
+
+    @staticmethod
+    def init_bias[target: StaticString](
+        mut b: Tensor, n: Int, ctx: Optional[DeviceContext]
+    ) raises:
+        _zero_bias[target](b, n, ctx)
+
+
 struct Xavier(Initializer):
     @staticmethod
     def init_weight[target: StaticString](

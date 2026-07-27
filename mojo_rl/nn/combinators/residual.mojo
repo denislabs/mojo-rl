@@ -89,10 +89,10 @@ struct Residual[Inner: Module](Module):
             comptime W = CPU_SIMD_W
             var k = 0
             while k + W <= N:
-                op.store(k, mp.load[width=W](k) + ip.load[width=W](k))
+                op.unsafe_store(k, mp.unsafe_load[width=W](k) + ip.unsafe_load[width=W](k))
                 k += W
             while k < N:
-                op[k] = mp[k] + ip[k]
+                op[unsafe_offset=k] = mp[unsafe_offset=k] + ip[unsafe_offset=k]
                 k += 1
         else:
             var c = ctx.value()
@@ -135,10 +135,10 @@ struct Residual[Inner: Module](Module):
             comptime W = CPU_SIMD_W
             var k = 0
             while k + W <= N:
-                gp.store(k, mp.load[width=W](k) + gop.load[width=W](k))
+                gp.unsafe_store(k, mp.unsafe_load[width=W](k) + gop.unsafe_load[width=W](k))
                 k += W
             while k < N:
-                gp[k] = mp[k] + gop[k]
+                gp[unsafe_offset=k] = mp[unsafe_offset=k] + gop[unsafe_offset=k]
                 k += 1
         else:
             var c = ctx.value()

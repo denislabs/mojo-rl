@@ -92,7 +92,7 @@ def _count_item(
 
 def test_world_generates(mut counts: List[Int]) raises:
     print("test_world_generates")
-    var state = alloc[Float32](STATE_SIZE)
+    var state = alloc[Float32](STATE_SIZE).as_unsafe_any_origin()
     for i in range(STATE_SIZE):
         state[i] = Float32(0.0)
     var pos = generate_full_world(seed=UInt64(0xC0FFEE), state_ptr=state)
@@ -113,7 +113,7 @@ def test_world_generates(mut counts: List[Int]) raises:
 
 def test_overworld(mut counts: List[Int]) raises:
     print("test_overworld (floor 0)")
-    var state = alloc[Float32](STATE_SIZE)
+    var state = alloc[Float32](STATE_SIZE).as_unsafe_any_origin()
     for i in range(STATE_SIZE):
         state[i] = Float32(0.0)
     _ = generate_full_world(seed=UInt64(0x12345678), state_ptr=state)
@@ -152,7 +152,7 @@ def test_overworld(mut counts: List[Int]) raises:
 
 def test_dungeons(mut counts: List[Int]) raises:
     print("test_dungeons (floors 1, 3, 4)")
-    var state = alloc[Float32](STATE_SIZE)
+    var state = alloc[Float32](STATE_SIZE).as_unsafe_any_origin()
     for i in range(STATE_SIZE):
         state[i] = Float32(0.0)
     _ = generate_full_world(seed=UInt64(0xDEADBEEF), state_ptr=state)
@@ -227,7 +227,7 @@ def test_dungeons(mut counts: List[Int]) raises:
 
 def test_mines_and_elemental(mut counts: List[Int]) raises:
     print("test_mines_and_elemental (floors 2, 5, 6, 7)")
-    var state = alloc[Float32](STATE_SIZE)
+    var state = alloc[Float32](STATE_SIZE).as_unsafe_any_origin()
     for i in range(STATE_SIZE):
         state[i] = Float32(0.0)
     _ = generate_full_world(seed=UInt64(0xCAFEBABE), state_ptr=state)
@@ -256,7 +256,7 @@ def test_mines_and_elemental(mut counts: List[Int]) raises:
 
 def test_boss_chamber(mut counts: List[Int]) raises:
     print("test_boss_chamber (floor 8)")
-    var state = alloc[Float32](STATE_SIZE)
+    var state = alloc[Float32](STATE_SIZE).as_unsafe_any_origin()
     for i in range(STATE_SIZE):
         state[i] = Float32(0.0)
     _ = generate_full_world(seed=UInt64(0xBADF00D), state_ptr=state)
@@ -283,8 +283,8 @@ def test_boss_chamber(mut counts: List[Int]) raises:
 
 def test_two_seeds_differ(mut counts: List[Int]) raises:
     print("test_two_seeds_differ")
-    var s1 = alloc[Float32](STATE_SIZE)
-    var s2 = alloc[Float32](STATE_SIZE)
+    var s1 = alloc[Float32](STATE_SIZE).as_unsafe_any_origin()
+    var s2 = alloc[Float32](STATE_SIZE).as_unsafe_any_origin()
     for i in range(STATE_SIZE):
         s1[i] = Float32(0.0)
         s2[i] = Float32(0.0)
@@ -305,7 +305,7 @@ def test_two_seeds_differ(mut counts: List[Int]) raises:
 
 def test_light_map_range(mut counts: List[Int]) raises:
     print("test_light_map_range")
-    var state = alloc[Float32](STATE_SIZE)
+    var state = alloc[Float32](STATE_SIZE).as_unsafe_any_origin()
     for i in range(STATE_SIZE):
         state[i] = Float32(0.0)
     _ = generate_full_world(seed=UInt64(42), state_ptr=state)

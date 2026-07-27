@@ -28,63 +28,22 @@ from std.random.philox import Random as PhiloxRandom
 from mojo_rl.render import Color, Renderer3D, Light, Camera3D
 from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
-from mojo_rl.physics3d.types import Model, Data, ConeType
+from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.joint_types import (
     JNT_FREE,
     JNT_BALL,
     JNT_HINGE,
     JNT_SLIDE,
 )
-from mojo_rl.physics3d.kinematics.forward_kinematics import (
-    forward_kinematics,
-    forward_kinematics_gpu,
-)
-from mojo_rl.physics3d.dynamics.mass_matrix import (
-    compute_body_invweight0,
-    ldl_factor_gpu,
-    compute_mass_matrix_full_gpu,
-)
-from mojo_rl.physics3d.dynamics.jacobian import (
-    compute_cdof_gpu,
-    compute_composite_inertia_gpu,
-)
 from mojo_rl.physics3d.gpu.constants import (
     TPB,
-    qpos_offset,
-    qvel_offset,
-    qacc_offset,
-    qfrc_offset,
-    model_size_with_invweight,
-    state_size,
-    integrator_workspace_size,
-    model_metadata_offset,
-    model_body_offset,
-    model_body_invweight0_offset,
-    model_dof_invweight0_offset,
-    model_joint_offset,
-    MODEL_META_IDX_NBODY,
-    MODEL_META_IDX_NJOINT,
-    JOINT_IDX_TYPE,
-    JOINT_IDX_BODY_ID,
-    JOINT_IDX_DOF_ADR,
-    JOINT_IDX_ARMATURE,
-    ws_cdof_offset,
-    ws_M_offset,
-    ws_L_offset,
-    ws_D_offset,
-    BODY_IDX_PARENT,
-    xipos_offset,
-    xpos_offset,
-    xquat_offset,
 )
-from mojo_rl.physics3d.gpu.buffer_utils import (
-    copy_model_to_buffer,
-    copy_geoms_to_buffer,
-    copy_invweight0_to_buffer,
-    copy_tendons_to_buffer,
-    copy_mesh_hull_to_buffer,
+from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch
+from mojo_rl.physics3d.dynamics.invweight import (
+    compute_invweight0,
 )
 from mojo_rl.physics3d.model.model_def import ModelDefLike
+from .fields_build import build_model_fields_from_flat
 from .full_parser import parse_xml_full
 from .xml_parser import (
     _xml_nth_motor_gear,
@@ -107,7 +66,6 @@ from .xml_parser import (
     _xml_find_joint_dof_adr,
     _xml_find_joint_index,
 )
-from mojo_rl.physics3d.model.inertia_from_geom import compute_inertia_from_geoms
 
 # Type aliases matching model_def.mojo module scope (required for trait conformance)
 comptime _RVec3 = _Vec3G[DType.float64]
@@ -189,6 +147,7 @@ struct ModelDefFromXML[
     comptime MAX_CONTACTS: Int = Self.max_contacts
     comptime MAX_TENDON: Int = Self.max_tendon
     comptime NSITE: Int = Self.nsite
+    comptime NEXCLUDE: Int = Self.nexclude
     comptime OBS_DIM: Int = Self.obs_dim_override if Self.obs_dim_override > 0 else (
         Self.nq - Self.obs_qpos_skip + Self.nv
     )
@@ -209,142 +168,23 @@ struct ModelDefFromXML[
     comptime _rcd: ComptimeRenderData = parse_xml_render_data(Self.xml)
 
     # =========================================================================
-    # CPU: Model setup
-    # =========================================================================
-
-    @staticmethod
-    def setup_model_and_data[
-        DTYPE: DType
-    ](
-        mut model: Model[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-            Self.MAX_TENDON,
-            Self.NSITE,
-        ],
-        mut data: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-        ],
-    ):
-        """Parse XML, populate model struct, run FK and compute invweight0."""
-        comptime assert (
-            DTYPE.is_floating_point()
-        ), "DTYPE must be a floating point type"
-        var fmd = parse_xml_full[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NQ,
-            Self.NV,
-            Self.NGEOM,
-            Self.nact,
-            Self.ntex,
-            Self.nmat,
-            Self.nlight,
-            Self.ncam,
-            Self.NSITE,
-            Self.neq,
-            Self.nexclude,
-        ](Self.xml)
-        fmd.setup_model[
-            DTYPE,
-            Self.MAX_CONTACTS,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-            Self.MAX_TENDON,
-            Self.NSITE,  # MODEL_NSITE in setup_model's renamed param
-        ](model)
-        comptime ifg_mode = _xml_compiler_inertiafromgeom[Self.xml]()
-        comptime igr = _xml_compiler_inertiagrouprange[Self.xml]()
-        comptime if ifg_mode == 1:
-            compute_inertia_from_geoms[
-                INERTIA_GROUP_MIN=igr[0], INERTIA_GROUP_MAX=igr[1],
-            ](model)
-        comptime if ifg_mode == 2:
-            compute_inertia_from_geoms[
-                INERTIA_GROUP_MIN=igr[0], INERTIA_GROUP_MAX=igr[1],
-                AUTO_MODE=True,
-            ](model)
-        comptime if ifg_mode > 0:
-            comptime settotalmass = _xml_compiler_settotalmass[Self.xml]()
-            comptime if settotalmass > 0.0:
-                var total_mass = Scalar[DTYPE](0)
-                for i in range(1, Self.NBODY):
-                    total_mass += model.body_mass[i]
-                if total_mass > Scalar[DTYPE](0):
-                    var scale = Scalar[DTYPE](settotalmass) / total_mass
-                    for i in range(1, Self.NBODY):
-                        model.body_mass[i] *= scale
-                        model.body_inv_mass[i] = (
-                            Scalar[DTYPE](1.0) / model.body_mass[i]
-                        )
-                        for k in range(3):
-                            model.body_inertia[i * 3 + k] *= scale
-                            model.body_inv_inertia[i * 3 + k] = (
-                                Scalar[DTYPE](1.0)
-                                / model.body_inertia[i * 3 + k]
-                            )
-        # Parse and add fixed tendons from XML <tendon><fixed> section.
-        # NOTE: fixed tendons only define a kinematic quantity (length = Σ coef*qpos).
-        # They produce NO forces unless referenced by <equality><tendon> or they have
-        # limited="true"/stiffness/damping attributes. Since we only support
-        # equality constraints on tendons, skip parsing when no equality block exists.
-        # TODO: parse <equality><tendon> and only constrain those tendons.
-        comptime if False and Self.MAX_TENDON > 0:
-            comptime for t_idx in range(Self.MAX_TENDON):
-                comptime nj = _xml_fixed_tendon_njoints[Self.xml, t_idx]()
-                comptime if nj > 0:
-                    var jidx = InlineArray[Int, 4](fill=-1)
-                    var jcoefs = InlineArray[Scalar[DTYPE], 4](
-                        fill=Scalar[DTYPE](0)
-                    )
-                    comptime for ji in range(nj):
-                        comptime jn = _xml_fixed_tendon_joint_name[
-                            Self.xml, t_idx, ji
-                        ]()
-                        comptime jnt_idx = _xml_find_joint_index(
-                            Self.xml, jn
-                        )
-                        comptime cf = _xml_fixed_tendon_coef[
-                            Self.xml, t_idx, ji
-                        ]()
-                        jidx[ji] = jnt_idx
-                        jcoefs[ji] = Scalar[DTYPE](cf)
-                    _ = model.add_tendon(nj, jidx, jcoefs)
-
-        # Initialize data.qpos from qpos0 (joint ref values) before FK
-        Self.reset_data(data)
-        forward_kinematics(model, data)
-        compute_body_invweight0(model, data)
-
-    # =========================================================================
-    # CPU: Joints / Actuators delegates
+    # CPU: state hooks (fields-native; G2). The legacy CPU model build
+    # (setup_model_and_data + _reset_data_legacy) was deleted at G4 — the
+    # model build is `init_fields` (spec-direct) below.
     # =========================================================================
 
     @staticmethod
     def reset_data[
         DTYPE: DType
     ](
-        mut data: Data[
+        mut d: Data[
             DTYPE,
             Self.NQ,
             Self.NV,
             Self.NBODY,
-            Self.NJOINT,
             Self.MAX_CONTACTS,
             Self.NSITE,
+            1,
         ],
     ):
         """Reset qpos to initial pose, zero qvel/qacc/qfrc.
@@ -359,79 +199,85 @@ struct ModelDefFromXML[
             comptime for i in range(Self.NQ):
                 comptime if i < Self._acd.nq:
                     comptime val = Self._acd.qpos0[i]
-                    data.qpos[i] = Scalar[DTYPE](val)
+                    d.qpos.data[i] = Scalar[DTYPE](val)
                 else:
-                    data.qpos[i] = Scalar[DTYPE](0)
+                    d.qpos.data[i] = Scalar[DTYPE](0)
         else:
             # No init_qpos — zero everything, then fix free-joint quaternion.
             for i in range(Self.NQ):
-                data.qpos[i] = Scalar[DTYPE](0)
+                d.qpos.data[i] = Scalar[DTYPE](0)
             comptime if Self._acd.free_joint_qpos_adr >= 0:
                 # qpos[adr+3] is qw for a free joint (MuJoCo convention:
                 # [tx, ty, tz, qw, qx, qy, qz]).  Set qw=1 for identity.
-                data.qpos[Self._acd.free_joint_qpos_adr + 3] = Scalar[DTYPE](1)
+                d.qpos.data[Self._acd.free_joint_qpos_adr + 3] = Scalar[
+                    DTYPE
+                ](1)
         for i in range(Self.NV):
-            data.qvel[i] = Scalar[DTYPE](0)
-            data.qacc[i] = Scalar[DTYPE](0)
-            data.qfrc[i] = Scalar[DTYPE](0)
+            d.qvel.data[i] = Scalar[DTYPE](0)
+            d.qacc.data[i] = Scalar[DTYPE](0)
+            d.qfrc.data[i] = Scalar[DTYPE](0)
 
     @staticmethod
     def extract_obs[
         DTYPE: DType
     ](
-        data: Data[
+        d: Data[
             DTYPE,
             Self.NQ,
             Self.NV,
             Self.NBODY,
-            Self.NJOINT,
             Self.MAX_CONTACTS,
             Self.NSITE,
+            1,
         ],
         mut obs: List[Scalar[DTYPE]],
     ):
         """Extract observation: qpos[obs_qpos_skip:] followed by qvel[:]."""
         for i in range(Self.NQ - Self.obs_qpos_skip):
-            obs.append(data.qpos[Self.obs_qpos_skip + i])
+            obs.append(d.qpos.data[Self.obs_qpos_skip + i])
         for i in range(Self.NV):
-            obs.append(data.qvel[i])
+            obs.append(d.qvel.data[i])
 
     @staticmethod
     def enforce_limits[
         DTYPE: DType
     ](
-        mut data: Data[
+        mut d: Data[
             DTYPE,
             Self.NQ,
             Self.NV,
             Self.NBODY,
-            Self.NJOINT,
             Self.MAX_CONTACTS,
             Self.NSITE,
+            1,
         ],
     ):
         """Clamp qpos to joint range limits (limited joints only)."""
         for j in range(Self.NJOINT):
             if Self._acd.joint_is_limited[j]:
                 var qp_adr = Self._acd.joint_qpos_adr[j]
-                var v = data.qpos[qp_adr]
+                var v = d.qpos.data[qp_adr]
                 if v < Scalar[DTYPE](Self._acd.joint_range_min[j]):
-                    data.qpos[qp_adr] = Scalar[DTYPE](Self._acd.joint_range_min[j])
+                    d.qpos.data[qp_adr] = Scalar[DTYPE](
+                        Self._acd.joint_range_min[j]
+                    )
                 elif v > Scalar[DTYPE](Self._acd.joint_range_max[j]):
-                    data.qpos[qp_adr] = Scalar[DTYPE](Self._acd.joint_range_max[j])
+                    d.qpos.data[qp_adr] = Scalar[DTYPE](
+                        Self._acd.joint_range_max[j]
+                    )
 
     @staticmethod
     def apply_actions[
         DTYPE: DType
     ](
-        mut data: Data[
+        mut d: Data[
             DTYPE,
             Self.NQ,
             Self.NV,
             Self.NBODY,
-            Self.NJOINT,
             Self.MAX_CONTACTS,
             Self.NSITE,
+            1,
         ],
         actions: List[Float64],
     ):
@@ -448,464 +294,114 @@ struct ModelDefFromXML[
                 ctrl = Self._acd.motor_ctrl_max[i]
             elif ctrl < Self._acd.motor_ctrl_min[i]:
                 ctrl = Self._acd.motor_ctrl_min[i]
-            data.qfrc[dof_adr] = Scalar[DTYPE](
+            d.qfrc.data[dof_adr] = Scalar[DTYPE](
                 Self._acd.motor_gears[i] * ctrl
             )
 
     # =========================================================================
-    # GPU: Model init
+    # Model build (spec-direct; G4)
     # =========================================================================
-
-    @staticmethod
-    def init_model_gpu[
-        DTYPE: DType
-    ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE],) raises:
-        """Serialize CPU model to GPU buffer, then compute invweight0 on GPU.
-
-        Creates a Model + Data on CPU, runs setup_model_and_data,
-        serializes to HostBuffer, copies to DeviceBuffer, then calls
-        _compute_invweight0_gpu to compute accurate invweight0 on GPU.
-        """
-        comptime BUF_SIZE = model_size_with_invweight[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NV,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.MAX_TENDON,
-            Self.NSITE,
-            Self.nexclude,
-        ]()
-        var host_buf = ctx.enqueue_create_host_buffer[DTYPE](BUF_SIZE)
-        for i in range(BUF_SIZE):
-            host_buf[i] = Scalar[DTYPE](0)
-
-        # Create CPU model + data, populate from XML
-        var model = Model[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.CONE_TYPE,
-            Self.MAX_TENDON,
-            Self.NSITE,
-        ]()
-        var data = Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-        ]()
-        Self.setup_model_and_data[DTYPE](model, data)
-
-        # Serialize model to host buffer
-        copy_model_to_buffer(model, host_buf)
-        copy_geoms_to_buffer(model, host_buf)
-        copy_tendons_to_buffer(model, host_buf)
-        copy_invweight0_to_buffer(model, host_buf)
-        copy_mesh_hull_to_buffer(model, host_buf)
-
-        # Copy to GPU (invweight0 already computed correctly by CPU's
-        # compute_body_invweight0 via setup_model_and_data)
-        ctx.enqueue_copy(model_buf, host_buf)
 
     # =========================================================================
     # GPU: _compute_invweight0_gpu (duplicated from ModelDef, dims from params)
     # =========================================================================
 
     @staticmethod
-    def _compute_invweight0_gpu[
-        DTYPE: DType,
-    ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE]) raises:
-        """Compute invweight0 on GPU via a single-thread kernel.
-
-        Identical algorithm to ModelDef._compute_invweight0_gpu,
-        parameterized on struct dimensions via Self.NQ, Self.NV, etc.
-        """
-        comptime STATE_SIZE = state_size[Self.NQ, Self.NV, Self.NBODY, 1]()
-        comptime MODEL_SIZE = model_size_with_invweight[
+    def init_fields[
+        DTYPE: DType, NMESHV: Int = 0
+    ](
+        ctx: DeviceContext,
+        mut mf: Model[
+            DTYPE,
+            Self.NV,
             Self.NBODY,
             Self.NJOINT,
-            Self.NV,
             Self.NGEOM,
             Self.MAX_EQUALITY,
             Self.MAX_TENDON,
             Self.NSITE,
+            Self.NEXCLUDE,
+            NMESHV,
+        ],
+    ) raises:
+        """Spec-direct fields model build (G4): parse the XML into a
+        FlatModelDef and write the packed record tensors DIRECTLY
+        (`fields_build.build_model_fields_from_flat`) — no CPU `Model`/`Data`
+        staging, no `setup_model_and_data`, no `load_from_model`. invweight0
+        is computed fields-natively (G1) from the reference pose given by the
+        fields `reset_data`. The legacy trait-default (setup_model_and_data →
+        load_from_model) was deleted at G4."""
+        var fmd = parse_xml_full[
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NQ,
+            Self.NV,
+            Self.NGEOM,
+            Self.nact,
+            Self.ntex,
+            Self.nmat,
+            Self.nlight,
+            Self.ncam,
+            Self.NSITE,
+            Self.neq,
             Self.nexclude,
+        ](Self.xml)
+        comptime ifg_mode = _xml_compiler_inertiafromgeom[Self.xml]()
+        comptime igr = _xml_compiler_inertiagrouprange[Self.xml]()
+        comptime stm = _xml_compiler_settotalmass[Self.xml]()
+        build_model_fields_from_flat[
+            DTYPE,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.NQ,
+            Self.NV,
+            Self.NGEOM,
+            Self.nact,
+            Self.ntex,
+            Self.nmat,
+            Self.nlight,
+            Self.ncam,
+            Self.NSITE,
+            Self.neq,
+            Self.nexclude,
+            Self.MAX_EQUALITY,
+            Self.MAX_TENDON,
+            Self.NSITE,
+            Self.NEXCLUDE,
+            NMESHV,
+            ifg_mode,
+            igr[0],
+            igr[1],
+            stm,
+        ](fmd, mf)
+
+        # Reference pose + fields-native invweight0 (G1).
+        var d_inv = Data[
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.MAX_CONTACTS,
+            Self.NSITE,
+            1,
         ]()
-        comptime WS_SIZE = integrator_workspace_size[Self.NV, Self.NBODY]()
-
-        var state_buf = ctx.enqueue_create_buffer[DTYPE](STATE_SIZE)
-        var ws_buf = ctx.enqueue_create_buffer[DTYPE](WS_SIZE)
-
-        var state = LayoutTensor[
-            DTYPE, Layout.row_major(1, STATE_SIZE), MutAnyOrigin
-        ](state_buf)
-        var model = LayoutTensor[
-            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
-        ](model_buf)
-        var workspace = LayoutTensor[
-            DTYPE, Layout.row_major(1, WS_SIZE), MutAnyOrigin
-        ](ws_buf)
-
-        @parameter
-        @always_inline
-        def invweight0_kernel(
-            state: LayoutTensor[
-                DTYPE, Layout.row_major(1, STATE_SIZE), MutAnyOrigin
-            ],
-            model: LayoutTensor[
-                DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
-            ],
-            workspace: LayoutTensor[
-                DTYPE, Layout.row_major(1, WS_SIZE), MutAnyOrigin
-            ],
-        ):
-            for i in range(STATE_SIZE):
-                state[0, i] = Scalar[DTYPE](0)
-
-            forward_kinematics_gpu[
-                DTYPE,
-                Self.NQ,
-                Self.NV,
-                Self.NBODY,
-                Self.NJOINT,
-                1,
-                STATE_SIZE,
-                MODEL_SIZE,
-                1,
-            ](0, state, model)
-
-            compute_cdof_gpu[
-                DTYPE,
-                Self.NQ,
-                Self.NV,
-                Self.NBODY,
-                Self.NJOINT,
-                1,
-                STATE_SIZE,
-                MODEL_SIZE,
-                1,
-                WS_SIZE,
-            ](0, state, model, workspace)
-
-            compute_composite_inertia_gpu[
-                DTYPE,
-                Self.NQ,
-                Self.NV,
-                Self.NBODY,
-                Self.NJOINT,
-                1,
-                STATE_SIZE,
-                MODEL_SIZE,
-                1,
-                WS_SIZE,
-            ](0, state, model, workspace)
-
-            compute_mass_matrix_full_gpu[
-                DTYPE,
-                Self.NQ,
-                Self.NV,
-                Self.NBODY,
-                Self.NJOINT,
-                1,
-                STATE_SIZE,
-                MODEL_SIZE,
-                1,
-                WS_SIZE,
-            ](0, state, model, workspace)
-
-            # Add armature to M diagonal
-            comptime M_idx = ws_M_offset[Self.NV, Self.NBODY]()
-            var meta_off = model_metadata_offset[Self.NBODY, Self.NJOINT]()
-            var num_joints = Int(
-                rebind[Scalar[DTYPE]](
-                    model[0, meta_off + MODEL_META_IDX_NJOINT]
-                )
-            )
-            for j in range(num_joints):
-                var joff = model_joint_offset[Self.NBODY](j)
-                var jtype = Int(
-                    rebind[Scalar[DTYPE]](model[0, joff + JOINT_IDX_TYPE])
-                )
-                var dof_adr = Int(
-                    rebind[Scalar[DTYPE]](model[0, joff + JOINT_IDX_DOF_ADR])
-                )
-                var arm = rebind[Scalar[DTYPE]](
-                    model[0, joff + JOINT_IDX_ARMATURE]
-                )
-                var ndof = 1
-                if jtype == JNT_FREE:
-                    ndof = 6
-                elif jtype == JNT_BALL:
-                    ndof = 3
-                for d in range(ndof):
-                    var idx = M_idx + (dof_adr + d) * Self.NV + (dof_adr + d)
-                    workspace[0, idx] = (
-                        rebind[Scalar[DTYPE]](workspace[0, idx]) + arm
-                    )
-
-            ldl_factor_gpu[DTYPE, Self.NV, Self.NBODY, 1, WS_SIZE](0, workspace)
-
-            # Compute invweight0
-            comptime cdof_idx = ws_cdof_offset()
-            comptime L_idx = ws_L_offset[Self.NV, Self.NBODY]()
-            comptime D_idx = ws_D_offset[Self.NV, Self.NBODY]()
-            comptime scratch1 = D_idx + Self.NV
-            comptime scratch2 = scratch1 + Self.NV
-            comptime scratch3 = scratch2 + Self.NV
-            var xi_off = xipos_offset[Self.NQ, Self.NV, Self.NBODY]()
-
-            var bw_off = model_body_invweight0_offset[
-                Self.NBODY,
-                Self.NJOINT,
-                Self.NGEOM,
-                Self.MAX_EQUALITY,
-                Self.MAX_TENDON,
-                Self.NSITE,
-            ]()
-            var dw_off = model_dof_invweight0_offset[
-                Self.NBODY,
-                Self.NJOINT,
-                Self.NGEOM,
-                Self.MAX_EQUALITY,
-                Self.MAX_TENDON,
-                Self.NSITE,
-            ]()
-
-            model[0, bw_off + 0] = Scalar[DTYPE](0)
-            model[0, bw_off + 1] = Scalar[DTYPE](0)
-
-            for i in range(Self.NBODY):
-                var ti_x = rebind[Scalar[DTYPE]](state[0, xi_off + i * 3 + 0])
-                var ti_y = rebind[Scalar[DTYPE]](state[0, xi_off + i * 3 + 1])
-                var ti_z = rebind[Scalar[DTYPE]](state[0, xi_off + i * 3 + 2])
-
-                var A_diag_tran = Scalar[DTYPE](0)
-                var A_diag_rot = Scalar[DTYPE](0)
-
-                for k in range(6):
-                    var dot_val = Scalar[DTYPE](0)
-
-                    for d in range(Self.NV):
-                        workspace[0, scratch1 + d] = Scalar[DTYPE](0)
-
-                    for d in range(Self.NV):
-                        var dof_body = 0
-                        for jj in range(num_joints):
-                            var jj_off = model_joint_offset[Self.NBODY](jj)
-                            var jj_type = Int(
-                                rebind[Scalar[DTYPE]](
-                                    model[0, jj_off + JOINT_IDX_TYPE]
-                                )
-                            )
-                            var jj_dof = Int(
-                                rebind[Scalar[DTYPE]](
-                                    model[0, jj_off + JOINT_IDX_DOF_ADR]
-                                )
-                            )
-                            var jj_body = Int(
-                                rebind[Scalar[DTYPE]](
-                                    model[0, jj_off + JOINT_IDX_BODY_ID]
-                                )
-                            )
-                            var jj_ndof = 1
-                            if jj_type == JNT_FREE:
-                                jj_ndof = 6
-                            elif jj_type == JNT_BALL:
-                                jj_ndof = 3
-                            if d >= jj_dof and d < jj_dof + jj_ndof:
-                                dof_body = jj_body
-                                break
-
-                        var affects = False
-                        if dof_body == i:
-                            affects = True
-                        else:
-                            var current = i
-                            while current > 0:
-                                var p_off = model_body_offset(current)
-                                var parent = Int(
-                                    rebind[Scalar[DTYPE]](
-                                        model[0, p_off + BODY_IDX_PARENT]
-                                    )
-                                )
-                                if parent == dof_body:
-                                    affects = True
-                                    break
-                                current = parent
-
-                        if not affects:
-                            continue
-
-                        var ang_x = rebind[Scalar[DTYPE]](
-                            workspace[0, cdof_idx + d * 6 + 0]
-                        )
-                        var ang_y = rebind[Scalar[DTYPE]](
-                            workspace[0, cdof_idx + d * 6 + 1]
-                        )
-                        var ang_z = rebind[Scalar[DTYPE]](
-                            workspace[0, cdof_idx + d * 6 + 2]
-                        )
-                        var lin_x = rebind[Scalar[DTYPE]](
-                            workspace[0, cdof_idx + d * 6 + 3]
-                        )
-                        var lin_y = rebind[Scalar[DTYPE]](
-                            workspace[0, cdof_idx + d * 6 + 4]
-                        )
-                        var lin_z = rebind[Scalar[DTYPE]](
-                            workspace[0, cdof_idx + d * 6 + 5]
-                        )
-
-                        var dx = ti_x - rebind[Scalar[DTYPE]](
-                            state[0, xi_off + dof_body * 3 + 0]
-                        )
-                        var dy = ti_y - rebind[Scalar[DTYPE]](
-                            state[0, xi_off + dof_body * 3 + 1]
-                        )
-                        var dz = ti_z - rebind[Scalar[DTYPE]](
-                            state[0, xi_off + dof_body * 3 + 2]
-                        )
-
-                        var val: Scalar[DTYPE]
-                        if k == 0:
-                            val = lin_x + ang_y * dz - ang_z * dy
-                        elif k == 1:
-                            val = lin_y + ang_z * dx - ang_x * dz
-                        elif k == 2:
-                            val = lin_z + ang_x * dy - ang_y * dx
-                        elif k == 3:
-                            val = ang_x
-                        elif k == 4:
-                            val = ang_y
-                        else:
-                            val = ang_z
-                        workspace[0, scratch1 + d] = val
-
-                    # LDL forward substitution: y = L^{-1} * b
-                    for ii in range(Self.NV):
-                        var s = rebind[Scalar[DTYPE]](
-                            workspace[0, scratch1 + ii]
-                        )
-                        for jj in range(ii):
-                            s = s - rebind[Scalar[DTYPE]](
-                                workspace[0, L_idx + ii * Self.NV + jj]
-                            ) * rebind[Scalar[DTYPE]](
-                                workspace[0, scratch2 + jj]
-                            )
-                        workspace[0, scratch2 + ii] = s
-
-                    # Scale: z = D^{-1} * y
-                    for ii in range(Self.NV):
-                        var d_val = rebind[Scalar[DTYPE]](
-                            workspace[0, D_idx + ii]
-                        )
-                        if d_val > Scalar[DTYPE](1e-14) or d_val < Scalar[
-                            DTYPE
-                        ](-1e-14):
-                            workspace[0, scratch3 + ii] = (
-                                rebind[Scalar[DTYPE]](
-                                    workspace[0, scratch2 + ii]
-                                )
-                                / d_val
-                            )
-                        else:
-                            workspace[0, scratch3 + ii] = Scalar[DTYPE](0)
-
-                    # Back substitution: x = L^{-T} * z
-                    for ii_rev in range(Self.NV):
-                        var ii = Self.NV - 1 - ii_rev
-                        var s = rebind[Scalar[DTYPE]](
-                            workspace[0, scratch3 + ii]
-                        )
-                        for jj in range(ii + 1, Self.NV):
-                            s = s - rebind[Scalar[DTYPE]](
-                                workspace[0, L_idx + jj * Self.NV + ii]
-                            ) * rebind[Scalar[DTYPE]](
-                                workspace[0, scratch2 + jj]
-                            )
-                        workspace[0, scratch2 + ii] = s
-
-                    # dot(J_row, x)
-                    for d in range(Self.NV):
-                        dot_val += rebind[Scalar[DTYPE]](
-                            workspace[0, scratch1 + d]
-                        ) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + d])
-
-                    if k < 3:
-                        A_diag_tran += dot_val
-                    else:
-                        A_diag_rot += dot_val
-
-                var tran = A_diag_tran / Scalar[DTYPE](3)
-                var rot = A_diag_rot / Scalar[DTYPE](3)
-
-                if tran < Scalar[DTYPE](1e-10) and rot > Scalar[DTYPE](1e-10):
-                    tran = rot
-                elif rot < Scalar[DTYPE](1e-10) and tran > Scalar[DTYPE](1e-10):
-                    rot = tran
-
-                model[0, bw_off + 2 * i] = tran
-                model[0, bw_off + 2 * i + 1] = rot
-
-            # Compute dof_invweight0: diagonal of M^{-1}
-            for d in range(Self.NV):
-                for ii in range(Self.NV):
-                    workspace[0, scratch1 + ii] = Scalar[DTYPE](0)
-                workspace[0, scratch1 + d] = Scalar[DTYPE](1)
-
-                for ii in range(Self.NV):
-                    var s = rebind[Scalar[DTYPE]](workspace[0, scratch1 + ii])
-                    for jj in range(ii):
-                        s = s - rebind[Scalar[DTYPE]](
-                            workspace[0, L_idx + ii * Self.NV + jj]
-                        ) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + jj])
-                    workspace[0, scratch2 + ii] = s
-
-                for ii in range(Self.NV):
-                    var d_val = rebind[Scalar[DTYPE]](workspace[0, D_idx + ii])
-                    if d_val > Scalar[DTYPE](1e-14) or d_val < Scalar[DTYPE](
-                        -1e-14
-                    ):
-                        workspace[0, scratch3 + ii] = (
-                            rebind[Scalar[DTYPE]](workspace[0, scratch2 + ii])
-                            / d_val
-                        )
-                    else:
-                        workspace[0, scratch3 + ii] = Scalar[DTYPE](0)
-
-                for ii_rev in range(Self.NV):
-                    var ii = Self.NV - 1 - ii_rev
-                    var s = rebind[Scalar[DTYPE]](workspace[0, scratch3 + ii])
-                    for jj in range(ii + 1, Self.NV):
-                        s = s - rebind[Scalar[DTYPE]](
-                            workspace[0, L_idx + jj * Self.NV + ii]
-                        ) * rebind[Scalar[DTYPE]](workspace[0, scratch2 + jj])
-                    workspace[0, scratch2 + ii] = s
-
-                model[0, dw_off + d] = rebind[Scalar[DTYPE]](
-                    workspace[0, scratch2 + d]
-                )
-
-        ctx.enqueue_function[invweight0_kernel](
-            state,
-            model,
-            workspace,
-            grid_dim=(1,),
-            block_dim=(1,),
-        )
-        ctx.synchronize()
-
-        # Keep buffers alive until kernel completes (prevent ASAP destruction)
-        _ = state_buf^
-        _ = ws_buf^
+        Self.reset_data[DTYPE](d_inv)
+        var sc_inv = DynamicsScratch[DTYPE, Self.NV, Self.NBODY, 1]()
+        compute_invweight0[
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.NJOINT,
+            Self.MAX_CONTACTS,
+            Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.MAX_TENDON,
+            Self.NSITE,
+            Self.NEXCLUDE,
+            NMESHV,
+        ](d_inv, mf, sc_inv)
+        mf.upload_all(ctx)
 
     # =========================================================================
     # GPU: Joints / Actuators kernel delegates
@@ -915,41 +411,34 @@ struct ModelDefFromXML[
     def apply_actions_kernel_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
         ACTION_DIM: Int,
     ](
         ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[DTYPE],
-        actions_buf: DeviceBuffer[DTYPE],
+        qfrc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
     ) raises:
-        """GPU kernel: apply gear * action to qfrc for each actuator.
-
-        Uses comptime helpers to extract per-actuator gear and DOF address
-        from the embedded XML at compile time.
+        """GPU kernel: apply gear * clamp(action, ctrlrange) to qfrc for each
+        actuator, straight on the per-field qfrc tensor (G5 — no state slab).
         """
-        var states = LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf)
-        var actions = LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), ImmutAnyOrigin
-        ](actions_buf)
-
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @parameter
         @always_inline
         def apply_kernel(
-            states: LayoutTensor[
-                DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+            qfrc: LayoutTensor[
+                DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
             ],
             actions: LayoutTensor[
-                DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), ImmutAnyOrigin
+                DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
             ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
                 return
-            comptime qfrc_base = qfrc_offset[Self.NQ, Self.NV]()
 
             comptime for act_i in range(Self.nact):
                 comptime gear = Self._acd.motor_gears[act_i]
@@ -963,102 +452,11 @@ struct ModelDefFromXML[
                         ctrl = Scalar[DTYPE](c_max)
                     elif ctrl < Scalar[DTYPE](c_min):
                         ctrl = Scalar[DTYPE](c_min)
-                    states[env, qfrc_base + dof] = Scalar[DTYPE](gear) * ctrl
+                    qfrc[env, dof] = Scalar[DTYPE](gear) * ctrl
 
         ctx.enqueue_function[apply_kernel](
-            states,
+            qfrc,
             actions,
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-    @staticmethod
-    def enforce_limits_kernel_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[DTYPE]) raises:
-        """GPU kernel: clamp qpos to joint limits for limited joints."""
-        var states = LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf)
-
-        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-
-        @parameter
-        @always_inline
-        def limits_kernel(
-            states: LayoutTensor[
-                DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-            ],
-        ):
-            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if env >= BATCH_SIZE:
-                return
-            comptime qpos_base = qpos_offset[Self.NQ, Self.NV]()
-
-            comptime for j in range(Self.njoint):
-                comptime limited = Self._acd.joint_is_limited[j]
-
-                comptime if limited:
-                    comptime qp_adr = Self._acd.joint_qpos_adr[j]
-                    comptime rmin = Self._acd.joint_range_min[j]
-                    comptime rmax = Self._acd.joint_range_max[j]
-                    var qpos = rebind[Scalar[DTYPE]](
-                        states[env, qpos_base + qp_adr]
-                    )
-                    if qpos < Scalar[DTYPE](rmin):
-                        states[env, qpos_base + qp_adr] = Scalar[DTYPE](rmin)
-                    elif qpos > Scalar[DTYPE](rmax):
-                        states[env, qpos_base + qp_adr] = Scalar[DTYPE](rmax)
-
-        ctx.enqueue_function[limits_kernel](
-            states,
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
-
-    @staticmethod
-    def extract_obs_kernel_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-        OBS_DIM: Int,
-    ](
-        ctx: DeviceContext,
-        states_buf: DeviceBuffer[DTYPE],
-        mut obs_buf: DeviceBuffer[DTYPE],
-    ) raises:
-        """GPU kernel: extract qpos[obs_qpos_skip:] + qvel[:] as observation."""
-        var states = LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
-        ](states_buf)
-        var obs = LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs_buf)
-
-        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
-
-        @parameter
-        @always_inline
-        def obs_kernel(
-            states: LayoutTensor[
-                DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
-            ],
-            obs: LayoutTensor[
-                DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-            ],
-        ):
-            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if env >= BATCH_SIZE:
-                return
-            Self.extract_obs_gpu[DTYPE, BATCH_SIZE, STATE_SIZE, OBS_DIM](
-                states, obs, env
-            )
-
-        ctx.enqueue_function[obs_kernel](
-            states,
-            obs,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1072,20 +470,24 @@ struct ModelDefFromXML[
     def reset_env_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+        ],
+        qacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+        ],
+        qfrc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
         ],
         env: Int,
         noise_scale: Scalar[DTYPE],
         seed: Int,
     ):
-        """Reset a single env with small random noise around qpos=0, qvel=0."""
-        comptime qpos_base = qpos_offset[Self.NQ, Self.NV]()
-        comptime qvel_base = qvel_offset[Self.NQ, Self.NV]()
-        comptime qacc_base = qacc_offset[Self.NQ, Self.NV]()
-        comptime qfrc_base = qfrc_offset[Self.NQ, Self.NV]()
+        """Reset a single env with small random noise around qpos0, qvel=0."""
         comptime TOTAL_VALS = Self.NQ + Self.NV
         comptime NUM_BATCHES = (TOTAL_VALS + 3) // 4
 
@@ -1106,37 +508,39 @@ struct ModelDefFromXML[
             var noise = Scalar[DTYPE](rand_vals[i] * 2.0 - 1.0) * noise_scale
             comptime if Self._acd.nq > 0 and i < Self._acd.nq:
                 comptime val = Self._acd.qpos0[i]
-                states[env, qpos_base + i] = Scalar[DTYPE](val) + noise
+                qpos[env, i] = Scalar[DTYPE](val) + noise
             else:
                 comptime if (
                     Self._acd.free_joint_qpos_adr >= 0
                     and i == Self._acd.free_joint_qpos_adr + 3
                 ):
                     # Free-joint qw: start from identity (1.0) + small noise.
-                    states[env, qpos_base + i] = Scalar[DTYPE](1) + noise
+                    qpos[env, i] = Scalar[DTYPE](1) + noise
                 else:
-                    states[env, qpos_base + i] = noise
+                    qpos[env, i] = noise
 
         comptime for i in range(Self.NV):
             var noise = (
                 Scalar[DTYPE](rand_vals[Self.NQ + i] * 2.0 - 1.0) * noise_scale
             )
-            states[env, qvel_base + i] = noise
+            qvel[env, i] = noise
 
         for i in range(Self.NV):
-            states[env, qacc_base + i] = Scalar[DTYPE](0)
-            states[env, qfrc_base + i] = Scalar[DTYPE](0)
+            qacc[env, i] = Scalar[DTYPE](0)
+            qfrc[env, i] = Scalar[DTYPE](0)
 
     @always_inline
     @staticmethod
     def extract_obs_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
         OBS_DIM: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
@@ -1144,16 +548,11 @@ struct ModelDefFromXML[
         env: Int,
     ):
         """Extract obs = qpos[obs_qpos_skip:] + qvel[:] for a single env."""
-        comptime qpos_base = qpos_offset[Self.NQ, Self.NV]()
-        comptime qvel_base = qvel_offset[Self.NQ, Self.NV]()
-
         comptime for i in range(Self.NQ - Self.obs_qpos_skip):
-            obs[env, i] = states[env, qpos_base + Self.obs_qpos_skip + i]
+            obs[env, i] = qpos[env, Self.obs_qpos_skip + i]
 
         comptime for i in range(Self.NV):
-            obs[env, Self.NQ - Self.obs_qpos_skip + i] = states[
-                env, qvel_base + i
-            ]
+            obs[env, Self.NQ - Self.obs_qpos_skip + i] = qvel[env, i]
 
     # =========================================================================
     # Rendering — driven from parsed XML assets, lights, cameras, geoms

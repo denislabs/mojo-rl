@@ -82,7 +82,7 @@ comptime MAX_GRAD_NORM: Scalar[DT] = 1.0
 comptime LAM: Scalar[DT] = 0.09
 comptime LOG_EVERY: Int = 500
 comptime CKPT_EVERY: Int = 10000    # periodic saves → partial runs usable
-comptime CKPT_PATH: String = "/tmp/lewm_pusht_recipe_world_model.txt"
+comptime CKPT_PATH: String = "lewm_pusht_recipe.ckpt"
 
 comptime EncCLS = LeWMEncoderCLS[
     IN_CH, IMG, PATCH, N_PATCHES, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB,

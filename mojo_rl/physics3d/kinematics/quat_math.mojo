@@ -269,23 +269,27 @@ def quat_integrate[
 ) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """Integrate quaternion with angular velocity.
 
-    Uses first-order approximation: q(t+dt) = q(t) + 0.5 * dt * omega * q(t)
-    where omega is the quaternion [wx, wy, wz, 0].
+    Uses first-order approximation: q(t+dt) = q(t) + 0.5 * dt * q(t) * omega
+    (RIGHT multiplication) where omega is the quaternion [wx, wy, wz, 0] —
+    i.e. the angular velocity is interpreted in the BODY-LOCAL frame,
+    matching MuJoCo's free/ball-joint qvel convention (mju_quatIntegrate).
+    (An earlier docstring claimed world-frame left-multiplication; the code
+    below has always been the local right-multiplication.)
 
     Args:
         qx: Current orientation quaternion x.
         qy: Current orientation quaternion y.
         qz: Current orientation quaternion z.
         qw: Current orientation quaternion w.
-        wx: Angular velocity x in world frame.
-        wy: Angular velocity y in world frame.
-        wz: Angular velocity z in world frame.
+        wx: Angular velocity x in body-local frame.
+        wy: Angular velocity y in body-local frame.
+        wz: Angular velocity z in body-local frame.
         dt: Time step.
 
     Returns:
         Updated (normalized) quaternion.
     """
-    # Compute qdot = 0.5 * omega * q
+    # Compute qdot = 0.5 * q * omega  (local-frame right multiplication)
     # where omega = [wx, wy, wz, 0]
     var half_dt = Scalar[DTYPE](0.5) * dt
 

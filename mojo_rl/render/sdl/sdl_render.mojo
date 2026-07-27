@@ -48,6 +48,16 @@ These functions must be called from the main thread. See this bug for
 details: https://github.com/libsdl-org/SDL/issues/986
 """
 
+from . import _get_dylib_function, c_char, c_double, c_float, c_int, lib, Ptr
+from .sdl_blendmode import BlendMode
+from .sdl_error import get_error
+from .sdl_events import Event
+from .sdl_pixels import FColor, PixelFormat
+from .sdl_properties import PropertiesID
+from .sdl_rect import FPoint, FRect, Rect
+from .sdl_surface import FlipMode, ScaleMode, Surface
+from .sdl_video import Window, WindowFlags
+
 
 @fieldwise_init
 struct Vertex(ImplicitlyCopyable, Movable):
@@ -248,7 +258,7 @@ def create_window_and_renderer(
         lib,
         "SDL_CreateWindowAndRenderer",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(title))],
+            Ptr[c_char, ImmOrigin(origin_of(title))],
             c_int,
             c_int,
             WindowFlags,
@@ -305,7 +315,7 @@ def create_renderer[win_o: MutOrigin, //](
         "SDL_CreateRenderer",
         def(
             Ptr[Window, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Ptr[c_char, ImmOrigin(origin_of(name))],
         ) thin -> Ptr[Renderer, MutAnyOrigin],
     ]()(window.as_unsafe_any_origin(), name.as_c_string_slice().unsafe_ptr())
 
@@ -3896,7 +3906,7 @@ def render_debug_text[o: MutOrigin, //](
             Ptr[Renderer, MutAnyOrigin],
             c_float,
             c_float,
-            Ptr[c_char, ImmutOrigin(origin_of(str))],
+            Ptr[c_char, ImmOrigin(origin_of(str))],
         ) thin -> Bool,
     ]()(renderer.as_unsafe_any_origin(), x, y, str.as_c_string_slice().unsafe_ptr())
     if not ret:

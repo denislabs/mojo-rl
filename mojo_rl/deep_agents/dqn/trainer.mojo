@@ -587,7 +587,7 @@ struct DQNTrainer[
                 self._ensure_action_scratch[N_ENVS]()
                 var act_h = self._act_host.unsafe_ptr()
                 for i in range(N_ENVS):
-                    act_h[i] = Scalar[DT](Int(random_float64() * Float64(NA)))
+                    act_h[unsafe_offset=i] = Scalar[DT](Int(random_float64() * Float64(NA)))
                 var action_dev = DeviceBuffer[DT](
                     c, action_ptr, N_ENVS, owning=False,
                 )
@@ -613,9 +613,9 @@ struct DQNTrainer[
             for i in range(N_ENVS):
                 var r = random_float64()
                 if r < Float64(self.epsilon):
-                    act_h[i] = Scalar[DT](Int(random_float64() * Float64(NA)))
+                    act_h[unsafe_offset=i] = Scalar[DT](Int(random_float64() * Float64(NA)))
                 else:
-                    act_h[i] = Scalar[DT](self._argmax_row(i * NA))
+                    act_h[unsafe_offset=i] = Scalar[DT](self._argmax_row(i * NA))
             var action_dev = DeviceBuffer[DT](
                 c, action_ptr, N_ENVS, owning=False,
             )
@@ -711,7 +711,7 @@ struct DQNTrainer[
             var c = self.ctx.value()
             var act_h = self._act_host.unsafe_ptr()
             for i in range(N_ENVS):
-                act_h[i] = Scalar[DT](self._argmax_row(i * NA))
+                act_h[unsafe_offset=i] = Scalar[DT](self._argmax_row(i * NA))
             var action_dev = DeviceBuffer[DT](
                 c, action_ptr, N_ENVS, owning=False,
             )
@@ -738,7 +738,7 @@ struct DQNTrainer[
         """Toggle Noisy-net exploration magnitude on the online net (1.0 =
         explore, 0.0 = deterministic mean weights). No-op for non-Noisy nets —
         the storage NoisyLinear honours it where present."""
-        pass
+        self.pair.online.set_attr["noise_scale"](scale)
 
     # ─── Logging ─────────────────────────────────────────────────────
 

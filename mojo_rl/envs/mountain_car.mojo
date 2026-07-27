@@ -56,8 +56,8 @@ struct MountainCarState(Copyable, ImplicitlyCopyable, Movable, State):
     def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    def __init__(out self, *, deinit take: Self):
-        self.index = take.index
+    def __init__(out self, *, deinit move: Self):
+        self.index = move.index
 
     def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
@@ -72,8 +72,8 @@ struct MountainCarAction(Action, Copyable, ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.direction = copy.direction
 
-    def __init__(out self, *, deinit take: Self):
-        self.direction = take.direction
+    def __init__(out self, *, deinit move: Self):
+        self.direction = move.direction
 
     @staticmethod
     def left() -> Self:
@@ -683,7 +683,7 @@ struct MountainCarEnv[DTYPE: DType](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.value().init_pointee_move(Renderer2D())
+        self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True
 

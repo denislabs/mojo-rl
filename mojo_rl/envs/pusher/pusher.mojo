@@ -1,4 +1,4 @@
-"""Pusher Environment - thin wrapper around Phyics3dEnv[PusherModel, PusherConfig]."""
+"""Pusher Environment - thin wrapper over Phyics3dEnv[PusherModel, PusherConfig]."""
 
 from .pusher_xml import PusherModel
 from .pusher_config import PusherConfig

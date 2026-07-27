@@ -97,16 +97,16 @@ struct BinaryElementwise[DIM_: Int, OP: BinaryElementOp](Module):
             var op = out.data.unsafe_ptr()
             var k = 0
             while k + CPU_SIMD_W <= M:
-                op.store(
+                op.unsafe_store(
                     k,
                     Self.OP.forward_simd[CPU_SIMD_W](
-                        ap.load[width=CPU_SIMD_W](k),
-                        bp.load[width=CPU_SIMD_W](k),
+                        ap.unsafe_load[width=CPU_SIMD_W](k),
+                        bp.unsafe_load[width=CPU_SIMD_W](k),
                     ),
                 )
                 k += CPU_SIMD_W
             while k < M:
-                op[k] = Self.OP.forward_scalar(ap[k], bp[k])
+                op[unsafe_offset=k] = Self.OP.forward_scalar(ap[unsafe_offset=k], bp[unsafe_offset=k])
                 k += 1
         else:
             var c = ctx.value()
@@ -149,16 +149,16 @@ struct BinaryElementwise[DIM_: Int, OP: BinaryElementOp](Module):
             var k = 0
             while k + CPU_SIMD_W <= M:
                 var cc = Self.OP.cache_simd[CPU_SIMD_W](
-                    ap.load[width=CPU_SIMD_W](k), bp.load[width=CPU_SIMD_W](k)
+                    ap.unsafe_load[width=CPU_SIMD_W](k), bp.unsafe_load[width=CPU_SIMD_W](k)
                 )
-                var gv = gp.load[width=CPU_SIMD_W](k)
-                g0.store(k, Self.OP.backward_simd_x[CPU_SIMD_W](cc, gv))
-                g1.store(k, Self.OP.backward_simd_y[CPU_SIMD_W](cc, gv))
+                var gv = gp.unsafe_load[width=CPU_SIMD_W](k)
+                g0.unsafe_store(k, Self.OP.backward_simd_x[CPU_SIMD_W](cc, gv))
+                g1.unsafe_store(k, Self.OP.backward_simd_y[CPU_SIMD_W](cc, gv))
                 k += CPU_SIMD_W
             while k < M:
-                var cc = Self.OP.cache_scalar(ap[k], bp[k])
-                g0[k] = Self.OP.backward_scalar_x(cc, gp[k])
-                g1[k] = Self.OP.backward_scalar_y(cc, gp[k])
+                var cc = Self.OP.cache_scalar(ap[unsafe_offset=k], bp[unsafe_offset=k])
+                g0[unsafe_offset=k] = Self.OP.backward_scalar_x(cc, gp[unsafe_offset=k])
+                g1[unsafe_offset=k] = Self.OP.backward_scalar_y(cc, gp[unsafe_offset=k])
                 k += 1
         else:
             var c = ctx.value()

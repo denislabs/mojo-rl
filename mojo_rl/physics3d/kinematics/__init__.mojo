@@ -1,6 +1,5 @@
-"""Forward kinematics for Generalized Coordinates engine.
-
-This module computes body world positions (xpos, xquat) from joint positions (qpos).
+"""Kinematics: quaternion math + the fields forward kinematics
+(`forward_kinematics` — body world poses xpos/xquat/xipos from qpos).
 """
 
 from .quat_math import (
@@ -11,4 +10,5 @@ from .quat_math import (
     axis_angle_to_quat,
     quat_integrate,
 )
-from .forward_kinematics import forward_kinematics, compute_body_velocities
+# Legacy struct-Model/Data FK deleted at the G4 fields sunset; the fields
+# FK is `forward_kinematics` (imported directly by module).

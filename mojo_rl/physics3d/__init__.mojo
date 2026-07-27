@@ -1,31 +1,17 @@
 """Physics3D - MuJoCo-inspired generalized coordinates physics engine.
 
 Constraint-based contact solving with joint-space dynamics.
-- Model: Static simulation configuration (kinematic tree, masses, etc.)
-- Data: Mutable simulation state (qpos, qvel, computed xpos/xquat)
-- EulerIntegrator[SOLVER]: Configurable constraint solver integrator
+Model/Data (per-field tensors) + the fields integrators/solvers.
 """
 
 from .constants import TILE, TPB, PhysicsConstants
 from .constants import GEOM_PLANE, GEOM_SPHERE
 
 # Types
-from .types import (
-    Model,
-    Data,
-    ContactInfo,
-    compute_capsule_inertia,
-    _max_one,
-    ConeType,
-)
+from .types import _max_one, ConeType
 from .joint_types import JointDef, JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
-from .traits import Integrator, ConstraintSolver
 
-# Kinematics
-from .kinematics.forward_kinematics import (
-    forward_kinematics,
-    compute_body_velocities,
-)
+# Kinematics (fields FK lives in kinematics/forward_kinematics)
 from .kinematics.quat_math import (
     quat_mul,
     quat_conjugate,
@@ -35,22 +21,11 @@ from .kinematics.quat_math import (
     quat_integrate,
 )
 
-# Dynamics
-from .dynamics.mass_matrix import compute_mass_matrix, solve_linear_diagonal
-from .dynamics.bias_forces import compute_bias_forces
-from .dynamics.cfrc_ext import compute_cfrc_ext
+# Legacy slab integrators + solvers were deleted at the P6 fields sunset; the
+# fields integrators/solvers are imported directly by module.
 
-# Integrator
-from .integrator import (
-    DefaultIntegrator,
-    EulerIntegrator,
-    ImplicitFastIntegrator,
-)
-
-# Solvers
-from .solver import PGSSolver, NewtonSolver, CGSolver
-
-# Collision
+# Collision primitives (shared leaves)
+from .types import ConeType
 from .collision import (
     sphere_sphere,
     sphere_plane,
@@ -61,6 +36,4 @@ from .collision import (
     box_sphere,
     box_capsule,
     box_box,
-    detect_contacts,
-    normalize_qpos_quaternions,
 )

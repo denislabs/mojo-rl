@@ -3,13 +3,11 @@
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.integrator import RK4Integrator
-from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
-    qpos_offset,
-    model_curriculum_offset,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
     rk4_extra_workspace_size,
 )
 
@@ -39,47 +37,6 @@ struct AntConfig(Phyics3dEnvConfig):
     comptime OBS_DIM: Int = 27  # qpos[2:15] + qvel[0:14]
     comptime ACTION_DIM: Int = 8
 
-    # === CPU: Integrator step ===
-    @staticmethod
-    def physics_substep[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        MAX_CONTACTS: Int,
-        NGEOM: Int,
-        MAX_EQUALITY: Int,
-        CONE_TYPE: Int,
-        MAX_TENDON: Int = 0,
-        NSITE: Int = 0,
-    ](
-        mut model: Model[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NGEOM,
-            MAX_EQUALITY,
-            CONE_TYPE,
-            MAX_TENDON,
-            NSITE,
-        ],
-        mut data: Data[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NSITE,
-        ],
-        verbose: Bool,
-    ):
-        RK4Integrator[SOLVER=NewtonSolver].step(model, data)
-
     # === CPU: Pre-step hook ===
     @staticmethod
     def pre_step_cpu[
@@ -87,14 +44,13 @@ struct AntConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         mut prev_x: Scalar[DTYPE],
     ):
-        prev_x = data.qpos[0]  # Save free joint x position
+        prev_x = d.qpos.data[0]  # Save free joint x position
 
     # === CPU: Reward + termination ===
     @staticmethod
@@ -103,18 +59,17 @@ struct AntConfig(Phyics3dEnvConfig):
         NQ: Int,
         NV: Int,
         NBODY: Int,
-        NJOINT: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,
         frame_skip: Int,
     ) -> Tuple[Scalar[DTYPE], Bool]:
         # Compute x velocity from position change
-        var x_after = data.qpos[0]
+        var x_after = d.qpos.data[0]
         var dt = Scalar[DTYPE](Self.get_timestep()) * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / dt
 
@@ -130,7 +85,7 @@ struct AntConfig(Phyics3dEnvConfig):
         var ctrl_cost = Scalar[DTYPE](Self.CTRL_COST_WEIGHT) * ctrl_cost_sum
 
         # Health check — z height from free joint qpos[2]
-        var z_height = data.qpos[2]
+        var z_height = d.qpos.data[2]
         var min_height = Scalar[DTYPE](Self.MIN_HEIGHT)
         var max_height = Scalar[DTYPE](Self.MAX_HEIGHT)
         var is_healthy = z_height >= min_height and z_height <= max_height
@@ -138,13 +93,13 @@ struct AntConfig(Phyics3dEnvConfig):
         # Check for NaN/Inf in state
         if is_healthy:
             for i in range(NQ):
-                var q = data.qpos[i]
+                var q = d.qpos.data[i]
                 if q != q:  # NaN check
                     is_healthy = False
                     break
             if is_healthy:
                 for i in range(NV):
-                    var v = data.qvel[i]
+                    var v = d.qvel.data[i]
                     if v != v:  # NaN check
                         is_healthy = False
                         break
@@ -168,59 +123,24 @@ struct AntConfig(Phyics3dEnvConfig):
     def get_reset_noise() -> Float64:
         return 0.1
 
-    # === GPU: Integrator step ===
-    @staticmethod
-    def physics_substep_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        MAX_CONTACTS: Int,
-        NGEOM: Int,
-        MAX_EQUALITY: Int,
-        CONE_TYPE: Int,
-        MAX_TENDON: Int = 0,
-        NSITE: Int = 0,
-    ](
-        ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[DTYPE],
-        mut model_buf: DeviceBuffer[DTYPE],
-        mut workspace_buf: DeviceBuffer[DTYPE],
-    ) raises:
-        RK4Integrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            BATCH_SIZE,
-            NGEOM,
-            CONE_TYPE=CONE_TYPE,
-            MAX_TENDON=MAX_TENDON,
-            NSITE=NSITE,
-            STEP_THREADS=NV,
-        ](ctx, states_buf, model_buf, workspace_buf)
-
     # === GPU inline: Pre-step hook ===
     @always_inline
     @staticmethod
     def pre_step_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
         env: Int,
-        meta_offset: Int,
     ):
         # Save free joint x position into META_IDX_PREV_X
-        comptime QPOS_OFF = qpos_offset[AntModel.NQ, AntModel.NV]()
-        states[env, meta_offset + META_IDX_PREV_X] = states[env, QPOS_OFF + 0]
+        meta[env, META_IDX_PREV_X] = qpos[env, 0]
 
     # === GPU inline: Reward + termination ===
     @always_inline
@@ -228,35 +148,47 @@ struct AntConfig(Phyics3dEnvConfig):
     def compute_reward_and_done_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
         ACTION_DIM: Int,
-        MODEL_SIZE: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
-        model: LayoutTensor[
-            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
         ],
         actions: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
-        xpos_off: Int,
-        xipos_off: Int,
-        cfrc_ext_off: Int,
-        cvel_off: Int,
-        meta_offset: Int,
-        curriculum_offset: Int,
         step_count: Int,
         frame_skip: Int,
         timestep: Scalar[DTYPE],
     ) -> Tuple[Scalar[DTYPE], Bool]:
         # Compute x velocity from position change
-        var x_after = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])
+        var x_after = rebind[Scalar[DTYPE]](qpos[env, 0])
         var prev_x = rebind[Scalar[DTYPE]](
-            states[env, meta_offset + META_IDX_PREV_X]
+            meta[env, META_IDX_PREV_X]
         )
         var effective_dt = timestep * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / effective_dt
@@ -274,13 +206,13 @@ struct AntConfig(Phyics3dEnvConfig):
 
         # Health check — read curriculum parameters (min_height, max_height);
         # fall back to defaults when curriculum is not set (slots remain 0).
-        var min_height = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 0])
+        var min_height = rebind[Scalar[DTYPE]](curriculum[0, 0])
         if min_height <= Scalar[DTYPE](0.0):
             min_height = Scalar[DTYPE](Self.MIN_HEIGHT)
-        var max_height = rebind[Scalar[DTYPE]](model[0, curriculum_offset + 1])
+        var max_height = rebind[Scalar[DTYPE]](curriculum[0, 1])
         if max_height <= Scalar[DTYPE](0.0):
             max_height = Scalar[DTYPE](Self.MAX_HEIGHT)
-        var z_height = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
+        var z_height = rebind[Scalar[DTYPE]](qpos[env, 2])
 
         var is_healthy = True
         if z_height < min_height or z_height > max_height:
@@ -322,34 +254,12 @@ struct AntConfig(Phyics3dEnvConfig):
     def init_qpos_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
-        STATE_SIZE: Int,
+        NQ_F: Int,
     ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
         env: Int,
-        qpos_off: Int,
     ):
         pass
 
-    # === GPU inline: Custom obs extraction (none, use model default) ===
-    @always_inline
-    @staticmethod
-    def custom_extract_obs_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-        OBS_DIM: Int,
-    ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ],
-        obs: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ],
-        env: Int,
-        qpos_off: Int,
-        qvel_off: Int,
-        xpos_off: Int,
-    ) -> Bool:
-        return False

@@ -83,10 +83,10 @@ def main() raises:
     print("  env        : 1D bang-bang, s_{t+1}=s_t+", ACTION_STEP, "·a_t,  a∈{-1,+1}")
 
     # ── Allocate net params + Adam state ──────────────────────────────────────
-    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
-    var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
+    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
+    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
+    var opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT.STATE_PER_PARAM).as_unsafe_any_origin()
+    var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE).as_unsafe_any_origin()
     memset(params_buf, 0, NET.PARAM_SIZE)
     memset(grads_buf, 0, NET.PARAM_SIZE)
     memset(opt_state_buf, 0, NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
@@ -107,11 +107,11 @@ def main() raises:
     NET.pc_init_params[PCXavier, dtype](params)
 
     # ── Scratch buffers ───────────────────────────────────────────────────────
-    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
-    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM)
-    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
+    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM).as_unsafe_any_origin()
+    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
     memset(lat_buf, 0, BATCH * NET.LATENT_DIM)
     memset(mu_eps_buf_raw, 0, BATCH * NET.SCRATCH_OUT_DIM)
     memset(a_below_buf_raw, 0, BATCH * NET.SCRATCH_IN_DIM)
@@ -135,8 +135,8 @@ def main() raises:
     ](dx_buf_raw)
 
     # ── Per-step input + target buffers ───────────────────────────────────────
-    var x_in_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM)
-    var y_tgt_buf = alloc[Scalar[dtype]](BATCH * DATA_DIM)
+    var x_in_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM).as_unsafe_any_origin()
+    var y_tgt_buf = alloc[Scalar[dtype]](BATCH * DATA_DIM).as_unsafe_any_origin()
     memset(x_in_buf, 0, BATCH * AUG_DIM)
     memset(y_tgt_buf, 0, BATCH * DATA_DIM)
     var x_in = LayoutTensor[
@@ -147,8 +147,8 @@ def main() raises:
     ](y_tgt_buf)
 
     # Per-rollout scratch — actions [BATCH, SEQ_LEN] and states [BATCH, SEQ_LEN+1].
-    var actions_buf = alloc[Scalar[dtype]](BATCH * SEQ_LEN)
-    var states_buf = alloc[Scalar[dtype]](BATCH * (SEQ_LEN + 1))
+    var actions_buf = alloc[Scalar[dtype]](BATCH * SEQ_LEN).as_unsafe_any_origin()
+    var states_buf = alloc[Scalar[dtype]](BATCH * (SEQ_LEN + 1)).as_unsafe_any_origin()
 
     # Param views per block (for eval feedforward)
     comptime offset_b1 = NET._param_offset[1]()
@@ -246,10 +246,10 @@ def main() raises:
     memset(x_in_buf, 0, BATCH * AUG_DIM)
 
     # Feedforward scratch for the eval predict path.
-    var z_pred_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
-    var a_z_pred_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM)
-    var s_pred_buf = alloc[Scalar[dtype]](BATCH * DATA_DIM)
-    var a_s_pred_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
+    var z_pred_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
+    var a_z_pred_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM).as_unsafe_any_origin()
+    var s_pred_buf = alloc[Scalar[dtype]](BATCH * DATA_DIM).as_unsafe_any_origin()
+    var a_s_pred_buf = alloc[Scalar[dtype]](BATCH * HIDDEN).as_unsafe_any_origin()
     var z_pred = LayoutTensor[
         dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
     ](z_pred_buf)

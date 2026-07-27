@@ -152,7 +152,10 @@ def _strip_xml_comments(s: String) -> String:
         var end = result.find("-->", start + 4)
         if end == -1:
             break  # Malformed XML, stop stripping
-        result = result[byte=:start] + result[byte = end + 3 :]
+        # Build into a temporary first: nightly's exclusivity check rejects
+        # constructing a `String` from slices of the very string being assigned.
+        var stripped = result[byte=:start] + result[byte = end + 3 :]
+        result = stripped^
     return result
 
 
@@ -1037,7 +1040,9 @@ def _strip_wrapper(xml: String) -> String:
         if mci_open_end != -1:
             var mci_close = result.find("</mujocoinclude>")
             if mci_close != -1:
-                result = String(result[byte=mci_open_end + 1 : mci_close])
+                # Temporary first — see `_strip_comments` above.
+                var inner = String(result[byte=mci_open_end + 1 : mci_close])
+                result = inner^
 
     # Strip <mujoco>...</mujoco>
     var mj_open = result.find("<mujoco")
@@ -1046,7 +1051,8 @@ def _strip_wrapper(xml: String) -> String:
         if mj_open_end != -1:
             var mj_close = result.find("</mujoco>")
             if mj_close != -1:
-                result = String(result[byte=mj_open_end + 1 : mj_close])
+                var inner = String(result[byte=mj_open_end + 1 : mj_close])
+                result = inner^
 
     return result
 
@@ -1346,20 +1352,20 @@ struct ComptimeActData(Copyable, Movable):
         for i in range(64):
             self.qpos0[i] = copy.qpos0[i]
 
-    def __init__(out self, *, deinit take: Self):
-        self.motor_gears = take.motor_gears^
-        self.motor_dof_adr = take.motor_dof_adr^
-        self.motor_ctrl_min = take.motor_ctrl_min^
-        self.motor_ctrl_max = take.motor_ctrl_max^
-        self.joint_is_limited = take.joint_is_limited^
-        self.joint_qpos_adr = take.joint_qpos_adr^
-        self.joint_range_min = take.joint_range_min^
-        self.joint_range_max = take.joint_range_max^
-        self.inertiafromgeom = take.inertiafromgeom
-        self.settotalmass = take.settotalmass
-        self.qpos0 = take.qpos0^
-        self.nq = take.nq
-        self.free_joint_qpos_adr = take.free_joint_qpos_adr
+    def __init__(out self, *, deinit move: Self):
+        self.motor_gears = move.motor_gears^
+        self.motor_dof_adr = move.motor_dof_adr^
+        self.motor_ctrl_min = move.motor_ctrl_min^
+        self.motor_ctrl_max = move.motor_ctrl_max^
+        self.joint_is_limited = move.joint_is_limited^
+        self.joint_qpos_adr = move.joint_qpos_adr^
+        self.joint_range_min = move.joint_range_min^
+        self.joint_range_max = move.joint_range_max^
+        self.inertiafromgeom = move.inertiafromgeom
+        self.settotalmass = move.settotalmass
+        self.qpos0 = move.qpos0^
+        self.nq = move.nq
+        self.free_joint_qpos_adr = move.free_joint_qpos_adr
 
 
 def _xml_find_joint_dof_adr(xml: String, jname: String) -> Int:
@@ -2085,96 +2091,96 @@ struct ComptimeRenderData(Copyable, Movable):
         self.vis_headlight_ambient_b = copy.vis_headlight_ambient_b
         self.vis_has_headlight = copy.vis_has_headlight
 
-    def __init__(out self, *, deinit take: Self):
-        self.ngeom = take.ngeom
-        self.nlight = take.nlight
-        self.ncam = take.ncam
-        self.ntex = take.ntex
-        self.nmat = take.nmat
-        self.nsite = take.nsite
-        self.geom_body_id = take.geom_body_id^
-        self.geom_type = take.geom_type^
-        self.geom_pos_x = take.geom_pos_x^
-        self.geom_pos_y = take.geom_pos_y^
-        self.geom_pos_z = take.geom_pos_z^
-        self.geom_quat_x = take.geom_quat_x^
-        self.geom_quat_y = take.geom_quat_y^
-        self.geom_quat_z = take.geom_quat_z^
-        self.geom_quat_w = take.geom_quat_w^
-        self.geom_radius = take.geom_radius^
-        self.geom_half_length = take.geom_half_length^
-        self.geom_half_x = take.geom_half_x^
-        self.geom_half_y = take.geom_half_y^
-        self.geom_half_z = take.geom_half_z^
-        self.geom_rgba_r = take.geom_rgba_r^
-        self.geom_rgba_g = take.geom_rgba_g^
-        self.geom_rgba_b = take.geom_rgba_b^
-        self.geom_rgba_a = take.geom_rgba_a^
-        self.geom_material_id = take.geom_material_id^
-        self.geom_mesh_id = take.geom_mesh_id^
-        self.nmesh = take.nmesh
-        self.mesh_names = take.mesh_names^
-        self.mesh_files = take.mesh_files^
-        self.light_dir_x = take.light_dir_x^
-        self.light_dir_y = take.light_dir_y^
-        self.light_dir_z = take.light_dir_z^
-        self.light_diffuse_r = take.light_diffuse_r^
-        self.light_diffuse_g = take.light_diffuse_g^
-        self.light_diffuse_b = take.light_diffuse_b^
-        self.light_specular_r = take.light_specular_r^
-        self.light_specular_g = take.light_specular_g^
-        self.light_specular_b = take.light_specular_b^
-        self.light_ambient_r = take.light_ambient_r^
-        self.light_ambient_g = take.light_ambient_g^
-        self.light_ambient_b = take.light_ambient_b^
-        self.light_directional = take.light_directional^
-        self.light_castshadow = take.light_castshadow^
-        self.light_exponent = take.light_exponent^
-        self.cam_pos_x = take.cam_pos_x^
-        self.cam_pos_y = take.cam_pos_y^
-        self.cam_pos_z = take.cam_pos_z^
-        self.cam_quat_x = take.cam_quat_x^
-        self.cam_quat_y = take.cam_quat_y^
-        self.cam_quat_z = take.cam_quat_z^
-        self.cam_quat_w = take.cam_quat_w^
-        self.cam_fovy = take.cam_fovy^
-        self.cam_mode = take.cam_mode^
-        self.cam_body_id = take.cam_body_id^
-        self.tex_type = take.tex_type^
-        self.tex_builtin = take.tex_builtin^
-        self.tex_rgb1_r = take.tex_rgb1_r^
-        self.tex_rgb1_g = take.tex_rgb1_g^
-        self.tex_rgb1_b = take.tex_rgb1_b^
-        self.tex_rgb2_r = take.tex_rgb2_r^
-        self.tex_rgb2_g = take.tex_rgb2_g^
-        self.tex_rgb2_b = take.tex_rgb2_b^
-        self.tex_names = take.tex_names^
-        self.tex_files = take.tex_files^
-        self.mat_rgba_r = take.mat_rgba_r^
-        self.mat_rgba_g = take.mat_rgba_g^
-        self.mat_rgba_b = take.mat_rgba_b^
-        self.mat_rgba_a = take.mat_rgba_a^
-        self.mat_shininess = take.mat_shininess^
-        self.mat_specular = take.mat_specular^
-        self.mat_reflectance = take.mat_reflectance^
-        self.mat_tex_id = take.mat_tex_id^
-        self.mat_texrepeat_u = take.mat_texrepeat_u^
-        self.mat_texrepeat_v = take.mat_texrepeat_v^
-        self.site_body_id = take.site_body_id^
-        self.site_pos_x = take.site_pos_x^
-        self.site_pos_y = take.site_pos_y^
-        self.site_pos_z = take.site_pos_z^
-        self.site_size_0 = take.site_size_0^
+    def __init__(out self, *, deinit move: Self):
+        self.ngeom = move.ngeom
+        self.nlight = move.nlight
+        self.ncam = move.ncam
+        self.ntex = move.ntex
+        self.nmat = move.nmat
+        self.nsite = move.nsite
+        self.geom_body_id = move.geom_body_id^
+        self.geom_type = move.geom_type^
+        self.geom_pos_x = move.geom_pos_x^
+        self.geom_pos_y = move.geom_pos_y^
+        self.geom_pos_z = move.geom_pos_z^
+        self.geom_quat_x = move.geom_quat_x^
+        self.geom_quat_y = move.geom_quat_y^
+        self.geom_quat_z = move.geom_quat_z^
+        self.geom_quat_w = move.geom_quat_w^
+        self.geom_radius = move.geom_radius^
+        self.geom_half_length = move.geom_half_length^
+        self.geom_half_x = move.geom_half_x^
+        self.geom_half_y = move.geom_half_y^
+        self.geom_half_z = move.geom_half_z^
+        self.geom_rgba_r = move.geom_rgba_r^
+        self.geom_rgba_g = move.geom_rgba_g^
+        self.geom_rgba_b = move.geom_rgba_b^
+        self.geom_rgba_a = move.geom_rgba_a^
+        self.geom_material_id = move.geom_material_id^
+        self.geom_mesh_id = move.geom_mesh_id^
+        self.nmesh = move.nmesh
+        self.mesh_names = move.mesh_names^
+        self.mesh_files = move.mesh_files^
+        self.light_dir_x = move.light_dir_x^
+        self.light_dir_y = move.light_dir_y^
+        self.light_dir_z = move.light_dir_z^
+        self.light_diffuse_r = move.light_diffuse_r^
+        self.light_diffuse_g = move.light_diffuse_g^
+        self.light_diffuse_b = move.light_diffuse_b^
+        self.light_specular_r = move.light_specular_r^
+        self.light_specular_g = move.light_specular_g^
+        self.light_specular_b = move.light_specular_b^
+        self.light_ambient_r = move.light_ambient_r^
+        self.light_ambient_g = move.light_ambient_g^
+        self.light_ambient_b = move.light_ambient_b^
+        self.light_directional = move.light_directional^
+        self.light_castshadow = move.light_castshadow^
+        self.light_exponent = move.light_exponent^
+        self.cam_pos_x = move.cam_pos_x^
+        self.cam_pos_y = move.cam_pos_y^
+        self.cam_pos_z = move.cam_pos_z^
+        self.cam_quat_x = move.cam_quat_x^
+        self.cam_quat_y = move.cam_quat_y^
+        self.cam_quat_z = move.cam_quat_z^
+        self.cam_quat_w = move.cam_quat_w^
+        self.cam_fovy = move.cam_fovy^
+        self.cam_mode = move.cam_mode^
+        self.cam_body_id = move.cam_body_id^
+        self.tex_type = move.tex_type^
+        self.tex_builtin = move.tex_builtin^
+        self.tex_rgb1_r = move.tex_rgb1_r^
+        self.tex_rgb1_g = move.tex_rgb1_g^
+        self.tex_rgb1_b = move.tex_rgb1_b^
+        self.tex_rgb2_r = move.tex_rgb2_r^
+        self.tex_rgb2_g = move.tex_rgb2_g^
+        self.tex_rgb2_b = move.tex_rgb2_b^
+        self.tex_names = move.tex_names^
+        self.tex_files = move.tex_files^
+        self.mat_rgba_r = move.mat_rgba_r^
+        self.mat_rgba_g = move.mat_rgba_g^
+        self.mat_rgba_b = move.mat_rgba_b^
+        self.mat_rgba_a = move.mat_rgba_a^
+        self.mat_shininess = move.mat_shininess^
+        self.mat_specular = move.mat_specular^
+        self.mat_reflectance = move.mat_reflectance^
+        self.mat_tex_id = move.mat_tex_id^
+        self.mat_texrepeat_u = move.mat_texrepeat_u^
+        self.mat_texrepeat_v = move.mat_texrepeat_v^
+        self.site_body_id = move.site_body_id^
+        self.site_pos_x = move.site_pos_x^
+        self.site_pos_y = move.site_pos_y^
+        self.site_pos_z = move.site_pos_z^
+        self.site_size_0 = move.site_size_0^
 
         # Visual settings
-        self.vis_znear = take.vis_znear
-        self.vis_fogstart = take.vis_fogstart
-        self.vis_fogend = take.vis_fogend
-        self.vis_shadowsize = take.vis_shadowsize
-        self.vis_headlight_ambient_r = take.vis_headlight_ambient_r
-        self.vis_headlight_ambient_g = take.vis_headlight_ambient_g
-        self.vis_headlight_ambient_b = take.vis_headlight_ambient_b
-        self.vis_has_headlight = take.vis_has_headlight
+        self.vis_znear = move.vis_znear
+        self.vis_fogstart = move.vis_fogstart
+        self.vis_fogend = move.vis_fogend
+        self.vis_shadowsize = move.vis_shadowsize
+        self.vis_headlight_ambient_r = move.vis_headlight_ambient_r
+        self.vis_headlight_ambient_g = move.vis_headlight_ambient_g
+        self.vis_headlight_ambient_b = move.vis_headlight_ambient_b
+        self.vis_has_headlight = move.vis_has_headlight
 
 
 # =============================================================================

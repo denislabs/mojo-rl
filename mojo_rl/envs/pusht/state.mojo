@@ -31,9 +31,9 @@ struct PushTState[DTYPE: DType](
         self.keypoints = copy.keypoints
         self.agent_pos = copy.agent_pos
 
-    def __init__(out self, *, deinit take: Self):
-        self.keypoints = take.keypoints
-        self.agent_pos = take.agent_pos
+    def __init__(out self, *, deinit move: Self):
+        self.keypoints = move.keypoints
+        self.agent_pos = move.agent_pos
 
     def __eq__(self, other: Self) -> Bool:
         for i in range(PConstants.KEYPOINTS_DIM):

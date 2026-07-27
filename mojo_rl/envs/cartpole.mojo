@@ -73,6 +73,82 @@ comptime INIT_RANGE: Float64 = 0.05
 comptime MAX_STEPS: Int = 500
 
 
+# =============================================================================
+# Single-source physics — the ONE copy of the CartPole math.
+#
+# Called verbatim by the CPU tabular `step`, the CPU `step_raw` and the GPU
+# `step_kernel`. These used to be three hand-maintained copies, and the copies
+# are exactly where CPU/GPU divergence shipped (the CPU terminal-step reward
+# bug). Any physics/termination change goes HERE, once.
+# =============================================================================
+
+
+@always_inline
+def cartpole_euler_step[
+    DTYPE: DType
+](
+    x: Scalar[DTYPE],
+    x_dot: Scalar[DTYPE],
+    theta: Scalar[DTYPE],
+    theta_dot: Scalar[DTYPE],
+    force: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """One Gymnasium CartPole-v1 Euler step: returns the post-step
+    (x, x_dot, theta, theta_dot)."""
+    comptime assert DTYPE.is_floating_point(), "DTYPE must be floating point"
+    var costheta = cos(theta)
+    var sintheta = sin(theta)
+
+    # Equations of motion (derived from Lagrangian mechanics)
+    var temp = (
+        force + Scalar[DTYPE](POLE_MASS_LENGTH) * theta_dot * theta_dot * sintheta
+    ) / Scalar[DTYPE](TOTAL_MASS)
+
+    var thetaacc = (Scalar[DTYPE](GRAVITY) * sintheta - costheta * temp) / (
+        Scalar[DTYPE](POLE_HALF_LENGTH)
+        * (
+            Scalar[DTYPE](4.0 / 3.0)
+            - Scalar[DTYPE](POLE_MASS)
+            * costheta
+            * costheta
+            / Scalar[DTYPE](TOTAL_MASS)
+        )
+    )
+
+    var xacc = temp - Scalar[DTYPE](
+        POLE_MASS_LENGTH
+    ) * thetaacc * costheta / Scalar[DTYPE](TOTAL_MASS)
+
+    # Euler integration (semi-implicit ordering matches Gymnasium exactly)
+    return (
+        x + Scalar[DTYPE](TAU) * x_dot,
+        x_dot + Scalar[DTYPE](TAU) * xacc,
+        theta + Scalar[DTYPE](TAU) * theta_dot,
+        theta_dot + Scalar[DTYPE](TAU) * thetaacc,
+    )
+
+
+@always_inline
+def cartpole_force[DTYPE: DType](action_idx: Int) -> Scalar[DTYPE]:
+    """Action decode: 1 → +FORCE_MAG (push right), else −FORCE_MAG."""
+    return Scalar[DTYPE](FORCE_MAG) if action_idx == 1 else Scalar[DTYPE](
+        -FORCE_MAG
+    )
+
+
+@always_inline
+def cartpole_terminated[
+    DTYPE: DType
+](x: Scalar[DTYPE], theta: Scalar[DTYPE]) -> Bool:
+    """Natural termination: cart or pole out of bounds."""
+    return (
+        x < Scalar[DTYPE](-X_THRESHOLD)
+        or x > Scalar[DTYPE](X_THRESHOLD)
+        or theta < Scalar[DTYPE](-THETA_THRESHOLD)
+        or theta > Scalar[DTYPE](THETA_THRESHOLD)
+    )
+
+
 # ============================================================================
 # CartPole State and Action types for trait conformance
 # ============================================================================
@@ -91,8 +167,8 @@ struct CartPoleState(Copyable, ImplicitlyCopyable, Movable, State):
     def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    def __init__(out self, *, deinit take: Self):
-        self.index = take.index
+    def __init__(out self, *, deinit move: Self):
+        self.index = move.index
 
     def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
@@ -107,8 +183,8 @@ struct CartPoleAction(Action, Copyable, ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.direction = copy.direction
 
-    def __init__(out self, *, deinit take: Self):
-        self.direction = take.direction
+    def __init__(out self, *, deinit move: Self):
+        self.direction = move.direction
 
     @staticmethod
     def left() -> Self:
@@ -229,66 +305,29 @@ struct CartPoleEnv[DTYPE: DType](
 
         Physics uses Euler integration (same as Gymnasium).
         """
-        # Determine force direction
-        var force = Scalar[Self.dtype](
-            FORCE_MAG
-        ) if action.direction == 1 else Scalar[Self.dtype](-FORCE_MAG)
-
-        # Physics calculations
-        var costheta = Scalar[Self.dtype](cos(Float64(self.theta)))
-        var sintheta = Scalar[Self.dtype](sin(Float64(self.theta)))
-
-        # Equations of motion (derived from Lagrangian mechanics)
-        var temp = (
-            force
-            + Scalar[Self.dtype](POLE_MASS_LENGTH)
-            * self.theta_dot
-            * self.theta_dot
-            * sintheta
-        ) / Scalar[Self.dtype](TOTAL_MASS)
-
-        var thetaacc = (
-            Scalar[Self.dtype](GRAVITY) * sintheta - costheta * temp
-        ) / (
-            Scalar[Self.dtype](POLE_HALF_LENGTH)
-            * (
-                Scalar[Self.dtype](4.0 / 3.0)
-                - Scalar[Self.dtype](POLE_MASS)
-                * costheta
-                * costheta
-                / Scalar[Self.dtype](TOTAL_MASS)
-            )
+        # Single-source physics (shared with step_raw + the GPU kernel).
+        var force = cartpole_force[Self.dtype](action.direction)
+        var nxt = cartpole_euler_step[Self.dtype](
+            self.x, self.x_dot, self.theta, self.theta_dot, force
         )
-
-        var xacc = temp - Scalar[Self.dtype](
-            POLE_MASS_LENGTH
-        ) * thetaacc * costheta / Scalar[Self.dtype](TOTAL_MASS)
-
-        # Euler integration
-        self.x = self.x + Scalar[Self.dtype](TAU) * self.x_dot
-        self.x_dot = self.x_dot + Scalar[Self.dtype](TAU) * xacc
-        self.theta = self.theta + Scalar[Self.dtype](TAU) * self.theta_dot
-        self.theta_dot = self.theta_dot + Scalar[Self.dtype](TAU) * thetaacc
+        self.x = nxt[0]
+        self.x_dot = nxt[1]
+        self.theta = nxt[2]
+        self.theta_dot = nxt[3]
 
         self.steps += 1
 
-        # Check termination conditions
-        var terminated = (
-            self.x < Scalar[Self.dtype](-X_THRESHOLD)
-            or self.x > Scalar[Self.dtype](X_THRESHOLD)
-            or self.theta < Scalar[Self.dtype](-THETA_THRESHOLD)
-            or self.theta > Scalar[Self.dtype](THETA_THRESHOLD)
-        )
-
+        var terminated = cartpole_terminated[Self.dtype](self.x, self.theta)
         var truncated = self.steps >= MAX_STEPS
 
         self.done = terminated or truncated
         self._last_terminated = terminated
 
-        # Reward: +1 for every step the pole stays upright
-        var reward: Scalar[Self.dtype] = Scalar[Self.dtype](
-            1.0
-        ) if not terminated else Scalar[Self.dtype](0.0)
+        # Reward: +1 for every step taken, INCLUDING the terminating step —
+        # Gymnasium gives +1 when the pole "just fell" (0 only for steps
+        # after termination, which never happen here since the driver
+        # resets); the GPU kernel matches this.
+        var reward: Scalar[Self.dtype] = Scalar[Self.dtype](1.0)
         self.total_reward += reward
 
         return (CartPoleState(index=self._discretize_obs()), reward, self.done)
@@ -439,61 +478,26 @@ struct CartPoleEnv[DTYPE: DType](
             Self.dtype.is_floating_point()
         ), "DTYPE must be a floating point type"
 
-        # Inline physics for maximum performance (avoid step() call overhead)
-        var force = Scalar[Self.dtype](FORCE_MAG) if action == 1 else Scalar[
-            Self.dtype
-        ](-FORCE_MAG)
-
-        var costheta = cos(self.theta)
-        var sintheta = sin(self.theta)
-
-        var temp = (
-            force
-            + Scalar[Self.dtype](POLE_MASS_LENGTH)
-            * self.theta_dot
-            * self.theta_dot
-            * sintheta
-        ) / Scalar[Self.dtype](TOTAL_MASS)
-
-        var thetaacc = (
-            Scalar[Self.dtype](GRAVITY) * sintheta - costheta * temp
-        ) / (
-            Scalar[Self.dtype](POLE_HALF_LENGTH)
-            * (
-                Scalar[Self.dtype](4.0 / 3.0)
-                - Scalar[Self.dtype](POLE_MASS)
-                * costheta
-                * costheta
-                / Scalar[Self.dtype](TOTAL_MASS)
-            )
+        # Single-source physics (shared with the tabular step + GPU kernel).
+        var force = cartpole_force[Self.dtype](action)
+        var nxt = cartpole_euler_step[Self.dtype](
+            self.x, self.x_dot, self.theta, self.theta_dot, force
         )
-
-        var xacc = temp - Scalar[Self.dtype](
-            POLE_MASS_LENGTH
-        ) * thetaacc * costheta / Scalar[Self.dtype](TOTAL_MASS)
-
-        # Euler integration
-        self.x = self.x + Scalar[Self.dtype](TAU) * self.x_dot
-        self.x_dot = self.x_dot + Scalar[Self.dtype](TAU) * xacc
-        self.theta = self.theta + Scalar[Self.dtype](TAU) * self.theta_dot
-        self.theta_dot = self.theta_dot + Scalar[Self.dtype](TAU) * thetaacc
+        self.x = nxt[0]
+        self.x_dot = nxt[1]
+        self.theta = nxt[2]
+        self.theta_dot = nxt[3]
 
         self.steps += 1
 
-        # Check termination
-        var terminated = (
-            self.x < Scalar[Self.dtype](-X_THRESHOLD)
-            or self.x > Scalar[Self.dtype](X_THRESHOLD)
-            or self.theta < Scalar[Self.dtype](-THETA_THRESHOLD)
-            or self.theta > Scalar[Self.dtype](THETA_THRESHOLD)
-        )
+        var terminated = cartpole_terminated[Self.dtype](self.x, self.theta)
         var truncated = self.steps >= MAX_STEPS
         self.done = terminated or truncated
         self._last_terminated = terminated
 
-        var reward: Scalar[Self.dtype] = Scalar[Self.dtype](
-            1.0
-        ) if not terminated else Scalar[Self.dtype](0.0)
+        # +1 including the terminating step (Gymnasium semantics; matches
+        # the GPU kernel — see the tabular step above).
+        var reward: Scalar[Self.dtype] = Scalar[Self.dtype](1.0)
         self.total_reward += reward
 
         return (self._get_obs(), reward, self.done)
@@ -603,7 +607,7 @@ struct CartPoleEnv[DTYPE: DType](
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.value().init_pointee_move(Renderer2D())
+        self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True
 
@@ -812,56 +816,25 @@ struct CartPoleEnv[DTYPE: DType](
         if i >= BATCH_SIZE:
             return
 
+        # Single-source physics (shared with the CPU step/step_raw).
         # Cast to int to handle float actions correctly (0.0 -> 0, 1.0 -> 1)
-        var force = Scalar[gpu_dtype](FORCE_MAG) if Int(
-            actions[i]
-        ) == 1 else Scalar[gpu_dtype](-FORCE_MAG)
-
-        # Physics calculations (Euler integration matching Gymnasium)
-        var cos_theta = cos(states[i, 2])
-        var sin_theta = sin(states[i, 2])
-
-        var temp = (
-            force
-            + Scalar[gpu_dtype](POLE_MASS_LENGTH)
-            * states[i, 3]
-            * states[i, 3]
-            * sin_theta
-        ) / Scalar[gpu_dtype](TOTAL_MASS)
-
-        var theta_acc = (
-            Scalar[gpu_dtype](GRAVITY) * sin_theta - cos_theta * temp
-        ) / (
-            Scalar[gpu_dtype](POLE_HALF_LENGTH)
-            * (
-                Scalar[gpu_dtype](4.0 / 3.0)
-                - Scalar[gpu_dtype](POLE_MASS)
-                * cos_theta
-                * cos_theta
-                / Scalar[gpu_dtype](TOTAL_MASS)
-            )
+        var force = cartpole_force[gpu_dtype](Int(actions[i]))
+        var nxt = cartpole_euler_step[gpu_dtype](
+            rebind[Scalar[gpu_dtype]](states[i, 0]),
+            rebind[Scalar[gpu_dtype]](states[i, 1]),
+            rebind[Scalar[gpu_dtype]](states[i, 2]),
+            rebind[Scalar[gpu_dtype]](states[i, 3]),
+            force,
         )
-
-        var x_acc = temp - Scalar[gpu_dtype](
-            POLE_MASS_LENGTH
-        ) * theta_acc * cos_theta / Scalar[gpu_dtype](TOTAL_MASS)
-
-        # Euler integration - update state in-place
-        states[i, 0] += Scalar[gpu_dtype](TAU) * states[i, 1]
-        states[i, 1] += Scalar[gpu_dtype](TAU) * x_acc
-        states[i, 2] += Scalar[gpu_dtype](TAU) * states[i, 3]
-        states[i, 3] += Scalar[gpu_dtype](TAU) * theta_acc
+        states[i, 0] = nxt[0]
+        states[i, 1] = nxt[1]
+        states[i, 2] = nxt[2]
+        states[i, 3] = nxt[3]
 
         # Increment step counter (stored at index 4)
         states[i, 4] += Scalar[gpu_dtype](1.0)
 
-        # Check termination conditions (physics bounds)
-        var terminated = (
-            (states[i, 0] < Scalar[gpu_dtype](-X_THRESHOLD))
-            or (states[i, 0] > Scalar[gpu_dtype](X_THRESHOLD))
-            or (states[i, 2] < Scalar[gpu_dtype](-THETA_THRESHOLD))
-            or (states[i, 2] > Scalar[gpu_dtype](THETA_THRESHOLD))
-        )
+        var terminated = cartpole_terminated[gpu_dtype](nxt[0], nxt[2])
 
         # Check truncation (max steps reached)
         var truncated = states[i, 4] >= Scalar[gpu_dtype](MAX_STEPS)

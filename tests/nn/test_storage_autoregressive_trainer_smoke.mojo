@@ -96,6 +96,6 @@ def main() raises:
 
     var gen = artr.generate("a", 12, temperature=0.0)
     print("  generate('a', 12) =", repr(gen))
-    assert_true(len(gen) == 12, "generated requested length")
+    assert_true(len(gen.codepoints()) == 12, "generated requested length")
 
     print("ALL PASSED")

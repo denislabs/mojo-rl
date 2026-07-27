@@ -30,9 +30,9 @@ struct ContAction[N: Int](Action, Copyable, Movable):
         """Copy constructor."""
         self.data = copy.data.copy()
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
-        self.data = take.data^
+        self.data = move.data^
 
     @staticmethod
     def from_list(actions: List[Float64]) -> Self:

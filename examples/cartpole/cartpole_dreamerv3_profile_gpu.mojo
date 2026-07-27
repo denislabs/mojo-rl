@@ -55,6 +55,7 @@ from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
 from mojo_rl.envs.cartpole import CartPoleEnv
 
@@ -89,6 +90,7 @@ comptime DIAG_STEPS = 30       # timed train_step(want_diag=True) calls
 comptime Ag = DreamerV3Agent[
     "gpu", OBS, ACT, DETER, H, STOCH, CLASSES, BLOCKS, TOKEN, DEC_U, HU, VU,
     PU, BINS, B, T, T_IMAG, CAP, True,   # DISCRETE=True, train_target="gpu"
+    OUT_INIT=Kaiming,  # full reward/critic output init (positive-reward optimism)
 ]
 
 
@@ -120,7 +122,7 @@ def main() raises:
     var ag = Ag.make(
         ctx=ctx,
         lr=Scalar[DT](1.5e-4), learning_starts=LEARN_START,
-        warmup_steps=0, out_init_scale=Scalar[DT](1.0),
+        warmup_steps=0,
     )
 
     var obsbuf = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()

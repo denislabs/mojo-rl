@@ -49,9 +49,9 @@ def main() raises:
         src_h.unsafe_ptr()[k] = UInt8((k * 37 + 11) % 256)
 
     # ── CPU reference
-    var cpu_dst: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var cpu_dst: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
     var src_host_ptr = rebind[UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]](
-        src_h.unsafe_ptr()
+        src_h.unsafe_ptr().as_unsafe_any_origin()
     )
     u8_hwc_to_chw_norm["cpu", C, FH, FW, BATCH](src_host_ptr, cpu_dst)
 
@@ -90,7 +90,7 @@ def main() raises:
 
     # ── layout-preserving u8_to_fp32_norm (the CHW Pong path) ──────────
     print("u8_to_fp32_norm (layout-preserving) CPU↔GPU ...")
-    var lp_cpu: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var lp_cpu: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
     u8_to_fp32_norm["cpu", N](src_host_ptr, lp_cpu)
     var lp_dst_d = ctx.enqueue_create_buffer[DT](N)
     u8_to_fp32_norm["gpu", N](_u8p(src_d), _fp(lp_dst_d), ctx=ctx)

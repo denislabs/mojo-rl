@@ -16,12 +16,14 @@ Layer counts pinned to v1 defaults (enc/dec 2 hidden, prior 2, head MLP 1);
 """
 
 from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.combinators.init_with import InitWith
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.rms_norm import RMSNorm
 from mojo_rl.nn.primitives.elementwise import Elementwise
 from mojo_rl.nn.primitives.ops.gelu_op import GELUOp
 from mojo_rl.nn.primitives.symlog import Symlog
 from mojo_rl.nn.core.element_op import ElementOp
+from mojo_rl.nn.core.initializer import Initializer, Zero, ScaledKaiming
 
 
 # Inter-layer activation is a comptime op `A` (default `GELUOp`, matching the
@@ -51,10 +53,18 @@ comptime DreamerPrior[DETER: Int, H: Int, SC: Int, A: ElementOp = GELUOp] = Sequ
     Linear[H, SC],
 ]
 
-# Reward head MLP (1 hidden): feat[FEAT] → [Linear,RMSNorm,act] → logits[BINS]
-comptime DreamerRewardMLP[FEAT: Int, U: Int, BINS: Int, A: ElementOp = GELUOp] = Sequential[
+# Reward head MLP (1 hidden): feat[FEAT] → [Linear,RMSNorm,act] → logits[BINS].
+# The OUTPUT Linear's init is declared STRUCTURALLY (InitWith) — paper p.6
+# zero-inits the reward-predictor output (reference `rewhead.outscale: 0.0`);
+# `OUT_INIT=Kaiming` restores the pre-zero-init optimism (positive-reward
+# tasks like CartPole). Replaces the post-hoc `scale_output_graph("rew.3.…")`
+# name-path surgery, which failed SILENTLY on refactor.
+comptime DreamerRewardMLP[
+    FEAT: Int, U: Int, BINS: Int, A: ElementOp = GELUOp,
+    OUT_INIT: Initializer = Zero,
+] = Sequential[
     Linear[FEAT, U], RMSNorm[U], Elementwise[U, A],
-    Linear[U, BINS],
+    InitWith[Linear[U, BINS], OUT_INIT],
 ]
 
 # Cont head MLP (1 hidden): feat[FEAT] → [Linear,RMSNorm,act] → logit[1]
@@ -64,10 +74,14 @@ comptime DreamerContMLP[FEAT: Int, U: Int, A: ElementOp = GELUOp] = Sequential[
 ]
 
 # Value/slowvalue head (1 hidden): feat[FEAT] → twohot logits[BINS].
-# Same shape as the reward MLP (symexp_twohot output).
-comptime DreamerValue[FEAT: Int, U: Int, BINS: Int, A: ElementOp = GELUOp] = Sequential[
+# Same shape as the reward MLP (symexp_twohot output); same structural
+# OUT_INIT (paper zero-inits the critic output; reference `value.outscale: 0.0`).
+comptime DreamerValue[
+    FEAT: Int, U: Int, BINS: Int, A: ElementOp = GELUOp,
+    OUT_INIT: Initializer = Zero,
+] = Sequential[
     Linear[FEAT, U], RMSNorm[U], Elementwise[U, A],
-    Linear[U, BINS],
+    InitWith[Linear[U, BINS], OUT_INIT],
 ]
 
 # Policy head (1 hidden): feat[FEAT] → [mean_raw[ACT], std_raw[ACT]] = 2·ACT.
@@ -95,5 +109,11 @@ comptime DreamerPolicyHead[
     FEAT: Int, U: Int, ACT: Int, DISCRETE: Bool, A: ElementOp = GELUOp
 ] = Sequential[
     Linear[FEAT, U], RMSNorm[U], Elementwise[U, A],
-    Linear[U, ACT if DISCRETE else 2 * ACT],
+    # Reference `policy.outscale = 0.01` declared STRUCTURALLY: near-zero
+    # output logits → near-uniform initial policy that stays uniform until
+    # real advantages arrive. Full-Kaiming logits are O(1) → a semi-collapsed
+    # policy from step 0 that self-reinforces via its own replay (observed on
+    # Pong: entropy 1.79→0.13 nats by 20k steps, all mass on one action
+    # family). Fixed (not a knob) — it is reference parity, not a tuning axis.
+    InitWith[Linear[U, ACT if DISCRETE else 2 * ACT], ScaledKaiming[1, 100]],
 ]

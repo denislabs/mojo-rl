@@ -339,18 +339,22 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             h.ensure(h_t_off + BATCH * H)
             c.ensure(c_t_off + BATCH * H)
             cache.ensure(cache_off + BATCH * Self.CACHE_SIZE)
+            # Bounded sub-views: `Span(list)[off : off + n]` carries a length
+            # and a tracked origin, unlike the bare offset pointer this
+            # replaces.
             var xv = TileTensor(
-                x.data.unsafe_ptr() + x_off, row_major[BATCH, Self.IN_]()
+                Span(x.data)[x_off : x_off + BATCH * Self.IN_],
+                row_major[BATCH, Self.IN_](),
             )
             var hp = TileTensor(
-                h.data.unsafe_ptr() + h_prev_off,
+                Span(h.data)[h_prev_off : h_prev_off + BATCH * Self.HIDDEN],
                 row_major[BATCH, Self.HIDDEN](),
             )
             var b_p = self.b.val.data.unsafe_ptr()
-            var cc_p = cache.data.unsafe_ptr() + cache_off
-            var ct_p = c.data.unsafe_ptr() + c_t_off
-            var ht_p = h.data.unsafe_ptr() + h_t_off
-            var cp_p = c.data.unsafe_ptr() + c_prev_off
+            var cc_p = cache.data.unsafe_ptr().unsafe_offset(cache_off)
+            var ct_p = c.data.unsafe_ptr().unsafe_offset(c_t_off)
+            var ht_p = h.data.unsafe_ptr().unsafe_offset(h_t_off)
+            var cp_p = c.data.unsafe_ptr().unsafe_offset(c_prev_off)
             # Gate pre-activations via BLAS (Apple Accelerate), mirroring
             # Linear's CPU path. ix = x @ W_ih, hx = h_prev @ W_hh. The gate
             # nonlinearities below stay scalar (O(BATCH·H)).
@@ -365,25 +369,25 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             for bi in range(BATCH):
                 for k in range(FOURH):
                     var pre: Scalar[DT] = (
-                        ix_list[bi * FOURH + k] + hx_list[bi * FOURH + k] + b_p[k]
+                        ix_list[bi * FOURH + k] + hx_list[bi * FOURH + k] + b_p[unsafe_offset=k]
                     )
                     var act: Scalar[DT]
                     if k < 3 * H:
                         act = _sigmoid(pre) if k < 2 * H else tanh(pre)
                     else:
                         act = _sigmoid(pre)
-                    cc_p[bi * Self.CACHE_SIZE + k] = act
+                    cc_p[unsafe_offset=bi * Self.CACHE_SIZE + k] = act
                 for j in range(H):
                     var base = bi * Self.CACHE_SIZE
-                    var i_v = cc_p[base + j]
-                    var f_v = cc_p[base + H + j]
-                    var g_v = cc_p[base + 2 * H + j]
-                    var o_v = cc_p[base + 3 * H + j]
-                    var c_new = f_v * cp_p[bi * H + j] + i_v * g_v
+                    var i_v = cc_p[unsafe_offset=base + j]
+                    var f_v = cc_p[unsafe_offset=base + H + j]
+                    var g_v = cc_p[unsafe_offset=base + 2 * H + j]
+                    var o_v = cc_p[unsafe_offset=base + 3 * H + j]
+                    var c_new = f_v * cp_p[unsafe_offset=bi * H + j] + i_v * g_v
                     var tc = tanh(c_new)
-                    ct_p[bi * H + j] = c_new
-                    ht_p[bi * H + j] = o_v * tc
-                    cc_p[base + 4 * H + j] = tc
+                    ct_p[unsafe_offset=bi * H + j] = c_new
+                    ht_p[unsafe_offset=bi * H + j] = o_v * tc
+                    cc_p[unsafe_offset=base + 4 * H + j] = tc
         else:
             var dctx = ctx.value()
             h.ensure_gpu(dctx, h_t_off + BATCH * H)
@@ -466,16 +470,16 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
                 var gates = InlineArray[Scalar[DT], 4 * Self.HIDDEN](fill=0.0)
                 for k in range(FOURH):
                     var pre: Scalar[DT] = (
-                        ix_list[bi * FOURH + k] + hx_list[bi * FOURH + k] + b_p[k]
+                        ix_list[bi * FOURH + k] + hx_list[bi * FOURH + k] + b_p[unsafe_offset=k]
                     )
                     if k < 3 * H:
                         gates[k] = _sigmoid(pre) if k < 2 * H else tanh(pre)
                     else:
                         gates[k] = _sigmoid(pre)
                 for j in range(H):
-                    var c_new = gates[H + j] * cp_p[bi * H + j] + gates[j] * gates[2 * H + j]
-                    ct_p[bi * H + j] = c_new
-                    ht_p[bi * H + j] = gates[3 * H + j] * tanh(c_new)
+                    var c_new = gates[H + j] * cp_p[unsafe_offset=bi * H + j] + gates[j] * gates[2 * H + j]
+                    ct_p[unsafe_offset=bi * H + j] = c_new
+                    ht_p[unsafe_offset=bi * H + j] = gates[3 * H + j] * tanh(c_new)
         else:
             var c = ctx.value()
             h_t.ensure_gpu(c, BATCH * H)
@@ -551,19 +555,22 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             dx.ensure(dx_off + BATCH * Self.IN_)
             dh_prev.ensure(dh_prev_off + BATCH * H)
             dc_prev.ensure(dc_prev_off + BATCH * H)
-            var cc_p = cache.data.unsafe_ptr() + cache_off
-            var dh_p = dh.data.unsafe_ptr() + dh_off
-            var dc_p = dc.data.unsafe_ptr() + dc_off
-            var cp_p = c_prev.data.unsafe_ptr() + c_prev_off
-            var dcp_p = dc_prev.data.unsafe_ptr() + dc_prev_off
+            var cc_p = cache.data.unsafe_ptr().unsafe_offset(cache_off)
+            var dh_p = dh.data.unsafe_ptr().unsafe_offset(dh_off)
+            var dc_p = dc.data.unsafe_ptr().unsafe_offset(dc_off)
+            var cp_p = c_prev.data.unsafe_ptr().unsafe_offset(c_prev_off)
+            var dcp_p = dc_prev.data.unsafe_ptr().unsafe_offset(dc_prev_off)
             var dW_ih_p = self.W_ih.grd.data.unsafe_ptr()
             var dW_hh_p = self.W_hh.grd.data.unsafe_ptr()
             var db_p = self.b.grd.data.unsafe_ptr()
             var xv = TileTensor(
-                x.data.unsafe_ptr() + x_off, row_major[BATCH, Self.IN_]()
+                Span(x.data)[x_off : x_off + BATCH * Self.IN_],
+                row_major[BATCH, Self.IN_](),
             )
             var hp = TileTensor(
-                h_prev.data.unsafe_ptr() + h_prev_off,
+                Span(h_prev.data)[
+                    h_prev_off : h_prev_off + BATCH * Self.HIDDEN
+                ],
                 row_major[BATCH, Self.HIDDEN](),
             )
             # Gate-grad math (unchanged) produces the combined per-(b,k) preact
@@ -574,19 +581,19 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             for bi in range(BATCH):
                 for j in range(H):
                     var cbase = bi * Self.CACHE_SIZE
-                    var i_v = cc_p[cbase + j]
-                    var f_v = cc_p[cbase + H + j]
-                    var g_v = cc_p[cbase + 2 * H + j]
-                    var o_v = cc_p[cbase + 3 * H + j]
-                    var tc = cc_p[cbase + 4 * H + j]
-                    var dh_j = dh_p[bi * H + j]
-                    var dc_j = dc_p[bi * H + j]
+                    var i_v = cc_p[unsafe_offset=cbase + j]
+                    var f_v = cc_p[unsafe_offset=cbase + H + j]
+                    var g_v = cc_p[unsafe_offset=cbase + 2 * H + j]
+                    var o_v = cc_p[unsafe_offset=cbase + 3 * H + j]
+                    var tc = cc_p[unsafe_offset=cbase + 4 * H + j]
+                    var dh_j = dh_p[unsafe_offset=bi * H + j]
+                    var dc_j = dc_p[unsafe_offset=bi * H + j]
                     var do_post = dh_j * tc
                     var dc_total = dc_j + dh_j * o_v * (Scalar[DT](1.0) - tc * tc)
-                    var df_post = dc_total * cp_p[bi * H + j]
+                    var df_post = dc_total * cp_p[unsafe_offset=bi * H + j]
                     var di_post = dc_total * g_v
                     var dg_post = dc_total * i_v
-                    dcp_p[bi * H + j] = dc_total * f_v
+                    dcp_p[unsafe_offset=bi * H + j] = dc_total * f_v
                     var base = bi * FOURH
                     dpre_list[base + j]         = di_post * i_v * (Scalar[DT](1.0) - i_v)
                     dpre_list[base + H + j]     = df_post * f_v * (Scalar[DT](1.0) - f_v)
@@ -616,23 +623,26 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             max_matmul[target="cpu"](dWih_tmp_tt, xT_tt, dpre_tt, None)
             max_matmul[target="cpu"](dWhh_tmp_tt, hT_tt, dpre_tt, None)
             for idx in range(Self.IN_ * FOURH):
-                dW_ih_p[idx] += dWih_tmp_list[idx]
+                dW_ih_p[unsafe_offset=idx] += dWih_tmp_list[idx]
             for idx in range(Self.HIDDEN * FOURH):
-                dW_hh_p[idx] += dWhh_tmp_list[idx]
+                dW_hh_p[unsafe_offset=idx] += dWhh_tmp_list[idx]
             # db — cheap O(BATCH·4H) reduction; keep scalar.
             for k in range(FOURH):
                 var sb: Scalar[DT] = 0.0
                 for bi in range(BATCH):
                     sb += dpre_list[bi * FOURH + k]
-                db_p[k] += sb
+                db_p[unsafe_offset=k] += sb
 
             # dx = d_pre @ W_ihᵀ, dh_prev = d_pre @ W_hhᵀ via BLAS. These WRITE
             # the slabs that x / h_prev alias — safe now (dW reads done).
             var dxv = TileTensor(
-                dx.data.unsafe_ptr() + dx_off, row_major[BATCH, Self.IN_]()
+                Span(dx.data)[dx_off : dx_off + BATCH * Self.IN_],
+                row_major[BATCH, Self.IN_](),
             )
             var dhp = TileTensor(
-                dh_prev.data.unsafe_ptr() + dh_prev_off,
+                Span(dh_prev.data)[
+                    dh_prev_off : dh_prev_off + BATCH * Self.HIDDEN
+                ],
                 row_major[BATCH, Self.HIDDEN](),
             )
             var Wih_tt = TileTensor(self.W_ih.val.data, row_major[Self.IN_, FOURH]())

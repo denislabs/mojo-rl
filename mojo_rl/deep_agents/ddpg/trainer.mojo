@@ -66,6 +66,10 @@ from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.trainer_block import TrainerState
 from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.blocks import SampleBlock, SingleCriticStep
+from ..training.blocks.action_select import (
+    select_deterministic_batched,
+    warmup_uniform_batched,
+)
 from .target_y_block import DDPGTargetYBlock
 from .blocks.actor_step import DDPGActorStep
 from .blocks.polyak_step import DDPGPolyakStep
@@ -80,65 +84,6 @@ from .metrics import DDPGMetrics
 # kernel is DDPG-specific (deterministic actor + additive Gaussian, no
 # rsample).
 # ──────────────────────────────────────────────────────────────────────
-
-
-def _ddpg_warmup_uniform_kernel[
-    N_ENVS: Int, ACT: Int
-](
-    action_dest: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
-    action_scale: Scalar[DT],
-    seed: UInt64,
-    offset_base: UInt64,
-):
-    """Per-lane Philox uniform → [N_ENVS, ACT] of Uniform(-scale, +scale)."""
-    var i = Int(global_idx.x)
-    var total = N_ENVS * ACT
-    if i >= total:
-        return
-    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
-    var u = Float32(philox.step_uniform()[0])
-    var s = Scalar[DT](2.0) * Scalar[DT](u) - Scalar[DT](1.0)
-    action_dest[i // ACT, i % ACT] = s * action_scale
-
-
-def _ddpg_copy2d_kernel[
-    N_ENVS: Int, D: Int
-](
-    src: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
-):
-    """dst[e,d] = src[e,d] — bridge the driver's obs view into the trainer's
-    owned device scratch the storage actor.forward consumes."""
-    var i = Int(global_idx.x)
-    var total = N_ENVS * D
-    if i < total:
-        dst[i // D, i % D] = rebind[Scalar[DT]](src[i // D, i % D])
-
-
-def _ddpg_noise_clamp_kernel[
-    N_ENVS: Int, ACT: Int
-](
-    ao: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
-    noise: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
-    action_out: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
-    sigma: Scalar[DT],
-    action_scale: Scalar[DT],
-):
-    """`action_out = clamp(ao + noise·sigma, ±scale)` per lane. `ao` is the
-    deterministic actor output (Tanh-bounded, ACT-wide); `noise` the
-    contiguous box-muller fill."""
-    var i = Int(global_idx.x)
-    var total = N_ENVS * ACT
-    if i >= total:
-        return
-    var e = i // ACT
-    var j = i % ACT
-    var a = rebind[Scalar[DT]](ao[e, j]) + rebind[Scalar[DT]](noise[e, j]) * sigma
-    if a > action_scale:
-        a = action_scale
-    elif a < -action_scale:
-        a = -action_scale
-    action_out[e, j] = a
 
 
 struct DDPGTrainer[
@@ -448,103 +393,36 @@ struct DDPGTrainer[
 
         # ── Warmup: uniform random action in [-action_scale, +scale].
         if step_idx < self.learning_starts:
-            comptime if Self.train_target == "cpu":
-                for env in range(N_ENVS):
-                    for j in range(ACT):
-                        var u = Scalar[DT](2.0 * random_float64() - 1.0)
-                        action[env, j] = u * self.action_scale
-                return
-            else:
-                var c = self.ctx.value()
-                comptime tot = N_ENVS * ACT
-                c.enqueue_function[_ddpg_warmup_uniform_kernel[N_ENVS, ACT]](
-                    action,
-                    self.action_scale,
-                    self._warmup_rng_seed,
-                    self._warmup_rng_offset,
-                    grid_dim=(tot + TPB - 1) // TPB,
-                    block_dim=TPB,
-                )
-                self._warmup_rng_offset += UInt64(N_ENVS * ACT * 2)
-                return
-
-        # ── Policy: deterministic actor (Tanh-bounded) + Gaussian noise +
-        # clamp. The actor output is fed raw (NOT scaled by action_scale —
-        # legacy parity); action_scale only bounds the clamp.
-        var sigma = self.noise_scale * self.action_scale
-        comptime if Self.train_target == "cpu":
-            # Bridge LayoutTensor obs → owned Tensor (storage actor.forward
-            # wants a Tensor).
-            self._ob_scr.ensure(N_ENVS * OBS)
-            for env in range(N_ENVS):
-                for d in range(OBS):
-                    self._ob_scr.data[env * OBS + d] = rebind[Scalar[DT]](
-                        obs[env, d]
-                    )
-            self._ao_scr.ensure(N_ENVS * ACT)
-            self._noise_scr.ensure(N_ENVS * ACT)
-            call_forward["cpu", N_ENVS](
-                self.actor_pair.online,
-                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr,
-            )
-            box_muller_normal(self._noise_scr.data.unsafe_ptr(), N_ENVS * ACT)
-            for env in range(N_ENVS):
-                for j in range(ACT):
-                    var a = (
-                        self._ao_scr.data[env * ACT + j]
-                        + self._noise_scr.data[env * ACT + j] * sigma
-                    )
-                    if a > self.action_scale:
-                        a = self.action_scale
-                    elif a < -self.action_scale:
-                        a = -self.action_scale
-                    action[env, j] = a
-            # silence unused warnings on the driver-owned scratch views.
-            _ = ao_scratch
-            _ = alp_scratch
-        else:
-            # Bridge the driver's device obs view → owned device scratch,
-            # run actor on device, fill device box-muller noise, then
-            # noise+clamp into `action`.
-            var c = self.ctx.value()
-            self._ob_scr.ensure_gpu(c, N_ENVS * OBS)
-            self._ao_scr.ensure_gpu(c, N_ENVS * ACT)
-            self._noise_scr.ensure_gpu(c, N_ENVS * ACT)
-            comptime tot_obs = N_ENVS * OBS
-            c.enqueue_function[_ddpg_copy2d_kernel[N_ENVS, OBS]](
-                obs,
-                self._ob_scr.lt["gpu", Layout.row_major(N_ENVS, OBS)](),
-                grid_dim=(tot_obs + TPB - 1) // TPB,
-                block_dim=TPB,
-            )
-            call_forward["gpu", N_ENVS](
-                self.actor_pair.online,
-                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr,
-                self.ctx,
-            )
-            comptime tot_act = N_ENVS * ACT
-            # box-muller fills the noise scratch (ACT-packed, flat); take a
-            # 1-D device view and pass its concrete-origin `.ptr` (matches the
-            # legacy DDPG GPU body; box_muller_normal_gpu rebuilds the view).
-            var noise_flat = self._noise_scr.lt[
-                "gpu", Layout.row_major(tot_act)
-            ]()
-            box_muller_normal_gpu[tot_act](
-                c, noise_flat.ptr,
-                self._noise_rng_seed, self._noise_rng_offset,
-            )
-            self._noise_rng_offset += UInt64(((tot_act + 1) // 2) * 2)
-            c.enqueue_function[_ddpg_noise_clamp_kernel[N_ENVS, ACT]](
-                self._ao_scr.lt["gpu", Layout.row_major(N_ENVS, ACT)](),
-                self._noise_scr.lt["gpu", Layout.row_major(N_ENVS, ACT)](),
+            warmup_uniform_batched[Self.train_target, N_ENVS, ACT](
                 action,
-                sigma,
                 self.action_scale,
-                grid_dim=(tot_act + TPB - 1) // TPB,
-                block_dim=TPB,
+                self.ctx,
+                self._warmup_rng_seed,
+                self._warmup_rng_offset,
             )
-            _ = ao_scratch
-            _ = alp_scratch
+            return
+
+        # ── Policy: shared deterministic-actor body (see
+        # training/blocks/action_select.mojo — one copy for ddpg + td3).
+        var sigma = self.noise_scale * self.action_scale
+        select_deterministic_batched[
+            Self.ACTOR, Self.train_target, N_ENVS, OBS, ACT
+        ](
+            self.actor_pair.online,
+            self._ob_scr,
+            self._ao_scr,
+            self._noise_scr,
+            obs,
+            action,
+            sigma,
+            self.action_scale,
+            self.ctx,
+            self._noise_rng_seed,
+            self._noise_rng_offset,
+        )
+        # silence unused warnings on the driver-owned scratch views.
+        _ = ao_scratch
+        _ = alp_scratch
 
     def select_greedy_action(
         mut self,

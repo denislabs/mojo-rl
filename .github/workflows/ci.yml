@@ -1,0 +1,91 @@
+name: ci
+
+# Cost/duration model (public repo → standard runners are free):
+#   * per-push/PR: the `smoke` job only — a curated ~11-file CPU manifest
+#     (tests/manifests/smoke.txt), hard-capped by timeout-minutes.
+#   * weekly cron: the full non-GPU discovery sweep (hours) — catches rot in
+#     the long tail without taxing every push.
+#   * GPU tests never run here (no free GPU runners) — `pixi run -e apple|
+#     nvidia test-gpu` stays a local/NVIDIA-box task.
+# The pixi env is cached by setup-pixi keyed on pixi.lock, so steady-state
+# runs skip the toolchain download.
+
+on:
+  push:
+    branches: [dev, main]
+    paths-ignore:
+      - "**.md"
+      - "**.gif"
+      - "**.png"
+      - "docs/**"
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "**.gif"
+      - "**.png"
+      - "docs/**"
+  schedule:
+    # Weekly full CPU sweep (Sunday 03:17 UTC — off-peak, odd minute to
+    # avoid the on-the-hour scheduling crunch).
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "Which tier to run"
+        type: choice
+        default: smoke
+        options: [smoke, cpu-full]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.tier == 'smoke')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          environments: cpu
+          cache: true
+          cache-write: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
+      - name: smoke tier
+        run: pixi run -e cpu test-smoke
+
+  examples-compile:
+    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.tier == 'smoke')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          environments: cpu
+          cache: true
+          cache-write: false
+      - name: compile-probe root examples
+        run: pixi run -e cpu examples-compile
+
+  cpu-full:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'cpu-full')
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          environments: cpu
+          cache: true
+          cache-write: false
+      - name: full CPU sweep
+        # Discovery over tests/ minus *_gpu.mojo. Some of the long tail needs
+        # local-only assets (references/, ROMs) and will fail on CI — the
+        # summary still tells you WHAT is red and whether it changed week to
+        # week. continue-on-error keeps the cron from paging you red every
+        # Sunday while the tail gets cleaned up; flip it off once test-cpu
+        # is green.
+        continue-on-error: true
+        run: pixi run -e cpu test-cpu

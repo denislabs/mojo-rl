@@ -8,7 +8,6 @@ module (encoder/dynamics/reward/online+target Q/policy) exactly.
 Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_checkpoint.mojo`
 """
 
-from std.memory import alloc
 from std.math import abs
 from std.random import seed
 from std.testing import assert_true, assert_almost_equal, TestSuite
@@ -35,18 +34,17 @@ comptime Ag = TDMPC2Agent[
 ]
 
 
-def _greedy(mut ag: Ag, obs: UnsafePointer[Scalar[DT], MutAnyOrigin]) raises -> List[Scalar[DT]]:
-    var act = alloc[Scalar[DT]](ACT)
+def _greedy(mut ag: Ag, obs: List[Scalar[DT]]) raises -> List[Scalar[DT]]:
+    var act = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
     ag.select_greedy_action(obs, act)
     var out = List[Scalar[DT]](length=ACT, fill=0.0)
     for j in range(ACT):
         out[j] = act[j]
-    act.free()
     return out^
 
 
 def test_checkpoint_roundtrip() raises:
-    var probe = alloc[Scalar[DT]](OBS)
+    var probe = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
     for d in range(OBS):
         probe[d] = Scalar[DT](0.2 * Float64(d) - 0.3)
 
@@ -73,7 +71,6 @@ def test_checkpoint_roundtrip() raises:
             act_b1[j], act_a[j], atol=1e-5,
             msg="loaded agent must reproduce saved agent's action",
         )
-    probe.free()
 
 
 def main() raises:

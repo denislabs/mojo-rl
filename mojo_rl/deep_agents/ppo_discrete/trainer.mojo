@@ -48,7 +48,11 @@ from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.core.initializer import Xavier
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.core.checkpoint import (
-    CheckpointWriter, CheckpointReader, _split_lines,
+    CheckpointWriter,
+    CheckpointReader,
+    _bytes_append_str,
+    _split_lines,
+    _write_file_bytes,
 )
 
 from mojo_rl.nn.core.log_bundle import log_bundle
@@ -776,8 +780,13 @@ struct PPODiscreteTrainer[
         w.content += (
             "_total_train_steps=" + String(self._total_train_steps) + "\n"
         )
-        with open(path, "w") as f:
-            f.write(w.content)
+        # Chunked + atomic (tmp-rename) write — a bare `f.write(w.content)`
+        # is non-atomic and a single write(2) silently truncates at ~2 GiB
+        # (the v2 corruption source). Format unchanged (v2 text + the
+        # `_total_train_steps` metadata line, which v3 has no slot for).
+        var bytes = List[UInt8]()
+        _bytes_append_str(bytes, w.content)
+        _write_file_bytes(path, bytes)
 
     def load_state(mut self, path: String) raises:
         """Inverse of `save_state`. PPO has no target nets, so no

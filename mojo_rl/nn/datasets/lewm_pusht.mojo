@@ -44,7 +44,7 @@ Typical usage::
         # buf.state   → [num_steps, state_dim] f32
 """
 
-from std.memory import alloc, memcpy
+from std.memory import alloc, unsafe_memcpy
 from std.python import Python, PythonObject
 
 from mojo_rl.io.hdf5 import (
@@ -63,13 +63,95 @@ comptime _HF_REPO = "quentinll/lewm-pusht"
 comptime _HF_FILE = "pusht_expert_train.h5.zst"
 comptime _CACHE_SUBDIR = ".cache/mojo_rl/lewm_pusht"
 
+# The streaming download loop runs ENTIRELY inside Python (one exec + one
+# call from Mojo). Driving it chunk-by-chunk from Mojo leaked every large
+# per-iteration PythonObject (read chunks + decompress outputs) until the
+# function returned: RSS stayed flat (macOS swapped the cold pages), but
+# the process's physical footprint grew ~1:1 with the DECOMPRESSED volume
+# — 23 GB footprint / 20.7 GB of swapped-out MALLOC_LARGE at 34% of the
+# download, filling swap. In-Python, each chunk is freed per iteration.
+# Features: in-place progress bar (compressed bytes, avg MB/s, ETA),
+# reconnect-and-seek resume into the SAME decompressor (30 retries),
+# F_NOCACHE (macOS) / periodic fsync+fadvise DONTNEED (Linux) so the
+# multi-GB write also stays out of the OS page cache.
+comptime _DL_HELPER_PY: StaticString = """
+def stream_download(uri, tmp_path):
+    import gc, os, time
+    import zstandard
+    from huggingface_hub import HfFileSystem
+
+    fs = HfFileSystem()
+    total = fs.info(uri)['size']
+    f_out = open(tmp_path, 'wb')
+    try:
+        import fcntl
+        fcntl.fcntl(f_out.fileno(), fcntl.F_NOCACHE, 1)
+    except Exception:
+        pass  # non-macOS: fsync+fadvise below covers it
+    dobj = zstandard.ZstdDecompressor().decompressobj()
+    CHUNK = 16 * 1024 * 1024
+    MAX_RETRIES = 30
+    f_in = fs.open(uri, 'rb')
+    offset = 0
+    retries = 0
+    n_chunks = 0
+    t0 = time.monotonic()
+    while offset < total:
+        try:
+            chunk = f_in.read(CHUNK)
+        except Exception as e:
+            retries += 1
+            if retries > MAX_RETRIES:
+                raise RuntimeError(
+                    '  [lewm_pusht] download failed after %d reconnects'
+                    ' (last: %s); rerun to retry' % (MAX_RETRIES, e))
+            print()
+            print('  [lewm_pusht] read error at %d/%d bytes - reconnecting'
+                  ' (retry %d/%d): %s' % (offset, total, retries,
+                                          MAX_RETRIES, e))
+            time.sleep(2.0)
+            try:
+                f_in.close()
+            except Exception:
+                pass
+            f_in = fs.open(uri, 'rb')
+            f_in.seek(offset)
+            continue
+        if not chunk:
+            break
+        offset += len(chunk)
+        f_out.write(dobj.decompress(chunk))
+        chunk = None
+        n_chunks += 1
+        if n_chunks % 32 == 0:  # every ~512 MB compressed
+            f_out.flush()
+            os.fsync(f_out.fileno())
+            if hasattr(os, 'posix_fadvise'):
+                os.posix_fadvise(f_out.fileno(), 0, 0,
+                                 os.POSIX_FADV_DONTNEED)
+            gc.collect()
+        el = time.monotonic() - t0
+        mbs = offset / 1e6 / el if el > 0 else 0.0
+        eta = int((total - offset) / 1e6 / mbs) if mbs > 0 else 0
+        pct = offset * 100 // total
+        filled = offset * 30 // total
+        bar = '#' * filled + '-' * (30 - filled)
+        print('\\r  [lewm_pusht] [%s] %d%% | %.1f/%.1f GB | %.1f MB/s |'
+              ' ETA %dm%02ds   ' % (bar, pct, offset / 1e9, total / 1e9,
+                                    mbs, eta // 60, eta % 60),
+              end='', flush=True)
+    print()
+    f_in.close()
+    f_out.close()
+"""
+
 
 def _ensure_dataset_cached() raises -> String:
     """Resolve the cached ``.h5`` path, downloading + decompressing if needed.
 
     Streams the HF blob through zstd directly to disk — the compressed
     ``.zst`` never lands locally, so peak disk usage equals the final
-    ``.h5`` size (~15–25 GB) rather than ~28–38 GB. Writes to a ``.tmp``
+    ``.h5`` size (~47 GB) rather than ~60 GB. Writes to a ``.tmp``
     file and renames on success, so a mid-stream failure does not leave
     a partial file masquerading as a valid cache hit.
 
@@ -89,20 +171,18 @@ def _ensure_dataset_cached() raises -> String:
         _ = os.remove(PythonObject(tmp_path))
 
     print("  [lewm_pusht] no cache hit; streaming", _HF_FILE)
-    print("  [lewm_pusht] (~13 GB over HTTP, decompressing to ~15–25 GB on disk)")
+    print("  [lewm_pusht] (~13 GB over HTTP, decompressing to ~47 GB on disk)")
 
-    var hf = Python.import_module("huggingface_hub")
-    var zstandard = Python.import_module("zstandard")
+    # One exec + one call: the chunk loop lives in Python (see the
+    # _DL_HELPER_PY note — Mojo-driven per-chunk PythonObjects leaked the
+    # whole decompressed volume into swap until the function returned).
     var builtins = Python.import_module("builtins")
-
-    var fs = hf.HfFileSystem()
     var hf_uri = String("datasets/") + _HF_REPO + "/" + _HF_FILE
-    var f_in = fs.open(PythonObject(hf_uri), PythonObject("rb"))
-    var f_out = builtins.open(PythonObject(tmp_path), PythonObject("wb"))
-    var dctx = zstandard.ZstdDecompressor()
-    _ = dctx.copy_stream(f_in, f_out)
-    _ = f_in.close()
-    _ = f_out.close()
+    var ns = builtins.dict()
+    _ = builtins.exec(PythonObject(_DL_HELPER_PY), ns)
+    _ = ns[PythonObject("stream_download")](
+        PythonObject(hf_uri), PythonObject(tmp_path)
+    )
 
     _ = os.rename(PythonObject(tmp_path), PythonObject(h5_path))
     print("  [lewm_pusht] cached → ", h5_path)
@@ -419,7 +499,7 @@ struct LewmPushTExpert(Movable, Sized):
         var start_in_ep = Int(self.clip_start[idx])
         var g_start = Int(self.ep_offset[ep_idx]) + start_in_ep
 
-        # ── pixels: dense read then strided memcpy ───────────────────────
+        # ── pixels: dense read then strided unsafe_memcpy ───────────────────────
         # `H5Sselect_hyperslab` with stride>1 is pathologically slow in
         # libhdf5 (~15× the cost of a contiguous read of the same chunk
         # range, measured on the PushT 100-frame chunks). So we read the
@@ -433,7 +513,7 @@ struct LewmPushTExpert(Movable, Sized):
         )
         var pix_per_frame = self.pixel_h * self.pixel_w * 3
         for k in range(self.num_steps):
-            memcpy(
+            unsafe_memcpy(
                 dest=into.pixels + k * pix_per_frame,
                 src=into.pixels_dense + k * self.frameskip * pix_per_frame,
                 count=pix_per_frame,
@@ -475,9 +555,9 @@ struct LewmPushTExpert(Movable, Sized):
 
         Unlike ``sample_window`` this skips proprio/state and the
         ``LewmPushTWindow.pixels`` intermediate: pixels stream from
-        libhdf5 into ``dense_scratch`` then strided-memcpy directly
+        libhdf5 into ``dense_scratch`` then strided-unsafe_memcpy directly
         into the caller's batch slot in ``pixels_dst``; actions
-        memcpy in one shot from the already-slurped flat host buffer
+        unsafe_memcpy in one shot from the already-slurped flat host buffer
         into ``actions_dst``. Used by ``PushTOfflineSampler``.
 
         Args:
@@ -501,16 +581,16 @@ struct LewmPushTExpert(Movable, Sized):
         )
         var pix_per_frame = self.pixel_h * self.pixel_w * 3
         for k in range(self.num_steps):
-            memcpy(
+            unsafe_memcpy(
                 dest=pixels_dst + k * pix_per_frame,
                 src=dense_scratch + k * self.frameskip * pix_per_frame,
                 count=pix_per_frame,
             )
 
-        # Actions: contiguous fp32 memcpy from slurped host buffer.
+        # Actions: contiguous fp32 unsafe_memcpy from slurped host buffer.
         var act_total = self.span * self.action_dim
-        memcpy(
+        unsafe_memcpy(
             dest=actions_dst,
-            src=self.action_flat.unsafe_ptr() + g_start * self.action_dim,
+            src=self.action_flat.unsafe_ptr().unsafe_offset(g_start * self.action_dim),
             count=act_total,
         )

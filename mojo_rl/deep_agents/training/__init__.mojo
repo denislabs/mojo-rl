@@ -8,7 +8,6 @@ batched env adapter).
 """
 
 from .episode_tracker import EpisodeTracker
-from .gae import compute_gae, normalize_in_place
 from .off_policy_critic import (
     concat_sa,
 )

@@ -11,8 +11,8 @@ struct FrozenState(Copyable, ImplicitlyCopyable, Movable, State):
     def __init__(out self, *, copy: Self):
         self.position = copy.position
 
-    def __init__(out self, *, deinit take: Self):
-        self.position = take.position
+    def __init__(out self, *, deinit move: Self):
+        self.position = move.position
 
     def __eq__(self, other: Self) -> Bool:
         return self.position == other.position
@@ -27,8 +27,8 @@ struct FrozenAction(Action, Copyable, ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.direction = copy.direction
 
-    def __init__(out self, *, deinit take: Self):
-        self.direction = take.direction
+    def __init__(out self, *, deinit move: Self):
+        self.direction = move.direction
 
     @staticmethod
     def left() -> Self:

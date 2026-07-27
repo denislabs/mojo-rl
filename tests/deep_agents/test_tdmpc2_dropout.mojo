@@ -16,7 +16,6 @@ reference-faithful dropout semantics.
 Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_dropout.mojo`
 """
 
-from std.memory import alloc
 from std.random import random_float64, seed
 from std.math import isfinite
 from std.testing import assert_true
@@ -47,8 +46,8 @@ def _train_pendulum[qp: Float64](mut first_wm: Scalar[DT], mut last_wm: Scalar[D
 
     var env = PendulumV2[DT]()
     var obs = env.reset_obs_list()
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var actbuf = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
 
     comptime TOTAL = 400
     comptime LEARN_START = 64
@@ -80,7 +79,6 @@ def _train_pendulum[qp: Float64](mut first_wm: Scalar[DT], mut last_wm: Scalar[D
                     first_wm = wm
                 last_wm = wm
                 n_train += 1
-    obsbuf.free(); actbuf.free()
     return n_train
 
 

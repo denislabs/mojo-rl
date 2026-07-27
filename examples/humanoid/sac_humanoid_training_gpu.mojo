@@ -7,7 +7,7 @@ GPU successor of `sac_humanoid_training.mojo` and counterpart of the legacy
   * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
     off-policy driver. All optimizers, the replay buffer, and the SAC
     train-step pipeline run on-device.
-  * `BatchedGpuEnv[Humanoid[DT], N_ENVS, OBS, ACT]` — wraps the physics3d env
+  * `Phyics3dBatchedEnv[HumanoidModel, HumanoidConfig, N_ENVS]` — the physics3d env
     (`GPUContinuousEnv`) into a `BatchedEnv`.
   * `RemoteLogger` — streams `env/mean_ret` and `env/ep_count`.
 
@@ -52,18 +52,18 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.humanoid import Humanoid
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
+from mojo_rl.envs.humanoid.humanoid_config import HumanoidConfig
 
 
 # =============================================================================
 # Architecture
 # =============================================================================
 
-comptime EnvT = Humanoid[DT, TERMINATE_ON_UNHEALTHY=True]
-comptime OBS_DIM = EnvT.OBS_DIM  # 45
-comptime ACT_DIM = EnvT.ACTION_DIM  # 17
-comptime HIDDEN = 512
+comptime OBS_DIM = HumanoidModel.OBS_DIM  # 45
+comptime ACT_DIM = HumanoidModel.ACTION_DIM  # 17
+comptime HIDDEN = 256
 
 # Off-policy GPU training parameters (mirror the legacy GPU script).
 # 256 matches the validated LayerNorm+H256 run (greedy ~5715). Bump to 512 only
@@ -83,10 +83,8 @@ comptime WARMUP_STEPS = 25_000
 comptime PRINT_EVERY = 50_000
 comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
-# LayerNorm critic changes PARAM_SIZE → NOT loadable by the preset-based eval
-# script; render with `sac_humanoid_nn_ln_eval_cpu.mojo` (HIDDEN=256, same
-# critic). Distinct path preserves the 6006 plain-critic baseline ckpt.
-comptime CHECKPOINT_PATH = "sac_humanoid_nn_ln.ckpt"
+# render with `sac_humanoid_nn_eval_cpu.mojo` (HIDDEN=256).
+comptime CHECKPOINT_PATH = "sac_humanoid_nn.ckpt"
 
 # Periodic DETERMINISTIC eval (greedy, no exploration noise) on an isolated set
 # of `EVAL_ENVS` parallel envs — the deployable-policy signal. The always-on
@@ -100,8 +98,15 @@ comptime EVAL_EVERY = 250_000  # env-steps between eval passes (~40 over 10M)
 comptime EVAL_EPISODES = 16  # <= EVAL_ENVS → completes in one eval window
 
 
-comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
-comptime EvalEnvT = BatchedGpuEnv[EnvT, EVAL_ENVS, OBS_DIM, ACT_DIM]
+# Per-field tensor physics path (migration P5+): the batched fields facade is
+# a `BatchedEnv` running the LEGACY PRODUCTION physics bundle by default
+# (RK4 + Newton, parallel _mt schedules, treewalk CRBA, auto broadphase).
+comptime BatchedEnvT = Phyics3dBatchedEnv[
+    HumanoidModel, HumanoidConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=True
+]
+comptime EvalEnvT = Phyics3dBatchedEnv[
+    HumanoidModel, HumanoidConfig, EVAL_ENVS, TERMINATE_ON_UNHEALTHY=True
+]
 
 # Actor + twin critics come from the `SAC[...]` preset (deep_agents.sac),
 # which bundles the canonical fused-`LinearReLU` `SACActorNet` /
@@ -132,7 +137,7 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="SAC Humanoid NN (GPU, LayerNorm critic, H256, 3M)",
+            run_name="SAC Humanoid NN (GPU, H256, 3M)",
             buffer_size=64,
             api_key=api_key,
         )
@@ -166,7 +171,10 @@ def main() raises:
         # Isolated eval env (greedy deterministic rollouts; never touches the
         # training env's state or the replay buffer).
         var eval_env = EvalEnvT(ctx)
-        var eval_env_ptr = UnsafePointer(to=eval_env)
+        # `.as_unsafe_any_origin()` — the facade takes
+        # Optional[UnsafePointer[EE, MutAnyOrigin]]; a tracked-origin
+        # pointer doesn't convert (same idiom as logger_ptr above).
+        var eval_env_ptr = UnsafePointer(to=eval_env).as_unsafe_any_origin()
 
         # ─── Single train() call — batched GPU off-policy driver ─────────
         print("Starting GPU training...")
@@ -177,7 +185,7 @@ def main() raises:
             N_ENVS=N_ENVS,
             L=RemoteLogger,
             USE_TRAIN_CUDA_GRAPH=True,
-            USE_ENV_CUDA_GRAPH=True,
+            USE_ENV_CUDA_GRAPH=False,
             EE=EvalEnvT,
             EVAL_ENVS=EVAL_ENVS,
         ](

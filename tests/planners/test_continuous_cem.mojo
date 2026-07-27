@@ -17,6 +17,7 @@ from mojo_rl.planners.trajectory import (
     ContinuousCEMOptimizer,
     ContinuousRandomShooter,
 )
+from mojo_rl.nn.core.ptr import mptr
 
 
 comptime BATCH = 2
@@ -73,7 +74,7 @@ def main() raises:
     var rs = ContinuousRandomShooter[BATCH, ACT_DIM](
         horizon=HORIZON, num_samples=300, init_std=1.0
     )
-    var rand_min = rs.optimize(sc1, best.unsafe_ptr(), verbose=False)
+    var rand_min = rs.optimize(sc1, mptr(best), verbose=False)
 
     # CEM
     var sc2 = QuadScorer(tgt.copy())
@@ -81,7 +82,7 @@ def main() raises:
         horizon=HORIZON, cem_iters=30, cem_samples=300, cem_topk=30,
         init_std=1.0,
     )
-    var cem_best = cem.optimize(sc2, best.unsafe_ptr(), verbose=False)
+    var cem_best = cem.optimize(sc2, mptr(best), verbose=False)
 
     print("   random_min=", rand_min, "  cem=", cem_best)
     assert_true(cem_best < rand_min, "CEM beats random shooter")

@@ -12,12 +12,8 @@ from .constraint_data import (
     CNSTR_EQUALITY_CONNECT,
     CNSTR_EQUALITY_WELD,
 )
-from .constraint_builder import build_constraints, writeback_forces
-from .constraint_builder_gpu import (
-    common_normal_size,
-    init_common_normal_workspace_gpu,
-    precompute_contact_normal_gpu,
-    warmstart_normals_gpu,
-    apply_solved_normals_gpu,
-    detect_and_solve_limits_gpu,
-)
+# Legacy slab constraint builders (constraint_builder[_gpu]) were deleted at the
+# P6 fields sunset — the fields path builds constraints inside
+# `contact_solve` / `equality_tendon` / `limits`.
+# `ConstraintData` (above) is kept: the shared `traits/solver` trait (used by
+# physics2d) references it.

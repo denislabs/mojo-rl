@@ -172,28 +172,28 @@ struct AtariRenderer(Movable):
         self.recorder = VideoRecorder()
         self.recording_counter = 0
 
-    def __init__(out self, *, deinit take: Self):
-        self.window = take.window
-        self.sdl_renderer = take.sdl_renderer
-        self.texture = take.texture
-        self.pixel_buf = take.pixel_buf
-        self.screen_width = take.screen_width
-        self.screen_height = take.screen_height
-        self.fps = take.fps
-        self.frame_delay = take.frame_delay
-        self.initialized = take.initialized
-        self.should_quit = take.should_quit
-        self.last_frame_time = take.last_frame_time
-        self.paused = take.paused
-        self.key_up = take.key_up
-        self.key_down = take.key_down
-        self.key_left = take.key_left
-        self.key_right = take.key_right
-        self.key_fire = take.key_fire
-        self.key_reset = take.key_reset
-        self.current_action = take.current_action
-        self.recorder = take.recorder^
-        self.recording_counter = take.recording_counter
+    def __init__(out self, *, deinit move: Self):
+        self.window = move.window
+        self.sdl_renderer = move.sdl_renderer
+        self.texture = move.texture
+        self.pixel_buf = move.pixel_buf
+        self.screen_width = move.screen_width
+        self.screen_height = move.screen_height
+        self.fps = move.fps
+        self.frame_delay = move.frame_delay
+        self.initialized = move.initialized
+        self.should_quit = move.should_quit
+        self.last_frame_time = move.last_frame_time
+        self.paused = move.paused
+        self.key_up = move.key_up
+        self.key_down = move.key_down
+        self.key_left = move.key_left
+        self.key_right = move.key_right
+        self.key_fire = move.key_fire
+        self.key_reset = move.key_reset
+        self.current_action = move.current_action
+        self.recorder = move.recorder^
+        self.recording_counter = move.recording_counter
 
     def __del__(deinit self):
         if self.initialized:

@@ -35,6 +35,9 @@ or user to give the library a hint as to how they would like the library to
 work.
 """
 
+from . import _get_dylib_function, c_char, lib, Ptr
+from .sdl_error import get_error
+
 
 struct HintPriority(Indexer, Intable, TrivialRegisterPassable):
     """An enumeration of hint priorities.
@@ -93,8 +96,8 @@ def set_hint_with_priority(
         lib,
         "SDL_SetHintWithPriority",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(name))],
-            Ptr[c_char, ImmutOrigin(origin_of(value))],
+            Ptr[c_char, ImmOrigin(origin_of(name))],
+            Ptr[c_char, ImmOrigin(origin_of(value))],
             HintPriority,
         ) thin -> Bool,
     ]()(
@@ -131,8 +134,8 @@ def set_hint(var name: String, var value: String) raises:
         lib,
         "SDL_SetHint",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(name))],
-            Ptr[c_char, ImmutOrigin(origin_of(value))],
+            Ptr[c_char, ImmOrigin(origin_of(name))],
+            Ptr[c_char, ImmOrigin(origin_of(value))],
         ) thin -> Bool,
     ]()(
         name.as_c_string_slice().unsafe_ptr(),
@@ -163,7 +166,7 @@ def reset_hint(var name: String) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_ResetHint", def(Ptr[c_char, ImmutOrigin(origin_of(name))]) thin -> Bool
+        lib, "SDL_ResetHint", def(Ptr[c_char, ImmOrigin(origin_of(name))]) thin -> Bool
     ]()(name.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -208,7 +211,7 @@ def get_hint(var name: String) raises -> Ptr[c_char, ImmutAnyOrigin]:
     return _get_dylib_function[
         lib,
         "SDL_GetHint",
-        def(Ptr[c_char, ImmutOrigin(origin_of(name))]) thin -> Ptr[c_char, ImmutAnyOrigin],
+        def(Ptr[c_char, ImmOrigin(origin_of(name))]) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(name.as_c_string_slice().unsafe_ptr())
 
 
@@ -232,7 +235,7 @@ def get_hint_boolean(var name: String, default_value: Bool) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_GetHintBoolean",
-        def(Ptr[c_char, ImmutOrigin(origin_of(name))], Bool) thin -> Bool,
+        def(Ptr[c_char, ImmOrigin(origin_of(name))], Bool) thin -> Bool,
     ]()(name.as_c_string_slice().unsafe_ptr(), default_value)
 
 
@@ -292,7 +295,7 @@ def add_hint_callback(
         lib,
         "SDL_AddHintCallback",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Ptr[c_char, ImmOrigin(origin_of(name))],
             HintCallback,
             Ptr[NoneType, MutAnyOrigin],
         ) thin -> Bool,
@@ -324,7 +327,7 @@ def remove_hint_callback(
         lib,
         "SDL_RemoveHintCallback",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Ptr[c_char, ImmOrigin(origin_of(name))],
             HintCallback,
             Ptr[NoneType, MutAnyOrigin],
         ) thin -> None,

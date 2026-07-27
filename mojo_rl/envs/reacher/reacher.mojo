@@ -1,4 +1,4 @@
-"""Reacher Environment - thin wrapper around Phyics3dEnv[ReacherModel, ReacherConfig]."""
+"""Reacher Environment - thin wrapper over Phyics3dEnv[ReacherModel, ReacherConfig]."""
 
 from .reacher_xml import ReacherModel
 from .reacher_config import ReacherConfig

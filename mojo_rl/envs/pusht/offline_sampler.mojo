@@ -11,7 +11,7 @@ This module wraps the HDF5-backed ``LewmPushTExpert`` (which delivers one
 clip per ``sample_window`` call as HWC uint8) into the trainer's batch
 shape. The HWC→CHW permute + uint8→fp32 normalize is deferred to a GPU
 kernel (``pixels_uint8_to_fp32_kernel``), so this sampler is essentially
-a bulk uint8 memcpy per batch element.
+a bulk uint8 unsafe_memcpy per batch element.
 
 Constructor takes the same dataset args as ``LewmPushTExpert``
 (``frameskip``, ``num_steps``, optional ``path`` for fixture tests).
@@ -25,7 +25,7 @@ Typical usage::
 """
 
 from std.math import isnan, sqrt
-from std.memory import memcpy
+from std.memory import unsafe_memcpy
 from std.random import random_float64
 
 from mojo_rl.core.offline_buffer import OfflineBuffer
@@ -133,13 +133,13 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
             self.dataset.num_steps,
         )
 
-    def __init__(out self, *, deinit take: Self):
-        self.dataset = take.dataset^
-        self.window = take.window^
-        self.n_frames = take.n_frames
-        self.normalize_actions = take.normalize_actions
-        self.act_mean = take.act_mean^
-        self.act_std = take.act_std^
+    def __init__(out self, *, deinit move: Self):
+        self.dataset = move.dataset^
+        self.window = move.window^
+        self.n_frames = move.n_frames
+        self.normalize_actions = move.normalize_actions
+        self.act_mean = move.act_mean^
+        self.act_std = move.act_std^
 
     def action_mean(self, d: Int) -> Float64:
         return self.act_mean[d]
@@ -196,7 +196,7 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
             if clip_idx < 0:
                 clip_idx = 0
 
-            # Fast path: dense HDF5 read → strided memcpy directly into
+            # Fast path: dense HDF5 read → strided unsafe_memcpy directly into
             # the batch's slot, skipping the LewmPushTWindow.pixels
             # intermediate. The window only contributes its ``pixels_dense``
             # buffer as a shared scratch — proprio/state are unused here.

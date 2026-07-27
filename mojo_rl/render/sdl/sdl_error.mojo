@@ -46,6 +46,8 @@ It's also common to just return `false` in this case if the failing thing
 is known to call SDL_SetError(), so errors simply propagate through.
 """
 
+from . import _get_dylib_function, c_char, lib, Ptr
+
 
 def out_of_memory() raises -> Bool:
     """Set an error indicating that memory allocation failed.

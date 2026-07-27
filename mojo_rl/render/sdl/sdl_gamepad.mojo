@@ -72,6 +72,15 @@ Windows.Gaming.Input, controllers may not be available at startup and will
 come in at some point after you've started processing events.
 """
 
+from . import _get_dylib_function, c_char, c_float, c_int, lib, Ptr
+from .sdl_error import get_error
+from .sdl_guid import GUID
+from .sdl_iostream import IOStream
+from .sdl_joystick import Joystick, JoystickConnectionState, JoystickID
+from .sdl_power import PowerState
+from .sdl_properties import PropertiesID
+from .sdl_sensor import SensorType
+
 
 @fieldwise_init
 struct Gamepad(ImplicitlyCopyable, Movable):
@@ -460,7 +469,7 @@ def add_gamepad_mapping(var mapping: String) raises -> c_int:
     return _get_dylib_function[
         lib,
         "SDL_AddGamepadMapping",
-        def(Ptr[c_char, ImmutOrigin(origin_of(mapping))]) thin -> c_int,
+        def(Ptr[c_char, ImmOrigin(origin_of(mapping))]) thin -> c_int,
     ]()(mapping.as_c_string_slice().unsafe_ptr())
 
 
@@ -540,7 +549,7 @@ def add_gamepad_mappings_from_file(var file: String) raises -> c_int:
     return _get_dylib_function[
         lib,
         "SDL_AddGamepadMappingsFromFile",
-        def(Ptr[c_char, ImmutOrigin(origin_of(file))]) thin -> c_int,
+        def(Ptr[c_char, ImmOrigin(origin_of(file))]) thin -> c_int,
     ]()(file.as_c_string_slice().unsafe_ptr())
 
 
@@ -661,7 +670,7 @@ def set_gamepad_mapping(instance_id: JoystickID, var mapping: String) raises:
         lib,
         "SDL_SetGamepadMapping",
         def(
-            JoystickID, Ptr[c_char, ImmutOrigin(origin_of(mapping))]
+            JoystickID, Ptr[c_char, ImmOrigin(origin_of(mapping))]
         ) thin -> Bool,
     ]()(instance_id, mapping.as_c_string_slice().unsafe_ptr())
     if not ret:
@@ -1554,7 +1563,7 @@ def get_gamepad_type_from_string(var str: String) raises -> GamepadType:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadTypeFromString",
-        def(Ptr[c_char, ImmutOrigin(origin_of(str))]) thin -> GamepadType,
+        def(Ptr[c_char, ImmOrigin(origin_of(str))]) thin -> GamepadType,
     ]()(str.as_c_string_slice().unsafe_ptr())
 
 
@@ -1606,7 +1615,7 @@ def get_gamepad_axis_from_string(var str: String) raises -> GamepadAxis:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadAxisFromString",
-        def(Ptr[c_char, ImmutOrigin(origin_of(str))]) thin -> GamepadAxis,
+        def(Ptr[c_char, ImmOrigin(origin_of(str))]) thin -> GamepadAxis,
     ]()(str.as_c_string_slice().unsafe_ptr())
 
 
@@ -1711,7 +1720,7 @@ def get_gamepad_button_from_string(var str: String) raises -> GamepadButton:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadButtonFromString",
-        def(Ptr[c_char, ImmutOrigin(origin_of(str))]) thin -> GamepadButton,
+        def(Ptr[c_char, ImmOrigin(origin_of(str))]) thin -> GamepadButton,
     ]()(str.as_c_string_slice().unsafe_ptr())
 
 

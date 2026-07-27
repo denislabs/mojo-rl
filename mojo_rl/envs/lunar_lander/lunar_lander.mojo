@@ -3,7 +3,6 @@
 This implementation uses the new modular physics components:
 - LunarLanderLayout for compile-time layout computation
 - PhysicsEnvHelpers for environment setup utilities
-- PhysicsKernel for unified physics step orchestration
 
 The flat state layout is compatible with GPUDiscreteEnv trait.
 All physics data is packed per-environment for efficient GPU access.
@@ -31,6 +30,7 @@ from .action import LunarLanderAction
 from .constants import LLConstants
 from .helpers import (
     compute_shaping,
+    lunar_terminal_and_reward,
     normalize_position,
     normalize_velocity,
     normalize_angular_velocity,
@@ -82,7 +82,6 @@ from mojo_rl.physics2d import (
     # New modular architecture
     LunarLanderLayout,
     PhysicsEnvHelpers,
-    PhysicsKernel,
     PhysicsConfig,
 )
 from mojo_rl.physics2d.integrators.euler import SemiImplicitEuler
@@ -198,6 +197,10 @@ struct LunarLander[
     var prev_shaping: Scalar[Self.dtype]
     var step_count: Int
     var game_over: Bool
+    # Natural-termination flag for the LAST step (crash/OOB/landed), False on
+    # time-limit truncation — read by `was_terminated()` so drivers keep the
+    # TD bootstrap on truncation and drop it on true terminals.
+    var last_terminated: Bool
     var rng_seed: UInt64
     var rng_counter: UInt64
 
@@ -303,6 +306,7 @@ struct LunarLander[
         self.prev_shaping = Scalar[Self.dtype](0)
         self.step_count = 0
         self.game_over = False
+        self.last_terminated = False
 
         self.rng_seed = seed
         self.rng_counter = 0
@@ -334,22 +338,15 @@ struct LunarLander[
         self._reset_cpu()
 
     def __init__(out self, *, copy: Self):
-        """Copy constructor - creates fresh physics state and copies data."""
+        """Copy constructor — true deep copy: a copied env continues from the
+        SAME mid-episode state (physics buffers, terrain, RNG counter). It
+        must NOT reset — resetting on copy silently wiped state, regenerated
+        terrain and advanced the RNG whenever an env was passed by value."""
         self.particles = List[Particle[Self.dtype]](copy.particles)
-        # Create fresh physics state
-        self.physics = PhysicsStateOwned[
-            LLConstants.NUM_BODIES,
-            LLConstants.NUM_SHAPES,
-            LLConstants.MAX_CONTACTS,
-            LLConstants.MAX_JOINTS,
-            LLConstants.STATE_SIZE_VAL,
-            LLConstants.BODIES_OFFSET,
-            LLConstants.FORCES_OFFSET,
-            LLConstants.JOINTS_OFFSET,
-            LLConstants.JOINT_COUNT_OFFSET,
-            LLConstants.EDGES_OFFSET,
-            LLConstants.EDGE_COUNT_OFFSET,
-        ]()
+        # PhysicsStateOwned deep-copies its state/shapes/contacts buffers, so
+        # the copied env's bodies (and the shapes _init_physics_shapes would
+        # have rebuilt) come across verbatim.
+        self.physics = copy.physics.copy()
         self.config = PhysicsConfig(
             gravity_x=copy.config.gravity_x,
             gravity_y=copy.config.gravity_y,
@@ -364,70 +361,51 @@ struct LunarLander[
         self.prev_shaping = copy.prev_shaping
         self.step_count = copy.step_count
         self.game_over = copy.game_over
+        self.last_terminated = copy.last_terminated
         self.rng_seed = copy.rng_seed
         self.rng_counter = copy.rng_counter
         self.wind_idx = copy.wind_idx
         self.torque_idx = copy.torque_idx
         self.terrain_heights = List[Scalar[Self.dtype]](copy.terrain_heights)
-        self.edge_collision = EdgeTerrainCollision(1)
+        self.edge_collision = copy.edge_collision.copy()
         self.cached_state = copy.cached_state
 
         # Do not copy renderer — reset to null
         self._renderer = None
         self._renderer_initialized = False
 
-        # Initialize physics shapes (critical for physics to work!)
-        self._init_physics_shapes()
-        # Reset to initialize physics state properly
-        self._reset_cpu()
-
-    def __init__(out self, *, deinit take: Self):
-        """Move constructor."""
-        self.particles = take.particles^
-        # Create fresh physics state
-        self.physics = PhysicsStateOwned[
-            LLConstants.NUM_BODIES,
-            LLConstants.NUM_SHAPES,
-            LLConstants.MAX_CONTACTS,
-            LLConstants.MAX_JOINTS,
-            LLConstants.STATE_SIZE_VAL,
-            LLConstants.BODIES_OFFSET,
-            LLConstants.FORCES_OFFSET,
-            LLConstants.JOINTS_OFFSET,
-            LLConstants.JOINT_COUNT_OFFSET,
-            LLConstants.EDGES_OFFSET,
-            LLConstants.EDGE_COUNT_OFFSET,
-        ]()
+    def __init__(out self, *, deinit move: Self):
+        """Move constructor — transfers all state verbatim (buffers move, no
+        reset). Resetting on move silently wiped mid-episode state whenever
+        an env was returned from a factory or stored into a container."""
+        self.particles = move.particles^
+        self.physics = move.physics^
         self.config = PhysicsConfig(
-            gravity_x=take.config.gravity_x,
-            gravity_y=take.config.gravity_y,
-            dt=take.config.dt,
-            friction=take.config.friction,
-            restitution=take.config.restitution,
-            baumgarte=take.config.baumgarte,
-            slop=take.config.slop,
-            velocity_iterations=take.config.velocity_iterations,
-            position_iterations=take.config.position_iterations,
+            gravity_x=move.config.gravity_x,
+            gravity_y=move.config.gravity_y,
+            dt=move.config.dt,
+            friction=move.config.friction,
+            restitution=move.config.restitution,
+            baumgarte=move.config.baumgarte,
+            slop=move.config.slop,
+            velocity_iterations=move.config.velocity_iterations,
+            position_iterations=move.config.position_iterations,
         )
-        self.prev_shaping = take.prev_shaping
-        self.step_count = take.step_count
-        self.game_over = take.game_over
-        self.rng_seed = take.rng_seed
-        self.rng_counter = take.rng_counter
-        self.wind_idx = take.wind_idx
-        self.torque_idx = take.torque_idx
-        self.terrain_heights = take.terrain_heights^
-        self.edge_collision = EdgeTerrainCollision(1)
-        self.cached_state = take.cached_state
+        self.prev_shaping = move.prev_shaping
+        self.step_count = move.step_count
+        self.game_over = move.game_over
+        self.last_terminated = move.last_terminated
+        self.rng_seed = move.rng_seed
+        self.rng_counter = move.rng_counter
+        self.wind_idx = move.wind_idx
+        self.torque_idx = move.torque_idx
+        self.terrain_heights = move.terrain_heights^
+        self.edge_collision = move.edge_collision^
+        self.cached_state = move.cached_state
 
         # Transfer renderer ownership
-        self._renderer = take._renderer
-        self._renderer_initialized = take._renderer_initialized
-
-        # Initialize physics shapes (critical for physics to work!)
-        self._init_physics_shapes()
-        # Reset to initialize physics state properly
-        self._reset_cpu()
+        self._renderer = move._renderer
+        self._renderer_initialized = move._renderer_initialized
 
     # =========================================================================
     # CPU Single-Environment Methods
@@ -642,6 +620,7 @@ struct LunarLander[
         # Reset tracking
         self.step_count = 0
         self.game_over = False
+        self.last_terminated = False
         self.prev_shaping = self._compute_shaping()
 
         # Clear particles
@@ -1249,37 +1228,32 @@ struct LunarLander[
             s_power * LLConstants.SIDE_ENGINE_FUEL_COST
         )
 
-        var terminated = False
-
-        if x_norm >= Scalar[Self.dtype](1.0) or x_norm <= Scalar[Self.dtype](
-            -1.0
-        ):
-            terminated = True
-            reward = Scalar[Self.dtype](-100.0)
-
         var both_legs = left_contact > Scalar[Self.dtype](
             0.5
         ) and right_contact > Scalar[Self.dtype](0.5)
-
         var speed = sqrt(vx * vx + vy * vy)
-
-        # Crash: lander body touches ground (using collision detection system)
-        # This is the proper physics-based crash detection, matching the original
-        # LunarLanderEnv which uses _is_lander_contacting()
+        # Crash: lander body touches ground (physics-based crash detection).
         var lander_contact = self._has_lander_body_contact()
         if lander_contact:
-            terminated = True
             self.game_over = True
-            reward = Scalar[Self.dtype](-100.0)
 
-        # Successful landing: both legs down, nearly at rest
-        # Use strict thresholds matching the original LunarLanderEnv's sleep detection
-        # (SLEEP_LINEAR_THRESHOLD = 0.01, SLEEP_ANGULAR_THRESHOLD = 0.01)
-        var is_at_rest = speed < 0.01 and abs(omega) < 0.01 and both_legs
+        # Single-source terminal predicate + terminal reward overrides
+        # (shared with BOTH GPU step kernels — see helpers.mojo).
+        var tr = lunar_terminal_and_reward[Self.dtype](
+            Scalar[Self.dtype](x_norm),
+            lander_contact,
+            both_legs,
+            Scalar[Self.dtype](speed),
+            Scalar[Self.dtype](abs(omega)),
+            reward,
+        )
+        reward = tr[0]
+        var terminated = tr[1]
 
-        if is_at_rest:
-            terminated = True
-            reward = reward + Scalar[Self.dtype](100.0)
+        # Natural termination (crash/OOB/landed) recorded BEFORE folding in
+        # the time-limit cap, so `was_terminated()` distinguishes the two —
+        # the GPU kernels already report them separately via terminated_out.
+        self.last_terminated = terminated
 
         if self.step_count >= 1000:
             terminated = True
@@ -1289,6 +1263,14 @@ struct LunarLander[
     def get_state(self) -> Self.StateType:
         """Return current state representation (from cache)."""
         return self.cached_state
+
+    def was_terminated(self) -> Bool:
+        """True iff the previous step ended by natural termination
+        (crash/out-of-bounds/landed), False on the 1000-step truncation —
+        mirrors the GPU kernels' separate `terminated_out`. Without this
+        override the base default (always False) made drivers bootstrap
+        through real crashes on the CPU path."""
+        return self.last_terminated
 
     def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a list."""
@@ -1486,7 +1468,7 @@ struct LunarLander[
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.value().init_pointee_move(Renderer2D())
+        self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True
 
@@ -2687,13 +2669,9 @@ struct LunarLander[
         var done = Scalar[dtype](0.0)
         var is_terminated = Scalar[dtype](0.0)
 
-        # Out of bounds
-        if x_norm >= Scalar[dtype](1.0) or x_norm <= Scalar[dtype](-1.0):
-            done = Scalar[dtype](1.0)
-            is_terminated = Scalar[dtype](1.0)
-            reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
-
-        # Too high
+        # Too high — documented GPU-only deviation (no CPU counterpart);
+        # applied BEFORE the shared terminal eval so the crash-override
+        # order matches the historical kernel exactly.
         var h_units_max = Scalar[dtype](LLConstants.H_UNITS * 1.5)
         if y > h_units_max:
             done = Scalar[dtype](1.0)
@@ -2709,12 +2687,6 @@ struct LunarLander[
                 lander_contact = True
                 break
 
-        if lander_contact:
-            done = Scalar[dtype](1.0)
-            is_terminated = Scalar[dtype](1.0)
-            reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
-
-        # Successful landing
         var both_legs = left_contact > Scalar[dtype](
             0.5
         ) and right_contact > Scalar[dtype](0.5)
@@ -2722,22 +2694,27 @@ struct LunarLander[
         var abs_omega = omega
         if omega < Scalar[dtype](0.0):
             abs_omega = -omega
-        if (
-            both_legs
-            and speed_val < Scalar[dtype](0.01)
-            and abs_omega < Scalar[dtype](0.01)
-        ):
+
+        # Single-source terminal predicate + terminal reward overrides
+        # (shared with the CPU _compute_step_result — see helpers.mojo).
+        var tr = lunar_terminal_and_reward[dtype](
+            x_norm, lander_contact, both_legs, speed_val, abs_omega, reward
+        )
+        reward = tr[0]
+        if tr[1]:
             done = Scalar[dtype](1.0)
             is_terminated = Scalar[dtype](1.0)
-            reward = reward + Scalar[dtype](LLConstants.LAND_REWARD)
 
-        # Max steps (truncation only, not termination)
+        # Max steps (truncation only, not termination). `step_count` is the
+        # PRE-increment count (incremented below), so the 1000th step reads
+        # 999 — matches the CPU/Gymnasium 1000-step limit (the old
+        # `> 1000` check truncated at step 1002).
         var step_count = rebind[Scalar[dtype]](
             states[
                 env, LLConstants.METADATA_OFFSET + LLConstants.META_STEP_COUNT
             ]
         )
-        if step_count > Scalar[dtype](1000.0):
+        if step_count >= Scalar[dtype](999.0):
             done = Scalar[dtype](1.0)
 
         # Update metadata
@@ -3691,34 +3668,36 @@ struct LunarLander[
             env, LLConstants.METADATA_OFFSET + LLConstants.META_PREV_SHAPING
         ] = shaping
 
-        # Continuous fuel costs (proportional to throttle)
-        # Policy outputs actions in [-1, 1] via tanh, remap throttle to [0, 1]
+        # Continuous fuel costs — engine gating MUST match the force kernel
+        # (and Gymnasium/CPU): main engine OFF (zero fuel) when action[0] <= 0,
+        # else power = (a+1)/2 in [0.5, 1]; side engine OFF when
+        # |action[1]| <= 0.5, else power = |action[1]| in (0.5, 1]. The old
+        # code charged main fuel with the engine off ((raw+1)/2 even at
+        # raw <= 0) and used a different side-power curve ((|a|-0.5)*2).
         var raw_throttle = rebind[Scalar[dtype]](actions[env, 0])
         var side_control = rebind[Scalar[dtype]](actions[env, 1])
+        if raw_throttle < Scalar[dtype](-1.0):
+            raw_throttle = Scalar[dtype](-1.0)
+        if raw_throttle > Scalar[dtype](1.0):
+            raw_throttle = Scalar[dtype](1.0)
+        if side_control < Scalar[dtype](-1.0):
+            side_control = Scalar[dtype](-1.0)
+        if side_control > Scalar[dtype](1.0):
+            side_control = Scalar[dtype](1.0)
 
-        # Remap main throttle from [-1, 1] to [0, 1]: (x + 1) / 2
-        var main_throttle = (raw_throttle + Scalar[dtype](1.0)) * Scalar[dtype](
-            0.5
-        )
+        if raw_throttle > Scalar[dtype](0.0):
+            var m_power = (raw_throttle + Scalar[dtype](1.0)) * Scalar[dtype](
+                0.5
+            )
+            reward = reward - m_power * Scalar[dtype](
+                LLConstants.MAIN_ENGINE_FUEL_COST
+            )
 
-        # Clip for fuel calculation (safety clamp)
-        if main_throttle < Scalar[dtype](0.0):
-            main_throttle = Scalar[dtype](0.0)
-        if main_throttle > Scalar[dtype](1.0):
-            main_throttle = Scalar[dtype](1.0)
-
-        # Main engine fuel cost (proportional to throttle)
-        reward = reward - main_throttle * Scalar[dtype](
-            LLConstants.MAIN_ENGINE_FUEL_COST
-        )
-
-        # Side engine fuel cost (proportional to power used)
         var abs_side = side_control
         if abs_side < Scalar[dtype](0.0):
             abs_side = -abs_side
         if abs_side > Scalar[dtype](0.5):
-            var s_power = (abs_side - Scalar[dtype](0.5)) * Scalar[dtype](2.0)
-            reward = reward - s_power * Scalar[dtype](
+            reward = reward - abs_side * Scalar[dtype](
                 LLConstants.SIDE_ENGINE_FUEL_COST
             )
 
@@ -3726,13 +3705,9 @@ struct LunarLander[
         var done = Scalar[dtype](0.0)
         var is_terminated = Scalar[dtype](0.0)
 
-        # Out of bounds
-        if x_norm >= Scalar[dtype](1.0) or x_norm <= Scalar[dtype](-1.0):
-            done = Scalar[dtype](1.0)
-            is_terminated = Scalar[dtype](1.0)
-            reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
-
-        # Too high
+        # Too high — documented GPU-only deviation (no CPU counterpart);
+        # applied BEFORE the shared terminal eval so the crash-override
+        # order matches the historical kernel exactly.
         var h_units_max = Scalar[dtype](LLConstants.H_UNITS * 1.5)
         if y > h_units_max:
             done = Scalar[dtype](1.0)
@@ -3748,12 +3723,6 @@ struct LunarLander[
                 lander_contact = True
                 break
 
-        if lander_contact:
-            done = Scalar[dtype](1.0)
-            is_terminated = Scalar[dtype](1.0)
-            reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
-
-        # Successful landing
         var both_legs = left_contact > Scalar[dtype](
             0.5
         ) and right_contact > Scalar[dtype](0.5)
@@ -3761,22 +3730,27 @@ struct LunarLander[
         var abs_omega = omega
         if omega < Scalar[dtype](0.0):
             abs_omega = -omega
-        if (
-            both_legs
-            and speed_val < Scalar[dtype](0.01)
-            and abs_omega < Scalar[dtype](0.01)
-        ):
+
+        # Single-source terminal predicate + terminal reward overrides
+        # (shared with the CPU _compute_step_result — see helpers.mojo).
+        var tr = lunar_terminal_and_reward[dtype](
+            x_norm, lander_contact, both_legs, speed_val, abs_omega, reward
+        )
+        reward = tr[0]
+        if tr[1]:
             done = Scalar[dtype](1.0)
             is_terminated = Scalar[dtype](1.0)
-            reward = reward + Scalar[dtype](LLConstants.LAND_REWARD)
 
-        # Max steps (truncation only, not termination)
+        # Max steps (truncation only, not termination). `step_count` is the
+        # PRE-increment count (incremented below), so the 1000th step reads
+        # 999 — matches the CPU/Gymnasium 1000-step limit (the old
+        # `> 1000` check truncated at step 1002).
         var step_count = rebind[Scalar[dtype]](
             states[
                 env, LLConstants.METADATA_OFFSET + LLConstants.META_STEP_COUNT
             ]
         )
-        if step_count > Scalar[dtype](1000.0):
+        if step_count >= Scalar[dtype](999.0):
             done = Scalar[dtype](1.0)
 
         # Update metadata

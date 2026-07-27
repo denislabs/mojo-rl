@@ -27,6 +27,8 @@ Functionality to query the current SDL version, both as headers the app was
 compiled against, and a library the app is linked to.
 """
 
+from . import _get_dylib_function, c_char, c_int, lib, Ptr
+
 
 def get_version() raises -> c_int:
     """Get the version of SDL that is linked against your program.

@@ -3,7 +3,6 @@
 This implementation uses the new modular physics components:
 - BipedalWalkerLayout for compile-time layout computation
 - PhysicsEnvHelpers for environment setup utilities
-- PhysicsKernel for unified physics step orchestration
 - Lidar for terrain sensing
 
 The flat state layout is compatible with GPUContinuousEnv trait.
@@ -92,7 +91,6 @@ from mojo_rl.physics2d import (
     CONTACT_DEPTH,
     BipedalWalkerLayout,
     PhysicsEnvHelpers,
-    PhysicsKernel,
     PhysicsConfig,
 )
 
@@ -161,6 +159,9 @@ struct BipedalWalker[
     var prev_shaping: Scalar[Self.dtype]
     var step_count: Int
     var game_over: Bool
+    # Natural-termination flag for the LAST step (crawl/crash/OOB/success),
+    # False on the time-limit truncation — read by `was_terminated()`.
+    var last_terminated: Bool
     var scroll: Scalar[Self.dtype]
     var rng_seed: UInt64
     var rng_counter: UInt64
@@ -221,6 +222,7 @@ struct BipedalWalker[
         self.prev_shaping = Scalar[Self.dtype](0)
         self.step_count = 0
         self.game_over = False
+        self.last_terminated = False
         self.scroll = Scalar[Self.dtype](0)
         self.rng_seed = seed
         self.rng_counter = 0
@@ -278,6 +280,7 @@ struct BipedalWalker[
         self.prev_shaping = copy.prev_shaping
         self.step_count = copy.step_count
         self.game_over = copy.game_over
+        self.last_terminated = copy.last_terminated
         self.scroll = copy.scroll
         self.rng_seed = copy.rng_seed
         self.rng_counter = copy.rng_counter
@@ -293,7 +296,7 @@ struct BipedalWalker[
         self._init_physics_shapes()
         self._reset_cpu()
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         """Move constructor."""
         self.physics = PhysicsStateOwned[
             BWConstants.NUM_BODIES,
@@ -309,31 +312,32 @@ struct BipedalWalker[
             BWConstants.EDGE_COUNT_OFFSET,
         ]()
         self.config = PhysicsConfig(
-            gravity_x=take.config.gravity_x,
-            gravity_y=take.config.gravity_y,
-            dt=take.config.dt,
-            friction=take.config.friction,
-            restitution=take.config.restitution,
-            baumgarte=take.config.baumgarte,
-            slop=take.config.slop,
-            velocity_iterations=take.config.velocity_iterations,
-            position_iterations=take.config.position_iterations,
+            gravity_x=move.config.gravity_x,
+            gravity_y=move.config.gravity_y,
+            dt=move.config.dt,
+            friction=move.config.friction,
+            restitution=move.config.restitution,
+            baumgarte=move.config.baumgarte,
+            slop=move.config.slop,
+            velocity_iterations=move.config.velocity_iterations,
+            position_iterations=move.config.position_iterations,
         )
-        self.prev_shaping = take.prev_shaping
-        self.step_count = take.step_count
-        self.game_over = take.game_over
-        self.scroll = take.scroll
-        self.rng_seed = take.rng_seed
-        self.rng_counter = take.rng_counter
-        self.left_leg_contact = take.left_leg_contact
-        self.right_leg_contact = take.right_leg_contact
-        self.terrain_x = take.terrain_x^
-        self.terrain_y = take.terrain_y^
+        self.prev_shaping = move.prev_shaping
+        self.step_count = move.step_count
+        self.game_over = move.game_over
+        self.last_terminated = move.last_terminated
+        self.scroll = move.scroll
+        self.rng_seed = move.rng_seed
+        self.rng_counter = move.rng_counter
+        self.left_leg_contact = move.left_leg_contact
+        self.right_leg_contact = move.right_leg_contact
+        self.terrain_x = move.terrain_x^
+        self.terrain_y = move.terrain_y^
         self.edge_collision = EdgeTerrainCollision(1)
-        self.cached_state = take.cached_state
+        self.cached_state = move.cached_state
         # Transfer renderer ownership
-        self._renderer = take._renderer
-        self._renderer_initialized = take._renderer_initialized
+        self._renderer = move._renderer
+        self._renderer_initialized = move._renderer_initialized
         self._init_physics_shapes()
         self._reset_cpu()
 
@@ -409,6 +413,7 @@ struct BipedalWalker[
         # Reset state
         self.step_count = 0
         self.game_over = False
+        self.last_terminated = False
         self.scroll = Scalar[Self.dtype](0)
         self.left_leg_contact = False
         self.right_leg_contact = False
@@ -1127,6 +1132,11 @@ struct BipedalWalker[
         if hull_x > terrain_end:
             terminated = True
 
+        # Natural termination recorded BEFORE folding in the time limit,
+        # so `was_terminated()` distinguishes the two — the GPU kernel
+        # already reports them separately via its terminated buffer.
+        self.last_terminated = terminated
+
         # Time limit
         if self.step_count >= 2000:
             terminated = True
@@ -1136,6 +1146,13 @@ struct BipedalWalker[
     def get_state(self) -> Self.StateType:
         """Return current state representation."""
         return self.cached_state
+
+    def was_terminated(self) -> Bool:
+        """True iff the previous step ended by natural termination
+        (crawl/crash/out-of-bounds/success), False on the 2000-step
+        truncation. Without this override the base default (always False)
+        made drivers bootstrap through real crashes on the CPU path."""
+        return self.last_terminated
 
     def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current observation as a list."""
@@ -1225,7 +1242,7 @@ struct BipedalWalker[
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
-        self._renderer.value().init_pointee_move(Renderer2D())
+        self._renderer.value().unsafe_write(Renderer2D())
         self._renderer_initialized = True
         return True
 

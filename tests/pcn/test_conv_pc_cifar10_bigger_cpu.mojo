@@ -25,6 +25,7 @@ from std.math import sqrt
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as dtype
+from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
 from mojo_rl.nn.datasets.cifar10 import CIFAR10
@@ -90,29 +91,29 @@ def main() raises:
     var ds = CIFAR10()
     print("  PARAM_SIZE=", NET.PARAM_SIZE, " LATENT_DIM=", NET.LATENT_DIM)
 
-    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
+    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
+    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
     memset(params_buf, 0, NET.PARAM_SIZE)
     memset(grads_buf, 0, NET.PARAM_SIZE)
     var params = LayoutTensor[dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin](params_buf)
     var grads = LayoutTensor[dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin](grads_buf)
     NET.pc_init_params[PCXavier, dtype](params)
 
-    var opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
-    var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
+    var opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT.STATE_PER_PARAM).as_unsafe_any_origin()
+    var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE).as_unsafe_any_origin()
     memset(opt_state_buf, 0, NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
     memset(opt_global_buf, 0, OPT.GLOBAL_STATE_SIZE)
     var opt_state = LayoutTensor[dtype, Layout.row_major(NET.PARAM_SIZE, OPT.STATE_PER_PARAM), MutAnyOrigin](opt_state_buf)
     var opt_global = LayoutTensor[dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin](opt_global_buf)
 
-    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
-    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM)
-    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
-    var eval_out_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM)
-    var x_buf = alloc[Scalar[dtype]](BATCH * IN)
-    var y_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM)
+    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM).as_unsafe_any_origin()
+    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var eval_out_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM).as_unsafe_any_origin()
+    var x_buf = alloc[Scalar[dtype]](BATCH * IN).as_unsafe_any_origin()
+    var y_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM).as_unsafe_any_origin()
     memset(lat_buf, 0, BATCH * NET.LATENT_DIM)
     memset(mu_eps_buf_raw, 0, BATCH * NET.SCRATCH_OUT_DIM)
     memset(a_below_buf_raw, 0, BATCH * NET.SCRATCH_IN_DIM)
@@ -143,7 +144,7 @@ def main() raises:
                 var sidx = batch_idx * BATCH + i
                 var do_flip = ((sidx * 2654435761 + epoch * 40503) >> 13) & 1
                 if do_flip == 1:
-                    _flip_into(ds.train_images.unsafe_ptr() + sidx * IN, x_buf + i * IN)
+                    _flip_into(mptr(ds.train_images).unsafe_offset(sidx * IN), x_buf + i * IN)
                 else:
                     for j in range(IN):
                         x_buf[i * IN + j] = ds.train_images[sidx * IN + j]

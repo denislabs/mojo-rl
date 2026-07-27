@@ -1,25 +1,22 @@
-"""Contact detection for physics engine.
+"""Contact detection over per-field tensors (migration P2, single-source).
 
-Provides unified geom-based contact detection and quaternion normalization.
-"""
+Per-field port of `_geom_world_pos_gpu` + `detect_contacts_gpu`
+(collision/contact_detection.mojo) — arithmetic verbatim. Reads FK products
+(`d.xpos`, `d.xquat`) + geom/body records + model meta + exclude pairs;
+writes packed contact records into `d.contacts` and the contact count into
+`d.meta` (META_IDX_NUM_CONTACTS).
 
-from std.math import sqrt
-from layout import LayoutTensor, Layout
-from ..types import (
-    Model,
-    Data,
-    ConeType,
-)
-from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
+Operands (10): xpos, xquat (data) + geoms, bodies, mmeta, excludes,
+mesh_meta, mesh_verts (model) + contacts, smeta (data outputs). Mesh
+collision (plane-mesh vertex scans + GJK/EPA fallback via gjk) is
+compiled in only when NMESH_VERTS > 0; zero-mesh models keep today's
+branch structure (mesh branches degrade to `continue`)."""
 
-from ..kinematics.quat_math import (
-    quat_normalize,
-    quat_rotate,
-    quat_mul,
-    gpu_quat_rotate,
-    gpu_quat_normalize,
-    gpu_quat_mul,
-)
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
+
+from ..kinematics.quat_math import gpu_quat_rotate, gpu_quat_mul
 from ..constants import (
     GEOM_SPHERE,
     GEOM_CAPSULE,
@@ -28,12 +25,16 @@ from ..constants import (
     GEOM_CYLINDER,
     GEOM_MESH,
 )
-from .gjk import gjk_epa
+from ..fields import Data, Model
 from ..gpu.constants import (
+    MODEL_BODY_SIZE,
+    MODEL_GEOM_SIZE,
+    MODEL_META_SIZE,
+    METADATA_SIZE,
+    MODEL_META_IDX_NEXCLUDE,
     BODY_IDX_PARENT,
     BODY_IDX_WELDID,
-    MODEL_META_IDX_NEXCLUDE,
-    model_exclude_offset,
+    META_IDX_NUM_CONTACTS,
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
     CONTACT_IDX_BODY_B,
@@ -52,11 +53,6 @@ from ..gpu.constants import (
     CONTACT_IDX_FRAME_T1_X,
     CONTACT_IDX_FRAME_T1_Y,
     CONTACT_IDX_FRAME_T1_Z,
-    JOINT_IDX_TYPE,
-    JOINT_IDX_QPOS_ADR,
-    META_IDX_NUM_CONTACTS,
-    MODEL_META_IDX_NJOINT,
-    MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
     GEOM_IDX_BODY,
     GEOM_IDX_POS_X,
@@ -79,17 +75,11 @@ from ..gpu.constants import (
     GEOM_IDX_FRICTION_ROLL,
     GEOM_IDX_RBOUND,
     GEOM_IDX_MARGIN,
-    model_body_offset,
-    model_joint_offset,
-    model_geom_offset,
-    model_metadata_offset,
-    qpos_offset,
-    xpos_offset,
-    xquat_offset,
-    contacts_offset,
-    metadata_offset,
+    GEOM_IDX_MESH_ID,
+    MAX_GPU_MESHES,
+    MODEL_MESH_META_SIZE,
 )
-from ..collision.collision_primitives import (
+from .collision_primitives import (
     sphere_sphere,
     capsule_sphere,
     capsule_capsule,
@@ -103,1159 +93,29 @@ from ..collision.collision_primitives import (
     cylinder_cylinder,
     cylinder_box,
 )
+from .gjk import gjk_epa
 
-
-def normalize_qpos_quaternions[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    MAX_EQUALITY: Int = 0,
-    CONE_TYPE: Int = ConeType.ELLIPTIC,
-    MAX_TENDON: Int = 0,
-    NSITE: Int = 0,
-](
-    model: Model[
-        DTYPE,
-        NQ,
-        NV,
-        NBODY,
-        NJOINT,
-        MAX_CONTACTS,
-        NGEOM,
-        MAX_EQUALITY,
-        CONE_TYPE,
-        MAX_TENDON,
-        NSITE,
-    ],
-    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-):
-    """Normalize quaternions in qpos for BALL and FREE joints."""
-    for j in range(model.num_joints):
-        var joint = model.joints[j]
-        var qpos_adr = joint.qpos_adr
-
-        if joint.jnt_type == JNT_FREE:
-            var qx = data.qpos[qpos_adr + 3]
-            var qy = data.qpos[qpos_adr + 4]
-            var qz = data.qpos[qpos_adr + 5]
-            var qw = data.qpos[qpos_adr + 6]
-
-            var normalized = quat_normalize(qx, qy, qz, qw)
-            data.qpos[qpos_adr + 3] = normalized[0]
-            data.qpos[qpos_adr + 4] = normalized[1]
-            data.qpos[qpos_adr + 5] = normalized[2]
-            data.qpos[qpos_adr + 6] = normalized[3]
-
-        elif joint.jnt_type == JNT_BALL:
-            var qx = data.qpos[qpos_adr + 0]
-            var qy = data.qpos[qpos_adr + 1]
-            var qz = data.qpos[qpos_adr + 2]
-            var qw = data.qpos[qpos_adr + 3]
-
-            var normalized = quat_normalize(qx, qy, qz, qw)
-            data.qpos[qpos_adr + 0] = normalized[0]
-            data.qpos[qpos_adr + 1] = normalized[1]
-            data.qpos[qpos_adr + 2] = normalized[2]
-            data.qpos[qpos_adr + 3] = normalized[3]
+comptime CD_TPB: Int = 64
 
 
 @always_inline
-def normalize_qpos_quaternions_gpu[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    STATE_SIZE: Int,
-    MODEL_SIZE: Int,
-    BATCH: Int,
-](
-    env: Int,
-    state: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-    ],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
-):
-    """Normalize quaternions in qpos for BALL and FREE joints."""
-    var qpos_off = qpos_offset[NQ, NV]()
-
-    var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
-    var num_joints = Int(
-        rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT])
-    )
-
-    for j in range(num_joints):
-        var joint_off = model_joint_offset[NBODY](j)
-        var jnt_type = Int(
-            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
-        )
-        var qpos_adr = Int(
-            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_QPOS_ADR])
-        )
-
-        if jnt_type == JNT_FREE:
-            var qx = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 3])
-            var qy = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 4])
-            var qz = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 5])
-            var qw = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 6])
-
-            var normalized = gpu_quat_normalize(qx, qy, qz, qw)
-            state[env, qpos_off + qpos_adr + 3] = normalized[0]
-            state[env, qpos_off + qpos_adr + 4] = normalized[1]
-            state[env, qpos_off + qpos_adr + 5] = normalized[2]
-            state[env, qpos_off + qpos_adr + 6] = normalized[3]
-
-        elif jnt_type == JNT_BALL:
-            var qx = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 0])
-            var qy = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 1])
-            var qz = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 2])
-            var qw = rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr + 3])
-
-            var normalized = gpu_quat_normalize(qx, qy, qz, qw)
-            state[env, qpos_off + qpos_adr + 0] = normalized[0]
-            state[env, qpos_off + qpos_adr + 1] = normalized[1]
-            state[env, qpos_off + qpos_adr + 2] = normalized[2]
-            state[env, qpos_off + qpos_adr + 3] = normalized[3]
-
-
-# =============================================================================
-# Unified Contact Detection (CPU)
-# =============================================================================
-
-
 def _geom_world_pos[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
     NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
     NGEOM: Int,
-    MAX_EQUALITY: Int = 0,
-    CONE_TYPE: Int = ConeType.ELLIPTIC,
-    MAX_TENDON: Int = 0,
-    NSITE: Int = 0,
-](
-    model: Model[
-        DTYPE,
-        NQ,
-        NV,
-        NBODY,
-        NJOINT,
-        MAX_CONTACTS,
-        NGEOM,
-        MAX_EQUALITY,
-        CONE_TYPE,
-        MAX_TENDON,
-        NSITE,
-    ],
-    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-    g: Int,
-) -> Tuple[
-    Scalar[DTYPE],
-    Scalar[DTYPE],
-    Scalar[DTYPE],
-    Scalar[DTYPE],
-    Scalar[DTYPE],
-    Scalar[DTYPE],
-    Scalar[DTYPE],
-]:
-    """Compute world position and orientation for geom g."""
-    var body_idx = model.geom_body[g]
-    var lx = model.geom_pos[g * 3 + 0]
-    var ly = model.geom_pos[g * 3 + 1]
-    var lz = model.geom_pos[g * 3 + 2]
-    var lqx = model.geom_quat[g * 4 + 0]
-    var lqy = model.geom_quat[g * 4 + 1]
-    var lqz = model.geom_quat[g * 4 + 2]
-    var lqw = model.geom_quat[g * 4 + 3]
-
-    if body_idx == 0:
-        return (lx, ly, lz, lqx, lqy, lqz, lqw)
-
-    var bpx = data.xpos[body_idx * 3 + 0]
-    var bpy = data.xpos[body_idx * 3 + 1]
-    var bpz = data.xpos[body_idx * 3 + 2]
-    var bqx = data.xquat[body_idx * 4 + 0]
-    var bqy = data.xquat[body_idx * 4 + 1]
-    var bqz = data.xquat[body_idx * 4 + 2]
-    var bqw = data.xquat[body_idx * 4 + 3]
-
-    var is_identity = (
-        lx == Scalar[DTYPE](0)
-        and ly == Scalar[DTYPE](0)
-        and lz == Scalar[DTYPE](0)
-        and lqx == Scalar[DTYPE](0)
-        and lqy == Scalar[DTYPE](0)
-        and lqz == Scalar[DTYPE](0)
-        and lqw == Scalar[DTYPE](1)
-    )
-    if is_identity:
-        return (bpx, bpy, bpz, bqx, bqy, bqz, bqw)
-
-    var rotated = quat_rotate(bqx, bqy, bqz, bqw, lx, ly, lz)
-    var wpx = bpx + rotated[0]
-    var wpy = bpy + rotated[1]
-    var wpz = bpz + rotated[2]
-    var wq = quat_mul(bqx, bqy, bqz, bqw, lqx, lqy, lqz, lqw)
-    return (wpx, wpy, wpz, wq[0], wq[1], wq[2], wq[3])
-
-
-def detect_contacts[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int,
-    MAX_EQUALITY: Int = 0,
-    CONE_TYPE: Int = ConeType.ELLIPTIC,
-    MAX_TENDON: Int = 0,
-    NSITE: Int = 0,
-](
-    model: Model[
-        DTYPE,
-        NQ,
-        NV,
-        NBODY,
-        NJOINT,
-        MAX_CONTACTS,
-        NGEOM,
-        MAX_EQUALITY,
-        CONE_TYPE,
-        MAX_TENDON,
-        NSITE,
-    ],
-    mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-):
-    """Unified contact detection using geom arrays."""
-    data.num_contacts = 0
-    for gi in range(NGEOM):
-        var gi_type = model.geom_type[gi]
-        var gi_body = model.geom_body[gi]
-        var gi_contype = model.geom_contype[gi]
-        var gi_conaffinity = model.geom_conaffinity[gi]
-        for gj in range(gi + 1, NGEOM):
-            if data.num_contacts >= MAX_CONTACTS:
-                return
-            var gj_type = model.geom_type[gj]
-            var gj_body = model.geom_body[gj]
-            if gi_type == GEOM_PLANE and gj_body == 0:
-                continue
-            if gj_type == GEOM_PLANE and gi_body == 0:
-                continue
-            # MuJoCo-style body pair filtering using weld bodies
-            var weld_i = model.body_weldid[gi_body]
-            var weld_j = model.body_weldid[gj_body]
-            # Same weld body → filter (same rigid subassembly)
-            if weld_i == weld_j:
-                continue
-            # Weld parent check: filter direct parent-child in weld hierarchy
-            if weld_i != 0 and weld_j != 0:
-                var weld_parent_i = model.body_weldid[
-                    model.body_parent[weld_i]
-                ]
-                var weld_parent_j = model.body_weldid[
-                    model.body_parent[weld_j]
-                ]
-                if weld_i == weld_parent_j or weld_j == weld_parent_i:
-                    continue
-                # Check contact exclusion pairs
-                var excluded = False
-                var ba = gi_body if gi_body <= gj_body else gj_body
-                var bb = gj_body if gi_body <= gj_body else gi_body
-                for ex in range(model.num_excludes):
-                    if (
-                        model.exclude_body1[ex] == ba
-                        and model.exclude_body2[ex] == bb
-                    ):
-                        excluded = True
-                        break
-                if excluded:
-                    continue
-            var gj_contype = model.geom_contype[gj]
-            var gj_conaffinity = model.geom_conaffinity[gj]
-            if (gi_contype & gj_conaffinity) == 0 and (
-                gj_contype & gi_conaffinity
-            ) == 0:
-                continue
-
-            var wi = _geom_world_pos(model, data, gi)
-            var wj = _geom_world_pos(model, data, gj)
-            var pi_x = wi[0]
-            var pi_y = wi[1]
-            var pi_z = wi[2]
-            var qi_x = wi[3]
-            var qi_y = wi[4]
-            var qi_z = wi[5]
-            var qi_w = wi[6]
-            var pj_x = wj[0]
-            var pj_y = wj[1]
-            var pj_z = wj[2]
-            var qj_x = wj[3]
-            var qj_y = wj[4]
-            var qj_z = wj[5]
-            var qj_w = wj[6]
-
-            # Broadphase bounding sphere check (skip for plane geoms — they're infinite)
-            if gi_type != GEOM_PLANE and gj_type != GEOM_PLANE:
-                var dx = pi_x - pj_x
-                var dy = pi_y - pj_y
-                var dz = pi_z - pj_z
-                var dist_sq = dx * dx + dy * dy + dz * dz
-                var bound = model.geom_rbound[gi] + model.geom_rbound[gj]
-                if dist_sq > bound * bound:
-                    continue
-
-            var ri = model.geom_radius[gi]
-            var rj = model.geom_radius[gj]
-            var hli = model.geom_half_length[gi]
-            var hlj = model.geom_half_length[gj]
-            var hxi = model.geom_half_x[gi]
-            var hyi = model.geom_half_y[gi]
-            var hzi = model.geom_half_z[gi]
-            var hxj = model.geom_half_x[gj]
-            var hyj = model.geom_half_y[gj]
-            var hzj = model.geom_half_z[gj]
-            # Friction combination: max per element (MuJoCo convention)
-            var contact_friction = model.geom_friction[gi]
-            if model.geom_friction[gj] > contact_friction:
-                contact_friction = model.geom_friction[gj]
-            var contact_friction_spin = model.geom_friction_spin[gi]
-            if model.geom_friction_spin[gj] > contact_friction_spin:
-                contact_friction_spin = model.geom_friction_spin[gj]
-            var contact_friction_roll = model.geom_friction_roll[gi]
-            if model.geom_friction_roll[gj] > contact_friction_roll:
-                contact_friction_roll = model.geom_friction_roll[gj]
-            # Condim: max of both geoms
-            var contact_condim = model.geom_condim[gi]
-            if model.geom_condim[gj] > contact_condim:
-                contact_condim = model.geom_condim[gj]
-            # Contact margin: sum of both geoms (MuJoCo 3.5+ convention)
-            var contact_margin = model.geom_margin[gi] + model.geom_margin[gj]
-
-            # --- Plane vs body-attached geom ---
-            if gi_type == GEOM_PLANE:
-                var ground_z = pi_z
-                if gj_type == GEOM_CAPSULE:
-                    # MuJoCo mjc_PlaneCapsule: test BOTH endpoints, up to 2 contacts
-                    var axis_w = quat_rotate(
-                        qj_x,
-                        qj_y,
-                        qj_z,
-                        qj_w,
-                        Scalar[DTYPE](0),
-                        Scalar[DTYPE](0),
-                        Scalar[DTYPE](1),
-                    )
-                    # Endpoint 1: center + half_length * axis
-                    var e1_x = pj_x + hlj * axis_w[0]
-                    var e1_y = pj_y + hlj * axis_w[1]
-                    var e1_z = pj_z + hlj * axis_w[2]
-                    var dist1 = e1_z - rj - ground_z
-                    if (
-                        dist1 < contact_margin
-                        and data.num_contacts < MAX_CONTACTS
-                    ):
-                        var idx = data.num_contacts
-                        data.contacts[idx].body_a = gj_body
-                        data.contacts[idx].body_b = 0
-                        data.contacts[idx].pos_x = e1_x
-                        data.contacts[idx].pos_y = e1_y
-                        data.contacts[idx].pos_z = ground_z + dist1 * Scalar[
-                            DTYPE
-                        ](0.5)
-                        data.contacts[idx].normal_x = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_y = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist1
-                        data.contacts[idx].includemargin = contact_margin
-                        data.contacts[idx].friction = contact_friction
-                        data.contacts[idx].friction_spin = contact_friction_spin
-                        data.contacts[idx].friction_roll = contact_friction_roll
-                        data.contacts[idx].condim = contact_condim
-                        data.contacts[idx].frame_t1_x = axis_w[0]
-                        data.contacts[idx].frame_t1_y = axis_w[1]
-                        data.contacts[idx].frame_t1_z = axis_w[2]
-                        data.num_contacts += 1
-                    # Endpoint 2: center - half_length * axis
-                    var e2_x = pj_x - hlj * axis_w[0]
-                    var e2_y = pj_y - hlj * axis_w[1]
-                    var e2_z = pj_z - hlj * axis_w[2]
-                    var dist2 = e2_z - rj - ground_z
-                    if (
-                        dist2 < contact_margin
-                        and data.num_contacts < MAX_CONTACTS
-                    ):
-                        var idx = data.num_contacts
-                        data.contacts[idx].body_a = gj_body
-                        data.contacts[idx].body_b = 0
-                        data.contacts[idx].pos_x = e2_x
-                        data.contacts[idx].pos_y = e2_y
-                        data.contacts[idx].pos_z = ground_z + dist2 * Scalar[
-                            DTYPE
-                        ](0.5)
-                        data.contacts[idx].normal_x = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_y = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist2
-                        data.contacts[idx].includemargin = contact_margin
-                        data.contacts[idx].friction = contact_friction
-                        data.contacts[idx].friction_spin = contact_friction_spin
-                        data.contacts[idx].friction_roll = contact_friction_roll
-                        data.contacts[idx].condim = contact_condim
-                        data.contacts[idx].frame_t1_x = axis_w[0]
-                        data.contacts[idx].frame_t1_y = axis_w[1]
-                        data.contacts[idx].frame_t1_z = axis_w[2]
-                        data.num_contacts += 1
-                elif gj_type == GEOM_CYLINDER:
-                    # Cylinder-plane: single contact at lowest rim point
-                    var cp = cylinder_plane[DTYPE](
-                        pj_x,
-                        pj_y,
-                        pj_z,
-                        qj_x,
-                        qj_y,
-                        qj_z,
-                        qj_w,
-                        hlj,
-                        rj,
-                        ground_z,
-                    )
-                    var dist = cp[0]
-                    if (
-                        dist < contact_margin
-                        and data.num_contacts < MAX_CONTACTS
-                    ):
-                        var idx = data.num_contacts
-                        data.contacts[idx].body_a = gj_body
-                        data.contacts[idx].body_b = 0
-                        data.contacts[idx].pos_x = cp[1]
-                        data.contacts[idx].pos_y = cp[2]
-                        data.contacts[idx].pos_z = cp[3]
-                        data.contacts[idx].normal_x = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_y = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist
-                        data.contacts[idx].includemargin = contact_margin
-                        data.contacts[idx].friction = contact_friction
-                        data.contacts[idx].friction_spin = contact_friction_spin
-                        data.contacts[idx].friction_roll = contact_friction_roll
-                        data.contacts[idx].condim = contact_condim
-                        data.num_contacts += 1
-                elif gj_type == GEOM_SPHERE:
-                    var dist = pj_z - rj - ground_z
-                    if (
-                        dist < contact_margin
-                        and data.num_contacts < MAX_CONTACTS
-                    ):
-                        var idx = data.num_contacts
-                        data.contacts[idx].body_a = gj_body
-                        data.contacts[idx].body_b = 0
-                        data.contacts[idx].pos_x = pj_x
-                        data.contacts[idx].pos_y = pj_y
-                        data.contacts[idx].pos_z = ground_z + dist * Scalar[
-                            DTYPE
-                        ](0.5)
-                        data.contacts[idx].normal_x = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_y = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist
-                        data.contacts[idx].includemargin = contact_margin
-                        data.contacts[idx].friction = contact_friction
-                        data.contacts[idx].friction_spin = contact_friction_spin
-                        data.contacts[idx].friction_roll = contact_friction_roll
-                        data.contacts[idx].condim = contact_condim
-                        data.num_contacts += 1
-                elif gj_type == GEOM_BOX:
-                    var bp = box_plane[DTYPE](
-                        pj_x, pj_y, pj_z,
-                        qj_x, qj_y, qj_z, qj_w,
-                        hxj, hyj, hzj,
-                        ground_z)
-                    var dist = bp[0]
-                    if dist < contact_margin and data.num_contacts < MAX_CONTACTS:
-                        var idx = data.num_contacts
-                        data.contacts[idx].body_a = gj_body
-                        data.contacts[idx].body_b = 0
-                        data.contacts[idx].pos_x = bp[1]
-                        data.contacts[idx].pos_y = bp[2]
-                        data.contacts[idx].pos_z = bp[3]
-                        data.contacts[idx].normal_x = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_y = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist
-                        data.contacts[idx].includemargin = contact_margin
-                        data.contacts[idx].friction = contact_friction
-                        data.contacts[idx].friction_spin = contact_friction_spin
-                        data.contacts[idx].friction_roll = contact_friction_roll
-                        data.contacts[idx].condim = contact_condim
-                        data.num_contacts += 1
-                elif gj_type == GEOM_MESH and model.geom_mesh_id[gj] >= 0:
-                    # Plane-mesh: scan hull vertices, generate contacts for those below plane
-                    var mesh_id = model.geom_mesh_id[gj]
-                    var vadr = model.mesh_vertadr[mesh_id]
-                    var vnum = model.mesh_vertnum[mesh_id]
-                    for vi in range(vnum):
-                        if data.num_contacts >= MAX_CONTACTS:
-                            break
-                        var off = vadr + vi * 3
-                        # Transform vertex to world frame
-                        var local_pt = quat_rotate(
-                            qj_x, qj_y, qj_z, qj_w,
-                            model.mesh_vert[off],
-                            model.mesh_vert[off + 1],
-                            model.mesh_vert[off + 2])
-                        var wx = pj_x + local_pt[0]
-                        var wy = pj_y + local_pt[1]
-                        var wz = pj_z + local_pt[2]
-                        var dist_v = wz - ground_z
-                        if dist_v < contact_margin:
-                            var idx = data.num_contacts
-                            data.contacts[idx].body_a = gj_body
-                            data.contacts[idx].body_b = 0
-                            data.contacts[idx].pos_x = wx
-                            data.contacts[idx].pos_y = wy
-                            data.contacts[idx].pos_z = ground_z + dist_v * Scalar[DTYPE](0.5)
-                            data.contacts[idx].normal_x = Scalar[DTYPE](0)
-                            data.contacts[idx].normal_y = Scalar[DTYPE](0)
-                            data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                            data.contacts[idx].dist = dist_v
-                            data.contacts[idx].includemargin = contact_margin
-                            data.contacts[idx].friction = contact_friction
-                            data.contacts[idx].friction_spin = contact_friction_spin
-                            data.contacts[idx].friction_roll = contact_friction_roll
-                            data.contacts[idx].condim = contact_condim
-                            data.num_contacts += 1
-                continue
-
-            if gj_type == GEOM_PLANE:
-                var ground_z = pj_z
-                if gi_type == GEOM_CAPSULE:
-                    # MuJoCo mjc_PlaneCapsule: test BOTH endpoints, up to 2 contacts
-                    var axis_w = quat_rotate(
-                        qi_x,
-                        qi_y,
-                        qi_z,
-                        qi_w,
-                        Scalar[DTYPE](0),
-                        Scalar[DTYPE](0),
-                        Scalar[DTYPE](1),
-                    )
-                    # Endpoint 1
-                    var e1_x = pi_x + hli * axis_w[0]
-                    var e1_y = pi_y + hli * axis_w[1]
-                    var e1_z = pi_z + hli * axis_w[2]
-                    var dist1 = e1_z - ri - ground_z
-                    if (
-                        dist1 < contact_margin
-                        and data.num_contacts < MAX_CONTACTS
-                    ):
-                        var idx = data.num_contacts
-                        data.contacts[idx].body_a = gi_body
-                        data.contacts[idx].body_b = 0
-                        data.contacts[idx].pos_x = e1_x
-                        data.contacts[idx].pos_y = e1_y
-                        data.contacts[idx].pos_z = ground_z + dist1 * Scalar[
-                            DTYPE
-                        ](0.5)
-                        data.contacts[idx].normal_x = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_y = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist1
-                        data.contacts[idx].includemargin = contact_margin
-                        data.contacts[idx].friction = contact_friction
-                        data.contacts[idx].friction_spin = contact_friction_spin
-                        data.contacts[idx].friction_roll = contact_friction_roll
-                        data.contacts[idx].condim = contact_condim
-                        data.contacts[idx].frame_t1_x = axis_w[0]
-                        data.contacts[idx].frame_t1_y = axis_w[1]
-                        data.contacts[idx].frame_t1_z = axis_w[2]
-                        data.num_contacts += 1
-                    # Endpoint 2
-                    var e2_x = pi_x - hli * axis_w[0]
-                    var e2_y = pi_y - hli * axis_w[1]
-                    var e2_z = pi_z - hli * axis_w[2]
-                    var dist2 = e2_z - ri - ground_z
-                    if (
-                        dist2 < contact_margin
-                        and data.num_contacts < MAX_CONTACTS
-                    ):
-                        var idx = data.num_contacts
-                        data.contacts[idx].body_a = gi_body
-                        data.contacts[idx].body_b = 0
-                        data.contacts[idx].pos_x = e2_x
-                        data.contacts[idx].pos_y = e2_y
-                        data.contacts[idx].pos_z = ground_z + dist2 * Scalar[
-                            DTYPE
-                        ](0.5)
-                        data.contacts[idx].normal_x = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_y = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist2
-                        data.contacts[idx].includemargin = contact_margin
-                        data.contacts[idx].friction = contact_friction
-                        data.contacts[idx].friction_spin = contact_friction_spin
-                        data.contacts[idx].friction_roll = contact_friction_roll
-                        data.contacts[idx].condim = contact_condim
-                        data.contacts[idx].frame_t1_x = axis_w[0]
-                        data.contacts[idx].frame_t1_y = axis_w[1]
-                        data.contacts[idx].frame_t1_z = axis_w[2]
-                        data.num_contacts += 1
-                elif gi_type == GEOM_CYLINDER:
-                    # Cylinder-plane: single contact at lowest rim point
-                    var cp = cylinder_plane[DTYPE](
-                        pi_x,
-                        pi_y,
-                        pi_z,
-                        qi_x,
-                        qi_y,
-                        qi_z,
-                        qi_w,
-                        hli,
-                        ri,
-                        ground_z,
-                    )
-                    var dist = cp[0]
-                    if (
-                        dist < contact_margin
-                        and data.num_contacts < MAX_CONTACTS
-                    ):
-                        var idx = data.num_contacts
-                        data.contacts[idx].body_a = gi_body
-                        data.contacts[idx].body_b = 0
-                        data.contacts[idx].pos_x = cp[1]
-                        data.contacts[idx].pos_y = cp[2]
-                        data.contacts[idx].pos_z = cp[3]
-                        data.contacts[idx].normal_x = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_y = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist
-                        data.contacts[idx].includemargin = contact_margin
-                        data.contacts[idx].friction = contact_friction
-                        data.contacts[idx].friction_spin = contact_friction_spin
-                        data.contacts[idx].friction_roll = contact_friction_roll
-                        data.contacts[idx].condim = contact_condim
-                        data.num_contacts += 1
-                elif gi_type == GEOM_SPHERE:
-                    var dist = pi_z - ri - ground_z
-                    if (
-                        dist < contact_margin
-                        and data.num_contacts < MAX_CONTACTS
-                    ):
-                        var idx = data.num_contacts
-                        data.contacts[idx].body_a = gi_body
-                        data.contacts[idx].body_b = 0
-                        data.contacts[idx].pos_x = pi_x
-                        data.contacts[idx].pos_y = pi_y
-                        data.contacts[idx].pos_z = ground_z + dist * Scalar[
-                            DTYPE
-                        ](0.5)
-                        data.contacts[idx].normal_x = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_y = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist
-                        data.contacts[idx].includemargin = contact_margin
-                        data.contacts[idx].friction = contact_friction
-                        data.contacts[idx].friction_spin = contact_friction_spin
-                        data.contacts[idx].friction_roll = contact_friction_roll
-                        data.contacts[idx].condim = contact_condim
-                        data.num_contacts += 1
-                elif gi_type == GEOM_BOX:
-                    var bp = box_plane[DTYPE](
-                        pi_x, pi_y, pi_z,
-                        qi_x, qi_y, qi_z, qi_w,
-                        hxi, hyi, hzi,
-                        ground_z)
-                    var dist = bp[0]
-                    if dist < contact_margin and data.num_contacts < MAX_CONTACTS:
-                        var idx = data.num_contacts
-                        data.contacts[idx].body_a = gi_body
-                        data.contacts[idx].body_b = 0
-                        data.contacts[idx].pos_x = bp[1]
-                        data.contacts[idx].pos_y = bp[2]
-                        data.contacts[idx].pos_z = bp[3]
-                        data.contacts[idx].normal_x = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_y = Scalar[DTYPE](0)
-                        data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist
-                        data.contacts[idx].includemargin = contact_margin
-                        data.contacts[idx].friction = contact_friction
-                        data.contacts[idx].friction_spin = contact_friction_spin
-                        data.contacts[idx].friction_roll = contact_friction_roll
-                        data.contacts[idx].condim = contact_condim
-                        data.num_contacts += 1
-                elif gi_type == GEOM_MESH and model.geom_mesh_id[gi] >= 0:
-                    # Mesh-plane: scan hull vertices below plane
-                    var mesh_id = model.geom_mesh_id[gi]
-                    var vadr = model.mesh_vertadr[mesh_id]
-                    var vnum = model.mesh_vertnum[mesh_id]
-                    for vi in range(vnum):
-                        if data.num_contacts >= MAX_CONTACTS:
-                            break
-                        var off = vadr + vi * 3
-                        var local_pt = quat_rotate(
-                            qi_x, qi_y, qi_z, qi_w,
-                            model.mesh_vert[off],
-                            model.mesh_vert[off + 1],
-                            model.mesh_vert[off + 2])
-                        var wx = pi_x + local_pt[0]
-                        var wy = pi_y + local_pt[1]
-                        var wz = pi_z + local_pt[2]
-                        var dist_v = wz - ground_z
-                        if dist_v < contact_margin:
-                            var idx = data.num_contacts
-                            data.contacts[idx].body_a = gi_body
-                            data.contacts[idx].body_b = 0
-                            data.contacts[idx].pos_x = wx
-                            data.contacts[idx].pos_y = wy
-                            data.contacts[idx].pos_z = ground_z + dist_v * Scalar[DTYPE](0.5)
-                            data.contacts[idx].normal_x = Scalar[DTYPE](0)
-                            data.contacts[idx].normal_y = Scalar[DTYPE](0)
-                            data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                            data.contacts[idx].dist = dist_v
-                            data.contacts[idx].includemargin = contact_margin
-                            data.contacts[idx].friction = contact_friction
-                            data.contacts[idx].friction_spin = contact_friction_spin
-                            data.contacts[idx].friction_roll = contact_friction_roll
-                            data.contacts[idx].condim = contact_condim
-                            data.num_contacts += 1
-                continue
-
-            # --- Non-plane geom pair ---
-            var dist: Scalar[DTYPE] = 1.0
-            var cx: Scalar[DTYPE] = 0
-            var cy: Scalar[DTYPE] = 0
-            var cz: Scalar[DTYPE] = 0
-            var nx: Scalar[DTYPE] = 0
-            var ny: Scalar[DTYPE] = 0
-            var nz: Scalar[DTYPE] = 1
-            var body_a = gi_body
-            var body_b = gj_body
-
-            if gi_type == GEOM_SPHERE and gj_type == GEOM_SPHERE:
-                var r = sphere_sphere[DTYPE](
-                    pi_x, pi_y, pi_z, ri, pj_x, pj_y, pj_z, rj
-                )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_CAPSULE and gj_type == GEOM_SPHERE:
-                var r = capsule_sphere[DTYPE](
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hli,
-                    ri,
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    rj,
-                )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_SPHERE and gj_type == GEOM_CAPSULE:
-                var r = capsule_sphere[DTYPE](
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hlj,
-                    rj,
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    ri,
-                )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = -r[4]
-                ny = -r[5]
-                nz = -r[6]
-                body_a = gj_body
-                body_b = gi_body
-            elif gi_type == GEOM_CAPSULE and gj_type == GEOM_CAPSULE:
-                var r = capsule_capsule[DTYPE](
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hli,
-                    ri,
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hlj,
-                    rj,
-                )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_BOX and gj_type == GEOM_SPHERE:
-                var r = box_sphere[DTYPE](
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hxi,
-                    hyi,
-                    hzi,
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    rj,
-                )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_SPHERE and gj_type == GEOM_BOX:
-                var r = box_sphere[DTYPE](
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hxj,
-                    hyj,
-                    hzj,
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    ri,
-                )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = -r[4]
-                ny = -r[5]
-                nz = -r[6]
-                body_a = gj_body
-                body_b = gi_body
-            elif gi_type == GEOM_BOX and gj_type == GEOM_CAPSULE:
-                var r = box_capsule[DTYPE](
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hxi,
-                    hyi,
-                    hzi,
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hlj,
-                    rj,
-                )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_CAPSULE and gj_type == GEOM_BOX:
-                var r = box_capsule[DTYPE](
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hxj,
-                    hyj,
-                    hzj,
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hli,
-                    ri,
-                )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = -r[4]
-                ny = -r[5]
-                nz = -r[6]
-                body_a = gj_body
-                body_b = gi_body
-            elif gi_type == GEOM_BOX and gj_type == GEOM_BOX:
-                var r = box_box[DTYPE](
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hxi,
-                    hyi,
-                    hzi,
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hxj,
-                    hyj,
-                    hzj,
-                )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_SPHERE:
-                var r = cylinder_sphere[DTYPE](
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hli,
-                    ri,
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    rj,
-                )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_SPHERE and gj_type == GEOM_CYLINDER:
-                var r = cylinder_sphere[DTYPE](
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hlj,
-                    rj,
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    ri,
-                )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = -r[4]
-                ny = -r[5]
-                nz = -r[6]
-                body_a = gj_body
-                body_b = gi_body
-
-            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE:
-                var r = cylinder_capsule[DTYPE](
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj)
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER:
-                var r = cylinder_capsule[DTYPE](
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri)
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = -r[4]
-                ny = -r[5]
-                nz = -r[6]
-                body_a = gj_body
-                body_b = gi_body
-
-            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER:
-                var r = cylinder_cylinder[DTYPE](
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj)
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-
-            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX:
-                var r = cylinder_box[DTYPE](
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj)
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
-            elif gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER:
-                var r = cylinder_box[DTYPE](
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi)
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = -r[4]
-                ny = -r[5]
-                nz = -r[6]
-                body_a = gj_body
-                body_b = gi_body
-
-            # GJK/EPA fallback for any pair involving a mesh geom
-            elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:
-                # Mesh geom parameters
-                var mvi = model.mesh_vert.copy() if model.num_meshes > 0 else List[Scalar[DTYPE]]()
-                var mvoi = model.mesh_vertadr[model.geom_mesh_id[gi]] if model.geom_mesh_id[gi] >= 0 else 0
-                var mnvi = model.mesh_vertnum[model.geom_mesh_id[gi]] if model.geom_mesh_id[gi] >= 0 else 0
-                var mvj = model.mesh_vert.copy() if model.num_meshes > 0 else List[Scalar[DTYPE]]()
-                var mvoj = model.mesh_vertadr[model.geom_mesh_id[gj]] if model.geom_mesh_id[gj] >= 0 else 0
-                var mnvj = model.mesh_vertnum[model.geom_mesh_id[gj]] if model.geom_mesh_id[gj] >= 0 else 0
-                var result = gjk_epa[DTYPE](
-                    gi_type,
-                    pi_x, pi_y, pi_z,
-                    qi_x, qi_y, qi_z, qi_w,
-                    ri, hli, hxi, hyi, hzi,
-                    mvi, mvoi, mnvi,
-                    gj_type,
-                    pj_x, pj_y, pj_z,
-                    qj_x, qj_y, qj_z, qj_w,
-                    rj, hlj, hxj, hyj, hzj,
-                    mvj, mvoj, mnvj,
-                )
-                dist = result[0]
-                cx = result[1]
-                cy = result[2]
-                cz = result[3]
-                nx = result[4]
-                ny = result[5]
-                nz = result[6]
-                body_a = gi_body
-                body_b = gj_body
-
-            if dist < contact_margin and data.num_contacts < MAX_CONTACTS:
-                var idx = data.num_contacts
-                data.contacts[idx].body_a = body_a
-                data.contacts[idx].body_b = body_b
-                data.contacts[idx].pos_x = cx
-                data.contacts[idx].pos_y = cy
-                data.contacts[idx].pos_z = cz
-                # Negate normal for body-body contacts so normal always
-                # points from B toward A (matching ground contact convention
-                # where normal=(0,0,1) points from ground=B toward body=A).
-                # This ensures v_n = J*qvel > 0 = separating for all contacts.
-                if body_b > 0:
-                    nx = -nx
-                    ny = -ny
-                    nz = -nz
-                data.contacts[idx].normal_x = nx
-                data.contacts[idx].normal_y = ny
-                data.contacts[idx].normal_z = nz
-                data.contacts[idx].dist = dist
-                data.contacts[idx].includemargin = contact_margin
-                data.contacts[idx].friction = contact_friction
-                data.contacts[idx].friction_spin = contact_friction_spin
-                data.contacts[idx].friction_roll = contact_friction_roll
-                data.contacts[idx].condim = contact_condim
-                data.num_contacts += 1
-
-
-# =============================================================================
-# Unified Contact Detection (GPU)
-# =============================================================================
-
-
-@always_inline
-def _geom_world_pos_gpu[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    STATE_SIZE: Int,
-    MODEL_SIZE: Int,
     BATCH: Int,
 ](
     env: Int,
-    g_off: Int,
-    state: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    g: Int,
+    geoms: LayoutTensor[
+        DTYPE, Layout.row_major(NGEOM, MODEL_GEOM_SIZE), MutAnyOrigin
     ],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
     mut out_px: Scalar[DTYPE],
     mut out_py: Scalar[DTYPE],
     mut out_pz: Scalar[DTYPE],
@@ -1264,15 +124,15 @@ def _geom_world_pos_gpu[
     mut out_qz: Scalar[DTYPE],
     mut out_qw: Scalar[DTYPE],
 ):
-    """Compute geom world pos/quat on GPU."""
-    var body_idx = Int(rebind[Scalar[DTYPE]](model[0, g_off + GEOM_IDX_BODY]))
-    var lx = rebind[Scalar[DTYPE]](model[0, g_off + GEOM_IDX_POS_X])
-    var ly = rebind[Scalar[DTYPE]](model[0, g_off + GEOM_IDX_POS_Y])
-    var lz = rebind[Scalar[DTYPE]](model[0, g_off + GEOM_IDX_POS_Z])
-    var lqx = rebind[Scalar[DTYPE]](model[0, g_off + GEOM_IDX_QUAT_X])
-    var lqy = rebind[Scalar[DTYPE]](model[0, g_off + GEOM_IDX_QUAT_Y])
-    var lqz = rebind[Scalar[DTYPE]](model[0, g_off + GEOM_IDX_QUAT_Z])
-    var lqw = rebind[Scalar[DTYPE]](model[0, g_off + GEOM_IDX_QUAT_W])
+    """Compute geom world pos/quat (verbatim from _geom_world_pos_gpu)."""
+    var body_idx = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_BODY]))
+    var lx = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_POS_X])
+    var ly = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_POS_Y])
+    var lz = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_POS_Z])
+    var lqx = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_QUAT_X])
+    var lqy = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_QUAT_Y])
+    var lqz = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_QUAT_Z])
+    var lqw = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_QUAT_W])
     if body_idx == 0:
         out_px = lx
         out_py = ly
@@ -1282,15 +142,13 @@ def _geom_world_pos_gpu[
         out_qz = lqz
         out_qw = lqw
         return
-    var xpos_off = xpos_offset[NQ, NV, NBODY]()
-    var xquat_off = xquat_offset[NQ, NV, NBODY]()
-    var bpx = rebind[Scalar[DTYPE]](state[env, xpos_off + body_idx * 3 + 0])
-    var bpy = rebind[Scalar[DTYPE]](state[env, xpos_off + body_idx * 3 + 1])
-    var bpz = rebind[Scalar[DTYPE]](state[env, xpos_off + body_idx * 3 + 2])
-    var bqx = rebind[Scalar[DTYPE]](state[env, xquat_off + body_idx * 4 + 0])
-    var bqy = rebind[Scalar[DTYPE]](state[env, xquat_off + body_idx * 4 + 1])
-    var bqz = rebind[Scalar[DTYPE]](state[env, xquat_off + body_idx * 4 + 2])
-    var bqw = rebind[Scalar[DTYPE]](state[env, xquat_off + body_idx * 4 + 3])
+    var bpx = rebind[Scalar[DTYPE]](xpos[env, body_idx * 3 + 0])
+    var bpy = rebind[Scalar[DTYPE]](xpos[env, body_idx * 3 + 1])
+    var bpz = rebind[Scalar[DTYPE]](xpos[env, body_idx * 3 + 2])
+    var bqx = rebind[Scalar[DTYPE]](xquat[env, body_idx * 4 + 0])
+    var bqy = rebind[Scalar[DTYPE]](xquat[env, body_idx * 4 + 1])
+    var bqz = rebind[Scalar[DTYPE]](xquat[env, body_idx * 4 + 2])
+    var bqw = rebind[Scalar[DTYPE]](xquat[env, body_idx * 4 + 3])
     if (
         lx == Scalar[DTYPE](0)
         and ly == Scalar[DTYPE](0)
@@ -1320,141 +178,218 @@ def _geom_world_pos_gpu[
 
 
 @always_inline
-def detect_contacts_gpu[
+def _plane_mesh_contacts[
+    DTYPE: DType,
+    MAX_CONTACTS: Int,
+    NGEOM: Int,
+    NMESH_VERTS: Int,
+    BATCH: Int,
+](
+    env: Int,
+    g: Int,
+    g_body: Int,
+    p_x: Scalar[DTYPE],
+    p_y: Scalar[DTYPE],
+    p_z: Scalar[DTYPE],
+    q_x: Scalar[DTYPE],
+    q_y: Scalar[DTYPE],
+    q_z: Scalar[DTYPE],
+    q_w: Scalar[DTYPE],
+    ground_z: Scalar[DTYPE],
+    contact_margin: Scalar[DTYPE],
+    contact_friction: Scalar[DTYPE],
+    contact_friction_spin: Scalar[DTYPE],
+    contact_friction_roll: Scalar[DTYPE],
+    contact_condim: Int,
+    geoms: LayoutTensor[
+        DTYPE, Layout.row_major(NGEOM, MODEL_GEOM_SIZE), MutAnyOrigin
+    ],
+    mesh_meta: LayoutTensor[
+        DTYPE,
+        Layout.row_major(MAX_GPU_MESHES, MODEL_MESH_META_SIZE),
+        MutAnyOrigin,
+    ],
+    mesh_verts: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
+    contacts: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    mut num_contacts: Int,
+):
+    """Plane-mesh: scan hull vertices below plane (verbatim from the
+    detect_contacts_gpu plane-mesh branches; both i/j orientations reduce to
+    this after substituting the mesh geom's pose)."""
+    var m_id = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_MESH_ID]))
+    if m_id >= 0:
+        var pm_vadr = Int(rebind[Scalar[DTYPE]](mesh_meta[m_id, 0]))
+        var pm_vnum = Int(rebind[Scalar[DTYPE]](mesh_meta[m_id, 1]))
+        for vi in range(pm_vnum):
+            if num_contacts >= MAX_CONTACTS:
+                break
+            var vx = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 0])
+            var vy = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 1])
+            var vz = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 2])
+            var local_pt = gpu_quat_rotate(q_x, q_y, q_z, q_w, vx, vy, vz)
+            var wx = p_x + local_pt[0]
+            var wy = p_y + local_pt[1]
+            var wz = p_z + local_pt[2]
+            var dist_v = wz - ground_z
+            if dist_v < contact_margin:
+                var c_off = num_contacts * CONTACT_SIZE
+                contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                    g_body
+                )
+                contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](0)
+                contacts[env, c_off + CONTACT_IDX_POS_X] = wx
+                contacts[env, c_off + CONTACT_IDX_POS_Y] = wy
+                contacts[
+                    env, c_off + CONTACT_IDX_POS_Z
+                ] = ground_z + dist_v * Scalar[DTYPE](0.5)
+                contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
+                contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
+                contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                contacts[env, c_off + CONTACT_IDX_DIST] = dist_v
+                contacts[
+                    env, c_off + CONTACT_IDX_INCLUDEMARGIN
+                ] = contact_margin
+                contacts[
+                    env, c_off + CONTACT_IDX_FRICTION
+                ] = contact_friction
+                contacts[
+                    env, c_off + CONTACT_IDX_FRICTION_SPIN
+                ] = contact_friction_spin
+                contacts[
+                    env, c_off + CONTACT_IDX_FRICTION_ROLL
+                ] = contact_friction_roll
+                contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                    contact_condim
+                )
+                num_contacts += 1
+
+
+@always_inline
+def _detect_contacts_env[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
     NBODY: Int,
     NJOINT: Int,
     MAX_CONTACTS: Int,
-    STATE_SIZE: Int,
-    MODEL_SIZE: Int,
-    BATCH: Int,
     NGEOM: Int,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
+    NEXCLUDE: Int,
+    NMESH_VERTS: Int,
+    BATCH: Int,
 ](
     env: Int,
-    state: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
     ],
-    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    geoms: LayoutTensor[
+        DTYPE, Layout.row_major(NGEOM, MODEL_GEOM_SIZE), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    mmeta: LayoutTensor[
+        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+    ],
+    excludes: LayoutTensor[
+        DTYPE, Layout.row_major(NEXCLUDE, 2), MutAnyOrigin
+    ],
+    mesh_meta: LayoutTensor[
+        DTYPE,
+        Layout.row_major(MAX_GPU_MESHES, MODEL_MESH_META_SIZE),
+        MutAnyOrigin,
+    ],
+    mesh_verts: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
+    contacts: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    smeta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+    ],
 ):
-    """Unified contact detection on GPU using geom buffer section."""
-    from ..collision.collision_primitives import (
-        sphere_sphere,
-        capsule_sphere,
-        capsule_capsule,
-        box_sphere,
-        box_capsule,
-        box_box,
-        box_plane,
-        cylinder_plane,
-        cylinder_sphere,
-        cylinder_capsule,
-        cylinder_cylinder,
-        cylinder_box,
-    )
-    from ..collision.gjk_gpu import gjk_epa_gpu
-    from ..gpu.constants import (
-        GEOM_IDX_MESH_ID,
-        model_mesh_meta_offset,
-        model_mesh_vert_offset,
-        MODEL_MESH_META_SIZE,
-    )
-
-    var contacts_off = contacts_offset[NQ, NV, NBODY]()
-    var meta_off = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+    """Unified contact detection for one env (verbatim from
+    detect_contacts_gpu; mesh branches compiled in iff NMESH_VERTS > 0)."""
     var num_contacts = 0
 
     for gi in range(NGEOM):
-        var gi_off = model_geom_offset[NBODY, NJOINT](gi)
         var gi_type = Int(
-            rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_TYPE])
+            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_TYPE])
         )
         var gi_body = Int(
-            rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_BODY])
+            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_BODY])
         )
         var gi_contype = Int(
-            rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_CONTYPE])
+            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONTYPE])
         )
         var gi_conaffinity = Int(
-            rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_CONAFFINITY])
+            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONAFFINITY])
         )
         for gj in range(gi + 1, NGEOM):
             if num_contacts >= MAX_CONTACTS:
-                state[env, meta_off + META_IDX_NUM_CONTACTS] = Scalar[DTYPE](
+                smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](
                     num_contacts
                 )
                 return
-            var gj_off = model_geom_offset[NBODY, NJOINT](gj)
             var gj_type = Int(
-                rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_TYPE])
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_TYPE])
             )
             var gj_body = Int(
-                rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_BODY])
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_BODY])
             )
             if gi_type == GEOM_PLANE and gj_body == 0:
                 continue
             if gj_type == GEOM_PLANE and gi_body == 0:
                 continue
             # MuJoCo-style weld body filtering (GPU)
-            var bi_off = model_body_offset(gi_body)
-            var bj_off = model_body_offset(gj_body)
             var weld_i = Int(
-                rebind[Scalar[DTYPE]](model[0, bi_off + BODY_IDX_WELDID])
+                rebind[Scalar[DTYPE]](bodies[gi_body, BODY_IDX_WELDID])
             )
             var weld_j = Int(
-                rebind[Scalar[DTYPE]](model[0, bj_off + BODY_IDX_WELDID])
+                rebind[Scalar[DTYPE]](bodies[gj_body, BODY_IDX_WELDID])
             )
             # Same weld body → filter
             if weld_i == weld_j:
                 continue
             # Weld parent check
             if weld_i != 0 and weld_j != 0:
-                var wi_off = model_body_offset(weld_i)
-                var wj_off = model_body_offset(weld_j)
                 var wp_i = Int(
-                    rebind[Scalar[DTYPE]](model[0, wi_off + BODY_IDX_PARENT])
+                    rebind[Scalar[DTYPE]](bodies[weld_i, BODY_IDX_PARENT])
                 )
                 var wp_j = Int(
-                    rebind[Scalar[DTYPE]](model[0, wj_off + BODY_IDX_PARENT])
+                    rebind[Scalar[DTYPE]](bodies[weld_j, BODY_IDX_PARENT])
                 )
                 var weld_parent_i = Int(
-                    rebind[Scalar[DTYPE]](
-                        model[0, model_body_offset(wp_i) + BODY_IDX_WELDID]
-                    )
+                    rebind[Scalar[DTYPE]](bodies[wp_i, BODY_IDX_WELDID])
                 )
                 var weld_parent_j = Int(
-                    rebind[Scalar[DTYPE]](
-                        model[0, model_body_offset(wp_j) + BODY_IDX_WELDID]
-                    )
+                    rebind[Scalar[DTYPE]](bodies[wp_j, BODY_IDX_WELDID])
                 )
                 if weld_i == weld_parent_j or weld_j == weld_parent_i:
                     continue
                 # Check contact exclusion pairs
-                var meta_off2 = model_metadata_offset[NBODY, NJOINT]()
                 var n_ex = Int(
-                    rebind[Scalar[DTYPE]](
-                        model[0, meta_off2 + MODEL_META_IDX_NEXCLUDE]
-                    )
+                    rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NEXCLUDE])
                 )
                 if n_ex > 0:
                     var ba = gi_body if gi_body <= gj_body else gj_body
                     var bb = gj_body if gi_body <= gj_body else gi_body
-                    var ex_off = model_exclude_offset[
-                        NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE
-                    ]()
                     var excluded = False
                     for ex in range(n_ex):
                         var eb1 = Int(
-                            rebind[Scalar[DTYPE]](model[0, ex_off + ex * 2])
+                            rebind[Scalar[DTYPE]](excludes[ex, 0])
                         )
                         var eb2 = Int(
-                            rebind[Scalar[DTYPE]](
-                                model[0, ex_off + ex * 2 + 1]
-                            )
+                            rebind[Scalar[DTYPE]](excludes[ex, 1])
                         )
                         if eb1 == ba and eb2 == bb:
                             excluded = True
@@ -1462,10 +397,10 @@ def detect_contacts_gpu[
                     if excluded:
                         continue
             var gj_contype = Int(
-                rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_CONTYPE])
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
             )
             var gj_conaffinity = Int(
-                rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_CONAFFINITY])
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONAFFINITY])
             )
             if (gi_contype & gj_conaffinity) == 0 and (
                 gj_contype & gi_conaffinity
@@ -1479,13 +414,12 @@ def detect_contacts_gpu[
             var qi_y: Scalar[DTYPE] = 0
             var qi_z: Scalar[DTYPE] = 0
             var qi_w: Scalar[DTYPE] = 1
-            _geom_world_pos_gpu[
-                DTYPE, NQ, NV, NBODY, STATE_SIZE, MODEL_SIZE, BATCH
-            ](
+            _geom_world_pos[DTYPE, NBODY, NGEOM, BATCH](
                 env,
-                gi_off,
-                state,
-                model,
+                gi,
+                geoms,
+                xpos,
+                xquat,
                 pi_x,
                 pi_y,
                 pi_z,
@@ -1501,13 +435,12 @@ def detect_contacts_gpu[
             var qj_y: Scalar[DTYPE] = 0
             var qj_z: Scalar[DTYPE] = 0
             var qj_w: Scalar[DTYPE] = 1
-            _geom_world_pos_gpu[
-                DTYPE, NQ, NV, NBODY, STATE_SIZE, MODEL_SIZE, BATCH
-            ](
+            _geom_world_pos[DTYPE, NBODY, NGEOM, BATCH](
                 env,
-                gj_off,
-                state,
-                model,
+                gj,
+                geoms,
+                xpos,
+                xquat,
                 pj_x,
                 pj_y,
                 pj_z,
@@ -1524,58 +457,58 @@ def detect_contacts_gpu[
                 var dz = pi_z - pj_z
                 var dist_sq = dx * dx + dy * dy + dz * dz
                 var ri_bound = rebind[Scalar[DTYPE]](
-                    model[0, gi_off + GEOM_IDX_RBOUND]
+                    geoms[gi, GEOM_IDX_RBOUND]
                 )
                 var rj_bound = rebind[Scalar[DTYPE]](
-                    model[0, gj_off + GEOM_IDX_RBOUND]
+                    geoms[gj, GEOM_IDX_RBOUND]
                 )
                 var bound = ri_bound + rj_bound
                 if dist_sq > bound * bound:
                     continue
 
-            var ri = rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_RADIUS])
-            var rj = rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_RADIUS])
+            var ri = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_RADIUS])
+            var rj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RADIUS])
             var hli = rebind[Scalar[DTYPE]](
-                model[0, gi_off + GEOM_IDX_HALF_LENGTH]
+                geoms[gi, GEOM_IDX_HALF_LENGTH]
             )
             var hlj = rebind[Scalar[DTYPE]](
-                model[0, gj_off + GEOM_IDX_HALF_LENGTH]
+                geoms[gj, GEOM_IDX_HALF_LENGTH]
             )
-            var hxi = rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_HALF_X])
-            var hyi = rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_HALF_Y])
-            var hzi = rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_HALF_Z])
-            var hxj = rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_HALF_X])
-            var hyj = rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_HALF_Y])
-            var hzj = rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_HALF_Z])
+            var hxi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_X])
+            var hyi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_Y])
+            var hzi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_Z])
+            var hxj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_X])
+            var hyj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Y])
+            var hzj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Z])
             # Friction combination: max per element (MuJoCo convention)
-            var fi = rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_FRICTION])
-            var fj = rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_FRICTION])
+            var fi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION])
+            var fj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION])
             var contact_friction = fi
             if fj > fi:
                 contact_friction = fj
             var fsi = rebind[Scalar[DTYPE]](
-                model[0, gi_off + GEOM_IDX_FRICTION_SPIN]
+                geoms[gi, GEOM_IDX_FRICTION_SPIN]
             )
             var fsj = rebind[Scalar[DTYPE]](
-                model[0, gj_off + GEOM_IDX_FRICTION_SPIN]
+                geoms[gj, GEOM_IDX_FRICTION_SPIN]
             )
             var contact_friction_spin = fsi
             if fsj > fsi:
                 contact_friction_spin = fsj
             var fri = rebind[Scalar[DTYPE]](
-                model[0, gi_off + GEOM_IDX_FRICTION_ROLL]
+                geoms[gi, GEOM_IDX_FRICTION_ROLL]
             )
             var frj = rebind[Scalar[DTYPE]](
-                model[0, gj_off + GEOM_IDX_FRICTION_ROLL]
+                geoms[gj, GEOM_IDX_FRICTION_ROLL]
             )
             var contact_friction_roll = fri
             if frj > fri:
                 contact_friction_roll = frj
             var ci = Int(
-                rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_CONDIM])
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])
             )
             var cj = Int(
-                rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_CONDIM])
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])
             )
             var contact_condim = ci
             if cj > ci:
@@ -1583,10 +516,10 @@ def detect_contacts_gpu[
 
             # Margin combination: max of both geoms (MuJoCo convention)
             var margin_gi = rebind[Scalar[DTYPE]](
-                model[0, gi_off + GEOM_IDX_MARGIN]
+                geoms[gi, GEOM_IDX_MARGIN]
             )
             var margin_gj = rebind[Scalar[DTYPE]](
-                model[0, gj_off + GEOM_IDX_MARGIN]
+                geoms[gj, GEOM_IDX_MARGIN]
             )
             # MuJoCo 3.5+ convention: margin = sum of both geoms
             var contact_margin = margin_gi + margin_gj
@@ -1611,38 +544,52 @@ def detect_contacts_gpu[
                     var e1_z = pj_z + hlj * axis_w[2]
                     var dist1 = e1_z - rj - ground_z
                     if dist1 < contact_margin and num_contacts < MAX_CONTACTS:
-                        var c_off = contacts_off + num_contacts * CONTACT_SIZE
-                        state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                            gj_body
-                        )
-                        state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                            0
-                        )
-                        state[env, c_off + CONTACT_IDX_POS_X] = e1_x
-                        state[env, c_off + CONTACT_IDX_POS_Y] = e1_y
-                        state[
+                        var c_off = num_contacts * CONTACT_SIZE
+                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
+                            DTYPE
+                        ](gj_body)
+                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
+                            DTYPE
+                        ](0)
+                        contacts[env, c_off + CONTACT_IDX_POS_X] = e1_x
+                        contacts[env, c_off + CONTACT_IDX_POS_Y] = e1_y
+                        contacts[
                             env, c_off + CONTACT_IDX_POS_Z
                         ] = ground_z + dist1 * Scalar[DTYPE](0.5)
-                        state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist1
-                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
-                        state[
+                        contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](
+                            1
+                        )
+                        contacts[env, c_off + CONTACT_IDX_DIST] = dist1
+                        contacts[
+                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+                        ] = contact_margin
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_SPIN
                         ] = contact_friction_spin
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_ROLL
                         ] = contact_friction_roll
-                        state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                            contact_condim
-                        )
-                        state[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[0]
-                        state[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[1]
-                        state[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[2]
+                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
+                            DTYPE
+                        ](contact_condim)
+                        contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[
+                            0
+                        ]
+                        contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[
+                            1
+                        ]
+                        contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[
+                            2
+                        ]
                         num_contacts += 1
                     # Endpoint 2: center - half_length * axis
                     var e2_x = pj_x - hlj * axis_w[0]
@@ -1650,38 +597,52 @@ def detect_contacts_gpu[
                     var e2_z = pj_z - hlj * axis_w[2]
                     var dist2 = e2_z - rj - ground_z
                     if dist2 < contact_margin and num_contacts < MAX_CONTACTS:
-                        var c_off = contacts_off + num_contacts * CONTACT_SIZE
-                        state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                            gj_body
-                        )
-                        state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                            0
-                        )
-                        state[env, c_off + CONTACT_IDX_POS_X] = e2_x
-                        state[env, c_off + CONTACT_IDX_POS_Y] = e2_y
-                        state[
+                        var c_off = num_contacts * CONTACT_SIZE
+                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
+                            DTYPE
+                        ](gj_body)
+                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
+                            DTYPE
+                        ](0)
+                        contacts[env, c_off + CONTACT_IDX_POS_X] = e2_x
+                        contacts[env, c_off + CONTACT_IDX_POS_Y] = e2_y
+                        contacts[
                             env, c_off + CONTACT_IDX_POS_Z
                         ] = ground_z + dist2 * Scalar[DTYPE](0.5)
-                        state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist2
-                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
-                        state[
+                        contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](
+                            1
+                        )
+                        contacts[env, c_off + CONTACT_IDX_DIST] = dist2
+                        contacts[
+                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+                        ] = contact_margin
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_SPIN
                         ] = contact_friction_spin
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_ROLL
                         ] = contact_friction_roll
-                        state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                            contact_condim
-                        )
-                        state[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[0]
-                        state[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[1]
-                        state[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[2]
+                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
+                            DTYPE
+                        ](contact_condim)
+                        contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[
+                            0
+                        ]
+                        contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[
+                            1
+                        ]
+                        contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[
+                            2
+                        ]
                         num_contacts += 1
                 elif gj_type == GEOM_CYLINDER:
                     # Cylinder-plane: single contact at lowest rim point
@@ -1699,66 +660,82 @@ def detect_contacts_gpu[
                     )
                     var dist = cp[0]
                     if dist < contact_margin and num_contacts < MAX_CONTACTS:
-                        var c_off = contacts_off + num_contacts * CONTACT_SIZE
-                        state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                            gj_body
-                        )
-                        state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                        var c_off = num_contacts * CONTACT_SIZE
+                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
+                            DTYPE
+                        ](gj_body)
+                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
+                            DTYPE
+                        ](0)
+                        contacts[env, c_off + CONTACT_IDX_POS_X] = cp[1]
+                        contacts[env, c_off + CONTACT_IDX_POS_Y] = cp[2]
+                        contacts[env, c_off + CONTACT_IDX_POS_Z] = cp[3]
+                        contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](
                             0
                         )
-                        state[env, c_off + CONTACT_IDX_POS_X] = cp[1]
-                        state[env, c_off + CONTACT_IDX_POS_Y] = cp[2]
-                        state[env, c_off + CONTACT_IDX_POS_Z] = cp[3]
-                        state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist
-                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
-                        state[
+                        contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](
+                            1
+                        )
+                        contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                        contacts[
+                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+                        ] = contact_margin
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_SPIN
                         ] = contact_friction_spin
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_ROLL
                         ] = contact_friction_roll
-                        state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                            contact_condim
-                        )
+                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
+                            DTYPE
+                        ](contact_condim)
                         num_contacts += 1
                 elif gj_type == GEOM_SPHERE:
                     var dist = pj_z - rj - ground_z
                     if dist < contact_margin and num_contacts < MAX_CONTACTS:
-                        var c_off = contacts_off + num_contacts * CONTACT_SIZE
-                        state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                            gj_body
-                        )
-                        state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                            0
-                        )
-                        state[env, c_off + CONTACT_IDX_POS_X] = pj_x
-                        state[env, c_off + CONTACT_IDX_POS_Y] = pj_y
-                        state[
+                        var c_off = num_contacts * CONTACT_SIZE
+                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
+                            DTYPE
+                        ](gj_body)
+                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
+                            DTYPE
+                        ](0)
+                        contacts[env, c_off + CONTACT_IDX_POS_X] = pj_x
+                        contacts[env, c_off + CONTACT_IDX_POS_Y] = pj_y
+                        contacts[
                             env, c_off + CONTACT_IDX_POS_Z
                         ] = ground_z + dist * Scalar[DTYPE](0.5)
-                        state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist
-                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
-                        state[
+                        contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](
+                            1
+                        )
+                        contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                        contacts[
+                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+                        ] = contact_margin
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_SPIN
                         ] = contact_friction_spin
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_ROLL
                         ] = contact_friction_roll
-                        state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                            contact_condim
-                        )
+                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
+                            DTYPE
+                        ](contact_condim)
                         num_contacts += 1
                 elif gj_type == GEOM_BOX:
                     var bp = box_plane[DTYPE](
@@ -1769,73 +746,70 @@ def detect_contacts_gpu[
                     )
                     var dist = bp[0]
                     if dist < contact_margin and num_contacts < MAX_CONTACTS:
-                        var c_off = contacts_off + num_contacts * CONTACT_SIZE
-                        state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                            gj_body
-                        )
-                        state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                        var c_off = num_contacts * CONTACT_SIZE
+                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
+                            DTYPE
+                        ](gj_body)
+                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
+                            DTYPE
+                        ](0)
+                        contacts[env, c_off + CONTACT_IDX_POS_X] = bp[1]
+                        contacts[env, c_off + CONTACT_IDX_POS_Y] = bp[2]
+                        contacts[env, c_off + CONTACT_IDX_POS_Z] = bp[3]
+                        contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](
                             0
                         )
-                        state[env, c_off + CONTACT_IDX_POS_X] = bp[1]
-                        state[env, c_off + CONTACT_IDX_POS_Y] = bp[2]
-                        state[env, c_off + CONTACT_IDX_POS_Z] = bp[3]
-                        state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist
-                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
-                        state[
+                        contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](
+                            1
+                        )
+                        contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                        contacts[
+                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+                        ] = contact_margin
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_SPIN
                         ] = contact_friction_spin
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_ROLL
                         ] = contact_friction_roll
-                        state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                            contact_condim
-                        )
+                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
+                            DTYPE
+                        ](contact_condim)
                         num_contacts += 1
                 elif gj_type == GEOM_MESH:
                     # Plane-mesh: scan hull vertices below plane
-                    var mj_id = Int(rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_MESH_ID]))
-                    if mj_id >= 0:
-                        comptime pm_meta = model_mesh_meta_offset[
-                            NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE]()
-                        comptime pm_verts = model_mesh_vert_offset[
-                            NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE]()
-                        var pm_vadr = Int(rebind[Scalar[DTYPE]](model[0, pm_meta + mj_id * 2]))
-                        var pm_vnum = Int(rebind[Scalar[DTYPE]](model[0, pm_meta + mj_id * 2 + 1]))
-                        var pm_voff = pm_verts + pm_vadr * 3
-                        for vi in range(pm_vnum):
-                            if num_contacts >= MAX_CONTACTS:
-                                break
-                            var vx = rebind[Scalar[DTYPE]](model[0, pm_voff + vi * 3 + 0])
-                            var vy = rebind[Scalar[DTYPE]](model[0, pm_voff + vi * 3 + 1])
-                            var vz = rebind[Scalar[DTYPE]](model[0, pm_voff + vi * 3 + 2])
-                            var local_pt = gpu_quat_rotate(qj_x, qj_y, qj_z, qj_w, vx, vy, vz)
-                            var wx = pj_x + local_pt[0]
-                            var wy = pj_y + local_pt[1]
-                            var wz = pj_z + local_pt[2]
-                            var dist_v = wz - ground_z
-                            if dist_v < contact_margin:
-                                var c_off = contacts_off + num_contacts * CONTACT_SIZE
-                                state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](gj_body)
-                                state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](0)
-                                state[env, c_off + CONTACT_IDX_POS_X] = wx
-                                state[env, c_off + CONTACT_IDX_POS_Y] = wy
-                                state[env, c_off + CONTACT_IDX_POS_Z] = ground_z + dist_v * Scalar[DTYPE](0.5)
-                                state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                                state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                                state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                                state[env, c_off + CONTACT_IDX_DIST] = dist_v
-                                state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
-                                state[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
-                                state[env, c_off + CONTACT_IDX_FRICTION_SPIN] = contact_friction_spin
-                                state[env, c_off + CONTACT_IDX_FRICTION_ROLL] = contact_friction_roll
-                                state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](contact_condim)
-                                num_contacts += 1
+                    comptime if NMESH_VERTS > 0:
+                        _plane_mesh_contacts[
+                            DTYPE, MAX_CONTACTS, NGEOM, NMESH_VERTS, BATCH
+                        ](
+                            env,
+                            gj,
+                            gj_body,
+                            pj_x,
+                            pj_y,
+                            pj_z,
+                            qj_x,
+                            qj_y,
+                            qj_z,
+                            qj_w,
+                            ground_z,
+                            contact_margin,
+                            contact_friction,
+                            contact_friction_spin,
+                            contact_friction_roll,
+                            contact_condim,
+                            geoms,
+                            mesh_meta,
+                            mesh_verts,
+                            contacts,
+                            num_contacts,
+                        )
                 continue
 
             if gj_type == GEOM_PLANE:
@@ -1857,38 +831,52 @@ def detect_contacts_gpu[
                     var e1_z = pi_z + hli * axis_w[2]
                     var dist1 = e1_z - ri - ground_z
                     if dist1 < contact_margin and num_contacts < MAX_CONTACTS:
-                        var c_off = contacts_off + num_contacts * CONTACT_SIZE
-                        state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                            gi_body
-                        )
-                        state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                            0
-                        )
-                        state[env, c_off + CONTACT_IDX_POS_X] = e1_x
-                        state[env, c_off + CONTACT_IDX_POS_Y] = e1_y
-                        state[
+                        var c_off = num_contacts * CONTACT_SIZE
+                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
+                            DTYPE
+                        ](gi_body)
+                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
+                            DTYPE
+                        ](0)
+                        contacts[env, c_off + CONTACT_IDX_POS_X] = e1_x
+                        contacts[env, c_off + CONTACT_IDX_POS_Y] = e1_y
+                        contacts[
                             env, c_off + CONTACT_IDX_POS_Z
                         ] = ground_z + dist1 * Scalar[DTYPE](0.5)
-                        state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist1
-                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
-                        state[
+                        contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](
+                            1
+                        )
+                        contacts[env, c_off + CONTACT_IDX_DIST] = dist1
+                        contacts[
+                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+                        ] = contact_margin
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_SPIN
                         ] = contact_friction_spin
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_ROLL
                         ] = contact_friction_roll
-                        state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                            contact_condim
-                        )
-                        state[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[0]
-                        state[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[1]
-                        state[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[2]
+                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
+                            DTYPE
+                        ](contact_condim)
+                        contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[
+                            0
+                        ]
+                        contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[
+                            1
+                        ]
+                        contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[
+                            2
+                        ]
                         num_contacts += 1
                     # Endpoint 2: center - half_length * axis
                     var e2_x = pi_x - hli * axis_w[0]
@@ -1896,38 +884,52 @@ def detect_contacts_gpu[
                     var e2_z = pi_z - hli * axis_w[2]
                     var dist2 = e2_z - ri - ground_z
                     if dist2 < contact_margin and num_contacts < MAX_CONTACTS:
-                        var c_off = contacts_off + num_contacts * CONTACT_SIZE
-                        state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                            gi_body
-                        )
-                        state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                            0
-                        )
-                        state[env, c_off + CONTACT_IDX_POS_X] = e2_x
-                        state[env, c_off + CONTACT_IDX_POS_Y] = e2_y
-                        state[
+                        var c_off = num_contacts * CONTACT_SIZE
+                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
+                            DTYPE
+                        ](gi_body)
+                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
+                            DTYPE
+                        ](0)
+                        contacts[env, c_off + CONTACT_IDX_POS_X] = e2_x
+                        contacts[env, c_off + CONTACT_IDX_POS_Y] = e2_y
+                        contacts[
                             env, c_off + CONTACT_IDX_POS_Z
                         ] = ground_z + dist2 * Scalar[DTYPE](0.5)
-                        state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist2
-                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
-                        state[
+                        contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](
+                            1
+                        )
+                        contacts[env, c_off + CONTACT_IDX_DIST] = dist2
+                        contacts[
+                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+                        ] = contact_margin
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_SPIN
                         ] = contact_friction_spin
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_ROLL
                         ] = contact_friction_roll
-                        state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                            contact_condim
-                        )
-                        state[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[0]
-                        state[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[1]
-                        state[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[2]
+                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
+                            DTYPE
+                        ](contact_condim)
+                        contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[
+                            0
+                        ]
+                        contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[
+                            1
+                        ]
+                        contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[
+                            2
+                        ]
                         num_contacts += 1
                 elif gi_type == GEOM_CYLINDER:
                     # Cylinder-plane: single contact at lowest rim point
@@ -1945,66 +947,82 @@ def detect_contacts_gpu[
                     )
                     var dist = cp[0]
                     if dist < contact_margin and num_contacts < MAX_CONTACTS:
-                        var c_off = contacts_off + num_contacts * CONTACT_SIZE
-                        state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                            gi_body
-                        )
-                        state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                        var c_off = num_contacts * CONTACT_SIZE
+                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
+                            DTYPE
+                        ](gi_body)
+                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
+                            DTYPE
+                        ](0)
+                        contacts[env, c_off + CONTACT_IDX_POS_X] = cp[1]
+                        contacts[env, c_off + CONTACT_IDX_POS_Y] = cp[2]
+                        contacts[env, c_off + CONTACT_IDX_POS_Z] = cp[3]
+                        contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](
                             0
                         )
-                        state[env, c_off + CONTACT_IDX_POS_X] = cp[1]
-                        state[env, c_off + CONTACT_IDX_POS_Y] = cp[2]
-                        state[env, c_off + CONTACT_IDX_POS_Z] = cp[3]
-                        state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist
-                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
-                        state[
+                        contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](
+                            1
+                        )
+                        contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                        contacts[
+                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+                        ] = contact_margin
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_SPIN
                         ] = contact_friction_spin
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_ROLL
                         ] = contact_friction_roll
-                        state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                            contact_condim
-                        )
+                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
+                            DTYPE
+                        ](contact_condim)
                         num_contacts += 1
                 elif gi_type == GEOM_SPHERE:
                     var dist = pi_z - ri - ground_z
                     if dist < contact_margin and num_contacts < MAX_CONTACTS:
-                        var c_off = contacts_off + num_contacts * CONTACT_SIZE
-                        state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                            gi_body
-                        )
-                        state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                            0
-                        )
-                        state[env, c_off + CONTACT_IDX_POS_X] = pi_x
-                        state[env, c_off + CONTACT_IDX_POS_Y] = pi_y
-                        state[
+                        var c_off = num_contacts * CONTACT_SIZE
+                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
+                            DTYPE
+                        ](gi_body)
+                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
+                            DTYPE
+                        ](0)
+                        contacts[env, c_off + CONTACT_IDX_POS_X] = pi_x
+                        contacts[env, c_off + CONTACT_IDX_POS_Y] = pi_y
+                        contacts[
                             env, c_off + CONTACT_IDX_POS_Z
                         ] = ground_z + dist * Scalar[DTYPE](0.5)
-                        state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist
-                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
-                        state[
+                        contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](
+                            1
+                        )
+                        contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                        contacts[
+                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+                        ] = contact_margin
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_SPIN
                         ] = contact_friction_spin
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_ROLL
                         ] = contact_friction_roll
-                        state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                            contact_condim
-                        )
+                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
+                            DTYPE
+                        ](contact_condim)
                         num_contacts += 1
                 elif gi_type == GEOM_BOX:
                     var bp = box_plane[DTYPE](
@@ -2015,72 +1033,69 @@ def detect_contacts_gpu[
                     )
                     var dist = bp[0]
                     if dist < contact_margin and num_contacts < MAX_CONTACTS:
-                        var c_off = contacts_off + num_contacts * CONTACT_SIZE
-                        state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                            gi_body
-                        )
-                        state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                        var c_off = num_contacts * CONTACT_SIZE
+                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
+                            DTYPE
+                        ](gi_body)
+                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
+                            DTYPE
+                        ](0)
+                        contacts[env, c_off + CONTACT_IDX_POS_X] = bp[1]
+                        contacts[env, c_off + CONTACT_IDX_POS_Y] = bp[2]
+                        contacts[env, c_off + CONTACT_IDX_POS_Z] = bp[3]
+                        contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](
                             0
                         )
-                        state[env, c_off + CONTACT_IDX_POS_X] = bp[1]
-                        state[env, c_off + CONTACT_IDX_POS_Y] = bp[2]
-                        state[env, c_off + CONTACT_IDX_POS_Z] = bp[3]
-                        state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                        state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = dist
-                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
-                        state[
+                        contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](
+                            1
+                        )
+                        contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                        contacts[
+                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+                        ] = contact_margin
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_SPIN
                         ] = contact_friction_spin
-                        state[
+                        contacts[
                             env, c_off + CONTACT_IDX_FRICTION_ROLL
                         ] = contact_friction_roll
-                        state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                            contact_condim
-                        )
+                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
+                            DTYPE
+                        ](contact_condim)
                         num_contacts += 1
                 elif gi_type == GEOM_MESH:
-                    var mi_id = Int(rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_MESH_ID]))
-                    if mi_id >= 0:
-                        comptime pm2_meta = model_mesh_meta_offset[
-                            NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE]()
-                        comptime pm2_verts = model_mesh_vert_offset[
-                            NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE]()
-                        var pm2_vadr = Int(rebind[Scalar[DTYPE]](model[0, pm2_meta + mi_id * 2]))
-                        var pm2_vnum = Int(rebind[Scalar[DTYPE]](model[0, pm2_meta + mi_id * 2 + 1]))
-                        var pm2_voff = pm2_verts + pm2_vadr * 3
-                        for vi in range(pm2_vnum):
-                            if num_contacts >= MAX_CONTACTS:
-                                break
-                            var vx = rebind[Scalar[DTYPE]](model[0, pm2_voff + vi * 3 + 0])
-                            var vy = rebind[Scalar[DTYPE]](model[0, pm2_voff + vi * 3 + 1])
-                            var vz = rebind[Scalar[DTYPE]](model[0, pm2_voff + vi * 3 + 2])
-                            var local_pt = gpu_quat_rotate(qi_x, qi_y, qi_z, qi_w, vx, vy, vz)
-                            var wx = pi_x + local_pt[0]
-                            var wy = pi_y + local_pt[1]
-                            var wz = pi_z + local_pt[2]
-                            var dist_v = wz - ground_z
-                            if dist_v < contact_margin:
-                                var c_off = contacts_off + num_contacts * CONTACT_SIZE
-                                state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](gi_body)
-                                state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](0)
-                                state[env, c_off + CONTACT_IDX_POS_X] = wx
-                                state[env, c_off + CONTACT_IDX_POS_Y] = wy
-                                state[env, c_off + CONTACT_IDX_POS_Z] = ground_z + dist_v * Scalar[DTYPE](0.5)
-                                state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                                state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                                state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                                state[env, c_off + CONTACT_IDX_DIST] = dist_v
-                                state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
-                                state[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
-                                state[env, c_off + CONTACT_IDX_FRICTION_SPIN] = contact_friction_spin
-                                state[env, c_off + CONTACT_IDX_FRICTION_ROLL] = contact_friction_roll
-                                state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](contact_condim)
-                                num_contacts += 1
+                    comptime if NMESH_VERTS > 0:
+                        _plane_mesh_contacts[
+                            DTYPE, MAX_CONTACTS, NGEOM, NMESH_VERTS, BATCH
+                        ](
+                            env,
+                            gi,
+                            gi_body,
+                            pi_x,
+                            pi_y,
+                            pi_z,
+                            qi_x,
+                            qi_y,
+                            qi_z,
+                            qi_w,
+                            ground_z,
+                            contact_margin,
+                            contact_friction,
+                            contact_friction_spin,
+                            contact_friction_roll,
+                            contact_condim,
+                            geoms,
+                            mesh_meta,
+                            mesh_verts,
+                            contacts,
+                            num_contacts,
+                        )
                 continue
 
             # --- Non-plane geom pair ---
@@ -2436,75 +1451,228 @@ def detect_contacts_gpu[
 
             # GJK/EPA fallback for any pair involving a mesh geom
             elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:
-                # Read mesh IDs from geom data
-                var mi_id = Int(rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_MESH_ID]))
-                var mj_id = Int(rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_MESH_ID]))
-                # Compute mesh vertex buffer offsets
-                comptime mesh_meta = model_mesh_meta_offset[
-                    NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE]()
-                comptime mesh_verts = model_mesh_vert_offset[
-                    NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE]()
-                var mvbo1 = 0
-                var mnv1 = 0
-                if mi_id >= 0:
-                    mvbo1 = mesh_verts + Int(rebind[Scalar[DTYPE]](
-                        model[0, mesh_meta + mi_id * 2])) * 3
-                    mnv1 = Int(rebind[Scalar[DTYPE]](
-                        model[0, mesh_meta + mi_id * 2 + 1]))
-                var mvbo2 = 0
-                var mnv2 = 0
-                if mj_id >= 0:
-                    mvbo2 = mesh_verts + Int(rebind[Scalar[DTYPE]](
-                        model[0, mesh_meta + mj_id * 2])) * 3
-                    mnv2 = Int(rebind[Scalar[DTYPE]](
-                        model[0, mesh_meta + mj_id * 2 + 1]))
-                var result = gjk_epa_gpu[DTYPE, MODEL_SIZE](
-                    gi_type,
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
-                    ri, hli, hxi, hyi, hzi,
-                    model, mvbo1, mnv1,
-                    gj_type,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
-                    rj, hlj, hxj, hyj, hzj,
-                    mvbo2, mnv2,
-                )
-                dist = result[0]
-                cx = result[1]
-                cy = result[2]
-                cz = result[3]
-                nx = result[4]
-                ny = result[5]
-                nz = result[6]
-                body_a = gi_body
-                body_b = gj_body
+                comptime if NMESH_VERTS > 0:
+                    # Read mesh IDs from geom data
+                    var mi_id = Int(
+                        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MESH_ID])
+                    )
+                    var mj_id = Int(
+                        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MESH_ID])
+                    )
+                    # Resolve mesh vertex ranges from mesh_meta records
+                    var va1 = 0
+                    var mnv1 = 0
+                    if mi_id >= 0:
+                        va1 = Int(rebind[Scalar[DTYPE]](mesh_meta[mi_id, 0]))
+                        mnv1 = Int(rebind[Scalar[DTYPE]](mesh_meta[mi_id, 1]))
+                    var va2 = 0
+                    var mnv2 = 0
+                    if mj_id >= 0:
+                        va2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 0]))
+                        mnv2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 1]))
+                    var result = gjk_epa[DTYPE, NMESH_VERTS](
+                        gi_type,
+                        pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                        ri, hli, hxi, hyi, hzi,
+                        mesh_verts, va1, mnv1,
+                        gj_type,
+                        pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                        rj, hlj, hxj, hyj, hzj,
+                        va2, mnv2,
+                    )
+                    dist = result[0]
+                    cx = result[1]
+                    cy = result[2]
+                    cz = result[3]
+                    nx = result[4]
+                    ny = result[5]
+                    nz = result[6]
+                    body_a = gi_body
+                    body_b = gj_body
+                else:
+                    continue
 
             if dist < contact_margin and num_contacts < MAX_CONTACTS:
-                var c_off = contacts_off + num_contacts * CONTACT_SIZE
-                state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](body_a)
-                state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](body_b)
-                state[env, c_off + CONTACT_IDX_POS_X] = cx
-                state[env, c_off + CONTACT_IDX_POS_Y] = cy
-                state[env, c_off + CONTACT_IDX_POS_Z] = cz
+                var c_off = num_contacts * CONTACT_SIZE
+                contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                    body_a
+                )
+                contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                    body_b
+                )
+                contacts[env, c_off + CONTACT_IDX_POS_X] = cx
+                contacts[env, c_off + CONTACT_IDX_POS_Y] = cy
+                contacts[env, c_off + CONTACT_IDX_POS_Z] = cz
                 # Negate normal for body-body contacts (same fix as CPU path)
                 if body_b > 0:
                     nx = -nx
                     ny = -ny
                     nz = -nz
-                state[env, c_off + CONTACT_IDX_NX] = nx
-                state[env, c_off + CONTACT_IDX_NY] = ny
-                state[env, c_off + CONTACT_IDX_NZ] = nz
-                state[env, c_off + CONTACT_IDX_DIST] = dist
-                state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
-                state[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
-                state[
+                contacts[env, c_off + CONTACT_IDX_NX] = nx
+                contacts[env, c_off + CONTACT_IDX_NY] = ny
+                contacts[env, c_off + CONTACT_IDX_NZ] = nz
+                contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                contacts[
+                    env, c_off + CONTACT_IDX_INCLUDEMARGIN
+                ] = contact_margin
+                contacts[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
+                contacts[
                     env, c_off + CONTACT_IDX_FRICTION_SPIN
                 ] = contact_friction_spin
-                state[
+                contacts[
                     env, c_off + CONTACT_IDX_FRICTION_ROLL
                 ] = contact_friction_roll
-                state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
                     contact_condim
                 )
                 num_contacts += 1
 
-    state[env, meta_off + META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)
+    smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)
+
+
+def _detect_contacts_fields_kernel[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int,
+    NEXCLUDE: Int,
+    NMESH_VERTS: Int,
+    BATCH: Int,
+](
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    geoms: LayoutTensor[
+        DTYPE, Layout.row_major(NGEOM, MODEL_GEOM_SIZE), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    mmeta: LayoutTensor[
+        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+    ],
+    excludes: LayoutTensor[
+        DTYPE, Layout.row_major(NEXCLUDE, 2), MutAnyOrigin
+    ],
+    mesh_meta: LayoutTensor[
+        DTYPE,
+        Layout.row_major(MAX_GPU_MESHES, MODEL_MESH_META_SIZE),
+        MutAnyOrigin,
+    ],
+    mesh_verts: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
+    contacts: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    smeta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+    ],
+):
+    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if env >= BATCH:
+        return
+    _detect_contacts_env[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEXCLUDE,
+        NMESH_VERTS, BATCH,
+    ](
+        env, xpos, xquat, geoms, bodies, mmeta, excludes, mesh_meta,
+        mesh_verts, contacts, smeta,
+    )
+
+
+def detect_contacts[
+    target: StaticString,
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
+    NEXCLUDE: Int = 0,
+    NMESH_VERTS: Int = 0,
+    BATCH: Int = 1,
+](
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: Model[
+        DTYPE,
+        NV,
+        NBODY,
+        NJOINT,
+        NGEOM,
+        NEQUALITY,
+        NTENDON,
+        NSITE,
+        NEXCLUDE,
+        NMESH_VERTS,
+    ],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """Unified geom contact detection from FK products, both targets, one
+    body. Reads `d.xpos`/`d.xquat` + geom/body/meta/exclude/mesh records;
+    writes `d.contacts` + the ncon slot of `d.meta`."""
+    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
+    comptime L_GEOM = Layout.row_major(NGEOM, MODEL_GEOM_SIZE)
+    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
+    comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
+    comptime L_EXCLUDE = Layout.row_major(NEXCLUDE, 2)
+    comptime L_MESH_META = Layout.row_major(
+        MAX_GPU_MESHES, MODEL_MESH_META_SIZE
+    )
+    comptime L_MESH_VERT = Layout.row_major(NMESH_VERTS, 3)
+    comptime L_CONTACTS = Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE)
+    comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
+
+    comptime if target == "cpu":
+        var xpos_v = d.xpos.lt["cpu", L_B3]()
+        var xquat_v = d.xquat.lt["cpu", L_B4]()
+        var geoms_v = m.geoms.lt["cpu", L_GEOM]()
+        var bodies_v = m.bodies.lt["cpu", L_BODY]()
+        var mmeta_v = m.meta.lt["cpu", L_MMETA]()
+        var excludes_v = m.excludes.lt["cpu", L_EXCLUDE]()
+        var mesh_meta_v = m.mesh_meta.lt["cpu", L_MESH_META]()
+        var mesh_verts_v = m.mesh_verts.lt["cpu", L_MESH_VERT]()
+        var contacts_v = d.contacts.lt["cpu", L_CONTACTS]()
+        var smeta_v = d.meta.lt["cpu", L_SMETA]()
+        for e in range(BATCH):
+            _detect_contacts_env[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+                NEXCLUDE, NMESH_VERTS, BATCH,
+            ](
+                e, xpos_v, xquat_v, geoms_v, bodies_v, mmeta_v,
+                excludes_v, mesh_meta_v, mesh_verts_v, contacts_v, smeta_v,
+            )
+    else:
+        var c = ctx.value()
+        comptime BLOCKS = (BATCH + CD_TPB - 1) // CD_TPB
+        c.enqueue_function[
+            _detect_contacts_fields_kernel[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+                NEXCLUDE, NMESH_VERTS, BATCH,
+            ]
+        ](
+            d.xpos.lt["gpu", L_B3](),
+            d.xquat.lt["gpu", L_B4](),
+            m.geoms.lt["gpu", L_GEOM](),
+            m.bodies.lt["gpu", L_BODY](),
+            m.meta.lt["gpu", L_MMETA](),
+            m.excludes.lt["gpu", L_EXCLUDE](),
+            m.mesh_meta.lt["gpu", L_MESH_META](),
+            m.mesh_verts.lt["gpu", L_MESH_VERT](),
+            d.contacts.lt["gpu", L_CONTACTS](),
+            d.meta.lt["gpu", L_SMETA](),
+            grid_dim=(BLOCKS,),
+            block_dim=(CD_TPB,),
+        )

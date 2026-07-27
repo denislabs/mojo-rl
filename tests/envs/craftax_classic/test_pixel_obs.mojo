@@ -25,6 +25,7 @@ from mojo_rl.envs.craftax_classic import (
 from mojo_rl.envs.craftax_classic.state import STATE_SIZE
 from mojo_rl.envs.craftax_classic.constants import ACTION_NOOP, ACTION_RIGHT
 from mojo_rl.nn.constants import DT as dtype
+from mojo_rl.nn.core.ptr import mptr
 
 
 @always_inline
@@ -140,7 +141,7 @@ def test_cpu_vs_gpu_pixel_parity(mut counts: List[Int]) raises:
         host_state.append(Float32(0))
     for i in range(STATE_SIZE):
         host_state[i] = Float32(cpu_env.inner.state[i])
-    ctx.enqueue_copy(states_buf, host_state.unsafe_ptr())
+    ctx.enqueue_copy(states_buf, mptr(host_state))
 
     # Upload the atlas into the shared region of workspace.
     cpu_env.init_step_workspace_gpu_with_atlas[BATCH](ctx, ws_buf)
@@ -148,12 +149,12 @@ def test_cpu_vs_gpu_pixel_parity(mut counts: List[Int]) raises:
 
     var ws_optional = Optional[
         UnsafePointer[Scalar[dtype], MutAnyOrigin]
-    ](ws_buf.unsafe_ptr())
+    ](ws_buf.unsafe_ptr().as_unsafe_any_origin())
 
     # Step both sides once with NOOP and matching seeds.
     var host_act = List[Float32](capacity=BATCH)
     host_act.append(Float32(ACTION_NOOP))
-    ctx.enqueue_copy(actions_buf, host_act.unsafe_ptr())
+    ctx.enqueue_copy(actions_buf, mptr(host_act))
     ctx.synchronize()
     CraftaxClassicPixelEnv[dtype].step_kernel_gpu[
         BATCH, STATE_SIZE, PIXEL_OBS_DIM
@@ -175,7 +176,7 @@ def test_cpu_vs_gpu_pixel_parity(mut counts: List[Int]) raises:
     var host_obs = List[Float32](capacity=PIXEL_OBS_DIM)
     for _ in range(PIXEL_OBS_DIM):
         host_obs.append(Float32(0.0))
-    ctx.enqueue_copy(host_obs.unsafe_ptr(), obs_buf)
+    ctx.enqueue_copy(mptr(host_obs), obs_buf)
     ctx.synchronize()
 
     var max_diff: Float32 = 0.0

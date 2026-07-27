@@ -63,7 +63,9 @@ def test_lambda_returns() raises:
 
     lambda_returns[B, H](rew, val, con, Scalar[DT](LAM), ret)
 
-    # hand recurrence: R_{H-1}=v_{H-1}; R_t = r_{t+1}+live·[(1-λ)v_{t+1}+λ R_{t+1}]
+    # hand recurrence ("arriving" convention — rew/con at t+1; heads trained on
+    # the shifted arriving reward, so out_rew[t+1] is the reward for out_act[t]):
+    #   R_{H-1}=v_{H-1};  R_t = r_{t+1} + live·[(1-λ)v_{t+1} + λ R_{t+1}]
     var rn = vals[3]
     var expected: InlineArray[Float64, 3] = [0.0, 0.0, 0.0]
     var t2 = H - 2

@@ -377,7 +377,7 @@ struct Dreamer4Dynamics[
     # agent isolation; with NAGENT=0 it is bit-identical to the old
     # `Dreamer4Stack[..., L=S, "wm_agent"]` (full mixing).
     comptime TF = Sequential[
-        SinusoidalPosAddBT[Self.T, Self.S, Self.D],
+        SinusoidalPosAddBT[Self.T, Self.S, Self.D, True],  # SCALE=True (÷√D), match refs
         Dreamer4DynStack[
             Self.D, Self.NH, Self.T, Self.NSP, Self.NREG, Self.NAGENT,
             Self.HID, Self.DEPTH, "wm_agent_bc", Self.USE_MAX,
@@ -609,6 +609,19 @@ struct Dreamer4Dynamics[
     def grad_agent_in_dev(self) -> DeviceBuffer[DT]:
         """Device buffer holding the grad wrt the agent input, after a GPU vjp."""
         return self.grad_agent_in.dev.value()
+
+    def sync_agent_out(mut self, c: DeviceContext) raises:
+        """D2H the agent tokens h_t (after a GPU forward) so `agent_out_ptr_cpu`
+        is valid for the CPU heads. Uses the Tensor's logical-size download (the
+        raw device buffer may over-allocate under lazy-grow)."""
+        comptime if Self.AGENT:
+            self.agent_out.download(c)
+
+    def sync_grad_agent_in(mut self, c: DeviceContext) raises:
+        """D2H the agent-input grad (after a GPU vjp) so `grad_agent_in_ptr_cpu`
+        is valid for the TaskEmbedder backward."""
+        comptime if Self.AGENT:
+            self.grad_agent_in.download(c)
 
     def forward[
         target: StaticString,

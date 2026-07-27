@@ -244,22 +244,22 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                     var row = b * Self.OUT_
                     var k = 0
                     while k + W <= Self.OUT_:
-                        var z = op.load[width=W](row + k) + bp.load[width=W](k)
+                        var z = op.unsafe_load[width=W](row + k) + bp.unsafe_load[width=W](k)
                         var y = Self.OP.forward_simd[W](z)
-                        op.store(row + k, y)
+                        op.unsafe_store(row + k, y)
                         comptime if Self.OP.owns_cache:
-                            cp.store(row + k, y)
+                            cp.unsafe_store(row + k, y)
                         else:
-                            cp.store(row + k, z)
+                            cp.unsafe_store(row + k, z)
                         k += W
                     while k < Self.OUT_:
-                        var z_s = op[row + k] + bp[k]
+                        var z_s = op[unsafe_offset=row + k] + bp[unsafe_offset=k]
                         var y_s = Self.OP.forward_scalar(z_s)
-                        op[row + k] = y_s
+                        op[unsafe_offset=row + k] = y_s
                         comptime if Self.OP.owns_cache:
-                            cp[row + k] = y_s
+                            cp[unsafe_offset=row + k] = y_s
                         else:
-                            cp[row + k] = z_s
+                            cp[unsafe_offset=row + k] = z_s
                         k += 1
             else:
                 var c = ctx.value()
@@ -344,12 +344,12 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                 comptime W2 = CPU_SIMD_W
                 var kk = 0
                 while kk + W2 <= M:
-                    var c = cp.load[width=W2](kk)
-                    var g = gp.load[width=W2](kk)
-                    gp.store(kk, Self.OP.backward_simd[W2](c, g))
+                    var c = cp.unsafe_load[width=W2](kk)
+                    var g = gp.unsafe_load[width=W2](kk)
+                    gp.unsafe_store(kk, Self.OP.backward_simd[W2](c, g))
                     kk += W2
                 while kk < M:
-                    gp[kk] = Self.OP.backward_scalar(cp[kk], gp[kk])
+                    gp[unsafe_offset=kk] = Self.OP.backward_scalar(cp[unsafe_offset=kk], gp[unsafe_offset=kk])
                     kk += 1
                 var go_v = TileTensor(god.data, row_major[B, Self.OUT_]())
                 var gi_v = TileTensor(gind.data, row_major[B, Self.IN_]())

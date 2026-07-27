@@ -63,7 +63,7 @@ def main() raises:
     var ctx = DeviceContext()
 
     # ── Allocate params on host, init with Xavier (deterministic seed) ────────
-    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
+    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
     memset(params_buf, 0, NET.PARAM_SIZE)
     var params = LayoutTensor[
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
@@ -71,8 +71,8 @@ def main() raises:
     NET.pc_init_params[PCXavier, dtype](params)
 
     # ── Allocate input + target (deterministic Philox) ────────────────────────
-    var x_in_buf = alloc[Scalar[dtype]](BATCH * NET.IN_DIM)
-    var y_tgt_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM)
+    var x_in_buf = alloc[Scalar[dtype]](BATCH * NET.IN_DIM).as_unsafe_any_origin()
+    var y_tgt_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM).as_unsafe_any_origin()
     var rng = PhiloxRandom(seed=UInt64(13), offset=UInt64(0))
     for i in range(BATCH * NET.IN_DIM):
         var r = rng.step_uniform()
@@ -92,12 +92,12 @@ def main() raises:
     # =================================================================
     # CPU run
     # =================================================================
-    var grads_cpu_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
-    var lat_cpu_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
-    var mu_eps_cpu_buf = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM)
-    var a_below_cpu_buf = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var z_below_cpu_buf = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var dx_cpu_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
+    var grads_cpu_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
+    var lat_cpu_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var mu_eps_cpu_buf = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM).as_unsafe_any_origin()
+    var a_below_cpu_buf = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var z_below_cpu_buf = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var dx_cpu_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
     memset(grads_cpu_buf, 0, NET.PARAM_SIZE)
     memset(lat_cpu_buf, 0, BATCH * NET.LATENT_DIM)
     memset(mu_eps_cpu_buf, 0, BATCH * NET.SCRATCH_OUT_DIM)
@@ -259,13 +259,4 @@ def main() raises:
         print("\n  [FAIL] CPU vs GPU disagreement exceeds tolerance")
         raise Error("parity test failed")
 
-    params_buf.free()
-    x_in_buf.free()
-    y_tgt_buf.free()
-    grads_cpu_buf.free()
-    lat_cpu_buf.free()
-    mu_eps_cpu_buf.free()
-    a_below_cpu_buf.free()
-    z_below_cpu_buf.free()
-    dx_cpu_buf.free()
     print("=== Done ===")

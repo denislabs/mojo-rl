@@ -85,17 +85,17 @@ struct SPIRVShaders(Movable):
         self.text_vert = text_vert^
         self.text_frag = text_frag^
 
-    def __init__(out self, *, deinit take: Self):
-        self.solid_vert = take.solid_vert^
-        self.solid_frag = take.solid_frag^
-        self.ground_vert = take.ground_vert^
-        self.ground_frag = take.ground_frag^
-        self.line_vert = take.line_vert^
-        self.line_frag = take.line_frag^
-        self.shadow_vert = take.shadow_vert^
-        self.shadow_frag = take.shadow_frag^
-        self.reflection_frag = take.reflection_frag^
-        self.skybox_vert = take.skybox_vert^
-        self.skybox_frag = take.skybox_frag^
-        self.text_vert = take.text_vert^
-        self.text_frag = take.text_frag^
+    def __init__(out self, *, deinit move: Self):
+        self.solid_vert = move.solid_vert^
+        self.solid_frag = move.solid_frag^
+        self.ground_vert = move.ground_vert^
+        self.ground_frag = move.ground_frag^
+        self.line_vert = move.line_vert^
+        self.line_frag = move.line_frag^
+        self.shadow_vert = move.shadow_vert^
+        self.shadow_frag = move.shadow_frag^
+        self.reflection_frag = move.reflection_frag^
+        self.skybox_vert = move.skybox_vert^
+        self.skybox_frag = move.skybox_frag^
+        self.text_vert = move.text_vert^
+        self.text_frag = move.text_frag^

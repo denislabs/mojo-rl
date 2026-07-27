@@ -30,7 +30,7 @@ v1 uses an UNCONDITIONAL dynamics (ADIM=0) — the action-conditioned video
 prediction (ADIM>0, already built) layers in for the real-env lighthouse.
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, HostBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -41,6 +41,10 @@ from mojo_rl.nn.core.initializer import Initializer
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.core.walkers import join_name
+from mojo_rl.nn.core.checkpoint import (
+    BinaryCheckpointWriter, BinaryCheckpointReader,
+    _write_file_bytes, _read_file_bytes,
+)
 
 from .dynamics import Dreamer4Dynamics
 from .task_embedder import TaskEmbedder
@@ -49,8 +53,9 @@ from .heads import (
     Dreamer4ContinueHead,
 )
 from .shortcut_loss import dynamics_pretrain_loss, _mao
-from .bc_loss import bc_mtp_loss
-from .imag_rollout import imagine_rollout
+from .bc_loss import bc_mtp_loss, bc_policy_only_loss
+from .imag_rollout import imagine_rollout, _fwd_window
+from ..dreamerv3.dists_discrete import cat_sample, UNIMIX
 from .imag_rl_loss import (
     lambda_returns,
     value_td_loss_cpu,
@@ -263,7 +268,9 @@ struct Dreamer4Agent[
         m.rlog.resize(Self.BF * Self.RLOG, Scalar[DT](0.0))
         m.gpl.resize(Self.BF * Self.PLOG, Scalar[DT](0.0))
         m.grl.resize(Self.BF * Self.RLOG, Scalar[DT](0.0))
-        m.clean_sig.resize(Self.BF, Scalar[DT](Float64(Self.KMAX - 1)))  # σ=0.75
+        m.clean_sig.resize(Self.BF, Scalar[DT](Float64(Self.KMAX - 1)))  # cleanest
+        # sig_idx (KMAX-1); the BC forward feeds CLEAN content (sig_bc=1.0) here,
+        # matching how imagination/ode_sampler place clean latents at this index.
         m.clean_step.resize(Self.BF, Scalar[DT](Float64(Self.EMAX)))
         m.bc_in.resize(Self.BF * Self.ND, Scalar[DT](0.0))
         m.gzero.resize(Self.BF * Self.ND, Scalar[DT](0.0))
@@ -319,8 +326,13 @@ struct Dreamer4Agent[
         self.rh.for_each_param[target, V](visitor, ctx, join_name(prefix, "rh"))
         self.vh.for_each_param[target, V](visitor, ctx, join_name(prefix, "vh"))
         self.ch.for_each_param[target, V](visitor, ctx, join_name(prefix, "ch"))
-        # NOTE: `ph_prior` is the FROZEN behavioral prior — never optimized, so
-        # it is deliberately excluded from the param walk.
+        # `ph_prior` is the behavioral prior: BC-trained (in acwm), FROZEN during
+        # imagination (the reverse-KL anchor). It IS optimized by the acwm step, so
+        # it joins the whole-agent param walk (CPU path). It is NOT touched by the
+        # imagination optimizer (which walks vh + ph only).
+        self.ph_prior.for_each_param[target, V](
+            visitor, ctx, join_name(prefix, "ph_prior")
+        )
 
     def zero_grad[target: StaticString](
         mut self, ctx: Optional[DeviceContext]
@@ -335,6 +347,75 @@ struct Dreamer4Agent[
         self.rh.zero_grad[target](ctx)
         self.vh.zero_grad[target](ctx)
         self.ch.zero_grad[target](ctx)
+        self.ph_prior.zero_grad[target](ctx)   # BC-trained anchor (acwm)
+
+    # ── checkpoint (params only; the frozen ph_prior + Adam moments are not
+    #    saved). ONE combined file `<base>.ckpt` holding the tokenizer + agent
+    #    (dyn, te, ph, rh, vh, ch) as consecutive name-validated sections (the
+    #    save_params_multi format, but with PER-MODULE targets so the mixed
+    #    DYN_TARGET — tok+dyn on device, heads/te on host — round-trips through
+    #    one writer). `load` walks the SAME modules in the SAME order. `dctx`
+    #    required when DYN_TARGET="gpu" (D2H/H2D the device tok+dyn params). te is
+    #    a bespoke non-Module → param-only section (no for_each_state). ──
+    @staticmethod
+    def _wsec[M: Module, tgt: StaticString](
+        mut w: BinaryCheckpointWriter, mut m: M, ctx: Optional[DeviceContext]
+    ) raises:
+        w.mode = 0
+        m.for_each_param[tgt](w, ctx)
+        w.mode = 1
+        m.for_each_state[tgt](w, ctx)
+
+    @staticmethod
+    def _rsec[M: Module, tgt: StaticString](
+        mut r: BinaryCheckpointReader, mut m: M, ctx: Optional[DeviceContext]
+    ) raises:
+        r.mode = 0
+        m.for_each_param[tgt](r, ctx)
+        r.mode = 1
+        m.for_each_state[tgt](r, ctx)
+
+    def save[
+        TOK: Module
+    ](
+        mut self, mut tok: TOK, base: String,
+        dctx: Optional[DeviceContext] = None,
+    ) raises:
+        var w = BinaryCheckpointWriter(False)
+        comptime if Self.DYN_TARGET == "gpu":
+            Self._wsec[TOK, "gpu"](w, tok, dctx)
+            Self._wsec[Self.DYN, "gpu"](w, self.dyn, dctx)
+        else:
+            Self._wsec[TOK, "cpu"](w, tok, None)
+            Self._wsec[Self.DYN, "cpu"](w, self.dyn, None)
+        w.mode = 0                          # te: param-only (no state section)
+        self.te.for_each_param["cpu"](w, None)
+        Self._wsec[Self.PH, "cpu"](w, self.ph, None)
+        Self._wsec[Self.RH, "cpu"](w, self.rh, None)
+        Self._wsec[Self.VH, "cpu"](w, self.vh, None)
+        Self._wsec[Self.CH, "cpu"](w, self.ch, None)
+        _write_file_bytes(base + ".ckpt", w.content)
+
+    def load[
+        TOK: Module
+    ](
+        mut self, mut tok: TOK, base: String,
+        dctx: Optional[DeviceContext] = None,
+    ) raises:
+        var bytes = _read_file_bytes(base + ".ckpt")
+        var r = BinaryCheckpointReader(bytes^)
+        comptime if Self.DYN_TARGET == "gpu":
+            Self._rsec[TOK, "gpu"](r, tok, dctx)
+            Self._rsec[Self.DYN, "gpu"](r, self.dyn, dctx)
+        else:
+            Self._rsec[TOK, "cpu"](r, tok, None)
+            Self._rsec[Self.DYN, "cpu"](r, self.dyn, None)
+        r.mode = 0                          # te: param-only
+        self.te.for_each_param["cpu"](r, None)
+        Self._rsec[Self.PH, "cpu"](r, self.ph, None)
+        Self._rsec[Self.RH, "cpu"](r, self.rh, None)
+        Self._rsec[Self.VH, "cpu"](r, self.vh, None)
+        Self._rsec[Self.CH, "cpu"](r, self.ch, None)
 
     # ── storage-module call bridges (List host scratch ↔ boundary Tensor) ──
     # @staticmethod so the caller can pass three DISTINCT fields of `self`
@@ -342,7 +423,7 @@ struct Dreamer4Agent[
     # whole-struct borrow aliasing them. CPU-only host world-model path.
     @staticmethod
     def _head_fwd[M: Module, NB: Int](
-        mut m: M, read inp: List[Scalar[DT]], mut out: List[Scalar[DT]]
+        mut m: M, imm inp: List[Scalar[DT]], mut out: List[Scalar[DT]]
     ) raises:
         comptime IN = M.IN_DIMS[0]
         comptime OUT = M.OUT_DIM
@@ -356,7 +437,7 @@ struct Dreamer4Agent[
 
     @staticmethod
     def _head_vjp[M: Module, NB: Int](
-        mut m: M, read fin: List[Scalar[DT]], read go: List[Scalar[DT]]
+        mut m: M, imm fin: List[Scalar[DT]], imm go: List[Scalar[DT]]
     ) raises:
         # grad wrt input discarded (heads-only imagination training).
         comptime IN = M.IN_DIMS[0]
@@ -374,7 +455,7 @@ struct Dreamer4Agent[
 
     @staticmethod
     def _dyn_fwd[NB: Int](
-        mut dyn: Self.DYN, read inp: List[Scalar[DT]], mut out: List[Scalar[DT]]
+        mut dyn: Self.DYN, imm inp: List[Scalar[DT]], mut out: List[Scalar[DT]]
     ) raises:
         comptime ND = Self.ND
         var in_t = Tensor.alloc(NB * ND)
@@ -387,7 +468,7 @@ struct Dreamer4Agent[
 
     @staticmethod
     def _dyn_vjp[NB: Int](
-        mut dyn: Self.DYN, read fin: List[Scalar[DT]], read go: List[Scalar[DT]]
+        mut dyn: Self.DYN, imm fin: List[Scalar[DT]], imm go: List[Scalar[DT]]
     ) raises:
         # forward_input = `fin` (the input of the preceding dyn forward, so the
         # spatial-proj grad recomputes correctly); dyn reuses the grid/tf_out/
@@ -404,6 +485,47 @@ struct Dreamer4Agent[
             TensorRefs[1](fin_t), go_t, TensorRefs[1](gi_t), None
         )
 
+    @staticmethod
+    def _dyn_fwd_gpu[NB: Int](
+        mut dyn: Self.DYN, imm inp: List[Scalar[DT]], mut out: List[Scalar[DT]],
+        c: DeviceContext,
+    ) raises:
+        # GPU sibling of _dyn_fwd: upload input → device forward → download the
+        # flow output. Leaves dyn's device caches (grid/tf_out/agent_out) for a
+        # following _dyn_vjp_gpu / an h_t D2H read.
+        comptime ND = Self.ND
+        var in_t = Tensor.alloc(NB * ND)
+        for i in range(NB * ND):
+            in_t.data[i] = inp[i]
+        in_t.upload(c)
+        var out_t = Tensor.alloc_gpu(c, NB * ND)
+        dyn.forward["gpu", NB](TensorRefs[1](in_t), out_t, Optional(c))
+        out_t.download(c)
+        for i in range(NB * ND):
+            out[i] = out_t.data[i]
+
+    @staticmethod
+    def _dyn_vjp_gpu[NB: Int](
+        mut dyn: Self.DYN, imm fin: List[Scalar[DT]], imm go: List[Scalar[DT]],
+        c: DeviceContext,
+    ) raises:
+        # GPU sibling of _dyn_vjp: forward_input `fin` + grad_output `go` uploaded
+        # to device, dyn.vjp["gpu"] accumulates the dynamics param grads on device
+        # (grad wrt input discarded). Matches the CPU forward_input semantics.
+        comptime ND = Self.ND
+        var fin_t = Tensor.alloc(NB * ND)
+        for i in range(NB * ND):
+            fin_t.data[i] = fin[i]
+        fin_t.upload(c)
+        var go_t = Tensor.alloc(NB * ND)
+        for i in range(NB * ND):
+            go_t.data[i] = go[i]
+        go_t.upload(c)
+        var gi_t = Tensor.alloc_gpu(c, NB * ND)
+        dyn.vjp["gpu", NB](
+            TensorRefs[1](fin_t), go_t, TensorRefs[1](gi_t), Optional(c)
+        )
+
     # ── eval accessors ──────────────────────────────────────────────────
     def agent_out_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         """Return h_t from the last forward (for inspection / eval heads)."""
@@ -414,6 +536,124 @@ struct Dreamer4Agent[
         (distance n at columns [n·NACT, (n+1)·NACT)) — greedy action = argmax of
         the distance-0 block."""
         return _mao(self.plog.unsafe_ptr())
+
+    # Imagination internals from the last imag_train_step (diagnostics): the
+    # reward-head prediction, value-head prediction, and λ-return per imagined
+    # state — used to check whether imagination sees phantom rewards/values.
+    def im_rew_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:  # [BF]
+        return _mao(self.im_rew.unsafe_ptr())
+
+    def im_val_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:  # [BF]
+        return _mao(self.im_val.unsafe_ptr())
+
+    def im_ret_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:  # [B*(T-1)]
+        return _mao(self.im_ret.unsafe_ptr())
+
+    # ── online acting (single-step inference) ────────────────────────────
+    def act_from_latents(
+        mut self,
+        z_window: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [n_ctx * ND]
+        n_ctx: Int,
+        action_hist: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [T * ADIM]
+        task_id: Int,
+        explore: Bool,
+        u01: Float64,
+        dctx: Optional[DeviceContext] = None,   # required when DYN_TARGET="gpu"
+    ) raises -> Int:
+        """Pick an action from a window of recent CLEAN world-model latents.
+
+        Places the `n_ctx` latents into frames [0, n_ctx-1] of a [B=1, T] window
+        (clean: σ=KMAX-1, step=EMAX; later frames zero — causal time attention
+        means they cannot affect the read), sets the action tokens from
+        `action_hist` (the one-hots leading INTO frames 1..n_ctx-1, the
+        `imagine_rollout` convention), runs ONE frozen-dynamics forward, reads
+        the agent token h at the current frame `n_ctx-1`, runs the policy head,
+        and returns the action class in [0, NACT) from the dist-0 block —
+        `explore=True` → categorical sample with `u01`; else argmax.
+
+        Allocates act-LOCAL scratch (B=1 ⇒ BF=T); does not touch the training
+        scratch. FWD path follows `DYN_TARGET` exactly like `imagine_rollout`."""
+        comptime assert Self.ADIM == Self.NACT, (
+            "act_from_latents needs ADIM = NACT (one-hot discrete actions)"
+        )
+        comptime T = Self.T
+        comptime ND = Self.ND
+        comptime AGD = Self.AGD
+        comptime ADIM = Self.ADIM
+        comptime PLOG = Self.PLOG
+        comptime BF = Self.T               # B = 1
+
+        var nc = n_ctx
+        if nc < 1:
+            nc = 1
+        if nc > T:
+            nc = T
+        var cur = nc - 1                    # current state / acting frame
+
+        # act-local scratch (B=1)
+        var sig = List[Scalar[DT]](length=BF, fill=Scalar[DT](0.0))
+        var step = List[Scalar[DT]](length=BF, fill=Scalar[DT](0.0))
+        var act_oh = List[Scalar[DT]](length=BF * ADIM, fill=Scalar[DT](0.0))
+        var act_mask = List[Scalar[DT]](length=BF * ADIM, fill=Scalar[DT](1.0))
+        var packed = List[Scalar[DT]](length=BF * ND, fill=Scalar[DT](0.0))
+        var zhat = List[Scalar[DT]](length=BF * ND, fill=Scalar[DT](0.0))
+        var h_host = List[Scalar[DT]](length=BF * AGD, fill=Scalar[DT](0.0))
+        var agp_l = List[Scalar[DT]](length=BF * AGD, fill=Scalar[DT](0.0))
+        var task_l = List[Scalar[DT]](length=1, fill=Scalar[DT](Float64(task_id)))
+
+        for f in range(nc):
+            sig[f] = Scalar[DT](Float64(Self.KMAX - 1))
+            step[f] = Scalar[DT](Float64(Self.EMAX))
+            for i in range(ND):
+                packed[f * ND + i] = z_window[f * ND + i]
+        for i in range(BF * ADIM):
+            act_oh[i] = action_hist[i]
+
+        # task embedding → agent tokens [B=1, T]
+        self.te.embed_into["cpu", 1, T](
+            _mao(task_l.unsafe_ptr()), _mao(agp_l.unsafe_ptr()), None
+        )
+
+        # boundary tensors: `_fwd_window` writes host `.data` then (gpu) uploads /
+        # downloads, so in_t/out_t need BOTH a host buffer AND (gpu) a device one.
+        # `Tensor.make["gpu"]` is device-ONLY → alloc host, then add the device
+        # buffer for the gpu path.
+        var in_t = Tensor.alloc(BF * ND)
+        var out_t = Tensor.alloc(BF * ND)
+        var h_ag = Optional[HostBuffer[DT]](None)
+        comptime if Self.DYN_TARGET == "gpu":
+            var dc = dctx.value()
+            in_t.ensure_gpu(dc, BF * ND)
+            out_t.ensure_gpu(dc, BF * ND)
+            h_ag = dc.enqueue_create_host_buffer[DT](BF * AGD)
+
+        # one frozen-dynamics forward → h_host [BF, AGD]
+        _fwd_window[Self.DYN, Self.DYN_TARGET, BF, ND, AGD](
+            self.dyn,
+            _mao(sig.unsafe_ptr()), _mao(step.unsafe_ptr()),
+            _mao(act_oh.unsafe_ptr()), _mao(act_mask.unsafe_ptr()),
+            _mao(agp_l.unsafe_ptr()),
+            _mao(packed.unsafe_ptr()), _mao(zhat.unsafe_ptr()),
+            _mao(h_host.unsafe_ptr()),
+            in_t, out_t, dctx, h_ag,
+        )
+
+        # policy head on every frame's h → [BF, PLOG]; act on frame `cur`
+        var plog = List[Scalar[DT]](length=BF * PLOG, fill=Scalar[DT](0.0))
+        Self._head_fwd[Self.PH, BF](self.ph, h_host, plog)
+
+        if explore:
+            return cat_sample[Self.NACT](
+                _mao(plog.unsafe_ptr()), cur * PLOG, UNIMIX, Scalar[DT](u01)
+            )
+        var best = 0
+        var best_v = Float64(plog[cur * PLOG + 0])
+        for a in range(1, Self.NACT):
+            var v = Float64(plog[cur * PLOG + a])
+            if v > best_v:
+                best_v = v
+                best = a
+        return best
 
     def _run_bc_loss(
         mut self,
@@ -438,6 +678,32 @@ struct Dreamer4Agent[
             _mao(self.grad_h_tmp.unsafe_ptr()),
             policy_weight=policy_weight,
             reward_weight=reward_weight,
+        )
+
+    def _train_prior_bc(
+        mut self,
+        ht: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B*T, AGD] clean h_t
+        actions: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B*T] class ids
+        policy_weight: Scalar[DT] = Scalar[DT](1.0),
+    ) raises:
+        """BC-train the behavioral prior `ph_prior` (policy-only) on the SAME
+        clean h_t + real actions as the `ph` BC. Fills `ph_prior`'s param grads
+        (the caller's acwm optimizer steps it). This makes `ph_prior` a diverse
+        BC anchor — never touched by PMPO — so the imagination reverse-KL keeps
+        the learned policy `ph` from mode-collapsing (the old self-snapshot prior
+        collapsed together with `ph`, providing no resistance). Self-contained
+        scratch (own Tensors); the grad-wrt-h is a throwaway (does NOT feed the
+        dynamics)."""
+        var plog = Tensor.alloc(Self.BF * Self.PLOG)
+        var gpl = Tensor.alloc(Self.BF * Self.PLOG)
+        var gh = Tensor.alloc(Self.BF * Self.AGD)   # throwaway grad-wrt-h
+        _ = bc_policy_only_loss[
+            Self.PH, Self.B, Self.T, Self.NMTP, Self.NACT, Self.AGD
+        ](
+            self.ph_prior, ht, actions,
+            _mao(plog.data.unsafe_ptr()), _mao(gpl.data.unsafe_ptr()),
+            _mao(gh.data.unsafe_ptr()),
+            Scalar[DT](0.0), policy_weight,
         )
 
     # ── one joint BC + video-prediction training step (fills all grads) ──
@@ -643,8 +909,20 @@ struct Dreamer4Agent[
         self.dyn.set_grad_h(ghp, Self.BF)
         Self._dyn_vjp[Self.BF](self.dyn, self.ztil, self.grad_zhat)
 
-        # 4. dedicated near-clean forward (σ_bc) WITH the action tokens → an
-        #    action-conditioned, un-noised h_t for the heads.
+        # 4. dedicated CLEAN forward WITH the action tokens → an action-
+        #    conditioned, un-noised h_t for the heads.
+        #
+        #    sig_bc MUST be 1.0 (pure z1, no noise). The heads (policy/reward/
+        #    value) are QUERIED in imagination on FULLY-clean latents — real z1
+        #    context + the flow head's x̂1 prediction — placed at sig_idx=KMAX-1
+        #    (imag_rollout.mojo; and the WM's own video sampler ode_sampler.mojo:73
+        #    likewise conditions on CLEAN context at KMAX-1). Training the heads'
+        #    h_t on a 0.75·z1+0.25·z0 (σ=0.75) frame instead — the earlier value —
+        #    was a train/inference distribution shift LOCALIZED TO THE HEADS: the
+        #    reward head then never reached the tile-crossing (+3) regime inside
+        #    imagination → dead imagined-reward stream → the value collapses to a
+        #    constant and PMPO gets no advantage signal. sig_idx stays KMAX-1 (the
+        #    cleanest index); only the CONTENT is now the clean z1 imagination uses.
         self.dyn.set_indices(
             _mao(self.clean_sig.unsafe_ptr()),
             _mao(self.clean_step.unsafe_ptr()),
@@ -652,7 +930,7 @@ struct Dreamer4Agent[
         )
         self.dyn.set_actions(atk, amk, Self.BF)
         self.dyn.set_agent_in(agp, Self.BF)
-        var sig_bc = Float64(Self.KMAX - 1) / Float64(Self.KMAX)
+        var sig_bc = 1.0                       # clean latent (match imagination)
         for i in range(Self.BF * Self.ND):
             self.bc_in[i] = Scalar[DT](
                 sig_bc * Float64(z1[i]) + (1.0 - sig_bc) * Float64(z0[i])
@@ -665,11 +943,136 @@ struct Dreamer4Agent[
             self.dyn.agent_out_ptr_cpu(), actions, rsh, bins,
             policy_weight, reward_weight,
         )
+        # 5b. BC-train the behavioral prior on the SAME clean h_t (policy-only).
+        self._train_prior_bc(
+            self.dyn.agent_out_ptr_cpu(), actions, policy_weight
+        )
 
         # 6. BC vjp through the clean forward (zero flow grad) → dyn + act-MLP
         #    grads; then the task-embedder grad.
         self.dyn.set_grad_h(ghp, Self.BF)
         Self._dyn_vjp[Self.BF](self.dyn, self.bc_in, self.gzero)
+        self.te.accumulate_grad["cpu", Self.B, Self.T](
+            self.dyn.grad_agent_in_ptr_cpu(), None
+        )
+
+        return Tuple(loss_v, loss_bc)
+
+    def acwm_train_step_gpu(
+        mut self,
+        z1: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        z0: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        sigma: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        sigma_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        step_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        do_boot: Bool,
+        task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        actions: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        rewards: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        dctx: DeviceContext,
+        policy_weight: Scalar[DT] = Scalar[DT](1.0),
+        reward_weight: Scalar[DT] = Scalar[DT](1.0),
+    ) raises -> Tuple[Float64, Float64]:
+        """GPU-dynamics counterpart of `acwm_train_step` (DYN_TARGET=\"gpu\"): the
+        three shortcut-forcing forwards + both vjps run the transformer ON DEVICE;
+        the heads (ph/rh) + task embedder stay on host, reading h_t / feeding the
+        agent-token grad across the device boundary (D2H). Grads are bit-parity
+        with the CPU path (see test_dreamer4_acwm_gpu_parity)."""
+        comptime assert Self.DYN_TARGET == "gpu", (
+            "acwm_train_step_gpu is the GPU world-model path (DYN_TARGET=\"gpu\")"
+        )
+        comptime assert Self.ADIM == Self.NACT, (
+            "acwm_train_step_gpu needs ADIM = NACT (one-hot action conditioning)"
+        )
+        # Pre-size ALL dynamics GPU scratch to the FULL batch BF up front. With
+        # do_boot=True the bootstrap half-passes run at the smaller self-row batch
+        # BS=B_SELF·T first; the device/host staging buffers only grow (never
+        # shrink), so sizing to BF now prevents a later BF copy from overflowing a
+        # BS-sized staging buffer ("Copy size exceeds Metal buffer length").
+        self.dyn._ensure_scratch_gpu(Self.BF, dctx)
+        var agp = _mao(self.agent_in.unsafe_ptr())
+        var gzh = _mao(self.grad_zhat.unsafe_ptr())
+        var zh = _mao(self.zhat.unsafe_ptr())
+        var ghp = _mao(self.grad_h.unsafe_ptr())
+        var atk = _mao(self.ac_tok.unsafe_ptr())
+        var amk = _mao(self.ac_mask.unsafe_ptr())
+        var rsh = _mao(self.rew_shift.unsafe_ptr())
+
+        # 0. shifted action tokens + transition rewards (identical to CPU)
+        for i in range(Self.BF * Self.ADIM):
+            self.ac_tok[i] = Scalar[DT](0.0)
+        for b in range(Self.B):
+            self.rew_shift[b * Self.T + 0] = Scalar[DT](0.0)
+            for f in range(1, Self.T):
+                var a_prev = Int(Float64(actions[b * Self.T + f - 1]) + 0.5)
+                self.ac_tok[(b * Self.T + f) * Self.ADIM + a_prev] = Scalar[DT](
+                    1.0
+                )
+                self.rew_shift[b * Self.T + f] = rewards[b * Self.T + f - 1]
+
+        # 1. task embeddings → agent token input (host)
+        self.te.embed_into["cpu", Self.B, Self.T](task_ids, agp, None)
+
+        # 2. ACTION-CONDITIONED shortcut-forcing video loss ON DEVICE (FWD="gpu")
+        var loss_v = dynamics_pretrain_loss[
+            Self.DYN, Self.B, Self.T, Self.B_SELF, Self.NSP, Self.DSP,
+            Self.KMAX, "gpu", Self.ADIM, Self.AGD,
+        ](
+            self.dyn, z1, z0, sigma, sigma_idx, step_idx, do_boot, gzh, zh,
+            ctx=Optional(dctx), actions=atk, act_mask=amk, agent_in=agp,
+        )
+
+        # main-pass input z̃ (the video vjp forward_input)
+        for bt in range(Self.BF):
+            var s = Float64(sigma[bt])
+            for i in range(Self.ND):
+                var idx = bt * Self.ND + i
+                self.ztil[idx] = Scalar[DT](
+                    (1.0 - s) * Float64(z0[idx]) + s * Float64(z1[idx])
+                )
+
+        # 3. video vjp ONLY (zero the agent-token grad), on device
+        for i in range(Self.BF * Self.AGD):
+            self.grad_h[i] = Scalar[DT](0.0)
+        self.dyn.set_grad_h(ghp, Self.BF)
+        Self._dyn_vjp_gpu[Self.BF](self.dyn, self.ztil, self.grad_zhat, dctx)
+
+        # 4. dedicated CLEAN forward WITH action tokens, on device. sig_bc MUST
+        #    match the CPU path (=1.0, clean z1): the heads are queried in
+        #    imagination on fully-clean latents at sig_idx=KMAX-1, so training
+        #    their h_t on a σ<1 corrupted frame is a train/inference shift that
+        #    kills the imagined reward stream. See the CPU-path note above.
+        self.dyn.set_indices(
+            _mao(self.clean_sig.unsafe_ptr()),
+            _mao(self.clean_step.unsafe_ptr()),
+            Self.BF,
+        )
+        self.dyn.set_actions(atk, amk, Self.BF)
+        self.dyn.set_agent_in(agp, Self.BF)
+        var sig_bc = 1.0                       # clean latent (match imagination + CPU)
+        for i in range(Self.BF * Self.ND):
+            self.bc_in[i] = Scalar[DT](
+                sig_bc * Float64(z1[i]) + (1.0 - sig_bc) * Float64(z0[i])
+            )
+        Self._dyn_fwd_gpu[Self.BF](self.dyn, self.bc_in, self.zhat, dctx)
+
+        # 5. BC loss on the clean h_t — D2H the agent tokens for the CPU heads.
+        self.dyn.sync_agent_out(dctx)
+        var loss_bc = self._run_bc_loss(
+            self.dyn.agent_out_ptr_cpu(), actions, rsh, bins,
+            policy_weight, reward_weight,
+        )
+        # 5b. BC-train the behavioral prior on the SAME clean h_t (policy-only).
+        self._train_prior_bc(
+            self.dyn.agent_out_ptr_cpu(), actions, policy_weight
+        )
+
+        # 6. BC vjp through the clean forward (zero flow grad) → dyn + act-MLP
+        #    grads; then the task-embedder grad (D2H the agent-input grad).
+        self.dyn.set_grad_h(ghp, Self.BF)
+        Self._dyn_vjp_gpu[Self.BF](self.dyn, self.bc_in, self.gzero, dctx)
+        self.dyn.sync_grad_agent_in(dctx)
         self.te.accumulate_grad["cpu", Self.B, Self.T](
             self.dyn.grad_agent_in_ptr_cpu(), None
         )

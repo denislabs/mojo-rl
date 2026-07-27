@@ -9,7 +9,7 @@ Data path (matches legacy "resident dataset + slice", no per-batch transfer):
 - GPU: the whole dataset is uploaded to device ONCE (lazily, on first use), then
   each batch input is a zero-copy `create_sub_buffer` VIEW into that resident
   buffer (no per-batch H2D). The owned `batch_x/batch_y` just carry the view.
-- CPU: the host `List` is already resident; each batch is a cheap `memcpy` slice
+- CPU: the host `List` is already resident; each batch is a cheap `unsafe_memcpy` slice
   (a zero-copy view would need an offset threaded through `forward`, not worth it
   — the copy is a few % of CPU wall time).
 
@@ -20,7 +20,7 @@ images, `train_y` = [N·NC] one-hot labels; `test_x` = [N·IN], `test_labels` =
 
 from std.gpu.host import DeviceContext
 from std.gpu import global_idx
-from std.memory import memcpy
+from std.memory import unsafe_memcpy
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
@@ -123,7 +123,7 @@ struct Trainer[
     var grad_f32: Tensor
     # fp32 input staging (used ONLY when MADT != DT). The resident dataset is
     # fp32, so a bf16 batch can't be a zero-copy fp32 sub-buffer view — the fp32
-    # batch slice lands here (sub-buffer view / memcpy / gather) and is then cast
+    # batch slice lands here (sub-buffer view / unsafe_memcpy / gather) and is then cast
     # into the owned bf16 `batch_x`. For MADT == DT this stays empty and unused:
     # the fp32 path stages directly into `batch_x` (zero-copy, unchanged).
     var batch_xf: Tensor
@@ -201,7 +201,7 @@ struct Trainer[
         dst.dev = ctx.enqueue_create_buffer[DT](n)
         var hb = ctx.enqueue_create_host_buffer[DT](n)
         ctx.synchronize()
-        memcpy(dest=hb.unsafe_ptr(), src=src.unsafe_ptr(), count=n)
+        unsafe_memcpy(dest=hb.unsafe_ptr(), src=src.unsafe_ptr(), count=n)
         ctx.enqueue_copy(dst.dev.value(), hb)
         ctx.synchronize()
         dst.n = n
@@ -418,14 +418,14 @@ struct Trainer[
             comptime if Self.target == "cpu":
                 # CPU is fp32-only → MADT == DT; rebind batch_x to the fp32 slab.
                 ref bx = rebind[Tensor](self.batch_x)
-                memcpy(
+                unsafe_memcpy(
                     dest=bx.data.unsafe_ptr(),
-                    src=train_x.unsafe_ptr() + x0,
+                    src=train_x.unsafe_ptr().unsafe_offset(x0),
                     count=Self.BATCH * Self.IN,
                 )
-                memcpy(
+                unsafe_memcpy(
                     dest=self.batch_y.data.unsafe_ptr(),
-                    src=train_y.unsafe_ptr() + y0,
+                    src=train_y.unsafe_ptr().unsafe_offset(y0),
                     count=Self.BATCH * Self.NC,
                 )
             else:
@@ -473,9 +473,9 @@ struct Trainer[
             comptime if Self.target == "cpu":
                 # CPU is fp32-only → MADT == DT; rebind batch_x to the fp32 slab.
                 ref bx = rebind[Tensor](self.batch_x)
-                memcpy(
+                unsafe_memcpy(
                     dest=bx.data.unsafe_ptr(),
-                    src=test_x.unsafe_ptr() + x0,
+                    src=test_x.unsafe_ptr().unsafe_offset(x0),
                     count=Self.BATCH * Self.IN,
                 )
             else:

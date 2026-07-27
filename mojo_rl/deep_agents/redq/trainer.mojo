@@ -60,6 +60,10 @@ from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.trainer_block import TrainerState
 from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.blocks import SampleBlock
+from ..training.blocks.action_select import (
+    select_squashed_batched,
+    warmup_uniform_batched,
+)
 from ..sac.blocks.alpha_update_step import AlphaUpdateStep
 
 from .ensemble import CriticEnsemble
@@ -73,56 +77,6 @@ from .metrics import REDQMetrics
 # ──────────────────────────────────────────────────────────────────────
 # GPU select_action_batched kernels (mirror SAC's warmup + copy + clamp).
 # ──────────────────────────────────────────────────────────────────────
-
-
-def _redq_warmup_uniform_kernel[
-    N_ENVS: Int, ACT: Int
-](
-    action_dest: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
-    action_scale: Scalar[DT],
-    seed: UInt64,
-    offset_base: UInt64,
-):
-    var i = Int(global_idx.x)
-    var total = N_ENVS * ACT
-    if i >= total:
-        return
-    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
-    var u = Float32(philox.step_uniform()[0])
-    var s = Scalar[DT](2.0) * Scalar[DT](u) - Scalar[DT](1.0)
-    action_dest[i // ACT, i % ACT] = s * action_scale
-
-
-def _redq_copy2d_kernel[
-    N_ENVS: Int, D: Int
-](
-    src: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
-):
-    var i = Int(global_idx.x)
-    var total = N_ENVS * D
-    if i < total:
-        dst[i // D, i % D] = rebind[Scalar[DT]](src[i // D, i % D])
-
-
-def _redq_clamp_action_kernel[
-    N_ENVS: Int, ACT: Int, ALP: Int
-](
-    alp: LayoutTensor[DT, Layout.row_major(N_ENVS, ALP), MutAnyOrigin],
-    action: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
-    scale: Scalar[DT],
-):
-    var i = Int(global_idx.x)
-    var total = N_ENVS * ACT
-    if i < total:
-        var e = i // ACT
-        var j = i % ACT
-        var a = rebind[Scalar[DT]](alp[e, j])
-        if a > scale:
-            a = scale
-        elif a < -scale:
-            a = -scale
-        action[e, j] = a
 
 
 struct REDQTrainer[
@@ -605,84 +559,34 @@ struct REDQTrainer[
         comptime OBS = Self.OBS_DIM
 
         if step_idx < self.learning_starts:
-            comptime if Self.train_target == "cpu":
-                for env in range(N_ENVS):
-                    for j in range(ACT):
-                        var u = Scalar[DT](2.0 * random_float64() - 1.0)
-                        action[env, j] = u * self.action_scale
-                return
-            else:
-                var c = self.ctx.value()
-                comptime tot = N_ENVS * ACT
-                c.enqueue_function[_redq_warmup_uniform_kernel[N_ENVS, ACT]](
-                    action,
-                    self.action_scale,
-                    self._warmup_rng_seed,
-                    self._warmup_rng_offset,
-                    grid_dim=(tot + TPB - 1) // TPB,
-                    block_dim=TPB,
-                )
-                self._warmup_rng_offset += UInt64(N_ENVS * ACT * 2)
-                return
-
-        comptime if Self.train_target == "cpu":
-            self._ob_scr.ensure(N_ENVS * OBS)
-            for env in range(N_ENVS):
-                for d in range(OBS):
-                    self._ob_scr.data[env * OBS + d] = rebind[Scalar[DT]](
-                        obs[env, d]
-                    )
-            self._ao_scr.ensure(N_ENVS * 2 * ACT)
-            self._alp_scr.ensure(N_ENVS * (ACT + 1))
-            call_forward["cpu", N_ENVS](
-                self.actor,
-                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr
-            )
-            self.sel.forward["cpu", N_ENVS](
-                TensorRefs[1](self._ao_scr), self._alp_scr
-            )
-            for env in range(N_ENVS):
-                for j in range(ACT):
-                    var a = self._alp_scr.data[env * (ACT + 1) + j]
-                    if a > self.action_scale:
-                        a = self.action_scale
-                    elif a < -self.action_scale:
-                        a = -self.action_scale
-                    action[env, j] = a
-            _ = ao_scratch
-            _ = alp_scratch
-        else:
-            var c = self.ctx.value()
-            self._ob_scr.ensure_gpu(c, N_ENVS * OBS)
-            self._ao_scr.ensure_gpu(c, N_ENVS * 2 * ACT)
-            self._alp_scr.ensure_gpu(c, N_ENVS * (ACT + 1))
-            comptime tot_obs = N_ENVS * OBS
-            c.enqueue_function[_redq_copy2d_kernel[N_ENVS, OBS]](
-                obs,
-                self._ob_scr.lt["gpu", Layout.row_major(N_ENVS, OBS)](),
-                grid_dim=(tot_obs + TPB - 1) // TPB,
-                block_dim=TPB,
-            )
-            call_forward["gpu", N_ENVS](
-                self.actor,
-                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr,
-                self.ctx,
-            )
-            self.sel.forward["gpu", N_ENVS](
-                TensorRefs[1](self._ao_scr), self._alp_scr, self.ctx
-            )
-            comptime tot_act = N_ENVS * ACT
-            c.enqueue_function[
-                _redq_clamp_action_kernel[N_ENVS, ACT, ACT + 1]
-            ](
-                self._alp_scr.lt["gpu", Layout.row_major(N_ENVS, ACT + 1)](),
+            warmup_uniform_batched[Self.train_target, N_ENVS, ACT](
                 action,
                 self.action_scale,
-                grid_dim=(tot_act + TPB - 1) // TPB,
-                block_dim=TPB,
+                self.ctx,
+                self._warmup_rng_seed,
+                self._warmup_rng_offset,
             )
-            _ = ao_scratch
-            _ = alp_scratch
+            return
+
+        # ── Policy: shared squashed-actor body (see
+        # training/blocks/action_select.mojo — one copy for
+        # sac/redq/redq_ofe/mbpo).
+        select_squashed_batched[
+            Self.ACTOR, Self.train_target, N_ENVS, OBS, ACT
+        ](
+            self.actor,
+            self.sel,
+            self._ob_scr,
+            self._ao_scr,
+            self._alp_scr,
+            obs,
+            action,
+            self.action_scale,
+            self.ctx,
+        )
+        # silence unused warnings on the driver-owned scratch views.
+        _ = ao_scratch
+        _ = alp_scratch
 
     def select_greedy_action(
         mut self,

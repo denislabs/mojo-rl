@@ -43,10 +43,10 @@ struct CarRacingAction[DTYPE: DType](
         self.gas = copy.gas
         self.brake = copy.brake
 
-    def __init__(out self, *, deinit take: Self):
-        self.steering = take.steering
-        self.gas = take.gas
-        self.brake = take.brake
+    def __init__(out self, *, deinit move: Self):
+        self.steering = move.steering
+        self.gas = move.gas
+        self.brake = move.brake
 
     @staticmethod
     def from_list(

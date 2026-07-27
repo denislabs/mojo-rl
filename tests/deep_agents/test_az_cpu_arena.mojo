@@ -62,7 +62,7 @@ def main() raises:
         do_eval=True,
         do_eval2=True,
         verbose=True,
-        logger=UnsafePointer(to=csv),
+        logger=UnsafePointer(to=csv).as_unsafe_any_origin(),
     )
     csv.close()
 

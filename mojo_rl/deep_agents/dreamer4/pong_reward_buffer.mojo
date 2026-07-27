@@ -121,14 +121,14 @@ struct Dreamer4PongRewardBuffer(Movable):
         )
         self.rng = seed | 1
 
-    def __init__(out self, *, deinit take: Self):
-        self.capacity = take.capacity
-        self.n_frames = take.n_frames
-        self.frames = take.frames^
-        self.actions = take.actions^
-        self.dones = take.dones^
-        self.rewards = take.rewards^
-        self.rng = take.rng
+    def __init__(out self, *, deinit move: Self):
+        self.capacity = move.capacity
+        self.n_frames = move.n_frames
+        self.frames = move.frames^
+        self.actions = move.actions^
+        self.dones = move.dones^
+        self.rewards = move.rewards^
+        self.rng = move.rng
 
     @always_inline
     def _u64(mut self) -> UInt64:
@@ -276,9 +276,9 @@ struct Dreamer4PongRewardBuffer(Movable):
         for i in range(self.n_frames):
             data.append(self.dones[i])
         # rewards: raw native fp32 bytes
-        var rb = self.rewards.unsafe_ptr().bitcast[UInt8]()
+        var rb = self.rewards.unsafe_ptr().unsafe_bitcast[UInt8]()
         for i in range(4 * self.n_frames):
-            data.append(rb[i])
+            data.append(rb[unsafe_offset=i])
 
         with open(path, "w") as f:
             f.write_bytes(data)
@@ -335,8 +335,8 @@ struct Dreamer4PongRewardBuffer(Movable):
         for i in range(n_frames):
             buf.dones[i] = data[off + i]
         off += n_frames
-        var rb = buf.rewards.unsafe_ptr().bitcast[UInt8]()
+        var rb = buf.rewards.unsafe_ptr().unsafe_bitcast[UInt8]()
         for i in range(4 * n_frames):
-            rb[i] = data[off + i]
+            rb[unsafe_offset=i] = data[off + i]
         buf.n_frames = n_frames
         return buf^

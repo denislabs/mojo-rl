@@ -34,11 +34,11 @@ struct EpisodeMetrics(Copyable, ImplicitlyCopyable, Movable):
         self.steps = copy.steps
         self.epsilon = copy.epsilon
 
-    def __init__(out self, *, deinit take: Self):
-        self.episode = take.episode
-        self.total_reward = take.total_reward
-        self.steps = take.steps
-        self.epsilon = take.epsilon
+    def __init__(out self, *, deinit move: Self):
+        self.episode = move.episode
+        self.total_reward = move.total_reward
+        self.steps = move.steps
+        self.epsilon = move.epsilon
 
 
 struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
@@ -79,10 +79,10 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
         self.algorithm_name = copy.algorithm_name
         self.environment_name = copy.environment_name
 
-    def __init__(out self, *, deinit take: Self):
-        self.episodes = take.episodes^
-        self.algorithm_name = take.algorithm_name^
-        self.environment_name = take.environment_name^
+    def __init__(out self, *, deinit move: Self):
+        self.episodes = move.episodes^
+        self.algorithm_name = move.algorithm_name^
+        self.environment_name = move.environment_name^
 
     def log_episode[
         dtype: DType

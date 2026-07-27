@@ -135,8 +135,17 @@ struct DecoderBlock[N: Int, HID: Int, FF: Int](Module):
             var cc = ctx.value()
             gx.ensure_gpu(cc, DN)
             gc.ensure_gpu(cc, DN)
-            cc.enqueue_copy(gx.dev.value(), self.graph.grad_input["x"]().dev.value())
-            cc.enqueue_copy(gc.dev.value(), self.graph.grad_input["c"]().dev.value())
+            # Size-exact sub-buffer copies: the caller's tmp grad slots are
+            # reused across nodes and may be larger than `DN`; whole-buffer
+            # copies error on the mismatch. Mirrors compute_graph's fix.
+            var gx_src = self.graph.grad_input["x"]().dev.value(
+            ).create_sub_buffer[DT](0, DN)
+            var gx_dst = gx.dev.value().create_sub_buffer[DT](0, DN)
+            cc.enqueue_copy(gx_dst, gx_src)
+            var gc_src = self.graph.grad_input["c"]().dev.value(
+            ).create_sub_buffer[DT](0, DN)
+            var gc_dst = gc.dev.value().create_sub_buffer[DT](0, DN)
+            cc.enqueue_copy(gc_dst, gc_src)
 
     def for_each_param[
         target: StaticString, V: ParamVisitor

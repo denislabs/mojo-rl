@@ -7,6 +7,9 @@ For LeWM PushT we need just enough to read either an entire flat column
 or a contiguous row range ``[start:end, ...]`` from a chunked dataset.
 """
 
+from . import _get_dylib_function, c_int, lib
+from .h5_types import herr_t, hid_t, hsize_t
+
 
 def h5s_create_simple(
     rank: c_int,

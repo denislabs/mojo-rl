@@ -1,7 +1,11 @@
-"""Sawyer Reach-v3 Environment — Phyics3dEnv[SawyerReachModel, SawyerReachConfig].
+"""Sawyer Reach-v3 Environment — Phyics3dEnv[SawyerReachModel,
+SawyerReachConfig] (per-field tensor engine).
 
 MetaWorld Reach task: move the Sawyer arm's end-effector to a goal position.
-Uses mocap position control (4D action: delta XYZ + gripper).
+Uses mocap position control (4D action: delta XYZ + gripper). The mocap target
+is welded to the hand; the fields facade presets the mocap body pose and skips
+it in FK so the weld-equality solve (SOLVER=newton) tracks it — see
+`phyics3d_env._sync_mocap_to_fields` and `test_sawyer_fields_parity`.
 """
 
 from .sawyer_reach_xml import SawyerReachModel

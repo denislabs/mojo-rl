@@ -8,7 +8,6 @@ gate; prints ms/step + samples/sec.
 Run: `pixi run -e apple mojo run -I . tests/deep_agents/test_tdmpc2_perf.mojo`
 """
 
-from std.memory import alloc
 from std.random import random_float64, seed
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
@@ -43,14 +42,13 @@ def main() raises:
         "cpu", OBS, ENC, ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, 256, H, CAP
     ]
     var agc = AgC.make(lr=Scalar[DT](1e-3), learning_starts=0)
-    var _ob = alloc[Scalar[DT]](OBS)
-    var _ac = alloc[Scalar[DT]](ACT)
+    var _ob = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var _ac = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
     for _ in range(FILL):
         for i in range(OBS):
             _ob[i] = Scalar[DT](random_float64() * 2.0 - 1.0)
         _ac[0] = Scalar[DT](random_float64() * 2.0 - 1.0)
         agc.record(_ob, _ac, Scalar[DT](random_float64() - 1.0), Scalar[DT](0.0))
-    _ob.free(); _ac.free()
     _ = agc.train_step()  # warmup
     var t0 = perf_counter_ns()
     for _ in range(N):
@@ -64,14 +62,13 @@ def main() raises:
         "gpu", OBS, ENC, ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, 32, H, CAP
     ]
     var agg32 = AgG32.make(lr=Scalar[DT](1e-3), learning_starts=0, ctx=ctx)
-    var _ob2 = alloc[Scalar[DT]](OBS)
-    var _ac2 = alloc[Scalar[DT]](ACT)
+    var _ob2 = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var _ac2 = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
     for _ in range(FILL):
         for i in range(OBS):
             _ob2[i] = Scalar[DT](random_float64() * 2.0 - 1.0)
         _ac2[0] = Scalar[DT](random_float64() * 2.0 - 1.0)
         agg32.record(_ob2, _ac2, Scalar[DT](random_float64() - 1.0), Scalar[DT](0.0))
-    _ob2.free(); _ac2.free()
     _ = agg32.train_step()
     var t2 = perf_counter_ns()
     for _ in range(N):
@@ -85,14 +82,13 @@ def main() raises:
         "gpu", OBS, ENC, ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, 256, H, CAP
     ]
     var agg256 = AgG256.make(lr=Scalar[DT](1e-3), learning_starts=0, ctx=ctx)
-    var _ob3 = alloc[Scalar[DT]](OBS)
-    var _ac3 = alloc[Scalar[DT]](ACT)
+    var _ob3 = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var _ac3 = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
     for _ in range(FILL):
         for i in range(OBS):
             _ob3[i] = Scalar[DT](random_float64() * 2.0 - 1.0)
         _ac3[0] = Scalar[DT](random_float64() * 2.0 - 1.0)
         agg256.record(_ob3, _ac3, Scalar[DT](random_float64() - 1.0), Scalar[DT](0.0))
-    _ob3.free(); _ac3.free()
     _ = agg256.train_step()
     var t4 = perf_counter_ns()
     for _ in range(N):

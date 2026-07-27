@@ -584,7 +584,7 @@ def _mz_train_prologue_gpu[
     is_weights: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises:
     """EAGER prologue of the unroll step: H2D the host batch slabs into the
-    persistent device scratch + zero the loss accumulators. Host work + memcpy —
+    persistent device scratch + zero the loss accumulators. Host work + unsafe_memcpy —
     kept OUT of the CUDA-graph-captured region (a captured H2D would bake the
     host source pointer). Run this each iteration before the captured compute;
     the compute reads the freshly-overwritten ``scratch.d_*`` buffers."""

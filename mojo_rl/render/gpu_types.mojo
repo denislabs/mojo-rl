@@ -4,7 +4,7 @@ Vertex structs, uniform buffer layouts, mesh handles, and conversion helpers
 for the SDL3 GPU-accelerated renderer.
 """
 
-from std.memory import UnsafePointer, memcpy
+from std.memory import UnsafePointer, unsafe_memcpy
 from std.math import sqrt, tan, sin, cos
 from mojo_rl.math3d import (
     Vec3 as Vec3Generic,
@@ -116,19 +116,19 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
         self.ground_params = copy.ground_params.copy()
         self.fog_params = copy.fog_params.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.view_proj = take.view_proj^
-        self.camera_pos = take.camera_pos^
-        self.light0_dir = take.light0_dir^
-        self.light0_color = take.light0_color^
-        self.light1_dir = take.light1_dir^
-        self.light1_color = take.light1_color^
-        self.light2_dir = take.light2_dir^
-        self.light2_color = take.light2_color^
-        self.light3_dir = take.light3_dir^
-        self.light3_color = take.light3_color^
-        self.ground_params = take.ground_params^
-        self.fog_params = take.fog_params^
+    def __init__(out self, *, deinit move: Self):
+        self.view_proj = move.view_proj^
+        self.camera_pos = move.camera_pos^
+        self.light0_dir = move.light0_dir^
+        self.light0_color = move.light0_color^
+        self.light1_dir = move.light1_dir^
+        self.light1_color = move.light1_color^
+        self.light2_dir = move.light2_dir^
+        self.light2_color = move.light2_color^
+        self.light3_dir = move.light3_dir^
+        self.light3_color = move.light3_color^
+        self.ground_params = move.ground_params^
+        self.fog_params = move.fog_params^
 
 
 struct ObjectUniforms(ImplicitlyCopyable, Movable):
@@ -157,10 +157,10 @@ struct ObjectUniforms(ImplicitlyCopyable, Movable):
         self.color = copy.color.copy()
         self.material = copy.material.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.model = take.model^
-        self.color = take.color^
-        self.material = take.material^
+    def __init__(out self, *, deinit move: Self):
+        self.model = move.model^
+        self.color = move.color^
+        self.material = move.material^
 
 
 struct SkyboxUniforms(ImplicitlyCopyable, Movable):
@@ -191,9 +191,9 @@ struct SkyboxUniforms(ImplicitlyCopyable, Movable):
         self.top_color = copy.top_color.copy()
         self.bottom_color = copy.bottom_color.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.top_color = take.top_color^
-        self.bottom_color = take.bottom_color^
+    def __init__(out self, *, deinit move: Self):
+        self.top_color = move.top_color^
+        self.bottom_color = move.bottom_color^
 
 
 struct LineUniforms(ImplicitlyCopyable, Movable):
@@ -215,9 +215,9 @@ struct LineUniforms(ImplicitlyCopyable, Movable):
         self.view_proj = copy.view_proj.copy()
         self.color = copy.color.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.view_proj = take.view_proj^
-        self.color = take.color^
+    def __init__(out self, *, deinit move: Self):
+        self.view_proj = move.view_proj^
+        self.color = move.color^
 
 
 struct ShadowUniforms(ImplicitlyCopyable, Movable):
@@ -242,9 +242,9 @@ struct ShadowUniforms(ImplicitlyCopyable, Movable):
         self.light_view_proj = copy.light_view_proj.copy()
         self.params = copy.params.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.light_view_proj = take.light_view_proj^
-        self.params = take.params^
+    def __init__(out self, *, deinit move: Self):
+        self.light_view_proj = move.light_view_proj^
+        self.params = move.params^
 
 
 # --- Mesh data structures ---
@@ -260,9 +260,9 @@ struct MeshData(Movable):
         self.vertices = List[GPUVertex]()
         self.indices = List[UInt16]()
 
-    def __init__(out self, *, deinit take: Self):
-        self.vertices = take.vertices^
-        self.indices = take.indices^
+    def __init__(out self, *, deinit move: Self):
+        self.vertices = move.vertices^
+        self.indices = move.indices^
 
     def vertex_byte_size(self) -> Int:
         return len(self.vertices) * 32  # sizeof(GPUVertex)
@@ -305,11 +305,11 @@ struct MeshHandle(Copyable, Movable):
         self.num_indices = copy.num_indices
         self.num_vertices = copy.num_vertices
 
-    def __init__(out self, *, deinit take: Self):
-        self.vertex_buffer = take.vertex_buffer
-        self.index_buffer = take.index_buffer
-        self.num_indices = take.num_indices
-        self.num_vertices = take.num_vertices
+    def __init__(out self, *, deinit move: Self):
+        self.vertex_buffer = move.vertex_buffer
+        self.index_buffer = move.index_buffer
+        self.num_indices = move.num_indices
+        self.num_vertices = move.num_vertices
 
 
 struct CapsuleCacheEntry(Copyable, Movable):
@@ -344,10 +344,10 @@ struct CapsuleCacheEntry(Copyable, Movable):
             copy.mesh.num_vertices,
         )
 
-    def __init__(out self, *, deinit take: Self):
-        self.radius = take.radius
-        self.half_height = take.half_height
-        self.mesh = take.mesh^
+    def __init__(out self, *, deinit move: Self):
+        self.radius = move.radius
+        self.half_height = move.half_height
+        self.mesh = move.mesh^
 
     def matches(self, radius: Float32, half_height: Float32) -> Bool:
         """Check if this entry matches the given dimensions (within tolerance).
@@ -383,9 +383,9 @@ struct MeshCacheEntry(Copyable, Movable):
             copy.mesh.num_vertices,
         )
 
-    def __init__(out self, *, deinit take: Self):
-        self.name = take.name^
-        self.mesh = take.mesh^
+    def __init__(out self, *, deinit move: Self):
+        self.name = move.name^
+        self.mesh = move.mesh^
 
     def matches(self, name: String) -> Bool:
         """Check if this entry matches the given name."""
@@ -424,12 +424,12 @@ struct TextureCacheEntry(Copyable, Movable):
         self.width = copy.width
         self.height = copy.height
 
-    def __init__(out self, *, deinit take: Self):
-        self.name = take.name^
-        self.texture = take.texture
-        self.sampler = take.sampler
-        self.width = take.width
-        self.height = take.height
+    def __init__(out self, *, deinit move: Self):
+        self.name = move.name^
+        self.texture = move.texture
+        self.sampler = move.sampler
+        self.width = move.width
+        self.height = move.height
 
     def matches(self, name: String) -> Bool:
         """Check if this entry matches the given name."""
@@ -482,16 +482,16 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
         self.mesh_cache_idx = copy.mesh_cache_idx
         self.texture_cache_idx = copy.texture_cache_idx
 
-    def __init__(out self, *, deinit take: Self):
-        self.mesh_idx = take.mesh_idx
-        self.uniforms = take.uniforms
-        self.is_capsule = take.is_capsule
-        self.capsule_cache_idx = take.capsule_cache_idx
-        self.is_cylinder = take.is_cylinder
-        self.cylinder_cache_idx = take.cylinder_cache_idx
-        self.is_mesh = take.is_mesh
-        self.mesh_cache_idx = take.mesh_cache_idx
-        self.texture_cache_idx = take.texture_cache_idx
+    def __init__(out self, *, deinit move: Self):
+        self.mesh_idx = move.mesh_idx
+        self.uniforms = move.uniforms
+        self.is_capsule = move.is_capsule
+        self.capsule_cache_idx = move.capsule_cache_idx
+        self.is_cylinder = move.is_cylinder
+        self.cylinder_cache_idx = move.cylinder_cache_idx
+        self.is_mesh = move.is_mesh
+        self.mesh_cache_idx = move.mesh_cache_idx
+        self.texture_cache_idx = move.texture_cache_idx
 
 
 # --- Helper functions ---
@@ -720,5 +720,5 @@ struct TextUniforms(ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.ortho_proj = copy.ortho_proj.copy()
 
-    def __init__(out self, *, deinit take: Self):
-        self.ortho_proj = take.ortho_proj^
+    def __init__(out self, *, deinit move: Self):
+        self.ortho_proj = move.ortho_proj^

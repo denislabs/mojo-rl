@@ -38,6 +38,7 @@ Run:
 
 from std.random import seed
 from std.time import perf_counter_ns
+from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
@@ -48,7 +49,8 @@ from mojo_rl.nn.primitives.activations import ReLU
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
-from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv
+from mojo_rl.envs.half_cheetah import HalfCheetahModel, HalfCheetahConfig
 
 
 # =============================================================================
@@ -58,6 +60,12 @@ from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
 comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM  #  6
 comptime HIDDEN = 256
+
+# Per-field tensor physics path (migration P5+): single-env fields facade,
+# CPU stepping (SOLVER="newton" = the legacy env default physics).
+comptime EnvT = Phyics3dEnv[
+    HalfCheetahModel, HalfCheetahConfig, DT, TERMINATE_ON_UNHEALTHY=False
+]
 comptime BATCH = 64
 comptime REPLAY_CAPACITY = 100_000
 
@@ -156,7 +164,8 @@ def main() raises:
         use_ere=False,
         ere_eta=0.996,
     )
-    var env = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]()
+    var ctx = DeviceContext()  # fields facade: host staging for the model bridge
+    var env = EnvT(ctx)
 
     # ─── Single train() call — auto-flush + auto-checkpoint ──────────────
     # `agent.train_single` drives the env loop internally and:
@@ -171,7 +180,7 @@ def main() raises:
     #     also runs at total_timesteps.
     var t_start = perf_counter_ns()
     _ = agent.train_single[
-        HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False],
+        EnvT,
         L=RemoteLogger,
     ](
         env,

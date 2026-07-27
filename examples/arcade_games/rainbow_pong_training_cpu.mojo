@@ -167,7 +167,7 @@ def main() raises:
             verbose=True,
             logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
             diag_every=5_000,
-            eval_env=UnsafePointer(to=eval_env),
+            eval_env=UnsafePointer(to=eval_env).as_unsafe_any_origin(),
             eval_every=50_000,
             eval_episodes=3,  # each is a full episode → keep small
         )

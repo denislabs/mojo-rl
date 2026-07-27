@@ -29,8 +29,8 @@ struct PendulumV2Action[DTYPE: DType](
     def __init__(out self, *, copy: Self):
         self.torque = copy.torque
 
-    def __init__(out self, *, deinit take: Self):
-        self.torque = take.torque
+    def __init__(out self, *, deinit move: Self):
+        self.torque = move.torque
 
     @staticmethod
     def from_list(

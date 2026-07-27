@@ -11,9 +11,8 @@ from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from mojo_rl.render import Renderer3D, Camera3D, Color
 from mojo_rl.render.light import Light
 from mojo_rl.core import EnvRenderer3D
-from ..model.geom_spec import GeomSpec, GeomsLike
-from ..model.camera_spec import CamerasLike, _EmptyCameras
-from ..model.light_spec import LightsLike, _EmptyLights
+
+from . import ModelDefLike
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
@@ -67,6 +66,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         follow: Bool = True,
         show_velocity: Bool = True,
         show_sites: Bool = False,
+        show_fog: Bool = False,
         title: String = String("Model Environment"),
     ) raises:
         # Setup all cameras from spec (fallback to default if none defined)
@@ -122,8 +122,12 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             for ci in range(len(self.cameras)):
                 # Camera stores fov in radians already, near is Float64
                 self.cameras[ci].near = znear
-            fog_start = Float32(vis[1])
-            fog_end = Float32(vis[2])
+            # MuJoCo defines fog map params (<map fogstart fogend/>) but does
+            # NOT render fog unless the mjVIS_FOG flag is enabled (off by
+            # default). Mirror that: keep fog disabled unless explicitly asked.
+            if show_fog:
+                fog_start = Float32(vis[1])
+                fog_end = Float32(vis[2])
             shadow_size = Int(vis[3])
             # Headlight ambient: add to all lights
             var has_hl = vis[7] > 0.5
@@ -191,21 +195,21 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.step_count = 0
         self.initialized = False
 
-    def __init__(out self, *, deinit take: Self):
-        self.renderer = take.renderer^
-        self.initialized = take.initialized
-        self.follow = take.follow
-        self.show_velocity = take.show_velocity
-        self.show_sites = take.show_sites
-        self.visual_radius_scale = take.visual_radius_scale
-        self.cameras = take.cameras^
-        self.camera_modes = take.camera_modes^
-        self.active_camera = take.active_camera
-        self.axes_offset = take.axes_offset
-        self.vel_arrow_height = take.vel_arrow_height
-        self.vel_arrow_scale = take.vel_arrow_scale
-        self.vel_color = take.vel_color
-        self.step_count = take.step_count
+    def __init__(out self, *, deinit move: Self):
+        self.renderer = move.renderer^
+        self.initialized = move.initialized
+        self.follow = move.follow
+        self.show_velocity = move.show_velocity
+        self.show_sites = move.show_sites
+        self.visual_radius_scale = move.visual_radius_scale
+        self.cameras = move.cameras^
+        self.camera_modes = move.camera_modes^
+        self.active_camera = move.active_camera
+        self.axes_offset = move.axes_offset
+        self.vel_arrow_height = move.vel_arrow_height
+        self.vel_arrow_scale = move.vel_arrow_scale
+        self.vel_color = move.vel_color
+        self.step_count = move.step_count
 
     def init(mut self) raises -> None:
         var title = String("Model Environment")

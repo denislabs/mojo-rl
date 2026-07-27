@@ -107,7 +107,7 @@ struct PCReLU(PCActivation):
     def __init__(out self, *, copy: Self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     @staticmethod
@@ -221,7 +221,7 @@ struct PCIdentity(PCActivation):
     def __init__(out self, *, copy: Self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     @staticmethod
@@ -316,7 +316,7 @@ struct PCTanh(PCActivation):
     def __init__(out self, *, copy: Self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     @staticmethod
@@ -453,7 +453,7 @@ struct PCSwish(PCActivation):
     def __init__(out self, *, copy: Self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     @staticmethod

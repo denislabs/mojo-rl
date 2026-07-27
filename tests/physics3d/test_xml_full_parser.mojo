@@ -27,8 +27,17 @@ Expected output:
 from mojo_rl.physics3d.parser import ParsedModel, parse_xml
 from mojo_rl.physics3d.parser import FlatModelDef
 from mojo_rl.physics3d.parser import parse_xml_full
-from mojo_rl.physics3d.types import Model, Data, ConeType
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
+from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
+from mojo_rl.physics3d.kinematics.forward_kinematics import (
+    forward_kinematics,
+)
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    BODY_IDX_MASS,
+    BODY_IDX_POS_Z,
+    MODEL_META_IDX_GRAVITY_Z,
+)
 from mojo_rl.physics3d.constants import GEOM_PLANE, GEOM_CAPSULE
 from std.testing import assert_true, TestSuite
 
@@ -179,39 +188,46 @@ def test_xml_full_parser() raises:
     print()
 
     # =========================================================================
-    # Step 3: Full round-trip — setup_model + FK
+    # Step 3: Full round-trip — spec-direct fields build + fields FK (G4)
     # =========================================================================
-    print("=== FK round-trip ===")
-    var model = Model[
-        DType.float64,
-        pm.NQ,
-        pm.NV,
-        pm.NBODY,
-        pm.NJOINT,
-        10,
-        pm.NGEOM,
-        0,
-        ConeType.ELLIPTIC,
-        0,
-        0,
+    print("=== FK round-trip (fields) ===")
+    var mf = Model[
+        DType.float64, pm.NV, pm.NBODY, pm.NJOINT, pm.NGEOM, 0, 0, 0, 0, 0,
     ]()
-    var data = Data[DType.float64, pm.NQ, pm.NV, pm.NBODY, pm.NJOINT, 10, 0]()
+    build_model_fields_from_flat[
+        DType.float64, pm.NBODY, pm.NJOINT, pm.NQ, pm.NV, pm.NGEOM, pm.NACT,
+        0, 0, 0, 0, 0, 0, 0,  # ntex/nmat/nlight/ncam/nsite/neq/nexclude
+        0, 0, 0, 0, 0,  # MAX_EQUALITY/MAX_TENDON/NSITE/NEXCLUDE/NMESH_VERTS
+        0, 0, 5, 0.0,  # no <compiler inertiafromgeom> in this inline XML
+    ](fmd, mf)
 
-    fmd.setup_model[DType.float64, 10](model)
-
-    print("gravity_z     =", Float64(model.gravity[2]), " (expected -9.81)")
+    print(
+        "gravity_z     =",
+        Float64(mf.meta.data[MODEL_META_IDX_GRAVITY_Z]),
+        " (expected -9.81)",
+    )
     print(
         "torso body_id1 mass=",
-        Float64(model.body_mass[1]),
+        Float64(mf.bodies.data[1 * MODEL_BODY_SIZE + BODY_IDX_MASS]),
         " (expected ~1.0 default)",
     )
     print(
-        "torso pos_z   =", Float64(model.body_pos[1 * 3 + 2]), " (expected 0.7)"
+        "torso pos_z   =",
+        Float64(mf.bodies.data[1 * MODEL_BODY_SIZE + BODY_IDX_POS_Z]),
+        " (expected 0.7)",
     )
 
-    forward_kinematics(model, data)
+    var d = Data[DType.float64, pm.NQ, pm.NV, pm.NBODY, 10, 0, 1]()
+    forward_kinematics[
+        "cpu", DType.float64, pm.NQ, pm.NV, pm.NBODY, pm.NJOINT, 10, pm.NGEOM,
+        0, 0, 0, 0, 0, 1,
+    ](d, mf, None)
     print("FK completed")
-    print("torso xpos_z  =", Float64(data.xpos[1 * 3 + 2]), " (expected ~0.7)")
+    print(
+        "torso xpos_z  =",
+        Float64(d.xpos.data[1 * 3 + 2]),
+        " (expected ~0.7)",
+    )
 
 
 def main() raises:

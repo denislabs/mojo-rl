@@ -1,27 +1,13 @@
-"""Physics3D GPU - Batched physics simulation on GPU."""
+"""Physics3D GPU layer: the fields record-layout constants (per-record
+sizes + column indices — the slab OFFSET tables died at the G5 sunset) and
+the cfrc_ext / cvel per-field kernels."""
 
 # Constants for buffer layout
 from .constants import (
     # GPU configuration
     TPB,
     TILE,
-    # State buffer layout
-    state_size,
-    qpos_offset,
-    qvel_offset,
-    qacc_offset,
-    qfrc_offset,
-    xpos_offset,
-    xquat_offset,
-    xvel_offset,
-    xangvel_offset,
-    contacts_offset,
-    metadata_offset,
-    model_size,
-    model_body_offset,
-    model_joint_offset,
-    model_metadata_offset,
-    # Buffer layout constants
+    # Record sizes + per-record column indices (the fields record layout)
     CONTACT_SIZE,
     METADATA_SIZE,
     MODEL_BODY_SIZE,
@@ -61,25 +47,7 @@ from .constants import (
     GEOM_IDX_FRICTION,
     GEOM_IDX_CONTYPE,
     GEOM_IDX_CONAFFINITY,
-    model_geom_offset,
-    # New phase-2 state buffer fields
-    site_xpos_offset,
-    cfrc_ext_offset,
-    cvel_offset,
-    cinert_offset,
-    qfrc_actuator_offset,
 )
-
-# Buffer utilities
-from .buffer_utils import (
-    create_state_buffer,
-    create_model_buffer,
-    copy_model_to_buffer,
-    copy_geoms_to_buffer,
-    copy_data_to_buffer,
-    copy_buffer_to_data,
-)
-
 
 # GPU kernels colocated with CPU implementations
 from ..kinematics.quat_math import (
@@ -88,20 +56,8 @@ from ..kinematics.quat_math import (
     gpu_axis_angle_to_quat,
     gpu_quat_normalize,
 )
-from ..kinematics.forward_kinematics import (
-    forward_kinematics_gpu,
-    compute_body_velocities_gpu,
-)
-from ..dynamics.mass_matrix import (
-    compute_mass_matrix_diagonal_gpu,
-    compute_mass_matrix_full_gpu,
-    ldl_factor_gpu,
-    ldl_solve_gpu,
-    compute_M_inv_from_ldl_gpu,
-)
-from ..dynamics.bias_forces import compute_bias_forces_gpu
-from ..dynamics.jacobian import compute_composite_inertia_gpu
+# Legacy GPU mass_matrix/jacobian (CRBA/LDL) deleted at the fields sunset.
 
 # Phase-2 post-substep GPU kernels
-from .cfrc_ext_gpu import compute_cfrc_ext_gpu
-from .cvel_gpu import compute_cvel_gpu
+from .cfrc_ext_gpu import compute_cfrc_ext
+from .cvel_gpu import compute_cvel

@@ -815,7 +815,7 @@ trait GPUContinuousEnv:
         Used by model-based agents (MBPO) to detect terminal states in
         synthetic rollouts where only predicted observations are available.
 
-        Default: no termination (memset dones to 0). Override for envs
+        Default: no termination (unsafe_memset dones to 0). Override for envs
         with observation-based termination conditions (Hopper, Ant, etc.).
 
         Args:

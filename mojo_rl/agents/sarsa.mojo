@@ -1,6 +1,8 @@
 from std.random import random_si64, random_float64
 from .qlearning import QTable
 from mojo_rl.core import (
+    train_tabular,
+    evaluate_tabular,
     TabularAgent,
     DiscreteEnv,
     RenderableEnv,
@@ -31,14 +33,14 @@ struct SARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         self.epsilon_min = copy.epsilon_min
         self.num_actions = copy.num_actions
 
-    def __init__(out self, *, deinit take: Self):
-        self.q_table = take.q_table^
-        self.learning_rate = take.learning_rate
-        self.discount_factor = take.discount_factor
-        self.epsilon = take.epsilon
-        self.epsilon_decay = take.epsilon_decay
-        self.epsilon_min = take.epsilon_min
-        self.num_actions = take.num_actions
+    def __init__(out self, *, deinit move: Self):
+        self.q_table = move.q_table^
+        self.learning_rate = move.learning_rate
+        self.discount_factor = move.discount_factor
+        self.epsilon = move.epsilon
+        self.epsilon_decay = move.epsilon_decay
+        self.epsilon_min = move.epsilon_min
+        self.num_actions = move.num_actions
 
     def __init__(
         out self,
@@ -196,55 +198,12 @@ struct SARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         render: Bool = False,
         frame_delay_ms: Int = 16,
     ) raises -> Float64:
-        """Evaluate the agent on the environment.
-
-        Args:
-            env: The discrete environment to evaluate on.
-            num_episodes: Number of evaluation episodes.
-            render: Whether to render the environment (default: False).
-            frame_delay_ms: Delay between frames in milliseconds (default: 16).
-
-        Returns:
-            Average reward across episodes.
-        """
-        var total_reward: Float64 = 0.0
-        var quit_requested = False
-
-        if render:
-            _ = env.init_renderer()
-
-        for _ in range(num_episodes):
-            if quit_requested:
-                break
-            var state = env.reset()
-            var episode_reward: Float64 = 0.0
-
-            for _ in range(1000):
-                var state_idx = env.state_to_index(state)
-                var action_idx = self.get_best_action(state_idx)
-                var action = env.action_from_index(action_idx)
-
-                var result = env.step(action^)
-                var next_state = result[0]
-                var reward = result[1]
-                var done = result[2]
-
-                if render:
-                    env.render_frame()
-                    env.renderer_delay(frame_delay_ms)
-                    if env.check_renderer_quit():
-                        quit_requested = True
-                        break
-
-                episode_reward += Float64(reward)
-                state = next_state
-
-                if done:
-                    break
-
-            total_reward += episode_reward
-
-        if render:
-            env.close_renderer()
-
-        return total_reward / Float64(num_episodes)
+        """Greedy eval — delegates to the shared `evaluate_tabular` loop
+        (core/tabular_training.mojo)."""
+        return evaluate_tabular(
+            self,
+            env,
+            num_episodes=num_episodes,
+            render=render,
+            frame_delay_ms=frame_delay_ms,
+        )

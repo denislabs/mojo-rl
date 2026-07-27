@@ -561,7 +561,7 @@ def test_gpu_kernel() raises:
     var samples_dbuf = ctx.enqueue_create_buffer[dtype](GPU_BATCH * 4)
     var samples_t = LayoutTensor[
         dtype, Layout.row_major(GPU_BATCH, 4), MutAnyOrigin
-    ](samples_dbuf.unsafe_ptr())
+    ](samples_dbuf.unsafe_ptr().as_unsafe_any_origin())
 
     comptime BLOCKS = (GPU_BATCH + TPB - 1) // TPB
 
@@ -598,7 +598,7 @@ def test_gpu_kernel() raises:
     var counts = List[Int](capacity=GPU_BINS)
     for _ in range(GPU_BINS):
         counts.append(0)
-    var hp = host.unsafe_ptr()
+    var hp = host.unsafe_ptr().as_unsafe_any_origin()
     var total = GPU_BATCH * 4
     var samples = List[Float64](capacity=total)
     for i in range(total):

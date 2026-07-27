@@ -29,6 +29,7 @@ from mojo_rl.experimental.pcn.predictive_model import PCIdentity
 from mojo_rl.experimental.pcn.pc_module import PCModule
 from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn.pc_module_trainer import pc_module_train_one_batch
+from mojo_rl.nn.core.ptr import mptr
 
 
 def main() raises:
@@ -61,10 +62,10 @@ def main() raises:
             y_s[b * OUT + j] = acc
 
     var x_in = LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin](
-        x_s.unsafe_ptr()
+        mptr(x_s)
     )
     var y_target = LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin](
-        y_s.unsafe_ptr()
+        mptr(y_s)
     )
 
     # ── PCN on nn storage + nn Adam ───────────────────────────────────

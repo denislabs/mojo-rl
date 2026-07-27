@@ -35,15 +35,15 @@ def main() raises:
     print("NormPCBlock validation (finite differences)\n")
     print("  DIM=", DIM, " BATCH=", BATCH, " PARAM_SIZE=", CB.PARAM_SIZE)
 
-    var x_buf = alloc[Scalar[dtype]](BATCH * DIM)
-    var g_buf = alloc[Scalar[dtype]](DIM)
-    var y_buf = alloc[Scalar[dtype]](BATCH * DIM)  # x_above target
-    var mu_buf = alloc[Scalar[dtype]](BATCH * DIM)
-    var a_buf = alloc[Scalar[dtype]](BATCH * DIM)
-    var eps_buf = alloc[Scalar[dtype]](BATCH * DIM)
-    var z_buf = alloc[Scalar[dtype]](BATCH * DIM)
-    var zeff_buf = alloc[Scalar[dtype]](BATCH * DIM)
-    var grads_buf = alloc[Scalar[dtype]](DIM)
+    var x_buf = alloc[Scalar[dtype]](BATCH * DIM).as_unsafe_any_origin()
+    var g_buf = alloc[Scalar[dtype]](DIM).as_unsafe_any_origin()
+    var y_buf = alloc[Scalar[dtype]](BATCH * DIM).as_unsafe_any_origin()  # x_above target
+    var mu_buf = alloc[Scalar[dtype]](BATCH * DIM).as_unsafe_any_origin()
+    var a_buf = alloc[Scalar[dtype]](BATCH * DIM).as_unsafe_any_origin()
+    var eps_buf = alloc[Scalar[dtype]](BATCH * DIM).as_unsafe_any_origin()
+    var z_buf = alloc[Scalar[dtype]](BATCH * DIM).as_unsafe_any_origin()
+    var zeff_buf = alloc[Scalar[dtype]](BATCH * DIM).as_unsafe_any_origin()
+    var grads_buf = alloc[Scalar[dtype]](DIM).as_unsafe_any_origin()
 
     for i in range(BATCH * DIM):
         x_buf[i] = Scalar[dtype](sin(Float32(i) * 0.7 + 0.3) * 1.5 + 0.2)
@@ -70,9 +70,9 @@ def main() raises:
 
     # ── numerical J^T ε via perturbing predict input ─────────────────────────
     var h: Float64 = 1e-3
-    var mu_p = alloc[Scalar[dtype]](BATCH * DIM)
-    var mu_m = alloc[Scalar[dtype]](BATCH * DIM)
-    var a_tmp = alloc[Scalar[dtype]](BATCH * DIM)
+    var mu_p = alloc[Scalar[dtype]](BATCH * DIM).as_unsafe_any_origin()
+    var mu_m = alloc[Scalar[dtype]](BATCH * DIM).as_unsafe_any_origin()
+    var a_tmp = alloc[Scalar[dtype]](BATCH * DIM).as_unsafe_any_origin()
     var mu_p_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](mu_p)
     var mu_m_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](mu_m)
     var a_tmp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](a_tmp)

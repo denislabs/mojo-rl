@@ -123,14 +123,14 @@ struct MCTSNode[ACTION_DIM: Int](ImplicitlyCopyable, Movable):
         self.total_visits = copy.total_visits
         self.hidden_state_idx = copy.hidden_state_idx
 
-    def __init__(out self, *, deinit take: Self):
-        self.visit_count = take.visit_count
-        self.total_value = take.total_value
-        self.prior = take.prior
-        self.reward = take.reward
-        self.child_idx = take.child_idx
-        self.total_visits = take.total_visits
-        self.hidden_state_idx = take.hidden_state_idx
+    def __init__(out self, *, deinit move: Self):
+        self.visit_count = move.visit_count
+        self.total_value = move.total_value
+        self.prior = move.prior
+        self.reward = move.reward
+        self.child_idx = move.child_idx
+        self.total_visits = move.total_visits
+        self.hidden_state_idx = move.hidden_state_idx
 
     def mean_value(self, action: Int) -> Float64:
         """Q(s, a) = W(s, a) / N(s, a), or 0 if unvisited."""
@@ -289,11 +289,11 @@ struct GenericCPUMCTS[
         self.min_max = MinMaxStats()
         self.gamma = gamma
 
-    def __init__(out self, *, deinit take: Self):
-        self.nodes = take.nodes^
-        self.hidden_states = take.hidden_states^
-        self.min_max = take.min_max
-        self.gamma = take.gamma
+    def __init__(out self, *, deinit move: Self):
+        self.nodes = move.nodes^
+        self.hidden_states = move.hidden_states^
+        self.min_max = move.min_max
+        self.gamma = move.gamma
 
     # ══════════════════════════════════════════════════════════════════════
     # Public API

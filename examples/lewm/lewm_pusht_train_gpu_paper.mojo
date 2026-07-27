@@ -67,9 +67,12 @@ comptime ACTIN = T * ACT
 
 comptime STEPS: Int = 32000    # paper budget (the bigger model needs it)
 comptime LOG_EVERY: Int = 200
+comptime CKPT_EVERY: Int = 2000  # periodic v3 saves (atomic tmp+rename):
+                                 # crash-safe on a 6-10 h run + enables
+                                 # intermediate evals on the live ckpt
 comptime LAM: Scalar[DT] = 0.09
 comptime LR: Scalar[DT] = 1e-3
-comptime CKPT_PATH: String = "/tmp/lewm_pusht_paper_world_model.txt"
+comptime CKPT_PATH: String = "lewm_pusht_paper.ckpt"
 
 comptime Trainer = LeWMTrainer[
     IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
@@ -112,6 +115,9 @@ def main() raises:
             print("   step", s + 1, "/", STEPS,
                   " loss=", wl, " var_min=", probes[0],
                   " gram_off=", probes[1])
+        if (s + 1) % CKPT_EVERY == 0:
+            tr.save_params(CKPT_PATH)
+            print("   [ckpt] saved @ step", s + 1, "→", CKPT_PATH)
 
     print()
     print("saving →", CKPT_PATH)

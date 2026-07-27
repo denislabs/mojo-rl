@@ -132,7 +132,7 @@ struct SinusoidalPosAdd[T_: Int, S_: Int, D_: Int, SCALE_: Bool = False](Module)
             var bp = self.bias.data.unsafe_ptr()
             for b in range(B):
                 for i in range(Self.N):
-                    out_t[b, i] = inp[b, i] + bp[i]
+                    out_t[b, i] = inp[b, i] + bp[unsafe_offset=i]
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.N)

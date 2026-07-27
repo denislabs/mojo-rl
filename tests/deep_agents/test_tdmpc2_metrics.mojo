@@ -9,7 +9,6 @@ prior window vs a fresh window).
 Run: `pixi run mojo run -I . tests/deep_agents/test_tdmpc2_metrics.mojo`
 """
 
-from std.memory import alloc
 from std.math import isfinite, abs
 from std.random import random_float64, seed
 from std.testing import assert_true, assert_almost_equal, TestSuite
@@ -41,8 +40,8 @@ def test_metrics() raises:
     var ag = Ag.make(lr=Scalar[DT](1e-3), learning_starts=0)
 
     # fill replay + train a few steps
-    var ob = alloc[Scalar[DT]](OBS)
-    var ac = alloc[Scalar[DT]](ACT)
+    var ob = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var ac = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
     for _ in range(200):
         for i in range(OBS):
             ob[i] = Scalar[DT](random_float64() * 2.0 - 1.0)
@@ -81,7 +80,6 @@ def test_metrics() raises:
     var m2 = ag.flush_metrics[NoOpLogger](none, 1)
     assert_true(m2.wm_loss == Scalar[DT](0.0), "window reset after flush")
 
-    ob.free(); ac.free()
 
 
 def main() raises:

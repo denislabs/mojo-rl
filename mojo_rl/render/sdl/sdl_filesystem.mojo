@@ -42,6 +42,9 @@ SDL also offers functions to manipulate the directory tree: renaming,
 removing, copying files.
 """
 
+from . import _get_dylib_function, c_char, c_int, lib, Ptr
+from .sdl_error import get_error
+
 
 def get_base_path() raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the directory where the application was run from.
@@ -148,8 +151,8 @@ def get_pref_path(
         lib,
         "SDL_GetPrefPath",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(org))],
-            Ptr[c_char, ImmutOrigin(origin_of(app))],
+            Ptr[c_char, ImmOrigin(origin_of(org))],
+            Ptr[c_char, ImmOrigin(origin_of(app))],
         ) thin -> Ptr[c_char, MutAnyOrigin],
     ]()(
         org.as_c_string_slice().unsafe_ptr(),
@@ -364,7 +367,7 @@ def create_directory(var path: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_CreateDirectory",
-        def(Ptr[c_char, ImmutOrigin(origin_of(path))]) thin -> Bool,
+        def(Ptr[c_char, ImmOrigin(origin_of(path))]) thin -> Bool,
     ]()(path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -466,7 +469,7 @@ def enumerate_directory(
         lib,
         "SDL_EnumerateDirectory",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[c_char, ImmOrigin(origin_of(path))],
             EnumerateDirectoryCallback,
             Ptr[NoneType, MutAnyOrigin],
         ) thin -> Bool,
@@ -494,7 +497,7 @@ def remove_path(var path: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_RemovePath",
-        def(Ptr[c_char, ImmutOrigin(origin_of(path))]) thin -> Bool,
+        def(Ptr[c_char, ImmOrigin(origin_of(path))]) thin -> Bool,
     ]()(path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -529,8 +532,8 @@ def rename_path(var oldpath: String, var newpath: String) raises:
         lib,
         "SDL_RenamePath",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(oldpath))],
-            Ptr[c_char, ImmutOrigin(origin_of(newpath))],
+            Ptr[c_char, ImmOrigin(origin_of(oldpath))],
+            Ptr[c_char, ImmOrigin(origin_of(newpath))],
         ) thin -> Bool,
     ]()(
         oldpath.as_c_string_slice().unsafe_ptr(),
@@ -586,8 +589,8 @@ def copy_file(var oldpath: String, var newpath: String) raises:
         lib,
         "SDL_CopyFile",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(oldpath))],
-            Ptr[c_char, ImmutOrigin(origin_of(newpath))],
+            Ptr[c_char, ImmOrigin(origin_of(oldpath))],
+            Ptr[c_char, ImmOrigin(origin_of(newpath))],
         ) thin -> Bool,
     ]()(
         oldpath.as_c_string_slice().unsafe_ptr(),
@@ -616,7 +619,7 @@ def get_path_info(var path: String, info: Ptr[PathInfo, MutAnyOrigin]) raises:
         lib,
         "SDL_GetPathInfo",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[c_char, ImmOrigin(origin_of(path))],
             Ptr[PathInfo, MutAnyOrigin],
         ) thin -> Bool,
     ]()(path.as_c_string_slice().unsafe_ptr(), info)
@@ -670,8 +673,8 @@ def glob_directory(
         lib,
         "SDL_GlobDirectory",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(path))],
-            Ptr[c_char, ImmutOrigin(origin_of(pattern))],
+            Ptr[c_char, ImmOrigin(origin_of(path))],
+            Ptr[c_char, ImmOrigin(origin_of(pattern))],
             GlobFlags,
             Ptr[c_int, MutAnyOrigin],
         ) thin -> Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin],

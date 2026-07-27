@@ -246,12 +246,12 @@ struct RMSNorm[DIM_: Int](Module):
                 var acc = SIMD[DT, W](0)
                 var d = 0
                 while d + W <= Self.DIM_:
-                    var x = in_p.load[width=W](row + d)
+                    var x = in_p.unsafe_load[width=W](row + d)
                     acc += x * x
                     d += W
                 var sumsq = acc.reduce_add()
                 while d < Self.DIM_:
-                    var x = in_p[row + d]
+                    var x = in_p[unsafe_offset=row + d]
                     sumsq += x * x
                     d += 1
                 var mean2 = sumsq * inv_dim
@@ -260,14 +260,14 @@ struct RMSNorm[DIM_: Int](Module):
                 var irv = SIMD[DT, W](inv_rms)
                 d = 0
                 while d + W <= Self.DIM_:
-                    var n = in_p.load[width=W](row + d) * irv
-                    nm_p.store(row + d, n)
-                    out_p.store(row + d, n * g_p.load[width=W](d))
+                    var n = in_p.unsafe_load[width=W](row + d) * irv
+                    nm_p.unsafe_store(row + d, n)
+                    out_p.unsafe_store(row + d, n * g_p.unsafe_load[width=W](d))
                     d += W
                 while d < Self.DIM_:
-                    var n = in_p[row + d] * inv_rms
-                    nm_p[row + d] = n
-                    out_p[row + d] = n * g_p[d]
+                    var n = in_p[unsafe_offset=row + d] * inv_rms
+                    nm_p[unsafe_offset=row + d] = n
+                    out_p[unsafe_offset=row + d] = n * g_p[unsafe_offset=d]
                     d += 1
         else:
             var c = ctx.value()
@@ -318,43 +318,43 @@ struct RMSNorm[DIM_: Int](Module):
                 var d = 0
                 while d + W <= Self.DIM_:
                     acc += (
-                        go_p.load[width=W](row + d)
-                        * g_p.load[width=W](d)
-                        * nm_p.load[width=W](row + d)
+                        go_p.unsafe_load[width=W](row + d)
+                        * g_p.unsafe_load[width=W](d)
+                        * nm_p.unsafe_load[width=W](row + d)
                     )
                     d += W
                 var R = acc.reduce_add()
                 while d < Self.DIM_:
-                    R += go_p[row + d] * g_p[d] * nm_p[row + d]
+                    R += go_p[unsafe_offset=row + d] * g_p[unsafe_offset=d] * nm_p[unsafe_offset=row + d]
                     d += 1
                 var irv = SIMD[DT, W](inv_rms)
                 var rscaled = SIMD[DT, W](R * inv_dim)
                 d = 0
                 while d + W <= Self.DIM_:
-                    var go = go_p.load[width=W](row + d)
-                    var n = nm_p.load[width=W](row + d)
-                    gi_p.store(
-                        row + d, irv * (go * g_p.load[width=W](d) - n * rscaled)
+                    var go = go_p.unsafe_load[width=W](row + d)
+                    var n = nm_p.unsafe_load[width=W](row + d)
+                    gi_p.unsafe_store(
+                        row + d, irv * (go * g_p.unsafe_load[width=W](d) - n * rscaled)
                     )
                     d += W
                 while d < Self.DIM_:
-                    var go = go_p[row + d]
-                    gi_p[row + d] = inv_rms * (
-                        go * g_p[d] - nm_p[row + d] * R * inv_dim
+                    var go = go_p[unsafe_offset=row + d]
+                    gi_p[unsafe_offset=row + d] = inv_rms * (
+                        go * g_p[unsafe_offset=d] - nm_p[unsafe_offset=row + d] * R * inv_dim
                     )
                     d += 1
                 # dγ += go·n  (accumulated across the batch)
                 d = 0
                 while d + W <= Self.DIM_:
-                    gg_p.store(
+                    gg_p.unsafe_store(
                         d,
-                        gg_p.load[width=W](d)
-                        + go_p.load[width=W](row + d)
-                        * nm_p.load[width=W](row + d),
+                        gg_p.unsafe_load[width=W](d)
+                        + go_p.unsafe_load[width=W](row + d)
+                        * nm_p.unsafe_load[width=W](row + d),
                     )
                     d += W
                 while d < Self.DIM_:
-                    gg_p[d] = gg_p[d] + go_p[row + d] * nm_p[row + d]
+                    gg_p[unsafe_offset=d] = gg_p[unsafe_offset=d] + go_p[unsafe_offset=row + d] * nm_p[unsafe_offset=row + d]
                     d += 1
         else:
             var c = ctx.value()

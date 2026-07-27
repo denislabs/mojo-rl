@@ -48,15 +48,15 @@ def main() raises:
     var ctx = DeviceContext()
 
     # ── Shared params + synthetic batch (host) ───────────────────────────────
-    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
+    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
     memset(params_buf, 0, NET.PARAM_SIZE)
     var params_lt = LayoutTensor[
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
     ](params_buf)
     NET.pc_init_params[PCXavier, dtype](params_lt)
 
-    var x_buf = alloc[Scalar[dtype]](BATCH * NET.IN_DIM)
-    var y_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM)
+    var x_buf = alloc[Scalar[dtype]](BATCH * NET.IN_DIM).as_unsafe_any_origin()
+    var y_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM).as_unsafe_any_origin()
     for i in range(BATCH * NET.IN_DIM):
         x_buf[i] = Scalar[dtype](0.5 + 0.5 * sin(Float32(i) * 0.3))
     for i in range(BATCH * NET.OUT_DIM):
@@ -65,13 +65,13 @@ def main() raises:
         y_buf[b * NET.OUT_DIM + (b % NET.OUT_DIM)] = 1
 
     # ── CPU grads ─────────────────────────────────────────────────────────────
-    var grads_cpu = alloc[Scalar[dtype]](NET.PARAM_SIZE)
+    var grads_cpu = alloc[Scalar[dtype]](NET.PARAM_SIZE).as_unsafe_any_origin()
     memset(grads_cpu, 0, NET.PARAM_SIZE)
-    var lat_c = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
-    var mu_c = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM)
-    var ab_c = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var zb_c = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
-    var dx_c = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
+    var lat_c = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
+    var mu_c = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM).as_unsafe_any_origin()
+    var ab_c = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var zb_c = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM).as_unsafe_any_origin()
+    var dx_c = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM).as_unsafe_any_origin()
     memset(lat_c, 0, BATCH * NET.LATENT_DIM)
     memset(mu_c, 0, BATCH * NET.SCRATCH_OUT_DIM)
     memset(ab_c, 0, BATCH * NET.SCRATCH_IN_DIM)

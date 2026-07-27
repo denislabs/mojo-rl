@@ -40,25 +40,33 @@ scripts = ["scripts/build_cuda_intercept.sh"]
 
 [feature.apple]
 
+[feature.cpu.dependencies]
+# CPU-only environment for CI and headless test runs: base deps WITHOUT the
+# CUDA toolchain the `default`/`nvidia` envs pull on linux-64 (GBs of
+# cuda-toolkit/cudnn a GitHub runner neither needs nor caches well).
+# Python pinned to 3.13 to match the MOJO_PYTHON_LIBRARY activation string.
+python = ">=3.13.14,<3.14"
+
 [dependencies]
-mojo = ">=1.0.0b3.dev2026063006,<2"
-max = ">=26.5.0.dev2026063006,<27"
+mojo = ">=1.0.0b3.dev2026072706,<2"
+max = ">=26.5.0.dev2026072706,<27"
 gymnasium = ">=1.3.0,<2"
 # Atari ROM support. ale-py ships without ROMs; `pixi run setup-roms` downloads
 # the canonical Farama ROM bundle (see scripts/setup_roms.py) and symlinks them.
-ale-py = ">=0.11.0,<0.12"           # Arcade Learning Environment (requires ROMs)
+ale-py = ">=0.12.0,<0.13"           # Arcade Learning Environment (requires ROMs)
 pygame = ">=2.6.1,<3"
 python = ">=3.12.13,<3.14"
 swig = ">=4.4.1,<5"
 box2d-py = ">=2.3.8,<3"  # for gymnasium Box2D envs (LunarLander, BipedalWalker, CarRacing)
-mujoco = ">=3.9.0,<4"    # for gymnasium MuJoCo envs (HalfCheetah, Ant, Humanoid, etc.)
+mujoco = ">=3.10.0,<4"    # for gymnasium MuJoCo envs (HalfCheetah, Ant, Humanoid, etc.)
 imageio = ">=2.37.0,<3"
 imageio-ffmpeg = ">=0.6.0,<0.7"
 shaderc = ">=2026.2,<2027"  # for GLSL->SPIR-V shader compilation (cross-platform rendering)
 hdf5 = ">=2.1.0,<3"             # libhdf5 C library, FFI target for mojo_rl/io/hdf5
-hdf5plugin = ">=6.0.0,<7"          # Blosc/LZ4/ZSTD chunk-compression filters loaded via HDF5_PLUGIN_PATH
+hdf5plugin = ">=7.0.0,<8"          # Blosc/LZ4/ZSTD chunk-compression filters loaded via HDF5_PLUGIN_PATH
 h5py = ">=3.16.0,<4"             # used by inspection script + parity test (not by the Mojo loader)
-huggingface_hub = ">=1.18.0,<2"  # first-run dataset download
+huggingface_hub = ">=1.24.0,<2"  # first-run dataset download
+pyarrow = ">=24.0.0,<25"            # read HF parquet datasets (e.g. CIFAR-10 loader)
 zstandard = ">=0.25.0,<0.26"        # first-run decompression of .h5.zst envelope
 
 [package]
@@ -69,13 +77,13 @@ version = "0.1.0"
 backend = { name = "pixi-build-mojo", version = "0.1.*" }
 
 [package.host-dependencies]
-mojo-compiler = ">=1.0.0b3.dev2026063006,<2"
+mojo-compiler = ">=1.0.0b3.dev2026072706,<2"
 
 [package.build-dependencies]
-mojo-compiler = ">=1.0.0b3.dev2026063006,<2"
+mojo-compiler = ">=1.0.0b3.dev2026072706,<2"
 
 [package.run-dependencies]
-mojo-compiler = ">=1.0.0b3.dev2026063006,<2"
+mojo-compiler = ">=1.0.0b3.dev2026072706,<2"
 
 # Point Mojo's embedded Python at the *active* env (CONDA_PREFIX), not a hardcoded
 # `default` env — otherwise `pixi run -e nvidia/apple` loads the wrong libpython and
@@ -91,6 +99,7 @@ env = { MOJO_PYTHON_LIBRARY = "$CONDA_PREFIX/lib/libpython3.13.so" }
 nvidia = { features = ["nvidia"], solve-group = "nvidia" }
 amd = { features = ["amd"], solve-group = "amd" }
 apple = { features = ["apple"], solve-group = "apple" }
+cpu = { features = ["cpu"], solve-group = "cpu" }
 default = { features = ["nvidia"] }
 
 [tasks]
@@ -99,6 +108,17 @@ setup-roms = { cmd = "python3 scripts/setup_roms.py", description = "Download At
 build = { cmd = "mojo precompile mojo_rl -o mojo_rl.mojoc" }
 run = { cmd = "mojo run -I ." }
 test = { cmd = "mojo run -I ." }
+# Tiered test suites (scripts/run_tests.sh — see its header for details):
+#   test-smoke  curated fast CPU gates (tests/manifests/smoke.txt) — the CI
+#               tier; self-contained (no references/, no ROMs, no GPU).
+#   test-cpu    discover ALL non-GPU tests under tests/ (hours; run before
+#               big merges or via the weekly CI cron).
+#   test-gpu    discover *_gpu.mojo tests; run as
+#               `pixi run -e apple test-gpu` or `pixi run -e nvidia test-gpu`.
+test-smoke = { cmd = "bash scripts/run_tests.sh tests/manifests/smoke.txt", description = "Fast curated CPU test tier (CI)" }
+examples-compile = { cmd = "bash scripts/run_tests.sh --compile-only tests/manifests/examples-compile.txt", description = "Compile-probe the root examples (CI)" }
+test-cpu = { cmd = "bash scripts/run_tests.sh --discover tests --cpu-only", description = "All non-GPU tests (slow)" }
+test-gpu = { cmd = "bash scripts/run_tests.sh --discover tests --gpu-only", description = "All *_gpu.mojo tests (use -e apple|nvidia)" }
 format = { cmd = "mojo format -l 80 ." }
 # NVIDIA GPU information and profiling utilities
 gpu-info = { cmd = "nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_version --format=csv", description = "Get basic GPU information" }

@@ -73,10 +73,10 @@ struct Flatten[DIM_: Int, ADT: DType = DT](Module):
             var dp = out.data.unsafe_ptr()
             var k = 0
             while k + CPU_SIMD_W <= N:
-                dp.store(k, sp.load[width=CPU_SIMD_W](k))
+                dp.unsafe_store(k, sp.unsafe_load[width=CPU_SIMD_W](k))
                 k += CPU_SIMD_W
             while k < N:
-                dp[k] = sp[k]
+                dp[unsafe_offset=k] = sp[unsafe_offset=k]
                 k += 1
         else:
             var c = ctx.value()
@@ -110,10 +110,10 @@ struct Flatten[DIM_: Int, ADT: DType = DT](Module):
             var dp = gin.data.unsafe_ptr()
             var k = 0
             while k + CPU_SIMD_W <= N:
-                dp.store(k, sp.load[width=CPU_SIMD_W](k))
+                dp.unsafe_store(k, sp.unsafe_load[width=CPU_SIMD_W](k))
                 k += CPU_SIMD_W
             while k < N:
-                dp[k] = sp[k]
+                dp[unsafe_offset=k] = sp[unsafe_offset=k]
                 k += 1
         else:
             var c = ctx.value()

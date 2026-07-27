@@ -191,7 +191,7 @@ def main() raises:
         params_init_host.unsafe_ptr()[i] = Scalar[dtype](0)
     var params_init_t = LayoutTensor[
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
-    ](params_init_host.unsafe_ptr())
+    ](params_init_host.unsafe_ptr().as_unsafe_any_origin())
     NET.pc_init_params[PCXavier, dtype](params_init_t)
 
     var params_dbuf = ctx.enqueue_create_buffer[dtype](NET.PARAM_SIZE)
@@ -322,7 +322,7 @@ def main() raises:
             comptime zero_k = _zero_x_in_kernel[BATCH, AUG_DIM, dtype]
             var zero_threads = BATCH * AUG_DIM
             var zero_blocks = (zero_threads + TPB - 1) // TPB
-            ctx.enqueue_function[zero_k, zero_k](
+            ctx.enqueue_function[zero_k](
                 x_in_t,
                 grid_dim=(zero_blocks,),
                 block_dim=(TPB,),
@@ -331,16 +331,16 @@ def main() raises:
             for t in range(1, SEQ_LEN + 1):
                 var actions_slice = LayoutTensor[
                     dtype, Layout.row_major(BATCH), MutAnyOrigin
-                ](actions_dbuf.unsafe_ptr() + (t - 1) * BATCH)
+                ](actions_dbuf.unsafe_ptr().as_unsafe_any_origin() + (t - 1) * BATCH)
                 var states_slice = LayoutTensor[
                     dtype, Layout.row_major(BATCH), MutAnyOrigin
-                ](states_dbuf.unsafe_ptr() + t * BATCH)
+                ](states_dbuf.unsafe_ptr().as_unsafe_any_origin() + t * BATCH)
 
                 comptime sat_k = _set_action_target_kernel[
                     BATCH, AUG_DIM, HIDDEN, DATA_DIM, dtype
                 ]
                 var sat_blocks = (BATCH + TPB - 1) // TPB
-                ctx.enqueue_function[sat_k, sat_k](
+                ctx.enqueue_function[sat_k](
                     actions_slice,
                     states_slice,
                     x_in_t,
@@ -380,7 +380,7 @@ def main() raises:
                 ]
                 var sph_threads = BATCH * HIDDEN
                 var sph_blocks = (sph_threads + TPB - 1) // TPB
-                ctx.enqueue_function[sph_k, sph_k](
+                ctx.enqueue_function[sph_k](
                     lat_t,
                     x_in_t,
                     grid_dim=(sph_blocks,),
@@ -502,7 +502,7 @@ def main() raises:
     comptime zero_k_eval = _zero_x_in_kernel[EVAL_BATCH, AUG_DIM, dtype]
     var zero_threads_eval = EVAL_BATCH * AUG_DIM
     var zero_blocks_eval = (zero_threads_eval + TPB - 1) // TPB
-    ctx.enqueue_function[zero_k_eval, zero_k_eval](
+    ctx.enqueue_function[zero_k_eval](
         eval_x_in_t,
         grid_dim=(zero_blocks_eval,),
         block_dim=(TPB,),
@@ -527,7 +527,7 @@ def main() raises:
             EVAL_BATCH, AUG_DIM, HIDDEN, dtype
         ]
         var sa_blocks = (EVAL_BATCH + TPB - 1) // TPB
-        ctx.enqueue_function[sa_k, sa_k](
+        ctx.enqueue_function[sa_k](
             eval_x_in_t,
             Scalar[dtype](1.0),
             grid_dim=(sa_blocks,),
@@ -568,7 +568,7 @@ def main() raises:
         ]
         var sph_threads_eval = EVAL_BATCH * HIDDEN
         var sph_blocks_eval = (sph_threads_eval + TPB - 1) // TPB
-        ctx.enqueue_function[sph_k_eval, sph_k_eval](
+        ctx.enqueue_function[sph_k_eval](
             eval_lat_t,
             eval_x_in_t,
             grid_dim=(sph_blocks_eval,),

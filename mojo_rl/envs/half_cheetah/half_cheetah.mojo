@@ -1,4 +1,4 @@
-"""HalfCheetah Environment - thin wrapper around Phyics3dEnv[HalfCheetahModel, HalfCheetahConfig].
+"""HalfCheetah Environment - thin wrapper over Phyics3dEnv[HalfCheetahModel, HalfCheetahConfig].
 
 """
 

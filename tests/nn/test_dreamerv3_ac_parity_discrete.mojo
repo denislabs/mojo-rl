@@ -69,11 +69,11 @@ def main() raises:
     var ctx = DeviceContext()
 
     # ── one fixed synthetic minibatch, shared by both backends ──
-    var mb_obs = alloc[Scalar[DT]](B * (T + 1) * OBS)
-    var mb_act = alloc[Scalar[DT]](B * T * ACT)
-    var mb_rew = alloc[Scalar[DT]](B * T)
-    var mb_dne = alloc[Scalar[DT]](B * T)
-    var mb_fst = alloc[Scalar[DT]](B * (T + 1))
+    var mb_obs = alloc[Scalar[DT]](B * (T + 1) * OBS).as_unsafe_any_origin()
+    var mb_act = alloc[Scalar[DT]](B * T * ACT).as_unsafe_any_origin()
+    var mb_rew = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
+    var mb_dne = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
+    var mb_fst = alloc[Scalar[DT]](B * (T + 1)).as_unsafe_any_origin()
     var s = UInt64(99887766)
     for i in range(B * (T + 1) * OBS):
         mb_obs[i] = _lcg(s)
@@ -87,10 +87,10 @@ def main() raises:
         for t in range(T + 1):
             mb_fst[b * (T + 1) + t] = Scalar[DT](1.0) if t == 0 else Scalar[DT](0.0)
 
-    var wm_cpu = alloc[Scalar[DT]](ITERS)
-    var ac_cpu = alloc[Scalar[DT]](ITERS)
-    var wm_gpu = alloc[Scalar[DT]](ITERS)
-    var ac_gpu = alloc[Scalar[DT]](ITERS)
+    var wm_cpu = alloc[Scalar[DT]](ITERS).as_unsafe_any_origin()
+    var ac_cpu = alloc[Scalar[DT]](ITERS).as_unsafe_any_origin()
+    var wm_gpu = alloc[Scalar[DT]](ITERS).as_unsafe_any_origin()
+    var ac_gpu = alloc[Scalar[DT]](ITERS).as_unsafe_any_origin()
 
     # reseed before EACH make so both backends draw IDENTICAL initial weights.
     seed(SEED)

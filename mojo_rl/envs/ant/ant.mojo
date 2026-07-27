@@ -1,4 +1,4 @@
-"""Ant Environment - thin wrapper around Phyics3dEnv[AntModel, AntConfig].
+"""Ant Environment - thin wrapper over Phyics3dEnv[AntModel, AntConfig].
 
 MuJoCo Ant-v5 quadruped with free joint root.
 13 bodies, 9 joints (1 free + 8 hinge), 8 actuators.

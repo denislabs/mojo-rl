@@ -53,7 +53,7 @@ struct ConstantSchedule(Scheduler):
     def __init__(out self, *, copy: Self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     @staticmethod
@@ -74,7 +74,7 @@ struct LinearWarmupSchedule[WARMUP_EPOCHS: Int](Scheduler):
     def __init__(out self, *, copy: Self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     @staticmethod
@@ -112,7 +112,7 @@ struct OneCycleSchedule[
     def __init__(out self, *, copy: Self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     @staticmethod
@@ -152,7 +152,7 @@ struct CosineWarmupSchedule[WARMUP_EPOCHS: Int, MIN_SCALE: Float64 = 0.1](
     def __init__(out self, *, copy: Self):
         pass
 
-    def __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit move: Self):
         pass
 
     @staticmethod

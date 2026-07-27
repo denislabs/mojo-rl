@@ -80,7 +80,7 @@ def main() raises:
         reanalyze_batch=B,   # > N_ENVS → exercises the multi-chunk reanalyze loop
         eval_every=150,
         eval_horizon=30,
-        eval_env=UnsafePointer(to=eval_env),
+        eval_env=UnsafePointer(to=eval_env).as_unsafe_any_origin(),
         seed=7,
         verbose=True,
     )

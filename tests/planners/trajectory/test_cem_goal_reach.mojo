@@ -100,7 +100,7 @@ def test_cem_converges_to_goal() raises:
         cem_smoothing=0.25,
     )
     var cb = GoalReachScoreCallback(goal_x=1.0, goal_y=1.0, goal_z=1.0)
-    var best_plan = alloc[Scalar[dtype]](BATCH * HORIZON * ACT_DIM)
+    var best_plan = alloc[Scalar[dtype]](BATCH * HORIZON * ACT_DIM).as_unsafe_any_origin()
     var best = planner.optimize(cb, best_plan, verbose=False)
 
     # 32 samples drawn from uniform once is already very likely to include
@@ -143,7 +143,7 @@ def test_cem_zero_iters_returns_inf() raises:
         cem_smoothing=0.5,
     )
     var cb = GoalReachScoreCallback(goal_x=1.0, goal_y=1.0, goal_z=1.0)
-    var out = alloc[Scalar[dtype]](BATCH * HORIZON * ACT_DIM)
+    var out = alloc[Scalar[dtype]](BATCH * HORIZON * ACT_DIM).as_unsafe_any_origin()
     out[0] = Scalar[dtype](-99.0)  # sentinel
     var best = planner.optimize(cb, out, verbose=False)
     # No iters → no samples scored → best stays at +inf, sentinel preserved.

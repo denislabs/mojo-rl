@@ -14,7 +14,7 @@ Pipeline per step (B·T = 96 frames):
 Every VIZ_EVERY steps a side-by-side original-vs-reconstruction PPM grid is
 written to /tmp (open in Preview). The encoder is never updated.
 
-Loads the paper-width checkpoint `/tmp/lewm_pusht_paper_world_model.txt`.
+Loads the paper-width checkpoint `lewm_pusht_paper.ckpt`.
 
 Run (after the paper-width train run, NVIDIA — 224² is too heavy for Apple):
   pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_decode_gpu.mojo
@@ -61,7 +61,7 @@ comptime FRAMESKIP = 5
 comptime IMG_DIM = IN_CH * IMG * IMG
 comptime PIX = T * IMG_DIM
 comptime ACTIN = T * ACT
-comptime WM_CKPT: String = "/tmp/lewm_pusht_paper_world_model.txt"
+comptime WM_CKPT: String = "lewm_pusht_paper.ckpt"
 
 # ── decoder probe config ────────────────────────────────────────────────
 comptime PATCH_D = 16                       # paper decoder patch size

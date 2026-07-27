@@ -145,15 +145,15 @@ struct Elementwise[DIM_: Int, OP: ElementOp, ADT: DType = DT](Module):
                 var op = outd.data.unsafe_ptr()
                 var k = 0
                 while k + CPU_SIMD_W <= M:
-                    op.store(
+                    op.unsafe_store(
                         k,
                         Self.OP.forward_simd[CPU_SIMD_W](
-                            xp.load[width=CPU_SIMD_W](k)
+                            xp.unsafe_load[width=CPU_SIMD_W](k)
                         ),
                     )
                     k += CPU_SIMD_W
                 while k < M:
-                    op[k] = Self.OP.forward_scalar(xp[k])
+                    op[unsafe_offset=k] = Self.OP.forward_scalar(xp[unsafe_offset=k])
                     k += 1
             else:
                 var c = ctx.value()
@@ -209,25 +209,25 @@ struct Elementwise[DIM_: Int, OP: ElementOp, ADT: DType = DT](Module):
                 var ip = gind.data.unsafe_ptr()
                 var k = 0
                 while k + CPU_SIMD_W <= M:
-                    var xv = xp.load[width=CPU_SIMD_W](k)
-                    var gv = gp.load[width=CPU_SIMD_W](k)
+                    var xv = xp.unsafe_load[width=CPU_SIMD_W](k)
+                    var gv = gp.unsafe_load[width=CPU_SIMD_W](k)
                     comptime if Self.OP.owns_cache:
-                        ip.store(
+                        ip.unsafe_store(
                             k,
                             Self.OP.backward_simd[CPU_SIMD_W](
                                 Self.OP.forward_simd[CPU_SIMD_W](xv), gv
                             ),
                         )
                     else:
-                        ip.store(k, Self.OP.backward_simd[CPU_SIMD_W](xv, gv))
+                        ip.unsafe_store(k, Self.OP.backward_simd[CPU_SIMD_W](xv, gv))
                     k += CPU_SIMD_W
                 while k < M:
                     comptime if Self.OP.owns_cache:
-                        ip[k] = Self.OP.backward_scalar(
-                            Self.OP.forward_scalar(xp[k]), gp[k]
+                        ip[unsafe_offset=k] = Self.OP.backward_scalar(
+                            Self.OP.forward_scalar(xp[unsafe_offset=k]), gp[unsafe_offset=k]
                         )
                     else:
-                        ip[k] = Self.OP.backward_scalar(xp[k], gp[k])
+                        ip[unsafe_offset=k] = Self.OP.backward_scalar(xp[unsafe_offset=k], gp[unsafe_offset=k])
                     k += 1
             else:
                 var c = ctx.value()

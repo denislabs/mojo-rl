@@ -50,7 +50,7 @@ def main() raises:
     print("")
 
     # Create tile coding for MountainCar's 2D state space
-    var tc = MountainCarEnv.make_tile_coding(num_tilings=8, tiles_per_dim=8)
+    var tc = MountainCarEnv[DType.float64].make_tile_coding(num_tilings=8, tiles_per_dim=8)
     print("Tile coding configuration:")
     print("  Tilings:", tc.get_num_tilings())
     print("  Tiles per dim: 8")
@@ -100,7 +100,7 @@ def main() raises:
     print("")
 
     # Create fresh tile coding
-    var tc_sl = MountainCarEnv.make_tile_coding(num_tilings=8, tiles_per_dim=8)
+    var tc_sl = MountainCarEnv[DType.float64].make_tile_coding(num_tilings=8, tiles_per_dim=8)
 
     var env_sl = MountainCarEnv[DType.float64]()
     var agent_sl = TiledSARSALambdaAgent(

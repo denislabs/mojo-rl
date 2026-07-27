@@ -17,6 +17,8 @@ from std.memory import alloc
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
+from layout import Layout, LayoutTensor
+
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.loss.seed_grad_inv_batch import seed_grad_inv_batch
 
@@ -24,13 +26,13 @@ from mojo_rl.deep_agents.loss.seed_grad_inv_batch import seed_grad_inv_batch
 def test_cpu_basic() raises:
     print("test_cpu_basic ...")
     comptime BATCH = 8
-    var buf = alloc[Scalar[DT]](BATCH)
+    var buf = alloc[Scalar[DT]](BATCH).as_unsafe_any_origin()
     # Pre-fill with garbage to confirm the seed overwrites it.
     for i in range(BATCH):
         buf[i] = Scalar[DT](999.0)
 
     seed_grad_inv_batch["cpu", BATCH](
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](buf)
+        LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin](buf)
     )
 
     var expected = Scalar[DT](1.0) / Scalar[DT](BATCH)
@@ -47,24 +49,24 @@ def test_cpu_batch_sizes() raises:
     """Different BATCH values must each produce 1/BATCH."""
     print("test_cpu_batch_sizes ...")
     # BATCH=1 → 1.0, BATCH=2 → 0.5, BATCH=256 → ~0.0039.
-    var b1 = alloc[Scalar[DT]](1)
+    var b1 = alloc[Scalar[DT]](1).as_unsafe_any_origin()
     seed_grad_inv_batch["cpu", 1](
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b1)
+        LayoutTensor[DT, Layout.row_major(1, 1), MutAnyOrigin](b1)
     )
     assert_true(b1[0] == Scalar[DT](1.0), "BATCH=1 should give 1.0")
     b1.free()
 
-    var b2 = alloc[Scalar[DT]](2)
+    var b2 = alloc[Scalar[DT]](2).as_unsafe_any_origin()
     seed_grad_inv_batch["cpu", 2](
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b2)
+        LayoutTensor[DT, Layout.row_major(2, 1), MutAnyOrigin](b2)
     )
     assert_true(b2[0] == Scalar[DT](0.5), "BATCH=2 [0] should give 0.5")
     assert_true(b2[1] == Scalar[DT](0.5), "BATCH=2 [1] should give 0.5")
     b2.free()
 
-    var b256 = alloc[Scalar[DT]](256)
+    var b256 = alloc[Scalar[DT]](256).as_unsafe_any_origin()
     seed_grad_inv_batch["cpu", 256](
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b256)
+        LayoutTensor[DT, Layout.row_major(256, 1), MutAnyOrigin](b256)
     )
     var expected_256 = Scalar[DT](1.0) / Scalar[DT](256)
     for i in range(256):
@@ -86,8 +88,8 @@ def test_gpu_basic() raises:
         host_buf[i] = Scalar[DT](999.0)
     ctx.enqueue_copy(dev_buf, host_buf)
 
-    var dev_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        dev_buf.unsafe_ptr()
+    var dev_p = LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin](
+        dev_buf.unsafe_ptr().as_unsafe_any_origin()
     )
     seed_grad_inv_batch["gpu", BATCH](
         dev_p, Optional[DeviceContext](ctx)

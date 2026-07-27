@@ -26,6 +26,7 @@ from std.time import perf_counter_ns
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
 from mojo_rl.envs.cartpole import CartPoleEnv
 
@@ -72,6 +73,7 @@ comptime Ag = DreamerV3Agent[
     T_IMAG,
     CAP,
     True,  # DISCRETE=True, train_target="gpu"
+    OUT_INIT=Kaiming,  # full reward/critic output init (positive-reward optimism)
 ]
 
 comptime NUM_STEPS = 150_000
@@ -118,8 +120,7 @@ def main() raises:
             lr=Scalar[DT](1.5e-4),
             learning_starts=LEARN_START,
             warmup_steps=500,
-            out_init_scale=Scalar[DT](1.0),
-        )
+            )
         var env = EnvT()
 
         # ─── Single train() call — auto-eval + auto-log + auto-checkpoint ──

@@ -241,6 +241,11 @@ Storage implementation may not support particularly strange sequences and
 refuse to create files with those names, etc.
 """
 
+from . import _get_dylib_function, c_char, c_int, lib, Ptr
+from .sdl_error import get_error
+from .sdl_filesystem import EnumerateDirectoryCallback, GlobFlags, PathInfo
+from .sdl_properties import PropertiesID
+
 
 @fieldwise_init
 struct StorageInterface(ImplicitlyCopyable, Movable):
@@ -364,7 +369,7 @@ def open_title_storage(
         lib,
         "SDL_OpenTitleStorage",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(override))], PropertiesID
+            Ptr[c_char, ImmOrigin(origin_of(override))], PropertiesID
         ) thin -> Ptr[Storage, MutAnyOrigin],
     ]()(override.as_c_string_slice().unsafe_ptr(), props)
     if Int(ret) == 0:
@@ -400,8 +405,8 @@ def open_user_storage(
         lib,
         "SDL_OpenUserStorage",
         def(
-            Ptr[c_char, ImmutOrigin(origin_of(org))],
-            Ptr[c_char, ImmutOrigin(origin_of(app))],
+            Ptr[c_char, ImmOrigin(origin_of(org))],
+            Ptr[c_char, ImmOrigin(origin_of(app))],
             PropertiesID,
         ) thin -> Ptr[Storage, MutAnyOrigin],
     ]()(
@@ -436,7 +441,7 @@ def open_file_storage(
     ret = _get_dylib_function[
         lib,
         "SDL_OpenFileStorage",
-        def(Ptr[c_char, ImmutOrigin(origin_of(path))]) thin -> Ptr[Storage, MutAnyOrigin],
+        def(Ptr[c_char, ImmOrigin(origin_of(path))]) thin -> Ptr[Storage, MutAnyOrigin],
     ]()(path.as_c_string_slice().unsafe_ptr())
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -551,7 +556,7 @@ def get_storage_file_size(
         "SDL_GetStorageFileSize",
         def(
             Ptr[Storage, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[c_char, ImmOrigin(origin_of(path))],
             Ptr[UInt64, MutAnyOrigin],
         ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr(), length)
@@ -588,7 +593,7 @@ def read_storage_file(
         "SDL_ReadStorageFile",
         def(
             Ptr[Storage, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[c_char, ImmOrigin(origin_of(path))],
             Ptr[NoneType, MutAnyOrigin],
             UInt64,
         ) thin -> Bool,
@@ -621,7 +626,7 @@ def write_storage_file(
         "SDL_WriteStorageFile",
         def(
             Ptr[Storage, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[c_char, ImmOrigin(origin_of(path))],
             Ptr[NoneType, ImmutAnyOrigin],
             UInt64,
         ) thin -> Bool,
@@ -649,7 +654,7 @@ def create_storage_directory(
         "SDL_CreateStorageDirectory",
         def(
             Ptr[Storage, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[c_char, ImmOrigin(origin_of(path))],
         ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr())
     if not ret:
@@ -695,7 +700,7 @@ def enumerate_storage_directory(
         "SDL_EnumerateStorageDirectory",
         def(
             Ptr[Storage, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[c_char, ImmOrigin(origin_of(path))],
             EnumerateDirectoryCallback,
             Ptr[NoneType, MutAnyOrigin],
         ) thin -> Bool,
@@ -725,7 +730,7 @@ def remove_storage_path(
         "SDL_RemoveStoragePath",
         def(
             Ptr[Storage, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[c_char, ImmOrigin(origin_of(path))],
         ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr())
     if not ret:
@@ -756,8 +761,8 @@ def rename_storage_path(
         "SDL_RenameStoragePath",
         def(
             Ptr[Storage, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(oldpath))],
-            Ptr[c_char, ImmutOrigin(origin_of(newpath))],
+            Ptr[c_char, ImmOrigin(origin_of(oldpath))],
+            Ptr[c_char, ImmOrigin(origin_of(newpath))],
         ) thin -> Bool,
     ]()(
         storage,
@@ -792,8 +797,8 @@ def copy_storage_file(
         "SDL_CopyStorageFile",
         def(
             Ptr[Storage, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(oldpath))],
-            Ptr[c_char, ImmutOrigin(origin_of(newpath))],
+            Ptr[c_char, ImmOrigin(origin_of(oldpath))],
+            Ptr[c_char, ImmOrigin(origin_of(newpath))],
         ) thin -> Bool,
     ]()(
         storage,
@@ -829,7 +834,7 @@ def get_storage_path_info(
         "SDL_GetStoragePathInfo",
         def(
             Ptr[Storage, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[c_char, ImmOrigin(origin_of(path))],
             Ptr[PathInfo, MutAnyOrigin],
         ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr(), info)
@@ -913,8 +918,8 @@ def glob_storage_directory(
         "SDL_GlobStorageDirectory",
         def(
             Ptr[Storage, MutAnyOrigin],
-            Ptr[c_char, ImmutOrigin(origin_of(path))],
-            Ptr[c_char, ImmutOrigin(origin_of(pattern))],
+            Ptr[c_char, ImmOrigin(origin_of(path))],
+            Ptr[c_char, ImmOrigin(origin_of(pattern))],
             GlobFlags,
             Ptr[c_int, MutAnyOrigin],
         ) thin -> Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin],

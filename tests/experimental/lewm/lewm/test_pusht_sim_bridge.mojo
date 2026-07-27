@@ -33,12 +33,12 @@ def main() raises:
     var acy = Scalar[DT](120.0)
 
     # reference HWC [0,255]
-    var hwc = alloc[Scalar[DT]](HW * 3)
+    var hwc = alloc[Scalar[DT]](HW * 3).as_unsafe_any_origin()
     var hwc_t = LayoutTensor[DT, Layout.row_major(OUT, OUT, 3), MutAnyOrigin](hwc)
     render_pusht_rgb_at[OUT](bcx, bcy, bang, acx, acy, hwc_t)
 
     # bridge CHW [0,1]
-    var chw = alloc[Scalar[DT]](3 * HW)
+    var chw = alloc[Scalar[DT]](3 * HW).as_unsafe_any_origin()
     sim_frame_chw_norm[OUT](bcx, bcy, bang, acx, acy, chw)
 
     # permute + scale must be exact

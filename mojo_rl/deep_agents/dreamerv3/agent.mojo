@@ -32,7 +32,7 @@ agent.py` facade shape (select_action / select_greedy_action / record /
 train_step).
 """
 
-from std.math import tanh
+from std.math import tanh, log
 from std.memory import alloc
 from std.random import random_float64
 from std.gpu.host import DeviceContext
@@ -43,12 +43,13 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor, TensorImpl
 from mojo_rl.nn.core.tensor_refs import TensorRefs, child_refs
 from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.initializer import Initializer, Kaiming, Zero
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents.dreamerv3.nets import DreamerEncoder, DreamerDecoder
 from mojo_rl.deep_agents.dreamerv3.trainer import DreamerV3Trainer
 from mojo_rl.deep_agents.dreamerv3.dists import bounded_std
 from mojo_rl.deep_agents.dreamerv3.dists_discrete import (
-    cat_sample, cat_argmax, UNIMIX,
+    cat_sample, cat_argmax, cat_softmax_mix, UNIMIX,
 )
 
 
@@ -85,6 +86,14 @@ struct DreamerV3Agent[
     # RECON_SIGMOID=True → reference pixel recon (sigmoid + plain MSE on [0,1]).
     # Default False keeps symlog recon for unbounded vector obs.
     RECON_SIGMOID: Bool = False,
+    # Reward + value/slowvalue OUTPUT-layer initializer (structural, replaces
+    # the runtime `out_init_scale`): Zero = paper zero-init (default; negative-
+    # reward tasks), Kaiming = full init optimism (positive-reward tasks like
+    # CartPole). The policy head's reference outscale 0.01 is fixed in nets.
+    OUT_INIT: Initializer = Zero,
+    # Hidden-layer weight init (see trainer): Kaiming default; TruncNormalIn
+    # = reference parity.
+    NET_INIT: Initializer = Kaiming,
 ](Movable & ImplicitlyDeletable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
@@ -96,7 +105,8 @@ struct DreamerV3Agent[
         Self.train_target, Self.OBS, Self.ACT, Self.DETER, Self.H, Self.STOCH,
         Self.CLASSES, Self.BLOCKS, Self.TOKEN, Self.DEC_U, Self.HU, Self.VU,
         Self.PU, Self.BINS, Self.B, Self.T, Self.T_IMAG, Self.CAP, Self.DISCRETE,
-        Self.ENC, Self.DEC, Self.RECON_SIGMOID,
+        Self.ENC, Self.DEC, Self.RECON_SIGMOID, Self.OUT_INIT,
+        Self.NET_INIT,
     ]
     comptime MINSTD = Scalar[DT](0.1)
     comptime MAXSTD = Scalar[DT](1.0)
@@ -106,6 +116,14 @@ struct DreamerV3Agent[
     var belief_stoch: Tensor   # [SC]
     var last_action: Tensor    # [ACT]
     var action_scale: Scalar[DT]
+    # Acting-policy telemetry (discrete, explore-time only): running sum of the
+    # TRUE per-state entropy of the unimix-mixed categorical + sampled-action
+    # histogram since the last log window. The policy-collapse detector: a
+    # collapsed actor shows entropy → ~0.06 nats (the unimix floor) and one
+    # act_hist bin taking ~99% of the mass; uniform over ACT = ln(ACT) nats.
+    var ent_acc: Scalar[DT]
+    var ent_n: Int
+    var act_hist: List[Int]    # [ACT]
 
     @staticmethod
     def make(
@@ -114,21 +132,26 @@ struct DreamerV3Agent[
         learning_starts: Int = 200,
         action_scale: Scalar[DT] = Scalar[DT](1.0),
         warmup_steps: Int = 1000,
-        out_init_scale: Scalar[DT] = Scalar[DT](0.0),
         actent: Scalar[DT] = Scalar[DT](3e-4),
         slowtar: Bool = False,
         device_noise: Bool = True,
+        ac_start: Int = 0,
+        online: Bool = False,
     ) raises -> Self:
         var a = Self(
             trainer=Self.TrainerT.make(
                 ctx=ctx, lr=lr, learning_starts=learning_starts,
-                warmup_steps=warmup_steps, out_init_scale=out_init_scale,
+                warmup_steps=warmup_steps,
                 actent=actent, slowtar=slowtar, device_noise=device_noise,
+                ac_start=ac_start, online=online,
             ),
             belief_deter=Tensor.alloc(Self.DETER),
             belief_stoch=Tensor.alloc(Self.SC),
             last_action=Tensor.alloc(Self.ACT),
             action_scale=action_scale,
+            ent_acc=Scalar[DT](0.0),
+            ent_n=0,
+            act_hist=List[Int](length=Self.ACT, fill=0),
         )
         a.reset_belief()
         return a^
@@ -164,6 +187,12 @@ struct DreamerV3Agent[
     def load(mut self, path: String) raises:
         """Restore the full network set from a `save()` checkpoint."""
         self.trainer.load_state(path)
+
+    def reset_ac(mut self) raises:
+        """Fresh actor-critic on top of the loaded world model (see
+        DreamerV3Trainer.reset_ac) — reuse a WM-mature checkpoint for
+        actor-from-step-1 experiments without re-paying the WM warmup."""
+        self.trainer.reset_ac()
 
     def train_step(mut self, want_diag: Bool = True) raises -> Bool:
         return self.trainer.train_step(want_diag)
@@ -211,6 +240,7 @@ struct DreamerV3Agent[
         eval_episodes: Int = 10,
         ep_len: Int = 500,
         print_every: Int = 2500,
+        log_every: Int = 0,
         verbose: Bool = True,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         checkpoint_path: String = String(""),
@@ -240,6 +270,9 @@ struct DreamerV3Agent[
         var ep_n: Int = 0                 # #completed episodes since last log
         var last_ep: Scalar[DT] = 0.0     # last completed episode return
         var best_ret: Scalar[DT] = 0.0    # best episode return so far
+        # WM/AC component metrics log at `le` (frequent, cheap); greedy eval +
+        # episode metrics stay at the coarser `eval_every`. le<=0 → tie to eval.
+        var le = log_every if log_every > 0 else eval_every
 
         for step in range(total_steps):
             for i in range(OBSL):
@@ -280,7 +313,7 @@ struct DreamerV3Agent[
                 # only remaining host cost — compute it ONLY on the train_step
                 # whose metrics get logged at the upcoming eval boundary
                 # (eval_every is a multiple of train_every in all examples).
-                var wd = (step % eval_every == 0)
+                var wd = (step % le == 0)
                 comptime if (
                     USE_TRAIN_CUDA_GRAPH
                     and Self.train_target == "gpu"
@@ -293,49 +326,124 @@ struct DreamerV3Agent[
                 else:
                     _ = self.train_step(want_diag=wd)
 
-            if step > 0 and step % eval_every == 0:
-                var ev = self._greedy_eval[E](
-                    env, eval_episodes, ep_len, obsbuf, actbuf
+            # frequent WM/AC component metrics (fresh dbg; NO greedy eval) — early
+            # loss curves at the `le` cadence without paying the eval cost. Names
+            # follow the monitoring tool's KNOWN_GROUPS panels.
+            if step > 0 and step % le == 0:
+                # acting-policy telemetry over the last log window (explore-time
+                # sampled actions): mean true entropy (nats; uniform = ln ACT ≈
+                # 1.79 for Pong's 6, unimix floor ≈ 0.06) + action fractions.
+                var ent_mean = (
+                    self.ent_acc / Scalar[DT](self.ent_n)
+                    if self.ent_n > 0 else Scalar[DT](-1.0)
                 )
-                last_eval = ev
-                var avg_ret = ep_acc / Scalar[DT](ep_n) if ep_n > 0 else last_ep
+                var hist_n = 0
+                for a in range(ACTL):
+                    hist_n += self.act_hist[a]
+                var frac_max = Float64(0.0)
+                for a in range(ACTL):
+                    if hist_n > 0:
+                        var f = Float64(self.act_hist[a]) / Float64(hist_n)
+                        if f > frac_max:
+                            frac_max = f
                 if verbose and step % print_every == 0:
                     print(
-                        "  step", step, " eval_ret=", ev, " avg_ret=", avg_ret,
-                        " WM=", self.last_wm_loss(), " AC=", self.last_ac_loss(),
+                        "  step", step, " WM=", self.last_wm_loss(),
+                        " AC=", self.last_ac_loss(),
+                        " rew_pred=", self.dbg_rew_pred(),
+                        " val_m=", self.dbg_val_mean(),
                         " con_m=", self.dbg_con_mean(),
+                        " pi_ent=", ent_mean,
+                        " act_max=", frac_max,
                     )
-                # Metric names follow the monitoring tool's KNOWN_GROUPS so they
-                # land in the right panels (Episode Reward / Loss / World Model
-                # Losses / KL / Critic-Policy Loss / Imagined Returns / Progress).
                 comptime if L.ENABLED:
                     if logger:
                         var lg = logger.value()
-                        # Episode Reward
-                        lg[].log_scalar("avg_reward", Float64(avg_ret), step)
-                        lg[].log_scalar("episode_reward", Float64(last_ep), step)
-                        lg[].log_scalar("best_reward", Float64(best_ret), step)
-                        lg[].log_scalar("eval/mean_return", Float64(ev), step)
-                        # Loss + World Model Losses + KL Divergence
                         lg[].log_scalar("wm_loss", Float64(self.last_wm_loss()), step)
                         lg[].log_scalar("obs_loss", Float64(self.dbg_obs_loss()), step)
                         lg[].log_scalar("reward_loss", Float64(self.dbg_rew_loss()), step)
                         lg[].log_scalar("continue_loss", Float64(self.dbg_con_loss()), step)
                         lg[].log_scalar("dyn_kl", Float64(self.dbg_dyn_kl()), step)
                         lg[].log_scalar("rep_kl", Float64(self.dbg_rep_kl()), step)
-                        # Critic / Policy Loss
                         lg[].log_scalar("value_loss", Float64(self.dbg_val_loss()), step)
                         lg[].log_scalar("policy_loss", Float64(self.dbg_pol_loss()), step)
-                        # Imagined Returns + Policy Scale
                         lg[].log_scalar(
                             "imagined_reward_mean", Float64(self.dbg_rew_pred()), step
                         )
                         lg[].log_scalar("return_scale", Float64(self.dbg_rscale()), step)
                         lg[].log_scalar("pi_scale", Float64(self.dbg_rscale()), step)
-                        # Training Progress
+                        if self.ent_n > 0:
+                            lg[].log_scalar(
+                                "policy_entropy", Float64(ent_mean), step
+                            )
+                        if hist_n > 0:
+                            lg[].log_scalar("act_frac_max", frac_max, step)
+                            for a in range(ACTL):
+                                lg[].log_scalar(
+                                    String("act_frac_") + String(a),
+                                    Float64(self.act_hist[a]) / Float64(hist_n),
+                                    step,
+                                )
+                        # per-action mean imagination advantage — the REINFORCE
+                        # drift per action. A persistent adv_gap with flat eval
+                        # = model-exploitation collapse (value/reward heads
+                        # favor one action's imagined futures).
+                        var adv_lo = Float64(self.dbg_adv_act(0))
+                        var adv_hi = adv_lo
+                        for a in range(ACTL):
+                            var av = Float64(self.dbg_adv_act(a))
+                            lg[].log_scalar(
+                                String("adv_act_") + String(a), av, step
+                            )
+                            if av < adv_lo:
+                                adv_lo = av
+                            if av > adv_hi:
+                                adv_hi = av
+                        lg[].log_scalar("adv_gap", adv_hi - adv_lo, step)
+                        # imagination-health scalars (already computed, now
+                        # surfaced): value spread + return spread + con floor.
+                        lg[].log_scalar(
+                            "imag_val_mean", Float64(self.trainer.dbg_val_mean()), step
+                        )
+                        lg[].log_scalar(
+                            "imag_val_std", Float64(self.trainer.dbg_val_std()), step
+                        )
+                        lg[].log_scalar(
+                            "imag_ret_std", Float64(self.trainer.dbg_ret_std()), step
+                        )
+                        lg[].log_scalar(
+                            "imag_con_min", Float64(self.trainer.dbg_con_min()), step
+                        )
                         lg[].log_scalar(
                             "train_steps", Float64(self.train_steps_done()), step
                         )
+                        if step % eval_every != 0:
+                            lg[].flush()
+                # reset the telemetry window
+                self.ent_acc = Scalar[DT](0.0)
+                self.ent_n = 0
+                for a in range(ACTL):
+                    self.act_hist[a] = 0
+
+            # periodic greedy eval + episode-return metrics (expensive: runs
+            # eval_episodes greedy rollouts) — coarser than the WM/AC log cadence.
+            if step > 0 and step % eval_every == 0:
+                var ev = self._greedy_eval[E](
+                    env, eval_episodes, ep_len, obsbuf, actbuf
+                )
+                last_eval = ev
+                var avg_ret = ep_acc / Scalar[DT](ep_n) if ep_n > 0 else last_ep
+                if verbose:
+                    print(
+                        "  step", step, " eval_ret=", ev, " avg_ret=", avg_ret,
+                    )
+                comptime if L.ENABLED:
+                    if logger:
+                        var lg = logger.value()
+                        lg[].log_scalar("avg_reward", Float64(avg_ret), step)
+                        lg[].log_scalar("episode_reward", Float64(last_ep), step)
+                        lg[].log_scalar("best_reward", Float64(best_ret), step)
+                        lg[].log_scalar("eval/mean_return", Float64(ev), step)
                         lg[].flush()
                 ep_acc = Scalar[DT](0.0)
                 ep_n = 0
@@ -349,7 +457,7 @@ struct DreamerV3Agent[
         if checkpoint_path.byte_length() > 0:
             self.save(checkpoint_path)
         var final_ev = self._greedy_eval[E](
-            env, eval_episodes, ep_len, obsbuf, actbuf, frame_repeat
+            env, eval_episodes, ep_len, obsbuf, actbuf
         )
         obsbuf.free()
         actbuf.free()
@@ -844,6 +952,9 @@ struct DreamerV3Agent[
     def dbg_rscale(self) -> Scalar[DT]:
         return self.trainer.dbg_rscale()
 
+    def dbg_adv_act(self, a: Int) -> Scalar[DT]:
+        return self.trainer.dbg_adv_act(a)
+
     def select_action(
         mut self,
         obs: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [OBS]
@@ -973,6 +1084,19 @@ struct DreamerV3Agent[
             if explore:
                 var u01 = Scalar[DT](random_float64())
                 k = cat_sample[ACTD](_hp(pol), 0, UNIMIX, u01)
+                # acting-policy telemetry: accumulate the true entropy of the
+                # unimix-mixed categorical at this state + the sampled action.
+                var sm = alloc[Scalar[DT]](ACTD)
+                var pp = alloc[Scalar[DT]](ACTD)
+                cat_softmax_mix[ACTD](_hp(pol), 0, UNIMIX, sm, pp)
+                var ent = Scalar[DT](0.0)
+                for m in range(ACTD):
+                    ent += -pp[m] * log(pp[m])
+                sm.free()
+                pp.free()
+                self.ent_acc += ent
+                self.ent_n += 1
+                self.act_hist[k] += 1
             else:
                 k = cat_argmax[ACTD](_hp(pol), 0)
             for a in range(ACTD):

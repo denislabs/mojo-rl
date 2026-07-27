@@ -169,10 +169,10 @@ struct MNIST(Movable):
         self.num_train = n_train
         self.num_test = n_test
 
-    def __init__(out self, *, deinit take: Self):
-        self.train_images = take.train_images^
-        self.train_labels = take.train_labels^
-        self.test_images = take.test_images^
-        self.test_labels = take.test_labels^
-        self.num_train = take.num_train
-        self.num_test = take.num_test
+    def __init__(out self, *, deinit move: Self):
+        self.train_images = move.train_images^
+        self.train_labels = move.train_labels^
+        self.test_images = move.test_images^
+        self.test_labels = move.test_labels^
+        self.num_train = move.num_train
+        self.num_test = move.num_test

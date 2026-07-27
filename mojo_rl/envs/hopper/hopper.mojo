@@ -1,5 +1,5 @@
-"""Hopper Environment - thin wrapper around Phyics3dEnv[HopperModel, HopperConfig].
-
+"""Hopper Environment - thin wrapper over Phyics3dEnv[HopperModel,
+HopperConfig] (per-field tensor engine).
 """
 
 

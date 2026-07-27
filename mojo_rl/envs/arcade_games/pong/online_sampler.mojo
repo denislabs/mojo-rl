@@ -146,9 +146,9 @@ struct OnlinePongSampler[
             self.envs.append(env^)
         self.policy = policy^
 
-    def __init__(out self, *, deinit take: Self):
-        self.envs = take.envs^
-        self.policy = take.policy^
+    def __init__(out self, *, deinit move: Self):
+        self.envs = move.envs^
+        self.policy = move.policy^
 
     @staticmethod
     def make(var policy: Self.POLICY) raises -> Self:

@@ -1,4 +1,4 @@
-"""InvertedDoublePendulum Environment - thin wrapper around Phyics3dEnv[InvertedDoublePendulumModel, InvertedDoublePendulumConfig]."""
+"""InvertedDoublePendulum Environment - thin wrapper over Phyics3dEnv[InvertedDoublePendulumModel, InvertedDoublePendulumConfig]."""
 
 from .inverted_double_pendulum_xml import InvertedDoublePendulumModel
 from .inverted_double_pendulum_config import InvertedDoublePendulumConfig

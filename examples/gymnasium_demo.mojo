@@ -200,7 +200,9 @@ def demo_pendulum() raises:
             torque = -2.0
 
         var result = env.step_continuous(torque)
-        obs = result[0]
+        # step_continuous returns a List obs; copy into the SIMD view.
+        for k in range(3):
+            obs[k] = result[0][k]
         var reward = result[1]
         total_reward += reward
         steps += 1

@@ -25,6 +25,7 @@ from .env_traits import (
 from .space import Space, DiscreteSpace, BoxSpace
 from .agent import Agent
 from .tabular_agent import TabularAgent
+from .tabular_training import train_tabular, evaluate_tabular
 from .replay_buffer import Transition, ReplayBuffer, PrioritizedReplayBuffer
 from .continuous_replay_buffer import (
     ContinuousTransition,
@@ -51,18 +52,3 @@ from .linear_fa import (
 
 from .obs_norm import ObsNormStats
 
-from .vec_env import (
-    VecStepResult,
-    simd_splat_f64,
-    simd_splat_i32,
-    simd_eq_i32,
-    simd_ge_i32,
-    simd_lt_f64,
-    simd_gt_f64,
-    simd_or,
-    random_simd,
-    random_simd_centered,
-    simd_any,
-    simd_all,
-    simd_count_true,
-)

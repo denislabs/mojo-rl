@@ -207,7 +207,7 @@ def main() raises:
                 diag_every=5_000,
                 checkpoint_every=CKPT_EVERY,
                 checkpoint_path=String(CKPT_PATH),
-                eval_env=UnsafePointer(to=eval_env),
+                eval_env=UnsafePointer(to=eval_env).as_unsafe_any_origin(),
                 eval_every=100_000,
                 eval_episodes=20,
             )

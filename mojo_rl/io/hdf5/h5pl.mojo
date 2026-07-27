@@ -11,6 +11,9 @@ which means we don't need to set ``HDF5_PLUGIN_PATH`` in the shell env.
 Called once from ``H5File.__init__`` (see ``reader.mojo``).
 """
 
+from . import _get_dylib_function, c_char, lib, Ptr
+from .h5_types import herr_t
+
 
 def h5pl_prepend(var path: String) raises -> herr_t:
     """``H5PLprepend(const char *plugin_path) -> herr_t``.
@@ -21,5 +24,5 @@ def h5pl_prepend(var path: String) raises -> herr_t:
     return _get_dylib_function[
         lib,
         "H5PLprepend",
-        def(Ptr[c_char, ImmutOrigin(origin_of(path))]) thin -> herr_t,
+        def(Ptr[c_char, ImmOrigin(origin_of(path))]) thin -> herr_t,
     ]()(path.as_c_string_slice().unsafe_ptr())

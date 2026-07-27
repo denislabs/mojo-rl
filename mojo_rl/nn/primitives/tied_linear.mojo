@@ -198,14 +198,18 @@ struct TiedLinear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
         self.src_val = rebind[Pointer[Tensor, MutUntrackedOrigin]](val)
         self.src_grd = rebind[Pointer[Tensor, MutUntrackedOrigin]](grd)
 
-    def _val(self) raises -> Pointer[Tensor, MutAnyOrigin]:
+    # Return the field's own origin (`MutUntrackedOrigin`). Nightly no longer
+    # implicitly widens `MutUntrackedOrigin` → `MutAnyOrigin`; every caller only
+    # dereferences the result, so matching the field is both accurate and
+    # sufficient.
+    def _val(self) raises -> Pointer[Tensor, MutUntrackedOrigin]:
         if not self.src_val:
             raise Error(
                 "TiedLinear: not wired — call tie_to(...) before forward/vjp"
             )
         return self.src_val.value()
 
-    def _grd(self) raises -> Pointer[Tensor, MutAnyOrigin]:
+    def _grd(self) raises -> Pointer[Tensor, MutUntrackedOrigin]:
         if not self.src_grd:
             raise Error(
                 "TiedLinear: not wired — call tie_to(...) before forward/vjp"
@@ -364,7 +368,7 @@ struct TiedLinear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                     max_matmul[target="cpu"](dW_tt, goT_tt, x_v, None)
                     var gw_p = gw.data.unsafe_ptr()
                     for i in range(Self.OUT_ * Self.IN_):
-                        gw_p[i] += dW_tmp[i]
+                        gw_p[unsafe_offset=i] += dW_tmp[i]
                 # ── (2) grad-input = dout @ Wsrc.
                 max_matmul[target="cpu"](gi_v, go_v, w_v, None)
             else:

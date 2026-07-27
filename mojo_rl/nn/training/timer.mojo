@@ -17,7 +17,7 @@ wall-time into N labeled sections. Caller drives the mark → accumulate cadence
     timer.accumulate(1, t1)
     # ...
 
-Hot-path overhead is one `perf_counter_ns()` + one List index + one UInt
+Hot-path overhead is one `perf_counter_ns()` + one List index + one Int
 subtraction per timed section per call — roughly 30 ns on Apple Silicon. For
 sub-steps taking >30 μs (every realistic training block), overhead is well under
 0.1 %.
@@ -41,26 +41,26 @@ struct Timer(Movable & ImplicitlyDeletable):
     """Section-indexed wall-time accumulator. Labels are declared via
     `add_section`; index order matches declaration order."""
 
-    var times_ns: List[UInt]
+    var times_ns: List[Int]
     var counts: List[Int]
     var labels: List[String]
 
     @staticmethod
     def new() -> Self:
         return Self(
-            times_ns=List[UInt](),
+            times_ns=List[Int](),
             counts=List[Int](),
             labels=List[String](),
         )
 
     def add_section(mut self, label: String):
         """Append one zero-initialised section with the given label."""
-        self.times_ns.append(UInt(0))
+        self.times_ns.append(0)
         self.counts.append(0)
         self.labels.append(label)
 
     @always_inline
-    def accumulate(mut self, idx: Int, start_ns: UInt):
+    def accumulate(mut self, idx: Int, start_ns: Int):
         """Add (now − start_ns) to section `idx`, increment its count."""
         var end_ns = perf_counter_ns()
         self.times_ns[idx] += end_ns - start_ns
@@ -69,7 +69,7 @@ struct Timer(Movable & ImplicitlyDeletable):
     def reset(mut self):
         """Zero every section's accumulator and call count."""
         for i in range(len(self.times_ns)):
-            self.times_ns[i] = UInt(0)
+            self.times_ns[i] = 0
             self.counts[i] = 0
 
     def total_seconds(self, idx: Int) -> Scalar[DT]:

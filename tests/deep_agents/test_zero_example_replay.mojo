@@ -4,10 +4,10 @@ Run:
     pixi run mojo run -I . tests/deep_agents/test_zero_example_replay.mojo
 """
 
-from std.memory import alloc
 from std.testing import assert_equal, assert_true, TestSuite
 
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.deep_agents.zero.example_replay import MCTSExampleReplay
 
 
@@ -16,14 +16,14 @@ def test_record_len_and_ring() raises:
     comptime TGT = 3
     comptime CAP = 8
     var rb = MCTSExampleReplay[OBS, TGT, CAP]()
-    var o = alloc[Scalar[DT]](OBS)
-    var t = alloc[Scalar[DT]](TGT)
+    var o = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var t = List[Scalar[DT]](length=TGT, fill=Scalar[DT](0))
     for k in range(5):
         for j in range(OBS):
             o[j] = Scalar[DT](k)
         for j in range(TGT):
             t[j] = Scalar[DT](k)
-        rb.record(o, t)
+        rb.record(o, 0, t, 0)
     assert_equal(len(rb), 5)
     # Overflow capacity → size clamps at CAP.
     for k in range(5, 20):
@@ -31,12 +31,8 @@ def test_record_len_and_ring() raises:
             o[j] = Scalar[DT](k)
         for j in range(TGT):
             t[j] = Scalar[DT](k)
-        rb.record(o, t)
+        rb.record(o, 0, t, 0)
     assert_equal(len(rb), CAP)
-    o.free()
-    t.free()
-
-
 def test_sample_pairing() raises:
     # obs row = constant b; target = [one-hot at b%ACT | z=b*0.1]. Sampling
     # must preserve the (obs,target) pairing: the obs constant determines both
@@ -48,38 +44,36 @@ def test_sample_pairing() raises:
     comptime N = 10
     comptime SB = 16
     var rb = MCTSExampleReplay[OBS, W, CAP]()
-    var o = alloc[Scalar[DT]](OBS)
-    var t = alloc[Scalar[DT]](W)
+    var o = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var t = List[Scalar[DT]](length=W, fill=Scalar[DT](0))
     for b in range(N):
         for j in range(OBS):
             o[j] = Scalar[DT](b)
         for a in range(ACT):
             t[a] = Scalar[DT](1.0 if a == (b % ACT) else 0.0)
         t[ACT] = Scalar[DT](Float64(b) * 0.1)
-        rb.record(o, t)
+        rb.record(o, 0, t, 0)
 
-    var so = alloc[Scalar[DT]](SB * OBS)
-    var st = alloc[Scalar[DT]](SB * W)
-    rb.sample_batch[SB](so, st)
+    # Sampling now lands straight in storage `Tensor`s (`sample_batch_tensors`),
+    # the same bridge the selfplay drivers use.
+    var so = Tensor.alloc(SB * OBS)
+    var st = Tensor.alloc(SB * W)
+    rb.sample_batch_tensors[SB](so, st)
     for i in range(SB):
-        var bval = Int(Float64(so[i * OBS]))
+        var bval = Int(Float64(so.data[i * OBS]))
         assert_true(bval >= 0 and bval < N, "sampled obs out of range")
         # obs row is uniform → every cell equals bval
         for j in range(OBS):
-            assert_equal(Int(Float64(so[i * OBS + j])), bval)
+            assert_equal(Int(Float64(so.data[i * OBS + j])), bval)
         var amax = 0
         for a in range(1, ACT):
-            if st[i * W + a] > st[i * W + amax]:
+            if st.data[i * W + a] > st.data[i * W + amax]:
                 amax = a
         assert_equal(amax, bval % ACT)  # policy paired with obs
         assert_true(
-            abs(Float64(st[i * W + ACT]) - Float64(bval) * 0.1) < 1e-4,
+            abs(Float64(st.data[i * W + ACT]) - Float64(bval) * 0.1) < 1e-4,
             "z target not paired with obs",
         )
-    so.free()
-    st.free()
-    o.free()
-    t.free()
 
 
 def main() raises:

@@ -24,9 +24,9 @@ struct WireframeLine(Copyable, Movable):
         self.start = copy.start
         self.end = copy.end
 
-    def __init__(out self, *, deinit take: Self):
-        self.start = take.start
-        self.end = take.end
+    def __init__(out self, *, deinit move: Self):
+        self.start = move.start
+        self.end = move.end
 
 
 struct WireframeSphere:

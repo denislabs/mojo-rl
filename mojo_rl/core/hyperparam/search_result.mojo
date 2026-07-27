@@ -106,19 +106,19 @@ struct TrialResult(Copyable, ImplicitlyCopyable, Movable):
         self.total_steps = copy.total_steps
         self.training_episodes = copy.training_episodes
 
-    def __init__(out self, *, deinit take: Self):
-        self.trial_id = take.trial_id
-        self.hyperparams_str = take.hyperparams_str^
-        self.mean_reward = take.mean_reward
-        self.max_reward = take.max_reward
-        self.min_reward = take.min_reward
-        self.std_reward = take.std_reward
-        self.final_reward = take.final_reward
-        self.convergence_episode = take.convergence_episode
-        self.convergence_target = take.convergence_target
-        self.mean_steps = take.mean_steps
-        self.total_steps = take.total_steps
-        self.training_episodes = take.training_episodes
+    def __init__(out self, *, deinit move: Self):
+        self.trial_id = move.trial_id
+        self.hyperparams_str = move.hyperparams_str^
+        self.mean_reward = move.mean_reward
+        self.max_reward = move.max_reward
+        self.min_reward = move.min_reward
+        self.std_reward = move.std_reward
+        self.final_reward = move.final_reward
+        self.convergence_episode = move.convergence_episode
+        self.convergence_target = move.convergence_target
+        self.mean_steps = move.mean_steps
+        self.total_steps = move.total_steps
+        self.training_episodes = move.training_episodes
 
     @staticmethod
     def csv_header() -> String:
@@ -193,12 +193,12 @@ struct SearchResults(Copyable, Movable):
             self.trials.append(copy.trials[i])
         self.hyperparam_header = copy.hyperparam_header
 
-    def __init__(out self, *, deinit take: Self):
-        self.algorithm_name = take.algorithm_name^
-        self.environment_name = take.environment_name^
-        self.search_type = take.search_type^
-        self.trials = take.trials^
-        self.hyperparam_header = take.hyperparam_header^
+    def __init__(out self, *, deinit move: Self):
+        self.algorithm_name = move.algorithm_name^
+        self.environment_name = move.environment_name^
+        self.search_type = move.search_type^
+        self.trials = move.trials^
+        self.hyperparam_header = move.hyperparam_header^
 
     def add_trial(mut self, var trial: TrialResult):
         """Add a trial result to the collection."""

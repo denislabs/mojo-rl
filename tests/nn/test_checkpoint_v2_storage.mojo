@@ -1,11 +1,13 @@
-"""Checkpoint v2: named sections + optimizer-moment (m/v) round-trip + drift.
+"""Checkpoint: named sections + optimizer-moment (m/v) round-trip + drift.
 
-1. Train a model a few Adam steps (populates per-Param m/v), save, load into a
-   fresh model, and confirm params AND moments restore EXACTLY (a capture visitor
-   concatenates param+m+v values; model1 vs model2 must match) — proving the
-   optimizer-state save enables exact resume. CPU + GPU.
+1. Train a model a few Adam steps (populates per-Param m/v), save (v3 binary),
+   load into a fresh model, and confirm params AND moments restore EXACTLY (a
+   capture visitor concatenates param+m+v values; model1 vs model2 must match)
+   — proving the optimizer-state save enables exact resume. CPU + GPU.
 2. Topology drift: loading the checkpoint into a differently-sized model RAISES
    (name/size validation), which the positional v1 format could not catch.
+3. Legacy v2 compat: a checkpoint written with the old TEXT writer still loads
+   through the dispatching `load_params` (pre-v3 files remain readable).
 
 Run: pixi run -e apple mojo run -I . tests/nn/test_checkpoint_v2_storage.mojo
 """
@@ -18,7 +20,9 @@ from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.param import ParamVisitor
 from mojo_rl.nn.core.initializer import Deterministic
-from mojo_rl.nn.core.checkpoint import save_params, load_params
+from mojo_rl.nn.core.checkpoint import (
+    save_params, load_params, CheckpointWriter,
+)
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.optimizer.adam import Adam
@@ -103,7 +107,7 @@ def _check[target: StaticString](
 
 
 def main() raises:
-    print("Checkpoint v2 (named sections + m/v round-trip + drift)")
+    print("Checkpoint v3 binary (+ legacy v2 text compat)")
     var oc = _check["cpu"](None, String("/tmp/ckpt_v2_cpu.txt"))
     print("  CPU round-trip+moments:", "OK" if oc else "FAIL")
     var c = DeviceContext()
@@ -119,5 +123,29 @@ def main() raises:
         drift_caught = True
     print("  topology-drift raises:", "OK" if drift_caught else "FAIL")
 
-    assert_true(oc and og and drift_caught, "checkpoint v2")
-    print("CHECKPOINT V2 OK")
+    # Legacy v2 text compat: write with the OLD text writer, load through the
+    # dispatching load_params, values must match.
+    var a2 = NET.make["cpu", Deterministic](None)
+    _train3["cpu"](a2, None)
+    var w = CheckpointWriter(save_moments=True)
+    w.mode = 0
+    a2.for_each_param["cpu"](w, None)
+    w.mode = 1
+    a2.for_each_state["cpu"](w, None)
+    with open("/tmp/ckpt_legacy_v2.txt", "w") as f:
+        f.write(w.content)
+    var b2 = NET.make["cpu", Deterministic](None)
+    load_params["cpu"](b2, String("/tmp/ckpt_legacy_v2.txt"), None)
+    var ca2 = _MVCapture(); a2.for_each_param["cpu"](ca2, None)
+    var cb2 = _MVCapture(); b2.for_each_param["cpu"](cb2, None)
+    var legacy_ok = len(ca2.vals) == len(cb2.vals) and len(ca2.vals) > 0
+    if legacy_ok:
+        for i in range(len(ca2.vals)):
+            # text round-trip is lossy at ~1e-6 (String(float) precision)
+            if abs(ca2.vals[i] - cb2.vals[i]) > Scalar[DT](1e-5):
+                legacy_ok = False
+                break
+    print("  legacy v2 text load:", "OK" if legacy_ok else "FAIL")
+
+    assert_true(oc and og and drift_caught and legacy_ok, "checkpoint")
+    print("CHECKPOINT V3 + LEGACY V2 OK")

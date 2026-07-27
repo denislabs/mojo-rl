@@ -29,7 +29,6 @@ Run with:
 
 from mojo_rl.envs import CliffWalkingEnv
 from mojo_rl.agents import QLearningAgent, SARSAAgent, SARSALambdaAgent
-from mojo_rl.render import Renderer2D
 
 
 def main() raises:
@@ -256,9 +255,8 @@ def main() raises:
     print("-" * 60)
 
     var demo_env = CliffWalkingEnv(width=12, height=4)
-    var renderer = Renderer2D()
     _ = demo_env.reset()
-    demo_env.render(renderer)
+    demo_env.render_frame()
 
     var action_names = List[String]()
     action_names.append("UP")
@@ -279,7 +277,7 @@ def main() raises:
         if result[2]:
             print("Goal reached in", step + 1, "steps!")
             print("Total reward:", total_reward_q)
-            demo_env.render(renderer)
+            demo_env.render_frame()
             break
 
     print("")

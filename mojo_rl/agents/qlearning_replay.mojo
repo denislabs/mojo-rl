@@ -1,6 +1,8 @@
 from std.random import random_si64, random_float64
 from .qlearning import QTable
 from mojo_rl.core import (
+    train_tabular,
+    evaluate_tabular,
     TabularAgent,
     ReplayBuffer,
     DiscreteEnv,
@@ -68,18 +70,18 @@ struct QLearningReplayAgent(
         self.batch_size = copy.batch_size
         self.min_buffer_size = copy.min_buffer_size
 
-    def __init__(out self, *, deinit take: Self):
-        self.q_table = take.q_table^
-        self.learning_rate = take.learning_rate
-        self.discount_factor = take.discount_factor
-        self.epsilon = take.epsilon
-        self.epsilon_decay = take.epsilon_decay
-        self.epsilon_min = take.epsilon_min
-        self.num_actions = take.num_actions
-        self.num_states = take.num_states
-        self.buffer = take.buffer^
-        self.batch_size = take.batch_size
-        self.min_buffer_size = take.min_buffer_size
+    def __init__(out self, *, deinit move: Self):
+        self.q_table = move.q_table^
+        self.learning_rate = move.learning_rate
+        self.discount_factor = move.discount_factor
+        self.epsilon = move.epsilon
+        self.epsilon_decay = move.epsilon_decay
+        self.epsilon_min = move.epsilon_min
+        self.num_actions = move.num_actions
+        self.num_states = move.num_states
+        self.buffer = move.buffer^
+        self.batch_size = move.batch_size
+        self.min_buffer_size = move.min_buffer_size
 
     def __init__(
         out self,
@@ -181,58 +183,18 @@ struct QLearningReplayAgent(
         print_every: Int = 100,
         environment_name: String = "Environment",
     ) -> TrainingMetrics:
-        """Train the agent on the given environment.
-
-        Args:
-            env: The discrete environment to train on.
-            num_episodes: Number of episodes to train.
-            max_steps_per_episode: Maximum steps per episode.
-            verbose: Whether to print progress.
-            print_every: Print progress every N episodes (if verbose).
-            environment_name: Name of environment for metrics labeling.
-
-        Returns:
-            TrainingMetrics object with episode rewards and statistics.
-        """
-        var metrics = TrainingMetrics(
+        """Train on `env` — delegates to the shared `train_tabular`
+        episode loop (core/tabular_training.mojo)."""
+        return train_tabular(
+            self,
+            env,
+            num_episodes,
+            max_steps_per_episode=max_steps_per_episode,
+            verbose=verbose,
+            print_every=print_every,
             algorithm_name="Q-Learning + Replay",
             environment_name=environment_name,
         )
-
-        for episode in range(num_episodes):
-            var state = env.reset()
-            var total_reward: Float64 = 0.0
-            var steps = 0
-
-            for _ in range(max_steps_per_episode):
-                var state_idx = env.state_to_index(state)
-                var action_idx = self.select_action(state_idx)
-                var action = env.action_from_index(action_idx)
-
-                var result = env.step(action^)
-                var next_state = result[0]
-                var reward = result[1]
-                var done = result[2]
-
-                var next_state_idx = env.state_to_index(next_state)
-                self.update(
-                    state_idx, action_idx, Float64(reward), next_state_idx, done
-                )
-
-                total_reward += Float64(reward)
-                steps += 1
-                state = next_state
-
-                if done:
-                    break
-
-            self.decay_epsilon()
-            metrics.log_episode(episode, total_reward, steps, self.epsilon)
-
-            if verbose and (episode + 1) % print_every == 0:
-                metrics.print_progress(episode, window=100)
-
-        return metrics^
 
     def evaluate[
         E: DiscreteEnv & RenderableEnv
@@ -243,55 +205,12 @@ struct QLearningReplayAgent(
         render: Bool = False,
         frame_delay_ms: Int = 16,
     ) raises -> Float64:
-        """Evaluate the agent on the environment.
-
-        Args:
-            env: The discrete environment to evaluate on.
-            num_episodes: Number of evaluation episodes.
-            render: Whether to render the environment (default: False).
-            frame_delay_ms: Delay between frames in milliseconds (default: 16).
-
-        Returns:
-            Average reward across episodes.
-        """
-        var total_reward: Float64 = 0.0
-        var quit_requested = False
-
-        if render:
-            _ = env.init_renderer()
-
-        for _ in range(num_episodes):
-            if quit_requested:
-                break
-            var state = env.reset()
-            var episode_reward: Float64 = 0.0
-
-            for _ in range(1000):
-                var state_idx = env.state_to_index(state)
-                var action_idx = self.get_best_action(state_idx)
-                var action = env.action_from_index(action_idx)
-
-                var result = env.step(action^)
-                var next_state = result[0]
-                var reward = result[1]
-                var done = result[2]
-
-                if render:
-                    env.render_frame()
-                    env.renderer_delay(frame_delay_ms)
-                    if env.check_renderer_quit():
-                        quit_requested = True
-                        break
-
-                episode_reward += Float64(reward)
-                state = next_state
-
-                if done:
-                    break
-
-            total_reward += episode_reward
-
-        if render:
-            env.close_renderer()
-
-        return total_reward / Float64(num_episodes)
+        """Greedy eval — delegates to the shared `evaluate_tabular` loop
+        (core/tabular_training.mojo)."""
+        return evaluate_tabular(
+            self,
+            env,
+            num_episodes=num_episodes,
+            render=render,
+            frame_delay_ms=frame_delay_ms,
+        )

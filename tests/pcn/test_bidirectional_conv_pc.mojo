@@ -41,7 +41,7 @@ from mojo_rl.render.image_writer import save_image_row, save_reconstruction_grid
 
 # ── Hyperparameters (trimmed from notebook 5 for CPU budget) ────────────────
 comptime BATCH = 200
-comptime EPOCHS = 10
+comptime EPOCHS = 15
 comptime T_INFER = 12
 comptime LR_X: Float64 = 0.01
 comptime ADAM_LR: Float64 = 0.01
@@ -70,7 +70,9 @@ comptime UP_PARAM_SIZE = UP_NET.PARAM_SIZE
 # ── DOWN path: label → x1 → x0 → image ────────────────────────────────────
 comptime DB0 = PCBlock[10, X1_DIM, PCIdentity]  # 10 → 784
 comptime DB1 = ConvTransposePCBlock[C1, C0, 4, 2, 1, 7, 7, PCReLU]  # 784 → 1568
-comptime DB2 = ConvTransposePCBlock[C0, 1, 4, 2, 1, 14, 14, PCReLU]  # 1568 → 784
+comptime DB2 = ConvTransposePCBlock[
+    C0, 1, 4, 2, 1, 14, 14, PCReLU
+]  # 1568 → 784
 comptime DOWN_PARAM_SIZE = DB0.PARAM_SIZE + DB1.PARAM_SIZE + DB2.PARAM_SIZE
 
 comptime OPT = PCAdam[LR=ADAM_LR]
@@ -89,125 +91,258 @@ def main() raises:
     var ds = MNIST()
 
     # ── UP params + Adam ────────────────────────────────────────────────────
-    var up_params_buf = alloc[Scalar[dtype]](UP_PARAM_SIZE)
-    var up_grads_buf = alloc[Scalar[dtype]](UP_PARAM_SIZE)
-    var up_os_buf = alloc[Scalar[dtype]](UP_PARAM_SIZE * OPT.STATE_PER_PARAM)
-    var up_og_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
+    var up_params_buf = alloc[Scalar[dtype]](UP_PARAM_SIZE).as_unsafe_any_origin()
+    var up_grads_buf = alloc[Scalar[dtype]](UP_PARAM_SIZE).as_unsafe_any_origin()
+    var up_os_buf = alloc[Scalar[dtype]](UP_PARAM_SIZE * OPT.STATE_PER_PARAM).as_unsafe_any_origin()
+    var up_og_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE).as_unsafe_any_origin()
     memset(up_params_buf, 0, UP_PARAM_SIZE)
     memset(up_grads_buf, 0, UP_PARAM_SIZE)
     memset(up_os_buf, 0, UP_PARAM_SIZE * OPT.STATE_PER_PARAM)
     memset(up_og_buf, 0, OPT.GLOBAL_STATE_SIZE)
-    var up_params = LayoutTensor[dtype, Layout.row_major(UP_PARAM_SIZE), MutAnyOrigin](up_params_buf)
-    var up_grads = LayoutTensor[dtype, Layout.row_major(UP_PARAM_SIZE), MutAnyOrigin](up_grads_buf)
-    var up_os = LayoutTensor[dtype, Layout.row_major(UP_PARAM_SIZE, OPT.STATE_PER_PARAM), MutAnyOrigin](up_os_buf)
-    var up_og = LayoutTensor[dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin](up_og_buf)
+    var up_params = LayoutTensor[
+        dtype, Layout.row_major(UP_PARAM_SIZE), MutAnyOrigin
+    ](up_params_buf)
+    var up_grads = LayoutTensor[
+        dtype, Layout.row_major(UP_PARAM_SIZE), MutAnyOrigin
+    ](up_grads_buf)
+    var up_os = LayoutTensor[
+        dtype,
+        Layout.row_major(UP_PARAM_SIZE, OPT.STATE_PER_PARAM),
+        MutAnyOrigin,
+    ](up_os_buf)
+    var up_og = LayoutTensor[
+        dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin
+    ](up_og_buf)
     UP_NET.pc_init_params[PCXavier, dtype](up_params)
 
     # ── DOWN params + Adam (init each block separately) ─────────────────────
-    var dn_params_buf = alloc[Scalar[dtype]](DOWN_PARAM_SIZE)
-    var dn_grads_buf = alloc[Scalar[dtype]](DOWN_PARAM_SIZE)
-    var dn_os_buf = alloc[Scalar[dtype]](DOWN_PARAM_SIZE * OPT.STATE_PER_PARAM)
-    var dn_og_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
+    var dn_params_buf = alloc[Scalar[dtype]](DOWN_PARAM_SIZE).as_unsafe_any_origin()
+    var dn_grads_buf = alloc[Scalar[dtype]](DOWN_PARAM_SIZE).as_unsafe_any_origin()
+    var dn_os_buf = alloc[Scalar[dtype]](DOWN_PARAM_SIZE * OPT.STATE_PER_PARAM).as_unsafe_any_origin()
+    var dn_og_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE).as_unsafe_any_origin()
     memset(dn_params_buf, 0, DOWN_PARAM_SIZE)
     memset(dn_grads_buf, 0, DOWN_PARAM_SIZE)
     memset(dn_os_buf, 0, DOWN_PARAM_SIZE * OPT.STATE_PER_PARAM)
     memset(dn_og_buf, 0, OPT.GLOBAL_STATE_SIZE)
-    var dn_params = LayoutTensor[dtype, Layout.row_major(DOWN_PARAM_SIZE), MutAnyOrigin](dn_params_buf)
-    var dn_grads = LayoutTensor[dtype, Layout.row_major(DOWN_PARAM_SIZE), MutAnyOrigin](dn_grads_buf)
-    var dn_os = LayoutTensor[dtype, Layout.row_major(DOWN_PARAM_SIZE, OPT.STATE_PER_PARAM), MutAnyOrigin](dn_os_buf)
-    var dn_og = LayoutTensor[dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin](dn_og_buf)
-    var dn_p0v = LayoutTensor[dtype, Layout.row_major(DB0.PARAM_SIZE), MutAnyOrigin](dn_params_buf)
-    var dn_p1v = LayoutTensor[dtype, Layout.row_major(DB1.PARAM_SIZE), MutAnyOrigin](dn_params_buf + DB0.PARAM_SIZE)
-    var dn_p2v = LayoutTensor[dtype, Layout.row_major(DB2.PARAM_SIZE), MutAnyOrigin](dn_params_buf + DB0.PARAM_SIZE + DB1.PARAM_SIZE)
+    var dn_params = LayoutTensor[
+        dtype, Layout.row_major(DOWN_PARAM_SIZE), MutAnyOrigin
+    ](dn_params_buf)
+    var dn_grads = LayoutTensor[
+        dtype, Layout.row_major(DOWN_PARAM_SIZE), MutAnyOrigin
+    ](dn_grads_buf)
+    var dn_os = LayoutTensor[
+        dtype,
+        Layout.row_major(DOWN_PARAM_SIZE, OPT.STATE_PER_PARAM),
+        MutAnyOrigin,
+    ](dn_os_buf)
+    var dn_og = LayoutTensor[
+        dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin
+    ](dn_og_buf)
+    var dn_p0v = LayoutTensor[
+        dtype, Layout.row_major(DB0.PARAM_SIZE), MutAnyOrigin
+    ](dn_params_buf)
+    var dn_p1v = LayoutTensor[
+        dtype, Layout.row_major(DB1.PARAM_SIZE), MutAnyOrigin
+    ](dn_params_buf + DB0.PARAM_SIZE)
+    var dn_p2v = LayoutTensor[
+        dtype, Layout.row_major(DB2.PARAM_SIZE), MutAnyOrigin
+    ](dn_params_buf + DB0.PARAM_SIZE + DB1.PARAM_SIZE)
     DB0.pc_init_params[PCXavier, dtype](dn_p0v)
     DB1.pc_init_params[PCXavier, dtype](dn_p1v)
     DB2.pc_init_params[PCXavier, dtype](dn_p2v)
 
     # ── Shared latents ──────────────────────────────────────────────────────
-    var x0_buf = alloc[Scalar[dtype]](BATCH * X0_DIM)
-    var x1_buf = alloc[Scalar[dtype]](BATCH * X1_DIM)
+    var x0_buf = alloc[Scalar[dtype]](BATCH * X0_DIM).as_unsafe_any_origin()
+    var x1_buf = alloc[Scalar[dtype]](BATCH * X1_DIM).as_unsafe_any_origin()
     memset(x0_buf, 0, BATCH * X0_DIM)
     memset(x1_buf, 0, BATCH * X1_DIM)
-    var x0 = LayoutTensor[dtype, Layout.row_major(BATCH, X0_DIM), MutAnyOrigin](x0_buf)
-    var x1 = LayoutTensor[dtype, Layout.row_major(BATCH, X1_DIM), MutAnyOrigin](x1_buf)
+    var x0 = LayoutTensor[dtype, Layout.row_major(BATCH, X0_DIM), MutAnyOrigin](
+        x0_buf
+    )
+    var x1 = LayoutTensor[dtype, Layout.row_major(BATCH, X1_DIM), MutAnyOrigin](
+        x1_buf
+    )
 
     # ── Scratch (UP) ────────────────────────────────────────────────────────
-    var up_mu0 = alloc[Scalar[dtype]](BATCH * X0_DIM); var up_eps0 = alloc[Scalar[dtype]](BATCH * X0_DIM); var up_a0 = alloc[Scalar[dtype]](BATCH * IMG)
-    var up_mu1 = alloc[Scalar[dtype]](BATCH * X1_DIM); var up_eps1 = alloc[Scalar[dtype]](BATCH * X1_DIM); var up_a1 = alloc[Scalar[dtype]](BATCH * X0_DIM)
-    var up_mu2 = alloc[Scalar[dtype]](BATCH * 10); var up_eps2 = alloc[Scalar[dtype]](BATCH * 10); var up_a2 = alloc[Scalar[dtype]](BATCH * X1_DIM)
-    var up_z1 = alloc[Scalar[dtype]](BATCH * X0_DIM)  # pull_back ε_up1 → x0
-    var up_z2 = alloc[Scalar[dtype]](BATCH * X1_DIM)  # pull_back ε_up2 → x1
+    var up_mu0 = alloc[Scalar[dtype]](BATCH * X0_DIM).as_unsafe_any_origin()
+    var up_eps0 = alloc[Scalar[dtype]](BATCH * X0_DIM).as_unsafe_any_origin()
+    var up_a0 = alloc[Scalar[dtype]](BATCH * IMG).as_unsafe_any_origin()
+    var up_mu1 = alloc[Scalar[dtype]](BATCH * X1_DIM).as_unsafe_any_origin()
+    var up_eps1 = alloc[Scalar[dtype]](BATCH * X1_DIM).as_unsafe_any_origin()
+    var up_a1 = alloc[Scalar[dtype]](BATCH * X0_DIM).as_unsafe_any_origin()
+    var up_mu2 = alloc[Scalar[dtype]](BATCH * 10).as_unsafe_any_origin()
+    var up_eps2 = alloc[Scalar[dtype]](BATCH * 10).as_unsafe_any_origin()
+    var up_a2 = alloc[Scalar[dtype]](BATCH * X1_DIM).as_unsafe_any_origin()
+    var up_z1 = alloc[Scalar[dtype]](BATCH * X0_DIM).as_unsafe_any_origin()  # pull_back ε_up1 → x0
+    var up_z2 = alloc[Scalar[dtype]](BATCH * X1_DIM).as_unsafe_any_origin()  # pull_back ε_up2 → x1
 
     # ── Scratch (DOWN) ──────────────────────────────────────────────────────
-    var dn_mu0 = alloc[Scalar[dtype]](BATCH * X1_DIM); var dn_eps0 = alloc[Scalar[dtype]](BATCH * X1_DIM); var dn_a0 = alloc[Scalar[dtype]](BATCH * 10)
-    var dn_mu1 = alloc[Scalar[dtype]](BATCH * X0_DIM); var dn_eps1 = alloc[Scalar[dtype]](BATCH * X0_DIM); var dn_a1 = alloc[Scalar[dtype]](BATCH * X1_DIM)
-    var dn_mu2 = alloc[Scalar[dtype]](BATCH * IMG); var dn_eps2 = alloc[Scalar[dtype]](BATCH * IMG); var dn_a2 = alloc[Scalar[dtype]](BATCH * X0_DIM)
-    var dn_z1 = alloc[Scalar[dtype]](BATCH * X1_DIM)  # pull_back ε_dn1 → x1
-    var dn_z2 = alloc[Scalar[dtype]](BATCH * X0_DIM)  # pull_back ε_dn2 → x0
+    var dn_mu0 = alloc[Scalar[dtype]](BATCH * X1_DIM).as_unsafe_any_origin()
+    var dn_eps0 = alloc[Scalar[dtype]](BATCH * X1_DIM).as_unsafe_any_origin()
+    var dn_a0 = alloc[Scalar[dtype]](BATCH * 10).as_unsafe_any_origin()
+    var dn_mu1 = alloc[Scalar[dtype]](BATCH * X0_DIM).as_unsafe_any_origin()
+    var dn_eps1 = alloc[Scalar[dtype]](BATCH * X0_DIM).as_unsafe_any_origin()
+    var dn_a1 = alloc[Scalar[dtype]](BATCH * X1_DIM).as_unsafe_any_origin()
+    var dn_mu2 = alloc[Scalar[dtype]](BATCH * IMG).as_unsafe_any_origin()
+    var dn_eps2 = alloc[Scalar[dtype]](BATCH * IMG).as_unsafe_any_origin()
+    var dn_a2 = alloc[Scalar[dtype]](BATCH * X0_DIM).as_unsafe_any_origin()
+    var dn_z1 = alloc[Scalar[dtype]](BATCH * X1_DIM).as_unsafe_any_origin()  # pull_back ε_dn1 → x1
+    var dn_z2 = alloc[Scalar[dtype]](BATCH * X0_DIM).as_unsafe_any_origin()  # pull_back ε_dn2 → x0
 
-    var dx0 = alloc[Scalar[dtype]](BATCH * X0_DIM)
-    var dx1 = alloc[Scalar[dtype]](BATCH * X1_DIM)
+    var dx0 = alloc[Scalar[dtype]](BATCH * X0_DIM).as_unsafe_any_origin()
+    var dx1 = alloc[Scalar[dtype]](BATCH * X1_DIM).as_unsafe_any_origin()
 
-    var image_buf = alloc[Scalar[dtype]](BATCH * IMG)
-    var label_buf = alloc[Scalar[dtype]](BATCH * 10)
-    memset(image_buf, 0, BATCH * IMG); memset(label_buf, 0, BATCH * 10)
+    var image_buf = alloc[Scalar[dtype]](BATCH * IMG).as_unsafe_any_origin()
+    var label_buf = alloc[Scalar[dtype]](BATCH * 10).as_unsafe_any_origin()
+    memset(image_buf, 0, BATCH * IMG)
+    memset(label_buf, 0, BATCH * 10)
 
     # ── UP param block views ────────────────────────────────────────────────
-    var up_p0 = LayoutTensor[dtype, Layout.row_major(UB0.PARAM_SIZE), MutAnyOrigin](up_params_buf)
-    var up_p1 = LayoutTensor[dtype, Layout.row_major(UB1.PARAM_SIZE), MutAnyOrigin](up_params_buf + UB0.PARAM_SIZE)
-    var up_p2 = LayoutTensor[dtype, Layout.row_major(UB2.PARAM_SIZE), MutAnyOrigin](up_params_buf + UB0.PARAM_SIZE + UB1.PARAM_SIZE)
-    var up_g0 = LayoutTensor[dtype, Layout.row_major(UB0.PARAM_SIZE), MutAnyOrigin](up_grads_buf)
-    var up_g1 = LayoutTensor[dtype, Layout.row_major(UB1.PARAM_SIZE), MutAnyOrigin](up_grads_buf + UB0.PARAM_SIZE)
-    var up_g2 = LayoutTensor[dtype, Layout.row_major(UB2.PARAM_SIZE), MutAnyOrigin](up_grads_buf + UB0.PARAM_SIZE + UB1.PARAM_SIZE)
-    var dn_g0 = LayoutTensor[dtype, Layout.row_major(DB0.PARAM_SIZE), MutAnyOrigin](dn_grads_buf)
-    var dn_g1 = LayoutTensor[dtype, Layout.row_major(DB1.PARAM_SIZE), MutAnyOrigin](dn_grads_buf + DB0.PARAM_SIZE)
-    var dn_g2 = LayoutTensor[dtype, Layout.row_major(DB2.PARAM_SIZE), MutAnyOrigin](dn_grads_buf + DB0.PARAM_SIZE + DB1.PARAM_SIZE)
+    var up_p0 = LayoutTensor[
+        dtype, Layout.row_major(UB0.PARAM_SIZE), MutAnyOrigin
+    ](up_params_buf)
+    var up_p1 = LayoutTensor[
+        dtype, Layout.row_major(UB1.PARAM_SIZE), MutAnyOrigin
+    ](up_params_buf + UB0.PARAM_SIZE)
+    var up_p2 = LayoutTensor[
+        dtype, Layout.row_major(UB2.PARAM_SIZE), MutAnyOrigin
+    ](up_params_buf + UB0.PARAM_SIZE + UB1.PARAM_SIZE)
+    var up_g0 = LayoutTensor[
+        dtype, Layout.row_major(UB0.PARAM_SIZE), MutAnyOrigin
+    ](up_grads_buf)
+    var up_g1 = LayoutTensor[
+        dtype, Layout.row_major(UB1.PARAM_SIZE), MutAnyOrigin
+    ](up_grads_buf + UB0.PARAM_SIZE)
+    var up_g2 = LayoutTensor[
+        dtype, Layout.row_major(UB2.PARAM_SIZE), MutAnyOrigin
+    ](up_grads_buf + UB0.PARAM_SIZE + UB1.PARAM_SIZE)
+    var dn_g0 = LayoutTensor[
+        dtype, Layout.row_major(DB0.PARAM_SIZE), MutAnyOrigin
+    ](dn_grads_buf)
+    var dn_g1 = LayoutTensor[
+        dtype, Layout.row_major(DB1.PARAM_SIZE), MutAnyOrigin
+    ](dn_grads_buf + DB0.PARAM_SIZE)
+    var dn_g2 = LayoutTensor[
+        dtype, Layout.row_major(DB2.PARAM_SIZE), MutAnyOrigin
+    ](dn_grads_buf + DB0.PARAM_SIZE + DB1.PARAM_SIZE)
 
     # ── Tensor views (typed by the CONSUMING block's member — conv blocks'
     #    computed dims don't unify with literal aliases, so shared latents get
     #    one view per role) ──────────────────────────────────────────────────
     # image: UB0 input (recognize) + DB2 output (reconstruct)
-    var image_ub0 = LayoutTensor[dtype, Layout.row_major(BATCH, UB0.IN_DIM), MutAnyOrigin](image_buf)
-    var image_db2 = LayoutTensor[dtype, Layout.row_major(BATCH, DB2.OUT_DIM), MutAnyOrigin](image_buf)
+    var image_ub0 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB0.IN_DIM), MutAnyOrigin
+    ](image_buf)
+    var image_db2 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB2.OUT_DIM), MutAnyOrigin
+    ](image_buf)
     # label: UB2 output (classify) + DB0 input (generate)
-    var label_ub2 = LayoutTensor[dtype, Layout.row_major(BATCH, UB2.OUT_DIM), MutAnyOrigin](label_buf)
-    var label_db0 = LayoutTensor[dtype, Layout.row_major(BATCH, DB0.IN_DIM), MutAnyOrigin](label_buf)
+    var label_ub2 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB2.OUT_DIM), MutAnyOrigin
+    ](label_buf)
+    var label_db0 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB0.IN_DIM), MutAnyOrigin
+    ](label_buf)
     # x0: UB0 above, UB1 below, DB1 above, DB2 below
-    var x0_ub0 = LayoutTensor[dtype, Layout.row_major(BATCH, UB0.OUT_DIM), MutAnyOrigin](x0_buf)
-    var x0_ub1 = LayoutTensor[dtype, Layout.row_major(BATCH, UB1.IN_DIM), MutAnyOrigin](x0_buf)
-    var x0_db1 = LayoutTensor[dtype, Layout.row_major(BATCH, DB1.OUT_DIM), MutAnyOrigin](x0_buf)
-    var x0_db2 = LayoutTensor[dtype, Layout.row_major(BATCH, DB2.IN_DIM), MutAnyOrigin](x0_buf)
+    var x0_ub0 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB0.OUT_DIM), MutAnyOrigin
+    ](x0_buf)
+    var x0_ub1 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB1.IN_DIM), MutAnyOrigin
+    ](x0_buf)
+    var x0_db1 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB1.OUT_DIM), MutAnyOrigin
+    ](x0_buf)
+    var x0_db2 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB2.IN_DIM), MutAnyOrigin
+    ](x0_buf)
     # x1: UB1 above, UB2 below, DB0 above, DB1 below
-    var x1_ub1 = LayoutTensor[dtype, Layout.row_major(BATCH, UB1.OUT_DIM), MutAnyOrigin](x1_buf)
-    var x1_ub2 = LayoutTensor[dtype, Layout.row_major(BATCH, UB2.IN_DIM), MutAnyOrigin](x1_buf)
-    var x1_db0 = LayoutTensor[dtype, Layout.row_major(BATCH, DB0.OUT_DIM), MutAnyOrigin](x1_buf)
-    var x1_db1 = LayoutTensor[dtype, Layout.row_major(BATCH, DB1.IN_DIM), MutAnyOrigin](x1_buf)
+    var x1_ub1 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB1.OUT_DIM), MutAnyOrigin
+    ](x1_buf)
+    var x1_ub2 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB2.IN_DIM), MutAnyOrigin
+    ](x1_buf)
+    var x1_db0 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB0.OUT_DIM), MutAnyOrigin
+    ](x1_buf)
+    var x1_db1 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB1.IN_DIM), MutAnyOrigin
+    ](x1_buf)
     # scratch (owner-block typed)
-    var up_mu0_t = LayoutTensor[dtype, Layout.row_major(BATCH, UB0.OUT_DIM), MutAnyOrigin](up_mu0)
-    var up_eps0_t = LayoutTensor[dtype, Layout.row_major(BATCH, UB0.OUT_DIM), MutAnyOrigin](up_eps0)
-    var up_a0_t = LayoutTensor[dtype, Layout.row_major(BATCH, UB0.IN_DIM), MutAnyOrigin](up_a0)
-    var up_mu1_t = LayoutTensor[dtype, Layout.row_major(BATCH, UB1.OUT_DIM), MutAnyOrigin](up_mu1)
-    var up_eps1_t = LayoutTensor[dtype, Layout.row_major(BATCH, UB1.OUT_DIM), MutAnyOrigin](up_eps1)
-    var up_a1_t = LayoutTensor[dtype, Layout.row_major(BATCH, UB1.IN_DIM), MutAnyOrigin](up_a1)
-    var up_mu2_t = LayoutTensor[dtype, Layout.row_major(BATCH, UB2.OUT_DIM), MutAnyOrigin](up_mu2)
-    var up_eps2_t = LayoutTensor[dtype, Layout.row_major(BATCH, UB2.OUT_DIM), MutAnyOrigin](up_eps2)
-    var up_a2_t = LayoutTensor[dtype, Layout.row_major(BATCH, UB2.IN_DIM), MutAnyOrigin](up_a2)
-    var up_z1_t = LayoutTensor[dtype, Layout.row_major(BATCH, UB1.IN_DIM), MutAnyOrigin](up_z1)
-    var up_z2_t = LayoutTensor[dtype, Layout.row_major(BATCH, UB2.IN_DIM), MutAnyOrigin](up_z2)
-    var dn_mu0_t = LayoutTensor[dtype, Layout.row_major(BATCH, DB0.OUT_DIM), MutAnyOrigin](dn_mu0)
-    var dn_eps0_t = LayoutTensor[dtype, Layout.row_major(BATCH, DB0.OUT_DIM), MutAnyOrigin](dn_eps0)
-    var dn_a0_t = LayoutTensor[dtype, Layout.row_major(BATCH, DB0.IN_DIM), MutAnyOrigin](dn_a0)
-    var dn_mu1_t = LayoutTensor[dtype, Layout.row_major(BATCH, DB1.OUT_DIM), MutAnyOrigin](dn_mu1)
-    var dn_eps1_t = LayoutTensor[dtype, Layout.row_major(BATCH, DB1.OUT_DIM), MutAnyOrigin](dn_eps1)
-    var dn_a1_t = LayoutTensor[dtype, Layout.row_major(BATCH, DB1.IN_DIM), MutAnyOrigin](dn_a1)
-    var dn_mu2_t = LayoutTensor[dtype, Layout.row_major(BATCH, DB2.OUT_DIM), MutAnyOrigin](dn_mu2)
-    var dn_eps2_t = LayoutTensor[dtype, Layout.row_major(BATCH, DB2.OUT_DIM), MutAnyOrigin](dn_eps2)
-    var dn_a2_t = LayoutTensor[dtype, Layout.row_major(BATCH, DB2.IN_DIM), MutAnyOrigin](dn_a2)
-    var dn_z1_t = LayoutTensor[dtype, Layout.row_major(BATCH, DB1.IN_DIM), MutAnyOrigin](dn_z1)
-    var dn_z2_t = LayoutTensor[dtype, Layout.row_major(BATCH, DB2.IN_DIM), MutAnyOrigin](dn_z2)
+    var up_mu0_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB0.OUT_DIM), MutAnyOrigin
+    ](up_mu0)
+    var up_eps0_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB0.OUT_DIM), MutAnyOrigin
+    ](up_eps0)
+    var up_a0_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB0.IN_DIM), MutAnyOrigin
+    ](up_a0)
+    var up_mu1_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB1.OUT_DIM), MutAnyOrigin
+    ](up_mu1)
+    var up_eps1_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB1.OUT_DIM), MutAnyOrigin
+    ](up_eps1)
+    var up_a1_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB1.IN_DIM), MutAnyOrigin
+    ](up_a1)
+    var up_mu2_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB2.OUT_DIM), MutAnyOrigin
+    ](up_mu2)
+    var up_eps2_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB2.OUT_DIM), MutAnyOrigin
+    ](up_eps2)
+    var up_a2_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB2.IN_DIM), MutAnyOrigin
+    ](up_a2)
+    var up_z1_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB1.IN_DIM), MutAnyOrigin
+    ](up_z1)
+    var up_z2_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UB2.IN_DIM), MutAnyOrigin
+    ](up_z2)
+    var dn_mu0_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB0.OUT_DIM), MutAnyOrigin
+    ](dn_mu0)
+    var dn_eps0_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB0.OUT_DIM), MutAnyOrigin
+    ](dn_eps0)
+    var dn_a0_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB0.IN_DIM), MutAnyOrigin
+    ](dn_a0)
+    var dn_mu1_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB1.OUT_DIM), MutAnyOrigin
+    ](dn_mu1)
+    var dn_eps1_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB1.OUT_DIM), MutAnyOrigin
+    ](dn_eps1)
+    var dn_a1_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB1.IN_DIM), MutAnyOrigin
+    ](dn_a1)
+    var dn_mu2_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB2.OUT_DIM), MutAnyOrigin
+    ](dn_mu2)
+    var dn_eps2_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB2.OUT_DIM), MutAnyOrigin
+    ](dn_eps2)
+    var dn_a2_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB2.IN_DIM), MutAnyOrigin
+    ](dn_a2)
+    var dn_z1_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB1.IN_DIM), MutAnyOrigin
+    ](dn_z1)
+    var dn_z2_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB2.IN_DIM), MutAnyOrigin
+    ](dn_z2)
     # generation chain re-views (consuming block typed)
-    var dn_mu0_db1 = LayoutTensor[dtype, Layout.row_major(BATCH, DB1.IN_DIM), MutAnyOrigin](dn_mu0)
-    var dn_mu1_db2 = LayoutTensor[dtype, Layout.row_major(BATCH, DB2.IN_DIM), MutAnyOrigin](dn_mu1)
+    var dn_mu0_db1 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB1.IN_DIM), MutAnyOrigin
+    ](dn_mu0)
+    var dn_mu1_db2 = LayoutTensor[
+        dtype, Layout.row_major(BATCH, DB2.IN_DIM), MutAnyOrigin
+    ](dn_mu1)
 
     # ── Train ───────────────────────────────────────────────────────────────
     print("\n  epoch | up_loss | dn_loss | test_acc | wall_t (s)")
@@ -225,7 +360,9 @@ def main() raises:
                     image_buf[i * IMG + j] = ds.train_images[sidx * IMG + j]
                 for c in range(10):
                     label_buf[i * 10 + c] = Scalar[dtype](0)
-                label_buf[i * 10 + Int(ds.train_labels[sidx])] = Scalar[dtype](1.0)
+                label_buf[i * 10 + Int(ds.train_labels[sidx])] = Scalar[dtype](
+                    1.0
+                )
 
             # init shared latents via UP forward
             UB0.predict[BATCH, dtype](image_ub0, up_p0, up_mu0_t, up_a0_t)
@@ -292,23 +429,31 @@ def main() raises:
                 dn_grads_buf[i] = dn_grads_buf[i] * Scalar[dtype](ALPHA_DOWN)
 
             step_num += 1
-            OPT.step[UP_PARAM_SIZE, dtype](up_params, up_grads, up_os, up_og, step_num)
-            OPT.step[DOWN_PARAM_SIZE, dtype](dn_params, dn_grads, dn_os, dn_og, step_num)
+            OPT.step[UP_PARAM_SIZE, dtype](
+                up_params, up_grads, up_os, up_og, step_num
+            )
+            OPT.step[DOWN_PARAM_SIZE, dtype](
+                dn_params, dn_grads, dn_os, dn_og, step_num
+            )
 
             var sl: Float64 = 0
             for i in range(BATCH * 10):
-                var v = Float64(up_eps2[i]); sl += v * v
+                var v = Float64(up_eps2[i])
+                sl += v * v
             ep_up += sl * 0.5
             var rl: Float64 = 0
             for i in range(BATCH * IMG):
-                var v = Float64(dn_eps2[i]); rl += v * v
+                var v = Float64(dn_eps2[i])
+                rl += v * v
             ep_dn += rl * 0.5
 
         # accuracy (UP forward_eval — ConvPCBlock + PCBlock all conform)
         var correct: Int = 0
-        var pred_buf = alloc[Scalar[dtype]](BATCH * 10)
+        var pred_buf = alloc[Scalar[dtype]](BATCH * 10).as_unsafe_any_origin()
         memset(pred_buf, 0, BATCH * 10)
-        var pred_t = LayoutTensor[dtype, Layout.row_major(BATCH, UP_NET.OUT_DIM), MutAnyOrigin](pred_buf)
+        var pred_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, UP_NET.OUT_DIM), MutAnyOrigin
+        ](pred_buf)
         for tb in range(N_TEST_BATCHES):
             for i in range(BATCH):
                 var sidx = tb * BATCH + i
@@ -321,15 +466,26 @@ def main() raises:
                 for c in range(1, 10):
                     var v = Float64(pred_buf[i * 10 + c])
                     if v > best_v:
-                        best_v = v; best_c = c
+                        best_v = v
+                        best_c = c
                 if best_c == Int(ds.test_labels[tb * BATCH + i]):
                     correct += 1
         var acc = Float64(correct) / Float64(N_TEST_BATCHES * BATCH)
         pred_buf.free()
 
         var el = Float64(perf_counter_ns() - t0) / 1e9
-        print("    ", epoch, "  ", ep_up / Float64(N_TRAIN_BATCHES), "  ",
-              ep_dn / Float64(N_TRAIN_BATCHES), "  ", acc, "  ", el)
+        print(
+            "    ",
+            epoch,
+            "  ",
+            ep_up / Float64(N_TRAIN_BATCHES),
+            "  ",
+            ep_dn / Float64(N_TRAIN_BATCHES),
+            "  ",
+            acc,
+            "  ",
+            el,
+        )
 
     var total_t = Float64(perf_counter_ns() - t0) / 1e9
     print("\n  total train time:", total_t, "s")
@@ -354,8 +510,8 @@ def main() raises:
     #    directly (NOT sigmoid, which compresses [0,0.8] to a washed-out gray).
     #    Two variants: clamp[0,1] (clean background) and per-image min/max
     #    stretch (max stroke contrast, but amplifies background speckle). ─────
-    var gen_sig = alloc[Scalar[dtype]](10 * IMG)  # clamp[0,1] — primary
-    var gen_stretch = alloc[Scalar[dtype]](10 * IMG)  # min/max stretch
+    var gen_sig = alloc[Scalar[dtype]](10 * IMG).as_unsafe_any_origin()  # clamp[0,1] — primary
+    var gen_stretch = alloc[Scalar[dtype]](10 * IMG).as_unsafe_any_origin()  # min/max stretch
     for c in range(10):
         var lo = Float64(dn_mu2[c * IMG])
         var hi = lo
@@ -378,8 +534,8 @@ def main() raises:
             gen_sig[c * IMG + j] = Scalar[dtype](vc)
             gen_stretch[c * IMG + j] = Scalar[dtype]((v - lo) / rng)
 
-    var real_digits = alloc[Scalar[dtype]](10 * IMG)
-    var found = alloc[UInt8](10)
+    var real_digits = alloc[Scalar[dtype]](10 * IMG).as_unsafe_any_origin()
+    var found = alloc[UInt8](10).as_unsafe_any_origin()
     memset(found, 0, 10)
     var fc: Int = 0
     for i in range(MNIST.N_TEST):
@@ -387,7 +543,8 @@ def main() raises:
         if found[c] == 0:
             for j in range(IMG):
                 real_digits[c * IMG + j] = ds.test_images[i * IMG + j]
-            found[c] = 1; fc += 1
+            found[c] = 1
+            fc += 1
             if fc == 10:
                 break
     found.free()
@@ -395,18 +552,68 @@ def main() raises:
     var labels = List[String]()
     for i in range(10):
         labels.append(String(i))
-    save_image_row("pcn_conv_generated_digits.ppm", gen_sig, n=10, height=28, width=28, channels=1, vmin=0.0, vmax=1.0, pixel_scale=4, labels=labels)
-    save_image_row("pcn_conv_generated_digits_stretched.ppm", gen_stretch, n=10, height=28, width=28, channels=1, vmin=0.0, vmax=1.0, pixel_scale=4, labels=labels)
-    save_image_row("pcn_conv_real_digits.ppm", real_digits, n=10, height=28, width=28, channels=1, vmin=0.0, vmax=1.0, pixel_scale=4, labels=labels)
-    save_reconstruction_grid("pcn_conv_real_vs_generated.ppm", real_digits, gen_sig, n=10, height=28, width=28, channels=1, vmin=0.0, vmax=1.0)
-    print("  saved: pcn_conv_generated_digits{,_stretched}.ppm  pcn_conv_real_vs_generated.ppm")
-    gen_sig.free(); gen_stretch.free(); real_digits.free()
+    save_image_row(
+        "pcn_conv_generated_digits.ppm",
+        gen_sig,
+        n=10,
+        height=28,
+        width=28,
+        channels=1,
+        vmin=0.0,
+        vmax=1.0,
+        pixel_scale=4,
+        labels=labels,
+    )
+    save_image_row(
+        "pcn_conv_generated_digits_stretched.ppm",
+        gen_stretch,
+        n=10,
+        height=28,
+        width=28,
+        channels=1,
+        vmin=0.0,
+        vmax=1.0,
+        pixel_scale=4,
+        labels=labels,
+    )
+    save_image_row(
+        "pcn_conv_real_digits.ppm",
+        real_digits,
+        n=10,
+        height=28,
+        width=28,
+        channels=1,
+        vmin=0.0,
+        vmax=1.0,
+        pixel_scale=4,
+        labels=labels,
+    )
+    save_reconstruction_grid(
+        "pcn_conv_real_vs_generated.ppm",
+        real_digits,
+        gen_sig,
+        n=10,
+        height=28,
+        width=28,
+        channels=1,
+        vmin=0.0,
+        vmax=1.0,
+    )
+    print(
+        "  saved: pcn_conv_generated_digits{,_stretched}.ppm "
+        " pcn_conv_real_vs_generated.ppm"
+    )
+    gen_sig.free()
+    gen_stretch.free()
+    real_digits.free()
 
     # ── Verdict ─────────────────────────────────────────────────────────────
     var final_correct: Int = 0
-    var fp_buf = alloc[Scalar[dtype]](BATCH * 10)
+    var fp_buf = alloc[Scalar[dtype]](BATCH * 10).as_unsafe_any_origin()
     memset(fp_buf, 0, BATCH * 10)
-    var fp_t = LayoutTensor[dtype, Layout.row_major(BATCH, UP_NET.OUT_DIM), MutAnyOrigin](fp_buf)
+    var fp_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, UP_NET.OUT_DIM), MutAnyOrigin
+    ](fp_buf)
     for tb in range(N_TEST_BATCHES):
         for i in range(BATCH):
             var sidx = tb * BATCH + i
@@ -419,7 +626,8 @@ def main() raises:
             for c in range(1, 10):
                 var v = Float64(fp_buf[i * 10 + c])
                 if v > best_v:
-                    best_v = v; best_c = c
+                    best_v = v
+                    best_c = c
             if best_c == Int(ds.test_labels[tb * BATCH + i]):
                 final_correct += 1
     var final_acc = Float64(final_correct) / Float64(N_TEST_BATCHES * BATCH)

@@ -166,8 +166,17 @@ struct ConditionalTransformerBlock[
             var c = ctx.value()
             gx.ensure_gpu(c, total)
             gc.ensure_gpu(c, total)
-            c.enqueue_copy(gx.dev.value(), self.graph.grad_input["x"]().dev.value())
-            c.enqueue_copy(gc.dev.value(), self.graph.grad_input["c"]().dev.value())
+            # Size-exact sub-buffer copies: the caller's tmp grad slots are
+            # reused across nodes and may be larger than `total`; whole-buffer
+            # copies error on the mismatch. Mirrors compute_graph's fix.
+            var gx_src = self.graph.grad_input["x"]().dev.value(
+            ).create_sub_buffer[DT](0, total)
+            var gx_dst = gx.dev.value().create_sub_buffer[DT](0, total)
+            c.enqueue_copy(gx_dst, gx_src)
+            var gc_src = self.graph.grad_input["c"]().dev.value(
+            ).create_sub_buffer[DT](0, total)
+            var gc_dst = gc.dev.value().create_sub_buffer[DT](0, total)
+            c.enqueue_copy(gc_dst, gc_src)
 
     def for_each_param[
         target: StaticString, V: ParamVisitor

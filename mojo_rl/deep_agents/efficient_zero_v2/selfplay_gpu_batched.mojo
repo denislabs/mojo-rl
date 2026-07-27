@@ -35,7 +35,7 @@ Run (GPU env required): see `tests/deep_agents/test_ezv2_atari_batched_smoke.moj
 """
 
 from std.math import exp, log
-from std.memory import alloc, memcpy
+from std.memory import alloc, unsafe_memcpy
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -289,18 +289,18 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
             var action = _sample_action(h_pol, e * ACT, ACT, temp, rng)
             # write the OBS-wide observation into the per-env raw buffer at the
             # step cursor (ep_len[e]); grow capacity by doubling if needed
-            # (amortized O(1), no per-step full-buffer realloc). bulk memcpy.
+            # (amortized O(1), no per-step full-buffer realloc). bulk unsafe_memcpy.
             var off = ep_len[e] * OBS
             if off + OBS > eo_cap[e]:
                 var newcap = eo_cap[e] * 2
                 if newcap < off + OBS:
                     newcap = off + OBS
                 var nb = _a(newcap)
-                memcpy(dest=nb, src=eo_buf[e], count=off)
+                unsafe_memcpy(dest=nb, src=eo_buf[e], count=off)
                 eo_buf[e].free()
                 eo_buf[e] = nb
                 eo_cap[e] = newcap
-            memcpy(dest=eo_buf[e] + off, src=obs_host + e * OBS, count=OBS)
+            unsafe_memcpy(dest=eo_buf[e] + off, src=obs_host + e * OBS, count=OBS)
             e_act[e].append(Scalar[DT](action))
             for a in range(ACT):
                 e_pol[e].append(h_pol[e * ACT + a])
@@ -374,11 +374,18 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                 # CPU draws prioritized slots + targets, then gathers the obs
                 # slab on-device straight into scratch.d_obs (no host build/H2D).
                 var _tsamp = perf_counter_ns()
+                # The sample writes the PAPER PER priority |ν − z| into
+                # `t_prio` (it owns both ν = stored root search value and
+                # z = n-step target). The train step used to overwrite it
+                # with the value-head soft-CE — not the paper signal.
                 rb.sample_training_batch_seq_per_gpu[B, K, N](
                     ctx, gamma, train_scratch.d_obs.dev.value(),
                     d_obs_slots, h_obs_slots,
                     t_act, t_pol, t_val, t_rew, t_isw, t_slots,
                     cons_mask=t_cmask,
+                    out_prio=Optional(
+                        t_prio.unsafe_ptr().as_unsafe_any_origin()
+                    ),
                 )
                 ts_t_sample += Float64(perf_counter_ns() - _tsamp)
                 var _tstep = perf_counter_ns()
@@ -394,9 +401,6 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                         cons_mask=t_cmask, loss_parts=l_parts,
                         is_weights=Optional(
                             t_isw.unsafe_ptr().as_unsafe_any_origin()
-                        ),
-                        out_prio=Optional(
-                            t_prio.unsafe_ptr().as_unsafe_any_origin()
                         ),
                         obs_on_device=True,
                         phase_ns=phase_ns.as_unsafe_any_origin(),
@@ -635,8 +639,11 @@ def _ez_eval_greedy_cpu_batched[
         if done_count >= target_episodes:
             break
         ctx.enqueue_copy(d_obs, eval_env[].obs_ptr())
+        # `d_obs` is an immutable param; planner ABI wants `MutAnyOrigin`.
         var obs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, RA.OBS_DIM),
-            MutAnyOrigin](d_obs.unsafe_ptr().as_unsafe_any_origin())
+            MutAnyOrigin](
+            d_obs.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]()
+        )
         planner.search_gpu[RA, DA, PA](ctx, rep_a, dyn_a, pred_a, obs_t,
           apply_legal=False, k_actual=MAX_K, rng_seed=es)
         es += UInt32(1)
