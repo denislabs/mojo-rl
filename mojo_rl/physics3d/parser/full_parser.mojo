@@ -337,6 +337,17 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         if gg_s.byte_length() > 0:
             d.geom_group_s = gg_s
 
+    # Find default <site  (structural attrs only — the touch sensor's zone)
+    var spos = defaults_sec.find("<site")
+    if spos != -1:
+        var stag = _extract_opening_tag(defaults_sec, spos)
+        var st_s = _extract_attr(stag, "type")
+        if st_s.byte_length() > 0:
+            d.site_type_s = st_s
+        var ss_s = _extract_attr(stag, "size")
+        if ss_s.byte_length() > 0:
+            d.site_size_s = ss_s
+
     # Find default <motor
     var mpos = defaults_sec.find("<motor")
     if mpos != -1:
@@ -1372,7 +1383,18 @@ def _fill_model[
                 var sd = SiteData()
                 sd.body_id = current_body
 
+                # Same class resolution as geoms: the site's own class="..."
+                # wins, else the enclosing body's childclass, else top-level.
+                var site_class = _extract_attr(tag, "class")
+                if site_class.byte_length() == 0:
+                    site_class = childclass_stack[depth]
+                var site_defaults = defaults
+                if site_class.byte_length() > 0:
+                    site_defaults = named_defaults.find(site_class)
+
                 var type_s = _extract_attr(tag, "type")
+                if type_s.byte_length() == 0:
+                    type_s = site_defaults.site_type_s
                 sd.site_type = _geom_type_from_str(type_s)
 
                 var pos_s = _extract_attr(tag, "pos")
@@ -1399,6 +1421,8 @@ def _fill_model[
                         sd.quat_w = aq[3]
 
                 var size_s = _extract_attr(tag, "size")
+                if size_s.byte_length() == 0:
+                    size_s = site_defaults.site_size_s
                 if size_s.byte_length() > 0:
                     var parts = List[String]()
 

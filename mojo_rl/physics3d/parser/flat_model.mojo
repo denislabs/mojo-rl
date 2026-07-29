@@ -849,6 +849,12 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var geom_pos_s: String
     var geom_quat_s: String
     var geom_group_s: String
+    # Site structural attrs, same raw-string treatment as the geom ones.
+    # dm_control's hopper declares its two touch sites entirely by class
+    # (`<default class="hopper"><site type="sphere" size="0.05"/>`), so the
+    # touch sensor sees nothing without these.
+    var site_type_s: String
+    var site_size_s: String
 
     def __init__(
         out self,
@@ -939,6 +945,8 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.geom_pos_s = ""
         self.geom_quat_s = ""
         self.geom_group_s = ""
+        self.site_type_s = ""
+        self.site_size_s = ""
 
 
 # =============================================================================

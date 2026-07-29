@@ -200,6 +200,10 @@ from mojo_rl.physics3d.gpu.constants import (
     SITE_IDX_POS_X,
     SITE_IDX_POS_Y,
     SITE_IDX_POS_Z,
+    SITE_IDX_TYPE,
+    SITE_IDX_SIZE_0,
+    SITE_IDX_SIZE_1,
+    SITE_IDX_SIZE_2,
 )
 from .flat_model import FlatModelDef, _EQ_CONNECT, _EQ_WELD
 
@@ -912,6 +916,10 @@ def build_model_fields_from_flat[
         mf.sites.data[o + SITE_IDX_POS_X] = Scalar[DTYPE](sd.pos_x)
         mf.sites.data[o + SITE_IDX_POS_Y] = Scalar[DTYPE](sd.pos_y)
         mf.sites.data[o + SITE_IDX_POS_Z] = Scalar[DTYPE](sd.pos_z)
+        mf.sites.data[o + SITE_IDX_TYPE] = Scalar[DTYPE](sd.site_type)
+        mf.sites.data[o + SITE_IDX_SIZE_0] = Scalar[DTYPE](sd.size_0)
+        mf.sites.data[o + SITE_IDX_SIZE_1] = Scalar[DTYPE](sd.size_1)
+        mf.sites.data[o + SITE_IDX_SIZE_2] = Scalar[DTYPE](sd.size_2)
 
     # ── equality constraints (legacy add_connect/add_weld semantics:
     #    solimp[3]=0.5 / solimp[4]=2.0 hardcoded, parsed values dropped) ────

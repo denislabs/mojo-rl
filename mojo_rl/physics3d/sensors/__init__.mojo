@@ -10,3 +10,4 @@ When the full framework lands, these become the per-type kernels behind it.
 """
 
 from .subtree import subtree_linvel, walk_to_root
+from .touch import touch_sphere_site
