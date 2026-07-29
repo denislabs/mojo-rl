@@ -13,9 +13,14 @@ export default defineConfig({
 			description:
 				'A reinforcement learning framework written in Mojo — 40+ algorithms, a deep learning framework, 2D/3D physics engines, and 25 native environments.',
 			logo: {
-				// noeira brand mark — the design system is noeira's, the product is mojo-rl.
-				src: './src/assets/noeira-mark.svg',
+				// Full lockup (mark + wordmark), so it replaces the title text.
+				// Starlight's `dark`/`light` name the THEME the file is shown in:
+				// `dark` needs light-on-transparent, `light` needs dark-on-transparent.
+				// Wordmarks are outlined paths — no font dependency.
+				dark: './src/assets/mojo-rl-logo-transparent-dark.svg',
+				light: './src/assets/mojo-rl-logo-light.svg',
 				alt: 'mojo-rl',
+				replacesTitle: true,
 			},
 			favicon: '/favicon.svg',
 			head: [{ tag: 'meta', attrs: { name: 'theme-color', content: '#0E1117' } }],

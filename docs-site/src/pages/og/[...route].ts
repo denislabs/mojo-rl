@@ -32,9 +32,10 @@ export const { getStaticPaths, GET } = await OGImageRoute({
 		title: page.title,
 		description: page.description,
 
-		// Mark + wordmark, so a shared card carries the project name and not just
-		// the moon. Regenerate with `node scripts/build-brand-lockup.mjs`.
-		logo: { path: './src/assets/noeira-lockup-og.png', size: [300] },
+		// Light-on-transparent lockup: the card is always dark, regardless of the
+		// viewer's theme. The 2x PNG rather than the SVG because canvaskit
+		// rasterises bitmaps only.
+		logo: { path: './src/assets/mojo-rl-logo-transparent-dark-2x.png', size: [300] },
 
 		bgGradient: [INK_900, INK_950],
 		border: { color: MOON_CYAN, width: 16, side: 'inline-start' },

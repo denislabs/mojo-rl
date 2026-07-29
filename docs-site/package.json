@@ -23,7 +23,6 @@
     "sharp": "^0.34.5"
   },
   "devDependencies": {
-    "opentype.js": "^2.0.0",
     "wrangler": "^4.114.0"
   }
 }

@@ -1,8 +1,26 @@
-# mojo-rl
+<!--
+  The wordmark carries the project name, so it stands in for an `# mojo-rl`
+  heading; `alt` keeps the accessible name. <picture> + prefers-color-scheme is
+  supported by GitHub, so the logo follows the reader's theme: the light file is
+  dark-on-transparent, the dark file light-on-transparent. PNG rather than SVG
+  because GitHub's image proxy is reliable with raster and inconsistent with SVG.
+-->
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs-site/src/assets/mojo-rl-logo-transparent-dark-2x.png">
+    <img alt="mojo-rl" src="docs-site/src/assets/mojo-rl-logo-light-2x.png" width="420">
+  </picture>
+</p>
 
-An end-to-end world‑model & RL framework written in Mojo, featuring trait-based design, 40+ RL algorithms, GPU-accelerated deep RL, custom 2D/3D physics engines, native arcade game engines, and SDL3 rendering.
+<p align="center">
+  An end-to-end world‑model &amp; RL framework written in Mojo, featuring trait-based design,
+  40+ RL algorithms, GPU-accelerated deep RL, custom 2D/3D physics engines,
+  native arcade game engines, and SDL3 rendering.
+</p>
 
-**📖 Documentation — [mojo-rl.denislabs.com](https://mojo-rl.denislabs.com)**
+<p align="center">
+  <b>📖 Documentation — <a href="https://mojo-rl.denislabs.com">mojo-rl.denislabs.com</a></b>
+</p>
 
 > **Note:** This is a beta version, not a production-grade library yet. While the tabular agents and core deep RL algorithms (DQN, PPO, SAC, TD3) are well-tested, the 3D physics engine, complex deep agents (DreamerV3, TD-MPC2, MuZero), and some advanced features are still experimental and may contain bugs. Contributions and bug reports are welcome!
 
