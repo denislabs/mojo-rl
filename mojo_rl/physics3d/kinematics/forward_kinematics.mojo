@@ -957,6 +957,20 @@ def _vel_body[
     vy = vy + (wz * rx - wx * rz)
     vz = vz + (wx * ry - wy * rx)
 
+    # This body's own quaternion + CoM offset, used below to place each joint
+    # anchor in world coordinates:
+    #     xpos   = xipos - R_b * ipos_b
+    #     anchor = xpos  + R_b * jnt_pos
+    #  => xipos - anchor = R_b * (ipos_b - jnt_pos)
+    # i.e. the lever arm from the joint anchor to this body's CoM.
+    var bqx = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 0])
+    var bqy = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 1])
+    var bqz = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 2])
+    var bqw = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 3])
+    var ipos_x = rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_IPOS_X])
+    var ipos_y = rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_IPOS_Y])
+    var ipos_z = rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_IPOS_Z])
+
     for j in range(NJOINT):
         var joint_body = Int(
             rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])
@@ -995,9 +1009,30 @@ def _vel_body[
             wz = w_world[2]
 
         elif jnt_type == JNT_BALL:
-            wx = wx + rebind[Scalar[DTYPE]](qvel[env, dof_adr + 0])
-            wy = wy + rebind[Scalar[DTYPE]](qvel[env, dof_adr + 1])
-            wz = wz + rebind[Scalar[DTYPE]](qvel[env, dof_adr + 2])
+            var bwx = rebind[Scalar[DTYPE]](qvel[env, dof_adr + 0])
+            var bwy = rebind[Scalar[DTYPE]](qvel[env, dof_adr + 1])
+            var bwz = rebind[Scalar[DTYPE]](qvel[env, dof_adr + 2])
+            wx = wx + bwx
+            wy = wy + bwy
+            wz = wz + bwz
+
+            # Same angular -> linear coupling as the hinge branch below.
+            # ⚠ UNGATED: no model in the repo uses a ball joint, so neither
+            # this term NOR the raw (unrotated) angular contribution above is
+            # covered by test_body_velocities_vs_mujoco. MuJoCo specifies ball
+            # qvel in the JOINT frame, so the angular part above likely needs
+            # rotating into world too — verify both against MuJoCo before
+            # trusting a ball-jointed model.
+            var bjpx = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_POS_X])
+            var bjpy = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_POS_Y])
+            var bjpz = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_POS_Z])
+            var blev = gpu_quat_rotate(
+                bqx, bqy, bqz, bqw,
+                ipos_x - bjpx, ipos_y - bjpy, ipos_z - bjpz,
+            )
+            vx = vx + (bwy * blev[2] - bwz * blev[1])
+            vy = vy + (bwz * blev[0] - bwx * blev[2])
+            vz = vz + (bwx * blev[1] - bwy * blev[0])
 
         elif jnt_type == JNT_SLIDE:
             var vel = rebind[Scalar[DTYPE]](qvel[env, dof_adr])
@@ -1014,6 +1049,9 @@ def _vel_body[
 
         elif jnt_type == JNT_HINGE:
             var omega = rebind[Scalar[DTYPE]](qvel[env, dof_adr])
+            # Rotating the axis by the PARENT quaternion is equivalent to the
+            # child's here: R_child = R_parent * R_axis(theta) and a rotation
+            # about an axis leaves that axis fixed.
             var pqx = rebind[Scalar[DTYPE]](xquat[env, parent * 4 + 0])
             var pqy = rebind[Scalar[DTYPE]](xquat[env, parent * 4 + 1])
             var pqz = rebind[Scalar[DTYPE]](xquat[env, parent * 4 + 2])
@@ -1024,6 +1062,24 @@ def _vel_body[
             wx = wx + rotated[0] * omega
             wy = wy + rotated[1] * omega
             wz = wz + rotated[2] * omega
+
+            # ANGULAR -> LINEAR COUPLING. Spinning about the joint axis also
+            # translates this body's CoM, by omega_j x (CoM - anchor). Missing
+            # until 2026-07-29, which left `xvel` wrong for every body below a
+            # hinge (~7% on walker2d) while `xangvel` stayed exact. The SLIDE
+            # branch always had its linear term, which is why only hinge/ball
+            # chains were affected. Gated by
+            # tests/physics3d/test_body_velocities_vs_mujoco.mojo.
+            var jpx = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_POS_X])
+            var jpy = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_POS_Y])
+            var jpz = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_POS_Z])
+            var lever = gpu_quat_rotate(
+                bqx, bqy, bqz, bqw,
+                ipos_x - jpx, ipos_y - jpy, ipos_z - jpz,
+            )
+            vx = vx + (rotated[1] * lever[2] - rotated[2] * lever[1]) * omega
+            vy = vy + (rotated[2] * lever[0] - rotated[0] * lever[2]) * omega
+            vz = vz + (rotated[0] * lever[1] - rotated[1] * lever[0]) * omega
 
     xvel[env, body * 3 + 0] = vx
     xvel[env, body * 3 + 1] = vy

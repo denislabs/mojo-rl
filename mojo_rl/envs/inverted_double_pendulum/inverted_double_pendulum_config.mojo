@@ -43,6 +43,10 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         NSITE: Int = 0,
     ](
         d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         # OBS_DIM=9: [cart_x, sin(q1), sin(q2), cos(q1), cos(q2),
@@ -89,6 +93,10 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         NSITE: Int = 0,
     ](
         d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,

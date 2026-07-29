@@ -56,6 +56,10 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
         NSITE: Int = 0,
     ](
         d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,

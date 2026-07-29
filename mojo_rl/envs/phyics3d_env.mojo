@@ -38,6 +38,7 @@ from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.physics3d.model.model_renderer import ModelRenderer
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
+    compute_body_velocities,
 )
 from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
@@ -201,6 +202,22 @@ struct Phyics3dEnv[
         except e:
             print("Phyics3dEnv._fields_fk: FK error:", e)
 
+    def _fields_vel(mut self):
+        """Body world velocities (xvel/xangvel) from the current qvel.
+
+        Companion to `_fields_fk`: the integrator computes these mid-step, so
+        hooks that read them need a refresh once integration has finished.
+        Only runs under CONFIG.SYNC_FK_AFTER_STEP."""
+        try:
+            compute_body_velocities[
+                "cpu", Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
+                Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
+                Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
+                Self.MODEL_DEF.NEXCLUDE, 0, 1,
+            ](self.d, self.mf, None)
+        except e:
+            print("Phyics3dEnv._fields_vel: velocity error:", e)
+
     def _sync_mocap_to_fields(mut self):
         """Mocap actuation: the CONFIG hooks write the mocap target into
         `d.mocap_pos`/`d.mocap_quat` (per step / on reset); preset the
@@ -243,7 +260,13 @@ struct Phyics3dEnv[
                     (random_float64() * 2.0 - 1.0) * noise_scale
                 )
                 self.d.qvel.data[i] = self.d.qvel.data[i] + noise
-        Self.CONFIG.custom_reset_cpu(self.d)
+        Self.CONFIG.custom_reset_cpu(
+            self.d,
+            self.mf.bodies.data,
+            self.mf.joints.data,
+            self.mf.geoms.data,
+            self.mf.sites.data,
+        )
         self._sync_mocap_to_fields()
         self._fields_fk()  # fresh obs before step 1
         self.current_step = 0
@@ -262,7 +285,14 @@ struct Phyics3dEnv[
 
     def _get_obs(self) -> ObsState[Self.MODEL_DEF.OBS_DIM]:
         var obs_list = List[Scalar[Self.DTYPE]](capacity=Self.OBS_DIM)
-        var custom = Self.CONFIG.custom_extract_obs_cpu(self.d, obs_list)
+        var custom = Self.CONFIG.custom_extract_obs_cpu(
+            self.d,
+            self.mf.bodies.data,
+            self.mf.joints.data,
+            self.mf.geoms.data,
+            self.mf.sites.data,
+            obs_list,
+        )
         if not custom:
             Self.MODEL_DEF.extract_obs(self.d, obs_list)
         var obs = ObsState[Self.MODEL_DEF.OBS_DIM]()
@@ -306,10 +336,28 @@ struct Phyics3dEnv[
             except e:
                 print("Phyics3dEnv.step: physics error:", e)
 
+        # Put the FK products in sync with the integrated qpos before the
+        # reward/obs hooks read them (dm_control convention). Off for the
+        # Gym-derived envs, which are calibrated against raw `mj_step`, where
+        # xpos/xquat/xipos still describe the pre-integration state. See
+        # Phyics3dEnvConfig.SYNC_FK_AFTER_STEP.
+        comptime if Self.CONFIG.SYNC_FK_AFTER_STEP:
+            self._fields_fk()
+            # …and the body velocities with the integrated qvel. `xvel` is
+            # written inside the integrator, so without this it describes the
+            # state before the last substep — the same staleness the FK sync
+            # exists to fix, one field over. Mass-weighted sensors
+            # (subtreelinvel) read `xvel` directly.
+            self._fields_vel()
+
         self.current_step += 1
 
         var result = Self.CONFIG.compute_reward_and_done_cpu(
             self.d,
+            self.mf.bodies.data,
+            self.mf.joints.data,
+            self.mf.geoms.data,
+            self.mf.sites.data,
             self.prev_x,
             clamped_action.to_list(),
             self.current_step,
@@ -441,7 +489,14 @@ struct Phyics3dEnv[
     # ── ContinuousStateEnv ────────────────────────────────────────────────
     def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         var obs = List[Scalar[Self.dtype]](capacity=Self.OBS_DIM)
-        var custom = Self.CONFIG.custom_extract_obs_cpu(self.d, obs)
+        var custom = Self.CONFIG.custom_extract_obs_cpu(
+            self.d,
+            self.mf.bodies.data,
+            self.mf.joints.data,
+            self.mf.geoms.data,
+            self.mf.sites.data,
+            obs,
+        )
         if not custom:
             Self.MODEL_DEF.extract_obs(self.d, obs)
         return obs^

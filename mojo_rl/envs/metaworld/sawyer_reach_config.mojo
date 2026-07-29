@@ -82,6 +82,10 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         NSITE: Int = 0,
     ](
         d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """Extract MetaWorld-style observation: hand + gripper + obj + goal."""
@@ -112,6 +116,10 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         NSITE: Int = 0,
     ](
         mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
     ):
         # Set initial mocap position (MetaWorld hand_init_pos = [0, 0.6, 0.2])
         d.mocap_pos.data[MOCAP_BODY_IDX * 3 + 0] = Scalar[DTYPE](0.0)
@@ -222,6 +230,10 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         NSITE: Int = 0,
     ](
         d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,

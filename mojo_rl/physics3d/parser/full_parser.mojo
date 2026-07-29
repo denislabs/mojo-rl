@@ -19,6 +19,7 @@ from std.collections import InlineArray
 from .xml_parser import (
     _split_spaces,
     _extract_section,
+    _extract_section_inner,
     _extract_opening_tag,
     _extract_attr,
     _trim,
@@ -27,6 +28,9 @@ from .xml_parser import (
     _parse_vec3,
     _parse_quat,
     _parse_axisangle_to_quat,
+    _parse_euler_to_quat,
+    _parse_zaxis_to_quat,
+    _compiler_deg_factor,
     _fromto_to_pos_quat,
     _find_joint_index_by_name,
     _find_body_index_by_name,
@@ -37,6 +41,9 @@ from .flat_model import (
     JointData,
     GeomData,
     ActuatorData,
+    ACT_KIND_POSITION,
+    ACT_KIND_VELOCITY,
+    ACT_KIND_GENERAL,
     TextureData,
     MaterialData,
     LightData,
@@ -99,6 +106,25 @@ def _min_valid(a: Int, b: Int) -> Int:
     if a < b:
         return a
     return b
+
+
+def _option_flag_disabled(xml: String, flag: String) -> Bool:
+    """True when `<option><flag NAME="disable"/></option>` is present.
+
+    MJCF puts `<flag>` INSIDE `<option>`, so this looks in the option section
+    rather than the option opening tag. Only the flags the engine can honour
+    are consulted — see `parse_xml_full` for how each is applied.
+    """
+    var opt_sec = _extract_section(xml, "option")
+    if opt_sec.byte_length() == 0:
+        return False
+    var ft = opt_sec.find("<flag")
+    while ft != -1:
+        var tag = _extract_opening_tag(opt_sec, ft)
+        if _trim(_extract_attr(tag, flag)) == "disable":
+            return True
+        ft = opt_sec.find("<flag", ft + 5)
+    return False
 
 
 # =============================================================================
@@ -208,6 +234,21 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
             if len(parts) >= 5:
                 d.joint_solimp_limit_4 = _parse_float(parts[4])
 
+        # Structural attrs — stored raw; only overwrite when this block
+        # actually sets them, so a parent class's value survives.
+        var jt_s = _extract_attr(jtag, "type")
+        if jt_s.byte_length() > 0:
+            d.joint_type_s = jt_s
+        var jax_s = _extract_attr(jtag, "axis")
+        if jax_s.byte_length() > 0:
+            d.joint_axis_s = jax_s
+        var jrng_s = _extract_attr(jtag, "range")
+        if jrng_s.byte_length() > 0:
+            d.joint_range_s = jrng_s
+        var jp_s = _extract_attr(jtag, "pos")
+        if jp_s.byte_length() > 0:
+            d.joint_pos_s = jp_s
+
     # Find default <geom
     var gpos = defaults_sec.find("<geom")
     if gpos != -1:
@@ -270,6 +311,32 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
             d.geom_rgba_b = cv[2]
             d.geom_rgba_a = cv[3]
 
+        # Structural attrs — stored raw (see DefaultsData docstring).
+        var gt_s = _extract_attr(gtag, "type")
+        if gt_s.byte_length() > 0:
+            d.geom_type_s = gt_s
+        var gft_s = _extract_attr(gtag, "fromto")
+        if gft_s.byte_length() > 0:
+            d.geom_fromto_s = gft_s
+        var gsz_s = _extract_attr(gtag, "size")
+        if gsz_s.byte_length() > 0:
+            d.geom_size_s = gsz_s
+        var gm_s = _extract_attr(gtag, "mass")
+        if gm_s.byte_length() > 0:
+            d.geom_mass_s = gm_s
+        var gmat_s = _extract_attr(gtag, "material")
+        if gmat_s.byte_length() > 0:
+            d.geom_material_s = gmat_s
+        var gp_s = _extract_attr(gtag, "pos")
+        if gp_s.byte_length() > 0:
+            d.geom_pos_s = gp_s
+        var gq_s = _extract_attr(gtag, "quat")
+        if gq_s.byte_length() > 0:
+            d.geom_quat_s = gq_s
+        var gg_s = _extract_attr(gtag, "group")
+        if gg_s.byte_length() > 0:
+            d.geom_group_s = gg_s
+
     # Find default <motor
     var mpos = defaults_sec.find("<motor")
     if mpos != -1:
@@ -288,6 +355,51 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
     return d
 
 
+def _strip_nested_defaults(sec: String) -> String:
+    """Remove nested `<default class="...">...</default>` sub-blocks.
+
+    `_extract_section(xml, "default")` hands back the inner text of the outer
+    `<default>` element, which still contains the named class blocks. Feeding
+    that straight to `_parse_one_default_block` makes the FIRST nested class's
+    `<joint>`/`<geom>` masquerade as the top-level default — cartpole's cart
+    geom inherited the pole class's `fromto`, putting the cart's CoM at
+    z=0.5 instead of 0.
+
+    Harmless while only tuning attributes were inherited; a real corruption
+    once structural attributes are (2026-07-29). Nesting is tracked so that
+    classes containing their own sub-classes are removed whole.
+    """
+    var out = String("")
+    var i = 0
+    var n = sec.byte_length()
+    while i < n:
+        var open_t = sec.find("<default", i)
+        if open_t == -1:
+            out += String(sec[byte=i:n])
+            break
+        out += String(sec[byte=i:open_t])
+        # Walk forward to this block's matching </default>.
+        var depth_ = 0
+        var j = open_t
+        while j < n:
+            var next_open = sec.find("<default", j + 1)
+            var next_close = sec.find("</default>", j + 1)
+            if next_close == -1:
+                j = n
+                break
+            if next_open != -1 and next_open < next_close:
+                depth_ += 1
+                j = next_open
+                continue
+            if depth_ == 0:
+                j = next_close + 10  # len("</default>")
+                break
+            depth_ -= 1
+            j = next_close
+        i = j
+    return out
+
+
 def _parse_defaults(
     xml: String,
 ) -> Tuple[DefaultsData, NamedDefaultsList]:
@@ -300,8 +412,14 @@ def _parse_defaults(
     if defaults_sec.byte_length() == 0:
         return (DefaultsData(), NamedDefaultsList())
 
-    # Parse top-level (unnamed) defaults from the section
-    var top = _parse_one_default_block(defaults_sec, DefaultsData())
+    # Parse top-level (unnamed) defaults. `_extract_section` KEEPS the outer
+    # <default>...</default> tags, so take the inner text first (that helper
+    # handles the nested same-name tags) and only then strip the class
+    # sub-blocks — otherwise the strip would swallow the whole section.
+    var top = _parse_one_default_block(
+        _strip_nested_defaults(_extract_section_inner(xml, "default")),
+        DefaultsData(),
+    )
 
     # Parse named <default class="..."> sub-blocks
     var named = NamedDefaultsList()
@@ -478,6 +596,37 @@ def _parse_rgba4(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     if len(parts) >= 4:
         a = _parse_float(parts[3])
     return (r, g, b, a)
+
+
+def _orientation_to_quat(
+    quat_s: String,
+    axisangle_s: String,
+    xyaxes_s: String,
+    zaxis_s: String,
+    euler_s: String,
+    deg_factor: Float64,
+    eulerseq: String,
+) -> Tuple[Float64, Float64, Float64, Float64]:
+    """Resolve MJCF's orientation attributes to a quaternion (qx, qy, qz, qw).
+
+    Mirrors `ResolveOrientation` in MuJoCo's `user_objects.cc`: `quat` wins,
+    otherwise at most one "alternative" attribute may be set. Returns identity
+    when none is present.
+
+    Callers pass already-resolved strings so each site can apply its own
+    default-class fallback before calling in.
+    """
+    if quat_s.byte_length() > 0:
+        return _parse_quat(quat_s)
+    if axisangle_s.byte_length() > 0:
+        return _parse_axisangle_to_quat(axisangle_s, deg_factor)
+    if xyaxes_s.byte_length() > 0:
+        return _xyaxes_to_quat(xyaxes_s)
+    if zaxis_s.byte_length() > 0:
+        return _parse_zaxis_to_quat(zaxis_s)
+    if euler_s.byte_length() > 0:
+        return _parse_euler_to_quat(euler_s, deg_factor, eulerseq)
+    return (Float64(0), Float64(0), Float64(0), Float64(1))
 
 
 def _xyaxes_to_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
@@ -744,12 +893,14 @@ def _fill_model[
         NEQ, NEXCLUDE,
     ],
     deg_factor: Float64 = 1.0,
+    eulerseq: String = "xyz",
 ):
     """Single-pass DFS over worldbody XML to populate bodies, joints, geoms,
     lights, cameras, and sites.
 
     deg_factor: 1.0 for radian models, pi/180 for degree models.
-    Applied to joint range values and axisangle rotation angles.
+    Applied to joint range values and axisangle/euler rotation angles.
+    eulerseq: `<compiler eulerseq="...">`, the axis order for `euler=`.
 
     Uses two-pointer scan: tracks `<body` and `</body>` to maintain depth/parent.
     Joints, geoms, lights, cameras, and sites encountered at each depth are
@@ -758,6 +909,11 @@ def _fill_model[
     # body_id_stack[depth] = body index at current depth
     # depth 0 = worldbody level (body_id=0)
     var body_id_stack = InlineArray[Int, NBODY + 1](fill=0)
+    # childclass_stack[depth] = default class inherited by elements at this
+    # depth. MJCF's `childclass` applies to every descendant of the body that
+    # declares it, until a deeper body overrides it; an element's own
+    # `class=` still wins. Empty string = no inherited class.
+    var childclass_stack = InlineArray[String, NBODY + 1](fill=String(""))
     var depth = 0
     var body_count = 0  # bodies[0..NBODY-2] → model body indices 1..NBODY-1
     var joint_count = 0
@@ -807,9 +963,16 @@ def _fill_model[
             # Opening <body ...>
             var tag = _extract_opening_tag(worldbody, next_body_open)
             var parent_id = body_id_stack[depth]
+            var inherited_class = childclass_stack[depth]
             depth += 1
             var this_body_id = body_count + 1  # model body index (worldbody=0)
             body_id_stack[depth] = this_body_id
+            # `childclass` on this body replaces the inherited one for the
+            # whole subtree; otherwise the parent's carries down.
+            var cc_s = _extract_attr(tag, "childclass")
+            childclass_stack[depth] = (
+                cc_s if cc_s.byte_length() > 0 else inherited_class
+            )
 
             if body_count < NBODY - 1:
                 var b = BodyData()
@@ -823,22 +986,20 @@ def _fill_model[
                     b.pos_y = pv[1]
                     b.pos_z = pv[2]
 
-                # quat / axisangle / euler orientation
-                var quat_s = _extract_attr(tag, "quat")
-                if quat_s.byte_length() > 0:
-                    var qv = _parse_quat(quat_s)
-                    b.quat_x = qv[0]
-                    b.quat_y = qv[1]
-                    b.quat_z = qv[2]
-                    b.quat_w = qv[3]
-                else:
-                    var aa_s = _extract_attr(tag, "axisangle")
-                    if aa_s.byte_length() > 0:
-                        var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
-                        b.quat_x = aq[0]
-                        b.quat_y = aq[1]
-                        b.quat_z = aq[2]
-                        b.quat_w = aq[3]
+                # orientation: quat > axisangle > xyaxes > zaxis > euler
+                var bq = _orientation_to_quat(
+                    _extract_attr(tag, "quat"),
+                    _extract_attr(tag, "axisangle"),
+                    _extract_attr(tag, "xyaxes"),
+                    _extract_attr(tag, "zaxis"),
+                    _extract_attr(tag, "euler"),
+                    deg_factor,
+                    eulerseq,
+                )
+                b.quat_x = bq[0]
+                b.quat_y = bq[1]
+                b.quat_z = bq[2]
+                b.quat_w = bq[3]
 
                 # inertial pos/quat (ipos, iquat)
                 var ipos_s = _extract_attr(tag, "ipos")
@@ -897,8 +1058,22 @@ def _fill_model[
                 var jd = JointData()
                 jd.body_id = current_body
 
+                # Effective defaults: the joint's own class="..." wins, else
+                # the enclosing body's childclass, else the top-level block.
+                # (Joints resolved NO class at all before 2026-07-29 — only
+                # geoms did — so a class-defined joint silently became a
+                # default hinge about the x axis.)
+                var joint_class = _extract_attr(tag, "class")
+                if joint_class.byte_length() == 0:
+                    joint_class = childclass_stack[depth]
+                var jdef = defaults
+                if joint_class.byte_length() > 0:
+                    jdef = named_defaults.find(joint_class)
+
                 # type
                 var type_s = _extract_attr(tag, "type")
+                if type_s.byte_length() == 0:
+                    type_s = jdef.joint_type_s
                 var t = _trim(type_s)
                 if t == "hinge" or t == "":
                     jd.jnt_type = JNT_HINGE
@@ -919,6 +1094,8 @@ def _fill_model[
 
                 # pos
                 var pos_s = _extract_attr(tag, "pos")
+                if pos_s.byte_length() == 0:
+                    pos_s = jdef.joint_pos_s
                 if pos_s.byte_length() > 0:
                     var pv = _parse_vec3(pos_s)
                     jd.pos_x = pv[0]
@@ -927,6 +1104,8 @@ def _fill_model[
 
                 # axis (MuJoCo normalizes joint axes during compilation)
                 var axis_s = _extract_attr(tag, "axis")
+                if axis_s.byte_length() == 0:
+                    axis_s = jdef.joint_axis_s
                 if axis_s.byte_length() > 0:
                     var av = _parse_vec3(axis_s)
                     var ax = av[0]
@@ -942,12 +1121,24 @@ def _fill_model[
                     jd.axis_y = ay
                     jd.axis_z = az
 
-                # range (convert deg→rad when deg_factor != 1.0)
+                # range — deg→rad, but ONLY for angular joints. MuJoCo's
+                # mjCJoint::Compile guards the conversion with
+                # `type == mjJNT_HINGE || type == mjJNT_BALL`, because a SLIDE
+                # range is in metres and must pass through untouched. Now that
+                # degree is the default this matters: cartpole's
+                # `<joint type="slide" range="-1.8 1.8">` would otherwise be
+                # scaled to +-0.03 m and pin the cart at the origin.
                 var range_s = _extract_attr(tag, "range")
+                if range_s.byte_length() == 0:
+                    range_s = jdef.joint_range_s
                 if range_s.byte_length() > 0:
+                    var angular = (
+                        jd.jnt_type == JNT_HINGE or jd.jnt_type == JNT_BALL
+                    )
+                    var rf = deg_factor if angular else Float64(1.0)
                     var rv = _parse_vec3(range_s)
-                    jd.range_min = rv[0] * deg_factor
-                    jd.range_max = rv[1] * deg_factor
+                    jd.range_min = rv[0] * rf
+                    jd.range_max = rv[1] * rf
                     jd.is_limited = True
 
                 # limited (explicit override)
@@ -964,28 +1155,28 @@ def _fill_model[
                 if arm_s.byte_length() > 0:
                     jd.armature = _parse_float(arm_s)
                 else:
-                    jd.armature = defaults.joint_armature
+                    jd.armature = jdef.joint_armature
 
                 # damping
                 var damp_s = _extract_attr(tag, "damping")
                 if damp_s.byte_length() > 0:
                     jd.damping = _parse_float(damp_s)
                 else:
-                    jd.damping = defaults.joint_damping
+                    jd.damping = jdef.joint_damping
 
                 # stiffness
                 var stiff_s = _extract_attr(tag, "stiffness")
                 if stiff_s.byte_length() > 0:
                     jd.stiffness = _parse_float(stiff_s)
                 else:
-                    jd.stiffness = defaults.joint_stiffness
+                    jd.stiffness = jdef.joint_stiffness
 
                 # springref
                 var sr_s = _extract_attr(tag, "springref")
                 if sr_s.byte_length() > 0:
                     jd.springref = _parse_float(sr_s)
                 else:
-                    jd.springref = defaults.joint_springref
+                    jd.springref = jdef.joint_springref
 
                 # ref (MuJoCo joint reference position → qpos0)
                 var ref_s = _extract_attr(tag, "ref")
@@ -999,7 +1190,7 @@ def _fill_model[
                 if fl_s.byte_length() > 0:
                     jd.frictionloss = _parse_float(fl_s)
                 else:
-                    jd.frictionloss = defaults.joint_frictionloss
+                    jd.frictionloss = jdef.joint_frictionloss
 
                 # solreflimit (per-joint or default)
                 var srl_s = _extract_attr(tag, "solreflimit")
@@ -1008,8 +1199,8 @@ def _fill_model[
                     jd.solref_limit_0 = sv[0]
                     jd.solref_limit_1 = sv[1]
                 else:
-                    jd.solref_limit_0 = defaults.joint_solref_limit_0
-                    jd.solref_limit_1 = defaults.joint_solref_limit_1
+                    jd.solref_limit_0 = jdef.joint_solref_limit_0
+                    jd.solref_limit_1 = jdef.joint_solref_limit_1
 
                 # solimplimit (per-joint or default)
                 var sil_s = _extract_attr(tag, "solimplimit")
@@ -1028,11 +1219,11 @@ def _fill_model[
                     if len(parts2) >= 5:
                         jd.solimp_limit_4 = _parse_float(parts2[4])
                 else:
-                    jd.solimp_limit_0 = defaults.joint_solimp_limit_0
-                    jd.solimp_limit_1 = defaults.joint_solimp_limit_1
-                    jd.solimp_limit_2 = defaults.joint_solimp_limit_2
-                    jd.solimp_limit_3 = defaults.joint_solimp_limit_3
-                    jd.solimp_limit_4 = defaults.joint_solimp_limit_4
+                    jd.solimp_limit_0 = jdef.joint_solimp_limit_0
+                    jd.solimp_limit_1 = jdef.joint_solimp_limit_1
+                    jd.solimp_limit_2 = jdef.joint_solimp_limit_2
+                    jd.solimp_limit_3 = jdef.joint_solimp_limit_3
+                    jd.solimp_limit_4 = jdef.joint_solimp_limit_4
 
                 result.joints[joint_count] = jd
             joint_count += 1
@@ -1226,14 +1417,19 @@ def _fill_model[
                 var gd = GeomData()
                 gd.body_id = current_body
 
-                # Resolve effective defaults: class="..." overrides top-level
+                # Resolve effective defaults: the geom's own class="..." wins,
+                # else the enclosing body's childclass, else top-level.
                 var geom_class = _extract_attr(tag, "class")
+                if geom_class.byte_length() == 0:
+                    geom_class = childclass_stack[depth]
                 var eff_defaults = defaults
                 if geom_class.byte_length() > 0:
                     eff_defaults = named_defaults.find(geom_class)
 
                 # type
                 var type_s = _extract_attr(tag, "type")
+                if type_s.byte_length() == 0:
+                    type_s = eff_defaults.geom_type_s
                 gd.geom_type = _geom_type_from_str(type_s)
 
                 # mesh reference: mesh="name" → resolve to file path from asset section
@@ -1248,6 +1444,8 @@ def _fill_model[
 
                 # fromto — overrides pos and quat for capsule
                 var fromto_s = _extract_attr(tag, "fromto")
+                if fromto_s.byte_length() == 0:
+                    fromto_s = eff_defaults.geom_fromto_s
                 if fromto_s.byte_length() > 0:
                     var ft = _fromto_to_pos_quat(fromto_s)
                     gd.pos_x = ft[0]
@@ -1262,33 +1460,36 @@ def _fill_model[
                 else:
                     # pos
                     var pos_s = _extract_attr(tag, "pos")
+                    if pos_s.byte_length() == 0:
+                        pos_s = eff_defaults.geom_pos_s
                     if pos_s.byte_length() > 0:
                         var pv = _parse_vec3(pos_s)
                         gd.pos_x = pv[0]
                         gd.pos_y = pv[1]
                         gd.pos_z = pv[2]
 
-                    # orientation: quat or axisangle
+                    # orientation: quat > axisangle > xyaxes > zaxis > euler
                     var quat_s = _extract_attr(tag, "quat")
-                    if quat_s.byte_length() > 0:
-                        var qv = _parse_quat(quat_s)
-                        gd.quat_x = qv[0]
-                        gd.quat_y = qv[1]
-                        gd.quat_z = qv[2]
-                        gd.quat_w = qv[3]
-                    else:
-                        var aa_s = _extract_attr(tag, "axisangle")
-                        if aa_s.byte_length() > 0:
-                            var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
-                            gd.quat_x = aq[0]
-                            gd.quat_y = aq[1]
-                            gd.quat_z = aq[2]
-                            gd.quat_w = aq[3]
-                        else:
-                            gd.quat_w = Float64(1)
+                    if quat_s.byte_length() == 0:
+                        quat_s = eff_defaults.geom_quat_s
+                    var gq = _orientation_to_quat(
+                        quat_s,
+                        _extract_attr(tag, "axisangle"),
+                        _extract_attr(tag, "xyaxes"),
+                        _extract_attr(tag, "zaxis"),
+                        _extract_attr(tag, "euler"),
+                        deg_factor,
+                        eulerseq,
+                    )
+                    gd.quat_x = gq[0]
+                    gd.quat_y = gq[1]
+                    gd.quat_z = gq[2]
+                    gd.quat_w = gq[3]
 
                 # size — interpretation depends on geom_type
                 var size_s = _extract_attr(tag, "size")
+                if size_s.byte_length() == 0:
+                    size_s = eff_defaults.geom_size_s
                 if size_s.byte_length() > 0:
                     var size_parts = List[String]()
 
@@ -1409,6 +1610,8 @@ def _fill_model[
 
                 # mass: explicit if provided, else compute from density * volume
                 var ms_s = _extract_attr(tag, "mass")
+                if ms_s.byte_length() == 0:
+                    ms_s = eff_defaults.geom_mass_s
                 if ms_s.byte_length() > 0:
                     gd.mass = _parse_float(ms_s)
                 else:
@@ -1455,6 +1658,8 @@ def _fill_model[
 
                 # group (visual/collision grouping, 0-5)
                 var grp_s = _extract_attr(tag, "group")
+                if grp_s.byte_length() == 0:
+                    grp_s = eff_defaults.geom_group_s
                 if grp_s.byte_length() > 0:
                     gd.group = _parse_int_str(grp_s)
 
@@ -1531,6 +1736,18 @@ def _fill_actuators[
         var tag = _extract_opening_tag(actuator_sec, earliest)
 
         var ad = ActuatorData()
+
+        # Record WHICH tag this was. Only <motor> (direct force = gear * ctrl)
+        # is implemented; <position>/<velocity>/<general> are position/velocity
+        # servos whose gainprm/biasprm this struct does not carry. Recording the
+        # kind lets `init_fields` reject them instead of silently simulating a
+        # servo as a torque motor. See docs/DM_CONTROL_PORT.md (gap G3).
+        if earliest == np_:
+            ad.kind = ACT_KIND_POSITION
+        elif earliest == nv_:
+            ad.kind = ACT_KIND_VELOCITY
+        elif earliest == ng:
+            ad.kind = ACT_KIND_GENERAL
 
         # gear
         var gear_s = _extract_attr(tag, "gear")
@@ -1871,21 +2088,28 @@ def parse_xml_full[
     result.opt_density = opt[4]
     result.opt_viscosity = opt[5]
 
+    # <flag gravity="disable"/> — zero the gravity vector.
+    if _option_flag_disabled(xml, "gravity"):
+        result.gravity_x = Float64(0)
+        result.gravity_y = Float64(0)
+        result.gravity_z = Float64(0)
+
     # Defaults (applied when specific attrs are absent)
     var defaults_tuple = _parse_defaults(xml)
     var defaults = defaults_tuple[0]
     var named_defaults = defaults_tuple[1]
 
-    # Compiler angle units: detect degree mode and compute conversion factor
-    var deg_factor = Float64(1.0)
+    # Compiler angle units (MuJoCo's MJCF default is degree) and euler order.
+    var deg_factor = _compiler_deg_factor(xml)
+    var eulerseq = String("xyz")
     var compiler_t = xml.find("<compiler")
     if compiler_t != -1:
         var compiler_end = xml.find(">", compiler_t)
         if compiler_end != -1:
             var ctag = String(xml[byte = compiler_t : compiler_end + 1])
-            var angle_val = _extract_attr(ctag, "angle")
-            if _trim(angle_val) == "degree":
-                deg_factor = Float64(3.141592653589793) / Float64(180.0)
+            var seq_val = _trim(_extract_attr(ctag, "eulerseq"))
+            if seq_val.byte_length() == 3:
+                eulerseq = seq_val
 
     # Assets: textures and materials
     _fill_assets[
@@ -1897,7 +2121,20 @@ def parse_xml_full[
     _fill_model[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
         NEQ, NEXCLUDE,
-    ](worldbody, defaults, named_defaults, result, deg_factor)
+    ](worldbody, defaults, named_defaults, result, deg_factor, eulerseq)
+
+    # <flag contact="disable"/> — MuJoCo drops ALL contacts. We have no global
+    # switch, but zeroing every geom's contype/conaffinity is exactly
+    # equivalent: no pair can ever pass the collision mask.
+    #
+    # This is not cosmetic. Several suite models interpenetrate on purpose
+    # because contacts are off — cartpole's cart box (size .2 .15 .1 at z=1)
+    # straddles both rails (y = +-.07 at z=1), so with contacts live the cart
+    # is launched on the first step.
+    if _option_flag_disabled(xml, "contact"):
+        for gi in range(NGEOM):
+            result.geoms[gi].contype = 0
+            result.geoms[gi].conaffinity = 0
 
     # Actuators
     _fill_actuators[

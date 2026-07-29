@@ -44,6 +44,7 @@ from mojo_rl.physics3d.dynamics.invweight import (
 )
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from .fields_build import build_model_fields_from_flat
+from .flat_model import ACT_KIND_MOTOR, act_kind_name
 from .full_parser import parse_xml_full
 from .xml_parser import (
     _xml_nth_motor_gear,
@@ -96,6 +97,7 @@ struct ModelDefFromXML[
     obs_dim_override: Int = -1,
     action_dim_override: Int = -1,
     timestep: Float64 = 0.01,
+    allow_unsupported_actuators: Bool = False,
 ](ModelDefLike):
     """ModelDefLike implementation driven entirely from an embedded MJCF XML string.
 
@@ -134,6 +136,14 @@ struct ModelDefFromXML[
             sin/cos transforms despite nq-skip+nv=6).
         action_dim_override: Override ACTION_DIM (default -1 = use nact).
         timestep:      Simulation timestep (default 0.01).
+        allow_unsupported_actuators: Build the model even when the XML declares
+            <position>/<velocity>/<general> actuators. Those are servos the
+            engine cannot simulate (no gainprm/biasprm — see gap G3 in
+            docs/DM_CONTROL_PORT.md), so `init_fields` rejects them by default.
+            Set True ONLY when the env's CONFIG bypasses `apply_actions`
+            entirely (returns True from `custom_apply_actions_cpu`) and drives
+            those DOFs itself — SawyerReach does exactly this for its two
+            kp=400 gripper servos.
     """
 
     # === Dimensions required by ModelDefLike ===
@@ -346,6 +356,31 @@ struct ModelDefFromXML[
             Self.neq,
             Self.nexclude,
         ](Self.xml)
+
+        # Reject unimplemented actuator transmissions LOUDLY. The parser
+        # recognizes <position>/<velocity>/<general> so the tag count is right,
+        # but ActuatorData carries no gainprm/biasprm — building the model
+        # anyway would simulate a position servo as a torque motor with no
+        # error at all. See docs/DM_CONTROL_PORT.md (gap G3).
+        comptime if not Self.allow_unsupported_actuators:
+            for a in range(Self.nact):
+                var kind = fmd.actuators[a].kind
+                if kind != ACT_KIND_MOTOR:
+                    raise Error(
+                        String(
+                            "physics3d: unimplemented actuator transmission ",
+                            act_kind_name(kind),
+                            " at actuator index ",
+                            a,
+                            ". Only <motor> (force = gear * ctrl) is",
+                            " supported; position/velocity servos need",
+                            " gainprm/biasprm, which the engine does not yet",
+                            " model. If this env's CONFIG drives those DOFs",
+                            " itself (custom_apply_actions_cpu -> True), pass",
+                            " allow_unsupported_actuators=True.",
+                        )
+                    )
+
         comptime ifg_mode = _xml_compiler_inertiafromgeom[Self.xml]()
         comptime igr = _xml_compiler_inertiagrouprange[Self.xml]()
         comptime stm = _xml_compiler_settotalmass[Self.xml]()

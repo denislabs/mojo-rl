@@ -325,6 +325,27 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
 # =============================================================================
 
 
+# Actuator transmission/gain kinds. Only ACT_KIND_MOTOR (direct force =
+# gear * ctrl) is implemented by the engine; the rest are RECOGNIZED by the
+# parser purely so the model build can reject them loudly instead of
+# simulating a servo as a torque motor. See `_fill_actuators`.
+comptime ACT_KIND_MOTOR: Int = 0
+comptime ACT_KIND_POSITION: Int = 1
+comptime ACT_KIND_VELOCITY: Int = 2
+comptime ACT_KIND_GENERAL: Int = 3
+
+
+def act_kind_name(kind: Int) -> String:
+    """Human-readable MJCF tag for an ACT_KIND_* value (error messages)."""
+    if kind == ACT_KIND_POSITION:
+        return "<position>"
+    if kind == ACT_KIND_VELOCITY:
+        return "<velocity>"
+    if kind == ACT_KIND_GENERAL:
+        return "<general>"
+    return "<motor>"
+
+
 struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     """Flat runtime actuator data parsed from <motor/position/velocity> tags."""
 
@@ -333,6 +354,10 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     var ctrl_min: Float64
     var ctrl_max: Float64
     var is_ctrl_limited: Bool
+    # ACT_KIND_*. Anything other than MOTOR is UNIMPLEMENTED: this struct
+    # carries no gainprm/biasprm, so a servo would silently simulate as a
+    # torque motor. `init_fields` raises on a non-MOTOR kind.
+    var kind: Int
 
     def __init__(
         out self,
@@ -341,12 +366,14 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
         ctrl_min: Float64 = -1.0,
         ctrl_max: Float64 = 1.0,
         is_ctrl_limited: Bool = False,
+        kind: Int = ACT_KIND_MOTOR,
     ):
         self.joint_id = joint_id
         self.gear = gear
         self.ctrl_min = ctrl_min
         self.ctrl_max = ctrl_max
         self.is_ctrl_limited = is_ctrl_limited
+        self.kind = kind
 
 
 # =============================================================================
@@ -745,7 +772,25 @@ struct EqualityData(Copyable, ImplicitlyCopyable, Movable):
 
 
 struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
-    """Parsed <default> block — applied when specific attrs are absent."""
+    """Parsed <default> block — applied when specific attrs are absent.
+
+    Two kinds of field live here:
+
+    * Tuning attributes (armature, damping, friction, solref, ...) are parsed
+      into typed values, because the element parsers want them as numbers.
+    * STRUCTURAL attributes (joint type/axis/range, geom type/fromto/size/
+      mass/material/...) are kept as the RAW attribute string, "" meaning
+      "not set by this class". The element parsers substitute the string
+      before their own parsing runs, so unit conversion (deg->rad), `fromto`
+      -> pos/quat decomposition and mesh resolution all keep working
+      untouched, and inheritance from a parent class comes for free via the
+      existing parent-merge in `_parse_one_default_block`.
+
+    Structural inheritance was added 2026-07-29 for the dm_control suite,
+    where a class can supply an element's ENTIRE definition — cartpole's
+    `<geom name="pole_1"/>` gets type/fromto/size/material/mass from
+    `<default class="pole">`. Before that, only tuning attributes inherited.
+    """
 
     var joint_armature: Float64
     var joint_damping: Float64
@@ -782,6 +827,27 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var motor_ctrl_limited: Bool
     var motor_ctrl_min: Float64
     var motor_ctrl_max: Float64
+
+    # Structural attributes, kept as raw strings ("" = not set by this class).
+    # Set by `_parse_one_default_block`, consumed by the joint/geom element
+    # parsers as a fallback when the element itself omits the attribute.
+    var joint_type_s: String
+    var joint_axis_s: String
+    var joint_range_s: String
+    var joint_pos_s: String
+    var geom_type_s: String
+    var geom_fromto_s: String
+    var geom_size_s: String
+    var geom_mass_s: String
+    # NOTE: captured but not yet consumed. Materials are resolved in a second
+    # pass over the worldbody that has no class/childclass context, so a
+    # class-supplied `material` currently does not reach the geom. Cosmetic
+    # only (rgba fallback), no physics effect — wiring it means threading the
+    # childclass stack into that pass.
+    var geom_material_s: String
+    var geom_pos_s: String
+    var geom_quat_s: String
+    var geom_group_s: String
 
     def __init__(
         out self,
@@ -856,6 +922,20 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.motor_ctrl_limited = motor_ctrl_limited
         self.motor_ctrl_min = motor_ctrl_min
         self.motor_ctrl_max = motor_ctrl_max
+        # Structural attrs are never passed positionally — a <default> block
+        # sets them by assignment in `_parse_one_default_block`.
+        self.joint_type_s = ""
+        self.joint_axis_s = ""
+        self.joint_range_s = ""
+        self.joint_pos_s = ""
+        self.geom_type_s = ""
+        self.geom_fromto_s = ""
+        self.geom_size_s = ""
+        self.geom_mass_s = ""
+        self.geom_material_s = ""
+        self.geom_pos_s = ""
+        self.geom_quat_s = ""
+        self.geom_group_s = ""
 
 
 # =============================================================================

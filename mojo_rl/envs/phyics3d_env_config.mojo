@@ -29,6 +29,24 @@ trait Phyics3dEnvConfig:
     # MetaWorld override to "euler".
     comptime INTEGRATOR: StaticString = "rk4"
 
+    # Refresh forward kinematics AFTER the frame-skip loop, so that reward and
+    # observation hooks see xpos/xquat/xipos/site_xpos consistent with the
+    # INTEGRATED qpos.
+    #
+    # Off by default because that matches raw `mj_step`, and therefore
+    # Gymnasium: MuJoCo computes FK in mj_step1 and integrates in mj_step2, so
+    # after `mj_step(n)` the derived fields still describe the state BEFORE the
+    # last substep. Every Gym-derived env here (Ant/Humanoid/Sawyer read xpos,
+    # xipos, cfrc_ext) is calibrated against that convention — flipping this
+    # globally would shift their rewards by one step.
+    #
+    # dm_control does the opposite: `Physics._step_with_up_to_date_position_
+    # velocity` runs mj_step2 then mj_step1 specifically so "(most of) mjData
+    # is in sync with qpos and qvel" when the task reads it. Suite ports must
+    # therefore set this True, or every xmat/site-based observation and reward
+    # is silently one control step stale.
+    comptime SYNC_FK_AFTER_STEP: Bool = False
+
     # === CPU: Pre-step hook — save any per-env state before physics ===
     @staticmethod
     def pre_step_cpu[
@@ -48,7 +66,29 @@ trait Phyics3dEnvConfig:
         metadata region on GPU). Configs use it to store whatever they need
         (e.g., rootx position for velocity computation).
         """
-        ...
+        # Default: memoryless reward — nothing to stash.
+        pass
+
+    # ── Model record lists on the CPU hooks ──────────────────────────────
+    # `compute_reward_and_done_cpu`, `custom_extract_obs_cpu` and
+    # `custom_reset_cpu` receive the four packed model record tensors
+    # (`m_bodies`, `m_joints`, `m_geoms`, `m_sites`) alongside the state.
+    #
+    # They are the host `List`s behind `Model.bodies/joints/geoms/sites`,
+    # borrowed (never copied), indexed with the usual column constants from
+    # `physics3d.gpu.constants`:
+    #
+    #     m_bodies[b * MODEL_BODY_SIZE + BODY_IDX_MASS]
+    #     m_geoms [g * MODEL_GEOM_SIZE + GEOM_IDX_SIZE_0]
+    #
+    # Added 2026-07-29: the hooks previously saw `Data` only, so a reward or
+    # observation could not read a single model constant. That blocked every
+    # mass-weighted sensor (subtreelinvel) and the dm_control tasks that size
+    # their reward from the model (reacher/acrobot/ball_in_cup/point_mass read
+    # geom_size / site_size; the joint randomizer needs joint ranges).
+    #
+    # Passing the record lists rather than `Model` itself keeps the hook
+    # signatures free of Model's six extra compile-time parameters.
 
     # === CPU: Unified reward + termination ===
     @staticmethod
@@ -61,6 +101,10 @@ trait Phyics3dEnvConfig:
         NSITE: Int = 0,
     ](
         d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
         prev_x: Scalar[DTYPE],
         actions: List[Float64],
         step_count: Int,
@@ -92,6 +136,10 @@ trait Phyics3dEnvConfig:
         NSITE: Int = 0,
     ](
         mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
     ):
         """Custom reset logic (e.g., set initial mocap position, pin goal
         joints). The facade runs the fields FK after this hook, so writes to
@@ -109,6 +157,10 @@ trait Phyics3dEnvConfig:
         NSITE: Int = 0,
     ](
         d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """Extract observations from data. Return True if handled, False for default.
@@ -147,7 +199,25 @@ trait Phyics3dEnvConfig:
 
     @staticmethod
     def get_reset_noise() -> Float64:
-        ...
+        # Default: no symmetric qpos/qvel jitter; envs that want it
+        # override, envs that randomize in custom_reset_cpu do not.
+        return 0.0
+
+    # =====================================================================
+    # GPU hooks.
+    #
+    # `pre_step_gpu` and `compute_reward_and_done_gpu` carry INERT DEFAULTS
+    # (no-op / zero reward) rather than being abstract, so CPU-only envs need
+    # not restate ~90 lines of stub each. That matters for the dm_control
+    # suite: its rewards need body quaternions, which the batched hook ABI
+    # does not pass (gap G10 in docs/DM_CONTROL_PORT.md), so all ~36 task
+    # configs are CPU-only by construction.
+    #
+    # ANY env wired to a GPU-batched driver MUST override
+    # `compute_reward_and_done_gpu`. Inheriting the default there gives a
+    # flat-zero reward curve — that is the symptom to look for. All 11
+    # Gym-derived configs override it today.
+    # =====================================================================
 
     # === GPU inline: Pre-step hook (per-field tensors; G5) ===
     @always_inline
@@ -170,7 +240,8 @@ trait Phyics3dEnvConfig:
         Write to meta[env, META_IDX_PREV_X] to persist a value for use in
         compute_reward_and_done_gpu.
         """
-        ...
+        # Default: nothing to stash between steps.
+        pass
 
     # === GPU inline: Unified reward + termination (per-field tensors; G5) ===
     @always_inline
@@ -225,7 +296,8 @@ trait Phyics3dEnvConfig:
         Returns:
             (reward, terminated).
         """
-        ...
+        # Default: NOT IMPLEMENTED — see the section note above.
+        return (Scalar[DTYPE](0), False)
 
     # === GPU: Observation-based termination (for model-based rollouts) ===
     @always_inline

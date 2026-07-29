@@ -105,4 +105,9 @@ comptime SawyerReachModel = ModelDefFromXML[
     action_dim_override=4,  # delta_xyz(3) + gripper(1)
     timestep=pm.TIMESTEP,
     cone_type=ConeType.ELLIPTIC,
+    # The two kp=400 gripper <position> servos are never actuated through
+    # MODEL_DEF.apply_actions: SawyerReachConfig.custom_apply_actions_cpu
+    # returns True and writes the mirrored gripper force into qfrc[7]/qfrc[8]
+    # itself (mocap control drives the arm). Opt out of the servo guard.
+    allow_unsupported_actuators=True,
 ]

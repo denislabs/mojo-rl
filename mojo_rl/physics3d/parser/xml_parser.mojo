@@ -458,12 +458,205 @@ def _sqrt_f64(x: Float64) -> Float64:
     return g
 
 
+comptime _PI_F64: Float64 = 3.14159265358979323846
+comptime _TWO_PI_F64: Float64 = 6.28318530717958647692
+
+
+def _sin_cos_f64(x: Float64) -> Tuple[Float64, Float64]:
+    """Return (sin x, cos x) for x in radians — comptime-safe, no stdlib math.
+
+    Range-reduces to [-pi, pi], evaluates the Taylor series at x/8 (where
+    |x/8| <= pi/8 and the 5/6-term truncation is ~1e-15), then applies the
+    double-angle identities three times to climb back. Reducing by 4 instead
+    of 8 leaves ~4e-11 at cheetah's `euler="0 -218 0"` — visible against
+    MuJoCo's geom_quat.
+
+    The reduction is not cosmetic: an un-reduced series is only accurate near
+    zero, and cheetah's `euler="0 -218 0"` geoms need sin/cos at a half-angle
+    of ~1.9 rad, where the plain 6-term series is off by ~5e-6 — three orders
+    of magnitude above our parity gates.
+
+    The reduction loop is deliberately fixed-trip with no early exit: a
+    data-dependent `while` with a `break` is the shape that blows up Mojo
+    compile times (see `scripts/audit_while_compile_risk.py`). 64 subtractions
+    cover |x| up to ~400 rad, far beyond any angle an MJCF file states.
+    """
+    var r = x
+    for _ in range(64):
+        if r > _PI_F64:
+            r = r - _TWO_PI_F64
+        elif r < -_PI_F64:
+            r = r + _TWO_PI_F64
+
+    var t = r * Float64(0.125)
+    var t2 = t * t
+    # sin(t) = t - t³/6 + t⁵/120 - t⁷/5040 + t⁹/362880
+    var s = (
+        t
+        - t * t2 / Float64(6)
+        + t * t2 * t2 / Float64(120)
+        - t * t2 * t2 * t2 / Float64(5040)
+        + t * t2 * t2 * t2 * t2 / Float64(362880)
+    )
+    # cos(t) = 1 - t²/2 + t⁴/24 - t⁶/720 + t⁸/40320 - t¹⁰/3628800
+    var c = (
+        Float64(1)
+        - t2 / Float64(2)
+        + t2 * t2 / Float64(24)
+        - t2 * t2 * t2 / Float64(720)
+        + t2 * t2 * t2 * t2 / Float64(40320)
+        - t2 * t2 * t2 * t2 * t2 / Float64(3628800)
+    )
+    # (sin t, cos t) -> 2t -> 4t -> 8t = r
+    for _ in range(3):
+        var s2 = Float64(2) * s * c
+        var c2 = Float64(1) - Float64(2) * s * s
+        s = s2
+        c = c2
+    return (s, c)
+
+
+def _quat_mul(
+    aw: Float64,
+    ax: Float64,
+    ay: Float64,
+    az: Float64,
+    bw: Float64,
+    bx: Float64,
+    by: Float64,
+    bz: Float64,
+) -> Tuple[Float64, Float64, Float64, Float64]:
+    """Hamilton product a ⊗ b, both and the result in (w, x, y, z) order.
+
+    Matches MuJoCo's `mjuu_mulquat`; kept in MuJoCo's (w,x,y,z) ordering so the
+    euler accumulation below can be read against `ResolveOrientation` directly.
+    """
+    return (
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    )
+
+
+def _z2quat(
+    vx: Float64, vy: Float64, vz: Float64
+) -> Tuple[Float64, Float64, Float64, Float64]:
+    """Minimal rotation taking +Z to `v` → quaternion (qx, qy, qz, qw).
+
+    Mirrors MuJoCo's `mjuu_z2quat`. Used by both `zaxis="..."` and the capsule
+    `fromto="..."` shorthand, which both mean "point local +Z along this vector".
+    """
+    var norm = _sqrt_f64(vx * vx + vy * vy + vz * vz)
+    if norm < Float64(1e-10):
+        return (Float64(0), Float64(0), Float64(0), Float64(1))
+    var nx = vx / norm
+    var ny = vy / norm
+    var nz = vz / norm
+
+    # Half-angle form of the axis-angle rotation about z × v = (-ny, nx, 0):
+    #   qw = sqrt((1+nz)/2),  (qx, qy) = (-ny, nx) / sqrt(2*(1+nz))
+    if nz > Float64(1) - Float64(1e-12):
+        # Already +Z.
+        return (Float64(0), Float64(0), Float64(0), Float64(1))
+    if nz < Float64(-1) + Float64(1e-12):
+        # Antiparallel: 180° about X (MuJoCo's degenerate-cross fallback).
+        return (Float64(1), Float64(0), Float64(0), Float64(0))
+
+    var denom = _sqrt_f64(Float64(2) * (Float64(1) + nz))
+    var qx = -ny / denom
+    var qy = nx / denom
+    var qz = Float64(0)
+    var qw = _sqrt_f64((Float64(1) + nz) * Float64(0.5))
+    var qlen = _sqrt_f64(qx * qx + qy * qy + qz * qz + qw * qw)
+    if qlen > Float64(1e-10):
+        qx = qx / qlen
+        qy = qy / qlen
+        qw = qw / qlen
+    return (qx, qy, qz, qw)
+
+
+def _euler_to_quat(
+    ex: Float64, ey: Float64, ez: Float64, seq: String = "xyz"
+) -> Tuple[Float64, Float64, Float64, Float64]:
+    """Convert MuJoCo `euler` (radians, in `seq` order) → quaternion (qx,qy,qz,qw).
+
+    Follows `ResolveOrientation` in MuJoCo's `user_objects.cc`: accumulate one
+    elemental rotation per character of the sequence, post-multiplying for
+    lowercase axes (moving/intrinsic) and pre-multiplying for uppercase
+    (fixed/extrinsic). `seq` comes from `<compiler eulerseq="...">`, default
+    "xyz".
+    """
+    var angles = [ex, ey, ez]
+    var qw = Float64(1)
+    var qx = Float64(0)
+    var qy = Float64(0)
+    var qz = Float64(0)
+
+    for i in range(3):
+        var axis = String(seq[byte = i : i + 1]) if seq.byte_length() > i else ""
+        var sc = _sin_cos_f64(angles[i] * Float64(0.5))
+        var sa = sc[0]
+        var rw = sc[1]
+        var rx = Float64(0)
+        var ry = Float64(0)
+        var rz = Float64(0)
+        if axis == "x" or axis == "X":
+            rx = sa
+        elif axis == "y" or axis == "Y":
+            ry = sa
+        elif axis == "z" or axis == "Z":
+            rz = sa
+
+        var out: Tuple[Float64, Float64, Float64, Float64]
+        if axis == "x" or axis == "y" or axis == "z":
+            # Moving axes: post-multiply.
+            out = _quat_mul(qw, qx, qy, qz, rw, rx, ry, rz)
+        else:
+            # Fixed axes: pre-multiply.
+            out = _quat_mul(rw, rx, ry, rz, qw, qx, qy, qz)
+        qw = out[0]
+        qx = out[1]
+        qy = out[2]
+        qz = out[3]
+
+    var qlen = _sqrt_f64(qw * qw + qx * qx + qy * qy + qz * qz)
+    if qlen > Float64(1e-10):
+        qw = qw / qlen
+        qx = qx / qlen
+        qy = qy / qlen
+        qz = qz / qlen
+    return (qx, qy, qz, qw)
+
+
+def _parse_euler_to_quat(
+    s: String,
+    deg_factor: Float64 = 1.0,
+    seq: String = "xyz",
+) -> Tuple[Float64, Float64, Float64, Float64]:
+    """Parse MuJoCo euler="ax ay az" → quaternion (qx,qy,qz,qw).
+
+    deg_factor: pass pi/180 when the model uses angle="degree", else 1.0.
+    """
+    var v = _parse_vec3(s)
+    return _euler_to_quat(
+        v[0] * deg_factor, v[1] * deg_factor, v[2] * deg_factor, seq
+    )
+
+
+def _parse_zaxis_to_quat(
+    s: String,
+) -> Tuple[Float64, Float64, Float64, Float64]:
+    """Parse MuJoCo zaxis="x y z" → quaternion (qx,qy,qz,qw)."""
+    var v = _parse_vec3(s)
+    return _z2quat(v[0], v[1], v[2])
+
+
 def _axisangle_to_quat(
     ax: Float64, ay: Float64, az: Float64, angle: Float64
 ) -> Tuple[Float64, Float64, Float64, Float64]:
     """Convert axis-angle (ax,ay,az,angle_rad) to quaternion (qx,qy,qz,qw).
 
-    Uses Taylor series for sin/cos — comptime-safe without math stdlib.
     Normalises the axis before conversion.
     """
     # Normalise axis
@@ -477,26 +670,9 @@ def _axisangle_to_quat(
         ny = ay / norm
         nz = az / norm
 
-    # sin(angle/2) and cos(angle/2) via Taylor series
-    var a = angle * Float64(0.5)
-    # cos(a) = 1 - a²/2 + a⁴/24 - a⁶/720 + a⁸/40320 - a¹⁰/3628800
-    var a2 = a * a
-    var cos_a = (
-        Float64(1)
-        - a2 / Float64(2)
-        + a2 * a2 / Float64(24)
-        - a2 * a2 * a2 / Float64(720)
-        + a2 * a2 * a2 * a2 / Float64(40320)
-        - a2 * a2 * a2 * a2 * a2 / Float64(3628800)
-    )
-    # sin(a) = a - a³/6 + a⁵/120 - a⁷/5040 + a⁹/362880
-    var sin_a = (
-        a
-        - a * a2 / Float64(6)
-        + a * a2 * a2 / Float64(120)
-        - a * a2 * a2 * a2 / Float64(5040)
-        + a * a2 * a2 * a2 * a2 / Float64(362880)
-    )
+    var sc = _sin_cos_f64(angle * Float64(0.5))
+    var sin_a = sc[0]
+    var cos_a = sc[1]
     return (nx * sin_a, ny * sin_a, nz * sin_a, cos_a)
 
 
@@ -571,10 +747,20 @@ def _fromto_to_pos_quat(
     var my = (y1 + y2) * Float64(0.5)
     var mz = (z1 + z2) * Float64(0.5)
 
-    # Direction vector
-    var dx = x2 - x1
-    var dy = y2 - y1
-    var dz = z2 - z1
+    # Direction vector — FROM minus TO, matching MuJoCo's mjCGeom::Compile
+    # (`vec = {fromto[0]-fromto[3], ...}` then `mjuu_z2quat(quat, vec)`).
+    #
+    # We used `to - from` until 2026-07-29, which points local +Z the other
+    # way. For a capsule or cylinder that is the SAME SOLID — flipping the
+    # long axis end for end changes nothing about the shape, the inertia
+    # tensor or the contact geometry — which is why every FK and inertia gate
+    # passed either way. It shows up only when the geom quaternion itself is
+    # compared, as `tests/dm_control/test_cheetah_vs_dm_control.mojo` does
+    # against `model.geom_quat`. Matching MuJoCo exactly is free here, so do
+    # it rather than leave a sign trap for whoever next reads a geom's frame.
+    var dx = x1 - x2
+    var dy = y1 - y2
+    var dz = z1 - z2
     var length = _sqrt_f64(dx * dx + dy * dy + dz * dz)
     var half_length = length * Float64(0.5)
 
@@ -591,45 +777,11 @@ def _fromto_to_pos_quat(
             Float64(0),
         )
 
-    var ndx = dx / length
-    var ndy = dy / length
-    var ndz = dz / length
+    # Quaternion rotating Z=(0,0,1) onto the capsule direction — the same
+    # "minimal rotation from +Z" MuJoCo applies for `zaxis`.
+    var q = _z2quat(dx, dy, dz)
 
-    # Quaternion to rotate Z=(0,0,1) to direction (ndx,ndy,ndz)
-    # Using half-angle formulas (sqrt only, no trig):
-    #   cos(θ/2) = sqrt((1+ndz)/2),  rotation axis = (-ndy, ndx, 0) / sin(θ)
-    #   qx = -ndy / sqrt(2*(1+ndz)),  qy = ndx / sqrt(2*(1+ndz)),  qz=0, qw=sqrt((1+ndz)/2)
-    var qx: Float64
-    var qy: Float64
-    var qz: Float64
-    var qw: Float64
-
-    if ndz > Float64(0.9999):
-        # Already pointing in +Z direction
-        qx = Float64(0)
-        qy = Float64(0)
-        qz = Float64(0)
-        qw = Float64(1)
-    elif ndz < Float64(-0.9999):
-        # Pointing in -Z direction: 180° rotation around X
-        qx = Float64(1)
-        qy = Float64(0)
-        qz = Float64(0)
-        qw = Float64(0)
-    else:
-        var denom = _sqrt_f64(Float64(2) * (Float64(1) + ndz))
-        qx = -ndy / denom
-        qy = ndx / denom
-        qz = Float64(0)
-        qw = _sqrt_f64((Float64(1) + ndz) * Float64(0.5))
-        # Normalise
-        var qlen = _sqrt_f64(qx * qx + qy * qy + qz * qz + qw * qw)
-        if qlen > Float64(1e-10):
-            qx = qx / qlen
-            qy = qy / qlen
-            qw = qw / qlen
-
-    return (mx, my, mz, qx, qy, qz, qw, half_length, Float64(0))
+    return (mx, my, mz, q[0], q[1], q[2], q[3], half_length, Float64(0))
 
 
 def _find_body_index_by_name(worldbody: String, body_name: String) -> Int:
@@ -703,34 +855,89 @@ def _count_joints_with_type(xml: String, joint_type: String) -> Int:
 # =============================================================================
 
 
-def _xml_compiler_angle_is_deg[xml: String]() -> Bool:
-    """Return True when <compiler angle="degree"/> is present. Comptime-safe."""
+def _compiler_angle_is_deg(xml: String) -> Bool:
+    """Return True when the model's angles are in degrees.
+
+    Value-argument twin of `_xml_compiler_angle_is_deg`; see that docstring
+    for why the default is DEGREE. Both exist because some call sites have the
+    XML as a comptime parameter and some as a value — but the rule must only
+    be written once, which is what let the wrong default sit in four separate
+    inline copies of this check.
+    """
     var t = xml.find("<compiler")
     if t == -1:
-        return False
+        return True
     var tag_end = xml.find(">", t)
     if tag_end == -1:
-        return False
+        return True
     var tag = String(xml[byte = t : tag_end + 1])
-    var angle_val = _extract_attr(tag, "angle")
-    return _trim(angle_val) == "degree"
+    var angle_val = _trim(_extract_attr(tag, "angle"))
+    if angle_val.byte_length() == 0:
+        return True
+    return angle_val == "degree"
+
+
+def _compiler_deg_factor(xml: String) -> Float64:
+    """Radians-per-unit for the model's angle attributes: pi/180 or 1.0."""
+    return Float64(
+        3.141592653589793 / 180.0
+    ) if _compiler_angle_is_deg(xml) else Float64(1.0)
+
+
+def _xml_compiler_angle_is_deg[xml: String]() -> Bool:
+    """Return True when the model's angles are in degrees. Comptime-safe.
+
+    MuJoCo's MJCF default is `angle="degree"` (`user_init.c`:
+    `spec->compiler.degree = 1`; only the URDF loader forces radian), so a
+    missing `<compiler>` element — or one without the attribute — means
+    DEGREE, not radian.
+
+    Fixed 2026-07-29, same shape as the `inertiafromgeom` default bug. It
+    stayed hidden because every Gym-derived env XML in the repo states `angle`
+    explicitly; dm_control's walker/cheetah/hopper omit it and state their
+    joint ranges in degrees, so walker's ankles came out with a +-45 RADIAN
+    range — effectively unlimited.
+    """
+    var t = xml.find("<compiler")
+    if t == -1:
+        return True
+    var tag_end = xml.find(">", t)
+    if tag_end == -1:
+        return True
+    var tag = String(xml[byte = t : tag_end + 1])
+    var angle_val = _trim(_extract_attr(tag, "angle"))
+    if angle_val.byte_length() == 0:
+        return True
+    return angle_val == "degree"
 
 
 def _xml_compiler_inertiafromgeom[xml: String]() -> Int:
-    """Return inertiafromgeom mode. 0=false, 1=true, 2=auto. Comptime-safe."""
+    """Return inertiafromgeom mode. 0=false, 1=true, 2=auto. Comptime-safe.
+
+    MuJoCo's default is "auto" (derive a body's mass/inertia from its geoms
+    UNLESS the body carries an explicit <inertial>), so a missing <compiler>
+    element — or a <compiler> without the attribute — means auto, NOT false.
+
+    Fixed 2026-07-29: both fell through to 0 (=false), which silently gave
+    every body a default inertia. It went unnoticed because all Gym-derived
+    env XMLs state `inertiafromgeom="true"` explicitly; the dm_control suite
+    XMLs state nothing, and pendulum came out with ~1/21 of its true inertia.
+    """
     var t = xml.find("<compiler")
     if t == -1:
-        return 0
+        return 2
     var tag_end = xml.find(">", t)
     if tag_end == -1:
-        return 0
+        return 2
     var tag = String(xml[byte = t : tag_end + 1])
     var val = _trim(_extract_attr(tag, "inertiafromgeom"))
     if val == "true":
         return 1
     elif val == "auto":
         return 2
-    return 0
+    elif val == "false":
+        return 0
+    return 2
 
 
 def _xml_compiler_settotalmass[xml: String]() -> Float64:
@@ -1101,6 +1308,11 @@ def merge_mjcf(*xmls: String) -> String:
     var all_actuator = String("")
     var all_equality = String("")
     var all_visual = String("")
+    # <option> is merged attribute-wise, but MJCF also allows <flag> CHILDREN
+    # inside it. Those were silently dropped before 2026-07-29, which quietly
+    # disabled `<flag contact="disable"/>` for every merged model — cartpole
+    # then launched its cart off the rails it is meant to overlap.
+    var all_option_flags = String("")
 
     for i in range(len(xmls)):
         var stripped = _strip_include_tags(_strip_wrapper(xmls[i]))
@@ -1109,6 +1321,10 @@ def merge_mjcf(*xmls: String) -> String:
         var opt = _extract_singleton_tag(stripped, "option")
         if opt.byte_length() > 0:
             option_tags.append(opt)
+        # Carry any <flag .../> children of this fragment's <option>.
+        all_option_flags = all_option_flags + _extract_section_inner(
+            stripped, "option"
+        )
         var comp = _extract_singleton_tag(stripped, "compiler")
         if comp.byte_length() > 0:
             compiler_tags.append(comp)
@@ -1131,7 +1347,23 @@ def merge_mjcf(*xmls: String) -> String:
 
     var merged_option = _merge_singleton_attrs(option_tags, "option")
     if merged_option.byte_length() > 0:
-        result = result + "  " + merged_option + "\n"
+        if _trim(all_option_flags).byte_length() > 0:
+            # Re-open the self-closing merged tag so the <flag> children fit.
+            var slash = merged_option.rfind("/>")
+            var open_tag = (
+                String(merged_option[byte=0:slash]) + ">" if slash
+                != -1 else merged_option
+            )
+            result = (
+                result
+                + "  "
+                + open_tag
+                + "\n"
+                + all_option_flags
+                + "\n  </option>\n"
+            )
+        else:
+            result = result + "  " + merged_option + "\n"
 
     # Visual
     if _trim(all_visual).byte_length() > 0:
@@ -1235,15 +1467,7 @@ def parse_xml(xml: String) -> ParsedModel:
     var nexclude = _count_tag(contact_sec, "exclude")
 
     # ---- Compiler angle units -----------------------------------------------
-    var angle_deg = False
-    var compiler_t = xml_clean.find("<compiler")
-    if compiler_t != -1:
-        var compiler_end = xml_clean.find(">", compiler_t)
-        if compiler_end != -1:
-            var ctag = String(xml_clean[byte = compiler_t : compiler_end + 1])
-            var angle_val = _extract_attr(ctag, "angle")
-            if _trim(angle_val) == "degree":
-                angle_deg = True
+    var angle_deg = _compiler_angle_is_deg(xml_clean)
 
     # ---- Timestep (<option timestep="..."/>) --------------------------------
     var timestep = Float64(0.002)  # MuJoCo default
@@ -1462,15 +1686,12 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
     var xml_clean = _strip_xml_comments(xml)
 
     # ---- Compiler flags -------------------------------------------------------
-    var angle_deg = False
+    var angle_deg = _compiler_angle_is_deg(xml_clean)
     var compiler_t = xml_clean.find("<compiler")
     if compiler_t != -1:
         var compiler_end = xml_clean.find(">", compiler_t)
         if compiler_end != -1:
             var ctag = String(xml_clean[byte = compiler_t : compiler_end + 1])
-            var angle_val = _extract_attr(ctag, "angle")
-            if _trim(angle_val) == "degree":
-                angle_deg = True
             var ifg = _extract_attr(ctag, "inertiafromgeom")
             if _trim(ifg) == "true":
                 data.inertiafromgeom = True
@@ -1595,18 +1816,28 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
                 data.joint_is_limited[jnt_count] = False
             else:
                 data.joint_is_limited[jnt_count] = def_limited
-            # Range
+            # Range. deg→rad applies to ANGULAR joints only (MuJoCo's
+            # mjCJoint::Compile gates on HINGE/BALL) — a slide range is in
+            # metres. An absent `type` means hinge, MuJoCo's default.
+            #
+            # Note this path reads `type` off the element and does not resolve
+            # default classes, so a class that sets `type="slide"` on an
+            # element that omits it would be misread as angular. No model in
+            # the repo does that; `full_parser` resolves the class properly.
             var range_str = _extract_attr(tag, "range")
             if range_str.byte_length() > 0:
+                var ts = _trim(_extract_attr(tag, "type"))
+                var angular = ts == "" or ts == "hinge" or ts == "ball"
+                var rf = deg_factor if angular else Float64(1.0)
                 var parts = List[String]()
                 _split_spaces(range_str, parts)
                 if len(parts) >= 1:
                     data.joint_range_min[jnt_count] = (
-                        _parse_float(parts[0]) * deg_factor
+                        _parse_float(parts[0]) * rf
                     )
                 if len(parts) >= 2:
                     data.joint_range_max[jnt_count] = (
-                        _parse_float(parts[1]) * deg_factor
+                        _parse_float(parts[1]) * rf
                     )
             # Extract ref value (MuJoCo joint reference → qpos0 for slide/hinge)
             var ref_str = _extract_attr(tag, "ref")
@@ -2386,15 +2617,7 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
     var xml_clean = _strip_xml_comments(xml)
 
     # ---- Compiler angle units ------------------------------------------------
-    var deg_factor = Float64(1.0)
-    var compiler_t = xml_clean.find("<compiler")
-    if compiler_t != -1:
-        var compiler_end = xml_clean.find(">", compiler_t)
-        if compiler_end != -1:
-            var ctag = String(xml_clean[byte = compiler_t : compiler_end + 1])
-            var angle_val = _extract_attr(ctag, "angle")
-            if _trim(angle_val) == "degree":
-                deg_factor = Float64(3.141592653589793) / Float64(180.0)
+    var deg_factor = _compiler_deg_factor(xml_clean)
 
     # ---- Default geom rgba from <default> section ----------------------------
     var def_rgba_r = Float64(-1.0)
@@ -3064,8 +3287,9 @@ def _xml_nth_joint_limited[xml: String, n: Int]() -> Bool:
 def _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
     """Return range_min for the n-th joint in worldbody DFS order (radians).
 
-    Automatically converts from degrees when <compiler angle="degree"/> is set.
-    Returns 0.0 if no range attribute. Comptime-safe.
+    Converts from degrees for ANGULAR joints when the model is in degree mode
+    (MuJoCo's default) — a slide range stays in metres, matching
+    mjCJoint::Compile. Returns 0.0 if no range attribute. Comptime-safe.
     """
     comptime deg_factor = (
         3.141592653589793 / 180.0 if _xml_compiler_angle_is_deg[xml]() else 1.0
@@ -3096,10 +3320,13 @@ def _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
             var range_str = _extract_attr(tag, "range")
             if range_str.byte_length() == 0:
                 return Float64(0.0)
+            var ts = _trim(_extract_attr(tag, "type"))
+            var angular = ts == "" or ts == "hinge" or ts == "ball"
+            var rf = deg_factor if angular else 1.0
             var parts = List[String]()
             _split_spaces(range_str, parts)
             if len(parts) >= 1:
-                return _parse_float(parts[0]) * deg_factor
+                return _parse_float(parts[0]) * rf
             return Float64(0.0)
         count += 1
         scan_pos = t + 6
@@ -3109,8 +3336,9 @@ def _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
 def _xml_nth_joint_range_max[xml: String, n: Int]() -> Float64:
     """Return range_max for the n-th joint in worldbody DFS order (radians).
 
-    Automatically converts from degrees when <compiler angle="degree"/> is set.
-    Returns 0.0 if no range attribute. Comptime-safe.
+    Converts from degrees for ANGULAR joints when the model is in degree mode
+    (MuJoCo's default) — a slide range stays in metres, matching
+    mjCJoint::Compile. Returns 0.0 if no range attribute. Comptime-safe.
     """
     comptime deg_factor = (
         3.141592653589793 / 180.0 if _xml_compiler_angle_is_deg[xml]() else 1.0
@@ -3141,10 +3369,13 @@ def _xml_nth_joint_range_max[xml: String, n: Int]() -> Float64:
             var range_str = _extract_attr(tag, "range")
             if range_str.byte_length() == 0:
                 return Float64(0.0)
+            var ts = _trim(_extract_attr(tag, "type"))
+            var angular = ts == "" or ts == "hinge" or ts == "ball"
+            var rf = deg_factor if angular else 1.0
             var parts = List[String]()
             _split_spaces(range_str, parts)
             if len(parts) >= 2:
-                return _parse_float(parts[1]) * deg_factor
+                return _parse_float(parts[1]) * rf
             return Float64(0.0)
         count += 1
         scan_pos = t + 6
