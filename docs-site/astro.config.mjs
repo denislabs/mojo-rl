@@ -152,6 +152,14 @@ export default defineConfig({
 					],
 				},
 				{
+					label: 'Planners',
+					items: [
+						{ label: 'Overview', slug: 'planners' },
+						{ label: 'Trajectory optimization', slug: 'planners/trajectory' },
+						{ label: 'Tree search', slug: 'planners/tree-search' },
+					],
+				},
+				{
 					label: 'Neural networks',
 					items: [
 						{ label: 'Overview', slug: 'nn' },

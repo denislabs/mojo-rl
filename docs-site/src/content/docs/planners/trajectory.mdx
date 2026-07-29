@@ -1,0 +1,249 @@
+---
+title: Trajectory optimization
+description: Random shooter, CEM, MPPI and iLQR — search over action sequences, in discrete and continuous action spaces, on CPU and GPU.
+sidebar:
+  order: 2
+---
+
+import Maturity from '~/components/Maturity.astro';
+import TrajectoryRefit from '~/components/diagrams/TrajectoryRefit.astro';
+import IlqrSweep from '~/components/diagrams/IlqrSweep.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="beta" note="MPPI is the production path; iLQR has no agent driving it yet." />
+
+A trajectory optimizer answers one question: given a model and a starting state,
+what is the best sequence of actions over the next `H` steps? The first action of
+the winner gets executed, the rest is discarded, and the whole thing runs again
+from the new state. That is model-predictive control, and it is what
+[TD-MPC2](/algorithms/tdmpc2/) does at every environment step.
+
+```mojo
+from mojo_rl.planners.trajectory import (
+    CategoricalRandomShooter, ContinuousRandomShooter,
+    CategoricalCEMOptimizer, ContinuousCEMOptimizer,
+    MPPICPU, MPPIGPUBatched,
+    ILQRCPU, ILQRGPUBatched,
+)
+```
+
+## Three planners, one loop
+
+The sampling-based planners are the same algorithm three times. Each draws
+candidate sequences, scores them through the callback, and refits the sampling
+distribution. They differ **only in the refit rule**:
+
+<TrajectoryRefit />
+
+Read as an escalation:
+
+**The random shooter** never refits. It draws `num_samples` sequences, scores
+them, and returns the best. It exists as a baseline, and it is a sharper
+diagnostic than it looks: if a learned world model cannot beat a random shooter
+on a held-out task, the model is not useful for planning, whatever its
+validation loss says.
+
+**CEM** keeps the top-`k` and fits the next distribution to those alone. The
+categorical version refits a per-timestep action distribution with add-`k`
+Laplace smoothing; the continuous version refits a diagonal Gaussian with a
+floor on the standard deviation, which is what stops the search collapsing to a
+point after a couple of iterations.
+
+**MPPI** softmaxes every sample's score into a weight and fits to the weighted
+set. Nothing is discarded, so a merely-good sequence still moves the mean and no
+single lucky sample can capture the distribution. It is the least brittle of the
+three, and it is the one in production use.
+
+<Papers label="Reference">
+	<Paper
+		title="Model Predictive Path Integral Control"
+		authors="Williams, Aldrich, Theodorou"
+		year="2015"
+		arxiv="1509.01149"
+		note="The path-integral derivation the exponential weighting comes from."
+	/>
+	<Paper
+		title="TD-MPC2: Scalable, Robust World Models for Continuous Control"
+		authors="Hansen, Su, Wang"
+		year="2023"
+		arxiv="2310.16828"
+		note="The MPPI configuration this implementation follows."
+	/>
+</Papers>
+
+## Discrete and continuous
+
+Each sampling planner comes in two flavours, differing in what a "candidate" is:
+
+| | Discrete | Continuous |
+|---|---|---|
+| Shooter | `CategoricalRandomShooter` | `ContinuousRandomShooter` |
+| CEM | `CategoricalCEMOptimizer` | `ContinuousCEMOptimizer` |
+| Distribution | per-step categorical over `ACT_DIM` | per-step diagonal Gaussian |
+| Refit | add-`k` smoothed counts over elites | elite mean and std, std floored |
+
+Both take `[BATCH, ACT_DIM]` as compile-time parameters and everything else at
+construction:
+
+```mojo
+var planner = ContinuousCEMOptimizer[BATCH, ACT_DIM](
+    horizon=5, cem_iters=30, cem_samples=300, cem_topk=30, init_std=1.0,
+)
+var best = planner.optimize(callback, best_plan_out_ptr)
+```
+
+Those are the LeWM PushT settings — 300 candidates, 30 iterations, top-30
+elites.
+
+:::tip[Why `horizon` is a runtime argument and not a compile-time parameter]
+Everything else in the codebase pushes dimensions to compile time. Horizon is
+the deliberate exception: making it `comptime` would cascade the parameter
+through every containing struct and force a rebuild for each horizon in a sweep.
+The host-side optimizer loop is negligible next to the GPU rollout it scores, so
+the lost constant-folding costs nothing measurable.
+:::
+
+## MPPI
+
+The production planner, and the only one with a batched GPU implementation that
+plans for many environments at once.
+
+```mojo
+comptime Planner = MPPIGPUBatched[
+    LATENT_DIM, ACTION_DIM, HORIZON,
+    NUM_SAMPLES, NUM_PI_TRAJS, NUM_ELITES, NUM_ITERATIONS, N_ENVS,
+]
+```
+
+`MPPIGPUBatched` runs one kernel grid per horizon step covering all
+`N_ENVS × NUM_SAMPLES` trajectories, and owns its own scratch — separating
+planner state from agent state was the point of the refactor that produced this
+package.
+
+Three details carry more weight than their parameter names suggest.
+
+**`NUM_PI_TRAJS` seeds the search with the policy.** That many of the sampled
+sequences start from the policy prior's action rather than from the current
+mean. In a high-dimensional continuous action space, purely random sequences
+essentially never find anything good, so without this the search does not get
+off the ground.
+
+**`NUM_ELITES` applies a top-k cut *before* the softmax.** MPPI as described
+above weights everything, but the implementation follows the reference and
+restricts the softmax to the elite set. Omitting that cut lets the worst
+trajectories contribute nonzero weight and biases the refit.
+
+**Action selection is multinomial, not argmax.** After the final iteration the
+executed sequence is drawn from the weighted set, matching the reference's
+`torch.multinomial`. Taking the argmax instead is a defensible choice but it is
+a different algorithm and it collapses exploration.
+
+:::caution[Two implementations means two chances to diverge]
+`MPPICPU` and `MPPIGPUBatched` are separate code, and they have drifted before:
+the CPU path once softmaxed over all samples instead of the elites, and computed
+its terminal value as a min over all critics where the GPU path averaged two.
+Both were eval-only, both were silent, and both produced a planner that was
+subtly more pessimistic than the one used in training.
+
+If you touch one path, check the other against
+`tests/planners/trajectory/test_mppi_lqr.mojo` — a linear-quadratic system whose
+optimal control is known in closed form, which is what makes the divergence
+visible at all.
+:::
+
+## iLQR
+
+The outlier in the package. Everything above is gradient-free — it needs only
+`(z, a) → (z′, r)`. iLQR instead **linearizes the dynamics** around the current
+trajectory and solves the resulting linear-quadratic problem exactly.
+
+<IlqrSweep />
+
+Each iteration runs a backward Riccati sweep to produce a feedforward gain `kₜ`
+and a feedback gain `Kₜ` at every step, then a forward rollout that applies them.
+Because the linearization is only locally valid, two safeguards wrap it:
+Levenberg-Marquardt regularization adds `μI` to `Q_uu` before inversion, and the
+forward pass backtracks on the step size until the cost actually improves. A
+successful iteration decreases `μ`; a failed line search increases it, shrinking
+the step toward plain gradient descent.
+
+<Papers label="Reference">
+	<Paper
+		title="Synthesis and Stabilization of Complex Behaviors through Online Trajectory Optimization"
+		authors="Tassa, Erez, Todorov"
+		year="2012"
+		venue="IROS"
+		url="https://homes.cs.washington.edu/~todorov/papers/TassaIROS12.pdf"
+		note="The Levenberg-Marquardt scheme and line search this follows."
+	/>
+	<Paper
+		title="Iterative Linear Quadratic Regulator Design for Nonlinear Biological Movement Systems"
+		authors="Li, Todorov"
+		year="2004"
+		venue="ICINCO"
+		url="https://homes.cs.washington.edu/~todorov/papers/LiICINCO04.pdf"
+		note="The original iLQR formulation."
+	/>
+</Papers>
+
+:::note[iLQR works in cost space, not reward space]
+Every other planner here maximizes reward. iLQR minimizes cost, and the callback
+returns a quadratic *cost* expansion — `l_z`, `l_u`, `l_zz`, `l_uu`, `l_zu`
+alongside the dynamics Jacobians `∂f/∂z` and `∂f/∂u`. Translating a reward-space
+model into cost space is the adapter's job, not the planner's, and getting the
+sign wrong produces a planner that confidently optimizes for the worst available
+trajectory.
+:::
+
+The derivative surface is why this needs its own callback trait
+(`RolloutJacobianCallback`) rather than extending the gradient-free one. CEM and
+MPPI should not have to implement Jacobian methods they will never call.
+
+**Status.** `ILQRCPU` and `ILQRGPUBatched` are both implemented and tested —
+the CPU path matches an analytic finite-horizon Riccati gain to 1e-6, the GPU
+path to 1e-4 in float32, and a pendulum stabilizer test exercises the line
+search on genuinely nonlinear dynamics. But no agent drives either. The GPU
+Riccati backward pass also runs one block per environment with a single thread
+walking `t = T-1 → 0`, so it parallelizes across problems and not within one.
+
+## Testing a planner
+
+`mojo_rl/planners/testing/` holds world models with known optima, which is what
+makes it possible to test correctness rather than convergence:
+
+| Stub | What it pins down |
+|---|---|
+| `LinearQuadratic1D` | closed-form optimal control — the strongest oracle here |
+| `IdentityDynamics` + `GoalReachReward` | the planner reaches a goal it can trivially reach |
+| `LinearQuadratic1DILQRCallback` | the iLQR derivative surface, against Riccati |
+| `Pendulum2DILQRCallback` | line search and LM on nonlinear dynamics |
+
+```bash
+pixi run mojo run -I . tests/planners/trajectory/test_mppi_lqr.mojo
+pixi run mojo run -I . tests/planners/trajectory/test_cem_goal_reach.mojo
+pixi run mojo run -I . tests/planners/trajectory/test_ilqr_lqr_oracle.mojo
+pixi run -e apple mojo run -I . tests/planners/trajectory/test_mppi_gpu_goal_reach.mojo
+```
+
+## Writing a callback
+
+For CEM and the random shooter, implement `ScorePlanCallback` — one plan in, one
+scalar out, lower is better. If you are scoring many candidates per iteration,
+implement `BatchedScorePlanCallback` as well: it hands you all `K` plans at once
+so you can run a single rollout instead of `K` sequential ones. That change is
+worth far more than it sounds. LeWM's paper-configuration evaluation was
+spending roughly a hundred thousand host syncs per pass before the batched path
+collapsed them to one per iteration.
+
+For MPPI, implement `RolloutCallbackCPU` or `RolloutCallbackGPU` — three
+methods: `policy_action` for the prior-seeded trajectories, `rollout_step` for
+the hot path, and `terminal_value` for the bootstrap at the horizon end. A stub
+with no learned policy can return zeros from `policy_action`; those trajectories
+degenerate to mean-seeded ones, which is harmless.
+
+## Next
+
+- [Tree search](/planners/tree-search/) — the other half of the package
+- [TD-MPC2](/algorithms/tdmpc2/) — MPPI driving a learned latent model
+- [MBPO](/algorithms/mbpo/) — the alternative: train a policy on model data instead of planning

@@ -995,6 +995,12 @@ mobile-starlight-toc a[aria-current='true'] {
 .diagram__key--purple {
 	color: #8b7fe8;
 }
+/* Was missing while `dg-edge--green` / `dg-fill-green` existed, so the MuZero
+   diagram drew green edges under a grey legend swatch — the key fell through to
+   `currentColor`. */
+.diagram__key--green {
+	color: #3ecf8e;
+}
 
 /* Light mode: the dark-theme accents are too light on a pale surface.
    Text fills need no override — see the note above the legend block. */
@@ -1033,6 +1039,44 @@ mobile-starlight-toc a[aria-current='true'] {
 :root[data-theme='light'] .dg-tree-node--root {
 	fill: color-mix(in srgb, #0f6d7d 14%, var(--noeira-surface));
 	stroke: #0f6d7d;
+}
+
+/* Green and purple never got the same treatment as cyan, so both were carrying
+   dark-theme values into light mode. The mint is the worse of the two: #3ecf8e
+   lands near 1.9:1 on the pale surface, under even the 3:1 graphics threshold,
+   which left MuZero's dynamics edges close to invisible. Purple passes as a
+   graphic but not as text, and `.dg-label--purple` is text. */
+:root[data-theme='light'] :is(.dg-edge--green, .dg-label--green, .dg-fill-green) {
+	stroke: #0f7a52;
+	fill: #0f7a52;
+}
+
+:root[data-theme='light'] .dg-edge--green {
+	fill: none;
+}
+
+:root[data-theme='light'] .dg-node--green rect {
+	stroke: #0f7a52;
+}
+
+:root[data-theme='light'] .diagram__key--green {
+	color: #0f7a52;
+}
+
+:root[data-theme='light'] :is(.dg-label--purple, .dg-fill-purple) {
+	fill: #5b4bc4;
+}
+
+:root[data-theme='light'] .dg-edge--purple {
+	stroke: #5b4bc4;
+}
+
+:root[data-theme='light'] .dg-node--purple rect {
+	stroke: #5b4bc4;
+}
+
+:root[data-theme='light'] .diagram__key--purple {
+	color: #5b4bc4;
 }
 
 @media (prefers-reduced-motion: reduce) {

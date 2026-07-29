@@ -1,0 +1,90 @@
+---
+/**
+ * IlqrSweep — one iLQR iteration: a backward Riccati pass that produces gains,
+ * then a forward rollout that applies them under a line search.
+ *
+ * The asymmetry is the thing to carry: the backward pass is exact given the
+ * linearization, and the forward pass is where the nonlinearity bites, which is
+ * why the step size is searched rather than trusted. The Levenberg-Marquardt
+ * term and the backtracking are two halves of the same admission — the
+ * quadratic model is only locally valid.
+ */
+
+const NODES = [110, 250, 390, 530, 670];
+const NODE_Y = 196;
+const R = 26;
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 380" role="img"
+		aria-label="One iLQR iteration: a backward Riccati sweep from the horizon end to the start produces feedforward and feedback gains, then a forward rollout applies them with a backtracking line search on the step size.">
+		<defs>
+			<marker id="il-purple" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-purple" />
+			</marker>
+			<marker id="il-spark" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-spark" />
+			</marker>
+		</defs>
+
+		<text x="20" y="30" class="dg-title dg-title--left">One iteration</text>
+		<text x="20" y="52" class="dg-sub dg-sub--left">
+			The nominal trajectory is linearized once, then improved twice — backward, then forward.
+		</text>
+
+		{/* backward: Riccati, from the horizon end to the start */}
+		<path class="dg-edge dg-edge--purple" marker-end="url(#il-purple)"
+			d={`M ${NODES[4]} 140 L ${NODES[0]} 140`} />
+		<text x="390" y="128" class="dg-label dg-label--purple">
+			backward — Riccati
+		</text>
+		<text x="390" y="108" class="dg-caption">
+			V_z, V_zz  →  gains kₜ, Kₜ,   with μI added to Q_uu before inversion
+		</text>
+
+		{/* the nominal trajectory */}
+		<g class="dg-tree-edge">
+			{NODES.slice(0, 4).map((x, i) => (
+				<path d={`M ${x + R} ${NODE_Y} L ${NODES[i + 1] - R} ${NODE_Y}`} />
+			))}
+		</g>
+		{
+			NODES.map((x, i) => (
+				<g>
+					<circle cx={x} cy={NODE_Y} r={R}
+						class={i === 0 ? 'dg-tree-node dg-tree-node--root' : 'dg-tree-node'} />
+					<text x={x} y={NODE_Y + 6} class="dg-tree-label">
+						{`z${['₀', '₁', '₂', '₃', '₄'][i]}`}
+					</text>
+				</g>
+			))
+		}
+
+		{/* forward: apply the gains under a line search */}
+		<path class="dg-edge dg-edge--spark" marker-end="url(#il-spark)"
+			d={`M ${NODES[0]} 258 L ${NODES[4]} 258`} />
+		<text x="390" y="280" class="dg-label dg-label--spark">
+			forward — rollout
+		</text>
+		{/* Vulgar fractions (½, ¼) render as cramped near-illegible glyphs in the
+		    mono caption face at this size — the same failure mode as combining
+		    diacritics. Plain solidus fractions are unambiguous. */}
+		<text x="390" y="302" class="dg-caption">
+			u ← ū + α·kₜ + Kₜ·δz,   backtracking α ∈ &#123;1, 1/2, 1/4, …&#125;
+		</text>
+
+		<text x="20" y="348" class="dg-sub dg-sub--left">
+			Cost improved: μ decreases, the model is trusted further.
+		</text>
+		<text x="20" y="370" class="dg-sub dg-sub--left">
+			Cost worsened at every α: μ increases, the step shrinks toward gradient descent.
+		</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--purple">backward sweep (exact, given the linearization)</span>
+		<span class="diagram__key diagram__key--spark">forward sweep (searched)</span>
+	</figcaption>
+</figure>
