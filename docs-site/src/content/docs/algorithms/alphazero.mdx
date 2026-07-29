@@ -1,8 +1,6 @@
 ---
 title: AlphaZero
 description: MCTS over a known simulator, guided by a policy-value network trained purely from self-play.
-sidebar:
-  order: 1
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -229,8 +227,12 @@ The KL gap between the search policy and the network prior is the more honest
 signal: it measures how much search is still improving on the network.
 :::
 
-**GPU MCTS explores more sparsely** than a sequential implementation at equal
-simulation count. Roughly double `num_simulations` when comparing.
+**Do not raise `BATCH_SIMS` above 1 under PUCT.** Selecting several leaves per
+round against a frozen tree distorts Connect Four visit-policy targets by up to
+2× per action — and those targets *are* the training signal. It is gated behind
+`UNSAFE_BATCHED=True` for that reason; the Gumbel orchestrators are the safe way
+to batch. See [the batching
+hazard](/planners/tree-search/#the-batching-hazard).
 
 ## Next
 

@@ -1,8 +1,6 @@
 ---
 title: TD-MPC2
 description: A learned latent world model used for planning at decision time with MPPI, rather than for generating data.
-sidebar:
-  order: 2
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -68,11 +66,16 @@ short horizon where the model is accurate; the critic covers everything after.
 That split is the "TD" in the name, and it is why `horizon = 3` is a reasonable
 setting rather than a compromise.
 
-**Refitting is soft, not a hard elite cut.** MPPI weights the sampled sequences
-by `exp(score / temperature)` and fits the next mean and standard deviation to
-that weighted set, so a merely-good sequence still moves the distribution and a
-single lucky sample cannot capture it. Cross-entropy method with a hard top-k
-cut is the more brittle relative.
+**Refitting is weighted, not just filtered.** MPPI takes a hard top-`MPC_ELITES`
+cut like CEM does, and then — unlike CEM — weights the survivors by
+`exp(score / temperature)` rather than averaging them equally. So a clearly
+better sequence pulls the next mean further than a marginal one, instead of both
+counting once. That gradient inside the elite set is the whole difference from
+CEM, and it is what makes the refit harder for a single lucky sample to capture.
+
+The planner itself lives in
+[`mojo_rl.planners`](/planners/trajectory/#mppi) and knows nothing about this
+agent — TD-MPC2 supplies a rollout callback and the planner supplies the search.
 
 The advantage over [MBPO](/algorithms/mbpo/) is that planning can correct model
 error *at decision time*, rather than baking it into a policy through training.

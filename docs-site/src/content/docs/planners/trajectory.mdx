@@ -1,8 +1,6 @@
 ---
 title: Trajectory optimization
 description: Random shooter, CEM, MPPI and iLQR — search over action sequences, in discrete and continuous action spaces, on CPU and GPU.
-sidebar:
-  order: 2
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -50,10 +48,20 @@ Laplace smoothing; the continuous version refits a diagonal Gaussian with a
 floor on the standard deviation, which is what stops the search collapsing to a
 point after a couple of iterations.
 
-**MPPI** softmaxes every sample's score into a weight and fits to the weighted
-set. Nothing is discarded, so a merely-good sequence still moves the mean and no
-single lucky sample can capture the distribution. It is the least brittle of the
-three, and it is the one in production use.
+**MPPI** takes the same top-`k` cut and then weights *within* it, by the softmax
+of each elite's return. So the difference from CEM is narrower than the textbook
+descriptions suggest: both discard the non-elites, but CEM treats its survivors
+as equals while MPPI lets a clearly-better sequence pull the mean further than a
+marginal one. That gradient inside the elite set is what makes it the least
+brittle of the three, and it is the one in production use.
+
+:::note[Textbook MPPI weights every sample; this one does not]
+The path-integral derivation puts a nonzero weight on all `N` samples. Both
+implementations here follow TD-MPC2's reference instead and restrict the softmax
+to the top `NUM_ELITES`, zeroing the rest — without that cut the
+bottom-fraction trajectories contribute enough weight to bias the refit. Worth
+knowing if you are comparing against a paper.
+:::
 
 <Papers label="Reference">
 	<Paper
@@ -129,10 +137,9 @@ mean. In a high-dimensional continuous action space, purely random sequences
 essentially never find anything good, so without this the search does not get
 off the ground.
 
-**`NUM_ELITES` applies a top-k cut *before* the softmax.** MPPI as described
-above weights everything, but the implementation follows the reference and
-restricts the softmax to the elite set. Omitting that cut lets the worst
-trajectories contribute nonzero weight and biases the refit.
+**`NUM_ELITES` is the cut the softmax runs inside**, as described above. Set it
+equal to `NUM_SAMPLES` and you get textbook MPPI; set it to 1 and you get a
+random shooter with extra steps.
 
 **Action selection is multinomial, not argmax.** After the final iteration the
 executed sequence is drawn from the weighted set, matching the reference's
@@ -187,13 +194,16 @@ the step toward plain gradient descent.
 	/>
 </Papers>
 
-:::note[iLQR works in cost space, not reward space]
-Every other planner here maximizes reward. iLQR minimizes cost, and the callback
-returns a quadratic *cost* expansion — `l_z`, `l_u`, `l_zz`, `l_uu`, `l_zu`
-alongside the dynamics Jacobians `∂f/∂z` and `∂f/∂u`. Translating a reward-space
-model into cost space is the adapter's job, not the planner's, and getting the
-sign wrong produces a planner that confidently optimizes for the worst available
-trajectory.
+:::caution[Check the sign convention — it is not uniform across the package]
+MPPI is the odd one out: it maximizes return. Everything else minimizes.
+`ScorePlanCallback` is documented as *lower is better* — CEM keeps the smallest
+scores and the random shooter returns the minimum — and iLQR minimizes cost,
+with the callback returning a quadratic *cost* expansion (`l_z`, `l_u`, `l_zz`,
+`l_uu`, `l_zu`) alongside the dynamics Jacobians `∂f/∂z` and `∂f/∂u`.
+
+Translating a reward-space model into cost space is the adapter's job, not the
+planner's. Get the sign wrong and nothing errors — you get a planner that
+confidently optimizes for the worst available trajectory.
 :::
 
 The derivative surface is why this needs its own callback trait

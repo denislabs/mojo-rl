@@ -1,8 +1,6 @@
 ---
 title: Atari 2600
-description: A complete 6502, TIA and RIOT emulator in Mojo — 100+ ROMs, used as the correctness reference for the native arcade engines.
-sidebar:
-  order: 8
+description: A complete 6502, TIA and RIOT emulator in Mojo — 103 ROMs, used as the correctness reference for the native arcade engines.
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -76,8 +74,9 @@ step, against ~30k emulated instructions per frame — invisible — and it avoi
 compiling one binary per game.
 
 Score, reward and termination are extracted by reading the **known RAM
-addresses** for each title, which is how ALE does it too. Around 100 ROMs are
-supported, verified frame-exact against reference behaviour.
+addresses** for each title, which is how ALE does it too. The registry carries
+**103 games** (`NUM_GAMES` in `mojo_rl/envs/atari/games/registry.mojo`),
+verified frame-exact against reference behaviour.
 
 ## Observation modes
 

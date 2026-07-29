@@ -1,8 +1,6 @@
 ---
 title: Board games
 description: Tic-Tac-Toe, Connect Four, Go and Chess — two-player perfect-information games for the zero-series planners.
-sidebar:
-  order: 9
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -79,14 +77,16 @@ signal; the cause is stale normalization state.
 
 ## GPU MCTS
 
-Tree search runs on-device through `mojo_rl.planners.tree_search`, with
-`GenericGPUMCTS` and `GumbelGPUMCTS` implementations. Search batches across
-simulations rather than running a tree per environment sequentially.
+Tree search runs on-device through
+[`mojo_rl.planners.tree_search`](/planners/tree-search/), with `GenericGPUMCTS`
+and `GumbelGPUMCTS` implementations. Search batches across **games** — one tree
+each, advanced together — rather than running them one after another.
 
-:::tip[Sparse trees need more simulations]
-GPU MCTS explores more sparsely than a sequential CPU implementation at the same
-simulation count. Roughly doubling `num_simulations` restores comparable play
-strength.
+:::tip[Prefer the Gumbel orchestrator for self-play]
+Batching *simulations* within a tree is only safe under sequential halving.
+Under PUCT it distorts the visit-count targets self-play trains on, so
+`GenericGPUMCTS` gates it behind `UNSAFE_BATCHED=True`. `GumbelGPUMCTS` has no
+such restriction, which is why the Connect Four recipe uses it.
 :::
 
 CUDA-graph capture is enabled for the training step but **hard-gated off** for

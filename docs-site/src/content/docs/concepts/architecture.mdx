@@ -1,8 +1,6 @@
 ---
 title: The layered stack
 description: How mojo-rl is organised — five layers from environments to training drivers, every one of them running on CPU or GPU.
-sidebar:
-  order: 1
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -19,7 +17,7 @@ has both a CPU and a GPU path.
 | **RL agents** | 40+ algorithms behind a common interface | `agents/`, `deep_agents/` |
 | **Deep learning** | Module / Param blocks · combinators · optimizers | `nn/` |
 | **Physics** | 2D impulse-based · 3D generalized coordinates | `physics2d/`, `physics3d/` |
-| **Environments & rendering** | 25+ environments · SDL3 2D/3D renderer · video capture | `envs/`, `render/` |
+| **Environments & rendering** | 25+ environments · [SDL3 2D/3D renderer](/rendering/) · video capture | `envs/`, `render/` |
 
 Generic traits let the compiler specialize the whole pipeline for the target
 device, which is why the same source produces both a CPU loop and a fused GPU
@@ -41,7 +39,7 @@ mojo_rl/
 ├── nn/             Deep-learning framework (Module + Param)
 ├── physics3d/      MuJoCo-inspired generalized-coordinates engine
 ├── physics2d/      GPU-batched 2D impulse engine
-├── planners/       Tree search (GPU MCTS for the zero-series)
+├── planners/       Trajectory optimizers (MPPI, CEM, iLQR) + GPU tree search
 ├── math3d/         Vec3, Quat, Mat3, Mat4 (+ GPU variants)
 ├── render/         SDL3 renderers, Metal shaders, video recording
 ├── envs/           25+ environments + Gymnasium wrappers
@@ -85,11 +83,11 @@ model for CarRacing, and LIDAR distance sensing for BipedalWalker.
 
 ## Layer 3 — Deep learning
 
-`mojo_rl.nn` — described in the project's own words as *"something between
-Tinygrad and PyTorch"*. Networks are assembled from small reusable `Module`
+[`mojo_rl.nn`](/nn/) — described in the project's own words as *"something
+between Tinygrad and PyTorch"*. Networks are assembled from small reusable `Module`
 blocks, each `Param` owning its own value and gradient tensors.
 
-- **20+ primitives**: Linear, Conv2D, attention, LSTMCell, NoisyLinear, LayerNorm/RMSNorm
+- **70+ primitives**: Linear, Conv2D, attention, LSTMCell, NoisyLinear, LayerNorm/RMSNorm
 - **Combinators**: Sequential, Residual, Parallel, Repeat
 - **Pre-built models**: ResNet, GPT, ViT, LSTM
 - **Optimizers**: SGD, Adam, AdamW, with grouped multi-tensor apply
@@ -112,6 +110,12 @@ Deep agents follow a **facade pattern**: one package per algorithm, each
 exposing an `XxxAgent` over a trainer plus a shared training driver. Networks
 arrive as compile-time parameters, so `SACAgent` does not know or care what
 architecture it is optimizing.
+
+Tier 5 splits once more. Most agents decide by evaluating a policy network;
+TD-MPC2 and the zero-series decide by running a **search** at every step. That
+search is not part of the agent — it lives in [`mojo_rl.planners`](/planners/),
+written against callback traits, which is why the same MPPI implementation
+drives a learned world model in production and a closed-form oracle in a test.
 
 ## Layer 5 — Training drivers
 

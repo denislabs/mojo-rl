@@ -178,10 +178,9 @@ export default defineConfig({
 						{ label: 'Validation', slug: 'physics/validation' },
 					],
 				},
-				{
-					label: 'Rendering',
-					items: [{ label: 'Rendering', slug: 'rendering' }],
-				},
+				// A bare link, not a group: the group wrapper existed only to hold a
+				// single item with the same label as itself.
+				{ label: 'Rendering', slug: 'rendering' },
 				{
 					label: 'Tooling',
 					items: [

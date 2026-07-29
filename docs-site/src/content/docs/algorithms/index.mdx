@@ -1,8 +1,6 @@
 ---
 title: Algorithms
 description: 40+ RL algorithms organised by family and complexity — from a lookup table to learned world models.
-sidebar:
-  order: 1
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -78,6 +76,12 @@ Monte-Carlo tree search, with self-play as the training signal.
 | [MuZero](/algorithms/muzero/) | a learned latent model |
 | [EfficientZero V2](/algorithms/efficient-zero-v2/) | learned, plus consistency and sampled actions |
 
+These four — the zero-series plus TD-MPC2 — are the agents that *search* rather
+than evaluate a policy. The search itself is factored out into
+[`mojo_rl.planners`](/planners/): MPPI and CEM over action sequences, MCTS over
+a tree. If you are tuning simulation counts, elite fractions or horizons, that
+section is where the behaviour is described.
+
 ## Choosing one
 
 **Discrete actions, want it to work** — [DQN](/algorithms/dqn/), or
@@ -149,4 +153,5 @@ path.
 
 - [Writing your own agent](/algorithms/custom/) — the facade pattern in detail
 - [Environments](/environments/) — what to train on
+- [Planners](/planners/) — the search the model-based agents run at decision time
 - [Traits](/concepts/traits/) — the interfaces involved

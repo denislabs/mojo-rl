@@ -1,8 +1,6 @@
 ---
 title: MuZero
 description: Planning with a learned model — MCTS over latent states, trained end to end from outcomes without ever being told the rules.
-sidebar:
-  order: 5
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -142,13 +140,20 @@ wrong, which makes it a costly mistake to debug.
 
 ## GPU MCTS
 
-Search runs on-device through `mojo_rl.planners.tree_search`, batched across
-simulations rather than running a tree per environment sequentially.
+Search runs on-device through
+[`mojo_rl.planners.tree_search`](/planners/tree-search/), batched across
+**environments** — one tree each, advanced in lockstep. Simulations within a
+tree stay sequential.
 
-:::caution[Batched search explores more sparsely]
-GPU MCTS produces sparser trees than a sequential CPU implementation at the same
-simulation count. Roughly **doubling `NUM_SIMS`** restores comparable strength.
-Compare like for like before concluding the GPU path is worse.
+:::caution[Do not batch simulations under PUCT]
+`GenericGPUMCTS` takes a `BATCH_SIMS` parameter that selects several leaves per
+round. Above 1 it is **biased, not merely approximate** — CartPole root values
+come out 1.2–1.7 too high — and it is gated behind an explicit
+`UNSAFE_BATCHED=True`. The default of 1 is near-exact against the CPU search.
+
+For batched simulations, use the Gumbel orchestrators, which are immune by
+construction. [The batching hazard](/planners/tree-search/#the-batching-hazard)
+has the mechanism.
 :::
 
 CUDA-graph capture is enabled for the training step but **hard-gated off** for

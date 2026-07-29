@@ -1,8 +1,6 @@
 ---
 title: EfficientZero V2
 description: MuZero with self-supervised consistency, value prefix and sampled actions — sample efficiency, and continuous control.
-sidebar:
-  order: 3
 ---
 
 import Maturity from '~/components/Maturity.astro';
@@ -138,8 +136,10 @@ convention, which the plain port converges with.
 distribution silently stalls learning — the same trap as
 [C51](/algorithms/rainbow/) and MuZero.
 
-**GPU MCTS is sparser** than sequential search at equal simulation count.
-Roughly double `NUM_SIMS` before concluding the GPU path is worse.
+**The one MuZero caution that does *not* apply here is the batching hazard.**
+That one is specific to PUCT selection. EZv2 searches with sequential halving,
+which is order-independent, so its GPU orchestrators batch simulations safely by
+construction — see [tree search](/planners/tree-search/#gumbel-search).
 
 **Reanalyze.** Re-running search on stored trajectories with the current network
 refreshes their policy targets and is a large part of the sample-efficiency
@@ -154,7 +154,7 @@ gain.
 | **EfficientZero V2** | learned latent | discrete + continuous | Gumbel, sampled for continuous | consistency, value prefix, sampled actions |
 
 All three share the `zero/` package and the GPU MCTS kernels in
-`mojo_rl.planners.tree_search`.
+[`mojo_rl.planners.tree_search`](/planners/tree-search/).
 
 ## Next
 
