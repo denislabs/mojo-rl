@@ -98,7 +98,25 @@ comptime GOLD_RTOL = 1e-3
 comptime GOLD_NCON_A = 8  # Part A tendon: total contacts over the steps
 comptime GOLD_A = -514929.7781171086  # Part A final qpos/qvel/qacc/contacts checksum
 comptime GOLD_NCON_B = 6  # Part B equality: total contacts over the steps
-comptime GOLD_B = 222.7145065382404  # Part B final qpos/qvel/qacc/contacts checksum
+# Re-harvested 2026-07-29 (was 222.7145065382404).
+#
+# WHY it moved: part B's two links are `fromto` capsules, and commit f0d35e2c
+# changed `fromto` orientation to MuJoCo's convention (`vec = from - to`, then
+# `mjuu_z2quat`). That is the same solid — same shape, same inertia, same
+# contact geometry — but it lands on a different roll about the capsule's own
+# axis, and the capsule axis is the TANGENT-FRAME HINT the ELLIPTIC friction
+# cone builds its basis from. Different (equally valid) tangent basis =>
+# different friction impulses => a different trajectory. `GOLD_NCON_B` is
+# unchanged, confirming the contact SET is identical and only the friction
+# solve moved.
+#
+# What this golden is and is not: it is a REGRESSION PIN frozen from the
+# legacy engine, not a correctness statement. Part B's weld solve has never
+# been gated against MuJoCo, and a direct comparison on this model shows the
+# two disagree substantially (qvel[2] -7.4 vs -0.43 by step 0). Validating the
+# weld path against MuJoCo is separate, unfinished work — do not read a pass
+# here as "welds are correct".
+comptime GOLD_B = 21105.382573808387  # Part B final qpos/qvel/qacc/contacts checksum
 
 # =============================================================================
 # Part A: Humanoid (tendons)
@@ -325,10 +343,19 @@ def _part_a_tendon(ctx: DeviceContext) raises:
 
 # =============================================================================
 # Part B: synthetic weld equality model
+#
+# `<compiler angle="radian"/>` is explicit on purpose. This model is synthetic,
+# and its `range="-170 170"` hinges were written meaning RADIANS — i.e.
+# "effectively unlimited", which is the regime the golden was frozen in. The
+# parser used to DEFAULT to radian (wrongly: MuJoCo's MJCF default is degree,
+# corrected in commit f0d35e2c), so that intent was implicit. Stating it keeps
+# this test testing what it is for — the weld equality rows — rather than
+# silently starting to test joint limits.
 # =============================================================================
 
 comptime weld_xml = """
 <mujoco model="weldtest">
+    <compiler angle="radian"/>
     <option timestep="0.005" iterations="50" solver="PGS"/>
     <worldbody>
         <geom name="floor" type="plane" size="5 5 0.1" pos="0 0 0" condim="3" friction="1 0.1 0.1"/>

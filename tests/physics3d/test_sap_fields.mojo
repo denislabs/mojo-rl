@@ -63,9 +63,21 @@ comptime METADATA_SIZE_L = 4
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
 comptime GOLD_NCON_H = 14  # Part A humanoid SAP: total contacts
-comptime GOLD_CON_H = 7711.957039542147
-comptime GOLD_NCON_S = 6  # Part B sawyer SAP: total contacts
-comptime GOLD_CON_S = 2258.0145981857786
+# Re-harvested 2026-07-29 (was 7711.957039542147). `GOLD_NCON_H` is unchanged,
+# so the contact SET is identical — only the records moved. Cause: commit
+# f0d35e2c switched `fromto` geom orientation to MuJoCo's convention
+# (`vec = from - to` then `mjuu_z2quat`). Humanoid has twelve `fromto`
+# capsules. Same solid, but a different roll about the capsule axis, and that
+# axis is the tangent-frame hint the contact record carries. See the note on
+# `GOLD_B` in test_equality_tendon_fields.mojo for the same effect on a solve.
+comptime GOLD_CON_H = 8120.21960220451
+# Re-harvested 2026-07-29 (was NCON 6 / fingerprint 2258.0145981857786), same
+# cause as the plane-mesh gate: SawyerReach's class-only geoms now inherit
+# `type="mesh"` from their `<default class="base_viz"/base_col">` blocks, as
+# MuJoCo does, instead of falling back to the built-in primitive. More mesh
+# geoms collide, so the count rises.
+comptime GOLD_NCON_S = 11  # Part B sawyer SAP: total contacts
+comptime GOLD_CON_S = 10191.86400251335
 
 # ── Humanoid (Part A) ────────────────────────────────────────────────────
 comptime NQ_H = HumanoidModel.NQ  # 24

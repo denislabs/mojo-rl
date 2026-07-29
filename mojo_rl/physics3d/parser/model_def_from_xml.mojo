@@ -380,6 +380,25 @@ struct ModelDefFromXML[
                             " allow_unsupported_actuators=True.",
                         )
                     )
+                # Same trap one level down: `<motor tendon="t1"/>`,
+                # `site=`, `body=` and `cranksite=` are all valid MJCF
+                # transmissions that carry no `joint` attribute, so the
+                # parser leaves joint_id at its -1 sentinel. Without this
+                # the actuator would be built against a garbage joint index
+                # instead of failing. See docs/DM_CONTROL_PORT.md (gap G3).
+                if fmd.actuators[a].joint_id < 0:
+                    raise Error(
+                        String(
+                            "physics3d: actuator index ",
+                            a,
+                            " has no resolvable `joint` transmission (tendon/",
+                            "site/body/cranksite transmissions are not",
+                            " modelled). Rewrite it as a joint motor if the",
+                            " transmission is equivalent, or pass",
+                            " allow_unsupported_actuators=True if this env's",
+                            " CONFIG drives the DOF itself.",
+                        )
+                    )
 
         comptime ifg_mode = _xml_compiler_inertiafromgeom[Self.xml]()
         comptime igr = _xml_compiler_inertiagrouprange[Self.xml]()

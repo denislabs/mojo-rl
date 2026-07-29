@@ -827,6 +827,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var motor_ctrl_limited: Bool
     var motor_ctrl_min: Float64
     var motor_ctrl_max: Float64
+    var motor_gear: Float64
 
     # Structural attributes, kept as raw strings ("" = not set by this class).
     # Set by `_parse_one_default_block`, consumed by the joint/geom element
@@ -886,6 +887,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         motor_ctrl_limited: Bool = False,
         motor_ctrl_min: Float64 = -1.0,
         motor_ctrl_max: Float64 = 1.0,
+        motor_gear: Float64 = 1.0,
     ):
         self.joint_armature = joint_armature
         self.joint_damping = joint_damping
@@ -922,6 +924,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.motor_ctrl_limited = motor_ctrl_limited
         self.motor_ctrl_min = motor_ctrl_min
         self.motor_ctrl_max = motor_ctrl_max
+        self.motor_gear = motor_gear
         # Structural attrs are never passed positionally — a <default> block
         # sets them by assignment in `_parse_one_default_block`.
         self.joint_type_s = ""

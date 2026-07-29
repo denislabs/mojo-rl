@@ -74,10 +74,22 @@ comptime OBJ_Z_ENV1: Float64 = -0.912  # vertex dist = -0.029
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
-comptime GOLD_NCON_A = 4  # O(N^2) leg
-comptime GOLD_CON_A = 1135.9686783785
-comptime GOLD_NCON_B = 6  # SAP leg
-comptime GOLD_CON_B = 1989.6578279478708
+# Re-harvested 2026-07-29 (was NCON 4 / fingerprint 1135.9686783785).
+#
+# Cause: commit f0d35e2c taught the parser that MJCF default classes supply
+# STRUCTURAL attributes, not just tuning ones. SawyerReach's `base_viz` and
+# `base_col` classes declare `type="mesh"`, and its class-only geoms had been
+# falling back to the built-in default type instead of inheriting it — so they
+# were being collided as the wrong primitive entirely. Now they are meshes, and
+# the O(N^2) leg finds 6 contacts.
+#
+# Both legs moved (the two legs collide different geom subsets, so their counts
+# were never expected to match each other). Regenerated with the HARVEST
+# procedure in the module docstring.
+comptime GOLD_NCON_A = 6  # O(N^2) leg
+comptime GOLD_CON_A = 2291.6087976897834
+comptime GOLD_NCON_B = 8  # SAP leg
+comptime GOLD_CON_B = 3442.650864849915
 
 
 def _qpos_for_env(e: Int) -> List[Float64]:

@@ -352,6 +352,13 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
             d.motor_ctrl_min = cvec[0]
             d.motor_ctrl_max = cvec[1]
 
+        # `gear` was missing here (and in the comptime twin) until 2026-07-29,
+        # so a default-class gear silently actuated at 1.0. dm_control's
+        # point_mass declares `<motor gear=".1"/>` this way — a 10x error.
+        var mg_s = _extract_attr(mtag, "gear")
+        if mg_s.byte_length() > 0:
+            d.motor_gear = _parse_float(mg_s)
+
     return d
 
 
@@ -1749,10 +1756,12 @@ def _fill_actuators[
         elif earliest == ng:
             ad.kind = ACT_KIND_GENERAL
 
-        # gear
+        # gear (element attribute wins, else the <default><motor> class)
         var gear_s = _extract_attr(tag, "gear")
         if gear_s.byte_length() > 0:
             ad.gear = _parse_float(gear_s)
+        else:
+            ad.gear = defaults.motor_gear
 
         # joint name → joint index
         var jname = _extract_attr(tag, "joint")
@@ -2131,10 +2140,25 @@ def parse_xml_full[
     # because contacts are off — cartpole's cart box (size .2 .15 .1 at z=1)
     # straddles both rails (y = +-.07 at z=1), so with contacts live the cart
     # is launched on the first step.
-    if _option_flag_disabled(xml, "contact"):
+    # <flag constraint="disable"/> — MuJoCo's mjDSBL_CONSTRAINT switches the
+    # whole constraint solver off, so contacts, joint/tendon limits, friction
+    # loss and equality constraints all stop generating rows. We reproduce the
+    # two that our engine builds rows for: contacts (via the collision mask,
+    # as above) and joint limits (via the unlimited sentinel).
+    #
+    # acrobot.xml relies on this — its lower arm sweeps a metre BELOW the
+    # floor plane, so with contacts live the swing-up dynamics are wrong.
+    var constraints_off = _option_flag_disabled(xml, "constraint")
+
+    if _option_flag_disabled(xml, "contact") or constraints_off:
         for gi in range(NGEOM):
             result.geoms[gi].contype = 0
             result.geoms[gi].conaffinity = 0
+
+    if constraints_off:
+        for ji in range(NJOINT):
+            result.joints[ji].range_min = Float64(-1e10)
+            result.joints[ji].range_max = Float64(1e10)
 
     # Actuators
     _fill_actuators[

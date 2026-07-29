@@ -46,7 +46,13 @@ comptime GOLD_RTOL = 1e-3
 comptime GOLD_QPOS = 42.2036153235822
 comptime GOLD_QVEL = -12.21184940263629
 comptime GOLD_QACC = -1929.7593653202057
-comptime GOLD_XVEL = 57.93556372821331
+# Re-harvested 2026-07-29. qpos/qvel/qacc are unchanged — the state trajectory
+# is identical — but `xvel` was recomputed when the hinge angular-to-linear
+# coupling bug was fixed (commit f0d35e2c), so the frozen value here described
+# the OLD, wrong xvel. The new one is not taken on trust: walker2d's xvel is
+# gated directly against MuJoCo to 1.2e-10 in
+# `tests/physics3d/test_body_velocities_vs_mujoco.mojo`, on this same model.
+comptime GOLD_XVEL = 16.63215710222721
 comptime GOLD_XANG = -46.879036627709866
 
 

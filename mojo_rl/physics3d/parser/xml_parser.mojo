@@ -1003,6 +1003,35 @@ def _xml_default_motor_ctrlrange[xml: String]() -> Tuple[Float64, Float64]:
     return (-1.0, 1.0)
 
 
+def _xml_default_motor_gear[xml: String]() -> Float64:
+    """Return `gear` from `<default><motor gear="..."/>`, else MuJoCo's 1.0.
+
+    The twin of `_xml_default_motor_ctrlrange`, which existed from the start —
+    `gear` did not, so a model that put its gear in the default class (the
+    dm_control `point_mass` does: `<motor gear=".1" .../>`) silently actuated
+    at gear 1.0, a 10x force error with no diagnostic. Found 2026-07-29.
+
+    Caveat shared with the ctrlrange twin: this reads the FIRST `<motor>`
+    anywhere in the `<default>` section, so a `<motor>` inside a NAMED
+    `<default class="...">` would be applied globally. No ported model does
+    that; fixing it properly needs a comptime-safe `_strip_nested_defaults`.
+    """
+    var def_sec = _extract_section(xml, "default")
+    if def_sec.byte_length() == 0:
+        return Float64(1.0)
+    var t = def_sec.find("<motor")
+    if t == -1:
+        return Float64(1.0)
+    var tag_end = def_sec.find(">", t)
+    if tag_end == -1:
+        return Float64(1.0)
+    var tag = String(def_sec[byte = t : tag_end + 1])
+    var g = _extract_attr(tag, "gear")
+    if g.byte_length() == 0:
+        return Float64(1.0)
+    return _parse_float(g)
+
+
 def _xml_nth_fixed_tag[xml: String, n: Int]() -> String:
     """Return the XML tag string for the Nth <fixed> tendon, or empty if absent."""
     var sec = _extract_section(xml, "tendon")
@@ -1704,9 +1733,10 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
         3.141592653589793 / 180.0
     ) if angle_deg else Float64(1.0)
 
-    # ---- Default motor ctrlrange (used as fallback for per-motor values) ------
+    # ---- Default motor gear / ctrlrange (fallbacks for per-motor values) -----
     var def_ctrl_min = Float64(-1.0)
     var def_ctrl_max = Float64(1.0)
+    var def_gear = Float64(1.0)
     var def_sec_motor = _extract_section(xml_clean, "default")
     if def_sec_motor.byte_length() > 0:
         var mt = def_sec_motor.find("<motor")
@@ -1721,6 +1751,11 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
                     if len(mparts) >= 2:
                         def_ctrl_min = _parse_float(mparts[0])
                         def_ctrl_max = _parse_float(mparts[1])
+                # `gear` was missing here until 2026-07-29 — see
+                # `_xml_default_motor_gear` for what that silently cost.
+                var mg = _extract_attr(mtag, "gear")
+                if mg.byte_length() > 0:
+                    def_gear = _parse_float(mg)
 
     # ---- Motor data -----------------------------------------------------------
     var act_sec = _extract_section(xml_clean, "actuator")
@@ -1748,7 +1783,7 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
             if g.byte_length() > 0:
                 data.motor_gears[act_count] = _parse_float(g)
             else:
-                data.motor_gears[act_count] = Float64(1.0)
+                data.motor_gears[act_count] = def_gear
             var jname = _extract_attr(tag, "joint")
             if jname.byte_length() > 0:
                 data.motor_dof_adr[act_count] = _xml_find_joint_dof_adr(
@@ -3078,8 +3113,10 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
 def _xml_nth_motor_gear[xml: String, n: Int]() -> Float64:
     """Return gear ratio for the n-th <motor> in <actuator> section.
 
-    Returns 1.0 if not found or no gear attribute. Comptime-safe.
+    Falls back to `<default><motor gear="..."/>` and then to MuJoCo's 1.0.
+    Comptime-safe.
     """
+    comptime def_gear = _xml_default_motor_gear[xml]()
     var sec = _extract_section(xml, "actuator")
     var pos = 0
     var count = 0
@@ -3102,15 +3139,15 @@ def _xml_nth_motor_gear[xml: String, n: Int]() -> Float64:
         if count == n:
             var tag_end = sec.find(">", t)
             if tag_end == -1:
-                return Float64(1.0)
+                return def_gear
             var tag = String(sec[byte = t : tag_end + 1])
             var g = _extract_attr(tag, "gear")
             if g.byte_length() == 0:
-                return Float64(1.0)
+                return def_gear
             return _parse_float(g)
         count += 1
         pos = t + 6
-    return Float64(1.0)
+    return def_gear
 
 
 def _xml_nth_motor_dof_adr[xml: String, n: Int]() -> Int:
