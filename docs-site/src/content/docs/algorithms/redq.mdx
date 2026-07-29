@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import Maturity from '~/components/Maturity.astro';
+import CriticEnsemble from '~/components/diagrams/CriticEnsemble.astro';
 import Paper from '~/components/Paper.astro';
 import Papers from '~/components/Papers.astro';
 
@@ -44,10 +45,20 @@ from mojo_rl.deep_agents.redq_ofe import REDQOFEAgent
 the minimum over a **random subset** of size M (typically 2) rather than over all
 of them.
 
+<CriticEnsemble />
+
 The random subset matters. Taking the min over all 10 would be far too
 pessimistic — value estimates would be dragged down and learning would stall.
 Sampling 2 of 10 keeps the pessimism at roughly SAC's level while the ensemble
 still reduces variance.
+
+The paper's framing is worth borrowing, because it turns two vague knobs into
+one quantity you can reason about. `(N, M)` together set the **bias** of the
+target: `M = 1` is an average and overestimates, `M = N` is a full min and is
+crushingly pessimistic, and everything useful lives between. `N` alone controls
+the **variance** of that estimate. So the ensemble is not "more critics for
+robustness" — it decouples two properties that SAC's fixed twin-min welds
+together, and only then is a high update rate survivable.
 
 **A much higher update-to-data ratio.** Around **20** gradient updates per
 collected transition, against 1 for SAC.
@@ -55,6 +66,13 @@ collected transition, against 1 for SAC.
 That is where the sample efficiency comes from: each real transition is exploited
 far more. And it is only viable *because* the ensemble stabilises the value
 estimate — 20 updates per step on a single critic diverges.
+
+The failure it avoids has a name in the literature — the deadly triad of
+bootstrapping, function approximation and off-policy data. Raising the update
+ratio does not add a new failure mode; it multiplies the rate at which the
+existing one compounds. Twenty updates per transition means twenty chances for a
+target built from an overestimate to become the next target, between two pieces
+of ground truth from the environment.
 
 ## The trade
 
@@ -95,6 +113,47 @@ representation network shared across the ensemble, which enlarges the effective
 input representation. A further sample-efficiency gain, and further complexity.
 
 ## Building it
+
+The `REDQ[...]` preset bakes in the paper-faithful ensemble configuration —
+`N = 10`, `M = 2`, `UTD = 20`, `policy_delay = 20` — so only the scalar
+hyperparameters, which are SAC's, remain to be passed:
+
+```mojo
+from mojo_rl.deep_agents.redq import REDQ
+
+var agent = REDQ[
+    "gpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN,
+    USE_TRAIN_CUDA_GRAPH,
+](
+    ctx=ctx,
+    actor_lr=3e-4, critic_lr=3e-4, alpha_lr=3e-4,
+    gamma=0.99, tau=0.005,
+    target_entropy=-Scalar[DT](ACT_DIM),
+    learning_starts=5_000,
+    max_grad_norm=0.0,          # the paper does not clip
+)
+```
+
+To vary the ensemble itself, drop to the underlying `REDQAgent`, which takes
+those four as compile-time parameters:
+
+```mojo
+REDQAgent[train_target, SAMPLE, ACTOR, CRITIC, N, N_MIN, UTD, POLICY_DELAY, Q_MODE]
+```
+
+`Q_MODE` selects how the subset is reduced: `0` is the min described above, `1`
+averages instead — the ablation the paper calls AVG, useful for confirming that
+the pessimism, and not the ensemble, is what is buying you stability.
+
+**`policy_delay = 20` is not a typo.** It matches `UTD`, so the actor still
+updates once per environment step while the critics update twenty times. Without
+it the actor would be re-optimised against a critic that has barely moved,
+twenty times over — the same coupling [TD3](/algorithms/td3/) introduced
+`policy_delay = 2` to break, at a twentyfold larger scale.
+
+REDQ ships single-env training only; `train_single` is the entry point, not
+SAC's batched `train`. That matches the paper's setup, where one environment
+step triggers `UTD` gradient updates.
 
 ```bash
 pixi run -e nvidia mojo run -I . examples/half_cheetah/redq_half_cheetah_training_gpu.mojo

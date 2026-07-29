@@ -739,6 +739,10 @@ mobile-starlight-toc a[aria-current='true'] {
 .dg-edge--purple {
 	stroke: #8b7fe8;
 }
+.dg-edge--green {
+	stroke: #3ecf8e;
+	stroke-width: 2.5;
+}
 .dg-edge--dashed {
 	stroke-dasharray: 6 5;
 }
@@ -874,6 +878,45 @@ mobile-starlight-toc a[aria-current='true'] {
 	text-anchor: middle;
 }
 
+/* --- bars, axes, grouping boxes (CategoricalProjection, CriticEnsemble) --- */
+
+.dg-axis {
+	fill: none;
+	stroke: var(--sl-color-gray-5);
+	stroke-width: 1.5;
+}
+
+/* Atom ticks on the fixed support. Deliberately lighter than the axis: the
+   point of the middle panel is that the bars sit *between* these. */
+.dg-tick {
+	fill: none;
+	stroke: var(--sl-color-gray-5);
+	stroke-width: 1;
+}
+
+/* Outline-only bar — the shifted distribution before projection. */
+.dg-ghost {
+	fill: none;
+	stroke: var(--sl-color-gray-4);
+	stroke-width: 1.5;
+	stroke-dasharray: 4 3;
+}
+
+/* Dashed enclosure grouping several nodes (e.g. the critic ensemble). */
+.dg-group {
+	fill: none;
+	stroke: var(--sl-color-gray-5);
+	stroke-width: 1.5;
+	stroke-dasharray: 6 5;
+}
+
+.dg-caption {
+	fill: var(--sl-color-gray-3);
+	font-family: var(--sl-font-mono);
+	font-size: 12px;
+	text-anchor: middle;
+}
+
 /* --- inline glyphs (AgentEnvLoop) --- */
 
 .dg-icon-bg {
@@ -971,6 +1014,18 @@ mobile-starlight-toc a[aria-current='true'] {
 
 :root[data-theme='light'] .dg-icon-bg--cyan {
 	fill: color-mix(in srgb, #0f6d7d 12%, var(--noeira-surface));
+}
+
+/* Node and tree-node strokes need the same darkening as the edges. Without
+   these, a cyan-bordered box sits at roughly 2:1 against the pale surface while
+   the arrow leaving it is at 7:1 — the box reads as disabled. */
+:root[data-theme='light'] .dg-node--cyan rect {
+	stroke: #0f6d7d;
+}
+
+:root[data-theme='light'] .dg-tree-node--root {
+	fill: color-mix(in srgb, #0f6d7d 14%, var(--noeira-surface));
+	stroke: #0f6d7d;
 }
 
 @media (prefers-reduced-motion: reduce) {

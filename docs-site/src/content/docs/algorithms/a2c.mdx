@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import Maturity from '~/components/Maturity.astro';
+import OnPolicyLoop from '~/components/diagrams/OnPolicyLoop.astro';
 import Paper from '~/components/Paper.astro';
 import Papers from '~/components/Papers.astro';
 
@@ -39,6 +40,26 @@ critic loss = (V(s) − return)²
 
 An actor and a critic; the critic supplies a baseline so the actor is updated by
 the **advantage** rather than the raw return. That is the whole thing.
+
+<OnPolicyLoop
+	rollout="on-policy · used once, discarded"
+	updateLabel="minibatch · 1 pass"
+	formulaTitle="policy gradient"
+	formula="∇_θ J = 𝔼 [ ∇_θ log π(a|s) · Â ],   Â = GAE(λ) from the critic"
+/>
+
+Subtracting the critic's `V(s)` does not change what the gradient converges to —
+any function of the state alone has zero expected effect on the policy
+gradient — it changes the **variance** of the estimate. That is the entire
+justification for having a critic in a policy-gradient method, and it is why the
+critic being merely approximately right is acceptable: a wrong baseline costs
+you variance reduction, not correctness. Contrast [DDPG](/algorithms/ddpg/),
+where the critic *is* the gradient and being wrong points the actor the wrong
+way.
+
+The entropy bonus is the only thing keeping the policy from collapsing early.
+With no clipping and one pass per batch, a confident-and-wrong policy stops
+sampling the actions that would correct it.
 
 ## Its relationship to PPO
 

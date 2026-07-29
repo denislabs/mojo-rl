@@ -9,14 +9,20 @@
 interface Props {
 	formula?: string;
 	formulaTitle?: string;
-	/** Rollout buffer caption. */
+	/**
+	 * Rollout buffer caption. Keep under ~34 characters: SVG text does not wrap,
+	 * and the box is 220 units wide.
+	 */
 	rollout?: string;
+	/** Label on the buffer → actor edge. A2C passes a single-pass variant. */
+	updateLabel?: string;
 }
 
 const {
 	formula,
 	formulaTitle = 'clipped surrogate',
 	rollout = 'on-policy · discarded after K epochs',
+	updateLabel = 'minibatch × K epochs',
 } = Astro.props;
 ---
 
@@ -74,7 +80,7 @@ const {
 		<!-- rollout → actor -->
 		<path class="dg-edge dg-edge--spark" marker-end="url(#pl-spark)"
 			d="M 440 300 L 440 98" />
-		<text x="452" y="205" class="dg-label dg-label--spark">minibatch × K epochs</text>
+		<text x="452" y="205" class="dg-label dg-label--spark">{updateLabel}</text>
 
 		<!-- rollout → critic -->
 		<path class="dg-edge dg-edge--purple" marker-end="url(#pl-purple)"

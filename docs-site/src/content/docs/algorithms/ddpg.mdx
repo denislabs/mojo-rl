@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import Maturity from '~/components/Maturity.astro';
+import OffPolicyLoop from '~/components/diagrams/OffPolicyLoop.astro';
 import Paper from '~/components/Paper.astro';
 import Papers from '~/components/Papers.astro';
 
@@ -20,13 +21,21 @@ from mojo_rl.deep_agents.ddpg import DDPGAgent
 ```
 
 
-<Papers label="Reference">
+<Papers label="Papers">
 	<Paper
 		title="Continuous control with deep reinforcement learning"
 		authors="Lillicrap et al."
 		year="2015"
 		arxiv="1509.02971"
 		venue="ICLR 2016"
+	/>
+	<Paper
+		title="Deterministic Policy Gradient Algorithms"
+		authors="Silver, Lever, Heess, Degris, Wierstra, Riedmiller"
+		year="2014"
+		url="https://proceedings.mlr.press/v32/silver14.html"
+		venue="ICML 2014"
+		note="The theorem DDPG is a deep implementation of."
 	/>
 </Papers>
 
@@ -48,8 +57,43 @@ critic loss = (Q(s,a) − y)²        # y = r + γ·Q′(s′, π′(s′))
 That trick — differentiate through the critic to improve the actor — is what
 every algorithm in this family inherits.
 
+<OffPolicyLoop
+	policy="Actor π"
+	policySub="deterministic policy"
+	target="Q′, π′"
+	targetSub="one critic + Polyak targets"
+	actionLabel="π(s) + 𝒩(0, σ)"
+	targetEdgeLabel="Q′(s′, π′(s′))"
+	capacity="1M transitions"
+	formula="y = r + γ · Q′(s′, π′(s′))"
+/>
+
+### Why the chain rule is the whole algorithm
+
+The deterministic policy gradient theorem says the objective's gradient with
+respect to the actor's parameters factors through the action:
+
+```
+∇_θ J = 𝔼_s [ ∇_a Q(s, a)|_(a = π(s)) · ∇_θ π(s) ]
+```
+
+Read it right to left. The actor produces an action; the critic reports which
+direction in action space increases value; the chain rule carries that direction
+back into the actor's weights. The critic is not just a baseline here, as it is
+in [A2C](/algorithms/a2c/) — it is the *source* of the gradient. If the critic's
+action-space slope is wrong, the actor is not slowed down, it is pointed the
+wrong way.
+
+That distinction explains why this family is so much more sensitive to critic
+quality than policy-gradient methods, and why every successor
+([TD3](/algorithms/td3/), [SAC](/algorithms/sac/), [REDQ](/algorithms/redq/))
+attacks the *critic* rather than the actor.
+
 Exploration is external: Gaussian noise added to the actor's output, since a
-deterministic policy explores nothing on its own.
+deterministic policy explores nothing on its own. The original paper used
+temporally correlated Ornstein-Uhlenbeck noise; uncorrelated Gaussian noise was
+later shown to work as well or better, and is what this implementation uses —
+`noise_scale`, default `0.1`, in units of the action scale.
 
 ## Building it
 
@@ -62,11 +106,25 @@ var agent = DDPGAgent[
     UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
     ActorNet,
     CriticNet,
-](ctx=ctx, actor_lr=1e-4, critic_lr=1e-3, gamma=0.99, tau=0.005)
+](
+    ctx=ctx,
+    actor_lr=1e-4,      # note: lower than the critic's
+    critic_lr=1e-3,
+    gamma=0.99,
+    tau=0.005,
+    noise_scale=0.1,    # exploration σ, in units of action_scale
+)
 ```
 
 The actor is a deterministic network ending in `Tanh` scaled to the action
 range — not a [`StochasticActor`](/algorithms/sac/), which is what SAC uses.
+
+**The asymmetric learning rates are deliberate**, and they are the one place
+DDPG's defaults differ from TD3's and SAC's `3e-4`/`3e-4`. Since the actor's
+gradient is manufactured by the critic, a fast actor chasing a slow critic
+compounds whatever the critic has got wrong. TD3 replaces this soft mitigation
+with an explicit one — updating the actor every other step — and can then afford
+equal rates.
 
 ```bash
 pixi run mojo run -I . examples/pendulum_ddpg.mojo
@@ -85,6 +143,20 @@ The next target is then computed there, reinforcing the error.
 This is not noise that averages out. The `max`-like structure of the update
 **selects** for optimistic error. A run can look healthy for a long time and
 then collapse.
+
+Fujimoto et al. made the mechanism precise. Write the critic's error at the
+actor's action as `ε`, with mean zero. Because the actor is trained to maximise
+`Q`, it is drawn to states and actions where `ε` happens to be *positive* — so
+the expectation of `ε` conditioned on the actor's own choice is not zero:
+
+```
+𝔼[ Q(s, π(s)) ]  >  𝔼[ Q^π(s, π(s)) ]
+```
+
+The bias enters the target, the target trains the critic, the critic re-aims the
+actor. Each of the three fixes in [TD3](/algorithms/td3/) breaks one link of
+that chain: the twin-min attacks the bias itself, the delay slows the loop, and
+target smoothing removes the narrow peaks the actor was exploiting.
 
 [TD3](/algorithms/td3/) fixes this with three targeted changes;
 [SAC](/algorithms/sac/) fixes it differently, with a stochastic policy and an

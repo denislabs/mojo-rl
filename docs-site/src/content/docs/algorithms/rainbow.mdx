@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import Maturity from '~/components/Maturity.astro';
+import CategoricalProjection from '~/components/diagrams/CategoricalProjection.astro';
 import Demo from '~/components/Demo.astro';
 import Paper from '~/components/Paper.astro';
 import Papers from '~/components/Papers.astro';
@@ -62,10 +63,33 @@ distribution by the reward, scale by `γ`, and project it back onto the fixed
 support. The loss is a cross-entropy between the projected target distribution
 and the prediction.
 
+<CategoricalProjection />
+
+The projection step is the part worth slowing down on, because it is where the
+implementations go wrong. `r + γz` is a real number and the support is a fixed
+grid, so the transformed atoms almost never land on it. Each one is placed
+between two neighbours and its mass split between them in proportion to
+closeness — the standard linear-interpolation rule. Do that for all 51 atoms,
+sum the contributions per grid point, and you have the target distribution.
+
+`γ < 1` also *contracts* the support toward zero on every update, which is what
+makes the fixed grid stable rather than a slowly widening mess.
+
+Two consequences follow directly, and both are practical:
+
+- The atoms nearest each other after contraction carry the most mass, so a support much wider than the true return range wastes most of its resolution
+- Anything falling outside `[v_min, v_max]` is clamped onto the end atoms, which is silent and destroys information rather than raising an error
+
 Why it helps, when the greedy policy only uses the mean: the network is forced
 to represent *how* returns vary, not just their average, which is a much richer
 learning signal per transition. It also handles multi-modal returns — "this
 action either wins big or loses" — which a mean squarely cannot express.
+
+Framed as a learning problem, the switch is from regression to classification.
+The head outputs logits over 51 fixed classes and trains under cross-entropy,
+which is far better conditioned than squared error against a moving scalar
+target — the gradient does not scale with the magnitude of the error, so an
+early wildly-wrong value estimate cannot produce a wildly-large update.
 
 :::caution[The support range must match your reward scale]
 This is the highest-value thing on this page.
@@ -133,10 +157,32 @@ from mojo_rl.deep_agents.c51 import C51Agent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
 from mojo_rl.nn.primitives.dueling_head_c51 import DuelingHeadC51
 from mojo_rl.nn.primitives.noisy_linear import NoisyLinear
+
+var agent = C51Agent[
+    "gpu",
+    UniformSampleGpuStep[OBS_DIM, 1, BATCH, REPLAY_CAPACITY],
+    QNet,
+    N_ATOMS=51,
+    NUM_ACTIONS=6,
+    DOUBLE=True,          # the Double-DQN target
+](ctx=ctx, lr=1e-4, gamma=0.99, v_min=-2.0, v_max=2.0)
 ```
 
 The `c51/` package covers both C51 and Rainbow — Rainbow is C51 with the other
-five components enabled, not a separate implementation.
+five components enabled, not a separate implementation. That is more than a
+packaging decision: the six components attach at three different places, and
+knowing which is which is what lets you enable them one at a time.
+
+| Component | Where it is configured |
+|---|---|
+| Distributional | `N_ATOMS`, `v_min`, `v_max` on the agent |
+| Double Q-learning | `DOUBLE=True` on the agent |
+| Prioritized replay, N-step | the `SAMPLE` block |
+| Dueling heads, Noisy nets | the `Q_NET` architecture |
+
+`Q_NET.OUT_DIM` must equal `NUM_ACTIONS · N_ATOMS` — the head emits per-atom
+logits for every action, and a mismatch here is a compile-time error rather than
+a silent one.
 
 ```bash
 pixi run -e nvidia mojo run -I . examples/arcade_games/rainbow_pong_training_gpu.mojo

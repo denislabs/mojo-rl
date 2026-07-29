@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import Maturity from '~/components/Maturity.astro';
+import MppiPlanning from '~/components/diagrams/MppiPlanning.astro';
 import Paper from '~/components/Paper.astro';
 import Papers from '~/components/Papers.astro';
 
@@ -50,9 +51,28 @@ and a planner**, and each action comes from a fresh optimization:
 4. Refit the sampling distribution toward the best (**MPPI**)
 5. Repeat a few iterations, then execute the first action of the winner
 
+<MppiPlanning />
+
 A policy prior guides the sampling so the search stays tractable — without it,
 random sequences in a high-dimensional action space almost never find anything
 good.
+
+Two parts of that loop carry more weight than their line count suggests.
+
+**The terminal value is what makes a 3-step horizon sufficient.** Scoring a
+sequence purely on its predicted rewards would need a horizon long enough to
+reach the consequences of an action — impossible for a learned model, since
+error compounds. Appending `γᴴ Q(z_H)` hands the rest of the future to the value
+function, which is trained by TD learning on real data. Planning covers the
+short horizon where the model is accurate; the critic covers everything after.
+That split is the "TD" in the name, and it is why `horizon = 3` is a reasonable
+setting rather than a compromise.
+
+**Refitting is soft, not a hard elite cut.** MPPI weights the sampled sequences
+by `exp(score / temperature)` and fits the next mean and standard deviation to
+that weighted set, so a merely-good sequence still moves the distribution and a
+single lucky sample cannot capture it. Cross-entropy method with a hard top-k
+cut is the more brittle relative.
 
 The advantage over [MBPO](/algorithms/mbpo/) is that planning can correct model
 error *at decision time*, rather than baking it into a policy through training.
@@ -76,7 +96,49 @@ Latents are normalized with **`SimNorm`** — simplicial normalization, projecti
 the latent onto a set of simplices, which keeps its scale bounded without the
 collapse that plain normalization can cause.
 
+Reward and value are predicted as **discrete distributions over 101 bins** in
+log-transformed space, not as scalars — the same two-hot representation
+[DreamerV3](/algorithms/dreamerv3/) uses, and for the same reason. A regression
+head has to commit to a single number and gets pulled around by reward-scale
+differences between tasks; a classification head over fixed bins does not, which
+is what lets one set of hyperparameters transfer across environments with
+wildly different reward magnitudes.
+
 ## Building it
+
+The `TDMPC2[...]` preset applies the reference-tuned defaults and takes the
+architecture and planning budget as compile-time parameters:
+
+```mojo
+from mojo_rl.deep_agents.tdmpc2.config import TDMPC2
+
+var ag = TDMPC2[
+    "gpu", OBS, ACT, BATCH, REPLAY_CAPACITY,
+    ENC, LATENT, MLP,          # 256, 512, 512
+    BINS, SIMNORM_DIM,         # 101, 8
+    VMIN, VMAX,                # -10, 10
+    HORIZON,                   # 3
+    MPC_SAMPLES, MPC_PI_TRAJS, MPC_ELITES, MPC_ITERS,
+](ctx=ctx, lr=3e-4, learning_starts=5_000)
+```
+
+The last four are the planning budget, and they are the whole inference cost:
+
+| Parameter | Reference | Repo example | Meaning |
+|---|---|---|---|
+| `MPC_SAMPLES` | 512 | 256 | sequences sampled per iteration |
+| `MPC_PI_TRAJS` | 24 | 12 | of those, drawn from the policy prior |
+| `MPC_ELITES` | 64 | 32 | sequences the refit is weighted over |
+| `MPC_ITERS` | 6 | 4 | refit rounds per action |
+
+The example runs at roughly half the reference budget, which is the difference
+between a feasible first run and a very long one.
+
+Acting is gated by a compile-time `USE_MPC` switch. With it off, the agent acts
+as `a = π(encode(obs))` — a single forward pass through the policy prior, no
+planning at all. That is worth knowing for two reasons: it is a legitimate fast
+mode for evaluation, and it is the cleanest way to measure what planning is
+actually buying you on your task.
 
 ```bash
 pixi run -e nvidia mojo run -I . examples/half_cheetah/tdmpc2_half_cheetah_gpu.mojo
@@ -86,6 +148,13 @@ pixi run mojo run -I . examples/half_cheetah/tdmpc2_half_cheetah_eval.mojo
 
 Note the separate eval script — because planning is expensive, evaluation is
 usually a distinct run rather than something folded into training.
+
+:::note[Apple Silicon is slower than CPU here]
+TD-MPC2 is kernel-launch-bound rather than compute-bound: the planner fires many
+small kernels per action. On CUDA the launch overhead is low enough that the GPU
+path wins comfortably; on Metal it is not, and the CPU path is faster. This is
+the one agent in the framework where `-e apple` is not the right default.
+:::
 
 ## Watch out for
 
