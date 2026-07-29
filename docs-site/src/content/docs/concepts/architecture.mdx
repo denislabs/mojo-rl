@@ -4,6 +4,7 @@ description: How mojo-rl is organised — five layers from environments to train
 ---
 
 import Maturity from '~/components/Maturity.astro';
+import LayeredStack from '~/components/diagrams/LayeredStack.astro';
 
 <Maturity level="stable" />
 
@@ -11,13 +12,13 @@ mojo-rl is five layers. Each one is usable on its own — the physics engines
 without the agents, the neural-network framework without the RL — and each one
 has both a CPU and a GPU path.
 
-| Layer | What it does | Package |
-|---|---|---|
-| **Training drivers** | off-/on-policy loops · CPU & GPU · batched environments | `deep_agents/training/` |
-| **RL agents** | 40+ algorithms behind a common interface | `agents/`, `deep_agents/` |
-| **Deep learning** | Module / Param blocks · combinators · optimizers | `nn/` |
-| **Physics** | 2D impulse-based · 3D generalized coordinates | `physics2d/`, `physics3d/` |
-| **Environments & rendering** | 25+ environments · [SDL3 2D/3D renderer](/rendering/) · video capture | `envs/`, `render/` |
+<LayeredStack />
+
+The bottom three layers are ordinary libraries that happen to live in an RL
+repository. [`nn`](/nn/) does not import an agent; `physics3d` does not import a
+network. That is worth knowing before you decide how much of this you are taking
+on: using the physics engine to drive your own controller costs you nothing
+above it.
 
 Generic traits let the compiler specialize the whole pipeline for the target
 device, which is why the same source produces both a CPU loop and a fused GPU

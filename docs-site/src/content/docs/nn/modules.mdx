@@ -4,6 +4,7 @@ description: The Module trait, the four-tensor Param, and how reflection over pa
 ---
 
 import Maturity from '~/components/Maturity.astro';
+import ParamWalk from '~/components/diagrams/ParamWalk.astro';
 
 <Maturity level="stable" />
 
@@ -110,18 +111,12 @@ Declaring the `Param` fields is all the registration there is. The default
 
 ## The parameter walk
 
-Three visitors ride the same traversal:
+<ParamWalk />
 
-| Visitor | Job |
-|---|---|
-| optimizer | read `grd`, update `val`, maintain `m`/`v` |
-| checkpoint | serialize `val` (+ moments) under a dotted name |
-| `named_params` | enumerate for inspection |
-
-Names are **dotted paths** composed from combinator child indices —
-`"0.weight"` is the first child's weight in a `Sequential`. The checkpoint layer
-validates those names against the in-memory walk order on load, which catches
-architecture drift between save and load rather than loading garbage.
+Names are **dotted paths** composed from combinator child indices, so
+`"0.weight"` is the first child's weight in a `Sequential`. Nothing maintains a
+registry: the names exist only as a consequence of the traversal order, which is
+why they cannot drift out of sync with the modules that produced them.
 
 ## Backward-pass invariants
 

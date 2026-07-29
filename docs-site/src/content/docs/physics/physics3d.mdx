@@ -7,6 +7,7 @@ import Maturity from '~/components/Maturity.astro';
 import Paper from '~/components/Paper.astro';
 import Papers from '~/components/Papers.astro';
 import Demo from '~/components/Demo.astro';
+import Physics3dPipeline from '~/components/diagrams/Physics3dPipeline.astro';
 
 <Maturity level="stable" note="Contact-rich models and elliptic friction cones are the least settled areas." />
 
@@ -42,12 +43,7 @@ number.
 
 ## The pipeline
 
-Each step runs:
-
-```
-forward kinematics → collision detection → constraint building
-    → constraint solving → integration
-```
+<Physics3dPipeline />
 
 State lives in `Data` (`qpos`, `qvel`, `xpos`, `xquat`, …); the compile-time
 model description lives in `Model`. Both are in `physics3d/fields/`.

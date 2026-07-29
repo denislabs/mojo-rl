@@ -866,18 +866,6 @@ mobile-starlight-toc a[aria-current='true'] {
 	fill: #3ecf8e;
 }
 
-.dg-sub--left {
-	text-anchor: start;
-}
-
-.dg-title--left {
-	text-anchor: start;
-}
-
-.dg-label--center {
-	text-anchor: middle;
-}
-
 /* --- bars, axes, grouping boxes (CategoricalProjection, CriticEnsemble) --- */
 
 .dg-axis {
@@ -922,6 +910,27 @@ mobile-starlight-toc a[aria-current='true'] {
    correctly, so any label carrying one needs this. */
 .dg-caption--sans {
 	font-family: var(--sl-font);
+}
+
+/* --- text-anchor modifiers ---
+
+   These must come LAST. They are single-class selectors, so they only beat the
+   base classes they modify by source order — and `.dg-caption` sets
+   `text-anchor: middle` itself. While these sat above it, every
+   `class="dg-caption dg-sub--left"` in the tree silently centred instead of
+   left-aligning, which pulled PlannerContract's three column headers half a
+   label-width left of the columns they head. */
+
+.dg-sub--left {
+	text-anchor: start;
+}
+
+.dg-title--left {
+	text-anchor: start;
+}
+
+.dg-label--center {
+	text-anchor: middle;
 }
 
 /* --- inline glyphs (AgentEnvLoop) --- */

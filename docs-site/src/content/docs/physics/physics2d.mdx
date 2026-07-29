@@ -6,6 +6,7 @@ description: GPU-batched impulse physics — contacts, revolute joints, articula
 import Maturity from '~/components/Maturity.astro';
 import Demo from '~/components/Demo.astro';
 import DemoGrid from '~/components/DemoGrid.astro';
+import BatchedStateLayout from '~/components/diagrams/BatchedStateLayout.astro';
 
 <Maturity level="stable" />
 
@@ -24,6 +25,8 @@ which is why it can be fully batched on GPU.
 
 The design decision that shapes everything: state is stored **strided across the
 batch**, as `[BATCH, STATE_SIZE]`.
+
+<BatchedStateLayout />
 
 ```
 mojo_rl/physics2d/

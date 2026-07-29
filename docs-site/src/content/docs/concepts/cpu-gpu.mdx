@@ -4,6 +4,7 @@ description: How the same code targets CPU, CUDA and Metal — batched environme
 ---
 
 import Maturity from '~/components/Maturity.astro';
+import DeviceResidency from '~/components/diagrams/DeviceResidency.astro';
 
 <Maturity level="stable" />
 
@@ -90,9 +91,7 @@ ratio much higher.
 The reason for all of this is that on a GPU run, the entire sequence stays
 resident:
 
-```
-env step → observe → network fwd/bwd → replay sample → target update
-```
+<DeviceResidency />
 
 The physics kernels write observations into device tensors. The replay buffer is
 device memory, sampled by a kernel. The forward and backward passes, the

@@ -4,6 +4,7 @@ description: The interfaces between layers — Env, Agent, Module — and the en
 ---
 
 import Maturity from '~/components/Maturity.astro';
+import EnvTraitGrid from '~/components/diagrams/EnvTraitGrid.astro';
 
 <Maturity level="stable" />
 
@@ -44,32 +45,22 @@ in the trait.
 ## The environment hierarchy
 
 `Env` splits along two independent axes — how states are represented, and how
-actions are — which then recombine:
+actions are. Two binary axes give four combinations, and three of them are
+named traits:
 
-```
-                  Env
-        ┌──────────┴──────────┐
-   state axis            action axis
-        │                     │
-DiscreteStateEnv        DiscreteActionEnv
-ContinuousStateEnv      ContinuousActionEnv
-        └──────────┬──────────┘
-                   │
-    DiscreteEnv              (discrete states + discrete actions)
-    BoxDiscreteActionEnv     (continuous obs + discrete actions)
-    BoxContinuousActionEnv   (continuous obs + continuous actions)
-```
-
-| Trait | Use with | Examples |
-|---|---|---|
-| `DiscreteEnv` | Tabular methods (Q-Learning, SARSA, Monte Carlo) | GridWorld, FrozenLake, Taxi |
-| `BoxDiscreteActionEnv` | Tile coding, DQN, PPO-discrete, REINFORCE | CartPole, MountainCar, LunarLander |
-| `BoxContinuousActionEnv` | DDPG, TD3, SAC, PPO | Pendulum, HalfCheetah, Humanoid |
-| `TerminationAwareEnv` | Continuous tasks needing the terminated/truncated split | MuJoCo-style locomotion |
+<EnvTraitGrid />
 
 The combination you implement determines which algorithms will accept your
 environment — the compiler enforces it. A tabular agent simply will not
 instantiate against an environment that cannot produce a state index.
+
+The empty cell is not an oversight. A discrete state space with continuous
+actions would mean a finite set of situations each admitting a continuum of
+responses, which none of the environments here need, so no trait exists for it.
+
+One more trait sits across the grid rather than inside it:
+`TerminationAwareEnv`, for continuous tasks that need the terminated/truncated
+split described above. The MuJoCo-style locomotion environments implement it.
 
 What each axis requires:
 

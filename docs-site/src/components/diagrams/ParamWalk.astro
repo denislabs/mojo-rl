@@ -1,0 +1,141 @@
+---
+/**
+ * ParamWalk — a Param's four tensors, and the single traversal three consumers
+ * ride.
+ *
+ * The page splits these into two tables that never meet, which hides the thing
+ * that makes the design work: because the moment state lives *on* the parameter
+ * rather than in a side table inside the optimizer, the checkpoint walk and the
+ * optimizer walk are the same walk. That is why exact training resume is free
+ * rather than a feature someone had to build.
+ *
+ * Drawn as two bands: what a Param holds, then who reads it.
+ */
+
+/** Two of the four tensors are allocated lazily — drawn as ghosts. */
+const SLOTS = [
+	{ name: 'val', what: 'the weights', lazy: false },
+	{ name: 'grd', what: 'the gradient', lazy: false },
+	{ name: 'm', what: "Adam's 1st moment", lazy: true },
+	{ name: 'v', what: "Adam's 2nd moment", lazy: true },
+];
+const SLOT_W = 186;
+const SLOT_X = (i: number) => 40 + i * (SLOT_W + 18);
+
+/** The dotted names a two-child Sequential produces, in walk order. */
+const NAMES = ['0.weight', '0.bias', '1.weight', '1.bias'];
+const NAME_Y = (i: number) => 286 + i * 30;
+
+const VISITORS = [
+	{ name: 'optimizer', what: 'read grd, update val, keep m and v', tone: 'spark' },
+	{ name: 'checkpoint', what: 'serialize val and moments, by name', tone: 'cyan' },
+	{ name: 'named_params', what: 'enumerate for inspection', tone: 'purple' },
+];
+const VIS_X = 540;
+const VIS_W = 300;
+const VIS_Y = (i: number) => 262 + i * 64;
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 520" role="img"
+		aria-label="A Param owns four tensors: val and grd always allocated, and Adam's first and second moment tensors allocated lazily. Below, a module tree produces dotted parameter names in walk order, and three consumers — the optimizer, the checkpoint layer, and named_params — all ride that same single traversal.">
+		<defs>
+			<marker id="pw-muted" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-muted" />
+			</marker>
+		</defs>
+
+		<text x="20" y="30" class="dg-title dg-title--left">Param — four tensors, two of them lazy</text>
+
+		{
+			SLOTS.map((slot, i) => (
+				<g>
+					{slot.lazy ? (
+						<rect x={SLOT_X(i)} y="54" width={SLOT_W} height="66" rx="8" class="dg-ghost" />
+					) : (
+						<g class="dg-node dg-node--cyan">
+							<rect x={SLOT_X(i)} y="54" width={SLOT_W} height="66" rx="8" />
+						</g>
+					)}
+					<text x={SLOT_X(i) + SLOT_W / 2} y="82"
+						class={slot.lazy ? 'dg-label dg-label--muted dg-label--center' : 'dg-label dg-label--cyan dg-label--center'}>
+						{slot.name}
+					</text>
+					<text x={SLOT_X(i) + SLOT_W / 2} y="106" class="dg-sub">{slot.what}</text>
+				</g>
+			))
+		}
+
+		<text x="20" y="146" class="dg-sub dg-sub--left">
+			SGD never calls ensure on the moments, so it never allocates them.
+		</text>
+
+		<text x="20" y="196" class="dg-title dg-title--left">One traversal, three consumers</text>
+		{/* Not a restatement of the sentence directly above the diagram on the page —
+		    that one already says for_each_param does the walking. */}
+		<text x="20" y="218" class="dg-sub dg-sub--left">
+			The optimizer holds no parameter table of its own. It rides the module tree.
+		</text>
+
+		{/* the module tree */}
+		<g class="dg-node dg-node--spark">
+			<rect x="40" y="252" width="170" height="40" rx="8" />
+		</g>
+		<text x="125" y="277" class="dg-sub">Sequential</text>
+		<g class="dg-node dg-node--spark">
+			<rect x="40" y="318" width="170" height="36" rx="8" />
+		</g>
+		<text x="125" y="341" class="dg-sub">child 0 · Linear</text>
+		<g class="dg-node dg-node--spark">
+			<rect x="40" y="368" width="170" height="36" rx="8" />
+		</g>
+		<text x="125" y="391" class="dg-sub">child 1 · Linear</text>
+		<g class="dg-tree-edge">
+			<path d="M 125 292 L 125 318" />
+			<path d="M 125 354 L 125 368" />
+		</g>
+
+		{/* the ordered names */}
+		<path class="dg-edge dg-edge--muted" marker-end="url(#pw-muted)"
+			d="M 268 268 L 268 400" />
+		<text x="284" y="262" class="dg-caption dg-sub--left">walk order</text>
+		{
+			NAMES.map((name, i) => (
+				<text x="290" y={NAME_Y(i)} class="dg-mono">{name}</text>
+			))
+		}
+
+		{/* the three visitors, all fed from the same list */}
+		{
+			VISITORS.map((v, i) => (
+				<g>
+					<g class={`dg-node dg-node--${v.tone}`}>
+						<rect x={VIS_X} y={VIS_Y(i)} width={VIS_W} height={52} rx="8" />
+					</g>
+					<text x={VIS_X + 18} y={VIS_Y(i) + 24} class={`dg-label dg-label--${v.tone}`}>
+						{v.name}
+					</text>
+					<text x={VIS_X + 18} y={VIS_Y(i) + 42} class="dg-sub dg-sub--left">
+						{v.what}
+					</text>
+					<path class="dg-edge dg-edge--muted"
+						d={`M 372 334 L 480 334 L 480 ${VIS_Y(i) + 26} L ${VIS_X - 4} ${VIS_Y(i) + 26}`}
+						marker-end="url(#pw-muted)" />
+				</g>
+			))
+		}
+
+		<text x="20" y="470" class="dg-sub dg-sub--left">
+			On load the checkpoint validates these names against the in-memory walk order, so
+		</text>
+		<text x="20" y="492" class="dg-sub dg-sub--left">
+			architecture drift between save and load fails loudly instead of loading garbage.
+		</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--cyan">always allocated</span>
+		<span class="diagram__key diagram__key--muted">lazy — allocated on first stateful visit</span>
+	</figcaption>
+</figure>

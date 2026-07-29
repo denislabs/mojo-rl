@@ -1,0 +1,121 @@
+---
+/**
+ * BatchedStateLayout — the [BATCH, STATE_SIZE] slab physics2d is built around.
+ *
+ * The page calls this "the design decision that shapes everything" and then
+ * describes it in prose only, which is the one shape prose is worst at. A
+ * memory layout wants to be drawn.
+ *
+ * What the drawing has to carry: a row is one environment's *entire* state —
+ * bodies, contacts and joints contiguous, not three separate arrays — and every
+ * offset into it is a compile-time constant, so a kernel indexes straight in
+ * with no pointer to chase.
+ *
+ * The highlighted row is annotated in the prose block rather than with a
+ * bracket of its own: a bracket over a middle row lands on the row above it,
+ * and moving the highlight to an edge row makes it read as a special case.
+ */
+
+const ROWS = ['env 0', 'env 1', 'env 2', '⋮', 'env N−1'];
+const ROW_H = 30;
+const ROW_GAP = 4;
+const ROW_Y = (i: number) => 108 + i * (ROW_H + ROW_GAP);
+
+const GRID_X = 150;
+const COLS = 10;
+const COL_W = 69;
+const COL_X = (i: number) => GRID_X + i * COL_W;
+const GRID_MID = GRID_X + (COLS * COL_W) / 2;
+
+/** Field groups, as [firstCol, colCount, label]. */
+const GROUPS = [
+	{ from: 0, span: 5, label: 'bodies' },
+	{ from: 5, span: 3, label: 'contacts' },
+	{ from: 8, span: 2, label: 'joints' },
+];
+
+/** The row drawn as "one environment" — index into ROWS. */
+const HIGHLIGHT = 1;
+const GRID_BOT = ROW_Y(ROWS.length - 1) + ROW_H;
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 400" role="img"
+		aria-label="Physics2d state is stored as a strided slab of shape batch by state size. Each row holds one environment's entire state — body fields, contact fields and joint fields contiguously — and PhysicsLayout computes every field offset at compile time, so a single kernel launch advances every row.">
+		<text x="20" y="30" class="dg-title dg-title--left">One slab, one launch</text>
+		{/* The columns are STATE_SIZE and the rows are BATCH. An explicit axis label
+		    over the columns would have to share the band with the three group
+		    headers, and at 12px they overlap — so the column axis is named in the
+		    subtitle and only the row axis gets a label. */}
+		<text x="20" y="52" class="dg-sub dg-sub--left">
+			One row per environment, STATE_SIZE wide. Every offset into a row is a compile-time constant.
+		</text>
+
+		<text x="20" y="92" class="dg-caption dg-sub--left">BATCH ↓</text>
+
+		{/* field-group headers */}
+		{
+			GROUPS.map((g) => (
+				<g>
+					<path class="dg-edge dg-edge--muted"
+						d={`M ${COL_X(g.from) + 3} 96 L ${COL_X(g.from) + 3} 88
+						    L ${COL_X(g.from + g.span) - 3} 88 L ${COL_X(g.from + g.span) - 3} 96`} />
+					<text x={(COL_X(g.from) + COL_X(g.from + g.span)) / 2} y="80" class="dg-caption">
+						{g.label}
+					</text>
+				</g>
+			))
+		}
+
+		{/* the slab */}
+		{
+			ROWS.map((label, r) =>
+				label === '⋮' ? (
+					<text x={GRID_MID} y={ROW_Y(r) + 22} class="dg-caption">⋮</text>
+				) : (
+					<g>
+						{Array.from({ length: COLS }, (_, c) => (
+							<rect x={COL_X(c) + 2} y={ROW_Y(r)} width={COL_W - 4} height={ROW_H} rx="3"
+								class={r === HIGHLIGHT ? 'dg-fill-cyan' : 'dg-ghost'}
+								opacity={r === HIGHLIGHT ? 0.32 : 1} />
+						))}
+					</g>
+				)
+			)
+		}
+		{
+			ROWS.filter((l) => l !== '⋮').map((label) => {
+				const r = ROWS.indexOf(label);
+				/* dg-label--cyan only sets fill, and it is declared after dg-sub, so this
+				   recolours the label without switching it to the mono face — the
+				   highlighted row should differ in colour, not in typeface. */
+				return (
+					<text x="20" y={ROW_Y(r) + 20}
+						class={r === HIGHLIGHT ? 'dg-sub dg-sub--left dg-label--cyan' : 'dg-sub dg-sub--left'}>
+						{label}
+					</text>
+				);
+			})
+		}
+
+		{/* the launch spans every row */}
+		<path class="dg-edge dg-edge--spark"
+			d={`M ${GRID_X} ${GRID_BOT + 8} L ${GRID_X} ${GRID_BOT + 18}
+			    L ${COL_X(COLS)} ${GRID_BOT + 18} L ${COL_X(COLS)} ${GRID_BOT + 8}`} />
+		<text x={GRID_MID} y={GRID_BOT + 42} class="dg-label dg-label--spark dg-label--center">
+			one step_gpu() — one launch advances every environment
+		</text>
+
+		<text x="20" y="356" class="dg-sub dg-sub--left">
+			A row is one environment's entire state: bodies, contacts and joints contiguous, not three
+		</text>
+		<text x="20" y="378" class="dg-sub dg-sub--left">
+			arrays. PhysicsLayout fixes every offset at compile time — no runtime address arithmetic.
+		</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--cyan">one environment</span>
+		<span class="diagram__key diagram__key--muted">the rest of the batch</span>
+	</figcaption>
+</figure>
