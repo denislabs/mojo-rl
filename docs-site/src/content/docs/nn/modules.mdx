@@ -1,0 +1,155 @@
+---
+title: Modules and Params
+description: The Module trait, the four-tensor Param, and how reflection over parameter fields replaces registration boilerplate.
+sidebar:
+  order: 2
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+Everything in `nn` is a `Module`. The trait fixes the shape contract and the
+forward/backward pair; parameters are ordinary struct fields, discovered by
+reflection.
+
+## The Module trait
+
+```mojo
+trait Module(Defaultable & Movable & ImplicitlyDeletable):
+    comptime ARITY: Int                              # number of inputs
+    comptime IN_DIMS: InlineArray[Int, Self.ARITY]   # input dimensions
+    comptime OUT_DIM: Int                            # output dimension
+    comptime ACT_DT: DType = DT                      # activation-flow dtype
+
+    @staticmethod
+    def make[target: StaticString, INIT: Initializer](
+        ctx: Optional[DeviceContext] = None
+    ) raises -> Self: ...
+
+    def forward[target, B, o, POLICY](...) raises: ...
+    def vjp[target, B, o, POLICY](...) raises: ...
+```
+
+**`ARITY` and `IN_DIMS`** let combinators handle modules with different input
+counts uniformly. Most leaves are arity 1; attention takes three.
+
+**`make`** is the unified CPU/GPU factory. Parameters are allocated *and*
+initialized with `INIT` at construction — there is no separate reinitialization
+pass. Combinators thread `[target, INIT]` down to their children, which is why
+you specify the initializer once at the top.
+
+**`ACT_DT`** is the activation-flow dtype, defaulting to `DT` (fp32). A bf16
+module sets `comptime ACT_DT = bfloat16`; combinators derive theirs from their
+children and type inter-module buffers accordingly. That is the memory win in
+[AMP](/nn/training/).
+
+**`forward` and `vjp`** operate over a borrowing `TensorRefs[ARITY, o]` input
+pack plus a single output tensor. `vjp` is the vector-Jacobian product — the
+backward pass. There is no tape; the backward pass is the composition of the
+modules' `vjp`s, resolved at compile time.
+
+## Param — four tensors
+
+```mojo
+Param[NAME, APPLY_DECAY, SIZE]
+```
+
+A `Param` owns **four** `Tensor`s:
+
+| Tensor | Purpose | Allocation |
+|---|---|---|
+| `val` | the weights | always |
+| `grd` | the gradient | always |
+| `m` | Adam's first moment | lazy |
+| `v` | Adam's second moment | lazy |
+
+`m` and `v` stay empty until a stateful optimizer's `visit` calls `ensure` on
+them at its first step. SGD never touches them, so it pays nothing.
+
+Co-locating the moment state with the parameter — rather than keeping a flat
+side table inside the optimizer — has two consequences worth knowing. The
+optimizer stays stateless at the visitor level, and **checkpointing rides the
+same walk**, which is why exact training resume comes for free. See
+[Checkpoints](/concepts/checkpoints/).
+
+`APPLY_DECAY` marks whether weight decay applies. Biases and normalization
+scales set it `False`.
+
+## Tensors carry both storages
+
+A `Tensor` holds a host `List` *and* a device buffer. The `target` parameter
+decides which is live: `.data` on CPU, `.dev` through a kernel on GPU. This is
+the reason one module source compiles for both devices — there is no separate
+GPU parameter type to keep in sync.
+
+## Writing a module
+
+```mojo
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.param import Param
+
+
+struct MyLayer[IN: Int, OUT: Int](Module):
+    comptime ARITY = 1
+    comptime IN_DIMS = InlineArray[Int, 1](IN)
+    comptime OUT_DIM = OUT
+
+    var weight: Param["weight", True, IN * OUT]
+    var bias: Param["bias", False, OUT]
+
+    @staticmethod
+    def make[target: StaticString, INIT: Initializer](
+        ctx: Optional[DeviceContext] = None
+    ) raises -> Self: ...
+
+    def forward[...](...) raises: ...
+    def vjp[...](...) raises: ...
+```
+
+Declaring the `Param` fields is all the registration there is. The default
+`for_each_param` walks them automatically.
+
+## The parameter walk
+
+Three visitors ride the same traversal:
+
+| Visitor | Job |
+|---|---|
+| optimizer | read `grd`, update `val`, maintain `m`/`v` |
+| checkpoint | serialize `val` (+ moments) under a dotted name |
+| `named_params` | enumerate for inspection |
+
+Names are **dotted paths** composed from combinator child indices —
+`"0.weight"` is the first child's weight in a `Sequential`. The checkpoint layer
+validates those names against the in-memory walk order on load, which catches
+architecture drift between save and load rather than loading garbage.
+
+## Backward-pass invariants
+
+Two rules that matter if you write a leaf with a GPU backward path. Both have
+caused real, silent miscomputation here.
+
+:::caution[Order the kernels: parameter gradients before input gradients]
+On GPU the parameter-gradient and input-gradient kernels can alias within a
+slab. Compute the **parameter gradients first**, then the input gradient.
+Reversing them produces wrong gradients with no error.
+:::
+
+:::caution[Zero the gradient, and read before you write]
+A leaf's `vjp` must zero its gradient accumulator before writing, and must read
+any input it also writes before overwriting it. Violating either produces
+gradients that are subtly wrong rather than obviously broken — the kind of bug
+that shows up as "training is a bit worse than the reference".
+:::
+
+Verify a new leaf with finite differences, but note:
+
+- Use `eps ≈ 1e-2` for deep chains — smaller steps drown in accumulated float error.
+- **Never finite-difference-check on TF32.** The reduced mantissa makes the comparison meaningless. Force fp32.
+
+## Related
+
+- [Primitives](/nn/primitives/) — the leaves already implemented
+- [Combinators](/nn/combinators/) — composing modules
+- [Checkpoints](/concepts/checkpoints/) — what the param walk serializes

@@ -1,0 +1,984 @@
+/* ============================================================
+   noeira design system — Starlight theme
+   Dark, technical "control-room at night" theme for mojo-rl.
+
+   Naming: "noeira" is the design system / company brand; "mojo-rl"
+   is the product this site documents. Tokens stay noeira-prefixed;
+   user-facing copy says mojo-rl.
+
+   Dark mode is the faithful brand theme; light mode is a
+   cool blue-cast derivation (the source system is dark-only).
+
+   Mirrors mojo-rl-monitor/client/src/index.css. Keep in sync.
+   ============================================================ */
+
+@import '@fontsource-variable/manrope/index.css';
+@import '@fontsource-variable/jetbrains-mono/index.css';
+
+/* ---------- brand primitives (theme-invariant) ---------- */
+:root {
+	--moon-cyan: #35d0e0;
+	--moon-cyan-bright: #5fd0e6;
+	--moon-blue: #4b8bf5;
+	--moon-blue-deep: #3b6fe0;
+	--spark: #ff6a2c;
+	--spark-bright: #ff8a3c;
+	--grad-moon: linear-gradient(140deg, #35d0e0 0%, #4b8bf5 55%, #3b6fe0 100%);
+	--grad-spark: radial-gradient(circle at 40% 35%, #ffd79a 0%, #ff8a3c 45%, #ff5e22 100%);
+
+	/* ink scale — the dark canvas */
+	--ink-950: #090c12; /* void   — nav + sidebar */
+	--ink-900: #0e1117; /* canvas — page background */
+	--ink-850: #141925; /* surface — cards */
+	--ink-800: #1b2130; /* elevated — inline code, asides */
+	--ink-750: #223047; /* hairline */
+	--ink-700: #2c3547; /* input border */
+
+	--sl-font: 'Manrope Variable', -apple-system, 'Segoe UI', system-ui, sans-serif;
+	--sl-font-mono: 'JetBrains Mono Variable', 'SFMono-Regular', ui-monospace, monospace;
+
+	--radius: 0.625rem;
+}
+
+/* ---------- dark theme (faithful noeira) ---------- */
+:root,
+:root[data-theme='dark'] {
+	--sl-color-white: #f2f5fa; /* text-strong */
+	--sl-color-gray-1: #e2e9f3;
+	--sl-color-gray-2: #c9d4e3; /* body text */
+	--sl-color-gray-3: #9aa7bd; /* muted text */
+	--sl-color-gray-4: #6b7a92;
+	--sl-color-gray-5: var(--ink-700);
+	--sl-color-gray-6: var(--ink-800);
+	--sl-color-gray-7: var(--ink-850);
+	--sl-color-black: var(--ink-900);
+
+	--sl-color-accent-low: #10303a;
+	--sl-color-accent: #1f8ea3;
+	--sl-color-accent-high: var(--moon-cyan-bright);
+
+	--sl-color-bg: var(--ink-900);
+	--sl-color-bg-nav: color-mix(in srgb, var(--ink-950) 88%, transparent);
+	--sl-color-bg-sidebar: var(--ink-950);
+	--sl-color-bg-inline-code: var(--ink-800);
+	--sl-color-bg-accent: var(--sl-color-accent-high);
+
+	--sl-color-hairline: var(--ink-750);
+	--sl-color-hairline-light: var(--ink-700);
+	--sl-color-hairline-shade: var(--ink-950);
+
+	--sl-color-text: var(--sl-color-gray-2);
+	--sl-color-text-accent: var(--moon-cyan-bright);
+	--sl-color-text-invert: var(--ink-900);
+
+	/* surfaces + status tones */
+	--noeira-surface: var(--ink-850);
+	--noeira-surface-raised: var(--ink-800);
+	--noeira-accent-border: rgba(95, 208, 230, 0.35);
+	--noeira-accent-soft: rgba(53, 208, 224, 0.12);
+	--status-success: #48d597;
+	--status-warning: #ffb020;
+	--status-danger: #f76d7a;
+	--noeira-glow: 0 0 60px -12px rgba(53, 208, 224, 0.35);
+
+	/* aside (callout) accents */
+	--sl-color-asides-text-accent: var(--moon-cyan-bright);
+	--sl-color-green: var(--status-success);
+	--sl-color-orange: var(--spark-bright);
+	--sl-color-red: var(--status-danger);
+	--sl-color-blue: var(--moon-blue);
+	--sl-color-purple: #9b8cff;
+
+	color-scheme: dark;
+}
+
+/* ---------- light theme (cool blue-cast derivation) ---------- */
+:root[data-theme='light'] {
+	--sl-color-white: #0e1117;
+	--sl-color-gray-1: #1b2130;
+	--sl-color-gray-2: #37415a; /* body text */
+	--sl-color-gray-3: #5c6b84; /* muted text */
+	--sl-color-gray-4: #8494ac;
+	--sl-color-gray-5: #d8e0ec;
+	--sl-color-gray-6: #e8edf5;
+	--sl-color-gray-7: #edf1f7;
+	--sl-color-black: #ffffff;
+
+	--sl-color-accent-low: #dce7fb;
+	--sl-color-accent: var(--moon-blue-deep);
+	--sl-color-accent-high: #26499a;
+
+	--sl-color-bg: #f6f8fb;
+	--sl-color-bg-nav: color-mix(in srgb, #edf1f8 88%, transparent);
+	--sl-color-bg-sidebar: #edf1f8;
+	--sl-color-bg-inline-code: #e8edf5;
+	--sl-color-bg-accent: var(--sl-color-accent);
+
+	--sl-color-hairline: #d8e0ec;
+	--sl-color-hairline-light: #c9d4e3;
+	--sl-color-hairline-shade: #d8e0ec;
+
+	--sl-color-text: var(--sl-color-gray-2);
+	--sl-color-text-accent: var(--sl-color-accent-high);
+	--sl-color-text-invert: #ffffff;
+
+	--noeira-surface: #ffffff;
+	--noeira-surface-raised: #ffffff;
+	--noeira-accent-border: rgba(59, 111, 224, 0.3);
+	--noeira-accent-soft: rgba(59, 111, 224, 0.1);
+	--status-success: #1fa26b;
+	--status-warning: #c77f00;
+	--status-danger: #d9455a;
+	--noeira-glow: 0 0 60px -14px rgba(59, 111, 224, 0.28);
+
+	--sl-color-asides-text-accent: var(--sl-color-accent-high);
+	--sl-color-green: var(--status-success);
+	--sl-color-orange: #e85512;
+	--sl-color-red: var(--status-danger);
+	--sl-color-blue: var(--moon-blue-deep);
+	--sl-color-purple: #7461e8;
+
+	color-scheme: light;
+}
+
+/* ============================================================
+   Typography
+   ============================================================ */
+
+body {
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+h1,
+h2,
+h3,
+.site-title {
+	letter-spacing: -0.015em;
+}
+
+.content h1,
+.content h2 {
+	font-weight: 700;
+}
+
+/* noeira uppercase letter-spaced kicker above titles */
+.eyebrow {
+	font-size: 0.6875rem;
+	font-weight: 600;
+	letter-spacing: 0.18em;
+	text-transform: uppercase;
+	color: var(--sl-color-gray-3);
+}
+
+::selection {
+	background: var(--noeira-accent-soft);
+	color: var(--sl-color-white);
+}
+
+/* ============================================================
+   Header / nav
+   ============================================================ */
+
+/* Starlight nests `<div class="header">` inside `<header class="header">`, so a
+   bare `.header` rule paints the divider twice. Scope to the element. */
+header.header {
+	border-bottom: 1px solid var(--sl-color-hairline);
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
+}
+
+.site-title {
+	font-weight: 700;
+	text-transform: lowercase;
+	letter-spacing: -0.02em;
+	gap: 0.55rem;
+}
+
+.site-title img {
+	filter: drop-shadow(0 0 10px rgba(53, 208, 224, 0.28));
+}
+
+/* ============================================================
+   Sidebar
+   ============================================================ */
+
+#starlight__sidebar {
+	border-right: 1px solid var(--sl-color-hairline);
+}
+
+/* group labels get the noeira eyebrow treatment */
+.sidebar-content .large,
+.sidebar-content summary .group-label > span {
+	font-size: 0.6875rem;
+	font-weight: 600;
+	letter-spacing: 0.18em;
+	text-transform: uppercase;
+	color: var(--sl-color-gray-3);
+}
+
+.sidebar-content a {
+	border-radius: calc(var(--radius) * 0.8);
+	transition:
+		color 0.15s ease,
+		background-color 0.15s ease;
+}
+
+.sidebar-content a[aria-current='page'],
+.sidebar-content a[aria-current='page']:hover {
+	background-color: var(--noeira-accent-soft);
+	color: var(--sl-color-text-accent);
+	font-weight: 600;
+}
+
+/* ============================================================
+   Right-hand table of contents
+   ============================================================ */
+
+starlight-toc a[aria-current='true'],
+mobile-starlight-toc a[aria-current='true'] {
+	color: var(--sl-color-text-accent);
+	border-inline-start-color: var(--sl-color-text-accent);
+	font-weight: 600;
+}
+
+/* ============================================================
+   Links, focus, controls
+   ============================================================ */
+
+.sl-markdown-content a:not(:where(.not-content *)) {
+	text-underline-offset: 0.25em;
+	text-decoration-thickness: 1px;
+	text-decoration-color: var(--noeira-accent-border);
+	transition: text-decoration-color 0.15s ease;
+}
+
+.sl-markdown-content a:not(:where(.not-content *)):hover {
+	text-decoration-color: currentColor;
+}
+
+:where(a, button, summary, input, select):focus-visible {
+	outline: 2px solid var(--sl-color-text-accent);
+	outline-offset: 2px;
+	border-radius: 4px;
+}
+
+/* Primary CTA — the moon gradient */
+.sl-link-button.primary {
+	background: var(--grad-moon);
+	border-color: transparent;
+	color: var(--ink-900);
+	font-weight: 700;
+	box-shadow: var(--noeira-glow);
+}
+
+.sl-link-button.primary:hover {
+	color: var(--ink-900);
+	filter: brightness(1.08);
+}
+
+.sl-link-button.secondary {
+	border-color: var(--noeira-accent-border);
+}
+
+/* ============================================================
+   Code
+   ============================================================ */
+
+.sl-markdown-content code:not(:where(.not-content *)) {
+	font-variant-ligatures: none;
+	border: 1px solid var(--sl-color-hairline);
+	border-radius: 5px;
+	padding: 0.15em 0.4em;
+	font-size: 0.875em;
+}
+
+.expressive-code .frame pre {
+	border-radius: var(--radius);
+}
+
+/* ============================================================
+   Cards + asides
+   ============================================================ */
+
+.card {
+	background-color: var(--noeira-surface);
+	border: 1px solid var(--sl-color-hairline);
+	border-radius: var(--radius);
+	transition:
+		border-color 0.2s ease,
+		transform 0.2s ease;
+}
+
+.card:hover {
+	border-color: var(--noeira-accent-border);
+}
+
+.card .icon {
+	color: var(--sl-color-text-accent);
+	border-color: var(--sl-color-hairline);
+	background-color: var(--noeira-accent-soft);
+}
+
+.card .title {
+	color: var(--sl-color-white);
+}
+
+.starlight-aside {
+	border-radius: var(--radius);
+	border-inline-start-width: 2px;
+	background-color: var(--noeira-surface-raised);
+}
+
+/* ============================================================
+   Inline code
+
+   Starlight renders inline code at the parent's font size, so a
+   `code` span inside a heading becomes a heading-sized box. Scale
+   it relative to the heading and drop the border.
+   ============================================================ */
+
+.sl-markdown-content :is(h1, h2, h3, h4, h5, h6) code:not(:where(.not-content *)) {
+	font-size: 0.9em;
+	font-weight: inherit;
+	padding: 0;
+	border: none;
+	background: none;
+	color: var(--sl-color-text-accent);
+	vertical-align: baseline;
+}
+
+/* ============================================================
+   Tables
+   ============================================================ */
+
+/* Starlight's own table rules ship AFTER customCss at equal specificity, so they
+   win the cascade. Two of them fight this design:
+
+     display: block; overflow: auto     → the bordered box stretches full width
+                                          while the table inside shrinks to fit
+     :is(th,td):first-child { padding-inline-start: 0 }
+                                        → cells sit flush against our border
+
+   Both are correct for Starlight's borderless default table and wrong for a
+   bordered one. The doubled `.sl-markdown-content` raises specificity just
+   enough to take them back without !important. */
+
+.sl-markdown-content.sl-markdown-content table:not(:where(.not-content *)) {
+	display: table;
+	width: 100%;
+	border: 1px solid var(--sl-color-hairline);
+	border-radius: var(--radius);
+	border-collapse: separate;
+	border-spacing: 0;
+	overflow: hidden;
+}
+
+.sl-markdown-content.sl-markdown-content th:not(:where(.not-content *)) {
+	background-color: var(--noeira-surface);
+	font-size: 0.6875rem;
+	font-weight: 600;
+	letter-spacing: 0.18em;
+	text-transform: uppercase;
+	color: var(--sl-color-gray-3);
+	border-bottom: 1px solid var(--sl-color-hairline);
+}
+
+.sl-markdown-content.sl-markdown-content :is(th, td):not(:where(.not-content *)) {
+	border-block-start: none;
+	border-bottom: 1px solid var(--sl-color-hairline);
+	padding: 0.625rem 1rem;
+	vertical-align: baseline;
+}
+
+/* Restore the edge padding Starlight zeroes out — a bordered table needs it. */
+.sl-markdown-content.sl-markdown-content
+	:is(th, td):first-child:not(:where(.not-content *)) {
+	padding-inline-start: 1rem;
+}
+
+.sl-markdown-content.sl-markdown-content
+	:is(th, td):last-child:not(:where(.not-content *)) {
+	padding-inline-end: 1rem;
+}
+
+.sl-markdown-content.sl-markdown-content tr:last-child td:not(:where(.not-content *)) {
+	border-bottom: none;
+}
+
+/* ============================================================
+   Hero (splash landing page)
+   ============================================================ */
+
+.hero > img,
+.hero > .hero-html {
+	filter: drop-shadow(0 0 90px rgba(53, 208, 224, 0.22));
+}
+
+.hero h1 {
+	text-transform: lowercase;
+	letter-spacing: -0.035em;
+	background: var(--grad-moon);
+	-webkit-background-clip: text;
+	background-clip: text;
+	color: transparent;
+	/* keep descenders from clipping */
+	padding-block-end: 0.08em;
+}
+
+.hero .tagline {
+	color: var(--sl-color-gray-3);
+	max-width: 44ch;
+}
+
+/* subtle moon-glow wash behind the splash hero */
+[data-has-hero] .hero {
+	position: relative;
+}
+
+[data-has-hero] .hero::before {
+	content: '';
+	position: absolute;
+	inset: -20% -10% auto;
+	height: 420px;
+	background: radial-gradient(ellipse at 65% 20%, rgba(53, 208, 224, 0.14), transparent 65%);
+	pointer-events: none;
+	z-index: -1;
+}
+
+/* ============================================================
+   Maturity marker (src/components/Maturity.astro)
+
+   mojo-rl is not uniformly mature, so stability is declared per
+   page rather than with one sitewide banner.
+   ============================================================ */
+
+.sl-markdown-content .maturity {
+	display: flex;
+	align-items: baseline;
+	gap: 0.75rem;
+	flex-wrap: wrap;
+	margin-block: 0 1.75rem;
+	padding: 0.6rem 0.85rem;
+	border: 1px solid var(--sl-color-hairline);
+	border-radius: var(--radius);
+	background-color: var(--noeira-surface);
+	font-size: 0.875rem;
+	line-height: 1.5;
+}
+
+.maturity__pill {
+	flex: none;
+	font-size: 0.6875rem;
+	font-weight: 600;
+	letter-spacing: 0.18em;
+	text-transform: uppercase;
+	padding: 0.15rem 0.5rem;
+	border-radius: 999px;
+	border: 1px solid currentColor;
+}
+
+.maturity__text {
+	color: var(--sl-color-gray-3);
+}
+
+.maturity--stable .maturity__pill {
+	color: var(--moon-cyan-bright);
+}
+
+.maturity--beta .maturity__pill {
+	color: var(--spark-bright);
+}
+
+.maturity--experimental .maturity__pill {
+	color: var(--sl-color-gray-3);
+}
+
+/* Light mode: the bright dark-mode accents fail contrast on a pale surface. */
+:root[data-theme='light'] .maturity--stable .maturity__pill {
+	color: #0f6d7d;
+}
+
+:root[data-theme='light'] .maturity--beta .maturity__pill {
+	color: #b8431a;
+}
+
+/* ============================================================
+   Stat cards (landing page)
+   ============================================================ */
+
+.stat-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+	gap: 1rem;
+	margin-block: 2rem;
+	padding: 0;
+	list-style: none;
+}
+
+.stat {
+	border: 1px solid var(--sl-color-hairline);
+	border-radius: var(--radius);
+	background-color: var(--noeira-surface);
+	padding: 1.1rem 1rem;
+}
+
+.stat__value {
+	display: block;
+	font-size: 1.875rem;
+	font-weight: 700;
+	line-height: 1.1;
+	letter-spacing: -0.02em;
+	color: var(--sl-color-white);
+}
+
+.stat__label {
+	display: block;
+	margin-block-start: 0.35rem;
+	font-size: 0.8125rem;
+	color: var(--sl-color-gray-3);
+}
+
+/* ============================================================
+   Paper citations (src/components/Paper.astro, Papers.astro)
+   ============================================================ */
+
+.papers {
+	margin-block: 1.75rem;
+	padding: 0.9rem 1.1rem;
+	border: 1px solid var(--sl-color-hairline);
+	border-left: 3px solid var(--moon-blue);
+	border-radius: var(--radius);
+	background-color: var(--noeira-surface);
+}
+
+.papers__label {
+	display: block;
+	margin-block-end: 0.6rem;
+	font-family: var(--sl-font-mono);
+	font-size: 0.6875rem;
+	font-weight: 600;
+	letter-spacing: 0.18em;
+	text-transform: uppercase;
+	color: var(--sl-color-gray-3);
+}
+
+.papers__list {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	display: flex;
+	flex-direction: column;
+	gap: 0.85rem;
+}
+
+.paper {
+	display: flex;
+	flex-direction: column;
+	gap: 0.15rem;
+}
+
+.paper__title {
+	font-size: 0.9375rem;
+	line-height: 1.4;
+	color: var(--sl-color-white);
+}
+
+.paper__title a {
+	color: inherit;
+	text-decoration: none;
+	border-bottom: 1px solid var(--noeira-accent-border);
+}
+
+.paper__title a:hover {
+	color: var(--sl-color-text-accent);
+	border-bottom-color: currentColor;
+}
+
+.paper__meta {
+	font-size: 0.8125rem;
+	color: var(--sl-color-gray-3);
+}
+
+.paper__id {
+	font-family: var(--sl-font-mono);
+	font-size: 0.75rem;
+}
+
+.paper__note {
+	font-size: 0.8125rem;
+	color: var(--sl-color-gray-3);
+	font-style: italic;
+}
+
+:root[data-theme='light'] .papers {
+	border-left-color: var(--moon-blue-deep);
+}
+
+/* ============================================================
+   Demo videos (src/components/Demo.astro, DemoGrid.astro)
+   ============================================================ */
+
+.demo {
+	margin: 0;
+	min-width: 0;
+}
+
+.demo__video {
+	display: block;
+	width: 100%;
+	/* The source captures range from 3:2 to 16:9. Left at `height: auto` the
+	   grid rows come out ragged and the captions sit at different baselines.
+	   A fixed box with `contain` aligns them without cropping anything — the
+	   letterbox reads as padding against the void-ink background. */
+	aspect-ratio: 16 / 10;
+	object-fit: contain;
+	border: 1px solid var(--sl-color-hairline);
+	border-radius: var(--radius);
+	background-color: var(--ink-950);
+}
+
+.demo__caption {
+	margin-block-start: 0.6rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.15rem;
+}
+
+.demo__title {
+	font-size: 0.9375rem;
+	font-weight: 600;
+	color: var(--sl-color-white);
+}
+
+.demo__meta {
+	font-family: var(--sl-font-mono);
+	font-size: 0.75rem;
+	color: var(--sl-color-gray-3);
+}
+
+.demo-grid {
+	display: grid;
+	grid-template-columns: var(--demo-grid-cols, repeat(auto-fit, minmax(15rem, 1fr)));
+	gap: 1.5rem 1.25rem;
+	margin-block: 1.75rem;
+}
+
+/* ============================================================
+   Diagrams (src/components/diagrams/*.astro)
+
+   Hand-built SVG in the noeira palette. Everything is driven by
+   CSS custom properties so the diagrams follow the theme rather
+   than baking in dark-mode colours.
+   ============================================================ */
+
+.diagram {
+	margin: 2rem 0;
+}
+
+.diagram svg {
+	display: block;
+	width: 100%;
+	height: auto;
+	overflow: visible;
+}
+
+/* --- nodes --- */
+
+.dg-node rect {
+	fill: var(--noeira-surface);
+	stroke: var(--sl-color-hairline);
+	stroke-width: 1.5;
+}
+
+.dg-node--cyan rect {
+	stroke: var(--moon-cyan);
+}
+.dg-node--spark rect {
+	stroke: var(--spark);
+}
+.dg-node--green rect {
+	stroke: #3ecf8e;
+}
+.dg-node--purple rect {
+	stroke: #8b7fe8;
+}
+.dg-node--muted rect {
+	stroke: var(--sl-color-gray-4);
+}
+
+.dg-title {
+	fill: var(--sl-color-white);
+	font-size: 17px;
+	font-weight: 600;
+	text-anchor: middle;
+}
+
+.dg-sub {
+	fill: var(--sl-color-gray-3);
+	font-size: 13px;
+	text-anchor: middle;
+}
+
+/* --- edges --- */
+
+.dg-edge {
+	fill: none;
+	stroke-width: 2;
+}
+
+.dg-edge--cyan {
+	stroke: var(--moon-cyan);
+}
+.dg-edge--spark {
+	stroke: var(--spark);
+}
+.dg-edge--muted {
+	stroke: var(--sl-color-gray-4);
+}
+.dg-edge--purple {
+	stroke: #8b7fe8;
+}
+.dg-edge--dashed {
+	stroke-dasharray: 6 5;
+}
+
+.dg-fill-cyan {
+	fill: var(--moon-cyan);
+}
+.dg-fill-spark {
+	fill: var(--spark);
+}
+.dg-fill-muted {
+	fill: var(--sl-color-gray-4);
+}
+.dg-fill-purple {
+	fill: #8b7fe8;
+}
+
+/* --- labels --- */
+
+.dg-label {
+	font-family: var(--sl-font-mono);
+	font-size: 12.5px;
+}
+
+.dg-label--cyan {
+	fill: var(--moon-cyan);
+}
+.dg-label--spark {
+	fill: var(--spark);
+}
+.dg-label--muted {
+	fill: var(--sl-color-gray-3);
+}
+.dg-label--purple {
+	fill: #8b7fe8;
+}
+
+/* --- formula callout (HTML, below the SVG) --- */
+
+.diagram__formula {
+	margin-block-start: 1.25rem;
+	padding: 0.85rem 1rem;
+	border: 1px solid var(--sl-color-hairline);
+	border-left: 3px solid var(--spark);
+	border-radius: var(--radius);
+	background-color: var(--noeira-surface);
+}
+
+.diagram__formula-title {
+	display: block;
+	margin-block-end: 0.4rem;
+	font-family: var(--sl-font-mono);
+	font-size: 0.6875rem;
+	font-weight: 600;
+	letter-spacing: 0.18em;
+	text-transform: uppercase;
+	color: var(--sl-color-gray-3);
+}
+
+.diagram__formula code {
+	font-family: var(--sl-font-mono);
+	font-size: 0.875rem;
+	color: var(--sl-color-white);
+	background: none;
+	border: none;
+	padding: 0;
+}
+
+.dg-mono {
+	fill: var(--sl-color-white);
+	font-family: var(--sl-font-mono);
+	font-size: 13px;
+}
+
+/* --- tree (MctsSearch) --- */
+
+.dg-tree-edge path {
+	fill: none;
+	stroke: var(--sl-color-gray-5);
+	stroke-width: 2;
+}
+
+.dg-tree-edge--hot path {
+	stroke: #3ecf8e;
+	stroke-width: 2.5;
+}
+
+.dg-tree-node {
+	fill: var(--noeira-surface-raised);
+	stroke: var(--sl-color-gray-5);
+	stroke-width: 2;
+}
+
+.dg-tree-node--root {
+	fill: color-mix(in srgb, var(--moon-cyan) 22%, var(--noeira-surface));
+	stroke: var(--moon-cyan);
+}
+
+.dg-tree-node--hot {
+	fill: color-mix(in srgb, #3ecf8e 20%, var(--noeira-surface));
+	stroke: #3ecf8e;
+}
+
+.dg-tree-node--new {
+	fill: color-mix(in srgb, #8b7fe8 22%, var(--noeira-surface));
+	stroke: #8b7fe8;
+}
+
+.dg-tree-label {
+	fill: var(--sl-color-white);
+	font-size: 15px;
+	font-weight: 600;
+	text-anchor: middle;
+}
+
+.dg-fill-green {
+	fill: #3ecf8e;
+}
+
+.dg-label--green {
+	fill: #3ecf8e;
+}
+
+.dg-sub--left {
+	text-anchor: start;
+}
+
+.dg-title--left {
+	text-anchor: start;
+}
+
+.dg-label--center {
+	text-anchor: middle;
+}
+
+/* --- inline glyphs (AgentEnvLoop) --- */
+
+.dg-icon-bg {
+	stroke: none;
+}
+
+.dg-icon-bg--spark {
+	fill: color-mix(in srgb, var(--spark) 16%, var(--noeira-surface));
+}
+
+.dg-icon-bg--cyan {
+	fill: color-mix(in srgb, var(--moon-cyan) 16%, var(--noeira-surface));
+}
+
+.dg-icon :is(rect, path, circle, line) {
+	fill: none;
+	stroke-width: 2;
+	stroke-linecap: round;
+}
+
+.dg-icon--spark :is(rect, path, circle, line) {
+	stroke: var(--spark);
+}
+
+.dg-icon--cyan :is(rect, path, circle, line) {
+	stroke: var(--moon-cyan);
+}
+
+/* NB: no light-mode override for .dg-title / .dg-mono / .dg-tree-label.
+   Starlight *inverts* its greyscale in light mode — `--sl-color-white` resolves
+   to near-black there. It means "highest-contrast text", not the literal
+   colour, so the base rules are already correct in both themes. Overriding
+   these to `--sl-color-black` paints them pure white on a white page. */
+
+/* --- legend --- */
+
+.diagram__legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.4rem 1.5rem;
+	margin-block-start: 1rem;
+	font-size: 0.8125rem;
+	color: var(--sl-color-gray-3);
+}
+
+.diagram__key {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.45rem;
+}
+
+.diagram__key::before {
+	content: '';
+	width: 1.1rem;
+	height: 2px;
+	border-radius: 1px;
+	background: currentColor;
+}
+
+.diagram__key--cyan {
+	color: var(--moon-cyan);
+}
+.diagram__key--spark {
+	color: var(--spark);
+}
+.diagram__key--muted {
+	color: var(--sl-color-gray-4);
+}
+.diagram__key--purple {
+	color: #8b7fe8;
+}
+
+/* Light mode: the dark-theme accents are too light on a pale surface.
+   Text fills need no override — see the note above the legend block. */
+:root[data-theme='light'] :is(.dg-edge--cyan, .dg-label--cyan) {
+	stroke: #0f6d7d;
+	fill: #0f6d7d;
+}
+
+:root[data-theme='light'] .dg-edge--cyan {
+	fill: none;
+}
+
+:root[data-theme='light'] .diagram__key--cyan {
+	color: #0f6d7d;
+}
+
+:root[data-theme='light'] .dg-fill-cyan {
+	fill: #0f6d7d;
+}
+
+:root[data-theme='light'] .dg-icon--cyan :is(rect, path, circle, line) {
+	stroke: #0f6d7d;
+}
+
+:root[data-theme='light'] .dg-icon-bg--cyan {
+	fill: color-mix(in srgb, #0f6d7d 12%, var(--noeira-surface));
+}
+
+@media (prefers-reduced-motion: reduce) {
+	* {
+		transition-duration: 0.01ms !important;
+		animation-duration: 0.01ms !important;
+	}
+
+	/* Pausing a video is not something CSS can do — the actual pause lives in
+	   the inline script in Demo.astro, which also reveals native controls. */
+}

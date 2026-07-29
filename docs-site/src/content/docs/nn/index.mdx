@@ -1,0 +1,170 @@
+---
+title: Neural networks
+description: mojo_rl.nn — Module/Param networks with autodiff, 70+ primitives, automatic fusion, and dual CPU/GPU paths.
+sidebar:
+  order: 1
+---
+
+import Maturity from '~/components/Maturity.astro';
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<Maturity level="stable" />
+
+`mojo_rl.nn` is the deep-learning framework the RL agents are built on —
+described in the project's own words as *"something between Tinygrad and
+PyTorch"*. It is usable on its own: the MNIST, CIFAR-10, ResNet, GPT and ViT
+examples never touch the RL code.
+
+Networks are assembled from small reusable `Module` blocks, each `Param`
+carrying its own value and gradient tensors. Composition happens at compile
+time, so a network is a *type* — see
+[compile-time composition](/concepts/compile-time-composition/).
+
+```mojo
+comptime Net = Sequential[
+    LinearReLU[784, 256],
+    LinearReLU[256, 128],
+    Linear[128, 10],
+]
+
+var trainer = Trainer[Net, NC, IN_DIM, BATCH, "gpu"].make[Kaiming](
+    Optional(ctx), lr=1e-3
+)
+```
+
+## What is in it
+
+<CardGrid>
+	<Card title="Modules & Params" icon="seti:config">
+		[The storage design](/nn/modules/) — a `Param` owns four tensors, and
+		reflection over them is what makes optimizers and checkpointing work
+		without registration boilerplate.
+	</Card>
+	<Card title="70+ primitives" icon="puzzle">
+		[The layer catalogue](/nn/primitives/) — Linear, Conv2D, attention,
+		LSTM/GRU, normalizations, and RL-specific ops.
+	</Card>
+	<Card title="Combinators & models" icon="list-format">
+		[Composition](/nn/combinators/) — Sequential, Residual, Parallel, Repeat,
+		plus ResNet, GPT and ViT, and the ComputeGraph DAG builder.
+	</Card>
+	<Card title="Optimizers & losses" icon="approve-check">
+		[SGD, Adam, AdamW](/nn/optimizers/), gradient clipping, LR schedules,
+		and the loss and initializer catalogues.
+	</Card>
+	<Card title="Training" icon="rocket">
+		[The supervised Trainer](/nn/training/) — whole-dataset GPU runs, AMP,
+		optional CUDA-graph capture, and the bundled datasets.
+	</Card>
+</CardGrid>
+
+## The design in one page
+
+**Modules own their weights.** A `Module` holds `Param` fields directly. There
+is no external parameter registry and no `parameters()` call to remember — a
+default `for_each_param` implementation reflects over the struct's `Param`-typed
+fields, which is how the optimizer and the checkpoint layer find them.
+
+**A Param is four tensors.** `val` and `grd` always; `m` and `v` — Adam's
+moments — allocated lazily on the first stateful optimizer step. Co-locating
+moment state with the parameter rather than in a side table means checkpointing
+rides the same walk and exact training resume comes free.
+
+**Every tensor carries CPU and GPU storage.** `Tensor` holds both a host `List`
+and a device buffer; the `target` parameter decides which is live. This is why
+the same module source compiles for both.
+
+**Forward and backward are explicit.** Each module implements `forward` and
+`vjp` (the vector-Jacobian product). There is no tape: the backward pass is the
+composition of the modules' `vjp`s, resolved at compile time.
+
+**Fusion is a type.** Adjacent operations that could fuse have a fused
+counterpart, and choosing it is how you opt in:
+
+```mojo
+Linear[D, H], ReLU[H]   # two modules, two kernels
+LinearReLU[D, H]        # one module, one fused kernel
+```
+
+`MatMul+Bias+Activation` and `Conv2D+Activation` collapse into single GPU
+kernels this way.
+
+## A complete example
+
+MNIST to 97%+ in five epochs, on GPU
+(`examples/nn/mlp/mlp_mnist_training_storage_gpu.mojo`):
+
+```mojo
+from std.gpu.host import DeviceContext
+from mojo_rl.nn.datasets import MNIST
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.linear_relu import LinearReLU
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.training.trainer import Trainer
+
+
+def main() raises:
+    comptime IN_DIM = 784
+    comptime NC = 10
+    comptime BATCH = 100
+
+    var ds = MNIST()
+    var c = DeviceContext()
+
+    comptime Net = Sequential[
+        LinearReLU[IN_DIM, 256],
+        LinearReLU[256, 128],
+        Linear[128, NC],
+    ]
+
+    var trainer = Trainer[Net, NC, IN_DIM, BATCH, "gpu"].make[Kaiming](
+        Optional(c), lr=1e-3
+    )
+
+    # one-hot the labels
+    var train_y = List[Scalar[DT]](length=MNIST.N_TRAIN * NC, fill=0.0)
+    for i in range(MNIST.N_TRAIN):
+        train_y[i * NC + Int(ds.train_labels[i])] = 1.0
+
+    var result = trainer.train_gpu[MNIST.N_TRAIN, MNIST.N_TEST](
+        ds.train_images, train_y, ds.test_images, ds.test_labels,
+        Optional(c), epochs=5, shuffle=True,
+    )
+```
+
+```bash
+pixi run -e apple  mojo run -I . examples/nn/mlp/mlp_mnist_training_storage_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/nn/mlp/mlp_mnist_training_storage_gpu.mojo
+```
+
+The dataset uploads to the device **once** and each batch is a zero-copy
+sub-buffer view — no per-batch host-to-device transfer.
+
+## Package layout
+
+```
+mojo_rl/nn/
+├── core/          Module trait, Param, Tensor, initializers, checkpoint, AMP
+├── primitives/    70+ leaf layers
+├── combinators/   Sequential, Residual, Parallel, Repeat, ComputeGraph
+├── models/        ResNet, GPT, ViT, conv and CIFAR feature nets
+├── optimizer/     SGD, Adam, AdamW, grad clipping, LR schedules
+├── loss/          CrossEntropy, MSE, SoftCE, TwoHot, GaussianNLL
+├── training/      Trainer, autoregressive trainer, augmenter
+├── datasets/      MNIST, CIFAR-10, TinyShakespeare, lewm_pusht
+└── random/        host RNG (box-muller, gaussian)
+```
+
+:::note[Initializers live in `core`, not their own package]
+`from mojo_rl.nn.core.initializer import Kaiming` — not
+`mojo_rl.nn.initializer`. Likewise `ComputeGraph` is in `combinators/`, not an
+`autodiff/` package. Older documentation says otherwise.
+:::
+
+## Next
+
+- [Modules and Params](/nn/modules/) — the storage design in detail
+- [Primitives](/nn/primitives/) — the layer catalogue
+- [Training](/nn/training/) — the Trainer, AMP and CUDA graphs

@@ -1,0 +1,129 @@
+---
+title: 2D physics
+description: LunarLander, BipedalWalker and CarRacing — GPU-batched impulse physics with joints, LIDAR and a slip-based tire model.
+sidebar:
+  order: 4
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Demo from '~/components/Demo.astro';
+import DemoGrid from '~/components/DemoGrid.astro';
+
+<Maturity level="stable" note="CarRacing's reward shaping is still being tuned." />
+
+Three environments on `mojo_rl.physics2d`, a custom impulse-based engine written
+for batched GPU simulation. State is laid out strided as `[BATCH, STATE_SIZE]`,
+so one kernel launch steps hundreds of environments at once.
+
+<DemoGrid min="15rem">
+	<Demo name="lunar_lander_ppo_trained" caption="LunarLander" meta="PPO · 8 obs" />
+	<Demo name="bipedal_walker_sac_trained" caption="BipedalWalker" meta="SAC · 24 obs" />
+	<Demo name="rainbow_car_racing" caption="CarRacing" meta="Rainbow · pixels" />
+</DemoGrid>
+
+| Environment | Obs | Actions | Physics features |
+|---|---|---|---|
+| LunarLander | 8 | 4 discrete **or** 2 continuous | terrain contact, flame particles |
+| BipedalWalker | 24 | 4 continuous | revolute joints, articulated chain, LIDAR |
+| CarRacing | 13 clean **or** pixels | 3 continuous **or** 5 discrete | slip-based tire friction |
+
+## The engine
+
+`physics2d` is not a general-purpose 2D physics library — it implements exactly
+what these three environments need, which is why it can be fast and fully
+batched:
+
+- **Impulse-based contact solving** with a unified constraint solver
+- **Revolute joints** and articulated multi-body chains
+- **Flat and edge terrain** collision detection
+- **LIDAR** distance sensing
+- **Slip-based tire friction** for CarRacing
+
+Everything runs as GPU kernels over the batch dimension. There is no per-body
+object graph to traverse.
+
+## LunarLander
+
+Land a craft between two flags. Eight observations — position, velocity, angle,
+angular velocity, and two ground-contact flags — with reward for approaching the
+pad, landing softly and coming to rest, and a penalty for crashing or firing
+engines.
+
+Both action spaces are available from the same physics:
+
+```mojo
+from mojo_rl.envs import LunarLander
+```
+
+- **Discrete** (4): do nothing, fire left, fire main, fire right
+- **Continuous** (2): `[main throttle, side throttle]`
+
+That makes it one of the few environments where you can compare a discrete
+algorithm and a continuous one on identical dynamics — DQN against SAC on the
+same task.
+
+The terrain is generated per episode, so a policy has to generalise rather than
+memorise one landscape.
+
+## BipedalWalker
+
+Walk a two-legged robot across terrain. Twenty-four observations: hull angle and
+velocity, joint angles and speeds, ground contact, and **10 LIDAR rangefinder
+readings** that let the agent see the ground ahead.
+
+Four continuous actions — torques for both hip and knee joints.
+
+Two modes: normal terrain, and **hardcore** with stumps, pits and stairs. The
+hardcore variant is a genuinely hard exploration problem; the normal one is a
+reasonable SAC/TD3 benchmark.
+
+The interesting engine feature here is the articulated chain — the legs are a
+connected multi-body system solved with revolute joint constraints, not
+independent rigid bodies.
+
+## CarRacing
+
+Drive a car around a procedurally generated track. The distinguishing feature is
+the **tire model**: friction is computed from wheel slip rather than assumed, so
+the car can lose traction, oversteer and spin. Throttle and steering interact
+the way they do in a real vehicle.
+
+Two observation modes:
+
+- **Clean** (13 dimensions) — car state plus track-relative geometry
+- **Pixels** — a rendered top-down view, for vision-based agents
+
+and two action spaces: 3 continuous (steer, gas, brake) or 5 discrete.
+
+```bash
+pixi run mojo run -I . examples/car_racing/rainbow_car_racing_pixel_hybrid_training.mojo
+pixi run mojo run -I . examples/car_racing/play_car_racing.mojo   # drive it yourself
+```
+
+:::note[Reward shaping is unfinished]
+CarRacing's reward is still being tuned, and the tire model makes it
+substantially harder than the Gymnasium original — a policy that works there may
+not transfer. Treat comparative numbers with care.
+:::
+
+## Batched GPU training
+
+All three implement `GPUDiscreteEnv` or `GPUContinuousEnv` and wrap into a
+batched driver:
+
+```mojo
+from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
+
+comptime N_ENVS = 64
+comptime EnvT = BatchedGpuEnv[LunarLander[DT], N_ENVS, OBS_DIM, ACT_DIM]
+```
+
+Because the physics is written for the batch dimension, going from 1 to 256
+environments costs almost nothing per environment — it is the same kernel with a
+wider grid. See [CPU and GPU paths](/concepts/cpu-gpu/).
+
+## Next
+
+- [3D locomotion](/environments/3d-locomotion/) — the generalized-coordinates engine
+- [Arcade](/environments/arcade/) — native GPU game engines
+- [CPU and GPU paths](/concepts/cpu-gpu/) — batched environment mechanics

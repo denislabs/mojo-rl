@@ -1,0 +1,134 @@
+---
+title: TD-MPC2
+description: A learned latent world model used for planning at decision time with MPPI, rather than for generating data.
+sidebar:
+  order: 2
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="beta" note="Works; MPPI planning is intricate and the world model is sensitive." />
+
+**Temporal Difference Model Predictive Control** learns a latent world model and
+**plans with it at every decision**, sampling action sequences and optimizing
+them online.
+
+```mojo
+from mojo_rl.deep_agents.tdmpc2 import TDMPC2Agent
+```
+
+
+<Papers label="Papers">
+	<Paper
+		title="TD-MPC2: Scalable, Robust World Models for Continuous Control"
+		authors="Hansen, Su, Wang"
+		year="2024"
+		arxiv="2310.16828"
+		venue="ICLR 2024"
+	/>
+	<Paper
+		title="Temporal Difference Learning for Model Predictive Control"
+		authors="Hansen, Wang, Su"
+		year="2022"
+		arxiv="2203.04955"
+		venue="ICML 2022"
+		note="TD-MPC, the predecessor."
+	/>
+</Papers>
+
+## Planning, not a policy
+
+This is the distinguishing property. [SAC](/algorithms/sac/) has a policy
+network that maps observation to action. TD-MPC2 has a **model, a value function
+and a planner**, and each action comes from a fresh optimization:
+
+1. Sample many action sequences over a short horizon
+2. Roll each through the learned latent dynamics
+3. Score them: predicted rewards plus the terminal value estimate
+4. Refit the sampling distribution toward the best (**MPPI**)
+5. Repeat a few iterations, then execute the first action of the winner
+
+A policy prior guides the sampling so the search stays tractable — without it,
+random sequences in a high-dimensional action space almost never find anything
+good.
+
+The advantage over [MBPO](/algorithms/mbpo/) is that planning can correct model
+error *at decision time*, rather than baking it into a policy through training.
+The cost is that every action requires an optimization, which makes inference
+much more expensive.
+
+## The world model
+
+Trained end to end on:
+
+- **Latent dynamics** — `(z, a) → z′`
+- **Reward** prediction
+- **Value** prediction (distributional)
+- **Policy prior** for sampling
+
+Like [MuZero](/algorithms/muzero/), it never reconstructs observations. Only the
+quantities planning needs are predicted, which is a far easier learning problem
+than pixel reconstruction.
+
+Latents are normalized with **`SimNorm`** — simplicial normalization, projecting
+the latent onto a set of simplices, which keeps its scale bounded without the
+collapse that plain normalization can cause.
+
+## Building it
+
+```bash
+pixi run -e nvidia mojo run -I . examples/half_cheetah/tdmpc2_half_cheetah_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/hopper/tdmpc2_hopper_gpu.mojo
+pixi run mojo run -I . examples/half_cheetah/tdmpc2_half_cheetah_eval.mojo
+```
+
+Note the separate eval script — because planning is expensive, evaluation is
+usually a distinct run rather than something folded into training.
+
+## Watch out for
+
+:::note[HalfCheetah's angle penalty was removed because of this algorithm]
+HalfCheetah once carried `ANGLE_PENALTY_WEIGHT = 0.5`, added to suppress a
+"running on its head" local optimum that SAC found.
+
+That penalty actively **blocked TD-MPC2** — it produced a Q-pessimism collapse.
+Later optimizations made it unnecessary for SAC too, so it is now `0.0`,
+matching reference dm_control.
+
+The general lesson: reward shaping tuned for one algorithm can break another.
+Planning methods are especially sensitive, because a shaped penalty distorts the
+value landscape the planner is searching.
+:::
+
+**Planning cost dominates.** Simulations × horizon × iterations forward passes
+per action. Profile before assuming training is the bottleneck.
+
+**Normalization layers matter.** A bug in this repo's dynamics LayerNorm cost
+real time to find — the model trained, the losses descended, and the planner
+produced nonsense. If planning underperforms while losses look healthy, suspect
+the world model before the planner.
+
+**GPU view shapes.** An MPC callback regression here came from a 2D view passed
+to a 1D kernel. Batched planning tensors are easy to reshape wrongly.
+
+## TD-MPC2, MBPO or DreamerV3?
+
+All three learn a model. What they *do* with it differs completely:
+
+| | Model used for | Inference cost |
+|---|---|---|
+| [MBPO](/algorithms/mbpo/) | generating training data | cheap — a policy forward pass |
+| **TD-MPC2** | planning at decision time | expensive — an optimization per action |
+| [DreamerV3](/algorithms/dreamerv3/) | training a policy in imagination | cheap — a policy forward pass |
+| [MuZero](/algorithms/muzero/) | tree search at decision time | expensive — MCTS per action |
+
+TD-MPC2 and MuZero both plan; TD-MPC2 uses sampling-based optimization over
+continuous actions, MuZero uses tree search over discrete ones.
+
+## Next
+
+- [MuZero](/algorithms/muzero/) — planning with tree search instead of MPPI
+- [DreamerV3](/algorithms/dreamerv3/) — learning a policy in imagination
+- [MBPO](/algorithms/mbpo/) — using a model for data instead of planning

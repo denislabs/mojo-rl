@@ -1,0 +1,64 @@
+name: docs
+
+# The documentation site (docs-site/) builds independently of the Mojo
+# toolchain, so it gets its own workflow rather than a job in ci.yml — no pixi
+# environment to resolve, and it runs in well under a minute.
+#
+# Two guards bracket the build, both because the failure they catch is silent:
+#   check-refs — fails on any repo path cited in a page that does not exist.
+#     Documentation naming files rots quietly, and several paths in README.md
+#     were already stale when the site was started.
+#   check-og   — fails if a page's og:image does not resolve. The homepage
+#     shipped pointing at a 404 once; the tags were present and merely wrong.
+# They run as separate steps rather than via `pnpm run build` so a failure names
+# itself in the CI step list.
+
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - "docs-site/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs-site/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: docs-site
+    steps:
+      # Full checkout: check-refs resolves cited paths against the repository
+      # root, so examples/, tests/ and mojo_rl/ must be present.
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: docs-site/pnpm-lock.yaml
+
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      - name: check repo references
+        run: pnpm run check:refs
+
+      - name: build
+        run: pnpm exec astro build
+
+      - name: check social cards
+        run: pnpm run check:og

@@ -1,0 +1,152 @@
+---
+title: Algorithms
+description: 40+ RL algorithms organised by family and complexity — from a lookup table to learned world models.
+sidebar:
+  order: 1
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" note="Maturity varies sharply by algorithm — see the table at the bottom." />
+
+Forty-plus algorithms, organised by **family** and ordered by increasing
+complexity. Each family shares an interface, a training driver and a set of
+failure modes, so reading one page usually transfers to its siblings.
+
+## The families
+
+### 1 · Tabular and linear
+
+No neural network, no GPU. Exact, fast, and the right place to verify an
+environment or an idea before scaling.
+
+| Page | Covers |
+|---|---|
+| [TD methods](/algorithms/tabular/td-methods/) | Q-Learning · SARSA · Expected SARSA · Double Q · n-step · SARSA(λ) · Monte Carlo · Dyna-Q · priority sweeping · replay variants |
+| [Function approximation](/algorithms/tabular/function-approximation/) | tile coding · polynomial and RBF features |
+| [Classical policy gradient](/algorithms/tabular/policy-gradient/) | REINFORCE · actor-critic · linear A2C/PPO · linear DDPG/TD3/SAC |
+
+### 2 · Value-based
+
+Learn a value network over **discrete** actions and act greedily on it.
+
+| Page | Covers |
+|---|---|
+| [DQN](/algorithms/dqn/) | Q-network · replay · target network · Double · Dueling · Noisy |
+| [C51 and Rainbow](/algorithms/rainbow/) | distributional value learning · the six Rainbow components |
+
+### 3 · Policy gradient
+
+Learn the policy directly. On-policy: collect fresh data, update, discard.
+
+| Page | Covers |
+|---|---|
+| [A2C](/algorithms/a2c/) | advantage actor-critic — a single-epoch PPO |
+| [PPO](/algorithms/ppo/) | clipped surrogate · GAE · multi-epoch · discrete and continuous |
+
+### 4 · Continuous control
+
+Off-policy actor-critic over a replay buffer. The workhorses for robotics-style
+tasks.
+
+| Page | Covers |
+|---|---|
+| [DDPG](/algorithms/ddpg/) | deterministic actor · single critic · the overestimation problem |
+| [TD3](/algorithms/td3/) | twin critics · delayed updates · target smoothing |
+| [SAC](/algorithms/sac/) | maximum entropy · auto-tuned temperature — **the recommended default** |
+| [REDQ](/algorithms/redq/) | N-critic ensemble · high update-to-data ratio |
+
+### 5 · Model-based
+
+Learn a model of the world and use it — for data, for planning, or to train a
+policy inside it.
+
+| Page | Model used for |
+|---|---|
+| [MBPO](/algorithms/mbpo/) | generating synthetic training data |
+| [TD-MPC2](/algorithms/tdmpc2/) | planning at decision time (MPPI) |
+| [DreamerV3](/algorithms/dreamerv3/) | training a policy in imagination |
+| [Dreamer 4](/algorithms/dreamer4/) | as DreamerV3, with a transformer — *experimental* |
+
+### 6 · Planning — the zero-series
+
+Monte-Carlo tree search, with self-play as the training signal.
+
+| Page | Dynamics |
+|---|---|
+| [AlphaZero](/algorithms/alphazero/) | a known simulator |
+| [MuZero](/algorithms/muzero/) | a learned latent model |
+| [EfficientZero V2](/algorithms/efficient-zero-v2/) | learned, plus consistency and sampled actions |
+
+## Choosing one
+
+**Discrete actions, want it to work** — [DQN](/algorithms/dqn/), or
+[Rainbow](/algorithms/rainbow/) if you need the sample efficiency.
+
+**Continuous actions** — [SAC](/algorithms/sac/). Its auto-tuned temperature
+removes the hyperparameter people most often get wrong.
+
+**Cheap simulation, want reliability** — [PPO](/algorithms/ppo/). More
+environment steps than SAC, far harder to destabilise, and the batched GPU driver
+makes the sample cost affordable.
+
+**Sample efficiency above all** — the model-based tier. Budget time for it.
+
+**Two-player games** — [AlphaZero](/algorithms/alphazero/) if you have the rules,
+which for [board games](/environments/board-games/) you do.
+
+**Learning how any of this works** — start with
+[TD methods](/algorithms/tabular/td-methods/) on
+[GridWorld](/environments/tabular/). Twenty lines, seconds to run, and you
+already know the right answer.
+
+## Maturity
+
+| Algorithm | Status | Notes |
+|---|---|---|
+| Tabular and linear | **stable** | well tested, exact |
+| DQN · Double · Dueling · Noisy | **stable** | |
+| C51 · Rainbow | **stable** | mind the support range |
+| A2C · PPO · PPO-discrete | **stable** | |
+| DDPG · TD3 · SAC | **stable** | SAC is the most exercised path in the repo |
+| REDQ | **beta** | LayerNorm critic effectively required |
+| MBPO | **beta** | needed Q-explosion fixes |
+| TD-MPC2 | **beta** | works; MPPI planning is intricate |
+| DreamerV3 | **beta** | full Atari Pong reproduction achieved |
+| AlphaZero · MuZero · EfficientZero V2 | **beta** | GPU MCTS has sharp edges |
+| Dreamer 4 | **experimental** | known open issue — see its page |
+
+## The facade pattern
+
+Every deep agent has the same shape: one package per algorithm exposing an
+`XxxAgent` over a trainer plus a shared training driver.
+
+```mojo
+from mojo_rl.deep_agents.dqn import DQNAgent
+from mojo_rl.deep_agents.sac import SACAgent
+from mojo_rl.deep_agents.ppo import PPOAgent
+from mojo_rl.deep_agents.muzero import MuZeroAgent
+from mojo_rl.deep_agents.dreamerv3 import DreamerV3Agent
+```
+
+Networks arrive as compile-time parameters, so an agent does not know what
+architecture it is optimizing — see
+[compile-time composition](/concepts/compile-time-composition/).
+
+Tabular and linear agents live in a separate package with a simpler interface:
+
+```mojo
+from mojo_rl.agents import QLearningAgent, SARSAAgent, TiledQLearningAgent
+```
+
+:::note[Some names exist in both packages]
+`PPOAgent`, `DDPGAgent`, `TD3Agent` and `SACAgent` exist in both
+`mojo_rl.agents` (linear) and `mojo_rl.deep_agents` (neural). Check the import
+path.
+:::
+
+## Next
+
+- [Writing your own agent](/algorithms/custom/) — the facade pattern in detail
+- [Environments](/environments/) — what to train on
+- [Traits](/concepts/traits/) — the interfaces involved

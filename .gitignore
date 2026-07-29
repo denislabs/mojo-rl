@@ -222,6 +222,8 @@ references/
 screenshots/
 INSTALL.md
 docs/
+# ...but the docs site's content collection lives in a directory named `docs/`
+!docs-site/src/content/docs/
 .claude/
 .cursor/
 .vscode/

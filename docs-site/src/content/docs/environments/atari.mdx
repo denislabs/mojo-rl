@@ -1,0 +1,140 @@
+---
+title: Atari 2600
+description: A complete 6502, TIA and RIOT emulator in Mojo — 100+ ROMs, used as the correctness reference for the native arcade engines.
+sidebar:
+  order: 8
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" note="CPU only — the Metal compiler cannot handle 6502 opcode dispatch." />
+
+A full Atari 2600 emulator written in Mojo: the **6502 CPU**, the **TIA** video
+and audio chip, and the **RIOT** RAM/IO/timer chip. It runs original ROMs, and
+its cycle-accurate TIA is the sole renderer.
+
+This is not a shortcut to more environments. It exists to answer a specific
+question about the [native arcade engines](/environments/arcade/): are they
+faithful? Validating a reimplementation against the actual hardware behaviour is
+a stronger check than comparing training curves.
+
+
+<Papers label="Papers">
+	<Paper
+		title="The Arcade Learning Environment: An Evaluation Platform for General Agents"
+		authors="Bellemare, Naddaf, Veness, Bowling"
+		year="2012"
+		arxiv="1207.4708"
+		venue="JAIR 2013"
+		note="The RAM-address approach to reward and termination extraction."
+	/>
+	<Paper
+		title="Revisiting the Arcade Learning Environment: Evaluation Protocols and Open Problems for General Agents"
+		authors="Machado, Bellemare, Talvitie et al."
+		year="2017"
+		arxiv="1709.06009"
+		venue="JAIR 2018"
+		note="Sticky actions and the modern evaluation protocol."
+	/>
+	<Paper
+		title="Model-Based Reinforcement Learning for Atari"
+		authors="Kaiser, Babaeizadeh, Milos et al."
+		year="2019"
+		arxiv="1903.00374"
+		venue="ICLR 2020"
+		note="SimPLe — introduced the Atari 100k budget."
+	/>
+</Papers>
+
+## What it emulates
+
+| Component | Scope |
+|---|---|
+| **6502 CPU** | full instruction set, cycle counting |
+| **TIA** | cycle-accurate video, playfield, sprites, collisions |
+| **RIOT** | 128 bytes RAM, timers, controller I/O |
+| **Cartridge** | standard bank-switching schemes |
+
+Around 30,000 CPU instructions execute per rendered frame.
+
+## The game registry
+
+One compiled binary plays every game. `AtariGame` is a value-enum id, and
+everything game-specific dispatches at **runtime**:
+
+```mojo
+game.rom_file()          # "roms/<name>.bin", ale-py naming
+game.num_actions()       # minimal action set size
+game.action(idx)         # the idx-th ALE action
+game_signals(game, ram)  # score, reward, lives, terminal — read from RAM
+```
+
+Runtime dispatch is deliberate. The lookup costs a handful of RAM reads per
+step, against ~30k emulated instructions per frame — invisible — and it avoids
+compiling one binary per game.
+
+Score, reward and termination are extracted by reading the **known RAM
+addresses** for each title, which is how ALE does it too. Around 100 ROMs are
+supported, verified frame-exact against reference behaviour.
+
+## Observation modes
+
+The emulator supports several preprocessing pipelines, matching the conventions
+different papers assume:
+
+| Mode | Output | Used by |
+|---|---|---|
+| `0` | RAM (128 bytes) | RAM-based agents |
+| `1` | 4×84×84 grayscale stack | standard DQN / Rainbow |
+| `2` | RGB-96 | EfficientZero V2 |
+| `3` | grayscale-96, single frame | DreamerV3 |
+| `4` | grayscale-96, 4-frame stack | DreamerV3 variants |
+| `5` | grayscale-64, single frame | DreamerV3 reference resolution |
+
+Matching a paper's preprocessing exactly matters more than it sounds — resolution
+and frame-stacking choices materially change what a world model can learn.
+
+## Setup
+
+ROMs are not distributed with the project. Fetch the canonical Farama bundle:
+
+```bash
+pixi run setup-roms
+```
+
+Then:
+
+```bash
+pixi run mojo run -I . examples/arcade_games/play_atari_pong.mojo
+pixi run mojo run -I . examples/arcade_games/atari_smoke_all.mojo
+```
+
+## Training on it
+
+It works, and DreamerV3 on emulated Pong is the project's most substantial
+result — a full reproduction reaching a perfect +21 game by 90k steps and
+averaging +14–16 at 100k, using the grayscale-96 single-frame mode.
+
+```bash
+pixi run -e nvidia mojo run -I . examples/atari/dreamerv3_atari_pong_training.mojo
+pixi run -e nvidia mojo run -I . examples/arcade_games/rainbow_atari_pong_pixel_training_gpu.mojo
+```
+
+:::caution[CPU only]
+The emulator does not run on GPU. The 6502's opcode dispatch is a large switch
+over instruction bytes, and the divergence across threads crashes the Metal
+compiler outright. An experimental GPU spike reached ~736K fps but is parked.
+
+Practically: emulated environments step on the CPU while the agent trains on the
+GPU, so the environment is the bottleneck. For volume training on these three
+games, use the [native arcade engines](/environments/arcade/) — they are
+GPU-batched and orders of magnitude faster. Use the emulator to check that what
+you trained against was real.
+:::
+
+## Next
+
+- [Arcade games](/environments/arcade/) — the fast native reimplementations
+- [Environments overview](/environments/) — the full catalogue

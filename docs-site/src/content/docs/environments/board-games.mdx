@@ -1,0 +1,106 @@
+---
+title: Board games
+description: Tic-Tac-Toe, Connect Four, Go and Chess — two-player perfect-information games for the zero-series planners.
+sidebar:
+  order: 9
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Demo from '~/components/Demo.astro';
+import DemoGrid from '~/components/DemoGrid.astro';
+
+<Maturity level="beta" note="Go and Chess are implemented but far less exercised than the smaller two." />
+
+Four two-player perfect-information games. These exist for the **zero-series**
+agents — AlphaZero, MuZero, EfficientZero V2 — which learn by self-play and
+Monte-Carlo tree search rather than from an external reward stream.
+
+<DemoGrid min="14rem">
+	<Demo name="tic_tac_toe_playable" caption="Tic-Tac-Toe" meta="27 obs · 9 actions" />
+	<Demo name="connect_four_playable" caption="Connect Four" meta="126 obs · 7 actions" />
+	<Demo name="chess_playable" caption="Chess" meta="896 obs · 4672 actions" />
+</DemoGrid>
+
+| Game | Obs | Actions | Board |
+|---|---|---|---|
+| Tic-Tac-Toe | 27 | 9 | 3×3 |
+| Connect Four | 126 | 7 | 6×7 (42 cells) |
+| Go | 4 × size² | size² + 1 | configurable |
+| Chess | 896 | 4672 | 8×8 |
+
+Observations are **planes**, not flat cell values — Tic-Tac-Toe's 27 is 3 planes
+of 9 (own pieces, opponent pieces, side to move), Connect Four's 126 is 3 × 42,
+and Go's is 4 planes. This is the standard AlphaZero encoding and it is what lets
+a convolutional network read the position.
+
+Chess's 4672 actions are the AlphaZero move encoding: every (from-square,
+move-type) pair, masked to legal moves each turn.
+
+## The two-player traits
+
+Board games use their own trait, because a self-play environment needs to track
+whose turn it is and report outcomes from a player's perspective:
+
+```mojo
+trait TwoPlayerDiscreteEnv(BoxDiscreteActionEnv)
+trait GPUTwoPlayerDiscreteEnv     # batched self-play on device
+```
+
+```mojo
+from mojo_rl.envs import TicTacToeEnv, ConnectFourEnv, GoEnv, ChessEnv
+```
+
+## Self-play training
+
+```bash
+pixi run mojo run -I . examples/board_games/tictactoe_alphazero_v2.mojo
+pixi run -e nvidia mojo run -I . examples/board_games/connect_four_alphazero_v2.mojo
+```
+
+Tic-Tac-Toe is the smoke test — small enough to solve completely, so a correct
+AlphaZero implementation reaches perfect play and every game draws. If it does
+not, the bug is real and visible.
+
+Connect Four is the real target: large enough to be interesting, small enough to
+train in reasonable time, and the game the GPU MCTS work was tuned against.
+
+:::note[Board games sample uniformly]
+Prioritized replay is **wrong** for these. The zero-series papers sample
+uniformly from self-play games, and using PER here degrades results — set
+`use_per=False`. This is paper-correct behaviour, not a workaround.
+:::
+
+:::caution[Target-network copies must include normalization state]
+A subtle failure worth knowing: when promoting a network during self-play, a
+hard copy that misses BatchNorm running statistics produces an apparently
+working network whose evaluation collapses. Symptoms look like a bad training
+signal; the cause is stale normalization state.
+:::
+
+## GPU MCTS
+
+Tree search runs on-device through `mojo_rl.planners.tree_search`, with
+`GenericGPUMCTS` and `GumbelGPUMCTS` implementations. Search batches across
+simulations rather than running a tree per environment sequentially.
+
+:::tip[Sparse trees need more simulations]
+GPU MCTS explores more sparsely than a sequential CPU implementation at the same
+simulation count. Roughly doubling `num_simulations` restores comparable play
+strength.
+:::
+
+CUDA-graph capture is enabled for the training step but **hard-gated off** for
+MCTS itself — capturing the search kernels is not currently safe.
+
+## Playing them
+
+```bash
+pixi run mojo run -I . examples/board_games/tic_tac_toe_playable.mojo
+pixi run mojo run -I . examples/board_games/connect_four_playable.mojo
+pixi run mojo run -I . examples/board_games/chess_playable.mojo
+```
+
+## Next
+
+- [Procgen](/environments/procgen/) — procedural generalization benchmarks
+- [Environments overview](/environments/) — the full catalogue

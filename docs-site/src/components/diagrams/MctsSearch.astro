@@ -1,0 +1,109 @@
+---
+/**
+ * MctsSearch — one MuZero simulation descending a tree built in latent space.
+ *
+ * The point the diagram has to make is that *none* of these nodes are real
+ * environment states: the root comes from the representation net h, every child
+ * from the dynamics net g, and every value from the prediction net f. The tree
+ * is entirely imagined.
+ */
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 400" role="img"
+		aria-label="MuZero MCTS: a tree expanded in latent space by the dynamics network">
+		<defs>
+			<marker id="mc-green" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-green" />
+			</marker>
+			<marker id="mc-cyan" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-cyan" />
+			</marker>
+		</defs>
+
+		<!-- observation → root, via h -->
+		<g class="dg-node dg-node--cyan">
+			<rect x="20" y="30" width="150" height="56" rx="10" />
+			<text x="95" y="56" class="dg-title">observation</text>
+			<text x="95" y="74" class="dg-sub">real</text>
+		</g>
+		<path class="dg-edge dg-edge--cyan" marker-end="url(#mc-cyan)"
+			d="M 170 58 L 268 58" />
+		<text x="196" y="46" class="dg-label dg-label--cyan">h</text>
+
+		<!-- tree edges (drawn before nodes so nodes sit on top) -->
+		<g class="dg-tree-edge">
+			<path d="M 300 86 L 210 156" />
+			<path d="M 300 86 L 470 156" />
+			<path d="M 210 212 L 130 282" />
+			<path d="M 210 212 L 290 282" />
+			<path d="M 470 212 L 390 282" />
+			<path d="M 470 212 L 550 282" />
+		</g>
+
+		<!-- the searched path, highlighted -->
+		<g class="dg-tree-edge dg-tree-edge--hot">
+			<path d="M 300 86 L 210 156" />
+			<path d="M 210 212 L 290 282" />
+		</g>
+
+		<!-- nodes -->
+		<circle cx="300" cy="58" r="28" class="dg-tree-node dg-tree-node--root" />
+		<text x="300" y="64" class="dg-tree-label">s⁰</text>
+
+		<circle cx="210" cy="184" r="26" class="dg-tree-node dg-tree-node--hot" />
+		<text x="210" y="190" class="dg-tree-label">s¹</text>
+
+		<circle cx="470" cy="184" r="26" class="dg-tree-node" />
+		<circle cx="130" cy="308" r="24" class="dg-tree-node" />
+		<circle cx="390" cy="308" r="24" class="dg-tree-node" />
+		<circle cx="550" cy="308" r="24" class="dg-tree-node" />
+
+		<circle cx="290" cy="308" r="26" class="dg-tree-node dg-tree-node--new" />
+		<text x="290" y="314" class="dg-tree-label">s²</text>
+
+		<!-- g label on the hot edge -->
+		<text x="238" y="128" class="dg-label dg-label--green">g</text>
+		<text x="262" y="256" class="dg-label dg-label--green">g</text>
+
+		<!-- f on the new node -->
+		<path class="dg-edge dg-edge--purple" marker-end="url(#mc-green)"
+			d="M 318 308 L 400 308" style="display:none" />
+		<text x="326" y="352" class="dg-label dg-label--purple">f → p, v</text>
+
+		<!-- the three networks, right panel -->
+		<g class="dg-node dg-node--muted">
+			<rect x="620" y="30" width="240" height="56" rx="10" />
+			<text x="740" y="54" class="dg-title">h · representation</text>
+			<text x="740" y="72" class="dg-sub">obs → s⁰</text>
+		</g>
+		<g class="dg-node dg-node--green">
+			<rect x="620" y="102" width="240" height="56" rx="10" />
+			<text x="740" y="126" class="dg-title">g · dynamics</text>
+			<text x="740" y="144" class="dg-sub">(s, a) → s′, r</text>
+		</g>
+		<g class="dg-node dg-node--purple">
+			<rect x="620" y="174" width="240" height="56" rx="10" />
+			<text x="740" y="198" class="dg-title">f · prediction</text>
+			<text x="740" y="216" class="dg-sub">s → policy, value</text>
+		</g>
+
+		<text x="620" y="272" class="dg-sub dg-sub--left">
+			Every node below the root is
+		</text>
+		<text x="620" y="292" class="dg-sub dg-sub--left">
+			imagined — the environment is
+		</text>
+		<text x="620" y="312" class="dg-sub dg-sub--left">
+			never queried during search.
+		</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--cyan">real observation</span>
+		<span class="diagram__key diagram__key--green">latent transition (g)</span>
+		<span class="diagram__key diagram__key--purple">evaluation (f)</span>
+	</figcaption>
+</figure>

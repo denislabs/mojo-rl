@@ -1,0 +1,179 @@
+---
+title: DreamerV3
+description: A recurrent latent world model learned from pixels, with actor and critic trained almost entirely inside it.
+sidebar:
+  order: 6
+---
+
+import Maturity from '~/components/Maturity.astro';
+import DreamerLoops from '~/components/diagrams/DreamerLoops.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="beta" note="A full Atari Pong reproduction has been achieved; the setup is intricate and sensitive." />
+
+DreamerV3 learns a **world model from pixels**, compressing frames into recurrent
+latent states. It then trains its actor and critic almost entirely *inside that
+model* — on imagined rollouts — so a few real episodes go a long way.
+
+Where [MuZero](/algorithms/muzero/) plans by searching a learned model at
+decision time, Dreamer trains a reactive policy by dreaming in it. No search at
+inference: the actor just runs.
+
+
+<Papers label="Papers">
+	<Paper
+		title="Mastering Diverse Domains through World Models"
+		authors="Hafner, Pasukonis, Ba, Lillicrap"
+		year="2023"
+		arxiv="2301.04104"
+		note="DreamerV3."
+	/>
+	<Paper
+		title="Mastering Atari with Discrete World Models"
+		authors="Hafner, Lillicrap, Norouzi, Ba"
+		year="2020"
+		arxiv="2010.02193"
+		venue="ICLR 2021"
+		note="DreamerV2 — the categorical latent."
+	/>
+</Papers>
+
+## Two loops
+
+<DreamerLoops />
+
+**The real loop** collects episodes into a replay buffer and trains the world
+model on them. **The imagination loop** never touches the environment: it rolls
+the latent state forward ~15 steps under the current policy and trains the actor
+and critic on those imagined trajectories.
+
+## The RSSM
+
+The world model is a Recurrent State-Space Model. Its latent splits in two:
+
+- **h** — a deterministic recurrent state, carrying history
+- **z** — a stochastic categorical state, capturing what is uncertain
+
+```
+h_t = f(h_{t−1}, z_{t−1}, a_{t−1})        deterministic recurrence
+z_t ~ q(z_t | h_t, x_t)                    posterior, given the observation
+ẑ_t ~ p(z_t | h_t)                         prior, without it
+```
+
+The world model is trained by reconstruction + reward + continue prediction, plus
+a KL between the posterior and the prior. That KL is the crux: it forces the
+prior to predict what the posterior will encode, which is exactly what makes
+imagination possible without observations.
+
+**Behaviour** is then learned on latent rollouts: the critic regresses λ-returns,
+the actor maximises them plus an entropy bonus. No decoder is involved — imagined
+training never renders a pixel.
+
+## Building it in mojo-rl
+
+DreamerV3 has the largest parameter list in the framework, because the world
+model, encoder, decoder and both heads are all configured at compile time. From
+`examples/atari/dreamerv3_atari_pong_training.mojo`:
+
+```mojo
+comptime Ag = DreamerV3Agent[
+    "gpu",
+    OBS, ACT,
+    DETER, H, STOCH, CLASSES,
+    BLOCKS, TOKEN, DEC_U, HU, VU, PU,
+    BINS, B, T, T_IMAG, CAP,
+    True,            # DISCRETE — categorical actor
+    ENC, DEC,        # encoder / decoder Modules
+    True,            # RECON_SIGMOID — reference pixel recon
+    Zero,            # OUT_INIT — reference outscale 0 on reward/value heads
+    TruncNormalIn,   # NET_INIT — reference winit, σ = √(1/fan_in)
+]
+comptime Env = AtariEnv[3, DT]   # OBS_MODE=3, gray-96 single frame
+```
+
+| Parameter | Meaning |
+|---|---|
+| `DETER` | width of the deterministic state `h` |
+| `STOCH` × `CLASSES` | the categorical latent `z` (e.g. 32 × 32) |
+| `T` | sequence length sampled from replay |
+| `T_IMAG` | imagination horizon (~15) |
+| `B` | batch size |
+| `BINS` | atoms in the two-hot reward/value heads |
+| `DISCRETE` | categorical actor vs. Gaussian |
+
+For pixel observations pass the CNN encoder/decoder and set `OBS = C*H*W`:
+
+```mojo
+ENC = DreamerEncoderCNN[C, H, W, BASE, TOKEN]
+DEC = DreamerDecoderCNN[STOCH * CLASSES + DETER, C, H, W, BASE]
+```
+
+The `OUT_INIT=Zero` and `NET_INIT=TruncNormalIn` choices are not cosmetic — they
+match the reference implementation's initialization, and DreamerV3 is sensitive
+enough to it that departures show up as failure to converge.
+
+## Results
+
+The strongest model-based result in the repository: **DreamerV3 on emulated Atari
+Pong**, reaching a perfect **+21** game by 90k steps and averaging **+14–16** at
+100k, using `OBS_MODE=3` (grayscale-96 single frame). That is a genuine
+reproduction of the paper's Atari behaviour, collapse-free and ungated.
+
+```bash
+pixi run -e nvidia mojo run -I . examples/atari/dreamerv3_atari_pong_training.mojo
+pixi run -e nvidia mojo run -I . examples/car_racing/dreamerv3_car_racing_pixel_training.mojo
+pixi run -e nvidia mojo run -I . examples/cartpole/cartpole_dreamerv3_training_gpu.mojo
+```
+
+CartPole is the sane place to start — small, fast, and it exercises the whole
+machinery.
+
+## Watch out for
+
+These are all real failures encountered in this repository, and every one is
+quiet rather than loud.
+
+:::caution[Terminal observations must be stored]
+The single hardest bug in the Dreamer work: if the terminal observation is never
+written to replay, the **continue predictor cannot be learned** — the model never
+sees an episode end. Training proceeds, losses look reasonable, and the agent
+never learns to avoid termination.
+:::
+
+**Prev-action alignment.** The action fed alongside an observation must be the one
+that *led to* it, not the one taken from it. An off-by-one here makes the
+dynamics unlearnable while every loss still descends.
+
+**Imagination cotangent length.** Backpropagating through an imagined rollout of
+`T_IMAG` steps uses a cotangent of length `T_IMAG − 1`, not `T − 1`. Getting it
+wrong reads out of bounds.
+
+**TwoHot and symlog.** The reward and value heads use a two-hot categorical
+encoding. Whether symlog scaling is applied is a per-head decision; in this
+implementation DreamerV3's TwoHot uses `SYMLOG=False`.
+
+**Never capture a CUDA graph during LR warmup.** The captured graph freezes the
+learning rate at whatever it was at capture time, so warmup silently stops
+working.
+
+## Dreamer 4
+
+An in-progress successor using a transformer world model with a tokenizer rather
+than an RSSM.
+
+```mojo
+from mojo_rl.deep_agents.dreamer4 import Dreamer4Agent
+```
+
+:::caution[Experimental]
+Dreamer 4 is active research and currently has a known open issue: a perceptual
+loss borrowed from an out-of-domain surrogate corrupts token reconstruction.
+Not recommended as a starting point.
+:::
+
+## Next
+
+- [MuZero](/algorithms/muzero/) — the search-based alternative
+- [SAC](/algorithms/sac/) — a model-free baseline to compare against
+- [Atari 2600](/environments/atari/) — where the Pong result was produced

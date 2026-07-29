@@ -1,0 +1,21 @@
+---
+/**
+ * Papers — wrapper for one or more <Paper> citations.
+ *
+ * Renders as a labelled block so the references are visually distinct from the
+ * prose without competing with it.
+ */
+interface Props {
+	/** Heading for the block. Defaults to "Paper" / "Papers" by content. */
+	label?: string;
+}
+
+const { label = 'Reference' } = Astro.props;
+---
+
+<aside class="papers not-content" aria-label={label}>
+	<span class="papers__label">{label}</span>
+	<ul class="papers__list">
+		<slot />
+	</ul>
+</aside>

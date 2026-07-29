@@ -1,0 +1,178 @@
+---
+title: TD methods
+description: Q-Learning, SARSA, eligibility traces, Dyna-Q and replay — the exact tabular algorithms.
+sidebar:
+  order: 1
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" />
+
+Temporal-difference learning on a Q-table: one value per state-action pair,
+updated from single transitions. Exact, fast, and the right place to check that
+an environment or an idea is correct before scaling.
+
+All implement [`TabularAgent`](/concepts/traits/), so switching is a one-line
+change.
+
+```mojo
+from mojo_rl.agents import QLearningAgent, SARSAAgent, ExpectedSARSAAgent
+```
+
+
+<Papers label="Papers">
+	<Paper
+		title="Learning from Delayed Rewards"
+		authors="Watkins"
+		year="1989"
+		venue="PhD thesis, Cambridge"
+		note="Q-learning."
+	/>
+	<Paper
+		title="On-line Q-learning using connectionist systems"
+		authors="Rummery, Niranjan"
+		year="1994"
+		venue="Cambridge tech. report"
+		note="SARSA."
+	/>
+	<Paper
+		title="Reinforcement Learning: An Introduction"
+		authors="Sutton, Barto"
+		year="2018"
+		url="http://incompleteideas.net/book/the-book.html"
+		venue="MIT Press, 2nd ed."
+		note="The standard reference for everything on this page."
+	/>
+</Papers>
+
+## The core four
+
+| Agent | Update |
+|---|---|
+| `QLearningAgent` | off-policy — `Q(s,a) += α(r + γ·max Q(s′,a′) − Q(s,a))` |
+| `SARSAAgent` | on-policy — uses the action actually taken next |
+| `ExpectedSARSAAgent` | uses `E[Q(s′,a′)]` under the policy — lower variance |
+| `DoubleQLearningAgent` | two Q-tables, reducing overestimation bias |
+
+The Q-Learning/SARSA distinction is not academic, and
+[CliffWalking](/environments/tabular/) shows it directly:
+
+- **Q-Learning** learns the optimal path along the cliff edge, because its update assumes greedy future behaviour. While exploring with ε-greedy it therefore falls off regularly, and its online returns look bad.
+- **SARSA** learns a safer route one row back, because its update accounts for the exploratory actions it will actually take.
+
+Both are correct. They answer different questions.
+
+`DoubleQLearningAgent` addresses the same overestimation bias that
+[TD3 and SAC](/algorithms/td3/) attack with twin critics — using the max of
+noisy estimates systematically inflates values, and decoupling selection from
+evaluation cancels most of it.
+
+## Multi-step and eligibility traces
+
+| Agent | Notes |
+|---|---|
+| `NStepSARSAAgent` | configurable n-step returns |
+| `SARSALambdaAgent` | eligibility traces (replacing traces) |
+| `MonteCarloAgent` | first-visit MC over complete episodes |
+
+Traces propagate credit backwards along the whole visited path rather than one
+step at a time, so `SARSALambdaAgent` typically converges in noticeably fewer
+episodes on small problems.
+
+```mojo
+var agent = SARSALambdaAgent(
+    num_states=env.num_states(),
+    num_actions=env.num_actions(),
+    learning_rate=0.1,
+    discount_factor=0.99,
+    lambda_=0.9,          # trace decay
+    epsilon=1.0,
+    epsilon_decay=0.995,
+    epsilon_min=0.01,
+)
+```
+
+`lambda_` interpolates between one-step TD (`0.0`) and Monte Carlo (`1.0`).
+
+## Model-based planning
+
+| Agent | Notes |
+|---|---|
+| `DynaQAgent` | Q-Learning plus updates from a learned model |
+| `PrioritySweepingAgent` | prioritizes updates by TD-error magnitude |
+
+Dyna-Q is the cheapest demonstration of why model-based RL matters. After each
+real step it runs several simulated updates from its learned transition model,
+so one real transition is exploited many times. On [Taxi](/environments/tabular/)
+that is a large win — and it is the same idea [MBPO](/algorithms/mbpo/) scales
+up with a neural dynamics ensemble.
+
+## With replay
+
+| Agent | Notes |
+|---|---|
+| `QLearningReplayAgent` | uniform replay buffer |
+| `QLearningPERAgent` | prioritized replay via a sum-tree |
+
+The tabular ancestors of [DQN](/algorithms/dqn/), useful for seeing what replay
+buys before neural networks are in the picture.
+
+## The common interface
+
+```mojo
+var agent = QLearningAgent(
+    num_states=env.num_states(),
+    num_actions=env.num_actions(),
+    learning_rate=0.1,
+    discount_factor=0.99,
+    epsilon=1.0,
+    epsilon_decay=0.995,
+    epsilon_min=0.01,
+)
+
+var metrics = agent.train(
+    env, num_episodes=500, max_steps_per_episode=100, verbose=True,
+)
+var eval_reward = agent.evaluate(env, num_episodes=10)
+```
+
+`train` returns `TrainingMetrics` — per-episode returns, means and maxima — so
+algorithms can be compared without instrumenting the loop.
+
+Exploration decays multiplicatively per episode, floored at `epsilon_min`.
+`select_action` explores; `get_best_action` is greedy and is what evaluation
+uses.
+
+## Running them
+
+```bash
+pixi run mojo run -I . examples/solve_gridworld.mojo
+pixi run mojo run -I . examples/solve_frozenlake.mojo
+pixi run mojo run -I . examples/solve_cliffwalking.mojo
+pixi run mojo run -I . examples/solve_taxi.mojo
+```
+
+Each trains several algorithms side by side and prints a comparison. The
+[tabular quickstart](/start/quickstart-tabular/) walks through the GridWorld one
+line by line.
+
+## Hyperparameter search
+
+```mojo
+from mojo_rl.core.hyperparam import TabularParamSpace, SearchResults
+```
+
+Parameter spaces, agent factories and CSV export for sweeps.
+
+```bash
+pixi run mojo run -I . examples/hyperparam_search_demo.mojo
+```
+
+## Next
+
+- [Function approximation](/algorithms/tabular/function-approximation/) — when the table stops fitting
+- [Classical policy gradient](/algorithms/tabular/policy-gradient/) — learning the policy directly
+- [DQN](/algorithms/dqn/) — where the table becomes a network

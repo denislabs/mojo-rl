@@ -1,0 +1,141 @@
+---
+title: AlphaZero
+description: MCTS over a known simulator, guided by a policy-value network trained purely from self-play.
+sidebar:
+  order: 1
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Demo from '~/components/Demo.astro';
+import DemoGrid from '~/components/DemoGrid.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="beta" note="Tic-Tac-Toe and Connect Four are exercised; Go and Chess far less so." />
+
+AlphaZero searches a **known simulator** with MCTS, guided by a network that
+supplies a policy prior and a value estimate. No dynamics model is learned —
+the rules are given.
+
+```mojo
+from mojo_rl.deep_agents.alphazero import AlphaZeroAgent
+```
+
+<DemoGrid min="14rem">
+	<Demo name="tic_tac_toe_playable" caption="Tic-Tac-Toe" meta="the correctness gate" />
+	<Demo name="connect_four_playable" caption="Connect Four" meta="the real target" />
+</DemoGrid>
+
+
+<Papers label="Papers">
+	<Paper
+		title="Mastering Chess and Shogi by Self-Play with a General Reinforcement Learning Algorithm"
+		authors="Silver et al."
+		year="2017"
+		arxiv="1712.01815"
+	/>
+	<Paper
+		title="Mastering the game of Go without human knowledge"
+		authors="Silver et al."
+		year="2017"
+		url="https://www.nature.com/articles/nature24270"
+		venue="Nature"
+		note="AlphaGo Zero — the self-play loop."
+	/>
+	<Paper
+		title="Policy improvement by planning with Gumbel"
+		authors="Danihelka et al."
+		year="2022"
+		url="https://openreview.net/forum?id=bERaNdoegnO"
+		venue="ICLR 2022"
+		note="The Gumbel variant."
+	/>
+</Papers>
+
+## The loop
+
+Self-play generates its own training data, and there is no external reward
+signal beyond the game outcome:
+
+1. **Play** a game against yourself. At each move, run MCTS from the current position, using the network's policy as a prior and its value in place of a rollout.
+2. **Act** on the search's visit counts, with temperature for exploration early in the game.
+3. **Store** every position with its visit distribution and the eventual game result.
+4. **Train** the network: policy toward the visit counts, value toward the outcome.
+5. Repeat.
+
+The self-improvement is the point. Search makes the policy better than the raw
+network; training on search results makes the network better; better priors make
+the next search stronger.
+
+## AlphaZero or MuZero?
+
+Simple rule: **if you have the rules, use AlphaZero.**
+
+|  | AlphaZero | [MuZero](/algorithms/muzero/) |
+|---|---|---|
+| Dynamics | the real simulator | learned latent model |
+| Networks | one (policy + value) | three (h, g, f) |
+| Reward model | not needed | learned |
+| Applies to | games with known rules | anything |
+
+MuZero's learned model is what lets it work on Atari, where "the rules" are not
+available. On a board game that flexibility is pure cost — a learned dynamics
+model can only approximate a simulator you already have exactly.
+
+## Building it
+
+```mojo
+from mojo_rl.deep_agents.alphazero import AlphaZeroAgent
+```
+
+```bash
+pixi run mojo run -I . examples/board_games/tictactoe_alphazero_v2_cpu.mojo
+pixi run -e nvidia mojo run -I . examples/board_games/connect_four_alphazero_v2.mojo
+pixi run -e nvidia mojo run -I . examples/board_games/connect_four_alphazero_gumbel.mojo
+```
+
+**Tic-Tac-Toe is the correctness gate.** The game is small enough to solve
+completely, so a correct implementation converges to perfect play and every
+self-play game draws. If yours does not, the bug is real and visible — do not
+move to Connect Four until it does.
+
+**Connect Four is the real target**, and the game the GPU MCTS work was tuned
+against.
+
+The Gumbel variant uses Gumbel top-k action selection, which is more
+sample-efficient at low simulation counts.
+
+## Watch out for
+
+:::caution[Sample uniformly — prioritized replay is wrong here]
+The zero-series papers sample uniformly from self-play games. PER degrades
+results on board games: pass `use_per=False`. This is paper-correct behaviour,
+not a workaround.
+:::
+
+:::caution[Network promotion must copy normalization state]
+When promoting a trained network to be the self-play network, a hard copy that
+misses BatchNorm running statistics produces a network that looks fine and
+evaluates catastrophically.
+
+This caused a real promotion collapse here. The symptom resembles a bad training
+signal; the cause is stale normalization state.
+:::
+
+:::tip[Compare strength with a KL gap, not raw cross-entropy]
+Raw policy cross-entropy is not a reliable measure of self-play progress — it
+moves with the visit-count distribution's sharpness, which changes with
+temperature and simulation count.
+
+The KL gap between the search policy and the network prior is the more honest
+signal: it measures how much search is still improving on the network.
+:::
+
+**GPU MCTS explores more sparsely** than a sequential implementation at equal
+simulation count. Roughly double `num_simulations` when comparing.
+
+## Next
+
+- [MuZero](/algorithms/muzero/) — the same search over a learned model
+- [EfficientZero V2](/algorithms/efficient-zero-v2/) — MuZero made more sample-efficient
+- [Board games](/environments/board-games/) — what self-play trains on

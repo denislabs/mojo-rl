@@ -1,0 +1,236 @@
+---
+title: DQN
+description: Value-based control for discrete actions — the Q-network, replay buffer and target network, and how they compose in mojo-rl.
+sidebar:
+  order: 2
+---
+
+import Maturity from '~/components/Maturity.astro';
+import OffPolicyLoop from '~/components/diagrams/OffPolicyLoop.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" />
+
+DQN learns a **Q-network that scores every action**. The agent acts greedily on
+those scores — with ε-greedy exploration — replays past experience, and
+stabilises learning with a target network. The same core powers Double, Dueling,
+Noisy, C51 and Rainbow.
+
+Discrete actions only, because the update takes a `max` over actions.
+
+
+<Papers label="Papers">
+	<Paper
+		title="Human-level control through deep reinforcement learning"
+		authors="Mnih et al."
+		year="2015"
+		url="https://www.nature.com/articles/nature14236"
+		venue="Nature"
+		note="The DQN paper — replay and target networks."
+	/>
+	<Paper
+		title="Deep Reinforcement Learning with Double Q-learning"
+		authors="van Hasselt, Guez, Silver"
+		year="2015"
+		arxiv="1509.06461"
+		venue="AAAI 2016"
+	/>
+	<Paper
+		title="Dueling Network Architectures for Deep Reinforcement Learning"
+		authors="Wang et al."
+		year="2015"
+		arxiv="1511.06581"
+		venue="ICML 2016"
+	/>
+	<Paper
+		title="Noisy Networks for Exploration"
+		authors="Fortunato et al."
+		year="2017"
+		arxiv="1706.10295"
+		venue="ICLR 2018"
+	/>
+</Papers>
+
+## The learning loop
+
+<OffPolicyLoop
+	policy="Q-network"
+	policySub="ε-greedy policy + value"
+	target="Target Q-net"
+	targetSub="periodic copy of Q"
+	actionLabel="ε-greedy action"
+	targetEdgeLabel="target Q(s′,·)"
+	capacity="100k transitions"
+	formula="y = r + γ · max Q′(s′, a′)"
+/>
+
+Three ideas do the work.
+
+**A Q-network with ε-greedy.** The network maps an observation to one value per
+action. The policy takes the highest, except with probability ε, when it acts
+randomly. ε decays from 1.0 toward ~0.05 over training.
+
+**Experience replay.** Transitions go into a buffer and updates sample from it
+uniformly. This decorrelates consecutive samples — sequential states are nearly
+identical, and training on them directly is unstable — and it lets each
+transition contribute to many updates.
+
+**A target network.** The bootstrap `max Q(s′, a′)` uses a *frozen copy* of the
+network rather than the network being trained. Without it, the target moves
+every time the weights move, and the regression chases itself.
+
+## Building it in mojo-rl
+
+```mojo
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.activations import ReLU
+from mojo_rl.deep_agents.dqn import DQNAgent
+from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
+from mojo_rl.envs.cartpole import CartPoleEnv
+
+comptime OBS_DIM = 4
+comptime NUM_ACTIONS = 2
+comptime HIDDEN = 64
+comptime BATCH = 32
+comptime CAPACITY = 4_096
+
+comptime QNet = Sequential[
+    Linear[OBS_DIM, HIDDEN], ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN], ReLU[HIDDEN],
+    Linear[HIDDEN, NUM_ACTIONS],
+]
+
+
+def main() raises:
+    var agent = DQNAgent[
+        "cpu",
+        UniformSampleCpuStep[OBS_DIM, 1, BATCH, CAPACITY],
+        QNet,
+    ](
+        lr=1e-3,
+        gamma=0.99,
+        tau=0.005,
+        epsilon=1.0,
+        epsilon_decay=0.995,
+        epsilon_min=0.01,
+        learning_starts=200,
+    )
+
+    var env = CartPoleEnv[DT]()
+    _ = agent.train(env, 2_000, print_every=500, verbose=True)
+
+    print("mean return:", agent.mean_return())
+    print("greedy eval:", agent.eval(CartPoleEnv[DT](), num_episodes=5))
+```
+
+This is `examples/cartpole/cartpole_dqn_training.mojo` — a 2,000-step smoke run
+that finishes in seconds.
+
+### The compile-time parameters
+
+```mojo
+DQNAgent[train_target, SAMPLE, Q_NET, DOUBLE = False]
+```
+
+| Parameter | Meaning |
+|---|---|
+| `train_target` | `"cpu"` or `"gpu"` — selects the kernels |
+| `SAMPLE` | replay-buffer block; carries `OBS`, `ACT`, `BATCH`, `CAPACITY` |
+| `Q_NET` | any `Module` mapping `OBS_DIM → NUM_ACTIONS` |
+| `DOUBLE` | `True` enables Double DQN's decoupled action selection |
+
+Note that the `SAMPLE` block, not the agent, carries the dimensions — they
+appear once at instantiation and flow everywhere else.
+
+### Runtime arguments
+
+| Argument | Typical | What it does |
+|---|---|---|
+| `lr` | `1e-3` | Adam learning rate |
+| `gamma` | `0.99` | discount |
+| `tau` | `0.005` | Polyak coefficient for the target copy |
+| `epsilon` / `_decay` / `_min` | `1.0` / `0.995` / `0.01` | exploration schedule |
+| `learning_starts` | `200`–`10_000` | steps collected before the first update |
+
+`learning_starts` matters more than it looks. Updating against a nearly empty
+buffer means training on a handful of highly correlated transitions, which can
+put the network in a bad basin before real data arrives.
+
+## Going to GPU
+
+Swap the target string, the sample block, and add a `DeviceContext`:
+
+```mojo
+from std.gpu.host import DeviceContext
+from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
+from mojo_rl.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
+
+comptime N_ENVS = 64
+comptime EnvT = BatchedGpuDiscreteEnv[CartPole[DT], N_ENVS, OBS_DIM, 1]
+
+with DeviceContext() as ctx:
+    var agent = DQNAgent[
+        "gpu",
+        UniformSampleGpuStep[OBS_DIM, 1, 128, 100_000],
+        QNet,
+    ](ctx=ctx, gamma=0.99, tau=0.005, eps_end=0.05)
+
+    _ = agent.train[EnvT, N_ENVS=N_ENVS](
+        EnvT(ctx), 200_000, updates_per_step=N_ENVS,
+    )
+```
+
+## The family
+
+Every variant shares this core; each changes one piece.
+
+| Variant | Change |
+|---|---|
+| **Double DQN** | select the action with the online net, evaluate it with the target — reduces overestimation |
+| **Dueling** | split the head into `V(s)` and `A(s,a)` |
+| **Noisy** | learned noise in the linear layers replaces ε-greedy entirely |
+| **PER** | sample by TD error instead of uniformly, via a sum-tree |
+| **C51** | predict a *distribution* over returns across 51 atoms instead of a mean |
+| **Rainbow** | all of the above at once |
+
+```mojo
+from mojo_rl.deep_agents.c51 import C51Agent   # C51 and Rainbow
+```
+
+:::caution[C51 and Rainbow: set the support range to your reward scale]
+The distributional variants predict returns over a fixed support `[v_min, v_max]`
+divided into atoms. If that range does not match your task's actual return
+distribution, almost every atom is wasted and the agent barely learns.
+
+On Pong, per-step rewards are −1, 0 or +1. A support of `[-2, 2]` works; the
+common default of `[-10, 10]` does not. This was precisely the difference between
+"never learns" and "solves it" in this repo.
+:::
+
+## Watch out for
+
+**Terminal versus truncated.** The bootstrap must be masked on genuine
+termination but *not* on a time-limit cutoff. mojo-rl exposes `was_terminated()`
+separately from `done` for this reason — see [Traits](/concepts/traits/).
+
+**Replay gather at pixel scale.** With 4×84×84 observations, sampling minibatches
+from a large buffer dominates step time — not the forward or backward pass.
+Profile before optimizing the network.
+
+## Where to run it
+
+```bash
+pixi run mojo run -I . examples/cartpole/cartpole_dqn_training.mojo
+pixi run mojo run -I . examples/lunar_lander/lunar_lander_dqn_training.mojo
+pixi run -e nvidia mojo run -I . examples/arcade_games/rainbow_pong_training_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/arcade_games/rainbow_pong_pixel_training_gpu.mojo
+```
+
+## Next
+
+- [SAC](/algorithms/sac/) — the continuous-action counterpart
+- [PPO](/algorithms/ppo/) — on-policy, and the structural contrast
+- [Algorithms overview](/algorithms/) — the full catalogue

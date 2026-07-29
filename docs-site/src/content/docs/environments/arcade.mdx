@@ -1,0 +1,118 @@
+---
+title: Arcade games
+description: Pong, Breakout and Space Invaders as native GPU engines — clean-state or pixel observations, batched on device.
+sidebar:
+  order: 7
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Demo from '~/components/Demo.astro';
+import DemoGrid from '~/components/DemoGrid.astro';
+
+<Maturity level="stable" />
+
+Three arcade games reimplemented as **native GPU engines** — not emulation.
+Pure game physics in Mojo, batched on device, with either a compact state vector
+or an Atari-shaped pixel stack.
+
+<DemoGrid min="15rem">
+	<Demo name="pong_playable" caption="Pong" meta="6 obs · 3 actions" />
+	<Demo name="breakout_playable" caption="Breakout" meta="7 obs · 4 actions" />
+	<Demo name="space_invaders_playable" caption="Space Invaders" meta="8 obs · 4 actions" />
+</DemoGrid>
+
+| Game | Clean obs | Actions | Pixel obs |
+|---|---|---|---|
+| Pong | 6 | 3 | 4×84×84 |
+| Breakout | 7 | 4 | 4×84×84 |
+| Space Invaders | 8 | 4 | 4×84×84 |
+
+## Two observation modes
+
+Set by a compile-time parameter:
+
+**`OBS_MODE=0` — clean state.** A short float vector of exactly the quantities
+that matter: paddle position, ball position and velocity, brick or alien counts.
+Six to eight dimensions.
+
+**`OBS_MODE=1` — pixels.** A 4×84×84 grayscale frame stack, matching the
+standard Atari preprocessing, for convolutional agents.
+
+Having both on identical dynamics is the point. You can measure what a
+representation costs — the same algorithm on the same game, learning from the
+state directly versus learning to see it. Pixel training typically needs orders
+of magnitude more steps for the same policy.
+
+:::note[Space Invaders is 8-dimensional]
+The project README quotes 10. The source says `comptime OBS_DIM: Int = 8`.
+:::
+
+## Why native rather than emulated
+
+The [Atari 2600 emulator](/environments/atari/) exists in this repo and runs these
+same games from original ROMs. The native engines are a deliberate parallel
+implementation, for two reasons.
+
+**Speed.** The emulator is CPU-only — 6502 opcode dispatch diverges too heavily
+for the Metal compiler to handle. The native engines are GPU kernels, batched
+across hundreds of environments, so they are orders of magnitude faster to train
+against.
+
+**Control.** A native engine can expose clean state. A ROM cannot: the emulator
+gives you a framebuffer and 128 bytes of RAM whose meaning you would have to
+reverse-engineer per game.
+
+The emulator earns its keep as a **correctness reference** — the native engines
+are validated against it, which is a stronger check than "the training curve
+looks plausible".
+
+## Training
+
+Pong is the standard target. Rainbow on clean observations is the fastest path to
+a working policy; the pixel variants are the real test:
+
+```bash
+pixi run -e nvidia mojo run -I . examples/arcade_games/rainbow_pong_training_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/arcade_games/rainbow_pong_pixel_training_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/arcade_games/muzero_pong_pixel_training_gpu.mojo
+```
+
+Play them yourself with the SDL3 renderer:
+
+```bash
+pixi run mojo run -I . examples/arcade_games/pong_playable.mojo
+pixi run mojo run -I . examples/arcade_games/breakout_playable.mojo
+pixi run mojo run -I . examples/arcade_games/space_invaders_playable.mojo
+```
+
+:::tip[Distributional support range matters]
+Rainbow on Pong needs its C51 support range set to the actual reward scale.
+Pong's per-step rewards are −1, 0 or +1, so a support of `[-2, 2]` works and the
+default `[-10, 10]` wastes almost all its atoms on values that never occur. This
+was the difference between "does not learn" and "solves it" in this repo.
+:::
+
+## Batched GPU use
+
+All three implement `GPUDiscreteEnv`:
+
+```mojo
+from mojo_rl.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
+from mojo_rl.envs.arcade_games.pong import Pong, PongConfig
+
+comptime N_ENVS = 64
+comptime EnvT = BatchedGpuDiscreteEnv[Pong[DT], N_ENVS, PongConfig.OBS_DIM, 1]
+```
+
+:::caution[Replay gather is the bottleneck at pixel scale]
+With 4×84×84 observations, a million-transition replay buffer is large, and
+sampling minibatches from it dominates the step time — not the forward or
+backward pass. Profile before optimizing the network. This is a known, unfixed
+bottleneck in the pixel training path.
+:::
+
+## Next
+
+- [Atari 2600](/environments/atari/) — the emulator these are validated against
+- [2D physics](/environments/2d-physics/) — CarRacing also offers pixel observations
+- [CPU and GPU paths](/concepts/cpu-gpu/) — batched environment mechanics

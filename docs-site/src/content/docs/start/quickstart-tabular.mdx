@@ -1,0 +1,133 @@
+---
+title: 'Quickstart: tabular'
+description: Train a Q-Learning agent on GridWorld in a few seconds — no GPU, no neural networks.
+sidebar:
+  order: 3
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+The fastest way to see mojo-rl work end to end. No GPU, no neural networks —
+just a Q-table, a 5×5 grid, and about five seconds of CPU time.
+
+```bash
+pixi run mojo run -I . examples/solve_gridworld.mojo
+```
+
+## The environment
+
+GridWorld is a 5×5 navigation task. The agent starts at `(0, 0)` and must reach
+the goal at `(4, 4)`. Each step costs `-1`; reaching the goal pays `+10`. The
+optimal path is 8 steps — right four, up four — for a total return of
+`-8 + 10 = 2`.
+
+Small enough that the optimal policy is obvious to you, which makes it a good
+place to check that an algorithm actually works.
+
+## The code
+
+```mojo
+from mojo_rl.envs import GridWorldEnv
+from mojo_rl.agents import QLearningAgent
+
+
+def main() raises:
+    var env = GridWorldEnv(width=5, height=5)
+
+    var agent = QLearningAgent(
+        num_states=env.num_states(),
+        num_actions=env.num_actions(),
+        learning_rate=0.1,
+        discount_factor=0.99,
+        epsilon=1.0,
+        epsilon_decay=0.995,
+        epsilon_min=0.01,
+    )
+
+    var metrics = agent.train(
+        env,
+        num_episodes=500,
+        max_steps_per_episode=100,
+        verbose=True,
+        print_every=100,
+        environment_name="GridWorld",
+    )
+
+    print("Mean reward:", metrics.mean_reward())
+    print("Eval reward:", agent.evaluate(env, num_episodes=10))
+```
+
+That is the whole program. A few things are worth naming, because they recur
+everywhere in the framework.
+
+**The environment owns its own spaces.** `env.num_states()` and
+`env.num_actions()` come from the `DiscreteEnv` trait, so the agent is
+constructed from the environment rather than from hard-coded numbers.
+
+**Exploration decays.** `epsilon` starts at `1.0` (act randomly) and is
+multiplied by `epsilon_decay` after each episode, floored at `epsilon_min`. Every
+tabular agent in mojo-rl follows this convention.
+
+**`train` returns metrics, not `None`.** `TrainingMetrics` carries the per-episode
+returns, so you can compare algorithms without instrumenting the loop yourself.
+
+## Swapping the algorithm
+
+Every tabular agent implements the same `TabularAgent` trait, so switching is a
+one-line change:
+
+```mojo
+from mojo_rl.agents import SARSAAgent, SARSALambdaAgent, DoubleQLearningAgent
+
+var agent = SARSALambdaAgent(
+    num_states=env.num_states(),
+    num_actions=env.num_actions(),
+    learning_rate=0.1,
+    discount_factor=0.99,
+    lambda_=0.9,          # eligibility-trace decay
+    epsilon=1.0,
+    epsilon_decay=0.995,
+    epsilon_min=0.01,
+)
+```
+
+`examples/solve_gridworld.mojo` runs Q-Learning, SARSA and SARSA(λ) side by side
+and prints a comparison table, which is the point of the example: on a task this
+small, eligibility traces converge in noticeably fewer episodes.
+
+Other tabular environments follow the same shape:
+
+```bash
+pixi run mojo run -I . examples/solve_frozenlake.mojo
+pixi run mojo run -I . examples/solve_cliffwalking.mojo
+pixi run mojo run -I . examples/solve_taxi.mojo
+```
+
+## Watching the policy
+
+`GridWorldEnv` implements `RenderableEnv` and draws to the terminal, so you can
+step the learned policy and watch it move:
+
+```mojo
+_ = env.reset()
+env.render_frame()
+
+for _ in range(20):
+    var state_idx = env.state_to_index(env.get_state())
+    var action = env.action_from_index(agent.get_best_action(state_idx))
+    var result = env.step(action)
+    env.render_frame()
+    if result[2]:      # done
+        break
+```
+
+`get_best_action` is the greedy policy — no exploration — which is what you want
+when evaluating rather than training.
+
+## Next
+
+- [Quickstart: GPU training](/start/quickstart-gpu/) — the same loop with a neural network, on the GPU
+- [RL in five minutes](/start/rl-in-five-minutes/) — if terms like *return* and *policy* need grounding
+- [Traits](/concepts/traits/) — what `DiscreteEnv` and `TabularAgent` require

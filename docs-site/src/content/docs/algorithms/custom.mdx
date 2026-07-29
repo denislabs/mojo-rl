@@ -1,0 +1,168 @@
+---
+title: Writing your own agent
+description: The facade pattern — a trainer, an agent facade, and a shared driver. What to reuse and what to write.
+sidebar:
+  order: 11
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+Adding a deep RL algorithm means writing two things — a **trainer** that owns
+the update, and a **facade** that presents it — and reusing a **driver** that
+owns the loop.
+
+The cheapest path is to copy the closest existing package. `dqn/` is the
+smallest off-policy example; `ppo_discrete/` the smallest on-policy one.
+
+## The anatomy of an algorithm package
+
+```
+mojo_rl/deep_agents/<algo>/
+├── __init__.mojo      public exports
+├── agent.mojo         XxxAgent — the facade
+├── trainer.mojo       XxxTrainer — owns nets, optimizers, the update step
+├── config.mojo        presets and factory helpers
+├── metrics.mojo       XxxMetrics — what gets logged
+└── <loss>.mojo        algorithm-specific loss blocks
+```
+
+## 1. The trainer
+
+The trainer owns the networks, their optimizers, and one method that performs a
+single update from a batch. It does *not* own the environment loop.
+
+```mojo
+struct MyTrainer[
+    train_target: StaticString,
+    SAMPLE: SampleBlock,
+    ACTOR: Module,
+    CRITIC: Module,
+]:
+    ...
+```
+
+Take the target string and the network types as compile-time parameters, and
+derive dimensions from `SAMPLE` so they appear in one place. See
+[compile-time composition](/concepts/compile-time-composition/).
+
+Reuse rather than reimplement:
+
+| Need | Use |
+|---|---|
+| Gaussian policy head | `deep_agents.primitives.stochastic_actor.StochasticActor` |
+| Reparameterised sampling | `nn.primitives.rsample.RSample` |
+| Replay buffer | `deep_agents.training.blocks.UniformSampleCpuStep` / `...GpuStep` |
+| Prioritized replay | the PER sample blocks in `deep_agents/data/` |
+| Twin-min, PPO ratio/clip, log-prob | `nn.primitives` RL ops |
+| Losses | `nn.loss` — including `TwoHot` and `GaussianNLLLoss` |
+| Polyak updates | `nn.core.polyak` |
+
+## 2. The facade
+
+A thin wrapper that constructs the trainer and selects a driver. It exists so
+callers write `agent.train(env, steps)` rather than assembling a loop.
+
+```mojo
+struct MyAgent[
+    train_target: StaticString,
+    SAMPLE: SampleBlock,
+    ACTOR: Module,
+    CRITIC: Module,
+](Movable & ImplicitlyDeletable):
+    comptime OBS_DIM: Int = Self.SAMPLE.OBS
+    comptime ACT_DIM: Int = Self.SAMPLE.ACT
+    comptime BATCH: Int = Self.SAMPLE.BATCH
+
+    var trainer: MyTrainer[Self.train_target, Self.SAMPLE, Self.ACTOR, Self.CRITIC]
+
+    def __init__(out self, ctx: Optional[DeviceContext] = None, lr: Scalar[DT] = 3e-4, ...):
+        ...
+
+    def train[ENV: ..., N_ENVS: Int = 1](mut self, ...) raises -> ...:
+        # pick the driver and hand it the trainer
+        ...
+```
+
+Hyperparameters are runtime arguments; structure is compile-time.
+
+## 3. The driver
+
+Do not write the loop. `deep_agents/training/` has four, each with CPU and GPU
+variants:
+
+|  | Single env | Batched |
+|---|---|---|
+| **Off-policy** | `run_offpolicy_train` | `run_offpolicy_train_batched` |
+| **On-policy** | `run_onpolicy_train` | `run_onpolicy_train_batched` |
+
+They handle collection, replay insertion, warmup, episode accounting, logging
+cadence, checkpointing and CUDA-graph capture. Getting all of that right again
+is a poor use of effort, and the drivers are where the device-residency work
+lives.
+
+`BatchedEnv` wrappers — `Phyics3dBatchedEnv`, `BatchedGpuEnv`,
+`BatchedGpuDiscreteEnv` — adapt environments to the batched interface.
+
+## 4. Metrics
+
+Define a metrics struct with the fields worth watching, and the driver will emit
+them at the configured cadence to whatever [logger](/tooling/logging/) is
+attached.
+
+```mojo
+struct MyMetrics:
+    var actor_loss: Scalar[DT]
+    var critic_loss: Scalar[DT]
+    var mean_q: Scalar[DT]
+```
+
+Log more than you think you need. Most of the bugs catalogued across these pages
+were found in a metric that stopped making sense, not in a stack trace.
+
+## Getting it right
+
+A checklist drawn from the failures documented elsewhere in these docs. Every
+one of these produced a quiet wrong answer rather than an error.
+
+- [ ] **Terminal vs. truncated** — mask the bootstrap on `was_terminated()`, not `done`
+- [ ] **Parameter gradients before input gradients** in any GPU backward pass (aliased slab)
+- [ ] **Zero the gradient accumulator**, and read before you write
+- [ ] **Distributional support range** matches the task's actual return scale
+- [ ] **Target-network copies include normalization state**, not just parameters
+- [ ] **LayerNorm the critic** on high-dimensional tasks
+- [ ] **Update-to-data ratio** is what you meant — `updates_per_step=N_ENVS` for UTD 1
+- [ ] **No CUDA-graph capture during LR warmup**
+- [ ] Gradient-check with finite differences at `eps ≈ 1e-2`, **never on TF32**
+
+## Testing it
+
+Follow the repo's own discipline: **search at smoke scale, then SARSA at
+scale.** Prove the algorithm converges on something tiny and exactly solvable —
+CartPole, Pendulum, Tic-Tac-Toe — before spending GPU hours on Humanoid or
+Atari. A model-based agent that cannot solve CartPole has a bug, not a tuning
+problem.
+
+Add a test under `tests/deep_agents/` and, if it is fast and CPU-only, to
+`tests/manifests/smoke.txt` so CI runs it.
+
+## Simpler alternatives
+
+If you are extending rather than inventing:
+
+**A new tabular agent** — implement `TabularAgent` (five methods) and you are
+done. See [Traits](/concepts/traits/#agent--the-base-agent).
+
+**A variant of an existing deep agent** — many differences are already
+parameters. `DQNAgent` has `DOUBLE`; the C51 package covers Rainbow's six
+components. Check before forking.
+
+**A new network only** — write a [`Module`](/nn/modules/) and pass it to an
+existing agent. No agent code required.
+
+## Next
+
+- [Traits](/concepts/traits/) — the interfaces involved
+- [Modules and Params](/nn/modules/) — writing the networks
+- [Algorithms overview](/algorithms/) — packages to copy from

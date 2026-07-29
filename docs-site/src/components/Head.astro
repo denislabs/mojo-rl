@@ -1,0 +1,74 @@
+---
+/**
+ * Starlight `Head` override.
+ *
+ * Starlight emits og:title/description/url and twitter:card, but no image —
+ * which means the `summary_large_image` card it declares renders blank on every
+ * share. This adds the per-page card built by src/pages/og/[...route].ts, plus
+ * the structured data.
+ *
+ * Configured via `components.Head` in astro.config.mjs.
+ */
+import Default from '@astrojs/starlight/components/Head.astro';
+
+const { entry, siteTitle } = Astro.locals.starlightRoute;
+
+/**
+ * Starlight strips `index` from route-data ids, so the site root arrives as `''`
+ * while its content-collection id — which is what names the generated card — is
+ * `index`. Without this the homepage points at `/og/.png` and every share of the
+ * landing page shows a broken image.
+ *
+ * Nested index pages need no special case: `environments/index` is stripped to
+ * `environments` on both sides.
+ */
+const isHome = entry.id === '';
+const ogId = isHome ? 'index' : entry.id;
+
+// Astro.site is guaranteed here — `site` is set in astro.config.mjs, and OG
+// consumers reject relative image URLs.
+const ogImage = new URL(`/og/${ogId}.png`, Astro.site);
+const canonical = new URL(Astro.url.pathname, Astro.site);
+
+/**
+ * SoftwareSourceCode on the landing page, TechArticle on doc pages. Both are
+ * types Google actually consumes; a generic WebPage adds nothing.
+ */
+const schema = isHome
+	? {
+			'@context': 'https://schema.org',
+			'@type': 'SoftwareSourceCode',
+			name: 'mojo-rl',
+			description: entry.data.description,
+			url: canonical.href,
+			codeRepository: 'https://github.com/denislabs/mojo-rl',
+			programmingLanguage: { '@type': 'ComputerLanguage', name: 'Mojo' },
+			applicationCategory: 'DeveloperApplication',
+			image: ogImage.href,
+		}
+	: {
+			'@context': 'https://schema.org',
+			'@type': 'TechArticle',
+			headline: entry.data.title,
+			description: entry.data.description,
+			url: canonical.href,
+			image: ogImage.href,
+			isPartOf: { '@type': 'WebSite', name: siteTitle, url: Astro.site?.href },
+			inLanguage: 'en',
+		};
+---
+
+<Default><slot /></Default>
+
+<meta property="og:image" content={ogImage} />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content={entry.data.title} />
+
+{/* Twitter reads og:* as fallback, but LinkedIn and Slack prefer explicit tags. */}
+<meta name="twitter:image" content={ogImage} />
+<meta name="twitter:title" content={entry.data.title} />
+<meta name="twitter:description" content={entry.data.description} />
+
+<script type="application/ld+json" set:html={JSON.stringify(schema)} is:inline />

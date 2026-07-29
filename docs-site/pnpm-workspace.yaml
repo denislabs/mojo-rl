@@ -1,0 +1,6 @@
+allowBuilds:
+  esbuild: true
+  sharp: true
+  # workerd is Wrangler's local runtime — needed for `wrangler dev`, not for
+  # `wrangler deploy` of a static-assets site.
+  workerd: true

@@ -1,0 +1,159 @@
+---
+title: CPU and GPU paths
+description: How the same code targets CPU, CUDA and Metal — batched environments, on-device training loops, and CUDA-graph capture.
+sidebar:
+  order: 4
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+Most components in mojo-rl have two implementations: a CPU path and a GPU one.
+Which you get is a compile-time choice, made with a target string and a
+`DeviceContext`.
+
+## Selecting a target
+
+```mojo
+# CPU — no DeviceContext
+var agent = DQNAgent["cpu", UniformSampleCpuStep[...], QNet](lr=1e-3)
+
+# GPU — DeviceContext threaded through
+with DeviceContext() as ctx:
+    var agent = SACAgent["gpu", UniformSampleGpuStep[...], Actor, Critic](ctx=ctx)
+```
+
+Two things change together, and both are required:
+
+1. The **target string** (`"cpu"` / `"gpu"`) selects the kernels the trainer compiles.
+2. The **`DeviceContext`** is what the trainer uses for host↔device staging and every kernel launch.
+
+The replay-buffer block changes with them — `UniformSampleCpuStep` versus
+`UniformSampleGpuStep` — because a device replay buffer lives in device memory
+and is sampled by a kernel.
+
+## Picking the pixi environment
+
+GPU kernels compile per backend, so the environment must be named on the command
+line:
+
+```bash
+pixi run -e apple  mojo run -I . <script>   # Metal
+pixi run -e nvidia mojo run -I . <script>   # CUDA
+```
+
+The same source builds for both. There is no separate Metal backend to maintain —
+the kernels are written once in Mojo.
+
+## Batched environments
+
+A single environment stepping on a GPU wastes it. The GPU paths run many copies
+at once, as one wide tensor operation.
+
+```mojo
+comptime N_ENVS = 32
+comptime BatchedEnvT = Phyics3dBatchedEnv[HalfCheetahModel, HalfCheetahConfig, N_ENVS]
+
+var env = BatchedEnvT(ctx)
+_ = agent.train[BatchedEnvT, N_ENVS=N_ENVS](env, 600_000, updates_per_step=N_ENVS)
+```
+
+The environment count is a compile-time parameter because it determines memory
+layout. Physics state is stored strided as `[BATCH, STATE_SIZE]`, so one kernel
+launch advances every environment, and observations arrive at the agent already
+batched.
+
+`BatchedEnv` wrappers adapt an environment to what the batched drivers expect:
+
+| Wrapper | For |
+|---|---|
+| `Phyics3dBatchedEnv` | MuJoCo-style 3D environments |
+| `BatchedGpuEnv` | GPU continuous-action environments |
+| `BatchedGpuDiscreteEnv` | GPU discrete-action environments |
+
+## Update-to-data ratio
+
+Each driver iteration steps all `N_ENVS` environments once, producing `N_ENVS`
+transitions. `updates_per_step` controls how many gradient updates run against
+them:
+
+```mojo
+updates_per_step=N_ENVS   # UTD = 1 — one update per transition collected
+updates_per_step=1        # UTD = 1/32 — 32× less training per unit experience
+```
+
+Setting `updates_per_step=N_ENVS` is the usual choice for off-policy algorithms,
+and it is what the GPU examples do. Algorithms like REDQ deliberately push the
+ratio much higher.
+
+## The whole loop on device
+
+The reason for all of this is that on a GPU run, the entire sequence stays
+resident:
+
+```
+env step → observe → network fwd/bwd → replay sample → target update
+```
+
+The physics kernels write observations into device tensors. The replay buffer is
+device memory, sampled by a kernel. The forward and backward passes, the
+optimizer step and the Polyak target update are all kernel launches on the same
+stream. Nothing round-trips to the host inside the loop.
+
+This only works because one language owns every stage. A stack that reached out
+to an external physics library would have to copy at that boundary, every step.
+
+## CUDA-graph capture
+
+On NVIDIA, the training step can be captured once as a CUDA graph and replayed,
+collapsing per-launch overhead. It is on by default for the batched drivers:
+
+```mojo
+_ = agent.train[
+    BatchedEnvT,
+    N_ENVS=N_ENVS,
+    USE_TRAIN_CUDA_GRAPH=True,    # capture the gradient update
+    USE_ENV_CUDA_GRAPH=False,     # step the environment eagerly
+](env, NUM_STEPS, ...)
+```
+
+Worth roughly **1.4×** on the SAC pipeline.
+
+:::caution[Environment capture is not always safe]
+`USE_ENV_CUDA_GRAPH` is separate from `USE_TRAIN_CUDA_GRAPH` for a reason. The
+physics3d path solves pyramidal contacts with a one-environment-per-block
+blocked Newton kernel that uses cooperative shared memory; capturing and
+replaying it hits illegal addresses on replay. The HalfCheetah and Humanoid GPU
+examples therefore set `USE_ENV_CUDA_GRAPH=False`. Eager environment stepping is
+correct — only the per-step launch collapse is lost.
+:::
+
+Capture is also only meaningful on NVIDIA: on non-NVIDIA targets these flags are
+no-ops.
+
+## Platform differences worth knowing
+
+Some of this is unavoidable, and knowing it saves debugging time.
+
+**Do not benchmark on Apple and generalize.** Kernel performance rankings can
+invert between Metal and CUDA — an optimization that wins on one can lose on the
+other. Treat Apple as a correctness target and NVIDIA as the performance target.
+
+**Heavy blocked kernels can hard-crash Metal.** Some kernels that run on CUDA
+will bring down the Metal compiler. Where a GPU path is CUDA-only, the examples
+say so.
+
+**Long training belongs on NVIDIA.** The Apple path exists for development and
+parity checking. Real runs go to a CUDA box and checkpoint.
+
+**The Atari 2600 emulator is CPU-only.** Its 6502 opcode dispatch diverges too
+heavily for the Metal compiler. The native arcade engines — Pong, Breakout,
+Space Invaders — are the GPU-capable alternative, and the emulator is used to
+validate them.
+
+## Next
+
+- [Checkpoints](/concepts/checkpoints/) — moving trained weights off the GPU box
+- [Compile-time composition](/concepts/compile-time-composition/) — why the target is a parameter
+- [Quickstart: GPU training](/start/quickstart-gpu/) — all of this in one script

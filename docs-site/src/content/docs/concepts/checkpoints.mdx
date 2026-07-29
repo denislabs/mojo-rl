@@ -1,0 +1,119 @@
+---
+title: Checkpoints
+description: Saving and restoring weights, optimizer state and module state — the storage-ckpt v3 format.
+sidebar:
+  order: 5
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="stable" />
+
+Checkpointing walks a `Module`'s parameters and states and writes one named
+section per field. It captures enough for an **exact training resume**, not just
+inference: Adam's per-parameter moments ride along with the weights.
+
+## Saving during training
+
+The batched drivers auto-checkpoint. Pass a cadence and a path:
+
+```mojo
+_ = agent.train[BatchedEnvT, N_ENVS=N_ENVS](
+    env, 600_000,
+    checkpoint_every=50_000,                  # env-steps between saves
+    checkpoint_path="sac_half_cheetah_nn.ckpt",
+)
+```
+
+Saves happen between driver iterations as a host-side device-to-host copy, which
+is safe alongside CUDA-graph capture. A final save runs at the end of training.
+
+## The format
+
+Current saves write **`storage-ckpt v3`**:
+
+```
+storage-ckpt v3
+P <dotted-name> <size> <has_moments:0|1>\n
+<size raw little-endian Scalar[DT] payload bytes>[<m bytes><v bytes>]
+S <dotted-name> <size>\n
+<size raw payload bytes>
+...
+```
+
+`P` sections are parameters, `S` sections are module state. Names are dotted
+paths derived from the module walk — `"0.weight"` for the first layer's weights
+in a `Sequential`.
+
+Three properties are worth knowing about:
+
+**Names are validated on load.** The dotted name and size of each section are
+checked against the in-memory walk order. A mismatch raises rather than loading
+garbage, which catches topology drift between the architecture that saved and
+the one trying to load.
+
+**Writes are atomic.** The payload lands in `<path>.tmp` and is renamed over the
+target only once fully written. A crash mid-save cannot destroy the previous good
+checkpoint.
+
+**I/O is chunked at 1 GiB.** This is not incidental — see the v2 note below.
+
+## Optimizer moments
+
+Adam's `m` and `v` are co-located on each `Param` and written into the same
+section when populated. That is what makes resume exact rather than approximate:
+reloading weights without moments restarts Adam's bias correction and momentum
+from zero, which visibly perturbs training.
+
+For inference or evaluation you do not need them:
+
+```mojo
+# model-only checkpoint — smaller, no exact resume
+save_moments=False
+```
+
+## GPU parameters
+
+Parameters living in device memory download on save and upload on load. No
+manual staging is required; the checkpoint layer handles the transfer.
+
+## Loading for evaluation
+
+The pattern the examples use is a paired eval script that rebuilds the *same*
+architecture and loads the checkpoint:
+
+```bash
+# trains, writes sac_half_cheetah_nn.ckpt
+pixi run -e nvidia mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo
+
+# reloads and renders it
+pixi run mojo run -I . examples/half_cheetah/sac_half_cheetah_nn_eval_cpu.mojo
+```
+
+The architecture must match, because the parameter layout is derived from it —
+including the fused-versus-unfused choice. A network built from `LinearReLU`
+does not have the same walk order as one built from `Linear` plus `ReLU`, and the
+name validation will reject the mismatch. Where an example pair exists, both
+sides typically share a preset such as `SAC[...]` so the definitions cannot
+drift apart.
+
+Note that a GPU-trained checkpoint loads fine into a CPU evaluation script. The
+weights are device-agnostic.
+
+:::caution[v2 is readable but obsolete]
+Loaders dispatch on the header line, so legacy `storage-ckpt v2` files still
+load. Nothing should write them.
+
+v2 stored one ASCII float per line. At DreamerV3 200m scale that meant ~5 GB of
+text per save, which was **silently truncated** at the single-`write(2)` syscall
+cap of ~2 GiB — producing corrupt checkpoints with no error. v3's raw
+little-endian payloads are about 3× smaller, skip the `atof`/`String` churn
+entirely, and all I/O goes through explicit ≤1 GiB chunks.
+
+If you have old checkpoints from a large run, treat them as suspect.
+:::
+
+## Next
+
+- [CPU and GPU paths](/concepts/cpu-gpu/) — where checkpoints fit in a device training loop
+- [Traits](/concepts/traits/) — `Module`, `Param` and the `Saveable` contract

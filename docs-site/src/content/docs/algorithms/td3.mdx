@@ -1,0 +1,132 @@
+---
+title: TD3
+description: Twin Delayed DDPG — three targeted fixes for overestimation, and a stable deterministic alternative to SAC.
+sidebar:
+  order: 2
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" />
+
+**Twin Delayed DDPG** takes [DDPG](/algorithms/ddpg/) and applies three specific
+fixes to its overestimation problem. The result is stable, strong, and
+deterministic.
+
+```mojo
+from mojo_rl.deep_agents.td3 import TD3Agent
+```
+
+
+<Papers label="Reference">
+	<Paper
+		title="Addressing Function Approximation Error in Actor-Critic Methods"
+		authors="Fujimoto, van Hoof, Meger"
+		year="2018"
+		arxiv="1802.09477"
+		venue="ICML 2018"
+	/>
+</Papers>
+
+## The three fixes
+
+**Twin critics.** Train two independent critics and use the **minimum** for the
+target:
+
+```
+y = r + γ · min( Q′₁(s′, a′), Q′₂(s′, a′) )
+```
+
+Overestimation noise is independent between them, so taking the min cancels most
+of it. This is the single largest contributor, and [SAC](/algorithms/sac/)
+inherits it unchanged.
+
+**Delayed policy updates.** Update the actor once every *two* critic updates. A
+policy chasing a critic that is still badly wrong makes both worse; letting the
+critic settle between actor steps breaks that feedback loop.
+
+**Target policy smoothing.** Add clipped noise to the target action:
+
+```
+a′ = π′(s′) + clip(ε, −c, c),   ε ~ N(0, σ)
+```
+
+This forces the critic to give similar values to similar actions, so the actor
+cannot exploit a narrow spurious peak in the critic's value surface. It is
+regularization applied to the *target*, not the policy.
+
+## Building it
+
+```mojo
+from mojo_rl.deep_agents.td3 import TD3Agent
+from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
+
+var agent = TD3Agent[
+    "gpu",
+    UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+    ActorNet,
+    CriticNet,
+](
+    ctx=ctx,
+    actor_lr=3e-4,
+    critic_lr=3e-4,
+    gamma=0.99,
+    tau=0.005,
+    policy_delay=2,          # actor updates per 2 critic updates
+    target_noise=0.2,        # smoothing σ
+    noise_clip=0.5,          # smoothing clip
+)
+```
+
+As with SAC, only **one** `CriticNet` type is passed — the agent instantiates
+both internally. You describe the architecture, not the count.
+
+```bash
+pixi run mojo run -I . examples/pendulum_td3.mojo
+pixi run mojo run -I . examples/half_cheetah/td3_half_cheetah_training.mojo
+```
+
+## TD3 or SAC?
+
+Both are stable and well exercised here. The differences that actually matter:
+
+|  | TD3 | [SAC](/algorithms/sac/) |
+|---|---|---|
+| Policy | deterministic | stochastic (Gaussian) |
+| Exploration | external Gaussian noise | policy entropy |
+| Temperature | none | auto-tuned `α` |
+| Hyperparameters | `policy_delay`, `target_noise`, `noise_clip`, noise schedule | `target_entropy` (heuristic) |
+| Evaluation | policy is already deterministic | take the mean action |
+
+**Choose TD3** when you want a deterministic policy, reproducible evaluation
+without sampling, or when SAC's temperature is behaving oddly on your task.
+
+**Choose SAC** as the default. Its auto-tuned temperature removes the
+exploration hyperparameter people most often get wrong, and it is the most
+exercised path in this repository.
+
+The exploration noise schedule is TD3's real cost — it is a hyperparameter you
+must set, and the right value is task-dependent. That is exactly what SAC's
+entropy target automates away.
+
+## Watch out for
+
+Everything on the [SAC](/algorithms/sac/) page about the off-policy family
+applies, in particular:
+
+**Mask the bootstrap on true termination only.** A time-limit cutoff must still
+bootstrap. Use `was_terminated()`, not `done`.
+
+**LayerNorm the critic on high-dimensional tasks.** Value scales drift, and the
+twin-min does not save you from a critic that diverges.
+
+**`updates_per_step=N_ENVS`** for a batched environment, or you train far less
+than intended.
+
+## Next
+
+- [SAC](/algorithms/sac/) — the recommended default and the full deep dive
+- [DDPG](/algorithms/ddpg/) — what TD3 fixes
+- [REDQ](/algorithms/redq/) — pushing the ensemble idea further

@@ -1,0 +1,122 @@
+---
+title: EfficientZero V2
+description: MuZero with self-supervised consistency, value prefix and sampled actions — sample efficiency, and continuous control.
+sidebar:
+  order: 3
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="beta" note="Discrete and continuous variants both exist; the GPU path has known perf characteristics." />
+
+**EfficientZero V2** adds three mechanisms to [MuZero](/algorithms/muzero/) that
+substantially improve sample efficiency, and extends the approach to continuous
+control.
+
+```mojo
+from mojo_rl.deep_agents.efficient_zero_v2 import EZv2DiscreteAgent, EZv2ContinuousAgent
+```
+
+
+<Papers label="Papers">
+	<Paper
+		title="EfficientZero V2: Mastering Discrete and Continuous Control with Limited Data"
+		authors="Wang, Liu, Ye, You, Gao"
+		year="2024"
+		arxiv="2403.00564"
+		venue="ICML 2024"
+	/>
+	<Paper
+		title="Mastering Atari Games with Limited Data"
+		authors="Ye et al."
+		year="2021"
+		arxiv="2111.00210"
+		venue="NeurIPS 2021"
+		note="EfficientZero, the predecessor."
+	/>
+</Papers>
+
+## The three additions
+
+**Self-supervised consistency.** MuZero's dynamics net `g` is trained only
+through the policy, value and reward it eventually predicts — a weak, indirect
+signal. EZv2 adds a direct one: the latent reached by unrolling `g` must match
+the latent the representation net `h` produces for the *actual* next
+observation.
+
+This is the largest of the three. It gives the dynamics model a dense target at
+every unroll step instead of relying on distant scalar predictions to shape the
+latent space.
+
+**Value prefix.** Rather than predicting each step's reward separately, predict
+the **cumulative** reward over the unroll window. Individual step rewards are
+noisy and often zero; their sum is a lower-variance target, and it is what the
+value bootstrap actually needs.
+
+**Sampled actions.** MCTS over continuous actions is not directly possible —
+there is no finite branching. EZv2 samples a set of candidate actions from a
+policy prior and searches over those, which is what makes `EZv2ContinuousAgent`
+work on locomotion tasks.
+
+## Discrete and continuous
+
+```mojo
+comptime Agent = EZv2DiscreteAgent[...]    # Atari, arcade, board games
+comptime Agent = EZv2ContinuousAgent[...]  # HalfCheetah, Pendulum
+```
+
+The continuous variant is the more interesting one — tree search on continuous
+control is unusual, and it is where the sampled-action machinery earns its
+place.
+
+```bash
+pixi run -e nvidia mojo run -I . examples/cartpole/ezv2_cartpole_v2_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/atari/ezv2_pong_atari_value_prefix_gpu.mojo
+pixi run -e nvidia mojo run -I . examples/pendulum/ezv2_pendulum_v2_gpu.mojo
+```
+
+CartPole first — it is small, and the tuned recipe in that example documents the
+reasoning behind each knob.
+
+## Watch out for
+
+Everything on the [MuZero](/algorithms/muzero/) page applies, plus:
+
+:::caution[Convolution here is bandwidth-bound, not GEMM-bound]
+Profiling the EZv2 GPU path showed the convolutional nets are limited by memory
+bandwidth rather than matrix-multiply throughput — and hand-written GEMMs *lose*
+to the library `max_matmul`.
+
+If you are optimizing this path, work on data movement. Arithmetic is not the
+bottleneck.
+:::
+
+**Value support range**, as ever. A support that does not cover the actual return
+distribution silently stalls learning — the same trap as
+[C51](/algorithms/rainbow/) and MuZero.
+
+**GPU MCTS is sparser** than sequential search at equal simulation count.
+Roughly double `NUM_SIMS` before concluding the GPU path is worse.
+
+**Reanalyze.** Re-running search on stored trajectories with the current network
+refreshes their policy targets and is a large part of the sample-efficiency
+gain.
+
+## The zero-series in one table
+
+|  | Dynamics | Actions | Extra machinery |
+|---|---|---|---|
+| [AlphaZero](/algorithms/alphazero/) | known simulator | discrete | — |
+| [MuZero](/algorithms/muzero/) | learned latent | discrete | — |
+| **EfficientZero V2** | learned latent | discrete + continuous | consistency, value prefix, sampled actions |
+
+All three share the `zero/` package and the GPU MCTS kernels in
+`mojo_rl.planners.tree_search`.
+
+## Next
+
+- [MuZero](/algorithms/muzero/) — the base algorithm and the search deep dive
+- [AlphaZero](/algorithms/alphazero/) — when the rules are known
+- [TD-MPC2](/algorithms/tdmpc2/) — the other continuous-control planner

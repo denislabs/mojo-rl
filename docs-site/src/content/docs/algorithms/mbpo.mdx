@@ -1,0 +1,126 @@
+---
+title: MBPO
+description: Model-Based Policy Optimization — SAC trained on short synthetic rollouts from a learned dynamics ensemble.
+sidebar:
+  order: 1
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="beta" note="Required Q-explosion fixes; sensitive to critic normalization." />
+
+**Model-Based Policy Optimization** is [SAC](/algorithms/sac/) plus a learned
+dynamics model that manufactures extra training data.
+
+```mojo
+from mojo_rl.deep_agents.mbpo import MBPOAgent
+```
+
+
+<Papers label="Reference">
+	<Paper
+		title="When to Trust Your Model: Model-Based Policy Optimization"
+		authors="Janner, Fu, Zhang, Levine"
+		year="2019"
+		arxiv="1906.08253"
+		venue="NeurIPS 2019"
+	/>
+</Papers>
+
+## The idea
+
+Train a **probabilistic dynamics ensemble** on real transitions. Then branch
+short imagined rollouts from real states, and train SAC on a mixture of real and
+synthetic data.
+
+The gain is straightforward: each real transition seeds many synthetic ones, so
+the policy sees far more data than the environment provided.
+
+**Short rollouts are the entire trick.** Model error compounds with every
+imagined step — a 5-step branch stays close enough to reality to help, while a
+50-step branch trains the policy on fiction. MBPO's contribution over earlier
+model-based methods is largely the insight that rollout length should be short
+and that branching from real states beats rolling from an initial state.
+
+This is [Dyna-Q](/algorithms/tabular/td-methods/) with a neural dynamics model
+and a continuous-control learner.
+
+## The dynamics ensemble
+
+Each member predicts a **distribution** over the next state and reward, trained
+with `GaussianNLLLoss`:
+
+```mojo
+from mojo_rl.nn.loss.gaussian_nll_loss import GaussianNLLLoss
+```
+
+Two kinds of uncertainty come out of this, and both matter:
+
+- **Aleatoric** — each member's predicted variance, capturing genuine environment stochasticity
+- **Epistemic** — disagreement *between* members, capturing where the model has not seen data
+
+Disagreement is the useful signal: it says where imagined rollouts should not be
+trusted.
+
+## Building it
+
+```mojo
+from mojo_rl.deep_agents.mbpo import MBPOAgent
+```
+
+MBPO composes an SAC trainer with the ensemble and a synthetic replay buffer, so
+the SAC hyperparameters carry over unchanged, plus the model-specific ones —
+ensemble size, rollout length, real-to-synthetic ratio, model retrain cadence.
+
+```bash
+pixi run -e nvidia mojo run -I . examples/half_cheetah/mbpo_half_cheetah_nn_gpu.mojo
+pixi run mojo run -I . examples/half_cheetah/mbpo_half_cheetah_training.mojo
+pixi run mojo run -I . examples/pendulum/pendulum_mbpo_training.mojo
+```
+
+## Watch out for
+
+:::caution[Q-value explosion is the characteristic failure]
+This required specific fixes here. Training a critic on model-generated data
+creates a feedback loop: the critic's errors influence which synthetic states are
+visited, which produces targets that reinforce the error. Q-values run away.
+
+The fix was the **LayerNorm critic** — the same one [SAC needs on
+Humanoid](/algorithms/sac/) and that [REDQ](/algorithms/redq/) requires at high
+update-to-data ratios.
+
+Symptom: returns collapse while the losses look fine. Check `mean_q` magnitude
+first — it will be visibly diverging well before the return does. See
+[Logging and metrics](/tooling/logging/).
+:::
+
+**Rollout length is the sensitive knob.** Too long and the policy trains on
+model error; too short and there is no benefit over plain SAC. Start short.
+
+**The real-to-synthetic ratio matters.** Training entirely on synthetic data
+lets the policy drift into regions the model invented.
+
+**Model retraining cadence.** The dynamics model must keep up with the state
+distribution the improving policy visits, or its rollouts become stale.
+
+## MBPO or REDQ?
+
+Both buy sample efficiency over SAC, by different means:
+
+|  | MBPO | [REDQ](/algorithms/redq/) |
+|---|---|---|
+| Mechanism | synthetic data from a learned model | more updates on real data |
+| Extra compute | model training + rollout generation | ~20× gradient updates |
+| Main risk | model error corrupts the policy | value divergence |
+| Extra hyperparameters | rollout length, ratio, ensemble, cadence | ensemble size, subset size, UTD |
+
+REDQ is simpler to get working — it has no model to go wrong. MBPO can go
+further when the dynamics are genuinely learnable.
+
+## Next
+
+- [SAC](/algorithms/sac/) — the base learner
+- [REDQ](/algorithms/redq/) — model-free sample efficiency
+- [TD-MPC2](/algorithms/tdmpc2/) — a learned model used for planning instead of data generation

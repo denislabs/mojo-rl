@@ -1,0 +1,94 @@
+---
+title: Dreamer 4
+description: A transformer world model with a learned tokenizer, replacing DreamerV3's RSSM. Active research.
+sidebar:
+  order: 4
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="experimental" note="Active research with a known open issue — start with DreamerV3 instead." />
+
+Dreamer 4 replaces [DreamerV3](/algorithms/dreamerv3/)'s recurrent RSSM with a
+**transformer world model over learned tokens**.
+
+```mojo
+from mojo_rl.deep_agents.dreamer4 import Dreamer4Agent
+```
+
+
+<Papers label="Reference">
+	<Paper
+		title="Training Agents Inside of Scalable World Models"
+		authors="Hafner, Yan, Lillicrap"
+		year="2025"
+		arxiv="2509.24527"
+	/>
+</Papers>
+
+## The change
+
+DreamerV3 compresses each frame into a recurrent latent `(h, z)` and predicts
+forward one step at a time through a GRU. Dreamer 4 instead:
+
+1. **Tokenizes** observations with a learned encoder into a discrete token sequence
+2. Models the dynamics with a **transformer** over that sequence
+3. Trains behaviour in imagination, as before
+
+The motivation is the usual one for replacing recurrence with attention: a
+transformer can attend across a long context directly rather than squeezing
+history through a fixed-width recurrent state, and it parallelises over the
+sequence during training.
+
+## Status
+
+:::caution[Known open issue: the perceptual loss corrupts reconstruction]
+The current blocker, diagnosed in this repository: the tokenizer is trained with
+a **perceptual loss** borrowed from an out-of-domain surrogate, and it corrupts
+token reconstruction rather than improving it.
+
+The working direction is to set the perceptual weight to zero and pre-train the
+tokenizer separately before joint training.
+
+There is also an operational trap — a stale online checkpoint must be deleted
+before re-running, or the run resumes from the corrupted tokenizer and the fix
+appears not to work.
+:::
+
+Beyond that, two Mojo-level issues have been hit here: compiler aborts on traits
+refining `Module` in this package, which constrain how the model can be
+structured.
+
+## Running it
+
+```bash
+pixi run -e nvidia mojo run -I . examples/car_racing/dreamer4_car_racing_offline.mojo
+pixi run -e nvidia mojo run -I . examples/car_racing/dreamer4_car_racing_online.mojo
+pixi run -e nvidia mojo run -I . examples/car_racing/dreamer4_tokenizer_probe.mojo
+```
+
+The tokenizer probe is the right entry point: if reconstruction is bad, nothing
+downstream can work, and the probe isolates that.
+
+## Should you use it?
+
+No — use [DreamerV3](/algorithms/dreamerv3/), which has a full Atari Pong
+reproduction behind it.
+
+Dreamer 4 is here because the project is developed in the open and the work is
+in progress. It is documented so the state is knowable, not because it is ready.
+
+## Related work
+
+The same territory is being explored from another direction in
+`mojo_rl/experimental/` — the LeWM (JEPA-style world model) and LeDreamer work,
+which aims at a reconstruction-free world model. Those are research code with no
+stability guarantee at all.
+
+## Next
+
+- [DreamerV3](/algorithms/dreamerv3/) — the working predecessor
+- [TD-MPC2](/algorithms/tdmpc2/) — a different latent world model
+- [Contributing](/project/contributing/) — the known sharp edges

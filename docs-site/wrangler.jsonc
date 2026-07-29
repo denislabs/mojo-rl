@@ -1,0 +1,30 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "mojo-rl-docs",
+	"compatibility_date": "2026-07-29",
+
+	// Static-assets-only Worker: there is no `main`, so no Worker script runs.
+	// Astro builds a fully static site, so requests are served straight from
+	// Cloudflare's asset storage with no compute and no per-request billing.
+	"assets": {
+		"directory": "./dist",
+		// Astro emits directory-style URLs (/start/why/index.html), which is
+		// exactly what "auto-trailing-slash" resolves. Left implicit — it is the
+		// default — but noted because switching Astro to `build.format: 'file'`
+		// would require changing it.
+		"not_found_handling": "404-page"
+	},
+
+	// Binds the hostname AND creates its DNS record, since denislabs.com is a
+	// zone on this same account. Removing this entry does not remove the record.
+	"routes": [
+		{
+			"pattern": "mojo-rl.denislabs.com",
+			"custom_domain": true
+		}
+	],
+
+	"observability": {
+		"enabled": true
+	}
+}

@@ -1,0 +1,134 @@
+---
+title: Classical policy gradient
+description: REINFORCE, actor-critic and linear PPO — learning the policy directly, without a neural network.
+sidebar:
+  order: 3
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+
+<Maturity level="stable" />
+
+Everything on the [TD methods](/algorithms/tabular/td-methods/) page learns a
+*value* and derives a policy from it. These learn the **policy directly**, which
+is what makes continuous actions and stochastic policies natural.
+
+They use linear function approximation, so the algorithm is visible without a
+network in the way — and they are the direct ancestors of
+[PPO](/algorithms/ppo/), [A2C](/algorithms/a2c/) and the
+[continuous-control family](/algorithms/sac/).
+
+```mojo
+from mojo_rl.agents import (
+    REINFORCEAgent, REINFORCEWithEntropyAgent,
+    ActorCriticAgent, ActorCriticLambdaAgent,
+    A2CAgent, PPOAgent, PPOAgentWithMinibatch,
+)
+```
+
+
+<Papers label="Papers">
+	<Paper
+		title="Simple statistical gradient-following algorithms for connectionist reinforcement learning"
+		authors="Williams"
+		year="1992"
+		url="https://link.springer.com/article/10.1007/BF00992696"
+		venue="Machine Learning 8"
+		note="REINFORCE."
+	/>
+	<Paper
+		title="Policy Gradient Methods for Reinforcement Learning with Function Approximation"
+		authors="Sutton, McAllester, Singh, Mansour"
+		year="1999"
+		url="https://papers.nips.cc/paper/1713-policy-gradient-methods-for-reinforcement-learning-with-function-approximation"
+		venue="NeurIPS 1999"
+		note="The policy gradient theorem."
+	/>
+</Papers>
+
+## REINFORCE
+
+The original policy gradient. Run a full episode, then push up the probability of
+every action taken, weighted by the return that followed it.
+
+| Agent | Notes |
+|---|---|
+| `REINFORCEAgent` | Monte-Carlo policy gradient |
+| `REINFORCEWithEntropyAgent` | plus an entropy bonus |
+
+Unbiased and very high variance — the whole episode's return is credited to every
+action in it, including the ones that had nothing to do with it. That variance is
+the problem every later method attacks.
+
+The entropy variant adds a bonus for keeping the policy stochastic, which
+prevents premature collapse onto a mediocre deterministic policy. The same
+idea, formalised, is [SAC](/algorithms/sac/)'s maximum-entropy objective.
+
+## Actor-critic
+
+| Agent | Notes |
+|---|---|
+| `ActorCriticAgent` | one-step actor-critic |
+| `ActorCriticLambdaAgent` | with eligibility traces |
+
+Replace the Monte-Carlo return with a learned value estimate. The critic gives a
+baseline, so the actor is updated by the **advantage** — how much better the
+action was than the state's average — rather than the raw return.
+
+Much lower variance, at the cost of bias from the critic's own error. That
+bias/variance dial is exactly what GAE's `λ` exposes in [PPO](/algorithms/ppo/).
+
+## A2C and PPO (linear)
+
+| Agent | Notes |
+|---|---|
+| `A2CAgent` | advantage actor-critic |
+| `PPOAgent` | clipped surrogate |
+| `PPOAgentWithMinibatch` | with minibatch updates |
+
+`compute_gae` is shared with the deep PPO implementation, so the advantage
+estimation is literally the same code.
+
+```bash
+pixi run mojo run -I . examples/cartpole/cartpole_policy_gradient.mojo
+```
+
+:::note[Name collision]
+`mojo_rl.agents.PPOAgent` is the linear one;
+`mojo_rl.deep_agents.ppo.PPOAgent` is the neural one. The same applies to
+`DDPGAgent`, `TD3Agent` and `SACAgent`, which exist in both packages. Check the
+import path.
+:::
+
+## Continuous control (linear)
+
+`DDPGAgent`, `TD3Agent` and `SACAgent` also exist in linear form. They work on
+[Pendulum](/environments/classic-control/) and are a good way to see each
+algorithm's structure — twin critics, target smoothing, entropy temperature —
+before networks are involved.
+
+```bash
+pixi run mojo run -I . examples/solve_pendulum.mojo
+```
+
+## The through-line
+
+Reading these in order is the cheapest way to understand the deep algorithms:
+
+| Linear | Deep counterpart | What changed |
+|---|---|---|
+| REINFORCE | — | baseline added → actor-critic |
+| Actor-critic | [A2C](/algorithms/a2c/) | neural critic, batched envs |
+| Linear PPO | [PPO](/algorithms/ppo/) | neural nets, GAE, minibatch epochs |
+| Linear SAC | [SAC](/algorithms/sac/) | twin critics, auto-tuned temperature |
+
+The algorithms are the same. What the deep versions add is a function
+approximator that scales — and every failure mode that comes with it.
+
+## Next
+
+- [PPO](/algorithms/ppo/) — the deep version
+- [A2C](/algorithms/a2c/) — the simplest deep policy gradient
+- [TD methods](/algorithms/tabular/td-methods/) — the value-based side

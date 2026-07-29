@@ -1,0 +1,134 @@
+---
+title: 3D manipulation
+description: Reacher, Pusher and the Metaworld-style Sawyer arm — goal-directed manipulation on physics3d.
+sidebar:
+  order: 6
+---
+
+import Maturity from '~/components/Maturity.astro';
+import Paper from '~/components/Paper.astro';
+import Papers from '~/components/Papers.astro';
+import Demo from '~/components/Demo.astro';
+import DemoGrid from '~/components/DemoGrid.astro';
+
+<Maturity level="beta" note="Sawyer diverges from Metaworld's reference physics — see the caveat below." />
+
+Goal-directed arm tasks on the same `physics3d` engine as the
+[locomotion environments](/environments/3d-locomotion/). Where locomotion rewards
+forward velocity, these reward reducing a distance to a target — which makes them
+useful for testing algorithms on sparse-ish, goal-conditioned reward.
+
+<DemoGrid min="15rem">
+	<Demo name="reacher" caption="Reacher" meta="10 obs · 2 act" />
+	<Demo name="pusher" caption="Pusher" meta="23 obs · 7 act" />
+	<Demo name="sawyer_reach" caption="Sawyer reach" meta="Metaworld-style" />
+</DemoGrid>
+
+| Environment | Obs | Act | Frame skip |
+|---|---|---|---|
+| Reacher | 10 | 2 | 2 |
+| Pusher | 23 | 7 | 5 |
+| Sawyer | varies by task | 4 | 5 |
+
+
+<Papers label="Reference">
+	<Paper
+		title="Meta-World: A Benchmark and Evaluation for Multi-Task and Meta Reinforcement Learning"
+		authors="Yu et al."
+		year="2019"
+		arxiv="1910.10897"
+		venue="CoRL 2019"
+		note="The Sawyer task suite."
+	/>
+</Papers>
+
+## Reacher
+
+A two-link arm reaching for a randomly placed target. Ten observations:
+
+```
+[cos q₀, cos q₁, sin q₀, sin q₁, target xy, qvel[0:2], fingertip − target]
+```
+
+Note the last term — the observation includes the **vector to the goal**, not
+just both positions. That is what makes it learnable quickly; the agent does not
+have to infer the relationship.
+
+Two continuous torques. Reward is negative distance to target plus a control
+cost. The smallest task here and a good first check that a continuous-control
+agent works on goal-directed reward.
+
+## Pusher
+
+A seven-DOF arm pushing a puck to a goal. Twenty-three observations:
+
+```
+[qpos[:7], qvel[:7], tip_arm_xyz(3), object_xyz(3), goal_xyz(3)]
+```
+
+Harder than Reacher in a structural way: the arm must contact an object and move
+it, so reward depends on a **contact interaction** rather than just arm
+kinematics. There is a genuine exploration gap — until the arm touches the puck,
+the object-to-goal term never changes.
+
+:::note[Pusher is 23-dimensional]
+The project slide deck quotes 22. The source layout above sums to 23
+(`7 + 7 + 3 + 3 + 3`), matching Gymnasium's `Pusher-v5`.
+:::
+
+Pusher pins the goal position in a custom reset hook. That hook was dormant for a
+while due to a signature mismatch — it silently did nothing — and now runs, so
+current behaviour matches Gymnasium and older recorded results do not.
+
+## Sawyer
+
+A Metaworld-style Sawyer arm, currently exercising the reach task. Its value to
+the project is less the task than the **engine features it forced**:
+
+- **Mocap bodies** — a motion-captured target the arm tracks, which required
+  extending the model layout with a dedicated mocap body index and skipping it in
+  forward kinematics
+- **Weld constraints** — rigidly attaching the end-effector to the mocap frame
+
+Those are general capabilities now, not Sawyer-specific.
+
+:::caution[Physics diverges from Metaworld]
+Sawyer is configured with an **elliptic** friction cone, and that exposed a
+pre-existing drift in elliptic-contact handling. Trajectories do not match
+Metaworld's reference closely enough for benchmark comparison. The task runs and
+trains; treat it as an engine testbed rather than a Metaworld reproduction.
+:::
+
+## Running them
+
+```bash
+pixi run mojo run -I . examples/metaworld/sawyer_reach_render.mojo
+```
+
+Reacher and Pusher wrap into the batched GPU driver like any physics3d
+environment:
+
+```mojo
+from mojo_rl.envs.reacher import ReacherModel, ReacherConfig
+from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
+
+comptime BatchedEnvT = Phyics3dBatchedEnv[ReacherModel, ReacherConfig, N_ENVS]
+```
+
+## What to use them for
+
+**Goal-conditioned reward** — all three reward reaching a target rather than
+sustaining a behaviour, which stresses different parts of an algorithm than
+locomotion does. Value estimates have to encode "how far from the goal", not
+"how fast am I going".
+
+**Contact-driven exploration** — Pusher specifically. An algorithm that cannot
+discover the object–goal coupling will plateau at "arm hovers near puck".
+
+**Short horizons** — Reacher episodes are brief, so iteration is fast when
+debugging an actor-critic implementation.
+
+## Next
+
+- [3D locomotion](/environments/3d-locomotion/) — the larger physics3d family
+- [Writing your own environment](/environments/custom/) — adding a task
