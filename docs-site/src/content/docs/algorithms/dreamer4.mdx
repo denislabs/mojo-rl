@@ -6,13 +6,16 @@ sidebar:
 ---
 
 import Maturity from '~/components/Maturity.astro';
+import Dreamer4WorldModel from '~/components/diagrams/Dreamer4WorldModel.astro';
+import ShortcutForcing from '~/components/diagrams/ShortcutForcing.astro';
 import Paper from '~/components/Paper.astro';
 import Papers from '~/components/Papers.astro';
 
 <Maturity level="experimental" note="Active research with a known open issue — start with DreamerV3 instead." />
 
 Dreamer 4 replaces [DreamerV3](/algorithms/dreamerv3/)'s recurrent RSSM with a
-**transformer world model over learned tokens**.
+**transformer world model trained as a diffusion model**, and learns its policy
+entirely offline — inside imagination, with no environment interaction at all.
 
 ```mojo
 from mojo_rl.deep_agents.dreamer4 import Dreamer4Agent
@@ -25,32 +28,138 @@ from mojo_rl.deep_agents.dreamer4 import Dreamer4Agent
 		authors="Hafner, Yan, Lillicrap"
 		year="2025"
 		arxiv="2509.24527"
+		note="The Minecraft-diamonds agent, trained purely from offline data."
 	/>
 </Papers>
 
 ## The change
 
 DreamerV3 compresses each frame into a recurrent latent `(h, z)` and predicts
-forward one step at a time through a GRU. Dreamer 4 instead:
+forward one step at a time through a GRU. Dreamer 4 replaces both halves of that:
+a **causal tokenizer** turns video into continuous latents, and a **block-causal
+transformer** denoises those latents under a diffusion-style objective.
 
-1. **Tokenizes** observations with a learned encoder into a discrete token sequence
-2. Models the dynamics with a **transformer** over that sequence
-3. Trains behaviour in imagination, as before
+<Dreamer4WorldModel />
 
-The motivation is the usual one for replacing recurrence with attention: a
-transformer can attend across a long context directly rather than squeezing
-history through a fixed-width recurrent state, and it parallelises over the
-sequence during training.
+:::note[Not a discrete-token autoregressive model]
+The name suggests tokens in the language-model sense. They are not that. The
+tokenizer's bottleneck is a handful of **continuous** latent tokens per frame —
+a linear projection to a small channel dimension followed by `tanh` — and the
+dynamics model *denoises* them rather than predicting a next token from a
+codebook. There is no vector quantisation anywhere in the model.
+:::
+
+Three architectural choices carry most of the design.
+
+**The tokenizer is trained by masked autoencoding.** Input patches are dropped
+with a probability that is itself randomised per image, `p ~ U(0, 0.9)`, and
+replaced by a learned embedding; the loss is reconstruction on the dropped
+positions. Sometimes `p = 0`, which is the setting inference actually uses. The
+paper reports that this improves the *spatial consistency* of the video the
+dynamics model later generates — the tokenizer is being taught to infer missing
+structure, not just to compress.
+
+**Both halves are causal in time.** That is what lets frames be decoded one at a
+time during interactive rollout, while still getting temporal compression.
+
+**Space and time attention are separated, and time is rare.** Rather than dense
+attention over all video tokens, the stack alternates three space-only layers
+with one causal time layer. Time attention every fourth layer is enough, and it
+is the expensive one — it is what has to read a long context's KV cache. Grouped
+query attention shrinks that cache further. This is the whole reason the model
+reaches real-time inference on a single GPU.
+
+## Shortcut forcing
+
+A flow-matching model is trained to nudge a corrupted sample a little way toward
+clean data. Generating anything then needs a long chain of small steps — 64 or
+more is typical — which is fine for offline video generation and hopeless for a
+world model you want to imagine inside of.
+
+<ShortcutForcing />
+
+Shortcut forcing fixes that by conditioning the network on the **step size** it
+is being asked to take, and adding a self-consistency constraint: one step of
+size `d` must land where two steps of `d/2` land. The two half-steps are run
+forward-only and their result is detached, so the gradient flows through the
+single-step pass alone. Train that at every scale — `d` sampled as a power of
+two — and the model can be asked for large steps directly at inference.
+
+The result is **K = 4 forward passes per generated frame**.
+
+Two refinements in the paper are worth knowing, because both look like details
+and are not:
+
+**x-prediction, not v-prediction.** Shortcut models normally predict the
+velocity `x₁ − x₀`. Dreamer 4 predicts the clean representation instead.
+Velocity prediction trains the network to emit high-frequency outputs, and when
+you generate a long video frame by frame those errors accumulate; predicting the
+endpoint gives rollouts of arbitrary length.
+
+**A ramp weight on the loss, `w(τ) = 0.9τ + 0.1`.** At low signal levels the
+flow-matching term degenerates into predicting the dataset mean — there is
+almost nothing to learn there — so capacity is steered toward the levels that
+carry signal.
+
+At inference the model is autoregressive in time, and the past frames it
+conditions on are deliberately corrupted slightly (`τ_ctx = 0.1`) so it stays
+robust to imperfections in its own generations.
+
+## The three phases
+
+The agent is not trained end to end. Reading the phases in order is the fastest
+way to understand what is frozen when.
+
+| Phase | What trains | What is frozen |
+|---|---|---|
+| **1 · World model pretraining** | tokenizer on video, then dynamics on tokenized video (+ actions, optionally) | — |
+| **2 · Agent finetuning** | task-conditioned policy and reward heads, jointly with the video-prediction loss | tokenizer |
+| **3 · Imagination training** | policy and value heads only, on rollouts the model generates | the whole transformer |
+
+**Phase 2 inserts agent tokens** as a new modality, interleaved with the image
+representations, actions and register tokens, and carrying a task embedding. The
+policy and reward heads read from them, trained by multi-token prediction — each
+head predicts the next `L = 8` actions and rewards rather than only the next one.
+
+:::tip[Agent tokens are attended *from*, never *to*]
+Agent tokens attend to themselves and to every other modality. No other modality
+attends back to them.
+
+This asymmetry is load-bearing. If the world model could see the agent tokens,
+its future predictions could be influenced by the *task* rather than only by the
+actions — causal confusion, and it would quietly stop being a world model. The
+one-way mask is what keeps prediction honest.
+:::
+
+**Phase 3 keeps the transformer frozen** and updates only the policy and value
+heads, so imagination training cannot damage the world model it depends on. A
+frozen copy of the phase-2 policy is kept as a behavioural prior. Rollouts start
+from dataset contexts, one rollout per context — a deliberate change from earlier
+Dreamers, trading rollout depth for data diversity and lower memory.
+
+The policy objective is **PMPO**, not the usual advantage-weighted update. It
+uses only the **sign** of the advantage, splitting imagined states into
+positive and negative sets and averaging a maximum-likelihood loss over each,
+balanced by `α = 0.5`, plus a reverse-KL pull toward the behavioural prior at
+`β = 0.3`. Discarding the magnitude is the point: it removes any need to
+normalise returns or advantages, which is what lets one set of hyperparameters
+cover tasks whose reward scales differ by orders of magnitude.
+
+The value head is trained on λ-returns with a symexp-twohot output, the same
+distributional trick [DreamerV3](/algorithms/dreamerv3/) and
+[TD-MPC2](/algorithms/tdmpc2/) use, and for the same reason.
 
 ## Status
 
 :::caution[Known open issue: the perceptual loss corrupts reconstruction]
-The current blocker, diagnosed in this repository: the tokenizer is trained with
-a **perceptual loss** borrowed from an out-of-domain surrogate, and it corrupts
-token reconstruction rather than improving it.
+The paper's tokenizer loss is `MSE + 0.2 · LPIPS`. LPIPS is a *learned*
+perceptual metric, and this port supplies it through a surrogate trained on
+out-of-domain data — which turns out to corrupt token reconstruction rather than
+improve it.
 
 The working direction is to set the perceptual weight to zero and pre-train the
-tokenizer separately before joint training.
+tokenizer separately before joint training. Since the tokenizer is frozen for
+every later phase, nothing downstream can be better than it is.
 
 There is also an operational trap — a stale online checkpoint must be deleted
 before re-running, or the run resumes from the corrupted tokenizer and the fix
@@ -71,6 +180,24 @@ pixi run -e nvidia mojo run -I . examples/car_racing/dreamer4_tokenizer_probe.mo
 
 The tokenizer probe is the right entry point: if reconstruction is bad, nothing
 downstream can work, and the probe isolates that.
+
+## Dreamer 4 or DreamerV3?
+
+|  | [DreamerV3](/algorithms/dreamerv3/) | Dreamer 4 |
+|---|---|---|
+| Latent | recurrent `(h, z)` through a GRU | continuous tokens from a causal tokenizer |
+| Dynamics | one-step prediction | diffusion, K = 4 passes per frame |
+| Attention | — | space every layer, causal time every fourth |
+| Policy objective | actor-critic with normalised returns | PMPO, sign of advantage only |
+| Data | online interaction | offline video, actions optional |
+| Status here | full Atari Pong reproduction | open issue in the tokenizer |
+
+The offline column is the interesting one. Dreamer 4's world model learns
+mostly from **unlabelled** video and needs only a small amount of
+action-paired data to pick up action conditioning — which is what makes the
+Minecraft-from-offline-data result possible, and what would make the approach
+applicable to robotics, where online interaction with a partly-trained policy is
+unsafe.
 
 ## Should you use it?
 

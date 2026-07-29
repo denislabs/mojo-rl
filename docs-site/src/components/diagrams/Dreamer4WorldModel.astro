@@ -1,0 +1,181 @@
+---
+/**
+ * Dreamer4WorldModel — the two halves of the world model, after Figure 2 of
+ * Hafner, Yan & Lillicrap (2025), redrawn in the site's palette.
+ *
+ * Kept close to the paper's layout on purpose: a reader cross-referencing the
+ * arXiv figure should recognise this immediately. The two things worth carrying
+ * over exactly are the masked patches on the tokenizer's input — it is trained
+ * by masked autoencoding, not plain reconstruction — and the 3-space-to-1-time
+ * layer ratio in the dynamics, which is where the architecture's speed comes
+ * from.
+ */
+
+/** Patch-grid geometry. Three frames, 3×3 patches plus a latent-token column. */
+const CELL = 15;
+const GAP = 2;
+const STRIDE = CELL + GAP;
+const GRID = 3 * CELL + 2 * GAP;
+const FRAMES = [40, 150, 260];
+
+/** Which patches are dropped on the way in. Varied per frame, as p ~ U(0, 0.9). */
+const MASKED = [
+	[1, 3, 6],
+	[0, 4, 8],
+	[2, 5, 7],
+];
+
+const cells = (ox: number, oy: number) =>
+	Array.from({ length: 9 }, (_, i) => ({
+		i,
+		x: ox + (i % 3) * STRIDE,
+		y: oy + Math.floor(i / 3) * STRIDE,
+	}));
+
+/** One frame of the interleaved dynamics input: action, signal+step, latents. */
+const BLOCKS = [470, 596, 722];
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 470" role="img"
+		aria-label="Dreamer 4's world model: a causal tokenizer trained by masked autoencoding, and a block-causal dynamics transformer over an interleaved sequence of actions, signal levels and noisy latents">
+		<defs>
+			<marker id="d4-cyan" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-cyan" />
+			</marker>
+			<marker id="d4-spark" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-spark" />
+			</marker>
+		</defs>
+
+		<text x="20" y="30" class="dg-title dg-title--left">(a) causal tokenizer</text>
+		<text x="20" y="52" class="dg-sub dg-sub--left">trained on video alone, then frozen</text>
+
+		<text x="470" y="30" class="dg-title dg-title--left">(b) interactive dynamics</text>
+		<text x="470" y="52" class="dg-sub dg-sub--left">denoises latents by shortcut forcing</text>
+
+		<!-- ── (a) reconstruction, top ───────────────────────────────────── -->
+		{
+			FRAMES.map((ox) => (
+				<g>
+					{cells(ox, 92).map((c) => (
+						<rect class="dg-fill-cyan" x={c.x} y={c.y} width={CELL} height={CELL} rx="2" opacity="0.75" />
+					))}
+					{[0, 1, 2].map((r) => (
+						<rect class="dg-ghost" x={ox + GRID + 8} y={92 + r * STRIDE} width={CELL} height={CELL} rx="2" />
+					))}
+				</g>
+			))
+		}
+		{/* Centred, not left-anchored: `.dg-caption` is declared after
+		    `.dg-sub--left` in noeira.css, so its `text-anchor: middle` wins and the
+		    pair silently renders centred anyway — off the panel at x = 20. */}
+		<text x="185" y="84" class="dg-caption">reconstructed patches</text>
+
+		<g class="dg-node dg-node--cyan">
+			<rect x="30" y="176" width="340" height="34" rx="8" />
+			<text x="200" y="198" class="dg-title" style="font-size:15px">Block Causal Decoder</text>
+		</g>
+		{FRAMES.map((ox) => (
+			<path class="dg-edge dg-edge--cyan" marker-end="url(#d4-cyan)"
+				d={`M ${ox + GRID / 2} 176 L ${ox + GRID / 2} 152`} />
+		))}
+
+		<!-- the bottleneck: a few latent tokens per frame -->
+		{
+			FRAMES.map((ox) => (
+				<g>
+					<text x={ox - 12} y={252} class="dg-label dg-label--spark">z</text>
+					{[0, 1, 2].map((r) => (
+						<rect class="dg-fill-spark" x={ox + 4} y={226 + r * STRIDE} width={CELL} height={CELL} rx="2" />
+					))}
+				</g>
+			))
+		}
+		{FRAMES.map((ox) => (
+			<path class="dg-edge dg-edge--spark" marker-end="url(#d4-spark)"
+				d={`M ${ox + GRID / 2} 226 L ${ox + GRID / 2} 210`} />
+		))}
+
+		<g class="dg-node dg-node--cyan">
+			<rect x="30" y="292" width="340" height="34" rx="8" />
+			<text x="200" y="314" class="dg-title" style="font-size:15px">Block Causal Encoder</text>
+		</g>
+		{FRAMES.map((ox) => (
+			<path class="dg-edge dg-edge--spark" marker-end="url(#d4-spark)"
+				d={`M ${ox + GRID / 2} 292 L ${ox + GRID / 2} 278`} />
+		))}
+
+		<!-- ── (a) masked input, bottom ──────────────────────────────────── -->
+		{
+			FRAMES.map((ox, f) => (
+				<g>
+					{cells(ox, 358).map((c) => (
+						<rect class={MASKED[f].includes(c.i) ? 'dg-ghost' : 'dg-fill-cyan'}
+							x={c.x} y={c.y} width={CELL} height={CELL} rx="2" opacity="0.75" />
+					))}
+					{[0, 1, 2].map((r) => (
+						<rect class="dg-fill-spark" x={ox + GRID + 8} y={358 + r * STRIDE} width={CELL} height={CELL} rx="2" />
+					))}
+					<path class="dg-edge dg-edge--cyan" marker-end="url(#d4-cyan)"
+						d={`M ${ox + GRID / 2} 358 L ${ox + GRID / 2} 326`} />
+				</g>
+			))
+		}
+		<text x="185" y="452" class="dg-caption">patches, randomly dropped (p ~ U(0, 0.9))</text>
+
+		<!-- ── (b) dynamics ──────────────────────────────────────────────── -->
+		{
+			BLOCKS.map((bx) => (
+				<g>
+					<rect class="dg-fill-cyan" x={bx} y="92" width={CELL} height={CELL * 2 + GAP} rx="2" />
+					<text x={bx + 8} y="80" class="dg-tree-label">ẑ</text>
+					<path class="dg-edge dg-edge--cyan" marker-end="url(#d4-cyan)"
+						d={`M ${bx + 8} 128 L ${bx + 8} 116`} />
+				</g>
+			))
+		}
+
+		<g class="dg-node dg-node--purple">
+			<rect x="450" y="128" width="380" height="198" rx="10" />
+			<text x="640" y="152" class="dg-title" style="font-size:15px">Block Causal Dynamics</text>
+		</g>
+		{
+			['Causal Time Layer', 'Space Layer', 'Space Layer', 'Space Layer'].map((label, i) => (
+				<g class="dg-node dg-node--muted">
+					<rect x="466" y={166 + i * 38} width="348" height="30" rx="6" />
+					<text x="640" y={186 + i * 38} class="dg-sub">{label}</text>
+				</g>
+			))
+		}
+		<text x="842" y="222" class="dg-caption">× L</text>
+		<text x="842" y="240" class="dg-caption">4</text>
+		<path class="dg-edge dg-edge--muted" d="M 836 228 L 852 228" />
+
+		<!-- the interleaved per-frame input block -->
+		{
+			BLOCKS.map((bx) => (
+				<g>
+					<rect class="dg-fill-spark" x={bx - 60} y="358" width={CELL} height={CELL} rx="2" />
+					<text x={bx - 53} y="404" class="dg-caption dg-caption--sans">a</text>
+					<rect class="dg-ghost" x={bx - 32} y="358" width={CELL} height={CELL} rx="2" />
+					<text x={bx - 25} y="404" class="dg-caption dg-caption--sans">τ d</text>
+					<rect class="dg-fill-cyan" x={bx} y="358" width={CELL} height={CELL * 2 + GAP} rx="2" opacity="0.6" />
+					<text x={bx + 8} y="404" class="dg-caption dg-caption--sans">z̃</text>
+					<path class="dg-edge dg-edge--cyan" marker-end="url(#d4-cyan)"
+						d={`M ${bx + 8} 358 L ${bx + 8} 326`} />
+				</g>
+			))
+		}
+		<text x="640" y="452" class="dg-caption">action · signal level and step size · corrupted latents</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--cyan">patches and latents</span>
+		<span class="diagram__key diagram__key--spark">bottleneck tokens, actions</span>
+		<span class="diagram__key diagram__key--muted">dropped / control tokens</span>
+		<span class="diagram__key diagram__key--purple">dynamics transformer</span>
+	</figcaption>
+</figure>

@@ -1,0 +1,76 @@
+---
+/**
+ * ShortcutForcing — why Dreamer 4 can generate a frame in four forward passes.
+ *
+ * A plain flow-matching model is only trained to take small steps, so inference
+ * needs a long chain of them. Shortcut forcing adds one constraint: a single
+ * step of size d must land where two steps of d/2 land. Train that at every
+ * scale and the model can be asked for large steps directly.
+ *
+ * The asymmetry is the part that is easy to miss and expensive to get wrong, so
+ * it is drawn rather than described: the two-half-step path is dashed and muted
+ * because it is forward-only, and the target it produces is detached.
+ */
+
+const START = { x: 130, y: 250 };
+const END = { x: 700, y: 250 };
+const MID = { x: 415, y: 336 };
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 420" role="img"
+		aria-label="Shortcut forcing: one step of size d is trained to match two forward-only steps of size d over two, whose average is used as a detached target">
+		<defs>
+			<marker id="sf-spark" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-spark" />
+			</marker>
+			<marker id="sf-muted" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-muted" />
+			</marker>
+		</defs>
+
+		<!-- the trained single step -->
+		<path class="dg-edge dg-edge--spark" marker-end="url(#sf-spark)"
+			d={`M ${START.x + 34} ${START.y - 14} Q 415 110 ${END.x - 34} ${START.y - 14}`} />
+		<text x="415" y="150" class="dg-title">one step of size d</text>
+		<text x="415" y="172" class="dg-sub">the main forward — this is what takes the gradient</text>
+
+		<!-- the two forward-only half steps -->
+		<path class="dg-edge dg-edge--muted dg-edge--dashed" marker-end="url(#sf-muted)"
+			d={`M ${START.x + 30} ${START.y + 20} L ${MID.x - 30} ${MID.y - 6}`} />
+		<path class="dg-edge dg-edge--muted dg-edge--dashed" marker-end="url(#sf-muted)"
+			d={`M ${MID.x + 30} ${MID.y - 6} L ${END.x - 30} ${START.y + 20}`} />
+		<circle cx={MID.x} cy={MID.y} r="26" class="dg-tree-node" />
+		<text x={MID.x} y={MID.y + 6} class="dg-tree-label">z′</text>
+		<text x="415" y="392" class="dg-sub">two steps of size d/2 — forward only, and the result is detached</text>
+
+		<circle cx={START.x} cy={START.y} r="34" class="dg-tree-node dg-tree-node--root" />
+		<text x={START.x} y={START.y + 6} class="dg-tree-label">z̃</text>
+		<text x={START.x} y={START.y + 62} class="dg-caption">(1−τ)·noise + τ·clean</text>
+
+		<circle cx={END.x} cy={END.y} r="34" class="dg-tree-node dg-tree-node--hot" />
+		<text x={END.x} y={END.y + 6} class="dg-tree-label">ẑ₁</text>
+		<text x={END.x} y={END.y + 62} class="dg-caption">clean prediction</text>
+
+		<!-- the constraint itself -->
+		<path class="dg-edge dg-edge--spark dg-edge--dashed"
+			d={`M ${MID.x} 200 L ${MID.x} ${MID.y - 26}`} />
+		<text x={MID.x + 12} y="240" class="dg-label dg-label--spark">must agree</text>
+
+		<text x="756" y="244" class="dg-sub dg-sub--left">At inference:</text>
+		<text x="756" y="264" class="dg-sub dg-sub--left">K = 4 passes</text>
+		<text x="756" y="284" class="dg-sub dg-sub--left">per frame.</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--spark">trained pass</span>
+		<span class="diagram__key diagram__key--muted">forward-only, detached target</span>
+	</figcaption>
+
+	<div class="diagram__formula">
+		<span class="diagram__formula-title">bootstrap term</span>
+		<code>L = (1−τ)² · ‖ (ẑ₁ − z̃)/(1−τ) − sg( (b′ + b″)/2 ) ‖²,   weighted by w(τ) = 0.9τ + 0.1</code>
+	</div>
+</figure>

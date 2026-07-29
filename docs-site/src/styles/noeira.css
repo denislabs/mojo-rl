@@ -917,6 +917,13 @@ mobile-starlight-toc a[aria-current='true'] {
 	text-anchor: middle;
 }
 
+/* Combining diacritics (z̃, ẑ) fall back badly in the mono face: at caption size
+   the tilde composes into a glyph that reads as "2". The sans face renders them
+   correctly, so any label carrying one needs this. */
+.dg-caption--sans {
+	font-family: var(--sl-font);
+}
+
 /* --- inline glyphs (AgentEnvLoop) --- */
 
 .dg-icon-bg {
