@@ -1,0 +1,25 @@
+"""dm_control `cartpole` domain.
+
+Tasks: balance, balance_sparse, swingup, swingup_sparse, two_poles, three_poles.
+Reference: references/dm_control-main/dm_control/suite/cartpole.py + .xml
+"""
+
+from .cartpole import (
+    DMCartpoleBalance,
+    DMCartpoleBalanceSparse,
+    DMCartpoleSwingup,
+    DMCartpoleSwingupSparse,
+    DMCartpoleTwoPoles,
+    DMCartpoleThreePoles,
+)
+from .cartpole_config import DMCartpoleConfig
+from .cartpole_xml import (
+    DMCartpole1Model,
+    DMCartpole2Model,
+    DMCartpole3Model,
+    dm_cartpole1_xml,
+    dm_cartpole2_xml,
+    dm_cartpole3_xml,
+    CART_BODY_IDX,
+    FIRST_POLE_BODY_IDX,
+)
