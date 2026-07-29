@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import Maturity from '~/components/Maturity.astro';
+import ArenaSelfPlay from '~/components/diagrams/ArenaSelfPlay.astro';
 import Demo from '~/components/Demo.astro';
 import DemoGrid from '~/components/DemoGrid.astro';
 import Paper from '~/components/Paper.astro';
@@ -67,6 +68,66 @@ The self-improvement is the point. Search makes the policy better than the raw
 network; training on search results makes the network better; better priors make
 the next search stronger.
 
+Why it works at all is worth one sentence: **search is a policy improvement
+operator**. The visit distribution after a few hundred simulations is a strictly
+better policy than the network's raw prior, because it has actually looked ahead.
+So training the network toward its own search output is not circular — it is
+distilling a better policy back into the thing that produced it, and the loop
+climbs.
+
+## The arena gate
+
+<ArenaSelfPlay />
+
+The loop above, run literally, has a failure mode: a learner that gets
+transiently worse still generates the next batch of self-play, and the poisoned
+data makes it worse still. Full AlphaZero closes that with a **best/learner
+split**.
+
+A frozen **best** net generates every self-play game — all MCTS expansion, all
+priors and values. A separate **learner** trains on that data and touches
+nothing else. Every `arena_every` iterations the learner plays the best in the
+Arena, and only if it wins a clear majority of decisive games is it copied over
+the best and allowed to generate.
+
+Three details in that gate matter:
+
+**The match runs at full MCTS strength, not argmax.** The winner is going to be
+used as net-plus-search, so that is the condition it should be judged in.
+Argmax evaluation also never consults the value head, which is half of what
+search depends on.
+
+**Both colours, from random openings.** Board games are not symmetric in
+practice, and a fixed opening measures one line rather than strength.
+
+**A clear majority, not a bare one.** A 51% result over a small match is noise,
+and promoting on noise reintroduces exactly the drift the gate exists to stop.
+
+`train_arena` runs this; plain `train` runs the ungated loop, which is faster
+and fine for Tic-Tac-Toe.
+
+## Symmetry augmentation
+
+Board games have symmetry groups the network does not know about. Every recorded
+`(obs, π)` is replayed under each of them, with the scalar outcome `z` copied
+unchanged because it is symmetry-invariant.
+
+This multiplies the effective data by the group order at no simulation cost,
+which is a large factor when self-play is the expensive part. `AUG` is a
+compile-time parameter; passing `IdentityAugmenter` turns it off.
+
+:::caution[Use the game's actual symmetry group, not D4 by reflex]
+Tic-Tac-Toe's board is square, so the full dihedral group applies — four
+rotations and their reflections, eight in all, via `BoardAugmenter`.
+
+**Connect Four's does not.** The board is 6×7, so no rotation maps it to itself,
+and gravity breaks vertical flips. Its only symmetry is the left↔right column
+flip — a group of order two, `HFlipColumnAugmenter`. Applying D4 here would
+train the network on positions that cannot occur.
+
+The augmenter is per-game for exactly this reason.
+:::
+
 ## AlphaZero or MuZero?
 
 Simple rule: **if you have the rules, use AlphaZero.**
@@ -86,7 +147,28 @@ model can only approximate a simulator you already have exactly.
 
 ```mojo
 from mojo_rl.deep_agents.alphazero import AlphaZeroAgent
+
+var agent = AlphaZeroAgent[
+    "gpu", Env, Net,
+    N_ENVS=64,          # self-play games stepped together
+    NUM_SIMS=500,       # MCTS simulations per move
+    MAX_NODES=1024,     # tree capacity — must exceed what NUM_SIMS can expand
+    BATCH=128,
+    CAP=1_000_000,      # replay capacity, in augmented positions
+    MAX_TRAJ=42,        # longest possible game
+](ctx, lr=0.002)
 ```
+
+The environment must satisfy `GPUTwoPlayerDiscreteEnv & TwoPlayerDiscreteEnv`,
+which is what lets MCTS expand nodes by *calling the rules* rather than a
+learned model.
+
+`MAX_NODES` is the one that bites: it has to exceed the number of nodes
+`NUM_SIMS` can create, and the search does not grow the tree to fit.
+
+**`NUM_SIMS` is not a knob to economise on.** Dropping Connect Four from 500 to
+100 gives visibly weaker MCTS targets — and since those targets *are* the
+training signal, a cheap search does not just play worse, it teaches worse.
 
 ```bash
 pixi run mojo run -I . examples/board_games/tictactoe_alphazero_v2_cpu.mojo
@@ -111,6 +193,22 @@ sample-efficient at low simulation counts.
 The zero-series papers sample uniformly from self-play games. PER degrades
 results on board games: pass `use_per=False`. This is paper-correct behaviour,
 not a workaround.
+:::
+
+:::caution[Clip the gradient, or the arena stops promoting]
+Running the Connect Four ResNet without gradient clipping reproduces a specific,
+recognisable failure: policy cross-entropy descends, bottoms out around move
+2000, then **climbs back toward uniform** — entropy rising, win-rate against a
+random opponent sliding 69% → 62% — and the arena rejects every challenger after
+the first promotion.
+
+The fix is `max_grad_norm=1.0` on the training call, with AdamW and
+`weight_decay=1e-4` to regularise the 5-block torso. Clipping is the larger of
+the two.
+
+Note what the symptom looks like from outside: *the gate appears to be working*.
+It is rejecting challengers because they are genuinely worse, and the cause is
+upstream in the optimizer.
 :::
 
 :::caution[Network promotion must copy normalization state]

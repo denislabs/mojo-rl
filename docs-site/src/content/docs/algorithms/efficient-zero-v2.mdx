@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import Maturity from '~/components/Maturity.astro';
+import UnrollConsistency from '~/components/diagrams/UnrollConsistency.astro';
 import Paper from '~/components/Paper.astro';
 import Papers from '~/components/Papers.astro';
 
@@ -46,30 +47,56 @@ signal. EZv2 adds a direct one: the latent reached by unrolling `g` must match
 the latent the representation net `h` produces for the *actual* next
 observation.
 
+<UnrollConsistency />
+
 This is the largest of the three. It gives the dynamics model a dense target at
 every unroll step instead of relying on distant scalar predictions to shape the
 latent space.
+
+The objective is **SimSiam** — negative cosine similarity between an online
+projection-and-prediction of `zᵏ` and a **detached** projection of `h(oₜ₊ₖ)`.
+Three properties of that setup are not optional:
+
+- **Cosine, not MSE.** The term should say "point the same way", not "have the same magnitude". Matching magnitudes would fight the normalization the latent space needs.
+- **Stop-gradient on the target.** Only the online branch is trained. Without the asymmetry both branches can satisfy the loss by collapsing to a constant, which trivially maximises cosine similarity and destroys the representation.
+- **No term at the root.** `z⁰` *is* `h(oₜ)`, so the two branches are the same tensor and the term is vacuous. Consistency runs over `k = 1…K`.
 
 **Value prefix.** Rather than predicting each step's reward separately, predict
 the **cumulative** reward over the unroll window. Individual step rewards are
 noisy and often zero; their sum is a lower-variance target, and it is what the
 value bootstrap actually needs.
 
+Because a running sum is state, the value-prefix head is recurrent — an LSTM
+over the unroll rather than a per-step MLP. In this repository it is wired for
+the **Atari** nets only; the MLP paths use per-step reward prediction.
+
 **Sampled actions.** MCTS over continuous actions is not directly possible —
 there is no finite branching. EZv2 samples a set of candidate actions from a
 policy prior and searches over those, which is what makes `EZv2ContinuousAgent`
 work on locomotion tasks.
 
+Search is **Gumbel** MCTS in both variants — Gumbel top-k selection with
+sequential halving rather than PUCT — which is what makes a low simulation
+count viable. The continuous agent runs the sampled variant of it: draw
+`K_ROOT` candidate action *vectors* at the root from a squashed-Gaussian head,
+then let the tree backups choose between them.
+
 ## Discrete and continuous
 
 ```mojo
-comptime Agent = EZv2DiscreteAgent[...]    # Atari, arcade, board games
-comptime Agent = EZv2ContinuousAgent[...]  # HalfCheetah, Pendulum
+from mojo_rl.deep_agents.efficient_zero_v2 import EZv2DiscreteAgent, EZv2ContinuousAgent
 ```
 
 The continuous variant is the more interesting one — tree search on continuous
 control is unusual, and it is where the sampled-action machinery earns its
 place.
+
+Its squashed-Gaussian parameters (`max_action`, `min_std`, `soft_clamp`,
+`init_std`, `ent_scale`) are threaded into **both** the planner's sampler and
+the training loss. They have to agree: the planner samples from that
+parameterization and the loss scores the chosen vector under it, so a mismatch
+means searching one distribution and training another — which shows up as a
+policy that learns slowly for no visible reason rather than as an error.
 
 ```bash
 pixi run -e nvidia mojo run -I . examples/cartpole/ezv2_cartpole_v2_gpu.mojo
@@ -93,6 +120,20 @@ If you are optimizing this path, work on data movement. Arithmetic is not the
 bottleneck.
 :::
 
+:::caution[Mask the consistency loss at episode boundaries]
+When a `K`-step unroll runs past a terminal state, the stored observation for
+the remaining steps is absorbing padding — the last real frame, repeated.
+
+Left unmasked, the consistency term then teaches the dynamics model a false
+fixed point: *terminal observation plus any action maps to itself*. That is
+learned confidently, and it is learned precisely at the boundary where the value
+bootstrap has to be correct.
+
+Rows whose target observation is padding get both loss and gradient zeroed. Only
+consistency is masked here; policy, value and reward keep MuZero's absorbing
+convention, which the plain port converges with.
+:::
+
 **Value support range**, as ever. A support that does not cover the actual return
 distribution silently stalls learning — the same trap as
 [C51](/algorithms/rainbow/) and MuZero.
@@ -106,11 +147,11 @@ gain.
 
 ## The zero-series in one table
 
-|  | Dynamics | Actions | Extra machinery |
-|---|---|---|---|
-| [AlphaZero](/algorithms/alphazero/) | known simulator | discrete | — |
-| [MuZero](/algorithms/muzero/) | learned latent | discrete | — |
-| **EfficientZero V2** | learned latent | discrete + continuous | consistency, value prefix, sampled actions |
+|  | Dynamics | Actions | Search | Extra machinery |
+|---|---|---|---|---|
+| [AlphaZero](/algorithms/alphazero/) | known simulator | discrete | PUCT or Gumbel | arena gate, symmetry augmentation |
+| [MuZero](/algorithms/muzero/) | learned latent | discrete | PUCT or Gumbel | — |
+| **EfficientZero V2** | learned latent | discrete + continuous | Gumbel, sampled for continuous | consistency, value prefix, sampled actions |
 
 All three share the `zero/` package and the GPU MCTS kernels in
 `mojo_rl.planners.tree_search`.

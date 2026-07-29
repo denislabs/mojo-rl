@@ -1,0 +1,111 @@
+---
+/**
+ * ArenaSelfPlay — AlphaZero's best/learner split and the promotion gate.
+ *
+ * The naive picture of self-play is one network that plays itself and trains on
+ * the result. That picture is missing the thing that keeps it stable: the net
+ * generating the games is *frozen*, and a learner only replaces it after
+ * beating it in a match. Drawing the gate as a separate node — with an edge
+ * that goes nowhere when the learner loses — is the point of the diagram.
+ *
+ * The other half is what MCTS expands here: the real simulator, not a learned
+ * dynamics model. That is the whole distinction from MuZero, so it is stated on
+ * the self-play node rather than left to the prose.
+ */
+---
+
+<figure class="diagram not-content">
+	<svg viewBox="0 0 880 400" role="img"
+		aria-label="AlphaZero: a frozen best network generates self-play through MCTS over the real rules; a learner trains on the results and replaces the best only after winning an arena match">
+		<defs>
+			<marker id="az-cyan" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-cyan" />
+			</marker>
+			<marker id="az-spark" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-spark" />
+			</marker>
+			<marker id="az-green" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-green" />
+			</marker>
+			<marker id="az-purple" viewBox="0 0 10 10" refX="9" refY="5"
+				markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M 0 0 L 10 5 L 0 10 z" class="dg-fill-purple" />
+			</marker>
+		</defs>
+
+		<!-- the frozen generator -->
+		<g class="dg-node dg-node--muted">
+			<rect x="20" y="40" width="210" height="76" rx="10" />
+			<text x="125" y="70" class="dg-title">Best net</text>
+			<text x="125" y="92" class="dg-sub">frozen — generates</text>
+			<text x="125" y="108" class="dg-sub">every self-play game</text>
+		</g>
+
+		<!-- search over the actual rules -->
+		<g class="dg-node dg-node--cyan">
+			<rect x="320" y="40" width="250" height="76" rx="10" />
+			<text x="445" y="70" class="dg-title">Self-play · MCTS</text>
+			<text x="445" y="92" class="dg-sub">expanded with the real rules —</text>
+			<text x="445" y="108" class="dg-sub">no learned dynamics</text>
+		</g>
+
+		<g class="dg-node dg-node--green">
+			<rect x="320" y="162" width="250" height="76" rx="10" />
+			<text x="445" y="192" class="dg-title">Replay</text>
+			<text x="445" y="214" class="dg-sub">(obs, π, z), one row per</text>
+			<text x="445" y="230" class="dg-sub">board symmetry</text>
+		</g>
+
+		<g class="dg-node dg-node--spark">
+			<rect x="650" y="162" width="210" height="76" rx="10" />
+			<text x="755" y="192" class="dg-title">Learner net</text>
+			<text x="755" y="214" class="dg-sub">π → visit counts</text>
+			<text x="755" y="230" class="dg-sub">v → game outcome</text>
+		</g>
+
+		<g class="dg-node dg-node--purple">
+			<rect x="320" y="292" width="250" height="76" rx="10" />
+			<text x="445" y="322" class="dg-title">Arena</text>
+			<text x="445" y="344" class="dg-sub">learner vs best, full MCTS,</text>
+			<text x="445" y="360" class="dg-sub">both colours</text>
+		</g>
+
+		<path class="dg-edge dg-edge--cyan" marker-end="url(#az-cyan)"
+			d="M 230 78 L 320 78" />
+		<text x="238" y="66" class="dg-label dg-label--cyan">prior + value</text>
+
+		<path class="dg-edge dg-edge--cyan" marker-end="url(#az-cyan)"
+			d="M 445 116 L 445 162" />
+
+		<path class="dg-edge dg-edge--green" marker-end="url(#az-green)"
+			d="M 570 200 L 650 200" />
+		<text x="576" y="190" class="dg-label dg-label--green">minibatch</text>
+
+		<path class="dg-edge dg-edge--spark" marker-end="url(#az-spark)"
+			d="M 755 238 L 755 330 L 570 330" />
+		<text x="600" y="320" class="dg-label dg-label--spark">candidate</text>
+
+		<!-- the gate: taken only on a clear win, which is why it is dashed -->
+		<path class="dg-edge dg-edge--purple dg-edge--dashed" marker-end="url(#az-purple)"
+			d="M 320 330 L 125 330 L 125 116" />
+		<text x="132" y="284" class="dg-label dg-label--purple">promote</text>
+		<text x="132" y="302" class="dg-label dg-label--purple">on a clear win</text>
+
+		{/* Top-right: the only block of empty canvas. Placing this lower collides
+		    with the learner → arena edge and its label. */}
+		<text x="620" y="56" class="dg-sub dg-sub--left">Lose the match and</text>
+		<text x="620" y="76" class="dg-sub dg-sub--left">nothing moves: the</text>
+		<text x="620" y="96" class="dg-sub dg-sub--left">learner keeps training,</text>
+		<text x="620" y="116" class="dg-sub dg-sub--left">the best keeps generating.</text>
+	</svg>
+
+	<figcaption class="diagram__legend">
+		<span class="diagram__key diagram__key--cyan">self-play over the real simulator</span>
+		<span class="diagram__key diagram__key--spark">training</span>
+		<span class="diagram__key diagram__key--purple">promotion gate</span>
+		<span class="diagram__key diagram__key--muted">frozen</span>
+	</figcaption>
+</figure>
