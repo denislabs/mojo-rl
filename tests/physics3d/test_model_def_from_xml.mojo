@@ -16,6 +16,10 @@ Expected output:
   obs[0] = 0.0       (qpos[1], rootz=0 after reset)
   bthigh qfrc = 120.0  (gear=120, action=1.0)
   enforce_limits clamped correctly
+
+Note the inline XML below has NO `<compiler angle="..."/>`, so MuJoCo's default
+of DEGREES applies and `range="-.52 1.05"` compiles to +-0.0183 rad. The real
+Gymnasium half_cheetah.xml carries `angle="radian"`; this copy dropped it.
 """
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
@@ -238,7 +242,7 @@ def test_model_def_from_xml() raises:
     print(
         "bthigh qpos after clamp =",
         Float64(d.qpos.data[3]),
-        " (expected 1.05)",
+        " (expected 0.018326 = 1.05 deg)",
     )
 
     # rootx (joint 0) is not limited, should not be clamped
@@ -252,6 +256,104 @@ def test_model_def_from_xml() raises:
     print()
 
     print("=== All CPU tests passed ===")
+
+
+# =============================================================================
+# Nested-default regression (bug 24)
+# =============================================================================
+
+# A minimal model with dm_control swimmer's `<default>` SHAPE: the top-level
+# `<motor>` and `<joint>` come AFTER two named class blocks, and one of those
+# classes is itself nested. `_extract_section` is not depth aware, so before
+# `_root_defaults` landed the scan saw a section truncated at the FIRST inner
+# `</default>` — which contains `class="inner"`'s joint and no `<motor>` at all.
+#
+# What that cost, silently, on the real model:
+#   * gear fell back to MuJoCo's 1.0 against an actual 5e-4 (2000x force),
+#   * `class="inner"`'s `limited="true"` was read as the global default, so the
+#     UNLIMITED root slide came out limited with an empty (0, 0) range.
+comptime nested_default_xml = """
+<mujoco model="nested_defaults">
+  <option timestep="0.002"/>
+  <default>
+    <default class="inner">
+      <joint type="hinge" axis="0 0 1" limited="true" armature="1e-6"/>
+      <default class="innermost">
+        <geom type="box" size=".01 .05 .01" mass=".01"/>
+      </default>
+    </default>
+    <default class="free">
+      <joint limited="false" armature="0"/>
+    </default>
+    <motor gear="5e-4" ctrllimited="true" ctrlrange="-1 1"/>
+  </default>
+  <worldbody>
+    <body name="root" pos="0 0 0" childclass="inner">
+      <joint name="slider" class="free" type="slide" axis="1 0 0"/>
+      <geom class="innermost" name="root_geom"/>
+      <body name="link" pos="0 .1 0">
+        <geom class="innermost" name="link_geom"/>
+        <joint name="hinge" range="-60 60"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="m0" joint="hinge"/>
+  </actuator>
+</mujoco>
+"""
+
+
+def test_root_default_survives_nested_classes() raises:
+    """Bug 24: top-level `<default>` entries declared after a named class.
+
+    Both assertions below are exactly the values the truncated scan produced,
+    so each fails loudly if `_root_defaults` is ever bypassed again.
+    """
+    comptime pm = parse_xml(nested_default_xml)
+    comptime XmlModel = ModelDefFromXML[
+        xml=nested_default_xml,
+        nbody = pm.NBODY, njoint = pm.NJOINT, nq = pm.NQ, nv = pm.NV,
+        ngeom = pm.NGEOM, nact = pm.NACT, ntex = pm.NTEX, nmat = pm.NMAT,
+        nlight = pm.NLIGHT, ncam = pm.NCAM, nsite = pm.NSITE,
+        max_contacts=1,
+        timestep = pm.TIMESTEP,
+    ]
+
+    print("=== nested-default regression ===")
+    print("motor gear =", XmlModel._acd.motor_gears[0], " (expected 0.0005)")
+    assert_true(
+        abs(XmlModel._acd.motor_gears[0] - 5e-4) <= 1e-18,
+        "the top-level <default><motor gear=...> is declared after two named"
+        " class blocks and was not picked up — gear fell back to 1.0, a 2000x"
+        " actuator force error with no diagnostic (bug 24)",
+    )
+    assert_true(
+        abs(XmlModel._acd.motor_ctrl_min[0] + 1.0) <= 1e-15
+        and abs(XmlModel._acd.motor_ctrl_max[0] - 1.0) <= 1e-15,
+        "the same <motor>'s ctrlrange",
+    )
+
+    # `slider` is class="free" (limited="false"); `hinge` inherits childclass
+    # "inner" (limited="true") and also declares a range. Neither default class
+    # is resolvable by this class-blind scan, so `limited` follows MuJoCo's
+    # `compiler/autolimits`: a joint with a range is limited.
+    print(
+        "joint limited =", XmlModel._acd.joint_is_limited[0],
+        XmlModel._acd.joint_is_limited[1],
+        " (expected False True)",
+    )
+    assert_true(
+        not XmlModel._acd.joint_is_limited[0],
+        "the UNLIMITED slide came out limited — a nested class's"
+        " limited=\"true\" is being read as the global default (bug 24)",
+    )
+    assert_true(
+        XmlModel._acd.joint_is_limited[1],
+        "the ranged hinge came out unlimited — autolimits is not being"
+        " applied, so a class-set `limited` is the only signal left",
+    )
+    print("=== nested-default regression passed ===")
 
 
 def main() raises:

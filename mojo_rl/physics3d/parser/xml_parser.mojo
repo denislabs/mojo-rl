@@ -1039,7 +1039,7 @@ def _xml_default_motor_ctrlrange[xml: String]() -> Tuple[Float64, Float64]:
     """Return (ctrl_min, ctrl_max) from <default><motor ctrlrange="lo hi"/>.
     Defaults to (-1.0, 1.0) if absent. Comptime-safe.
     """
-    var def_sec = _extract_section(xml, "default")
+    var def_sec = _root_defaults(xml)
     if def_sec.byte_length() == 0:
         return (-1.0, 1.0)
     var t = def_sec.find("<motor")
@@ -1067,12 +1067,13 @@ def _xml_default_motor_gear[xml: String]() -> Float64:
     dm_control `point_mass` does: `<motor gear=".1" .../>`) silently actuated
     at gear 1.0, a 10x force error with no diagnostic. Found 2026-07-29.
 
-    Caveat shared with the ctrlrange twin: this reads the FIRST `<motor>`
-    anywhere in the `<default>` section, so a `<motor>` inside a NAMED
-    `<default class="...">` would be applied globally. No ported model does
-    that; fixing it properly needs a comptime-safe `_strip_nested_defaults`.
+    Both twins now route through `_root_defaults`, which strips the named
+    `<default class="...">` blocks — without it a `<motor>` inside a class
+    would be applied globally, AND a top-level `<motor>` declared after the
+    first class block would be missed entirely. swimmer is the second model to
+    pay for that, at 2000x; see `_strip_nested_defaults`.
     """
-    var def_sec = _extract_section(xml, "default")
+    var def_sec = _root_defaults(xml)
     if def_sec.byte_length() == 0:
         return Float64(1.0)
     var t = def_sec.find("<motor")
@@ -1226,6 +1227,75 @@ def _extract_section_inner(xml: String, tag: String) -> String:
         if depth > 0:
             break  # Unmatched tags
     return result
+
+
+def _strip_nested_defaults(sec: String) -> String:
+    """Remove nested `<default class="...">...</default>` sub-blocks.
+
+    Comptime twin of `full_parser._strip_nested_defaults`, which the runtime
+    parser has had since 2026-07-29. This side did not, so every lookup below
+    that scanned the `<default>` section with a bare `find("<tag")` picked up
+    the FIRST NAMED CLASS's element whenever the top-level one was declared
+    after it — and MJCF puts no ordering constraint on that.
+
+    dm_control's swimmer is the model that exposes it. Its `<default>` is
+
+        <default>
+          <default class="swimmer"> <joint ... limited="true" .../> ... </default>
+          <default class="free">    <joint limited="false" .../>       </default>
+          <motor gear="5e-4" ctrllimited="true" ctrlrange="-1 1"/>
+        </default>
+
+    so the top-level `<motor>` comes LAST. `_extract_section` is not depth
+    aware either, so it used to hand back a section truncated at the first
+    inner `</default>` — with no `<motor>` in it at all. Gear silently fell
+    back to MuJoCo's 1.0 against an actual 5e-4: a 2000x actuator force error,
+    which is the whole dynamics of the domain. The same truncation made
+    `def_limited` read the swimmer class's `limited="true"`, marking the three
+    unlimited root DOFs as limited with an empty (0, 0) range.
+
+    Nesting is depth-tracked so a class containing sub-classes is removed
+    whole (swimmer's `class="swimmer"` contains `inertial` and `visual`).
+    """
+    var out = String("")
+    var i = 0
+    var n = sec.byte_length()
+    while i < n:
+        var open_t = sec.find("<default", i)
+        if open_t == -1:
+            out += String(sec[byte=i:n])
+            break
+        out += String(sec[byte=i:open_t])
+        # Walk forward to this block's matching </default>.
+        var depth_ = 0
+        var j = open_t
+        while j < n:
+            var next_open = sec.find("<default", j + 1)
+            var next_close = sec.find("</default>", j + 1)
+            if next_close == -1:
+                j = n
+                break
+            if next_open != -1 and next_open < next_close:
+                depth_ += 1
+                j = next_open
+                continue
+            if depth_ == 0:
+                j = next_close + 10  # len("</default>")
+                break
+            depth_ -= 1
+            j = next_close
+        i = j
+    return out
+
+
+def _root_defaults(xml: String) -> String:
+    """The TOP-LEVEL `<default>` content only — named classes stripped.
+
+    Every `<default>` lookup in this file must go through here rather than
+    `_extract_section(xml, "default")`; see `_strip_nested_defaults` for the
+    2000x actuator error the bare version cost.
+    """
+    return _strip_nested_defaults(_extract_section_inner(xml, "default"))
 
 
 def _extract_singleton_tag(xml: String, tag: String) -> String:
@@ -1846,7 +1916,7 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
     var def_ctrl_min = Float64(-1.0)
     var def_ctrl_max = Float64(1.0)
     var def_gear = Float64(1.0)
-    var def_sec_motor = _extract_section(xml_clean, "default")
+    var def_sec_motor = _root_defaults(xml_clean)
     if def_sec_motor.byte_length() > 0:
         var mt = def_sec_motor.find("<motor")
         if mt != -1:
@@ -1917,7 +1987,7 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
 
     # ---- Default joint limited from <default> section -------------------------
     var def_limited = False
-    var def_sec = _extract_section(xml_clean, "default")
+    var def_sec = _root_defaults(xml_clean)
     if def_sec.byte_length() > 0:
         var jpos = def_sec.find("<joint")
         if jpos != -1:
@@ -1952,12 +2022,22 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
         var tag_end = wb.find(">", t)
         if tag_end != -1:
             var tag = String(wb[byte = t : tag_end + 1])
-            # Limited
+            # Limited. Explicit attribute wins; otherwise MuJoCo's
+            # `compiler/autolimits` (default "true" since 2.2.2) makes a joint
+            # limited exactly when it declares a `range`. Deriving it from the
+            # range is what lets this class-blind scan agree with the compiler:
+            # swimmer puts `limited` on TWO default classes (`swimmer` true,
+            # `free` false), neither of which this path can resolve, yet every
+            # joint's range presence already encodes the same answer. The root
+            # `<default>` value is the last resort, for a joint with neither.
             var lim = _extract_attr(tag, "limited")
+            var rng_attr = _extract_attr(tag, "range")
             if lim == "true" or lim == "1":
                 data.joint_is_limited[jnt_count] = True
             elif lim == "false" or lim == "0":
                 data.joint_is_limited[jnt_count] = False
+            elif rng_attr.byte_length() > 0:
+                data.joint_is_limited[jnt_count] = True
             else:
                 data.joint_is_limited[jnt_count] = def_limited
             # Range. deg→rad applies to ANGULAR joints only (MuJoCo's
@@ -3391,7 +3471,7 @@ def _xml_nth_joint_limited[xml: String, n: Int]() -> Bool:
     """
     # Read default from <default> section
     var def_limited = False
-    var def_sec = _extract_section(xml, "default")
+    var def_sec = _root_defaults(xml)
     if def_sec.byte_length() > 0:
         var jpos = def_sec.find("<joint")
         if jpos != -1:
@@ -3431,6 +3511,9 @@ def _xml_nth_joint_limited[xml: String, n: Int]() -> Bool:
                 return True
             elif lim == "false" or lim == "0":
                 return False
+            # `compiler/autolimits` — see the twin in `parse_xml_model_data`.
+            if _extract_attr(tag, "range").byte_length() > 0:
+                return True
             return def_limited
         count += 1
         scan_pos = t + 6

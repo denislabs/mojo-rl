@@ -9,5 +9,6 @@ directly.
 When the full framework lands, these become the per-type kernels behind it.
 """
 
+from .frame_vel import site_frame_velocity
 from .subtree import subtree_linvel, walk_to_root
 from .touch import touch_sphere_site
