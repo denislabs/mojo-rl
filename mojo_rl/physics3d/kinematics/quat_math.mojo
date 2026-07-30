@@ -267,14 +267,25 @@ def quat_integrate[
     wz: Scalar[DTYPE],
     dt: Scalar[DTYPE],
 ) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
-    """Integrate quaternion with angular velocity.
+    """Integrate quaternion with angular velocity, EXACTLY as MuJoCo does.
 
-    Uses first-order approximation: q(t+dt) = q(t) + 0.5 * dt * q(t) * omega
-    (RIGHT multiplication) where omega is the quaternion [wx, wy, wz, 0] —
-    i.e. the angular velocity is interpreted in the BODY-LOCAL frame,
-    matching MuJoCo's free/ball-joint qvel convention (mju_quatIntegrate).
-    (An earlier docstring claimed world-frame left-multiplication; the code
-    below has always been the local right-multiplication.)
+    `q(t+dt) = normalize(q(t)) * axisAngle(omega/|omega|, dt*|omega|)` —
+    a RIGHT multiplication, i.e. omega is in the BODY-LOCAL frame, matching
+    MuJoCo's free/ball-joint qvel convention.
+
+    Verbatim `mju_quatIntegrate` (engine_util_spatial.c:241): normalize the
+    axis, scale the angle by dt, build the rotation quaternion, normalize the
+    current quat, right-multiply. The rotation applied is the exact
+    exponential map, NOT a truncated series.
+
+    ⚠ This was a FIRST-ORDER approximation (`q + 0.5*dt*q*omega`, then
+    normalize) until 2026-07-30, which is a different integrator from
+    MuJoCo's for any free- or ball-jointed model. Cost: the root quaternion
+    was the single largest state discrepancy vs MuJoCo at EVERY step of a
+    dm_control humanoid rollout (1.1e-8 after one step, where the 21 hinge
+    DOFs sat at 4e-10), and it compounds. Only free-rooted models were
+    affected, and their gates were loose enough to miss it — the Ant Euler
+    gate budgets 1e-4 on qpos.
 
     Args:
         qx: Current orientation quaternion x.
@@ -289,23 +300,27 @@ def quat_integrate[
     Returns:
         Updated (normalized) quaternion.
     """
-    # Compute qdot = 0.5 * q * omega  (local-frame right multiplication)
-    # where omega = [wx, wy, wz, 0]
-    var half_dt = Scalar[DTYPE](0.5) * dt
+    comptime assert (
+        DTYPE.is_floating_point()
+    ), "DTYPE must be a floating point type"
+    # mju_normalize3 on the angular velocity; below mjMINVAL MuJoCo leaves the
+    # angle at 0, which makes the rotation the identity.
+    var wn = sqrt(wx * wx + wy * wy + wz * wz)
+    var q = quat_normalize(qx, qy, qz, qw)
+    if wn < Scalar[DTYPE](1e-15):
+        return q
 
-    var qdot_x = half_dt * (qw * wx + qy * wz - qz * wy)
-    var qdot_y = half_dt * (qw * wy - qx * wz + qz * wx)
-    var qdot_z = half_dt * (qw * wz + qx * wy - qy * wx)
-    var qdot_w = half_dt * (-qx * wx - qy * wy - qz * wz)
+    var angle = dt * wn
+    var half = Scalar[DTYPE](0.5) * angle
+    var s = Scalar[DTYPE](sin(half)) / wn  # fold the axis normalization in
+    var c = Scalar[DTYPE](cos(half))
 
-    # Integrate
-    var new_qx = qx + qdot_x
-    var new_qy = qy + qdot_y
-    var new_qz = qz + qdot_z
-    var new_qw = qw + qdot_w
+    var rx = wx * s
+    var ry = wy * s
+    var rz = wz * s
 
-    # Normalize
-    return quat_normalize(new_qx, new_qy, new_qz, new_qw)
+    # q * qrot — right multiplication (local frame).
+    return quat_mul(q[0], q[1], q[2], q[3], rx, ry, rz, c)
 
 
 # =============================================================================

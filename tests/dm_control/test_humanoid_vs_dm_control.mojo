@@ -292,29 +292,30 @@ def test_humanoid_model_matches_mujoco() raises:
     )
 
 
-def report_humanoid_dynamics_gap() raises:
-    """Physics / observation / reward measurements — REPORTED, NOT ASSERTED.
+def test_humanoid_dynamics_vs_dm_control() raises:
+    """Physics / observation / reward parity over the contact-free prefix.
 
-    Deliberately not a `test_` function, so `TestSuite` does not discover it.
-    It runs from `main()` and prints, because the numbers below are currently
-    dominated by an ENGINE bug that this port surfaced but does not fix:
+    This was print-only while three engine bugs the port surfaced were open.
+    All three are fixed (2026-07-30) and it now asserts:
 
-      `_vel_body` rotates every joint axis by the PARENT body's quaternion.
-      That is only valid for a body with exactly one joint and no fixed
-      `quat=`. humanoid has three hinges on one body (right_hip_x/z/y) and
-      `quat="1.000 0 -.002 0"` on lower_waist and pelvis. Measured against
-      MuJoCo's `d.xaxis`: a body's FIRST joint matches the parent frame to
-      1e-16, its LAST matches the child frame, and a MIDDLE one matches
-      neither (~0.3). The correct frame for joint k is
-      `R_parent * R_bodyquat * R_1 ... R_{k-1}` — the running composition
-      `_fk_body` already builds for POSITION, which is why xipos agrees to
-      1e-6 while xangvel is out by up to 0.42 rad/s at an IDENTICAL state.
+      1. `_vel_body` rotated every joint axis by the PARENT body's quat,
+         valid only for a body with one joint and no fixed `quat=`. Fixed by
+         walking the running frame MuJoCo builds in `mj_kinematics`; gated
+         against `mj_objectVelocity` at 1e-10 in
+         tests/physics3d/test_body_velocities_vs_mujoco.mojo. `com_velocity`
+         was out by ~0.37 before the state had drifted at all; `|d(obs)|` now
+         equals `|d(state)|` exactly, i.e. the obs adds no error of its own.
+      2. `_parse_quat` did not normalize, and `lower_waist` carries
+         `quat="1.000 0 -.002 0"` (norm 1.000002), scaling every vector that
+         quat rotated by |q|^2.
+      3. `quat_integrate` was a FIRST-ORDER approximation where MuJoCo's
+         `mju_quatIntegrate` is the exact exponential map. The free root's
+         quaternion was the largest single state error at every step; fixing
+         it took step-1 qpos from 1.1e-8 to 2.0e-12 and these rewards from
+         ~2e-6 to ~1e-8.
 
-    Consequences visible below: `com_velocity` (the only `subtree_linvel`
-    term) is wrong from step 0, and the integrated state drifts far faster
-    than any other ported domain, since the same axis convention feeds the
-    dynamics. Turning these back into assertions is the acceptance test for
-    that fix. See docs/DM_CONTROL_PORT.md.
+    The one remaining gap is a joint LIMIT constraint — see the state gate
+    below for why it is budgeted rather than tightened.
     """
     var handle = _setup()
     var mujoco = handle[0]
@@ -628,10 +629,40 @@ def report_humanoid_dynamics_gap() raises:
     print("  stand reward range over the prefix =", r_stand_lo, "..",
           r_stand_hi)
 
-    print("  ^ REPORTED ONLY — blocked on the _vel_body joint-axis frame bug;")
-    print("    see this function's docstring and docs/DM_CONTROL_PORT.md.")
+    # ── Gates ────────────────────────────────────────────────────────────
+    # Rewards are what the tasks actually consume, and over the contact-free
+    # prefix they now agree to ~1e-8. The bound is deliberately ~50x looser
+    # than the observed value so it tracks real regressions, not noise.
+    assert_true(
+        max_r_stand_s < 1e-6, "stand reward diverged over the prefix"
+    )
+    assert_true(max_r_walk_s < 1e-6, "walk reward diverged over the prefix")
+    assert_true(max_r_run_s < 1e-6, "run reward diverged over the prefix")
+
+    # A reward that never moves would pass the gates above vacuously.
+    assert_true(
+        r_stand_hi - r_stand_lo > 0.3,
+        "stand reward is degenerate over the prefix — gate is vacuous",
+    )
+
+    # State is looser ON PURPOSE. The residual is ONE joint's limit
+    # constraint: our response to a newly-active joint limit differs from
+    # MuJoCo's soft solref/solimp response by a single-step spike of ~1e-3
+    # in qvel that then decays. Everything else agrees to ~1e-10 (see
+    # tests/physics3d/test_euler_fields_vs_mujoco.mojo, which has never gated
+    # an ACTIVE-constraint configuration against MuJoCo — it asserts
+    # nefc == 0). Verified independent of the solver: PGS and Newton produce
+    # this to 10 digits. Tightening this bound is the acceptance test for
+    # constraint softness; see docs/DM_CONTROL_PORT.md.
+    assert_true(
+        max_state_s < 5e-4,
+        "humanoid prefix state diverged beyond the joint-limit budget",
+    )
+
+    # NOT gated: the FULL run. Once feet contact the floor the trajectories
+    # separate outright (|d(state)| ~ 30), which is the contact solver, not
+    # this domain.
 
 
 def main() raises:
-    report_humanoid_dynamics_gap()
     TestSuite.discover_tests[__functions_in_module()]().run()

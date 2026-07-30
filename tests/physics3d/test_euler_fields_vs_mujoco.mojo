@@ -37,17 +37,30 @@ comptime NEQ = AntModel.MAX_EQUALITY
 comptime NTEN = AntModel.MAX_TENDON
 comptime NEXCL = AntModel.NEXCLUDE
 
-# Same budgets as the legacy free-joint gate.
-comptime QPOS_ABS_TOL_1: Float64 = 1e-4
-comptime QVEL_ABS_TOL_1: Float64 = 5e-3
-comptime QPOS_ABS_TOL_10: Float64 = 1e-3
-comptime QVEL_ABS_TOL_10: Float64 = 5e-3
+# ⚠ These were inherited from the legacy free-joint gate at 1e-4 / 5e-3 —
+# NINE orders of magnitude looser than what the path actually achieves, so
+# they could not fail for any reason short of a total break. That slack is
+# precisely what hid a real bug: `quat_integrate` was a first-order
+# approximation where MuJoCo's `mju_quatIntegrate` is the exact exponential
+# map, which made this a DIFFERENT INTEGRATOR for every free-rooted model.
+# Ant sat comfortably inside 1e-4 the whole time. Fixed 2026-07-30; observed
+# is now 4.8e-13 / 4.9e-13 (1 step) and 4.7e-13 / 4.7e-12 (10 steps), so the
+# budgets are set ~20x above that. Do NOT loosen these back to "safe" values;
+# if a change moves them, that is the gate doing its job.
+comptime QPOS_ABS_TOL_1: Float64 = 1e-11
+comptime QVEL_ABS_TOL_1: Float64 = 1e-11
+comptime QPOS_ABS_TOL_10: Float64 = 1e-11
+comptime QVEL_ABS_TOL_10: Float64 = 1e-10
 
 # --- GOLDEN fingerprint for the active-limit fields-CPU trajectory -----------
 comptime HARVEST = False  # True => print fingerprint + skip asserts (regen)
 comptime GOLD_RTOL = 1e-6  # fields-CPU f64 is deterministic across devices
-comptime GOLD_LIM_QPOS = 12.238419676584359
-comptime GOLD_LIM_QVEL = 17.46190088582406
+# Regenerated 2026-07-30 for the exact `quat_integrate` (bug 17). Ant is
+# free-rooted, so its root orientation integrates differently now; the
+# MuJoCo-gated sub-tests above IMPROVED to ~5e-13 in the same change, which
+# is what says this move is a fix and not a regression.
+comptime GOLD_LIM_QPOS = 12.23845641921087
+comptime GOLD_LIM_QVEL = 17.46190805621464
 
 
 def _tumbling_qpos() -> InlineArray[Float64, NQ]:

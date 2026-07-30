@@ -470,6 +470,15 @@ def _parse_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
 
     MuJoCo XML stores all quaternion attributes (body quat, geom quat, iquat,
     joint quat) in (w, x, y, z) order. Our internal representation is (x, y, z, w).
+
+    The result is NORMALIZED, as MuJoCo's compiler does to every quat it
+    reads (`mju_normalize4` in `user_objects.cc`). Hand-written MJCF is
+    routinely a hair off unit length — dm_control's humanoid writes
+    `quat="1.000 0 -.002 0"` on `lower_waist`, norm 1.000002 — and an
+    unnormalized quat scales every vector it rotates by |q|^2, which leaked
+    ~4e-6 of relative error into that body's whole subtree. Normalizing at
+    parse time keeps it out of the kinematics rather than papering over it
+    downstream. Degenerate (all-zero) input falls back to identity.
     """
     var parts = List[String]()
     _split_spaces(s, parts)
@@ -485,7 +494,10 @@ def _parse_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
         qy = _parse_float(parts[2])
     if len(parts) >= 4:
         qz = _parse_float(parts[3])
-    return (qx, qy, qz, qw)
+    var n = _sqrt_f64(qw * qw + qx * qx + qy * qy + qz * qz)
+    if n <= Float64(0):
+        return (Float64(0), Float64(0), Float64(0), Float64(1))
+    return (qx / n, qy / n, qz / n, qw / n)
 
 
 def _sqrt_f64(x: Float64) -> Float64:
