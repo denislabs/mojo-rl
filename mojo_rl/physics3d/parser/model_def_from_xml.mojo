@@ -357,6 +357,25 @@ struct ModelDefFromXML[
             Self.nexclude,
         ](Self.xml)
 
+        # Reject unplumbed dof-friction solver params LOUDLY, for the same
+        # reason as the actuator guard below: the parser sees the attribute,
+        # the model would build, and `friction_dof.mojo` would quietly use
+        # MuJoCo's DEFAULT solref/solimp instead of the ones the XML asked for.
+        for j in range(Self.njoint):
+            if fmd.joints[j].has_friction_solparams:
+                raise Error(
+                    String(
+                        "physics3d: joint index ",
+                        j,
+                        " sets solreffriction/solimpfriction, which are not"
+                        " plumbed. constraints/friction_dof.mojo assumes"
+                        " MuJoCo's defaults (solref 0.02 1, solimp"
+                        " 0.9 0.95 0.001 0.5 2); give them their own model"
+                        " meta slots beside the limit ones before using these"
+                        " attributes.",
+                    )
+                )
+
         # Reject unimplemented actuator transmissions LOUDLY. The parser
         # recognizes <position>/<velocity>/<general> so the tag count is right,
         # but ActuatorData carries no gainprm/biasprm — building the model

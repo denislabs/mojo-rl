@@ -1983,10 +1983,17 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
                     data.joint_range_max[jnt_count] = (
                         _parse_float(parts[1]) * rf
                     )
-            # Extract ref value (MuJoCo joint reference → qpos0 for slide/hinge)
+            # Extract ref value (MuJoCo joint reference → qpos0 for slide/hinge).
+            # deg→rad applies exactly as it does to `range` above: `ref` is an
+            # ANGLE for hinge/ball and a LENGTH for slide, and MuJoCo converts
+            # it with the same compiler angle unit. Missing this made finger's
+            # `ref="-90"` land in qpos0 as -90 rad instead of -pi/2.
             var ref_str = _extract_attr(tag, "ref")
             if ref_str.byte_length() > 0:
-                data.qpos0[qpos_adr] = _parse_float(ref_str)
+                var rts = _trim(_extract_attr(tag, "type"))
+                var r_angular = rts == "" or rts == "hinge" or rts == "ball"
+                var rrf = deg_factor if r_angular else Float64(1.0)
+                data.qpos0[qpos_adr] = _parse_float(ref_str) * rrf
             # Advance qpos_adr, track free joint
             var jtype = _extract_attr(tag, "type")
             if jtype == "free":

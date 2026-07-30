@@ -51,6 +51,7 @@ from ..types import _max_one, ConeType
 from ..joint_types import JNT_FREE, JNT_BALL
 from ..solver.qcqp import mj_qcqp2, mj_qcqp3, mj_qcqp5
 from .limits import _limits_env
+from .friction_dof import _friction_env
 from .equality_tendon import _equality_env, _tendon_env
 from ..fields import Data, Model, DynamicsScratch, ContactScratch
 from ..gpu.constants import (
@@ -1165,10 +1166,37 @@ def _contact_solve_env[
     si_power = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLIMP_CONTACT_4])
     if si_width < Scalar[DTYPE](1e-6):
         si_width = Scalar[DTYPE](1e-6)
-    if si_dmax < Scalar[DTYPE](1e-4):
-        si_dmax = Scalar[DTYPE](1e-4)
-    K_spring = Scalar[DTYPE](1.0) / (sr_tc * sr_tc * si_dmax * si_dmax)
-    B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
+    # MuJoCo clamps BOTH ends of solimp to [mjMINIMP, mjMAXIMP] before ever
+    # interpolating (engine_core_constraint.c:1284-1287), and the floor on
+    # dmin is the one that bites: R = (1-imp)/imp * diagApprox blows up as
+    # imp -> 0, so a model that asks for dmin=0 gets a contact that is soft
+    # by orders of magnitude rather than merely soft. dm_control's finger is
+    # the first model here to do exactly that (`solimp="0 0.9 0.01"`); every
+    # earlier model used the 0.9 default, which is why clamping only dmax
+    # survived this long. Our old floor sat on the INTERPOLATED imp at 1e-6,
+    # 100x below MuJoCo's 1e-4, so first touch was ~100x too soft.
+    comptime MJ_MINIMP = Scalar[DTYPE](0.0001)
+    comptime MJ_MAXIMP = Scalar[DTYPE](0.9999)
+    if si_dmin < MJ_MINIMP:
+        si_dmin = MJ_MINIMP
+    elif si_dmin > MJ_MAXIMP:
+        si_dmin = MJ_MAXIMP
+    if si_dmax < MJ_MINIMP:
+        si_dmax = MJ_MINIMP
+    elif si_dmax > MJ_MAXIMP:
+        si_dmax = MJ_MAXIMP
+    if si_power < Scalar[DTYPE](1):
+        si_power = Scalar[DTYPE](1)
+    # K = 1/(dmax^2 * timeconst^2 * dampratio^2), B = 2/(dmax * timeconst)
+    # (engine_core_constraint.c:1432,1440). The dampratio belongs SQUARED in
+    # K and not at all in B; this used to have it linearly in B and absent
+    # from K. Every model in the repo runs dampratio=1, where the two forms
+    # coincide exactly — which is why it never showed up — but `limits.mojo`
+    # already had the MuJoCo form, so the two constraint paths disagreed.
+    K_spring = Scalar[DTYPE](1.0) / (
+        sr_tc * sr_tc * si_dmax * si_dmax * sr_dr * sr_dr
+    )
+    B_damp = Scalar[DTYPE](2.0) / (sr_tc * si_dmax)
 
     # === PHASE 1: normal precompute (legacy: parallel, one thread per
     # contact slot; internal `contact_tid < nc` guard kept in the helper) ===
@@ -1248,6 +1276,11 @@ def _contact_solve_env[
     _limits_env[DTYPE, NQ, NV, NJOINT, BATCH, PGS_ITERATIONS](
         env, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
         qacc_constrained,
+    )
+    # Dry-friction dof rows (MuJoCo mjCNSTR_FRICTION_DOF), solved
+    # beside the limit rows. No-op for a model with no frictionloss.
+    _friction_env[DTYPE, NQ, NV, NJOINT, BATCH, PGS_ITERATIONS](
+        env, qvel, joints, dof_invweight0, m_inv, qacc_constrained
     )
 
     # Equality constraints — legacy position (right after limits; the legacy

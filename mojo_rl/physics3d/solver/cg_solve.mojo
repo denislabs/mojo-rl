@@ -57,6 +57,7 @@ from ..constraints.contact_solve import (
     _precompute_contact_friction,
 )
 from ..constraints.limits import _limits_env
+from ..constraints.friction_dof import _friction_env
 from ..constraints.equality_tendon import (
     _equality_env,
     _tendon_env,
@@ -240,8 +241,24 @@ def _cg_solve_env[
     si_power = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLIMP_CONTACT_4])
     if si_width < Scalar[DTYPE](1e-6):
         si_width = Scalar[DTYPE](1e-6)
-    if si_dmax < Scalar[DTYPE](1e-4):
-        si_dmax = Scalar[DTYPE](1e-4)
+    # MuJoCo clamps BOTH ends of solimp to [mjMINIMP, mjMAXIMP] before
+    # interpolating (engine_core_constraint.c:1284-1287). The dmin floor is
+    # the one that bites: R = (1-imp)/imp * diagApprox, so dmin=0 asks for an
+    # infinitely soft contact at first touch. dm_control's finger is the first
+    # model here to set it (`solimp="0 0.9 0.01"`); everything before used the
+    # 0.9 default, which is why clamping only dmax survived.
+    comptime MJ_MINIMP = Scalar[DTYPE](0.0001)
+    comptime MJ_MAXIMP = Scalar[DTYPE](0.9999)
+    if si_dmin < MJ_MINIMP:
+        si_dmin = MJ_MINIMP
+    elif si_dmin > MJ_MAXIMP:
+        si_dmin = MJ_MAXIMP
+    if si_dmax < MJ_MINIMP:
+        si_dmax = MJ_MINIMP
+    elif si_dmax > MJ_MAXIMP:
+        si_dmax = MJ_MAXIMP
+    if si_power < Scalar[DTYPE](1):
+        si_power = Scalar[DTYPE](1)
     K_spring = Scalar[DTYPE](1.0) / (
         si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
     )
@@ -728,6 +745,11 @@ def _cg_solve_env[
     _limits_env[DTYPE, NQ, NV, NJOINT, BATCH, SOLVER_ITER_GPU](
         env, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
         qacc_constrained,
+    )
+    # Dry-friction dof rows (MuJoCo mjCNSTR_FRICTION_DOF), solved
+    # beside the limit rows. No-op for a model with no frictionloss.
+    _friction_env[DTYPE, NQ, NV, NJOINT, BATCH, SOLVER_ITER_GPU](
+        env, qvel, joints, dof_invweight0, m_inv, qacc_constrained
     )
 
     comptime if NEQUALITY > 0:

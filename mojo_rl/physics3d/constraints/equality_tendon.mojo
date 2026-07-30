@@ -530,8 +530,20 @@ def _equality_env[
         var si_power = rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_SOLIMP_4])
         if si_width < Scalar[DTYPE](1e-6):
             si_width = Scalar[DTYPE](1e-6)
-        if si_dmax < Scalar[DTYPE](1e-4):
-            si_dmax = Scalar[DTYPE](1e-4)
+        # Clamp BOTH ends to [mjMINIMP, mjMAXIMP] as MuJoCo does before
+        # interpolating (engine_core_constraint.c:1284-1287).
+        comptime MJE_MINIMP = Scalar[DTYPE](0.0001)
+        comptime MJE_MAXIMP = Scalar[DTYPE](0.9999)
+        if si_dmin < MJE_MINIMP:
+            si_dmin = MJE_MINIMP
+        elif si_dmin > MJE_MAXIMP:
+            si_dmin = MJE_MAXIMP
+        if si_dmax < MJE_MINIMP:
+            si_dmax = MJE_MINIMP
+        elif si_dmax > MJE_MAXIMP:
+            si_dmax = MJE_MAXIMP
+        if si_power < Scalar[DTYPE](1):
+            si_power = Scalar[DTYPE](1)
         var eq_K_spring = Scalar[DTYPE](1.0) / (
             si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
         )
@@ -1135,8 +1147,20 @@ def _tendon_env[
         )
         if si_width < Scalar[DTYPE](1e-6):
             si_width = Scalar[DTYPE](1e-6)
-        if si_dmax < Scalar[DTYPE](1e-4):
-            si_dmax = Scalar[DTYPE](1e-4)
+        # Clamp BOTH ends to [mjMINIMP, mjMAXIMP] as MuJoCo does before
+        # interpolating (engine_core_constraint.c:1284-1287).
+        comptime MJE_MINIMP = Scalar[DTYPE](0.0001)
+        comptime MJE_MAXIMP = Scalar[DTYPE](0.9999)
+        if si_dmin < MJE_MINIMP:
+            si_dmin = MJE_MINIMP
+        elif si_dmin > MJE_MAXIMP:
+            si_dmin = MJE_MAXIMP
+        if si_dmax < MJE_MINIMP:
+            si_dmax = MJE_MINIMP
+        elif si_dmax > MJE_MAXIMP:
+            si_dmax = MJE_MAXIMP
+        if si_power < Scalar[DTYPE](1):
+            si_power = Scalar[DTYPE](1)
         # MuJoCo: K = 1/(dmax² * timeconst² * dampratio²)
         var t_K_spring = Scalar[DTYPE](1.0) / (
             si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr

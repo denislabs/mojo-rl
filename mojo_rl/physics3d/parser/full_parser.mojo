@@ -1280,10 +1280,18 @@ def _fill_model[
                 else:
                     jd.springref = jdef.joint_springref
 
-                # ref (MuJoCo joint reference position → qpos0)
+                # ref (MuJoCo joint reference position → qpos0). Same deg→rad
+                # gate as `range` above — `ref` is an ANGLE for hinge/ball and
+                # a LENGTH for slide. Without this, finger's `ref="-90"` became
+                # -90 rad instead of -pi/2, which (per bug 18) silently skews
+                # every constraint inverse weight since they are built at qpos0.
                 var ref_s = _extract_attr(tag, "ref")
                 if ref_s.byte_length() > 0:
-                    jd.ref_val = _parse_float(ref_s)
+                    var r_angular = (
+                        jd.jnt_type == JNT_HINGE or jd.jnt_type == JNT_BALL
+                    )
+                    var rrf = deg_factor if r_angular else Float64(1.0)
+                    jd.ref_val = _parse_float(ref_s) * rrf
                 else:
                     jd.ref_val = 0.0
 
@@ -1293,6 +1301,19 @@ def _fill_model[
                     jd.frictionloss = _parse_float(fl_s)
                 else:
                     jd.frictionloss = jdef.joint_frictionloss
+
+                # `solreffriction` / `solimpfriction` set the dof-FRICTION
+                # solver parameters, a DIFFERENT pair from the LIMIT ones
+                # below — MuJoCo keeps them in dof_solref/dof_solimp, and a
+                # model setting solimplimit leaves solimpfriction at the
+                # default. `constraints/friction_dof.mojo` hardcodes MuJoCo's
+                # defaults, exact for every model in the repo (none sets
+                # these). Flag it here; `init_fields` raises, so the day one
+                # does set them it is loud, not a silently wrong friction.
+                jd.has_friction_solparams = (
+                    _extract_attr(tag, "solreffriction").byte_length() > 0
+                    or _extract_attr(tag, "solimpfriction").byte_length() > 0
+                )
 
                 # solreflimit (per-joint or default)
                 var srl_s = _extract_attr(tag, "solreflimit")

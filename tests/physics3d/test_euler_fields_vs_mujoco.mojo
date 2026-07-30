@@ -55,12 +55,24 @@ comptime QVEL_ABS_TOL_10: Float64 = 1e-10
 # --- GOLDEN fingerprint for the active-limit fields-CPU trajectory -----------
 comptime HARVEST = False  # True => print fingerprint + skip asserts (regen)
 comptime GOLD_RTOL = 1e-6  # fields-CPU f64 is deterministic across devices
-# Regenerated 2026-07-30 for the exact `quat_integrate` (bug 17). Ant is
-# free-rooted, so its root orientation integrates differently now; the
-# MuJoCo-gated sub-tests above IMPROVED to ~5e-13 in the same change, which
-# is what says this move is a fix and not a regression.
-comptime GOLD_LIM_QPOS = 12.23845641921087
-comptime GOLD_LIM_QVEL = 17.46190805621464
+# ⚠ This golden pins our OWN output, and there is no MuJoCo comparison in this
+# file for the active-limit case (the two sub-tests above assert nefc == 0).
+# It therefore CANNOT catch an error in the constraint response — it froze one
+# for months: `dof_invweight0` was ~1% wrong, and this number faithfully
+# preserved it. The authority for constrained behaviour is
+# tests/physics3d/test_constraints_vs_mujoco.mojo, which compares against
+# MuJoCo directly. Treat this fingerprint as a determinism check only.
+#
+# Regenerated 2026-07-30 (b) for bug 18 (dof_invweight0 built at the env reset
+# pose instead of qpos0, and missing MuJoCo's free/ball dof-group averaging).
+# Moved 1.2e-6 (qpos) / 2.3e-5 (qvel) — small because the limit rows are only
+# briefly active over these 10 steps. What says this is a fix and not a
+# regression: the MuJoCo-gated sub-tests above did NOT move (4.8e-13 / 4.7e-12,
+# they run limit-free), while the active-limit case measured against MuJoCo in
+# test_constraints_vs_mujoco went 9.4e-6 -> 4.4e-13 in the same change.
+# Previously regenerated 2026-07-30 (a) for the exact `quat_integrate` (bug 17).
+comptime GOLD_LIM_QPOS = 12.238441724124275
+comptime GOLD_LIM_QVEL = 17.46150375918525
 
 
 def _tumbling_qpos() -> InlineArray[Float64, NQ]:

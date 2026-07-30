@@ -116,7 +116,28 @@ comptime GOLD_NCON_B = 6  # Part B equality: total contacts over the steps
 # two disagree substantially (qvel[2] -7.4 vs -0.43 by step 0). Validating the
 # weld path against MuJoCo is separate, unfinished work — do not read a pass
 # here as "welds are correct".
-comptime GOLD_B = 21105.382573808387  # Part B final qpos/qvel/qacc/contacts checksum
+# Regenerated 2026-07-30 for bug 20 (`dynamics/invweight.mojo`). `invweight0`
+# used to substitute `body_invweight0`'s TRANSLATIONAL half with its ROTATIONAL
+# half whenever the translational one came out ~0, under a comment claiming
+# that was MuJoCo behaviour. It is not: `mj_setConst` assigns the two
+# independently (engine_setconst.c:157-158), and a zero translational weight is
+# a CORRECT answer for a body whose CoM lies on its only rotation axis.
+#
+# This model has exactly such a body — `anchor` is a sphere at its own body
+# origin on a hinge through pos="0 0 0", so it cannot be translated and its
+# true translational weight IS 0. The weld path reads BOTH invweight
+# components as its diagApprox, so the anchor's fabricated non-zero value fed
+# straight into the weld solve. Verified by causation, not inference: with only
+# `invweight.mojo` reverted this test matches the OLD number exactly, and with
+# it applied it matches the new one.
+#
+# So the previous value was frozen around a wrong model constant, the same way
+# `test_euler_fields_vs_mujoco`'s limit golden was before bug 18. That is the
+# recurring hazard of a self-golden over a regime never checked against ground
+# truth: it preserves whatever it captured. Per the note above, this number is
+# still a REGRESSION PIN and still not a correctness statement — the weld path
+# remains ungated against MuJoCo.
+comptime GOLD_B = 29033.456920214216  # Part B final qpos/qvel/qacc/contacts checksum
 
 # =============================================================================
 # Part A: Humanoid (tendons)

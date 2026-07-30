@@ -630,14 +630,15 @@ def test_humanoid_dynamics_vs_dm_control() raises:
           r_stand_hi)
 
     # ── Gates ────────────────────────────────────────────────────────────
-    # Rewards are what the tasks actually consume, and over the contact-free
-    # prefix they now agree to ~1e-8. The bound is deliberately ~50x looser
-    # than the observed value so it tracks real regressions, not noise.
+    # Rewards are what the tasks actually consume. Over the contact-free
+    # prefix they agree to ~1e-11 (was ~1e-8 before the solimp clamp landed;
+    # see the state gate below). Bounds are ~100x looser than observed so they
+    # track real regressions, not platform noise.
     assert_true(
-        max_r_stand_s < 1e-6, "stand reward diverged over the prefix"
+        max_r_stand_s < 1e-8, "stand reward diverged over the prefix"
     )
-    assert_true(max_r_walk_s < 1e-6, "walk reward diverged over the prefix")
-    assert_true(max_r_run_s < 1e-6, "run reward diverged over the prefix")
+    assert_true(max_r_walk_s < 1e-8, "walk reward diverged over the prefix")
+    assert_true(max_r_run_s < 1e-8, "run reward diverged over the prefix")
 
     # A reward that never moves would pass the gates above vacuously.
     assert_true(
@@ -645,17 +646,27 @@ def test_humanoid_dynamics_vs_dm_control() raises:
         "stand reward is degenerate over the prefix — gate is vacuous",
     )
 
-    # State is looser ON PURPOSE. The residual is ONE joint's limit
-    # constraint: our response to a newly-active joint limit differs from
-    # MuJoCo's soft solref/solimp response by a single-step spike of ~1e-3
-    # in qvel that then decays. Everything else agrees to ~1e-10 (see
-    # tests/physics3d/test_euler_fields_vs_mujoco.mojo, which has never gated
-    # an ACTIVE-constraint configuration against MuJoCo — it asserts
-    # nefc == 0). Verified independent of the solver: PGS and Newton produce
-    # this to 10 digits. Tightening this bound is the acceptance test for
-    # constraint softness; see docs/DM_CONTROL_PORT.md.
+    # RESOLVED 2026-07-30. This bound was 5e-4 and carried a note calling its
+    # own tightening "the acceptance test for constraint softness". The
+    # softness was real and it was the joint-limit IMPEDANCE, not the solver:
+    # MuJoCo clamps both ends of solimp to [mjMINIMP, mjMAXIMP] = [1e-4,
+    # 0.9999] BEFORE interpolating (engine_core_constraint.c:1284-1287), and
+    # we clamped only dmax while flooring the interpolated `imp` at 1e-6 —
+    # 100x below MuJoCo's floor. humanoid's joints carry
+    # `solimplimit="0 .99 .01"`, so dmin IS 0 and every shallow limit
+    # violation got a force ~100x too soft. Prefix |d(state)| 7.7259e-05 ->
+    # 5.66e-08.
+    #
+    # Why it resisted diagnosis for so long: every probe swept ANT, whose
+    # solimplimit is the DEFAULT (dmin=0.9), so the defect was structurally
+    # absent from the model under test — ant's limits genuinely did match to
+    # 1e-13. It also only bites at SHALLOW penetration (deep violations
+    # saturate to dmax, where both engines agree), which is why one humanoid
+    # init held 1.7e-9 while the others sat at 6.5e-5.
+    #
+    # Bound is ~50x the observed value, per this file's convention.
     assert_true(
-        max_state_s < 5e-4,
+        max_state_s < 3e-6,
         "humanoid prefix state diverged beyond the joint-limit budget",
     )
 

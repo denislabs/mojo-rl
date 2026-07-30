@@ -126,6 +126,13 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
     var solimp_limit_2: Float64  # -1.0 = use model default
     var solimp_limit_3: Float64  # -1.0 = use model default
     var solimp_limit_4: Float64  # -1.0 = use model default
+    # MJCF `solreffriction` / `solimpfriction` — the dof-FRICTION solver
+    # parameters, a DIFFERENT pair from the limit ones above (MuJoCo keeps
+    # them in dof_solref/dof_solimp). Not plumbed; `friction_dof.mojo` uses
+    # MuJoCo's defaults, which is exact for every model in the repo. This flag
+    # lets `ModelDefFromXML.init_fields` raise if an XML ever sets them, so it
+    # is loud rather than a silently wrong friction force.
+    var has_friction_solparams: Bool
 
     def __init__(
         out self,
@@ -155,6 +162,7 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
         solimp_limit_2: Float64 = -1.0,
         solimp_limit_3: Float64 = -1.0,
         solimp_limit_4: Float64 = -1.0,
+        has_friction_solparams: Bool = False,
     ):
         self.jnt_type = jnt_type
         self.body_id = body_id
@@ -182,6 +190,7 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
         self.solimp_limit_2 = solimp_limit_2
         self.solimp_limit_3 = solimp_limit_3
         self.solimp_limit_4 = solimp_limit_4
+        self.has_friction_solparams = has_friction_solparams
 
 
 # =============================================================================

@@ -40,6 +40,7 @@ from ..dynamics.ldl import (
     _ldl_solve_env,
 )
 from ..constraints.limits import solve_limits
+from ..constraints.friction_dof import solve_friction
 from ..constraints.contact_solve import solve_contacts
 from ..solver.newton_solve import solve_newton
 from ..solver.cg_solve import solve_cg
@@ -154,20 +155,16 @@ def _fnet_passive_env[
                 var qpos_d = rebind[Scalar[DTYPE]](qpos[env, qpos_adr + d])
                 var cur = rebind[Scalar[DTYPE]](fnet[env, dof_adr + d])
                 fnet[env, dof_adr + d] = cur - stiff * (qpos_d - sref)
-        if floss > Scalar[DTYPE](0):
-            comptime VEL_THRESH: Scalar[DTYPE] = 1e-4
-            var nd = 1
-            if jnt_type == JNT_FREE:
-                nd = 6
-            elif jnt_type == JNT_BALL:
-                nd = 3
-            for d in range(nd):
-                var v = rebind[Scalar[DTYPE]](qvel[env, dof_adr + d])
-                var cur = rebind[Scalar[DTYPE]](fnet[env, dof_adr + d])
-                if v > VEL_THRESH:
-                    fnet[env, dof_adr + d] = cur - floss
-                elif v < -VEL_THRESH:
-                    fnet[env, dof_adr + d] = cur + floss
+        # frictionloss is NOT a passive force. It used to be applied here as an
+        # explicit Coulomb force with a 1e-4 velocity deadband, which cannot
+        # arrest motion — it overshoots zero and settles into a period-2 limit
+        # cycle, so a joint that should stop dead spins forever (dm_control's
+        # finger spinner: MuJoCo 1e-17 rad/s, ours a bit-constant +-0.0329).
+        # MuJoCo solves it as a CONSTRAINT ROW (`mjCNSTR_FRICTION_DOF`) whose
+        # force is bounded by frictionloss rather than fixed at it; that lives
+        # in `constraints/friction_dof.mojo` and runs beside the limit rows in
+        # every solver. `floss` is read there, not here.
+        _ = floss
 
 
 # ── qacc writeback: state qacc + qacc_constrained = qacc_ws ───────────────
@@ -627,6 +624,15 @@ struct EulerIntegrator[
                         ](d, m, self.scratch, self.cscratch, ctx)
         else:
             solve_limits[
+                target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
+                Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
+                Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
+                Self.BATCH,
+            ](d, m, self.scratch, ctx)
+            # Dry-friction dof rows. With CONTACTS=False no solver runs, so
+            # this is the only place they can be applied; with contacts the
+            # solvers call `_friction_env` themselves beside their limit rows.
+            solve_friction[
                 target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                 Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
                 Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,

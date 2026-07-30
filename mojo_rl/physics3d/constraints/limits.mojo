@@ -136,8 +136,21 @@ def _limits_env[
     var li_power = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLIMP_LIMIT_4])
     if li_width < Scalar[DTYPE](1e-6):
         li_width = Scalar[DTYPE](1e-6)
-    if li_dmax < Scalar[DTYPE](1e-4):
-        li_dmax = Scalar[DTYPE](1e-4)
+    # Clamp BOTH ends to [mjMINIMP, mjMAXIMP] as MuJoCo does before
+    # interpolating (engine_core_constraint.c:1284-1287) — see the same fix in
+    # contact_solve.mojo for why the dmin floor is the one that matters.
+    comptime MJ_MINIMP = Scalar[DTYPE](0.0001)
+    comptime MJ_MAXIMP = Scalar[DTYPE](0.9999)
+    if li_dmin < MJ_MINIMP:
+        li_dmin = MJ_MINIMP
+    elif li_dmin > MJ_MAXIMP:
+        li_dmin = MJ_MAXIMP
+    if li_dmax < MJ_MINIMP:
+        li_dmax = MJ_MINIMP
+    elif li_dmax > MJ_MAXIMP:
+        li_dmax = MJ_MAXIMP
+    if li_power < Scalar[DTYPE](1):
+        li_power = Scalar[DTYPE](1)
     var l_K_spring = Scalar[DTYPE](1.0) / (
         li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr
     )
