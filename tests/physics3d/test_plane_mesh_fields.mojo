@@ -86,10 +86,10 @@ comptime GOLD_RTOL = 1e-3
 # Both legs moved (the two legs collide different geom subsets, so their counts
 # were never expected to match each other). Regenerated with the HARVEST
 # procedure in the module docstring.
-comptime GOLD_NCON_A = 6  # O(N^2) leg
-comptime GOLD_CON_A = 2291.6087976897834
-comptime GOLD_NCON_B = 8  # SAP leg
-comptime GOLD_CON_B = 3442.650864849915
+comptime GOLD_NCON_A = 4  # O(N^2) leg
+comptime GOLD_CON_A = 1135.9686783785
+comptime GOLD_NCON_B = 6  # SAP leg
+comptime GOLD_CON_B = 1989.6578279478708
 
 
 def _qpos_for_env(e: Int) -> List[Float64]:

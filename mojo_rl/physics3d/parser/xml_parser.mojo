@@ -274,11 +274,38 @@ def _digit_value(c: String) -> Int:
     return digits.find(c)
 
 
+def _pow10(k: Int) -> Float64:
+    """10^k, exactly, for 0 <= k <= 22.
+
+    Every power of ten up to 10^22 is representable in Float64 (10^22 = 2^22 *
+    5^22 and 5^22 < 2^53), and each step of the loop lands on a representable
+    value, so the product is exact. Past 22 it is no longer exact — MJCF
+    numbers never reach there, and the alternative (repeated *0.1) is far
+    worse, being inexact from the very first step.
+    """
+    var p = Float64(1.0)
+    for _ in range(k):
+        p *= 10.0
+    return p
+
+
 def _parse_float(s: String) -> Float64:
     """Parse a float string such as "0.7", "-3.14", "1e-3" to Float64.
 
     Uses slice-based character iteration (s[i:i+1]) — comptime-safe.
     No stdlib float parsing is used.
+
+    All digits go into ONE integer-valued mantissa which is scaled by a single
+    power of ten at the end, so the result is the correctly-rounded double
+    whenever the mantissa fits in 2^53 and the decimal exponent is within
+    +-22 — true of every number in an MJCF file.
+
+    This used to accumulate the fraction as `sum(digit * mul)` with
+    `mul *= 0.1`, which is inexact from the first digit: 0.1 is not
+    representable, so `<option timestep="0.02"/>` parsed to
+    0.020000000000000004, one ULP high. That is a systematic ~1e-16 relative
+    error on every float in every model, and it compounds over a rollout —
+    which is exactly the regime the dm_control parity tests measure.
     """
     var t = _trim(s)
     if t.byte_length() == 0:
@@ -308,28 +335,45 @@ def _parse_float(s: String) -> Float64:
     else:
         int_end = t.byte_length()
 
-    var int_part = Float64(0)
+    # One shared mantissa for the integer and fractional digits; `frac_digits`
+    # counts how far the decimal point must move back at the end. Digits past
+    # the 17th cannot change a Float64, so they are counted (to keep the
+    # exponent right) but not accumulated — that also keeps the mantissa
+    # under 2^53, where the integer arithmetic below stays exact.
+    comptime MAX_MANTISSA_DIGITS = 17
+    var mantissa = Float64(0)
+    var ndigits = 0
+
     for i in range(start, int_end):
         var d = _digit_value(String(t[byte = i : i + 1]))
         if d >= 0:
-            int_part = int_part * 10.0 + Float64(d)
+            if ndigits < MAX_MANTISSA_DIGITS:
+                mantissa = mantissa * 10.0 + Float64(d)
+                ndigits += 1
+            else:
+                # A dropped INTEGER digit still scales the value.
+                mantissa *= 10.0
 
     # Fractional part
-    var frac_part = Float64(0)
+    var frac_digits = 0
     if dot_pos != -1:
         var frac_end: Int
         if exp_pos != -1:
             frac_end = exp_pos
         else:
             frac_end = t.byte_length()
-        var frac_mul = Float64(0.1)
         for i in range(dot_pos + 1, frac_end):
             var d = _digit_value(String(t[byte = i : i + 1]))
             if d >= 0:
-                frac_part += Float64(d) * frac_mul
-                frac_mul *= 0.1
+                if ndigits < MAX_MANTISSA_DIGITS:
+                    mantissa = mantissa * 10.0 + Float64(d)
+                    ndigits += 1
+                    frac_digits += 1
+                # A dropped FRACTIONAL digit is simply below precision.
 
-    var result = int_part + frac_part
+    var result = mantissa
+    if frac_digits > 0:
+        result /= _pow10(frac_digits)
 
     # Exponent part
     if exp_pos != -1:
@@ -346,13 +390,13 @@ def _parse_float(s: String) -> Float64:
             var d = _digit_value(String(t[byte = i : i + 1]))
             if d >= 0:
                 exp_val = exp_val * 10 + d
-        var pow10 = Float64(1.0)
-        for _ in range(exp_val):
-            if exp_neg:
-                pow10 *= 0.1
-            else:
-                pow10 *= 10.0
-        result *= pow10
+        # Scale by a single exact power of ten — DIVIDING for a negative
+        # exponent rather than multiplying by an inexact 0.1^k.
+        var pow10 = _pow10(exp_val)
+        if exp_neg:
+            result /= pow10
+        else:
+            result *= pow10
 
     if neg:
         return -result
@@ -1293,6 +1337,54 @@ def _strip_wrapper(xml: String) -> String:
     return result
 
 
+def _normalize_freejoint(xml: String) -> String:
+    """Rewrite `<freejoint .../>` as `<joint type="free" .../>`.
+
+    MJCF accepts both spellings for a 6-DOF root; MuJoCo's compiler treats
+    `<freejoint>` as sugar. Our scanners look for the literal `"<joint"` in
+    roughly twenty places, so supporting the alias at each of them would be
+    both invasive and easy to miss one of. Normalizing the TEXT once, before
+    anything scans it, covers every site at a stroke.
+
+    This matters because the failure was silent: an unrecognized `<freejoint>`
+    is not an error, it simply yields a model with no root joint — the body
+    welds to the world and nq/nv come out 7/6 short, which then shows up as a
+    dimension mismatch far from the cause. In-scope users are dm_control's
+    humanoid and quadruped (dog and humanoid_CMU are descoped).
+
+    THE PASSIVE ATTRIBUTES ARE PINNED TO ZERO, and that is the whole point of
+    the distinction MuJoCo draws between the two spellings. Its docs say of
+    `<freejoint>`: "The alternative is to set type='free' in a regular joint
+    element, but then the joint will inherit any defaults defined for joints,
+    which is usually undesirable." A bare `<joint type="free">` under
+    humanoid's `<default class="body"><joint armature=".01" damping=".2"
+    stiffness="1" limited="true"/>` would give the ROOT an armature, a damper,
+    a spring pulling it toward the origin, and a limit — MuJoCo reports 0 for
+    all of them. Writing the zeros out explicitly reproduces that, because an
+    attribute on the element beats the class.
+
+    Other attributes are carried through untouched; the injected ones go
+    immediately after the tag name, which is safe because `<freejoint>` admits
+    only name/group/align, and `_extract_attr` takes the first match anyway.
+    """
+    var result = String("")
+    var scan = 0
+    var xlen = xml.byte_length()
+    while scan < xlen:
+        var fj = xml.find("<freejoint", scan)
+        if fj == -1:
+            result = result + String(xml[byte=scan:xlen])
+            break
+        result = (
+            result
+            + String(xml[byte=scan:fj])
+            + '<joint type="free" limited="false" armature="0" damping="0"'
+            + ' stiffness="0" springref="0" frictionloss="0"'
+        )
+        scan = fj + 10  # len("<freejoint")
+    return result
+
+
 def _strip_include_tags(xml: String) -> String:
     """Remove all <include file="..."/> tags from XML."""
     var result = String("")
@@ -1344,7 +1436,12 @@ def merge_mjcf(*xmls: String) -> String:
     var all_option_flags = String("")
 
     for i in range(len(xmls)):
-        var stripped = _strip_include_tags(_strip_wrapper(xmls[i]))
+        # `<freejoint>` -> `<joint type="free">` before ANY scanning, so the
+        # ~20 `find("<joint")` sites downstream all see it. See
+        # `_normalize_freejoint` for why this is textual rather than per-site.
+        var stripped = _normalize_freejoint(
+            _strip_include_tags(_strip_wrapper(xmls[i]))
+        )
 
         # Singleton tags
         var opt = _extract_singleton_tag(stripped, "option")

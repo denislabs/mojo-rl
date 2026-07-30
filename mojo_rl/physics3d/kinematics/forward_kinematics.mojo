@@ -1008,6 +1008,30 @@ def _vel_body[
             wy = w_world[1]
             wz = w_world[2]
 
+            # Angular -> linear coupling, exactly as the BALL/HINGE branches
+            # below do it. MuJoCo's free-joint qvel[0:3] is the velocity of
+            # the body FRAME ORIGIN (it matches `mj_objectVelocity` with
+            # mjOBJ_XBODY bit-for-bit), but every other velocity in this
+            # function is carried at the body CoM — the propagation above is
+            # `v = parent_v + parent_w x (xipos_b - xipos_parent)`. So the
+            # free root has to be moved from its origin to its CoM by
+            # `w x (R_b * ipos_b)`, the free joint's lever arm (its anchor IS
+            # the body frame origin, hence no `- jnt_pos` term here).
+            #
+            # Omitting it made `Data.xvel` hold the ORIGIN velocity for a
+            # free-rooted body and the CoM velocity for every other body, so
+            # `sensors.subtree_linvel` — which mass-averages xvel and is
+            # specified at the CoM — was wrong for every free-rooted model by
+            # a rigid offset of w x r. Invisible on the planar domains
+            # (cheetah/walker/hopper are slide+hinge rooted, and their
+            # `subtreelinvel` gates pass to 1e-10); dm_control's humanoid is
+            # the first free-rooted model to gate this term, and it showed up
+            # as a flat ~0.07 m/s error in `com_velocity` from step 0.
+            var flev = gpu_quat_rotate(fqx, fqy, fqz, fqw, ipos_x, ipos_y, ipos_z)
+            vx = vx + (wy * flev[2] - wz * flev[1])
+            vy = vy + (wz * flev[0] - wx * flev[2])
+            vz = vz + (wx * flev[1] - wy * flev[0])
+
         elif jnt_type == JNT_BALL:
             var bwx = rebind[Scalar[DTYPE]](qvel[env, dof_adr + 0])
             var bwy = rebind[Scalar[DTYPE]](qvel[env, dof_adr + 1])
@@ -1052,6 +1076,27 @@ def _vel_body[
             # Rotating the axis by the PARENT quaternion is equivalent to the
             # child's here: R_child = R_parent * R_axis(theta) and a rotation
             # about an axis leaves that axis fixed.
+            #
+            # ⚠ THAT IDENTITY HOLDS ONLY FOR A BODY WITH EXACTLY ONE JOINT AND
+            # NO FIXED `quat=` OF ITS OWN. Measured against MuJoCo's `d.xaxis`
+            # on dm_control's humanoid: the FIRST joint of a body matches the
+            # parent frame (1e-16), the LAST matches the child frame, and a
+            # MIDDLE joint matches NEITHER (~0.2-0.3) — the true frame for
+            # joint k is `R_parent * R_bodyquat * R_1 ... R_{k-1}`, the running
+            # composition the POSITION path above already builds. A non-identity
+            # body quat also breaks it on its own (humanoid's lower_waist has
+            # `quat="1.000 0 -.002 0"`, worth 3e-3 on abdomen_z).
+            #
+            # Consequence: `xangvel` (and `xvel` through it) is wrong for any
+            # body carrying several joints — humanoid's abdomen, hips, ankles
+            # and shoulders, so up to 0.42 rad/s at an identical state. Every
+            # model currently in the repo has one joint per body and identity
+            # body quats, which is why walker2d/hopper/ant gate this to 1e-9
+            # in tests/physics3d/test_body_velocities_vs_mujoco.mojo and it has
+            # never surfaced. NOT FIXED HERE: the fix is to carry a running
+            # (position, quaternion) frame through the joint loop exactly as
+            # `_fk_body` does, which needs `qpos` and `xpos` threaded into this
+            # helper and both kernels. See docs/DM_CONTROL_PORT.md.
             var pqx = rebind[Scalar[DTYPE]](xquat[env, parent * 4 + 0])
             var pqy = rebind[Scalar[DTYPE]](xquat[env, parent * 4 + 1])
             var pqz = rebind[Scalar[DTYPE]](xquat[env, parent * 4 + 2])

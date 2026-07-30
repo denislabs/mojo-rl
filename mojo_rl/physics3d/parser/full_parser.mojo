@@ -439,37 +439,121 @@ def _parse_defaults(
         DefaultsData(),
     )
 
-    # Parse named <default class="..."> sub-blocks
+    # Parse named <default class="..."> sub-blocks, recursively, each one
+    # inheriting from the block that ENCLOSES it.
     var named = NamedDefaultsList()
-    var scan_pos = 0
-    var dlen = defaults_sec.byte_length()
-    while scan_pos < dlen:
-        var dt = defaults_sec.find("<default", scan_pos)
-        if dt == -1:
-            break
-        var tag = _extract_opening_tag(defaults_sec, dt)
-        var class_name = _extract_attr(tag, "class")
-        if class_name.byte_length() > 0:
-            # Extract the inner content of this named default block
-            var tag_end = defaults_sec.find(">", dt)
-            if tag_end == -1:
+    _collect_named_defaults(
+        _extract_section_inner(xml, "default"), top, named
+    )
+    return (top, named)
+
+
+def _find_matching_default_close(sec: String, open_pos: Int) -> Int:
+    """Index of the `</default>` matching the `<default` at `open_pos`.
+
+    Returns -1 if unbalanced. Depth-tracked, because `<default>` blocks nest.
+    """
+    var n = sec.byte_length()
+    var depth = 0
+    var i = open_pos
+    while i < n:
+        var next_open = sec.find("<default", i + 1)
+        var next_close = sec.find("</default>", i + 1)
+        if next_close == -1:
+            return -1
+        if next_open != -1 and next_open < next_close:
+            depth += 1
+            i = next_open
+            continue
+        if depth == 0:
+            return next_close
+        depth -= 1
+        i = next_close
+    return -1
+
+
+def _collect_named_defaults(
+    inner: String,
+    parent: DefaultsData,
+    mut named: NamedDefaultsList,
+):
+    """Register every `<default class="...">` in `inner`, depth-first.
+
+    `inner` is the INNER text of an enclosing `<default>` block and `parent`
+    is that block's resolved defaults. Each direct child class inherits from
+    `parent`, is registered, and is then recursed into so ITS children inherit
+    from IT.
+
+    This replaces a loop that took `defaults_sec.find("</default>")` — the
+    FIRST close tag, not the matching one. With a flat `<default>` section
+    that is the same thing, which is why it survived every domain up to
+    humanoid. humanoid nests three deep:
+
+        <default class="body">          <- worked (its <joint> is the first
+          <joint armature=".01" .../>      one inside its span)
+          <default class="big_joint">   <- NEVER REGISTERED: its opening tag
+            <joint damping="5" .../>       sits inside the span the parent
+            <default class="big_stiff_joint">   consumed, so the scan skipped
+              <joint stiffness="20"/>          straight past it
+            </default>
+          </default>
+        </default>
+
+    so `named.find("big_joint")` returned an EMPTY DefaultsData and every
+    joint naming a nested class silently got armature/damping/stiffness 0 —
+    a humanoid with no hip or abdomen springs at all, which still simulates
+    and still looks like a humanoid.
+
+    Inheriting from `parent` rather than the top level is the second half of
+    the fix: `big_stiff_joint` sets only `stiffness`, and must pick up
+    `damping="5"` from `big_joint` and `armature=".01"` from `body`.
+
+    Breadth-first over an explicit worklist rather than recursively: the
+    natural recursive spelling is correct (`child_inner` shrinks every step)
+    but Mojo flags the self-call with "will cause an infinite loop", and a
+    warning on every model build is not worth the two saved lines.
+    """
+    var pending_text = List[String]()
+    var pending_parent = List[DefaultsData]()
+    pending_text.append(inner)
+    pending_parent.append(parent)
+
+    var q = 0
+    while q < len(pending_text):
+        var text = pending_text[q]
+        var par = pending_parent[q]
+        q += 1
+
+        var n = text.byte_length()
+        var scan = 0
+        while scan < n:
+            var dt = text.find("<default", scan)
+            if dt == -1:
                 break
-            # Find matching </default> for this nested block
-            var inner_start = tag_end + 1
-            var close = defaults_sec.find("</default>", inner_start)
+            var close = _find_matching_default_close(text, dt)
             if close == -1:
                 break
-            var inner = String(defaults_sec[byte=inner_start:close])
-            # Parse this block inheriting from top-level
-            var cls_defaults = _parse_one_default_block(inner, top)
-            named.add(class_name, cls_defaults)
-            scan_pos = close + 10  # len("</default>")
-        else:
-            # Skip unnamed <default (the outer one)
-            var tag_end = defaults_sec.find(">", dt)
-            scan_pos = tag_end + 1 if tag_end != -1 else dlen
+            var tag_end = text.find(">", dt)
+            if tag_end == -1 or tag_end > close:
+                break
 
-    return (top, named)
+            var tag = _extract_opening_tag(text, dt)
+            var class_name = _extract_attr(tag, "class")
+            var child_inner = String(text[byte = tag_end + 1 : close])
+
+            var child_defaults = par
+            if class_name.byte_length() > 0:
+                # Own attributes only — strip the grandchildren first, or the
+                # first grandchild's <joint>/<geom> masquerades as this
+                # class's.
+                child_defaults = _parse_one_default_block(
+                    _strip_nested_defaults(child_inner), par
+                )
+                named.add(class_name, child_defaults)
+
+            pending_text.append(child_inner)
+            pending_parent.append(child_defaults)
+            scan = close + 10  # len("</default>")
 
 
 # =============================================================================

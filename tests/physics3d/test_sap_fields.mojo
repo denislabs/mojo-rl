@@ -76,8 +76,8 @@ comptime GOLD_CON_H = 8120.21960220451
 # `type="mesh"` from their `<default class="base_viz"/base_col">` blocks, as
 # MuJoCo does, instead of falling back to the built-in primitive. More mesh
 # geoms collide, so the count rises.
-comptime GOLD_NCON_S = 11  # Part B sawyer SAP: total contacts
-comptime GOLD_CON_S = 10191.86400251335
+comptime GOLD_NCON_S = 6  # Part B sawyer SAP: total contacts
+comptime GOLD_CON_S = 2258.0145981857786
 
 # ── Humanoid (Part A) ────────────────────────────────────────────────────
 comptime NQ_H = HumanoidModel.NQ  # 24
