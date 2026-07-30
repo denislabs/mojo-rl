@@ -223,25 +223,28 @@ struct Phyics3dEnv[
         `d.mocap_pos`/`d.mocap_quat` (per step / on reset); preset the
         corresponding body world pose so the fields FK — which SKIPS mocap
         bodies — leaves the target in place and the weld/equality solve
-        (SOLVER=newton) tracks it. Zero-cost for non-mocap models
-        (MAX_EQUALITY gate + the body mocap flag is 0 everywhere else)."""
-        comptime if Self.MODEL_DEF.MAX_EQUALITY > 0:
-            for b in range(Self.NBODY):
-                if (
-                    self.mf.bodies.data[
-                        b * MODEL_BODY_SIZE + BODY_IDX_MOCAP
-                    ]
-                    == 0
-                ):
-                    continue
-                for k in range(3):
-                    var p = self.d.mocap_pos.data[b * 3 + k]
-                    self.d.xpos.data[b * 3 + k] = p
-                    self.d.xipos.data[b * 3 + k] = p
-                for k in range(4):
-                    self.d.xquat.data[b * 4 + k] = self.d.mocap_quat.data[
-                        b * 4 + k
-                    ]
+        (SOLVER=newton) tracks it.
+
+        Gated only on the per-body mocap flag, which is 0 for every non-mocap
+        model, so this costs an NBODY float compare per call there. It used to
+        carry an outer `MAX_EQUALITY > 0` comptime gate as well, on the
+        assumption that mocap only ever means "weld-driven actuation"
+        (SawyerReach). That silently disabled mocap for models that use a
+        mocap body as a POSE CARRIER with no constraint attached — dm_control's
+        reacher parks its randomized per-episode target on one — so the pose
+        would never leave `mocap_pos` and the body would sit at its XML pos
+        forever, with no error."""
+        for b in range(Self.NBODY):
+            if self.mf.bodies.data[b * MODEL_BODY_SIZE + BODY_IDX_MOCAP] == 0:
+                continue
+            for k in range(3):
+                var p = self.d.mocap_pos.data[b * 3 + k]
+                self.d.xpos.data[b * 3 + k] = p
+                self.d.xipos.data[b * 3 + k] = p
+            for k in range(4):
+                self.d.xquat.data[b * 4 + k] = self.d.mocap_quat.data[
+                    b * 4 + k
+                ]
 
     # ── state management ─────────────────────────────────────────────────
     def _reset_state(mut self):
