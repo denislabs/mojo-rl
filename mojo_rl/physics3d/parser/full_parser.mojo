@@ -62,6 +62,7 @@ from .flat_model import (
     _GEOM_BOX,
     _GEOM_CYLINDER,
     _GEOM_MESH,
+    _GEOM_ELLIPSOID,
     TEX_SKYBOX,
     TEX_2D,
     TEX_CUBE,
@@ -576,6 +577,12 @@ def _geom_type_from_str(s: String) -> Int:
         return _GEOM_CYLINDER
     elif t == "mesh":
         return _GEOM_MESH
+    elif t == "ellipsoid":
+        return _GEOM_ELLIPSOID
+    # ⚠ THE DEFAULT IS A SILENT SUBSTITUTION, not an error. `ellipsoid` used
+    # to land here, which cost fish its whole mass distribution (bug 26).
+    # Anything still falling through — `hfield`, `sdf` — is modelled as a
+    # sphere of radius size[0] with no diagnostic.
     return _GEOM_SPHERE  # default
 
 
@@ -1660,6 +1667,14 @@ def _fill_model[
                         gd.radius = s0
                         if fromto_s.byte_length() == 0:
                             gd.half_length = s1
+                    elif gd.geom_type == _GEOM_ELLIPSOID:
+                        # `size` is the three SEMI-AXES, stored like a box's
+                        # half-extents. `radius` keeps size[0] so the broad
+                        # phase's bounding radius stays conservative.
+                        gd.half_x = s0
+                        gd.half_y = s1
+                        gd.half_z = s2
+                        gd.radius = s0
                     elif gd.geom_type == _GEOM_PLANE:
                         gd.half_x = s0
                         gd.half_y = s1
@@ -1785,6 +1800,14 @@ def _fill_model[
                             * gd.radius
                             * gd.radius
                             * (Float64(2.0) * gd.half_length)
+                        )
+                    elif gd.geom_type == _GEOM_ELLIPSOID:
+                        vol = (
+                            (Float64(4.0) / Float64(3.0))
+                            * PI
+                            * gd.half_x
+                            * gd.half_y
+                            * gd.half_z
                         )
                     # PLANE has no volume → mass stays 0
                     if vol > Float64(0):

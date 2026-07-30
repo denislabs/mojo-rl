@@ -17,6 +17,7 @@ from ..constants import (
     GEOM_CAPSULE,
     GEOM_BOX,
     GEOM_CYLINDER,
+    GEOM_ELLIPSOID,
 )
 
 # Pi constant
@@ -61,6 +62,11 @@ def geom_volume[
     elif geom_type == GEOM_BOX:
         # V = 8 * hx * hy * hz
         return Scalar[DTYPE](8.0) * half_x * half_y * half_z
+    elif geom_type == GEOM_ELLIPSOID:
+        # V = (4/3) * pi * a * b * c, the three semi-axes from `size`.
+        return (
+            Scalar[DTYPE](4.0 / 3.0 * PI) * half_x * half_y * half_z
+        )
     else:
         # Plane or unknown: zero volume
         return Scalar[DTYPE](0.0)
@@ -172,6 +178,17 @@ def geom_inertia[
         var Ix = mass * (sy2 + sz2) / Scalar[DTYPE](3.0)
         var Iy = mass * (sx2 + sz2) / Scalar[DTYPE](3.0)
         var Iz = mass * (sx2 + sy2) / Scalar[DTYPE](3.0)
+        return (Ix, Iy, Iz)
+
+    elif geom_type == GEOM_ELLIPSOID:
+        # I_xx = m*(b^2 + c^2)/5, etc. — the box formula with /5 instead of
+        # /3, and a sphere's (2/5)mr^2 when the three semi-axes are equal.
+        var ax2 = half_x * half_x
+        var ay2 = half_y * half_y
+        var az2 = half_z * half_z
+        var Ix = mass * (ay2 + az2) / Scalar[DTYPE](5.0)
+        var Iy = mass * (ax2 + az2) / Scalar[DTYPE](5.0)
+        var Iz = mass * (ax2 + ay2) / Scalar[DTYPE](5.0)
         return (Ix, Iy, Iz)
 
     else:

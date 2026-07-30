@@ -22,3 +22,14 @@ comptime GEOM_CAPSULE: Int = 2
 comptime GEOM_BOX: Int = 3
 comptime GEOM_CYLINDER: Int = 4
 comptime GEOM_MESH: Int = 5
+# `ellipsoid` used to fall through to GEOM_SPHERE SILENTLY (no `ellipsoid`
+# case in `_geom_type_from_str`, whose default is sphere). Harmless while every
+# ellipsoid in the repo carried `mass="0"` with contacts disabled — swimmer's
+# head, finger's touch SITES — and load-bearing the moment fish arrived, whose
+# tail and fins ARE ellipsoids with density-derived mass: a sphere of radius
+# size[0] gave tail1 1/128th of its mass and each fin 26x too much.
+#
+# INERTIA ONLY. There is no ellipsoid narrow phase; `init_fields` raises if an
+# ellipsoid geom can actually collide, rather than silently colliding it as a
+# sphere. See `geom_volume` / `geom_inertia`.
+comptime GEOM_ELLIPSOID: Int = 6

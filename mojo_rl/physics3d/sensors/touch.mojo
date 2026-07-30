@@ -21,12 +21,16 @@ Used by dm_control's hopper, whose OBSERVATION carries
 `np.log1p(sensordata[['touch_toe', 'touch_heel']])` — so this feeds the policy
 input, not only a reward term.
 
-SCOPE: sphere sites only. Hopper's are spheres (`<default class="hopper">
-<site type="sphere" size="0.05"/>`), and a sphere's zone test is
-orientation-free, which matters because our site records carry no quaternion —
-`site_xmat` has no equivalent here. `touch_sphere_sites` RAISES on any other
-site type rather than silently treating it as a sphere; extend it (and add
-site quats to the record) when a domain needs capsule/box zones.
+SCOPE: sphere zones, plus ellipsoid zones MEASURED AS a sphere of radius
+size[0]. A sphere's zone test is orientation-free, which matters because our
+site records carry no quaternion — `site_xmat` has no equivalent here.
+Hopper's sites are spheres; finger's `touchtop`/`touchbottom` are ellipsoids
+(`size=".025 .03 .025"`) and take the approximation, which is exact there
+because the in-plane semi-axes are equal and the model is planar —
+`test_finger_vs_dm_control::test_touch_site_sphere_approximation_is_exact`
+pins both facts. Any OTHER site type raises rather than being silently
+treated as a sphere; extend it (and add site quats to the record) when a
+domain needs capsule/box zones, or a real ellipsoid one.
 
 PRECONDITION: contact records must be POST-SOLVE, i.e. read after the
 integrator has run the constraint solve for this step. `CONTACT_IDX_FORCE_N`
@@ -37,7 +41,7 @@ sensor rather than an error.
 from std.math import sqrt
 
 from ..fields import Data
-from ..constants import GEOM_SPHERE
+from ..constants import GEOM_SPHERE, GEOM_ELLIPSOID
 from ..gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
@@ -80,7 +84,20 @@ def touch_sphere_site[
     """
     var sbase = site * MODEL_SITE_SIZE
     var stype = Int(m_sites[sbase + SITE_IDX_TYPE])
-    if stype != GEOM_SPHERE:
+    # ELLIPSOID is measured as a SPHERE of radius size[0]. That is an
+    # approximation, and it is deliberate: it is what this sensor has always
+    # done for finger's `touchtop`/`touchbottom`, which are
+    # `type="ellipsoid" size=".025 .03 .025"` and used to reach here as
+    # GEOM_SPHERE because `_geom_type_from_str` had no `ellipsoid` case and
+    # silently defaulted to sphere. Making ellipsoid a real geom type (bug 26)
+    # turned that silence into a raise, which would have made finger's
+    # observation extraction fail rather than be slightly approximate — so the
+    # approximation is now EXPLICIT, and the condition under which it is exact
+    # stays pinned by `test_finger_vs_dm_control::
+    # test_touch_site_sphere_approximation_is_exact` (equal in-plane semi-axes,
+    # planar model). A zone that needs the real ellipsoid needs the site
+    # quaternion in the model record, which is also what capsule/box need.
+    if stype != GEOM_SPHERE and stype != GEOM_ELLIPSOID:
         raise Error(
             String(
                 "physics3d touch sensor: site ",
@@ -89,6 +106,9 @@ def touch_sphere_site[
                 stype,
                 "; only sphere zones (type ",
                 GEOM_SPHERE,
+                ") and ellipsoid zones measured as a sphere of radius"
+                " size[0] (type ",
+                GEOM_ELLIPSOID,
                 ") are implemented. Capsule/box zones need the site",
                 " quaternion in the model record — see sensors/touch.mojo.",
             )

@@ -1,6 +1,6 @@
-"""Kinematics: quaternion math, MuJoCo-compatible `xmat` / `geom_xpos`
-accessors, and the fields forward kinematics (`forward_kinematics` — body
-world poses xpos/xquat/xipos from qpos).
+"""Kinematics: quaternion math, MuJoCo-compatible `xmat` / `geom_xpos` /
+`geom_xmat` accessors, and the fields forward kinematics
+(`forward_kinematics` — body world poses xpos/xquat/xipos from qpos).
 """
 
 from .quat_math import (
@@ -25,5 +25,6 @@ from .xmat import (
     XMAT_ZZ,
 )
 from .geom_xpos import geom_xpos
+from .geom_xmat import geom_xquat, geom_xmat_elem
 # Legacy struct-Model/Data FK deleted at the G4 fields sunset; the fields
 # FK is `forward_kinematics` (imported directly by module).

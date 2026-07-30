@@ -44,7 +44,12 @@ from mojo_rl.physics3d.dynamics.invweight import (
 )
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from .fields_build import build_model_fields_from_flat
-from .flat_model import ACT_KIND_MOTOR, act_kind_name
+from .flat_model import (
+    ACT_KIND_MOTOR,
+    ACT_KIND_POSITION,
+    act_kind_name,
+    _GEOM_ELLIPSOID,
+)
 from .full_parser import parse_xml_full
 from .xml_parser import (
     _xml_nth_motor_gear,
@@ -291,22 +296,113 @@ struct ModelDefFromXML[
         ],
         actions: List[Float64],
     ):
-        """Apply actuator forces to qfrc (gear * clamp(action, ctrlrange))."""
+        """Generalized forces from the model spec: actuators + tendon springs.
+
+        MuJoCo recomputes `qfrc_actuator` inside every `mj_step`, and for a
+        `<motor>` that is redundant — its force is `gear * ctrl`, constant
+        across a control step. A `<position>` servo is not: its force reads
+        `qpos`, which moves every substep. So `Phyics3dEnv.step` calls this
+        ONCE PER SUBSTEP rather than once per control step. For a motor-only
+        model that is bit-identical (the same constant is written each time);
+        for a servo it is the difference between a spring and a constant push.
+
+        Both actuator kinds go through the same
+        `force -> moment^T force` shape, over the transmission triples the
+        comptime parser resolved (`motor_trn_*`):
+
+            MOTOR     force = ctrl
+            POSITION  force = kp*(ctrl - length) - kv*velocity
+            length    = gear * sum_k coef_k qpos[qadr_k]
+            velocity  = gear * sum_k coef_k qvel[dadr_k]
+            qfrc[dadr_k] += gear * coef_k * force
+
+        A joint transmission is one triple with coef 1, so the motor path
+        reduces to the previous `qfrc[dof] = gear * ctrl` exactly.
+
+        Accumulates rather than assigns, because a tendon transmission and a
+        tendon spring can land on the same DOF (fish's `fins_flap` actuator
+        and `fins_sym` spring share both fin roll joints) — hence the zeroing
+        pass first. `d.qfrc` has exactly two other writers: `reset_data`,
+        which zeroes it, and a CONFIG's `custom_apply_actions_cpu`, which
+        returns True and suppresses this method entirely.
+        """
+        for i in range(Self.NV):
+            d.qfrc.data[i] = Scalar[DTYPE](0)
+
         for i in range(Self.nact):
             if i >= len(actions):
                 break
-            var dof_adr = Self._acd.motor_dof_adr[i]
-            if dof_adr < 0 or dof_adr >= Self.NV:
+            var n = Self._acd.motor_trn_n[i]
+            if n == 0:
                 continue
-            # Clamp to per-motor ctrlrange (MuJoCo: per-element overrides default)
+            # Clamp to per-actuator ctrlrange (per-element overrides default).
             var ctrl = actions[i]
             if ctrl > Self._acd.motor_ctrl_max[i]:
                 ctrl = Self._acd.motor_ctrl_max[i]
             elif ctrl < Self._acd.motor_ctrl_min[i]:
                 ctrl = Self._acd.motor_ctrl_min[i]
-            d.qfrc.data[dof_adr] = Scalar[DTYPE](
-                Self._acd.motor_gears[i] * ctrl
-            )
+
+            var gear = Self._acd.motor_gears[i]
+            var force = ctrl
+            if Self._acd.motor_kind[i] == ACT_KIND_POSITION:
+                var length = Float64(0)
+                var vel = Float64(0)
+                for k in range(n):
+                    var qadr = Self._acd.motor_trn_qadr[i * 4 + k]
+                    var dadr = Self._acd.motor_trn_dadr[i * 4 + k]
+                    var coef = Self._acd.motor_trn_coef[i * 4 + k]
+                    if qadr >= 0 and qadr < Self.NQ:
+                        length += coef * Float64(d.qpos.data[qadr])
+                    if dadr >= 0 and dadr < Self.NV:
+                        vel += coef * Float64(d.qvel.data[dadr])
+                length *= gear
+                vel *= gear
+                force = (
+                    Self._acd.motor_kp[i] * (ctrl - length)
+                    - Self._acd.motor_kv[i] * vel
+                )
+
+            for k in range(n):
+                var dadr = Self._acd.motor_trn_dadr[i * 4 + k]
+                if dadr < 0 or dadr >= Self.NV:
+                    continue
+                d.qfrc.data[dadr] += Scalar[DTYPE](
+                    gear * Self._acd.motor_trn_coef[i * 4 + k] * force
+                )
+
+        # Fixed-tendon springs (`engine_passive.c`, tendon-level spring):
+        # a DEADBAND on `tendon_lengthspring`, zero inside the band.
+        for t in range(Self._acd.ntendon):
+            var k_spring = Self._acd.tendon_stiffness[t]
+            if k_spring == 0.0:
+                continue
+            var n = Self._acd.tendon_trn_n[t]
+            if n == 0:
+                continue
+            var length = Float64(0)
+            for k in range(n):
+                var qadr = Self._acd.tendon_trn_qadr[t * 4 + k]
+                if qadr >= 0 and qadr < Self.NQ:
+                    length += (
+                        Self._acd.tendon_trn_coef[t * 4 + k]
+                        * Float64(d.qpos.data[qadr])
+                    )
+            var lo = Self._acd.tendon_spring_lo[t]
+            var hi = Self._acd.tendon_spring_hi[t]
+            var frc = Float64(0)
+            if length > hi:
+                frc = k_spring * (hi - length)
+            elif length < lo:
+                frc = k_spring * (lo - length)
+            if frc == 0.0:
+                continue
+            for k in range(n):
+                var dadr = Self._acd.tendon_trn_dadr[t * 4 + k]
+                if dadr < 0 or dadr >= Self.NV:
+                    continue
+                d.qfrc.data[dadr] += Scalar[DTYPE](
+                    Self._acd.tendon_trn_coef[t * 4 + k] * frc
+                )
 
     # =========================================================================
     # Model build (spec-direct; G4)
@@ -376,48 +472,78 @@ struct ModelDefFromXML[
                     )
                 )
 
-        # Reject unimplemented actuator transmissions LOUDLY. The parser
-        # recognizes <position>/<velocity>/<general> so the tag count is right,
-        # but ActuatorData carries no gainprm/biasprm — building the model
-        # anyway would simulate a position servo as a torque motor with no
-        # error at all. See docs/DM_CONTROL_PORT.md (gap G3).
+        # Reject unimplemented actuator transmissions LOUDLY. Building the
+        # model anyway would simulate a servo as a torque motor with no error
+        # at all. `<motor>` and `<position>` are modelled (see
+        # `apply_actions`); `<velocity>` and `<general>` are recognized by the
+        # parser purely so the tag count is right, and are rejected here.
+        # See docs/DM_CONTROL_PORT.md (gap G3).
         comptime if not Self.allow_unsupported_actuators:
             for a in range(Self.nact):
                 var kind = fmd.actuators[a].kind
-                if kind != ACT_KIND_MOTOR:
+                if kind != ACT_KIND_MOTOR and kind != ACT_KIND_POSITION:
                     raise Error(
                         String(
                             "physics3d: unimplemented actuator transmission ",
                             act_kind_name(kind),
                             " at actuator index ",
                             a,
-                            ". Only <motor> (force = gear * ctrl) is",
-                            " supported; position/velocity servos need",
-                            " gainprm/biasprm, which the engine does not yet",
-                            " model. If this env's CONFIG drives those DOFs",
-                            " itself (custom_apply_actions_cpu -> True), pass",
+                            ". <motor> (force = gear*ctrl) and <position>",
+                            " (force = kp*(ctrl - length) - kv*velocity) are",
+                            " supported; <velocity>/<general> need their own",
+                            " gainprm/biasprm handling. If this env's CONFIG",
+                            " drives those DOFs itself",
+                            " (custom_apply_actions_cpu -> True), pass",
                             " allow_unsupported_actuators=True.",
                         )
                     )
-                # Same trap one level down: `<motor tendon="t1"/>`,
-                # `site=`, `body=` and `cranksite=` are all valid MJCF
-                # transmissions that carry no `joint` attribute, so the
-                # parser leaves joint_id at its -1 sentinel. Without this
-                # the actuator would be built against a garbage joint index
-                # instead of failing. See docs/DM_CONTROL_PORT.md (gap G3).
-                if fmd.actuators[a].joint_id < 0:
+                # Same trap one level down: `site=`, `body=` and `cranksite=`
+                # are valid MJCF transmissions that carry neither a `joint`
+                # nor a `tendon` attribute, so nothing resolves and the
+                # actuator would be built against a garbage index instead of
+                # failing. `tendon=` IS resolved (fish's `fins_flap`), so the
+                # check is on the comptime transmission list rather than on
+                # `joint_id`, which a tendon transmission legitimately leaves
+                # at its -1 sentinel.
+                if Self._acd.motor_trn_n[a] == 0:
                     raise Error(
                         String(
                             "physics3d: actuator index ",
                             a,
-                            " has no resolvable `joint` transmission (tendon/",
-                            "site/body/cranksite transmissions are not",
-                            " modelled). Rewrite it as a joint motor if the",
-                            " transmission is equivalent, or pass",
+                            " has no resolvable transmission. `joint=` and",
+                            " `tendon=` (fixed tendons) are modelled;",
+                            " site/body/cranksite are not. Rewrite it as a",
+                            " joint actuator if the transmission is",
+                            " equivalent, or pass",
                             " allow_unsupported_actuators=True if this env's",
                             " CONFIG drives the DOF itself.",
                         )
                     )
+
+        # An ELLIPSOID has correct mass/inertia (bug 26) but NO narrow phase.
+        # Reject one that could actually collide rather than let the broad
+        # phase hand it to a sphere routine — the exact silent substitution
+        # that fix removed on the inertia side. Both models that use
+        # ellipsoids (swimmer, fish) disable contacts, so contype and
+        # conaffinity are already zero and this never fires for them.
+        comptime if not Self.allow_unsupported_actuators:
+            for g in range(Self.NGEOM):
+                if fmd.geoms[g].geom_type != _GEOM_ELLIPSOID:
+                    continue
+                if fmd.geoms[g].contype == 0 and fmd.geoms[g].conaffinity == 0:
+                    continue
+                raise Error(
+                    String(
+                        "physics3d: geom index ",
+                        g,
+                        " is an <ellipsoid> with collision enabled"
+                        " (contype/conaffinity nonzero). Its mass and inertia"
+                        " are modelled, but there is no ellipsoid narrow"
+                        " phase — colliding it would silently use a sphere of"
+                        " radius size[0]. Disable contacts for it, or add the"
+                        " narrow-phase case.",
+                    )
+                )
 
         comptime ifg_mode = _xml_compiler_inertiafromgeom[Self.xml]()
         comptime igr = _xml_compiler_inertiagrouprange[Self.xml]()

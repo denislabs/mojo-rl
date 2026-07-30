@@ -317,11 +317,12 @@ struct Phyics3dEnv[
         # + gear), written straight into the fields qfrc.
         var clamped_action = action.copy()
         var action_list = clamped_action.to_list()
+        # The CONFIG hook keeps ONCE-PER-CONTROL-STEP semantics: it is action
+        # semantics, not a force law, and SawyerReach's applies a mocap DELTA
+        # that would compound `frame_skip` times inside the loop below.
         var custom_applied = Self.CONFIG.custom_apply_actions_cpu(
             self.d, action_list
         )
-        if not custom_applied:
-            Self.MODEL_DEF.apply_actions(self.d, action_list)
         # Mocap-controlled models (SawyerReach): push the updated mocap target
         # into the fields body poses before the step so the weld solve tracks it.
         self._sync_mocap_to_fields()
@@ -329,6 +330,14 @@ struct Phyics3dEnv[
         # Physics: fields integrator (RK4 or Euler per CONFIG.INTEGRATOR) with
         # per-substep contact/limit solving.
         for _ in range(self.frame_skip):
+            # Actuator + tendon-spring forces are recomputed EVERY SUBSTEP,
+            # as MuJoCo recomputes qfrc_actuator inside every mj_step. For a
+            # `<motor>` this rewrites the same constant and is bit-identical
+            # to hoisting it; for a `<position>` servo, whose force reads
+            # qpos, hoisting it would freeze the spring at its start-of-step
+            # value for the whole control step.
+            if not custom_applied:
+                Self.MODEL_DEF.apply_actions(self.d, action_list)
             try:
                 # CPU target: cannot actually raise (the `raises` on the
                 # dispatchers exists for the GPU branch's ctx handling).

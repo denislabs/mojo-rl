@@ -204,6 +204,7 @@ comptime _GEOM_CAPSULE: Int = 2
 comptime _GEOM_BOX: Int = 3
 comptime _GEOM_CYLINDER: Int = 4
 comptime _GEOM_MESH: Int = 5
+comptime _GEOM_ELLIPSOID: Int = 6
 
 
 struct GeomData(Copyable, ImplicitlyCopyable, Movable):

@@ -510,14 +510,20 @@ def test_swimmer_sensor_layout_matches_body_velocities_slice() raises:
     )
 
 
-def test_swimmer_head_ellipsoid_falls_through_to_sphere_harmlessly() raises:
-    """`geom head` is an `ellipsoid`; `_geom_type_from_str` has no such case.
+def test_swimmer_head_ellipsoid_is_inert() raises:
+    """`geom head` is an `ellipsoid`, and it must contribute nothing.
 
-    It falls through to sphere SILENTLY (the same trap finger's touch sites
-    hit). Harmless here for two independent reasons, both pinned so neither can
-    quietly stop holding: the geom carries `mass="0"` so it contributes no
-    inertia, and contacts are disabled model-wide so no narrow phase ever reads
-    its shape.
+    HISTORY: `ellipsoid` had no case in `_geom_type_from_str` and fell through
+    to SPHERE silently. Harmless here — but load-bearing in fish, whose tail
+    and fins ARE ellipsoids with density-derived mass, where it cost tail1
+    1/128th of its mass. `GEOM_ELLIPSOID` is a real geom type now (bug 26), so
+    this geom is modelled as one.
+
+    Either way the head ellipsoid must stay inert, for two independent reasons
+    pinned here so neither can quietly stop holding: it carries `mass="0"` so
+    it contributes no inertia, and contacts are disabled model-wide so no
+    narrow phase ever reads its shape (there is no ellipsoid narrow phase —
+    `init_fields` raises if a collidable ellipsoid ever appears).
     """
     comptime M = DMSwimmer6Model
     var mj = _ref(6)

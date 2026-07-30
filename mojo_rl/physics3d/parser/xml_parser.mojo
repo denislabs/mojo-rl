@@ -24,6 +24,8 @@ by searching for four explicit suffix patterns: `<foo `, `<foo>`, `<foo/`,
 
 from std.collections import InlineArray
 
+from .flat_model import ACT_KIND_MOTOR, ACT_KIND_POSITION
+
 
 # =============================================================================
 # ParsedModel — result of parsing
@@ -1490,8 +1492,22 @@ def merge_mjcf(*xmls: String) -> String:
     """Merge multiple MJCF XML strings following MuJoCo <include> semantics.
 
     Singleton tags (<option>, <compiler>): attributes merged, last wins per attr.
-    Accumulator tags (<asset>, <default>, <worldbody>, <actuator>, <equality>,
-    <sensor>): inner content concatenated from all inputs.
+    Accumulator tags — inner content concatenated from all inputs:
+    <asset>, <default>, <worldbody>, <tendon>, <actuator>, <equality>,
+    <visual>, and <option>'s <flag> children.
+
+    ⚠ ANYTHING NOT IN THAT LIST IS SILENTLY DROPPED, with no diagnostic. Two
+    sections are, deliberately:
+
+      * <sensor> — the engine has no sensor framework (gap G1); the ported
+        configs read the underlying fields directly, and the models keep their
+        `<sensor>` blocks only as documentation of what the observation is.
+      * <contact> — no exclude/pair support yet.
+
+    This list used to CLAIM <sensor> was accumulated while omitting <tendon>,
+    which was both wrong and the reason a dropped `<tendon>` went unnoticed
+    until fish needed one. Keep it honest: if you add an accumulator, add it
+    here; if a section is dropped on purpose, say so.
 
     Each input can be a full <mujoco>...</mujoco> or a <mujocoinclude> fragment.
     <include file="..."/> tags are stripped (already resolved by caller).
@@ -1511,6 +1527,16 @@ def merge_mjcf(*xmls: String) -> String:
     var all_actuator = String("")
     var all_equality = String("")
     var all_visual = String("")
+    # <tendon> was missing from this list until 2026-07-30, so the whole
+    # section was DROPPED from every merged model. Latent for a long time
+    # because the only other merged model with tendons is dm_control's
+    # point_mass, which deliberately rewrites its two identity-coefficient
+    # fixed tendons as plain joint motors. fish is the first model that needs
+    # them for real, and lost BOTH: the `fins_flap` actuator's tendon
+    # transmission (which then failed the G3 transmission guard loudly) and
+    # the `fins_sym` passive spring (which would have failed NOTHING — a
+    # missing passive force is just a slightly different fish).
+    var all_tendon = String("")
     # <option> is merged attribute-wise, but MJCF also allows <flag> CHILDREN
     # inside it. Those were silently dropped before 2026-07-29, which quietly
     # disabled `<flag contact="disable"/>` for every merged model — cartpole
@@ -1543,6 +1569,7 @@ def merge_mjcf(*xmls: String) -> String:
         all_worldbody = all_worldbody + _extract_section_inner(stripped, "worldbody")
         all_actuator = all_actuator + _extract_section_inner(stripped, "actuator")
         all_equality = all_equality + _extract_section_inner(stripped, "equality")
+        all_tendon = all_tendon + _extract_section_inner(stripped, "tendon")
         all_visual = all_visual + _extract_section_inner(stripped, "visual")
 
     # Build merged XML
@@ -1590,6 +1617,11 @@ def merge_mjcf(*xmls: String) -> String:
         result = result + "  <worldbody>\n" + all_worldbody + "  </worldbody>\n"
 
     # Actuator
+    # Emitted BEFORE <actuator> so the merged text reads like a hand-written
+    # model; the parser resolves `tendon="..."` by name either way.
+    if _trim(all_tendon).byte_length() > 0:
+        result = result + "  <tendon>\n" + all_tendon + "  </tendon>\n"
+
     if _trim(all_actuator).byte_length() > 0:
         result = result + "  <actuator>\n" + all_actuator + "  </actuator>\n"
 
@@ -1727,6 +1759,50 @@ struct ComptimeActData(Copyable, Movable):
     var motor_dof_adr: InlineArray[Int, 32]
     var motor_ctrl_min: InlineArray[Float64, 32]
     var motor_ctrl_max: InlineArray[Float64, 32]
+    # ── Actuator transmission + gain, as a single flat representation ────────
+    #
+    # MuJoCo's actuator force is `moment^T * (gain*ctrl + bias)`, and both
+    # transmissions we support reduce to the same shape — a list of
+    # (qpos address, dof address, coefficient) triples:
+    #
+    #   mjTRN_JOINT   length = gear * qpos[qadr],          moment = gear
+    #   mjTRN_TENDON  length = gear * sum coef_k qpos_k,    moment_k = gear*coef_k
+    #
+    # so a joint transmission is the degenerate one-triple case with coef 1.
+    # `motor_trn_n[i] == 0` means the actuator has no usable transmission
+    # (unresolved name) and is skipped.
+    #
+    # `motor_kind` is ACT_KIND_MOTOR / ACT_KIND_POSITION (flat_model.mojo):
+    #   MOTOR     force = ctrl                       (gain=1, no bias)
+    #   POSITION  force = kp*(ctrl - length) - kv*vel  (gainprm/biasprm of a
+    #             <position>, i.e. gaintype=fixed + biastype=affine)
+    var motor_kind: InlineArray[Int, 32]
+    var motor_kp: InlineArray[Float64, 32]
+    var motor_kv: InlineArray[Float64, 32]
+    var motor_trn_n: InlineArray[Int, 32]
+    var motor_trn_qadr: InlineArray[Int, 128]  # 32 actuators x 4 triples
+    var motor_trn_dadr: InlineArray[Int, 128]
+    var motor_trn_coef: InlineArray[Float64, 128]
+    # ── Fixed-tendon springs (`<fixed stiffness="..."/>`) ────────────────────
+    #
+    # MuJoCo's tendon spring (engine_passive.c, "tendon-level spring-dampers")
+    # is a DEADBAND on `tendon_lengthspring`:
+    #
+    #   length > upper -> frc = stiffness*(upper - length)
+    #   length < lower -> frc = stiffness*(lower - length)
+    #   otherwise      -> 0                       then qfrc += ten_J^T * frc
+    #
+    # With no `springlength` attribute the compiler collapses the band to the
+    # tendon's length at qpos0, which for a fixed tendon over joints at their
+    # own qpos0 is where both bounds land. Same triple representation as above.
+    var tendon_stiffness: InlineArray[Float64, 8]
+    var tendon_spring_lo: InlineArray[Float64, 8]
+    var tendon_spring_hi: InlineArray[Float64, 8]
+    var tendon_trn_n: InlineArray[Int, 8]
+    var tendon_trn_qadr: InlineArray[Int, 32]  # 8 tendons x 4 triples
+    var tendon_trn_dadr: InlineArray[Int, 32]
+    var tendon_trn_coef: InlineArray[Float64, 32]
+    var ntendon: Int
     var joint_is_limited: InlineArray[Bool, 32]
     var joint_qpos_adr: InlineArray[Int, 32]
     var joint_range_min: InlineArray[Float64, 32]
@@ -1747,6 +1823,21 @@ struct ComptimeActData(Copyable, Movable):
         self.motor_dof_adr = InlineArray[Int, 32](fill=-1)
         self.motor_ctrl_min = InlineArray[Float64, 32](fill=-1.0)
         self.motor_ctrl_max = InlineArray[Float64, 32](fill=1.0)
+        self.motor_kind = InlineArray[Int, 32](fill=0)  # ACT_KIND_MOTOR
+        self.motor_kp = InlineArray[Float64, 32](fill=0.0)
+        self.motor_kv = InlineArray[Float64, 32](fill=0.0)
+        self.motor_trn_n = InlineArray[Int, 32](fill=0)
+        self.motor_trn_qadr = InlineArray[Int, 128](fill=-1)
+        self.motor_trn_dadr = InlineArray[Int, 128](fill=-1)
+        self.motor_trn_coef = InlineArray[Float64, 128](fill=0.0)
+        self.tendon_stiffness = InlineArray[Float64, 8](fill=0.0)
+        self.tendon_spring_lo = InlineArray[Float64, 8](fill=0.0)
+        self.tendon_spring_hi = InlineArray[Float64, 8](fill=0.0)
+        self.tendon_trn_n = InlineArray[Int, 8](fill=0)
+        self.tendon_trn_qadr = InlineArray[Int, 32](fill=-1)
+        self.tendon_trn_dadr = InlineArray[Int, 32](fill=-1)
+        self.tendon_trn_coef = InlineArray[Float64, 32](fill=0.0)
+        self.ntendon = 0
         self.joint_is_limited = InlineArray[Bool, 32](fill=False)
         self.joint_qpos_adr = InlineArray[Int, 32](fill=0)
         self.joint_range_min = InlineArray[Float64, 32](fill=0.0)
@@ -1763,6 +1854,21 @@ struct ComptimeActData(Copyable, Movable):
         self.motor_dof_adr = InlineArray[Int, 32](fill=-1)
         self.motor_ctrl_min = InlineArray[Float64, 32](fill=-1.0)
         self.motor_ctrl_max = InlineArray[Float64, 32](fill=1.0)
+        self.motor_kind = InlineArray[Int, 32](fill=0)
+        self.motor_kp = InlineArray[Float64, 32](fill=0.0)
+        self.motor_kv = InlineArray[Float64, 32](fill=0.0)
+        self.motor_trn_n = InlineArray[Int, 32](fill=0)
+        self.motor_trn_qadr = InlineArray[Int, 128](fill=-1)
+        self.motor_trn_dadr = InlineArray[Int, 128](fill=-1)
+        self.motor_trn_coef = InlineArray[Float64, 128](fill=0.0)
+        self.tendon_stiffness = InlineArray[Float64, 8](fill=0.0)
+        self.tendon_spring_lo = InlineArray[Float64, 8](fill=0.0)
+        self.tendon_spring_hi = InlineArray[Float64, 8](fill=0.0)
+        self.tendon_trn_n = InlineArray[Int, 8](fill=0)
+        self.tendon_trn_qadr = InlineArray[Int, 32](fill=-1)
+        self.tendon_trn_dadr = InlineArray[Int, 32](fill=-1)
+        self.tendon_trn_coef = InlineArray[Float64, 32](fill=0.0)
+        self.ntendon = copy.ntendon
         self.joint_is_limited = InlineArray[Bool, 32](fill=False)
         self.joint_qpos_adr = InlineArray[Int, 32](fill=0)
         self.joint_range_min = InlineArray[Float64, 32](fill=0.0)
@@ -1777,10 +1883,27 @@ struct ComptimeActData(Copyable, Movable):
             self.motor_dof_adr[i] = copy.motor_dof_adr[i]
             self.motor_ctrl_min[i] = copy.motor_ctrl_min[i]
             self.motor_ctrl_max[i] = copy.motor_ctrl_max[i]
+            self.motor_kind[i] = copy.motor_kind[i]
+            self.motor_kp[i] = copy.motor_kp[i]
+            self.motor_kv[i] = copy.motor_kv[i]
+            self.motor_trn_n[i] = copy.motor_trn_n[i]
             self.joint_is_limited[i] = copy.joint_is_limited[i]
             self.joint_qpos_adr[i] = copy.joint_qpos_adr[i]
             self.joint_range_min[i] = copy.joint_range_min[i]
             self.joint_range_max[i] = copy.joint_range_max[i]
+        for i in range(128):
+            self.motor_trn_qadr[i] = copy.motor_trn_qadr[i]
+            self.motor_trn_dadr[i] = copy.motor_trn_dadr[i]
+            self.motor_trn_coef[i] = copy.motor_trn_coef[i]
+        for i in range(8):
+            self.tendon_stiffness[i] = copy.tendon_stiffness[i]
+            self.tendon_spring_lo[i] = copy.tendon_spring_lo[i]
+            self.tendon_spring_hi[i] = copy.tendon_spring_hi[i]
+            self.tendon_trn_n[i] = copy.tendon_trn_n[i]
+        for i in range(32):
+            self.tendon_trn_qadr[i] = copy.tendon_trn_qadr[i]
+            self.tendon_trn_dadr[i] = copy.tendon_trn_dadr[i]
+            self.tendon_trn_coef[i] = copy.tendon_trn_coef[i]
         for i in range(64):
             self.qpos0[i] = copy.qpos0[i]
 
@@ -1789,6 +1912,21 @@ struct ComptimeActData(Copyable, Movable):
         self.motor_dof_adr = move.motor_dof_adr^
         self.motor_ctrl_min = move.motor_ctrl_min^
         self.motor_ctrl_max = move.motor_ctrl_max^
+        self.motor_kind = move.motor_kind^
+        self.motor_kp = move.motor_kp^
+        self.motor_kv = move.motor_kv^
+        self.motor_trn_n = move.motor_trn_n^
+        self.motor_trn_qadr = move.motor_trn_qadr^
+        self.motor_trn_dadr = move.motor_trn_dadr^
+        self.motor_trn_coef = move.motor_trn_coef^
+        self.tendon_stiffness = move.tendon_stiffness^
+        self.tendon_spring_lo = move.tendon_spring_lo^
+        self.tendon_spring_hi = move.tendon_spring_hi^
+        self.tendon_trn_n = move.tendon_trn_n^
+        self.tendon_trn_qadr = move.tendon_trn_qadr^
+        self.tendon_trn_dadr = move.tendon_trn_dadr^
+        self.tendon_trn_coef = move.tendon_trn_coef^
+        self.ntendon = move.ntendon
         self.joint_is_limited = move.joint_is_limited^
         self.joint_qpos_adr = move.joint_qpos_adr^
         self.joint_range_min = move.joint_range_min^
@@ -1838,6 +1976,117 @@ def _xml_find_joint_dof_adr(xml: String, jname: String) -> Int:
             dof_adr += 6
         else:  # hinge, slide, or default (hinge)
             dof_adr += 1
+        scan_pos = tag_end + 1
+    return -1
+
+
+def _find_tag(sec: String, marker: String, start: Int) -> Int:
+    """Index of the next REAL `marker` tag at or after `start`, else -1.
+
+    "Real" means the character after the marker ends the element name, so
+    `<position` does not match `<positionfoo` (and, historically, `<motor`
+    must not match a longer name either).
+    """
+    var pos = start
+    var n = sec.byte_length()
+    var mlen = marker.byte_length()
+    while pos < n:
+        var t = sec.find(marker, pos)
+        if t == -1:
+            return -1
+        var after_pos = t + mlen
+        if after_pos >= n:
+            return t
+        var after = String(sec[byte=after_pos : after_pos + 1])
+        if (
+            after == " "
+            or after == ">"
+            or after == "/"
+            or after == "\n"
+            or after == "\t"
+        ):
+            return t
+        pos = after_pos
+    return -1
+
+
+def _min_valid_pos(a: Int, b: Int) -> Int:
+    """The smaller of two find() results, ignoring -1."""
+    if a == -1:
+        return b
+    if b == -1:
+        return a
+    return a if a < b else b
+
+
+def _xml_find_joint_ref(xml: String, jname: String, deg_factor: Float64) -> Float64:
+    """A named joint's `ref` (MuJoCo `qpos0`), in radians for angular joints.
+
+    Only hinge/ball ranges and refs get the deg->rad conversion, matching
+    `mjCJoint::Compile`; a slide `ref` is in metres. Returns 0 when the joint
+    or the attribute is absent, which IS MuJoCo's default reference pose.
+    """
+    var wb = _extract_section(xml, "worldbody")
+    var scan_pos = 0
+    var search_name = 'name="' + jname + '"'
+    while True:
+        var t = _find_tag(wb, "<joint", scan_pos)
+        if t == -1:
+            return 0.0
+        var tag_end = wb.find(">", t)
+        if tag_end == -1:
+            return 0.0
+        var tag = String(wb[byte = t : tag_end + 1])
+        if tag.find(search_name) != -1:
+            var rs = _extract_attr(tag, "ref")
+            if rs.byte_length() == 0:
+                return 0.0
+            var ts = _trim(_extract_attr(tag, "type"))
+            var angular = ts == "" or ts == "hinge" or ts == "ball"
+            return _parse_float(rs) * (deg_factor if angular else 1.0)
+        scan_pos = tag_end + 1
+
+
+def _xml_find_joint_qpos_adr(xml: String, jname: String) -> Int:
+    """Return the QPOS address of a named joint, in worldbody DFS order.
+
+    The twin of `_xml_find_joint_dof_adr`; they differ only for `free` (7 vs 6)
+    and `ball` (4 vs 3) joints. A position servo needs BOTH — its `length` is a
+    qpos read and its force lands on a dof — and fish is the first model where
+    they diverge, since its root is a free joint ahead of every actuated hinge.
+    """
+    var wb = _extract_section(xml, "worldbody")
+    var scan_pos = 0
+    var qpos_adr = 0
+    var search_name = 'name="' + jname + '"'
+    while True:
+        var t = wb.find("<joint", scan_pos)
+        if t == -1:
+            break
+        if wb.byte_length() > t + 6:
+            var after = String(wb[byte = t + 6 : t + 7])
+            if (
+                after != " "
+                and after != ">"
+                and after != "/"
+                and after != "\n"
+                and after != "\t"
+            ):
+                scan_pos = t + 6
+                continue
+        var tag_end = wb.find(">", t)
+        if tag_end == -1:
+            break
+        var tag = String(wb[byte = t : tag_end + 1])
+        if tag.find(search_name) != -1:
+            return qpos_adr
+        var jtype = _extract_attr(tag, "type")
+        if jtype == "ball":
+            qpos_adr += 4
+        elif jtype == "free":
+            qpos_adr += 7
+        else:  # hinge, slide, or default (hinge)
+            qpos_adr += 1
         scan_pos = tag_end + 1
     return -1
 
@@ -1936,52 +2185,173 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
                 if mg.byte_length() > 0:
                     def_gear = _parse_float(mg)
 
-    # ---- Motor data -----------------------------------------------------------
+    # ---- Fixed tendons: joint/coef lists + the passive spring ----------------
+    #
+    # Parsed BEFORE the actuators because a `<position tendon="..."/>`
+    # transmission resolves through here.
+    var ten_sec = _extract_section(xml_clean, "tendon")
+    var ten_names = List[String]()
+    if ten_sec.byte_length() > 0:
+        var tpos = 0
+        while data.ntendon < 8:
+            var ft = ten_sec.find("<fixed", tpos)
+            if ft == -1:
+                break
+            var open_end = ten_sec.find(">", ft)
+            if open_end == -1:
+                break
+            var fend = ten_sec.find("</fixed>", ft)
+            if fend == -1:
+                fend = ten_sec.byte_length()
+            var ftag = String(ten_sec[byte = ft : open_end + 1])
+            var ti = data.ntendon
+            ten_names.append(_trim(_extract_attr(ftag, "name")))
+
+            var st = _extract_attr(ftag, "stiffness")
+            if st.byte_length() > 0:
+                data.tendon_stiffness[ti] = _parse_float(st)
+
+            # Joint/coef children.
+            var body = String(ten_sec[byte = open_end + 1 : fend])
+            var jscan = 0
+            var n = 0
+            var length0 = Float64(0)
+            while n < 4:
+                var jt = body.find("<joint", jscan)
+                if jt == -1:
+                    break
+                var jte = body.find(">", jt)
+                if jte == -1:
+                    break
+                var jtag = String(body[byte = jt : jte + 1])
+                var jn = _trim(_extract_attr(jtag, "joint"))
+                var cf = _extract_attr(jtag, "coef")
+                var coef = _parse_float(cf) if cf.byte_length() > 0 else 1.0
+                data.tendon_trn_qadr[ti * 4 + n] = _xml_find_joint_qpos_adr(
+                    xml_clean, jn
+                )
+                data.tendon_trn_dadr[ti * 4 + n] = _xml_find_joint_dof_adr(
+                    xml_clean, jn
+                )
+                data.tendon_trn_coef[ti * 4 + n] = coef
+                length0 += coef * _xml_find_joint_ref(xml_clean, jn, deg_factor)
+                n += 1
+                jscan = jte + 1
+            data.tendon_trn_n[ti] = n
+
+            # `springlength`: one value sets both bounds, two set the band.
+            # ABSENT is the common case and is NOT zero — MuJoCo's compiler
+            # collapses the band onto the tendon's length at qpos0, which for a
+            # fixed tendon is `sum coef * jnt_ref`. Defaulting to 0 instead
+            # would be right only for a model whose joints all have ref="0",
+            # and silently wrong for any other.
+            var sl = _extract_attr(ftag, "springlength")
+            if sl.byte_length() > 0:
+                var sparts = List[String]()
+                _split_spaces(sl, sparts)
+                if len(sparts) >= 2:
+                    data.tendon_spring_lo[ti] = _parse_float(sparts[0])
+                    data.tendon_spring_hi[ti] = _parse_float(sparts[1])
+                elif len(sparts) == 1:
+                    data.tendon_spring_lo[ti] = _parse_float(sparts[0])
+                    data.tendon_spring_hi[ti] = _parse_float(sparts[0])
+            else:
+                data.tendon_spring_lo[ti] = length0
+                data.tendon_spring_hi[ti] = length0
+
+            data.ntendon = ti + 1
+            tpos = fend + 1
+
+    # ---- Actuators ------------------------------------------------------------
+    #
+    # `<motor>` and `<position>` are scanned TOGETHER in document order, which
+    # is the order MuJoCo indexes actuators in — scanning one tag type and then
+    # the other would permute `ctrl` on any model that mixes them.
     var act_sec = _extract_section(xml_clean, "actuator")
     var act_pos = 0
     var act_count = 0
     while act_count < 32:
-        var t = act_sec.find("<motor", act_pos)
+        var nm = _find_tag(act_sec, "<motor", act_pos)
+        var npos = _find_tag(act_sec, "<position", act_pos)
+        var t = _min_valid_pos(nm, npos)
         if t == -1:
             break
-        if act_sec.byte_length() > t + 6:
-            var after = String(act_sec[byte = t + 6 : t + 7])
-            if (
-                after != " "
-                and after != ">"
-                and after != "/"
-                and after != "\n"
-                and after != "\t"
-            ):
-                act_pos = t + 6
-                continue
+        var is_position = t == npos
         var tag_end = act_sec.find(">", t)
-        if tag_end != -1:
-            var tag = String(act_sec[byte = t : tag_end + 1])
-            var g = _extract_attr(tag, "gear")
-            if g.byte_length() > 0:
-                data.motor_gears[act_count] = _parse_float(g)
-            else:
-                data.motor_gears[act_count] = def_gear
-            var jname = _extract_attr(tag, "joint")
-            if jname.byte_length() > 0:
-                data.motor_dof_adr[act_count] = _xml_find_joint_dof_adr(
-                    xml_clean, jname
-                )
-            # Per-motor ctrlrange (overrides default)
-            var cr = _extract_attr(tag, "ctrlrange")
-            if cr.byte_length() > 0:
-                var parts = List[String]()
-                _split_spaces(cr, parts)
-                if len(parts) >= 2:
-                    data.motor_ctrl_min[act_count] = _parse_float(parts[0])
-                    data.motor_ctrl_max[act_count] = _parse_float(parts[1])
-                else:
-                    data.motor_ctrl_min[act_count] = def_ctrl_min
-                    data.motor_ctrl_max[act_count] = def_ctrl_max
-            else:
-                data.motor_ctrl_min[act_count] = def_ctrl_min
-                data.motor_ctrl_max[act_count] = def_ctrl_max
+        if tag_end == -1:
+            break
+        var tag = String(act_sec[byte = t : tag_end + 1])
+
+        data.motor_kind[act_count] = (
+            ACT_KIND_POSITION if is_position else ACT_KIND_MOTOR
+        )
+
+        var g = _extract_attr(tag, "gear")
+        if g.byte_length() > 0:
+            data.motor_gears[act_count] = _parse_float(g)
+        else:
+            data.motor_gears[act_count] = def_gear
+
+        # `<position>` is `<general>` with gaintype=fixed, biastype=affine:
+        # gainprm = [kp, 0, 0] and biasprm = [0, -kp, -kv]. MuJoCo's kp
+        # default is 1 and kv's is 0.
+        if is_position:
+            var kp_s = _extract_attr(tag, "kp")
+            data.motor_kp[act_count] = (
+                _parse_float(kp_s) if kp_s.byte_length() > 0 else 1.0
+            )
+            var kv_s = _extract_attr(tag, "kv")
+            data.motor_kv[act_count] = (
+                _parse_float(kv_s) if kv_s.byte_length() > 0 else 0.0
+            )
+
+        # Transmission: a joint is one (qadr, dadr, 1) triple; a tendon is the
+        # tendon's own joint/coef list.
+        var jname = _trim(_extract_attr(tag, "joint"))
+        var tname = _trim(_extract_attr(tag, "tendon"))
+        if jname.byte_length() > 0:
+            var dadr = _xml_find_joint_dof_adr(xml_clean, jname)
+            var qadr = _xml_find_joint_qpos_adr(xml_clean, jname)
+            data.motor_dof_adr[act_count] = dadr
+            if dadr >= 0:
+                data.motor_trn_qadr[act_count * 4] = qadr
+                data.motor_trn_dadr[act_count * 4] = dadr
+                data.motor_trn_coef[act_count * 4] = 1.0
+                data.motor_trn_n[act_count] = 1
+        elif tname.byte_length() > 0:
+            for ti in range(len(ten_names)):
+                if ten_names[ti] != tname:
+                    continue
+                var n = data.tendon_trn_n[ti]
+                for k in range(n):
+                    data.motor_trn_qadr[act_count * 4 + k] = (
+                        data.tendon_trn_qadr[ti * 4 + k]
+                    )
+                    data.motor_trn_dadr[act_count * 4 + k] = (
+                        data.tendon_trn_dadr[ti * 4 + k]
+                    )
+                    data.motor_trn_coef[act_count * 4 + k] = (
+                        data.tendon_trn_coef[ti * 4 + k]
+                    )
+                data.motor_trn_n[act_count] = n
+                if n > 0:
+                    data.motor_dof_adr[act_count] = data.tendon_trn_dadr[ti * 4]
+                break
+
+        # Per-actuator ctrlrange (overrides default)
+        var cr = _extract_attr(tag, "ctrlrange")
+        var used_default = True
+        if cr.byte_length() > 0:
+            var parts = List[String]()
+            _split_spaces(cr, parts)
+            if len(parts) >= 2:
+                data.motor_ctrl_min[act_count] = _parse_float(parts[0])
+                data.motor_ctrl_max[act_count] = _parse_float(parts[1])
+                used_default = False
+        if used_default:
+            data.motor_ctrl_min[act_count] = def_ctrl_min
+            data.motor_ctrl_max[act_count] = def_ctrl_max
+
         act_count += 1
         act_pos = t + 6
 
@@ -2652,7 +3022,13 @@ struct ComptimeRenderData(Copyable, Movable):
 
 def _rcd_geom_type_from_str(s: String) -> Int:
     """Convert geom type string to integer constant.
-    PLANE=0, SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4, MESH=5."""
+    PLANE=0, SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4, MESH=5, ELLIPSOID=6.
+
+    The comptime twin of `full_parser._geom_type_from_str`; both must know the
+    same set, because this table feeds the RENDERER while that one feeds the
+    inertia. `ellipsoid` was in neither until fish (bug 26) — see
+    `physics3d/constants.GEOM_ELLIPSOID`.
+    """
     var t = _trim(s)
     if t == "plane":
         return 0
@@ -2666,7 +3042,9 @@ def _rcd_geom_type_from_str(s: String) -> Int:
         return 4
     elif t == "mesh":
         return 5
-    return 1  # default = sphere
+    elif t == "ellipsoid":
+        return 6
+    return 1  # default = sphere (a SILENT substitution — see the twin)
 
 
 def _rcd_parse_rgba4(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
@@ -3104,6 +3482,11 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                         data.geom_radius[geom_count] = s0
                         if fromto_s.byte_length() == 0:
                             data.geom_half_length[geom_count] = s1
+                    elif gt == 6:  # ELLIPSOID — `size` is three semi-axes
+                        data.geom_half_x[geom_count] = s0
+                        data.geom_half_y[geom_count] = s1
+                        data.geom_half_z[geom_count] = s2
+                        data.geom_radius[geom_count] = s0
                     elif gt == 0:  # PLANE
                         data.geom_half_x[geom_count] = s0
                         data.geom_half_y[geom_count] = s1
