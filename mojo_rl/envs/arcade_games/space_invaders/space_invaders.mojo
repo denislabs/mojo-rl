@@ -780,7 +780,11 @@ struct SpaceInvadersEnv[DTYPE: DType](
         states[i, S_STEP_COUNT] = steps
 
         rewards[i] = reward
-        dones[i] = Scalar[gpu_dtype](is_done)
+        # `is_done` is a Bool, and `Scalar[float](Bool)` no longer compiles —
+        # SIMD's Intable constructor now requires an integral dtype.
+        dones[i] = Scalar[gpu_dtype](1.0) if is_done else Scalar[gpu_dtype](
+            0.0
+        )
 
     @staticmethod
     @always_inline

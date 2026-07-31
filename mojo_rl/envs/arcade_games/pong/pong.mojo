@@ -847,7 +847,12 @@ struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
         # --- Done ---
         var terminated = Int(p_score) >= WIN_SCORE or Int(c_score) >= WIN_SCORE
         var truncated = Int(steps) >= PONG_MAX_STEPS
-        dones[i] = Scalar[gpu_dtype](terminated or truncated)
+        # `terminated or truncated` is a Bool, and `Scalar[float](Bool)` no
+        # longer compiles — SIMD's Intable constructor now requires an integral
+        # dtype.
+        dones[i] = Scalar[gpu_dtype](1.0) if (
+            terminated or truncated
+        ) else Scalar[gpu_dtype](0.0)
 
     @staticmethod
     @always_inline

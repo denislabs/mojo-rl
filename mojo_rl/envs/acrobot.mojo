@@ -1213,7 +1213,10 @@ struct AcrobotEnv[DTYPE: DType](
         ](-1.0)
 
         rewards[i] = reward
-        dones[i] = Scalar[gpu_dtype](done)
+        # `done` is a Bool, and `Scalar[float](Bool)` no longer compiles —
+        # SIMD's Intable constructor now requires an integral dtype. Spell the
+        # 0/1 encoding out rather than casting through an integer.
+        dones[i] = Scalar[gpu_dtype](1.0) if done else Scalar[gpu_dtype](0.0)
 
     @staticmethod
     @always_inline
@@ -1394,7 +1397,9 @@ struct AcrobotEnv[DTYPE: DType](
                 var is_terminated = -cos(theta1) - cos(
                     theta1 + theta2
                 ) > Scalar[gpu_dtype](1.0)
-                terminated_out[i] = Scalar[gpu_dtype](is_terminated)
+                terminated_out[i] = Scalar[gpu_dtype](
+                    1.0
+                ) if is_terminated else Scalar[gpu_dtype](0.0)
 
                 # Build observation from state
                 obs[i, 0] = cos(theta1)

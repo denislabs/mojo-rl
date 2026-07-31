@@ -846,7 +846,10 @@ struct CartPoleEnv[DTYPE: DType](
         var reward = Scalar[gpu_dtype](1.0)
 
         rewards[i] = reward
-        dones[i] = Scalar[gpu_dtype](done)
+        # `done` is a Bool, and `Scalar[float](Bool)` no longer compiles —
+        # SIMD's Intable constructor now requires an integral dtype. Spell the
+        # 0/1 encoding out rather than casting through an integer.
+        dones[i] = Scalar[gpu_dtype](1.0) if done else Scalar[gpu_dtype](0.0)
 
     @staticmethod
     @always_inline
@@ -1054,7 +1057,9 @@ struct CartPoleEnv[DTYPE: DType](
                     or (states[i, 2] < Scalar[gpu_dtype](-THETA_THRESHOLD))
                     or (states[i, 2] > Scalar[gpu_dtype](THETA_THRESHOLD))
                 )
-                terminated_out[i] = Scalar[gpu_dtype](is_terminated)
+                terminated_out[i] = Scalar[gpu_dtype](
+                    1.0
+                ) if is_terminated else Scalar[gpu_dtype](0.0)
                 # Extract observations (obs == first 4 state elements)
                 for d in range(OBS_DIM):
                     obs[i, d] = states[i, d]
