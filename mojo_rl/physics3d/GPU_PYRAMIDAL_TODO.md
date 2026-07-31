@@ -136,14 +136,20 @@ pixi run mojo run -I . tests/dm_control/test_ball_in_cup_vs_dm_control.mojo
 | one-sided rows unchanged by the refactor | ✅ `test_newton_blocked_fields` golden unchanged |
 | tendon-row physics vs MuJoCo | ✅ 8.9e-16 (via `euler.mojo` routed at `solve_newton_blocked`) |
 
-### STILL OPEN — needs an NVIDIA box
+### STILL OPEN
 
-1. **Shared-memory headroom on a large model.** `ME` drives
+Item 1 needs an NVIDIA box. Item 2 does NOT — it was mis-scoped as
+NVIDIA-only when first written. `solve_newton_blocked` runs on Metal at
+float32 (that is exactly how `test_newton_blocked_tendon_fields` gates the
+tendon rows), so the friction rows can be gated on Apple too, given a model
+that expresses them.
+
+1. **[NVIDIA] Shared-memory headroom on a large model.** `ME` drives
    `Je_sh = ME * V_SIZE`, the dominant threadgroup term. Growth is ~10-13%
    (dm_control humanoid `ME` 170 -> 201). Overflow is a LAUNCH FAILURE, which
    is loud, not a wrong answer — but it would take humanoid off this kernel.
    Run any humanoid GPU gate under `-e nvidia` and watch for a launch error.
-2. **Dry-friction rows are UNEXERCISED by any model.** Only `finger` sets
+2. **[Apple is fine] Dry-friction rows are UNEXERCISED by any model.** Only `finger` sets
    `frictionloss` and finger is ELLIPTIC, so it never reaches this kernel. The
    friction rows here are written but ungated — the same "the gate cannot
    express the defect" situation that has produced several silent bugs in this
