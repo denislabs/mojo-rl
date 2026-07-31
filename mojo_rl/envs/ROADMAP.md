@@ -362,6 +362,95 @@ Files to create:
 
 ---
 
+## Tier C / quadruped — IN PROGRESS (started 2026-07-31)
+
+Tier C is quadruped (walk, run) + manipulator (4 tasks) + stacker (2).
+quadruped first: it is the only one of the three in the standard proprio
+benchmark set (DreamerV3 / TD-MPC2 headline).
+
+### Done
+
+**The stripped model.** `mojo_rl/envs/dm_control/quadruped/quadruped_xml.mojo`
+reproduces `quadruped.make_model(floor_size=..., terrain=False,
+rangefinders=False, walls_and_ball=False)` — the walk/run variant, which
+deletes the four walls, the ball body, the target site, the terrain geom and
+the twenty `<rangefinder>` sensors, but KEEPS the twenty `rf_*` sites (only
+the sensors go) and the unused hfield/ball assets. Verified against MuJoCo
+loading the same stripped XML: **nq=23 nv=22 nu=12 na=12 nbody=18 njnt=17
+ngeom=20 nsite=29 ntendon=12 neq=4**, all matching.
+
+**`<general>` actuators, comptime side.** All twelve now resolve exactly as
+MuJoCo reports them — ctrlranges (-1,1)/(-1,1.1)/(-0.8,0.8) repeating,
+kp=1000 from `gainprm`, kv=0 from `biasprm[2]`, tau=0.1 from `dynprm`,
+`actadr` 0..11, and the joint/tendon transmissions (1/2/3 triples). Three
+things had to change to get there:
+
+1. `<general>` was not scanned at all by `parse_xml_model_data`. It is now
+   mapped onto the existing POSITION law after VALIDATING the shape
+   (gaintype=fixed, biastype=affine, biasprm[0]==0, biasprm[1]==-gainprm[0]);
+   anything else is recorded and turned into a compile error by a
+   `comptime assert` in `ModelDefFromXML`, because the parser runs at comptime
+   and cannot raise.
+2. Named `<default class="...">` blocks were invisible on the comptime side —
+   `_root_defaults` deliberately strips them. quadruped keeps all three of its
+   ctrlranges there, so all twelve actuators would have got (-1, 1): right for
+   four, wrong for eight, silently.
+3. **The comptime tendon cap was 8 and quadruped has 12.** `while
+   data.ntendon < 8` truncated silently, and the dropped tendons' actuators
+   resolve to `motor_trn_n == 0`, which `apply_actions` SKIPS — four of twelve
+   legs' actuators doing nothing at all, with no diagnostic. Raised to 16 and
+   backed by a `comptime assert`.
+
+⚠ COMPTIME INTERPRETER LIMIT hit while doing this, worth knowing before the
+next parser change: **slicing a `String` that was itself built by slicing
+another `String` fails to compile** — `String(tag[byte=a:b])` dies with
+"interpreting memcpy can't get dst memory from the interpreter / write
+clobbers a pointer region". It is selective in a way that reads as a logic
+bug: a lookup that MISSES in the intermediate string is fine and only one
+that HITS (and so reaches the slice) fails, so seven of eight attribute
+lookups compiled. `_class_attr` is therefore one function doing index
+arithmetic over the original `xml` with a single slice at the end, rather than
+the obvious three composed helpers.
+
+Regression after the parser change: dm_control **15/15**, physics3d **58/60**
+(the two failures are the known pre-existing `test_comptime_parser_io` —
+comptime `open()` is not interpretable — and `test_solver_debug`).
+
+### Remaining, in dependency order
+
+1. **Activation state.** `Data` has no `act`. Plan: a trailing `NA: Int = 0`
+   parameter plus an `act` tensor. The key point is that it is `na` (activation
+   count) and NOT `nu`: every model ported before quadruped has na=0, because
+   `<motor>` and `<position>` both default to dyntype=none — so the parameter
+   defaults away and NOT ONE of the ~25 existing env configs needs touching.
+   `apply_actions` then reads `act` where it currently reads `ctrl`, and
+   integrates `act += (ctrl-act)/tau * dt` after computing the force (MuJoCo
+   order: `mj_fwdActuation` uses the current act, `mj_advance` integrates).
+   It must happen once per SUBSTEP, which is where `apply_actions` already
+   runs — a per-control-step config hook cannot express it.
+2. **Ellipsoid narrow phase.** The torso is `type="ellipsoid"` with collision
+   enabled and `init_fields` refuses it outright (mass/inertia are modelled;
+   colliding it would silently use a sphere of radius size[0]). Needed against
+   the floor plane at least — a fallen quadruped rests on its torso, and the
+   upright reward is defined for exactly that state.
+3. **accelerometer + force/torque sensors.** The first sensors needing
+   `mj_rnePostConstraint` rather than a kinematic read: the accelerometer
+   wants `cacc` recomputed with the real `qacc` (ours is built with qacc=0 for
+   the bias pass), and force/torque want `cfrc_ext` from contacts and equality
+   rows mapped to the subtree CoM, then the backward accumulation to
+   `cfrc_int`. `velocimeter` and `gyro` already exist (`sensors/frame_vel`).
+4. **Env config.** `_find_non_contacting_height` reset (random unit quaternion,
+   raise z in 1 cm steps until ncon==0), the five `_common_observations`
+   blocks (egocentric_state includes `data.act`), and Move's reward
+   = `_upright_reward` × `tolerance(velocimeter[0], bounds=(speed, inf),
+   margin=speed, value_at_margin=0.5, linear)`; walk 0.5, run 5.
+
+Already present and NOT blockers, contrary to the original Stage-3 sketch:
+`<equality><tendon>` (the four `coupling_*` rows), `childclass`/`class`
+structural inheritance, `<freejoint>`, and ellipsoid mass/inertia.
+
+---
+
 ## point_mass `hard` — DONE 2026-07-31
 
 Ported and gated at machine precision:

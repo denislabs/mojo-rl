@@ -1327,6 +1327,156 @@ def _root_defaults(xml: String) -> String:
     return _strip_nested_defaults(_extract_section_inner(xml, "default"))
 
 
+def _class_attr(
+    xml: String, cls: String, tag_name: String, attr: String
+) -> String:
+    """`attr` of the first `<tag_name>` directly inside `<default class="cls">`.
+
+    The counterpart to `_root_defaults` for NAMED classes. Until quadruped
+    nothing on this side of the parser needed one: `_root_defaults` exists
+    precisely to keep class blocks from leaking into the global lookups, and
+    every earlier model put its actuator attributes at the top level.
+
+    quadruped does not. Its twelve actuators carry nothing but a name, a
+    transmission and `class="yaw_act"` / `"lift_act"` / `"extend_act"`, and
+    each of those classes supplies exactly one attribute (`ctrlrange`) on top
+    of the top-level `<general>` default that supplies all the rest. Reading
+    only root defaults would give all twelve the same ctrlrange of (-1, 1),
+    which is right for four of them and wrong for eight.
+
+    ⚠ WHY THIS IS ONE FUNCTION AND NOT THREE COMPOSED ONES. The obvious
+    factoring — return the class section, pull the tag out of it, then
+    `_extract_attr` that tag — DOES NOT COMPILE. Slicing a `String` that was
+    itself built by slicing another `String` defeats the comptime interpreter:
+    `String(tag[byte=a:b])` fails with "interpreting memcpy can't get dst
+    memory from the interpreter / write clobbers a pointer region". The
+    failure is selective in a way that makes it easy to misread — a lookup
+    that MISSES in the intermediate string is fine, and only one that HITS
+    (and therefore reaches the slice) fails, so seven of eight attribute
+    lookups compiled happily. Everything here is therefore index arithmetic
+    over the ORIGINAL `xml`, with exactly one slice at the end.
+
+    Elements inside a NESTED `<default class="...">` are skipped, so a class
+    that contains sub-classes resolves to its own child rather than theirs.
+    """
+    if cls.byte_length() == 0:
+        return String("")
+    var n = xml.byte_length()
+    var scan = 0
+    while scan < n:
+        var t = xml.find("<default", scan)
+        if t == -1:
+            return String("")
+        var te = xml.find(">", t)
+        if te == -1:
+            return String("")
+        if _trim(_extract_attr(String(xml[byte = t : te + 1]), "class")) != cls:
+            scan = te + 1
+            continue
+
+        # This block's inner span, as indices into `xml`.
+        var inner = te + 1
+        var depth = 0
+        var j = inner
+        var stop = -1
+        while j < n:
+            var no = xml.find("<default", j)
+            var nc = xml.find("</default>", j)
+            if nc == -1:
+                break
+            if no != -1 and no < nc:
+                depth += 1
+                j = no + 8  # len("<default")
+                continue
+            if depth == 0:
+                stop = nc
+                break
+            depth -= 1
+            j = nc + 10  # len("</default>")
+        if stop < 0:
+            return String("")
+
+        # First `<tag_name>` at depth 0 within [inner, stop).
+        var marker = "<" + tag_name
+        var p = inner
+        while p < stop:
+            var tt = _find_tag(xml, marker, p)
+            if tt == -1 or tt >= stop:
+                return String("")
+            # Depth of `tt` relative to `inner`: count nested opens before it.
+            var d = 0
+            var k = inner
+            while k < tt:
+                var o2 = xml.find("<default", k)
+                var c2 = xml.find("</default>", k)
+                if o2 != -1 and o2 < tt and (c2 == -1 or o2 < c2):
+                    d += 1
+                    k = o2 + 8
+                    continue
+                if c2 != -1 and c2 < tt:
+                    d -= 1
+                    k = c2 + 10
+                    continue
+                break
+            if d != 0:
+                p = tt + 1
+                continue
+            var tte = xml.find(">", tt)
+            if tte == -1 or tte > stop:
+                return String("")
+            return _extract_attr(String(xml[byte = tt : tte + 1]), attr)
+        return String("")
+    return String("")
+
+
+def _first_tag(sec: String, tag_name: String) -> String:
+    """The first `<tag_name ...>` element in `sec`, or empty."""
+    if sec.byte_length() == 0:
+        return String("")
+    var t = _find_tag(sec, "<" + tag_name, 0)
+    if t == -1:
+        return String("")
+    var te = sec.find(">", t)
+    if te == -1:
+        return String("")
+    return String(sec[byte = t : te + 1])
+
+
+def _attr_3way(
+    xml: String,
+    elem: String,
+    cls: String,
+    tag_name: String,
+    root_tag: String,
+    name: String,
+) -> String:
+    """MJCF attribute resolution: element, then its class, then the top level.
+
+    Returns "" when none of the three carries `name`, leaving the caller to
+    apply MuJoCo's own documented default. The class level goes through
+    `_class_attr`, which re-walks `xml` per lookup rather than caching a class
+    section — see the warning there for why the cached form cannot compile.
+    """
+    var v = _extract_attr(elem, name)
+    if v.byte_length() > 0:
+        return v
+    var c = _class_attr(xml, cls, tag_name, name)
+    if c.byte_length() > 0:
+        return c
+    return _extract_attr(root_tag, name)
+
+
+def _nth_float(s: String, n: Int, fallback: Float64) -> Float64:
+    """`n`-th whitespace-separated float of `s`, or `fallback`."""
+    if s.byte_length() == 0:
+        return fallback
+    var parts = List[String]()
+    _split_spaces(s, parts)
+    if n >= len(parts):
+        return fallback
+    return _parse_float(parts[n])
+
+
 def _extract_singleton_tag(xml: String, tag: String) -> String:
     """Extract a self-closing singleton tag like <option .../> or <compiler .../>.
 
@@ -1778,6 +1928,10 @@ def parse_xml(xml: String) -> ParsedModel:
 # =============================================================================
 
 
+comptime MAX_COMPTIME_TENDONS: Int = 16
+"""Cap on `<fixed>` tendons the comptime parser records (quadruped needs 12)."""
+
+
 struct ComptimeActData(Copyable, Movable):
     """Precomputed actuator/joint data for GPU kernel use.
 
@@ -1813,6 +1967,38 @@ struct ComptimeActData(Copyable, Movable):
     var motor_kind: InlineArray[Int, 32]
     var motor_kp: InlineArray[Float64, 32]
     var motor_kv: InlineArray[Float64, 32]
+    # ── Activation state (`dyntype`), added for dm_control's quadruped ───────
+    #
+    # `motor_dyn_tau[i] > 0` means actuator i owns ONE activation variable
+    # obeying mjDYN_FILTER, `act_dot = (ctrl - act) / tau` (engine_forward.c
+    # :340), and its force reads `act` where a dyntype-less actuator reads
+    # `ctrl` ("force = gain .* [ctrl/act]", mj_fwdActuation). `motor_act_adr`
+    # is that variable's index in `Data.act`, or -1 for the actuators that
+    # have none — the same -1 convention as MuJoCo's `actuator_actadr`.
+    #
+    # `na` is the TOTAL count, i.e. MuJoCo's `m->na`. It is 0 for every model
+    # ported before quadruped (`<motor>` and `<position>` both default to
+    # dyntype=none), which is why `Data` can carry it as a trailing parameter
+    # defaulted to 0 without touching a single existing env config.
+    var motor_dyn_tau: InlineArray[Float64, 32]
+    var motor_act_adr: InlineArray[Int, 32]
+    var na: Int
+    # ── Unsupported-`<general>` report ──────────────────────────────────────
+    #
+    # This function runs at comptime and cannot `raise`, so a `<general>` whose
+    # gain/bias/dyn shape we do not implement is RECORDED here and turned into
+    # a compile error by `ModelDefFromXML`'s `comptime assert`. Silently
+    # simulating the wrong actuator law is the failure mode this exists to
+    # prevent — it produces a working env for a different robot.
+    #
+    #   -1  fine
+    #    0  gaintype is not `fixed`
+    #    1  biastype is neither `none` nor `affine`
+    #    2  biasprm[0] != 0        (a constant force offset)
+    #    3  biasprm[1] != -gainprm[0]  (not a position servo)
+    #    4  dyntype is not `none` or `filter`
+    var bad_actuator: Int
+    var bad_actuator_code: Int
     var motor_trn_n: InlineArray[Int, 32]
     var motor_trn_qadr: InlineArray[Int, 128]  # 32 actuators x 4 triples
     var motor_trn_dadr: InlineArray[Int, 128]
@@ -1829,13 +2015,21 @@ struct ComptimeActData(Copyable, Movable):
     # With no `springlength` attribute the compiler collapses the band to the
     # tendon's length at qpos0, which for a fixed tendon over joints at their
     # own qpos0 is where both bounds land. Same triple representation as above.
-    var tendon_stiffness: InlineArray[Float64, 8]
-    var tendon_spring_lo: InlineArray[Float64, 8]
-    var tendon_spring_hi: InlineArray[Float64, 8]
-    var tendon_trn_n: InlineArray[Int, 8]
-    var tendon_trn_qadr: InlineArray[Int, 32]  # 8 tendons x 4 triples
-    var tendon_trn_dadr: InlineArray[Int, 32]
-    var tendon_trn_coef: InlineArray[Float64, 32]
+    # Widened 8 -> MAX_COMPTIME_TENDONS on 2026-07-31 for quadruped, which
+    # declares TWELVE fixed tendons (4 coupling + 4 lift + 4 extend). The old
+    # bound was a SILENT truncation: `while data.ntendon < 8` simply stopped,
+    # and the four dropped tendons' actuators resolved to `motor_trn_n == 0`,
+    # which `apply_actions` skips. Four of twelve legs' actuators would have
+    # done nothing at all, with no diagnostic anywhere. `ModelDefFromXML` now
+    # asserts `MAX_TENDON <= MAX_COMPTIME_TENDONS` so the next model to
+    # outgrow this fails to compile instead.
+    var tendon_stiffness: InlineArray[Float64, MAX_COMPTIME_TENDONS]
+    var tendon_spring_lo: InlineArray[Float64, MAX_COMPTIME_TENDONS]
+    var tendon_spring_hi: InlineArray[Float64, MAX_COMPTIME_TENDONS]
+    var tendon_trn_n: InlineArray[Int, MAX_COMPTIME_TENDONS]
+    var tendon_trn_qadr: InlineArray[Int, MAX_COMPTIME_TENDONS * 4]
+    var tendon_trn_dadr: InlineArray[Int, MAX_COMPTIME_TENDONS * 4]
+    var tendon_trn_coef: InlineArray[Float64, MAX_COMPTIME_TENDONS * 4]
     var ntendon: Int
     var joint_is_limited: InlineArray[Bool, 32]
     var joint_qpos_adr: InlineArray[Int, 32]
@@ -1860,17 +2054,34 @@ struct ComptimeActData(Copyable, Movable):
         self.motor_kind = InlineArray[Int, 32](fill=0)  # ACT_KIND_MOTOR
         self.motor_kp = InlineArray[Float64, 32](fill=0.0)
         self.motor_kv = InlineArray[Float64, 32](fill=0.0)
+        self.motor_dyn_tau = InlineArray[Float64, 32](fill=0.0)
+        self.motor_act_adr = InlineArray[Int, 32](fill=-1)
+        self.na = 0
+        self.bad_actuator = -1
+        self.bad_actuator_code = -1
         self.motor_trn_n = InlineArray[Int, 32](fill=0)
         self.motor_trn_qadr = InlineArray[Int, 128](fill=-1)
         self.motor_trn_dadr = InlineArray[Int, 128](fill=-1)
         self.motor_trn_coef = InlineArray[Float64, 128](fill=0.0)
-        self.tendon_stiffness = InlineArray[Float64, 8](fill=0.0)
-        self.tendon_spring_lo = InlineArray[Float64, 8](fill=0.0)
-        self.tendon_spring_hi = InlineArray[Float64, 8](fill=0.0)
-        self.tendon_trn_n = InlineArray[Int, 8](fill=0)
-        self.tendon_trn_qadr = InlineArray[Int, 32](fill=-1)
-        self.tendon_trn_dadr = InlineArray[Int, 32](fill=-1)
-        self.tendon_trn_coef = InlineArray[Float64, 32](fill=0.0)
+        self.tendon_stiffness = InlineArray[Float64, MAX_COMPTIME_TENDONS](
+            fill=0.0
+        )
+        self.tendon_spring_lo = InlineArray[Float64, MAX_COMPTIME_TENDONS](
+            fill=0.0
+        )
+        self.tendon_spring_hi = InlineArray[Float64, MAX_COMPTIME_TENDONS](
+            fill=0.0
+        )
+        self.tendon_trn_n = InlineArray[Int, MAX_COMPTIME_TENDONS](fill=0)
+        self.tendon_trn_qadr = InlineArray[Int, MAX_COMPTIME_TENDONS * 4](
+            fill=-1
+        )
+        self.tendon_trn_dadr = InlineArray[Int, MAX_COMPTIME_TENDONS * 4](
+            fill=-1
+        )
+        self.tendon_trn_coef = InlineArray[Float64, MAX_COMPTIME_TENDONS * 4](
+            fill=0.0
+        )
         self.ntendon = 0
         self.joint_is_limited = InlineArray[Bool, 32](fill=False)
         self.joint_qpos_adr = InlineArray[Int, 32](fill=0)
@@ -1891,17 +2102,34 @@ struct ComptimeActData(Copyable, Movable):
         self.motor_kind = InlineArray[Int, 32](fill=0)
         self.motor_kp = InlineArray[Float64, 32](fill=0.0)
         self.motor_kv = InlineArray[Float64, 32](fill=0.0)
+        self.motor_dyn_tau = InlineArray[Float64, 32](fill=0.0)
+        self.motor_act_adr = InlineArray[Int, 32](fill=-1)
+        self.na = copy.na
+        self.bad_actuator = copy.bad_actuator
+        self.bad_actuator_code = copy.bad_actuator_code
         self.motor_trn_n = InlineArray[Int, 32](fill=0)
         self.motor_trn_qadr = InlineArray[Int, 128](fill=-1)
         self.motor_trn_dadr = InlineArray[Int, 128](fill=-1)
         self.motor_trn_coef = InlineArray[Float64, 128](fill=0.0)
-        self.tendon_stiffness = InlineArray[Float64, 8](fill=0.0)
-        self.tendon_spring_lo = InlineArray[Float64, 8](fill=0.0)
-        self.tendon_spring_hi = InlineArray[Float64, 8](fill=0.0)
-        self.tendon_trn_n = InlineArray[Int, 8](fill=0)
-        self.tendon_trn_qadr = InlineArray[Int, 32](fill=-1)
-        self.tendon_trn_dadr = InlineArray[Int, 32](fill=-1)
-        self.tendon_trn_coef = InlineArray[Float64, 32](fill=0.0)
+        self.tendon_stiffness = InlineArray[Float64, MAX_COMPTIME_TENDONS](
+            fill=0.0
+        )
+        self.tendon_spring_lo = InlineArray[Float64, MAX_COMPTIME_TENDONS](
+            fill=0.0
+        )
+        self.tendon_spring_hi = InlineArray[Float64, MAX_COMPTIME_TENDONS](
+            fill=0.0
+        )
+        self.tendon_trn_n = InlineArray[Int, MAX_COMPTIME_TENDONS](fill=0)
+        self.tendon_trn_qadr = InlineArray[Int, MAX_COMPTIME_TENDONS * 4](
+            fill=-1
+        )
+        self.tendon_trn_dadr = InlineArray[Int, MAX_COMPTIME_TENDONS * 4](
+            fill=-1
+        )
+        self.tendon_trn_coef = InlineArray[Float64, MAX_COMPTIME_TENDONS * 4](
+            fill=0.0
+        )
         self.ntendon = copy.ntendon
         self.joint_is_limited = InlineArray[Bool, 32](fill=False)
         self.joint_qpos_adr = InlineArray[Int, 32](fill=0)
@@ -1920,6 +2148,8 @@ struct ComptimeActData(Copyable, Movable):
             self.motor_kind[i] = copy.motor_kind[i]
             self.motor_kp[i] = copy.motor_kp[i]
             self.motor_kv[i] = copy.motor_kv[i]
+            self.motor_dyn_tau[i] = copy.motor_dyn_tau[i]
+            self.motor_act_adr[i] = copy.motor_act_adr[i]
             self.motor_trn_n[i] = copy.motor_trn_n[i]
             self.joint_is_limited[i] = copy.joint_is_limited[i]
             self.joint_qpos_adr[i] = copy.joint_qpos_adr[i]
@@ -1929,12 +2159,12 @@ struct ComptimeActData(Copyable, Movable):
             self.motor_trn_qadr[i] = copy.motor_trn_qadr[i]
             self.motor_trn_dadr[i] = copy.motor_trn_dadr[i]
             self.motor_trn_coef[i] = copy.motor_trn_coef[i]
-        for i in range(8):
+        for i in range(MAX_COMPTIME_TENDONS):
             self.tendon_stiffness[i] = copy.tendon_stiffness[i]
             self.tendon_spring_lo[i] = copy.tendon_spring_lo[i]
             self.tendon_spring_hi[i] = copy.tendon_spring_hi[i]
             self.tendon_trn_n[i] = copy.tendon_trn_n[i]
-        for i in range(32):
+        for i in range(MAX_COMPTIME_TENDONS * 4):
             self.tendon_trn_qadr[i] = copy.tendon_trn_qadr[i]
             self.tendon_trn_dadr[i] = copy.tendon_trn_dadr[i]
             self.tendon_trn_coef[i] = copy.tendon_trn_coef[i]
@@ -1949,6 +2179,11 @@ struct ComptimeActData(Copyable, Movable):
         self.motor_kind = move.motor_kind^
         self.motor_kp = move.motor_kp^
         self.motor_kv = move.motor_kv^
+        self.motor_dyn_tau = move.motor_dyn_tau^
+        self.motor_act_adr = move.motor_act_adr^
+        self.na = move.na
+        self.bad_actuator = move.bad_actuator
+        self.bad_actuator_code = move.bad_actuator_code
         self.motor_trn_n = move.motor_trn_n^
         self.motor_trn_qadr = move.motor_trn_qadr^
         self.motor_trn_dadr = move.motor_trn_dadr^
@@ -2227,7 +2462,7 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
     var ten_names = List[String]()
     if ten_sec.byte_length() > 0:
         var tpos = 0
-        while data.ntendon < 8:
+        while data.ntendon < MAX_COMPTIME_TENDONS:
             var ft = ten_sec.find("<fixed", tpos)
             if ft == -1:
                 break
@@ -2307,24 +2542,63 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
     while act_count < 32:
         var nm = _find_tag(act_sec, "<motor", act_pos)
         var npos = _find_tag(act_sec, "<position", act_pos)
-        var t = _min_valid_pos(nm, npos)
+        var ngen = _find_tag(act_sec, "<general", act_pos)
+        var t = _min_valid_pos(_min_valid_pos(nm, npos), ngen)
         if t == -1:
             break
         var is_position = t == npos
+        var is_general = t == ngen
         var tag_end = act_sec.find(">", t)
         if tag_end == -1:
             break
         var tag = String(act_sec[byte = t : tag_end + 1])
 
+        # Attributes resolve element -> `class="..."` -> top-level default.
+        # `<general>` is the only kind that reads the two outer levels today;
+        # `<motor>`/`<position>` keep the root-only lookup they had, so this
+        # cannot change any previously parsed model.
+        var elem_cls = _trim(_extract_attr(tag, "class"))
+        # Single-assignment throughout: reassigning a `String` var inside this
+        # loop makes the COMPTIME INTERPRETER fail outright ("write clobbers a
+        # pointer region" out of `String._iadd`'s memcpy), not merely slowly.
+        var tag_name = String("general") if is_general else (
+            String("position") if is_position else String("motor")
+        )
+        var root_tag = _first_tag(_root_defaults(xml_clean), tag_name)
+
         data.motor_kind[act_count] = (
-            ACT_KIND_POSITION if is_position else ACT_KIND_MOTOR
+            ACT_KIND_POSITION if (is_position or is_general) else ACT_KIND_MOTOR
         )
 
-        var g = _extract_attr(tag, "gear")
+        var g = _attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "gear")
         if g.byte_length() > 0:
             data.motor_gears[act_count] = _parse_float(g)
         else:
             data.motor_gears[act_count] = def_gear
+
+        # ctrlrange: element, then `class="..."`, then the top-level default.
+        # The class level is where quadruped keeps all three of its ranges.
+        #
+        # ⚠ Resolved AND CONSUMED here rather than at the bottom of the loop
+        # where it used to live. A `String` that stays live across the
+        # transmission block below makes the COMPTIME INTERPRETER give up —
+        # "interpreting memcpy can't get dst memory from the interpreter /
+        # write clobbers a pointer region" out of `_extract_attr`, which is a
+        # hard failure to compile, not a slow build. Seven other `_attr_3way`
+        # calls in this same loop are fine because each is consumed on the
+        # spot. Keep every string lookup here short-lived.
+        var cr = _attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "ctrlrange")
+        var used_default = True
+        if cr.byte_length() > 0:
+            var parts = List[String]()
+            _split_spaces(cr, parts)
+            if len(parts) >= 2:
+                data.motor_ctrl_min[act_count] = _parse_float(parts[0])
+                data.motor_ctrl_max[act_count] = _parse_float(parts[1])
+                used_default = False
+        if used_default:
+            data.motor_ctrl_min[act_count] = def_ctrl_min
+            data.motor_ctrl_max[act_count] = def_ctrl_max
 
         # `<position>` is `<general>` with gaintype=fixed, biastype=affine:
         # gainprm = [kp, 0, 0] and biasprm = [0, -kp, -kv]. MuJoCo's kp
@@ -2338,6 +2612,59 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
             data.motor_kv[act_count] = (
                 _parse_float(kv_s) if kv_s.byte_length() > 0 else 0.0
             )
+        elif is_general:
+            # Spelled-out form of the same law. MuJoCo (mj_fwdActuation):
+            #     force = gain * [ctrl | act] + bias
+            #     gain  = gainprm[0]                          (gaintype fixed)
+            #     bias  = biasprm[0] + biasprm[1]*len + biasprm[2]*vel (affine)
+            # which is our POSITION path exactly when biasprm[0] == 0 and
+            # biasprm[1] == -gainprm[0]; then kp = gain and kv = -biasprm[2].
+            # Anything else is a different actuator and is refused below.
+            var gaintype = _trim(_attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "gaintype"))
+            var biastype = _trim(_attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "biastype"))
+            var gainprm = _attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "gainprm")
+            var biasprm = _attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "biasprm")
+            var dyntype = _trim(_attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "dyntype"))
+            var dynprm = _attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "dynprm")
+
+            var gain = _nth_float(gainprm, 0, 1.0)  # MuJoCo gainprm default 1
+            var b0 = _nth_float(biasprm, 0, 0.0)
+            var b1 = _nth_float(biasprm, 1, 0.0)
+            var b2 = _nth_float(biasprm, 2, 0.0)
+
+            if gaintype.byte_length() > 0 and gaintype != "fixed":
+                if data.bad_actuator < 0:
+                    data.bad_actuator = act_count
+                    data.bad_actuator_code = 0
+            elif biastype != "affine":
+                if data.bad_actuator < 0:
+                    data.bad_actuator = act_count
+                    data.bad_actuator_code = 1
+            elif b0 != 0.0:
+                if data.bad_actuator < 0:
+                    data.bad_actuator = act_count
+                    data.bad_actuator_code = 2
+            elif b1 != -gain:
+                if data.bad_actuator < 0:
+                    data.bad_actuator = act_count
+                    data.bad_actuator_code = 3
+
+            data.motor_kp[act_count] = gain
+            data.motor_kv[act_count] = -b2
+
+            # mjDYN_FILTER: act_dot = (ctrl - act) / dynprm[0], one activation
+            # variable per actuator, integrated by the same Euler step as qvel.
+            if dyntype.byte_length() == 0 or dyntype == "none":
+                data.motor_dyn_tau[act_count] = 0.0
+                data.motor_act_adr[act_count] = -1
+            elif dyntype == "filter":
+                data.motor_dyn_tau[act_count] = _nth_float(dynprm, 0, 1.0)
+                data.motor_act_adr[act_count] = data.na
+                data.na += 1
+            else:
+                if data.bad_actuator < 0:
+                    data.bad_actuator = act_count
+                    data.bad_actuator_code = 4
 
         # Transmission: a joint is one (qadr, dadr, 1) triple; a tendon is the
         # tendon's own joint/coef list.
@@ -2372,22 +2699,11 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
                     data.motor_dof_adr[act_count] = data.tendon_trn_dadr[ti * 4]
                 break
 
-        # Per-actuator ctrlrange (overrides default)
-        var cr = _extract_attr(tag, "ctrlrange")
-        var used_default = True
-        if cr.byte_length() > 0:
-            var parts = List[String]()
-            _split_spaces(cr, parts)
-            if len(parts) >= 2:
-                data.motor_ctrl_min[act_count] = _parse_float(parts[0])
-                data.motor_ctrl_max[act_count] = _parse_float(parts[1])
-                used_default = False
-        if used_default:
-            data.motor_ctrl_min[act_count] = def_ctrl_min
-            data.motor_ctrl_max[act_count] = def_ctrl_max
-
         act_count += 1
-        act_pos = t + 6
+        # Past the whole opening tag. `t + 6` was enough while the scanned tags
+        # were `<motor`/`<position`, but `<general` is longer than the shortest
+        # marker and re-scanning from inside it would rematch the same element.
+        act_pos = tag_end + 1
 
     # ---- Default joint limited from <default> section -------------------------
     var def_limited = False

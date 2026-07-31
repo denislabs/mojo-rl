@@ -47,11 +47,13 @@ from .fields_build import build_model_fields_from_flat
 from .flat_model import (
     ACT_KIND_MOTOR,
     ACT_KIND_POSITION,
+    ACT_KIND_GENERAL,
     act_kind_name,
     _GEOM_ELLIPSOID,
 )
 from .full_parser import parse_xml_full
 from .xml_parser import (
+    MAX_COMPTIME_TENDONS,
     _xml_nth_motor_gear,
     _xml_nth_motor_dof_adr,
     _xml_nth_joint_qpos_adr,
@@ -502,25 +504,51 @@ struct ModelDefFromXML[
                         " constraints/tendon_limit.mojo."
                     )
 
+        # A `<fixed>` tendon past the comptime cap is dropped SILENTLY by
+        # `parse_xml_model_data`, taking every actuator transmitted through it
+        # with it (`motor_trn_n == 0`, which `apply_actions` skips). Fail to
+        # compile instead.
+        comptime assert Self.MAX_TENDON <= MAX_COMPTIME_TENDONS, (
+            "physics3d: this model has more <fixed> tendons than"
+            " MAX_COMPTIME_TENDONS; raise it in xml_parser.mojo. Leaving it"
+            " would silently drop the surplus tendons AND disable every"
+            " actuator transmitted through them."
+        )
+
+        # A `<general>` whose gain/bias/dyn shape we do not implement. The
+        # comptime parser cannot raise, so it records the offender and we turn
+        # that into a compile error here. Codes are documented on the field.
+        comptime assert Self._acd.bad_actuator < 0, (
+            "physics3d: <general> actuator with an unsupported gain/bias/dyn"
+            " shape. Supported: gaintype=fixed, biastype=affine, biasprm[0]"
+            " == 0, biasprm[1] == -gainprm[0] (i.e. a position servo), and"
+            " dyntype none|filter. See ComptimeActData.bad_actuator_code."
+        )
+
         # Reject unimplemented actuator transmissions LOUDLY. Building the
         # model anyway would simulate a servo as a torque motor with no error
-        # at all. `<motor>` and `<position>` are modelled (see
-        # `apply_actions`); `<velocity>` and `<general>` are recognized by the
-        # parser purely so the tag count is right, and are rejected here.
-        # See docs/DM_CONTROL_PORT.md (gap G3).
+        # at all. `<motor>`, `<position>` and the `<general>` shape validated
+        # just above are modelled (see `apply_actions`); `<velocity>` is
+        # recognized by the parser purely so the tag count is right, and is
+        # rejected here. See docs/DM_CONTROL_PORT.md (gap G3).
         comptime if not Self.allow_unsupported_actuators:
             for a in range(Self.nact):
                 var kind = fmd.actuators[a].kind
-                if kind != ACT_KIND_MOTOR and kind != ACT_KIND_POSITION:
+                if (
+                    kind != ACT_KIND_MOTOR
+                    and kind != ACT_KIND_POSITION
+                    and kind != ACT_KIND_GENERAL
+                ):
                     raise Error(
                         String(
                             "physics3d: unimplemented actuator transmission ",
                             act_kind_name(kind),
                             " at actuator index ",
                             a,
-                            ". <motor> (force = gear*ctrl) and <position>",
-                            " (force = kp*(ctrl - length) - kv*velocity) are",
-                            " supported; <velocity>/<general> need their own",
+                            ". <motor> (force = gear*ctrl), <position>",
+                            " (force = kp*(ctrl - length) - kv*velocity) and",
+                            " <general> restricted to that same affine shape",
+                            " are supported; <velocity> needs its own",
                             " gainprm/biasprm handling. If this env's CONFIG",
                             " drives those DOFs itself",
                             " (custom_apply_actions_cpu -> True), pass",
