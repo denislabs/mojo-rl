@@ -5,17 +5,31 @@ Originally validated BIT-EXACT against the legacy FK + narrow-phase kernels.
 That legacy reference was frozen into the GOLDEN fingerprints below during
 Phase-0 of the physics3d sunset, so this gate survives deletion of the legacy
 slab/kernels. It checks:
-  * fields-GPU (FK -> detect) reproduces the frozen (legacy-validated)
-    fingerprint — per-env contact counts + a contact-record checksum,
+  * fields-GPU (FK -> detect) reproduces the frozen fingerprint — per-env
+    contact counts + a contact-record checksum,
   * a MESH-involved contact (mesh-geom body vs obj body) is present in env1
     (GJK/EPA fallback — non-vacuous), and
   * fields-CPU == fields-GPU on records, fed the GPU FK products (isolates the
-    detection port; GJK convergence is chaotic under ULP FK diffs).
+    detection port from FK differences).
 
-env0 = canonical reset (obj on table); env1 = obj teleported into the
-eGripperBase mesh hull. Model build = fields-native init_fields (Stage B; the
-NMESHV-padded mesh build). Regenerate goldens after an INTENTIONAL physics
-change: HARVEST=True, run on Apple, paste, False.
+env0 = canonical reset (obj on table); env1 = obj teleported INTO the
+eGripperBase mesh hull.
+
+The env1 z used to be 0.25, where the obj is in fact 15.1 mm CLEAR of the hull
+— the gate's mesh contact was a phantom, manufactured by a flat GJK simplex
+being read as an enclosure of the origin (see `_closest_point_on_simplex`).
+Both the count and the checksum were frozen around it. z=0.28 is a real
+overlap: float64 CPU, float32 CPU and float32 GPU agree there to 6 digits,
+where at z=0.25 float64 said +0.0151 and float32 said -0.0553.
+
+Contact DEPTH on the mesh path is still the crude fallback in `gjk_epa` (the
+Minkowski-difference extent along the centre line), not a true EPA depth, so
+the golden pins what the engine computes rather than ground truth. Separation
+and the contact/no-contact verdict ARE trustworthy; the depth is not.
+
+Model build = fields-native init_fields (Stage B; the NMESHV-padded mesh
+build). Regenerate goldens after an INTENTIONAL physics change: HARVEST=True,
+run on Apple, paste, False.
 
 Run: pixi run -e apple mojo run -I . tests/physics3d/test_mesh_detection_fields.mojo
 """
@@ -58,11 +72,11 @@ comptime BATCH = 2
 comptime NMESHV = MAX_GPU_MESHES * 256
 comptime METADATA_SIZE_L = 4
 
-# --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
+# --- GOLDEN fingerprints (regenerated after the flat-simplex fix) ------------
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
-comptime GOLD_NCON = 4  # total contacts across both envs
-comptime GOLD_CON = 1261.838640670292  # order-sensitive contact-record checksum
+comptime GOLD_NCON = 2  # total contacts across both envs
+comptime GOLD_CON = 463.781851073727  # order-sensitive contact-record checksum
 
 
 def main() raises:
@@ -116,7 +130,7 @@ def main() raises:
         else:
             q[9] = 0.005
             q[10] = 0.601
-            q[11] = 0.25
+            q[11] = 0.28  # inside the hull — see the module docstring
         q[12] = 1.0
         qcfg.append(q^)
 

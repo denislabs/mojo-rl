@@ -6,7 +6,7 @@ furthest along a given direction. These are the building blocks of GJK/EPA.
 Reference: MuJoCo engine_collision_convex.c lines 162-398
 """
 
-from std.math import sqrt
+from std.math import sqrt, abs
 from ..constants import (
     GEOM_SPHERE,
     GEOM_CAPSULE,
@@ -457,6 +457,19 @@ def _closest_point_on_simplex[
     var best_vx: Scalar[DTYPE] = 0
     var best_vy: Scalar[DTYPE] = 0
     var best_vz: Scalar[DTYPE] = 0
+    var any_usable_face = False
+
+    # Scale for the degeneracy tests below: the largest vertex magnitude.
+    var scale: Scalar[DTYPE] = 0
+    for q in range(4):
+        var m = (
+            simplex[q * 9 + 0] * simplex[q * 9 + 0]
+            + simplex[q * 9 + 1] * simplex[q * 9 + 1]
+            + simplex[q * 9 + 2] * simplex[q * 9 + 2]
+        )
+        if m > scale:
+            scale = m
+    scale = sqrt(scale)
 
     for f in range(4):
         var i0 = face_v[f * 4 + 0]
@@ -487,18 +500,57 @@ def _closest_point_on_simplex[
         var face_n = _cross3[DTYPE](e1x, e1y, e1z, e2x, e2y, e2z)
 
         # Sign check: is origin on the same side as the opposite vertex?
+        # Both dots are measured against the UNNORMALIZED normal, so divide by
+        # |n| to get true heights before testing them against a scale-relative
+        # epsilon — otherwise the test's sensitivity rides on the face's area.
+        var n_len = sqrt(
+            face_n[0] * face_n[0]
+            + face_n[1] * face_n[1]
+            + face_n[2] * face_n[2]
+        )
+        if n_len <= Scalar[DTYPE](1e-30):
+            # Repeated or collinear vertices — this face says nothing.
+            continue
+        any_usable_face = True
         var dot_opp = _dot3[DTYPE](face_n[0], face_n[1], face_n[2], fox - f0x, foy - f0y, foz - f0z)
         var dot_origin = _dot3[DTYPE](face_n[0], face_n[1], face_n[2], -f0x, -f0y, -f0z)
+        var h_opp = dot_opp / n_len
+        var h_origin = dot_origin / n_len
+        var flat = Scalar[DTYPE](1e-6) * scale
 
-        if dot_opp * dot_origin < 0:
+        # A tetrahedron whose opposite vertex sits IN this face's plane has no
+        # interior, so nothing can be enclosed by it. The old test was the bare
+        # product `dot_opp * dot_origin < 0`, which reads h_opp == 0 as "not
+        # outside" — and a FLAT simplex has h_opp == 0 on all four faces, so no
+        # face is ever flagged and the routine reports the origin as ENCLOSED.
+        # That is not a rare tie: GJK converges onto a planar facet whenever the
+        # closest feature is one (a hull face parallel to a box/cylinder cap),
+        # and the caller reads "enclosed" as penetration — a phantom contact
+        # between geoms that are centimetres apart, with a depth invented by
+        # the EPA fallback.
+        var outside = False
+        if h_opp > flat:
+            outside = h_origin < 0
+        elif h_opp < -flat:
+            outside = h_origin > 0
+        else:
+            outside = abs(h_origin) > flat
+
+        if outside:
             # Origin is OUTSIDE this face — closest point is on this triangle
             # Project origin onto this face plane
             var n_dot_n = face_n[0] * face_n[0] + face_n[1] * face_n[1] + face_n[2] * face_n[2]
             if n_dot_n > Scalar[DTYPE](1e-30):
+                # Closest point on the face PLANE to the origin is
+                # (n.f0 / |n|^2) * n — the same outward convention the
+                # nsimplex<=3 branches use (v = origin -> simplex). It used to
+                # carry a leading minus, which handed GJK a search direction
+                # pointing AWAY from the shape and flipped the reported
+                # contact normal on the separated path.
                 var d = _dot3[DTYPE](f0x, f0y, f0z, face_n[0], face_n[1], face_n[2]) / n_dot_n
-                var proj_x = -d * face_n[0]
-                var proj_y = -d * face_n[1]
-                var proj_z = -d * face_n[2]
+                var proj_x = d * face_n[0]
+                var proj_y = d * face_n[1]
+                var proj_z = d * face_n[2]
                 var d_sq = proj_x * proj_x + proj_y * proj_y + proj_z * proj_z
                 if d_sq < best_dist_sq:
                     best_dist_sq = d_sq
@@ -508,20 +560,53 @@ def _closest_point_on_simplex[
                     best_vz = proj_z
 
     if best_face >= 0:
-        # Origin is outside at least one face — reduce to that triangle
+        # Origin is outside at least one face — reduce to that triangle.
+        # Stage through a temporary: destination slots OVERLAP the sources.
+        # Face ADB is (i0,i1,i2) = (0,27,9), so an in-place copy overwrites
+        # slot 1 with D and then reads that slot back as "B", retaining
+        # {A,D,D} — a degenerate simplex that stalls the next GJK iteration
+        # and makes a penetrating pair report as separated.
         var i0 = face_v[best_face * 4 + 0]
         var i1 = face_v[best_face * 4 + 1]
         var i2 = face_v[best_face * 4 + 2]
+        var keep = InlineArray[Scalar[DTYPE], 27](fill=Scalar[DTYPE](0))
         for k in range(9):
-            simplex[k] = simplex[i0 + k]
-        for k in range(9):
-            simplex[9 + k] = simplex[i1 + k]
-        for k in range(9):
-            simplex[18 + k] = simplex[i2 + k]
+            keep[k] = simplex[i0 + k]
+            keep[9 + k] = simplex[i1 + k]
+            keep[18 + k] = simplex[i2 + k]
+        for k in range(27):
+            simplex[k] = keep[k]
         result[0] = best_vx
         result[1] = best_vy
         result[2] = best_vz
         result[3] = Scalar[DTYPE](3)
+        return result
+
+    if not any_usable_face:
+        # Every face was degenerate — the four points are collinear or
+        # coincident, so there is no tetrahedron to be inside of. Keep the
+        # vertex nearest the origin and let the next iteration rebuild; do NOT
+        # fall through to the enclosure verdict, which would be unfounded.
+        var near = 0
+        var near_sq: Scalar[DTYPE] = 1e30
+        for q in range(4):
+            var m = (
+                simplex[q * 9 + 0] * simplex[q * 9 + 0]
+                + simplex[q * 9 + 1] * simplex[q * 9 + 1]
+                + simplex[q * 9 + 2] * simplex[q * 9 + 2]
+            )
+            if m < near_sq:
+                near_sq = m
+                near = q
+        var keep1 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+        for k in range(9):
+            keep1[k] = simplex[near * 9 + k]
+        for k in range(9):
+            simplex[k] = keep1[k]
+        result[0] = simplex[0]
+        result[1] = simplex[1]
+        result[2] = simplex[2]
+        result[3] = Scalar[DTYPE](1)
         return result
 
     # Origin is inside all faces — truly inside tetrahedron

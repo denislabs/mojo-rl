@@ -503,9 +503,18 @@ def gjk_epa[
             vz = Scalar[DTYPE](0)
             break
 
-    var dist = sqrt(vx * vx + vy * vy + vz * vz)
+    # Classify with the SAME quantity the loop converges on. `GJK_TOLERANCE` is
+    # a threshold on |v|^2 in the loop above (`v_dot_v < GJK_TOLERANCE`), so
+    # comparing |v| against it here meant any run that exited by converging to
+    # the origin — |v| anywhere in [1e-10, 1e-5) — was then reported SEPARATED
+    # at a hair's-breadth positive distance, and dropped by the caller's
+    # `dist < margin` test. A deep penetration would vanish outright: the two
+    # exits that mean "origin reached" (tetrahedron enclosed, |v| -> 0) have to
+    # agree, or a single ULP decides whether a contact exists at all.
+    var dist_sq = vx * vx + vy * vy + vz * vz
+    var dist = sqrt(dist_sq)
 
-    if dist > Scalar[DTYPE](GJK_TOLERANCE):
+    if dist_sq > Scalar[DTYPE](GJK_TOLERANCE):
         # Separated
         var w1x: Scalar[DTYPE] = 0
         var w1y: Scalar[DTYPE] = 0

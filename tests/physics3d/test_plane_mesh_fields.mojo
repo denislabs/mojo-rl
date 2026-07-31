@@ -74,6 +74,12 @@ comptime OBJ_Z_ENV1: Float64 = -0.912  # vertex dist = -0.029
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
+# Re-harvested 2026-07-30 (was NCON 4/6, fingerprints 1135.9686783785 /
+# 1989.6578279478708). The plane-mesh record this gate exists for is unchanged
+# — both legs still assert it, with the same conventions. What went away are
+# the scene's PHANTOM mesh-mesh contacts: `_closest_point_on_simplex` read a
+# FLAT GJK simplex as enclosing the origin, so pairs float64 puts centimetres
+# apart came back as penetrating. Two per leg.
 # Re-harvested 2026-07-29 (was NCON 4 / fingerprint 1135.9686783785).
 #
 # Cause: commit f0d35e2c taught the parser that MJCF default classes supply
@@ -86,10 +92,10 @@ comptime GOLD_RTOL = 1e-3
 # Both legs moved (the two legs collide different geom subsets, so their counts
 # were never expected to match each other). Regenerated with the HARVEST
 # procedure in the module docstring.
-comptime GOLD_NCON_A = 4  # O(N^2) leg
-comptime GOLD_CON_A = 1135.9686783785
-comptime GOLD_NCON_B = 6  # SAP leg
-comptime GOLD_CON_B = 1989.6578279478708
+comptime GOLD_NCON_A = 2  # O(N^2) leg
+comptime GOLD_CON_A = 401.1735017262399
+comptime GOLD_NCON_B = 4  # SAP leg
+comptime GOLD_CON_B = 988.7928031698102
 
 
 def _qpos_for_env(e: Int) -> List[Float64]:

@@ -16,6 +16,13 @@ env1 teleports the obj cylinder into the eGripperBase MESH hull so a
 GJK/EPA mesh contact appears through the SAP path. Legacy-SAP vs
 fields-SAP BIT-EXACT + non-vacuity (mesh-body/obj-body contact present).
 
+⚠ env1's z used to be 0.25, where the obj is in fact 15.1 mm CLEAR of the
+hull: the mesh contact this part asserts was a phantom, produced by a flat
+GJK simplex being read as an enclosure of the origin, and the golden counts
+were frozen around it. z=0.28 is a real overlap (float64 CPU, float32 CPU and
+float32 GPU agree there to 6 digits). Same pose, same story as
+test_mesh_detection_fields — see `_closest_point_on_simplex`.
+
 Part C — Walker2d (NGEOM=8 < 16): detect_contacts_auto must route
 to detect_contacts, results bit-equal.
 
@@ -76,8 +83,13 @@ comptime GOLD_CON_H = 8120.21960220451
 # `type="mesh"` from their `<default class="base_viz"/base_col">` blocks, as
 # MuJoCo does, instead of falling back to the built-in primitive. More mesh
 # geoms collide, so the count rises.
-comptime GOLD_NCON_S = 6  # Part B sawyer SAP: total contacts
-comptime GOLD_CON_S = 2258.0145981857786
+# Re-harvested 2026-07-30 (was NCON 6 / 2258.0145981857786): the flat-simplex
+# fix in `_closest_point_on_simplex` retired the scene's PHANTOM mesh contacts
+# — pairs GJK reported as penetrating that float64 puts centimetres apart —
+# and env1's pose moved to a z where the mesh contact is real. Two effects,
+# one direction: fewer, and now all genuine.
+comptime GOLD_NCON_S = 4  # Part B sawyer SAP: total contacts
+comptime GOLD_CON_S = 1126.0095018647844
 
 # ── Humanoid (Part A) ────────────────────────────────────────────────────
 comptime NQ_H = HumanoidModel.NQ  # 24
@@ -437,7 +449,7 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
         else:
             q[9] = 0.005  # obj x (inside gripper mesh hull)
             q[10] = 0.601  # obj y
-            q[11] = 0.25  # obj z
+            q[11] = 0.28  # obj z (0.25 was 15.1 mm clear — see the docstring)
         q[12] = 1.0  # obj quat w
         q[13] = 0.0
         q[14] = 0.0
