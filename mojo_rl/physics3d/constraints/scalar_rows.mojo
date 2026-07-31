@@ -22,8 +22,13 @@ A scalar row is `J = sign * e_dof` — a single nonzero — so it is stored as
 `(dof, sign)` rather than a dense NV-vector. That keeps the added local storage
 at O(rows) instead of O(rows*NV), which matters: the elliptic Newton core is
 already close to the Metal local-memory ceiling (see the RK4/elliptic OOM note
-in the solver docstring). Equality and tendon rows need a dense J and are NOT
-handled here — they remain post-passes for now.
+in the solver docstring). Equality rows need a dense J, so they are not
+built here — the PYRAMIDAL Newton path, which already carries a dense-J edge
+list, gets fixed-tendon equality rows from
+`constraints/tendon_limit.build_tendon_equality_rows` instead (2026-07-31);
+the elliptic and CG paths, which consume THIS builder, still run them as
+post-passes. `SROW_EQ_BILATERAL` lives here because the row-state / force /
+cost helpers below are shared by both.
 
 ROW SEMANTICS (MuJoCo `mj_constraintUpdate`, engine_core_constraint.c:2296+)
 
@@ -94,6 +99,12 @@ from ..gpu.constants import (
 # Row kinds
 comptime SROW_LIMIT: Int = 0
 comptime SROW_FRICTION: Int = 1
+# Bilateral: an equality row. Always active, never clamped — its state is
+# unconditionally QUADRATIC, so `R`/`floss` are never read for it. Built by
+# `constraints/tendon_limit.build_tendon_equality_rows` for the pyramidal edge
+# list; `build_scalar_rows` below does NOT emit one (see the docstring note on
+# equality rows in the elliptic/CG paths).
+comptime SROW_EQ_BILATERAL: Int = 2
 
 # Row states (MuJoCo mjCNSTRSTATE_*)
 comptime SROW_SATISFIED: Int = 0
@@ -131,6 +142,8 @@ def scalar_row_state[
     floss: Scalar[DTYPE],
 ) -> Int:
     """MuJoCo's per-row branch, given the current `jar`."""
+    if kind == SROW_EQ_BILATERAL:
+        return SROW_QUADRATIC
     if kind == SROW_LIMIT:
         if jar >= Scalar[DTYPE](0):
             return SROW_SATISFIED

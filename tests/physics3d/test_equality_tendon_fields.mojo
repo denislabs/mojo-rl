@@ -93,11 +93,26 @@ comptime DTYPE = DType.float32
 comptime BATCH = 2
 comptime METADATA_SIZE_L = 4
 
+# Regenerated 2026-07-31 (GOLD_A only, 0.25%; GOLD_NCON_A and both Part B
+# numbers unchanged) for the tendon-equality diagApprox. `_tendon_env` used to
+# build its `R` from the SUM of `dof_invweight0` over the tendon's joints, via
+# `_legacy_invw_read` — the docstring above still describes that misread as
+# something this gate "locks in". MuJoCo uses `tendon_invweight0[eq_obj1id]`,
+# one number (engine_core_constraint.c:1091); the sum is the mjEQ_JOINT rule
+# (:1090) applied to the wrong constraint type. On dm_control's quadruped,
+# whose four coupling tendons are the first equality tendons any model here
+# builds through the PARSER, the old rule put ~7% on qacc; the new one takes
+# the contact-free gate in test_rne_post_sensors_vs_mujoco.mojo to 2e-7.
+#
+# Part A's records are injected by hand and never set `TENDON_IDX_INVWEIGHT0`,
+# so this model now takes the `diag_ten = k` (exact K) fallback rather than a
+# misread. Still a regression pin, not a correctness statement — as below.
+#
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ---
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
 comptime GOLD_NCON_A = 8  # Part A tendon: total contacts over the steps
-comptime GOLD_A = -514929.7781171086  # Part A final qpos/qvel/qacc/contacts checksum
+comptime GOLD_A = -513649.55245587835  # Part A final qpos/qvel/qacc/contacts checksum
 comptime GOLD_NCON_B = 6  # Part B equality: total contacts over the steps
 # Re-harvested 2026-07-29 (was 222.7145065382404).
 #

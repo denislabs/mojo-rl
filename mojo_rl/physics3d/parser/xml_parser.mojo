@@ -1737,21 +1737,121 @@ def _strip_include_tags(xml: String) -> String:
     return result
 
 
+def _dedupe_last_wins(inner: String) -> String:
+    """Keep only the LAST element of each name in `inner`, in document order.
+
+    `<visual>`'s children (`global`, `quality`, `headlight`, `map`, `scale`,
+    `rgba`) are SINGLETONS in the MJCF schema, but `merge_mjcf` treats
+    `<visual>` as an accumulator and concatenates every input's children. A
+    model that declares its own `<visual><map .../></visual>` on top of the
+    shared `common/visual.xml` therefore produced two `<map>` elements, and
+    MuJoCo rejects that outright:
+
+        XML Error: Schema violation: unique element 'map' found 2 times
+
+    Nothing in OUR engine reads `<visual>`, so the merged models ran fine and
+    this stayed invisible until quadruped — the first merged model with its
+    own `<visual>` — needed to be loaded BY MUJOCO for a parity gate. An MJCF
+    we cannot round-trip into MuJoCo is an MJCF we cannot gate.
+
+    Last-wins matches `<include>` ordering (the model's own section comes
+    after the shared one). It is element replacement, not MuJoCo's
+    attribute-wise merge: an attribute set only by the EARLIER element is
+    dropped rather than kept. That is exact for every current caller (the
+    shared `<map znear>` is a strict subset of quadruped's `<map znear zfar>`)
+    and stays cosmetic regardless, since only the renderer reads these.
+
+    Bails out unchanged on anything that is not a flat list of self-closing
+    elements — better today's invalid XML than a silently mangled section.
+    """
+    var starts = List[Int]()
+    var ends = List[Int]()
+    var name_starts = List[Int]()
+    var name_ends = List[Int]()
+
+    var i = 0
+    var n = inner.byte_length()
+    # BOUNDED, not `while i < n`. An unbounded data-dependent loop inside a
+    # nested comptime callee is a known compile-time explosion in this tree
+    # (see sensors/subtree.mojo's `walk_to_root` for the reproducer). Each
+    # iteration consumes at least one byte, so `n` is an exact bound.
+    for _ in range(n):
+        if i >= n:
+            break
+        var t = inner.find("<", i)
+        if t == -1:
+            break
+        if t + 4 <= n and String(inner[byte = t : t + 4]) == "<!--":
+            var c = inner.find("-->", t)
+            if c == -1:
+                return inner
+            i = c + 3
+            continue
+        var te = inner.find(">", t)
+        if te == -1:
+            return inner
+        if not _is_self_closing(inner, t, te):
+            return inner
+        var ns = t + 1
+        var ne = ns
+        while ne < te:
+            var ch = String(inner[byte = ne : ne + 1])
+            if ch == " " or ch == "\n" or ch == "\t" or ch == "\r" or ch == "/":
+                break
+            ne += 1
+        if ne == ns:
+            return inner
+        starts.append(t)
+        ends.append(te + 1)
+        name_starts.append(ns)
+        name_ends.append(ne)
+        i = te + 1
+
+    var out = String("")
+    for a in range(len(starts)):
+        var la = name_ends[a] - name_starts[a]
+        var dup = False
+        for b in range(a + 1, len(starts)):
+            if name_ends[b] - name_starts[b] != la:
+                continue
+            var same = True
+            for k in range(la):
+                var ca = String(
+                    inner[byte = name_starts[a] + k : name_starts[a] + k + 1]
+                )
+                var cb = String(
+                    inner[byte = name_starts[b] + k : name_starts[b] + k + 1]
+                )
+                if ca != cb:
+                    same = False
+                    break
+            if same:
+                dup = True
+                break
+        if not dup:
+            out = out + "    " + String(inner[byte = starts[a] : ends[a]]) + "\n"
+    return out
+
+
 def merge_mjcf(*xmls: String) -> String:
     """Merge multiple MJCF XML strings following MuJoCo <include> semantics.
 
     Singleton tags (<option>, <compiler>): attributes merged, last wins per attr.
     Accumulator tags — inner content concatenated from all inputs:
     <asset>, <default>, <worldbody>, <tendon>, <actuator>, <equality>,
-    <visual>, and <option>'s <flag> children.
+    <visual>, <sensor>, and <option>'s <flag> children.
 
-    ⚠ ANYTHING NOT IN THAT LIST IS SILENTLY DROPPED, with no diagnostic. Two
-    sections are, deliberately:
+    ⚠ ANYTHING NOT IN THAT LIST IS SILENTLY DROPPED, with no diagnostic. One
+    section still is, deliberately:
 
-      * <sensor> — the engine has no sensor framework (gap G1); the ported
-        configs read the underlying fields directly, and the models keep their
-        `<sensor>` blocks only as documentation of what the observation is.
       * <contact> — no exclude/pair support yet.
+
+    <sensor> was in that dropped list until 2026-07-31. Our parser ignores the
+    section either way — the ported configs read the underlying fields through
+    physics3d/sensors/ — but dropping it made the merged XML UNLOADABLE as a
+    reference: MuJoCo built a model with nsensor == 0, so no parity gate could
+    ask it what a sensor should read. Accumulating it costs nothing and makes
+    the merged text a faithful copy of what the model declares.
 
     This list used to CLAIM <sensor> was accumulated while omitting <tendon>,
     which was both wrong and the reason a dropped `<tendon>` went unnoticed
@@ -1786,6 +1886,9 @@ def merge_mjcf(*xmls: String) -> String:
     # the `fins_sym` passive spring (which would have failed NOTHING — a
     # missing passive force is just a slightly different fish).
     var all_tendon = String("")
+    # Carried for the MuJoCo side of parity gates (see the docstring); our own
+    # parser never looks at it.
+    var all_sensor = String("")
     # <option> is merged attribute-wise, but MJCF also allows <flag> CHILDREN
     # inside it. Those were silently dropped before 2026-07-29, which quietly
     # disabled `<flag contact="disable"/>` for every merged model — cartpole
@@ -1819,6 +1922,7 @@ def merge_mjcf(*xmls: String) -> String:
         all_actuator = all_actuator + _extract_section_inner(stripped, "actuator")
         all_equality = all_equality + _extract_section_inner(stripped, "equality")
         all_tendon = all_tendon + _extract_section_inner(stripped, "tendon")
+        all_sensor = all_sensor + _extract_section_inner(stripped, "sensor")
         all_visual = all_visual + _extract_section_inner(stripped, "visual")
 
     # Build merged XML
@@ -1851,7 +1955,12 @@ def merge_mjcf(*xmls: String) -> String:
 
     # Visual
     if _trim(all_visual).byte_length() > 0:
-        result = result + "  <visual>\n" + all_visual + "  </visual>\n"
+        result = (
+            result
+            + "  <visual>\n"
+            + _dedupe_last_wins(all_visual)
+            + "  </visual>\n"
+        )
 
     # Defaults
     if _trim(all_defaults).byte_length() > 0:
@@ -1877,6 +1986,10 @@ def merge_mjcf(*xmls: String) -> String:
     # Equality
     if _trim(all_equality).byte_length() > 0:
         result = result + "  <equality>\n" + all_equality + "  </equality>\n"
+
+    # Sensor (reference-only; see the docstring)
+    if _trim(all_sensor).byte_length() > 0:
+        result = result + "  <sensor>\n" + all_sensor + "  </sensor>\n"
 
     result = result + "</mujoco>"
     return result

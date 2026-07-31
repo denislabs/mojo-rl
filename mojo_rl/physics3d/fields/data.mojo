@@ -75,6 +75,14 @@ struct Data[
     var cfrc_ext: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*6]
     var cvel: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*6]
     var cinert: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*10]
+    # `mj_rnePostConstraint` products (torque:force, world-oriented, at the
+    # subtree CoM of each body's kinematic root). Written ONLY by the
+    # `compute_rne_post` stage, which an integrator runs when its
+    # `RNE_POST` parameter is set — every other model leaves them zero.
+    # They feed the acceleration-stage sensors (accelerometer, force,
+    # torque); see physics3d/sensors/site_acc.mojo.
+    var cacc: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*6]
+    var cfrc_int: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*6]
     var subtree_com: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*3]
     var qfrc_actuator: TensorImpl[Self.DTYPE]  # [BATCH, NV]
     # Mocap body targets (world frame; hook-written, FK skips mocap bodies —
@@ -101,6 +109,8 @@ struct Data[
         self.cfrc_ext = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
         self.cvel = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
         self.cinert = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 10)
+        self.cacc = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
+        self.cfrc_int = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
         self.subtree_com = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 3)
         self.qfrc_actuator = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
         self.mocap_pos = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 3)
@@ -125,6 +135,8 @@ struct Data[
         self.cfrc_ext.upload(ctx)
         self.cvel.upload(ctx)
         self.cinert.upload(ctx)
+        self.cacc.upload(ctx)
+        self.cfrc_int.upload(ctx)
         self.subtree_com.upload(ctx)
         self.qfrc_actuator.upload(ctx)
         self.mocap_pos.upload(ctx)
@@ -148,6 +160,8 @@ struct Data[
         self.cfrc_ext.download(ctx)
         self.cvel.download(ctx)
         self.cinert.download(ctx)
+        self.cacc.download(ctx)
+        self.cfrc_int.download(ctx)
         self.subtree_com.download(ctx)
         self.qfrc_actuator.download(ctx)
         self.mocap_pos.download(ctx)

@@ -93,6 +93,22 @@ comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime BATCH = 2
 comptime N_ROUNDS = 3
 
+# Regenerated 2026-07-31 for the pyramidal contact-force RECORD fix. The
+# PYRAMIDAL contacts checksum moved ~2.17x; ELLIPTIC did not move at all, and
+# neither did any qacc/state checksum. That split is the whole story:
+# `mju_decodePyramid` makes a contact's normal force the SUM of its four edge
+# forces, and `newton_solve.mojo` was halving it. The solver works in edge
+# forces, so qacc was never affected — only the write-back to
+# `Data.contacts[CONTACT_IDX_FORCE_*]`, which the elliptic path writes
+# directly and therefore never had wrong. Verified by causation: with the
+# whole change stashed, this file's PYRAMIDAL qacc checksum is byte-identical
+# to the new one.
+#
+# ⚠ While regenerating, the OLD PYRAMIDAL qacc golden turned out to be STALE
+# on its own: baseline harvests 5707.35403907299 against a frozen
+# 5707.129324436188 (4e-5). It had drifted at some earlier commit and survived
+# because GOLD_RTOL is 1e-3. Refreshed here too, but note that a 1e-3 pin on a
+# self-golden cannot tell drift from a bug.
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
@@ -115,8 +131,8 @@ comptime GOLD_CON_ELL = 506352.9110841565
 # moved it by only ~4e-5 relative (float32 reassociation in the refactored
 # `primal.mojo` expressions), well inside GOLD_RTOL.
 comptime GOLD_NCON_PYR = 36
-comptime GOLD_QC_PYR = 5707.129324436188
-comptime GOLD_CON_PYR = 178360.48161778972
+comptime GOLD_QC_PYR = 5707.35403907299
+comptime GOLD_CON_PYR = 387211.7646696381
 
 
 def _check(name: String, got: Float64, gold: Float64) raises:

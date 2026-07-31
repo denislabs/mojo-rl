@@ -119,6 +119,7 @@ struct Phyics3dEnv[
         Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
         Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0,
         Self.MODEL_DEF.CONE_TYPE, 1, SOLVER = Self.SOLVER,
+        RNE_POST = Self.CONFIG.RNE_POST,
     ]
     var integ_rk4: Self.IntegRK4
     var integ_euler: Self.IntegEuler
@@ -164,6 +165,13 @@ struct Phyics3dEnv[
         """`ctx` is used ONCE, for the model-record device upload at build
         (no device work on the CPU step path); it is stored to keep the mf
         device buffers valid for the env's lifetime."""
+        comptime assert (
+            (not Self.CONFIG.RNE_POST) or Self.CONFIG.INTEGRATOR == "euler"
+        ), (
+            "Phyics3dEnv: CONFIG.RNE_POST is wired into the Euler integrator"
+            " only — an RK4 config would silently get zero cacc/cfrc_int, and"
+            " with them zero accelerometer/force/torque readings"
+        )
         self._ctx = ctx
         self.max_steps = max_steps
         self.current_step = 0

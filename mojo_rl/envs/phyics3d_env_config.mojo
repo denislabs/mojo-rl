@@ -47,6 +47,22 @@ trait Phyics3dEnvConfig:
     # is silently one control step stale.
     comptime SYNC_FK_AFTER_STEP: Bool = False
 
+    # Run `mj_rnePostConstraint` inside every substep, filling `Data.cacc`
+    # and `Data.cfrc_int` (dynamics/rne_post.mojo). Needed ONLY by the
+    # acceleration-stage sensors — `accelerometer`, `force`, `torque` — and
+    # off by default because it is pure overhead for every other model.
+    #
+    # The values land at MuJoCo's `mj_sensorAcc` point: the state BEFORE the
+    # substep's integration, with that substep's constrained qacc. After the
+    # frame-skip loop they therefore describe the second-to-last state, which
+    # is exactly what dm_control observes — `mj_step1` refreshes position and
+    # velocity sensors at the new state but leaves the acceleration stage
+    # alone. Do NOT "fix" this to agree with SYNC_FK_AFTER_STEP.
+    #
+    # Euler only: the RK4 integrator would need the hook inside its base
+    # stage, and no in-scope model wants both.
+    comptime RNE_POST: Bool = False
+
     # === CPU: Pre-step hook — save any per-env state before physics ===
     @staticmethod
     def pre_step_cpu[

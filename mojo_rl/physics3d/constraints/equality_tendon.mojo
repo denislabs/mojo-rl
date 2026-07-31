@@ -86,6 +86,9 @@ from ..gpu.constants import (
     TENDON_IDX_SOLIMP_2,
     TENDON_IDX_SOLIMP_3,
     TENDON_IDX_SOLIMP_4,
+    TENDON_IDX_INVWEIGHT0,
+    TENDON_IDX_KIND,
+    TENDON_KIND_SPATIAL,
 )
 
 
@@ -995,6 +998,7 @@ def _tendon_env[
     NSITE: Int,
     BATCH: Int,
     NUM_ITERATIONS: Int,
+    SKIP_FIXED: Bool = False,
 ](
     env: Int,
     qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
@@ -1027,6 +1031,13 @@ def _tendon_env[
 
     A fixed tendon is: ten_length = Σ(coef_i * qpos[joint_qposadr_i]).
     Equality constraint: ten_length - length_ref = 0.
+
+    ⚠ `sites`, `body_invweight0` and `dof_invweight0` are NO LONGER READ. They
+    fed the `_legacy_invw_read` diagApprox, which was the mjEQ_JOINT rule
+    applied to a tendon row; the row now takes `TENDON_IDX_INVWEIGHT0` (see
+    below). Kept in the signature only to avoid churning four solver call
+    sites ahead of the rewrite that moves these rows INTO the Newton/CG
+    systems — do not read them back in on the assumption they still matter.
     """
 
     comptime if NTENDON == 0:
@@ -1082,6 +1093,19 @@ def _tendon_env[
             == 0
         ):
             continue
+
+        # SKIP_FIXED: the caller already put this row INSIDE its solver
+        # (`build_tendon_equality_rows`), so re-applying it here would double
+        # the constraint force. Set by the PYRAMIDAL Newton paths; the
+        # elliptic, CG and PGS paths still solve these here. Spatial equality
+        # tendons are never row-built, so they stay this pass's job either way
+        # — which is why the guard tests the KIND rather than skipping wholesale.
+        comptime if SKIP_FIXED:
+            if (
+                Int(rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_KIND]))
+                != TENDON_KIND_SPATIAL
+            ):
+                continue
 
         var num_joints = Int(
             rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_NUM_JOINTS])
@@ -1232,28 +1256,24 @@ def _tendon_env[
         var bias = t_B_damp * ten_vel + t_K_spring * imp * pos_err
         ten_bias[r] = bias
 
-        # R = (1-imp)/imp * diagApprox (sum of dof_invweight0 for tendon joints)
-        # (legacy addresses dof_invweight0 via the NTENDON/NSITE-less offset,
-        # i.e. NBODY*2 + dof_adr from the tendon-records start — see
-        # _legacy_invw_read; on tendon models this lands in the tendon /
-        # body_invweight0 records exactly as the legacy kernel's read does)
-        var diag_ten: Scalar[DTYPE] = 0
-        for ji in range(4):
-            if ji >= num_joints:
-                break
-            var jnt_idx = joint_idxs[ji]
-            if jnt_idx < 0 or jnt_idx >= NJOINT:
-                continue
-            var dof_adr = Int(
-                rebind[Scalar[DTYPE]](joints[jnt_idx, JOINT_IDX_DOF_ADR])
-            )
-            diag_ten += _legacy_invw_read[DTYPE, NV, NBODY, NTENDON, NSITE](
-                NBODY * 2 + dof_adr,
-                tendons,
-                sites,
-                body_invweight0,
-                dof_invweight0,
-            )
+        # R = (1-imp)/imp * diagApprox.
+        #
+        # ⚠ diagApprox for a TENDON equality is `tendon_invweight0[id]` — ONE
+        # number, the tendon's own J M^-1 J^T at qpos0 (engine_core_constraint
+        # .c:1091, `m->tendon_invweight0[m->eq_obj1id[id]]`). It is NOT the sum
+        # of `dof_invweight0` over the tendon's joints, which is what this used
+        # to compute: that is the mjEQ_JOINT branch's rule (:1090), applied to
+        # the wrong constraint type. The two disagree by more than a constant —
+        # a fixed tendon's coefficients and the joints' cross-coupling both
+        # enter the real quantity and neither enters the sum.
+        #
+        # Silent, as usual: R only sets the row's COMPLIANCE, so the constraint
+        # still held approximately and nothing errored. quadruped's four
+        # coupling tendons are the first equality tendons any model here builds
+        # through the parser, and they put ~7% on qacc.
+        var diag_ten = rebind[Scalar[DTYPE]](
+            tendons[t_i, TENDON_IDX_INVWEIGHT0]
+        )
         if diag_ten < Scalar[DTYPE](1e-10):
             diag_ten = k  # Fallback to exact K
         var R_ten = (Scalar[DTYPE](1.0) - imp) / imp * diag_ten

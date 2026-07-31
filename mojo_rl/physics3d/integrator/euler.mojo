@@ -48,6 +48,7 @@ from ..solver.island_pgs_solve import solve_island_pgs
 from ..collision.broadphase_sap import detect_contacts_auto
 from ..types import ConeType
 from ..dynamics.rne import compute_bias_forces_rne
+from ..dynamics.rne_post import compute_rne_post
 from ..dynamics.fluid_forces import compute_fluid_forces
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
 from ..fields import Data, Model, DynamicsScratch, ContactScratch
@@ -387,6 +388,7 @@ struct EulerIntegrator[
     SOLVER: StaticString = "pgs",
     PARALLEL_GPU: Bool = False,
     CRBA_TREEWALK: Bool = False,
+    RNE_POST: Bool = False,
 ](Movable):
     """Owns its scratch; steps contact-free dynamics on either target. See
     module docstring for what is deliberately not yet ported.
@@ -633,6 +635,19 @@ struct EulerIntegrator[
             # this is the only place they can be applied; with contacts the
             # solvers call `_friction_env` themselves beside their limit rows.
             solve_friction[
+                target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
+                Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
+                Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
+                Self.BATCH,
+            ](d, m, self.scratch, ctx)
+
+        # `mj_sensorAcc` sits exactly here in MuJoCo: after fwdConstraint,
+        # before the integrator. Every input the stage needs (FK products,
+        # solved contact forces, scratch.qacc_constrained) is valid at this
+        # point and stale one line later — `_finalize_env` overwrites
+        # d.qacc with the implicit-damping re-solve and moves qpos/qvel on.
+        comptime if Self.RNE_POST:
+            compute_rne_post[
                 target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                 Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
                 Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,

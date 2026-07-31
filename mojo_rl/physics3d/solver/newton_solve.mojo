@@ -66,7 +66,10 @@ from ..constraints.contact_solve import (
 )
 from ..constraints.limits import _limits_env
 from ..constraints.friction_dof import _friction_env
-from ..constraints.tendon_limit import build_tendon_limit_rows
+from ..constraints.tendon_limit import (
+    build_tendon_limit_rows,
+    build_tendon_equality_rows,
+)
 from ..constraints.scalar_rows import (
     build_scalar_rows,
     max_scalar_rows,
@@ -76,6 +79,7 @@ from ..constraints.scalar_rows import (
     SROW_QUADRATIC,
     SROW_LIMIT,
     SROW_FRICTION,
+    SROW_EQ_BILATERAL,
     DOF_SOLREF_TIMECONST,
     DOF_SOLIMP_DMIN,
     DOF_SOLIMP_DMAX,
@@ -632,8 +636,9 @@ def _newton_solve_env[
         comptime MAX_LIM = _max_one[2 * NJOINT]()
         comptime MAX_FRIC = V_SIZE  # one friction row per dof
         comptime MAX_TLIM = 2 * NTENDON  # lo + hi per tendon
-        # contact edges + limit edges + dry-friction + tendon-limit rows
-        comptime ME = NE * MC + MAX_LIM + MAX_FRIC + MAX_TLIM
+        comptime MAX_TEQ = NTENDON  # one bilateral row per equality tendon
+        # contact + limit + dry-friction + tendon-limit + tendon-equality rows
+        comptime ME = NE * MC + MAX_LIM + MAX_FRIC + MAX_TLIM + MAX_TEQ
 
         # Cache edge data from PYRAMIDAL workspace layout
         var pyr_sc = ws_Jt1_idx + 4 * MC * NV
@@ -901,6 +906,19 @@ def _newton_solve_env[
                 Je, De, bias_e, num_edges,
             )
 
+        # Fixed-tendon equality rows (MuJoCo mjEQ_TENDON). BILATERAL — always
+        # active, never clamped. These used to be a post-solve Gauss-Seidel
+        # pass; with contacts live that split cost a standing quadruped two
+        # thirds of its ground reaction force. See
+        # constraints/tendon_limit.build_tendon_equality_rows.
+        comptime if NTENDON > 0:
+            build_tendon_equality_rows[
+                DTYPE, NQ, NV, NJOINT, NTENDON, V_SIZE, ME, BATCH
+            ](
+                env, qpos, qvel, tendons, joints, mmeta, m_inv,
+                Je, De, bias_e, kind_e, num_edges,
+            )
+
         # Dry-friction dof rows (MuJoCo mjCNSTR_FRICTION_DOF). These were
         # MISSING from the pyramidal path entirely — `_friction_env` was only
         # ever called on the elliptic branch, so a pyramidal model with
@@ -1155,7 +1173,16 @@ def _newton_solve_env[
             var f_e1 = force[c * NE + 1]
             var f_e2 = force[c * NE + 2]
             var f_e3 = force[c * NE + 3]
-            fn_c = (f_e0 + f_e1 + f_e2 + f_e3) / Scalar[DTYPE](2.0)
+            # `mju_decodePyramid`: the normal force is the SUM of the four edge
+            # forces, NOT half of it. Both engines build each edge as
+            # `Jn +- mu*Jt` with a FULL Jn (engine_core_constraint.c:1003), so
+            # halving it made every pyramidal contact RECORD read half true
+            # while qacc stayed correct — the solver works in edge forces and
+            # only this write-back was wrong. Its two consumers are cfrc_ext
+            # (hence Ant's contact_cost, a squared norm that had been costing a
+            # quarter of what it should) and the quadruped force/torque
+            # sensors. Fixed 2026-07-31.
+            fn_c = f_e0 + f_e1 + f_e2 + f_e3
             ft1_c = (f_e0 - f_e1) * safe_mu
             ft2_c = (f_e2 - f_e3) * safe_mu
             var c_off = c * CONTACT_SIZE
@@ -1175,10 +1202,13 @@ def _newton_solve_env[
                 equality, tendons, sites, body_invweight0, dof_invweight0,
                 cdof, m_inv, qacc_constrained,
             )
+        # SKIP_FIXED: the fixed-tendon equalities are rows of the system
+        # solved above. Only SPATIAL equality tendons (none in the tree, but
+        # the builder skips them by design) are left for this pass.
         comptime if NTENDON > 0:
             _tendon_env[
                 DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
-                SOLVER_ITER_GPU,
+                SOLVER_ITER_GPU, SKIP_FIXED=True,
             ](
                 env, qpos, qvel, joints, mmeta, tendons, sites,
                 body_invweight0, dof_invweight0, m_inv, qacc_constrained,
@@ -2509,10 +2539,11 @@ def _newton_blocked_fields_kernel[
     #
     # ⚠ ME drives `Je_sh`, which is `ME * V_SIZE` DOUBLES of THREADGROUP
     # memory and is the dominant shared-memory term. Growing ME by
-    # `V_SIZE + 2*NTENDON` grows Je_sh by `(V_SIZE + 2*NTENDON) * V_SIZE`. On a
+    # `V_SIZE + 3*NTENDON` grows Je_sh by `(V_SIZE + 3*NTENDON) * V_SIZE`. On a
     # large model that can push the block over the device's shared-memory
     # limit, which shows up as a LAUNCH FAILURE (loud), not a wrong answer.
-    comptime ME = NE * MC + MAX_LIM + MAX_FRIC + MAX_TLIM
+    comptime MAX_TEQ = NTENDON  # one bilateral row per equality tendon
+    comptime ME = NE * MC + MAX_LIM + MAX_FRIC + MAX_TLIM + MAX_TEQ
 
     # === SHARED memory (per-block == per-env) ===
     var M_sh = LayoutTensor[
@@ -2891,6 +2922,35 @@ def _newton_blocked_fields_kernel[
                 bias_e_sh[num_edges] = t_bias[r]
                 num_edges += 1
 
+            # Fixed-tendon equality rows — same staging, and the same reason
+            # they are rows: see the CPU pyramidal path.
+            var q_je = InlineArray[Scalar[DTYPE], MAX_TEQ * V_SIZE](
+                fill=Scalar[DTYPE](0)
+            )
+            var q_de = InlineArray[Scalar[DTYPE], MAX_TEQ](
+                fill=Scalar[DTYPE](0)
+            )
+            var q_bias = InlineArray[Scalar[DTYPE], MAX_TEQ](
+                fill=Scalar[DTYPE](0)
+            )
+            var q_kind = InlineArray[Int, MAX_TEQ](fill=SROW_EQ_BILATERAL)
+            var q_n = 0
+            build_tendon_equality_rows[
+                DTYPE, NQ, NV, NJOINT, NTENDON, V_SIZE, MAX_TEQ, BATCH
+            ](
+                env, qpos, qvel, tendons, joints, mmeta, m_inv,
+                q_je, q_de, q_bias, q_kind, q_n,
+            )
+            for r in range(q_n):
+                if num_edges >= ME:
+                    break
+                for i in range(NV):
+                    Je_sh[num_edges * NV + i] = q_je[r * NV + i]
+                De_sh[num_edges] = q_de[r]
+                bias_e_sh[num_edges] = q_bias[r]
+                kind_e_sh[num_edges] = Scalar[DTYPE](q_kind[r])
+                num_edges += 1
+
         # Dry-friction dof rows (mjCNSTR_FRICTION_DOF). BOX rows, clamped to
         # +-frictionloss, so they are the reason this kernel needs row states
         # at all. Arithmetic identical to the per-env pyramidal builder.
@@ -3252,7 +3312,16 @@ def _newton_blocked_fields_kernel[
         var f_e1 = rebind[Scalar[DTYPE]](force_sh[c * NE + 1])
         var f_e2 = rebind[Scalar[DTYPE]](force_sh[c * NE + 2])
         var f_e3 = rebind[Scalar[DTYPE]](force_sh[c * NE + 3])
-        fn_c = (f_e0 + f_e1 + f_e2 + f_e3) / Scalar[DTYPE](2.0)
+        # `mju_decodePyramid`: the normal force is the SUM of the four edge
+        # forces, NOT half of it. Both engines build each edge as
+        # `Jn +- mu*Jt` with a FULL Jn (engine_core_constraint.c:1003), so
+        # halving it made every pyramidal contact RECORD read half true
+        # while qacc stayed correct — the solver works in edge forces and
+        # only this write-back was wrong. Its two consumers are cfrc_ext
+        # (hence Ant's contact_cost, a squared norm that had been costing a
+        # quarter of what it should) and the quadruped force/torque
+        # sensors. Fixed 2026-07-31.
+        fn_c = f_e0 + f_e1 + f_e2 + f_e3
         ft1_c = (f_e0 - f_e1) * safe_mu
         ft2_c = (f_e2 - f_e3) * safe_mu
         var c_off = c * CONTACT_SIZE
@@ -3260,8 +3329,11 @@ def _newton_blocked_fields_kernel[
         contacts[env, c_off + CONTACT_IDX_FORCE_T1] = ft1_c
         contacts[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_c
 
-    # Joint limits are handled as edges above; equality/tendon remain as a
-    # separate post-solve step (mirrors the PYRAMIDAL per-env path's gating).
+    # Joint limits and fixed-tendon equalities are handled as edges above;
+    # weld/connect equalities (and any SPATIAL equality tendon) remain a
+    # separate post-solve step. Mirrors the PYRAMIDAL per-env path's gating,
+    # including SKIP_FIXED — without it the tendon rows would be applied
+    # twice, once inside the solve and once after.
     comptime SOLVER_ITER_GPU: Int = 50
     comptime if NEQUALITY > 0:
         _equality_env[
@@ -3275,7 +3347,7 @@ def _newton_blocked_fields_kernel[
     comptime if NTENDON > 0:
         _tendon_env[
             DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
-            SOLVER_ITER_GPU,
+            SOLVER_ITER_GPU, SKIP_FIXED=True,
         ](
             env, qpos, qvel, joints, mmeta, tendons, sites, body_invweight0,
             dof_invweight0, m_inv, qacc_constrained,
