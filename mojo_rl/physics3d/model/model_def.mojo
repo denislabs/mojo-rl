@@ -36,6 +36,8 @@ trait ModelDefLike:
     comptime MAX_CONTACTS: Int
     comptime MAX_TENDON: Int
     comptime NSITE: Int
+    # MuJoCo `m->na`: ACTIVATION variables, not `nu`.
+    comptime NA: Int
     comptime NEXCLUDE: Int
     comptime OBS_DIM: Int
     comptime ACTION_DIM: Int
@@ -118,6 +120,7 @@ trait ModelDefLike:
             1,
         ],
         actions: List[Float64],
+        mut act: List[Scalar[DTYPE]],
     ):
         ...
 

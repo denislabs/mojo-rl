@@ -164,6 +164,9 @@ struct ModelDefFromXML[
     comptime MAX_CONTACTS: Int = Self.max_contacts
     comptime MAX_TENDON: Int = Self.max_tendon
     comptime NSITE: Int = Self.nsite
+    # MuJoCo `m->na` — activation variables, NOT `nu`. Nonzero only for
+    # actuators with a `dyntype`; 0 for every <motor>/<position>.
+    comptime NA: Int = Self._acd.na
     comptime NEXCLUDE: Int = Self.nexclude
     comptime OBS_DIM: Int = Self.obs_dim_override if Self.obs_dim_override > 0 else (
         Self.nq - Self.obs_qpos_skip + Self.nv
@@ -297,6 +300,7 @@ struct ModelDefFromXML[
             1,
         ],
         actions: List[Float64],
+        mut act: List[Scalar[DTYPE]],
     ):
         """Generalized forces from the model spec: actuators + tendon springs.
 
@@ -345,7 +349,24 @@ struct ModelDefFromXML[
                 ctrl = Self._acd.motor_ctrl_min[i]
 
             var gear = Self._acd.motor_gears[i]
-            var force = ctrl
+
+            # ACTIVATION (MuJoCo `d->act`). `force = gain .* [ctrl/act]`
+            # (mj_fwdActuation): an actuator with a `dyntype` feeds its
+            # activation to the gain where a plain one feeds `ctrl`. The
+            # activation itself is a first-order lag of `ctrl`.
+            #
+            # `u` is what the gain multiplies. `act` is integrated AFTER the
+            # force is computed, matching MuJoCo's order — `mj_fwdActuation`
+            # reads the current `act`, and `mj_advance` advances it at the end
+            # of the same step (`actearly` is off here). This function runs
+            # ONCE PER SUBSTEP, which is the same cadence, so the two agree
+            # step for step.
+            var adr = Self._acd.motor_act_adr[i]
+            var u = ctrl
+            if adr >= 0 and adr < len(act):
+                u = Float64(act[adr])
+
+            var force = u
             if Self._acd.motor_kind[i] == ACT_KIND_POSITION:
                 var length = Float64(0)
                 var vel = Float64(0)
@@ -359,8 +380,11 @@ struct ModelDefFromXML[
                         vel += coef * Float64(d.qvel.data[dadr])
                 length *= gear
                 vel *= gear
+                # `u`, not `ctrl` — for a dyntype actuator the servo setpoint
+                # is the ACTIVATION, which lags the control. They coincide
+                # only when the actuator has no activation (then u == ctrl).
                 force = (
-                    Self._acd.motor_kp[i] * (ctrl - length)
+                    Self._acd.motor_kp[i] * (u - length)
                     - Self._acd.motor_kv[i] * vel
                 )
 
@@ -370,6 +394,19 @@ struct ModelDefFromXML[
                     continue
                 d.qfrc.data[dadr] += Scalar[DTYPE](
                     gear * Self._acd.motor_trn_coef[i * 4 + k] * force
+                )
+
+            # mjDYN_FILTER, integrated by Euler exactly as `nextActivation`
+            # does for a non-`filterexact` dyntype (engine_forward.c:341):
+            #     act_dot = (ctrl - act) / tau ;  act += act_dot * timestep
+            # `ctrl` here is already ctrlrange-clamped, matching MuJoCo, which
+            # clamps `d->ctrl` before computing act_dot.
+            if adr >= 0 and adr < len(act):
+                var tau = Self._acd.motor_dyn_tau[i]
+                if tau < 1e-10:
+                    tau = 1e-10  # mjMINVAL guard, as MuJoCo applies
+                act[adr] = Scalar[DTYPE](
+                    u + (ctrl - u) / tau * Self.TIMESTEP
                 )
 
         # Fixed-tendon springs (`engine_passive.c`, tendon-level spring):

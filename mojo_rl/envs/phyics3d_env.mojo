@@ -128,6 +128,14 @@ struct Phyics3dEnv[
     var frame_skip: Int
     var _last_terminated: Bool
     var prev_x: Scalar[Self.DTYPE]
+    # Actuator activation (MuJoCo `d->act`), one scalar per activation
+    # variable. Lives on the ENV rather than in `Data` because no physics
+    # kernel reads it — only `apply_actions` does, on the CPU, and putting it
+    # in `Data` would force an NA parameter onto every FK / integrator /
+    # solver signature that threads a `Data` through. Sized with a floor of 1:
+    # NA == 0 for every model but quadruped, and a zero-length List is a
+    # needless edge case for the indexing below.
+    var act: List[Scalar[Self.DTYPE]]
 
     # Renderer (optional; RenderableEnv). Reads the fields FK products
     # (`self.d.xpos`/`xquat`), which the fields step refreshes every frame.
@@ -162,6 +170,9 @@ struct Phyics3dEnv[
         self.frame_skip = frame_skip
         self.prev_x = Scalar[Self.DTYPE](0.0)
         self._last_terminated = False
+        self.act = List[Scalar[Self.DTYPE]]()
+        for _ in range(Self.MODEL_DEF.NA if Self.MODEL_DEF.NA > 0 else 1):
+            self.act.append(Scalar[Self.DTYPE](0))
         self._renderer = None
         self._renderer_initialized = False
 
@@ -250,6 +261,9 @@ struct Phyics3dEnv[
     def _reset_state(mut self):
         """Reset semantics (qpos0 + uniform noise + custom hook), all on the
         fields state."""
+        # MuJoCo's mj_resetData zeroes `act` along with qpos/qvel.
+        for _i in range(len(self.act)):
+            self.act[_i] = Scalar[Self.DTYPE](0)
         Self.MODEL_DEF.reset_data(self.d)
         var noise_scale = Self.CONFIG.get_reset_noise()
         if noise_scale > 0.0:
@@ -352,7 +366,9 @@ struct Phyics3dEnv[
             # qpos, hoisting it would freeze the spring at its start-of-step
             # value for the whole control step.
             if not custom_applied:
-                Self.MODEL_DEF.apply_actions(self.d, action_list)
+                Self.MODEL_DEF.apply_actions(
+                    self.d, action_list, self.act
+                )
             try:
                 # CPU target: cannot actually raise (the `raises` on the
                 # dispatchers exists for the GPU branch's ctx handling).

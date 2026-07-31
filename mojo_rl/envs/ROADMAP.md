@@ -479,24 +479,30 @@ is `ten_length - tendon_length0 - eq_data[0]`, and every quadruped hinge has
 qpos0 = 0 so `tendon_length0 = 0`. A model with a joint `ref` would need it
 computed.
 
+**Actuator activation state.** `apply_actions` now implements MuJoCo's
+`force = gain .* [ctrl/act]`: an actuator with a `dyntype` feeds its
+ACTIVATION to the gain where a plain one feeds `ctrl`, and the activation is
+integrated `act += (ctrl - act)/tau * dt` AFTER the force is computed —
+MuJoCo's order (`mj_fwdActuation` reads the current `act`, `mj_advance`
+advances it at the end of the same step). It runs once per SUBSTEP, the same
+cadence, so the two agree step for step; a per-control-step config hook could
+not have expressed it.
+
+⚠ **`act` lives on `Phyics3dEnv`, not in `Data`** — the opposite of the plan
+sketched here earlier, after trying it. Threading `NA` through `Data` costs an
+`NA` parameter on EVERY function that takes a `Data`: forward_kinematics, both
+integrators, the solvers, contact detection. `act` is read by none of them —
+only by `apply_actions`, on the CPU. The env-owned form cost one signature
+(`ModelDefLike.apply_actions` gains `mut act`) and ZERO config-file edits;
+the `Data` form was abandoned mid-way with ~30 files already touched. Sized
+with a floor of 1 element, since NA == 0 for every model but quadruped.
+
+The GPU-batched path does not carry `act` yet — quadruped is CPU-only for now,
+and the GPU hooks are a separate family.
+
 ### Remaining, in dependency order
 
-1. **Activation state.** `Data` has no `act`. Plan: a trailing `NA: Int = 0`
-   parameter plus an `act` tensor. The key point is that it is `na` (activation
-   count) and NOT `nu`: every model ported before quadruped has na=0, because
-   `<motor>` and `<position>` both default to dyntype=none — so the parameter
-   defaults away and NOT ONE of the ~25 existing env configs needs touching.
-   `apply_actions` then reads `act` where it currently reads `ctrl`, and
-   integrates `act += (ctrl-act)/tau * dt` after computing the force (MuJoCo
-   order: `mj_fwdActuation` uses the current act, `mj_advance` integrates).
-   It must happen once per SUBSTEP, which is where `apply_actions` already
-   runs — a per-control-step config hook cannot express it.
-2. **Ellipsoid narrow phase.** The torso is `type="ellipsoid"` with collision
-   enabled and `init_fields` refuses it outright (mass/inertia are modelled;
-   colliding it would silently use a sphere of radius size[0]). Needed against
-   the floor plane at least — a fallen quadruped rests on its torso, and the
-   upright reward is defined for exactly that state.
-3. **accelerometer + force/torque sensors.** The first sensors needing
+1. **accelerometer + force/torque sensors.** The first sensors needing
    `mj_rnePostConstraint` rather than a kinematic read: the accelerometer
    wants `cacc` recomputed with the real `qacc` (ours is built with qacc=0 for
    the bias pass), and force/torque want `cfrc_ext` from contacts and equality

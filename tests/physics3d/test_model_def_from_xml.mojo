@@ -227,7 +227,14 @@ def test_model_def_from_xml() raises:
         actions.append(Float64(0.0))
     actions[0] = Float64(1.0)  # bthigh motor with gear=120
 
-    XmlModel.apply_actions[DType.float64](d, actions)
+    # `act` is the actuator ACTIVATION state (MuJoCo `d->act`). cheetah's
+    # actuators are plain `<motor>`s with no dyntype, so NA == 0 and this
+    # stays a one-element placeholder that apply_actions never reads.
+    var act = List[Scalar[DType.float64]]()
+    for _ in range(XmlModel.NA if XmlModel.NA > 0 else 1):
+        act.append(Scalar[DType.float64](0))
+
+    XmlModel.apply_actions[DType.float64](d, actions, act)
     # bthigh is joint 3 with dof_adr=3
     print("qfrc[3] =", Float64(d.qfrc.data[3]), " (expected 120.0)")
     print()
