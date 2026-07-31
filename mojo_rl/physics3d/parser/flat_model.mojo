@@ -698,6 +698,80 @@ struct SiteData(Copyable, ImplicitlyCopyable, Movable):
 
 
 # =============================================================================
+# TendonData
+# =============================================================================
+
+
+# Mirror of TENDON_KIND_* in physics3d/gpu/constants.mojo, kept local so the
+# parser does not depend on the GPU record layout (same pattern as _EQ_*).
+comptime _TENDON_KIND_FIXED: Int = 0
+comptime _TENDON_KIND_SPATIAL: Int = 1
+
+
+struct TendonData(Copyable, ImplicitlyCopyable, Movable):
+    """Flat runtime tendon data parsed from <tendon><fixed> / <spatial>.
+
+    A FIXED tendon is a linear combination of joint coordinates
+    (`length = sum coef_i * qpos[joint_i]`); a SPATIAL one is a polyline
+    through sites (`length = sum |p_{k+1} - p_k|`). `kind` selects which half
+    of this record is meaningful — they are never both populated.
+
+    Only the site-to-site spatial case is supported. Wrap geoms (<geom>) and
+    pulleys (<pulley>) inside a <spatial> are rejected by the parser rather
+    than skipped, because silently dropping them would shorten the tendon and
+    the error would surface only as a physics divergence.
+    """
+
+    var kind: Int  # _TENDON_KIND_FIXED / _TENDON_KIND_SPATIAL
+    var is_equality: Int  # 1 only when <equality><tendon> names it
+
+    # fixed
+    var num_joints: Int
+    var joint_ids: InlineArray[Int, 4]
+    var coefs: InlineArray[Float64, 4]
+    var length_ref: Float64
+
+    # spatial
+    var num_sites: Int
+    var site_ids: InlineArray[Int, 4]
+
+    # limit
+    var limited: Int
+    var range_min: Float64
+    var range_max: Float64
+    var margin: Float64
+    var solref_lim_0: Float64
+    var solref_lim_1: Float64
+    var solimp_lim_0: Float64
+    var solimp_lim_1: Float64
+    var solimp_lim_2: Float64
+    var solimp_lim_3: Float64
+    var solimp_lim_4: Float64
+
+    def __init__(out self):
+        self.kind = _TENDON_KIND_FIXED
+        self.is_equality = 0
+        self.num_joints = 0
+        self.joint_ids = InlineArray[Int, 4](fill=-1)
+        self.coefs = InlineArray[Float64, 4](fill=0.0)
+        self.length_ref = 0.0
+        self.num_sites = 0
+        self.site_ids = InlineArray[Int, 4](fill=-1)
+        self.limited = 0
+        self.range_min = 0.0
+        self.range_max = 0.0
+        self.margin = 0.0
+        # MuJoCo model defaults (mjModel tendon_solref_lim / tendon_solimp_lim).
+        self.solref_lim_0 = 0.02
+        self.solref_lim_1 = 1.0
+        self.solimp_lim_0 = 0.9
+        self.solimp_lim_1 = 0.95
+        self.solimp_lim_2 = 0.001
+        self.solimp_lim_3 = 0.5
+        self.solimp_lim_4 = 2.0
+
+
+# =============================================================================
 # EqualityData
 # =============================================================================
 
@@ -1044,6 +1118,7 @@ struct FlatModelDef[
     NSITE: Int = 0,
     NEQ: Int = 0,
     NEXCLUDE: Int = 0,
+    NTENDON: Int = 0,
 ](Movable):
     """Model definition using flat InlineArrays — driven entirely from XML.
 
@@ -1067,6 +1142,7 @@ struct FlatModelDef[
     var sites: InlineArray[SiteData, Self.NSITE + 1]
     var equalities: InlineArray[EqualityData, Self.NEQ + 1]
     var excludes: InlineArray[ExcludeData, Self.NEXCLUDE + 1]
+    var tendons: InlineArray[TendonData, Self.NTENDON + 1]
     var gravity_x: Float64
     var gravity_y: Float64
     var gravity_z: Float64
@@ -1100,6 +1176,9 @@ struct FlatModelDef[
         )
         self.excludes = InlineArray[ExcludeData, Self.NEXCLUDE + 1](
             fill=ExcludeData()
+        )
+        self.tendons = InlineArray[TendonData, Self.NTENDON + 1](
+            fill=TendonData()
         )
         self.gravity_x = Float64(0)
         self.gravity_y = Float64(0)

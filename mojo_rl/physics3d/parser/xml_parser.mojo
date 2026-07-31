@@ -55,6 +55,7 @@ struct ParsedModel:
     var NSITE: Int  # number of <site> entries in <worldbody>
     var NEQ: Int  # number of equality constraints (<weld> + <connect> in <equality>)
     var NEXCLUDE: Int  # number of <exclude> entries in <contact>
+    var NTENDON: Int  # number of <fixed> + <spatial> entries in <tendon>
     var ANGLE_DEG: Bool  # True when <compiler angle="degree"/>
     var TIMESTEP: Float64  # <option timestep="..."/>
 
@@ -73,6 +74,7 @@ struct ParsedModel:
         nsite: Int = 0,
         neq: Int = 0,
         nexclude: Int = 0,
+        ntendon: Int = 0,
         angle_deg: Bool = False,
         timestep: Float64 = 0.01,
     ):
@@ -89,6 +91,7 @@ struct ParsedModel:
         self.NSITE = nsite
         self.NEQ = neq
         self.NEXCLUDE = nexclude
+        self.NTENDON = ntendon
         self.ANGLE_DEG = angle_deg
         self.TIMESTEP = timestep
 
@@ -882,6 +885,30 @@ def _find_joint_index_by_name(worldbody: String, joint_name: String) -> Int:
         count += 1
         scan_pos = tag_end + 1
     return -1
+
+
+def _find_site_index_by_name(worldbody: String, site_name: String) -> Int:
+    """Return 0-based index of <site name="site_name"> in DFS order, or -1.
+
+    Site indices are assigned by `_fill_model`'s worldbody walk in exactly
+    this order, so counting `<site` tags here reproduces them. Added for
+    `<spatial>` tendons, whose waypoints are named site references.
+    """
+    var search_name = 'name="' + site_name + '"'
+    var count = 0
+    var scan_pos = 0
+    while True:
+        var site_pos = worldbody.find("<site", scan_pos)
+        if site_pos == -1:
+            return -1
+        var tag_end = worldbody.find(">", site_pos)
+        if tag_end == -1:
+            return -1
+        var tag = String(worldbody[byte = site_pos : tag_end + 1])
+        if tag.find(search_name) != -1:
+            return count
+        count += 1
+        scan_pos = tag_end + 1
 
 
 def _count_joints_with_type(xml: String, joint_type: String) -> Int:
@@ -1706,6 +1733,12 @@ def parse_xml(xml: String) -> ParsedModel:
     var contact_sec = _extract_section(xml_clean, "contact")
     var nexclude = _count_tag(contact_sec, "exclude")
 
+    # ---- Tendons (<tendon> section) -----------------------------------------
+    var tendon_sec = _extract_section(xml_clean, "tendon")
+    var ntendon = _count_tag(tendon_sec, "fixed") + _count_tag(
+        tendon_sec, "spatial"
+    )
+
     # ---- Compiler angle units -----------------------------------------------
     var angle_deg = _compiler_angle_is_deg(xml_clean)
 
@@ -1734,6 +1767,7 @@ def parse_xml(xml: String) -> ParsedModel:
         nsite,
         neq,
         nexclude,
+        ntendon,
         angle_deg,
         timestep,
     )

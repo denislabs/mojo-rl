@@ -23,12 +23,19 @@ covers the case those three structurally cannot: a body with NO translational
 freedom, whose translational weight is legitimately zero. Add the same
 few-line check to each newly ported model's gate — it is what caught bug 20.
 
-Known deviation from `mj_setConst`: MuJoCo short-circuits `body_simple == 2`
-bodies to 1/mass; we always take the general A = J M^-1 J^T path. The two
-agree to float tolerance on the models gated here.
+`body_simple == 2` bodies (all joints axis-aligned SLIDEs, inertial frame ==
+body frame, not a parent, anchored) take MuJoCo's short-circuit
+`invweight0 = (1/mass, 0)` rather than the general path — see the comment at
+the branch. This USED to be an unimplemented "known deviation" documented as
+harmless; it is not. The general path averages over three translational axes,
+so a body with fewer than three slide dofs comes out short by exactly the
+missing fraction. Fixed 2026-07-31 after dm_control's ball_in_cup measured
+10.1859 against MuJoCo's 15.2789 (= 2/3) on its two-slide ball.
 
 CPU-only (build-time); no GPU kernels needed.
 """
+
+from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
@@ -45,7 +52,7 @@ from mojo_rl.physics3d.dynamics.ldl import (
     ldl_factor,
     ldl_solve,
 )
-from mojo_rl.physics3d.joint_types import JNT_FREE, JNT_BALL
+from mojo_rl.physics3d.joint_types import JNT_FREE, JNT_BALL, JNT_SLIDE
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -58,13 +65,37 @@ from mojo_rl.physics3d.gpu.constants import (
     BODY_IDX_QUAT_Y,
     BODY_IDX_QUAT_Z,
     BODY_IDX_QUAT_W,
+    BODY_IDX_IPOS_X,
+    BODY_IDX_IPOS_Y,
+    BODY_IDX_IPOS_Z,
+    BODY_IDX_IQUAT_X,
+    BODY_IDX_IQUAT_Y,
+    BODY_IDX_IQUAT_Z,
+    BODY_IDX_IQUAT_W,
+    BODY_IDX_MASS,
+    JOINT_IDX_POS_X,
+    JOINT_IDX_POS_Y,
+    JOINT_IDX_POS_Z,
+    JOINT_IDX_AXIS_X,
+    JOINT_IDX_AXIS_Y,
+    JOINT_IDX_AXIS_Z,
     JOINT_IDX_TYPE,
     JOINT_IDX_BODY_ID,
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_DOF_ADR,
     JOINT_IDX_ARMATURE,
     JOINT_IDX_QPOS0,
+    MODEL_META_SIZE,
+    MODEL_SITE_SIZE,
+    MODEL_TENDON_SIZE,
+    TENDON_KIND_SPATIAL,
+    TENDON_IDX_KIND,
+    TENDON_IDX_NUM_JOINTS,
+    TENDON_IDX_JOINT_0,
+    TENDON_IDX_COEF_0,
+    TENDON_IDX_INVWEIGHT0,
 )
+from .tendon import spatial_tendon_length_jac
 
 
 def compute_invweight0[
@@ -175,8 +206,104 @@ def compute_invweight0[
     mf.body_invweight0.data[0] = Scalar[DTYPE](0)
     mf.body_invweight0.data[1] = Scalar[DTYPE](0)
 
+    # ── body_simple == 2 (mj_setConst's short-circuit) ───────────────────────
+    #
+    # MuJoCo does NOT take the A = J M^-1 J^T path for a "simple level 2" body
+    # — one whose joints are ALL axis-aligned SLIDEs through the body origin,
+    # whose inertial frame is the body frame, and which is neither a parent nor
+    # a child of a moving body. It assigns
+    #
+    #     body_invweight0[2i] = 1/mass,   body_invweight0[2i+1] = 0
+    #
+    # (engine_setconst.c:138-145, predicate at user_model.cc:2657-2766).
+    #
+    # ⚠ THIS IS NOT AN OPTIMIZATION. The two paths agree only when the body has
+    # all THREE translational dofs, because the general path averages
+    # (A[0,0] + A[1,1] + A[2,2]) / 3 and a missing axis contributes a ZERO.
+    # A body with two slides therefore gets 2/3 of the right value, and one
+    # with a single slide gets 1/3.
+    #
+    # This module's docstring claimed the deviation "agrees to float tolerance
+    # on the models gated here", which was true only because every gated model
+    # was FREE-ROOTED (3 translational dofs) or contact-free. dm_control's
+    # ball_in_cup is the first with a contacting 2-slide body: its ball came
+    # out at 10.1859 against MuJoCo's 15.2789 — exactly 2/3 — making every
+    # ball contact 1.5x too soft. Same failure shape as bug 20, on the other
+    # half of the same function, and hidden for the same reason.
+    var body_dofnum = List[Int](length=NBODY, fill=0)
+    var body_is_parent = List[Bool](length=NBODY, fill=False)
+    for i in range(NBODY):
+        var par = Int(mf.bodies.data[i * MODEL_BODY_SIZE + BODY_IDX_PARENT])
+        if par > 0:
+            body_is_parent[par] = True
+    for dd in range(NV):
+        body_dofnum[dof_body[dd]] += 1
+
+    var simple2 = List[Bool](length=NBODY, fill=False)
+    for i in range(1, NBODY):
+        if body_dofnum[i] == 0 or body_is_parent[i]:
+            continue
+        var bo = i * MODEL_BODY_SIZE
+        # sameframe: inertial frame == body frame.
+        if (
+            abs(mf.bodies.data[bo + BODY_IDX_IPOS_X]) > 1e-12
+            or abs(mf.bodies.data[bo + BODY_IDX_IPOS_Y]) > 1e-12
+            or abs(mf.bodies.data[bo + BODY_IDX_IPOS_Z]) > 1e-12
+            or abs(mf.bodies.data[bo + BODY_IDX_IQUAT_X]) > 1e-12
+            or abs(mf.bodies.data[bo + BODY_IDX_IQUAT_Y]) > 1e-12
+            or abs(mf.bodies.data[bo + BODY_IDX_IQUAT_Z]) > 1e-12
+            or abs(abs(mf.bodies.data[bo + BODY_IDX_IQUAT_W]) - 1) > 1e-12
+        ):
+            continue
+        # self-root, or parent is a fixed child of world.
+        var rootid = Int(mf.bodies.data[bo + BODY_IDX_ROOTID])
+        var par = Int(mf.bodies.data[bo + BODY_IDX_PARENT])
+        var anchored = rootid == i
+        if not anchored and par > 0:
+            var gp = Int(
+                mf.bodies.data[par * MODEL_BODY_SIZE + BODY_IDX_PARENT]
+            )
+            anchored = gp == 0 and body_dofnum[par] == 0
+        if not anchored:
+            continue
+        # every joint an axis-aligned SLIDE through the body origin.
+        var ok = True
+        for j in range(NJOINT):
+            var jo = j * MODEL_JOINT_SIZE
+            if Int(mf.joints.data[jo + JOINT_IDX_BODY_ID]) != i:
+                continue
+            if Int(mf.joints.data[jo + JOINT_IDX_TYPE]) != JNT_SLIDE:
+                ok = False
+                break
+            if (
+                abs(mf.joints.data[jo + JOINT_IDX_POS_X]) > 1e-12
+                or abs(mf.joints.data[jo + JOINT_IDX_POS_Y]) > 1e-12
+                or abs(mf.joints.data[jo + JOINT_IDX_POS_Z]) > 1e-12
+            ):
+                ok = False
+                break
+            var naxis = 0
+            if abs(mf.joints.data[jo + JOINT_IDX_AXIS_X]) > 1e-14:
+                naxis += 1
+            if abs(mf.joints.data[jo + JOINT_IDX_AXIS_Y]) > 1e-14:
+                naxis += 1
+            if abs(mf.joints.data[jo + JOINT_IDX_AXIS_Z]) > 1e-14:
+                naxis += 1
+            if naxis != 1:
+                ok = False
+                break
+        if ok:
+            simple2[i] = True
+
     # ── per-body invweight0 via A = J M^-1 J^T diagonal (legacy :482-586) ─────
     for i in range(NBODY):
+        if simple2[i]:
+            var mass = mf.bodies.data[i * MODEL_BODY_SIZE + BODY_IDX_MASS]
+            if mass < Scalar[DTYPE](1e-15):
+                mass = Scalar[DTYPE](1e-15)
+            mf.body_invweight0.data[2 * i] = Scalar[DTYPE](1) / mass
+            mf.body_invweight0.data[2 * i + 1] = Scalar[DTYPE](0)
+            continue
         var ti_x = d.xipos.data[i * 3 + 0]
         var ti_y = d.xipos.data[i * 3 + 1]
         var ti_z = d.xipos.data[i * 3 + 2]
@@ -291,3 +418,70 @@ def compute_invweight0[
             mf.dof_invweight0.data[b] = avg
             mf.dof_invweight0.data[b + 1] = avg
             mf.dof_invweight0.data[b + 2] = avg
+
+    # ── tendon_invweight0[i] = J_i M^-1 J_i^T (engine_setconst.c:256-271) ─────
+    # The tendon limit row's diagApprox, and the only place a spatial tendon's
+    # stiffness is set. Evaluated at the SAME qpos0 pose as everything above —
+    # a spatial tendon's Jacobian is configuration-dependent, so this is a
+    # reference value, exactly like body_invweight0.
+    comptime if NTENDON > 0:
+        comptime L_META = Layout.row_major(MODEL_META_SIZE)
+        comptime L_TEN = Layout.row_major(NTENDON, MODEL_TENDON_SIZE)
+        comptime L_SITE = Layout.row_major(NSITE, MODEL_SITE_SIZE)
+        comptime L_BODY_V = Layout.row_major(NBODY, MODEL_BODY_SIZE)
+        comptime L_JOINT_V = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
+        comptime L_B3_V = Layout.row_major(1, NBODY * 3)
+        comptime L_B4_V = Layout.row_major(1, NBODY * 4)
+        comptime L_CDOF_V = Layout.row_major(1, NV * 6)
+
+        var meta_v = mf.meta.lt["cpu", L_META]()
+        var ten_v = mf.tendons.lt["cpu", L_TEN]()
+        var site_v = mf.sites.lt["cpu", L_SITE]()
+        var bodies_v = mf.bodies.lt["cpu", L_BODY_V]()
+        var joints_v = mf.joints.lt["cpu", L_JOINT_V]()
+        var stcom_v = d.subtree_com.lt["cpu", L_B3_V]()
+        var xpos_v = d.xpos.lt["cpu", L_B3_V]()
+        var xquat_v = d.xquat.lt["cpu", L_B4_V]()
+        var cdof_v = sc.cdof.lt["cpu", L_CDOF_V]()
+
+        var tJ = InlineArray[Scalar[DTYPE], NV](fill=Scalar[DTYPE](0))
+        for t in range(NTENDON):
+            var kind = Int(mf.tendons.data[t * MODEL_TENDON_SIZE + TENDON_IDX_KIND])
+            if kind == TENDON_KIND_SPATIAL:
+                _ = spatial_tendon_length_jac[
+                    DTYPE, NV, NBODY, NJOINT, NSITE, NTENDON, NV, 1
+                ](
+                    0, t, ten_v, site_v, bodies_v, joints_v, meta_v,
+                    stcom_v, cdof_v, xpos_v, xquat_v, tJ,
+                )
+            else:
+                # Fixed tendon: J[dof_adr(j)] = coef_j.
+                for i in range(NV):
+                    tJ[i] = Scalar[DTYPE](0)
+                var nj = Int(
+                    mf.tendons.data[t * MODEL_TENDON_SIZE + TENDON_IDX_NUM_JOINTS]
+                )
+                for k in range(nj):
+                    var jid = Int(
+                        mf.tendons.data[
+                            t * MODEL_TENDON_SIZE + TENDON_IDX_JOINT_0 + k
+                        ]
+                    )
+                    if jid < 0 or jid >= NJOINT:
+                        continue
+                    var dadr = Int(
+                        mf.joints.data[jid * MODEL_JOINT_SIZE + JOINT_IDX_DOF_ADR]
+                    )
+                    tJ[dadr] += mf.tendons.data[
+                        t * MODEL_TENDON_SIZE + TENDON_IDX_COEF_0 + k
+                    ]
+
+            for q in range(NV):
+                sc.fnet.data[q] = tJ[q]
+            ldl_solve["cpu", DTYPE, NV, NBODY, 1](sc)
+            var iw = Scalar[DTYPE](0)
+            for q in range(NV):
+                iw += tJ[q] * sc.qacc_ws.data[q]
+            mf.tendons.data[
+                t * MODEL_TENDON_SIZE + TENDON_IDX_INVWEIGHT0
+            ] = iw

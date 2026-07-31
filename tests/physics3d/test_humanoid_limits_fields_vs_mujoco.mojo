@@ -68,6 +68,7 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_RANGE_MAX,
     META_IDX_NUM_CONTACTS,
     TENDON_IDX_NUM_JOINTS,
+    TENDON_IDX_IS_EQUALITY,
     TENDON_IDX_JOINT_0,
     TENDON_IDX_JOINT_1,
     TENDON_IDX_JOINT_2,
@@ -141,6 +142,14 @@ def _build_model(
     for t_i in range(2):
         var t_off = t_i * MODEL_TENDON_SIZE
         var j0 = 6 if t_i == 0 else 10
+        # `_tendon_env` imposes a BILATERAL EQUALITY, and since
+        # 2026-07-31 it only acts on records that say so. That gate
+        # exists because `fields_build` now populates `ntendon`
+        # honestly, and humanoid's <fixed> tendons are NOT constrained
+        # by MuJoCo — without it, every humanoid hip-knee pair would be
+        # welded. This test's whole subject IS the equality path, so it
+        # opts in explicitly.
+        mf.tendons.data[t_off + TENDON_IDX_IS_EQUALITY] = Scalar[DTYPE](1)
         mf.tendons.data[t_off + TENDON_IDX_NUM_JOINTS] = Scalar[DTYPE](2)
         mf.tendons.data[t_off + TENDON_IDX_JOINT_0] = Scalar[DTYPE](j0)
         mf.tendons.data[t_off + TENDON_IDX_JOINT_1] = Scalar[DTYPE](j0 + 1)

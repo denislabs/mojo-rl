@@ -286,10 +286,25 @@ comptime EQ_IDX_SOLIMP_4: Int = 19  # solimp power
 
 
 # =============================================================================
-# Model Buffer Layout - Fixed Tendons
+# Model Buffer Layout - Tendons
 # =============================================================================
+#
+# Indices 0..16 are the ORIGINAL fixed-tendon record and keep their offsets;
+# 17..35 were appended 2026-07-31 for dm_control's `ball_in_cup`, the first
+# model with a SPATIAL (site-routed) tendon and the first with a tendon LIMIT.
+# Same append-don't-renumber discipline the site record used for type+size.
+#
+# A fixed tendon uses NUM_JOINTS/JOINT_*/COEF_*; a spatial one uses
+# NUM_SITES/SITE_*. KIND says which. The two halves are mutually exclusive.
+#
+# ⚠ IS_EQUALITY exists because `_tendon_env` treats every populated record as a
+# BILATERAL EQUALITY (ten_length == LENGTH_REF). That was harmless only while
+# `fields_build` hardcoded `ntendon = 0`. humanoid and humanoid_standup both
+# declare <fixed> tendons that MuJoCo constrains in NO way, so honestly
+# populating the count would have silently welded their hips together. Only
+# <equality><tendon> sets this flag; `_tendon_env` skips rows without it.
 
-comptime MODEL_TENDON_SIZE: Int = 17  # Per fixed tendon
+comptime MODEL_TENDON_SIZE: Int = 36  # Per tendon
 
 comptime TENDON_IDX_NUM_JOINTS: Int = 0
 comptime TENDON_IDX_JOINT_0: Int = 1
@@ -308,6 +323,36 @@ comptime TENDON_IDX_SOLIMP_1: Int = 13
 comptime TENDON_IDX_SOLIMP_2: Int = 14
 comptime TENDON_IDX_SOLIMP_3: Int = 15  # solimp midpoint
 comptime TENDON_IDX_SOLIMP_4: Int = 16  # solimp power
+
+# --- appended 2026-07-31 (spatial routing + limits) --------------------------
+
+comptime TENDON_KIND_FIXED: Int = 0
+comptime TENDON_KIND_SPATIAL: Int = 1
+
+comptime TENDON_IDX_KIND: Int = 17  # TENDON_KIND_*
+comptime TENDON_IDX_IS_EQUALITY: Int = 18  # 1 => `_tendon_env` owns this row
+comptime TENDON_IDX_NUM_SITES: Int = 19  # spatial only, <= 4
+comptime TENDON_IDX_SITE_0: Int = 20
+comptime TENDON_IDX_SITE_1: Int = 21
+comptime TENDON_IDX_SITE_2: Int = 22
+comptime TENDON_IDX_SITE_3: Int = 23
+comptime TENDON_IDX_LIMITED: Int = 24
+comptime TENDON_IDX_RANGE_MIN: Int = 25
+comptime TENDON_IDX_RANGE_MAX: Int = 26
+comptime TENDON_IDX_MARGIN: Int = 27
+# J M^-1 J^T at qpos0 — the limit row's diagApprox (engine_setconst.c:256).
+comptime TENDON_IDX_INVWEIGHT0: Int = 28
+# The LIMIT solref/solimp pair, distinct from the equality pair at 10..16
+# (MuJoCo keeps tendon_solref_lim separate from tendon_solref_fri).
+comptime TENDON_IDX_SOLREF_LIM_0: Int = 29
+comptime TENDON_IDX_SOLREF_LIM_1: Int = 30
+comptime TENDON_IDX_SOLIMP_LIM_0: Int = 31
+comptime TENDON_IDX_SOLIMP_LIM_1: Int = 32
+comptime TENDON_IDX_SOLIMP_LIM_2: Int = 33
+comptime TENDON_IDX_SOLIMP_LIM_3: Int = 34
+comptime TENDON_IDX_SOLIMP_LIM_4: Int = 35
+
+comptime TENDON_MAX_SITES: Int = 4
 
 
 # =============================================================================
@@ -398,5 +443,6 @@ comptime MODEL_MESH_META_SIZE: Int = 2  # vertadr, vertnum per mesh
 def rk4_extra_workspace_size[NQ: Int, NV: Int]() -> Int:
     """Total RK4-extra workspace size per environment."""
     return NQ + 7 * NV
+
 
 

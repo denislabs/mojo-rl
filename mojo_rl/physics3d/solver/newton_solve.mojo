@@ -66,6 +66,7 @@ from ..constraints.contact_solve import (
 )
 from ..constraints.limits import _limits_env
 from ..constraints.friction_dof import _friction_env
+from ..constraints.tendon_limit import build_tendon_limit_rows
 from ..constraints.scalar_rows import (
     build_scalar_rows,
     max_scalar_rows,
@@ -295,6 +296,22 @@ def _recompute_jfq_coop[
         DTYPE, Layout.row_major(ME), MutAnyOrigin,
         address_space = AddressSpace.SHARED,
     ],
+    kind_e_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    R_e_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    floss_e_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
+    state_e_sh: LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space = AddressSpace.SHARED,
+    ],
     qacc_sh: LayoutTensor[
         DTYPE, Layout.row_major(V_SIZE), MutAnyOrigin,
         address_space = AddressSpace.SHARED,
@@ -321,10 +338,17 @@ def _recompute_jfq_coop[
                 Scalar[DTYPE]
             ](qacc_sh[i])
         jar_sh[e] = j
-        if j >= Scalar[DTYPE](0):
-            force_sh[e] = Scalar[DTYPE](0)
-        else:
-            force_sh[e] = -rebind[Scalar[DTYPE]](De_sh[e]) * j
+        var st = scalar_row_state[DTYPE](
+            Int(rebind[Scalar[DTYPE]](kind_e_sh[e])),
+            j,
+            rebind[Scalar[DTYPE]](R_e_sh[e]),
+            rebind[Scalar[DTYPE]](floss_e_sh[e]),
+        )
+        state_e_sh[e] = Scalar[DTYPE](st)
+        force_sh[e] = scalar_row_force[DTYPE](
+            st, j, rebind[Scalar[DTYPE]](De_sh[e]),
+            rebind[Scalar[DTYPE]](floss_e_sh[e]),
+        )
     barrier()
     for i in range(tid, NV, n_threads):
         var q: Scalar[DTYPE] = 0
@@ -607,8 +631,9 @@ def _newton_solve_env[
         comptime NE = 4  # edges per contact
         comptime MAX_LIM = _max_one[2 * NJOINT]()
         comptime MAX_FRIC = V_SIZE  # one friction row per dof
-        # contact edges + limit edges + dry-friction dof rows
-        comptime ME = NE * MC + MAX_LIM + MAX_FRIC
+        comptime MAX_TLIM = 2 * NTENDON  # lo + hi per tendon
+        # contact edges + limit edges + dry-friction + tendon-limit rows
+        comptime ME = NE * MC + MAX_LIM + MAX_FRIC + MAX_TLIM
 
         # Cache edge data from PYRAMIDAL workspace layout
         var pyr_sc = ws_Jt1_idx + 4 * MC * NV
@@ -863,6 +888,18 @@ def _newton_solve_env[
                     l_B_damp * v_lim - l_K_spring * imp_lim * pen
                 )
                 num_edges += 1
+
+        # Tendon limit rows (MuJoCo mjCNSTR_LIMIT_TENDON). Dense J, one row
+        # per violated side — see constraints/tendon_limit.mojo for why this
+        # is a row here rather than a post-pass.
+        comptime if NTENDON > 0:
+            build_tendon_limit_rows[
+                DTYPE, NV, NBODY, NJOINT, NSITE, NTENDON, V_SIZE, ME, BATCH
+            ](
+                env, qvel, tendons, sites, bodies, joints, mmeta,
+                subtree_com, cdof, xpos, xquat, m_inv,
+                Je, De, bias_e, num_edges,
+            )
 
         # Dry-friction dof rows (MuJoCo mjCNSTR_FRICTION_DOF). These were
         # MISSING from the pyramidal path entirely — `_friction_env` was only
@@ -2460,7 +2497,22 @@ def _newton_blocked_fields_kernel[
     # PYRAMIDAL-only blocked solver. (Non-PYRAMIDAL never routes here.)
     comptime NE = 4  # edges per contact
     comptime MAX_LIM = _max_one[2 * NJOINT]()
-    comptime ME = NE * MC + MAX_LIM  # contact edges + limit edges
+    comptime MAX_FRIC = V_SIZE  # one dry-friction row per dof
+    comptime MAX_TLIM = 2 * NTENDON  # lo + hi per tendon
+    # contact edges + joint limits + dry friction + tendon limits.
+    #
+    # ⚠ The last two were MISSING here until 2026-07-31, so on NVIDIA +
+    # PYRAMIDAL — the only configuration that takes this kernel — a model with
+    # `frictionloss` had NO dry friction and a model with a limited tendon had
+    # NO string, both silently. `frictionloss` rows landed in the per-env
+    # pyramidal path with 04a7c508 and were simply never mirrored here.
+    #
+    # ⚠ ME drives `Je_sh`, which is `ME * V_SIZE` DOUBLES of THREADGROUP
+    # memory and is the dominant shared-memory term. Growing ME by
+    # `V_SIZE + 2*NTENDON` grows Je_sh by `(V_SIZE + 2*NTENDON) * V_SIZE`. On a
+    # large model that can push the block over the device's shared-memory
+    # limit, which shows up as a LAUNCH FAILURE (loud), not a wrong answer.
+    comptime ME = NE * MC + MAX_LIM + MAX_FRIC + MAX_TLIM
 
     # === SHARED memory (per-block == per-env) ===
     var M_sh = LayoutTensor[
@@ -2484,6 +2536,27 @@ def _newton_blocked_fields_kernel[
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
     var force_sh = LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    # Row kind + box data (written once by thread 0) and the per-iteration row
+    # STATE (written by thread 0 with the forces, read by every thread for the
+    # Hessian). The state cannot be re-derived from `force_sh` alone: a
+    # saturated box row has force > 0 yet contributes NO curvature, which is
+    # exactly the misclassification `primal.mojo` carried until 04a7c508.
+    var kind_e_sh = LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var R_e_sh = LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var floss_e_sh = LayoutTensor[
+        DTYPE, Layout.row_major(ME), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var state_e_sh = LayoutTensor[
         DTYPE, Layout.row_major(ME), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
@@ -2568,6 +2641,14 @@ def _newton_blocked_fields_kernel[
     var num_edges = 0
 
     if valid_env and tid == 0:
+        # Contact edges and joint limits are ONE-SIDED, so they leave
+        # kind = SROW_LIMIT and R/floss = 0; only the dry-friction rows below
+        # override. Must be cleared first — shared memory is uninitialised.
+        for e in range(ME):
+            kind_e_sh[e] = Scalar[DTYPE](SROW_LIMIT)
+            R_e_sh[e] = Scalar[DTYPE](0)
+            floss_e_sh[e] = Scalar[DTYPE](0)
+            state_e_sh[e] = Scalar[DTYPE](0)
         num_edges = nc * NE
 
         # Model-level defaults for fallback
@@ -2775,6 +2856,89 @@ def _newton_blocked_fields_kernel[
                 )
                 num_edges += 1
 
+        # Tendon limit rows (mjCNSTR_LIMIT_TENDON). Dense J — the same builder
+        # the per-env pyramidal path uses, so the two cones cannot drift.
+        comptime if NTENDON > 0:
+            # Staging buffers sized MAX_TLIM, NOT ME: these are per-thread
+            # LOCAL memory, and `ME * V_SIZE` doubles would be tens of KB —
+            # precisely the local-memory OOM this cooperative kernel exists to
+            # avoid. The builder fills from index 0, so tendon capacity is all
+            # it can ever need.
+            var t_je = InlineArray[Scalar[DTYPE], MAX_TLIM * V_SIZE](
+                fill=Scalar[DTYPE](0)
+            )
+            var t_de = InlineArray[Scalar[DTYPE], MAX_TLIM](
+                fill=Scalar[DTYPE](0)
+            )
+            var t_bias = InlineArray[Scalar[DTYPE], MAX_TLIM](
+                fill=Scalar[DTYPE](0)
+            )
+            var t_n = 0
+            build_tendon_limit_rows[
+                DTYPE, NV, NBODY, NJOINT, NSITE, NTENDON, V_SIZE, MAX_TLIM,
+                BATCH,
+            ](
+                env, qvel, tendons, sites, bodies, joints, mmeta,
+                subtree_com, cdof, xpos, xquat, m_inv,
+                t_je, t_de, t_bias, t_n,
+            )
+            for r in range(t_n):
+                if num_edges >= ME:
+                    break
+                for i in range(NV):
+                    Je_sh[num_edges * NV + i] = t_je[r * NV + i]
+                De_sh[num_edges] = t_de[r]
+                bias_e_sh[num_edges] = t_bias[r]
+                num_edges += 1
+
+        # Dry-friction dof rows (mjCNSTR_FRICTION_DOF). BOX rows, clamped to
+        # +-frictionloss, so they are the reason this kernel needs row states
+        # at all. Arithmetic identical to the per-env pyramidal builder.
+        var f_imp = Scalar[DTYPE](DOF_SOLIMP_DMIN)
+        var f_dmax = Scalar[DTYPE](DOF_SOLIMP_DMAX)
+        var f_B = Scalar[DTYPE](2.0) / (
+            f_dmax * Scalar[DTYPE](DOF_SOLREF_TIMECONST)
+        )
+        for j in range(NJOINT):
+            var floss = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_FRICTIONLOSS]
+            )
+            if floss <= Scalar[DTYPE](0):
+                continue
+            var jt = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR])
+            )
+            var nd = 1
+            if jt == JNT_FREE:
+                nd = 6
+            elif jt == JNT_BALL:
+                nd = 3
+            for k in range(nd):
+                if num_edges >= ME:
+                    break
+                var dof = dof_adr + k
+                var K_d = rebind[Scalar[DTYPE]](m_inv[env, dof * NV + dof])
+                if K_d < Scalar[DTYPE](1e-10):
+                    K_d = Scalar[DTYPE](1e-10)
+                var diag_f = rebind[Scalar[DTYPE]](dof_invweight0[dof])
+                if diag_f < Scalar[DTYPE](1e-10):
+                    diag_f = K_d
+                var R_f = (Scalar[DTYPE](1) - f_imp) / f_imp * diag_f
+                if R_f < Scalar[DTYPE](1e-14):
+                    R_f = Scalar[DTYPE](1e-14)
+                for i in range(NV):
+                    Je_sh[num_edges * NV + i] = Scalar[DTYPE](0)
+                Je_sh[num_edges * NV + dof] = Scalar[DTYPE](1)
+                De_sh[num_edges] = Scalar[DTYPE](1) / R_f
+                R_e_sh[num_edges] = R_f
+                floss_e_sh[num_edges] = floss
+                kind_e_sh[num_edges] = Scalar[DTYPE](SROW_FRICTION)
+                bias_e_sh[num_edges] = f_B * rebind[Scalar[DTYPE]](
+                    qvel[env, dof]
+                )
+                num_edges += 1
+
         # Publish num_edges to shared for all threads.
         ctrl_sh[0] = Scalar[DTYPE](num_edges)
 
@@ -2807,11 +2971,19 @@ def _newton_blocked_fields_kernel[
                 jar[e_idx] += (
                     rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i]) * qacc[i]
                 )
-            var f_e: Scalar[DTYPE]
-            if jar[e_idx] >= Scalar[DTYPE](0):
-                f_e = Scalar[DTYPE](0)
-            else:
-                f_e = -rebind[Scalar[DTYPE]](De_sh[e_idx]) * jar[e_idx]
+            var st_e = scalar_row_state[DTYPE](
+                Int(rebind[Scalar[DTYPE]](kind_e_sh[e_idx])),
+                jar[e_idx],
+                rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
+                rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+            )
+            state_e_sh[e_idx] = Scalar[DTYPE](st_e)
+            var f_e = scalar_row_force[DTYPE](
+                st_e,
+                jar[e_idx],
+                rebind[Scalar[DTYPE]](De_sh[e_idx]),
+                rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+            )
             force_sh[e_idx] = f_e
             for i in range(NV):
                 qfrc[i] += rebind[Scalar[DTYPE]](Je_sh[e_idx * NV + i]) * f_e
@@ -2844,7 +3016,10 @@ def _newton_blocked_fields_kernel[
                 var j = idx % NV
                 var h = rebind[Scalar[DTYPE]](M_sh[idx])
                 for e in range(num_edges_b):
-                    if rebind[Scalar[DTYPE]](force_sh[e]) > Scalar[DTYPE](0):
+                    if (
+                        Int(rebind[Scalar[DTYPE]](state_e_sh[e]))
+                        == SROW_QUADRATIC
+                    ):
                         h += (
                             rebind[Scalar[DTYPE]](De_sh[e])
                             * rebind[Scalar[DTYPE]](Je_sh[e * NV + i])
@@ -2895,12 +3070,19 @@ def _newton_blocked_fields_kernel[
             var p0_d1 = gauss_b
             var p0_d2 = gauss_a
             for e_idx in range(num_edges_b):
-                if jar[e_idx] < Scalar[DTYPE](0):
-                    p0_d1 += (
-                        rebind[Scalar[DTYPE]](De_sh[e_idx])
-                        * jar[e_idx]
-                        * Jv_e[e_idx]
-                    )
+                # d1 gets -f*Jv in EVERY active state (a saturated box row
+                # still pushes); d2 gets curvature only where the cost is
+                # quadratic. Collapsing these two into one `jar < 0` test is
+                # what makes box rows wrong.
+                var st_p = Int(rebind[Scalar[DTYPE]](state_e_sh[e_idx]))
+                var f_p = scalar_row_force[DTYPE](
+                    st_p,
+                    jar[e_idx],
+                    rebind[Scalar[DTYPE]](De_sh[e_idx]),
+                    rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                )
+                p0_d1 += -f_p * Jv_e[e_idx]
+                if st_p == SROW_QUADRATIC:
                     p0_d2 += (
                         rebind[Scalar[DTYPE]](De_sh[e_idx])
                         * Jv_e[e_idx]
@@ -2921,13 +3103,13 @@ def _newton_blocked_fields_kernel[
                         * (qacc[i] - qacc_smooth[i])
                     )
                 for e_idx in range(num_edges_b):
-                    if jar[e_idx] < Scalar[DTYPE](0):
-                        old_cost_ls += (
-                            Scalar[DTYPE](0.5)
-                            * rebind[Scalar[DTYPE]](De_sh[e_idx])
-                            * jar[e_idx]
-                            * jar[e_idx]
-                        )
+                    old_cost_ls += scalar_row_cost[DTYPE](
+                        Int(rebind[Scalar[DTYPE]](state_e_sh[e_idx])),
+                        jar[e_idx],
+                        rebind[Scalar[DTYPE]](De_sh[e_idx]),
+                        rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
+                        rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                    )
 
                 for _ in range(LINESEARCH_ITER):
                     var trial_cost: Scalar[DTYPE] = 0
@@ -2941,13 +3123,22 @@ def _newton_blocked_fields_kernel[
                         )
                     for e_idx in range(num_edges_b):
                         var jar_t = jar[e_idx] + alpha * Jv_e[e_idx]
-                        if jar_t < Scalar[DTYPE](0):
-                            trial_cost += (
-                                Scalar[DTYPE](0.5)
-                                * rebind[Scalar[DTYPE]](De_sh[e_idx])
-                                * jar_t
-                                * jar_t
-                            )
+                        # Re-classify at the TRIAL point: a step can move a row
+                        # across a zone boundary, which is the whole reason the
+                        # line search exists.
+                        var st_t = scalar_row_state[DTYPE](
+                            Int(rebind[Scalar[DTYPE]](kind_e_sh[e_idx])),
+                            jar_t,
+                            rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
+                            rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                        )
+                        trial_cost += scalar_row_cost[DTYPE](
+                            st_t,
+                            jar_t,
+                            rebind[Scalar[DTYPE]](De_sh[e_idx]),
+                            rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
+                            rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                        )
                     if trial_cost <= old_cost_ls:
                         break
                     alpha *= Scalar[DTYPE](0.5)
@@ -2974,13 +3165,13 @@ def _newton_blocked_fields_kernel[
                         * (qacc[i] - qacc_smooth[i])
                     )
                 for e_idx in range(num_edges_b):
-                    if jar[e_idx] < Scalar[DTYPE](0):
-                        old_cost += (
-                            Scalar[DTYPE](0.5)
-                            * rebind[Scalar[DTYPE]](De_sh[e_idx])
-                            * jar[e_idx]
-                            * jar[e_idx]
-                        )
+                    old_cost += scalar_row_cost[DTYPE](
+                        Int(rebind[Scalar[DTYPE]](state_e_sh[e_idx])),
+                        jar[e_idx],
+                        rebind[Scalar[DTYPE]](De_sh[e_idx]),
+                        rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
+                        rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                    )
 
                 for i in range(NV):
                     qacc[i] += alpha * search[i]
@@ -2995,7 +3186,8 @@ def _newton_blocked_fields_kernel[
         # finishes the accept/revert.
         barrier()
         _recompute_jfq_coop[DTYPE, NV, V_SIZE, ME](
-            tid, THREADS, num_edges_b, Je_sh, De_sh, bias_e_sh, qacc_sh,
+            tid, THREADS, num_edges_b, Je_sh, De_sh, bias_e_sh,
+            kind_e_sh, R_e_sh, floss_e_sh, state_e_sh, qacc_sh,
             jar_sh, force_sh, qfrc_sh,
         )
         barrier()
@@ -3013,13 +3205,13 @@ def _newton_blocked_fields_kernel[
                         * (qacc[i] - qacc_smooth[i])
                     )
                 for e_idx in range(num_edges_b):
-                    if jar[e_idx] < Scalar[DTYPE](0):
-                        new_cost += (
-                            Scalar[DTYPE](0.5)
-                            * rebind[Scalar[DTYPE]](De_sh[e_idx])
-                            * jar[e_idx]
-                            * jar[e_idx]
-                        )
+                    new_cost += scalar_row_cost[DTYPE](
+                        Int(rebind[Scalar[DTYPE]](state_e_sh[e_idx])),
+                        jar[e_idx],
+                        rebind[Scalar[DTYPE]](De_sh[e_idx]),
+                        rebind[Scalar[DTYPE]](R_e_sh[e_idx]),
+                        rebind[Scalar[DTYPE]](floss_e_sh[e_idx]),
+                    )
 
                 var improvement = scale * (old_cost - new_cost)
                 if (

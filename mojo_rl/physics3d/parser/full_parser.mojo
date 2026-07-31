@@ -34,6 +34,7 @@ from .xml_parser import (
     _fromto_to_pos_quat,
     _find_joint_index_by_name,
     _find_body_index_by_name,
+    _find_site_index_by_name,
     _sqrt_f64,
 )
 from .flat_model import (
@@ -52,6 +53,9 @@ from .flat_model import (
     DefaultsData,
     EqualityData,
     ExcludeData,
+    TendonData,
+    _TENDON_KIND_FIXED,
+    _TENDON_KIND_SPATIAL,
     NamedDefaultsList,
     FlatModelDef,
     _EQ_CONNECT,
@@ -136,12 +140,26 @@ def _option_flag_disabled(xml: String, flag: String) -> Bool:
 def _parse_option(xml: String) -> Tuple[Float64, Float64, Float64, Float64, Float64, Float64]:
     """Extract (gravity_x, gravity_y, gravity_z, timestep, density, viscosity) from <option .../>.
 
-    Defaults: gravity=(0,0,-9.81), timestep=0.01, density=0.0, viscosity=0.0.
+    Defaults: gravity=(0,0,-9.81), timestep=0.002, density=0.0, viscosity=0.0.
+
+    ⚠ The timestep default was 0.01 until 2026-07-31 — 5x MuJoCo's actual
+    default (mjOption.timestep = 0.002) and, worse, 5x what the OTHER parser
+    uses: `xml_parser.parse_xml` has always defaulted to 0.002, and that is
+    what `ModelDefFromXML.TIMESTEP` and therefore `Phyics3dEnvConfig.
+    get_timestep()` report. So a model with no `<option timestep>` STEPPED at
+    0.01 while every consumer was told 0.002.
+
+    Invisible until dm_control's ball_in_cup, which is the first ported model
+    that omits `<option>` entirely — every other suite domain states its
+    timestep, and the Gym-derived models do too. It showed up as a ball
+    falling 0.054 m in the time MuJoCo fell 0.0022, i.e. exactly the (0.01 /
+    0.002)^2 = 25x an integrator error of this shape produces. Two parsers,
+    two defaults: see feedback_physics3d_two_parser_paths.
     """
     var gx = Float64(0)
     var gy = Float64(0)
     var gz = Float64(-9.81)
-    var ts = Float64(0.01)
+    var ts = Float64(0.002)
     var dens = Float64(0)
     var visc = Float64(0)
 
@@ -830,11 +848,12 @@ def _fill_assets[
     NSITE: Int,
     NEQ: Int = 0,
     NEXCLUDE: Int = 0,
+    NTENDON: Int = 0,
 ](
     asset_sec: String,
     mut result: FlatModelDef[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ, NEXCLUDE,
+        NEQ, NEXCLUDE, NTENDON,
     ],
 ):
     """Parse <asset> section: fill result.textures[] and result.materials[]."""
@@ -993,13 +1012,14 @@ def _fill_model[
     NSITE: Int,
     NEQ: Int = 0,
     NEXCLUDE: Int = 0,
+    NTENDON: Int = 0,
 ](
     worldbody: String,
     defaults: DefaultsData,
     named_defaults: NamedDefaultsList,
     mut result: FlatModelDef[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ, NEXCLUDE,
+        NEQ, NEXCLUDE, NTENDON,
     ],
     deg_factor: Float64 = 1.0,
     eulerseq: String = "xyz",
@@ -1867,13 +1887,14 @@ def _fill_actuators[
     NSITE: Int,
     NEQ: Int = 0,
     NEXCLUDE: Int = 0,
+    NTENDON: Int = 0,
 ](
     actuator_sec: String,
     worldbody: String,
     defaults: DefaultsData,
     mut result: FlatModelDef[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ, NEXCLUDE,
+        NEQ, NEXCLUDE, NTENDON,
     ],
 ):
     """Parse <actuator> section and populate result.actuators[]."""
@@ -1964,12 +1985,13 @@ def _fill_equality[
     NSITE: Int,
     NEQ: Int,
     NEXCLUDE: Int = 0,
+    NTENDON: Int = 0,
 ](
     equality_sec: String,
     worldbody: String,
     mut result: FlatModelDef[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ, NEXCLUDE,
+        NEQ, NEXCLUDE, NTENDON,
     ],
 ):
     """Parse <equality> section: fill result.equalities[] with weld/connect data."""
@@ -2088,6 +2110,180 @@ def _find_material_index_by_name(asset_sec: String, name: String) -> Int:
 # =============================================================================
 
 
+def _fill_tendons[
+    NBODY: Int,
+    NJOINT: Int,
+    NQ: Int,
+    NV: Int,
+    NGEOM: Int,
+    NACT: Int,
+    NTEX: Int,
+    NMAT: Int,
+    NLIGHT: Int,
+    NCAM: Int,
+    NSITE: Int,
+    NEQ: Int,
+    NEXCLUDE: Int,
+    NTENDON: Int = 0,
+](
+    tendon_sec: String,
+    worldbody: String,
+    mut result: FlatModelDef[
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
+        NEQ, NEXCLUDE, NTENDON,
+    ],
+) raises:
+    """Parse <tendon>: fill result.tendons[] with <fixed> and <spatial> data.
+
+    Tendon order is XML order, matching how every other element is numbered
+    here. `<fixed>` reads its <joint joint= coef=> children; `<spatial>` reads
+    its <site site=> children. Both read `limited`/`range`/`margin` and the
+    limit solref/solimp pair.
+
+    RAISES rather than skips on a <spatial> containing <geom> (wrap surface)
+    or <pulley>. Neither is implemented, and dropping them would silently
+    shorten the tendon — the failure would surface only as a physics
+    divergence, which is exactly how the `<tendon>`-dropped-by-merge_mjcf bug
+    stayed hidden until 2026-07-30.
+    """
+    var count = 0
+    var scan_pos = 0
+    var tlen = tendon_sec.byte_length()
+
+    while scan_pos < tlen and count < NTENDON:
+        var nf = tendon_sec.find("<fixed", scan_pos)
+        var ns = tendon_sec.find("<spatial", scan_pos)
+        var earliest = _min_valid(nf, ns)
+        if earliest == -1:
+            break
+
+        var is_spatial = earliest == ns
+        var close_tag = String("</spatial>") if is_spatial else String(
+            "</fixed>"
+        )
+        var open_tag = _extract_opening_tag(tendon_sec, earliest)
+
+        # Body spans the element: either up to its closing tag, or (for a
+        # self-closed <fixed/>) nothing at all.
+        var body_start = tendon_sec.find(">", earliest) + 1
+        var body_end = tendon_sec.find(close_tag, body_start)
+        var inner = String("")
+        if body_end != -1:
+            inner = String(tendon_sec[byte=body_start:body_end])
+
+        var td = TendonData()
+        td.kind = _TENDON_KIND_SPATIAL if is_spatial else _TENDON_KIND_FIXED
+
+        if is_spatial:
+            if inner.find("<geom") != -1:
+                raise Error(
+                    "physics3d: <spatial> tendon with a wrap <geom> is not"
+                    " supported (site-to-site routing only)"
+                )
+            if inner.find("<pulley") != -1:
+                raise Error(
+                    "physics3d: <spatial> tendon with a <pulley> is not"
+                    " supported (site-to-site routing only)"
+                )
+
+            var spos = 0
+            while td.num_sites < 4:
+                var sp = inner.find("<site", spos)
+                if sp == -1:
+                    break
+                var stag = _extract_opening_tag(inner, sp)
+                var sname = _extract_attr(stag, "site")
+                if sname.byte_length() > 0:
+                    var sid = _find_site_index_by_name(worldbody, sname)
+                    if sid < 0:
+                        raise Error(
+                            "physics3d: <spatial> tendon references unknown"
+                            " site '" + sname + "'"
+                        )
+                    td.site_ids[td.num_sites] = sid
+                    td.num_sites += 1
+                spos = inner.find(">", sp) + 1
+            if td.num_sites < 2:
+                raise Error(
+                    "physics3d: <spatial> tendon needs at least two <site>"
+                    " waypoints"
+                )
+        else:
+            var jpos = 0
+            while td.num_joints < 4:
+                var jp = inner.find("<joint", jpos)
+                if jp == -1:
+                    break
+                var jtag = _extract_opening_tag(inner, jp)
+                var jname = _extract_attr(jtag, "joint")
+                if jname.byte_length() > 0:
+                    var jid = _find_joint_index_by_name(worldbody, jname)
+                    if jid < 0:
+                        raise Error(
+                            "physics3d: <fixed> tendon references unknown"
+                            " joint '" + jname + "'"
+                        )
+                    td.joint_ids[td.num_joints] = jid
+                    var coef_s = _extract_attr(jtag, "coef")
+                    if coef_s.byte_length() > 0:
+                        td.coefs[td.num_joints] = _parse_float(coef_s)
+                    td.num_joints += 1
+                jpos = inner.find(">", jp) + 1
+
+        # limited / range / margin
+        var limited_s = _extract_attr(open_tag, "limited")
+        var range_s = _extract_attr(open_tag, "range")
+        if range_s.byte_length() > 0:
+            var parts = List[String]()
+            _split_spaces(range_s, parts)
+            if len(parts) >= 2:
+                td.range_min = _parse_float(parts[0])
+                td.range_max = _parse_float(parts[1])
+        # MuJoCo's `limited="auto"` (the compiler default) enables the limit
+        # whenever a range is present; an explicit "true"/"false" wins.
+        if limited_s == "true":
+            td.limited = 1
+        elif limited_s == "false":
+            td.limited = 0
+        elif range_s.byte_length() > 0:
+            td.limited = 1
+
+        var margin_s = _extract_attr(open_tag, "margin")
+        if margin_s.byte_length() > 0:
+            td.margin = _parse_float(margin_s)
+
+        var solref_s = _extract_attr(open_tag, "solreflimit")
+        if solref_s.byte_length() > 0:
+            var rp = List[String]()
+            _split_spaces(solref_s, rp)
+            if len(rp) >= 2:
+                td.solref_lim_0 = _parse_float(rp[0])
+                td.solref_lim_1 = _parse_float(rp[1])
+
+        var solimp_s = _extract_attr(open_tag, "solimplimit")
+        if solimp_s.byte_length() > 0:
+            var ip = List[String]()
+            _split_spaces(solimp_s, ip)
+            if len(ip) >= 1:
+                td.solimp_lim_0 = _parse_float(ip[0])
+            if len(ip) >= 2:
+                td.solimp_lim_1 = _parse_float(ip[1])
+            if len(ip) >= 3:
+                td.solimp_lim_2 = _parse_float(ip[2])
+            if len(ip) >= 4:
+                td.solimp_lim_3 = _parse_float(ip[3])
+            if len(ip) >= 5:
+                td.solimp_lim_4 = _parse_float(ip[4])
+
+        result.tendons[count] = td
+        count += 1
+
+        if body_end != -1:
+            scan_pos = body_end + close_tag.byte_length()
+        else:
+            scan_pos = tendon_sec.find(">", earliest) + 1
+
+
 def _fill_excludes[
     NBODY: Int,
     NJOINT: Int,
@@ -2102,12 +2298,13 @@ def _fill_excludes[
     NSITE: Int,
     NEQ: Int,
     NEXCLUDE: Int,
+    NTENDON: Int = 0,
 ](
     contact_sec: String,
     worldbody: String,
     mut result: FlatModelDef[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ, NEXCLUDE,
+        NEQ, NEXCLUDE, NTENDON,
     ],
 ):
     """Parse <contact> section: fill result.excludes[] with body pair exclusions."""
@@ -2153,12 +2350,13 @@ def _resolve_geom_materials[
     NSITE: Int,
     NEQ: Int = 0,
     NEXCLUDE: Int = 0,
+    NTENDON: Int = 0,
 ](
     worldbody: String,
     asset_sec: String,
     mut result: FlatModelDef[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ, NEXCLUDE,
+        NEQ, NEXCLUDE, NTENDON,
     ],
 ):
     """Resolve material="name" on geoms → material index; copy material rgba."""
@@ -2209,9 +2407,10 @@ def parse_xml_full[
     NSITE: Int = 0,
     NEQ: Int = 0,
     NEXCLUDE: Int = 0,
-](xml: String) -> FlatModelDef[
+    NTENDON: Int = 0,
+](xml: String) raises -> FlatModelDef[
     NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE, NEQ,
-    NEXCLUDE,
+    NEXCLUDE, NTENDON,
 ]:
     """Full MJCF parse: returns a populated FlatModelDef.
 
@@ -2221,7 +2420,7 @@ def parse_xml_full[
         comptime fmd = parse_xml_full[
             pm.NBODY, pm.NJOINT, pm.NQ, pm.NV, pm.NGEOM, pm.NACT,
             pm.NTEX, pm.NMAT, pm.NLIGHT, pm.NCAM, pm.NSITE,
-            pm.NEQ, pm.NEXCLUDE,
+            pm.NEQ, pm.NEXCLUDE, pm.NTENDON,
         ](xml)
 
     The NTEX/NMAT/NLIGHT/NCAM/NSITE parameters default to 0 for backward
@@ -2230,7 +2429,7 @@ def parse_xml_full[
     """
     var result = FlatModelDef[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ, NEXCLUDE,
+        NEQ, NEXCLUDE, NTENDON,
     ]()
 
     # Extract top-level sections
@@ -2275,13 +2474,13 @@ def parse_xml_full[
     # Assets: textures and materials
     _fill_assets[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ, NEXCLUDE,
+        NEQ, NEXCLUDE, NTENDON,
     ](asset_sec, result)
 
     # Single DFS pass: bodies + joints + geoms + lights + cameras + sites
     _fill_model[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ, NEXCLUDE,
+        NEQ, NEXCLUDE, NTENDON,
     ](worldbody, defaults, named_defaults, result, deg_factor, eulerseq)
 
     # <flag contact="disable"/> — MuJoCo drops ALL contacts. We have no global
@@ -2315,27 +2514,34 @@ def parse_xml_full[
     # Actuators
     _fill_actuators[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ, NEXCLUDE,
+        NEQ, NEXCLUDE, NTENDON,
     ](actuator_sec, worldbody, defaults, result)
 
     # Equality constraints
     comptime if NEQ > 0:
         _fill_equality[
             NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM,
-            NSITE, NEQ, NEXCLUDE,
+            NSITE, NEQ, NEXCLUDE, NTENDON,
         ](equality_sec, worldbody, result)
+
+    # Tendons
+    comptime if NTENDON > 0:
+        _fill_tendons[
+            NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM,
+            NSITE, NEQ, NEXCLUDE, NTENDON,
+        ](_extract_section(xml, "tendon"), worldbody, result)
 
     # Contact exclusion pairs
     comptime if NEXCLUDE > 0:
         _fill_excludes[
             NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM,
-            NSITE, NEQ, NEXCLUDE,
+            NSITE, NEQ, NEXCLUDE, NTENDON,
         ](contact_sec, worldbody, result)
 
     # Post-pass: resolve geom material="name" references
     _resolve_geom_materials[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ, NEXCLUDE,
+        NEQ, NEXCLUDE, NTENDON,
     ](worldbody, asset_sec, result)
 
     return result^

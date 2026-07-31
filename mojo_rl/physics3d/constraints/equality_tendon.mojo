@@ -69,6 +69,7 @@ from ..gpu.constants import (
     EQ_IDX_SOLIMP_3,
     EQ_IDX_SOLIMP_4,
     TENDON_IDX_NUM_JOINTS,
+    TENDON_IDX_IS_EQUALITY,
     TENDON_IDX_JOINT_0,
     TENDON_IDX_JOINT_1,
     TENDON_IDX_JOINT_2,
@@ -115,19 +116,33 @@ def _legacy_invw_read[
     base (`body*2` / `body*2+1` for the equality builder, `NBODY*2 +
     dof_adr` for the tendon builder). Mapped address-faithfully onto the
     record tensors so the value read is bit-identical to the legacy slab
-    read (including the misreads on models with tendons/sites)."""
-    comptime T_END = NTENDON * MODEL_TENDON_SIZE
-    comptime S_END = T_END + NSITE * MODEL_SITE_SIZE
+    read (including the misreads on models with tendons/sites).
+
+    ⚠ THE SLAB GEOMETRY IS PINNED TO THE HISTORICAL RECORD WIDTHS, not to the
+    current `MODEL_TENDON_SIZE`. This function's entire contract is "reproduce
+    the legacy addressing exactly", so it must not move when a record grows.
+    It did move on 2026-07-31, when `MODEL_TENDON_SIZE` went 17 -> 36 for
+    spatial tendons: `T_END` doubled, every `delta` landed in a different
+    record, and `test_equality_tendon_fields`'s golden shifted 0.26% for a
+    reason that had nothing to do with the change under test.
+
+    Pinning is safe precisely because the new tendon fields were APPENDED —
+    columns 0..16 still hold the same quantities, so `tendons[r, c]` for
+    `c < 17` returns exactly what the legacy slab held."""
+    comptime LEGACY_TENDON_SIZE = 17
+    comptime LEGACY_SITE_SIZE = 8
+    comptime T_END = NTENDON * LEGACY_TENDON_SIZE
+    comptime S_END = T_END + NSITE * LEGACY_SITE_SIZE
     comptime B_END = S_END + NBODY * 2
     if delta < T_END:
         return rebind[Scalar[DTYPE]](
-            tendons[delta // MODEL_TENDON_SIZE, delta % MODEL_TENDON_SIZE]
+            tendons[delta // LEGACY_TENDON_SIZE, delta % LEGACY_TENDON_SIZE]
         )
     if delta < S_END:
         return rebind[Scalar[DTYPE]](
             sites[
-                (delta - T_END) // MODEL_SITE_SIZE,
-                (delta - T_END) % MODEL_SITE_SIZE,
+                (delta - T_END) // LEGACY_SITE_SIZE,
+                (delta - T_END) % LEGACY_SITE_SIZE,
             ]
         )
     if delta < B_END:
@@ -1052,6 +1067,21 @@ def _tendon_env[
     for t_i in range(nten):
         if num_ten_rows >= MAX_TEN_ROWS:
             break
+
+        # A <tendon> DECLARATION is not a constraint. This pass imposes a
+        # bilateral `ten_length == LENGTH_REF`, which only <equality><tendon>
+        # asks for; a plain <fixed>/<spatial> is just a length definition used
+        # by transmissions, springs and limits.
+        #
+        # This guard became load-bearing on 2026-07-31, when `fields_build`
+        # stopped hardcoding `ntendon = 0`. humanoid and humanoid_standup each
+        # declare two <fixed> hip-knee tendons that MuJoCo constrains in no
+        # way; without it, populating the count would have welded them.
+        if (
+            Int(rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_IS_EQUALITY]))
+            == 0
+        ):
+            continue
 
         var num_joints = Int(
             rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_NUM_JOINTS])

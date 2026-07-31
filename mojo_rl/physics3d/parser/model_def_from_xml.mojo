@@ -451,6 +451,7 @@ struct ModelDefFromXML[
             Self.NSITE,
             Self.neq,
             Self.nexclude,
+            Self.MAX_TENDON,
         ](Self.xml)
 
         # Reject unplumbed dof-friction solver params LOUDLY, for the same
@@ -471,6 +472,35 @@ struct ModelDefFromXML[
                         " attributes.",
                     )
                 )
+
+        # Reject a <spatial> tendon that has nowhere to go. `max_tendon` sizes
+        # the tendon record array, and a model that leaves it 0 while the XML
+        # routes a string through sites would build fine and simulate with the
+        # string simply absent — ball_in_cup would become a ball falling past
+        # a cup. A <fixed> tendon is exempt: those also ride the comptime
+        # transmission/spring path, which needs no records (fish).
+        comptime if Self.MAX_TENDON == 0:
+            comptime if Self.xml.find("<spatial") != -1:
+                raise Error(
+                    "physics3d: model declares a <spatial> tendon but"
+                    " max_tendon=0, so it would be silently dropped. Set"
+                    " max_tendon to the tendon count."
+                )
+
+        # Tendon LIMIT rows are built only on the PYRAMIDAL edge list. The
+        # elliptic core keeps its scalar rows in (dof, sign) form to stay
+        # under Metal's local-memory ceiling, so a dense tendon row there is
+        # a separate change. No model needs it yet — but a model that did
+        # would otherwise simulate with the limit simply absent.
+        comptime if Self.cone_type == ConeType.ELLIPTIC:
+            for t in range(Self.MAX_TENDON):
+                if fmd.tendons[t].limited != 0:
+                    raise Error(
+                        "physics3d: tendon limits are implemented on the"
+                        " PYRAMIDAL cone only; this model sets cone=elliptic"
+                        " and has a limited tendon. See"
+                        " constraints/tendon_limit.mojo."
+                    )
 
         # Reject unimplemented actuator transmissions LOUDLY. Building the
         # model anyway would simulate a servo as a torque motor with no error
@@ -563,6 +593,7 @@ struct ModelDefFromXML[
             Self.NSITE,
             Self.neq,
             Self.nexclude,
+            Self.MAX_TENDON,
             Self.MAX_EQUALITY,
             Self.MAX_TENDON,
             Self.NSITE,

@@ -198,6 +198,35 @@ from mojo_rl.physics3d.gpu.constants import (
     EQ_IDX_SOLIMP_4,
     SITE_IDX_BODY,
     SITE_IDX_POS_X,
+    MODEL_TENDON_SIZE,
+    TENDON_IDX_KIND,
+    TENDON_IDX_IS_EQUALITY,
+    TENDON_IDX_NUM_JOINTS,
+    TENDON_IDX_JOINT_0,
+    TENDON_IDX_JOINT_1,
+    TENDON_IDX_JOINT_2,
+    TENDON_IDX_JOINT_3,
+    TENDON_IDX_COEF_0,
+    TENDON_IDX_COEF_1,
+    TENDON_IDX_COEF_2,
+    TENDON_IDX_COEF_3,
+    TENDON_IDX_LENGTH_REF,
+    TENDON_IDX_NUM_SITES,
+    TENDON_IDX_SITE_0,
+    TENDON_IDX_SITE_1,
+    TENDON_IDX_SITE_2,
+    TENDON_IDX_SITE_3,
+    TENDON_IDX_LIMITED,
+    TENDON_IDX_RANGE_MIN,
+    TENDON_IDX_RANGE_MAX,
+    TENDON_IDX_MARGIN,
+    TENDON_IDX_SOLREF_LIM_0,
+    TENDON_IDX_SOLREF_LIM_1,
+    TENDON_IDX_SOLIMP_LIM_0,
+    TENDON_IDX_SOLIMP_LIM_1,
+    TENDON_IDX_SOLIMP_LIM_2,
+    TENDON_IDX_SOLIMP_LIM_3,
+    TENDON_IDX_SOLIMP_LIM_4,
     SITE_IDX_POS_Y,
     SITE_IDX_POS_Z,
     SITE_IDX_TYPE,
@@ -448,6 +477,7 @@ def build_model_fields_from_flat[
     NSITE_P: Int,
     NEQ: Int,
     NEXCLUDE_P: Int,
+    NTENDON_P: Int,
     # Model dims (record capacities)
     MAX_EQUALITY: Int,
     MAX_TENDON: Int,
@@ -474,6 +504,7 @@ def build_model_fields_from_flat[
         NSITE_P,
         NEQ,
         NEXCLUDE_P,
+        NTENDON_P,
     ],
     mut mf: Model[
         DTYPE,
@@ -504,7 +535,14 @@ def build_model_fields_from_flat[
     mf.meta.data[MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](
         NEQ if NEQ < MAX_EQUALITY else MAX_EQUALITY
     )
-    mf.meta.data[MODEL_META_IDX_NTENDON] = Scalar[DTYPE](0)
+    # Honest tendon count. This used to be hardcoded 0, which made every
+    # tendon record dead. `_tendon_env` treats a record as a BILATERAL
+    # EQUALITY, so waking it up is safe only because that pass now also
+    # requires TENDON_IDX_IS_EQUALITY — humanoid declares two <fixed> tendons
+    # that MuJoCo constrains in no way.
+    mf.meta.data[MODEL_META_IDX_NTENDON] = Scalar[DTYPE](
+        NTENDON_P if NTENDON_P < MAX_TENDON else MAX_TENDON
+    )
     mf.meta.data[MODEL_META_IDX_NEXCLUDE] = Scalar[DTYPE](NEXCLUDE_P)
 
     # Contact solref/solimp: MuJoCo model defaults, then geom[0]'s parsed
@@ -920,6 +958,73 @@ def build_model_fields_from_flat[
         mf.sites.data[o + SITE_IDX_SIZE_0] = Scalar[DTYPE](sd.size_0)
         mf.sites.data[o + SITE_IDX_SIZE_1] = Scalar[DTYPE](sd.size_1)
         mf.sites.data[o + SITE_IDX_SIZE_2] = Scalar[DTYPE](sd.size_2)
+
+    # ── tendons ──────────────────────────────────────────────────────────
+    #
+    # NTENDON_P == MAX_TENDON by construction (ModelDefFromXML passes
+    # `max_tendon` for both), so this is a straight copy. INVWEIGHT0 is left
+    # zero here and filled by the invweight pass, which needs FK at qpos0.
+    for i in range(NTENDON_P):
+        if i >= MAX_TENDON:
+            break
+        var td = fmd.tendons[i]
+        var o = i * MODEL_TENDON_SIZE
+        mf.tendons.data[o + TENDON_IDX_KIND] = Scalar[DTYPE](td.kind)
+        mf.tendons.data[o + TENDON_IDX_IS_EQUALITY] = Scalar[DTYPE](
+            td.is_equality
+        )
+        mf.tendons.data[o + TENDON_IDX_NUM_JOINTS] = Scalar[DTYPE](
+            td.num_joints
+        )
+        mf.tendons.data[o + TENDON_IDX_JOINT_0] = Scalar[DTYPE](
+            td.joint_ids[0]
+        )
+        mf.tendons.data[o + TENDON_IDX_JOINT_1] = Scalar[DTYPE](
+            td.joint_ids[1]
+        )
+        mf.tendons.data[o + TENDON_IDX_JOINT_2] = Scalar[DTYPE](
+            td.joint_ids[2]
+        )
+        mf.tendons.data[o + TENDON_IDX_JOINT_3] = Scalar[DTYPE](
+            td.joint_ids[3]
+        )
+        mf.tendons.data[o + TENDON_IDX_COEF_0] = Scalar[DTYPE](td.coefs[0])
+        mf.tendons.data[o + TENDON_IDX_COEF_1] = Scalar[DTYPE](td.coefs[1])
+        mf.tendons.data[o + TENDON_IDX_COEF_2] = Scalar[DTYPE](td.coefs[2])
+        mf.tendons.data[o + TENDON_IDX_COEF_3] = Scalar[DTYPE](td.coefs[3])
+        mf.tendons.data[o + TENDON_IDX_LENGTH_REF] = Scalar[DTYPE](
+            td.length_ref
+        )
+        mf.tendons.data[o + TENDON_IDX_NUM_SITES] = Scalar[DTYPE](td.num_sites)
+        mf.tendons.data[o + TENDON_IDX_SITE_0] = Scalar[DTYPE](td.site_ids[0])
+        mf.tendons.data[o + TENDON_IDX_SITE_1] = Scalar[DTYPE](td.site_ids[1])
+        mf.tendons.data[o + TENDON_IDX_SITE_2] = Scalar[DTYPE](td.site_ids[2])
+        mf.tendons.data[o + TENDON_IDX_SITE_3] = Scalar[DTYPE](td.site_ids[3])
+        mf.tendons.data[o + TENDON_IDX_LIMITED] = Scalar[DTYPE](td.limited)
+        mf.tendons.data[o + TENDON_IDX_RANGE_MIN] = Scalar[DTYPE](td.range_min)
+        mf.tendons.data[o + TENDON_IDX_RANGE_MAX] = Scalar[DTYPE](td.range_max)
+        mf.tendons.data[o + TENDON_IDX_MARGIN] = Scalar[DTYPE](td.margin)
+        mf.tendons.data[o + TENDON_IDX_SOLREF_LIM_0] = Scalar[DTYPE](
+            td.solref_lim_0
+        )
+        mf.tendons.data[o + TENDON_IDX_SOLREF_LIM_1] = Scalar[DTYPE](
+            td.solref_lim_1
+        )
+        mf.tendons.data[o + TENDON_IDX_SOLIMP_LIM_0] = Scalar[DTYPE](
+            td.solimp_lim_0
+        )
+        mf.tendons.data[o + TENDON_IDX_SOLIMP_LIM_1] = Scalar[DTYPE](
+            td.solimp_lim_1
+        )
+        mf.tendons.data[o + TENDON_IDX_SOLIMP_LIM_2] = Scalar[DTYPE](
+            td.solimp_lim_2
+        )
+        mf.tendons.data[o + TENDON_IDX_SOLIMP_LIM_3] = Scalar[DTYPE](
+            td.solimp_lim_3
+        )
+        mf.tendons.data[o + TENDON_IDX_SOLIMP_LIM_4] = Scalar[DTYPE](
+            td.solimp_lim_4
+        )
 
     # ── equality constraints (legacy add_connect/add_weld semantics:
     #    solimp[3]=0.5 / solimp[4]=2.0 hardcoded, parsed values dropped) ────

@@ -197,6 +197,7 @@ def test_xml_full_parser() raises:
     build_model_fields_from_flat[
         DType.float64, pm.NBODY, pm.NJOINT, pm.NQ, pm.NV, pm.NGEOM, pm.NACT,
         0, 0, 0, 0, 0, 0, 0,  # ntex/nmat/nlight/ncam/nsite/neq/nexclude
+        0,  # ntendon (FlatModelDef tendon-record count)
         0, 0, 0, 0, 0,  # MAX_EQUALITY/MAX_TENDON/NSITE/NEXCLUDE/NMESH_VERTS
         0, 0, 5, 0.0,  # no <compiler inertiafromgeom> in this inline XML
     ](fmd, mf)
