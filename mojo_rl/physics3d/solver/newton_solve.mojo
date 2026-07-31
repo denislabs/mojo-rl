@@ -56,7 +56,7 @@ from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor
 
 from ..types import _max_one, ConeType
-from ..joint_types import JNT_HINGE, JNT_SLIDE
+from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JNT_BALL
 from .cholesky import chol_factor_inline, chol_solve_inline
 from .primal import pyramidal_edge_forces, pyramidal_linesearch
 from ..constraints.contact_solve import (
@@ -66,6 +66,19 @@ from ..constraints.contact_solve import (
 )
 from ..constraints.limits import _limits_env
 from ..constraints.friction_dof import _friction_env
+from ..constraints.scalar_rows import (
+    build_scalar_rows,
+    max_scalar_rows,
+    scalar_row_state,
+    scalar_row_force,
+    scalar_row_cost,
+    SROW_QUADRATIC,
+    SROW_LIMIT,
+    SROW_FRICTION,
+    DOF_SOLREF_TIMECONST,
+    DOF_SOLIMP_DMIN,
+    DOF_SOLIMP_DMAX,
+)
 from ..constraints.equality_tendon import (
     _equality_env,
     _tendon_env,
@@ -104,6 +117,7 @@ from ..gpu.constants import (
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_RANGE_MIN,
     JOINT_IDX_RANGE_MAX,
+    JOINT_IDX_FRICTIONLOSS,
     JOINT_IDX_SOLREF_LIMIT_0,
     JOINT_IDX_SOLREF_LIMIT_1,
     JOINT_IDX_SOLIMP_LIMIT_0,
@@ -592,13 +606,22 @@ def _newton_solve_env[
         # =================================================================
         comptime NE = 4  # edges per contact
         comptime MAX_LIM = _max_one[2 * NJOINT]()
-        comptime ME = NE * MC + MAX_LIM  # contact edges + limit edges
+        comptime MAX_FRIC = V_SIZE  # one friction row per dof
+        # contact edges + limit edges + dry-friction dof rows
+        comptime ME = NE * MC + MAX_LIM + MAX_FRIC
 
         # Cache edge data from PYRAMIDAL workspace layout
         var pyr_sc = ws_Jt1_idx + 4 * MC * NV
         var Je = InlineArray[Scalar[DTYPE], ME * V_SIZE](uninitialized=True)
         var De = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
         var bias_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+        # Row kind + box data. Contact edges and joint limits are ONE-SIDED;
+        # only dry-friction dof rows are box-clamped, and R/floss are read
+        # solely on that branch, so the one-sided rows leave them at 0.
+        var kind_e = InlineArray[Int, ME](fill=SROW_LIMIT)
+        var R_e = InlineArray[Scalar[DTYPE], ME](fill=Scalar[DTYPE](0))
+        var floss_e = InlineArray[Scalar[DTYPE], ME](fill=Scalar[DTYPE](0))
+        var state_e = InlineArray[Int, ME](fill=0)
         var num_edges = nc * NE
 
         # Load contact edges
@@ -841,6 +864,56 @@ def _newton_solve_env[
                 )
                 num_edges += 1
 
+        # Dry-friction dof rows (MuJoCo mjCNSTR_FRICTION_DOF). These were
+        # MISSING from the pyramidal path entirely — `_friction_env` was only
+        # ever called on the elliptic branch, so a pyramidal model with
+        # `frictionloss` silently had no dry friction at all. They are box
+        # rows, clamped to +-frictionloss, hence kind_e = SROW_FRICTION.
+        var f_imp = Scalar[DTYPE](DOF_SOLIMP_DMIN)
+        var f_dmax = Scalar[DTYPE](DOF_SOLIMP_DMAX)
+        var f_B = Scalar[DTYPE](2.0) / (
+            f_dmax * Scalar[DTYPE](DOF_SOLREF_TIMECONST)
+        )
+        for j in range(NJOINT):
+            var floss = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_FRICTIONLOSS]
+            )
+            if floss <= Scalar[DTYPE](0):
+                continue
+            var jt = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
+            var dof_adr = Int(
+                rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR])
+            )
+            var nd = 1
+            if jt == JNT_FREE:
+                nd = 6
+            elif jt == JNT_BALL:
+                nd = 3
+            for k in range(nd):
+                if num_edges >= ME:
+                    break
+                var dof = dof_adr + k
+                var K_d = rebind[Scalar[DTYPE]](m_inv[env, dof * NV + dof])
+                if K_d < Scalar[DTYPE](1e-10):
+                    K_d = Scalar[DTYPE](1e-10)
+                var diag_f = rebind[Scalar[DTYPE]](dof_invweight0[dof])
+                if diag_f < Scalar[DTYPE](1e-10):
+                    diag_f = K_d
+                var R_f = (Scalar[DTYPE](1) - f_imp) / f_imp * diag_f
+                if R_f < Scalar[DTYPE](1e-14):
+                    R_f = Scalar[DTYPE](1e-14)
+                for i in range(NV):
+                    Je[num_edges * NV + i] = Scalar[DTYPE](0)
+                Je[num_edges * NV + dof] = Scalar[DTYPE](1)
+                De[num_edges] = Scalar[DTYPE](1) / R_f
+                R_e[num_edges] = R_f
+                floss_e[num_edges] = floss
+                kind_e[num_edges] = SROW_FRICTION
+                bias_e[num_edges] = f_B * rebind[Scalar[DTYPE]](
+                    qvel[env, dof]
+                )
+                num_edges += 1
+
         # Initialize qacc from workspace (qacc_smooth set by stage kernel)
         var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         var qacc_smooth = InlineArray[Scalar[DTYPE], V_SIZE](
@@ -892,7 +965,8 @@ def _newton_solve_env[
         # Initial jar + force + qfrc
         var qfrc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
         pyramidal_edge_forces[DTYPE, NV, ME, V_SIZE](
-            num_edges, Je, De, bias_e, qacc, jar, force, qfrc
+            num_edges, Je, De, bias_e, kind_e, R_e, floss_e,
+            qacc, jar, force, state_e, qfrc
         )
 
         # Newton iterations
@@ -911,7 +985,7 @@ def _newton_solve_env[
                 for j in range(NV):
                     H[i * NV + j] = M_local[i * NV + j]
             for e_idx in range(num_edges):
-                if force[e_idx] > Scalar[DTYPE](0):
+                if state_e[e_idx] == SROW_QUADRATIC:
                     for i in range(NV):
                         for j in range(NV):
                             H[i * NV + j] += (
@@ -942,8 +1016,8 @@ def _newton_solve_env[
             var alpha = pyramidal_linesearch[
                 DTYPE, NV, ME, V_SIZE, LINESEARCH_ITER, PRIMAL_MINVAL_GPU
             ](
-                num_edges, Je, De, search, Mv, Ma, f_smooth, qacc,
-                qacc_smooth, jar,
+                num_edges, Je, De, kind_e, R_e, floss_e, search, Mv, Ma,
+                f_smooth, qacc, qacc_smooth, jar,
             )
 
             if alpha < Scalar[DTYPE](1e-10):
@@ -980,13 +1054,10 @@ def _newton_solve_env[
                     * (qacc[i] - qacc_smooth[i])
                 )
             for e_idx in range(num_edges):
-                if jar[e_idx] < Scalar[DTYPE](0):
-                    old_cost += (
-                        Scalar[DTYPE](0.5)
-                        * De[e_idx]
-                        * jar[e_idx]
-                        * jar[e_idx]
-                    )
+                old_cost += scalar_row_cost[DTYPE](
+                    state_e[e_idx], jar[e_idx], De[e_idx], R_e[e_idx],
+                    floss_e[e_idx],
+                )
 
             # Update qacc, Ma
             for i in range(NV):
@@ -995,7 +1066,8 @@ def _newton_solve_env[
 
             # Recompute jar, force, qfrc
             pyramidal_edge_forces[DTYPE, NV, ME, V_SIZE](
-                num_edges, Je, De, bias_e, qacc, jar, force, qfrc
+                num_edges, Je, De, bias_e, kind_e, R_e, floss_e,
+                qacc, jar, force, state_e, qfrc
             )
 
             # Compute new cost and check improvement
@@ -1007,13 +1079,10 @@ def _newton_solve_env[
                     * (qacc[i] - qacc_smooth[i])
                 )
             for e_idx in range(num_edges):
-                if jar[e_idx] < Scalar[DTYPE](0):
-                    new_cost += (
-                        Scalar[DTYPE](0.5)
-                        * De[e_idx]
-                        * jar[e_idx]
-                        * jar[e_idx]
-                    )
+                new_cost += scalar_row_cost[DTYPE](
+                    state_e[e_idx], jar[e_idx], De[e_idx], R_e[e_idx],
+                    floss_e[e_idx],
+                )
 
             var improvement = scale * (old_cost - new_cost)
             if improvement < Scalar[DTYPE](NEWTON_TOL_GPU) and iter_n > 0:
@@ -1115,6 +1184,28 @@ def _newton_solve_env[
             Jt2_c[c * NV + i] = rebind[Scalar[DTYPE]](
                 solver[env, ws_Jt2_idx + c * NV + i]
             )
+
+    # === Scalar rows: joint limits + dry-friction dofs ===
+    # These used to be PGS post-passes that ran AFTER this solve, so the
+    # contact rows were solved as if they did not exist. They are rows of the
+    # same system — see constraints/scalar_rows.mojo for the measurement that
+    # established this. J = sign * e_dof, so only (dof, sign) is stored.
+    comptime MAXS = max_scalar_rows[NV, NJOINT]()
+    var sr_dof = InlineArray[Int, MAXS](fill=0)
+    var sr_kind = InlineArray[Int, MAXS](fill=0)
+    var sr_sign = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+    var sr_D = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+    var sr_R = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+    var sr_bias = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+    var sr_floss = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+    var ns = build_scalar_rows[DTYPE, NQ, NV, NJOINT, BATCH, MAXS](
+        env, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
+        sr_dof, sr_kind, sr_sign, sr_D, sr_R, sr_bias, sr_floss,
+    )
+    var sr_jar = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+    var sr_f = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+    var sr_st = InlineArray[Int, MAXS](fill=0)
+    var sr_Js = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
 
     # === Step 2: Initialize local InlineArrays from workspace ===
     var H = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
@@ -1222,7 +1313,23 @@ def _newton_solve_env[
             ft2_arr[c] = Dm * mu * s * jar_t2 / T_safe
             cs_arr[c] = 2  # CONE
 
+    # Scalar rows: same 3-zone logic, one dof each.
+    for s in range(ns):
+        var jar_s = sr_bias[s] + sr_sign[s] * qacc[sr_dof[s]]
+        sr_jar[s] = jar_s
+        var st = scalar_row_state[DTYPE](
+            sr_kind[s], jar_s, sr_R[s], sr_floss[s]
+        )
+        sr_st[s] = st
+        sr_f[s] = scalar_row_force[DTYPE](st, jar_s, sr_D[s], sr_floss[s])
+
     # === Step 4: Build Hessian H = M + J^T*D*J (cone-aware, using cached Jacobians) ===
+    # Scalar rows contribute D only on their own dof (J = sign*e_dof, so
+    # J^T*J = e_dof*e_dof^T — the sign squares away).
+    for s in range(ns):
+        if sr_st[s] == SROW_QUADRATIC:
+            var d = sr_dof[s]
+            H[d * NV + d] += sr_D[s]
     for c in range(nc):
         var cs = cs_arr[c]
         if cs == 0:  # SATISFIED
@@ -1320,6 +1427,8 @@ def _newton_solve_env[
                 + Jt1_c[c * NV + i] * ft1_arr[c]
                 + Jt2_c[c * NV + i] * ft2_arr[c]
             )
+    for s in range(ns):
+        qfrc_c[sr_dof[s]] += sr_sign[s] * sr_f[s]
 
     # === Step 5: Newton iteration loop ===
     for _iter in range(NEWTON_ITER_GPU):
@@ -1371,6 +1480,8 @@ def _newton_solve_env[
             Js_n[c] = js_n
             Js_t1[c] = js_t1
             Js_t2[c] = js_t2
+        for s in range(ns):
+            sr_Js[s] = sr_sign[s] * search[sr_dof[s]]
 
         # Analytical Newton linesearch (matches CPU primal_linesearch_with_D)
         # Gauss coefficients for derivative: d_gauss/dalpha = ga*alpha + gb
@@ -1417,6 +1528,12 @@ def _newton_solve_env[
                 var Jv_f_sq = Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
                 var d2sda2 = -mu * (Jv_f_sq - dTda * dTda) / T0_safe
                 p0_d2 += Dm * (dsda * dsda + s0 * d2sda2)
+        # Scalar rows. d(cost)/dalpha = -f*Jv in EVERY state, and the second
+        # derivative is D*Jv^2 only where the row is quadratic.
+        for s in range(ns):
+            p0_d1 += -sr_f[s] * sr_Js[s]
+            if sr_st[s] == SROW_QUADRATIC:
+                p0_d2 += sr_D[s] * sr_Js[s] * sr_Js[s]
         if p0_d2 < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
             p0_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
 
@@ -1468,6 +1585,17 @@ def _newton_solve_env[
                     var Jvf = Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
                     var d2s = -mu * (Jvf - dTda * dTda) / tT_s
                     p1_d2_v += Dm * (dsda * dsda + s_v * d2s)
+            for s in range(ns):
+                var tj = sr_jar[s] + p1_alpha * sr_Js[s]
+                var tst = scalar_row_state[DTYPE](
+                    sr_kind[s], tj, sr_R[s], sr_floss[s]
+                )
+                p1_d1 += (
+                    -scalar_row_force[DTYPE](tst, tj, sr_D[s], sr_floss[s])
+                    * sr_Js[s]
+                )
+                if tst == SROW_QUADRATIC:
+                    p1_d2_v += sr_D[s] * sr_Js[s] * sr_Js[s]
             if p1_d2_v < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
                 p1_d2_v = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
 
@@ -1529,6 +1657,19 @@ def _newton_solve_env[
                             )
                             var d2s = -mu * (Jvf - dTda * dTda) / tT_s
                             p1_d2_v += Dm * (dsda * dsda + s_v * d2s)
+                    for s in range(ns):
+                        var tj = sr_jar[s] + p1_alpha * sr_Js[s]
+                        var tst = scalar_row_state[DTYPE](
+                            sr_kind[s], tj, sr_R[s], sr_floss[s]
+                        )
+                        p1_d1 += (
+                            -scalar_row_force[DTYPE](
+                                tst, tj, sr_D[s], sr_floss[s]
+                            )
+                            * sr_Js[s]
+                        )
+                        if tst == SROW_QUADRATIC:
+                            p1_d2_v += sr_D[s] * sr_Js[s] * sr_Js[s]
                     if p1_d2_v < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
                         p1_d2_v = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
                     if p1_d1 * p1_d1 < gtol_sq:
@@ -1575,6 +1716,17 @@ def _newton_solve_env[
                                 ) / tT_s
                                 var dsda = Js_n[c] - mu * dTda
                                 mid_d1 += Dm * s_v * dsda
+                        for s in range(ns):
+                            var tj = sr_jar[s] + mid * sr_Js[s]
+                            var tst = scalar_row_state[DTYPE](
+                                sr_kind[s], tj, sr_R[s], sr_floss[s]
+                            )
+                            mid_d1 += (
+                                -scalar_row_force[DTYPE](
+                                    tst, tj, sr_D[s], sr_floss[s]
+                                )
+                                * sr_Js[s]
+                            )
                         if mid_d1 * mid_d1 < gtol_sq:
                             p1_alpha = mid
                             p1_d1 = mid_d1
@@ -1649,6 +1801,17 @@ def _newton_solve_env[
                 cs_arr[c] = 2
             if cs_arr[c] != old_cs:
                 state_changed = True
+        for s in range(ns):
+            var old_st = sr_st[s]
+            var jar_s = sr_bias[s] + sr_sign[s] * qacc[sr_dof[s]]
+            sr_jar[s] = jar_s
+            var st = scalar_row_state[DTYPE](
+                sr_kind[s], jar_s, sr_R[s], sr_floss[s]
+            )
+            sr_st[s] = st
+            sr_f[s] = scalar_row_force[DTYPE](st, jar_s, sr_D[s], sr_floss[s])
+            if st != old_st:
+                state_changed = True
 
         # Recompute qfrc_c = J^T * updated forces (all InlineArray ops)
         for i in range(NV):
@@ -1662,11 +1825,17 @@ def _newton_solve_env[
                     + Jt1_c[c * NV + i] * ft1_arr[c]
                     + Jt2_c[c * NV + i] * ft2_arr[c]
                 )
+        for s in range(ns):
+            qfrc_c[sr_dof[s]] += sr_sign[s] * sr_f[s]
 
         # Hessian rebuild if states changed (using cached Jacobians — no workspace reads)
         if state_changed:
             for k in range(NV * NV):
                 H[k] = M_local[k]
+            for s in range(ns):
+                if sr_st[s] == SROW_QUADRATIC:
+                    var d = sr_dof[s]
+                    H[d * NV + d] += sr_D[s]
             for c in range(nc):
                 var cs = cs_arr[c]
                 if cs == 0:
@@ -1766,16 +1935,12 @@ def _newton_solve_env[
         contacts[env, c_off + CONTACT_IDX_FORCE_T1] = ft1_arr[c]
         contacts[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_arr[c]
 
+    # Joint limits and dry-friction dofs are rows of the Newton system above
+    # (`build_scalar_rows`), not post-passes — solving them after the contacts
+    # is what made the contact force wrong. Equality and tendon rows still run
+    # as post-passes: they need a dense Jacobian, so folding them in is a
+    # separate change.
     comptime SOLVER_ITER_GPU: Int = 50
-    _limits_env[DTYPE, NQ, NV, NJOINT, BATCH, SOLVER_ITER_GPU](
-        env, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
-        qacc_constrained,
-    )
-    # Dry-friction dof rows (MuJoCo mjCNSTR_FRICTION_DOF), solved
-    # beside the limit rows. No-op for a model with no frictionloss.
-    _friction_env[DTYPE, NQ, NV, NJOINT, BATCH, SOLVER_ITER_GPU](
-        env, qvel, joints, dof_invweight0, m_inv, qacc_constrained
-    )
 
     comptime if NEQUALITY > 0:
         _equality_env[

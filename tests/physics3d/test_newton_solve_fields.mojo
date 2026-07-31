@@ -97,10 +97,23 @@ comptime N_ROUNDS = 3
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
 # ELLIPTIC leg
+# Re-harvested 2026-07-30: joint limits and dry-friction dofs became ROWS of
+# the elliptic Newton system instead of PGS post-passes run after it
+# (constraints/scalar_rows.mojo). env1 carries one limit row, so its qacc
+# moved — QC 12520.206316679716 -> 11196.676875680685 (10.6%),
+# CON 514215.5317506604 -> 506352.9110841565 (1.5%).
+# This golden is a checksum, not ground truth, so it cannot say which value is
+# right. What can: with `distal` tightened to +-0.5 rad so the limit fires
+# during contact, worst |d qvel| vs MuJoCo over the finger rollout went
+# 1.0237321068510568 -> 0.0261971900712797 (39x closer). Do NOT re-harvest this
+# leg again without an equivalent MuJoCo-anchored measurement.
 comptime GOLD_NCON_ELL = 36  # total contacts summed over the 3 rounds
-comptime GOLD_QC_ELL = 12520.206316679716
-comptime GOLD_CON_ELL = 514215.5317506604
-# PYRAMIDAL leg
+comptime GOLD_QC_ELL = 11196.676875680685
+comptime GOLD_CON_ELL = 506352.9110841565
+# PYRAMIDAL leg — unchanged goldens. This leg already carried its limit rows in
+# the Newton system, and the model has no frictionloss, so the same change
+# moved it by only ~4e-5 relative (float32 reassociation in the refactored
+# `primal.mojo` expressions), well inside GOLD_RTOL.
 comptime GOLD_NCON_PYR = 36
 comptime GOLD_QC_PYR = 5707.129324436188
 comptime GOLD_CON_PYR = 178360.48161778972

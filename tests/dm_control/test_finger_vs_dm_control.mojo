@@ -685,15 +685,74 @@ def test_finger_contact_phase_residual_is_bounded() raises:
 
     ⚠ NEITHER fully closed this residual, and the frictionloss attribution
     that used to be written here was WRONG: fixing it moved the early-contact
-    number only 0.0475 -> 0.0390. What a lockstep probe actually shows is
-      (a) ~0.3% per-step drift while a contact is live (0.012 -> 0.033 rad/s
-          on a 5-9 rad/s hinge over six contact steps), and
-      (b) a one-step SEPARATION TIMING difference — our contact persists for a
-          step after MuJoCo's has ended (ncon 1 vs 0), which injects an
-          impulse MuJoCo does not have and spikes |d qvel| to 0.072.
-    Neither is the friction row and neither is the narrow phase at a static
-    pose (that matches to ~4e-4). The cone A/B that exonerated ELLIPTIC was
-    run BEFORE the invweight fix and is stale — redo it before trusting it.
+    number only 0.0475 -> 0.0390.
+
+    LOCALIZED 2026-07-30 to a single scalar — the SOLVED CONTACT FORCE — by a
+    substep probe that forks our engine off MuJoCo's state, takes ONE Euler
+    substep on each, and compares. What is now RULED OUT, by measurement and
+    not by argument:
+
+      * Narrow phase. Detected at an IDENTICAL state (FK + detect, no stepping
+        in between), dist / pos / normal agree with MuJoCo to ~5e-11. The
+        "~4e-4 at a static pose" written here before was measured at the END of
+        a step, after the states had already diverged — a consequence read as a
+        cause. A contact whose closest feature is a near-tangent capsule pair
+        slides far under a tiny rotation, which is why it looked so big.
+      * Contact Jacobian, mass matrix, smooth forces, the damping-implicit
+        Euler update, and the saturated friction-dof row. Predicting the
+        one-substep d(qvel) from the FORCE DIFFERENCE ALONE, through MuJoCo's
+        own J and M+dt*D, reproduces the observed d(qvel) to 2e-10
+        (ratio 1.00000003). If any of those differed, it could not.
+      * The constraint problem itself. imp, R, aref and K/B were recomputed by
+        hand from the model and match MuJoCo's efc rows exactly — including
+        the solimp clamp (imp = 0.86403303 with dmin clamped to 1e-4, vs
+        0.86402903 unclamped; MuJoCo reports the clamped value).
+
+    CAUSE FOUND 2026-07-30, and it is NOT the solver. MuJoCo puts every
+    constraint row in ONE system: here nefc = 4, nf = 1 — three elliptic
+    contact rows AND a frictionloss row on the spinner dof, solved together.
+    We solve the three contact rows in the Newton core and then apply the
+    friction row as a SEPARATE PGS pass afterwards (`_friction_env`, and the
+    same holds for `_limits_env` / `_equality_env` / the tendon rows). The
+    contact solve therefore never sees the friction force, and the spinner dof
+    that carries it is one the contact rows also act on.
+
+    Proved by solving MuJoCo's own primal problem, from MuJoCo's own efc data
+    (J, R, aref, qacc_smooth, mj_fullM), two ways at four contact substeps:
+
+      A) all 4 rows jointly  -> reproduces MuJoCo's force to ~1e-14
+      B) the 3 contact rows  -> reproduces OUR force to ~1e-7, i.e. to the
+                                harness's own convergence level
+
+    So our ELLIPTIC NEWTON SOLVE IS CORRECT — it returns the exact optimum of
+    the problem it is handed. The problem it is handed is missing a row. The
+    "KKT residual 0.517" recorded here before was measured against the FULL
+    4-row system, which our force is not a solution of and was never asked to
+    be; and the stale-Hessian LEAD was wrong twice over — H IS rebuilt and
+    refactorized whenever a cone state changes (newton_solve.mojo, the
+    `state_changed` branch), and a stale metric cannot bias a converged
+    gradient anyway.
+
+    FIXED 2026-07-30 by `physics3d/constraints/scalar_rows.mojo`: joint limits
+    and dry-friction dofs are now ROWS of the same system, built once and
+    solved with the contacts. J = sign*e_dof (one nonzero), so they cost O(rows)
+    of local storage rather than O(rows*NV) — the elliptic Newton core sits near
+    the Metal local-memory ceiling. Wired into `newton_solve` (both cones) and
+    `cg_solve`; their `_limits_env` / `_friction_env` post-passes are gone.
+
+      contact force vs MuJoCo   0.216 off  ->  2e-7
+      substep |d qvel|          7.5e-3     ->  6.2e-9
+      the residual gated below  0.0390     ->  8.8e-9
+
+    Still SEQUENTIAL, deliberately: equality and tendon rows (they need a dense
+    Jacobian, so they need different storage), and the PGS / island-PGS solvers.
+
+    The bound below is now ~7 orders of magnitude loose. It is kept as a
+    regression trip-wire; tighten it only with a fresh MuJoCo-anchored number.
+
+    Superseded: (a) the claim that our elliptic solve returns a non-KKT point;
+    (b) the claim that a one-step SEPARATION TIMING difference is a co-cause —
+    it is downstream of the same force error.
 
     The bound below is a defect record, not a parity tolerance. Tighten it
     when the contact phase is fixed; never relax it.

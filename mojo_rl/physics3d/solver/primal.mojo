@@ -1,8 +1,6 @@
 """Shared primal-solver fragments over InlineArray working sets (Stage-S
 refactor). These are the reusable leaf computations extracted VERBATIM from
-the inlined fields-Newton kernel (`solver/newton_solve.mojo`) so the
-CG primal solver (`cg_solve`) can reuse them instead of copying the
-Newton kernel body.
+the inlined fields-Newton kernel (`solver/newton_solve.mojo`).
 
 All helpers are `@always_inline` and operate on the per-env InlineArray
 working set the primal solvers already build (Je/De/bias_e/qacc/...), so
@@ -10,9 +8,24 @@ inlining them at the Newton call sites is codegen- (and thus bit-) identical
 to the previous inline code — the Newton golden gates re-validate this after
 each extraction.
 
-PYRAMIDAL cone only for now (the pyramidal primal path is what the Walker2D
-Newton gates and the HalfCheetah CG gate exercise; the elliptic path is
-extracted separately once it has fields-gate coverage)."""
+PYRAMIDAL cone only (the pyramidal primal path is what the Walker2D Newton
+gates exercise; the elliptic path is inlined in `newton_solve.mojo`).
+
+ROW KINDS. The row list is no longer homogeneous. Contact edges and joint
+limits are ONE-SIDED (`SROW_LIMIT`: inactive once jar >= 0), while
+dry-friction dof rows are BOX-clamped to +-frictionloss (`SROW_FRICTION`),
+which has a LINEAR regime where the force is constant and the row contributes
+NOTHING to the Hessian. Classifying with `force > 0` — as this file did while
+every row was one-sided — silently mis-handles a box row: a saturated negative
+row has force > 0 and would wrongly add curvature. Callers therefore read the
+per-row `state_e` that `pyramidal_edge_forces` now writes."""
+
+from ..constraints.scalar_rows import (
+    scalar_row_state,
+    scalar_row_force,
+    scalar_row_cost,
+    SROW_QUADRATIC,
+)
 
 
 @always_inline
@@ -23,33 +36,40 @@ def pyramidal_edge_forces[
     Je: InlineArray[Scalar[DTYPE], ME * V_SIZE],
     De: InlineArray[Scalar[DTYPE], ME],
     bias_e: InlineArray[Scalar[DTYPE], ME],
+    kind_e: InlineArray[Int, ME],
+    R_e: InlineArray[Scalar[DTYPE], ME],
+    floss_e: InlineArray[Scalar[DTYPE], ME],
     qacc: InlineArray[Scalar[DTYPE], V_SIZE],
     mut jar: InlineArray[Scalar[DTYPE], ME],
     mut force: InlineArray[Scalar[DTYPE], ME],
+    mut state_e: InlineArray[Int, ME],
     mut qfrc: InlineArray[Scalar[DTYPE], V_SIZE],
 ):
-    """Pyramidal edge constraint forces given the current qacc.
-
-    Verbatim from the fields-Newton inline body:
+    """Primal row forces given the current qacc.
 
         qfrc = 0
-        for each active edge e:
+        for each row e:
             jar[e]   = bias_e[e] + Je[e]·qacc
-            force[e] = -De[e]*jar[e]   if jar[e] < 0 else 0   (unilateral)
+            state[e] = branch(kind_e[e], jar[e], R_e[e], floss_e[e])
+            force[e] = f(state[e])       one-sided or box, see scalar_rows
             qfrc    += Je[e] * force[e]
 
     Je is row-major [ME, NV] (stride NV; array sized ME*V_SIZE with
-    V_SIZE = max(NV,1)). Writes jar/force (per-edge) and qfrc (per-dof)."""
+    V_SIZE = max(NV,1)). Writes jar/force/state_e (per-row) and qfrc
+    (per-dof)."""
     for i in range(NV):
         qfrc[i] = Scalar[DTYPE](0)
     for e_idx in range(num_edges):
         jar[e_idx] = bias_e[e_idx]
         for i in range(NV):
             jar[e_idx] += Je[e_idx * NV + i] * qacc[i]
-        if jar[e_idx] >= Scalar[DTYPE](0):
-            force[e_idx] = Scalar[DTYPE](0)
-        else:
-            force[e_idx] = -De[e_idx] * jar[e_idx]
+        var st = scalar_row_state[DTYPE](
+            kind_e[e_idx], jar[e_idx], R_e[e_idx], floss_e[e_idx]
+        )
+        state_e[e_idx] = st
+        force[e_idx] = scalar_row_force[DTYPE](
+            st, jar[e_idx], De[e_idx], floss_e[e_idx]
+        )
         for i in range(NV):
             qfrc[i] += Je[e_idx * NV + i] * force[e_idx]
 
@@ -66,6 +86,9 @@ def pyramidal_linesearch[
     num_edges: Int,
     Je: InlineArray[Scalar[DTYPE], ME * V_SIZE],
     De: InlineArray[Scalar[DTYPE], ME],
+    kind_e: InlineArray[Int, ME],
+    R_e: InlineArray[Scalar[DTYPE], ME],
+    floss_e: InlineArray[Scalar[DTYPE], ME],
     search: InlineArray[Scalar[DTYPE], V_SIZE],
     Mv: InlineArray[Scalar[DTYPE], V_SIZE],
     Ma: InlineArray[Scalar[DTYPE], V_SIZE],
@@ -74,21 +97,20 @@ def pyramidal_linesearch[
     qacc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
     jar: InlineArray[Scalar[DTYPE], ME],
 ) -> Scalar[DTYPE]:
-    """Analytical Newton/CG line-search for the pyramidal primal cost (verbatim
-    from the fields-Newton inline body, matching CPU `primal_linesearch_with_D`).
+    """Analytical Newton/CG line-search for the pyramidal primal cost (matching
+    CPU `primal_linesearch_with_D`).
 
     Given a search direction and its images (Mv = M·search, and Jv_e = Je·search
     computed internally), returns the step length `alpha` that minimizes the
-    primal Gauss + edge-constraint cost along the line, with analytical initial
+    primal Gauss + row-constraint cost along the line, with analytical initial
     step `alpha = -d1/d2` at alpha=0 then cost-based halving. Direction-agnostic:
-    the Newton chol step and the CG conjugate step both feed the same math, so
-    both primal solvers share this leaf.
+    the Newton chol step and the CG conjugate step both feed the same math.
 
-    Inputs are the per-edge residual `jar[e] = bias_e[e] + Je[e]·qacc` at the
+    Inputs are the per-row residual `jar[e] = bias_e[e] + Je[e]·qacc` at the
     current qacc, the smooth force/accel state (Ma/f_smooth/qacc/qacc_smooth),
     and the direction images. Returns 0 when the direction is not a descent
     direction (p0_d1 >= 0)."""
-    # Precompute Jv_e = Je · search for each edge.
+    # Precompute Jv_e = Je · search for each row.
     var Jv_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
     for e_idx in range(num_edges):
         Jv_e[e_idx] = Scalar[DTYPE](0)
@@ -101,12 +123,19 @@ def pyramidal_linesearch[
         gauss_a += Mv[i] * search[i]
         gauss_b += (Ma[i] - f_smooth[i]) * search[i]
 
-    # Evaluate d1, d2 at alpha=0
+    # Evaluate d1, d2 at alpha=0. d(cost)/dalpha = -f*Jv in every state; the
+    # second derivative is D*Jv^2 only where the row is quadratic.
     var p0_d1 = gauss_b
     var p0_d2 = gauss_a
     for e_idx in range(num_edges):
-        if jar[e_idx] < Scalar[DTYPE](0):
-            p0_d1 += De[e_idx] * jar[e_idx] * Jv_e[e_idx]
+        var st = scalar_row_state[DTYPE](
+            kind_e[e_idx], jar[e_idx], R_e[e_idx], floss_e[e_idx]
+        )
+        var f = scalar_row_force[DTYPE](
+            st, jar[e_idx], De[e_idx], floss_e[e_idx]
+        )
+        p0_d1 += -f * Jv_e[e_idx]
+        if st == SROW_QUADRATIC:
             p0_d2 += De[e_idx] * Jv_e[e_idx] * Jv_e[e_idx]
     if p0_d2 < Scalar[DTYPE](PRIMAL_MINVAL):
         p0_d2 = Scalar[DTYPE](PRIMAL_MINVAL)
@@ -126,10 +155,12 @@ def pyramidal_linesearch[
                 * (qacc[i] - qacc_smooth[i])
             )
         for e_idx in range(num_edges):
-            if jar[e_idx] < Scalar[DTYPE](0):
-                old_cost += (
-                    Scalar[DTYPE](0.5) * De[e_idx] * jar[e_idx] * jar[e_idx]
-                )
+            var st = scalar_row_state[DTYPE](
+                kind_e[e_idx], jar[e_idx], R_e[e_idx], floss_e[e_idx]
+            )
+            old_cost += scalar_row_cost[DTYPE](
+                st, jar[e_idx], De[e_idx], R_e[e_idx], floss_e[e_idx]
+            )
 
         # Try alpha, halve if cost doesn't decrease
         for _ in range(LINESEARCH_ITER):
@@ -144,10 +175,12 @@ def pyramidal_linesearch[
                 )
             for e_idx in range(num_edges):
                 var jar_t = jar[e_idx] + alpha * Jv_e[e_idx]
-                if jar_t < Scalar[DTYPE](0):
-                    trial_cost += (
-                        Scalar[DTYPE](0.5) * De[e_idx] * jar_t * jar_t
-                    )
+                var st_t = scalar_row_state[DTYPE](
+                    kind_e[e_idx], jar_t, R_e[e_idx], floss_e[e_idx]
+                )
+                trial_cost += scalar_row_cost[DTYPE](
+                    st_t, jar_t, De[e_idx], R_e[e_idx], floss_e[e_idx]
+                )
             if trial_cost <= old_cost:
                 break
             alpha *= Scalar[DTYPE](0.5)

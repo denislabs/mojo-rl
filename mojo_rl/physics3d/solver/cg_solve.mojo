@@ -58,6 +58,13 @@ from ..constraints.contact_solve import (
 )
 from ..constraints.limits import _limits_env
 from ..constraints.friction_dof import _friction_env
+from ..constraints.scalar_rows import (
+    build_scalar_rows,
+    max_scalar_rows,
+    scalar_row_state,
+    scalar_row_force,
+    scalar_row_cost,
+)
 from ..constraints.equality_tendon import (
     _equality_env,
     _tendon_env,
@@ -382,6 +389,25 @@ def _cg_solve_env[
     else:
         scale = Scalar[DTYPE](1.0)
 
+    # === Scalar rows: joint limits + dry-friction dofs ===
+    # Rows of THIS system, not post-passes — see constraints/scalar_rows.mojo.
+    comptime MAXS = max_scalar_rows[NV, NJOINT]()
+    var sr_dof = InlineArray[Int, MAXS](fill=0)
+    var sr_kind = InlineArray[Int, MAXS](fill=0)
+    var sr_sign = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+    var sr_D = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+    var sr_R = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+    var sr_bias = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+    var sr_floss = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+    var ns = build_scalar_rows[DTYPE, NQ, NV, NJOINT, BATCH, MAXS](
+        env, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
+        sr_dof, sr_kind, sr_sign, sr_D, sr_R, sr_bias, sr_floss,
+    )
+    var sr_jar = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+    var sr_f = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+    var sr_st = InlineArray[Int, MAXS](fill=0)
+    var sr_Js = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
+
     # === Step 4: Compute initial jar and forces via 3-zone cone logic ===
     for c in range(nc):
         if rebind[Scalar[DTYPE]](solver[env, ws_c_dist_idx + c]) >= Scalar[
@@ -446,6 +472,15 @@ def _cg_solve_env[
             solver[env, ws_ft2_idx + c] = Dm * mu_c * s * jar_t2_c / T_safe
             solver[env, ws_cstate_idx + c] = 2
 
+    for s_i in range(ns):
+        var jr = sr_bias[s_i] + sr_sign[s_i] * qacc[sr_dof[s_i]]
+        sr_jar[s_i] = jr
+        var st = scalar_row_state[DTYPE](
+            sr_kind[s_i], jr, sr_R[s_i], sr_floss[s_i]
+        )
+        sr_st[s_i] = st
+        sr_f[s_i] = scalar_row_force[DTYPE](st, jr, sr_D[s_i], sr_floss[s_i])
+
     # === Step 5: Compute initial gradient and preconditioned gradient ===
     var grad_norm_sq: Scalar[DTYPE] = 0
     for i in range(NV):
@@ -462,6 +497,9 @@ def _cg_solve_env[
                 + rebind[Scalar[DTYPE]](solver[env, ws_Jt2_idx + c * NV + i])
                 * rebind[Scalar[DTYPE]](solver[env, ws_ft2_idx + c])
             )
+        for s_i in range(ns):
+            if sr_dof[s_i] == i:
+                g -= sr_sign[s_i] * sr_f[s_i]
         grad[i] = g
         grad_norm_sq += g * g
 
@@ -519,6 +557,8 @@ def _cg_solve_env[
             Js_n[c] = js_n_c
             Js_t1[c] = js_t1_c
             Js_t2[c] = js_t2_c
+        for s_i in range(ns):
+            sr_Js[s_i] = sr_sign[s_i] * search[sr_dof[s_i]]
 
         # Compute current total cost and gradient-direction dot product
         var gauss_0: Scalar[DTYPE] = 0
@@ -561,6 +601,11 @@ def _cg_solve_env[
                 var s = N - mu_c * T_s
                 var Dm = D_n_c / (Scalar[DTYPE](1.0) + mu_c * mu_c)
                 c_cost_0 += Scalar[DTYPE](0.5) * Dm * s * s
+
+        for s_i in range(ns):
+            c_cost_0 += scalar_row_cost[DTYPE](
+                sr_st[s_i], sr_jar[s_i], sr_D[s_i], sr_R[s_i], sr_floss[s_i]
+            )
 
         var current_cost = gauss_0 + c_cost_0
 
@@ -605,6 +650,14 @@ def _cg_solve_env[
                     var trial_s = trial_N - mu_c * trial_T_safe
                     var Dm = D_n_c / (Scalar[DTYPE](1.0) + mu_c * mu_c)
                     trial_c_cost += Scalar[DTYPE](0.5) * Dm * trial_s * trial_s
+            for s_i in range(ns):
+                var tj = sr_jar[s_i] + alpha * sr_Js[s_i]
+                var tst = scalar_row_state[DTYPE](
+                    sr_kind[s_i], tj, sr_R[s_i], sr_floss[s_i]
+                )
+                trial_c_cost += scalar_row_cost[DTYPE](
+                    tst, tj, sr_D[s_i], sr_R[s_i], sr_floss[s_i]
+                )
             var trial_cost = trial_gauss + trial_c_cost
             if trial_cost <= current_cost + armijo_c * alpha * gtd:
                 break
@@ -676,6 +729,17 @@ def _cg_solve_env[
                 solver[env, ws_ft2_idx + c] = Dm * mu_c * s * jar_t2_c / T_safe
                 solver[env, ws_cstate_idx + c] = Scalar[DTYPE](2)
 
+        for s_i in range(ns):
+            var jr = sr_bias[s_i] + sr_sign[s_i] * qacc[sr_dof[s_i]]
+            sr_jar[s_i] = jr
+            var st = scalar_row_state[DTYPE](
+                sr_kind[s_i], jr, sr_R[s_i], sr_floss[s_i]
+            )
+            sr_st[s_i] = st
+            sr_f[s_i] = scalar_row_force[DTYPE](
+                st, jr, sr_D[s_i], sr_floss[s_i]
+            )
+
         # Save old gradient for Polak-Ribiere
         for i in range(NV):
             gradold[i] = grad[i]
@@ -703,6 +767,9 @@ def _cg_solve_env[
                     )
                     * rebind[Scalar[DTYPE]](solver[env, ws_ft2_idx + c])
                 )
+            for s_i in range(ns):
+                if sr_dof[s_i] == i:
+                    g -= sr_sign[s_i] * sr_f[s_i]
             grad[i] = g
             grad_norm_sq += g * g
 
@@ -740,17 +807,11 @@ def _cg_solve_env[
             env, ws_ft2_idx + c
         ]
 
-    # === Post-solve: limits, equality, tendon (shared with Newton elliptic) ===
+    # === Post-solve: equality, tendon (shared with Newton elliptic) ===
+    # Limits and dry-friction dofs are rows of the CG system above, matching
+    # the Newton path — see constraints/scalar_rows.mojo. Equality and tendon
+    # rows need a dense Jacobian and remain post-passes for now.
     comptime SOLVER_ITER_GPU: Int = 50
-    _limits_env[DTYPE, NQ, NV, NJOINT, BATCH, SOLVER_ITER_GPU](
-        env, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
-        qacc_constrained,
-    )
-    # Dry-friction dof rows (MuJoCo mjCNSTR_FRICTION_DOF), solved
-    # beside the limit rows. No-op for a model with no frictionloss.
-    _friction_env[DTYPE, NQ, NV, NJOINT, BATCH, SOLVER_ITER_GPU](
-        env, qvel, joints, dof_invweight0, m_inv, qacc_constrained
-    )
 
     comptime if NEQUALITY > 0:
         _equality_env[
