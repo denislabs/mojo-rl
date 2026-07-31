@@ -24,6 +24,7 @@ from ..constants import (
     GEOM_PLANE,
     GEOM_CYLINDER,
     GEOM_MESH,
+    GEOM_ELLIPSOID,
 )
 from ..fields import Data, Model
 from ..gpu.constants import (
@@ -87,6 +88,7 @@ from .collision_primitives import (
     box_capsule,
     box_box,
     box_plane,
+    ellipsoid_plane,
     cylinder_plane,
     cylinder_sphere,
     cylinder_capsule,
@@ -737,6 +739,57 @@ def _detect_contacts_env[
                             DTYPE
                         ](contact_condim)
                         num_contacts += 1
+                elif gj_type == GEOM_ELLIPSOID:
+                    # MuJoCo routes plane x ellipsoid through mjc_PlaneConvex,
+                    # which reports the single deepest support point. A smooth
+                    # strictly-convex surface touches a plane at one point, and
+                    # MuJoCo was measured to emit exactly 1 contact over 500
+                    # random poses — so, unlike box_plane, there is no second
+                    # contact to look for.
+                    var ep = ellipsoid_plane[DTYPE](
+                        pj_x, pj_y, pj_z,
+                        qj_x, qj_y, qj_z, qj_w,
+                        hxj, hyj, hzj,
+                        ground_z,
+                    )
+                    var dist = ep[0]
+                    if dist < contact_margin and num_contacts < MAX_CONTACTS:
+                        var c_off = num_contacts * CONTACT_SIZE
+                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
+                            DTYPE
+                        ](gj_body)
+                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
+                            DTYPE
+                        ](0)
+                        contacts[env, c_off + CONTACT_IDX_POS_X] = ep[1]
+                        contacts[env, c_off + CONTACT_IDX_POS_Y] = ep[2]
+                        contacts[env, c_off + CONTACT_IDX_POS_Z] = ep[3]
+                        contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](
+                            1
+                        )
+                        contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                        contacts[
+                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+                        ] = contact_margin
+                        contacts[
+                            env, c_off + CONTACT_IDX_FRICTION
+                        ] = contact_friction
+                        contacts[
+                            env, c_off + CONTACT_IDX_FRICTION_SPIN
+                        ] = contact_friction_spin
+                        contacts[
+                            env, c_off + CONTACT_IDX_FRICTION_ROLL
+                        ] = contact_friction_roll
+                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
+                            DTYPE
+                        ](contact_condim)
+                        num_contacts += 1
                 elif gj_type == GEOM_BOX:
                     var bp = box_plane[DTYPE](
                         pj_x, pj_y, pj_z,
@@ -998,6 +1051,53 @@ def _detect_contacts_env[
                         contacts[
                             env, c_off + CONTACT_IDX_POS_Z
                         ] = ground_z + dist * Scalar[DTYPE](0.5)
+                        contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](
+                            0
+                        )
+                        contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](
+                            1
+                        )
+                        contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                        contacts[
+                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
+                        ] = contact_margin
+                        contacts[
+                            env, c_off + CONTACT_IDX_FRICTION
+                        ] = contact_friction
+                        contacts[
+                            env, c_off + CONTACT_IDX_FRICTION_SPIN
+                        ] = contact_friction_spin
+                        contacts[
+                            env, c_off + CONTACT_IDX_FRICTION_ROLL
+                        ] = contact_friction_roll
+                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
+                            DTYPE
+                        ](contact_condim)
+                        num_contacts += 1
+                elif gi_type == GEOM_ELLIPSOID:
+                    # Mirror of the gj branch above; see it for why one
+                    # contact is the whole story.
+                    var ep = ellipsoid_plane[DTYPE](
+                        pi_x, pi_y, pi_z,
+                        qi_x, qi_y, qi_z, qi_w,
+                        hxi, hyi, hzi,
+                        ground_z,
+                    )
+                    var dist = ep[0]
+                    if dist < contact_margin and num_contacts < MAX_CONTACTS:
+                        var c_off = num_contacts * CONTACT_SIZE
+                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
+                            DTYPE
+                        ](gi_body)
+                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
+                            DTYPE
+                        ](0)
+                        contacts[env, c_off + CONTACT_IDX_POS_X] = ep[1]
+                        contacts[env, c_off + CONTACT_IDX_POS_Y] = ep[2]
+                        contacts[env, c_off + CONTACT_IDX_POS_Z] = ep[3]
                         contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](
                             0
                         )

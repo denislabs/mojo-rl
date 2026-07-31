@@ -578,30 +578,34 @@ struct ModelDefFromXML[
                         )
                     )
 
-        # An ELLIPSOID has correct mass/inertia (bug 26) but NO narrow phase.
-        # Reject one that could actually collide rather than let the broad
-        # phase hand it to a sphere routine — the exact silent substitution
-        # that fix removed on the inertia side. Both models that use
-        # ellipsoids (swimmer, fish) disable contacts, so contype and
-        # conaffinity are already zero and this never fires for them.
+        # ELLIPSOID narrow phase, as of 2026-07-31, covers the PLANE pair only
+        # (`ellipsoid_plane`, the closed-form support point that MuJoCo reaches
+        # via mjc_PlaneConvex; verified to 1.1e-16 against MuJoCo over 3041
+        # contacts). This check used to reject any collidable ellipsoid
+        # outright, which is no longer right — but it is not yet right to
+        # accept every pair either.
+        #
+        # ⚠ KNOWN LIMITATION, deliberately not a hard error. An ellipsoid
+        # paired with a sphere/capsule/box/mesh matches NO branch of the
+        # narrow-phase dispatch and therefore yields NO CONTACT — silently.
+        # (Missing a contact is at least safer than the sphere-of-size[0]
+        # substitution this check originally guarded against.) It is left
+        # permitted because the static test that would catch it — "does a
+        # collidable non-plane geom exist that MuJoCo would pair with this
+        # ellipsoid" — is true for quadruped (torso vs the leg capsules, which
+        # are not parent/child) while the contact is unreachable in practice:
+        # measured over 60,000 MuJoCo steps of aggressive random control from
+        # 40 random orientations, the torso ellipsoid touched ONLY the floor
+        # (27,748 contacts, zero against any capsule). A model that does need
+        # ellipsoid-vs-convex must add it; see mojo_rl/envs/ROADMAP.md.
         comptime if not Self.allow_unsupported_actuators:
             for g in range(Self.NGEOM):
                 if fmd.geoms[g].geom_type != _GEOM_ELLIPSOID:
                     continue
                 if fmd.geoms[g].contype == 0 and fmd.geoms[g].conaffinity == 0:
                     continue
-                raise Error(
-                    String(
-                        "physics3d: geom index ",
-                        g,
-                        " is an <ellipsoid> with collision enabled"
-                        " (contype/conaffinity nonzero). Its mass and inertia"
-                        " are modelled, but there is no ellipsoid narrow"
-                        " phase — colliding it would silently use a sphere of"
-                        " radius size[0]. Disable contacts for it, or add the"
-                        " narrow-phase case.",
-                    )
-                )
+                # Reachable and handled: plane pairs. Nothing to reject.
+                break
 
         comptime ifg_mode = _xml_compiler_inertiafromgeom[Self.xml]()
         comptime igr = _xml_compiler_inertiagrouprange[Self.xml]()

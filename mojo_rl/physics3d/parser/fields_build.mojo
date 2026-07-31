@@ -47,6 +47,7 @@ from mojo_rl.physics3d.constants import (
     GEOM_BOX,
     GEOM_CYLINDER,
     GEOM_MESH,
+    GEOM_ELLIPSOID,
 )
 from mojo_rl.physics3d.fields import Model
 from mojo_rl.physics3d.collision.convex_hull import (
@@ -889,6 +890,23 @@ def build_model_fields_from_flat[
                     + gd.half_z * gd.half_z
                 )
             )
+        elif gd.geom_type == GEOM_ELLIPSOID:
+            # `max(size)` — mjCGeom::GetRBound (user_objects.cc:3345). Without
+            # this case `rbound` fell through to `gd.radius`, which the parser
+            # sets to size[0] for an ellipsoid; any ellipsoid whose LARGEST
+            # semi-axis is not the first would get a bounding sphere smaller
+            # than itself and the broad phase would silently drop its
+            # contacts. Harmless until the ellipsoid narrow phase landed
+            # (2026-07-31), because a colliding ellipsoid was rejected at
+            # build time; a real bug from that point on. quadruped's torso
+            # (.3 .27 .2) happens to be ordered largest-first and so would
+            # NOT have exposed it.
+            var mx = gd.half_x
+            if gd.half_y > mx:
+                mx = gd.half_y
+            if gd.half_z > mx:
+                mx = gd.half_z
+            rbound = Scalar[DTYPE](mx)
         # GEOM_MESH: refined from hull vertices below.
         mf.geoms.data[o + GEOM_IDX_RBOUND] = rbound
 

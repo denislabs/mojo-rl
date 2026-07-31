@@ -416,8 +416,52 @@ Regression after the parser change: dm_control **15/15**, physics3d **58/60**
 (the two failures are the known pre-existing `test_comptime_parser_io` —
 comptime `open()` is not interpretable — and `test_solver_debug`).
 
+**Ellipsoid-plane narrow phase.** `collision_primitives.ellipsoid_plane` — the
+closed-form support point MuJoCo reaches via `mjc_PlaneConvex`:
+
+    d = R^T w,  point = c + R (A^2 d) / |A d|,  w = (0,0,-1), A = diag(size)
+
+Checked against MuJoCo over 3041 contacts: **dist 1.1e-16, pos 2.2e-16**. One
+contact, not up to four as `box_plane` reports — a smooth strictly-convex
+surface touches a plane at a point, and MuJoCo emitted exactly 1 over 500
+random poses.
+
+Two things fell out while wiring it:
+
+- **`geom_rbound` had no ellipsoid case**, so it fell through to `gd.radius`,
+  which the parser sets to `size[0]`. Any ellipsoid whose LARGEST semi-axis is
+  not the first would get a bounding sphere smaller than itself and the broad
+  phase would silently drop its contacts. Fixed to `max(size)`
+  (`mjCGeom::GetRBound`). quadruped's torso (.3 .27 .2) is ordered
+  largest-first and would NOT have exposed it.
+- The build-time rejection of collidable ellipsoids is relaxed, but the
+  narrow phase covers the PLANE pair only. An ellipsoid vs
+  sphere/capsule/box/mesh matches no dispatch branch and yields NO contact,
+  silently. Left permitted because the static test that would catch it is
+  true for quadruped (torso vs the leg capsules are not parent/child) while
+  the contact is unreachable in practice: over **60,000 MuJoCo steps** of
+  aggressive random control from 40 random orientations the torso touched
+  ONLY the floor (27,748 contacts, zero against any capsule).
+
 ### Remaining, in dependency order
 
+0. **`<equality><tendon>` is not parsed at runtime — the coupling is ABSENT.**
+   Found 2026-07-31 by dumping the built `fields.Model`: all four
+   `coupling_*` tendons come back with `IS_EQUALITY = 0`. `TendonData` has the
+   field and `fields_build` copies it, but NOTHING in `full_parser` ever sets
+   it — `_fill_equality` scans only `<weld` and `<connect`. Worse, the
+   equality solref/solimp slots (`TENDON_IDX_SOLREF_0` / `SOLIMP_0`) are READ
+   by `constraints/equality_tendon.mojo` and written by nobody, so they are
+   zero. The path has never run end to end; `test_equality_tendon_fields`
+   passes because it builds the tendon record directly rather than through
+   the parser. quadruped is the first model to need it, and it is not
+   optional — without it each leg's pitch/knee/ankle are uncoupled, which is
+   a different robot. Needs: parse `<tendon tendon1=...>` in `<equality>`,
+   resolve `class=` for solref/solimp (quadruped puts them in
+   `class="coupling"`: solref `.005 .5`, solimp `.95 .99 .01`), raise on
+   `tendon2`/non-default `polycoef`, and set `length_ref` to the tendon length
+   at qpos0 (MuJoCo's residual is `ten_length - tendon_length0 - eq_data[0]`,
+   engine_core_constraint.c:603).
 1. **Activation state.** `Data` has no `act`. Plan: a trailing `NA: Int = 0`
    parameter plus an `act` tensor. The key point is that it is `na` (activation
    count) and NOT `nu`: every model ported before quadruped has na=0, because

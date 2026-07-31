@@ -285,6 +285,87 @@ def sphere_plane[
     return (dist, contact_x, contact_y, contact_z)
 
 
+@always_inline
+def ellipsoid_plane[
+    DTYPE: DType
+](
+    center_x: Scalar[DTYPE],
+    center_y: Scalar[DTYPE],
+    center_z: Scalar[DTYPE],
+    qx: Scalar[DTYPE],
+    qy: Scalar[DTYPE],
+    qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
+    rx: Scalar[DTYPE],
+    ry: Scalar[DTYPE],
+    rz: Scalar[DTYPE],
+    ground_z: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """Ellipsoid-plane collision (ground plane with normal = +Z).
+
+    MuJoCo routes plane x ellipsoid through `mjc_PlaneConvex`, which asks the
+    convex geom for its SUPPORT POINT along -normal and reports that single
+    deepest point. An ellipsoid's support point is closed-form, so no ccd is
+    needed here.
+
+    For the ellipsoid `{c + R A u : |u| <= 1}` with `A = diag(rx, ry, rz)`,
+    the support along a world direction `w` is
+
+        d     = R^T w
+        point = c + R (A^2 d) / |A d|
+
+    Taking `w = (0, 0, -1)` maximises `-z`, i.e. finds the LOWEST point of the
+    ellipsoid, and `dist = point_z - ground_z` is then the exact analogue of
+    `sphere_plane`'s `(center_z - radius) - ground_z`.
+
+    A smooth strictly-convex surface touches a plane at one point, so one
+    contact is the whole story — unlike `box_plane`, which reports up to four.
+
+    Args:
+        center_x: Ellipsoid centre x.
+        center_y: Ellipsoid centre y.
+        center_z: Ellipsoid centre z.
+        qx: Orientation quaternion x.
+        qy: Orientation quaternion y.
+        qz: Orientation quaternion z.
+        qw: Orientation quaternion w.
+        rx: Semi-axis along local x.
+        ry: Semi-axis along local y.
+        rz: Semi-axis along local z.
+        ground_z: Z-height of the ground plane.
+
+    Returns:
+        Tuple of (dist, contact_x, contact_y, contact_z), matching
+        `sphere_plane`: dist is signed (negative = penetration) and the
+        contact point sits midway across the gap.
+    """
+    # d = R^T * (0, 0, -1)
+    var d = rotate_vector_by_quat_inverse[DTYPE](
+        Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](-1),
+        qx, qy, qz, qw,
+    )
+    var ax = rx * d[0]
+    var ay = ry * d[1]
+    var az = rz * d[2]
+    var norm = sqrt(ax * ax + ay * ay + az * az)
+    # Degenerate only if a semi-axis is zero; fall back to the centre so the
+    # caller still gets a finite, obviously-non-penetrating distance.
+    if norm <= Scalar[DTYPE](1e-15):
+        return (center_z - ground_z, center_x, center_y, ground_z)
+    var inv = Scalar[DTYPE](1) / norm
+    # R * (A^2 d) / |A d|
+    var off = rotate_vector_by_quat[DTYPE](
+        rx * ax * inv, ry * ay * inv, rz * az * inv,
+        qx, qy, qz, qw,
+    )
+    var px = center_x + off[0]
+    var py = center_y + off[1]
+    var pz = center_z + off[2]
+
+    var dist = pz - ground_z
+    return (dist, px, py, ground_z + dist * Scalar[DTYPE](0.5))
+
+
 # =============================================================================
 # Capsule Collision Primitives (Phase 8)
 # =============================================================================
