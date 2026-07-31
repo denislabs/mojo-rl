@@ -156,3 +156,38 @@ that expresses them.
    engine. Closing this needs a purpose-built PYRAMIDAL model with
    `frictionloss` (a two-body slider with friction and a ground contact is
    enough); until then treat those rows as unverified.
+
+---
+
+## OPEN (unrelated to the solver): box-vs-plane contact count
+
+Found 2026-07-31 while building `tests/physics3d/test_friction_dof_rows_vs_mujoco.mojo`.
+
+For a box resting on a plane, **MuJoCo emits FOUR contacts** — one per bottom
+corner:
+
+```
+ncon = 4
+  [0] dist=-0.004 pos=(-0.05,-0.05,-0.002)
+  [1] dist=-0.004 pos=(+0.05,-0.05,-0.002)
+  [2] dist=-0.004 pos=(-0.05,+0.05,-0.002)
+  [3] dist=-0.004 pos=(+0.05,+0.05,-0.002)
+```
+
+Our narrow phase emitted **one** in the same pose. A single point cannot
+reproduce a four-corner pressure distribution, and a resting box diverges from
+MuJoCo by ~0.023 per step (worst |d(state)|, resynced) while the same rollout
+in flight is exact at 4e-19.
+
+**It is NOT a friction or solver bug** — the null test settles that: with
+`frictionloss="0"`, so no friction row exists at all, the contact-phase
+residual is 0.02337063116882 against 0.02337063116880 with friction. Identical
+to 13 digits.
+
+Sphere-vs-plane is exact (8.9e-16 after the `body_simple == 2` invweight fix),
+which is why the friction gate uses a sphere.
+
+Not chased because it is orthogonal to the tendon/friction work and no ported
+model rests a box flat on a plane (cartpole's cart has contacts disabled). Worth
+picking up before any domain that does — start by diffing `ncon` and contact
+positions for box-plane in `collision/collision_primitives.mojo`.
