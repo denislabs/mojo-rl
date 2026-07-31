@@ -359,3 +359,59 @@ Files to create:
    `x_velocity = Σ(mass_b * cvel[b*6+3]) / total_mass`. No finite-difference approximation needed.
 
 6. **Walker2d timestep=0.002**: **RESOLVED** — The smaller timestep is passed correctly via `get_timestep()` in the XML model def. The integrator handles it automatically with the same frame_skip=4 as other envs.
+
+---
+
+## point_mass `hard` — remaining work (scouted 2026-07-31)
+
+`point_mass-easy` is ported. `hard` differs only in `initialize_episode`: it
+randomizes the ACTUATOR MIXING each episode, so each control drives a random
+linear combination of the two joints (`suite/point_mass.py:96-108`):
+
+```python
+dir1 = randn(2); dir1 /= norm(dir1)
+parallel = True
+while parallel:                       # reject near-parallel directions
+    dir2 = randn(2); dir2 /= norm(dir2)
+    parallel = abs(dot(dir1, dir2)) > 0.9
+physics.model.wrap_prm[[0, 1]] = dir1
+physics.model.wrap_prm[[2, 3]] = dir2
+```
+
+`wrap_prm` for a FIXED tendon IS the per-joint coefficient, so this is exactly
+`Model.tendons[t, TENDON_IDX_COEF_0/1]` — records that now exist and are
+populated by `full_parser._fill_tendons` (added with the ball_in_cup port).
+The physics side is therefore already in place. Two things are NOT:
+
+1. **`point_mass_xml` substitutes the tendons away.** It rewrites the two
+   identity-coef fixed tendons as plain joint motors, which is exact for
+   `easy` and documented there. `hard` needs the REAL `<tendon>` + tendon
+   motors, with `max_tendon=2`.
+
+2. **THE ACTUAL BLOCKER — the two config hooks cannot see the tendons.**
+   * `custom_apply_actions_cpu(mut d, actions) -> Bool` receives Data and
+     actions only. No model, so it cannot read the per-episode coefs.
+   * `custom_reset_cpu(mut d, m_bodies, m_joints, m_geoms, m_sites)` receives
+     model records as READ-ONLY `List`s, and no tendons at all, so it cannot
+     write them.
+
+   Both need the tendon records, and reset needs them MUTABLE. That is an ABI
+   change to `Phyics3dEnvConfig`. It is small — only two configs implement
+   `custom_apply_actions_cpu` (`fish`, `sawyer_reach`) — but it touches the
+   trait default, both implementors, and the `Phyics3dEnv` call sites, so it
+   wants doing deliberately rather than squeezed in.
+
+Suggested order:
+  a. Extend `custom_apply_actions_cpu` to take the model records (including
+     tendons); update the trait default, fish, sawyer_reach, and the env.
+  b. Give `custom_reset_cpu` MUTABLE tendon records.
+  c. Rewrite `point_mass_xml` with the real tendons; keep `easy` on the
+     substituted model or move both over and re-gate `easy` first — the
+     existing `test_point_mass_vs_dm_control` already drives MuJoCo from the
+     UNMODIFIED reference XML, so it will catch a mistake here immediately.
+  d. `DMPointMassHardConfig`: reset writes dir1/dir2 (with the |dot| > 0.9
+     rejection); apply reads the coefs and accumulates
+     `qfrc[dof] += gear * coef * ctrl`.
+  e. Parity test. Note dm_control's own draw sequence cannot be reproduced
+     exactly (different RNG), so gate the PHYSICS by setting the coefs
+     identically in both engines, as the ball_in_cup test does for qpos.
