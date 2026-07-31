@@ -263,6 +263,15 @@ struct Phyics3dEnv[
                     (random_float64() * 2.0 - 1.0) * noise_scale
                 )
                 self.d.qvel.data[i] = self.d.qvel.data[i] + noise
+        # Per-episode MODEL randomization first, so the state hook below reads
+        # whatever it wrote (point_mass `hard` randomizes the tendon mixing).
+        Self.CONFIG.custom_reset_model_cpu(
+            self.mf.bodies.data,
+            self.mf.joints.data,
+            self.mf.geoms.data,
+            self.mf.sites.data,
+            self.mf.tendons.data,
+        )
         Self.CONFIG.custom_reset_cpu(
             self.d,
             self.mf.bodies.data,
@@ -321,7 +330,13 @@ struct Phyics3dEnv[
         # semantics, not a force law, and SawyerReach's applies a mocap DELTA
         # that would compound `frame_skip` times inside the loop below.
         var custom_applied = Self.CONFIG.custom_apply_actions_cpu(
-            self.d, action_list
+            self.d,
+            self.mf.bodies.data,
+            self.mf.joints.data,
+            self.mf.geoms.data,
+            self.mf.sites.data,
+            self.mf.tendons.data,
+            action_list,
         )
         # Mocap-controlled models (SawyerReach): push the updated mocap target
         # into the fields body poses before the step so the weld solve tracks it.

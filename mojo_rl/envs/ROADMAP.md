@@ -362,7 +362,38 @@ Files to create:
 
 ---
 
-## point_mass `hard` — remaining work (scouted 2026-07-31)
+## point_mass `hard` — DONE 2026-07-31
+
+Ported and gated at machine precision:
+`tests/dm_control/test_point_mass_hard_vs_dm_control.mojo` — state/obs 6.9e-18
+and reward 8.4e-13 under four non-identity mixings, plus a sampler gate (unit
+norm 2.2e-16, worst |dot(dir1,dir2)| 0.8969 against the .9 rejection, response
+alignment with dir1 2.2e-16).
+
+Three things came out different from the scout below, which is kept for the
+record:
+
+* **The substitution did not need keeping.** `apply_actions` already resolved
+  fixed-tendon transmission (`_acd.motor_trn_*`, added with fish), so
+  `point_mass_xml` is now the reference XML verbatim and BOTH tasks run the
+  real tendons. `easy`'s numbers did not move by one digit.
+* **`custom_reset_cpu` was not widened.** A new `custom_reset_model_cpu` hook
+  takes the model records MUTABLY instead, defaulting to a no-op — model
+  randomization is a separate concern from state randomization, and the ~16
+  configs that touch state alone need not restate a signature they never use.
+* **Only ONE config implements `custom_apply_actions_cpu`** (sawyer_reach, not
+  fish — fish mentions it in a docstring only), so widening it was a two-line
+  change.
+
+The `hard` config must own actuation, and that is the trap worth remembering:
+`MODEL_DEF.apply_actions` reads the COMPTIME transmission tables, which cannot
+see a runtime write, so a `hard` that inherited it would keep the identity
+mixing and quietly be `easy` — a working env for the wrong task, with no error
+anywhere. The sampler test asserts the response direction tracks `dir1` rather
+than merely that the records changed, which is the only assertion that catches
+it.
+
+### Original scout (2026-07-31, superseded above)
 
 `point_mass-easy` is ported. `hard` differs only in `initialize_episode`: it
 randomizes the ACTUATOR MIXING each episode, so each control drives a random

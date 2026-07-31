@@ -70,16 +70,18 @@ trait Phyics3dEnvConfig:
         pass
 
     # ── Model record lists on the CPU hooks ──────────────────────────────
-    # `compute_reward_and_done_cpu`, `custom_extract_obs_cpu` and
-    # `custom_reset_cpu` receive the four packed model record tensors
-    # (`m_bodies`, `m_joints`, `m_geoms`, `m_sites`) alongside the state.
+    # `compute_reward_and_done_cpu`, `custom_extract_obs_cpu`,
+    # `custom_reset_cpu` and `custom_apply_actions_cpu` receive the packed
+    # model record tensors alongside the state.
     #
-    # They are the host `List`s behind `Model.bodies/joints/geoms/sites`,
-    # borrowed (never copied), indexed with the usual column constants from
+    # They are the host `List`s behind `Model.bodies/joints/geoms/sites`
+    # (plus `Model.tendons` on the two action-side hooks), borrowed (never
+    # copied), indexed with the usual column constants from
     # `physics3d.gpu.constants`:
     #
-    #     m_bodies[b * MODEL_BODY_SIZE + BODY_IDX_MASS]
-    #     m_geoms [g * MODEL_GEOM_SIZE + GEOM_IDX_SIZE_0]
+    #     m_bodies [b * MODEL_BODY_SIZE   + BODY_IDX_MASS]
+    #     m_geoms  [g * MODEL_GEOM_SIZE   + GEOM_IDX_SIZE_0]
+    #     m_tendons[t * MODEL_TENDON_SIZE + TENDON_IDX_COEF_0]
     #
     # Added 2026-07-29: the hooks previously saw `Data` only, so a reward or
     # observation could not read a single model constant. That blocked every
@@ -89,6 +91,13 @@ trait Phyics3dEnvConfig:
     #
     # Passing the record lists rather than `Model` itself keeps the hook
     # signatures free of Model's six extra compile-time parameters.
+    #
+    # `m_tendons` (2026-07-31) is on `custom_apply_actions_cpu` and on the new
+    # `custom_reset_model_cpu` only, not on the reward/obs hooks, because the
+    # only thing that reads it is transmission: a fixed tendon's per-joint
+    # `coef` IS its actuator moment arm (MuJoCo's `wrap_prm`), so a config that
+    # drives the DOFs itself needs the coefs, and a config that randomizes the
+    # control-to-joint mixing per episode needs to WRITE them.
 
     # === CPU: Unified reward + termination ===
     @staticmethod
@@ -146,6 +155,50 @@ trait Phyics3dEnvConfig:
         qpos/mocap take effect before the first observation. Default: no-op."""
         pass
 
+    # === CPU: Per-episode MODEL randomization (called before custom_reset_cpu) ===
+    @staticmethod
+    def custom_reset_model_cpu[
+        DTYPE: DType,
+    ](
+        mut m_bodies: List[Scalar[DTYPE]],
+        mut m_joints: List[Scalar[DTYPE]],
+        mut m_geoms: List[Scalar[DTYPE]],
+        mut m_sites: List[Scalar[DTYPE]],
+        mut m_tendons: List[Scalar[DTYPE]],
+    ):
+        """Randomize MODEL constants per episode. Default: no-op.
+
+        Distinct from `custom_reset_cpu`, which randomizes STATE, and it runs
+        first so the state hook reads whatever this wrote. dm_control does the
+        two together in `initialize_episode` (point_mass `hard` randomizes the
+        joints, then the tendon mixing matrix); the split here is only so that
+        the ~16 configs which touch state alone need not restate a model
+        signature they never use.
+
+        ⚠ Three things this hook does NOT do, all of which it would have to if
+        the randomized quantity were anything but a transmission coefficient:
+
+        1. It does not re-upload to the device. These are the HOST lists; a
+           GPU-batched env would keep stepping the stale copy. Nothing but
+           `Phyics3dEnv._reset_state` calls this hook today, so that is a
+           real limit rather than a latent bug — but it is why the name says
+           `_cpu`, and it is also why a batched driver cannot simply start
+           calling it: `Model` is SHARED and unbatched, so per-episode model
+           randomization there would apply one env's draw to all of them.
+        2. It does not recompute anything DERIVED from the model. Masses feed
+           the CRBA mass matrix; tendon coefs feed `tendon_invweight0`
+           (`J M^-1 J^T` at qpos0, the limit row's diagApprox). Writing a coef
+           here leaves that constant describing the OLD tendon. Harmless for
+           point_mass, whose tendons carry no limit and no equality — check
+           before randomizing a tendon that has either.
+        3. It does not touch the COMPTIME actuator tables (`_acd.motor_trn_*`),
+           which is where `MODEL_DEF.apply_actions` reads transmission from.
+           A config that randomizes coefs must therefore also drive the DOFs
+           itself via `custom_apply_actions_cpu` — the comptime path cannot
+           see runtime writes, and would silently keep the XML coefficients.
+        """
+        pass
+
     # === CPU: Custom observation extraction (default: use MODEL_DEF.extract_obs) ===
     @staticmethod
     def custom_extract_obs_cpu[
@@ -181,14 +234,31 @@ trait Phyics3dEnvConfig:
         NSITE: Int = 0,
     ](
         mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        m_bodies: List[Scalar[DTYPE]],
+        m_joints: List[Scalar[DTYPE]],
+        m_geoms: List[Scalar[DTYPE]],
+        m_sites: List[Scalar[DTYPE]],
+        m_tendons: List[Scalar[DTYPE]],
         actions: List[Float64],
     ) -> Bool:
         """Apply actions to data. Return True if handled, False for default.
 
         Override for envs that need non-standard action application
-        (e.g., mocap position control instead of torque motors).
+        (e.g., mocap position control instead of torque motors, or a
+        transmission whose coefficients are randomized per episode and so
+        cannot live in the comptime actuator tables).
         Default returns False, which causes Phyics3dEnv.step() to call
         MODEL_DEF.apply_actions() as usual.
+
+        Returning True suppresses `MODEL_DEF.apply_actions` ENTIRELY, including
+        the `qfrc` zeroing it opens with — an override that sums several
+        transmissions onto one DOF must zero `d.qfrc` itself, or each control
+        step adds to the previous one instead of replacing it.
+
+        Note the call is ONCE PER CONTROL STEP, outside the frame-skip loop
+        (see `Phyics3dEnv.step`), whereas `MODEL_DEF.apply_actions` runs every
+        substep. Identical for a `<motor>`, whose force `gear*ctrl` is constant
+        across the step; NOT identical for a state-dependent force law.
         """
         return False
 

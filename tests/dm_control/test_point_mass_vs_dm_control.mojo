@@ -1,11 +1,16 @@
 """dm_control `point_mass-easy` parity: our env vs MuJoCo + the reference task.
 
 Same layers as the other domain tests (model / physics / observation /
-reward), but with one extra job: MuJoCo is driven from the UNMODIFIED
-`suite/point_mass.xml`, tendons and all, while our env runs the joint-motor
-rewrite described in `point_mass_xml`. Any difference between a fixed-tendon
-transmission with identity coefficients and two joint motors would show up
-here as a physics divergence on the very first step.
+reward). MuJoCo is driven from the UNMODIFIED `suite/point_mass.xml`, tendons
+and all, and so are we — this port used to substitute two joint motors for the
+two identity-coef fixed tendons, and that rewrite is gone now that
+`apply_actions` resolves a tendon transmission directly. The numbers below did
+not move by one digit when it was removed, which is the substitution's epitaph:
+it was exact, and it is no longer needed.
+
+`hard`, which randomizes those coefficients per episode and so cannot be
+expressed by any substitution, is gated separately in
+`test_point_mass_hard_vs_dm_control.mojo`.
 
 What this exercises beyond the earlier domains:
   - `geom_xpos`, added to `physics3d/kinematics` with this port. The reward is
@@ -134,8 +139,8 @@ def test_point_mass_model_matches_mujoco() raises:
     var sys = Python.import_module("sys")
     sys.path.insert(0, REF_PATH)
     var mujoco = Python.import_module("mujoco")
-    # Compare against the REFERENCE model, not our rewritten one — the only
-    # legitimate difference is nu's transmission, not any of these.
+    # Both sides now build the same XML; this reads it from disk so a drift
+    # between our embedded copy and the reference file still fails here.
     var m = mujoco.MjModel.from_xml_path(String(REF_XML))
 
     assert_true(Int(py=m.nbody) == DMPointMassModel.NBODY, "nbody mismatch")

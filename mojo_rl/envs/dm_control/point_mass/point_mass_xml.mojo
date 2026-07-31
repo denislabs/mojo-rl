@@ -1,33 +1,34 @@
 """dm_control `point_mass` model — port of `dm_control/suite/point_mass.xml`.
 
-Verbatim apart from the `<include>` lines and ONE deliberate substitution.
+Verbatim apart from the `<include>` lines. Serves BOTH tasks: dm_control uses
+one XML for `easy` and `hard`, which differ only in `initialize_episode`.
 
-THE SUBSTITUTION. The reference drives the mass through two fixed tendons:
+THE TENDONS. The mass is driven through two fixed tendons rather than two
+joint motors:
 
     <tendon>
       <fixed name="t1"><joint joint="root_x" coef="1"/>
                        <joint joint="root_y" coef="0"/></fixed>
-      <fixed name="t2"><joint joint="root_x" coef="0"/>
-                       <joint joint="root_y" coef="1"/></fixed>
+      ...
     </tendon>
-    <actuator>
-      <motor name="t1" tendon="t1"/>
-      <motor name="t2" tendon="t2"/>
-    </actuator>
+    <actuator><motor name="t1" tendon="t1"/> ... </actuator>
 
-A fixed tendon's actuator moment arm on joint j is just its `coef`, so with
-the identity coefficient matrix above this is exactly two joint motors —
-`t1` drives `root_x`, `t2` drives `root_y`, both at the default `gear=".1"`.
-Our engine has no tendon transmission (an actuator resolves to one joint), so
-the model below writes that equivalence out directly. This is safe ONLY for
-the `easy` task: `hard` overwrites `model.wrap_prm` each episode with a random
-mixing matrix, which is genuinely a tendon feature and is why `point_mass-hard`
-sits in Tier B. `tests/dm_control/test_point_mass_vs_dm_control.mojo` drives
-MuJoCo from the UNMODIFIED reference XML, so the substitution is proved rather
-than assumed.
+A fixed tendon's actuator moment arm on joint j IS its `coef`, so with the
+identity coefficient matrix above this is exactly two joint motors — `t1`
+drives `root_x`, `t2` drives `root_y`, both at the default `gear=".1"`.
 
-A tendon-transmission actuator used to parse into `joint_id = -1` silently;
-`ModelDefFromXML` now raises on that (added with this port).
+This port used to WRITE THAT EQUIVALENCE OUT, substituting `<motor joint=...>`
+for the tendons, because the engine resolved an actuator to a single joint.
+That substitution is gone: `ModelDefFromXML.apply_actions` now walks the
+comptime transmission triples (`_acd.motor_trn_qadr/dadr/coef`), of which a
+joint transmission is the degenerate one-triple coef-1 case, so the real
+tendons parse and actuate directly.
+
+Removing it matters for `hard`, which overwrites `model.wrap_prm` — i.e. these
+very coefs — each episode with a random mixing matrix. A substituted model has
+nowhere to put that. `DMPointMassHardConfig` therefore drives the DOFs itself
+from the RUNTIME tendon records (`Model.tendons`), which the comptime tables
+above cannot see; see the notes there.
 
 Note the joints are `limited="true" range="-.29 .29"` SLIDE joints, so the
 degree->radian conversion must not touch them — see the `<compiler angle>`
@@ -70,9 +71,20 @@ comptime _point_mass_body = """
     <geom name="target" pos="0 0 .01" material="target" type="sphere" size=".015"/>
   </worldbody>
 
+  <tendon>
+    <fixed name="t1">
+      <joint joint="root_x" coef="1"/>
+      <joint joint="root_y" coef="0"/>
+    </fixed>
+    <fixed name="t2">
+      <joint joint="root_x" coef="0"/>
+      <joint joint="root_y" coef="1"/>
+    </fixed>
+  </tendon>
+
   <actuator>
-    <motor name="t1" joint="root_x"/>
-    <motor name="t2" joint="root_y"/>
+    <motor name="t1" tendon="t1"/>
+    <motor name="t2" tendon="t2"/>
   </actuator>
 </mujoco>
 """
@@ -91,9 +103,15 @@ comptime DMPointMassModel = ModelDefFromXML[
     ngeom=pmp.NGEOM, nact=pmp.NACT, ntex=pmp.NTEX, nmat=pmp.NMAT,
     nlight=pmp.NLIGHT, ncam=pmp.NCAM, nsite=pmp.NSITE,
     max_contacts=1,
+    max_tendon=pmp.NTENDON,
     obs_dim_override=4,
     timestep=pmp.TIMESTEP,
 ]
+
+# Tendon indices, in declaration order. `t1` mixes into root_x, `t2` into
+# root_y — under the XML's identity coefs; `hard` replaces both rows.
+comptime T1_TENDON_IDX: Int = 0
+comptime T2_TENDON_IDX: Int = 1
 
 # Geom indices in OUR ordering, which is worldbody text (DFS) order.
 #
