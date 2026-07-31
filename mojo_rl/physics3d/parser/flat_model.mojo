@@ -748,6 +748,18 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
     var solimp_lim_3: Float64
     var solimp_lim_4: Float64
 
+    # equality (<equality><tendon tendon1="..."/>), distinct from the LIMIT
+    # pair above — MuJoCo keeps eq_solref/eq_solimp on the equality, not on
+    # the tendon. Only meaningful when `is_equality`; defaults are MuJoCo's
+    # own (solref 0.02 1, solimp 0.9 0.95 0.001 0.5 2).
+    var solref_eq_0: Float64
+    var solref_eq_1: Float64
+    var solimp_eq_0: Float64
+    var solimp_eq_1: Float64
+    var solimp_eq_2: Float64
+    var solimp_eq_3: Float64
+    var solimp_eq_4: Float64
+
     def __init__(out self):
         self.kind = _TENDON_KIND_FIXED
         self.is_equality = 0
@@ -769,6 +781,14 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
         self.solimp_lim_2 = 0.001
         self.solimp_lim_3 = 0.5
         self.solimp_lim_4 = 2.0
+        # MuJoCo model defaults (mjModel eq_solref / eq_solimp).
+        self.solref_eq_0 = 0.02
+        self.solref_eq_1 = 1.0
+        self.solimp_eq_0 = 0.9
+        self.solimp_eq_1 = 0.95
+        self.solimp_eq_2 = 0.001
+        self.solimp_eq_3 = 0.5
+        self.solimp_eq_4 = 2.0
 
 
 # =============================================================================

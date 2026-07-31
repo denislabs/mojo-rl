@@ -2110,6 +2110,195 @@ def _find_material_index_by_name(asset_sec: String, name: String) -> Int:
 # =============================================================================
 
 
+def _tendon_index_by_name(tendon_sec: String, name: String) -> Int:
+    """Index of the `<fixed>`/`<spatial>` tendon called `name`, or -1.
+
+    Numbering is XML order, exactly as `_fill_tendons` assigns it — both walk
+    the same two markers in the same order.
+    """
+    var count = 0
+    var scan_pos = 0
+    var tlen = tendon_sec.byte_length()
+    while scan_pos < tlen:
+        var nf = tendon_sec.find("<fixed", scan_pos)
+        var ns = tendon_sec.find("<spatial", scan_pos)
+        var earliest = _min_valid(nf, ns)
+        if earliest == -1:
+            return -1
+        var tag_end = tendon_sec.find(">", earliest)
+        if tag_end == -1:
+            return -1
+        var tag = String(tendon_sec[byte = earliest : tag_end + 1])
+        if _trim(_extract_attr(tag, "name")) == name:
+            return count
+        count += 1
+        scan_pos = tag_end + 1
+    return -1
+
+
+def _default_class_tag(xml: String, cls: String, tag_name: String) -> String:
+    """First `<tag_name ...>` inside `<default class="cls">`, or "".
+
+    Nested classes are stripped first, so a class containing sub-classes
+    resolves to its OWN child rather than a grandchild's.
+    """
+    if cls.byte_length() == 0:
+        return String("")
+    var n = xml.byte_length()
+    var scan = 0
+    while scan < n:
+        var t = xml.find("<default", scan)
+        if t == -1:
+            return String("")
+        var te = xml.find(">", t)
+        if te == -1:
+            return String("")
+        if _trim(_extract_attr(_extract_opening_tag(xml, t), "class")) != cls:
+            scan = te + 1
+            continue
+        var close = _find_matching_default_close(xml, t)
+        if close == -1:
+            return String("")
+        var inner = _strip_nested_defaults(String(xml[byte = te + 1 : close]))
+        var it = inner.find("<" + tag_name)
+        if it == -1:
+            return String("")
+        var ite = inner.find(">", it)
+        if ite == -1:
+            return String("")
+        return String(inner[byte = it : ite + 1])
+    return String("")
+
+
+def _fill_tendon_equalities[
+    NBODY: Int,
+    NJOINT: Int,
+    NQ: Int,
+    NV: Int,
+    NGEOM: Int,
+    NACT: Int,
+    NTEX: Int,
+    NMAT: Int,
+    NLIGHT: Int,
+    NCAM: Int,
+    NSITE: Int,
+    NEQ: Int,
+    NEXCLUDE: Int = 0,
+    NTENDON: Int = 0,
+](
+    equality_sec: String,
+    tendon_sec: String,
+    xml: String,
+    mut result: FlatModelDef[
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
+        NEQ, NEXCLUDE, NTENDON,
+    ],
+) raises:
+    """`<equality><tendon tendon1="..."/>` -> `TendonData.is_equality` + solref.
+
+    ⚠ This did not exist until 2026-07-31 and its absence was SILENT.
+    `_fill_equality` scans only `<weld` and `<connect`, so `is_equality` stayed
+    at its 0 default for every model, and `constraints/equality_tendon.mojo`
+    — which gates on exactly that flag — never produced a row. The equality
+    solref/solimp slots it reads were likewise written by nobody, so they were
+    zero. `test_equality_tendon_fields` passes regardless because it builds the
+    tendon record by hand rather than through the parser, so the constraint
+    MATH was covered while the PARSING was not.
+
+    dm_control's quadruped is the first model to need it: each leg's
+    `coupling_*` tendon constrains .333*(pitch + knee + ankle) to zero, and
+    without the constraint the three joints are independent — a different
+    robot, converging to a different gait, with no error anywhere.
+
+    MuJoCo's residual for a one-object tendon equality (engine_core_constraint
+    .c:603) is `ten_length - tendon_length0 - eq_data[0]`, so `polycoef[0]`
+    must be 0 for `length_ref` alone to describe the target; a non-default
+    polycoef and the two-tendon (`tendon2`) polynomial coupling both RAISE
+    rather than silently degrade to the simple case.
+    """
+    var scan_pos = 0
+    var elen = equality_sec.byte_length()
+    while scan_pos < elen:
+        var t = equality_sec.find("<tendon", scan_pos)
+        if t == -1:
+            break
+        var tag = _extract_opening_tag(equality_sec, t)
+        var tag_end = equality_sec.find(">", t)
+        scan_pos = tag_end + 1 if tag_end != -1 else elen
+
+        var n2 = _trim(_extract_attr(tag, "tendon2"))
+        if n2.byte_length() > 0:
+            raise Error(
+                "physics3d: <equality><tendon> with tendon2 couples two"
+                " tendon lengths by a quartic polynomial; only the"
+                " single-tendon form (length == polycoef[0]) is implemented."
+            )
+        var poly = _trim(_extract_attr(tag, "polycoef"))
+        if poly.byte_length() > 0:
+            var pp = List[String]()
+            _split_spaces(poly, pp)
+            var bad = False
+            for i in range(len(pp)):
+                var want = Float64(1.0) if i == 1 else Float64(0.0)
+                if _parse_float(pp[i]) != want:
+                    bad = True
+            if bad:
+                raise Error(
+                    "physics3d: <equality><tendon polycoef=...> other than the"
+                    " default '0 1 0 0 0' is not implemented; the residual"
+                    " here is ten_length - length0 - polycoef[0]."
+                )
+
+        var n1 = _trim(_extract_attr(tag, "tendon1"))
+        var idx = _tendon_index_by_name(tendon_sec, n1)
+        if idx < 0 or idx >= NTENDON:
+            raise Error(
+                String(
+                    "physics3d: <equality><tendon tendon1='",
+                    n1,
+                    "'/> names no tendon in <tendon>.",
+                )
+            )
+        # READ-MODIFY-WRITE, matching `_fill_tendons`. Mutating
+        # `result.tendons[idx].field` in place does NOT stick — the subscript
+        # hands back a copy, so the writes are silently dropped and every
+        # tendon still reads is_equality == 0.
+        var td = result.tendons[idx]
+        td.is_equality = 1
+
+        # solref/solimp: element, then `class="..."`, then MuJoCo's defaults
+        # (already in TendonData.__init__). quadruped keeps both in
+        # `<default class="coupling"><equality .../></default>`.
+        var cls = _trim(_extract_attr(tag, "class"))
+        var cls_tag = _default_class_tag(xml, cls, "equality")
+        var sr = _trim(_extract_attr(tag, "solref"))
+        if sr.byte_length() == 0:
+            sr = _trim(_extract_attr(cls_tag, "solref"))
+        if sr.byte_length() > 0:
+            var sp = List[String]()
+            _split_spaces(sr, sp)
+            if len(sp) >= 2:
+                td.solref_eq_0 = _parse_float(sp[0])
+                td.solref_eq_1 = _parse_float(sp[1])
+        var si = _trim(_extract_attr(tag, "solimp"))
+        if si.byte_length() == 0:
+            si = _trim(_extract_attr(cls_tag, "solimp"))
+        if si.byte_length() > 0:
+            var ip = List[String]()
+            _split_spaces(si, ip)
+            if len(ip) >= 1:
+                td.solimp_eq_0 = _parse_float(ip[0])
+            if len(ip) >= 2:
+                td.solimp_eq_1 = _parse_float(ip[1])
+            if len(ip) >= 3:
+                td.solimp_eq_2 = _parse_float(ip[2])
+            if len(ip) >= 4:
+                td.solimp_eq_3 = _parse_float(ip[3])
+            if len(ip) >= 5:
+                td.solimp_eq_4 = _parse_float(ip[4])
+        result.tendons[idx] = td
+
+
 def _fill_tendons[
     NBODY: Int,
     NJOINT: Int,
@@ -2530,6 +2719,14 @@ def parse_xml_full[
             NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM,
             NSITE, NEQ, NEXCLUDE, NTENDON,
         ](_extract_section(xml, "tendon"), worldbody, result)
+        # AFTER the tendons exist — this marks them by name. Note it is NOT
+        # gated on NEQ: a tendon equality does not occupy an EqualityData
+        # slot (it lives on the tendon record), so quadruped has neq==0 while
+        # declaring four of them.
+        _fill_tendon_equalities[
+            NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM,
+            NSITE, NEQ, NEXCLUDE, NTENDON,
+        ](equality_sec, _extract_section(xml, "tendon"), xml, result)
 
     # Contact exclusion pairs
     comptime if NEXCLUDE > 0:

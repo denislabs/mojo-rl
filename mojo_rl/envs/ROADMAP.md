@@ -443,25 +443,44 @@ Two things fell out while wiring it:
   aggressive random control from 40 random orientations the torso touched
   ONLY the floor (27,748 contacts, zero against any capsule).
 
+**`<equality><tendon>` parsing** — two independent silent failures, both now
+fixed. quadruped's four `coupling_*` tendons built with `IS_EQUALITY = 0`,
+i.e. the leg coupling constraint was simply absent (each leg's
+pitch/knee/ankle independent — a different robot, converging to a different
+gait, with no error anywhere).
+
+1. **The parse did not exist.** `_fill_equality` scans only `<weld` and
+   `<connect`, so `TendonData.is_equality` stayed at its 0 default for every
+   model, and the equality solref/solimp slots that
+   `constraints/equality_tendon.mojo` READS were written by nobody (zero).
+   `test_equality_tendon_fields` passes regardless because it builds the
+   tendon record by hand — the constraint MATH was covered, the PARSING was
+   not. Added `_fill_tendon_equalities`, which raises on `tendon2` and on a
+   non-default `polycoef` rather than degrading to the simple case.
+2. **`<equality>` never reached it, because `merge_mjcf` had already deleted
+   the section.** MJCF puts per-class defaults in self-closing form, and
+   quadruped has `<default class="coupling"><equality solimp=... solref=.../>
+   </default>`. Both `_extract_section` and `_extract_section_inner` latched
+   onto that self-closing `<equality/>` as the section OPENER and counted it
+   as a nested open that never closes — so the depth counter never returned
+   to zero and the whole section came back EMPTY. Same shape as the
+   `<tendon>`-dropped-by-merge_mjcf bug of 2026-07-30, same functions,
+   different trigger. Both now skip self-closing tags; `_extract_section` also
+   stopped accepting a tag name that is a strict prefix of a longer one.
+
+⚠ Two Mojo/idiom notes from this: `result.tendons[idx].field = x` does NOT
+stick (the subscript yields a copy) — read-modify-write, as `_fill_tendons`
+already did. And a tendon equality occupies no `EqualityData` slot, so
+quadruped has `neq == 0` while declaring four of them; the pass must not be
+gated on `NEQ > 0`.
+
+`length_ref` stays 0 and is correct here only by accident: MuJoCo's residual
+is `ten_length - tendon_length0 - eq_data[0]`, and every quadruped hinge has
+qpos0 = 0 so `tendon_length0 = 0`. A model with a joint `ref` would need it
+computed.
+
 ### Remaining, in dependency order
 
-0. **`<equality><tendon>` is not parsed at runtime — the coupling is ABSENT.**
-   Found 2026-07-31 by dumping the built `fields.Model`: all four
-   `coupling_*` tendons come back with `IS_EQUALITY = 0`. `TendonData` has the
-   field and `fields_build` copies it, but NOTHING in `full_parser` ever sets
-   it — `_fill_equality` scans only `<weld` and `<connect`. Worse, the
-   equality solref/solimp slots (`TENDON_IDX_SOLREF_0` / `SOLIMP_0`) are READ
-   by `constraints/equality_tendon.mojo` and written by nobody, so they are
-   zero. The path has never run end to end; `test_equality_tendon_fields`
-   passes because it builds the tendon record directly rather than through
-   the parser. quadruped is the first model to need it, and it is not
-   optional — without it each leg's pitch/knee/ankle are uncoupled, which is
-   a different robot. Needs: parse `<tendon tendon1=...>` in `<equality>`,
-   resolve `class=` for solref/solimp (quadruped puts them in
-   `class="coupling"`: solref `.005 .5`, solimp `.95 .99 .01`), raise on
-   `tendon2`/non-default `polycoef`, and set `length_ref` to the tendon length
-   at qpos0 (MuJoCo's residual is `ten_length - tendon_length0 - eq_data[0]`,
-   engine_core_constraint.c:603).
 1. **Activation state.** `Data` has no `act`. Plan: a trailing `NA: Int = 0`
    parameter plus an `act` tensor. The key point is that it is `na` (activation
    count) and NOT `nu`: every model ported before quadruped has na=0, because

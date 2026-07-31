@@ -185,16 +185,49 @@ def _extract_section(xml: String, tag: String) -> String:
 
     Returns empty string if the section is not found.
     Handles `<tag>` and `<tag ...>` (with attributes).
+
+    ⚠ SELF-CLOSING `<tag ... />` elements are skipped rather than taken as the
+    section opener. MJCF puts per-class defaults in exactly that form, so
+    `<default class="coupling"><equality solimp=... solref=.../></default>`
+    (dm_control's quadruped) otherwise made this return everything from the
+    DEFAULT block to the real `</equality>` — a section starting in the middle
+    of `<default>` and containing the whole `<worldbody>`. Also skips a name
+    that is a strict prefix of another tag, which the old bare `find` did not:
+    `<tendon` matched `<tendonlimited` shaped names.
     """
     var open_marker = "<" + tag
     var close_marker = "</" + tag + ">"
-    var start = xml.find(open_marker)
-    if start == -1:
-        return String("")
-    var end = xml.find(close_marker, start)
-    if end == -1:
-        return String("")
-    return String(xml[byte = start : end + close_marker.byte_length()])
+    var n = xml.byte_length()
+    var scan = 0
+    while scan < n:
+        var start = xml.find(open_marker, scan)
+        if start == -1:
+            return String("")
+        # Reject substring matches: the char after the name must end the name.
+        var after_pos = start + open_marker.byte_length()
+        if after_pos < n:
+            var ch = String(xml[byte = after_pos : after_pos + 1])
+            if (
+                ch != " "
+                and ch != ">"
+                and ch != "/"
+                and ch != "\n"
+                and ch != "\t"
+                and ch != "\r"
+            ):
+                scan = after_pos
+                continue
+        var tag_end = xml.find(">", start)
+        if tag_end == -1:
+            return String("")
+        if _is_self_closing(xml, start, tag_end):
+            scan = tag_end + 1
+            continue
+        var end = xml.find(close_marker, start)
+        if end == -1:
+            return String("")
+        return String(xml[byte = start : end + close_marker.byte_length()])
+    return String("")
 
 
 # =============================================================================
@@ -1204,11 +1237,39 @@ def _xml_fixed_tendon_coef[xml: String, n: Int, j: Int]() -> Float64:
 # =============================================================================
 
 
+def _is_self_closing(xml: String, tag_start: Int, tag_end: Int) -> Bool:
+    """True when `xml[tag_start..tag_end]` is a `<tag ... />` element.
+
+    `tag_end` is the index of the closing `>`. Trailing whitespace between the
+    `/` and the `>` is tolerated (`<equality ... / >` is legal XML).
+    """
+    var i = tag_end - 1
+    while i > tag_start:
+        var ch = String(xml[byte = i : i + 1])
+        if ch == " " or ch == "\n" or ch == "\t" or ch == "\r":
+            i -= 1
+            continue
+        return ch == "/"
+    return False
+
+
 def _extract_section_inner(xml: String, tag: String) -> String:
     """Return the inner content of <tag ...>...</tag>, excluding the outermost tags.
 
     Handles nested same-name tags (e.g., <default><default class="x">...</default></default>)
     by depth-counting. Handles multiple top-level occurrences by concatenating.
+
+    ⚠ SELF-CLOSING tags of the same name are skipped rather than treated as
+    section openers, and are not counted as nested opens. Without that, a
+    `<default class="coupling"><equality solimp="..." solref="..."/></default>`
+    — MJCF's way of putting equality defaults in a class, which dm_control's
+    quadruped uses — made `_extract_section_inner(xml, "equality")` return ""
+    for the WHOLE FILE: it latched onto the self-closing `<equality/>` as the
+    opener, then never found a matching close because the depth counter had
+    incremented on a tag that closes itself. `merge_mjcf` then emitted an empty
+    `<equality>` section and the four leg-coupling constraints vanished with no
+    diagnostic. This is the same shape as the `<tendon>`-dropped-by-merge_mjcf
+    bug of 2026-07-30, in the same function, from a different trigger.
     """
     var result = String("")
     var open_marker = "<" + tag
@@ -1229,6 +1290,10 @@ def _extract_section_inner(xml: String, tag: String) -> String:
         var tag_end = xml.find(">", start)
         if tag_end == -1:
             break
+        # Self-closing `<tag ... />` opens no section — skip it entirely.
+        if _is_self_closing(xml, start, tag_end):
+            scan = tag_end + 1
+            continue
         var inner_start = tag_end + 1
         # Find matching closing tag (depth-counted)
         var depth = 1
@@ -1244,7 +1309,14 @@ def _extract_section_inner(xml: String, tag: String) -> String:
                 if np < xml.byte_length():
                     var nc = String(xml[byte=np : np + 1])
                     if nc == " " or nc == ">" or nc == "/" or nc == "\n" or nc == "\t":
-                        depth += 1
+                        # A self-closing nested tag needs no matching close,
+                        # so counting it would leave depth permanently high
+                        # and swallow the real closing tag.
+                        var no_end = xml.find(">", next_open)
+                        if no_end == -1 or not _is_self_closing(
+                            xml, next_open, no_end
+                        ):
+                            depth += 1
                 search_pos = next_open + open_marker.byte_length()
             else:
                 depth -= 1

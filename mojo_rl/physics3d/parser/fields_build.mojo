@@ -221,6 +221,13 @@ from mojo_rl.physics3d.gpu.constants import (
     TENDON_IDX_RANGE_MIN,
     TENDON_IDX_RANGE_MAX,
     TENDON_IDX_MARGIN,
+    TENDON_IDX_SOLREF_0,
+    TENDON_IDX_SOLREF_1,
+    TENDON_IDX_SOLIMP_0,
+    TENDON_IDX_SOLIMP_1,
+    TENDON_IDX_SOLIMP_2,
+    TENDON_IDX_SOLIMP_3,
+    TENDON_IDX_SOLIMP_4,
     TENDON_IDX_SOLREF_LIM_0,
     TENDON_IDX_SOLREF_LIM_1,
     TENDON_IDX_SOLIMP_LIM_0,
@@ -1043,6 +1050,17 @@ def build_model_fields_from_flat[
         mf.tendons.data[o + TENDON_IDX_SOLIMP_LIM_4] = Scalar[DTYPE](
             td.solimp_lim_4
         )
+        # The EQUALITY pair, slots 10..16. `constraints/equality_tendon.mojo`
+        # has always read these; until 2026-07-31 nothing wrote them, so every
+        # tendon-equality row would have been built on a zero solref timeconst
+        # (had any row ever been built — `is_equality` was never set either).
+        mf.tendons.data[o + TENDON_IDX_SOLREF_0] = Scalar[DTYPE](td.solref_eq_0)
+        mf.tendons.data[o + TENDON_IDX_SOLREF_1] = Scalar[DTYPE](td.solref_eq_1)
+        mf.tendons.data[o + TENDON_IDX_SOLIMP_0] = Scalar[DTYPE](td.solimp_eq_0)
+        mf.tendons.data[o + TENDON_IDX_SOLIMP_1] = Scalar[DTYPE](td.solimp_eq_1)
+        mf.tendons.data[o + TENDON_IDX_SOLIMP_2] = Scalar[DTYPE](td.solimp_eq_2)
+        mf.tendons.data[o + TENDON_IDX_SOLIMP_3] = Scalar[DTYPE](td.solimp_eq_3)
+        mf.tendons.data[o + TENDON_IDX_SOLIMP_4] = Scalar[DTYPE](td.solimp_eq_4)
 
     # ── equality constraints (legacy add_connect/add_weld semantics:
     #    solimp[3]=0.5 / solimp[4]=2.0 hardcoded, parsed values dropped) ────
