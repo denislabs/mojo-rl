@@ -45,6 +45,7 @@ from .constants import (
     BODY_IDX_PARENT,
     MODEL_BODY_SIZE,
 )
+from ..collision.contact_frame import contact_tangent_frame
 
 
 def compute_cfrc_ext[
@@ -185,19 +186,33 @@ def compute_cfrc_ext[
             var nz = rebind[Scalar[DTYPE]](
                 contacts[env, con_base + CONTACT_IDX_NZ]
             )
-            var t1x = rebind[Scalar[DTYPE]](
-                contacts[env, con_base + CONTACT_IDX_FRAME_T1_X]
+            # FRAME_T1 is a HINT, not a tangent — unnormalized, not orthogonal
+            # to the normal, and written only by the capsule narrow phases.
+            # Reading it raw left the tangential force pointing somewhere
+            # arbitrary while the normal component stayed correct, so
+            # `contact_cost` (a squared norm over this) read wrong on every
+            # model whose contacts are not capsule-vs-something.
+            # See collision/contact_frame.mojo.
+            var frame = contact_tangent_frame[DTYPE](
+                nx,
+                ny,
+                nz,
+                rebind[Scalar[DTYPE]](
+                    contacts[env, con_base + CONTACT_IDX_FRAME_T1_X]
+                ),
+                rebind[Scalar[DTYPE]](
+                    contacts[env, con_base + CONTACT_IDX_FRAME_T1_Y]
+                ),
+                rebind[Scalar[DTYPE]](
+                    contacts[env, con_base + CONTACT_IDX_FRAME_T1_Z]
+                ),
             )
-            var t1y = rebind[Scalar[DTYPE]](
-                contacts[env, con_base + CONTACT_IDX_FRAME_T1_Y]
-            )
-            var t1z = rebind[Scalar[DTYPE]](
-                contacts[env, con_base + CONTACT_IDX_FRAME_T1_Z]
-            )
-            # T2 = N × T1
-            var t2x = ny * t1z - nz * t1y
-            var t2y = nz * t1x - nx * t1z
-            var t2z = nx * t1y - ny * t1x
+            var t1x = frame[0]
+            var t1y = frame[1]
+            var t1z = frame[2]
+            var t2x = frame[3]
+            var t2y = frame[4]
+            var t2z = frame[5]
 
             # Contact forces in contact-local frame
             var f_n = rebind[Scalar[DTYPE]](

@@ -23,11 +23,10 @@ WHAT IS AND IS NOT COMPARABLE HERE.
   that make the draw correct — unit norm, and a height that leaves the model
   clear of the floor.
 
-⚠ CONTACT-FREE STATES ONLY for the numeric comparisons. A loaded quadruped
-still differs from MuJoCo in the horizontal contact force by ~22% — an open
-compliance bug (`R_edge` carries a spurious `2*mu^2`; see
-test_rne_post_sensors_vs_mujoco's standing case). That is a solver gap, not a
-task gap, and gating it here would only duplicate the pin.
+CONTACT-FREE STATES ONLY for the numeric comparisons — the loaded case is
+gated by test_rne_post_sensors_vs_mujoco's standing test (now at 5e-11 on
+every force/torque component), and repeating it here would only duplicate
+that pin.
 
 Run: pixi run mojo run -I . tests/dm_control/test_quadruped_vs_dm_control.mojo
 """

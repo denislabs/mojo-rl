@@ -72,19 +72,15 @@ comptime Mod = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
 # Free flight has no solver in the loop: the only error is float rounding
 # through two independent implementations of the same recursion.
 comptime FLIGHT_TOL: Float64 = 1e-8
-# Standing rides on the contact solve, whose own gate
-# (test_constraints_vs_mujoco) lives at ~1e-6 relative on a much simpler
-# model. This is a SIGN and MAGNITUDE gate, not a precision one.
-# Standing. The TOTAL vertical toe force now matches MuJoCo to 1.4e-11, so
-# this is a real gate; the per-component bound below is separate and looser
-# because the TANGENTIAL split is still off (see `test_standing_sensors`).
+# Standing rides on the contact solve. Total vertical toe force matches
+# MuJoCo to 1.4e-11.
 comptime STAND_REL_TOL: Float64 = 1e-9
-# Worst single force/torque component, standing. Observed 0.221 (= 5.49 N of
-# horizontal force against a 24.9 N scale) — carried by the horizontal
-# component alone, which the four splayed legs make a NULL direction of the
-# pose (any common inward push cancels in the net), so it is set entirely by
-# the rows' compliance R and not by equilibrium.
-comptime STAND_COMPONENT_TOL: Float64 = 0.30
+# Worst single force/torque component, standing. Observed 5.1e-11. This was
+# 0.221 until the tangential direction was fixed — `cfrc_ext` was reading the
+# contact record's FRAME_T1 HINT as if it were the tangent, so the horizontal
+# force landed along an arbitrary axis while the vertical one (which needs
+# only the normal) stayed exact. See collision/contact_frame.mojo.
+comptime STAND_COMPONENT_TOL: Float64 = 1e-9
 # Forward kinematics itself. NOT 1e-15: our FK reproduces MuJoCo's body poses
 # to ~1e-10 on this model, an order of magnitude worse than float64 rounding
 # and worth its own investigation (it shows up identically in cvel, qfrc_bias
@@ -543,7 +539,7 @@ def _compare_sensors(
         # TOTAL VERTICAL FORCE — the whole robot's weight through four toes.
         # This is the gate that says the contact -> cfrc_ext -> cfrc_int ->
         # sensor chain is right end to end, and it is tight (1e-11 observed).
-        # It took two fixes to get here, both silent before quadruped:
+        # It took three fixes to get here, all silent before quadruped:
         #   * the four <equality><tendon> rows are now rows of the Newton
         #     system rather than a post-solve Gauss-Seidel pass, which took
         #     qacc from 45% off to 4e-9 (constraints/tendon_limit.mojo);
@@ -552,6 +548,9 @@ def _compare_sensors(
         #     contact force RECORD on the pyramidal path read half true. Ant's
         #     contact_cost — the only other consumer — is a squared norm, so
         #     it had been costing a quarter of what it should.
+        #   * `cfrc_ext` read the contact record's FRAME_T1 field as the
+        #     tangent when it is only a HINT, so the TANGENTIAL force pointed
+        #     somewhere arbitrary (collision/contact_frame.mojo).
         var rel = abs(our_fz_sum - mj_fz_sum) / max(abs(mj_fz_sum), 1.0)
         print("  sum force_z rel err =", rel)
         assert_true(
@@ -568,20 +567,15 @@ def _compare_sensors(
             spread < 1e-6,
             "the four toes disagree under a symmetric pose",
         )
-        # ⚠ Per-component, still 0.22 relative, and ALL of it is horizontal.
-        # Four legs splayed at 90 degrees make the common inward/outward toe
-        # force a null direction of the net wrench, so equilibrium does not
-        # pin it — the rows' compliance R does. Ours is
-        # `R_edge = 2*mu^2*(1+mu^2)*(1-imp)/imp*diag_n`
-        # (constraints/contact_solve.mojo); MuJoCo's is
-        # `(1-imp)/imp * tran*(1+mu^2)` (engine_core_constraint.c:1203), i.e.
-        # WITHOUT the leading `2*mu^2` — 4.5x on this model's mu=1.5. Very
-        # likely a fourth bug, deliberately not fixed in the same change as
-        # the two above: it moves every pyramidal model's trajectory and needs
-        # its own pass against test_constraints_vs_mujoco.
+        # Per-component too, which is the part that pins the TANGENTIAL
+        # direction. The four legs splay at 90 degrees, so a common
+        # inward/outward toe force cancels in the net wrench: equilibrium does
+        # not constrain it and `qacc` cannot see it. That made this the only
+        # assertion in the suite able to catch the FRAME_T1-hint bug, which
+        # sat here at 0.221 while every other number in the file was at 1e-9.
         assert_true(
             worst_ft / ft_scale < STAND_COMPONENT_TOL,
-            "force/torque component error grew beyond the known R_edge gap",
+            "force/torque components diverge from MuJoCo",
         )
     else:
         assert_true(

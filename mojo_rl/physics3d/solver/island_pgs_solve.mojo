@@ -102,6 +102,7 @@ from ..gpu.constants import (
     JOINT_IDX_BODY_ID,
     JOINT_IDX_DOF_ADR,
 )
+from ..collision.contact_frame import contact_tangent_frame
 
 comptime CS_TPB: Int = 64
 
@@ -530,65 +531,15 @@ def _island_pgs_solve_env[
                 var hint_z = rebind[Scalar[DTYPE]](
                     contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z]
                 )
-                var hint_len_sq = (
-                    hint_x * hint_x + hint_y * hint_y + hint_z * hint_z
+                var frame = contact_tangent_frame[DTYPE](
+                    nx, ny, nz, hint_x, hint_y, hint_z
                 )
-
-                # If no hint (non-capsule), use MuJoCo default
-                if hint_len_sq < Scalar[DTYPE](0.25):
-                    var abs_nx = abs(nx)
-                    var abs_ny = abs(ny)
-                    var abs_nz = abs(nz)
-                    if abs_nx <= abs_ny and abs_nx <= abs_nz:
-                        hint_x = Scalar[DTYPE](1)
-                        hint_y = Scalar[DTYPE](0)
-                        hint_z = Scalar[DTYPE](0)
-                    elif abs_ny <= abs_nz:
-                        hint_x = Scalar[DTYPE](0)
-                        hint_y = Scalar[DTYPE](1)
-                        hint_z = Scalar[DTYPE](0)
-                    else:
-                        hint_x = Scalar[DTYPE](0)
-                        hint_y = Scalar[DTYPE](0)
-                        hint_z = Scalar[DTYPE](1)
-
-                # Gram-Schmidt: orthogonalize hint against normal
-                var dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
-                var t1x = hint_x - dot_nh * nx
-                var t1y = hint_y - dot_nh * ny
-                var t1z = hint_z - dot_nh * nz
-                var t1_mag = sqrt(t1x * t1x + t1y * t1y + t1z * t1z)
-                if t1_mag < Scalar[DTYPE](1e-10):
-                    # Hint parallel to normal — fall back to least-aligned axis
-                    var abs_nx = abs(nx)
-                    var abs_ny = abs(ny)
-                    var abs_nz = abs(nz)
-                    if abs_nx <= abs_ny and abs_nx <= abs_nz:
-                        hint_x = Scalar[DTYPE](1)
-                        hint_y = Scalar[DTYPE](0)
-                        hint_z = Scalar[DTYPE](0)
-                    elif abs_ny <= abs_nz:
-                        hint_x = Scalar[DTYPE](0)
-                        hint_y = Scalar[DTYPE](1)
-                        hint_z = Scalar[DTYPE](0)
-                    else:
-                        hint_x = Scalar[DTYPE](0)
-                        hint_y = Scalar[DTYPE](0)
-                        hint_z = Scalar[DTYPE](1)
-                    dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
-                    t1x = hint_x - dot_nh * nx
-                    t1y = hint_y - dot_nh * ny
-                    t1z = hint_z - dot_nh * nz
-                    t1_mag = sqrt(t1x * t1x + t1y * t1y + t1z * t1z)
-                if t1_mag > Scalar[DTYPE](1e-10):
-                    t1x = t1x / t1_mag
-                    t1y = t1y / t1_mag
-                    t1z = t1z / t1_mag
-
-                # T2 = cross(normal, T1)
-                var t2x = ny * t1z - nz * t1y
-                var t2y = nz * t1x - nx * t1z
-                var t2z = nx * t1y - ny * t1x
+                var t1x = frame[0]
+                var t1y = frame[1]
+                var t1z = frame[2]
+                var t2x = frame[3]
+                var t2y = frame[4]
+                var t2z = frame[5]
 
                 # Store directions and friction coefficients
                 solver[env, ws_df + (0 * 3 + 0) * MC + c] = t1x

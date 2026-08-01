@@ -53,6 +53,7 @@ from layout import Layout, LayoutTensor
 
 from ..fields import Data, Model, DynamicsScratch
 from ..joint_types import JNT_FREE, JNT_BALL
+from ..collision.contact_frame import contact_tangent_frame
 from .rne import (
     _max_one,
     _rne_fwd_body,
@@ -147,18 +148,25 @@ def _cfrc_ext_env[
         var nx = rebind[Scalar[DTYPE]](contacts[env, cb + CONTACT_IDX_NX])
         var ny = rebind[Scalar[DTYPE]](contacts[env, cb + CONTACT_IDX_NY])
         var nz = rebind[Scalar[DTYPE]](contacts[env, cb + CONTACT_IDX_NZ])
-        var t1x = rebind[Scalar[DTYPE]](
-            contacts[env, cb + CONTACT_IDX_FRAME_T1_X]
+        # FRAME_T1 is a HINT, not a tangent — it has had no fallback, no
+        # Gram-Schmidt and no normalization applied, and non-capsule pairs
+        # never write it at all. Reading it raw gave the tangential force a
+        # garbage direction while the normal component stayed right, because
+        # that one only needs `n`. See collision/contact_frame.mojo.
+        var frame = contact_tangent_frame[DTYPE](
+            nx,
+            ny,
+            nz,
+            rebind[Scalar[DTYPE]](contacts[env, cb + CONTACT_IDX_FRAME_T1_X]),
+            rebind[Scalar[DTYPE]](contacts[env, cb + CONTACT_IDX_FRAME_T1_Y]),
+            rebind[Scalar[DTYPE]](contacts[env, cb + CONTACT_IDX_FRAME_T1_Z]),
         )
-        var t1y = rebind[Scalar[DTYPE]](
-            contacts[env, cb + CONTACT_IDX_FRAME_T1_Y]
-        )
-        var t1z = rebind[Scalar[DTYPE]](
-            contacts[env, cb + CONTACT_IDX_FRAME_T1_Z]
-        )
-        var t2x = ny * t1z - nz * t1y
-        var t2y = nz * t1x - nx * t1z
-        var t2z = nx * t1y - ny * t1x
+        var t1x = frame[0]
+        var t1y = frame[1]
+        var t1z = frame[2]
+        var t2x = frame[3]
+        var t2y = frame[4]
+        var t2z = frame[5]
 
         var f_n = rebind[Scalar[DTYPE]](contacts[env, cb + CONTACT_IDX_FORCE_N])
         var f_t1 = rebind[Scalar[DTYPE]](
