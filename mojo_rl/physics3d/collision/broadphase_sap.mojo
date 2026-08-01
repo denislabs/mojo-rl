@@ -94,6 +94,12 @@ from .collision_primitives import (
     cylinder_cylinder,
     cylinder_box,
 )
+from .plane_frame import (
+    plane_world_normal,
+    to_plane_frame,
+    from_plane_frame,
+    quat_to_plane_frame,
+)
 from .gjk import gjk_epa
 from .contact_detection import (
     _geom_world_pos,
@@ -293,7 +299,21 @@ def _detect_contacts_sap_env[
         var gi_conaffinity = Int(
             rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONAFFINITY])
         )
-        var ground_z = wpz[gi]
+        # The plane's full pose. This loop used to keep only `wpz[gi]` as a
+        # `ground_z` and hardcode the normal to (0,0,1), i.e. it modelled every
+        # plane as a horizontal floor at the height of its origin. See
+        # `collision/plane_frame.mojo`. Everything below now works in the
+        # PLANE'S FRAME — where the plane really is z=0 with normal +z, which
+        # is what all the `*_plane` primitives assume — and maps the contact
+        # point and normal back to world at the write.
+        var plp_x = wpx[gi]
+        var plp_y = wpy[gi]
+        var plp_z = wpz[gi]
+        var plq_x = wqx[gi]
+        var plq_y = wqy[gi]
+        var plq_z = wqz[gi]
+        var plq_w = wqw[gi]
+        var pn = plane_world_normal[DTYPE](plq_x, plq_y, plq_z, plq_w)
 
         for gj in range(NGEOM):
             if num_contacts >= MAX_CONTACTS:
@@ -350,13 +370,24 @@ def _detect_contacts_sap_env[
             var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
             var cm = mgi + mgj  # MuJoCo 3.5+: sum of margins
 
-            var pj_x = wpx[gj]
-            var pj_y = wpy[gj]
-            var pj_z = wpz[gj]
-            var qj_x = wqx[gj]
-            var qj_y = wqy[gj]
-            var qj_z = wqz[gj]
-            var qj_w = wqw[gj]
+            # Pose IN THE PLANE'S FRAME, so `ground_z` below is 0 and the
+            # branch arithmetic is the same as it always was.
+            var lpj = to_plane_frame[DTYPE](
+                plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
+                wpx[gj], wpy[gj], wpz[gj],
+            )
+            var lqj = quat_to_plane_frame[DTYPE](
+                plq_x, plq_y, plq_z, plq_w,
+                wqx[gj], wqy[gj], wqz[gj], wqw[gj],
+            )
+            var pj_x = lpj[0]
+            var pj_y = lpj[1]
+            var pj_z = lpj[2]
+            var qj_x = lqj[0]
+            var qj_y = lqj[1]
+            var qj_z = lqj[2]
+            var qj_w = lqj[3]
+            var ground_z = Scalar[DTYPE](0)
             var rj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RADIUS])
             var hlj = rebind[Scalar[DTYPE]](
                 geoms[gj, GEOM_IDX_HALF_LENGTH]
@@ -372,14 +403,17 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
                         -1
                     )
-                    contacts[env, c_off + CONTACT_IDX_POS_X] = pj_x
-                    contacts[env, c_off + CONTACT_IDX_POS_Y] = pj_y
-                    contacts[
-                        env, c_off + CONTACT_IDX_POS_Z
-                    ] = ground_z + dist * Scalar[DTYPE](0.5)
-                    contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                    contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                    contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                    var cw = from_plane_frame[DTYPE](
+                        plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
+                        pj_x, pj_y,
+                        ground_z + dist * Scalar[DTYPE](0.5),
+                    )
+                    contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
+                    contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
+                    contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
+                    contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
+                    contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
+                    contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
                     contacts[env, c_off + CONTACT_IDX_DIST] = dist
                     contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                     contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
@@ -399,6 +433,15 @@ def _detect_contacts_sap_env[
                     Scalar[DTYPE](0),
                     Scalar[DTYPE](1),
                 )
+                # `axis_w` is in the PLANE'S frame (qj_* were rebased above),
+                # which is what the endpoint arithmetic below needs. The
+                # FRAME_T1 hint written into the record is read in WORLD space,
+                # so it goes back — see collision/contact_frame.mojo for what
+                # that slot is and is not.
+                var axis_wd = gpu_quat_rotate(
+                    plq_x, plq_y, plq_z, plq_w,
+                    axis_w[0], axis_w[1], axis_w[2],
+                )
                 var e1_x = pj_x + hlj * axis_w[0]
                 var e1_y = pj_y + hlj * axis_w[1]
                 var e1_z = pj_z + hlj * axis_w[2]
@@ -411,14 +454,17 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
                         -1
                     )
-                    contacts[env, c_off + CONTACT_IDX_POS_X] = e1_x
-                    contacts[env, c_off + CONTACT_IDX_POS_Y] = e1_y
-                    contacts[
-                        env, c_off + CONTACT_IDX_POS_Z
-                    ] = ground_z + dist1 * Scalar[DTYPE](0.5)
-                    contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                    contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                    contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                    var cw = from_plane_frame[DTYPE](
+                        plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
+                        e1_x, e1_y,
+                        ground_z + dist1 * Scalar[DTYPE](0.5),
+                    )
+                    contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
+                    contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
+                    contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
+                    contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
+                    contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
+                    contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
                     contacts[env, c_off + CONTACT_IDX_DIST] = dist1
                     contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                     contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
@@ -426,9 +472,9 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
                         cdim
                     )
-                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[0]
-                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[1]
-                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[2]
+                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_wd[0]
+                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_wd[1]
+                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_wd[2]
                     num_contacts += 1
                 var e2_x = pj_x - hlj * axis_w[0]
                 var e2_y = pj_y - hlj * axis_w[1]
@@ -442,14 +488,17 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
                         -1
                     )
-                    contacts[env, c_off + CONTACT_IDX_POS_X] = e2_x
-                    contacts[env, c_off + CONTACT_IDX_POS_Y] = e2_y
-                    contacts[
-                        env, c_off + CONTACT_IDX_POS_Z
-                    ] = ground_z + dist2 * Scalar[DTYPE](0.5)
-                    contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                    contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                    contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                    var cw = from_plane_frame[DTYPE](
+                        plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
+                        e2_x, e2_y,
+                        ground_z + dist2 * Scalar[DTYPE](0.5),
+                    )
+                    contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
+                    contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
+                    contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
+                    contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
+                    contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
+                    contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
                     contacts[env, c_off + CONTACT_IDX_DIST] = dist2
                     contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                     contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
@@ -457,9 +506,9 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
                         cdim
                     )
-                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[0]
-                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[1]
-                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[2]
+                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_wd[0]
+                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_wd[1]
+                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_wd[2]
                     num_contacts += 1
 
             elif gj_type == GEOM_CYLINDER:
@@ -484,12 +533,16 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
                         -1
                     )
-                    contacts[env, c_off + CONTACT_IDX_POS_X] = cp[1]
-                    contacts[env, c_off + CONTACT_IDX_POS_Y] = cp[2]
-                    contacts[env, c_off + CONTACT_IDX_POS_Z] = cp[3]
-                    contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                    contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                    contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                    var cw = from_plane_frame[DTYPE](
+                        plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
+                        cp[1], cp[2], cp[3],
+                    )
+                    contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
+                    contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
+                    contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
+                    contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
+                    contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
+                    contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
                     contacts[env, c_off + CONTACT_IDX_DIST] = dist
                     contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                     contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
@@ -518,12 +571,16 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
                         -1
                     )
-                    contacts[env, c_off + CONTACT_IDX_POS_X] = bp[1]
-                    contacts[env, c_off + CONTACT_IDX_POS_Y] = bp[2]
-                    contacts[env, c_off + CONTACT_IDX_POS_Z] = bp[3]
-                    contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
-                    contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
-                    contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                    var cw = from_plane_frame[DTYPE](
+                        plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
+                        bp[1], bp[2], bp[3],
+                    )
+                    contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
+                    contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
+                    contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
+                    contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
+                    contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
+                    contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
                     contacts[env, c_off + CONTACT_IDX_DIST] = dist
                     contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                     contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
@@ -573,20 +630,24 @@ def _detect_contacts_sap_env[
                                 contacts[
                                     env, c_off + CONTACT_IDX_BODY_B
                                 ] = Scalar[DTYPE](-1)
-                                contacts[env, c_off + CONTACT_IDX_POS_X] = wx
-                                contacts[env, c_off + CONTACT_IDX_POS_Y] = wy
+                                var cw = from_plane_frame[DTYPE](
+                                    plp_x, plp_y, plp_z,
+                                    plq_x, plq_y, plq_z, plq_w,
+                                    wx, wy,
+                                    ground_z + dist_v * Scalar[DTYPE](0.5),
+                                )
+                                contacts[
+                                    env, c_off + CONTACT_IDX_POS_X
+                                ] = cw[0]
+                                contacts[
+                                    env, c_off + CONTACT_IDX_POS_Y
+                                ] = cw[1]
                                 contacts[
                                     env, c_off + CONTACT_IDX_POS_Z
-                                ] = ground_z + dist_v * Scalar[DTYPE](0.5)
-                                contacts[
-                                    env, c_off + CONTACT_IDX_NX
-                                ] = Scalar[DTYPE](0)
-                                contacts[
-                                    env, c_off + CONTACT_IDX_NY
-                                ] = Scalar[DTYPE](0)
-                                contacts[
-                                    env, c_off + CONTACT_IDX_NZ
-                                ] = Scalar[DTYPE](1)
+                                ] = cw[2]
+                                contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
+                                contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
+                                contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
                                 contacts[
                                     env, c_off + CONTACT_IDX_DIST
                                 ] = dist_v - cm
