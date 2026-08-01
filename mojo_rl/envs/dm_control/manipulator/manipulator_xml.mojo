@@ -41,6 +41,16 @@ WHAT THIS MODEL NEEDS THAT NO EARLIER DOMAIN DID
 
 SUBSTITUTIONS
 -------------
+  * `target_ball` becomes a MOCAP BODY, the same workaround reacher and finger
+    needed (gap G4). `Bring.initialize_episode` randomises the target every
+    episode by writing `model.body_pos[target]` and `model.body_quat[target]`,
+    and `fields.Model` is a single SHARED, UNBATCHED tensor set — a model write
+    is a write for every env in the batch. A mocap body is the sanctioned
+    alternative: FK skips it and the facade presets its world pose from
+    `d.mocap_pos` / `d.mocap_quat`, which are per-env `[BATCH, NBODY*k]` state.
+    Physically inert either way — `class="ghost"` already gives it
+    `contype=0 conaffinity=0`, and with no joints it contributes no DOF — so
+    the only thing that changes is WHERE the pose lives.
   * The model-local `<asset>` (a `background` texture + material) and
     `<visual>` (shadowclip / shadowsize) blocks are dropped, and the
     `background` geom's `material="background"` with them. Both are purely
@@ -193,7 +203,7 @@ comptime _manipulator_body = """
     </body>
 
     <!-- targets -->
-    <body name="target_ball" pos=".4 .001 .4" childclass="ghost">
+    <body name="target_ball" pos=".4 .001 .4" childclass="ghost" mocap="true">
       <geom  name="target_ball" type="sphere" size=".02" />
       <site  name="target_ball" type="sphere"/>
     </body>
@@ -244,6 +254,66 @@ comptime mbp = parse_xml(dm_manipulator_bring_ball_xml)
 # obs = arm_pos (8 joints x sin/cos = 16) + arm_vel (8) + touch (5)
 #     + hand_pos (4) + object_pos (4) + object_vel (3) + target_pos (4) = 44
 comptime MANIPULATOR_OBS_DIM: Int = 44
+
+# --- Indices, in OUR ordering. The parity test pins every one of these.
+#
+# ⚠ `_ARM_JOINTS` in `manipulator.py` is
+#     [arm_root, arm_shoulder, arm_elbow, arm_wrist, finger, fingertip,
+#      thumb, thumbtip]
+# but the MODEL declares the thumb chain BEFORE the finger chain. So the
+# observation's joint order is NOT the model's joint order — finger/fingertip
+# come 5th/6th in the observation and 5th/6th in the model are thumb/thumbtip.
+# Getting this wrong silently swaps two symmetric halves of the observation,
+# which a symmetric pose would hide completely.
+def arm_joint_obs_order(k: Int) -> Int:
+    """`_ARM_JOINTS[k]` as OUR joint index."""
+    if k == 4:
+        return 6  # finger
+    if k == 5:
+        return 7  # fingertip
+    if k == 6:
+        return 4  # thumb
+    if k == 7:
+        return 5  # thumbtip
+    return k  # arm_root, arm_shoulder, arm_elbow, arm_wrist
+
+comptime HAND_BODY_IDX: Int = 4
+comptime BALL_BODY_IDX: Int = 10
+comptime TARGET_BODY_IDX: Int = 11
+
+# Sites, OUR order (XML text order; see `_our_site_to_mj` in the parity test
+# for where it diverges from MuJoCo's body-sorted order).
+comptime SITE_GRASP: Int = 0
+comptime SITE_PINCH: Int = 1
+comptime SITE_PALM_TOUCH: Int = 2
+comptime SITE_THUMB_TOUCH: Int = 3
+comptime SITE_THUMBTIP_TOUCH: Int = 4
+comptime SITE_FINGER_TOUCH: Int = 5
+comptime SITE_FINGERTIP_TOUCH: Int = 6
+comptime SITE_BALL: Int = 7
+comptime SITE_TARGET_BALL: Int = 8
+
+# `_TOUCH_SENSORS` order: palm, finger, thumb, fingertip, thumbtip — which is
+# also the sensor-id order, so the two happen to coincide here. Written as the
+# SITE indices the touch sensor reads.
+def touch_site_order(k: Int) -> Int:
+    """`_TOUCH_SENSORS[k]` as OUR site index."""
+    if k == 0:
+        return SITE_PALM_TOUCH
+    if k == 1:
+        return SITE_FINGER_TOUCH
+    if k == 2:
+        return SITE_THUMB_TOUCH
+    if k == 3:
+        return SITE_FINGERTIP_TOUCH
+    return SITE_THUMBTIP_TOUCH
+
+# The ball's three joints (`_object_joints` = ball_x, ball_z, ball_y), whose
+# qpos/qvel addresses coincide with the joint index (every joint is 1-dof and
+# they are declared in order).
+comptime BALL_QADR_X: Int = 8
+comptime BALL_QADR_Z: Int = 9
+comptime BALL_QADR_Y: Int = 10
 
 comptime DMManipulatorBringBallModel = ModelDefFromXML[
     xml=dm_manipulator_bring_ball_xml,

@@ -101,3 +101,76 @@ def model(use_peg=False, insert=False):
     import mujoco
 
     return mujoco.MjModel.from_xml_string(make_model_xml(use_peg, insert), assets())
+
+
+# --- Task-side reference: observation and reward -----------------------------
+# Copies of `Bring.get_observation` / `_ball_reward` + `rewards.tolerance`,
+# with the same two mechanical substitutions the model builder needed. Kept as
+# copies rather than imports so a change upstream diverges VISIBLY instead of
+# silently agreeing with our port because both were written by the same hand.
+
+_ARM_JOINTS = ['arm_root', 'arm_shoulder', 'arm_elbow', 'arm_wrist',
+               'finger', 'fingertip', 'thumb', 'thumbtip']
+_TOUCH_SENSORS = ['palm_touch', 'finger_touch', 'thumb_touch',
+                  'fingertip_touch', 'thumbtip_touch']
+_CLOSE = .01
+
+
+def _jid(m, name):
+    import mujoco
+    return mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, name)
+
+
+def _bid(m, name):
+    import mujoco
+    return mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, name)
+
+
+def _sid(m, name):
+    import mujoco
+    return mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, name)
+
+
+def observation(m, d):
+    """`Bring.get_observation(fully_observable=True)`, flattened."""
+    import numpy as np
+    out = []
+    # arm_pos: np.vstack([sin, cos]).T  -> interleaved (sin, cos) per joint
+    q = np.array([d.qpos[m.jnt_qposadr[_jid(m, n)]] for n in _ARM_JOINTS])
+    out.extend(np.vstack([np.sin(q), np.cos(q)]).T.ravel())
+    # arm_vel
+    out.extend([d.qvel[m.jnt_dofadr[_jid(m, n)]] for n in _ARM_JOINTS])
+    # touch
+    out.extend(np.log1p([d.sensordata[m.sensor_adr[
+        __import__('mujoco').mj_name2id(
+            m, __import__('mujoco').mjtObj.mjOBJ_SENSOR, n)]]
+        for n in _TOUCH_SENSORS]))
+
+    def body_2d_pose(name):
+        b = _bid(m, name)
+        return [d.xpos[b][0], d.xpos[b][2], d.xquat[b][0], d.xquat[b][2]]
+
+    out.extend(body_2d_pose('hand'))
+    out.extend(body_2d_pose('ball'))
+    out.extend([d.qvel[m.jnt_dofadr[_jid(m, n)]]
+                for n in ('ball_x', 'ball_z', 'ball_y')])
+    out.extend(body_2d_pose('target_ball'))
+    return np.array(out, dtype=np.float64)
+
+
+def _tolerance(x, lower, upper, margin):
+    """`rewards.tolerance` with the default gaussian sigmoid."""
+    import numpy as np
+    if lower <= x <= upper:
+        return 1.0
+    d = ((lower - x) if x < lower else (x - upper)) / margin
+    scale = np.sqrt(-2 * np.log(0.1))          # value_at_margin = 0.1
+    return float(np.exp(-0.5 * (d * scale) ** 2))
+
+
+def reward(m, d):
+    """`Bring._ball_reward`."""
+    import numpy as np
+    a, b = _sid(m, 'ball'), _sid(m, 'target_ball')
+    dist = float(np.linalg.norm(d.site_xpos[a] - d.site_xpos[b]))
+    return _tolerance(dist, 0.0, _CLOSE, _CLOSE * 2)

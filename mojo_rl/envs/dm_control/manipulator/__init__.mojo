@@ -24,5 +24,18 @@ from .manipulator_xml import (
     dm_manipulator_bring_ball_xml,
     DMManipulatorBringBallModel,
     MANIPULATOR_OBS_DIM,
+    arm_joint_obs_order,
+    touch_site_order,
+    HAND_BODY_IDX,
+    BALL_BODY_IDX,
+    TARGET_BODY_IDX,
+    SITE_BALL,
+    SITE_TARGET_BALL,
+    SITE_GRASP,
+    BALL_QADR_X,
+    BALL_QADR_Z,
+    BALL_QADR_Y,
     mbp,
 )
+from .manipulator_config import DMManipulatorConfig, CLOSE
+from .manipulator import DMManipulatorBringBall

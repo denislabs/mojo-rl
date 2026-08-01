@@ -41,7 +41,9 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.envs.dm_control.manipulator import (
     DMManipulatorBringBallModel as M,
+    DMManipulatorConfig,
     dm_manipulator_bring_ball_xml,
+    TARGET_BODY_IDX,
 )
 from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
@@ -118,6 +120,15 @@ comptime TOL_MODEL: Float64 = 1e-9
 # behind the uncoupled one.
 comptime TOL_QACC_UNCOUPLED: Float64 = 1e-8
 comptime TOL_QACC_COUPLED: Float64 = 1e-8
+# Observation and reward are pure readbacks of state the physics layer already
+# gates, so they sit at the FK floor. Measured 2026-08-01: arm_pos/arm_vel/
+# object_vel/target_pos exact, hand_pos and object_pos 5.0e-11, reward 1.8e-11.
+comptime TOL_OBS: Float64 = 1e-9
+# TOUCH is different in kind: it reads POST-SOLVE contact forces, so it
+# inherits the contact solve's floor (the qacc buckets sit at ~4e-9) rather
+# than FK's. Measured 1.36e-9 through `log1p` of 2-4 N. Split out so the
+# state-readback blocks stay pinned at 1e-9 and cannot drift behind it.
+comptime TOL_TOUCH: Float64 = 1e-8
 
 # OUR site order is XML TEXT order; MuJoCo's is sorted by body id, and here
 # they DIVERGE — `palm_touch` is declared after the `pinch site` body but
@@ -943,6 +954,188 @@ def test_manipulator_qacc_by_constraint_bucket() raises:
         worst_by_bucket[3] <= TOL_QACC_COUPLED,
         "equality+limit+contact qacc diverges",
     )
+
+
+
+# ── observation + reward ────────────────────────────────────────────────────
+
+def _set_state_and_fk(
+    mut d: Dat, mut mf: Mod, mut integ: Integ,
+    state: List[Float64], ctrl: List[Float64],
+) raises:
+    """Both engines at the same state, ours stepped once so contacts and
+    `site_xpos` are live (the touch entries read post-solve contact forces)."""
+    M.reset_data(d)
+    for i in range(NQ):
+        d.qpos.data[i] = Scalar[DTYPE](state[i])
+    for i in range(NV):
+        d.qvel.data[i] = Scalar[DTYPE](state[NQ + i])
+        d.qfrc.data[i] = Scalar[DTYPE](0)
+    # The target is a MOCAP body here and a static one in the reference, so
+    # pin ours to the reference's XML pose rather than leaving it wherever
+    # `reset_data` put it.
+    d.mocap_pos.data[TARGET_BODY_IDX * 3 + 0] = Scalar[DTYPE](0.4)
+    d.mocap_pos.data[TARGET_BODY_IDX * 3 + 1] = Scalar[DTYPE](0.001)
+    d.mocap_pos.data[TARGET_BODY_IDX * 3 + 2] = Scalar[DTYPE](0.4)
+    d.mocap_quat.data[TARGET_BODY_IDX * 4 + 0] = Scalar[DTYPE](0)
+    d.mocap_quat.data[TARGET_BODY_IDX * 4 + 1] = Scalar[DTYPE](0)
+    d.mocap_quat.data[TARGET_BODY_IDX * 4 + 2] = Scalar[DTYPE](0)
+    d.mocap_quat.data[TARGET_BODY_IDX * 4 + 3] = Scalar[DTYPE](1)
+    # FK SKIPS mocap bodies, so their world pose has to be preset from
+    # `mocap_pos`/`mocap_quat`. The env facade does this in
+    # `_sync_mocap_to_fields`; this test drives `integ.step` directly and so
+    # must do it itself, or the target sits at the origin and every term that
+    # reads it silently reports a 40 cm error.
+    for k in range(3):
+        var pv = d.mocap_pos.data[TARGET_BODY_IDX * 3 + k]
+        d.xpos.data[TARGET_BODY_IDX * 3 + k] = pv
+        d.xipos.data[TARGET_BODY_IDX * 3 + k] = pv
+    for k in range(4):
+        d.xquat.data[TARGET_BODY_IDX * 4 + k] = d.mocap_quat.data[
+            TARGET_BODY_IDX * 4 + k
+        ]
+    var act = List[Scalar[DTYPE]]()
+    for _ in range(NA if NA > 0 else 1):
+        act.append(Scalar[DTYPE](0))
+    M.apply_actions(d, ctrl, act)
+    integ.step["cpu"](d, mf)
+    # `integ.step` INTEGRATES. `d.contacts` and `d.site_xpos` were computed at
+    # the PRE-integration pose, so restoring qpos/qvel here puts every
+    # observation term back on the same state MuJoCo's `mj_forward` saw.
+    # Without this the two engines are one Euler step apart and the diff reads
+    # as a small, plausible, wrong number rather than an obvious one.
+    for i in range(NQ):
+        d.qpos.data[i] = Scalar[DTYPE](state[i])
+    for i in range(NV):
+        d.qvel.data[i] = Scalar[DTYPE](state[NQ + i])
+
+
+def test_manipulator_observation_matches_mujoco() raises:
+    """All 44 observation entries, at a pose that makes every term non-trivial.
+
+    The pose is deliberately ASYMMETRIC in the hand. `_ARM_JOINTS` lists
+    finger/fingertip BEFORE thumb/thumbtip while the model declares the thumb
+    chain first, so the observation carries a permutation of the model's joint
+    order — and a symmetric hand would hide a wrong permutation completely.
+
+    It also holds the ball, so the five `touch` entries are non-zero. Those are
+    the first numeric gate on the BOX touch zones: `sensors/touch.mojo` grew a
+    `ray_box` branch for this domain and until now nothing compared it to
+    MuJoCo's `sensordata`.
+    """
+    var ctx = DeviceContext()
+    var mf = _build()
+    var d = Dat()
+    var integ = Integ()
+    # C-bucket grasp pose, with the two finger chains driven APART so the
+    # observation permutation is observable.
+    # Grasping AND asymmetric: thumb .60 / finger .66, thumbtip -.30 /
+    # fingertip -.18. Chosen by sweeping MuJoCo for a pose that both loads the
+    # touch sensors and breaks the hand's symmetry — a symmetric hand would
+    # hide a wrong `_ARM_JOINTS` permutation, and a non-touching one would make
+    # the five touch entries a 0 == 0 comparison.
+    var state = _pose_state(
+        0.0, 0.3, -0.6, 0.2, 0.60, -0.30, BALL_GRASP_X, BALL_GRASP_Z, False
+    )
+    state[6] = 0.66  # finger    != thumb
+    state[7] = -0.18  # fingertip != thumbtip
+    var ctrl = _zero_ctrl()
+    _set_state_and_fk(d, mf, integ, state, ctrl)
+
+    var mj = _mj_at(state, ctrl)
+    var mujoco = mj[0]
+    var m = mj[1]
+    var dat = mj[2]
+    var builder = Python.import_module("manipulator_ref")
+    var ref_obs = builder.observation(m, dat)
+
+    var obs = List[Scalar[DTYPE]]()
+    _ = DMManipulatorConfig.custom_extract_obs_cpu[
+        DTYPE, NQ, NV, NBODY, MAXC, NSITE
+    ](
+        d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,
+        List[Scalar[DTYPE]](), obs,
+    )
+    assert_true(
+        len(obs) == 44,
+        String("obs dim ") + String(len(obs)) + " != 44",
+    )
+
+    var names = [
+        String("arm_pos"), String("arm_vel"), String("touch"),
+        String("hand_pos"), String("object_pos"), String("object_vel"),
+        String("target_pos"),
+    ]
+    var bounds = [0, 16, 24, 29, 33, 37, 40, 44]
+    var worst_all = Float64(0)
+    for blk in range(7):
+        var worst = Float64(0)
+        var wi = 0
+        for i in range(bounds[blk], bounds[blk + 1]):
+            var e = abs(Float64(obs[i]) - Float64(py=ref_obs[i]))
+            if e > worst:
+                worst = e
+                wi = i
+        if worst > worst_all:
+            worst_all = worst
+        print("   ", names[blk], " worst |d| =", worst, " at", wi)
+        var tol = TOL_TOUCH if blk == 2 else TOL_OBS
+        assert_true(
+            worst <= tol,
+            String("observation block ") + names[blk] + " diverges",
+        )
+
+    # Non-vacuity: the touch block must actually be loaded, or it gates nothing.
+    var touch_sum = Float64(0)
+    for i in range(24, 29):
+        touch_sum += Float64(py=ref_obs[i])
+    print("  MuJoCo touch block sum =", touch_sum)
+    assert_true(
+        touch_sum > 0.0,
+        "MuJoCo's touch sensors read zero at this pose, so the five touch"
+        " entries — and the BOX zone code behind them — are still ungated",
+    )
+    print("  worst |d obs| =", worst_all)
+
+
+def test_manipulator_reward_matches_mujoco() raises:
+    """`_ball_reward` across the whole useful range of the tolerance curve.
+
+    The gaussian sigmoid decays superexponentially — 1.0 inside 1 cm, 5.6e-21
+    at 10 cm — so a single distance would gate almost nothing. These four span
+    saturated, mid-curve and far.
+    """
+    var ctx = DeviceContext()
+    var mf = _build()
+    var integ = Integ()
+    var offsets = [0.0, 0.015, 0.03, 0.12]
+    var worst = Float64(0)
+    for k in range(len(offsets)):
+        var d = Dat()
+        # Ball parked away from the arm at the target's x, offset in z.
+        var state = _pose_state(
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4, 0.4 + offsets[k], False
+        )
+        _set_state_and_fk(d, mf, integ, state, _zero_ctrl())
+        var mj = _mj_at(state, _zero_ctrl())
+        var ref_r = Float64(
+            py=Python.import_module("manipulator_ref").reward(mj[1], mj[2])
+        )
+        var got = DMManipulatorConfig.compute_reward_and_done_cpu[
+            DTYPE, NQ, NV, NBODY, MAXC, NSITE
+        ](
+            d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,
+            Scalar[DTYPE](0), _zero_ctrl(), 0, 1,
+        )
+        var e = abs(Float64(got[0]) - ref_r)
+        if e > worst:
+            worst = e
+        print("    dz =", offsets[k], " ours =", got[0], " MuJoCo =", ref_r)
+        assert_true(
+            not got[1], "dm_control tasks never terminate early"
+        )
+    print("  worst |d reward| =", worst)
+    assert_true(worst <= TOL_OBS, "reward diverges from MuJoCo")
 
 
 def main() raises:
