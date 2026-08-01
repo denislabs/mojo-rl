@@ -119,6 +119,24 @@ from mojo_rl.physics3d.types import ConeType
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
 
+# The arm's index tables are SHARED with `stacker`, whose arm is this one
+# verbatim. Re-exported from here so the names this module has always published
+# keep resolving; the definitions live in `dm_control/planar_arm.mojo`.
+from ..planar_arm import (
+    NARM_JOINTS,
+    HAND_BODY_IDX,
+    SITE_GRASP,
+    SITE_PINCH,
+    SITE_PALM_TOUCH,
+    SITE_THUMB_TOUCH,
+    SITE_THUMBTIP_TOUCH,
+    SITE_FINGER_TOUCH,
+    SITE_FINGERTIP_TOUCH,
+    N_ARM_SITES,
+    arm_joint_obs_order,
+    touch_site_order,
+)
+
 
 # ── shared segments ─────────────────────────────────────────────────────────
 # Options, defaults, arena and arm — identical in all four tasks. Ends with the
@@ -353,63 +371,12 @@ comptime MANIP_TAIL = """
 #     + hand_pos (4) + object_pos (4) + object_vel (3) + target_pos (4) = 44
 comptime MANIPULATOR_OBS_DIM: Int = 44
 
-comptime NARM_JOINTS: Int = 8
-comptime HAND_BODY_IDX: Int = 4
-
 # The prop is always the first body after the arm, and always carries the
 # three DOFs that follow the arm's eight.
 comptime OBJECT_BODY_IDX: Int = 10
 comptime OBJECT_QADR_X: Int = 8
 comptime OBJECT_QADR_Z: Int = 9
 comptime OBJECT_QADR_Y: Int = 10
-
-# Arm sites, OUR order (XML text order; `palm_touch` and `pinch` swap against
-# MuJoCo's body-sorted order — see the parity tests' `_our_site_to_mj`).
-comptime SITE_GRASP: Int = 0
-comptime SITE_PINCH: Int = 1
-comptime SITE_PALM_TOUCH: Int = 2
-comptime SITE_THUMB_TOUCH: Int = 3
-comptime SITE_THUMBTIP_TOUCH: Int = 4
-comptime SITE_FINGER_TOUCH: Int = 5
-comptime SITE_FINGERTIP_TOUCH: Int = 6
-comptime N_ARM_SITES: Int = 7
-
-
-# ⚠ `_ARM_JOINTS` in `manipulator.py` is
-#     [arm_root, arm_shoulder, arm_elbow, arm_wrist, finger, fingertip,
-#      thumb, thumbtip]
-# but the MODEL declares the thumb chain BEFORE the finger chain. So the
-# observation's joint order is NOT the model's joint order — finger/fingertip
-# come 5th/6th in the observation and 5th/6th in the model are thumb/thumbtip.
-# Getting this wrong silently swaps two symmetric halves of the observation,
-# which a symmetric pose would hide completely.
-def arm_joint_obs_order(k: Int) -> Int:
-    """`_ARM_JOINTS[k]` as OUR joint index."""
-    if k == 4:
-        return 6  # finger
-    if k == 5:
-        return 7  # fingertip
-    if k == 6:
-        return 4  # thumb
-    if k == 7:
-        return 5  # thumbtip
-    return k  # arm_root, arm_shoulder, arm_elbow, arm_wrist
-
-
-# `_TOUCH_SENSORS` order: palm, finger, thumb, fingertip, thumbtip — which is
-# also the sensor-id order, so the two happen to coincide here. Written as the
-# SITE indices the touch sensor reads.
-def touch_site_order(k: Int) -> Int:
-    """`_TOUCH_SENSORS[k]` as OUR site index."""
-    if k == 0:
-        return SITE_PALM_TOUCH
-    if k == 1:
-        return SITE_FINGER_TOUCH
-    if k == 2:
-        return SITE_THUMB_TOUCH
-    if k == 3:
-        return SITE_FINGERTIP_TOUCH
-    return SITE_THUMBTIP_TOUCH
 
 
 # ── per-variant indices ─────────────────────────────────────────────────────

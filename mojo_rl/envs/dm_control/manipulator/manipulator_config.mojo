@@ -69,7 +69,7 @@ WHAT THIS PORT DOES DIFFERENTLY, and why:
   * The reference's rejection loop needs full collision detection from inside a
     reset hook, which is not available here — the same constraint ball_in_cup
     hit. Instead the object is placed with a CLOSED-FORM clearance test against
-    the arm (`_arm_clearance` below), which is exact for the three arm links
+    the arm (`planar_arm.arm_clearance`), which is exact for the three arm links
     and conservative for the hand. The acceptance region is therefore a SUBSET
     of the reference's rather than an approximation of it: everything this
     accepts, the reference would also accept. The distinction matters, because
@@ -83,7 +83,7 @@ WHAT THIS PORT DOES DIFFERENTLY, and why:
     parity tests set qpos in both engines directly.
 
 ⚠ THE FIRST VERSION OF THIS RESET was near-degenerate and its replacement is
-the reason `_arm_clearance` exists. It rejected any object within ARM_REACH
+the reason `arm_clearance` exists. It rejected any object within ARM_REACH
 (.62 m, the arm's FULL extension) of the shoulder — a sound bound, but one that
 accepts only 0.13% of draws from the reference's sampling box, so 77% of resets
 exhausted all 200 tries and fell through with an arbitrary, usually
@@ -126,6 +126,8 @@ from .manipulator_xml import (
     MANIPULATOR_OBS_DIM,
 )
 
+from ..planar_arm import arm_clearance
+
 from ...phyics3d_env_config import Phyics3dEnvConfig
 
 
@@ -151,35 +153,6 @@ comptime OBJECT_VX_HI: Float64 = 5.0
 
 comptime NARM: Int = NARM_JOINTS
 
-# ── the arm, as a planar chain ──────────────────────────────────────────────
-#
-# `_arm_clearance` needs the arm's actual pose, and the reset hook runs BEFORE
-# forward kinematics (`_reset_state`: reset_data -> hooks -> FK). That is fine
-# here because the arm is a PLANAR 4-link chain with hinges all about `0 -1 0`,
-# so its world geometry is three lines of trig rather than a call into FK.
-#
-# Rotating a local vector by angle `q` about the axis (0,-1,0) maps the local
-# +z direction to `(-sin q, cos q)` in world (x, z), and the joints compose, so
-# link `i` runs along the cumulative angle `q0 + ... + qi`.
-comptime SHOULDER_X: Float64 = 0.0
-comptime SHOULDER_Z: Float64 = 0.4  # `<body name="upper_arm" pos="0 0 .4">`
-
-# `fromto` lengths and `size` radii of upper_arm / middle_arm / lower_arm.
-comptime LINK_LEN_0: Float64 = 0.18
-comptime LINK_LEN_1: Float64 = 0.15
-comptime LINK_LEN_2: Float64 = 0.12
-comptime LINK_RAD_0: Float64 = 0.02
-comptime LINK_RAD_1: Float64 = 0.017
-comptime LINK_RAD_2: Float64 = 0.014
-
-# Everything from the wrist outwards — the hand capsule, both palms, both
-# fingers and both fingertips — bounded by one disc about the wrist origin.
-# The furthest reachable point is palm tip (.054) + thumb (.05 + .01) + tip
-# radius (.008) ~ .12; .13 rounds that up. Conservative on purpose: a disc is
-# what makes the test a SUBSET of the reference's acceptance region, since the
-# fingers move with two joints this test never reads.
-comptime HAND_DISC_RAD: Float64 = 0.13
-
 # Bounding radius of the prop about its own origin, which is what the clearance
 # is compared against. The ball is its geom radius. The peg's origin is at the
 # blade's TOP and it hangs .113 below with a .005 capsule, so it needs a much
@@ -199,68 +172,6 @@ comptime SLOT_CLEAR_RAD: Float64 = 0.16 + PEG_BOUND_RAD
 # (ball) and 70% (peg), so exhausting this is a ~1e-104 event; it exists to
 # bound the loop, not because it is expected to fire.
 comptime MAX_PLACEMENT_TRIES: Int = 200
-
-
-def _dist_point_segment(
-    px: Float64, pz: Float64,
-    ax: Float64, az: Float64,
-    bx: Float64, bz: Float64,
-) -> Float64:
-    """Distance from (px, pz) to the segment a->b, in the x-z plane."""
-    var dx = bx - ax
-    var dz = bz - az
-    var l2 = dx * dx + dz * dz
-    var t = 0.0
-    if l2 > 0.0:
-        t = ((px - ax) * dx + (pz - az) * dz) / l2
-        if t < 0.0:
-            t = 0.0
-        elif t > 1.0:
-            t = 1.0
-    var cx = px - (ax + t * dx)
-    var cz = pz - (az + t * dz)
-    return sqrt(cx * cx + cz * cz)
-
-
-def _arm_clearance(
-    q0: Float64, q1: Float64, q2: Float64, q3: Float64,
-    px: Float64, pz: Float64,
-) -> Float64:
-    """Gap in metres between the point (px, pz) and the arm's SURFACE.
-
-    Negative means inside. Exact for the three arm capsules (a capsule's
-    surface is exactly `distance-to-axis minus radius`) and conservative for
-    everything past the wrist, which is bounded by `HAND_DISC_RAD`.
-
-    `q3` (`arm_wrist`) only rotates the hand about the wrist origin, which the
-    disc already covers, so it is accepted and unused — spelled out rather than
-    dropped from the signature so a future non-disc hand model has it.
-    """
-    var x = SHOULDER_X
-    var z = SHOULDER_Z
-    var th = 0.0
-    var best = 1.0e18
-
-    var lens = [LINK_LEN_0, LINK_LEN_1, LINK_LEN_2]
-    var rads = [LINK_RAD_0, LINK_RAD_1, LINK_RAD_2]
-    var angs = [q0, q1, q2]
-    for i in range(3):
-        th += angs[i]
-        var nx = x - lens[i] * sin(th)
-        var nz = z + lens[i] * cos(th)
-        var g = _dist_point_segment(px, pz, x, z, nx, nz) - rads[i]
-        if g < best:
-            best = g
-        x = nx
-        z = nz
-
-    # Wrist origin: the hand assembly, as one disc.
-    var hx = px - x
-    var hz = pz - z
-    var gh = sqrt(hx * hx + hz * hz) - HAND_DISC_RAD
-    if gh < best:
-        best = gh
-    return best
 
 
 struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
@@ -407,9 +318,18 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
             d.qpos.data[j] = Scalar[DTYPE](lo + random_float64() * (hi - lo))
 
         # `data.qpos['finger'] = data.qpos['thumb']` — symmetrise the hand.
-        # Model joint 4 is thumb, 6 is finger; 5 thumbtip, 7 fingertip.
+        # Model joint 4 is thumb and 6 is finger.
+        #
+        # ⚠ THE KNUCKLES ONLY. `initialize_episode` has exactly this one line;
+        # `thumbtip` (5) and `fingertip` (7) keep their own independent draws,
+        # so the hand starts NEAR-symmetric rather than symmetric. This used to
+        # copy 5 -> 7 as well, which is not in the reference; caught while
+        # porting stacker, whose `initialize_episode` has the same single line.
+        # No parity test moved, because the parity tests set qpos directly and
+        # never run a reset — an infidelity here is invisible to every gate in
+        # the suite and only shows up as a slightly wrong initial-state
+        # distribution during training.
         d.qpos.data[6] = d.qpos.data[4]
-        d.qpos.data[7] = d.qpos.data[5]
 
         # Target: a mocap pose, not a model write. `target_angle` is a rotation
         # about y, so the quaternion is (cos(a/2), 0, sin(a/2), 0) in MuJoCo's
@@ -465,7 +385,7 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
                 oz = OBJECT_Z_LO + random_float64() * (
                     OBJECT_Z_HI - OBJECT_Z_LO
                 )
-                if _arm_clearance(q0, q1, q2, q3, ox, oz) <= Self.OBJ_RAD:
+                if arm_clearance(q0, q1, q2, q3, ox, oz) <= Self.OBJ_RAD:
                     continue
                 comptime if Self.INSERT:
                     var rx = ox - tx
