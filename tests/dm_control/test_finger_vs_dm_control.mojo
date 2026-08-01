@@ -77,11 +77,22 @@ comptime AMP_F: Float64 = 0.35
 comptime STATE_TOL_F: Float64 = 1e-9
 comptime OBS_TOL_F: Float64 = 1e-9
 
-# ⚠ NOT a parity tolerance — it records a KNOWN, UNFIXED contact-phase gap
-# (per-step drift while a contact is live, plus a one-step separation-timing
-# difference; see the test docstring). It exists so the contact phase cannot
-# silently degrade further, and so nobody mistakes this domain for gated.
-comptime CONTACT_STATE_BOUND: Float64 = 0.08
+# Early-contact residual. The contact phase IS gated — 8.84e-9 measured
+# 2026-08-01 over 56 contact steps with peak forces of 116 N — since
+# `constraints/scalar_rows.mojo` made joint limits and dry friction rows of the
+# same system as the contacts (see the test docstring).
+#
+# ⚠ This comment used to read "NOT a parity tolerance — records a KNOWN,
+# UNFIXED contact-phase gap" and the bound was 0.08, ~7 orders of magnitude
+# loose. That was already stale when the fix landed on 2026-07-30, and it cost
+# real time on 2026-08-01: it was read as evidence that finger still had an
+# open contact defect, which made it look like the common cause behind
+# manipulator's grasp error and MetaWorld sawyer's NaN. It is not — finger's
+# elliptic contacts are exact. **A stale comment on a loose bound is a false
+# lead with a long half-life; retire the bound WITH the fix.**
+#
+# Tightened to a MuJoCo-anchored number with an order of magnitude of headroom.
+comptime CONTACT_STATE_BOUND: Float64 = 1e-7
 comptime EARLY_CONTACT_STEPS: Int = 10
 
 comptime BIG_TARGET: Float64 = 0.07  # _EASY_TARGET_SIZE
@@ -747,15 +758,17 @@ def test_finger_contact_phase_residual_is_bounded() raises:
     Still SEQUENTIAL, deliberately: equality and tendon rows (they need a dense
     Jacobian, so they need different storage), and the PGS / island-PGS solvers.
 
-    The bound below is now ~7 orders of magnitude loose. It is kept as a
-    regression trip-wire; tighten it only with a fresh MuJoCo-anchored number.
+    TIGHTENED 2026-08-01 from 0.08 to 1e-7, against a fresh measurement of
+    8.84e-9 over 56 contact steps. It had been left ~7 orders loose with a
+    stale "KNOWN, UNFIXED" comment on it, which read as an open contact defect
+    on the only other ELLIPTIC model and sent a manipulator investigation down
+    a blind alley. The domain is gated; the bound now says so.
 
     Superseded: (a) the claim that our elliptic solve returns a non-KKT point;
     (b) the claim that a one-step SEPARATION TIMING difference is a co-cause —
     it is downstream of the same force error.
 
-    The bound below is a defect record, not a parity tolerance. Tighten it
-    when the contact phase is fixed; never relax it.
+    Never relax the bound. If it trips, the contact phase regressed.
     """
     var near = [-0.9, 0.6, -2.0]
     var r = _rollout[BIG_TARGET](1.6, near)
