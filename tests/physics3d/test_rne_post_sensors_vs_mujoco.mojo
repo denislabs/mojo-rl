@@ -240,19 +240,19 @@ def test_body_and_site_order_match_mujoco() raises:
             if e > worst_body:
                 worst_body = e
                 worst_body_i = b
-    # ⚠ Only the FIVE sensor sites, not all NSITE. quadruped's twenty `rf_*`
-    # rangefinder sites are declared with `fromto=`, which our parser does not
-    # implement for sites — their local pos stays (0,0,0), so `site_xpos`
-    # lands on the torso origin and is wrong by up to 0.4 m. Harmless for
-    # walk/run (dm_control deletes the rangefinder SENSORS; only the unused
-    # sites remain) and out of scope here, but it is a real gap and this is
-    # where it was found. Do not widen this loop without fixing `fromto`.
+    # ALL sites, not just the five the sensors read. This loop was restricted
+    # to those five until 2026-08-01 because quadruped's twenty `rf_*`
+    # rangefinder sites are declared with `fromto=`, which the parser did not
+    # implement for sites — their local pos stayed (0,0,0), so `site_xpos`
+    # landed on the torso origin, up to 0.4 m out. Now that sites honour
+    # `fromto` it covers all NSITE, which is what makes it a site-ORDER gate
+    # and not just a spot check.
     var sensor_sites = _toe_names()
     sensor_sites.append(String("torso"))
+    var nsite_mj = Int(py=m.nsite)
     var worst_site = Float64(0)
     var worst_site_i = 0
-    for nm in sensor_sites:
-        var s = Int(py=mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, nm))
+    for s in range(nsite_mj):
         for k in range(3):
             var e = abs(
                 Float64(d.site_xpos.data[s * 3 + k])

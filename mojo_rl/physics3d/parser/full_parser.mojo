@@ -1529,28 +1529,46 @@ def _fill_model[
                     type_s = site_defaults.site_type_s
                 sd.site_type = _geom_type_from_str(type_s)
 
-                var pos_s = _extract_attr(tag, "pos")
-                if pos_s.byte_length() > 0:
-                    var pv = _parse_vec3(pos_s)
-                    sd.pos_x = pv[0]
-                    sd.pos_y = pv[1]
-                    sd.pos_z = pv[2]
-
-                var quat_s = _extract_attr(tag, "quat")
-                if quat_s.byte_length() > 0:
-                    var qv = _parse_quat(quat_s)
-                    sd.quat_x = qv[0]
-                    sd.quat_y = qv[1]
-                    sd.quat_z = qv[2]
-                    sd.quat_w = qv[3]
+                # `fromto` is valid on a SITE, not just a geom
+                # (user_objects.cc:3841, mjCSite::Compile — the same block as
+                # mjCGeom's). It supersedes both pos and the orientation
+                # attributes, so it is resolved first and they are skipped.
+                # Until 2026-08-01 sites ignored it entirely and kept
+                # pos (0,0,0), which put quadruped's twenty `rf_*`
+                # rangefinder sites at the body origin — up to 0.4 m out.
+                var site_fromto_s = _extract_attr(tag, "fromto")
+                if site_fromto_s.byte_length() > 0:
+                    var sft = _fromto_to_pos_quat(site_fromto_s)
+                    sd.pos_x = sft[0]
+                    sd.pos_y = sft[1]
+                    sd.pos_z = sft[2]
+                    sd.quat_x = sft[3]
+                    sd.quat_y = sft[4]
+                    sd.quat_z = sft[5]
+                    sd.quat_w = sft[6]
                 else:
-                    var aa_s = _extract_attr(tag, "axisangle")
-                    if aa_s.byte_length() > 0:
-                        var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
-                        sd.quat_x = aq[0]
-                        sd.quat_y = aq[1]
-                        sd.quat_z = aq[2]
-                        sd.quat_w = aq[3]
+                    var pos_s = _extract_attr(tag, "pos")
+                    if pos_s.byte_length() > 0:
+                        var pv = _parse_vec3(pos_s)
+                        sd.pos_x = pv[0]
+                        sd.pos_y = pv[1]
+                        sd.pos_z = pv[2]
+
+                    var quat_s = _extract_attr(tag, "quat")
+                    if quat_s.byte_length() > 0:
+                        var qv = _parse_quat(quat_s)
+                        sd.quat_x = qv[0]
+                        sd.quat_y = qv[1]
+                        sd.quat_z = qv[2]
+                        sd.quat_w = qv[3]
+                    else:
+                        var aa_s = _extract_attr(tag, "axisangle")
+                        if aa_s.byte_length() > 0:
+                            var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
+                            sd.quat_x = aq[0]
+                            sd.quat_y = aq[1]
+                            sd.quat_z = aq[2]
+                            sd.quat_w = aq[3]
 
                 var size_s = _extract_attr(tag, "size")
                 if size_s.byte_length() == 0:
@@ -1565,6 +1583,21 @@ def _fill_model[
                         sd.size_1 = _parse_float(parts[1])
                     if len(parts) >= 3:
                         sd.size_2 = _parse_float(parts[2])
+
+                # `fromto` OVERRIDES the size read above: MuJoCo sets
+                # size[1] to half the segment length, and for a box or an
+                # ellipsoid then shifts it (size[2]=size[1], size[1]=size[0]).
+                # Done after the size attr so it wins regardless of order.
+                if site_fromto_s.byte_length() > 0:
+                    var half_len = _fromto_to_pos_quat(site_fromto_s)[7]
+                    if (
+                        sd.site_type == _GEOM_ELLIPSOID
+                        or sd.site_type == _GEOM_BOX
+                    ):
+                        sd.size_2 = half_len
+                        sd.size_1 = sd.size_0
+                    else:
+                        sd.size_1 = half_len
 
                 result.sites[site_count] = sd
             site_count += 1

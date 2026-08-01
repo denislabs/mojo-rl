@@ -4128,12 +4128,24 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
             var tag = _extract_opening_tag(worldbody, next_site)
             if site_count < 16:
                 data.site_body_id[site_count] = current_body
-                var pos_s = _extract_attr(tag, "pos")
-                if pos_s.byte_length() > 0:
-                    var pv = _parse_vec3(pos_s)
-                    data.site_pos_x[site_count] = pv[0]
-                    data.site_pos_y[site_count] = pv[1]
-                    data.site_pos_z[site_count] = pv[2]
+                # `fromto` supersedes `pos` on a site exactly as it does on a
+                # geom (user_objects.cc:3841). This record has no quaternion
+                # field, so only the midpoint lands here — enough for the
+                # render path, which is all this parser feeds. The runtime
+                # parser carries the orientation and the size remap.
+                var site_ft_s = _extract_attr(tag, "fromto")
+                if site_ft_s.byte_length() > 0:
+                    var sft = _fromto_to_pos_quat(site_ft_s)
+                    data.site_pos_x[site_count] = sft[0]
+                    data.site_pos_y[site_count] = sft[1]
+                    data.site_pos_z[site_count] = sft[2]
+                else:
+                    var pos_s = _extract_attr(tag, "pos")
+                    if pos_s.byte_length() > 0:
+                        var pv = _parse_vec3(pos_s)
+                        data.site_pos_x[site_count] = pv[0]
+                        data.site_pos_y[site_count] = pv[1]
+                        data.site_pos_z[site_count] = pv[2]
                 var size_s = _extract_attr(tag, "size")
                 if size_s.byte_length() > 0:
                     var sparts = List[String]()
