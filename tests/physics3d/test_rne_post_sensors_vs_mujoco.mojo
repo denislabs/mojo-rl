@@ -438,6 +438,29 @@ def _compare_sensors(
     print("  worst |qacc| =", worst_qacc, " |cvel| =", worst_cvel,
           " |cacc| =", worst_cacc, "(body", wb_acc, ")",
           " |cfrc_ext| =", worst_cext, " |cfrc_int| =", worst_cint)
+
+    # ⚠ These two were COMPUTED AND PRINTED here from the day this file was
+    # written, and never asserted. That is precisely how bug 30 (the contact
+    # frame hint read as a tangent) survived inside the one file that was
+    # already measuring it: this line printed |cfrc_ext| = 3.88 against a
+    # ~100 N scale while every assertion in the file passed. A printed
+    # diagnostic is not a gate. Asserting them also makes this the only
+    # numeric check on `cfrc_ext` anywhere in the suite.
+    var cext_scale = Float64(1.0)
+    var cint_scale = Float64(1.0)
+    for b in range(NBODY):
+        for k in range(6):
+            cext_scale = max(cext_scale, abs(Float64(py=dat.cfrc_ext[b][k])))
+            cint_scale = max(cint_scale, abs(Float64(py=dat.cfrc_int[b][k])))
+    print("    cfrc_ext rel =", worst_cext / cext_scale,
+          " cfrc_int rel =", worst_cint / cint_scale,
+          " (scales", cext_scale, cint_scale, ")")
+    assert_true(
+        worst_cext / cext_scale < tol, "cfrc_ext diverges from MuJoCo"
+    )
+    assert_true(
+        worst_cint / cint_scale < tol, "cfrc_int diverges from MuJoCo"
+    )
     print("    cacc[", wb_acc, "] ours =",
           Float64(d.cacc.data[wb_acc * 6 + 0]),
           Float64(d.cacc.data[wb_acc * 6 + 1]),
