@@ -22,20 +22,26 @@ single cross product and the rotation is one inverse quaternion rotation:
     velocimeter  = R_site^T v_site_world
     gyro         = R_site^T xangvel[b]
 
-⚠ THE SITE FRAME IS TAKEN TO BE THE BODY FRAME. `Data` stores `site_xpos` but
-no `site_xmat`, so `R_site` here is the body's `xquat`. That is exact only for
-a site that declares no `quat`/`euler`/`axisangle`/`zaxis` — i.e. one whose
-local orientation is identity. Every site swimmer declares is of that form
-(`<site name="site_i"/>` under `class="swimmer"`, which sets only `size` and
-`rgba`), and the swimmer parity test asserts `site_quat == (1,0,0,0)` for all
-of them against the reference model, so a rotated site cannot slip in
-unnoticed. Adding `site_xmat` is the real fix when a domain needs one.
+THE SITE FRAME is `xquat[body] * site_quat`, composed by
+`kinematics/site_frame.site_world_quat_list`. `Data` deliberately stores no
+`site_xmat` — it is one quaternion multiply and every consumer already holds
+the body quaternion, so materialising a `[BATCH, NSITE*9]` tensor and writing
+it in four forward-kinematics paths would buy nothing the dynamics reads. See
+that module for the reasoning.
+
+⚠ This USED TO substitute the body's quaternion for the site's, which is exact
+only for an identity-oriented site. Every model that reached here was of that
+form, so the substitution was invisible; manipulator's rotated box touch zones
+are what forced the site quaternion into the model record, and this was fixed
+with it. Fixing it moved NO existing gate, which is the evidence that the old
+scope really was as narrow as it claimed.
 
 Used by dm_control's swimmer, whose `body_velocities()` observation is the
 `[vx, vy, wz]` slice of one velocimeter/gyro pair per link.
 """
 
 from ..kinematics.quat_math import quat_rotate_inverse
+from ..kinematics.site_frame import site_world_quat_list
 
 
 def site_frame_velocity[
@@ -46,6 +52,7 @@ def site_frame_velocity[
     xipos: List[Scalar[DTYPE]],
     xquat: List[Scalar[DTYPE]],
     site_xpos: List[Scalar[DTYPE]],
+    m_sites: List[Scalar[DTYPE]],
     body: Int,
     site: Int,
 ) raises -> Tuple[Float64, Float64, Float64, Float64, Float64, Float64]:
@@ -68,10 +75,14 @@ def site_frame_velocity[
     var vy = xvel[body * 3 + 1] + (wz * rx - wx * rz)
     var vz = xvel[body * 3 + 2] + (wx * ry - wy * rx)
 
-    var qx = xquat[body * 4 + 0]
-    var qy = xquat[body * 4 + 1]
-    var qz = xquat[body * 4 + 2]
-    var qw = xquat[body * 4 + 3]
+    # R_site is the SITE's world frame, `xquat[body] * site_quat` — not the
+    # body's. Those coincide only for a site with no orientation attribute,
+    # which was true of every model that reached here before manipulator.
+    var sq = site_world_quat_list[DTYPE](m_sites, xquat, body, site)
+    var qx = Scalar[DTYPE](sq[0])
+    var qy = Scalar[DTYPE](sq[1])
+    var qz = Scalar[DTYPE](sq[2])
+    var qw = Scalar[DTYPE](sq[3])
 
     var vl = quat_rotate_inverse[DTYPE](qx, qy, qz, qw, vx, vy, vz)
     var wl = quat_rotate_inverse[DTYPE](qx, qy, qz, qw, wx, wy, wz)

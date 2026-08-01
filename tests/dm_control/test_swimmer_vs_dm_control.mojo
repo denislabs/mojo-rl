@@ -422,12 +422,16 @@ def test_swimmer_actuators_match_mujoco() raises:
 def test_swimmer_sites_are_unrotated() raises:
     """`sensors/frame_vel.mojo` uses the BODY quaternion as the site frame.
 
-    `Data` has `site_xpos` but no `site_xmat`, so the velocimeter/gyro pair is
-    exact only for a site whose local orientation is identity. Every swimmer
-    site is declared bare under `class="swimmer"` (which sets `size`/`rgba`
-    only), and this pins it against the compiled model so a `quat=`/`euler=`
-    added upstream fails here rather than silently skewing half the
-    observation.
+    ⚠ This assertion USED TO exist because `site_frame_velocity` substituted
+    the site's BODY quaternion for its own, so the velocimeter/gyro pair was
+    exact only for an identity-oriented site. That is fixed — the sensors now
+    compose `xquat[body] * site_quat` via
+    `kinematics/site_frame.site_world_quat_list`, and a rotated site is handled
+    correctly. The check is KEPT, with its reason rewritten: swimmer's sites
+    ARE all bare under `class="swimmer"` (which sets `size`/`rgba` only), and
+    pinning that means a `quat=`/`euler=` appearing upstream shows up here as a
+    MODEL change to look at rather than passing unnoticed. It is no longer a
+    statement about what the engine can do.
     """
     var mj = _ref(6)
     var sq = mj.site_quat.tolist()
@@ -444,8 +448,10 @@ def test_swimmer_sites_are_unrotated() raises:
             and abs(Float64(py=sq[s][1])) <= 1e-15
             and abs(Float64(py=sq[s][2])) <= 1e-15
             and abs(Float64(py=sq[s][3])) <= 1e-15,
-            String("site ") + String(s) + " is ROTATED relative to its body —"
-            " site_frame_velocity needs real site_xmat support",
+            String("site ") + String(s) + " is ROTATED relative to its body."
+            " The sensors handle that correctly now (site_world_quat_list), so"
+            " this is a MODEL CHANGE upstream, not an engine limit — check"
+            " what moved and then relax this assertion.",
         )
         # Site i rides body i + 1 (head, then one per segment): the mapping
         # `body_velocities` walks.

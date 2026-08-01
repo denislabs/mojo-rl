@@ -193,7 +193,7 @@ struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
             # --- torso_velocity: the velocimeter at the torso site ---------
             var fv = site_frame_velocity[DTYPE](
                 d.xvel.data, d.xangvel.data, d.xipos.data, d.xquat.data,
-                d.site_xpos.data, TORSO_BODY_IDX, TORSO_SITE_IDX,
+                d.site_xpos.data, m_sites, TORSO_BODY_IDX, TORSO_SITE_IDX,
             )
             obs.append(Scalar[DTYPE](fv[0]))
             obs.append(Scalar[DTYPE](fv[1]))
@@ -209,7 +209,7 @@ struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
             # --- imu: accelerometer THEN gyro (sensor-id order) ------------
             var acc = site_accelerometer[DTYPE](
                 d.cvel.data, d.cacc.data, d.subtree_com.data,
-                d.site_xpos.data, d.xquat.data, m_bodies,
+                d.site_xpos.data, d.xquat.data, m_bodies, m_sites,
                 TORSO_BODY_IDX, TORSO_SITE_IDX,
             )
             obs.append(Scalar[DTYPE](acc[0]))
@@ -226,7 +226,7 @@ struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
             for t in range(4):
                 var ftt = site_force_torque[DTYPE](
                     d.cfrc_int.data, d.subtree_com.data, d.site_xpos.data,
-                    d.xquat.data, m_bodies,
+                    d.xquat.data, m_bodies, m_sites,
                     TOE_BODY_0 + t * TOE_BODY_STRIDE, TOE_SITE_0 + t,
                 )
                 # Tuple subscripts need a comptime index; unpack once.
@@ -271,7 +271,7 @@ struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
         try:
             var fv = site_frame_velocity[DTYPE](
                 d.xvel.data, d.xangvel.data, d.xipos.data, d.xquat.data,
-                d.site_xpos.data, TORSO_BODY_IDX, TORSO_SITE_IDX,
+                d.site_xpos.data, m_sites, TORSO_BODY_IDX, TORSO_SITE_IDX,
             )
             vx = fv[0]
         except:

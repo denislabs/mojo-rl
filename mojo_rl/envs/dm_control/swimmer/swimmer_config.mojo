@@ -185,6 +185,7 @@ struct DMSwimmerConfig(Phyics3dEnvConfig):
                     d.xipos.data,
                     d.xquat.data,
                     d.site_xpos.data,
+                    m_sites,
                     body,
                     k,
                 )

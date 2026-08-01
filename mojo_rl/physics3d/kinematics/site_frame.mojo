@@ -66,3 +66,35 @@ def site_world_quat[
         rebind[Scalar[DTYPE]](sites[site_idx, SITE_IDX_QUAT_Z]),
         rebind[Scalar[DTYPE]](sites[site_idx, SITE_IDX_QUAT_W]),
     )
+
+
+@always_inline
+def site_world_quat_list[
+    DTYPE: DType
+](
+    m_sites: List[Scalar[DTYPE]],
+    xquat: List[Scalar[DTYPE]],
+    body: Int,
+    site: Int,
+) -> Tuple[Float64, Float64, Float64, Float64]:
+    """`site_world_quat` over the host `.data` buffers, as (x, y, z, w).
+
+    The sensor modules take `List` buffers rather than LayoutTensors, so they
+    need this rather than the kernel-facing form above. Same composition:
+    `xquat[body] * site_quat`.
+    """
+    var sb = site * MODEL_SITE_SIZE
+    var bx = Float64(xquat[body * 4 + 0])
+    var by = Float64(xquat[body * 4 + 1])
+    var bz = Float64(xquat[body * 4 + 2])
+    var bw = Float64(xquat[body * 4 + 3])
+    var sx = Float64(m_sites[sb + SITE_IDX_QUAT_X])
+    var sy = Float64(m_sites[sb + SITE_IDX_QUAT_Y])
+    var sz = Float64(m_sites[sb + SITE_IDX_QUAT_Z])
+    var sw = Float64(m_sites[sb + SITE_IDX_QUAT_W])
+    return (
+        bw * sx + bx * sw + by * sz - bz * sy,
+        bw * sy - bx * sz + by * sw + bz * sx,
+        bw * sz + bx * sy - by * sx + bz * sw,
+        bw * sw - bx * sx - by * sy - bz * sz,
+    )

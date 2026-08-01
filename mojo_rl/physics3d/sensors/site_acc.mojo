@@ -22,16 +22,22 @@ out NEGATIVE in z (the leg pulls down on the shin), which is what MuJoCo
 reports too — dm_control's quadruped feeds it through `arcsinh` and lets the
 policy sort it out.
 
-⚠ THE SITE FRAME IS TAKEN TO BE THE BODY FRAME, exactly as in
-`sensors/frame_vel.mojo` — `Data` stores `site_xpos` but no `site_xmat`, so
-`R_site` here is the body's `xquat`. Exact only for a site with identity
-local orientation. quadruped's `torso` and four `toe_*` sites declare no
-`quat`/`euler`/`axisangle`/`zaxis` and inherit none from their classes; the
-parity test asserts `site_quat == (1,0,0,0)` for all five against the
-reference model, so a rotated site cannot slip in unnoticed. Adding
-`site_xmat` is the real fix when a domain needs one.
+THE SITE FRAME is `xquat[body] * site_quat`, composed by
+`kinematics/site_frame.site_world_quat_list`. `Data` deliberately stores no
+`site_xmat` — it is one quaternion multiply and every consumer already holds
+the body quaternion, so materialising a `[BATCH, NSITE*9]` tensor and writing
+it in four forward-kinematics paths would buy nothing the dynamics reads. See
+that module for the reasoning.
+
+⚠ This USED TO substitute the body's quaternion for the site's, which is exact
+only for an identity-oriented site. Every model that reached here was of that
+form, so the substitution was invisible; manipulator's rotated box touch zones
+are what forced the site quaternion into the model record, and this was fixed
+with it. Fixing it moved NO existing gate, which is the evidence that the old
+scope really was as narrow as it claimed.
 """
 
+from ..kinematics.site_frame import site_world_quat_list
 from ..kinematics.quat_math import quat_rotate_inverse
 from ..gpu.constants import MODEL_BODY_SIZE, BODY_IDX_ROOTID
 
@@ -73,6 +79,7 @@ def site_accelerometer[
     site_xpos: List[Scalar[DTYPE]],
     xquat: List[Scalar[DTYPE]],
     m_bodies: List[Scalar[DTYPE]],
+    m_sites: List[Scalar[DTYPE]],
     body: Int,
     site: Int,
 ) raises -> Tuple[Float64, Float64, Float64]:
@@ -106,10 +113,12 @@ def site_accelerometer[
         dx, dy, dz, False,
     )
 
-    var qx = xquat[body * 4 + 0]
-    var qy = xquat[body * 4 + 1]
-    var qz = xquat[body * 4 + 2]
-    var qw = xquat[body * 4 + 3]
+    # The SITE's world frame, not the body's — `xquat[body] * site_quat`.
+    var sq = site_world_quat_list[DTYPE](m_sites, xquat, body, site)
+    var qx = Scalar[DTYPE](sq[0])
+    var qy = Scalar[DTYPE](sq[1])
+    var qz = Scalar[DTYPE](sq[2])
+    var qw = Scalar[DTYPE](sq[3])
 
     # Rotate into the site frame BEFORE the correction — MuJoCo builds both
     # `vel` and `res` in the local frame and only then adds vel_ang x vel_lin.
@@ -138,6 +147,7 @@ def site_force_torque[
     site_xpos: List[Scalar[DTYPE]],
     xquat: List[Scalar[DTYPE]],
     m_bodies: List[Scalar[DTYPE]],
+    m_sites: List[Scalar[DTYPE]],
     body: Int,
     site: Int,
 ) raises -> Tuple[Float64, Float64, Float64, Float64, Float64, Float64]:
@@ -166,10 +176,12 @@ def site_force_torque[
         dx, dy, dz, True,
     )
 
-    var qx = Float64(xquat[body * 4 + 0])
-    var qy = Float64(xquat[body * 4 + 1])
-    var qz = Float64(xquat[body * 4 + 2])
-    var qw = Float64(xquat[body * 4 + 3])
+    # The SITE's world frame, not the body's — `xquat[body] * site_quat`.
+    var sq = site_world_quat_list[DTYPE](m_sites, xquat, body, site)
+    var qx = sq[0]
+    var qy = sq[1]
+    var qz = sq[2]
+    var qw = sq[3]
 
     var trq = quat_rotate_inverse[DType.float64](
         qx, qy, qz, qw, t[0], t[1], t[2]

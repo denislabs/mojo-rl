@@ -481,7 +481,7 @@ def _compare_sensors(
     # --- accelerometer -----------------------------------------------------
     var acct = site_accelerometer[DTYPE](
         d.cvel.data, d.cacc.data, d.subtree_com.data, d.site_xpos.data,
-        d.xquat.data, mf.bodies.data, torso_bid, torso_sid,
+        d.xquat.data, mf.bodies.data, mf.sites.data, torso_bid, torso_sid,
     )
     var acc = [acct[0], acct[1], acct[2]]
     var mj_acc = _sensor_slice(mujoco, m, "imu_accel", dat)
@@ -501,7 +501,7 @@ def _compare_sensors(
     # --- gyro / velocimeter (existing sensors, free cross-check) -----------
     var fvt = site_frame_velocity[DTYPE](
         d.xvel.data, d.xangvel.data, d.xipos.data, d.xquat.data,
-        d.site_xpos.data, torso_bid, torso_sid,
+        d.site_xpos.data, mf.sites.data, torso_bid, torso_sid,
     )
     var fv = [fvt[0], fvt[1], fvt[2], fvt[3], fvt[4], fvt[5]]
     var mj_gyro = _sensor_slice(mujoco, m, "imu_gyro", dat)
@@ -528,7 +528,7 @@ def _compare_sensors(
         var bid = Int(py=m.site_bodyid[sid])
         var ftt = site_force_torque[DTYPE](
             d.cfrc_int.data, d.subtree_com.data, d.site_xpos.data,
-            d.xquat.data, mf.bodies.data, bid, sid,
+            d.xquat.data, mf.bodies.data, mf.sites.data, bid, sid,
         )
         var ft = [ftt[0], ftt[1], ftt[2], ftt[3], ftt[4], ftt[5]]
         var mj_f = _sensor_slice(mujoco, m, "force_" + nm, dat)
