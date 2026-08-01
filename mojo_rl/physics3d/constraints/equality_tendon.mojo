@@ -129,9 +129,13 @@ def _legacy_invw_read[
     record, and `test_equality_tendon_fields`'s golden shifted 0.26% for a
     reason that had nothing to do with the change under test.
 
-    Pinning is safe precisely because the new tendon fields were APPENDED —
-    columns 0..16 still hold the same quantities, so `tendons[r, c]` for
-    `c < 17` returns exactly what the legacy slab held."""
+    Pinning is safe precisely because both growths APPENDED columns:
+    `tendons[r, c]` for `c < 17` and `sites[r, c]` for `c < 8` still return
+    exactly what the legacy slab held. (`MODEL_SITE_SIZE` went 8 -> 12 on
+    2026-08-01 for the site quaternion; `LEGACY_SITE_SIZE` stayed 8, so this
+    read did not move.) A record growth that REORDERS or INSERTS columns would
+    break the contract silently — the values would still be finite and
+    plausible, and only a golden would notice."""
     comptime LEGACY_TENDON_SIZE = 17
     comptime LEGACY_SITE_SIZE = 8
     comptime T_END = NTENDON * LEGACY_TENDON_SIZE

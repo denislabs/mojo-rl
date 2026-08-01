@@ -959,6 +959,17 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     # touch sensor sees nothing without these.
     var site_type_s: String
     var site_size_s: String
+    # POSE from a default class. `type`/`size` were enough until manipulator,
+    # whose five touch zones get BOTH their offset and their orientation from
+    # `<default class="hand"><site pos=".022 0 -.002" euler="0 15 0"/>` — the
+    # site tags themselves carry only `name` and `group`. Without these the
+    # zones sit at the body origin, axis-aligned.
+    var site_pos_s: String
+    var site_quat_s: String
+    var site_axisangle_s: String
+    var site_xyaxes_s: String
+    var site_zaxis_s: String
+    var site_euler_s: String
 
     def __init__(
         out self,
@@ -1051,6 +1062,12 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.geom_group_s = ""
         self.site_type_s = ""
         self.site_size_s = ""
+        self.site_pos_s = ""
+        self.site_quat_s = ""
+        self.site_axisangle_s = ""
+        self.site_xyaxes_s = ""
+        self.site_zaxis_s = ""
+        self.site_euler_s = ""
 
 
 # =============================================================================

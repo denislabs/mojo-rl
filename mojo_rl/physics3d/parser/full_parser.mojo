@@ -366,6 +366,30 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var ss_s = _extract_attr(stag, "size")
         if ss_s.byte_length() > 0:
             d.site_size_s = ss_s
+        # POSE. Sites take the same five orientation spellings as geoms and
+        # bodies, and a default class may set any of them. Each is captured
+        # separately so the child tag can override one without clearing the
+        # others — which is what `class="fingertip"` does: it re-declares
+        # `euler="0 0 0"` to cancel the `euler="0 15 0"` it would otherwise
+        # inherit from `class="hand"`.
+        var sp_s = _extract_attr(stag, "pos")
+        if sp_s.byte_length() > 0:
+            d.site_pos_s = sp_s
+        var sq_s = _extract_attr(stag, "quat")
+        if sq_s.byte_length() > 0:
+            d.site_quat_s = sq_s
+        var saa_s = _extract_attr(stag, "axisangle")
+        if saa_s.byte_length() > 0:
+            d.site_axisangle_s = saa_s
+        var sxy_s = _extract_attr(stag, "xyaxes")
+        if sxy_s.byte_length() > 0:
+            d.site_xyaxes_s = sxy_s
+        var sza_s = _extract_attr(stag, "zaxis")
+        if sza_s.byte_length() > 0:
+            d.site_zaxis_s = sza_s
+        var seu_s = _extract_attr(stag, "euler")
+        if seu_s.byte_length() > 0:
+            d.site_euler_s = seu_s
 
     # Find default <motor
     var mpos = defaults_sec.find("<motor")
@@ -1023,7 +1047,7 @@ def _fill_model[
     ],
     deg_factor: Float64 = 1.0,
     eulerseq: String = "xyz",
-):
+) raises:
     """Single-pass DFS over worldbody XML to populate bodies, joints, geoms,
     lights, cameras, and sites.
 
@@ -1062,6 +1086,7 @@ def _fill_model[
         var next_light = worldbody.find("<light", scan_pos)
         var next_cam = worldbody.find("<camera", scan_pos)
         var next_site = worldbody.find("<site", scan_pos)
+        var next_inertial = worldbody.find("<inertial", scan_pos)
 
         # Check for no more interesting tokens
         var all_invalid = (
@@ -1072,6 +1097,7 @@ def _fill_model[
             and next_light == -1
             and next_cam == -1
             and next_site == -1
+            and next_inertial == -1
         )
         if all_invalid:
             break
@@ -1084,7 +1110,7 @@ def _fill_model[
             ),
             _min_valid(
                 _min_valid(next_light, next_cam),
-                next_site,
+                _min_valid(next_site, next_inertial),
             ),
         )
 
@@ -1177,6 +1203,79 @@ def _fill_model[
             if depth > 0:
                 depth -= 1
             scan_pos = next_body_close + 7  # len("</body>") == 7
+
+        elif earliest == next_inertial:
+            # <inertial ...> — an explicit inertia for the ENCLOSING body.
+            #
+            # Both parsers read `mass`/`diaginertia` off the `<body>` tag only,
+            # which MJCF also allows, and ignored this child element entirely
+            # until manipulator. Its `pinch site` body is a massless marker
+            # with no geom, so the whole of its inertia arrives here: without
+            # it the body took the geomless default of 1.0 kg instead of 1e-6,
+            # a 6x overstatement of the hand subtree's mass.
+            #
+            # MuJoCo (`mjCBody::Compile`) treats an explicit <inertial> as
+            # AUTHORITATIVE — it replaces the geom-derived inertia rather than
+            # adding to it — which is what `has_explicit_inertia` already
+            # means downstream.
+            var tag = _extract_opening_tag(worldbody, next_inertial)
+            var cur_body = body_id_stack[depth]
+            if cur_body >= 1 and cur_body - 1 < NBODY - 1:
+                # READ-MODIFY-WRITE: `result.bodies[i].field = x` on an
+                # InlineArray subscript mutates a COPY and silently drops.
+                var b = result.bodies[cur_body - 1]
+
+                var im_s = _extract_attr(tag, "mass")
+                if im_s.byte_length() > 0:
+                    b.mass = _parse_float(im_s)
+                    b.has_explicit_inertia = True
+
+                var idi_s = _extract_attr(tag, "diaginertia")
+                if idi_s.byte_length() > 0:
+                    var dv = _parse_vec3(idi_s)
+                    b.ixx = dv[0]
+                    b.iyy = dv[1]
+                    b.izz = dv[2]
+                    b.has_explicit_inertia = True
+
+                # `fullinertia` is the 6-vector (ixx iyy izz ixy ixz iyz).
+                # `BodyData` stores a DIAGONAL inertia plus `iquat`, so a
+                # genuinely off-diagonal one would need eigendecomposition —
+                # raise rather than silently dropping the off-diagonal terms,
+                # which would read as a mild dynamics divergence.
+                var ifi_s = _extract_attr(tag, "fullinertia")
+                if ifi_s.byte_length() > 0:
+                    raise Error(
+                        "physics3d: <inertial fullinertia=...> needs an"
+                        " eigendecomposition into diaginertia + iquat, which"
+                        " BodyData cannot express; only diaginertia is"
+                        " implemented."
+                    )
+
+                var ip_s = _extract_attr(tag, "pos")
+                if ip_s.byte_length() > 0:
+                    var iv = _parse_vec3(ip_s)
+                    b.ipos_x = iv[0]
+                    b.ipos_y = iv[1]
+                    b.ipos_z = iv[2]
+
+                var iq = _orientation_to_quat(
+                    _extract_attr(tag, "quat"),
+                    _extract_attr(tag, "axisangle"),
+                    _extract_attr(tag, "xyaxes"),
+                    _extract_attr(tag, "zaxis"),
+                    _extract_attr(tag, "euler"),
+                    deg_factor,
+                    eulerseq,
+                )
+                b.iquat_x = iq[0]
+                b.iquat_y = iq[1]
+                b.iquat_z = iq[2]
+                b.iquat_w = iq[3]
+
+                result.bodies[cur_body - 1] = b
+            var tag_end = worldbody.find(">", next_inertial)
+            scan_pos = tag_end + 1 if tag_end != -1 else wlen
 
         elif earliest == next_joint:
             # <joint ...>
@@ -1547,28 +1646,44 @@ def _fill_model[
                     sd.quat_z = sft[5]
                     sd.quat_w = sft[6]
                 else:
+                    # pos and orientation both fall back to the default class,
+                    # which until manipulator they did not: a site declaring
+                    # only `name` and `group` inside `class="hand"` kept local
+                    # pos (0,0,0) and identity orientation, when the class
+                    # gives it `pos=".022 0 -.002" euler="0 15 0"`.
                     var pos_s = _extract_attr(tag, "pos")
+                    if pos_s.byte_length() == 0:
+                        pos_s = site_defaults.site_pos_s
                     if pos_s.byte_length() > 0:
                         var pv = _parse_vec3(pos_s)
                         sd.pos_x = pv[0]
                         sd.pos_y = pv[1]
                         sd.pos_z = pv[2]
 
+                    # Same precedence as geoms and bodies:
+                    # quat > axisangle > xyaxes > zaxis > euler.
                     var quat_s = _extract_attr(tag, "quat")
-                    if quat_s.byte_length() > 0:
-                        var qv = _parse_quat(quat_s)
-                        sd.quat_x = qv[0]
-                        sd.quat_y = qv[1]
-                        sd.quat_z = qv[2]
-                        sd.quat_w = qv[3]
-                    else:
-                        var aa_s = _extract_attr(tag, "axisangle")
-                        if aa_s.byte_length() > 0:
-                            var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
-                            sd.quat_x = aq[0]
-                            sd.quat_y = aq[1]
-                            sd.quat_z = aq[2]
-                            sd.quat_w = aq[3]
+                    if quat_s.byte_length() == 0:
+                        quat_s = site_defaults.site_quat_s
+                    var aa_s = _extract_attr(tag, "axisangle")
+                    if aa_s.byte_length() == 0:
+                        aa_s = site_defaults.site_axisangle_s
+                    var xy_s = _extract_attr(tag, "xyaxes")
+                    if xy_s.byte_length() == 0:
+                        xy_s = site_defaults.site_xyaxes_s
+                    var za_s = _extract_attr(tag, "zaxis")
+                    if za_s.byte_length() == 0:
+                        za_s = site_defaults.site_zaxis_s
+                    var eu_s = _extract_attr(tag, "euler")
+                    if eu_s.byte_length() == 0:
+                        eu_s = site_defaults.site_euler_s
+                    var sq = _orientation_to_quat(
+                        quat_s, aa_s, xy_s, za_s, eu_s, deg_factor, eulerseq
+                    )
+                    sd.quat_x = sq[0]
+                    sd.quat_y = sq[1]
+                    sd.quat_z = sq[2]
+                    sd.quat_w = sq[3]
 
                 var size_s = _extract_attr(tag, "size")
                 if size_s.byte_length() == 0:

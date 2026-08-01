@@ -377,14 +377,24 @@ comptime CURRICULUM_IDX_PARAM_7: Int = 7
 # Model Buffer Layout - Sites
 # =============================================================================
 
-# Site layout: [body_idx, pos(3), type, size(3)]
+# Site layout: [body_idx, pos(3), type, size(3), quat(4)]
 #
 # type + size were appended 2026-07-29 for the `touch` sensor, which needs the
 # site's ZONE (MuJoCo casts a ray from each contact point along the contact
 # normal and asks whether it hits the site volume). `SiteData` carried both all
 # along; only the serialized record was truncated. Appending keeps every
 # existing `SITE_IDX_*` offset put.
-comptime MODEL_SITE_SIZE: Int = 8  # Per site: body + pos(3) + type + size(3)
+#
+# quat was appended 2026-08-01 for manipulator, whose `thumb_touch` /
+# `finger_touch` zones are BOXES carrying `euler="0 15 0"`. A box zone is
+# orientation-dependent, so the sphere-only scope that let the record ship
+# without an orientation ended there. Three files had been substituting the
+# site's BODY quaternion in the meantime and saying so in their docstrings —
+# `sensors/touch.mojo`, `sensors/frame_vel.mojo`, `sensors/site_acc.mojo`.
+# Stored (x, y, z, w), the order `BODY_IDX_QUAT_*` and `GEOM_IDX_QUAT_*`
+# already use — MuJoCo's own `site_quat` is (w, x, y, z), so a parity test
+# reading both has to reorder.
+comptime MODEL_SITE_SIZE: Int = 12  # body + pos(3) + type + size(3) + quat(4)
 
 comptime SITE_IDX_BODY: Int = 0  # Body index the site is attached to
 comptime SITE_IDX_POS_X: Int = 1  # Local position in body frame
@@ -394,6 +404,10 @@ comptime SITE_IDX_TYPE: Int = 4  # GEOM_* code (sphere/capsule/box/...)
 comptime SITE_IDX_SIZE_0: Int = 5  # radius, or half-x for a box
 comptime SITE_IDX_SIZE_1: Int = 6  # half-length, or half-y
 comptime SITE_IDX_SIZE_2: Int = 7  # half-z (box only)
+comptime SITE_IDX_QUAT_X: Int = 8  # Local orientation in body frame
+comptime SITE_IDX_QUAT_Y: Int = 9
+comptime SITE_IDX_QUAT_Z: Int = 10
+comptime SITE_IDX_QUAT_W: Int = 11
 
 
 comptime MODEL_EXCLUDE_PAIR_SIZE: Int = 2  # body1, body2

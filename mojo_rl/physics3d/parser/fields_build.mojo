@@ -241,6 +241,10 @@ from mojo_rl.physics3d.gpu.constants import (
     SITE_IDX_SIZE_0,
     SITE_IDX_SIZE_1,
     SITE_IDX_SIZE_2,
+    SITE_IDX_QUAT_W,
+    SITE_IDX_QUAT_X,
+    SITE_IDX_QUAT_Y,
+    SITE_IDX_QUAT_Z,
 )
 from .flat_model import FlatModelDef, _EQ_CONNECT, _EQ_WELD
 
@@ -983,6 +987,10 @@ def build_model_fields_from_flat[
         mf.sites.data[o + SITE_IDX_SIZE_0] = Scalar[DTYPE](sd.size_0)
         mf.sites.data[o + SITE_IDX_SIZE_1] = Scalar[DTYPE](sd.size_1)
         mf.sites.data[o + SITE_IDX_SIZE_2] = Scalar[DTYPE](sd.size_2)
+        mf.sites.data[o + SITE_IDX_QUAT_X] = Scalar[DTYPE](sd.quat_x)
+        mf.sites.data[o + SITE_IDX_QUAT_Y] = Scalar[DTYPE](sd.quat_y)
+        mf.sites.data[o + SITE_IDX_QUAT_Z] = Scalar[DTYPE](sd.quat_z)
+        mf.sites.data[o + SITE_IDX_QUAT_W] = Scalar[DTYPE](sd.quat_w)
 
     # ── tendons ──────────────────────────────────────────────────────────
     #
