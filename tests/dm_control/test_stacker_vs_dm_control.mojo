@@ -10,20 +10,20 @@ both models. So is the CONSTRAINT SOLVE — but only over the poses whose contac
 ROW SET our narrow phase can reproduce, which for this domain is a real
 restriction rather than a formality:
 
-⚠ OUR NARROW PHASE EMITS ONE CONTACT PER COLLIDING GEOM *PAIR*. MuJoCo emits up
-to four for a box lying on a plane and up to four for two boxes meeting face to
-face. That is task #42, and
-`test_stacker_box_face_contacts_are_one_point_per_pair` below MEASURES it for
-both, because a cube resting flat is the one thing every stacker state does. A
-box supported by a single corner point cannot be in equilibrium — it pivots — so
-this is not a small numerical gap for this domain, it is the domain.
+⚠ THE BOX-FACE RESTRICTION IS GONE, and with it the reason this domain was only
+half gateable. Our narrow phase used to emit ONE contact per colliding geom
+*pair* where MuJoCo emits up to four for a box on a plane and up to six for two
+boxes meeting face to face — and a box supported by a single corner point cannot
+be in equilibrium, it pivots, so for stacker that was not a numerical gap, it was
+the domain. Both are now byte-identical to MuJoCo (task #42: box/plane, then the
+box/box FACE manifold), and `test_stacker_qacc_by_constraint_bucket` gates the
+stacking poses themselves — `C9 cube stacked on a cube`, `C10 side by side` —
+at 2.9e-10.
 
-What that leaves gateable is everything with no box-FACE contact in it: free
-flight, the arm, the coupling tendon, the joint limits, and a cube HELD IN THE
-HAND at an angle — capsule/box and sphere/box, which agree with MuJoCo point for
-point since task #45 was fixed (`tests/physics3d/test_capsule_box_sweep.mojo`
-gates that over 400 poses). `test_stacker_qacc_by_constraint_bucket` covers all
-four constraint buckets on that basis, and says so per pose.
+⚠ WHAT IS STILL ONE POINT is a box/box pair whose separating axis is an EDGE
+rather than a face, and capsule/box's SECOND point. Neither arises in the pose
+table below; `tests/physics3d/test_box_box_sweep.mojo` measures the first and is
+where that half of task #42 will be closed.
 
 ⚠ `ncon` AGREEING IS NOT THE ROW SET AGREEING, and the converse trap is live
 here too: our count can equal MuJoCo's PAIR count while being four times short
@@ -969,18 +969,23 @@ def test_stacker_qacc_by_constraint_bucket() raises:
     number cannot tell those apart.
 
     ⚠ WHICH BOX CONTACTS THE BUCKETS CAN HOLD IS SET BY THE NARROW PHASE, and
-    it changed when task #45 was fixed. A cube HELD IN THE HAND is now in the C
-    and D buckets: that is capsule/box and sphere/box, both of which now agree
-    with MuJoCo point for point. A cube resting on the FLOOR or on another cube
-    still cannot be here — box/plane and box/box emit one point where MuJoCo
-    emits up to four (task #42, open), so such a pose would compare two
-    different constraint problems and report the difference as a solver error.
-    `test_stacker_box_face_contacts_are_one_point_per_pair` pins that and names
-    this table as the thing to widen when it is fixed.
+    it has widened three times as task #42 was fixed piece by piece: a cube
+    HELD IN THE HAND once #45 landed (capsule/box, sphere/box), a cube resting
+    FLAT ON THE FLOOR once box/plane emitted a point per corner, and a cube
+    STACKED ON A CUBE once the box/box FACE manifold landed. Each of those
+    poses was ungatable before its fix: with one contact where MuJoCo has four,
+    the two engines are not solving the same constraint problem and the
+    difference shows up as a solver error that is not one.
 
-    ⚠ THE HELD CUBE IS STILL ROTATED, for a different reason than before. At
-    these angles MuJoCo emits ONE point per pair; face-on it emits two, which is
-    task #42 again. The per-pose `our ncon == MuJoCo ncon` assertion enforces it.
+    ⚠ WHAT STILL CANNOT BE HERE is a box/box pair whose separating axis is an
+    EDGE — the edge-edge half of #42 is still one point where MuJoCo emits up
+    to six. `tests/physics3d/test_box_box_sweep.mojo` measures the shortfall
+    and names this table as the thing to widen when it closes.
+
+    ⚠ THE HELD CUBE IS STILL ROTATED, and now for a THIRD reason: at these
+    angles the hand's capsules meet the cube on a face, which the manifold
+    handles, and the per-pose `our ncon == MuJoCo ncon` assertion enforces it
+    either way.
 
     ⚠ BOTH D POSES KEEP THE LIMIT VIOLATION INSIDE ITS IMPEDANCE WIDTH
     (`solimplimit` width = .01 rad; thumb 1.05 is .0028 past the 60 deg stop).
@@ -1078,6 +1083,25 @@ def test_stacker_qacc_by_constraint_bucket() raises:
     _box2(c8, 1, PARK1_X, PARK1_Z, 0.0)
     tags.append(String("C8 cube on an edge (30 deg)"))
     states.append(c8^)
+    ctrls.append(_zero_ctrl(NACT2))
+
+    # C, box on BOX — THE STACKING POSE, and the reason the task exists. These
+    # two lived in `test_stacker_box_box_is_one_point_per_pair`, which asserted
+    # we emitted ONE point where MuJoCo emitted four; that test was written to
+    # fail once the face manifold landed, and it did, so it is gone and its
+    # poses are here.
+    var c9 = _state2(0, 0, 0, 0, 0.0, 0.0)
+    _box2(c9, 0, 0.15, 0.0219, 0.0)
+    _box2(c9, 1, 0.15, 0.0657, 0.0)
+    tags.append(String("C9 cube stacked on a cube"))
+    states.append(c9^)
+    ctrls.append(_zero_ctrl(NACT2))
+
+    var c10 = _state2(0, 0, 0, 0, 0.0, 0.0)
+    _box2(c10, 0, 0.15, 0.0219, 0.0)
+    _box2(c10, 1, 0.1938, 0.0219, 0.0)
+    tags.append(String("C10 cubes side by side on the floor"))
+    states.append(c10^)
     ctrls.append(_zero_ctrl(NACT2))
 
     # D — all three: the same self-contact with the stop just crossed.
@@ -1209,115 +1233,6 @@ def test_stacker_qacc_by_constraint_bucket() raises:
         max_ncon < MAXC2,
         "the pose table already reaches MAX_CONTACTS; a rollout would truncate"
         " contacts silently",
-    )
-
-
-def test_stacker_box_box_is_one_point_per_pair() raises:
-    """PINS THE REMAINING HALF OF TASK #42. It asserts we emit FEWER contacts
-    than MuJoCo for a BOX/BOX pair, and gates that box/PLANE no longer does.
-
-    ⚠ WHEN THIS TEST FAILS, THE BUG IS FIXED. Delete it and move the stacked and
-    side-by-side poses into the C bucket of
-    `test_stacker_qacc_by_constraint_bucket`, which is where the flat-on-floor
-    pose went when box/plane was fixed.
-
-    WHAT IS STILL BROKEN. `mjc_BoxBox` emits up to four points for two cubes
-    meeting face to face; we emit one. A rigid body held by a single contact
-    point has no restoring torque about that point, so a cube resting on another
-    cube pivots — which is the stacking half of the task.
-
-    WHAT IS NO LONGER BROKEN, and is gated here rather than merely stated:
-    box/PLANE now emits one point per corner below the plane, up to four, so a
-    cube resting flat on the FLOOR matches MuJoCo contact for contact. The
-    per-pair assertions below check the floor pairs for EQUALITY and the box/box
-    pairs for a shortfall, so a regression in either direction fails.
-    """
-    print("--- stacker: box/box vs box/plane, ours vs MuJoCo ---")
-    var mf = _build2()
-    var integ = Integ2()
-
-    var tags = List[String]()
-    var states = List[List[Float64]]()
-
-    # STACKED, face to face: floor/box0 (4 points, matched) and box0/box1
-    # (4 points in MuJoCo, 1 in ours).
-    var p3 = _state2(0, 0, 0, 0, 0.0, 0.0)
-    _box2(p3, 0, 0.15, 0.0219, 0.0)
-    _box2(p3, 1, 0.15, 0.0657, 0.0)
-    tags.append(String("cube stacked on a cube"))
-    states.append(p3^)
-
-    # Side by side, each on the floor and touching the other.
-    var p4 = _state2(0, 0, 0, 0, 0.0, 0.0)
-    _box2(p4, 0, 0.15, 0.0219, 0.0)
-    _box2(p4, 1, 0.1938, 0.0219, 0.0)
-    tags.append(String("cubes side by side on the floor"))
-    states.append(p4^)
-
-    var saw_shortfall = False
-    for p in range(len(tags)):
-        var d = Dat2()
-        _set_state_and_fk2(d, mf, integ, states[p], _zero_ctrl(NACT2),
-                           0.2, 0.022)
-        var our_ncon = Int(d.meta.data[META_IDX_NUM_CONTACTS])
-        var mj = _mj_at2(states[p], _zero_ctrl(NACT2), 0.2, 0.022)
-        var dat = mj[2]
-        var m = mj[1]
-        var mj_ncon = Int(py=dat.ncon)
-
-        # Count OUR points on the floor pairs and on the box/box pair. The world
-        # body is negative on the SAP path and 0 on the direct one, so treat
-        # anything <= 0 as the floor.
-        var our_floor = 0
-        var our_boxbox = 0
-        for c in range(our_ncon):
-            var b = c * CONTACT_SIZE
-            var ba = Int(d.contacts.data[b + CONTACT_IDX_BODY_A])
-            var bb = Int(d.contacts.data[b + CONTACT_IDX_BODY_B])
-            if ba <= 0 or bb <= 0:
-                our_floor += 1
-            else:
-                our_boxbox += 1
-
-        var mj_floor = 0
-        var mj_boxbox = 0
-        for k in range(mj_ncon):
-            var con = dat.contact[k]
-            var q1 = Int(py=m.geom_bodyid[con.geom1])
-            var q2 = Int(py=m.geom_bodyid[con.geom2])
-            if q1 == 0 or q2 == 0:
-                mj_floor += 1
-            else:
-                mj_boxbox += 1
-
-        print(
-            "  ", tags[p],
-            " | floor points: ours", our_floor, "MuJoCo", mj_floor,
-            " | box/box points: ours", our_boxbox, "MuJoCo", mj_boxbox,
-        )
-
-        assert_true(
-            our_floor == mj_floor,
-            String(tags[p]) + ": box/PLANE no longer matches MuJoCo ("
-            + String(our_floor) + " vs " + String(mj_floor)
-            + ") — the multi-point plane/box emit has regressed",
-        )
-        assert_true(
-            our_boxbox == 1 and mj_boxbox > 1,
-            String(tags[p]) + ": box/box is ours " + String(our_boxbox)
-            + " vs MuJoCo " + String(mj_boxbox)
-            + " — if ours has caught up, THE DEFECT IS FIXED and this test"
-            " should be deleted; if ours has grown past 1 without matching,"
-            " that is a new bug",
-        )
-        if our_boxbox < mj_boxbox:
-            saw_shortfall = True
-
-    assert_true(
-        saw_shortfall,
-        "box/box now emits as many contacts as MuJoCo — THE DEFECT IS FIXED."
-        " Delete this test and move these poses into the C bucket of"
-        " test_stacker_qacc_by_constraint_bucket.",
     )
 
 

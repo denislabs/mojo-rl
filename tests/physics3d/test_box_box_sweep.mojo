@@ -17,10 +17,19 @@ If the normal already matches, the remaining work is manifold generation alone.
 If it does not, the axis selection has to be ported too — and a manifold built
 on the wrong axis would be worse than one point on the right one.
 
-⚠ THIS FILE DELIBERATELY DOES NOT ASSERT THE COUNT. That is the open defect;
-`test_stacker_box_box_is_one_point_per_pair` pins it. What this file gates is
-that the single point we DO emit is on the right axis at the right depth, which
-is the part a manifold port must not regress.
+The first run answered it: the axis and the depth ALREADY matched to 1e-10, so
+only manifold generation was missing. `test_box_box_face_manifold_vs_mujoco`
+below now gates that manifold, point for point, on the poses whose axis is a
+FACE.
+
+⚠ THE EDGE-EDGE HALF IS STILL ONE POINT, and that is the rest of task #42. It
+is a bigger remainder than it sounds: of the 217 contacting poses here only 90
+take the face path, 127 take edge-edge, and MuJoCo's edge-edge path is NOT
+single-point either — measured over those 127 poses it emitted 1 to 6 points,
+361 in total. An earlier version of this comment claimed edge-edge emitted one
+point in MuJoCo too; that was wrong, read off the `n = 1; ... n = 2` prologue
+of `mjc_BoxBox`'s edge branch without following it to the clipping that comes
+after.
 
 ⚠ COMPARED AGAINST MuJoCo'S DEEPEST POINT, and that IS the right choice here,
 unlike capsule/box: on a face manifold every point shares one normal, and the
@@ -41,6 +50,10 @@ from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
+from mojo_rl.physics3d.collision.collision_primitives import (
+    box_box_manifold,
+    BB_MAX_POINTS,
+)
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
     META_IDX_NUM_CONTACTS,
@@ -152,6 +165,7 @@ def test_box_box_sweep_vs_mujoco() raises:
     # half is reported rather than assumed.
     var mj_points = 0
     var mj_max_points = 0
+    var our_points = 0
 
     for p in range(NPOSE):
         var px = rng.sym(SPAN)
@@ -206,6 +220,7 @@ def test_box_box_sweep_vs_mujoco() raises:
                 mj_max_points = mjn
         if nc > 0:
             n_ours += 1
+            our_points += nc
         if mjn == 0 or nc == 0:
             continue
         n_both += 1
@@ -220,9 +235,20 @@ def test_box_box_sweep_vs_mujoco() raises:
                 best = k
         var con = dat.contact[best]
 
-        var ba = Int(d.contacts.data[CONTACT_IDX_BODY_A])
-        var bb2 = Int(d.contacts.data[CONTACT_IDX_BODY_B])
+        # ...against OUR deepest. Before the face manifold landed we emitted
+        # exactly one contact and index 0 was it; now a face pose emits the
+        # whole manifold in MuJoCo's own order, whose first point is not
+        # generally the deepest.
+        var obest = 0
         var od = Float64(d.contacts.data[CONTACT_IDX_DIST])
+        for k in range(1, nc):
+            var dk = Float64(d.contacts.data[k * CONTACT_SIZE + CONTACT_IDX_DIST])
+            if dk < od:
+                od = dk
+                obest = k
+        var o_off = obest * CONTACT_SIZE
+        var ba = Int(d.contacts.data[o_off + CONTACT_IDX_BODY_A])
+        var bb2 = Int(d.contacts.data[o_off + CONTACT_IDX_BODY_B])
 
         var dd = abs(od - bestd)
         if dd > worst_dist:
@@ -235,12 +261,12 @@ def test_box_box_sweep_vs_mujoco() raises:
         var mb2 = Int(py=m.geom_bodyid[con.geom2])
         var sgn = Float64(1.0) if (mb1 == bb2 and mb2 == ba) else Float64(-1.0)
         var e = max(
-            abs(Float64(d.contacts.data[CONTACT_IDX_NX])
+            abs(Float64(d.contacts.data[o_off + CONTACT_IDX_NX])
                 - sgn * Float64(py=con.frame[0])),
             max(
-                abs(Float64(d.contacts.data[CONTACT_IDX_NY])
+                abs(Float64(d.contacts.data[o_off + CONTACT_IDX_NY])
                     - sgn * Float64(py=con.frame[1])),
-                abs(Float64(d.contacts.data[CONTACT_IDX_NZ])
+                abs(Float64(d.contacts.data[o_off + CONTACT_IDX_NZ])
                     - sgn * Float64(py=con.frame[2])),
             ),
         )
@@ -252,8 +278,10 @@ def test_box_box_sweep_vs_mujoco() raises:
 
     print("  poses with a MuJoCo contact =", n_touch,
           " with ours =", n_ours, " with both =", n_both)
-    print("  MuJoCo manifold points: total", mj_points, " max on one pose",
-          mj_max_points, " (we emit 1 — task #42)")
+    print("  manifold points: MuJoCo", mj_points, " ours", our_points,
+          " (MuJoCo max on one pose", mj_max_points, ")")
+    print("    the shortfall is the EDGE-EDGE half of task #42; the face half"
+          " is gated point-for-point below")
     print("  worst |d dist| =", worst_dist, " at pose", worst_dist_pose,
           " (", n_bad_dist, "poses over tol )")
     print("  worst |d normal| =", worst_dir, " at pose", worst_dir_pose,
@@ -277,6 +305,179 @@ def test_box_box_sweep_vs_mujoco() raises:
         String("box/box PENETRATION diverges from MuJoCo by ")
         + String(worst_dist) + " at pose " + String(worst_dist_pose)
         + " (" + String(n_bad_dist) + " poses over tolerance)",
+    )
+    # The manifold has to reach the CONTACT RECORDS, not just the primitive:
+    # `_box_box_contacts` is wired into two separate narrow phases and this is
+    # the one that runs `detect_contacts`.
+    assert_true(
+        our_points > n_ours,
+        String("the narrow phase emitted ") + String(our_points)
+        + " contacts over " + String(n_ours) + " contacting poses — one per"
+        " pair, so the face manifold is not reaching the records even though"
+        " `box_box_manifold` builds it",
+    )
+
+
+def test_box_box_face_manifold_vs_mujoco() raises:
+    """Every point of the FACE manifold, in MuJoCo's own order.
+
+    Calls `box_box_manifold` directly rather than going through the engine, so
+    a failure says which of the two is wrong: the primitive, or the wiring in
+    `_box_box_contacts`. The engine path is gated by
+    `test_box_box_sweep_vs_mujoco` above and by the stacker qacc buckets.
+
+    ⚠ Both geoms sit at their body origin with no local offset in `BB_XML`, so
+    the geom world pose IS the body pose and the sweep's own `(p, q)` can be
+    passed straight in. Add a `pos=`/`quat=` to either `<geom>` and this stops
+    being true.
+    """
+    print("--- box/box FACE manifold:", NPOSE, "poses")
+
+    var mujoco = Python.import_module("mujoco")
+    var m = mujoco.MjModel.from_xml_string(String(BB_XML))
+    var dat = mujoco.MjData(m)
+
+    var rng = Lcg(0x9E3779B97F4A7C15)
+
+    var n_face = 0
+    var n_edge = 0
+    var n_sep = 0
+    var n_points = 0
+    var n_count_bad = 0
+    var first_bad = -1
+    var worst_dist = Float64(0)
+    var worst_pos = Float64(0)
+    var worst_dir = Float64(0)
+    var worst_pose = -1
+
+    for p in range(NPOSE):
+        var px = rng.sym(SPAN)
+        var py = rng.sym(SPAN)
+        var pz = rng.sym(SPAN)
+        var qx = rng.sym(1.0)
+        var qy = rng.sym(1.0)
+        var qz = rng.sym(1.0)
+        var qw = rng.sym(1.0)
+        var qn = sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+        if qn < 1e-6:
+            qx = 0.0
+            qy = 0.0
+            qz = 0.0
+            qw = 1.0
+            qn = 1.0
+        qx /= qn
+        qy /= qn
+        qz /= qn
+        qw /= qn
+
+        dat.qpos[0] = px
+        dat.qpos[1] = py
+        dat.qpos[2] = pz
+        dat.qpos[3] = qw
+        dat.qpos[4] = qx
+        dat.qpos[5] = qy
+        dat.qpos[6] = qz
+        for i in range(NV):
+            dat.qvel[i] = 0.0
+        mujoco.mj_forward(m, dat)
+        var mjn = Int(py=dat.ncon)
+
+        var n_bb = 0
+        var bb_dist = InlineArray[Scalar[DTYPE], BB_MAX_POINTS](
+            fill=Scalar[DTYPE](0)
+        )
+        var bb_pos = InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS](
+            fill=Scalar[DTYPE](0)
+        )
+        var bb_n = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+        var code = box_box_manifold[DTYPE](
+            Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),
+            Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),
+            Scalar[DTYPE](1),
+            Scalar[DTYPE](0.03), Scalar[DTYPE](0.02), Scalar[DTYPE](0.05),
+            Scalar[DTYPE](px), Scalar[DTYPE](py), Scalar[DTYPE](pz),
+            Scalar[DTYPE](qx), Scalar[DTYPE](qy), Scalar[DTYPE](qz),
+            Scalar[DTYPE](qw),
+            Scalar[DTYPE](0.025), Scalar[DTYPE](0.04), Scalar[DTYPE](0.015),
+            Scalar[DTYPE](0),
+            n_bb,
+            bb_dist,
+            bb_pos,
+            bb_n,
+        )
+
+        if code < 0:
+            n_sep += 1
+            if mjn != 0 and first_bad < 0:
+                first_bad = p
+            if mjn != 0:
+                n_count_bad += 1
+            continue
+        if code >= 12:
+            n_edge += 1
+            continue
+        n_face += 1
+        n_points += n_bb
+
+        if n_bb != mjn:
+            n_count_bad += 1
+            if first_bad < 0:
+                first_bad = p
+            continue
+
+        for i in range(mjn):
+            var con = dat.contact[i]
+            var dd = abs(Float64(bb_dist[i]) - Float64(py=con.dist))
+            if dd > worst_dist:
+                worst_dist = dd
+                worst_pose = p
+            for c in range(3):
+                var dp = abs(
+                    Float64(bb_pos[3 * i + c]) - Float64(py=con.pos[c])
+                )
+                if dp > worst_pos:
+                    worst_pos = dp
+                var dn = abs(Float64(bb_n[c]) - Float64(py=con.frame[c]))
+                if dn > worst_dir:
+                    worst_dir = dn
+
+    print("  poses: face =", n_face, " edge-edge =", n_edge,
+          " separated =", n_sep)
+    print("  face manifold points =", n_points,
+          " (one point per pose would be", n_face, ")")
+    print("  count mismatches =", n_count_bad, " first at pose", first_bad)
+    print("  worst |d dist| =", worst_dist, " at pose", worst_pose)
+    print("  worst |d pos|  =", worst_pos)
+    print("  worst |d n|    =", worst_dir)
+
+    assert_true(
+        n_face >= 40,
+        String("only ") + String(n_face) + " poses took the FACE path — this"
+        " test gates almost nothing",
+    )
+    assert_true(
+        n_points > n_face,
+        String("the face path emitted ") + String(n_points) + " points over "
+        + String(n_face) + " poses, i.e. no manifold at all",
+    )
+    assert_true(
+        n_count_bad == 0,
+        String("box/box face manifold has a different POINT COUNT from MuJoCo"
+        " on ") + String(n_count_bad) + " poses, first at pose "
+        + String(first_bad),
+    )
+    assert_true(
+        worst_dist <= TOL_DIST,
+        String("face manifold DEPTH diverges by ") + String(worst_dist)
+        + " at pose " + String(worst_pose),
+    )
+    assert_true(
+        worst_pos <= TOL_DIST,
+        String("face manifold POSITION diverges by ") + String(worst_pos),
+    )
+    assert_true(
+        worst_dir <= TOL_DIR,
+        String("face manifold NORMAL diverges by ") + String(worst_dir),
     )
 
 

@@ -103,6 +103,7 @@ from .plane_frame import (
 from .gjk import gjk_epa
 from .contact_detection import (
     _plane_box_contacts,
+    _box_box_contacts,
     _geom_world_pos,
     detect_contacts,
 )
@@ -1053,6 +1054,26 @@ def _detect_contacts_sap_env[
                 ny = -r[5]
                 nz = -r[6]
             elif gi_type == GEOM_BOX and gj_type == GEOM_BOX:
+                # A FACE contact is a whole manifold, not a point — see
+                # `_box_box_contacts` and task #42. It writes its own records
+                # and this branch is done; the other two cases fall through to
+                # the single point `box_box` returns.
+                var code = _box_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                    env,
+                    gi_body,
+                    gj_body,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
+                    cm,
+                    cf,
+                    cfs,
+                    cfr,
+                    cdim,
+                    contacts,
+                    num_contacts,
+                )
+                if code >= 0 and code < 12:
+                    continue
                 var r = box_box[DTYPE](
                     pi_x,
                     pi_y,

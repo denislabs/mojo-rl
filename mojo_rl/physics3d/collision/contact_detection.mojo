@@ -93,6 +93,8 @@ from .collision_primitives import (
     box_sphere,
     box_capsule,
     box_box,
+    box_box_manifold,
+    BB_MAX_POINTS,
     box_plane,
     ellipsoid_plane,
     cylinder_plane,
@@ -403,6 +405,111 @@ def _plane_box_contacts[
         )
         num_contacts += 1
         cnt += 1
+
+
+@always_inline
+def _box_box_contacts[
+    DTYPE: DType,
+    MAX_CONTACTS: Int,
+    BATCH: Int,
+](
+    env: Int,
+    body_a: Int,
+    body_b: Int,
+    ai_x: Scalar[DTYPE],
+    ai_y: Scalar[DTYPE],
+    ai_z: Scalar[DTYPE],
+    ai_qx: Scalar[DTYPE],
+    ai_qy: Scalar[DTYPE],
+    ai_qz: Scalar[DTYPE],
+    ai_qw: Scalar[DTYPE],
+    ai_hx: Scalar[DTYPE],
+    ai_hy: Scalar[DTYPE],
+    ai_hz: Scalar[DTYPE],
+    bj_x: Scalar[DTYPE],
+    bj_y: Scalar[DTYPE],
+    bj_z: Scalar[DTYPE],
+    bj_qx: Scalar[DTYPE],
+    bj_qy: Scalar[DTYPE],
+    bj_qz: Scalar[DTYPE],
+    bj_qw: Scalar[DTYPE],
+    bj_hx: Scalar[DTYPE],
+    bj_hy: Scalar[DTYPE],
+    bj_hz: Scalar[DTYPE],
+    contact_margin: Scalar[DTYPE],
+    contact_friction: Scalar[DTYPE],
+    contact_friction_spin: Scalar[DTYPE],
+    contact_friction_roll: Scalar[DTYPE],
+    contact_condim: Int,
+    contacts: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    mut num_contacts: Int,
+) -> Int:
+    """Box/box: the whole manifold when the separating axis is a FACE.
+
+    Returns MuJoCo's `code` so the caller can fall back for the two cases this
+    does not write: `-1` (separated) and `>= 12` (edge-edge, still one point —
+    the remaining half of task #42). On `0 <= code < 12` the records are
+    written here and the caller must NOT emit again.
+
+    A box resting on another touches over a whole face, and one point cannot
+    express that — the same reason `_plane_box_contacts` exists. See
+    `box_box_manifold` for the port and for why it came from MuJoCo 3.6.0
+    rather than from `references/mujoco-3.3.6/`.
+    """
+    var n_bb = 0
+    var bb_dist = InlineArray[Scalar[DTYPE], BB_MAX_POINTS](
+        fill=Scalar[DTYPE](0)
+    )
+    var bb_pos = InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS](
+        fill=Scalar[DTYPE](0)
+    )
+    var bb_n = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var code = box_box_manifold[DTYPE](
+        ai_x, ai_y, ai_z, ai_qx, ai_qy, ai_qz, ai_qw, ai_hx, ai_hy, ai_hz,
+        bj_x, bj_y, bj_z, bj_qx, bj_qy, bj_qz, bj_qw, bj_hx, bj_hy, bj_hz,
+        contact_margin,
+        n_bb,
+        bb_dist,
+        bb_pos,
+        bb_n,
+    )
+    if code < 0 or code >= 12:
+        return code
+
+    for c in range(n_bb):
+        if num_contacts >= MAX_CONTACTS:
+            break
+        if bb_dist[c] >= contact_margin:
+            continue
+        var c_off = num_contacts * CONTACT_SIZE
+        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](body_a)
+        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](body_b)
+        contacts[env, c_off + CONTACT_IDX_POS_X] = bb_pos[3 * c + 0]
+        contacts[env, c_off + CONTACT_IDX_POS_Y] = bb_pos[3 * c + 1]
+        contacts[env, c_off + CONTACT_IDX_POS_Z] = bb_pos[3 * c + 2]
+        # `box_box_manifold` returns the normal pointing A -> B; the record's
+        # convention is `body_b -> body_a`, which is what the shared emit below
+        # gets by negating. Same negation here.
+        contacts[env, c_off + CONTACT_IDX_NX] = -bb_n[0]
+        contacts[env, c_off + CONTACT_IDX_NY] = -bb_n[1]
+        contacts[env, c_off + CONTACT_IDX_NZ] = -bb_n[2]
+        contacts[env, c_off + CONTACT_IDX_DIST] = bb_dist[c]
+        contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
+        contacts[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
+        contacts[
+            env, c_off + CONTACT_IDX_FRICTION_SPIN
+        ] = contact_friction_spin
+        contacts[
+            env, c_off + CONTACT_IDX_FRICTION_ROLL
+        ] = contact_friction_roll
+        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+            contact_condim
+        )
+        num_contacts += 1
+    return code
 
 
 @always_inline
@@ -1546,6 +1653,26 @@ def _detect_contacts_env[
                 ny = -r[5]
                 nz = -r[6]
             elif gi_type == GEOM_BOX and gj_type == GEOM_BOX:
+                # A FACE contact is a whole manifold, not a point — see
+                # `_box_box_contacts` and task #42. It writes its own records
+                # and this branch is done; the other two cases fall through to
+                # the single point `box_box` returns.
+                var code = _box_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                    env,
+                    gi_body,
+                    gj_body,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
+                    contact_margin,
+                    contact_friction,
+                    contact_friction_spin,
+                    contact_friction_roll,
+                    contact_condim,
+                    contacts,
+                    num_contacts,
+                )
+                if code >= 0 and code < 12:
+                    continue
                 var r = box_box[DTYPE](
                     pi_x,
                     pi_y,

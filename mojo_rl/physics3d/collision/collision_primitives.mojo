@@ -2825,6 +2825,588 @@ def box_box[
 
 
 # =============================================================================
+# box/box CONTACT MANIFOLD (port of MuJoCo's `_boxbox` face path)
+# =============================================================================
+
+# Upper bound on the points the face path can produce before filtering: at most
+# 8 from clipping the incident face's edges against the reference face, 4 from
+# reference-face corners inside the incident face, and 4 incident-face corners.
+comptime BB_MAX_POINTS: Int = 16
+
+# MuJoCo's mjMINVAL.
+comptime _BB_MINVAL: Float64 = 1e-15
+
+
+@always_inline
+def _bb_quat_mat[
+    DTYPE: DType
+](
+    qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE], qw: Scalar[DTYPE]
+) -> InlineArray[Scalar[DTYPE], 9]:
+    """Rotation matrix, ROW-MAJOR (`m[3 * row + col]`), matching MuJoCo's
+    `geom_xmat` layout so the transcribed index arithmetic carries over."""
+    var c0 = rotate_vector_by_quat(
+        Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0), qx, qy, qz, qw
+    )
+    var c1 = rotate_vector_by_quat(
+        Scalar[DTYPE](0), Scalar[DTYPE](1), Scalar[DTYPE](0), qx, qy, qz, qw
+    )
+    var c2 = rotate_vector_by_quat(
+        Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1), qx, qy, qz, qw
+    )
+    var m = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    m[0] = c0[0]
+    m[1] = c1[0]
+    m[2] = c2[0]
+    m[3] = c0[1]
+    m[4] = c1[1]
+    m[5] = c2[1]
+    m[6] = c0[2]
+    m[7] = c1[2]
+    m[8] = c2[2]
+    return m
+
+
+@always_inline
+def _bb_outside_box[
+    DTYPE: DType
+](
+    px: Scalar[DTYPE],
+    py: Scalar[DTYPE],
+    pz: Scalar[DTYPE],
+    bx: Scalar[DTYPE],
+    by: Scalar[DTYPE],
+    bz: Scalar[DTYPE],
+    mat: InlineArray[Scalar[DTYPE], 9],
+    sx: Scalar[DTYPE],
+    sy: Scalar[DTYPE],
+    sz: Scalar[DTYPE],
+    inflate: Scalar[DTYPE],
+) -> Int:
+    """Port of `mju_outsideBox`: +1 outside the inflated box, -1 inside the
+    deflated box, 0 in the shell between them."""
+    var vx = px - bx
+    var vy = py - by
+    var vz = pz - bz
+    # mat^T * v — mat's COLUMNS are the box axes.
+    var lx = mat[0] * vx + mat[3] * vy + mat[6] * vz
+    var ly = mat[1] * vx + mat[4] * vy + mat[7] * vz
+    var lz = mat[2] * vx + mat[5] * vy + mat[8] * vz
+
+    var gx = sx * inflate
+    var gy = sy * inflate
+    var gz = sz * inflate
+    if lx > gx or lx < -gx or ly > gy or ly < -gy or lz > gz or lz < -gz:
+        return 1
+
+    var mx = sx / inflate
+    var my = sy / inflate
+    var mz = sz / inflate
+    if lx < mx and lx > -mx and ly < my and ly > -my and lz < mz and lz > -mz:
+        return -1
+    return 0
+
+
+@always_inline
+def box_box_manifold[
+    DTYPE: DType
+](
+    # Box A (MuJoCo's geom 1)
+    a_x: Scalar[DTYPE],
+    a_y: Scalar[DTYPE],
+    a_z: Scalar[DTYPE],
+    a_qx: Scalar[DTYPE],
+    a_qy: Scalar[DTYPE],
+    a_qz: Scalar[DTYPE],
+    a_qw: Scalar[DTYPE],
+    a_hx: Scalar[DTYPE],
+    a_hy: Scalar[DTYPE],
+    a_hz: Scalar[DTYPE],
+    # Box B (MuJoCo's geom 2)
+    b_x: Scalar[DTYPE],
+    b_y: Scalar[DTYPE],
+    b_z: Scalar[DTYPE],
+    b_qx: Scalar[DTYPE],
+    b_qy: Scalar[DTYPE],
+    b_qz: Scalar[DTYPE],
+    b_qw: Scalar[DTYPE],
+    b_hx: Scalar[DTYPE],
+    b_hy: Scalar[DTYPE],
+    b_hz: Scalar[DTYPE],
+    margin: Scalar[DTYPE],
+    mut n_out: Int,
+    mut dist_out: InlineArray[Scalar[DTYPE], BB_MAX_POINTS],
+    mut pos_out: InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS],
+    mut normal_out: InlineArray[Scalar[DTYPE], 3],
+) -> Int:
+    """Full contact MANIFOLD for a box pair whose separating axis is a FACE.
+
+    Port of the `code < 12` half of `_boxbox` plus the bad/duplicate removal
+    that `mjc_BoxBox` wraps around it
+    (`references/mujoco-3.6.0/src/engine/engine_collision_box.c`).
+
+    Returns MuJoCo's `code`, which tells the caller which path was taken:
+
+        -1        the boxes are separated; nothing written
+        0 .. 11   FACE axis — `n_out` contacts written, sharing `normal_out`
+        >= 12     EDGE-EDGE axis — nothing written; the caller falls back to
+                  the single point `box_box` returns
+
+    `normal_out` points from box A to box B, the convention every primitive in
+    this file follows.
+
+    ⚠ PORTED FROM 3.6.0, NOT FROM `references/mujoco-3.3.6/`. Those two differ
+    in exactly one line of this routine and it is the answer: 3.3.6 ends with
+    `con[i].dist = points[i][2]` where the value has already been halved to
+    place the contact POINT midway through the overlap, so every face contact
+    it reports is half as deep as it should be. 3.6.0 has
+    `con[i].dist = 2 * points[i][2]`. The pixi runtime we compare against is
+    MuJoCo 3.10.0 and it agrees with 3.6.0 (a box overlapping another by
+    exactly 4 mm reports dist = -0.004), so CLAUDE.md's "3.3.6 matches the pixi
+    version" is stale by several releases.
+
+    ⚠ ONLY THE FACE PATH. On a 400-pose sweep of two unequal boxes, 90 of the
+    217 contacting poses take this path and 127 take edge-edge, and MuJoCo's
+    edge-edge path is NOT single-point either — it emitted 1 to 6 points, 361
+    over those 127 poses. `tests/physics3d/test_box_box_sweep.mojo` measures
+    both halves; the edge half is what remains of task #42.
+    """
+    n_out = 0
+
+    var mat1 = _bb_quat_mat[DTYPE](a_qx, a_qy, a_qz, a_qw)
+    var mat2 = _bb_quat_mat[DTYPE](b_qx, b_qy, b_qz, b_qw)
+
+    var size1 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    size1[0] = a_hx
+    size1[1] = a_hy
+    size1[2] = a_hz
+    var size2 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    size2[0] = b_hx
+    size2[1] = b_hy
+    size2[2] = b_hz
+
+    # pos21 = mat1^T (pos2 - pos1); pos12 = mat2^T (pos1 - pos2)
+    var dx = b_x - a_x
+    var dy = b_y - a_y
+    var dz = b_z - a_z
+    var pos21 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var pos12 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    for i in range(3):
+        pos21[i] = mat1[i] * dx + mat1[3 + i] * dy + mat1[6 + i] * dz
+        pos12[i] = -(mat2[i] * dx + mat2[3 + i] * dy + mat2[6 + i] * dz)
+
+    # rot = mat1^T mat2, row-major; rott = rot^T
+    var rot = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    for i in range(3):
+        for j in range(3):
+            var acc = Scalar[DTYPE](0)
+            for k in range(3):
+                acc += mat1[3 * k + i] * mat2[3 * k + j]
+            rot[3 * i + j] = acc
+    var rott = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var rotabs = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    for i in range(3):
+        for j in range(3):
+            rott[3 * i + j] = rot[3 * j + i]
+            rotabs[3 * i + j] = abs(rot[3 * i + j])
+
+    var plen1 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var plen2 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    for i in range(3):
+        var s2 = Scalar[DTYPE](0)
+        var s1 = Scalar[DTYPE](0)
+        for j in range(3):
+            s2 += rotabs[3 * i + j] * size2[j]
+            s1 += rotabs[3 * j + i] * size1[j]
+        plen2[i] = s2
+        plen1[i] = s1
+
+    var penetration = margin
+    for i in range(3):
+        penetration += size1[i] * Scalar[DTYPE](3) + size2[i] * Scalar[DTYPE](
+            3
+        )
+
+    var code = -1
+    for i in range(3):
+        var c1 = -abs(pos21[i]) + size1[i] + plen2[i]
+        var c2 = -abs(pos12[i]) + size2[i] + plen1[i]
+        if c1 < -margin or c2 < -margin:
+            return -1
+        if c1 < penetration:
+            penetration = c1
+            code = i + (3 if pos21[i] < Scalar[DTYPE](0) else 0) + 0
+        if c2 < penetration:
+            penetration = c2
+            code = i + (3 if pos12[i] < Scalar[DTYPE](0) else 0) + 6
+
+    # The nine edge-edge axes. Their outcome is not built here, but they can
+    # still SEPARATE the pair or WIN the axis, and both change what the caller
+    # must do — so the whole selection runs.
+    for i in range(3):
+        for j in range(3):
+            var t0 = Scalar[DTYPE](0)
+            var t1 = Scalar[DTYPE](0)
+            var t2 = Scalar[DTYPE](0)
+            if i == 0:
+                t1 = -rott[3 * j + 2]
+                t2 = rott[3 * j + 1]
+            elif i == 1:
+                t0 = rott[3 * j + 2]
+                t2 = -rott[3 * j + 0]
+            else:
+                t0 = -rott[3 * j + 1]
+                t1 = rott[3 * j + 0]
+            var c1 = sqrt(t0 * t0 + t1 * t1 + t2 * t2)
+            if c1 < Scalar[DTYPE](_BB_MINVAL):
+                continue
+            t0 /= c1
+            t1 /= c1
+            t2 /= c1
+            var c2 = pos21[0] * t0 + pos21[1] * t1 + pos21[2] * t2
+            var c3 = Scalar[DTYPE](0)
+            for k in range(3):
+                if k != i:
+                    var tk = t0
+                    if k == 1:
+                        tk = t1
+                    elif k == 2:
+                        tk = t2
+                    c3 += size1[k] * abs(tk)
+            for k in range(3):
+                if k != j:
+                    c3 += size2[k] * rotabs[3 * i + (3 - k - j)] / c1
+            c3 -= abs(c2)
+            if c3 < -margin:
+                return -1
+            if c3 < penetration * (Scalar[DTYPE](1) - Scalar[DTYPE](1e-12)):
+                penetration = c3
+                code = 12 + i * 3 + j
+
+    if code == -1:
+        return -1
+    if code >= 12:
+        return code
+
+    # ------------------------------------------------------------------
+    # Face path. `rotmore` is a signed permutation taking the winning face
+    # normal to +z; MuJoCo applies it through the `rotaxis` / `rotmatx` macros
+    # as an index-and-flip triple rather than a matrix product, and so does
+    # this.
+    # ------------------------------------------------------------------
+    var q1 = code % 6
+    var q2 = code // 6
+
+    var i0 = 0
+    var i1 = 1
+    var i2 = 2
+    var f0 = Scalar[DTYPE](1)
+    var f1 = Scalar[DTYPE](1)
+    var f2 = Scalar[DTYPE](1)
+    if q1 == 0:
+        i0 = 2
+        f0 = Scalar[DTYPE](-1)
+        i2 = 0
+    elif q1 == 1:
+        i1 = 2
+        f1 = Scalar[DTYPE](-1)
+        i2 = 1
+    elif q1 == 3:
+        i0 = 2
+        i2 = 0
+        f2 = Scalar[DTYPE](-1)
+    elif q1 == 4:
+        i1 = 2
+        i2 = 1
+        f2 = Scalar[DTYPE](-1)
+    elif q1 == 5:
+        f0 = Scalar[DTYPE](-1)
+        f2 = Scalar[DTYPE](-1)
+
+    # r = rotmore * (q2 ? rot^T : rot); p, tmp1 = rotmore * (vector)
+    var src = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var pv = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var sv = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    var s = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    if q2 != 0:
+        for i in range(9):
+            src[i] = rott[i]
+        for i in range(3):
+            pv[i] = pos12[i]
+            sv[i] = size2[i]
+            s[i] = size1[i]
+    else:
+        for i in range(9):
+            src[i] = rot[i]
+        for i in range(3):
+            pv[i] = pos21[i]
+            sv[i] = size1[i]
+            s[i] = size2[i]
+
+    var r = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    for c in range(3):
+        r[0 * 3 + c] = src[i0 * 3 + c] * f0
+        r[1 * 3 + c] = src[i1 * 3 + c] * f1
+        r[2 * 3 + c] = src[i2 * 3 + c] * f2
+
+    var p = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    p[0] = pv[i0] * f0
+    p[1] = pv[i1] * f1
+    p[2] = pv[i2] * f2
+    var tmp1 = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    tmp1[0] = sv[i0] * f0
+    tmp1[1] = sv[i1] * f1
+    tmp1[2] = sv[i2] * f2
+
+    # `rt` row i is the world direction of the incident box's local axis i.
+    var rt = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    for i in range(3):
+        for j in range(3):
+            rt[3 * i + j] = r[3 * j + i]
+
+    var ss = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    for i in range(3):
+        ss[i] = abs(tmp1[i])
+    var lx = ss[0]
+    var ly = ss[1]
+    var hz = ss[2]
+    p[2] -= hz
+
+    # The incident box's DEEPEST corner, and the two face edges leaving it.
+    var clcorner = 0
+    for i in range(3):
+        if r[6 + i] < Scalar[DTYPE](0):
+            clcorner += 1 << i
+
+    var pts = InlineArray[Scalar[DTYPE], 18](fill=Scalar[DTYPE](0))
+    for c in range(3):
+        var acc = p[c]
+        for i in range(3):
+            var sgn = Scalar[DTYPE](1) if (clcorner & (1 << i)) != 0 else (
+                Scalar[DTYPE](-1)
+            )
+            acc += rt[3 * i + c] * s[i] * sgn
+        pts[c] = acc
+
+    var m = 1
+    for i in range(3):
+        if abs(r[6 + i]) < Scalar[DTYPE](0.5):
+            var sc = Scalar[DTYPE](-2) if (clcorner & (1 << i)) != 0 else (
+                Scalar[DTYPE](2)
+            )
+            for c in range(3):
+                pts[3 * m + c] = rt[3 * i + c] * s[i] * sc
+            m += 1
+    for c in range(3):
+        pts[3 * 3 + c] = pts[c] + pts[3 + c]
+        pts[3 * 4 + c] = pts[c] + pts[6 + c]
+    for c in range(3):
+        pts[3 * 5 + c] = pts[3 * 3 + c] + pts[6 + c]
+
+    # Four (origin, direction) edges of the incident face.
+    var lines = InlineArray[Scalar[DTYPE], 24](fill=Scalar[DTYPE](0))
+    var k = 0
+    if m > 1:
+        for c in range(3):
+            lines[6 * k + c] = pts[c]
+            lines[6 * k + 3 + c] = pts[3 + c]
+        k += 1
+    if m > 2:
+        for c in range(3):
+            lines[6 * k + c] = pts[c]
+            lines[6 * k + 3 + c] = pts[6 + c]
+        k += 1
+        for c in range(3):
+            lines[6 * k + c] = pts[3 * 3 + c]
+            lines[6 * k + 3 + c] = pts[6 + c]
+        k += 1
+        for c in range(3):
+            lines[6 * k + c] = pts[3 * 4 + c]
+            lines[6 * k + 3 + c] = pts[3 + c]
+        k += 1
+
+    var pnt = InlineArray[Scalar[DTYPE], 3 * BB_MAX_POINTS](
+        fill=Scalar[DTYPE](0)
+    )
+    var n = 0
+
+    # Clip each incident edge against the reference face's four side planes.
+    for i in range(k):
+        for q in range(2):
+            var a = lines[6 * i + q]
+            var b = lines[6 * i + 3 + q]
+            var c = lines[6 * i + (1 - q)]
+            var d = lines[6 * i + 4 - q]
+            if abs(b) <= Scalar[DTYPE](_BB_MINVAL):
+                continue
+            for jj in range(2):
+                if n >= BB_MAX_POINTS:
+                    break
+                var j = Scalar[DTYPE](-1) if jj == 0 else Scalar[DTYPE](1)
+                var l = ss[q] * j
+                var c1 = (l - a) / b
+                if c1 < Scalar[DTYPE](0) or c1 > Scalar[DTYPE](1):
+                    continue
+                var c2 = c + d * c1
+                if abs(c2) > ss[1 - q]:
+                    continue
+                for cc in range(3):
+                    pnt[3 * n + cc] = (
+                        lines[6 * i + cc] + lines[6 * i + 3 + cc] * c1
+                    )
+                n += 1
+
+    # Reference-face corners that fall inside the incident face.
+    var ea = pts[3 + 0]
+    var eb = pts[6 + 0]
+    var ec = pts[3 + 1]
+    var ed = pts[6 + 1]
+    var det = ea * ed - eb * ec
+    if m > 2:
+        for i in range(4):
+            if n >= BB_MAX_POINTS:
+                break
+            var llx = lx if (i // 2) != 0 else -lx
+            var lly = ly if (i % 2) != 0 else -ly
+            var x = llx - pts[0]
+            var y = lly - pts[1]
+            var u = (x * ed - y * eb) / det
+            var v = (y * ea - x * ec) / det
+            if (
+                u <= Scalar[DTYPE](0)
+                or v <= Scalar[DTYPE](0)
+                or u >= Scalar[DTYPE](1)
+                or v >= Scalar[DTYPE](1)
+            ):
+                continue
+            pnt[3 * n + 0] = llx
+            pnt[3 * n + 1] = lly
+            pnt[3 * n + 2] = pts[2] + u * pts[3 + 2] + v * pts[6 + 2]
+            n += 1
+
+    # Incident-face corners that fall inside the reference face. ⚠ The deepest
+    # corner (i == 0) is added WITHOUT the bounds test — MuJoCo does the same,
+    # and the post-filter below is what removes it when it lies outside.
+    for i in range(1 << (m - 1)):
+        if n >= BB_MAX_POINTS:
+            break
+        var base = 0 if i == 0 else 3 * (i + 2)
+        var tx = pts[base + 0]
+        var ty = pts[base + 1]
+        if i != 0:
+            if tx <= -lx or tx >= lx:
+                continue
+            if ty <= -ly or ty >= ly:
+                continue
+        for cc in range(3):
+            pnt[3 * n + cc] = pts[base + cc]
+        n += 1
+
+    # Drop points above the reference face, then halve z to put the contact
+    # POINT midway through the overlap. `dist` keeps the full depth.
+    var depth = InlineArray[Scalar[DTYPE], BB_MAX_POINTS](
+        fill=Scalar[DTYPE](0)
+    )
+    var kept = 0
+    for i in range(n):
+        if pnt[3 * i + 2] > margin:
+            continue
+        depth[kept] = pnt[3 * i + 2]
+        pnt[3 * kept + 0] = pnt[3 * i + 0]
+        pnt[3 * kept + 1] = pnt[3 * i + 1]
+        pnt[3 * kept + 2] = pnt[3 * i + 2] * Scalar[DTYPE](0.5)
+        kept += 1
+    n = kept
+
+    # Back to world: rw = (q2 ? mat2 : mat1) * rotmore^T.
+    var rw = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var mref = mat2 if q2 != 0 else mat1
+    # rotmore^T has a single non-zero per column: column a is e_{idx[a]} * f_a.
+    for row in range(3):
+        rw[3 * row + 0] = mref[3 * row + i0] * f0
+        rw[3 * row + 1] = mref[3 * row + i1] * f1
+        rw[3 * row + 2] = mref[3 * row + i2] * f2
+
+    var nsgn = Scalar[DTYPE](-1) if q2 != 0 else Scalar[DTYPE](1)
+    normal_out[0] = nsgn * rw[2]
+    normal_out[1] = nsgn * rw[5]
+    normal_out[2] = nsgn * rw[8]
+
+    var ox = b_x if q2 != 0 else a_x
+    var oy = b_y if q2 != 0 else a_y
+    var oz = b_z if q2 != 0 else a_z
+
+    for i in range(n):
+        var lx_ = pnt[3 * i + 0]
+        var ly_ = pnt[3 * i + 1]
+        var lz_ = pnt[3 * i + 2] + hz
+        pos_out[3 * i + 0] = (
+            rw[0] * lx_ + rw[1] * ly_ + rw[2] * lz_ + ox
+        )
+        pos_out[3 * i + 1] = (
+            rw[3] * lx_ + rw[4] * ly_ + rw[5] * lz_ + oy
+        )
+        pos_out[3 * i + 2] = (
+            rw[6] * lx_ + rw[7] * ly_ + rw[8] * lz_ + oz
+        )
+        dist_out[i] = depth[i]
+
+    # ------------------------------------------------------------------
+    # `mjc_BoxBox`'s post-filter: drop points that sit outside one box without
+    # being inside the other, then drop exact duplicates. Without it the face
+    # path emits points that are geometrically off both boxes.
+    # ------------------------------------------------------------------
+    var bad = InlineArray[Bool, BB_MAX_POINTS](fill=False)
+    var ratio = Scalar[DTYPE](1.01)
+    for i in range(n):
+        var o1 = _bb_outside_box[DTYPE](
+            pos_out[3 * i + 0],
+            pos_out[3 * i + 1],
+            pos_out[3 * i + 2],
+            a_x, a_y, a_z, mat1,
+            a_hx + margin, a_hy + margin, a_hz + margin,
+            ratio,
+        )
+        var o2 = _bb_outside_box[DTYPE](
+            pos_out[3 * i + 0],
+            pos_out[3 * i + 1],
+            pos_out[3 * i + 2],
+            b_x, b_y, b_z, mat2,
+            b_hx + margin, b_hy + margin, b_hz + margin,
+            ratio,
+        )
+        if (o1 == 1 and o2 != -1) or (o2 == 1 and o1 != -1):
+            bad[i] = True
+
+    for i in range(n - 1):
+        if bad[i]:
+            continue
+        for j in range(i + 1, n):
+            if bad[j]:
+                continue
+            if (
+                pos_out[3 * i + 0] == pos_out[3 * j + 0]
+                and pos_out[3 * i + 1] == pos_out[3 * j + 1]
+                and pos_out[3 * i + 2] == pos_out[3 * j + 2]
+            ):
+                bad[i] = True
+                break
+
+    var w = 0
+    for i in range(n):
+        if bad[i]:
+            continue
+        if w != i:
+            pos_out[3 * w + 0] = pos_out[3 * i + 0]
+            pos_out[3 * w + 1] = pos_out[3 * i + 1]
+            pos_out[3 * w + 2] = pos_out[3 * i + 2]
+            dist_out[w] = dist_out[i]
+        w += 1
+    n_out = w
+    return code
+
+
+# =============================================================================
 # Phase 10: Missing collision pairs
 # cylinder-box, cylinder-capsule, cylinder-cylinder
 # =============================================================================
