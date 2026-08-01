@@ -107,6 +107,7 @@ struct DMHumanoidConfig[MOVE_SPEED: Float64, PURE_STATE: Bool](
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
+        act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """`Humanoid.get_observation`, both layouts."""

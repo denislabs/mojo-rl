@@ -47,6 +47,7 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
+        act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         # OBS_DIM=9: [cart_x, sin(q1), sin(q2), cos(q1), cos(q2),

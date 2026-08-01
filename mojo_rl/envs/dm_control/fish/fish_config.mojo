@@ -198,6 +198,7 @@ struct DMFishUprightConfig(Phyics3dEnvConfig):
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
+        act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """`Upright.get_observation`: joint_angles, upright, velocity."""
@@ -285,6 +286,7 @@ struct DMFishSwimConfig(Phyics3dEnvConfig):
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
+        act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """`Swim.get_observation`: + target, before velocity."""

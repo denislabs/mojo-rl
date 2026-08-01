@@ -95,6 +95,7 @@ struct PusherConfig(Phyics3dEnvConfig):
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
+        act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """Gymnasium Pusher-v5 observation: qpos[:7] + qvel[:7] + 3 body positions.

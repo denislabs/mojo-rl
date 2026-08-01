@@ -83,6 +83,7 @@ struct DMReacherConfig[TARGET_SIZE: Float64](Phyics3dEnvConfig):
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
+        act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """`Reacher.get_observation`: position, to_target, velocity."""

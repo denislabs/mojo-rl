@@ -90,6 +90,7 @@ struct DMHopperConfig[HOPPING: Bool](Phyics3dEnvConfig):
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
+        act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """`Hopper.get_observation`: position, velocity, touch.

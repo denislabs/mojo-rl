@@ -63,6 +63,13 @@ trait Phyics3dEnvConfig:
     # stage, and no in-scope model wants both.
     comptime RNE_POST: Bool = False
 
+    # Raise the free root in 1 cm steps at reset until nothing is touching,
+    # after `custom_reset_cpu` has set the orientation
+    # (`Phyics3dEnv._find_non_contacting_height`). dm_control's quadruped is
+    # the only user: it draws a random orientation per episode, so a fixed
+    # spawn height would sometimes start the robot inside the floor.
+    comptime RESET_FIND_HEIGHT: Bool = False
+
     # === CPU: Pre-step hook — save any per-env state before physics ===
     @staticmethod
     def pre_step_cpu[
@@ -230,12 +237,21 @@ trait Phyics3dEnvConfig:
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
+        act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """Extract observations from data. Return True if handled, False for default.
 
         Override for envs that need non-standard observations
         (e.g., hand position + object position instead of qpos/qvel).
+
+        `act` is MuJoCo's `d->act` — the actuator ACTIVATION state, one scalar
+        per activation variable, empty-but-length-1 on the models that have
+        none (`MODEL_DEF.NA == 0`, which is all of them but quadruped). It is
+        here because dm_control's quadruped puts `data.act` inside its
+        `egocentric_state` block, i.e. in the MIDDLE of the observation, so
+        the env cannot append it after the fact. See `Phyics3dEnv.act` for why
+        the activation lives on the env rather than in `Data`.
         """
         return False
 

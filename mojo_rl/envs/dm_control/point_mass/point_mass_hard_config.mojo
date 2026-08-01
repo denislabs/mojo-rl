@@ -102,10 +102,11 @@ struct DMPointMassHardConfig(Phyics3dEnvConfig):
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
+        act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         return DMPointMassConfig.custom_extract_obs_cpu(
-            d, m_bodies, m_joints, m_geoms, m_sites, obs
+            d, m_bodies, m_joints, m_geoms, m_sites, act, obs
         )
 
     # === CPU: Reset (state) === (`easy`'s joint randomizer)

@@ -195,6 +195,7 @@ struct DMFingerSpinConfig(Phyics3dEnvConfig):
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
+        act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """`Spin.get_observation`: position, velocity, touch."""
@@ -279,6 +280,7 @@ struct DMFingerTurnConfig[TARGET_SIZE: Float64](Phyics3dEnvConfig):
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
+        act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """`Turn.get_observation`: + target_position, dist_to_target."""

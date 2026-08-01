@@ -41,11 +41,17 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import (
     compute_body_velocities,
 )
 from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_auto
+from mojo_rl.physics3d.joint_types import JNT_FREE
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
+    MODEL_JOINT_SIZE,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_QPOS_ADR,
+    META_IDX_NUM_CONTACTS,
 )
 from mojo_rl.nn.core.tensor import TensorImpl
 
@@ -301,12 +307,62 @@ struct Phyics3dEnv[
             self.mf.geoms.data,
             self.mf.sites.data,
         )
+        comptime if Self.CONFIG.RESET_FIND_HEIGHT:
+            self._find_non_contacting_height()
         self._sync_mocap_to_fields()
         self._fields_fk()  # fresh obs before step 1
         self.current_step = 0
         self.prev_x = Scalar[Self.dtype](0)
         self._last_terminated = False
         Self.CONFIG.pre_step_cpu(self.d, self.prev_x)
+
+
+    def _find_non_contacting_height(mut self):
+        """Raise the free root in 1 cm steps until nothing is touching.
+
+        `quadruped._find_non_contacting_height` (suite/quadruped.py:397): start
+        embedded in the floor at z = 0 and step up by 1 cm until `data.ncon`
+        is 0. The ORIENTATION is whatever `custom_reset_cpu` drew; this only
+        moves the height, exactly as the reference does.
+
+        Lives on the env rather than in the reset hook because it needs
+        forward kinematics AND broadphase, and a config hook gets the record
+        Lists but neither `Model` nor a way to run a pipeline stage. Gated by
+        `CONFIG.RESET_FIND_HEIGHT` so no other model pays for it.
+
+        Bounded at 10000 attempts like the reference — which RAISES there. We
+        cannot raise from `_reset_state`, so this leaves the last height tried
+        and lets the first step report the penetration; a model whose legs
+        cannot clear the floor in 100 m is misbuilt in a way a reset failure
+        would not explain anyway.
+        """
+        # The free root's z. Found from the joint records rather than assumed
+        # at qpos[2]: a model may declare its free joint second.
+        var zadr = -1
+        for j in range(Self.NJOINT):
+            var jt = Int(self.mf.joints.data[j * MODEL_JOINT_SIZE + JOINT_IDX_TYPE])
+            if jt == JNT_FREE:
+                zadr = Int(
+                    self.mf.joints.data[j * MODEL_JOINT_SIZE + JOINT_IDX_QPOS_ADR]
+                ) + 2
+                break
+        if zadr < 0:
+            return
+
+        for attempt in range(10000):
+            self.d.qpos.data[zadr] = Scalar[Self.dtype](0.01 * Float64(attempt))
+            self._fields_fk()
+            try:
+                detect_contacts_auto[
+                    "cpu", Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
+                    Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
+                    Self.MODEL_DEF.MAX_EQUALITY, Self.MODEL_DEF.MAX_TENDON,
+                    Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0, 1,
+                ](self.d, self.mf, None)
+            except:
+                return
+            if Int(self.d.meta.data[META_IDX_NUM_CONTACTS]) == 0:
+                return
 
     def set_state(mut self, qpos: List[Float64], qvel: List[Float64]):
         """Deterministic state injection (tests / eval)."""
@@ -316,6 +372,11 @@ struct Phyics3dEnv[
             self.d.qvel.data[i] = Scalar[Self.dtype](qvel[i])
         self._sync_mocap_to_fields()
         self._fields_fk()
+        # Velocities too, not just poses: injecting a qvel and leaving
+        # xvel/xangvel at whatever the last step left is exactly the kind of
+        # half-updated state this method exists to avoid. Every velocimeter /
+        # gyro / subtreelinvel read goes through those two.
+        self._fields_vel()
 
     def _get_obs(self) -> ObsState[Self.MODEL_DEF.OBS_DIM]:
         var obs_list = List[Scalar[Self.DTYPE]](capacity=Self.OBS_DIM)
@@ -325,6 +386,7 @@ struct Phyics3dEnv[
             self.mf.joints.data,
             self.mf.geoms.data,
             self.mf.sites.data,
+            self.act,
             obs_list,
         )
         if not custom:
@@ -546,6 +608,7 @@ struct Phyics3dEnv[
             self.mf.joints.data,
             self.mf.geoms.data,
             self.mf.sites.data,
+            self.act,
             obs,
         )
         if not custom:

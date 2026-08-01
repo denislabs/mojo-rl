@@ -422,5 +422,24 @@ comptime QUADRUPED_RUN_SPEED: Float64 = 5.0
 comptime QUADRUPED_WALK_SPEED: Float64 = 0.5
 
 # The torso body carries the IMU/velocimeter site; the four toes carry the
-# force/torque sites. Indices are OURS and are pinned by the parity test.
+# force/torque sites. Indices are OURS and are pinned by the parity test
+# (`test_rne_post_sensors_vs_mujoco` proves our body and site ORDER equals
+# MuJoCo's for this XML, so `mj_name2id` values are valid here).
 comptime TORSO_BODY_IDX: Int = 1
+comptime TORSO_SITE_IDX: Int = 24
+
+# Toes in SENSOR-ID order — front-left, front-right, back-right, back-left —
+# which is how `physics.force_torque()` lays them out. NOT the reference's
+# `_TOES` list, which is FL, BL, BR, FR and is only used by `toe_positions()`.
+# Each leg is four bodies (hip, knee, ankle, toe), declared in the same order,
+# so the toes are evenly spaced. Sites are contiguous because the four toe
+# sites are the last four declared.
+comptime TOE_BODY_0: Int = 5
+comptime TOE_BODY_STRIDE: Int = 4
+comptime TOE_SITE_0: Int = 25
+
+# Joint 0 is the free root; joints 1..16 are the leg hinges, so their qpos and
+# dof blocks are contiguous. `egocentric_state` reads exactly these.
+comptime N_HINGE: Int = 16
+comptime HINGE_QPOS_0: Int = 7
+comptime HINGE_DOF_0: Int = 6

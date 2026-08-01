@@ -1,10 +1,17 @@
 """dm_control `quadruped` domain — walk and run (Tier C).
 
-IN PROGRESS. The stripped model (see `quadruped_xml`) parses to MuJoCo's exact
-counts and its twelve `<general>` actuators resolve correctly, but the domain
-is not yet runnable: there is no env config, no activation state in `Data`,
-no accelerometer / force-torque sensors, and no ellipsoid narrow phase for the
-torso. See `mojo_rl/envs/ROADMAP.md` for the remaining gap list.
+    walk = Phyics3dEnv[DMQuadrupedWalkModel, DMQuadrupedWalkConfig]
+    run  = Phyics3dEnv[DMQuadrupedRunModel,  DMQuadrupedRunConfig]
+
+The two differ only in the target speed and the floor's half-extent; see
+`quadruped_config` for the observation and reward, and `quadruped_xml` for
+what `make_model(terrain=False, rangefinders=False, walls_and_ball=False)`
+strips.
+
+The first domain here whose observation is mostly `<sensor>` reads — 34 of
+its 78 numbers — including the three that need `mj_rnePostConstraint`
+(`physics3d/dynamics/rne_post.mojo`). `escape` and `fetch` stay descoped:
+they need heightfields, rangefinders and a ball.
 """
 
 from .quadruped_xml import (
@@ -16,6 +23,21 @@ from .quadruped_xml import (
     QUADRUPED_WALK_SPEED,
     QUADRUPED_RUN_SPEED,
     TORSO_BODY_IDX,
+    TORSO_SITE_IDX,
+    TOE_BODY_0,
+    TOE_BODY_STRIDE,
+    TOE_SITE_0,
+    N_HINGE,
+    HINGE_QPOS_0,
+    HINGE_DOF_0,
     qwp,
     qrp,
+)
+from .quadruped import DMQuadrupedWalk, DMQuadrupedRun
+from .quadruped_config import (
+    DMQuadrupedConfig,
+    DMQuadrupedWalkConfig,
+    DMQuadrupedRunConfig,
+    QUADRUPED_MAX_STEPS,
+    QUADRUPED_FRAME_SKIP,
 )
