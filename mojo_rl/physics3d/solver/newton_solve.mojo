@@ -1274,6 +1274,44 @@ def _newton_solve_env[
     var sr_st = InlineArray[Int, MAXS](fill=0)
     var sr_Js = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
 
+    # === Fixed-tendon EQUALITY rows (dense J) ===
+    # These ran as a post-pass on this path until 2026-08-01, which is the same
+    # defect `build_scalar_rows` above exists to fix, one constraint type over.
+    # Measured on dm_control manipulator `bring_ball`, where the `coupling`
+    # tendon holds thumb == finger while the grasped ball's two contacts break
+    # that symmetry: the post-pass left qacc[thumb]/qacc[finger] at
+    # +60.12/-58.11 where MuJoCo has -832.98/-839.37 — equal and OPPOSITE, i.e.
+    # the row was not enforced against the contact solve at all. Poses where the
+    # contacts are SYMMETRIC (a closed empty hand, 18 contact rows) were exact
+    # even then, because the equality had nothing to correct — which is why this
+    # needed a domain with an object in the hand to surface.
+    #
+    # A scalar row is stored as `(dof, sign)` to keep the elliptic core's local
+    # memory at O(rows); an equality row needs a full NV Jacobian. That is the
+    # cost this deferral was avoiding, and it is `NTENDON * NV` floats — 22 for
+    # manipulator, 88 for quadruped — next to the contact block's `MC * NV * 6`.
+    #
+    # The row is built by the SAME function the pyramidal edge list uses, so
+    # both cones get bit-identical (J, D, bias).
+    comptime MAXEQ = _max_one[NTENDON]()
+    var eq_J = InlineArray[Scalar[DTYPE], MAXEQ * V_SIZE](
+        fill=Scalar[DTYPE](0)
+    )
+    var eq_D = InlineArray[Scalar[DTYPE], MAXEQ](fill=Scalar[DTYPE](0))
+    var eq_bias = InlineArray[Scalar[DTYPE], MAXEQ](fill=Scalar[DTYPE](0))
+    var eq_kind = InlineArray[Int, MAXEQ](fill=0)
+    var eq_jar = InlineArray[Scalar[DTYPE], MAXEQ](fill=Scalar[DTYPE](0))
+    var eq_f = InlineArray[Scalar[DTYPE], MAXEQ](fill=Scalar[DTYPE](0))
+    var eq_Js = InlineArray[Scalar[DTYPE], MAXEQ](fill=Scalar[DTYPE](0))
+    var neq_rows = 0
+    comptime if NTENDON > 0:
+        build_tendon_equality_rows[
+            DTYPE, NQ, NV, NJOINT, NTENDON, V_SIZE, MAXEQ, BATCH
+        ](
+            env, qpos, qvel, tendons, joints, mmeta, m_inv,
+            eq_J, eq_D, eq_bias, eq_kind, neq_rows,
+        )
+
     # === Step 2: Initialize local InlineArrays from workspace ===
     var H = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
     var L_chol = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
@@ -1390,6 +1428,15 @@ def _newton_solve_env[
         sr_st[s] = st
         sr_f[s] = scalar_row_force[DTYPE](st, jar_s, sr_D[s], sr_floss[s])
 
+    # Equality rows: BILATERAL, so unconditionally QUADRATIC — no state, and
+    # `f = -D*jar` always.
+    for e in range(neq_rows):
+        var jar_e = eq_bias[e]
+        for d in range(NV):
+            jar_e += eq_J[e * NV + d] * qacc[d]
+        eq_jar[e] = jar_e
+        eq_f[e] = -eq_D[e] * jar_e
+
     # === Step 4: Build Hessian H = M + J^T*D*J (cone-aware, using cached Jacobians) ===
     # Scalar rows contribute D only on their own dof (J = sign*e_dof, so
     # J^T*J = e_dof*e_dof^T — the sign squares away).
@@ -1397,6 +1444,15 @@ def _newton_solve_env[
         if sr_st[s] == SROW_QUADRATIC:
             var d = sr_dof[s]
             H[d * NV + d] += sr_D[s]
+    # Equality rows have a DENSE J, so their contribution is a full rank-1
+    # outer product rather than a diagonal bump.
+    for e in range(neq_rows):
+        for a in range(NV):
+            var Ja = eq_J[e * NV + a]
+            if Ja == Scalar[DTYPE](0):
+                continue
+            for b in range(NV):
+                H[a * NV + b] += eq_D[e] * Ja * eq_J[e * NV + b]
     for c in range(nc):
         var cs = cs_arr[c]
         if cs == 0:  # SATISFIED
@@ -1496,6 +1552,9 @@ def _newton_solve_env[
             )
     for s in range(ns):
         qfrc_c[sr_dof[s]] += sr_sign[s] * sr_f[s]
+    for e in range(neq_rows):
+        for d in range(NV):
+            qfrc_c[d] += eq_J[e * NV + d] * eq_f[e]
 
     # === Step 5: Newton iteration loop ===
     for _iter in range(NEWTON_ITER_GPU):
@@ -1549,6 +1608,11 @@ def _newton_solve_env[
             Js_t2[c] = js_t2
         for s in range(ns):
             sr_Js[s] = sr_sign[s] * search[sr_dof[s]]
+        for e in range(neq_rows):
+            var jv = Scalar[DTYPE](0)
+            for d in range(NV):
+                jv += eq_J[e * NV + d] * search[d]
+            eq_Js[e] = jv
 
         # Analytical Newton linesearch (matches CPU primal_linesearch_with_D)
         # Gauss coefficients for derivative: d_gauss/dalpha = ga*alpha + gb
@@ -1601,6 +1665,9 @@ def _newton_solve_env[
             p0_d1 += -sr_f[s] * sr_Js[s]
             if sr_st[s] == SROW_QUADRATIC:
                 p0_d2 += sr_D[s] * sr_Js[s] * sr_Js[s]
+        for e in range(neq_rows):
+            p0_d1 += -eq_f[e] * eq_Js[e]
+            p0_d2 += eq_D[e] * eq_Js[e] * eq_Js[e]
         if p0_d2 < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
             p0_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
 
@@ -1663,6 +1730,10 @@ def _newton_solve_env[
                 )
                 if tst == SROW_QUADRATIC:
                     p1_d2_v += sr_D[s] * sr_Js[s] * sr_Js[s]
+            for e in range(neq_rows):
+                var tje = eq_jar[e] + p1_alpha * eq_Js[e]
+                p1_d1 += eq_D[e] * tje * eq_Js[e]
+                p1_d2_v += eq_D[e] * eq_Js[e] * eq_Js[e]
             if p1_d2_v < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
                 p1_d2_v = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
 
@@ -1737,6 +1808,10 @@ def _newton_solve_env[
                         )
                         if tst == SROW_QUADRATIC:
                             p1_d2_v += sr_D[s] * sr_Js[s] * sr_Js[s]
+                    for e in range(neq_rows):
+                        var tje = eq_jar[e] + p1_alpha * eq_Js[e]
+                        p1_d1 += eq_D[e] * tje * eq_Js[e]
+                        p1_d2_v += eq_D[e] * eq_Js[e] * eq_Js[e]
                     if p1_d2_v < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
                         p1_d2_v = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
                     if p1_d1 * p1_d1 < gtol_sq:
@@ -1794,6 +1869,9 @@ def _newton_solve_env[
                                 )
                                 * sr_Js[s]
                             )
+                        for e in range(neq_rows):
+                            var tje = eq_jar[e] + mid * eq_Js[e]
+                            mid_d1 += eq_D[e] * tje * eq_Js[e]
                         if mid_d1 * mid_d1 < gtol_sq:
                             p1_alpha = mid
                             p1_d1 = mid_d1
@@ -1879,6 +1957,14 @@ def _newton_solve_env[
             sr_f[s] = scalar_row_force[DTYPE](st, jar_s, sr_D[s], sr_floss[s])
             if st != old_st:
                 state_changed = True
+        # Bilateral: no state, so nothing can flip `state_changed` — but jar
+        # and f still track qacc every iteration.
+        for e in range(neq_rows):
+            var jar_e = eq_bias[e]
+            for d in range(NV):
+                jar_e += eq_J[e * NV + d] * qacc[d]
+            eq_jar[e] = jar_e
+            eq_f[e] = -eq_D[e] * jar_e
 
         # Recompute qfrc_c = J^T * updated forces (all InlineArray ops)
         for i in range(NV):
@@ -1894,6 +1980,9 @@ def _newton_solve_env[
                 )
         for s in range(ns):
             qfrc_c[sr_dof[s]] += sr_sign[s] * sr_f[s]
+        for e in range(neq_rows):
+            for d in range(NV):
+                qfrc_c[d] += eq_J[e * NV + d] * eq_f[e]
 
         # Hessian rebuild if states changed (using cached Jacobians — no workspace reads)
         if state_changed:
@@ -1903,6 +1992,15 @@ def _newton_solve_env[
                 if sr_st[s] == SROW_QUADRATIC:
                     var d = sr_dof[s]
                     H[d * NV + d] += sr_D[s]
+            # Equality rows are always QUADRATIC, so their outer product is
+            # always in the Hessian — no state to test.
+            for e in range(neq_rows):
+                for a in range(NV):
+                    var Ja = eq_J[e * NV + a]
+                    if Ja == Scalar[DTYPE](0):
+                        continue
+                    for b in range(NV):
+                        H[a * NV + b] += eq_D[e] * Ja * eq_J[e * NV + b]
             for c in range(nc):
                 var cs = cs_arr[c]
                 if cs == 0:
@@ -2002,11 +2100,13 @@ def _newton_solve_env[
         contacts[env, c_off + CONTACT_IDX_FORCE_T1] = ft1_arr[c]
         contacts[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_arr[c]
 
-    # Joint limits and dry-friction dofs are rows of the Newton system above
-    # (`build_scalar_rows`), not post-passes — solving them after the contacts
-    # is what made the contact force wrong. Equality and tendon rows still run
-    # as post-passes: they need a dense Jacobian, so folding them in is a
-    # separate change.
+    # Joint limits, dry-friction dofs AND fixed-tendon equalities are rows of
+    # the Newton system above (`build_scalar_rows` /
+    # `build_tendon_equality_rows`), not post-passes — solving them after the
+    # contacts is what made the contact force wrong. `_equality_env` (connect /
+    # weld) and SPATIAL tendon equalities still run as post-passes; neither has
+    # a model in the tree that puts them on the same dofs as a live contact,
+    # and both need a dense body Jacobian rather than a joint-coefficient one.
     comptime SOLVER_ITER_GPU: Int = 50
 
     comptime if NEQUALITY > 0:
@@ -2020,9 +2120,13 @@ def _newton_solve_env[
         )
 
     comptime if NTENDON > 0:
+        # SKIP_FIXED: the fixed-tendon equalities are rows of the system above,
+        # so re-applying them here would double the constraint force. Spatial
+        # equality tendons are never row-built and stay this pass's job, which
+        # is why the guard tests the KIND rather than skipping wholesale.
         _tendon_env[
             DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
-            SOLVER_ITER_GPU,
+            SOLVER_ITER_GPU, SKIP_FIXED=True,
         ](
             env, qpos, qvel, joints, mmeta, tendons, sites, body_invweight0,
             dof_invweight0, m_inv, qacc_constrained,
