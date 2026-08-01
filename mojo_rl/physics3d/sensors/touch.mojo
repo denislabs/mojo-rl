@@ -8,10 +8,14 @@ contact point projects into the site's volume along the contact normal:
         if site_body not in {body(geom0), body(geom1)}: skip
         f = mj_contactForce(j)[0]           # normal component, contact frame
         if f <= 0: skip
-        ray = normalize(frame_normal * f)   # == the unit normal
-        if site_body == body1: ray = -ray   # point INTO the sensor body
+        ray = normalize(frame_normal * f)   # == the unit normal, geom1 -> geom2
+        if site_body == body(geom2): ray = -ray
         if rayGeom(site_xpos, site_xmat, site_size, contact_pos, ray, type) >= 0:
             sensordata += f
+
+⚠ OUR CONTACT NORMAL POINTS `body_b` -> `body_a`, the reverse of MuJoCo's
+geom1 -> geom2, so MuJoCo's `geom2` is our `body_a` and the flip above is keyed
+on `body_a`. See the comment at the flip itself for the measurement.
 
 Note the ray starts at the CONTACT POINT and is cast along the normal, and the
 zone being intersected is the SITE. A contact inside the site volume always
@@ -172,9 +176,28 @@ def touch_sphere_site[
         var nx = Float64(d.contacts.data[base + CONTACT_IDX_NX])
         var ny = Float64(d.contacts.data[base + CONTACT_IDX_NY])
         var nz = Float64(d.contacts.data[base + CONTACT_IDX_NZ])
-        # MuJoCo flips the ray when the sensorized body is body2, so it always
-        # points INTO the sensing body.
-        if sbody == bb:
+        # MuJoCo flips the ray when the sensorized body is the one carrying
+        # `geom2`, so the ray always leaves the contact on the same side.
+        #
+        # ⚠ THAT IS OUR `body_a`, NOT OUR `body_b`. MuJoCo's `con->frame` normal
+        # points geom1 -> geom2; ours points BODY_B -> BODY_A. So MuJoCo's
+        # "geom2" is our "body_a", and flipping on `bb` — which is what this
+        # line did until 2026-08-01 — reverses every ray.
+        #
+        # MEASURED, not argued (stacker's closed hand, 8 contacts, both engines
+        # on the same state): `dot(n, xpos[bb] - xpos[ba])` is negative for all
+        # eight of ours while MuJoCo's `dot(frame, geom_xpos[g2] - geom_xpos[g1])`
+        # is positive for all eight, and the two engines' normals agree up to
+        # exactly that sign once the pairs are matched.
+        #
+        # ⚠ WHY THIS SURVIVED FOUR DOMAINS. The ray only changes the ANSWER for
+        # a contact point OUTSIDE the zone: a point inside is hit from either
+        # direction. hopper's and finger's zones contain their contacts, and so
+        # do the only two manipulator zones that ever carried force. stacker's
+        # `thumb_touch` / `finger_touch` are the first zones to see contacts
+        # 2 mm outside them, where MuJoCo reports 0 and the flipped ray reported
+        # a full 55 N.
+        if sbody == ba:
             nx = -nx
             ny = -ny
             nz = -nz

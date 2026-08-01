@@ -294,6 +294,118 @@ def _plane_mesh_contacts[
 
 
 @always_inline
+def _plane_box_contacts[
+    DTYPE: DType,
+    MAX_CONTACTS: Int,
+    BATCH: Int,
+](
+    env: Int,
+    g_body: Int,
+    p_x: Scalar[DTYPE],
+    p_y: Scalar[DTYPE],
+    p_z: Scalar[DTYPE],
+    q_x: Scalar[DTYPE],
+    q_y: Scalar[DTYPE],
+    q_z: Scalar[DTYPE],
+    q_w: Scalar[DTYPE],
+    hx: Scalar[DTYPE],
+    hy: Scalar[DTYPE],
+    hz: Scalar[DTYPE],
+    ground_z: Scalar[DTYPE],
+    plp_x: Scalar[DTYPE],
+    plp_y: Scalar[DTYPE],
+    plp_z: Scalar[DTYPE],
+    plq_x: Scalar[DTYPE],
+    plq_y: Scalar[DTYPE],
+    plq_z: Scalar[DTYPE],
+    plq_w: Scalar[DTYPE],
+    contact_margin: Scalar[DTYPE],
+    contact_friction: Scalar[DTYPE],
+    contact_friction_spin: Scalar[DTYPE],
+    contact_friction_roll: Scalar[DTYPE],
+    contact_condim: Int,
+    world_body: Int,
+    contacts: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    mut num_contacts: Int,
+):
+    """Plane-box: one contact per box CORNER below the plane, up to four.
+
+    Port of `mjc_PlaneBox` (`engine_collision_primitive.c`). A box resting flat
+    on a plane touches it over a whole face, and a single point cannot express
+    that: a rigid body supported at ONE point has no restoring torque about it,
+    so a cube on a floor pivots instead of resting. That is task #42, and this
+    is its box/plane half.
+
+    `p_*` / `q_*` are the box's pose IN THE PLANE'S FRAME, where the plane is
+    z = `ground_z` facing +z, so a corner's height above the plane is just its
+    z. `plp_*` / `plq_*` are the plane's world pose, used only to put the
+    contact point and normal back into world — see `collision/plane_frame.mojo`.
+
+    ⚠ TWO FILTERS, BOTH MuJoCo's, AND THE SECOND IS NOT REDUNDANT. A corner is
+    skipped when it is further than `margin` above the plane (obviously) AND
+    when its offset from the box CENTRE points along +normal (`ldist > 0`),
+    which drops the box's upper four corners even when a deeply sunk box has all
+    eight below the plane. Without it a fully submerged box would emit four
+    contacts on its TOP face pushing the wrong way.
+
+    ⚠ THE ITERATION ORDER IS PART OF THE ANSWER when more than four corners
+    qualify: MuJoCo keeps the first four in `i = 0..7` with x = i&1, y = i&2,
+    z = i&4, so this loop matches that order rather than sorting by depth.
+    """
+    var pn = plane_world_normal[DTYPE](plq_x, plq_y, plq_z, plq_w)
+    var cnt = 0
+    for i in range(8):
+        if num_contacts >= MAX_CONTACTS or cnt >= 4:
+            break
+        var vx = hx if (i & 1) != 0 else -hx
+        var vy = hy if (i & 2) != 0 else -hy
+        var vz = hz if (i & 4) != 0 else -hz
+        var rel = gpu_quat_rotate(q_x, q_y, q_z, q_w, vx, vy, vz)
+        # `ldist` is the corner offset along the plane normal, which in this
+        # frame is simply its z component.
+        var ldist = rel[2]
+        var cdist = (p_z + rel[2]) - ground_z
+        if cdist > contact_margin or ldist > Scalar[DTYPE](0):
+            continue
+
+        var cw = from_plane_frame[DTYPE](
+            plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
+            p_x + rel[0],
+            p_y + rel[1],
+            (p_z + rel[2]) - cdist * Scalar[DTYPE](0.5),
+        )
+        var c_off = num_contacts * CONTACT_SIZE
+        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](g_body)
+        # ⚠ THE TWO PATHS DISAGREE ON THE WORLD BODY ID — `detect_contacts`
+        # writes 0 and the SAP broadphase writes -1 — so it is passed in rather
+        # than hardcoded here, which would silently change one of them.
+        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](world_body)
+        contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
+        contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
+        contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
+        contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
+        contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
+        contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
+        contacts[env, c_off + CONTACT_IDX_DIST] = cdist
+        contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
+        contacts[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
+        contacts[
+            env, c_off + CONTACT_IDX_FRICTION_SPIN
+        ] = contact_friction_spin
+        contacts[
+            env, c_off + CONTACT_IDX_FRICTION_ROLL
+        ] = contact_friction_roll
+        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+            contact_condim
+        )
+        num_contacts += 1
+        cnt += 1
+
+
+@always_inline
 def _detect_contacts_env[
     DTYPE: DType,
     NQ: Int,
@@ -838,48 +950,26 @@ def _detect_contacts_env[
                         ](contact_condim)
                         num_contacts += 1
                 elif gj_type == GEOM_BOX:
-                    var bp = box_plane[DTYPE](
+                    # Up to FOUR corners, not one — see
+                    # `_plane_box_contacts` and task #42.
+                    _plane_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                        env,
+                        gj_body,
                         fp_x, fp_y, fp_z,
                         fq_x, fq_y, fq_z, fq_w,
                         hxj, hyj, hzj,
                         ground_z,
+                        plp_x, plp_y, plp_z,
+                        plq_x, plq_y, plq_z, plq_w,
+                        contact_margin,
+                        contact_friction,
+                        contact_friction_spin,
+                        contact_friction_roll,
+                        contact_condim,
+                        0,
+                        contacts,
+                        num_contacts,
                     )
-                    var dist = bp[0]
-                    if dist < contact_margin and num_contacts < MAX_CONTACTS:
-                        var c_off = num_contacts * CONTACT_SIZE
-                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
-                            DTYPE
-                        ](gj_body)
-                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
-                            DTYPE
-                        ](0)
-                        var cw = from_plane_frame[DTYPE](
-                            plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
-                            bp[1], bp[2], bp[3],
-                        )
-                        contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
-                        contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
-                        contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
-                        contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
-                        contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
-                        contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
-                        contacts[env, c_off + CONTACT_IDX_DIST] = dist
-                        contacts[
-                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
-                        ] = contact_margin
-                        contacts[
-                            env, c_off + CONTACT_IDX_FRICTION
-                        ] = contact_friction
-                        contacts[
-                            env, c_off + CONTACT_IDX_FRICTION_SPIN
-                        ] = contact_friction_spin
-                        contacts[
-                            env, c_off + CONTACT_IDX_FRICTION_ROLL
-                        ] = contact_friction_roll
-                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
-                            DTYPE
-                        ](contact_condim)
-                        num_contacts += 1
                 elif gj_type == GEOM_MESH:
                     # Plane-mesh: scan hull vertices below plane
                     comptime if NMESH_VERTS > 0:
@@ -1194,48 +1284,26 @@ def _detect_contacts_env[
                         ](contact_condim)
                         num_contacts += 1
                 elif gi_type == GEOM_BOX:
-                    var bp = box_plane[DTYPE](
+                    # Up to FOUR corners, not one — see
+                    # `_plane_box_contacts` and task #42.
+                    _plane_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                        env,
+                        gi_body,
                         fp_x, fp_y, fp_z,
                         fq_x, fq_y, fq_z, fq_w,
                         hxi, hyi, hzi,
                         ground_z,
+                        plp_x, plp_y, plp_z,
+                        plq_x, plq_y, plq_z, plq_w,
+                        contact_margin,
+                        contact_friction,
+                        contact_friction_spin,
+                        contact_friction_roll,
+                        contact_condim,
+                        0,
+                        contacts,
+                        num_contacts,
                     )
-                    var dist = bp[0]
-                    if dist < contact_margin and num_contacts < MAX_CONTACTS:
-                        var c_off = num_contacts * CONTACT_SIZE
-                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
-                            DTYPE
-                        ](gi_body)
-                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
-                            DTYPE
-                        ](0)
-                        var cw = from_plane_frame[DTYPE](
-                            plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
-                            bp[1], bp[2], bp[3],
-                        )
-                        contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
-                        contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
-                        contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
-                        contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
-                        contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
-                        contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
-                        contacts[env, c_off + CONTACT_IDX_DIST] = dist
-                        contacts[
-                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
-                        ] = contact_margin
-                        contacts[
-                            env, c_off + CONTACT_IDX_FRICTION
-                        ] = contact_friction
-                        contacts[
-                            env, c_off + CONTACT_IDX_FRICTION_SPIN
-                        ] = contact_friction_spin
-                        contacts[
-                            env, c_off + CONTACT_IDX_FRICTION_ROLL
-                        ] = contact_friction_roll
-                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
-                            DTYPE
-                        ](contact_condim)
-                        num_contacts += 1
                 elif gi_type == GEOM_MESH:
                     comptime if NMESH_VERTS > 0:
                         _plane_mesh_contacts[

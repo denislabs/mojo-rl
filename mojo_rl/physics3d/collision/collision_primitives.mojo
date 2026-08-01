@@ -1518,6 +1518,17 @@ def box_sphere[
     var ny_local: Scalar[DTYPE]
     var nz_local: Scalar[DTYPE]
 
+    # ⚠ THE INTERIOR CASE NEEDS ITS OWN CONTACT POINT, not `dist/2` along the
+    # normal. `clamp_*` equals the sphere CENTRE once the centre is inside the
+    # box, so the exterior formula measures from the wrong origin and lands
+    # `face_gap` away from MuJoCo's point. Depth and normal stay correct, which
+    # is why a gate comparing only those two passes — see
+    # `tests/physics3d/test_capsule_box_sweep.mojo`, which did exactly that and
+    # missed this until stacker's held cube showed a 15% qacc error with every
+    # depth and normal matching.
+    var interior = False
+    var face_gap = Scalar[DTYPE](0)
+
     if dist_to_center > Scalar[DTYPE](1e-10):
         var inv_dist = Scalar[DTYPE](1.0) / dist_to_center
         nx_local = dx * inv_dist
@@ -1538,6 +1549,8 @@ def box_sphere[
             ny_local = Scalar[DTYPE](0.0)
             nz_local = Scalar[DTYPE](0.0)
             dist = -face_dist_x - sph_radius
+            interior = True
+            face_gap = face_dist_x
         elif face_dist_y <= face_dist_z:
             # Y face is closest
             nx_local = Scalar[DTYPE](0.0)
@@ -1546,6 +1559,8 @@ def box_sphere[
             ) else Scalar[DTYPE](-1.0)
             nz_local = Scalar[DTYPE](0.0)
             dist = -face_dist_y - sph_radius
+            interior = True
+            face_gap = face_dist_y
         else:
             # Z face is closest
             nx_local = Scalar[DTYPE](0.0)
@@ -1554,6 +1569,8 @@ def box_sphere[
                 0
             ) else Scalar[DTYPE](-1.0)
             dist = -face_dist_z - sph_radius
+            interior = True
+            face_gap = face_dist_z
 
     # Transform normal back to world frame
     var normal_world = rotate_vector_by_quat(
@@ -1571,13 +1588,199 @@ def box_sphere[
     var closest_y = box_y + closest_world[1]
     var closest_z = box_z + closest_world[2]
 
-    # Contact point is midpoint between surfaces
+    # Contact point is midpoint between surfaces.
+    #   exterior  `closest` is on the box surface, so mid = closest + n*dist/2,
+    #             which is `mjraw_SphereBox`'s 0.5*(clamped + deepest)
+    #   interior  `closest` IS the sphere centre, and MuJoCo's is
+    #             centre + nearest*(radius - face_gap)/2
+    #
+    # ⚠ `nearest` IS THE NEGATION OF OUR NORMAL. MuJoCo's interior normal points
+    # from the nearest face INTO the box (its convention is geom1 -> geom2, i.e.
+    # sphere -> box); ours points out of the box toward the sphere. So the
+    # offset along OUR normal is (face_gap - radius)/2, and writing MuJoCo's
+    # expression verbatim moves the point the wrong way by `face_gap` — the same
+    # distance the original `dist/2` was wrong by, in the opposite direction.
     var half_dist = Scalar[DTYPE](0.5) * dist
+    if interior:
+        half_dist = Scalar[DTYPE](0.5) * (face_gap - sph_radius)
     var contact_x = closest_x + nx * half_dist
     var contact_y = closest_y + ny * half_dist
     var contact_z = closest_z + nz * half_dist
 
     return (dist, contact_x, contact_y, contact_z, nx, ny, nz)
+
+
+@always_inline
+def _capsule_box_best_segment_pos[
+    DTYPE: DType
+](
+    pos_x: Scalar[DTYPE],
+    pos_y: Scalar[DTYPE],
+    pos_z: Scalar[DTYPE],
+    hax_x: Scalar[DTYPE],
+    hax_y: Scalar[DTYPE],
+    hax_z: Scalar[DTYPE],
+    sx: Scalar[DTYPE],
+    sy: Scalar[DTYPE],
+    sz: Scalar[DTYPE],
+) -> Scalar[DTYPE]:
+    """Where on a capsule's axis it comes closest to a box's SURFACE.
+
+    Everything is in the BOX'S LOCAL FRAME: the box is centred at the origin
+    with half-extents `(sx, sy, sz)`, and the capsule's axis segment is
+    `pos + halfaxis * s` for `s` in [-1, 1]. Returns that `s`.
+
+    This is `mjraw_CapsuleBox`'s search (`engine_collision_box.c`), which the
+    caller then reduces to box/sphere at the returned point exactly as MuJoCo
+    reduces to `mjraw_SphereBox`. Two families of candidate:
+
+      FACE  each ENDPOINT, clamped into the box. Accepted only when the
+            endpoint is outside along at most ONE axis, which is what makes it
+            a face (or interior) case rather than an edge or corner one — those
+            are covered exactly by the edge family below, and letting a corner
+            through here would return the distance to the corner while claiming
+            a face.
+      EDGE  all 12 box edges against the segment, as a segment/segment closest
+            point with both parameters clamped to [-1, 1]. An edge's midpoint
+            is a corner with the edge's own component zeroed, and it runs along
+            that axis with half-length `size[j]` — hence the `i & (1 << j)`
+            filter, which visits each edge once.
+
+    ⚠ NOT the point closest to the box's CENTRE. That is what this replaced and
+    the two agree only for face contacts; see task #45.
+
+    ⚠ THE DEGENERATE EDGE IS SKIPPED, NOT CLAMPED. When the capsule axis is
+    parallel to box axis `j`, `det` vanishes for that axis's four edges and
+    they carry no information — the other eight still do. Clamping a vanishing
+    determinant instead would return an arbitrary point on a parallel edge and
+    win the comparison with a bogus distance.
+    """
+    comptime MINVAL = Scalar[DTYPE](1e-15)
+
+    var best = Scalar[DTYPE](0)
+    var best_d2 = Scalar[DTYPE](1e30)
+    var found = False
+
+    # ── faces: the two endpoints ────────────────────────────────────────────
+    var ends = [Scalar[DTYPE](-1), Scalar[DTYPE](1)]
+    for k in range(2):
+        var i = ends[k]
+        var ex = pos_x + hax_x * i
+        var ey = pos_y + hax_y * i
+        var ez = pos_z + hax_z * i
+
+        var cx = ex
+        var cy = ey
+        var cz = ez
+        var nclamp = 0
+        if cx < -sx:
+            cx = -sx
+            nclamp += 1
+        elif cx > sx:
+            cx = sx
+            nclamp += 1
+        if cy < -sy:
+            cy = -sy
+            nclamp += 1
+        elif cy > sy:
+            cy = sy
+            nclamp += 1
+        if cz < -sz:
+            cz = -sz
+            nclamp += 1
+        elif cz > sz:
+            cz = sz
+            nclamp += 1
+        if nclamp > 1:
+            continue
+
+        var dx = cx - ex
+        var dy = cy - ey
+        var dz = cz - ez
+        var d2 = dx * dx + dy * dy + dz * dz
+        if d2 < best_d2:
+            best_d2 = d2
+            best = i
+            found = True
+
+    # ── edges: all 12, as segment vs segment ────────────────────────────────
+    var sizes = [sx, sy, sz]
+    var hax = [hax_x, hax_y, hax_z]
+    var pos = [pos_x, pos_y, pos_z]
+    for j in range(3):
+        var sj = sizes[j]
+        for i in range(8):
+            if (i & (1 << j)) != 0:
+                continue
+            # The edge's midpoint: a corner with component j zeroed.
+            var e0 = sx if (i & 1) != 0 else -sx
+            var e1 = sy if (i & 2) != 0 else -sy
+            var e2 = sz if (i & 4) != 0 else -sz
+            var edge = [e0, e1, e2]
+            edge[j] = Scalar[DTYPE](0)
+
+            var dif0 = edge[0] - pos[0]
+            var dif1 = edge[1] - pos[1]
+            var dif2 = edge[2] - pos[2]
+
+            var ma = sj * sj
+            var mb = -sj * hax[j]
+            var mc = hax_x * hax_x + hax_y * hax_y + hax_z * hax_z
+
+            var difs = [dif0, dif1, dif2]
+            var u = -sj * difs[j]
+            var v = hax_x * dif0 + hax_y * dif1 + hax_z * dif2
+
+            var det = ma * mc - mb * mb
+            if abs(det) < MINVAL:
+                continue
+            var idet = Scalar[DTYPE](1) / det
+
+            var x1 = (mc * u - mb * v) * idet
+            var x2 = (ma * v - mb * u) * idet
+
+            if x1 > Scalar[DTYPE](1):
+                x1 = Scalar[DTYPE](1)
+                x2 = (v - mb) / mc
+            elif x1 < Scalar[DTYPE](-1):
+                x1 = Scalar[DTYPE](-1)
+                x2 = (v + mb) / mc
+
+            if x2 > Scalar[DTYPE](1):
+                x2 = Scalar[DTYPE](1)
+                x1 = (u - mb) / ma
+                if x1 > Scalar[DTYPE](1):
+                    x1 = Scalar[DTYPE](1)
+                elif x1 < Scalar[DTYPE](-1):
+                    x1 = Scalar[DTYPE](-1)
+            elif x2 < Scalar[DTYPE](-1):
+                x2 = Scalar[DTYPE](-1)
+                x1 = (u + mb) / ma
+                if x1 > Scalar[DTYPE](1):
+                    x1 = Scalar[DTYPE](1)
+                elif x1 < Scalar[DTYPE](-1):
+                    x1 = Scalar[DTYPE](-1)
+
+            # Vector from the point on the capsule to the point on the edge.
+            var g0 = dif0 - hax_x * x2
+            var g1 = dif1 - hax_y * x2
+            var g2 = dif2 - hax_z * x2
+            var gg = [g0, g1, g2]
+            gg[j] = gg[j] + sj * x1
+            var d2 = gg[0] * gg[0] + gg[1] * gg[1] + gg[2] * gg[2]
+
+            # The `- MINVAL` is MuJoCo's, and it matters: it stops a tie broken
+            # by round-off from moving the contact point between two edges that
+            # are exactly equidistant, which a numerically-parallel axis makes
+            # common.
+            if d2 < best_d2 - MINVAL:
+                best_d2 = d2
+                best = x2
+                found = True
+
+    if not found:
+        return Scalar[DTYPE](0)
+    return best
 
 
 @always_inline
@@ -1664,32 +1867,30 @@ def box_capsule[
         rel2_x, rel2_y, rel2_z, box_qx, box_qy, box_qz, box_qw
     )
 
-    # Segment direction in local frame
-    var seg_dx = local2[0] - local1[0]
-    var seg_dy = local2[1] - local1[1]
-    var seg_dz = local2[2] - local1[2]
+    # The capsule as (centre, half-axis) in the box's local frame, which is the
+    # parameterisation `_capsule_box_best_segment_pos` and MuJoCo both use:
+    # the segment is `pos + halfaxis * s` for s in [-1, 1].
+    var pos_x = (local1[0] + local2[0]) * Scalar[DTYPE](0.5)
+    var pos_y = (local1[1] + local2[1]) * Scalar[DTYPE](0.5)
+    var pos_z = (local1[2] + local2[2]) * Scalar[DTYPE](0.5)
+    var hax_x = (local1[0] - local2[0]) * Scalar[DTYPE](0.5)
+    var hax_y = (local1[1] - local2[1]) * Scalar[DTYPE](0.5)
+    var hax_z = (local1[2] - local2[2]) * Scalar[DTYPE](0.5)
 
-    # Find point on segment closest to box center (origin in local frame)
-    # Project origin onto segment: t = -dot(p1, d) / dot(d, d)
-    var seg_len_sq = seg_dx * seg_dx + seg_dy * seg_dy + seg_dz * seg_dz
-    var t: Scalar[DTYPE]
-
-    if seg_len_sq > Scalar[DTYPE](1e-10):
-        t = (
-            -(local1[0] * seg_dx + local1[1] * seg_dy + local1[2] * seg_dz)
-            / seg_len_sq
-        )
-        if t < Scalar[DTYPE](0.0):
-            t = Scalar[DTYPE](0.0)
-        elif t > Scalar[DTYPE](1.0):
-            t = Scalar[DTYPE](1.0)
-    else:
-        t = Scalar[DTYPE](0.5)
+    # ⚠ THE POINT ON THE SEGMENT CLOSEST TO THE BOX'S SURFACE, NOT TO ITS
+    # CENTRE. This used to project the box CENTRE onto the segment, which is a
+    # different point whenever the box's nearest feature is not the face that
+    # projection points at — i.e. for every edge and corner contact. It cost up
+    # to 24 mm of depth and a fully reversed normal; see task #45 and
+    # `tests/physics3d/test_capsule_box_sweep.mojo`.
+    var s = _capsule_box_best_segment_pos[DTYPE](
+        pos_x, pos_y, pos_z, hax_x, hax_y, hax_z, half_x, half_y, half_z
+    )
 
     # Closest point on segment (in local frame)
-    var closest_seg_x = local1[0] + t * seg_dx
-    var closest_seg_y = local1[1] + t * seg_dy
-    var closest_seg_z = local1[2] + t * seg_dz
+    var closest_seg_x = pos_x + s * hax_x
+    var closest_seg_y = pos_y + s * hax_y
+    var closest_seg_z = pos_z + s * hax_z
 
     # Transform back to world frame for box-sphere test
     var closest_world = rotate_vector_by_quat(
