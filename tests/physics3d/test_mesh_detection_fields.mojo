@@ -76,13 +76,21 @@ comptime METADATA_SIZE_L = 4
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
 comptime GOLD_NCON = 2  # total contacts across both envs
-# ⚠ GOLD_CON moved +32.0 on 2026-08-01 with the narrow-phase CONTACT DIRECTION
-# fix (see `collision/broadphase_sap.mojo`). Accounted for exactly: the
-# fractional part is UNCHANGED, so only integer fields moved, and 33 - 1 = 32
-# is exactly one `(body_a, body_b)` relabel on the env0 obj(33)/table(1)
-# contact at weight (e+1)(c+1) = 1. Normal, position and dist are bit-identical
-# and the count is unchanged. Not re-recorded blind.
-comptime GOLD_CON = 495.781851073727  # order-sensitive contact-record checksum
+# ⚠ GOLD_CON has moved TWICE on 2026-08-01, both times accounted for exactly
+# and neither re-recorded blind. Both changes are narrow-phase CONTACT
+# DIRECTION work; the fingerprint is `sum contacts[e,c,k] * (e+1)(c+1)(k+1)`.
+#   +32.0  bug 35 (the double flip): fractional part UNCHANGED, and 33 - 1 = 32
+#          is one `(body_a, body_b)` relabel on the env0 obj(33)/table(1)
+#          contact at weight (e+1)(c+1) = 1. Normal/pos/dist bit-identical.
+#   -16.0  bug 36 (`cylinder_box` returned the opposite normal — it delegates
+#          to `box_capsule` with SWAPPED operands and did not negate). Sawyer's
+#          obj is a cylinder and its table a box, so this is exactly that pair.
+#          The table is horizontal, so the normal is (0,0,+-1): flipping nz by
+#          2 at CONTACT_IDX_NZ (k=7, weight (e+1)(c+1)*8 = 8) gives -2*8 = -16.
+#          Fractional part unchanged for the same reason — an integer-valued
+#          float moved. The new direction is MuJoCo-verified by
+#          `test_narrow_phase_pairs.mojo`.
+comptime GOLD_CON = 479.781851073727  # order-sensitive contact-record checksum
 
 
 def main() raises:

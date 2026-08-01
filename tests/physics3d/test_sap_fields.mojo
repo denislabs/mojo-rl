@@ -102,11 +102,18 @@ comptime GOLD_CON_H = 8088.218293994316
 # and env1's pose moved to a z where the mesh contact is real. Two effects,
 # one direction: fewer, and now all genuine.
 comptime GOLD_NCON_S = 4  # Part B sawyer SAP: total contacts
-# ⚠ GOLD_CON_S moved +64.0 with the same 2026-08-01 CONTACT DIRECTION fix.
-# Fractional part UNCHANGED, so only integer fields moved: 64 = 32 * 2, i.e.
-# one `(body_a, body_b)` relabel on the env1 obj(33)/table(1) contact, whose
-# fingerprint weight is (e+1)(c+1) = 2. Same accounting as GOLD_CON_H above.
-comptime GOLD_CON_S = 1190.0095018647844
+# ⚠ GOLD_CON_S has moved TWICE on 2026-08-01, both accounted for exactly.
+#   +64.0  bug 35 (the double flip): fractional part unchanged; 64 = 32 * 2,
+#          one `(body_a, body_b)` relabel of the env1 obj(33)/table(1) contact
+#          at fingerprint weight (e+1)(c+1) = 2.
+#   -32.0  bug 36 (`cylinder_box` returned the opposite normal). Sawyer's obj
+#          is a cylinder and its table a box. The table is horizontal so the
+#          normal is (0,0,+-1); flipping nz by 2 at CONTACT_IDX_NZ (k=7,
+#          weight (e+1)(c+1)*8 = 16) gives -2*16 = -32. Fractional part
+#          unchanged because an integer-valued float moved. MuJoCo-verified by
+#          `test_narrow_phase_pairs.mojo`.
+# Part A (humanoid) did NOT move for bug 36 — no cylinder/box pair there.
+comptime GOLD_CON_S = 1158.0095018647844
 
 # ── Humanoid (Part A) ────────────────────────────────────────────────────
 comptime NQ_H = HumanoidModel.NQ  # 24

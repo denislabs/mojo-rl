@@ -2836,9 +2836,22 @@ def cylinder_box[
     For exact cylinder-box, a full SAT or GJK approach would be needed,
     but capsule approximation matches MuJoCo's practical behavior for
     typical robot geometries.
+
+    Returns the normal pointing from the CYLINDER to the BOX — first operand
+    to second, the convention every primitive in this file follows.
+
+    ⚠ The delegation below SWAPS the operands (`box_capsule` takes the box
+    first), so its normal comes back pointing box -> cylinder and has to be
+    negated. It was not, so this primitive returned the exact opposite of what
+    its own signature promises. Silent until 2026-08-01: no gate exercised a
+    cylinder-box pair against MuJoCo, and the two call sites in the narrow
+    phase BOTH consumed it, so they were consistently wrong with each other
+    and only a MuJoCo comparison could see it —
+    `tests/physics3d/test_narrow_phase_pairs.mojo` measured a direction error
+    of 2.0 on a unit vector, i.e. a full reversal, on its first run.
     """
     # Treat cylinder as capsule → reuse box_capsule
-    return box_capsule[DTYPE](
+    var r = box_capsule[DTYPE](
         b_x, b_y, b_z,
         b_qx, b_qy, b_qz, b_qw,
         hx, hy, hz,
@@ -2847,3 +2860,5 @@ def cylinder_box[
         cyl_hl,
         cyl_r,
     )
+    # dist and the contact point are direction-free; only the normal flips.
+    return (r[0], r[1], r[2], r[3], -r[4], -r[5], -r[6])
