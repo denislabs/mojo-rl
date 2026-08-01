@@ -850,6 +850,25 @@ def _detect_contacts_sap_env[
             var nx: Scalar[DTYPE] = 0
             var ny: Scalar[DTYPE] = 0
             var nz: Scalar[DTYPE] = 1
+            # CONTACT DIRECTION INVARIANT — every branch below emits
+            # `normal = gi -> gj` with `body_a = gi_body, body_b = gj_body`.
+            #
+            # The REVERSED-ORDER branches call a primitive written for the
+            # other operand order, so they negate the returned normal to get
+            # back to gi->gj. They used to ALSO swap body_a/body_b, and that
+            # double flip left them emitting `normal = body_b -> body_a` while
+            # the ten canonical-order branches emitted `body_a -> body_b`.
+            # Either operation alone is correct; both is not.
+            #
+            # Silent until dm_control manipulator, which is the first model
+            # where one physical pair type reaches BOTH orderings — a sphere
+            # (the ball) contacting capsules (the fingers), under the SAP
+            # broadphase where (gi, gj) comes from the sweep rather than the
+            # geom index. `aref` is built from the penetration DEPTH and so
+            # does not flip with the normal, so a flipped normal desynchronises
+            # `jar = aref + J*qacc`: one contact was self-consistent and the
+            # other was not, giving contact forces 9% and 20% below MuJoCo's
+            # while every row constant matched to 15 digits.
             var body_a = gi_body
             var body_b = gj_body
 
@@ -910,8 +929,6 @@ def _detect_contacts_sap_env[
                 nx = -r[4]
                 ny = -r[5]
                 nz = -r[6]
-                body_a = gj_body
-                body_b = gi_body
             elif gi_type == GEOM_CAPSULE and gj_type == GEOM_CAPSULE:
                 var r = capsule_capsule[DTYPE](
                     pi_x,
@@ -988,8 +1005,6 @@ def _detect_contacts_sap_env[
                 nx = -r[4]
                 ny = -r[5]
                 nz = -r[6]
-                body_a = gj_body
-                body_b = gi_body
             elif gi_type == GEOM_BOX and gj_type == GEOM_CAPSULE:
                 var r = box_capsule[DTYPE](
                     pi_x,
@@ -1048,8 +1063,6 @@ def _detect_contacts_sap_env[
                 nx = -r[4]
                 ny = -r[5]
                 nz = -r[6]
-                body_a = gj_body
-                body_b = gi_body
             elif gi_type == GEOM_BOX and gj_type == GEOM_BOX:
                 var r = box_box[DTYPE](
                     pi_x,
@@ -1126,8 +1139,6 @@ def _detect_contacts_sap_env[
                 nx = -r[4]
                 ny = -r[5]
                 nz = -r[6]
-                body_a = gj_body
-                body_b = gi_body
 
             elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE:
                 var r = cylinder_capsule[DTYPE](
@@ -1151,8 +1162,6 @@ def _detect_contacts_sap_env[
                 nx = -r[4]
                 ny = -r[5]
                 nz = -r[6]
-                body_a = gj_body
-                body_b = gi_body
 
             elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER:
                 var r = cylinder_cylinder[DTYPE](
@@ -1188,8 +1197,6 @@ def _detect_contacts_sap_env[
                 nx = -r[4]
                 ny = -r[5]
                 nz = -r[6]
-                body_a = gj_body
-                body_b = gi_body
 
             # GJK/EPA fallback for any pair involving a mesh geom
             elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:

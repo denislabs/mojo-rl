@@ -13,16 +13,22 @@ WHAT THIS DOMAIN EXERCISES THAT NO EARLIER ONE DID
   - ELLIPTIC cone WITH a fixed-tendon equality (`coupling`).
   - A `<motor>` on a TENDON transmission (`grasp`).
 
-⚠ `test_manipulator_qacc_by_constraint_bucket` IS CURRENTLY RED, on purpose.
-It fails its `our ncon == MuJoCo ncon` assertion because our plane narrow
-phase reduces every plane to a horizontal floor at its own z and ignores the
-orientation — so manipulator's VERTICAL `background` plane (`pos="0 .2 .5"
-zaxis="0 -1 0"`) is read as a floor at z = 0.5 and invents a contact with
-`upper_arm` in every pose. That is a real engine bug, found by this file; it
-is not flaky and must not be softened. The observation and reward layers wait
-on the same fix, as does any numeric reading of the buckets below.
+THIS FILE FOUND TWO ENGINE BUGS, both silent and both now fixed:
 
-The MODEL layer is green and is what this file establishes today.
+  * the plane narrow phase ignored plane ORIENTATION, reducing every plane to
+    a horizontal floor at its own z. manipulator's VERTICAL `background` plane
+    (`pos="0 .2 .5" zaxis="0 -1 0"`) was read as a floor at z = 0.5 and
+    invented a contact with `upper_arm` in every pose. Caught by the
+    `our ncon == MuJoCo ncon` assertion below, which is why that assertion is
+    there: bucketing by MuJoCo's live rows means nothing if our own row set
+    differs.
+  * the narrow phase's contact DIRECTION invariant. Twelve reversed-order
+    branches negated the primitive's normal AND swapped body_a/body_b — a
+    double flip that left them emitting `normal = body_b -> body_a` where the
+    ten canonical-order branches emit `body_a -> body_b`. `aref` is built from
+    the penetration DEPTH and does not flip with the normal, so a flipped
+    normal desynchronises `jar = aref + J*qacc`. The grasp buckets were 5.21
+    and 1.22 (a 100%+ qacc error) and are now 4.05e-9 and 1.01e-9.
 
 Run with:
     pixi run mojo run -I . tests/dm_control/test_manipulator_vs_dm_control.mojo
@@ -100,11 +106,18 @@ comptime NTEN: Int = M.MAX_TENDON  # 2
 # inertia integrals, so anything above ~1e-12 is a real disagreement.
 comptime TOL_MODEL: Float64 = 1e-9
 
-# qacc gates, PROVISIONAL — set from the first measurement, then tightened.
-# Split so a regression in a coupled bucket cannot hide behind the uncoupled
-# one; see the block comment above the physics layer.
-comptime TOL_QACC_UNCOUPLED: Float64 = 1e-9
-comptime TOL_QACC_COUPLED: Float64 = 1e-9
+# qacc gates, set from the measured worst case per bucket with roughly a
+# decade of headroom. Measured 2026-08-01, all ten poses:
+#   A equality only               9.94e-10
+#   B equality + limit            6.02e-10
+#   C equality + contact          4.05e-9
+#   D equality + limit + contact  1.01e-9
+# The C/D buckets were 5.21 and 1.22 — a 100%+ error — until the narrow
+# phase's contact DIRECTION invariant was fixed; see the block comment above
+# the physics layer. Split so a regression in a coupled bucket cannot hide
+# behind the uncoupled one.
+comptime TOL_QACC_UNCOUPLED: Float64 = 1e-8
+comptime TOL_QACC_COUPLED: Float64 = 1e-8
 
 # OUR site order is XML TEXT order; MuJoCo's is sorted by body id, and here
 # they DIVERGE — `palm_touch` is declared after the `pinch site` body but

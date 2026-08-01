@@ -77,7 +77,20 @@ comptime GOLD_NCON_H = 14  # Part A humanoid SAP: total contacts
 # capsules. Same solid, but a different roll about the capsule axis, and that
 # axis is the tangent-frame hint the contact record carries. See the note on
 # `GOLD_B` in test_equality_tendon_fields.mojo for the same effect on a solve.
-comptime GOLD_CON_H = 8120.21960220451
+# ⚠ GOLD_CON_H moved -32.0 on 2026-08-01 with the narrow-phase CONTACT
+# DIRECTION fix (see `collision/broadphase_sap.mojo`). Accounted for exactly,
+# and NOT re-recorded blind: only TWO env1 records changed, both purely a
+# `(body_a, body_b)` relabel with the normal, position and dist BIT-IDENTICAL
+# and the count unchanged —
+#     c=8  a5 b9 -> a9 b5      c=9  a8 b6 -> a6 b8
+# and the fingerprint weights BODY_A by (e+1)(c+1) and BODY_B by 2(e+1)(c+1):
+#     c=8: 18*(9-5) + 36*(5-9) = -72
+#     c=9: 20*(6-8) + 40*(8-6) = +40   -> -32 exactly.
+# Those are precisely the two contacts that took a reversed-order narrow-phase
+# branch, which used to negate the normal AND swap the bodies (a double flip).
+# The physics of the fix is anchored against MuJoCo on dm_control manipulator,
+# where it took the grasp qacc from 5.21 to 4.05e-9.
+comptime GOLD_CON_H = 8088.218293994316
 # Re-harvested 2026-07-29 (was NCON 6 / fingerprint 2258.0145981857786), same
 # cause as the plane-mesh gate: SawyerReach's class-only geoms now inherit
 # `type="mesh"` from their `<default class="base_viz"/base_col">` blocks, as
@@ -89,7 +102,11 @@ comptime GOLD_CON_H = 8120.21960220451
 # and env1's pose moved to a z where the mesh contact is real. Two effects,
 # one direction: fewer, and now all genuine.
 comptime GOLD_NCON_S = 4  # Part B sawyer SAP: total contacts
-comptime GOLD_CON_S = 1126.0095018647844
+# ⚠ GOLD_CON_S moved +64.0 with the same 2026-08-01 CONTACT DIRECTION fix.
+# Fractional part UNCHANGED, so only integer fields moved: 64 = 32 * 2, i.e.
+# one `(body_a, body_b)` relabel on the env1 obj(33)/table(1) contact, whose
+# fingerprint weight is (e+1)(c+1) = 2. Same accounting as GOLD_CON_H above.
+comptime GOLD_CON_S = 1190.0095018647844
 
 # ── Humanoid (Part A) ────────────────────────────────────────────────────
 comptime NQ_H = HumanoidModel.NQ  # 24

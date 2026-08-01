@@ -76,7 +76,13 @@ comptime METADATA_SIZE_L = 4
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
 comptime GOLD_NCON = 2  # total contacts across both envs
-comptime GOLD_CON = 463.781851073727  # order-sensitive contact-record checksum
+# ⚠ GOLD_CON moved +32.0 on 2026-08-01 with the narrow-phase CONTACT DIRECTION
+# fix (see `collision/broadphase_sap.mojo`). Accounted for exactly: the
+# fractional part is UNCHANGED, so only integer fields moved, and 33 - 1 = 32
+# is exactly one `(body_a, body_b)` relabel on the env0 obj(33)/table(1)
+# contact at weight (e+1)(c+1) = 1. Normal, position and dist are bit-identical
+# and the count is unchanged. Not re-recorded blind.
+comptime GOLD_CON = 495.781851073727  # order-sensitive contact-record checksum
 
 
 def main() raises:
