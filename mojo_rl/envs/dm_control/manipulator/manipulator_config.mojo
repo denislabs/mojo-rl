@@ -1,10 +1,27 @@
-"""dm_control `manipulator-bring_ball` task config — port of `suite/manipulator.py`.
+"""dm_control `manipulator` task config — port of `suite/manipulator.py::Bring`.
+
+ONE task class over four models. `Bring` is parameterised by `(use_peg,
+insert)` and so is this config; the four registered tasks are
+
+    bring_ball   DMManipulatorConfig[False, False]
+    bring_peg    DMManipulatorConfig[True,  False]
+    insert_ball  DMManipulatorConfig[False, True ]
+    insert_peg   DMManipulatorConfig[True,  True ]
 
     observation = arm_pos(16) + arm_vel(8) + touch(5)
                 + hand_pos(4) + object_pos(4) + object_vel(3)
                 + target_pos(4)                                        (44)
-    reward      = _is_close(site_distance('ball', 'target_ball'))
     episode     = 1000 control steps (10 s / .01 s), no early termination
+
+WHAT EACH FLAG CHANGES
+  use_peg  the MODEL (peg + target_peg instead of ball + target_ball, which
+           renumbers everything after the arm) and the REWARD (`_peg_reward`'s
+           four terms instead of `_ball_reward`'s one).
+  insert   the MODEL again (a `cup`/`slot` receptacle between the prop and the
+           target) and the RESET (the receptacle is posed with the target, and
+           the target angle narrows from U(-pi, pi) to U(-pi/3, pi/3)).
+           It does NOT change the reward: `get_reward` never mentions the
+           receptacle, so inserting is rewarded only through bringing.
 
 OBSERVATION, term by term (`Bring.get_observation`, fully_observable=True):
 
@@ -16,45 +33,67 @@ OBSERVATION, term by term (`Bring.get_observation`, fully_observable=True):
   hand_pos    `body_2d_pose('hand')` = [xpos.x, xpos.z, xquat.qw, xquat.qy].
               A PLANAR pose: two of four quaternion components, because the
               model only moves in the x-z plane.
-  object_pos  same, for `ball`.
-  object_vel  `qvel[['ball_x','ball_z','ball_y']]`.
-  target_pos  same 2-D pose, for `target_ball`.
+  object_pos  same, for the prop.
+  object_vel  `qvel` of the prop's three joints.
+  target_pos  same 2-D pose, for the target.
 
 ⚠ `_ARM_JOINTS` lists finger/fingertip BEFORE thumb/thumbtip, while the MODEL
-declares the thumb chain first. `ARM_JOINT_OBS_ORDER` carries that permutation.
+declares the thumb chain first. `arm_joint_obs_order` carries that permutation.
 A symmetric pose hides the difference completely, which is exactly why the
-parity test drives an ASYMMETRIC one.
+parity tests drive an ASYMMETRIC one.
 
-REWARD. `_ball_reward` = `_is_close(site_distance('ball', 'target_ball'))`,
-where `_is_close(d) = tolerance(d, bounds=(0, _CLOSE), margin=_CLOSE*2)` and
-`_CLOSE = .01`. `site_distance` is the full 3-D norm between the two SITES,
-both of which sit at their body origins here. The `peg` variants use a
-different, four-term reward and are not ported.
+REWARD. `_is_close(d) = tolerance(d, bounds=(0, _CLOSE), margin=_CLOSE*2)` with
+`_CLOSE = .01`, over full 3-D distances between SITES.
+
+    _ball_reward = _is_close(dist(ball, target_ball))
+    _peg_reward  = max(bringing, grasping / 3), where
+                     grasping = mean(_is_close(dist(peg_grasp, grasp)),
+                                     _is_close(dist(peg_pinch, pinch)))
+                     bringing = mean(_is_close(dist(peg, target_peg)),
+                                     _is_close(dist(target_peg_tip, peg_tip)))
+
+The peg form is a shaped reward: holding the peg correctly is worth at most
+1/3, and actually delivering it dominates as soon as either bring term lifts
+off the floor. The `/3` is what keeps a policy from parking in the grasp.
 
 RESET. `Bring.initialize_episode` randomises the arm within its joint limits,
-SYMMETRISES the hand (`qpos['finger'] = qpos['thumb']`), places the target, and
-then picks the object's start from three cases with probabilities
-(.1 in-hand, .1 in-target, .8 uniform) — rejecting the whole draw while
-`physics.data.ncon > 0`.
+SYMMETRISES the hand (`qpos['finger'] = qpos['thumb']`), places the target (and
+the receptacle, when inserting), and then picks the object's start from three
+cases with probabilities (.1 in-hand, .1 in-target, .8 uniform) — REJECTING the
+whole draw while `physics.data.ncon > 0`.
 
 WHAT THIS PORT DOES DIFFERENTLY, and why:
-  * The target is a MOCAP body (see `manipulator_xml`), so its per-episode pose
-    is written to `d.mocap_pos` / `d.mocap_quat` instead of to the model.
-  * The rejection loop needs collision detection from inside a reset hook,
-    which is not available here — the same constraint ball_in_cup hit. Rather
-    than approximate a 21-geom arm in closed form, this port SKIPS the
-    `in_hand` case (the one that deliberately starts the object touching the
-    hand) and samples the object away from the arm, which makes the rejection
-    test unnecessary rather than approximate. The acceptance region is
-    therefore a subset of the reference's, not an approximation of it — the
-    distinction matters, because an approximate region would drift silently
-    and a subset cannot.
+  * The target and the receptacle are MOCAP bodies (see `manipulator_xml`), so
+    their per-episode poses are written to `d.mocap_pos` / `d.mocap_quat`
+    instead of to the model.
+  * The reference's rejection loop needs full collision detection from inside a
+    reset hook, which is not available here — the same constraint ball_in_cup
+    hit. Instead the object is placed with a CLOSED-FORM clearance test against
+    the arm (`_arm_clearance` below), which is exact for the three arm links
+    and conservative for the hand. The acceptance region is therefore a SUBSET
+    of the reference's rather than an approximation of it: everything this
+    accepts, the reference would also accept. The distinction matters, because
+    an approximate region drifts silently and a subset cannot.
+  * The `in_hand` case (which deliberately starts the object touching the hand,
+    and needs `site_xmat['grasp']` mid-reset) is SKIPPED. `in_target` is
+    skipped for the INSERT tasks only, where it places the object inside the
+    receptacle: for insert_ball the ball's .022 radius overlaps the cup wall by
+    ~4 mm at the cup origin, so the reference rejects that draw anyway.
   * Episode-for-episode reproduction of a reference rollout is not a goal; the
-    parity test sets qpos in both engines directly.
+    parity tests set qpos in both engines directly.
+
+⚠ THE FIRST VERSION OF THIS RESET was near-degenerate and its replacement is
+the reason `_arm_clearance` exists. It rejected any object within ARM_REACH
+(.62 m, the arm's FULL extension) of the shoulder — a sound bound, but one that
+accepts only 0.13% of draws from the reference's sampling box, so 77% of resets
+exhausted all 200 tries and fell through with an arbitrary, usually
+arm-penetrating, placement. Measured, not estimated. The clearance test accepts
+88% (ball) and 70% (peg) and gives the same guarantee, because it tests the arm
+where the arm actually IS rather than where it could reach.
 """
 
 from std.random import random_float64
-from std.math import sin, cos, sqrt, log
+from std.math import sin, cos, sqrt, log, pi
 
 from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
@@ -66,17 +105,24 @@ from mojo_rl.physics3d.sensors.touch import touch_sphere_site
 from mojo_rl.envs.dm_control.rewards import tolerance
 
 from .manipulator_xml import (
-    DMManipulatorBringBallModel,
     arm_joint_obs_order,
     touch_site_order,
+    target_body_idx,
+    receptacle_body_idx,
+    site_object,
+    site_object_pinch,
+    site_object_grasp,
+    site_object_tip,
+    site_target,
+    site_target_tip,
     HAND_BODY_IDX,
-    BALL_BODY_IDX,
-    TARGET_BODY_IDX,
-    SITE_BALL,
-    SITE_TARGET_BALL,
-    BALL_QADR_X,
-    BALL_QADR_Z,
-    BALL_QADR_Y,
+    OBJECT_BODY_IDX,
+    OBJECT_QADR_X,
+    OBJECT_QADR_Z,
+    OBJECT_QADR_Y,
+    SITE_GRASP,
+    SITE_PINCH,
+    NARM_JOINTS,
     MANIPULATOR_OBS_DIM,
 )
 
@@ -103,18 +149,121 @@ comptime OBJECT_Z_HI: Float64 = 0.7
 comptime OBJECT_VX_LO: Float64 = -5.0
 comptime OBJECT_VX_HI: Float64 = 5.0
 
-# The arm is inside a cylinder of this radius about the shoulder; sampling the
-# object outside it makes the reference's `ncon > 0` rejection unnecessary
-# rather than approximate. upper+middle+lower+hand+fingers reach
-# .18+.15+.12+.03+~.06 = .54 from the shoulder at (0, .4).
-comptime ARM_REACH: Float64 = 0.62
+comptime NARM: Int = NARM_JOINTS
+
+# ── the arm, as a planar chain ──────────────────────────────────────────────
+#
+# `_arm_clearance` needs the arm's actual pose, and the reset hook runs BEFORE
+# forward kinematics (`_reset_state`: reset_data -> hooks -> FK). That is fine
+# here because the arm is a PLANAR 4-link chain with hinges all about `0 -1 0`,
+# so its world geometry is three lines of trig rather than a call into FK.
+#
+# Rotating a local vector by angle `q` about the axis (0,-1,0) maps the local
+# +z direction to `(-sin q, cos q)` in world (x, z), and the joints compose, so
+# link `i` runs along the cumulative angle `q0 + ... + qi`.
 comptime SHOULDER_X: Float64 = 0.0
-comptime SHOULDER_Z: Float64 = 0.4
+comptime SHOULDER_Z: Float64 = 0.4  # `<body name="upper_arm" pos="0 0 .4">`
 
-comptime NARM: Int = 8
+# `fromto` lengths and `size` radii of upper_arm / middle_arm / lower_arm.
+comptime LINK_LEN_0: Float64 = 0.18
+comptime LINK_LEN_1: Float64 = 0.15
+comptime LINK_LEN_2: Float64 = 0.12
+comptime LINK_RAD_0: Float64 = 0.02
+comptime LINK_RAD_1: Float64 = 0.017
+comptime LINK_RAD_2: Float64 = 0.014
+
+# Everything from the wrist outwards — the hand capsule, both palms, both
+# fingers and both fingertips — bounded by one disc about the wrist origin.
+# The furthest reachable point is palm tip (.054) + thumb (.05 + .01) + tip
+# radius (.008) ~ .12; .13 rounds that up. Conservative on purpose: a disc is
+# what makes the test a SUBSET of the reference's acceptance region, since the
+# fingers move with two joints this test never reads.
+comptime HAND_DISC_RAD: Float64 = 0.13
+
+# Bounding radius of the prop about its own origin, which is what the clearance
+# is compared against. The ball is its geom radius. The peg's origin is at the
+# blade's TOP and it hangs .113 below with a .005 capsule, so it needs a much
+# larger ball — and its `peg_y` hinge means the orientation is random, so a
+# sphere is the only sound bound.
+comptime BALL_BOUND_RAD: Float64 = 0.022
+comptime PEG_BOUND_RAD: Float64 = 0.12
+
+# Keep-out disc about the receptacle origin, for the INSERT tasks: the
+# receptacle is posed at the target and the object is not, so a uniform draw
+# could otherwise land inside it. Sized from the receptacle's own extent plus
+# the prop's bound. `cup` spans ~.07 from its origin, `slot` ~.16.
+comptime CUP_CLEAR_RAD: Float64 = 0.07 + BALL_BOUND_RAD
+comptime SLOT_CLEAR_RAD: Float64 = 0.16 + PEG_BOUND_RAD
+
+# `initialize_episode`'s draw budget. The measured acceptance rates are 88%
+# (ball) and 70% (peg), so exhausting this is a ~1e-104 event; it exists to
+# bound the loop, not because it is expected to fire.
+comptime MAX_PLACEMENT_TRIES: Int = 200
 
 
-struct DMManipulatorConfig(Phyics3dEnvConfig):
+def _dist_point_segment(
+    px: Float64, pz: Float64,
+    ax: Float64, az: Float64,
+    bx: Float64, bz: Float64,
+) -> Float64:
+    """Distance from (px, pz) to the segment a->b, in the x-z plane."""
+    var dx = bx - ax
+    var dz = bz - az
+    var l2 = dx * dx + dz * dz
+    var t = 0.0
+    if l2 > 0.0:
+        t = ((px - ax) * dx + (pz - az) * dz) / l2
+        if t < 0.0:
+            t = 0.0
+        elif t > 1.0:
+            t = 1.0
+    var cx = px - (ax + t * dx)
+    var cz = pz - (az + t * dz)
+    return sqrt(cx * cx + cz * cz)
+
+
+def _arm_clearance(
+    q0: Float64, q1: Float64, q2: Float64, q3: Float64,
+    px: Float64, pz: Float64,
+) -> Float64:
+    """Gap in metres between the point (px, pz) and the arm's SURFACE.
+
+    Negative means inside. Exact for the three arm capsules (a capsule's
+    surface is exactly `distance-to-axis minus radius`) and conservative for
+    everything past the wrist, which is bounded by `HAND_DISC_RAD`.
+
+    `q3` (`arm_wrist`) only rotates the hand about the wrist origin, which the
+    disc already covers, so it is accepted and unused — spelled out rather than
+    dropped from the signature so a future non-disc hand model has it.
+    """
+    var x = SHOULDER_X
+    var z = SHOULDER_Z
+    var th = 0.0
+    var best = 1.0e18
+
+    var lens = [LINK_LEN_0, LINK_LEN_1, LINK_LEN_2]
+    var rads = [LINK_RAD_0, LINK_RAD_1, LINK_RAD_2]
+    var angs = [q0, q1, q2]
+    for i in range(3):
+        th += angs[i]
+        var nx = x - lens[i] * sin(th)
+        var nz = z + lens[i] * cos(th)
+        var g = _dist_point_segment(px, pz, x, z, nx, nz) - rads[i]
+        if g < best:
+            best = g
+        x = nx
+        z = nz
+
+    # Wrist origin: the hand assembly, as one disc.
+    var hx = px - x
+    var hz = pz - z
+    var gh = sqrt(hx * hx + hz * hz) - HAND_DISC_RAD
+    if gh < best:
+        best = gh
+    return best
+
+
+struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
     # === Physics ===
     # _CONTROL_TIMESTEP .01 / timestep .001.
     comptime FRAME_SKIP: Int = 10
@@ -126,6 +275,11 @@ struct DMManipulatorConfig(Phyics3dEnvConfig):
     comptime SYNC_FK_AFTER_STEP: Bool = True
     # No `<option integrator>`, so MuJoCo's Euler default applies.
     comptime INTEGRATOR: StaticString = "euler"
+
+    # Prop bounding radius and receptacle keep-out, selected by the flag rather
+    # than branched at every use.
+    comptime OBJ_RAD: Float64 = PEG_BOUND_RAD if Self.USE_PEG else BALL_BOUND_RAD
+    comptime RECEPTACLE_RAD: Float64 = SLOT_CLEAR_RAD if Self.USE_PEG else CUP_CLEAR_RAD
 
     # === CPU: Observation ===
     @staticmethod
@@ -171,7 +325,7 @@ struct DMManipulatorConfig(Phyics3dEnvConfig):
                 # `touch_sphere_site` raises only on an unsupported zone TYPE,
                 # which is a model-construction error and cannot become true
                 # mid-episode. Surfacing it from an obs hook is not possible,
-                # so it degrades to 0 here and the parity test gates the real
+                # so it degrades to 0 here and the parity tests gate the real
                 # values against MuJoCo's `sensordata`.
                 f = 0.0
             obs.append(Scalar[DTYPE](log(1.0 + f)))
@@ -181,16 +335,16 @@ struct DMManipulatorConfig(Phyics3dEnvConfig):
             d, HAND_BODY_IDX, obs
         )
         Self._append_2d_pose[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
-            d, BALL_BODY_IDX, obs
+            d, OBJECT_BODY_IDX, obs
         )
 
-        # object_vel — the ball's three joints, BEFORE target_pos.
-        obs.append(d.qvel.data[BALL_QADR_X])
-        obs.append(d.qvel.data[BALL_QADR_Z])
-        obs.append(d.qvel.data[BALL_QADR_Y])
+        # object_vel — the prop's three joints, BEFORE target_pos.
+        obs.append(d.qvel.data[OBJECT_QADR_X])
+        obs.append(d.qvel.data[OBJECT_QADR_Z])
+        obs.append(d.qvel.data[OBJECT_QADR_Y])
 
         Self._append_2d_pose[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
-            d, TARGET_BODY_IDX, obs
+            d, target_body_idx(Self.USE_PEG, Self.INSERT), obs
         )
         return True
 
@@ -233,20 +387,14 @@ struct DMManipulatorConfig(Phyics3dEnvConfig):
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
     ):
-        """`Bring.initialize_episode`, minus the `in_hand` case.
-
-        See the module docstring: the reference rejects a draw while
-        `physics.data.ncon > 0`, which needs collision detection from inside a
-        reset hook. Sampling the object OUTSIDE the arm's reach makes that test
-        unnecessary rather than approximate — a subset of the reference's
-        acceptance region, not a drifting version of it.
+        """`Bring.initialize_episode`, minus the cases named in the docstring.
         """
         # Arm joints, uniform within their limits (unlimited -> [-pi, pi]).
         # `arm_root` is `limited="false"`, the rest carry ranges.
         for k in range(NARM):
             var j = arm_joint_obs_order(k)
-            var lo = -3.14159265358979323846
-            var hi = 3.14159265358979323846
+            var lo = -pi
+            var hi = pi
             var rlo = Float64(
                 m_joints[j * MODEL_JOINT_SIZE + JOINT_IDX_RANGE_MIN]
             )
@@ -266,59 +414,137 @@ struct DMManipulatorConfig(Phyics3dEnvConfig):
         # Target: a mocap pose, not a model write. `target_angle` is a rotation
         # about y, so the quaternion is (cos(a/2), 0, sin(a/2), 0) in MuJoCo's
         # (w, x, y, z); `d.mocap_quat` is (x, y, z, w).
+        #
+        # The INSERT tasks narrow the angle to U(-pi/3, pi/3), because the
+        # receptacle takes the same angle and an upside-down slot is not a task
+        # any policy could solve.
         var tx = TARGET_X_LO + random_float64() * (TARGET_X_HI - TARGET_X_LO)
         var tz = TARGET_Z_LO + random_float64() * (TARGET_Z_HI - TARGET_Z_LO)
-        var ta = -3.14159265358979323846 + random_float64() * (
-            2.0 * 3.14159265358979323846
-        )
-        d.mocap_pos.data[TARGET_BODY_IDX * 3 + 0] = Scalar[DTYPE](tx)
-        d.mocap_pos.data[TARGET_BODY_IDX * 3 + 1] = Scalar[DTYPE](0.001)
-        d.mocap_pos.data[TARGET_BODY_IDX * 3 + 2] = Scalar[DTYPE](tz)
-        d.mocap_quat.data[TARGET_BODY_IDX * 4 + 0] = Scalar[DTYPE](0)
-        d.mocap_quat.data[TARGET_BODY_IDX * 4 + 1] = Scalar[DTYPE](
-            sin(ta * 0.5)
-        )
-        d.mocap_quat.data[TARGET_BODY_IDX * 4 + 2] = Scalar[DTYPE](0)
-        d.mocap_quat.data[TARGET_BODY_IDX * 4 + 3] = Scalar[DTYPE](
-            cos(ta * 0.5)
+        var a_half = pi / 3.0 if Self.INSERT else pi
+        var ta = -a_half + random_float64() * (2.0 * a_half)
+
+        var tb = target_body_idx(Self.USE_PEG, Self.INSERT)
+        Self._set_mocap_2d[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+            d, tb, tx, 0.001, tz, ta
         )
 
-        # Object: `in_target` with probability .1 (exact, no rejection needed —
-        # the target box is outside the arm's reach at these radii only
-        # sometimes, so it is still range-checked below), else uniform outside
-        # the arm's reach.
+        comptime if Self.INSERT:
+            # `model.body_pos[receptacle, ['x','z']] = target_x, target_z`, with
+            # `y` left at the XML value (0 for both `cup` and `slot`) — the
+            # target's own y is .001 so the ghost renders in front, and the
+            # receptacle has no such offset.
+            Self._set_mocap_2d[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+                d, receptacle_body_idx(Self.USE_PEG), tx, 0.0, tz, ta
+            )
+
+        # Object placement. `in_hand` is skipped in every task, `in_target` in
+        # the INSERT ones (see the module docstring); what remains is
+        # `in_target` at its reference probability .1, else uniform subject to
+        # the arm-clearance test.
         var ox = 0.0
         var oz = 0.0
+        var oa = 0.0
         var vx = 0.0
-        if random_float64() < 0.1:
+        var in_target = False
+        comptime if not Self.INSERT:
+            in_target = random_float64() < 0.1
+
+        if in_target:
             ox = tx
             oz = tz
+            oa = ta
         else:
-            var tries = 0
-            while tries < 200:
+            var q0 = Float64(d.qpos.data[0])
+            var q1 = Float64(d.qpos.data[1])
+            var q2 = Float64(d.qpos.data[2])
+            var q3 = Float64(d.qpos.data[3])
+            for _try in range(MAX_PLACEMENT_TRIES):
                 ox = OBJECT_X_LO + random_float64() * (
                     OBJECT_X_HI - OBJECT_X_LO
                 )
                 oz = OBJECT_Z_LO + random_float64() * (
                     OBJECT_Z_HI - OBJECT_Z_LO
                 )
-                tries += 1
-                var dx = ox - SHOULDER_X
-                var dz = oz - SHOULDER_Z
-                if sqrt(dx * dx + dz * dz) > ARM_REACH:
-                    break
+                if _arm_clearance(q0, q1, q2, q3, ox, oz) <= Self.OBJ_RAD:
+                    continue
+                comptime if Self.INSERT:
+                    var rx = ox - tx
+                    var rz = oz - tz
+                    if sqrt(rx * rx + rz * rz) <= Self.RECEPTACLE_RAD:
+                        continue
+                break
+            oa = random_float64() * 2.0 * pi
             vx = OBJECT_VX_LO + random_float64() * (
                 OBJECT_VX_HI - OBJECT_VX_LO
             )
 
-        d.qpos.data[BALL_QADR_X] = Scalar[DTYPE](ox)
-        d.qpos.data[BALL_QADR_Z] = Scalar[DTYPE](oz)
-        d.qpos.data[BALL_QADR_Y] = Scalar[DTYPE](
-            random_float64() * 2.0 * 3.14159265358979323846
-        )
-        d.qvel.data[BALL_QADR_X] = Scalar[DTYPE](vx)
+        d.qpos.data[OBJECT_QADR_X] = Scalar[DTYPE](ox)
+        d.qpos.data[OBJECT_QADR_Z] = Scalar[DTYPE](oz)
+        d.qpos.data[OBJECT_QADR_Y] = Scalar[DTYPE](oa)
+        d.qvel.data[OBJECT_QADR_X] = Scalar[DTYPE](vx)
+
+    @staticmethod
+    def _set_mocap_2d[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        MAX_CONTACTS: Int,
+        NSITE: Int,
+    ](
+        mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        body: Int,
+        x: Float64,
+        y: Float64,
+        z: Float64,
+        angle: Float64,
+    ):
+        """One planar mocap pose: position (x, y, z) and a rotation of `angle`
+        about the y axis.
+
+        `d.mocap_quat` is (x, y, z, w); the reference writes MuJoCo's
+        `['qw','qy']` = (cos(a/2), sin(a/2)) and leaves qx/qz alone, which are
+        zero for every body this is called on.
+        """
+        d.mocap_pos.data[body * 3 + 0] = Scalar[DTYPE](x)
+        d.mocap_pos.data[body * 3 + 1] = Scalar[DTYPE](y)
+        d.mocap_pos.data[body * 3 + 2] = Scalar[DTYPE](z)
+        d.mocap_quat.data[body * 4 + 0] = Scalar[DTYPE](0)
+        d.mocap_quat.data[body * 4 + 1] = Scalar[DTYPE](sin(angle * 0.5))
+        d.mocap_quat.data[body * 4 + 2] = Scalar[DTYPE](0)
+        d.mocap_quat.data[body * 4 + 3] = Scalar[DTYPE](cos(angle * 0.5))
 
     # === CPU: Reward ===
+    @staticmethod
+    def _site_distance[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        MAX_CONTACTS: Int,
+        NSITE: Int,
+    ](
+        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        s1: Int,
+        s2: Int,
+    ) -> Float64:
+        """`Physics.site_distance` — the full 3-D norm, not the planar one."""
+        var dx = Float64(d.site_xpos.data[s1 * 3 + 0]) - Float64(
+            d.site_xpos.data[s2 * 3 + 0]
+        )
+        var dy = Float64(d.site_xpos.data[s1 * 3 + 1]) - Float64(
+            d.site_xpos.data[s2 * 3 + 1]
+        )
+        var dz = Float64(d.site_xpos.data[s1 * 3 + 2]) - Float64(
+            d.site_xpos.data[s2 * 3 + 2]
+        )
+        return sqrt(dx * dx + dy * dy + dz * dz)
+
+    @staticmethod
+    def _is_close(dist: Float64) -> Float64:
+        """`Bring._is_close` — `tolerance(d, (0, _CLOSE), _CLOSE*2)`."""
+        return tolerance(dist, 0.0, CLOSE, CLOSE * 2.0)
+
     @staticmethod
     def compute_reward_and_done_cpu[
         DTYPE: DType,
@@ -338,22 +564,50 @@ struct DMManipulatorConfig(Phyics3dEnvConfig):
         step_count: Int,
         frame_skip: Int,
     ) -> Tuple[Scalar[DTYPE], Bool]:
-        """`_ball_reward` = `_is_close(site_distance('ball','target_ball'))`."""
-        var ax = Float64(d.site_xpos.data[SITE_BALL * 3 + 0])
-        var ay = Float64(d.site_xpos.data[SITE_BALL * 3 + 1])
-        var az = Float64(d.site_xpos.data[SITE_BALL * 3 + 2])
-        var bx = Float64(d.site_xpos.data[SITE_TARGET_BALL * 3 + 0])
-        var by = Float64(d.site_xpos.data[SITE_TARGET_BALL * 3 + 1])
-        var bz = Float64(d.site_xpos.data[SITE_TARGET_BALL * 3 + 2])
-        var dx = ax - bx
-        var dy = ay - by
-        var dz = az - bz
-        var dist = sqrt(dx * dx + dy * dy + dz * dz)
-        var r = tolerance(dist, 0.0, CLOSE, CLOSE * 2.0)
+        """`Bring.get_reward` — `_peg_reward` or `_ball_reward`."""
+        var s_obj = site_object(Self.USE_PEG)
+        var s_tgt = site_target(Self.USE_PEG, Self.INSERT)
+        var bring = Self._is_close(
+            Self._site_distance[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+                d, s_obj, s_tgt
+            )
+        )
+
+        var r = bring
+        comptime if Self.USE_PEG:
+            var grasp = Self._is_close(
+                Self._site_distance[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+                    d, site_object_grasp(Self.USE_PEG), SITE_GRASP
+                )
+            )
+            var pinch = Self._is_close(
+                Self._site_distance[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+                    d, site_object_pinch(Self.USE_PEG), SITE_PINCH
+                )
+            )
+            var grasping = (grasp + pinch) / 2.0
+            var bring_tip = Self._is_close(
+                Self._site_distance[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+                    d,
+                    site_target_tip(Self.USE_PEG, Self.INSERT),
+                    site_object_tip(Self.USE_PEG),
+                )
+            )
+            var bringing = (bring + bring_tip) / 2.0
+            r = bringing if bringing > grasping / 3.0 else grasping / 3.0
+
         # dm_control tasks never terminate early.
         return (Scalar[DTYPE](r), False)
 
     # === CPU: Float getters ===
     @staticmethod
     def get_timestep() -> Float64:
-        return Float64(DMManipulatorBringBallModel.TIMESTEP)
+        # Every variant is built from the same `<option timestep="0.001">`.
+        return 0.001
+
+
+# The four registered tasks.
+comptime DMManipulatorBringBallConfig = DMManipulatorConfig[False, False]
+comptime DMManipulatorBringPegConfig = DMManipulatorConfig[True, False]
+comptime DMManipulatorInsertBallConfig = DMManipulatorConfig[False, True]
+comptime DMManipulatorInsertPegConfig = DMManipulatorConfig[True, True]

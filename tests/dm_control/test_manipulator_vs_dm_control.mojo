@@ -41,7 +41,7 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.envs.dm_control.manipulator import (
     DMManipulatorBringBallModel as M,
-    DMManipulatorConfig,
+    DMManipulatorBringBallConfig,
     dm_manipulator_bring_ball_xml,
     TARGET_BODY_IDX,
 )
@@ -1050,7 +1050,7 @@ def test_manipulator_observation_matches_mujoco() raises:
     var ref_obs = builder.observation(m, dat)
 
     var obs = List[Scalar[DTYPE]]()
-    _ = DMManipulatorConfig.custom_extract_obs_cpu[
+    _ = DMManipulatorBringBallConfig.custom_extract_obs_cpu[
         DTYPE, NQ, NV, NBODY, MAXC, NSITE
     ](
         d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,
@@ -1121,7 +1121,7 @@ def test_manipulator_reward_matches_mujoco() raises:
         var ref_r = Float64(
             py=Python.import_module("manipulator_ref").reward(mj[1], mj[2])
         )
-        var got = DMManipulatorConfig.compute_reward_and_done_cpu[
+        var got = DMManipulatorBringBallConfig.compute_reward_and_done_cpu[
             DTYPE, NQ, NV, NBODY, MAXC, NSITE
         ](
             d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,

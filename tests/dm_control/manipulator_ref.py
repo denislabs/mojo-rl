@@ -131,9 +131,14 @@ def _sid(m, name):
     return mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, name)
 
 
-def observation(m, d):
-    """`Bring.get_observation(fully_observable=True)`, flattened."""
+def observation(m, d, use_peg=False):
+    """`Bring.get_observation(fully_observable=True)`, flattened.
+
+    `insert` does not appear: it changes the model and the reset, never the
+    observation, so `use_peg` alone selects which prop and target are read.
+    """
     import numpy as np
+    obj = 'peg' if use_peg else 'ball'
     out = []
     # arm_pos: np.vstack([sin, cos]).T  -> interleaved (sin, cos) per joint
     q = np.array([d.qpos[m.jnt_qposadr[_jid(m, n)]] for n in _ARM_JOINTS])
@@ -151,10 +156,10 @@ def observation(m, d):
         return [d.xpos[b][0], d.xpos[b][2], d.xquat[b][0], d.xquat[b][2]]
 
     out.extend(body_2d_pose('hand'))
-    out.extend(body_2d_pose('ball'))
-    out.extend([d.qvel[m.jnt_dofadr[_jid(m, n)]]
-                for n in ('ball_x', 'ball_z', 'ball_y')])
-    out.extend(body_2d_pose('target_ball'))
+    out.extend(body_2d_pose(obj))
+    out.extend([d.qvel[m.jnt_dofadr[_jid(m, obj + '_' + dim)]]
+                for dim in 'xzy'])
+    out.extend(body_2d_pose('target_' + obj))
     return np.array(out, dtype=np.float64)
 
 
@@ -168,9 +173,29 @@ def _tolerance(x, lower, upper, margin):
     return float(np.exp(-0.5 * (d * scale) ** 2))
 
 
-def reward(m, d):
-    """`Bring._ball_reward`."""
+def _site_distance(m, d, s1, s2):
+    """`Physics.site_distance`."""
     import numpy as np
-    a, b = _sid(m, 'ball'), _sid(m, 'target_ball')
-    dist = float(np.linalg.norm(d.site_xpos[a] - d.site_xpos[b]))
+    return float(np.linalg.norm(d.site_xpos[_sid(m, s1)] - d.site_xpos[_sid(m, s2)]))
+
+
+def _is_close(dist):
+    """`Bring._is_close`."""
     return _tolerance(dist, 0.0, _CLOSE, _CLOSE * 2)
+
+
+def reward(m, d, use_peg=False):
+    """`Bring.get_reward` — `_peg_reward` or `_ball_reward`.
+
+    `insert` does not appear here either: `get_reward` never mentions the
+    receptacle, so inserting is rewarded only through bringing.
+    """
+    if not use_peg:
+        return _is_close(_site_distance(m, d, 'ball', 'target_ball'))
+    grasp = _is_close(_site_distance(m, d, 'peg_grasp', 'grasp'))
+    pinch = _is_close(_site_distance(m, d, 'peg_pinch', 'pinch'))
+    grasping = (grasp + pinch) / 2
+    bring = _is_close(_site_distance(m, d, 'peg', 'target_peg'))
+    bring_tip = _is_close(_site_distance(m, d, 'target_peg_tip', 'peg_tip'))
+    bringing = (bring + bring_tip) / 2
+    return max(bringing, grasping / 3)
