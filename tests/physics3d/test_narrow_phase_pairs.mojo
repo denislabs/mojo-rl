@@ -173,6 +173,16 @@ comptime PAIRS_XML = """
       <joint name="j11b" type="slide" axis="1 0 0"/>
       <geom name="c11b" type="box" size=".05 .05 .05"/>
     </body>
+    <geom name="w12" type="sphere" size=".05" pos="12.0 0 0.5"/>
+    <body name="g12b" pos="12.085 0 0.5">
+      <joint name="j12b" type="slide" axis="1 0 0"/>
+      <geom name="c12b" type="capsule" size=".04" fromto="0 -.06 0 0 .06 0"/>
+    </body>
+    <body name="g13a" pos="13.0 0 0.5">
+      <joint name="j13a" type="slide" axis="1 0 0"/>
+      <geom name="c13a" type="capsule" size=".04" fromto="0 -.06 0 0 .06 0"/>
+    </body>
+    <geom name="w13" type="sphere" size=".05" pos="13.085 0 0.5"/>
   </worldbody>
 </mujoco>
 """
@@ -194,7 +204,7 @@ comptime PM = ModelDefFromXML[
 comptime NGEOM = PM.NGEOM
 comptime NBODY = PM.NBODY
 comptime MC = PM.MAX_CONTACTS
-comptime NGROUPS = 12
+comptime NGROUPS = 14
 
 # Gates set from the measured worst case with headroom. Measured 2026-08-01:
 #   direction  <= 2.9e-12 for every pair EXCEPT box/cylinder
@@ -228,6 +238,8 @@ def _group_names() -> List[String]:
         String("capsule/box"), String("box/capsule"),
         String("capsule/cylinder"), String("cylinder/capsule"),
         String("box/cylinder"), String("cylinder/box"),
+        String("WORLD-first sphere/capsule"),
+        String("WORLD-second capsule/sphere"),
     ]
 
 
@@ -273,12 +285,13 @@ def test_narrow_phase_pairs_vs_mujoco() raises:
         var b = c * CONTACT_SIZE
         var ba = Int(d.contacts.data[b + CONTACT_IDX_BODY_A])
         var bb = Int(d.contacts.data[b + CONTACT_IDX_BODY_B])
-        var g = (ba - 1) // 2
+        var px = Float64(d.contacts.data[b + CONTACT_IDX_POS_X])
+        var g = Int(px + 0.5)
         assert_true(
-            g >= 0 and g < NGROUPS and (bb - 1) // 2 == g,
-            String("contact ") + String(c) + " spans groups (bodies "
-            + String(ba) + "," + String(bb) + ") — the groups are 1 m apart,"
-            " so this is a broadphase or FK error, not a narrow-phase one",
+            g >= 0 and g < NGROUPS and abs(px - Float64(g)) < 0.3,
+            String("contact ") + String(c) + " at x=" + String(px)
+            + " is not inside any group — the groups are 1 m apart, so this is"
+            " a broadphase or FK error, not a narrow-phase one",
         )
         seen[g] = seen[g] + 1
 
@@ -328,6 +341,11 @@ def test_narrow_phase_pairs_vs_mujoco() raises:
             worst_dir = e
         # box/cylinder reduces the cylinder to a capsule (documented in
         # `cylinder_box`), so it gets the looser pair; everything else is exact.
+        var is_world = (ba == 0 or bb == 0)
+        if is_world:
+            print("      WORLD group: ours a", ba, "b", bb,
+                  " our n [", nx, ny, nz, "]  mj n [", mj_n0, mj_n1, mj_n2,
+                  "]  mj bodies", mj_b1, mj_b2)
         var approx = (g == 10 or g == 11)
         var tol_d = TOL_DIST_APPROX if approx else TOL_DIST
         var tol_n = TOL_DIR_APPROX if approx else TOL_DIR

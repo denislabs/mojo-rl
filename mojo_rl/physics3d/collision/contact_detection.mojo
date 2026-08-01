@@ -1668,11 +1668,24 @@ def _detect_contacts_env[
                 contacts[env, c_off + CONTACT_IDX_POS_X] = cx
                 contacts[env, c_off + CONTACT_IDX_POS_Y] = cy
                 contacts[env, c_off + CONTACT_IDX_POS_Z] = cz
-                # Negate normal for body-body contacts (same fix as CPU path)
-                if body_b > 0:
-                    nx = -nx
-                    ny = -ny
-                    nz = -nz
+                # The record's normal points `body_b -> body_a`. Every branch
+                # above computed `gi -> gj` with `body_a = gi`, so it is
+                # negated here — UNCONDITIONALLY.
+                #
+                # ⚠ This used to be `if body_b > 0:`, which skipped the negation
+                # whenever the second geom sat on the WORLD body and left those
+                # contacts as `a -> b` while every other contact was `b -> a`.
+                # Two conventions in one record, selected by a body id. Planes
+                # are not affected either way — they have their own loop and
+                # never reach this emit — so `body_b == 0` here means a
+                # NON-PLANE world geom, which no shipped model currently has.
+                # Latent, but it made body labels and normal direction
+                # interdependent, and it nearly derailed the bug 35 fix.
+                # Measured by `tests/physics3d/test_narrow_phase_pairs.mojo`'s
+                # WORLD groups: a full 2.0 reversal on a unit vector.
+                nx = -nx
+                ny = -ny
+                nz = -nz
                 contacts[env, c_off + CONTACT_IDX_NX] = nx
                 contacts[env, c_off + CONTACT_IDX_NY] = ny
                 contacts[env, c_off + CONTACT_IDX_NZ] = nz

@@ -42,6 +42,20 @@ def groups():
     return out
 
 
+# WORLD-BODY groups. The shared emit in both narrow phases carries
+# `if body_b > 0: negate`, so the recorded normal convention depends on whether
+# one geom sits on the WORLD body. These two groups put a world geom on either
+# side of the movable one in geom order, which is the only way to exercise both
+# sides of that guard.
+# Same pair TYPE in both, because the variable under test is the declaration
+# ORDER, not the geometry. The world geom is the sphere in both because the
+# capsule is defined with `fromto`, which MJCF forbids alongside `pos`.
+WORLD_GROUPS = [
+    ("sphere", "capsule"),   # world geom FIRST  -> body_a == 0
+    ("sphere", "capsule"),   # world geom SECOND -> body_b == 0
+]
+
+
 def make_xml():
     body = []
     for g, (ta, tb) in enumerate(groups()):
@@ -56,6 +70,29 @@ def make_xml():
       <joint name="j{g}b" type="slide" axis="1 0 0"/>
       <geom name="c{g}b" {GEOM[tb]}/>
     </body>''')
+    # world groups: one geom straight in <worldbody> (body 0), one on a body
+    n = len(groups())
+    for k, (tw, tb) in enumerate(WORLD_GROUPS):
+        g = n + k
+        x = g * 1.0
+        dx = HALF_X[tw] + HALF_X[tb] - PENETRATION
+        if k == 0:
+            # world geom declared FIRST -> lower geom index -> body_a == 0
+            body.append(f'''
+    <geom name="w{g}" {GEOM[tw]} pos="{x} 0 0.5"/>
+    <body name="g{g}b" pos="{x + dx} 0 0.5">
+      <joint name="j{g}b" type="slide" axis="1 0 0"/>
+      <geom name="c{g}b" {GEOM[tb]}/>
+    </body>''')
+        else:
+            # world geom declared SECOND -> higher geom index -> body_b == 0
+            body.append(f'''
+    <body name="g{g}a" pos="{x} 0 0.5">
+      <joint name="j{g}a" type="slide" axis="1 0 0"/>
+      <geom name="c{g}a" {GEOM[tb]}/>
+    </body>
+    <geom name="w{g}" {GEOM[tw]} pos="{x + dx} 0 0.5"/>''')
+
     return f'''<mujoco model="pairs">
   <option timestep="0.002" gravity="0 0 0"/>
   <default>
