@@ -190,21 +190,21 @@ comptime NGROUPS: Int = 8
 comptime N_HINT_GROUPS: Int = 1  # g7 — plane/capsule is the only writer
 comptime TOL_FRAME: Float64 = 1e-12
 # `t1` is a function of the NORMAL, so it can be no more exact than the normal
-# it is built from — and the two capsule-first groups arrive with a normal
-# ~1e-10 off MuJoCo's, where every other group is exact to 0 or 1.1e-16. That
-# is task #49, not this file: the primitive returns 1.85e-16 when called
-# directly and the parser's fromto axis is exact to 2.2e-16, so it enters in
-# the detection pipeline.
+# it is built from. When this file was written the two capsule-first groups
+# arrived with a normal ~1e-10 off MuJoCo's while every other group was exact,
+# so each group's bound was `max(TOL_FRAME, 8 * its own measured normal
+# error)` — a measured allowance rather than a constant picked to make a
+# failure go away — and the note here said "#49 closing will show up as the
+# slack going unused".
 #
-# Rather than loosen TOL_FRAME globally and stop testing the exact groups,
-# each group's bound is `max(TOL_FRAME, FRAME_SLACK * normal error)` — the
-# allowance is a MEASURED input error, not a constant picked to make a failure
-# go away, and the five exact groups stay pinned at 1e-12. The normal error is
-# separately asserted against TOL_NORMAL so it cannot silently grow, and the
-# per-group numbers are printed so #49 closing shows up here as the slack
-# going unused.
-comptime FRAME_SLACK: Float64 = 8.0
-comptime TOL_NORMAL: Float64 = 1e-9
+# #49 CLOSED 2026-08-03 and the slack went unused, so it is gone. The cause
+# was never the narrow phase: `quat_math.mojo` normalized quaternions as
+# `1/sqrt(norm_sq + 1e-10)`, leaving every body quaternion 5e-11 short of
+# unit, so a capsule's world AXIS (its local quaternion rotated by the body's)
+# was not unit either. Spheres have no axis, which is the whole reason it
+# looked like a capsule-specific narrow-phase defect. Now every group is
+# exact: worst normal error 4.44e-16, worst t1 4.44e-16, worst t2 1.11e-16.
+comptime TOL_NORMAL: Float64 = 1e-14
 
 comptime Dat = Data[DTYPE, FM.NQ, FM.NV, FM.NBODY, FM.MAX_CONTACTS, FM.NSITE, 1]
 comptime Mod = Model[
@@ -372,7 +372,6 @@ def test_contact_frame_matches_mujoco() raises:
             String("group ") + String(g) + ": normal is " + String(n_err)
             + " off MuJoCo's — a narrow-phase regression, not a frame one",
         )
-        var tol = max(TOL_FRAME, FRAME_SLACK * n_err)
         print("    g", g, " hint", has_hint, " normal err", n_err)
 
         var f = contact_tangent_frame[DTYPE](
@@ -401,7 +400,7 @@ def test_contact_frame_matches_mujoco() raises:
             var e1 = abs(abs(dt1) - 1.0)
             worst_t1 = max(worst_t1, e1)
             assert_true(
-                e1 < tol,
+                e1 < TOL_FRAME,
                 String("group ") + String(g) + " (hint): our t1 is not"
                 " collinear with MuJoCo's — Gram-Schmidt or the hint differs",
             )
@@ -409,7 +408,7 @@ def test_contact_frame_matches_mujoco() raises:
             var e2 = abs(abs(dt2) - 1.0)
             worst_t2 = max(worst_t2, e2)
             assert_true(
-                e2 < tol,
+                e2 < TOL_FRAME,
                 String("group ") + String(g) + " (hint): t2 is not collinear"
                 " with MuJoCo's",
             )
@@ -422,7 +421,7 @@ def test_contact_frame_matches_mujoco() raises:
             )
             worst_t1 = max(worst_t1, e1)
             assert_true(
-                e1 < tol,
+                e1 < TOL_FRAME,
                 String("group ") + String(g) + ": t1 = (" + String(t1x) + ", "
                 + String(t1y) + ", " + String(t1z) + ") but MuJoCo has ("
                 + String(m1x) + ", " + String(m1y) + ", " + String(m1z) + ")",
@@ -434,7 +433,7 @@ def test_contact_frame_matches_mujoco() raises:
             )
             worst_t2 = max(worst_t2, e2)
             assert_true(
-                e2 < tol,
+                e2 < TOL_FRAME,
                 String("group ") + String(g) + ": t2 disagrees with MuJoCo's"
                 " once the normal sign is accounted for",
             )

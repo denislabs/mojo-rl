@@ -69,24 +69,39 @@ comptime Integ = EulerIntegrator[
 comptime Dat = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]
 comptime Mod = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]
 
+# ⚠ ALL FOUR BOUNDS WERE RE-PINNED 2026-08-03, two to three orders tighter,
+# and the reason is worth reading before loosening any of them again.
+#
+# They used to sit at 1e-8 / 1e-9 / 1e-9 / 5e-10 around a residual of ~1e-10
+# that FK_TOL's own comment called "worth its own investigation". It was:
+# `kinematics/quat_math.mojo` normalized quaternions as
+# `1/sqrt(norm_sq + 1e-10)` — a divide-by-zero guard INSIDE the sqrt — which
+# returns 0.99999999995 for an already-unit quaternion, so every body
+# quaternion came out 5e-11 short of unit and every vector rotated by one was
+# scaled by 1 - 1e-10. Every quantity below inherited it, which is exactly why
+# the gap "showed up identically in cvel, qfrc_bias and tendon_invweight0".
+#
+# With that fixed the whole file agrees with MuJoCo at float64 rounding. A
+# tolerance left at the old value would now pass while testing nothing — which
+# is the failure mode that let the bug survive under six quadruped gates.
+#
 # Free flight has no solver in the loop: the only error is float rounding
-# through two independent implementations of the same recursion.
-comptime FLIGHT_TOL: Float64 = 1e-8
-# Standing rides on the contact solve. Total vertical toe force matches
-# MuJoCo to 1.4e-11.
-comptime STAND_REL_TOL: Float64 = 1e-9
-# Worst single force/torque component, standing. Observed 5.1e-11. This was
+# through two independent implementations of the same recursion. Observed
+# 1.00e-14 (was ~1e-10).
+comptime FLIGHT_TOL: Float64 = 1e-13
+# Standing rides on the contact solve. Observed 3.55e-15; the total vertical
+# toe force matches MuJoCo to 9.99e-16 (was 1.4e-11).
+comptime STAND_REL_TOL: Float64 = 1e-13
+# Worst single force/torque component, standing. Observed 4.07e-15. This was
 # 0.221 until the tangential direction was fixed — `cfrc_ext` was reading the
 # contact record's FRAME_T1 HINT as if it were the tangent, so the horizontal
 # force landed along an arbitrary axis while the vertical one (which needs
-# only the normal) stayed exact. See collision/contact_frame.mojo.
-comptime STAND_COMPONENT_TOL: Float64 = 1e-9
-# Forward kinematics itself. NOT 1e-15: our FK reproduces MuJoCo's body poses
-# to ~1e-10 on this model, an order of magnitude worse than float64 rounding
-# and worth its own investigation (it shows up identically in cvel, qfrc_bias
-# and tendon_invweight0). It is not what this file is testing, so it is pinned
-# rather than hidden — if it moves, something changed.
-comptime FK_TOL: Float64 = 5e-10
+# only the normal) stayed exact. See collision/contact_frame.mojo. It was then
+# 5.06e-11 until the quaternion normalizer above.
+comptime STAND_COMPONENT_TOL: Float64 = 1e-13
+# Forward kinematics itself. Observed 4.44e-16 on both `xpos` and `site_xpos`
+# — i.e. float64 rounding, which is what it should always have been.
+comptime FK_TOL: Float64 = 1e-14
 
 def _toe_names() -> List[String]:
     return [

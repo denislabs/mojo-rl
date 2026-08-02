@@ -105,11 +105,22 @@ comptime SENS_GYRO: Int = 3
 comptime SENS_FORCE: Int = 4
 comptime SENS_TORQUE: Int = 5
 
-comptime OBS_TOL: Float64 = 1e-8
-# The reward reads the velocimeter, so it inherits the ~1e-10 forward-
-# kinematics gap between the two engines on this model (pinned as FK_TOL in
-# tests/physics3d/test_rne_post_sensors_vs_mujoco.mojo). Observed 2.0e-12.
-comptime REWARD_TOL: Float64 = 1e-10
+# ⚠ RE-PINNED 2026-08-03 after the quaternion-normalizer fix (see FLIGHT_TOL
+# and friends in tests/physics3d/test_rne_post_sensors_vs_mujoco.mojo).
+# `quat_math.mojo` normalized as `1/sqrt(norm_sq + 1e-10)`, leaving every body
+# quaternion 5e-11 short of unit, and the whole observation inherited it.
+#
+# ⚠ THE OBSERVATION DID NOT COLLAPSE TO MACHINE PRECISION LIKE EVERYTHING
+# ELSE. It went 2.34e-9 -> 5.52e-10 at dim 54, a factor of 4, where the
+# sensors themselves now agree to 4.07e-15 and the reward is bit-exact. So
+# dim 54 carries a SECOND residual with a different cause, and this bound is
+# set to keep watch on it rather than to certify it. Do not read the pass as
+# "the observation matches to 1e-15" — it does not, and that is a live thread.
+comptime OBS_TOL: Float64 = 2e-9
+# The reward reads the velocimeter. It used to inherit the ~1e-10 FK gap
+# (observed 2.0e-12); with that gone it is now BIT-EXACT against the
+# reference for both walk and run.
+comptime REWARD_TOL: Float64 = 1e-14
 
 
 def _mj(state_qpos: List[Float64], state_qvel: List[Float64]) raises -> Tuple[
@@ -472,10 +483,14 @@ comptime Mod = Model[
 # anything above rounding is a real divergence; `invweight0` is the exception
 # and carries its own note.
 comptime TOL_MODEL: Float64 = 1e-12
-# `invweight0` is COMPUTED from the mass matrix at qpos0, not parsed, so it
-# inherits this model's ~1e-10 forward-kinematics gap (FK_TOL in
-# tests/physics3d/test_rne_post_sensors_vs_mujoco.mojo). Observed 3.0e-11.
-comptime INVWEIGHT_TOL: Float64 = 1e-9
+# `invweight0` is COMPUTED from the mass matrix at qpos0, not parsed. It used
+# to inherit this model's ~1e-10 forward-kinematics gap and was pinned at 1e-9
+# with 5.02e-10 observed; that gap was the `1/sqrt(norm_sq + 1e-10)`
+# quaternion normalizer in `kinematics/quat_math.mojo`, fixed 2026-08-03.
+# Observed 4.92e-15 now — the mass matrix at qpos0 agrees with MuJoCo's at
+# float64 rounding, which is the strongest evidence that the FK chain feeding
+# it is exact.
+comptime INVWEIGHT_TOL: Float64 = 1e-13
 
 
 def _build() raises -> Mod:

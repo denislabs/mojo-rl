@@ -391,10 +391,21 @@ def gpu_axis_angle_to_quat[
     var s = Scalar[DTYPE](sin(half))
     var c = Scalar[DTYPE](cos(half))
 
+    # ⚠ THE ZERO-AXIS GUARD IS A BRANCH, NOT AN EPSILON UNDER THE SQRT. This
+    # was `1.0 / sqrt(len_sq + 1e-10)`, which for the unit axis every caller
+    # actually passes returns `1 - 5e-11` instead of `1` — see
+    # `gpu_quat_normalize` for the full story and the measurement.
     var len_sq = axis_x * axis_x + axis_y * axis_y + axis_z * axis_z
-    var inv_len = Scalar[DTYPE](1.0 / sqrt(len_sq + 1e-10))
-
     var result = InlineArray[Scalar[DTYPE], 4](uninitialized=True)
+    # Degenerate axis keeps the old formula, for the reason in
+    # `gpu_quat_normalize` — this change is about the epsilon, not about what
+    # a zero axis should mean.
+    var inv_len: Scalar[DTYPE]
+    if len_sq < Scalar[DTYPE](1e-6):
+        inv_len = Scalar[DTYPE](1.0) / sqrt(len_sq + Scalar[DTYPE](1e-10))
+    else:
+        inv_len = Scalar[DTYPE](1.0) / sqrt(len_sq)
+
     result[0] = axis_x * inv_len * s
     result[1] = axis_y * inv_len * s
     result[2] = axis_z * inv_len * s
@@ -411,11 +422,52 @@ def gpu_quat_normalize[
     qz: Scalar[DTYPE],
     qw: Scalar[DTYPE],
 ) -> InlineArray[Scalar[DTYPE], 4]:
-    """Normalize quaternion (GPU version)."""
-    var norm_sq = qx * qx + qy * qy + qz * qz + qw * qw
-    var inv_norm = Scalar[DTYPE](1.0 / sqrt(norm_sq + 1e-10))
+    """Normalize quaternion (GPU version).
 
+    ⚠ THE DEGENERATE GUARD IS A BRANCH, NOT AN EPSILON UNDER THE SQRT. This
+    was `1.0 / sqrt(norm_sq + 1e-10)`, which POISONS THE COMMON CASE to
+    protect a case that never happens: for an already-unit quaternion it
+    returns `1/sqrt(1 + 1e-10)` = 0.99999999995, so every quaternion this
+    function touched came out 5e-11 SHORT of unit, and every vector rotated by
+    one was scaled by `|q|^2` = 1 - 1e-10.
+
+    That is not rounding — it is a deterministic one-directional bias, and it
+    was the cause of BOTH of the ~1e-10 residuals that had been filed as
+    separate mysteries:
+
+      * task #48 — quadruped's forward kinematics reproducing MuJoCo to only
+        ~1e-10 where other models manage 1e-15, "showing up identically in
+        cvel, qfrc_bias and tendon_invweight0". Every body quaternion in the
+        chain is normalized here.
+      * task #49 — capsule contact normals ~1e-10 off MuJoCo's while every
+        sphere pair was exact. A capsule's world AXIS is its local quaternion
+        rotated by the body's; spheres have no axis to corrupt, which is
+        exactly why the error looked type-specific.
+
+    The observed body quaternion was 0.99999999995 to every digit of
+    `1/sqrt(1+1e-10)`. Branch on the degenerate case instead, so the
+    arithmetic is exact for the input every caller actually passes.
+    """
+    var norm_sq = qx * qx + qy * qy + qz * qz + qw * qw
     var result = InlineArray[Scalar[DTYPE], 4](uninitialized=True)
+    # ⚠ THE DEGENERATE BRANCH KEEPS THE OLD FORMULA ON PURPOSE, so that this
+    # change is a pure precision fix and nothing else. Below 1e-6 the result is
+    # bit-identical to what it always was; above it, exact.
+    #
+    # It is NOT bit-identical to return identity there instead — an A/B moved
+    # `test_equality_tendon_fields`'s humanoid fingerprint by 0.83, which means
+    # SOMETHING IN THAT MODEL NORMALIZES A NEAR-ZERO QUATERNION and takes this
+    # path. (It is not what caused that file's golden to move 2.6%; the
+    # precision fix did, with this branch held at the old formula.) Returning
+    # `(0,0,0,0)` for a zero-norm input is not a rotation at all and is very
+    # likely wrong, but which caller reaches it and what it should do there is
+    # a separate question from the epsilon. Filed rather than guessed.
+    var inv_norm: Scalar[DTYPE]
+    if norm_sq < Scalar[DTYPE](1e-6):
+        inv_norm = Scalar[DTYPE](1.0) / sqrt(norm_sq + Scalar[DTYPE](1e-10))
+    else:
+        inv_norm = Scalar[DTYPE](1.0) / sqrt(norm_sq)
+
     result[0] = qx * inv_norm
     result[1] = qy * inv_norm
     result[2] = qz * inv_norm

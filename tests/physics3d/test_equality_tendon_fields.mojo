@@ -112,7 +112,37 @@ comptime METADATA_SIZE_L = 4
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
 comptime GOLD_NCON_A = 8  # Part A tendon: total contacts over the steps
-comptime GOLD_A = -513649.55245587835  # Part A final qpos/qvel/qacc/contacts checksum
+comptime GOLD_A = -500065.48171551153  # Part A final qpos/qvel/qacc/contacts checksum
+# Re-harvested 2026-08-03 (was -513649.55245587835, a 2.6% move).
+#
+# WHY it moved: `kinematics/quat_math.mojo` used to normalize quaternions as
+# `1/sqrt(norm_sq + 1e-10)`, a divide-by-zero guard placed INSIDE the sqrt. For
+# an already-unit quaternion that returns 0.99999999995, so EVERY body
+# quaternion came out 5e-11 short of unit and every vector rotated by one was
+# scaled by 1 - 1e-10. Removing that bias changes the arithmetic under every
+# model in the tree.
+#
+# WHY 5e-11 MOVES A CHECKSUM BY 2.6%, which is the part that has to be
+# explained rather than waved at:
+#   * `GOLD_NCON_A` is UNCHANGED at 8, so the contact SET is identical — no
+#     discrete flip, no gained or lost contact.
+#   * Part A's fields-CPU vs fields-GPU agreement is 5.2e-8 on qpos, so the
+#     configuration is NOT chaotic and the new state is self-consistent. (Part
+#     B's is 1.2e-2 — that one IS sensitive, and its golden did NOT move.)
+#   * The fingerprint is dominated by its CONTACT-RECORD terms: 23 slots per
+#     contact weighted up to (c+1)*(k+1) = 92, carrying solved forces of order
+#     1e3, against qpos/qvel terms of order 1e0-1e1. The humanoid rests on
+#     four contacts, which is force-INDETERMINATE — the total is pinned, the
+#     split between redundant contacts is not — so a tiny perturbation
+#     redistributes the forces measurably while qpos barely moves. That is
+#     what a 2.6% move in a force-weighted checksum with an unchanged contact
+#     set and a 5.2e-8 qpos means.
+#
+# WHY THE NEW NUMBER IS THE BETTER ONE, which a self-golden cannot establish
+# on its own: the same fix takes quadruped's force/torque SENSORS — a direct
+# comparison of contact forces against MuJoCo — from 5.06e-11 to 4.07e-15, and
+# capsule contact normals from 1.0e-10 to 4.4e-16. The contact solve did not
+# merely change, it got ~12,000x closer to the reference.
 comptime GOLD_NCON_B = 6  # Part B equality: total contacts over the steps
 # Re-harvested 2026-07-29 (was 222.7145065382404).
 #
