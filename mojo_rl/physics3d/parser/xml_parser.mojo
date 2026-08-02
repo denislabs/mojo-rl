@@ -1685,20 +1685,36 @@ def _normalize_freejoint(xml: String) -> String:
     dimension mismatch far from the cause. In-scope users are dm_control's
     humanoid and quadruped (dog and humanoid_CMU are descoped).
 
-    THE PASSIVE ATTRIBUTES ARE PINNED TO ZERO, and that is the whole point of
-    the distinction MuJoCo draws between the two spellings. Its docs say of
-    `<freejoint>`: "The alternative is to set type='free' in a regular joint
-    element, but then the joint will inherit any defaults defined for joints,
-    which is usually undesirable." A bare `<joint type="free">` under
+    EVERY ATTRIBUTE A CLASS COULD SUPPLY IS PINNED, and that is the whole
+    point of the distinction MuJoCo draws between the two spellings. Its docs
+    say of `<freejoint>`: "The alternative is to set type='free' in a regular
+    joint element, but then the joint will inherit any defaults defined for
+    joints, which is usually undesirable." The compiler implements that
+    literally — `xml_native_reader.cc:3570` calls `mjs_addFreeJoint(body)`,
+    whose comment reads "create free joint without defaults", so the joint
+    keeps the values `mjs_defaultJoint` memset in (`user_init.c:96`) no matter
+    what the enclosing class says. A bare `<joint type="free">` under
     humanoid's `<default class="body"><joint armature=".01" damping=".2"
     stiffness="1" limited="true"/>` would give the ROOT an armature, a damper,
     a spring pulling it toward the origin, and a limit — MuJoCo reports 0 for
-    all of them. Writing the zeros out explicitly reproduces that, because an
-    attribute on the element beats the class.
+    all of them. Writing the defaults out explicitly reproduces that, because
+    an attribute on the element beats the class.
+
+    ⚠ THE LIST HAS TO BE COMPLETE, not just the passive scalars. It used to
+    stop at armature/damping/stiffness/springref/frictionloss, so quadruped's
+    root inherited `solimplimit="0 .99 .01"` from `<default class="body">` and
+    reported `jnt_solimp[0] = (0, .99, .01, .5, 2)` where MuJoCo reports the
+    global `(.9, .95, .001, .5, 2)`. That one is INERT — a free joint is never
+    `limited`, so no limit row is ever built and nothing reads its solimp —
+    but `ref` under the same class would not have been, and the omission was
+    only ever going to be found by a model-constant diff. The solref/solimp
+    numbers are `mj_defaultSolRefImp` (`engine_init.c:32`).
 
     Other attributes are carried through untouched; the injected ones go
     immediately after the tag name, which is safe because `<freejoint>` admits
     only name/group/align, and `_extract_attr` takes the first match anyway.
+    `ref` precedes `springref` for the same reason, though `_extract_attr`
+    requires a separator before the name and so would not confuse them.
     """
     var result = String("")
     var scan = 0
@@ -1712,7 +1728,9 @@ def _normalize_freejoint(xml: String) -> String:
             result
             + String(xml[byte=scan:fj])
             + '<joint type="free" limited="false" armature="0" damping="0"'
-            + ' stiffness="0" springref="0" frictionloss="0"'
+            + ' stiffness="0" ref="0" springref="0" frictionloss="0"'
+            + ' range="0 0" margin="0" solreflimit="0.02 1"'
+            + ' solimplimit="0.9 0.95 0.001 0.5 2"'
         )
         scan = fj + 10  # len("<freejoint")
     return result
