@@ -814,64 +814,66 @@ def capsule_capsule[
     var c2_y = closest[4]
     var c2_z = closest[5]
 
-    # Check if centerlines cross (closest points coincident).
-    # When this happens, sphere_sphere picks an arbitrary normal which
-    # makes the constraint solver push in the wrong direction.
-    # Instead, use cross(axis_a, axis_b) as the separation normal
-    # (perpendicular to both capsule axes) — matches MuJoCo mjc_CapsuleCapsule.
+    # The two closest points can COINCIDE — the capsule centrelines cross —
+    # and then the separation direction is genuinely undefined and has to be
+    # chosen by a rule. MuJoCo's rule lives in `mjraw_SphereSphere`
+    # (`engine_collision_primitive.c:261-268`), which is what its
+    # `mjraw_CapsuleCapsule` reduces to:
+    #
+    #     if (len < mjMINVAL) { cross(axis1, axis2); mju_normalize3(...); }
+    #
+    # i.e. CROSS OF THE TWO CAPSULE AXES first, and — because `mju_normalize3`
+    # rewrites a zero vector as (1,0,0) — plain +x when the axes are parallel.
+    #
+    # ⚠ THIS USED TO PICK `centre_B - centre_A` INSTEAD, deliberately, with the
+    # rationale that a cross-product normal is perpendicular to a planar arm's
+    # motion plane so "no DOF can resolve it". The comment above it claimed the
+    # code matched `mjc_CapsuleCapsule`; it did the opposite. The rationale is
+    # also wrong: an out-of-plane normal is not inert, it just means the pair
+    # acts through its FRICTION rows instead of its normal row, which is
+    # exactly what MuJoCo does. Keeping the normal in-plane changes the
+    # constraint COST, so the solver converges to a different minimiser —
+    # measured on dm_control manipulator `bring_peg` with the hand closed on
+    # itself (thumb2 x finger2, axes crossing, dist exactly -(r1+r2)):
+    # MuJoCo's normal is (0,1,0) and its normal-row Jacobian is ~0 (2.8e-18)
+    # where ours was (-0.995, 0, 0.0998) and large. qacc[thumb] came out -3859
+    # against MuJoCo's +1824 — a sign flip, and it read as a joint-LIMIT bug
+    # (task #41) for a whole arc because the limit row then correctly reports
+    # itself satisfied at the wrong minimiser.
     var dx = c2_x - c1_x
     var dy = c2_y - c1_y
     var dz = c2_z - c1_z
     var center_dist_sq = dx * dx + dy * dy + dz * dz
 
     if center_dist_sq < Scalar[DTYPE](1e-16):
-        # Degenerate: capsule centerlines cross or coincide.
-        # Strategy: use direction from capsule A center to capsule B center.
-        # This keeps the normal in the motion plane (critical for 2D chains
-        # where cross(axis_a, axis_b) is perpendicular to the plane and no
-        # DOF can resolve it).  Fall back to cross(axes) only if centers
-        # are also coincident.
-        var nx = b_x - a_x
-        var ny = b_y - a_y
-        var nz = b_z - a_z
-        var nlen_sq = nx * nx + ny * ny + nz * nz
+        var nx = a_ay * b_az - a_az * b_ay
+        var ny = a_az * b_ax - a_ax * b_az
+        var nz = a_ax * b_ay - a_ay * b_ax
+        var nlen = sqrt(nx * nx + ny * ny + nz * nz)
+        if nlen < Scalar[DTYPE](1e-15):
+            # `mju_normalize3` on a zero vector — parallel axes.
+            nx = Scalar[DTYPE](1)
+            ny = Scalar[DTYPE](0)
+            nz = Scalar[DTYPE](0)
+        else:
+            var inv_nlen = Scalar[DTYPE](1.0) / nlen
+            nx *= inv_nlen
+            ny *= inv_nlen
+            nz *= inv_nlen
 
-        if nlen_sq < Scalar[DTYPE](1e-16):
-            # Centers also coincident — use cross(axis_a, axis_b).
-            nx = a_ay * b_az - a_az * b_ay
-            ny = a_az * b_ax - a_ax * b_az
-            nz = a_ax * b_ay - a_ay * b_ax
-            nlen_sq = nx * nx + ny * ny + nz * nz
-
-        if nlen_sq < Scalar[DTYPE](1e-16):
-            # Parallel at same location — pick perpendicular to axis_a.
-            var abs_ax = abs(a_ax)
-            var abs_ay = abs(a_ay)
-            var abs_az = abs(a_az)
-            if abs_ax <= abs_ay and abs_ax <= abs_az:
-                nx = Scalar[DTYPE](0)
-                ny = -a_az
-                nz = a_ay
-            elif abs_ay <= abs_az:
-                nx = a_az
-                ny = Scalar[DTYPE](0)
-                nz = -a_ax
-            else:
-                nx = -a_ay
-                ny = a_ax
-                nz = Scalar[DTYPE](0)
-            nlen_sq = nx * nx + ny * ny + nz * nz
-
-        var inv_nlen = Scalar[DTYPE](1.0) / sqrt(nlen_sq)
-        nx *= inv_nlen
-        ny *= inv_nlen
-        nz *= inv_nlen
-
+        # `mjraw_SphereSphere`'s own point and depth at coincident centres:
+        # dist = -(r1 + r2), pos = p1 + n * (r1 + dist/2).
         var dist = -(a_radius + b_radius)
-        var mid_x = (c1_x + c2_x) * Scalar[DTYPE](0.5)
-        var mid_y = (c1_y + c2_y) * Scalar[DTYPE](0.5)
-        var mid_z = (c1_z + c2_z) * Scalar[DTYPE](0.5)
-        return (dist, mid_x, mid_y, mid_z, nx, ny, nz)
+        var off = a_radius + dist * Scalar[DTYPE](0.5)
+        return (
+            dist,
+            c1_x + nx * off,
+            c1_y + ny * off,
+            c1_z + nz * off,
+            nx,
+            ny,
+            nz,
+        )
 
     # Normal case: treat as sphere-sphere between the closest points
     return sphere_sphere(c1_x, c1_y, c1_z, a_radius, c2_x, c2_y, c2_z, b_radius)

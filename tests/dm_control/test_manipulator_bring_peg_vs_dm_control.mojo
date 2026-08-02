@@ -790,14 +790,22 @@ def test_bring_peg_qacc_by_constraint_bucket() raises:
 
     # D — all three.
     #
-    # ⚠ BOTH D POSES KEEP THE LIMIT VIOLATION INSIDE ITS IMPEDANCE WIDTH
-    # (`solimplimit` width = .01 rad, and thumb 1.05 is .0028 past the 60 deg
-    # stop). That is not a free choice: driving the violation PAST the width,
-    # which turns the row on at full impedance, hits an open engine defect —
-    # see `test_bring_peg_active_limit_with_contacts_is_an_open_defect` below,
-    # which pins it. This is a DEBT, recorded here rather than hidden: when
-    # that defect is fixed, its test fails and this bucket must be widened to
-    # the deep-limit poses it currently cannot hold.
+    # D1/D2 keep the limit violation INSIDE its impedance width (`solimplimit`
+    # width = .01 rad; thumb 1.05 is .0028 past the 60 deg stop); D3/D4 drive it
+    # WELL PAST the width, so the row switches on at full impedance .99.
+    #
+    # ⚠ D3/D4 ARE THE POSES THIS BUCKET COULD NOT HOLD UNTIL 2026-08-02, and
+    # they are here because the defect that excluded them is fixed. They used
+    # to give a rel qacc error of 2.65 / 4.03 and were pinned by an inverted
+    # test asserting exactly that. The cause was never the limit: with the hand
+    # closed on itself the thumb2/finger2 capsule AXES CROSS, and our
+    # capsule/capsule narrow phase resolved that degenerate normal to
+    # `centre_B - centre_A` where MuJoCo uses `cross(axis_a, axis_b)`. A wrong
+    # contact NORMAL changes the constraint cost, so the solver converged to a
+    # different minimiser — at which the limit row correctly reported itself
+    # satisfied, which is what made it look like a limit bug. Keep these poses:
+    # they are the only ones in the file that exercise a fully-engaged limit
+    # against live contacts.
     tags.append(String("D1 closed hand, self-contact + limit"))
     states.append(
         _pose_state(0, 0, 0, 0, 1.05, 0.0, PEG_FAR_X, PEG_FAR_Z, 0.0, False)
@@ -809,6 +817,18 @@ def test_bring_peg_qacc_by_constraint_bucket() raises:
                     PEG_HELD_ANGLE, False)
     )
     ctrls.append([0.0, 0.0, 0.0, 0.0, 0.6])
+    tags.append(String("D3 grasp + limit PAST its impedance width"))
+    states.append(
+        _pose_state(0, ARM1, ARM2, ARM3, 1.06, 0.0, GRASP_X, GRASP_Z + 0.02,
+                    PEG_HELD_ANGLE, False)
+    )
+    ctrls.append(_zero_ctrl())
+    tags.append(String("D4 grasp + limit far past the width"))
+    states.append(
+        _pose_state(0, ARM1, ARM2, ARM3, 1.10, 0.0, GRASP_X, GRASP_Z + 0.02,
+                    PEG_HELD_ANGLE, False)
+    )
+    ctrls.append(_zero_ctrl())
 
     var worst_by_bucket = List[Float64]()
     var count_by_bucket = List[Int]()
@@ -923,104 +943,6 @@ def test_bring_peg_qacc_by_constraint_bucket() raises:
         max_ncon < MAXC,
         "the pose table already reaches MAX_CONTACTS; a rollout would truncate"
         " contacts silently",
-    )
-
-
-def test_bring_peg_active_limit_with_contacts_is_an_open_defect() raises:
-    """PINS AN OPEN ENGINE DEFECT. It asserts the error is LARGE.
-
-    ⚠ WHEN THIS TEST FAILS, THE BUG IS FIXED. Delete it, and move the
-    deep-limit poses back into the D bucket of
-    `test_bring_peg_qacc_by_constraint_bucket`, which is currently restricted
-    to violations inside the impedance width because of this.
-
-    THE DEFECT. With a joint limit violated PAST its `solimplimit` width (.01
-    rad here, so the row switches on at full impedance .99) AND contacts live
-    at the same time, our qacc converges to the CONTACT-ONLY answer — MuJoCo
-    has qacc[thumb] = +1824 where we have -3859, a sign flip rather than a
-    tolerance miss.
-
-    WHAT IS ALREADY RULED OUT, each by measurement rather than by argument:
-      * the CONE — the pyramidal build blows up too (1.61 at thumb 1.06), so
-        the elliptic path's sequential split is not the cause
-      * the ACTUATOR — ctrl = 0 is slightly worse than ctrl = .6
-      * the PROP — identical numbers with the peg parked out of reach, which
-        is what makes this a bare-hand defect that bring_ball has too
-      * LIMITS ALONE — deep violations with no contacts are exact to 5e-11,
-        including four simultaneous limit rows
-      * CONTACTS ALONE — up to 14 contacts with no active limit are exact to
-        4.7e-9
-      * the LIMIT ROW DATA — ours is bit-identical to MuJoCo's efc row
-        (D 3.566857109e-4, bias -517.2706587 against aref +517.2706587)
-      * the CONTACT ROW SET — the same six geom pairs, distances agreeing to
-        1e-11, compared pair by pair rather than by `ncon`
-      * the SOLVER — Newton and CG produce the same wrong answer, and Newton
-        CONVERGES (|grad| 1.5e-15 in two iterations) with the limit row
-        classified SATISFIED
-
-    Which leaves the contradiction worth chasing: identical rows and identical
-    contacts, yet two converged stationary points of a cost that is supposed to
-    be strictly convex.
-    """
-    print("--- OPEN DEFECT: active limit + contacts ---")
-    var thumbs = [1.06, 1.10]
-    var worst_rel = Float64(0)
-    for k in range(len(thumbs)):
-        var state = _pose_state(
-            0, ARM1, ARM2, ARM3, thumbs[k], 0.0,
-            GRASP_X, GRASP_Z + 0.02, PEG_HELD_ANGLE, False,
-        )
-        var mj = _mj_at(state, _zero_ctrl())
-        var dat = mj[2]
-        var n_lim = 0
-        for i in range(Int(py=dat.nefc)):
-            if Int(py=dat.efc_type[i]) == 3:
-                n_lim += 1
-        var ours = _our_qacc(state, _zero_ctrl())
-        var scale = Float64(1.0)
-        for i in range(NV):
-            var a = abs(Float64(py=dat.qacc[i]))
-            if a > scale:
-                scale = a
-        var worst = Float64(0)
-        for i in range(NV):
-            var e = abs(ours[i] - Float64(py=dat.qacc[i]))
-            if e > worst:
-                worst = e
-        var rel = worst / scale
-        if rel > worst_rel:
-            worst_rel = rel
-        print(
-            "   thumb", thumbs[k], "| lim", n_lim,
-            "| ncon mj", Int(py=dat.ncon), "ours", Int(ours[NV]),
-            "| rel", rel,
-        )
-        # Non-vacuity: the pose has to actually have BOTH an active limit and
-        # contacts, or this pins nothing.
-        assert_true(
-            n_lim > 0 and Int(py=dat.ncon) > 0,
-            "the pose no longer has both an active limit and contacts, so this"
-            " test stopped describing the defect it was written for",
-        )
-        assert_true(
-            Int(ours[NV]) == Int(py=dat.ncon),
-            "our contact count diverged, which would be a DIFFERENT bug than"
-            " the one this test pins",
-        )
-
-    print("  worst rel =", worst_rel, " (expected: large, this is the bug)")
-    assert_true(
-        worst_rel > 0.5,
-        "the limit+contact qacc defect appears to be FIXED — this test exists"
-        " only to pin it. Delete this test and widen the D bucket in"
-        " test_bring_peg_qacc_by_constraint_bucket back to the deep-limit"
-        " poses (thumb 1.06 / 1.10), which it is currently restricted from"
-        " holding.",
-    )
-    assert_true(
-        worst_rel < 20.0,
-        "the limit+contact defect got substantially WORSE than the 2.3-4.0"
-        " measured on 2026-08-01 — something regressed on top of it",
     )
 
 
