@@ -15,15 +15,16 @@ half gateable. Our narrow phase used to emit ONE contact per colliding geom
 *pair* where MuJoCo emits up to four for a box on a plane and up to six for two
 boxes meeting face to face — and a box supported by a single corner point cannot
 be in equilibrium, it pivots, so for stacker that was not a numerical gap, it was
-the domain. Both are now byte-identical to MuJoCo (task #42: box/plane, then the
-box/box FACE manifold), and `test_stacker_qacc_by_constraint_bucket` gates the
-stacking poses themselves — `C9 cube stacked on a cube`, `C10 side by side` —
-at 2.9e-10.
+the domain. Every box contact is now byte-identical to MuJoCo — task #42 closed
+in four pieces: box/plane, the box/box FACE manifold, the box/box EDGE-EDGE
+manifold, and capsule/box's second point — and
+`test_stacker_qacc_by_constraint_bucket` gates the stacking poses themselves —
+`C9 cube stacked on a cube`, `C10 side by side` — at 2.9e-10.
 
-⚠ WHAT IS STILL ONE POINT is a box/box pair whose separating axis is an EDGE
-rather than a face, and capsule/box's SECOND point. Neither arises in the pose
-table below; `tests/physics3d/test_box_box_sweep.mojo` measures the first and is
-where that half of task #42 will be closed.
+The manifold gates live in `tests/physics3d/test_box_box_sweep.mojo` (both
+box/box axis kinds, 571 points over 217 poses, point for point) and
+`tests/physics3d/test_capsule_box_sweep.mojo` (the capsule manifold, including
+fixed lying-along-a-face poses).
 
 ⚠ `ncon` AGREEING IS NOT THE ROW SET AGREEING, and the converse trap is live
 here too: our count can equal MuJoCo's PAIR count while being four times short
@@ -638,13 +639,15 @@ comptime GRASP_Z: Float64 = 0.9026161228069853
 # With the arm at rest the grasp site is straight above the shoulder.
 comptime REST_GRASP_Z: Float64 = 0.915
 
-# ⚠ THE HELD CUBE IS ROTATED, AND THAT IS LOad BEARING. A cube meeting a hand
-# capsule face-on makes MuJoCo emit TWO points for that pair where we emit one,
-# which would put the qacc buckets below on a different constraint problem
-# entirely. At these angles MuJoCo itself emits exactly one point per pair, so
-# the two row sets agree and the bucket measures the SOLVER. Found by sweeping
-# MuJoCo for one-point-per-pair grasps; the bucket test asserts the property
-# per pose rather than relying on the angle staying lucky.
+# ⚠ THE HELD CUBE IS ROTATED. It had to be while a cube meeting a hand capsule
+# face-on made MuJoCo emit TWO points for that pair where we emitted one, which
+# would have put the qacc buckets below on a different constraint problem
+# entirely; these angles were found by sweeping MuJoCo for one-point-per-pair
+# grasps. `box_capsule_manifold` emits the second point now, so the constraint
+# no longer applies and a face-on grasp would be gateable — the angles stay
+# because they are what the numbers below were measured at. Either way the
+# bucket test asserts `our ncon == MuJoCo ncon` per pose rather than relying on
+# the angle staying lucky.
 comptime BOX_HELD_ANGLE_A: Float64 = 0.56
 comptime BOX_HELD_ANGLE_B: Float64 = 0.10
 
@@ -935,29 +938,6 @@ def _our_qacc2(
     return out^
 
 
-def _mj_pair_count(dat: PythonObject) raises -> Int:
-    """How many DISTINCT geom pairs MuJoCo's contacts cover.
-
-    Our narrow phase emits one point per pair, so this — not `ncon` — is the
-    number our count can legitimately equal.
-    """
-    var n = Int(py=dat.ncon)
-    var g1 = List[Int]()
-    var g2 = List[Int]()
-    for c in range(n):
-        var a = Int(py=dat.contact[c].geom1)
-        var b = Int(py=dat.contact[c].geom2)
-        var seen = False
-        for k in range(len(g1)):
-            if g1[k] == a and g2[k] == b:
-                seen = True
-                break
-        if not seen:
-            g1.append(a)
-            g2.append(b)
-    return len(g1)
-
-
 def test_stacker_qacc_by_constraint_bucket() raises:
     """`qacc` vs MuJoCo on stack_2, bucketed by which constraint rows MuJoCo has
     live: A equality only, B +limit, C +contact, D all three.
@@ -969,18 +949,19 @@ def test_stacker_qacc_by_constraint_bucket() raises:
     number cannot tell those apart.
 
     ⚠ WHICH BOX CONTACTS THE BUCKETS CAN HOLD IS SET BY THE NARROW PHASE, and
-    it has widened three times as task #42 was fixed piece by piece: a cube
-    HELD IN THE HAND once #45 landed (capsule/box, sphere/box), a cube resting
-    FLAT ON THE FLOOR once box/plane emitted a point per corner, and a cube
-    STACKED ON A CUBE once the box/box FACE manifold landed. Each of those
-    poses was ungatable before its fix: with one contact where MuJoCo has four,
-    the two engines are not solving the same constraint problem and the
-    difference shows up as a solver error that is not one.
+    it widened three times as task #42 was fixed piece by piece: a cube HELD IN
+    THE HAND once #45 landed (capsule/box, sphere/box), a cube resting FLAT ON
+    THE FLOOR once box/plane emitted a point per corner, and a cube STACKED ON
+    A CUBE once the box/box FACE manifold landed. Each of those poses was
+    ungatable before its fix: with one contact where MuJoCo has four, the two
+    engines are not solving the same constraint problem and the difference
+    shows up as a solver error that is not one.
 
-    ⚠ WHAT STILL CANNOT BE HERE is a box/box pair whose separating axis is an
-    EDGE — the edge-edge half of #42 is still one point where MuJoCo emits up
-    to six. `tests/physics3d/test_box_box_sweep.mojo` measures the shortfall
-    and names this table as the thing to widen when it closes.
+    The narrow phase no longer restricts what can go here: the box/box EDGE
+    manifold and capsule/box's second point closed the rest of #42, so a box
+    pair meeting on an EDGE and a capsule LYING ALONG a box face are both
+    gateable now. Neither is in the table yet — adding one would extend the
+    coverage this bucket has rather than fix anything.
 
     ⚠ THE HELD CUBE IS STILL ROTATED, and now for a THIRD reason: at these
     angles the hand's capsules meet the cube on a face, which the manifold
@@ -1187,9 +1168,10 @@ def test_stacker_qacc_by_constraint_bucket() raises:
             String("pose ") + tags[p] + ": we found " + String(our_ncon)
             + " contacts, MuJoCo " + String(mj_ncon)
             + " — the bucket label is a fiction and the qacc comparison is"
-            " measuring a different constraint problem. If a BOX has entered"
-            " this pose, that is expected and the pose is wrong: see tasks #42"
-            " and #45 and the two defect tests below.",
+            " measuring a different constraint problem. Every box narrow phase"
+            " is point-for-point with MuJoCo now (tasks #42, #45), so this is"
+            " a real regression rather than a known gap; the box/box and"
+            " capsule/box sweeps under tests/physics3d/ localise it.",
         )
 
     var names = [

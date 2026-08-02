@@ -85,7 +85,6 @@ from .collision_primitives import (
     capsule_sphere,
     capsule_capsule,
     box_sphere,
-    box_capsule,
     box_box,
     box_plane,
     cylinder_plane,
@@ -104,6 +103,7 @@ from .gjk import gjk_epa
 from .contact_detection import (
     _plane_box_contacts,
     _box_box_contacts,
+    _capsule_box_contacts,
     _geom_world_pos,
     detect_contacts,
 )
@@ -996,68 +996,32 @@ def _detect_contacts_sap_env[
                 ny = -r[5]
                 nz = -r[6]
             elif gi_type == GEOM_BOX and gj_type == GEOM_CAPSULE:
-                var r = box_capsule[DTYPE](
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hxi,
-                    hyi,
-                    hzi,
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hlj,
-                    rj,
+                # A capsule along a box face is a two-point manifold — see
+                # `_capsule_box_contacts`, which writes its own records.
+                _ = _capsule_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                    env, gi_body, gj_body,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+                    Scalar[DTYPE](-1),
+                    cm, cf, cfs, cfr, cdim,
+                    contacts, num_contacts,
                 )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
+                continue
             elif gi_type == GEOM_CAPSULE and gj_type == GEOM_BOX:
-                var r = box_capsule[DTYPE](
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hxj,
-                    hyj,
-                    hzj,
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hli,
-                    ri,
+                _ = _capsule_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                    env, gi_body, gj_body,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    Scalar[DTYPE](1),
+                    cm, cf, cfs, cfr, cdim,
+                    contacts, num_contacts,
                 )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = -r[4]
-                ny = -r[5]
-                nz = -r[6]
+                continue
             elif gi_type == GEOM_BOX and gj_type == GEOM_BOX:
-                # A FACE contact is a whole manifold, not a point — see
-                # `_box_box_contacts` and task #42. It writes its own records
-                # and this branch is done; the other two cases fall through to
-                # the single point `box_box` returns.
+                # A box/box contact is a whole manifold, not a point — see
+                # `_box_box_contacts`. It writes its own records and this
+                # branch is done; only a SEPARATED pair (code -1) falls through
+                # to `box_box`, which then rejects it too.
                 var code = _box_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
                     env,
                     gi_body,
@@ -1072,7 +1036,7 @@ def _detect_contacts_sap_env[
                     contacts,
                     num_contacts,
                 )
-                if code >= 0 and code < 12:
+                if code >= 0:
                     continue
                 var r = box_box[DTYPE](
                     pi_x,

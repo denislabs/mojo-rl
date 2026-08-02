@@ -326,31 +326,6 @@ def _mj_dists(dat: PythonObject) raises -> List[Float64]:
     return _sorted_dists(out)
 
 
-def _mj_pair_count(dat: PythonObject) raises -> Int:
-    """How many DISTINCT geom pairs MuJoCo's contacts cover.
-
-    `ncon` and this number differ exactly when MuJoCo emits more than one
-    point for a pair, which `mjc_CapsuleBox` does when a capsule lies along a
-    box face. Our narrow phase emits one point per pair, so the two numbers
-    being equal is the precondition for a like-for-like `ncon` comparison —
-    see `test_insert_peg_capsule_box_multipoint_is_an_open_defect`.
-    """
-    var g1 = List[Int]()
-    var g2 = List[Int]()
-    for c in range(Int(py=dat.ncon)):
-        var a = Int(py=dat.contact[c].geom1)
-        var b = Int(py=dat.contact[c].geom2)
-        var seen = False
-        for k in range(len(g1)):
-            if g1[k] == a and g2[k] == b:
-                seen = True
-                break
-        if not seen:
-            g1.append(a)
-            g2.append(b)
-    return len(g1)
-
-
 def _mj_insert(
     use_peg: Bool,
     ox: Float64, oz: Float64, oa: Float64,
@@ -549,23 +524,24 @@ def test_insert_peg_receptacle_collides_at_its_mocap_pose() raises:
     MP.init_fields[DTYPE, 0](ctx, mf)
     var integ = PInteg()
 
-    # Scan for a pose that is BOTH one-point-per-pair and at a physical
-    # depth. Two filters, each for its own reason:
+    # Scan for the pose with the most MuJoCo contacts at a PHYSICAL depth.
     #
-    #   one point per pair — poses where MuJoCo emits two points for a
-    #     capsule/box pair are a genuine open gap in our narrow phase, pinned
-    #     by the defect test below. Mixing them in would make this gate fail
-    #     for a reason it does not measure.
-    #   |dist| <= 8 mm — MuJoCo CLAMPS a capsule/box penetration at the box's
-    #     half-thickness plus the capsule radius (-.015 here, and the sweep
-    #     shows that value appearing verbatim over whole bands of z). Depth
-    #     parity inside a clamped, 3 cm interpenetration is a different
-    #     question from contact parity, and not one this file is about.
+    # ⚠ THIS USED TO ALSO REQUIRE ONE POINT PER PAIR, and that restriction is
+    # gone with the gap it existed for. Our capsule/box narrow phase emitted
+    # one contact per colliding pair where `mjc_CapsuleBox` emits two for a
+    # capsule lying along a box face, so poses where MuJoCo doubled up would
+    # have failed this gate for a reason it does not measure; they were pinned
+    # separately by `test_insert_peg_capsule_box_multipoint_is_an_open_defect`,
+    # which is deleted now that `box_capsule_manifold` emits the second point.
+    # Dropping the filter is what widens this gate from single-pair poses to
+    # the FOUR-pair, seven-contact one — the peg actually lying in the slot,
+    # which is the terminal state insert_peg is about.
     #
-    # Those two filters together leave only SINGLE-pair poses: the sweep shows
-    # MuJoCo doubling up as soon as a second pair engages. Multi-pair coverage
-    # is therefore carried by the defect test, which asserts we find exactly
-    # MuJoCo's four pairs at the four-pair pose, at matching depths.
+    # The remaining filter stands on its own: MuJoCo CLAMPS a capsule/box
+    # penetration at the box's half-thickness plus the capsule radius (-.015
+    # here, and the sweep shows that value appearing verbatim over whole bands
+    # of z). Depth parity inside a clamped, 3 cm interpenetration is a
+    # different question from contact parity, and not one this file is about.
     var oz = RECEPTACLE_Z + 0.10
     var best_z = oz
     var mj_ncon = 0
@@ -573,7 +549,7 @@ def test_insert_peg_receptacle_collides_at_its_mocap_pose() raises:
     while oz > RECEPTACLE_Z - 0.10:
         var mj = _mj_insert(True, RECEPTACLE_X, oz, RECEPTACLE_ANGLE)
         var n = Int(py=mj[1].ncon)
-        if n > 0 and _mj_pair_count(mj[1]) == n:
+        if n > 0:
             var deepest = _mj_dists(mj[1])[0]
             if abs(deepest) <= 0.008 and n >= mj_ncon:
                 mj_ncon = n
@@ -585,9 +561,9 @@ def test_insert_peg_receptacle_collides_at_its_mocap_pose() raises:
     print("  peg z =", best_z, " MuJoCo ncon =", mj_ncon)
     assert_true(
         found and mj_ncon >= 1,
-        "no pose in the swept band is both one-point-per-pair and at a"
-        " physical depth, so this gate has nothing to stand on — the slot"
-        " geometry or its mocap pose moved",
+        "no pose in the swept band has a contact at a physical depth, so this"
+        " gate has nothing to stand on — the slot geometry or its mocap pose"
+        " moved",
     )
     oz = best_z
 
@@ -630,133 +606,6 @@ def test_insert_peg_receptacle_collides_at_its_mocap_pose() raises:
         worst <= 1e-9,
         "our contact DEPTHS diverge from MuJoCo's even though the counts"
         " match — the slot is colliding, but not where MuJoCo has it",
-    )
-
-
-def test_insert_peg_capsule_box_multipoint_is_an_open_defect() raises:
-    """PINS AN OPEN ENGINE GAP. It asserts we find FEWER contacts than MuJoCo.
-
-    ⚠ WHEN THIS TEST FAILS, THE GAP IS CLOSED. Delete it, and drop the
-    one-point-per-pair restriction from the scan in
-    `test_insert_peg_receptacle_collides_at_its_mocap_pose`, which exists only
-    because of this.
-
-    THE GAP. Our capsule/box narrow phase emits ONE contact per colliding geom
-    pair. MuJoCo's `mjc_CapsuleBox` emits up to TWO — both endpoints — when a
-    capsule lies along a box face. Measured with the peg lowered into the
-    slot:
-
-        z=.330   MuJoCo 1 contact  / 1 pair    ours 1
-        z=.305   MuJoCo 7 contacts / 4 pairs   ours 4
-        z=.290   MuJoCo 5 contacts / 4 pairs   ours 4
-        z=.270   MuJoCo 5 contacts / 5 pairs   ours 5
-
-    so we match exactly whenever MuJoCo is also one-per-pair, and fall short by
-    precisely the duplicated points otherwise. The contact we DO emit is
-    right: depths agree to 1e-9 at the one-per-pair poses, and the sphere/
-    capsule insert_ball case agrees to 2.4e-17.
-
-    WHY IT MATTERS rather than being cosmetic: a capsule resting flat on a box
-    held by a single point can PIVOT about that point. That is the peg-lying-
-    in-the-slot configuration, i.e. the terminal state insert_peg is about.
-    """
-    print("--- OPEN GAP: capsule/box multi-point contacts ---")
-    var ctx = DeviceContext()
-    var mf = PModel()
-    MP.init_fields[DTYPE, 0](ctx, mf)
-    var integ = PInteg()
-
-    # Find a pose where MuJoCo genuinely doubles up a pair.
-    var oz = RECEPTACLE_Z + 0.10
-    var best_z = oz
-    var best_extra = 0
-    var mj_ncon = 0
-    var mj_pairs = 0
-    while oz > RECEPTACLE_Z - 0.10:
-        var mj = _mj_insert(True, RECEPTACLE_X, oz, RECEPTACLE_ANGLE)
-        var n = Int(py=mj[1].ncon)
-        var p = _mj_pair_count(mj[1])
-        if n - p > best_extra:
-            best_extra = n - p
-            best_z = oz
-            mj_ncon = n
-            mj_pairs = p
-        oz -= 0.005
-    print(
-        "  peg z =", best_z, " MuJoCo ncon =", mj_ncon,
-        " over", mj_pairs, "pairs",
-    )
-    assert_true(
-        best_extra > 0,
-        "MuJoCo no longer doubles up any capsule/box pair anywhere in the"
-        " swept band, so this test describes nothing — either the geometry"
-        " moved or MuJoCo changed, and the restriction it justifies in the"
-        " parity gate next door should be revisited",
-    )
-
-    var d = PData()
-    MP.reset_data(d)
-    d.qpos.data[OBJECT_QADR_X] = Scalar[DTYPE](RECEPTACLE_X)
-    d.qpos.data[OBJECT_QADR_Z] = Scalar[DTYPE](best_z)
-    d.qpos.data[OBJECT_QADR_Y] = Scalar[DTYPE](RECEPTACLE_ANGLE)
-    for i in range(PNV):
-        d.qfrc.data[i] = Scalar[DTYPE](0)
-    _pose_mocap_peg(d)
-    var zero = List[Float64]()
-    for _ in range(MP.ACTION_DIM):
-        zero.append(0.0)
-    var act = List[Scalar[DTYPE]]()
-    for _ in range(MP.NA if MP.NA > 0 else 1):
-        act.append(Scalar[DTYPE](0))
-    MP.apply_actions(d, zero, act)
-    integ.step["cpu"](d, mf)
-    var our_ncon = Int(d.meta.data[META_IDX_NUM_CONTACTS])
-    var mjb2 = _mj_insert(True, RECEPTACLE_X, best_z, RECEPTACLE_ANGLE)
-    print("  our ncon =", our_ncon, " (expected: == pairs, < MuJoCo's ncon)")
-
-    assert_true(
-        our_ncon < mj_ncon,
-        "we now find as many contacts as MuJoCo at a pose where it doubles up"
-        " a capsule/box pair — the multi-point gap appears to be CLOSED."
-        " Delete this test and drop the one-point-per-pair restriction from"
-        " the scan in test_insert_peg_receptacle_collides_at_its_mocap_pose.",
-    )
-    assert_true(
-        our_ncon == mj_pairs,
-        String("we found ") + String(our_ncon) + " contacts over MuJoCo's "
-        + String(mj_pairs) + " distinct pairs. The gap this test pins is"
-        " exactly `one point per pair`; a different count means a SECOND,"
-        " unpinned defect — pairs being missed or invented.",
-    )
-
-    # This is where the MULTI-PAIR coverage lives. The parity gate next door
-    # can only run on single-pair poses (MuJoCo doubles up as soon as a second
-    # pair engages), so the strong statement has to be made here: every contact
-    # we emit must match one of MuJoCo's at the same DEPTH. That upgrades the
-    # claim from "we find the right number of pairs" to "we find the right
-    # pairs, in the right places — we just find fewer points on them", which is
-    # the difference between a known gap and an unknown one.
-    var ours = List[Float64]()
-    for c in range(our_ncon):
-        ours.append(
-            Float64(d.contacts.data[c * CONTACT_SIZE + CONTACT_IDX_DIST])
-        )
-    var mj_d = _mj_dists(mjb2[1])
-    var worst_match = Float64(0)
-    for i in range(len(ours)):
-        var best = Float64(1e18)
-        for j in range(len(mj_d)):
-            var e = abs(ours[i] - mj_d[j])
-            if e < best:
-                best = e
-        if best > worst_match:
-            worst_match = best
-    print("  worst |ours - nearest MuJoCo dist| =", worst_match)
-    assert_true(
-        worst_match <= 1e-9,
-        "one of our contacts has no MuJoCo counterpart at the same depth, so"
-        " the divergence is NOT just the missing duplicate points this test"
-        " pins — we are reporting a contact MuJoCo does not have",
     )
 
 

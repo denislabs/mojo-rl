@@ -1,4 +1,4 @@
-"""box/box narrow phase, swept over many poses (task #42, the remaining half).
+"""box/box narrow phase, swept over many poses (task #42).
 
 WHAT THIS MEASURES, AND WHY IT COMES BEFORE THE FIX. `mjc_BoxBox` does two
 things: it picks a separating axis (its `code`, from 6 face axes on each box
@@ -18,18 +18,21 @@ If it does not, the axis selection has to be ported too — and a manifold built
 on the wrong axis would be worse than one point on the right one.
 
 The first run answered it: the axis and the depth ALREADY matched to 1e-10, so
-only manifold generation was missing. `test_box_box_face_manifold_vs_mujoco`
-below now gates that manifold, point for point, on the poses whose axis is a
-FACE.
+only manifold generation was missing. `test_box_box_manifold_vs_mujoco` below
+now gates that manifold, point for point, on BOTH kinds of axis.
 
-⚠ THE EDGE-EDGE HALF IS STILL ONE POINT, and that is the rest of task #42. It
-is a bigger remainder than it sounds: of the 217 contacting poses here only 90
-take the face path, 127 take edge-edge, and MuJoCo's edge-edge path is NOT
-single-point either — measured over those 127 poses it emitted 1 to 6 points,
-361 in total. An earlier version of this comment claimed edge-edge emitted one
-point in MuJoCo too; that was wrong, read off the `n = 1; ... n = 2` prologue
-of `mjc_BoxBox`'s edge branch without following it to the clipping that comes
-after.
+Both halves are ported. Of the 217 contacting poses here, 90 take the face path
+(210 points) and 127 take edge-edge (361 points); the engine emits all 571,
+matching MuJoCo exactly. An earlier version of this comment claimed edge-edge
+emitted one point in MuJoCo too; that was wrong, read off the `n = 1; ... n = 2`
+prologue of `mjc_BoxBox`'s edge branch without following it to the clipping
+that comes after — it emits 1 to 6.
+
+⚠ The edge branch has a quirk that has to be reproduced, not cleaned up:
+MuJoCo overwrites its barycentric determinant `c1` inside its own
+reference-corner loop, so every corner after the first divides by a squared
+distance. Without that we emit 368 edge points where the runtime emits 361, and
+the extra ones look perfectly reasonable.
 
 ⚠ COMPARED AGAINST MuJoCo'S DEEPEST POINT, and that IS the right choice here,
 unlike capsule/box: on a face manifold every point shares one normal, and the
@@ -280,8 +283,6 @@ def test_box_box_sweep_vs_mujoco() raises:
           " with ours =", n_ours, " with both =", n_both)
     print("  manifold points: MuJoCo", mj_points, " ours", our_points,
           " (MuJoCo max on one pose", mj_max_points, ")")
-    print("    the shortfall is the EDGE-EDGE half of task #42; the face half"
-          " is gated point-for-point below")
     print("  worst |d dist| =", worst_dist, " at pose", worst_dist_pose,
           " (", n_bad_dist, "poses over tol )")
     print("  worst |d normal| =", worst_dir, " at pose", worst_dir_pose,
@@ -308,30 +309,38 @@ def test_box_box_sweep_vs_mujoco() raises:
     )
     # The manifold has to reach the CONTACT RECORDS, not just the primitive:
     # `_box_box_contacts` is wired into two separate narrow phases and this is
-    # the one that runs `detect_contacts`.
+    # the one that runs `detect_contacts`. `MAX_CONTACTS` is 8 here and MuJoCo's
+    # worst pose has 6, so nothing is being clipped by the cap.
     assert_true(
-        our_points > n_ours,
+        our_points == mj_points,
         String("the narrow phase emitted ") + String(our_points)
-        + " contacts over " + String(n_ours) + " contacting poses — one per"
-        " pair, so the face manifold is not reaching the records even though"
+        + " contacts where MuJoCo emitted " + String(mj_points)
+        + " over the same " + String(n_ours) + " contacting poses — the"
+        " manifold is not reaching the records intact even though"
         " `box_box_manifold` builds it",
     )
 
 
-def test_box_box_face_manifold_vs_mujoco() raises:
-    """Every point of the FACE manifold, in MuJoCo's own order.
+def test_box_box_manifold_vs_mujoco() raises:
+    """Every point of the manifold, in MuJoCo's own order, on BOTH axis kinds.
 
     Calls `box_box_manifold` directly rather than going through the engine, so
     a failure says which of the two is wrong: the primitive, or the wiring in
     `_box_box_contacts`. The engine path is gated by
     `test_box_box_sweep_vs_mujoco` above and by the stacker qacc buckets.
 
+    Face and edge poses are counted separately so a regression in one path
+    cannot hide behind the other's totals — they are different code with
+    different failure modes (the face path picks a reference FACE and its
+    normal is that face's; the edge path's normal is a cross product and its
+    reference frame is chosen from the leading corner).
+
     ⚠ Both geoms sit at their body origin with no local offset in `BB_XML`, so
     the geom world pose IS the body pose and the sweep's own `(p, q)` can be
     passed straight in. Add a `pos=`/`quat=` to either `<geom>` and this stops
     being true.
     """
-    print("--- box/box FACE manifold:", NPOSE, "poses")
+    print("--- box/box manifold:", NPOSE, "poses")
 
     var mujoco = Python.import_module("mujoco")
     var m = mujoco.MjModel.from_xml_string(String(BB_XML))
@@ -342,7 +351,8 @@ def test_box_box_face_manifold_vs_mujoco() raises:
     var n_face = 0
     var n_edge = 0
     var n_sep = 0
-    var n_points = 0
+    var n_face_points = 0
+    var n_edge_points = 0
     var n_count_bad = 0
     var first_bad = -1
     var worst_dist = Float64(0)
@@ -415,9 +425,10 @@ def test_box_box_face_manifold_vs_mujoco() raises:
             continue
         if code >= 12:
             n_edge += 1
-            continue
-        n_face += 1
-        n_points += n_bb
+            n_edge_points += n_bb
+        else:
+            n_face += 1
+            n_face_points += n_bb
 
         if n_bb != mjn:
             n_count_bad += 1
@@ -443,8 +454,10 @@ def test_box_box_face_manifold_vs_mujoco() raises:
 
     print("  poses: face =", n_face, " edge-edge =", n_edge,
           " separated =", n_sep)
-    print("  face manifold points =", n_points,
+    print("  face manifold points =", n_face_points,
           " (one point per pose would be", n_face, ")")
+    print("  edge manifold points =", n_edge_points,
+          " (one point per pose would be", n_edge, ")")
     print("  count mismatches =", n_count_bad, " first at pose", first_bad)
     print("  worst |d dist| =", worst_dist, " at pose", worst_pose)
     print("  worst |d pos|  =", worst_pos)
@@ -456,28 +469,38 @@ def test_box_box_face_manifold_vs_mujoco() raises:
         " test gates almost nothing",
     )
     assert_true(
-        n_points > n_face,
-        String("the face path emitted ") + String(n_points) + " points over "
-        + String(n_face) + " poses, i.e. no manifold at all",
+        n_edge >= 40,
+        String("only ") + String(n_edge) + " poses took the EDGE-EDGE path —"
+        " this test gates almost nothing",
+    )
+    assert_true(
+        n_face_points > n_face,
+        String("the face path emitted ") + String(n_face_points)
+        + " points over " + String(n_face) + " poses, i.e. no manifold at all",
+    )
+    assert_true(
+        n_edge_points > n_edge,
+        String("the edge-edge path emitted ") + String(n_edge_points)
+        + " points over " + String(n_edge) + " poses, i.e. no manifold at all",
     )
     assert_true(
         n_count_bad == 0,
-        String("box/box face manifold has a different POINT COUNT from MuJoCo"
+        String("box/box manifold has a different POINT COUNT from MuJoCo"
         " on ") + String(n_count_bad) + " poses, first at pose "
         + String(first_bad),
     )
     assert_true(
         worst_dist <= TOL_DIST,
-        String("face manifold DEPTH diverges by ") + String(worst_dist)
+        String("manifold DEPTH diverges by ") + String(worst_dist)
         + " at pose " + String(worst_pose),
     )
     assert_true(
         worst_pos <= TOL_DIST,
-        String("face manifold POSITION diverges by ") + String(worst_pos),
+        String("manifold POSITION diverges by ") + String(worst_pos),
     )
     assert_true(
         worst_dir <= TOL_DIR,
-        String("face manifold NORMAL diverges by ") + String(worst_dir),
+        String("manifold NORMAL diverges by ") + String(worst_dir),
     )
 
 

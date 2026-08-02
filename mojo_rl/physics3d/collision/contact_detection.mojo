@@ -91,7 +91,8 @@ from .collision_primitives import (
     capsule_sphere,
     capsule_capsule,
     box_sphere,
-    box_capsule,
+    box_capsule_manifold,
+    CB_MAX_POINTS,
     box_box,
     box_box_manifold,
     BB_MAX_POINTS,
@@ -408,6 +409,115 @@ def _plane_box_contacts[
 
 
 @always_inline
+def _capsule_box_contacts[
+    DTYPE: DType,
+    MAX_CONTACTS: Int,
+    BATCH: Int,
+](
+    env: Int,
+    body_a: Int,
+    body_b: Int,
+    box_x: Scalar[DTYPE],
+    box_y: Scalar[DTYPE],
+    box_z: Scalar[DTYPE],
+    box_qx: Scalar[DTYPE],
+    box_qy: Scalar[DTYPE],
+    box_qz: Scalar[DTYPE],
+    box_qw: Scalar[DTYPE],
+    box_hx: Scalar[DTYPE],
+    box_hy: Scalar[DTYPE],
+    box_hz: Scalar[DTYPE],
+    cap_x: Scalar[DTYPE],
+    cap_y: Scalar[DTYPE],
+    cap_z: Scalar[DTYPE],
+    cap_qx: Scalar[DTYPE],
+    cap_qy: Scalar[DTYPE],
+    cap_qz: Scalar[DTYPE],
+    cap_qw: Scalar[DTYPE],
+    cap_hl: Scalar[DTYPE],
+    cap_r: Scalar[DTYPE],
+    # -1 when the BOX is geom i, +1 when the CAPSULE is. See below.
+    nsgn: Scalar[DTYPE],
+    contact_margin: Scalar[DTYPE],
+    contact_friction: Scalar[DTYPE],
+    contact_friction_spin: Scalar[DTYPE],
+    contact_friction_roll: Scalar[DTYPE],
+    contact_condim: Int,
+    contacts: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    mut num_contacts: Int,
+) -> Int:
+    """Capsule/box: up to TWO contacts, MuJoCo's manifold.
+
+    A capsule lying along a box face touches over a segment; one point leaves
+    it free to pivot, the same defect a box on one contact point has. See
+    `box_capsule_manifold`.
+
+    Returns the number of records written, so the caller knows whether to fall
+    back (it never has to — 0 means no contact).
+
+    ⚠ NORMAL SIGN. `box_capsule_manifold` returns box -> capsule. The record's
+    convention is `body_b -> body_a` = `gj -> gi`, so when the BOX is geom i
+    that is the negation of the manifold normal (`nsgn = -1`) and when the
+    CAPSULE is geom i it is the manifold normal itself (`nsgn = +1`). The two
+    single-point branches this replaces encoded the same thing as `nx = r[4]`
+    versus `nx = -r[4]` followed by the shared emit's unconditional negation.
+    """
+    var cb_dist = InlineArray[Scalar[DTYPE], CB_MAX_POINTS](
+        fill=Scalar[DTYPE](0)
+    )
+    var cb_pos = InlineArray[Scalar[DTYPE], 3 * CB_MAX_POINTS](
+        fill=Scalar[DTYPE](0)
+    )
+    var cb_n = InlineArray[Scalar[DTYPE], 3 * CB_MAX_POINTS](
+        fill=Scalar[DTYPE](0)
+    )
+    var n_cb = box_capsule_manifold[DTYPE](
+        box_x, box_y, box_z, box_qx, box_qy, box_qz, box_qw,
+        box_hx, box_hy, box_hz,
+        cap_x, cap_y, cap_z, cap_qx, cap_qy, cap_qz, cap_qw,
+        cap_hl, cap_r,
+        contact_margin,
+        cb_dist,
+        cb_pos,
+        cb_n,
+    )
+
+    var written = 0
+    for c in range(n_cb):
+        if num_contacts >= MAX_CONTACTS:
+            break
+        if cb_dist[c] >= contact_margin:
+            continue
+        var c_off = num_contacts * CONTACT_SIZE
+        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](body_a)
+        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](body_b)
+        contacts[env, c_off + CONTACT_IDX_POS_X] = cb_pos[3 * c + 0]
+        contacts[env, c_off + CONTACT_IDX_POS_Y] = cb_pos[3 * c + 1]
+        contacts[env, c_off + CONTACT_IDX_POS_Z] = cb_pos[3 * c + 2]
+        contacts[env, c_off + CONTACT_IDX_NX] = nsgn * cb_n[3 * c + 0]
+        contacts[env, c_off + CONTACT_IDX_NY] = nsgn * cb_n[3 * c + 1]
+        contacts[env, c_off + CONTACT_IDX_NZ] = nsgn * cb_n[3 * c + 2]
+        contacts[env, c_off + CONTACT_IDX_DIST] = cb_dist[c]
+        contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
+        contacts[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
+        contacts[
+            env, c_off + CONTACT_IDX_FRICTION_SPIN
+        ] = contact_friction_spin
+        contacts[
+            env, c_off + CONTACT_IDX_FRICTION_ROLL
+        ] = contact_friction_roll
+        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+            contact_condim
+        )
+        num_contacts += 1
+        written += 1
+    return written
+
+
+@always_inline
 def _box_box_contacts[
     DTYPE: DType,
     MAX_CONTACTS: Int,
@@ -447,12 +557,11 @@ def _box_box_contacts[
     ],
     mut num_contacts: Int,
 ) -> Int:
-    """Box/box: the whole manifold when the separating axis is a FACE.
+    """Box/box: the whole manifold, on both the FACE and EDGE-EDGE axes.
 
-    Returns MuJoCo's `code` so the caller can fall back for the two cases this
-    does not write: `-1` (separated) and `>= 12` (edge-edge, still one point —
-    the remaining half of task #42). On `0 <= code < 12` the records are
-    written here and the caller must NOT emit again.
+    Returns MuJoCo's `code` so the caller can fall back for the one case this
+    does not write: `-1`, separated. On any `code >= 0` the records are written
+    here and the caller must NOT emit again.
 
     A box resting on another touches over a whole face, and one point cannot
     express that — the same reason `_plane_box_contacts` exists. See
@@ -476,7 +585,7 @@ def _box_box_contacts[
         bb_pos,
         bb_n,
     )
-    if code < 0 or code >= 12:
+    if code < 0:
         return code
 
     for c in range(n_bb):
@@ -1595,68 +1704,40 @@ def _detect_contacts_env[
                 ny = -r[5]
                 nz = -r[6]
             elif gi_type == GEOM_BOX and gj_type == GEOM_CAPSULE:
-                var r = box_capsule[DTYPE](
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hxi,
-                    hyi,
-                    hzi,
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hlj,
-                    rj,
+                # A capsule along a box face is a two-point manifold — see
+                # `_capsule_box_contacts`, which writes its own records.
+                _ = _capsule_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                    env, gi_body, gj_body,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+                    Scalar[DTYPE](-1),
+                    contact_margin,
+                    contact_friction,
+                    contact_friction_spin,
+                    contact_friction_roll,
+                    contact_condim,
+                    contacts, num_contacts,
                 )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = r[4]
-                ny = r[5]
-                nz = r[6]
+                continue
             elif gi_type == GEOM_CAPSULE and gj_type == GEOM_BOX:
-                var r = box_capsule[DTYPE](
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hxj,
-                    hyj,
-                    hzj,
-                    pi_x,
-                    pi_y,
-                    pi_z,
-                    qi_x,
-                    qi_y,
-                    qi_z,
-                    qi_w,
-                    hli,
-                    ri,
+                _ = _capsule_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                    env, gi_body, gj_body,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    Scalar[DTYPE](1),
+                    contact_margin,
+                    contact_friction,
+                    contact_friction_spin,
+                    contact_friction_roll,
+                    contact_condim,
+                    contacts, num_contacts,
                 )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = -r[4]
-                ny = -r[5]
-                nz = -r[6]
+                continue
             elif gi_type == GEOM_BOX and gj_type == GEOM_BOX:
-                # A FACE contact is a whole manifold, not a point — see
-                # `_box_box_contacts` and task #42. It writes its own records
-                # and this branch is done; the other two cases fall through to
-                # the single point `box_box` returns.
+                # A box/box contact is a whole manifold, not a point — see
+                # `_box_box_contacts`. It writes its own records and this
+                # branch is done; only a SEPARATED pair (code -1) falls through
+                # to `box_box`, which then rejects it too.
                 var code = _box_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
                     env,
                     gi_body,
@@ -1671,7 +1752,7 @@ def _detect_contacts_env[
                     contacts,
                     num_contacts,
                 )
-                if code >= 0 and code < 12:
+                if code >= 0:
                     continue
                 var r = box_box[DTYPE](
                     pi_x,

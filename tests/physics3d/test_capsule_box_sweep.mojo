@@ -26,13 +26,20 @@ index, and it reports the WORST case rather than the first — a primitive that 
 right in 90% of poses is still broken, and the first failure tells you nothing
 about how bad it gets.
 
-⚠ CONTACT COUNTS ARE NOT COMPARED. MuJoCo emits a SECOND point for a capsule
-lying along a box face; we emit one (task #42, open). This file compares our
-single point against MuJoCo's `contact[0]`, the primary at `bestsegmentpos`.
-NOT against its deepest — `bestsegmentpos` minimises distance to the box
-SURFACE, so for a penetrating capsule MuJoCo's second point is often deeper, and
-selecting by depth compares our primary against its manifold extra and reports
-the missing second point as a defect in this primitive.
+⚠ `test_capsule_box_sweep_vs_mujoco` COMPARES ONLY MuJoCo'S `contact[0]`, and
+that is deliberate: it was written while we emitted one point, and it stays that
+way so it keeps measuring the PRIMARY point in isolation. It compares against
+`contact[0]`, the point at `bestsegmentpos` — NOT against MuJoCo's deepest,
+because `bestsegmentpos` minimises distance to the box SURFACE, so for a
+penetrating capsule the second point is often deeper, and selecting by depth
+compares our primary against its manifold extra.
+
+The SECOND point is now emitted too, and
+`test_capsule_box_manifold_vs_mujoco` at the bottom of this file gates the whole
+record set. Note the random sweep is a weak gate for it on its own — a uniformly
+random orientation is almost never parallel to a face, so only 7 of the 400
+poses get two points. That test adds fixed lying-along-a-face poses for the
+configuration the second point actually exists for.
 
 All FOUR parts of the record are compared: depth, normal AND position. An
 earlier version checked only the first two and passed while the contact POINT
@@ -356,6 +363,241 @@ def test_capsule_box_sweep_vs_mujoco() raises:
         String("capsule/box NORMAL diverges from MuJoCo by ")
         + String(worst_dir) + " at pose " + String(worst_dir_pose)
         + " (" + String(n_bad_dir) + " poses over tolerance)",
+    )
+
+
+# Poses that DELIBERATELY lay the capsule along a box face. The random sweep
+# above produces a second point at only 7 of its 400 poses, because a uniformly
+# random orientation is almost never near-parallel to a face — so a gate built
+# on the sweep alone would barely exercise the manifold it is meant to check.
+# These are the configuration the second point exists for: a limb resting on a
+# surface.
+#
+# ⚠ EVERY ONE OF THEM IS TILTED A FEW DEGREES, AND THAT IS NOT COSMETIC. A
+# capsule lying EXACTLY flat and overhanging leaves the two opposite box edges
+# exactly equidistant, and which one `mjraw_CapsuleBox` picks is then decided by
+# the last bits of the rotation matrix. The first version of this table used
+# perfectly flat poses; MuJoCo and this engine disagreed on two of them — one in
+# contact COUNT and one in contact ORDER — purely because `forward_kinematics`
+# and `mj_forward` round the quaternion differently. Neither engine was wrong.
+# Each pose below was screened by re-running MuJoCo with the position AND the
+# quaternion nudged by 1e-7 and requiring the same two contacts in the same
+# order; screening on position alone passes the degenerate poses.
+#
+# (x, y, z, qx, qy, qz, qw); q rotates the capsule's local +z into its axis.
+comptime NFIXED: Int = 6
+
+
+def _fixed_poses() -> List[Float64]:
+    """The NFIXED poses above, flattened; see the comment block."""
+    return [
+        # A: along the +x face, tilted 2 deg, capsule shorter than the face.
+        0.035999999999999997, 0.0, 0.0,
+        0.0, 0.017452406437283512, 0.0, 0.99984769515639127,
+        # B: along the +x face, tilted 5 deg, shifted along its axis, deeper.
+        0.034000000000000002, 0.0, 0.0060000000000000001,
+        0.0, 0.043619387365336, 0.0, 0.9990482215818578,
+        # C: along the +y face, tilted 2 deg the other way.
+        0.0, 0.026000000000000002, -0.0089999999999999993,
+        0.017452406437283512, 0.0, 0.0, 0.99984769515639127,
+        # D: along the +z face, capsule OVERHANGS both ends of the face.
+        0.0060000000000000001, 0.0, 0.056000000000000001,
+        0.0, 0.71933980033865108, 0.0, 0.69465837045899737,
+        # E: along the -z face, so the gate is not all on +ve faces.
+        -0.0089999999999999993, 0.0, -0.054000000000000006,
+        0.0, 0.73727733681012397, 0.0, 0.67559020761566024,
+        # F: axis +z, capsule centre INSIDE the box — the one face case with
+        # no second point (`clface == -1`), so the gate sees that branch too.
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+
+
+def test_capsule_box_manifold_vs_mujoco() raises:
+    """The WHOLE capsule/box manifold — count and every point — vs MuJoCo.
+
+    `test_capsule_box_sweep_vs_mujoco` above deliberately compares only
+    MuJoCo's `contact[0]`, because it was written while we emitted one point.
+    This one compares the record SET, which is what the solver actually sees.
+
+    Run through the engine (`detect_contacts`), not the primitive, so it gates
+    `_capsule_box_contacts`'s wiring and its normal sign as well as
+    `box_capsule_manifold` itself. The record order is MuJoCo's: the point at
+    `bestsegmentpos` first, the second point after it.
+    """
+    print("--- capsule/box manifold:", NFIXED, "fixed +", NPOSE, "random")
+    var mf = _build()
+    var d = Dat()
+
+    var mujoco = Python.import_module("mujoco")
+    var m = mujoco.MjModel.from_xml_string(String(CB_XML))
+    var dat = mujoco.MjData(m)
+
+    var rng = Lcg(0x9E3779B97F4A7C15)
+    var fixed = _fixed_poses()
+
+    var n_both = 0
+    var n_two = 0
+    var n_two_fixed = 0
+    var mj_points = 0
+    var our_points = 0
+    var n_count_bad = 0
+    var first_bad = -1
+    var worst_dist = Float64(0)
+    var worst_pos = Float64(0)
+    var worst_dir = Float64(0)
+    var worst_pose = -1
+
+    for p in range(NFIXED + NPOSE):
+        var px = Float64(0)
+        var py = Float64(0)
+        var pz = Float64(0)
+        var qx = Float64(0)
+        var qy = Float64(0)
+        var qz = Float64(0)
+        var qw = Float64(1)
+        if p < NFIXED:
+            px = fixed[7 * p + 0]
+            py = fixed[7 * p + 1]
+            pz = fixed[7 * p + 2]
+            qx = fixed[7 * p + 3]
+            qy = fixed[7 * p + 4]
+            qz = fixed[7 * p + 5]
+            qw = fixed[7 * p + 6]
+        else:
+            px = rng.sym(SPAN)
+            py = rng.sym(SPAN)
+            pz = rng.sym(SPAN)
+            qx = rng.sym(1.0)
+            qy = rng.sym(1.0)
+            qz = rng.sym(1.0)
+            qw = rng.sym(1.0)
+            var qn = sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+            if qn < 1e-6:
+                qx = 0.0
+                qy = 0.0
+                qz = 0.0
+                qw = 1.0
+                qn = 1.0
+            qx /= qn
+            qy /= qn
+            qz /= qn
+            qw /= qn
+
+        CBM.reset_data(d)
+        d.qpos.data[0] = Scalar[DTYPE](px)
+        d.qpos.data[1] = Scalar[DTYPE](py)
+        d.qpos.data[2] = Scalar[DTYPE](pz)
+        d.qpos.data[3] = Scalar[DTYPE](qw)
+        d.qpos.data[4] = Scalar[DTYPE](qx)
+        d.qpos.data[5] = Scalar[DTYPE](qy)
+        d.qpos.data[6] = Scalar[DTYPE](qz)
+        forward_kinematics["cpu"](d, mf)
+        detect_contacts["cpu"](d, mf)
+        var nc = Int(d.meta.data[META_IDX_NUM_CONTACTS])
+
+        dat.qpos[0] = px
+        dat.qpos[1] = py
+        dat.qpos[2] = pz
+        dat.qpos[3] = qw
+        dat.qpos[4] = qx
+        dat.qpos[5] = qy
+        dat.qpos[6] = qz
+        for i in range(NV):
+            dat.qvel[i] = 0.0
+        mujoco.mj_forward(m, dat)
+        var mjn = Int(py=dat.ncon)
+
+        if mjn == 0 and nc == 0:
+            continue
+        n_both += 1
+        mj_points += mjn
+        our_points += nc
+        if mjn >= 2:
+            n_two += 1
+            if p < NFIXED:
+                n_two_fixed += 1
+
+        if nc != mjn:
+            n_count_bad += 1
+            if first_bad < 0:
+                first_bad = p
+            continue
+
+        for i in range(mjn):
+            var con = dat.contact[i]
+            var b = i * CONTACT_SIZE
+            var ba = Int(d.contacts.data[b + CONTACT_IDX_BODY_A])
+            var bbi = Int(d.contacts.data[b + CONTACT_IDX_BODY_B])
+
+            var dd = abs(
+                Float64(d.contacts.data[b + CONTACT_IDX_DIST])
+                - Float64(py=con.dist)
+            )
+            if dd > worst_dist:
+                worst_dist = dd
+                worst_pose = p
+
+            for c in range(3):
+                var dp = abs(
+                    Float64(d.contacts.data[b + CONTACT_IDX_POS_X + c])
+                    - Float64(py=con.pos[c])
+                )
+                if dp > worst_pos:
+                    worst_pos = dp
+
+            # Same direction invariant as the sweep above: the expected sign
+            # comes from the BODY LABELS, not from whichever normal is closer.
+            var mb1 = Int(py=m.geom_bodyid[con.geom1])
+            var mb2 = Int(py=m.geom_bodyid[con.geom2])
+            var sgn = Float64(1.0) if (
+                mb1 == bbi and mb2 == ba
+            ) else Float64(-1.0)
+            for c in range(3):
+                var dn = abs(
+                    Float64(d.contacts.data[b + CONTACT_IDX_NX + c])
+                    - sgn * Float64(py=con.frame[c])
+                )
+                if dn > worst_dir:
+                    worst_dir = dn
+
+    print("  contacting poses =", n_both, " of which MuJoCo gives 2 points on",
+          n_two, "(", n_two_fixed, "of the", NFIXED, "fixed )")
+    print("  manifold points: MuJoCo", mj_points, " ours", our_points)
+    print("  count mismatches =", n_count_bad, " first at pose", first_bad)
+    print("  worst |d dist| =", worst_dist, " at pose", worst_pose)
+    print("  worst |d pos|  =", worst_pos)
+    print("  worst |d n|    =", worst_dir)
+
+    # Coverage: the fixed poses exist so the second point is exercised on
+    # purpose rather than by luck. If MuJoCo stops emitting two points on them
+    # the poses have drifted off the faces and this gate is vacuous.
+    assert_true(
+        n_two_fixed == NFIXED - 1,
+        String("only ") + String(n_two_fixed) + " of the " + String(NFIXED)
+        + " FIXED poses gave MuJoCo two contacts; " + String(NFIXED - 1)
+        + " should (all but the capsule-inside-the-box one). The poses no"
+        " longer lie along the faces and this gate is vacuous",
+    )
+    assert_true(
+        n_count_bad == 0,
+        String("capsule/box manifold has a different POINT COUNT from MuJoCo"
+        " on ") + String(n_count_bad) + " poses, first at pose "
+        + String(first_bad) + " (ours " + String(our_points) + " points,"
+        " MuJoCo " + String(mj_points) + " over " + String(n_both) + " poses)",
+    )
+    assert_true(
+        worst_dist <= TOL_DIST,
+        String("capsule/box manifold DEPTH diverges by ") + String(worst_dist)
+        + " at pose " + String(worst_pose),
+    )
+    assert_true(
+        worst_pos <= TOL_POS,
+        String("capsule/box manifold POSITION diverges by ")
+        + String(worst_pos),
+    )
+    assert_true(
+        worst_dir <= TOL_DIR,
+        String("capsule/box manifold NORMAL diverges by ") + String(worst_dir),
     )
 
 
