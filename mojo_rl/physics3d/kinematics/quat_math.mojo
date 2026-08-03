@@ -399,7 +399,8 @@ def gpu_axis_angle_to_quat[
     var result = InlineArray[Scalar[DTYPE], 4](uninitialized=True)
     # Degenerate axis keeps the old formula, for the reason in
     # `gpu_quat_normalize` — this change is about the epsilon, not about what
-    # a zero axis should mean.
+    # a zero axis should mean. Like that one, this branch is unreached by every
+    # model in the suite: all three callers pass a joint AXIS, which is unit.
     var inv_len: Scalar[DTYPE]
     if len_sq < Scalar[DTYPE](1e-6):
         inv_len = Scalar[DTYPE](1.0) / sqrt(len_sq + Scalar[DTYPE](1e-10))
@@ -450,18 +451,27 @@ def gpu_quat_normalize[
     """
     var norm_sq = qx * qx + qy * qy + qz * qz + qw * qw
     var result = InlineArray[Scalar[DTYPE], 4](uninitialized=True)
-    # ⚠ THE DEGENERATE BRANCH KEEPS THE OLD FORMULA ON PURPOSE, so that this
+    # THE DEGENERATE BRANCH KEEPS THE OLD FORMULA ON PURPOSE, so that this
     # change is a pure precision fix and nothing else. Below 1e-6 the result is
     # bit-identical to what it always was; above it, exact.
     #
-    # It is NOT bit-identical to return identity there instead — an A/B moved
-    # `test_equality_tendon_fields`'s humanoid fingerprint by 0.83, which means
-    # SOMETHING IN THAT MODEL NORMALIZES A NEAR-ZERO QUATERNION and takes this
-    # path. (It is not what caused that file's golden to move 2.6%; the
-    # precision fix did, with this branch held at the old formula.) Returning
-    # `(0,0,0,0)` for a zero-norm input is not a rotation at all and is very
-    # likely wrong, but which caller reaches it and what it should do there is
-    # a separate question from the epsilon. Filed rather than guessed.
+    # ⚠ CORRECTION (task #50, 2026-08-03): an earlier version of this comment
+    # claimed an A/B "proved the branch IS reached" because returning identity
+    # there moved `test_equality_tendon_fields`'s fingerprint by 0.83. THAT WAS
+    # WRONG — the A/B also changed the function's SHAPE (an early `return`
+    # inside the `if` versus a fallthrough assignment), which changes FP codegen
+    # in the NON-degenerate path, and this file's humanoid rests on four
+    # contacts whose force split is indeterminate and amplifies last-bit
+    # differences. The real test injects an absurd `inv_norm = -12345` into both
+    # degenerate branches and checks the fingerprint: it comes out UNCHANGED, so
+    # neither branch is reached at all, on the CPU or the GPU path. Instrumented
+    # CPU runs printed nothing either.
+    #
+    # So this branch is dead code for every model in the test suite, and the
+    # old `(0,0,0,0)`-for-zero-norm behaviour it preserves is not observable.
+    # Keep it anyway: it costs one comparison, and "unreachable in this suite"
+    # is not "unreachable". If you ever make it reachable, note that returning
+    # a ZERO quaternion is not a rotation and identity is the sane answer.
     var inv_norm: Scalar[DTYPE]
     if norm_sq < Scalar[DTYPE](1e-6):
         inv_norm = Scalar[DTYPE](1.0) / sqrt(norm_sq + Scalar[DTYPE](1e-10))
