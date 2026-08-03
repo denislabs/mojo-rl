@@ -3931,33 +3931,27 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
     #
     # acrobot needs this: `<default><geom type="capsule" mass="1"/></default>`
     # with no named class, and its geoms carry only a name and `fromto`.
-    # Without it every acrobot link draws as a sphere — which is exactly what
-    # tests/physics3d/test_render_data_vs_physics.mojo caught.
     #
-    # ⚠ REUSES `def_sec` ABOVE — do not "improve" this to `_root_defaults`.
-    # That helper is depth-aware and therefore more correct, but it returns a
-    # DOUBLY-derived String (`_strip_nested_defaults(_extract_section_inner)`)
-    # and slicing it defeats the comptime interpreter with "interpreting
-    # memcpy can't get dst memory". `_extract_section` is singly derived and
-    # is what the working `rgba` lookup above already slices. The trap is
-    # documented at length on `_class_attr`.
+    # ⚠ GOES THROUGH `_class_attr`, NOT THROUGH A LOCAL SLICE OF `def_sec`.
+    # The obvious version — slice the `<geom>` tag out of the section and
+    # `_extract_attr` it, exactly as the `rgba` lookup above does — CRASHES the
+    # comptime interpreter here, and the reason is the subtlety spelled out on
+    # `_class_attr`: the failure happens only on a lookup that HITS, because
+    # only a hit reaches `String(tag[byte=a:b])`. The `rgba` lookup above
+    # always MISSES (no in-tree model puts rgba on the root geom) so it never
+    # reaches the slice and looks like proof the shape is safe. It is not.
+    # acrobot's root geom DOES carry `type`, so that one hit, and the viewer
+    # died with "interpreting memcpy can't get dst memory" — after this shipped
+    # in 5b62d09f, because no test forces `_rcd` evaluation and only rendering
+    # does.
     #
-    # `_extract_section` is NOT depth aware, so guard that the `<geom>` we
-    # find really is at the top level rather than the first one inside a
-    # nested class — the ordering hazard that cost swimmer a 2000x gear error.
-    var def_geom_type = String("")
-    var def_geom_size = String("")
-    var def_geom_fromto = String("")
-    if def_sec.byte_length() > 0:
-        var rg = def_sec.find("<geom")
-        var first_nested = def_sec.find("<default", 1)
-        if rg != -1 and (first_nested == -1 or rg < first_nested):
-            var rg_end = def_sec.find(">", rg)
-            if rg_end != -1:
-                var rgtag = String(def_sec[byte = rg : rg_end + 1])
-                def_geom_type = _extract_attr(rgtag, "type")
-                def_geom_size = _extract_attr(rgtag, "size")
-                def_geom_fromto = _extract_attr(rgtag, "fromto")
+    # `_class_attr` with an empty class means the top-level block and is index
+    # arithmetic over `xml_clean` with a single slice, which survives a hit.
+    # THREE calls, hoisted out of every loop: doing this per geom class was
+    # what blew the interpreter's budget in the first place.
+    var def_geom_type = _class_attr(xml_clean, String(""), "geom", "type")
+    var def_geom_size = _class_attr(xml_clean, String(""), "geom", "size")
+    var def_geom_fromto = _class_attr(xml_clean, String(""), "geom", "fromto")
 
     # ---- Parse <asset> section: textures and materials -----------------------
     var asset_sec = _extract_section(xml_clean, "asset")
