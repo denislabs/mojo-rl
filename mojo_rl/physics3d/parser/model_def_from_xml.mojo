@@ -56,7 +56,9 @@ from .xml_parser import (
     MAX_COMPTIME_TENDONS,
     MAX_COMPTIME_ACTUATORS,
     MAX_COMPTIME_JOINTS,
+    MAX_COMPTIME_MATERIALS,
     MAX_COMPTIME_NQ,
+    MAX_COMPTIME_TEXTURES,
     _xml_nth_motor_gear,
     _xml_nth_motor_dof_adr,
     _xml_nth_joint_qpos_adr,
@@ -585,6 +587,26 @@ struct ModelDefFromXML[
             " truncating scan — `qpos0` is indexed by qpos address, so it"
             " writes out of bounds."
         )
+        # And on the RENDER tables, where it had already gone off. `nmat` here
+        # is `ParsedModel.NMAT`, an uncapped `_count_tag`; `_rcd`'s material
+        # arrays hold MAX_COMPTIME_MATERIALS. `render_body_geoms` guards its
+        # material lookup with `mid < Self.nmat`, so while those two disagreed
+        # the guard was checking the WRONG BOUND and let an out-of-range index
+        # straight through to the array — point_mass, fish and reacher aborted
+        # at the first frame. Anything that survived did so by having every
+        # material land under the cap.
+        comptime assert Self.nmat <= MAX_COMPTIME_MATERIALS, (
+            "physics3d: this model has more <material> records than"
+            " MAX_COMPTIME_MATERIALS; raise it in xml_parser.mojo. Leaving it"
+            " is not a cosmetic loss: `mid < nmat` then guards against a count"
+            " larger than the array it indexes."
+        )
+        comptime assert Self.ntex <= MAX_COMPTIME_TEXTURES, (
+            "physics3d: this model has more <texture> records than"
+            " MAX_COMPTIME_TEXTURES; raise it in xml_parser.mojo. Textures past"
+            " the cap are dropped, so materials referencing them fall back to"
+            " flat colour — including the skybox."
+        )
 
         # A `<general>` whose gain/bias/dyn shape we do not implement. The
         # comptime parser cannot raise, so it records the offender and we turn
@@ -1037,7 +1059,27 @@ struct ModelDefFromXML[
         follow: Bool,
         visual_radius_scale: Float64,
     ) raises:
-        """Draw plane geoms (body_id=0) as ground grids; fallback if none."""
+        """Draw plane geoms (body_id=0): the ground as a grid, walls as slabs.
+
+        ⚠ NOT EVERY PLANE IS A FLOOR. This used to send every plane geom to
+        `draw_ground_grid` at its own `pos_z`, dropping its x/y position and
+        its orientation entirely — so manipulator's four planes (floor at z=0,
+        two 45° walls at z=.283, and a `background` at z=.5) came out as four
+        stacked horizontal grids, the topmost ABOVE the arm's base. Read as a
+        picture that is the arm hanging under a ceiling, which is exactly how
+        it was reported: "things are below the ground".
+
+        A plane is only treated as the ground when it is unrotated and centred
+        on the world axis; anything else is drawn as a thin oriented box of its
+        declared half-extents. The ground keeps the grid path because that is
+        what carries the infinite extent, the texture repeat and the reflection
+        pass — a slab cannot stand in for it.
+
+        ⚠ This is the RENDER half of a defect whose PHYSICS half is still open:
+        the plane narrow phase also assumes every plane is a horizontal floor
+        at its origin's z with normal (0,0,1). Fixing the picture does not make
+        an inclined plane collide correctly.
+        """
         # GEOM_PLANE=0
         var has_plane = False
         var max_body_radius = Float64(0.0)
@@ -1046,6 +1088,49 @@ struct ModelDefFromXML[
                 max_body_radius = Self._rcd.geom_radius[j]
         for i in range(Self.NGEOM):
             if Self._rcd.geom_type[i] == 0:  # PLANE
+                var pqx = Self._rcd.geom_quat_x[i]
+                var pqy = Self._rcd.geom_quat_y[i]
+                var pqz = Self._rcd.geom_quat_z[i]
+                var pqw = Self._rcd.geom_quat_w[i]
+                var upright = (
+                    pqx == 0.0 and pqy == 0.0 and pqz == 0.0 and pqw == 1.0
+                )
+                var centred = (
+                    Self._rcd.geom_pos_x[i] == 0.0
+                    and Self._rcd.geom_pos_y[i] == 0.0
+                )
+                var hx = Self._rcd.geom_half_x[i]
+                var hy = Self._rcd.geom_half_y[i]
+                if not (upright and centred) and hx > 0.0 and hy > 0.0:
+                    # A wall, a ramp or a backdrop. Half-extents come straight
+                    # from MJCF `size="x y spacing"`; a zero there means the
+                    # plane is INFINITE along that axis and there is no slab to
+                    # draw, so it falls through to the grid path instead.
+                    var wall_r = Float32(Self._rcd.geom_rgba_r[i])
+                    var wall_g = Float32(Self._rcd.geom_rgba_g[i])
+                    var wall_b = Float32(Self._rcd.geom_rgba_b[i])
+                    var wall_a = Float32(Self._rcd.geom_rgba_a[i])
+                    var wmid = Self._rcd.geom_material_id[i]
+                    if wmid >= 0 and wmid < Self.nmat:
+                        wall_r = Float32(Self._rcd.mat_rgba_r[wmid])
+                        wall_g = Float32(Self._rcd.mat_rgba_g[wmid])
+                        wall_b = Float32(Self._rcd.mat_rgba_b[wmid])
+                        wall_a = Float32(Self._rcd.mat_rgba_a[wmid])
+                    if wall_a >= 0.99:
+                        renderer.draw_box(
+                            center=_RVec3(
+                                Self._rcd.geom_pos_x[i],
+                                Self._rcd.geom_pos_y[i],
+                                Self._rcd.geom_pos_z[i],
+                            ),
+                            orientation=_RQuat(pqw, pqx, pqy, pqz),
+                            half_extents=_RVec3(hx, hy, 0.002),
+                            color=Color(
+                                UInt8(wall_r * 255), UInt8(wall_g * 255),
+                                UInt8(wall_b * 255), UInt8(wall_a * 255),
+                            ),
+                        )
+                    continue
                 has_plane = True
                 var ground_offset = Self._rcd.geom_pos_z[i] - max_body_radius * (visual_radius_scale - 1.0)
                 var grid_cx = torso_x if follow else Float64(0.0)

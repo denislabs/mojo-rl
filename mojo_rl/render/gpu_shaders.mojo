@@ -628,8 +628,14 @@ fragment float4 skybox_fragment(
     VertexOut in [[stage_in]],
     constant SkyboxUniforms &sky [[buffer(0)]]
 ) {
-    // Vertical gradient: uv.y=1 is top, uv.y=0 is bottom
-    float t = in.uv.y;
+    // ⚠ uv.y=0 is the TOP of the screen, not the bottom. `skybox_vertex`
+    // writes `uv.y = 1.0 - pos.y` while Metal NDC has y=+1 at the top, so the
+    // two cancel: uv.y runs 0 at the top to 1 at the bottom. This line used to
+    // read `t = in.uv.y` against a comment claiming the opposite, which put
+    // rgb2 at the zenith and rgb1 at the horizon — dm_control's sky
+    // (rgb1=".4 .6 .8", rgb2="0 0 0") came out black overhead and blue at the
+    // horizon, the exact inverse of MuJoCo, where rgb1 is the top.
+    float t = 1.0 - in.uv.y;
     float3 color = mix(sky.bottom_color.rgb, sky.top_color.rgb, t);
     return float4(color, 1.0);
 }

@@ -2279,6 +2279,36 @@ def parse_xml(xml: String) -> ParsedModel:
 comptime MAX_COMPTIME_TENDONS: Int = 16
 """Cap on `<fixed>` tendons the comptime parser records (quadruped needs 12)."""
 
+comptime MAX_COMPTIME_MATERIALS: Int = 32
+"""Cap on `<material>` records the comptime RENDER parser keeps.
+
+Widened 8 -> 32 on 2026-08-03. Eight was not close: dm_control's shared asset
+block (`envs/dm_control/common_xml.mojo`, the port of `common/materials.xml`)
+declares THIRTEEN materials, and every ported suite model includes it, so most
+of the suite was over the cap. Indices 0-7 cover grid..decoration; `eye`(8),
+`target`(9) and `site`(12) are the ones that were past the end.
+
+⚠ THE PAYLOAD WAS AN OUT-OF-BOUNDS READ, NOT A MISSING COLOUR. Material ids
+come from `_rcd_find_material_index_by_name`, which returns the material's
+ordinal among ALL `<material>` tags and knows nothing about this cap, and
+`ModelDefFromXML` bounds-checks them against `Self.nmat` — which is
+`ParsedModel.NMAT`, an INDEPENDENT `_count_tag` with no cap either. So `mid=9`
+passed a `mid < nmat` guard and then indexed an 8-slot array: point_mass, fish
+and reacher aborted on sight. Models whose materials all landed under 8 merely
+rendered in the wrong colours, which is why this looked like two separate
+complaints.
+
+The `comptime assert` in `model_def_from_xml.mojo` is what keeps the two counts
+from drifting apart again."""
+
+comptime MAX_COMPTIME_TEXTURES: Int = 16
+"""Cap on `<texture>` records the comptime render parser keeps.
+
+Widened 8 -> 16 alongside the materials. Only two textures come from the shared
+block (skybox, grid), so this one was not being exceeded — but it is the same
+scan, sized the same way, with the same silent-truncation shape, and leaving it
+at 8 next to a 32 just invites the next model to trip it."""
+
 comptime MAX_COMPTIME_ACTUATORS: Int = 64
 """Cap on actuators the comptime parser records (humanoid_CMU needs 56).
 
@@ -3363,29 +3393,29 @@ struct ComptimeRenderData(Copyable, Movable):
     var cam_mode: InlineArray[Int, 8]
     var cam_body_id: InlineArray[Int, 8]
 
-    # Textures (max 8)
-    var tex_type: InlineArray[Int, 8]
-    var tex_builtin: InlineArray[Int, 8]
-    var tex_rgb1_r: InlineArray[Float64, 8]
-    var tex_rgb1_g: InlineArray[Float64, 8]
-    var tex_rgb1_b: InlineArray[Float64, 8]
-    var tex_rgb2_r: InlineArray[Float64, 8]
-    var tex_rgb2_g: InlineArray[Float64, 8]
-    var tex_rgb2_b: InlineArray[Float64, 8]
-    var tex_names: InlineArray[String, 8]  # texture name (for material lookup)
-    var tex_files: InlineArray[String, 8]  # texture file path (PNG)
+    # Textures (max MAX_COMPTIME_TEXTURES)
+    var tex_type: InlineArray[Int, MAX_COMPTIME_TEXTURES]
+    var tex_builtin: InlineArray[Int, MAX_COMPTIME_TEXTURES]
+    var tex_rgb1_r: InlineArray[Float64, MAX_COMPTIME_TEXTURES]
+    var tex_rgb1_g: InlineArray[Float64, MAX_COMPTIME_TEXTURES]
+    var tex_rgb1_b: InlineArray[Float64, MAX_COMPTIME_TEXTURES]
+    var tex_rgb2_r: InlineArray[Float64, MAX_COMPTIME_TEXTURES]
+    var tex_rgb2_g: InlineArray[Float64, MAX_COMPTIME_TEXTURES]
+    var tex_rgb2_b: InlineArray[Float64, MAX_COMPTIME_TEXTURES]
+    var tex_names: InlineArray[String, MAX_COMPTIME_TEXTURES]  # texture name (for material lookup)
+    var tex_files: InlineArray[String, MAX_COMPTIME_TEXTURES]  # texture file path (PNG)
 
-    # Materials (max 8)
-    var mat_rgba_r: InlineArray[Float64, 8]
-    var mat_rgba_g: InlineArray[Float64, 8]
-    var mat_rgba_b: InlineArray[Float64, 8]
-    var mat_rgba_a: InlineArray[Float64, 8]
-    var mat_shininess: InlineArray[Float64, 8]
-    var mat_specular: InlineArray[Float64, 8]
-    var mat_reflectance: InlineArray[Float64, 8]
-    var mat_tex_id: InlineArray[Int, 8]  # index into tex_names[], -1 if no texture
-    var mat_texrepeat_u: InlineArray[Float64, 8]  # texture repeat U (default 1.0)
-    var mat_texrepeat_v: InlineArray[Float64, 8]  # texture repeat V (default 1.0)
+    # Materials (max MAX_COMPTIME_MATERIALS)
+    var mat_rgba_r: InlineArray[Float64, MAX_COMPTIME_MATERIALS]
+    var mat_rgba_g: InlineArray[Float64, MAX_COMPTIME_MATERIALS]
+    var mat_rgba_b: InlineArray[Float64, MAX_COMPTIME_MATERIALS]
+    var mat_rgba_a: InlineArray[Float64, MAX_COMPTIME_MATERIALS]
+    var mat_shininess: InlineArray[Float64, MAX_COMPTIME_MATERIALS]
+    var mat_specular: InlineArray[Float64, MAX_COMPTIME_MATERIALS]
+    var mat_reflectance: InlineArray[Float64, MAX_COMPTIME_MATERIALS]
+    var mat_tex_id: InlineArray[Int, MAX_COMPTIME_MATERIALS]  # index into tex_names[], -1 if no texture
+    var mat_texrepeat_u: InlineArray[Float64, MAX_COMPTIME_MATERIALS]  # texture repeat U (default 1.0)
+    var mat_texrepeat_v: InlineArray[Float64, MAX_COMPTIME_MATERIALS]  # texture repeat V (default 1.0)
 
     # Sites (max 16)
     var site_body_id: InlineArray[Int, 16]
@@ -3464,27 +3494,27 @@ struct ComptimeRenderData(Copyable, Movable):
         self.cam_mode = InlineArray[Int, 8](fill=0)
         self.cam_body_id = InlineArray[Int, 8](fill=0)
 
-        self.tex_type = InlineArray[Int, 8](fill=0)
-        self.tex_builtin = InlineArray[Int, 8](fill=0)
-        self.tex_rgb1_r = InlineArray[Float64, 8](fill=0.8)
-        self.tex_rgb1_g = InlineArray[Float64, 8](fill=0.8)
-        self.tex_rgb1_b = InlineArray[Float64, 8](fill=0.8)
-        self.tex_rgb2_r = InlineArray[Float64, 8](fill=0.5)
-        self.tex_rgb2_g = InlineArray[Float64, 8](fill=0.5)
-        self.tex_rgb2_b = InlineArray[Float64, 8](fill=0.5)
-        self.tex_names = InlineArray[String, 8](fill=String(""))
-        self.tex_files = InlineArray[String, 8](fill=String(""))
+        self.tex_type = InlineArray[Int, MAX_COMPTIME_TEXTURES](fill=0)
+        self.tex_builtin = InlineArray[Int, MAX_COMPTIME_TEXTURES](fill=0)
+        self.tex_rgb1_r = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.8)
+        self.tex_rgb1_g = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.8)
+        self.tex_rgb1_b = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.8)
+        self.tex_rgb2_r = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.5)
+        self.tex_rgb2_g = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.5)
+        self.tex_rgb2_b = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.5)
+        self.tex_names = InlineArray[String, MAX_COMPTIME_TEXTURES](fill=String(""))
+        self.tex_files = InlineArray[String, MAX_COMPTIME_TEXTURES](fill=String(""))
 
-        self.mat_rgba_r = InlineArray[Float64, 8](fill=1.0)
-        self.mat_rgba_g = InlineArray[Float64, 8](fill=1.0)
-        self.mat_rgba_b = InlineArray[Float64, 8](fill=1.0)
-        self.mat_rgba_a = InlineArray[Float64, 8](fill=1.0)
-        self.mat_shininess = InlineArray[Float64, 8](fill=0.5)
-        self.mat_specular = InlineArray[Float64, 8](fill=0.5)
-        self.mat_reflectance = InlineArray[Float64, 8](fill=0.0)
-        self.mat_tex_id = InlineArray[Int, 8](fill=-1)
-        self.mat_texrepeat_u = InlineArray[Float64, 8](fill=1.0)
-        self.mat_texrepeat_v = InlineArray[Float64, 8](fill=1.0)
+        self.mat_rgba_r = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
+        self.mat_rgba_g = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
+        self.mat_rgba_b = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
+        self.mat_rgba_a = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
+        self.mat_shininess = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=0.5)
+        self.mat_specular = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=0.5)
+        self.mat_reflectance = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=0.0)
+        self.mat_tex_id = InlineArray[Int, MAX_COMPTIME_MATERIALS](fill=-1)
+        self.mat_texrepeat_u = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
+        self.mat_texrepeat_v = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
 
         self.site_body_id = InlineArray[Int, 16](fill=0)
         self.site_pos_x = InlineArray[Float64, 16](fill=0.0)
@@ -3613,17 +3643,17 @@ struct ComptimeRenderData(Copyable, Movable):
             self.cam_mode[i] = copy.cam_mode[i]
             self.cam_body_id[i] = copy.cam_body_id[i]
 
-        self.tex_type = InlineArray[Int, 8](fill=0)
-        self.tex_builtin = InlineArray[Int, 8](fill=0)
-        self.tex_rgb1_r = InlineArray[Float64, 8](fill=0.8)
-        self.tex_rgb1_g = InlineArray[Float64, 8](fill=0.8)
-        self.tex_rgb1_b = InlineArray[Float64, 8](fill=0.8)
-        self.tex_rgb2_r = InlineArray[Float64, 8](fill=0.5)
-        self.tex_rgb2_g = InlineArray[Float64, 8](fill=0.5)
-        self.tex_rgb2_b = InlineArray[Float64, 8](fill=0.5)
-        self.tex_names = InlineArray[String, 8](fill=String(""))
-        self.tex_files = InlineArray[String, 8](fill=String(""))
-        for i in range(8):
+        self.tex_type = InlineArray[Int, MAX_COMPTIME_TEXTURES](fill=0)
+        self.tex_builtin = InlineArray[Int, MAX_COMPTIME_TEXTURES](fill=0)
+        self.tex_rgb1_r = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.8)
+        self.tex_rgb1_g = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.8)
+        self.tex_rgb1_b = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.8)
+        self.tex_rgb2_r = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.5)
+        self.tex_rgb2_g = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.5)
+        self.tex_rgb2_b = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.5)
+        self.tex_names = InlineArray[String, MAX_COMPTIME_TEXTURES](fill=String(""))
+        self.tex_files = InlineArray[String, MAX_COMPTIME_TEXTURES](fill=String(""))
+        for i in range(MAX_COMPTIME_TEXTURES):
             self.tex_type[i] = copy.tex_type[i]
             self.tex_builtin[i] = copy.tex_builtin[i]
             self.tex_rgb1_r[i] = copy.tex_rgb1_r[i]
@@ -3635,17 +3665,17 @@ struct ComptimeRenderData(Copyable, Movable):
             self.tex_names[i] = copy.tex_names[i]
             self.tex_files[i] = copy.tex_files[i]
 
-        self.mat_rgba_r = InlineArray[Float64, 8](fill=1.0)
-        self.mat_rgba_g = InlineArray[Float64, 8](fill=1.0)
-        self.mat_rgba_b = InlineArray[Float64, 8](fill=1.0)
-        self.mat_rgba_a = InlineArray[Float64, 8](fill=1.0)
-        self.mat_shininess = InlineArray[Float64, 8](fill=0.5)
-        self.mat_specular = InlineArray[Float64, 8](fill=0.5)
-        self.mat_reflectance = InlineArray[Float64, 8](fill=0.0)
-        self.mat_tex_id = InlineArray[Int, 8](fill=-1)
-        self.mat_texrepeat_u = InlineArray[Float64, 8](fill=1.0)
-        self.mat_texrepeat_v = InlineArray[Float64, 8](fill=1.0)
-        for i in range(8):
+        self.mat_rgba_r = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
+        self.mat_rgba_g = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
+        self.mat_rgba_b = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
+        self.mat_rgba_a = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
+        self.mat_shininess = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=0.5)
+        self.mat_specular = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=0.5)
+        self.mat_reflectance = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=0.0)
+        self.mat_tex_id = InlineArray[Int, MAX_COMPTIME_MATERIALS](fill=-1)
+        self.mat_texrepeat_u = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
+        self.mat_texrepeat_v = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
+        for i in range(MAX_COMPTIME_MATERIALS):
             self.mat_rgba_r[i] = copy.mat_rgba_r[i]
             self.mat_rgba_g[i] = copy.mat_rgba_g[i]
             self.mat_rgba_b[i] = copy.mat_rgba_b[i]
@@ -4036,7 +4066,7 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
     # Textures
     var tex_pos = 0
     var tex_count = 0
-    while tex_count < 8:
+    while tex_count < MAX_COMPTIME_TEXTURES:
         var t = asset_sec.find("<texture", tex_pos)
         if t == -1:
             break
@@ -4075,7 +4105,7 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
     # Materials
     var mat_pos = 0
     var mat_count = 0
-    while mat_count < 8:
+    while mat_count < MAX_COMPTIME_MATERIALS:
         var t = asset_sec.find("<material", mat_pos)
         if t == -1:
             break
@@ -4153,6 +4183,17 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
     var cls_size = InlineArray[String, 24](fill=String(""))
     var cls_fromto = InlineArray[String, 24](fill=String(""))
     var cls_rgba = InlineArray[String, 24](fill=String(""))
+    var cls_material = InlineArray[String, 24](fill=String(""))
+    # Effective material name per geom, resolved WITH the class chain. The
+    # post-pass below used to re-scan the worldbody for `<geom` tags and read
+    # `material=` straight off each one, which cannot see a `<default>` — and
+    # dm_control puts it there almost everywhere (`<default class="body">
+    # <geom material="self">`). Every such geom came back with material id -1
+    # and fell through to the default rgba, which is why the suite rendered
+    # white/grey. Resolving it here, where `ci` exists, is the whole fix; the
+    # post-pass then has nothing left to look up.
+    var geom_mat_name = InlineArray[String, 64](fill=String(""))
+    var geom_has_rgba = InlineArray[Bool, 64](fill=False)
     var n_cls = 0
     var depth = 0
     var body_count = 0
@@ -4235,6 +4276,9 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                 cls_rgba[n_cls] = _class_attr_inherited(
                     xml_clean, geom_cls, "geom", "rgba"
                 )
+                cls_material[n_cls] = _class_attr_inherited(
+                    xml_clean, geom_cls, "geom", "material"
+                )
                 ci = n_cls
                 n_cls += 1
             if geom_count < 64:
@@ -4275,21 +4319,57 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                         data.geom_pos_x[geom_count] = pv[0]
                         data.geom_pos_y[geom_count] = pv[1]
                         data.geom_pos_z[geom_count] = pv[2]
+                    # ⚠ ALL FIVE MJCF ORIENTATION FORMS, not just two. Until
+                    # 2026-08-03 this chain stopped after `quat` and
+                    # `axisangle`, so `zaxis` and `euler` were silently DROPPED
+                    # and the geom kept its identity rotation. Both helpers
+                    # already existed a few hundred lines up in this same file
+                    # — they simply had no caller, which is why nothing flagged
+                    # it. What it cost, all of it visible only by eye:
+                    #   cartpole  — rails are `zaxis="1 0 0"` capsules, drawn
+                    #               standing on end instead of lying flat;
+                    #   cheetah   — `euler="0 -218 0"` geoms drawn unrotated
+                    #               (this file's own docstring cites that very
+                    #               attribute as a precision case, while the
+                    #               render path was throwing it away);
+                    #   swimmer   — same, and point_mass's walls likewise.
+                    # MuJoCo permits only ONE of these per element, so the
+                    # order here is a fallback chain, not a precedence rule.
                     var quat_s = _extract_attr(tag, "quat")
+                    var aa_s = _extract_attr(tag, "axisangle")
+                    var zax_s = _extract_attr(tag, "zaxis")
+                    var eul_s = _extract_attr(tag, "euler")
+                    var xy_s2 = _extract_attr(tag, "xyaxes")
                     if quat_s.byte_length() > 0:
                         var qv = _parse_quat(quat_s)
                         data.geom_quat_x[geom_count] = qv[0]
                         data.geom_quat_y[geom_count] = qv[1]
                         data.geom_quat_z[geom_count] = qv[2]
                         data.geom_quat_w[geom_count] = qv[3]
-                    else:
-                        var aa_s = _extract_attr(tag, "axisangle")
-                        if aa_s.byte_length() > 0:
-                            var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
-                            data.geom_quat_x[geom_count] = aq[0]
-                            data.geom_quat_y[geom_count] = aq[1]
-                            data.geom_quat_z[geom_count] = aq[2]
-                            data.geom_quat_w[geom_count] = aq[3]
+                    elif aa_s.byte_length() > 0:
+                        var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
+                        data.geom_quat_x[geom_count] = aq[0]
+                        data.geom_quat_y[geom_count] = aq[1]
+                        data.geom_quat_z[geom_count] = aq[2]
+                        data.geom_quat_w[geom_count] = aq[3]
+                    elif zax_s.byte_length() > 0:
+                        var zq = _parse_zaxis_to_quat(zax_s)
+                        data.geom_quat_x[geom_count] = zq[0]
+                        data.geom_quat_y[geom_count] = zq[1]
+                        data.geom_quat_z[geom_count] = zq[2]
+                        data.geom_quat_w[geom_count] = zq[3]
+                    elif eul_s.byte_length() > 0:
+                        var eq = _parse_euler_to_quat(eul_s, deg_factor)
+                        data.geom_quat_x[geom_count] = eq[0]
+                        data.geom_quat_y[geom_count] = eq[1]
+                        data.geom_quat_z[geom_count] = eq[2]
+                        data.geom_quat_w[geom_count] = eq[3]
+                    elif xy_s2.byte_length() > 0:
+                        var xq2 = _rcd_xyaxes_to_quat(xy_s2)
+                        data.geom_quat_x[geom_count] = xq2[0]
+                        data.geom_quat_y[geom_count] = xq2[1]
+                        data.geom_quat_z[geom_count] = xq2[2]
+                        data.geom_quat_w[geom_count] = xq2[3]
                 var size_s = _extract_attr(tag, "size")
                 if size_s.byte_length() == 0:
                     size_s = cls_size[ci] if ci >= 0 else String("")
@@ -4340,9 +4420,14 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                         data.geom_half_y[geom_count] = s1
                     else:
                         data.geom_radius[geom_count] = s0
+                var mat_s = _extract_attr(tag, "material")
+                if mat_s.byte_length() == 0:
+                    mat_s = cls_material[ci] if ci >= 0 else String("")
+                geom_mat_name[geom_count] = mat_s
                 var rgba_s = _extract_attr(tag, "rgba")
                 if rgba_s.byte_length() == 0:
                     rgba_s = cls_rgba[ci] if ci >= 0 else String("")
+                geom_has_rgba[geom_count] = rgba_s.byte_length() > 0
                 if rgba_s.byte_length() > 0:
                     var cv = _rcd_parse_rgba4(rgba_s)
                     data.geom_rgba_r[geom_count] = cv[0]
@@ -4519,29 +4604,21 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                     data.vis_headlight_ambient_b = c[2]
                     data.vis_has_headlight = True
 
-    # ---- Post-pass: resolve geom material="name" references ------------------
-    var geom_scan = 0
-    var geom_idx = 0
-    while geom_scan < wlen and geom_idx < geom_count and geom_idx < 64:
-        var t = worldbody.find("<geom", geom_scan)
-        if t == -1:
-            break
-        var tag_end = worldbody.find(">", t)
-        if tag_end == -1:
-            break
-        var tag = String(worldbody[byte = t : tag_end + 1])
-        var mat_name = _extract_attr(tag, "material")
+    # ---- Resolve geom material="name" -> index -------------------------------
+    # Names were gathered in the geom loop above, WITH the class chain applied;
+    # this pass only turns each into an index and applies the material's colour
+    # where the geom did not state one of its own.
+    var n_resolved = geom_count if geom_count < 64 else 64
+    for geom_idx in range(n_resolved):
+        var mat_name = geom_mat_name[geom_idx]
         if mat_name.byte_length() > 0:
             var mid = _rcd_find_material_index_by_name(asset_sec, mat_name)
             data.geom_material_id[geom_idx] = mid
-            var has_explicit_rgba = _extract_attr(tag, "rgba").byte_length() > 0
-            if not has_explicit_rgba and mid >= 0 and mid < mat_count:
+            if not geom_has_rgba[geom_idx] and mid >= 0 and mid < mat_count:
                 data.geom_rgba_r[geom_idx] = data.mat_rgba_r[mid]
                 data.geom_rgba_g[geom_idx] = data.mat_rgba_g[mid]
                 data.geom_rgba_b[geom_idx] = data.mat_rgba_b[mid]
                 data.geom_rgba_a[geom_idx] = data.mat_rgba_a[mid]
-        geom_idx += 1
-        geom_scan = tag_end + 1
 
     return data^
 
