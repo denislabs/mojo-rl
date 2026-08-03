@@ -2225,6 +2225,53 @@ struct Renderer3D(Movable):
             SolidDrawCommand(0, uniforms, texture_cache_idx=tex_idx)
         )
 
+    def draw_ellipsoid(
+        mut self,
+        center: Vec3,
+        orientation: Quat,
+        radii: Vec3,
+        color: Color = Color(255, 255, 255, 255),
+        shininess: Float32 = 0.5,
+        specular: Float32 = 0.5,
+        reflectance: Float32 = 0.0,
+        emission: Float32 = 0.0,
+    ) raises:
+        """Draw a solid ellipsoid — the sphere mesh under a non-uniform scale.
+
+        `draw_sphere` already composes its model matrix with a scale vector
+        `(r, r, r)`; an ellipsoid is the same call with three different radii
+        and a real orientation, so this costs a mesh reuse and nothing else.
+
+        Added 2026-08-03: `mjGEOM_ELLIPSOID` had no branch in
+        `ModelDefFromXML.render_body_geoms` and no fallback either, so every
+        ellipsoid geom was silently INVISIBLE — quadruped's torso, and geoms in
+        swimmer, fish and finger. A viewer that hides a robot's torso is worse
+        than no viewer, since it reads as a broken model rather than a missing
+        draw call.
+
+        Args:
+            center: Ellipsoid center in world space.
+            orientation: World orientation.
+            radii: Semi-axes (x, y, z) in the ellipsoid's local frame.
+            color: Surface color.
+            shininess: Specular exponent scaling (0-1).
+            specular: Specular intensity (0-1).
+            reflectance: Reflectance coefficient (0-1).
+            emission: Emissive intensity (0-1).
+        """
+        var model = Mat4.compose(center, orientation, radii)
+        var uniforms = ObjectUniforms()
+        uniforms.model = mat4_to_gpu_f32(model)
+        uniforms.color = color_to_vec4(color)
+        uniforms.material[0] = shininess
+        uniforms.material[1] = specular
+        uniforms.material[2] = reflectance
+        uniforms.material[3] = emission
+
+        self.solid_draws.append(
+            SolidDrawCommand(0, uniforms, texture_cache_idx=-1)
+        )
+
     def draw_capsule(
         mut self,
         center: Vec3,

@@ -1430,9 +1430,15 @@ def _class_attr(
 
     Elements inside a NESTED `<default class="...">` are skipped, so a class
     that contains sub-classes resolves to its own child rather than theirs.
+
+    An EMPTY `cls` means the top-level `<default>` block — the one with no
+    `class` attribute. That is the terminator of the inheritance chain in
+    `_class_attr_inherited`, and doing it here rather than via
+    `_root_defaults` is not a style choice: `_root_defaults` returns a String
+    built by SLICING, and slicing that again is precisely the comptime failure
+    this docstring warns about above. Index arithmetic over the original
+    `xml`, one slice at the end, is the only shape that survives.
     """
-    if cls.byte_length() == 0:
-        return String("")
     var n = xml.byte_length()
     var scan = 0
     while scan < n:
@@ -1498,6 +1504,126 @@ def _class_attr(
                 return String("")
             return _extract_attr(String(xml[byte = tt : tte + 1]), attr)
         return String("")
+    return String("")
+
+
+def _class_parent(xml: String, cls: String) -> String:
+    """The class enclosing `<default class="cls">`, or "" if it is top level.
+
+    MJCF default classes NEST and INHERIT, which `_class_attr` alone does not
+    express — it answers "what does this exact block say", not "what does an
+    element in this class end up with". quadruped's legs need the difference:
+
+        <default>
+          <default class="body">                     <- type, size, material
+            <default class="hip">  <geom fromto=.../>   <- fromto only
+            <default class="knee"> ...
+
+    and a leg geom is the bare tag `<geom name="thigh_front_left"/>` under a
+    body carrying `childclass="hip"`. Its `type` lives two levels up. Walking
+    parents is the only way to reach it.
+
+    ⚠ Index arithmetic over the ORIGINAL `xml`, with single slices, for the
+    reason spelled out at length in `_class_attr`: slicing a String that was
+    itself produced by slicing another String defeats the comptime
+    interpreter, and it fails only on the paths that HIT.
+    """
+    if cls.byte_length() == 0:
+        return String("")
+    var n = xml.byte_length()
+    # Spans of the currently-open `<default ...>` tags, outermost first.
+    var open_start = InlineArray[Int, 32](fill=-1)
+    var open_end = InlineArray[Int, 32](fill=-1)
+    var depth = 0
+    var i = 0
+    while i < n:
+        var t = xml.find("<default", i)
+        var c = xml.find("</default>", i)
+        if t == -1 and c == -1:
+            break
+        if t != -1 and (c == -1 or t < c):
+            var te = xml.find(">", t)
+            if te == -1:
+                break
+            if depth < 32:
+                open_start[depth] = t
+                open_end[depth] = te
+            depth += 1
+            if (
+                _trim(_extract_attr(String(xml[byte = t : te + 1]), "class"))
+                == cls
+            ):
+                # Enclosing block is one level out; the top-level `<default>`
+                # carries no class, so its name comes back "" — exactly the
+                # terminator the caller wants.
+                if depth >= 2 and open_start[depth - 2] >= 0:
+                    return _trim(
+                        _extract_attr(
+                            String(
+                                xml[
+                                    byte = open_start[depth - 2] : open_end[
+                                        depth - 2
+                                    ]
+                                    + 1
+                                ]
+                            ),
+                            "class",
+                        )
+                    )
+                return String("")
+            i = te + 1
+        else:
+            if depth > 0:
+                depth -= 1
+            i = c + 10  # len("</default>")
+    return String("")
+
+
+def _class_attr_inherited(
+    xml: String, cls: String, tag_name: String, attr: String
+) -> String:
+    """`attr` for an element of class `cls`, walking the default-class chain.
+
+    Own class first, then each enclosing class, then the top-level `<default>`
+    block — MJCF's resolution order. Returns "" if nothing in the chain sets
+    it, which lets the caller keep its own fallback.
+
+    This is what `parse_xml_render_data` was missing. It read geom attributes
+    only off the geom's own tag, so every geom that inherited its `type` from
+    a class fell back to the MJCF default of SPHERE — quadruped's legs became
+    default-radius spheres parked at their body origins, i.e. invisible inside
+    the torso. Ten of sixteen dm_control domains put geom type/size/fromto in
+    a `<default>` block, so this was most of the suite, and no test could see
+    it: the PHYSICS reads the runtime parser (`full_parser`), which has
+    resolved classes correctly since 2026-07-29.
+    """
+    var c = cls
+    # Bounded: a class chain deeper than 16 is a malformed model, and an
+    # unbounded `while` here would be a comptime hazard of its own.
+    for _ in range(16):
+        if c.byte_length() == 0:
+            break
+        var v = _class_attr(xml, c, tag_name, attr)
+        if v.byte_length() > 0:
+            return v
+        c = _class_parent(xml, c)
+    # Chain exhausted.
+    #
+    # ⚠ THE TOP-LEVEL `<default>` BLOCK IS DELIBERATELY NOT CONSULTED for the
+    # render attributes. Routing the tail through `_class_attr(xml, "", ...)`
+    # is correct MJCF and it works for a single model, but it tips
+    # `parse_xml_render_data` over the comptime interpreter's budget once a
+    # dozen-plus models are instantiated in one binary — that function's own
+    # docstring says it exists to dodge exactly such a crash. The named-class
+    # chain is where the real defect lived (quadruped's legs inherit `type`
+    # from `class="body"`), and a ROOT-level `<geom type=.../>` is rare: no
+    # dm_control model sets type, size or fromto there, only solimp/solref,
+    # which rendering ignores. Colour still falls back to root via the
+    # `def_rgba_*` path in the geom loop, as it always did.
+    #
+    # If a model ever needs it, the fix is not to re-add the call but to make
+    # the resolution cheaper — resolve every class ONCE into a table before
+    # the worldbody scan instead of lazily per class.
     return String("")
 
 
@@ -3801,6 +3927,38 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                     def_rgba_b = cv[2]
                     def_rgba_a = cv[3]
 
+    # ---- Top-level <default><geom> type/size/fromto, resolved ONCE ----------
+    #
+    # acrobot needs this: `<default><geom type="capsule" mass="1"/></default>`
+    # with no named class, and its geoms carry only a name and `fromto`.
+    # Without it every acrobot link draws as a sphere — which is exactly what
+    # tests/physics3d/test_render_data_vs_physics.mojo caught.
+    #
+    # ⚠ REUSES `def_sec` ABOVE — do not "improve" this to `_root_defaults`.
+    # That helper is depth-aware and therefore more correct, but it returns a
+    # DOUBLY-derived String (`_strip_nested_defaults(_extract_section_inner)`)
+    # and slicing it defeats the comptime interpreter with "interpreting
+    # memcpy can't get dst memory". `_extract_section` is singly derived and
+    # is what the working `rgba` lookup above already slices. The trap is
+    # documented at length on `_class_attr`.
+    #
+    # `_extract_section` is NOT depth aware, so guard that the `<geom>` we
+    # find really is at the top level rather than the first one inside a
+    # nested class — the ordering hazard that cost swimmer a 2000x gear error.
+    var def_geom_type = String("")
+    var def_geom_size = String("")
+    var def_geom_fromto = String("")
+    if def_sec.byte_length() > 0:
+        var rg = def_sec.find("<geom")
+        var first_nested = def_sec.find("<default", 1)
+        if rg != -1 and (first_nested == -1 or rg < first_nested):
+            var rg_end = def_sec.find(">", rg)
+            if rg_end != -1:
+                var rgtag = String(def_sec[byte = rg : rg_end + 1])
+                def_geom_type = _extract_attr(rgtag, "type")
+                def_geom_size = _extract_attr(rgtag, "size")
+                def_geom_fromto = _extract_attr(rgtag, "fromto")
+
     # ---- Parse <asset> section: textures and materials -----------------------
     var asset_sec = _extract_section(xml_clean, "asset")
 
@@ -3908,6 +4066,23 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
     # ---- DFS scan <worldbody>: geoms, lights, cameras, sites -----------------
     var worldbody = _extract_section(xml_clean, "worldbody")
     var body_id_stack = InlineArray[Int, 65](fill=0)
+    # MJCF `childclass` applies to every DESCENDANT of the body that declares
+    # it, so it has to ride the body stack rather than be read per element.
+    # Without this a geom that inherits its type from a class is unresolvable.
+    var childclass_stack = InlineArray[String, 65](fill=String(""))
+    # ⚠ RESOLVE EACH CLASS ONCE. `_class_attr_inherited` re-scans the whole
+    # XML per lookup, and doing that per geom per attribute blows the comptime
+    # interpreter's budget on this function — which is already the one whose
+    # docstring says it exists to avoid a comptime crash on large models. A
+    # model has a handful of distinct geom classes and dozens of geoms, so
+    # caching by class name turns O(geoms x attrs) scans into O(classes x
+    # attrs). quadruped: 64 walks becomes about 20.
+    var cls_names = InlineArray[String, 24](fill=String(""))
+    var cls_type = InlineArray[String, 24](fill=String(""))
+    var cls_size = InlineArray[String, 24](fill=String(""))
+    var cls_fromto = InlineArray[String, 24](fill=String(""))
+    var cls_rgba = InlineArray[String, 24](fill=String(""))
+    var n_cls = 0
     var depth = 0
     var body_count = 0
     var geom_count = 0
@@ -3941,9 +4116,17 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
             _rcd_min_valid(next_cam, next_site),
         )
         if earliest == next_body_open:
+            var btag = _extract_opening_tag(worldbody, next_body_open)
+            var inherited_cc = childclass_stack[depth]
             depth += 1
             body_count += 1
             body_id_stack[depth] = body_count
+            # `childclass` on this body replaces the inherited one for its
+            # whole subtree; otherwise the parent's carries down.
+            var own_cc = _trim(_extract_attr(btag, "childclass"))
+            childclass_stack[depth] = (
+                own_cc if own_cc.byte_length() > 0 else inherited_cc
+            )
             var tag_end = worldbody.find(">", next_body_open)
             scan_pos = tag_end + 1 if tag_end != -1 else wlen
         elif earliest == next_body_close:
@@ -3953,11 +4136,44 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
         elif earliest == next_geom:
             var current_body = body_id_stack[depth]
             var tag = _extract_opening_tag(worldbody, next_geom)
+            # Effective class: the geom's own `class=` wins, else the nearest
+            # enclosing body's `childclass`.
+            var own_cls = _trim(_extract_attr(tag, "class"))
+            var geom_cls = (
+                own_cls if own_cls.byte_length() > 0
+                else childclass_stack[depth]
+            )
+            # Cache slot for this class ("" is a real key — it means "root
+            # defaults only", which most geoms use).
+            var ci = -1
+            for k in range(n_cls):
+                if cls_names[k] == geom_cls:
+                    ci = k
+                    break
+            if ci < 0 and n_cls < 24:
+                cls_names[n_cls] = geom_cls
+                cls_type[n_cls] = _class_attr_inherited(
+                    xml_clean, geom_cls, "geom", "type"
+                )
+                cls_size[n_cls] = _class_attr_inherited(
+                    xml_clean, geom_cls, "geom", "size"
+                )
+                cls_fromto[n_cls] = _class_attr_inherited(
+                    xml_clean, geom_cls, "geom", "fromto"
+                )
+                cls_rgba[n_cls] = _class_attr_inherited(
+                    xml_clean, geom_cls, "geom", "rgba"
+                )
+                ci = n_cls
+                n_cls += 1
             if geom_count < 64:
                 data.geom_body_id[geom_count] = current_body
-                data.geom_type[geom_count] = _rcd_geom_type_from_str(
-                    _extract_attr(tag, "type")
-                )
+                var type_s = _extract_attr(tag, "type")
+                if type_s.byte_length() == 0:
+                    type_s = cls_type[ci] if ci >= 0 else String("")
+                if type_s.byte_length() == 0:
+                    type_s = def_geom_type
+                data.geom_type[geom_count] = _rcd_geom_type_from_str(type_s)
                 # Mesh reference: mesh="name" → lookup in mesh assets
                 if data.geom_type[geom_count] == 5:  # GEOM_MESH
                     var mesh_ref = _extract_attr(tag, "mesh")
@@ -3967,6 +4183,10 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                                 data.geom_mesh_id[geom_count] = mi
                                 break
                 var fromto_s = _extract_attr(tag, "fromto")
+                if fromto_s.byte_length() == 0:
+                    fromto_s = cls_fromto[ci] if ci >= 0 else String("")
+                if fromto_s.byte_length() == 0:
+                    fromto_s = def_geom_fromto
                 if fromto_s.byte_length() > 0:
                     var ft = _fromto_to_pos_quat(fromto_s)
                     data.geom_pos_x[geom_count] = ft[0]
@@ -4000,6 +4220,10 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                             data.geom_quat_z[geom_count] = aq[2]
                             data.geom_quat_w[geom_count] = aq[3]
                 var size_s = _extract_attr(tag, "size")
+                if size_s.byte_length() == 0:
+                    size_s = cls_size[ci] if ci >= 0 else String("")
+                if size_s.byte_length() == 0:
+                    size_s = def_geom_size
                 if size_s.byte_length() > 0:
                     var size_parts = List[String]()
                     _split_spaces(size_s, size_parts)
@@ -4046,6 +4270,8 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                     else:
                         data.geom_radius[geom_count] = s0
                 var rgba_s = _extract_attr(tag, "rgba")
+                if rgba_s.byte_length() == 0:
+                    rgba_s = cls_rgba[ci] if ci >= 0 else String("")
                 if rgba_s.byte_length() > 0:
                     var cv = _rcd_parse_rgba4(rgba_s)
                     data.geom_rgba_r[geom_count] = cv[0]

@@ -1136,6 +1136,20 @@ struct ModelDefFromXML[
                     half_height=Self._rcd.geom_half_length[i], axis=2,
                     color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
                     texture_name=tex_name_str, texture_path=tex_file_str)
+            elif gt == 6:  # ELLIPSOID
+                # ⚠ THIS BRANCH DID NOT EXIST until 2026-08-03, and there is no
+                # trailing `else`, so every ellipsoid geom was silently skipped
+                # — invisible in the renderer while colliding normally. It hit
+                # quadruped (the torso), swimmer, fish and finger. Semi-axes
+                # live in half_x/y/z, the same slots a box uses.
+                renderer.draw_ellipsoid(center=geom_pos, orientation=geom_quat,
+                    radii=_RVec3(
+                        Self._rcd.geom_half_x[i] * visual_radius_scale,
+                        Self._rcd.geom_half_y[i] * visual_radius_scale,
+                        Self._rcd.geom_half_z[i] * visual_radius_scale,
+                    ),
+                    color=geom_color, shininess=shininess, specular=specular,
+                    reflectance=reflectance)
             elif gt == 5:  # MESH
                 var mid2 = Self._rcd.geom_mesh_id[i]
                 # Draw mesh with optional texture
