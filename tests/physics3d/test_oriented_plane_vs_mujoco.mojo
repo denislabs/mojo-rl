@@ -45,6 +45,12 @@ Both entry points are gated: `detect_contacts` (naive, all-pairs) and
 the plane branch — `broadphase_sap.mojo` has five `from_plane_frame` call sites
 of its own.
 
+ALL FIVE GEOM TYPES ARE GATED EXACTLY. The cylinder was the last holdout: it
+emitted ONE point against `mjc_PlaneCylinder`'s manifold until 2026-08-03, and
+was pinned here by a self-cleaning test that failed with its own cleanup
+instructions the moment the manifold landed. That test is gone and the cylinder
+now sits in the exact set with the other four.
+
 ⚠ NOT COVERED: plane/mesh. The plane-mesh vertex scan takes the same
 `ground_z`, but a mesh needs an STL asset the synthetic model here has no way
 to carry. It remains ungated.
@@ -350,16 +356,6 @@ def _check(mut d: Dat, mf: Mod, label: String) raises:
             + String(mj_n1) + ", " + String(mj_n2) + "). A normal of (0,0,1)"
             " here means the plane's orientation is being ignored.",
         )
-        # ⚠ CYLINDER IS EXCLUDED FROM THE POSITION AND COUNT CHECKS, and only
-        # from those. Its depth and normal are exact; what is wrong is that we
-        # emit ONE point where `mjc_PlaneCylinder` emits THREE, and our single
-        # point sits on the rim instead of inside the 3-point manifold. That is
-        # a missing manifold (the bug-39 class), pinned by
-        # `test_plane_cylinder_manifold_is_an_open_defect` below so it cannot
-        # be quietly absorbed into a loosened tolerance here.
-        if other == 5:
-            continue
-
         assert_true(
             best <= TOL_POS,
             label + " " + nm + ": contact POSITION is " + String(best)
@@ -375,8 +371,6 @@ def _check(mut d: Dat, mf: Mod, label: String) raises:
     for i in range(1, 6):
         print("      ", names[i - 1], per_body_ours[i], "vs", per_body_mj[i])
     for i in range(1, 6):
-        if i == 5:
-            continue  # cylinder — see the open-defect test below
         assert_true(
             per_body_ours[i] == per_body_mj[i],
             label + " " + names[i - 1] + ": we emit "
@@ -464,72 +458,6 @@ def test_the_plane_is_actually_oriented() raises:
         lo < 0.3 and hi > 0.3,
         "the test geoms no longer straddle the plane origin's z, so the old"
         " 'floor at ground_z' rule would not be grossly wrong for them",
-    )
-
-
-def test_plane_cylinder_manifold_is_an_open_defect() raises:
-    """PINS a defect this file found. DELETE IT when the manifold lands.
-
-    `mjc_PlaneCylinder` emits a THREE-POINT manifold for a cylinder resting on
-    its flat face — the rim triple. We emit ONE point, and it is on the rim
-    rather than among MuJoCo's three, so a cylinder standing on a plane has no
-    restoring torque and will tip. Same class as bug 39 (box/plane and box/box
-    emitting one point per pair), and the fix is the same shape: port the
-    reference routine, then gate it point-for-point.
-
-    ⚠ NOT ORIENTATION-SPECIFIC. Measured identically against an axis-aligned
-    floor, so it long predates the oriented-plane work this file was written
-    for and is not a regression from it.
-
-    This test asserts the defect is STILL PRESENT so that fixing it turns this
-    file red with instructions, rather than leaving a stale caveat behind.
-    Three such self-cleaning tests have already paid for themselves in this
-    project (tasks #42, #45 and the stacker box/box pin).
-
-    WHEN YOU FIX IT: delete this test, and remove the two `if other == 5` /
-    `if i == 5` guards in `_check` so the cylinder joins the exact set.
-    """
-    var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(materialize[PLANE_XML]())
-    var md = mujoco.MjData(m)
-    mujoco.mj_forward(m, md)
-
-    var mf = _build()
-    var d = Dat()
-    PM.reset_data(d)
-    forward_kinematics["cpu"](d, mf)
-    detect_contacts["cpu"](d, mf)
-
-    var ours = 0
-    var n_ours = Int(d.meta.data[META_IDX_NUM_CONTACTS])
-    for c in range(n_ours):
-        var b = c * CONTACT_SIZE
-        var ba = Int(d.contacts.data[b + CONTACT_IDX_BODY_A])
-        var bb = Int(d.contacts.data[b + CONTACT_IDX_BODY_B])
-        var other = ba if (bb == 0 or bb == -1) else bb
-        if other == 5:
-            ours += 1
-    var theirs = 0
-    for k in range(Int(py=md.ncon)):
-        var cc = md.contact[k]
-        if Int(py=m.geom_bodyid[cc.geom1]) == 5 or Int(
-            py=m.geom_bodyid[cc.geom2]
-        ) == 5:
-            theirs += 1
-
-    print("--- OPEN DEFECT: plane/cylinder manifold — ours", ours,
-          " MuJoCo", theirs)
-    assert_true(
-        theirs == 3,
-        "MuJoCo no longer emits a 3-point cylinder manifold here — the pose"
-        " changed and this pin no longer describes anything",
-    )
-    assert_true(
-        ours == 1,
-        "plane/cylinder now emits " + String(ours) + " contacts, not 1. If the"
-        " manifold has been implemented: DELETE THIS TEST and remove the two"
-        " `== 5` guards in `_check` so the cylinder is gated exactly like the"
-        " other four types.",
     )
 
 

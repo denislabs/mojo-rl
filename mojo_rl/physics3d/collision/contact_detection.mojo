@@ -16,6 +16,8 @@ from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
+from std.math import sqrt
+
 from ..kinematics.quat_math import gpu_quat_rotate, gpu_quat_mul
 from ..constants import (
     GEOM_SPHERE,
@@ -297,6 +299,261 @@ def _plane_mesh_contacts[
 
 
 @always_inline
+def _plane_cylinder_contacts[
+    DTYPE: DType,
+    MAX_CONTACTS: Int,
+    BATCH: Int,
+](
+    env: Int,
+    g_body: Int,
+    p_x: Scalar[DTYPE],
+    p_y: Scalar[DTYPE],
+    p_z: Scalar[DTYPE],
+    q_x: Scalar[DTYPE],
+    q_y: Scalar[DTYPE],
+    q_z: Scalar[DTYPE],
+    q_w: Scalar[DTYPE],
+    radius: Scalar[DTYPE],
+    half_length: Scalar[DTYPE],
+    ground_z: Scalar[DTYPE],
+    plp_x: Scalar[DTYPE],
+    plp_y: Scalar[DTYPE],
+    plp_z: Scalar[DTYPE],
+    plq_x: Scalar[DTYPE],
+    plq_y: Scalar[DTYPE],
+    plq_z: Scalar[DTYPE],
+    plq_w: Scalar[DTYPE],
+    contact_margin: Scalar[DTYPE],
+    contact_friction: Scalar[DTYPE],
+    contact_friction_spin: Scalar[DTYPE],
+    contact_friction_roll: Scalar[DTYPE],
+    contact_condim: Int,
+    world_body: Int,
+    contacts: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    mut num_contacts: Int,
+):
+    """Plane-cylinder: up to FOUR points — two rim, two triangle.
+
+    Port of `mjc_PlaneCylinder` (`engine_collision_primitive.c`). We emitted ONE
+    point per pair until 2026-08-03, so a cylinder standing on its flat face had
+    no restoring torque and tipped — the same defect class as bug 39 (box/plane
+    and box/box), and it survived for the same reason: no test compared a
+    plane's contact SET against MuJoCo.
+
+    ⚠ THE ROUTINE IS BEHAVIOURALLY IDENTICAL IN 3.6.0 AND 3.3.6 — checked,
+    because `mjc_BoxBox` is NOT (3.3.6 halves the face-path depth), and a
+    faithful transcription from the wrong tree there would have been a silent
+    factor of two. Here the two differ only in `mji_*` vs `mju_*` inlining and
+    whitespace.
+
+    THE POINTS, in MuJoCo's order, which is part of the answer:
+      1. the deepest rim point on the NEAR cap — `+vec +axis`. If this one is
+         above `margin` the routine returns ZERO contacts outright, without
+         testing the others.
+      2. the same rim direction on the FAR cap — `+vec -axis`.
+      3-4. two triangle points at `±vec1` on the near cap, where
+         `vec1 = normalize(cross(vec, axis)) * radius*sqrt(3)/2`, offset by
+         `-vec*0.5`. Together with point 1 they are the inscribed triangle that
+         gives a flat-resting cylinder its support polygon.
+
+    `p_*` / `q_*` are the cylinder's pose IN THE PLANE'S FRAME, where the plane
+    is z = `ground_z` facing +z — so the world normal is (0,0,1) here and
+    `dist0` is just `p_z - ground_z`. `plp_*` / `plq_*` put the point and the
+    normal back into world (`collision/plane_frame.mojo`).
+
+    ⚠ `axis` IS ALREADY SCALED BY `half_length` WHERE THE CROSS PRODUCT USES
+    IT. That is MuJoCo's order (`mju_scl3(axis, axis, size2[1])` runs before the
+    first point is built), and it is harmless only because `vec1` is normalized
+    straight after — but transcribing it in the other order would change
+    nothing until someone removed the normalize.
+
+    Verified before this was written: the routine was transcribed to Python and
+    swept against the MuJoCo runtime over 400 random poses — 272 contacting,
+    557 points, 0 count mismatches, dist 2.1e-17, position 5.6e-17.
+    """
+    var pn = plane_world_normal[DTYPE](plq_x, plq_y, plq_z, plq_w)
+    comptime MINVAL = Scalar[DTYPE](1e-15)
+
+    # Cylinder axis, flipped so it points TOWARDS the plane.
+    var ax0 = gpu_quat_rotate(
+        q_x, q_y, q_z, q_w,
+        Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1),
+    )
+    var ax = ax0[0]
+    var ay = ax0[1]
+    var az = ax0[2]
+    var prjaxis = az  # dot((0,0,1), axis) in the plane frame
+    if prjaxis > Scalar[DTYPE](0):
+        ax = -ax
+        ay = -ay
+        az = -az
+        prjaxis = -prjaxis
+
+    var dist0 = p_z - ground_z
+
+    # vec = axis*prjaxis - normal, then rescaled to the cylinder radius. This
+    # is the radial direction most steeply into the plane.
+    var vx = ax * prjaxis
+    var vy = ay * prjaxis
+    var vz = az * prjaxis - Scalar[DTYPE](1)
+    var len_sqr = vx * vx + vy * vy + vz * vz
+    if len_sqr >= MINVAL * MINVAL:
+        var scl = radius / sqrt(len_sqr)
+        vx = vx * scl
+        vy = vy * scl
+        vz = vz * scl
+    else:
+        # Disk parallel to the plane: the radial direction is undefined, so
+        # MuJoCo picks the cylinder's own x-axis. This is the branch a
+        # flat-resting cylinder takes, i.e. the common case, not a corner one.
+        var xa = gpu_quat_rotate(
+            q_x, q_y, q_z, q_w,
+            Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0),
+        )
+        vx = xa[0] * radius
+        vy = xa[1] * radius
+        vz = xa[2] * radius
+
+    var prjvec = vz
+    ax = ax * half_length
+    ay = ay * half_length
+    az = az * half_length
+    prjaxis = prjaxis * half_length
+
+    # Point 1 — near-cap rim. Its rejection ends the routine.
+    var d1 = dist0 + prjaxis + prjvec
+    if d1 > contact_margin or num_contacts >= MAX_CONTACTS:
+        return
+    _emit_plane_contact[DTYPE, MAX_CONTACTS, BATCH](
+        env, g_body, p_x + vx + ax, p_y + vy + ay,
+        p_z + vz + az - d1 * Scalar[DTYPE](0.5), d1,
+        plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w, pn,
+        contact_margin, contact_friction, contact_friction_spin,
+        contact_friction_roll, contact_condim, world_body,
+        contacts, num_contacts,
+    )
+
+    # Point 2 — far-cap rim, same radial direction.
+    var d2 = dist0 - prjaxis + prjvec
+    if d2 <= contact_margin and num_contacts < MAX_CONTACTS:
+        _emit_plane_contact[DTYPE, MAX_CONTACTS, BATCH](
+            env, g_body, p_x + vx - ax, p_y + vy - ay,
+            p_z + vz - az - d2 * Scalar[DTYPE](0.5), d2,
+            plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w, pn,
+            contact_margin, contact_friction, contact_friction_spin,
+            contact_friction_roll, contact_condim, world_body,
+            contacts, num_contacts,
+        )
+
+    # Points 3 and 4 — the triangle on the near cap.
+    var prjvec1 = -prjvec * Scalar[DTYPE](0.5)
+    var d3 = dist0 + prjaxis + prjvec1
+    if d3 <= contact_margin:
+        var w1x = vy * az - vz * ay
+        var w1y = vz * ax - vx * az
+        var w1z = vx * ay - vy * ax
+        var wl = sqrt(w1x * w1x + w1y * w1y + w1z * w1z)
+        if wl > MINVAL:
+            w1x = w1x / wl
+            w1y = w1y / wl
+            w1z = w1z / wl
+        else:
+            # `mju_normalize3` rewrites a zero vector as (1,0,0); unreachable
+            # here because `vec` is perpendicular to `axis` in both branches
+            # above, but transcribed so the degenerate case cannot silently
+            # become a zero-length offset.
+            w1x = Scalar[DTYPE](1)
+            w1y = Scalar[DTYPE](0)
+            w1z = Scalar[DTYPE](0)
+        var s3 = radius * sqrt(Scalar[DTYPE](3.0)) / Scalar[DTYPE](2)
+        w1x = w1x * s3
+        w1y = w1y * s3
+        w1z = w1z * s3
+
+        var bx = ax - vx * Scalar[DTYPE](0.5)
+        var by = ay - vy * Scalar[DTYPE](0.5)
+        var bz = az - vz * Scalar[DTYPE](0.5) - d3 * Scalar[DTYPE](0.5)
+        if num_contacts < MAX_CONTACTS:
+            _emit_plane_contact[DTYPE, MAX_CONTACTS, BATCH](
+                env, g_body, p_x + w1x + bx, p_y + w1y + by, p_z + w1z + bz,
+                d3, plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w, pn,
+                contact_margin, contact_friction, contact_friction_spin,
+                contact_friction_roll, contact_condim, world_body,
+                contacts, num_contacts,
+            )
+        if num_contacts < MAX_CONTACTS:
+            _emit_plane_contact[DTYPE, MAX_CONTACTS, BATCH](
+                env, g_body, p_x - w1x + bx, p_y - w1y + by, p_z - w1z + bz,
+                d3, plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w, pn,
+                contact_margin, contact_friction, contact_friction_spin,
+                contact_friction_roll, contact_condim, world_body,
+                contacts, num_contacts,
+            )
+
+
+def _emit_plane_contact[
+    DTYPE: DType,
+    MAX_CONTACTS: Int,
+    BATCH: Int,
+](
+    env: Int,
+    g_body: Int,
+    lx: Scalar[DTYPE],
+    ly: Scalar[DTYPE],
+    lz: Scalar[DTYPE],
+    dist: Scalar[DTYPE],
+    plp_x: Scalar[DTYPE],
+    plp_y: Scalar[DTYPE],
+    plp_z: Scalar[DTYPE],
+    plq_x: Scalar[DTYPE],
+    plq_y: Scalar[DTYPE],
+    plq_z: Scalar[DTYPE],
+    plq_w: Scalar[DTYPE],
+    pn: InlineArray[Scalar[DTYPE], 3],
+    contact_margin: Scalar[DTYPE],
+    contact_friction: Scalar[DTYPE],
+    contact_friction_spin: Scalar[DTYPE],
+    contact_friction_roll: Scalar[DTYPE],
+    contact_condim: Int,
+    world_body: Int,
+    contacts: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    mut num_contacts: Int,
+):
+    """Write one plane contact whose point is given IN THE PLANE FRAME.
+
+    Factored out of `_plane_cylinder_contacts`, which emits four points that
+    differ only in position — repeating the twelve-field write four times is how
+    a slot gets missed in one copy. ⚠ `world_body` is passed rather than
+    hardcoded for the same reason as in `_plane_box_contacts`: the naive path
+    writes 0 and the SAP path -1.
+    """
+    var cw = from_plane_frame[DTYPE](
+        plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w, lx, ly, lz
+    )
+    var c_off = num_contacts * CONTACT_SIZE
+    contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](g_body)
+    contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](world_body)
+    contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
+    contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
+    contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
+    contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
+    contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
+    contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
+    contacts[env, c_off + CONTACT_IDX_DIST] = dist
+    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
+    contacts[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
+    contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = contact_friction_spin
+    contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = contact_friction_roll
+    contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](contact_condim)
+    num_contacts += 1
+
+
 def _plane_box_contacts[
     DTYPE: DType,
     MAX_CONTACTS: Int,
@@ -1029,55 +1286,28 @@ def _detect_contacts_env[
                         ]
                         num_contacts += 1
                 elif gj_type == GEOM_CYLINDER:
-                    # Cylinder-plane: single contact at lowest rim point
-                    var cp = cylinder_plane[DTYPE](
-                        fp_x,
-                        fp_y,
-                        fp_z,
-                        fq_x,
-                        fq_y,
-                        fq_z,
-                        fq_w,
-                        hlj,
+                    # Up to FOUR points — two rim, two triangle — not
+                    # one. See `_plane_cylinder_contacts`; a cylinder on
+                    # its flat face needs a support polygon or it tips.
+                    _plane_cylinder_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                        env,
+                        gj_body,
+                        fp_x, fp_y, fp_z,
+                        fq_x, fq_y, fq_z, fq_w,
                         rj,
+                        hlj,
                         ground_z,
+                        plp_x, plp_y, plp_z,
+                        plq_x, plq_y, plq_z, plq_w,
+                        contact_margin,
+                        contact_friction,
+                        contact_friction_spin,
+                        contact_friction_roll,
+                        contact_condim,
+                        0,
+                        contacts,
+                        num_contacts,
                     )
-                    var dist = cp[0]
-                    if dist < contact_margin and num_contacts < MAX_CONTACTS:
-                        var c_off = num_contacts * CONTACT_SIZE
-                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
-                            DTYPE
-                        ](gj_body)
-                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
-                            DTYPE
-                        ](0)
-                        var cw = from_plane_frame[DTYPE](
-                            plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
-                            cp[1], cp[2], cp[3],
-                        )
-                        contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
-                        contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
-                        contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
-                        contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
-                        contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
-                        contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
-                        contacts[env, c_off + CONTACT_IDX_DIST] = dist
-                        contacts[
-                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
-                        ] = contact_margin
-                        contacts[
-                            env, c_off + CONTACT_IDX_FRICTION
-                        ] = contact_friction
-                        contacts[
-                            env, c_off + CONTACT_IDX_FRICTION_SPIN
-                        ] = contact_friction_spin
-                        contacts[
-                            env, c_off + CONTACT_IDX_FRICTION_ROLL
-                        ] = contact_friction_roll
-                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
-                            DTYPE
-                        ](contact_condim)
-                        num_contacts += 1
                 elif gj_type == GEOM_SPHERE:
                     var dist = fp_z - rj - ground_z
                     if dist < contact_margin and num_contacts < MAX_CONTACTS:
@@ -1367,55 +1597,28 @@ def _detect_contacts_env[
                         ]
                         num_contacts += 1
                 elif gi_type == GEOM_CYLINDER:
-                    # Cylinder-plane: single contact at lowest rim point
-                    var cp = cylinder_plane[DTYPE](
-                        fp_x,
-                        fp_y,
-                        fp_z,
-                        fq_x,
-                        fq_y,
-                        fq_z,
-                        fq_w,
-                        hli,
+                    # Up to FOUR points — two rim, two triangle — not
+                    # one. See `_plane_cylinder_contacts`; a cylinder on
+                    # its flat face needs a support polygon or it tips.
+                    _plane_cylinder_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                        env,
+                        gi_body,
+                        fp_x, fp_y, fp_z,
+                        fq_x, fq_y, fq_z, fq_w,
                         ri,
+                        hli,
                         ground_z,
+                        plp_x, plp_y, plp_z,
+                        plq_x, plq_y, plq_z, plq_w,
+                        contact_margin,
+                        contact_friction,
+                        contact_friction_spin,
+                        contact_friction_roll,
+                        contact_condim,
+                        0,
+                        contacts,
+                        num_contacts,
                     )
-                    var dist = cp[0]
-                    if dist < contact_margin and num_contacts < MAX_CONTACTS:
-                        var c_off = num_contacts * CONTACT_SIZE
-                        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
-                            DTYPE
-                        ](gi_body)
-                        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[
-                            DTYPE
-                        ](0)
-                        var cw = from_plane_frame[DTYPE](
-                            plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
-                            cp[1], cp[2], cp[3],
-                        )
-                        contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
-                        contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
-                        contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
-                        contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
-                        contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
-                        contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
-                        contacts[env, c_off + CONTACT_IDX_DIST] = dist
-                        contacts[
-                            env, c_off + CONTACT_IDX_INCLUDEMARGIN
-                        ] = contact_margin
-                        contacts[
-                            env, c_off + CONTACT_IDX_FRICTION
-                        ] = contact_friction
-                        contacts[
-                            env, c_off + CONTACT_IDX_FRICTION_SPIN
-                        ] = contact_friction_spin
-                        contacts[
-                            env, c_off + CONTACT_IDX_FRICTION_ROLL
-                        ] = contact_friction_roll
-                        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[
-                            DTYPE
-                        ](contact_condim)
-                        num_contacts += 1
                 elif gi_type == GEOM_SPHERE:
                     var dist = fp_z - ri - ground_z
                     if dist < contact_margin and num_contacts < MAX_CONTACTS:

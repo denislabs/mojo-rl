@@ -104,6 +104,7 @@ from .plane_frame import (
 from .gjk import gjk_epa
 from .contact_detection import (
     _plane_box_contacts,
+    _plane_cylinder_contacts,
     _box_box_contacts,
     _capsule_box_contacts,
     _geom_world_pos,
@@ -516,45 +517,29 @@ def _detect_contacts_sap_env[
                     num_contacts += 1
 
             elif gj_type == GEOM_CYLINDER:
-                var cp = cylinder_plane[DTYPE](
-                    pj_x,
-                    pj_y,
-                    pj_z,
-                    qj_x,
-                    qj_y,
-                    qj_z,
-                    qj_w,
-                    hlj,
+                # Up to FOUR points — two rim, two triangle — not one.
+                # See `_plane_cylinder_contacts` in contact_detection.mojo;
+                # shared with the naive path so the two cannot drift, which
+                # is exactly how the ellipsoid branch below went missing.
+                _plane_cylinder_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                    env,
+                    gj_body,
+                    pj_x, pj_y, pj_z,
+                    qj_x, qj_y, qj_z, qj_w,
                     rj,
+                    hlj,
                     ground_z,
+                    plp_x, plp_y, plp_z,
+                    plq_x, plq_y, plq_z, plq_w,
+                    cm,
+                    cf,
+                    cfs,
+                    cfr,
+                    cdim,
+                    -1,
+                    contacts,
+                    num_contacts,
                 )
-                var dist = cp[0]
-                if dist < cm and num_contacts < MAX_CONTACTS:
-                    var c_off = num_contacts * CONTACT_SIZE
-                    contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                        gj_body
-                    )
-                    contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
-                        -1
-                    )
-                    var cw = from_plane_frame[DTYPE](
-                        plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
-                        cp[1], cp[2], cp[3],
-                    )
-                    contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
-                    contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
-                    contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
-                    contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
-                    contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
-                    contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
-                    contacts[env, c_off + CONTACT_IDX_DIST] = dist
-                    contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
-                    contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
-                    contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
-                    contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                        cdim
-                    )
-                    num_contacts += 1
 
             elif gj_type == GEOM_ELLIPSOID:
                 # ⚠ ADDED 2026-08-03. This branch did not exist, and
