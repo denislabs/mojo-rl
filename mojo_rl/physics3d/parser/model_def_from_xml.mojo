@@ -1005,15 +1005,35 @@ struct ModelDefFromXML[
 
     @staticmethod
     def setup_camera_modes() raises -> List[Int]:
-        """Return camera modes (CAM_MODE_* constants) for each parsed camera."""
+        """MJCF `mode` -> the renderer's own encoding.
+
+        Renderer: 0 = TRACKCOM (translate to follow the torso), 1 = FIXED,
+        2 = TARGETBODY (re-aim at a body every frame). MJCF: 0 fixed, 1 track,
+        2 trackcom, 3 targetbody, 4 targetbodycom.
+
+        ⚠ targetbody USED TO COLLAPSE INTO TRACKCOM, which is a different
+        behaviour entirely: trackcom moves the camera and keeps its
+        orientation, targetbody holds the camera still and turns it. cartpole's
+        `lookatcart` is the one model that asks for it.
+        """
         var modes = List[Int]()
         for i in range(Self.ncam):
             var xml_mode = Self._rcd.cam_mode[i]
             if xml_mode == 0:
-                modes.append(1)  # CAM_MODE_FIXED -> renderer CAM_FIXED=1
+                modes.append(1)  # fixed
+            elif xml_mode == 3 or xml_mode == 4:
+                modes.append(2)  # targetbody / targetbodycom
             else:
-                modes.append(0)  # TRACK / TRACKCOM / TARGET* -> renderer CAM_TRACKCOM=0
+                modes.append(0)  # track / trackcom
         return modes^
+
+    @staticmethod
+    def get_camera_target_bodies() -> List[Int]:
+        """Body index each camera aims at, or -1. Parallel to `setup_cameras`."""
+        var out = List[Int]()
+        for i in range(Self.ncam):
+            out.append(Self._rcd.cam_target_body[i])
+        return out^
 
     @staticmethod
     def get_skybox_colors() -> List[Float64]:

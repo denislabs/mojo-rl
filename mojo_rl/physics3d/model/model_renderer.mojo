@@ -39,7 +39,9 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
 
     # Multi-camera support
     var cameras: List[Camera3D]
-    var camera_modes: List[Int]  # CAM_TRACKCOM=0, CAM_FIXED=1
+    var camera_modes: List[Int]  # CAM_TRACKCOM=0, CAM_FIXED=1, CAM_TARGETBODY=2
+    var camera_targets: List[Int]
+    """Body each camera aims at for CAM_TARGETBODY, -1 otherwise."""
     var active_camera: Int
 
     var axes_offset: Float64
@@ -108,6 +110,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 else:
                     self.camera_modes.append(0)  # CAM_TRACKCOM fallback
         self.active_camera = 0
+        self.camera_targets = Self.MODEL_DEF.get_camera_target_bodies()
 
         # Setup all lights from spec (fallback to default if none defined)
         var lights = Self.MODEL_DEF.setup_lights()
@@ -231,6 +234,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.visual_radius_scale = move.visual_radius_scale
         self.cameras = move.cameras^
         self.camera_modes = move.camera_modes^
+        self.camera_targets = move.camera_targets^
         self.active_camera = move.active_camera
         self.axes_offset = move.axes_offset
         self.vel_arrow_height = move.vel_arrow_height
@@ -356,6 +360,37 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             var offset = self.renderer.camera.eye - self.renderer.camera.target
             self.renderer.camera.target = Vec3(torso_pos.x, 0.0, torso_pos.z)
             self.renderer.camera.eye = self.renderer.camera.target + offset
+        elif cam_mode == 2:  # CAM_TARGETBODY
+            # MuJoCo `mj_camlight`, mjCAMLIGHT_TARGETBODY: the camera does NOT
+            # move — it TURNS to face the body every frame. That is the whole
+            # difference from trackcom, which moves it and leaves its
+            # orientation alone, and it is why collapsing the two was wrong.
+            #
+            #   zaxis = normalize(cam_pos - target_pos)   (points AT the camera)
+            #   xaxis = normalize(cross(+Z, zaxis))
+            #   yaxis = cross(zaxis, xaxis)               (the camera's up)
+            #
+            # ⚠ targetbodycom is aimed at the body's ORIGIN here, not its
+            # subtree centre of mass, which the renderer does not have. The two
+            # coincide for a single-body target — cartpole's `cart`, the only
+            # user in the suite — and diverge for a multi-body subtree.
+            var tgt = -1
+            if self.active_camera < len(self.camera_targets):
+                tgt = self.camera_targets[self.active_camera]
+            if tgt >= 0 and tgt < len(positions):
+                var eye = self.renderer.camera.eye
+                var zax = (eye - positions[tgt]).normalized()
+                if zax.length_squared() > 1e-12:
+                    var world_up = Vec3(0.0, 0.0, 1.0)
+                    var xax = world_up.cross(zax)
+                    if xax.length_squared() < 1e-12:
+                        # Camera directly above or below the target: +Z gives no
+                        # usable xaxis, so fall back to +X the way a look-at has
+                        # to when the view direction is the world vertical.
+                        xax = Vec3(1.0, 0.0, 0.0).cross(zax)
+                    xax = xax.normalized()
+                    self.renderer.camera.target = eye - zax
+                    self.renderer.camera.up = zax.cross(xax).normalized()
 
         # Prevent camera from going below ground
         if self.renderer.has_ground:

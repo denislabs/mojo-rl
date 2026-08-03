@@ -3398,6 +3398,11 @@ struct ComptimeRenderData(Copyable, Movable):
     var cam_fovy: InlineArray[Float64, 8]
     var cam_mode: InlineArray[Int, 8]
     var cam_body_id: InlineArray[Int, 8]
+    var cam_target_body: InlineArray[Int, 8]
+    """Body index a `mode="targetbody"` camera aims at; -1 when it has none.
+
+    Resolved at parse time from `target="..."`, because the render-time re-aim
+    happens every frame and must not do string work."""
 
     # Textures (max MAX_COMPTIME_TEXTURES)
     var tex_type: InlineArray[Int, MAX_COMPTIME_TEXTURES]
@@ -3522,6 +3527,7 @@ struct ComptimeRenderData(Copyable, Movable):
         self.cam_fovy = InlineArray[Float64, 8](fill=45.0)
         self.cam_mode = InlineArray[Int, 8](fill=0)
         self.cam_body_id = InlineArray[Int, 8](fill=0)
+        self.cam_target_body = InlineArray[Int, 8](fill=-1)
 
         self.tex_type = InlineArray[Int, MAX_COMPTIME_TEXTURES](fill=0)
         self.tex_builtin = InlineArray[Int, MAX_COMPTIME_TEXTURES](fill=0)
@@ -3682,6 +3688,7 @@ struct ComptimeRenderData(Copyable, Movable):
         self.cam_fovy = InlineArray[Float64, 8](fill=45.0)
         self.cam_mode = InlineArray[Int, 8](fill=0)
         self.cam_body_id = InlineArray[Int, 8](fill=0)
+        self.cam_target_body = InlineArray[Int, 8](fill=-1)
         for i in range(8):
             self.cam_pos_x[i] = copy.cam_pos_x[i]
             self.cam_pos_y[i] = copy.cam_pos_y[i]
@@ -3693,6 +3700,7 @@ struct ComptimeRenderData(Copyable, Movable):
             self.cam_fovy[i] = copy.cam_fovy[i]
             self.cam_mode[i] = copy.cam_mode[i]
             self.cam_body_id[i] = copy.cam_body_id[i]
+            self.cam_target_body[i] = copy.cam_target_body[i]
 
         self.tex_type = InlineArray[Int, MAX_COMPTIME_TEXTURES](fill=0)
         self.tex_builtin = InlineArray[Int, MAX_COMPTIME_TEXTURES](fill=0)
@@ -3850,6 +3858,7 @@ struct ComptimeRenderData(Copyable, Movable):
         self.cam_fovy = move.cam_fovy^
         self.cam_mode = move.cam_mode^
         self.cam_body_id = move.cam_body_id^
+        self.cam_target_body = move.cam_target_body^
         self.tex_type = move.tex_type^
         self.tex_builtin = move.tex_builtin^
         self.tex_rgb1_r = move.tex_rgb1_r^
@@ -4653,35 +4662,66 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                     data.cam_pos_x[cam_count] = pv[0]
                     data.cam_pos_y[cam_count] = pv[1]
                     data.cam_pos_z[cam_count] = pv[2]
+                # ⚠ ALL FIVE ORIENTATION FORMS, same as geoms. This chain
+                # stopped after quat/axisangle/xyaxes, so `zaxis` and `euler`
+                # fell through to the identity — which for a camera means
+                # looking straight DOWN its own -Z. Once `setup_cameras` began
+                # deriving the look direction from the orientation, that turned
+                # into a top-down view of the floor for every model whose
+                # camera uses one of the two missing forms:
+                #   acrobot, cartpole  — `zaxis="0 -1 0"`
+                #   walker (side)      — `euler="60 0 0"`
+                # Models that genuinely ARE top-down (point_mass and reacher
+                # declare `quat="1 0 0 0"`, fish defaults to `tracking_top`)
+                # were correct before and stay correct.
                 var quat_s = _extract_attr(tag, "quat")
+                var aa_s = _extract_attr(tag, "axisangle")
+                var zax_s = _extract_attr(tag, "zaxis")
+                var eul_s = _extract_attr(tag, "euler")
+                var xy_s = _extract_attr(tag, "xyaxes")
                 if quat_s.byte_length() > 0:
                     var qv = _parse_quat(quat_s)
                     data.cam_quat_x[cam_count] = qv[0]
                     data.cam_quat_y[cam_count] = qv[1]
                     data.cam_quat_z[cam_count] = qv[2]
                     data.cam_quat_w[cam_count] = qv[3]
-                else:
-                    var aa_s = _extract_attr(tag, "axisangle")
-                    if aa_s.byte_length() > 0:
-                        var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
-                        data.cam_quat_x[cam_count] = aq[0]
-                        data.cam_quat_y[cam_count] = aq[1]
-                        data.cam_quat_z[cam_count] = aq[2]
-                        data.cam_quat_w[cam_count] = aq[3]
-                    else:
-                        var xy_s = _extract_attr(tag, "xyaxes")
-                        if xy_s.byte_length() > 0:
-                            var xq = _rcd_xyaxes_to_quat(xy_s)
-                            data.cam_quat_x[cam_count] = xq[0]
-                            data.cam_quat_y[cam_count] = xq[1]
-                            data.cam_quat_z[cam_count] = xq[2]
-                            data.cam_quat_w[cam_count] = xq[3]
+                elif aa_s.byte_length() > 0:
+                    var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
+                    data.cam_quat_x[cam_count] = aq[0]
+                    data.cam_quat_y[cam_count] = aq[1]
+                    data.cam_quat_z[cam_count] = aq[2]
+                    data.cam_quat_w[cam_count] = aq[3]
+                elif zax_s.byte_length() > 0:
+                    var zq = _parse_zaxis_to_quat(zax_s)
+                    data.cam_quat_x[cam_count] = zq[0]
+                    data.cam_quat_y[cam_count] = zq[1]
+                    data.cam_quat_z[cam_count] = zq[2]
+                    data.cam_quat_w[cam_count] = zq[3]
+                elif eul_s.byte_length() > 0:
+                    var eq = _parse_euler_to_quat(eul_s, deg_factor)
+                    data.cam_quat_x[cam_count] = eq[0]
+                    data.cam_quat_y[cam_count] = eq[1]
+                    data.cam_quat_z[cam_count] = eq[2]
+                    data.cam_quat_w[cam_count] = eq[3]
+                elif xy_s.byte_length() > 0:
+                    var xq = _rcd_xyaxes_to_quat(xy_s)
+                    data.cam_quat_x[cam_count] = xq[0]
+                    data.cam_quat_y[cam_count] = xq[1]
+                    data.cam_quat_z[cam_count] = xq[2]
+                    data.cam_quat_w[cam_count] = xq[3]
                 var fovy_s = _extract_attr(tag, "fovy")
                 if fovy_s.byte_length() > 0:
                     data.cam_fovy[cam_count] = _parse_float(fovy_s)
                 var mode_s = _extract_attr(tag, "mode")
                 if mode_s.byte_length() > 0:
                     data.cam_mode[cam_count] = _rcd_cam_mode_from_str(mode_s)
+                # `target="body"` — only meaningful for targetbody(com), and
+                # resolved here so the per-frame re-aim is pure arithmetic.
+                var tgt_s = _trim(_extract_attr(tag, "target"))
+                if tgt_s.byte_length() > 0:
+                    data.cam_target_body[cam_count] = (
+                        _find_body_index_by_name(worldbody, tgt_s)
+                    )
             cam_count += 1
             var tag_end = worldbody.find(">", next_cam)
             scan_pos = tag_end + 1 if tag_end != -1 else wlen

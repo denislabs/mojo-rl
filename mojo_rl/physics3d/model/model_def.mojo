@@ -253,6 +253,14 @@ trait ModelDefLike:
         ...
 
     @staticmethod
+    def get_camera_target_bodies() -> List[Int]:
+        """Body each camera aims at (mode="targetbody"), or -1 for none.
+
+        Defaults to empty: a model definition with no cameras, or one written
+        before targetbody was honoured, simply gets no re-aiming."""
+        return List[Int]()
+
+    @staticmethod
     def get_skybox_colors() -> List[Float64]:
         ...
 
