@@ -51,6 +51,8 @@ from ..constraints.contact_solve import (
 )
 # Island constants (relocated here at the P6 legacy sunset; formerly imported
 # from the deleted legacy `island_detection` / `island_solver`).
+from ..constraints.constraint_data import solref_spring_damper
+
 comptime MAX_ISLANDS: Int = 64
 comptime ISLAND_CONVERGE_EPS: Float64 = 1e-6
 from ..fields import Data, Model, DynamicsScratch, ContactScratch
@@ -298,10 +300,12 @@ def _island_pgs_solve_env[
     # (engine_core_constraint.c:1432,1440) — the dampratio belongs SQUARED
     # in K and not at all in B. Identical at dampratio=1 (every model in
     # the repo), but the other three solvers already use the MuJoCo form.
-    K_spring = Scalar[DTYPE](1.0) / (
-        sr_tc * sr_tc * si_dmax * si_dmax * sr_dr * sr_dr
+    # solref -> (K, B), including MuJoCo's DIRECT form for a NEGATIVE
+    # solref. See `constraints/constraint_data.solref_spring_damper` — the
+    # formula lived in twelve copy-pasted sites until 2026-08-03.
+    (K_spring, B_damp) = solref_spring_damper[DTYPE](
+        sr_tc, sr_dr, si_dmax
     )
-    B_damp = Scalar[DTYPE](2.0) / (sr_tc * si_dmax)
 
     # === PHASE 1: normal precompute (legacy: parallel, one thread per
     # contact slot; internal `contact_tid < nc` guard kept in the helper) ===

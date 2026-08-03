@@ -35,6 +35,8 @@ from ..gpu.constants import (
     JOINT_IDX_RANGE_MAX,
 )
 
+from .constraint_data import solref_spring_damper
+
 comptime LIM_TPB: Int = 64
 
 
@@ -151,10 +153,12 @@ def _limits_env[
         li_dmax = MJ_MAXIMP
     if li_power < Scalar[DTYPE](1):
         li_power = Scalar[DTYPE](1)
-    var l_K_spring = Scalar[DTYPE](1.0) / (
-        li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr
+    # solref -> (K, B), including MuJoCo's DIRECT form for a NEGATIVE
+    # solref. See `constraints/constraint_data.solref_spring_damper` — the
+    # formula lived in twelve copy-pasted sites until 2026-08-03.
+    var (l_K_spring, l_B_damp) = solref_spring_damper[DTYPE](
+        lr_tc, lr_dr, li_dmax
     )
-    var l_B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
 
     var lim_bias = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
     var lim_inv_K = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)

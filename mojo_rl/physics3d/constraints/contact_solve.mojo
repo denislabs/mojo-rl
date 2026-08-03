@@ -104,6 +104,8 @@ from ..gpu.constants import (
 )
 from ..collision.contact_frame import contact_tangent_frame
 
+from .constraint_data import solref_spring_damper
+
 comptime CS_TPB: Int = 64
 
 # PGS solver parameters (replicated from solver/pgs_solver.mojo:83)
@@ -1146,10 +1148,12 @@ def _contact_solve_env[
     # from K. Every model in the repo runs dampratio=1, where the two forms
     # coincide exactly — which is why it never showed up — but `limits.mojo`
     # already had the MuJoCo form, so the two constraint paths disagreed.
-    K_spring = Scalar[DTYPE](1.0) / (
-        sr_tc * sr_tc * si_dmax * si_dmax * sr_dr * sr_dr
+    # solref -> (K, B), including MuJoCo's DIRECT form for a NEGATIVE
+    # solref. See `constraints/constraint_data.solref_spring_damper` — the
+    # formula lived in twelve copy-pasted sites until 2026-08-03.
+    (K_spring, B_damp) = solref_spring_damper[DTYPE](
+        sr_tc, sr_dr, si_dmax
     )
-    B_damp = Scalar[DTYPE](2.0) / (sr_tc * si_dmax)
 
     # === PHASE 1: normal precompute (legacy: parallel, one thread per
     # contact slot; internal `contact_tid < nc` guard kept in the helper) ===

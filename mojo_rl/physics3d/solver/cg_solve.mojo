@@ -96,6 +96,8 @@ from ..gpu.constants import (
 # One env per block (see newton_solve.mojo:115): the per-env CG solve
 # stack-allocates a modest local frame (a handful of V_SIZE/M_SIZE arrays),
 # so one thread per block keeps the local reservation tight.
+from ..constraints.constraint_data import solref_spring_damper
+
 comptime CG_TPB: Int = 1
 
 
@@ -266,10 +268,12 @@ def _cg_solve_env[
         si_dmax = MJ_MAXIMP
     if si_power < Scalar[DTYPE](1):
         si_power = Scalar[DTYPE](1)
-    K_spring = Scalar[DTYPE](1.0) / (
-        si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
+    # solref -> (K, B), including MuJoCo's DIRECT form for a NEGATIVE
+    # solref. See `constraints/constraint_data.solref_spring_damper` — the
+    # formula lived in twelve copy-pasted sites until 2026-08-03.
+    (K_spring, B_damp) = solref_spring_damper[DTYPE](
+        sr_tc, sr_dr, si_dmax
     )
-    B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
     impratio = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_IMPRATIO])
     if impratio < Scalar[DTYPE](1e-6):
         impratio = Scalar[DTYPE](1.0)

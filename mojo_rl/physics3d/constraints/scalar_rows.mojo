@@ -97,6 +97,8 @@ from ..gpu.constants import (
 )
 
 # Row kinds
+from .constraint_data import solref_spring_damper
+
 comptime SROW_LIMIT: Int = 0
 comptime SROW_FRICTION: Int = 1
 # Bilateral: an equality row. Always active, never clamped — its state is
@@ -294,10 +296,12 @@ def build_scalar_rows[
         li_dmax = _clamp_imp[DTYPE](li_dmax)
         if li_pow < Scalar[DTYPE](1):
             li_pow = Scalar[DTYPE](1)
-        var K_spring = Scalar[DTYPE](1.0) / (
-            li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr
+        # solref -> (K, B), including MuJoCo's DIRECT form for a NEGATIVE
+        # solref. See `constraints/constraint_data.solref_spring_damper` — the
+        # formula lived in twelve copy-pasted sites until 2026-08-03.
+        var (K_spring, B_damp) = solref_spring_damper[DTYPE](
+            lr_tc, lr_dr, li_dmax
         )
-        var B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
 
         for side in range(2):
             var sign = Scalar[DTYPE](1) if side == 0 else Scalar[DTYPE](-1)

@@ -147,3 +147,105 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
         self.num_friction = 0
         self.num_limits = 0
         self.num_equality = 0
+
+
+# =============================================================================
+# solref -> (K, B) — the ONE place this conversion happens
+# =============================================================================
+
+
+@always_inline
+def solref_spring_damper[
+    DTYPE: DType
+](
+    ref_tc: Scalar[DTYPE],
+    ref_dr: Scalar[DTYPE],
+    d_width: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE]]:
+    """MuJoCo's `solref` -> constraint spring/damper, INCLUDING the direct form.
+
+    Port of `engine_core_constraint.c:1845-1862`. Returns `(K, B)` for
+    `aref = -B*vel - K*imp*pos`.
+
+        K = ref[0] > 0 : 1 / (d_width^2 * ref[0]^2 * ref[1]^2)   standard
+                       : -ref[0] / d_width^2                     direct
+        B = ref[1] > 0 : 2 / (d_width * ref[0])                  standard
+                       : -ref[1] / d_width                       direct
+
+    ⚠ **A NEGATIVE `solref` IS NOT AN ERROR, IT SELECTS A DIFFERENT MEANING.**
+    With `solref[0] >= 0` the pair is `(timeconst, dampratio)`; with it negative
+    MuJoCo reads `(-stiffness, -damping)` and uses them directly. Until
+    2026-08-03 this codebase implemented only the standard form, in TWELVE
+    copy-pasted sites, so a negative solref produced
+      * `K` about 1e-8 of its correct value — effectively no stiffness; and
+      * `B` NEGATIVE, i.e. a damper that INJECTS energy rather than removing it.
+    dm_control's quadruped `fetch` is the first model in the tree to use one
+    (`<geom name="ball" solref="-10000 -30"/>`), which is why it never bit.
+
+    ⚠ **THE TWO BRANCHES ARE SELECTED INDEPENDENTLY** — `K` on `ref[0]`, `B` on
+    `ref[1]` — which is what the C does, so this transcribes it. It is NOT
+    because a mixed-sign solref can reach here: MuJoCo's COMPILER rejects one
+    outright ("WARNING: mixed solref format, replacing with default", measured),
+    so both components always share a sign by the time the solver sees them.
+    An earlier draft of this docstring claimed a model could legitimately mix
+    them and justified the two branches on that; the branches are right and the
+    justification was wrong.
+
+    ⚠ **THE STANDARD `B` BRANCH IS SELECTED BY `ref[1]` BUT COMPUTED FROM
+    `ref[0]`.** That is not a transcription slip; it is what MuJoCo does.
+
+    THIS FUNCTION EXISTS BECAUSE THE FORMULA WAS COPY-PASTED TWELVE TIMES —
+    `contact_solve`, `equality_tendon` (x2), `limits`, `scalar_rows`,
+    `friction_dof`, `cg_solve`, `island_pgs_solve` and `newton_solve` (x4). That
+    is the same shape as bug 21, where a missing `solimp` clamp lived in six
+    copied sites and survived three investigations. Adding a thirteenth copy is
+    how the next one gets missed: call this instead.
+
+    ⚠ FRICTION ROWS TAKE `K = 0` (`mjCNSTR_FRICTION_*` and elliptic friction,
+    same source lines) — that branch is the CALLER's, not this function's, and
+    `friction_dof.mojo` already implements it. Do not route a friction row's K
+    through here expecting a zero.
+
+    `d_width` is `solimp[1]` (dmax), already clamped to [mjMINIMP, mjMAXIMP] by
+    the caller — this function does not clamp it, because the callers do it in
+    the same breath as clamping dmin and power.
+
+    VERIFIED against `mjData.efc_KBIP`, which exposes MuJoCo's own K and B:
+
+        contact solref   dmax    MuJoCo K, B            ours
+        (0.02, 1)        0.95     2770.0831 105.2632    identical
+        (0.0125, 0.75)   0.95    12606.9560 168.4211    identical
+        (0.005, 0.5)     0.95   177285.3186 421.0526    identical
+        (-10000, -30)    0.95    11080.3324  31.5789    identical   <- direct
+
+    ⚠ **THIS FUNCTION IS NECESSARY BUT NOT SUFFICIENT FOR A PER-GEOM `solref`.**
+    Contact rows currently read ONE MODEL-LEVEL solref
+    (`mmeta[MODEL_META_IDX_SOLREF_CONTACT_0/1]`), so a geom's own `solref` never
+    reaches here at all — the contact record carries per-contact friction,
+    condim and margin but no solref/solimp. Supporting
+    `<geom solref="-10000 -30"/>` needs those two added to the record and mixed
+    in the narrow phase by MuJoCo's rule, measured as:
+      * priorities differ  -> the higher-priority geom's parameters, wholesale;
+      * priorities equal, BOTH solrefs positive -> elementwise MEAN;
+      * priorities equal, EITHER negative       -> elementwise MIN.
+    (That last rule is why a direct solref wins over a standard one even at
+    equal priority.)
+    """
+    comptime MINVAL = Scalar[DTYPE](1e-15)
+
+    var k_den = d_width * d_width * ref_tc * ref_tc * ref_dr * ref_dr
+    var k_out: Scalar[DTYPE]
+    if ref_tc > Scalar[DTYPE](0):
+        k_out = Scalar[DTYPE](1.0) / (k_den if k_den > MINVAL else MINVAL)
+    else:
+        var dw2 = d_width * d_width
+        k_out = -ref_tc / (dw2 if dw2 > MINVAL else MINVAL)
+
+    var b_out: Scalar[DTYPE]
+    if ref_dr > Scalar[DTYPE](0):
+        var b_den = d_width * ref_tc
+        b_out = Scalar[DTYPE](2.0) / (b_den if b_den > MINVAL else MINVAL)
+    else:
+        b_out = -ref_dr / (d_width if d_width > MINVAL else MINVAL)
+
+    return (k_out, b_out)

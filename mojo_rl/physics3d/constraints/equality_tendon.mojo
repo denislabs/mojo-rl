@@ -92,6 +92,8 @@ from ..gpu.constants import (
 )
 
 
+from .constraint_data import solref_spring_damper
+
 @always_inline
 def _legacy_invw_read[
     DTYPE: DType,
@@ -566,10 +568,12 @@ def _equality_env[
             si_dmax = MJE_MAXIMP
         if si_power < Scalar[DTYPE](1):
             si_power = Scalar[DTYPE](1)
-        var eq_K_spring = Scalar[DTYPE](1.0) / (
-            si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
+        # solref -> (K, B), including MuJoCo's DIRECT form for a NEGATIVE
+        # solref. See `constraints/constraint_data.solref_spring_damper` — the
+        # formula lived in twelve copy-pasted sites until 2026-08-03.
+        var (eq_K_spring, eq_B_damp) = solref_spring_damper[DTYPE](
+            sr_tc, sr_dr, si_dmax
         )
-        var eq_B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
 
         # Compute world anchor A: xpos[body_a] + quat_rotate(xquat[body_a], anchor_a)
         var xpos_a_x = rebind[Scalar[DTYPE]](
@@ -1220,11 +1224,12 @@ def _tendon_env[
         if si_power < Scalar[DTYPE](1):
             si_power = Scalar[DTYPE](1)
         # MuJoCo: K = 1/(dmax² * timeconst² * dampratio²)
-        var t_K_spring = Scalar[DTYPE](1.0) / (
-            si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
+        # solref -> (K, B), including MuJoCo's DIRECT form for a NEGATIVE
+        # solref. See `constraints/constraint_data.solref_spring_damper` — the
+        # formula lived in twelve copy-pasted sites until 2026-08-03.
+        var (t_K_spring, t_B_damp) = solref_spring_damper[DTYPE](
+            sr_tc, sr_dr, si_dmax
         )
-        # MuJoCo: B = 2/(dmax * timeconst)
-        var t_B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
 
         # Impedance: MuJoCo piecewise power formula on |pos_err|
         var penetration = abs(pos_err)

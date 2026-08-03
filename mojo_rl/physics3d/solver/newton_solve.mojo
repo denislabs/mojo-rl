@@ -138,6 +138,8 @@ from ..gpu.constants import (
 # BATCH — reserves that frame, and CUDA reserves it for max residency across
 # the device, which OOMs at humanoid scale (Metal doesn't pre-reserve). One
 # thread per block keeps the reservation to the envs actually running.
+from ..constraints.constraint_data import solref_spring_damper
+
 comptime NS_TPB: Int = 1
 
 
@@ -545,10 +547,12 @@ def _newton_solve_env[
         si_dmax = MJ_MAXIMP
     if si_power < Scalar[DTYPE](1):
         si_power = Scalar[DTYPE](1)
-    K_spring = Scalar[DTYPE](1.0) / (
-        si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
+    # solref -> (K, B), including MuJoCo's DIRECT form for a NEGATIVE
+    # solref. See `constraints/constraint_data.solref_spring_damper` — the
+    # formula lived in twelve copy-pasted sites until 2026-08-03.
+    (K_spring, B_damp) = solref_spring_damper[DTYPE](
+        sr_tc, sr_dr, si_dmax
     )
-    B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
     impratio = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_IMPRATIO])
     if impratio < Scalar[DTYPE](1e-6):
         impratio = Scalar[DTYPE](1.0)
@@ -764,10 +768,12 @@ def _newton_solve_env[
                 li_dmax = MJL_MAXIMP
             if li_power < Scalar[DTYPE](1):
                 li_power = Scalar[DTYPE](1)
-            var l_K_spring = Scalar[DTYPE](1.0) / (
-                li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr
+            # solref -> (K, B), including MuJoCo's DIRECT form for a NEGATIVE
+            # solref. See `constraints/constraint_data.solref_spring_damper` — the
+            # formula lived in twelve copy-pasted sites until 2026-08-03.
+            var (l_K_spring, l_B_damp) = solref_spring_damper[DTYPE](
+                lr_tc, lr_dr, li_dmax
             )
-            var l_B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
 
             var pos = rebind[Scalar[DTYPE]](qpos[env, qpos_adr])
             # Lower limit: dist_lo = pos - rmin < 0 → violated
@@ -2588,10 +2594,12 @@ def _newton_blocked_fields_kernel[
             si_dmax = MJ_MAXIMP
         if si_power < Scalar[DTYPE](1):
             si_power = Scalar[DTYPE](1)
-        K_spring = Scalar[DTYPE](1.0) / (
-            si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
+        # solref -> (K, B), including MuJoCo's DIRECT form for a NEGATIVE
+        # solref. See `constraints/constraint_data.solref_spring_damper` — the
+        # formula lived in twelve copy-pasted sites until 2026-08-03.
+        (K_spring, B_damp) = solref_spring_damper[DTYPE](
+            sr_tc, sr_dr, si_dmax
         )
-        B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
         impratio = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_IMPRATIO])
         if impratio < Scalar[DTYPE](1e-6):
             impratio = Scalar[DTYPE](1.0)
@@ -2871,10 +2879,12 @@ def _newton_blocked_fields_kernel[
                 li_dmax = MJL_MAXIMP
             if li_power < Scalar[DTYPE](1):
                 li_power = Scalar[DTYPE](1)
-            var l_K_spring = Scalar[DTYPE](1.0) / (
-                li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr
+            # solref -> (K, B), including MuJoCo's DIRECT form for a NEGATIVE
+            # solref. See `constraints/constraint_data.solref_spring_damper` — the
+            # formula lived in twelve copy-pasted sites until 2026-08-03.
+            var (l_K_spring, l_B_damp) = solref_spring_damper[DTYPE](
+                lr_tc, lr_dr, li_dmax
             )
-            var l_B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
 
             var pos = rebind[Scalar[DTYPE]](qpos[env, qpos_adr])
             # Lower limit
