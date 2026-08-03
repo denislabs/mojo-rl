@@ -66,7 +66,7 @@ comptime MAX_POS_CORRECTION_VEL: Float32 = 10.0  # Legacy, unused after accel-le
 # =============================================================================
 
 # Contact layout (same as Cartesian engine: 12 floats per contact)
-comptime CONTACT_SIZE: Int = 23
+comptime CONTACT_SIZE: Int = 30
 
 comptime CONTACT_IDX_BODY_A: Int = 0
 comptime CONTACT_IDX_BODY_B: Int = 1
@@ -91,6 +91,28 @@ comptime CONTACT_IDX_FORCE_ROLL2: Int = 19
 comptime CONTACT_IDX_FRAME_T1_X: Int = 20  # T1 hint for tangent frame (capsule axis)
 comptime CONTACT_IDX_FRAME_T1_Y: Int = 21
 comptime CONTACT_IDX_FRAME_T1_Z: Int = 22
+# ── Per-contact solver parameters, appended 2026-08-03 ──────────────────────
+#
+# Until now every contact row read ONE MODEL-LEVEL solref/solimp
+# (`MODEL_META_IDX_SOLREF_CONTACT_*`), while the record already carried
+# per-contact friction, condim and margin. So `<geom solref=... solimp=.../>`
+# was parsed, written into the GEOM record (`GEOM_IDX_SOLREF_0`..`SOLIMP_4`)
+# and then read by NOTHING — dead data on every build.
+#
+# These slots hold the pair's MIXED values, computed in the narrow phase by
+# MuJoCo's rule (`engine_collision_driver.c:1426-1480`), so the solver reads
+# them the same way it already reads friction.
+#
+# ⚠ APPENDED, NOT INSERTED. Every index 0..22 keeps its value, which is what
+# lets a layout change like this be verified as inert: nothing that does not
+# read 23..29 can behave differently.
+comptime CONTACT_IDX_SOLREF_0: Int = 23  # mixed solref timeconst (or -stiffness)
+comptime CONTACT_IDX_SOLREF_1: Int = 24  # mixed solref dampratio (or -damping)
+comptime CONTACT_IDX_SOLIMP_0: Int = 25  # mixed solimp dmin
+comptime CONTACT_IDX_SOLIMP_1: Int = 26  # mixed solimp dmax
+comptime CONTACT_IDX_SOLIMP_2: Int = 27  # mixed solimp width
+comptime CONTACT_IDX_SOLIMP_3: Int = 28  # mixed solimp midpoint
+comptime CONTACT_IDX_SOLIMP_4: Int = 29  # mixed solimp power
 
 
 # =============================================================================
@@ -223,7 +245,7 @@ comptime MODEL_META_IDX_NEXCLUDE: Int = 25  # Number of contact exclude pairs
 # Model Buffer Layout - Unified Geoms (body-attached + static)
 # =============================================================================
 
-comptime MODEL_GEOM_SIZE: Int = 30  # Per unified geom (+7 for solref/solimp(5) +1 for margin +1 mesh_id)
+comptime MODEL_GEOM_SIZE: Int = 31  # Per unified geom (+7 solref/solimp, +1 margin, +1 mesh_id, +1 priority)
 
 comptime GEOM_IDX_TYPE: Int = 0
 comptime GEOM_IDX_BODY: Int = 1  # Body index (-1 for static)
@@ -255,6 +277,13 @@ comptime GEOM_IDX_SOLIMP_3: Int = 26  # Per-geom solimp midpoint
 comptime GEOM_IDX_SOLIMP_4: Int = 27  # Per-geom solimp power
 comptime GEOM_IDX_MARGIN: Int = 28  # Per-geom contact margin
 comptime GEOM_IDX_MESH_ID: Int = 29  # Mesh hull index (-1 if not mesh)
+# `<geom priority="...">`, default 0. When two geoms differ, the HIGHER
+# priority one dictates condim, solref, solimp AND friction wholesale — no
+# mixing at all (`engine_collision_driver.c:1427-1438`). dm_control's quadruped
+# and dog are the only suite models that set it; quadruped's ball uses it to
+# force its own `condim="6"` and `solref="-10000 -30"` onto every contact it
+# takes part in, including against the floor.
+comptime GEOM_IDX_PRIORITY: Int = 30
 
 
 # =============================================================================

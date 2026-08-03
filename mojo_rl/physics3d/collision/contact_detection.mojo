@@ -74,6 +74,14 @@ from ..gpu.constants import (
     GEOM_IDX_CONTYPE,
     GEOM_IDX_CONAFFINITY,
     GEOM_IDX_CONDIM,
+    GEOM_IDX_PRIORITY,
+    GEOM_IDX_SOLREF_0,
+    GEOM_IDX_SOLREF_1,
+    GEOM_IDX_SOLIMP_0,
+    GEOM_IDX_SOLIMP_1,
+    GEOM_IDX_SOLIMP_2,
+    GEOM_IDX_SOLIMP_3,
+    GEOM_IDX_SOLIMP_4,
     GEOM_IDX_FRICTION_SPIN,
     GEOM_IDX_FRICTION_ROLL,
     GEOM_IDX_RBOUND,
@@ -299,6 +307,111 @@ def _plane_mesh_contacts[
 
 
 @always_inline
+@always_inline
+def mix_contact_params[
+    DTYPE: DType
+](
+    prio_i: Int,
+    condim_i: Int,
+    fri_i: Scalar[DTYPE],
+    fsp_i: Scalar[DTYPE],
+    frl_i: Scalar[DTYPE],
+    sr0_i: Scalar[DTYPE],
+    sr1_i: Scalar[DTYPE],
+    si0_i: Scalar[DTYPE],
+    si1_i: Scalar[DTYPE],
+    si2_i: Scalar[DTYPE],
+    si3_i: Scalar[DTYPE],
+    si4_i: Scalar[DTYPE],
+    prio_j: Int,
+    condim_j: Int,
+    fri_j: Scalar[DTYPE],
+    fsp_j: Scalar[DTYPE],
+    frl_j: Scalar[DTYPE],
+    sr0_j: Scalar[DTYPE],
+    sr1_j: Scalar[DTYPE],
+    si0_j: Scalar[DTYPE],
+    si1_j: Scalar[DTYPE],
+    si2_j: Scalar[DTYPE],
+    si3_j: Scalar[DTYPE],
+    si4_j: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 12]:
+    """MuJoCo's contact-parameter mixing. Port of
+    `engine_collision_driver.c:1426-1480`.
+
+    Returns `[condim, friction, friction_spin, friction_roll, solref0, solref1,
+    solimp0..solimp4]` — index 0 holds condim as a float.
+
+    THE RULE, and every branch of it matters for dm_control's quadruped:
+
+      * **Priorities DIFFER** -> the higher-priority geom supplies condim,
+        solref, solimp AND friction, wholesale. No mixing of any kind. This is
+        how quadruped's ball (`priority="1"`) forces its own `condim="6"` and
+        `solref="-10000 -30"` onto every contact it takes part in, including
+        against a floor whose parameters are entirely different.
+      * **Priorities EQUAL**:
+          - condim   -> max
+          - friction -> elementwise max
+          - solref   -> elementwise MEAN if BOTH `solref[0] > 0`, otherwise
+            elementwise MIN. That second branch is why a DIRECT (negative)
+            solref wins over a standard one even at equal priority: it is not
+            averaged, it is taken.
+          - solimp   -> elementwise mean, with no direct branch at all.
+
+    ⚠ THE SOLREF TEST IS ON COMPONENT [0] OF **BOTH** GEOMS
+    (`solref1[0] > 0 && solref2[0] > 0`), not "either is negative". Same
+    outcome for the sign combinations MuJoCo's compiler permits, but the
+    condition is the source's.
+
+    ⚠ THE MEAN IS A SPECIAL CASE OF A `solmix` WEIGHTING —
+    `mix = solmix1/(solmix1 + solmix2)` — which is 0.5 only because every geom
+    defaults to `solmix = 1`. `full_parser` REJECTS a non-default `solmix`
+    rather than letting it silently degrade to this mean. No suite model sets
+    one; a five-point probe against MuJoCo could not have revealed this, and
+    did not — the source did.
+
+    ⚠ Until 2026-08-03 the narrow phase applied the equal-priority max rule to
+    friction and condim UNCONDITIONALLY and never looked at solref/solimp at
+    all, so `priority` was ignored and per-geom solparams were dead data.
+    """
+    var out = InlineArray[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
+
+    if prio_i != prio_j:
+        var hi_i = prio_i > prio_j
+        out[0] = Scalar[DTYPE](condim_i if hi_i else condim_j)
+        out[1] = fri_i if hi_i else fri_j
+        out[2] = fsp_i if hi_i else fsp_j
+        out[3] = frl_i if hi_i else frl_j
+        out[4] = sr0_i if hi_i else sr0_j
+        out[5] = sr1_i if hi_i else sr1_j
+        out[6] = si0_i if hi_i else si0_j
+        out[7] = si1_i if hi_i else si1_j
+        out[8] = si2_i if hi_i else si2_j
+        out[9] = si3_i if hi_i else si3_j
+        out[10] = si4_i if hi_i else si4_j
+        return out
+
+    out[0] = Scalar[DTYPE](condim_i if condim_i > condim_j else condim_j)
+    out[1] = fri_i if fri_i > fri_j else fri_j
+    out[2] = fsp_i if fsp_i > fsp_j else fsp_j
+    out[3] = frl_i if frl_i > frl_j else frl_j
+
+    comptime HALF = Scalar[DTYPE](0.5)
+    if sr0_i > Scalar[DTYPE](0) and sr0_j > Scalar[DTYPE](0):
+        out[4] = HALF * (sr0_i + sr0_j)
+        out[5] = HALF * (sr1_i + sr1_j)
+    else:
+        out[4] = sr0_i if sr0_i < sr0_j else sr0_j
+        out[5] = sr1_i if sr1_i < sr1_j else sr1_j
+
+    out[6] = HALF * (si0_i + si0_j)
+    out[7] = HALF * (si1_i + si1_j)
+    out[8] = HALF * (si2_i + si2_j)
+    out[9] = HALF * (si3_i + si3_j)
+    out[10] = HALF * (si4_i + si4_j)
+    return out
+
+
 def _plane_cylinder_contacts[
     DTYPE: DType,
     MAX_CONTACTS: Int,
@@ -1089,39 +1202,41 @@ def _detect_contacts_env[
             var hxj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_X])
             var hyj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Y])
             var hzj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Z])
-            # Friction combination: max per element (MuJoCo convention)
-            var fi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION])
-            var fj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION])
-            var contact_friction = fi
-            if fj > fi:
-                contact_friction = fj
-            var fsi = rebind[Scalar[DTYPE]](
-                geoms[gi, GEOM_IDX_FRICTION_SPIN]
+            # Contact parameters: MuJoCo's full rule, PRIORITY FIRST. This
+            # used to be an unconditional elementwise max on friction and
+            # condim, with solref/solimp not consulted at all — so
+            # `<geom priority>` was ignored and the per-geom solparams already
+            # in the geom record were dead data. See `mix_contact_params`.
+            var _mx = mix_contact_params[DTYPE](
+                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
+                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_SPIN]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_ROLL]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_0]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_1]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_0]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_1]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_2]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_3]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_4]),
+                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_PRIORITY])),
+                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_SPIN]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_ROLL]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_0]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_1]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_0]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_1]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_2]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_3]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_4]),
             )
-            var fsj = rebind[Scalar[DTYPE]](
-                geoms[gj, GEOM_IDX_FRICTION_SPIN]
-            )
-            var contact_friction_spin = fsi
-            if fsj > fsi:
-                contact_friction_spin = fsj
-            var fri = rebind[Scalar[DTYPE]](
-                geoms[gi, GEOM_IDX_FRICTION_ROLL]
-            )
-            var frj = rebind[Scalar[DTYPE]](
-                geoms[gj, GEOM_IDX_FRICTION_ROLL]
-            )
-            var contact_friction_roll = fri
-            if frj > fri:
-                contact_friction_roll = frj
-            var ci = Int(
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])
-            )
-            var cj = Int(
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])
-            )
-            var contact_condim = ci
-            if cj > ci:
-                contact_condim = cj
+            var contact_condim = Int(_mx[0])
+            var contact_friction = _mx[1]
+            var contact_friction_spin = _mx[2]
+            var contact_friction_roll = _mx[3]
 
             # Margin combination: max of both geoms (MuJoCo convention)
             var margin_gi = rebind[Scalar[DTYPE]](

@@ -246,6 +246,7 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     var rgba_a: Float64
     var material_id: Int  # index into FlatModelDef.materials[], -1 if none
     var group: Int  # geom group (0-5), used for inertiagrouprange filtering
+    var priority: Int  # `<geom priority>`; higher wins ALL contact params
     var mesh_id: Int  # index into mesh hull data (-1 if not mesh geom)
     var mesh_filename: String  # STL filename for mesh geoms ("" if not mesh)
 
@@ -326,6 +327,7 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         self.rgba_a = rgba_a
         self.material_id = material_id
         self.group = group
+        self.priority = 0  # MuJoCo default; set by the parser when declared
         self.mesh_id = mesh_id
         self.mesh_filename = mesh_filename
 

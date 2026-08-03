@@ -1881,6 +1881,34 @@ def _fill_model[
                     > 0 else eff_defaults.geom_condim
                 )
 
+                # `priority` — when two geoms differ, the higher one dictates
+                # condim, solref, solimp AND friction wholesale, with no mixing
+                # (`engine_collision_driver.c:1427-1438`). Default 0.
+                var prio_s = _extract_attr(tag, "priority")
+                gd.priority = (
+                    _parse_int_str(prio_s) if prio_s.byte_length() > 0 else 0
+                )
+
+                # ⚠ `solmix` IS NOT SUPPORTED, AND IS REJECTED RATHER THAN
+                # IGNORED. At equal priority MuJoCo blends the two geoms'
+                # solref/solimp with `mix = solmix1/(solmix1+solmix2)`; every
+                # geom defaults to `solmix=1`, giving mix = 0.5 (a plain mean),
+                # which is what the mixing code implements. A model that
+                # declares a non-default solmix would silently get the mean
+                # instead of its intended weighting — the same silent-default
+                # shape as the dof friction solparams, which raise for the same
+                # reason. No dm_control suite model sets it.
+                var solmix_s = _extract_attr(tag, "solmix")
+                if solmix_s.byte_length() > 0:
+                    var sm = _parse_float(solmix_s)
+                    if sm < 0.999999 or sm > 1.000001:
+                        raise Error(
+                            "physics3d: <geom solmix> is not supported (only"
+                            " the default 1.0). At equal priority it weights"
+                            " the solref/solimp blend; ignoring it would"
+                            " silently substitute a plain mean."
+                        )
+
                 # solref / solimp
                 var sr_s = _extract_attr(tag, "solref")
                 if sr_s.byte_length() > 0:

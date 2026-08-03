@@ -168,6 +168,7 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_FRICTION_SPIN,
     GEOM_IDX_FRICTION_ROLL,
     GEOM_IDX_RBOUND,
+    GEOM_IDX_PRIORITY,
     GEOM_IDX_SOLREF_0,
     GEOM_IDX_SOLREF_1,
     GEOM_IDX_SOLIMP_0,
@@ -869,6 +870,7 @@ def build_model_fields_from_flat[
         mf.geoms.data[o + GEOM_IDX_FRICTION_ROLL] = Scalar[DTYPE](
             gd.friction_roll
         )
+        mf.geoms.data[o + GEOM_IDX_PRIORITY] = Scalar[DTYPE](gd.priority)
         mf.geoms.data[o + GEOM_IDX_SOLREF_0] = Scalar[DTYPE](gd.solref_0)
         mf.geoms.data[o + GEOM_IDX_SOLREF_1] = Scalar[DTYPE](gd.solref_1)
         mf.geoms.data[o + GEOM_IDX_SOLIMP_0] = Scalar[DTYPE](gd.solimp_0)
