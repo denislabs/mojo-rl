@@ -6,7 +6,7 @@ checkerboard ground.
 """
 
 from std.memory import UnsafePointer, unsafe_memcpy, alloc
-from std.math import sqrt, sin, cos
+from std.math import sqrt, sin, cos, tan
 from mojo_rl.math3d import (
     Vec3 as Vec3Generic,
     Quat as QuatGeneric,
@@ -14,6 +14,7 @@ from mojo_rl.math3d import (
 )
 from std.ffi import _get_dylib_function
 from std.sys import CompilationTarget
+from std.sys.info import size_of
 from .sdl import (
     _null_ptr,
     untracked,
@@ -2813,6 +2814,25 @@ struct Renderer3D(Movable):
         self.skybox_uniforms.bottom_color[2] = bottom_b
         self.skybox_uniforms.bottom_color[3] = 1.0
 
+    def set_skybox_stars(
+        mut self,
+        r: Float32,
+        g: Float32,
+        b: Float32,
+        density: Float32,
+    ):
+        """Turn on the procedural starfield (MuJoCo `mark="random"`).
+
+        `density` is MuJoCo's `random` attribute — the fraction of texture
+        pixels it would have marked, default .01 — reused here as the fraction
+        of direction cells holding a star. Passing 0 disables it, which is what
+        a model without `mark="random"` gets.
+        """
+        self.skybox_uniforms.mark_color[0] = r
+        self.skybox_uniforms.mark_color[1] = g
+        self.skybox_uniforms.mark_color[2] = b
+        self.skybox_uniforms.mark_color[3] = density
+
     def set_ground_checker_colors(
         mut self,
         r: Float32 = 0.22,
@@ -3262,11 +3282,18 @@ struct Renderer3D(Movable):
         # ------------------------------------------------------------------
         if self.draw_skybox:
             bind_gpu_graphics_pipeline(render_pass, self.skybox_pipeline.value())
+            # ⚠ SIZED FROM THE STRUCT, NOT BY HAND. This was a literal 32 —
+            # correct for two float4s — and adding the starfield's mark colour
+            # and camera basis made it 96. Nothing warns about the mismatch:
+            # the shader simply reads whatever follows the 32 bytes it was
+            # given, so the stars were computed from uninitialised memory and
+            # never appeared. The other push sites in this file are still
+            # hand-sized literals and carry the same hazard.
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
                 Ptr(to=self.skybox_uniforms).bitcast[NoneType](),
-                32,
+                UInt32(size_of[SkyboxUniforms]()),
             )
             # Draw fullscreen triangle (3 vertices, no vertex buffer)
             draw_gpu_primitives(render_pass, 3, 1, 0, 0)
@@ -3693,6 +3720,28 @@ struct Renderer3D(Movable):
         var view_proj = proj @ view
 
         self.scene_uniforms.view_proj = mat4_to_gpu_f32(view_proj)
+
+        # Camera basis for the skybox's starfield. Rebuilt every frame from the
+        # SAME camera state the view matrix comes from, so the stars cannot
+        # drift out of step with the scene; the fragment reconstructs its view
+        # ray from these and hashes world directions, which is what keeps a
+        # star nailed to a point in the sky rather than to the screen.
+        var fwd = (self.camera.target - self.camera.eye).normalized()
+        var right = fwd.cross(self.camera.up).normalized()
+        var up = right.cross(fwd).normalized()
+        self.skybox_uniforms.cam_right[0] = Float32(right.x)
+        self.skybox_uniforms.cam_right[1] = Float32(right.y)
+        self.skybox_uniforms.cam_right[2] = Float32(right.z)
+        # `Camera3D.fov` is already in RADIANS (see ModelRenderer.__init__).
+        self.skybox_uniforms.cam_right[3] = Float32(tan(self.camera.fov * 0.5))
+        self.skybox_uniforms.cam_up[0] = Float32(up.x)
+        self.skybox_uniforms.cam_up[1] = Float32(up.y)
+        self.skybox_uniforms.cam_up[2] = Float32(up.z)
+        self.skybox_uniforms.cam_up[3] = Float32(self.camera.aspect)
+        self.skybox_uniforms.cam_fwd[0] = Float32(fwd.x)
+        self.skybox_uniforms.cam_fwd[1] = Float32(fwd.y)
+        self.skybox_uniforms.cam_fwd[2] = Float32(fwd.z)
+        self.skybox_uniforms.cam_fwd[3] = 0.0
 
         # Camera position + num_active_lights in w
         var num_lights = len(self.lights)

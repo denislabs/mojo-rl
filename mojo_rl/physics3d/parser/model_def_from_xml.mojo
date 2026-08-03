@@ -939,39 +939,60 @@ struct ModelDefFromXML[
         return lights^
 
     @staticmethod
+    def _rcd_rotate_by_quat(
+        qx: Float64, qy: Float64, qz: Float64, qw: Float64,
+        vx: Float64, vy: Float64, vz: Float64,
+    ) -> List[Float64]:
+        """Rotate (vx,vy,vz) by the quaternion, returned as [x, y, z]."""
+        var tx = 2.0 * (qy * vz - qz * vy)
+        var ty = 2.0 * (qz * vx - qx * vz)
+        var tz = 2.0 * (qx * vy - qy * vx)
+        var out = List[Float64]()
+        out.append(vx + qw * tx + qy * tz - qz * ty)
+        out.append(vy + qw * ty + qz * tx - qx * tz)
+        out.append(vz + qw * tz + qx * ty - qy * tx)
+        return out^
+
+    @staticmethod
     def setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
-        """Return Camera3D objects parsed from <camera> elements in <worldbody>."""
+        """Return Camera3D objects parsed from <camera> elements in <worldbody>.
+
+        ⚠ THE LOOK DIRECTION AND THE UP VECTOR BOTH COME FROM THE CAMERA'S OWN
+        ORIENTATION, for every mode. MuJoCo's camera frame looks along its -Z
+        with +Y up (`mjCCamera`), and `mode` governs only whether the POSITION
+        follows a body — `track`/`trackcom` keep the declared orientation.
+
+        Until 2026-08-03 this was inside out: the quaternion was used only for
+        `targetbody`, and fixed/track/trackcom got the invented target
+        `(cam_pos_x, 0, 0)` with `up` hardcoded to +Z. For a camera at
+        (-3, 0, 1) — humanoid's default `back` camera — that aims straight DOWN
+        at (-3, 0, 0), which makes the view direction PARALLEL to the up
+        vector. `look_at` then has a zero cross product and the whole view
+        matrix degenerates, so the model rendered as nothing at all. That is
+        the "humanoid: I can't see anything" report, and point_mass's top-down
+        camera hit the same wall.
+
+        Cameras that already looked right are unaffected: cheetah's
+        `xyaxes="1 0 0 0 0 1"` at (0,-3,0) resolves to the same +Y look with a
+        +Z up it was getting by accident.
+        """
         var cameras = List[Camera3D]()
         for i in range(Self.ncam):
             var eye = _RVec3(Self._rcd.cam_pos_x[i], Self._rcd.cam_pos_y[i], Self._rcd.cam_pos_z[i])
-            var target: _RVec3
-            var cam_mode = Self._rcd.cam_mode[i]
-            if cam_mode == 0 or cam_mode == 1 or cam_mode == 2:
-                target = _RVec3(Self._rcd.cam_pos_x[i], Float64(0), Float64(0))
-            else:
-                var qx = Self._rcd.cam_quat_x[i]
-                var qy = Self._rcd.cam_quat_y[i]
-                var qz = Self._rcd.cam_quat_z[i]
-                var qw = Self._rcd.cam_quat_w[i]
-                var vx = Float64(0)
-                var vy = Float64(0)
-                var vz = Float64(-1)
-                var tx = 2.0 * (qy * vz - qz * vy)
-                var ty = 2.0 * (qz * vx - qx * vz)
-                var tz = 2.0 * (qx * vy - qy * vx)
-                var look_x = vx + qw * tx + qy * tz - qz * ty
-                var look_y = vy + qw * ty + qz * tx - qx * tz
-                var look_z = vz + qw * tz + qx * ty - qy * tx
-                target = _RVec3(
-                    Self._rcd.cam_pos_x[i] + look_x,
-                    Self._rcd.cam_pos_y[i] + look_y,
-                    Self._rcd.cam_pos_z[i] + look_z,
-                )
+            var qx = Self._rcd.cam_quat_x[i]
+            var qy = Self._rcd.cam_quat_y[i]
+            var qz = Self._rcd.cam_quat_z[i]
+            var qw = Self._rcd.cam_quat_w[i]
+            var look = Self._rcd_rotate_by_quat(qx, qy, qz, qw, 0.0, 0.0, -1.0)
+            var up_v = Self._rcd_rotate_by_quat(qx, qy, qz, qw, 0.0, 1.0, 0.0)
+            var target = _RVec3(
+                eye.x + look[0], eye.y + look[1], eye.z + look[2]
+            )
             cameras.append(
                 Camera3D(
                     eye=eye,
                     target=target,
-                    up=_RVec3(0.0, 0.0, 1.0),
+                    up=_RVec3(up_v[0], up_v[1], up_v[2]),
                     fov=Self._rcd.cam_fovy[i],
                     aspect=Float64(width) / Float64(height),
                     near=Float64(0.1),
@@ -1008,6 +1029,29 @@ struct ModelDefFromXML[
                 result.append(Self._rcd.tex_rgb2_r[i])
                 result.append(Self._rcd.tex_rgb2_g[i])
                 result.append(Self._rcd.tex_rgb2_b[i])
+                return result^
+        return List[Float64]()
+
+    @staticmethod
+    def get_skybox_mark() -> List[Float64]:
+        """Return [kind, r, g, b, density] for the skybox's `mark`, else empty.
+
+        Only `mark="random"` (kind 3) means anything to the renderer: MuJoCo
+        bakes random dots into the generated skybox texture, which over a dark
+        gradient is a starfield. dm_control's `common/skybox.xml` asks for
+        exactly that (`mark="random" markrgb="1 1 1"`), and a plain two-colour
+        gradient has no way to show it — hence "the stars aren't showing".
+        `edge` and `cross` mark 2D textures, not the sky, so they are ignored
+        here rather than approximated.
+        """
+        for i in range(Self.ntex):
+            if Self._rcd.tex_type[i] == 1 or Self._rcd.tex_builtin[i] == 1:
+                var result = List[Float64]()
+                result.append(Float64(Self._rcd.tex_mark[i]))
+                result.append(Self._rcd.tex_markrgb_r[i])
+                result.append(Self._rcd.tex_markrgb_g[i])
+                result.append(Self._rcd.tex_markrgb_b[i])
+                result.append(Self._rcd.tex_random[i])
                 return result^
         return List[Float64]()
 
@@ -1051,6 +1095,86 @@ struct ModelDefFromXML[
         result.append(Self._rcd.vis_headlight_ambient_b)
         result.append(Float64(1.0) if Self._rcd.vis_has_headlight else Float64(0.0))
         return result^
+
+    @staticmethod
+    def render_spatial_tendons(
+        mut renderer: Renderer3D,
+        positions: List[_RVec3],
+        quaternions: List[_RQuat],
+    ) raises:
+        """Draw `<spatial>` tendons as a chain of thin capsules.
+
+        This is the only thing that makes ball_in_cup's string visible: the
+        tendon is load-bearing in the physics (an inextensible 30 cm link
+        between the ball's site and the cup's) but the renderer had no notion
+        of tendons at all, so the ball appeared to fly free.
+
+        Sites are stored in the body frame, so each endpoint is the body's
+        world pose composed with the site's local offset — the same transform
+        `render_body_geoms` applies to a geom.
+
+        ⚠ STRAIGHT SEGMENTS ONLY. MuJoCo routes a spatial tendon around
+        `<geom>` wrapping objects; those children are not recorded, so a
+        wrapping tendon would be drawn as the chord it wraps around rather
+        than the path it takes. ball_in_cup has none, which is why this is
+        enough for it and would not be for, say, a pulley.
+        """
+        var base = 0
+        for t in range(Self._rcd.nsten):
+            var n = Self._rcd.sten_nsite[t]
+            var radius = Self._rcd.sten_width[t]
+            var col = Color(
+                UInt8(Self._rcd.sten_rgba_r[t] * 255),
+                UInt8(Self._rcd.sten_rgba_g[t] * 255),
+                UInt8(Self._rcd.sten_rgba_b[t] * 255),
+                255,
+            )
+            for k in range(n - 1):
+                var ia = Self._rcd.sten_sites[base + k]
+                var ib = Self._rcd.sten_sites[base + k + 1]
+                if ia < 0 or ib < 0:
+                    continue
+                var ba = Self._rcd.site_body_id[ia]
+                var bb = Self._rcd.site_body_id[ib]
+                if ba >= len(positions) or bb >= len(positions):
+                    continue
+                var pa = positions[ba] + quaternions[ba].rotate_vec(
+                    _RVec3(
+                        Self._rcd.site_pos_x[ia],
+                        Self._rcd.site_pos_y[ia],
+                        Self._rcd.site_pos_z[ia],
+                    )
+                )
+                var pb = positions[bb] + quaternions[bb].rotate_vec(
+                    _RVec3(
+                        Self._rcd.site_pos_x[ib],
+                        Self._rcd.site_pos_y[ib],
+                        Self._rcd.site_pos_z[ib],
+                    )
+                )
+                var seg = pb - pa
+                var length = seg.length()
+                if length < 1e-9:
+                    continue
+                # `draw_capsule` takes a centre, an orientation and a half
+                # height about its local +Z, so the segment becomes a rotation
+                # of +Z onto its direction.
+                var orient = _RQuat.from_two_vectors(
+                    _RVec3(0.0, 0.0, 1.0), seg
+                )
+                renderer.draw_capsule(
+                    center=_RVec3(
+                        (pa.x + pb.x) * 0.5,
+                        (pa.y + pb.y) * 0.5,
+                        (pa.z + pb.z) * 0.5,
+                    ),
+                    orientation=orient,
+                    radius=radius,
+                    half_height=length * 0.5,
+                    axis=2,
+                    color=col,
+                )
+            base += n
 
     @staticmethod
     def render_ground_geoms(

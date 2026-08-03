@@ -2301,6 +2301,12 @@ complaints.
 The `comptime assert` in `model_def_from_xml.mojo` is what keeps the two counts
 from drifting apart again."""
 
+comptime MAX_COMPTIME_SPATIAL_TENDONS: Int = 4
+"""Cap on `<spatial>` tendons the RENDER parser records (ball_in_cup needs 1)."""
+
+comptime MAX_COMPTIME_SPATIAL_TENDON_SITES: Int = 16
+"""Flat cap on site references across all spatial tendons (4 per tendon)."""
+
 comptime MAX_COMPTIME_TEXTURES: Int = 16
 """Cap on `<texture>` records the comptime render parser keeps.
 
@@ -3404,6 +3410,16 @@ struct ComptimeRenderData(Copyable, Movable):
     var tex_rgb2_b: InlineArray[Float64, MAX_COMPTIME_TEXTURES]
     var tex_names: InlineArray[String, MAX_COMPTIME_TEXTURES]  # texture name (for material lookup)
     var tex_files: InlineArray[String, MAX_COMPTIME_TEXTURES]  # texture file path (PNG)
+    # `mark`/`markrgb`/`random`: MuJoCo sprinkles marks INTO the generated
+    # texture. On a `builtin="gradient"` skybox with `mark="random"` that is a
+    # starfield — which is exactly what dm_control's common/skybox.xml asks for
+    # and what a two-colour gradient cannot reproduce. 0=none 1=edge 2=cross
+    # 3=random; only `random` is rendered, and only on the skybox.
+    var tex_mark: InlineArray[Int, MAX_COMPTIME_TEXTURES]
+    var tex_markrgb_r: InlineArray[Float64, MAX_COMPTIME_TEXTURES]
+    var tex_markrgb_g: InlineArray[Float64, MAX_COMPTIME_TEXTURES]
+    var tex_markrgb_b: InlineArray[Float64, MAX_COMPTIME_TEXTURES]
+    var tex_random: InlineArray[Float64, MAX_COMPTIME_TEXTURES]  # mark density
 
     # Materials (max MAX_COMPTIME_MATERIALS)
     var mat_rgba_r: InlineArray[Float64, MAX_COMPTIME_MATERIALS]
@@ -3423,6 +3439,19 @@ struct ComptimeRenderData(Copyable, Movable):
     var site_pos_y: InlineArray[Float64, 16]
     var site_pos_z: InlineArray[Float64, 16]
     var site_size_0: InlineArray[Float64, 16]
+    # Spatial tendons, for DRAWING ONLY. The physics reads its tendon records
+    # from the runtime parser; this records the site chain so the renderer can
+    # draw the segments, without which ball_in_cup's string is simply absent.
+    # ⚠ Wrapping geoms are NOT modelled: a <geom> child inside a <spatial> is
+    # ignored, so a tendon that wraps would be drawn as the straight chord it
+    # is not.
+    var nsten: Int
+    var sten_nsite: InlineArray[Int, MAX_COMPTIME_SPATIAL_TENDONS]
+    var sten_sites: InlineArray[Int, MAX_COMPTIME_SPATIAL_TENDON_SITES]
+    var sten_width: InlineArray[Float64, MAX_COMPTIME_SPATIAL_TENDONS]
+    var sten_rgba_r: InlineArray[Float64, MAX_COMPTIME_SPATIAL_TENDONS]
+    var sten_rgba_g: InlineArray[Float64, MAX_COMPTIME_SPATIAL_TENDONS]
+    var sten_rgba_b: InlineArray[Float64, MAX_COMPTIME_SPATIAL_TENDONS]
 
     # Visual settings from <visual> section
     var vis_znear: Float64  # <map znear="..."/>  (camera near plane)
@@ -3504,6 +3533,11 @@ struct ComptimeRenderData(Copyable, Movable):
         self.tex_rgb2_b = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.5)
         self.tex_names = InlineArray[String, MAX_COMPTIME_TEXTURES](fill=String(""))
         self.tex_files = InlineArray[String, MAX_COMPTIME_TEXTURES](fill=String(""))
+        self.tex_mark = InlineArray[Int, MAX_COMPTIME_TEXTURES](fill=0)
+        self.tex_markrgb_r = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=1.0)
+        self.tex_markrgb_g = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=1.0)
+        self.tex_markrgb_b = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=1.0)
+        self.tex_random = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.01)
 
         self.mat_rgba_r = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
         self.mat_rgba_g = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
@@ -3521,6 +3555,23 @@ struct ComptimeRenderData(Copyable, Movable):
         self.site_pos_y = InlineArray[Float64, 16](fill=0.0)
         self.site_pos_z = InlineArray[Float64, 16](fill=0.0)
         self.site_size_0 = InlineArray[Float64, 16](fill=0.005)
+        self.nsten = 0
+        self.sten_nsite = InlineArray[Int, MAX_COMPTIME_SPATIAL_TENDONS](fill=0)
+        self.sten_sites = InlineArray[
+            Int, MAX_COMPTIME_SPATIAL_TENDON_SITES
+        ](fill=-1)
+        self.sten_width = InlineArray[
+            Float64, MAX_COMPTIME_SPATIAL_TENDONS
+        ](fill=0.003)
+        self.sten_rgba_r = InlineArray[
+            Float64, MAX_COMPTIME_SPATIAL_TENDONS
+        ](fill=0.5)
+        self.sten_rgba_g = InlineArray[
+            Float64, MAX_COMPTIME_SPATIAL_TENDONS
+        ](fill=0.5)
+        self.sten_rgba_b = InlineArray[
+            Float64, MAX_COMPTIME_SPATIAL_TENDONS
+        ](fill=0.5)
 
         # Visual defaults (MuJoCo defaults)
         self.vis_znear = 0.01  # MuJoCo default
@@ -3653,6 +3704,11 @@ struct ComptimeRenderData(Copyable, Movable):
         self.tex_rgb2_b = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.5)
         self.tex_names = InlineArray[String, MAX_COMPTIME_TEXTURES](fill=String(""))
         self.tex_files = InlineArray[String, MAX_COMPTIME_TEXTURES](fill=String(""))
+        self.tex_mark = InlineArray[Int, MAX_COMPTIME_TEXTURES](fill=0)
+        self.tex_markrgb_r = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=1.0)
+        self.tex_markrgb_g = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=1.0)
+        self.tex_markrgb_b = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=1.0)
+        self.tex_random = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.01)
         for i in range(MAX_COMPTIME_TEXTURES):
             self.tex_type[i] = copy.tex_type[i]
             self.tex_builtin[i] = copy.tex_builtin[i]
@@ -3664,6 +3720,11 @@ struct ComptimeRenderData(Copyable, Movable):
             self.tex_rgb2_b[i] = copy.tex_rgb2_b[i]
             self.tex_names[i] = copy.tex_names[i]
             self.tex_files[i] = copy.tex_files[i]
+            self.tex_mark[i] = copy.tex_mark[i]
+            self.tex_markrgb_r[i] = copy.tex_markrgb_r[i]
+            self.tex_markrgb_g[i] = copy.tex_markrgb_g[i]
+            self.tex_markrgb_b[i] = copy.tex_markrgb_b[i]
+            self.tex_random[i] = copy.tex_random[i]
 
         self.mat_rgba_r = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
         self.mat_rgba_g = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
@@ -3692,12 +3753,37 @@ struct ComptimeRenderData(Copyable, Movable):
         self.site_pos_y = InlineArray[Float64, 16](fill=0.0)
         self.site_pos_z = InlineArray[Float64, 16](fill=0.0)
         self.site_size_0 = InlineArray[Float64, 16](fill=0.005)
+        self.nsten = copy.nsten
+        self.sten_nsite = InlineArray[Int, MAX_COMPTIME_SPATIAL_TENDONS](fill=0)
+        self.sten_sites = InlineArray[
+            Int, MAX_COMPTIME_SPATIAL_TENDON_SITES
+        ](fill=-1)
+        self.sten_width = InlineArray[
+            Float64, MAX_COMPTIME_SPATIAL_TENDONS
+        ](fill=0.003)
+        self.sten_rgba_r = InlineArray[
+            Float64, MAX_COMPTIME_SPATIAL_TENDONS
+        ](fill=0.5)
+        self.sten_rgba_g = InlineArray[
+            Float64, MAX_COMPTIME_SPATIAL_TENDONS
+        ](fill=0.5)
+        self.sten_rgba_b = InlineArray[
+            Float64, MAX_COMPTIME_SPATIAL_TENDONS
+        ](fill=0.5)
         for i in range(16):
             self.site_body_id[i] = copy.site_body_id[i]
             self.site_pos_x[i] = copy.site_pos_x[i]
             self.site_pos_y[i] = copy.site_pos_y[i]
             self.site_pos_z[i] = copy.site_pos_z[i]
             self.site_size_0[i] = copy.site_size_0[i]
+        for i in range(MAX_COMPTIME_SPATIAL_TENDONS):
+            self.sten_nsite[i] = copy.sten_nsite[i]
+            self.sten_width[i] = copy.sten_width[i]
+            self.sten_rgba_r[i] = copy.sten_rgba_r[i]
+            self.sten_rgba_g[i] = copy.sten_rgba_g[i]
+            self.sten_rgba_b[i] = copy.sten_rgba_b[i]
+        for i in range(MAX_COMPTIME_SPATIAL_TENDON_SITES):
+            self.sten_sites[i] = copy.sten_sites[i]
 
         # Visual settings
         self.vis_znear = copy.vis_znear
@@ -3774,6 +3860,11 @@ struct ComptimeRenderData(Copyable, Movable):
         self.tex_rgb2_b = move.tex_rgb2_b^
         self.tex_names = move.tex_names^
         self.tex_files = move.tex_files^
+        self.tex_mark = move.tex_mark^
+        self.tex_markrgb_r = move.tex_markrgb_r^
+        self.tex_markrgb_g = move.tex_markrgb_g^
+        self.tex_markrgb_b = move.tex_markrgb_b^
+        self.tex_random = move.tex_random^
         self.mat_rgba_r = move.mat_rgba_r^
         self.mat_rgba_g = move.mat_rgba_g^
         self.mat_rgba_b = move.mat_rgba_b^
@@ -3789,6 +3880,13 @@ struct ComptimeRenderData(Copyable, Movable):
         self.site_pos_y = move.site_pos_y^
         self.site_pos_z = move.site_pos_z^
         self.site_size_0 = move.site_size_0^
+        self.nsten = move.nsten
+        self.sten_nsite = move.sten_nsite^
+        self.sten_sites = move.sten_sites^
+        self.sten_width = move.sten_width^
+        self.sten_rgba_r = move.sten_rgba_r^
+        self.sten_rgba_g = move.sten_rgba_g^
+        self.sten_rgba_b = move.sten_rgba_b^
 
         # Visual settings
         self.vis_znear = move.vis_znear
@@ -3896,6 +3994,19 @@ def _rcd_xyaxes_to_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     yx = zy * xz - zz * xy
     yy = zz * xx - zx * xz
     yz = zx * xy - zy * xx
+    # ⚠ THE VECTOR PART WAS NEGATED — this returned the CONJUGATE, i.e. the
+    # inverse rotation. The frame's axes are the COLUMNS of R, so
+    # R[i][j] = (axis_j)_i and therefore R[2][1] = y_z (`yz`), R[1][2] = z_y
+    # (`zy`); the standard qx = (R[2][1] - R[1][2]) is `yz - zy`, and every
+    # branch here had the operands the other way round. Consistently so, which
+    # is why it produced a unit quaternion that looked plausible and simply
+    # rotated the wrong way.
+    #
+    # It stayed latent because the only caller was the camera `targetbody`
+    # branch, which no ported model takes. The moment `setup_cameras` started
+    # deriving look/up from the orientation for EVERY camera, it surfaced as
+    # cameras aimed 180 degrees away from the model — ball_in_cup's cam0 at
+    # (0,-1,.8) targeting (0,-1.89,.35), i.e. facing out of the scene.
     var trace = xx + yy + zz
     var qx: Float64
     var qy: Float64
@@ -3904,24 +4015,24 @@ def _rcd_xyaxes_to_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     if trace > 0.0:
         var s2 = _sqrt_f64(trace + 1.0) * 2.0
         qw = 0.25 * s2
-        qx = (zy - yz) / s2
-        qy = (xz - zx) / s2
-        qz = (yx - xy) / s2
+        qx = (yz - zy) / s2
+        qy = (zx - xz) / s2
+        qz = (xy - yx) / s2
     elif xx > yy and xx > zz:
         var s2 = _sqrt_f64(1.0 + xx - yy - zz) * 2.0
-        qw = (zy - yz) / s2
+        qw = (yz - zy) / s2
         qx = 0.25 * s2
         qy = (xy + yx) / s2
         qz = (xz + zx) / s2
     elif yy > zz:
         var s2 = _sqrt_f64(1.0 + yy - xx - zz) * 2.0
-        qw = (xz - zx) / s2
+        qw = (zx - xz) / s2
         qx = (xy + yx) / s2
         qy = 0.25 * s2
         qz = (yz + zy) / s2
     else:
         var s2 = _sqrt_f64(1.0 + zz - xx - yy) * 2.0
-        qw = (yx - xy) / s2
+        qw = (xy - yx) / s2
         qx = (xz + zx) / s2
         qy = (yz + zy) / s2
         qz = 0.25 * s2
@@ -3978,6 +4089,45 @@ def _rcd_cam_mode_from_str(s: String) -> Int:
         return 3
     elif t == "targetbodycom":
         return 4
+    return 0
+
+
+def _rcd_find_site_index_by_name(worldbody: String, name: String) -> Int:
+    """Ordinal of the `<site name="...">` matching `name`, or -1.
+
+    ⚠ SCANS ON DEMAND rather than keeping a name table. Two earlier shapes of
+    this both tripped the comptime interpreter with "interpreting memcpy can't
+    get dst memory": an `InlineArray[String, 16]` field on
+    `ComptimeRenderData`, and the same array as a parse-local filled for EVERY
+    site. This runs only for the handful of `site="..."` references a
+    `<spatial>` tendon actually makes — two, for ball_in_cup — so models
+    without tendons pay nothing at all.
+    """
+    var pos = 0
+    var idx = 0
+    while True:
+        var t = worldbody.find("<site", pos)
+        if t == -1:
+            return -1
+        var tag_end = worldbody.find(">", t)
+        if tag_end == -1:
+            return -1
+        var tag = String(worldbody[byte = t : tag_end + 1])
+        if _trim(_extract_attr(tag, "name")) == name:
+            return idx
+        idx += 1
+        pos = tag_end + 1
+
+
+def _rcd_tex_mark_from_str(s: String) -> Int:
+    """MuJoCo `mark` -> 0 none, 1 edge, 2 cross, 3 random (mjtMark order)."""
+    var t = _trim(s)
+    if t == "edge":
+        return 1
+    elif t == "cross":
+        return 2
+    elif t == "random":
+        return 3
     return 0
 
 
@@ -4098,6 +4248,18 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
         var tex_file_s = _extract_attr(tag, "file")
         if tex_file_s.byte_length() > 0:
             data.tex_files[tex_count] = tex_file_s
+        data.tex_mark[tex_count] = _rcd_tex_mark_from_str(
+            _extract_attr(tag, "mark")
+        )
+        var markrgb_s = _extract_attr(tag, "markrgb")
+        if markrgb_s.byte_length() > 0:
+            var mc = _rcd_parse_rgb3(markrgb_s)
+            data.tex_markrgb_r[tex_count] = mc[0]
+            data.tex_markrgb_g[tex_count] = mc[1]
+            data.tex_markrgb_b[tex_count] = mc[2]
+        var rand_s = _extract_attr(tag, "random")
+        if rand_s.byte_length() > 0:
+            data.tex_random[tex_count] = _parse_float(rand_s)
         tex_count += 1
         tex_pos = tag_end + 1
     data.ntex = tex_count
@@ -4562,6 +4724,62 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
     data.nlight = light_count
     data.ncam = cam_count
     data.nsite = site_count
+
+    # ---- Parse <tendon>: <spatial> polylines, for DRAWING only ---------------
+    # The physics gets its tendons from the runtime parser. This records the
+    # site chain so the renderer can draw the segments — without it
+    # ball_in_cup's string simply is not there, which is how it was reported.
+    var tendon_sec = _extract_section(xml_clean, "tendon")
+    var sten_pos = 0
+    var sten_count = 0
+    var sten_site_cursor = 0
+    while sten_count < MAX_COMPTIME_SPATIAL_TENDONS:
+        var sp = tendon_sec.find("<spatial", sten_pos)
+        if sp == -1:
+            break
+        var sp_close = tendon_sec.find("</spatial", sp)
+        if sp_close == -1:
+            break
+        var sp_head_end = tendon_sec.find(">", sp)
+        if sp_head_end == -1:
+            break
+        var head = String(tendon_sec[byte = sp : sp_head_end + 1])
+        var w_s = _extract_attr(head, "width")
+        if w_s.byte_length() > 0:
+            data.sten_width[sten_count] = _parse_float(w_s)
+        var trgba_s = _extract_attr(head, "rgba")
+        if trgba_s.byte_length() > 0:
+            var tc = _rcd_parse_rgba4(trgba_s)
+            data.sten_rgba_r[sten_count] = tc[0]
+            data.sten_rgba_g[sten_count] = tc[1]
+            data.sten_rgba_b[sten_count] = tc[2]
+        # Site chain, in document order — that order IS the routing.
+        var body = String(tendon_sec[byte = sp_head_end + 1 : sp_close])
+        var child_pos = 0
+        var n_in_this = 0
+        while True:
+            var cs = body.find("<site", child_pos)
+            if cs == -1:
+                break
+            var cs_end = body.find(">", cs)
+            if cs_end == -1:
+                break
+            var ctag = String(body[byte = cs : cs_end + 1])
+            var sref = _trim(_extract_attr(ctag, "site"))
+            if (
+                sref.byte_length() > 0
+                and sten_site_cursor < MAX_COMPTIME_SPATIAL_TENDON_SITES
+            ):
+                data.sten_sites[sten_site_cursor] = (
+                    _rcd_find_site_index_by_name(worldbody, sref)
+                )
+                sten_site_cursor += 1
+                n_in_this += 1
+            child_pos = cs_end + 1
+        data.sten_nsite[sten_count] = n_in_this
+        sten_count += 1
+        sten_pos = sp_close + 1
+    data.nsten = sten_count
 
     # ---- Parse <visual> section: map, quality, headlight ----------------------
     var visual_sec = _extract_section(xml_clean, "visual")

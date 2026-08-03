@@ -622,7 +622,20 @@ struct VertexOut {
 struct SkyboxUniforms {
     float4 top_color;     // Gradient top color (rgb + alpha)
     float4 bottom_color;  // Gradient bottom color (rgb + alpha)
+    float4 mark_color;    // Starfield rgb, .w = density (0 disables)
+    float4 cam_right;     // Camera right basis, .w = tan(fovy/2)
+    float4 cam_up;        // Camera up basis,    .w = aspect
+    float4 cam_fwd;       // Camera forward basis
 };
+
+// Cheap 3D value hash. Stars must be a pure function of DIRECTION so they sit
+// still in the world while the camera moves; anything seeded by screen
+// position would slide across the sky and look like a camera bug.
+static inline float sky_hash(float3 p) {
+    p = fract(p * 0.3183099 + float3(0.71, 0.113, 0.419));
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
 
 fragment float4 skybox_fragment(
     VertexOut in [[stage_in]],
@@ -637,6 +650,38 @@ fragment float4 skybox_fragment(
     // horizon, the exact inverse of MuJoCo, where rgb1 is the top.
     float t = 1.0 - in.uv.y;
     float3 color = mix(sky.bottom_color.rgb, sky.top_color.rgb, t);
+
+    // MuJoCo's `mark="random"`: dots baked into the skybox texture, which over
+    // a dark gradient is a starfield. Rebuild the world-space view ray from
+    // the camera basis, then hash a coarse grid on the unit sphere so each
+    // cell holds at most one star and every star stays put in the world.
+    float density = sky.mark_color.w;
+    if (density > 0.0) {
+        float2 ndc = float2(in.uv.x, 1.0 - in.uv.y) * 2.0 - 1.0;
+        float tan_h = sky.cam_right.w;
+        float aspect = sky.cam_up.w;
+        float3 dir = normalize(
+            sky.cam_fwd.xyz
+            + sky.cam_right.xyz * (ndc.x * tan_h * aspect)
+            + sky.cam_up.xyz * (ndc.y * tan_h)
+        );
+        // 260 cells across the sphere's diameter: fine enough that stars read
+        // as points, coarse enough that neighbouring pixels share a cell and
+        // the dot has a body rather than aliasing to nothing.
+        float3 g = dir * 260.0;
+        float3 cell = floor(g);
+        if (sky_hash(cell) < density) {
+            float3 star = float3(sky_hash(cell + 11.3),
+                                 sky_hash(cell + 27.7),
+                                 sky_hash(cell + 43.1));
+            float d = length((g - cell) - star);
+            // Fade rather than cut, so a star does not pop as it crosses a
+            // pixel boundary.
+            float b = smoothstep(0.42, 0.0, d);
+            float mag = 0.35 + 0.65 * sky_hash(cell + 59.9);
+            color += sky.mark_color.rgb * (b * mag);
+        }
+    }
     return float4(color, 1.0);
 }
 """

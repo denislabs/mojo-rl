@@ -187,6 +187,15 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 bottom_g=Float32(skybox[4]),
                 bottom_b=Float32(skybox[5]),
             )
+            # `mark="random"` on the same texture — dm_control's night sky.
+            var mark = Self.MODEL_DEF.get_skybox_mark()
+            if len(mark) == 5 and Int(mark[0]) == 3:
+                self.renderer.set_skybox_stars(
+                    r=Float32(mark[1]),
+                    g=Float32(mark[2]),
+                    b=Float32(mark[3]),
+                    density=Float32(mark[4]),
+                )
 
         # Configure ground appearance from model textures/geom colors
         var checker = Self.MODEL_DEF.get_checker_colors()
@@ -372,6 +381,15 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 positions,
                 quaternions,
                 self.visual_radius_scale,
+            )
+        except:
+            pass
+
+        # Spatial tendons (ball_in_cup's string). Unconditional: models
+        # without any record zero of them and the call costs a loop bound.
+        try:
+            Self.MODEL_DEF.render_spatial_tendons(
+                self.renderer, positions, quaternions
             )
         except:
             pass

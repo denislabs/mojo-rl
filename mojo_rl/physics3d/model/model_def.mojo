@@ -231,6 +231,16 @@ trait ModelDefLike:
         ...
 
     @staticmethod
+    def render_spatial_tendons(
+        mut renderer: Renderer3D,
+        positions: List[_RVec3],
+        quaternions: List[_RQuat],
+    ) raises:
+        """Draw `<spatial>` tendons. Defaults to nothing, since most models
+        have none and a model definition predating this should still build."""
+        pass
+
+    @staticmethod
     def setup_lights() raises -> List[Light]:
         ...
 
@@ -245,6 +255,16 @@ trait ModelDefLike:
     @staticmethod
     def get_skybox_colors() -> List[Float64]:
         ...
+
+    @staticmethod
+    def get_skybox_mark() -> List[Float64]:
+        """[kind, r, g, b, density] for the skybox `mark`, or empty for none.
+
+        Defaults to empty so a model definition that predates the starfield
+        keeps compiling — the renderer treats an empty list, and any kind other
+        than 3 (`random`), as "no stars".
+        """
+        return List[Float64]()
 
     @staticmethod
     def get_checker_colors() -> List[Float64]:

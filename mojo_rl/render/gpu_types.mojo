@@ -164,19 +164,42 @@ struct ObjectUniforms(ImplicitlyCopyable, Movable):
 
 
 struct SkyboxUniforms(ImplicitlyCopyable, Movable):
-    """Skybox uniforms: 32 bytes.
+    """Skybox uniforms: 96 bytes.
 
     Layout (std140):
       top_color: vec4 (16 bytes) - gradient top color
       bottom_color: vec4 (16 bytes) - gradient bottom color
+      mark_color: vec4 (16 bytes) - starfield rgb + density in .w (0 = off)
+      cam_right: vec4 (16 bytes) - camera right basis, .w = tan(fovy/2)
+      cam_up: vec4 (16 bytes) - camera up basis, .w = aspect
+      cam_fwd: vec4 (16 bytes) - camera forward basis, .w unused
+
+    ⚠ THE CAMERA BASIS IS HERE FOR THE STARS, AND ONLY FOR THEM. The gradient
+    needs nothing but a screen-space y, but stars have to be fixed to the WORLD
+    or they swim across the sky as the camera turns — which reads as a bug in
+    the camera, not in the sky. Three basis vectors plus tan(fovy/2) and the
+    aspect are enough for the fragment to rebuild the view ray per pixel, and
+    are cheaper than shipping and inverting a view-projection matrix.
+
+    ⚠ MUST MATCH `SkyboxUniforms` in gpu_shaders.mojo field for field. Metal
+    reads this buffer positionally; a field added on one side only is not a
+    compile error anywhere, it is garbage in the shader.
     """
 
     var top_color: InlineArray[Float32, 4]
     var bottom_color: InlineArray[Float32, 4]
+    var mark_color: InlineArray[Float32, 4]
+    var cam_right: InlineArray[Float32, 4]
+    var cam_up: InlineArray[Float32, 4]
+    var cam_fwd: InlineArray[Float32, 4]
 
     def __init__(out self):
         self.top_color = InlineArray[Float32, 4](fill=Float32(0))
         self.bottom_color = InlineArray[Float32, 4](fill=Float32(0))
+        self.mark_color = InlineArray[Float32, 4](fill=Float32(0))
+        self.cam_right = InlineArray[Float32, 4](fill=Float32(0))
+        self.cam_up = InlineArray[Float32, 4](fill=Float32(0))
+        self.cam_fwd = InlineArray[Float32, 4](fill=Float32(0))
         # Default: white top, dark blue bottom
         self.top_color[0] = 0.8
         self.top_color[1] = 0.85
@@ -190,10 +213,18 @@ struct SkyboxUniforms(ImplicitlyCopyable, Movable):
     def __init__(out self, *, copy: Self):
         self.top_color = copy.top_color.copy()
         self.bottom_color = copy.bottom_color.copy()
+        self.mark_color = copy.mark_color.copy()
+        self.cam_right = copy.cam_right.copy()
+        self.cam_up = copy.cam_up.copy()
+        self.cam_fwd = copy.cam_fwd.copy()
 
     def __init__(out self, *, deinit move: Self):
         self.top_color = move.top_color^
         self.bottom_color = move.bottom_color^
+        self.mark_color = move.mark_color^
+        self.cam_right = move.cam_right^
+        self.cam_up = move.cam_up^
+        self.cam_fwd = move.cam_fwd^
 
 
 struct LineUniforms(ImplicitlyCopyable, Movable):
