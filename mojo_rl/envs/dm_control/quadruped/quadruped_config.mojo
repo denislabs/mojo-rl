@@ -88,6 +88,92 @@ def _upright_reward(zz: Float64) -> Float64:
     return tolerance[SIGMOID_LINEAR, 0.0](zz, 1.0, inf[DType.float64](), 2.0)
 
 
+@always_inline
+def _common_obs_cpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    MAX_CONTACTS: Int,
+    NSITE: Int,
+    TORSO_SITE: Int,
+    TOE_SITE_0_P: Int,
+](
+    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    m_bodies: List[Scalar[DTYPE]],
+    m_joints: List[Scalar[DTYPE]],
+    m_geoms: List[Scalar[DTYPE]],
+    m_sites: List[Scalar[DTYPE]],
+    act: List[Scalar[DTYPE]],
+    mut obs: List[Scalar[DTYPE]],
+) -> Bool:
+    """`_common_observations` — the five blocks, in order, 78 numbers.
+
+    ⚠ THE SITE INDICES ARE PARAMETERS, not the module constants, because
+    `fetch` declares a `target` site ahead of the torso body and every site id
+    shifts by one. Hardcoding walk/run's ids here would leave fetch reading the
+    velocimeter off the wrong site — finite, plausible, and wrong.
+    """
+    try:
+        # --- egocentric_state: hinge qpos, hinge qvel, act -----------------
+        for k in range(N_HINGE):
+            obs.append(d.qpos.data[HINGE_QPOS_0 + k])
+        for k in range(N_HINGE):
+            obs.append(d.qvel.data[HINGE_DOF_0 + k])
+        for k in range(len(act)):
+            obs.append(act[k])
+
+        # --- torso_velocity: the velocimeter at the torso site -------------
+        var fv = site_frame_velocity[DTYPE](
+            d.xvel.data, d.xangvel.data, d.xipos.data, d.xquat.data,
+            d.site_xpos.data, m_sites, TORSO_BODY_IDX, TORSO_SITE,
+        )
+        obs.append(Scalar[DTYPE](fv[0]))
+        obs.append(Scalar[DTYPE](fv[1]))
+        obs.append(Scalar[DTYPE](fv[2]))
+
+        # --- torso_upright: xmat['torso', 'zz'] ----------------------------
+        obs.append(Scalar[DTYPE](xmat_elem(d, TORSO_BODY_IDX, XMAT_ZZ)))
+
+        # --- imu: accelerometer THEN gyro (sensor-id order) ----------------
+        var acc = site_accelerometer[DTYPE](
+            d.cvel.data, d.cacc.data, d.subtree_com.data,
+            d.site_xpos.data, d.xquat.data, m_bodies, m_sites,
+            TORSO_BODY_IDX, TORSO_SITE,
+        )
+        obs.append(Scalar[DTYPE](acc[0]))
+        obs.append(Scalar[DTYPE](acc[1]))
+        obs.append(Scalar[DTYPE](acc[2]))
+        obs.append(Scalar[DTYPE](fv[3]))
+        obs.append(Scalar[DTYPE](fv[4]))
+        obs.append(Scalar[DTYPE](fv[5]))
+
+        # --- force_torque: arcsinh(all four forces, then all four torques)
+        #     — two passes over the toes, not one interleaved.
+        var fx = InlineArray[Float64, 12](fill=0.0)
+        var tx = InlineArray[Float64, 12](fill=0.0)
+        for t in range(4):
+            var ftt = site_force_torque[DTYPE](
+                d.cfrc_int.data, d.subtree_com.data, d.site_xpos.data,
+                d.xquat.data, m_bodies, m_sites,
+                TOE_BODY_0 + t * TOE_BODY_STRIDE, TOE_SITE_0_P + t,
+            )
+            # Tuple subscripts need a comptime index; unpack once.
+            fx[t * 3 + 0] = ftt[0]
+            fx[t * 3 + 1] = ftt[1]
+            fx[t * 3 + 2] = ftt[2]
+            tx[t * 3 + 0] = ftt[3]
+            tx[t * 3 + 1] = ftt[4]
+            tx[t * 3 + 2] = ftt[5]
+        for k in range(12):
+            obs.append(Scalar[DTYPE](_asinh(fx[k])))
+        for k in range(12):
+            obs.append(Scalar[DTYPE](_asinh(tx[k])))
+    except:
+        return False
+    return True
+
+
 struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
     """`Move`, for both walk (0.5) and run (5.0)."""
 
@@ -181,68 +267,10 @@ struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """`_common_observations` — the five blocks, in order."""
-        try:
-            # --- egocentric_state: hinge qpos, hinge qvel, act -------------
-            for k in range(N_HINGE):
-                obs.append(d.qpos.data[HINGE_QPOS_0 + k])
-            for k in range(N_HINGE):
-                obs.append(d.qvel.data[HINGE_DOF_0 + k])
-            for k in range(len(act)):
-                obs.append(act[k])
-
-            # --- torso_velocity: the velocimeter at the torso site ---------
-            var fv = site_frame_velocity[DTYPE](
-                d.xvel.data, d.xangvel.data, d.xipos.data, d.xquat.data,
-                d.site_xpos.data, m_sites, TORSO_BODY_IDX, TORSO_SITE_IDX,
-            )
-            obs.append(Scalar[DTYPE](fv[0]))
-            obs.append(Scalar[DTYPE](fv[1]))
-            obs.append(Scalar[DTYPE](fv[2]))
-
-            # --- torso_upright: xmat['torso', 'zz'] ------------------------
-            obs.append(
-                Scalar[DTYPE](
-                    xmat_elem(d, TORSO_BODY_IDX, XMAT_ZZ)
-                )
-            )
-
-            # --- imu: accelerometer THEN gyro (sensor-id order) ------------
-            var acc = site_accelerometer[DTYPE](
-                d.cvel.data, d.cacc.data, d.subtree_com.data,
-                d.site_xpos.data, d.xquat.data, m_bodies, m_sites,
-                TORSO_BODY_IDX, TORSO_SITE_IDX,
-            )
-            obs.append(Scalar[DTYPE](acc[0]))
-            obs.append(Scalar[DTYPE](acc[1]))
-            obs.append(Scalar[DTYPE](acc[2]))
-            obs.append(Scalar[DTYPE](fv[3]))
-            obs.append(Scalar[DTYPE](fv[4]))
-            obs.append(Scalar[DTYPE](fv[5]))
-
-            # --- force_torque: arcsinh(all four forces, then all four
-            #     torques) — two passes over the toes, not one interleaved.
-            var fx = InlineArray[Float64, 12](fill=0.0)
-            var tx = InlineArray[Float64, 12](fill=0.0)
-            for t in range(4):
-                var ftt = site_force_torque[DTYPE](
-                    d.cfrc_int.data, d.subtree_com.data, d.site_xpos.data,
-                    d.xquat.data, m_bodies, m_sites,
-                    TOE_BODY_0 + t * TOE_BODY_STRIDE, TOE_SITE_0 + t,
-                )
-                # Tuple subscripts need a comptime index; unpack once.
-                fx[t * 3 + 0] = ftt[0]
-                fx[t * 3 + 1] = ftt[1]
-                fx[t * 3 + 2] = ftt[2]
-                tx[t * 3 + 0] = ftt[3]
-                tx[t * 3 + 1] = ftt[4]
-                tx[t * 3 + 2] = ftt[5]
-            for k in range(12):
-                obs.append(Scalar[DTYPE](_asinh(fx[k])))
-            for k in range(12):
-                obs.append(Scalar[DTYPE](_asinh(tx[k])))
-        except:
-            return False
-        return True
+        return _common_obs_cpu[
+            DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE,
+            TORSO_SITE_IDX, TOE_SITE_0,
+        ](d, m_bodies, m_joints, m_geoms, m_sites, act, obs)
 
     @staticmethod
     def compute_reward_and_done_cpu[

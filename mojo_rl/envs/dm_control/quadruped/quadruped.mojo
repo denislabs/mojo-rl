@@ -16,11 +16,18 @@ dyntype="filter">` servos are integrated through it. A batched quadruped
 would run with a permanently zero activation — every actuator dead — so the
 alias is deliberately not offered.
 
-`escape` and `fetch` stay descoped (heightfield terrain, rangefinders, ball).
+`escape` stays descoped — it needs heightfield terrain and rangefinders,
+neither of which the engine has. `fetch` is IN, and brought two engine
+prerequisites with it: oriented planes (its four walls are tilted planes) and
+condim>=4 friction rows (its ball is the only condim-6 geom in the tree, and
+the pyramidal edge builder silently dropped those rows until 004fe439).
 """
 
-from .quadruped_xml import DMQuadrupedWalkModel, DMQuadrupedRunModel
+from .quadruped_xml import (
+    DMQuadrupedWalkModel, DMQuadrupedRunModel, DMQuadrupedFetchModel,
+)
 from .quadruped_config import DMQuadrupedWalkConfig, DMQuadrupedRunConfig
+from .quadruped_fetch_config import DMQuadrupedFetchConfig
 from ...phyics3d_env import Phyics3dEnv
 
 
@@ -32,4 +39,8 @@ comptime DMQuadrupedWalk[DTYPE: DType = DType.float64] = Phyics3dEnv[
 
 comptime DMQuadrupedRun[DTYPE: DType = DType.float64] = Phyics3dEnv[
     DMQuadrupedRunModel, DMQuadrupedRunConfig, DTYPE, False
+]
+
+comptime DMQuadrupedFetch[DTYPE: DType = DType.float64] = Phyics3dEnv[
+    DMQuadrupedFetchModel, DMQuadrupedFetchConfig, DTYPE, False
 ]

@@ -379,6 +379,77 @@ comptime dm_quadruped_run_xml = merge_mjcf(
     dm_skybox_xml, dm_visual_xml, dm_materials_xml, _quadruped_run_body
 )
 
+# --- fetch: the arena the other two tasks strip out -------------------------
+# `make_model(walls_and_ball=True)` keeps four WALLS, the ball and the target
+# site; walk/run call `make_model(floor_size=...)` with the default
+# `walls_and_ball=False`, which deletes all three. fetch passes NO floor_size,
+# so the floor keeps quadruped.xml's own `15 15 .5` rather than the
+# `_DEFAULT_TIME_LIMIT * speed` the other two compute.
+#
+# ⚠ THE WALLS ARE TILTED PLANES, not boxes — `class="wall"` resolves to
+# `<geom type="plane" material="decoration"/>` and each carries a `zaxis` that
+# leans it inward by 45 degrees. They are the reason the oriented-plane work
+# had to land first: a plane whose normal is not +z used to be treated as
+# though it were, so the ball would have passed straight through all four.
+#
+# ⚠ THE TARGET SITE IS DECLARED BEFORE THE TORSO BODY, so it takes site id 0
+# and shifts EVERY other site index by one relative to walk/run. Constants
+# below are re-derived for this model rather than reused.
+comptime _QUADRUPED_FETCH_ARENA = """    <geom name="floor" type="plane" size="15 15 .5" material="grid"/>
+    <geom name="wall_px" class="wall" pos="-15.7 0 .7" zaxis="1 0 1"  size="1 15 .5"/>
+    <geom name="wall_py" class="wall" pos="0 -15.7 .7" zaxis="0 1 1"  size="15 1 .5"/>
+    <geom name="wall_nx" class="wall" pos="15.7 0 .7" zaxis="-1 0 1"  size="1 15 .5"/>
+    <geom name="wall_ny" class="wall" pos="0 15.7 .7" zaxis="0 -1 1"  size="15 1 .5"/>
+    <site name="target" type="cylinder" size=".4 .06" pos="0 0 .05" material="target"/>
+"""
+
+# The ball rides in as its own fragment so it lands LAST in the accumulated
+# <worldbody> — which is where quadruped.xml declares it, after the torso body
+# closes. That makes it the last body, and `ball_root` the last joint, so its
+# qpos/qvel occupy the tail of the state vector and nothing above them moves.
+#
+# ⚠ `condim="6"` HERE IS THE WHOLE REASON THE PYRAMIDAL EDGE BUILDER HAD TO BE
+# GENERALISED. Until 004fe439 the torsional and rolling rows were built into a
+# workspace the solver never read, and this ball would have spun and rolled
+# without resistance while every other model in the tree stayed exact. See
+# tests/physics3d/test_rolling_friction_vs_mujoco.mojo.
+#
+# ⚠ `priority="1"` makes the ball's condim, friction AND solref win over the
+# floor's outright, rather than being mixed — including the DIRECT-form
+# `solref="-10000 -30"` (negative = stiffness/damping given literally).
+# ⚠ NO <asset> HERE. The ball texture and material are already in
+# `_QUADRUPED_HEAD` — `make_model` strips the ball BODY but leaves its asset
+# behind, so walk and run carry an unused ball material too. Re-declaring it
+# fails the compile outright ("repeated name 'ball' in texture"), which is the
+# friendly version of this mistake.
+comptime _QUADRUPED_FETCH_BALL = """
+<mujoco>
+  <worldbody>
+    <body name="ball" pos="0 0 3">
+      <freejoint name="ball_root"/>
+      <geom name="ball" size=".15" material="ball" priority="1" condim="6" friction=".7 .005 .005"
+            solref="-10000 -30"/>
+      <light name="ball_light" pos="0 0 4" mode="trackcom"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+comptime _quadruped_fetch_body = (
+    _QUADRUPED_HEAD + _QUADRUPED_FETCH_ARENA + _QUADRUPED_TAIL
+)
+
+comptime dm_quadruped_fetch_xml = merge_mjcf(
+    dm_skybox_xml,
+    dm_visual_xml,
+    dm_materials_xml,
+    _quadruped_fetch_body,
+    _QUADRUPED_FETCH_BALL,
+)
+
+comptime qfp = parse_xml(dm_quadruped_fetch_xml)
+
+
 comptime qwp = parse_xml(dm_quadruped_walk_xml)
 comptime qrp = parse_xml(dm_quadruped_run_xml)
 
@@ -443,3 +514,47 @@ comptime TOE_SITE_0: Int = 25
 comptime N_HINGE: Int = 16
 comptime HINGE_QPOS_0: Int = 7
 comptime HINGE_DOF_0: Int = 6
+
+# --- fetch model + its own indices ------------------------------------------
+# obs = _common_observations (78) + ball_state (9) + target_position (3)
+comptime QUADRUPED_FETCH_OBS_DIM: Int = 90
+
+comptime DMQuadrupedFetchModel = ModelDefFromXML[
+    xml=dm_quadruped_fetch_xml,
+    nbody=qfp.NBODY, njoint=qfp.NJOINT, nq=qfp.NQ, nv=qfp.NV,
+    ngeom=qfp.NGEOM, nact=qfp.NACT, ntex=qfp.NTEX, nmat=qfp.NMAT,
+    nlight=qfp.NLIGHT, ncam=qfp.NCAM, nsite=qfp.NSITE,
+    max_tendon=qfp.NTENDON,
+    cone_type=ConeType.PYRAMIDAL,
+    # Four toes and the torso ellipsoid as in walk/run, plus the ball against
+    # the floor, the four walls, and any leg it is being nudged with.
+    max_contacts=24,
+    obs_dim_override=QUADRUPED_FETCH_OBS_DIM,
+    obs_qpos_skip=0,
+    timestep=qfp.TIMESTEP,
+    # ⚠ WITHOUT THIS THE BALL'S condim=6 IS SILENTLY DOWNGRADED to four
+    # pyramid edges and it spins and rolls unopposed. Derived by scanning the
+    # XML, never hand-written — passing the number by hand is the defect
+    # 004fe439 fixed, in a new dress.
+    max_condim=qfp.MAX_CONDIM,
+]
+
+# ⚠ SITE IDS ARE NOT walk/run's. `<site name="target">` is declared before the
+# torso body, so it takes id 0 and pushes every other site up by one. These are
+# read out of a compiled mjModel, not counted by hand.
+comptime FETCH_TARGET_SITE_IDX: Int = 0
+comptime FETCH_WORKSPACE_SITE_IDX: Int = 3
+comptime FETCH_TORSO_SITE_IDX: Int = 25
+comptime FETCH_TOE_SITE_0: Int = 26
+
+# The ball is the last body and `ball_root` the last joint, so the quadruped's
+# own qpos/qvel layout is untouched and only the tail is new.
+comptime FETCH_BALL_BODY_IDX: Int = 18
+comptime FETCH_BALL_QPOS_0: Int = 23
+comptime FETCH_BALL_DOF_0: Int = 22
+
+# Reward geometry, read from the compiled model rather than from the XML text.
+comptime FETCH_FLOOR_HALF: Float64 = 15.0
+comptime FETCH_WORKSPACE_RADIUS: Float64 = 0.3
+comptime FETCH_TARGET_RADIUS: Float64 = 0.4
+comptime FETCH_BALL_RADIUS: Float64 = 0.15
