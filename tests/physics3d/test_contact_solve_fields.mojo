@@ -50,11 +50,28 @@ comptime METADATA_SIZE_L = 4
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
+# ⚠ RE-RECORDED when the pyramidal edge builder stopped leaving a STALE
+# JACOBIAN on non-touching contacts. The builder's early-out zeroed only the
+# two slots named `ws_Jt1_idx`/`ws_Jt2_idx`, which alias pyramid edges 0 and 1;
+# edges 2 and 3 live further up the same region and kept the PREVIOUS step's
+# Jacobian, so a contact that had separated still pushed a row into the Newton
+# solve and still got a force written into its record.
+# The mechanism was isolated, not inferred: zeroing D and bias as well leaves
+# the fingerprint bit-identical (everything flows through Je), and zeroing only
+# edges 0-1 reproduces the old value exactly.
+# ⚠ THESE NUMBERS ARE NOT MuJoCo-ANCHORED. The originals were frozen from the
+# legacy Euler+PGS pipeline, which carried the same defect; the case for the
+# new values is that a geom which is not touching must contribute neither a
+# Jacobian nor a contact force. A MuJoCo-anchored Walker2D contact-FORCE gate
+# is still missing — every MuJoCo-anchored test in tests/physics3d passes
+# unchanged either way, which is exactly why this went unnoticed.
+# The contact-record fingerprint moves 1.5-1.7%; qpos/qvel/qacc move <2e-6,
+# i.e. the defect was almost entirely in the RECORD, not the dynamics.
 comptime GOLD_NCON = 12  # contacts per step (uniform across the 3 steps)
-comptime GOLD_QPOS = 14.316056500072591
-comptime GOLD_QVEL = -38.34850059449673
-comptime GOLD_QACC = -5676.545036315918
-comptime GOLD_CON = 413859.05552286515
+comptime GOLD_QPOS = 14.316056373878382
+comptime GOLD_QVEL = -38.348557934165
+comptime GOLD_QACC = -5676.547218322754
+comptime GOLD_CON = 420119.10779341473
 
 
 def _check(name: String, got: Float64, gold: Float64) raises:

@@ -58,6 +58,7 @@ struct ParsedModel:
     var NTENDON: Int  # number of <fixed> + <spatial> entries in <tendon>
     var ANGLE_DEG: Bool  # True when <compiler angle="degree"/>
     var TIMESTEP: Float64  # <option timestep="..."/>
+    var MAX_CONDIM: Int  # largest `condim=` anywhere in the file (>= 3)
 
     def __init__(
         out self,
@@ -77,6 +78,7 @@ struct ParsedModel:
         ntendon: Int = 0,
         angle_deg: Bool = False,
         timestep: Float64 = 0.01,
+        max_condim: Int = 3,
     ):
         self.NBODY = nbody
         self.NJOINT = njoint
@@ -94,6 +96,7 @@ struct ParsedModel:
         self.NTENDON = ntendon
         self.ANGLE_DEG = angle_deg
         self.TIMESTEP = timestep
+        self.MAX_CONDIM = max_condim
 
     def __str__(self) -> String:
         return (
@@ -2158,6 +2161,46 @@ def merge_mjcf(*xmls: String) -> String:
     return result
 
 
+def _scan_max_condim(xml: String) -> Int:
+    """Largest `condim=` in the file, floored at 3.
+
+    Sizes the PYRAMIDAL edge list, which needs `2*(dim-1)` rows per contact.
+    ⚠ THIS DELIBERATELY SCANS THE WHOLE FILE, `<default>` blocks included, and
+    does not try to work out which classes are actually used. Over-estimating
+    is SAFE — the builder zeroes the slots a contact does not need, so the only
+    cost is a few unused rows — while under-estimating is SILENT: the extra
+    friction rows get built into a workspace nothing reads, and the model spins
+    and rolls without resistance. A conservative bound is the whole point.
+
+    (Getting this wrong once already cost a full debugging arc: see
+    tests/physics3d/test_rolling_friction_vs_mujoco.mojo.)
+    """
+    var best = 3
+    var pos = 0
+    var needle = 'condim="'
+    var nlen = needle.byte_length()
+    while True:
+        var hit = xml.find(needle, pos)
+        if hit < 0:
+            break
+        var vs = hit + nlen
+        var ve = xml.find('"', vs)
+        if ve < 0:
+            break
+        var val = 0
+        var ok = ve > vs
+        for i in range(vs, ve):
+            var ch = Int(xml.as_bytes()[i])
+            if ch < ord("0") or ch > ord("9"):
+                ok = False
+                break
+            val = val * 10 + (ch - ord("0"))
+        if ok and val > best:
+            best = val
+        pos = ve + 1
+    return best
+
+
 def parse_xml(xml: String) -> ParsedModel:
     """Parse a MuJoCo XML string and return dimension counts.
 
@@ -2268,6 +2311,7 @@ def parse_xml(xml: String) -> ParsedModel:
         ntendon,
         angle_deg,
         timestep,
+        _scan_max_condim(xml),
     )
 
 

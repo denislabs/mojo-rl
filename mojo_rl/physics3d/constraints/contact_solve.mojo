@@ -716,6 +716,7 @@ def _precompute_contact_friction[
     BATCH: Int,
     SOLVER_WS: Int,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_CONDIM: Int = 3,
 ](
     env: Int,
     contact_tid: Int,
@@ -760,6 +761,12 @@ def _precompute_contact_friction[
     friction phase 3). The legacy pyramidal branch declared an unused
     M_inv offset, dropped here."""
     comptime MC = _max_one[MAX_CONTACTS]()
+    # Pyramid edges per contact: MuJoCo emits one OPPOSING PAIR per friction
+    # dimension (engine_core_constraint.c `make pyramidal friction cone`), so
+    # a condim-d contact owns 2*(d-1) rows — 4 at condim 3, 6 at 4, 10 at 6.
+    # Slots are sized for the model's WORST condim and the tail is zeroed per
+    # contact, because condim is per-geom-pair and only known at runtime.
+    comptime NE_PYR = 2 * (MAX_CONDIM - 1)
 
     # Common normal block offsets
     comptime ws_c_dist = 2 * MC
@@ -784,9 +791,21 @@ def _precompute_contact_friction[
         solver[env, ws_D_f_idx + c] = 0
         solver[env, ws_bt1_idx + c] = 0
         solver[env, ws_bt2_idx + c] = 0
-        for i in range(NV):
-            solver[env, ws_Jt1_idx + c * NV + i] = 0
-            solver[env, ws_Jt2_idx + c * NV + i] = 0
+        comptime if CONE_TYPE == ConeType.PYRAMIDAL:
+            # ⚠ ZERO EVERY EDGE, not just the two `ws_Jt1/Jt2` slots. Those
+            # two names alias pyramid edges 0 and 1; edges 2.. live further
+            # up the same region and would otherwise keep a previous step's
+            # Jacobian for a contact that is no longer touching.
+            var pyr_sc_z = ws_Jt1_idx + NE_PYR * MC * NV
+            for e in range(NE_PYR):
+                for i in range(NV):
+                    solver[env, ws_Jt1_idx + e * MC * NV + c * NV + i] = 0
+                solver[env, pyr_sc_z + e * MC + c] = 0
+                solver[env, pyr_sc_z + NE_PYR * MC + e * MC + c] = 0
+        else:
+            for i in range(NV):
+                solver[env, ws_Jt1_idx + c * NV + i] = 0
+                solver[env, ws_Jt2_idx + c * NV + i] = 0
         return
 
     var nx = rebind[Scalar[DTYPE]](solver[env, ws_c_nx + c])
@@ -855,14 +874,14 @@ def _precompute_contact_friction[
     comptime ws_J_n = 15 * MC
 
     comptime if CONE_TYPE == ConeType.PYRAMIDAL:
-        # === PYRAMIDAL: Build 4 edge Jacobians (J_n ± mu*J_t) ===
-        # Workspace layout (PYRAMIDAL scalar base = ws_Jt1_idx + 4*MC*NV):
-        #   Jacobians: 4 * MC * NV at ws_Jt1_idx
+        # === PYRAMIDAL: Build 2*(dim-1) edge Jacobians (J_n ± mu_k*J_k) ===
+        # Workspace layout (PYRAMIDAL scalar base = ws_Jt1_idx + NE*MC*NV):
+        #   Jacobians: NE * MC * NV at ws_Jt1_idx
         #   Scalars at PYR_SC:
-        #     [0*MC..4*MC)   D_edge[4*MC]
-        #     [4*MC..8*MC)   bias_edge[4*MC]
-        #     [8*MC..9*MC)   mu[MC]
-        var pyr_sc = ws_Jt1_idx + 4 * MC * NV
+        #     [0*MC..NE*MC)      D_edge[NE*MC]
+        #     [NE*MC..2*NE*MC)   bias_edge[NE*MC]
+        #     [2*NE*MC..+MC)     mu[MC]
+        var pyr_sc = ws_Jt1_idx + NE_PYR * MC * NV
 
         # Use imp and diag_n from normal precompute (already read above)
         var diag_edge = diag_n_c + mu_c * mu_c * diag_n_c
@@ -881,31 +900,100 @@ def _precompute_contact_friction[
         var pen = -rebind[Scalar[DTYPE]](solver[env, ws_c_dist + c])
 
         # Store mu
-        solver[env, pyr_sc + 8 * MC + c] = mu_c
+        solver[env, pyr_sc + 2 * NE_PYR * MC + c] = mu_c
 
-        # Build 4 edges
-        for edge in range(4):
+        # This contact's own condim decides how many of the NE_PYR slots are
+        # live; the rest are zeroed below so a condim-3 contact in a condim-6
+        # model contributes exactly its 4 edges.
+        var condim_c = Int(
+            rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_CONDIM])
+        )
+        if condim_c < 1:
+            condim_c = 3
+        if condim_c > MAX_CONDIM:
+            condim_c = MAX_CONDIM
+        var n_edge_c = 2 * (condim_c - 1)
+
+        # Friction direction k (k = 1..dim-1) pairs MuJoCo's `jac` row k with
+        # `con->friction[k-1]`:  k=1,2 -> the two SLIDE tangents (linear
+        # Jacobian along t1/t2); k=3 -> TORSION about the contact normal;
+        # k=4,5 -> ROLLING about t1/t2. Rows 3.. use the ANGULAR Jacobian,
+        # which is why they cannot reuse J_t1/J_t2.
+        var mu_spin_c = rebind[Scalar[DTYPE]](
+            contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN]
+        )
+        var mu_roll_c = rebind[Scalar[DTYPE]](
+            contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL]
+        )
+        var J_k = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+
+        # Build 2*(dim-1) edges: one opposing pair per friction dimension.
+        for edge in range(NE_PYR):
+            var ws_Je = ws_Jt1_idx + edge * MC * NV
+            if edge >= n_edge_c:
+                for i in range(NV):
+                    solver[env, ws_Je + c * NV + i] = 0
+                solver[env, pyr_sc + edge * MC + c] = 0
+                solver[env, pyr_sc + NE_PYR * MC + edge * MC + c] = 0
+                continue
+
             var sign = Scalar[DTYPE](1.0) if (edge % 2 == 0) else Scalar[
                 DTYPE
             ](-1.0)
-            # edge 0,1 use J_t1; edge 2,3 use J_t2
-            var ws_Je = ws_Jt1_idx + edge * MC * NV
+            var k = edge // 2  # 0 -> t1, 1 -> t2, 2 -> torsion, 3/4 -> roll
+            var mu_k = mu_c
+            if k == 2:
+                mu_k = mu_spin_c
+            elif k >= 3:
+                mu_k = mu_roll_c
+
+            if k == 0:
+                for i in range(NV):
+                    J_k[i] = J_t1[i]
+            elif k == 1:
+                for i in range(NV):
+                    J_k[i] = J_t2[i]
+            else:
+                # Angular row about n (k=2), t1 (k=3) or t2 (k=4).
+                var ax = nx
+                var ay = ny
+                var az = nz
+                if k == 3:
+                    ax = t1x
+                    ay = t1y
+                    az = t1z
+                elif k == 4:
+                    ax = t2x
+                    ay = t2y
+                    az = t2z
+                _angular_jacobian_row[
+                    DTYPE, NV, NBODY, NJOINT, V_SIZE, BATCH
+                ](
+                    env, joints, bodies, mmeta, cdof,
+                    body_a, body_b, ax, ay, az, J_k,
+                )
 
             var v_edge: Scalar[DTYPE] = 0
             for i in range(NV):
                 var jn_i = rebind[Scalar[DTYPE]](
                     solver[env, ws_J_n + c * NV + i]
                 )
-                var jt_i = J_t1[i] if edge < 2 else J_t2[i]
-                var je = jn_i + sign * mu_c * jt_i
+                var je = jn_i + sign * mu_k * J_k[i]
                 solver[env, ws_Je + c * NV + i] = je
                 v_edge += je * rebind[Scalar[DTYPE]](qvel[env, i])
 
-            # D_edge (same for all edges of this contact)
+            # ⚠ D_edge IS COMMON TO EVERY EDGE OF THE CONTACT, including the
+            # torsional and rolling ones. MuJoCo's pyramidal branch assigns a
+            # single `Rpy = 2*mu^2*R` to all 2*(dim-1) rows
+            # (engine_core_constraint.c:1899). The per-direction
+            # `R[j] = R[1]*friction[0]^2/friction[j]^2` rescaling right above
+            # it belongs to the ELLIPTIC branch — applying it here makes the
+            # spin row ~(mu_slide/mu_spin)^2 too soft, which for a ball at
+            # 0.7/0.05 is a factor of 196 and reads as "torsion does nothing".
             solver[env, pyr_sc + edge * MC + c] = D_edge_val
             # bias_edge = B*v_edge - K_spring*imp*pen
             var bias_e = B_damp * v_edge - K_spring * imp_n * pen
-            solver[env, pyr_sc + 4 * MC + edge * MC + c] = bias_e
+            solver[env, pyr_sc + NE_PYR * MC + edge * MC + c] = bias_e
 
     else:
         # === ELLIPTIC: Store separate J_t1, J_t2, D_n, D_f, mu, bias ===

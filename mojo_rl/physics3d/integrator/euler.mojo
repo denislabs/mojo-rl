@@ -389,6 +389,7 @@ struct EulerIntegrator[
     PARALLEL_GPU: Bool = False,
     CRBA_TREEWALK: Bool = False,
     RNE_POST: Bool = False,
+    MAX_CONDIM: Int = 3,
 ](Movable):
     """Owns its scratch; steps contact-free dynamics on either target. See
     module docstring for what is deliberately not yet ported.
@@ -597,6 +598,7 @@ struct EulerIntegrator[
                     Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
                     Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
                     Self.NMESH_VERTS, Self.CONE_TYPE, Self.BATCH,
+                    MAX_CONDIM=Self.MAX_CONDIM,
                 ](d, m, self.scratch, self.cscratch, ctx)
             else:
                 comptime if Self.SOLVER == "cg":

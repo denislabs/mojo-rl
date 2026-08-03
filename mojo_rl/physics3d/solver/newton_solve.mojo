@@ -386,6 +386,7 @@ def _newton_solve_env[
     CONE_TYPE: Int,
     BATCH: Int,
     SOLVER_WS: Int,
+    MAX_CONDIM: Int = 3,
 ](
     env: Int,
     qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
@@ -599,6 +600,7 @@ def _newton_solve_env[
             BATCH,
             SOLVER_WS,
             CONE_TYPE,
+            MAX_CONDIM,
         ](
             env,
             contact_tid,
@@ -636,7 +638,10 @@ def _newton_solve_env[
         # 4 edges per contact for condim=3: J_e = J_n ± mu*J_t
         # No cone coupling — simpler than ELLIPTIC
         # =================================================================
-        comptime NE = 4  # edges per contact
+        # Edges per contact = 2*(dim-1): 4 at condim 3, 6 at 4, 10 at 6.
+        # Slots are sized for the model's worst condim; the builder zeros the
+        # tail per contact, so a condim-3 contact here still spans 4 edges.
+        comptime NE = 2 * (MAX_CONDIM - 1)
         comptime MAX_LIM = _max_one[2 * NJOINT]()
         comptime MAX_FRIC = V_SIZE  # one friction row per dof
         comptime MAX_TLIM = 2 * NTENDON  # lo + hi per tendon
@@ -645,7 +650,7 @@ def _newton_solve_env[
         comptime ME = NE * MC + MAX_LIM + MAX_FRIC + MAX_TLIM + MAX_TEQ
 
         # Cache edge data from PYRAMIDAL workspace layout
-        var pyr_sc = ws_Jt1_idx + 4 * MC * NV
+        var pyr_sc = ws_Jt1_idx + NE * MC * NV
         var Je = InlineArray[Scalar[DTYPE], ME * V_SIZE](uninitialized=True)
         var De = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
         var bias_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
@@ -670,7 +675,7 @@ def _newton_solve_env[
                     solver[env, pyr_sc + e * MC + c]
                 )
                 bias_e[idx] = rebind[Scalar[DTYPE]](
-                    solver[env, pyr_sc + 4 * MC + e * MC + c]
+                    solver[env, pyr_sc + NE * MC + e * MC + c]
                 )
 
         # Detect and add joint limit edges (unified with contacts)
@@ -1168,7 +1173,7 @@ def _newton_solve_env[
             var ft1_c: Scalar[DTYPE] = 0
             var ft2_c: Scalar[DTYPE] = 0
             var mu_c = rebind[Scalar[DTYPE]](
-                solver[env, pyr_sc + 8 * MC + c]
+                solver[env, pyr_sc + 2 * NE * MC + c]
             )
             var safe_mu = mu_c
             if safe_mu < Scalar[DTYPE](1e-8):
@@ -2153,6 +2158,7 @@ def _newton_solve_fields_kernel[
     CONE_TYPE: Int,
     BATCH: Int,
     SOLVER_WS: Int,
+    MAX_CONDIM: Int = 3,
 ](
     qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
     qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
@@ -2224,6 +2230,7 @@ def _newton_solve_fields_kernel[
         CONE_TYPE,
         BATCH,
         SOLVER_WS,
+        MAX_CONDIM,
     ](
         env, qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
         bodies, mmeta, equality, tendons, sites, body_invweight0,
@@ -2247,6 +2254,7 @@ def solve_newton[
     NMESH_VERTS: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     BATCH: Int = 1,
+    MAX_CONDIM: Int = 3,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
@@ -2336,6 +2344,7 @@ def solve_newton[
                 CONE_TYPE,
                 BATCH,
                 SOLVER_WS,
+                MAX_CONDIM,
             ](
                 e, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, bw_v, dw_v,
@@ -2376,6 +2385,7 @@ def solve_newton[
                     CONE_TYPE,
                     BATCH,
                     SOLVER_WS,
+                    MAX_CONDIM,
                 ]
             ](
                 d.qpos.lt["gpu", L_QPOS](),
@@ -2432,6 +2442,7 @@ def _newton_blocked_fields_kernel[
     CONE_TYPE: Int,
     BATCH: Int,
     SOLVER_WS: Int,
+    MAX_CONDIM: Int = 3,
 ](
     qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
     qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
@@ -2520,7 +2531,7 @@ def _newton_blocked_fields_kernel[
     comptime ws_ft1_idx = CVS + 4 * MC
     comptime ws_ft2_idx = CVS + 5 * MC
     comptime ws_cstate_idx = CVS + 6 * MC
-    comptime pyr_sc = ws_Jt1_idx + 4 * MC * NV
+    comptime pyr_sc = ws_Jt1_idx + 2 * (MAX_CONDIM - 1) * MC * NV
 
     # === PARALLEL: Initialize common normal workspace (one thread/contact) ===
     if valid_env:
@@ -2621,7 +2632,7 @@ def _newton_blocked_fields_kernel[
     if valid_env and contact_tid < nc:
         _precompute_contact_friction[
             DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, BATCH, SOLVER_WS,
-            CONE_TYPE,
+            CONE_TYPE, MAX_CONDIM,
         ](
             env, contact_tid, nc, qvel, subtree_com, contacts, joints, bodies,
             mmeta, cdof, solver, B_damp, impratio, K_spring, ws_Jt1_idx,
@@ -2637,7 +2648,8 @@ def _newton_blocked_fields_kernel[
     comptime PRIMAL_MINVAL_GPU: Float64 = 1e-12
 
     # PYRAMIDAL-only blocked solver. (Non-PYRAMIDAL never routes here.)
-    comptime NE = 4  # edges per contact
+    # 2*(dim-1) edges per contact; see the per-env path for the layout note.
+    comptime NE = 2 * (MAX_CONDIM - 1)
     comptime MAX_LIM = _max_one[2 * NJOINT]()
     comptime MAX_FRIC = V_SIZE  # one dry-friction row per dof
     comptime MAX_TLIM = 2 * NTENDON  # lo + hi per tendon
@@ -2758,7 +2770,7 @@ def _newton_blocked_fields_kernel[
                     solver[env, pyr_sc + e * MC + c]
                 )
                 bias_e_sh[idx] = rebind[Scalar[DTYPE]](
-                    solver[env, pyr_sc + 4 * MC + e * MC + c]
+                    solver[env, pyr_sc + NE * MC + e * MC + c]
                 )
 
     barrier()
@@ -3418,7 +3430,7 @@ def _newton_blocked_fields_kernel[
         var fn_c: Scalar[DTYPE] = 0
         var ft1_c: Scalar[DTYPE] = 0
         var ft2_c: Scalar[DTYPE] = 0
-        var mu_c = rebind[Scalar[DTYPE]](solver[env, pyr_sc + 8 * MC + c])
+        var mu_c = rebind[Scalar[DTYPE]](solver[env, pyr_sc + 2 * NE * MC + c])
         var safe_mu = mu_c
         if safe_mu < Scalar[DTYPE](1e-8):
             safe_mu = Scalar[DTYPE](1e-8)
@@ -3484,6 +3496,7 @@ def solve_newton_blocked[
     NMESH_VERTS: Int = 0,
     CONE_TYPE: Int = ConeType.PYRAMIDAL,
     BATCH: Int = 1,
+    MAX_CONDIM: Int = 3,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
@@ -3558,6 +3571,7 @@ def solve_newton_blocked[
             _newton_solve_env[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
                 NTENDON, NSITE, CONE_TYPE, BATCH, SOLVER_WS,
+ MAX_CONDIM,
             ](
                 e, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, bw_v, dw_v,
@@ -3569,6 +3583,7 @@ def solve_newton_blocked[
             _newton_blocked_fields_kernel[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
                 NTENDON, NSITE, CONE_TYPE, BATCH, SOLVER_WS,
+ MAX_CONDIM,
             ]
         ](
             d.qpos.lt["gpu", L_QPOS](),

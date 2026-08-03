@@ -110,6 +110,7 @@ struct ModelDefFromXML[
     action_dim_override: Int = -1,
     timestep: Float64 = 0.01,
     allow_unsupported_actuators: Bool = False,
+    max_condim: Int = 3,
 ](ModelDefLike):
     """ModelDefLike implementation driven entirely from an embedded MJCF XML string.
 
@@ -137,6 +138,9 @@ struct ModelDefFromXML[
         max_contacts:  Maximum contacts per step (default 50).
         max_equality:  Maximum equality constraints (default 0).
         cone_type:     Friction cone type (default ELLIPTIC).
+        max_condim:    Largest condim over the model's geoms; pass
+                       `parse_xml(xml).MAX_CONDIM`. Over-estimating only
+                       costs unused rows, under-estimating is silent.
         max_tendon:    Maximum fixed tendons (default 0).
         nsite:   Total site count (default 0).
         neq:           Number of equality constraints (default 0).
@@ -166,6 +170,11 @@ struct ModelDefFromXML[
     comptime NGEOM: Int = Self.ngeom
     comptime MAX_EQUALITY: Int = Self.max_equality
     comptime CONE_TYPE: Int = Self.cone_type
+    # Largest condim in the model — sizes the PYRAMIDAL edge list at
+    # 2*(MAX_CONDIM-1) rows per contact. Pass `parse_xml(xml).MAX_CONDIM`;
+    # leaving it at 3 on a model with condim 4/6 geoms builds the torsional
+    # and rolling rows into a workspace the solver never reads.
+    comptime MAX_CONDIM: Int = Self.max_condim
     comptime MAX_CONTACTS: Int = Self.max_contacts
     comptime MAX_TENDON: Int = Self.max_tendon
     comptime NSITE: Int = Self.nsite
