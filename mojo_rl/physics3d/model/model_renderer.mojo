@@ -460,6 +460,10 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         """Replace the application-owned HUD lines."""
         self.hud_extra = lines.copy()
 
+    def set_ui_sidebar_width(mut self, w: Int):
+        """Reserve `w` px on the left for UI; the scene renders to the rest."""
+        self.renderer.set_ui_sidebar_width(w)
+
     def set_ui(mut self, rects: List[UIRect], texts: List[UIText]):
         """Replace the deferred UI command list for the next frame."""
         self.ui_rects = rects.copy()
@@ -481,7 +485,11 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     def _draw_hud(mut self):
         """Draw MuJoCo-style HUD: controls help, camera name, step counter, pause indicator.
         """
-        var x0 = Float32(12)
+        # ⚠ START AFTER THE RESERVED STRIP. The engine HUD belongs over the
+        # SCENE, not under the application's sidebar: panels are drawn
+        # semi-transparent, so a HUD at x=12 ghosts through a sidebar rather
+        # than being hidden by it.
+        var x0 = Float32(self.renderer.ui_sidebar_width + 12)
         var y = Float32(12)
         var s = 2  # 2× scale → 16×16 px per char
 

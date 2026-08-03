@@ -611,6 +611,12 @@ struct Phyics3dEnv[
             return 0
         return self._renderer.value()[].mouse_y()
 
+    def set_ui_sidebar_width(mut self, w: Int) -> None:
+        """Reserve `w` px on the left of the window for screen-space UI."""
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].set_ui_sidebar_width(w)
+
     def set_ui(
         mut self, rects: List[UIRect], texts: List[UIText]
     ) -> None:

@@ -75,6 +75,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv, Phyics3dEnvConfig
 from mojo_rl.physics3d.model import ModelDefLike
+from mojo_rl.render.types import Color
 from mojo_rl.render.ui import UI, UI_ROW_H_SMALL
 
 from mojo_rl.envs.dm_control.acrobot.acrobot_xml import DMAcrobotModel
@@ -286,24 +287,6 @@ def _fmt2(v: Float64) -> String:
     return String(whole) + "." + f
 
 
-def _hud(
-    name: String, drive: Int, scale: Float64, step: Int, episode: Int,
-    ep_return: Float64,
-) -> List[String]:
-    var out = List[String]()
-    out.append(String("task  ") + name)
-    out.append(
-        String("[D] drive ") + _drive_name(drive)
-        + String("   [ ] scale ") + _fmt2(scale)
-    )
-    out.append(String("[N] reset   [0] zero"))
-    out.append(
-        String("ep ") + String(episode) + String("  step ") + String(step)
-        + String("  return ") + _fmt2(ep_return)
-    )
-    return out^
-
-
 def _view[
     MODEL: ModelDefLike, CONFIG: Phyics3dEnvConfig
 ](name: String, mut st: ViewerState) raises:
@@ -348,16 +331,18 @@ def _view[
         st.quit = True
         return
 
-    # ── screen-space layout, sized off the window the env actually asked for
-    # rather than a copy of 1280x720 that would rot the day that changes ──
-    comptime WIN_W = Float32(E.RENDER_WIDTH)
-    # 23 = the longest task name ("manipulator_insert_ball"), 8 px per
-    # character at text scale 1. Scale 2 would need 39*22 = 858 px of height
-    # in a 720 px window, so the list would have to scroll; at scale 1 all 39
-    # fit and there is nothing to scroll.
-    comptime LIST_W = Float32(23 * 8 + 14)
-    comptime LIST_X = WIN_W - LIST_W - 12.0
-    comptime LIST_TOP = Float32(34.0)
+    # ── sidebar layout ───────────────────────────────────────────────────
+    # 300 px is set by the longest task name: "manipulator_insert_ball" is 23
+    # characters, 8 px each at text scale 1, plus padding. Scale 2 would need
+    # 39 * 22 = 858 px of list height in a 720 px window, so the list would
+    # have to scroll; at scale 1 all 39 fit with room for the controls under
+    # them, and nothing has to scroll.
+    comptime SIDEBAR_W = Float32(300.0)
+    comptime PAD = Float32(10.0)
+    comptime INNER_W = SIDEBAR_W - 2.0 * PAD
+    comptime LIST_TOP = Float32(58.0)
+
+    env.set_ui_sidebar_width(Int(SIDEBAR_W))
 
     var tasks = _task_names()
     var held = E.ActionType()
@@ -387,8 +372,14 @@ def _view[
         elif k == 0x30:  # 0 — zero torque, the fastest way back to rest
             live_drive = DRIVE_ZERO
 
-        # ── clickable controls ───────────────────────────────────────────
-        # Immediate mode: each widget both draws and answers, so the panel is
+        # ── sidebar ──────────────────────────────────────────────────────
+        # Everything lives in the RESERVED strip: `set_ui_sidebar_width` insets
+        # the 3D viewport by SIDEBAR_W and corrects the camera aspect, so these
+        # widgets sit beside the scene rather than on top of it. Nothing here
+        # overlaps the render, which is why the panel can be opaque and the
+        # list can be long.
+        #
+        # Immediate mode: each widget both draws and answers, so the sidebar is
         # rebuilt from scratch every frame and holds no state of its own.
         # Widgets RECORD here and are painted inside render_frame — an
         # application cannot draw between begin_frame and end_frame.
@@ -397,54 +388,56 @@ def _view[
             env.renderer_mouse_y(),
             env.renderer_take_click(),
         )
-        # Task picker, down the right edge. Recorded FIRST so its panel sits
-        # under its own rows; a click is consumed by the first widget that
-        # wants it, so rows drawn after the slab still win the hit test.
-        ui.panel(LIST_X - 6.0, 6.0, LIST_W + 12.0,
-                 LIST_TOP + Float32(N_TASKS) * UI_ROW_H_SMALL - 2.0)
-        ui.label(LIST_X, 12.0, String("task"))
+        # Slab first, so its own contents hit-test above it: a click is
+        # consumed by the first widget that wants it.
+        ui.panel(0.0, 0.0, SIDEBAR_W, Float32(E.RENDER_HEIGHT),
+                 Color(16, 18, 26, 255))
+        ui.label(PAD, 8.0, String("dm_control"))
+        ui.label(PAD, 30.0, name, Color(120, 230, 255, 255), 1)
+        ui.label(
+            PAD, 42.0,
+            String("ep ") + String(episode) + String("  step ")
+            + String(step_i) + String("  return ") + _fmt2(ep_return),
+            Color(150, 165, 190, 255), 1,
+        )
+
         var picked = ui.list_select(
-            LIST_X, LIST_TOP, LIST_W, N_TASKS, tasks, 0, st.task,
+            PAD, LIST_TOP, INNER_W, N_TASKS, tasks, 0, st.task,
             text_scale=1, row_h=UI_ROW_H_SMALL,
         )
 
-        # Controls, left column BELOW the engine HUD and the app's own HUD
-        # lines. Those run from y=12 to roughly y=280, and the panel used to
-        # start at 200 — the HUD text drew straight through the buttons.
-        var px = Float32(12.0)
-        var py = Float32(310.0)
-        ui.panel(px - 6.0, py - 6.0, 236.0, 146.0)
-        ui.label(px, py, String("drive"))
-        var by = py + 20.0
-        if ui.button(px, by, 72.0, 24.0, String("zero"),
-                     live_drive == DRIVE_ZERO):
+        var cy = LIST_TOP + Float32(N_TASKS) * UI_ROW_H_SMALL + 8.0
+        ui.label(PAD, cy, String("drive   [D]"), Color(150, 165, 190, 255), 1)
+        cy += 14.0
+        if ui.button(PAD, cy, 90.0, 22.0, String("zero"),
+                     live_drive == DRIVE_ZERO, 1):
             live_drive = DRIVE_ZERO
-        if ui.button(px + 78.0, by, 72.0, 24.0, String("random"),
-                     live_drive == DRIVE_RANDOM):
+        if ui.button(PAD + 95.0, cy, 90.0, 22.0, String("random"),
+                     live_drive == DRIVE_RANDOM, 1):
             live_drive = DRIVE_RANDOM
-        if ui.button(px + 156.0, by, 68.0, 24.0, String("sweep"),
-                     live_drive == DRIVE_SWEEP):
+        if ui.button(PAD + 190.0, cy, 90.0, 22.0, String("sweep"),
+                     live_drive == DRIVE_SWEEP, 1):
             live_drive = DRIVE_SWEEP
 
-        var sy = by + 32.0
-        ui.label(px, sy + 4.0, String("scale ") + _fmt2(live_scale))
-        if ui.button(px + 150.0, sy, 34.0, 24.0, String("-"), False):
+        cy += 28.0
+        ui.label(PAD, cy + 6.0, String("scale ") + _fmt2(live_scale)
+                 + String("   [ ] ]"), Color(150, 165, 190, 255), 1)
+        if ui.button(PAD + 210.0, cy, 34.0, 22.0, String("-"), False, 1):
             live_scale = max(live_scale * 0.8, 0.01)
-        if ui.button(px + 190.0, sy, 34.0, 24.0, String("+"), False):
+        if ui.button(PAD + 248.0, cy, 32.0, 22.0, String("+"), False, 1):
             live_scale = min(live_scale * 1.25, 8.0)
 
-        var ry = sy + 32.0
-        if ui.button(px, ry, 110.0, 24.0, String("reset ep"), False):
+        cy += 28.0
+        if ui.button(PAD, cy, 137.0, 22.0, String("reset ep  [N]"), False, 1):
             _ = env.reset()
             step_i = 0
             ep_return = 0.0
-        if ui.button(px + 116.0, ry, 108.0, 24.0, String("zero now"), False):
+        if ui.button(PAD + 143.0, cy, 137.0, 22.0, String("zero now  [0]"),
+                     False, 1):
             live_drive = DRIVE_ZERO
             live_scale = 1.0
 
         env.set_ui(ui.rects, ui.texts)
-        env.set_hud_extra(_hud(name, live_drive, live_scale, step_i,
-                               episode, ep_return))
 
         # Leave BEFORE stepping: the new task's env has to be built by `main`,
         # and there is nothing to gain from one more frame of the old one.

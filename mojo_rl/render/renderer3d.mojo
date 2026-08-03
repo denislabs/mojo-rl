@@ -361,6 +361,14 @@ struct Renderer3D(Movable):
     var mouse_clicked: Bool
     var text_budget_warned: Bool
     """One-shot latch so an exhausted quad budget is reported, not swallowed."""
+    var ui_sidebar_width: Int
+    """Pixels reserved on the LEFT for screen-space UI. 0 = full-window scene.
+
+    ⚠ THIS RESERVES SPACE, it does not merely draw over it. The 3D phases get a
+    viewport inset by this much and the camera's aspect is corrected to match,
+    so the scene is squeezed rather than stretched or cropped. The HUD/text
+    phase then runs at FULL window size, which is what lets widgets live in the
+    reserved strip while the scene keeps the remainder to itself."""
     var draw_grid: Bool
     var draw_axes: Bool
 
@@ -424,6 +432,7 @@ struct Renderer3D(Movable):
         self.mouse_y = 0
         self.mouse_clicked = False
         self.text_budget_warned = False
+        self.ui_sidebar_width = 0
         self.initialized = False
 
         # Copy camera
@@ -603,6 +612,7 @@ struct Renderer3D(Movable):
         self.mouse_y = move.mouse_y
         self.mouse_clicked = move.mouse_clicked
         self.text_budget_warned = move.text_budget_warned
+        self.ui_sidebar_width = move.ui_sidebar_width
         self.draw_grid = move.draw_grid
         self.draw_axes = move.draw_axes
 
@@ -2270,6 +2280,22 @@ struct Renderer3D(Movable):
         self.mouse_clicked = False
         return c
 
+    def scene_width(self) -> Int:
+        """Window width minus the reserved UI strip; at least 1."""
+        var w = self.width - self.ui_sidebar_width
+        return w if w > 1 else 1
+
+    def set_ui_sidebar_width(mut self, w: Int):
+        """Reserve `w` pixels on the left for UI and re-fit the camera.
+
+        Correcting the aspect here is the whole point: without it the scene
+        would keep a full-window aspect while being drawn into a narrower
+        viewport, which reads as everything being horizontally stretched — a
+        subtle wrongness that is easy to blame on the model.
+        """
+        self.ui_sidebar_width = w if w > 0 else 0
+        self.camera.set_screen_size(self.scene_width(), self.height)
+
     def _text_budget_ok(mut self) -> Bool:
         """Room for one more quad? Complains ONCE if not.
 
@@ -3217,7 +3243,7 @@ struct Renderer3D(Movable):
         if Int(sc_w) != self.width or Int(sc_h) != self.height:
             self.width = Int(sc_w)
             self.height = Int(sc_h)
-            self.camera.set_screen_size(self.width, self.height)
+            self.camera.set_screen_size(self.scene_width(), self.height)
             release_gpu_texture(self.device.value(), self.depth_texture.value())
             self._create_depth_texture()
 
@@ -3261,10 +3287,16 @@ struct Renderer3D(Movable):
             cmd_buf, Ptr(to=color_info), 1, Ptr(to=depth_info)
         )
 
+        # The 3D phases render into the window MINUS the reserved UI strip.
+        # Phase E restores the full window so the HUD and widgets can use it.
+        var scene_x = Float32(self.ui_sidebar_width)
+        var scene_w = Float32(sc_w) - scene_x
+        if scene_w < 1.0:
+            scene_w = 1.0
         var viewport = GPUViewport(
-            x=0.0,
+            x=c_float(scene_x),
             y=0.0,
-            w=c_float(sc_w),
+            w=c_float(scene_w),
             h=c_float(sc_h),
             min_depth=0.0,
             max_depth=1.0,
@@ -3518,6 +3550,19 @@ struct Renderer3D(Movable):
         # Phase E: TEXT HUD OVERLAY (screen-space, alpha-blended, no depth)
         # ------------------------------------------------------------------
         if num_text_chars > 0:
+            # ⚠ FULL WINDOW AGAIN. The text ortho projection is built for the
+            # whole window (see `ortho_projection` above), so leaving the
+            # scene's inset viewport in place would both clip the HUD and shift
+            # every glyph right by the sidebar width.
+            var full_viewport = GPUViewport(
+                x=0.0,
+                y=0.0,
+                w=c_float(sc_w),
+                h=c_float(sc_h),
+                min_depth=0.0,
+                max_depth=1.0,
+            )
+            set_gpu_viewport(render_pass, Ptr(to=full_viewport))
             bind_gpu_graphics_pipeline(render_pass, self.text_pipeline.value())
             push_gpu_vertex_uniform_data(
                 cmd_buf,
@@ -3947,11 +3992,17 @@ struct Renderer3D(Movable):
             elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_DOWN:
                 # Track any button press (macOS trackpad intermittently
                 # misidentifies left as right, so treat all buttons same)
-                self.mouse_left_down = True
                 var mb = event[MouseButtonEvent]
                 self.mouse_x = Float32(mb.x)
                 self.mouse_y = Float32(mb.y)
                 self.mouse_clicked = True
+                # A drag that STARTS over the UI strip must not orbit the
+                # camera — otherwise every slider drag spins the scene behind
+                # it. Where the gesture began is what matters, not where the
+                # pointer currently is, so this is latched on press.
+                self.mouse_left_down = (
+                    Float32(mb.x) >= Float32(self.ui_sidebar_width)
+                )
 
             elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_UP:
                 self.mouse_left_down = False
