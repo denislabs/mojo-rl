@@ -49,6 +49,12 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     var vel_color: Color
 
     # Site marker visibility
+    # Extra HUD lines the APPLICATION owns — task name, drive mode, whatever
+    # the tool wants on screen. `_draw_hud` renders the fixed engine controls;
+    # these are appended under them so a viewer can label itself without the
+    # renderer knowing anything about viewers.
+    var hud_extra: List[String]
+
     var show_sites: Bool
 
     # HUD state
@@ -147,6 +153,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.follow = follow
         self.show_velocity = show_velocity
         self.show_sites = show_sites
+        self.hud_extra = List[String]()
 
         var camera = self.cameras[0].copy()
         self.renderer = Renderer3D(
@@ -201,6 +208,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.follow = move.follow
         self.show_velocity = move.show_velocity
         self.show_sites = move.show_sites
+        self.hud_extra = move.hud_extra^
         self.visual_radius_scale = move.visual_radius_scale
         self.cameras = move.cameras^
         self.camera_modes = move.camera_modes^
@@ -385,6 +393,14 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         except:
             pass
 
+    def set_hud_extra(mut self, lines: List[String]):
+        """Replace the application-owned HUD lines."""
+        self.hud_extra = lines.copy()
+
+    def take_key(mut self) -> Int:
+        """Consume a keycode the renderer's own bindings did not claim."""
+        return self.renderer.take_key()
+
     def _draw_hud(mut self):
         """Draw MuJoCo-style HUD: controls help, camera name, step counter, pause indicator.
         """
@@ -456,6 +472,12 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 x0 + 1, y + 1, rec_str, Color(0, 0, 0, 160), s
             )
             self.renderer.draw_text(x0, y, rec_str, Color(220, 40, 40, 255), s)
+
+        # Application-owned lines last, in cyan so they read as "not engine".
+        for line in self.hud_extra:
+            self.renderer.draw_text(x0 + 1, y + 1, line, Color(0, 0, 0, 160), s)
+            self.renderer.draw_text(x0, y, line, Color(120, 230, 255, 255), s)
+            y += 20
 
     def _draw_velocity_indicator(mut self, torso_pos: Vec3, vel_x: Float64):
         """Draw a velocity indicator arrow above the torso."""

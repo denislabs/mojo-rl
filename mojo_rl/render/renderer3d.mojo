@@ -338,6 +338,11 @@ struct Renderer3D(Movable):
     # State
     var initialized: Bool
     var should_quit: Bool
+    # Most recent key the renderer's own bindings did NOT claim, 0 when none.
+    # The event switch below decodes a fixed set (ESC, 1-9, SPACE, RIGHT, R,
+    # S, V) and swallows everything else; without this an application has no
+    # way to bind a key of its own. Read it with `take_key`, which clears.
+    var last_key: Int
     var draw_grid: Bool
     var draw_axes: Bool
 
@@ -396,6 +401,7 @@ struct Renderer3D(Movable):
         self.draw_grid = draw_grid
         self.draw_axes = draw_axes
         self.should_quit = False
+        self.last_key = 0
         self.initialized = False
 
         # Copy camera
@@ -570,6 +576,7 @@ struct Renderer3D(Movable):
         self.default_target = move.default_target
         self.initialized = move.initialized
         self.should_quit = move.should_quit
+        self.last_key = move.last_key
         self.draw_grid = move.draw_grid
         self.draw_axes = move.draw_axes
 
@@ -2225,6 +2232,16 @@ struct Renderer3D(Movable):
             SolidDrawCommand(0, uniforms, texture_cache_idx=tex_idx)
         )
 
+    def take_key(mut self) -> Int:
+        """Consume the last unclaimed keycode (0 if none since the last call).
+
+        Clearing on read is what makes this usable as an EVENT rather than a
+        state: a viewer polling once per frame gets each press exactly once.
+        """
+        var k = self.last_key
+        self.last_key = 0
+        return k
+
     def draw_ellipsoid(
         mut self,
         center: Vec3,
@@ -3760,6 +3777,10 @@ struct Renderer3D(Movable):
                             self.start_recording(fname)
                     except:
                         pass
+                else:
+                    # Anything the bindings above do not claim is handed to
+                    # the application rather than dropped.
+                    self.last_key = key_val
             elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_DOWN:
                 # Track any button press (macOS trackpad intermittently
                 # misidentifies left as right, so treat all buttons same)

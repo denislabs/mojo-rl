@@ -572,6 +572,22 @@ struct Phyics3dEnv[
             return False
         return self._renderer.value()[].check_quit()
 
+    def renderer_take_key(mut self) -> Int:
+        """A keycode the renderer's own bindings did not claim, 0 if none.
+
+        Clears on read, so each press is delivered once. Lets a tool bind keys
+        without the env or the renderer knowing what they mean.
+        """
+        if not self._renderer_initialized:
+            return 0
+        return self._renderer.value()[].take_key()
+
+    def set_hud_extra(mut self, lines: List[String]) -> None:
+        """Application-owned HUD lines, drawn under the engine's controls."""
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].set_hud_extra(lines)
+
     def renderer_delay(self, ms: Int) -> None:
         if not self._renderer_initialized:
             return

@@ -58,7 +58,7 @@ the fields facade still wants a `DeviceContext` for host staging.
 """
 
 from std.random import seed, random_float64
-from std.math import sin, pi
+from std.math import sin, pi, min, max
 from std.sys import argv
 from std.gpu.host import DeviceContext
 
@@ -176,6 +176,43 @@ def _parse_drive(name: String) -> Int:
     return DRIVE_SWEEP
 
 
+def _drive_name(d: Int) -> String:
+    if d == DRIVE_ZERO:
+        return String("zero")
+    if d == DRIVE_RANDOM:
+        return String("random")
+    return String("sweep")
+
+
+def _fmt2(v: Float64) -> String:
+    """Two decimals without a formatting library."""
+    var scaled = Int(v * 100.0 + (0.5 if v >= 0 else -0.5))
+    var whole = scaled // 100
+    var frac = scaled % 100
+    if frac < 0:
+        frac = -frac
+    var f = String(frac) if frac >= 10 else "0" + String(frac)
+    return String(whole) + "." + f
+
+
+def _hud(
+    name: String, drive: Int, scale: Float64, step: Int, episode: Int,
+    ep_return: Float64,
+) -> List[String]:
+    var out = List[String]()
+    out.append(String("task  ") + name)
+    out.append(
+        String("[D] drive ") + _drive_name(drive)
+        + String("   [ ] scale ") + _fmt2(scale)
+    )
+    out.append(String("[N] reset   [0] zero"))
+    out.append(
+        String("ep ") + String(episode) + String("  step ") + String(step)
+        + String("  return ") + _fmt2(ep_return)
+    )
+    return out^
+
+
 def _view[
     MODEL: ModelDefLike, CONFIG: Phyics3dEnvConfig
 ](name: String, drive: Int, act_scale: Float64) raises:
@@ -217,20 +254,43 @@ def _view[
     var step_i = 0
     var episode = 0
     var ep_return = Float64(0)
+    var live_drive = drive
+    var live_scale = act_scale
 
     while env.is_renderer_open():
+        # ── live keys ────────────────────────────────────────────────────
+        # Only keys the renderer does not already bind. Taken: ESC, 1-9,
+        # SPACE, RIGHT, R, S, V. `renderer_take_key` clears on read, so each
+        # press fires once.
+        var k = env.renderer_take_key()
+        if k == 0x44 or k == 0x64:  # D — cycle drive mode
+            live_drive = (live_drive + 1) % 3
+        elif k == 0x4E or k == 0x6E:  # N — restart the episode
+            _ = env.reset()
+            step_i = 0
+            ep_return = 0.0
+        elif k == 0x5D:  # ] — more torque
+            live_scale = min(live_scale * 1.25, 8.0)
+        elif k == 0x5B:  # [ — less torque
+            live_scale = max(live_scale * 0.8, 0.01)
+        elif k == 0x30:  # 0 — zero torque, the fastest way back to rest
+            live_drive = DRIVE_ZERO
+
+        env.set_hud_extra(_hud(name, live_drive, live_scale, step_i,
+                               episode, ep_return))
+
         var action = E.ActionType()
-        if drive == DRIVE_RANDOM:
+        if live_drive == DRIVE_RANDOM:
             if step_i % HOLD_STEPS == 0:
                 for a in range(ACT_DIM):
-                    held.data[a] = random_float64(-1.0, 1.0) * act_scale
+                    held.data[a] = random_float64(-1.0, 1.0) * live_scale
             for a in range(ACT_DIM):
                 action.data[a] = held.data[a]
-        elif drive == DRIVE_SWEEP:
+        elif live_drive == DRIVE_SWEEP:
             var t = Float64(step_i) / SWEEP_PERIOD
             for a in range(ACT_DIM):
                 var phase = Float64(a) / Float64(ACT_DIM if ACT_DIM > 0 else 1)
-                action.data[a] = sin(2.0 * pi * (t + phase)) * act_scale
+                action.data[a] = sin(2.0 * pi * (t + phase)) * live_scale
 
         var out = env.step(action)
         ep_return += Float64(out[1])
