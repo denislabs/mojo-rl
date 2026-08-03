@@ -161,6 +161,22 @@ def quat_normalize[
 ) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """Normalize a quaternion to unit length.
 
+    ⚠ THE DEGENERATE GUARD IS A BRANCH, NOT AN EPSILON UNDER THE SQRT — the
+    same fix `gpu_quat_normalize` got, one epsilon smaller. This was
+    `1.0 / sqrt(length_sq + 1e-12)`, which returns 0.9999999999995 for an
+    already-unit quaternion, so everything this touched came out 5.00e-13
+    short of unit.
+
+    IT MATTERED MORE THAN THE MAGNITUDE SUGGESTS because of where it sits:
+    all three integrators renormalize the free/ball-joint quaternion in `qpos`
+    through here after every step (`integrator/euler.mojo:278`,
+    `implicit.mojo:190`, `rk4.mojo:133`), and `quat_integrate` below calls it
+    again on the way in. So every free-jointed model carried a root quaternion
+    permanently below unit — and repeated renormalisation does NOT decay to
+    zero, it converges to the fixed point of `q -> q/sqrt(q^2 + 1e-12)`, which
+    is |q| = 0.9999999999995. Every vector rotated by the root quaternion was
+    scaled by 1 - 1e-12 forever.
+
     Args:
         qx: Quaternion x.
         qy: Quaternion y.
@@ -171,7 +187,16 @@ def quat_normalize[
         Normalized unit quaternion.
     """
     var length_sq = qx * qx + qy * qy + qz * qz + qw * qw
-    var inv_length = Scalar[DTYPE](1.0) / sqrt(length_sq + Scalar[DTYPE](1e-12))
+    # Degenerate input keeps the OLD formula bit-for-bit, so this is a pure
+    # precision change. As with the GPU pair, that arm is believed unreachable
+    # — every caller passes a quaternion that is already unit to rounding.
+    var inv_length: Scalar[DTYPE]
+    if length_sq < Scalar[DTYPE](1e-6):
+        inv_length = Scalar[DTYPE](1.0) / sqrt(
+            length_sq + Scalar[DTYPE](1e-12)
+        )
+    else:
+        inv_length = Scalar[DTYPE](1.0) / sqrt(length_sq)
     return (qx * inv_length, qy * inv_length, qz * inv_length, qw * inv_length)
 
 
