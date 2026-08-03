@@ -112,7 +112,39 @@ comptime METADATA_SIZE_L = 4
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
 comptime GOLD_NCON_A = 8  # Part A tendon: total contacts over the steps
-comptime GOLD_A = -500065.48171551153  # Part A final qpos/qvel/qacc/contacts checksum
+comptime GOLD_A = -499170.73185298603  # Part A final qpos/qvel/qacc/contacts checksum
+# Re-harvested 2026-08-03 (was -500065.48171551153, a +894.750 move), and the
+# delta is ACCOUNTED FOR RATHER THAN RE-RECORDED ON SIGHT:
+#
+#   newly-filled contact slots 23..29   +894.348   DEFINITIONAL
+#   drift inside the original 0..22     -  0.402   PRE-EXISTING, 8.0e-07 rel
+#                                       ---------
+#   observed                             +894.750
+#
+# ⚠ THE FINGERPRINT'S DEFINITION CHANGED, NOT THE PHYSICS. This loop sums
+# `for k in range(CONTACT_SIZE)`, and `CONTACT_SIZE` grew 23 -> 30 when
+# per-contact solref/solimp were appended to the record. So it now weighs seven
+# slots it never saw. `mix_contact_params` writes MuJoCo's own mixed values
+# there — for these two models every geom carries the defaults, so the added
+# terms are (0.02, 1) and (0.9, 0.95, 0.001, 0.5, 2) weighted by (c+1)*(k+1).
+#
+# ⚠ THE -0.402 IS NOT PART OF THIS CHANGE. Measured with every uncommitted file
+# stashed (tree at commit 9bd3aad1) it is IDENTICAL to the last digit, so it
+# predates the work that moved the constant. It is 8.0e-07 relative, riding
+# under GOLD_RTOL = 1e-3, and Part A is exactly the fingerprint this file
+# already documents as amplifying last-bit differences: it rests on four
+# redundant contacts whose force split is INDETERMINATE (the total is pinned,
+# the split is not). Left as its own question rather than folded in here.
+#
+# ⚠ IT TOOK THREE ATTEMPTS TO GET THIS ACCOUNTING RIGHT, and the two wrong ones
+# are worth naming. First I compared `fp - new_slots` against the golden — that
+# subtracts the NEW contribution of slots 23..29 while the golden carries their
+# OLD contribution, which are different quantities, and the "residual" it
+# produced was an artifact of the subtraction. Then I attributed that artifact
+# to uninitialized memory in the new slots. Only summing slots 0..22 ALONE and
+# comparing to the golden separates the two effects. When a golden moves, split
+# it by the thing you changed, not by the thing you are looking at.
+# ── the pre-2026-08-03 history of this constant follows ──
 # Re-harvested 2026-08-03 (was -513649.55245587835, a 2.6% move).
 #
 # WHY it moved: `kinematics/quat_math.mojo` used to normalize quaternions as
@@ -183,7 +215,17 @@ comptime GOLD_NCON_B = 6  # Part B equality: total contacts over the steps
 # truth: it preserves whatever it captured. Per the note above, this number is
 # still a REGRESSION PIN and still not a correctness statement — the weld path
 # remains ungated against MuJoCo.
-comptime GOLD_B = 29033.456920214216  # Part B final qpos/qvel/qacc/contacts checksum
+comptime GOLD_B = 29331.575603858786  # Part B final qpos/qvel/qacc/contacts checksum
+# Re-harvested 2026-08-03 (was 29033.456920214216, a +298.119 move) for the SAME
+# reason as GOLD_A: `CONTACT_SIZE` grew 23 -> 30 and this fingerprint sums
+# `range(CONTACT_SIZE)`. Predicted definitional delta for a pair of default
+# geoms is 149.058 per unit of `(c+1)`, and the observed move is 2x that to
+# within 0.003 — i.e. essentially all of it, with a residual three orders
+# smaller than Part A's.
+#
+# ⚠ THIS ONE WAS MASKED. Part A raises before Part B runs, so while GOLD_A was
+# failing this constant looked untouched; it had moved the whole time. A test
+# that aborts on its first golden hides every later one.
 
 # =============================================================================
 # Part A: Humanoid (tendons)

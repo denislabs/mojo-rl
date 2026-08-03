@@ -83,6 +83,13 @@ from ..gpu.constants import (
     CONTACT_IDX_FRICTION_SPIN,
     CONTACT_IDX_FRICTION_ROLL,
     CONTACT_IDX_CONDIM,
+    CONTACT_IDX_SOLIMP_4,
+    CONTACT_IDX_SOLIMP_3,
+    CONTACT_IDX_SOLIMP_2,
+    CONTACT_IDX_SOLIMP_1,
+    CONTACT_IDX_SOLIMP_0,
+    CONTACT_IDX_SOLREF_1,
+    CONTACT_IDX_SOLREF_0,
     CONTACT_IDX_FRAME_T1_X,
     CONTACT_IDX_FRAME_T1_Y,
     CONTACT_IDX_FRAME_T1_Z,
@@ -463,13 +470,21 @@ def _precompute_contact_normal[
     solver: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, SOLVER_WS), MutAnyOrigin
     ],
-    K_spring: Scalar[DTYPE],
-    B_damp: Scalar[DTYPE],
-    si_dmin: Scalar[DTYPE],
-    si_dmax: Scalar[DTYPE],
-    si_width: Scalar[DTYPE],
-    si_midpoint: Scalar[DTYPE],
-    si_power: Scalar[DTYPE],
+    # ⚠ SUPERSEDED, AND DELIBERATELY RENAMED SO THEY CANNOT BE MISREAD AS
+    # LIVE. These are the MODEL-LEVEL solref/solimp
+    # (`MODEL_META_IDX_SOLREF_CONTACT_*`) every contact used to share. Since
+    # 2026-08-03 the mixed PER-CONTACT values are read from the contact record
+    # below, so changing the model-level ones does nothing here. They are still
+    # passed because five call sites across four files hand them in positionally
+    # and a second consumer (`_precompute_contact_friction`) takes the same
+    # list; removing them is a follow-up, not a silent leftover.
+    _unused_model_K: Scalar[DTYPE],
+    _unused_model_B: Scalar[DTYPE],
+    _unused_model_dmin: Scalar[DTYPE],
+    _unused_model_dmax: Scalar[DTYPE],
+    _unused_model_width: Scalar[DTYPE],
+    _unused_model_midpoint: Scalar[DTYPE],
+    _unused_model_power: Scalar[DTYPE],
 ):
     """Precompute one contact's normal constraint data (verbatim from
     precompute_contact_normal_gpu, specialized to COMPUTE_RHS=False — its
@@ -503,6 +518,56 @@ def _precompute_contact_normal[
     if contact_tid < nc:
         var c = contact_tid
         var c_off = c * CONTACT_SIZE
+
+        # ── PER-CONTACT solver parameters ────────────────────────────────
+        # Written by the narrow phase from MuJoCo's mixing rule
+        # (`mix_contact_params`), which honours `<geom priority>` and the
+        # two geoms' own solref/solimp. Before this the whole model shared
+        # one solref, so `<geom solref="-10000 -30"/>` — dm_control's
+        # quadruped ball — was parsed, stored and ignored.
+        var si_dmin = rebind[Scalar[DTYPE]](
+            contacts[env, c_off + CONTACT_IDX_SOLIMP_0]
+        )
+        var si_dmax = rebind[Scalar[DTYPE]](
+            contacts[env, c_off + CONTACT_IDX_SOLIMP_1]
+        )
+        var si_width = rebind[Scalar[DTYPE]](
+            contacts[env, c_off + CONTACT_IDX_SOLIMP_2]
+        )
+        var si_midpoint = rebind[Scalar[DTYPE]](
+            contacts[env, c_off + CONTACT_IDX_SOLIMP_3]
+        )
+        var si_power = rebind[Scalar[DTYPE]](
+            contacts[env, c_off + CONTACT_IDX_SOLIMP_4]
+        )
+        if si_width < Scalar[DTYPE](1e-6):
+            si_width = Scalar[DTYPE](1e-6)
+        # Same clamps MuJoCo applies before interpolating
+        # (engine_core_constraint.c:1284-1287) — see the note at the old
+        # hoisted block for why the dmin floor is the one that bites.
+        comptime MJ_MINIMP_C = Scalar[DTYPE](0.0001)
+        comptime MJ_MAXIMP_C = Scalar[DTYPE](0.9999)
+        if si_dmin < MJ_MINIMP_C:
+            si_dmin = MJ_MINIMP_C
+        elif si_dmin > MJ_MAXIMP_C:
+            si_dmin = MJ_MAXIMP_C
+        if si_dmax < MJ_MINIMP_C:
+            si_dmax = MJ_MINIMP_C
+        elif si_dmax > MJ_MAXIMP_C:
+            si_dmax = MJ_MAXIMP_C
+        if si_power < Scalar[DTYPE](1):
+            si_power = Scalar[DTYPE](1)
+        var _kb = solref_spring_damper[DTYPE](
+            rebind[Scalar[DTYPE]](
+                contacts[env, c_off + CONTACT_IDX_SOLREF_0]
+            ),
+            rebind[Scalar[DTYPE]](
+                contacts[env, c_off + CONTACT_IDX_SOLREF_1]
+            ),
+            si_dmax,
+        )
+        var K_spring = _kb[0]
+        var B_damp = _kb[1]
         var body = Int(
             rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_BODY_A])
         )

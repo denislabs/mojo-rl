@@ -77,6 +77,21 @@ from ..gpu.constants import (
     GEOM_IDX_FRICTION_SPIN,
     GEOM_IDX_FRICTION_ROLL,
     GEOM_IDX_MARGIN,
+    GEOM_IDX_PRIORITY,
+    GEOM_IDX_SOLREF_0,
+    GEOM_IDX_SOLREF_1,
+    GEOM_IDX_SOLIMP_0,
+    GEOM_IDX_SOLIMP_1,
+    GEOM_IDX_SOLIMP_2,
+    GEOM_IDX_SOLIMP_3,
+    GEOM_IDX_SOLIMP_4,
+    CONTACT_IDX_SOLREF_0,
+    CONTACT_IDX_SOLREF_1,
+    CONTACT_IDX_SOLIMP_0,
+    CONTACT_IDX_SOLIMP_1,
+    CONTACT_IDX_SOLIMP_2,
+    CONTACT_IDX_SOLIMP_3,
+    CONTACT_IDX_SOLIMP_4,
     GEOM_IDX_MESH_ID,
     MAX_GPU_MESHES,
     MODEL_MESH_META_SIZE,
@@ -103,6 +118,8 @@ from .plane_frame import (
 )
 from .gjk import gjk_epa
 from .contact_detection import (
+    mix_contact_params,
+    _fill_pair_solparams,
     _plane_box_contacts,
     _plane_cylinder_contacts,
     _box_box_contacts,
@@ -347,30 +364,40 @@ def _detect_contacts_sap_env[
             ) == 0:
                 continue
 
-            var fi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION])
-            var fj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION])
-            var cf = fi if fj <= fi else fj
-            var fsi = rebind[Scalar[DTYPE]](
-                geoms[gi, GEOM_IDX_FRICTION_SPIN]
+            # MuJoCo's full contact-parameter rule, PRIORITY FIRST — shared
+            # with `detect_contacts` so the two paths cannot drift, which is
+            # exactly how the SAP ellipsoid branch went missing.
+            var _mx = mix_contact_params[DTYPE](
+                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
+                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_SPIN]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_ROLL]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_0]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_1]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_0]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_1]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_2]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_3]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_4]),
+                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_PRIORITY])),
+                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_SPIN]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_ROLL]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_0]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_1]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_0]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_1]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_2]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_3]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_4]),
             )
-            var fsj = rebind[Scalar[DTYPE]](
-                geoms[gj, GEOM_IDX_FRICTION_SPIN]
-            )
-            var cfs = fsi if fsj <= fsi else fsj
-            var fri = rebind[Scalar[DTYPE]](
-                geoms[gi, GEOM_IDX_FRICTION_ROLL]
-            )
-            var frj = rebind[Scalar[DTYPE]](
-                geoms[gj, GEOM_IDX_FRICTION_ROLL]
-            )
-            var cfr = fri if frj <= fri else frj
-            var ci = Int(
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])
-            )
-            var cj = Int(
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])
-            )
-            var cdim = ci if cj <= ci else cj
+            var cdim = Int(_mx[0])
+            var cf = _mx[1]
+            var cfs = _mx[2]
+            var cfr = _mx[3]
+            var _n0 = num_contacts
             var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
             var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
             var cm = mgi + mgj  # MuJoCo 3.5+: sum of margins
@@ -710,6 +737,10 @@ def _detect_contacts_sap_env[
                                 ] = Scalar[DTYPE](cdim)
                                 num_contacts += 1
 
+            _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                env, _n0, num_contacts, _mx, contacts
+            )
+
     # ------------------------------------------------------------------
     # 4. SAP sweep for non-plane pairs.
     # ------------------------------------------------------------------
@@ -845,30 +876,40 @@ def _detect_contacts_sap_env[
             ) == 0:
                 continue
 
-            var fi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION])
-            var fj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION])
-            var cf = fi if fj <= fi else fj
-            var fsi = rebind[Scalar[DTYPE]](
-                geoms[gi, GEOM_IDX_FRICTION_SPIN]
+            # MuJoCo's full contact-parameter rule, PRIORITY FIRST — shared
+            # with `detect_contacts` so the two paths cannot drift, which is
+            # exactly how the SAP ellipsoid branch went missing.
+            var _mx = mix_contact_params[DTYPE](
+                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
+                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_SPIN]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_ROLL]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_0]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_1]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_0]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_1]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_2]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_3]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_4]),
+                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_PRIORITY])),
+                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_SPIN]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_ROLL]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_0]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_1]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_0]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_1]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_2]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_3]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_4]),
             )
-            var fsj = rebind[Scalar[DTYPE]](
-                geoms[gj, GEOM_IDX_FRICTION_SPIN]
-            )
-            var cfs = fsi if fsj <= fsi else fsj
-            var fri = rebind[Scalar[DTYPE]](
-                geoms[gi, GEOM_IDX_FRICTION_ROLL]
-            )
-            var frj = rebind[Scalar[DTYPE]](
-                geoms[gj, GEOM_IDX_FRICTION_ROLL]
-            )
-            var cfr = fri if frj <= fri else frj
-            var ci = Int(
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])
-            )
-            var cj_dim = Int(
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])
-            )
-            var cdim = ci if cj_dim <= ci else cj_dim
+            var cdim = Int(_mx[0])
+            var cf = _mx[1]
+            var cfs = _mx[2]
+            var cfr = _mx[3]
+            var _n0 = num_contacts
             var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
             var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
             var cm = mgi + mgj  # MuJoCo 3.5+: sum of margins
@@ -1061,6 +1102,9 @@ def _detect_contacts_sap_env[
                     cm, cf, cfs, cfr, cdim,
                     contacts, num_contacts,
                 )
+                _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                    env, _n0, num_contacts, _mx, contacts
+                )
                 continue
             elif gi_type == GEOM_CAPSULE and gj_type == GEOM_BOX:
                 _ = _capsule_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
@@ -1070,6 +1114,9 @@ def _detect_contacts_sap_env[
                     Scalar[DTYPE](1),
                     cm, cf, cfs, cfr, cdim,
                     contacts, num_contacts,
+                )
+                _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                    env, _n0, num_contacts, _mx, contacts
                 )
                 continue
             elif gi_type == GEOM_BOX and gj_type == GEOM_BOX:
@@ -1092,6 +1139,9 @@ def _detect_contacts_sap_env[
                     num_contacts,
                 )
                 if code >= 0:
+                    _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                        env, _n0, num_contacts, _mx, contacts
+                    )
                     continue
                 var r = box_box[DTYPE](
                     pi_x,
@@ -1268,6 +1318,9 @@ def _detect_contacts_sap_env[
                     body_a = gi_body
                     body_b = gj_body
                 else:
+                    _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                        env, _n0, num_contacts, _mx, contacts
+                    )
                     continue
 
             if dist < cm and num_contacts < MAX_CONTACTS:
@@ -1310,6 +1363,10 @@ def _detect_contacts_sap_env[
                     cdim
                 )
                 num_contacts += 1
+
+            _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                env, _n0, num_contacts, _mx, contacts
+            )
 
     smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)
 

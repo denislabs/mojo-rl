@@ -53,6 +53,13 @@ from ..gpu.constants import (
     CONTACT_IDX_FRICTION_SPIN,
     CONTACT_IDX_FRICTION_ROLL,
     CONTACT_IDX_CONDIM,
+    CONTACT_IDX_SOLREF_0,
+    CONTACT_IDX_SOLREF_1,
+    CONTACT_IDX_SOLIMP_0,
+    CONTACT_IDX_SOLIMP_1,
+    CONTACT_IDX_SOLIMP_2,
+    CONTACT_IDX_SOLIMP_3,
+    CONTACT_IDX_SOLIMP_4,
     CONTACT_IDX_FRAME_T1_X,
     CONTACT_IDX_FRAME_T1_Y,
     CONTACT_IDX_FRAME_T1_Z,
@@ -992,6 +999,47 @@ def _box_box_contacts[
 
 
 @always_inline
+@always_inline
+def _fill_pair_solparams[
+    DTYPE: DType,
+    MAX_CONTACTS: Int,
+    BATCH: Int,
+](
+    env: Int,
+    n0: Int,
+    n1: Int,
+    mx: InlineArray[Scalar[DTYPE], 12],
+    contacts: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+):
+    """Stamp a geom pair's mixed solref/solimp onto every contact it emitted.
+
+    The mixed values are constant across all points of one pair, so they are
+    written once per pair rather than at each of the nineteen emit sites — a
+    narrow-phase branch added later then inherits them instead of silently
+    shipping zeros.
+
+    ⚠ CALL THIS AT EVERY EXIT OF THE PAIR LOOP BODY, NOT JUST THE BOTTOM. The
+    first version ran only at the bottom, and the two PLANE branches end with
+    `continue` — so every plane contact in the engine got solref (0, 0), which
+    `solref_spring_damper` then read as the DIRECT form with zero stiffness and
+    zero damping. It showed up as `test_contacts_vs_mujoco` failing on hopper
+    within one build, but only because that gate exists; a post-pass at the
+    bottom of a loop body is safe only when the body has a single exit.
+    """
+    for c in range(n0, n1):
+        var o = c * CONTACT_SIZE
+        contacts[env, o + CONTACT_IDX_SOLREF_0] = mx[4]
+        contacts[env, o + CONTACT_IDX_SOLREF_1] = mx[5]
+        contacts[env, o + CONTACT_IDX_SOLIMP_0] = mx[6]
+        contacts[env, o + CONTACT_IDX_SOLIMP_1] = mx[7]
+        contacts[env, o + CONTACT_IDX_SOLIMP_2] = mx[8]
+        contacts[env, o + CONTACT_IDX_SOLIMP_3] = mx[9]
+        contacts[env, o + CONTACT_IDX_SOLIMP_4] = mx[10]
+
+
 def _detect_contacts_env[
     DTYPE: DType,
     NQ: Int,
@@ -1237,6 +1285,13 @@ def _detect_contacts_env[
             var contact_friction = _mx[1]
             var contact_friction_spin = _mx[2]
             var contact_friction_roll = _mx[3]
+            # First contact slot this PAIR will fill. The mixed solver
+            # parameters are constant across every point the pair emits, so
+            # they are written once at the bottom of this loop body rather
+            # than at each of the nineteen emit sites — which also means a
+            # narrow-phase branch added later gets them for free instead of
+            # silently shipping zeros.
+            var _n0 = num_contacts
 
             # Margin combination: max of both geoms (MuJoCo convention)
             var margin_gi = rebind[Scalar[DTYPE]](
@@ -1561,6 +1616,9 @@ def _detect_contacts_env[
                             contacts,
                             num_contacts,
                         )
+                _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                    env, _n0, num_contacts, _mx, contacts
+                )
                 continue
 
             if gj_type == GEOM_PLANE:
@@ -1867,6 +1925,9 @@ def _detect_contacts_env[
                             contacts,
                             num_contacts,
                         )
+                _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                    env, _n0, num_contacts, _mx, contacts
+                )
                 continue
 
             # --- Non-plane geom pair ---
@@ -2036,6 +2097,9 @@ def _detect_contacts_env[
                     contact_condim,
                     contacts, num_contacts,
                 )
+                _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                    env, _n0, num_contacts, _mx, contacts
+                )
                 continue
             elif gi_type == GEOM_CAPSULE and gj_type == GEOM_BOX:
                 _ = _capsule_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
@@ -2049,6 +2113,9 @@ def _detect_contacts_env[
                     contact_friction_roll,
                     contact_condim,
                     contacts, num_contacts,
+                )
+                _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                    env, _n0, num_contacts, _mx, contacts
                 )
                 continue
             elif gi_type == GEOM_BOX and gj_type == GEOM_BOX:
@@ -2071,6 +2138,9 @@ def _detect_contacts_env[
                     num_contacts,
                 )
                 if code >= 0:
+                    _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                        env, _n0, num_contacts, _mx, contacts
+                    )
                     continue
                 var r = box_box[DTYPE](
                     pi_x,
@@ -2249,6 +2319,9 @@ def _detect_contacts_env[
                     body_a = gi_body
                     body_b = gj_body
                 else:
+                    _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                        env, _n0, num_contacts, _mx, contacts
+                    )
                     continue
 
             if dist < contact_margin and num_contacts < MAX_CONTACTS:
@@ -2298,6 +2371,10 @@ def _detect_contacts_env[
                     contact_condim
                 )
                 num_contacts += 1
+
+            _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                env, _n0, num_contacts, _mx, contacts
+            )
 
     smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)
 
