@@ -34,6 +34,7 @@ from ..constants import (
     GEOM_PLANE,
     GEOM_CYLINDER,
     GEOM_MESH,
+    GEOM_ELLIPSOID,
 )
 from ..fields import Data, Model
 from ..gpu.constants import (
@@ -92,6 +93,7 @@ from .collision_primitives import (
     cylinder_capsule,
     cylinder_cylinder,
     cylinder_box,
+    ellipsoid_plane,
 )
 from .plane_frame import (
     plane_world_normal,
@@ -546,6 +548,74 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
                     contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
                     contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                    contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
+                    contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+                    contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+                    contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                        cdim
+                    )
+                    num_contacts += 1
+
+            elif gj_type == GEOM_ELLIPSOID:
+                # ⚠ ADDED 2026-08-03. This branch did not exist, and
+                # `broadphase_sap.mojo` contained no mention of ELLIPSOID at
+                # all, so every ellipsoid geom was INVISIBLE TO COLLISION in
+                # any model that takes the SAP path — `detect_contacts_auto`
+                # switches to SAP at NGEOM >= 16, and nothing warns.
+                #
+                # Shipped and silently wrong at the time of the fix:
+                #   quadruped     26 geoms, SAP, ellipsoid = `torso`
+                #   humanoid_CMU  50 geoms, SAP, ellipsoids = `lhand`, `rhand`
+                # i.e. the quadruped's TORSO never collided with the floor.
+                # fish (12 geoms, 7 ellipsoids) and swimmer (7, 1) sit under
+                # the threshold and take the naive path, which is why the
+                # ellipsoid narrow phase looked exercised.
+                #
+                # It hid because no test compared a plane's contact SET
+                # against MuJoCo — every plane in the suite is an axis-aligned
+                # floor and every gate read qacc at poses where the ellipsoid
+                # was not touching it. `test_oriented_plane_vs_mujoco` is what
+                # found it, and it found it on the AXIS-ALIGNED control rather
+                # than the tilted case it was written for.
+                #
+                # Body id is -1 here where `detect_contacts` writes 0 — the
+                # documented split between the two emit paths.
+                var hxje = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_X])
+                var hyje = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Y])
+                var hzje = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Z])
+                # MuJoCo routes plane x ellipsoid through `mjc_PlaneConvex`,
+                # which reports the single deepest support point; a smooth
+                # strictly-convex surface meets a plane at one point, so unlike
+                # the box there is no second contact to look for.
+                var epe = ellipsoid_plane[DTYPE](
+                    pj_x, pj_y, pj_z,
+                    qj_x, qj_y, qj_z, qj_w,
+                    hxje, hyje, hzje,
+                    ground_z,
+                )
+                var diste = epe[0]
+                if diste < cm and num_contacts < MAX_CONTACTS:
+                    var c_off = num_contacts * CONTACT_SIZE
+                    contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                        gj_body
+                    )
+                    contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                        -1
+                    )
+                    # `ellipsoid_plane` already returns the contact point in
+                    # the PLANE frame, including the half-depth offset, so
+                    # unlike the sphere branch there is nothing to add here.
+                    var cwe = from_plane_frame[DTYPE](
+                        plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
+                        epe[1], epe[2], epe[3],
+                    )
+                    contacts[env, c_off + CONTACT_IDX_POS_X] = cwe[0]
+                    contacts[env, c_off + CONTACT_IDX_POS_Y] = cwe[1]
+                    contacts[env, c_off + CONTACT_IDX_POS_Z] = cwe[2]
+                    contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
+                    contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
+                    contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
+                    contacts[env, c_off + CONTACT_IDX_DIST] = diste
                     contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                     contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                     contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
