@@ -460,6 +460,36 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         """Replace the application-owned HUD lines."""
         self.hud_extra = lines.copy()
 
+    def n_cameras(self) -> Int:
+        return len(self.cameras)
+
+    def current_camera(self) -> Int:
+        return self.active_camera
+
+    def request_camera(mut self, index: Int):
+        self.renderer.request_camera(index)
+
+    def request_screenshot(mut self):
+        self.renderer.request_screenshot()
+
+    def is_recording(self) -> Bool:
+        return self.renderer.is_recording()
+
+    def recording_frames(self) -> Int:
+        return self.renderer.recording_frames()
+
+    def toggle_recording(mut self) raises:
+        self.renderer.toggle_recording()
+
+    def paused(self) -> Bool:
+        return self.renderer.paused()
+
+    def toggle_pause(mut self):
+        self.renderer.toggle_pause()
+
+    def set_text_input_mode(mut self, on: Bool):
+        self.renderer.set_text_input_mode(on)
+
     def set_ui_sidebar_width(mut self, w: Int):
         """Reserve `w` px on the left for UI; the scene renders to the rest."""
         self.renderer.set_ui_sidebar_width(w)

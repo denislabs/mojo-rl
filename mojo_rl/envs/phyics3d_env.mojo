@@ -611,6 +611,56 @@ struct Phyics3dEnv[
             return 0
         return self._renderer.value()[].mouse_y()
 
+    def renderer_n_cameras(self) -> Int:
+        if not self._renderer_initialized:
+            return 0
+        return self._renderer.value()[].n_cameras()
+
+    def renderer_current_camera(self) -> Int:
+        if not self._renderer_initialized:
+            return 0
+        return self._renderer.value()[].current_camera()
+
+    def renderer_request_camera(mut self, index: Int) -> None:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].request_camera(index)
+
+    def renderer_request_screenshot(mut self) -> None:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].request_screenshot()
+
+    def renderer_is_recording(self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return self._renderer.value()[].is_recording()
+
+    def renderer_recording_frames(self) -> Int:
+        if not self._renderer_initialized:
+            return 0
+        return self._renderer.value()[].recording_frames()
+
+    def renderer_toggle_recording(mut self) raises -> None:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].toggle_recording()
+
+    def renderer_paused(self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return self._renderer.value()[].paused()
+
+    def renderer_toggle_pause(mut self) -> None:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].toggle_pause()
+
+    def renderer_set_text_input_mode(mut self, on: Bool) -> None:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].set_text_input_mode(on)
+
     def set_ui_sidebar_width(mut self, w: Int) -> None:
         """Reserve `w` px on the left of the window for screen-space UI."""
         if not self._renderer_initialized:

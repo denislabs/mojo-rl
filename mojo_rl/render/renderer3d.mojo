@@ -361,6 +361,15 @@ struct Renderer3D(Movable):
     var mouse_clicked: Bool
     var text_budget_warned: Bool
     """One-shot latch so an exhausted quad budget is reported, not swallowed."""
+    var text_input_mode: Bool
+    """When set, the renderer claims NO keyboard shortcut and forwards every
+    keycode to the application via `take_key`.
+
+    ⚠ WITHOUT THIS A TEXT FIELD IS UNUSABLE, not merely awkward. The bindings
+    below swallow R, S, V, SPACE, 1-9 and ESC before the app ever sees them, so
+    typing "reacher" would reset the camera, save a screenshot and start a
+    video recording. ESC is included deliberately: quitting the window mid-word
+    is worse than making the app responsible for unfocusing."""
     var ui_sidebar_width: Int
     """Pixels reserved on the LEFT for screen-space UI. 0 = full-window scene.
 
@@ -433,6 +442,7 @@ struct Renderer3D(Movable):
         self.mouse_clicked = False
         self.text_budget_warned = False
         self.ui_sidebar_width = 0
+        self.text_input_mode = False
         self.initialized = False
 
         # Copy camera
@@ -613,6 +623,7 @@ struct Renderer3D(Movable):
         self.mouse_clicked = move.mouse_clicked
         self.text_budget_warned = move.text_budget_warned
         self.ui_sidebar_width = move.ui_sidebar_width
+        self.text_input_mode = move.text_input_mode
         self.draw_grid = move.draw_grid
         self.draw_axes = move.draw_axes
 
@@ -2279,6 +2290,38 @@ struct Renderer3D(Movable):
         var c = self.mouse_clicked
         self.mouse_clicked = False
         return c
+
+    def set_text_input_mode(mut self, on: Bool):
+        """Suspend the renderer's own key bindings while a field has focus."""
+        self.text_input_mode = on
+
+    def request_camera(mut self, index: Int):
+        """Same channel the 1-9 keys use; read once by the next render."""
+        self.camera_switch_request = index
+
+    def request_screenshot(mut self):
+        self.screenshot_requested = True
+
+    def is_recording(self) -> Bool:
+        return self.recorder.is_recording
+
+    def recording_frames(self) -> Int:
+        return self.recorder.frame_count
+
+    def toggle_recording(mut self) raises:
+        """Start/stop video capture — the V key's behaviour, as a method."""
+        if self.recorder.is_recording:
+            self.stop_recording()
+        else:
+            self.start_recording(
+                "recording_" + String(self.screenshot_counter) + ".mp4"
+            )
+
+    def paused(self) -> Bool:
+        return self.is_paused
+
+    def toggle_pause(mut self):
+        self.is_paused = not self.is_paused
 
     def scene_width(self) -> Int:
         """Window width minus the reserved UI strip; at least 1."""
@@ -3956,7 +3999,10 @@ struct Renderer3D(Movable):
             elif EventType(event_type) == EventType.EVENT_KEY_DOWN:
                 var key_event = event[KeyboardEvent]
                 var key_val = Int(key_event.key)
-                if key_val == Int(Keycode.SDLK_ESCAPE):
+                if self.text_input_mode:
+                    # Everything goes to the application while it is typing.
+                    self.last_key = key_val
+                elif key_val == Int(Keycode.SDLK_ESCAPE):
                     self.should_quit = True
                     return True
                 elif key_val >= 0x31 and key_val <= 0x39:

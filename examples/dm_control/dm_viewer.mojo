@@ -76,7 +76,9 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv, Phyics3dEnvConfig
 from mojo_rl.physics3d.model import ModelDefLike
 from mojo_rl.render.types import Color
-from mojo_rl.render.ui import UI, UI_ROW_H_SMALL
+from mojo_rl.render.ui import (
+    UI, UI_ROW_H_SMALL, ui_apply_key, UI_KEY_ESCAPE, UI_KEY_RETURN,
+)
 
 from mojo_rl.envs.dm_control.acrobot.acrobot_xml import DMAcrobotModel
 from mojo_rl.envs.dm_control.acrobot.acrobot_config import DMAcrobotConfig
@@ -233,6 +235,76 @@ def _task_names() -> List[String]:
     return t^
 
 
+def _domain_names() -> List[String]:
+    """The 16 domains, in the order `_task_domain` indexes them."""
+    var d = List[String]()
+    d.append(String("acrobot"))
+    d.append(String("ball_in_cup"))
+    d.append(String("cartpole"))
+    d.append(String("cheetah"))
+    d.append(String("finger"))
+    d.append(String("fish"))
+    d.append(String("hopper"))
+    d.append(String("humanoid"))
+    d.append(String("manipulator"))
+    d.append(String("pendulum"))
+    d.append(String("point_mass"))
+    d.append(String("quadruped"))
+    d.append(String("reacher"))
+    d.append(String("stacker"))
+    d.append(String("swimmer"))
+    d.append(String("walker"))
+    return d^
+
+
+def _task_domain() -> List[Int]:
+    """Domain index per task id.
+
+    ⚠ EXPLICIT, NOT DERIVED FROM THE NAME. Prefix-splitting looks tempting and
+    is wrong here: `ball_in_cup_catch`, `point_mass_easy` and
+    `humanoid_run_pure_state` all break a split-on-first-underscore rule, in
+    three different ways.
+    """
+    var t = List[Int]()
+    for _ in range(2):
+        t.append(0)   # acrobot
+    t.append(1)       # ball_in_cup
+    for _ in range(6):
+        t.append(2)   # cartpole
+    t.append(3)       # cheetah
+    for _ in range(3):
+        t.append(4)   # finger
+    for _ in range(2):
+        t.append(5)   # fish
+    for _ in range(2):
+        t.append(6)   # hopper
+    for _ in range(4):
+        t.append(7)   # humanoid
+    for _ in range(4):
+        t.append(8)   # manipulator
+    t.append(9)       # pendulum
+    for _ in range(2):
+        t.append(10)  # point_mass
+    for _ in range(2):
+        t.append(11)  # quadruped
+    for _ in range(2):
+        t.append(12)  # reacher
+    for _ in range(2):
+        t.append(13)  # stacker
+    for _ in range(2):
+        t.append(14)  # swimmer
+    for _ in range(3):
+        t.append(15)  # walker
+    return t^
+
+
+def _contains(haystack: String, needle: String) -> Bool:
+    """Substring test — `find` returning -1 is the whole implementation."""
+    if needle.byte_length() == 0:
+        return True
+    return haystack.find(needle) != -1
+
+
 def _task_index(name: String) -> Int:
     """Task id for an argv name, or -1."""
     var names = _task_names()
@@ -258,6 +330,12 @@ struct ViewerState(Copyable, Movable):
     var scale: Float64
     var quit: Bool
     """Set when the window closed for real, as opposed to for a switch."""
+    var filter: String
+    """Task-name filter. Survives a switch so the list does not reset itself
+    under the user the moment they pick something from it."""
+    var open_domain: Int
+    """Expanded domain, or -1. One at a time: the sidebar has room for every
+    header plus one group, and an accordion needs no scrolling."""
 
 
 def _parse_drive(name: String) -> Int:
@@ -340,11 +418,20 @@ def _view[
     comptime SIDEBAR_W = Float32(300.0)
     comptime PAD = Float32(10.0)
     comptime INNER_W = SIDEBAR_W - 2.0 * PAD
-    comptime LIST_TOP = Float32(58.0)
+    comptime TREE_TOP = Float32(80.0)
+    comptime CTRL_TOP = Float32(556.0)
+    comptime TREE_ROWS = 32
+    """Rows the tree region fits: (CTRL_TOP - TREE_TOP) / 14, minus a margin.
+    16 headers plus the largest group (cartpole, 6) is 22, so the accordion
+    never needs to scroll; only a very loose filter can overflow, and that
+    case says so rather than silently truncating."""
 
     env.set_ui_sidebar_width(Int(SIDEBAR_W))
 
     var tasks = _task_names()
+    var domains = _domain_names()
+    var task_domain = _task_domain()
+    var filter_focused = False
     var held = E.ActionType()
     var step_i = 0
     var episode = 0
@@ -359,7 +446,16 @@ def _view[
         # SPACE, RIGHT, R, S, V. `renderer_take_key` clears on read, so each
         # press fires once.
         var k = env.renderer_take_key()
-        if k == 0x44 or k == 0x64:  # D — cycle drive mode
+        if filter_focused:
+            # While the field has focus the renderer forwards EVERY keycode
+            # (see `set_text_input_mode`), so the shortcuts below must not run
+            # — otherwise typing "reacher" would also cycle the drive mode.
+            if k == UI_KEY_ESCAPE or k == UI_KEY_RETURN:
+                filter_focused = False
+                env.renderer_set_text_input_mode(False)
+            elif k != 0:
+                _ = ui_apply_key(st.filter, k)
+        elif k == 0x44 or k == 0x64:  # D — cycle drive mode
             live_drive = (live_drive + 1) % 3
         elif k == 0x4E or k == 0x6E:  # N — restart the episode
             _ = env.reset()
@@ -374,15 +470,13 @@ def _view[
 
         # ── sidebar ──────────────────────────────────────────────────────
         # Everything lives in the RESERVED strip: `set_ui_sidebar_width` insets
-        # the 3D viewport by SIDEBAR_W and corrects the camera aspect, so these
-        # widgets sit beside the scene rather than on top of it. Nothing here
-        # overlaps the render, which is why the panel can be opaque and the
-        # list can be long.
+        # the 3D viewport and corrects the camera aspect, so these widgets sit
+        # beside the scene rather than on top of it.
         #
         # Immediate mode: each widget both draws and answers, so the sidebar is
-        # rebuilt from scratch every frame and holds no state of its own.
-        # Widgets RECORD here and are painted inside render_frame — an
-        # application cannot draw between begin_frame and end_frame.
+        # rebuilt from scratch every frame and holds no state of its own — the
+        # filter text and the expanded domain live in `ViewerState`, which is
+        # also what carries them across a task switch.
         var ui = UI(
             env.renderer_mouse_x(),
             env.renderer_mouse_y(),
@@ -401,12 +495,64 @@ def _view[
             Color(150, 165, 190, 255), 1,
         )
 
-        var picked = ui.list_select(
-            PAD, LIST_TOP, INNER_W, N_TASKS, tasks, 0, st.task,
-            text_scale=1, row_h=UI_ROW_H_SMALL,
-        )
+        # ── filter ───────────────────────────────────────────────────────
+        if ui.text_input(PAD, 56.0, INNER_W, 18.0, st.filter, filter_focused,
+                         String("filter tasks...")):
+            filter_focused = not filter_focused
+            env.renderer_set_text_input_mode(filter_focused)
 
-        var cy = LIST_TOP + Float32(N_TASKS) * UI_ROW_H_SMALL + 8.0
+        # ── task tree ────────────────────────────────────────────────────
+        # A filter flattens the tree: with a query, matching tasks are listed
+        # directly, because making the user expand a domain to reach a result
+        # they already named would defeat the search.
+        var picked = -1
+        var ty = TREE_TOP
+        if st.filter.byte_length() > 0:
+            var shown = List[String]()
+            var shown_ids = List[Int]()
+            for i in range(N_TASKS):
+                if _contains(tasks[i], st.filter):
+                    shown.append(tasks[i])
+                    shown_ids.append(i)
+            if len(shown) == 0:
+                ui.label(PAD, ty, String("no match"),
+                         Color(150, 165, 190, 255), 1)
+            else:
+                var hit = ui.list_select(
+                    PAD, ty, INNER_W, TREE_ROWS, shown, 0, -1,
+                    text_scale=1, row_h=UI_ROW_H_SMALL,
+                )
+                if hit >= 0:
+                    picked = shown_ids[hit]
+                if len(shown) > TREE_ROWS:
+                    ui.label(
+                        PAD, ty + Float32(TREE_ROWS) * UI_ROW_H_SMALL,
+                        String("+") + String(len(shown) - TREE_ROWS)
+                        + String(" more — narrow the filter"),
+                        Color(150, 165, 190, 255), 1,
+                    )
+        else:
+            for d in range(len(domains)):
+                var n_in = 0
+                for i in range(N_TASKS):
+                    if task_domain[i] == d:
+                        n_in += 1
+                if ui.tree_header(PAD, ty, INNER_W, UI_ROW_H_SMALL - 1.0,
+                                  domains[d], st.open_domain == d, n_in):
+                    st.open_domain = -1 if st.open_domain == d else d
+                ty += UI_ROW_H_SMALL
+                if st.open_domain == d:
+                    for i in range(N_TASKS):
+                        if task_domain[i] != d:
+                            continue
+                        if ui.button(PAD + 12.0, ty, INNER_W - 12.0,
+                                     UI_ROW_H_SMALL - 2.0, tasks[i],
+                                     i == st.task, 1):
+                            picked = i
+                        ty += UI_ROW_H_SMALL
+
+        # ── controls, pinned to the bottom ───────────────────────────────
+        var cy = CTRL_TOP
         ui.label(PAD, cy, String("drive   [D]"), Color(150, 165, 190, 255), 1)
         cy += 14.0
         if ui.button(PAD, cy, 90.0, 22.0, String("zero"),
@@ -436,6 +582,38 @@ def _view[
                      False, 1):
             live_drive = DRIVE_ZERO
             live_scale = 1.0
+
+        # Camera row — one button per camera the model declares. Models carry
+        # between one and four, so the row is sized from the model, not fixed.
+        cy += 28.0
+        var n_cam = env.renderer_n_cameras()
+        ui.label(PAD, cy + 6.0, String("cam"), Color(150, 165, 190, 255), 1)
+        var cam_w = (INNER_W - 40.0) / Float32(n_cam if n_cam > 0 else 1)
+        for c in range(n_cam):
+            if ui.button(PAD + 36.0 + Float32(c) * cam_w, cy, cam_w - 3.0,
+                         22.0, String(c + 1),
+                         c == env.renderer_current_camera(), 1):
+                env.renderer_request_camera(c)
+
+        cy += 28.0
+        if ui.button(PAD, cy, 90.0, 22.0,
+                     String("pause") if not env.renderer_paused()
+                     else String("resume"), env.renderer_paused(), 1):
+            env.renderer_toggle_pause()
+        if ui.button(PAD + 95.0, cy, 90.0, 22.0, String("shot  [S]"),
+                     False, 1):
+            env.renderer_request_screenshot()
+        var rec = env.renderer_is_recording()
+        if ui.button(
+            PAD + 190.0, cy, 90.0, 22.0,
+            # Labels are sized to the button: 90 px holds 11 characters at
+            # 8 px each, and "record  [V]" is exactly one over, so it spilled
+            # past its own edge.
+            (String("rec ") + String(env.renderer_recording_frames()))
+            if rec else String("rec  [V]"),
+            rec, 1,
+        ):
+            env.renderer_toggle_recording()
 
         env.set_ui(ui.rects, ui.texts)
 
@@ -607,6 +785,6 @@ def main() raises:
     # One task runs at a time; picking another in the window ends that task's
     # loop and comes back here to build the next one. `st` is what crosses the
     # gap, since the env and its window do not.
-    var st = ViewerState(task, drive, act_scale, False)
+    var st = ViewerState(task, drive, act_scale, False, String(""), -1)
     while not st.quit:
         _dispatch(st)

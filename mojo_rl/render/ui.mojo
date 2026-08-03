@@ -7,15 +7,23 @@ The only state is `UI` itself — pointer position and whether a click is still
 unconsumed this frame — which is why it can be built and thrown away every
 frame.
 
-WHY NOT A GUI LIBRARY. SDL3 ships no widgets, so something has to provide
-them. Dear ImGui or Nuklear would each still need a rendering backend written
-against THIS project's SDL3-GPU/Metal pipeline, and that backend is about as
-much code as the widgets below — plus C FFI and vendoring. Everything the
-widgets need was already here: a screen-space textured-quad path (`draw_text`),
-a font atlas, `SDL_GetMouseState`, `MouseButtonEvent` with coordinates, and
-`SDL_StartTextInput` for typing if a filter box is ever wanted. Reconsider
-this if the ambition grows to docking panels, property inspectors and plots —
-that is where ImGui's depth starts paying for its backend.
+WHY THIS EXISTS RATHER THAN A GUI LIBRARY — and the honest current answer.
+SDL3 ships no widgets, so something has to provide them, and everything these
+need was already here: a screen-space textured-quad path (`draw_text`), a font
+atlas, and mouse coordinates the event pump already received.
+
+⚠ AN EARLIER VERSION OF THIS NOTE CLAIMED Dear ImGui WOULD NEED A RENDERING
+BACKEND WRITTEN AGAINST THIS PROJECT'S PIPELINE. That was wrong: ImGui ships an
+official `imgui_impl_sdlgpu3` backend, and a spike drove it from Mojo through a
+152-line C shim, rendering into a render pass this project's own bindings
+built. So the reason to stay here is NOT that ImGui is expensive to integrate.
+
+What this layer still buys is no C++ toolchain, no vendored dependency and no
+second build step. What it cannot buy, at any reasonable price, is drag
+tracking (a slider that streams values mid-gesture needs pointer capture and
+per-widget retained state), real text editing (selection, clipboard, IME), or
+plots. `text_input` below is the boundary case: it works because task names are
+lowercase identifiers, and it would not survive contact with anything else.
 
 ⚠ RECTANGLES SHARE THE TEXT BUDGET. `draw_rect` writes into the same vertex
 buffer as `draw_text`, capped at `MAX_TEXT_CHARS` quads. A panel costs a few
@@ -89,6 +97,40 @@ do not — 39 * 22 = 858 — which is the whole reason `text_scale` exists."""
 def ui_char_w(scale: Int) -> Float32:
     """Advance per character — `draw_text` uses 8 * scale."""
     return Float32(8 * scale)
+
+
+comptime UI_KEY_BACKSPACE: Int = 8
+comptime UI_KEY_ESCAPE: Int = 27
+comptime UI_KEY_RETURN: Int = 13
+
+
+def ui_apply_key(mut text: String, key: Int) -> Bool:
+    """Apply one SDL keycode to a text buffer. True if the buffer changed.
+
+    Deliberately tiny: printable ASCII and backspace. That covers a filter over
+    identifiers like `manipulator_insert_ball`, which is the only text this UI
+    has any business accepting. Anything more — selection, clipboard, IME,
+    composed characters — is where a hand-rolled field stops being cheap and a
+    real widget library starts paying for itself.
+
+    ⚠ SDL DELIVERS UNSHIFTED KEYCODES here, so this sees lowercase letters and
+    the unshifted digit row. That is exactly right for matching task names and
+    exactly wrong for anything needing capitals.
+    """
+    if key == UI_KEY_BACKSPACE:
+        if text.byte_length() > 0:
+            # ⚠ VIA A TEMPORARY. `text = String(text[...])` aliases the
+            # destination with the slice it is built from and the compiler
+            # rejects it outright, which is a mercy — that is exactly the shape
+            # that silently corrupts in languages without the check.
+            var trimmed = String(text[byte = 0 : text.byte_length() - 1])
+            text = trimmed
+            return True
+        return False
+    if key >= 32 and key < 127:
+        text += chr(key)
+        return True
+    return False
 
 
 struct UI(Copyable, Movable):
@@ -207,6 +249,107 @@ struct UI(Copyable, Movable):
             ):
                 picked = idx
         return picked
+
+    def tree_header(
+        mut self,
+        x: Float32,
+        y: Float32,
+        w: Float32,
+        h: Float32,
+        label: String,
+        open: Bool,
+        count: Int = -1,
+        text_scale: Int = 1,
+    ) -> Bool:
+        """A collapsible group header. Returns True on the frame it is clicked.
+
+        The OPEN STATE IS THE CALLER'S, like `list_select`'s scroll: the widget
+        stays stateless, so there is no hidden per-header state to fall out of
+        sync with a changing group list.
+
+        Why a tree at all: a flat list costs one row per item, and rows share
+        the renderer's quad budget with the HUD. 16 collapsed headers plus one
+        expanded group is ~22 rows where a flat list of the same content is 39,
+        and at Phase 2 scale (85 tasks) the flat version does not fit at all.
+        """
+        var hot = self._hit(x, y, w, h)
+        self.rects.append(
+            UIRect(x, y, w, h, Color(46, 52, 68, 240) if hot
+                   else Color(32, 37, 48, 235))
+        )
+        var arrow = String("- ") if open else String("+ ")
+        var txt = arrow + label
+        if count >= 0:
+            txt += String("  (") + String(count) + String(")")
+        self.texts.append(
+            UIText(
+                x + 5.0,
+                y + (h - Float32(8 * text_scale)) * 0.5,
+                txt,
+                Color(235, 240, 250, 255) if hot
+                else Color(185, 196, 214, 255),
+                text_scale,
+            )
+        )
+        if hot and self.click:
+            self.click = False
+            return True
+        return False
+
+    def text_input(
+        mut self,
+        x: Float32,
+        y: Float32,
+        w: Float32,
+        h: Float32,
+        text: String,
+        focused: Bool,
+        placeholder: String = String(""),
+        text_scale: Int = 1,
+    ) -> Bool:
+        """A single-line field. Returns True on the frame it is CLICKED.
+
+        ⚠ THIS WIDGET DOES NOT EDIT THE STRING. Editing needs keyboard events,
+        which arrive through the renderer, so the caller owns the buffer and
+        feeds keycodes to `ui_apply_key`. Splitting it this way keeps the whole
+        UI layer free of any renderer dependency.
+
+        ⚠ THE CALLER MUST ALSO CALL `set_text_input_mode(focused)`. The
+        renderer claims R, S, V, SPACE, 1-9 and ESC for its own bindings, so an
+        unfocused-but-typed-into field would fire screenshots and recordings
+        instead of inserting characters.
+        """
+        var hot = self._hit(x, y, w, h)
+        self.rects.append(
+            UIRect(x, y, w, h, Color(12, 14, 20, 255))
+        )
+        # A bright 1 px underline is the focus cue; a full border would cost
+        # four rects out of the shared quad budget for the same information.
+        self.rects.append(
+            UIRect(x, y + h - 1.0, w, 1.0,
+                   Color(120, 190, 255, 255) if focused
+                   else Color(70, 78, 95, 220))
+        )
+        var shown = text
+        var col = Color(225, 232, 245, 255)
+        if text.byte_length() == 0 and not focused:
+            shown = placeholder
+            col = Color(110, 120, 140, 255)
+        if focused:
+            shown += "_"
+        self.texts.append(
+            UIText(
+                x + 5.0,
+                y + (h - Float32(8 * text_scale)) * 0.5,
+                shown,
+                col,
+                text_scale,
+            )
+        )
+        if hot and self.click:
+            self.click = False
+            return True
+        return False
 
     def scrollbar_hint(
         mut self,
