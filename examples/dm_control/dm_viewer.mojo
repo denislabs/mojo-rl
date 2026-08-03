@@ -63,12 +63,79 @@ from std.sys import argv
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.envs.dm_control.quadruped import DMQuadrupedWalk
+from mojo_rl.envs.phyics3d_env import Phyics3dEnv, Phyics3dEnvConfig
+from mojo_rl.physics3d.model import ModelDefLike
 
+from mojo_rl.envs.dm_control.acrobot.acrobot_xml import DMAcrobotModel
+from mojo_rl.envs.dm_control.acrobot.acrobot_config import DMAcrobotConfig
+from mojo_rl.envs.dm_control.ball_in_cup.ball_in_cup_xml import DMBallInCupModel
+from mojo_rl.envs.dm_control.ball_in_cup.ball_in_cup_config import (
+    DMBallInCupConfig,
+)
+from mojo_rl.envs.dm_control.cartpole.cartpole_xml import (
+    DMCartpole1Model, DMCartpole2Model, DMCartpole3Model,
+)
+from mojo_rl.envs.dm_control.cartpole.cartpole_config import DMCartpoleConfig
+from mojo_rl.envs.dm_control.cheetah.cheetah_xml import DMCheetahModel
+from mojo_rl.envs.dm_control.cheetah.cheetah_config import DMCheetahConfig
+from mojo_rl.envs.dm_control.finger.finger_xml import (
+    DMFingerSpinModel, DMFingerTurnModel,
+)
+from mojo_rl.envs.dm_control.finger.finger_config import (
+    DMFingerSpinConfig, DMFingerTurnConfig,
+)
+from mojo_rl.envs.dm_control.fish.fish_xml import (
+    DMFishSwimModel, DMFishUprightModel,
+)
+from mojo_rl.envs.dm_control.fish.fish_config import (
+    DMFishSwimConfig, DMFishUprightConfig,
+)
+from mojo_rl.envs.dm_control.hopper.hopper_xml import DMHopperModel
+from mojo_rl.envs.dm_control.hopper.hopper_config import DMHopperConfig
+from mojo_rl.envs.dm_control.humanoid.humanoid_xml import (
+    DMHumanoidModel, DMHumanoidPureModel,
+)
+from mojo_rl.envs.dm_control.humanoid.humanoid_config import (
+    DMHumanoidConfig, WALK_SPEED, RUN_SPEED,
+)
+from mojo_rl.envs.dm_control.manipulator.manipulator_xml import (
+    DMManipulatorBringBallModel, DMManipulatorBringPegModel,
+    DMManipulatorInsertBallModel, DMManipulatorInsertPegModel,
+)
+from mojo_rl.envs.dm_control.manipulator.manipulator_config import (
+    DMManipulatorBringBallConfig, DMManipulatorBringPegConfig,
+    DMManipulatorInsertBallConfig, DMManipulatorInsertPegConfig,
+)
+from mojo_rl.envs.dm_control.pendulum.pendulum_xml import DMPendulumModel
+from mojo_rl.envs.dm_control.pendulum.pendulum_config import DMPendulumConfig
+from mojo_rl.envs.dm_control.point_mass.point_mass_xml import DMPointMassModel
+from mojo_rl.envs.dm_control.point_mass.point_mass_config import (
+    DMPointMassConfig,
+)
+from mojo_rl.envs.dm_control.point_mass.point_mass_hard_config import (
+    DMPointMassHardConfig,
+)
+from mojo_rl.envs.dm_control.quadruped.quadruped_xml import (
+    DMQuadrupedWalkModel, DMQuadrupedRunModel,
+)
+from mojo_rl.envs.dm_control.quadruped.quadruped_config import (
+    DMQuadrupedWalkConfig, DMQuadrupedRunConfig,
+)
+from mojo_rl.envs.dm_control.reacher.reacher_xml import DMReacherModel
+from mojo_rl.envs.dm_control.reacher.reacher_config import DMReacherConfig
+from mojo_rl.envs.dm_control.stacker.stacker_xml import (
+    DMStacker2Model, DMStacker4Model,
+)
+from mojo_rl.envs.dm_control.stacker.stacker_config import (
+    DMStacker2Config, DMStacker4Config,
+)
+from mojo_rl.envs.dm_control.swimmer.swimmer_xml import (
+    DMSwimmer6Model, DMSwimmer15Model,
+)
+from mojo_rl.envs.dm_control.swimmer.swimmer_config import DMSwimmerConfig
+from mojo_rl.envs.dm_control.walker.walker_xml import DMWalkerModel
+from mojo_rl.envs.dm_control.walker.walker_config import DMWalkerConfig
 
-# ── the task under the microscope ────────────────────────────────────────────
-# Change BOTH this alias and its `from ... import` line above.
-comptime ENV = DMQuadrupedWalk
 
 # ── drive mode — RUNTIME, so all three live in one binary ────────────────────
 #
@@ -109,57 +176,50 @@ def _parse_drive(name: String) -> Int:
     return DRIVE_SWEEP
 
 
-def main() raises:
-    seed(SEED)
+def _view[
+    MODEL: ModelDefLike, CONFIG: Phyics3dEnvConfig
+](name: String, drive: Int, act_scale: Float64) raises:
+    """The viewer loop, generic over one task's (model, config) pair.
 
-    comptime OBS_DIM = ENV.OBS_DIM
-    comptime ACT_DIM = ENV.ACTION_DIM
-
-    var args = argv()
-    var drive = _parse_drive(String(args[1])) if len(args) > 1 else DRIVE_SWEEP
-    var act_scale = Float64(1.0)
-    if len(args) > 2:
-        try:
-            act_scale = Float64(String(args[2]))
-        except:
-            print("could not parse action scale '", String(args[2]),
-                  "' — using 1.0")
+    ⚠ PARAMETERISED ON MODEL+CONFIG, NOT ON THE ENV TYPE. The obvious
+    factoring — `def _view[E: BoxContinuousActionEnv & RenderableEnv](mut env: E)`
+    — does not compile: `E.ActionType()` cannot be constructed through the
+    trait bound ("no matching function in initialization"). Building the
+    concrete `Phyics3dEnv[...]` inside the function makes `E.ActionType` a real
+    type again, and costs nothing.
+    """
+    comptime E = Phyics3dEnv[MODEL, CONFIG, DT, False]
+    comptime ACT_DIM = E.ACTION_DIM
 
     print("=" * 66)
-    print("dm_control viewer")
+    print("dm_control viewer —", name)
     print("=" * 66)
-    print("  obs dim      =", OBS_DIM)
+    print("  obs dim      =", E.OBS_DIM)
     print("  action dim   =", ACT_DIM)
     if drive == DRIVE_ZERO:
         print("  drive        = zero (reset pose + gravity)")
     elif drive == DRIVE_RANDOM:
         print("  drive        = random, scale", act_scale)
     else:
-        print("  drive        = sweep, period", SWEEP_PERIOD, "steps, scale",
-              act_scale)
-    print("  (drive mode is argv[1]: zero | random | sweep; argv[2] = scale)")
-    print("  reset every  =", EPISODE_STEPS, "steps")
+        print("  drive        = sweep, scale", act_scale)
     print("  close the window to quit")
     print("=" * 66)
 
     var ctx = DeviceContext()
-    var env = ENV(ctx)
+    var env = E(ctx)
     _ = env.reset()
 
     if not env.init_renderer():
-        print("No renderer available — is SDL3 present? Running headless is")
-        print("pointless for this script, so stopping here.")
+        print("No renderer available — is SDL3 present?")
         return
 
-    # Held action for RANDOM, so the model is driven rather than dithered.
-    var held = ENV.ActionType()
+    var held = E.ActionType()
     var step_i = 0
     var episode = 0
     var ep_return = Float64(0)
 
     while env.is_renderer_open():
-        var action = ENV.ActionType()
-
+        var action = E.ActionType()
         if drive == DRIVE_RANDOM:
             if step_i % HOLD_STEPS == 0:
                 for a in range(ACT_DIM):
@@ -167,8 +227,6 @@ def main() raises:
             for a in range(ACT_DIM):
                 action.data[a] = held.data[a]
         elif drive == DRIVE_SWEEP:
-            # Out-of-phase so neighbouring joints do not move together — a
-            # synchronised sweep hides a mirrored or duplicated axis.
             var t = Float64(step_i) / SWEEP_PERIOD
             for a in range(ACT_DIM):
                 var phase = Float64(a) / Float64(ACT_DIM if ACT_DIM > 0 else 1)
@@ -176,24 +234,144 @@ def main() raises:
 
         var out = env.step(action)
         ep_return += Float64(out[1])
-
         env.render_frame()
         env.renderer_delay(FRAME_DELAY_MS)
         if env.check_renderer_quit():
             break
-
         step_i += 1
-        # `out[2]` is the env's own terminated flag; dm_control tasks are
-        # mostly non-terminating, so the step budget is the usual reset.
         if out[2] or step_i >= EPISODE_STEPS:
             episode += 1
-            print(
-                "  episode", episode, "ended after", step_i,
-                "steps, return =", ep_return,
-            )
+            print("  episode", episode, "ended after", step_i,
+                  "steps, return =", ep_return)
             _ = env.reset()
             step_i = 0
             ep_return = 0.0
 
     env.close_renderer()
     print("viewer closed")
+
+
+def main() raises:
+    seed(SEED)
+    var args = argv()
+    var task = String(args[1]) if len(args) > 1 else String("quadruped_walk")
+    var drive = _parse_drive(String(args[2])) if len(args) > 2 else DRIVE_SWEEP
+    var act_scale = Float64(1.0)
+    if len(args) > 3:
+        try:
+            act_scale = Float64(String(args[3]))
+        except:
+            print("bad scale, using 1.0")
+
+    if task == "acrobot_swingup":
+        _view[DMAcrobotModel, DMAcrobotConfig[False]](task, drive, act_scale)
+    elif task == "acrobot_swingup_sparse":
+        _view[DMAcrobotModel, DMAcrobotConfig[True]](task, drive, act_scale)
+    elif task == "ball_in_cup_catch":
+        _view[DMBallInCupModel, DMBallInCupConfig](task, drive, act_scale)
+    elif task == "cartpole_balance":
+        _view[DMCartpole1Model, DMCartpoleConfig[1, False, False]](
+            task, drive, act_scale)
+    elif task == "cartpole_balance_sparse":
+        _view[DMCartpole1Model, DMCartpoleConfig[1, False, True]](
+            task, drive, act_scale)
+    elif task == "cartpole_swingup":
+        _view[DMCartpole1Model, DMCartpoleConfig[1, True, False]](
+            task, drive, act_scale)
+    elif task == "cartpole_swingup_sparse":
+        _view[DMCartpole1Model, DMCartpoleConfig[1, True, True]](
+            task, drive, act_scale)
+    elif task == "cartpole_two_poles":
+        _view[DMCartpole2Model, DMCartpoleConfig[2, True, False]](
+            task, drive, act_scale)
+    elif task == "cartpole_three_poles":
+        _view[DMCartpole3Model, DMCartpoleConfig[3, True, False]](
+            task, drive, act_scale)
+    elif task == "cheetah_run":
+        _view[DMCheetahModel, DMCheetahConfig](task, drive, act_scale)
+    elif task == "finger_spin":
+        _view[DMFingerSpinModel, DMFingerSpinConfig](task, drive, act_scale)
+    elif task == "finger_turn_easy":
+        _view[DMFingerTurnModel, DMFingerTurnConfig[0.07]](
+            task, drive, act_scale)
+    elif task == "finger_turn_hard":
+        _view[DMFingerTurnModel, DMFingerTurnConfig[0.03]](
+            task, drive, act_scale)
+    elif task == "fish_upright":
+        _view[DMFishUprightModel, DMFishUprightConfig](task, drive, act_scale)
+    elif task == "fish_swim":
+        _view[DMFishSwimModel, DMFishSwimConfig](task, drive, act_scale)
+    elif task == "hopper_stand":
+        _view[DMHopperModel, DMHopperConfig[False]](task, drive, act_scale)
+    elif task == "hopper_hop":
+        _view[DMHopperModel, DMHopperConfig[True]](task, drive, act_scale)
+    elif task == "humanoid_stand":
+        _view[DMHumanoidModel, DMHumanoidConfig[0.0, False]](
+            task, drive, act_scale)
+    elif task == "humanoid_walk":
+        _view[DMHumanoidModel, DMHumanoidConfig[WALK_SPEED, False]](
+            task, drive, act_scale)
+    elif task == "humanoid_run":
+        _view[DMHumanoidModel, DMHumanoidConfig[RUN_SPEED, False]](
+            task, drive, act_scale)
+    elif task == "humanoid_run_pure_state":
+        _view[DMHumanoidPureModel, DMHumanoidConfig[RUN_SPEED, True]](
+            task, drive, act_scale)
+    elif task == "manipulator_bring_ball":
+        _view[DMManipulatorBringBallModel, DMManipulatorBringBallConfig](
+            task, drive, act_scale)
+    elif task == "manipulator_bring_peg":
+        _view[DMManipulatorBringPegModel, DMManipulatorBringPegConfig](
+            task, drive, act_scale)
+    elif task == "manipulator_insert_ball":
+        _view[DMManipulatorInsertBallModel, DMManipulatorInsertBallConfig](
+            task, drive, act_scale)
+    elif task == "manipulator_insert_peg":
+        _view[DMManipulatorInsertPegModel, DMManipulatorInsertPegConfig](
+            task, drive, act_scale)
+    elif task == "pendulum_swingup":
+        _view[DMPendulumModel, DMPendulumConfig](task, drive, act_scale)
+    elif task == "point_mass_easy":
+        _view[DMPointMassModel, DMPointMassConfig](task, drive, act_scale)
+    elif task == "point_mass_hard":
+        _view[DMPointMassModel, DMPointMassHardConfig](task, drive, act_scale)
+    elif task == "quadruped_walk":
+        _view[DMQuadrupedWalkModel, DMQuadrupedWalkConfig](
+            task, drive, act_scale)
+    elif task == "quadruped_run":
+        _view[DMQuadrupedRunModel, DMQuadrupedRunConfig](
+            task, drive, act_scale)
+    elif task == "reacher_easy":
+        _view[DMReacherModel, DMReacherConfig[0.05]](task, drive, act_scale)
+    elif task == "reacher_hard":
+        _view[DMReacherModel, DMReacherConfig[0.015]](task, drive, act_scale)
+    elif task == "stacker_stack_2":
+        _view[DMStacker2Model, DMStacker2Config](task, drive, act_scale)
+    elif task == "stacker_stack_4":
+        _view[DMStacker4Model, DMStacker4Config](task, drive, act_scale)
+    elif task == "swimmer_swimmer6":
+        _view[DMSwimmer6Model, DMSwimmerConfig](task, drive, act_scale)
+    elif task == "swimmer_swimmer15":
+        _view[DMSwimmer15Model, DMSwimmerConfig](task, drive, act_scale)
+    elif task == "walker_stand":
+        _view[DMWalkerModel, DMWalkerConfig[0.0]](task, drive, act_scale)
+    elif task == "walker_walk":
+        _view[DMWalkerModel, DMWalkerConfig[1.0]](task, drive, act_scale)
+    elif task == "walker_run":
+        _view[DMWalkerModel, DMWalkerConfig[8.0]](task, drive, act_scale)
+    else:
+        print("unknown task:", task, "— the 39 registered tasks are:")
+        print("  acrobot_swingup acrobot_swingup_sparse ball_in_cup_catch")
+        print("  cartpole_balance cartpole_balance_sparse cartpole_swingup")
+        print("  cartpole_swingup_sparse cartpole_two_poles cartpole_three_poles")
+        print("  cheetah_run finger_spin finger_turn_easy finger_turn_hard")
+        print("  fish_upright fish_swim hopper_stand hopper_hop")
+        print("  humanoid_stand humanoid_walk humanoid_run")
+        print("  humanoid_run_pure_state")
+        print("  manipulator_bring_ball manipulator_bring_peg")
+        print("  manipulator_insert_ball manipulator_insert_peg")
+        print("  pendulum_swingup point_mass_easy point_mass_hard")
+        print("  quadruped_walk quadruped_run reacher_easy reacher_hard")
+        print("  stacker_stack_2 stacker_stack_4")
+        print("  swimmer_swimmer6 swimmer_swimmer15")
+        print("  walker_stand walker_walk walker_run")
