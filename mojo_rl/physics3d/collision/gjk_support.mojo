@@ -54,10 +54,12 @@ def support_capsule[
     radius: Scalar[DTYPE],
     half_length: Scalar[DTYPE],
 ) -> InlineArray[Scalar[DTYPE], 3]:
-    """Support point on capsule: choose endpoint closest to dir, then sphere support."""
+    """Support point on capsule: choose endpoint closest to dir, then sphere support.
+    """
     # Capsule axis in world frame (local z-axis rotated by quaternion)
-    var axis = quat_rotate[DTYPE](qx, qy, qz, qw,
-        Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1))
+    var axis = quat_rotate[DTYPE](
+        qx, qy, qz, qw, Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1)
+    )
     var ax = axis[0]
     var ay = axis[1]
     var az = axis[2]
@@ -99,22 +101,37 @@ def support_box[
 ) -> InlineArray[Scalar[DTYPE], 3]:
     """Support point on OBB: pick vertex furthest along dir."""
     # Box axes in world frame (columns of rotation matrix from quaternion)
-    var ax = quat_rotate[DTYPE](qx, qy, qz, qw,
-        Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0))
-    var ay = quat_rotate[DTYPE](qx, qy, qz, qw,
-        Scalar[DTYPE](0), Scalar[DTYPE](1), Scalar[DTYPE](0))
-    var az = quat_rotate[DTYPE](qx, qy, qz, qw,
-        Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1))
+    var ax = quat_rotate[DTYPE](
+        qx, qy, qz, qw, Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0)
+    )
+    var ay = quat_rotate[DTYPE](
+        qx, qy, qz, qw, Scalar[DTYPE](0), Scalar[DTYPE](1), Scalar[DTYPE](0)
+    )
+    var az = quat_rotate[DTYPE](
+        qx, qy, qz, qw, Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1)
+    )
 
     # Sign of projection onto each axis
-    var sx = Scalar[DTYPE](1) if (dir_x * ax[0] + dir_y * ax[1] + dir_z * ax[2]) >= 0 else Scalar[DTYPE](-1)
-    var sy = Scalar[DTYPE](1) if (dir_x * ay[0] + dir_y * ay[1] + dir_z * ay[2]) >= 0 else Scalar[DTYPE](-1)
-    var sz = Scalar[DTYPE](1) if (dir_x * az[0] + dir_y * az[1] + dir_z * az[2]) >= 0 else Scalar[DTYPE](-1)
+    var sx = Scalar[DTYPE](1) if (
+        dir_x * ax[0] + dir_y * ax[1] + dir_z * ax[2]
+    ) >= 0 else Scalar[DTYPE](-1)
+    var sy = Scalar[DTYPE](1) if (
+        dir_x * ay[0] + dir_y * ay[1] + dir_z * ay[2]
+    ) >= 0 else Scalar[DTYPE](-1)
+    var sz = Scalar[DTYPE](1) if (
+        dir_x * az[0] + dir_y * az[1] + dir_z * az[2]
+    ) >= 0 else Scalar[DTYPE](-1)
 
     var result = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-    result[0] = pos_x + sx * half_x * ax[0] + sy * half_y * ay[0] + sz * half_z * az[0]
-    result[1] = pos_y + sx * half_x * ax[1] + sy * half_y * ay[1] + sz * half_z * az[1]
-    result[2] = pos_z + sx * half_x * ax[2] + sy * half_y * ay[2] + sz * half_z * az[2]
+    result[0] = (
+        pos_x + sx * half_x * ax[0] + sy * half_y * ay[0] + sz * half_z * az[0]
+    )
+    result[1] = (
+        pos_y + sx * half_x * ax[1] + sy * half_y * ay[1] + sz * half_z * az[1]
+    )
+    result[2] = (
+        pos_z + sx * half_x * ax[2] + sy * half_y * ay[2] + sz * half_z * az[2]
+    )
     return result
 
 
@@ -137,8 +154,9 @@ def support_cylinder[
 ) -> InlineArray[Scalar[DTYPE], 3]:
     """Support point on cylinder: disk rim + endpoint selection."""
     # Cylinder axis in world frame (local z-axis)
-    var axis = quat_rotate[DTYPE](qx, qy, qz, qw,
-        Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1))
+    var axis = quat_rotate[DTYPE](
+        qx, qy, qz, qw, Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1)
+    )
     var ax = axis[0]
     var ay = axis[1]
     var az = axis[2]
@@ -164,8 +182,9 @@ def support_cylinder[
         result[2] = cz + perp_z * inv_perp
     else:
         # dir is parallel to axis — any rim point works
-        var local_x = quat_rotate[DTYPE](qx, qy, qz, qw,
-            Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0))
+        var local_x = quat_rotate[DTYPE](
+            qx, qy, qz, qw, Scalar[DTYPE](1), Scalar[DTYPE](0), Scalar[DTYPE](0)
+        )
         result[0] = cx + radius * local_x[0]
         result[1] = cy + radius * local_x[1]
         result[2] = cz + radius * local_x[2]
@@ -197,8 +216,9 @@ def support_mesh[
     but n is typically 50-200 for robot convex hulls.
     """
     # Rotate direction to local frame
-    var local_dir = quat_rotate_inverse[DTYPE](qx, qy, qz, qw,
-        dir_x, dir_y, dir_z)
+    var local_dir = quat_rotate_inverse[DTYPE](
+        qx, qy, qz, qw, dir_x, dir_y, dir_z
+    )
     var ld_x = local_dir[0]
     var ld_y = local_dir[1]
     var ld_z = local_dir[2]
@@ -208,15 +228,18 @@ def support_mesh[
     var best_idx = 0
     for i in range(num_verts):
         var off = vert_offset + i * 3
-        var d = ld_x * verts[off] + ld_y * verts[off + 1] + ld_z * verts[off + 2]
+        var d = (
+            ld_x * verts[off] + ld_y * verts[off + 1] + ld_z * verts[off + 2]
+        )
         if d > best_dot:
             best_dot = d
             best_idx = i
 
     # Transform best vertex to world frame
     var off = vert_offset + best_idx * 3
-    var local_pt = quat_rotate[DTYPE](qx, qy, qz, qw,
-        verts[off], verts[off + 1], verts[off + 2])
+    var local_pt = quat_rotate[DTYPE](
+        qx, qy, qz, qw, verts[off], verts[off + 1], verts[off + 2]
+    )
 
     var result = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     result[0] = pos_x + local_pt[0]
@@ -442,7 +465,7 @@ def _closest_point_on_simplex[
     face_v[4] = 0
     face_v[5] = 18
     face_v[6] = 27
-    face_v[7] = 9   # ACD, opp B
+    face_v[7] = 9  # ACD, opp B
     face_v[8] = 0
     face_v[9] = 27
     face_v[10] = 9
@@ -450,7 +473,7 @@ def _closest_point_on_simplex[
     face_v[12] = 9
     face_v[13] = 27
     face_v[14] = 18
-    face_v[15] = 0   # BDC, opp A
+    face_v[15] = 0  # BDC, opp A
 
     var best_dist_sq: Scalar[DTYPE] = 1e30
     var best_face = -1
@@ -512,8 +535,12 @@ def _closest_point_on_simplex[
             # Repeated or collinear vertices — this face says nothing.
             continue
         any_usable_face = True
-        var dot_opp = _dot3[DTYPE](face_n[0], face_n[1], face_n[2], fox - f0x, foy - f0y, foz - f0z)
-        var dot_origin = _dot3[DTYPE](face_n[0], face_n[1], face_n[2], -f0x, -f0y, -f0z)
+        var dot_opp = _dot3[DTYPE](
+            face_n[0], face_n[1], face_n[2], fox - f0x, foy - f0y, foz - f0z
+        )
+        var dot_origin = _dot3[DTYPE](
+            face_n[0], face_n[1], face_n[2], -f0x, -f0y, -f0z
+        )
         var h_opp = dot_opp / n_len
         var h_origin = dot_origin / n_len
         var flat = Scalar[DTYPE](1e-6) * scale
@@ -528,7 +555,7 @@ def _closest_point_on_simplex[
         # and the caller reads "enclosed" as penetration — a phantom contact
         # between geoms that are centimetres apart, with a depth invented by
         # the EPA fallback.
-        var outside = False
+        var outside: Bool
         if h_opp > flat:
             outside = h_origin < 0
         elif h_opp < -flat:
@@ -539,7 +566,11 @@ def _closest_point_on_simplex[
         if outside:
             # Origin is OUTSIDE this face — closest point is on this triangle
             # Project origin onto this face plane
-            var n_dot_n = face_n[0] * face_n[0] + face_n[1] * face_n[1] + face_n[2] * face_n[2]
+            var n_dot_n = (
+                face_n[0] * face_n[0]
+                + face_n[1] * face_n[1]
+                + face_n[2] * face_n[2]
+            )
             if n_dot_n > Scalar[DTYPE](1e-30):
                 # Closest point on the face PLANE to the origin is
                 # (n.f0 / |n|^2) * n — the same outward convention the
@@ -547,7 +578,10 @@ def _closest_point_on_simplex[
                 # carry a leading minus, which handed GJK a search direction
                 # pointing AWAY from the shape and flipped the reported
                 # contact normal on the separated path.
-                var d = _dot3[DTYPE](f0x, f0y, f0z, face_n[0], face_n[1], face_n[2]) / n_dot_n
+                var d = (
+                    _dot3[DTYPE](f0x, f0y, f0z, face_n[0], face_n[1], face_n[2])
+                    / n_dot_n
+                )
                 var proj_x = d * face_n[0]
                 var proj_y = d * face_n[1]
                 var proj_z = d * face_n[2]

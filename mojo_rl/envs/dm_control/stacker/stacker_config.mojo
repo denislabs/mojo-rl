@@ -197,7 +197,7 @@ struct DMStackerConfig[N_BOXES: Int](Phyics3dEnvConfig):
         # a signal whose raw range spans several decades; the reference feeds
         # exactly this to the policy, so the compression is part of the task.
         for k in range(5):
-            var f = 0.0
+            var f: Float64
             try:
                 f = touch_sphere_site[
                     DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
@@ -418,9 +418,7 @@ struct DMStackerConfig[N_BOXES: Int](Phyics3dEnvConfig):
         var hand_d = Self._site_distance[
             DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
         ](d, SITE_GRASP, s_tgt)
-        var hand_is_far = tolerance(
-            hand_d, 0.1, inf[DType.float64](), CLOSE
-        )
+        var hand_is_far = tolerance(hand_d, 0.1, inf[DType.float64](), CLOSE)
 
         # dm_control tasks never terminate early.
         return (Scalar[DTYPE](box_is_close * hand_is_far), False)

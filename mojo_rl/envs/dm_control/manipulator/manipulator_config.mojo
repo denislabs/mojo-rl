@@ -227,7 +227,7 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
         # exactly this to the policy, so the compression is part of the task,
         # not a convenience.
         for k in range(5):
-            var f = 0.0
+            var f: Float64
             try:
                 f = touch_sphere_site[
                     DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
@@ -363,7 +363,7 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
         # the arm-clearance test.
         var ox = 0.0
         var oz = 0.0
-        var oa = 0.0
+        var oa: Float64
         var vx = 0.0
         var in_target = False
         comptime if not Self.INSERT:
@@ -394,9 +394,7 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
                         continue
                 break
             oa = random_float64() * 2.0 * pi
-            vx = OBJECT_VX_LO + random_float64() * (
-                OBJECT_VX_HI - OBJECT_VX_LO
-            )
+            vx = OBJECT_VX_LO + random_float64() * (OBJECT_VX_HI - OBJECT_VX_LO)
 
         d.qpos.data[OBJECT_QADR_X] = Scalar[DTYPE](ox)
         d.qpos.data[OBJECT_QADR_Z] = Scalar[DTYPE](oz)

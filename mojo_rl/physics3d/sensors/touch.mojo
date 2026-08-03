@@ -123,8 +123,10 @@ def touch_sphere_site[
                 GEOM_SPHERE,
                 "), box zones (type ",
                 GEOM_BOX,
-                ") and ellipsoid zones measured as a sphere of radius"
-                " size[0] (type ",
+                (
+                    ") and ellipsoid zones measured as a sphere of radius"
+                    " size[0] (type "
+                ),
                 GEOM_ELLIPSOID,
                 ") are implemented. A capsule zone needs its own ray test —",
                 " see sensors/touch.mojo.",
@@ -206,18 +208,28 @@ def touch_sphere_site[
         var py = Float64(d.contacts.data[base + CONTACT_IDX_POS_Y])
         var pz = Float64(d.contacts.data[base + CONTACT_IDX_POS_Z])
 
-        var hit = False
+        var hit: Bool
         if stype == GEOM_BOX:
             hit = _ray_hits_box(
-                sx, sy, sz,
-                wq[0], wq[1], wq[2], wq[3],
-                hx, hy, hz,
-                px, py, pz, nx, ny, nz,
+                sx,
+                sy,
+                sz,
+                wq[0],
+                wq[1],
+                wq[2],
+                wq[3],
+                hx,
+                hy,
+                hz,
+                px,
+                py,
+                pz,
+                nx,
+                ny,
+                nz,
             )
         else:
-            hit = _ray_hits_sphere(
-                sx, sy, sz, radius, px, py, pz, nx, ny, nz
-            )
+            hit = _ray_hits_sphere(sx, sy, sz, radius, px, py, pz, nx, ny, nz)
         if hit:
             total += f_normal
 
