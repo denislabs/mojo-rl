@@ -65,6 +65,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv, Phyics3dEnvConfig
 from mojo_rl.physics3d.model import ModelDefLike
+from mojo_rl.render.ui import UI, UI_ROW_H
 
 from mojo_rl.envs.dm_control.acrobot.acrobot_xml import DMAcrobotModel
 from mojo_rl.envs.dm_control.acrobot.acrobot_config import DMAcrobotConfig
@@ -276,6 +277,48 @@ def _view[
         elif k == 0x30:  # 0 — zero torque, the fastest way back to rest
             live_drive = DRIVE_ZERO
 
+        # ── clickable controls ───────────────────────────────────────────
+        # Immediate mode: each widget both draws and answers, so the panel is
+        # rebuilt from scratch every frame and holds no state of its own.
+        # Widgets RECORD here and are painted inside render_frame — an
+        # application cannot draw between begin_frame and end_frame.
+        var ui = UI(
+            env.renderer_mouse_x(),
+            env.renderer_mouse_y(),
+            env.renderer_take_click(),
+        )
+        var px = Float32(12.0)
+        var py = Float32(200.0)
+        ui.panel(px - 6.0, py - 6.0, 236.0, 146.0)
+        ui.label(px, py, String("drive"))
+        var by = py + 20.0
+        if ui.button(px, by, 72.0, 24.0, String("zero"),
+                     live_drive == DRIVE_ZERO):
+            live_drive = DRIVE_ZERO
+        if ui.button(px + 78.0, by, 72.0, 24.0, String("random"),
+                     live_drive == DRIVE_RANDOM):
+            live_drive = DRIVE_RANDOM
+        if ui.button(px + 156.0, by, 68.0, 24.0, String("sweep"),
+                     live_drive == DRIVE_SWEEP):
+            live_drive = DRIVE_SWEEP
+
+        var sy = by + 32.0
+        ui.label(px, sy + 4.0, String("scale ") + _fmt2(live_scale))
+        if ui.button(px + 150.0, sy, 34.0, 24.0, String("-"), False):
+            live_scale = max(live_scale * 0.8, 0.01)
+        if ui.button(px + 190.0, sy, 34.0, 24.0, String("+"), False):
+            live_scale = min(live_scale * 1.25, 8.0)
+
+        var ry = sy + 32.0
+        if ui.button(px, ry, 110.0, 24.0, String("reset ep"), False):
+            _ = env.reset()
+            step_i = 0
+            ep_return = 0.0
+        if ui.button(px + 116.0, ry, 108.0, 24.0, String("zero now"), False):
+            live_drive = DRIVE_ZERO
+            live_scale = 1.0
+
+        env.set_ui(ui.rects, ui.texts)
         env.set_hud_extra(_hud(name, live_drive, live_scale, step_i,
                                episode, ep_return))
 

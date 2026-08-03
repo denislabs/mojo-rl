@@ -195,7 +195,7 @@ from .gpu_shaders import (
     TEXT_VERTEX_MSL,
     TEXT_FRAGMENT_MSL,
 )
-from .font_atlas import build_font_atlas_r8, glyph_uv
+from .font_atlas import build_font_atlas_r8, glyph_uv, solid_uv
 from .png_loader import load_png, TextureData
 from .gpu_shaders_spirv import load_spirv_shaders, SPIRVShaders
 
@@ -343,6 +343,12 @@ struct Renderer3D(Movable):
     # S, V) and swallows everything else; without this an application has no
     # way to bind a key of its own. Read it with `take_key`, which clears.
     var last_key: Int
+    # Pointer state for screen-space UI. The pump already receives these
+    # coordinates and used to keep only a button bool, so nothing could
+    # hit-test a widget.
+    var mouse_x: Float32
+    var mouse_y: Float32
+    var mouse_clicked: Bool
     var draw_grid: Bool
     var draw_axes: Bool
 
@@ -402,6 +408,9 @@ struct Renderer3D(Movable):
         self.draw_axes = draw_axes
         self.should_quit = False
         self.last_key = 0
+        self.mouse_x = 0
+        self.mouse_y = 0
+        self.mouse_clicked = False
         self.initialized = False
 
         # Copy camera
@@ -577,6 +586,9 @@ struct Renderer3D(Movable):
         self.initialized = move.initialized
         self.should_quit = move.should_quit
         self.last_key = move.last_key
+        self.mouse_x = move.mouse_x
+        self.mouse_y = move.mouse_y
+        self.mouse_clicked = move.mouse_clicked
         self.draw_grid = move.draw_grid
         self.draw_axes = move.draw_axes
 
@@ -2232,6 +2244,59 @@ struct Renderer3D(Movable):
             SolidDrawCommand(0, uniforms, texture_cache_idx=tex_idx)
         )
 
+    def take_click(mut self) -> Bool:
+        """True once per mouse press; clears on read like `take_key`."""
+        var c = self.mouse_clicked
+        self.mouse_clicked = False
+        return c
+
+    def draw_rect(
+        mut self,
+        x: Float32,
+        y: Float32,
+        w: Float32,
+        h: Float32,
+        color: Color = Color(30, 30, 40, 220),
+    ):
+        """Filled screen-space rectangle, in pixels, top-left origin.
+
+        Rides the FONT pipeline: the same textured-quad buffer `draw_text`
+        writes into, with UVs pinned to the atlas's solid cell. That keeps the
+        UI to one draw pass and needs no second shader — but it also means
+        rectangles share `MAX_TEXT_CHARS` budget with text, so a panel is
+        worth a few characters.
+        """
+        if len(self.text_vertex_data) >= MAX_TEXT_CHARS * 4 * 8:
+            return
+        var cr = Float32(color.r) / 255.0
+        var cg = Float32(color.g) / 255.0
+        var cb = Float32(color.b) / 255.0
+        var ca = Float32(color.a) / 255.0
+        var uv = solid_uv()
+        var u = uv[0]
+        var v = uv[1]
+
+        # ⚠ InlineArray has no positional-variadic ctor; fill then assign.
+        var xs = InlineArray[Float32, 4](fill=Float32(0))
+        var ys = InlineArray[Float32, 4](fill=Float32(0))
+        xs[0] = x
+        ys[0] = y
+        xs[1] = x + w
+        ys[1] = y
+        xs[2] = x + w
+        ys[2] = y + h
+        xs[3] = x
+        ys[3] = y + h
+        for i in range(4):
+            self.text_vertex_data.append(xs[i])
+            self.text_vertex_data.append(ys[i])
+            self.text_vertex_data.append(u)
+            self.text_vertex_data.append(v)
+            self.text_vertex_data.append(cr)
+            self.text_vertex_data.append(cg)
+            self.text_vertex_data.append(cb)
+            self.text_vertex_data.append(ca)
+
     def take_key(mut self) -> Int:
         """Consume the last unclaimed keycode (0 if none since the last call).
 
@@ -3785,12 +3850,18 @@ struct Renderer3D(Movable):
                 # Track any button press (macOS trackpad intermittently
                 # misidentifies left as right, so treat all buttons same)
                 self.mouse_left_down = True
+                var mb = event[MouseButtonEvent]
+                self.mouse_x = Float32(mb.x)
+                self.mouse_y = Float32(mb.y)
+                self.mouse_clicked = True
 
             elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_UP:
                 self.mouse_left_down = False
 
             elif EventType(event_type) == EventType.EVENT_MOUSE_MOTION:
                 var motion = event[MouseMotionEvent]
+                self.mouse_x = Float32(motion.x)
+                self.mouse_y = Float32(motion.y)
                 var dx = Float64(motion.xrel)
                 var dy = Float64(motion.yrel)
                 if self.mouse_left_down:

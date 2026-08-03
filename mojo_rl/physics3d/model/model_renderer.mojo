@@ -9,6 +9,7 @@ Supports all geom types: capsule, sphere, box, and plane (ground).
 from std.collections import InlineArray
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from mojo_rl.render import Renderer3D, Camera3D, Color
+from mojo_rl.render.ui import UIRect, UIText
 from mojo_rl.render.light import Light
 from mojo_rl.core import EnvRenderer3D
 
@@ -54,6 +55,11 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     # these are appended under them so a viewer can label itself without the
     # renderer knowing anything about viewers.
     var hud_extra: List[String]
+    # Deferred UI command list. Widgets record into these off-frame and they
+    # are painted at HUD time, because an application cannot draw inside
+    # `render_frame`'s begin/end span.
+    var ui_rects: List[UIRect]
+    var ui_texts: List[UIText]
 
     var show_sites: Bool
 
@@ -154,6 +160,8 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.show_velocity = show_velocity
         self.show_sites = show_sites
         self.hud_extra = List[String]()
+        self.ui_rects = List[UIRect]()
+        self.ui_texts = List[UIText]()
 
         var camera = self.cameras[0].copy()
         self.renderer = Renderer3D(
@@ -209,6 +217,8 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.show_velocity = move.show_velocity
         self.show_sites = move.show_sites
         self.hud_extra = move.hud_extra^
+        self.ui_rects = move.ui_rects^
+        self.ui_texts = move.ui_texts^
         self.visual_radius_scale = move.visual_radius_scale
         self.cameras = move.cameras^
         self.camera_modes = move.camera_modes^
@@ -397,6 +407,20 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         """Replace the application-owned HUD lines."""
         self.hud_extra = lines.copy()
 
+    def set_ui(mut self, rects: List[UIRect], texts: List[UIText]):
+        """Replace the deferred UI command list for the next frame."""
+        self.ui_rects = rects.copy()
+        self.ui_texts = texts.copy()
+
+    def take_click(mut self) -> Bool:
+        return self.renderer.take_click()
+
+    def mouse_x(self) -> Float32:
+        return self.renderer.mouse_x
+
+    def mouse_y(self) -> Float32:
+        return self.renderer.mouse_y
+
     def take_key(mut self) -> Int:
         """Consume a keycode the renderer's own bindings did not claim."""
         return self.renderer.take_key()
@@ -472,6 +496,12 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 x0 + 1, y + 1, rec_str, Color(0, 0, 0, 160), s
             )
             self.renderer.draw_text(x0, y, rec_str, Color(220, 40, 40, 255), s)
+
+        # Widget command list first, so HUD text stays legible over panels.
+        for rc in self.ui_rects:
+            self.renderer.draw_rect(rc.x, rc.y, rc.w, rc.h, rc.color)
+        for tx in self.ui_texts:
+            self.renderer.draw_text(tx.x, tx.y, tx.text, tx.color, 2)
 
         # Application-owned lines last, in cyan so they read as "not engine".
         for line in self.hud_extra:

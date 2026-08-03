@@ -36,6 +36,7 @@ from mojo_rl.core.cont_action import ContAction
 
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.physics3d.model.model_renderer import ModelRenderer
+from mojo_rl.render.ui import UIRect, UIText
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -587,6 +588,30 @@ struct Phyics3dEnv[
         if not self._renderer_initialized:
             return
         self._renderer.value()[].set_hud_extra(lines)
+
+    def renderer_take_click(mut self) -> Bool:
+        """True once per mouse press; clears on read."""
+        if not self._renderer_initialized:
+            return False
+        return self._renderer.value()[].take_click()
+
+    def renderer_mouse_x(self) -> Float32:
+        if not self._renderer_initialized:
+            return 0
+        return self._renderer.value()[].mouse_x()
+
+    def renderer_mouse_y(self) -> Float32:
+        if not self._renderer_initialized:
+            return 0
+        return self._renderer.value()[].mouse_y()
+
+    def set_ui(
+        mut self, rects: List[UIRect], texts: List[UIText]
+    ) -> None:
+        """Hand a widget command list to the renderer for the next frame."""
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].set_ui(rects, texts)
 
     def renderer_delay(self, ms: Int) -> None:
         if not self._renderer_initialized:

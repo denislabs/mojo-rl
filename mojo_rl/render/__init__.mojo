@@ -141,3 +141,6 @@ from .image_writer import (
     save_vector_heatmap,
     save_vector_comparison,
 )
+
+# Immediate-mode UI widgets over the screen-space quad pipeline
+from .ui import UI, UI_ROW_H
