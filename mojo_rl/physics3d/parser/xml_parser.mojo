@@ -1983,12 +1983,13 @@ def merge_mjcf(*xmls: String) -> String:
     Singleton tags (<option>, <compiler>): attributes merged, last wins per attr.
     Accumulator tags — inner content concatenated from all inputs:
     <asset>, <default>, <worldbody>, <tendon>, <actuator>, <equality>,
-    <visual>, <sensor>, and <option>'s <flag> children.
+    <visual>, <sensor>, <contact>, and <option>'s <flag> children.
 
-    ⚠ ANYTHING NOT IN THAT LIST IS SILENTLY DROPPED, with no diagnostic. One
-    section still is, deliberately:
-
-      * <contact> — no exclude/pair support yet.
+    ⚠ ANYTHING NOT IN THAT LIST IS SILENTLY DROPPED, with no diagnostic. No
+    section is dropped deliberately any more — <contact> was, on the stale
+    grounds of "no exclude/pair support yet", until 2026-08-03; see the note
+    at `all_contact` below. `<pair>` remains unparsed, but that is a gap in
+    `full_parser`, not here.
 
     <sensor> was in that dropped list until 2026-07-31. Our parser ignores the
     section either way — the ported configs read the underlying fields through
@@ -2033,6 +2034,19 @@ def merge_mjcf(*xmls: String) -> String:
     # Carried for the MuJoCo side of parity gates (see the docstring); our own
     # parser never looks at it.
     var all_sensor = String("")
+    # <contact> joined the accumulators on 2026-08-03, for humanoid_CMU. The
+    # docstring above had said "no exclude/pair support yet" since the function
+    # was written, and by then that was FALSE at both ends: `full_parser`
+    # `_fill_excludes` populates the record and `contact_detection` skips the
+    # excluded pair (`MODEL_META_IDX_NEXCLUDE`). Only the merge was missing, so
+    # a merged model reported `nexclude == 0` against MuJoCo's real count and
+    # collided bodies MuJoCo never collides — silently, since a dropped section
+    # is not an error. This is the THIRD section dropped this way (<tendon>,
+    # then <option>'s <flag> children, now <contact>); the pattern each time is
+    # a stale claim in the docstring outliving the limitation that justified it.
+    # ⚠ `<pair>` inside the section is still unparsed and still silently
+    # ignored — carrying the text does not change that.
+    var all_contact = String("")
     # <option> is merged attribute-wise, but MJCF also allows <flag> CHILDREN
     # inside it. Those were silently dropped before 2026-07-29, which quietly
     # disabled `<flag contact="disable"/>` for every merged model — cartpole
@@ -2067,6 +2081,7 @@ def merge_mjcf(*xmls: String) -> String:
         all_equality = all_equality + _extract_section_inner(stripped, "equality")
         all_tendon = all_tendon + _extract_section_inner(stripped, "tendon")
         all_sensor = all_sensor + _extract_section_inner(stripped, "sensor")
+        all_contact = all_contact + _extract_section_inner(stripped, "contact")
         all_visual = all_visual + _extract_section_inner(stripped, "visual")
 
     # Build merged XML
@@ -2134,6 +2149,10 @@ def merge_mjcf(*xmls: String) -> String:
     # Sensor (reference-only; see the docstring)
     if _trim(all_sensor).byte_length() > 0:
         result = result + "  <sensor>\n" + all_sensor + "  </sensor>\n"
+
+    # Contact — <exclude> pairs are parsed and honoured; <pair> is not.
+    if _trim(all_contact).byte_length() > 0:
+        result = result + "  <contact>\n" + all_contact + "  </contact>\n"
 
     result = result + "</mujoco>"
     return result
@@ -2260,6 +2279,61 @@ def parse_xml(xml: String) -> ParsedModel:
 comptime MAX_COMPTIME_TENDONS: Int = 16
 """Cap on `<fixed>` tendons the comptime parser records (quadruped needs 12)."""
 
+comptime MAX_COMPTIME_ACTUATORS: Int = 64
+"""Cap on actuators the comptime parser records (humanoid_CMU needs 56).
+
+⚠ COUNT THESE WITH MuJoCo, NOT WITH grep. `grep -c '<motor '` on
+humanoid_CMU.xml says 57 and `mjModel.nu` says 56 — the extra match is the
+`<motor ctrllimited=... />` inside `<default class="main">`. Every count in
+these three docstrings was off by the number of same-named elements sitting in
+default blocks until it was checked against a compiled model.
+
+Widened 32 -> 64 on 2026-08-03 for dm_control's humanoid_CMU. The old bound
+was a SILENT TRUNCATION of exactly the shape `MAX_COMPTIME_TENDONS` had before
+2026-07-31: the scan below is `while act_count < CAP`, so a model with more
+actuators than the cap simply stopped recording, while `ParsedModel.nact`
+counted the tags INDEPENDENTLY and came out right. The env would therefore
+expose the full action space and silently apply zero force through every
+actuator past the cap. `ModelDefFromXML` now asserts `nact <=
+MAX_COMPTIME_ACTUATORS` so the next model to outgrow this fails to compile.
+
+Measured with MuJoCo 3.10.0: humanoid_CMU `nu` 56, dog `nu` 38 — both fit. If
+a later model does not, RAISE THIS AND MEASURE THE BUILD TIME; these arrays are
+materialized by the comptime interpreter."""
+
+comptime MAX_COMPTIME_JOINTS: Int = 64
+"""Cap on joints the comptime parser records (humanoid_CMU needs 57).
+
+(1 free + 56 hinges. `grep -c '<joint '` says 60: four of those are the
+`<joint>` elements of `main`, `stiff_low`, `stiff_medium` and `stiff_high`.)
+
+Same silent-truncation shape as `MAX_COMPTIME_ACTUATORS` above, and the payload
+is worse: `joint_qpos_adr` / `joint_is_limited` / `joint_range_*` feed the JOINT
+LIMIT rows, so a joint past the cap keeps its degree of freedom and quietly
+loses its stops. Asserted in `ModelDefFromXML` against `njoint`.
+
+⚠ dog's `njnt` is 75 and does NOT fit — raising this is a Phase 4 item, and
+the assert is what makes that a compile error rather than a physics bug."""
+
+comptime MAX_COMPTIME_NQ: Int = 128
+"""Cap on `qpos0` slots the comptime parser records.
+
+⚠ humanoid_CMU does NOT need this widening — its `nq` is 63, ONE SLOT under the
+old bound of 64. It was widened on the strength of a miscount and is kept
+because dog's `nq` is 87 and genuinely does not fit, and because the failure
+mode below is the worst of the three. One slot is not a margin.
+
+Widened 64 -> 128 on 2026-08-03. ⚠ THIS ONE IS NOT A TRUNCATING SCAN — the
+writes are `data.qpos0[qpos_adr] = ...` indexed by the joint's own qpos address,
+so a model with `nq` past the cap indexes OUT OF BOUNDS rather than stopping
+early. Asserted against `nq` in `ModelDefFromXML`. dog is the model that exceeds 64.
+
+Note the SEPARATE 64-geom cap in `ComptimeRenderData` below: that one is
+RENDER data, not physics (`fields.Model` is parameterized by NGEOM and comes
+from the runtime `full_parser`), so exceeding it costs geoms in the viewer and
+nothing in the dynamics. dog has 296 geoms and blows straight past it;
+humanoid_CMU has 50 and does not."""
+
 
 struct ComptimeActData(Copyable, Movable):
     """Precomputed actuator/joint data for GPU kernel use.
@@ -2272,10 +2346,10 @@ struct ComptimeActData(Copyable, Movable):
         # In GPU kernel:  Self._acd.motor_gears[i]  (no String ops)
     """
 
-    var motor_gears: InlineArray[Float64, 32]
-    var motor_dof_adr: InlineArray[Int, 32]
-    var motor_ctrl_min: InlineArray[Float64, 32]
-    var motor_ctrl_max: InlineArray[Float64, 32]
+    var motor_gears: InlineArray[Float64, MAX_COMPTIME_ACTUATORS]
+    var motor_dof_adr: InlineArray[Int, MAX_COMPTIME_ACTUATORS]
+    var motor_ctrl_min: InlineArray[Float64, MAX_COMPTIME_ACTUATORS]
+    var motor_ctrl_max: InlineArray[Float64, MAX_COMPTIME_ACTUATORS]
     # ── Actuator transmission + gain, as a single flat representation ────────
     #
     # MuJoCo's actuator force is `moment^T * (gain*ctrl + bias)`, and both
@@ -2293,9 +2367,9 @@ struct ComptimeActData(Copyable, Movable):
     #   MOTOR     force = ctrl                       (gain=1, no bias)
     #   POSITION  force = kp*(ctrl - length) - kv*vel  (gainprm/biasprm of a
     #             <position>, i.e. gaintype=fixed + biastype=affine)
-    var motor_kind: InlineArray[Int, 32]
-    var motor_kp: InlineArray[Float64, 32]
-    var motor_kv: InlineArray[Float64, 32]
+    var motor_kind: InlineArray[Int, MAX_COMPTIME_ACTUATORS]
+    var motor_kp: InlineArray[Float64, MAX_COMPTIME_ACTUATORS]
+    var motor_kv: InlineArray[Float64, MAX_COMPTIME_ACTUATORS]
     # ── Activation state (`dyntype`), added for dm_control's quadruped ───────
     #
     # `motor_dyn_tau[i] > 0` means actuator i owns ONE activation variable
@@ -2309,8 +2383,8 @@ struct ComptimeActData(Copyable, Movable):
     # ported before quadruped (`<motor>` and `<position>` both default to
     # dyntype=none), which is why `Data` can carry it as a trailing parameter
     # defaulted to 0 without touching a single existing env config.
-    var motor_dyn_tau: InlineArray[Float64, 32]
-    var motor_act_adr: InlineArray[Int, 32]
+    var motor_dyn_tau: InlineArray[Float64, MAX_COMPTIME_ACTUATORS]
+    var motor_act_adr: InlineArray[Int, MAX_COMPTIME_ACTUATORS]
     var na: Int
     # ── Unsupported-`<general>` report ──────────────────────────────────────
     #
@@ -2328,10 +2402,10 @@ struct ComptimeActData(Copyable, Movable):
     #    4  dyntype is not `none` or `filter`
     var bad_actuator: Int
     var bad_actuator_code: Int
-    var motor_trn_n: InlineArray[Int, 32]
-    var motor_trn_qadr: InlineArray[Int, 128]  # 32 actuators x 4 triples
-    var motor_trn_dadr: InlineArray[Int, 128]
-    var motor_trn_coef: InlineArray[Float64, 128]
+    var motor_trn_n: InlineArray[Int, MAX_COMPTIME_ACTUATORS]
+    var motor_trn_qadr: InlineArray[Int, MAX_COMPTIME_ACTUATORS * 4]  # 32 actuators x 4 triples
+    var motor_trn_dadr: InlineArray[Int, MAX_COMPTIME_ACTUATORS * 4]
+    var motor_trn_coef: InlineArray[Float64, MAX_COMPTIME_ACTUATORS * 4]
     # ── Fixed-tendon springs (`<fixed stiffness="..."/>`) ────────────────────
     #
     # MuJoCo's tendon spring (engine_passive.c, "tendon-level spring-dampers")
@@ -2360,15 +2434,15 @@ struct ComptimeActData(Copyable, Movable):
     var tendon_trn_dadr: InlineArray[Int, MAX_COMPTIME_TENDONS * 4]
     var tendon_trn_coef: InlineArray[Float64, MAX_COMPTIME_TENDONS * 4]
     var ntendon: Int
-    var joint_is_limited: InlineArray[Bool, 32]
-    var joint_qpos_adr: InlineArray[Int, 32]
-    var joint_range_min: InlineArray[Float64, 32]
-    var joint_range_max: InlineArray[Float64, 32]
+    var joint_is_limited: InlineArray[Bool, MAX_COMPTIME_JOINTS]
+    var joint_qpos_adr: InlineArray[Int, MAX_COMPTIME_JOINTS]
+    var joint_range_min: InlineArray[Float64, MAX_COMPTIME_JOINTS]
+    var joint_range_max: InlineArray[Float64, MAX_COMPTIME_JOINTS]
     var inertiafromgeom: Bool
     var settotalmass: Float64
     # Initial qpos values from <custom><numeric name="init_qpos" data="..."/>.
     # nq == 0 means no init_qpos was found; use qpos0 defaults instead.
-    var qpos0: InlineArray[Float64, 64]
+    var qpos0: InlineArray[Float64, MAX_COMPTIME_NQ]
     var nq: Int
     # qpos address of the first free joint (-1 if no free joint present).
     var free_joint_qpos_adr: Int
@@ -2376,22 +2450,22 @@ struct ComptimeActData(Copyable, Movable):
     def __init__(out self):
         """Initialize with safe defaults: gears=1.0, dof_adr=-1, all others=0/False.
         """
-        self.motor_gears = InlineArray[Float64, 32](fill=1.0)
-        self.motor_dof_adr = InlineArray[Int, 32](fill=-1)
-        self.motor_ctrl_min = InlineArray[Float64, 32](fill=-1.0)
-        self.motor_ctrl_max = InlineArray[Float64, 32](fill=1.0)
-        self.motor_kind = InlineArray[Int, 32](fill=0)  # ACT_KIND_MOTOR
-        self.motor_kp = InlineArray[Float64, 32](fill=0.0)
-        self.motor_kv = InlineArray[Float64, 32](fill=0.0)
-        self.motor_dyn_tau = InlineArray[Float64, 32](fill=0.0)
-        self.motor_act_adr = InlineArray[Int, 32](fill=-1)
+        self.motor_gears = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=1.0)
+        self.motor_dof_adr = InlineArray[Int, MAX_COMPTIME_ACTUATORS](fill=-1)
+        self.motor_ctrl_min = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=-1.0)
+        self.motor_ctrl_max = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=1.0)
+        self.motor_kind = InlineArray[Int, MAX_COMPTIME_ACTUATORS](fill=0)  # ACT_KIND_MOTOR
+        self.motor_kp = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=0.0)
+        self.motor_kv = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=0.0)
+        self.motor_dyn_tau = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=0.0)
+        self.motor_act_adr = InlineArray[Int, MAX_COMPTIME_ACTUATORS](fill=-1)
         self.na = 0
         self.bad_actuator = -1
         self.bad_actuator_code = -1
-        self.motor_trn_n = InlineArray[Int, 32](fill=0)
-        self.motor_trn_qadr = InlineArray[Int, 128](fill=-1)
-        self.motor_trn_dadr = InlineArray[Int, 128](fill=-1)
-        self.motor_trn_coef = InlineArray[Float64, 128](fill=0.0)
+        self.motor_trn_n = InlineArray[Int, MAX_COMPTIME_ACTUATORS](fill=0)
+        self.motor_trn_qadr = InlineArray[Int, MAX_COMPTIME_ACTUATORS * 4](fill=-1)
+        self.motor_trn_dadr = InlineArray[Int, MAX_COMPTIME_ACTUATORS * 4](fill=-1)
+        self.motor_trn_coef = InlineArray[Float64, MAX_COMPTIME_ACTUATORS * 4](fill=0.0)
         self.tendon_stiffness = InlineArray[Float64, MAX_COMPTIME_TENDONS](
             fill=0.0
         )
@@ -2412,34 +2486,34 @@ struct ComptimeActData(Copyable, Movable):
             fill=0.0
         )
         self.ntendon = 0
-        self.joint_is_limited = InlineArray[Bool, 32](fill=False)
-        self.joint_qpos_adr = InlineArray[Int, 32](fill=0)
-        self.joint_range_min = InlineArray[Float64, 32](fill=0.0)
-        self.joint_range_max = InlineArray[Float64, 32](fill=0.0)
+        self.joint_is_limited = InlineArray[Bool, MAX_COMPTIME_JOINTS](fill=False)
+        self.joint_qpos_adr = InlineArray[Int, MAX_COMPTIME_JOINTS](fill=0)
+        self.joint_range_min = InlineArray[Float64, MAX_COMPTIME_JOINTS](fill=0.0)
+        self.joint_range_max = InlineArray[Float64, MAX_COMPTIME_JOINTS](fill=0.0)
         self.inertiafromgeom = False
         self.settotalmass = Float64(-1.0)
-        self.qpos0 = InlineArray[Float64, 64](fill=0.0)
+        self.qpos0 = InlineArray[Float64, MAX_COMPTIME_NQ](fill=0.0)
         self.nq = 0
         self.free_joint_qpos_adr = -1
 
     def __init__(out self, *, copy: Self):
         # InlineArray is not ImplicitlyCopyable; copy element-by-element.
-        self.motor_gears = InlineArray[Float64, 32](fill=1.0)
-        self.motor_dof_adr = InlineArray[Int, 32](fill=-1)
-        self.motor_ctrl_min = InlineArray[Float64, 32](fill=-1.0)
-        self.motor_ctrl_max = InlineArray[Float64, 32](fill=1.0)
-        self.motor_kind = InlineArray[Int, 32](fill=0)
-        self.motor_kp = InlineArray[Float64, 32](fill=0.0)
-        self.motor_kv = InlineArray[Float64, 32](fill=0.0)
-        self.motor_dyn_tau = InlineArray[Float64, 32](fill=0.0)
-        self.motor_act_adr = InlineArray[Int, 32](fill=-1)
+        self.motor_gears = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=1.0)
+        self.motor_dof_adr = InlineArray[Int, MAX_COMPTIME_ACTUATORS](fill=-1)
+        self.motor_ctrl_min = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=-1.0)
+        self.motor_ctrl_max = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=1.0)
+        self.motor_kind = InlineArray[Int, MAX_COMPTIME_ACTUATORS](fill=0)
+        self.motor_kp = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=0.0)
+        self.motor_kv = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=0.0)
+        self.motor_dyn_tau = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=0.0)
+        self.motor_act_adr = InlineArray[Int, MAX_COMPTIME_ACTUATORS](fill=-1)
         self.na = copy.na
         self.bad_actuator = copy.bad_actuator
         self.bad_actuator_code = copy.bad_actuator_code
-        self.motor_trn_n = InlineArray[Int, 32](fill=0)
-        self.motor_trn_qadr = InlineArray[Int, 128](fill=-1)
-        self.motor_trn_dadr = InlineArray[Int, 128](fill=-1)
-        self.motor_trn_coef = InlineArray[Float64, 128](fill=0.0)
+        self.motor_trn_n = InlineArray[Int, MAX_COMPTIME_ACTUATORS](fill=0)
+        self.motor_trn_qadr = InlineArray[Int, MAX_COMPTIME_ACTUATORS * 4](fill=-1)
+        self.motor_trn_dadr = InlineArray[Int, MAX_COMPTIME_ACTUATORS * 4](fill=-1)
+        self.motor_trn_coef = InlineArray[Float64, MAX_COMPTIME_ACTUATORS * 4](fill=0.0)
         self.tendon_stiffness = InlineArray[Float64, MAX_COMPTIME_TENDONS](
             fill=0.0
         )
@@ -2460,16 +2534,16 @@ struct ComptimeActData(Copyable, Movable):
             fill=0.0
         )
         self.ntendon = copy.ntendon
-        self.joint_is_limited = InlineArray[Bool, 32](fill=False)
-        self.joint_qpos_adr = InlineArray[Int, 32](fill=0)
-        self.joint_range_min = InlineArray[Float64, 32](fill=0.0)
-        self.joint_range_max = InlineArray[Float64, 32](fill=0.0)
+        self.joint_is_limited = InlineArray[Bool, MAX_COMPTIME_JOINTS](fill=False)
+        self.joint_qpos_adr = InlineArray[Int, MAX_COMPTIME_JOINTS](fill=0)
+        self.joint_range_min = InlineArray[Float64, MAX_COMPTIME_JOINTS](fill=0.0)
+        self.joint_range_max = InlineArray[Float64, MAX_COMPTIME_JOINTS](fill=0.0)
         self.inertiafromgeom = copy.inertiafromgeom
         self.settotalmass = copy.settotalmass
-        self.qpos0 = InlineArray[Float64, 64](fill=0.0)
+        self.qpos0 = InlineArray[Float64, MAX_COMPTIME_NQ](fill=0.0)
         self.nq = copy.nq
         self.free_joint_qpos_adr = copy.free_joint_qpos_adr
-        for i in range(32):
+        for i in range(MAX_COMPTIME_ACTUATORS):
             self.motor_gears[i] = copy.motor_gears[i]
             self.motor_dof_adr[i] = copy.motor_dof_adr[i]
             self.motor_ctrl_min[i] = copy.motor_ctrl_min[i]
@@ -2480,11 +2554,14 @@ struct ComptimeActData(Copyable, Movable):
             self.motor_dyn_tau[i] = copy.motor_dyn_tau[i]
             self.motor_act_adr[i] = copy.motor_act_adr[i]
             self.motor_trn_n[i] = copy.motor_trn_n[i]
+        # Joints have their OWN cap — the two were one loop while both were 32,
+        # which is a bug the moment they diverge (dog: 58 actuators, 147 joints).
+        for i in range(MAX_COMPTIME_JOINTS):
             self.joint_is_limited[i] = copy.joint_is_limited[i]
             self.joint_qpos_adr[i] = copy.joint_qpos_adr[i]
             self.joint_range_min[i] = copy.joint_range_min[i]
             self.joint_range_max[i] = copy.joint_range_max[i]
-        for i in range(128):
+        for i in range(MAX_COMPTIME_ACTUATORS * 4):
             self.motor_trn_qadr[i] = copy.motor_trn_qadr[i]
             self.motor_trn_dadr[i] = copy.motor_trn_dadr[i]
             self.motor_trn_coef[i] = copy.motor_trn_coef[i]
@@ -2497,7 +2574,7 @@ struct ComptimeActData(Copyable, Movable):
             self.tendon_trn_qadr[i] = copy.tendon_trn_qadr[i]
             self.tendon_trn_dadr[i] = copy.tendon_trn_dadr[i]
             self.tendon_trn_coef[i] = copy.tendon_trn_coef[i]
-        for i in range(64):
+        for i in range(MAX_COMPTIME_NQ):
             self.qpos0[i] = copy.qpos0[i]
 
     def __init__(out self, *, deinit move: Self):
@@ -2868,7 +2945,7 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
     var act_sec = _extract_section(xml_clean, "actuator")
     var act_pos = 0
     var act_count = 0
-    while act_count < 32:
+    while act_count < MAX_COMPTIME_ACTUATORS:
         var nm = _find_tag(act_sec, "<motor", act_pos)
         var npos = _find_tag(act_sec, "<position", act_pos)
         var ngen = _find_tag(act_sec, "<general", act_pos)
@@ -3052,7 +3129,7 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
     var jnt_pos = 0
     var jnt_count = 0
     var qpos_adr = 0
-    while jnt_count < 32:
+    while jnt_count < MAX_COMPTIME_JOINTS:
         var t = wb.find("<joint", jnt_pos)
         if t == -1:
             break

@@ -54,6 +54,9 @@ from .flat_model import (
 from .full_parser import parse_xml_full
 from .xml_parser import (
     MAX_COMPTIME_TENDONS,
+    MAX_COMPTIME_ACTUATORS,
+    MAX_COMPTIME_JOINTS,
+    MAX_COMPTIME_NQ,
     _xml_nth_motor_gear,
     _xml_nth_motor_dof_adr,
     _xml_nth_joint_qpos_adr,
@@ -550,6 +553,37 @@ struct ModelDefFromXML[
             " MAX_COMPTIME_TENDONS; raise it in xml_parser.mojo. Leaving it"
             " would silently drop the surplus tendons AND disable every"
             " actuator transmitted through them."
+        )
+
+        # ── The same trap, on three more comptime tables (2026-08-03) ────────
+        #
+        # `parse_xml_model_data` scans actuators and joints with
+        # `while count < CAP`, while `ParsedModel` counts the tags
+        # INDEPENDENTLY — so before these asserts a model past either cap built
+        # and ran, with the right nact/njoint and a silently truncated `_acd`.
+        # The two payloads differ and both are invisible at runtime:
+        #   actuators — the env exposes the full action space and every
+        #               actuator past the cap applies ZERO FORCE;
+        #   joints    — the dof survives but its LIMIT ROW is never built, so
+        #               the joint quietly loses its stops.
+        # `qpos0` is worse still: it is indexed by the joint's own qpos address
+        # rather than scanned, so `nq > MAX_COMPTIME_NQ` writes OUT OF BOUNDS.
+        comptime assert Self.nact <= MAX_COMPTIME_ACTUATORS, (
+            "physics3d: this model has more actuators than"
+            " MAX_COMPTIME_ACTUATORS; raise it in xml_parser.mojo. Leaving it"
+            " would expose the full action space while every actuator past the"
+            " cap applies zero force."
+        )
+        comptime assert Self.njoint <= MAX_COMPTIME_JOINTS, (
+            "physics3d: this model has more joints than MAX_COMPTIME_JOINTS;"
+            " raise it in xml_parser.mojo. Leaving it would keep every dof past"
+            " the cap while silently dropping its joint-limit row."
+        )
+        comptime assert Self.nq <= MAX_COMPTIME_NQ, (
+            "physics3d: this model's nq exceeds MAX_COMPTIME_NQ; raise it in"
+            " xml_parser.mojo. Unlike the caps above this one is not a"
+            " truncating scan — `qpos0` is indexed by qpos address, so it"
+            " writes out of bounds."
         )
 
         # A `<general>` whose gain/bias/dyn shape we do not implement. The

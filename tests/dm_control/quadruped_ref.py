@@ -146,103 +146,28 @@ def model(run=False):
 # picking a subset is how `jnt_solimp` stayed wrong (the `<freejoint>`
 # expansion was inheriting `solimplimit` from `<default class="body">`, which
 # MuJoCo's `mjs_addFreeJoint` does not) through five other quadruped gates.
-_TABLES = [
-    "body_parentid", "body_rootid", "body_weldid", "body_jntnum", "body_jntadr",
-    "body_dofnum", "body_dofadr", "body_geomnum", "body_geomadr",
-    "body_pos", "body_quat", "body_ipos", "body_iquat",
-    "body_mass", "body_inertia", "body_invweight0",
-    "jnt_type", "jnt_bodyid", "jnt_qposadr", "jnt_dofadr", "jnt_axis",
-    "jnt_pos", "jnt_range", "jnt_limited", "jnt_solimp", "jnt_solref",
-    "jnt_stiffness", "jnt_margin",
-    "dof_bodyid", "dof_jntid", "dof_parentid", "dof_armature", "dof_damping",
-    "dof_invweight0", "dof_M0", "dof_frictionloss",
-    "qpos0", "qpos_spring",
-    "geom_type", "geom_bodyid", "geom_contype", "geom_conaffinity",
-    "geom_condim", "geom_group", "geom_pos", "geom_quat", "geom_size",
-    "geom_friction", "geom_solimp", "geom_solref", "geom_margin", "geom_gap",
-    "geom_rbound",
-    "site_type", "site_bodyid", "site_pos", "site_quat", "site_size",
-    "actuator_trntype", "actuator_trnid", "actuator_dyntype",
-    "actuator_gaintype", "actuator_biastype", "actuator_dynprm",
-    "actuator_gainprm", "actuator_biasprm", "actuator_gear",
-    "actuator_ctrllimited", "actuator_ctrlrange", "actuator_forcerange",
-    "actuator_actadr", "actuator_actnum",
-    "tendon_adr", "tendon_num", "tendon_limited", "tendon_range",
-    "tendon_stiffness", "tendon_damping", "tendon_invweight0",
-    "tendon_length0", "tendon_lengthspring",
-    "tendon_solimp_lim", "tendon_solref_lim",
-    "wrap_type", "wrap_objid", "wrap_prm",
-    "eq_type", "eq_obj1id", "eq_obj2id", "eq_active0", "eq_solimp",
-    "eq_solref", "eq_data",
-    "sensor_type", "sensor_objid", "sensor_adr", "sensor_dim",
-]
-
-_COUNTS = ["nq", "nv", "nu", "na", "nbody", "njnt", "ngeom", "nsite",
-           "ntendon", "neq", "nsensor", "nmocap"]
-
-_OPTS = ["timestep", "cone", "jacobian", "solver", "iterations", "integrator",
-         "impratio", "tolerance"]
+# The table list, the counts, the `<option>` fields and the compare loop moved
+# to `mjmodel_diff.py` on 2026-08-03, when humanoid_CMU became the second user
+# of this gate and `docs/DM_CONTROL_PORT_PHASE2.md` queued ~40 more ports behind
+# it. Behaviour is unchanged except that the shared list also covers `nexclude`
+# and `exclude_signature`, which quadruped has none of.
 
 
 def compare_xml_to_reference(xml_string, run=False):
     """Compile `xml_string` with MuJoCo and diff it against the reference.
 
     Returns a list of human-readable mismatch strings; empty means the ported
-    XML compiles to the reference model exactly. Element ORDER is covered too,
-    by name, since a table comparison indexed by id says nothing if the ids
-    name different things.
+    XML compiles to the reference model exactly.
     """
-    import numpy as np
     import mujoco
+    from mjmodel_diff import diff_models
 
-    ref = model(run=run)
-    got = mujoco.MjModel.from_xml_string(xml_string)
-    bad = []
-
-    for n in _COUNTS:
-        a, b = getattr(ref, n), getattr(got, n)
-        if a != b:
-            bad.append(f"{n}: ref {a} != ours {b}")
-    for n in _OPTS:
-        a, b = getattr(ref.opt, n), getattr(got.opt, n)
-        if a != b:
-            bad.append(f"opt.{n}: ref {a} != ours {b}")
-    if not np.array_equal(ref.opt.gravity, got.opt.gravity):
-        bad.append(f"opt.gravity: ref {ref.opt.gravity} != ours {got.opt.gravity}")
-
-    for n in _TABLES:
-        a = np.asarray(getattr(ref, n), dtype=np.float64)
-        b = np.asarray(getattr(got, n), dtype=np.float64)
-        if a.shape != b.shape:
-            bad.append(f"{n}: shape {a.shape} != {b.shape}")
-            continue
-        if a.size == 0:
-            continue
-        d = np.abs(a - b)
-        if d.max() > 0.0:
-            i = np.unravel_index(int(np.argmax(d)), d.shape)
-            bad.append(f"{n}{list(i)}: ref {a[i]!r} != ours {b[i]!r}")
-
-    for objtype, count in [(mujoco.mjtObj.mjOBJ_BODY, "nbody"),
-                           (mujoco.mjtObj.mjOBJ_JOINT, "njnt"),
-                           (mujoco.mjtObj.mjOBJ_GEOM, "ngeom"),
-                           (mujoco.mjtObj.mjOBJ_SITE, "nsite"),
-                           (mujoco.mjtObj.mjOBJ_TENDON, "ntendon"),
-                           (mujoco.mjtObj.mjOBJ_ACTUATOR, "nu"),
-                           (mujoco.mjtObj.mjOBJ_SENSOR, "nsensor")]:
-        for i in range(min(getattr(ref, count), getattr(got, count))):
-            x = mujoco.mj_id2name(ref, objtype, i)
-            y = mujoco.mj_id2name(got, objtype, i)
-            if x != y:
-                bad.append(f"{objtype} order at {i}: ref {x!r} != ours {y!r}")
-
-    return bad
+    return diff_models(model(run=run),
+                       mujoco.MjModel.from_xml_string(xml_string))
 
 
 def n_tables_compared():
-    """How many tables `compare_xml_to_reference` sweeps.
+    """How many mjModel tables `compare_xml_to_reference` sweeps."""
+    from mjmodel_diff import n_tables
 
-    Asserted on the Mojo side so that deleting entries from `_TABLES` to make
-    a failure go away shows up as a failure of its own.
-    """
-    return len(_TABLES)
+    return n_tables()
