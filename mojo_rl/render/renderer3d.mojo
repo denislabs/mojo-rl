@@ -207,8 +207,17 @@ comptime Mat4 = Mat4Generic[DType.float64]
 # Maximum line vertices per frame
 comptime MAX_LINE_VERTICES = 512
 
-# Maximum text characters per frame for HUD overlay
-comptime MAX_TEXT_CHARS = 512
+# Maximum text characters per frame for HUD overlay.
+#
+# ⚠ THIS IS ALSO THE RECTANGLE BUDGET. `draw_rect` writes quads into the same
+# buffer, so panels and buttons spend from the same pot as glyphs.
+#
+# Raised 512 → 2048 on 2026-08-03 for the viewer's 39-row task list. The old
+# value left ~55 quads of headroom (the engine HUD plus four application lines
+# already cost ~457), and one list blows through that several times over. Cost
+# is a static 2048*4*32 = 256 KiB vertex buffer plus a 24 KiB index buffer,
+# allocated once at init.
+comptime MAX_TEXT_CHARS = 2048
 
 
 # --- Line color entry for list storage ---
@@ -349,6 +358,8 @@ struct Renderer3D(Movable):
     var mouse_x: Float32
     var mouse_y: Float32
     var mouse_clicked: Bool
+    var text_budget_warned: Bool
+    """One-shot latch so an exhausted quad budget is reported, not swallowed."""
     var draw_grid: Bool
     var draw_axes: Bool
 
@@ -411,6 +422,7 @@ struct Renderer3D(Movable):
         self.mouse_x = 0
         self.mouse_y = 0
         self.mouse_clicked = False
+        self.text_budget_warned = False
         self.initialized = False
 
         # Copy camera
@@ -589,6 +601,7 @@ struct Renderer3D(Movable):
         self.mouse_x = move.mouse_x
         self.mouse_y = move.mouse_y
         self.mouse_clicked = move.mouse_clicked
+        self.text_budget_warned = move.text_budget_warned
         self.draw_grid = move.draw_grid
         self.draw_axes = move.draw_axes
 
@@ -2126,8 +2139,6 @@ struct Renderer3D(Movable):
             color: RGBA text color.
             scale: Pixel scale factor (default 2 = 16×16 per char).
         """
-        if len(self.text_vertex_data) >= MAX_TEXT_CHARS * 4 * 8:
-            return  # budget exhausted
         var cr = Float32(color.r) / 255.0
         var cg = Float32(color.g) / 255.0
         var cb = Float32(color.b) / 255.0
@@ -2136,6 +2147,14 @@ struct Renderer3D(Movable):
         var glyph_h = Float32(8 * scale)
         var cx = x
         for i in range(text.byte_length()):
+            # ⚠ PER CHARACTER, not once per call. The check used to sit above
+            # the loop, which let a single long string append past the end of
+            # a buffer sized for MAX_TEXT_CHARS quads — the upload path copies
+            # `len(text_vertex_data)` floats with no clamp of its own, so that
+            # was a write past the mapped transfer buffer, not a dropped glyph.
+            # It never fired only because every caller was short.
+            if not self._text_budget_ok():
+                break
             var c = text.as_bytes()[i]
             var uv = glyph_uv(c)
             var u0 = uv[0]
@@ -2250,6 +2269,28 @@ struct Renderer3D(Movable):
         self.mouse_clicked = False
         return c
 
+    def _text_budget_ok(mut self) -> Bool:
+        """Room for one more quad? Complains ONCE if not.
+
+        Overflow used to be a silent `return`, which is the worst shape for
+        this failure: the frame still renders, just missing whatever came
+        last, so a half-drawn list reads as a layout or logic bug rather than
+        as a budget that ran out. One line on stderr costs nothing and names
+        the actual cause.
+        """
+        if len(self.text_vertex_data) < MAX_TEXT_CHARS * 4 * 8:
+            return True
+        if not self.text_budget_warned:
+            self.text_budget_warned = True
+            print(
+                "[renderer3d] HUD/UI quad budget exhausted at",
+                MAX_TEXT_CHARS,
+                "quads — text and rectangles beyond this are DROPPED this"
+                " frame and every frame after. Raise MAX_TEXT_CHARS in"
+                " renderer3d.mojo.",
+            )
+        return False
+
     def draw_rect(
         mut self,
         x: Float32,
@@ -2266,7 +2307,7 @@ struct Renderer3D(Movable):
         rectangles share `MAX_TEXT_CHARS` budget with text, so a panel is
         worth a few characters.
         """
-        if len(self.text_vertex_data) >= MAX_TEXT_CHARS * 4 * 8:
+        if not self._text_budget_ok():
             return
         var cr = Float32(color.r) / 255.0
         var cg = Float32(color.g) / 255.0
@@ -3036,12 +3077,20 @@ struct Renderer3D(Movable):
         var num_text_chars = (
             len(self.text_vertex_data) // 32
         )  # 32 floats per quad (4 verts × 8 floats)
+        # ⚠ CLAMP, do not trust the producers. The transfer buffer holds
+        # exactly MAX_TEXT_CHARS quads; the loop below writes through a raw
+        # mapped pointer, so one caller appending past the cap would corrupt
+        # memory rather than lose a glyph. `draw_text`/`draw_rect` check their
+        # own budget, but this is the write that has to be safe.
+        if num_text_chars > MAX_TEXT_CHARS:
+            num_text_chars = MAX_TEXT_CHARS
+        var n_text_floats = num_text_chars * 32
         if num_text_chars > 0:
             var text_mapped = map_gpu_transfer_buffer(
                 self.device.value(), self.text_transfer_buffer.value(), True
             )
             var text_mapped_f32 = text_mapped.bitcast[Float32]()
-            for i in range(len(self.text_vertex_data)):
+            for i in range(n_text_floats):
                 (text_mapped_f32 + i)[] = self.text_vertex_data[i]
             unmap_gpu_transfer_buffer(self.device.value(), self.text_transfer_buffer.value())
 
@@ -3052,7 +3101,7 @@ struct Renderer3D(Movable):
             var text_dst = GPUBufferRegion(
                 buffer=untracked(self.text_vertex_buffer.value()),
                 offset=0,
-                size=UInt32(len(self.text_vertex_data) * 4),
+                size=UInt32(n_text_floats * 4),
             )
             upload_to_gpu_buffer(
                 text_copy_pass, Ptr(to=text_src), Ptr(to=text_dst), False

@@ -512,6 +512,12 @@ struct Phyics3dEnv[
     def init_renderer(mut self, show_velocity: Bool) raises -> Bool:
         return self._init_renderer(show_velocity=show_velocity)
 
+    comptime RENDER_WIDTH: Int = 1280
+    comptime RENDER_HEIGHT: Int = 720
+    """Window size the env asks for. Exposed because screen-space UI has to
+    lay itself out against it, and a hardcoded 1280 in a viewer would silently
+    drift the day this changes."""
+
     def _init_renderer(mut self, show_velocity: Bool) raises -> Bool:
         if self._renderer_initialized:
             return True
@@ -519,8 +525,8 @@ struct Phyics3dEnv[
         self._renderer = alloc[ModelRenderer[Self.MODEL_DEF]](1)
 
         var renderer = ModelRenderer[Self.MODEL_DEF](
-            width=1280,
-            height=720,
+            width=Self.RENDER_WIDTH,
+            height=Self.RENDER_HEIGHT,
             visual_radius_scale=1.0,
             axes_offset=1.5,
             vel_arrow_height=0.15,

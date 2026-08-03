@@ -2,18 +2,25 @@
 look right?" tool, in the spirit of dm_control's own `suite.explore` viewer.
 
     pixi run mojo run -I . examples/dm_control/dm_viewer.mojo
+    pixi run mojo run -I . examples/dm_control/dm_viewer.mojo cheetah_run random
 
-PICK THE TASK BY EDITING `ENV` BELOW. There is no runtime `--env` flag and
-that is a deliberate limitation, not an oversight: `Phyics3dEnv[MODEL, CONFIG]`
-is a distinct COMPILE-TIME type per task, so a runtime selector would have to
-instantiate all 39 in one binary. Each one costs minutes of compile on its own
-and this tree has a documented history of compiler blowups from far less (see
-`feedback_mojo_*_compile_explosion` in the notes). One task per build keeps a
-rebuild at "normal test file" cost. Editing one line is the cheap version of a
-menu; if you want a real menu later, the honest way is a small set of separate
-binaries plus a shell picker, not one 39-way executable.
+PICK THE TASK IN THE WINDOW, from the list down the right-hand side; argv only
+sets which one opens first. All 39 live in one binary, which costs about eight
+minutes to build (measured: 90 s for one task, 474 s for all 39 — near enough
+linear, no compiler blowup, the failure mode this tree has a long history of).
 
-ALL 39 PORTED TASKS — copy one into `ENV` and the matching `from` line:
+⚠ SWITCHING TASKS DESTROYS AND REBUILDS THE WINDOW, so expect it to blink and
+the camera to return to its default. That is not a bug that can be polished
+out from here: `Phyics3dEnv[MODEL, CONFIG]` is a distinct COMPILE-TIME type per
+task and the env OWNS its `ModelRenderer`, which owns the `Renderer3D`, which
+owns the window. Switching therefore destroys one env and builds another, and
+the window goes with it. Keeping the window alive across a switch means
+splitting the window and GPU device out of `Renderer3D` — worth doing if this
+grows into a "physics3d studio", and pointless before then. (That SDL3 tolerates
+close→create at all inside one process was verified by probe first, since the
+whole picker rests on it.)
+
+ALL 39 PORTED TASKS — argv accepts any of these names:
 
   acrobot      DMAcrobotSwingup  DMAcrobotSwingupSparse
   ball_in_cup  DMBallInCupCatch
@@ -48,7 +55,10 @@ you can see it articulate, not to accomplish the task. A tumbling humanoid
 under RANDOM torque is the expected picture, not a bug.
 
 CONTROLS (renderer window)
+  task list (right)     click any of the 39 tasks to switch to it
+  control panel (left)  drive mode, action scale, reset
   mouse drag / scroll   orbit, zoom
+  D / [ / ] / N / 0     drive, scale down/up, reset episode, zero torque
   1-9                   switch camera (if the model declares several)
   close window          quit
 
@@ -65,7 +75,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv, Phyics3dEnvConfig
 from mojo_rl.physics3d.model import ModelDefLike
-from mojo_rl.render.ui import UI, UI_ROW_H
+from mojo_rl.render.ui import UI, UI_ROW_H_SMALL
 
 from mojo_rl.envs.dm_control.acrobot.acrobot_xml import DMAcrobotModel
 from mojo_rl.envs.dm_control.acrobot.acrobot_config import DMAcrobotConfig
@@ -163,10 +173,90 @@ comptime DRIVE_RANDOM: Int = 1
 comptime DRIVE_SWEEP: Int = 2
 
 comptime HOLD_STEPS: Int = 25       # RANDOM: steps between resamples
+comptime N_TASKS: Int = 39
 comptime SWEEP_PERIOD: Float64 = 120.0  # SWEEP: steps per full cycle
 comptime EPISODE_STEPS: Int = 1000  # auto-reset cadence
 comptime FRAME_DELAY_MS: Int = 16   # ~60 FPS
 comptime SEED: Int = 0
+
+
+def _task_names() -> List[String]:
+    """The 39 tasks, in the order `_dispatch` indexes them.
+
+    ⚠ THIS LIST AND `_dispatch` ARE POSITIONALLY COUPLED. Index i here must be
+    the arm `st.task == i` there; a mismatch shows up as clicking one robot and
+    getting another, which is confusing precisely because everything still
+    works. `_task_index` is the only lookup, so argv names come from here too
+    and cannot drift separately.
+    """
+    var t = List[String]()
+    t.append(String("acrobot_swingup"))
+    t.append(String("acrobot_swingup_sparse"))
+    t.append(String("ball_in_cup_catch"))
+    t.append(String("cartpole_balance"))
+    t.append(String("cartpole_balance_sparse"))
+    t.append(String("cartpole_swingup"))
+    t.append(String("cartpole_swingup_sparse"))
+    t.append(String("cartpole_two_poles"))
+    t.append(String("cartpole_three_poles"))
+    t.append(String("cheetah_run"))
+    t.append(String("finger_spin"))
+    t.append(String("finger_turn_easy"))
+    t.append(String("finger_turn_hard"))
+    t.append(String("fish_upright"))
+    t.append(String("fish_swim"))
+    t.append(String("hopper_stand"))
+    t.append(String("hopper_hop"))
+    t.append(String("humanoid_stand"))
+    t.append(String("humanoid_walk"))
+    t.append(String("humanoid_run"))
+    t.append(String("humanoid_run_pure_state"))
+    t.append(String("manipulator_bring_ball"))
+    t.append(String("manipulator_bring_peg"))
+    t.append(String("manipulator_insert_ball"))
+    t.append(String("manipulator_insert_peg"))
+    t.append(String("pendulum_swingup"))
+    t.append(String("point_mass_easy"))
+    t.append(String("point_mass_hard"))
+    t.append(String("quadruped_walk"))
+    t.append(String("quadruped_run"))
+    t.append(String("reacher_easy"))
+    t.append(String("reacher_hard"))
+    t.append(String("stacker_stack_2"))
+    t.append(String("stacker_stack_4"))
+    t.append(String("swimmer_swimmer6"))
+    t.append(String("swimmer_swimmer15"))
+    t.append(String("walker_stand"))
+    t.append(String("walker_walk"))
+    t.append(String("walker_run"))
+    return t^
+
+
+def _task_index(name: String) -> Int:
+    """Task id for an argv name, or -1."""
+    var names = _task_names()
+    for i in range(len(names)):
+        if names[i] == name:
+            return i
+    return -1
+
+
+@fieldwise_init
+struct ViewerState(Copyable, Movable):
+    """Everything that must SURVIVE a task switch.
+
+    A switch tears the env down, so anything held in `_view`'s locals is lost
+    with it. Drive mode and action scale live here so that picking a new robot
+    does not silently reset how it is being driven — the single most annoying
+    way a picker can behave.
+    """
+
+    var task: Int
+    """Task to run; `_view` overwrites it when a list row is clicked."""
+    var drive: Int
+    var scale: Float64
+    var quit: Bool
+    """Set when the window closed for real, as opposed to for a switch."""
 
 
 def _parse_drive(name: String) -> Int:
@@ -216,8 +306,14 @@ def _hud(
 
 def _view[
     MODEL: ModelDefLike, CONFIG: Phyics3dEnvConfig
-](name: String, drive: Int, act_scale: Float64) raises:
-    """The viewer loop, generic over one task's (model, config) pair.
+](name: String, mut st: ViewerState) raises:
+    """The viewer loop for one task, running until it quits or switches.
+
+    Returns through `st`: either `st.quit` (the window was closed) or
+    `st.task` now naming a DIFFERENT task, which `main` then launches. It
+    cannot simply call itself with the new task — each task is a separate
+    compile-time instantiation, so recursion would try to instantiate all 39
+    inside all 39.
 
     ⚠ PARAMETERISED ON MODEL+CONFIG, NOT ON THE ENV TYPE. The obvious
     factoring — `def _view[E: BoxContinuousActionEnv & RenderableEnv](mut env: E)`
@@ -234,13 +330,13 @@ def _view[
     print("=" * 66)
     print("  obs dim      =", E.OBS_DIM)
     print("  action dim   =", ACT_DIM)
-    if drive == DRIVE_ZERO:
+    if st.drive == DRIVE_ZERO:
         print("  drive        = zero (reset pose + gravity)")
-    elif drive == DRIVE_RANDOM:
-        print("  drive        = random, scale", act_scale)
+    elif st.drive == DRIVE_RANDOM:
+        print("  drive        = random, scale", st.scale)
     else:
-        print("  drive        = sweep, scale", act_scale)
-    print("  close the window to quit")
+        print("  drive        = sweep, scale", st.scale)
+    print("  pick another task in the window, or close it to quit")
     print("=" * 66)
 
     var ctx = DeviceContext()
@@ -249,14 +345,28 @@ def _view[
 
     if not env.init_renderer():
         print("No renderer available — is SDL3 present?")
+        st.quit = True
         return
 
+    # ── screen-space layout, sized off the window the env actually asked for
+    # rather than a copy of 1280x720 that would rot the day that changes ──
+    comptime WIN_W = Float32(E.RENDER_WIDTH)
+    # 23 = the longest task name ("manipulator_insert_ball"), 8 px per
+    # character at text scale 1. Scale 2 would need 39*22 = 858 px of height
+    # in a 720 px window, so the list would have to scroll; at scale 1 all 39
+    # fit and there is nothing to scroll.
+    comptime LIST_W = Float32(23 * 8 + 14)
+    comptime LIST_X = WIN_W - LIST_W - 12.0
+    comptime LIST_TOP = Float32(34.0)
+
+    var tasks = _task_names()
     var held = E.ActionType()
     var step_i = 0
     var episode = 0
     var ep_return = Float64(0)
-    var live_drive = drive
-    var live_scale = act_scale
+    var live_drive = st.drive
+    var live_scale = st.scale
+    var switching = False
 
     while env.is_renderer_open():
         # ── live keys ────────────────────────────────────────────────────
@@ -287,8 +397,22 @@ def _view[
             env.renderer_mouse_y(),
             env.renderer_take_click(),
         )
+        # Task picker, down the right edge. Recorded FIRST so its panel sits
+        # under its own rows; a click is consumed by the first widget that
+        # wants it, so rows drawn after the slab still win the hit test.
+        ui.panel(LIST_X - 6.0, 6.0, LIST_W + 12.0,
+                 LIST_TOP + Float32(N_TASKS) * UI_ROW_H_SMALL - 2.0)
+        ui.label(LIST_X, 12.0, String("task"))
+        var picked = ui.list_select(
+            LIST_X, LIST_TOP, LIST_W, N_TASKS, tasks, 0, st.task,
+            text_scale=1, row_h=UI_ROW_H_SMALL,
+        )
+
+        # Controls, left column BELOW the engine HUD and the app's own HUD
+        # lines. Those run from y=12 to roughly y=280, and the panel used to
+        # start at 200 — the HUD text drew straight through the buttons.
         var px = Float32(12.0)
-        var py = Float32(200.0)
+        var py = Float32(310.0)
         ui.panel(px - 6.0, py - 6.0, 236.0, 146.0)
         ui.label(px, py, String("drive"))
         var by = py + 20.0
@@ -322,6 +446,13 @@ def _view[
         env.set_hud_extra(_hud(name, live_drive, live_scale, step_i,
                                episode, ep_return))
 
+        # Leave BEFORE stepping: the new task's env has to be built by `main`,
+        # and there is nothing to gain from one more frame of the old one.
+        if picked >= 0 and picked != st.task:
+            st.task = picked
+            switching = True
+            break
+
         var action = E.ActionType()
         if live_drive == DRIVE_RANDOM:
             if step_i % HOLD_STEPS == 0:
@@ -350,14 +481,128 @@ def _view[
             step_i = 0
             ep_return = 0.0
 
+    # Drive settings outlive the env; the window does not.
+    st.drive = live_drive
+    st.scale = live_scale
+    st.quit = not switching
     env.close_renderer()
-    print("viewer closed")
+    if switching:
+        print("  switching to", tasks[st.task])
+    else:
+        print("viewer closed")
+
+
+def _dispatch(mut st: ViewerState) raises:
+    """Run whichever task `st.task` names, and return when it wants another.
+
+    ⚠ INDEX ORDER MUST MATCH `_task_names`. This is the one place all 39
+    compile-time instantiations are named, which is what makes the binary
+    take ~8 minutes to build and what lets the picker exist at all.
+    """
+    var name = _task_names()[st.task]
+    if st.task == 0:
+        _view[DMAcrobotModel, DMAcrobotConfig[False]](name, st)
+    elif st.task == 1:
+        _view[DMAcrobotModel, DMAcrobotConfig[True]](name, st)
+    elif st.task == 2:
+        _view[DMBallInCupModel, DMBallInCupConfig](name, st)
+    elif st.task == 3:
+        _view[DMCartpole1Model, DMCartpoleConfig[1, False, False]](name, st)
+    elif st.task == 4:
+        _view[DMCartpole1Model, DMCartpoleConfig[1, False, True]](name, st)
+    elif st.task == 5:
+        _view[DMCartpole1Model, DMCartpoleConfig[1, True, False]](name, st)
+    elif st.task == 6:
+        _view[DMCartpole1Model, DMCartpoleConfig[1, True, True]](name, st)
+    elif st.task == 7:
+        _view[DMCartpole2Model, DMCartpoleConfig[2, True, False]](name, st)
+    elif st.task == 8:
+        _view[DMCartpole3Model, DMCartpoleConfig[3, True, False]](name, st)
+    elif st.task == 9:
+        _view[DMCheetahModel, DMCheetahConfig](name, st)
+    elif st.task == 10:
+        _view[DMFingerSpinModel, DMFingerSpinConfig](name, st)
+    elif st.task == 11:
+        _view[DMFingerTurnModel, DMFingerTurnConfig[0.07]](name, st)
+    elif st.task == 12:
+        _view[DMFingerTurnModel, DMFingerTurnConfig[0.03]](name, st)
+    elif st.task == 13:
+        _view[DMFishUprightModel, DMFishUprightConfig](name, st)
+    elif st.task == 14:
+        _view[DMFishSwimModel, DMFishSwimConfig](name, st)
+    elif st.task == 15:
+        _view[DMHopperModel, DMHopperConfig[False]](name, st)
+    elif st.task == 16:
+        _view[DMHopperModel, DMHopperConfig[True]](name, st)
+    elif st.task == 17:
+        _view[DMHumanoidModel, DMHumanoidConfig[0.0, False]](name, st)
+    elif st.task == 18:
+        _view[DMHumanoidModel, DMHumanoidConfig[WALK_SPEED, False]](name, st)
+    elif st.task == 19:
+        _view[DMHumanoidModel, DMHumanoidConfig[RUN_SPEED, False]](name, st)
+    elif st.task == 20:
+        _view[DMHumanoidPureModel, DMHumanoidConfig[RUN_SPEED, True]](name, st)
+    elif st.task == 21:
+        _view[
+            DMManipulatorBringBallModel, DMManipulatorBringBallConfig
+        ](name, st)
+    elif st.task == 22:
+        _view[
+            DMManipulatorBringPegModel, DMManipulatorBringPegConfig
+        ](name, st)
+    elif st.task == 23:
+        _view[
+            DMManipulatorInsertBallModel, DMManipulatorInsertBallConfig
+        ](name, st)
+    elif st.task == 24:
+        _view[
+            DMManipulatorInsertPegModel, DMManipulatorInsertPegConfig
+        ](name, st)
+    elif st.task == 25:
+        _view[DMPendulumModel, DMPendulumConfig](name, st)
+    elif st.task == 26:
+        _view[DMPointMassModel, DMPointMassConfig](name, st)
+    elif st.task == 27:
+        _view[DMPointMassModel, DMPointMassHardConfig](name, st)
+    elif st.task == 28:
+        _view[DMQuadrupedWalkModel, DMQuadrupedWalkConfig](name, st)
+    elif st.task == 29:
+        _view[DMQuadrupedRunModel, DMQuadrupedRunConfig](name, st)
+    elif st.task == 30:
+        _view[DMReacherModel, DMReacherConfig[0.05]](name, st)
+    elif st.task == 31:
+        _view[DMReacherModel, DMReacherConfig[0.015]](name, st)
+    elif st.task == 32:
+        _view[DMStacker2Model, DMStacker2Config](name, st)
+    elif st.task == 33:
+        _view[DMStacker4Model, DMStacker4Config](name, st)
+    elif st.task == 34:
+        _view[DMSwimmer6Model, DMSwimmerConfig](name, st)
+    elif st.task == 35:
+        _view[DMSwimmer15Model, DMSwimmerConfig](name, st)
+    elif st.task == 36:
+        _view[DMWalkerModel, DMWalkerConfig[0.0]](name, st)
+    elif st.task == 37:
+        _view[DMWalkerModel, DMWalkerConfig[1.0]](name, st)
+    elif st.task == 38:
+        _view[DMWalkerModel, DMWalkerConfig[8.0]](name, st)
+    else:
+        print("unknown task index:", st.task)
+        st.quit = True
 
 
 def main() raises:
     seed(SEED)
     var args = argv()
-    var task = String(args[1]) if len(args) > 1 else String("quadruped_walk")
+    var start = String(args[1]) if len(args) > 1 else String("quadruped_walk")
+    var task = _task_index(start)
+    if task < 0:
+        print("unknown task:", start, "— the 39 registered tasks are:")
+        var names = _task_names()
+        for i in range(len(names)):
+            print("   ", names[i])
+        return
+
     var drive = _parse_drive(String(args[2])) if len(args) > 2 else DRIVE_SWEEP
     var act_scale = Float64(1.0)
     if len(args) > 3:
@@ -366,115 +611,9 @@ def main() raises:
         except:
             print("bad scale, using 1.0")
 
-    if task == "acrobot_swingup":
-        _view[DMAcrobotModel, DMAcrobotConfig[False]](task, drive, act_scale)
-    elif task == "acrobot_swingup_sparse":
-        _view[DMAcrobotModel, DMAcrobotConfig[True]](task, drive, act_scale)
-    elif task == "ball_in_cup_catch":
-        _view[DMBallInCupModel, DMBallInCupConfig](task, drive, act_scale)
-    elif task == "cartpole_balance":
-        _view[DMCartpole1Model, DMCartpoleConfig[1, False, False]](
-            task, drive, act_scale)
-    elif task == "cartpole_balance_sparse":
-        _view[DMCartpole1Model, DMCartpoleConfig[1, False, True]](
-            task, drive, act_scale)
-    elif task == "cartpole_swingup":
-        _view[DMCartpole1Model, DMCartpoleConfig[1, True, False]](
-            task, drive, act_scale)
-    elif task == "cartpole_swingup_sparse":
-        _view[DMCartpole1Model, DMCartpoleConfig[1, True, True]](
-            task, drive, act_scale)
-    elif task == "cartpole_two_poles":
-        _view[DMCartpole2Model, DMCartpoleConfig[2, True, False]](
-            task, drive, act_scale)
-    elif task == "cartpole_three_poles":
-        _view[DMCartpole3Model, DMCartpoleConfig[3, True, False]](
-            task, drive, act_scale)
-    elif task == "cheetah_run":
-        _view[DMCheetahModel, DMCheetahConfig](task, drive, act_scale)
-    elif task == "finger_spin":
-        _view[DMFingerSpinModel, DMFingerSpinConfig](task, drive, act_scale)
-    elif task == "finger_turn_easy":
-        _view[DMFingerTurnModel, DMFingerTurnConfig[0.07]](
-            task, drive, act_scale)
-    elif task == "finger_turn_hard":
-        _view[DMFingerTurnModel, DMFingerTurnConfig[0.03]](
-            task, drive, act_scale)
-    elif task == "fish_upright":
-        _view[DMFishUprightModel, DMFishUprightConfig](task, drive, act_scale)
-    elif task == "fish_swim":
-        _view[DMFishSwimModel, DMFishSwimConfig](task, drive, act_scale)
-    elif task == "hopper_stand":
-        _view[DMHopperModel, DMHopperConfig[False]](task, drive, act_scale)
-    elif task == "hopper_hop":
-        _view[DMHopperModel, DMHopperConfig[True]](task, drive, act_scale)
-    elif task == "humanoid_stand":
-        _view[DMHumanoidModel, DMHumanoidConfig[0.0, False]](
-            task, drive, act_scale)
-    elif task == "humanoid_walk":
-        _view[DMHumanoidModel, DMHumanoidConfig[WALK_SPEED, False]](
-            task, drive, act_scale)
-    elif task == "humanoid_run":
-        _view[DMHumanoidModel, DMHumanoidConfig[RUN_SPEED, False]](
-            task, drive, act_scale)
-    elif task == "humanoid_run_pure_state":
-        _view[DMHumanoidPureModel, DMHumanoidConfig[RUN_SPEED, True]](
-            task, drive, act_scale)
-    elif task == "manipulator_bring_ball":
-        _view[DMManipulatorBringBallModel, DMManipulatorBringBallConfig](
-            task, drive, act_scale)
-    elif task == "manipulator_bring_peg":
-        _view[DMManipulatorBringPegModel, DMManipulatorBringPegConfig](
-            task, drive, act_scale)
-    elif task == "manipulator_insert_ball":
-        _view[DMManipulatorInsertBallModel, DMManipulatorInsertBallConfig](
-            task, drive, act_scale)
-    elif task == "manipulator_insert_peg":
-        _view[DMManipulatorInsertPegModel, DMManipulatorInsertPegConfig](
-            task, drive, act_scale)
-    elif task == "pendulum_swingup":
-        _view[DMPendulumModel, DMPendulumConfig](task, drive, act_scale)
-    elif task == "point_mass_easy":
-        _view[DMPointMassModel, DMPointMassConfig](task, drive, act_scale)
-    elif task == "point_mass_hard":
-        _view[DMPointMassModel, DMPointMassHardConfig](task, drive, act_scale)
-    elif task == "quadruped_walk":
-        _view[DMQuadrupedWalkModel, DMQuadrupedWalkConfig](
-            task, drive, act_scale)
-    elif task == "quadruped_run":
-        _view[DMQuadrupedRunModel, DMQuadrupedRunConfig](
-            task, drive, act_scale)
-    elif task == "reacher_easy":
-        _view[DMReacherModel, DMReacherConfig[0.05]](task, drive, act_scale)
-    elif task == "reacher_hard":
-        _view[DMReacherModel, DMReacherConfig[0.015]](task, drive, act_scale)
-    elif task == "stacker_stack_2":
-        _view[DMStacker2Model, DMStacker2Config](task, drive, act_scale)
-    elif task == "stacker_stack_4":
-        _view[DMStacker4Model, DMStacker4Config](task, drive, act_scale)
-    elif task == "swimmer_swimmer6":
-        _view[DMSwimmer6Model, DMSwimmerConfig](task, drive, act_scale)
-    elif task == "swimmer_swimmer15":
-        _view[DMSwimmer15Model, DMSwimmerConfig](task, drive, act_scale)
-    elif task == "walker_stand":
-        _view[DMWalkerModel, DMWalkerConfig[0.0]](task, drive, act_scale)
-    elif task == "walker_walk":
-        _view[DMWalkerModel, DMWalkerConfig[1.0]](task, drive, act_scale)
-    elif task == "walker_run":
-        _view[DMWalkerModel, DMWalkerConfig[8.0]](task, drive, act_scale)
-    else:
-        print("unknown task:", task, "— the 39 registered tasks are:")
-        print("  acrobot_swingup acrobot_swingup_sparse ball_in_cup_catch")
-        print("  cartpole_balance cartpole_balance_sparse cartpole_swingup")
-        print("  cartpole_swingup_sparse cartpole_two_poles cartpole_three_poles")
-        print("  cheetah_run finger_spin finger_turn_easy finger_turn_hard")
-        print("  fish_upright fish_swim hopper_stand hopper_hop")
-        print("  humanoid_stand humanoid_walk humanoid_run")
-        print("  humanoid_run_pure_state")
-        print("  manipulator_bring_ball manipulator_bring_peg")
-        print("  manipulator_insert_ball manipulator_insert_peg")
-        print("  pendulum_swingup point_mass_easy point_mass_hard")
-        print("  quadruped_walk quadruped_run reacher_easy reacher_hard")
-        print("  stacker_stack_2 stacker_stack_4")
-        print("  swimmer_swimmer6 swimmer_swimmer15")
-        print("  walker_stand walker_walk walker_run")
+    # One task runs at a time; picking another in the window ends that task's
+    # loop and comes back here to build the next one. `st` is what crosses the
+    # gap, since the env and its window do not.
+    var st = ViewerState(task, drive, act_scale, False)
+    while not st.quit:
+        _dispatch(st)

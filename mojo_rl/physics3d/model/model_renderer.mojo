@@ -501,7 +501,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         for rc in self.ui_rects:
             self.renderer.draw_rect(rc.x, rc.y, rc.w, rc.h, rc.color)
         for tx in self.ui_texts:
-            self.renderer.draw_text(tx.x, tx.y, tx.text, tx.color, 2)
+            self.renderer.draw_text(tx.x, tx.y, tx.text, tx.color, tx.scale)
 
         # Application-owned lines last, in cyan so they read as "not engine".
         for line in self.hud_extra:

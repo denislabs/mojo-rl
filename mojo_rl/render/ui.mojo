@@ -19,9 +19,11 @@ that is where ImGui's depth starts paying for its backend.
 
 ⚠ RECTANGLES SHARE THE TEXT BUDGET. `draw_rect` writes into the same vertex
 buffer as `draw_text`, capped at `MAX_TEXT_CHARS` quads. A panel costs a few
-"characters"; a 39-row list costs about as much as the labels on it. Budget
-exhaustion drops quads silently, so a list that renders half its rows is that,
-not a logic bug.
+"characters"; a 39-row list costs about as much as the labels on it (measured:
+79 rects + ~624 glyphs, against an engine HUD that already spends ~460). The
+budget was raised 512 → 2048 for exactly that list, and overflow now prints
+once instead of silently dropping quads — a half-drawn list is a budget that
+ran out, and it should not have to be diagnosed as a layout bug first.
 
 ⚠ THE CLICK IS CONSUMED BY THE FIRST WIDGET THAT WANTS IT. Widgets are tested
 in call order, so overlapping ones resolve to whichever is called first — draw
@@ -43,6 +45,10 @@ Usage:
     ui.panel(10, 10, 220, 400)
     if ui.button(20, 20, 200, 24, "reset", False):
         _ = env.reset()
+    var picked = ui.list_select(         # -1 unless a row was clicked
+        10, 40, 198, len(names), names, scroll=0, current=cur,
+        text_scale=1, row_h=UI_ROW_H_SMALL,
+    )
     env.set_ui(ui.rects, ui.texts)   # drawn during the next render_frame
 """
 
@@ -68,13 +74,21 @@ struct UIText(Copyable, Movable):
     var y: Float32
     var text: String
     var color: Color
+    var scale: Int
+    """Glyph scale: 1 = 8 px per character, 2 = 16 px. Long lists need 1."""
 
 
 comptime UI_ROW_H: Float32 = 22.0
 """Row height that fits 16 px text (scale 2) with 3 px of padding."""
 
-comptime _CHAR_W: Float32 = 16.0
-"""Advance per character at scale 2 — `draw_text` uses 8 * scale."""
+comptime UI_ROW_H_SMALL: Float32 = 14.0
+"""Row height for scale-1 text. 39 rows fit a 720 px window; at scale 2 they
+do not — 39 * 22 = 858 — which is the whole reason `text_scale` exists."""
+
+
+def ui_char_w(scale: Int) -> Float32:
+    """Advance per character — `draw_text` uses 8 * scale."""
+    return Float32(8 * scale)
 
 
 struct UI(Copyable, Movable):
@@ -119,8 +133,9 @@ struct UI(Copyable, Movable):
         y: Float32,
         text: String,
         color: Color = Color(210, 220, 235, 255),
+        text_scale: Int = 2,
     ):
-        self.texts.append(UIText(x, y, text, color))
+        self.texts.append(UIText(x, y, text, color, text_scale))
 
     def button(
         mut self,
@@ -130,6 +145,7 @@ struct UI(Copyable, Movable):
         h: Float32,
         text: String,
         active: Bool = False,
+        text_scale: Int = 2,
     ) -> Bool:
         """Draw a button; return True on the frame it is clicked.
 
@@ -148,10 +164,11 @@ struct UI(Copyable, Movable):
         self.texts.append(
             UIText(
                 x + 6.0,
-                y + (h - 16.0) * 0.5,
+                y + (h - Float32(8 * text_scale)) * 0.5,
                 text,
                 Color(255, 255, 255, 255) if (hot or active)
                 else Color(200, 208, 222, 255),
+                text_scale,
             )
         )
         if hot and self.click:
@@ -168,12 +185,15 @@ struct UI(Copyable, Movable):
         items: List[String],
         scroll: Int,
         current: Int,
+        text_scale: Int = 2,
+        row_h: Float32 = UI_ROW_H,
     ) -> Int:
         """Scrollable single-choice list. Returns the clicked index, else -1.
 
         `scroll` is the caller's — the widget stays stateless, so paging is
         the caller's business and there is no hidden state to get out of sync
-        with the item list.
+        with the item list. Pass `rows >= len(items)` and it simply draws them
+        all, which is what a list short enough to fit should do.
         """
         var picked = -1
         var n = len(items)
@@ -181,9 +201,9 @@ struct UI(Copyable, Movable):
             var idx = scroll + i
             if idx >= n:
                 break
-            var ry = y + Float32(i) * UI_ROW_H
+            var ry = y + Float32(i) * row_h
             if self.button(
-                x, ry, w, UI_ROW_H - 2.0, items[idx], idx == current
+                x, ry, w, row_h - 2.0, items[idx], idx == current, text_scale
             ):
                 picked = idx
         return picked
