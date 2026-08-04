@@ -425,6 +425,19 @@ struct Renderer3D(Movable):
     # Dear ImGui overlay (see mojo_rl/render/imgui/). OPT-IN: nothing here
     # touches the ImGui shim unless `imgui_init()` succeeded, so the FFI
     # dependency stays confined to applications that ask for it.
+    var capture_scene_only: Bool
+    """Crop screenshots and recordings to the 3D viewport.
+
+    ⚠ CROPPED ON THE CPU, NOT ON THE GPU. Narrowing the download region
+    instead would be the obvious move and is a trap: SDL_GPU texture downloads
+    carry row-pitch alignment rules, so an arbitrary `ui_sidebar_width` can
+    produce a skewed image rather than an error. The full swapchain is
+    downloaded as before and the columns are dropped in numpy, which has no
+    alignment to satisfy.
+
+    No effect when `ui_sidebar_width` is 0 — with no reserved strip there is
+    nothing to crop away."""
+
     var imgui_on: Bool
     var imgui_frame_open: Bool
     """True between `imgui_new_frame()` and the `ImGui::Render()` inside
@@ -555,6 +568,7 @@ struct Renderer3D(Movable):
         self.recording_tb_size = 0
         self.default_eye = camera.eye
         self.default_target = camera.target
+        self.capture_scene_only = True
         self.imgui_on = False
         self.imgui_frame_open = False
         if len(lights) > 0:
@@ -641,6 +655,7 @@ struct Renderer3D(Movable):
         self.recording_tb_size = move.recording_tb_size
         self.default_eye = move.default_eye
         self.default_target = move.default_target
+        self.capture_scene_only = move.capture_scene_only
         self.imgui_on = move.imgui_on
         self.imgui_frame_open = move.imgui_frame_open
         self.initialized = move.initialized
@@ -2367,6 +2382,21 @@ struct Renderer3D(Movable):
         self.ui_sidebar_width = w if w > 0 else 0
         self.camera.set_screen_size(self.scene_width(), self.height)
 
+    def set_capture_scene_only(mut self, on: Bool):
+        """Whether screenshots/recordings exclude the reserved UI strip."""
+        self.capture_scene_only = on
+
+    def _capture_x(self) -> Int:
+        """First column of the capture region."""
+        return self.ui_sidebar_width if self.capture_scene_only else 0
+
+    def _capture_w(self) -> Int:
+        """Columns to capture; 0 means the whole frame (the recorder's
+        "no crop" sentinel), which is what a full-window capture wants."""
+        if not self.capture_scene_only or self.ui_sidebar_width <= 0:
+            return 0
+        return self.scene_width()
+
     # --- Dear ImGui overlay ---
 
     def imgui_init(mut self) raises -> Bool:
@@ -3835,7 +3865,8 @@ struct Renderer3D(Movable):
                     "screenshot_" + String(self.screenshot_counter) + ".jpg"
                 )
                 self.recorder.save_frame_bgra(
-                    Int(pixels), self.width, self.height, filename
+                    Int(pixels), self.width, self.height, filename,
+                    self._capture_x(), self._capture_w(),
                 )
                 unmap_gpu_transfer_buffer(self.device.value(), screenshot_tb.value())
                 self.screenshot_counter += 1
@@ -3899,7 +3930,8 @@ struct Renderer3D(Movable):
                         self.device.value(), self.recording_tb.value(), False
                     )
                     self.recorder.add_frame_bgra(
-                        Int(rec_pixels), self.width, self.height
+                        Int(rec_pixels), self.width, self.height,
+                        self._capture_x(), self._capture_w(),
                     )
                     unmap_gpu_transfer_buffer(self.device.value(), self.recording_tb.value())
                 except e:

@@ -569,6 +569,10 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     def imgui_active(self) -> Bool:
         return self.renderer.imgui_active()
 
+    def set_capture_scene_only(mut self, on: Bool):
+        """Crop screenshots/recordings to the 3D viewport (default on)."""
+        self.renderer.set_capture_scene_only(on)
+
     def set_show_hud(mut self, on: Bool):
         """Show or hide the built-in text HUD."""
         self.show_hud = on

@@ -541,10 +541,23 @@ def ui_view_controls(mut vc: ViewControls) raises:
         if ig_toggle_button(String(c + 1), c == vc.current_camera, w, 0.0):
             vc.want_camera = c
 
+    # ⚠ "###" PINS THE ID WHILE THE TEXT VARIES. ImGui derives a widget's
+    # identity from its LABEL, so a button whose caption changes is a DIFFERENT
+    # widget each frame — the press and the release land on two different ids
+    # and the click never completes.
+    #
+    # That is not theoretical: the record button showed a live frame count
+    # ("rec 1", "rec 2", ...), so once recording started its id changed every
+    # single frame and it could no longer be clicked to STOP. It would start a
+    # recording and then refuse to end it; the only way out was switching task.
+    #
+    # Everything after "###" is the id and is not drawn; everything before is
+    # drawn and does NOT contribute to the id (unlike "##", where the visible
+    # part still does — which would not have helped here).
     var third = (ig_content_width() - 16.0) / 3.0
     if ig_toggle_button(
-        String("resume") if vc.paused else String("pause"), vc.paused, third,
-        0.0,
+        String("resume###pause") if vc.paused else String("pause###pause"),
+        vc.paused, third, 0.0,
     ):
         vc.want_toggle_pause = True
     ig_same_line()
@@ -552,8 +565,8 @@ def ui_view_controls(mut vc: ViewControls) raises:
         vc.want_screenshot = True
     ig_same_line()
     if ig_toggle_button(
-        (String("rec ") + String(vc.rec_frames)) if vc.recording
-        else String("rec"),
+        (String("rec ") + String(vc.rec_frames) + String("###rec"))
+        if vc.recording else String("rec###rec"),
         vc.recording, third, 0.0,
     ):
         vc.want_toggle_record = True
@@ -725,7 +738,18 @@ def run_view[
         if vc.want_toggle_pause:
             env.renderer_toggle_pause()
         if vc.want_toggle_record:
-            env.renderer_toggle_recording()
+            # ⚠ CATCH: video encoding goes through Python `imageio`, and a
+            # missing import raised straight out of the frame loop and killed
+            # the viewer. Screenshots already degrade to a printed message;
+            # recording must not be the one button that can end the session.
+            try:
+                env.renderer_toggle_recording()
+            except e:
+                print("recording unavailable:", e)
+                print(
+                    "  imageio lives in the pixi env — launch through"
+                    " `pixi run`, not the bare binary"
+                )
 
         # Leave BEFORE stepping: the new task's env is built by `run_viewer`,
         # and there is nothing to gain from one more frame of the old one.
@@ -738,8 +762,22 @@ def run_view[
             st.task = ui.picked
             switching = True
 
+        # ⚠ PAUSE MUST GATE THE STEP, not merely label the button. Both this
+        # viewer and the ui.mojo one read `renderer_paused()` only to choose
+        # between "pause" and "resume" and then stepped anyway, so the button
+        # toggled a flag that nothing downstream honoured — the renderer's own
+        # `is_paused` only ever froze its HUD step counter.
+        #
+        # `renderer_step_once()` is the RIGHT-arrow single-step: true for
+        # exactly the one frame after the key, so a paused sim advances one
+        # step and stops. It is reset at the top of every `check_quit`, which
+        # this loop calls once per iteration, so reading it here is correct.
+        var stepping = not switching
+        if stepping and env.renderer_paused() and not env.renderer_step_once():
+            stepping = False
+
         var action = E.ActionType()
-        if not switching:
+        if stepping:
             if Int(st.drive) == DRIVE_RANDOM:
                 if step_i % HOLD_STEPS == 0:
                     for a in range(ACT_DIM):

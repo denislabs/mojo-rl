@@ -32,6 +32,21 @@ by their LABEL, so two buttons reading "reset" in the same window are ONE
 widget and only one of them responds. Wrap loop bodies in
 `ig_push_id_int(i)` / `ig_pop_id()`, or give labels a "##unique" suffix (the
 part after "##" is part of the id but is not drawn).
+
+⚠ A LABEL THAT CHANGES EVERY FRAME IS A NEW WIDGET EVERY FRAME, and the
+symptom is not a wrong id — it is a button that CANNOT BE CLICKED. ImGui
+completes a click across a press and a release; if the id changes in between,
+the two land on different widgets and nothing fires. This shipped once: the
+viewer's record button displayed a live frame count ("rec 1", "rec 2", ...), so
+it would start a recording and then refuse to stop it.
+
+Use "###" for any caption that varies:
+
+    "rec 12###rec"    drawn: "rec 12"    id: "rec"     stable ✓
+    "rec 12##rec"     drawn: "rec 12"    id: whole string — STILL CHANGES ✗
+
+`ig_push_id_*` does NOT rescue this: the pushed id is combined with the
+widget's own label, so a varying label still yields a varying id.
 """
 
 from std.os import abort, getenv
