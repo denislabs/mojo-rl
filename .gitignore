@@ -248,3 +248,11 @@ checkpoints/
 # (root-anchored on purpose - tracked images elsewhere stay addable)
 /*.png
 /*.gif
+
+# Vendored C/C++ sources fetched by build scripts (scripts/build_imgui.sh
+# clones Dear ImGui here on first use). Source, not ours; re-fetchable.
+third_party/
+# The Dear ImGui shim built from mojo_rl/render/imgui/imgui_shim.cpp. The
+# .cpp IS tracked; the binary is per-platform and rebuilt by
+# `pixi run build-imgui`.
+*.dylib

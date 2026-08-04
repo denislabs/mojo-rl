@@ -667,6 +667,37 @@ struct Phyics3dEnv[
             return
         self._renderer.value()[].set_ui_sidebar_width(w)
 
+    def imgui_init(mut self) raises -> Bool:
+        """Attach a Dear ImGui overlay to the renderer window.
+
+        Returns False when the shim is not built (`pixi run build-imgui`) or
+        the device refuses it — callers should degrade, not abort.
+        """
+        if not self._renderer_initialized:
+            return False
+        return self._renderer.value()[].imgui_init()
+
+    def imgui_new_frame(mut self) raises -> None:
+        """Open an ImGui frame. Widgets go between this and `render_frame`."""
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].imgui_new_frame()
+
+    def imgui_active(self) -> Bool:
+        if not self._renderer_initialized:
+            return False
+        return self._renderer.value()[].imgui_active()
+
+    def renderer_set_show_hud(mut self, on: Bool) -> None:
+        """Show or hide the built-in text HUD (keybinds, camera, step).
+
+        Turn it OFF alongside an ImGui sidebar: both report the same facts, and
+        the HUD is drawn over the scene rather than beside it.
+        """
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].set_show_hud(on)
+
     def set_ui(
         mut self, rects: List[UIRect], texts: List[UIText]
     ) -> None:

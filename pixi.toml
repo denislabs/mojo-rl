@@ -120,6 +120,11 @@ examples-compile = { cmd = "bash scripts/run_tests.sh --compile-only tests/manif
 test-cpu = { cmd = "bash scripts/run_tests.sh --discover tests --cpu-only", description = "All non-GPU tests (slow)" }
 test-gpu = { cmd = "bash scripts/run_tests.sh --discover tests --gpu-only", description = "All *_gpu.mojo tests (use -e apple|nvidia)" }
 format = { cmd = "mojo format -l 80 ." }
+# Dear ImGui shim for `mojo_rl/render/imgui/` (the ImGui dm_control viewer).
+# Clones ImGui into third_party/ on first run, then rebuilds only when stale.
+# Neither the clone nor the built dylib is tracked, so this is a prerequisite
+# of examples/dm_control/dm_viewer_imgui.mojo on a fresh checkout.
+build-imgui = { cmd = "bash scripts/build_imgui.sh", description = "Build the Dear ImGui shim (mojo_rl/render/imgui/)" }
 # NVIDIA GPU information and profiling utilities
 gpu-info = { cmd = "nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_version --format=csv", description = "Get basic GPU information" }
 

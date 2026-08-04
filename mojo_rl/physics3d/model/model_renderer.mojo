@@ -65,6 +65,14 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
 
     var show_sites: Bool
 
+    var show_hud: Bool
+    """Draw the built-in keybind/camera/step overlay.
+
+    ⚠ TURN THIS OFF WHEN AN ImGui SIDEBAR IS UP. The two report the same
+    facts — camera, step, pause, recording — and the HUD is drawn over the
+    SCENE, so leaving both on costs a strip of the robot to tell the user
+    something the panel already says."""
+
     # HUD state
     var step_count: Int
 
@@ -162,6 +170,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.follow = follow
         self.show_velocity = show_velocity
         self.show_sites = show_sites
+        self.show_hud = True
         self.hud_extra = List[String]()
         self.ui_rects = List[UIRect]()
         self.ui_texts = List[UIText]()
@@ -228,6 +237,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.follow = move.follow
         self.show_velocity = move.show_velocity
         self.show_sites = move.show_sites
+        self.show_hud = move.show_hud
         self.hud_extra = move.hud_extra^
         self.ui_rects = move.ui_rects^
         self.ui_texts = move.ui_texts^
@@ -443,7 +453,8 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             self._draw_velocity_indicator(torso_pos, vel_x)
 
         # HUD overlay
-        self._draw_hud()
+        if self.show_hud:
+            self._draw_hud()
 
         # Increment step counter AFTER drawing (so first frame shows 0)
         # Only increment when not paused (paused display should freeze the count)
@@ -493,6 +504,22 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     def set_ui_sidebar_width(mut self, w: Int):
         """Reserve `w` px on the left for UI; the scene renders to the rest."""
         self.renderer.set_ui_sidebar_width(w)
+
+    def imgui_init(mut self) raises -> Bool:
+        """Attach a Dear ImGui overlay; False if the shim is not built."""
+        return self.renderer.imgui_init()
+
+    def imgui_new_frame(mut self) raises:
+        """Open an ImGui frame. Call before building widgets and before
+        `render_frame`."""
+        self.renderer.imgui_new_frame()
+
+    def imgui_active(self) -> Bool:
+        return self.renderer.imgui_active()
+
+    def set_show_hud(mut self, on: Bool):
+        """Show or hide the built-in text HUD."""
+        self.show_hud = on
 
     def set_ui(mut self, rects: List[UIRect], texts: List[UIText]):
         """Replace the deferred UI command list for the next frame."""

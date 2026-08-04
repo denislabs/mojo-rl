@@ -148,6 +148,17 @@ from .sdl import (
 )
 from .camera3d import Camera3D
 from .types import Color
+from .imgui import (
+    ig_init,
+    ig_shutdown,
+    ig_new_frame,
+    ig_prepare,
+    ig_render,
+    ig_process_event,
+    ig_want_mouse,
+    ig_want_keyboard,
+    imgui_shim_available,
+)
 from .light import Light
 from .video_recorder import VideoRecorder
 from .gpu_types import (
@@ -411,6 +422,19 @@ struct Renderer3D(Movable):
     var default_eye: Vec3
     var default_target: Vec3
 
+    # Dear ImGui overlay (see mojo_rl/render/imgui/). OPT-IN: nothing here
+    # touches the ImGui shim unless `imgui_init()` succeeded, so the FFI
+    # dependency stays confined to applications that ask for it.
+    var imgui_on: Bool
+    var imgui_frame_open: Bool
+    """True between `imgui_new_frame()` and the `ImGui::Render()` inside
+    `end_frame`.
+
+    ⚠ ONCE A FRAME IS OPEN IT MUST BE CLOSED, on every path. ImGui asserts on
+    the *next* `NewFrame` if the previous one was never rendered, so the close
+    happens before `end_frame`'s early return on a missing swapchain texture
+    rather than beside the draw call."""
+
     def __init__(
         out self,
         width: Int = 800,
@@ -531,6 +555,8 @@ struct Renderer3D(Movable):
         self.recording_tb_size = 0
         self.default_eye = camera.eye
         self.default_target = camera.target
+        self.imgui_on = False
+        self.imgui_frame_open = False
         if len(lights) > 0:
             self.lights = lights.copy()
         else:
@@ -615,6 +641,8 @@ struct Renderer3D(Movable):
         self.recording_tb_size = move.recording_tb_size
         self.default_eye = move.default_eye
         self.default_target = move.default_target
+        self.imgui_on = move.imgui_on
+        self.imgui_frame_open = move.imgui_frame_open
         self.initialized = move.initialized
         self.should_quit = move.should_quit
         self.last_key = move.last_key
@@ -2339,6 +2367,58 @@ struct Renderer3D(Movable):
         self.ui_sidebar_width = w if w > 0 else 0
         self.camera.set_screen_size(self.scene_width(), self.height)
 
+    # --- Dear ImGui overlay ---
+
+    def imgui_init(mut self) raises -> Bool:
+        """Attach an ImGui context to THIS window and device. Idempotent.
+
+        Returns False (having printed why) when the shim is missing or ImGui
+        declines the device, so a viewer can fall back instead of dying: the
+        3D scene is perfectly usable without a UI, and an FFI dependency that
+        takes the whole tool down with it would be a poor trade.
+        """
+        if self.imgui_on:
+            return True
+        if not self.initialized:
+            print("imgui_init: renderer not initialized")
+            return False
+        if not imgui_shim_available():
+            print(
+                "imgui_init: Dear ImGui shim not built — run"
+                " `pixi run build-imgui`"
+            )
+            return False
+        self.imgui_on = ig_init(
+            self.window.value(),
+            self.device.value(),
+            UInt32(Int(self.swapchain_format)),
+        )
+        if not self.imgui_on:
+            print("imgui_init: ImGui declined this GPU device")
+        return self.imgui_on
+
+    def imgui_new_frame(mut self) raises:
+        """Open an ImGui frame. Call BEFORE building any widgets, and before
+        `render_frame`; `end_frame` closes it."""
+        if not self.imgui_on:
+            return
+        ig_new_frame()
+        self.imgui_frame_open = True
+
+    def imgui_active(self) -> Bool:
+        return self.imgui_on
+
+    def imgui_close(mut self) raises:
+        """Detach ImGui. Must run BEFORE the device and window are destroyed,
+        since the backend releases GPU objects it created on them."""
+        if not self.imgui_on:
+            return
+        # An open frame here means the app quit mid-frame. ImGui's shutdown
+        # tolerates that; the flag is cleared so a later re-init starts clean.
+        self.imgui_frame_open = False
+        self.imgui_on = False
+        ig_shutdown()
+
     def _text_budget_ok(mut self) -> Bool:
         """Room for one more quad? Complains ONCE if not.
 
@@ -3197,6 +3277,20 @@ struct Renderer3D(Movable):
             )
             end_gpu_copy_pass(text_copy_pass)
 
+        # ====================================================================
+        # ImGui geometry upload
+        # ====================================================================
+        # ⚠ HERE, NOT NEXT TO THE DRAW CALL. `PrepareDrawData` records a COPY
+        # pass, and SDL_GPU forbids one while a render pass is open — so it has
+        # to precede the shadow pass, not merely the main pass. Placing it
+        # before the swapchain acquire has a second benefit: it runs on the
+        # early-return path too, so `ImGui::Render()` always closes the frame
+        # that `imgui_new_frame` opened and the next frame cannot assert.
+        var imgui_pending = self.imgui_frame_open
+        if imgui_pending:
+            ig_prepare(cmd_buf)
+            self.imgui_frame_open = False
+
         # Build scene uniforms and shadow uniforms
         self._build_scene_uniforms()
         self._build_light_view_proj()
@@ -3637,6 +3731,46 @@ struct Renderer3D(Movable):
         # End render pass
         end_gpu_render_pass(render_pass)
 
+        # ====================================================================
+        # IMGUI PASS (color-only, loads the scene, no depth)
+        # ====================================================================
+        # ⚠ ITS OWN PASS, DELIBERATELY. The obvious placement — alongside the
+        # text HUD inside the main pass — makes ImGui's pipeline and that pass
+        # disagree about attachments: `ImGui_ImplSDLGPU3_InitInfo` has no
+        # depth-stencil field, so the backend builds a color-only pipeline,
+        # while the main pass carries a depth attachment. Metal requires the
+        # two to match. A second pass costs one begin/end and makes the
+        # overlay independent of however the scene pass is configured.
+        #
+        # LOAD + cycle=False, so the scene underneath survives; CLEAR or
+        # cycling would leave the UI floating on an empty background. It runs
+        # BEFORE the screenshot/recording downloads below so captures include
+        # the UI.
+        if imgui_pending:
+            var ui_color_info = GPUColorTargetInfo(
+                texture=untracked(swapchain_tex),
+                mip_level=0,
+                layer_or_depth_plane=0,
+                clear_color=FColor(0.0, 0.0, 0.0, 1.0),
+                load_op=GPULoadOp.GPU_LOADOP_LOAD,
+                store_op=GPUStoreOp.GPU_STOREOP_STORE,
+                resolve_texture=_null_ptr[GPUTexture, MutUntrackedOrigin](),
+                resolve_mip_level=0,
+                resolve_layer=0,
+                cycle=False,
+                cycle_resolve_texture=False,
+                padding1=0,
+                padding2=0,
+            )
+            var ui_pass = begin_gpu_render_pass(
+                cmd_buf,
+                Ptr(to=ui_color_info),
+                1,
+                _null_ptr[GPUDepthStencilTargetInfo, MutAnyOrigin](),
+            )
+            ig_render(cmd_buf, ui_pass)
+            end_gpu_render_pass(ui_pass)
+
         # Screenshot capture: append a download copy pass before submitting.
         # The transfer buffer pointer is non-null only if setup succeeded.
         var screenshot_tb: Optional[
@@ -3981,6 +4115,22 @@ struct Renderer3D(Movable):
         var event = Event()
         var has_events = True
 
+        # Who owns the pointer and the keyboard this frame.
+        #
+        # ⚠ THESE ARE LAST FRAME'S ANSWERS, and that is correct. ImGui can only
+        # decide what it wants once its widgets have been laid out, which
+        # happens after `NewFrame` — i.e. after this pump has already run. Every
+        # ImGui integration reads them one frame stale; the flags change on
+        # hover, so a one-frame lag is invisible.
+        var ig_mouse = False
+        var ig_kbd = False
+        if self.imgui_on:
+            try:
+                ig_mouse = ig_want_mouse()
+                ig_kbd = ig_want_keyboard()
+            except:
+                pass
+
         while has_events:
             try:
                 has_events = poll_event(Ptr(to=event))
@@ -3989,6 +4139,15 @@ struct Renderer3D(Movable):
 
             if not has_events:
                 break
+
+            # ImGui sees EVERY event, including ones claimed below. It tracks
+            # key-up, focus and modifier state, so filtering here would leave
+            # it believing a key is still held.
+            if self.imgui_on:
+                try:
+                    ig_process_event(Ptr(to=event))
+                except:
+                    pass
 
             var event_type = event[UInt32]
 
@@ -3999,7 +4158,14 @@ struct Renderer3D(Movable):
             elif EventType(event_type) == EventType.EVENT_KEY_DOWN:
                 var key_event = event[KeyboardEvent]
                 var key_val = Int(key_event.key)
-                if self.text_input_mode:
+                if ig_kbd:
+                    # ImGui is taking typed input: "s" is a letter, not the
+                    # screenshot shortcut, and ESC closes a popup rather than
+                    # the window. This is what makes `text_input_mode`
+                    # unnecessary — the UI reports its own focus instead of the
+                    # application having to declare it.
+                    pass
+                elif self.text_input_mode:
                     # Everything goes to the application while it is typing.
                     self.last_key = key_val
                 elif key_val == Int(Keycode.SDLK_ESCAPE):
@@ -4041,13 +4207,18 @@ struct Renderer3D(Movable):
                 var mb = event[MouseButtonEvent]
                 self.mouse_x = Float32(mb.x)
                 self.mouse_y = Float32(mb.y)
-                self.mouse_clicked = True
-                # A drag that STARTS over the UI strip must not orbit the
-                # camera — otherwise every slider drag spins the scene behind
-                # it. Where the gesture began is what matters, not where the
-                # pointer currently is, so this is latched on press.
+                self.mouse_clicked = not ig_mouse
+                # A drag that STARTS over the UI must not orbit the camera —
+                # otherwise every slider drag spins the scene behind it. Where
+                # the gesture began is what matters, not where the pointer
+                # currently is, so this is latched on press.
+                #
+                # Two sources, because both UI layers exist: `ui_sidebar_width`
+                # is the reserved strip the hand-rolled widgets live in, and
+                # `ig_mouse` covers ImGui windows, which can float anywhere.
                 self.mouse_left_down = (
-                    Float32(mb.x) >= Float32(self.ui_sidebar_width)
+                    not ig_mouse
+                    and Float32(mb.x) >= Float32(self.ui_sidebar_width)
                 )
 
             elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_UP:
@@ -4081,6 +4252,9 @@ struct Renderer3D(Movable):
                         self.camera.clamp_above_ground(self.ground_z)
 
             elif EventType(event_type) == EventType.EVENT_MOUSE_WHEEL:
+                if ig_mouse:
+                    # Scrolling a task list must not also dolly the camera.
+                    continue
                 var wheel = event[MouseWheelEvent]
                 # Scroll up (positive y) = zoom in (move eye closer)
                 self.camera.zoom(-Float64(wheel.y) * 0.5)
@@ -4146,6 +4320,12 @@ struct Renderer3D(Movable):
         """Release all GPU resources and shutdown SDL3."""
         if not self.initialized:
             return
+
+        # ⚠ FIRST. ImGui's backend owns GPU buffers, a font texture and a
+        # pipeline created on THIS device; tearing the device down first would
+        # leave it releasing freed handles. The viewer destroys and rebuilds
+        # the window on every task switch, so this runs often, not once.
+        self.imgui_close()
 
         # Stop any active recording and release the persistent transfer buffer
         if self.recorder.is_recording:
