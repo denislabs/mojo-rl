@@ -688,6 +688,16 @@ struct Phyics3dEnv[
             return False
         return self._renderer.value()[].imgui_active()
 
+    def renderer_request_free_camera(mut self) -> None:
+        """Detach from model cameras — dm_control's free camera (`-1`).
+
+        Model cameras in `trackcom`/`targetbody` mode are re-aimed every frame,
+        so mouse orbit fights them; only this one is actually free.
+        """
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].request_free_camera()
+
     def renderer_set_show_hud(mut self, on: Bool) -> None:
         """Show or hide the built-in text HUD (keybinds, camera, step).
 

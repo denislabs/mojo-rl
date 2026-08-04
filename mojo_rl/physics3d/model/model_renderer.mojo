@@ -65,6 +65,12 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
 
     var show_sites: Bool
 
+    var free_cam_reframe: Bool
+    """One-shot: reposition the free camera to a 3/4 view on the next frame.
+
+    Deferred rather than done in `request_free_camera` because framing needs
+    the torso position, which only `render_frame` has."""
+
     var show_hud: Bool
     """Draw the built-in keybind/camera/step overlay.
 
@@ -171,6 +177,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.show_velocity = show_velocity
         self.show_sites = show_sites
         self.show_hud = True
+        self.free_cam_reframe = False
         self.hud_extra = List[String]()
         self.ui_rects = List[UIRect]()
         self.ui_texts = List[UIText]()
@@ -238,6 +245,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.show_velocity = move.show_velocity
         self.show_sites = move.show_sites
         self.show_hud = move.show_hud
+        self.free_cam_reframe = move.free_cam_reframe
         self.hud_extra = move.hud_extra^
         self.ui_rects = move.ui_rects^
         self.ui_texts = move.ui_texts^
@@ -362,8 +370,39 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
 
         var torso_pos = positions[1]  # Body 1 = torso (body 0 = worldbody)
 
+        # ── free camera ──────────────────────────────────────────────────
+        # `active_camera == -1` is dm_control's free camera (its viewer starts
+        # there: `_camera_idx = -1`, model cameras only via cycling). It is not
+        # an entry in `cameras`; it is the ABSENCE of a model camera, so every
+        # per-frame re-aim below is skipped and the pose belongs entirely to
+        # mouse orbit/pan/zoom.
+        #
+        # ⚠ THIS IS WHY A MODEL CAMERA CAN FEEL "STUCK". A trackcom or
+        # targetbody camera is re-aimed by the branches below on EVERY frame,
+        # so dragging fights the model and loses. Only the free camera is
+        # actually free.
+        if self.free_cam_reframe:
+            self.free_cam_reframe = False
+            # Keep the DISTANCE that was on screen — it is the only
+            # model-scale information available here, and it is already correct
+            # for this model — but replace the direction with a 3/4 view. That
+            # fixes the complaint (fish's camera 0 looks straight down) without
+            # needing to know how big the robot is.
+            var cur_off = self.renderer.camera.eye - self.renderer.camera.target
+            var dist = cur_off.length()
+            if dist < 1e-6:
+                dist = 3.0
+            var dir = Vec3(0.6, -1.0, 0.5).normalized()
+            self.renderer.camera.target = torso_pos
+            self.renderer.camera.eye = torso_pos + dir * dist
+            self.renderer.camera.up = Vec3(0.0, 0.0, 1.0)
+
         # Camera follow torso (only for trackcom mode cameras)
-        var cam_mode = self.camera_modes[self.active_camera]
+        var cam_mode = -1
+        if self.active_camera >= 0 and self.active_camera < len(
+            self.camera_modes
+        ):
+            cam_mode = self.camera_modes[self.active_camera]
         if self.follow and cam_mode == 0:  # CAM_TRACKCOM
             # Preserve the current eye-to-target offset so mouse orbit is respected.
             # Each frame we only translate both eye and target to follow the torso.
@@ -480,6 +519,19 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     def request_camera(mut self, index: Int):
         self.renderer.request_camera(index)
 
+    def request_free_camera(mut self):
+        """Detach from model cameras — dm_control's free camera.
+
+        Set directly rather than through `renderer.request_camera`, whose
+        `camera_switch_request` already uses -1 to mean "no request"; routing
+        free through it would be indistinguishable from silence.
+        """
+        self.active_camera = -1
+        self.free_cam_reframe = True
+
+    def is_free_camera(self) -> Bool:
+        return self.active_camera < 0
+
     def request_screenshot(mut self):
         self.renderer.request_screenshot()
 
@@ -584,7 +636,12 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         y += 28  # gap
 
         # Camera name (bright white)
-        var cam_name = String("Cam ") + String(self.active_camera + 1)
+        # `active_camera + 1` would read "Cam 0" for the free camera, which is
+        # a real camera index in every other line of this HUD.
+        var cam_name = (
+            String("Cam free") if self.active_camera < 0
+            else String("Cam ") + String(self.active_camera + 1)
+        )
         self.renderer.draw_text(x0 + 1, y + 1, cam_name, Color(0, 0, 0, 160), s)
         self.renderer.draw_text(x0, y, cam_name, Color(255, 255, 255, 255), s)
         y += 20

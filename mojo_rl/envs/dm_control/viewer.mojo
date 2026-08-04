@@ -380,7 +380,8 @@ struct ViewControls(Copyable, Movable):
     var rec_frames: Int
 
     var want_camera: Int
-    """-1 when no camera button was pressed this frame."""
+    """-1 when no numbered camera button was pressed this frame."""
+    var want_free_camera: Bool
     var want_screenshot: Bool
     var want_toggle_pause: Bool
     var want_toggle_record: Bool
@@ -393,6 +394,7 @@ struct ViewControls(Copyable, Movable):
         self.recording = recording
         self.rec_frames = rec_frames
         self.want_camera = -1
+        self.want_free_camera = False
         self.want_screenshot = False
         self.want_toggle_pause = False
         self.want_toggle_record = False
@@ -518,22 +520,26 @@ def ui_drive_controls(mut st: ViewerState) raises -> SidebarOut:
 def ui_view_controls(mut vc: ViewControls) raises:
     """Camera selection and capture. Writes its answers back into `vc`."""
     vc.want_camera = -1
+    vc.want_free_camera = False
     vc.want_screenshot = False
     vc.want_toggle_pause = False
     vc.want_toggle_record = False
 
-    if vc.n_cameras > 0:
-        ig_text_disabled(String("camera"))
-        # Sized from the model, not fixed: dm_control models carry between one
-        # and four cameras.
-        var w = (
-            ig_content_width() - Float32(vc.n_cameras - 1) * 8.0
-        ) / Float32(vc.n_cameras)
-        for c in range(vc.n_cameras):
-            if c > 0:
-                ig_same_line()
-            if ig_toggle_button(String(c + 1), c == vc.current_camera, w, 0.0):
-                vc.want_camera = c
+    ig_text_disabled(String("camera"))
+    # "free" is NOT one of the model's cameras — it is dm_control's -1, the
+    # absence of one, and the only camera the mouse fully controls. It leads
+    # the row because it is where dm_control's own viewer starts.
+    #
+    # Sized from the model, not fixed: dm_control models carry between one and
+    # four cameras, plus this button.
+    var n_slots = vc.n_cameras + 1
+    var w = (ig_content_width() - Float32(n_slots - 1) * 8.0) / Float32(n_slots)
+    if ig_toggle_button(String("free"), vc.current_camera < 0, w, 0.0):
+        vc.want_free_camera = True
+    for c in range(vc.n_cameras):
+        ig_same_line()
+        if ig_toggle_button(String(c + 1), c == vc.current_camera, w, 0.0):
+            vc.want_camera = c
 
     var third = (ig_content_width() - 16.0) / 3.0
     if ig_toggle_button(
@@ -710,6 +716,8 @@ def run_view[
         elif ui.zero_now:
             st.drive = Int32(DRIVE_ZERO)
             st.scale = 1.0
+        if vc.want_free_camera:
+            env.renderer_request_free_camera()
         if vc.want_camera >= 0:
             env.renderer_request_camera(vc.want_camera)
         if vc.want_screenshot:
