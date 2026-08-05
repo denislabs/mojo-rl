@@ -899,6 +899,39 @@ def _precompute_contact_friction[
         var imp_n = imp_c
         var pen = -rebind[Scalar[DTYPE]](solver[env, ws_c_dist + c])
 
+        # ⚠ `K_spring`/`B_damp` MUST COME FROM THIS CONTACT, NOT THE MODEL.
+        # The caller computes them ONCE from the model-level
+        # `MODEL_META_IDX_SOLREF_CONTACT_*` / `SOLIMP_CONTACT_*` and passes
+        # them in, but MuJoCo derives `k = 1/(dmax^2 tc^2 dr^2)` and
+        # `b = 2/(dmax tc)` from each contact's MIXED solref/solimp. Every
+        # contact whose mixed parameters differ from the model default
+        # therefore got the wrong `aref`, as a CONSTANT offset on all of its
+        # rows — the normal builder above already recomputes these per contact
+        # (see the `solref_spring_damper` call there); only this edge builder
+        # did not, and the pyramidal edge rows are what the Newton solver
+        # consumes.
+        #
+        # Measured on dm_control's dog at a settled pose: the five contacts
+        # with mixed solimp (`foot_primitive` 0.9/0.95 against the floor's
+        # 0.95/0.99, mixing to 0.925/0.97) carried `jar` offsets of +0.0464,
+        # +0.0822, +0.1149, +0.0133, +0.0098 — constant within each contact,
+        # which is the signature of a bias error rather than a Jacobian one.
+        # Contact 1 checks out exactly: `k` is 10203.04 at the model's
+        # dmax = 0.99 and 10628.10 at the mixed 0.97, and the difference in
+        # `-k*imp*pen` is +0.04636.
+        #
+        # The consequence was a solver that converged PERFECTLY (gradient
+        # 1.9e-14) to the minimum of a slightly different objective: its cost
+        # understated the true one by 0.774 and its answer sat exactly one
+        # Newton step from MuJoCo's.
+        var _kb_c = solref_spring_damper[DTYPE](
+            rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_SOLREF_0]),
+            rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_SOLREF_1]),
+            rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_SOLIMP_1]),
+        )
+        var K_spring_c = _kb_c[0]
+        var B_damp_c = _kb_c[1]
+
         # Store mu
         solver[env, pyr_sc + 2 * NE_PYR * MC + c] = mu_c
 
@@ -1022,8 +1055,9 @@ def _precompute_contact_friction[
             solver[env, pyr_sc + edge * MC + c] = (
                 Scalar[DTYPE](1.0) / R_n_c if frictionless else D_edge_val
             )
-            # bias_edge = B*v_edge - K_spring*imp*pen
-            var bias_e = B_damp * v_edge - K_spring * imp_n * pen
+            # bias_edge = B*v_edge - K_spring*imp*pen, with THIS CONTACT's
+            # mixed spring/damper — see the note above `_kb_c`.
+            var bias_e = B_damp_c * v_edge - K_spring_c * imp_n * pen
             solver[env, pyr_sc + NE_PYR * MC + edge * MC + c] = bias_e
 
     else:
@@ -1037,15 +1071,26 @@ def _precompute_contact_friction[
         solver[env, ws_D_f_idx + c] = D_n_c / impratio
         solver[env, ws_mu_idx + c] = mu_c
 
-        # Friction velocity-damping bias: bt = B_damp * J_t * qvel
+        # Friction velocity-damping bias: bt = B_damp * J_t * qvel, with THIS
+        # CONTACT's mixed damper rather than the model-level one the caller
+        # passes in — the same defect the PYRAMIDAL branch above carried, and
+        # fixed with it so the two cones cannot drift. Untested on a model
+        # that both uses `cone="elliptic"` AND mixes solref across a contacting
+        # pair; no such model is in the tree, which is exactly why it is
+        # corrected here rather than left as the odd one out.
+        var _kb_e = solref_spring_damper[DTYPE](
+            rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_SOLREF_0]),
+            rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_SOLREF_1]),
+            rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_SOLIMP_1]),
+        )
         var bt1_c: Scalar[DTYPE] = 0
         var bt2_c: Scalar[DTYPE] = 0
         for i in range(NV):
             var qv_i = rebind[Scalar[DTYPE]](qvel[env, i])
             bt1_c += J_t1[i] * qv_i
             bt2_c += J_t2[i] * qv_i
-        solver[env, ws_bt1_idx + c] = B_damp * bt1_c
-        solver[env, ws_bt2_idx + c] = B_damp * bt2_c
+        solver[env, ws_bt1_idx + c] = _kb_e[1] * bt1_c
+        solver[env, ws_bt2_idx + c] = _kb_e[1] * bt2_c
 
 
 @always_inline
