@@ -25,6 +25,9 @@ from .episode_index import EpisodeIndex
 from .manifest import (
     MANIFEST_DATASET, Manifest, SCHEMA_VERSION, parse_column, parse_manifest,
 )
+from .resident import (
+    IDX_DT, IndexBatch, ResidentColumn,
+)
 from .store import (
     DEFAULT_CHUNK_ROWS,
     DEFAULT_MAX_RESIDENT_BYTES,
