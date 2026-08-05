@@ -225,7 +225,7 @@ def upload_file(
     raises rather than silently truncating.
     """
     var os = Python.import_module("os")
-    var size = Int(os.path.getsize(PythonObject(path)))
+    var size = Int(py=os.path.getsize(PythonObject(path)))
     if size > 5 * 1000 * 1000 * 1000:
         raise Error(
             "upload_file: " + path + " is " + String(size // 1000000)
@@ -234,7 +234,7 @@ def upload_file(
         )
     var ns = _helpers()
     return Int(
-        ns[PythonObject("upload_file")](
+        py=ns[PythonObject("upload_file")](
             PythonObject(url), PythonObject(path), PythonObject(label)
         )
     )
