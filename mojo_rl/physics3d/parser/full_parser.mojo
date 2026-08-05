@@ -17,6 +17,7 @@ with arithmetic helpers defined in xml_parser.mojo.
 from std.collections import InlineArray
 from .xml_parser import (
     _split_spaces,
+    _strip_xml_comments,
     _extract_section,
     _extract_section_inner,
     _extract_opening_tag,
@@ -2784,7 +2785,7 @@ def _resolve_geom_materials(
 
 
 def parse_xml_full(
-xml: String) raises -> FlatModelDef:
+xml_in: String) raises -> FlatModelDef:
     """Full MJCF parse: returns a populated FlatModelDef.
 
     ⚠ NON-GENERIC since 2026-08-05. It used to take the fourteen dimensions as
@@ -2807,6 +2808,20 @@ xml: String) raises -> FlatModelDef:
     All operations are comptime-safe (String.find + slice arithmetic only).
     """
     var result = FlatModelDef()
+
+    # ⚠ STRIP COMMENTS FIRST. Everything below is `find` + slice arithmetic
+    # over the raw text, so a commented-out element is indistinguishable from a
+    # live one — `<!-- <site name='tip' pos='.15 0 .11'/> -->` in Gymnasium's
+    # `half_cheetah.xml` was parsed as a REAL site, giving nsite 1 where MuJoCo
+    # reports 0.
+    #
+    # The comptime `xml_parser` has stripped comments all along
+    # (`_strip_xml_comments`), which is the whole hazard of having two parsers:
+    # they disagreed, the comptime one was right, and the runtime one silently
+    # wrote a site nobody had declared. It stayed invisible because the old
+    # capacity-bounded writes dropped the overflow without a word; the
+    # dimension check in `ModelDefFromXML` now turns exactly this into a raise.
+    var xml = _strip_xml_comments(xml_in)
 
     # Extract top-level sections
     var worldbody = _extract_section(xml, "worldbody")
