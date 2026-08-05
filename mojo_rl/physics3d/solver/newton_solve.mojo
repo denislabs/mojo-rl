@@ -1021,14 +1021,40 @@ def _newton_solve_env[
         for i in range(NV):
             f_smooth[i] = Ma[i]
 
-        # Scale for convergence check
-        var scale: Scalar[DTYPE] = 0
-        for i in range(NV):
-            scale += M_local[i * NV + i]
-        if scale > Scalar[DTYPE](1e-10):
-            scale = Scalar[DTYPE](1.0) / scale
-        else:
-            scale = Scalar[DTYPE](1.0)
+        # ⚠ MuJoCo's CONVERGENCE SCALE IS A MODEL CONSTANT, NOT A POSE ONE.
+        # `mj_solPrimal` uses `1 / (stat.meaninertia * max(1, nv))`
+        # (`engine_solver.c:1863`), and `stat.meaninertia` is the mean of the
+        # mass-matrix diagonal evaluated ONCE at qpos0 in `mj_setConst`. This
+        # summed `M[i][i]` at the CURRENT pose instead — the same formula
+        # (`sum(diag M)` at qpos0 IS `meaninertia * nv`; measured on dog,
+        # 35.635564 both ways) evaluated at the wrong point.
+        #
+        # It scales BOTH exit tests, `improvement < tol` and `gradient < tol`,
+        # so a pose-dependent scale makes the effective tolerance wander with
+        # the configuration. Measured on dog at its settled pose: 34.107946
+        # against 35.635564, i.e. a tolerance 1.045x looser than MuJoCo's.
+        # Unbounded in general — a model that folds up moves its diagonal a lot
+        # further than 4.5%.
+        #
+        # ⚠ THIS IS NOT A FIX FOR THE OPEN DOG RESIDUAL and must not be read as
+        # one: tightening `NEWTON_TOL_GPU` to 1e-14 leaves our answer identical
+        # to the last digit, so the exit threshold is not what is holding it.
+        # This is a fidelity correction on its own merits.
+        #
+        # `meaninertia` reached the model meta with `mj_solNoSlip`, which needs
+        # it for the same reason.
+        # ⚠ STAY IN `DTYPE`. Computing this in Float64 makes the enclosing
+        # kernel return a double and Metal rejects the module outright
+        # ("returns unsupported type 'double'"), which is a BUILD failure on
+        # every GPU model, not a dog-only one.
+        var scale_d = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_MEANINERTIA]
+        ) * Scalar[DTYPE](NV if NV > 1 else 1)
+        var scale = (
+            Scalar[DTYPE](1) / scale_d
+            if scale_d > Scalar[DTYPE](1e-10)
+            else Scalar[DTYPE](1)
+        )
 
         # Working arrays
         var jar = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
@@ -1443,14 +1469,18 @@ def _newton_solve_env[
     for i in range(NV):
         qfrc_sm[i] = Ma[i]
 
-    # Scale = 1/trace(M) for convergence check
-    var scale: Scalar[DTYPE] = 0
-    for i in range(NV):
-        scale += M_local[i * NV + i]
-    if scale > Scalar[DTYPE](1e-10):
-        scale = Scalar[DTYPE](1.0) / scale
-    else:
-        scale = Scalar[DTYPE](1.0)
+    # Same model-constant scale as the PYRAMIDAL path; see the note there.
+    # `mj_solPrimal` is shared by both cones in MuJoCo, so the ELLIPTIC leg
+    # took the identical pose-dependent-trace deviation and is corrected with
+    # it rather than left as the odd one out.
+    var scale_de = rebind[Scalar[DTYPE]](
+        mmeta[MODEL_META_IDX_MEANINERTIA]
+    ) * Scalar[DTYPE](NV if NV > 1 else 1)
+    var scale = (
+        Scalar[DTYPE](1) / scale_de
+        if scale_de > Scalar[DTYPE](1e-10)
+        else Scalar[DTYPE](1)
+    )
 
     # === Mutable per-contact state: kept in InlineArrays, written to state buffer at end ===
     var fn_arr = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
@@ -3228,13 +3258,17 @@ def _newton_blocked_fields_kernel[
                 Ma[i] += rebind[Scalar[DTYPE]](M_sh[i * NV + j]) * qacc[j]
         for i in range(NV):
             f_smooth[i] = Ma[i]
-        # Scale for convergence check
-        for i in range(NV):
-            scale += rebind[Scalar[DTYPE]](M_sh[i * NV + i])
-        if scale > Scalar[DTYPE](1e-10):
-            scale = Scalar[DTYPE](1.0) / scale
-        else:
-            scale = Scalar[DTYPE](1.0)
+        # Same model-constant scale as the per-env path above; see the note
+        # there for why a pose-dependent trace(M) is wrong and why this is NOT
+        # a fix for the open dog residual.
+        var scale_db = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_MEANINERTIA]
+        ) * Scalar[DTYPE](NV if NV > 1 else 1)
+        scale = (
+            Scalar[DTYPE](1) / scale_db
+            if scale_db > Scalar[DTYPE](1e-10)
+            else Scalar[DTYPE](1)
+        )
 
         # Initial jar + force + qfrc; publish force to force_sh
         for i in range(NV):
