@@ -1,7 +1,7 @@
 """AnyPerReplay[target, OBS, ACT, CAP] — target-selecting PER buffer.
 
 PER counterpart of `AnyReplay`: maps `target` to either
-`CPUPrioritizedReplay` or `GPUPrioritizedReplay`, carrying both as
+`StoreReplay[..., True]` or `StoreReplayGpu[..., True]`, carrying both as
 `Optional` and dispatching each `ReplayBuffer` trait method (including
 the PER hooks `configure_per` / `set_beta` / `update_priorities`) via
 method-body `comptime if`. Only the selected backend is constructed.
@@ -16,8 +16,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.nn.constants import DT
 from ..training.replay_buffer import ReplayBuffer
 from ..training.trainer_block import TrainerState
-from .cpu_per_replay import CPUPrioritizedReplay
-from .per_replay import GPUPrioritizedReplay
+from mojo_rl.data.replay import StoreReplay
+from mojo_rl.data.replay_gpu import StoreReplayGpu
 
 
 @fieldwise_init
@@ -36,11 +36,10 @@ struct AnyPerReplay[
     comptime ACT = Self.ACT_
     comptime CAP = Self.CAP_
 
-    var cpu: Optional[CPUPrioritizedReplay[Self.OBS_, Self.ACT_, Self.CAP_]]
+    var cpu: Optional[StoreReplay[Self.OBS_, Self.ACT_, Self.CAP_, True]]
     var gpu: Optional[
-        GPUPrioritizedReplay[
-            Self.OBS_, Self.ACT_, Self.CAP_,
-            Self.OBS_STORE_DT_, Self.DEVICE_TREE_,
+        StoreReplayGpu[
+            Self.OBS_, Self.ACT_, Self.CAP_, True, Self.OBS_STORE_DT_
         ]
     ]
 
@@ -52,22 +51,30 @@ struct AnyPerReplay[
         comptime assert (
             Self.target == "cpu" or Self.target == "gpu"
         ), "AnyPerReplay: target must be 'cpu' or 'gpu'"
+        # `DEVICE_TREE_=False` was the legacy host-tree hybrid (D2H the TD
+        # residuals, walk a host sum-tree). Only the device-tree path — the
+        # legacy DEFAULT and hot path — is ported. Assert rather than silently
+        # running the device tree when a caller asked for the host one.
+        comptime assert Self.DEVICE_TREE_, (
+            "AnyPerReplay: DEVICE_TREE_=False (the legacy host-tree hybrid) is"
+            " not ported. The device tree is the legacy default and is what"
+            " mojo_rl.data implements."
+        )
         comptime if Self.target == "cpu":
             comptime assert Self.OBS_STORE_DT_ == DT, (
                 "AnyPerReplay[cpu]: OBS_STORE_DT is a GPU-backend option"
             )
             return Self(
-                cpu=CPUPrioritizedReplay[
-                    Self.OBS_, Self.ACT_, Self.CAP_
+                cpu=StoreReplay[
+                    Self.OBS_, Self.ACT_, Self.CAP_, True
                 ].make(batch_capacity=batch_capacity),
                 gpu=None,
             )
         else:
             return Self(
                 cpu=None,
-                gpu=GPUPrioritizedReplay[
-                    Self.OBS_, Self.ACT_, Self.CAP_,
-                    Self.OBS_STORE_DT_, Self.DEVICE_TREE_,
+                gpu=StoreReplayGpu[
+                    Self.OBS_, Self.ACT_, Self.CAP_, True, Self.OBS_STORE_DT_
                 ].make(ctx=ctx, batch_capacity=batch_capacity),
             )
 

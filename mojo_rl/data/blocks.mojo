@@ -24,6 +24,7 @@ Both produce bit-identical minibatches under the same seed — gated by
 from mojo_rl.deep_agents.training.blocks.replay_sample_step import (
     ReplaySampleStep,
 )
+from mojo_rl.nn.constants import DT
 from .replay import StoreReplay
 from .replay_gpu import StoreReplayGpu
 
@@ -46,6 +47,6 @@ comptime StoreUniformSampleGpuStep[
 `configure_ere`, bit-identically."""
 
 comptime StorePerSampleGpuStep[
-    OBS: Int, ACT: Int, BATCH: Int, CAP: Int
-] = ReplaySampleStep[StoreReplayGpu[OBS, ACT, CAP, True], BATCH]
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int, SDT: DType = DT
+] = ReplaySampleStep[StoreReplayGpu[OBS, ACT, CAP, True, SDT], BATCH]
 """Replaces `PerSampleGpuStep` (backed by `GPUPrioritizedReplay`)."""

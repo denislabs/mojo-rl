@@ -34,6 +34,7 @@ comptime ACT: Int = 2
 comptime CAP: Int = 32
 comptime BATCH: Int = 16
 comptime N_FILL: Int = 50          # > CAP so the ring wraps
+comptime U8 = DType.uint8
 
 
 def _obs_for(row: Int) -> List[Scalar[DT]]:
@@ -300,9 +301,65 @@ def test_gpu_per_parity() raises:
     print("      post-update draw bit-identical  OK")
 
 
+def test_u8_obs_parity() raises:
+    """uint8 obs storage — the pixel-replay path (4x VRAM saving).
+
+    Values are `k/255`, which is what the pixel pipeline actually produces and
+    the only input for which the quantise/dequantise round trip is EXACT. A
+    fixture of arbitrary floats would round-trip lossily and force a tolerance,
+    hiding a real quantisation bug behind it.
+    """
+    print("[4] uint8 obs storage vs GPUReplay[uint8] ...")
+    var ctx = DeviceContext()
+
+    var legacy = ReplaySampleStep[GPUReplay[OBS, ACT, CAP, U8], BATCH]()
+    var mine = ReplaySampleStep[
+        StoreReplayGpu[OBS, ACT, CAP, False, U8], BATCH
+    ]()
+    legacy.setup(learning_starts=0, ctx=ctx)
+    mine.setup(learning_starts=0, ctx=ctx)
+
+    for r in range(N_FILL):
+        var o = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+        var nx = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+        for i in range(OBS):
+            o[i] = Scalar[DT](Float64((r * 7 + i * 31) % 256) / 255.0)
+            nx[i] = Scalar[DT](Float64((r * 11 + i * 13) % 256) / 255.0)
+        var a = _act_for(r)
+        legacy.add(o, a, Scalar[DT](Float64(r) * 0.25), nx, Scalar[DT](0), ctx=ctx)
+        mine.add(o, a, Scalar[DT](Float64(r) * 0.25), nx, Scalar[DT](0), ctx=ctx)
+
+    var st_a = TrainerState[OBS, ACT, BATCH].make["gpu"](ctx)
+    var st_b = TrainerState[OBS, ACT, BATCH].make["gpu"](ctx)
+    st_a.step_idx = 1
+    st_b.step_idx = 1
+    legacy.step(st_a)
+    mine.step(st_b)
+    var ga = _readback(ctx, st_a)
+    var gb = _readback(ctx, st_b)
+
+    for i in range(len(ga)):
+        assert_equal(ga[i], gb[i], "uint8 obs element " + String(i))
+
+    # And the round trip must be EXACT for k/255 — not merely equal to a
+    # legacy path that is also wrong.
+    var exact = 0
+    for i in range(BATCH * OBS):
+        var v = Float64(gb[i]) * 255.0
+        var k = Float64(Int(v + 0.5))
+        if v > k - 1e-4 and v < k + 1e-4:
+            exact += 1
+    assert_equal(
+        exact, BATCH * OBS,
+        "k/255 obs must survive the uint8 round trip exactly",
+    )
+    print("      bit-identical + round trip exact  OK")
+
+
 def main() raises:
     test_gpu_parity()
     test_ere_parity()
     test_ere_per_conflict_raises()
     test_gpu_per_parity()
+    test_u8_obs_parity()
     print("\n[PASS] StoreReplayGpu parity — 4b")

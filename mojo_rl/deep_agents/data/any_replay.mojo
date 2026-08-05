@@ -1,5 +1,9 @@
 """AnyReplay[target, OBS, ACT, CAP] — target-selecting ReplayBuffer leaf.
 
+**Backed by `mojo_rl.data` since 2026-08-05 (4d batch 2).** The wrapper itself
+SURVIVES the migration: Mojo still cannot select a field type by target, so
+the carry-both shim is still needed. Only its two backends changed.
+
 The single place where `target` (a `StaticString`) is mapped to a
 concrete buffer backend. Mojo can't select a field *type* by target
 (no type-ternary, no struct-body `comptime if`), so this leaf carries
@@ -8,7 +12,7 @@ method-body `comptime if` — the nn carry-both idiom, confined to one
 ~60-line shim instead of smeared across every sample block.
 
 Only the selected backend is constructed (`make`); the other stays
-`None`. GPUReplay can't exist without a ctx (its DeviceBuffers need
+`None`. The GPU backend can't exist without a ctx (its DeviceBuffers need
 one), which is why both backends are `Optional` rather than values.
 
 This is the conformer the C51 config presets plug into so a single
@@ -21,8 +25,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.nn.constants import DT
 from ..training.replay_buffer import ReplayBuffer
 from ..training.trainer_block import TrainerState
-from .cpu_replay import CPUReplay
-from .gpu_replay import GPUReplay
+from mojo_rl.data.replay import StoreReplay
+from mojo_rl.data.replay_gpu import StoreReplayGpu
 
 
 @fieldwise_init
@@ -39,9 +43,9 @@ struct AnyReplay[
     comptime ACT = Self.ACT_
     comptime CAP = Self.CAP_
 
-    var cpu: Optional[CPUReplay[Self.OBS_, Self.ACT_, Self.CAP_]]
+    var cpu: Optional[StoreReplay[Self.OBS_, Self.ACT_, Self.CAP_, False]]
     var gpu: Optional[
-        GPUReplay[Self.OBS_, Self.ACT_, Self.CAP_, Self.OBS_STORE_DT_]
+        StoreReplayGpu[Self.OBS_, Self.ACT_, Self.CAP_, False, Self.OBS_STORE_DT_]
     ]
 
     @staticmethod
@@ -57,14 +61,14 @@ struct AnyReplay[
                 "AnyReplay[cpu]: OBS_STORE_DT is a GPU-backend option"
             )
             return Self(
-                cpu=CPUReplay[Self.OBS_, Self.ACT_, Self.CAP_].make(),
+                cpu=StoreReplay[Self.OBS_, Self.ACT_, Self.CAP_, False].make(),
                 gpu=None,
             )
         else:
             return Self(
                 cpu=None,
-                gpu=GPUReplay[
-                    Self.OBS_, Self.ACT_, Self.CAP_, Self.OBS_STORE_DT_
+                gpu=StoreReplayGpu[
+                    Self.OBS_, Self.ACT_, Self.CAP_, False, Self.OBS_STORE_DT_
                 ].make(ctx=ctx, batch_capacity=batch_capacity),
             )
 

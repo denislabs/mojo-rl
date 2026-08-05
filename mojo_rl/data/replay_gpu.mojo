@@ -45,20 +45,53 @@ from .resident import IDX_DT
 from .sampler import UniformDeviceSampler
 
 
+
+# ── obs quantisation ──────────────────────────────────────────────────────
+#
+# Pixel replay stores obs as `uint8` rather than fp32: Pong frames are
+# 4x84x84 = 28224 elements, so at CAP=100k obs+next_obs is ~22.6 GB in fp32
+# against ~5.6 GB in uint8. Rainbow's CNN configs default to uint8 for exactly
+# that reason — it is a fit-in-VRAM question, not an optimisation.
+
+def _obs_quant[SDT: DType](x: Scalar[DT]) -> Scalar[SDT]:
+    """`DT` obs element -> storage dtype. `SDT == DT` is a pure rebind.
+    `uint8` stores `round(x*255)` clamped to [0,255] — exact for `k/255`
+    pixel inputs."""
+    comptime if SDT == DT:
+        return rebind[Scalar[SDT]](x)
+    else:
+        var v = x * Scalar[DT](255.0) + Scalar[DT](0.5)
+        if v < Scalar[DT](0.0):
+            v = Scalar[DT](0.0)
+        if v > Scalar[DT](255.0):
+            v = Scalar[DT](255.0)
+        return v.cast[SDT]()
+
+
+def _obs_dequant[SDT: DType](x: Scalar[SDT]) -> Scalar[DT]:
+    """Storage dtype -> `DT`. `uint8` divides by 255.0 — the same division the
+    pixel pipeline used to produce the stored value, so the round trip is
+    bit-identical for `k/255` inputs."""
+    comptime if SDT == DT:
+        return rebind[Scalar[DT]](x)
+    else:
+        return x.cast[DT]() / Scalar[DT](255.0)
+
+
 # ── kernels ───────────────────────────────────────────────────────────────
 
 def _store_one_kernel[
-    OBS: Int, ACT: Int, CAP: Int
+    OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT
 ](
     stage_s: LayoutTensor[DT, Layout.row_major(OBS), MutAnyOrigin],
     stage_a: LayoutTensor[DT, Layout.row_major(ACT), MutAnyOrigin],
     stage_r: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
     stage_sp: LayoutTensor[DT, Layout.row_major(OBS), MutAnyOrigin],
     stage_d: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
-    buf_s: LayoutTensor[DT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_s: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     buf_a: LayoutTensor[DT, Layout.row_major(CAP, ACT), MutAnyOrigin],
     buf_r: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
-    buf_sp: LayoutTensor[DT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_sp: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     buf_d: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
     slot: Int32,
 ):
@@ -66,8 +99,8 @@ def _store_one_kernel[
     var d = Int(thread_idx.x)
     var s = Int(slot)
     if d < OBS:
-        buf_s[s, d] = stage_s[d]
-        buf_sp[s, d] = stage_sp[d]
+        buf_s[s, d] = _obs_quant[SDT](rebind[Scalar[DT]](stage_s[d]))
+        buf_sp[s, d] = _obs_quant[SDT](rebind[Scalar[DT]](stage_sp[d]))
     if d < ACT:
         buf_a[s, d] = stage_a[d]
     if d == 0:
@@ -76,17 +109,17 @@ def _store_one_kernel[
 
 
 def _store_batch_kernel[
-    N_ENVS: Int, OBS: Int, ACT: Int, CAP: Int
+    N_ENVS: Int, OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT
 ](
     src_s: LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin],
     src_a: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
     src_r: LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin],
     src_sp: LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin],
     src_d: LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin],
-    buf_s: LayoutTensor[DT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_s: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     buf_a: LayoutTensor[DT, Layout.row_major(CAP, ACT), MutAnyOrigin],
     buf_r: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
-    buf_sp: LayoutTensor[DT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_sp: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     buf_d: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
     start_pos: Int32,
 ):
@@ -99,8 +132,8 @@ def _store_batch_kernel[
     var e = t // OBS
     var d = t % OBS
     var slot = (Int(start_pos) + e) % CAP
-    buf_s[slot, d] = src_s[e, d]
-    buf_sp[slot, d] = src_sp[e, d]
+    buf_s[slot, d] = _obs_quant[SDT](rebind[Scalar[DT]](src_s[e, d]))
+    buf_sp[slot, d] = _obs_quant[SDT](rebind[Scalar[DT]](src_sp[e, d]))
     if d < ACT:
         buf_a[slot, d] = src_a[e, d]
     if d == 0:
@@ -109,17 +142,17 @@ def _store_batch_kernel[
 
 
 def _gather_batch_kernel[
-    BATCH: Int, OBS: Int, ACT: Int, CAP: Int
+    BATCH: Int, OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT
 ](
     mb_s: LayoutTensor[DT, Layout.row_major(BATCH, OBS), MutAnyOrigin],
     mb_a: LayoutTensor[DT, Layout.row_major(BATCH, ACT), MutAnyOrigin],
     mb_r: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
     mb_sp: LayoutTensor[DT, Layout.row_major(BATCH, OBS), MutAnyOrigin],
     mb_d: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
-    buf_s: LayoutTensor[DT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_s: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     buf_a: LayoutTensor[DT, Layout.row_major(CAP, ACT), MutAnyOrigin],
     buf_r: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
-    buf_sp: LayoutTensor[DT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    buf_sp: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     buf_d: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
     indices: LayoutTensor[IDX_DT, Layout.row_major(BATCH), MutAnyOrigin],
 ):
@@ -134,8 +167,8 @@ def _gather_batch_kernel[
     var i = t // OBS
     var d = t % OBS
     var idx = Int(indices[i])
-    mb_s[i, d] = buf_s[idx, d]
-    mb_sp[i, d] = buf_sp[idx, d]
+    mb_s[i, d] = _obs_dequant[SDT](rebind[Scalar[SDT]](buf_s[idx, d]))
+    mb_sp[i, d] = _obs_dequant[SDT](rebind[Scalar[SDT]](buf_sp[idx, d]))
     if d < ACT:
         mb_a[i, d] = buf_a[idx, d]
     if d == 0:
@@ -416,7 +449,11 @@ def _per_copy_weights_kernel[
 # ── the buffer ────────────────────────────────────────────────────────────
 
 struct StoreReplayGpu[
-    OBS_: Int, ACT_: Int, CAP_: Int, PRIORITIZED: Bool = False
+    OBS_: Int,
+    ACT_: Int,
+    CAP_: Int,
+    PRIORITIZED: Bool = False,
+    OBS_STORE_DT_: DType = DT,
 ](ReplayBuffer):
     """Device ring + a device index policy. `PRIORITIZED` is a comptime FLAG,
     matching the CPU `StoreReplay`: ONE storage struct serves both policies,
@@ -427,11 +464,14 @@ struct StoreReplayGpu[
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime CAP = Self.CAP_
+    comptime SDT = Self.OBS_STORE_DT_
+    """Obs storage dtype. `DT` stores verbatim; `uint8` quantises — see the
+    module's quantisation note."""
 
-    var obs: DeviceBuffer[DT]
+    var obs: DeviceBuffer[Self.SDT]
     var act: DeviceBuffer[DT]
     var rew: DeviceBuffer[DT]
-    var nxt: DeviceBuffer[DT]
+    var nxt: DeviceBuffer[Self.SDT]
     var dne: DeviceBuffer[DT]
 
     var stage_obs: DeviceBuffer[DT]
@@ -471,10 +511,10 @@ struct StoreReplayGpu[
 
     def __init__(
         out self,
-        var obs: DeviceBuffer[DT],
+        var obs: DeviceBuffer[Self.SDT],
         var act: DeviceBuffer[DT],
         var rew: DeviceBuffer[DT],
-        var nxt: DeviceBuffer[DT],
+        var nxt: DeviceBuffer[Self.SDT],
         var dne: DeviceBuffer[DT],
         var stage_obs: DeviceBuffer[DT],
         var stage_act: DeviceBuffer[DT],
@@ -570,15 +610,15 @@ struct StoreReplayGpu[
         if not ctx:
             raise Error("StoreReplayGpu.make: ctx required (GPU backend)")
         var c = ctx.value()
-        var s = c.enqueue_create_buffer[DT](Self.CAP * Self.OBS)
+        var s = c.enqueue_create_buffer[Self.SDT](Self.CAP * Self.OBS)
         var a = c.enqueue_create_buffer[DT](Self.CAP * Self.ACT)
         var r = c.enqueue_create_buffer[DT](Self.CAP)
-        var sp = c.enqueue_create_buffer[DT](Self.CAP * Self.OBS)
+        var sp = c.enqueue_create_buffer[Self.SDT](Self.CAP * Self.OBS)
         var d = c.enqueue_create_buffer[DT](Self.CAP)
-        s.enqueue_fill(Scalar[DT](0))
+        s.enqueue_fill(Scalar[Self.SDT](0))
         a.enqueue_fill(Scalar[DT](0))
         r.enqueue_fill(Scalar[DT](0))
-        sp.enqueue_fill(Scalar[DT](0))
+        sp.enqueue_fill(Scalar[Self.SDT](0))
         d.enqueue_fill(Scalar[DT](0))
 
         var sz_dev = c.enqueue_create_buffer[DType.int32](1)
@@ -652,17 +692,17 @@ struct StoreReplayGpu[
         c.enqueue_copy(self.stage_dne, self._h_dne.unsafe_ptr())
 
         comptime tpb = Self.OBS if Self.OBS > Self.ACT else Self.ACT
-        comptime kern = _store_one_kernel[Self.OBS, Self.ACT, Self.CAP]
+        comptime kern = _store_one_kernel[Self.OBS, Self.ACT, Self.CAP, Self.SDT]
         c.enqueue_function[kern](
             LayoutTensor[DT, Layout.row_major(Self.OBS)](self.stage_obs),
             LayoutTensor[DT, Layout.row_major(Self.ACT)](self.stage_act),
             LayoutTensor[DT, Layout.row_major(1)](self.stage_rew),
             LayoutTensor[DT, Layout.row_major(Self.OBS)](self.stage_nxt),
             LayoutTensor[DT, Layout.row_major(1)](self.stage_dne),
-            LayoutTensor[DT, Layout.row_major(Self.CAP, Self.OBS)](self.obs),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.obs),
             LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](self.act),
             LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew),
-            LayoutTensor[DT, Layout.row_major(Self.CAP, Self.OBS)](self.nxt),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.nxt),
             LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne),
             Int32(self.pos),
             grid_dim=1,
@@ -716,7 +756,7 @@ struct StoreReplayGpu[
         comptime assert N_ENVS > 0, "N_ENVS must be > 0"
         comptime n_blocks = (N_ENVS * Self.OBS + TPB - 1) // TPB
         comptime kern = _store_batch_kernel[
-            N_ENVS, Self.OBS, Self.ACT, Self.CAP
+            N_ENVS, Self.OBS, Self.ACT, Self.CAP, Self.SDT
         ]
         ctx.enqueue_function[kern](
             LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS)](src_obs),
@@ -724,10 +764,10 @@ struct StoreReplayGpu[
             LayoutTensor[DT, Layout.row_major(N_ENVS)](src_rew),
             LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS)](src_nxt),
             LayoutTensor[DT, Layout.row_major(N_ENVS)](src_dne),
-            LayoutTensor[DT, Layout.row_major(Self.CAP, Self.OBS)](self.obs),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.obs),
             LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](self.act),
             LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew),
-            LayoutTensor[DT, Layout.row_major(Self.CAP, Self.OBS)](self.nxt),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.nxt),
             LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne),
             Int32(self.pos),
             grid_dim=n_blocks,
@@ -838,7 +878,7 @@ struct StoreReplayGpu[
 
         comptime n_blocks = (BATCH * Self.OBS + TPB - 1) // TPB
         comptime kern = _gather_batch_kernel[
-            BATCH, Self.OBS, Self.ACT, Self.CAP
+            BATCH, Self.OBS, Self.ACT, Self.CAP, Self.SDT
         ]
         ctx.enqueue_function[kern](
             LayoutTensor[DT, Layout.row_major(BATCH, Self.OBS)](
@@ -852,10 +892,10 @@ struct StoreReplayGpu[
                 state.mb_sp.dev.value()
             ),
             LayoutTensor[DT, Layout.row_major(BATCH)](state.mb_d.dev.value()),
-            LayoutTensor[DT, Layout.row_major(Self.CAP, Self.OBS)](self.obs),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.obs),
             LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](self.act),
             LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew),
-            LayoutTensor[DT, Layout.row_major(Self.CAP, Self.OBS)](self.nxt),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.nxt),
             LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne),
             LayoutTensor[IDX_DT, Layout.row_major(BATCH)](self.idx_buf),
             grid_dim=n_blocks,

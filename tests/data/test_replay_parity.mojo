@@ -36,6 +36,9 @@ from mojo_rl.deep_agents.data.cpu_per_replay import CPUPrioritizedReplay
 from mojo_rl.deep_agents.training.blocks.replay_sample_step import (
     ReplaySampleStep,
 )
+from mojo_rl.deep_agents.training.blocks.n_step_sample_step import (
+    NStepSampleStep,
+)
 from mojo_rl.deep_agents.training.trainer_block import TrainerState
 
 
@@ -222,8 +225,59 @@ def test_one_struct_two_policies() raises:
     print("      OK")
 
 
+def test_nstep_parity() raises:
+    """The n-step DECORATOR path.
+
+    `NStepSampleStep[N, R, BATCH]` is a different block from
+    `ReplaySampleStep` — it accumulates N transitions into a discounted
+    return before storing. Batch 1 repointed its alias too, so it needs its
+    own gate; the earlier tests covered only the undecorated block.
+
+    (This hole was found the hard way: a marginal convergence miss on the
+    n-step path had to be A/B'd against the legacy aliases to rule out a
+    regression. It turned out pre-existing — but nothing here proved it.)
+    """
+    print("[4] n-step decorator: StoreReplay vs CPUReplay ...")
+    comptime N: Int = 3
+
+    var legacy = NStepSampleStep[N, CPUReplay[OBS, ACT, CAP], BATCH]()
+    var mine = NStepSampleStep[N, StoreReplay[OBS, ACT, CAP, False], BATCH]()
+    legacy.setup(learning_starts=0)
+    mine.setup(learning_starts=0)
+    legacy.configure_gamma(Scalar[DT](0.99))
+    mine.configure_gamma(Scalar[DT](0.99))
+
+    for r in range(N_FILL):
+        var o = _obs_for(r)
+        var a = _act_for(r)
+        var nx = _nxt_for(r)
+        # Terminate periodically so the n-step flush path runs too.
+        var done = Scalar[DT](1.0) if (r % 7 == 6) else Scalar[DT](0.0)
+        legacy.add(o, a, Scalar[DT](Float64(r) * 0.25), nx, done)
+        mine.add(o, a, Scalar[DT](Float64(r) * 0.25), nx, done)
+
+    assert_equal(
+        legacy.inner.buf.value().count(), mine.inner.buf.value().count(),
+        "n-step stored count must match",
+    )
+
+    var st_a = TrainerState[OBS, ACT, BATCH].make["cpu"]()
+    var st_b = TrainerState[OBS, ACT, BATCH].make["cpu"]()
+    st_a.step_idx = 1
+    st_b.step_idx = 1
+    seed(SEED)
+    legacy.step(st_a)
+    seed(SEED)
+    mine.step(st_b)
+
+    assert_true(_nonconstant(st_a), "n-step minibatch is constant")
+    _assert_state_identical(st_a, st_b, "n-step", False)
+    print("      minibatch bit-identical  OK")
+
+
 def main() raises:
     test_uniform_parity()
     test_per_parity()
     test_one_struct_two_policies()
+    test_nstep_parity()
     print("\n[PASS] StoreReplay parity — Stage 4")
