@@ -28,6 +28,12 @@ from .manifest import (
 from .resident import (
     IDX_DT, IndexBatch, ResidentColumn,
 )
+from .sampler import (
+    PrioritizedSampler,
+    SequenceWindowSampler,
+    UniformDeviceSampler,
+    UniformSampler,
+)
 from .store import (
     DEFAULT_CHUNK_ROWS,
     DEFAULT_MAX_RESIDENT_BYTES,
