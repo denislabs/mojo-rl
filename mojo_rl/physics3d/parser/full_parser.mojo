@@ -288,12 +288,23 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         if dens_s.byte_length() > 0:
             d.geom_density = _parse_float(dens_s)
 
+        # ⚠ A PARTIAL `friction` OVERWRITES ONLY THE COMPONENTS PRESENT.
+        # `_parse_vec3` returns 0 for anything missing, so `friction="0.9"`
+        # used to zero the TORSIONAL and ROLLING coefficients instead of
+        # leaving MuJoCo's (0.005, 0.0001). Measured on dog: 86 of its 128
+        # geoms are `(0.9, 0.005, 0.0001)` in MuJoCo and were `(0.9, 0, 0)`
+        # here. The `solimp` block below already guards on `len(parts)`; this
+        # one did not, which is the only reason the two behaved differently.
         var fric_s = _extract_attr(gtag, "friction")
         if fric_s.byte_length() > 0:
-            var fvec = _parse_vec3(fric_s)
-            d.geom_friction = fvec[0]
-            d.geom_friction_spin = fvec[1]
-            d.geom_friction_roll = fvec[2]
+            var fparts = List[String]()
+            _split_spaces(fric_s, fparts)
+            if len(fparts) >= 1:
+                d.geom_friction = _parse_float(fparts[0])
+            if len(fparts) >= 2:
+                d.geom_friction_spin = _parse_float(fparts[1])
+            if len(fparts) >= 3:
+                d.geom_friction_roll = _parse_float(fparts[2])
 
         var ct_s = _extract_attr(gtag, "contype")
         if ct_s.byte_length() > 0:
@@ -1873,16 +1884,31 @@ def _fill_model(
                     gd.radius = s0
 
             # friction (explicit or default)
+            # ⚠ PARTIAL `friction` KEEPS THE INHERITED COMPONENTS — see the
+            # identical guard in the `<default>` block above. MuJoCo starts a
+            # geom's friction from its class (ultimately the global
+            # `1 0.005 0.0001`) and overwrites only what the attribute spells,
+            # so `friction="0.9"` is `(0.9, 0.005, 0.0001)` and NOT
+            # `(0.9, 0, 0)`.
+            #
+            # Currently INERT on every gated pose — the torsional and rolling
+            # coefficients are read only at condim >= 4, and dog's condim-6
+            # teeth spell all three values — but it is a wrong number in
+            # `geom_friction` (86 of dog's 128 geoms) and would bite the first
+            # condim >= 4 contact against a partially-specified geom.
             var fric_s = _extract_attr(tag, "friction")
+            gd.friction = eff_defaults.geom_friction
+            gd.friction_spin = eff_defaults.geom_friction_spin
+            gd.friction_roll = eff_defaults.geom_friction_roll
             if fric_s.byte_length() > 0:
-                var fvec = _parse_vec3(fric_s)
-                gd.friction = fvec[0]
-                gd.friction_spin = fvec[1]
-                gd.friction_roll = fvec[2]
-            else:
-                gd.friction = eff_defaults.geom_friction
-                gd.friction_spin = eff_defaults.geom_friction_spin
-                gd.friction_roll = eff_defaults.geom_friction_roll
+                var fparts = List[String]()
+                _split_spaces(fric_s, fparts)
+                if len(fparts) >= 1:
+                    gd.friction = _parse_float(fparts[0])
+                if len(fparts) >= 2:
+                    gd.friction_spin = _parse_float(fparts[1])
+                if len(fparts) >= 3:
+                    gd.friction_roll = _parse_float(fparts[2])
 
             # contype / conaffinity / condim
             var ct_s = _extract_attr(tag, "contype")

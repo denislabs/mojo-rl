@@ -58,6 +58,16 @@ from mojo_rl.physics3d.gpu.constants import (
     CONTACT_IDX_FORCE_N,
     CONTACT_IDX_FORCE_T1,
     CONTACT_IDX_FORCE_T2,
+    CONTACT_IDX_FRICTION,
+    CONTACT_IDX_FRICTION_SPIN,
+    CONTACT_IDX_FRICTION_ROLL,
+    CONTACT_IDX_SOLREF_0,
+    CONTACT_IDX_SOLREF_1,
+    CONTACT_IDX_SOLIMP_0,
+    CONTACT_IDX_SOLIMP_1,
+    CONTACT_IDX_SOLIMP_2,
+    CONTACT_IDX_SOLIMP_3,
+    CONTACT_IDX_SOLIMP_4,
     META_IDX_NUM_CONTACTS,
     MODEL_JOINT_SIZE,
     JOINT_IDX_TYPE,
@@ -681,6 +691,175 @@ def test_dog_contact_forces_vs_mujoco() raises:
         sum_mj > 1.0,
         "MuJoCo's total normal force is ~0 — the dog is not resting on"
         " anything and this comparison gates nothing",
+    )
+
+
+def test_dog_contact_params_vs_mujoco() raises:
+    """The SOLVER'S INPUTS, one step upstream of the forces.
+
+    The per-contact force table localized the residual precisely: the three
+    worst contacts are 1, 2 and 4 — `floor x toe_L0` twice and
+    `floor x toe_R0` — at |d(fn)| 0.023 / 0.038 / 0.025, while every contact
+    whose two geoms share their solparams sits at 1e-4 to 5e-6. Three to four
+    orders of separation, along a line that is not a coincidence:
+
+    THOSE THREE ARE THE ONLY DOG CONTACTS WHERE PARAMETER MIXING DOES ANYTHING.
+    The toes are `class="foot_primitive"` (`solimp="0.9 0.95 0.001"`) against a
+    floor on the global `solimp="0.95 0.99 0.001"`. At equal priority MuJoCo
+    AVERAGES (`mix = solmix1/(solmix1+solmix2)`, and every dog geom has the
+    default `solmix = 1`), giving `[0.925, 0.97, 0.001, 0.5, 2.0]` — measured
+    off `d.contact[i].solimp`, not derived. Everywhere else in dog the two
+    geoms already agree, so any mixing rule at all would produce the same
+    answer and the contact would look clean whether the rule were right or not.
+
+    So this compares the mixed parameters our narrow phase WROTE against the
+    ones MuJoCo compiled, before either solver runs. If they differ, the
+    forces were always going to.
+
+    ⚠ FRICTION IS STORED 3-WIDE HERE AND 5-WIDE IN MuJoCo. MuJoCo unpacks
+    `(slide, spin, roll)` into `(f0, f0, f1, f2, f2)`, so the comparison maps
+    ours -> `friction[0]`, `friction[2]`, `friction[3]` rather than comparing
+    index for index.
+    """
+    print("=== dog: mixed contact PARAMETERS vs MuJoCo ===")
+    var mujoco = Python.import_module("mujoco")
+    var mm = mujoco.MjModel.from_xml_string(
+        materialize[dm_dog_stand_walk_xml]()
+    )
+    var dat = mujoco.MjData(mm)
+    mujoco.mj_resetData(mm, dat)
+    for _ in range(N_SETTLE):
+        mujoco.mj_step(mm, dat)
+    for k in range(M.nact):
+        dat.ctrl[k] = 0.0
+        dat.act[k] = 0.0
+    mujoco.mj_forward(mm, dat)
+
+    var ctx = DeviceContext()
+    var mf = Model[
+        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
+        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+    ]()
+    M.init_fields[DTYPE, 0](ctx, mf)
+    var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    M.reset_data[DTYPE](d)
+    for i in range(NQ):
+        d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
+    for i in range(NV):
+        d.qvel.data[i] = Scalar[DTYPE](Float64(py=dat.qvel[i]))
+        d.qfrc.data[i] = Scalar[DTYPE](0)
+    forward_kinematics["cpu"](d, mf)
+    var integ = EulerIntegrator[
+        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
+        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+        M.CONE_TYPE, 1, SOLVER="newton",
+        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER,
+    ]()
+    integ.step["cpu"](d, mf)
+
+    var nc = Int(py=dat.ncon)
+    var worst_ref = 0.0
+    var worst_imp = 0.0
+    var worst_imp_at = -1
+    var worst_fri = 0.0
+    var n_mixed = 0
+    for c in range(nc):
+        var o = c * CONTACT_SIZE
+        var mc_ = dat.contact[c]
+        # Does mixing DO anything at this contact? Compare the two geoms'
+        # own solimp; if they agree, the contact gates nothing about the rule.
+        var g1 = Int(py=mc_.geom1)
+        var g2 = Int(py=mc_.geom2)
+        var mixed = abs(
+            Float64(py=mm.geom_solimp[g1][0]) - Float64(py=mm.geom_solimp[g2][0])
+        ) > 1e-12
+        if mixed:
+            n_mixed += 1
+
+        var ours_imp = List[Float64]()
+        ours_imp.append(Float64(d.contacts.data[o + CONTACT_IDX_SOLIMP_0]))
+        ours_imp.append(Float64(d.contacts.data[o + CONTACT_IDX_SOLIMP_1]))
+        ours_imp.append(Float64(d.contacts.data[o + CONTACT_IDX_SOLIMP_2]))
+        ours_imp.append(Float64(d.contacts.data[o + CONTACT_IDX_SOLIMP_3]))
+        ours_imp.append(Float64(d.contacts.data[o + CONTACT_IDX_SOLIMP_4]))
+        var c_imp = 0.0
+        for k in range(5):
+            var e = abs(ours_imp[k] - Float64(py=mc_.solimp[k]))
+            if e > c_imp:
+                c_imp = e
+        if c_imp > worst_imp:
+            worst_imp = c_imp
+            worst_imp_at = c
+
+        var r0 = abs(
+            Float64(d.contacts.data[o + CONTACT_IDX_SOLREF_0])
+            - Float64(py=mc_.solref[0])
+        )
+        var r1 = abs(
+            Float64(d.contacts.data[o + CONTACT_IDX_SOLREF_1])
+            - Float64(py=mc_.solref[1])
+        )
+        if r0 > worst_ref:
+            worst_ref = r0
+        if r1 > worst_ref:
+            worst_ref = r1
+
+        var f0 = abs(
+            Float64(d.contacts.data[o + CONTACT_IDX_FRICTION])
+            - Float64(py=mc_.friction[0])
+        )
+        var f1 = abs(
+            Float64(d.contacts.data[o + CONTACT_IDX_FRICTION_SPIN])
+            - Float64(py=mc_.friction[2])
+        )
+        var f2 = abs(
+            Float64(d.contacts.data[o + CONTACT_IDX_FRICTION_ROLL])
+            - Float64(py=mc_.friction[3])
+        )
+        if f0 > worst_fri:
+            worst_fri = f0
+        if f1 > worst_fri:
+            worst_fri = f1
+        if f2 > worst_fri:
+            worst_fri = f2
+
+        print(
+            "  ", c, " mixed" if mixed else "  same",
+            " ours solimp", ours_imp[0], ours_imp[1], ours_imp[2],
+            ours_imp[3], ours_imp[4],
+            " | mj", Float64(py=mc_.solimp[0]), Float64(py=mc_.solimp[1]),
+            Float64(py=mc_.solimp[2]), Float64(py=mc_.solimp[3]),
+            Float64(py=mc_.solimp[4]),
+        )
+
+    print("  contacts where mixing is non-trivial:", n_mixed, "/", nc)
+    print("  worst |d(solref)| =", worst_ref,
+          "  |d(solimp)| =", worst_imp, " at contact", worst_imp_at,
+          "  |d(friction)| =", worst_fri)
+
+    # NON-VACUITY: if no contact mixes, every solimp comparison below is
+    # satisfied by two geoms that already agreed, and says nothing about the
+    # rule. dog's toes are the only place this bites.
+    assert_true(
+        n_mixed >= 1,
+        "no dog contact has geoms with differing solimp — the mixing rule is"
+        " untested here and the numbers below are vacuous",
+    )
+    assert_true(
+        worst_ref < 1e-12,
+        "mixed contact SOLREF differs from MuJoCo — the solver's stiffness"
+        " input is wrong before it runs",
+    )
+    assert_true(
+        worst_imp < 1e-12,
+        "mixed contact SOLIMP differs from MuJoCo — at equal priority the rule"
+        " is the solmix-weighted MEAN (0.5 at the default solmix = 1), not max"
+        " and not one-sided",
+    )
+    assert_true(
+        worst_fri < 1e-12,
+        "mixed contact FRICTION differs from MuJoCo (elementwise MAX at equal"
+        " priority)",
     )
 
 
