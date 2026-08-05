@@ -402,6 +402,13 @@ def test_dog_step_stages_vs_mujoco() raises:
           "}  MuJoCo {1:", mj_d1, ", >=3:", mj_d3, "}")
 
     # --- stage 5: the solved acceleration ---------------------------------
+    # Full vector dump, machine-readable. The objective is evaluated OUTSIDE
+    # this file (`/tmp/dog_obj.py`) against MuJoCo's own M / J / D / aref, so
+    # both solutions are scored by ONE cost function rather than each by its
+    # own. A per-dof print keeps it parseable and avoids transcription.
+    for i in range(NV):
+        print("QACC_OURS", i, qacc_full[i])
+
     print("  [5] qacc (solved, contacts ON)")
     var r5 = _report("qacc  ", qacc_full, dat.qacc, NV, 4)
     print("      max|d| =", r5)
