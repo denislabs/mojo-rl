@@ -35,13 +35,24 @@ comptime NARM_JOINTS: Int = 8
 # both put the arm first in the worldbody and the props after it.
 comptime HAND_BODY_IDX: Int = 4
 
-# Arm sites, OUR order (XML text order). MuJoCo sorts sites by body id, and the
-# one place the two orders DIVERGE is `palm_touch`: it is declared after the
-# `pinch site` body yet belongs to `hand`, so MuJoCo lists it before `pinch`.
-# The parity tests carry that swap as `_our_site_to_mj`.
+# Arm sites, in MuJoCo's order — which is now OURS too (element-order fix,
+# 2026-08-03).
+#
+# ⚠ `palm_touch` PRECEDES `pinch`, which is NOT the XML text order. It is
+# declared after the `pinch site` body yet belongs to `hand`, and MuJoCo groups
+# sites by body id. Our parser used to number sites as it walked the text, so
+# these two were swapped here and the parity tests carried a `_our_site_to_mj`
+# permutation to paper over it.
+#
+# That was a bug, not a convention: `manipulator_config` reads SITE_PINCH to
+# compute the reward, so with the parser fixed and these constants stale it
+# would have measured `palm_touch` instead — a plausible, finite, wrong number.
+# The same text-vs-body ordering also permutes JOINTS, and `fields_build`
+# derives `qpos_adr`/`dof_adr` as running counters over the joint array, which
+# is how dm_control's dog exposed the whole class of defect.
 comptime SITE_GRASP: Int = 0
-comptime SITE_PINCH: Int = 1
-comptime SITE_PALM_TOUCH: Int = 2
+comptime SITE_PALM_TOUCH: Int = 1
+comptime SITE_PINCH: Int = 2
 comptime SITE_THUMB_TOUCH: Int = 3
 comptime SITE_THUMBTIP_TOUCH: Int = 4
 comptime SITE_FINGER_TOUCH: Int = 5

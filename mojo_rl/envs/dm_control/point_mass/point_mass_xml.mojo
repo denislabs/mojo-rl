@@ -115,16 +115,25 @@ comptime T2_TENDON_IDX: Int = 1
 
 # Geom indices in OUR ordering, which is worldbody text (DFS) order.
 #
-# CAUTION: this is NOT MuJoCo's geom order. MuJoCo sorts geoms by body id, so
-# in mjModel the five world geoms come first, then `target` (also world), then
-# `pointmass` on body 1 — i.e. target=5, pointmass=6, the reverse of ours.
-# Our parser numbers them as it walks the XML, so `pointmass` (declared inside
-# the body) precedes `target` (declared after it). The two orders coincide for
-# every previously ported domain because their world geoms all appear before
-# any body; point_mass is the first model to interleave. The parity test pins
-# both orders explicitly instead of assuming they agree.
-comptime POINTMASS_GEOM_IDX: Int = 5
-comptime TARGET_GEOM_IDX: Int = 6
+# These ARE MuJoCo's geom indices, as of the element-order fix (2026-08-03).
+#
+# MuJoCo groups geoms by body id: the five world geoms, then `target` (also
+# world, but declared AFTER the `<body>` in the XML), then `pointmass` on body
+# 1. Our parser used to number them in XML TEXT order, which put `pointmass`
+# at 5 and `target` at 6 — the reverse — and this file carried a note saying
+# so, treating the divergence as a property to work around.
+#
+# It was a bug, and dog is what proved it: the same text-vs-body ordering
+# permutes JOINTS, and `fields_build` derives `qpos_adr`/`dof_adr` as running
+# counters over the joint array, so the whole `qpos` layout goes with it.
+# `full_parser` now groups joints, geoms and sites by body
+# (`_stable_group_by_body_*`), gated by
+# `tests/physics3d/test_element_order_vs_mujoco.mojo`.
+#
+# point_mass was the ONLY previously ported domain that interleaved, which is
+# why it is the only one whose constants moved.
+comptime POINTMASS_GEOM_IDX: Int = 6
+comptime TARGET_GEOM_IDX: Int = 5
 
 # `named.model.geom_size['target', 0]` — the target sphere's radius. Geom sizes
 # are not carried in a form the reward hook reads, so it is lifted from the XML

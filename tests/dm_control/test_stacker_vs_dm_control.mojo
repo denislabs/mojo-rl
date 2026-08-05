@@ -145,18 +145,24 @@ comptime TOL_OBS: Float64 = 1e-9
 comptime TOL_TOUCH: Float64 = 1e-8
 
 
-# OUR site order is XML TEXT order; MuJoCo's is sorted by body id. The only
-# divergence is in the ARM, and it is the one `manipulator` has: `palm_touch` is
-# declared after the `pinch site` body but belongs to `hand`, so MuJoCo's sort
-# pulls it ahead of `pinch`. The boxes' own sites do not move — each box has
-# exactly one — but that is asserted below rather than assumed, and it is
-# identical in both models because the swap is in the shared arm.
+# OUR site order IS MuJoCo's, as of the element-order fix (2026-08-03).
+#
+# It used to diverge in the ARM — the same divergence `manipulator` had:
+# `palm_touch` is declared AFTER the `pinch site` body but belongs to `hand`,
+# so MuJoCo's body sort pulls it ahead of `pinch` while our XML-text walk left
+# it behind. This file carried a permutation to paper over that.
+#
+# It was a bug, not a property. The same ordering permutes JOINTS, and
+# `fields_build` derives `qpos_adr`/`dof_adr` as running counters over the
+# joint array, so the whole `qpos` layout went with it — which is how
+# dm_control's dog exposed it. `full_parser` now groups joints, geoms and
+# sites by body id, gated by
+# `tests/physics3d/test_element_order_vs_mujoco.mojo`.
+#
+# Kept as the identity rather than deleted so the call sites still read
+# "our index -> MuJoCo's index", and a future divergence has one place to live.
 def _our_site_to_mj(ours: Int) -> Int:
-    """MuJoCo's site index for our site `ours` (only 1 and 2 swap)."""
-    if ours == 1:
-        return 2
-    if ours == 2:
-        return 1
+    """MuJoCo's site index for our site `ours` — now the identity."""
     return ours
 
 
@@ -309,8 +315,11 @@ def test_stacker_ordering_matches_mujoco() raises:
         String("thumbtip2"), String("finger1"), String("finger2"),
         String("fingertip1"), String("fingertip2"),
     ]
+    # ⚠ `palm_touch` is SECOND here, not third as it appears in the XML text:
+    # it belongs to `hand` and MuJoCo groups by body, so it precedes `pinch`
+    # (which sits on the nested `pinch site` body). Our parser now agrees.
     var arm_sites = [
-        String("grasp"), String("pinch"), String("palm_touch"),
+        String("grasp"), String("palm_touch"), String("pinch"),
         String("thumb_touch"), String("thumbtip_touch"),
         String("finger_touch"), String("fingertip_touch"),
     ]

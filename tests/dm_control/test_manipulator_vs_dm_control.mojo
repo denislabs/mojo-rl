@@ -130,20 +130,26 @@ comptime TOL_OBS: Float64 = 1e-9
 # state-readback blocks stay pinned at 1e-9 and cannot drift behind it.
 comptime TOL_TOUCH: Float64 = 1e-8
 
-# OUR site order is XML TEXT order; MuJoCo's is sorted by body id, and here
-# they DIVERGE — `palm_touch` is declared after the `pinch site` body but
-# belongs to `hand`, so MuJoCo's sort pulls it ahead of `pinch`. Nothing else
-# moves. `_our_site_to_mj(i)` is the MuJoCo index of our site `i`.
+# OUR site order IS MuJoCo's, as of the element-order fix (2026-08-03).
 #
-# This is the same class of divergence as the geom ordering that made
-# `mj_name2id`-ing a geom a standing hazard — recorded explicitly rather than
-# worked around at each use.
+# It used to diverge here: `palm_touch` is declared AFTER the `pinch site`
+# body but belongs to `hand`, so MuJoCo's body sort pulls it ahead of `pinch`
+# while our XML-text walk left it behind. This file carried a permutation,
+# `_our_site_to_mj`, to paper over that — treating the divergence as a
+# property to record rather than a bug to fix.
+#
+# It was a bug. The same text-vs-body ordering permutes JOINTS, and
+# `fields_build` derives `qpos_adr`/`dof_adr` as running counters over the
+# joint array, so the whole `qpos` layout went with it — which is how
+# dm_control's dog exposed it. `full_parser` now groups joints, geoms and
+# sites by body id (`_stable_group_by_body_*`), gated by
+# `tests/physics3d/test_element_order_vs_mujoco.mojo`.
+#
+# The identity below is kept rather than deleted so the call sites still read
+# "our index -> MuJoCo's index", and so that a future divergence has one
+# obvious place to be expressed.
 def _our_site_to_mj(ours: Int) -> Int:
-    """MuJoCo's site index for our site `ours` (only 1 and 2 swap)."""
-    if ours == 1:
-        return 2
-    if ours == 2:
-        return 1
+    """MuJoCo's site index for our site `ours` — now the identity."""
     return ours
 
 
@@ -272,13 +278,13 @@ def test_manipulator_ordering_matches_mujoco() raises:
             String("MuJoCo geom order moved at ") + geom_names[i],
         )
 
-    # Sites are where the two orders DIVERGE: `palm_touch` is declared AFTER
-    # the `pinch site` body in the XML but belongs to `hand`, so MuJoCo's body
-    # sort pulls it back ahead of `pinch`. `site_names` below is OUR order
-    # (XML text order); the expected MuJoCo index comes from
-    # `_our_site_to_mj`, which is what pins the divergence.
+    # Sites USED to be where the two orders diverge — `palm_touch` is declared
+    # AFTER the `pinch site` body but belongs to `hand`, so MuJoCo's body sort
+    # pulls it ahead of `pinch` and our text walk did not. The parser now
+    # groups by body, so this list is BOTH orders and `_our_site_to_mj` is the
+    # identity. Note the swap relative to the XML text: `palm_touch` second.
     var site_names = [
-        "grasp", "pinch", "palm_touch",
+        "grasp", "palm_touch", "pinch",
         "thumb_touch", "thumbtip_touch",
         "finger_touch", "fingertip_touch",
         "ball", "target_ball",

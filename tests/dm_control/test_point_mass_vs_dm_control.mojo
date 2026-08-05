@@ -72,8 +72,13 @@ comptime GEOM_TOL: Float64 = 1e-9
 comptime OBS_TOL: Float64 = 1e-9
 comptime REWARD_TOL: Float64 = 1e-9
 
-# MuJoCo's own indices for the same two geoms (it sorts by body, we sort by
-# XML text order — see `point_mass_xml`). Pinned in the model test.
+# MuJoCo's own indices for the same two geoms. These USED to differ from ours:
+# MuJoCo groups geoms by body and our parser numbered them in XML text order,
+# and point_mass is the one previously ported domain that interleaves (`target`
+# is a world geom declared AFTER the `<body>`). The parser now groups by body
+# too, so the two agree — and `test_point_mass_model_matches_mujoco` asserts
+# that agreement rather than leaving these as independent constants that happen
+# to match.
 comptime REF_TARGET_GEOM_IDX: Int = 5
 comptime REF_POINTMASS_GEOM_IDX: Int = 6
 
@@ -161,6 +166,19 @@ def test_point_mass_model_matches_mujoco() raises:
     )
     assert_true(pm_id == 6, "MuJoCo's pointmass geom index moved")
     assert_true(tg_id == 5, "MuJoCo's target geom index moved")
+
+    # OUR indices must now BE MuJoCo's. point_mass is the one previously
+    # ported domain where they used to differ, so this is the domain that
+    # gates the element-order fix end to end — the parser change is proved on
+    # a synthetic model in
+    # `tests/physics3d/test_element_order_vs_mujoco.mojo`, and proved on a real
+    # ported domain here.
+    assert_true(
+        POINTMASS_GEOM_IDX == pm_id and TARGET_GEOM_IDX == tg_id,
+        "our geom indices are not MuJoCo's — `full_parser` groups joints,"
+        " geoms and sites by body id; if that regressed to XML text order"
+        " these two swap and the reward silently measures the wrong pair",
+    )
 
     var mf_idx = _build_model()
     assert_true(
