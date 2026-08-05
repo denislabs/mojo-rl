@@ -141,13 +141,19 @@ struct UniformDeviceSampler(Movable & ImplicitlyDeletable):
         self.seed = move.seed
         self.offset = move.offset
 
-    def draw(mut self, ctx: DeviceContext, batch: Int) raises -> IndexBatch:
+    def draw_into_device(
+        mut self,
+        ctx: DeviceContext,
+        dev: DeviceBuffer[IDX_DT],
+        batch: Int,
+    ) raises:
+        """Fill a caller-owned device index buffer. No readback, no
+        synchronize — this is the training-loop path, where a D2H round trip
+        per minibatch would dominate a gather that costs microseconds."""
         if batch <= 0:
-            raise Error("UniformDeviceSampler.draw: batch must be > 0")
+            raise Error("UniformDeviceSampler: batch must be > 0")
         if self.n_rows <= 0:
-            raise Error("UniformDeviceSampler.draw: store is empty")
-
-        var dev = ctx.enqueue_create_buffer[IDX_DT](batch)
+            raise Error("UniformDeviceSampler: store is empty")
         var lt = LayoutTensor[IDX_DT, DYN1, MutAnyOrigin](
             mptr(dev.unsafe_ptr()),
             RuntimeLayout[DYN1].row_major(IndexList[1](batch)),
@@ -161,14 +167,17 @@ struct UniformDeviceSampler(Movable & ImplicitlyDeletable):
             grid_dim=n_blocks,
             block_dim=TPB,
         )
-
-        var h = List[Scalar[IDX_DT]](unsafe_uninit_length=batch)
-        ctx.enqueue_copy(h.unsafe_ptr(), dev)
-        ctx.synchronize()
-
         # Same advance as GPUReplay's `_increment_rng_offset_kernel`.
         self.offset += UInt64(2 * batch)
 
+    def draw(mut self, ctx: DeviceContext, batch: Int) raises -> IndexBatch:
+        """Device draw WITH readback — for gating and inspection, not the
+        training loop (see `draw_into_device`)."""
+        var dev = ctx.enqueue_create_buffer[IDX_DT](batch)
+        self.draw_into_device(ctx, dev, batch)
+        var h = List[Scalar[IDX_DT]](unsafe_uninit_length=batch)
+        ctx.enqueue_copy(h.unsafe_ptr(), dev)
+        ctx.synchronize()
         var out = IndexBatch(h^)
         out.dev = dev^
         out.dev_len = batch

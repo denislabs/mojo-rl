@@ -25,6 +25,7 @@ from mojo_rl.deep_agents.training.blocks.replay_sample_step import (
     ReplaySampleStep,
 )
 from .replay import StoreReplay
+from .replay_gpu import StoreReplayGpu
 
 
 comptime StoreUniformSampleCpuStep[
@@ -36,3 +37,12 @@ comptime StorePerSampleCpuStep[
     OBS: Int, ACT: Int, BATCH: Int, CAP: Int
 ] = ReplaySampleStep[StoreReplay[OBS, ACT, CAP, True], BATCH]
 """Replaces `PerSampleCpuStep` (backed by `CPUPrioritizedReplay`)."""
+
+
+comptime StoreUniformSampleGpuStep[
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int
+] = ReplaySampleStep[StoreReplayGpu[OBS, ACT, CAP], BATCH]
+"""Replaces `UniformSampleGpuStep` (backed by `GPUReplay`).
+
+⚠ Not a drop-in for call sites that enable ERE — see `StoreReplayGpu`.
+"""

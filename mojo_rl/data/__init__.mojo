@@ -30,8 +30,10 @@ from .resident import (
 )
 from .blocks import (
     StorePerSampleCpuStep, StoreUniformSampleCpuStep,
+    StoreUniformSampleGpuStep,
 )
 from .replay import StoreReplay
+from .replay_gpu import StoreReplayGpu
 from .sampler import (
     PrioritizedSampler,
     SequenceWindowSampler,
