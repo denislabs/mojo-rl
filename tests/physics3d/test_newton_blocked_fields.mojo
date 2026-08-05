@@ -112,9 +112,24 @@ comptime N_ROUNDS = 3
 # self-golden cannot tell drift from a bug.
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
+#
+# ⚠ CON REFRESHED 2026-08-05 (387211.7646696381 -> 393472.4222483421, 1.6%),
+# QC UNTOUCHED — and that split is the justification, not a convenience. The
+# element-order fix made `full_parser` group geoms by body as MuJoCo numbers
+# them, so the record EMISSION ORDER moved while the physics did not:
+#   * `GOLD_NCON` unchanged at 36;
+#   * `GOLD_QC` PASSES and is checked BEFORE the contact fingerprint — the
+#     solved accelerations are identical;
+#   * walker2d has NO condim-1 geoms (all 8 condim 3, measured), so neither
+#     frictionless change can reach this model;
+#   * and the resulting order IS MuJoCo's, verified on this same model in
+#     `test_walker2d_contacts_vs_mujoco.mojo` (zero position-matched
+#     body-pair mismatches).
+# A checksum cannot tell a reorder from a regression on its own. That file is
+# the reference this one lacks — read it before touching these numbers again.
 comptime GOLD_NCON = 36  # total contacts over the rounds
 comptime GOLD_QC = 5707.35403907299  # final qacc_constrained checksum
-comptime GOLD_CON = 387211.7646696381  # final contact-record checksum
+comptime GOLD_CON = 393472.4222483421  # final contact-record checksum
 
 
 def _fields_prep[

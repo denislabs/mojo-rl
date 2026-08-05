@@ -123,16 +123,35 @@ comptime GOLD_RTOL = 1e-3
 # during contact, worst |d qvel| vs MuJoCo over the finger rollout went
 # 1.0237321068510568 -> 0.0261971900712797 (39x closer). Do NOT re-harvest this
 # leg again without an equivalent MuJoCo-anchored measurement.
+#
+# ⚠ CON REFRESHED 2026-08-05 (506352.9110841565 -> 512613.3470442081, 1.2%),
+# QC UNTOUCHED — and that split is the entire justification. The element-order
+# fix made `full_parser` group geoms by body as MuJoCo numbers them, so the
+# EMISSION ORDER of the contact records changed while the physics did not:
+#   * `GOLD_NCON_ELL` unchanged at 36 — no contact appeared or vanished;
+#   * `GOLD_QC_ELL` PASSES, and it is checked BEFORE the contact fingerprint —
+#     the solved accelerations are identical, so this is bookkeeping, not
+#     dynamics;
+#   * walker2d has NO condim-1 geoms (all 8 are condim 3, measured), so
+#     neither the frictionless-row fix nor the frictionless record guard can
+#     reach this model — element order is the only remaining cause;
+#   * and the order itself is now MuJoCo's, verified in
+#     `test_walker2d_contacts_vs_mujoco.mojo` on this same model: zero
+#     position-matched body-pair mismatches, dist 1.2e-7, pos 7.6e-8.
+# The instruction above still stands — do not re-harvest the ELLIPTIC leg's QC
+# without a MuJoCo-anchored measurement. This refresh does not touch QC.
 comptime GOLD_NCON_ELL = 36  # total contacts summed over the 3 rounds
 comptime GOLD_QC_ELL = 11196.676875680685
-comptime GOLD_CON_ELL = 506352.9110841565
+comptime GOLD_CON_ELL = 512613.3470442081
 # PYRAMIDAL leg — unchanged goldens. This leg already carried its limit rows in
 # the Newton system, and the model has no frictionloss, so the same change
 # moved it by only ~4e-5 relative (float32 reassociation in the refactored
 # `primal.mojo` expressions), well inside GOLD_RTOL.
 comptime GOLD_NCON_PYR = 36
 comptime GOLD_QC_PYR = 5707.35403907299
-comptime GOLD_CON_PYR = 387211.7646696381
+# Refreshed with the ELLIPTIC leg above and for the same reason — record ORDER,
+# not dynamics. QC untouched here too.
+comptime GOLD_CON_PYR = 393472.4222483421
 
 
 def _check(name: String, got: Float64, gold: Float64) raises:
