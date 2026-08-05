@@ -71,7 +71,24 @@ comptime GOLD_NCON = 12  # contacts per step (uniform across the 3 steps)
 comptime GOLD_QPOS = 14.328573160222732
 comptime GOLD_QVEL = -40.97618084400892
 comptime GOLD_QACC = -5301.061818122864
-comptime GOLD_CON = 239785.12210576795
+#
+# ⚠ CON REFRESHED 2026-08-05 (239785.12210576795 -> 246045.58073905203, 2.6%),
+# and QPOS/QVEL/QACC UNTOUCHED — which is the justification, not a coincidence.
+# The element-order fix made `full_parser` group geoms by body as MuJoCo
+# numbers them, so the record EMISSION ORDER moved and an order-sensitive
+# checksum noticed. The trajectory did not move:
+#   * `GOLD_NCON` unchanged at 12 on every one of the 3 steps;
+#   * qpos, qvel and qacc are all checked BEFORE `con` and all PASS — the RK4
+#     rollout is identical;
+#   * walker2d has NO condim-1 geoms (all 8 condim 3, measured), so neither
+#     the frictionless-row fix nor the frictionless record guard reaches it;
+#   * and the resulting order IS MuJoCo's, verified on this same model by
+#     `test_walker2d_contacts_vs_mujoco.mojo` — zero position-matched
+#     body-pair mismatches, dist 1.2e-7, pos 7.6e-8.
+# A 2.6% move in a positionally-weighted checksum is what a permutation of 12
+# records looks like; the size of the jump carries no information about
+# severity, which is why the state checksums are the ones to read.
+comptime GOLD_CON = 246045.58073905203
 comptime GOLD_RTOL = 1e-3
 
 

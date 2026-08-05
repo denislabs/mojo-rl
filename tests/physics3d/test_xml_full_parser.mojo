@@ -125,9 +125,12 @@ def test_xml_full_parser() raises:
     # =========================================================================
     # Step 2: Full parse — dimensions from comptime pm, data at runtime
     # =========================================================================
-    var fmd = parse_xml_full[
-        pm.NBODY, pm.NJOINT, pm.NQ, pm.NV, pm.NGEOM, pm.NACT
-    ](half_cheetah_xml)
+    # ⚠ NON-GENERIC since 2026-08-05. `parse_xml_full` used to take the
+    # dimensions as comptime parameters solely to size `FlatModelDef`'s
+    # `InlineArray`s; it is `List`-backed now and compiles once per binary
+    # instead of once per model. The counts come off the Lists
+    # (`len(fmd.bodies)`, ...) rather than being declared up front.
+    var fmd = parse_xml_full(half_cheetah_xml)
 
     print("=== Body checks ===")
     # bodies[0] = torso (model body index 1, parent=worldbody=0)
@@ -194,10 +197,13 @@ def test_xml_full_parser() raises:
     var mf = Model[
         DType.float64, pm.NV, pm.NBODY, pm.NJOINT, pm.NGEOM, 0, 0, 0, 0, 0,
     ]()
+    # ⚠ THE FlatModelDef DIMS ARE GONE from this parameter list — all fourteen.
+    # `FlatModelDef` is List-backed since 2026-08-05, so its counts come from
+    # the Lists. What remains is the MODEL side, which still sizes
+    # `fields.Model`'s tensors: NV/NBODY/NJOINT/NGEOM, then the record
+    # capacities, then the `<compiler>` build modes.
     build_model_fields_from_flat[
-        DType.float64, pm.NBODY, pm.NJOINT, pm.NQ, pm.NV, pm.NGEOM, pm.NACT,
-        0, 0, 0, 0, 0, 0, 0,  # ntex/nmat/nlight/ncam/nsite/neq/nexclude
-        0,  # ntendon (FlatModelDef tendon-record count)
+        DType.float64, pm.NV, pm.NBODY, pm.NJOINT, pm.NGEOM,
         0, 0, 0, 0, 0,  # MAX_EQUALITY/MAX_TENDON/NSITE/NEXCLUDE/NMESH_VERTS
         0, 0, 5, 0.0,  # no <compiler inertiafromgeom> in this inline XML
     ](fmd, mf)
