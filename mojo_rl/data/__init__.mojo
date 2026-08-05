@@ -28,6 +28,10 @@ from .manifest import (
 from .resident import (
     IDX_DT, IndexBatch, ResidentColumn,
 )
+from .blocks import (
+    StorePerSampleCpuStep, StoreUniformSampleCpuStep,
+)
+from .replay import StoreReplay
 from .sampler import (
     PrioritizedSampler,
     SequenceWindowSampler,
