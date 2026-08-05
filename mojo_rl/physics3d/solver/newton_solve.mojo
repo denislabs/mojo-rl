@@ -106,6 +106,7 @@ from ..gpu.constants import (
     MODEL_SITE_SIZE,
     METADATA_SIZE,
     CONTACT_SIZE,
+    CONTACT_IDX_CONDIM,
     CONTACT_IDX_FORCE_N,
     CONTACT_IDX_FORCE_T1,
     CONTACT_IDX_FORCE_T2,
@@ -1253,9 +1254,31 @@ def _newton_solve_env[
             # quarter of what it should) and the quadruped force/torque
             # sensors. Fixed 2026-07-31.
             fn_c = f_e0 + f_e1 + f_e2 + f_e3
-            ft1_c = (f_e0 - f_e1) * safe_mu
-            ft2_c = (f_e2 - f_e3) * safe_mu
             var c_off = c * CONTACT_SIZE
+            # ⚠ A FRICTIONLESS CONTACT HAS NO TANGENTIAL FORCE, and this
+            # decode cannot know that from the edge forces alone. At condim 1
+            # only edge 0 is live and edges 1..3 are zero, so `(f_e0 - f_e1)`
+            # is `f_e0` and the record picks up a spurious `mu * f_n` of
+            # friction. Measured on dog before this guard: `ft1/f_n = 0.9002`
+            # on all three of its frictionless contacts — exactly the model's
+            # default `friction="0.9"` — against MuJoCo's 0.
+            #
+            # It only became reachable when condim-1 contacts started producing
+            # a row at all (see `_precompute_contact_friction`); before that
+            # every edge force was zero and this read 0 for the right value by
+            # accident, alongside an `f_n` of 0 that was simply wrong.
+            #
+            # `qacc` is NOT affected — that row's Jacobian is the pure normal,
+            # so the solve stays frictionless. The damage is confined to the
+            # record's consumers: `cfrc_ext` (hence contact-cost reward terms)
+            # and the force/touch sensors, which is the fourth instance of this
+            # write-back failure mode in this file's history.
+            var dim_c = Int(
+                rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_CONDIM])
+            )
+            if dim_c > 1:
+                ft1_c = (f_e0 - f_e1) * safe_mu
+                ft2_c = (f_e2 - f_e3) * safe_mu
             contacts[env, c_off + CONTACT_IDX_FORCE_N] = fn_c
             contacts[env, c_off + CONTACT_IDX_FORCE_T1] = ft1_c
             contacts[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_c
@@ -3513,9 +3536,16 @@ def _newton_blocked_fields_kernel[
         # quarter of what it should) and the quadruped force/torque
         # sensors. Fixed 2026-07-31.
         fn_c = f_e0 + f_e1 + f_e2 + f_e3
-        ft1_c = (f_e0 - f_e1) * safe_mu
-        ft2_c = (f_e2 - f_e3) * safe_mu
         var c_off = c * CONTACT_SIZE
+        # Frictionless contacts carry no tangential force — see the identical
+        # guard in the per-env path above for the measurement and the reason
+        # `qacc` is unaffected while the sensors are not.
+        var dim_c = Int(
+            rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_CONDIM])
+        )
+        if dim_c > 1:
+            ft1_c = (f_e0 - f_e1) * safe_mu
+            ft2_c = (f_e2 - f_e3) * safe_mu
         contacts[env, c_off + CONTACT_IDX_FORCE_N] = fn_c
         contacts[env, c_off + CONTACT_IDX_FORCE_T1] = ft1_c
         contacts[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_c

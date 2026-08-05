@@ -44,6 +44,13 @@ from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.fields import Model, Data
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from mojo_rl.physics3d.gpu.constants import (
+    CONTACT_SIZE,
+    CONTACT_IDX_CONDIM,
+    CONTACT_IDX_FORCE_N,
+    CONTACT_IDX_FORCE_T1,
+    CONTACT_IDX_FORCE_T2,
+)
 from std.gpu.host import DeviceContext
 
 
@@ -218,6 +225,104 @@ def test_frictionless_contact_matches_mujoco() raises:
         worst_v <= TOL,
         "qvel diverged — a frictionless (condim-1) contact under the pyramidal"
         " cone does not match MuJoCo",
+    )
+
+
+def test_frictionless_contact_records_no_tangential_force() raises:
+    """The contact RECORD, which the rollout above cannot see.
+
+    ⚠ THIS IS A SEPARATE CLAIM FROM THE ROLLOUT, and the rollout passing is no
+    evidence for it. The frictionless row's Jacobian is the pure normal, so the
+    SOLVE is frictionless no matter what the record says — `qacc`, `qpos` and
+    `qvel` all stay exact while `contact.force` reads a friction that does not
+    exist. Its consumers are `cfrc_ext` (hence any contact-cost reward term)
+    and the force/touch sensors, and this repo has three prior instances of
+    exactly that failure mode.
+
+    The decode is `ft1 = (f_e0 - f_e1) * mu`, which cannot tell a frictionless
+    contact's single live row from a pyramid pair whose negative edge happens
+    to be zero. Measured on dm_control's dog before the guard: `ft1/f_n =
+    0.9002` on all three of its frictionless contacts — precisely the model's
+    default `friction="0.9"` — where MuJoCo reports exactly 0.
+    """
+    print("--- frictionless: the contact record ---")
+    var h = _mj()
+    var mujoco = h[0]
+    var m = h[1]
+    var md = h[2]
+    var np = Python.import_module("numpy")
+    _settle(mujoco, m, md)
+
+    var ctx = DeviceContext()
+    var mf = Model[
+        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
+        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+    ]()
+    M.init_fields[DTYPE, 0](ctx, mf)
+    var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    M.reset_data[DTYPE](d)
+    var sq = md.qpos.flatten().tolist()
+    var sv = md.qvel.flatten().tolist()
+    for i in range(M.NQ):
+        d.qpos.data[i] = Scalar[DTYPE](Float64(py=sq[i]))
+    for i in range(M.NV):
+        d.qvel.data[i] = Scalar[DTYPE](Float64(py=sv[i]))
+        d.qfrc.data[i] = Scalar[DTYPE](0)
+    forward_kinematics["cpu"](d, mf)
+    var integ = EulerIntegrator[
+        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
+        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+        M.CONE_TYPE, 1, SOLVER="newton",
+        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER,
+    ]()
+    integ.step["cpu"](d, mf)
+    mujoco.mj_forward(m, md)
+
+    var buf = np.zeros(6)
+    var n_frictionless = 0
+    var worst_tan = 0.0
+    var worst_fn = 0.0
+    var nc = Int(py=md.ncon)
+    for c in range(nc):
+        mujoco.mj_contactForce(m, md, c, buf)
+        var o = c * CONTACT_SIZE
+        var dim = Int(Float64(d.contacts.data[o + CONTACT_IDX_CONDIM]))
+        var f_n = Float64(d.contacts.data[o + CONTACT_IDX_FORCE_N])
+        var t1 = abs(Float64(d.contacts.data[o + CONTACT_IDX_FORCE_T1]))
+        var t2 = abs(Float64(d.contacts.data[o + CONTACT_IDX_FORCE_T2]))
+        print("   c", c, " dim", dim, " ours fn", f_n, " |t1|", t1, " |t2|", t2,
+              "  MuJoCo fn", Float64(py=buf[0]),
+              " t1", Float64(py=buf[1]), " t2", Float64(py=buf[2]))
+        if dim == 1:
+            n_frictionless += 1
+            if t1 > worst_tan:
+                worst_tan = t1
+            if t2 > worst_tan:
+                worst_tan = t2
+            var dfn = abs(f_n - Float64(py=buf[0]))
+            if dfn > worst_fn:
+                worst_fn = dfn
+
+    print("  frictionless contacts:", n_frictionless,
+          " worst |tangential| =", worst_tan, " worst |d(fn)| =", worst_fn)
+
+    # NON-VACUITY: if the slick ball is not touching, every number above is 0
+    # and the assertions are satisfied by an empty set.
+    assert_true(
+        n_frictionless >= 1,
+        "no condim-1 contact in the record — the slick ball is not touching,"
+        " so the tangential assertion below is vacuous",
+    )
+    assert_true(
+        worst_tan == 0.0,
+        "a frictionless contact recorded a TANGENTIAL force — the pyramid"
+        " decode `(f_e0 - f_e1) * mu` is being applied to a single normal row."
+        " `qacc` is unaffected, so only the sensors and cfrc_ext are wrong,"
+        " which is why a passing rollout says nothing about this",
+    )
+    assert_true(
+        worst_fn <= TOL,
+        "the frictionless NORMAL force disagrees with MuJoCo",
     )
 
 
