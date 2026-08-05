@@ -55,6 +55,9 @@ from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_CONDIM,
+    CONTACT_IDX_FORCE_N,
+    CONTACT_IDX_FORCE_T1,
+    CONTACT_IDX_FORCE_T2,
     META_IDX_NUM_CONTACTS,
     MODEL_JOINT_SIZE,
     JOINT_IDX_TYPE,
@@ -405,6 +408,279 @@ def test_dog_step_stages_vs_mujoco() raises:
         r3 < 1e-8,
         "the UNCONSTRAINED acceleration disagrees — mass matrix, passive"
         " forces or the LDL solve, not the contact solver",
+    )
+
+
+def test_dog_noslip_ab() raises:
+    """Is `mj_solNoSlip` wrong, or is it faithfully carrying a solver error?
+
+    The stage ladder above leaves ONE unmeasured branch in the step: the
+    friction-only sweep that runs after the primal solve. `|d(qacc)| = 1.73` at
+    the settled pose is consistent with both "our noslip computes the wrong
+    thing" and "our contact solve is slightly off and noslip propagates it",
+    and those are different files.
+
+    A 2x2 separates them, because `noslip_iterations` is settable on BOTH
+    sides — `m.opt.noslip_iterations` on MuJoCo's, a comptime parameter on
+    ours:
+
+        base  = |ours(0)  - MuJoCo(0)|      the contact solve, noslip absent
+        full  = |ours(4)  - MuJoCo(4)|      the whole step (currently 1.73)
+        delta = |(ours(4) - ours(0)) - (MuJoCo(4) - MuJoCo(0))|
+
+    `delta` is what noslip ITSELF does, differenced against what MuJoCo's does.
+    If `delta` is at round-off and `base` carries the 1.73, noslip is right and
+    the contact solver is the defect. If `delta` carries it, noslip is the
+    defect. If both are large they are independent and both need work.
+
+    ⚠ NON-VACUITY IS THE WHOLE RISK HERE. If the pass happens to be inert at
+    this pose then `MuJoCo(4) == MuJoCo(0)`, `delta` collapses to `base`, and
+    the 2x2 reports a clean-looking separation that means nothing — which is
+    exactly the trap `tests/physics3d/test_noslip_vs_mujoco.mojo` documents for
+    a small model. The test therefore MEASURES MuJoCo's own noslip effect first
+    and refuses to interpret anything until it is real.
+
+    ⚠ Capture `qacc_constrained` into a `List` immediately after each `step()`:
+    one integrator owns one scratch, and the second run overwrites the first.
+    """
+    print("=== dog: noslip A/B at the settled pose ===")
+    var mujoco = Python.import_module("mujoco")
+
+    # Two MuJoCo models differing ONLY in `noslip_iterations`.
+    var mm4 = mujoco.MjModel.from_xml_string(
+        materialize[dm_dog_stand_walk_xml]()
+    )
+    var mm0 = mujoco.MjModel.from_xml_string(
+        materialize[dm_dog_stand_walk_xml]()
+    )
+    mm0.opt.noslip_iterations = 0
+    var dat4 = mujoco.MjData(mm4)
+
+    mujoco.mj_resetData(mm4, dat4)
+    for _ in range(N_SETTLE):
+        mujoco.mj_step(mm4, dat4)
+    for k in range(M.nact):
+        dat4.ctrl[k] = 0.0
+        dat4.act[k] = 0.0
+    mujoco.mj_forward(mm4, dat4)
+
+    var dat0 = mujoco.MjData(mm0)
+    for i in range(NQ):
+        dat0.qpos[i] = Float64(py=dat4.qpos[i])
+    for i in range(NV):
+        dat0.qvel[i] = Float64(py=dat4.qvel[i])
+    for k in range(M.nact):
+        dat0.ctrl[k] = 0.0
+        dat0.act[k] = 0.0
+    mujoco.mj_forward(mm0, dat0)
+
+    # NON-VACUITY, measured before anything is interpreted.
+    var mj_effect = 0.0
+    for i in range(NV):
+        var e = abs(Float64(py=dat4.qacc[i]) - Float64(py=dat0.qacc[i]))
+        if e > mj_effect:
+            mj_effect = e
+    print("  MuJoCo's OWN noslip effect on qacc here =", mj_effect)
+    assert_true(
+        mj_effect > 1e-6,
+        "noslip changes nothing in MuJoCo at this pose, so `delta` below is"
+        " just `base` restated and the 2x2 separates nothing — find a pose"
+        " where the pass actually bites before reading any number from it",
+    )
+
+    # --- our two runs, same state, differing only in NOSLIP_ITER -----------
+    var ctx = DeviceContext()
+    var mf = Model[
+        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
+        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+    ]()
+    M.init_fields[DTYPE, 0](ctx, mf)
+
+    var d4 = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    M.reset_data[DTYPE](d4)
+    for i in range(NQ):
+        d4.qpos.data[i] = Scalar[DTYPE](Float64(py=dat4.qpos[i]))
+    for i in range(NV):
+        d4.qvel.data[i] = Scalar[DTYPE](Float64(py=dat4.qvel[i]))
+        d4.qfrc.data[i] = Scalar[DTYPE](0)
+    forward_kinematics["cpu"](d4, mf)
+    var integ4 = EulerIntegrator[
+        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
+        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+        M.CONE_TYPE, 1, SOLVER="newton",
+        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER,
+    ]()
+    integ4.step["cpu"](d4, mf)
+    var o4 = List[Float64]()
+    for i in range(NV):
+        o4.append(Float64(integ4.scratch.qacc_constrained.data[i]))
+
+    var d0 = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    M.reset_data[DTYPE](d0)
+    for i in range(NQ):
+        d0.qpos.data[i] = Scalar[DTYPE](Float64(py=dat4.qpos[i]))
+    for i in range(NV):
+        d0.qvel.data[i] = Scalar[DTYPE](Float64(py=dat4.qvel[i]))
+        d0.qfrc.data[i] = Scalar[DTYPE](0)
+    forward_kinematics["cpu"](d0, mf)
+    var integ0 = EulerIntegrator[
+        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
+        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+        M.CONE_TYPE, 1, SOLVER="newton",
+        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=0,
+    ]()
+    integ0.step["cpu"](d0, mf)
+    var o0 = List[Float64]()
+    for i in range(NV):
+        o0.append(Float64(integ0.scratch.qacc_constrained.data[i]))
+
+    # --- the 2x2 -----------------------------------------------------------
+    var our_effect = 0.0
+    var base = 0.0
+    var base_at = -1
+    var full = 0.0
+    var full_at = -1
+    var delta = 0.0
+    var delta_at = -1
+    for i in range(NV):
+        var oe = abs(o4[i] - o0[i])
+        if oe > our_effect:
+            our_effect = oe
+        var b = abs(o0[i] - Float64(py=dat0.qacc[i]))
+        if b > base:
+            base = b
+            base_at = i
+        var f = abs(o4[i] - Float64(py=dat4.qacc[i]))
+        if f > full:
+            full = f
+            full_at = i
+        var dl = abs(
+            (o4[i] - o0[i])
+            - (Float64(py=dat4.qacc[i]) - Float64(py=dat0.qacc[i]))
+        )
+        if dl > delta:
+            delta = dl
+            delta_at = i
+
+    print("  our OWN noslip effect on qacc      =", our_effect)
+    print("  base  |ours(0) - MuJoCo(0)|        =", base, " at dof", base_at)
+    print("  full  |ours(4) - MuJoCo(4)|        =", full, " at dof", full_at)
+    print("  delta |d(ours) - d(MuJoCo)|        =", delta, " at dof", delta_at)
+    if delta_at >= 0:
+        print(
+            "      at that dof: ours", o0[delta_at], "->", o4[delta_at],
+            "  MuJoCo", Float64(py=dat0.qacc[delta_at]), "->",
+            Float64(py=dat4.qacc[delta_at]),
+        )
+
+    # Report only — the verdict is which of `base` and `delta` carries `full`,
+    # and asserting a budget on either before knowing that would just pin
+    # today's number.
+    assert_true(
+        our_effect > 1e-9,
+        "our noslip pass moved NOTHING while MuJoCo's moved the solution — it"
+        " is compiled out or exiting on iteration 0, which is a different bug"
+        " from a wrong sweep and makes `delta` meaningless",
+    )
+
+
+def test_dog_contact_forces_vs_mujoco() raises:
+    """WHICH contact is the solve getting wrong?
+
+    The A/B above put the residual in the contact solve rather than in noslip,
+    and the ladder put it at the TOES. `qacc` is a global quantity, so it says
+    the solve is wrong without saying where; the per-contact forces say where.
+
+    The contact SETS are identical to ~1e-15 (dist, pos, normal, condim, and
+    the body pairs), which was established before this comparison is worth
+    making — comparing forces across two different contact sets would be
+    comparing nothing.
+
+    ⚠ WARM START IS NOT THE EXPLANATION, measured rather than assumed: MuJoCo's
+    own `qacc` at this pose moves by 1.2e-12 between a populated
+    `qacc_warmstart` (magnitude 26) and a zeroed one, while our engine starts
+    cold. That was the cheapest way to be wrong here and it is ruled out.
+
+    ⚠ A MISMATCH HERE IS NOT AUTOMATICALLY A SOLVER BUG. The contact RECORD is
+    written back separately from the solve, and this repo has three logged
+    cases of a record being wrong while `qacc` was right (FRAME_T1, the halved
+    pyramidal force, the tendon-equality diagApprox). What makes the direction
+    unambiguous THIS time is that `qacc` is independently known to be wrong by
+    1.73 — so a force mismatch corroborates rather than being the only witness.
+    """
+    print("=== dog: per-contact forces vs MuJoCo ===")
+    var mujoco = Python.import_module("mujoco")
+    var np = Python.import_module("numpy")
+    var mm = mujoco.MjModel.from_xml_string(
+        materialize[dm_dog_stand_walk_xml]()
+    )
+    var dat = mujoco.MjData(mm)
+    mujoco.mj_resetData(mm, dat)
+    for _ in range(N_SETTLE):
+        mujoco.mj_step(mm, dat)
+    for k in range(M.nact):
+        dat.ctrl[k] = 0.0
+        dat.act[k] = 0.0
+    mujoco.mj_forward(mm, dat)
+
+    var ctx = DeviceContext()
+    var mf = Model[
+        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
+        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+    ]()
+    M.init_fields[DTYPE, 0](ctx, mf)
+    var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    M.reset_data[DTYPE](d)
+    for i in range(NQ):
+        d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
+    for i in range(NV):
+        d.qvel.data[i] = Scalar[DTYPE](Float64(py=dat.qvel[i]))
+        d.qfrc.data[i] = Scalar[DTYPE](0)
+    forward_kinematics["cpu"](d, mf)
+    var integ = EulerIntegrator[
+        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
+        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+        M.CONE_TYPE, 1, SOLVER="newton",
+        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER,
+    ]()
+    integ.step["cpu"](d, mf)
+
+    var nc = Int(py=dat.ncon)
+    var buf = np.zeros(6)
+    print("   c  dim   ours(fn, ft1, ft2)            MuJoCo(fn, ft1, ft2)")
+    var worst_n = 0.0
+    var worst_n_at = -1
+    var sum_ours = 0.0
+    var sum_mj = 0.0
+    for c in range(nc):
+        mujoco.mj_contactForce(mm, dat, c, buf)
+        var o = c * CONTACT_SIZE
+        var dim = Int(Float64(d.contacts.data[o + CONTACT_IDX_CONDIM]))
+        var ofn = Float64(d.contacts.data[o + CONTACT_IDX_FORCE_N])
+        var ot1 = Float64(d.contacts.data[o + CONTACT_IDX_FORCE_T1])
+        var ot2 = Float64(d.contacts.data[o + CONTACT_IDX_FORCE_T2])
+        var mfn = Float64(py=buf[0])
+        var mt1 = Float64(py=buf[1])
+        var mt2 = Float64(py=buf[2])
+        sum_ours += ofn
+        sum_mj += mfn
+        var e = abs(ofn - mfn)
+        if e > worst_n:
+            worst_n = e
+            worst_n_at = c
+        print(
+            "  ", c, " ", dim, "  ", ofn, ot1, ot2, "   |  ", mfn, mt1, mt2,
+            "   |dfn|", e,
+        )
+    print("  sum of normal forces: ours", sum_ours, " MuJoCo", sum_mj)
+    print("  worst |d(fn)| =", worst_n, " at contact", worst_n_at)
+
+    # NON-VACUITY: a pose where every contact force is zero would print a
+    # perfect table and prove nothing about the solve.
+    assert_true(
+        sum_mj > 1.0,
+        "MuJoCo's total normal force is ~0 — the dog is not resting on"
+        " anything and this comparison gates nothing",
     )
 
 
