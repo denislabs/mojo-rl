@@ -42,7 +42,10 @@ comptime StorePerSampleCpuStep[
 comptime StoreUniformSampleGpuStep[
     OBS: Int, ACT: Int, BATCH: Int, CAP: Int
 ] = ReplaySampleStep[StoreReplayGpu[OBS, ACT, CAP], BATCH]
-"""Replaces `UniformSampleGpuStep` (backed by `GPUReplay`).
+"""Replaces `UniformSampleGpuStep` (backed by `GPUReplay`). Supports ERE via
+`configure_ere`, bit-identically."""
 
-⚠ Not a drop-in for call sites that enable ERE — see `StoreReplayGpu`.
-"""
+comptime StorePerSampleGpuStep[
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int
+] = ReplaySampleStep[StoreReplayGpu[OBS, ACT, CAP, True], BATCH]
+"""Replaces `PerSampleGpuStep` (backed by `GPUPrioritizedReplay`)."""
