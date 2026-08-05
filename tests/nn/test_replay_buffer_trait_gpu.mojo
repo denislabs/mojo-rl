@@ -12,8 +12,8 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.training.replay_buffer import ReplayBuffer
 from mojo_rl.deep_agents.training.trainer_block import TrainerState
-from mojo_rl.deep_agents.data.gpu_replay import GPUReplay
-from mojo_rl.deep_agents.data.per_replay import GPUPrioritizedReplay
+from mojo_rl.data.replay_gpu import StoreReplayGpu
+from mojo_rl.data.replay_gpu import StoreReplayGpu
 
 
 comptime OBS = 3
@@ -38,7 +38,7 @@ def drive[R: ReplayBuffer](mut buf: R, mut state: TrainerState[R.OBS, R.ACT, BAT
 def main() raises:
     seed(42)
     var ctx = DeviceContext()
-    var buf = GPUReplay[OBS, ACT, CAP].make(ctx=ctx, batch_capacity=BATCH)
+    var buf = StoreReplayGpu[OBS, ACT, CAP, False].make(ctx=ctx, batch_capacity=BATCH)
     var state = TrainerState[OBS, ACT, BATCH].make["gpu"](ctx=ctx)
     drive(buf, state, ctx)
     ctx.synchronize()
@@ -46,7 +46,7 @@ def main() raises:
     print("  GPUReplay conforms: count=", buf.count())
 
     # GPUPrioritizedReplay conforms through the SAME generic drive[R].
-    var per = GPUPrioritizedReplay[OBS, ACT, CAP].make(
+    var per = StoreReplayGpu[OBS, ACT, CAP, True].make(
         ctx=ctx, batch_capacity=BATCH
     )
     per.configure_per(alpha=0.6, beta=0.4, epsilon=1e-6)
