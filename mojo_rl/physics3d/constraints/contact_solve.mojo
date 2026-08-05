@@ -914,6 +914,24 @@ def _precompute_contact_friction[
             condim_c = MAX_CONDIM
         var n_edge_c = 2 * (condim_c - 1)
 
+        # ⚠ A FRICTIONLESS CONTACT IS ONE ROW, NOT ZERO ROWS.
+        # `2*(dim-1)` is zero at `dim == 1`, which used to zero every slot and
+        # leave the contact contributing NOTHING — detected, recorded in
+        # `d.contacts`, reported in `ncon`, and silently absent from the solve,
+        # so the two geoms passed through each other. MuJoCo emits one
+        # `mjCNSTR_CONTACT_FRICTIONLESS` row there (`efc_type == 5`): the pure
+        # normal row, one-sided like every pyramid edge, with the NORMAL `R`
+        # rather than the pyramid's `2*mu^2*R`.
+        #
+        # Measured on dm_control's dog at a settled pose: MuJoCo reports
+        # `efc_type {6: 40, 5: 3, 3: 2}` — three of thirteen contacts are
+        # frictionless, because `collision_primitive` sets `condim="1"` and dog
+        # has 81 such geoms. Gated by
+        # `tests/physics3d/test_frictionless_contact_pyramidal.mojo`.
+        var frictionless = condim_c == 1
+        if frictionless:
+            n_edge_c = 1
+
         # Friction direction k (k = 1..dim-1) pairs MuJoCo's `jac` row k with
         # `con->friction[k-1]`:  k=1,2 -> the two SLIDE tangents (linear
         # Jacobian along t1/t2); k=3 -> TORSION about the contact normal;
@@ -942,7 +960,14 @@ def _precompute_contact_friction[
             ](-1.0)
             var k = edge // 2  # 0 -> t1, 1 -> t2, 2 -> torsion, 3/4 -> roll
             var mu_k = mu_c
-            if k == 2:
+            if frictionless:
+                # `je = J_n + sign*mu_k*J_k` collapses to `J_n` at mu = 0, so
+                # the single row IS the normal row. `k` is 0 here, which loads
+                # `J_t1` into `J_k` — it is multiplied by zero, but it must
+                # still be a real vector: `J_k` is `uninitialized=True` and
+                # `0 * NaN` is NaN, not 0.
+                mu_k = Scalar[DTYPE](0)
+            elif k == 2:
                 mu_k = mu_spin_c
             elif k >= 3:
                 mu_k = mu_roll_c
@@ -990,7 +1015,13 @@ def _precompute_contact_friction[
             # it belongs to the ELLIPTIC branch — applying it here makes the
             # spin row ~(mu_slide/mu_spin)^2 too soft, which for a ball at
             # 0.7/0.05 is a factor of 196 and reads as "torsion does nothing".
-            solver[env, pyr_sc + edge * MC + c] = D_edge_val
+            # ⚠ THE FRICTIONLESS ROW TAKES THE NORMAL `R`, NOT THE PYRAMID'S.
+            # `R_edge = 2*mu^2*R_n` is zero at mu = 0 and would be clamped to
+            # 1e-14, i.e. `D = 1e14` — an infinitely rigid row that blows the
+            # solve up rather than merely being wrong.
+            solver[env, pyr_sc + edge * MC + c] = (
+                Scalar[DTYPE](1.0) / R_n_c if frictionless else D_edge_val
+            )
             # bias_edge = B*v_edge - K_spring*imp*pen
             var bias_e = B_damp * v_edge - K_spring * imp_n * pen
             solver[env, pyr_sc + NE_PYR * MC + edge * MC + c] = bias_e

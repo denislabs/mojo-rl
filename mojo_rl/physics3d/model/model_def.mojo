@@ -39,6 +39,19 @@ trait ModelDefLike:
     # MuJoCo `m->na`: ACTIVATION variables, not `nu`.
     comptime NA: Int
     comptime NEXCLUDE: Int
+    # Largest `condim` in the model — sizes the PYRAMIDAL edge list at
+    # `2*(MAX_CONDIM-1)` rows per contact.
+    #
+    # ⚠ ON THE TRAIT ON PURPOSE, not just on `ModelDefFromXML`. `Phyics3dEnv`
+    # reads it through this trait to forward into the integrator, and until
+    # 2026-08-03 it did not forward it at all — so every env silently ran the
+    # pyramidal builder at condim 3 regardless of its model, and quadruped
+    # `fetch` and dog both lost their condim-6 friction rows. Declaring it here
+    # is what makes omitting it a compile error rather than a silent downgrade.
+    comptime MAX_CONDIM: Int
+    # `<option noslip_iterations>`; 0 disables `mj_solNoSlip`. Same reasoning —
+    # the env has to forward it, so the trait has to expose it.
+    comptime NOSLIP_ITER: Int
     comptime OBS_DIM: Int
     comptime ACTION_DIM: Int
     comptime TIMESTEP: Float64

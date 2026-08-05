@@ -56,6 +56,7 @@ from mojo_rl.physics3d.joint_types import JNT_FREE, JNT_BALL, JNT_SLIDE
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
+    MODEL_META_IDX_MEANINERTIA,
     BODY_IDX_PARENT,
     BODY_IDX_ROOTID,
     BODY_IDX_POS_X,
@@ -184,6 +185,21 @@ def compute_invweight0[
             ndof = 3
         for dd in range(ndof):
             sc.M.data[(dof_adr + dd) * NV + (dof_adr + dd)] += arm
+
+    # ── stat.meaninertia, and it MUST be read here ──────────────────────────
+    # `ldl_factor` overwrites `sc.M` IN PLACE on the very next line, so after
+    # it the "diagonal" is the LDL factor's D, not the mass matrix's. MuJoCo
+    # takes this from `d->qM` inside `mj_setConst`, i.e. the same pre-
+    # factorization matrix, armature included.
+    #
+    # Consumed only by `mj_solNoSlip`'s convergence test — see
+    # `MODEL_META_IDX_MEANINERTIA`.
+    var _mi_sum = Float64(0)
+    for i in range(NV):
+        _mi_sum += Float64(sc.M.data[i * NV + i])
+    mf.meta.data[MODEL_META_IDX_MEANINERTIA] = Scalar[DTYPE](
+        _mi_sum / Float64(NV) if NV > 0 else Float64(0)
+    )
 
     ldl_factor["cpu", DTYPE, NV, NBODY, 1](sc)
 

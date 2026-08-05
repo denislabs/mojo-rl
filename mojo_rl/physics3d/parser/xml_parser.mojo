@@ -59,6 +59,7 @@ struct ParsedModel:
     var ANGLE_DEG: Bool  # True when <compiler angle="degree"/>
     var TIMESTEP: Float64  # <option timestep="..."/>
     var MAX_CONDIM: Int  # largest `condim=` anywhere in the file (>= 3)
+    var NOSLIP_ITER: Int  # <option noslip_iterations="..."/>, 0 = pass off
 
     def __init__(
         out self,
@@ -79,6 +80,7 @@ struct ParsedModel:
         angle_deg: Bool = False,
         timestep: Float64 = 0.01,
         max_condim: Int = 3,
+        noslip_iter: Int = 0,
     ):
         self.NBODY = nbody
         self.NJOINT = njoint
@@ -97,6 +99,7 @@ struct ParsedModel:
         self.ANGLE_DEG = angle_deg
         self.TIMESTEP = timestep
         self.MAX_CONDIM = max_condim
+        self.NOSLIP_ITER = noslip_iter
 
     def __str__(self) -> String:
         return (
@@ -2201,6 +2204,40 @@ def _scan_max_condim(xml: String) -> Int:
     return best
 
 
+def _scan_noslip_iterations(xml: String) -> Int:
+    """`<option noslip_iterations="N">`, or 0 if absent (MuJoCo's default).
+
+    MuJoCo runs `mj_solNoSlip` after the main solver whenever this is > 0. It
+    is a friction-only Gauss-Seidel sweep with the normal forces frozen, and
+    it is NOT a rounding refinement: on dm_control's dog — the one suite model
+    that sets it — turning it off moves MuJoCo's own rollout by `max|d(qvel)|`
+    2.9e-2 on the FIRST contacting step.
+
+    ⚠ THE LEDGER CLOSED THIS FEATURE ON A GREP THAT WAS WRONG. `docs/
+    DM_CONTROL_PORT.md` decision 4 read "`grep -r noslip references/
+    dm_control-main/` returns nothing in the suite" — `dog.xml` line 6 has set
+    `noslip_iterations="4"` the whole time. The conclusion was accidentally
+    right (dog was descoped) and the evidence was not.
+
+    Unlike `_scan_max_condim`, this reads only the REAL `<option>` element:
+    an over-estimate here is not free — it would run a solver pass MuJoCo does
+    not run — so a value inside a comment or a `<default>` must not count.
+    """
+    var opt = _first_tag(xml, "option")
+    if opt.byte_length() == 0:
+        return 0
+    var s = _trim(_extract_attr(opt, "noslip_iterations"))
+    if s.byte_length() == 0:
+        return 0
+    var val = 0
+    for i in range(s.byte_length()):
+        var ch = Int(s.as_bytes()[i])
+        if ch < ord("0") or ch > ord("9"):
+            return 0
+        val = val * 10 + (ch - ord("0"))
+    return val
+
+
 def parse_xml(xml: String) -> ParsedModel:
     """Parse a MuJoCo XML string and return dimension counts.
 
@@ -2312,6 +2349,7 @@ def parse_xml(xml: String) -> ParsedModel:
         angle_deg,
         timestep,
         _scan_max_condim(xml),
+        _scan_noslip_iterations(xml),
     )
 
 
@@ -2381,27 +2419,38 @@ Measured with MuJoCo 3.10.0: humanoid_CMU `nu` 56, dog `nu` 38 — both fit. If
 a later model does not, RAISE THIS AND MEASURE THE BUILD TIME; these arrays are
 materialized by the comptime interpreter."""
 
-comptime MAX_COMPTIME_JOINTS: Int = 64
-"""Cap on joints the comptime parser records (humanoid_CMU needs 57).
+comptime MAX_COMPTIME_JOINTS: Int = 96
+"""Cap on joints the comptime parser records (dog needs 75, humanoid_CMU 57).
 
-(1 free + 56 hinges. `grep -c '<joint '` says 60: four of those are the
-`<joint>` elements of `main`, `stiff_low`, `stiff_medium` and `stiff_high`.)
+(humanoid_CMU: 1 free + 56 hinges. `grep -c '<joint '` says 60: four of those
+are the `<joint>` elements of `main`, `stiff_low`, `stiff_medium` and
+`stiff_high`.)
 
 Same silent-truncation shape as `MAX_COMPTIME_ACTUATORS` above, and the payload
 is worse: `joint_qpos_adr` / `joint_is_limited` / `joint_range_*` feed the JOINT
 LIMIT rows, so a joint past the cap keeps its degree of freedom and quietly
 loses its stops. Asserted in `ModelDefFromXML` against `njoint`.
 
-⚠ dog's `njnt` is 75 and does NOT fit — raising this is a Phase 4 item, and
-the assert is what makes that a compile error rather than a physics bug."""
+Widened 64 -> 96 on 2026-08-03 for dm_control's dog (Phase 4). ⚠ dog is TWO
+models, and only one of them was measured when this note first said "75":
+
+    stand / walk / trot / run   njnt 74   nq 80    (`make_model` deletes the
+                                                    ball, and with it a free
+                                                    joint worth 1 jnt / 7 qpos)
+    fetch                       njnt 75   nq 87    (ball kept)
+
+Both were counted with `mjModel`, not grep. 96 leaves headroom over the larger
+of the two rather than sitting one slot above it — see `MAX_COMPTIME_NQ`'s note
+on why a one-slot margin is not a margin."""
 
 comptime MAX_COMPTIME_NQ: Int = 128
 """Cap on `qpos0` slots the comptime parser records.
 
 ⚠ humanoid_CMU does NOT need this widening — its `nq` is 63, ONE SLOT under the
 old bound of 64. It was widened on the strength of a miscount and is kept
-because dog's `nq` is 87 and genuinely does not fit, and because the failure
-mode below is the worst of the three. One slot is not a margin.
+because dog's `nq` is 80 (stand/walk/trot/run) or 87 (fetch) and genuinely does
+not fit, and because the failure mode below is the worst of the three. One slot
+is not a margin.
 
 Widened 64 -> 128 on 2026-08-03. ⚠ THIS ONE IS NOT A TRUNCATING SCAN — the
 writes are `data.qpos0[qpos_adr] = ...` indexed by the joint's own qpos address,
@@ -2411,8 +2460,11 @@ early. Asserted against `nq` in `ModelDefFromXML`. dog is the model that exceeds
 Note the SEPARATE 64-geom cap in `ComptimeRenderData` below: that one is
 RENDER data, not physics (`fields.Model` is parameterized by NGEOM and comes
 from the runtime `full_parser`), so exceeding it costs geoms in the viewer and
-nothing in the dynamics. dog has 296 geoms and blows straight past it;
-humanoid_CMU has 50 and does not."""
+nothing in the dynamics. dog has 290 geoms as authored (296 with the ball) and
+blows straight past it; humanoid_CMU has 50 and does not. ⚠ After the Phase 4
+mesh-inertia bake the ported dog carries 128 geoms, not 290 — the 162 bone
+meshes are non-colliding and are deleted once their inertia is stated
+explicitly."""
 
 
 struct ComptimeActData(Copyable, Movable):
@@ -2444,9 +2496,30 @@ struct ComptimeActData(Copyable, Movable):
     # (unresolved name) and is skipped.
     #
     # `motor_kind` is ACT_KIND_MOTOR / ACT_KIND_POSITION (flat_model.mojo):
-    #   MOTOR     force = ctrl                       (gain=1, no bias)
-    #   POSITION  force = kp*(ctrl - length) - kv*vel  (gainprm/biasprm of a
-    #             <position>, i.e. gaintype=fixed + biastype=affine)
+    #   MOTOR     force = kp * u                       (gaintype fixed, NO bias)
+    #   POSITION  force = kp*(u - length) - kv*vel      (gaintype fixed +
+    #             biastype affine, i.e. the <position> shape)
+    #
+    # where `u` is `act` for a dyntype actuator and `ctrl` otherwise.
+    #
+    # ⚠ `motor_kp` IS MuJoCo's `gainprm[0]`, NOT "the position gain". It reads
+    # as a servo gain only on the POSITION path. It defaults to 1.0 — MuJoCo's
+    # own `gainprm` default — so a plain `<motor>`, which never writes it, is
+    # `force = 1 * ctrl` exactly as before.
+    #
+    # dog is why MOTOR carries a gain at all. Its 38 actuators are
+    #
+    #     <general ctrllimited="true" ctrlrange="-1 1"
+    #              dyntype="filter" dynprm="0.05" gainprm="0.02"/>
+    #
+    # — no `biastype`, so MuJoCo's default `mjBIAS_NONE` applies and there is
+    # no position feedback whatsoever: force = 0.02 * act, where act is a
+    # 0.05 s lag of ctrl. Before this, EVERY `<general>` was classified
+    # ACT_KIND_POSITION on the strength of the tag name alone, so dog's
+    # actuators were refused outright by the `bad_actuator` gate (code 1,
+    # biastype != affine). That gate doing its job is the only reason this was
+    # a compile error rather than 38 torque motors driven by a phantom
+    # position error.
     var motor_kind: InlineArray[Int, MAX_COMPTIME_ACTUATORS]
     var motor_kp: InlineArray[Float64, MAX_COMPTIME_ACTUATORS]
     var motor_kv: InlineArray[Float64, MAX_COMPTIME_ACTUATORS]
@@ -2535,7 +2608,7 @@ struct ComptimeActData(Copyable, Movable):
         self.motor_ctrl_min = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=-1.0)
         self.motor_ctrl_max = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=1.0)
         self.motor_kind = InlineArray[Int, MAX_COMPTIME_ACTUATORS](fill=0)  # ACT_KIND_MOTOR
-        self.motor_kp = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=0.0)
+        self.motor_kp = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=1.0)
         self.motor_kv = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=0.0)
         self.motor_dyn_tau = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=0.0)
         self.motor_act_adr = InlineArray[Int, MAX_COMPTIME_ACTUATORS](fill=-1)
@@ -2583,7 +2656,7 @@ struct ComptimeActData(Copyable, Movable):
         self.motor_ctrl_min = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=-1.0)
         self.motor_ctrl_max = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=1.0)
         self.motor_kind = InlineArray[Int, MAX_COMPTIME_ACTUATORS](fill=0)
-        self.motor_kp = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=0.0)
+        self.motor_kp = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=1.0)
         self.motor_kv = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=0.0)
         self.motor_dyn_tau = InlineArray[Float64, MAX_COMPTIME_ACTUATORS](fill=0.0)
         self.motor_act_adr = InlineArray[Int, MAX_COMPTIME_ACTUATORS](fill=-1)
@@ -3105,6 +3178,14 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
             #     bias  = biasprm[0] + biasprm[1]*len + biasprm[2]*vel (affine)
             # which is our POSITION path exactly when biasprm[0] == 0 and
             # biasprm[1] == -gainprm[0]; then kp = gain and kv = -biasprm[2].
+            #
+            # With NO bias at all (`biastype` absent or "none", MuJoCo's
+            # default `mjBIAS_NONE`) the same formula degenerates to
+            # `force = gain * u`, which is our MOTOR path carrying a gain.
+            # That is dog: 38 `<general dyntype="filter" gainprm="0.02"/>`
+            # with no biastype. Classifying by TAG NAME alone called those
+            # position servos and refused them.
+            #
             # Anything else is a different actuator and is refused below.
             var gaintype = _trim(_attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "gaintype"))
             var biastype = _trim(_attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "biastype"))
@@ -3118,25 +3199,33 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
             var b1 = _nth_float(biasprm, 1, 0.0)
             var b2 = _nth_float(biasprm, 2, 0.0)
 
+            var no_bias = biastype.byte_length() == 0 or biastype == "none"
+
             if gaintype.byte_length() > 0 and gaintype != "fixed":
                 if data.bad_actuator < 0:
                     data.bad_actuator = act_count
                     data.bad_actuator_code = 0
-            elif biastype != "affine":
+            elif not (no_bias or biastype == "affine"):
                 if data.bad_actuator < 0:
                     data.bad_actuator = act_count
                     data.bad_actuator_code = 1
-            elif b0 != 0.0:
+            elif (not no_bias) and b0 != 0.0:
                 if data.bad_actuator < 0:
                     data.bad_actuator = act_count
                     data.bad_actuator_code = 2
-            elif b1 != -gain:
+            elif (not no_bias) and b1 != -gain:
                 if data.bad_actuator < 0:
                     data.bad_actuator = act_count
                     data.bad_actuator_code = 3
 
+            # A bias-free `<general>` is a gained torque motor, not a servo.
+            # The unconditional ACT_KIND_POSITION written above is corrected
+            # here, once `biastype` has actually been read.
+            if no_bias:
+                data.motor_kind[act_count] = ACT_KIND_MOTOR
+
             data.motor_kp[act_count] = gain
-            data.motor_kv[act_count] = -b2
+            data.motor_kv[act_count] = 0.0 if no_bias else -b2
 
             # mjDYN_FILTER: act_dot = (ctrl - act) / dynprm[0], one activation
             # variable per actuator, integrated by the same Euler step as qvel.

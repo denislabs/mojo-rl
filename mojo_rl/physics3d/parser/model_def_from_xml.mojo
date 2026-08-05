@@ -37,7 +37,13 @@ from mojo_rl.physics3d.joint_types import (
 )
 from mojo_rl.physics3d.gpu.constants import (
     TPB,
+    MODEL_JOINT_SIZE,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_DOF_ADR,
+    JOINT_IDX_DAMPING,
+    JOINT_IDX_STIFFNESS,
 )
+from mojo_rl.physics3d.joint_types import JNT_FREE, JNT_BALL
 from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch
 from mojo_rl.physics3d.dynamics.invweight import (
     compute_invweight0,
@@ -111,6 +117,8 @@ struct ModelDefFromXML[
     timestep: Float64 = 0.01,
     allow_unsupported_actuators: Bool = False,
     max_condim: Int = 3,
+    noslip_iter: Int = 0,
+    allow_missing_noslip: Bool = False,
 ](ModelDefLike):
     """ModelDefLike implementation driven entirely from an embedded MJCF XML string.
 
@@ -141,6 +149,10 @@ struct ModelDefFromXML[
         max_condim:    Largest condim over the model's geoms; pass
                        `parse_xml(xml).MAX_CONDIM`. Over-estimating only
                        costs unused rows, under-estimating is silent.
+        noslip_iter:   `<option noslip_iterations>`; pass
+                       `parse_xml(xml).NOSLIP_ITER`. 0 disables the pass,
+                       which is MuJoCo's default and correct for every suite
+                       model except dog.
         max_tendon:    Maximum fixed tendons (default 0).
         nsite:   Total site count (default 0).
         neq:           Number of equality constraints (default 0).
@@ -175,6 +187,12 @@ struct ModelDefFromXML[
     # leaving it at 3 on a model with condim 4/6 geoms builds the torsional
     # and rolling rows into a workspace the solver never reads.
     comptime MAX_CONDIM: Int = Self.max_condim
+    # `<option noslip_iterations>`. Runs MuJoCo's `mj_solNoSlip` after the
+    # primal solve: a friction-only Gauss-Seidel sweep with the normal forces
+    # held fixed. 0 = off, which is MuJoCo's default. dm_control's dog is the
+    # only in-scope model that sets it (to 4), and it is first-order there —
+    # 2.9e-2 of qvel on the first contacting step.
+    comptime NOSLIP_ITER: Int = Self.noslip_iter
     comptime MAX_CONTACTS: Int = Self.max_contacts
     comptime MAX_TENDON: Int = Self.max_tendon
     comptime NSITE: Int = Self.nsite
@@ -380,7 +398,11 @@ struct ModelDefFromXML[
             if adr >= 0 and adr < len(act):
                 u = Float64(act[adr])
 
-            var force = u
+            # `motor_kp` is MuJoCo's `gainprm[0]`, whose default is 1 — so a
+            # plain `<motor>`, which never writes it, is `force = ctrl`. A
+            # bias-free `<general>` lands here too and its gain is real: dog's
+            # actuators are `force = 0.02 * act`.
+            var force = Self._acd.motor_kp[i] * u
             if Self._acd.motor_kind[i] == ACT_KIND_POSITION:
                 var length = Float64(0)
                 var vel = Float64(0)
@@ -490,22 +512,58 @@ struct ModelDefFromXML[
         is computed fields-natively (G1) from the reference pose given by the
         fields `reset_data`. The legacy trait-default (setup_model_and_data →
         load_from_model) was deleted at G4."""
-        var fmd = parse_xml_full[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NQ,
-            Self.NV,
-            Self.NGEOM,
-            Self.nact,
-            Self.ntex,
-            Self.nmat,
-            Self.nlight,
-            Self.ncam,
-            Self.NSITE,
-            Self.neq,
-            Self.nexclude,
-            Self.MAX_TENDON,
-        ](Self.xml)
+        var fmd = parse_xml_full(Self.xml)
+
+        # ⚠ THE DIMENSION CHECK THAT REPLACED SILENT TRUNCATION.
+        #
+        # `FlatModelDef` used to be `InlineArray`-backed and sized by these
+        # very parameters, so the parser wrote `if joint_count < NJOINT:` and
+        # incremented the counter REGARDLESS — a model with more elements than
+        # its declared dimension dropped the overflow without a word. Same
+        # shape as `MAX_COMPTIME_TENDONS` and `MAX_NAMED_DEFAULTS`.
+        #
+        # With `List` storage the parser cannot truncate, so the failure mode
+        # inverts: a disagreement between `parse_xml` (which supplied these
+        # comptime dims) and `full_parser` (which produced the Lists) now shows
+        # up as a LENGTH MISMATCH, and `fields_build` would index past the end.
+        # Catch it here, where both numbers are in hand and the message can say
+        # which element type disagreed.
+        if len(fmd.bodies) != Self.NBODY - 1:
+            raise Error(
+                String(
+                    "physics3d: parser/dimension mismatch on BODIES — ",
+                    "parse_xml declared nbody=", Self.NBODY, " (so ",
+                    Self.NBODY - 1, " non-world bodies) but full_parser found ",
+                    len(fmd.bodies),
+                    ". The two MJCF paths disagree; fix the parser, do not",
+                    " widen the dimension.",
+                )
+            )
+        if len(fmd.joints) != Self.NJOINT:
+            raise Error(
+                String(
+                    "physics3d: parser/dimension mismatch on JOINTS — declared",
+                    " njoint=", Self.NJOINT, ", full_parser found ",
+                    len(fmd.joints), ".",
+                )
+            )
+        if len(fmd.geoms) != Self.NGEOM:
+            raise Error(
+                String(
+                    "physics3d: parser/dimension mismatch on GEOMS — declared",
+                    " ngeom=", Self.NGEOM, ", full_parser found ",
+                    len(fmd.geoms), ".",
+                )
+            )
+        if len(fmd.sites) != Self.NSITE:
+            raise Error(
+                String(
+                    "physics3d: parser/dimension mismatch on SITES — declared",
+                    " nsite=", Self.NSITE, ", full_parser found ",
+                    len(fmd.sites), ". Sensors are addressed BY SITE INDEX, so",
+                    " a mismatch here reads the wrong sensor.",
+                )
+            )
 
         # Reject unplumbed dof-friction solver params LOUDLY, for the same
         # reason as the actuator guard below: the parser sees the attribute,
@@ -617,6 +675,28 @@ struct ModelDefFromXML[
             " flat colour — including the skybox."
         )
 
+        # `<option noslip_iterations>` — `mj_solNoSlip` is implemented for the
+        # PYRAMIDAL cone only (`solver/noslip.mojo`), and only the pyramidal
+        # branch of the Newton solver calls it.
+        #
+        # ⚠ AN ELLIPTIC MODEL WITH noslip_iterations SET WOULD SKIP THE PASS
+        # SILENTLY — the elliptic solve path has no call — so it is refused
+        # here instead. That is the caller-side dispatch obligation
+        # `noslip.mojo` documents, enforced at the one place that knows both
+        # the cone type and the option.
+        comptime assert (
+            Self.noslip_iter == 0
+            or Self.cone_type == ConeType.PYRAMIDAL
+            or Self.allow_missing_noslip
+        ), (
+            "physics3d: <option noslip_iterations> is set on an ELLIPTIC-cone"
+            " model, but mj_solNoSlip is implemented for the pyramidal cone"
+            " only — the elliptic solve path would skip the pass without a"
+            " word. Use cone=\"pyramidal\", or pass"
+            " allow_missing_noslip=True to accept a rollout that will not"
+            " match MuJoCo."
+        )
+
         # A `<general>` whose gain/bias/dyn shape we do not implement. The
         # comptime parser cannot raise, so it records the offender and we turn
         # that into a compile error here. Codes are documented on the field.
@@ -714,20 +794,10 @@ struct ModelDefFromXML[
         comptime stm = _xml_compiler_settotalmass[Self.xml]()
         build_model_fields_from_flat[
             DTYPE,
+            Self.NV,
             Self.NBODY,
             Self.NJOINT,
-            Self.NQ,
-            Self.NV,
             Self.NGEOM,
-            Self.nact,
-            Self.ntex,
-            Self.nmat,
-            Self.nlight,
-            Self.ncam,
-            Self.NSITE,
-            Self.neq,
-            Self.nexclude,
-            Self.MAX_TENDON,
             Self.MAX_EQUALITY,
             Self.MAX_TENDON,
             Self.NSITE,
@@ -765,6 +835,62 @@ struct ModelDefFromXML[
             Self.NEXCLUDE,
             NMESHV,
         ](d_inv, mf, sc_inv)
+
+        # ── AutoSpringDamper (mjCModel::AutoSpringDamper, user_model.cc:2369)
+        #
+        # ⚠ ORDER IS LOAD-BEARING: this READS `dof_invweight0`, so it must run
+        # AFTER `compute_invweight0` and before the upload. MuJoCo does exactly
+        # the same thing — `mj_setConst(m, d)` then `AutoSpringDamper(m)`
+        # (user_model.cc:5242-5245).
+        #
+        # `<joint springdamper="timeconst dampratio">` asks MuJoCo to DERIVE
+        # the spring from the body's own inertia rather than take a number:
+        #
+        #     inertia   = ndim / sum(dof_invweight0[adr .. adr+ndim])
+        #     stiffness = inertia / (timeconst^2 * dampratio^2)
+        #     damping   = 2 * inertia / timeconst
+        #
+        # and it OVERWRITES whatever `stiffness`/`damping` the XML or class
+        # supplied. dm_control's dog declares `springdamper="0.001 50"` once,
+        # in a default class, which is why ~20 of its `jnt_stiffness` values
+        # (0.0400187, 0.0401469, ...) appear NOWHERE in the XML and why our
+        # stiffness was wrong before this. It is not a cosmetic mismatch: the
+        # same formula sets `dof_damping`, so getting it wrong is a passive-
+        # force error, i.e. a dynamics defect.
+        #
+        # Both parameters must be strictly positive for MuJoCo to act, which
+        # is why (0, 0) is a sufficient "absent" encoding.
+        comptime _MJMINVAL = 1e-15
+        for j in range(Self.NJOINT):
+            # `mjCJoint::nv` — dofs per joint type. Free is 6 (not 7: qpos and
+            # dof sizes differ for a free joint, and this formula wants DOFS).
+
+            var jd = fmd.joints[j]
+            var tc = jd.springdamper_0
+            var dr = jd.springdamper_1
+            if tc <= 0.0 or dr <= 0.0:
+                continue
+            var jo = j * MODEL_JOINT_SIZE
+            var dof_adr = Int(mf.joints.data[jo + JOINT_IDX_DOF_ADR])
+            var jt = Int(mf.joints.data[jo + JOINT_IDX_TYPE])
+            var ndim = 6 if jt == JNT_FREE else (3 if jt == JNT_BALL else 1)
+            var acc = Float64(0)
+            for i in range(ndim):
+                acc += Float64(mf.dof_invweight0.data[dof_adr + i])
+            if acc < _MJMINVAL:
+                acc = _MJMINVAL
+            var inertia = Float64(ndim) / acc
+            var denom = tc * tc * dr * dr
+            if denom < _MJMINVAL:
+                denom = _MJMINVAL
+            var tc_d = tc if tc > _MJMINVAL else _MJMINVAL
+            mf.joints.data[jo + JOINT_IDX_STIFFNESS] = Scalar[DTYPE](
+                inertia / denom
+            )
+            mf.joints.data[jo + JOINT_IDX_DAMPING] = Scalar[DTYPE](
+                2.0 * inertia / tc_d
+            )
+
         mf.upload_all(ctx)
 
     # =========================================================================
@@ -1222,11 +1348,23 @@ struct ModelDefFromXML[
         picture that is the arm hanging under a ceiling, which is exactly how
         it was reported: "things are below the ground".
 
-        A plane is only treated as the ground when it is unrotated and centred
-        on the world axis; anything else is drawn as a thin oriented box of its
-        declared half-extents. The ground keeps the grid path because that is
-        what carries the infinite extent, the texture repeat and the reflection
+        A plane is treated as the ground when it is UNROTATED; anything tilted
+        or vertical is drawn as a thin oriented box of its declared
+        half-extents. The ground keeps the grid path because that is what
+        carries the infinite extent, the texture repeat and the reflection
         pass — a slab cannot stand in for it.
+
+        ⚠ ORIENTATION DECIDES, POSITION MUST NOT. This test also required the
+        plane to sit at x=y=0, and that was a REGRESSION (introduced with the
+        oriented-plane fix, `8f248290`): the running tracks of cheetah
+        (`pos="98 0 0"`), hopper (`pos="48 0 0"`) and walker (`pos="248 0 0"`)
+        are unrotated floors that are merely OFFSET, so they fell to the slab
+        path and rendered as flat white rectangles — `draw_box` takes a single
+        colour and cannot carry the `grid` material's texture. The position
+        test bought nothing even for the case it was added for: every wall and
+        backdrop in manipulator, stacker, point_mass and reacher is rotated, so
+        `upright` alone already excludes all of them. Verified by enumerating
+        every plane geom in the suite — exactly those three change class.
 
         ⚠ This is the RENDER half of a defect whose PHYSICS half is still open:
         the plane narrow phase also assumes every plane is a horizontal floor
@@ -1248,13 +1386,9 @@ struct ModelDefFromXML[
                 var upright = (
                     pqx == 0.0 and pqy == 0.0 and pqz == 0.0 and pqw == 1.0
                 )
-                var centred = (
-                    Self._rcd.geom_pos_x[i] == 0.0
-                    and Self._rcd.geom_pos_y[i] == 0.0
-                )
                 var hx = Self._rcd.geom_half_x[i]
                 var hy = Self._rcd.geom_half_y[i]
-                if not (upright and centred) and hx > 0.0 and hy > 0.0:
+                if not upright and hx > 0.0 and hy > 0.0:
                     # A wall, a ramp or a backdrop. Half-extents come straight
                     # from MJCF `size="x y spacing"`; a zero there means the
                     # plane is INFINITE along that axis and there is no slab to

@@ -58,6 +58,14 @@ from layout import Layout, LayoutTensor
 from ..types import _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JNT_BALL
 from .cholesky import chol_factor_inline, chol_solve_inline
+from .noslip import noslip_pyramidal
+
+# `mjModel.opt.noslip_tolerance`, MuJoCo's default. dm_control's dog does not
+# override it, and no ported model sets it, so it is a constant here rather
+# than another parameter threaded through five call sites. The moment a model
+# DOES set it, this must become one — the sweep stops on a different iteration
+# otherwise.
+comptime NOSLIP_TOLERANCE: Float64 = 1e-6
 from .primal import pyramidal_edge_forces, pyramidal_linesearch
 from ..constraints.contact_solve import (
     _init_common_normal_ws,
@@ -102,6 +110,7 @@ from ..gpu.constants import (
     CONTACT_IDX_FORCE_T1,
     CONTACT_IDX_FORCE_T2,
     META_IDX_NUM_CONTACTS,
+    MODEL_META_IDX_MEANINERTIA,
     MODEL_META_IDX_SOLREF_CONTACT_0,
     MODEL_META_IDX_SOLREF_CONTACT_1,
     MODEL_META_IDX_SOLIMP_CONTACT_0,
@@ -387,6 +396,7 @@ def _newton_solve_env[
     BATCH: Int,
     SOLVER_WS: Int,
     MAX_CONDIM: Int = 3,
+    NOSLIP_ITER: Int = 0,
 ](
     env: Int,
     qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
@@ -1162,6 +1172,55 @@ def _newton_solve_env[
                         jar[e_idx] = old_jar[e_idx]
                         force[e_idx] = old_force[e_idx]
                 break
+
+        # ── mj_solNoSlip ───────────────────────────────────────────────────
+        # A friction-only Gauss-Seidel sweep with the NORMAL forces frozen,
+        # run after the primal solve. Off unless the model asks for it
+        # (`<option noslip_iterations>`); dm_control's dog is the only in-scope
+        # model that does, and there it is first-order — 2.9e-2 of qvel on the
+        # first contacting step — not a rounding refinement.
+        #
+        # PYRAMIDAL path only, and that is not an oversight: this is the
+        # pyramidal branch of the solver, and `noslip.mojo` implements the
+        # matching branch of MuJoCo's routine. The elliptic path below does
+        # NOT call it, so an elliptic model with `noslip_iterations` set gets
+        # the pass silently skipped — which is exactly why `ModelDefFromXML`
+        # makes `noslip_iter > 0` a build error unless the model opts in.
+        comptime if NOSLIP_ITER > 0:
+            noslip_pyramidal[
+                DTYPE, NV, ME, V_SIZE, MC, MAX_CONTACTS, MAX_CONDIM,
+                BATCH, NOSLIP_ITER,
+            ](
+                env,
+                nc,
+                num_edges,
+                contacts,
+                m_inv,
+                Je,
+                bias_e,
+                kind_e,
+                R_e,
+                floss_e,
+                qacc_smooth,
+                # `scale` = 1 / (meaninertia * max(1, nv)) and `tolerance` =
+                # opt.noslip_tolerance. Both must be MuJoCo's or the sweep
+                # stops on a different iteration — see the note on
+                # MODEL_META_IDX_MEANINERTIA.
+                1.0
+                / (
+                    Float64(
+                        rebind[Scalar[DTYPE]](
+                            mmeta[MODEL_META_IDX_MEANINERTIA]
+                        )
+                    )
+                    * Float64(NV if NV > 1 else 1)
+                ),
+                NOSLIP_TOLERANCE,
+                qacc,
+                jar,
+                force,
+                qfrc,
+            )
 
         # Write qacc back
         for i in range(NV):
@@ -2159,6 +2218,7 @@ def _newton_solve_fields_kernel[
     BATCH: Int,
     SOLVER_WS: Int,
     MAX_CONDIM: Int = 3,
+    NOSLIP_ITER: Int = 0,
 ](
     qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
     qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
@@ -2231,6 +2291,7 @@ def _newton_solve_fields_kernel[
         BATCH,
         SOLVER_WS,
         MAX_CONDIM,
+        NOSLIP_ITER,
     ](
         env, qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
         bodies, mmeta, equality, tendons, sites, body_invweight0,
@@ -2255,6 +2316,7 @@ def solve_newton[
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     BATCH: Int = 1,
     MAX_CONDIM: Int = 3,
+    NOSLIP_ITER: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
@@ -2345,6 +2407,7 @@ def solve_newton[
                 BATCH,
                 SOLVER_WS,
                 MAX_CONDIM,
+                NOSLIP_ITER,
             ](
                 e, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, bw_v, dw_v,
@@ -2386,6 +2449,7 @@ def solve_newton[
                     BATCH,
                     SOLVER_WS,
                     MAX_CONDIM,
+                    NOSLIP_ITER,
                 ]
             ](
                 d.qpos.lt["gpu", L_QPOS](),
@@ -2443,6 +2507,7 @@ def _newton_blocked_fields_kernel[
     BATCH: Int,
     SOLVER_WS: Int,
     MAX_CONDIM: Int = 3,
+    NOSLIP_ITER: Int = 0,
 ](
     qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
     qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
@@ -3497,6 +3562,7 @@ def solve_newton_blocked[
     CONE_TYPE: Int = ConeType.PYRAMIDAL,
     BATCH: Int = 1,
     MAX_CONDIM: Int = 3,
+    NOSLIP_ITER: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
@@ -3572,6 +3638,7 @@ def solve_newton_blocked[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
                 NTENDON, NSITE, CONE_TYPE, BATCH, SOLVER_WS,
  MAX_CONDIM,
+ NOSLIP_ITER,
             ](
                 e, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
                 joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, bw_v, dw_v,
@@ -3584,6 +3651,7 @@ def solve_newton_blocked[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
                 NTENDON, NSITE, CONE_TYPE, BATCH, SOLVER_WS,
  MAX_CONDIM,
+ NOSLIP_ITER,
             ]
         ](
             d.qpos.lt["gpu", L_QPOS](),

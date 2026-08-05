@@ -121,12 +121,27 @@ struct Phyics3dEnv[
         Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0,
         Self.MODEL_DEF.CONE_TYPE, 1, SOLVER = Self.SOLVER,
     ]
+    # ⚠ `MAX_CONDIM` AND `NOSLIP_ITER` MUST BE FORWARDED FROM THE MODEL DEF.
+    # Both default to a value that silently disables the feature (3 and 0), and
+    # omitting them here does not fail — it just runs a different physics.
+    #
+    # That is not hypothetical: `MAX_CONDIM` was NOT forwarded until
+    # 2026-08-03, so every env built through this class ran the pyramidal edge
+    # builder at condim 3 no matter what its model declared. quadruped `fetch`
+    # (condim-6 ball) and dog (42 condim-6 teeth) were both affected, and the
+    # Phase 3 gate did not catch it because
+    # `test_rolling_friction_vs_mujoco.mojo` constructs the integrator
+    # DIRECTLY with `MAX_CONDIM=M.MAX_CONDIM` and never goes through
+    # `Phyics3dEnv`. A gate that bypasses the production path proves the
+    # production path works only by coincidence.
     comptime IntegEuler = EulerIntegrator[
         Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
         Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
         Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0,
         Self.MODEL_DEF.CONE_TYPE, 1, SOLVER = Self.SOLVER,
         RNE_POST = Self.CONFIG.RNE_POST,
+        MAX_CONDIM = Self.MODEL_DEF.MAX_CONDIM,
+        NOSLIP_ITER = Self.MODEL_DEF.NOSLIP_ITER,
     ]
     var integ_rk4: Self.IntegRK4
     var integ_euler: Self.IntegEuler
@@ -697,6 +712,16 @@ struct Phyics3dEnv[
         if not self._renderer_initialized:
             return
         self._renderer.value()[].request_free_camera()
+
+    def renderer_set_capture_scene_only(mut self, on: Bool) -> None:
+        """Whether screenshots and recordings exclude the reserved UI strip.
+
+        On by default: a capture of the environment is what these are for, and
+        the sidebar is a control surface, not part of the scene.
+        """
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].set_capture_scene_only(on)
 
     def renderer_set_show_hud(mut self, on: Bool) -> None:
         """Show or hide the built-in text HUD (keybinds, camera, step).

@@ -204,7 +204,7 @@ comptime JOINT_IDX_QPOS0: Int = 25  # Joint reference position (MuJoCo qpos0 / r
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 26
+comptime MODEL_META_SIZE: Int = 27
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -239,6 +239,18 @@ comptime MODEL_META_IDX_NEQUALITY: Int = 23  # Number of equality constraints
 # Fixed tendons
 comptime MODEL_META_IDX_NTENDON: Int = 24  # Number of fixed tendons
 comptime MODEL_META_IDX_NEXCLUDE: Int = 25  # Number of contact exclude pairs
+# `mjModel.stat.meaninertia` — the MEAN OF THE MASS-MATRIX DIAGONAL at qpos0,
+# armature included (`engine_setconst.c:1139-1146`):
+#
+#     meaninertia = (1/nv) * sum_i qM[dof_Madr[i]]
+#
+# Its only consumer is `mj_solNoSlip`'s convergence test, which scales the
+# per-iteration improvement by `1 / (meaninertia * max(1, nv))` before
+# comparing against `opt.noslip_tolerance`. Getting it wrong does not corrupt
+# the sweep, it changes WHEN the sweep stops — measured on dm_control's dog,
+# suppressing the early exit entirely moves a 120-step rollout by 2.2e-6 of
+# qvel, so the stopping rule is not something to approximate.
+comptime MODEL_META_IDX_MEANINERTIA: Int = 26
 
 
 # =============================================================================

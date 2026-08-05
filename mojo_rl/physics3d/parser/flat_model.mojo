@@ -116,6 +116,13 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
     var armature: Float64
     var damping: Float64
     var stiffness: Float64
+    # `<joint springdamper="timeconst dampratio">`. Both <= 0 means "absent",
+    # which is MuJoCo's own test (`AutoSpringDamper` skips the joint unless
+    # BOTH are strictly positive). When present, MuJoCo DERIVES `stiffness`
+    # and `damping` from the body's own inertia and OVERWRITES whatever the
+    # XML or the class said — see `_apply_auto_spring_damper`.
+    var springdamper_0: Float64
+    var springdamper_1: Float64
     var springref: Float64
     var frictionloss: Float64
     var ref_val: Float64  # MuJoCo joint ref (zero-position offset for qpos0)
@@ -152,6 +159,8 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
         armature: Float64 = 0.0,
         damping: Float64 = 0.0,
         stiffness: Float64 = 0.0,
+        springdamper_0: Float64 = 0.0,
+        springdamper_1: Float64 = 0.0,
         springref: Float64 = 0.0,
         frictionloss: Float64 = 0.0,
         ref_val: Float64 = 0.0,
@@ -180,6 +189,8 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
         self.armature = armature
         self.damping = damping
         self.stiffness = stiffness
+        self.springdamper_0 = springdamper_0
+        self.springdamper_1 = springdamper_1
         self.springref = springref
         self.frictionloss = frictionloss
         self.ref_val = ref_val
@@ -901,6 +912,8 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var joint_armature: Float64
     var joint_damping: Float64
     var joint_stiffness: Float64
+    var joint_springdamper_0: Float64
+    var joint_springdamper_1: Float64
     var joint_limited: Bool
     var joint_frictionloss: Float64
     var joint_springref: Float64
@@ -918,6 +931,13 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var geom_contype: Int
     var geom_conaffinity: Int
     var geom_condim: Int
+    # `<geom priority>` from a default CLASS. Read from the element
+    # itself since quadruped (whose ball spells it inline), but the
+    # class path was missing until dog — whose 42 teeth carry it
+    # only via `<default class="tooth_primitive">`, so every one of
+    # them resolved to priority 0 and lost its condim/friction/solref
+    # override against the floor.
+    var geom_priority: Int
     var geom_solref_0: Float64
     var geom_solref_1: Float64
     var geom_solimp_0: Float64
@@ -978,6 +998,8 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         joint_armature: Float64 = 0.0,
         joint_damping: Float64 = 0.0,
         joint_stiffness: Float64 = 0.0,
+        joint_springdamper_0: Float64 = 0.0,
+        joint_springdamper_1: Float64 = 0.0,
         joint_limited: Bool = False,
         joint_frictionloss: Float64 = 0.0,
         joint_springref: Float64 = 0.0,
@@ -995,6 +1017,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         geom_contype: Int = 1,
         geom_conaffinity: Int = 1,
         geom_condim: Int = 3,
+        geom_priority: Int = 0,
         geom_solref_0: Float64 = 0.02,
         geom_solref_1: Float64 = 1.0,
         geom_solimp_0: Float64 = 0.9,
@@ -1015,6 +1038,8 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.joint_armature = joint_armature
         self.joint_damping = joint_damping
         self.joint_stiffness = joint_stiffness
+        self.joint_springdamper_0 = joint_springdamper_0
+        self.joint_springdamper_1 = joint_springdamper_1
         self.joint_limited = joint_limited
         self.joint_frictionloss = joint_frictionloss
         self.joint_springref = joint_springref
@@ -1032,6 +1057,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.geom_contype = geom_contype
         self.geom_conaffinity = geom_conaffinity
         self.geom_condim = geom_condim
+        self.geom_priority = geom_priority
         self.geom_solref_0 = geom_solref_0
         self.geom_solref_1 = geom_solref_1
         self.geom_solimp_0 = geom_solimp_0
@@ -1076,8 +1102,34 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
 # NamedDefaultsList — named <default class="..."> blocks
 # =============================================================================
 
-# Maximum number of named default classes supported
-comptime MAX_NAMED_DEFAULTS: Int = 16
+# Maximum number of named default classes supported.
+#
+# Raised 16 -> 128 on 2026-08-03 for dm_control's dog, which declares 42.
+#
+# ⚠ THE OLD BOUND FAILED SILENTLY, AND IN THE WORST POSSIBLE WAY. `add()`
+# dropped anything past the cap without a word, and `find()` returns
+# `DefaultsData()` — MuJoCo's GLOBAL defaults — for a class it cannot find. So
+# an element naming a dropped class did not error and did not keep its
+# neighbours' values; it silently got the compiler defaults.
+#
+# On dog that meant, measured against MuJoCo:
+#
+#   geom condim   ours {1: 48, 3: 80, 6:  0}   MuJoCo {1: 81, 3: 5, 6: 42}
+#
+# i.e. 80 geoms sitting at the default of 3, including all 42 teeth, which
+# lost the `condim="6" priority="2" friction="0.5 0.01 0.01"` that
+# `<default class="tooth_primitive">` exists to give them. The same drop hit
+# the joint classes: `max|d(armature)| = 0.01` and `max|d(stiffness)| = 45`,
+# and a wrong armature propagates into `dof_invweight0` (3445x relative).
+#
+# ⚠ AND IT IS NOT SIMPLY "THE FIRST 16 SURVIVE". `_collect_named_defaults`
+# walks BREADTH-FIRST over a worklist, so every top-level class is registered
+# before any nested one. dog has more than 16 at the top level, so
+# `tooth_primitive` — nested one level inside `collision_primitive` — never
+# got in even though it is the sixth class in document order. A cap that
+# interacts with traversal order is not something to reason about; it is
+# something to make impossible, hence the raise in `add()` below.
+comptime MAX_NAMED_DEFAULTS: Int = 128
 
 
 struct NamedDefault(Copyable, ImplicitlyCopyable, Movable):
@@ -1107,11 +1159,30 @@ struct NamedDefaultsList(Copyable, ImplicitlyCopyable, Movable):
         )
         self.count = 0
 
-    def add(mut self, class_name: String, defaults: DefaultsData):
-        """Add a named default class."""
-        if self.count < MAX_NAMED_DEFAULTS:
-            self.items[self.count] = NamedDefault(class_name, defaults)
-            self.count += 1
+    def add(mut self, class_name: String, defaults: DefaultsData) raises:
+        """Add a named default class. RAISES rather than dropping silently.
+
+        The old `if self.count < MAX_NAMED_DEFAULTS` swallowed the overflow,
+        and because `find()` falls back to MuJoCo's global defaults the model
+        then built and simulated with the wrong constants. See the note on
+        `MAX_NAMED_DEFAULTS`.
+        """
+        if self.count >= MAX_NAMED_DEFAULTS:
+            raise Error(
+                String(
+                    "physics3d: more than ",
+                    MAX_NAMED_DEFAULTS,
+                    ' named <default class="..."> blocks (at "',
+                    class_name,
+                    '"). Raise MAX_NAMED_DEFAULTS in parser/flat_model.mojo.',
+                    " This used to drop the class silently, and every element",
+                    " naming it then took MuJoCo's global defaults instead of",
+                    " the class's — wrong condim, friction, armature and",
+                    " stiffness, with no diagnostic anywhere.",
+                )
+            )
+        self.items[self.count] = NamedDefault(class_name, defaults)
+        self.count += 1
 
     def find(self, class_name: String) -> DefaultsData:
         """Find defaults for a class name. Returns top-level defaults if not found.
@@ -1143,45 +1214,62 @@ struct ExcludeData(Copyable, ImplicitlyCopyable, Movable):
 # =============================================================================
 
 
-struct FlatModelDef[
-    NBODY: Int,
-    NJOINT: Int,
-    NQ: Int,
-    NV: Int,
-    NGEOM: Int,
-    NACT: Int,
-    NTEX: Int = 0,
-    NMAT: Int = 0,
-    NLIGHT: Int = 0,
-    NCAM: Int = 0,
-    NSITE: Int = 0,
-    NEQ: Int = 0,
-    NEXCLUDE: Int = 0,
-    NTENDON: Int = 0,
-](Movable):
-    """Model definition using flat InlineArrays — driven entirely from XML.
+struct FlatModelDef(Movable):
+    """Parsed MJCF model, in flat `List`s — the build-time intermediate.
 
-    Dimensions are supplied as comptime parameters (from parse_xml() output).
-    Data is stored in InlineArray[BodyData/JointData/GeomData/ActuatorData/...].
-    setup_model() uses regular for loops — no comptime if needed.
+    ⚠ NON-GENERIC BY DESIGN, as of 2026-08-05. This struct used to carry the
+    fourteen dimension parameters (`NBODY`, `NJOINT`, `NGEOM`, …) and store its
+    contents in `InlineArray`s sized by them, which forced `parse_xml_full` and
+    its eleven helpers to be generic too.
 
-    Optional visual-element arrays (NTEX, NMAT, NLIGHT, NCAM, NSITE) default to
-    0; the underlying InlineArray uses size+1 to satisfy the >0 requirement.
-    Access indices 0..N-1 only; index N is a sentinel and should be ignored.
+    THAT GENERICITY WAS INCIDENTAL AND IT WAS THE SINGLE LARGEST BUILD COST IN
+    THE TREE. The parser is a text scanner; none of its logic depends on a
+    dimension. But because the OUTPUT type was dimension-parameterized, every
+    distinct model instantiated a fresh copy of a ~2900-line function. Measured
+    (`docs/DM_CONTROL_PORT_PHASE2.md` §15):
+
+        parse_xml_full alone, at dm_control dog's dimensions   1961 s
+        init_fields total, same model                          2085 s
+        init_fields on a 2-body / 2-geom model                  344 s
+
+    i.e. 94% of a 35-minute build, and a ~6-minute floor paid by EVERY model in
+    the codebase. With `List` storage the parser compiles ONCE for the whole
+    program.
+
+    ⚠ THIS DOES NOT MAKE THE ENGINE RUNTIME-DIMENSIONED, and the two must not
+    be conflated. `FlatModelDef` is consumed exactly once, by
+    `fields_build.build_model_fields_from_flat`, which copies into the
+    COMPTIME-sized `fields.Model`. `Model`, `Data`, the integrators and the
+    solvers keep their comptime dimensions — that is the hot path, and its
+    genericity is deliberate (zero-cost indexing, GPU batching). See
+    `project_physics3d_runtime_dims_assessment` for that separate question.
+
+    ⚠ CAPACITY GUARDS ARE GONE, AND THAT IS AN IMPROVEMENT. The old code wrote
+    `if joint_count < NJOINT: result.joints[joint_count] = jd` and then
+    incremented the counter REGARDLESS, so a model with more elements than its
+    declared dimension silently dropped the overflow — the same shape as
+    `MAX_COMPTIME_TENDONS` and `MAX_NAMED_DEFAULTS`. A `List` cannot truncate;
+    instead `ModelDefFromXML.init_fields` now checks the resulting lengths
+    against the declared dimensions and RAISES on a mismatch, so a
+    `parse_xml` / `full_parser` disagreement is loud rather than silent.
+
+    Counts live in the `List`s themselves (`len(fmd.joints)`). `bodies` holds
+    NBODY-1 entries — the worldbody is body 0 in `Model` and is not stored here,
+    so a body with `Model` index `i` is `bodies[i - 1]`.
     """
 
-    var bodies: InlineArray[BodyData, Self.NBODY]
-    var joints: InlineArray[JointData, Self.NJOINT]
-    var geoms: InlineArray[GeomData, Self.NGEOM]
-    var actuators: InlineArray[ActuatorData, Self.NACT]
-    var textures: InlineArray[TextureData, Self.NTEX + 1]
-    var materials: InlineArray[MaterialData, Self.NMAT + 1]
-    var lights: InlineArray[LightData, Self.NLIGHT + 1]
-    var cameras: InlineArray[CameraData, Self.NCAM + 1]
-    var sites: InlineArray[SiteData, Self.NSITE + 1]
-    var equalities: InlineArray[EqualityData, Self.NEQ + 1]
-    var excludes: InlineArray[ExcludeData, Self.NEXCLUDE + 1]
-    var tendons: InlineArray[TendonData, Self.NTENDON + 1]
+    var bodies: List[BodyData]
+    var joints: List[JointData]
+    var geoms: List[GeomData]
+    var actuators: List[ActuatorData]
+    var textures: List[TextureData]
+    var materials: List[MaterialData]
+    var lights: List[LightData]
+    var cameras: List[CameraData]
+    var sites: List[SiteData]
+    var equalities: List[EqualityData]
+    var excludes: List[ExcludeData]
+    var tendons: List[TendonData]
     var gravity_x: Float64
     var gravity_y: Float64
     var gravity_z: Float64
@@ -1189,44 +1277,32 @@ struct FlatModelDef[
     var opt_density: Float64  # Fluid density (kg/m³), 0 = disabled
     var opt_viscosity: Float64  # Fluid dynamic viscosity (Pa·s), 0 = disabled
 
-    # Mesh assets: name → file path mapping (max 16 meshes)
-    var mesh_asset_names: InlineArray[String, 17]  # +1 sentinel
-    var mesh_asset_files: InlineArray[String, 17]
+    # Mesh assets: name → file path mapping.
+    var mesh_asset_names: List[String]
+    var mesh_asset_files: List[String]
     var num_mesh_assets: Int
 
     def __init__(out self):
-        self.bodies = InlineArray[BodyData, Self.NBODY](fill=BodyData())
-        self.joints = InlineArray[JointData, Self.NJOINT](fill=JointData())
-        self.geoms = InlineArray[GeomData, Self.NGEOM](fill=GeomData())
-        self.actuators = InlineArray[ActuatorData, Self.NACT](
-            fill=ActuatorData()
-        )
-        self.textures = InlineArray[TextureData, Self.NTEX + 1](
-            fill=TextureData()
-        )
-        self.materials = InlineArray[MaterialData, Self.NMAT + 1](
-            fill=MaterialData()
-        )
-        self.lights = InlineArray[LightData, Self.NLIGHT + 1](fill=LightData())
-        self.cameras = InlineArray[CameraData, Self.NCAM + 1](fill=CameraData())
-        self.sites = InlineArray[SiteData, Self.NSITE + 1](fill=SiteData())
-        self.equalities = InlineArray[EqualityData, Self.NEQ + 1](
-            fill=EqualityData()
-        )
-        self.excludes = InlineArray[ExcludeData, Self.NEXCLUDE + 1](
-            fill=ExcludeData()
-        )
-        self.tendons = InlineArray[TendonData, Self.NTENDON + 1](
-            fill=TendonData()
-        )
+        self.bodies = List[BodyData]()
+        self.joints = List[JointData]()
+        self.geoms = List[GeomData]()
+        self.actuators = List[ActuatorData]()
+        self.textures = List[TextureData]()
+        self.materials = List[MaterialData]()
+        self.lights = List[LightData]()
+        self.cameras = List[CameraData]()
+        self.sites = List[SiteData]()
+        self.equalities = List[EqualityData]()
+        self.excludes = List[ExcludeData]()
+        self.tendons = List[TendonData]()
         self.gravity_x = Float64(0)
         self.gravity_y = Float64(0)
         self.gravity_z = Float64(-9.81)
         self.timestep = Float64(0.01)
         self.opt_density = Float64(0)
         self.opt_viscosity = Float64(0)
-        self.mesh_asset_names = InlineArray[String, 17](fill=String(""))
-        self.mesh_asset_files = InlineArray[String, 17](fill=String(""))
+        self.mesh_asset_names = List[String]()
+        self.mesh_asset_files = List[String]()
         self.num_mesh_assets = 0
 
     # `setup_model` (FlatModelDef -> legacy CPU `Model`) was deleted at the

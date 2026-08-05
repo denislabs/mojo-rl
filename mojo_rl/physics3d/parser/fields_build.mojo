@@ -476,21 +476,17 @@ def _inertia_from_geoms_staging[
 
 def build_model_fields_from_flat[
     DTYPE: DType,
-    # FlatModelDef dims (parser)
+    # ⚠ THE FlatModelDef DIMS USED TO BE PARAMETERS HERE — all fourteen of
+    # them. They are gone: `FlatModelDef` is non-generic (List-backed) since
+    # 2026-08-05, so its counts come from the Lists themselves.
+    #
+    # What remains below is the MODEL side, and it is deliberate: these size
+    # `fields.Model`'s tensors, which are the hot path. Do not confuse the two
+    # — de-genericizing the PARSER did not make the ENGINE runtime-dimensioned.
+    NV: Int,
     NBODY: Int,
     NJOINT: Int,
-    NQ: Int,
-    NV: Int,
     NGEOM: Int,
-    NACT: Int,
-    NTEX: Int,
-    NMAT: Int,
-    NLIGHT: Int,
-    NCAM: Int,
-    NSITE_P: Int,
-    NEQ: Int,
-    NEXCLUDE_P: Int,
-    NTENDON_P: Int,
     # Model dims (record capacities)
     MAX_EQUALITY: Int,
     MAX_TENDON: Int,
@@ -503,22 +499,7 @@ def build_model_fields_from_flat[
     IGR_MAX: Int,
     SETTOTALMASS: Float64,
 ](
-    fmd: FlatModelDef[
-        NBODY,
-        NJOINT,
-        NQ,
-        NV,
-        NGEOM,
-        NACT,
-        NTEX,
-        NMAT,
-        NLIGHT,
-        NCAM,
-        NSITE_P,
-        NEQ,
-        NEXCLUDE_P,
-        NTENDON_P,
-    ],
+    fmd: FlatModelDef,
     mut mf: Model[
         DTYPE,
         NV,
@@ -546,7 +527,8 @@ def build_model_fields_from_flat[
     mf.meta.data[MODEL_META_IDX_VISCOSITY] = Scalar[DTYPE](fmd.opt_viscosity)
     mf.meta.data[MODEL_META_IDX_IMPRATIO] = Scalar[DTYPE](1.0)
     mf.meta.data[MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](
-        NEQ if NEQ < MAX_EQUALITY else MAX_EQUALITY
+        len(fmd.equalities) if len(fmd.equalities) < MAX_EQUALITY
+        else MAX_EQUALITY
     )
     # Honest tendon count. This used to be hardcoded 0, which made every
     # tendon record dead. `_tendon_env` treats a record as a BILATERAL
@@ -554,9 +536,10 @@ def build_model_fields_from_flat[
     # requires TENDON_IDX_IS_EQUALITY — humanoid declares two <fixed> tendons
     # that MuJoCo constrains in no way.
     mf.meta.data[MODEL_META_IDX_NTENDON] = Scalar[DTYPE](
-        NTENDON_P if NTENDON_P < MAX_TENDON else MAX_TENDON
+        len(fmd.tendons) if len(fmd.tendons) < MAX_TENDON
+        else MAX_TENDON
     )
-    mf.meta.data[MODEL_META_IDX_NEXCLUDE] = Scalar[DTYPE](NEXCLUDE_P)
+    mf.meta.data[MODEL_META_IDX_NEXCLUDE] = Scalar[DTYPE](len(fmd.excludes))
 
     # Contact solref/solimp: MuJoCo model defaults, then geom[0]'s parsed
     # values (floor / first worldbody geom inherits <default><geom>).
@@ -633,7 +616,7 @@ def build_model_fields_from_flat[
     body_iquat[3] = Scalar[DTYPE](1)
 
     # Bodies 1..NBODY-1 from fmd (legacy `set_body` semantics: unguarded 1/x).
-    for i in range(NBODY - 1):
+    for i in range(len(fmd.bodies)):
         var b = fmd.bodies[i]
         var bi = i + 1
         body_mass[bi] = Scalar[DTYPE](b.mass)
@@ -692,7 +675,7 @@ def build_model_fields_from_flat[
     # ── joints ───────────────────────────────────────────────────────────
     var qpos_adr = 0
     var dof_adr = 0
-    for j in range(NJOINT):
+    for j in range(len(fmd.joints)):
         var jd = fmd.joints[j]
         var o = j * MODEL_JOINT_SIZE
 
@@ -826,7 +809,7 @@ def build_model_fields_from_flat[
     # body_weldid: bodies with joints weld to themselves, jointless bodies
     # inherit the parent's weldid (MuJoCo convention).
     var body_has_joint = List[Bool](length=NBODY, fill=False)
-    for j in range(NJOINT):
+    for j in range(len(fmd.joints)):
         body_has_joint[fmd.joints[j].body_id] = True
     var body_weldid = List[Int](length=NBODY, fill=0)
     for bi in range(1, NBODY):
@@ -841,7 +824,7 @@ def build_model_fields_from_flat[
     # ── geoms (+ build-only mass/group staging for inertiafromgeom) ───────
     var geom_mass = List[Scalar[DTYPE]](length=NGEOM, fill=Scalar[DTYPE](0))
     var geom_group = List[Int](length=NGEOM, fill=0)
-    for i in range(NGEOM):
+    for i in range(len(fmd.geoms)):
         var gd = fmd.geoms[i]
         var o = i * MODEL_GEOM_SIZE
         mf.geoms.data[o + GEOM_IDX_TYPE] = Scalar[DTYPE](gd.geom_type)
@@ -929,7 +912,7 @@ def build_model_fields_from_flat[
     var mesh_vertnum = List[Int]()
     var num_meshes = 0
     var loaded_mesh_ids = List[Int](length=fmd.num_mesh_assets, fill=-1)
-    for i in range(NGEOM):
+    for i in range(len(fmd.geoms)):
         var gd = fmd.geoms[i]
         var o = i * MODEL_GEOM_SIZE
         if (
@@ -999,7 +982,7 @@ def build_model_fields_from_flat[
     # NTENDON_P == MAX_TENDON by construction (ModelDefFromXML passes
     # `max_tendon` for both), so this is a straight copy. INVWEIGHT0 is left
     # zero here and filled by the invweight pass, which needs FK at qpos0.
-    for i in range(NTENDON_P):
+    for i in range(len(fmd.tendons)):
         if i >= MAX_TENDON:
             break
         var td = fmd.tendons[i]
@@ -1075,7 +1058,7 @@ def build_model_fields_from_flat[
     # ── equality constraints (legacy add_connect/add_weld semantics:
     #    solimp[3]=0.5 / solimp[4]=2.0 hardcoded, parsed values dropped) ────
     var num_eq = 0
-    for i in range(NEQ):
+    for i in range(len(fmd.equalities)):
         if num_eq >= MAX_EQUALITY:
             break
         var ed = fmd.equalities[i]
@@ -1120,7 +1103,7 @@ def build_model_fields_from_flat[
     mf.meta.data[MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](num_eq)
 
     # ── contact exclusion pairs ────────────────────────────────────────────
-    for i in range(NEXCLUDE_P):
+    for i in range(len(fmd.excludes)):
         var ex = fmd.excludes[i]
         mf.excludes.data[i * 2 + 0] = Scalar[DTYPE](ex.body1)
         mf.excludes.data[i * 2 + 1] = Scalar[DTYPE](ex.body2)
@@ -1173,7 +1156,7 @@ def build_model_fields_from_flat[
                         )
 
     # ── body mass/inertia record write (post ifg/settotalmass) ────────────
-    for b in range(NBODY):
+    for b in range(len(fmd.bodies) + 1):
         var o = b * MODEL_BODY_SIZE
         mf.bodies.data[o + BODY_IDX_MASS] = body_mass[b]
         mf.bodies.data[o + BODY_IDX_INV_MASS] = body_inv_mass[b]
