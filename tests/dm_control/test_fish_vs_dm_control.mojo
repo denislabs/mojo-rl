@@ -91,8 +91,14 @@ comptime STATE_TOL: Float64 = 1e-8
 comptime OBS_TOL: Float64 = 1e-8
 comptime REWARD_TOL: Float64 = 1e-10
 
-# Our geom order is XML text order; the reference's is body order. Every check
-# below resolves the reference side BY NAME, in our order.
+# Every check below resolves the reference side BY NAME rather than by index.
+#
+# That was written when our geom order was XML TEXT order and the reference's
+# was body order; as of the element-order fix (2026-08-03) `full_parser` groups
+# by body id and the two agree, so the names are no longer papering over a
+# divergence. Kept anyway: name resolution is the stronger form — it survives a
+# model gaining a geom, which an index list does not — and it is why this file
+# needed no change when the order moved, while three sibling files did.
 def _geom_names() -> List[String]:
     return [
         String("ground"), String("eye"), String("mouth"),

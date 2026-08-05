@@ -128,17 +128,31 @@ comptime TOL_OBS: Float64 = 1e-9
 comptime TOL_TOUCH: Float64 = 1e-8
 
 
-# OUR site order is XML TEXT order; MuJoCo's is sorted by body id. The only
-# divergence is in the ARM, and it is the same one bring_ball has: `palm_touch`
-# is declared after the `pinch site` body but belongs to `hand`, so MuJoCo's
-# sort pulls it ahead of `pinch`. The peg's own sites do not move — `pommel`
-# has none — but that is asserted below rather than assumed.
+# OUR site order IS MuJoCo's, as of the element-order fix (2026-08-03).
+#
+# It used to diverge here: `palm_touch` is declared AFTER the `pinch site` body
+# but belongs to `hand`, so MuJoCo's body sort pulls it ahead of `pinch` while
+# our XML-text walk left it behind. This file carried a permutation swapping
+# sites 1 and 2 to paper over that — treating the divergence as a property of
+# the model to record rather than a bug to fix.
+#
+# It was a bug. The same text-vs-body ordering permutes JOINTS, and
+# `fields_build` derives `qpos_adr`/`dof_adr` as running counters over the
+# joint array, so the whole `qpos` layout went with it — which is how
+# dm_control's dog exposed it. `full_parser` now groups joints, geoms and sites
+# by body id (`_stable_group_by_body_*`), gated by
+# `tests/physics3d/test_element_order_vs_mujoco.mojo`.
+#
+# ⚠ THIS FILE WAS MISSED when the sibling permutations were removed, because
+# the sweep grepped for the HELPER in the three files that defined it and not
+# for the ASSERTIONS that consume it. It surfaced as `site_bodyid mismatch on
+# site 1` with every physics number still green (obs 2.1e-10, reward 1.8e-11).
+#
+# The identity is kept rather than deleted so the call sites still read
+# "our index -> MuJoCo's index", and so a future divergence has one obvious
+# place to be expressed.
 def _our_site_to_mj(ours: Int) -> Int:
-    """MuJoCo's site index for our site `ours` (only 1 and 2 swap)."""
-    if ours == 1:
-        return 2
-    if ours == 2:
-        return 1
+    """MuJoCo's site index for our site `ours` — now the identity."""
     return ours
 
 
@@ -276,8 +290,14 @@ def test_bring_peg_ordering_matches_mujoco() raises:
             String("MuJoCo geom order moved at ") + geom_names[i],
         )
 
+    # ⚠ THIS LIST IS IN MuJoCo's ORDER, which is now also ours: `palm_touch`
+    # is at 1 and `pinch` at 2. It was written the other way round, matching
+    # the XML text order our parser used to produce, and the swap lived in
+    # `_our_site_to_mj`. With that helper now the identity the LIST is what has
+    # to move — verified against the compiled reference, not reasoned about:
+    #   0 grasp (body 4) · 1 palm_touch (body 4) · 2 pinch (body 5) · ...
     var site_names = [
-        "grasp", "pinch", "palm_touch",
+        "grasp", "palm_touch", "pinch",
         "thumb_touch", "thumbtip_touch",
         "finger_touch", "fingertip_touch",
         "peg", "peg_pinch", "peg_grasp", "peg_tip",

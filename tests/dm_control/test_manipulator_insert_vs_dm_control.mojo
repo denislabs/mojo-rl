@@ -277,16 +277,24 @@ def test_insert_peg_model_matches_mujoco() raises:
             == Int(py=gref[g]),
             String("geom_bodyid mismatch on geom ") + String(g),
         )
+    # OUR site order IS MuJoCo's, as of the element-order fix (2026-08-03).
+    #
+    # This loop used to swap sites 1 and 2: `palm_touch` is declared AFTER the
+    # `pinch site` body but belongs to `hand`, so MuJoCo's body sort pulled it
+    # ahead of `pinch` while our XML-text walk left it behind. `full_parser`
+    # now groups joints, geoms and sites by body id
+    # (`_stable_group_by_body_*`), so the comparison is elementwise.
+    #
+    # ⚠ THE SWAP WAS WRITTEN INLINE HERE rather than through the
+    # `_our_site_to_mj` helper its sibling files use, which is exactly why the
+    # sweep that removed those missed this one — grepping for the helper name
+    # cannot find a workaround that was open-coded. It surfaced as
+    # `site_bodyid mismatch on site 1` with every physics number still green.
     var sref = mj.site_bodyid.tolist()
     for s in range(PNSITE):
-        var r = s
-        if s == 1:
-            r = 2
-        elif s == 2:
-            r = 1
         assert_true(
             Int(mf.sites.data[s * MODEL_SITE_SIZE + SITE_IDX_BODY])
-            == Int(py=sref[r]),
+            == Int(py=sref[s]),
             String("site_bodyid mismatch on site ") + String(s),
         )
     assert_true(
