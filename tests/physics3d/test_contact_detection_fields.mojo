@@ -52,7 +52,26 @@ comptime METADATA_SIZE_L = 4
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
 comptime GOLD_NCON = 10  # total contacts across both envs
-comptime GOLD_CON = 3390.603547532484  # order-sensitive contact-record checksum
+# ⚠ REFRESHED 2026-08-05, from 3390.603547532484, and NOT on faith.
+#
+# The element-order fix made `full_parser` group geoms by body as MuJoCo
+# numbers them. Geom indices moved, so the EMISSION ORDER of these 10 contacts
+# moved with them, and a deliberately order-sensitive checksum is exactly what
+# notices that. `GOLD_NCON` did not move: no contact appeared or vanished.
+#
+# This gate could not tell "reordered correctly" from "broken", because the
+# legacy kernels it was frozen against no longer exist — a golden with no live
+# reference only ever reports CHANGE. So the question was answered elsewhere
+# before this number was touched:
+# `tests/physics3d/test_walker2d_contacts_vs_mujoco.mojo` replays these same
+# two poses against MuJoCo and compares contact by contact, MATCHED BY POSITION
+# rather than sorted, so a right-set-wrong-order result fails it. Measured:
+# ncon 6/6 and 4/4, ZERO position-matched body-pair mismatches, dist 1.2e-7,
+# pos 7.6e-8, normal 0.0 (float32 FK round-off). Our order IS MuJoCo's.
+#
+# Read that file first if this ever moves again — it is the reference this one
+# lacks, and refreshing this constant without it is laundering.
+comptime GOLD_CON = 9501.98150853524  # order-sensitive contact-record checksum
 
 
 def main() raises:
