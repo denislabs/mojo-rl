@@ -196,6 +196,35 @@ struct StoreReplay[
             state.mb_r.data[k] = self.rew[row]
             state.mb_d.data[k] = self.dne[row]
 
+    def sample(
+        mut self,
+        n: Int,
+        mut s_out: List[Scalar[DT]],
+        mut a_out: List[Scalar[DT]],
+        mut r_out: List[Scalar[DT]],
+        mut sp_out: List[Scalar[DT]],
+        mut d_out: List[Scalar[DT]],
+        row_offset: Int = 0,
+    ) raises:
+        """Uniform draw into caller lists at `row_offset`.
+
+        MBPO's `DualSampleStep` stacks a real and a synthetic partition into
+        one minibatch by calling this twice with different offsets, so the raw
+        form is needed alongside `sample_into`.
+        """
+        var sampler = UniformSampler(self.size)
+        var batch = sampler.draw(n)
+        for k in range(n):
+            var row = Int(batch.host[k])
+            var dst = row_offset + k
+            for i in range(Self.OBS):
+                s_out[dst * Self.OBS + i] = self.obs[row * Self.OBS + i]
+                sp_out[dst * Self.OBS + i] = self.nxt[row * Self.OBS + i]
+            for j in range(Self.ACT):
+                a_out[dst * Self.ACT + j] = self.act[row * Self.ACT + j]
+            r_out[dst] = self.rew[row]
+            d_out[dst] = self.dne[row]
+
     def sample_into[
         BATCH: Int
     ](

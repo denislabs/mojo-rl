@@ -50,7 +50,7 @@ from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from .gpu_replay import _obs_quant, _obs_dequant
+from mojo_rl.data.quantize import _obs_quant, _obs_dequant
 from .sequence_replay_buffer import SequenceReplayBuffer
 
 

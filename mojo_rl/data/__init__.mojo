@@ -32,6 +32,7 @@ from .blocks import (
     StorePerSampleCpuStep, StoreUniformSampleCpuStep,
     StorePerSampleGpuStep, StoreUniformSampleGpuStep,
 )
+from .quantize import obs_dequant, obs_quant
 from .replay import StoreReplay
 from .replay_gpu import StoreReplayGpu
 from .sampler import (

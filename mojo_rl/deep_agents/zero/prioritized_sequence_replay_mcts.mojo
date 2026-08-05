@@ -48,7 +48,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.core.sum_tree import SumTree
 from .nstep_targets import compute_nstep_value_targets
-from ..data.gpu_replay import _obs_quant, _obs_dequant
+from mojo_rl.data.quantize import _obs_quant, _obs_dequant
 
 
 # Host→device store staging chunk (steps). Bounds the transient host uint8

@@ -1,7 +1,7 @@
 """DualSampleStep — MBPO mixed-batch sampler (CPU + GPU, dual storage).
 
 Owns BOTH a real replay buffer AND a synthetic replay buffer, and carries
-BOTH backends (host `CPUReplay` + device `Optional[GPUReplay]`) in one
+BOTH backends (host `StoreReplay` + device `Optional[StoreReplayGpu]`) in one
 struct so the MBPO trainer can hold a single concrete field type for both
 `train_target`s — sidestepping the "ternary over two struct types"
 limitation (a `T_gpu if cond else T_cpu` alias does not type-unify). Only
@@ -13,7 +13,7 @@ the documented nn target-unification pattern (see
 Each step gathers REAL_BS transitions from the real buffer into the first
 REAL_BS rows of `state.mb_*`, and SYNTH_BS from the synth buffer into the
 rest. On GPU the synth partition lands at the REAL_BS offset via non-owning
-`DeviceBuffer` views (`GPUReplay.sample[N]` gathers rows `[0, N)`).
+`DeviceBuffer` views (`StoreReplayGpu.sample[N]` gathers rows `[0, N)`).
 
 Real transitions arrive host-side via `real_add` (CPU: direct; GPU: H2D);
 synthetic transitions arrive host-side via `synth_add` (CPU rollout) or
@@ -23,8 +23,8 @@ device-batched via `synth_add_batch` (GPU rollout).
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
-from ...data.cpu_replay import CPUReplay
-from ...data.gpu_replay import GPUReplay
+from mojo_rl.data.replay import StoreReplay
+from mojo_rl.data.replay_gpu import StoreReplayGpu
 from ..trainer_block import TrainerState
 
 
@@ -41,10 +41,10 @@ struct DualSampleStep[
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_
 
-    var real_cpu: Optional[CPUReplay[Self.OBS, Self.ACT, Self.REAL_CAP]]
-    var synth_cpu: Optional[CPUReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP]]
-    var real_gpu: Optional[GPUReplay[Self.OBS, Self.ACT, Self.REAL_CAP]]
-    var synth_gpu: Optional[GPUReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP]]
+    var real_cpu: Optional[StoreReplay[Self.OBS, Self.ACT, Self.REAL_CAP, False]]
+    var synth_cpu: Optional[StoreReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP, False]]
+    var real_gpu: Optional[StoreReplayGpu[Self.OBS, Self.ACT, Self.REAL_CAP, False]]
+    var synth_gpu: Optional[StoreReplayGpu[Self.OBS, Self.ACT, Self.SYNTH_CAP, False]]
     var learning_starts: Int
 
     def __init__(out self):
@@ -58,14 +58,14 @@ struct DualSampleStep[
         mut self, learning_starts: Int, ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime if target == "cpu":
-            self.real_cpu = CPUReplay[Self.OBS, Self.ACT, Self.REAL_CAP].new()
-            self.synth_cpu = CPUReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP].new()
+            self.real_cpu = StoreReplay[Self.OBS, Self.ACT, Self.REAL_CAP, False].make()
+            self.synth_cpu = StoreReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP, False].make()
         else:
             var c = ctx.value()
-            self.real_gpu = GPUReplay[Self.OBS, Self.ACT, Self.REAL_CAP].new(
+            self.real_gpu = StoreReplayGpu[Self.OBS, Self.ACT, Self.REAL_CAP, False].make(
                 c, batch_capacity=Self.BATCH,
             )
-            self.synth_gpu = GPUReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP].new(
+            self.synth_gpu = StoreReplayGpu[Self.OBS, Self.ACT, Self.SYNTH_CAP, False].make(
                 c, batch_capacity=Self.BATCH,
             )
         self.learning_starts = learning_starts
@@ -93,8 +93,14 @@ struct DualSampleStep[
         reward: Scalar[DT],
         ref next_obs: List[Scalar[DT]],
         done: Scalar[DT],
-    ):
-        """CPU rollout synthetic store (host list)."""
+    ) raises:
+        """CPU rollout synthetic store (host list).
+
+        `raises` because `StoreReplay.add` does (the legacy `CPUReplay.add`
+        did not) — the trait already declares `add` as raising, so this is the
+        conformer catching up with its own trait rather than a new failure
+        mode.
+        """
         self.synth_cpu.value().add(obs, action, reward, next_obs, done)
 
     def synth_add_batch[

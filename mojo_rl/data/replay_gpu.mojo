@@ -41,41 +41,10 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.deep_agents.training.replay_buffer import ReplayBuffer
 from mojo_rl.deep_agents.training.trainer_block import TrainerState
+from .quantize import _obs_dequant, _obs_quant
 from .resident import IDX_DT
 from .sampler import UniformDeviceSampler
 
-
-
-# ── obs quantisation ──────────────────────────────────────────────────────
-#
-# Pixel replay stores obs as `uint8` rather than fp32: Pong frames are
-# 4x84x84 = 28224 elements, so at CAP=100k obs+next_obs is ~22.6 GB in fp32
-# against ~5.6 GB in uint8. Rainbow's CNN configs default to uint8 for exactly
-# that reason — it is a fit-in-VRAM question, not an optimisation.
-
-def _obs_quant[SDT: DType](x: Scalar[DT]) -> Scalar[SDT]:
-    """`DT` obs element -> storage dtype. `SDT == DT` is a pure rebind.
-    `uint8` stores `round(x*255)` clamped to [0,255] — exact for `k/255`
-    pixel inputs."""
-    comptime if SDT == DT:
-        return rebind[Scalar[SDT]](x)
-    else:
-        var v = x * Scalar[DT](255.0) + Scalar[DT](0.5)
-        if v < Scalar[DT](0.0):
-            v = Scalar[DT](0.0)
-        if v > Scalar[DT](255.0):
-            v = Scalar[DT](255.0)
-        return v.cast[SDT]()
-
-
-def _obs_dequant[SDT: DType](x: Scalar[SDT]) -> Scalar[DT]:
-    """Storage dtype -> `DT`. `uint8` divides by 255.0 — the same division the
-    pixel pipeline used to produce the stored value, so the round trip is
-    bit-identical for `k/255` inputs."""
-    comptime if SDT == DT:
-        return rebind[Scalar[DT]](x)
-    else:
-        return x.cast[DT]() / Scalar[DT](255.0)
 
 
 # ── kernels ───────────────────────────────────────────────────────────────
@@ -269,6 +238,40 @@ def _ere_indices_kernel[
     var idx = (Int(write_pos) - c + off + CAP) % CAP
     if idx < 0:
         idx = idx + CAP
+    indices[i] = Scalar[IDX_DT](idx)
+
+
+
+def _range_indices_kernel[
+    BATCH: Int
+](
+    indices: LayoutTensor[IDX_DT, Layout.row_major(BATCH), MutAnyOrigin],
+    lo: Int32,
+    hi: Int32,
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Uniform index in `[lo, hi)` — MBPO's dynamics train/holdout split.
+
+    Port of `gpu_replay.mojo::_sample_indices_range_kernel`. The range is a
+    host scalar, matching the legacy: that split is not CUDA-graph captured.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH:
+        return
+    var offset_base = rebind[UInt64](offset_buf[0])
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
+    var u = Float32(philox.step_uniform()[0])
+    var lo_i = Int(lo)
+    var hi_i = Int(hi)
+    var span = hi_i - lo_i
+    if span < 1:
+        span = 1
+    var idx = lo_i + Int(u * Float32(span))
+    if idx >= hi_i:
+        idx = hi_i - 1
+    if idx < lo_i:
+        idx = lo_i
     indices[i] = Scalar[IDX_DT](idx)
 
 
@@ -950,6 +953,99 @@ struct StoreReplayGpu[
             ctx.enqueue_function[_per_tree_propagate_kernel[Self.CAP]](
                 tree_lt, grid_dim=1, block_dim=TPB,
             )
+
+    def sample[
+        N: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mb_s: DeviceBuffer[DT],
+        mb_a: DeviceBuffer[DT],
+        mb_r: DeviceBuffer[DT],
+        mb_sp: DeviceBuffer[DT],
+        mb_d: DeviceBuffer[DT],
+    ) raises:
+        """Uniform draw into CALLER device buffers.
+
+        `sample_into` targets a `TrainerState`; MBPO needs the raw form for
+        its dynamics-model batches and rollout start states.
+        """
+        var idx_lt = LayoutTensor[IDX_DT, Layout.row_major(N)](self.idx_buf)
+        var size_lt = LayoutTensor[DType.int32, Layout.row_major(1)](
+            self.size_dev
+        )
+        var off_lt = LayoutTensor[DType.uint64, Layout.row_major(1)](
+            self.offset_dev
+        )
+        comptime nb = (N + TPB - 1) // TPB
+        ctx.enqueue_function[_uniform_indices_dev_kernel[N]](
+            idx_lt, size_lt, UInt64(0xC0FFEE_DECADE_0042), off_lt,
+            grid_dim=nb, block_dim=TPB,
+        )
+        ctx.enqueue_function[_incr_offset_kernel[N]](
+            off_lt, grid_dim=1, block_dim=1,
+        )
+        self._launch_gather[N](ctx, mb_s, mb_a, mb_r, mb_sp, mb_d)
+
+    def sample_range[
+        N: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        lo: Int,
+        hi: Int,
+        mb_s: DeviceBuffer[DT],
+        mb_a: DeviceBuffer[DT],
+        mb_r: DeviceBuffer[DT],
+        mb_sp: DeviceBuffer[DT],
+        mb_d: DeviceBuffer[DT],
+    ) raises:
+        """Uniform draw restricted to rows `[lo, hi)` — MBPO's dynamics
+        train/holdout split."""
+        var idx_lt = LayoutTensor[IDX_DT, Layout.row_major(N)](self.idx_buf)
+        var off_lt = LayoutTensor[DType.uint64, Layout.row_major(1)](
+            self.offset_dev
+        )
+        comptime nb = (N + TPB - 1) // TPB
+        ctx.enqueue_function[_range_indices_kernel[N]](
+            idx_lt, Int32(lo), Int32(hi),
+            UInt64(0xC0FFEE_DECADE_0042), off_lt,
+            grid_dim=nb, block_dim=TPB,
+        )
+        ctx.enqueue_function[_incr_offset_kernel[N]](
+            off_lt, grid_dim=1, block_dim=1,
+        )
+        self._launch_gather[N](ctx, mb_s, mb_a, mb_r, mb_sp, mb_d)
+
+    def _launch_gather[
+        N: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mb_s: DeviceBuffer[DT],
+        mb_a: DeviceBuffer[DT],
+        mb_r: DeviceBuffer[DT],
+        mb_sp: DeviceBuffer[DT],
+        mb_d: DeviceBuffer[DT],
+    ) raises:
+        comptime nbg = (N * Self.OBS + TPB - 1) // TPB
+        comptime kern = _gather_batch_kernel[
+            N, Self.OBS, Self.ACT, Self.CAP, Self.SDT
+        ]
+        ctx.enqueue_function[kern](
+            LayoutTensor[DT, Layout.row_major(N, Self.OBS)](mb_s),
+            LayoutTensor[DT, Layout.row_major(N, Self.ACT)](mb_a),
+            LayoutTensor[DT, Layout.row_major(N)](mb_r),
+            LayoutTensor[DT, Layout.row_major(N, Self.OBS)](mb_sp),
+            LayoutTensor[DT, Layout.row_major(N)](mb_d),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.obs),
+            LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](self.act),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.nxt),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne),
+            LayoutTensor[IDX_DT, Layout.row_major(N)](self.idx_buf),
+            grid_dim=nbg, block_dim=TPB,
+        )
 
     def configure_ere(
         mut self,
