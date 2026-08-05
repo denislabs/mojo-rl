@@ -41,6 +41,7 @@ from .sampler import (
     UniformDeviceSampler,
     UniformSampler,
 )
+from .windowed import WindowedColumn, WindowSampler
 from .store import (
     DEFAULT_CHUNK_ROWS,
     DEFAULT_MAX_RESIDENT_BYTES,
