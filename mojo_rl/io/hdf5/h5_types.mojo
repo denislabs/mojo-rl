@@ -40,12 +40,33 @@ comptime H5F_ACC_SWMR_READ = UInt32(0x0040)
 """Open file in single-writer-multiple-reader read mode (safe for
 concurrent reads while another process writes)."""
 
+comptime H5F_ACC_TRUNC = UInt32(0x0002)
+"""Create file, overwriting it if it already exists."""
+
+comptime H5F_ACC_EXCL = UInt32(0x0004)
+"""Create file, failing if it already exists."""
+
 
 # ── H5P default property list ────────────────────────────────────────────────
 
 comptime H5P_DEFAULT = hid_t(0)
 """Sentinel hid_t for "use default property list" — accepted everywhere
 the HDF5 C API takes a property list argument."""
+
+
+# ── H5S unlimited-extent sentinel ────────────────────────────────────────────
+
+comptime H5S_UNLIMITED = hsize_t(0xFFFF_FFFF_FFFF_FFFF)
+"""``(hsize_t)(-1)`` — a maxdims entry meaning "this axis grows without
+bound". A dataset with any unlimited axis MUST be chunked (H5Pset_chunk),
+which is what makes append-during-collection possible."""
+
+
+# ── H5D_layout_t (dataset storage layout) ────────────────────────────────────
+
+comptime H5D_COMPACT = c_int(0)
+comptime H5D_CONTIGUOUS = c_int(1)
+comptime H5D_CHUNKED = c_int(2)
 
 
 # ── H5T_class_t (datatype class) ─────────────────────────────────────────────

@@ -33,6 +33,7 @@ from .h5_types import (
 )
 from .h5d import h5d_close, h5d_get_space, h5d_get_type, h5d_open2, h5d_read
 from .h5f import h5f_close, h5f_open
+from .h5l import list_link_names
 from .h5pl import h5pl_prepend
 from .h5s import (
     h5s_close,
@@ -87,6 +88,21 @@ struct H5File(Movable):
                 _ = h5f_close(self.file_id)
             except:
                 pass
+
+    def dataset_names(self) raises -> List[String]:
+        """Top-level link names in the file, in name order.
+
+        The entry point for ingesting a file we did not write: enumerate, then
+        `open_dataset` each to recover its shape and dtype.
+        """
+        return list_link_names(self.file_id)
+
+    def has_dataset(self, name: String) raises -> Bool:
+        var names = self.dataset_names()
+        for i in range(len(names)):
+            if names[i] == name:
+                return True
+        return False
 
     def open_dataset(self, var name: String) raises -> H5Dataset:
         """Open a dataset by path within the file (e.g. ``"pixels"``)."""

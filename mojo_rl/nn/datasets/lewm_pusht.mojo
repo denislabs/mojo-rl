@@ -8,16 +8,27 @@ subsequent loads are pure-Mojo via the libhdf5 FFI in ``mojo_rl/io/hdf5``.
 
 Schema (from ``stable_worldmodel.data.formats.hdf5``):
 
-================ ===========  =========================  =============================
-Dataset          Dtype        Shape                      Notes
-================ ===========  =========================  =============================
-``ep_len``       int32        ``(N_ep,)``                episode lengths
-``ep_offset``    int64        ``(N_ep,)``                start index in flat storage
-``pixels``       uint8        ``(N_total, H, W, 3)``     HWC; we deliver permuted CHW
-``action``       float32      ``(N_total, A)``           A=2 for PushT
-``proprio``      float32      ``(N_total, P)``           P=2 for PushT (agent xy)
-``state``        float32      ``(N_total, S)``           S=5 for PushT
-================ ===========  =========================  =============================
+Schema as MEASURED from the cached `pusht_expert_train.h5` (2026-08-05):
+N_total = 2_336_736 frames over N_ep = 18_685 episodes.
+
+================ ===========  ============================  ==========================
+Dataset          Dtype        Shape                         Notes
+================ ===========  ============================  ==========================
+``ep_len``       int32        ``(N_ep,)``                   episode lengths
+``ep_offset``    int64        ``(N_ep,)``                   start index in flat storage
+``pixels``       uint8        ``(N_total, 224, 224, 3)``    HWC; we deliver permuted CHW
+``action``       float32      ``(N_total, 2)``
+``proprio``      float32      ``(N_total, 4)``
+``state``        float32      ``(N_total, 7)``
+``episode_idx``  int64        ``(N_total,)``                unused here
+``step_idx``     int64        ``(N_total,)``                unused here
+================ ===========  ============================  ==========================
+
+⚠ An earlier version of this table claimed P=2 / S=5 and omitted
+``episode_idx`` / ``step_idx``. The loader was never wrong — it reads every
+dimension from the file (see ``__init__``: ``dims[1]`` for action/proprio/state)
+— but the documented shapes were. Corrected after ``mojo_rl.data``'s foreign
+ingest enumerated the real file.
 
 Sampling matches ``stable_worldmodel.data.dataset.Dataset.__getitem__``
 exactly:
