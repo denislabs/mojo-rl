@@ -28,6 +28,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, CPU_SIMD_W
 from ..core.tensor import Tensor, TensorImpl
+from ..core.polyak import polyak_tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import Param, ParamVisitor
@@ -548,3 +549,33 @@ struct LayerNorm[DIM_: Int, ADT: DType = DT](Module):
 
     # for_each_param / zero_grad inherit the Module reflection defaults
     # (core/walkers.mojo auto-discovers the Param fields).
+
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self,
+        mut src: Self,
+        tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """Soft-update the affine params toward `src`.
+
+        ⚠⚠ This override was MISSING, and `Module.polyak_from` defaults to a
+        NO-OP. Any online/target pair containing a `LayerNorm` therefore copied
+        its `Linear` weights every Polyak step and left the target's
+        `gamma`/`beta` frozen at their init forever, while the online ones
+        drifted. Nothing raises; the target net is simply evaluated with a
+        different output scale than the online net, which is exactly the kind
+        of mis-scaled bootstrap that reads as a plausible loss curve.
+
+        Found via an FB run whose backward net ends in `LayerNorm[D]`: the
+        online gain had reached ~1.2 while the target's was still 1.0. Same
+        family as the zero-series promotion bug where `hard_copy` missed
+        BatchNorm.
+        """
+        polyak_tensor[target, Self.DIM_](
+            self.gamma.val, src.gamma.val, tau, ctx
+        )
+        polyak_tensor[target, Self.DIM_](
+            self.beta.val, src.beta.val, tau, ctx
+        )

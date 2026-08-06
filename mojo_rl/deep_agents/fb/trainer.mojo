@@ -83,6 +83,9 @@ from mojo_rl.nn.core.tensor_pack import TensorPack
 from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.core.initializer import Initializer, Xavier
 from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.core.checkpoint import (
+    CheckpointWriter, CheckpointReader, _split_lines,
+)
 
 from ..core.online_target_pair import OnlineTargetPair
 from .loss import (
@@ -711,6 +714,76 @@ struct FBTrainer[
         )
         self.opt_actor.step[T](self.actor.online, c)
         return loss
+
+    # ── checkpoint ───────────────────────────────────────────────────────
+
+    def save_state(mut self, path: String) raises:
+        """Write B, both F twins and the actor into ONE `storage-ckpt` file.
+
+        ⚠ Only the ONLINE nets. The targets are EMA copies that re-converge
+        within a few thousand Polyak steps, and Adam moments re-warm — neither
+        is worth the file size. A resume is therefore not bit-identical, which
+        is fine for a 2 M-step run and would not be for a parity gate.
+
+        ⚠⚠ Call this PERIODICALLY, not only at the end. The first version of
+        the M2 run script trained for 2 M steps and exited without saving
+        anything: hours of GPU time producing a log file and no weights.
+        """
+        var w = CheckpointWriter(save_moments=False)
+        w.mode = 0
+        self.bnet.online.for_each_param[Self.TARGET](w, self.ctx, "b")
+        self.f1.online.for_each_param[Self.TARGET](w, self.ctx, "f1")
+        self.f2.online.for_each_param[Self.TARGET](w, self.ctx, "f2")
+        self.actor.online.for_each_param[Self.TARGET](w, self.ctx, "actor")
+        w.mode = 1
+        self.bnet.online.for_each_state[Self.TARGET](w, self.ctx, "b")
+        self.f1.online.for_each_state[Self.TARGET](w, self.ctx, "f1")
+        self.f2.online.for_each_state[Self.TARGET](w, self.ctx, "f2")
+        self.actor.online.for_each_state[Self.TARGET](w, self.ctx, "actor")
+        with open(path, "w") as f:
+            f.write(w.content)
+
+    def load_state(mut self, path: String) raises:
+        """Restore the online nets and HARD-COPY them onto the targets.
+
+        Without the hard copy the targets stay at their random init while the
+        online nets are trained, and the first bootstrapped target is garbage —
+        a resume that silently undoes part of the run it is resuming.
+        """
+        var content: String
+        with open(path, "r") as f:
+            content = String(f.read())
+        var lines = _split_lines(content)
+        # The `storage-ckpt vN` header is not a section; the reader expects the
+        # first line to BE one, so strip it. (`CheckpointWriter` emits it.)
+        var body = List[String]()
+        for li in range(len(lines)):
+            if lines[li].startswith("storage-ckpt"):
+                continue
+            body.append(lines[li])
+        var r = CheckpointReader(body^)
+        r.mode = 0
+        self.bnet.online.for_each_param[Self.TARGET](r, self.ctx, "b")
+        self.f1.online.for_each_param[Self.TARGET](r, self.ctx, "f1")
+        self.f2.online.for_each_param[Self.TARGET](r, self.ctx, "f2")
+        self.actor.online.for_each_param[Self.TARGET](r, self.ctx, "actor")
+        r.mode = 1
+        self.bnet.online.for_each_state[Self.TARGET](r, self.ctx, "b")
+        self.f1.online.for_each_state[Self.TARGET](r, self.ctx, "f1")
+        self.f2.online.for_each_state[Self.TARGET](r, self.ctx, "f2")
+        self.actor.online.for_each_state[Self.TARGET](r, self.ctx, "actor")
+        self.bnet.target_net.polyak_from[Self.TARGET](
+            self.bnet.online, Scalar[DT](1.0), self.ctx
+        )
+        self.f1.target_net.polyak_from[Self.TARGET](
+            self.f1.online, Scalar[DT](1.0), self.ctx
+        )
+        self.f2.target_net.polyak_from[Self.TARGET](
+            self.f2.online, Scalar[DT](1.0), self.ctx
+        )
+        self.actor.target_net.polyak_from[Self.TARGET](
+            self.actor.online, Scalar[DT](1.0), self.ctx
+        )
 
     # ── inference ────────────────────────────────────────────────────────
 

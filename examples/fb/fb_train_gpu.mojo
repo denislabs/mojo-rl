@@ -66,6 +66,8 @@ comptime BATCH: Int = 1024
 comptime HID: Int = 1024
 comptime TRAIN_STEPS: Int = 2_000_000
 comptime LOG_EVERY: Int = 2000   # see the want_loss note in the header
+comptime CKPT_EVERY: Int = 50_000
+comptime CKPT_PATH: StaticString = "/tmp/fb_walker_d128.ckpt"
 comptime SEED: Int = 20260805
 
 comptime F_IN = OBS + NACT + D
@@ -225,10 +227,22 @@ def main() raises:
                 "   step", step, " measure", l.measure, " ortho", l.ortho,
                 " actor", l.actor, " |B|", l.b_norm,
             )
-            # ⚠ TWO failure modes, both silent in the measure loss:
-            #   |B| -> 0        the collapse L_ortho exists to prevent
-            #   ortho POSITIVE and growing   B running away from orthonormal
-            # A healthy run has ortho NEGATIVE (order -1 .. -10) and |B|
-            # steady. The measure loss descends either way, so it tells you
-            # nothing on its own.
-    print("[3] done.")
+            # ⚠ Read TRENDS, not signs. With `LayerNorm[D]` on B, ||B|| is
+            # pinned near sqrt(D) = 11.3 (observed ~13.6 once the learned gain
+            # settles), and at that scale `E[(B·B+)^2]` (~||B||^4) outweighs
+            # `-2E[||B||^2]`, so a POSITIVE ortho is the constrained optimum —
+            # not a failure. An earlier version of this comment demanded a
+            # NEGATIVE ortho, which was read off M1's UNNORMALISED B where
+            # ||B|| ~ 1.9; that criterion does not transfer.
+            #
+            # The two real failure modes:
+            #   |B| -> 0                  collapse; L_ortho exists to stop it
+            #   ortho GROWING without bound   B running away from orthonormal
+            # Measured healthy here: measure ~-70 flat, |B| 13.5-14.5 flat,
+            # ortho oscillating 16-140 with no trend, over 54 k steps.
+            # The measure loss descends in every case, so it diagnoses none.
+        if step > 0 and (step % CKPT_EVERY) == 0:
+            t.save_state(String(CKPT_PATH))
+            print("      checkpoint ->", CKPT_PATH, "at step", step)
+    t.save_state(String(CKPT_PATH))
+    print("[3] done. final checkpoint ->", CKPT_PATH)
