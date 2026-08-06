@@ -2384,6 +2384,23 @@ def parse_xml(xml: String) -> ParsedModel:
 
 
 comptime MAX_COMPTIME_TENDONS: Int = 16
+
+# Joint wraps per FIXED tendon, and per actuator transmission (a joint
+# transmission is the degenerate one-wrap case).
+#
+# ⚠ THIS WAS A BARE `4` AND IT SILENTLY TRUNCATED. dm_control's dog wraps 11
+# and 10 joints on `caudal_extend` / `caudal_bend` — its tail — so those two
+# actuators drove a THIRD of the joints they should, while the parse wrote
+# `tendon_trn_n = 4` and every consumer read a complete tendon. Six of dog's
+# eight tendons wrap exactly 4, which is why nothing noticed.
+#
+# The third silent truncation of this shape in the dm_control arc, after
+# `MAX_COMPTIME_TENDONS` (8 -> 16) and `MAX_NAMED_DEFAULTS` (16 -> 128). Per
+# section 4.3 of `docs/DM_CONTROL_PORT_PHASE2.md`, WIDENING IS THE EASY HALF:
+# `ComptimeActData.tendon_wrap_overflow` counts what would not fit and
+# `ModelDefFromXML.init_fields` RAISES on it, so the next model to outgrow
+# this fails to build instead of running wrong.
+comptime MAX_COMPTIME_TENDON_WRAPS: Int = 16
 """Cap on `<fixed>` tendons the comptime parser records (quadruped needs 12)."""
 
 comptime MAX_COMPTIME_MATERIALS: Int = 32
@@ -2581,9 +2598,9 @@ struct ComptimeActData(Copyable, Movable):
     var bad_actuator: Int
     var bad_actuator_code: Int
     var motor_trn_n: InlineArray[Int, MAX_COMPTIME_ACTUATORS]
-    var motor_trn_qadr: InlineArray[Int, MAX_COMPTIME_ACTUATORS * 4]  # 32 actuators x 4 triples
-    var motor_trn_dadr: InlineArray[Int, MAX_COMPTIME_ACTUATORS * 4]
-    var motor_trn_coef: InlineArray[Float64, MAX_COMPTIME_ACTUATORS * 4]
+    var motor_trn_qadr: InlineArray[Int, MAX_COMPTIME_ACTUATORS * MAX_COMPTIME_TENDON_WRAPS]
+    var motor_trn_dadr: InlineArray[Int, MAX_COMPTIME_ACTUATORS * MAX_COMPTIME_TENDON_WRAPS]
+    var motor_trn_coef: InlineArray[Float64, MAX_COMPTIME_ACTUATORS * MAX_COMPTIME_TENDON_WRAPS]
     # ── Fixed-tendon springs (`<fixed stiffness="..."/>`) ────────────────────
     #
     # MuJoCo's tendon spring (engine_passive.c, "tendon-level spring-dampers")
@@ -2607,10 +2624,14 @@ struct ComptimeActData(Copyable, Movable):
     var tendon_stiffness: InlineArray[Float64, MAX_COMPTIME_TENDONS]
     var tendon_spring_lo: InlineArray[Float64, MAX_COMPTIME_TENDONS]
     var tendon_spring_hi: InlineArray[Float64, MAX_COMPTIME_TENDONS]
+    # How many joint wraps did NOT fit in MAX_COMPTIME_TENDON_WRAPS, for the
+    # worst tendon. Zero on every well-sized model; `init_fields` RAISES when
+    # it is not — the half of a cap that actually prevents bugs.
+    var tendon_wrap_overflow: Int
     var tendon_trn_n: InlineArray[Int, MAX_COMPTIME_TENDONS]
-    var tendon_trn_qadr: InlineArray[Int, MAX_COMPTIME_TENDONS * 4]
-    var tendon_trn_dadr: InlineArray[Int, MAX_COMPTIME_TENDONS * 4]
-    var tendon_trn_coef: InlineArray[Float64, MAX_COMPTIME_TENDONS * 4]
+    var tendon_trn_qadr: InlineArray[Int, MAX_COMPTIME_TENDONS * MAX_COMPTIME_TENDON_WRAPS]
+    var tendon_trn_dadr: InlineArray[Int, MAX_COMPTIME_TENDONS * MAX_COMPTIME_TENDON_WRAPS]
+    var tendon_trn_coef: InlineArray[Float64, MAX_COMPTIME_TENDONS * MAX_COMPTIME_TENDON_WRAPS]
     var ntendon: Int
     var joint_is_limited: InlineArray[Bool, MAX_COMPTIME_JOINTS]
     var joint_qpos_adr: InlineArray[Int, MAX_COMPTIME_JOINTS]
@@ -2641,9 +2662,9 @@ struct ComptimeActData(Copyable, Movable):
         self.bad_actuator = -1
         self.bad_actuator_code = -1
         self.motor_trn_n = InlineArray[Int, MAX_COMPTIME_ACTUATORS](fill=0)
-        self.motor_trn_qadr = InlineArray[Int, MAX_COMPTIME_ACTUATORS * 4](fill=-1)
-        self.motor_trn_dadr = InlineArray[Int, MAX_COMPTIME_ACTUATORS * 4](fill=-1)
-        self.motor_trn_coef = InlineArray[Float64, MAX_COMPTIME_ACTUATORS * 4](fill=0.0)
+        self.motor_trn_qadr = InlineArray[Int, MAX_COMPTIME_ACTUATORS * MAX_COMPTIME_TENDON_WRAPS](fill=-1)
+        self.motor_trn_dadr = InlineArray[Int, MAX_COMPTIME_ACTUATORS * MAX_COMPTIME_TENDON_WRAPS](fill=-1)
+        self.motor_trn_coef = InlineArray[Float64, MAX_COMPTIME_ACTUATORS * MAX_COMPTIME_TENDON_WRAPS](fill=0.0)
         self.tendon_stiffness = InlineArray[Float64, MAX_COMPTIME_TENDONS](
             fill=0.0
         )
@@ -2653,14 +2674,15 @@ struct ComptimeActData(Copyable, Movable):
         self.tendon_spring_hi = InlineArray[Float64, MAX_COMPTIME_TENDONS](
             fill=0.0
         )
+        self.tendon_wrap_overflow = 0
         self.tendon_trn_n = InlineArray[Int, MAX_COMPTIME_TENDONS](fill=0)
-        self.tendon_trn_qadr = InlineArray[Int, MAX_COMPTIME_TENDONS * 4](
+        self.tendon_trn_qadr = InlineArray[Int, MAX_COMPTIME_TENDONS * MAX_COMPTIME_TENDON_WRAPS](
             fill=-1
         )
-        self.tendon_trn_dadr = InlineArray[Int, MAX_COMPTIME_TENDONS * 4](
+        self.tendon_trn_dadr = InlineArray[Int, MAX_COMPTIME_TENDONS * MAX_COMPTIME_TENDON_WRAPS](
             fill=-1
         )
-        self.tendon_trn_coef = InlineArray[Float64, MAX_COMPTIME_TENDONS * 4](
+        self.tendon_trn_coef = InlineArray[Float64, MAX_COMPTIME_TENDONS * MAX_COMPTIME_TENDON_WRAPS](
             fill=0.0
         )
         self.ntendon = 0
@@ -2689,9 +2711,9 @@ struct ComptimeActData(Copyable, Movable):
         self.bad_actuator = copy.bad_actuator
         self.bad_actuator_code = copy.bad_actuator_code
         self.motor_trn_n = InlineArray[Int, MAX_COMPTIME_ACTUATORS](fill=0)
-        self.motor_trn_qadr = InlineArray[Int, MAX_COMPTIME_ACTUATORS * 4](fill=-1)
-        self.motor_trn_dadr = InlineArray[Int, MAX_COMPTIME_ACTUATORS * 4](fill=-1)
-        self.motor_trn_coef = InlineArray[Float64, MAX_COMPTIME_ACTUATORS * 4](fill=0.0)
+        self.motor_trn_qadr = InlineArray[Int, MAX_COMPTIME_ACTUATORS * MAX_COMPTIME_TENDON_WRAPS](fill=-1)
+        self.motor_trn_dadr = InlineArray[Int, MAX_COMPTIME_ACTUATORS * MAX_COMPTIME_TENDON_WRAPS](fill=-1)
+        self.motor_trn_coef = InlineArray[Float64, MAX_COMPTIME_ACTUATORS * MAX_COMPTIME_TENDON_WRAPS](fill=0.0)
         self.tendon_stiffness = InlineArray[Float64, MAX_COMPTIME_TENDONS](
             fill=0.0
         )
@@ -2701,14 +2723,17 @@ struct ComptimeActData(Copyable, Movable):
         self.tendon_spring_hi = InlineArray[Float64, MAX_COMPTIME_TENDONS](
             fill=0.0
         )
+        # ⚠ CARRY IT. Resetting to 0 in the copy ctor would lose the overflow
+        # precisely when the data is copied, which is how a cap diagnostic dies.
+        self.tendon_wrap_overflow = copy.tendon_wrap_overflow
         self.tendon_trn_n = InlineArray[Int, MAX_COMPTIME_TENDONS](fill=0)
-        self.tendon_trn_qadr = InlineArray[Int, MAX_COMPTIME_TENDONS * 4](
+        self.tendon_trn_qadr = InlineArray[Int, MAX_COMPTIME_TENDONS * MAX_COMPTIME_TENDON_WRAPS](
             fill=-1
         )
-        self.tendon_trn_dadr = InlineArray[Int, MAX_COMPTIME_TENDONS * 4](
+        self.tendon_trn_dadr = InlineArray[Int, MAX_COMPTIME_TENDONS * MAX_COMPTIME_TENDON_WRAPS](
             fill=-1
         )
-        self.tendon_trn_coef = InlineArray[Float64, MAX_COMPTIME_TENDONS * 4](
+        self.tendon_trn_coef = InlineArray[Float64, MAX_COMPTIME_TENDONS * MAX_COMPTIME_TENDON_WRAPS](
             fill=0.0
         )
         self.ntendon = copy.ntendon
@@ -2739,7 +2764,7 @@ struct ComptimeActData(Copyable, Movable):
             self.joint_qpos_adr[i] = copy.joint_qpos_adr[i]
             self.joint_range_min[i] = copy.joint_range_min[i]
             self.joint_range_max[i] = copy.joint_range_max[i]
-        for i in range(MAX_COMPTIME_ACTUATORS * 4):
+        for i in range(MAX_COMPTIME_ACTUATORS * MAX_COMPTIME_TENDON_WRAPS):
             self.motor_trn_qadr[i] = copy.motor_trn_qadr[i]
             self.motor_trn_dadr[i] = copy.motor_trn_dadr[i]
             self.motor_trn_coef[i] = copy.motor_trn_coef[i]
@@ -2748,7 +2773,7 @@ struct ComptimeActData(Copyable, Movable):
             self.tendon_spring_lo[i] = copy.tendon_spring_lo[i]
             self.tendon_spring_hi[i] = copy.tendon_spring_hi[i]
             self.tendon_trn_n[i] = copy.tendon_trn_n[i]
-        for i in range(MAX_COMPTIME_TENDONS * 4):
+        for i in range(MAX_COMPTIME_TENDONS * MAX_COMPTIME_TENDON_WRAPS):
             self.tendon_trn_qadr[i] = copy.tendon_trn_qadr[i]
             self.tendon_trn_dadr[i] = copy.tendon_trn_dadr[i]
             self.tendon_trn_coef[i] = copy.tendon_trn_coef[i]
@@ -2775,6 +2800,7 @@ struct ComptimeActData(Copyable, Movable):
         self.tendon_stiffness = move.tendon_stiffness^
         self.tendon_spring_lo = move.tendon_spring_lo^
         self.tendon_spring_hi = move.tendon_spring_hi^
+        self.tendon_wrap_overflow = move.tendon_wrap_overflow
         self.tendon_trn_n = move.tendon_trn_n^
         self.tendon_trn_qadr = move.tendon_trn_qadr^
         self.tendon_trn_dadr = move.tendon_trn_dadr^
@@ -3069,7 +3095,11 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
             var jscan = 0
             var n = 0
             var length0 = Float64(0)
-            while n < 4:
+            # ⚠ COUNT WHAT DOES NOT FIT. The bound used to be a bare `4` and
+            # the loop simply stopped, writing `tendon_trn_n = 4` so every
+            # consumer read a complete tendon. Overflow is now recorded and
+            # `init_fields` raises on it — see `MAX_COMPTIME_TENDON_WRAPS`.
+            while n < MAX_COMPTIME_TENDON_WRAPS:
                 var jt = body.find("<joint", jscan)
                 if jt == -1:
                     break
@@ -3080,17 +3110,32 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
                 var jn = _trim(_extract_attr(jtag, "joint"))
                 var cf = _extract_attr(jtag, "coef")
                 var coef = _parse_float(cf) if cf.byte_length() > 0 else 1.0
-                data.tendon_trn_qadr[ti * 4 + n] = _xml_find_joint_qpos_adr(
+                data.tendon_trn_qadr[ti * MAX_COMPTIME_TENDON_WRAPS + n] = _xml_find_joint_qpos_adr(
                     xml_clean, jn
                 )
-                data.tendon_trn_dadr[ti * 4 + n] = _xml_find_joint_dof_adr(
+                data.tendon_trn_dadr[ti * MAX_COMPTIME_TENDON_WRAPS + n] = _xml_find_joint_dof_adr(
                     xml_clean, jn
                 )
-                data.tendon_trn_coef[ti * 4 + n] = coef
+                data.tendon_trn_coef[ti * MAX_COMPTIME_TENDON_WRAPS + n] = coef
                 length0 += coef * _xml_find_joint_ref(xml_clean, jn, deg_factor)
                 n += 1
                 jscan = jte + 1
             data.tendon_trn_n[ti] = n
+            # Keep scanning past the cap purely to size the overflow, so the
+            # diagnostic can say HOW MANY were dropped rather than just that
+            # some were.
+            var extra = 0
+            while True:
+                var jt2 = body.find("<joint", jscan)
+                if jt2 == -1:
+                    break
+                var jte2 = body.find(">", jt2)
+                if jte2 == -1:
+                    break
+                extra += 1
+                jscan = jte2 + 1
+            if extra > data.tendon_wrap_overflow:
+                data.tendon_wrap_overflow = extra
 
             # `springlength`: one value sets both bounds, two set the band.
             # ABSENT is the common case and is NOT zero — MuJoCo's compiler
@@ -3275,9 +3320,9 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
             var qadr = _xml_find_joint_qpos_adr(xml_clean, jname)
             data.motor_dof_adr[act_count] = dadr
             if dadr >= 0:
-                data.motor_trn_qadr[act_count * 4] = qadr
-                data.motor_trn_dadr[act_count * 4] = dadr
-                data.motor_trn_coef[act_count * 4] = 1.0
+                data.motor_trn_qadr[act_count * MAX_COMPTIME_TENDON_WRAPS] = qadr
+                data.motor_trn_dadr[act_count * MAX_COMPTIME_TENDON_WRAPS] = dadr
+                data.motor_trn_coef[act_count * MAX_COMPTIME_TENDON_WRAPS] = 1.0
                 data.motor_trn_n[act_count] = 1
         elif tname.byte_length() > 0:
             for ti in range(len(ten_names)):
@@ -3285,18 +3330,18 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
                     continue
                 var n = data.tendon_trn_n[ti]
                 for k in range(n):
-                    data.motor_trn_qadr[act_count * 4 + k] = (
-                        data.tendon_trn_qadr[ti * 4 + k]
+                    data.motor_trn_qadr[act_count * MAX_COMPTIME_TENDON_WRAPS + k] = (
+                        data.tendon_trn_qadr[ti * MAX_COMPTIME_TENDON_WRAPS + k]
                     )
-                    data.motor_trn_dadr[act_count * 4 + k] = (
-                        data.tendon_trn_dadr[ti * 4 + k]
+                    data.motor_trn_dadr[act_count * MAX_COMPTIME_TENDON_WRAPS + k] = (
+                        data.tendon_trn_dadr[ti * MAX_COMPTIME_TENDON_WRAPS + k]
                     )
-                    data.motor_trn_coef[act_count * 4 + k] = (
-                        data.tendon_trn_coef[ti * 4 + k]
+                    data.motor_trn_coef[act_count * MAX_COMPTIME_TENDON_WRAPS + k] = (
+                        data.tendon_trn_coef[ti * MAX_COMPTIME_TENDON_WRAPS + k]
                     )
                 data.motor_trn_n[act_count] = n
                 if n > 0:
-                    data.motor_dof_adr[act_count] = data.tendon_trn_dadr[ti * 4]
+                    data.motor_dof_adr[act_count] = data.tendon_trn_dadr[ti * MAX_COMPTIME_TENDON_WRAPS]
                 break
 
         act_count += 1

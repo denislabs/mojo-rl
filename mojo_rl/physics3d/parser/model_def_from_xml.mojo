@@ -60,6 +60,7 @@ from .flat_model import (
 from .full_parser import parse_xml_full
 from .xml_parser import (
     MAX_COMPTIME_TENDONS,
+    MAX_COMPTIME_TENDON_WRAPS,
     MAX_COMPTIME_ACTUATORS,
     MAX_COMPTIME_JOINTS,
     MAX_COMPTIME_MATERIALS,
@@ -407,9 +408,9 @@ struct ModelDefFromXML[
                 var length = Float64(0)
                 var vel = Float64(0)
                 for k in range(n):
-                    var qadr = Self._acd.motor_trn_qadr[i * 4 + k]
-                    var dadr = Self._acd.motor_trn_dadr[i * 4 + k]
-                    var coef = Self._acd.motor_trn_coef[i * 4 + k]
+                    var qadr = Self._acd.motor_trn_qadr[i * MAX_COMPTIME_TENDON_WRAPS + k]
+                    var dadr = Self._acd.motor_trn_dadr[i * MAX_COMPTIME_TENDON_WRAPS + k]
+                    var coef = Self._acd.motor_trn_coef[i * MAX_COMPTIME_TENDON_WRAPS + k]
                     if qadr >= 0 and qadr < Self.NQ:
                         length += coef * Float64(d.qpos.data[qadr])
                     if dadr >= 0 and dadr < Self.NV:
@@ -425,11 +426,11 @@ struct ModelDefFromXML[
                 )
 
             for k in range(n):
-                var dadr = Self._acd.motor_trn_dadr[i * 4 + k]
+                var dadr = Self._acd.motor_trn_dadr[i * MAX_COMPTIME_TENDON_WRAPS + k]
                 if dadr < 0 or dadr >= Self.NV:
                     continue
                 d.qfrc.data[dadr] += Scalar[DTYPE](
-                    gear * Self._acd.motor_trn_coef[i * 4 + k] * force
+                    gear * Self._acd.motor_trn_coef[i * MAX_COMPTIME_TENDON_WRAPS + k] * force
                 )
 
             # mjDYN_FILTER, integrated by Euler exactly as `nextActivation`
@@ -456,10 +457,10 @@ struct ModelDefFromXML[
                 continue
             var length = Float64(0)
             for k in range(n):
-                var qadr = Self._acd.tendon_trn_qadr[t * 4 + k]
+                var qadr = Self._acd.tendon_trn_qadr[t * MAX_COMPTIME_TENDON_WRAPS + k]
                 if qadr >= 0 and qadr < Self.NQ:
                     length += (
-                        Self._acd.tendon_trn_coef[t * 4 + k]
+                        Self._acd.tendon_trn_coef[t * MAX_COMPTIME_TENDON_WRAPS + k]
                         * Float64(d.qpos.data[qadr])
                     )
             var lo = Self._acd.tendon_spring_lo[t]
@@ -472,11 +473,11 @@ struct ModelDefFromXML[
             if frc == 0.0:
                 continue
             for k in range(n):
-                var dadr = Self._acd.tendon_trn_dadr[t * 4 + k]
+                var dadr = Self._acd.tendon_trn_dadr[t * MAX_COMPTIME_TENDON_WRAPS + k]
                 if dadr < 0 or dadr >= Self.NV:
                     continue
                 d.qfrc.data[dadr] += Scalar[DTYPE](
-                    Self._acd.tendon_trn_coef[t * 4 + k] * frc
+                    Self._acd.tendon_trn_coef[t * MAX_COMPTIME_TENDON_WRAPS + k] * frc
                 )
 
     # =========================================================================
@@ -562,6 +563,27 @@ struct ModelDefFromXML[
                     " nsite=", Self.NSITE, ", full_parser found ",
                     len(fmd.sites), ". Sensors are addressed BY SITE INDEX, so",
                     " a mismatch here reads the wrong sensor.",
+                )
+            )
+
+        # ⚠ A TENDON THAT OUTGREW `MAX_COMPTIME_TENDON_WRAPS` MUST NOT BUILD.
+        # The wrap loop used to stop at a bare 4 and write `tendon_trn_n = 4`,
+        # so a longer tendon looked complete to every consumer. dm_control's
+        # dog wraps 11 and 10 joints on its tail tendons, and drove a third of
+        # them. Section 4.3 of the port plan is explicit that widening a cap is
+        # the easy half and the assert is the load-bearing one — this is that
+        # assert, and it is why the parse counts the overflow instead of
+        # discarding it.
+        comptime _acd_wrap = materialize[Self._acd]()
+        if _acd_wrap.tendon_wrap_overflow > 0:
+            raise Error(
+                String(
+                    "physics3d: a fixed tendon wraps more joints than",
+                    " MAX_COMPTIME_TENDON_WRAPS=", MAX_COMPTIME_TENDON_WRAPS,
+                    " (overflow ", _acd_wrap.tendon_wrap_overflow,
+                    " on the worst tendon). Raise the cap in xml_parser.mojo;",
+                    " it is NOT safe to truncate — the actuator would drive a",
+                    " subset of the joints and every gate would still pass.",
                 )
             )
 
