@@ -41,7 +41,7 @@ Same elements, re-tiled → bit-identical.
 Obs storage dtype (`OBS_STORE_DT_`, default `DT` — bit-identical): set
 `DType.uint8` for pixel obs to quantize on store / dequantize on sample
 (4× window capacity; lossless for exact `k/255` inputs; pixel-only —
-see gpu_replay.mojo).
+see `mojo_rl/data/quantize.mojo`).
 """
 
 from std.gpu import block_dim, block_idx, thread_idx

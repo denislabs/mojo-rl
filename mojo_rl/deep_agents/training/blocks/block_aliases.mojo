@@ -3,7 +3,9 @@
 Repointing these eight aliases migrated ~40 call sites in one edit, because
 every consumer imports the ALIAS, not the buffer type. Safe to do wholesale
 only because all five legacy policies (CPU uniform/PER, GPU uniform/ERE/PER)
-are gated bit-identical — see `tests/data/test_replay*_parity.mojo`.
+were gated bit-identical against those buffers before they were deleted — the
+surviving gates are `tests/data/test_replay_seam.mojo`,
+`tests/data/test_replay_gpu_seam.mojo` and `tests/data/test_sampler_golden.mojo`.
 
 ⚠ These 4-arg aliases never exposed `OBS_STORE_DT`, so the uint8-obs pixel
 replay path does NOT go through here; it names the buffer types directly in

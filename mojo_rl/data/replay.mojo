@@ -42,8 +42,11 @@ struct StoreReplay[
     """Ring storage + a pluggable index policy.
 
     `PRIORITIZED=False` reproduces `CPUReplay`; `PRIORITIZED=True` reproduces
-    `CPUPrioritizedReplay`. Both are gated bit-identical in
-    `tests/data/test_replay_parity.mojo`.
+    `CPUPrioritizedReplay`. Both were gated bit-identical against those buffers
+    before they were deleted; the surviving gate is
+    `tests/data/test_replay_seam.mojo` (minibatches through the real
+    `ReplaySampleStep`, ring wraparound, post-priority-update draw), over the
+    index sequences pinned in `tests/data/test_sampler_golden.mojo`.
     """
 
     comptime OBS = Self.OBS_

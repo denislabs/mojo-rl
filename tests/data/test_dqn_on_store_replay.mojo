@@ -6,7 +6,8 @@ migration for an algorithm, because DQNAgent/DQNTrainer take
 `SAMPLE: SampleBlock` as a compile-time parameter and `ReplaySampleStep` is
 generic over any `ReplayBuffer`.
 
-`test_replay_parity.mojo` already proves the minibatches are bit-identical;
+`test_replay_seam.mojo` (successor to `test_replay_parity.mojo`, which was
+retired with the legacy buffers) already proves the minibatches themselves;
 this proves the seam survives a real training loop (setup, warmup gating,
 add, sample, train_step, eval).
 

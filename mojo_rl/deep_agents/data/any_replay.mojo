@@ -36,7 +36,7 @@ struct AnyReplay[
 ](ReplayBuffer):
     """`OBS_STORE_DT_` (default `DT` — no behaviour change) selects the
     GPU backend's obs storage dtype; `DType.uint8` is the pixel-obs
-    capacity option (see gpu_replay.mojo). CPU backend ignores it
+    capacity option (see `mojo_rl/data/quantize.mojo`). CPU backend ignores it
     (pixel training is GPU-resident)."""
 
     comptime OBS = Self.OBS_

@@ -27,7 +27,7 @@ from mojo_rl.nn.constants import DT
 from .nstep_targets import compute_nstep_value_targets
 # Same quantize/dequantize helpers the GPU replays use: `SDT == DT` is a pure
 # rebind; `uint8` stores `round(x·255)` and reads back `k/255` — bit-lossless
-# for the `k/255` pixel pipeline (see data/gpu_replay.mojo).
+# for the `k/255` pixel pipeline (see `mojo_rl/data/quantize.mojo`).
 from mojo_rl.data.quantize import _obs_quant, _obs_dequant
 
 

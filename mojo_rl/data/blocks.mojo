@@ -14,8 +14,11 @@ than per-algorithm-internals.
     # after
     from mojo_rl.data.blocks import StoreUniformSampleCpuStep
 
-Both produce bit-identical minibatches under the same seed — gated by
-`tests/data/test_replay_parity.mojo`.
+Both produce bit-identical minibatches under the same seed. That was gated
+against the legacy buffers until they were deleted; the surviving gates are
+`tests/data/test_replay_seam.mojo` (CPU) and
+`tests/data/test_replay_gpu_seam.mojo` (device uniform / ERE / PER / uint8 /
+`add_batch`), over the goldens in `tests/data/test_sampler_golden.mojo`.
 
 ⚠ Note the argument order matches the legacy aliases exactly
 (`OBS, ACT, BATCH, CAP`) so a swap is a one-token edit, not a re-ordering.

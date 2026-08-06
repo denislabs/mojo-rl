@@ -12,8 +12,10 @@ policy emits an `IndexBatch` and `ResidentColumn.gather_*` consumes it, so
 adding PER costs one policy rather than N buffers.
 
 **These are ports, not redesigns.** Each policy reproduces its legacy
-counterpart's index sequence bit-for-bit under a fixed seed, gated by
-`tests/data/test_sampler_parity.mojo`. A sampler that is subtly *differently*
+counterpart's index sequence bit-for-bit under a fixed seed. That was gated
+against the legacy buffers directly until they were deleted; the sequences were
+captured as goldens first, so the gate is now
+`tests/data/test_sampler_golden.mojo`. A sampler that is subtly *differently*
 random still trains — just worse, and only visibly so several algorithms
 later. So the arithmetic below is copied deliberately, including its clamps:
 
