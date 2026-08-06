@@ -905,49 +905,29 @@ def _find_body_index_by_name(worldbody: String, body_name: String) -> Int:
 
 
 def _find_joint_index_by_name(worldbody: String, joint_name: String) -> Int:
-    """Return 0-based index of first <joint name="joint_name"> in DFS order, or -1.
+    """0-based index of `<joint name="joint_name">` in MuJoCo order, or -1.
+
+    ⚠ WAS A PLAIN TEXT COUNT, WHICH IS THE WRONG ORDER. `_fill_model` ends by
+    grouping `result.joints` by body (`_stable_group_by_body_joints`), and this
+    lookup runs AFTER that — so a text ordinal indexed a permuted array. See
+    `_index_by_name_grouped`.
     """
-    var search_name = 'name="' + joint_name + '"'
-    var count = 0
-    var scan_pos = 0
-    var searching = True
-    while searching:
-        var joint_pos = worldbody.find("<joint", scan_pos)
-        if joint_pos == -1:
-            return -1
-        var tag_end = worldbody.find(">", joint_pos)
-        if tag_end == -1:
-            return -1
-        var tag = String(worldbody[byte = joint_pos : tag_end + 1])
-        if tag.find(search_name) != -1:
-            return count
-        count += 1
-        scan_pos = tag_end + 1
-    return -1
+    return _index_by_name_grouped(worldbody, "<joint", joint_name)
 
 
 def _find_site_index_by_name(worldbody: String, site_name: String) -> Int:
-    """Return 0-based index of <site name="site_name"> in DFS order, or -1.
+    """0-based index of `<site name="site_name">` in MuJoCo order, or -1.
 
-    Site indices are assigned by `_fill_model`'s worldbody walk in exactly
-    this order, so counting `<site` tags here reproduces them. Added for
-    `<spatial>` tendons, whose waypoints are named site references.
+    Added for `<spatial>` tendons, whose waypoints are named site references.
+
+    ⚠ THE OLD DOCSTRING'S CLAIM WAS TRUE WHEN WRITTEN AND STOPPED BEING TRUE.
+    It said site indices "are assigned by `_fill_model`'s worldbody walk in
+    exactly this order, so counting `<site` tags here reproduces them" — and
+    then `_stable_group_by_body_sites` was added to the end of that same walk
+    and nobody came back to this. A comment asserting agreement with another
+    function is a claim with a shelf life.
     """
-    var search_name = 'name="' + site_name + '"'
-    var count = 0
-    var scan_pos = 0
-    while True:
-        var site_pos = worldbody.find("<site", scan_pos)
-        if site_pos == -1:
-            return -1
-        var tag_end = worldbody.find(">", site_pos)
-        if tag_end == -1:
-            return -1
-        var tag = String(worldbody[byte = site_pos : tag_end + 1])
-        if tag.find(search_name) != -1:
-            return count
-        count += 1
-        scan_pos = tag_end + 1
+    return _index_by_name_grouped(worldbody, "<site", site_name)
 
 
 def _count_joints_with_type(xml: String, joint_type: String) -> Int:
@@ -2945,6 +2925,79 @@ def _xml_joint_adr_grouped(xml: String, jname: String, want_qpos: Bool) -> Int:
     return adr
 
 
+def _index_by_name_grouped(worldbody: String, marker: String, name: String) -> Int:
+    """Ordinal of the named element in MuJoCo's ELEMENT order, or -1.
+
+    The index twin of `_xml_joint_adr_grouped`: same body-grouping rule, but it
+    returns a position in the element array rather than a qpos/dof address.
+    MuJoCo emits `<joint>`s and `<site>`s grouped by body — all of body 0's,
+    then body 1's, declaration order preserved inside each — so counting tags
+    in raw text order is only right when every body declares its own elements
+    BEFORE its nested `<body>` children.
+
+    ⚠ `<worldbody>`'s OWN sites belong to body 0 and therefore come FIRST,
+    ahead of every site declared inside a body, however early in the text those
+    world-level sites appear. That is the whole of the finger / manipulator /
+    stacker divergence: their `target` and `palm_touch` sites move.
+
+    ⚠ SCANS `marker` ONLY, mirroring what the array builder scans. `_fill_model`
+    looks for `"<joint"` and nothing else, so this must too — `<freejoint>` is
+    already rewritten to `<joint type="free">` by `merge_mjcf` before either is
+    reached, and adding a second marker here would number joints DIFFERENTLY
+    from the array being indexed. A resolver has to mirror its builder, not
+    MuJoCo.
+    """
+    var n = worldbody.byte_length()
+    var ebody = List[Int]()
+    var target = -1
+    var pos = 0
+    var next_body = 0
+    var cur = 0  # the world body
+    var stack = List[Int]()
+    while pos < n:
+        var t_open = _find_tag(worldbody, "<body", pos)
+        var t_elem = _find_tag(worldbody, marker, pos)
+        var t_close = worldbody.find("</body", pos)
+        var t = _min_valid_pos(_min_valid_pos(t_open, t_elem), t_close)
+        if t == -1:
+            break
+        var tag_end = worldbody.find(">", t)
+        if tag_end == -1:
+            break
+        if t == t_close:
+            if len(stack) > 0:
+                cur = stack.pop()
+            else:
+                cur = 0
+        elif t == t_open:
+            # The id is consumed even by a childless body, or later siblings
+            # would be numbered as though it had never existed.
+            next_body += 1
+            var self_closed = (
+                tag_end >= 1
+                and String(worldbody[byte = tag_end - 1 : tag_end]) == "/"
+            )
+            if not self_closed:
+                stack.append(cur)
+                cur = next_body
+        else:
+            var tag = String(worldbody[byte = t : tag_end + 1])
+            if target < 0 and _trim(_extract_attr(tag, "name")) == name:
+                target = len(ebody)
+            ebody.append(cur)
+        pos = tag_end + 1
+
+    if target < 0:
+        return -1
+
+    var idx = 0
+    var tbody = ebody[target]
+    for i in range(len(ebody)):
+        if ebody[i] < tbody or (ebody[i] == tbody and i < target):
+            idx += 1
+    return idx
+
+
 def _min_valid_pos(a: Int, b: Int) -> Int:
     """The smaller of two find() results, ignoring -1."""
     if a == -1:
@@ -4337,21 +4390,14 @@ def _rcd_find_site_index_by_name(worldbody: String, name: String) -> Int:
     site. This runs only for the handful of `site="..."` references a
     `<spatial>` tendon actually makes — two, for ball_in_cup — so models
     without tendons pay nothing at all.
+
+    ⚠ BODY-GROUPED, NOT TEXT ORDER. `sten_sites` indexes the site array that
+    `full_parser` builds and then groups by body, so this had the same defect
+    as its `full_parser` twin. Inert until now only because ball_in_cup is the
+    one model with a `<spatial>` tendon and its site order happens to match;
+    finger, manipulator and stacker have the permutation and no spatial tendon.
     """
-    var pos = 0
-    var idx = 0
-    while True:
-        var t = worldbody.find("<site", pos)
-        if t == -1:
-            return -1
-        var tag_end = worldbody.find(">", t)
-        if tag_end == -1:
-            return -1
-        var tag = String(worldbody[byte = t : tag_end + 1])
-        if _trim(_extract_attr(tag, "name")) == name:
-            return idx
-        idx += 1
-        pos = tag_end + 1
+    return _index_by_name_grouped(worldbody, "<site", name)
 
 
 def _rcd_tex_mark_from_str(s: String) -> Int:
