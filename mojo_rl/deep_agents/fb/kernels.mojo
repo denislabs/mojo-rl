@@ -65,6 +65,27 @@ def gather_rows_kernel[ROW_DIM: Int, BATCH: Int](
     dst[t] = src[Int(idx[i]) * ROW_DIM + d]
 
 
+def gather_idx_kernel[BATCH: Int](
+    table: UnsafePointer[Scalar[IDX_DT], MutAnyOrigin],
+    idx: UnsafePointer[Scalar[IDX_DT], MutAnyOrigin],
+    dst: UnsafePointer[Scalar[IDX_DT], MutAnyOrigin],
+):
+    """`dst[i] = table[idx[i]]` — remaps sampled rows through a lookup.
+
+    Used for the `s'` indices: a precomputed `next_row` table encodes the
+    episode boundaries, so `s'` is never the first row of the FOLLOWING
+    episode. Doing it as a table lookup keeps the boundary logic on the host
+    where it is written once, and off the hot path entirely.
+
+    Separate from `gather_rows_kernel` because the index dtype is `IDX_DT`,
+    not `DT`: routing indices through the float gather would lose exactness
+    above 2^24 rows, which a 10 M-row dataset is not far from.
+    """
+    var i = Int(global_idx.x)
+    if i < BATCH:
+        dst[i] = table[Int(idx[i])]
+
+
 def pack3_kernel[A_DIM: Int, B_DIM: Int, C_DIM: Int, BATCH: Int](
     a: UnsafePointer[Scalar[DT], MutAnyOrigin],
     b: UnsafePointer[Scalar[DT], MutAnyOrigin],

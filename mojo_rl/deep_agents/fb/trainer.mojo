@@ -442,6 +442,30 @@ struct FBTrainer[
         ensure_t[T](self.bz, Self._ND, c)
         self._sized = True
 
+    def ensure_sized(mut self) raises:
+        """Allocate the owned batch + scratch without running a step.
+
+        A GPU caller gathers straight into `bs`/`ba`/`bsn`/`bsp`/`bz`, so it
+        needs them sized first. It cannot get there via `load_batch` — passing
+        `self`'s own fields to a `mut self` method aliases, and Mojo rejects
+        it.
+        """
+        self._size_once()
+
+    def embed_sp(mut self) raises:
+        """`b_sp = B(bsp)` over the OWNED batch, for the `z` mixture.
+
+        `train_step` computes this itself, but the mixture needs `B(s+)` BEFORE
+        the step that consumes `z`. Exposed as a method rather than letting the
+        caller write `backward_embed(t.bsp, t.b_sp)`, which aliases `self`.
+        """
+        comptime T = Self.TARGET
+        self._size_once()
+        call_forward[T, Self.BATCH](
+            self.bnet.online, TensorRefs[1, MutAnyOrigin](self.bsp),
+            self.b_sp, self.ctx,
+        )
+
     # ── the step ─────────────────────────────────────────────────────────
 
     def load_batch(
