@@ -234,6 +234,13 @@ struct FBTrainer[
     var ortho_weight: Float64
     var policy_noise: Float64
     var noise_clip: Float64
+    # ⚠ Global grad-norm clip, 0 = OFF. NOT cosmetic on FB: the measure loss is
+    # `E[(F·B+^T - gamma·Fbar·Bbar^T)^2]` with ||B|| pinned at sqrt(d) ~ 11.3,
+    # so its scale goes as (||F||·11.3)^2 and a spike to 2.5e3 carries gradients
+    # to match. Measured on walker at 1 M rows: stable to ~50 k steps, then
+    # excursions to +2559 by 116 k. `F` is the unconstrained half of the pair —
+    # `L_ortho` and the LayerNorm bound `B`, nothing bounds `F`.
+    var max_grad_norm: Float64
     var steps: Int
     var _rng_seed: UInt64
     var _rng_offset: UInt64
@@ -298,6 +305,7 @@ struct FBTrainer[
         self.ortho_weight = 1.0
         self.policy_noise = 0.2
         self.noise_clip = 0.3
+        self.max_grad_norm = 0.0
         self.steps = 0
         self._rng_seed = UInt64(0x5EED)
         self._rng_offset = UInt64(0)
@@ -362,6 +370,7 @@ struct FBTrainer[
         self.ortho_weight = move.ortho_weight
         self.policy_noise = move.policy_noise
         self.noise_clip = move.noise_clip
+        self.max_grad_norm = move.max_grad_norm
         self.steps = move.steps
         self._rng_seed = move._rng_seed
         self._rng_offset = move._rng_offset
@@ -377,6 +386,7 @@ struct FBTrainer[
         ortho_weight: Float64 = 1.0,
         ctx: Optional[DeviceContext] = None,
         seed: UInt64 = UInt64(0x5EED),
+        max_grad_norm: Float64 = 0.0,
     ) raises -> Self:
         """Defaults are the published FB / Meta Motivo settings: EMA 0.99
         (`tau = 0.01`), `gamma = 0.98`, Adam 3e-4.
@@ -401,6 +411,7 @@ struct FBTrainer[
         t.gamma = gamma
         t.tau = tau
         t.ortho_weight = ortho_weight
+        t.max_grad_norm = max_grad_norm
         t._rng_seed = seed
         return t^
 
@@ -633,6 +644,11 @@ struct FBTrainer[
             TensorRefs[1, MutAnyOrigin](sink[0]), c,
         )
 
+        if self.max_grad_norm > 0.0:
+            var mgn = Scalar[DT](self.max_grad_norm)
+            _ = self.opt_f1.clip_grads[T](self.f1.online, mgn, c)
+            _ = self.opt_f2.clip_grads[T](self.f2.online, mgn, c)
+            _ = self.opt_b.clip_grads[T](self.bnet.online, mgn, c)
         self.opt_f1.step[T](self.f1.online, c)
         self.opt_f2.step[T](self.f2.online, c)
         self.opt_b.step[T](self.bnet.online, c)
@@ -712,6 +728,10 @@ struct FBTrainer[
             self.actor.online, TensorRefs[1, MutAnyOrigin](self.ain), self.g_pi,
             TensorRefs[1, MutAnyOrigin](sink[0]), c,
         )
+        if self.max_grad_norm > 0.0:
+            _ = self.opt_actor.clip_grads[T](
+                self.actor.online, Scalar[DT](self.max_grad_norm), c
+            )
         self.opt_actor.step[T](self.actor.online, c)
         return loss
 

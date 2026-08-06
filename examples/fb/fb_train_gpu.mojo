@@ -68,6 +68,13 @@ comptime TRAIN_STEPS: Int = 2_000_000
 comptime LOG_EVERY: Int = 2000   # see the want_loss note in the header
 comptime CKPT_EVERY: Int = 50_000
 comptime CKPT_PATH: StaticString = "/tmp/fb_walker_d128.ckpt"
+
+# ⚠⚠ Global grad-norm clip. FB's measure loss scales as (||F||·sqrt(d))^2 and
+# was measured spiking to +2559 on walker at 1 M rows; the gradients spike with
+# it. `L_ortho` and the LayerNorm bound `B`, and NOTHING bounds `F` — clipping
+# is the cheap standard remedy and every reference FB implementation uses one.
+# 0 disables it.
+comptime MAX_GRAD_NORM: Float64 = 1.0
 comptime SEED: Int = 20260805
 
 comptime F_IN = OBS + NACT + D
@@ -179,7 +186,8 @@ def main() raises:
     var samp_b = UniformDeviceSampler(n_rows, seed=UInt64(SEED) + 977)
 
     var t = Trainer.make(
-        lr=3e-4, gamma=0.98, tau=0.01, ctx=ctx, seed=UInt64(SEED) + 13
+        lr=3e-4, gamma=0.98, tau=0.01, ctx=ctx, seed=UInt64(SEED) + 13,
+        max_grad_norm=MAX_GRAD_NORM,
     )
     # Size the owned batch buffers before gathering straight into them.
     t.ensure_sized()
@@ -268,7 +276,14 @@ def main() raises:
             # ortho oscillating 16-140 with no trend, over 54 k steps.
             # The measure loss descends in every case, so it diagnoses none.
         if step > 0 and (step % CKPT_EVERY) == 0:
-            t.save_state(String(CKPT_PATH))
-            print("      checkpoint ->", CKPT_PATH, "at step", step)
-    t.save_state(String(CKPT_PATH))
-    print("[3] done. final checkpoint ->", CKPT_PATH)
+            # ⚠⚠ STEP-STAMPED, not a single overwritten path. FB's loss can be
+            # healthy at 50 k and cycling at 116 k; overwriting means the run
+            # ends holding its WORST state and the good early one is gone. That
+            # happened: a stable 50 k checkpoint was replaced by a 100 k one
+            # from the oscillating phase before it could be evaluated.
+            var p = String(CKPT_PATH) + "." + String(step)
+            t.save_state(p)
+            print("      checkpoint ->", p)
+    var pf = String(CKPT_PATH) + ".final"
+    t.save_state(pf)
+    print("[3] done. final checkpoint ->", pf)
