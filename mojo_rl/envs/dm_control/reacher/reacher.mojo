@@ -3,16 +3,20 @@
     from mojo_rl.envs.dm_control.reacher import DMReacherEasy, DMReacherHard
     var env = DMReacherEasy()
 
-They differ only in the target radius the reward measures against
-(`_BIG_TARGET = .05` vs `_SMALL_TARGET = .015`), which is a config comptime
-here rather than the reference's per-episode `geom_size` write — the target is
-inert (contact is disabled model-wide), so nothing physical depends on it.
+They differ only in the target radius (`_BIG_TARGET = .05` vs
+`_SMALL_TARGET = .015`). The target is inert (contact is disabled model-wide),
+so nothing PHYSICAL depends on it: the reward reads it from a config comptime
+rather than the reference's per-episode `geom_size` write.
+
+⚠ THEY DO NOT SHARE A MODEL, though, because the radius is also the drawn size
+and the renderer resolves geom sizes at compile time. See
+`reacher_xml.DMReacherHardModel`.
 
 CPU only: the config's GPU reward/obs hooks are stubs because the batched hook
 ABI does not carry the mocap fields yet (gap G10). See docs/DM_CONTROL_PORT.md.
 """
 
-from .reacher_xml import DMReacherModel
+from .reacher_xml import DMReacherModel, DMReacherHardModel
 from .reacher_config import DMReacherConfig
 from ...phyics3d_env import Phyics3dEnv
 
@@ -24,5 +28,9 @@ comptime DMReacherEasy[DTYPE: DType = DType.float64] = Phyics3dEnv[
 ]
 
 comptime DMReacherHard[DTYPE: DType = DType.float64] = Phyics3dEnv[
-    DMReacherModel, DMReacherConfig[0.015], DTYPE, False
+    DMReacherHardModel, DMReacherConfig[0.015], DTYPE, False
 ]
+"""⚠ A DIFFERENT MODEL FROM `DMReacherEasy`, not just a different config. The
+two carry the same physics — the target is inert — but `hard`'s target geom is
+`.015` where `easy`'s is `.05`, and the renderer reads that radius at COMPILE
+TIME. Sharing the model drew `hard`'s 1.5 cm disc as a 5 cm ball."""

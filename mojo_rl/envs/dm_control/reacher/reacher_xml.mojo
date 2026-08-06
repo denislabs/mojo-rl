@@ -27,9 +27,17 @@ target is inert in both the reference and here. It does add one body to NBODY
 the parity test accounts for explicitly.
 
 `geom_size['target', 0]` is the OTHER thing reset writes — `.05` for `easy`,
-`.015` for `hard`. It feeds only the reward radius, never a contact, so the
-port carries it as a config comptime (`DMReacherConfig.TARGET_SIZE`) rather
-than a per-episode model write. The XML keeps the reference's `.05`.
+`.015` for `hard`. It never feeds a contact, so the REWARD side of it is a
+config comptime (`DMReacherConfig.TARGET_SIZE`) rather than a per-episode model
+write.
+
+⚠ THAT IS NOT THE WHOLE STORY, and treating it as such was a bug. The radius is
+also what the target is DRAWN at, and the renderer reads geom sizes at COMPILE
+TIME (`MODEL_DEF.render_body_geoms`) — so one shared XML at `.05` drew `hard`'s
+1.5 cm disc as a 5 cm ball, 3.3x too big. Hence two model defs,
+`DMReacherModel` and `DMReacherHardModel`, differing in exactly that one
+attribute. Nothing physical distinguishes them; the parity rollout is
+parameterized over both precisely because it cannot tell them apart.
 
 GEOM ORDER, as always: ours is XML text order, MuJoCo's is sorted by body id.
 Here MuJoCo puts `target` (a world geom) at 6, ahead of arm/hand/finger; ours
@@ -42,7 +50,7 @@ from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
 
 
-comptime _reacher_body = """
+comptime _reacher_body_pre = """
 <mujoco model="two-link planar reacher">
   <option timestep="0.02">
     <flag contact="disable"/>
@@ -77,8 +85,24 @@ comptime _reacher_body = """
     </body>
 
     <body name="target" mocap="true" pos="0 0 .01">
-      <geom name="target" material="target" type="sphere" size=".05"/>
-    </body>
+"""
+"""The body, up to the TARGET GEOM — the one line the two tasks differ in.
+`_reacher_body_post` resumes at the line after it."""
+
+
+# ⚠ THE WHOLE LINE IS DUPLICATED, not spliced around the number. Splicing means
+# ending the preceding chunk mid-attribute, right after `size=`, so the opening
+# quote of the value has to reach the string through an escape — and an escaped
+# quote sitting immediately before a triple-quote terminator reads as either the
+# escape or the end of the string depending on how you squint. Two adjacent
+# lines that differ in one number cannot drift unnoticed; a clever splice can.
+comptime _target_geom_easy = """      <geom name="target" material="target" type="sphere" size=".05"/>
+"""
+comptime _target_geom_hard = """      <geom name="target" material="target" type="sphere" size=".015"/>
+"""
+
+
+comptime _reacher_body_post = """    </body>
   </worldbody>
 
   <actuator>
@@ -89,10 +113,25 @@ comptime _reacher_body = """
 """
 
 
+comptime _reacher_body = (
+    _reacher_body_pre + _target_geom_easy + _reacher_body_post
+)
+comptime _reacher_body_hard = (
+    _reacher_body_pre + _target_geom_hard + _reacher_body_post
+)
+
+
 comptime dm_reacher_xml = merge_mjcf(
     dm_skybox_xml, dm_visual_xml, dm_materials_xml, _reacher_body
 )
+comptime dm_reacher_hard_xml = merge_mjcf(
+    dm_skybox_xml, dm_visual_xml, dm_materials_xml, _reacher_body_hard
+)
 
+# ⚠ PARSED FROM THE EASY XML AND REUSED FOR BOTH. The two differ in one
+# attribute VALUE, so every count `parse_xml` returns — nbody, ngeom, nq, nv,
+# the timestep — is identical by construction. Parsing twice would only pay a
+# second comptime XML parse to learn the same numbers.
 comptime pmr = parse_xml(dm_reacher_xml)
 
 # obs = position (qpos, 2) + to_target (2) + velocity (qvel, 2) = 6
@@ -105,6 +144,30 @@ comptime DMReacherModel = ModelDefFromXML[
     obs_dim_override=6,
     timestep=pmr.TIMESTEP,
 ]
+
+comptime DMReacherHardModel = ModelDefFromXML[
+    xml=dm_reacher_hard_xml,
+    nbody=pmr.NBODY, njoint=pmr.NJOINT, nq=pmr.NQ, nv=pmr.NV,
+    ngeom=pmr.NGEOM, nact=pmr.NACT, ntex=pmr.NTEX, nmat=pmr.NMAT,
+    nlight=pmr.NLIGHT, ncam=pmr.NCAM, nsite=pmr.NSITE,
+    max_contacts=1,
+    obs_dim_override=6,
+    timestep=pmr.TIMESTEP,
+]
+"""`hard`'s model — identical but for the target's `.015` radius.
+
+⚠ A SECOND MODEL FOR A PURELY VISUAL DIFFERENCE, which is worth stating plainly
+because it costs a second comptime model def. The target is INERT (contact is
+disabled model-wide) and the reward measures against `DMReacherConfig`'s
+`TARGET_SIZE`, so nothing physical reads this radius — but the RENDERER does,
+and it reads it at COMPILE TIME (`MODEL_DEF.render_body_geoms`). There is no
+runtime geom-size path to write instead, which is why `hard` used to draw
+`easy`'s 5 cm ball: 3.3x too big, and the only visible symptom.
+
+The alternative — dm_control's own `initialize_episode` writing
+`geom_size['target', 0]` per episode — is not available to us for the same
+reason: our `custom_reset_model_cpu` hook writes the HOST model lists, which
+the comptime renderer never consults."""
 
 # Body indices in worldbody DFS order (0 = world). `target` is appended last so
 # the arm chain keeps the reference's own 1..3.

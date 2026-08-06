@@ -37,6 +37,7 @@ from mojo_rl.envs.dm_control.reacher import (
     DMReacherEasy,
     DMReacherHard,
     DMReacherModel,
+    DMReacherHardModel,
     DMReacherConfig,
     FINGER_BODY_IDX,
     TARGET_BODY_IDX,
@@ -46,6 +47,7 @@ from mojo_rl.envs.dm_control.reacher import (
     TARGET_Z,
 )
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv
+from mojo_rl.physics3d.model import ModelDefLike
 from mojo_rl.physics3d.fields import Model
 from mojo_rl.physics3d.kinematics.geom_xpos import geom_xpos
 from mojo_rl.physics3d.gpu.constants import (
@@ -256,12 +258,22 @@ def test_reacher_model_matches_mujoco() raises:
     )
 
 
-def _rollout[TSIZE: Float64]() raises -> List[Float64]:
+def _rollout[
+    MODEL: ModelDefLike, TSIZE: Float64
+]() raises -> List[Float64]:
     """One easy/hard rollout set; returns [state, geom, obs, reward, r_min,
     r_max, hit_limit] as floats so both parameterizations report identically.
+
+    ⚠ THE MODEL IS A PARAMETER because `hard` no longer shares `easy`'s. They
+    differ only in the target's radius, which is INERT (contact is disabled
+    model-wide) — so this rollout cannot tell them apart, and that is exactly
+    why the parameter has to be here rather than hardcoded: the numbers below
+    would stay green while the env that ships drifted away from the one under
+    test. What the radius DOES reach is the renderer, which reads it at compile
+    time; see `reacher_xml.DMReacherHardModel`.
     """
     comptime EnvT = Phyics3dEnv[
-        DMReacherModel, DMReacherConfig[TSIZE], DType.float64, False
+        MODEL, DMReacherConfig[TSIZE], DType.float64, False
     ]
 
     var handle = _setup()
@@ -406,8 +418,8 @@ def _rollout[TSIZE: Float64]() raises -> List[Float64]:
     return [max_state, max_geom, max_obs, max_r, r_min, r_max, hit_limit]
 
 
-def _check[TSIZE: Float64](label: String) raises:
-    var r = _rollout[TSIZE]()
+def _check[MODEL: ModelDefLike, TSIZE: Float64](label: String) raises:
+    var r = _rollout[MODEL, TSIZE]()
     print("reacher", label, "vs MuJoCo, 5 x", N_STEPS, "steps:")
     print("  max |d(state)| =", r[0], " |d(geom_xpos)| =", r[1])
     print("  max |d(obs)| =", r[2], " |d(reward)| =", r[3])
@@ -424,14 +436,14 @@ def _check[TSIZE: Float64](label: String) raises:
 
 def test_reacher_easy_matches_mujoco() raises:
     """Physics, geom_xpos through the mocap target, observation and reward."""
-    _check[BIG_TARGET]("easy")
+    _check[DMReacherModel, BIG_TARGET]("easy")
 
 
 def test_reacher_hard_matches_mujoco() raises:
     """Same rollout at `hard`'s 1.5 cm radius — the only difference between the
     two registered tasks, and the one we carry as a comptime instead of the
     reference's per-episode `geom_size` write."""
-    _check[SMALL_TARGET]("hard")
+    _check[DMReacherHardModel, SMALL_TARGET]("hard")
 
 
 def test_reacher_reset_randomization() raises:
