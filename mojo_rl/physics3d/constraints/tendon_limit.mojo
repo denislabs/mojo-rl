@@ -60,6 +60,7 @@ from ..gpu.constants import (
     TENDON_IDX_INVWEIGHT0,
     TENDON_IDX_NUM_JOINTS,
     TENDON_IDX_JOINT_0,
+    TENDON_MAX_WRAPS,
     TENDON_IDX_COEF_0,
     TENDON_IDX_SOLREF_LIM_0,
     TENDON_IDX_SOLREF_LIM_1,
@@ -82,10 +83,16 @@ from ..gpu.constants import (
 from ..dynamics.tendon import spatial_tendon_length_jac
 from .scalar_rows import SROW_EQ_BILATERAL
 
-# A fixed tendon stores at most four (joint, coef) pairs — TENDON_IDX_JOINT_0
-# .. JOINT_3. Named here rather than reusing TENDON_MAX_SITES, which happens to
-# be 4 for an unrelated reason.
-comptime TENDON_MAX_JOINTS: Int = 4
+# How many (joint, coef) pairs a fixed tendon stores.
+#
+# ⚠ WAS A LOCAL `4`, ON THE REASONING THAT REUSING `TENDON_MAX_SITES` WOULD BE
+# COINCIDENTAL. The reasoning was sound and the outcome was not: the cap ended
+# up written down in five places that all had to be changed together, and when
+# dog arrived with an 11-joint tendon four of them were missed. They are the
+# same quantity — how wide one tendon's wrap list may be — so they now share
+# one constant, and `TENDON_MAX_SITES` is an alias of it rather than a
+# coincidence.
+comptime TENDON_MAX_JOINTS: Int = TENDON_MAX_WRAPS
 
 
 comptime MJ_MINIMP: Float64 = 0.0001

@@ -201,23 +201,15 @@ from mojo_rl.physics3d.gpu.constants import (
     SITE_IDX_BODY,
     SITE_IDX_POS_X,
     MODEL_TENDON_SIZE,
+    TENDON_MAX_WRAPS,
     TENDON_IDX_KIND,
     TENDON_IDX_IS_EQUALITY,
     TENDON_IDX_NUM_JOINTS,
     TENDON_IDX_JOINT_0,
-    TENDON_IDX_JOINT_1,
-    TENDON_IDX_JOINT_2,
-    TENDON_IDX_JOINT_3,
     TENDON_IDX_COEF_0,
-    TENDON_IDX_COEF_1,
-    TENDON_IDX_COEF_2,
-    TENDON_IDX_COEF_3,
     TENDON_IDX_LENGTH_REF,
     TENDON_IDX_NUM_SITES,
     TENDON_IDX_SITE_0,
-    TENDON_IDX_SITE_1,
-    TENDON_IDX_SITE_2,
-    TENDON_IDX_SITE_3,
     TENDON_IDX_LIMITED,
     TENDON_IDX_RANGE_MIN,
     TENDON_IDX_RANGE_MAX,
@@ -994,30 +986,26 @@ def build_model_fields_from_flat[
         mf.tendons.data[o + TENDON_IDX_NUM_JOINTS] = Scalar[DTYPE](
             td.num_joints
         )
-        mf.tendons.data[o + TENDON_IDX_JOINT_0] = Scalar[DTYPE](
-            td.joint_ids[0]
-        )
-        mf.tendons.data[o + TENDON_IDX_JOINT_1] = Scalar[DTYPE](
-            td.joint_ids[1]
-        )
-        mf.tendons.data[o + TENDON_IDX_JOINT_2] = Scalar[DTYPE](
-            td.joint_ids[2]
-        )
-        mf.tendons.data[o + TENDON_IDX_JOINT_3] = Scalar[DTYPE](
-            td.joint_ids[3]
-        )
-        mf.tendons.data[o + TENDON_IDX_COEF_0] = Scalar[DTYPE](td.coefs[0])
-        mf.tendons.data[o + TENDON_IDX_COEF_1] = Scalar[DTYPE](td.coefs[1])
-        mf.tendons.data[o + TENDON_IDX_COEF_2] = Scalar[DTYPE](td.coefs[2])
-        mf.tendons.data[o + TENDON_IDX_COEF_3] = Scalar[DTYPE](td.coefs[3])
+        # ⚠ LOOPED, NOT UNROLLED. These were four explicit writes each, which
+        # is how the 4-wrap cap got baked into a fourth place: widening the
+        # record without touching this would have left wraps 4..15 as
+        # uninitialised garbage. Driving both from `TENDON_MAX_WRAPS` means the
+        # cap moves in one edit.
+        for k in range(TENDON_MAX_WRAPS):
+            mf.tendons.data[o + TENDON_IDX_JOINT_0 + k] = Scalar[DTYPE](
+                td.joint_ids[k]
+            )
+            mf.tendons.data[o + TENDON_IDX_COEF_0 + k] = Scalar[DTYPE](
+                td.coefs[k]
+            )
         mf.tendons.data[o + TENDON_IDX_LENGTH_REF] = Scalar[DTYPE](
             td.length_ref
         )
         mf.tendons.data[o + TENDON_IDX_NUM_SITES] = Scalar[DTYPE](td.num_sites)
-        mf.tendons.data[o + TENDON_IDX_SITE_0] = Scalar[DTYPE](td.site_ids[0])
-        mf.tendons.data[o + TENDON_IDX_SITE_1] = Scalar[DTYPE](td.site_ids[1])
-        mf.tendons.data[o + TENDON_IDX_SITE_2] = Scalar[DTYPE](td.site_ids[2])
-        mf.tendons.data[o + TENDON_IDX_SITE_3] = Scalar[DTYPE](td.site_ids[3])
+        for k in range(TENDON_MAX_WRAPS):
+            mf.tendons.data[o + TENDON_IDX_SITE_0 + k] = Scalar[DTYPE](
+                td.site_ids[k]
+            )
         mf.tendons.data[o + TENDON_IDX_LIMITED] = Scalar[DTYPE](td.limited)
         mf.tendons.data[o + TENDON_IDX_RANGE_MIN] = Scalar[DTYPE](td.range_min)
         mf.tendons.data[o + TENDON_IDX_RANGE_MAX] = Scalar[DTYPE](td.range_max)

@@ -71,13 +71,8 @@ from ..gpu.constants import (
     TENDON_IDX_NUM_JOINTS,
     TENDON_IDX_IS_EQUALITY,
     TENDON_IDX_JOINT_0,
-    TENDON_IDX_JOINT_1,
-    TENDON_IDX_JOINT_2,
-    TENDON_IDX_JOINT_3,
     TENDON_IDX_COEF_0,
-    TENDON_IDX_COEF_1,
-    TENDON_IDX_COEF_2,
-    TENDON_IDX_COEF_3,
+    TENDON_MAX_WRAPS,
     TENDON_IDX_LENGTH_REF,
     TENDON_IDX_SOLREF_0,
     TENDON_IDX_SOLREF_1,
@@ -93,6 +88,44 @@ from ..gpu.constants import (
 
 
 from .constraint_data import solref_spring_damper
+
+
+@always_inline
+def _legacy_tendon_col(c: Int) -> Int:
+    """Legacy tendon-record column -> its column in the CURRENT record.
+
+    The legacy record was 17 wide and laid out
+
+        0        num_joints
+        1..4     joint_0..3
+        5..8     coef_0..3
+        9        length_ref
+        10..11   solref_0..1
+        12..16   solimp_0..4
+
+    `_legacy_invw_read` reproduces a historical misread BIT-EXACTLY, so it must
+    keep naming those same quantities however the live record is arranged. It
+    used the column index raw, which worked only while every layout change
+    APPENDED. `TENDON_MAX_WRAPS` 4 -> 16 widened the joint and coef runs in
+    place instead, so columns 5..16 changed meaning underneath it.
+
+    Written as a mapping rather than a second frozen copy of the values
+    because the point is to track the live record: if a wrap run moves again,
+    this moves with it, and only a genuine reordering of the SCALAR fields
+    would need an edit here.
+    """
+    if c <= 0:
+        return TENDON_IDX_NUM_JOINTS
+    if c <= 4:
+        return TENDON_IDX_JOINT_0 + (c - 1)
+    if c <= 8:
+        return TENDON_IDX_COEF_0 + (c - 5)
+    if c == 9:
+        return TENDON_IDX_LENGTH_REF
+    if c <= 11:
+        return TENDON_IDX_SOLREF_0 + (c - 10)
+    return TENDON_IDX_SOLIMP_0 + (c - 12)
+
 
 @always_inline
 def _legacy_invw_read[
@@ -144,8 +177,26 @@ def _legacy_invw_read[
     comptime S_END = T_END + NSITE * LEGACY_SITE_SIZE
     comptime B_END = S_END + NBODY * 2
     if delta < T_END:
+        # ⚠ THE COLUMN IS REMAPPED, NOT USED RAW — the paragraph above called
+        # this exactly. `TENDON_MAX_WRAPS` 4 -> 16 did not append, it WIDENED
+        # two runs in the middle: COEF_0 went 5 -> 17 and LENGTH_REF 9 -> 33,
+        # so a raw `delta % 17` stopped naming the legacy quantity.
+        #
+        # ⚠ THIS WAS NOT THE CAUSE OF THE GOLDEN THAT MOVED, though it was
+        # confidently reported as such at the time. Adding the remap left
+        # `test_equality_tendon_fields`'s Part A fingerprint bit-identical
+        # (-664336.7153001489) because this reader is reached only from the
+        # weld/connect builders, not from the tendon path Part A exercises;
+        # the real cause was 16-wide per-thread arrays in the kernel below.
+        # The remap is kept because it is independently correct — the weld
+        # path WOULD have read the wrong columns at width 16 — but it is a
+        # latent fix, not the explanation. Recorded because a plausible
+        # mechanism read off a docstring is not a measurement.
         return rebind[Scalar[DTYPE]](
-            tendons[delta // LEGACY_TENDON_SIZE, delta % LEGACY_TENDON_SIZE]
+            tendons[
+                delta // LEGACY_TENDON_SIZE,
+                _legacy_tendon_col(delta % LEGACY_TENDON_SIZE),
+            ]
         )
     if delta < S_END:
         return rebind[Scalar[DTYPE]](
@@ -1122,35 +1173,39 @@ def _tendon_env[
             tendons[t_i, TENDON_IDX_LENGTH_REF]
         )
 
-        # Read joint indices and coefficients (up to 4)
-        var joint_idxs = InlineArray[Int, 4](fill=-1)
-        var coefs = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
-        joint_idxs[0] = Int(
-            rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_JOINT_0])
-        )
-        joint_idxs[1] = Int(
-            rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_JOINT_1])
-        )
-        joint_idxs[2] = Int(
-            rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_JOINT_2])
-        )
-        joint_idxs[3] = Int(
-            rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_JOINT_3])
-        )
-        coefs[0] = rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_COEF_0])
-        coefs[1] = rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_COEF_1])
-        coefs[2] = rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_COEF_2])
-        coefs[3] = rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_COEF_3])
-
-        # Compute tendon length and velocity, build trivial Jacobian
+        # Compute tendon length and velocity, build trivial Jacobian.
+        #
+        # ⚠ THE SOLVER HELD ITS OWN COPY OF THE 4-WRAP CAP: four unrolled reads
+        # into a pair of `InlineArray[..., 4]` locals. Widening the parser and
+        # the record alone would have left a tendon with more than four wraps
+        # silently short HERE instead — the same defect one layer down.
+        #
+        # ⚠ BUT WIDENING THOSE LOCALS TO 16 CORRUPTED THE SOLVE. This kernel is
+        # Metal-compiled, and two 16-wide per-thread arrays moved Part A's
+        # golden by 33% while the RECORD at 16 was provably fine — bisected as:
+        #
+        #     record 16, locals 16  ->  FAIL  -664336.715
+        #     record 16, locals  4  ->  PASS
+        #     record  4, locals  4  ->  PASS
+        #
+        # It is the local-memory hazard this codebase has hit before (the RK4
+        # elliptic OOM, the two-non-owning-DeviceBuffer miscompile), and it
+        # shows up as WRONG NUMBERS rather than a crash.
+        #
+        # So the wraps are read INLINE and never buffered, which is what
+        # `tendon_limit.mojo` and `invweight.mojo` already do. The kernel now
+        # holds less local state than before this change, and the cap it obeys
+        # is the record's rather than one of its own.
         var ten_length: Scalar[DTYPE] = 0
         var ten_vel: Scalar[DTYPE] = 0
         var r = num_ten_rows
 
-        for ji in range(4):
+        for ji in range(TENDON_MAX_WRAPS):
             if ji >= num_joints:
                 break
-            var jnt_idx = joint_idxs[ji]
+            var jnt_idx = Int(
+                rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_JOINT_0 + ji])
+            )
             if jnt_idx < 0 or jnt_idx >= NJOINT:
                 continue
             # Read joint's qpos_adr and dof_adr from the joint records
@@ -1160,7 +1215,9 @@ def _tendon_env[
             var dof_adr = Int(
                 rebind[Scalar[DTYPE]](joints[jnt_idx, JOINT_IDX_DOF_ADR])
             )
-            var c = coefs[ji]
+            var c = rebind[Scalar[DTYPE]](
+                tendons[t_i, TENDON_IDX_COEF_0 + ji]
+            )
             ten_length += c * rebind[Scalar[DTYPE]](
                 qpos[env, qpos_adr]
             )

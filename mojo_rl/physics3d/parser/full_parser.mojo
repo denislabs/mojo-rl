@@ -89,6 +89,9 @@ from .flat_model import (
     CAM_MODE_TARGETBODY,
     CAM_MODE_TARGETBODYCOM,
 )
+# How many joints/sites one tendon may wrap — shared with the packed field
+# layout so the parser and the record cannot disagree.
+from mojo_rl.physics3d.gpu.constants import TENDON_MAX_WRAPS
 from mojo_rl.physics3d.joint_types import (
     JNT_HINGE,
     JNT_SLIDE,
@@ -2638,21 +2641,26 @@ def _fill_tendons(
                 )
 
             var spos = 0
-            while td.num_sites < 4:
+            while True:
                 var sp = inner.find("<site", spos)
                 if sp == -1:
                     break
                 var stag = _extract_opening_tag(inner, sp)
                 var sname = _extract_attr(stag, "site")
                 if sname.byte_length() > 0:
-                    var sid = _find_site_index_by_name(worldbody, sname)
-                    if sid < 0:
-                        raise Error(
-                            "physics3d: <spatial> tendon references unknown"
-                            " site '" + sname + "'"
-                        )
-                    td.site_ids[td.num_sites] = sid
-                    td.num_sites += 1
+                    # ⚠ COUNT PAST THE CAP RATHER THAN STOPPING AT IT. Breaking
+                    # out of the loop is what made this truncate in silence.
+                    if td.num_sites >= TENDON_MAX_WRAPS:
+                        td.wrap_overflow += 1
+                    else:
+                        var sid = _find_site_index_by_name(worldbody, sname)
+                        if sid < 0:
+                            raise Error(
+                                "physics3d: <spatial> tendon references unknown"
+                                " site '" + sname + "'"
+                            )
+                        td.site_ids[td.num_sites] = sid
+                        td.num_sites += 1
                 spos = inner.find(">", sp) + 1
             if td.num_sites < 2:
                 raise Error(
@@ -2661,24 +2669,29 @@ def _fill_tendons(
                 )
         else:
             var jpos = 0
-            while td.num_joints < 4:
+            while True:
                 var jp = inner.find("<joint", jpos)
                 if jp == -1:
                     break
                 var jtag = _extract_opening_tag(inner, jp)
                 var jname = _extract_attr(jtag, "joint")
                 if jname.byte_length() > 0:
-                    var jid = _find_joint_index_by_name(worldbody, jname)
-                    if jid < 0:
-                        raise Error(
-                            "physics3d: <fixed> tendon references unknown"
-                            " joint '" + jname + "'"
-                        )
-                    td.joint_ids[td.num_joints] = jid
-                    var coef_s = _extract_attr(jtag, "coef")
-                    if coef_s.byte_length() > 0:
-                        td.coefs[td.num_joints] = _parse_float(coef_s)
-                    td.num_joints += 1
+                    # ⚠ COUNT PAST THE CAP RATHER THAN STOPPING AT IT — see the
+                    # spatial branch above. dog's `caudal_extend` wraps 11.
+                    if td.num_joints >= TENDON_MAX_WRAPS:
+                        td.wrap_overflow += 1
+                    else:
+                        var jid = _find_joint_index_by_name(worldbody, jname)
+                        if jid < 0:
+                            raise Error(
+                                "physics3d: <fixed> tendon references unknown"
+                                " joint '" + jname + "'"
+                            )
+                        td.joint_ids[td.num_joints] = jid
+                        var coef_s = _extract_attr(jtag, "coef")
+                        if coef_s.byte_length() > 0:
+                            td.coefs[td.num_joints] = _parse_float(coef_s)
+                        td.num_joints += 1
                 jpos = inner.find(">", jp) + 1
 
         # limited / range / margin
@@ -2725,6 +2738,28 @@ def _fill_tendons(
                 td.solimp_lim_3 = _parse_float(ip[3])
             if len(ip) >= 5:
                 td.solimp_lim_4 = _parse_float(ip[4])
+
+        # ⚠ RAISE, DO NOT TRUNCATE. Defect 17 was a bare `while n < 4` on the
+        # comptime side: dog's `caudal_extend` wraps 11 joints, so seven were
+        # dropped and the model ran with a third of its tail tendon. Nothing
+        # said a word, and it took a driven rollout to notice. A model over the
+        # cap now fails to BUILD, which is the only signal that cannot be
+        # missed.
+        if td.wrap_overflow > 0:
+            raise Error(
+                "physics3d: tendon '"
+                + _trim(_extract_attr(open_tag, "name"))
+                + "' declares "
+                + String(
+                    td.num_sites + td.wrap_overflow if is_spatial
+                    else td.num_joints + td.wrap_overflow
+                )
+                + " wraps, over the TENDON_MAX_WRAPS cap of "
+                + String(TENDON_MAX_WRAPS)
+                + " — raise it in `gpu/constants.mojo` (and"
+                + " MAX_COMPTIME_TENDON_WRAPS in `xml_parser.mojo`, which must"
+                + " agree) rather than letting the tendon run truncated"
+            )
 
         result.tendons.append(td)
         count += 1

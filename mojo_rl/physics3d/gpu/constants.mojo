@@ -345,55 +345,76 @@ comptime EQ_IDX_SOLIMP_4: Int = 19  # solimp power
 # populating the count would have silently welded their hips together. Only
 # <equality><tendon> sets this flag; `_tendon_env` skips rows without it.
 
-comptime MODEL_TENDON_SIZE: Int = 36  # Per tendon
+# ⚠ THE WRAP CAP IS ONE CONSTANT AND EVERY OFFSET BELOW IS DERIVED FROM IT.
+# It was 4, hardcoded in five places that had to agree: this layout, the loop
+# bounds in `full_parser._fill_tendons`, `TendonData`'s three `InlineArray`s,
+# the explicit `JOINT_0..3` writes in `fields_build`, and `TENDON_MAX_JOINTS`
+# in `constraints/tendon_limit.mojo`. dog's `caudal_extend` wraps ELEVEN
+# joints, so it was silently truncated to four on this path exactly as it was
+# on the comptime path before defect 17.
+#
+# 16 matches `MAX_COMPTIME_TENDON_WRAPS`, deliberately: the two parsers must
+# not disagree about how wide a tendon may be, and having them differ is its
+# own class of bug (see `feedback_physics3d_two_parser_paths`).
+#
+# ⚠ THE WRAP SLOTS MUST STAY CONTIGUOUS. Consumers read
+# `TENDON_IDX_JOINT_0 + k` / `TENDON_IDX_SITE_0 + k` in a loop
+# (`tendon_limit.mojo`, `dynamics/tendon.mojo`), so appending new slots at the
+# END of the record instead of widening in place would make k=4 silently read
+# COEF_0. That is why this is a renumber rather than an append.
+comptime TENDON_MAX_WRAPS: Int = 16
+
+# 24 scalar fields + three wrap-indexed runs (joint, coef, site).
+# Checks out against the old hand-numbered layout: 24 + 3*4 == 36.
+comptime MODEL_TENDON_SIZE: Int = 24 + 3 * TENDON_MAX_WRAPS  # Per tendon
 
 comptime TENDON_IDX_NUM_JOINTS: Int = 0
 comptime TENDON_IDX_JOINT_0: Int = 1
-comptime TENDON_IDX_JOINT_1: Int = 2
-comptime TENDON_IDX_JOINT_2: Int = 3
-comptime TENDON_IDX_JOINT_3: Int = 4
-comptime TENDON_IDX_COEF_0: Int = 5
-comptime TENDON_IDX_COEF_1: Int = 6
-comptime TENDON_IDX_COEF_2: Int = 7
-comptime TENDON_IDX_COEF_3: Int = 8
-comptime TENDON_IDX_LENGTH_REF: Int = 9
-comptime TENDON_IDX_SOLREF_0: Int = 10
-comptime TENDON_IDX_SOLREF_1: Int = 11
-comptime TENDON_IDX_SOLIMP_0: Int = 12
-comptime TENDON_IDX_SOLIMP_1: Int = 13
-comptime TENDON_IDX_SOLIMP_2: Int = 14
-comptime TENDON_IDX_SOLIMP_3: Int = 15  # solimp midpoint
-comptime TENDON_IDX_SOLIMP_4: Int = 16  # solimp power
+comptime TENDON_IDX_JOINT_1: Int = TENDON_IDX_JOINT_0 + 1
+comptime TENDON_IDX_JOINT_2: Int = TENDON_IDX_JOINT_0 + 2
+comptime TENDON_IDX_JOINT_3: Int = TENDON_IDX_JOINT_0 + 3
+comptime TENDON_IDX_COEF_0: Int = TENDON_IDX_JOINT_0 + TENDON_MAX_WRAPS
+comptime TENDON_IDX_COEF_1: Int = TENDON_IDX_COEF_0 + 1
+comptime TENDON_IDX_COEF_2: Int = TENDON_IDX_COEF_0 + 2
+comptime TENDON_IDX_COEF_3: Int = TENDON_IDX_COEF_0 + 3
+comptime TENDON_IDX_LENGTH_REF: Int = TENDON_IDX_COEF_0 + TENDON_MAX_WRAPS
+comptime TENDON_IDX_SOLREF_0: Int = TENDON_IDX_LENGTH_REF + 1
+comptime TENDON_IDX_SOLREF_1: Int = TENDON_IDX_LENGTH_REF + 2
+comptime TENDON_IDX_SOLIMP_0: Int = TENDON_IDX_LENGTH_REF + 3
+comptime TENDON_IDX_SOLIMP_1: Int = TENDON_IDX_LENGTH_REF + 4
+comptime TENDON_IDX_SOLIMP_2: Int = TENDON_IDX_LENGTH_REF + 5
+comptime TENDON_IDX_SOLIMP_3: Int = TENDON_IDX_LENGTH_REF + 6  # solimp midpoint
+comptime TENDON_IDX_SOLIMP_4: Int = TENDON_IDX_LENGTH_REF + 7  # solimp power
 
 # --- appended 2026-07-31 (spatial routing + limits) --------------------------
 
 comptime TENDON_KIND_FIXED: Int = 0
 comptime TENDON_KIND_SPATIAL: Int = 1
 
-comptime TENDON_IDX_KIND: Int = 17  # TENDON_KIND_*
-comptime TENDON_IDX_IS_EQUALITY: Int = 18  # 1 => `_tendon_env` owns this row
-comptime TENDON_IDX_NUM_SITES: Int = 19  # spatial only, <= 4
-comptime TENDON_IDX_SITE_0: Int = 20
-comptime TENDON_IDX_SITE_1: Int = 21
-comptime TENDON_IDX_SITE_2: Int = 22
-comptime TENDON_IDX_SITE_3: Int = 23
-comptime TENDON_IDX_LIMITED: Int = 24
-comptime TENDON_IDX_RANGE_MIN: Int = 25
-comptime TENDON_IDX_RANGE_MAX: Int = 26
-comptime TENDON_IDX_MARGIN: Int = 27
+comptime TENDON_IDX_KIND: Int = TENDON_IDX_SOLIMP_4 + 1  # TENDON_KIND_*
+comptime TENDON_IDX_IS_EQUALITY: Int = TENDON_IDX_KIND + 1  # 1 => `_tendon_env` owns this row
+comptime TENDON_IDX_NUM_SITES: Int = TENDON_IDX_KIND + 2  # spatial only
+comptime TENDON_IDX_SITE_0: Int = TENDON_IDX_KIND + 3
+comptime TENDON_IDX_SITE_1: Int = TENDON_IDX_SITE_0 + 1
+comptime TENDON_IDX_SITE_2: Int = TENDON_IDX_SITE_0 + 2
+comptime TENDON_IDX_SITE_3: Int = TENDON_IDX_SITE_0 + 3
+comptime TENDON_IDX_LIMITED: Int = TENDON_IDX_SITE_0 + TENDON_MAX_WRAPS
+comptime TENDON_IDX_RANGE_MIN: Int = TENDON_IDX_LIMITED + 1
+comptime TENDON_IDX_RANGE_MAX: Int = TENDON_IDX_LIMITED + 2
+comptime TENDON_IDX_MARGIN: Int = TENDON_IDX_LIMITED + 3
 # J M^-1 J^T at qpos0 — the limit row's diagApprox (engine_setconst.c:256).
-comptime TENDON_IDX_INVWEIGHT0: Int = 28
-# The LIMIT solref/solimp pair, distinct from the equality pair at 10..16
+comptime TENDON_IDX_INVWEIGHT0: Int = TENDON_IDX_LIMITED + 4
+# The LIMIT solref/solimp pair, distinct from the equality pair above
 # (MuJoCo keeps tendon_solref_lim separate from tendon_solref_fri).
-comptime TENDON_IDX_SOLREF_LIM_0: Int = 29
-comptime TENDON_IDX_SOLREF_LIM_1: Int = 30
-comptime TENDON_IDX_SOLIMP_LIM_0: Int = 31
-comptime TENDON_IDX_SOLIMP_LIM_1: Int = 32
-comptime TENDON_IDX_SOLIMP_LIM_2: Int = 33
-comptime TENDON_IDX_SOLIMP_LIM_3: Int = 34
-comptime TENDON_IDX_SOLIMP_LIM_4: Int = 35
+comptime TENDON_IDX_SOLREF_LIM_0: Int = TENDON_IDX_LIMITED + 5
+comptime TENDON_IDX_SOLREF_LIM_1: Int = TENDON_IDX_LIMITED + 6
+comptime TENDON_IDX_SOLIMP_LIM_0: Int = TENDON_IDX_LIMITED + 7
+comptime TENDON_IDX_SOLIMP_LIM_1: Int = TENDON_IDX_LIMITED + 8
+comptime TENDON_IDX_SOLIMP_LIM_2: Int = TENDON_IDX_LIMITED + 9
+comptime TENDON_IDX_SOLIMP_LIM_3: Int = TENDON_IDX_LIMITED + 10
+comptime TENDON_IDX_SOLIMP_LIM_4: Int = TENDON_IDX_LIMITED + 11
 
-comptime TENDON_MAX_SITES: Int = 4
+comptime TENDON_MAX_SITES: Int = TENDON_MAX_WRAPS
 
 
 # =============================================================================

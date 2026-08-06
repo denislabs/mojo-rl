@@ -13,6 +13,9 @@ from mojo_rl.physics3d.joint_types import (
     JNT_BALL,
     JNT_FREE,
 )
+# The single source for how many joints/sites one tendon may wrap. `TendonData`
+# and the packed field layout must agree, so both read it from here.
+from mojo_rl.physics3d.gpu.constants import TENDON_MAX_WRAPS
 
 
 # =============================================================================
@@ -740,13 +743,19 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
 
     # fixed
     var num_joints: Int
-    var joint_ids: InlineArray[Int, 4]
-    var coefs: InlineArray[Float64, 4]
+    var joint_ids: InlineArray[Int, TENDON_MAX_WRAPS]
+    var coefs: InlineArray[Float64, TENDON_MAX_WRAPS]
     var length_ref: Float64
 
     # spatial
     var num_sites: Int
-    var site_ids: InlineArray[Int, 4]
+    var site_ids: InlineArray[Int, TENDON_MAX_WRAPS]
+
+    # Wraps the XML declared beyond `TENDON_MAX_WRAPS`. Non-zero makes the
+    # model build RAISE rather than run a silently truncated tendon — the
+    # lesson of defect 17, where a bare `while n < 4` drove a third of dog's
+    # tail joints and nothing said so.
+    var wrap_overflow: Int
 
     # limit
     var limited: Int
@@ -777,11 +786,12 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
         self.kind = _TENDON_KIND_FIXED
         self.is_equality = 0
         self.num_joints = 0
-        self.joint_ids = InlineArray[Int, 4](fill=-1)
-        self.coefs = InlineArray[Float64, 4](fill=0.0)
+        self.joint_ids = InlineArray[Int, TENDON_MAX_WRAPS](fill=-1)
+        self.coefs = InlineArray[Float64, TENDON_MAX_WRAPS](fill=0.0)
         self.length_ref = 0.0
         self.num_sites = 0
-        self.site_ids = InlineArray[Int, 4](fill=-1)
+        self.site_ids = InlineArray[Int, TENDON_MAX_WRAPS](fill=-1)
+        self.wrap_overflow = 0
         self.limited = 0
         self.range_min = 0.0
         self.range_max = 0.0
