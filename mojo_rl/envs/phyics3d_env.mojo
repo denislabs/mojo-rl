@@ -394,6 +394,68 @@ struct Phyics3dEnv[
         # gyro / subtreelinvel read goes through those two.
         self._fields_vel()
 
+    def reward_at(
+        mut self,
+        qpos: List[Float64],
+        qvel: List[Float64],
+        action: List[Float64],
+        prev_x: Scalar[Self.DTYPE] = Scalar[Self.DTYPE](0),
+        step_count: Int = 1,
+    ) -> Tuple[Scalar[Self.dtype], Bool]:
+        """Reward of an ARBITRARY state, without having reached it by stepping.
+
+        This is the relabelling primitive: `set_state` puts the engine in
+        `(qpos, qvel)` — refreshing FK *and* body velocities — and the config's
+        reward hook is then called on it. It is what lets a dataset of
+        `(qpos, qvel, action)` be scored under a reward invented long after
+        collection, which is the whole reason the BFM dataset stores generalized
+        coordinates rather than observations (`docs/BFM_ZERO_SHOT_RL.md` §6).
+
+        ⚠ **Destructive.** The env's state IS the injected one afterwards —
+        `reward_at` is not a peek. Relabelling a dataset therefore wants a
+        dedicated env instance, not the one driving a rollout.
+
+        ⚠ **Purity is a per-task property, not a guarantee.** The hook also
+        receives `prev_x` and `step_count`, so a task that computes velocity as
+        a finite difference of positions is NOT a function of `(qpos, qvel,
+        action)` and cannot be relabelled from this dataset. The defaults here
+        (`prev_x = 0`, `step_count = 1`) are what a stateless task ignores; for
+        one that reads them, they are wrong, silently.
+
+        Do not assume — measure. `tests/dm_control/test_reward_relabel.mojo`
+        replays a rollout and diffs the relabelled reward against the online
+        one; a task that passes is Markovian in the only sense that matters
+        here. dm_control's suite is clean because its rewards read `Data` (FK
+        products of qpos, and `xvel`, itself FK of qvel), but the Gym-derived
+        configs in this same package are NOT: HalfCheetah's forward reward is
+        literally `(x - prev_x) / dt`.
+        """
+        self.set_state(qpos, qvel)
+        return Self.CONFIG.compute_reward_and_done_cpu(
+            self.d,
+            self.mf.bodies.data,
+            self.mf.joints.data,
+            self.mf.geoms.data,
+            self.mf.sites.data,
+            prev_x,
+            action,
+            step_count,
+            self.frame_skip,
+        )
+
+    def obs_at(
+        mut self, qpos: List[Float64], qvel: List[Float64]
+    ) -> Self.StateType:
+        """Observation of an arbitrary state. Same contract as `reward_at`.
+
+        The dataset stores `qpos`/`qvel` and recovers the observation through
+        this rather than storing it: for walker that is 18 floats against 24,
+        and unlike the observation, generalized coordinates are sufficient for
+        rewards the collection run had never heard of.
+        """
+        self.set_state(qpos, qvel)
+        return self._get_obs()
+
     def _get_obs(self) -> ObsState[Self.MODEL_DEF.OBS_DIM]:
         var obs_list = List[Scalar[Self.DTYPE]](capacity=Self.OBS_DIM)
         var custom = Self.CONFIG.custom_extract_obs_cpu(
