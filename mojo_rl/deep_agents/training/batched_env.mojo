@@ -40,7 +40,10 @@ reconstructs non-owning views via
 `DeviceBuffer[DT](ctx, env.obs_ptr(), N*OBS, owning=False)`.
 """
 
-from std.algorithm import parallelize
+# `parallelize` moved out of the stdlib into MAX in Mojo 1.0 — `std.algorithm`
+# keeps `vectorize` but no longer carries any parallel primitive. The async
+# runtime it is built on is still `std.runtime.asyncrt`.
+from max.algorithm import parallelize
 from std.gpu import thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
@@ -304,7 +307,7 @@ struct BatchedCpuDiscreteEnv[
     OBS_DIM_: Int,
 ](BatchedEnv):
     """Discrete-action sibling of `BatchedCpuEnv` that steps its N envs
-    in PARALLEL across CPU cores (`std.algorithm.parallelize`) — the
+    in PARALLEL across CPU cores (`max.algorithm.parallelize`) — the
     Stage-1 lever from `docs/ATARI_AUDIT.md` §2. Each env instance is
     fully independent, so per-env work items never share mutable state
     and the parallel step is bit-identical to a serial loop (validated
