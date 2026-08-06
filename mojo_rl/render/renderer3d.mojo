@@ -1736,13 +1736,26 @@ struct Renderer3D(Movable):
                 padding3=0,
             ),
             depth_stencil_state=GPUDepthStencilState(
-                compare_op=GPUCompareOp.GPU_COMPAREOP_LESS,
+                # ⚠ ALWAYS, NOT LESS — the reflection now draws AFTER the
+                # ground (Phase B2), and the ground has written depth by then.
+                # Under LESS every reflection fragment would be rejected by the
+                # very floor it belongs on, and the pass would silently render
+                # nothing. It was LESS while this ran BEFORE the ground, where
+                # the depth buffer was still cleared to far and the test passed
+                # everything — i.e. it was already a no-op, so nothing is lost.
+                #
+                # With no depth test, what keeps reflections from painting over
+                # the sky past the ground's rim is the fragment shader's own
+                # distance fade, which is tighter than the ground's. Still no
+                # depth WRITE: reflections must not occlude the solids drawn
+                # after them.
+                compare_op=GPUCompareOp.GPU_COMPAREOP_ALWAYS,
                 back_stencil_state=self._no_stencil_op(),
                 front_stencil_state=self._no_stencil_op(),
                 compare_mask=0,
                 write_mask=0,
                 enable_depth_test=True,
-                enable_depth_write=False,  # Don't write depth (ground renders on top)
+                enable_depth_write=False,
                 enable_stencil_test=False,
                 padding1=0,
                 padding2=0,
@@ -3831,51 +3844,7 @@ struct Renderer3D(Movable):
             draw_gpu_primitives(render_pass, 3, 1, 0, 0)
 
         # ------------------------------------------------------------------
-        # Phase A: REFLECTIONS (Z-flipped solid objects, semi-transparent)
-        # ------------------------------------------------------------------
-        if self.has_ground and len(self.solid_draws) > 0:
-            bind_gpu_graphics_pipeline(render_pass, self.reflection_pipeline.value())
-
-            # Push scene uniforms (fragment slot 0 for reflection clipping)
-            push_gpu_vertex_uniform_data(
-                cmd_buf,
-                0,
-                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                240,
-            )
-            push_gpu_fragment_uniform_data(
-                cmd_buf,
-                0,
-                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                240,
-            )
-
-            for i in range(len(self.solid_draws)):
-                # Build mirrored model matrix: flip Z around ground_z
-                var mirrored_uniforms = self.solid_draws[i].uniforms
-                # M_reflected = T(0,0,2*gz) * S(1,1,-1) * M
-                # This negates row 2 of the model matrix (m20,m21,m22,m23)
-                # In column-major storage: m20=[2], m21=[6], m22=[10], m23=[14]
-                var gz = Float32(self.ground_z)
-                mirrored_uniforms.model[2] = -mirrored_uniforms.model[2]  # m20
-                mirrored_uniforms.model[6] = -mirrored_uniforms.model[6]  # m21
-                mirrored_uniforms.model[10] = -mirrored_uniforms.model[
-                    10
-                ]  # m22
-                mirrored_uniforms.model[14] = (
-                    -mirrored_uniforms.model[14] + 2.0 * gz
-                )  # m23
-
-                push_gpu_vertex_uniform_data(
-                    cmd_buf,
-                    1,
-                    Ptr(to=mirrored_uniforms).bitcast[NoneType](),
-                    96,
-                )
-                self._select_and_draw(render_pass, self.solid_draws[i])
-
-        # ------------------------------------------------------------------
-        # Phase B: GROUND (checkerboard with shadow map sampling)
+        # Phase B1: GROUND (opaque checkerboard, shadow-mapped)
         # ------------------------------------------------------------------
         if self.has_ground:
             bind_gpu_graphics_pipeline(render_pass, self.ground_pipeline.value())
@@ -3952,6 +3921,61 @@ struct Renderer3D(Movable):
                 0,
                 0,
             )
+
+        # ------------------------------------------------------------------
+        # Phase B2: REFLECTIONS (Z-flipped solids, blended ON TOP of the floor)
+        #
+        # ⚠ AFTER THE GROUND, NOT BEFORE. This ran first and the ground was
+        # then drawn semi-transparent over it, which is how the SKYBOX ended up
+        # visible through the floor: the floor's missing 45% showed reflections
+        # where reflected geometry existed and STARS everywhere else. MuJoCo
+        # keeps the floor opaque and blends the mirror term on top at the
+        # material's `reflectance`, which is what this order does.
+        #
+        # Needs the pipeline's depth compare to be ALWAYS (see
+        # `_create_pipelines`) — the ground has written depth by now and would
+        # otherwise reject every fragment of its own reflection.
+        # ------------------------------------------------------------------
+        if self.has_ground and len(self.solid_draws) > 0:
+            bind_gpu_graphics_pipeline(render_pass, self.reflection_pipeline.value())
+
+            # Push scene uniforms (fragment slot 0 for reflection clipping)
+            push_gpu_vertex_uniform_data(
+                cmd_buf,
+                0,
+                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                240,
+            )
+            push_gpu_fragment_uniform_data(
+                cmd_buf,
+                0,
+                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                240,
+            )
+
+            for i in range(len(self.solid_draws)):
+                # Build mirrored model matrix: flip Z around ground_z
+                var mirrored_uniforms = self.solid_draws[i].uniforms
+                # M_reflected = T(0,0,2*gz) * S(1,1,-1) * M
+                # This negates row 2 of the model matrix (m20,m21,m22,m23)
+                # In column-major storage: m20=[2], m21=[6], m22=[10], m23=[14]
+                var gz = Float32(self.ground_z)
+                mirrored_uniforms.model[2] = -mirrored_uniforms.model[2]  # m20
+                mirrored_uniforms.model[6] = -mirrored_uniforms.model[6]  # m21
+                mirrored_uniforms.model[10] = -mirrored_uniforms.model[
+                    10
+                ]  # m22
+                mirrored_uniforms.model[14] = (
+                    -mirrored_uniforms.model[14] + 2.0 * gz
+                )  # m23
+
+                push_gpu_vertex_uniform_data(
+                    cmd_buf,
+                    1,
+                    Ptr(to=mirrored_uniforms).bitcast[NoneType](),
+                    96,
+                )
+                self._select_and_draw(render_pass, self.solid_draws[i])
 
         # ------------------------------------------------------------------
         # Phase C: SOLID OBJECTS (with shadow map sampling)

@@ -78,11 +78,12 @@ void main() {
     total_ambient = min(total_ambient, 1.0);
     vec3 color = in_obj_color.rgb * total_ambient + total_color;
 
-    // Darken and make semi-transparent for reflection effect
-    color *= 0.35;
-    float alpha = 0.35;
+    // ⚠ ALPHA IS THE REFLECTANCE, and the only attenuation — see the MSL twin.
+    // 0.2 is dm_control's `<material name="grid" reflectance=".2">`.
+    float alpha = 0.2;
 
-    // Fade out near edges of ground
+    // Fade out near the edges of the ground. ⚠ LOAD-BEARING with the depth test
+    // off (render_frame Phase B2): it is what keeps a reflection off the sky.
     float dist = length(world_pos.xy - scene.camera_pos.xy);
     alpha *= 1.0 - smoothstep(6.0, 10.0, dist);
 

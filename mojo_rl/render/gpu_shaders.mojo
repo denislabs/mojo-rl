@@ -412,16 +412,19 @@ fragment float4 ground_fragment(
         }
     }
 
-    // Distance fade for smooth ground edge
+    // Distance fade for a smooth ground edge. This one STAYS: without it the
+    // finite ground quad ends in a hard line against the sky.
     float dist = length(in.world_pos.xy - scene.camera_pos.xy);
     float edge_fade = 1.0 - smoothstep(8.0, 12.0, dist);
 
-    // Semi-transparent ground to let reflections show through (rendered underneath)
-    // Textured ground should be more opaque to show the texture clearly
-    float base_alpha = is_textured ? 0.95 : 0.55;
-    float alpha = base_alpha * edge_fade;
-
-    return float4(base_color, alpha);
+    // ⚠ THE GROUND IS OPAQUE. It used to be alpha 0.55 (0.95 textured) so the
+    // reflection pass, drawn UNDERNEATH it, would show through — and what
+    // showed through was not only the reflection. Where no reflected geometry
+    // existed, the remaining 45% was the SKYBOX, so the starfield was visible
+    // THROUGH THE FLOOR. MuJoCo's floor is opaque and its `reflectance` blends
+    // the reflection ON TOP; `render_frame` now does the same, so nothing here
+    // needs to be see-through.
+    return float4(base_color, edge_fade);
 }
 """
 
@@ -576,11 +579,22 @@ fragment float4 reflection_fragment(
     total_ambient = min(total_ambient, 1.0);
     float3 color = in.obj_color.rgb * total_ambient + total_color;
 
-    // Darken and make semi-transparent for reflection effect
-    color *= 0.35;
-    float alpha = 0.35;
+    // ⚠ ALPHA IS THE REFLECTANCE, and it is the ONLY attenuation. The colour
+    // used to be pre-darkened (`color *= 0.35`) as well as blended at 0.35,
+    // which double-counted: MuJoCo's mirror term is
+    // `floor*(1-reflectance) + reflected*reflectance`, one factor, not two.
+    //
+    // 0.2 is dm_control's own number — `<material name="grid" reflectance=".2">`
+    // in `suite/common/materials.xml`, which every suite floor uses. It is a
+    // constant here rather than a uniform because no model we ship differs; a
+    // model that did would need it threaded through SceneUniforms.
+    float alpha = 0.2;
 
-    // Fade out near edges of ground
+    // Fade out near the edges of the ground. ⚠ LOAD-BEARING NOW THAT THIS PASS
+    // RUNS WITH THE DEPTH TEST OFF (see `render_frame` Phase B2): nothing else
+    // stops a reflection from painting onto the sky past the ground's rim. Its
+    // 6→10 fade sits INSIDE the ground's 8→12, so the reflection is always gone
+    // before the floor it is supposed to be lying on is.
     float dist = length(in.world_pos.xy - scene.camera_pos.xy);
     alpha *= 1.0 - smoothstep(6.0, 10.0, dist);
 
