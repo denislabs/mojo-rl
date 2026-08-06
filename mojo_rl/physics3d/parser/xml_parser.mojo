@@ -2818,45 +2818,13 @@ struct ComptimeActData(Copyable, Movable):
 
 
 def _xml_find_joint_dof_adr(xml: String, jname: String) -> Int:
-    """Return DOF address of joint with the given name in worldbody DFS order.
+    """A named joint's DOF address in MuJoCo's element order, or -1.
 
-    Scans joints in DFS order, accumulating DOF count until the target joint
-    is found. Returns -1 if the joint name is not found.
+    Delegates to `_xml_joint_adr_grouped`, which explains why the obvious
+    linear text scan this used to be is WRONG: MuJoCo groups joints by body,
+    and dog is the model where that stops coinciding with text order.
     """
-    var wb = _extract_section(xml, "worldbody")
-    var scan_pos = 0
-    var dof_adr = 0
-    var search_name = 'name="' + jname + '"'
-    while True:
-        var t = wb.find("<joint", scan_pos)
-        if t == -1:
-            break
-        if wb.byte_length() > t + 6:
-            var after = String(wb[byte = t + 6 : t + 7])
-            if (
-                after != " "
-                and after != ">"
-                and after != "/"
-                and after != "\n"
-                and after != "\t"
-            ):
-                scan_pos = t + 6
-                continue
-        var tag_end = wb.find(">", t)
-        if tag_end == -1:
-            break
-        var tag = String(wb[byte = t : tag_end + 1])
-        if tag.find(search_name) != -1:
-            return dof_adr
-        var jtype = _extract_attr(tag, "type")
-        if jtype == "ball":
-            dof_adr += 3
-        elif jtype == "free":
-            dof_adr += 6
-        else:  # hinge, slide, or default (hinge)
-            dof_adr += 1
-        scan_pos = tag_end + 1
-    return -1
+    return _xml_joint_adr_grouped(xml, jname, False)
 
 
 def _find_tag(sec: String, marker: String, start: Int) -> Int:
@@ -2887,6 +2855,94 @@ def _find_tag(sec: String, marker: String, start: Int) -> Int:
             return t
         pos = after_pos
     return -1
+
+
+def _xml_joint_adr_grouped(xml: String, jname: String, want_qpos: Bool) -> Int:
+    """A named joint's qpos/dof address in MuJoCo's element order.
+
+    ⚠ MuJoCo'S ORDER IS NOT XML TEXT ORDER. It emits joints GROUPED BY BODY —
+    all of body 0's, then body 1's, declaration order preserved inside each —
+    and the two coincide only when every body declares its own joints BEFORE
+    its nested `<body>` children. dm_control's dog does not: its `skull`
+    declares 42 teeth after its child bodies, and its spine bodies nest before
+    they joint. `full_parser` already reorders for exactly this reason
+    (`_stable_group_by_body_joints`, defect 7) — this is the same correction on
+    the COMPTIME side, which resolves actuator and tendon transmissions.
+
+    THE DEFECT THIS FIXES. The comptime scanners walked the text linearly, so
+    every one of dog's 38 actuators wrote its force at the wrong dof: `hip_L_
+    supinate` drove dof 8 where MuJoCo drives 17, and the tail tendons drove a
+    descending run of the wrong joints entirely. It is invisible at `ctrl = 0`
+    — which is why the whole step measured exact and only a DRIVEN rollout
+    diverged.
+
+    Body ids are assigned in DFS order at each `<body` open, which is MuJoCo's
+    body order, so accumulating widths over `(body_id, text_index)` reproduces
+    the compiled layout. `want_qpos` picks NQ widths (free 7, ball 4) over NV
+    ones (6, 3); they differ only for those two types.
+    """
+    var wb = _extract_section(xml, "worldbody")
+    var n = wb.byte_length()
+    var search_name = 'name="' + jname + '"'
+
+    # Pass 1: every joint in text order, tagged with the body it belongs to.
+    var jbody = List[Int]()
+    var jwidth = List[Int]()
+    var target = -1
+    var pos = 0
+    var next_body = 0
+    var cur = 0  # the world body, which cannot carry a joint
+    var stack = List[Int]()
+    while pos < n:
+        var t_open = _find_tag(wb, "<body", pos)
+        var t_joint = _find_tag(wb, "<joint", pos)
+        var t_close = wb.find("</body", pos)
+        var t = _min_valid_pos(_min_valid_pos(t_open, t_joint), t_close)
+        if t == -1:
+            break
+        var tag_end = wb.find(">", t)
+        if tag_end == -1:
+            break
+        if t == t_close:
+            if len(stack) > 0:
+                cur = stack.pop()
+            else:
+                cur = 0
+        elif t == t_open:
+            # The id is consumed even by a childless body, or later siblings
+            # would be numbered as though it had never existed.
+            next_body += 1
+            var self_closed = (
+                tag_end >= 1
+                and String(wb[byte = tag_end - 1 : tag_end]) == "/"
+            )
+            if not self_closed:
+                stack.append(cur)
+                cur = next_body
+        else:
+            var tag = String(wb[byte = t : tag_end + 1])
+            var jtype = _trim(_extract_attr(tag, "type"))
+            var w = 1
+            if jtype == "ball":
+                w = 4 if want_qpos else 3
+            elif jtype == "free":
+                w = 7 if want_qpos else 6
+            if target < 0 and tag.find(search_name) != -1:
+                target = len(jbody)
+            jbody.append(cur)
+            jwidth.append(w)
+        pos = tag_end + 1
+
+    if target < 0:
+        return -1
+
+    # Pass 2: sum the widths of every joint that MuJoCo emits before this one.
+    var adr = 0
+    var tbody = jbody[target]
+    for i in range(len(jbody)):
+        if jbody[i] < tbody or (jbody[i] == tbody and i < target):
+            adr += jwidth[i]
+    return adr
 
 
 def _min_valid_pos(a: Int, b: Int) -> Int:
@@ -2934,40 +2990,7 @@ def _xml_find_joint_qpos_adr(xml: String, jname: String) -> Int:
     qpos read and its force lands on a dof — and fish is the first model where
     they diverge, since its root is a free joint ahead of every actuated hinge.
     """
-    var wb = _extract_section(xml, "worldbody")
-    var scan_pos = 0
-    var qpos_adr = 0
-    var search_name = 'name="' + jname + '"'
-    while True:
-        var t = wb.find("<joint", scan_pos)
-        if t == -1:
-            break
-        if wb.byte_length() > t + 6:
-            var after = String(wb[byte = t + 6 : t + 7])
-            if (
-                after != " "
-                and after != ">"
-                and after != "/"
-                and after != "\n"
-                and after != "\t"
-            ):
-                scan_pos = t + 6
-                continue
-        var tag_end = wb.find(">", t)
-        if tag_end == -1:
-            break
-        var tag = String(wb[byte = t : tag_end + 1])
-        if tag.find(search_name) != -1:
-            return qpos_adr
-        var jtype = _extract_attr(tag, "type")
-        if jtype == "ball":
-            qpos_adr += 4
-        elif jtype == "free":
-            qpos_adr += 7
-        else:  # hinge, slide, or default (hinge)
-            qpos_adr += 1
-        scan_pos = tag_end + 1
-    return -1
+    return _xml_joint_adr_grouped(xml, jname, True)
 
 
 def _xml_find_joint_index(xml: String, jname: String) -> Int:
