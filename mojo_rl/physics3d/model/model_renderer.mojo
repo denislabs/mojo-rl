@@ -488,6 +488,21 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         except:
             pass
 
+        # Deformable skin (dog's envelope). Unconditional for the same reason
+        # as the tendons — `render_skin` compiles to nothing on a model with no
+        # `<skin>`, since `has_skin` is comptime.
+        #
+        # ⚠ AFTER THE GEOMS, BEFORE THE TENDONS. The skin is opaque and encloses
+        # the group 0-2 geoms it shares a body with, so drawing it first would
+        # have it depth-fight whatever pokes through; the tendons are lines and
+        # want to sit on top of everything solid.
+        try:
+            Self.MODEL_DEF.render_skin(
+                self.renderer, positions, quaternions
+            )
+        except e:
+            print("render_skin failed:", e)
+
         # Spatial tendons (ball_in_cup's string). Unconditional: models
         # without any record zero of them and the call costs a loop bound.
         try:

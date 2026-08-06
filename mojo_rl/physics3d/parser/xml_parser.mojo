@@ -2419,6 +2419,42 @@ block (skybox, grid), so this one was not being exceeded — but it is the same
 scan, sized the same way, with the same silent-truncation shape, and leaving it
 at 8 next to a 32 just invites the next model to trip it."""
 
+# ── Render-data capacities (`ComptimeRenderData`) ────────────────────────────
+#
+# ⚠ THESE WERE BARE LITERALS — 64 geoms and 16 sites — with a SILENT fill
+# guard (`if geom_count < 64:`) and consumers looping `range(Self.NGEOM)`.
+# dm_control's dog has 128 geoms, so half of them were never written and the
+# renderer indexed past the end: a `debug_assert` in the viewer build, and an
+# OUT-OF-BOUNDS READ in a release one. quadruped (30 sites), humanoid (25) and
+# manipulator (20) were over the site cap the same way.
+#
+# Sized from the measured maxima with headroom (dog 128 geoms, quadruped 30
+# sites), and `init_fields` now RAISES when a model exceeds them rather than
+# truncating — the same rule as MAX_COMPTIME_TENDON_WRAPS.
+comptime MAX_COMPTIME_RENDER_GEOMS: Int = 160
+comptime MAX_COMPTIME_RENDER_SITES: Int = 48
+
+# Body NAMES are deliberately NOT recorded here.
+#
+# A `<skin>`'s bones name the bodies they follow, so binding one needs names —
+# but every way of writing them into this comptime struct is a compile failure in
+# the interpreter, and the failures point at the standard library rather than at
+# the cause. Measured, in order:
+#
+#   · storing a CONSTANT at the DFS site compiles; storing ANY slice there does
+#     not, including a fixed `worldbody[byte=p:p+4]`. So it is the slice.
+#   · hoisting to a top-level pass does not help, on `worldbody` or on
+#     `xml_clean`, with `_extract_attr` or with pure index arithmetic.
+#   · shrinking the array from 96 entries to 8 does not help either.
+#   · the `<texture>` loop below stores `_extract_attr(tag, "name")` from the
+#     same depth and DOES compile, so this is not the slice-depth family in
+#     `feedback_comptime_nested_string_slice_fails`. Whatever separates them was
+#     not worth more bisecting.
+#
+# `ModelDefFromXML.body_names()` extracts them from the model's XML AT RUNTIME
+# instead, where none of this applies — see its note. The XML is already carried
+# as a comptime parameter, so nothing extra is stored to make that possible.
+
 comptime MAX_COMPTIME_ACTUATORS: Int = 64
 """Cap on actuators the comptime parser records (humanoid_CMU needs 56).
 
@@ -3623,26 +3659,44 @@ struct ComptimeRenderData(Copyable, Movable):
     var nsite: Int
 
     # Geoms (max 64)
-    var geom_body_id: InlineArray[Int, 64]
-    var geom_type: InlineArray[Int, 64]
-    var geom_pos_x: InlineArray[Float64, 64]
-    var geom_pos_y: InlineArray[Float64, 64]
-    var geom_pos_z: InlineArray[Float64, 64]
-    var geom_quat_x: InlineArray[Float64, 64]
-    var geom_quat_y: InlineArray[Float64, 64]
-    var geom_quat_z: InlineArray[Float64, 64]
-    var geom_quat_w: InlineArray[Float64, 64]
-    var geom_radius: InlineArray[Float64, 64]
-    var geom_half_length: InlineArray[Float64, 64]
-    var geom_half_x: InlineArray[Float64, 64]
-    var geom_half_y: InlineArray[Float64, 64]
-    var geom_half_z: InlineArray[Float64, 64]
-    var geom_rgba_r: InlineArray[Float64, 64]
-    var geom_rgba_g: InlineArray[Float64, 64]
-    var geom_rgba_b: InlineArray[Float64, 64]
-    var geom_rgba_a: InlineArray[Float64, 64]
-    var geom_material_id: InlineArray[Int, 64]
-    var geom_mesh_id: InlineArray[Int, 64]  # index into mesh_names[], -1 if not mesh
+    var geom_body_id: InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_type: InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_pos_x: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_pos_y: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_pos_z: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_quat_x: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_quat_y: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_quat_z: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_quat_w: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_radius: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_half_length: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_half_x: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_half_y: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_half_z: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_rgba_r: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_rgba_g: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_rgba_b: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_rgba_a: InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_material_id: InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS]
+    var geom_mesh_id: InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS]  # index into mesh_names[], -1 if not mesh
+    var geom_group: InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS]
+    """MuJoCo's `geom group`, default 0.
+
+    ⚠ THIS IS VISIBILITY, and ignoring it is why dog rendered as a skeleton.
+    MuJoCo's viewer draws groups 0-2 and hides the rest; dm_control's dog puts
+    its collision capsules in group 3 (`rgba="0 0.5 0.5"`, the teal you see)
+    and its 162 bone meshes in group 5. Drawing every group means drawing the
+    collision proxy as if it were the model."""
+
+
+# ⚠ NOTHING ABOUT `<skin>` IS RECORDED HERE EITHER, for the same reason as body
+# names above — and dog is the model that proved it. Resolving
+# `<skin material=>` -> `<material texture=>` -> `<texture file=>` needs an
+# attribute read off a tag sliced out of the asset section, and that read is a
+# comptime compile failure the moment it HITS. `ModelDefFromXML.render_skin`
+# does the whole resolution at RUNTIME from `Self.xml`; the only comptime
+# question left is "does this model have a skin at all", which is a `find` and
+# never a slice.
 
     # Mesh assets (max 16) — name and file path for STL loading
     var nmesh: Int
@@ -3718,11 +3772,11 @@ struct ComptimeRenderData(Copyable, Movable):
     var mat_texrepeat_v: InlineArray[Float64, MAX_COMPTIME_MATERIALS]  # texture repeat V (default 1.0)
 
     # Sites (max 16)
-    var site_body_id: InlineArray[Int, 16]
-    var site_pos_x: InlineArray[Float64, 16]
-    var site_pos_y: InlineArray[Float64, 16]
-    var site_pos_z: InlineArray[Float64, 16]
-    var site_size_0: InlineArray[Float64, 16]
+    var site_body_id: InlineArray[Int, MAX_COMPTIME_RENDER_SITES]
+    var site_pos_x: InlineArray[Float64, MAX_COMPTIME_RENDER_SITES]
+    var site_pos_y: InlineArray[Float64, MAX_COMPTIME_RENDER_SITES]
+    var site_pos_z: InlineArray[Float64, MAX_COMPTIME_RENDER_SITES]
+    var site_size_0: InlineArray[Float64, MAX_COMPTIME_RENDER_SITES]
     # Spatial tendons, for DRAWING ONLY. The physics reads its tendon records
     # from the runtime parser; this records the site chain so the renderer can
     # draw the segments, without which ball_in_cup's string is simply absent.
@@ -3756,26 +3810,27 @@ struct ComptimeRenderData(Copyable, Movable):
         self.nmat = 0
         self.nsite = 0
 
-        self.geom_body_id = InlineArray[Int, 64](fill=0)
-        self.geom_type = InlineArray[Int, 64](fill=1)  # SPHERE default
-        self.geom_pos_x = InlineArray[Float64, 64](fill=0.0)
-        self.geom_pos_y = InlineArray[Float64, 64](fill=0.0)
-        self.geom_pos_z = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_x = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_y = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_z = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_w = InlineArray[Float64, 64](fill=1.0)
-        self.geom_radius = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_length = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_x = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_y = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_z = InlineArray[Float64, 64](fill=0.0)
-        self.geom_rgba_r = InlineArray[Float64, 64](fill=0.7)
-        self.geom_rgba_g = InlineArray[Float64, 64](fill=0.7)
-        self.geom_rgba_b = InlineArray[Float64, 64](fill=0.7)
-        self.geom_rgba_a = InlineArray[Float64, 64](fill=1.0)
-        self.geom_material_id = InlineArray[Int, 64](fill=-1)
-        self.geom_mesh_id = InlineArray[Int, 64](fill=-1)
+        self.geom_body_id = InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS](fill=0)
+        self.geom_type = InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS](fill=1)  # SPHERE default
+        self.geom_pos_x = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_pos_y = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_pos_z = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_quat_x = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_quat_y = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_quat_z = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_quat_w = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=1.0)
+        self.geom_radius = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_half_length = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_half_x = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_half_y = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_half_z = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_rgba_r = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.7)
+        self.geom_rgba_g = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.7)
+        self.geom_rgba_b = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.7)
+        self.geom_rgba_a = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=1.0)
+        self.geom_material_id = InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS](fill=-1)
+        self.geom_mesh_id = InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS](fill=-1)
+        self.geom_group = InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS](fill=0)
         self.nmesh = 0
         self.mesh_names = InlineArray[String, 16](fill=String(""))
         self.mesh_files = InlineArray[String, 16](fill=String(""))
@@ -3835,11 +3890,11 @@ struct ComptimeRenderData(Copyable, Movable):
         self.mat_texrepeat_u = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
         self.mat_texrepeat_v = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
 
-        self.site_body_id = InlineArray[Int, 16](fill=0)
-        self.site_pos_x = InlineArray[Float64, 16](fill=0.0)
-        self.site_pos_y = InlineArray[Float64, 16](fill=0.0)
-        self.site_pos_z = InlineArray[Float64, 16](fill=0.0)
-        self.site_size_0 = InlineArray[Float64, 16](fill=0.005)
+        self.site_body_id = InlineArray[Int, MAX_COMPTIME_RENDER_SITES](fill=0)
+        self.site_pos_x = InlineArray[Float64, MAX_COMPTIME_RENDER_SITES](fill=0.0)
+        self.site_pos_y = InlineArray[Float64, MAX_COMPTIME_RENDER_SITES](fill=0.0)
+        self.site_pos_z = InlineArray[Float64, MAX_COMPTIME_RENDER_SITES](fill=0.0)
+        self.site_size_0 = InlineArray[Float64, MAX_COMPTIME_RENDER_SITES](fill=0.005)
         self.nsten = 0
         self.sten_nsite = InlineArray[Int, MAX_COMPTIME_SPATIAL_TENDONS](fill=0)
         self.sten_sites = InlineArray[
@@ -3877,27 +3932,33 @@ struct ComptimeRenderData(Copyable, Movable):
         self.nmat = copy.nmat
         self.nsite = copy.nsite
 
-        self.geom_body_id = InlineArray[Int, 64](fill=0)
-        self.geom_type = InlineArray[Int, 64](fill=1)
-        self.geom_pos_x = InlineArray[Float64, 64](fill=0.0)
-        self.geom_pos_y = InlineArray[Float64, 64](fill=0.0)
-        self.geom_pos_z = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_x = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_y = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_z = InlineArray[Float64, 64](fill=0.0)
-        self.geom_quat_w = InlineArray[Float64, 64](fill=1.0)
-        self.geom_radius = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_length = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_x = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_y = InlineArray[Float64, 64](fill=0.0)
-        self.geom_half_z = InlineArray[Float64, 64](fill=0.0)
-        self.geom_rgba_r = InlineArray[Float64, 64](fill=0.7)
-        self.geom_rgba_g = InlineArray[Float64, 64](fill=0.7)
-        self.geom_rgba_b = InlineArray[Float64, 64](fill=0.7)
-        self.geom_rgba_a = InlineArray[Float64, 64](fill=1.0)
-        self.geom_material_id = InlineArray[Int, 64](fill=-1)
-        self.geom_mesh_id = InlineArray[Int, 64](fill=-1)
-        for i in range(64):
+        self.geom_body_id = InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS](fill=0)
+        self.geom_type = InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS](fill=1)
+        self.geom_pos_x = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_pos_y = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_pos_z = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_quat_x = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_quat_y = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_quat_z = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_quat_w = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=1.0)
+        self.geom_radius = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_half_length = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_half_x = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_half_y = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_half_z = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.0)
+        self.geom_rgba_r = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.7)
+        self.geom_rgba_g = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.7)
+        self.geom_rgba_b = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=0.7)
+        self.geom_rgba_a = InlineArray[Float64, MAX_COMPTIME_RENDER_GEOMS](fill=1.0)
+        self.geom_material_id = InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS](fill=-1)
+        self.geom_mesh_id = InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS](fill=-1)
+        self.geom_group = InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS](fill=0)
+        # ⚠ WAS `range(64)` AGAINST A 160-SLOT ARRAY. The write guard further
+        # down was widened from 64 when dog overflowed it; this copy was not,
+        # so every geom past 63 silently kept its fill value here — the same
+        # defect, in the constructor rather than the parser. Bound both to the
+        # cap so widening it again cannot leave one behind.
+        for i in range(MAX_COMPTIME_RENDER_GEOMS):
             self.geom_body_id[i] = copy.geom_body_id[i]
             self.geom_type[i] = copy.geom_type[i]
             self.geom_pos_x[i] = copy.geom_pos_x[i]
@@ -3918,6 +3979,7 @@ struct ComptimeRenderData(Copyable, Movable):
             self.geom_rgba_a[i] = copy.geom_rgba_a[i]
             self.geom_material_id[i] = copy.geom_material_id[i]
             self.geom_mesh_id[i] = copy.geom_mesh_id[i]
+            self.geom_group[i] = copy.geom_group[i]
         self.nmesh = copy.nmesh
         self.mesh_names = InlineArray[String, 16](fill=String(""))
         self.mesh_files = InlineArray[String, 16](fill=String(""))
@@ -4035,11 +4097,11 @@ struct ComptimeRenderData(Copyable, Movable):
             self.mat_texrepeat_u[i] = copy.mat_texrepeat_u[i]
             self.mat_texrepeat_v[i] = copy.mat_texrepeat_v[i]
 
-        self.site_body_id = InlineArray[Int, 16](fill=0)
-        self.site_pos_x = InlineArray[Float64, 16](fill=0.0)
-        self.site_pos_y = InlineArray[Float64, 16](fill=0.0)
-        self.site_pos_z = InlineArray[Float64, 16](fill=0.0)
-        self.site_size_0 = InlineArray[Float64, 16](fill=0.005)
+        self.site_body_id = InlineArray[Int, MAX_COMPTIME_RENDER_SITES](fill=0)
+        self.site_pos_x = InlineArray[Float64, MAX_COMPTIME_RENDER_SITES](fill=0.0)
+        self.site_pos_y = InlineArray[Float64, MAX_COMPTIME_RENDER_SITES](fill=0.0)
+        self.site_pos_z = InlineArray[Float64, MAX_COMPTIME_RENDER_SITES](fill=0.0)
+        self.site_size_0 = InlineArray[Float64, MAX_COMPTIME_RENDER_SITES](fill=0.005)
         self.nsten = copy.nsten
         self.sten_nsite = InlineArray[Int, MAX_COMPTIME_SPATIAL_TENDONS](fill=0)
         self.sten_sites = InlineArray[
@@ -4057,7 +4119,9 @@ struct ComptimeRenderData(Copyable, Movable):
         self.sten_rgba_b = InlineArray[
             Float64, MAX_COMPTIME_SPATIAL_TENDONS
         ](fill=0.5)
-        for i in range(16):
+        # ⚠ WAS `range(16)` AGAINST A 48-SLOT ARRAY — same stale bound as the
+        # geoms above (quadruped has 30 sites, humanoid 25).
+        for i in range(MAX_COMPTIME_RENDER_SITES):
             self.site_body_id[i] = copy.site_body_id[i]
             self.site_pos_x[i] = copy.site_pos_x[i]
             self.site_pos_y[i] = copy.site_pos_y[i]
@@ -4109,6 +4173,7 @@ struct ComptimeRenderData(Copyable, Movable):
         self.geom_rgba_a = move.geom_rgba_a^
         self.geom_material_id = move.geom_material_id^
         self.geom_mesh_id = move.geom_mesh_id^
+        self.geom_group = move.geom_group^
         self.nmesh = move.nmesh
         self.mesh_names = move.mesh_names^
         self.mesh_files = move.mesh_files^
@@ -4609,6 +4674,7 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
 
     # ---- DFS scan <worldbody>: geoms, lights, cameras, sites -----------------
     var worldbody = _extract_section(xml_clean, "worldbody")
+
     var body_id_stack = InlineArray[Int, 65](fill=0)
     # MJCF `childclass` applies to every DESCENDANT of the body that declares
     # it, so it has to ride the body stack rather than be read per element.
@@ -4622,6 +4688,7 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
     # caching by class name turns O(geoms x attrs) scans into O(classes x
     # attrs). quadruped: 64 walks becomes about 20.
     var cls_names = InlineArray[String, 24](fill=String(""))
+    var cls_group = InlineArray[String, 24](fill=String(""))
     var cls_type = InlineArray[String, 24](fill=String(""))
     var cls_size = InlineArray[String, 24](fill=String(""))
     var cls_fromto = InlineArray[String, 24](fill=String(""))
@@ -4635,8 +4702,8 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
     # and fell through to the default rgba, which is why the suite rendered
     # white/grey. Resolving it here, where `ci` exists, is the whole fix; the
     # post-pass then has nothing left to look up.
-    var geom_mat_name = InlineArray[String, 64](fill=String(""))
-    var geom_has_rgba = InlineArray[Bool, 64](fill=False)
+    var geom_mat_name = InlineArray[String, MAX_COMPTIME_RENDER_GEOMS](fill=String(""))
+    var geom_has_rgba = InlineArray[Bool, MAX_COMPTIME_RENDER_GEOMS](fill=False)
     var n_cls = 0
     var depth = 0
     var body_count = 0
@@ -4722,9 +4789,17 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                 cls_material[n_cls] = _class_attr_inherited(
                     xml_clean, geom_cls, "geom", "material"
                 )
+                # ⚠ INHERITED, NOT READ OFF THE GEOM. dog declares
+                # `group="3"` once on `<default class="collision_primitive">`
+                # and never repeats it on a single geom, so a per-element read
+                # would see nothing and default every capsule to the visible
+                # group 0 — exactly the bug this field exists to fix.
+                cls_group[n_cls] = _class_attr_inherited(
+                    xml_clean, geom_cls, "geom", "group"
+                )
                 ci = n_cls
                 n_cls += 1
-            if geom_count < 64:
+            if geom_count < MAX_COMPTIME_RENDER_GEOMS:
                 data.geom_body_id[geom_count] = current_body
                 var type_s = _extract_attr(tag, "type")
                 if type_s.byte_length() == 0:
@@ -4740,6 +4815,11 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                             if data.mesh_names[mi] == mesh_ref:
                                 data.geom_mesh_id[geom_count] = mi
                                 break
+                var group_s = _extract_attr(tag, "group")
+                if group_s.byte_length() == 0:
+                    group_s = cls_group[ci] if ci >= 0 else String("")
+                if group_s.byte_length() > 0:
+                    data.geom_group[geom_count] = Int(_parse_float(group_s))
                 var fromto_s = _extract_attr(tag, "fromto")
                 if fromto_s.byte_length() == 0:
                     fromto_s = cls_fromto[ci] if ci >= 0 else String("")
@@ -5000,7 +5080,7 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
         elif earliest == next_site:
             var current_body = body_id_stack[depth]
             var tag = _extract_opening_tag(worldbody, next_site)
-            if site_count < 16:
+            if site_count < MAX_COMPTIME_RENDER_SITES:
                 data.site_body_id[site_count] = current_body
                 # `fromto` supersedes `pos` on a site exactly as it does on a
                 # geom (user_objects.cc:3841). This record has no quaternion
@@ -5138,7 +5218,10 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
     # Names were gathered in the geom loop above, WITH the class chain applied;
     # this pass only turns each into an index and applies the material's colour
     # where the geom did not state one of its own.
-    var n_resolved = geom_count if geom_count < 64 else 64
+    var n_resolved = (
+        geom_count if geom_count < MAX_COMPTIME_RENDER_GEOMS
+        else MAX_COMPTIME_RENDER_GEOMS
+    )
     for geom_idx in range(n_resolved):
         var mat_name = geom_mat_name[geom_idx]
         if mat_name.byte_length() > 0:

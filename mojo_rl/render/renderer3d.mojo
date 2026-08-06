@@ -185,6 +185,8 @@ from .gpu_types import (
 from .sdl.sdl_keyboard import get_mod_state
 from .sdl.sdl_keycode import Keymod
 from .stl_loader import load_stl
+from .skn_loader import load_skn, SkinData
+from .skinning import resolve_skin_bones, skin_pose
 from .gpu_mesh import (
     generate_sphere,
     generate_box,
@@ -268,6 +270,78 @@ struct LineColorEntry(Copyable, Movable):
         out[2] = self.b
         out[3] = self.a
         return out^
+
+
+struct SkinCacheEntry(Movable):
+    """A loaded skin: its rest data, its bone->body map, and its GPU home.
+
+    ⚠ THE GPU SIDE LIVES IN `mesh_cache`, not here. The posed skin is an
+    ordinary indexed triangle mesh once it has been deformed, so it is drawn by
+    the existing mesh path (`SolidDrawCommand.is_mesh`) and its buffers are
+    released by the existing `_release_model_caches`. What this entry adds is
+    the CPU state a mesh geom never needs: the rest vertices, the bones, and
+    the scratch the per-frame deformation writes into.
+
+    ⚠ THE SCRATCH IS FIELDS, NOT LOCALS, and that is the point. `draw_skin`
+    runs every frame; allocating 24k vertices' worth of `List` per frame would
+    cost more than the skinning does.
+    """
+
+    var name: String
+    var skin: SkinData
+    var bone_body: List[Int]
+    var n_unbound: Int
+    """Bones whose body name matched nothing. Reported once at load — the
+    symptom is a collapsed region of the mesh, never an error."""
+
+    var mesh_idx: Int
+    """Index into `mesh_cache`. Its vertex buffer is rewritten every frame; its
+    index buffer never changes, since deformation moves vertices and not
+    topology."""
+
+    var transfer: Ptr[GPUTransferBuffer, MutUntrackedOrigin]
+    """Persistent upload staging. ⚠ ALLOCATED ONCE. Creating a transfer buffer
+    per frame is the shape that has burned this codebase before."""
+    var vbuf_bytes: Int
+
+    var posed: List[Float32]
+    var normals: List[Float32]
+    var verts: List[GPUVertex]
+
+    def __init__[
+        tb_o: MutOrigin, //
+    ](
+        out self,
+        var name: String,
+        var skin: SkinData,
+        var bone_body: List[Int],
+        n_unbound: Int,
+        mesh_idx: Int,
+        transfer: Ptr[GPUTransferBuffer, tb_o],
+        vbuf_bytes: Int,
+    ):
+        self.name = name^
+        self.skin = skin^
+        self.bone_body = bone_body^
+        self.n_unbound = n_unbound
+        self.mesh_idx = mesh_idx
+        self.transfer = untracked(transfer)
+        self.vbuf_bytes = vbuf_bytes
+        self.posed = List[Float32]()
+        self.normals = List[Float32]()
+        self.verts = List[GPUVertex]()
+
+    def __init__(out self, *, deinit move: Self):
+        self.name = move.name^
+        self.skin = move.skin^
+        self.bone_body = move.bone_body^
+        self.n_unbound = move.n_unbound
+        self.mesh_idx = move.mesh_idx
+        self.transfer = move.transfer
+        self.vbuf_bytes = move.vbuf_bytes
+        self.posed = move.posed^
+        self.normals = move.normals^
+        self.verts = move.verts^
 
 
 @fieldwise_init
@@ -386,6 +460,10 @@ struct Renderer3D(Movable):
         CapsuleCacheEntry
     ]  # Same cache type (radius, half_height)
     var mesh_cache: List[MeshCacheEntry]
+    var skin_cache: List[SkinCacheEntry]
+    """Deformable skins. Separate from `mesh_cache` because a skin carries CPU
+    state a rigid mesh never needs; its GPU buffers still live in `mesh_cache`.
+    See `SkinCacheEntry`."""
 
     # Texture cache for PNG textures
     var texture_cache: List[TextureCacheEntry]
@@ -607,6 +685,7 @@ struct Renderer3D(Movable):
         self.capsule_cache = List[CapsuleCacheEntry]()
         self.cylinder_cache = List[CapsuleCacheEntry]()
         self.mesh_cache = List[MeshCacheEntry]()
+        self.skin_cache = List[SkinCacheEntry]()
 
         # Texture cache
         self.texture_cache = List[TextureCacheEntry]()
@@ -689,6 +768,7 @@ struct Renderer3D(Movable):
         self.capsule_cache = move.capsule_cache^
         self.cylinder_cache = move.cylinder_cache^
         self.mesh_cache = move.mesh_cache^
+        self.skin_cache = move.skin_cache^
         self.texture_cache = move.texture_cache^
         self.default_texture = move.default_texture^
         self.default_tex_sampler = move.default_tex_sampler^
@@ -1072,6 +1152,17 @@ struct Renderer3D(Movable):
                 self.device.value(), self.texture_cache[i].sampler
             )
         self.texture_cache.clear()
+
+        # ⚠ THE SKIN'S VERTEX/INDEX BUFFERS ARE ALREADY GONE — they live in
+        # `mesh_cache`, released above. What is left here is the persistent
+        # upload staging, which nothing else owns. Clearing the list too keeps
+        # `mesh_idx` from outliving the `mesh_cache` it points into: on a task
+        # switch that index would otherwise address another model's mesh.
+        for i in range(len(self.skin_cache)):
+            release_gpu_transfer_buffer(
+                self.device.value(), self.skin_cache[i].transfer
+            )
+        self.skin_cache.clear()
 
     def _create_shader_msl(
         self,
@@ -3238,6 +3329,235 @@ struct Renderer3D(Movable):
                 texture_cache_idx=tex_idx,
             )
         )
+
+    def draw_skin(
+        mut self,
+        name: String,
+        skn_path: String,
+        body_names: List[String],
+        xpos: List[Float32],
+        xquat: List[Float32],
+        color: Color = Color(255, 255, 255, 255),
+        shininess: Float32 = 0.4,
+        specular: Float32 = 0.3,
+        texture_name: String = String(""),
+        texture_path: String = String(""),
+    ) raises:
+        """Deform a MuJoCo `.skn` by the current body poses and queue it.
+
+        Args:
+            name: Cache key.
+            skn_path: Path to the binary `.skn`.
+            body_names: Model body names, index-aligned with `xpos`/`xquat`.
+            xpos: World body positions, 3 per body.
+            xquat: World body orientations, 4 per body, (w, x, y, z).
+            color: Modulates the texture.
+            shininess: Specular exponent scaling (0-1).
+            specular: Specular intensity (0-1).
+            texture_name: Cache key for the texture (empty = untextured).
+            texture_path: Path to the PNG (empty = untextured).
+
+        ⚠ THE VERTICES GO UP IN WORLD SPACE, so the draw carries an IDENTITY
+        model matrix. Skinning has already applied each bone's transform; a
+        second one on the GPU would apply the torso's motion twice.
+
+        The first call loads, resolves bones and allocates; every call after it
+        deforms and re-uploads. Failure to LOAD is reported and then swallowed,
+        matching `draw_mesh` — a missing asset should cost you the skin, not
+        the window.
+        """
+        var idx = -1
+        for i in range(len(self.skin_cache)):
+            if self.skin_cache[i].name == name:
+                idx = i
+                break
+
+        if idx < 0:
+            idx = self._load_skin(name, skn_path, body_names)
+            if idx < 0:
+                return
+
+        # ── deform ───────────────────────────────────────────────────────
+        skin_pose(
+            self.skin_cache[idx].skin,
+            self.skin_cache[idx].bone_body,
+            xpos,
+            xquat,
+            self.skin_cache[idx].posed,
+            self.skin_cache[idx].normals,
+        )
+
+        var nv = self.skin_cache[idx].skin.nvert
+        var textured = self.skin_cache[idx].skin.has_texcoords()
+        for v in range(nv):
+            var u = Float32(0)
+            var tv = Float32(0)
+            if textured:
+                u = self.skin_cache[idx].skin.texcoord[2 * v]
+                tv = self.skin_cache[idx].skin.texcoord[2 * v + 1]
+            self.skin_cache[idx].verts[v] = GPUVertex(
+                px=self.skin_cache[idx].posed[3 * v],
+                py=self.skin_cache[idx].posed[3 * v + 1],
+                pz=self.skin_cache[idx].posed[3 * v + 2],
+                nx=self.skin_cache[idx].normals[3 * v],
+                ny=self.skin_cache[idx].normals[3 * v + 1],
+                nz=self.skin_cache[idx].normals[3 * v + 2],
+                u=u,
+                v=tv,
+            )
+
+        # ── upload into the mesh's existing vertex buffer ─────────────────
+        var vb_size = UInt32(self.skin_cache[idx].vbuf_bytes)
+        var mapped = map_gpu_transfer_buffer(
+            self.device.value(), self.skin_cache[idx].transfer, True
+        )
+        unsafe_memcpy(
+            dest=mapped.bitcast[UInt8](),
+            src=UnsafePointer(to=self.skin_cache[idx].verts[0]).bitcast[
+                UInt8
+            ](),
+            count=Int(vb_size),
+        )
+        unmap_gpu_transfer_buffer(
+            self.device.value(), self.skin_cache[idx].transfer
+        )
+
+        var mi = self.skin_cache[idx].mesh_idx
+        var cmd_buf = acquire_gpu_command_buffer(self.device.value())
+        var copy_pass = begin_gpu_copy_pass(cmd_buf)
+        var src = GPUTransferBufferLocation(
+            transfer_buffer=untracked(self.skin_cache[idx].transfer), offset=0
+        )
+        var dst = GPUBufferRegion(
+            buffer=untracked(self.mesh_cache[mi].mesh.vertex_buffer),
+            offset=0,
+            size=vb_size,
+        )
+        # `cycle=True`: the GPU may still be reading last frame's copy of this
+        # buffer, and this is a per-frame overwrite of the whole thing.
+        upload_to_gpu_buffer(copy_pass, Ptr(to=src), Ptr(to=dst), True)
+        end_gpu_copy_pass(copy_pass)
+        submit_gpu_command_buffer(cmd_buf)
+
+        # ── texture ──────────────────────────────────────────────────────
+        var tex_idx = -1
+        if texture_name.byte_length() > 0 and texture_path.byte_length() > 0:
+            for ti in range(len(self.texture_cache)):
+                if self.texture_cache[ti].matches(texture_name):
+                    tex_idx = ti
+                    break
+            if tex_idx < 0:
+                try:
+                    var tex_data = load_png(texture_path)
+                    tex_idx = self.upload_texture(texture_name, tex_data)
+                    print(
+                        "Loaded skin texture '", texture_name, "':",
+                        tex_data.width, "x", tex_data.height,
+                    )
+                except e:
+                    print("Warning: skin texture load failed:", String(e))
+
+        var uniforms = ObjectUniforms()
+        uniforms.model = make_identity_f32()
+        uniforms.color = color_to_vec4(color)
+        uniforms.material[0] = shininess
+        uniforms.material[1] = specular
+        uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else Float32(0.0)
+        uniforms.material[3] = Float32(0.0)
+
+        self.solid_draws.append(
+            SolidDrawCommand(
+                0,
+                uniforms,
+                is_mesh=True,
+                mesh_cache_idx=mi,
+                texture_cache_idx=tex_idx,
+            )
+        )
+
+    def _load_skin(
+        mut self, name: String, skn_path: String, body_names: List[String]
+    ) raises -> Int:
+        """Load a `.skn`, bind its bones and allocate its GPU home. -1 on
+        failure (already reported)."""
+        var skin: SkinData
+        try:
+            skin = load_skn(skn_path)
+        except e:
+            print("Warning: skin load failed:", String(e))
+            return -1
+
+        # ⚠ 16-BIT INDICES. `MeshData` and the mesh draw path are UInt16
+        # throughout, so a skin past 65535 vertices would WRAP silently and
+        # scramble the topology. dog is 24065; refuse anything that would not
+        # fit rather than render a knot.
+        if skin.nvert > 65535:
+            print(
+                "Warning: skin '", name, "' has", skin.nvert,
+                "vertices; the mesh path is 16-bit indexed (max 65535)",
+            )
+            return -1
+
+        var bone_body = resolve_skin_bones(skin, body_names)
+        var n_unbound = 0
+        for b in range(len(bone_body)):
+            if bone_body[b] < 0:
+                n_unbound += 1
+                print(
+                    "Warning: skin bone '", skin.bones[b].body_name,
+                    "' matches no body — that region will collapse",
+                )
+
+        # Seed the buffers from the REST mesh. The first frame overwrites the
+        # vertices anyway; this exists so the index buffer and the allocation
+        # come from the one code path that already works.
+        var seed = MeshData()
+        seed.vertices.reserve(skin.nvert)
+        seed.indices.reserve(3 * skin.nface)
+        var textured = skin.has_texcoords()
+        for v in range(skin.nvert):
+            seed.vertices.append(
+                GPUVertex(
+                    px=skin.vert[3 * v],
+                    py=skin.vert[3 * v + 1],
+                    pz=skin.vert[3 * v + 2],
+                    nz=Float32(1.0),
+                    u=skin.texcoord[2 * v] if textured else Float32(0),
+                    v=skin.texcoord[2 * v + 1] if textured else Float32(0),
+                )
+            )
+        for i in range(3 * skin.nface):
+            seed.indices.append(UInt16(Int(skin.face[i])))
+
+        var vb_bytes = seed.vertex_byte_size()
+        var handle = self._upload_mesh(seed)
+        self.mesh_cache.append(MeshCacheEntry(name, handle^))
+        var mesh_idx = len(self.mesh_cache) - 1
+
+        var tb_info = GPUTransferBufferCreateInfo(
+            usage=GPUTransferBufferUsage.GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            size=UInt32(vb_bytes),
+            props=PropertiesID(0),
+        )
+        var transfer = untracked(
+            create_gpu_transfer_buffer(self.device.value(), Ptr(to=tb_info))
+        )
+
+        var nv = skin.nvert
+        var entry = SkinCacheEntry(
+            name, skin^, bone_body^, n_unbound, mesh_idx, transfer, vb_bytes
+        )
+        for _ in range(nv):
+            entry.verts.append(GPUVertex(px=0, py=0, pz=0))
+        self.skin_cache.append(entry^)
+
+        print(
+            "Loaded skin '", name, "':", nv, "verts,",
+            len(self.skin_cache[len(self.skin_cache) - 1].skin.bones),
+            "bones,", n_unbound, "unbound",
+        )
+        return len(self.skin_cache) - 1
+
 
     def draw_box(
         mut self,

@@ -61,6 +61,8 @@ from .full_parser import parse_xml_full
 from .xml_parser import (
     MAX_COMPTIME_TENDONS,
     MAX_COMPTIME_TENDON_WRAPS,
+    MAX_COMPTIME_RENDER_GEOMS,
+    MAX_COMPTIME_RENDER_SITES,
     MAX_COMPTIME_ACTUATORS,
     MAX_COMPTIME_JOINTS,
     MAX_COMPTIME_MATERIALS,
@@ -90,6 +92,30 @@ from .xml_parser import (
 # Type aliases matching model_def.mojo module scope (required for trait conformance)
 comptime _RVec3 = _Vec3G[DType.float64]
 comptime _RQuat = _QuatG[DType.float64]
+
+
+def _attr_between(src: String, lo: Int, hi: Int, attr: String) -> String:
+    """`attr="value"` inside `src[lo:hi]`, or "".
+
+    A local reader so `body_names` does not depend on the comptime parser's
+    helpers — this one runs at RUNTIME and has no interpreter constraints to
+    respect.
+    """
+    var needle = attr + '="'
+    var nlen = needle.byte_length()
+    var p = src.find(needle, lo)
+    while p != -1 and p < hi:
+        var ok = p == 0
+        if not ok:
+            var c = src.as_bytes()[p - 1]
+            ok = c == 32 or c == 9 or c == 10 or c == 13
+        if ok:
+            var vs = p + nlen
+            var ve = src.find('"', vs)
+            if ve != -1 and ve <= hi:
+                return String(src[byte=vs:ve])
+        p = src.find(needle, p + 1)
+    return String("")
 
 
 @fieldwise_init
@@ -574,6 +600,39 @@ struct ModelDefFromXML[
         # the easy half and the assert is the load-bearing one — this is that
         # assert, and it is why the parse counts the overflow instead of
         # discarding it.
+        # ⚠ SAME RULE FOR THE RENDER RECORD. `ComptimeRenderData`'s geom and
+        # site arrays were bare literals (64 and 16) with a SILENT fill guard
+        # (`if geom_count < 64:`), while every consumer loops `range(NGEOM)`.
+        # dog has 128 geoms, so the viewer indexed 64 past the end — a
+        # `debug_assert` in the viewer build, and an out-of-bounds READ in a
+        # release one. quadruped (30 sites), humanoid (25) and manipulator (20)
+        # were over the site cap identically.
+        #
+        # Checked against NGEOM/NSITE, which come from `parse_xml` and are the
+        # TRUE counts, so this catches the overflow the render fill silently
+        # dropped. No counter is needed on `ComptimeRenderData` itself, which
+        # also avoids touching its constructors — adding fields there has
+        # tripped the comptime interpreter before ("interpreting memcpy can't
+        # get dst memory").
+        if Self.NGEOM > MAX_COMPTIME_RENDER_GEOMS:
+            raise Error(
+                String(
+                    "physics3d: model has ", Self.NGEOM, " geoms but",
+                    " MAX_COMPTIME_RENDER_GEOMS=", MAX_COMPTIME_RENDER_GEOMS,
+                    ". Raise it in xml_parser.mojo; truncating leaves the",
+                    " renderer reading past the end of every geom array.",
+                )
+            )
+        if Self.NSITE > MAX_COMPTIME_RENDER_SITES:
+            raise Error(
+                String(
+                    "physics3d: model has ", Self.NSITE, " sites but",
+                    " MAX_COMPTIME_RENDER_SITES=", MAX_COMPTIME_RENDER_SITES,
+                    ". Raise it in xml_parser.mojo; truncating leaves the",
+                    " renderer reading past the end of every site array.",
+                )
+            )
+
         comptime _acd_wrap = materialize[Self._acd]()
         if _acd_wrap.tendon_wrap_overflow > 0:
             raise Error(
@@ -1488,6 +1547,15 @@ struct ModelDefFromXML[
                 continue
             if bid >= len(positions):
                 continue
+            # ⚠ GROUP IS VISIBILITY, and skipping this check is what drew
+            # dm_control's dog as a teal skeleton. MuJoCo's default
+            # `mjvOption.geomgroup` is 1 for groups 0-2 and 0 for the rest
+            # (`mjv_defaultOption`, engine_vis_init.c:320), and dog parks its
+            # collision capsules in group 3 and its 162 bone meshes in group 5.
+            # Drawing every group means drawing the collision proxy as if it
+            # were the model.
+            if Self._rcd.geom_group[i] >= 3:
+                continue
             # Skip geoms with alpha < 1 (collision-only / semi-transparent)
             if Self._rcd.geom_rgba_a[i] < 0.99:
                 continue
@@ -1593,6 +1661,149 @@ struct ModelDefFromXML[
                             texture_name=tex_name_str,
                             texture_path=tex_file_str,
                         )
+
+    @staticmethod
+    def has_skin() -> Bool:
+        """Whether the model declares a `<skin>`.
+
+        ⚠ A `find` ON THE XML, NOT A PARSED FLAG. Recording anything about the
+        skin in the comptime render data does not compile (see the note above
+        `MAX_COMPTIME_RENDER_GEOMS` in `xml_parser.mojo`) — but `find` never
+        slices, so asking the question is safe even though storing the answer
+        is not. Comptime-resolvable, so a model without a skin still compiles
+        `render_skin` away to nothing.
+        """
+        return Self.xml.find("<skin") != -1
+
+    @staticmethod
+    def geom_group_at(i: Int) -> Int:
+        """MuJoCo's geom `group` for geom `i` — visibility, not a tag.
+
+        Exposed so a test can count what `render_body_geoms` will skip; see the
+        group note there.
+        """
+        return Self._rcd.geom_group[i]
+
+    @staticmethod
+    def body_names() -> List[String]:
+        """Body names by index (0 = worldbody), parsed from the model XML AT
+        RUNTIME.
+
+        ⚠ RUNTIME ON PURPOSE, and it is not a style choice. A `<skin>`'s bones
+        name the bodies they follow and those names live inside the BINARY
+        `.skn`, so the match cannot happen at compile time — which leaves the
+        names needing to survive into runtime somehow. Writing them into the
+        comptime render data does not compile, in every spelling tried (see
+        `xml_parser.mojo`, above `MAX_COMPTIME_RENDER_GEOMS`). The XML is
+        already a comptime parameter of this struct, so materializing it once
+        and scanning it with ORDINARY runtime string code costs nothing extra
+        and is subject to none of those restrictions.
+
+        Document order, which is the order the parser assigns body ids: both
+        walk `<body` opening tags left to right.
+
+        ⚠ CALL IT ONCE. It materializes the whole model XML and rescans it;
+        `render_skin` does so only on the frame that loads the skin.
+        """
+        var src = String(Self.xml)
+        var out = List[String]()
+        out.append(String(""))  # index 0 = worldbody, which has no <body> tag
+
+        var wb = src.find("<worldbody")
+        if wb == -1:
+            return out^
+        var stop = src.find("</worldbody>", wb)
+        if stop == -1:
+            stop = src.byte_length()
+
+        var pos = src.find(">", wb)
+        if pos == -1:
+            return out^
+        pos += 1
+        while True:
+            var bt = src.find("<body", pos)
+            if bt == -1 or bt >= stop:
+                break
+            var bte = src.find(">", bt)
+            if bte == -1:
+                break
+            out.append(_attr_between(src, bt, bte, "name"))
+            pos = bte + 1
+        return out^
+
+    @staticmethod
+    def render_skin(
+        mut renderer: Renderer3D,
+        positions: List[_RVec3],
+        quaternions: List[_RQuat],
+    ) raises:
+        """Deform and draw the model's `<skin>`, if it has one.
+
+        The skin is the ENVELOPE MuJoCo actually shows for a model like dog —
+        the geoms it draws alongside are only those in groups 0-2. See
+        `render_body_geoms` for the group rule.
+        """
+        comptime if Self.xml.find("<skin") == -1:
+            return
+        else:
+            # ⚠ THE WHOLE ASSET CHAIN IS WALKED AT RUNTIME, from the XML this
+            # struct already carries. `<skin file= material=>` ->
+            # `<material texture=>` -> `<texture file=>` is three attribute
+            # reads, and doing any of them in the comptime interpreter is a
+            # compile failure the moment it hits. See `body_names`.
+            var src = String(Self.xml)
+            var st = src.find("<skin")
+            if st == -1:
+                return
+            var se = src.find(">", st)
+            if se == -1:
+                return
+
+            var skin_file = _attr_between(src, st, se, "file")
+            if skin_file.byte_length() == 0:
+                return
+            var skin_mat = _attr_between(src, st, se, "material")
+
+            var tex_name = String("")
+            var tex_file = String("")
+            if skin_mat.byte_length() > 0:
+                var want_tex = String("")
+                var mp = 0
+                while True:
+                    var mt = src.find("<material", mp)
+                    if mt == -1:
+                        break
+                    var me = src.find(">", mt)
+                    if me == -1:
+                        break
+                    if _attr_between(src, mt, me, "name") == skin_mat:
+                        want_tex = _attr_between(src, mt, me, "texture")
+                        break
+                    mp = me + 1
+                if want_tex.byte_length() > 0:
+                    var tp = 0
+                    while True:
+                        var tt = src.find("<texture", tp)
+                        if tt == -1:
+                            break
+                        var te = src.find(">", tt)
+                        if te == -1:
+                            break
+                        if _attr_between(src, tt, te, "name") == want_tex:
+                            tex_name = want_tex
+                            tex_file = _attr_between(src, tt, te, "file")
+                            break
+                        tp = te + 1
+
+            renderer.draw_skin(
+                name=skin_file,
+                skn_path=skin_file,
+                body_names=Self.body_names(),
+                xpos=xpos,
+                xquat=xquat,
+                texture_name=tex_name,
+                texture_path=tex_file,
+            )
 
     @staticmethod
     def render_sites(

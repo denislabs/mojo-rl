@@ -738,14 +738,46 @@ comptime _dog_stand_walk_body = _DOG_HEAD + _DOG_FLOOR_STAND_WALK + _DOG_TAIL
 comptime _dog_trot_body = _DOG_HEAD + _DOG_FLOOR_TROT + _DOG_TAIL
 comptime _dog_run_body = _DOG_HEAD + _DOG_FLOOR_RUN + _DOG_TAIL
 
+comptime _DOG_SKIN_ASSETS = """
+<mujoco>
+  <asset>
+    <texture name="skin" type="2d" file="mojo_rl/envs/dm_control/dog/assets/skin_texture.png"/>
+    <material name="skin" texture="skin"/>
+    <skin name="skin" file="mojo_rl/envs/dm_control/dog/assets/dog_skin.skn" material="skin"/>
+  </asset>
+</mujoco>
+"""
+"""dog's deformable envelope — the thing dm_control actually shows you.
+
+⚠ WITHOUT THIS, DOG RENDERS AS A SKELETON. The reference hides everything else:
+its 162 bone meshes sit in geom group 5 and its collision capsules in group 3,
+both of which MuJoCo's viewer leaves invisible (`mjv_defaultOption` enables
+groups 0-2 only). So the picture is the skin, plus the 23 `class="visible_bone"`
+geoms in group 1 — and this port dropped the meshes, which leaves the skin
+carrying the whole image.
+
+⚠ PATHS ARE REPO-ROOT-RELATIVE, matching `sawyer_scene_xml.mojo`. Every command
+in this project runs from the project root; the renderer opens these verbatim.
+
+⚠ NOT PART OF THE PHYSICS, and it must stay that way. A `<skin>` has no
+collision, no inertia and no DOF — MuJoCo treats it as pure visualization. It
+is appended to the model's assets rather than merged into the reference body
+text so that the parity tests, which compare against a MuJoCo model built from
+that same body text, cannot be perturbed by it.
+"""
+
+
 comptime dm_dog_stand_walk_xml = merge_mjcf(
-    dm_skybox_xml, dm_visual_xml, dm_materials_xml, _dog_stand_walk_body
+    dm_skybox_xml, dm_visual_xml, dm_materials_xml, _DOG_SKIN_ASSETS,
+    _dog_stand_walk_body,
 )
 comptime dm_dog_trot_xml = merge_mjcf(
-    dm_skybox_xml, dm_visual_xml, dm_materials_xml, _dog_trot_body
+    dm_skybox_xml, dm_visual_xml, dm_materials_xml, _DOG_SKIN_ASSETS,
+    _dog_trot_body,
 )
 comptime dm_dog_run_xml = merge_mjcf(
-    dm_skybox_xml, dm_visual_xml, dm_materials_xml, _dog_run_body
+    dm_skybox_xml, dm_visual_xml, dm_materials_xml, _DOG_SKIN_ASSETS,
+    _dog_run_body,
 )
 
 comptime dsp = parse_xml(dm_dog_stand_walk_xml)
