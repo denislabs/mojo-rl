@@ -1795,6 +1795,19 @@ struct ModelDefFromXML[
                             break
                         tp = te + 1
 
+            # Flatten the poses `skin_pose` wants: plain float arrays with
+            # (w, x, y, z) quats, which is MuJoCo's order and `_RQuat`'s.
+            var xpos = List[Float32]()
+            var xquat = List[Float32]()
+            for b in range(len(positions)):
+                xpos.append(Float32(positions[b].x))
+                xpos.append(Float32(positions[b].y))
+                xpos.append(Float32(positions[b].z))
+                xquat.append(Float32(quaternions[b].w))
+                xquat.append(Float32(quaternions[b].x))
+                xquat.append(Float32(quaternions[b].y))
+                xquat.append(Float32(quaternions[b].z))
+
             renderer.draw_skin(
                 name=skin_file,
                 skn_path=skin_file,

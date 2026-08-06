@@ -254,6 +254,22 @@ trait ModelDefLike:
         pass
 
     @staticmethod
+    def render_skin(
+        mut renderer: Renderer3D,
+        positions: List[_RVec3],
+        quaternions: List[_RQuat],
+    ) raises:
+        """Deform and draw a MuJoCo `<skin>`. Defaults to nothing.
+
+        A DEFAULT for the same reason the tendons have one: exactly one ported
+        model (dog) declares a skin, and a model definition written before this
+        existed must still conform. `ModelDefFromXML` overrides it and compiles
+        the body away when its XML has no `<skin>`, so the cost to everyone
+        else is zero.
+        """
+        pass
+
+    @staticmethod
     def setup_lights() raises -> List[Light]:
         ...
 
