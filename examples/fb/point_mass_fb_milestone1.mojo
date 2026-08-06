@@ -254,7 +254,8 @@ def main() raises:
         for i in range(BATCH * D):
             z.data[i] = zl[i]
 
-        var l = t.train_step(s, a, s_next, s_plus, z)
+        t.load_batch(s, a, s_next, s_plus, z)
+        var l = t.train_step()
         if step % 250 == 0 or step == TRAIN_STEPS - 1:
             print(
                 "       step", step, " measure", l.measure, " ortho", l.ortho,
