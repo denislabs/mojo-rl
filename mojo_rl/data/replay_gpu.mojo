@@ -21,8 +21,9 @@ comptime flag, so ONE struct replaces both `GPUReplay` and
 
 ⚠ **Capture-safety differs by policy, faithfully.** `size` and the Philox
 `offset` live in DEVICE buffers for the uniform and PER paths — a baked host
-`size` is what `gpu_replay.mojo` calls "the catastrophic-divergence bug", since
-capture would freeze sampling at the warmup fill. ERE passes `size`/`pos`/`c_k`
+`size` is what the legacy `gpu_replay.mojo` (deleted 4d.3) called "the
+catastrophic-divergence bug", since capture would freeze sampling at the warmup
+fill. ERE passes `size`/`pos`/`c_k`
 as host scalars, exactly as the legacy does: the legacy documents ERE as
 deliberately non-capturable (it would need an on-device anneal).
 
@@ -149,8 +150,8 @@ def _gather_batch_kernel[
 # ── device-resident RNG / size bookkeeping ────────────────────────────────
 #
 # `size` and the Philox `offset` live in DEVICE buffers, not host scalars.
-# That is not fussiness: `gpu_replay.mojo` documents a baked host `size` as
-# "the catastrophic-divergence bug" — under CUDA-graph capture it freezes
+# That is not fussiness: the legacy `gpu_replay.mojo` (deleted 4d.3) documented
+# a baked host `size` as "the catastrophic-divergence bug" — under capture it freezes
 # sampling to the capture-time fill (≈ warmup) forever. 4b shipped host
 # scalars here; this restores capture-safety.
 
@@ -757,16 +758,37 @@ struct StoreReplayGpu[
     ) raises:
         """Device multi-env store — the GPU-batched driver path."""
         comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+        # ⚠ The `src_*` buffers arrive as READ-ONLY arguments, so the
+        # LayoutTensor built from one carries an immutable origin and does
+        # NOT convert to the kernel's `MutAnyOrigin` parameter. The rebind is
+        # what legacy `gpu_replay.add_batch` did and is load-bearing: without
+        # it this method simply fails to instantiate (and, being generic, it
+        # stayed silently uncompiled until the first GPU-batched call site).
+        var src_obs_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS)](src_obs))
+        var src_act_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS, Self.ACT), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS, Self.ACT)](src_act))
+        var src_rew_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS)](src_rew))
+        var src_nxt_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS)](src_nxt))
+        var src_dne_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS)](src_dne))
         comptime n_blocks = (N_ENVS * Self.OBS + TPB - 1) // TPB
         comptime kern = _store_batch_kernel[
             N_ENVS, Self.OBS, Self.ACT, Self.CAP, Self.SDT
         ]
         ctx.enqueue_function[kern](
-            LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS)](src_obs),
-            LayoutTensor[DT, Layout.row_major(N_ENVS, Self.ACT)](src_act),
-            LayoutTensor[DT, Layout.row_major(N_ENVS)](src_rew),
-            LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS)](src_nxt),
-            LayoutTensor[DT, Layout.row_major(N_ENVS)](src_dne),
+            src_obs_lt,
+            src_act_lt,
+            src_rew_lt,
+            src_nxt_lt,
+            src_dne_lt,
             LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.obs),
             LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](self.act),
             LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew),
@@ -1028,16 +1050,34 @@ struct StoreReplayGpu[
         mb_sp: DeviceBuffer[DT],
         mb_d: DeviceBuffer[DT],
     ) raises:
+        # Same immutable-origin rebind as `add_batch` — these are the kernel's
+        # DESTINATIONS and arrive read-only, so without it `sample` /
+        # `sample_range` (the MBPO raw-buffer path) fail to instantiate.
+        var mb_s_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N, Self.OBS)](mb_s))
+        var mb_a_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N, Self.ACT), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N, Self.ACT)](mb_a))
+        var mb_r_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N)](mb_r))
+        var mb_sp_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N, Self.OBS)](mb_sp))
+        var mb_d_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N)](mb_d))
         comptime nbg = (N * Self.OBS + TPB - 1) // TPB
         comptime kern = _gather_batch_kernel[
             N, Self.OBS, Self.ACT, Self.CAP, Self.SDT
         ]
         ctx.enqueue_function[kern](
-            LayoutTensor[DT, Layout.row_major(N, Self.OBS)](mb_s),
-            LayoutTensor[DT, Layout.row_major(N, Self.ACT)](mb_a),
-            LayoutTensor[DT, Layout.row_major(N)](mb_r),
-            LayoutTensor[DT, Layout.row_major(N, Self.OBS)](mb_sp),
-            LayoutTensor[DT, Layout.row_major(N)](mb_d),
+            mb_s_lt,
+            mb_a_lt,
+            mb_r_lt,
+            mb_sp_lt,
+            mb_d_lt,
             LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.obs),
             LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](self.act),
             LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew),

@@ -20,7 +20,7 @@ Run:
     pixi run mojo run -I . tests/data/test_replay_gpu_seam.mojo
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceBuffer, DeviceContext
 from std.testing import assert_almost_equal, assert_equal, assert_true
 
 from mojo_rl.nn.constants import DT
@@ -36,6 +36,7 @@ comptime ACT: Int = 2
 comptime CAP: Int = 32
 comptime BATCH: Int = 16
 comptime N_FILL: Int = 50
+comptime N_ENVS: Int = 4
 comptime U8 = DType.uint8
 
 
@@ -244,10 +245,136 @@ def test_u8_roundtrip_exact() raises:
     print("      all", BATCH * OBS, "elements exact  OK")
 
 
+def _dev_from(ctx: DeviceContext, ref vals: List[Scalar[DT]]) raises -> DeviceBuffer[DT]:
+    var b = ctx.enqueue_create_buffer[DT](len(vals))
+    ctx.enqueue_copy(b, vals.unsafe_ptr())
+    return b^
+
+
+def _host(ctx: DeviceContext, ref b: DeviceBuffer[DT], n: Int) raises -> List[Scalar[DT]]:
+    var h = List[Scalar[DT]](unsafe_uninit_length=n)
+    ctx.enqueue_copy(h.unsafe_ptr(), b)
+    ctx.synchronize()
+    return h^
+
+
+def test_add_batch_and_raw_gather() raises:
+    """The two DEVICE-SOURCE surfaces the tests above never touch:
+    `add_batch[N_ENVS]` (the GPU-batched driver's store) and
+    `sample` / `sample_range` (MBPO's raw-DeviceBuffer gather).
+
+    Both take their buffers as READ-ONLY arguments, which is exactly what
+    made them fail to instantiate: a `LayoutTensor` built from a borrowed
+    `DeviceBuffer` carries an immutable origin and does not convert to the
+    kernel's `MutAnyOrigin` parameter. Being generic, neither body was
+    compiled at all until a call site instantiated it — no gate did, so the
+    defect surfaced only in the SAC batched physics3d smoke test.
+
+    `sample_range(row, row+1)` has span 1, so the drawn index is `row`
+    deterministically: that turns the random sampler into an exact
+    gather-by-index and lets this check VALUES, not just that it compiles.
+    """
+    print("[6] add_batch[N_ENVS] + raw-buffer gather ...")
+    var ctx = DeviceContext()
+    var buf = StoreReplayGpu[OBS, ACT, CAP].make(ctx)
+
+    comptime ROUNDS = 2
+    for rd in range(ROUNDS):
+        var ho = List[Scalar[DT]](length=N_ENVS * OBS, fill=Scalar[DT](0))
+        var ha = List[Scalar[DT]](length=N_ENVS * ACT, fill=Scalar[DT](0))
+        var hr = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0))
+        var hn = List[Scalar[DT]](length=N_ENVS * OBS, fill=Scalar[DT](0))
+        var hd = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0))
+        for e in range(N_ENVS):
+            var row = rd * N_ENVS + e
+            var o = _obs_for(row)
+            var nx = _nxt_for(row)
+            var a = _act_for(row)
+            for i in range(OBS):
+                ho[e * OBS + i] = o[i]
+                hn[e * OBS + i] = nx[i]
+            for j in range(ACT):
+                ha[e * ACT + j] = a[j]
+            hr[e] = Scalar[DT](Float64(row) * 0.25)
+            hd[e] = Scalar[DT](Float64(row % 2))
+        var so = _dev_from(ctx, ho)
+        var sa = _dev_from(ctx, ha)
+        var sr = _dev_from(ctx, hr)
+        var sn = _dev_from(ctx, hn)
+        var sd = _dev_from(ctx, hd)
+        buf.add_batch[N_ENVS](ctx, so, sa, sr, sn, sd)
+        ctx.synchronize()
+
+    comptime STORED = ROUNDS * N_ENVS
+    assert_equal(buf.count(), STORED, "add_batch must advance size by N_ENVS")
+
+    var mb_s = ctx.enqueue_create_buffer[DT](OBS)
+    var mb_a = ctx.enqueue_create_buffer[DT](ACT)
+    var mb_r = ctx.enqueue_create_buffer[DT](1)
+    var mb_sp = ctx.enqueue_create_buffer[DT](OBS)
+    var mb_d = ctx.enqueue_create_buffer[DT](1)
+    for row in range(STORED):
+        buf.sample_range[1](ctx, row, row + 1, mb_s, mb_a, mb_r, mb_sp, mb_d)
+        var gs = _host(ctx, mb_s, OBS)
+        var ga = _host(ctx, mb_a, ACT)
+        var gr = _host(ctx, mb_r, 1)
+        var gn = _host(ctx, mb_sp, OBS)
+        var gd = _host(ctx, mb_d, 1)
+        var eo = _obs_for(row)
+        var en = _nxt_for(row)
+        var ea = _act_for(row)
+        for i in range(OBS):
+            assert_almost_equal(
+                Float64(gs[i]), Float64(eo[i]), atol=1e-6,
+                msg="obs[" + String(i) + "] of stored row " + String(row),
+            )
+            assert_almost_equal(
+                Float64(gn[i]), Float64(en[i]), atol=1e-6,
+                msg="next_obs[" + String(i) + "] of stored row " + String(row),
+            )
+        for j in range(ACT):
+            assert_almost_equal(
+                Float64(ga[j]), Float64(ea[j]), atol=1e-6,
+                msg="act[" + String(j) + "] of stored row " + String(row),
+            )
+        assert_almost_equal(
+            Float64(gr[0]), Float64(row) * 0.25, atol=1e-6,
+            msg="reward of stored row " + String(row),
+        )
+        assert_almost_equal(
+            Float64(gd[0]), Float64(row % 2), atol=1e-6,
+            msg="done of stored row " + String(row),
+        )
+    print("      all", STORED, "batched rows round-trip exactly  OK")
+
+    # `sample` (uniform, no range) — the other raw-buffer entry point.
+    var us = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
+    var ua = ctx.enqueue_create_buffer[DT](N_ENVS * ACT)
+    var ur = ctx.enqueue_create_buffer[DT](N_ENVS)
+    var un = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
+    var ud = ctx.enqueue_create_buffer[DT](N_ENVS)
+    buf.sample[N_ENVS](ctx, us, ua, ur, un, ud)
+    var hs = _host(ctx, us, N_ENVS * OBS)
+    for k in range(N_ENVS):
+        # obs[0] of stored row r is r*10, so the decoded row must be live.
+        var r = Int(Float64(hs[k * OBS]) / 10.0 + 0.5)
+        assert_true(
+            r >= 0 and r < STORED,
+            "uniform raw draw returned row " + String(r) + " outside [0, "
+            + String(STORED) + ")",
+        )
+        assert_almost_equal(
+            Float64(hs[k * OBS]), Float64(r) * 10.0, atol=1e-6,
+            msg="raw gather produced a row that was never stored",
+        )
+    print("      uniform raw gather stays inside the live ring  OK")
+
+
 def main() raises:
     test_uniform_seam()
     test_ere_recency()
     test_ere_per_conflict_raises()
     test_per_seam()
     test_u8_roundtrip_exact()
+    test_add_batch_and_raw_gather()
     print("\n[PASS] StoreReplayGpu seam gate")
