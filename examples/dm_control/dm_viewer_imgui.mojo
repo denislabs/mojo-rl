@@ -1,4 +1,4 @@
-"""Interactive dm_control viewer with a Dear ImGui sidebar — all 43 tasks.
+"""Interactive dm_control viewer with a Dear ImGui sidebar — all 47 tasks.
 
     pixi run build-imgui                                   # ONCE
     pixi run mojo run -I . examples/dm_control/dm_viewer_imgui.mojo
@@ -47,7 +47,7 @@ def main() raises:
     var start = String(args[1]) if len(args) > 1 else String("quadruped_walk")
     var task = task_index(start)
     if task < 0:
-        print("unknown task:", start, "— the 43 registered tasks are:")
+        print("unknown task:", start, "— the 47 registered tasks are:")
         print_task_list()
         return
 

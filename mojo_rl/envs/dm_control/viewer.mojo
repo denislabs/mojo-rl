@@ -1,4 +1,4 @@
-"""Interactive dm_control viewer — the TASK REGISTRY and the 43-arm dispatch.
+"""Interactive dm_control viewer — the TASK REGISTRY and the 47-arm dispatch.
 
     from mojo_rl.envs.dm_control.viewer import run_viewer, task_index
     run_viewer(task, drive, scale)
@@ -17,23 +17,30 @@ THE OTHER HALF IS `viewer_core.mojo` — state, sidebar and the per-task run
 loop, none of which names a task. Everything task-agnostic belongs there.
 
 COMPILE COST LIVES IN `dispatch`. Each task is a distinct compile-time
-`Phyics3dEnv[MODEL, CONFIG]`, and `dispatch` is the one place all 43 are
+`Phyics3dEnv[MODEL, CONFIG]`, and `dispatch` is the one place all 47 are
 named — so build time is roughly proportional to its arm count and to how
 much code `run_view` carries PER ARM. Two consequences, both load-bearing:
 
   · `build_sidebar` is NOT generic. It takes plain data in and returns
-    requests out, so 43 instantiations share one copy of the widget code
-    instead of stamping out 43. Keep it that way when adding features —
+    requests out, so 47 instantiations share one copy of the widget code
+    instead of stamping out 47. Keep it that way when adding features —
     anything that can be phrased over plain values belongs in `viewer_core`.
 
-  · IMPORTING THIS MODULE COSTS ALL 43, whether or not you call `dispatch`.
+  · IMPORTING THIS MODULE COSTS ALL 47, whether or not you call `dispatch`.
     That is why the split exists: a front end that wants two tasks imports
     `viewer_core` and writes its own two-arm dispatch, and compiles in
     seconds. `examples/dm_control/dm_viewer_imgui_two.mojo` is that front
     end, and is the one to iterate against while working on the viewer.
 
-⚠ DOG IS DELIBERATELY ABSENT. It is still being ported in parallel; adding it
-here would couple this file to a moving target.
+⚠ `dog_fetch` IS ABSENT, the other four dog tasks are not. Fetch is Phase 5 of
+the dog port: it keeps the ball and the target, which adds a free joint
+(njnt 75 / nq 87) and a second free-jointed object to collide. The same goes
+for `quadruped_fetch`'s dog-sized sibling — do not read the four dog entries
+as "dog is finished".
+
+⚠ DOG IS THE EXPENSIVE ARM. Its three models are the largest in the suite, so
+they dominate this file's already-long build; if you are iterating on viewer
+behaviour rather than on dog, use `dm_viewer_imgui_two.mojo`.
 
 WHAT THIS IS FOR. It answers "is the model built and posed the way I think" —
 geometry, joint axes, ranges, the reset pose, whether anything falls through
@@ -64,6 +71,17 @@ from mojo_rl.envs.dm_control.cartpole.cartpole_xml import (
 from mojo_rl.envs.dm_control.cartpole.cartpole_config import DMCartpoleConfig
 from mojo_rl.envs.dm_control.cheetah.cheetah_xml import DMCheetahModel
 from mojo_rl.envs.dm_control.cheetah.cheetah_config import DMCheetahConfig
+# ⚠ THREE MODELS FOR FOUR TASKS. `dog.py::make_model` rewrites the floor's
+# half-extent to `move_speed * 15`, so stand and walk share one model (15),
+# trot has its own (45) and run a third (135) — `DMDogStandConfig` is what
+# separates stand from walk on the shared one.
+from mojo_rl.envs.dm_control.dog.dog_xml import (
+    DMDogStandWalkModel, DMDogTrotModel, DMDogRunModel,
+    DOG_WALK_SPEED, DOG_TROT_SPEED, DOG_RUN_SPEED,
+)
+from mojo_rl.envs.dm_control.dog.dog_config import (
+    DMDogStandConfig, DMDogMoveConfig,
+)
 from mojo_rl.envs.dm_control.finger.finger_xml import (
     DMFingerSpinModel, DMFingerTurnModel,
 )
@@ -123,7 +141,9 @@ from mojo_rl.envs.dm_control.quadruped.quadruped_config import (
 from mojo_rl.envs.dm_control.quadruped.quadruped_fetch_config import (
     DMQuadrupedFetchConfig,
 )
-from mojo_rl.envs.dm_control.reacher.reacher_xml import DMReacherModel
+from mojo_rl.envs.dm_control.reacher.reacher_xml import (
+    DMReacherModel, DMReacherHardModel,
+)
 from mojo_rl.envs.dm_control.reacher.reacher_config import DMReacherConfig
 from mojo_rl.envs.dm_control.stacker.stacker_xml import (
     DMStacker2Model, DMStacker4Model,
@@ -140,7 +160,7 @@ from mojo_rl.envs.dm_control.walker.walker_config import DMWalkerConfig
 
 
 def task_names() -> List[String]:
-    """The 43 tasks, in the order `dispatch` indexes them.
+    """The 47 tasks, in the order `dispatch` indexes them.
 
     ⚠ THIS LIST AND `dispatch` ARE POSITIONALLY COUPLED. Index i here must be
     the arm `st.task == i` there; a mismatch shows up as clicking one robot and
@@ -159,6 +179,10 @@ def task_names() -> List[String]:
     t.append(String("cartpole_two_poles"))
     t.append(String("cartpole_three_poles"))
     t.append(String("cheetah_run"))
+    t.append(String("dog_stand"))
+    t.append(String("dog_walk"))
+    t.append(String("dog_trot"))
+    t.append(String("dog_run"))
     t.append(String("finger_spin"))
     t.append(String("finger_turn_easy"))
     t.append(String("finger_turn_hard"))
@@ -196,12 +220,13 @@ def task_names() -> List[String]:
 
 
 def domain_names() -> List[String]:
-    """The 17 domains, in the order `task_domain` indexes them."""
+    """The 18 domains, in the order `task_domain` indexes them."""
     var d = List[String]()
     d.append(String("acrobot"))
     d.append(String("ball_in_cup"))
     d.append(String("cartpole"))
     d.append(String("cheetah"))
+    d.append(String("dog"))
     d.append(String("finger"))
     d.append(String("fish"))
     d.append(String("hopper"))
@@ -233,38 +258,40 @@ def task_domain() -> List[Int]:
     for _ in range(6):
         t.append(2)   # cartpole
     t.append(3)       # cheetah
-    for _ in range(3):
-        t.append(4)   # finger
-    for _ in range(2):
-        t.append(5)   # fish
-    for _ in range(2):
-        t.append(6)   # hopper
     for _ in range(4):
-        t.append(7)   # humanoid
+        t.append(4)   # dog  (stand, walk, trot, run)
     for _ in range(3):
-        t.append(8)   # humanoid_cmu
+        t.append(5)   # finger
+    for _ in range(2):
+        t.append(6)   # fish
+    for _ in range(2):
+        t.append(7)   # hopper
     for _ in range(4):
-        t.append(9)   # manipulator
-    t.append(10)      # pendulum
-    for _ in range(2):
-        t.append(11)  # point_mass
+        t.append(8)   # humanoid
     for _ in range(3):
-        t.append(12)  # quadruped  (walk, run, fetch)
+        t.append(9)   # humanoid_cmu
+    for _ in range(4):
+        t.append(10)  # manipulator
+    t.append(11)      # pendulum
     for _ in range(2):
-        t.append(13)  # reacher
-    for _ in range(2):
-        t.append(14)  # stacker
-    for _ in range(2):
-        t.append(15)  # swimmer
+        t.append(12)  # point_mass
     for _ in range(3):
-        t.append(16)  # walker
+        t.append(13)  # quadruped  (walk, run, fetch)
+    for _ in range(2):
+        t.append(14)  # reacher
+    for _ in range(2):
+        t.append(15)  # stacker
+    for _ in range(2):
+        t.append(16)  # swimmer
+    for _ in range(3):
+        t.append(17)  # walker
     return t^
 
 
 def dispatch(mut st: ViewerState) raises:
     """Run whichever task `st.task` names, and return when it wants another.
 
-    ⚠ INDEX ORDER MUST MATCH `task_names`. This is the one place all 43
+    ⚠ INDEX ORDER MUST MATCH `task_names`. This is the one place all 47
     compile-time instantiations are named, and what the build time is
     proportional to.
     """
@@ -290,84 +317,94 @@ def dispatch(mut st: ViewerState) raises:
     elif st.task == 9:
         run_view[DMCheetahModel, DMCheetahConfig](name, st)
     elif st.task == 10:
-        run_view[DMFingerSpinModel, DMFingerSpinConfig](name, st)
+        run_view[DMDogStandWalkModel, DMDogStandConfig](name, st)
     elif st.task == 11:
-        run_view[DMFingerTurnModel, DMFingerTurnConfig[0.07]](name, st)
+        run_view[
+            DMDogStandWalkModel, DMDogMoveConfig[DOG_WALK_SPEED]
+        ](name, st)
     elif st.task == 12:
-        run_view[DMFingerTurnModel, DMFingerTurnConfig[0.03]](name, st)
+        run_view[DMDogTrotModel, DMDogMoveConfig[DOG_TROT_SPEED]](name, st)
     elif st.task == 13:
-        run_view[DMFishUprightModel, DMFishUprightConfig](name, st)
+        run_view[DMDogRunModel, DMDogMoveConfig[DOG_RUN_SPEED]](name, st)
     elif st.task == 14:
-        run_view[DMFishSwimModel, DMFishSwimConfig](name, st)
+        run_view[DMFingerSpinModel, DMFingerSpinConfig](name, st)
     elif st.task == 15:
-        run_view[DMHopperModel, DMHopperConfig[False]](name, st)
+        run_view[DMFingerTurnModel, DMFingerTurnConfig[0.07]](name, st)
     elif st.task == 16:
-        run_view[DMHopperModel, DMHopperConfig[True]](name, st)
+        run_view[DMFingerTurnModel, DMFingerTurnConfig[0.03]](name, st)
     elif st.task == 17:
-        run_view[DMHumanoidModel, DMHumanoidConfig[0.0, False]](name, st)
+        run_view[DMFishUprightModel, DMFishUprightConfig](name, st)
     elif st.task == 18:
-        run_view[DMHumanoidModel, DMHumanoidConfig[WALK_SPEED, False]](name, st)
+        run_view[DMFishSwimModel, DMFishSwimConfig](name, st)
     elif st.task == 19:
-        run_view[DMHumanoidModel, DMHumanoidConfig[RUN_SPEED, False]](name, st)
+        run_view[DMHopperModel, DMHopperConfig[False]](name, st)
     elif st.task == 20:
+        run_view[DMHopperModel, DMHopperConfig[True]](name, st)
+    elif st.task == 21:
+        run_view[DMHumanoidModel, DMHumanoidConfig[0.0, False]](name, st)
+    elif st.task == 22:
+        run_view[DMHumanoidModel, DMHumanoidConfig[WALK_SPEED, False]](name, st)
+    elif st.task == 23:
+        run_view[DMHumanoidModel, DMHumanoidConfig[RUN_SPEED, False]](name, st)
+    elif st.task == 24:
         run_view[
             DMHumanoidPureModel, DMHumanoidConfig[RUN_SPEED, True]
         ](name, st)
-    elif st.task == 21:
+    elif st.task == 25:
         run_view[DMHumanoidCMUModel, DMHumanoidCMUConfig[0.0]](name, st)
-    elif st.task == 22:
+    elif st.task == 26:
         run_view[
             DMHumanoidCMUModel, DMHumanoidCMUConfig[CMU_WALK_SPEED]
         ](name, st)
-    elif st.task == 23:
+    elif st.task == 27:
         run_view[
             DMHumanoidCMUModel, DMHumanoidCMUConfig[CMU_RUN_SPEED]
         ](name, st)
-    elif st.task == 24:
+    elif st.task == 28:
         run_view[
             DMManipulatorBringBallModel, DMManipulatorBringBallConfig
         ](name, st)
-    elif st.task == 25:
+    elif st.task == 29:
         run_view[
             DMManipulatorBringPegModel, DMManipulatorBringPegConfig
         ](name, st)
-    elif st.task == 26:
+    elif st.task == 30:
         run_view[
             DMManipulatorInsertBallModel, DMManipulatorInsertBallConfig
         ](name, st)
-    elif st.task == 27:
+    elif st.task == 31:
         run_view[
             DMManipulatorInsertPegModel, DMManipulatorInsertPegConfig
         ](name, st)
-    elif st.task == 28:
-        run_view[DMPendulumModel, DMPendulumConfig](name, st)
-    elif st.task == 29:
-        run_view[DMPointMassModel, DMPointMassConfig](name, st)
-    elif st.task == 30:
-        run_view[DMPointMassModel, DMPointMassHardConfig](name, st)
-    elif st.task == 31:
-        run_view[DMQuadrupedWalkModel, DMQuadrupedWalkConfig](name, st)
     elif st.task == 32:
-        run_view[DMQuadrupedRunModel, DMQuadrupedRunConfig](name, st)
+        run_view[DMPendulumModel, DMPendulumConfig](name, st)
     elif st.task == 33:
-        run_view[DMQuadrupedFetchModel, DMQuadrupedFetchConfig](name, st)
+        run_view[DMPointMassModel, DMPointMassConfig](name, st)
     elif st.task == 34:
-        run_view[DMReacherModel, DMReacherConfig[0.05]](name, st)
+        run_view[DMPointMassModel, DMPointMassHardConfig](name, st)
     elif st.task == 35:
-        run_view[DMReacherModel, DMReacherConfig[0.015]](name, st)
+        run_view[DMQuadrupedWalkModel, DMQuadrupedWalkConfig](name, st)
     elif st.task == 36:
-        run_view[DMStacker2Model, DMStacker2Config](name, st)
+        run_view[DMQuadrupedRunModel, DMQuadrupedRunConfig](name, st)
     elif st.task == 37:
-        run_view[DMStacker4Model, DMStacker4Config](name, st)
+        run_view[DMQuadrupedFetchModel, DMQuadrupedFetchConfig](name, st)
     elif st.task == 38:
-        run_view[DMSwimmer6Model, DMSwimmerConfig](name, st)
+        run_view[DMReacherModel, DMReacherConfig[0.05]](name, st)
     elif st.task == 39:
-        run_view[DMSwimmer15Model, DMSwimmerConfig](name, st)
+        run_view[DMReacherHardModel, DMReacherConfig[0.015]](name, st)
     elif st.task == 40:
-        run_view[DMWalkerModel, DMWalkerConfig[0.0]](name, st)
+        run_view[DMStacker2Model, DMStacker2Config](name, st)
     elif st.task == 41:
-        run_view[DMWalkerModel, DMWalkerConfig[1.0]](name, st)
+        run_view[DMStacker4Model, DMStacker4Config](name, st)
     elif st.task == 42:
+        run_view[DMSwimmer6Model, DMSwimmerConfig](name, st)
+    elif st.task == 43:
+        run_view[DMSwimmer15Model, DMSwimmerConfig](name, st)
+    elif st.task == 44:
+        run_view[DMWalkerModel, DMWalkerConfig[0.0]](name, st)
+    elif st.task == 45:
+        run_view[DMWalkerModel, DMWalkerConfig[1.0]](name, st)
+    elif st.task == 46:
         run_view[DMWalkerModel, DMWalkerConfig[8.0]](name, st)
     else:
         print("unknown task index:", st.task)
@@ -406,7 +443,7 @@ def run_viewer(start_task: Int, drive: Int, scale: Float64) raises:
 
 
 def task_index(name: String) -> Int:
-    """Task id for one of the 43 registered names, or -1.
+    """Task id for one of the 47 registered names, or -1.
 
     The registry's own lookup; `viewer_core.task_index` is the same search over
     an arbitrary table, since that module is not allowed to know this one.

@@ -1,10 +1,10 @@
 """Task-agnostic half of the dm_control viewer — state, sidebar, run loop.
 
-`viewer.mojo` is the other half: the 43-arm `dispatch` that names every task's
+`viewer.mojo` is the other half: the 47-arm `dispatch` that names every task's
 compile-time `Phyics3dEnv[MODEL, CONFIG]`, plus `run_viewer` around it.
 
 ⚠ THE SPLIT IS A BUILD-TIME LEVER, not tidiness. `dispatch` instantiates
-`run_view` 43 times, and importing the module that holds it pays for all 43
+`run_view` 47 times, and importing the module that holds it pays for all 47
 even if the importer only wants two. Keeping everything task-agnostic HERE lets
 a front end with its own short task list — `examples/dm_control/
 dm_viewer_imgui_two.mojo`, which exists so this code can be exercised in
@@ -290,7 +290,7 @@ def ui_task_tree(
     _ = ig_input_text(String("##filter"), st.filter, String("filter tasks..."))
     var query = st.filter.value()
 
-    # The child is what makes 43 tasks a non-problem: it SCROLLS. The
+    # The child is what makes 47 tasks a non-problem: it SCROLLS. The
     # hand-rolled sidebar had to cap the row count and print
     # "+N more — narrow the filter" instead.
     if ig_begin_child(String("tasks"), 0.0, height, True):
@@ -417,7 +417,7 @@ def build_sidebar(
     """The whole panel, in one NON-GENERIC function.
 
     ⚠ KEEP IT NON-GENERIC. `run_view` is instantiated once per task, so every
-    line inside it is compiled 43 times; every line here is compiled once.
+    line inside it is compiled 47 times; every line here is compiled once.
     Taking the env's state as plain arguments and returning requests is what
     buys that, and it is the difference between the sidebar being free and it
     dominating the build.
@@ -460,7 +460,7 @@ def run_view[
     Returns through `st`: either `st.quit`, or `st.task` now naming a DIFFERENT
     task, which `run_viewer` then launches. It cannot call itself with the new
     task — each task is a separate compile-time instantiation, so recursion
-    would try to instantiate all 43 inside all 43.
+    would try to instantiate all 47 inside all 47.
 
     ⚠ PARAMETERISED ON MODEL+CONFIG, NOT ON THE ENV TYPE. The obvious
     factoring — `def run_view[E: BoxContinuousActionEnv & RenderableEnv](mut
