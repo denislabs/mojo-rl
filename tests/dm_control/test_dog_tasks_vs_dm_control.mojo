@@ -277,15 +277,122 @@ def test_dog_observation_matches_dm_control() raises:
         "the reference observation is not 223 long",
     )
 
+    # ⚠ THE ACCELEROMETER CANNOT BE GATED BY PINNING A POST-STEP STATE, and
+    # dims 160..162 are excluded here and gated separately below.
+    #
+    # Everything else in the observation is a POSITION- or VELOCITY-stage
+    # quantity, so recomputing it with `mj_forward` at our post-step state is
+    # exactly what dm_control would report. The accelerometer is the one
+    # ACCELERATION-stage entry, and dm_control never recomputes that stage
+    # after a step: `Physics.step()` ends with `mj_step1`, which refreshes the
+    # pos/vel stages only, so the accelerometer a task observes belongs to the
+    # state BEFORE the step. Measured on this model (scratch probe):
+    #
+    #     dm_control post-step accel  ==  PRE-step accel      (diff 0.0)
+    #     fresh mj_forward at post-step state                  differs by 23.3
+    #     velocimeter / gyro under both protocols              differ by 0.0
+    #
+    # Our engine agrees with dm_control — `RNE_POST` runs inside the substep,
+    # off that substep's `qacc` — so the 4.516 this file used to report at dim
+    # 162 was the REFERENCE being wrong, not the sensor. A post-step state
+    # simply does not contain the pre-step acceleration; no amount of
+    # tolerance fixes that, and widening OBS_TOL would have buried a correct
+    # sensor under a broken comparison.
+    # ⚠ IT IS NOT JUST THE ACCELEROMETER. Every ACCELERATION-stage sensor has
+    # this property, and dog has two blocks of them — `dog_config` names both:
+    # "accelerometer + the four force sensors need `mj_rnePostConstraint`".
+    # The first pass of this fix excluded only dims 160..162 and the failure
+    # moved straight to dim 169, `foot_forces[0]`, at 2.062. Fixing a symptom
+    # one index at a time is how you end up with a tolerance instead of a gate.
+    #
+    #   160..162  accelerometer      (acceleration stage)
+    #   169..180  foot/hand force x4 (acceleration stage)
+    #
+    # `touch` (181..184) is also acceleration-stage but stays with the pinned
+    # comparison: it is identically zero on both sides at this contact-free
+    # pose, which the block comment below already records as ungated here.
+    comptime ACC_0 = 160
+    comptime ACC_N = 3
+    comptime FRC_0 = 169
+    comptime FRC_N = 12
     var worst = 0.0
     var worst_i = -1
     for i in range(DOG_OBS_DIM):
+        if i >= ACC_0 and i < ACC_0 + ACC_N:
+            continue
+        if i >= FRC_0 and i < FRC_0 + FRC_N:
+            continue
         var d = abs(Float64(obs[i]) - Float64(py=want[i]))
         if d > worst:
             worst = d
             worst_i = i
-    print("  worst |err| over the 223 dims =", worst, "at", worst_i)
-    assert_true(worst <= OBS_TOL, "dog observation differs from dm_control")
+    print(
+        "  worst |err| over the 208 position/velocity-stage dims =",
+        worst, "at", worst_i,
+    )
+    assert_true(
+        worst <= OBS_TOL,
+        "dog observation differs from dm_control on a position- or"
+        " velocity-stage dim — the acceleration-stage sensors are excluded"
+        " here and gated separately below, so this is a real accessor defect",
+    )
+
+    # --- the accelerometer, against dm_control's OWN stepping ---------------
+    # A second MjData is driven from the SAME pre-step state through the same
+    # FRAME_SKIP substeps and finished with `mj_step1`, which is precisely
+    # `Physics._step_with_up_to_date_position_velocity`. Its `sensordata` is
+    # then the accelerometer dm_control would hand the task.
+    #
+    # ⚠ This half DOES depend on the integration agreeing, unlike the pinned
+    # comparison above — that is unavoidable, because the quantity is defined
+    # by a step rather than by a state. It is a fair gate here: the pose is
+    # contact-free by the assert above, and the rollout gate measures the
+    # driven contacting step at 1.23e-13.
+    var dat2 = mujoco.MjData(m)
+    for i in range(NQ):
+        dat2.qpos[i] = qpos[i]
+    for i in range(NV):
+        dat2.qvel[i] = qvel[i]
+    for i in range(NACT):
+        dat2.act[i] = act[i]
+        dat2.ctrl[i] = act[i]
+    mujoco.mj_forward(m, dat2)
+    for _ in range(DOG_FRAME_SKIP):
+        mujoco.mj_step(m, dat2)
+    mujoco.mj_step1(m, dat2)
+
+    var acc_ref = refmod.observation(m, dat2)
+    var worst_acc = 0.0
+    var worst_acc_i = -1
+    var acc_mag = 0.0
+    for k in range(ACC_N + FRC_N):
+        var i = (ACC_0 + k) if k < ACC_N else (FRC_0 + k - ACC_N)
+        var d = abs(Float64(obs[i]) - Float64(py=acc_ref[i]))
+        if d > worst_acc:
+            worst_acc = d
+            worst_acc_i = i
+        var v = abs(Float64(py=acc_ref[i]))
+        if v > acc_mag:
+            acc_mag = v
+    print(
+        "  acceleration-stage (accel + 4 force sensors) vs dm_control"
+        " stepping: worst |err| =", worst_acc, "at", worst_acc_i,
+    )
+
+    # NON-VACUITY: an all-zero acceleration block would pass any tolerance.
+    # dog is under gravity with `act` driving it, so this is far from zero.
+    print("    reference |acc-stage|_inf =", acc_mag, " (must be >> 0)")
+    assert_true(
+        acc_mag > 1.0,
+        "the reference acceleration-stage block is ~zero, so this comparison"
+        " would pass whatever our sensors reported",
+    )
+    assert_true(
+        worst_acc <= OBS_TOL,
+        "an acceleration-stage sensor differs from dm_control's own stepping —"
+        " suspect `RNE_POST`/`cacc`/`cfrc_int` or the substep at which they are"
+        " sampled, NOT the pinned-state accessors above",
+    )
 
     # ⚠ NON-VACUITY, PER BLOCK. A whole block of zeros would sit inside any
     # tolerance if the reference read the same zeros. Measured at this pose:
