@@ -48,7 +48,13 @@ struct DualSampleCpuStep[
         reward: Scalar[DT],
         ref next_obs: List[Scalar[DT]],
         done: Scalar[DT],
-    ):
+    ) raises:
+        """`raises` because `StoreReplay.add` does (the legacy `CPUReplay.add`
+        did not) — the trait already declares `add` as raising, so this is the
+        conformer catching up with its own trait rather than a new failure
+        mode. Same fix as `dual_sample_step.mojo`, which this file was missed
+        alongside in the 4d alias repoint.
+        """
         self.real_buf.value().add(obs, action, reward, next_obs, done)
 
     def synth_add(
@@ -58,7 +64,7 @@ struct DualSampleCpuStep[
         reward: Scalar[DT],
         ref next_obs: List[Scalar[DT]],
         done: Scalar[DT],
-    ):
+    ) raises:
         self.synth_buf.value().add(obs, action, reward, next_obs, done)
 
     # Uniform readiness accessors (mirror DualSampleGpuStep) so the
