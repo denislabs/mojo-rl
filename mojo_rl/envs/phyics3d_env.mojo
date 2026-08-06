@@ -37,6 +37,7 @@ from mojo_rl.core.cont_action import ContAction
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.physics3d.model.model_renderer import ModelRenderer
 from mojo_rl.render.ui import UIRect, UIText
+from mojo_rl.render.renderer3d import RendererHandoff
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -584,10 +585,22 @@ struct Phyics3dEnv[
 
     # ── RenderableEnv (mirrors the legacy env; renders the fields poses) ──
     def init_renderer(mut self) raises -> Bool:
-        return self._init_renderer(show_velocity=True)
+        return self._init_renderer(show_velocity=True, adopt=None)
 
     def init_renderer(mut self, show_velocity: Bool) raises -> Bool:
-        return self._init_renderer(show_velocity=show_velocity)
+        return self._init_renderer(show_velocity=show_velocity, adopt=None)
+
+    def init_renderer(
+        mut self, show_velocity: Bool, adopt: Optional[RendererHandoff]
+    ) raises -> Bool:
+        """Open a window, or take over one another env's renderer detached.
+
+        The adopt path is for tools that swap MODELS behind one window — each
+        model is a different `Phyics3dEnv[...]` type, so the env cannot swap
+        itself; the window has to outlive it. `detach_renderer` produces the
+        handoff. See `RendererHandoff`.
+        """
+        return self._init_renderer(show_velocity=show_velocity, adopt=adopt)
 
     comptime RENDER_WIDTH: Int = 1280
     comptime RENDER_HEIGHT: Int = 720
@@ -595,7 +608,9 @@ struct Phyics3dEnv[
     lay itself out against it, and a hardcoded 1280 in a viewer would silently
     drift the day this changes."""
 
-    def _init_renderer(mut self, show_velocity: Bool) raises -> Bool:
+    def _init_renderer(
+        mut self, show_velocity: Bool, adopt: Optional[RendererHandoff]
+    ) raises -> Bool:
         if self._renderer_initialized:
             return True
 
@@ -610,7 +625,7 @@ struct Phyics3dEnv[
             vel_arrow_scale=0.1,
             show_velocity=show_velocity,
         )
-        renderer.init()
+        renderer.init(adopt)
 
         self._renderer.value().unsafe_write(renderer^)
         self._renderer_initialized = True
@@ -645,6 +660,24 @@ struct Phyics3dEnv[
         self._renderer.value()[].close()
         self._renderer.value().free()
         self._renderer_initialized = False
+
+    def detach_renderer(mut self) raises -> Optional[RendererHandoff]:
+        """Close this env's renderer but KEEP its window and device alive.
+
+        Returns the handoff to give to the next env's
+        `init_renderer(show_velocity, adopt)`, or `None` if there was no
+        renderer to detach.
+
+        ⚠ THE HANDOFF IS NOW THE CALLER'S TO END. Once it exists nothing else
+        owns the window: adopt it, or call `Renderer3D.close_handoff` on it.
+        Dropping it leaks the window, the device and every pipeline on it.
+        """
+        if not self._renderer_initialized:
+            return None
+        var h = self._renderer.value()[].detach()
+        self._renderer.value().free()
+        self._renderer_initialized = False
+        return h^
 
     def is_renderer_open(self) -> Bool:
         if not self._renderer_initialized:

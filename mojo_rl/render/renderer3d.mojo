@@ -270,6 +270,83 @@ struct LineColorEntry(Copyable, Movable):
         return out^
 
 
+@fieldwise_init
+struct RendererHandoff(Copyable, Movable):
+    """The window, device and every MODEL-INDEPENDENT GPU resource, detached
+    from one `Renderer3D` so the next one can adopt them.
+
+    WHY THIS EXISTS. A tool that swaps models — the dm_control viewer — used to
+    destroy the whole renderer per switch, and with it the SDL window. A
+    destroyed window is re-created wherever the OS decides, which on a
+    multi-monitor desktop means it JUMPS BACK to the primary display: the user
+    drags the viewer to an external screen, picks another robot, and the window
+    reappears on the laptop. It also blinks, drops the ImGui context (and with
+    it the sidebar's expanded/scrolled state), and pays for shader compilation,
+    the font atlas and the static meshes all over again.
+
+    ⚠ MODEL-INDEPENDENT IS THE WHOLE CRITERION. Everything here is built from
+    the swapchain format and the window size, never from the model: pipelines,
+    depth/shadow targets, the sphere/box/ground meshes, the line and text
+    buffers, the 1x1 default texture. What is NOT here — the capsule, cylinder,
+    STL and PNG caches — is keyed by the model's geoms and is released by
+    `detach`, because carrying it over would hand the next model the previous
+    one's limb meshes.
+
+    ⚠ `shadow_size` COMES FROM THE MODEL (`<visual shadowsize=>`), so the
+    shadow map is carried but re-created when the sizes disagree. It rides here
+    rather than in the caches because most models agree and re-allocating a
+    4096² depth texture per switch is the one adoption that would visibly cost
+    something.
+    """
+
+    var window: Ptr[Window, MutUntrackedOrigin]
+    var device: Ptr[GPUDevice, MutUntrackedOrigin]
+    var swapchain_format: GPUTextureFormat
+
+    var width: Int
+    var height: Int
+    """The window's size AT DETACH, not the size the renderer was built with.
+    The user may have resized it, and the adopting renderer has to agree with
+    the swapchain or it re-creates the depth texture on its first frame."""
+
+    var solid_pipeline: Ptr[GPUGraphicsPipeline, MutUntrackedOrigin]
+    var ground_pipeline: Ptr[GPUGraphicsPipeline, MutUntrackedOrigin]
+    var line_pipeline: Ptr[GPUGraphicsPipeline, MutUntrackedOrigin]
+    var shadow_pipeline: Ptr[GPUGraphicsPipeline, MutUntrackedOrigin]
+    var reflection_pipeline: Ptr[GPUGraphicsPipeline, MutUntrackedOrigin]
+    var skybox_pipeline: Ptr[GPUGraphicsPipeline, MutUntrackedOrigin]
+    var text_pipeline: Ptr[GPUGraphicsPipeline, MutUntrackedOrigin]
+
+    var depth_texture: Ptr[GPUTexture, MutUntrackedOrigin]
+    var shadow_map: Ptr[GPUTexture, MutUntrackedOrigin]
+    var shadow_sampler: Ptr[GPUSampler, MutUntrackedOrigin]
+    var shadow_size: Int
+
+    var sphere_mesh: MeshHandle
+    var box_mesh: MeshHandle
+    var ground_mesh: MeshHandle
+
+    var line_vertex_buffer: Ptr[GPUBuffer, MutUntrackedOrigin]
+    var line_transfer_buffer: Ptr[GPUTransferBuffer, MutUntrackedOrigin]
+
+    var font_atlas_tex: Ptr[GPUTexture, MutUntrackedOrigin]
+    var font_sampler: Ptr[GPUSampler, MutUntrackedOrigin]
+    var text_vertex_buffer: Ptr[GPUBuffer, MutUntrackedOrigin]
+    var text_index_buffer: Ptr[GPUBuffer, MutUntrackedOrigin]
+    var text_transfer_buffer: Ptr[GPUTransferBuffer, MutUntrackedOrigin]
+
+    var default_texture: Ptr[GPUTexture, MutUntrackedOrigin]
+    var default_tex_sampler: Ptr[GPUSampler, MutUntrackedOrigin]
+
+    var imgui_on: Bool
+    """Whether the ImGui backend is still attached to this window+device.
+
+    It survives a handoff untouched — the context, its font texture and its
+    pipeline all live on the device being carried over — so the adopting
+    renderer must NOT call `ig_init` again. `imgui_init` returns early on
+    `imgui_on`, which is exactly that."""
+
+
 struct Renderer3D(Movable):
     """GPU-accelerated 3D renderer using SDL3 GPU API.
 
@@ -682,6 +759,23 @@ struct Renderer3D(Movable):
 
     def init(mut self, mut title: String) raises:
         """Initialize SDL3, GPU device, pipelines, and static meshes."""
+        self.init(title, None)
+
+    def init(
+        mut self, mut title: String, adopt: Optional[RendererHandoff]
+    ) raises:
+        """Initialize, or ADOPT a `RendererHandoff` from a previous renderer.
+
+        Adopting skips every step below: the window, the device and all the
+        model-independent GPU resources already exist and are simply re-pointed
+        at. That is what lets a model swap keep the same window — same monitor,
+        same position, same size, no blink — instead of destroying it and
+        letting the OS re-place the replacement. See `RendererHandoff`.
+        """
+        if adopt:
+            self._adopt(adopt.value())
+            return
+
         # 1. Init SDL3
         init(InitFlags.INIT_VIDEO)
 
@@ -739,6 +833,245 @@ struct Renderer3D(Movable):
         self._create_default_texture()
 
         self.initialized = True
+
+    def _adopt(mut self, h: RendererHandoff) raises:
+        """Take over a previous renderer's window, device and shared GPU
+        resources. The counterpart of `detach`."""
+        self.window = h.window
+        self.device = h.device
+        self.swapchain_format = h.swapchain_format
+
+        self.solid_pipeline = h.solid_pipeline
+        self.ground_pipeline = h.ground_pipeline
+        self.line_pipeline = h.line_pipeline
+        self.shadow_pipeline = h.shadow_pipeline
+        self.reflection_pipeline = h.reflection_pipeline
+        self.skybox_pipeline = h.skybox_pipeline
+        self.text_pipeline = h.text_pipeline
+
+        self.sphere_mesh = h.sphere_mesh.copy()
+        self.box_mesh = h.box_mesh.copy()
+        self.ground_mesh = h.ground_mesh.copy()
+
+        self.line_vertex_buffer = h.line_vertex_buffer
+        self.line_transfer_buffer = h.line_transfer_buffer
+
+        self.font_atlas_tex = h.font_atlas_tex
+        self.font_sampler = h.font_sampler
+        self.text_vertex_buffer = h.text_vertex_buffer
+        self.text_index_buffer = h.text_index_buffer
+        self.text_transfer_buffer = h.text_transfer_buffer
+
+        self.default_texture = h.default_texture
+        self.default_tex_sampler = h.default_tex_sampler
+
+        self.imgui_on = h.imgui_on
+        self.imgui_frame_open = False
+
+        # ⚠ THE WINDOW'S SIZE WINS, not the size this renderer asked for. The
+        # user may have resized it since the last model was built; disagreeing
+        # with the live swapchain would make `render_frame`'s resize branch fire
+        # on the first frame and throw away the depth texture we just adopted.
+        self.width = h.width
+        self.height = h.height
+        self.camera.set_screen_size(self.scene_width(), self.height)
+        self.depth_texture = h.depth_texture
+
+        # Shadow map resolution is the one adopted resource the MODEL chooses
+        # (`<visual shadowsize=>`), so a disagreement means re-creating it.
+        if self.shadow_size == h.shadow_size:
+            self.shadow_map = h.shadow_map
+            self.shadow_sampler = h.shadow_sampler
+        else:
+            release_gpu_texture(self.device.value(), h.shadow_map)
+            release_gpu_sampler(self.device.value(), h.shadow_sampler)
+            self._create_shadow_resources()
+
+        self.initialized = True
+
+    def detach(mut self) raises -> RendererHandoff:
+        """Release only the MODEL-SPECIFIC GPU state and hand the rest over.
+
+        Leaves `self` uninitialized, so the usual `close()` on the way out is a
+        no-op and the window survives the renderer that opened it. The caller
+        now owns the handoff and MUST either pass it to another renderer's
+        `init` or end it with `close_handoff` — nothing else will free the
+        device.
+
+        ⚠ NOT A CHEAPER `close()`. `close()` still exists and still tears
+        everything down; this is the switch path only.
+        """
+        # Recording is per-renderer bookkeeping (frame counter, output file),
+        # and the next model is a different video. Stop rather than carry.
+        if self.recorder.is_recording:
+            self.recorder.stop()
+        if self.recording_tb:
+            release_gpu_transfer_buffer(
+                self.device.value(), self.recording_tb.value()
+            )
+            self.recording_tb = None
+            self.recording_tb_size = 0
+
+        self._release_model_caches()
+
+        var h = RendererHandoff(
+            window=self.window.value(),
+            device=self.device.value(),
+            swapchain_format=self.swapchain_format,
+            width=self.width,
+            height=self.height,
+            solid_pipeline=self.solid_pipeline.value(),
+            ground_pipeline=self.ground_pipeline.value(),
+            line_pipeline=self.line_pipeline.value(),
+            shadow_pipeline=self.shadow_pipeline.value(),
+            reflection_pipeline=self.reflection_pipeline.value(),
+            skybox_pipeline=self.skybox_pipeline.value(),
+            text_pipeline=self.text_pipeline.value(),
+            depth_texture=self.depth_texture.value(),
+            shadow_map=self.shadow_map.value(),
+            shadow_sampler=self.shadow_sampler.value(),
+            shadow_size=self.shadow_size,
+            sphere_mesh=self.sphere_mesh.value().copy(),
+            box_mesh=self.box_mesh.value().copy(),
+            ground_mesh=self.ground_mesh.value().copy(),
+            line_vertex_buffer=self.line_vertex_buffer.value(),
+            line_transfer_buffer=self.line_transfer_buffer.value(),
+            font_atlas_tex=self.font_atlas_tex.value(),
+            font_sampler=self.font_sampler.value(),
+            text_vertex_buffer=self.text_vertex_buffer.value(),
+            text_index_buffer=self.text_index_buffer.value(),
+            text_transfer_buffer=self.text_transfer_buffer.value(),
+            default_texture=self.default_texture.value(),
+            default_tex_sampler=self.default_tex_sampler.value(),
+            imgui_on=self.imgui_on,
+        )
+
+        # ⚠ DROP EVERY HANDLE, don't merely lower the flag. `close()` guards on
+        # `initialized`, but a stray `imgui_close()` or a future teardown path
+        # reading a still-populated field would release an object the NEXT
+        # renderer is drawing with — a use-after-free that only shows up as a
+        # corrupted frame.
+        self.initialized = False
+        self.imgui_on = False
+        self.imgui_frame_open = False
+        self.window = None
+        self.device = None
+        self.solid_pipeline = None
+        self.ground_pipeline = None
+        self.line_pipeline = None
+        self.shadow_pipeline = None
+        self.reflection_pipeline = None
+        self.skybox_pipeline = None
+        self.text_pipeline = None
+        self.depth_texture = None
+        self.shadow_map = None
+        self.shadow_sampler = None
+        self.sphere_mesh = None
+        self.box_mesh = None
+        self.ground_mesh = None
+        self.line_vertex_buffer = None
+        self.line_transfer_buffer = None
+        self.font_atlas_tex = None
+        self.font_sampler = None
+        self.text_vertex_buffer = None
+        self.text_index_buffer = None
+        self.text_transfer_buffer = None
+        self.default_texture = None
+        self.default_tex_sampler = None
+        return h^
+
+    @staticmethod
+    def close_handoff(var h: RendererHandoff) raises:
+        """Tear down a handoff nobody adopted — the end of a switch chain.
+
+        The viewer calls this when the LAST model's window is closed for real,
+        because by then the window and device belong to the handoff rather than
+        to any live renderer.
+        """
+        if h.imgui_on:
+            ig_shutdown()
+
+        release_gpu_buffer(h.device, h.sphere_mesh.vertex_buffer)
+        release_gpu_buffer(h.device, h.sphere_mesh.index_buffer)
+        release_gpu_buffer(h.device, h.box_mesh.vertex_buffer)
+        release_gpu_buffer(h.device, h.box_mesh.index_buffer)
+        release_gpu_buffer(h.device, h.ground_mesh.vertex_buffer)
+        release_gpu_buffer(h.device, h.ground_mesh.index_buffer)
+
+        release_gpu_texture(h.device, h.default_texture)
+        release_gpu_sampler(h.device, h.default_tex_sampler)
+
+        release_gpu_buffer(h.device, h.line_vertex_buffer)
+        release_gpu_transfer_buffer(h.device, h.line_transfer_buffer)
+
+        release_gpu_texture(h.device, h.depth_texture)
+        release_gpu_texture(h.device, h.shadow_map)
+        release_gpu_sampler(h.device, h.shadow_sampler)
+
+        release_gpu_buffer(h.device, h.text_vertex_buffer)
+        release_gpu_buffer(h.device, h.text_index_buffer)
+        release_gpu_transfer_buffer(h.device, h.text_transfer_buffer)
+        release_gpu_texture(h.device, h.font_atlas_tex)
+        release_gpu_sampler(h.device, h.font_sampler)
+
+        release_gpu_graphics_pipeline(h.device, h.solid_pipeline)
+        release_gpu_graphics_pipeline(h.device, h.ground_pipeline)
+        release_gpu_graphics_pipeline(h.device, h.line_pipeline)
+        release_gpu_graphics_pipeline(h.device, h.shadow_pipeline)
+        release_gpu_graphics_pipeline(h.device, h.reflection_pipeline)
+        release_gpu_graphics_pipeline(h.device, h.skybox_pipeline)
+        release_gpu_graphics_pipeline(h.device, h.text_pipeline)
+
+        release_window_from_gpu_device(h.device, h.window)
+        destroy_window(h.window)
+        destroy_gpu_device(h.device)
+        quit()
+
+    def _release_model_caches(mut self) raises:
+        """Free the geom-keyed GPU caches — capsules, cylinders, STL meshes and
+        PNG textures.
+
+        ⚠ THE CYLINDER CACHE IS IN HERE FOR A REASON. `close()` released the
+        capsule, mesh and texture caches and silently skipped the cylinders;
+        that was a one-shot leak at exit, but on the switch path it would be a
+        leak PER SWITCH, which is how a viewer someone leaves open for an hour
+        ends up out of GPU memory.
+        """
+        for i in range(len(self.capsule_cache)):
+            release_gpu_buffer(
+                self.device.value(), self.capsule_cache[i].mesh.vertex_buffer
+            )
+            release_gpu_buffer(
+                self.device.value(), self.capsule_cache[i].mesh.index_buffer
+            )
+        self.capsule_cache.clear()
+
+        for i in range(len(self.cylinder_cache)):
+            release_gpu_buffer(
+                self.device.value(), self.cylinder_cache[i].mesh.vertex_buffer
+            )
+            release_gpu_buffer(
+                self.device.value(), self.cylinder_cache[i].mesh.index_buffer
+            )
+        self.cylinder_cache.clear()
+
+        for i in range(len(self.mesh_cache)):
+            release_gpu_buffer(
+                self.device.value(), self.mesh_cache[i].mesh.vertex_buffer
+            )
+            release_gpu_buffer(
+                self.device.value(), self.mesh_cache[i].mesh.index_buffer
+            )
+        self.mesh_cache.clear()
+
+        for i in range(len(self.texture_cache)):
+            release_gpu_texture(
+                self.device.value(), self.texture_cache[i].texture
+            )
+            release_gpu_sampler(
+                self.device.value(), self.texture_cache[i].sampler
+            )
+        self.texture_cache.clear()
 
     def _create_shader_msl(
         self,
@@ -4367,28 +4700,8 @@ struct Renderer3D(Movable):
             self.recording_tb = None
             self.recording_tb_size = 0
 
-        # Release capsule cache meshes
-        for i in range(len(self.capsule_cache)):
-            release_gpu_buffer(
-                self.device.value(), self.capsule_cache[i].mesh.vertex_buffer
-            )
-            release_gpu_buffer(
-                self.device.value(), self.capsule_cache[i].mesh.index_buffer
-            )
-
-        # Release STL mesh cache
-        for i in range(len(self.mesh_cache)):
-            release_gpu_buffer(
-                self.device.value(), self.mesh_cache[i].mesh.vertex_buffer
-            )
-            release_gpu_buffer(
-                self.device.value(), self.mesh_cache[i].mesh.index_buffer
-            )
-
-        # Release texture cache
-        for i in range(len(self.texture_cache)):
-            release_gpu_texture(self.device.value(), self.texture_cache[i].texture)
-            release_gpu_sampler(self.device.value(), self.texture_cache[i].sampler)
+        # Release the geom-keyed caches (capsules, cylinders, STL, textures).
+        self._release_model_caches()
 
         # Release default texture resources
         if self.default_texture:

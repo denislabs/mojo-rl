@@ -128,7 +128,7 @@ from .shapes import (
 from .renderer2d import Renderer2D
 
 from .camera3d import Camera3D
-from .renderer3d import Renderer3D
+from .renderer3d import Renderer3D, RendererHandoff
 from .gpu_types import MeshHandle, MeshCacheEntry, TextureCacheEntry, SkyboxUniforms
 from .stl_loader import load_stl
 from .png_loader import load_png, TextureData

@@ -8,7 +8,7 @@ Supports all geom types: capsule, sphere, box, and plane (ground).
 
 from std.collections import InlineArray
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
-from mojo_rl.render import Renderer3D, Camera3D, Color
+from mojo_rl.render import Renderer3D, RendererHandoff, Camera3D, Color
 from mojo_rl.render.ui import UIRect, UIText
 from mojo_rl.render.light import Light
 from mojo_rl.core import EnvRenderer3D
@@ -261,14 +261,33 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.step_count = move.step_count
 
     def init(mut self) raises -> None:
+        self.init(None)
+
+    def init(mut self, adopt: Optional[RendererHandoff]) raises -> None:
+        """Open a window, or ADOPT one a previous model's renderer detached.
+
+        Adopting is what lets a model-swapping tool keep the same window across
+        the swap — same monitor, same position, same ImGui state. See
+        `RendererHandoff`.
+        """
         var title = String("Model Environment")
-        self.renderer.init(title)
+        self.renderer.init(title, adopt)
         self.initialized = True
 
     def close(mut self) raises -> None:
         if self.initialized:
             self.renderer.close()
             self.initialized = False
+
+    def detach(mut self) raises -> RendererHandoff:
+        """Give up this model's GPU caches and hand the window on.
+
+        ⚠ THE CALLER OWNS THE RESULT. Nothing frees it implicitly: pass it to
+        the next `init`, or end it with `Renderer3D.close_handoff`.
+        """
+        var h = self.renderer.detach()
+        self.initialized = False
+        return h^
 
     def check_quit(mut self) -> Bool:
         return self.renderer.check_quit()
