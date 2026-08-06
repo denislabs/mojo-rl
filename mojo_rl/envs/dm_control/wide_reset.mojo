@@ -73,6 +73,38 @@ comptime WALKER_Z_LO: Float64 = 0.1 - WALKER_TORSO_NOMINAL_Z
 comptime WALKER_Z_HI: Float64 = 1.5 - WALKER_TORSO_NOMINAL_Z
 
 
+# ── cheetah root DoFs ────────────────────────────────────────────────────
+# ⚠⚠ **The order is NOT walker's.** Cheetah declares `rootx, rootz, rooty`
+# (cheetah_xml.mojo:56-58) where walker declares `rootz, rootx, rooty`, so the
+# height coordinate is at index 1 here and 0 there. Reusing
+# `WALKER_ROOTZ_ADR` for cheetah would write the height onto the HORIZONTAL
+# slide: the walker never leaves the ground, the cheetah teleports downrange,
+# and nothing raises. Read the joint order off each model — this is per-domain
+# data, not a convention.
+comptime CHEETAH_ROOTZ_ADR: Int = 1
+
+# Torso is declared at `pos="0 0 .7"`, so these offsets map to world heights
+# [0.15, 1.2] m — lying through airborne, containing the ~0.7 m running pose.
+comptime CHEETAH_TORSO_NOMINAL_Z: Float64 = 0.7
+comptime CHEETAH_Z_LO: Float64 = 0.15 - CHEETAH_TORSO_NOMINAL_Z
+comptime CHEETAH_Z_HI: Float64 = 1.2 - CHEETAH_TORSO_NOMINAL_Z
+
+
+# ── quadruped: the height lever does NOT apply ───────────────────────────
+# ⚠⚠ Quadruped sets `RESET_FIND_HEIGHT = True`, and `Phyics3dEnv._reset_state`
+# runs `custom_reset_cpu` FIRST and `_find_non_contacting_height` AFTER. That
+# second pass walks the free root upward in 1 cm steps until nothing touches,
+# so ANY height this config writes is discarded a few lines later. The write
+# is not wrong, it is DEAD — and a dead write that looks like a configured
+# lever is worse than no lever, because the dataset comes out narrow and the
+# config says otherwise.
+#
+# `WideResetConfig` therefore refuses the combination at compile time (see the
+# assert in the struct). Quadruped's diversity comes from the orientation the
+# suite already draws per episode, plus `QVEL_SCALE`. Use `HEIGHT_OFF`.
+comptime HEIGHT_OFF: Float64 = 0.0
+
+
 struct WideResetConfig[
     BASE: Phyics3dEnvConfig,
     ROOT_Z_ADR: Int,
@@ -93,6 +125,10 @@ struct WideResetConfig[
     """
 
     # ── forwarded, unchanged ─────────────────────────────────────────────
+    # `Z_HI <= Z_LO` means "do not randomise the height at all" — the honest
+    # setting for a domain whose height is decided elsewhere.
+    comptime HEIGHT_ENABLED: Bool = Self.Z_HI > Self.Z_LO
+
     comptime FRAME_SKIP: Int = Self.BASE.FRAME_SKIP
     comptime MAX_STEPS: Int = Self.BASE.MAX_STEPS
     comptime INTEGRATOR_WS_EXTRA: Int = Self.BASE.INTEGRATOR_WS_EXTRA
@@ -230,13 +266,27 @@ struct WideResetConfig[
         comptime assert Self.ROOT_Z_ADR >= 0, (
             "WideResetConfig: ROOT_Z_ADR must name the root height coordinate"
         )
-        comptime assert Self.Z_HI > Self.Z_LO, (
-            "WideResetConfig: Z_HI must exceed Z_LO"
+        # ⚠⚠ `_find_non_contacting_height` runs AFTER this hook, so on a BASE
+        # that enables it any height written here is discarded a few lines
+        # later. Refuse the combination rather than let a dead write read like
+        # a configured lever — see the quadruped note at the top of the file.
+        comptime assert (
+            (not Self.BASE.RESET_FIND_HEIGHT) or (not Self.HEIGHT_ENABLED)
+        ), (
+            "WideResetConfig: BASE sets RESET_FIND_HEIGHT, so"
+            " `_find_non_contacting_height` OVERWRITES the root height after"
+            " this hook returns. A height range here would be a DEAD write"
+            " that still reads like a configured lever, and the dataset would"
+            " come out narrow while the config claimed otherwise. Pass"
+            " Z_LO = Z_HI = HEIGHT_OFF and take diversity from the"
+            " per-episode orientation the suite already draws, plus"
+            " QVEL_SCALE."
         )
-        if Self.ROOT_Z_ADR < NQ:
-            d.qpos.data[Self.ROOT_Z_ADR] = Scalar[DTYPE](
-                Self.Z_LO + random_float64() * (Self.Z_HI - Self.Z_LO)
-            )
+        comptime if Self.HEIGHT_ENABLED:
+            if Self.ROOT_Z_ADR < NQ:
+                d.qpos.data[Self.ROOT_Z_ADR] = Scalar[DTYPE](
+                    Self.Z_LO + random_float64() * (Self.Z_HI - Self.Z_LO)
+                )
 
         comptime if Self.QVEL_SCALE > 0.0:
             for i in range(NV):

@@ -30,12 +30,20 @@ from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
 from mojo_rl.envs.dm_control.walker import DMWalkerModel, DMWalkerConfig
 from mojo_rl.envs.dm_control.walker.walker_xml import TORSO_BODY_IDX
+from mojo_rl.envs.dm_control.cheetah import DMCheetahModel, DMCheetahConfig
+from mojo_rl.envs.dm_control.cheetah.cheetah_xml import (
+    TORSO_BODY_IDX as CHEETAH_TORSO_BODY_IDX,
+)
 from mojo_rl.envs.dm_control.wide_reset import (
     WideResetConfig,
     WALKER_ROOTZ_ADR,
     WALKER_Z_LO,
     WALKER_Z_HI,
     WALKER_TORSO_NOMINAL_Z,
+    CHEETAH_ROOTZ_ADR,
+    CHEETAH_Z_LO,
+    CHEETAH_Z_HI,
+    CHEETAH_TORSO_NOMINAL_Z,
 )
 
 
@@ -211,8 +219,53 @@ def test_reward_still_matches_base() raises:
     print("      identical reward", Float64(ra[0]), " OK")
 
 
+def test_cheetah_uses_its_own_root_index() raises:
+    """Cheetah declares `rootx, rootz, rooty`; walker declares `rootz, rootx,
+    rooty`. The height coordinate is therefore at a DIFFERENT index, and the
+    only thing that catches a copy-pasted `WALKER_ROOTZ_ADR` is measuring the
+    world height of the body the reward reads.
+    """
+    print("[4] cheetah: ROOT_Z_ADR =", CHEETAH_ROOTZ_ADR, "(walker uses",
+          WALKER_ROOTZ_ADR, ") ...")
+    comptime CheetahWide = WideResetConfig[
+        DMCheetahConfig, CHEETAH_ROOTZ_ADR, CHEETAH_Z_LO, CHEETAH_Z_HI
+    ]
+    comptime CEnv = Phyics3dEnv[
+        DMCheetahModel, CheetahWide, DType.float64, False
+    ]
+    assert_true(
+        CHEETAH_ROOTZ_ADR != WALKER_ROOTZ_ADR,
+        "cheetah and walker resolved to the same root index — one of them is"
+        " wrong; the two models declare their root joints in different orders",
+    )
+
+    seed(SEED)
+    var env = CEnv()
+    var lo = Float64(1e30)
+    var hi = Float64(-1e30)
+    for _ in range(N_RESETS):
+        _ = env.reset()
+        var h = Float64(env.d.xpos.data[CHEETAH_TORSO_BODY_IDX * 3 + 2])
+        if h < lo:
+            lo = h
+        if h > hi:
+            hi = h
+    var want_lo = CHEETAH_TORSO_NOMINAL_Z + CHEETAH_Z_LO
+    var want_hi = CHEETAH_TORSO_NOMINAL_Z + CHEETAH_Z_HI
+    print("       cheetah torso height: [", lo, ",", hi, "]  wanted ~[",
+          want_lo, ",", want_hi, "]")
+    assert_true(
+        lo < want_lo + 0.15 and hi > want_hi - 0.15,
+        "cheetah torso height spans [" + String(lo) + ", " + String(hi)
+        + "] but the configured band is [" + String(want_lo) + ", "
+        + String(want_hi) + "]. If the span is right but SHIFTED, ROOT_Z_ADR"
+        " is writing the wrong coordinate.",
+    )
+
+
 def main() raises:
     test_baseline_is_narrow()
     test_wide_reset_spreads_height()
     test_reward_still_matches_base()
+    test_cheetah_uses_its_own_root_index()
     print("\n[PASS] widened reset gate")
