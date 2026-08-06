@@ -1658,13 +1658,38 @@ def _attr_3way(
 
     Returns "" when none of the three carries `name`, leaving the caller to
     apply MuJoCo's own documented default. The class level goes through
-    `_class_attr`, which re-walks `xml` per lookup rather than caching a class
-    section — see the warning there for why the cached form cannot compile.
+    `_class_attr_inherited`, which re-walks `xml` per lookup rather than
+    caching a class section — see the warning in `_class_attr` for why the
+    cached form cannot compile.
+
+    ⚠ THE CLASS LEVEL MUST WALK THE PARENT CHAIN, not just the named class.
+    This called `_class_attr`, which reads ONLY the class's own block, so an
+    attribute set on an ENCLOSING class was invisible and resolution fell
+    straight through to the root default.
+
+    dm_control's dog is the model that exposes it: all 38 actuators are
+    `<general dyntype="filter">` whose force IS `gainprm[0] * act`, and their
+    gains live in nested `<default>` classes — `lumbar` sets 40, a class nested
+    inside it sets 60, `finger` sets 2 — over a root default of 0.02. MuJoCo
+    compiles NINE distinct gains, `{0.5, 2, 3, 10, 14, 20, 30, 40, 60}`; we
+    compiled 0.02 for every one, i.e. between 25x and 3000x too weak.
+
+    ⚠ WHY IT HID FOR SO LONG. The gain scales the FORCE, not the activation,
+    so `act` still matched MuJoCo exactly (`|d(act)| = 0.0`) and every
+    zero-actuation comparison was exact — the whole solve at 2.99e-11, an
+    applied force on every dof at 3.41e-11, five env steps at 1e-13. Only a
+    DRIVEN rollout could see it, and `0.02 * 0 == 40 * 0` is why the staged
+    probe never could. Gated by `tests/dm_control/test_dog_actuator_gain.mojo`.
+
+    `_class_attr_inherited` stops before the top-level `<default>` block on
+    purpose (see its docstring); that is exactly right here, because
+    `root_tag` below IS that block and consulting it twice would be wasted
+    work in a comptime-budget-sensitive path.
     """
     var v = _extract_attr(elem, name)
     if v.byte_length() > 0:
         return v
-    var c = _class_attr(xml, cls, tag_name, name)
+    var c = _class_attr_inherited(xml, cls, tag_name, name)
     if c.byte_length() > 0:
         return c
     return _extract_attr(root_tag, name)
