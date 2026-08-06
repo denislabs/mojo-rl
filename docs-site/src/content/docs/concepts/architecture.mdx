@@ -28,7 +28,7 @@ one.
 
 ```
 mojo_rl/
-├── core/           Traits, replay buffers, tile coding, metrics, logging
+├── core/           Traits, tabular replay buffers, tile coding, metrics, logging
 ├── agents/         Tabular & linear algorithms (Q-Learning → linear SAC)
 ├── deep_agents/    Deep RL, one facade package per algorithm
 │   ├── dqn/ c51/ ddpg/ td3/ sac/ a2c/ ppo/ ppo_discrete/
@@ -38,6 +38,8 @@ mojo_rl/
 │   ├── training/   CPU/GPU drivers, BatchedEnv wrappers
 │   └── primitives/ loss/ data/
 ├── nn/             Deep-learning framework (Module + Param)
+├── data/           Trajectory store, deep-RL replay buffers, index policies
+├── io/             Native HDF5 FFI + resumable HTTP fetch
 ├── physics3d/      MuJoCo-inspired generalized-coordinates engine
 ├── physics2d/      GPU-batched 2D impulse engine
 ├── planners/       Trajectory optimizers (MPPI, CEM, iLQR) + GPU tree search

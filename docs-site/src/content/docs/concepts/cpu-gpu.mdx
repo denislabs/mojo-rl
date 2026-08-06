@@ -30,7 +30,8 @@ Two things change together, and both are required:
 
 The replay-buffer block changes with them — `UniformSampleCpuStep` versus
 `UniformSampleGpuStep` — because a device replay buffer lives in device memory
-and is sampled by a kernel.
+and is sampled by a kernel. See [replay buffers](/data/replay/) for what each
+backend supports.
 
 ## Picking the pixi environment
 

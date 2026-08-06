@@ -1,0 +1,128 @@
+---
+title: Remote datasets
+description: A catalog client that resolves a dataset name to bytes on disk — presigned object-store URLs, sha256 caching, and provenance for regeneration.
+---
+
+import Maturity from '~/components/Maturity.astro';
+
+<Maturity level="beta" note="Requires a catalog service and an object store you control. The client is stable; the deployment is yours to provide." />
+
+Training happens on rented GPU boxes that are created and destroyed. Without a
+remote store, every dataset is either regenerated on each box or pushed from a
+laptop each time. `RemoteCatalog` closes that gap: it resolves a dataset name to
+bytes at a local path, fetching only if the local copy is missing or stale.
+
+```mojo
+from mojo_rl.data.remote import RemoteCatalog
+
+var cat = RemoteCatalog.from_env()                       # reads .env
+var path = cat.pull(String("walker-random-v1"), String("data/walker.h5"))
+var store = TrajectoryStore(path^)
+```
+
+Credentials come from a dotenv file, the same two keys the training monitor
+already uses:
+
+```
+RL_MONITOR_URL=https://…
+RL_MONITOR_API_KEY=…
+```
+
+`from_env` raises with the missing key named, rather than letting it surface
+later as a 401 — an empty key produces a bare `Authorization: Bearer ` header,
+which is indistinguishable at the server from a wrong one.
+
+## The service is never in the data path
+
+```
+box ──1. GET /datasets/:id  (Bearer API key)──> catalog service ──> metadata DB
+    <─2. metadata + presigned URL ─────────────┘
+    ──3. GET / PUT the bytes ──────────────────> object store (direct)
+```
+
+The service returns a **presigned URL**; the client transfers directly against
+the object store. This is a deliberate shape, not an implementation detail:
+
+- there is no custom transfer protocol, and no request-duration limit in the
+  data path — proxying a 40 GB body through an edge function is the obvious
+  wrong turn;
+- on the box, `curl`, `rclone`, `aws s3 cp` and the built-in downloader all work
+  unchanged;
+- **multipart upload for large objects is never implemented by us** — those
+  tools do it.
+
+The reference deployment runs on Cloudflare R2 behind the existing monitor
+Worker, chosen because egress is free: pulling datasets to GPU boxes as often as
+you like costs nothing, which is the entire argument when boxes are torn down
+and re-pull everything.
+
+## `pull` is a cache, not a toll booth
+
+The catalog stores each dataset's `sha256` and size. If the destination already
+exists and its hash matches, **no bytes move**. That makes repeated runs on the
+same box free, and it makes the remote store a cache rather than a single point
+of failure.
+
+The catalog also records the **generating recipe** — seed plus source commit —
+mirroring the store's own manifest. For state-only datasets, regeneration is
+sometimes cheaper than transfer: walker at 10 M transitions is 992 MiB but only
+a couple of minutes of CPU. That argument fails completely for motion-capture
+data, pixel datasets and exploration-driven collection, which is exactly why the
+bucket exists.
+
+## Pushing
+
+```mojo
+var id = cat.push(
+    String("data/walker.h5"),
+    name=String("walker-random"),
+    version=String("v1"),
+    env_id=String("walker-walk"),
+    n_rows=10_000_000,
+    seed=7,
+)
+```
+
+`push` is three steps — register, upload, complete — and they are separate on
+purpose. The catalog row stays `pending` between them, and `describe` refuses to
+serve a pending row. So an interrupted upload leaves a row that cannot be
+downloaded, rather than one advertising a truncated object.
+
+## The downloader
+
+`mojo_rl/io/fetch.mojo` handles the transfer. It was generalised from the PushT
+dataset loader rather than rewritten, because the parts worth keeping are the
+ones that were painful to get right:
+
+- **Resume by HTTP Range** across a bounded number of retries, so a multi-GB
+  transfer survives a dropped connection instead of restarting.
+- **`F_NOCACHE` on macOS, periodic fsync + `POSIX_FADV_DONTNEED` on Linux**, so
+  a multi-GB write does not evict everything else from the page cache.
+- **The whole loop runs inside Python** — one exec, one call from Mojo. Driving
+  it chunk-by-chunk from Mojo leaked every large per-iteration `PythonObject`
+  until the function returned. Resident memory looked flat while the process
+  footprint grew roughly 1:1 with the downloaded volume: 23 GB at 34% of one
+  download, filling swap.
+- **Downloads to `<dest>.part`, renames only on success.** A crashed transfer
+  must never leave a truncated file where the next run would treat it as
+  complete.
+
+## Working example
+
+`examples/data/dataset_remote_smoke.mojo` round-trips a real store through the
+catalog: write locally → push → pull to a fresh path → reopen and verify the
+contents survived. It needs credentials, and it says so clearly if they are
+absent.
+
+:::caution[Deployment notes, if you stand one up yourself]
+Presigning requires an S3 API key pair — an in-worker bucket binding cannot
+presign. `region: 'auto'` is required by every S3 signer against R2, and
+omitting it breaks all calls. Presigned URLs cap at 7 days; return the expiry to
+the client rather than letting it discover a 403.
+
+Do **not** attach a custom domain to the bucket. A presigned URL cannot use one
+— the signature binds to the host — and attaching a domain makes the bucket
+publicly readable, with no private variant. Object keys like
+`datasets/<name>/<version>.h5` are entirely guessable, so that combination is
+the worst of both: no benefit in the data path, every dataset exposed.
+:::

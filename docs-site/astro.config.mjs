@@ -171,6 +171,15 @@ export default defineConfig({
 					],
 				},
 				{
+					label: 'Data',
+					items: [
+						{ label: 'Overview', slug: 'data' },
+						{ label: 'Replay buffers', slug: 'data/replay' },
+						{ label: 'Trajectory store', slug: 'data/trajectory-store' },
+						{ label: 'Remote datasets', slug: 'data/remote' },
+					],
+				},
+				{
 					label: 'Physics',
 					items: [
 						{ label: '3D engine', slug: 'physics/physics3d' },

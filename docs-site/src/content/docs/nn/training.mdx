@@ -127,6 +127,12 @@ from mojo_rl.nn.datasets import MNIST, CIFAR10, TinyShakespeare
 
 Datasets download on first use and cache locally.
 
+These are supervised data — images plus labels, or a token stream — and they stay
+here rather than moving to the [trajectory store](/data/trajectory-store/) on
+purpose: they have no episode axis, so they are not trajectories. Episodic data
+(offline RL datasets, demonstrations, replay dumps) belongs in
+[the data layer](/data/) instead.
+
 :::caution[pyarrow crashes the embedded interpreter]
 The CIFAR-10 loader reads Hugging Face parquet, and `pyarrow` cannot run inside
 Mojo's embedded Python — it must be **subprocess-isolated**. This is handled in
