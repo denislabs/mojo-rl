@@ -40,7 +40,7 @@ Run with:
     pixi run mojo run -I . tests/dm_control/test_dog_step_probe.mojo
 """
 
-from std.math import abs, sqrt
+from std.math import abs, sqrt, sin
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from std.gpu.host import DeviceContext
@@ -551,6 +551,14 @@ def test_dog_noslip_ab() raises:
     for i in range(NV):
         o0.append(Float64(integ0.scratch.qacc_constrained.data[i]))
 
+    # Full dump of the NOSLIP=0 solve. That is the point the primal objective
+    # is defined at: `mj_solNoSlip` deliberately redistributes friction away
+    # from the primal optimum, so the noslip=4 answer is NOT a minimiser on
+    # either side and scoring it would prove nothing. Validated on MuJoCo's own
+    # noslip=0 solution: scaled |grad| = 6.6e-16 against a 1e-8 tolerance.
+    for i in range(NV):
+        print("QACC0_OURS", i, o0[i])
+
     # --- the 2x2 -----------------------------------------------------------
     var our_effect = 0.0
     var base = 0.0
@@ -867,6 +875,91 @@ def test_dog_contact_params_vs_mujoco() raises:
         worst_fri < 1e-12,
         "mixed contact FRICTION differs from MuJoCo (elementwise MAX at equal"
         " priority)",
+    )
+
+
+def test_dog_applied_force_vs_mujoco() raises:
+    """A NONZERO applied force through the solve — the gap the ladder left.
+
+    Every stage above runs at `ctrl = 0`, `act = 0` and `d.qfrc = 0`, which was
+    deliberate: it isolates bias + passive + contacts. But it means the applied
+    force path has never been compared, and the rollout gate — which drives all
+    38 actuators — still diverges by 6.098 of qvel on its first contacting step
+    while this file's single substep is now exact at 2.99e-11.
+
+    `|d(act)|` is exactly 0.0 in that rollout, so both engines hold the SAME
+    activations and therefore the same actuator force. What is untested is
+    whether that force enters our solve the way MuJoCo's `qfrc_applied` enters
+    its own.
+
+    The pattern is deterministic and hits every dof rather than a chosen few; a
+    force on only the actuated hinges would leave the free root untested, and
+    the root is where an applied-force convention error would show first.
+    """
+    print("=== dog: applied force through the solve ===")
+    var mujoco = Python.import_module("mujoco")
+    var mm = mujoco.MjModel.from_xml_string(
+        materialize[dm_dog_stand_walk_xml]()
+    )
+    var dat = mujoco.MjData(mm)
+    mujoco.mj_resetData(mm, dat)
+    for _ in range(N_SETTLE):
+        mujoco.mj_step(mm, dat)
+    for k in range(M.nact):
+        dat.ctrl[k] = 0.0
+        dat.act[k] = 0.0
+
+    var ctx = DeviceContext()
+    var mf = Model[
+        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
+        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+    ]()
+    M.init_fields[DTYPE, 0](ctx, mf)
+    var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    M.reset_data[DTYPE](d)
+    for i in range(NQ):
+        d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
+    var fmag = 0.0
+    for i in range(NV):
+        d.qvel.data[i] = Scalar[DTYPE](Float64(py=dat.qvel[i]))
+        var f = 0.35 * sin(0.7 * Float64(i) + 0.3)
+        d.qfrc.data[i] = Scalar[DTYPE](f)
+        dat.qfrc_applied[i] = f
+        if abs(f) > fmag:
+            fmag = abs(f)
+    mujoco.mj_forward(mm, dat)
+    forward_kinematics["cpu"](d, mf)
+    var integ = EulerIntegrator[
+        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
+        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+        M.CONE_TYPE, 1, SOLVER="newton",
+        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER,
+    ]()
+    integ.step["cpu"](d, mf)
+
+    var qacc = List[Float64]()
+    for i in range(NV):
+        qacc.append(Float64(integ.scratch.qacc_constrained.data[i]))
+    print("  applied |f| up to", fmag, " MuJoCo ncon", Int(py=dat.ncon))
+    var r = _report("qacc_f", qacc, dat.qacc, NV, 6)
+    print("      max|d| =", r)
+
+    # NON-VACUITY: a zero force would make this a rerun of stage [5].
+    assert_true(
+        fmag > 0.1,
+        "the applied force is ~0 — this repeats the zero-force stages and"
+        " tests nothing new",
+    )
+    assert_true(
+        Int(py=dat.ncon) >= 4,
+        "the pose is not loaded — the applied force is not being pushed"
+        " through a contacting solve",
+    )
+    assert_true(
+        r < 1e-9,
+        "qacc diverges once a NONZERO applied force enters the solve, while"
+        " the zero-force stages are exact — the defect is in how qfrc reaches"
+        " the constraint solve, not in the contact rows",
     )
 
 
