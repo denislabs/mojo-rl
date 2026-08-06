@@ -71,7 +71,7 @@ comptime D: Int = 128
 comptime HID: Int = 1024
 comptime BATCH: Int = 1024          # must match the trained checkpoint
 
-comptime CKPT: StaticString = "/tmp/fb_walker_d128.ckpt"
+comptime CKPT: StaticString = "fb_walker_d128.ckpt"
 comptime STORE: StaticString = "/tmp/fb_walker_wide.h5"
 comptime RELABEL_ROWS: Int = 4096
 comptime EVAL_EPISODES: Int = 10
@@ -195,20 +195,44 @@ def _rollout[
 def _eval_task[
     CONFIG: Phyics3dEnvConfig
 ](mut t: Trainer, ref z: Tensor, name: String) raises:
+    # ⚠ PAIRED per episode. Both policies see the SAME reset seed, so the
+    # difference is taken within an episode and the (large) spread across start
+    # states cancels. Comparing two independent means would need far more
+    # episodes to see the same effect.
+    var diffs = List[Float64]()
     var rp = Float64(0)
     var rr = Float64(0)
     for ep in range(EVAL_EPISODES):
-        # Same reset seed for both policies: the suite reset randomises the
-        # limb pose, so comparing across DIFFERENT start states would mostly
-        # measure where the walker happened to spawn.
-        rp += _rollout[CONFIG](t, z, True, SEED + 1000 + ep)
-        rr += _rollout[CONFIG](t, z, False, SEED + 1000 + ep)
+        var a = _rollout[CONFIG](t, z, True, SEED + 1000 + ep)
+        var b = _rollout[CONFIG](t, z, False, SEED + 1000 + ep)
+        rp += a
+        rr += b
+        diffs.append(a - b)
     var n = Float64(EVAL_EPISODES)
     var mp = rp / n
     var mr = rr / n
+
+    # Standard error of the PAIRED difference. Without it a ratio of 1.15 is
+    # not a claim — walker returns vary by tens across start states, and the
+    # whole margin can sit inside one standard error.
+    var md = Float64(0)
+    for i in range(len(diffs)):
+        md += diffs[i]
+    md /= n
+    var sq = Float64(0)
+    for i in range(len(diffs)):
+        var d = diffs[i] - md
+        sq += d * d
+    var sd = sqrt(sq / (n - 1.0)) if EVAL_EPISODES > 1 else 0.0
+    var se = sd / sqrt(n)
+    var tstat = md / se if se > 1e-12 else 0.0
     print(
         "   ", name, ": pi_z", mp, "  random", mr,
         "  ratio", mp / mr if mr > 1e-9 else 0.0,
+    )
+    print(
+        "            paired diff", md, "+-", se, " (t =", tstat, ")",
+        " SIGNAL" if abs(tstat) > 2.0 else " within noise",
     )
 
 

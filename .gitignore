@@ -270,3 +270,4 @@ third_party/
 # .cpp IS tracked; the binary is per-platform and rebuilt by
 # `pixi run build-imgui`.
 *.dylib
+fb_walker_d128.ckpt
