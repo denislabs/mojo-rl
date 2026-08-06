@@ -80,6 +80,18 @@ comptime F_IN = OBS + NACT + D
 comptime A_IN = OBS + D
 
 comptime FNet = Sequential[Linear[F_IN, HID], ReLU[HID], Linear[HID, D]]
+# ⚠⚠ NO normalisation on B here, and the M2 walker run DIVERGED without one
+# (`L_ortho` positive and growing 8x, `|B|` climbing, measure loss unbounded
+# below). Meta Motivo sets `"b": {"norm": true}` and §6's table names
+# `layer_norm.mojo`; `examples/fb/fb_train_gpu.mojo` now ends `BNet` in a
+# `LayerNorm[D]`.
+#
+# It is left OFF here on purpose: this script's recorded M1 result (pi_z 0.617
+# vs random 2e-11) was produced by this architecture, and its `L_ortho` stayed
+# NEGATIVE and `|B|` stable at ~1.9 for 40 k steps — point_mass at d=50 does
+# not hit the failure. Changing it silently would invalidate a recorded number
+# without re-running it. Add the LayerNorm and re-measure before trusting a
+# comparison against the M2 configuration.
 comptime BNet = Sequential[Linear[OBS, HID], ReLU[HID], Linear[HID, D]]
 comptime ANet = Sequential[
     Linear[A_IN, HID], ReLU[HID], Linear[HID, NACT], Tanh[NACT]

@@ -39,6 +39,14 @@ update. It also means `zero_grad` must run exactly once per step, at the top. A
 second zeroing anywhere in the middle silently discards whichever contributions
 came before it, and the loss would still descend.
 
+⚠⚠ **`BNET` should end in a normalisation.** Meta Motivo carries
+`"b": {"norm": true}`, and a bare `Linear -> ReLU -> Linear` backward net
+DIVERGED on walker at d=128: `L_ortho` went POSITIVE and grew 8x (21 -> 172
+over 24 k steps) while `|B|` climbed and the measure loss fell without bound.
+At the orthonormality optimum `L_ortho` is NEGATIVE, so its SIGN is the health
+check — not `|B|` alone, and certainly not the measure loss, which descends in
+both the healthy and the diverging case. `nn/primitives/layer_norm.mojo`.
+
 ⚠ **The two batches must be INDEPENDENT draws.** `s+` is not `s'`. See
 `loss.mojo` on why; `train_step` takes them as separate arguments and cannot
 enforce it, so the sampler is where that invariant lives.

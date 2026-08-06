@@ -38,6 +38,7 @@ from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.activations import ReLU, Tanh
+from mojo_rl.nn.primitives.layer_norm import LayerNorm
 from mojo_rl.nn.random.box_muller import box_muller_normal_gpu
 
 from mojo_rl.data.store import TrajectoryStore
@@ -71,7 +72,21 @@ comptime F_IN = OBS + NACT + D
 comptime A_IN = OBS + D
 
 comptime FNet = Sequential[Linear[F_IN, HID], ReLU[HID], Linear[HID, D]]
-comptime BNet = Sequential[Linear[OBS, 256], ReLU[256], Linear[256, D]]
+# ⚠⚠ **`B` MUST end in a normalisation.** Meta Motivo's config carries
+# `"b": {..., "norm": true}` and §6's reuse table names `layer_norm.mojo` for
+# exactly this; the first version of this script omitted it and the run
+# DIVERGED. The signature is unmistakable once you know to look: `L_ortho`
+# went POSITIVE and grew 8x (21 -> 172 over 24 k steps) while `|B|` climbed
+# 7.2 -> 9.3 and the measure loss fell without bound (-59 -> -295).
+#
+# At the orthonormality optimum `L_ortho = E[(B·B+)^2] - 2E[||B||^2]` is
+# NEGATIVE (M1's converged point_mass run sat at -2.2 .. -3.5). A positive,
+# growing ortho loss means B is running away from orthonormal and the
+# regulariser is losing to the anchor term, which is unbounded below when F
+# and B both grow. Watch the SIGN of ortho, not just `|B|`.
+comptime BNet = Sequential[
+    Linear[OBS, 256], ReLU[256], Linear[256, D], LayerNorm[D]
+]
 comptime ANet = Sequential[
     Linear[A_IN, HID], ReLU[HID], Linear[HID, NACT], Tanh[NACT]
 ]
@@ -210,7 +225,10 @@ def main() raises:
                 "   step", step, " measure", l.measure, " ortho", l.ortho,
                 " actor", l.actor, " |B|", l.b_norm,
             )
-            # ⚠ |B| drifting toward 0 is the collapse L_ortho exists to
-            # prevent, and the measure loss keeps descending while it happens.
-            # Watch this column, not the loss.
+            # ⚠ TWO failure modes, both silent in the measure loss:
+            #   |B| -> 0        the collapse L_ortho exists to prevent
+            #   ortho POSITIVE and growing   B running away from orthonormal
+            # A healthy run has ortho NEGATIVE (order -1 .. -10) and |B|
+            # steady. The measure loss descends either way, so it tells you
+            # nothing on its own.
     print("[3] done.")
