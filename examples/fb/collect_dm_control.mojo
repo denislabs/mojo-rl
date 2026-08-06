@@ -67,7 +67,19 @@ from mojo_rl.envs.dm_control.wide_reset import (
 # ── pick ONE ─────────────────────────────────────────────────────────────
 comptime DOMAIN: StaticString = "walker"      # "walker" | "cheetah"
 
-comptime N_EPISODES: Int = 40
+# ⚠⚠ **These defaults are a COVERAGE-CHECK size, not a TRAINING size.**
+# 40 x 250 = 10 000 rows is enough to compare two reset distributions and far
+# too small to train FB on: at batch 1024, a 2 M-step run sees every transition
+# ~200 000 times. That is exactly what happened on the first M2 launch — the
+# measure loss cycled to +2048 and back while `actor` swung -7 -> -317 -> -7,
+# the classic deadly-triad blow-up (bootstrapping + function approximation +
+# off-policy) on memorised data.
+#
+# For a real dataset use ~1 M rows minimum, 10 M to match §13. It is cheap:
+# walker collects at ~13.3 k steps/s on one CPU thread, so 10 M transitions is
+# ~12 minutes and ~960 MB at 24 fp32 per row. `fb_train_gpu.mojo` prints the
+# epochs-over-dataset ratio and refuses to start above 5 000.
+comptime N_EPISODES: Int = 4000
 comptime EP_LEN: Int = 250
 comptime SEED: Int = 20260805
 comptime RND_FIT_STEPS: Int = 400

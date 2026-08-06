@@ -110,6 +110,32 @@ def main() raises:
             " training at BATCH=" + String(BATCH)
         )
 
+    # ⚠⚠ How many times will each transition be seen? This is the check that
+    # would have prevented the first M2 launch. A 10 000-row store with a 2 M
+    # step run at batch 1024 is ~205 000 epochs: the measure loss cycled to
+    # +2048 and back, `actor` swung -7 -> -317 -> -7, and `|B|` dipped to 8.4
+    # before recovering — a TD bootstrap oscillating on memorised data, with
+    # the excursion amplitude GROWING (+-100 early, +-2000 later).
+    #
+    # None of that looks like a code bug and none of it is one. Offline RL on
+    # dm_control normally runs 1 M - 10 M transitions; a few hundred epochs is
+    # ordinary, a few hundred THOUSAND is not.
+    var epochs = (
+        Float64(TRAIN_STEPS) * Float64(BATCH) / Float64(n_rows)
+    )
+    print("       each transition will be seen ~", epochs, "times")
+    if epochs > 5000.0:
+        raise Error(
+            "dataset far too small: " + String(n_rows) + " rows against "
+            + String(TRAIN_STEPS) + " steps at batch " + String(BATCH)
+            + " is ~" + String(epochs) + " epochs. FB will overfit and the TD"
+            " bootstrap will oscillate rather than converge — this exact"
+            " configuration blew up on the first M2 run. Collect ~1 M rows"
+            " (raise N_EPISODES in collect_dm_control.mojo; walker runs at"
+            " ~13.3 k steps/s, so 10 M transitions is ~12 minutes), or lower"
+            " TRAIN_STEPS."
+        )
+
     # ── upload the dataset ONCE ──────────────────────────────────────────
     # obs = [qpos | qvel], built on the host because it is a one-off.
     var obs_host = Tensor()
