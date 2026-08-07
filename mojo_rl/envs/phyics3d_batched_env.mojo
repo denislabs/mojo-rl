@@ -51,6 +51,8 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
+from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_auto
+from mojo_rl.physics3d.joint_types import JNT_FREE
 from mojo_rl.physics3d.gpu import compute_cfrc_ext, compute_cvel
 from mojo_rl.physics3d.gpu.constants import (
     TPB,
@@ -59,8 +61,11 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_SITE_SIZE,
     MODEL_GEOM_SIZE,
     MODEL_JOINT_SIZE,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_QPOS_ADR,
     METADATA_SIZE,
     META_IDX_STEP_COUNT,
+    META_IDX_NUM_CONTACTS,
     MODEL_CURRICULUM_SIZE,
 )
 
@@ -202,7 +207,14 @@ struct Phyics3dBatchedEnv[
     # force is computed from the wrong quantity entirely. quadruped and
     # dog are the models that have one. Floored at 1 like the CPU side.
     comptime NA_F: Int = Self.MODEL_DEF.NA_F
+    comptime L_ACT_HOOK = Layout.row_major(Self.N_ENVS, Self.NA_F)
     var _act: DeviceBuffer[DT]
+    # 1.0 for a lane the last reset touched, 0.0 otherwise. Written by BOTH
+    # reset kernels because `selective_reset_kernel` CLEARS `dones[i]` as it
+    # resets, so afterwards nothing else records which lanes moved — and
+    # `_find_non_contacting_height_batch` must not raise a lane that is
+    # mid-episode.
+    var _reset_mask: DeviceBuffer[DT]
 
     def __init__(out self, ctx: DeviceContext) raises:
         # ⚠ A CONFIG without GPU hooks inherits `compute_reward_and_done_gpu`'s
@@ -271,6 +283,8 @@ struct Phyics3dBatchedEnv[
             Self.N_ENVS * Self.SITE_DIM
         )
         self._act = ctx.enqueue_create_buffer[DT](Self.N_ENVS * Self.NA_F)
+        self._reset_mask = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
+        self._reset_mask.enqueue_fill(Scalar[DT](0))
         # `mj_resetData` zeroes `act`; so does `Phyics3dEnv._reset_state`.
         var _h_act0 = ctx.enqueue_create_host_buffer[DT](
             Self.N_ENVS * Self.NA_F
@@ -329,6 +343,199 @@ struct Phyics3dBatchedEnv[
                 LayoutTensor[DT, Self.L_SITE_HOOK](self._site_dummy)
             )
 
+    @always_inline
+    def _site_xpos_acc_operand(
+        mut self,
+    ) -> LayoutTensor[DT, Self.L_SITE_HOOK, MutAnyOrigin]:
+        """`site_xpos` AS IT STOOD WHEN `cacc`/`cfrc_int` WERE WRITTEN.
+
+        Sized and floored exactly like `_site_xpos_operand` — `Data` allocates
+        `site_xpos_acc` to shadow `site_xpos` including its lack of a
+        zero-extent guard, so the same NSITE == 0 dummy applies. It reuses the
+        SAME dummy buffer: for a model with no sites, no hook can legally index
+        either, so two distinct dummies would only cost memory.
+
+        ⚠ This is not interchangeable with `_site_xpos_operand`. An
+        acceleration-stage sensor that reads the LIVE site pose mixes
+        integration stages — dog's accelerometer read 1.484 against
+        dm_control's -6.386 that way (defect 19), with `cacc` itself exact to
+        4.5e-10. See fields/data.mojo.
+        """
+        comptime if Self.NSITE > 0:
+            return rebind[LayoutTensor[DT, Self.L_SITE_HOOK, MutAnyOrigin]](
+                self.d.site_xpos_acc.lt["gpu", type_of(self.d).L_SITE]()
+            )
+        else:
+            return rebind[LayoutTensor[DT, Self.L_SITE_HOOK, MutAnyOrigin]](
+                LayoutTensor[DT, Self.L_SITE_HOOK](self._site_dummy)
+            )
+
+    @always_inline
+    def _act_operand(
+        mut self,
+    ) -> LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin]:
+        """The per-env actuator activation, as a hook operand.
+
+        `_act` is already floored at `NA_F >= 1` (see the field), so unlike
+        `site_xpos` there is no dummy to pick between — this is only here to
+        keep the `rebind` off the two call sites."""
+        return rebind[LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin]](
+            LayoutTensor[DT, Self.L_ACT_HOOK](self._act)
+        )
+
+    def _find_non_contacting_height_batch(
+        mut self, mut c: DeviceContext
+    ) raises:
+        """Raise each lane's free root in 1 cm steps until nothing touches.
+
+        The batched twin of `Phyics3dEnv._find_non_contacting_height`
+        (`quadruped._find_non_contacting_height`, suite/quadruped.py:397).
+        Lanes settle INDEPENDENTLY — each draws its own random orientation, so
+        a sprawled one needs a lower clearance than a rolled one — which is why
+        the loop carries a per-lane `done` flag rather than stopping the whole
+        batch at the first clear lane.
+
+        ⚠ WITHOUT THIS the GPU lanes spawn at z = 0, i.e. embedded in the
+        floor. That is not a crash: the solver pushes the robot out over the
+        first few steps and training proceeds from a state the reference never
+        visits. Same failure class as blocker H's frozen mocap target.
+
+        COST. One FK + broadphase over the batch per centimetre, with a host
+        sync per iteration to test the flags. quadruped settles in tens of
+        iterations and its episodes are 1000 steps with no early termination,
+        so every lane truncates together and this runs about once per 1000
+        steps. It is comptime-gated on `CONFIG.RESET_FIND_HEIGHT`, so no other
+        model pays a launch for it.
+        """
+        # The free root's z, from the joint records rather than assumed at
+        # qpos[2] — a model may declare its free joint second. Host-side read
+        # of `Model.joints`, which is uploaded once and never mutated.
+        var zadr = -1
+        for j in range(Self.NJOINT):
+            var jt = Int(
+                self.mf.joints.data[j * MODEL_JOINT_SIZE + JOINT_IDX_TYPE]
+            )
+            if jt == JNT_FREE:
+                zadr = (
+                    Int(
+                        self.mf.joints.data[
+                            j * MODEL_JOINT_SIZE + JOINT_IDX_QPOS_ADR
+                        ]
+                    )
+                    + 2
+                )
+                break
+        if zadr < 0:
+            return
+
+        var done = c.enqueue_create_buffer[DT](Self.N_ENVS)
+
+        @parameter
+        @always_inline
+        def seed_kernel(
+            mask: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS), MutAnyOrigin
+            ],
+            done_t: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS), MutAnyOrigin
+            ],
+        ):
+            # A lane the reset did NOT touch starts already "done", so the
+            # search never moves a mid-episode robot's root.
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= Self.N_ENVS:
+                return
+            done_t[env] = Scalar[DT](
+                0
+            ) if mask[env] != Scalar[DT](0) else Scalar[DT](1)
+
+        @parameter
+        @always_inline
+        def raise_kernel(
+            qpos: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NQ), MutAnyOrigin
+            ],
+            done_t: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS), MutAnyOrigin
+            ],
+            z_adr: Int,
+            # ⚠ The HEIGHT, not the attempt index. Computing
+            # `0.01 * Float64(attempt)` inside the kernel emits an
+            # i64 -> double conversion, and Metal rejects a module
+            # containing `double` outright — the error names
+            # `air.convert.f.f64.s.i64`, which is exactly this.
+            z_val: Scalar[DT],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= Self.N_ENVS:
+                return
+            if done_t[env] != Scalar[DT](0):
+                return
+            qpos[env, z_adr] = z_val
+
+        @parameter
+        @always_inline
+        def settle_kernel(
+            meta: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, METADATA_SIZE),
+                MutAnyOrigin,
+            ],
+            done_t: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS), MutAnyOrigin
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= Self.N_ENVS:
+                return
+            if meta[env, META_IDX_NUM_CONTACTS] == Scalar[DT](0):
+                done_t[env] = Scalar[DT](1)
+
+        var done_t = LayoutTensor[DT, Layout.row_major(Self.N_ENVS)](done)
+        var mask_t = LayoutTensor[DT, Layout.row_major(Self.N_ENVS)](
+            self._reset_mask
+        )
+        c.enqueue_function[seed_kernel](
+            mask_t, done_t, grid_dim=(Self.BLOCKS,), block_dim=(TPB,)
+        )
+        var host = List[Scalar[DT]](length=Self.N_ENVS, fill=Scalar[DT](0))
+
+        # Bounded like the reference, which RAISES on exhaustion. We cannot
+        # raise per lane here, so an exhausted lane keeps the last height tried
+        # and its first step reports the penetration — a model whose legs
+        # cannot clear the floor in 100 m is misbuilt in a way a reset failure
+        # would not explain either.
+        for attempt in range(10000):
+            c.enqueue_function[raise_kernel](
+                self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
+                done_t,
+                zadr,
+                Scalar[DT](0.01 * Float64(attempt)),
+                grid_dim=(Self.BLOCKS,),
+                block_dim=(TPB,),
+            )
+            self._run_fields_fk(c)
+            detect_contacts_auto[
+                "gpu", DT, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
+                Self.MC, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
+                Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
+                Self.MODEL_DEF.NEXCLUDE, 0, Self.N_ENVS,
+            ](self.d, self.mf, c)
+            c.enqueue_function[settle_kernel](
+                self.d.meta.lt["gpu", type_of(self.d).L_META](),
+                done_t,
+                grid_dim=(Self.BLOCKS,),
+                block_dim=(TPB,),
+            )
+            c.enqueue_copy(host.unsafe_ptr(), done)
+            c.synchronize()
+            var all_done = True
+            for i in range(Self.N_ENVS):
+                if host[i] == Scalar[DT](0):
+                    all_done = False
+                    break
+            if all_done:
+                return
 
     def _sync_mocap_batch(mut self, c: DeviceContext) raises:
         """Push `mocap_pos`/`mocap_quat` into the mocap bodies' world pose.
@@ -474,6 +681,45 @@ struct Phyics3dBatchedEnv[
                 Layout.row_major(Self.N_ENVS, Self.OBS_DIM),
                 MutAnyOrigin,
             ],
+            xipos: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 3),
+                MutAnyOrigin,
+            ],
+            xangvel: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 3),
+                MutAnyOrigin,
+            ],
+            cvel: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 6),
+                MutAnyOrigin,
+            ],
+            cacc: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 6),
+                MutAnyOrigin,
+            ],
+            cfrc_int: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 6),
+                MutAnyOrigin,
+            ],
+            subtree_com: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 3),
+                MutAnyOrigin,
+            ],
+            site_xpos_acc: LayoutTensor[
+                DT, Self.L_SITE_HOOK, MutAnyOrigin
+            ],
+            xquat_acc: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 4),
+                MutAnyOrigin,
+            ],
+            act: LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= Self.N_ENVS:
@@ -481,10 +727,12 @@ struct Phyics3dBatchedEnv[
             if not Self.CONFIG.custom_extract_obs_gpu[
                 DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY,
                 Self.OBS_DIM, Self.SITE_DIM, Self.MC, Self.NSITE_F,
-                Self.NGEOM_F,
+                Self.NGEOM_F, Self.NA_F,
             ](
                 qpos, qvel, xpos, xquat, xvel, bodies, site_xpos,
-                contacts, sites, geoms, meta, obs, env,
+                contacts, sites, geoms, meta, obs,
+                xipos, xangvel, cvel, cacc, cfrc_int, subtree_com,
+                site_xpos_acc, xquat_acc, act, env,
             ):
                 Self.MODEL_DEF.extract_obs_gpu[
                     DT, Self.N_ENVS, Self.OBS_DIM
@@ -506,6 +754,15 @@ struct Phyics3dBatchedEnv[
             self.mf.geoms.lt["gpu", Self.L_GEOMS_HOOK](),
             self.d.meta.lt["gpu", type_of(self.d).L_META](),
             obs_t,
+            self.d.xipos.lt["gpu", type_of(self.d).L_B3](),
+            self.d.xangvel.lt["gpu", type_of(self.d).L_B3](),
+            self.d.cvel.lt["gpu", type_of(self.d).L_B6](),
+            self.d.cacc.lt["gpu", type_of(self.d).L_B6](),
+            self.d.cfrc_int.lt["gpu", type_of(self.d).L_B6](),
+            self.d.subtree_com.lt["gpu", type_of(self.d).L_B3](),
+            self._site_xpos_acc_operand(),
+            self.d.xquat_acc.lt["gpu", type_of(self.d).L_B4](),
+            self._act_operand(),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
@@ -593,6 +850,41 @@ struct Phyics3dBatchedEnv[
                 Layout.row_major(Self.N_ENVS, Self.OBS_DIM),
                 MutAnyOrigin,
             ],
+            # ── E2: the acceleration-stage set ────────────────────────────
+            # ⚠ OPERAND BUDGET. This kernel now binds 27 operands against a
+            # MEASURED Metal cliff of 28 (29 = JIT abort, not a slowdown).
+            # Anything further has to displace something, not append — the
+            # obvious lever is that `cfrc_ext` is read by three Gym configs
+            # and nothing in the suite.
+            xangvel: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 3),
+                MutAnyOrigin,
+            ],
+            cacc: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 6),
+                MutAnyOrigin,
+            ],
+            cfrc_int: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 6),
+                MutAnyOrigin,
+            ],
+            subtree_com: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 3),
+                MutAnyOrigin,
+            ],
+            site_xpos_acc: LayoutTensor[
+                DT, Self.L_SITE_HOOK, MutAnyOrigin
+            ],
+            xquat_acc: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 4),
+                MutAnyOrigin,
+            ],
+            act: LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= Self.N_ENVS:
@@ -607,10 +899,12 @@ struct Phyics3dBatchedEnv[
             if not Self.CONFIG.custom_extract_obs_gpu[
                 DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY,
                 Self.OBS_DIM, Self.SITE_DIM, Self.MC, Self.NSITE_F,
-                Self.NGEOM_F,
+                Self.NGEOM_F, Self.NA_F,
             ](
                 qpos, qvel, xpos, xquat, xvel, bodies, site_xpos,
-                contacts, sites, geoms, meta, obs, env,
+                contacts, sites, geoms, meta, obs,
+                xipos, xangvel, cvel, cacc, cfrc_int, subtree_com,
+                site_xpos_acc, xquat_acc, act, env,
             ):
                 Self.MODEL_DEF.extract_obs_gpu[
                     DT, Self.N_ENVS, Self.OBS_DIM
@@ -619,7 +913,7 @@ struct Phyics3dBatchedEnv[
             var result = Self.CONFIG.compute_reward_and_done_gpu[
                 DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY,
                 Self.ACT_DIM, Self.SITE_DIM, Self.MC, Self.NSITE_F,
-                Self.NGEOM_F,
+                Self.NGEOM_F, Self.NA_F,
             ](
                 qpos,
                 qvel,
@@ -637,6 +931,13 @@ struct Phyics3dBatchedEnv[
                 meta,
                 curriculum,
                 actions,
+                xangvel,
+                cacc,
+                cfrc_int,
+                subtree_com,
+                site_xpos_acc,
+                xquat_acc,
+                act,
                 env,
                 step_count,
                 Self.CONFIG.FRAME_SKIP,
@@ -695,6 +996,13 @@ struct Phyics3dBatchedEnv[
             dones_t,
             term_t,
             obs_t,
+            self.d.xangvel.lt["gpu", type_of(self.d).L_B3](),
+            self.d.cacc.lt["gpu", type_of(self.d).L_B6](),
+            self.d.cfrc_int.lt["gpu", type_of(self.d).L_B6](),
+            self.d.subtree_com.lt["gpu", type_of(self.d).L_B3](),
+            self._site_xpos_acc_operand(),
+            self.d.xquat_acc.lt["gpu", type_of(self.d).L_B4](),
+            self._act_operand(),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
@@ -747,6 +1055,9 @@ struct Phyics3dBatchedEnv[
                 Layout.row_major(Self.N_ENVS, Self.NBODY * 4),
                 MutAnyOrigin,
             ],
+            reset_mask: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS), MutAnyOrigin
+            ],
             seed: Int,
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -756,6 +1067,7 @@ struct Phyics3dBatchedEnv[
                 qpos, qvel, qacc, qfrc, meta, joints, mocap_pos,
                 mocap_quat, i, seed,
             )
+            reset_mask[i] = Scalar[DT](1)
 
         c.enqueue_function[reset_kernel](
             self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
@@ -766,10 +1078,15 @@ struct Phyics3dBatchedEnv[
             self.mf.joints.lt["gpu", type_of(self.mf).L_JOINT](),
             self.d.mocap_pos.lt["gpu", type_of(self.d).L_B3](),
             self.d.mocap_quat.lt["gpu", type_of(self.d).L_B4](),
+            LayoutTensor[DT, Layout.row_major(Self.N_ENVS)](self._reset_mask),
             Int(rng_seed),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
+        # After the orientation draw, before the reset observation — the same
+        # order `Phyics3dEnv._reset_state` uses.
+        comptime if Self.CONFIG.RESET_FIND_HEIGHT:
+            self._find_non_contacting_height_batch(c)
         comptime if Self.CONFIG.USES_MOCAP:
             self._sync_mocap_batch(c)
         self._run_fields_fk(c)
@@ -820,45 +1137,9 @@ struct Phyics3dBatchedEnv[
             c.synchronize()
             print("[step_batch] 1 pre_step ok")
 
-        # 2) Actions -> qfrc via the comptime actuator logic (field tensor).
         var actions_t = LayoutTensor[
             DT, Layout.row_major(Self.N_ENVS, Self.ACT_DIM)
         ](self._action)
-        Self.MODEL_DEF.apply_actions_kernel_gpu[
-            DT, Self.N_ENVS, Self.ACT_DIM
-        ](
-            c,
-            self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),
-            rebind[
-                LayoutTensor[
-                    DT,
-                    Layout.row_major(Self.N_ENVS, Self.ACT_DIM),
-                    MutAnyOrigin,
-                ]
-            ](actions_t),
-            # qpos/qvel: the kernel needs them for position servos and
-            # fixed-tendon springs. Both are refused at compile time today
-            # (see the cadence asserts in the kernel), so for every model that
-            # reaches here they are read by nothing — but passing them is what
-            # lets the kernel MIRROR the CPU path term for term rather than be
-            # a reduced copy of it, which is what blocker G was.
-            self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
-            self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
-            rebind[
-                LayoutTensor[
-                    DT,
-                    Layout.row_major(Self.N_ENVS, Self.MODEL_DEF.NA_F),
-                    MutAnyOrigin,
-                ]
-            ](
-                LayoutTensor[
-                    DT, Layout.row_major(Self.N_ENVS, Self.MODEL_DEF.NA_F)
-                ](self._act)
-            ),
-        )
-        comptime if DEBUG:
-            c.synchronize()
-            print("[step_batch] 2 apply_actions ok")
 
         # 2b) Mocap-controlled models: push the updated target into the
         #     body pose BEFORE the step so the weld solve tracks it.
@@ -867,8 +1148,51 @@ struct Phyics3dBatchedEnv[
             self._sync_mocap_batch(c)
 
         # 3) Physics: fields integrator (RK4 or Euler per CONFIG.INTEGRATOR)
-        #    with per-substep contact/limit solving.
+        #    with per-substep contact/limit solving, with actuation re-applied
+        #    at the top of EVERY substep.
+        #
+        # ⚠ THE ACTUATOR CALL MOVED INSIDE THIS LOOP (2026-08-07). It used to
+        # run ONCE per control step while `Phyics3dEnv.step` calls its CPU twin
+        # once per SUBSTEP. For a plain `<motor>` the two are identical — its
+        # force is `gear * coef * kp * ctrl`, constant across the step, and the
+        # kernel zeroes `qfrc` before writing, so re-applying is idempotent.
+        # That is why every model gated to date was unaffected, and it is the
+        # evidence that this move is a no-op for them.
+        #
+        # It is NOT identical for anything that reads `qpos`/`qvel` or carries
+        # state: a position servo, a fixed-tendon spring, and a `dyntype`
+        # activation all change every substep. Those three were refused by
+        # comptime asserts in `apply_actions_kernel_gpu` precisely because of
+        # this cadence; the asserts are gone now that the cadence matches.
+        # quadruped needs all three at once (`<general biastype="affine"
+        # dyntype="filter">` on tendon transmissions).
         for _ in range(Self.CONFIG.FRAME_SKIP):
+            Self.MODEL_DEF.apply_actions_kernel_gpu[
+                DT, Self.N_ENVS, Self.ACT_DIM
+            ](
+                c,
+                self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),
+                rebind[
+                    LayoutTensor[
+                        DT,
+                        Layout.row_major(Self.N_ENVS, Self.ACT_DIM),
+                        MutAnyOrigin,
+                    ]
+                ](actions_t),
+                self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
+                self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
+                rebind[
+                    LayoutTensor[
+                        DT,
+                        Layout.row_major(Self.N_ENVS, Self.MODEL_DEF.NA_F),
+                        MutAnyOrigin,
+                    ]
+                ](
+                    LayoutTensor[
+                        DT, Layout.row_major(Self.N_ENVS, Self.MODEL_DEF.NA_F)
+                    ](self._act)
+                ),
+            )
             comptime if Self.CONFIG.INTEGRATOR == "euler":
                 self.integ_euler.step["gpu"](self.d, self.mf, ctx)
             else:
@@ -917,14 +1241,42 @@ struct Phyics3dBatchedEnv[
         comptime if DEBUG:
             c.synchronize()
             print("[step_batch] 5b compute_cfrc_ext ok")
-        compute_cvel[DT, Self.N_ENVS, Self.NBODY](
-            c,
-            self.d.xpos.lt["gpu", type_of(self.d).L_B3](),
-            self.d.xvel.lt["gpu", type_of(self.d).L_B3](),
-            self.d.xangvel.lt["gpu", type_of(self.d).L_B3](),
-            self.d.xipos.lt["gpu", type_of(self.d).L_B3](),
-            self.d.cvel.lt["gpu", type_of(self.d).L_B6](),
-        )
+        # ⚠⚠ `d.cvel` HAS TWO PRODUCERS WRITING DIFFERENT QUANTITIES, and this
+        # call is the one that must NOT run last for an RNE_POST model.
+        #
+        #   rne_post          -> MuJoCo's `d->cvel`: the spatial velocity
+        #                        referenced at `subtree_com[rootid]`, written
+        #                        DURING the substep. This is what
+        #                        `mju_transformSpatial` in the accelerometer
+        #                        transports, and what `Phyics3dEnv` leaves in
+        #                        the field (it never calls the helper below).
+        #   gpu/cvel_gpu      -> a per-body CoM velocity referenced at
+        #                        `xipos[b]`, written AFTER the substep loop.
+        #
+        # The two differ by the reference point, so overwriting the first with
+        # the second hands the acceleration-stage sensors a different physical
+        # quantity. Measured on quadruped's torso at step 0: worst |cvel diff|
+        # vs the CPU path was 45.6, against 3.5e-7 on the FK snapshots — i.e.
+        # not rounding, a different vector. It reached the observation as
+        # accelerometer[0] = 0.102 where the CPU reads 0.027, and rebuilding
+        # the sensor in float64 from the GPU's own downloaded fields
+        # reproduced 0.102 to 5.6e-9, which is how the sensor was cleared and
+        # the input blamed.
+        #
+        # Gated rather than deleted: no config reads the helper's form today
+        # (grep says `cvel` reaches only quadruped's and dog's hooks, both
+        # acceleration-stage), but every Gym-derived model was built while it
+        # ran, so leaving it in place for them keeps this change a provable
+        # no-op there.
+        comptime if not Self.CONFIG.RNE_POST:
+            compute_cvel[DT, Self.N_ENVS, Self.NBODY](
+                c,
+                self.d.xpos.lt["gpu", type_of(self.d).L_B3](),
+                self.d.xvel.lt["gpu", type_of(self.d).L_B3](),
+                self.d.xangvel.lt["gpu", type_of(self.d).L_B3](),
+                self.d.xipos.lt["gpu", type_of(self.d).L_B3](),
+                self.d.cvel.lt["gpu", type_of(self.d).L_B6](),
+            )
         comptime if DEBUG:
             c.synchronize()
             print("[step_batch] 5c compute_cvel ok")
@@ -994,10 +1346,14 @@ struct Phyics3dBatchedEnv[
             counter: LayoutTensor[
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
             ],
+            reset_mask: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS), MutAnyOrigin
+            ],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= Self.N_ENVS:
                 return
+            reset_mask[i] = Scalar[DT](0)
             if dones[i] > Scalar[DT](0.5):
                 Self._reset_env_lane(
                     qpos,
@@ -1012,6 +1368,7 @@ struct Phyics3dBatchedEnv[
                     Int(rebind[Scalar[DType.uint64]](counter[0])),
                 )
                 dones[i] = Scalar[DT](0.0)
+                reset_mask[i] = Scalar[DT](1)
 
         var dones_t = LayoutTensor[DT, Layout.row_major(Self.N_ENVS)](
             self._done
@@ -1027,9 +1384,14 @@ struct Phyics3dBatchedEnv[
             self.d.mocap_pos.lt["gpu", type_of(self.d).L_B3](),
             self.d.mocap_quat.lt["gpu", type_of(self.d).L_B4](),
             cnt_t,
+            LayoutTensor[DT, Layout.row_major(Self.N_ENVS)](self._reset_mask),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
+        # Only the lanes this call reset get raised; the mask is what keeps a
+        # mid-episode lane's root where the physics left it.
+        comptime if Self.CONFIG.RESET_FIND_HEIGHT:
+            self._find_non_contacting_height_batch(c)
         # FK for the batch (idempotent for the live lanes, whose state is
         # unchanged since the last step), then refresh obs so reset lanes
         # start their episode from the reset observation.

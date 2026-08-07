@@ -1026,38 +1026,23 @@ struct ModelDefFromXML[
         actuator drives — so a tendon transmission and a tendon spring landing
         on the same dof (fish's `fins_flap` + `fins_sym`) could not both apply.
 
-        ⚠ ACTIVATION (`d->act`) IS STILL NOT HERE, and the comptime assert
-        below refuses any model that needs it rather than simulating something
-        else. `Phyics3dBatchedEnv` carries no per-env activation state at all
-        (blocker E3); that is a storage gap, not an arithmetic one.
+        ACTIVATION (`d->act`) landed with blocker E3: `Phyics3dBatchedEnv`
+        owns a `[N_ENVS, NA_F]` activation slab, and the mjDYN_FILTER
+        integration at the end of the actuator loop below advances it.
         """
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        # ⚠ CADENCE. `Phyics3dBatchedEnv` invokes this ONCE PER CONTROL STEP,
-        # while `Phyics3dEnv.step` calls the CPU twin ONCE PER SUBSTEP. For a
-        # `<motor>` — including one on a tendon transmission — the two are
-        # bit-identical: its force is `gear * coef * kp * ctrl`, constant
-        # across the control step. For anything reading `qpos`/`qvel` they are
-        # NOT: a position servo and a tendon spring both move every substep,
-        # so applying them once would freeze a spring at its start-of-step
-        # length. Refuse those rather than integrate the wrong force.
-        comptime for _t in range(Self._acd.ntendon):
-            comptime assert Self._acd.tendon_stiffness[_t] == 0.0, (
-                "apply_actions_kernel_gpu: this model has a fixed-tendon"
-                " SPRING, whose force depends on qpos and therefore changes"
-                " every substep. The batched env applies actuation once per"
-                " CONTROL step, so the spring would be frozen at its"
-                " start-of-step length. Move the call inside the frame-skip"
-                " loop for this model before enabling it."
-            )
-        comptime for _i in range(Self.nact):
-            comptime assert Self._acd.motor_kind[_i] != ACT_KIND_POSITION, (
-                "apply_actions_kernel_gpu: this model has a POSITION servo,"
-                " whose force reads qpos/qvel and therefore changes every"
-                " substep. Same cadence problem as the tendon spring above —"
-                " the servo path here is correct per-substep but is currently"
-                " invoked once per control step."
-            )
+        # ⚠ CADENCE — RESOLVED 2026-08-07, READ THIS BEFORE MOVING THE CALL.
+        # Every term below is a PER-SUBSTEP quantity, and this used to be
+        # invoked once per CONTROL step while `Phyics3dEnv.step` calls the CPU
+        # twin once per SUBSTEP. A `<motor>` is immune (its force is
+        # `gear * coef * kp * ctrl`, constant across the step), which is why
+        # every model gated before quadruped was unaffected — but a position
+        # servo, a fixed-tendon spring and a `dyntype` activation all move
+        # every substep, and two comptime asserts refused those models rather
+        # than integrate a frozen force. `Phyics3dBatchedEnv._step_impl` now
+        # calls this at the top of every substep, so the asserts are gone.
+        # If this ever moves back outside the frame-skip loop, restore them.
 
         @parameter
         @always_inline

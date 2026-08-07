@@ -37,9 +37,16 @@ with it. Fixing it moved NO existing gate, which is the evidence that the old
 scope really was as narrow as it claimed.
 """
 
-from ..kinematics.site_frame import site_world_quat_list
+from std.collections import InlineArray
+from layout import Layout, LayoutTensor
+
+from ..kinematics.site_frame import site_world_quat, site_world_quat_list
 from ..kinematics.quat_math import quat_rotate_inverse
-from ..gpu.constants import MODEL_BODY_SIZE, BODY_IDX_ROOTID
+from ..gpu.constants import (
+    MODEL_BODY_SIZE,
+    MODEL_SITE_SIZE,
+    BODY_IDX_ROOTID,
+)
 
 
 @always_inline
@@ -191,3 +198,232 @@ def site_force_torque[
     )
 
     return (frc[0], frc[1], frc[2], trq[0], trq[1], trq[2])
+
+
+# ── GPU forms ────────────────────────────────────────────────────────────
+#
+# ⚠ EVERYTHING BELOW COMPUTES IN `DTYPE`, NOT Float64. The CPU functions above
+# widen to Float64 internally; Metal REJECTS a kernel module containing
+# `double` outright, so the GPU twins cannot. The two therefore agree to
+# float32 rounding rather than bitwise, which is what the GPU-vs-CPU gates'
+# `atol + rtol*|cpu|` bound is sized for.
+#
+# ⚠ AND THEY MUST BE FED THE `*_acc` SNAPSHOTS. `site_xpos` / `xquat` here are
+# the pose AS IT STOOD WHEN `cacc`/`cfrc_int` WERE WRITTEN — `Data.site_xpos_acc`
+# and `Data.xquat_acc`, not the live FK products. Passing the live ones mixes
+# integration stages and is defect 19: dog's accelerometer read 1.484 against
+# dm_control's -6.386 that way, with `cacc` itself exact to 4.5e-10. The
+# parameters are named `site_xpos` / `xquat` to mirror the CPU signature, which
+# is exactly why this warning is here.
+
+
+@always_inline
+def _site_transport_gpu[
+    DTYPE: DType
+](
+    v0: Scalar[DTYPE], v1: Scalar[DTYPE], v2: Scalar[DTYPE],
+    v3: Scalar[DTYPE], v4: Scalar[DTYPE], v5: Scalar[DTYPE],
+    dx: Scalar[DTYPE], dy: Scalar[DTYPE], dz: Scalar[DTYPE],
+    flg_force: Bool,
+) -> InlineArray[Scalar[DTYPE], 6]:
+    """`_site_transport` in DTYPE. Same expressions, same association."""
+    var o = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+    if flg_force:
+        o[0] = v0 - (dy * v5 - dz * v4)
+        o[1] = v1 - (dz * v3 - dx * v5)
+        o[2] = v2 - (dx * v4 - dy * v3)
+        o[3] = v3
+        o[4] = v4
+        o[5] = v5
+    else:
+        o[0] = v0
+        o[1] = v1
+        o[2] = v2
+        o[3] = v3 - (dy * v2 - dz * v1)
+        o[4] = v4 - (dz * v0 - dx * v2)
+        o[5] = v5 - (dx * v1 - dy * v0)
+    return o
+
+
+@always_inline
+def _site_com_offset_gpu[
+    DTYPE: DType, BATCH_SIZE: Int, NBODY: Int, SITE_DIM: Int
+](
+    site_xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+    ],
+    subtree_com: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    env: Int,
+    body: Int,
+    site: Int,
+) -> InlineArray[Scalar[DTYPE], 3]:
+    """`site_xpos[site] - subtree_com[rootid[body]]` — the transport vector
+    both acceleration-stage sensors need."""
+    var root = Int(rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_ROOTID]))
+    var d = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    for k in range(3):
+        d[k] = rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + k]) - rebind[
+            Scalar[DTYPE]
+        ](subtree_com[env, root * 3 + k])
+    return d
+
+
+@always_inline
+def site_accelerometer_gpu[
+    DTYPE: DType,
+    BATCH_SIZE: Int,
+    NBODY: Int,
+    NSITE_F: Int,
+    SITE_DIM: Int,
+](
+    cvel: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+    ],
+    cacc: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+    ],
+    subtree_com: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    site_xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    sites: LayoutTensor[
+        DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+    ],
+    env: Int,
+    body: Int,
+    site: Int,
+) -> InlineArray[Scalar[DTYPE], 3]:
+    """`site_accelerometer` against the batched field tensors.
+
+    Pass `site_xpos_acc` / `xquat_acc`, not the live products — see the
+    section note above. Requires the integrator to have run with
+    `RNE_POST=True`; without it `cacc` is all zeros and this returns the
+    `vel_ang x vel_lin` correction alone, which is finite, plausible and
+    wrong. `Phyics3dBatchedEnv.__init__` asserts the Euler pairing that
+    `RNE_POST` needs, but nothing can assert that a config asked for it.
+    """
+    var d = _site_com_offset_gpu[DTYPE, BATCH_SIZE, NBODY, SITE_DIM](
+        site_xpos, subtree_com, bodies, env, body, site
+    )
+
+    var v = _site_transport_gpu[DTYPE](
+        rebind[Scalar[DTYPE]](cvel[env, body * 6 + 0]),
+        rebind[Scalar[DTYPE]](cvel[env, body * 6 + 1]),
+        rebind[Scalar[DTYPE]](cvel[env, body * 6 + 2]),
+        rebind[Scalar[DTYPE]](cvel[env, body * 6 + 3]),
+        rebind[Scalar[DTYPE]](cvel[env, body * 6 + 4]),
+        rebind[Scalar[DTYPE]](cvel[env, body * 6 + 5]),
+        d[0], d[1], d[2], False,
+    )
+    var a = _site_transport_gpu[DTYPE](
+        rebind[Scalar[DTYPE]](cacc[env, body * 6 + 0]),
+        rebind[Scalar[DTYPE]](cacc[env, body * 6 + 1]),
+        rebind[Scalar[DTYPE]](cacc[env, body * 6 + 2]),
+        rebind[Scalar[DTYPE]](cacc[env, body * 6 + 3]),
+        rebind[Scalar[DTYPE]](cacc[env, body * 6 + 4]),
+        rebind[Scalar[DTYPE]](cacc[env, body * 6 + 5]),
+        d[0], d[1], d[2], False,
+    )
+
+    var sq = site_world_quat[DTYPE, NBODY, NSITE_F, BATCH_SIZE](
+        env, site, sites, xquat
+    )
+    # Rotate into the site frame BEFORE the correction — MuJoCo builds both
+    # `vel` and `res` locally and only then adds vel_ang x vel_lin.
+    var vl = quat_rotate_inverse[DTYPE](
+        sq[0], sq[1], sq[2], sq[3], v[0], v[1], v[2]
+    )
+    var vv = quat_rotate_inverse[DTYPE](
+        sq[0], sq[1], sq[2], sq[3], v[3], v[4], v[5]
+    )
+    var al = quat_rotate_inverse[DTYPE](
+        sq[0], sq[1], sq[2], sq[3], a[3], a[4], a[5]
+    )
+
+    var out = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+    out[0] = al[0] + (vl[1] * vv[2] - vl[2] * vv[1])
+    out[1] = al[1] + (vl[2] * vv[0] - vl[0] * vv[2])
+    out[2] = al[2] + (vl[0] * vv[1] - vl[1] * vv[0])
+    return out
+
+
+@always_inline
+def site_force_torque_gpu[
+    DTYPE: DType,
+    BATCH_SIZE: Int,
+    NBODY: Int,
+    NSITE_F: Int,
+    SITE_DIM: Int,
+](
+    cfrc_int: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+    ],
+    subtree_com: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    site_xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    sites: LayoutTensor[
+        DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+    ],
+    env: Int,
+    body: Int,
+    site: Int,
+) -> InlineArray[Scalar[DTYPE], 6]:
+    """`site_force_torque` against the batched field tensors.
+
+    Returns `[force(3), torque(3)]` — force first, matching the CPU twin
+    rather than MuJoCo's packed order. Pass `site_xpos_acc` / `xquat_acc`.
+    """
+    var d = _site_com_offset_gpu[DTYPE, BATCH_SIZE, NBODY, SITE_DIM](
+        site_xpos, subtree_com, bodies, env, body, site
+    )
+
+    var t = _site_transport_gpu[DTYPE](
+        rebind[Scalar[DTYPE]](cfrc_int[env, body * 6 + 0]),
+        rebind[Scalar[DTYPE]](cfrc_int[env, body * 6 + 1]),
+        rebind[Scalar[DTYPE]](cfrc_int[env, body * 6 + 2]),
+        rebind[Scalar[DTYPE]](cfrc_int[env, body * 6 + 3]),
+        rebind[Scalar[DTYPE]](cfrc_int[env, body * 6 + 4]),
+        rebind[Scalar[DTYPE]](cfrc_int[env, body * 6 + 5]),
+        d[0], d[1], d[2], True,
+    )
+
+    var sq = site_world_quat[DTYPE, NBODY, NSITE_F, BATCH_SIZE](
+        env, site, sites, xquat
+    )
+    var trq = quat_rotate_inverse[DTYPE](
+        sq[0], sq[1], sq[2], sq[3], t[0], t[1], t[2]
+    )
+    var frc = quat_rotate_inverse[DTYPE](
+        sq[0], sq[1], sq[2], sq[3], t[3], t[4], t[5]
+    )
+
+    var out = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+    out[0] = frc[0]
+    out[1] = frc[1]
+    out[2] = frc[2]
+    out[3] = trq[0]
+    out[4] = trq[1]
+    out[5] = trq[2]
+    return out

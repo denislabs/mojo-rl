@@ -10,11 +10,17 @@ floor size has no effect on the dynamics at these episode lengths; it is
 carried because the model is otherwise a verbatim copy of what
 `make_model(floor_size=...)` emits, and a gate compares the two.
 
-CPU ONLY, and unlike the other domains not merely because of a hook ABI: the
-GPU-batched facade does not carry `act`, and quadruped's twelve `<general
-dyntype="filter">` servos are integrated through it. A batched quadruped
-would run with a permanently zero activation — every actuator dead — so the
-alias is deliberately not offered.
+walk and run are GPU-BATCHED as of 2026-08-07 (`*Batched` below). Getting
+there took the whole of blocker E: `Phyics3dBatchedEnv` had no `act` slab, so
+quadruped's twelve `<general dyntype="filter">` servos would have run with a
+permanently zero activation (E3); `RNE_POST` was never wired into the batched
+integrator, so `cacc`/`cfrc_int` — and with them 30 of the 78 observation
+dims — would have been zero (E1); the actuator kernel ran once per CONTROL
+step where these servos need it once per SUBSTEP; and the reset's
+`_find_non_contacting_height` had no batched form, so every lane would have
+spawned embedded in the floor.
+
+`fetch` stays CPU-only for now — it is under active development.
 
 `escape` stays descoped — it needs heightfield terrain and rangefinders,
 neither of which the engine has. `fetch` is IN, and brought two engine
@@ -29,6 +35,7 @@ from .quadruped_xml import (
 from .quadruped_config import DMQuadrupedWalkConfig, DMQuadrupedRunConfig
 from .quadruped_fetch_config import DMQuadrupedFetchConfig
 from ...phyics3d_env import Phyics3dEnv
+from ...phyics3d_batched_env import Phyics3dBatchedEnv
 
 
 # dm_control tasks never terminate early — the driver only ever sees
@@ -43,4 +50,20 @@ comptime DMQuadrupedRun[DTYPE: DType = DType.float64] = Phyics3dEnv[
 
 comptime DMQuadrupedFetch[DTYPE: DType = DType.float64] = Phyics3dEnv[
     DMQuadrupedFetchModel, DMQuadrupedFetchConfig, DTYPE, False
+]
+
+
+# ── GPU-batched aliases ────────────────────────────────────────────────
+#
+# N_ENVS is the caller's; the driver instantiates one per training run.
+# `TERMINATE_ON_UNHEALTHY=False` because no suite task terminates early —
+# the driver only ever sees truncation at MAX_STEPS.
+comptime DMQuadrupedWalkBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
+    DMQuadrupedWalkModel, DMQuadrupedWalkConfig, N_ENVS,
+    TERMINATE_ON_UNHEALTHY=False,
+]
+
+comptime DMQuadrupedRunBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
+    DMQuadrupedRunModel, DMQuadrupedRunConfig, N_ENVS,
+    TERMINATE_ON_UNHEALTHY=False,
 ]

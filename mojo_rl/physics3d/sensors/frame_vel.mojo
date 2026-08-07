@@ -40,8 +40,12 @@ Used by dm_control's swimmer, whose `body_velocities()` observation is the
 `[vx, vy, wz]` slice of one velocimeter/gyro pair per link.
 """
 
+from std.collections import InlineArray
+from layout import Layout, LayoutTensor
+
 from ..kinematics.quat_math import quat_rotate_inverse
-from ..kinematics.site_frame import site_world_quat_list
+from ..kinematics.site_frame import site_world_quat, site_world_quat_list
+from ..gpu.constants import MODEL_SITE_SIZE
 
 
 @always_inline
@@ -147,3 +151,92 @@ def site_frame_velocity[
         Float64(wl[1]),
         Float64(wl[2]),
     )
+
+
+@always_inline
+def site_frame_velocity_gpu[
+    DTYPE: DType,
+    BATCH_SIZE: Int,
+    NBODY: Int,
+    NSITE_F: Int,
+    SITE_DIM: Int,
+](
+    xvel: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    xangvel: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    xipos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+    ],
+    site_xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+    ],
+    sites: LayoutTensor[
+        DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+    ],
+    env: Int,
+    body: Int,
+    site: Int,
+) -> InlineArray[Scalar[DTYPE], 6]:
+    """`site_frame_velocity` against the batched field tensors.
+
+    Returns `[velocimeter(3), gyro(3)]` — linear first, matching the CPU
+    twin's tuple order rather than MuJoCo's packed `res` (rotational first).
+
+    ⚠ THE ARITHMETIC IS THE CPU FUNCTION'S, TRANSCRIBED EXPRESSION FOR
+    EXPRESSION — same cross products, same association, same order. The two
+    are diffed element-wise by the GPU-vs-CPU gates, so a reassociation here
+    reads as a physics divergence. It is a transcription rather than a call
+    because the CPU form takes `List` host buffers, which no kernel has.
+
+    Everything is computed in DTYPE (float32 in production). The CPU twin
+    widens to Float64 internally, so the two agree to float32 rounding, not
+    bitwise — which is exactly what the gates' `atol + rtol*|cpu|` bound is
+    sized for. Metal rejects a kernel containing `double` outright, so
+    widening here is not an option (`feedback_metal_nested_generics`).
+    """
+    var wx = rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 0])
+    var wy = rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 1])
+    var wz = rebind[Scalar[DTYPE]](xangvel[env, body * 3 + 2])
+
+    # Transport the CoM velocity to the site point: v + w x (p - xipos).
+    var rx = rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 0]) - rebind[
+        Scalar[DTYPE]
+    ](xipos[env, body * 3 + 0])
+    var ry = rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 1]) - rebind[
+        Scalar[DTYPE]
+    ](xipos[env, body * 3 + 1])
+    var rz = rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 2]) - rebind[
+        Scalar[DTYPE]
+    ](xipos[env, body * 3 + 2])
+
+    var vx = rebind[Scalar[DTYPE]](xvel[env, body * 3 + 0]) + (
+        wy * rz - wz * ry
+    )
+    var vy = rebind[Scalar[DTYPE]](xvel[env, body * 3 + 1]) + (
+        wz * rx - wx * rz
+    )
+    var vz = rebind[Scalar[DTYPE]](xvel[env, body * 3 + 2]) + (
+        wx * ry - wy * rx
+    )
+
+    # R_site is the SITE's world frame, `xquat[body] * site_quat`.
+    var sq = site_world_quat[DTYPE, NBODY, NSITE_F, BATCH_SIZE](
+        env, site, sites, xquat
+    )
+    var vl = quat_rotate_inverse[DTYPE](sq[0], sq[1], sq[2], sq[3], vx, vy, vz)
+    var wl = quat_rotate_inverse[DTYPE](sq[0], sq[1], sq[2], sq[3], wx, wy, wz)
+
+    var out = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
+    out[0] = vl[0]
+    out[1] = vl[1]
+    out[2] = vl[2]
+    out[3] = wl[0]
+    out[4] = wl[1]
+    out[5] = wl[2]
+    return out

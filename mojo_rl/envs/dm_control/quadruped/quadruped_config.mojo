@@ -36,18 +36,37 @@ which is why `custom_extract_obs_cpu` takes an `act` argument at all — the
 env cannot append the activation after the fact.
 """
 
-from std.math import log, sqrt, cos, sin, pi, inf
+from std.math import log, sqrt, cos, sin, pi, inf, abs
 from std.random import random_float64
 from std.collections import InlineArray
 
+from layout import Layout, LayoutTensor
+from std.random.philox import Random as PhiloxRandom
+
 from mojo_rl.physics3d.fields import Data
-from mojo_rl.physics3d.kinematics.xmat import xmat_elem, XMAT_ZZ
-from mojo_rl.physics3d.sensors.frame_vel import site_frame_velocity
+from mojo_rl.physics3d.kinematics.xmat import xmat_elem, xmat_elem_gpu, XMAT_ZZ
+from mojo_rl.physics3d.sensors.frame_vel import (
+    site_frame_velocity,
+    site_frame_velocity_gpu,
+)
 from mojo_rl.physics3d.sensors.site_acc import (
     site_accelerometer,
+    site_accelerometer_gpu,
     site_force_torque,
+    site_force_torque_gpu,
+)
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    MODEL_SITE_SIZE,
+    MODEL_GEOM_SIZE,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
+    CONTACT_SIZE,
+    MODEL_JOINT_SIZE,
 )
 
+from ..dtype_math import asinh_dt, sqrt_dt, inf_dt
+from ..gpu_reset import reset_seed, standard_normal
 from ..rewards import tolerance, SIGMOID_LINEAR
 from .quadruped_xml import (
     qwp,
@@ -72,9 +91,20 @@ comptime QUADRUPED_FRAME_SKIP: Int = 4
 
 @always_inline
 def _asinh(x: Float64) -> Float64:
-    """`np.arcsinh`. Not in `std.math`, and the identity is exact enough here
-    — `force_torque()` only uses it to squash a wide dynamic range."""
-    return log(x + sqrt(x * x + 1.0))
+    """`np.arcsinh`. Not in `std.math`, so the identity, folded onto |x|.
+
+    ⚠ THE FOLD IS NOT COSMETIC. `x + sqrt(x*x + 1)` cancels catastrophically
+    for large negative x, and a loaded toe here reaches |force| ~ 1.4e3 — far
+    enough that the float32 GPU twin collapsed all four toes onto a single
+    value (see `dm_control/dtype_math.asinh_dt`, which carries the
+    measurement). float64 degrades later rather than escaping, and the two
+    paths are diffed element-wise, so both use the same stable form.
+
+    `asinh` is odd, so this is exact, not an approximation.
+    """
+    var a = abs(x)
+    var r = log(a + sqrt(a * a + 1.0))
+    return -r if x < 0.0 else r
 
 
 @always_inline
@@ -178,6 +208,166 @@ def _common_obs_cpu[
     return True
 
 
+@always_inline
+def _common_obs_gpu[
+    DTYPE: DType,
+    BATCH_SIZE: Int,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    OBS_DIM: Int,
+    SITE_DIM: Int,
+    NSITE_F: Int,
+    NA_F: Int,
+    TORSO_SITE: Int,
+    TOE_SITE_0_P: Int,
+](
+    qpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+    ],
+    qvel: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+    ],
+    xipos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+    ],
+    xvel: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    xangvel: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    site_xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+    ],
+    sites: LayoutTensor[
+        DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+    ],
+    cvel: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+    ],
+    cacc: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+    ],
+    cfrc_int: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+    ],
+    subtree_com: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    site_xpos_acc: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+    ],
+    xquat_acc: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+    ],
+    act: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+    ],
+    obs: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+    ],
+    env: Int,
+) -> Bool:
+    """`_common_obs_cpu` against the batched field tensors, block for block.
+
+    ⚠ THE SITE INDICES ARE PARAMETERS for the same reason they are on the CPU
+    twin: `fetch` declares a `target` site ahead of the torso body, so every
+    site id shifts by one.
+
+    ⚠ THE SIZE ASSERT IS LOAD-BEARING. This writes `obs[env, k]` by running
+    index rather than appending to a `List`, so a block that is one dim short
+    silently leaves the tail at whatever the buffer last held — a stale
+    observation, not a crash. The assert below is what makes a mis-sized
+    block a compile error.
+    """
+    comptime assert (
+        2 * N_HINGE + NA_F + 3 + 1 + 6 + 24 == OBS_DIM
+    ), (
+        "quadruped._common_obs_gpu: the five blocks do not sum to OBS_DIM."
+        " egocentric_state(2*N_HINGE + NA_F) + torso_velocity(3) +"
+        " torso_upright(1) + imu(6) + force_torque(24) must equal it exactly."
+    )
+
+    var k = 0
+
+    # --- egocentric_state: hinge qpos, hinge qvel, act ---------------------
+    for i in range(N_HINGE):
+        obs[env, k] = qpos[env, HINGE_QPOS_0 + i]
+        k += 1
+    for i in range(N_HINGE):
+        obs[env, k] = qvel[env, HINGE_DOF_0 + i]
+        k += 1
+    # `act` is the ACTUATOR ACTIVATION, and it sits INSIDE this block rather
+    # than at the end of the observation. Zero here means the twelve
+    # `dyntype="filter"` servos are dead — blocker E3's failure mode, visible
+    # as twelve permanently-zero dims.
+    for i in range(NA_F):
+        obs[env, k] = act[env, i]
+        k += 1
+
+    # --- torso_velocity: the velocimeter at the torso site -----------------
+    var fv = site_frame_velocity_gpu[
+        DTYPE, BATCH_SIZE, NBODY, NSITE_F, SITE_DIM
+    ](
+        xvel, xangvel, xipos, xquat, site_xpos, sites,
+        env, TORSO_BODY_IDX, TORSO_SITE,
+    )
+    for i in range(3):
+        obs[env, k] = fv[i]
+        k += 1
+
+    # --- torso_upright: xmat['torso', 'zz'] --------------------------------
+    obs[env, k] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY](
+        xquat, env, TORSO_BODY_IDX, XMAT_ZZ
+    )
+    k += 1
+
+    # --- imu: accelerometer THEN gyro (sensor-id order) --------------------
+    # ⚠ `site_xpos_acc` / `xquat_acc`, NOT the live products — defect 19.
+    var acc = site_accelerometer_gpu[
+        DTYPE, BATCH_SIZE, NBODY, NSITE_F, SITE_DIM
+    ](
+        cvel, cacc, subtree_com, site_xpos_acc, xquat_acc, bodies, sites,
+        env, TORSO_BODY_IDX, TORSO_SITE,
+    )
+    for i in range(3):
+        obs[env, k] = acc[i]
+        k += 1
+    for i in range(3):
+        obs[env, k] = fv[3 + i]
+        k += 1
+
+    # --- force_torque: arcsinh(all four forces, then all four torques) -----
+    #     Two passes over the toes, not one interleaved.
+    var fx = InlineArray[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
+    var tx = InlineArray[Scalar[DTYPE], 12](fill=Scalar[DTYPE](0))
+    for t in range(4):
+        var ftt = site_force_torque_gpu[
+            DTYPE, BATCH_SIZE, NBODY, NSITE_F, SITE_DIM
+        ](
+            cfrc_int, subtree_com, site_xpos_acc, xquat_acc, bodies, sites,
+            env, TOE_BODY_0 + t * TOE_BODY_STRIDE, TOE_SITE_0_P + t,
+        )
+        for i in range(3):
+            fx[t * 3 + i] = ftt[i]
+            tx[t * 3 + i] = ftt[3 + i]
+    for i in range(12):
+        obs[env, k] = asinh_dt[DTYPE](fx[i])
+        k += 1
+    for i in range(12):
+        obs[env, k] = asinh_dt[DTYPE](tx[i])
+        k += 1
+
+    return True
+
+
 struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
     """`Move`, for both walk (0.5) and run (5.0)."""
 
@@ -193,6 +383,7 @@ struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
     comptime RNE_POST: Bool = True
     # `_find_non_contacting_height` after the orientation draw below.
     comptime RESET_FIND_HEIGHT: Bool = True
+    comptime HAS_GPU_HOOKS: Bool = True
 
     @staticmethod
     def get_timestep() -> Float64:
@@ -317,6 +508,313 @@ struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
         )
         return (Scalar[DTYPE](upright * move), False)
 
+
+    # ── GPU hooks ────────────────────────────────────────────────────────
+
+    @always_inline
+    @staticmethod
+    def init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NJOINT: Int,
+        NV: Int,
+        NBODY: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        mocap_pos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        mocap_quat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """`Move.initialize_episode` — a uniform random torso orientation.
+
+        The GPU twin of `custom_reset_cpu`. A normalized 4-vector of
+        INDEPENDENT NORMALS is uniform on SO(3); a normalized vector of
+        UNIFORMS is not (it clusters toward the cube's corners), so the
+        Box-Muller draws are load-bearing rather than decoration. This is why
+        the hook cannot reuse `randomize_limited_and_rotational_joints_gpu`,
+        whose free-joint branch deliberately reproduces the reference's
+        `random.rand(4)` quirk — quadruped's own reset does `randn(4)`.
+
+        The height stays 0 for `_find_non_contacting_height_batch` to raise;
+        the hinges stay at qpos0 (`get_reset_noise` is 0 for the same reason).
+
+        ⚠ THE STREAM DOES NOT MATCH THE CPU PATH, by construction: the CPU
+        draws from host `random_float64` and keeps BOTH Box-Muller halves,
+        this draws from per-lane Philox and keeps the cosine half only (see
+        `standard_normal`). Same distribution, different sequence — so the
+        GPU-vs-CPU gate injects a shared qpos/qvel rather than comparing
+        resets, exactly as every other suite gate does.
+        """
+        var rng = PhiloxRandom(seed=reset_seed(env, seed), offset=0)
+        var b0 = rng.step_uniform()
+        var b1 = rng.step_uniform()
+
+        var q = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        q[0] = standard_normal[DTYPE](
+            Scalar[DTYPE](b0[0]), Scalar[DTYPE](b0[1])
+        )
+        q[1] = standard_normal[DTYPE](
+            Scalar[DTYPE](b0[2]), Scalar[DTYPE](b0[3])
+        )
+        q[2] = standard_normal[DTYPE](
+            Scalar[DTYPE](b1[0]), Scalar[DTYPE](b1[1])
+        )
+        q[3] = standard_normal[DTYPE](
+            Scalar[DTYPE](b1[2]), Scalar[DTYPE](b1[3])
+        )
+
+        # `sqrt` needs `is_floating_point()` evidence an unconstrained trait
+        # DTYPE cannot supply — hence the shim
+        # (`feedback_where_clause_cannot_cross_trait_boundary`).
+        var nn = sqrt_dt[DTYPE](
+            q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]
+        )
+        if nn < Scalar[DTYPE](1e-12):
+            q[0] = Scalar[DTYPE](1)
+            q[1] = Scalar[DTYPE](0)
+            q[2] = Scalar[DTYPE](0)
+            q[3] = Scalar[DTYPE](0)
+            nn = Scalar[DTYPE](1)
+
+        # Free-joint qpos is [x, y, z, qw, qx, qy, qz] — W FIRST. (Only
+        # `Data.xquat` is xyzw.) The three linear dofs stay at 0; the height
+        # is the search's job.
+        for i in range(3):
+            qpos[env, i] = Scalar[DTYPE](0)
+        for i in range(4):
+            qpos[env, 3 + i] = q[i] / nn
+
+    @always_inline
+    @staticmethod
+    def custom_extract_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        OBS_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+        NA_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cfrc_int: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        subtree_com: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        site_xpos_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        xquat_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """`_common_observations` — the five blocks, in order."""
+        return _common_obs_gpu[
+            DTYPE, BATCH_SIZE, NQ, NV, NBODY, OBS_DIM, SITE_DIM, NSITE_F,
+            NA_F, TORSO_SITE_IDX, TOE_SITE_0,
+        ](
+            qpos, qvel, xipos, xquat, xvel, xangvel, bodies, site_xpos,
+            sites, cvel, cacc, cfrc_int, subtree_com, site_xpos_acc,
+            xquat_acc, act, obs, env,
+        )
+
+    @always_inline
+    @staticmethod
+    def compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        ACTION_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+        NA_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        cacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cfrc_int: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        subtree_com: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        site_xpos_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        xquat_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        env: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """`Move.get_reward` — upright x move, never terminates early."""
+        var zz = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY](
+            xquat, env, TORSO_BODY_IDX, XMAT_ZZ
+        )
+        # `_upright_reward` in DTYPE: bound [1, inf), margin 2,
+        # value_at_margin 0 on a linear sigmoid.
+        var upright = tolerance[SIGMOID_LINEAR, 0.0, DTYPE](
+            zz,
+            Scalar[DTYPE](1.0),
+            inf_dt[DTYPE](),
+            Scalar[DTYPE](2.0),
+        )
+
+        # The velocimeter's x component — the LIVE site pose, not the `*_acc`
+        # snapshot: this is a velocity-stage sensor, and dm_control reads it
+        # after `mj_step1` has refreshed position and velocity at the new
+        # state. Only the acceleration stage is frozen (defect 19).
+        var fv = site_frame_velocity_gpu[
+            DTYPE, BATCH_SIZE, NBODY, NSITE_F, SITE_DIM
+        ](
+            xvel, xangvel, xipos, xquat, site_xpos, sites,
+            env, TORSO_BODY_IDX, TORSO_SITE_IDX,
+        )
+
+        # `margin = desired_speed` and `value_at_margin = 0.5`: at zero speed
+        # the move term is exactly 0.5, not 0 — so a quadruped that only
+        # stands still scores half the upright reward rather than nothing.
+        var move = tolerance[SIGMOID_LINEAR, 0.5, DTYPE](
+            fv[0],
+            Scalar[DTYPE](Self.DESIRED_SPEED),
+            inf_dt[DTYPE](),
+            Scalar[DTYPE](Self.DESIRED_SPEED),
+        )
+        return (upright * move, False)
 
 comptime DMQuadrupedWalkConfig = DMQuadrupedConfig[0.5]
 comptime DMQuadrupedRunConfig = DMQuadrupedConfig[5.0]

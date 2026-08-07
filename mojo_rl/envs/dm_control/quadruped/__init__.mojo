@@ -49,7 +49,13 @@ from .quadruped_xml import (
     qrp,
     qfp,
 )
-from .quadruped import DMQuadrupedWalk, DMQuadrupedRun, DMQuadrupedFetch
+from .quadruped import (
+    DMQuadrupedWalk,
+    DMQuadrupedRun,
+    DMQuadrupedFetch,
+    DMQuadrupedWalkBatched,
+    DMQuadrupedRunBatched,
+)
 from .quadruped_config import (
     DMQuadrupedConfig,
     DMQuadrupedWalkConfig,

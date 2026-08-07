@@ -9,7 +9,12 @@ directly.
 When the full framework lands, these become the per-type kernels behind it.
 """
 
-from .frame_vel import site_frame_velocity
-from .site_acc import site_accelerometer, site_force_torque
-from .subtree import subtree_linvel, walk_to_root
-from .touch import touch_sphere_site
+from .frame_vel import site_frame_velocity, site_frame_velocity_gpu
+from .site_acc import (
+    site_accelerometer,
+    site_accelerometer_gpu,
+    site_force_torque,
+    site_force_torque_gpu,
+)
+from .subtree import subtree_linvel, subtree_linvel_gpu, walk_to_root
+from .touch import touch_sphere_site, touch_sphere_site_gpu
