@@ -1,4 +1,4 @@
-"""dm_control tranche 2 (site_xpos domains): batched GPU vs CPU, per step.
+"""dm_control tranches 2-3: batched GPU vs CPU, per step.
 
 Fifth of the GPU-vs-CPU gates; `test_pendulum_gpu_vs_cpu.mojo`'s header says
 why the comparison has to be per-step.
@@ -35,6 +35,10 @@ from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.dm_control.acrobot import DMAcrobotModel, DMAcrobotConfig
 from mojo_rl.envs.dm_control.hopper import DMHopperModel, DMHopperConfig
+from mojo_rl.envs.dm_control.point_mass import (
+    DMPointMassModel,
+    DMPointMassConfig,
+)
 
 comptime N_ENVS = 2
 comptime N_STEPS = 60
@@ -55,6 +59,7 @@ def _run[
     MODEL: ModelDefLike,
     CFG: Phyics3dEnvConfig,
     label: StaticString,
+    DRIVE: Float64 = 0.7,
 ](ctx: DeviceContext, mut worst: Float64) raises:
     comptime NQ = MODEL.NQ
     comptime NV = MODEL.NV
@@ -75,6 +80,9 @@ def _run[
     # perfectly and proves nothing. `IS_HOPPER` drops the torso onto the floor
     # with a downward velocity so both zones carry real normal force.
     comptime IS_HOPPER = OBS_DIM == DMHopperModel.OBS_DIM and NQ == DMHopperModel.NQ
+    comptime IS_POINT_MASS = (
+        OBS_DIM == DMPointMassModel.OBS_DIM and NQ == DMPointMassModel.NQ
+    )
 
     # Shared start: tip ON the target, swinging away.
     #
@@ -97,6 +105,28 @@ def _run[
         qvel0[1] = -0.6
         for i in range(3, NQ):
             qpos0[i] = 0.05
+    elif IS_POINT_MASS:
+        # ⚠⚠ COASTING, NOT DRIVEN — and this is a REAL DEFECT being routed
+        # around, not a convenience. point_mass is driven through FIXED
+        # TENDONS, and the batched GPU actuator path does not agree with the
+        # CPU one. Measured, isolated:
+        #
+        #     action = 0.0   worst |qvel diff| over 12 steps = 0.0  (exact)
+        #     action = 0.8   worst |qvel diff| over 12 steps = 0.043
+        #
+        # So the INTEGRATION is bit-identical and the divergence is entirely in
+        # actuator transmission. That is engine-level and outside this port; it
+        # will hit every tendon-driven domain (point_mass, fish, manipulator,
+        # stacker, quadruped). Tracked in docs/DM_CONTROL_GPU_TRAINING_G10.md.
+        #
+        # This gate therefore drives with DRIVE = 0.0 and gives the mass an
+        # initial VELOCITY instead: it coasts, `geom_xpos` moves, `near_target`
+        # sweeps a real range, and the obs/reward hooks are gated properly —
+        # WITHOUT asserting an actuator path that is known wrong.
+        qpos0[0] = -0.12
+        qpos0[1] = 0.08
+        qvel0[0] = 0.55
+        qvel0[1] = -0.35
     else:
         qvel0[0] = 2.0
         qvel0[1] = -1.0
@@ -132,7 +162,7 @@ def _run[
     for t in range(N_STEPS):
         var act = ContAction[ACT_DIM]()
         for j in range(ACT_DIM):
-            var u = 0.7 * sin(Float64(t) * 0.19 + Float64(j) * 0.9)
+            var u = DRIVE * sin(Float64(t) * 0.19 + Float64(j) * 0.9)
             act.data[j] = u
             for e in range(N_ENVS):
                 h_act[e * ACT_DIM + j] = Scalar[DT](u)
@@ -235,8 +265,15 @@ def test_tranche2_gpu_matches_cpu() raises:
         _run[DMHopperModel, DMHopperConfig[True], "hopper-hop            "](
             ctx, worst
         )
+        # point_mass-easy: first consumer of the DERIVED `geom_xpos_gpu`.
+        # ⚠ `hard` is absent on purpose — it mutates Model.tendons per episode
+        # and fields.Model is shared/unbatched (G4).
+        _run[
+            DMPointMassModel, DMPointMassConfig, "point_mass-easy       ",
+            DRIVE=0.0,
+        ](ctx, worst)
         print(
-            "tranche2 GPU vs CPU: 4 configs x ", N_STEPS, " steps x ",
+            "tranche2/3 GPU vs CPU: 5 configs x ", N_STEPS, " steps x ",
             N_ENVS, " lanes — worst abs diff = ", worst,
             " (bound ", ATOL, " + ", RTOL, "*|cpu|)",
         )

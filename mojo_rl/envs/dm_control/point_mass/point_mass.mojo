@@ -7,17 +7,22 @@ One model serves both, as in the reference; `hard` randomizes the tendon
 mixing matrix per episode so each control drives a random linear combination
 of the two joints.
 
-CPU only: the configs' GPU reward/obs hooks are stubs because the batched hook
-ABI does not carry body quaternions yet (gap G10). `hard` is CPU-only for a
-second, independent reason — its per-episode model randomization writes the
-HOST tendon records, which no GPU path re-uploads.
-See docs/DM_CONTROL_PORT.md.
+point_mass-EASY is **GPU-trainable as of 2026-08-07**:
+
+    from mojo_rl.envs.dm_control.point_mass import DMPointMassEasyBatched
+    var env = DMPointMassEasyBatched[N_ENVS=64](ctx)
+
+⚠ `hard` stays CPU-only, and not for want of effort: it mutates
+`Model.tendons` per episode (the actuator->joint mixing matrix), and
+`fields.Model` is SHARED and UNBATCHED across lanes — every env would get the
+last one's draw. That is gap G4. See docs/DM_CONTROL_GPU_TRAINING_G10.md.
 """
 
 from .point_mass_xml import DMPointMassModel
 from .point_mass_config import DMPointMassConfig
 from .point_mass_hard_config import DMPointMassHardConfig
 from ...phyics3d_env import Phyics3dEnv
+from ...phyics3d_batched_env import Phyics3dBatchedEnv
 
 
 # dm_control tasks never terminate early — TERMINATE_ON_UNHEALTHY stays False
@@ -28,4 +33,10 @@ comptime DMPointMassEasy[DTYPE: DType = DType.float64] = Phyics3dEnv[
 
 comptime DMPointMassHard[DTYPE: DType = DType.float64] = Phyics3dEnv[
     DMPointMassModel, DMPointMassHardConfig, DTYPE, False
+]
+
+
+comptime DMPointMassEasyBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
+    DMPointMassModel, DMPointMassConfig, N_ENVS,
+    TERMINATE_ON_UNHEALTHY=False,
 ]

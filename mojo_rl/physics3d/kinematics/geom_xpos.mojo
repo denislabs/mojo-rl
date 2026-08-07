@@ -23,6 +23,8 @@ from ..gpu.constants import (
     GEOM_IDX_POS_Y,
     GEOM_IDX_POS_Z,
 )
+from layout import Layout, LayoutTensor
+
 from .quat_math import gpu_quat_rotate
 
 
@@ -63,4 +65,63 @@ def geom_xpos[
         Float64(d.xpos.data[body * 3 + 0]) + rot[0],
         Float64(d.xpos.data[body * 3 + 1]) + rot[1],
         Float64(d.xpos.data[body * 3 + 2]) + rot[2],
+    )
+
+
+# =============================================================================
+# GPU-batched counterpart
+# =============================================================================
+
+
+@always_inline
+def geom_xpos_gpu[
+    DTYPE: DType,
+    BATCH_SIZE: Int,
+    NBODY: Int,
+    NGEOM_F: Int,
+](
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+    ],
+    geoms: LayoutTensor[
+        DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+    ],
+    env: Int,
+    geom: Int,
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """`data.geom_xpos[geom]` for one lane of the batched path.
+
+    ⚠ DERIVED, NOT STORED — and that is a correction to the plan. G2 in
+    `docs/DM_CONTROL_PORT.md` specified `geom_xpos` as "a new `Data` field
+    `[BATCH, NGEOM*3]` + fill in FK, CPU **and** GPU". It does not need to be:
+    a geom's world position is its body's `xpos` plus its local offset rotated
+    by the body's `xquat`, which are both already hook operands. Deriving it
+    costs a quaternion rotate at the two or three call sites a task actually
+    has, against an NGEOM*3 tensor allocated, filled and uploaded every step
+    for every model. Same argument as `xmat_elem_gpu` vs an `xmat` field.
+
+    World-attached geoms (body 0) short-circuit: the worldbody frame is the
+    identity, so the local offset IS the world position. dm_control's targets
+    are usually world-attached, so this branch is the common one, not an edge
+    case.
+    """
+    var body = Int(rebind[Scalar[DTYPE]](geoms[geom, GEOM_IDX_BODY]))
+    var lx = rebind[Scalar[DTYPE]](geoms[geom, GEOM_IDX_POS_X])
+    var ly = rebind[Scalar[DTYPE]](geoms[geom, GEOM_IDX_POS_Y])
+    var lz = rebind[Scalar[DTYPE]](geoms[geom, GEOM_IDX_POS_Z])
+    if body == 0:
+        return (lx, ly, lz)
+
+    var qx = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 0])
+    var qy = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 1])
+    var qz = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 2])
+    var qw = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 3])
+    var rot = gpu_quat_rotate[DTYPE](qx, qy, qz, qw, lx, ly, lz)
+    return (
+        rebind[Scalar[DTYPE]](xpos[env, body * 3 + 0]) + rot[0],
+        rebind[Scalar[DTYPE]](xpos[env, body * 3 + 1]) + rot[1],
+        rebind[Scalar[DTYPE]](xpos[env, body * 3 + 2]) + rot[2],
     )

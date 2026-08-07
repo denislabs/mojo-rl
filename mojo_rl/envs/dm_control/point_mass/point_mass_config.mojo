@@ -26,9 +26,20 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data
-from mojo_rl.physics3d.kinematics.geom_xpos import geom_xpos
+from mojo_rl.physics3d.kinematics.geom_xpos import (
+    geom_xpos,
+    geom_xpos_gpu,
+)
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
+from layout import Layout, LayoutTensor
+
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    MODEL_SITE_SIZE,
+    MODEL_GEOM_SIZE,
+    CONTACT_SIZE,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
     MODEL_JOINT_SIZE,
@@ -46,7 +57,13 @@ from .point_mass_xml import (
 )
 
 from ...phyics3d_env_config import Phyics3dEnvConfig
-from ..rewards import tolerance, SIGMOID_QUADRATIC
+from ..rewards import (
+    tolerance,
+    SIGMOID_QUADRATIC,
+    SIGMOID_GAUSSIAN,
+    DEFAULT_VALUE_AT_MARGIN,
+)
+from ..gpu_reset import randomize_limited_and_rotational_joints_gpu
 
 
 struct DMPointMassConfig(Phyics3dEnvConfig):
@@ -54,6 +71,8 @@ struct DMPointMassConfig(Phyics3dEnvConfig):
     # point_mass.py passes no control_timestep, so one env step is one
     # physics step of 0.02 s.
     comptime FRAME_SKIP: Int = 1
+    # GPU hooks implemented below — see Phyics3dEnvConfig.HAS_GPU_HOOKS.
+    comptime HAS_GPU_HOOKS: Bool = True
     # _DEFAULT_TIME_LIMIT = 20 s / 0.02 s = 1000 steps.
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = 0
@@ -173,6 +192,230 @@ struct DMPointMassConfig(Phyics3dEnvConfig):
 
         # dm_control tasks never terminate early.
         return (Scalar[DTYPE](near_target * small_control), False)
+
+
+    # =====================================================================
+    # GPU hooks — the batched (`Phyics3dBatchedEnv`) path.
+    #
+    # FIRST CONSUMER OF `geom_xpos_gpu`, which is DERIVED from xpos+xquat+geom
+    # records rather than stored — see that function on why blocker F did not
+    # need a new `Data` field after all.
+    #
+    # The observation is the whole qpos+qvel, which IS the model default, so
+    # there is no `custom_extract_obs_gpu` here on purpose.
+    #
+    # ⚠ EASY ONLY. `point_mass-hard` mutates `Model.tendons` per episode
+    # (`custom_reset_model_cpu` writes the actuator->joint mixing coefs), and
+    # `fields.Model` is SHARED and UNBATCHED — every lane would get the last
+    # lane's draw. That is gap G4, not an oversight.
+    # =====================================================================
+
+    @always_inline
+    @staticmethod
+    def custom_extract_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        OBS_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """`PointMass.get_observation`: the WHOLE qpos, then the whole qvel.
+
+        ⚠ THIS IS NOT THE MODEL DEFAULT, and assuming it was is what the
+        tranche-2/3 gate caught at step 0: the default is
+        `qpos[obs_qpos_skip:] + qvel` and point_mass's skip is 1, so the whole
+        observation came out SHIFTED BY ONE with a zero in the last slot
+        (gpu[i] == cpu[i+1]). The reference keeps qpos[0] — the mass's x
+        position is the task, not a nuisance coordinate to be made invariant,
+        unlike cheetah's rootx.
+
+        Returning False here to "use the default" is therefore wrong for this
+        domain even though the shapes match. Shapes matching is not the test.
+        """
+        for i in range(NQ_F):
+            obs[env, i] = qpos[env, i]
+        for i in range(NV_F):
+            obs[env, NQ_F + i] = qvel[env, i]
+        return True
+
+    @always_inline
+    @staticmethod
+    def compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        ACTION_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        env: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """`PointMass.get_reward` — mirrors `compute_reward_and_done_cpu`."""
+        comptime ONE = Scalar[DTYPE](1.0)
+        comptime ZERO = Scalar[DTYPE](0.0)
+        var tp = geom_xpos_gpu[DTYPE, BATCH_SIZE, NBODY_F, NGEOM_F](
+            xpos, xquat, geoms, env, TARGET_GEOM_IDX
+        )
+        var mp = geom_xpos_gpu[DTYPE, BATCH_SIZE, NBODY_F, NGEOM_F](
+            xpos, xquat, geoms, env, POINTMASS_GEOM_IDX
+        )
+        var dx = tp[0] - mp[0]
+        var dy = tp[1] - mp[1]
+        var dz = tp[2] - mp[2]
+        var dist = sqrt(dx * dx + dy * dy + dz * dz)
+        var near_target = tolerance[
+            SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE
+        ](
+            dist, ZERO, Scalar[DTYPE](TARGET_SIZE), Scalar[DTYPE](TARGET_SIZE)
+        )
+
+        var acc = ZERO
+        comptime nact = DMPointMassModel.nact
+        for a in range(nact):
+            var c = (
+                rebind[Scalar[DTYPE]](actions[env, a])
+                if a < ACTION_DIM
+                else ZERO
+            )
+            if c > ONE:
+                c = ONE
+            elif c < -ONE:
+                c = -ONE
+            acc += tolerance[SIGMOID_QUADRATIC, 0.0, DTYPE](c, ZERO, ZERO, ONE)
+        var small_control = (
+            acc / Scalar[DTYPE](nact) + Scalar[DTYPE](4.0)
+        ) / Scalar[DTYPE](5.0)
+        return (near_target * small_control, False)
+
+    @always_inline
+    @staticmethod
+    def init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NJOINT_F: Int,
+        NV_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT_F, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """`randomize_limited_and_rotational_joints`. Both of point_mass's
+        joints are LIMITED slides, so only the first branch is ever taken —
+        the unlimited-hinge flag is irrelevant here and left at the default."""
+        randomize_limited_and_rotational_joints_gpu[
+            DTYPE, BATCH_SIZE, NQ_F, NJOINT_F, RANDOMIZE_UNLIMITED_HINGES=True
+        ](qpos, joints, env, seed)
 
     # === CPU: Float getters ===
     @staticmethod

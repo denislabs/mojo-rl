@@ -56,6 +56,7 @@ from mojo_rl.physics3d.gpu.constants import (
     TPB,
     MODEL_BODY_SIZE,
     MODEL_SITE_SIZE,
+    MODEL_GEOM_SIZE,
     MODEL_JOINT_SIZE,
     METADATA_SIZE,
     META_IDX_STEP_COUNT,
@@ -140,6 +141,11 @@ struct Phyics3dBatchedEnv[
     comptime NSITE_F: Int = Self.NSITE if Self.NSITE > 0 else 1
     comptime L_SITES_HOOK = Layout.row_major(
         Self.NSITE_F, MODEL_SITE_SIZE
+    )
+    # `Model.geoms` is `_at_least_one`'d too, so again only the layout.
+    comptime NGEOM_F: Int = Self.NGEOM if Self.NGEOM > 0 else 1
+    comptime L_GEOMS_HOOK = Layout.row_major(
+        Self.NGEOM_F, MODEL_GEOM_SIZE
     )
 
     # Fields path (the actual physics state)
@@ -335,6 +341,7 @@ struct Phyics3dBatchedEnv[
                 DT, type_of(self.d).L_CONTACTS, MutAnyOrigin
             ],
             sites: LayoutTensor[DT, Self.L_SITES_HOOK, MutAnyOrigin],
+            geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
             meta: LayoutTensor[
                 DT,
                 Layout.row_major(Self.N_ENVS, METADATA_SIZE),
@@ -352,9 +359,10 @@ struct Phyics3dBatchedEnv[
             if not Self.CONFIG.custom_extract_obs_gpu[
                 DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY,
                 Self.OBS_DIM, Self.SITE_DIM, Self.MC, Self.NSITE_F,
+                Self.NGEOM_F,
             ](
                 qpos, qvel, xpos, xquat, xvel, bodies, site_xpos,
-                contacts, sites, meta, obs, env,
+                contacts, sites, geoms, meta, obs, env,
             ):
                 Self.MODEL_DEF.extract_obs_gpu[
                     DT, Self.N_ENVS, Self.OBS_DIM
@@ -373,6 +381,7 @@ struct Phyics3dBatchedEnv[
             self._site_xpos_operand(),
             self.d.contacts.lt["gpu", type_of(self.d).L_CONTACTS](),
             self.mf.sites.lt["gpu", Self.L_SITES_HOOK](),
+            self.mf.geoms.lt["gpu", Self.L_GEOMS_HOOK](),
             self.d.meta.lt["gpu", type_of(self.d).L_META](),
             obs_t,
             grid_dim=(Self.BLOCKS,),
@@ -424,6 +433,7 @@ struct Phyics3dBatchedEnv[
                 DT, type_of(self.d).L_CONTACTS, MutAnyOrigin
             ],
             sites: LayoutTensor[DT, Self.L_SITES_HOOK, MutAnyOrigin],
+            geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
             cfrc_ext: LayoutTensor[
                 DT,
                 Layout.row_major(Self.N_ENVS, Self.NBODY * 6),
@@ -475,9 +485,10 @@ struct Phyics3dBatchedEnv[
             if not Self.CONFIG.custom_extract_obs_gpu[
                 DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY,
                 Self.OBS_DIM, Self.SITE_DIM, Self.MC, Self.NSITE_F,
+                Self.NGEOM_F,
             ](
                 qpos, qvel, xpos, xquat, xvel, bodies, site_xpos,
-                contacts, sites, meta, obs, env,
+                contacts, sites, geoms, meta, obs, env,
             ):
                 Self.MODEL_DEF.extract_obs_gpu[
                     DT, Self.N_ENVS, Self.OBS_DIM
@@ -486,6 +497,7 @@ struct Phyics3dBatchedEnv[
             var result = Self.CONFIG.compute_reward_and_done_gpu[
                 DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY,
                 Self.ACT_DIM, Self.SITE_DIM, Self.MC, Self.NSITE_F,
+                Self.NGEOM_F,
             ](
                 qpos,
                 qvel,
@@ -497,6 +509,7 @@ struct Phyics3dBatchedEnv[
                 site_xpos,
                 contacts,
                 sites,
+                geoms,
                 cfrc_ext,
                 cvel,
                 meta,
@@ -548,6 +561,7 @@ struct Phyics3dBatchedEnv[
             self._site_xpos_operand(),
             self.d.contacts.lt["gpu", type_of(self.d).L_CONTACTS](),
             self.mf.sites.lt["gpu", Self.L_SITES_HOOK](),
+            self.mf.geoms.lt["gpu", Self.L_GEOMS_HOOK](),
             self.d.cfrc_ext.lt["gpu", type_of(self.d).L_B6](),
             self.d.cvel.lt["gpu", type_of(self.d).L_B6](),
             self.d.meta.lt["gpu", type_of(self.d).L_META](),

@@ -5,6 +5,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_GEOM_SIZE,
     MODEL_SITE_SIZE,
     CONTACT_SIZE,
     MODEL_BODY_SIZE,
@@ -125,6 +126,7 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
         SITE_DIM: Int,
         MC_F: Int,
         NSITE_F: Int,
+        NGEOM_F: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
@@ -157,6 +159,9 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
         ],
         sites: LayoutTensor[
             DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
         ],
         cfrc_ext: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
