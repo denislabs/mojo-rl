@@ -658,6 +658,60 @@ struct EulerIntegrator[
                 Self.BATCH,
             ](d, m, self.scratch, ctx)
 
+            # ⚠ AND THE FK PRODUCTS THAT GO WITH THEM — defect 19.
+            #
+            # `cacc`/`cfrc_int` are only half of an acceleration-stage sensor:
+            # the other half is the site pose they are transported to and
+            # rotated into. Those live in `site_xpos`/`xquat`, which
+            # `Phyics3dEnv._fields_fk` moves to the POST-integration state
+            # after the substep loop (correctly — the position/velocity-stage
+            # observation dims need it, and dm_control's `mj_step1` does the
+            # same). Reading them at observation time therefore mixed
+            # pre-integration `cacc` with post-integration geometry.
+            #
+            # MuJoCo never has this problem because it evaluates the stage
+            # HERE and stores the finished sensor value. We cannot do that
+            # generically — the sensor set is per-CONFIG, not per-engine — so
+            # the inputs are frozen instead, at the same instant and under the
+            # same `RNE_POST` gate that writes `cacc`. A model without the
+            # stage pays nothing.
+            comptime N_SITE_ACC = Self.BATCH * Self.NSITE * 3
+            comptime N_QUAT_ACC = Self.BATCH * Self.NBODY * 4
+            comptime if target == "cpu":
+                comptime if N_SITE_ACC > 0:
+                    for i in range(N_SITE_ACC):
+                        d.site_xpos_acc.data[i] = d.site_xpos.data[i]
+                for i in range(N_QUAT_ACC):
+                    d.xquat_acc.data[i] = d.xquat.data[i]
+            else:
+                # Device-to-device, both buffers owned and the same length by
+                # construction. Mirrored on GPU rather than skipped: a snapshot
+                # that only exists on one target is the same silent-divergence
+                # shape this whole fix exists to remove.
+                # ⚠ `as_unsafe_any_origin()` — `copy_from_device` wants
+                # `MutAnyOrigin` and the buffer's pointer carries
+                # `origin_of(dev._value)`. Same spelling as
+                # `dreamerv3/param_sync.mojo`, which is the established caller.
+                #
+                # ⚠ COMPILES BUT IS NOT RUNTIME-GATED: no model with
+                # `RNE_POST` runs on GPU today (dog and quadruped are both
+                # CPU-only, because the batched facade carries no `act`). It is
+                # written rather than skipped so the device path cannot silently
+                # diverge the day one does, and it is flagged here rather than
+                # left to look tested.
+                var c = ctx.value()
+                comptime if N_SITE_ACC > 0:
+                    d.site_xpos_acc.copy_from_device(
+                        c,
+                        d.site_xpos.dev.value().unsafe_ptr().as_unsafe_any_origin(),
+                        N_SITE_ACC,
+                    )
+                d.xquat_acc.copy_from_device(
+                    c,
+                    d.xquat.dev.value().unsafe_ptr().as_unsafe_any_origin(),
+                    N_QUAT_ACC,
+                )
+
         comptime if target == "cpu":
             var qpos_v3 = d.qpos.lt["cpu", L_QPOS]()
             var qvel_v3 = d.qvel.lt["cpu", L_NV]()

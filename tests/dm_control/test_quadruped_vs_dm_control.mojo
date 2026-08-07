@@ -85,6 +85,11 @@ from mojo_rl.physics3d.gpu.constants import (
     TENDON_IDX_SOLREF_0, TENDON_IDX_SOLIMP_0,
 )
 
+# ⚠ THE WRAP STRIDE IS A CONSTANT, NOT A LITERAL. These tables are
+# `[actuator * MAX_COMPTIME_TENDON_WRAPS + k]`; the cap moved 4 -> 16
+# with defect 17 and a hardcoded 4 here silently reads the wrong slot.
+from mojo_rl.physics3d.parser.xml_parser import MAX_COMPTIME_TENDON_WRAPS
+
 comptime REF_PATH: StaticString = "references/dm_control-main"
 
 comptime NQ: Int = 23
@@ -1330,12 +1335,12 @@ def test_quadruped_actuator_constants_match_mujoco() raises:
                 + String(n) + " transmission triples",
             )
             assert_true(
-                acd.motor_trn_dadr[a * 4] == Int(py=jdadr[Int(py=trnid[a][0])]),
+                acd.motor_trn_dadr[a * MAX_COMPTIME_TENDON_WRAPS] == Int(py=jdadr[Int(py=trnid[a][0])]),
                 String("joint transmission dof mismatch on actuator ")
                 + String(a),
             )
             assert_true(
-                abs(acd.motor_trn_coef[a * 4] - 1.0) <= TOL_MODEL,
+                abs(acd.motor_trn_coef[a * MAX_COMPTIME_TENDON_WRAPS] - 1.0) <= TOL_MODEL,
                 String("joint transmission coef is not 1 on actuator ")
                 + String(a),
             )
@@ -1350,13 +1355,13 @@ def test_quadruped_actuator_constants_match_mujoco() raises:
             )
             for k in range(n):
                 assert_true(
-                    acd.motor_trn_dadr[a * 4 + k]
+                    acd.motor_trn_dadr[a * MAX_COMPTIME_TENDON_WRAPS + k]
                     == Int(py=jdadr[Int(py=wobj[adr + k])]),
                     String("tendon transmission dof ") + String(k)
                     + " mismatch on actuator " + String(a),
                 )
                 assert_true(
-                    abs(acd.motor_trn_coef[a * 4 + k]
+                    abs(acd.motor_trn_coef[a * MAX_COMPTIME_TENDON_WRAPS + k]
                         - Float64(py=wprm[adr + k])) <= TOL_MODEL,
                     String("tendon transmission coef ") + String(k)
                     + " mismatch on actuator " + String(a),

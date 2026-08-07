@@ -83,6 +83,26 @@ struct Data[
     # torque); see physics3d/sensors/site_acc.mojo.
     var cacc: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*6]
     var cfrc_int: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*6]
+    # ⚠ THE FK PRODUCTS AS THEY STOOD WHEN `cacc`/`cfrc_int` WERE WRITTEN.
+    #
+    # An acceleration-stage sensor transports `cacc`/`cfrc_int` to a site and
+    # rotates into the site frame, so it needs the site pose FROM THE SAME
+    # INSTANT. MuJoCo gets that for free: it evaluates the stage before
+    # integrating and stores the RESULT in `sensordata`. We evaluate lazily in
+    # the observation hook, by which point `_fields_fk` has moved
+    # `xpos`/`xquat`/`site_xpos` to the POST-integration state — which is
+    # required for the position/velocity-stage dims and wrong for these.
+    #
+    # That mix was defect 19: dog's accelerometer read 1.484 where dm_control
+    # reads -6.386, while `cacc` itself was exact to 4.5e-10 on a magnitude of
+    # 13463. Rebuilding the sensor from the mixed fields reproduced our output
+    # to 5.1e-13, which is how the cause was pinned rather than argued.
+    #
+    # `cvel` and `subtree_com` need no snapshot: nothing refreshes them after
+    # the substep, so they are already the pre-integration values. These two
+    # are the whole inconsistency.
+    var site_xpos_acc: TensorImpl[Self.DTYPE]  # [BATCH, NSITE*3]
+    var xquat_acc: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*4]
     var subtree_com: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*3]
     var qfrc_actuator: TensorImpl[Self.DTYPE]  # [BATCH, NV]
     # Mocap body targets (world frame; hook-written, FK skips mocap bodies —
@@ -111,6 +131,11 @@ struct Data[
         self.cinert = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 10)
         self.cacc = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
         self.cfrc_int = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
+        # Sized exactly like `site_xpos` above, including its lack of a
+        # zero-extent guard: a model with NSITE == 0 never reaches a site
+        # sensor, and diverging from the field it shadows would be its own bug.
+        self.site_xpos_acc = TensorImpl[Self.DTYPE].alloc(B * Self.NSITE * 3)
+        self.xquat_acc = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 4)
         self.subtree_com = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 3)
         self.qfrc_actuator = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
         self.mocap_pos = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 3)
@@ -136,6 +161,8 @@ struct Data[
         self.cvel.upload(ctx)
         self.cinert.upload(ctx)
         self.cacc.upload(ctx)
+        self.site_xpos_acc.upload(ctx)
+        self.xquat_acc.upload(ctx)
         self.cfrc_int.upload(ctx)
         self.subtree_com.upload(ctx)
         self.qfrc_actuator.upload(ctx)
@@ -161,6 +188,8 @@ struct Data[
         self.cvel.download(ctx)
         self.cinert.download(ctx)
         self.cacc.download(ctx)
+        self.site_xpos_acc.download(ctx)
+        self.xquat_acc.download(ctx)
         self.cfrc_int.download(ctx)
         self.subtree_com.download(ctx)
         self.qfrc_actuator.download(ctx)

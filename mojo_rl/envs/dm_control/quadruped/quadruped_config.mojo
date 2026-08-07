@@ -136,9 +136,13 @@ def _common_obs_cpu[
         obs.append(Scalar[DTYPE](xmat_elem(d, TORSO_BODY_IDX, XMAT_ZZ)))
 
         # --- imu: accelerometer THEN gyro (sensor-id order) ----------------
+        # ⚠ The acceleration-stage SNAPSHOT (`*_acc`), not the live FK
+        # products — defect 19. quadruped's own gate runs at frame_skip=1,
+        # where the two happen to differ less, which is why this went
+        # unnoticed here and surfaced on dog.
         var acc = site_accelerometer[DTYPE](
             d.cvel.data, d.cacc.data, d.subtree_com.data,
-            d.site_xpos.data, d.xquat.data, m_bodies, m_sites,
+            d.site_xpos_acc.data, d.xquat_acc.data, m_bodies, m_sites,
             TORSO_BODY_IDX, TORSO_SITE,
         )
         obs.append(Scalar[DTYPE](acc[0]))
@@ -154,8 +158,8 @@ def _common_obs_cpu[
         var tx = InlineArray[Float64, 12](fill=0.0)
         for t in range(4):
             var ftt = site_force_torque[DTYPE](
-                d.cfrc_int.data, d.subtree_com.data, d.site_xpos.data,
-                d.xquat.data, m_bodies, m_sites,
+                d.cfrc_int.data, d.subtree_com.data, d.site_xpos_acc.data,
+                d.xquat_acc.data, m_bodies, m_sites,
                 TOE_BODY_0 + t * TOE_BODY_STRIDE, TOE_SITE_0_P + t,
             )
             # Tuple subscripts need a comptime index; unpack once.

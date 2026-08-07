@@ -278,9 +278,16 @@ def _dog_obs_cpu[
         # --- inertial_sensors: accelerometer, velocimeter, gyro ------------
         #     All three sit on the `head` site, and dm_control reads them BY
         #     NAME in that order — which happens to be declaration order too.
+        # ⚠ `site_xpos_acc` / `xquat_acc`, NOT the live FK products —
+        # defect 19. This sensor transports `cacc` to the site and rotates
+        # into the site frame, so it needs the geometry FROM THE INSTANT
+        # `cacc` was written. `d.site_xpos`/`d.xquat` have since been moved to
+        # the post-integration state by `_fields_fk`, which the
+        # position/velocity-stage dims below require and this one must not
+        # see. Mixing them read 1.484 where dm_control reads -6.386.
         var acc = site_accelerometer[DTYPE](
             d.cvel.data, d.cacc.data, d.subtree_com.data,
-            d.site_xpos.data, d.xquat.data, m_bodies, m_sites,
+            d.site_xpos_acc.data, d.xquat_acc.data, m_bodies, m_sites,
             DOG_SKULL_BODY_IDX, DOG_SITE_HEAD,
         )
         var fv = site_frame_velocity[DTYPE](
@@ -316,9 +323,11 @@ def _dog_obs_cpu[
         f_sites[2] = DOG_SITE_HAND_ANCHOR_L
         f_sites[3] = DOG_SITE_HAND_ANCHOR_R
         for t in range(4):
+            # Acceleration stage, same as the accelerometer above: the
+            # snapshot, not the live FK products.
             var ft = site_force_torque[DTYPE](
-                d.cfrc_int.data, d.subtree_com.data, d.site_xpos.data,
-                d.xquat.data, m_bodies, m_sites, f_bodies[t], f_sites[t],
+                d.cfrc_int.data, d.subtree_com.data, d.site_xpos_acc.data,
+                d.xquat_acc.data, m_bodies, m_sites, f_bodies[t], f_sites[t],
             )
             obs.append(Scalar[DTYPE](ft[0]))
             obs.append(Scalar[DTYPE](ft[1]))

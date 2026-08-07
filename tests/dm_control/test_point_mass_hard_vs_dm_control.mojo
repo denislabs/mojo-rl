@@ -53,6 +53,11 @@ from mojo_rl.physics3d.gpu.constants import (
     TENDON_KIND_FIXED,
 )
 
+# ⚠ THE WRAP STRIDE IS A CONSTANT, NOT A LITERAL. These tables are
+# `[actuator * MAX_COMPTIME_TENDON_WRAPS + k]`; the cap moved 4 -> 16
+# with defect 17 and a hardcoded 4 here silently reads the wrong slot.
+from mojo_rl.physics3d.parser.xml_parser import MAX_COMPTIME_TENDON_WRAPS
+
 
 comptime Env = DMPointMassHard[DType.float64]
 
@@ -174,7 +179,7 @@ def test_point_mass_hard_model_matches_mujoco() raises:
         for k in range(2):
             var want = 1.0 if a == k else 0.0
             assert_true(
-                abs(DMPointMassModel._acd.motor_trn_coef[a * 4 + k] - want)
+                abs(DMPointMassModel._acd.motor_trn_coef[a * MAX_COMPTIME_TENDON_WRAPS + k] - want)
                 <= 1e-15,
                 "comptime tendon coefs are not the XML's identity mixing",
             )
