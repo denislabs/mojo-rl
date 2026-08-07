@@ -47,6 +47,7 @@ sensor rather than an error.
 """
 
 from std.math import sqrt
+from layout import Layout, LayoutTensor
 
 from ..fields import Data
 from ..constants import GEOM_SPHERE, GEOM_ELLIPSOID, GEOM_BOX
@@ -346,3 +347,145 @@ def _ray_hits_sphere(
     # nearer one is a valid non-negative hit.
     _ = sqrt(disc)
     return True
+
+
+# =============================================================================
+# GPU-batched counterpart
+# =============================================================================
+
+
+@always_inline
+def _ray_hits_sphere_gpu[
+    DTYPE: DType
+](
+    cx: Scalar[DTYPE], cy: Scalar[DTYPE], cz: Scalar[DTYPE],
+    radius: Scalar[DTYPE],
+    px: Scalar[DTYPE], py: Scalar[DTYPE], pz: Scalar[DTYPE],
+    dx: Scalar[DTYPE], dy: Scalar[DTYPE], dz: Scalar[DTYPE],
+) -> Bool:
+    """`_ray_hits_sphere` in `DTYPE`. Same branches, same order."""
+    comptime ZERO = Scalar[DTYPE](0)
+    var ox = px - cx
+    var oy = py - cy
+    var oz = pz - cz
+    var oo = ox * ox + oy * oy + oz * oz
+    if oo <= radius * radius:
+        return True  # origin inside the zone
+    var dd = dx * dx + dy * dy + dz * dz
+    if dd < Scalar[DTYPE](1e-18):
+        return False
+    var od = ox * dx + oy * dy + oz * dz
+    if od >= ZERO:
+        return False  # sphere is behind the ray
+    var disc = od * od - dd * (oo - radius * radius)
+    if disc < ZERO:
+        return False
+    return True
+
+
+# Returned instead of a force sum when the site's zone type is one the GPU
+# path does not implement. A touch reading is a sum of NON-NEGATIVE normal
+# forces, so a negative value cannot be produced legitimately — it is a
+# sentinel that shows up immediately in any obs diff, rather than a silent 0
+# that reads as "nothing is touching".
+comptime TOUCH_UNSUPPORTED_ZONE: Float64 = -1.0
+
+
+@always_inline
+def touch_sphere_site_gpu[
+    DTYPE: DType,
+    BATCH_SIZE: Int,
+    MAX_CONTACTS: Int,
+    NSITE_F: Int,
+    SITE_DIM: Int,
+](
+    contacts: LayoutTensor[
+        DTYPE,
+        Layout.row_major(BATCH_SIZE, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    site_xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+    ],
+    sites: LayoutTensor[
+        DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+    ],
+    meta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+    ],
+    env: Int,
+    site: Int,
+    scale: Scalar[DTYPE],
+) -> Scalar[DTYPE]:
+    """`sensordata` for one `<touch>` sensor, one lane of the batched path.
+
+    SPHERE and ELLIPSOID zones only. ⚠ A BOX zone returns
+    `TOUCH_UNSUPPORTED_ZONE` rather than a wrong number — manipulator and
+    stacker (tranche 4) are the domains that need it, and the box ray test
+    wants `site_xmat`, which the hook ABI does not carry yet. Port it with
+    them, and gate it then.
+
+    ELLIPSOID is measured as a SPHERE of radius `size[0]`, exactly as the CPU
+    version does — see its docstring for why that approximation is explicit
+    rather than accidental, and what pins the case where it is exact.
+
+    ⚠⚠ THE RAY FLIP IS ON `body_a`, NOT `body_b`. MuJoCo flips when the
+    sensorized body carries `geom2`; our normal points BODY_B -> BODY_A, so
+    MuJoCo's geom2 is our `body_a`. Flipping on the wrong one reverses every
+    ray and only changes the ANSWER for contacts OUTSIDE the zone — which is
+    why it survived four domains on the CPU side before stacker caught it.
+    Do not "simplify" this to `bb`.
+    """
+    comptime ZERO = Scalar[DTYPE](0)
+    var sbase = site * MODEL_SITE_SIZE
+    var stype = Int(rebind[Scalar[DTYPE]](sites[site, SITE_IDX_TYPE]))
+    if stype != GEOM_SPHERE and stype != GEOM_ELLIPSOID:
+        return Scalar[DTYPE](TOUCH_UNSUPPORTED_ZONE)
+
+    var sbody = Int(rebind[Scalar[DTYPE]](sites[site, SITE_IDX_BODY]))
+    var radius = rebind[Scalar[DTYPE]](sites[site, SITE_IDX_SIZE_0])
+    var sx = rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 0])
+    var sy = rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 1])
+    var sz = rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 2])
+
+    var ncon = Int(rebind[Scalar[DTYPE]](meta[env, META_IDX_NUM_CONTACTS]))
+    if ncon > MAX_CONTACTS:
+        ncon = MAX_CONTACTS
+
+    var total = ZERO
+    for c in range(ncon):
+        var base = c * CONTACT_SIZE
+        var ba = Int(
+            rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_BODY_A])
+        )
+        var bb = Int(
+            rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_BODY_B])
+        )
+        if sbody != ba and sbody != bb:
+            continue
+
+        var f_normal = (
+            rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_FORCE_N])
+            * scale
+        )
+        if f_normal <= ZERO:
+            continue
+
+        var nx = rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_NX])
+        var ny = rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_NY])
+        var nz = rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_NZ])
+        if sbody == ba:
+            nx = -nx
+            ny = -ny
+            nz = -nz
+
+        var px = rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_POS_X])
+        var py = rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_POS_Y])
+        var pz = rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_POS_Z])
+
+        if _ray_hits_sphere_gpu[DTYPE](
+            sx, sy, sz, radius, px, py, pz, nx, ny, nz
+        ):
+            total += f_normal
+    _ = sbase
+    return total

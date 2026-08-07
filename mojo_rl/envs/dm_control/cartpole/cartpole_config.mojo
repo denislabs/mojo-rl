@@ -29,6 +29,8 @@ from mojo_rl.physics3d.kinematics.xmat import (
     XMAT_XZ,
 )
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_SITE_SIZE,
+    CONTACT_SIZE,
     MODEL_BODY_SIZE,
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
@@ -252,6 +254,8 @@ struct DMCartpoleConfig[
         NBODY_F: Int,
         OBS_DIM: Int,
         SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
@@ -273,6 +277,17 @@ struct DMCartpoleConfig[
         ],
         site_xpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
@@ -304,6 +319,8 @@ struct DMCartpoleConfig[
         NBODY_F: Int,
         ACTION_DIM: Int,
         SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
@@ -328,6 +345,14 @@ struct DMCartpoleConfig[
         ],
         site_xpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
         ],
         cfrc_ext: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin

@@ -14,6 +14,8 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_SITE_SIZE,
+    CONTACT_SIZE,
     MODEL_BODY_SIZE,
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
@@ -384,6 +386,8 @@ trait Phyics3dEnvConfig:
         NBODY: Int,
         ACTION_DIM: Int,
         SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
@@ -408,6 +412,14 @@ trait Phyics3dEnvConfig:
         ],
         site_xpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
         ],
         cfrc_ext: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
@@ -521,6 +533,8 @@ trait Phyics3dEnvConfig:
         NBODY: Int,
         OBS_DIM: Int,
         SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
@@ -542,6 +556,17 @@ trait Phyics3dEnvConfig:
         ],
         site_xpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin

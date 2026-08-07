@@ -12,6 +12,8 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_SITE_SIZE,
+    CONTACT_SIZE,
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
     META_IDX_PREV_X,
@@ -185,6 +187,8 @@ struct ReacherConfig(Phyics3dEnvConfig):
         NBODY_F: Int,
         ACTION_DIM: Int,
         SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
@@ -209,6 +213,14 @@ struct ReacherConfig(Phyics3dEnvConfig):
         ],
         site_xpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
         ],
         cfrc_ext: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
@@ -303,6 +315,8 @@ struct ReacherConfig(Phyics3dEnvConfig):
         NBODY_F: Int,
         OBS_DIM: Int,
         SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
@@ -324,6 +338,17 @@ struct ReacherConfig(Phyics3dEnvConfig):
         ],
         site_xpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin

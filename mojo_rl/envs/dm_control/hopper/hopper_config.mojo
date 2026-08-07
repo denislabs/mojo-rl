@@ -27,9 +27,20 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
-from mojo_rl.physics3d.sensors.subtree import subtree_linvel
-from mojo_rl.physics3d.sensors.touch import touch_sphere_site
+from mojo_rl.physics3d.sensors.subtree import (
+    subtree_linvel,
+    subtree_linvel_gpu,
+)
+from mojo_rl.physics3d.sensors.touch import (
+    touch_sphere_site,
+    touch_sphere_site_gpu,
+)
+from layout import Layout, LayoutTensor
+
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    MODEL_SITE_SIZE,
+    CONTACT_SIZE,
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
     MODEL_JOINT_SIZE,
@@ -48,7 +59,15 @@ from .hopper_xml import (
 )
 
 from ...phyics3d_env_config import Phyics3dEnvConfig
-from ..rewards import tolerance, SIGMOID_QUADRATIC, SIGMOID_LINEAR
+from ..rewards import (
+    tolerance,
+    SIGMOID_QUADRATIC,
+    SIGMOID_LINEAR,
+    SIGMOID_GAUSSIAN,
+    DEFAULT_VALUE_AT_MARGIN,
+)
+from ..gpu_reset import randomize_limited_and_rotational_joints_gpu
+from ..dtype_math import log1p_dt
 
 
 # `hopper.py`: minimal torso-over-foot height scoring 1, and the hopping speed
@@ -68,6 +87,8 @@ struct DMHopperConfig[HOPPING: Bool](Phyics3dEnvConfig):
     # === Physics ===
     # `_CONTROL_TIMESTEP = .02` over the model's 0.005 s step => 4 substeps.
     comptime FRAME_SKIP: Int = 4
+    # GPU hooks implemented below — see Phyics3dEnvConfig.HAS_GPU_HOOKS.
+    comptime HAS_GPU_HOOKS: Bool = True
     # _DEFAULT_TIME_LIMIT = 20 s / 0.02 s = 1000 steps.
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = 0
@@ -215,6 +236,244 @@ struct DMHopperConfig[HOPPING: Bool](Phyics3dEnvConfig):
                 acc += tolerance[SIGMOID_QUADRATIC, 0.0](c, 0.0, 0.0, 1.0)
             var small_control = (acc / Float64(nact) + 4.0) / 5.0
             return (Scalar[DTYPE](standing * small_control), False)
+
+
+    # =====================================================================
+    # GPU hooks — the batched (`Phyics3dBatchedEnv`) path.
+    #
+    # FIRST CONSUMER OF `touch_sphere_site_gpu`. That helper is shared with
+    # finger, manipulator, stacker and dog, so a defect here is a defect in
+    # four more domains later — which is why the gate drives the foot into the
+    # ground rather than testing a hovering hopper whose touch terms are 0.
+    #
+    # ⚠ Must stay numerically identical to the CPU hooks above (gated vs
+    # MuJoCo by `test_hopper_vs_dm_control.mojo`).
+    # =====================================================================
+
+    @always_inline
+    @staticmethod
+    def custom_extract_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        OBS_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """`Hopper.get_observation` — position, velocity, touch.
+
+        qpos[0] (rootx) is dropped for translational invariance, as the
+        reference comments say.
+        """
+        var k = 0
+        for i in range(1, NQ_F):
+            obs[env, k] = qpos[env, i]
+            k += 1
+        for i in range(NV_F):
+            obs[env, k] = qvel[env, i]
+            k += 1
+        # `np.log1p(sensordata[['touch_toe','touch_heel']])`.
+        #
+        # ⚠ No `try` here, unlike the CPU hook: a kernel cannot raise. A zone
+        # type the GPU sensor does not implement comes back as
+        # TOUCH_UNSUPPORTED_ZONE (negative), and log1p of a negative is NaN —
+        # which propagates into the observation and is impossible to miss.
+        # That is deliberate: the CPU hook's `except` writes 0.0, which reads
+        # as "nothing is touching" and would be silent.
+        var toe = touch_sphere_site_gpu[
+            DTYPE, BATCH_SIZE, MC_F, NSITE_F, SITE_DIM
+        ](
+            contacts, site_xpos, sites, meta, env, TOUCH_TOE_SITE_IDX,
+            Scalar[DTYPE](TOUCH_FORCE_SCALE),
+        )
+        var heel = touch_sphere_site_gpu[
+            DTYPE, BATCH_SIZE, MC_F, NSITE_F, SITE_DIM
+        ](
+            contacts, site_xpos, sites, meta, env, TOUCH_HEEL_SITE_IDX,
+            Scalar[DTYPE](TOUCH_FORCE_SCALE),
+        )
+        obs[env, k] = log1p_dt[DTYPE](toe)
+        obs[env, k + 1] = log1p_dt[DTYPE](heel)
+        return True
+
+    @always_inline
+    @staticmethod
+    def compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        ACTION_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        env: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """`Hopper.get_reward` — mirrors `compute_reward_and_done_cpu`."""
+        comptime ONE = Scalar[DTYPE](1.0)
+        comptime ZERO = Scalar[DTYPE](0.0)
+        # `Physics.height`: xipos['torso','z'] - xipos['foot','z'].
+        var height = (
+            rebind[Scalar[DTYPE]](xipos[env, TORSO_BODY_IDX * 3 + 2])
+            - rebind[Scalar[DTYPE]](xipos[env, FOOT_BODY_IDX * 3 + 2])
+        )
+        # margin 0 => hard indicator.
+        var standing = tolerance[
+            SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE
+        ](height, Scalar[DTYPE](STAND_HEIGHT), Scalar[DTYPE](2.0), ZERO)
+
+        comptime if Self.HOPPING:
+            var vx = ZERO
+            var vy = ZERO
+            var vz = ZERO
+            subtree_linvel_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+                xvel, bodies, env, TORSO_BODY_IDX, vx, vy, vz
+            )
+            var hopping = tolerance[SIGMOID_LINEAR, 0.5, DTYPE](
+                vx,
+                Scalar[DTYPE](HOP_SPEED),
+                inf[DTYPE](),
+                Scalar[DTYPE](HOP_SPEED / 2.0),
+            )
+            return (standing * hopping, False)
+        else:
+            var acc = ZERO
+            comptime nact = DMHopperModel.nact
+            for a in range(nact):
+                var c = (
+                    rebind[Scalar[DTYPE]](actions[env, a])
+                    if a < ACTION_DIM
+                    else ZERO
+                )
+                if c > ONE:
+                    c = ONE
+                elif c < -ONE:
+                    c = -ONE
+                acc += tolerance[SIGMOID_QUADRATIC, 0.0, DTYPE](
+                    c, ZERO, ZERO, ONE
+                )
+            var small_control = (
+                acc / Scalar[DTYPE](nact) + Scalar[DTYPE](4.0)
+            ) / Scalar[DTYPE](5.0)
+            return (standing * small_control, False)
+
+    @always_inline
+    @staticmethod
+    def init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NJOINT_F: Int,
+        NV_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT_F, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """`randomizers.randomize_limited_and_rotational_joints` — as walker's."""
+        randomize_limited_and_rotational_joints_gpu[
+            DTYPE, BATCH_SIZE, NQ_F, NJOINT_F, RANDOMIZE_UNLIMITED_HINGES=True
+        ](qpos, joints, env, seed)
 
     # === CPU: Float getters ===
     @staticmethod

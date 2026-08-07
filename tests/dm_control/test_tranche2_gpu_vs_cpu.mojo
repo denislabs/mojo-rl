@@ -34,6 +34,7 @@ from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.dm_control.acrobot import DMAcrobotModel, DMAcrobotConfig
+from mojo_rl.envs.dm_control.hopper import DMHopperModel, DMHopperConfig
 
 comptime N_ENVS = 2
 comptime N_STEPS = 60
@@ -42,8 +43,12 @@ comptime N_STEPS = 60
 # absolute-only bound is wrong on a vector mixing O(1) xmat entries with joint
 # velocities. Acrobot is contact-free and FRAME_SKIP=1, so this is the tightest
 # of the locomotion-class gates.
-comptime ATOL: Float64 = 5e-3
-comptime RTOL: Float64 = 5e-3
+# Acrobot is contact-free at FRAME_SKIP=1; hopper has a live contact set at
+# FRAME_SKIP=4, where a contact engaging one substep earlier on one path is
+# a real state difference rather than rounding. The bound covers the looser
+# of the two.
+comptime ATOL: Float64 = 2e-2
+comptime RTOL: Float64 = 1e-2
 
 
 def _run[
@@ -64,6 +69,13 @@ def _run[
     _ = cpu.reset()
     gpu.reset_batch[N_ENVS](Optional(ctx), UInt64(9))
 
+    # ⚠ START STATE IS PER-DOMAIN, and for hopper it is the whole point:
+    # `TOUCH` is the reason this gate exists, and a hopper that never contacts
+    # the ground reports touch = log1p(0) = 0 on both paths, which agrees
+    # perfectly and proves nothing. `IS_HOPPER` drops the torso onto the floor
+    # with a downward velocity so both zones carry real normal force.
+    comptime IS_HOPPER = OBS_DIM == DMHopperModel.OBS_DIM and NQ == DMHopperModel.NQ
+
     # Shared start: tip ON the target, swinging away.
     #
     # ⚠ CHOSEN BY MEASUREMENT, not by eye. The first attempt (0.35, -0.2) left
@@ -78,8 +90,16 @@ def _run[
     # velocities separate them immediately and the window is 60 steps.
     var qpos0 = List[Float64](length=NQ, fill=0.0)
     var qvel0 = List[Float64](length=NV, fill=0.0)
-    qvel0[0] = 2.0
-    qvel0[1] = -1.0
+    comptime if IS_HOPPER:
+        # rootz just above its rest height, driven down: the foot lands within
+        # a few steps and both touch zones load up.
+        qpos0[1] = 0.02
+        qvel0[1] = -0.6
+        for i in range(3, NQ):
+            qpos0[i] = 0.05
+    else:
+        qvel0[0] = 2.0
+        qvel0[1] = -1.0
     cpu.set_state(qpos0, qvel0)
 
     gpu.d.qpos.download(ctx)
@@ -107,6 +127,7 @@ def _run[
     var n_bad = 0
     var rew_lo = 1e30
     var rew_hi = -1e30
+    var touch_hi = 0.0
 
     for t in range(N_STEPS):
         var act = ContAction[ACT_DIM]()
@@ -127,6 +148,11 @@ def _run[
             rew_lo = cpu_rew
         if cpu_rew > rew_hi:
             rew_hi = cpu_rew
+
+        comptime if IS_HOPPER:
+            for k in range(OBS_DIM - 2, OBS_DIM):
+                if res[0].data[k] > touch_hi:
+                    touch_hi = res[0].data[k]
 
         for e in range(N_ENVS):
             for k in range(OBS_DIM):
@@ -174,6 +200,19 @@ def _run[
         " that means the tip never entered the target; pick a start state whose"
         " swing crosses it.",
     )
+    comptime if IS_HOPPER:
+        # ⚠ The LAST TWO obs dims are log1p(touch_toe), log1p(touch_heel).
+        # If they stayed at 0 the foot never touched the ground and the GPU
+        # touch sensor — the entire reason hopper is in this gate — was never
+        # exercised. Agreement at zero is not agreement.
+        assert_true(
+            touch_hi > 1e-6,
+            String(label)
+            + ": both touch dims stayed 0 over the window — the foot never"
+            " contacted the ground, so touch_sphere_site_gpu was never called"
+            " with a live contact. Drop the hopper harder.",
+        )
+        print("     touch dims peaked at ", touch_hi, " (log1p of the force sum)")
     if max_obs > worst:
         worst = max_obs
     if max_rew > worst:
@@ -189,8 +228,15 @@ def test_tranche2_gpu_matches_cpu() raises:
         _run[DMAcrobotModel, DMAcrobotConfig[True], "acrobot-swingup-sparse"](
             ctx, worst
         )
+        # hopper: the GPU touch sensor's first consumer, both reward branches.
+        _run[DMHopperModel, DMHopperConfig[False], "hopper-stand          "](
+            ctx, worst
+        )
+        _run[DMHopperModel, DMHopperConfig[True], "hopper-hop            "](
+            ctx, worst
+        )
         print(
-            "tranche2 GPU vs CPU: 2 configs x ", N_STEPS, " steps x ",
+            "tranche2 GPU vs CPU: 4 configs x ", N_STEPS, " steps x ",
             N_ENVS, " lanes — worst abs diff = ", worst,
             " (bound ", ATOL, " + ", RTOL, "*|cpu|)",
         )
