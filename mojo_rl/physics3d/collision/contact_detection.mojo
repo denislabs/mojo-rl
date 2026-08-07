@@ -122,6 +122,7 @@ from .collision_primitives import (
     cylinder_box,
 )
 from .gjk import gjk_epa
+from .multi_ccd import multi_ccd_pair_supported, multi_ccd_extra_contacts
 
 comptime CD_TPB: Int = 64
 
@@ -1238,6 +1239,12 @@ def _detect_contacts_env[
 
             var ri = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_RADIUS])
             var rj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RADIUS])
+            # Bounding radii, re-read here rather than reused from the
+            # broadphase check above: that one is scoped to its `if` and skips
+            # plane pairs entirely. Multi-CCD scales its distinctness tolerance
+            # by the smaller of the two (`mjc_Convex`).
+            var rbound_i = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_RBOUND])
+            var rbound_j = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RBOUND])
             var hli = rebind[Scalar[DTYPE]](
                 geoms[gi, GEOM_IDX_HALF_LENGTH]
             )
@@ -2325,6 +2332,13 @@ def _detect_contacts_env[
                     continue
 
             if dist < contact_margin and num_contacts < MAX_CONTACTS:
+                # The `gi -> gj` normal, captured BEFORE the emit negates it in
+                # place — `multi_ccd_extra_contacts` re-runs the same query and
+                # so works in the same convention the branches above produced.
+                var mccd_nx = nx
+                var mccd_ny = ny
+                var mccd_nz = nz
+                var mccd_first = num_contacts
                 var c_off = num_contacts * CONTACT_SIZE
                 contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                     body_a
@@ -2371,6 +2385,34 @@ def _detect_contacts_env[
                     contact_condim
                 )
                 num_contacts += 1
+
+                # MULTI-POINT CONVEX CONTACT — defect 21. A single point cannot
+                # hold a flat contact: the body rotates about it and sinks.
+                # MuJoCo re-queries at four tilted poses and keeps the distinct
+                # hits, which is what takes a cylinder resting on a box from 1
+                # row to 5. `multi_ccd_pair_supported` is the guard; everything
+                # it rejects — spheres, ellipsoids, meshes, the plane pairs
+                # (which never reach this emit) — keeps the single point it
+                # had, deliberately. See collision/multi_ccd.mojo.
+                if multi_ccd_pair_supported(gi_type, gj_type):
+                    _ = multi_ccd_extra_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                        env, body_a, body_b, mccd_first,
+                        gi_type,
+                        pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                        ri, hli, hxi, hyi, hzi, rbound_i,
+                        gj_type,
+                        pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                        rj, hlj, hxj, hyj, hzj, rbound_j,
+                        cx, cy, cz,
+                        mccd_nx, mccd_ny, mccd_nz,
+                        dist,
+                        contact_margin,
+                        contact_friction,
+                        contact_friction_spin,
+                        contact_friction_roll,
+                        contact_condim,
+                        contacts, num_contacts,
+                    )
 
             _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
                 env, _n0, num_contacts, _mx, contacts

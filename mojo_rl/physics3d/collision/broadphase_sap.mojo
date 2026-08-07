@@ -66,6 +66,7 @@ from ..gpu.constants import (
     GEOM_IDX_TYPE,
     GEOM_IDX_BODY,
     GEOM_IDX_RADIUS,
+    GEOM_IDX_RBOUND,
     GEOM_IDX_HALF_LENGTH,
     GEOM_IDX_HALF_X,
     GEOM_IDX_HALF_Y,
@@ -117,6 +118,7 @@ from .plane_frame import (
     quat_to_plane_frame,
 )
 from .gjk import gjk_epa
+from .multi_ccd import multi_ccd_pair_supported, multi_ccd_extra_contacts
 from .contact_detection import (
     mix_contact_params,
     _fill_pair_solparams,
@@ -792,6 +794,9 @@ def _detect_contacts_sap_env[
         var hxi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_X])
         var hyi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_Y])
         var hzi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_Z])
+        # Multi-CCD scales its distinctness tolerance by the smaller bounding
+        # radius (`mjc_Convex`).
+        var rbound_i = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_RBOUND])
 
         for j in range(i + 1, sap_n):
             if num_contacts >= MAX_CONTACTS:
@@ -928,6 +933,7 @@ def _detect_contacts_sap_env[
             var hxj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_X])
             var hyj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Y])
             var hzj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Z])
+            var rbound_j = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RBOUND])
 
             var dist: Scalar[DTYPE] = 1.0
             var cx: Scalar[DTYPE] = 0
@@ -1324,6 +1330,12 @@ def _detect_contacts_sap_env[
                     continue
 
             if dist < cm and num_contacts < MAX_CONTACTS:
+                # The `gi -> gj` normal, captured BEFORE the emit negates it in
+                # place — see the identical capture in `contact_detection.mojo`.
+                var mccd_nx = nx
+                var mccd_ny = ny
+                var mccd_nz = nz
+                var mccd_first = num_contacts
                 var c_off = num_contacts * CONTACT_SIZE
                 contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                     body_a
@@ -1363,6 +1375,33 @@ def _detect_contacts_sap_env[
                     cdim
                 )
                 num_contacts += 1
+
+                # MULTI-POINT CONVEX CONTACT — defect 21.
+                #
+                # ⚠⚠ THIS FILE IS THE SECOND NARROW PHASE. `contact_detection`
+                # carries the same dispatch and the same emit, and SAP takes
+                # over at NGEOM >= SAP_THRESHOLD — so patching only the other
+                # one would have left every LARGE model (dog, quadruped: the
+                # exact models this was found on) with single-point cylinder
+                # contacts while the small-model gate went green. That is the
+                # shape of `feedback_sap_path_missing_a_whole_geom_type`, and
+                # it is why this hook is duplicated rather than "left for
+                # later". The two must move together.
+                if multi_ccd_pair_supported(gi_type, gj_type):
+                    _ = multi_ccd_extra_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                        env, body_a, body_b, mccd_first,
+                        gi_type,
+                        pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                        ri, hli, hxi, hyi, hzi, rbound_i,
+                        gj_type,
+                        pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                        rj, hlj, hxj, hyj, hzj, rbound_j,
+                        cx, cy, cz,
+                        mccd_nx, mccd_ny, mccd_nz,
+                        dist,
+                        cm, cf, cfs, cfr, cdim,
+                        contacts, num_contacts,
+                    )
 
             _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
                 env, _n0, num_contacts, _mx, contacts

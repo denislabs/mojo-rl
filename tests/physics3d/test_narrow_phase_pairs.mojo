@@ -52,6 +52,9 @@ from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
+from mojo_rl.physics3d.collision.multi_ccd import (
+    MULTICCD_PERTURBATION_ANGLE,
+)
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
     METADATA_SIZE,
@@ -299,8 +302,36 @@ def test_narrow_phase_pairs_vs_mujoco() raises:
         var nz = Float64(d.contacts.data[b + CONTACT_IDX_NZ])
         var dist = Float64(d.contacts.data[b + CONTACT_IDX_DIST])
 
-        # MuJoCo's contact for the same body pair (first is enough — the
-        # manifold points agree in direction to ~1e-3).
+        # MuJoCo's contact for the same body pair, matched by POSITION.
+        #
+        # ⚠ THIS USED TO TAKE THE FIRST MATCH, on the reasoning that "the
+        # manifold points agree in direction to ~1e-3". That held only while we
+        # emitted a single point per pair. Multi-point convex contact makes both
+        # sides emit up to five, and the perturbed rows carry DELIBERATELY
+        # tilted normals — MuJoCo's own read [-1, 0, +-0.001] and [-1, +-0.001,
+        # 0], which is the +-1e-3 rad perturbation showing through. Comparing
+        # our second row against MuJoCo's first then fails by exactly 1e-3,
+        # which is the perturbation, not an error.
+        #
+        # So every one of our rows is still compared against MuJoCo's FIRST row
+        # for the pair — its PRIMARY, untilted contact — and the tolerance is
+        # widened by the perturbation angle for our rows AFTER the first.
+        #
+        # ⚠ TWO PAIRINGS THAT LOOK BETTER AND ARE NOT, both tried and measured:
+        #   * NEAREST BY POSITION. A cylinder/capsule manifold's rows sit ~1e-7
+        #     apart (the tilt barely moves the point) so the choice among them
+        #     is arbitrary; a box/cylinder manifold's rows are spread ACROSS THE
+        #     FACE, centimetres apart, so position dominates any combined score.
+        #     Our single box/cylinder row then paired with an off-centre tilted
+        #     row and reported 9.96e-4 — the perturbation, not a defect.
+        #   * BEST-AGREEING ROW (minimise the direction error itself). That is
+        #     self-fulfilling: "find the row that agrees best, then assert it
+        #     agrees" cannot fail while any row is close, so it would mask a
+        #     real error smaller than the perturbation.
+        # Comparing against the primary keeps the ORIGINAL strong gate on the
+        # contact that carries the physics, and asks of the extra rows only
+        # that they be within a perturbation of it — which is exactly what
+        # MuJoCo's own rows are.
         var mj_n0 = Float64(0)
         var mj_n1 = Float64(0)
         var mj_n2 = Float64(0)
@@ -319,6 +350,8 @@ def test_narrow_phase_pairs_vs_mujoco() raises:
                 mj_n2 = Float64(py=cc.frame[2])
                 mj_d = Float64(py=cc.dist)
                 break
+        # `seen[g]` was incremented above, so 1 means this is our primary row.
+        var is_primary = (seen[g] == 1)
         assert_true(
             mj_b1 >= 0,
             String("group ") + names[g] + ": we emit a contact for bodies "
@@ -348,6 +381,14 @@ def test_narrow_phase_pairs_vs_mujoco() raises:
         var approx = (g == 10 or g == 11)
         var tol_d = TOL_DIST_APPROX if approx else TOL_DIST
         var tol_n = TOL_DIR_APPROX if approx else TOL_DIR
+        # A perturbed manifold row is tilted off the primary normal BY
+        # CONSTRUCTION — MuJoCo's own extra rows read [+-1, 0, +-0.001]. So a
+        # row after the first is allowed that much and no more; 1.5x leaves
+        # room for the tilt landing on two axes at once without letting a real
+        # error through, since the next thing bigger than the perturbation is a
+        # gross one. The primary row keeps the original tolerance untouched.
+        if not is_primary:
+            tol_n += 1.5 * MULTICCD_PERTURBATION_ANGLE
         print("   ", names[g], " bodies", ba, bb, " mj", mj_b1, mj_b2,
               " expect_same", expect_same, " dist err", dd, " dir err", e)
         assert_true(
@@ -392,15 +433,14 @@ def test_narrow_phase_pairs_vs_mujoco() raises:
     # nothing and concluding "unconditional" is the mistake here; check BOTH
     # enums. `feedback_reference_tree_version_drift`.
     #
-    # ⚠⚠ AND THE GATE IS AN EQUALITY, NOT A TOLERANCE, because of what the
-    # measurement showed: WE ARE EXACTLY MuJoCo WITH MULTICCD DISABLED. Not
-    # approximately — 15 vs 15 overall and 1-vs-1 in every group. So the
-    # reference for what we do today is not a hand-recorded number that rots,
-    # it is MuJoCo itself run with one flag flipped. Both are computed below.
-    #
-    # `mj_multi` is the TARGET (default MuJoCo, what the runtime really does);
-    # `mj_nomulti` is the CONTRACT (what we implement today). When multi-point
-    # convex contact lands, the assert to flip is the one naming `mj_nomulti`.
+    # ⚠⚠ AND THE GATE IS AN EQUALITY, NOT A TOLERANCE, because the reference is
+    # not a hand-recorded number that rots — it is MuJoCo itself, run twice.
+    # `mj_multi` is DEFAULT MuJoCo, which is what the runtime does and what we
+    # are now supposed to match. `mj_nomulti` is MuJoCo with `mjDSBL_MULTICCD`
+    # set, which is what this engine emitted BEFORE multi-point convex contact
+    # landed — kept because it is the exact statement of what that feature is
+    # worth, and because a regression that silently disabled the manifold would
+    # land right back on it.
     var mujoco_mod = Python.import_module("mujoco")
     var m_no = pr.model()
     m_no.opt.disableflags = mujoco_mod.mjtDisableBit.mjDSBL_MULTICCD
@@ -431,32 +471,52 @@ def test_narrow_phase_pairs_vs_mujoco() raises:
     var deficit = 0
     for g in range(NGROUPS):
         deficit += mj_multi[g] - seen[g]
+        # Groups 10 and 11 are box/cylinder and cylinder/box — the pair whose
+        # primitive reduces the cylinder to a capsule. Same two groups the
+        # tolerance block above calls `approx`.
+        var approx_group = (g == 10 or g == 11)
         print(
             "   ", names[g], "  ours", seen[g],
             " mj_nomulti", mj_nomulti[g], " mj_default", mj_multi[g],
+            "  (approx)" if approx_group else "",
         )
-        # THE CONTRACT: our narrow phase must equal MuJoCo with multiCCD off,
-        # group by group. This is what actually gates the single-point
-        # primitives, and it can fail for a real reason in either direction.
+        # THE CONTRACT: our narrow phase must equal DEFAULT MuJoCo, group by
+        # group — except on the two groups whose PRIMITIVE is an approximation,
+        # which are the same two this file already gives a looser distance and
+        # direction tolerance.
+        #
+        # ⚠ box/cylinder and cylinder/box reach 4 of MuJoCo's 5. `cylinder_box`
+        # reduces the cylinder to a CAPSULE (its own docstring says so), and a
+        # capsule is rotationally symmetric about its axis, so one of the four
+        # perturbed re-queries returns a point that is not distinct from one
+        # already found and is dropped. MuJoCo's own two z-tilt rows for that
+        # pair sit 1.64e-4 apart in y — real, but only resolvable by a query
+        # that sees the cylinder's flat rim. Recording 4 rather than widening
+        # the count to "4 or 5": the missing row is the approximation's
+        # residue, and it should fail here the day `cylinder_box` becomes exact.
+        var want = mj_multi[g] - 1 if approx_group else mj_multi[g]
         assert_true(
-            seen[g] == mj_nomulti[g],
+            seen[g] == want,
             String("group ") + names[g] + ": we emit " + String(seen[g])
-            + " contacts where MuJoCo with mjDSBL_MULTICCD emits "
-            + String(mj_nomulti[g]) + ". We are supposed to BE that"
-            " configuration exactly, so this is a narrow-phase defect, not the"
-            " known manifold gap.",
+            + " contacts, expected " + String(want) + " (default MuJoCo "
+            + String(mj_multi[g]) + ", MuJoCo with mjDSBL_MULTICCD "
+            + String(mj_nomulti[g]) + "). If ours matches the mjDSBL_MULTICCD"
+            " number, multi-point convex contact is not running for this pair —"
+            " check `multi_ccd_pair_supported`. If it is one BELOW default on a"
+            " non-approximate pair, a perturbed re-query is being rejected as"
+            " non-distinct. See defect 21.",
         )
     print("  manifold rows we do not produce =", deficit, " (defect 21)")
 
-    # THE GAP, stated as the reference's own flag rather than a magic number.
-    # It is not a tolerance and not a target to widen: when multi-point convex
-    # contact lands this goes to 0 and the per-group assert above must be
-    # re-pointed at `mj_multi`.
+    # NON-VACUITY: the manifold has to be doing something, or every assert
+    # above would be satisfied by the old single-point engine.
+    var multi_rows = 0
+    for g in range(NGROUPS):
+        multi_rows += mj_multi[g] - mj_nomulti[g]
     assert_true(
-        deficit > 0,
-        "the manifold deficit is 0, so multi-point convex contact has landed —"
-        " re-point the per-group assert above from `mj_nomulti` to `mj_multi`"
-        " and delete this one. See defect 21.",
+        multi_rows > 0,
+        "no group in this fixture has a multi-point manifold, so nothing here"
+        " gates multi-point convex contact at all",
     )
 
 

@@ -50,6 +50,12 @@ from mojo_rl.physics3d.collision.contact_detection import (
 
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
+    CONTACT_IDX_BODY_A,
+    CONTACT_IDX_BODY_B,
+    CONTACT_IDX_DIST,
+    CONTACT_IDX_NX,
+    CONTACT_IDX_NY,
+    CONTACT_IDX_NZ,
     META_IDX_NUM_CONTACTS,
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
@@ -513,6 +519,24 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
     if ncon_s == 0:
         raise Error("sawyer SAP: no contacts — gate is vacuous")
     print("  sawyer fields-SAP total contacts:", ncon_s)
+    # Per-contact dump. A count golden that moves is only refreshable if the
+    # move can be ACCOUNTED FOR — this file's own rule, see GOLD_CON_S's
+    # history — and "the total went up by one" does not say which pair gained
+    # a row. Printed always, not under HARVEST, because the next person to
+    # move it needs the same evidence.
+    for e in range(BATCH):
+        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        for c in range(nc):
+            var o = e * MC_S * CONTACT_SIZE + c * CONTACT_SIZE
+            print(
+                "     env", e, "c", c,
+                " bodies(", Int(Float64(d.contacts.data[o + CONTACT_IDX_BODY_A])),
+                ",", Int(Float64(d.contacts.data[o + CONTACT_IDX_BODY_B])), ")",
+                " dist", Float64(d.contacts.data[o + CONTACT_IDX_DIST]),
+                " n [", Float64(d.contacts.data[o + CONTACT_IDX_NX]),
+                Float64(d.contacts.data[o + CONTACT_IDX_NY]),
+                Float64(d.contacts.data[o + CONTACT_IDX_NZ]), "]",
+            )
     if HARVEST:
         print("  HARVEST GOLD_NCON_S =", ncon_s)
         print("  HARVEST GOLD_CON_S  =", fp_s)

@@ -1,0 +1,487 @@
+"""Multi-point convex contact — MuJoCo's `mjc_MultiCCD` (defect 21).
+
+A convex-convex narrow phase that returns ONE point cannot hold a flat contact:
+the body rotates about that point and sinks. MuJoCo's answer is to find the
+first contact, then re-run the SAME query four more times with the two geoms
+TILTED slightly about the axes perpendicular to the contact normal, keeping
+whichever new points are distinct. A cylinder resting on a box goes from 1 row
+to 5.
+
+Ported from `references/mujoco-3.11.0/src/engine/engine_collision_convex.c`
+:881-935 (`mjc_Convex`'s tail). 3.11.0 is the closest tree to the 3.10.0
+runtime; the older trees differ on this in a way that matters — see the flag
+note below.
+
+    relative_tolerance = 1e-3;  perturbation_angle = 1e-3;
+    frame = makeFrame(con[0].normal);
+    tolerance = relative_tolerance * min(geom_rbound[g1], geom_rbound[g2]);
+    axes = {frame+3, frame+6};  angles = {-1e-3, +1e-3};
+    for axis, angle:
+        rot = axisAngle2Mat(axis, angle);
+        rotate g1 about con[0].pos by rot;
+        rotate g2 about con[0].pos by rot^T;      // INVERSELY
+        n = penetration(g1, g2, 1 contact);
+        if n and isDistinctContact(con, ncon+1, tolerance):
+            con[ncon].dist = con[0].dist;         // COPIED, not measured
+            ncon += 1;
+        restore g1, g2;
+
+⚠ `con[ncon].dist = con[0].dist` is not an optimisation. The perturbed query
+measures a penetration at a TILTED pose, which is not the penetration at the
+real pose; MuJoCo overwrites it with the first point's. Keeping the measured
+value makes every extra row slightly wrong and the manifold asymmetric. It is
+also directly observable: all five rows of a cylinder/capsule contact report
+dist exactly -0.005000 at a 5 mm fixture.
+
+⚠⚠ THE ENABLE FLAG INVERTED BETWEEN VERSIONS, and reading the wrong tree gets
+this backwards. MuJoCo 3.6.0 has `mjENBL_MULTICCD` (1<<4) — OPT-IN, off by
+default. The 3.10.0 runtime and the 3.11.0 tree have `mjDSBL_MULTICCD` (1<<19)
+— a DISABLE bit, so the feature is ON by default. We implement the default-on
+behaviour, unconditionally, because that is what the runtime we gate against
+does. Measured: with `opt.disableflags = 0` the reference emits 31 contacts on
+`tests/physics3d/narrow_phase_pairs_ref.py`; with `mjDSBL_MULTICCD` it emits 15,
+which is exactly what this engine emitted before this file existed.
+
+⚠ SPHERE AND ELLIPSOID ARE EXCLUDED by MuJoCo's own guard, and that is not an
+oversight to "fix": a sphere or ellipsoid touches a convex body at ONE point,
+so a tilted requery finds the same point again and the manifold is a single
+row by geometry. Dog's 44 collidable ellipsoids are unaffected, as are fish,
+swimmer and humanoid_CMU whose only convex geoms are ellipsoids.
+
+SCOPE: the CYLINDER family — the pairs this engine currently answers with a
+single point and MuJoCo answers with a manifold. Mesh pairs go through
+`gjk_epa` here and through native-CCD polygon clipping there, which is a
+different mechanism and a separate piece of work; they are deliberately NOT
+routed here, and `multi_ccd_pair_supported` says so rather than silently
+covering them.
+"""
+
+from std.math import sqrt
+
+from layout import Layout, LayoutTensor
+
+from ..constants import (
+    GEOM_SPHERE,
+    GEOM_CAPSULE,
+    GEOM_ELLIPSOID,
+    GEOM_CYLINDER,
+    GEOM_BOX,
+)
+from ..kinematics.quat_math import (
+    gpu_quat_mul,
+    gpu_quat_rotate,
+    gpu_axis_angle_to_quat,
+)
+from ..gpu.constants import (
+    CONTACT_SIZE,
+    CONTACT_IDX_BODY_A,
+    CONTACT_IDX_BODY_B,
+    CONTACT_IDX_POS_X,
+    CONTACT_IDX_POS_Y,
+    CONTACT_IDX_POS_Z,
+    CONTACT_IDX_NX,
+    CONTACT_IDX_NY,
+    CONTACT_IDX_NZ,
+    CONTACT_IDX_DIST,
+    CONTACT_IDX_INCLUDEMARGIN,
+    CONTACT_IDX_FRICTION,
+    CONTACT_IDX_FRICTION_SPIN,
+    CONTACT_IDX_FRICTION_ROLL,
+    CONTACT_IDX_CONDIM,
+)
+from .collision_primitives import (
+    cylinder_capsule,
+    cylinder_cylinder,
+    cylinder_box,
+)
+
+# `mjc_Convex`'s two constants, named as MuJoCo names them.
+comptime MULTICCD_RELATIVE_TOLERANCE: Float64 = 1e-3
+comptime MULTICCD_PERTURBATION_ANGLE: Float64 = 1e-3
+
+
+@always_inline
+def multi_ccd_pair_supported(gi_type: Int, gj_type: Int) -> Bool:
+    """Does this geom pair get a perturbed manifold?
+
+    MuJoCo's guard is "`mjc_Convex` handled it AND neither geom is a sphere or
+    an ellipsoid". Ours is narrower ON PURPOSE — it is the set of pairs where
+    this engine emits one point and the reference emits several, which is the
+    cylinder family. Mesh pairs are excluded; see the module docstring.
+
+    ⚠ Anything added here MUST also be answered by `_convex_pair_single`, or
+    the perturbed query silently returns "no contact" and the manifold quietly
+    stays a single point — a gap that looks exactly like success.
+    """
+    if gi_type == GEOM_SPHERE or gj_type == GEOM_SPHERE:
+        return False
+    if gi_type == GEOM_ELLIPSOID or gj_type == GEOM_ELLIPSOID:
+        return False
+    if gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE:
+        return True
+    if gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER:
+        return True
+    if gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER:
+        return True
+    if gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX:
+        return True
+    if gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER:
+        return True
+    return False
+
+
+@always_inline
+def _convex_pair_single[
+    DTYPE: DType
+](
+    gi_type: Int,
+    pi_x: Scalar[DTYPE], pi_y: Scalar[DTYPE], pi_z: Scalar[DTYPE],
+    qi_x: Scalar[DTYPE], qi_y: Scalar[DTYPE], qi_z: Scalar[DTYPE],
+    qi_w: Scalar[DTYPE],
+    ri: Scalar[DTYPE], hli: Scalar[DTYPE],
+    hxi: Scalar[DTYPE], hyi: Scalar[DTYPE], hzi: Scalar[DTYPE],
+    gj_type: Int,
+    pj_x: Scalar[DTYPE], pj_y: Scalar[DTYPE], pj_z: Scalar[DTYPE],
+    qj_x: Scalar[DTYPE], qj_y: Scalar[DTYPE], qj_z: Scalar[DTYPE],
+    qj_w: Scalar[DTYPE],
+    rj: Scalar[DTYPE], hlj: Scalar[DTYPE],
+    hxj: Scalar[DTYPE], hyj: Scalar[DTYPE], hzj: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 7]:
+    """One contact for a `multi_ccd_pair_supported` pair — `(dist, pos, normal)`.
+
+    ⚠ THE NORMAL IS `gi -> gj`, matching the inline dispatch in
+    `contact_detection.mojo` exactly, INCLUDING its negation when the primitive
+    is invoked with swapped operands. This function must stay a mirror of those
+    branches: it is re-running the same query at a tilted pose, so any
+    divergence between the two would make the extra manifold points disagree
+    with the point they are extending. `feedback_contact_direction_conventions`
+    is the record of what that class of mistake costs.
+    """
+    var out = InlineArray[Scalar[DTYPE], 7](uninitialized=True)
+    for k in range(7):
+        out[k] = Scalar[DTYPE](0)
+    out[0] = Scalar[DTYPE](1e30)  # no contact
+
+    if gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE:
+        var r = cylinder_capsule[DTYPE](
+            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+        )
+        out[0] = r[0]
+        out[1] = r[1]
+        out[2] = r[2]
+        out[3] = r[3]
+        out[4] = r[4]
+        out[5] = r[5]
+        out[6] = r[6]
+    elif gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER:
+        var r = cylinder_capsule[DTYPE](
+            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+        )
+        out[0] = r[0]
+        out[1] = r[1]
+        out[2] = r[2]
+        out[3] = r[3]
+        out[4] = -r[4]
+        out[5] = -r[5]
+        out[6] = -r[6]
+    elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER:
+        var r = cylinder_cylinder[DTYPE](
+            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+        )
+        out[0] = r[0]
+        out[1] = r[1]
+        out[2] = r[2]
+        out[3] = r[3]
+        out[4] = r[4]
+        out[5] = r[5]
+        out[6] = r[6]
+    elif gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX:
+        var r = cylinder_box[DTYPE](
+            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
+        )
+        out[0] = r[0]
+        out[1] = r[1]
+        out[2] = r[2]
+        out[3] = r[3]
+        out[4] = r[4]
+        out[5] = r[5]
+        out[6] = r[6]
+    elif gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER:
+        var r = cylinder_box[DTYPE](
+            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
+        )
+        out[0] = r[0]
+        out[1] = r[1]
+        out[2] = r[2]
+        out[3] = r[3]
+        out[4] = -r[4]
+        out[5] = -r[5]
+        out[6] = -r[6]
+
+    return out^
+
+
+@always_inline
+def _make_frame_axes[
+    DTYPE: DType
+](
+    nx: Scalar[DTYPE], ny: Scalar[DTYPE], nz: Scalar[DTYPE]
+) -> InlineArray[Scalar[DTYPE], 6]:
+    """`mju_makeFrame`'s y and z axes, for a normal already used as x.
+
+    Port of `engine_util_spatial.c:508`. The seed axis is (0,1,0) unless the
+    normal is too close to it, in which case (0,0,1) — the same `|n_y| < 0.5`
+    test, kept because a different seed rotates the perturbation axes and so
+    changes WHICH extra points are found.
+
+    The sign of `n` does not matter: the two axes span the plane perpendicular
+    to it either way, and the perturbation angles are applied symmetrically as
+    `{-a, +a}`. So callers may pass the record's stored normal or its negation.
+    """
+    var ax = nx
+    var ay = ny
+    var az = nz
+    var n = sqrt(ax * ax + ay * ay + az * az)
+    if n > Scalar[DTYPE](0):
+        ax = ax / n
+        ay = ay / n
+        az = az / n
+
+    # Seed y, exactly as MuJoCo chooses it.
+    var yx = Scalar[DTYPE](0)
+    var yy = Scalar[DTYPE](0)
+    var yz = Scalar[DTYPE](0)
+    if ay < Scalar[DTYPE](0.5) and ay > Scalar[DTYPE](-0.5):
+        yy = Scalar[DTYPE](1)
+    else:
+        yz = Scalar[DTYPE](1)
+
+    # Orthogonalise against x, then normalise.
+    var d = ax * yx + ay * yy + az * yz
+    yx = yx - ax * d
+    yy = yy - ay * d
+    yz = yz - az * d
+    var yn = sqrt(yx * yx + yy * yy + yz * yz)
+    if yn > Scalar[DTYPE](0):
+        yx = yx / yn
+        yy = yy / yn
+        yz = yz / yn
+
+    var out = InlineArray[Scalar[DTYPE], 6](uninitialized=True)
+    out[0] = yx
+    out[1] = yy
+    out[2] = yz
+    # z = cross(x, y)
+    out[3] = ay * yz - az * yy
+    out[4] = az * yx - ax * yz
+    out[5] = ax * yy - ay * yx
+    return out^
+
+
+@always_inline
+def _rotate_pose_about[
+    DTYPE: DType
+](
+    ox: Scalar[DTYPE], oy: Scalar[DTYPE], oz: Scalar[DTYPE],
+    rqx: Scalar[DTYPE], rqy: Scalar[DTYPE], rqz: Scalar[DTYPE],
+    rqw: Scalar[DTYPE],
+    px: Scalar[DTYPE], py: Scalar[DTYPE], pz: Scalar[DTYPE],
+    gqx: Scalar[DTYPE], gqy: Scalar[DTYPE], gqz: Scalar[DTYPE],
+    gqw: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 7]:
+    """`mju_rotateFrame` — rotate a geom pose about `o`, returning pos + quat.
+
+        xmat = rot * xmat
+        rel  = origin - xpos
+        vec  = rot*rel - rel
+        xpos = xpos - vec
+
+    The orientation is LEFT-multiplied (a world-frame rotation), and the
+    position correction is written as MuJoCo writes it rather than the
+    algebraically equivalent `o + rot*(p - o)`; they differ in the last bits
+    and this is re-running a query whose answer decides whether a contact
+    counts as distinct.
+    """
+    var q = gpu_quat_mul[DTYPE](rqx, rqy, rqz, rqw, gqx, gqy, gqz, gqw)
+
+    var relx = ox - px
+    var rely = oy - py
+    var relz = oz - pz
+    var rr = gpu_quat_rotate[DTYPE](rqx, rqy, rqz, rqw, relx, rely, relz)
+    var vecx = rr[0] - relx
+    var vecy = rr[1] - rely
+    var vecz = rr[2] - relz
+
+    var out = InlineArray[Scalar[DTYPE], 7](uninitialized=True)
+    out[0] = px - vecx
+    out[1] = py - vecy
+    out[2] = pz - vecz
+    out[3] = q[0]
+    out[4] = q[1]
+    out[5] = q[2]
+    out[6] = q[3]
+    return out^
+
+
+@always_inline
+def multi_ccd_extra_contacts[
+    DTYPE: DType, MAX_CONTACTS: Int, BATCH: Int
+](
+    env: Int,
+    body_a: Int,
+    body_b: Int,
+    first_idx: Int,
+    gi_type: Int,
+    pi_x: Scalar[DTYPE], pi_y: Scalar[DTYPE], pi_z: Scalar[DTYPE],
+    qi_x: Scalar[DTYPE], qi_y: Scalar[DTYPE], qi_z: Scalar[DTYPE],
+    qi_w: Scalar[DTYPE],
+    ri: Scalar[DTYPE], hli: Scalar[DTYPE],
+    hxi: Scalar[DTYPE], hyi: Scalar[DTYPE], hzi: Scalar[DTYPE],
+    rbound_i: Scalar[DTYPE],
+    gj_type: Int,
+    pj_x: Scalar[DTYPE], pj_y: Scalar[DTYPE], pj_z: Scalar[DTYPE],
+    qj_x: Scalar[DTYPE], qj_y: Scalar[DTYPE], qj_z: Scalar[DTYPE],
+    qj_w: Scalar[DTYPE],
+    rj: Scalar[DTYPE], hlj: Scalar[DTYPE],
+    hxj: Scalar[DTYPE], hyj: Scalar[DTYPE], hzj: Scalar[DTYPE],
+    rbound_j: Scalar[DTYPE],
+    c0x: Scalar[DTYPE], c0y: Scalar[DTYPE], c0z: Scalar[DTYPE],
+    n0x: Scalar[DTYPE], n0y: Scalar[DTYPE], n0z: Scalar[DTYPE],
+    dist0: Scalar[DTYPE],
+    contact_margin: Scalar[DTYPE],
+    contact_friction: Scalar[DTYPE],
+    contact_friction_spin: Scalar[DTYPE],
+    contact_friction_roll: Scalar[DTYPE],
+    contact_condim: Int,
+    contacts: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    mut num_contacts: Int,
+) -> Int:
+    """Append the perturbed manifold points for one already-emitted contact.
+
+    `first_idx` is the record index of that contact; `c0`/`n0`/`dist0` are its
+    position, its `gi -> gj` normal and its distance. Returns how many extra
+    records were written.
+
+    ⚠ CALL THIS ONLY AFTER THE FIRST CONTACT IS EMITTED, and only when the pair
+    passed `multi_ccd_pair_supported`. MuJoCo's guard is `ncon == 1`: with no
+    contact there is nothing to perturb about, and with a manifold already in
+    hand the extra points are redundant.
+    """
+    var written = 0
+
+    # `mjc_Convex`: tolerance scales with the SMALLER bounding radius, so a
+    # small geom against a large one does not have its distinct points merged
+    # by the large one's scale.
+    var tol = Scalar[DTYPE](MULTICCD_RELATIVE_TOLERANCE) * (
+        rbound_i if rbound_i < rbound_j else rbound_j
+    )
+
+    var axes = _make_frame_axes[DTYPE](n0x, n0y, n0z)
+    var ang = Scalar[DTYPE](MULTICCD_PERTURBATION_ANGLE)
+
+    for axis_id in range(2):
+        var axx = axes[0] if axis_id == 0 else axes[3]
+        var axy = axes[1] if axis_id == 0 else axes[4]
+        var axz = axes[2] if axis_id == 0 else axes[5]
+
+        for angle_id in range(2):
+            if num_contacts >= MAX_CONTACTS:
+                return written
+            var angle = -ang if angle_id == 0 else ang
+
+            # rot, and its inverse for the second geom.
+            #
+            # ⚠ `gpu_axis_angle_to_quat` rather than a hand-rolled half-angle:
+            # a bare `sin`/`cos` on `Scalar[DTYPE]` fails to compile at an
+            # unconstrained trait `DTYPE` ("lacking evidence to prove
+            # correctness"), and that helper already carries the
+            # floating-point evidence AND the zero-axis branch whose epsilon
+            # was itself a fixed bug. See
+            # `feedback_where_clause_cannot_cross_trait_boundary`.
+            var rq = gpu_axis_angle_to_quat[DTYPE](axx, axy, axz, angle)
+            var rqx = rq[0]
+            var rqy = rq[1]
+            var rqz = rq[2]
+            var rqw = rq[3]
+
+            var pi = _rotate_pose_about[DTYPE](
+                c0x, c0y, c0z, rqx, rqy, rqz, rqw,
+                pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+            )
+            # ⚠ THE SECOND GEOM ROTATES BY THE INVERSE. Rotating both the same
+            # way is a rigid motion of the pair and finds the same point again;
+            # the point of the perturbation is to change their RELATIVE
+            # orientation, which is what exposes a second contact on a flat
+            # face. Quaternion inverse of a unit quat is its conjugate.
+            var pj = _rotate_pose_about[DTYPE](
+                c0x, c0y, c0z, -rqx, -rqy, -rqz, rqw,
+                pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+            )
+
+            var r = _convex_pair_single[DTYPE](
+                gi_type,
+                pi[0], pi[1], pi[2], pi[3], pi[4], pi[5], pi[6],
+                ri, hli, hxi, hyi, hzi,
+                gj_type,
+                pj[0], pj[1], pj[2], pj[3], pj[4], pj[5], pj[6],
+                rj, hlj, hxj, hyj, hzj,
+            )
+            if not (r[0] < contact_margin):
+                continue
+
+            # `mjc_isDistinctContact`: the new point must be farther than
+            # `tol` from EVERY point already in this pair's manifold.
+            var distinct = True
+            for k in range(first_idx, num_contacts):
+                var o = k * CONTACT_SIZE
+                var dx = r[1] - rebind[Scalar[DTYPE]](
+                    contacts[env, o + CONTACT_IDX_POS_X]
+                )
+                var dy = r[2] - rebind[Scalar[DTYPE]](
+                    contacts[env, o + CONTACT_IDX_POS_Y]
+                )
+                var dz = r[3] - rebind[Scalar[DTYPE]](
+                    contacts[env, o + CONTACT_IDX_POS_Z]
+                )
+                if sqrt(dx * dx + dy * dy + dz * dz) <= tol:
+                    distinct = False
+                    break
+            if not distinct:
+                continue
+
+            var off = num_contacts * CONTACT_SIZE
+            contacts[env, off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](body_a)
+            contacts[env, off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](body_b)
+            contacts[env, off + CONTACT_IDX_POS_X] = r[1]
+            contacts[env, off + CONTACT_IDX_POS_Y] = r[2]
+            contacts[env, off + CONTACT_IDX_POS_Z] = r[3]
+            # Same `body_b -> body_a` flip the single-point emit applies.
+            contacts[env, off + CONTACT_IDX_NX] = -r[4]
+            contacts[env, off + CONTACT_IDX_NY] = -r[5]
+            contacts[env, off + CONTACT_IDX_NZ] = -r[6]
+            # ⚠ THE FIRST POINT'S DISTANCE, not the perturbed query's — see
+            # the module docstring.
+            contacts[env, off + CONTACT_IDX_DIST] = dist0
+            contacts[env, off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
+            contacts[env, off + CONTACT_IDX_FRICTION] = contact_friction
+            contacts[
+                env, off + CONTACT_IDX_FRICTION_SPIN
+            ] = contact_friction_spin
+            contacts[
+                env, off + CONTACT_IDX_FRICTION_ROLL
+            ] = contact_friction_roll
+            contacts[env, off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                contact_condim
+            )
+            num_contacts += 1
+            written += 1
+
+    return written
