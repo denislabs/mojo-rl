@@ -383,6 +383,7 @@ trait Phyics3dEnvConfig:
         NV: Int,
         NBODY: Int,
         ACTION_DIM: Int,
+        SITE_DIM: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
@@ -404,6 +405,9 @@ trait Phyics3dEnvConfig:
         ],
         bodies: LayoutTensor[
             DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
         ],
         cfrc_ext: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
@@ -516,6 +520,7 @@ trait Phyics3dEnvConfig:
         NV: Int,
         NBODY: Int,
         OBS_DIM: Int,
+        SITE_DIM: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
@@ -534,6 +539,9 @@ trait Phyics3dEnvConfig:
         ],
         bodies: LayoutTensor[
             DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin

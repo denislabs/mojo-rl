@@ -117,6 +117,23 @@ struct Phyics3dBatchedEnv[
     comptime NSITE: Int = Self.MODEL_DEF.NSITE
     comptime BLOCKS: Int = (Self.N_ENVS + TPB - 1) // TPB
 
+    # ⚠ FLOORED AT ONE SITE. `Data.site_xpos` is `[BATCH, NSITE*3]` with no
+    # zero-extent guard, and FIVE ported models have NSITE == 0 (pendulum,
+    # cartpole, cheetah, walker — measured). Binding that as a kernel operand
+    # would hand them a zero-extent tensor, which SEGFAULTS
+    # (feedback_zero_extent_tensor_operand_crash). The hook ABI therefore
+    # carries `SITE_DIM = max(NSITE, 1) * 3`, and for NSITE == 0 the operand is
+    # a one-site DUMMY buffer that no hook can legally index — a model with no
+    # sites has no site sensor to read.
+    #
+    # Floored HERE rather than in `Data`: the alloc there is deliberately
+    # un-floored so `site_xpos_acc` can shadow it exactly (see fields/data.mojo),
+    # and this is the only consumer that binds it unconditionally.
+    comptime SITE_DIM: Int = (
+        Self.NSITE if Self.NSITE > 0 else 1
+    ) * 3
+    comptime L_SITE_HOOK = Layout.row_major(Self.N_ENVS, Self.SITE_DIM)
+
     # Fields path (the actual physics state)
     var d: Data[
         DT, Self.NQ, Self.NV, Self.NBODY, Self.MC, Self.NSITE, Self.N_ENVS
@@ -160,6 +177,8 @@ struct Phyics3dBatchedEnv[
     var _done: DeviceBuffer[DT]
     var _terminated: DeviceBuffer[DT]
     var _env_rng_counter: DeviceBuffer[DType.uint64]
+    # Bound as `site_xpos` only when NSITE == 0; see SITE_DIM above.
+    var _site_dummy: DeviceBuffer[DT]
 
     def __init__(out self, ctx: DeviceContext) raises:
         # ⚠ A CONFIG without GPU hooks inherits `compute_reward_and_done_gpu`'s
@@ -209,9 +228,39 @@ struct Phyics3dBatchedEnv[
         ctx.enqueue_memset(self._done, 0)
         ctx.enqueue_memset(self._terminated, 0)
         self._env_rng_counter = ctx.enqueue_create_buffer[DType.uint64](1)
+        # Always allocated (a field cannot be conditionally absent); only
+        # BOUND when NSITE == 0. N_ENVS * SITE_DIM = N_ENVS * 3 floats.
+        self._site_dummy = ctx.enqueue_create_buffer[DT](
+            Self.N_ENVS * Self.SITE_DIM
+        )
         self._env_rng_counter.enqueue_fill(UInt64(42))
 
     # ── kinematics ────────────────────────────────────────────────────
+
+
+    @always_inline
+    def _site_xpos_operand(
+        mut self,
+    ) -> LayoutTensor[DT, Self.L_SITE_HOOK, MutAnyOrigin]:
+        """The `site_xpos` kernel operand, floored to one site.
+
+        For NSITE > 0 this IS `d.site_xpos`. For NSITE == 0 it is the dummy —
+        `d.site_xpos` is a zero-length allocation there and is never even
+        uploaded (`Data.upload_all` guards on `NSITE > 0`), so binding it would
+        be a zero-extent operand at best and a null device pointer at worst.
+        See the SITE_DIM note above."""
+        comptime if Self.NSITE > 0:
+            return rebind[LayoutTensor[DT, Self.L_SITE_HOOK, MutAnyOrigin]](
+                self.d.site_xpos.lt["gpu", type_of(self.d).L_SITE]()
+            )
+        else:
+            # rebind: the buffer-constructed view carries
+            # `origin_of(self._site_dummy)`, the kernel ABI wants
+            # MutAnyOrigin. Constructed FROM THE BUFFER, never from
+            # `unsafe_ptr()` — that spelling silently miscompiles on GPU.
+            return rebind[LayoutTensor[DT, Self.L_SITE_HOOK, MutAnyOrigin]](
+                LayoutTensor[DT, Self.L_SITE_HOOK](self._site_dummy)
+            )
 
     def _run_fields_fk(mut self, c: DeviceContext) raises:
         """Fields FK over the whole batch (mf -> Data xpos/xquat/xipos
@@ -271,6 +320,9 @@ struct Phyics3dBatchedEnv[
                 Layout.row_major(Self.NBODY, MODEL_BODY_SIZE),
                 MutAnyOrigin,
             ],
+            site_xpos: LayoutTensor[
+                DT, Self.L_SITE_HOOK, MutAnyOrigin
+            ],
             obs: LayoutTensor[
                 DT,
                 Layout.row_major(Self.N_ENVS, Self.OBS_DIM),
@@ -281,8 +333,9 @@ struct Phyics3dBatchedEnv[
             if env >= Self.N_ENVS:
                 return
             if not Self.CONFIG.custom_extract_obs_gpu[
-                DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY, Self.OBS_DIM
-            ](qpos, qvel, xpos, xquat, xvel, bodies, obs, env):
+                DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY,
+                Self.OBS_DIM, Self.SITE_DIM,
+            ](qpos, qvel, xpos, xquat, xvel, bodies, site_xpos, obs, env):
                 Self.MODEL_DEF.extract_obs_gpu[
                     DT, Self.N_ENVS, Self.OBS_DIM
                 ](qpos, qvel, obs, env)
@@ -297,6 +350,7 @@ struct Phyics3dBatchedEnv[
             self.d.xquat.lt["gpu", type_of(self.d).L_B4](),
             self.d.xvel.lt["gpu", type_of(self.d).L_B3](),
             self.mf.bodies.lt["gpu", type_of(self.mf).L_BODY](),
+            self._site_xpos_operand(),
             obs_t,
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
@@ -339,6 +393,9 @@ struct Phyics3dBatchedEnv[
                 DT,
                 Layout.row_major(Self.NBODY, MODEL_BODY_SIZE),
                 MutAnyOrigin,
+            ],
+            site_xpos: LayoutTensor[
+                DT, Self.L_SITE_HOOK, MutAnyOrigin
             ],
             cfrc_ext: LayoutTensor[
                 DT,
@@ -389,14 +446,16 @@ struct Phyics3dBatchedEnv[
             meta[env, META_IDX_STEP_COUNT] = Scalar[DT](step_count)
 
             if not Self.CONFIG.custom_extract_obs_gpu[
-                DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY, Self.OBS_DIM
-            ](qpos, qvel, xpos, xquat, xvel, bodies, obs, env):
+                DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY,
+                Self.OBS_DIM, Self.SITE_DIM,
+            ](qpos, qvel, xpos, xquat, xvel, bodies, site_xpos, obs, env):
                 Self.MODEL_DEF.extract_obs_gpu[
                     DT, Self.N_ENVS, Self.OBS_DIM
                 ](qpos, qvel, obs, env)
 
             var result = Self.CONFIG.compute_reward_and_done_gpu[
-                DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY, Self.ACT_DIM
+                DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY,
+                Self.ACT_DIM, Self.SITE_DIM,
             ](
                 qpos,
                 qvel,
@@ -405,6 +464,7 @@ struct Phyics3dBatchedEnv[
                 xquat,
                 xvel,
                 bodies,
+                site_xpos,
                 cfrc_ext,
                 cvel,
                 meta,
@@ -453,6 +513,7 @@ struct Phyics3dBatchedEnv[
             self.d.xquat.lt["gpu", type_of(self.d).L_B4](),
             self.d.xvel.lt["gpu", type_of(self.d).L_B3](),
             self.mf.bodies.lt["gpu", type_of(self.mf).L_BODY](),
+            self._site_xpos_operand(),
             self.d.cfrc_ext.lt["gpu", type_of(self.d).L_B6](),
             self.d.cvel.lt["gpu", type_of(self.d).L_B6](),
             self.d.meta.lt["gpu", type_of(self.d).L_META](),

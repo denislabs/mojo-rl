@@ -4,7 +4,12 @@ Tasks: swingup, swingup_sparse.
 Reference: references/dm_control-main/dm_control/suite/acrobot.py + .xml
 """
 
-from .acrobot import DMAcrobotSwingup, DMAcrobotSwingupSparse
+from .acrobot import (
+    DMAcrobotSwingup,
+    DMAcrobotSwingupBatched,
+    DMAcrobotSwingupSparse,
+    DMAcrobotSwingupSparseBatched,
+)
 from .acrobot_config import DMAcrobotConfig, TARGET_RADIUS
 from .acrobot_xml import (
     DMAcrobotModel,

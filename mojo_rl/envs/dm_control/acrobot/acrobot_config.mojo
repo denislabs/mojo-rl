@@ -17,13 +17,21 @@ training is expected rather than a broken env.
 """
 
 from std.random import random_float64
+from std.random.philox import Random as PhiloxRandom
 from std.math import pi, sqrt
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data
-from mojo_rl.physics3d.kinematics.xmat import xmat_elem, XMAT_ZZ, XMAT_XZ
+from mojo_rl.physics3d.kinematics.xmat import (
+    xmat_elem,
+    xmat_elem_gpu,
+    XMAT_ZZ,
+    XMAT_XZ,
+)
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    MODEL_JOINT_SIZE,
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
 )
@@ -37,7 +45,8 @@ from .acrobot_xml import (
 )
 
 from ...phyics3d_env_config import Phyics3dEnvConfig
-from ..rewards import tolerance
+from ..rewards import tolerance, SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN
+from ..gpu_reset import reset_seed
 
 
 # `physics.named.model.site_size['target', 0]` — the target sphere's radius.
@@ -52,6 +61,8 @@ struct DMAcrobotConfig[SPARSE: Bool](Phyics3dEnvConfig):
     # acrobot.py sets no _CONTROL_TIMESTEP, so control_timestep == the model's
     # 0.01 s timestep => 1 substep per env step.
     comptime FRAME_SKIP: Int = 1
+    # GPU hooks implemented below — see Phyics3dEnvConfig.HAS_GPU_HOOKS.
+    comptime HAS_GPU_HOOKS: Bool = True
     # _DEFAULT_TIME_LIMIT = 10 s / 0.01 s = 1000 steps.
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = 0
@@ -156,6 +167,193 @@ struct DMAcrobotConfig[SPARSE: Bool](Phyics3dEnvConfig):
         var r = tolerance(to_target, 0.0, TARGET_RADIUS, margin)
         # dm_control tasks never terminate early.
         return (Scalar[DTYPE](r), False)
+
+
+    # =====================================================================
+    # GPU hooks — the batched (`Phyics3dBatchedEnv`) path.
+    #
+    # First tranche-2 domain: the first whose reward reads `site_xpos`, which
+    # became a hook operand for exactly this. ⚠ Must stay numerically identical
+    # to the CPU hooks above (gated vs MuJoCo by
+    # `test_acrobot_vs_dm_control.mojo`); `test_tranche2_gpu_vs_cpu.mojo` diffs
+    # the two paths step for step, for BOTH the sparse and dense margins.
+    # =====================================================================
+
+    @always_inline
+    @staticmethod
+    def custom_extract_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        OBS_DIM: Int,
+        SITE_DIM: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """`Balance.get_observation` — mirrors `custom_extract_obs_cpu`.
+
+        ⚠ BODY-MINOR: `orientations()` is `concatenate((horizontal(),
+        vertical()))` and each half is a two-body slice, so the order is
+        (xz upper, xz lower, zz upper, zz lower) — NOT (xz, zz) per body.
+        """
+        obs[env, 0] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, UPPER_ARM_BODY_IDX, XMAT_XZ
+        )
+        obs[env, 1] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, LOWER_ARM_BODY_IDX, XMAT_XZ
+        )
+        obs[env, 2] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, UPPER_ARM_BODY_IDX, XMAT_ZZ
+        )
+        obs[env, 3] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, LOWER_ARM_BODY_IDX, XMAT_ZZ
+        )
+        obs[env, 4] = qvel[env, 0]
+        obs[env, 5] = qvel[env, 1]
+        return True
+
+    @always_inline
+    @staticmethod
+    def compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        ACTION_DIM: Int,
+        SITE_DIM: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        env: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """`Balance.get_reward` — mirrors `compute_reward_and_done_cpu`."""
+        var dx = (
+            rebind[Scalar[DTYPE]](site_xpos[env, TARGET_SITE_IDX * 3 + 0])
+            - rebind[Scalar[DTYPE]](site_xpos[env, TIP_SITE_IDX * 3 + 0])
+        )
+        var dy = (
+            rebind[Scalar[DTYPE]](site_xpos[env, TARGET_SITE_IDX * 3 + 1])
+            - rebind[Scalar[DTYPE]](site_xpos[env, TIP_SITE_IDX * 3 + 1])
+        )
+        var dz = (
+            rebind[Scalar[DTYPE]](site_xpos[env, TARGET_SITE_IDX * 3 + 2])
+            - rebind[Scalar[DTYPE]](site_xpos[env, TIP_SITE_IDX * 3 + 2])
+        )
+        var to_target = sqrt(dx * dx + dy * dy + dz * dz)
+        # margin 0 => hard indicator (the sparse task); 1 => shaped.
+        comptime margin = 0.0 if Self.SPARSE else 1.0
+        var r = tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE](
+            to_target,
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](TARGET_RADIUS),
+            Scalar[DTYPE](margin),
+        )
+        return (r, False)
+
+    @always_inline
+    @staticmethod
+    def init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NJOINT_F: Int,
+        NV_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT_F, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """`qpos[['shoulder','elbow']] = uniform(-pi, pi, 2)`.
+
+        Written directly rather than through the shared randomizer: the
+        reference sets these two joints explicitly, and acrobot's hinges are
+        UNLIMITED, so the shared helper would draw them from the same
+        distribution but by a different route. qvel stays at the zeros
+        `reset_env_gpu` wrote.
+        """
+        var rng = PhiloxRandom(seed=reset_seed(env, seed), offset=0)
+        var u = rng.step_uniform()
+        qpos[env, 0] = (
+            Scalar[DTYPE](u[0]) * Scalar[DTYPE](2.0) - Scalar[DTYPE](1.0)
+        ) * Scalar[DTYPE](pi)
+        qpos[env, 1] = (
+            Scalar[DTYPE](u[1]) * Scalar[DTYPE](2.0) - Scalar[DTYPE](1.0)
+        ) * Scalar[DTYPE](pi)
 
     # === CPU: Float getters ===
     @staticmethod

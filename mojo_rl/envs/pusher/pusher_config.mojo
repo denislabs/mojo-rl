@@ -216,6 +216,7 @@ struct PusherConfig(Phyics3dEnvConfig):
         NV_F: Int,
         NBODY_F: Int,
         ACTION_DIM: Int,
+        SITE_DIM: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
@@ -237,6 +238,9 @@ struct PusherConfig(Phyics3dEnvConfig):
         ],
         bodies: LayoutTensor[
             DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
         ],
         cfrc_ext: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
@@ -350,6 +354,7 @@ struct PusherConfig(Phyics3dEnvConfig):
         NV_F: Int,
         NBODY_F: Int,
         OBS_DIM: Int,
+        SITE_DIM: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
@@ -368,6 +373,9 @@ struct PusherConfig(Phyics3dEnvConfig):
         ],
         bodies: LayoutTensor[
             DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
