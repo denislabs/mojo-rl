@@ -991,11 +991,79 @@ struct ModelDefFromXML[
         actions: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
         ],
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+        ],
     ) raises:
-        """GPU kernel: apply gear * clamp(action, ctrlrange) to qfrc for each
-        actuator, straight on the per-field qfrc tensor (G5 — no state slab).
+        """Generalized forces from the model spec — the GPU mirror of
+        `apply_actions` above, term for term.
+
+        ⚠⚠ THIS USED TO BE `qfrc[dof] = gear * ctrl` OVER A SINGLE DOF, and
+        that was blocker G. It read `motor_dof_adr` — one dof per actuator —
+        where the CPU path walks the TRANSMISSION TRIPLES
+        (`motor_trn_n/qadr/dadr/coef`, up to MAX_COMPTIME_TENDON_WRAPS of
+        them). For a plain joint transmission the two agree exactly, which is
+        why every Gym env was fine and nobody noticed. For a FIXED-TENDON
+        transmission — point_mass, fish, manipulator, stacker, quadruped — the
+        old form applied the whole force to one dof with coefficient 1 instead
+        of distributing `gear * coef_k * force` across the tendon's dofs.
+
+        Measured on point_mass before the fix, CPU vs GPU over 12 steps:
+            action = 0.0   worst |qvel diff| = 0.0     (bit-identical)
+            action = 0.8   worst |qvel diff| = 0.043
+        i.e. the integrator was exact and the transmission was not.
+
+        It also ASSIGNED rather than accumulating, and never zeroed the dofs no
+        actuator drives — so a tendon transmission and a tendon spring landing
+        on the same dof (fish's `fins_flap` + `fins_sym`) could not both apply.
+
+        ⚠ ACTIVATION (`d->act`) IS STILL NOT HERE, and the comptime assert
+        below refuses any model that needs it rather than simulating something
+        else. `Phyics3dBatchedEnv` carries no per-env activation state at all
+        (blocker E3); that is a storage gap, not an arithmetic one.
         """
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        # ⚠ CADENCE. `Phyics3dBatchedEnv` invokes this ONCE PER CONTROL STEP,
+        # while `Phyics3dEnv.step` calls the CPU twin ONCE PER SUBSTEP. For a
+        # `<motor>` — including one on a tendon transmission — the two are
+        # bit-identical: its force is `gear * coef * kp * ctrl`, constant
+        # across the control step. For anything reading `qpos`/`qvel` they are
+        # NOT: a position servo and a tendon spring both move every substep,
+        # so applying them once would freeze a spring at its start-of-step
+        # length. Refuse those rather than integrate the wrong force.
+        comptime for _t in range(Self._acd.ntendon):
+            comptime assert Self._acd.tendon_stiffness[_t] == 0.0, (
+                "apply_actions_kernel_gpu: this model has a fixed-tendon"
+                " SPRING, whose force depends on qpos and therefore changes"
+                " every substep. The batched env applies actuation once per"
+                " CONTROL step, so the spring would be frozen at its"
+                " start-of-step length. Move the call inside the frame-skip"
+                " loop for this model before enabling it."
+            )
+        comptime for _i in range(Self.nact):
+            comptime assert Self._acd.motor_kind[_i] != ACT_KIND_POSITION, (
+                "apply_actions_kernel_gpu: this model has a POSITION servo,"
+                " whose force reads qpos/qvel and therefore changes every"
+                " substep. Same cadence problem as the tendon spring above —"
+                " the servo path here is correct per-substep but is currently"
+                " invoked once per control step."
+            )
+
+        # ⚠ Refuse dyntype actuators instead of silently dropping the lag.
+        comptime for _i in range(Self.nact):
+            comptime assert Self._acd.motor_act_adr[_i] < 0, (
+                "apply_actions_kernel_gpu: this model has an actuator with an"
+                " ACTIVATION STATE (dyntype, e.g. `<general dyntype=\"filter\">`)."
+                " The batched path carries no per-env `act` storage, so its"
+                " force would be computed from `ctrl` instead of the lagged"
+                " activation — a different actuator. Add per-env activation to"
+                " Phyics3dBatchedEnv first (blocker E3 in"
+                " docs/DM_CONTROL_GPU_TRAINING_G10.md)."
+            )
 
         @parameter
         @always_inline
@@ -1006,28 +1074,129 @@ struct ModelDefFromXML[
             actions: LayoutTensor[
                 DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
             ],
+            qpos: LayoutTensor[
+                DTYPE, Layout.row_major(BATCH_SIZE, Self.NQ), MutAnyOrigin
+            ],
+            qvel: LayoutTensor[
+                DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+            ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
                 return
 
-            comptime for act_i in range(Self.nact):
-                comptime gear = Self._acd.motor_gears[act_i]
-                comptime dof = Self._acd.motor_dof_adr[act_i]
-                comptime c_min = Self._acd.motor_ctrl_min[act_i]
-                comptime c_max = Self._acd.motor_ctrl_max[act_i]
+            # Zero first: this ACCUMULATES, and dofs no actuator drives must
+            # not keep the previous step's force.
+            comptime for i in range(Self.NV):
+                qfrc[env, i] = Scalar[DTYPE](0)
 
-                comptime if dof >= 0 and dof < Self.NV:
+            comptime for act_i in range(Self.nact):
+                comptime n = Self._acd.motor_trn_n[act_i]
+                comptime if n > 0 and act_i < ACTION_DIM:
+                    comptime gear = Self._acd.motor_gears[act_i]
+                    comptime c_min = Self._acd.motor_ctrl_min[act_i]
+                    comptime c_max = Self._acd.motor_ctrl_max[act_i]
+                    comptime kp = Self._acd.motor_kp[act_i]
+
                     var ctrl = rebind[Scalar[DTYPE]](actions[env, act_i])
                     if ctrl > Scalar[DTYPE](c_max):
                         ctrl = Scalar[DTYPE](c_max)
                     elif ctrl < Scalar[DTYPE](c_min):
                         ctrl = Scalar[DTYPE](c_min)
-                    qfrc[env, dof] = Scalar[DTYPE](gear) * ctrl
+
+                    # No activation here — the comptime assert above
+                    # guarantees `u == ctrl` for every model that reaches this.
+                    var force = Scalar[DTYPE](kp) * ctrl
+
+                    comptime if (
+                        Self._acd.motor_kind[act_i] == ACT_KIND_POSITION
+                    ):
+                        comptime kv = Self._acd.motor_kv[act_i]
+                        var length = Scalar[DTYPE](0)
+                        var vel = Scalar[DTYPE](0)
+                        comptime for k in range(n):
+                            comptime qadr = Self._acd.motor_trn_qadr[
+                                act_i * MAX_COMPTIME_TENDON_WRAPS + k
+                            ]
+                            comptime dadr = Self._acd.motor_trn_dadr[
+                                act_i * MAX_COMPTIME_TENDON_WRAPS + k
+                            ]
+                            comptime coef = Self._acd.motor_trn_coef[
+                                act_i * MAX_COMPTIME_TENDON_WRAPS + k
+                            ]
+                            comptime if qadr >= 0 and qadr < Self.NQ:
+                                length += Scalar[DTYPE](coef) * rebind[
+                                    Scalar[DTYPE]
+                                ](qpos[env, qadr])
+                            comptime if dadr >= 0 and dadr < Self.NV:
+                                vel += Scalar[DTYPE](coef) * rebind[
+                                    Scalar[DTYPE]
+                                ](qvel[env, dadr])
+                        length *= Scalar[DTYPE](gear)
+                        vel *= Scalar[DTYPE](gear)
+                        force = (
+                            Scalar[DTYPE](kp) * (ctrl - length)
+                            - Scalar[DTYPE](kv) * vel
+                        )
+
+                    comptime for k in range(n):
+                        comptime dadr = Self._acd.motor_trn_dadr[
+                            act_i * MAX_COMPTIME_TENDON_WRAPS + k
+                        ]
+                        comptime coef = Self._acd.motor_trn_coef[
+                            act_i * MAX_COMPTIME_TENDON_WRAPS + k
+                        ]
+                        comptime if dadr >= 0 and dadr < Self.NV:
+                            qfrc[env, dadr] = qfrc[env, dadr] + Scalar[DTYPE](
+                                gear * coef
+                            ) * force
+
+            # Fixed-tendon springs, deadbanded on `tendon_lengthspring`.
+            comptime for t in range(Self._acd.ntendon):
+                comptime k_spring = Self._acd.tendon_stiffness[t]
+                comptime nt = Self._acd.tendon_trn_n[t]
+                comptime if k_spring != 0.0 and nt > 0:
+                    comptime lo = Self._acd.tendon_spring_lo[t]
+                    comptime hi = Self._acd.tendon_spring_hi[t]
+                    var tlen = Scalar[DTYPE](0)
+                    comptime for k in range(nt):
+                        comptime qadr = Self._acd.tendon_trn_qadr[
+                            t * MAX_COMPTIME_TENDON_WRAPS + k
+                        ]
+                        comptime tcoef = Self._acd.tendon_trn_coef[
+                            t * MAX_COMPTIME_TENDON_WRAPS + k
+                        ]
+                        comptime if qadr >= 0 and qadr < Self.NQ:
+                            tlen += Scalar[DTYPE](tcoef) * rebind[
+                                Scalar[DTYPE]
+                            ](qpos[env, qadr])
+                    var frc = Scalar[DTYPE](0)
+                    if tlen > Scalar[DTYPE](hi):
+                        frc = Scalar[DTYPE](k_spring) * (
+                            Scalar[DTYPE](hi) - tlen
+                        )
+                    elif tlen < Scalar[DTYPE](lo):
+                        frc = Scalar[DTYPE](k_spring) * (
+                            Scalar[DTYPE](lo) - tlen
+                        )
+                    if frc != Scalar[DTYPE](0):
+                        comptime for k in range(nt):
+                            comptime dadr = Self._acd.tendon_trn_dadr[
+                                t * MAX_COMPTIME_TENDON_WRAPS + k
+                            ]
+                            comptime tcoef = Self._acd.tendon_trn_coef[
+                                t * MAX_COMPTIME_TENDON_WRAPS + k
+                            ]
+                            comptime if dadr >= 0 and dadr < Self.NV:
+                                qfrc[env, dadr] = qfrc[
+                                    env, dadr
+                                ] + Scalar[DTYPE](tcoef) * frc
 
         ctx.enqueue_function[apply_kernel](
             qfrc,
             actions,
+            qpos,
+            qvel,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )

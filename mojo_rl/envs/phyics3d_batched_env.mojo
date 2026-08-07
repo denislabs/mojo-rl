@@ -697,6 +697,14 @@ struct Phyics3dBatchedEnv[
                     MutAnyOrigin,
                 ]
             ](actions_t),
+            # qpos/qvel: the kernel needs them for position servos and
+            # fixed-tendon springs. Both are refused at compile time today
+            # (see the cadence asserts in the kernel), so for every model that
+            # reaches here they are read by nothing — but passing them is what
+            # lets the kernel MIRROR the CPU path term for term rather than be
+            # a reduced copy of it, which is what blocker G was.
+            self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
+            self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
         )
         comptime if DEBUG:
             c.synchronize()

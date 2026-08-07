@@ -177,7 +177,18 @@ trait ModelDefLike:
         actions: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
         ],
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+        ],
     ) raises:
+        """⚠ `qpos`/`qvel` added 2026-08-07 with the blocker-G fix. The GPU
+        actuator path used to apply `gear * ctrl` to ONE dof; it now mirrors
+        `apply_actions` term for term, which means walking the transmission
+        triples and — for position servos and fixed-tendon springs — reading
+        the joint state. See `ModelDefFromXML.apply_actions_kernel_gpu`."""
         ...
 
     # === GPU inline: Per-env methods (called from inside GPU kernels) ===
