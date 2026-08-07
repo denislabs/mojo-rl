@@ -29,6 +29,7 @@ Batched driver (Tier-3) deferred until a consumer needs it.
 """
 
 from std.time import perf_counter_ns
+from std.sys import has_nvidia_gpu_accelerator
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
@@ -841,7 +842,12 @@ def run_offpolicy_discrete_train_gpu_batched[
         iter_idx += 1
 
         # ── 7. Trainer updates.
-        comptime if USE_TRAIN_CUDA_GRAPH:
+        # Gated on NVIDIA to honour the 'NVIDIA only' contract this flag
+        # has always claimed. The continuous driver's ENV-graph twin was
+        # MEASURED to freeze the env on Apple/Metal rather than no-op
+        # (see driver_offpolicy.mojo, 2026-08-07); this train-side branch
+        # was not independently measured, and is gated for consistency.
+        comptime if USE_TRAIN_CUDA_GRAPH and has_nvidia_gpu_accelerator():
             # Capture path: once the buffer is warm, the per-update device
             # kernel sequence (`train_device_kernels`) is captured into
             # `train_graph` on first call and replayed thereafter — host

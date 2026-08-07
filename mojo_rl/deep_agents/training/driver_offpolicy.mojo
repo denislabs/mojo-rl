@@ -42,6 +42,7 @@ through the `BatchedEnv` trait.
 """
 
 from std.time import perf_counter_ns
+from std.sys import has_nvidia_gpu_accelerator
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
@@ -1073,7 +1074,19 @@ def run_offpolicy_train_batched[
         )
 
         # ── 3. Env step (writes env-internal obs/reward/done).
-        comptime if USE_ENV_CUDA_GRAPH and env_target == "gpu":
+        # ⚠ `and has_nvidia_gpu_accelerator()` added 2026-08-07. The
+        # comptime asserts above have always CLAIMED this path is a
+        # "no-op on non-NVIDIA" — it was not. On Apple/Metal the capture
+        # branch ran and silently FROZE the env: measured ep_count 0 vs 6
+        # over an identical 6000-step dm_control walker run with the flag
+        # off (3 truncations x 2 lanes is the correct count). Every GPU
+        # example in examples/ sets USE_ENV_CUDA_GRAPH=True, so on Apple
+        # they were all training against a stopped environment.
+        comptime if (
+            USE_ENV_CUDA_GRAPH
+            and env_target == "gpu"
+            and has_nvidia_gpu_accelerator()
+        ):
             # Capture the (deterministic) physics `step_batch` into a CUDA graph
             # and replay it once per iteration — collapses the env's dozens of
             # eager per-step kernel launches (newton solver, integrators,
@@ -1220,7 +1233,19 @@ def run_offpolicy_train_batched[
         # advances reset randomness on every replay — no baked host seed. The
         # `rng_seed` arg is retained for trait/CPU compatibility but the GPU
         # reset ignores it (the device counter is authoritative).
-        comptime if USE_ENV_CUDA_GRAPH and env_target == "gpu":
+        # ⚠ `and has_nvidia_gpu_accelerator()` added 2026-08-07. The
+        # comptime asserts above have always CLAIMED this path is a
+        # "no-op on non-NVIDIA" — it was not. On Apple/Metal the capture
+        # branch ran and silently FROZE the env: measured ep_count 0 vs 6
+        # over an identical 6000-step dm_control walker run with the flag
+        # off (3 truncations x 2 lanes is the correct count). Every GPU
+        # example in examples/ sets USE_ENV_CUDA_GRAPH=True, so on Apple
+        # they were all training against a stopped environment.
+        comptime if (
+            USE_ENV_CUDA_GRAPH
+            and env_target == "gpu"
+            and has_nvidia_gpu_accelerator()
+        ):
             # TEMP DIAGNOSTIC: inline, legacy-style explicit CUDAGraph capture
             # (mirrors the env-step block above). Reset randomness is driven by
             # the env's DEVICE RNG counter (bumped inside `selective_reset_batch`
@@ -1258,7 +1283,12 @@ def run_offpolicy_train_batched[
         iter_idx += 1
 
         # ── 9. Trainer updates.
-        comptime if USE_TRAIN_CUDA_GRAPH:
+        # Gated on NVIDIA for the same reason as the env branches above
+        # (same CUDAGraph API, same 'NVIDIA only' contract). ⚠ Unlike the
+        # env path this one was NOT independently measured to misbehave on
+        # Metal — it is gated to honour the contract, not to fix a
+        # diagnosed defect.
+        comptime if USE_TRAIN_CUDA_GRAPH and has_nvidia_gpu_accelerator():
             # Capture path: once the buffer is warm, the per-update device
             # kernel sequence (`train_device_kernels`) is captured into
             # `train_graph` on first call and replayed thereafter — host
