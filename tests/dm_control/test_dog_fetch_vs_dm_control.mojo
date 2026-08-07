@@ -25,6 +25,53 @@ apart — `reach_ball` is 0.3788 at 0.50 m and exactly 1.0 at 0.04 m. A fixture
 that only samples one side would pass while the other branch was unimplemented,
 which is the shape of dead test this project keeps finding.
 
+⚠⚠ AND BOTH POSES ARE AIRBORNE. THIS IS THE FIX FOR DEFECT 20, NOT A WEAKENING.
+
+The two branches were originally sampled with the dog ON THE FLOOR, and both
+rows were red — by 1.3e-5 and 1.1e-2. Neither was an engine defect. Stand's
+sixth factor is TOUCH, a sum of contact normal forces, and at the dog's reset
+pose that sum is NUMERICALLY INDETERMINATE: the palms sit at ~zero clearance,
+so the contact set and the redundant-contact force split bifurcate on rounding.
+Measured on the REFERENCE ALONE, sweeping the root yaw over 25 samples at that
+pose. Yaw is an exact symmetry here — the floor is a `plane` (geom_type 0), so
+infinite and homogeneous; gravity is vertical; the free joint rotates the dog
+about its own root; and the ball, which is placed in WORLD coordinates and so
+does NOT rotate with the dog, is out of contact at every sampled yaw (checked,
+not assumed). So none of these numbers may move, and they do:
+
+    touch sum   32.6396 .. 40.2162      spread 22.6% of the mean
+    ncon        18 .. 25
+    palm_L/palm_R   10.05/10.05  ->  18.76/8.46   (no ball contact at any yaw)
+
+Our own residual there is 0.13%, two orders INSIDE MuJoCo's spread. Pressing the
+root down to force firmer contact makes it worse, not better (49%), so there is
+no nearby well-conditioned floor fixture to move to. See
+`test_dog_fetch_touch_probe.mojo` for the staged measurement.
+
+Lifted 3 m the dog touches nothing, touch is 0 on BOTH sides and its factor is
+the 0.9 floor, so what remains is exactly what this file exists to gate. And
+`ball_to_target_distance` — the quantity the discontinuity keys on — is a world
+-frame distance between the ball and the target geom, independent of the dog
+entirely, so lifting the dog costs the branch coverage nothing.
+
+It makes the waiver row STRICTLY MORE discriminating, in fact. `reach_ball` is
+built from the ball-to-MOUTH distance, which airborne is ~3 m, so dropping the
+`reach_ball = 1` waiver would give 1/7 rather than the 0.3788 it gives on the
+floor — the failure it gates is now 6x larger.
+
+⚠ CONSEQUENCE, AND IT IS A REAL COVERAGE HOLE: dog's touch factor is gated
+NOWHERE. `test_dog_tasks_vs_dm_control` runs at a contact-free pose and asserts
+as much, so its touch factor is the 0.9 floor too. `touch_sphere_site` itself is
+gated on hopper (aggregate, for the same underlying reason — see that file's
+docstring), finger and manipulator. What is unpinned is dog's touch
+specifically, and it cannot be pinned tightly at any pose this model reaches.
+
+⚠ THE FIXTURE IS STILL A RANDOM DRAW. `DMDogFetchConfig.custom_reset_cpu` takes
+the root yaw from the GLOBAL RNG and each row builds a fresh env, so the rows
+are different yaws and adding one reshuffles the others. That is harmless here
+BECAUSE the rows are airborne — with no contacts the reward is smooth in the
+draw — and it is exactly what made the floor rows brittle.
+
 ⚠ THE HEAD FRAME IS A SITE FRAME AND THE ROTATION IS WORLD -> SITE. The
 reference writes `v.dot(head_frame)`, which under numpy's row-vector convention
 is `R^T v`. Transposing it is the single most plausible way to get `ball_state`
@@ -328,22 +375,26 @@ def test_dog_fetch_reward_matches_dm_control() raises:
     """The 8-factor product, on BOTH sides of the reward's discontinuity."""
     print("--- dog fetch: reward vs dm_control ---")
 
-    # ⚠ AIRBORNE FIRST — this is the one that gates FETCH's own two factors.
-    # On the floor, Stand's sixth factor is TOUCH, a sum of contact normal
-    # forces, and any difference in it multiplies straight through the product
-    # and masks `reach_ball`/`fetch_ball` entirely. Lifted 3 m the dog touches
-    # nothing, touch is 0 on both sides and its factor is the 0.9 floor, so
-    # what remains IS fetch.
-    var air = _reward_at(0.5, String("airborne, far from target"), 3.0)
-    var far = _reward_at(0.5, String("on the floor, far from target"))
-    var near = _reward_at(0.03, String("on the floor, inside 2*target_radius"))
+    # ⚠ BOTH ROWS LIFTED 3 m. On the floor, Stand's sixth factor is TOUCH, a
+    # sum of contact normal forces, and any difference in it multiplies straight
+    # through the product and masks `reach_ball`/`fetch_ball` entirely — worse,
+    # at this model's reset pose that sum is indeterminate to 22.6% in MuJoCo
+    # ITSELF under a symmetry of the fixture, so a floor row cannot fail for a
+    # reason worth acting on. Airborne, touch is 0 on both sides and its factor
+    # is the 0.9 floor, so what remains IS fetch. Header, defect 20.
+    var far = _reward_at(0.5, String("airborne, far from target"), 3.0)
+    var near = _reward_at(
+        0.03, String("airborne, inside 2*target_radius"), 3.0
+    )
 
+    # NON-VACUITY: lifting the dog must not have zeroed what is being compared.
+    # `reach_ball`/`fetch_ball` are built from the ball and target positions in
+    # the HEAD frame, and the head moved 3 m — so assert the rewards are still
+    # ordinary numbers, not both collapsed to 0 or both saturated at 1.
     assert_true(
-        abs(air[0] - air[1]) <= REWARD_TOL,
-        "dog fetch reward differs from dm_control with the dog AIRBORNE, where"
-        " Stand's touch factor is the 0.9 floor on both sides — so this is"
-        " `reach_ball` or `fetch_ball`, i.e. fetch's own arithmetic, not a"
-        " contact-force difference",
+        far[1] > 1e-6 and far[1] < 1.0 - 1e-6,
+        "the reference reward is 0 or 1 with the dog airborne, so fetch's two"
+        " factors are saturated and this row gates nothing",
     )
 
     # The fixture must straddle the branch, or one side is never gated.
@@ -362,7 +413,10 @@ def test_dog_fetch_reward_matches_dm_control() raises:
 
     assert_true(
         abs(far[0] - far[1]) <= REWARD_TOL,
-        "dog fetch reward differs from dm_control far from the target",
+        "dog fetch reward differs from dm_control far from the target, with the"
+        " dog airborne — so Stand's touch factor is the 0.9 floor on both sides"
+        " and this is `reach_ball`/`fetch_ball`, fetch's own arithmetic, not a"
+        " contact-force difference",
     )
     assert_true(
         abs(near[0] - near[1]) <= REWARD_TOL,
