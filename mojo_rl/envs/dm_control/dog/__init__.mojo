@@ -57,4 +57,6 @@ from .dog_xml import (
     drp,
 )
 from .dog_config import DMDogStandConfig, DMDogMoveConfig
-from .dog import DMDogStand, DMDogWalk, DMDogTrot, DMDogRun
+from .dog import DMDogStand, DMDogWalk, DMDogTrot, DMDogRun, DMDogFetch
+from .dog_fetch_xml import DMDogFetchModel, DOG_FETCH_OBS_DIM, dm_dog_fetch_xml
+from .dog_fetch_config import DMDogFetchConfig

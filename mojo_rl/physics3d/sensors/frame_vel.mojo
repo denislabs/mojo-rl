@@ -44,6 +44,51 @@ from ..kinematics.quat_math import quat_rotate_inverse
 from ..kinematics.site_frame import site_world_quat_list
 
 
+@always_inline
+def point_velocity_world[
+    DTYPE: DType
+](
+    xvel: List[Scalar[DTYPE]],
+    xangvel: List[Scalar[DTYPE]],
+    xipos: List[Scalar[DTYPE]],
+    body: Int,
+    px: Scalar[DTYPE],
+    py: Scalar[DTYPE],
+    pz: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """World-frame linear velocity of a point rigidly attached to `body`.
+
+    `mj_objectVelocity(..., flg_local=0)`'s linear half, for ANY point — a
+    site, a geom, a body landmark. `xvel[b]` is the body's world linear
+    velocity at its CoM (`xipos[b]`), so the point velocity is that plus
+    `omega x (p - xipos)`.
+
+    ⚠ THE ARITHMETIC IS `site_frame_velocity`'s, MOVED HERE UNCHANGED — same
+    expressions, same order, same association. That function's velocimeter is
+    gated exact on dog (2.66e-15 across the observation) and on swimmer, so a
+    reassociation here would be a silent regression in a passing gate. It is
+    `@always_inline`, so this is a factoring, not a call.
+
+    Extracted for dog `fetch`, which needs the same transport in WORLD frame
+    for a GEOM (the ball) and a SITE (the head) — `ball_in_head_frame`
+    subtracts the two. Writing it a second time is how a quantity ends up
+    computed five slightly different ways; today's tendon cap was exactly that.
+    """
+    var wx = xangvel[body * 3 + 0]
+    var wy = xangvel[body * 3 + 1]
+    var wz = xangvel[body * 3 + 2]
+
+    var rx = px - xipos[body * 3 + 0]
+    var ry = py - xipos[body * 3 + 1]
+    var rz = pz - xipos[body * 3 + 2]
+
+    return (
+        xvel[body * 3 + 0] + (wy * rz - wz * ry),
+        xvel[body * 3 + 1] + (wz * rx - wx * rz),
+        xvel[body * 3 + 2] + (wx * ry - wy * rx),
+    )
+
+
 def site_frame_velocity[
     DTYPE: DType
 ](
@@ -66,14 +111,21 @@ def site_frame_velocity[
     var wy = xangvel[body * 3 + 1]
     var wz = xangvel[body * 3 + 2]
 
-    # Transport the CoM velocity to the site point.
-    var rx = site_xpos[site * 3 + 0] - xipos[body * 3 + 0]
-    var ry = site_xpos[site * 3 + 1] - xipos[body * 3 + 1]
-    var rz = site_xpos[site * 3 + 2] - xipos[body * 3 + 2]
-
-    var vx = xvel[body * 3 + 0] + (wy * rz - wz * ry)
-    var vy = xvel[body * 3 + 1] + (wz * rx - wx * rz)
-    var vz = xvel[body * 3 + 2] + (wx * ry - wy * rx)
+    # Transport the CoM velocity to the site point. Shared with `fetch`'s
+    # geom/site velocities — see `point_velocity_world` for why it is one
+    # function and why its arithmetic must not be rearranged.
+    var v = point_velocity_world[DTYPE](
+        xvel,
+        xangvel,
+        xipos,
+        body,
+        site_xpos[site * 3 + 0],
+        site_xpos[site * 3 + 1],
+        site_xpos[site * 3 + 2],
+    )
+    var vx = v[0]
+    var vy = v[1]
+    var vz = v[2]
 
     # R_site is the SITE's world frame, `xquat[body] * site_quat` — not the
     # body's. Those coincide only for a site with no orientation attribute,

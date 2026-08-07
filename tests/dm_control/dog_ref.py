@@ -462,3 +462,120 @@ def move_reward_factors(m, d, move_speed):
                          'linear', 0.0)
     forward = (4 * forward + 1) / 5
     return np.hstack((standing, forward))
+
+
+# =============================================================================
+# fetch (Phase 5) — `Fetch`'s physics helpers, observation and reward factors
+# =============================================================================
+#
+# Transcribed from `suite/dog.py`. Everything here is the REFERENCE side; the
+# port is gated against it by `test_dog_fetch_vs_dm_control.mojo`.
+#
+# ⚠ `object_velocity` RETURNS (linear, angular) while the raw
+# `mj_objectVelocity` writes ANGULAR first (res[0:3]) and linear second
+# (res[3:6]). dm_control swaps them. Taking res[:3] here would silently give
+# the angular velocity, which is the same shape and entirely wrong.
+
+
+def _obj_lin_vel(m, d, name, objtype):
+    """`physics.data.object_velocity(name, type)[0]` — world-frame LINEAR."""
+    import mujoco
+    import numpy as np
+    tid = {'site': mujoco.mjtObj.mjOBJ_SITE, 'geom': mujoco.mjtObj.mjOBJ_GEOM}[objtype]
+    oid = mujoco.mj_name2id(m, tid, name)
+    res = np.zeros(6)
+    mujoco.mj_objectVelocity(m, d, tid, oid, res, 0)   # 0 = world frame
+    return res[3:6].copy()
+
+
+def _head_frame(m, d):
+    import numpy as np
+    import mujoco
+    sid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, 'head')
+    return np.array(d.site_xmat[sid]).reshape(3, 3)
+
+
+def _site_pos(m, d, name):
+    import numpy as np
+    import mujoco
+    return np.array(d.site_xpos[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, name)])
+
+
+def _geom_pos(m, d, name):
+    import numpy as np
+    import mujoco
+    return np.array(d.geom_xpos[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, name)])
+
+
+def ball_in_head_frame(m, d):
+    """`Physics.ball_in_head_frame` — 6 numbers, position THEN velocity."""
+    import numpy as np
+    head_frame = _head_frame(m, d)
+    head_pos = _site_pos(m, d, 'head')
+    ball_pos = _geom_pos(m, d, 'ball')
+    head_to_ball = ball_pos - head_pos
+    head_vel = _obj_lin_vel(m, d, 'head', 'site')
+    ball_vel = _obj_lin_vel(m, d, 'ball', 'geom')
+    head_to_ball_vel = ball_vel - head_vel
+    # `.dot(frame)` is a ROW-vector product, i.e. R^T v — world -> head.
+    return np.hstack((head_to_ball.dot(head_frame),
+                      head_to_ball_vel.dot(head_frame)))
+
+
+def target_in_head_frame(m, d):
+    """`Physics.target_in_head_frame` — 3 numbers."""
+    head_frame = _head_frame(m, d)
+    head_pos = _site_pos(m, d, 'head')
+    target_pos = _geom_pos(m, d, 'target')
+    return (target_pos - head_pos).dot(head_frame)
+
+
+def ball_to_mouth_distance(m, d):
+    """`Physics.ball_to_mouth_distance` — the MEAN of the two bite sites."""
+    import numpy as np
+    ball_pos = _geom_pos(m, d, 'ball')
+    upper = np.linalg.norm(ball_pos - _site_pos(m, d, 'upper_bite'))
+    lower = np.linalg.norm(ball_pos - _site_pos(m, d, 'lower_bite'))
+    return 0.5 * (upper + lower)
+
+
+def ball_to_target_distance(m, d):
+    """`Physics.ball_to_target_distance`."""
+    import numpy as np
+    return float(np.linalg.norm(_geom_pos(m, d, 'ball') - _geom_pos(m, d, 'target')))
+
+
+def fetch_observation(m, d):
+    """`Fetch.get_observation_components` — Stand's 223 plus 6 + 3 = 232."""
+    import numpy as np
+    return np.hstack((observation(m, d),
+                      ball_in_head_frame(m, d),
+                      target_in_head_frame(m, d)))
+
+
+def fetch_reward_factors(m, d):
+    """`Fetch.get_reward_factors` — Stand's SIX plus reach_ball, fetch_ball."""
+    import numpy as np
+    import mujoco
+    standing = stand_reward_factors(m, d)
+
+    sid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, 'upper_bite')
+    bite_radius = float(m.site_size[sid][0])
+    bite_margin = 2
+    reach_ball = _tolerance(ball_to_mouth_distance(m, d),
+                            0, bite_radius, bite_margin, 'reciprocal')
+    reach_ball = (6 * reach_ball + 1) / 7
+
+    gid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, 'target')
+    fid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, 'floor')
+    target_radius = float(m.geom_size[gid][0])
+    bring_margin = float(m.geom_size[fid][0])
+    ball_near_target = _tolerance(ball_to_target_distance(m, d),
+                                  0, target_radius, bring_margin, 'reciprocal')
+    fetch_ball = (ball_near_target + 1) / 2
+
+    # ⚠ APPLIED AFTER THE RESCALING — `1`, not `(6*1 + 1)/7`.
+    if ball_to_target_distance(m, d) < 2 * target_radius:
+        reach_ball = 1
+
+    return np.hstack((standing, reach_ball, fetch_ball))

@@ -20,6 +20,8 @@ only use of `sigmoid='reciprocal'`.
 
 from .dog_xml import DMDogStandWalkModel, DMDogTrotModel, DMDogRunModel
 from .dog_config import DMDogStandConfig, DMDogMoveConfig
+from .dog_fetch_xml import DMDogFetchModel
+from .dog_fetch_config import DMDogFetchConfig
 from .dog_xml import DOG_WALK_SPEED, DOG_TROT_SPEED, DOG_RUN_SPEED
 from ...phyics3d_env import Phyics3dEnv
 
@@ -40,4 +42,13 @@ comptime DMDogTrot[DTYPE: DType = DType.float64] = Phyics3dEnv[
 
 comptime DMDogRun[DTYPE: DType = DType.float64] = Phyics3dEnv[
     DMDogRunModel, DMDogMoveConfig[DOG_RUN_SPEED], DTYPE, False
+]
+
+# ⚠ `fetch` HAS ITS OWN MODEL, not one of the three above: it is the only dog
+# task that keeps the ball, the target and the walls, and it takes dog.xml's
+# DEFAULT floor half-extent of 10 rather than `move_speed * 15`. CPU only, for
+# the same reason as the others — every actuator is `dyntype="filter"` and the
+# batched facade carries no `act`.
+comptime DMDogFetch[DTYPE: DType = DType.float64] = Phyics3dEnv[
+    DMDogFetchModel, DMDogFetchConfig, DTYPE, False
 ]
