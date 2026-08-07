@@ -181,6 +181,7 @@ struct Phyics3dBatchedEnv[
         Self.MODEL_DEF.NEXCLUDE, 0, Self.MODEL_DEF.CONE_TYPE, Self.N_ENVS,
         SOLVER = Self.SOLVER, PARALLEL_GPU = Self.PARALLEL_GPU,
         CRBA_TREEWALK = Self.CRBA_TREEWALK,
+        RNE_POST = Self.CONFIG.RNE_POST,
     ]
     var integ_rk4: Self.IntegRK4
     var integ_euler: Self.IntegEuler
@@ -194,6 +195,14 @@ struct Phyics3dBatchedEnv[
     var _env_rng_counter: DeviceBuffer[DType.uint64]
     # Bound as `site_xpos` only when NSITE == 0; see SITE_DIM above.
     var _site_dummy: DeviceBuffer[DT]
+    # E3 — per-env ACTUATOR ACTIVATION (MuJoCo `d->act`), the batched
+    # twin of `Phyics3dEnv.act`. An actuator with a `dyntype` feeds its
+    # ACTIVATION to the gain where a plain one feeds `ctrl`, and the
+    # activation is a first-order lag of ctrl — so without this the
+    # force is computed from the wrong quantity entirely. quadruped and
+    # dog are the models that have one. Floored at 1 like the CPU side.
+    comptime NA_F: Int = Self.MODEL_DEF.NA_F
+    var _act: DeviceBuffer[DT]
 
     def __init__(out self, ctx: DeviceContext) raises:
         # ⚠ A CONFIG without GPU hooks inherits `compute_reward_and_done_gpu`'s
@@ -201,6 +210,19 @@ struct Phyics3dBatchedEnv[
         # it runs, it reports episodes, and it learns nothing. Every dm_control
         # task config was in exactly that state for months (gap G10). Refuse the
         # instantiation instead. See Phyics3dEnvConfig.HAS_GPU_HOOKS.
+        # ⚠ RNE_POST lives on the EULER integrator only — RK4 would need the
+        # hook inside its base stage and no in-scope model wants both. Mirrors
+        # the same assert in `Phyics3dEnv`; without it, a config asking for
+        # RNE_POST under RK4 would silently get `cacc`/`cfrc_int` of zero and
+        # its acceleration-stage sensors would read 0.
+        comptime assert (
+            (not Self.CONFIG.RNE_POST)
+            or Self.CONFIG.INTEGRATOR == "euler"
+        ), (
+            "Phyics3dBatchedEnv: CONFIG.RNE_POST is wired into the Euler"
+            " integrator only, but this CONFIG selects a different integrator."
+            " The acceleration-stage sensors would read zero."
+        )
         comptime assert Self.CONFIG.HAS_GPU_HOOKS, (
             "Phyics3dBatchedEnv: this CONFIG does not implement the GPU hooks"
             " (HAS_GPU_HOOKS is False), so its reward would be a constant 0 and"
@@ -248,6 +270,16 @@ struct Phyics3dBatchedEnv[
         self._site_dummy = ctx.enqueue_create_buffer[DT](
             Self.N_ENVS * Self.SITE_DIM
         )
+        self._act = ctx.enqueue_create_buffer[DT](Self.N_ENVS * Self.NA_F)
+        # `mj_resetData` zeroes `act`; so does `Phyics3dEnv._reset_state`.
+        var _h_act0 = ctx.enqueue_create_host_buffer[DT](
+            Self.N_ENVS * Self.NA_F
+        )
+        ctx.synchronize()
+        for _i in range(Self.N_ENVS * Self.NA_F):
+            _h_act0[_i] = Scalar[DT](0)
+        ctx.enqueue_copy(self._act, _h_act0)
+        ctx.synchronize()
 
         # ⚠ A model with a mocap body and CONFIG.USES_MOCAP == False would run
         # perfectly and train on a target frozen at its XML pose — an easier
@@ -812,6 +844,17 @@ struct Phyics3dBatchedEnv[
             # a reduced copy of it, which is what blocker G was.
             self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
             self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
+            rebind[
+                LayoutTensor[
+                    DT,
+                    Layout.row_major(Self.N_ENVS, Self.MODEL_DEF.NA_F),
+                    MutAnyOrigin,
+                ]
+            ](
+                LayoutTensor[
+                    DT, Layout.row_major(Self.N_ENVS, Self.MODEL_DEF.NA_F)
+                ](self._act)
+            ),
         )
         comptime if DEBUG:
             c.synchronize()

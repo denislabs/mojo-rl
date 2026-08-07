@@ -226,6 +226,9 @@ struct ModelDefFromXML[
     # MuJoCo `m->na` — activation variables, NOT `nu`. Nonzero only for
     # actuators with a `dyntype`; 0 for every <motor>/<position>.
     comptime NA: Int = Self._acd.na
+    # Floored at 1 so a model with no activation still has a bindable `act`
+    # tensor — a zero-extent operand segfaults.
+    comptime NA_F: Int = Self.NA if Self.NA > 0 else 1
     comptime NEXCLUDE: Int = Self.nexclude
     comptime OBS_DIM: Int = Self.obs_dim_override if Self.obs_dim_override > 0 else (
         Self.nq - Self.obs_qpos_skip + Self.nv
@@ -997,6 +1000,9 @@ struct ModelDefFromXML[
         qvel: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
         ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NA_F), MutAnyOrigin
+        ],
     ) raises:
         """Generalized forces from the model spec — the GPU mirror of
         `apply_actions` above, term for term.
@@ -1053,18 +1059,6 @@ struct ModelDefFromXML[
                 " invoked once per control step."
             )
 
-        # ⚠ Refuse dyntype actuators instead of silently dropping the lag.
-        comptime for _i in range(Self.nact):
-            comptime assert Self._acd.motor_act_adr[_i] < 0, (
-                "apply_actions_kernel_gpu: this model has an actuator with an"
-                " ACTIVATION STATE (dyntype, e.g. `<general dyntype=\"filter\">`)."
-                " The batched path carries no per-env `act` storage, so its"
-                " force would be computed from `ctrl` instead of the lagged"
-                " activation — a different actuator. Add per-env activation to"
-                " Phyics3dBatchedEnv first (blocker E3 in"
-                " docs/DM_CONTROL_GPU_TRAINING_G10.md)."
-            )
-
         @parameter
         @always_inline
         def apply_kernel(
@@ -1079,6 +1073,9 @@ struct ModelDefFromXML[
             ],
             qvel: LayoutTensor[
                 DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+            ],
+            act: LayoutTensor[
+                DTYPE, Layout.row_major(BATCH_SIZE, Self.NA_F), MutAnyOrigin
             ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -1104,9 +1101,15 @@ struct ModelDefFromXML[
                     elif ctrl < Scalar[DTYPE](c_min):
                         ctrl = Scalar[DTYPE](c_min)
 
-                    # No activation here — the comptime assert above
-                    # guarantees `u == ctrl` for every model that reaches this.
-                    var force = Scalar[DTYPE](kp) * ctrl
+                    # ACTIVATION (MuJoCo `d->act`): `force = gain .* [ctrl/act]`
+                    # (mj_fwdActuation). An actuator with a `dyntype` feeds its
+                    # ACTIVATION to the gain; a plain one feeds `ctrl`. `u` is
+                    # whichever the gain multiplies.
+                    comptime adr = Self._acd.motor_act_adr[act_i]
+                    var u = ctrl
+                    comptime if adr >= 0 and adr < Self.NA_F:
+                        u = rebind[Scalar[DTYPE]](act[env, adr])
+                    var force = Scalar[DTYPE](kp) * u
 
                     comptime if (
                         Self._acd.motor_kind[act_i] == ACT_KIND_POSITION
@@ -1134,8 +1137,10 @@ struct ModelDefFromXML[
                                 ](qvel[env, dadr])
                         length *= Scalar[DTYPE](gear)
                         vel *= Scalar[DTYPE](gear)
+                        # `u`, not `ctrl` — for a dyntype actuator the servo
+                        # setpoint is the ACTIVATION, which lags the control.
                         force = (
-                            Scalar[DTYPE](kp) * (ctrl - length)
+                            Scalar[DTYPE](kp) * (u - length)
                             - Scalar[DTYPE](kv) * vel
                         )
 
@@ -1150,6 +1155,21 @@ struct ModelDefFromXML[
                             qfrc[env, dadr] = qfrc[env, dadr] + Scalar[DTYPE](
                                 gear * coef
                             ) * force
+
+                    # mjDYN_FILTER, Euler-integrated exactly as
+                    # `nextActivation` does (engine_forward.c:341):
+                    #     act_dot = (ctrl - act) / tau ; act += act_dot * dt
+                    # ⚠ AFTER the force, matching MuJoCo's order —
+                    # `mj_fwdActuation` reads the CURRENT act and `mj_advance`
+                    # advances it at the end of the same step. `ctrl` is
+                    # already ctrlrange-clamped, as MuJoCo clamps `d->ctrl`
+                    # before computing act_dot.
+                    comptime if adr >= 0 and adr < Self.NA_F:
+                        comptime tau_raw = Self._acd.motor_dyn_tau[act_i]
+                        comptime tau = tau_raw if tau_raw >= 1e-10 else 1e-10
+                        act[env, adr] = u + (ctrl - u) / Scalar[DTYPE](
+                            tau
+                        ) * Scalar[DTYPE](Self.TIMESTEP)
 
             # Fixed-tendon springs, deadbanded on `tendon_lengthspring`.
             comptime for t in range(Self._acd.ntendon):
@@ -1197,6 +1217,7 @@ struct ModelDefFromXML[
             actions,
             qpos,
             qvel,
+            act,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )

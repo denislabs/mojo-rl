@@ -38,6 +38,7 @@ trait ModelDefLike:
     comptime NSITE: Int
     # MuJoCo `m->na`: ACTIVATION variables, not `nu`.
     comptime NA: Int
+    comptime NA_F: Int
     comptime NEXCLUDE: Int
     # Largest `condim` in the model — sizes the PYRAMIDAL edge list at
     # `2*(MAX_CONDIM-1)` rows per contact.
@@ -183,8 +184,11 @@ trait ModelDefLike:
         qvel: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
         ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, Self.NA_F), MutAnyOrigin
+        ],
     ) raises:
-        """⚠ `qpos`/`qvel` added 2026-08-07 with the blocker-G fix. The GPU
+        """⚠ `qpos`/`qvel`/`act` added 2026-08-07 with the blocker-G fix. The GPU
         actuator path used to apply `gear * ctrl` to ONE dof; it now mirrors
         `apply_actions` term for term, which means walking the transmission
         triples and — for position servos and fixed-tendon springs — reading
