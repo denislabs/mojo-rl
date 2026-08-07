@@ -72,7 +72,7 @@ update. Log every few hundred steps, not every step.
 """
 
 from std.gpu.host import DeviceContext
-from std.math import sqrt
+from std.math import abs, sqrt
 from std.random import random_float64
 
 from mojo_rl.nn.constants import DT
@@ -241,6 +241,27 @@ struct FBTrainer[
     # excursions to +2559 by 116 k. `F` is the unconstrained half of the pair —
     # `L_ortho` and the LayerNorm bound `B`, nothing bounds `F`.
     var max_grad_norm: Float64
+    # ⚠⚠ Behaviour-cloning weight on the actor loss (0 = OFF). NOT optional in
+    # the offline setting, which is the only setting this trainer runs in.
+    #
+    # The actor maximises `F(s, pi(s,z), z)·z` over the box [-1, 1]. `F` is a
+    # ReLU MLP and therefore near-linear in `a` across that box, and the
+    # maximiser of a linear function on a box is a CORNER. Measured on walker
+    # at 200 k steps with `bc_weight = 0`: 95-98% of emitted actions had
+    # |a| > 0.99, i.e. bang-bang torque, and the policy scored WORSE than
+    # random on all three tasks (significantly so on `walk`, t = -6.0).
+    #
+    # This is the standard offline-RL extrapolation failure — TD3+BC, CQL and
+    # IQL each exist to prevent it — and `docs/BFM_ZERO_SHOT_RL.md` §7 names
+    # the FB-specific answer: Meta Motivo is FB-**CPR**, where CPR regularises
+    # the policy toward the data distribution with a discriminator. The BC term
+    # here is the cheap stand-in for that, not a replacement.
+    #
+    # ⚠ Too LARGE a weight collapses every `z` onto the data's mean action and
+    # destroys the whole point of a z-conditioned policy family. The scaling
+    # below follows TD3+BC: the value term is normalised by its own magnitude
+    # so `bc_weight` is a ratio rather than an absolute.
+    var bc_weight: Float64
     var steps: Int
     var _rng_seed: UInt64
     var _rng_offset: UInt64
@@ -306,6 +327,7 @@ struct FBTrainer[
         self.policy_noise = 0.2
         self.noise_clip = 0.3
         self.max_grad_norm = 0.0
+        self.bc_weight = 0.0
         self.steps = 0
         self._rng_seed = UInt64(0x5EED)
         self._rng_offset = UInt64(0)
@@ -371,6 +393,7 @@ struct FBTrainer[
         self.policy_noise = move.policy_noise
         self.noise_clip = move.noise_clip
         self.max_grad_norm = move.max_grad_norm
+        self.bc_weight = move.bc_weight
         self.steps = move.steps
         self._rng_seed = move._rng_seed
         self._rng_offset = move._rng_offset
@@ -387,6 +410,7 @@ struct FBTrainer[
         ctx: Optional[DeviceContext] = None,
         seed: UInt64 = UInt64(0x5EED),
         max_grad_norm: Float64 = 0.0,
+        bc_weight: Float64 = 0.0,
     ) raises -> Self:
         """Defaults are the published FB / Meta Motivo settings: EMA 0.99
         (`tau = 0.01`), `gamma = 0.98`, Adam 3e-4.
@@ -412,6 +436,7 @@ struct FBTrainer[
         t.tau = tau
         t.ortho_weight = ortho_weight
         t.max_grad_norm = max_grad_norm
+        t.bc_weight = bc_weight
         t._rng_seed = seed
         return t^
 
@@ -704,9 +729,19 @@ struct FBTrainer[
             var m = mean_t[T, Self.BATCH](self.rz, self.acc, c)
             loss = -m
 
-        # dL/dF = -z / BATCH
+        # dL/dF = -lambda·z / BATCH. TD3+BC's adaptive scale: normalising the
+        # value term by its own magnitude makes `bc_weight` a RATIO between the
+        # two objectives instead of an absolute that has to be retuned whenever
+        # ||F|| moves — and ||F|| moves a lot here.
+        var lam = Float64(1.0)
+        if self.bc_weight > 0.0:
+            var mag = abs(loss) if want_loss else 1.0
+            if mag < 1e-6:
+                mag = 1e-6
+            lam = 1.0 / mag
         scale_t[T, Self._ND](
-            self.g_fa, self.bz, Scalar[DT](-1.0 / Float64(Self.BATCH)), c
+            self.g_fa, self.bz,
+            Scalar[DT](-lam / Float64(Self.BATCH)), c,
         )
 
         # ⚠ Through F1 WITHOUT keeping F1's parameter grads: the optimizer has
@@ -723,6 +758,16 @@ struct FBTrainer[
         slice_cols_t[T, Self.F_IN, Self._A_OFF, Self.ACT, Self.BATCH](
             self.g_pi, g_fin[0], c
         )
+        # + BC: d/dpi of `bc_weight · mean_i mean_k (pi - a_data)^2`.
+        # `axpy` twice rather than a bespoke kernel: g_pi += w·pi, g_pi -= w·a.
+        if self.bc_weight > 0.0:
+            var w = Scalar[DT](
+                self.bc_weight * 2.0
+                / (Float64(Self.BATCH) * Float64(Self.ACT))
+            )
+            axpy_t[T, Self._NA](self.g_pi, self.pi, w, c)
+            axpy_t[T, Self._NA](self.g_pi, self.ba, -w, c)
+
         var sink = TensorPack[1]()
         call_vjp[T, Self.BATCH](
             self.actor.online, TensorRefs[1, MutAnyOrigin](self.ain), self.g_pi,

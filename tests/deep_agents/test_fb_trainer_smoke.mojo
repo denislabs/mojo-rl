@@ -204,8 +204,61 @@ def test_ortho_weight_changes_the_update() raises:
     )
 
 
+def test_bc_weight_curbs_action_saturation() raises:
+    """`bc_weight` must pull `pi_z` toward the DATA actions.
+
+    Without it the actor maximises `F(s, pi, z)·z` over the box [-1, 1], `F` is
+    near-linear in `a`, and the maximiser of a linear function on a box is a
+    CORNER — so the policy goes bang-bang. Measured on walker at 200 k steps
+    with `bc_weight = 0`: 95-98% of actions had |a| > 0.99 and the policy
+    scored WORSE than random on all three tasks.
+
+    The gate feeds SMALL data actions (+-0.15) and checks the BC trainer's
+    policy stays closer to them. ⚠ Small data actions are the point: if the
+    dataset itself were bang-bang, "near the data" and "saturated" would be the
+    same place and this would measure nothing.
+    """
+    print("[4] bc_weight pulls pi_z toward the data actions ...")
+
+    var probe = Tensor.alloc(BATCH * OBS)
+    for i in range(BATCH * OBS):
+        probe.data[i] = Scalar[DT](0.17 * Float64(i % 11) - 0.8)
+    var zp = _z_tensor(BATCH)
+
+    var sat = List[Float64]()
+    for variant in range(2):
+        var w = 0.0 if variant == 0 else 2.0
+        seed(SEED)
+        var t = Trainer.make(lr=3e-3, bc_weight=w)
+        seed(SEED + 5)
+        for _ in range(60):
+            var s = _rand_tensor(BATCH * OBS, 1.0)
+            # ⚠ SMALL data actions — see the docstring.
+            var a = _rand_tensor(BATCH * ACT, 0.15)
+            var sn = _rand_tensor(BATCH * OBS, 1.0)
+            var sp = _rand_tensor(BATCH * OBS, 1.0)
+            var z = _z_tensor(BATCH)
+            t.load_batch(s, a, sn, sp, z)
+            _ = t.train_step(want_loss=True)
+        var out = Tensor()
+        t.act[BATCH](probe, zp, out)
+        var acc = Float64(0)
+        for i in range(BATCH * ACT):
+            acc += abs(Float64(out.data[i]))
+        sat.append(acc / Float64(BATCH * ACT))
+
+    print("      mean|a|:  bc_weight=0 ->", sat[0], "  bc_weight=2 ->", sat[1])
+    assert_true(
+        sat[1] < sat[0],
+        "bc_weight did not reduce |action| (" + String(sat[0]) + " -> "
+        + String(sat[1]) + "). The BC gradient is not reaching the actor, and"
+        " the policy will go bang-bang on any offline dataset.",
+    )
+
+
 def main() raises:
     test_step_runs_and_reports()
     test_b_does_not_collapse()
     test_ortho_weight_changes_the_update()
+    test_bc_weight_curbs_action_saturation()
     print("\n[PASS] FB trainer smoke gate")

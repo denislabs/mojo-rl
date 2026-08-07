@@ -75,6 +75,19 @@ comptime CKPT_PATH: StaticString = "/tmp/fb_walker_d128.ckpt"
 # is the cheap standard remedy and every reference FB implementation uses one.
 # 0 disables it.
 comptime MAX_GRAD_NORM: Float64 = 1.0
+
+# ⚠⚠ Behaviour-cloning weight on the actor. Measured NECESSARY, not optional:
+# at `bc_weight = 0` and 200 k steps, 95-98% of pi_z's actions had |a| > 0.99
+# — bang-bang torque — and the policy scored WORSE than random on all three
+# walker tasks (t = -6.0 on `walk`). The actor maximises `F·z` over [-1,1],
+# `F` is near-linear in `a`, and a linear function's maximum on a box is a
+# corner.
+#
+# ⚠ Too large collapses every `z` onto the data's mean action and destroys the
+# z-conditioned policy family — the thing FB exists for. 1.0 is a starting
+# point; the eval prints `mean|a|` and `saturated`, so tune against those
+# rather than against the loss.
+comptime BC_WEIGHT: Float64 = 1.0
 comptime SEED: Int = 20260805
 
 comptime F_IN = OBS + NACT + D
@@ -187,7 +200,7 @@ def main() raises:
 
     var t = Trainer.make(
         lr=3e-4, gamma=0.98, tau=0.01, ctx=ctx, seed=UInt64(SEED) + 13,
-        max_grad_norm=MAX_GRAD_NORM,
+        max_grad_norm=MAX_GRAD_NORM, bc_weight=BC_WEIGHT,
     )
     # Size the owned batch buffers before gathering straight into them.
     t.ensure_sized()

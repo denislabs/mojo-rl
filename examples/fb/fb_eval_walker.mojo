@@ -76,7 +76,7 @@ comptime BATCH: Int = 1024          # must match the trained checkpoint
 # latest one: FB's measure loss cycles, and the last file written is not
 # necessarily the best model. Read the log for a run of consistently NEGATIVE
 # measure with a small, non-growing `actor` before choosing.
-comptime CKPT: StaticString = "fb_walker_d128.ckpt.200000"
+comptime CKPT: StaticString = "checkpoints/fb_walker_d128.ckpt.200000"
 comptime STORE: StaticString = "/tmp/fb_walker_wide.h5"
 comptime RELABEL_ROWS: Int = 4096
 comptime EVAL_EPISODES: Int = 10
@@ -167,7 +167,10 @@ def _z_for_task[
 
 def _rollout[
     CONFIG: Phyics3dEnvConfig
-](mut t: Trainer, ref z: Tensor, use_policy: Bool, ep_seed: Int) raises -> Float64:
+](
+    mut t: Trainer, ref z: Tensor, use_policy: Bool, ep_seed: Int,
+    mut act_mean_abs: Float64, mut act_sat_frac: Float64,
+) raises -> Float64:
     comptime Env = Phyics3dEnv[DMWalkerModel, CONFIG, DType.float64, False]
     seed(ep_seed)
     var env = Env()
@@ -179,6 +182,13 @@ def _rollout[
         z1.data[k] = z.data[k]
     var act_out = Tensor()
     var ret = Float64(0)
+    # ⚠ What the policy DOES, not just what it scores. A Tanh actor that has
+    # saturated emits +-1 constantly: that is bang-bang torque, which on walker
+    # is reliably WORSE than random jitter, and it looks identical to
+    # "undertrained" in the return alone.
+    var abs_sum = Float64(0)
+    var sat = 0
+    var n_act = 0
     for _ in range(EVAL_LEN):
         var a = Env.ActionType()
         if use_policy:
@@ -188,12 +198,20 @@ def _rollout[
                 obs.data[NQ + k] = Scalar[DT](Float64(env.d.qvel.data[k]))
             t.act[1](obs, z1, act_out)
             for k in range(NACT):
-                a.data[k] = Float64(act_out.data[k])
+                var av = Float64(act_out.data[k])
+                a.data[k] = av
+                abs_sum += abs(av)
+                if abs(av) > 0.99:
+                    sat += 1
+                n_act += 1
         else:
             for k in range(NACT):
                 a.data[k] = random_float64() * 2.0 - 1.0
         var out = env.step(a)
         ret += Float64(out[1])
+    if use_policy and n_act > 0:
+        act_mean_abs = abs_sum / Float64(n_act)
+        act_sat_frac = Float64(sat) / Float64(n_act)
     return ret
 
 
@@ -207,9 +225,19 @@ def _eval_task[
     var diffs = List[Float64]()
     var rp = Float64(0)
     var rr = Float64(0)
+    var mean_abs = Float64(0)
+    var sat_frac = Float64(0)
     for ep in range(EVAL_EPISODES):
-        var a = _rollout[CONFIG](t, z, True, SEED + 1000 + ep)
-        var b = _rollout[CONFIG](t, z, False, SEED + 1000 + ep)
+        var ama = Float64(0)
+        var asf = Float64(0)
+        var a = _rollout[CONFIG](t, z, True, SEED + 1000 + ep, ama, asf)
+        var dummy_a = Float64(0)
+        var dummy_b = Float64(0)
+        var b = _rollout[CONFIG](
+            t, z, False, SEED + 1000 + ep, dummy_a, dummy_b
+        )
+        mean_abs += ama
+        sat_frac += asf
         rp += a
         rr += b
         diffs.append(a - b)
@@ -238,6 +266,10 @@ def _eval_task[
     print(
         "            paired diff", md, "+-", se, " (t =", tstat, ")",
         " SIGNAL" if abs(tstat) > 2.0 else " within noise",
+    )
+    print(
+        "            pi_z action: mean|a| =", mean_abs / n,
+        " saturated(|a|>0.99) =", sat_frac / n,
     )
 
 
