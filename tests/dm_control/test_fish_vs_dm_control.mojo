@@ -74,6 +74,9 @@ from mojo_rl.envs.dm_control.fish.fish_xml import (
     N_ROOT_QPOS,
 )
 
+# The comptime tendon tables are strided by this, not by a literal.
+from mojo_rl.physics3d.parser.xml_parser import MAX_COMPTIME_TENDON_WRAPS
+
 comptime DTYPE = DType.float64
 comptime REF_XML: StaticString = (
     "references/dm_control-main/dm_control/suite/fish.xml"
@@ -284,7 +287,10 @@ def test_fish_tendons_match_mujoco() raises:
         t_lo.append(M._acd.tendon_spring_lo[a])
         t_hi.append(M._acd.tendon_spring_hi[a])
         t_n.append(M._acd.tendon_trn_n[a])
-    comptime for a in range(32):
+    # ⚠ 8 tendons * the WRAP STRIDE, not a literal 32. The stride moved
+    # 4 -> 16 with defect 17; copying 32 entries then took two tendons'
+    # worth instead of eight, and the `t * 4 + k` reads below compounded it.
+    comptime for a in range(8 * MAX_COMPTIME_TENDON_WRAPS):
         t_qadr.append(M._acd.tendon_trn_qadr[a])
         t_dadr.append(M._acd.tendon_trn_dadr[a])
         t_coef.append(M._acd.tendon_trn_coef[a])
@@ -314,15 +320,15 @@ def test_fish_tendons_match_mujoco() raises:
             var w = Int(py=tadr[t]) + k
             var jnt = Int(py=wobj[w])
             assert_equal(
-                t_dadr[t * 4 + k], Int(py=jdof[jnt]),
+                t_dadr[t * MAX_COMPTIME_TENDON_WRAPS + k], Int(py=jdof[jnt]),
                 "tendon joint dof address",
             )
             assert_equal(
-                t_qadr[t * 4 + k], Int(py=jqpos[jnt]),
+                t_qadr[t * MAX_COMPTIME_TENDON_WRAPS + k], Int(py=jqpos[jnt]),
                 "tendon joint qpos address",
             )
             assert_true(
-                _close(t_coef[t * 4 + k], Float64(py=wprm[w])),
+                _close(t_coef[t * MAX_COMPTIME_TENDON_WRAPS + k], Float64(py=wprm[w])),
                 "tendon coefficient (wrap_prm) — the sign is what makes"
                 " fins_flap antisymmetric and fins_sym symmetric",
             )
