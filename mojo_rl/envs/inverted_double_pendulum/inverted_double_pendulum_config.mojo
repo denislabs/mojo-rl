@@ -6,6 +6,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
     META_IDX_PREV_X,
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
@@ -24,6 +25,8 @@ comptime _POLE_LEN = 0.6
 struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
     # === Physics ===
     comptime FRAME_SKIP: Int = 5
+    # GPU hooks implemented below — see Phyics3dEnvConfig.HAS_GPU_HOOKS.
+    comptime HAS_GPU_HOOKS: Bool = True
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
         InvertedDoublePendulumModel.NQ, InvertedDoublePendulumModel.NV
@@ -187,6 +190,15 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         xipos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
         ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
         cfrc_ext: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
         ],
@@ -263,6 +275,15 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         ],
         xpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin

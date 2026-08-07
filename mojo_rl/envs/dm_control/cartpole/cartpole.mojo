@@ -3,8 +3,13 @@
     from mojo_rl.envs.dm_control.cartpole import DMCartpoleSwingup
     var env = DMCartpoleSwingup()
 
-CPU only: the configs' GPU reward/obs hooks are stubs because the batched hook
-ABI does not carry body quaternions yet (gap G10). See docs/DM_CONTROL_PORT.md.
+**GPU-trainable as of 2026-08-06** — `DMCartpoleConfig` implements the GPU
+obs/reward/reset hooks. Each task has a `*Batched` alias:
+
+    from mojo_rl.envs.dm_control.cartpole import DMCartpoleSwingupBatched
+    var env = DMCartpoleSwingupBatched[N_ENVS=64](ctx)
+
+See docs/DM_CONTROL_GPU_TRAINING_G10.md.
 """
 
 from .cartpole_xml import (
@@ -14,6 +19,7 @@ from .cartpole_xml import (
 )
 from .cartpole_config import DMCartpoleConfig
 from ...phyics3d_env import Phyics3dEnv
+from ...phyics3d_batched_env import Phyics3dBatchedEnv
 
 
 # dm_control tasks never terminate early — TERMINATE_ON_UNHEALTHY stays False
@@ -41,4 +47,37 @@ comptime DMCartpoleTwoPoles[DTYPE: DType = DType.float64] = Phyics3dEnv[
 
 comptime DMCartpoleThreePoles[DTYPE: DType = DType.float64] = Phyics3dEnv[
     DMCartpole3Model, DMCartpoleConfig[3, True, False], DTYPE, False
+]
+
+
+# ── GPU-batched aliases (Phyics3dBatchedEnv, float32) ─────────────────
+
+comptime DMCartpoleBalanceBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
+    DMCartpole1Model, DMCartpoleConfig[1, False, False], N_ENVS,
+    TERMINATE_ON_UNHEALTHY=False,
+]
+
+comptime DMCartpoleBalanceSparseBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
+    DMCartpole1Model, DMCartpoleConfig[1, False, True], N_ENVS,
+    TERMINATE_ON_UNHEALTHY=False,
+]
+
+comptime DMCartpoleSwingupBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
+    DMCartpole1Model, DMCartpoleConfig[1, True, False], N_ENVS,
+    TERMINATE_ON_UNHEALTHY=False,
+]
+
+comptime DMCartpoleSwingupSparseBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
+    DMCartpole1Model, DMCartpoleConfig[1, True, True], N_ENVS,
+    TERMINATE_ON_UNHEALTHY=False,
+]
+
+comptime DMCartpoleTwoPolesBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
+    DMCartpole2Model, DMCartpoleConfig[2, True, False], N_ENVS,
+    TERMINATE_ON_UNHEALTHY=False,
+]
+
+comptime DMCartpoleThreePolesBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
+    DMCartpole3Model, DMCartpoleConfig[3, True, False], N_ENVS,
+    TERMINATE_ON_UNHEALTHY=False,
 ]

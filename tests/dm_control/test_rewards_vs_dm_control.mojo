@@ -150,5 +150,111 @@ def test_tolerance_matches_dm_control() raises:
     )
 
 
+# =============================================================================
+# Float32 instantiation parity (the GPU path's gate)
+# =============================================================================
+#
+# `tolerance` grew a `DTYPE` parameter so the GPU reward hooks can call it —
+# Metal has no `double`, so the float64 form cannot appear in a kernel at all
+# (see the module docstring and physics3d/solver/newton_solve.mojo:1046).
+#
+# ⚠ Compiling is NOT the gate. A float32 `tolerance` that builds but disagrees
+# with the float64 one is a silently different reward curve on every suite
+# task, and no learning curve would reveal it. This diffs the two
+# instantiations over the same grid the reference sweep uses.
+
+# Bound for float32 vs float64. `tolerance` returns values in [0, 1], and the
+# sigmoids are smooth there, so the error is a few float32 ULP (~1e-7) with the
+# `exp`/`tanh` cases amplifying it a little. 5e-6 absorbs that and still fails
+# loudly if a branch or a scale constant diverges between instantiations.
+comptime TOL_F32: Float64 = 5e-6
+
+
+def _check_f32[
+    sigmoid: StaticString, value_at_margin: Float64
+](
+    mut n_checked: Int,
+    mut max_diff: Float64,
+    x: Float64,
+    lower: Float64,
+    upper: Float64,
+    margin: Float64,
+) raises:
+    """Same point through the float64 and float32 instantiations."""
+    var f64 = tolerance[sigmoid, value_at_margin](x, lower, upper, margin)
+    var f32 = tolerance[sigmoid, value_at_margin, DType.float32](
+        Float32(x), Float32(lower), Float32(upper), Float32(margin)
+    )
+    var diff = abs(f64 - Float64(f32))
+    if diff > max_diff:
+        max_diff = diff
+    if diff > TOL_F32:
+        print(
+            "F32 MISMATCH sigmoid=", sigmoid,
+            " v@m=", value_at_margin,
+            " x=", x,
+            " bounds=(", lower, ",", upper, ")",
+            " margin=", margin,
+            " f64=", f64,
+            " f32=", f32,
+            " diff=", diff,
+        )
+    assert_true(
+        diff <= TOL_F32, "tolerance() float32 instantiation diverges from f64"
+    )
+    n_checked += 1
+
+
+def _sweep_f32[
+    sigmoid: StaticString, value_at_margin: Float64
+](mut n_checked: Int, mut max_diff: Float64) raises:
+    # `inf` is deliberately absent here: Float32(inf[f64]()) is still inf, but
+    # the half-open case is already covered by the reference sweep and adding
+    # it buys no discrimination between the two instantiations.
+    var configs = [
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, 0.3),
+        (-0.25, 0.25, 0.5),
+        (0.995, 1.0, 0.0),
+        (0.0, 0.05, 0.3),
+    ]
+    for cfg in configs:
+        var lower = cfg[0]
+        var upper = cfg[1]
+        var margin = cfg[2]
+        var xs = [
+            -3.0, -1.5, -1.0, -0.5, -0.25, -0.1, 0.0, 0.05, 0.1, 0.25,
+            0.5, 0.995, 1.0, 1.2, 1.5, 2.0, 3.0, 7.5,
+        ]
+        for x in xs:
+            _check_f32[sigmoid, value_at_margin](
+                n_checked, max_diff, x, lower, upper, margin
+            )
+
+
+def test_tolerance_float32_matches_float64() raises:
+    var n = 0
+    var max_diff = 0.0
+
+    _sweep_f32[SIGMOID_GAUSSIAN, 0.1](n, max_diff)
+    _sweep_f32[SIGMOID_HYPERBOLIC, 0.1](n, max_diff)
+    _sweep_f32[SIGMOID_LONG_TAIL, 0.1](n, max_diff)
+    _sweep_f32[SIGMOID_RECIPROCAL, 0.1](n, max_diff)
+    _sweep_f32[SIGMOID_COSINE, 0.1](n, max_diff)
+    _sweep_f32[SIGMOID_LINEAR, 0.1](n, max_diff)
+    _sweep_f32[SIGMOID_QUADRATIC, 0.1](n, max_diff)
+    _sweep_f32[SIGMOID_TANH_SQUARED, 0.1](n, max_diff)
+
+    # The non-default value_at_margin cases the suite actually uses.
+    _sweep_f32[SIGMOID_LINEAR, 0.5](n, max_diff)
+    _sweep_f32[SIGMOID_QUADRATIC, 0.0](n, max_diff)
+    _sweep_f32[SIGMOID_COSINE, 0.0](n, max_diff)
+
+    print(
+        "tolerance() f32 vs f64: ", n, " points — max |diff| = ",
+        max_diff, " (bound ", TOL_F32, ")",
+    )
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

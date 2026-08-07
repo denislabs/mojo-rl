@@ -5,6 +5,8 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    MODEL_JOINT_SIZE,
     META_IDX_PREV_X,
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
@@ -19,6 +21,8 @@ from ..phyics3d_env_config import Phyics3dEnvConfig
 struct Walker2dConfig(Phyics3dEnvConfig):
     # === Physics ===
     comptime FRAME_SKIP: Int = 4
+    # GPU hooks implemented below — see Phyics3dEnvConfig.HAS_GPU_HOOKS.
+    comptime HAS_GPU_HOOKS: Bool = True
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
         Walker2dModel.NQ, Walker2dModel.NV
@@ -154,6 +158,15 @@ struct Walker2dConfig(Phyics3dEnvConfig):
         xipos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
         ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
         cfrc_ext: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
         ],
@@ -221,11 +234,20 @@ struct Walker2dConfig(Phyics3dEnvConfig):
         DTYPE: DType,
         BATCH_SIZE: Int,
         NQ_F: Int,
+        NJOINT_F: Int,
+        NV_F: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT_F, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
         env: Int,
+        seed: Int,
     ):
         # rootz joint ref=1.25 in MJCF → qpos[1] resets to 1.25 (world z).
         # Health bounds use world-z coordinates directly.

@@ -14,21 +14,29 @@ all-zero learning curve for a broken env early in training.
 """
 
 from std.random import random_float64
+from std.random.philox import Random as PhiloxRandom
 from std.math import pi
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data
-from mojo_rl.physics3d.kinematics.xmat import xmat_elem, XMAT_ZZ, XMAT_XZ
+from mojo_rl.physics3d.kinematics.xmat import (
+    xmat_elem,
+    xmat_elem_gpu,
+    XMAT_ZZ,
+    XMAT_XZ,
+)
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
+    MODEL_JOINT_SIZE,
 )
 
 from .pendulum_xml import DMPendulumModel, POLE_BODY_IDX
 
 from ...phyics3d_env_config import Phyics3dEnvConfig
-from ..rewards import tolerance
+from ..rewards import tolerance, SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN
 
 
 # Reference: `_ANGLE_BOUND = 8` degrees, `_COSINE_BOUND = cos(deg2rad(8))`.
@@ -41,6 +49,8 @@ struct DMPendulumConfig(Phyics3dEnvConfig):
     # pendulum.xml has timestep=0.02 and pendulum.py sets no _CONTROL_TIMESTEP,
     # so control_timestep == physics timestep => 1 substep per env step.
     comptime FRAME_SKIP: Int = 1
+    # GPU hooks implemented below — see Phyics3dEnvConfig.HAS_GPU_HOOKS.
+    comptime HAS_GPU_HOOKS: Bool = True
     # Every suite task is time_limit / control_timestep = 1000 steps.
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = 0
@@ -127,6 +137,176 @@ struct DMPendulumConfig(Phyics3dEnvConfig):
         # dm_control tasks never terminate early — only the time limit ends
         # an episode.
         return (Scalar[DTYPE](r), False)
+
+    # =====================================================================
+    # GPU hooks — the batched (`Phyics3dBatchedEnv`) path.
+    #
+    # First dm_control task off the CPU-only list (G10; see
+    # docs/DM_CONTROL_GPU_TRAINING_G10.md). Three things make it possible:
+    #   * `xquat` is now a hook operand, so `xmat_elem_gpu` gives the two
+    #     rotation-matrix entries the task reads without an NBODY*9 tensor;
+    #   * `tolerance` is DTYPE-generic, so the reward can be computed in
+    #     float32 — Metal has no `double`;
+    #   * `init_qpos_gpu` now receives a seed, so the pole can start at a
+    #     random angle as the reference does.
+    #
+    # ⚠ These MUST stay numerically identical to the CPU hooks above. The
+    # CPU hooks are what `tests/dm_control/test_pendulum_vs_dm_control.mojo`
+    # gates against MuJoCo; nothing gates these except
+    # `tests/dm_control/test_pendulum_gpu_vs_cpu.mojo`, which diffs the two
+    # paths step for step.
+    # =====================================================================
+
+    # === GPU inline: Observation ===
+    @always_inline
+    @staticmethod
+    def custom_extract_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        OBS_DIM: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """`SwingUp.get_observation` — mirrors `custom_extract_obs_cpu`."""
+        obs[env, 0] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, POLE_BODY_IDX, XMAT_ZZ
+        )
+        obs[env, 1] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, POLE_BODY_IDX, XMAT_XZ
+        )
+        obs[env, 2] = qvel[env, 0]
+        return True
+
+    # === GPU inline: Reward ===
+    @always_inline
+    @staticmethod
+    def compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        ACTION_DIM: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        env: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """`SwingUp.get_reward` — mirrors `compute_reward_and_done_cpu`.
+
+        `margin` is 0, so this is a hard indicator and the float32 arithmetic
+        can only differ from the CPU path within ~1e-7 of the bound itself.
+        """
+        var pole_vertical = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, POLE_BODY_IDX, XMAT_ZZ
+        )
+        var r = tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE](
+            pole_vertical,
+            Scalar[DTYPE](COSINE_BOUND),
+            Scalar[DTYPE](1.0),
+            Scalar[DTYPE](0.0),
+        )
+        # dm_control tasks never terminate early.
+        return (r, False)
+
+    # === GPU inline: Reset — pole at a uniformly random angle ===
+    @always_inline
+    @staticmethod
+    def init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NJOINT_F: Int,
+        NV_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT_F, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """`physics.named.data.qpos['hinge'] = random.uniform(-pi, pi)`.
+
+        Written directly rather than through
+        `dm_control/gpu_reset.randomize_limited_and_rotational_joints_gpu`
+        because the reference does the same: `SwingUp.initialize_episode` sets
+        the one hinge explicitly instead of calling the randomizer. qvel stays
+        at the zeros `reset_env_gpu` wrote.
+        """
+        var rng = PhiloxRandom(
+            seed=UInt64(seed * 1103515245 + env * 98765431), offset=0
+        )
+        var u = Scalar[DTYPE](rng.step_uniform()[0])
+        qpos[env, 0] = (
+            (u * Scalar[DTYPE](2.0) - Scalar[DTYPE](1.0)) * Scalar[DTYPE](pi)
+        )
 
     # === CPU: Float getters ===
     @staticmethod

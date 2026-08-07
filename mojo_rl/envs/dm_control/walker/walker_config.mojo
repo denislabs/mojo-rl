@@ -19,10 +19,22 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data
-from mojo_rl.physics3d.kinematics.xmat import xmat_elem, XMAT_XX, XMAT_XZ, XMAT_ZZ
-from mojo_rl.physics3d.sensors.subtree import subtree_linvel
+from mojo_rl.physics3d.kinematics.xmat import (
+    xmat_elem,
+    xmat_elem_gpu,
+    XMAT_XX,
+    XMAT_XZ,
+    XMAT_ZZ,
+)
+from mojo_rl.physics3d.sensors.subtree import (
+    subtree_linvel,
+    subtree_linvel_gpu,
+)
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
     MODEL_JOINT_SIZE,
     JOINT_IDX_TYPE,
     JOINT_IDX_QPOS_ADR,
@@ -33,7 +45,13 @@ from mojo_rl.physics3d.gpu.constants import (
 from .walker_xml import TORSO_BODY_IDX
 
 from ...phyics3d_env_config import Phyics3dEnvConfig
-from ..rewards import tolerance, SIGMOID_LINEAR
+from ..rewards import (
+    tolerance,
+    SIGMOID_LINEAR,
+    SIGMOID_GAUSSIAN,
+    DEFAULT_VALUE_AT_MARGIN,
+)
+from ..gpu_reset import randomize_limited_and_rotational_joints_gpu
 
 
 # `walker._STAND_HEIGHT`.
@@ -45,6 +63,8 @@ struct DMWalkerConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
     # walker.xml timestep = 0.0025, walker.py _CONTROL_TIMESTEP = 0.025
     # => 10 physics substeps per control step.
     comptime FRAME_SKIP: Int = 10
+    # GPU hooks implemented below — see Phyics3dEnvConfig.HAS_GPU_HOOKS.
+    comptime HAS_GPU_HOOKS: Bool = True
     # time_limit 25 s / control_timestep 0.025 s = 1000 steps.
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = 0
@@ -177,6 +197,205 @@ struct DMWalkerConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
             )
             var r = stand_reward * (5.0 * move_reward + 1.0) / 6.0
             return (Scalar[DTYPE](r), False)
+
+
+    # =====================================================================
+    # GPU hooks — the batched (`Phyics3dBatchedEnv`) path.
+    #
+    # ⚠ Must stay numerically identical to the CPU hooks above, which are what
+    # `tests/dm_control/test_walker_vs_dm_control.mojo` gates against MuJoCo.
+    # `tests/dm_control/test_locomotion_gpu_vs_cpu.mojo` diffs the two paths
+    # step for step, for BOTH MOVE_SPEED branches — `stand` (MOVE_SPEED == 0)
+    # short-circuits before `subtree_linvel` entirely, so a gate on it alone
+    # would never touch the move-reward path.
+    # =====================================================================
+
+    # === GPU inline: Observation ===
+    @always_inline
+    @staticmethod
+    def custom_extract_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        OBS_DIM: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """`PlanarWalker.get_observation` — mirrors `custom_extract_obs_cpu`.
+
+        orientations = xmat[1:, ['xx','xz']].ravel(): every body EXCEPT the
+        world, two columns each, interleaved xx_1, xz_1, xx_2, xz_2, ...
+        """
+        var k = 0
+        for b in range(1, NBODY_F):
+            obs[env, k] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+                xquat, env, b, XMAT_XX
+            )
+            obs[env, k + 1] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+                xquat, env, b, XMAT_XZ
+            )
+            k += 2
+        # torso_height = xpos['torso', 'z'] (the body frame origin, not the CoM)
+        obs[env, k] = xpos[env, TORSO_BODY_IDX * 3 + 2]
+        k += 1
+        for i in range(NV_F):
+            obs[env, k + i] = qvel[env, i]
+        return True
+
+    # === GPU inline: Reward ===
+    @always_inline
+    @staticmethod
+    def compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        ACTION_DIM: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        env: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """`PlanarWalker.get_reward` — mirrors `compute_reward_and_done_cpu`."""
+        comptime ONE = Scalar[DTYPE](1.0)
+        var torso_height = rebind[Scalar[DTYPE]](
+            xpos[env, TORSO_BODY_IDX * 3 + 2]
+        )
+        var standing = tolerance[
+            SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE
+        ](
+            torso_height,
+            Scalar[DTYPE](STAND_HEIGHT),
+            inf[DTYPE](),
+            Scalar[DTYPE](STAND_HEIGHT / 2.0),
+        )
+        var upright = (
+            ONE
+            + xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+                xquat, env, TORSO_BODY_IDX, XMAT_ZZ
+            )
+        ) / Scalar[DTYPE](2.0)
+        var stand_reward = (
+            Scalar[DTYPE](3.0) * standing + upright
+        ) / Scalar[DTYPE](4.0)
+
+        comptime if Self.MOVE_SPEED == 0.0:
+            return (stand_reward, False)
+        else:
+            var vx = Scalar[DTYPE](0)
+            var vy = Scalar[DTYPE](0)
+            var vz = Scalar[DTYPE](0)
+            subtree_linvel_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+                xvel, bodies, env, TORSO_BODY_IDX, vx, vy, vz
+            )
+            var move_reward = tolerance[SIGMOID_LINEAR, 0.5, DTYPE](
+                vx,
+                Scalar[DTYPE](Self.MOVE_SPEED),
+                inf[DTYPE](),
+                Scalar[DTYPE](Self.MOVE_SPEED / 2.0),
+            )
+            var r = (
+                stand_reward
+                * (Scalar[DTYPE](5.0) * move_reward + ONE)
+                / Scalar[DTYPE](6.0)
+            )
+            return (r, False)
+
+    # === GPU inline: Reset ===
+    @always_inline
+    @staticmethod
+    def init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NJOINT_F: Int,
+        NV_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT_F, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """`randomizers.randomize_limited_and_rotational_joints` — mirrors
+        `custom_reset_cpu`.
+
+        Unlike cheetah, walker DOES randomize its unlimited hinges (uniform on
+        [-pi, pi)), which is the reference helper's own behaviour. Walker has
+        no ball or free joints, so the quaternion branch the helper does not
+        implement is not reachable here. Velocities stay at the zeros
+        `reset_env_gpu` wrote, as the reference leaves them.
+        """
+        randomize_limited_and_rotational_joints_gpu[
+            DTYPE, BATCH_SIZE, NQ_F, NJOINT_F, RANDOMIZE_UNLIMITED_HINGES=True
+        ](qpos, joints, env, seed)
 
     @staticmethod
     def get_timestep() -> Float64:

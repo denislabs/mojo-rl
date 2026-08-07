@@ -13,6 +13,8 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    MODEL_JOINT_SIZE,
     META_IDX_PREV_X,
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
@@ -35,6 +37,8 @@ comptime NUM_ARM_JOINTS: Int = 7
 struct PusherConfig(Phyics3dEnvConfig):
     # === Physics ===
     comptime FRAME_SKIP: Int = 5
+    # GPU hooks implemented below — see Phyics3dEnvConfig.HAS_GPU_HOOKS.
+    comptime HAS_GPU_HOOKS: Bool = True
     comptime MAX_STEPS: Int = 100
     comptime INTEGRATOR_WS_EXTRA: Int = 0  # EulerIntegrator needs no extra workspace
     comptime INTEGRATOR: StaticString = "euler"  # matches physics_substep (Euler+Newton)
@@ -225,6 +229,15 @@ struct PusherConfig(Phyics3dEnvConfig):
         xipos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
         ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
         cfrc_ext: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
         ],
@@ -308,11 +321,20 @@ struct PusherConfig(Phyics3dEnvConfig):
         DTYPE: DType,
         BATCH_SIZE: Int,
         NQ_F: Int,
+        NJOINT_F: Int,
+        NV_F: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
         ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT_F, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
         env: Int,
+        seed: Int,
     ):
         # Fix goal joints to 0 (goal stays at XML body position)
         qpos[env, 9] = Scalar[DTYPE](0)
@@ -337,6 +359,15 @@ struct PusherConfig(Phyics3dEnvConfig):
         ],
         xpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
         ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin

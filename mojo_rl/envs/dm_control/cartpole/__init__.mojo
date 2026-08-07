@@ -6,11 +6,17 @@ Reference: references/dm_control-main/dm_control/suite/cartpole.py + .xml
 
 from .cartpole import (
     DMCartpoleBalance,
+    DMCartpoleBalanceBatched,
     DMCartpoleBalanceSparse,
+    DMCartpoleBalanceSparseBatched,
     DMCartpoleSwingup,
+    DMCartpoleSwingupBatched,
     DMCartpoleSwingupSparse,
+    DMCartpoleSwingupSparseBatched,
     DMCartpoleTwoPoles,
+    DMCartpoleTwoPolesBatched,
     DMCartpoleThreePoles,
+    DMCartpoleThreePolesBatched,
 )
 from .cartpole_config import DMCartpoleConfig
 from .cartpole_xml import (

@@ -14,8 +14,10 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
+    MODEL_JOINT_SIZE,
 )
 
 
@@ -62,6 +64,23 @@ trait Phyics3dEnvConfig:
     # Euler only: the RK4 integrator would need the hook inside its base
     # stage, and no in-scope model wants both.
     comptime RNE_POST: Bool = False
+
+    # Does this config implement the GPU hooks (`compute_reward_and_done_gpu`
+    # and, where the model default is not enough, `custom_extract_obs_gpu`)?
+    #
+    # ⚠ THIS EXISTS TO MAKE A SILENT FAILURE LOUD. Those hooks carry INERT
+    # DEFAULTS — zero reward, "use the model default obs" — rather than being
+    # abstract, so that CPU-only configs need not restate ~90 lines of stub
+    # each. The cost is that wiring a CPU-only config to `Phyics3dBatchedEnv`
+    # COMPILES AND RUNS, and trains against a flat-zero reward curve. That cost
+    # was paid for real by the dm_control suite, whose ~36 task configs were
+    # CPU-only by construction for months (gap G10).
+    #
+    # Mojo cannot ask "did you override this method?", so the config declares
+    # it and `Phyics3dBatchedEnv` asserts it at compile time. Flipping this to
+    # True without actually implementing the hooks reinstates exactly the trap
+    # it closes — so flip it in the same commit as the hooks, never ahead.
+    comptime HAS_GPU_HOOKS: Bool = False
 
     # Raise the free root in 1 cm steps at reset until nothing is touching,
     # after `custom_reset_cpu` has set the orientation
@@ -310,10 +329,19 @@ trait Phyics3dEnvConfig:
     #
     # `pre_step_gpu` and `compute_reward_and_done_gpu` carry INERT DEFAULTS
     # (no-op / zero reward) rather than being abstract, so CPU-only envs need
-    # not restate ~90 lines of stub each. That matters for the dm_control
-    # suite: its rewards need body quaternions, which the batched hook ABI
-    # does not pass (gap G10 in docs/DM_CONTROL_PORT.md), so all ~36 task
-    # configs are CPU-only by construction.
+    # not restate ~90 lines of stub each.
+    #
+    # ⚠ `xquat` and `xvel` were added 2026-08-06 (G10 step 2, see
+    # docs/DM_CONTROL_GPU_TRAINING_G10.md) — they are what the dm_control suite
+    # needs and what its facades cite as the reason for being CPU-only.
+    # `xquat` gives `xmat` on demand via `kinematics/xmat.xmat_elem_gpu` (no
+    # NBODY*9 tensor); `xvel` is what `subtree_linvel` consumes. The Gym-derived
+    # configs take both and ignore them.
+    #
+    # Operand budget: binding these brought the batched env's `extract_kernel`
+    # to 15 of the measured Metal cliff of 28 (29 = JIT abort). The remaining
+    # suite quantities (site_xpos, subtree_com, cacc, cfrc_int, contacts) fit
+    # under it too — add plain operands, do not pack.
     #
     # ANY env wired to a GPU-batched driver MUST override
     # `compute_reward_and_done_gpu`. Inheriting the default there gives a
@@ -367,6 +395,15 @@ trait Phyics3dEnvConfig:
         ],
         xipos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
         ],
         cfrc_ext: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
@@ -431,17 +468,41 @@ trait Phyics3dEnvConfig:
         DTYPE: DType,
         BATCH_SIZE: Int,
         NQ: Int,
+        NJOINT: Int,
+        NV: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
         ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
         env: Int,
+        seed: Int,
     ):
         """Apply non-zero initial qpos offsets after noise (default: no-op).
 
         Override for envs whose initial qpos is non-zero (e.g., Humanoid
         z=1.4 / quat_w=1.0, HumanoidStandup z=0.105). Called by
         _reset_env_gpu after noise has been applied around zero.
+
+        ⚠ MISNOMER, kept for continuity: it writes **qvel too**. `joints`,
+        `seed` and `qvel` were all added 2026-08-06 (G10 step 4). Without them
+        the hook could express a fixed qpos offset and nothing else — but the
+        suite resets are real distributions over the FULL state: walker uses
+        `randomizers.randomize_limited_and_rotational_joints` (needs per-joint
+        RANGES + a draw) and cartpole draws Gaussian qpos AND qvel. The CPU
+        counterpart `custom_reset_cpu` gets all of `Data`; this is the GPU
+        hook's equivalent reach. The Gym configs ignore the three new args.
+
+        `seed` is the same value `MODEL_DEF.reset_env_gpu` receives; derive an
+        independent stream from it rather than reusing its exact Philox key, or
+        the joint angles correlate with the reset noise. The shared helper
+        `dm_control/gpu_reset.randomize_limited_and_rotational_joints_gpu`
+        does this; prefer it over open-coding a draw.
         """
         pass
 
@@ -465,6 +526,15 @@ trait Phyics3dEnvConfig:
         xpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
         ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ],
@@ -481,6 +551,9 @@ trait Phyics3dEnvConfig:
             qpos: Generalized positions, [BATCH_SIZE, NQ].
             qvel: Generalized velocities, [BATCH_SIZE, NV].
             xpos: Body world positions, [BATCH_SIZE, NBODY * 3].
+            xquat: Body world orientations [x,y,z,w], [BATCH_SIZE, NBODY * 4].
+                Use `kinematics/xmat.xmat_elem_gpu` for MuJoCo `xmat` entries.
+            xvel: Body world linear velocities, [BATCH_SIZE, NBODY * 3].
             obs: Output observation buffer to write into.
             env: Environment index.
 

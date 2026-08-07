@@ -49,10 +49,13 @@ from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
+    compute_body_velocities,
 )
 from mojo_rl.physics3d.gpu import compute_cfrc_ext, compute_cvel
 from mojo_rl.physics3d.gpu.constants import (
     TPB,
+    MODEL_BODY_SIZE,
+    MODEL_JOINT_SIZE,
     METADATA_SIZE,
     META_IDX_STEP_COUNT,
     MODEL_CURRICULUM_SIZE,
@@ -159,6 +162,19 @@ struct Phyics3dBatchedEnv[
     var _env_rng_counter: DeviceBuffer[DType.uint64]
 
     def __init__(out self, ctx: DeviceContext) raises:
+        # ⚠ A CONFIG without GPU hooks inherits `compute_reward_and_done_gpu`'s
+        # INERT DEFAULT and trains against a flat-zero reward curve — it compiles,
+        # it runs, it reports episodes, and it learns nothing. Every dm_control
+        # task config was in exactly that state for months (gap G10). Refuse the
+        # instantiation instead. See Phyics3dEnvConfig.HAS_GPU_HOOKS.
+        comptime assert Self.CONFIG.HAS_GPU_HOOKS, (
+            "Phyics3dBatchedEnv: this CONFIG does not implement the GPU hooks"
+            " (HAS_GPU_HOOKS is False), so its reward would be a constant 0 and"
+            " its observation the model default. Implement"
+            " compute_reward_and_done_gpu (+ custom_extract_obs_gpu if the model"
+            " default is not the task's observation), then set HAS_GPU_HOOKS ="
+            " True. See docs/DM_CONTROL_GPU_TRAINING_G10.md."
+        )
         # Offset-free fields-native model build: init_fields runs
         # the spec-direct fields build and uploads every record
         # tensor (bodies/joints/meta/curriculum/…) — the reset FK, cfrc_ext,
@@ -208,6 +224,18 @@ struct Phyics3dBatchedEnv[
             Self.N_ENVS,
         ](self.d, self.mf, c)
 
+    def _run_fields_vel(mut self, c: DeviceContext) raises:
+        """Body world velocities (xvel/xangvel) over the batch, from the
+        current qvel. Companion to `_run_fields_fk` — the integrators compute
+        these mid-step, so hooks reading them after integration need a
+        refresh. Mirrors `Phyics3dEnv._fields_vel`."""
+        compute_body_velocities[
+            "gpu", DT, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MC,
+            Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
+            Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0,
+            Self.N_ENVS,
+        ](self.d, self.mf, c)
+
     # ── hook kernels (legacy Phyics3dEnv GPU code, verbatim) ──────────
 
     def _extract_obs_only(mut self, c: DeviceContext) raises:
@@ -228,6 +256,21 @@ struct Phyics3dBatchedEnv[
                 Layout.row_major(Self.N_ENVS, Self.NBODY * 3),
                 MutAnyOrigin,
             ],
+            xquat: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 4),
+                MutAnyOrigin,
+            ],
+            xvel: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 3),
+                MutAnyOrigin,
+            ],
+            bodies: LayoutTensor[
+                DT,
+                Layout.row_major(Self.NBODY, MODEL_BODY_SIZE),
+                MutAnyOrigin,
+            ],
             obs: LayoutTensor[
                 DT,
                 Layout.row_major(Self.N_ENVS, Self.OBS_DIM),
@@ -239,7 +282,7 @@ struct Phyics3dBatchedEnv[
                 return
             if not Self.CONFIG.custom_extract_obs_gpu[
                 DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY, Self.OBS_DIM
-            ](qpos, qvel, xpos, obs, env):
+            ](qpos, qvel, xpos, xquat, xvel, bodies, obs, env):
                 Self.MODEL_DEF.extract_obs_gpu[
                     DT, Self.N_ENVS, Self.OBS_DIM
                 ](qpos, qvel, obs, env)
@@ -251,6 +294,9 @@ struct Phyics3dBatchedEnv[
             self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
             self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
             self.d.xpos.lt["gpu", type_of(self.d).L_B3](),
+            self.d.xquat.lt["gpu", type_of(self.d).L_B4](),
+            self.d.xvel.lt["gpu", type_of(self.d).L_B3](),
+            self.mf.bodies.lt["gpu", type_of(self.mf).L_BODY](),
             obs_t,
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
@@ -277,6 +323,21 @@ struct Phyics3dBatchedEnv[
             xipos: LayoutTensor[
                 DT,
                 Layout.row_major(Self.N_ENVS, Self.NBODY * 3),
+                MutAnyOrigin,
+            ],
+            xquat: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 4),
+                MutAnyOrigin,
+            ],
+            xvel: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 3),
+                MutAnyOrigin,
+            ],
+            bodies: LayoutTensor[
+                DT,
+                Layout.row_major(Self.NBODY, MODEL_BODY_SIZE),
                 MutAnyOrigin,
             ],
             cfrc_ext: LayoutTensor[
@@ -329,7 +390,7 @@ struct Phyics3dBatchedEnv[
 
             if not Self.CONFIG.custom_extract_obs_gpu[
                 DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NBODY, Self.OBS_DIM
-            ](qpos, qvel, xpos, obs, env):
+            ](qpos, qvel, xpos, xquat, xvel, bodies, obs, env):
                 Self.MODEL_DEF.extract_obs_gpu[
                     DT, Self.N_ENVS, Self.OBS_DIM
                 ](qpos, qvel, obs, env)
@@ -341,6 +402,9 @@ struct Phyics3dBatchedEnv[
                 qvel,
                 xpos,
                 xipos,
+                xquat,
+                xvel,
+                bodies,
                 cfrc_ext,
                 cvel,
                 meta,
@@ -386,6 +450,9 @@ struct Phyics3dBatchedEnv[
             self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
             self.d.xpos.lt["gpu", type_of(self.d).L_B3](),
             self.d.xipos.lt["gpu", type_of(self.d).L_B3](),
+            self.d.xquat.lt["gpu", type_of(self.d).L_B4](),
+            self.d.xvel.lt["gpu", type_of(self.d).L_B3](),
+            self.mf.bodies.lt["gpu", type_of(self.mf).L_BODY](),
             self.d.cfrc_ext.lt["gpu", type_of(self.d).L_B6](),
             self.d.cvel.lt["gpu", type_of(self.d).L_B6](),
             self.d.meta.lt["gpu", type_of(self.d).L_META](),
@@ -434,12 +501,17 @@ struct Phyics3dBatchedEnv[
                 Layout.row_major(Self.N_ENVS, METADATA_SIZE),
                 MutAnyOrigin,
             ],
+            joints: LayoutTensor[
+                DT,
+                Layout.row_major(Self.NJOINT, MODEL_JOINT_SIZE),
+                MutAnyOrigin,
+            ],
             seed: Int,
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= Self.N_ENVS:
                 return
-            Self._reset_env_lane(qpos, qvel, qacc, qfrc, meta, i, seed)
+            Self._reset_env_lane(qpos, qvel, qacc, qfrc, meta, joints, i, seed)
 
         c.enqueue_function[reset_kernel](
             self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
@@ -447,6 +519,7 @@ struct Phyics3dBatchedEnv[
             self.d.qacc.lt["gpu", type_of(self.d).L_NV](),
             self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),
             self.d.meta.lt["gpu", type_of(self.d).L_META](),
+            self.mf.joints.lt["gpu", type_of(self.mf).L_JOINT](),
             Int(rng_seed),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
@@ -531,6 +604,31 @@ struct Phyics3dBatchedEnv[
             c.synchronize()
             print("[step_batch] 4 physics step ok")
 
+        # 3b) Put the FK products and body velocities in sync with the
+        #     INTEGRATED qpos/qvel before anything derived is computed from
+        #     them. Both integrators run FK -> body velocities -> subtree_com
+        #     at the START of each substep, so after the frame-skip loop
+        #     xpos/xquat/xipos/site_xpos/xvel describe the state BEFORE the
+        #     last substep. That is raw `mj_step` — right for the Gym-derived
+        #     envs and wrong for dm_control, whose tasks read mjData in sync
+        #     with qpos/qvel. See Phyics3dEnvConfig.SYNC_FK_AFTER_STEP.
+        #
+        # ⚠ This was missing on the batched path entirely until 2026-08-06 —
+        #     `Phyics3dEnv` (single-env, CPU) honoured the flag and this file
+        #     did not, so a suite config ported to the GPU hooks would have
+        #     produced rewards one control step stale WITH ITS CPU GATE STILL
+        #     PASSING. See docs/DM_CONTROL_GPU_TRAINING_G10.md §4.
+        #
+        # Comptime-gated, so the Gym envs pay nothing. Both calls are
+        # deterministic and RNG-free, so they stay inside a USE_ENV_CUDA_GRAPH
+        # capture safely.
+        comptime if Self.CONFIG.SYNC_FK_AFTER_STEP:
+            self._run_fields_fk(c)
+            self._run_fields_vel(c)
+            comptime if DEBUG:
+                c.synchronize()
+                print("[step_batch] 4b sync_fk_after_step ok")
+
         # 4) Derived quantities the reward hooks may read (cfrc_ext / cvel),
         #    straight on the field tensors.
         compute_cfrc_ext[DT, Self.N_ENVS, Self.NBODY, Self.MC](
@@ -603,6 +701,11 @@ struct Phyics3dBatchedEnv[
             dones: LayoutTensor[
                 DT, Layout.row_major(Self.N_ENVS), MutAnyOrigin
             ],
+            joints: LayoutTensor[
+                DT,
+                Layout.row_major(Self.NJOINT, MODEL_JOINT_SIZE),
+                MutAnyOrigin,
+            ],
             counter: LayoutTensor[
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
             ],
@@ -617,6 +720,7 @@ struct Phyics3dBatchedEnv[
                     qacc,
                     qfrc,
                     meta,
+                    joints,
                     i,
                     Int(rebind[Scalar[DType.uint64]](counter[0])),
                 )
@@ -632,6 +736,7 @@ struct Phyics3dBatchedEnv[
             self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),
             self.d.meta.lt["gpu", type_of(self.d).L_META](),
             dones_t,
+            self.mf.joints.lt["gpu", type_of(self.mf).L_JOINT](),
             cnt_t,
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
@@ -660,6 +765,9 @@ struct Phyics3dBatchedEnv[
         meta: LayoutTensor[
             DT, Layout.row_major(Self.N_ENVS, METADATA_SIZE), MutAnyOrigin
         ],
+        joints: LayoutTensor[
+            DT, Layout.row_major(Self.NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
         env: Int,
         seed: Int,
     ):
@@ -669,7 +777,9 @@ struct Phyics3dBatchedEnv[
         Self.MODEL_DEF.reset_env_gpu[DT, Self.N_ENVS](
             qpos, qvel, qacc, qfrc, env, RESET_NOISE, seed
         )
-        Self.CONFIG.init_qpos_gpu[DT, Self.N_ENVS, Self.NQ](qpos, env)
+        Self.CONFIG.init_qpos_gpu[
+            DT, Self.N_ENVS, Self.NQ, Self.NJOINT, Self.NV
+        ](qpos, qvel, joints, env, seed)
         meta[env, META_IDX_STEP_COUNT] = Scalar[DT](0.0)
         Self.CONFIG.pre_step_gpu[DT, Self.N_ENVS, Self.NQ](qpos, meta, env)
 

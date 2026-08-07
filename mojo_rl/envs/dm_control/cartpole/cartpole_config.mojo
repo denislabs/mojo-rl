@@ -16,21 +16,35 @@ One parameterized config covers all six registered tasks:
 """
 
 from std.random import random_float64
+from std.random.philox import Random as PhiloxRandom
 from std.math import pi, log, sqrt, cos
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data
-from mojo_rl.physics3d.kinematics.xmat import xmat_elem, XMAT_ZZ, XMAT_XZ
+from mojo_rl.physics3d.kinematics.xmat import (
+    xmat_elem,
+    xmat_elem_gpu,
+    XMAT_ZZ,
+    XMAT_XZ,
+)
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
+    MODEL_JOINT_SIZE,
 )
 
 from .cartpole_xml import CART_BODY_IDX, FIRST_POLE_BODY_IDX
 
 from ...phyics3d_env_config import Phyics3dEnvConfig
-from ..rewards import tolerance, SIGMOID_QUADRATIC
+from ..rewards import (
+    tolerance,
+    SIGMOID_QUADRATIC,
+    SIGMOID_GAUSSIAN,
+    DEFAULT_VALUE_AT_MARGIN,
+)
+from ..gpu_reset import reset_seed, standard_normal
 
 
 # `Balance._CART_RANGE` and `Balance._ANGLE_COSINE_RANGE`.
@@ -64,6 +78,8 @@ struct DMCartpoleConfig[
     # cartpole.xml: timestep=0.01, and cartpole.py sets no _CONTROL_TIMESTEP,
     # so control_timestep == physics timestep => 1 substep per env step.
     comptime FRAME_SKIP: Int = 1
+    # GPU hooks implemented below — see Phyics3dEnvConfig.HAS_GPU_HOOKS.
+    comptime HAS_GPU_HOOKS: Bool = True
     # Every suite task is time_limit / control_timestep = 1000 steps.
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = 0
@@ -213,6 +229,263 @@ struct DMCartpoleConfig[
 
             var r = upright * small_control * small_velocity * centered
             return (Scalar[DTYPE](r), False)
+
+    # =====================================================================
+    # GPU hooks — the batched (`Phyics3dBatchedEnv`) path.
+    #
+    # ⚠ These MUST stay numerically identical to the CPU hooks above, which
+    # are what `tests/dm_control/test_cartpole_vs_dm_control.mojo` gates
+    # against MuJoCo. `tests/dm_control/test_cartpole_gpu_vs_cpu.mojo` diffs
+    # the two paths step for step, over all three N_POLES and both reward
+    # modes — the comptime branches below are separate code paths and a gate
+    # on one says nothing about the others.
+    # =====================================================================
+
+    # === GPU inline: Observation ===
+    @always_inline
+    @staticmethod
+    def custom_extract_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        OBS_DIM: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """`Balance.get_observation` — mirrors `custom_extract_obs_cpu`."""
+        obs[env, 0] = qpos[env, 0]  # cart_position (the slider)
+        for p in range(Self.N_POLES):
+            var b = FIRST_POLE_BODY_IDX + p
+            obs[env, 1 + 2 * p] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+                xquat, env, b, XMAT_ZZ
+            )
+            obs[env, 2 + 2 * p] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+                xquat, env, b, XMAT_XZ
+            )
+        for i in range(NV_F):
+            obs[env, 1 + 2 * Self.N_POLES + i] = qvel[env, i]
+        return True
+
+    # === GPU inline: Reward ===
+    @always_inline
+    @staticmethod
+    def compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        ACTION_DIM: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        env: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """`Balance.get_reward` — mirrors `compute_reward_and_done_cpu`."""
+        comptime ONE = Scalar[DTYPE](1.0)
+        var cart_pos = rebind[Scalar[DTYPE]](qpos[env, 0])
+
+        comptime if Self.SPARSE:
+            var cart_in_bounds = tolerance[
+                SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE
+            ](
+                cart_pos,
+                Scalar[DTYPE](CART_RANGE_LO),
+                Scalar[DTYPE](CART_RANGE_HI),
+                Scalar[DTYPE](0.0),
+            )
+            var angle_in_bounds = ONE
+            for p in range(Self.N_POLES):
+                angle_in_bounds *= tolerance[
+                    SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE
+                ](
+                    xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+                        xquat, env, FIRST_POLE_BODY_IDX + p, XMAT_ZZ
+                    ),
+                    Scalar[DTYPE](ANGLE_COSINE_LO),
+                    Scalar[DTYPE](ANGLE_COSINE_HI),
+                    Scalar[DTYPE](0.0),
+                )
+            return (cart_in_bounds * angle_in_bounds, False)
+        else:
+            # upright = ((cos + 1) / 2).mean()
+            var upright_sum = Scalar[DTYPE](0.0)
+            for p in range(Self.N_POLES):
+                upright_sum += (
+                    xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+                        xquat, env, FIRST_POLE_BODY_IDX + p, XMAT_ZZ
+                    )
+                    + ONE
+                ) / Scalar[DTYPE](2.0)
+            var upright = upright_sum / Scalar[DTYPE](Self.N_POLES)
+
+            # centered = (1 + tolerance(cart_pos, margin=2)) / 2
+            var centered = (
+                ONE
+                + tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE](
+                    cart_pos,
+                    Scalar[DTYPE](0.0),
+                    Scalar[DTYPE](0.0),
+                    Scalar[DTYPE](2.0),
+                )
+            ) / Scalar[DTYPE](2.0)
+
+            # small_control from the CLAMPED control, as on the CPU side.
+            var ctrl = rebind[Scalar[DTYPE]](actions[env, 0])
+            if ctrl > ONE:
+                ctrl = ONE
+            elif ctrl < -ONE:
+                ctrl = -ONE
+            var small_control = (
+                Scalar[DTYPE](4.0)
+                + tolerance[SIGMOID_QUADRATIC, 0.0, DTYPE](
+                    ctrl,
+                    Scalar[DTYPE](0.0),
+                    Scalar[DTYPE](0.0),
+                    Scalar[DTYPE](1.0),
+                )
+            ) / Scalar[DTYPE](5.0)
+
+            # small_velocity over qvel[1:] — the hinges, excluding the slider.
+            var min_sv = ONE
+            for i in range(1, NV_F):
+                var sv = tolerance[
+                    SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE
+                ](
+                    rebind[Scalar[DTYPE]](qvel[env, i]),
+                    Scalar[DTYPE](0.0),
+                    Scalar[DTYPE](0.0),
+                    Scalar[DTYPE](5.0),
+                )
+                if sv < min_sv:
+                    min_sv = sv
+            var small_velocity = (ONE + min_sv) / Scalar[DTYPE](2.0)
+
+            return (upright * small_control * small_velocity * centered, False)
+
+    # === GPU inline: Reset ===
+    @always_inline
+    @staticmethod
+    def init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NJOINT_F: Int,
+        NV_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT_F, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """`Balance.initialize_episode` — mirrors `custom_reset_cpu`.
+
+        ⚠ The DRAW ORDER matters for nothing here (the two paths use different
+        RNGs and the parity gate injects a fixed state), but the DISTRIBUTION
+        must match term for term — that is what the reference specifies and all
+        the port can honour. Same split ball_in_cup and point_mass-hard used.
+        """
+        var rng = PhiloxRandom(seed=reset_seed(env, seed), offset=0)
+
+        # Local wrapper: `standard_normal` takes the two uniforms rather than
+        # the generator (no PhiloxRandom in its signature — see gpu_reset).
+        @parameter
+        @always_inline
+        def _normal[D: DType](mut g: type_of(rng)) -> Scalar[D]:
+            var p = g.step_uniform()
+            return standard_normal[D](Scalar[D](p[0]), Scalar[D](p[1]))
+
+        comptime if Self.SWING_UP:
+            qpos[env, 0] = Scalar[DTYPE](0.01) * _normal[DTYPE](rng)
+            qpos[env, 1] = Scalar[DTYPE](pi) + Scalar[DTYPE](
+                0.01
+            ) * _normal[DTYPE](rng)
+            for i in range(2, NQ_F):
+                qpos[env, i] = Scalar[DTYPE](0.1) * _normal[DTYPE](rng)
+        else:
+            var u = rng.step_uniform()
+            qpos[env, 0] = (
+                Scalar[DTYPE](u[0]) * Scalar[DTYPE](2.0) - Scalar[DTYPE](1.0)
+            ) * Scalar[DTYPE](0.1)
+            for i in range(1, NQ_F):
+                # A fresh block per joint: `step_uniform` yields 4 lanes and
+                # reusing one block across joints would tie a 3-pole model's
+                # qpos[3] to its qpos[1] through the same Philox counter.
+                var uu = rng.step_uniform()
+                qpos[env, i] = (
+                    Scalar[DTYPE](uu[0]) * Scalar[DTYPE](2.0)
+                    - Scalar[DTYPE](1.0)
+                ) * Scalar[DTYPE](0.034)
+
+        for i in range(NV_F):
+            qvel[env, i] = Scalar[DTYPE](0.01) * _normal[DTYPE](rng)
 
     @staticmethod
     def get_timestep() -> Float64:

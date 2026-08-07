@@ -6,9 +6,13 @@ Reference: references/dm_control-main/dm_control/suite/humanoid.py + .xml
 
 from .humanoid import (
     DMHumanoidStand,
+    DMHumanoidStandBatched,
     DMHumanoidWalk,
+    DMHumanoidWalkBatched,
     DMHumanoidRun,
+    DMHumanoidRunBatched,
     DMHumanoidRunPureState,
+    DMHumanoidRunPureStateBatched,
 )
 from .humanoid_config import (
     DMHumanoidConfig,

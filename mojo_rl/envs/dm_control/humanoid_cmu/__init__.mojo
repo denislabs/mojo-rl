@@ -12,8 +12,11 @@ places they diverge.
 
 from .humanoid_cmu import (
     DMHumanoidCMUStand,
+    DMHumanoidCMUStandBatched,
     DMHumanoidCMUWalk,
+    DMHumanoidCMUWalkBatched,
     DMHumanoidCMURun,
+    DMHumanoidCMURunBatched,
 )
 from .humanoid_cmu_config import (
     DMHumanoidCMUConfig,

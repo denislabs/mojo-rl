@@ -55,6 +55,8 @@ Bounding is not a hack here: a parent chain cannot revisit a body, so `nbody`
 is an exact bound.
 """
 
+from layout import Layout, LayoutTensor
+
 from ..gpu.constants import MODEL_BODY_SIZE, BODY_IDX_MASS, BODY_IDX_PARENT
 
 
@@ -115,6 +117,94 @@ def subtree_linvel[
         vx = 0.0
         vy = 0.0
         vz = 0.0
+        return
+    vx = px / total_mass
+    vy = py / total_mass
+    vz = pz / total_mass
+
+
+# =============================================================================
+# GPU-batched counterparts
+# =============================================================================
+#
+# The functions above take host `List`s and compute in Float64, so a kernel can
+# call neither (Metal has no `double`). These are the same arithmetic over the
+# batched field/model tensors, in `DTYPE`.
+#
+# ⚠ The `for ... break` bound in `walk_to_root_gpu` is load-bearing for the
+# SAME reason as on the host — read the module docstring. On the GPU there is a
+# second reason: an unbounded data-dependent `while` inside a kernel is a
+# divergence hazard, and every lane walks a different chain length.
+
+
+@always_inline
+def walk_to_root_gpu[
+    DTYPE: DType, NBODY: Int
+](
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    body: Int,
+    root: Int,
+) -> Bool:
+    """True when `body` is `root` or a descendant of it. Batched `walk_to_root`.
+
+    `bodies` is the SHARED (unbatched) `Model.bodies` tensor — the kinematic
+    tree is model state, identical across lanes.
+    """
+    var b = body
+    for _ in range(NBODY):
+        if b < 0:
+            break
+        if b == root:
+            return True
+        b = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
+    return False
+
+
+@always_inline
+def subtree_linvel_gpu[
+    DTYPE: DType, BATCH_SIZE: Int, NBODY: Int
+](
+    xvel: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    env: Int,
+    root: Int,
+    mut vx: Scalar[DTYPE],
+    mut vy: Scalar[DTYPE],
+    mut vz: Scalar[DTYPE],
+):
+    """`data.subtree_linvel[root]` for one lane. Batched `subtree_linvel`.
+
+    Writes (0,0,0) for a massless subtree, matching MuJoCo's guard and the host
+    version. This is what feeds every `torso_subtreelinvel` reward in the
+    suite's locomotion tasks (cheetah, walker, hopper, humanoid, humanoid_cmu).
+    """
+    comptime ZERO = Scalar[DTYPE](0)
+    var total_mass = ZERO
+    var px = ZERO
+    var py = ZERO
+    var pz = ZERO
+
+    for b in range(NBODY):
+        if not walk_to_root_gpu[DTYPE, NBODY](bodies, b, root):
+            continue
+        var mass = rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_MASS])
+        if mass == ZERO:
+            continue
+        total_mass += mass
+        px += mass * rebind[Scalar[DTYPE]](xvel[env, b * 3 + 0])
+        py += mass * rebind[Scalar[DTYPE]](xvel[env, b * 3 + 1])
+        pz += mass * rebind[Scalar[DTYPE]](xvel[env, b * 3 + 2])
+
+    if total_mass <= ZERO:
+        vx = ZERO
+        vy = ZERO
+        vz = ZERO
         return
     vx = px / total_mass
     vy = py / total_mass

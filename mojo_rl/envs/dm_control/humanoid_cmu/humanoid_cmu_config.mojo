@@ -46,6 +46,7 @@ from std.math import pi, inf, sqrt
 from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.kinematics.xmat import (
     xmat_elem,
+    xmat_elem_gpu,
     XMAT_XX,
     XMAT_XY,
     XMAT_XZ,
@@ -56,9 +57,17 @@ from mojo_rl.physics3d.kinematics.xmat import (
     XMAT_ZY,
     XMAT_ZZ,
 )
-from mojo_rl.physics3d.sensors.subtree import subtree_linvel
+from mojo_rl.physics3d.sensors.subtree import (
+    subtree_linvel,
+    subtree_linvel_gpu,
+)
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE
+from layout import Layout, LayoutTensor
+
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
     MODEL_JOINT_SIZE,
     JOINT_IDX_TYPE,
     JOINT_IDX_QPOS_ADR,
@@ -71,11 +80,22 @@ from .humanoid_cmu_xml import (
     THORAX_BODY_IDX,
     HEAD_BODY_IDX,
     extremity_body_indices,
+    LEFT_HAND_BODY_IDX,
+    LEFT_FOOT_BODY_IDX,
+    RIGHT_HAND_BODY_IDX,
+    RIGHT_FOOT_BODY_IDX,
     ROOT_QPOS_SIZE,
 )
 
 from ...phyics3d_env_config import Phyics3dEnvConfig
-from ..rewards import tolerance, SIGMOID_LINEAR, SIGMOID_QUADRATIC
+from ..rewards import (
+    tolerance,
+    SIGMOID_LINEAR,
+    SIGMOID_QUADRATIC,
+    SIGMOID_GAUSSIAN,
+    DEFAULT_VALUE_AT_MARGIN,
+)
+from ..gpu_reset import randomize_limited_and_rotational_joints_gpu
 
 
 # `humanoid_CMU._STAND_HEIGHT`. Same value as `humanoid`'s, and the margin is
@@ -101,6 +121,8 @@ struct DMHumanoidCMUConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
     # explicit `<option timestep=".005"/>` and a .025 control step; neither
     # number carries over.)
     comptime FRAME_SKIP: Int = 10
+    # GPU hooks implemented below — see Phyics3dEnvConfig.HAS_GPU_HOOKS.
+    comptime HAS_GPU_HOOKS: Bool = True
     # _DEFAULT_TIME_LIMIT 20 s / .02 s = 1000 steps.
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = 0
@@ -355,6 +377,290 @@ struct DMHumanoidCMUConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
                 Scalar[DTYPE](small_control * stand_reward * move),
                 False,
             )
+
+
+    # =====================================================================
+    # GPU hooks — the batched (`Phyics3dBatchedEnv`) path.
+    #
+    # ⚠ Must stay numerically identical to the CPU hooks above, gated against
+    # MuJoCo by `test_humanoid_cmu_vs_dm_control.mojo`;
+    # `test_humanoid_gpu_vs_cpu.mojo` diffs the two paths step for step.
+    #
+    # ⚠⚠ THE THORAX/ZY TRAP. This domain differs from `humanoid` in exactly two
+    # places and BOTH are easy to "fix" wrongly when copying that config's GPU
+    # hooks: the subtree root and extremity frame are the THORAX (not the
+    # torso), and `thorax_upright()` reads xmat ZY (not ZZ). Copying humanoid's
+    # ZZ here yields a plausible reward that is simply a different task.
+    # =====================================================================
+
+    # === GPU inline: Observation ===
+    @always_inline
+    @staticmethod
+    def custom_extract_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        OBS_DIM: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """`HumanoidCMU.get_observation` — mirrors the CPU hook."""
+        var k = 0
+        for i in range(ROOT_QPOS_SIZE, NQ_F):
+            obs[env, k] = qpos[env, i]
+            k += 1
+
+        obs[env, k] = xpos[env, HEAD_BODY_IDX * 3 + 2]
+        k += 1
+
+        # extremities(), in the THORAX frame. R^T v — see the CPU hook.
+        var tx = rebind[Scalar[DTYPE]](xpos[env, THORAX_BODY_IDX * 3 + 0])
+        var ty = rebind[Scalar[DTYPE]](xpos[env, THORAX_BODY_IDX * 3 + 1])
+        var tz = rebind[Scalar[DTYPE]](xpos[env, THORAX_BODY_IDX * 3 + 2])
+        var r00 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, THORAX_BODY_IDX, XMAT_XX
+        )
+        var r01 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, THORAX_BODY_IDX, XMAT_XY
+        )
+        var r02 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, THORAX_BODY_IDX, XMAT_XZ
+        )
+        var r10 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, THORAX_BODY_IDX, XMAT_YX
+        )
+        var r11 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, THORAX_BODY_IDX, XMAT_YY
+        )
+        var r12 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, THORAX_BODY_IDX, XMAT_YZ
+        )
+        var r20 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, THORAX_BODY_IDX, XMAT_ZX
+        )
+        var r21 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, THORAX_BODY_IDX, XMAT_ZY
+        )
+        var r22 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, THORAX_BODY_IDX, XMAT_ZZ
+        )
+        # Order: left_hand, left_foot, right_hand, right_foot. Must stay in
+        # step with `extremity_body_indices()`, which a kernel cannot call.
+        comptime LIMBS = [
+            LEFT_HAND_BODY_IDX,
+            LEFT_FOOT_BODY_IDX,
+            RIGHT_HAND_BODY_IDX,
+            RIGHT_FOOT_BODY_IDX,
+        ]
+        comptime for li in range(4):
+            comptime b = LIMBS[li]
+            var vx = rebind[Scalar[DTYPE]](xpos[env, b * 3 + 0]) - tx
+            var vy = rebind[Scalar[DTYPE]](xpos[env, b * 3 + 1]) - ty
+            var vz = rebind[Scalar[DTYPE]](xpos[env, b * 3 + 2]) - tz
+            obs[env, k] = vx * r00 + vy * r10 + vz * r20
+            obs[env, k + 1] = vx * r01 + vy * r11 + vz * r21
+            obs[env, k + 2] = vx * r02 + vy * r12 + vz * r22
+            k += 3
+
+        # torso_vertical_orientation(): the whole z ROW — not the single ZY
+        # element the reward reads.
+        obs[env, k] = r20
+        obs[env, k + 1] = r21
+        obs[env, k + 2] = r22
+        k += 3
+
+        var cx = Scalar[DTYPE](0)
+        var cy = Scalar[DTYPE](0)
+        var cz = Scalar[DTYPE](0)
+        subtree_linvel_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xvel, bodies, env, THORAX_BODY_IDX, cx, cy, cz
+        )
+        obs[env, k] = cx
+        obs[env, k + 1] = cy
+        obs[env, k + 2] = cz
+        k += 3
+
+        for i in range(NV_F):
+            obs[env, k + i] = qvel[env, i]
+        return True
+
+    # === GPU inline: Reward ===
+    @always_inline
+    @staticmethod
+    def compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        ACTION_DIM: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        env: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """`HumanoidCMU.get_reward` — mirrors `compute_reward_and_done_cpu`."""
+        comptime ONE = Scalar[DTYPE](1.0)
+        comptime ZERO = Scalar[DTYPE](0.0)
+
+        var head_z = rebind[Scalar[DTYPE]](xpos[env, HEAD_BODY_IDX * 3 + 2])
+        var standing = tolerance[
+            SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE
+        ](
+            head_z,
+            Scalar[DTYPE](STAND_HEIGHT),
+            inf[DTYPE](),
+            Scalar[DTYPE](STAND_HEIGHT / 4.0),
+        )
+        # ⚠⚠ ZY, not ZZ. `thorax_upright()` differs from humanoid's
+        # `torso_upright()` here and nowhere else in the reward.
+        var upright_zy = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xquat, env, THORAX_BODY_IDX, XMAT_ZY
+        )
+        var upright = tolerance[SIGMOID_LINEAR, 0.0, DTYPE](
+            upright_zy, Scalar[DTYPE](0.9), inf[DTYPE](), Scalar[DTYPE](1.9)
+        )
+        var stand_reward = standing * upright
+
+        var acc = ZERO
+        for a in range(N_ACTUATORS):
+            var c = (
+                rebind[Scalar[DTYPE]](actions[env, a])
+                if a < ACTION_DIM
+                else ZERO
+            )
+            if c > ONE:
+                c = ONE
+            elif c < -ONE:
+                c = -ONE
+            acc += tolerance[SIGMOID_QUADRATIC, 0.0, DTYPE](
+                c, ZERO, ZERO, ONE
+            )
+        var small_control = (
+            Scalar[DTYPE](4.0) + acc / Scalar[DTYPE](N_ACTUATORS)
+        ) / Scalar[DTYPE](5.0)
+
+        var cx = ZERO
+        var cy = ZERO
+        var cz = ZERO
+        subtree_linvel_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xvel, bodies, env, THORAX_BODY_IDX, cx, cy, cz
+        )
+
+        comptime if Self.MOVE_SPEED == 0.0:
+            var dm0 = tolerance[
+                SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE
+            ](cx, ZERO, ZERO, Scalar[DTYPE](2.0))
+            var dm1 = tolerance[
+                SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE
+            ](cy, ZERO, ZERO, Scalar[DTYPE](2.0))
+            var dont_move = (dm0 + dm1) / Scalar[DTYPE](2.0)
+            return (small_control * stand_reward * dont_move, False)
+        else:
+            var speed = sqrt(cx * cx + cy * cy)
+            var move = tolerance[SIGMOID_LINEAR, 0.0, DTYPE](
+                speed,
+                Scalar[DTYPE](Self.MOVE_SPEED),
+                inf[DTYPE](),
+                Scalar[DTYPE](Self.MOVE_SPEED),
+            )
+            move = (Scalar[DTYPE](5.0) * move + ONE) / Scalar[DTYPE](6.0)
+            return (small_control * stand_reward * move, False)
+
+    # === GPU inline: Reset ===
+    @always_inline
+    @staticmethod
+    def init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NJOINT_F: Int,
+        NV_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT_F, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """As `humanoid`'s — mirrors `custom_reset_cpu`, including the
+        no-rejection DEVIATION documented there. ⚠ That deviation bites HARDER
+        here: humanoid_CMU has fingers, thumbs and toes packed close together,
+        so a uniform draw self-collides more often."""
+        randomize_limited_and_rotational_joints_gpu[
+            DTYPE,
+            BATCH_SIZE,
+            NQ_F,
+            NJOINT_F,
+            RANDOMIZE_UNLIMITED_HINGES=True,
+            RANDOMIZE_FREE_QUAT=True,
+        ](qpos, joints, env, seed)
 
     # === CPU: Float getters ===
     @staticmethod

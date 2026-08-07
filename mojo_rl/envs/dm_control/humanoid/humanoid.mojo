@@ -8,14 +8,16 @@ observation: 67 engineered features vs the raw 55-dim state. That is a
 different OBS_DIM, hence a different model-def alias (`DMHumanoidPureModel`),
 not just a different config parameter.
 
-CPU only: the config's GPU reward/obs hooks are stubs because the batched hook
-ABI carries neither body quaternions nor `xvel` (gap G10). See
-docs/DM_CONTROL_PORT.md.
+**GPU-trainable as of 2026-08-06** — see docs/DM_CONTROL_GPU_TRAINING_G10.md.
+
+    from mojo_rl.envs.dm_control.humanoid import DMHumanoidWalkBatched
+    var env = DMHumanoidWalkBatched[N_ENVS=32](ctx)
 """
 
 from .humanoid_xml import DMHumanoidModel, DMHumanoidPureModel
 from .humanoid_config import DMHumanoidConfig, WALK_SPEED, RUN_SPEED
 from ...phyics3d_env import Phyics3dEnv
+from ...phyics3d_batched_env import Phyics3dBatchedEnv
 
 
 # dm_control tasks never terminate early — TERMINATE_ON_UNHEALTHY stays False
@@ -36,4 +38,27 @@ comptime DMHumanoidRun[DTYPE: DType = DType.float64] = Phyics3dEnv[
 
 comptime DMHumanoidRunPureState[DTYPE: DType = DType.float64] = Phyics3dEnv[
     DMHumanoidPureModel, DMHumanoidConfig[RUN_SPEED, True], DTYPE, False
+]
+
+
+# ── GPU-batched aliases (Phyics3dBatchedEnv, float32) ─────────────────────
+
+comptime DMHumanoidStandBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
+    DMHumanoidModel, DMHumanoidConfig[0.0, False], N_ENVS,
+    TERMINATE_ON_UNHEALTHY=False,
+]
+
+comptime DMHumanoidWalkBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
+    DMHumanoidModel, DMHumanoidConfig[WALK_SPEED, False], N_ENVS,
+    TERMINATE_ON_UNHEALTHY=False,
+]
+
+comptime DMHumanoidRunBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
+    DMHumanoidModel, DMHumanoidConfig[RUN_SPEED, False], N_ENVS,
+    TERMINATE_ON_UNHEALTHY=False,
+]
+
+comptime DMHumanoidRunPureStateBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
+    DMHumanoidPureModel, DMHumanoidConfig[RUN_SPEED, True], N_ENVS,
+    TERMINATE_ON_UNHEALTHY=False,
 ]

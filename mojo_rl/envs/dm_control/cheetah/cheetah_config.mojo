@@ -17,9 +17,17 @@ from std.random import random_float64
 from std.math import inf
 
 from mojo_rl.physics3d.fields import Data
-from mojo_rl.physics3d.sensors.subtree import subtree_linvel
+from mojo_rl.physics3d.sensors.subtree import (
+    subtree_linvel,
+    subtree_linvel_gpu,
+)
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
+from layout import Layout, LayoutTensor
+
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
     MODEL_JOINT_SIZE,
     JOINT_IDX_TYPE,
     JOINT_IDX_QPOS_ADR,
@@ -31,6 +39,7 @@ from .cheetah_xml import TORSO_BODY_IDX
 
 from ...phyics3d_env_config import Phyics3dEnvConfig
 from ..rewards import tolerance, SIGMOID_LINEAR
+from ..gpu_reset import randomize_limited_and_rotational_joints_gpu
 
 
 # `cheetah._RUN_SPEED`.
@@ -42,6 +51,8 @@ struct DMCheetahConfig(Phyics3dEnvConfig):
     # cheetah.xml timestep = 0.01 and cheetah.py passes no control_timestep,
     # so control_timestep == physics timestep => 1 substep per env step.
     comptime FRAME_SKIP: Int = 1
+    # GPU hooks implemented below — see Phyics3dEnvConfig.HAS_GPU_HOOKS.
+    comptime HAS_GPU_HOOKS: Bool = True
     # time_limit 10 s / 0.01 s = 1000 steps.
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = 0
@@ -149,6 +160,134 @@ struct DMCheetahConfig(Phyics3dEnvConfig):
             vx, RUN_SPEED, inf[DType.float64](), RUN_SPEED
         )
         return (Scalar[DTYPE](r), False)
+
+
+    # =====================================================================
+    # GPU hooks — the batched (`Phyics3dBatchedEnv`) path.
+    #
+    # ⚠ Must stay numerically identical to the CPU hooks above, which are what
+    # `tests/dm_control/test_cheetah_vs_dm_control.mojo` gates against MuJoCo.
+    # `tests/dm_control/test_locomotion_gpu_vs_cpu.mojo` diffs the two paths
+    # step for step.
+    #
+    # The observation is `qpos[1:] + qvel`, which IS the model default
+    # (`extract_obs_gpu` with obs_qpos_skip=1), so no `custom_extract_obs_gpu`
+    # override is needed — returning False from the default is correct here.
+    # ⚠ Do not "add one for symmetry": a second implementation of an identical
+    # observation is a second thing to keep in sync.
+    # =====================================================================
+
+    # === GPU inline: Reward ===
+    @always_inline
+    @staticmethod
+    def compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NV_F: Int,
+        NBODY_F: Int,
+        ACTION_DIM: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_F, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_F * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        env: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """`Cheetah.get_reward` — mirrors `compute_reward_and_done_cpu`.
+
+        `speed` is the x component of `torso_subtreelinvel`: the CoM velocity
+        of the WHOLE body, not qvel[0] (the root slider alone).
+        """
+        var vx = Scalar[DTYPE](0)
+        var vy = Scalar[DTYPE](0)
+        var vz = Scalar[DTYPE](0)
+        subtree_linvel_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            xvel, bodies, env, TORSO_BODY_IDX, vx, vy, vz
+        )
+        # bounds=(RUN_SPEED, inf): `inf[DTYPE]` NOT `inf[float64]` — the
+        # float64 spelling would not type-check against Scalar[DTYPE], and
+        # silently casting one would collapse the upper bound.
+        var r = tolerance[SIGMOID_LINEAR, 0.0, DTYPE](
+            vx,
+            Scalar[DTYPE](RUN_SPEED),
+            inf[DTYPE](),
+            Scalar[DTYPE](RUN_SPEED),
+        )
+        return (r, False)
+
+    # === GPU inline: Reset ===
+    @always_inline
+    @staticmethod
+    def init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ_F: Int,
+        NJOINT_F: Int,
+        NV_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV_F), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT_F, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """`Cheetah.initialize_episode` — mirrors `custom_reset_cpu`.
+
+        ⚠ `RANDOMIZE_UNLIMITED_HINGES=False`: cheetah walks `jnt_range` and
+        touches ONLY the limited joints. Leaving it True would also randomize
+        the three unlimited root dofs (rootx/rootz slides + rooty hinge) and
+        start the cheetah at a random body angle — a different initial state
+        distribution, and not the reference's.
+
+        The reference's `physics.step(nstep=200)` settle is NOT done here, as
+        on the CPU path. Noted in docs/DM_CONTROL_PORT.md as an open item; it
+        affects the initial state distribution, not the dynamics.
+        """
+        randomize_limited_and_rotational_joints_gpu[
+            DTYPE, BATCH_SIZE, NQ_F, NJOINT_F, RANDOMIZE_UNLIMITED_HINGES=False
+        ](qpos, joints, env, seed)
 
     @staticmethod
     def get_timestep() -> Float64:
