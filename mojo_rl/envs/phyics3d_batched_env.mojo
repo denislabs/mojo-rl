@@ -55,6 +55,7 @@ from mojo_rl.physics3d.gpu import compute_cfrc_ext, compute_cvel
 from mojo_rl.physics3d.gpu.constants import (
     TPB,
     MODEL_BODY_SIZE,
+    BODY_IDX_MOCAP,
     MODEL_SITE_SIZE,
     MODEL_GEOM_SIZE,
     MODEL_JOINT_SIZE,
@@ -247,6 +248,26 @@ struct Phyics3dBatchedEnv[
         self._site_dummy = ctx.enqueue_create_buffer[DT](
             Self.N_ENVS * Self.SITE_DIM
         )
+
+        # ⚠ A model with a mocap body and CONFIG.USES_MOCAP == False would run
+        # perfectly and train on a target frozen at its XML pose — an easier
+        # task, silently. Read the BUILT model and refuse instead.
+        comptime if not Self.CONFIG.USES_MOCAP:
+            for _b in range(Self.NBODY):
+                if (
+                    self.mf.bodies.data[_b * MODEL_BODY_SIZE + BODY_IDX_MOCAP]
+                    != 0
+                ):
+                    raise Error(
+                        String(
+                            "Phyics3dBatchedEnv: body ", _b, " is a MOCAP body"
+                            " but CONFIG.USES_MOCAP is False, so its pose"
+                            " would never be synced and the target would sit"
+                            " at its XML position for every episode. Set"
+                            " USES_MOCAP = True on the config (blocker H in"
+                            " docs/DM_CONTROL_GPU_TRAINING_G10.md)."
+                        )
+                    )
         self._env_rng_counter.enqueue_fill(UInt64(42))
 
     # ── kinematics ────────────────────────────────────────────────────
@@ -275,6 +296,75 @@ struct Phyics3dBatchedEnv[
             return rebind[LayoutTensor[DT, Self.L_SITE_HOOK, MutAnyOrigin]](
                 LayoutTensor[DT, Self.L_SITE_HOOK](self._site_dummy)
             )
+
+
+    def _sync_mocap_batch(mut self, c: DeviceContext) raises:
+        """Push `mocap_pos`/`mocap_quat` into the mocap bodies' world pose.
+
+        The batched twin of `Phyics3dEnv._sync_mocap_to_fields`, and it must be
+        called at the SAME points relative to FK: immediately BEFORE it. That
+        ordering is not arbitrary — the fields FK SKIPS mocap bodies, so
+        writing the pose first leaves it in place for the weld/equality solve
+        to track, and writing it after would be redundant at best.
+
+        ⚠ Without this, a config's per-episode mocap target simply never
+        reaches the body: `d.mocap_pos` gets written by the reset hook and
+        nothing reads it, so the target sits at its XML pose for every episode
+        of every lane. That is a SILENTLY EASIER TASK, not a crash — blocker H.
+
+        Comptime-gated on `CONFIG.USES_MOCAP` so the ~11 non-mocap envs pay no
+        launch; `__init__` raises if a model contradicts that flag.
+        """
+
+        @parameter
+        @always_inline
+        def mocap_kernel(
+            bodies: LayoutTensor[
+                DT,
+                Layout.row_major(Self.NBODY, MODEL_BODY_SIZE),
+                MutAnyOrigin,
+            ],
+            mocap_pos: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NBODY * 3), MutAnyOrigin
+            ],
+            mocap_quat: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NBODY * 4), MutAnyOrigin
+            ],
+            xpos: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NBODY * 3), MutAnyOrigin
+            ],
+            xipos: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NBODY * 3), MutAnyOrigin
+            ],
+            xquat: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NBODY * 4), MutAnyOrigin
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= Self.N_ENVS:
+                return
+            for b in range(Self.NBODY):
+                if bodies[b, BODY_IDX_MOCAP] == Scalar[DT](0):
+                    continue
+                # xipos too, not just xpos: a mocap body's inertial frame is
+                # its body frame, and reward hooks read xipos.
+                for k in range(3):
+                    var pv = mocap_pos[env, b * 3 + k]
+                    xpos[env, b * 3 + k] = pv
+                    xipos[env, b * 3 + k] = pv
+                for k in range(4):
+                    xquat[env, b * 4 + k] = mocap_quat[env, b * 4 + k]
+
+        c.enqueue_function[mocap_kernel](
+            self.mf.bodies.lt["gpu", type_of(self.mf).L_BODY](),
+            self.d.mocap_pos.lt["gpu", type_of(self.d).L_B3](),
+            self.d.mocap_quat.lt["gpu", type_of(self.d).L_B4](),
+            self.d.xpos.lt["gpu", type_of(self.d).L_B3](),
+            self.d.xipos.lt["gpu", type_of(self.d).L_B3](),
+            self.d.xquat.lt["gpu", type_of(self.d).L_B4](),
+            grid_dim=(Self.BLOCKS,),
+            block_dim=(TPB,),
+        )
 
     def _run_fields_fk(mut self, c: DeviceContext) raises:
         """Fields FK over the whole batch (mf -> Data xpos/xquat/xipos
@@ -615,12 +705,25 @@ struct Phyics3dBatchedEnv[
                 Layout.row_major(Self.NJOINT, MODEL_JOINT_SIZE),
                 MutAnyOrigin,
             ],
+            mocap_pos: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 3),
+                MutAnyOrigin,
+            ],
+            mocap_quat: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 4),
+                MutAnyOrigin,
+            ],
             seed: Int,
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= Self.N_ENVS:
                 return
-            Self._reset_env_lane(qpos, qvel, qacc, qfrc, meta, joints, i, seed)
+            Self._reset_env_lane(
+                qpos, qvel, qacc, qfrc, meta, joints, mocap_pos,
+                mocap_quat, i, seed,
+            )
 
         c.enqueue_function[reset_kernel](
             self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
@@ -629,10 +732,14 @@ struct Phyics3dBatchedEnv[
             self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),
             self.d.meta.lt["gpu", type_of(self.d).L_META](),
             self.mf.joints.lt["gpu", type_of(self.mf).L_JOINT](),
+            self.d.mocap_pos.lt["gpu", type_of(self.d).L_B3](),
+            self.d.mocap_quat.lt["gpu", type_of(self.d).L_B4](),
             Int(rng_seed),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
+        comptime if Self.CONFIG.USES_MOCAP:
+            self._sync_mocap_batch(c)
         self._run_fields_fk(c)
         self._extract_obs_only(c)
 
@@ -710,6 +817,12 @@ struct Phyics3dBatchedEnv[
             c.synchronize()
             print("[step_batch] 2 apply_actions ok")
 
+        # 2b) Mocap-controlled models: push the updated target into the
+        #     body pose BEFORE the step so the weld solve tracks it.
+        #     Mirrors `Phyics3dEnv.step`, which syncs at this exact point.
+        comptime if Self.CONFIG.USES_MOCAP:
+            self._sync_mocap_batch(c)
+
         # 3) Physics: fields integrator (RK4 or Euler per CONFIG.INTEGRATOR)
         #    with per-substep contact/limit solving.
         for _ in range(Self.CONFIG.FRAME_SKIP):
@@ -740,6 +853,8 @@ struct Phyics3dBatchedEnv[
         # deterministic and RNG-free, so they stay inside a USE_ENV_CUDA_GRAPH
         # capture safely.
         comptime if Self.CONFIG.SYNC_FK_AFTER_STEP:
+            comptime if Self.CONFIG.USES_MOCAP:
+                self._sync_mocap_batch(c)
             self._run_fields_fk(c)
             self._run_fields_vel(c)
             comptime if DEBUG:
@@ -823,6 +938,16 @@ struct Phyics3dBatchedEnv[
                 Layout.row_major(Self.NJOINT, MODEL_JOINT_SIZE),
                 MutAnyOrigin,
             ],
+            mocap_pos: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 3),
+                MutAnyOrigin,
+            ],
+            mocap_quat: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.NBODY * 4),
+                MutAnyOrigin,
+            ],
             counter: LayoutTensor[
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
             ],
@@ -838,6 +963,8 @@ struct Phyics3dBatchedEnv[
                     qfrc,
                     meta,
                     joints,
+                    mocap_pos,
+                    mocap_quat,
                     i,
                     Int(rebind[Scalar[DType.uint64]](counter[0])),
                 )
@@ -854,6 +981,8 @@ struct Phyics3dBatchedEnv[
             self.d.meta.lt["gpu", type_of(self.d).L_META](),
             dones_t,
             self.mf.joints.lt["gpu", type_of(self.mf).L_JOINT](),
+            self.d.mocap_pos.lt["gpu", type_of(self.d).L_B3](),
+            self.d.mocap_quat.lt["gpu", type_of(self.d).L_B4](),
             cnt_t,
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
@@ -861,6 +990,8 @@ struct Phyics3dBatchedEnv[
         # FK for the batch (idempotent for the live lanes, whose state is
         # unchanged since the last step), then refresh obs so reset lanes
         # start their episode from the reset observation.
+        comptime if Self.CONFIG.USES_MOCAP:
+            self._sync_mocap_batch(c)
         self._run_fields_fk(c)
         self._extract_obs_only(c)
 
@@ -885,6 +1016,12 @@ struct Phyics3dBatchedEnv[
         joints: LayoutTensor[
             DT, Layout.row_major(Self.NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
         ],
+        mocap_pos: LayoutTensor[
+            DT, Layout.row_major(Self.N_ENVS, Self.NBODY * 3), MutAnyOrigin
+        ],
+        mocap_quat: LayoutTensor[
+            DT, Layout.row_major(Self.N_ENVS, Self.NBODY * 4), MutAnyOrigin
+        ],
         env: Int,
         seed: Int,
     ):
@@ -895,8 +1032,8 @@ struct Phyics3dBatchedEnv[
             qpos, qvel, qacc, qfrc, env, RESET_NOISE, seed
         )
         Self.CONFIG.init_qpos_gpu[
-            DT, Self.N_ENVS, Self.NQ, Self.NJOINT, Self.NV
-        ](qpos, qvel, joints, env, seed)
+            DT, Self.N_ENVS, Self.NQ, Self.NJOINT, Self.NV, Self.NBODY
+        ](qpos, qvel, joints, mocap_pos, mocap_quat, env, seed)
         meta[env, META_IDX_STEP_COUNT] = Scalar[DT](0.0)
         Self.CONFIG.pre_step_gpu[DT, Self.N_ENVS, Self.NQ](qpos, meta, env)
 

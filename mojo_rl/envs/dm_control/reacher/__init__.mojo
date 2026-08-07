@@ -4,7 +4,12 @@ Tasks: easy, hard.
 Reference: references/dm_control-main/dm_control/suite/reacher.py + .xml
 """
 
-from .reacher import DMReacherEasy, DMReacherHard
+from .reacher import (
+    DMReacherEasy,
+    DMReacherEasyBatched,
+    DMReacherHard,
+    DMReacherHardBatched,
+)
 from .reacher_config import DMReacherConfig
 from .reacher_xml import (
     DMReacherModel,

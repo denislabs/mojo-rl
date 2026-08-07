@@ -85,6 +85,22 @@ trait Phyics3dEnvConfig:
     # it closes — so flip it in the same commit as the hooks, never ahead.
     comptime HAS_GPU_HOOKS: Bool = False
 
+    # Does this config drive a MOCAP body (a per-episode target parked on a
+    # `<body mocap="true">`, the G4 workaround)? reacher, finger, fish, swimmer,
+    # manipulator, stacker and SawyerReach all do.
+    #
+    # ⚠ WHY A DECLARATION AND NOT A MODEL QUERY. `is_mocap` is parsed by the
+    # RUNTIME parser into `Model.bodies[.., BODY_IDX_MOCAP]`; the COMPTIME
+    # parser does not carry it (`physics3d has TWO MJCF parsers`). Making the
+    # batched env comptime-gate on it therefore needs either a declaration or
+    # new comptime-parser work, and the declaration is the smaller change.
+    #
+    # ⚠ FORGETTING IT IS NOT SILENT. `Phyics3dBatchedEnv.__init__` reads the
+    # built model and RAISES if any body is mocap-flagged while this is False —
+    # the failure mode it prevents is a target frozen at its XML pose, i.e. a
+    # silently easier task, which no gate would flag as an error.
+    comptime USES_MOCAP: Bool = False
+
     # Raise the free root in 1 cm steps at reset until nothing is touching,
     # after `custom_reset_cpu` has set the orientation
     # (`Phyics3dEnv._find_non_contacting_height`). dm_control's quadruped is
@@ -491,6 +507,7 @@ trait Phyics3dEnvConfig:
         NQ: Int,
         NJOINT: Int,
         NV: Int,
+        NBODY: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
@@ -500,6 +517,12 @@ trait Phyics3dEnvConfig:
         ],
         joints: LayoutTensor[
             DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        mocap_pos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        mocap_quat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
         ],
         env: Int,
         seed: Int,

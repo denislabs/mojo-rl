@@ -39,6 +39,14 @@ from mojo_rl.envs.dm_control.point_mass import (
     DMPointMassModel,
     DMPointMassConfig,
 )
+from mojo_rl.envs.dm_control.reacher import (
+    DMReacherModel,
+    DMReacherConfig,
+    DMReacherEasyBatched,
+)
+from mojo_rl.physics3d.gpu.constants import BODY_IDX_MOCAP, MODEL_BODY_SIZE
+from mojo_rl.physics3d.kinematics.geom_xpos import geom_xpos
+from mojo_rl.envs.dm_control.reacher import FINGER_GEOM_IDX, TARGET_BODY_IDX
 
 comptime N_ENVS = 2
 comptime N_STEPS = 60
@@ -140,6 +148,52 @@ def _run[
     gpu.d.qpos.upload(ctx)
     gpu.d.qvel.upload(ctx)
     ctx.synchronize()
+
+    # ⚠ MOCAP DOMAINS NEED THEIR TARGET SHARED TOO, for exactly the reason
+    # qpos does. The two reset paths draw from different RNGs (host
+    # `random_float64` vs per-lane Philox), so each ends up with a DIFFERENT
+    # per-episode target — and a finger-to-target observation then differs by a
+    # CONSTANT per lane, which looks like a port bug and is not. Copy the CPU's
+    # target into every lane, then re-sync and re-run FK so the body pose and
+    # every FK product follow it.
+    comptime if CFG.USES_MOCAP:
+        comptime NB = MODEL.NBODY
+        # ⚠ PUT THE TARGET ON THE FINGER, measured from the CPU's own FK.
+        #
+        # reacher's reward is a HARD indicator — 1 inside the finger+target
+        # radii, 0 outside — and with the reset's random target the finger
+        # never reached it in a 60-step window: reward was 0.0 .. 0.0 and the
+        # non-vacuity assert (correctly) failed. Seeding the target at the
+        # finger makes the indicator start at 1 and fall to 0 as the arm
+        # swings away, so the gate exercises BOTH sides of the branch.
+        #
+        # Same lesson as acrobot-sparse: measure the start state, do not pick
+        # it by eye, and make the reward MOVE.
+        var fp = geom_xpos(cpu.d, cpu.mf.geoms.data, FINGER_GEOM_IDX)
+        cpu.d.mocap_pos.data[TARGET_BODY_IDX * 3 + 0] = fp[0]
+        cpu.d.mocap_pos.data[TARGET_BODY_IDX * 3 + 1] = fp[1]
+        # Re-inject so the CPU re-syncs mocap and re-runs FK with the new
+        # target (`set_state` does both).
+        cpu.set_state(qpos0, qvel0)
+
+        gpu.d.mocap_pos.download(ctx)
+        gpu.d.mocap_quat.download(ctx)
+        ctx.synchronize()
+        for e in range(N_ENVS):
+            for i in range(NB * 3):
+                gpu.d.mocap_pos.data[e * NB * 3 + i] = Scalar[DT](
+                    cpu.d.mocap_pos.data[i]
+                )
+            for i in range(NB * 4):
+                gpu.d.mocap_quat.data[e * NB * 4 + i] = Scalar[DT](
+                    cpu.d.mocap_quat.data[i]
+                )
+        gpu.d.mocap_pos.upload(ctx)
+        gpu.d.mocap_quat.upload(ctx)
+        ctx.synchronize()
+        gpu._sync_mocap_batch(ctx)
+        gpu._run_fields_fk(ctx)
+        ctx.synchronize()
 
     var h_act = ctx.enqueue_create_host_buffer[DT](N_ENVS * ACT_DIM)
     var h_obs = ctx.enqueue_create_host_buffer[DT](N_ENVS * OBS_DIM)
@@ -246,6 +300,61 @@ def _run[
         worst = max_rew
 
 
+def test_mocap_target_actually_moves() raises:
+    """Blocker H: does the per-episode mocap target reach the BODY POSE?
+
+    ⚠ THE FAILURE THIS GUARDS IS SILENT. Before `_sync_mocap_batch`, a config's
+    reset hook wrote `d.mocap_pos` and nothing read it, so every lane of every
+    episode ran with the target at its XML position — a fixed, easier task with
+    no crash, no NaN and a perfectly plausible learning curve. A GPU-vs-CPU obs
+    diff would not catch it either, if both paths were frozen the same way.
+
+    So this asserts the two things that failure would violate: the target body's
+    world pose MOVES between resets, and it DIFFERS between lanes.
+    """
+    with DeviceContext() as ctx:
+        comptime NB = DMReacherModel.NBODY
+        var env = DMReacherEasyBatched[4](ctx)
+
+        # Which body is the mocap one, read from the built model rather than
+        # assumed — an index constant could drift with the XML.
+        var mocap_b = -1
+        for b in range(NB):
+            if env.mf.bodies.data[b * MODEL_BODY_SIZE + BODY_IDX_MOCAP] != 0:
+                mocap_b = b
+                break
+        assert_true(mocap_b >= 0, "reacher has no mocap body — wrong model?")
+
+        var seen = List[Float64]()
+        for r in range(3):
+            env.reset_batch[4](Optional(ctx), UInt64(100 + r))
+            env.d.xpos.download(ctx)
+            ctx.synchronize()
+            for e in range(4):
+                var x = Float64(env.d.xpos.data[e * NB * 3 + mocap_b * 3 + 0])
+                var y = Float64(env.d.xpos.data[e * NB * 3 + mocap_b * 3 + 1])
+                seen.append(x)
+                seen.append(y)
+
+        var lo = 1e30
+        var hi = -1e30
+        for v in seen:
+            if v < lo:
+                lo = v
+            if v > hi:
+                hi = v
+        print(
+            "  mocap target body xpos over 3 resets x 4 lanes: range ",
+            lo, " .. ", hi,
+        )
+        assert_true(
+            hi - lo > 1e-3,
+            "the mocap target body NEVER MOVED across resets or lanes — it is"
+            " frozen at its XML pose, which is blocker H. Check that"
+            " CONFIG.USES_MOCAP is True and _sync_mocap_batch runs before FK.",
+        )
+
+
 def test_tranche2_gpu_matches_cpu() raises:
     with DeviceContext() as ctx:
         var worst = 0.0
@@ -268,8 +377,14 @@ def test_tranche2_gpu_matches_cpu() raises:
         _run[DMPointMassModel, DMPointMassConfig, "point_mass-easy       "](
             ctx, worst
         )
+        # reacher-easy: first MOCAP domain (blocker H). Its reward is a HARD
+        # indicator over the finger/target radii, so the non-vacuity assert
+        # matters here as much as it did for acrobot-sparse.
+        _run[DMReacherModel, DMReacherConfig[0.05], "reacher-easy          "](
+            ctx, worst
+        )
         print(
-            "tranche2/3 GPU vs CPU: 5 configs x ", N_STEPS, " steps x ",
+            "tranche2/3 GPU vs CPU: 6 configs x ", N_STEPS, " steps x ",
             N_ENVS, " lanes — worst abs diff = ", worst,
             " (bound ", ATOL, " + ", RTOL, "*|cpu|)",
         )

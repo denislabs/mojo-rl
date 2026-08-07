@@ -18,7 +18,7 @@ See `feedback_where_clause_cannot_cross_trait_boundary`. Add shims here as
 hooks need them; do NOT widen a trait signature to satisfy `std.math`.
 """
 
-from std.math import log
+from std.math import log, sin, cos
 
 
 @always_inline
@@ -57,3 +57,39 @@ def _log1p_impl[
     """The body. Reached only through `log1p_dt`, which binds `DTYPE` to a
     concrete float type first — see the module docstring."""
     return log(Scalar[DTYPE](1.0) + x)
+
+
+@always_inline
+def sin_dt[DTYPE: DType](x: Scalar[DTYPE]) -> Scalar[DTYPE]:
+    """`sin(x)`, callable from a GPU hook. See the module docstring."""
+    comptime if DTYPE == DType.float32:
+        return rebind[Scalar[DTYPE]](_sin_impl[DType.float32](rebind[Float32](x)))
+    elif DTYPE == DType.float64:
+        return rebind[Scalar[DTYPE]](_sin_impl[DType.float64](rebind[Float64](x)))
+    else:
+        comptime assert False, "dtype_math.sin_dt: float32 / float64 only."
+
+
+@always_inline
+def cos_dt[DTYPE: DType](x: Scalar[DTYPE]) -> Scalar[DTYPE]:
+    """`cos(x)`, callable from a GPU hook. See the module docstring."""
+    comptime if DTYPE == DType.float32:
+        return rebind[Scalar[DTYPE]](_cos_impl[DType.float32](rebind[Float32](x)))
+    elif DTYPE == DType.float64:
+        return rebind[Scalar[DTYPE]](_cos_impl[DType.float64](rebind[Float64](x)))
+    else:
+        comptime assert False, "dtype_math.cos_dt: float32 / float64 only."
+
+
+@always_inline
+def _sin_impl[
+    DTYPE: DType
+](x: Scalar[DTYPE]) -> Scalar[DTYPE] where DTYPE.is_floating_point():
+    return sin(x)
+
+
+@always_inline
+def _cos_impl[
+    DTYPE: DType
+](x: Scalar[DTYPE]) -> Scalar[DTYPE] where DTYPE.is_floating_point():
+    return cos(x)

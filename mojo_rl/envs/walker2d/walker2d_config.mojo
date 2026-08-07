@@ -257,6 +257,7 @@ struct Walker2dConfig(Phyics3dEnvConfig):
         NQ_F: Int,
         NJOINT_F: Int,
         NV_F: Int,
+        NBODY_M: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
@@ -266,6 +267,12 @@ struct Walker2dConfig(Phyics3dEnvConfig):
         ],
         joints: LayoutTensor[
             DTYPE, Layout.row_major(NJOINT_F, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        mocap_pos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_M * 3), MutAnyOrigin
+        ],
+        mocap_quat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY_M * 4), MutAnyOrigin
         ],
         env: Int,
         seed: Int,
