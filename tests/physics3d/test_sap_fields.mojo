@@ -32,6 +32,7 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_sap_fields.mojo
 from std.math import abs
 from std.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
+from std.testing import TestSuite
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
@@ -659,9 +660,34 @@ def _part_c_walker(ctx: DeviceContext) raises:
     print("  PASS: auto dispatcher routes walker2d to O(N^2), bit-equal")
 
 
+# ⚠ THREE INDEPENDENT TESTS, NOT THREE CALLS IN `main()`.
+#
+# These used to be `_part_a_humanoid(ctx); _part_b_sawyer(ctx);
+# _part_c_walker(ctx)` in sequence. Each part signals failure by RAISING, so
+# the first one to fail aborted the other two — and on 2026-08-07 that is
+# exactly what happened: Part A's humanoid fingerprint was stale, and Part B's
+# sawyer count golden was ALSO stale, but nobody could see B because A never
+# returned. It was found only by temporarily reordering the calls.
+#
+# One stale golden hiding two more results is a reporting defect in its own
+# right, independent of whichever golden is wrong. `TestSuite` runs each test
+# and reports all three, so a red file now tells you HOW red.
+#
+# Each takes its own `DeviceContext` — the parts are independent by
+# construction and sharing one would reintroduce a coupling between them.
+
+
+def test_sap_humanoid_fields_golden() raises:
+    _part_a_humanoid(DeviceContext())
+
+
+def test_sap_sawyer_mesh_leg_golden() raises:
+    _part_b_sawyer(DeviceContext())
+
+
+def test_sap_walker2d_auto_dispatch() raises:
+    _part_c_walker(DeviceContext())
+
+
 def main() raises:
-    var ctx = DeviceContext()
-    _part_a_humanoid(ctx)
-    _part_b_sawyer(ctx)
-    _part_c_walker(ctx)
-    print("test_sap_fields: ALL PASS")
+    TestSuite.discover_tests[__functions_in_module()]().run()
