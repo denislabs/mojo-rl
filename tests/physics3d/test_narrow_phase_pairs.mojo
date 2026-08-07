@@ -271,8 +271,7 @@ def test_narrow_phase_pairs_vs_mujoco() raises:
     var names = _group_names()
     var n_ours = Int(d.meta.data[META_IDX_NUM_CONTACTS])
     var n_mj = Int(py=dat.ncon)
-    print("  contacts: ours", n_ours, " MuJoCo", n_mj,
-          " (MuJoCo emits multi-point manifolds; counts are not compared)")
+    print("  contacts: ours", n_ours, " MuJoCo", n_mj)
 
     # per-group bookkeeping: group g owns bodies 2g+1 and 2g+2
     var seen = List[Int]()
@@ -375,6 +374,90 @@ def test_narrow_phase_pairs_vs_mujoco() raises:
             String("group ") + names[g] + " produced NO contact — that branch"
             " is not being exercised, so this file gates nothing for it",
         )
+
+    # ── MANIFOLD COUNTS — defect 21 ──────────────────────────────────────
+    #
+    # This file used to print the two totals and say "counts are not
+    # compared". That was a real blind spot: MuJoCo routes every
+    # cylinder/ellipsoid/mesh pair to `mjc_Convex`, which returns a MULTI-POINT
+    # manifold, and we dispatch those to single-point primitives. The whole
+    # difference was invisible to CI, and it is what makes a dog resting a
+    # forelimb on fetch's `target` CYLINDER sink to 1.5e-2 m of penetration
+    # where MuJoCo holds 3.5e-4.
+    #
+    # ⚠ MIND THE FLAG'S POLARITY, IT INVERTED. The 3.6.0 tree has
+    # `mjENBL_MULTICCD` (1<<4), OPT-IN. The 3.10.0 runtime has no such enable
+    # bit — it has `mjDSBL_MULTICCD` (1<<19), a DISABLE bit, so the behaviour
+    # is default-ON and you opt out. Searching only `mjtEnableBit`, finding
+    # nothing and concluding "unconditional" is the mistake here; check BOTH
+    # enums. `feedback_reference_tree_version_drift`.
+    #
+    # ⚠⚠ AND THE GATE IS AN EQUALITY, NOT A TOLERANCE, because of what the
+    # measurement showed: WE ARE EXACTLY MuJoCo WITH MULTICCD DISABLED. Not
+    # approximately — 15 vs 15 overall and 1-vs-1 in every group. So the
+    # reference for what we do today is not a hand-recorded number that rots,
+    # it is MuJoCo itself run with one flag flipped. Both are computed below.
+    #
+    # `mj_multi` is the TARGET (default MuJoCo, what the runtime really does);
+    # `mj_nomulti` is the CONTRACT (what we implement today). When multi-point
+    # convex contact lands, the assert to flip is the one naming `mj_nomulti`.
+    var mujoco_mod = Python.import_module("mujoco")
+    var m_no = pr.model()
+    m_no.opt.disableflags = mujoco_mod.mjtDisableBit.mjDSBL_MULTICCD
+    var dat_no = mujoco_mod.MjData(m_no)
+    mujoco_mod.mj_forward(m_no, dat_no)
+
+    var mj_multi = List[Int]()
+    var mj_nomulti = List[Int]()
+    for _ in range(NGROUPS):
+        mj_multi.append(0)
+        mj_nomulti.append(0)
+    # Groups are 1 m apart in x, so a contact's own x names its group — the
+    # same mapping the ours-side loop above uses.
+    for k in range(n_mj):
+        var gx = Int(Float64(py=dat.contact[k].pos[0]) + 0.5)
+        if gx >= 0 and gx < NGROUPS:
+            mj_multi[gx] = mj_multi[gx] + 1
+    var n_mj_no = Int(py=dat_no.ncon)
+    for k in range(n_mj_no):
+        var gx = Int(Float64(py=dat_no.contact[k].pos[0]) + 0.5)
+        if gx >= 0 and gx < NGROUPS:
+            mj_nomulti[gx] = mj_nomulti[gx] + 1
+
+    print(
+        "  manifold counts — ours", n_ours, " MuJoCo(multiCCD off)", n_mj_no,
+        " MuJoCo(default)", n_mj,
+    )
+    var deficit = 0
+    for g in range(NGROUPS):
+        deficit += mj_multi[g] - seen[g]
+        print(
+            "   ", names[g], "  ours", seen[g],
+            " mj_nomulti", mj_nomulti[g], " mj_default", mj_multi[g],
+        )
+        # THE CONTRACT: our narrow phase must equal MuJoCo with multiCCD off,
+        # group by group. This is what actually gates the single-point
+        # primitives, and it can fail for a real reason in either direction.
+        assert_true(
+            seen[g] == mj_nomulti[g],
+            String("group ") + names[g] + ": we emit " + String(seen[g])
+            + " contacts where MuJoCo with mjDSBL_MULTICCD emits "
+            + String(mj_nomulti[g]) + ". We are supposed to BE that"
+            " configuration exactly, so this is a narrow-phase defect, not the"
+            " known manifold gap.",
+        )
+    print("  manifold rows we do not produce =", deficit, " (defect 21)")
+
+    # THE GAP, stated as the reference's own flag rather than a magic number.
+    # It is not a tolerance and not a target to widen: when multi-point convex
+    # contact lands this goes to 0 and the per-group assert above must be
+    # re-pointed at `mj_multi`.
+    assert_true(
+        deficit > 0,
+        "the manifold deficit is 0, so multi-point convex contact has landed —"
+        " re-point the per-group assert above from `mj_nomulti` to `mj_multi`"
+        " and delete this one. See defect 21.",
+    )
 
 
 def main() raises:
