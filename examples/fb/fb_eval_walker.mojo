@@ -71,7 +71,12 @@ comptime D: Int = 128
 comptime HID: Int = 1024
 comptime BATCH: Int = 1024          # must match the trained checkpoint
 
-comptime CKPT: StaticString = "fb_walker_d128.ckpt"
+# Checkpoints are STEP-STAMPED (`<path>.<step>`, plus `.final`) — point this at
+# the step you want. ⚠ Prefer a checkpoint from a HEALTHY stretch over the
+# latest one: FB's measure loss cycles, and the last file written is not
+# necessarily the best model. Read the log for a run of consistently NEGATIVE
+# measure with a small, non-growing `actor` before choosing.
+comptime CKPT: StaticString = "fb_walker_d128.ckpt.200000"
 comptime STORE: StaticString = "/tmp/fb_walker_wide.h5"
 comptime RELABEL_ROWS: Int = 4096
 comptime EVAL_EPISODES: Int = 10
