@@ -4,7 +4,12 @@ Tasks: swimmer6, swimmer15.
 Reference: references/dm_control-main/dm_control/suite/swimmer.py + .xml
 """
 
-from .swimmer import DMSwimmer6, DMSwimmer15
+from .swimmer import (
+    DMSwimmer6,
+    DMSwimmer15,
+    DMSwimmer6Batched,
+    DMSwimmer15Batched,
+)
 from .swimmer_config import DMSwimmerConfig
 from .swimmer_xml import (
     DMSwimmer6Model,

@@ -520,6 +520,7 @@ struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
         NJOINT: Int,
         NV: Int,
         NBODY: Int,
+        NGEOM_F: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
@@ -535,6 +536,12 @@ struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
         ],
         mocap_quat: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
         ],
         env: Int,
         seed: Int,

@@ -47,9 +47,16 @@ skip — this one is faithful.
 
 from std.random import random_float64
 from std.math import pi, sqrt
+from std.collections import InlineArray
+
+from layout import Layout, LayoutTensor
+from std.random.philox import Random as PhiloxRandom
 
 from mojo_rl.physics3d.fields import Data
-from mojo_rl.physics3d.sensors.frame_vel import site_frame_velocity
+from mojo_rl.physics3d.sensors.frame_vel import (
+    site_frame_velocity,
+    site_frame_velocity_gpu,
+)
 from mojo_rl.physics3d.kinematics.quat_math import quat_rotate, quat_rotate_inverse
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
 from mojo_rl.physics3d.gpu.constants import (
@@ -62,6 +69,11 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_POS_X,
     GEOM_IDX_POS_Y,
     GEOM_IDX_POS_Z,
+    MODEL_BODY_SIZE,
+    MODEL_SITE_SIZE,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
+    CONTACT_SIZE,
 )
 
 from .swimmer_xml import (
@@ -75,7 +87,16 @@ from .swimmer_xml import (
     TARGET_Z,
 )
 
-from ..rewards import tolerance, SIGMOID_LONG_TAIL
+from ..dtype_math import sqrt_dt
+from ..gpu_reset import (
+    reset_seed,
+    randomize_limited_and_rotational_joints_gpu,
+)
+from ..rewards import (
+    tolerance,
+    SIGMOID_LONG_TAIL,
+    DEFAULT_VALUE_AT_MARGIN,
+)
 from ...phyics3d_env_config import Phyics3dEnvConfig
 
 
@@ -129,6 +150,65 @@ def _nose_to_target[
 
     var loc = quat_rotate_inverse[DTYPE](hqx, hqy, hqz, hqw, dx, dy, dz)
     return (Float64(loc[0]), Float64(loc[1]))
+
+
+# XORed into the reset key for the TARGET draw, so it is a different stream
+# from the joint randomizer's. Continuing that generator would make the target
+# distribution depend on how many joints preceded it — and swimmer6 and
+# swimmer15 differ in exactly that.
+comptime _TARGET_STREAM: UInt64 = 0x9E3779B97F4A7C15
+
+
+@always_inline
+def _nose_to_target_gpu[
+    DTYPE: DType, BATCH_SIZE: Int, NBODY: Int, NGEOM_F: Int
+](
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+    ],
+    geoms: LayoutTensor[
+        DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+    ],
+    env: Int,
+) -> InlineArray[Scalar[DTYPE], 2]:
+    """`_nose_to_target` against the batched field tensors.
+
+    ⚠ THE ARITHMETIC IS THE CPU FUNCTION'S, transcribed — same rotation, same
+    order. The two are diffed element-wise by the GPU-vs-CPU gate.
+
+    The nose's local offset is read from the geom record rather than
+    hardcoded, exactly as the CPU form does, so a model edit shows up as a
+    parity failure instead of a silent bias.
+    """
+    var lx = rebind[Scalar[DTYPE]](geoms[NOSE_GEOM_IDX, GEOM_IDX_POS_X])
+    var ly = rebind[Scalar[DTYPE]](geoms[NOSE_GEOM_IDX, GEOM_IDX_POS_Y])
+    var lz = rebind[Scalar[DTYPE]](geoms[NOSE_GEOM_IDX, GEOM_IDX_POS_Z])
+
+    var hqx = rebind[Scalar[DTYPE]](xquat[env, HEAD_BODY_IDX * 4 + 0])
+    var hqy = rebind[Scalar[DTYPE]](xquat[env, HEAD_BODY_IDX * 4 + 1])
+    var hqz = rebind[Scalar[DTYPE]](xquat[env, HEAD_BODY_IDX * 4 + 2])
+    var hqw = rebind[Scalar[DTYPE]](xquat[env, HEAD_BODY_IDX * 4 + 3])
+
+    var off = quat_rotate[DTYPE](hqx, hqy, hqz, hqw, lx, ly, lz)
+    var nose_x = rebind[Scalar[DTYPE]](xpos[env, HEAD_BODY_IDX * 3 + 0]) + off[0]
+    var nose_y = rebind[Scalar[DTYPE]](xpos[env, HEAD_BODY_IDX * 3 + 1]) + off[1]
+    var nose_z = rebind[Scalar[DTYPE]](xpos[env, HEAD_BODY_IDX * 3 + 2]) + off[2]
+
+    # The target geom sits at its mocap body's origin, so `geom_xpos` is the
+    # body's world position.
+    comptime TGT = NBODY - 1
+    var dx = rebind[Scalar[DTYPE]](xpos[env, TGT * 3 + 0]) - nose_x
+    var dy = rebind[Scalar[DTYPE]](xpos[env, TGT * 3 + 1]) - nose_y
+    var dz = rebind[Scalar[DTYPE]](xpos[env, TGT * 3 + 2]) - nose_z
+
+    var loc = quat_rotate_inverse[DTYPE](hqx, hqy, hqz, hqw, dx, dy, dz)
+    var out = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
+    out[0] = loc[0]
+    out[1] = loc[1]
+    return out
 
 
 struct DMSwimmerConfig(Phyics3dEnvConfig):
@@ -291,3 +371,306 @@ struct DMSwimmerConfig(Phyics3dEnvConfig):
             DMSwimmer6Model.TIMESTEP == DMSwimmer15Model.TIMESTEP
         ), "the two swimmer models no longer share a timestep"
         return Float64(DMSwimmer6Model.TIMESTEP)
+
+    # ── GPU hooks ────────────────────────────────────────────────────────
+    comptime HAS_GPU_HOOKS: Bool = True
+    # The target rides a mocap body (gap G4); without this the batched env
+    # would never push `mocap_pos` into the body pose and every episode would
+    # aim at the XML target — blocker H.
+    comptime USES_MOCAP: Bool = True
+
+    @always_inline
+    @staticmethod
+    def init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NJOINT: Int,
+        NV: Int,
+        NBODY: Int,
+        NGEOM_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        mocap_pos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        mocap_quat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """`Swimmer.initialize_episode` — joints, then the target box.
+
+        The joint draw is the shared randomizer with its DEFAULTS: unlimited
+        hinges get [-pi, pi) and unlimited slides are skipped, which is why the
+        swimmer always starts at the world origin (`rootx`/`rooty` are
+        unlimited slides; only `rootz`, the heading, moves).
+        """
+        randomize_limited_and_rotational_joints_gpu[
+            DTYPE, BATCH_SIZE, NQ, NJOINT
+        ](qpos, joints, env, seed)
+
+        # `close_target = random.rand() < .2` -> a .3 or 2.0 half-width box.
+        # ⚠ A SEPARATE Philox stream from the joint draw above, which consumed
+        # an unknown number of blocks (it depends on the joint count, so
+        # swimmer6 and swimmer15 differ). Continuing that generator would make
+        # the target distribution depend on the link count.
+        var rng = PhiloxRandom(
+            seed=reset_seed(env, seed) ^ _TARGET_STREAM, offset=0
+        )
+        var b = rng.step_uniform()
+        var box = Scalar[DTYPE](FAR_TARGET_BOX)
+        if Scalar[DTYPE](b[0]) < Scalar[DTYPE](CLOSE_TARGET_PROB):
+            box = Scalar[DTYPE](CLOSE_TARGET_BOX)
+        var tx = -box + Scalar[DTYPE](b[1]) * Scalar[DTYPE](2.0) * box
+        var ty = -box + Scalar[DTYPE](b[2]) * Scalar[DTYPE](2.0) * box
+
+        comptime TGT = NBODY - 1
+        mocap_pos[env, TGT * 3 + 0] = tx
+        mocap_pos[env, TGT * 3 + 1] = ty
+        mocap_pos[env, TGT * 3 + 2] = Scalar[DTYPE](TARGET_Z)
+        mocap_quat[env, TGT * 4 + 0] = Scalar[DTYPE](0)
+        mocap_quat[env, TGT * 4 + 1] = Scalar[DTYPE](0)
+        mocap_quat[env, TGT * 4 + 2] = Scalar[DTYPE](0)
+        mocap_quat[env, TGT * 4 + 3] = Scalar[DTYPE](1)
+
+    @always_inline
+    @staticmethod
+    def custom_extract_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        OBS_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+        NA_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cfrc_int: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        subtree_com: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        site_xpos_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        xquat_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """`Swimmer.get_observation`: joints, to_target, body_velocities."""
+        comptime N_LINKS = NBODY - 2
+        comptime assert (
+            (NQ - N_ROOT_DOF) + 2 + 3 * N_LINKS == OBS_DIM
+        ), (
+            "swimmer.custom_extract_obs_gpu: joints(NQ-3) + to_target(2) +"
+            " body_velocities(3*(NBODY-2)) must equal OBS_DIM exactly. This"
+            " writes by running index, so a short block leaves the tail"
+            " holding the previous step's values."
+        )
+
+        var k = 0
+        # `physics.joints()` = `qpos[3:]` — the internal hinges only.
+        for q in range(N_ROOT_DOF, NQ):
+            obs[env, k] = qpos[env, q]
+            k += 1
+
+        var tt = _nose_to_target_gpu[
+            DTYPE, BATCH_SIZE, NBODY, NGEOM_F
+        ](xpos, xquat, geoms, env)
+        obs[env, k] = tt[0]
+        k += 1
+        obs[env, k] = tt[1]
+        k += 1
+
+        # One row per link, head first: [linear x, linear y, angular z] of
+        # that link's own site. Site i is on body i + HEAD_BODY_IDX.
+        for i in range(N_LINKS):
+            var v = site_frame_velocity_gpu[
+                DTYPE, BATCH_SIZE, NBODY, NSITE_F, SITE_DIM
+            ](
+                xvel, xangvel, xipos, xquat, site_xpos, sites,
+                env, HEAD_BODY_IDX + i, i,
+            )
+            obs[env, k] = v[0]
+            obs[env, k + 1] = v[1]
+            obs[env, k + 2] = v[5]
+            k += 3
+        return True
+
+    @always_inline
+    @staticmethod
+    def compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        ACTION_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+        NA_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        cacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cfrc_int: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        subtree_com: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        site_xpos_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        xquat_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        env: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """`tolerance(nose_to_target_dist, (0, size), 5*size, 'long_tail')`."""
+        var tt = _nose_to_target_gpu[
+            DTYPE, BATCH_SIZE, NBODY, NGEOM_F
+        ](xpos, xquat, geoms, env)
+        var dist = sqrt_dt[DTYPE](tt[0] * tt[0] + tt[1] * tt[1])
+        var r = tolerance[SIGMOID_LONG_TAIL, DEFAULT_VALUE_AT_MARGIN, DTYPE](
+            dist,
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](TARGET_SIZE),
+            Scalar[DTYPE](5.0 * TARGET_SIZE),
+        )
+        return (r, False)

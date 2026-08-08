@@ -23,9 +23,21 @@ so runs 1:1).
 
 from std.random import random_float64
 from std.math import sqrt, abs
+from std.random.philox import Random as PhiloxRandom
+from layout import Layout, LayoutTensor
+
 from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
+    MODEL_BODY_SIZE,
+    MODEL_SITE_SIZE,
+    MODEL_JOINT_SIZE,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
+    CONTACT_SIZE,
+    BODY_IDX_POS_X,
+    BODY_IDX_POS_Y,
+    BODY_IDX_POS_Z,
     GEOM_IDX_POS_X,
     GEOM_IDX_POS_Y,
     GEOM_IDX_POS_Z,
@@ -49,6 +61,8 @@ from .ball_in_cup_xml import (
     BALL_RADIUS,
 )
 
+from ..dtype_math import sqrt_dt
+from ..gpu_reset import reset_seed
 from ...phyics3d_env_config import Phyics3dEnvConfig
 
 
@@ -137,12 +151,23 @@ struct DMBallInCupConfig(Phyics3dEnvConfig):
             var bz = SPAWN_Z_LO + random_float64() * (SPAWN_Z_HI - SPAWN_Z_LO)
             tries += 1
 
-            # Cup body is at its qpos0 here (cup_x = cup_z = 0), so the
-            # capsule endpoints are their local `fromto` plus the body origin,
-            # which FK has already written into d.xpos.
-            var cup_x = Float64(d.xpos.data[1 * 3 + 0])
-            var cup_y = Float64(d.xpos.data[1 * 3 + 1])
-            var cup_z = Float64(d.xpos.data[1 * 3 + 2])
+            # The cup body is at its qpos0 here (cup_x = cup_z = 0) and is a
+            # direct child of worldbody, so its world origin IS the model's
+            # `body_pos` — read from the record, not from `d.xpos`.
+            #
+            # ⚠ THIS USED TO READ `d.xpos`, AND THAT WAS WRONG ON EVERY RESET
+            # BUT THE FIRST. `Phyics3dEnv._reset_state` calls `reset_data`
+            # (which zeroes qpos) and then this hook, and only runs
+            # `_fields_fk()` AFTERWARDS — so `d.xpos` still held wherever the
+            # PREVIOUS episode left the cup. The cup is on two damped springs
+            # and swings a good fraction of the .2-wide spawn box, so the
+            # acceptance region drifted with the last episode's ending pose.
+            # dm_control has no such problem: it calls `physics.after_reset()`,
+            # which recomputes FK from the reset qpos before testing `ncon`.
+            var cb = BALL_BODY_IDX - 1  # the cup, body 1
+            var cup_x = Float64(m_bodies[cb * MODEL_BODY_SIZE + BODY_IDX_POS_X])
+            var cup_y = Float64(m_bodies[cb * MODEL_BODY_SIZE + BODY_IDX_POS_Y])
+            var cup_z = Float64(m_bodies[cb * MODEL_BODY_SIZE + BODY_IDX_POS_Z])
 
             var hit = False
             for g in range(CUP_GEOM_FIRST, CUP_GEOM_LAST + 1):
@@ -231,3 +256,342 @@ struct DMBallInCupConfig(Phyics3dEnvConfig):
     @staticmethod
     def get_timestep() -> Float64:
         return Float64(DMBallInCupModel.TIMESTEP)
+
+    # ── GPU hooks ────────────────────────────────────────────────────────
+    comptime HAS_GPU_HOOKS: Bool = True
+
+    @always_inline
+    @staticmethod
+    def init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NJOINT: Int,
+        NV: Int,
+        NBODY: Int,
+        NGEOM_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        mocap_pos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        mocap_quat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """`BallInCup.initialize_episode` — the rejection sampler, per lane.
+
+        The SAME closed-form acceptance test the CPU twin uses, and for the
+        same reason: collision detection is not available from inside a reset
+        hook. With the cup at qpos0 the only geoms the ball can reach are the
+        five cup capsules, and a sphere-capsule contact exists exactly when
+        the centre-to-segment distance is below the radius sum.
+
+        ⚠ THE CUP ORIGIN COMES FROM THE BODY RECORD, NOT FROM `xpos`. This
+        hook runs BEFORE the reset FK, so `Data.xpos` holds the PREVIOUS
+        episode's pose — and the cup rides two damped springs, so it swings a
+        good fraction of the .2-wide spawn box. Reading `xpos` here made the
+        acceptance region drift with wherever the last episode ended; that was
+        a real defect on the CPU path too, fixed in the same commit. At qpos0
+        the cup is a direct child of worldbody, so `body_pos` IS its world
+        origin.
+
+        ⚠ THE LOOP IS FIXED-TRIP, not `while`. Every lane of the batch runs
+        the same kernel, so an early `break` buys nothing and a data-dependent
+        trip count would diverge the warp; instead all lanes run the bound and
+        keep the FIRST accepted draw. Same acceptance region, same
+        distribution.
+        """
+        var rng = PhiloxRandom(seed=reset_seed(env, seed), offset=0)
+
+        var cb = BALL_BODY_IDX - 1  # the cup, body 1
+        var cup_x = rebind[Scalar[DTYPE]](bodies[cb, BODY_IDX_POS_X])
+        var cup_y = rebind[Scalar[DTYPE]](bodies[cb, BODY_IDX_POS_Y])
+        var cup_z = rebind[Scalar[DTYPE]](bodies[cb, BODY_IDX_POS_Z])
+
+        # Fallback if all 100 draws are rejected: the box centre, which is
+        # well clear of every capsule. Mirrors the CPU twin.
+        var acc_x = Scalar[DTYPE](0.0)
+        var acc_z = Scalar[DTYPE](0.35)
+        var found = False
+
+        for _try in range(100):
+            var b = rng.step_uniform()
+            var bx = Scalar[DTYPE](SPAWN_X_LO) + Scalar[DTYPE](
+                b[0]
+            ) * Scalar[DTYPE](SPAWN_X_HI - SPAWN_X_LO)
+            var bz = Scalar[DTYPE](SPAWN_Z_LO) + Scalar[DTYPE](
+                b[1]
+            ) * Scalar[DTYPE](SPAWN_Z_HI - SPAWN_Z_LO)
+
+            var hit = False
+            for g in range(CUP_GEOM_FIRST, CUP_GEOM_LAST + 1):
+                var r = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_RADIUS])
+                var hl = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_LENGTH])
+                # Capsule axis in the body frame: local z rotated by the geom
+                # quaternion, scaled by the half-length.
+                var qx = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_QUAT_X])
+                var qy = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_QUAT_Y])
+                var qz = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_QUAT_Z])
+                var qw = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_QUAT_W])
+                var ax = Scalar[DTYPE](2.0) * (qx * qz + qw * qy)
+                var ay = Scalar[DTYPE](2.0) * (qy * qz - qw * qx)
+                var az = Scalar[DTYPE](1.0) - Scalar[DTYPE](2.0) * (
+                    qx * qx + qy * qy
+                )
+
+                var cx = cup_x + rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_POS_X])
+                var cy = cup_y + rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_POS_Y])
+                var cz = cup_z + rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_POS_Z])
+
+                # Closest point on [c - hl*a, c + hl*a] to (bx, 0, bz).
+                var px = bx - cx
+                var py = Scalar[DTYPE](0.0) - cy
+                var pz = bz - cz
+                var t = px * ax + py * ay + pz * az
+                if t > hl:
+                    t = hl
+                elif t < -hl:
+                    t = -hl
+                var ddx = px - t * ax
+                var ddy = py - t * ay
+                var ddz = pz - t * az
+                var dist = sqrt_dt[DTYPE](
+                    ddx * ddx + ddy * ddy + ddz * ddz
+                )
+                if dist < r + Scalar[DTYPE](BALL_RADIUS):
+                    hit = True
+
+            if not hit and not found:
+                acc_x = bx
+                acc_z = bz
+                found = True
+
+        qpos[env, QADR_BALL_X] = acc_x
+        qpos[env, QADR_BALL_Z] = acc_z
+
+    @always_inline
+    @staticmethod
+    def custom_extract_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        OBS_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+        NA_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cfrc_int: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        subtree_com: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        site_xpos_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        xquat_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """`BallInCup.get_observation`: position then velocity, both whole."""
+        comptime assert NQ + NV == OBS_DIM, (
+            "ball_in_cup: qpos(NQ) + qvel(NV) must equal OBS_DIM exactly."
+        )
+        var k = 0
+        for i in range(NQ):
+            obs[env, k] = qpos[env, i]
+            k += 1
+        for i in range(NV):
+            obs[env, k] = qvel[env, i]
+            k += 1
+        return True
+
+    @always_inline
+    @staticmethod
+    def compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        ACTION_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+        NA_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        cacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cfrc_int: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        subtree_com: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        site_xpos_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        xquat_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        env: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """`Physics.in_target()` — 1.0 inside the target box, else 0.0."""
+        # `named.data.site_xpos['target', ['x', 'z']]`
+        var tx = rebind[Scalar[DTYPE]](site_xpos[env, TARGET_SITE_IDX * 3 + 0])
+        var tz = rebind[Scalar[DTYPE]](site_xpos[env, TARGET_SITE_IDX * 3 + 2])
+        # `named.data.xpos['ball', ['x', 'z']]` — the BODY, not the geom.
+        var bx = rebind[Scalar[DTYPE]](xpos[env, BALL_BODY_IDX * 3 + 0])
+        var bz = rebind[Scalar[DTYPE]](xpos[env, BALL_BODY_IDX * 3 + 2])
+
+        var dx = tx - bx
+        if dx < Scalar[DTYPE](0):
+            dx = -dx
+        var dz = tz - bz
+        if dz < Scalar[DTYPE](0):
+            dz = -dz
+
+        var in_target = (
+            dx < Scalar[DTYPE](TARGET_HALF_X - BALL_RADIUS)
+            and dz < Scalar[DTYPE](TARGET_HALF_Z - BALL_RADIUS)
+        )
+        return (
+            Scalar[DTYPE](1.0) if in_target else Scalar[DTYPE](0.0),
+            False,
+        )

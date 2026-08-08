@@ -464,6 +464,7 @@ struct DMWalkerConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         NJOINT_F: Int,
         NV_F: Int,
         NBODY_M: Int,
+        NGEOM_F: Int,
     ](
         qpos: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NQ_F), MutAnyOrigin
@@ -479,6 +480,12 @@ struct DMWalkerConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         ],
         mocap_quat: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NBODY_M * 4), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY_M, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
         ],
         env: Int,
         seed: Int,

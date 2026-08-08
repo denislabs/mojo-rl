@@ -5,7 +5,7 @@ the first with a tendon LIMIT — see `ball_in_cup_xml` for what that required.
 Reference: references/dm_control-main/dm_control/suite/ball_in_cup.py + .xml
 """
 
-from .ball_in_cup import DMBallInCupCatch
+from .ball_in_cup import DMBallInCupCatch, DMBallInCupCatchBatched
 from .ball_in_cup_config import DMBallInCupConfig
 from .ball_in_cup_xml import (
     DMBallInCupModel,

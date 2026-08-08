@@ -1058,6 +1058,12 @@ struct Phyics3dBatchedEnv[
             reset_mask: LayoutTensor[
                 DT, Layout.row_major(Self.N_ENVS), MutAnyOrigin
             ],
+            bodies: LayoutTensor[
+                DT,
+                Layout.row_major(Self.NBODY, MODEL_BODY_SIZE),
+                MutAnyOrigin,
+            ],
+            geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
             seed: Int,
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -1065,7 +1071,7 @@ struct Phyics3dBatchedEnv[
                 return
             Self._reset_env_lane(
                 qpos, qvel, qacc, qfrc, meta, joints, mocap_pos,
-                mocap_quat, i, seed,
+                mocap_quat, bodies, geoms, i, seed,
             )
             reset_mask[i] = Scalar[DT](1)
 
@@ -1079,6 +1085,8 @@ struct Phyics3dBatchedEnv[
             self.d.mocap_pos.lt["gpu", type_of(self.d).L_B3](),
             self.d.mocap_quat.lt["gpu", type_of(self.d).L_B4](),
             LayoutTensor[DT, Layout.row_major(Self.N_ENVS)](self._reset_mask),
+            self.mf.bodies.lt["gpu", type_of(self.mf).L_BODY](),
+            self.mf.geoms.lt["gpu", Self.L_GEOMS_HOOK](),
             Int(rng_seed),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
@@ -1349,6 +1357,12 @@ struct Phyics3dBatchedEnv[
             reset_mask: LayoutTensor[
                 DT, Layout.row_major(Self.N_ENVS), MutAnyOrigin
             ],
+            bodies: LayoutTensor[
+                DT,
+                Layout.row_major(Self.NBODY, MODEL_BODY_SIZE),
+                MutAnyOrigin,
+            ],
+            geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= Self.N_ENVS:
@@ -1364,6 +1378,8 @@ struct Phyics3dBatchedEnv[
                     joints,
                     mocap_pos,
                     mocap_quat,
+                    bodies,
+                    geoms,
                     i,
                     Int(rebind[Scalar[DType.uint64]](counter[0])),
                 )
@@ -1385,6 +1401,8 @@ struct Phyics3dBatchedEnv[
             self.d.mocap_quat.lt["gpu", type_of(self.d).L_B4](),
             cnt_t,
             LayoutTensor[DT, Layout.row_major(Self.N_ENVS)](self._reset_mask),
+            self.mf.bodies.lt["gpu", type_of(self.mf).L_BODY](),
+            self.mf.geoms.lt["gpu", Self.L_GEOMS_HOOK](),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1427,18 +1445,33 @@ struct Phyics3dBatchedEnv[
         mocap_quat: LayoutTensor[
             DT, Layout.row_major(Self.N_ENVS, Self.NBODY * 4), MutAnyOrigin
         ],
+        bodies: LayoutTensor[
+            DT, Layout.row_major(Self.NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
         env: Int,
         seed: Int,
     ):
         """One env lane's reset on the field tensors (arithmetic verbatim
-        from the slab era: joint reset noise + CONFIG qpos + hook metadata)."""
+        from the slab era: joint reset noise + CONFIG qpos + hook metadata).
+
+        ⚠ `bodies` / `geoms` are the MODEL records, and the hook must not
+        expect FK products alongside them: this runs BEFORE `_run_fields_fk`,
+        so `Data.xpos` still holds the PREVIOUS episode's pose. `Phyics3dEnv`
+        has the same ordering (`_reset_state` runs `_fields_fk()` after
+        `custom_reset_cpu`), which is exactly how ball_in_cup's rejection
+        sampler ended up testing against a stale cup position."""
         var RESET_NOISE = Scalar[DT](Self.CONFIG.get_reset_noise())
         Self.MODEL_DEF.reset_env_gpu[DT, Self.N_ENVS](
             qpos, qvel, qacc, qfrc, env, RESET_NOISE, seed
         )
         Self.CONFIG.init_qpos_gpu[
-            DT, Self.N_ENVS, Self.NQ, Self.NJOINT, Self.NV, Self.NBODY
-        ](qpos, qvel, joints, mocap_pos, mocap_quat, env, seed)
+            DT, Self.N_ENVS, Self.NQ, Self.NJOINT, Self.NV, Self.NBODY,
+            Self.NGEOM_F,
+        ](
+            qpos, qvel, joints, mocap_pos, mocap_quat, bodies, geoms,
+            env, seed,
+        )
         meta[env, META_IDX_STEP_COUNT] = Scalar[DT](0.0)
         Self.CONFIG.pre_step_gpu[DT, Self.N_ENVS, Self.NQ](qpos, meta, env)
 

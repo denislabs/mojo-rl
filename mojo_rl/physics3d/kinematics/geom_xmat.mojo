@@ -24,6 +24,9 @@ QUATERNION ORDER: `Data.xquat` and the packed geom record are both
 [x, y, z, w], NOT MuJoCo's [w, x, y, z].
 """
 
+from std.collections import InlineArray
+from layout import Layout, LayoutTensor
+
 from ..fields import Data
 from ..gpu.constants import (
     MODEL_GEOM_SIZE,
@@ -92,3 +95,61 @@ def geom_xmat_elem[
     """`data.geom_xmat[geom, idx]`; `idx` is an `XMAT_*` constant."""
     var q = geom_xquat(d, m_geoms, geom)
     return quat_xmat_elem(q[0], q[1], q[2], q[3], idx)
+
+
+@always_inline
+def geom_xquat_gpu[
+    DTYPE: DType,
+    BATCH_SIZE: Int,
+    NBODY: Int,
+    NGEOM_F: Int,
+](
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+    ],
+    geoms: LayoutTensor[
+        DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+    ],
+    env: Int,
+    geom: Int,
+) -> InlineArray[Scalar[DTYPE], 4]:
+    """`geom_xquat` for one lane of the batched path, as (x, y, z, w).
+
+    DERIVED, not stored — same call as the CPU form, and for the same reason
+    `geom_xpos_gpu` is derived: `Data` carries no `geom_xmat`, and this is one
+    quaternion multiply over FK output the batched path already has.
+
+    All arithmetic in `DTYPE`. The CPU twin widens to Float64; Metal rejects a
+    kernel containing `double`, so the two agree to float32 rounding rather
+    than bitwise.
+
+    World-attached geoms (`body == 0`) carry their local quaternion directly —
+    the worldbody frame is the identity. ⚠ That branch is RUNTIME here, not
+    comptime: `geom` is an ordinary argument so a caller can loop over geoms.
+    """
+    var gx = rebind[Scalar[DTYPE]](geoms[geom, GEOM_IDX_QUAT_X])
+    var gy = rebind[Scalar[DTYPE]](geoms[geom, GEOM_IDX_QUAT_Y])
+    var gz = rebind[Scalar[DTYPE]](geoms[geom, GEOM_IDX_QUAT_Z])
+    var gw = rebind[Scalar[DTYPE]](geoms[geom, GEOM_IDX_QUAT_W])
+
+    var body = Int(rebind[Scalar[DTYPE]](geoms[geom, GEOM_IDX_BODY]))
+    var out = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    if body == 0:
+        out[0] = gx
+        out[1] = gy
+        out[2] = gz
+        out[3] = gw
+        return out
+
+    var q = gpu_quat_mul[DTYPE](
+        rebind[Scalar[DTYPE]](xquat[env, body * 4 + 0]),
+        rebind[Scalar[DTYPE]](xquat[env, body * 4 + 1]),
+        rebind[Scalar[DTYPE]](xquat[env, body * 4 + 2]),
+        rebind[Scalar[DTYPE]](xquat[env, body * 4 + 3]),
+        gx, gy, gz, gw,
+    )
+    out[0] = q[0]
+    out[1] = q[1]
+    out[2] = q[2]
+    out[3] = q[3]
+    return out
