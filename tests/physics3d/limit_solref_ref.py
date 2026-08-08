@@ -88,3 +88,26 @@ if __name__ == "__main__":
         print(f"  efc[{i}] type={int(d.efc_type[i])} id={int(d.efc_id[i])}"
               f" pos={d.efc_pos[i]:.6g} KBIP={np.array(d.efc_KBIP[i])}")
     print("qacc", np.array(d.qacc))
+
+
+# ---------------------------------------------------------------------------
+# Second fixture: INSIDE the clamp region, for defect 23 (the REFSAFE clamp).
+# ---------------------------------------------------------------------------
+# Identical to XML above except solreflimit, which is BELOW 2*timestep. MuJoCo
+# raises it (`solref[0] = max(solref[0], 2*timestep)`,
+# engine_core_constraint.c:2028, "integrator safety", active unless
+# mjDSBL_REFSAFE — and that bit is off by default, so it always applies).
+#
+#     declared solreflimit 0.0025,  timestep 0.005,  2*timestep 0.01
+#     MuJoCo uses  1/(0.99^2 * 0.01^2)   =  10203.04
+#     unclamped    1/(0.99^2 * 0.0025^2) = 163248.65      16x too stiff
+#
+# ⚠ THE MODEL STILL REPORTS 0.0025 in `jnt_solref` — the clamp happens when the
+# constraint row is built, not at compile time. So a gate that compares model
+# TABLES will see nothing; only a gate that compares the SOLVED row catches it.
+XML_CLAMPED = XML.replace('solreflimit="0.04 1"', 'solreflimit="0.0025 1"')
+
+
+def model_clamped():
+    import mujoco
+    return mujoco.MjModel.from_xml_string(XML_CLAMPED)

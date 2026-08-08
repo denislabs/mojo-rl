@@ -158,15 +158,17 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
 def solref_spring_damper[
     DTYPE: DType
 ](
-    ref_tc: Scalar[DTYPE],
+    ref_tc_raw: Scalar[DTYPE],
     ref_dr: Scalar[DTYPE],
     d_width: Scalar[DTYPE],
+    timestep: Scalar[DTYPE],
 ) -> Tuple[Scalar[DTYPE], Scalar[DTYPE]]:
     """MuJoCo's `solref` -> constraint spring/damper, INCLUDING the direct form.
 
     Port of `engine_core_constraint.c:1845-1862`. Returns `(K, B)` for
     `aref = -B*vel - K*imp*pos`.
 
+        ref[0] = max(ref[0], 2*timestep)   if ref[0] > 0   (REFSAFE)
         K = ref[0] > 0 : 1 / (d_width^2 * ref[0]^2 * ref[1]^2)   standard
                        : -ref[0] / d_width^2                     direct
         B = ref[1] > 0 : 2 / (d_width * ref[0])                  standard
@@ -232,6 +234,27 @@ def solref_spring_damper[
     equal priority.)
     """
     comptime MINVAL = Scalar[DTYPE](1e-15)
+
+    # ⚠ REFSAFE: `timeconst` is raised to 2*timestep before anything uses it
+    # (`engine_core_constraint.c:2028`, "integrator safety", active unless
+    # mjDSBL_REFSAFE — and that flag is OFF by default, so this ALWAYS applies).
+    # It is the DIRECT form (`ref_tc <= 0`) that is exempt: MuJoCo guards the
+    # clamp with `solref[0] > 0`, so a negative solref passes through as the
+    # stiffness it literally is.
+    #
+    # Missing this made quadruped 4x too stiff on its four LIVE equality rows:
+    # eq_solref 0.005 against dt 0.005, where MuJoCo's efc_KBIP reads 40812.16
+    # (the clamped 1/(0.99^2 * 0.01^2)) and we computed 163248.65.
+    #
+    # ⚠ `timestep` IS REQUIRED, not defaulted. A default of 0 would make this
+    # a silent no-op at any call site that forgot to pass it, which is the
+    # half-fix shape that produced defect 22 and the twelve-way copy-paste this
+    # function exists to end. The compiler enumerates the call sites instead.
+    var ref_tc = ref_tc_raw
+    if ref_tc > Scalar[DTYPE](0):
+        var two_dt = Scalar[DTYPE](2.0) * timestep
+        if ref_tc < two_dt:
+            ref_tc = two_dt
 
     var k_den = d_width * d_width * ref_tc * ref_tc * ref_dr * ref_dr
     var k_out: Scalar[DTYPE]

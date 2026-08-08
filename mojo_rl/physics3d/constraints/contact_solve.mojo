@@ -55,6 +55,7 @@ from .friction_dof import _friction_env
 from .equality_tendon import _equality_env, _tendon_env
 from ..fields import Data, Model, DynamicsScratch, ContactScratch
 from ..gpu.constants import (
+    MODEL_META_IDX_TIMESTEP,
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
@@ -565,6 +566,7 @@ def _precompute_contact_normal[
                 contacts[env, c_off + CONTACT_IDX_SOLREF_1]
             ),
             si_dmax,
+            rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
         )
         var K_spring = _kb[0]
         var B_damp = _kb[1]
@@ -928,6 +930,7 @@ def _precompute_contact_friction[
             rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_SOLREF_0]),
             rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_SOLREF_1]),
             rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_SOLIMP_1]),
+            rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
         )
         var K_spring_c = _kb_c[0]
         var B_damp_c = _kb_c[1]
@@ -1082,6 +1085,7 @@ def _precompute_contact_friction[
             rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_SOLREF_0]),
             rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_SOLREF_1]),
             rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_SOLIMP_1]),
+            rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
         )
         var bt1_c: Scalar[DTYPE] = 0
         var bt2_c: Scalar[DTYPE] = 0
@@ -1381,7 +1385,8 @@ def _contact_solve_env[
     # solref. See `constraints/constraint_data.solref_spring_damper` — the
     # formula lived in twelve copy-pasted sites until 2026-08-03.
     (K_spring, B_damp) = solref_spring_damper[DTYPE](
-        sr_tc, sr_dr, si_dmax
+        sr_tc, sr_dr, si_dmax,
+        rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
     )
 
     # === PHASE 1: normal precompute (legacy: parallel, one thread per

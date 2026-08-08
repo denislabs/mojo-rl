@@ -98,6 +98,7 @@ from ..constraints.equality_tendon import (
 )
 from ..fields import Data, Model, DynamicsScratch, ContactScratch
 from ..gpu.constants import (
+    MODEL_META_IDX_TIMESTEP,
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
@@ -563,7 +564,8 @@ def _newton_solve_env[
     # solref. See `constraints/constraint_data.solref_spring_damper` — the
     # formula lived in twelve copy-pasted sites until 2026-08-03.
     (K_spring, B_damp) = solref_spring_damper[DTYPE](
-        sr_tc, sr_dr, si_dmax
+        sr_tc, sr_dr, si_dmax,
+        rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
     )
     impratio = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_IMPRATIO])
     if impratio < Scalar[DTYPE](1e-6):
@@ -788,7 +790,8 @@ def _newton_solve_env[
             # solref. See `constraints/constraint_data.solref_spring_damper` — the
             # formula lived in twelve copy-pasted sites until 2026-08-03.
             var (l_K_spring, l_B_damp) = solref_spring_damper[DTYPE](
-                lr_tc, lr_dr, li_dmax
+                lr_tc, lr_dr, li_dmax,
+                rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
             )
 
             var pos = rebind[Scalar[DTYPE]](qpos[env, qpos_adr])
@@ -2727,7 +2730,8 @@ def _newton_blocked_fields_kernel[
         # solref. See `constraints/constraint_data.solref_spring_damper` — the
         # formula lived in twelve copy-pasted sites until 2026-08-03.
         (K_spring, B_damp) = solref_spring_damper[DTYPE](
-            sr_tc, sr_dr, si_dmax
+            sr_tc, sr_dr, si_dmax,
+            rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
         )
         impratio = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_IMPRATIO])
         if impratio < Scalar[DTYPE](1e-6):
@@ -3013,7 +3017,8 @@ def _newton_blocked_fields_kernel[
             # solref. See `constraints/constraint_data.solref_spring_damper` — the
             # formula lived in twelve copy-pasted sites until 2026-08-03.
             var (l_K_spring, l_B_damp) = solref_spring_damper[DTYPE](
-                lr_tc, lr_dr, li_dmax
+                lr_tc, lr_dr, li_dmax,
+                rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
             )
 
             var pos = rebind[Scalar[DTYPE]](qpos[env, qpos_adr])

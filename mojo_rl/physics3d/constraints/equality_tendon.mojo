@@ -33,6 +33,7 @@ from ..types import _max_one, EQ_WELD
 from ..joint_types import JNT_FREE, JNT_BALL
 from ..kinematics.quat_math import quat_mul, quat_conjugate, quat_rotate
 from ..gpu.constants import (
+    MODEL_META_IDX_TIMESTEP,
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
@@ -623,7 +624,8 @@ def _equality_env[
         # solref. See `constraints/constraint_data.solref_spring_damper` — the
         # formula lived in twelve copy-pasted sites until 2026-08-03.
         var (eq_K_spring, eq_B_damp) = solref_spring_damper[DTYPE](
-            sr_tc, sr_dr, si_dmax
+            sr_tc, sr_dr, si_dmax,
+            rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
         )
 
         # Compute world anchor A: xpos[body_a] + quat_rotate(xquat[body_a], anchor_a)
@@ -1285,7 +1287,8 @@ def _tendon_env[
         # solref. See `constraints/constraint_data.solref_spring_damper` — the
         # formula lived in twelve copy-pasted sites until 2026-08-03.
         var (t_K_spring, t_B_damp) = solref_spring_damper[DTYPE](
-            sr_tc, sr_dr, si_dmax
+            sr_tc, sr_dr, si_dmax,
+            rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
         )
 
         # Impedance: MuJoCo piecewise power formula on |pos_err|

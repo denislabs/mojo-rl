@@ -72,6 +72,7 @@ from layout import Layout, LayoutTensor
 
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JNT_BALL
 from ..gpu.constants import (
+    MODEL_META_IDX_TIMESTEP,
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
     MODEL_META_IDX_SOLREF_LIMIT_0,
@@ -300,7 +301,8 @@ def build_scalar_rows[
         # solref. See `constraints/constraint_data.solref_spring_damper` — the
         # formula lived in twelve copy-pasted sites until 2026-08-03.
         var (K_spring, B_damp) = solref_spring_damper[DTYPE](
-            lr_tc, lr_dr, li_dmax
+            lr_tc, lr_dr, li_dmax,
+            rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
         )
 
         for side in range(2):

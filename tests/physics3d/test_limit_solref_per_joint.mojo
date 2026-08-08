@@ -91,6 +91,45 @@ comptime LM = ModelDefFromXML[
     timestep=lp.TIMESTEP,
 ]
 
+# ── Defect 23 fixture: solreflimit BELOW 2*timestep ──────────────────────────
+# Same model, solreflimit 0.0025 against timestep 0.005 (2*dt = 0.01). MuJoCo
+# raises it to 0.01 when it builds the row ("integrator safety",
+# engine_core_constraint.c:2028); unclamped the stiffness is 16x MuJoCo's.
+#
+# ⚠ THE MODEL TABLES STILL SAY 0.0025 — the clamp happens at ROW BUILD, not at
+# compile. A model-constant gate sees nothing here; only the solved row does.
+comptime LIMIT_XML_CLAMPED = """<mujoco model="limit_solref">
+  <compiler angle="degree"/>
+  <option timestep="0.005" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="b0" pos="0 0 1">
+      <joint name="j0" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" density="1000"/>
+      <body name="b1" pos="0.2 0 0">
+        <joint name="j1" type="hinge" axis="0 1 0" limited="true"
+               range="-30 30" solreflimit="0.0025 1"
+               solimplimit="0.9 0.99 0.01"/>
+        <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" density="1000"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+comptime cp = parse_xml(LIMIT_XML_CLAMPED)
+comptime CM = ModelDefFromXML[
+    xml=LIMIT_XML_CLAMPED,
+    nbody=cp.NBODY, njoint=cp.NJOINT, nq=cp.NQ, nv=cp.NV,
+    ngeom=cp.NGEOM, nact=cp.NACT, ntex=cp.NTEX, nmat=cp.NMAT,
+    nlight=cp.NLIGHT, ncam=cp.NCAM, nsite=cp.NSITE,
+    max_tendon=cp.NTENDON,
+    cone_type=ConeType.PYRAMIDAL,
+    max_contacts=8,
+    obs_dim_override=1,
+    obs_qpos_skip=0,
+    timestep=cp.TIMESTEP,
+]
+
 comptime NQ = LM.NQ
 comptime NV = LM.NV
 
@@ -227,6 +266,99 @@ def test_limit_solref_is_read_per_joint() raises:
         " each row, not the MODEL_META_IDX_* slots that `fields_build` fills"
         " from joint 0. Measured before the fix: joint 0's params give"
         " K = 2770.08 where MuJoCo uses j1's 637.69, 4.3x apart.",
+    )
+
+
+def test_refsafe_clamp_raises_timeconst_to_two_timesteps() raises:
+    """solref[0] >= 2*timestep at row build — defect 23, gated vs MuJoCo.
+
+    ⚠ THIS TEST EXISTS BECAUSE THE CLAMP HAD NO OBSERVABLE EFFECT ANYWHERE
+    ELSE. Its only live site in the ported suite is quadruped's four equality
+    rows, and quadruped gates 11/11 both with and without it — an equality
+    constraint enforces the same kinematic condition at either stiffness, so
+    the converged solution barely moves. A change with no failing test is
+    indistinguishable from a change that is not wired up, which is why this
+    fixture is built to make the clamp the ONLY thing that differs.
+
+        declared solreflimit 0.0025, timestep 0.005, 2*timestep 0.01
+        MuJoCo   K = 1/(0.99^2 * 0.01^2)   =  10203.04   (efc_KBIP, measured)
+        unclamped  1/(0.99^2 * 0.0025^2)   = 163248.65   16x too stiff
+    """
+    print("--- REFSAFE clamp: solref[0] >= 2*timestep (defect 23) ---")
+    var sys = Python.import_module("sys")
+    sys.path.insert(0, TEST_PATH)
+    var mujoco = Python.import_module("mujoco")
+    var refmod = Python.import_module("limit_solref_ref")
+    var m = refmod.model_clamped()
+    m.opt.disableflags = (
+        Int(py=m.opt.disableflags)
+        | Int(py=mujoco.mjtDisableBit.mjDSBL_CONTACT)
+    )
+    var dat = mujoco.MjData(m)
+    dat.qpos[0] = Q0
+    dat.qpos[1] = Q1
+    dat.qvel[0] = V0
+    dat.qvel[1] = V1
+    mujoco.mj_forward(m, dat)
+
+    assert_true(
+        Int(py=dat.nefc) == 1,
+        "expected exactly one active limit row; the fixture is not exercising"
+        " the clamp",
+    )
+    # THE FIXTURE MUST BE IN THE CLAMP REGION, or this gates nothing: MuJoCo's
+    # own K has to be the CLAMPED value, not the declared one.
+    var K_mj = Float64(py=dat.efc_KBIP[0][0])
+    print("  declared solreflimit 0.0025, dt 0.005 -> MuJoCo K =", K_mj)
+    assert_true(
+        abs(K_mj - 10203.0405) < 1e-3,
+        "MuJoCo's K is not the CLAMPED 10203.04. If it reads 163248.65 the"
+        " reference stopped clamping and this test gates nothing; if it reads"
+        " something else the fixture drifted out of the clamp region.",
+    )
+
+    var ctx = DeviceContext()
+    var mf = Model[
+        DTYPE, CM.NV, CM.NBODY, CM.NJOINT, CM.NGEOM, CM.MAX_EQUALITY,
+        CM.MAX_TENDON, CM.NSITE, CM.NEXCLUDE, 0,
+    ]()
+    CM.init_fields[DTYPE, 0](ctx, mf)
+    var d = Data[DTYPE, CM.NQ, CM.NV, CM.NBODY, CM.MAX_CONTACTS, CM.NSITE, 1]()
+    CM.reset_data[DTYPE](d)
+    d.qpos.data[0] = Scalar[DTYPE](Q0)
+    d.qpos.data[1] = Scalar[DTYPE](Q1)
+    d.qvel.data[0] = Scalar[DTYPE](V0)
+    d.qvel.data[1] = Scalar[DTYPE](V1)
+    for i in range(CM.NV):
+        d.qfrc.data[i] = Scalar[DTYPE](0)
+    forward_kinematics["cpu"](d, mf)
+
+    var integ = EulerIntegrator[
+        DTYPE, CM.NQ, CM.NV, CM.NBODY, CM.NJOINT, CM.MAX_CONTACTS, CM.NGEOM,
+        CM.MAX_EQUALITY, CM.MAX_TENDON, CM.NSITE, CM.NEXCLUDE, 0,
+        CM.CONE_TYPE, 1, SOLVER="newton",
+        MAX_CONDIM=CM.MAX_CONDIM, NOSLIP_ITER=CM.NOSLIP_ITER,
+    ]()
+    integ.step["cpu", CONTACTS=False](d, mf)
+
+    var worst = Float64(0)
+    for i in range(CM.NV):
+        var ours = Float64(integ.scratch.qacc_constrained.data[i])
+        var theirs = Float64(py=dat.qacc[i])
+        var e = abs(ours - theirs)
+        print("   dof", i, " ours", ours, " MuJoCo", theirs, " |d|", e)
+        if e > worst:
+            worst = e
+    print("  worst |d(qacc)| =", worst)
+
+    assert_true(
+        worst < 1e-9,
+        "qacc disagrees with MuJoCo on a model whose solreflimit is BELOW"
+        " 2*timestep. That is defect 23: `solref_spring_damper` must raise"
+        " `ref_tc` to 2*timestep for the STANDARD format (ref_tc > 0) before"
+        " computing K and B, as engine_core_constraint.c:2028 does. The direct"
+        " (negative) form is exempt. Declared 0.0025 against dt 0.005 gives"
+        " K = 163248.65 unclamped where MuJoCo uses 10203.04 — 16x.",
     )
 
 

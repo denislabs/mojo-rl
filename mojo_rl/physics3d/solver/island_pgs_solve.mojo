@@ -57,6 +57,7 @@ comptime MAX_ISLANDS: Int = 64
 comptime ISLAND_CONVERGE_EPS: Float64 = 1e-6
 from ..fields import Data, Model, DynamicsScratch, ContactScratch
 from ..gpu.constants import (
+    MODEL_META_IDX_TIMESTEP,
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
@@ -304,7 +305,8 @@ def _island_pgs_solve_env[
     # solref. See `constraints/constraint_data.solref_spring_damper` — the
     # formula lived in twelve copy-pasted sites until 2026-08-03.
     (K_spring, B_damp) = solref_spring_damper[DTYPE](
-        sr_tc, sr_dr, si_dmax
+        sr_tc, sr_dr, si_dmax,
+        rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
     )
 
     # === PHASE 1: normal precompute (legacy: parallel, one thread per

@@ -19,6 +19,7 @@ from layout import Layout, LayoutTensor
 from ..joint_types import JNT_HINGE, JNT_SLIDE
 from ..fields import Data, Model, DynamicsScratch
 from ..gpu.constants import (
+    MODEL_META_IDX_TIMESTEP,
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
     JOINT_IDX_TYPE,
@@ -195,7 +196,8 @@ def _limits_env[
         # solref. See `constraints/constraint_data.solref_spring_damper` — the
         # formula lived in twelve copy-pasted sites until 2026-08-03.
         var (l_K_spring, l_B_damp) = solref_spring_damper[DTYPE](
-            lr_tc, lr_dr, li_dmax
+            lr_tc, lr_dr, li_dmax,
+            rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_TIMESTEP]),
         )
 
         var penetration = -limit_dist_arr[l]
