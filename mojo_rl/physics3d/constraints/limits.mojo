@@ -21,18 +21,22 @@ from ..fields import Data, Model, DynamicsScratch
 from ..gpu.constants import (
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
-    MODEL_META_IDX_SOLREF_LIMIT_0,
-    MODEL_META_IDX_SOLREF_LIMIT_1,
-    MODEL_META_IDX_SOLIMP_LIMIT_0,
-    MODEL_META_IDX_SOLIMP_LIMIT_1,
-    MODEL_META_IDX_SOLIMP_LIMIT_2,
-    MODEL_META_IDX_SOLIMP_LIMIT_3,
-    MODEL_META_IDX_SOLIMP_LIMIT_4,
     JOINT_IDX_TYPE,
     JOINT_IDX_DOF_ADR,
     JOINT_IDX_QPOS_ADR,
     JOINT_IDX_RANGE_MIN,
     JOINT_IDX_RANGE_MAX,
+    # ⚠ PER-JOINT limit solver params (defect 22). The `MODEL_META_IDX_SOL*
+    # _LIMIT_*` slots are deliberately NOT imported any more: `fields_build`
+    # fills them from JOINT 0 for the whole model, which is the free root on
+    # dog — unlimited, so the only joint that can never own a limit row.
+    JOINT_IDX_SOLREF_LIMIT_0,
+    JOINT_IDX_SOLREF_LIMIT_1,
+    JOINT_IDX_SOLIMP_LIMIT_0,
+    JOINT_IDX_SOLIMP_LIMIT_1,
+    JOINT_IDX_SOLIMP_LIMIT_2,
+    JOINT_IDX_SOLIMP_LIMIT_3,
+    JOINT_IDX_SOLIMP_LIMIT_4,
 )
 
 from .constraint_data import solref_spring_damper
@@ -72,6 +76,15 @@ def _limits_env[
     comptime MAX_LIMITS = _max_one[2 * NJOINT]()
 
     var limit_dof = InlineArray[Int, MAX_LIMITS](uninitialized=True)
+    # ⚠ THE OWNING JOINT, because solref/solimp are PER-JOINT (defect 22).
+    # These used to come from `meta`, which `fields_build` filled from JOINT 0
+    # for the whole model on the assumption of "uniform joint solimp across all
+    # current models". False on dog: 73 of its 74 joints are limited and all use
+    # solreflimit [0.01 1], while joint 0 is the FREE ROOT — unlimited, so the
+    # one joint whose parameters were broadcast is the only one that can never
+    # form a limit row. It carried the model defaults [0.02 1], making every
+    # limit 3.68x too soft (K 2770.08 where MuJoCo's efc_KBIP reads 10203.04).
+    var limit_jnt = InlineArray[Int, MAX_LIMITS](uninitialized=True)
     var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
     var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](
         uninitialized=True
@@ -82,6 +95,7 @@ def _limits_env[
     )
     for i in range(MAX_LIMITS):
         limit_dof[i] = 0
+        limit_jnt[i] = 0
         limit_sign[i] = Scalar[DTYPE](0)
         limit_dist_arr[i] = Scalar[DTYPE](0)
         K_limit[i] = Scalar[DTYPE](1)
@@ -104,6 +118,7 @@ def _limits_env[
         var dist_lo = pos - rmin
         if dist_lo < Scalar[DTYPE](0) and num_limits < MAX_LIMITS:
             limit_dof[num_limits] = dof
+            limit_jnt[num_limits] = j
             limit_sign[num_limits] = Scalar[DTYPE](1)
             limit_dist_arr[num_limits] = dist_lo
             K_limit[num_limits] = rebind[Scalar[DTYPE]](
@@ -115,6 +130,7 @@ def _limits_env[
         var dist_hi = rmax - pos
         if dist_hi < Scalar[DTYPE](0) and num_limits < MAX_LIMITS:
             limit_dof[num_limits] = dof
+            limit_jnt[num_limits] = j
             limit_sign[num_limits] = Scalar[DTYPE](-1)
             limit_dist_arr[num_limits] = dist_hi
             K_limit[num_limits] = rebind[Scalar[DTYPE]](
@@ -127,38 +143,8 @@ def _limits_env[
     if num_limits == 0:
         return
 
-    var lr_tc = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLREF_LIMIT_0])
-    var lr_dr = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLREF_LIMIT_1])
-    var li_dmin = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLIMP_LIMIT_0])
-    var li_dmax = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLIMP_LIMIT_1])
-    var li_width = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLIMP_LIMIT_2])
-    var li_midpoint = rebind[Scalar[DTYPE]](
-        meta[MODEL_META_IDX_SOLIMP_LIMIT_3]
-    )
-    var li_power = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLIMP_LIMIT_4])
-    if li_width < Scalar[DTYPE](1e-6):
-        li_width = Scalar[DTYPE](1e-6)
-    # Clamp BOTH ends to [mjMINIMP, mjMAXIMP] as MuJoCo does before
-    # interpolating (engine_core_constraint.c:1284-1287) — see the same fix in
-    # contact_solve.mojo for why the dmin floor is the one that matters.
     comptime MJ_MINIMP = Scalar[DTYPE](0.0001)
     comptime MJ_MAXIMP = Scalar[DTYPE](0.9999)
-    if li_dmin < MJ_MINIMP:
-        li_dmin = MJ_MINIMP
-    elif li_dmin > MJ_MAXIMP:
-        li_dmin = MJ_MAXIMP
-    if li_dmax < MJ_MINIMP:
-        li_dmax = MJ_MINIMP
-    elif li_dmax > MJ_MAXIMP:
-        li_dmax = MJ_MAXIMP
-    if li_power < Scalar[DTYPE](1):
-        li_power = Scalar[DTYPE](1)
-    # solref -> (K, B), including MuJoCo's DIRECT form for a NEGATIVE
-    # solref. See `constraints/constraint_data.solref_spring_damper` — the
-    # formula lived in twelve copy-pasted sites until 2026-08-03.
-    var (l_K_spring, l_B_damp) = solref_spring_damper[DTYPE](
-        lr_tc, lr_dr, li_dmax
-    )
 
     var lim_bias = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
     var lim_inv_K = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
@@ -167,6 +153,51 @@ def _limits_env[
         uninitialized=True
     )
     for l in range(num_limits):
+        # PER-ROW solref/solimp, read from the joint that OWNS this row
+        # (defect 22). MuJoCo carries `jnt_solref[j]` / `jnt_solimp[j]` and
+        # builds each limit row from its own joint's values; these were already
+        # parsed and written into the joint record by `fields_build` and then
+        # read by nothing.
+        var lj = limit_jnt[l]
+        var lr_tc = rebind[Scalar[DTYPE]](joints[lj, JOINT_IDX_SOLREF_LIMIT_0])
+        var lr_dr = rebind[Scalar[DTYPE]](joints[lj, JOINT_IDX_SOLREF_LIMIT_1])
+        var li_dmin = rebind[Scalar[DTYPE]](
+            joints[lj, JOINT_IDX_SOLIMP_LIMIT_0]
+        )
+        var li_dmax = rebind[Scalar[DTYPE]](
+            joints[lj, JOINT_IDX_SOLIMP_LIMIT_1]
+        )
+        var li_width = rebind[Scalar[DTYPE]](
+            joints[lj, JOINT_IDX_SOLIMP_LIMIT_2]
+        )
+        var li_midpoint = rebind[Scalar[DTYPE]](
+            joints[lj, JOINT_IDX_SOLIMP_LIMIT_3]
+        )
+        var li_power = rebind[Scalar[DTYPE]](
+            joints[lj, JOINT_IDX_SOLIMP_LIMIT_4]
+        )
+        if li_width < Scalar[DTYPE](1e-6):
+            li_width = Scalar[DTYPE](1e-6)
+        # Clamp BOTH ends to [mjMINIMP, mjMAXIMP] as MuJoCo does before
+        # interpolating (engine_core_constraint.c:1284-1287) — see the same fix
+        # in contact_solve.mojo for why the dmin floor is the one that matters.
+        if li_dmin < MJ_MINIMP:
+            li_dmin = MJ_MINIMP
+        elif li_dmin > MJ_MAXIMP:
+            li_dmin = MJ_MAXIMP
+        if li_dmax < MJ_MINIMP:
+            li_dmax = MJ_MINIMP
+        elif li_dmax > MJ_MAXIMP:
+            li_dmax = MJ_MAXIMP
+        if li_power < Scalar[DTYPE](1):
+            li_power = Scalar[DTYPE](1)
+        # solref -> (K, B), including MuJoCo's DIRECT form for a NEGATIVE
+        # solref. See `constraints/constraint_data.solref_spring_damper` — the
+        # formula lived in twelve copy-pasted sites until 2026-08-03.
+        var (l_K_spring, l_B_damp) = solref_spring_damper[DTYPE](
+            lr_tc, lr_dr, li_dmax
+        )
+
         var penetration = -limit_dist_arr[l]
         if penetration < Scalar[DTYPE](0):
             penetration = Scalar[DTYPE](0)
