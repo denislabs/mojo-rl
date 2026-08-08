@@ -326,7 +326,11 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 | `test_cheetah_torque_diag.mojo` | 5 constant-torque scenarios (free fall, small, max, all-down, all-up) | HalfCheetah (Newton) |
 | `test_cheetah_policy_diag.mojo` | PPO policy actions over 3 episodes (requires checkpoint) | HalfCheetah (Newton) |
 | `test_cheetah_diagnostics.mojo` | Free fall per-step logging (body Z, contacts, penetration) | HalfCheetah (PGS) |
-| `test_solver_debug.mojo` | Single-step solver trace (FK, M, constraints, solver iterations, writeback) | HalfCheetah (Newton) |
+_(`test_solver_debug.mojo` was listed here as a single-step solver trace. The
+file was EMPTY — 0 bytes in every commit that contains it, back to the June
+folder restructure — so the row documented something that never existed, while
+the file itself reported "module does not define a `main` function" in every
+sweep. Deleted 2026-08-08. A permanent red teaches people to ignore reds.)_
 
 ---
 

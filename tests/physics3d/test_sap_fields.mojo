@@ -51,6 +51,8 @@ from mojo_rl.physics3d.collision.contact_detection import (
 
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
+    CONTACT_IDX_SOLREF_0,
+    CONTACT_IDX_SOLIMP_4,
     CONTACT_IDX_BODY_A,
     CONTACT_IDX_BODY_B,
     CONTACT_IDX_DIST,
@@ -97,7 +99,32 @@ comptime GOLD_NCON_H = 14  # Part A humanoid SAP: total contacts
 # branch, which used to negate the normal AND swap the bodies (a double flip).
 # The physics of the fix is anchored against MuJoCo on dm_control manipulator,
 # where it took the grasp qacc from 5.21 to 4.05e-9.
-comptime GOLD_CON_H = 8088.218293994316
+#
+# ⚠ GOLD_CON_H moved +20570.003871900029 on 2026-08-03 with `11e188fd`
+# "per-contact solref/solimp reach the solver", and was NOT refreshed then —
+# it sat RED AT HEAD for five days. Two things hid it: this file is not in the
+# light sweep list (29 of 693 .mojo files), and Part A's failure ABORTED Parts
+# B and C, so the file could only ever report one of its two stale goldens.
+# Both fixed (363e1ae9 split the parts; the sweep is now 121 files).
+#
+# ACCOUNTED FOR EXACTLY, and measured rather than argued. That commit made
+# per-contact solref/solimp reach the contact RECORD — its own message: "the
+# whole model shared ONE solref taken from geom[0], and the per-geom values ...
+# were read by nothing" — so columns SOLREF_0/1 and SOLIMP_0..4 (21..29) went
+# from uniform to per-pair mixed values. Splitting the fingerprint at exactly
+# those columns (printed every run, below):
+#     solparam cols  20570.003868740983
+#     everything else 8088.218297153362   vs the old golden 8088.218293994316
+# The solparam columns carry the ENTIRE move to 3.16e-6 absolute, and that same
+# 3.16e-6 is the drift in the non-solparam part — 3.9e-10 relative, four orders
+# inside GOLD_RTOL. So nothing else moved and nothing is being buried.
+# The new values are the CORRECT ones: `11e188fd` is MuJoCo-verified by
+# `test_contact_solparams_vs_mujoco.mojo`, added in that same commit.
+#
+# ⚠ The split print is permanent ON PURPOSE. A count-and-fingerprint golden can
+# only be refreshed honestly if the move can be attributed to specific columns;
+# harvesting the number first produces a golden that passes by construction.
+comptime GOLD_CON_H = 28658.222165894345
 # Re-harvested 2026-07-29 (was NCON 6 / fingerprint 2258.0145981857786), same
 # cause as the plane-mesh gate: SawyerReach's class-only geoms now inherit
 # `type="mesh"` from their `<default class="base_viz"/base_col">` blocks, as
@@ -231,6 +258,31 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
                         e * MC_H * CONTACT_SIZE + c * CONTACT_SIZE + k
                     ]
                 ) * Float64((e + 1) * (c + 1) * (k + 1))
+    # THE ACCOUNT, not just the number. This file's rule is that a golden move
+    # must be explained exactly, so the fingerprint is also split at the
+    # solparam columns: `11e188fd` made per-contact solref/solimp reach the
+    # record (SOLREF_0/1 and SOLIMP_0..4 = columns 21..29), and the claim is
+    # that the whole 2026-08-03 move lives there and nowhere else. Printed
+    # every run, because the next person to move this needs the same split.
+    var fp_h_solparams = Float64(0)
+    var fp_h_rest = Float64(0)
+    for e in range(BATCH):
+        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        for c in range(nc):
+            for k in range(CONTACT_SIZE):
+                var term = Float64(
+                    d.contacts.data[
+                        e * MC_H * CONTACT_SIZE + c * CONTACT_SIZE + k
+                    ]
+                ) * Float64((e + 1) * (c + 1) * (k + 1))
+                if k >= CONTACT_IDX_SOLREF_0 and k <= CONTACT_IDX_SOLIMP_4:
+                    fp_h_solparams += term
+                else:
+                    fp_h_rest += term
+    print(
+        "  humanoid fingerprint split: solparam cols", fp_h_solparams,
+        " everything else", fp_h_rest,
+    )
     if ncon_h == 0:
         raise Error("humanoid SAP: no contacts — gate is vacuous")
     print("  humanoid fields-SAP total contacts:", ncon_h)

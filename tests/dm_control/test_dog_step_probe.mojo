@@ -364,7 +364,12 @@ def test_dog_step_stages_vs_mujoco() raises:
         dat0.ctrl[k] = 0.0
         dat0.act[k] = 0.0
     mujoco.mj_forward(mm0, dat0)
-    print("  [3] qacc with contacts DISABLED on both sides (ncon =",
+    # ⚠ PRINT `nefc` AND MEAN IT. This is labelled "contacts disabled", not
+    # "unconstrained": on dog `nefc` is 2 here — both elbow joint limits — and
+    # reading this line as an unconstrained comparison is exactly the mistake
+    # the stage-3 assert used to encode.
+    print("  [3] qacc with contacts DISABLED on both sides — NOT unconstrained,"
+          " joint limits and dry friction survive `mjDSBL_CONTACT` (ncon =",
           Int(py=dat0.ncon), ", nefc =", Int(py=dat0.nefc), ")")
     var qacc_nc = List[Float64]()
     for i in range(NV):
@@ -414,8 +419,21 @@ def test_dog_step_stages_vs_mujoco() raises:
     print("      max|d| =", r5)
 
     # Report only. The assertions below are the ones that can be stated
-    # honestly today: stages 1-3 are contact-free smooth dynamics and are
-    # gated elsewhere, so a miss there would relocate the bug entirely.
+    # honestly today.
+    #
+    # ⚠⚠ STAGE 3 IS NOT "THE UNCONSTRAINED ACCELERATION", AND THIS ASSERT USED
+    # TO SAY IT WAS. It ran `mjDSBL_CONTACT`, which keeps joint limits and dry
+    # friction — as the stage-3 comment above says — so on dog it solves TWO
+    # LIMIT_JOINT rows (elbow_L id=63, elbow_R id=71; measured `nefc = 2`).
+    # The message blamed "mass matrix, passive forces or the LDL solve", all
+    # three of which stage [2] EXONERATES: that one really is unconstrained
+    # (`nefc = 0`) and matches MuJoCo to 2.2e-12.
+    #
+    # The wrong label cost two confident misattributions on 2026-08-08 — first
+    # "upstream of contacts, suspect the actuator path", then a bisect over
+    # five innocent GPU-batching commits — before anyone read the per-stage
+    # numbers. An assert that names the wrong subsystem is worse than a silent
+    # one: it spends other people's time in the wrong place.
     assert_true(
         r1 < 1e-8,
         "the RNE bias already disagrees — the divergence is NOT in the contact"
@@ -423,8 +441,16 @@ def test_dog_step_stages_vs_mujoco() raises:
     )
     assert_true(
         r3 < 1e-8,
-        "the UNCONSTRAINED acceleration disagrees — mass matrix, passive"
-        " forces or the LDL solve, not the contact solver",
+        "the CONTACT-FREE solve disagrees. This is NOT the unconstrained"
+        " acceleration — stage [2] is, and it is exact — so the mass matrix,"
+        " the passive forces and the LDL solve are all already proven fine."
+        " `mjDSBL_CONTACT` keeps JOINT LIMITS and dry friction, so on dog this"
+        " stage is the solve of the two elbow LIMIT_JOINT rows. Compare"
+        " efc_pos / efc_margin / solref / solimp on those rows before"
+        " suspecting the solver; test_humanoid_limits_fields_vs_mujoco passes,"
+        " so limits are not wholly broken. Currently RED at |d| ~ 87 on a qacc"
+        " magnitude of ~500, pre-existing and masked whenever contacts are"
+        " live (stage [5] is exact at 2.8e-11) — see docs §18 addendum.",
     )
 
 
