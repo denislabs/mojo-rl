@@ -47,6 +47,7 @@ from mojo_rl.physics3d.gpu.constants import (
     CONTACT_IDX_NZ,
     CONTACT_IDX_DIST,
     META_IDX_NUM_CONTACTS,
+    METADATA_SIZE,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel, walker2d_xml
 
@@ -61,7 +62,6 @@ comptime NEQ = Walker2dModel.MAX_EQUALITY
 comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
-comptime METADATA_SIZE_L = 4
 
 # float32 FK on positions of order 1. Measured, then budgeted an order above.
 comptime POS_TOL: Float64 = 1e-5

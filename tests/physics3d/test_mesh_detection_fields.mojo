@@ -55,6 +55,7 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_RADIUS,
     GEOM_IDX_HALF_LENGTH,
     MAX_GPU_MESHES,
+    METADATA_SIZE,
 )
 from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel
 
@@ -70,7 +71,6 @@ comptime NSITE = SawyerReachModel.NSITE
 comptime MC = SawyerReachModel.MAX_CONTACTS
 comptime BATCH = 2
 comptime NMESHV = MAX_GPU_MESHES * 256
-comptime METADATA_SIZE_L = 4
 
 # --- GOLDEN fingerprints (regenerated after the flat-simplex fix) ------------
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
@@ -169,7 +169,7 @@ def main() raises:
     var ncon_total = 0
     var fp_con = Float64(0)
     for e in range(BATCH):
-        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         ncon_total += nc
         for c in range(nc):
             for k in range(CONTACT_SIZE):
@@ -200,7 +200,7 @@ def main() raises:
         print("  PASS: fields-GPU matches golden fingerprint")
 
     # Non-vacuity: env1 must have a mesh-geom-body vs obj-body contact.
-    var ncon1 = Int(d.meta.data[1 * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+    var ncon1 = Int(d.meta.data[1 * METADATA_SIZE + META_IDX_NUM_CONTACTS])
     var mesh_contact_found = False
     for c in range(ncon1):
         var ba = Int(
@@ -230,9 +230,9 @@ def main() raises:
     ](dc, mf)
     var worst = Float64(0)
     for e in range(BATCH):
-        var nc_g = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc_g = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         var nc_c = Int(
-            dc.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+            dc.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
         )
         if nc_g != nc_c:
             raise Error("fields-CPU contact count differs from fields-GPU")

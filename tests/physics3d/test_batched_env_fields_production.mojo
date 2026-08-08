@@ -25,14 +25,13 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS, METADATA_SIZE
 
 comptime BATCH = 2
 comptime N_STEPS = 16
 comptime OBS_DIM = Walker2dModel.OBS_DIM
 comptime ACT_DIM = Walker2dModel.ACTION_DIM
 comptime RESET_SEED = UInt64(123)
-comptime METADATA_SIZE_L = 4
 
 # The facade DEFAULT — the legacy production bundle.
 comptime EnvProd = Phyics3dBatchedEnv[
@@ -107,7 +106,7 @@ def main() raises:
             if h_done_p[e] != h_done_d[e]:
                 raise Error("done timing differs at step " + String(t))
             total_ncon += Int(
-                env_p.d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+                env_p.d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
             )
 
     print(

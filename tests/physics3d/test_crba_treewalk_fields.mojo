@@ -43,6 +43,7 @@ from mojo_rl.physics3d.dynamics.mass_matrix import (
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
+    METADATA_SIZE,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 from mojo_rl.envs.ant.ant_xml import AntModel
@@ -89,7 +90,6 @@ comptime A_NSITE = AntModel.NSITE
 comptime A_NEXCL = AntModel.NEXCLUDE
 comptime A_BATCH = 2
 
-comptime METADATA_SIZE_L = 4
 
 
 # ── legs 1+2 for Walker2D ──────────────────────────────────────────────────
@@ -380,7 +380,7 @@ def test_rk4_integrator_treewalk() raises:
 
     var ncon = 0
     for e in range(W_BATCH):
-        ncon += Int(d_tw.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        ncon += Int(d_tw.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
     if ncon == 0:
         raise Error("no contacts in the treewalk run — vacuous")
     print("  contacts (final step, treewalk run):", ncon)

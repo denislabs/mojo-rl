@@ -21,6 +21,7 @@ from mojo_rl.physics3d.gpu.constants import (
     METADATA_SIZE,
     MODEL_CURRICULUM_SIZE,
     MODEL_JOINT_SIZE,
+    MODEL_TENDON_SIZE,
 )
 
 
@@ -107,6 +108,20 @@ trait Phyics3dEnvConfig:
     # the only user: it draws a random orientation per episode, so a fixed
     # spawn height would sometimes start the robot inside the floor.
     comptime RESET_FIND_HEIGHT: Bool = False
+
+    # Does this config drive the actuators itself on the GPU path, via
+    # `custom_apply_actions_gpu` below?
+    #
+    # ⚠ THE GPU TWIN CANNOT BE A `return False` DEFAULT LIKE THE CPU ONE.
+    # `Phyics3dEnv` calls `custom_apply_actions_cpu` and branches on its return
+    # value at runtime; the batched path has to choose between two KERNEL
+    # LAUNCHES, so the choice must be comptime. Hence a declaration, checked
+    # the same way `HAS_GPU_HOOKS` is.
+    #
+    # Setting this True and not implementing the hook gives a permanently zero
+    # `qfrc` — every actuator dead, which trains to a flat curve rather than
+    # crashing. Flip it in the same commit as the hook.
+    comptime HAS_CUSTOM_ACTUATION_GPU: Bool = False
 
     # === CPU: Pre-step hook — save any per-env state before physics ===
     @staticmethod
@@ -332,6 +347,65 @@ trait Phyics3dEnvConfig:
         """
         return False
 
+    # === GPU inline: Custom action application (per-lane; G4 workaround) ===
+    @always_inline
+    @staticmethod
+    def custom_apply_actions_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NJOINT: Int,
+        NTENDON_F: Int,
+        ACTION_DIM: Int,
+        NA_F: Int,
+    ](
+        qfrc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        tendons: LayoutTensor[
+            DTYPE, Layout.row_major(NTENDON_F, MODEL_TENDON_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+    ):
+        """The batched twin of `custom_apply_actions_cpu`, one lane.
+
+        Reached only when `HAS_CUSTOM_ACTUATION_GPU` is True, in which case it
+        REPLACES `MODEL_DEF.apply_actions_kernel_gpu` entirely — including the
+        `qfrc` zeroing that opens it. Zero `qfrc[env, :]` yourself.
+
+        ⚠ UNLIKE THE CPU TWIN, THIS RUNS ONCE PER SUBSTEP. The batched env
+        calls it at the top of every frame-skip iteration, exactly where it
+        calls the model default, so a state-dependent force law is correct
+        here where the CPU hook's once-per-control-step cadence would not be.
+        `Phyics3dEnv` is the one that needs fixing if that ever matters.
+
+        `meta` is here for the TASK_PARAM slots — a per-episode model
+        parameter that cannot live in the shared `Model` (see
+        `physics3d/gpu/constants.META_IDX_TASK_PARAM_0`). `tendons` and
+        `joints` are the RUNTIME records, so a transmission read from them
+        follows the model rather than the comptime tables.
+        """
+        pass
+
     # === CPU: Float getters (can't use Float64 as comptime in traits) ===
     @staticmethod
     def get_timestep() -> Float64:
@@ -552,6 +626,9 @@ trait Phyics3dEnvConfig:
         ],
         geoms: LayoutTensor[
             DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
         env: Int,
         seed: Int,

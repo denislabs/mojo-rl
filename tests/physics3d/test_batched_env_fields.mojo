@@ -25,7 +25,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.envs.phyics3d_batched_env import Phyics3dBatchedEnv
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS, METADATA_SIZE
 
 comptime NQ = Walker2dModel.NQ
 comptime NV = Walker2dModel.NV
@@ -35,7 +35,6 @@ comptime OBS_DIM = Walker2dModel.OBS_DIM
 comptime ACT_DIM = Walker2dModel.ACTION_DIM
 comptime BATCH = 2
 comptime N_STEPS = 20
-comptime METADATA_SIZE_L = 4
 comptime RESET_SEED = UInt64(123)
 
 # Pinned to PGS + serial + dense (the config this gate's legacy reference used).
@@ -89,7 +88,7 @@ def main() raises:
         env.d.meta.download(ctx)
         for e in range(BATCH):
             total_ncon += Int(
-                env.d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+                env.d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
             )
     if total_ncon == 0:
         raise Error("no contacts over the run — gate is vacuous")

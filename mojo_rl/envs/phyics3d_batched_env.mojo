@@ -61,6 +61,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_SITE_SIZE,
     MODEL_GEOM_SIZE,
     MODEL_JOINT_SIZE,
+    MODEL_TENDON_SIZE,
     JOINT_IDX_TYPE,
     JOINT_IDX_QPOS_ADR,
     METADATA_SIZE,
@@ -152,6 +153,13 @@ struct Phyics3dBatchedEnv[
     comptime NGEOM_F: Int = Self.NGEOM if Self.NGEOM > 0 else 1
     comptime L_GEOMS_HOOK = Layout.row_major(
         Self.NGEOM_F, MODEL_GEOM_SIZE
+    )
+    # `Model.tendons` is `_at_least_one`'d too — layout only.
+    comptime NTENDON_F: Int = (
+        Self.MODEL_DEF.MAX_TENDON if Self.MODEL_DEF.MAX_TENDON > 0 else 1
+    )
+    comptime L_TENDONS_HOOK = Layout.row_major(
+        Self.NTENDON_F, MODEL_TENDON_SIZE
     )
 
     # Fields path (the actual physics state)
@@ -536,6 +544,83 @@ struct Phyics3dBatchedEnv[
                     break
             if all_done:
                 return
+
+    def _apply_actions_custom(mut self, c: DeviceContext) raises:
+        """Launch `CONFIG.custom_apply_actions_gpu` over the batch.
+
+        The batched twin of `Phyics3dEnv`'s `custom_applied` branch, and it
+        REPLACES the model default including its `qfrc` zeroing — the hook
+        zeroes for itself. Called at the top of every substep, which is where
+        the model default is called, so a state-dependent force law is right
+        here even though the CPU hook's once-per-control-step cadence would
+        not be.
+        """
+
+        @parameter
+        @always_inline
+        def act_kernel(
+            qfrc: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+            ],
+            actions: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.ACT_DIM), MutAnyOrigin
+            ],
+            qpos: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NQ), MutAnyOrigin
+            ],
+            qvel: LayoutTensor[
+                DT, Layout.row_major(Self.N_ENVS, Self.NV), MutAnyOrigin
+            ],
+            act: LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin],
+            meta: LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, METADATA_SIZE),
+                MutAnyOrigin,
+            ],
+            joints: LayoutTensor[
+                DT,
+                Layout.row_major(Self.NJOINT, MODEL_JOINT_SIZE),
+                MutAnyOrigin,
+            ],
+            tendons: LayoutTensor[DT, Self.L_TENDONS_HOOK, MutAnyOrigin],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= Self.N_ENVS:
+                return
+            Self.CONFIG.custom_apply_actions_gpu[
+                DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NJOINT,
+                Self.NTENDON_F, Self.ACT_DIM, Self.NA_F,
+            ](
+                qfrc, actions, qpos, qvel, act, meta, joints, tendons, env
+            )
+
+        # ⚠ The action view is built HERE rather than passed in: `actions_t`
+        # at the call site carries `origin_of(self._action)`, and handing that
+        # to a `mut self` method is an exclusivity violation ("aliasing values
+        # passed mutably to 'self' and to 'actions_t'"). The model-default
+        # path does not hit this because it is a static method on MODEL_DEF.
+        c.enqueue_function[act_kernel](
+            self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),
+            rebind[
+                LayoutTensor[
+                    DT,
+                    Layout.row_major(Self.N_ENVS, Self.ACT_DIM),
+                    MutAnyOrigin,
+                ]
+            ](
+                LayoutTensor[
+                    DT, Layout.row_major(Self.N_ENVS, Self.ACT_DIM)
+                ](self._action)
+            ),
+            self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
+            self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
+            self._act_operand(),
+            self.d.meta.lt["gpu", type_of(self.d).L_META](),
+            self.mf.joints.lt["gpu", type_of(self.mf).L_JOINT](),
+            self.mf.tendons.lt["gpu", Self.L_TENDONS_HOOK](),
+            grid_dim=(Self.BLOCKS,),
+            block_dim=(TPB,),
+        )
 
     def _sync_mocap_batch(mut self, c: DeviceContext) raises:
         """Push `mocap_pos`/`mocap_quat` into the mocap bodies' world pose.
@@ -1175,32 +1260,45 @@ struct Phyics3dBatchedEnv[
         # quadruped needs all three at once (`<general biastype="affine"
         # dyntype="filter">` on tendon transmissions).
         for _ in range(Self.CONFIG.FRAME_SKIP):
-            Self.MODEL_DEF.apply_actions_kernel_gpu[
-                DT, Self.N_ENVS, Self.ACT_DIM
-            ](
-                c,
-                self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),
-                rebind[
-                    LayoutTensor[
-                        DT,
-                        Layout.row_major(Self.N_ENVS, Self.ACT_DIM),
-                        MutAnyOrigin,
-                    ]
-                ](actions_t),
-                self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
-                self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
-                rebind[
-                    LayoutTensor[
-                        DT,
-                        Layout.row_major(Self.N_ENVS, Self.MODEL_DEF.NA_F),
-                        MutAnyOrigin,
-                    ]
+            # A config whose transmission is randomized PER EPISODE cannot be
+            # driven from the comptime actuator tables, which are baked from
+            # the XML — see `CONFIG.HAS_CUSTOM_ACTUATION_GPU`. The choice is
+            # comptime because it is a choice between kernel launches, not a
+            # per-lane `if` like the CPU path's.
+            comptime if Self.CONFIG.HAS_CUSTOM_ACTUATION_GPU:
+                self._apply_actions_custom(c)
+            else:
+                Self.MODEL_DEF.apply_actions_kernel_gpu[
+                    DT, Self.N_ENVS, Self.ACT_DIM
                 ](
-                    LayoutTensor[
-                        DT, Layout.row_major(Self.N_ENVS, Self.MODEL_DEF.NA_F)
-                    ](self._act)
-                ),
-            )
+                    c,
+                    self.d.qfrc.lt["gpu", type_of(self.d).L_NV](),
+                    rebind[
+                        LayoutTensor[
+                            DT,
+                            Layout.row_major(Self.N_ENVS, Self.ACT_DIM),
+                            MutAnyOrigin,
+                        ]
+                    ](actions_t),
+                    self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
+                    self.d.qvel.lt["gpu", type_of(self.d).L_NV](),
+                    rebind[
+                        LayoutTensor[
+                            DT,
+                            Layout.row_major(
+                                Self.N_ENVS, Self.MODEL_DEF.NA_F
+                            ),
+                            MutAnyOrigin,
+                        ]
+                    ](
+                        LayoutTensor[
+                            DT,
+                            Layout.row_major(
+                                Self.N_ENVS, Self.MODEL_DEF.NA_F
+                            ),
+                        ](self._act)
+                    ),
+                )
             comptime if Self.CONFIG.INTEGRATOR == "euler":
                 self.integ_euler.step["gpu"](self.d, self.mf, ctx)
             else:
@@ -1470,7 +1568,7 @@ struct Phyics3dBatchedEnv[
             Self.NGEOM_F,
         ](
             qpos, qvel, joints, mocap_pos, mocap_quat, bodies, geoms,
-            env, seed,
+            meta, env, seed,
         )
         meta[env, META_IDX_STEP_COUNT] = Scalar[DT](0.0)
         Self.CONFIG.pre_step_gpu[DT, Self.N_ENVS, Self.NQ](qpos, meta, env)

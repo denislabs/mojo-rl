@@ -31,6 +31,7 @@ from mojo_rl.physics3d.collision.contact_detection import (
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
     META_IDX_NUM_CONTACTS,
+    METADATA_SIZE,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 
@@ -46,7 +47,6 @@ comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime BATCH = 2
-comptime METADATA_SIZE_L = 4
 
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
@@ -112,7 +112,7 @@ def main() raises:
     var ncon_total = 0
     var fp_con = Float64(0)
     for e in range(BATCH):
-        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         ncon_total += nc
         for c in range(nc):
             for k in range(CONTACT_SIZE):
@@ -155,9 +155,9 @@ def main() raises:
     ](dc, mf)
     var worst = Float64(0)
     for e in range(BATCH):
-        var nc_g = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc_g = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         var nc_c = Int(
-            dc.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+            dc.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
         )
         if nc_g != nc_c:
             raise Error("fields-CPU contact count differs from fields-GPU")

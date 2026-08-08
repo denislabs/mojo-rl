@@ -487,6 +487,9 @@ struct DMFishUprightConfig(Phyics3dEnvConfig):
         geoms: LayoutTensor[
             DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
         ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
         env: Int,
         seed: Int,
     ):
@@ -841,6 +844,9 @@ struct DMFishSwimConfig(Phyics3dEnvConfig):
         ],
         geoms: LayoutTensor[
             DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
         ],
         env: Int,
         seed: Int,

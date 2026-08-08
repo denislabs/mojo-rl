@@ -119,12 +119,39 @@ comptime CONTACT_IDX_SOLIMP_4: Int = 29  # mixed solimp power
 # State Buffer Layout - Metadata
 # =============================================================================
 
-comptime METADATA_SIZE: Int = 4
+comptime METADATA_SIZE: Int = 8
 
 comptime META_IDX_NUM_CONTACTS: Int = 0
 comptime META_IDX_STEP_COUNT: Int = 1  # Episode step counter for truncation
 comptime META_IDX_PREV_X: Int = 2  # Previous x position for velocity computation
 comptime META_IDX_PREV_COM_X: Int = 3  # Reserved for prev CoM x (unused with cvel approach)
+
+# ── Per-episode TASK-RANDOMIZED MODEL PARAMETERS (the G4 workaround) ──────
+#
+# ⚠ WHY THESE LIVE IN PER-ENV STATE AND NOT IN `Model`. A few dm_control
+# tasks randomize a MODEL field per episode, not just the state:
+# `point_mass-hard` redraws the two fixed-tendon coefficient vectors
+# (`model.wrap_prm`) so each control drives a random linear combination of
+# root_x/root_y. `Model` is deliberately SHARED across the batch — the design
+# batches STATE, not MODEL — so a lane cannot own a different `Model.tendons`
+# row without batching the whole record set.
+#
+# These four slots are the narrow escape: the randomized quantity is a handful
+# of floats, it is per-episode (written by `init_qpos_gpu`, which already runs
+# per lane at reset), and the ONLY consumer is the config's own actuation
+# hook. That last part is a property to CHECK, not to assume — a tendon that
+# is also `limited`, spring-loaded, or named in an `<equality>` would be read
+# by the SOLVER out of `Model.tendons`, where these writes are invisible. The
+# configs that use these slots carry a comptime assert to that effect.
+#
+# NOT ZEROED between episodes beyond what the writer does: `_reset_env_lane`
+# sets `META_IDX_STEP_COUNT` and leaves the rest, exactly as it always did for
+# `META_IDX_PREV_X`. A hook that reads a slot it never wrote gets the previous
+# episode's value.
+comptime META_IDX_TASK_PARAM_0: Int = 4
+comptime META_IDX_TASK_PARAM_1: Int = 5
+comptime META_IDX_TASK_PARAM_2: Int = 6
+comptime META_IDX_TASK_PARAM_3: Int = 7
 
 
 # =============================================================================

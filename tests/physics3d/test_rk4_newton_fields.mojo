@@ -30,6 +30,7 @@ from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     CONTACT_SIZE,
+    METADATA_SIZE,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 
@@ -47,7 +48,6 @@ comptime NEXCL = Walker2dModel.NEXCLUDE
 comptime CONE = Walker2dModel.CONE_TYPE  # PYRAMIDAL (XML default)
 comptime BATCH = 2
 comptime N_STEPS = 3
-comptime METADATA_SIZE_L = 4
 
 # --- GOLDEN fingerprint (frozen from the legacy-validated fields-GPU run) -----
 # Regenerated 2026-07-31 for the pyramidal contact-force RECORD fix. The
@@ -148,7 +148,7 @@ def main() raises:
         var ncon_seen = 0
         for e in range(BATCH):
             ncon_seen += Int(
-                d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+                d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
             )
         if ncon_seen == 0:
             raise Error("no contacts at step " + String(step) + " — vacuous")
@@ -177,7 +177,7 @@ def main() raises:
             fp_qacc += Float64(d.qacc.data[e * NV + i]) * Float64(e * NV + i + 1)
     var fp_con = Float64(0)
     for e in range(BATCH):
-        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         for c in range(nc):
             for k in range(CONTACT_SIZE):
                 fp_con += Float64(

@@ -12,10 +12,20 @@ point_mass-EASY is **GPU-trainable as of 2026-08-07**:
     from mojo_rl.envs.dm_control.point_mass import DMPointMassEasyBatched
     var env = DMPointMassEasyBatched[N_ENVS=64](ctx)
 
-⚠ `hard` stays CPU-only, and not for want of effort: it mutates
-`Model.tendons` per episode (the actuator->joint mixing matrix), and
-`fields.Model` is SHARED and UNBATCHED across lanes — every env would get the
-last one's draw. That is gap G4. See docs/DM_CONTROL_GPU_TRAINING_G10.md.
+point_mass-HARD is GPU-trainable as of 2026-08-08, and G4 is CLOSED FOR IT
+WITHOUT BATCHING `Model`. It mutates the actuator->joint mixing per episode,
+and `fields.Model` is SHARED and UNBATCHED across lanes by design (the design
+batches STATE, not MODEL) — so the four randomized floats live in per-env
+state instead, in `d.meta`'s `META_IDX_TASK_PARAM_*` slots, written by
+`init_qpos_gpu` and read by `custom_apply_actions_gpu`.
+
+⚠ THAT SHORTCUT IS ONLY VALID BECAUSE NOTHING ELSE READS THESE TENDONS. A
+`limited` tendon emits a solver limit row, a spring-loaded one a passive
+force, an `<equality><tendon>` a constraint — all built from the SHARED
+`Model.tendons`, which these writes do not touch. point_mass's two tendons
+carry none of those, and `point_mass_hard_config` asserts it at compile time
+rather than trusting it. A domain that randomizes a tendon with any of them
+needs real per-env model storage. See docs/DM_CONTROL_GPU_TRAINING_G10.md.
 """
 
 from .point_mass_xml import DMPointMassModel
@@ -38,5 +48,10 @@ comptime DMPointMassHard[DTYPE: DType = DType.float64] = Phyics3dEnv[
 
 comptime DMPointMassEasyBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
     DMPointMassModel, DMPointMassConfig, N_ENVS,
+    TERMINATE_ON_UNHEALTHY=False,
+]
+
+comptime DMPointMassHardBatched[N_ENVS: Int] = Phyics3dBatchedEnv[
+    DMPointMassModel, DMPointMassHardConfig, N_ENVS,
     TERMINATE_ON_UNHEALTHY=False,
 ]

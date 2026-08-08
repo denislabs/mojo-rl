@@ -38,6 +38,10 @@ the sparse-ish `tolerance` reward and the timestep all come from
 from std.random import random_float64
 from std.math import sqrt, log, cos, pi, abs
 
+from layout import Layout, LayoutTensor
+from std.collections import InlineArray
+from std.random.philox import Random as PhiloxRandom
+
 from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
@@ -46,6 +50,20 @@ from mojo_rl.physics3d.gpu.constants import (
     TENDON_IDX_NUM_JOINTS,
     TENDON_IDX_JOINT_0,
     TENDON_IDX_COEF_0,
+    MODEL_BODY_SIZE,
+    MODEL_SITE_SIZE,
+    MODEL_GEOM_SIZE,
+    METADATA_SIZE,
+    MODEL_CURRICULUM_SIZE,
+    CONTACT_SIZE,
+    META_IDX_TASK_PARAM_0,
+)
+
+from ..dtype_math import sqrt_dt
+from ..gpu_reset import (
+    reset_seed,
+    standard_normal,
+    randomize_limited_and_rotational_joints_gpu,
 )
 
 from .point_mass_xml import DMPointMassModel
@@ -78,6 +96,11 @@ def _randn() -> Float64:
     var u2 = random_float64()
     return sqrt(-2.0 * log(u1)) * cos(2.0 * pi * u2)
 
+
+# XORed into the reset key for the MIXING draw, so it is a different stream
+# from the joint randomizer's — which consumes a joint-count-dependent number
+# of Philox blocks.
+comptime _MIXING_STREAM: UInt64 = 0xBF58476D1CE4E5B9
 
 struct DMPointMassHardConfig(Phyics3dEnvConfig):
     # === Physics === (identical to easy — one XML, one timestep, one horizon)
@@ -272,3 +295,436 @@ struct DMPointMassHardConfig(Phyics3dEnvConfig):
     @staticmethod
     def get_timestep() -> Float64:
         return Float64(DMPointMassModel.TIMESTEP)
+
+    # ── GPU hooks ────────────────────────────────────────────────────────
+    comptime HAS_GPU_HOOKS: Bool = True
+    # The transmission is redrawn every episode, so the comptime actuator
+    # tables are wrong by construction — see `custom_apply_actions_gpu`.
+    comptime HAS_CUSTOM_ACTUATION_GPU: Bool = True
+
+    # ⚠ THE `meta` TASK_PARAM SLOTS ARE ONLY ENOUGH BECAUSE NOTHING ELSE
+    # READS THESE TENDONS. A `limited` tendon emits a solver limit row, a
+    # spring-loaded one a passive force, and an `<equality><tendon>` a
+    # constraint — all built from `Model.tendons`, which is SHARED across the
+    # batch and which this config no longer keeps in sync. Randomizing a
+    # tendon with any of those needs real per-env model storage (G4), not
+    # this. point_mass's two tendons carry none; the assert lives inside
+    # `custom_apply_actions_gpu` because a `comptime for` must be contained
+    # in a function, not at struct scope.
+
+    @always_inline
+    @staticmethod
+    def init_qpos_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NJOINT: Int,
+        NV: Int,
+        NBODY: Int,
+        NGEOM_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        mocap_pos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        mocap_quat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """`easy`'s joint randomizer, then the control-to-joint mixing.
+
+        The mixing is TWO UNIT DIRECTIONS that are not too parallel, stored in
+        the four `META_IDX_TASK_PARAM_*` slots as (d1x, d1y, d2x, d2y) — the
+        per-env stand-in for `model.wrap_prm`, which cannot be per-lane
+        because `Model` is shared. `custom_apply_actions_gpu` reads them back.
+
+        ⚠ THE REJECTION LOOP IS FIXED-TRIP, unlike the CPU's `while`. Every
+        lane runs the same kernel, so an early break buys nothing and a
+        data-dependent trip count would diverge the warp; all lanes run the
+        bound and keep the FIRST accepted draw. Same acceptance region.
+
+        ⚠ FALLING BACK TO THE IDENTITY MIXING WOULD BE A SILENT `easy`. The
+        fallback here is (0, 1) against a d1 that is a unit vector — always
+        accepted unless d1 is within 26 degrees of the y-axis, and even then
+        it is a legitimate non-identity mixing rather than the XML's. With 64
+        tries the fallback is unreachable at ~1e-35.
+        """
+        randomize_limited_and_rotational_joints_gpu[
+            DTYPE, BATCH_SIZE, NQ, NJOINT, RANDOMIZE_UNLIMITED_HINGES=True
+        ](qpos, joints, env, seed)
+
+        var rng = PhiloxRandom(
+            seed=reset_seed(env, seed) ^ _MIXING_STREAM, offset=0
+        )
+        var b = rng.step_uniform()
+        var d1x = standard_normal[DTYPE](
+            Scalar[DTYPE](b[0]), Scalar[DTYPE](b[1])
+        )
+        var d1y = standard_normal[DTYPE](
+            Scalar[DTYPE](b[2]), Scalar[DTYPE](b[3])
+        )
+        var n1 = sqrt_dt[DTYPE](d1x * d1x + d1y * d1y)
+        if n1 < Scalar[DTYPE](1e-12):
+            d1x = Scalar[DTYPE](1)
+            d1y = Scalar[DTYPE](0)
+            n1 = Scalar[DTYPE](1)
+        d1x /= n1
+        d1y /= n1
+
+        var d2x = Scalar[DTYPE](0)
+        var d2y = Scalar[DTYPE](1)
+        var found = False
+        for _t in range(MAX_REJECT_TRIES):
+            var c = rng.step_uniform()
+            var cx = standard_normal[DTYPE](
+                Scalar[DTYPE](c[0]), Scalar[DTYPE](c[1])
+            )
+            var cy = standard_normal[DTYPE](
+                Scalar[DTYPE](c[2]), Scalar[DTYPE](c[3])
+            )
+            var n2 = sqrt_dt[DTYPE](cx * cx + cy * cy)
+            if n2 < Scalar[DTYPE](1e-12):
+                continue
+            cx /= n2
+            cy /= n2
+            var dot = d1x * cx + d1y * cy
+            var adot = -dot if dot < Scalar[DTYPE](0) else dot
+            if adot <= Scalar[DTYPE](PARALLEL_COS) and not found:
+                d2x = cx
+                d2y = cy
+                found = True
+
+        meta[env, META_IDX_TASK_PARAM_0] = d1x
+        meta[env, META_IDX_TASK_PARAM_0 + 1] = d1y
+        meta[env, META_IDX_TASK_PARAM_0 + 2] = d2x
+        meta[env, META_IDX_TASK_PARAM_0 + 3] = d2y
+
+    @always_inline
+    @staticmethod
+    def custom_apply_actions_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NJOINT: Int,
+        NTENDON_F: Int,
+        ACTION_DIM: Int,
+        NA_F: Int,
+    ](
+        qfrc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        joints: LayoutTensor[
+            DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        ],
+        tendons: LayoutTensor[
+            DTYPE, Layout.row_major(NTENDON_F, MODEL_TENDON_SIZE), MutAnyOrigin
+        ],
+        env: Int,
+    ):
+        """`qfrc[dof] += gear * coef * ctrl`, with `coef` read PER LANE.
+
+        The same arithmetic as `custom_apply_actions_cpu`, and for the same
+        reason: `MODEL_DEF.apply_actions_kernel_gpu` reads its transmission
+        from the COMPTIME tables, baked from the XML and therefore blind to
+        the per-episode mixing. Inheriting it would silently keep the identity
+        coefficients and turn `hard` back into `easy` — a task that trains
+        perfectly well and is simply the wrong one.
+
+        Only the COEFS come from `meta`; the joint ids and the wrap count
+        still come from the RUNTIME tendon records, and gear/ctrlrange from
+        the comptime tables (`hard` randomizes the mixing only, so those are
+        as constant as the XML).
+
+        ACTUATOR a DRIVES TENDON a — the model declares one `<motor tendon=>`
+        per `<fixed>`, in the same order, and nothing at runtime records that
+        pairing. The parity test pins it.
+        """
+        # ⚠ The per-episode coefs live in `d.meta`, NOT in `Model.tendons`,
+        # so any OTHER consumer of these tendons would read the stale XML
+        # values. Refuse a model where one exists rather than simulate a lane
+        # that actuates against its own mixing and springs against the XML's.
+        # (At struct scope this would be a `comptime for` outside a function,
+        # which Mojo rejects — hence its home here.)
+        comptime for _t in range(DMPointMassModel._acd.ntendon):
+            comptime assert (
+                DMPointMassModel._acd.tendon_stiffness[_t] == 0.0
+            ), (
+                "point_mass-hard: a tendon grew a SPRING. Its force is built"
+                " from the SHARED Model.tendons, which the per-episode coefs"
+                " in d.meta do not update."
+            )
+
+        for i in range(NV):
+            qfrc[env, i] = Scalar[DTYPE](0)
+
+        comptime nact = DMPointMassModel.nact
+        comptime for a in range(nact):
+            comptime if a < ACTION_DIM:
+                comptime c_min = DMPointMassModel._acd.motor_ctrl_min[a]
+                comptime c_max = DMPointMassModel._acd.motor_ctrl_max[a]
+                comptime gear = DMPointMassModel._acd.motor_gears[a]
+
+                var ctrl = rebind[Scalar[DTYPE]](actions[env, a])
+                if ctrl > Scalar[DTYPE](c_max):
+                    ctrl = Scalar[DTYPE](c_max)
+                elif ctrl < Scalar[DTYPE](c_min):
+                    ctrl = Scalar[DTYPE](c_min)
+
+                comptime if a < NTENDON_F:
+                    var njnt = Int(
+                        rebind[Scalar[DTYPE]](
+                            tendons[a, TENDON_IDX_NUM_JOINTS]
+                        )
+                    )
+                    for k in range(njnt):
+                        var jid = Int(
+                            rebind[Scalar[DTYPE]](
+                                tendons[a, TENDON_IDX_JOINT_0 + k]
+                            )
+                        )
+                        # ⚠ THE COEF, AND ONLY THE COEF, COMES FROM `meta`.
+                        # Slot layout is (t0.c0, t0.c1, t1.c0, t1.c1) —
+                        # `wrap_prm[[0,1]]` then `[[2,3]]`, the reference's own
+                        # order.
+                        var coef = rebind[Scalar[DTYPE]](
+                            meta[env, META_IDX_TASK_PARAM_0 + a * 2 + k]
+                        )
+                        var dadr = Int(
+                            rebind[Scalar[DTYPE]](
+                                joints[jid, JOINT_IDX_DOF_ADR]
+                            )
+                        )
+                        if dadr < 0 or dadr >= NV:
+                            continue
+                        qfrc[env, dadr] = rebind[Scalar[DTYPE]](
+                            qfrc[env, dadr]
+                        ) + Scalar[DTYPE](gear) * coef * ctrl
+
+    @always_inline
+    @staticmethod
+    def custom_extract_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        OBS_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+        NA_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cfrc_int: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        subtree_com: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        site_xpos_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        xquat_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """`easy`'s: qpos then qvel, both whole."""
+        return DMPointMassConfig.custom_extract_obs_gpu[
+            DTYPE, BATCH_SIZE, NQ, NV, NBODY, OBS_DIM, SITE_DIM, MC_F,
+            NSITE_F, NGEOM_F, NA_F,
+        ](
+            qpos, qvel, xpos, xquat, xvel, bodies, site_xpos, contacts,
+            sites, geoms, meta, obs, xipos, xangvel, cvel, cacc, cfrc_int,
+            subtree_com, site_xpos_acc, xquat_acc, act, env,
+        )
+
+    @always_inline
+    @staticmethod
+    def compute_reward_and_done_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        ACTION_DIM: Int,
+        SITE_DIM: Int,
+        MC_F: Int,
+        NSITE_F: Int,
+        NGEOM_F: Int,
+        NA_F: Int,
+    ](
+        qpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NQ), MutAnyOrigin
+        ],
+        qvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
+        ],
+        xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xipos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        xquat: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        xvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        bodies: LayoutTensor[
+            DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        ],
+        site_xpos: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        contacts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(BATCH_SIZE, MC_F * CONTACT_SIZE),
+            MutAnyOrigin,
+        ],
+        sites: LayoutTensor[
+            DTYPE, Layout.row_major(NSITE_F, MODEL_SITE_SIZE), MutAnyOrigin
+        ],
+        geoms: LayoutTensor[
+            DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        ],
+        cfrc_ext: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        meta: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
+        ],
+        curriculum: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_CURRICULUM_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+        ],
+        xangvel: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        cacc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        cfrc_int: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 6), MutAnyOrigin
+        ],
+        subtree_com: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        ],
+        site_xpos_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, SITE_DIM), MutAnyOrigin
+        ],
+        xquat_acc: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        ],
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        env: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
+    ) -> Tuple[Scalar[DTYPE], Bool]:
+        """`easy`'s, unchanged."""
+        return DMPointMassConfig.compute_reward_and_done_gpu[
+            DTYPE, BATCH_SIZE, NQ, NV, NBODY, ACTION_DIM, SITE_DIM, MC_F,
+            NSITE_F, NGEOM_F, NA_F,
+        ](
+            qpos, qvel, xpos, xipos, xquat, xvel, bodies, site_xpos,
+            contacts, sites, geoms, cfrc_ext, cvel, meta, curriculum,
+            actions, xangvel, cacc, cfrc_int, subtree_com, site_xpos_acc,
+            xquat_acc, act, env, step_count, frame_skip, timestep,
+        )

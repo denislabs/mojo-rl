@@ -66,6 +66,7 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_RADIUS,
     GEOM_IDX_HALF_LENGTH,
     MAX_GPU_MESHES,
+    METADATA_SIZE,
 )
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
 from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel
@@ -73,7 +74,6 @@ from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 
 comptime DTYPE = DType.float32
 comptime BATCH = 2
-comptime METADATA_SIZE_L = 4
 
 # --- GOLDEN fingerprints (frozen from the legacy-validated fields-GPU run) ----
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
@@ -249,7 +249,7 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     var ncon_h = 0
     var fp_h = Float64(0)
     for e in range(BATCH):
-        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         ncon_h += nc
         for c in range(nc):
             for k in range(CONTACT_SIZE):
@@ -267,7 +267,7 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     var fp_h_solparams = Float64(0)
     var fp_h_rest = Float64(0)
     for e in range(BATCH):
-        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         for c in range(nc):
             for k in range(CONTACT_SIZE):
                 var term = Float64(
@@ -308,7 +308,7 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     # Non-vacuity for the SWEEP itself: env1 must contain a body-body
     # contact (BODY_B > 0) — plane contacts come from the direct plane
     # loop; only the sorted sweep emits body-body pairs.
-    var ncon1 = Int(d.meta.data[1 * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+    var ncon1 = Int(d.meta.data[1 * METADATA_SIZE + META_IDX_NUM_CONTACTS])
     var n_bodybody = 0
     for c in range(ncon1):
         var bb = Int(
@@ -336,10 +336,10 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     var worst = Float64(0)
     for e in range(BATCH):
         var nc_g = Int(
-            d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+            d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
         )
         var nc_c = Int(
-            dc.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+            dc.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
         )
         if nc_g != nc_c:
             raise Error("fields-CPU SAP contact count differs from fields-GPU")
@@ -388,10 +388,10 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     dn.meta.download(ctx)
     for e in range(BATCH):
         var nc_sap = Int(
-            d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+            d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
         )
         var nc_n2 = Int(
-            dn.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+            dn.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
         )
         print("  env", e, ": ncon fields-SAP=", nc_sap, " fields-N2=", nc_n2)
         if nc_sap != nc_n2:
@@ -459,10 +459,10 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     da.meta.download(ctx)
     for e in range(BATCH):
         var nc_a = Int(
-            da.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+            da.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
         )
         var nc_s = Int(
-            d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+            d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
         )
         if nc_a != nc_s:
             raise Error("auto(humanoid) != SAP contact count")
@@ -560,7 +560,7 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
     var ncon_s = 0
     var fp_s = Float64(0)
     for e in range(BATCH):
-        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         ncon_s += nc
         for c in range(nc):
             for k in range(CONTACT_SIZE):
@@ -578,7 +578,7 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
     # a row. Printed always, not under HARVEST, because the next person to
     # move it needs the same evidence.
     for e in range(BATCH):
-        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         for c in range(nc):
             var o = e * MC_S * CONTACT_SIZE + c * CONTACT_SIZE
             print(
@@ -611,7 +611,7 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
 
     # Non-vacuity: env1 must have a contact between a mesh-geom body and
     # the obj body (GJK/EPA mesh fallback through the SAP sweep).
-    var ncon1 = Int(d.meta.data[1 * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+    var ncon1 = Int(d.meta.data[1 * METADATA_SIZE + META_IDX_NUM_CONTACTS])
     var mesh_contact_found = False
     for c in range(ncon1):
         var ba = Int(
@@ -689,10 +689,10 @@ def _part_c_walker(ctx: DeviceContext) raises:
 
     for e in range(BATCH):
         var nc_1 = Int(
-            d1.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+            d1.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
         )
         var nc_2 = Int(
-            d2.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+            d2.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
         )
         print("  env", e, ": ncon direct=", nc_1, " auto=", nc_2)
         if nc_1 != nc_2:

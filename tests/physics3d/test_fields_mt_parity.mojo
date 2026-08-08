@@ -41,6 +41,7 @@ from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     CONTACT_SIZE,
+    METADATA_SIZE,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
@@ -74,7 +75,6 @@ comptime H_NSITE = HumanoidModel.NSITE  # 0
 comptime H_NEXCL = HumanoidModel.nexclude
 comptime H_BATCH = 2
 
-comptime METADATA_SIZE_L = 4
 
 
 def _cmp(
@@ -380,10 +380,10 @@ def test_rk4_integrator_parallel() raises:
         var ncon_seen = 0
         for e in range(BATCH):
             var nc_s = Int(
-                ds.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+                ds.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
             )
             var nc_p = Int(
-                dp.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+                dp.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
             )
             if nc_s != nc_p:
                 print(

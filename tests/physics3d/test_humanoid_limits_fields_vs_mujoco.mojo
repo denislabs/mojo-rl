@@ -85,6 +85,7 @@ from mojo_rl.physics3d.gpu.constants import (
     TENDON_IDX_SOLIMP_2,
     TENDON_IDX_SOLIMP_3,
     TENDON_IDX_SOLIMP_4,
+    METADATA_SIZE,
 )
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
 
@@ -100,7 +101,6 @@ comptime NTEN = HumanoidModel.MAX_TENDON  # 2
 comptime NSITE = HumanoidModel.NSITE  # 0
 comptime NEXCL = HumanoidModel.nexclude  # 0
 comptime CONE = HumanoidModel.CONE_TYPE
-comptime METADATA_SIZE_L = 4
 
 # Tendon length at the test pose (hip_y=0, knee=-0.15; L = -hip_y + knee):
 # length_ref here == polycoef[0] in the MuJoCo equality block below.

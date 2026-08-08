@@ -8,6 +8,7 @@ from .point_mass import (
     DMPointMassEasy,
     DMPointMassEasyBatched,
     DMPointMassHard,
+    DMPointMassHardBatched,
 )
 from .point_mass_config import DMPointMassConfig
 from .point_mass_hard_config import DMPointMassHardConfig

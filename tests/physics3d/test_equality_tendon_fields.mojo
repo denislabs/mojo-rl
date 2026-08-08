@@ -86,12 +86,12 @@ from mojo_rl.physics3d.gpu.constants import (
     EQ_IDX_SOLIMP_2,
     EQ_IDX_SOLIMP_3,
     EQ_IDX_SOLIMP_4,
+    METADATA_SIZE,
 )
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
 
 comptime DTYPE = DType.float32
 comptime BATCH = 2
-comptime METADATA_SIZE_L = 4
 
 # Regenerated 2026-07-31 (GOLD_A only, 0.25%; GOLD_NCON_A and both Part B
 # numbers unchanged) for the tendon-equality diagApprox. `_tendon_env` used to
@@ -378,7 +378,7 @@ def _part_a_tendon(ctx: DeviceContext) raises:
         var ncon_seen = 0
         for e in range(BATCH):
             ncon_seen += Int(
-                d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+                d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
             )
         if ncon_seen == 0:
             raise Error(
@@ -404,7 +404,7 @@ def _part_a_tendon(ctx: DeviceContext) raises:
             fp += Float64(d.qacc.data[e * NV_A + i]) * Float64(
                 (e * NV_A + i + 1) * 13
             )
-        var nc2 = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc2 = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         for c in range(nc2):
             for k in range(CONTACT_SIZE):
                 fp += Float64(
@@ -585,7 +585,7 @@ def _part_b_equality(ctx: DeviceContext) raises:
         var ncon_seen = 0
         for e in range(BATCH):
             ncon_seen += Int(
-                d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+                d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
             )
         if ncon_seen == 0:
             raise Error(
@@ -611,7 +611,7 @@ def _part_b_equality(ctx: DeviceContext) raises:
             fp += Float64(d.qacc.data[e * NV_B + i]) * Float64(
                 (e * NV_B + i + 1) * 13
             )
-        var nc2 = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc2 = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         for c in range(nc2):
             for k in range(CONTACT_SIZE):
                 fp += Float64(

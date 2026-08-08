@@ -51,6 +51,7 @@ from mojo_rl.physics3d.gpu.constants import (
     CONTACT_IDX_NZ,
     CONTACT_IDX_DIST,
     MAX_GPU_MESHES,
+    METADATA_SIZE,
 )
 from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel
 
@@ -65,7 +66,6 @@ comptime NTD = SawyerReachModel.MAX_TENDON
 comptime NSITE = SawyerReachModel.NSITE
 comptime MC = SawyerReachModel.MAX_CONTACTS
 comptime BATCH = 2
-comptime METADATA_SIZE_L = 4
 comptime NMESHV = MAX_GPU_MESHES * 256
 
 comptime OBJ_Z_ENV0: Float64 = -0.900  # vertex dist = -0.017
@@ -125,7 +125,7 @@ def _fp_check(
     var ncon_total = 0
     var fp = Float64(0)
     for e in range(BATCH):
-        var nc = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         ncon_total += nc
         for c in range(nc):
             for k in range(CONTACT_SIZE):
@@ -161,7 +161,7 @@ def _assert_plane_mesh_contact(
     expected_body_b: Int,
 ) raises:
     for e in range(BATCH):
-        var ncon = Int(d.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS])
+        var ncon = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         var found = 0
         for c in range(ncon):
             var base = e * MC * CONTACT_SIZE + c * CONTACT_SIZE
@@ -278,7 +278,7 @@ def main() raises:
     _assert_plane_mesh_contact("O(N^2)", d_a, obj_body, 0)
     for e in range(BATCH):
         var ncon = Int(
-            d_a.meta.data[e * METADATA_SIZE_L + META_IDX_NUM_CONTACTS]
+            d_a.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS]
         )
         var found_neg = False
         for c in range(ncon):
