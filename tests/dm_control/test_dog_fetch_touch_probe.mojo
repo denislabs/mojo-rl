@@ -39,12 +39,32 @@ WHAT IT MEASURED (2026-08-07, both fixtures pinned)
   A. default pose   ncon 24 vs 24, the SAME four body pairs against the floor,
                     normal forces to 0.2% (3.2127 vs 3.2125, 5.0823 vs 5.0705),
                     touch sum 32.9998 vs 32.9579 = 0.13%, heights to 1e-8.
-                    State drifts |d(qpos)| 3.4e-4 over the control step, and the
-                    contact DISTANCES carry it — ours -3.618e-4 where MuJoCo has
-                    -5.477e-4, i.e. the same force at a different penetration,
-                    which is the position difference and not a stiffness one.
+                    State drifts |d(qpos)| 3.4e-4 over the control step.
                     ⇒ nothing here is an engine defect at the 22.6% scale of the
                     fixture's own indeterminacy. Defect 20 closes on this row.
+
+                    ⚠ AN EARLIER VERSION OF THIS NOTE SAID "the contact
+                    DISTANCES carry it — ours -3.618e-4 where MuJoCo has
+                    -5.477e-4 ... the position difference, not a stiffness one".
+                    THAT WAS THIS FILE'S OWN STAGE BUG, not physics: see the
+                    warning at stage 2. Same-stage, the distances agree to
+                    1.6e-8.
+
+                    WHAT THE RESIDUAL ACTUALLY IS (measured 2026-08-09): the
+                    dog is AIRBORNE at the pinned pre-state — `nefc = 0`, no
+                    contacts, no limit rows — and lands DURING the control step:
+                        pre-step        ncon  0   torso z 0.415220
+                        after substep 1 ncon  0   torso z 0.415220
+                        after substep 2 ncon 12   deepest -2.470e-05
+                        after substep 3 ncon 24   deepest -3.618e-04
+                    So the comparison spans a landing transient where the
+                    contact set forms 0 -> 12 -> 24. The worst dof is 78 =
+                    joint 73 `finger_R`, whose `dof_M0` is 1.26e-4 against the
+                    root's 10.24 — the LIGHTEST dof in the model, 81252x
+                    lighter. |d(qvel)| 4.15e-2 there is an impulse difference of
+                    ~5e-6 N.m.s. Contact set, forces and heights all agree; this
+                    is sub-percent contact-formation timing amplified by the
+                    lightest joint, not a parameter or contact-set defect.
 
   B. settled 400    ⚠ ncon 10 vs 23, |d(qvel)| 2.25. NOT a rounding difference:
                     we are missing whole rows, including BOTH `(55,49)` and
@@ -247,6 +267,15 @@ def _stage(n_settle: Int, ball_x: Float64, label: String) raises:
     var nc = Int(Float64(env.d.meta.data[META_IDX_NUM_CONTACTS]))
     var ref_nc = Int(py=dat.ncon)
     print("  2. contacts   ours ncon", nc, "   MuJoCo ncon", ref_nc)
+    # ⚠⚠ DO NOT COMPARE THE `dist` COLUMNS ACROSS THESE TWO TABLES. They are at
+    # DIFFERENT STAGES: ours are the last substep's detection (PRE-integration),
+    # MuJoCo's have been re-detected by the closing `mj_step1` (POST). Measured
+    # on fixture A: MuJoCo reads -3.617941e-4 before that `mj_step1` and
+    # -6.938770e-4 after it, while ours reads -3.618101e-4 — so we agree with
+    # the SAME-STAGE value to 1.6e-8 and "differ" by 90% from the other one.
+    # An earlier read of this table concluded "the contact distances carry the
+    # drift, so it is a position difference upstream of the force law". That was
+    # this artifact, not physics. Same shape as defect 19, one table over.
     print("     ours:  (body_a, body_b)  dist  fn  dim")
     for c in range(nc):
         var o = c * CONTACT_SIZE
