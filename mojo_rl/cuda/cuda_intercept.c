@@ -132,6 +132,130 @@ static CUresult wrapped_cuLaunchKernelEx(
     return real_cuLaunchKernelEx(config, f, kernelParams, extra);
 }
 
+/* ---- Unsafe-during-capture call tracing --------------------------------
+ *
+ * ⚠ WHY THIS EXISTS: EVERY MOJO `print()` IS LOST WHEN THE RUN ABORTS.
+ * Mojo's stdout is block-buffered and an abort never flushes it, so a
+ * crashing capture shows ONLY the `[intercept]` lines — these go to stderr,
+ * which is unbuffered. That is why three separate NVIDIA runs told us
+ * nothing about how far the test got: the test's own prints never made it
+ * out. Anything we want to see from a crashing run must be printed HERE.
+ *
+ * WHAT WE ARE HUNTING. `CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED` is raised by
+ * MAX (its own error formatter, not ours -- our wrappers only return rc
+ * codes), and it survives capture modes GLOBAL, THREAD_LOCAL and RELAXED
+ * alike. Mode only governs calls on OTHER threads/resources, so a failure in
+ * all three modes means the call is on the CAPTURED STREAM ITSELF, which is
+ * illegal unconditionally. These wrappers name it instead of inferring it.
+ *
+ * ⚠ HOOKED VIA BOTH PATHS ON PURPOSE. A dlsym hook alone is not enough:
+ * modern CUDA prefers `cuGetProcAddress`, and anything MAX resolves that way
+ * is invisible to LD_PRELOAD. Both routes funnel through `maybe_wrap`, so if
+ * NOTHING prints below, that is itself the finding -- it means the offending
+ * call reaches the driver by a third route, and the next move is to widen
+ * the hook rather than to keep editing the capture code.
+ */
+
+static int g_capturing = 0;
+static CUstream g_capture_stream = NULL;
+
+typedef CUresult (*fn_ptr1_t)(void*);
+typedef CUresult (*fn_void_t)(void);
+typedef CUresult (*fn_alloc_t)(void**, size_t);
+
+static fn_ptr1_t  real_cuStreamSynchronize = NULL;
+static fn_ptr1_t  real_cuStreamQuery       = NULL;
+static fn_ptr1_t  real_cuEventSynchronize  = NULL;
+static fn_ptr1_t  real_cuEventQuery        = NULL;
+static fn_void_t  real_cuCtxSynchronize    = NULL;
+static fn_alloc_t real_cuMemAlloc          = NULL;
+
+static void note_unsafe(const char *name, void *arg) {
+    if (!g_capturing) return;
+    fprintf(stderr, "[intercept] !! %s(%p) DURING CAPTURE%s\n", name, arg,
+            (arg && arg == g_capture_stream)
+                ? "  <-- ON THE CAPTURED STREAM: illegal in EVERY mode"
+                : "  (other resource; legal under RELAXED)");
+}
+
+#define DEFINE_PTR1_WRAPPER(NAME)                                             \
+    static CUresult wrapped_##NAME(void *a) {                                 \
+        note_unsafe(#NAME, a);                                                \
+        return real_##NAME(a);                                                \
+    }
+
+DEFINE_PTR1_WRAPPER(cuStreamSynchronize)
+DEFINE_PTR1_WRAPPER(cuStreamQuery)
+DEFINE_PTR1_WRAPPER(cuEventSynchronize)
+DEFINE_PTR1_WRAPPER(cuEventQuery)
+
+static CUresult wrapped_cuCtxSynchronize(void) {
+    /* Context-wide sync: hits the captured stream by definition. */
+    note_unsafe("cuCtxSynchronize", g_capture_stream);
+    return real_cuCtxSynchronize();
+}
+
+static CUresult wrapped_cuMemAlloc(void **p, size_t n) {
+    if (g_capturing)
+        fprintf(stderr,
+                "[intercept] !! cuMemAlloc(%zu bytes) DURING CAPTURE\n", n);
+    return real_cuMemAlloc(p, n);
+}
+
+/* Shared by the dlsym hook and the cuGetProcAddress hook. */
+static void *maybe_wrap(const char *symbol, void *real_fn) {
+    if (!symbol || !real_fn) return real_fn;
+
+#define HOOK_PTR1(NAME)                                                       \
+    if (strcmp(symbol, #NAME) == 0) {                                         \
+        if (!real_##NAME) real_##NAME = (fn_ptr1_t)real_fn;                   \
+        return (void*)wrapped_##NAME;                                         \
+    }
+    HOOK_PTR1(cuStreamSynchronize)
+    HOOK_PTR1(cuStreamQuery)
+    HOOK_PTR1(cuEventSynchronize)
+    HOOK_PTR1(cuEventQuery)
+#undef HOOK_PTR1
+
+    if (strcmp(symbol, "cuCtxSynchronize") == 0) {
+        if (!real_cuCtxSynchronize) real_cuCtxSynchronize = (fn_void_t)real_fn;
+        return (void*)wrapped_cuCtxSynchronize;
+    }
+    /* `_v2` is the ABI the driver actually exports for cuMemAlloc. */
+    if (strcmp(symbol, "cuMemAlloc") == 0
+        || strcmp(symbol, "cuMemAlloc_v2") == 0) {
+        if (!real_cuMemAlloc) real_cuMemAlloc = (fn_alloc_t)real_fn;
+        return (void*)wrapped_cuMemAlloc;
+    }
+    return real_fn;
+}
+
+/* cuGetProcAddress: the route a dlsym hook cannot see. We let the real one
+   resolve, then swap our wrapper into the caller's out-pointer. */
+typedef CUresult (*cuGetProcAddress_t)(
+    const char*, void**, int, unsigned long long);
+typedef CUresult (*cuGetProcAddress_v2_t)(
+    const char*, void**, int, unsigned long long, int*);
+
+static cuGetProcAddress_t    real_cuGetProcAddress    = NULL;
+static cuGetProcAddress_v2_t real_cuGetProcAddress_v2 = NULL;
+
+static CUresult wrapped_cuGetProcAddress(
+    const char *sym, void **pfn, int ver, unsigned long long flags)
+{
+    CUresult r = real_cuGetProcAddress(sym, pfn, ver, flags);
+    if (r == 0 && pfn && *pfn) *pfn = maybe_wrap(sym, *pfn);
+    return r;
+}
+
+static CUresult wrapped_cuGetProcAddress_v2(
+    const char *sym, void **pfn, int ver, unsigned long long flags, int *status)
+{
+    CUresult r = real_cuGetProcAddress_v2(sym, pfn, ver, flags, status);
+    if (r == 0 && pfn && *pfn) *pfn = maybe_wrap(sym, *pfn);
+    return r;
+}
+
 /* ---- dlsym interception ---- */
 
 /* We need the real dlsym to resolve everything else */
@@ -193,7 +317,28 @@ void* dlsym(void *handle, const char *symbol) {
         return (void*)wrapped_cuLaunchKernelEx;
     }
 
-    return real_dlsym(handle, symbol);
+    /* Intercept cuGetProcAddress so symbols resolved through it are wrapped
+       too — see the note above `maybe_wrap`. */
+    if (strcmp(symbol, "cuGetProcAddress") == 0) {
+        void *real_fn = real_dlsym(handle, symbol);
+        if (real_fn && !real_cuGetProcAddress) {
+            real_cuGetProcAddress = (cuGetProcAddress_t)real_fn;
+            fprintf(stderr, "[intercept] Hooked cuGetProcAddress -> %p\n",
+                    real_fn);
+        }
+        return real_fn ? (void*)wrapped_cuGetProcAddress : NULL;
+    }
+    if (strcmp(symbol, "cuGetProcAddress_v2") == 0) {
+        void *real_fn = real_dlsym(handle, symbol);
+        if (real_fn && !real_cuGetProcAddress_v2) {
+            real_cuGetProcAddress_v2 = (cuGetProcAddress_v2_t)real_fn;
+            fprintf(stderr, "[intercept] Hooked cuGetProcAddress_v2 -> %p\n",
+                    real_fn);
+        }
+        return real_fn ? (void*)wrapped_cuGetProcAddress_v2 : NULL;
+    }
+
+    return maybe_wrap(symbol, real_dlsym(handle, symbol));
 }
 
 /* ---- API callable from Mojo via FFI ---- */
@@ -280,16 +425,30 @@ CUresult intercept_stream_begin_capture(void *stream) {
     fn_t f = (fn_t)cuda_fn("cuStreamBeginCapture");
     if (!f) return 1;
     int mode = capture_mode();
-    fprintf(stderr, "[intercept] cuStreamBeginCapture mode=%d (%s)\n", mode,
+    fprintf(stderr, "[intercept] cuStreamBeginCapture stream=%p mode=%d (%s)\n",
+            stream, mode,
             mode == 0 ? "GLOBAL" : (mode == 1 ? "THREAD_LOCAL" : "RELAXED"));
-    return f(stream, mode);
+    CUresult r = f(stream, mode);
+    if (r == 0) {
+        g_capturing = 1;
+        g_capture_stream = stream;
+    }
+    fprintf(stderr, "[intercept] cuStreamBeginCapture rc=%d\n", (int)r);
+    return r;
 }
 
 CUresult intercept_stream_end_capture(void *stream, void **graph_out) {
     typedef CUresult (*fn_t)(void*, void**);
     fn_t f = (fn_t)cuda_fn("cuStreamEndCapture");
     if (!f) return 1;
-    return f(stream, graph_out);
+    /* Clear the flag BEFORE the call: cuStreamEndCapture is itself an
+       operation on the capturing stream, and tracing it would be noise. */
+    g_capturing = 0;
+    g_capture_stream = NULL;
+    CUresult r = f(stream, graph_out);
+    fprintf(stderr, "[intercept] cuStreamEndCapture rc=%d graph=%p\n",
+            (int)r, graph_out ? *graph_out : NULL);
+    return r;
 }
 
 CUresult intercept_graph_instantiate(void **exec_out, void *graph) {
