@@ -124,13 +124,42 @@ def compute_convex_hull[
     num_verts: Int,
     mut hull_verts: List[Scalar[DTYPE]],
 ) -> Int:
-    """Compute 3D convex hull vertices via support-point sampling.
+    """Approximate the convex hull by support-point sampling.
 
-    For each of ~242 uniformly distributed directions, finds the support
-    point (vertex furthest along that direction). The set of unique support
-    points forms the convex hull vertices.
+    26 directions (a 3x3x3 grid minus the centre), then 3 refinement passes
+    seeded from the vertex-to-centroid directions of the hull points found so
+    far.
 
-    O(n*k) where n=num_verts, k=num_directions. Fast for any mesh size.
+    ⚠ THIS UNDER-APPROXIMATES, WITH ONE SIGN. Support sampling returns a SUBSET
+    of the true hull vertices, so the shape handed to GJK/EPA is smaller than
+    the real one and shallow contacts are lost; it never invents one. On
+    eGripperBase it keeps 81 of 883 true hull vertices.
+
+    ⚠ The docstring used to claim "~242 uniformly distributed directions" while
+    the code sampled 26 — the count was aspirational and the code was never
+    changed to match.
+
+    ⚠ DENSER SAMPLING WAS TRIED AND MEASURED NO BETTER, so the 26 stay. A
+    256-direction Fibonacci sphere raises eGripperBase from 81 to 324..335 kept
+    vertices and sawyer's total from 648 to 1956, yet:
+      * end-to-end, the sawyer obj/gripper depth moved 0.32 mm -> 0.33 mm of
+        error against MuJoCo, i.e. nothing;
+      * over 40 random interior poses, comparing each sampled hull against the
+        FULL vertex set, the 26-direction hull was BETTER — mean 0.785 mm / max
+        1.826 mm, versus mean 1.311 mm / max 28.368 mm for 256 directions.
+    The sampled sets are not nested: a Fibonacci sphere can miss the
+    axis-extreme points the 3x3x3 grid always captures, and those extremes are
+    what bound the shape. (The 28 mm outlier was not diagnosed; it is reported
+    rather than dismissed.)
+
+    So the remaining ~0.32 mm of sawyer mesh-depth error is NOT the sampler
+    density. An independent EPA on MuJoCo's own full vertex set still differs
+    from MuJoCo by 0.18 mm, so most of what is left is the reference's own
+    routine, not this function. Real gains need a real hull algorithm (the
+    module docstring's incremental/quickhull description is still aspirational),
+    not more directions.
+
+    O(n*k) per mesh, run once at model build.
     """
     if num_verts < 4:
         for i in range(num_verts * 3):
