@@ -141,16 +141,16 @@ struct PCEncoder[in_dim: Int, hidden_dim: Int, out_dim: Int]:
         # Param sub-views over the flat slab (no rebind; like the block path).
         var W1 = LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.hidden_dim), MutAnyOrigin
-        ](params.ptr + Self.W1_OFFSET)
+        ](params.ptr.unsafe_offset(Self.W1_OFFSET))
         var b1 = LayoutTensor[
             dtype, Layout.row_major(Self.hidden_dim), MutAnyOrigin
-        ](params.ptr + Self.B1_OFFSET)
+        ](params.ptr.unsafe_offset(Self.B1_OFFSET))
         var W2 = LayoutTensor[
             dtype, Layout.row_major(Self.hidden_dim, Self.out_dim), MutAnyOrigin
-        ](params.ptr + Self.W2_OFFSET)
+        ](params.ptr.unsafe_offset(Self.W2_OFFSET))
         var b2 = LayoutTensor[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
-        ](params.ptr + Self.B2_OFFSET)
+        ](params.ptr.unsafe_offset(Self.B2_OFFSET))
 
         # h_pre = input @ W1
         try:
@@ -211,19 +211,19 @@ struct PCEncoder[in_dim: Int, hidden_dim: Int, out_dim: Int]:
         # Grad + param sub-views over the slabs (no rebind; like the block path).
         var dW1 = LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.hidden_dim), MutAnyOrigin
-        ](grads.ptr + Self.W1_OFFSET)
+        ](grads.ptr.unsafe_offset(Self.W1_OFFSET))
         var db1 = LayoutTensor[
             dtype, Layout.row_major(Self.hidden_dim), MutAnyOrigin
-        ](grads.ptr + Self.B1_OFFSET)
+        ](grads.ptr.unsafe_offset(Self.B1_OFFSET))
         var dW2 = LayoutTensor[
             dtype, Layout.row_major(Self.hidden_dim, Self.out_dim), MutAnyOrigin
-        ](grads.ptr + Self.W2_OFFSET)
+        ](grads.ptr.unsafe_offset(Self.W2_OFFSET))
         var db2 = LayoutTensor[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
-        ](grads.ptr + Self.B2_OFFSET)
+        ](grads.ptr.unsafe_offset(Self.B2_OFFSET))
         var W2 = LayoutTensor[
             dtype, Layout.row_major(Self.hidden_dim, Self.out_dim), MutAnyOrigin
-        ](params.ptr + Self.W2_OFFSET)
+        ](params.ptr.unsafe_offset(Self.W2_OFFSET))
 
         # dW2 = h_act^T @ dz_out
         comptime if CompilationTarget.is_macos() and dtype == DType.float32:

@@ -177,12 +177,9 @@ struct ScalarAdam(Movable & Deinitable):
         consumers (SAC's `target_y` device-α path takes this as a kernel arg).
         Stable for the buffer lifetime. Module-trait consumers (the actor-loss
         `Scale` node) should prefer `alpha_dev_buffer` (type-safe DeviceBuffer)."""
-        return (
-            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
-                self.state_dev.value().unsafe_ptr()
-            )
-            + _SA_ALPHA
-        )
+        return rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+            self.state_dev.value().unsafe_ptr()
+        ).unsafe_offset(_SA_ALPHA)
 
     def alpha_dev_buffer(mut self) raises -> DeviceBuffer[DT]:
         """Length-1 device sub-buffer viewing `state_dev[ALPHA]` — the live α

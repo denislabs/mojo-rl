@@ -300,7 +300,7 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                 eo_buf[e].unsafe_free()
                 eo_buf[e] = nb
                 eo_cap[e] = newcap
-            unsafe_memcpy(dest=eo_buf[e] + off, src=obs_host + e * OBS, count=OBS)
+            unsafe_memcpy(dest=eo_buf[e].unsafe_offset(off), src=obs_host.unsafe_offset(e * OBS), count=OBS)
             e_act[e].append(Scalar[DT](action))
             for a in range(ACT):
                 e_pol[e].append(h_pol[unsafe_offset=e * ACT + a])

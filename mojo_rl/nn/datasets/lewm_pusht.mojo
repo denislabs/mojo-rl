@@ -525,8 +525,8 @@ struct LewmPushTExpert(Movable, Sized):
         var pix_per_frame = self.pixel_h * self.pixel_w * 3
         for k in range(self.num_steps):
             unsafe_memcpy(
-                dest=into.pixels + k * pix_per_frame,
-                src=into.pixels_dense + k * self.frameskip * pix_per_frame,
+                dest=into.pixels.unsafe_offset(k * pix_per_frame),
+                src=into.pixels_dense.unsafe_offset(k * self.frameskip * pix_per_frame),
                 count=pix_per_frame,
             )
 
@@ -593,8 +593,8 @@ struct LewmPushTExpert(Movable, Sized):
         var pix_per_frame = self.pixel_h * self.pixel_w * 3
         for k in range(self.num_steps):
             unsafe_memcpy(
-                dest=pixels_dst + k * pix_per_frame,
-                src=dense_scratch + k * self.frameskip * pix_per_frame,
+                dest=pixels_dst.unsafe_offset(k * pix_per_frame),
+                src=dense_scratch.unsafe_offset(k * self.frameskip * pix_per_frame),
                 count=pix_per_frame,
             )
 

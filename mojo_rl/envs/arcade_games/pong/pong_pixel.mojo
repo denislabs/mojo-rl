@@ -589,7 +589,7 @@ struct PongPixelEnv[
                 return
             var env_idx = tid // FB_SIZE
             var pixel = tid % FB_SIZE
-            var env_ws = ws_ptr + env_idx * PIXEL_WS_PER_ENV
+            var env_ws = ws_ptr.unsafe_offset(env_idx * PIXEL_WS_PER_ENV)
             var frame_buf = env_ws.unsafe_bitcast[UInt8]()
             frame_buf[unsafe_offset=pixel] = UInt8(0)
 
@@ -616,7 +616,7 @@ struct PongPixelEnv[
             var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
             if idx >= BATCH_SIZE:
                 return
-            var env_ws = ws_ptr + idx * PIXEL_WS_PER_ENV
+            var env_ws = ws_ptr.unsafe_offset(idx * PIXEL_WS_PER_ENV)
             var frame_buf = env_ws.unsafe_bitcast[UInt8]()
             _draw_pong_frame(
                 frame_buf,
@@ -659,7 +659,7 @@ struct PongPixelEnv[
             var dy = pixel_idx // OBS_W
             var dx = pixel_idx % OBS_W
 
-            var env_ws = ws_ptr + env_idx * PIXEL_WS_PER_ENV
+            var env_ws = ws_ptr.unsafe_offset(env_idx * PIXEL_WS_PER_ENV)
             var frame_buf = env_ws.unsafe_bitcast[UInt8]()
 
             # Box-filter resize for this single pixel
@@ -691,7 +691,7 @@ struct PongPixelEnv[
             # Output chronological frame stack for this pixel. NCHW =
             # f*FRAME_SIZE+pixel (frame-outer); NHWC = pixel*FRAME_STACK+f
             # (frame-inner, channels-last).
-            var env_obs = obs_ptr + env_idx * PIXEL_OBS_DIM
+            var env_obs = obs_ptr.unsafe_offset(env_idx * PIXEL_OBS_DIM)
             for f in range(FRAME_STACK):
                 var read_slot = (slot + 1 + f) % FRAME_STACK
                 var read_base = WS_FRAME_STACK + read_slot * FRAME_SIZE
@@ -722,7 +722,7 @@ struct PongPixelEnv[
             var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
             if idx >= BATCH_SIZE:
                 return
-            var env_ws = ws_ptr + idx * PIXEL_WS_PER_ENV
+            var env_ws = ws_ptr.unsafe_offset(idx * PIXEL_WS_PER_ENV)
             var slot = Int(env_ws[unsafe_offset=WS_FRAME_IDX_OFF])
             env_ws[unsafe_offset=WS_FRAME_IDX_OFF] = Scalar[gpu_dtype](
                 (slot + 1) % FRAME_STACK
@@ -833,7 +833,7 @@ struct PongPixelEnv[
                 )
 
                 # Clear frame stack for this env
-                var env_ws = ws_ptr + idx * PIXEL_WS_PER_ENV
+                var env_ws = ws_ptr.unsafe_offset(idx * PIXEL_WS_PER_ENV)
                 # Zero frame stack region
                 for i in range(FRAME_STACK_F32_SIZE):
                     env_ws[unsafe_offset=FRAME_BUF_F32_SIZE + i] = 0.0
@@ -877,7 +877,7 @@ struct PongPixelEnv[
                 ](states, dones, Scalar[DType.uint32](rng_seed))
 
                 # Clear frame stack for this env
-                var env_ws = ws_ptr + idx * PIXEL_WS_PER_ENV
+                var env_ws = ws_ptr.unsafe_offset(idx * PIXEL_WS_PER_ENV)
                 # Zero frame stack region
                 for i in range(FRAME_STACK_F32_SIZE):
                     env_ws[unsafe_offset=FRAME_BUF_F32_SIZE + i] = 0.0

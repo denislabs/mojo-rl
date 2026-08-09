@@ -316,14 +316,14 @@ def dynamics_pretrain_loss[
         comptime if COND:
             if actions:
                 dyn.set_actions(
-                    _mao(actions.value() + (B_EMP * T) * ADIM),
+                    _mao(actions.value().unsafe_offset((B_EMP * T) * ADIM)),
                     act_mask.value(),
                     BS,
                 )
         comptime if AGCOND:
             if agent_in:
                 dyn.set_agent_in(
-                    _mao(agent_in.value() + (B_EMP * T) * AGDIM), BS
+                    _mao(agent_in.value().unsafe_offset((B_EMP * T) * AGDIM)), BS
                 )
         _run_fwd[M, FWD, BS, ND](dyn, zts, zh1, ctx)
         for j in range(BS):
@@ -339,14 +339,14 @@ def dynamics_pretrain_loss[
         comptime if COND:
             if actions:
                 dyn.set_actions(
-                    _mao(actions.value() + (B_EMP * T) * ADIM),
+                    _mao(actions.value().unsafe_offset((B_EMP * T) * ADIM)),
                     act_mask.value(),
                     BS,
                 )
         comptime if AGCOND:
             if agent_in:
                 dyn.set_agent_in(
-                    _mao(agent_in.value() + (B_EMP * T) * AGDIM), BS
+                    _mao(agent_in.value().unsafe_offset((B_EMP * T) * AGDIM)), BS
                 )
         _run_fwd[M, FWD, BS, ND](dyn, zprime, zh2, ctx)
         for j in range(BS):

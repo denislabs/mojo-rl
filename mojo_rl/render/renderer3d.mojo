@@ -2088,7 +2088,7 @@ struct Renderer3D(Movable):
         )
         # Copy indices after vertices
         unsafe_memcpy(
-            dest=mapped_ptr + Int(vb_size),
+            dest=mapped_ptr.unsafe_offset(Int(vb_size)),
             src=Pointer(to=mesh_data.indices[0]).unsafe_bitcast[UInt8](),
             count=Int(ib_size),
         )

@@ -1537,7 +1537,7 @@ struct BipedalWalker[
                 SHAPES_SIZE,
                 owning=False,
             )
-            var per_env_ptr = workspace_ptr.value() + SHAPES_SIZE
+            var per_env_ptr = workspace_ptr.value().unsafe_offset(SHAPES_SIZE)
             contacts_buf = DeviceBuffer[dtype](
                 ctx,
                 per_env_ptr,
@@ -1546,19 +1546,19 @@ struct BipedalWalker[
             )
             contact_counts_buf = DeviceBuffer[dtype](
                 ctx,
-                per_env_ptr + BATCH_SIZE * CONTACTS_SIZE,
+                per_env_ptr.unsafe_offset(BATCH_SIZE * CONTACTS_SIZE),
                 BATCH_SIZE,
                 owning=False,
             )
             edge_counts_buf = DeviceBuffer[dtype](
                 ctx,
-                per_env_ptr + BATCH_SIZE * CONTACTS_SIZE + BATCH_SIZE,
+                per_env_ptr.unsafe_offset(BATCH_SIZE * CONTACTS_SIZE + BATCH_SIZE),
                 BATCH_SIZE,
                 owning=False,
             )
             joint_counts_buf = DeviceBuffer[dtype](
                 ctx,
-                per_env_ptr + BATCH_SIZE * CONTACTS_SIZE + 2 * BATCH_SIZE,
+                per_env_ptr.unsafe_offset(BATCH_SIZE * CONTACTS_SIZE + 2 * BATCH_SIZE),
                 BATCH_SIZE,
                 owning=False,
             )

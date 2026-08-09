@@ -938,9 +938,9 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
             var h = pix // OBS_PIX_W
             var w = pix % OBS_PIX_W
 
-            var state = states_ptr + env_idx * STATE_SIZE
+            var state = states_ptr.unsafe_offset(env_idx * STATE_SIZE)
             var rgb = _render_pixel_rgb_from_state(state, atlas_ptr, h, w)
-            var env_obs = obs_ptr + env_idx * PIXEL_OBS_DIM
+            var env_obs = obs_ptr.unsafe_offset(env_idx * PIXEL_OBS_DIM)
             env_obs[unsafe_offset=0 * HW + pix] = rgb[0]
             env_obs[unsafe_offset=1 * HW + pix] = rgb[1]
             env_obs[unsafe_offset=2 * HW + pix] = rgb[2]
@@ -1022,7 +1022,7 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
             var e = Int(block_dim.x * block_idx.x + thread_idx.x)
             if e >= BATCH_SIZE:
                 return
-            var state = states_ptr + e * STATE_SIZE
+            var state = states_ptr.unsafe_offset(e * STATE_SIZE)
             var action = Int(actions_ptr[unsafe_offset=e])
             var per_env_seed = (
                 UInt64(seed) * UInt64(BATCH_SIZE) + UInt64(e) + UInt64(1)

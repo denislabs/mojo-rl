@@ -192,8 +192,8 @@ def _bgra_maxpool_to_rgb_planar[
     var a32 = a.unsafe_bitcast[UInt32]()
     var b32 = b.unsafe_bitcast[UInt32]()
     var rp = dst
-    var gp = dst + RGB_SRC_PLANE
-    var bp = dst + 2 * RGB_SRC_PLANE
+    var gp = dst.unsafe_offset(RGB_SRC_PLANE)
+    var bp = dst.unsafe_offset(2 * RGB_SRC_PLANE)
     for i in range(0, RGB_SRC_PLANE, W):
         var va = a32.unsafe_load[width=W](i)
         var vb = b32.unsafe_load[width=W](i)
@@ -543,7 +543,7 @@ struct AtariEnv[
         var slot_offset = self.frame_idx * OBS_FRAME_SIZE
         _resize_160x210_to_84x84(
             self.gray_buf.value(),
-            self.frame_stack.value() + slot_offset,
+            self.frame_stack.value().unsafe_offset(slot_offset),
         )
         self.frame_idx = (self.frame_idx + 1) % 4
 
@@ -570,12 +570,12 @@ struct AtariEnv[
             self.raw_frame_b.value().as_unsafe_any_origin(),
             self.rgb_buf.value(),
         )
-        var slot = self.frame_stack.value() + self.frame_idx * RGB_FRAME_SIZE
+        var slot = self.frame_stack.value().unsafe_offset(self.frame_idx * RGB_FRAME_SIZE)
         var src = self.rgb_buf.value()
         for c in range(3):
             _resize_plane_160x210_to_96x96(
-                src + c * RGB_SRC_PLANE,
-                slot + c * RGB_OBS_PLANE,
+                src.unsafe_offset(c * RGB_SRC_PLANE),
+                slot.unsafe_offset(c * RGB_OBS_PLANE),
             )
         self.frame_idx = (self.frame_idx + 1) % 4
 
@@ -600,10 +600,10 @@ struct AtariEnv[
             comptime CH = RGB_STACK_SIZE // RGB_OBS_PLANE  # 12
             for i in range(4):
                 var slot = (self.frame_idx + i) % 4  # oldest first
-                var src = fs + slot * RGB_FRAME_SIZE
+                var src = fs.unsafe_offset(slot * RGB_FRAME_SIZE)
                 for c in range(3):
                     var ch = i * 3 + c
-                    var src_c = src + c * RGB_OBS_PLANE
+                    var src_c = src.unsafe_offset(c * RGB_OBS_PLANE)
                     for p in range(RGB_OBS_PLANE):
                         obs_out[unsafe_offset=p * CH + ch] = (
                             src_c[unsafe_offset=p].cast[Self.dtype]() / 255.0
@@ -618,7 +618,7 @@ struct AtariEnv[
             var out_off = 0
             for i in range(4):
                 var slot = (self.frame_idx + i) % 4  # oldest first
-                var src = fs + slot * RGB_FRAME_SIZE
+                var src = fs.unsafe_offset(slot * RGB_FRAME_SIZE)
                 for j in range(0, RGB_FRAME_SIZE, W):
                     obs_out.unsafe_store(
                         out_off + j,
@@ -678,7 +678,7 @@ struct AtariEnv[
         """Max-pool a/b → grayscale → area-resize to 96×96 into the current ring
         slot, then advance the ring (OBS_MODE==4)."""
         self._bgra_to_gray_maxpool()
-        var slot = self.frame_stack.value() + self.frame_idx * GRAY96_SIZE
+        var slot = self.frame_stack.value().unsafe_offset(self.frame_idx * GRAY96_SIZE)
         _resize_plane_160x210_to_96x96(self.gray_buf.value(), slot)
         self.frame_idx = (self.frame_idx + 1) % 4
 
@@ -693,7 +693,7 @@ struct AtariEnv[
         var out_off = 0
         for i in range(4):
             var slot = (self.frame_idx + i) % 4  # oldest first
-            var src = fs + slot * GRAY96_SIZE
+            var src = fs.unsafe_offset(slot * GRAY96_SIZE)
             for j in range(0, GRAY96_SIZE, W):
                 obs_out.unsafe_store(
                     out_off + j, src.unsafe_load[width=W](j).cast[Self.dtype]() / 255.0
@@ -886,7 +886,7 @@ struct AtariEnv[
         var out_off = 0
         for i in range(4):
             var slot = (self.frame_idx + i) % 4  # oldest first
-            var src = fs + slot * OBS_FRAME_SIZE
+            var src = fs.unsafe_offset(slot * OBS_FRAME_SIZE)
             for j in range(0, OBS_FRAME_SIZE, W):
                 obs_out.unsafe_store(
                     out_off + j,

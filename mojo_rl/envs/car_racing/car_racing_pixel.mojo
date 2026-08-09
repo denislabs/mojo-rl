@@ -205,7 +205,7 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
                 CarRacingDiscrete[Self.dtype]._reset_env[BATCH_SIZE, STATE_SIZE](st, env, s)
                 dn[env] = Scalar[dtype](0.0)
                 # Clear this env's frame stack + ring index.
-                var env_ws = ws_ptr + env * Self.STEP_WS_PER_ENV
+                var env_ws = ws_ptr.unsafe_offset(env * Self.STEP_WS_PER_ENV)
                 for i in range(Self.STEP_WS_PER_ENV):
                     env_ws[unsafe_offset=i] = Scalar[dtype](0.0)
 
@@ -285,7 +285,7 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
                     st[env, Self.D.METADATA_OFFSET + Self.D.META_NUM_TILES]
                 )
             )
-            var env_ws = ws_ptr + env * Self.STEP_WS_PER_ENV
+            var env_ws = ws_ptr.unsafe_offset(env * Self.STEP_WS_PER_ENV)
             var r2 = Scalar[dtype](Self.CULL_R2)
             var half = Scalar[dtype](0.5)
             var count = 0
@@ -332,9 +332,9 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
             var dy = pix // Self.OBS_W
             var dx = pix % Self.OBS_W
 
-            var env_ws = ws_ptr + env * Self.STEP_WS_PER_ENV
+            var env_ws = ws_ptr.unsafe_offset(env * Self.STEP_WS_PER_ENV)
             var vis_count = Int(rebind[Scalar[dtype]](env_ws[unsafe_offset=Self.WS_VIS_COUNT]))
-            var vis_ptr = env_ws + Self.WS_VIS
+            var vis_ptr = env_ws.unsafe_offset(Self.WS_VIS)
             var gray = CarRacingPixel[Self.dtype]._render_pixel[BATCH_SIZE, STATE_SIZE](
                 env, st, vis_ptr, vis_count, dx, dy
             )
@@ -342,7 +342,7 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
             var slot = Int(env_ws[unsafe_offset=Self.WS_IDX]) % Self.FRAME_STACK
             env_ws[unsafe_offset=slot * Self.FRAME_SIZE + pix] = gray
 
-            var env_obs = o_ptr + env * Self.OBS_DIM
+            var env_obs = o_ptr.unsafe_offset(env * Self.OBS_DIM)
             for f in range(Self.FRAME_STACK):
                 var rs = (slot + 1 + f) % Self.FRAME_STACK
                 env_obs[unsafe_offset=f * Self.FRAME_SIZE + pix] = env_ws[unsafe_offset=rs * Self.FRAME_SIZE + pix]
@@ -358,7 +358,7 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
                 return
-            var env_ws = ws_ptr + env * Self.STEP_WS_PER_ENV
+            var env_ws = ws_ptr.unsafe_offset(env * Self.STEP_WS_PER_ENV)
             var slot = Int(env_ws[unsafe_offset=Self.WS_IDX])
             env_ws[unsafe_offset=Self.WS_IDX] = Scalar[dtype]((slot + 1) % Self.FRAME_STACK)
 

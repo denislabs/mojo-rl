@@ -630,9 +630,9 @@ def generate_full_world_inline(
         var map_off = s_map(floor, 0, 0)
         var item_off = s_item_map(floor, 0, 0)
         var light_off = s_light_map(floor, 0, 0)
-        var map_ptr = state_ptr + map_off
-        var item_ptr = state_ptr + item_off
-        var light_ptr = state_ptr + light_off
+        var map_ptr = state_ptr.unsafe_offset(map_off)
+        var item_ptr = state_ptr.unsafe_offset(item_off)
+        var light_ptr = state_ptr.unsafe_offset(light_off)
 
         var ladders: Tuple[Int, Int, Int, Int]
         if _floor_is_dungeon(floor):

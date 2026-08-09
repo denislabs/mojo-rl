@@ -297,7 +297,7 @@ def ezv2_unroll_train_step_cpu[
                 cons_t_l[i] = tstore.data[(k - 1) * B * PROJ + i]
             var mk = Optional[Pointer[Scalar[DT], MutAnyOrigin]](None)
             if cons_mask:
-                mk = cons_mask.value() + (k - 1) * B
+                mk = cons_mask.value().unsafe_offset((k - 1) * B)
             var l_cons_k = consistency_loss_and_grad[B, PROJ](
                 pk.data, cons_t_l, cscale, gpk.data, mask=mk
             )
@@ -592,7 +592,7 @@ def ezv2_unroll_train_step_cpu_vp[
                 cons_t_l[i] = tstore.data[(k - 1) * B * PROJ + i]
             var mk = Optional[Pointer[Scalar[DT], MutAnyOrigin]](None)
             if cons_mask:
-                mk = cons_mask.value() + (k - 1) * B
+                mk = cons_mask.value().unsafe_offset((k - 1) * B)
             var l_cons_k = consistency_loss_and_grad[B, PROJ](
                 pk.data, cons_t_l, cscale, gpk.data, mask=mk)
             loss += l_cons_k; l_cons += l_cons_k

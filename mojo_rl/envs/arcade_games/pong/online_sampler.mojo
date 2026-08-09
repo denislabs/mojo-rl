@@ -201,8 +201,8 @@ struct OnlinePongSampler[
         var act_stride = Self.T * PONG_NUM_ACTIONS
 
         for b in range(Self.B):
-            var pix_dst = pixels_out + b * pix_stride
-            var act_dst = actions_out + b * act_stride
+            var pix_dst = pixels_out.unsafe_offset(b * pix_stride)
+            var act_dst = actions_out.unsafe_offset(b * act_stride)
 
             # Roll one window for env b, rejecting boundary-bridging windows.
             for _attempt in range(Self.MAX_RETRIES):
@@ -215,7 +215,7 @@ struct OnlinePongSampler[
                     var a = self.policy.select_action(self.envs[b])
 
                     # Pixels: quantize obs_t into slot t.
-                    self._quantize_into(obs, pix_dst + t * PONG_FRAME_BYTES)
+                    self._quantize_into(obs, pix_dst.unsafe_offset(t * PONG_FRAME_BYTES))
                     # Actions: one-hot a_t into slot t.
                     for k in range(PONG_NUM_ACTIONS):
                         act_dst[unsafe_offset=t * PONG_NUM_ACTIONS + k] = 0.0

@@ -1565,19 +1565,19 @@ struct LunarLander[
         # Carve pre-allocated workspace into sub-buffers (no GPU allocation)
         var ws = workspace_ptr.value()
         var shapes_buf = DeviceBuffer[dtype](ctx, ws, SHAPES_SIZE, owning=False)
-        ws = ws + SHAPES_SIZE
+        ws = ws.unsafe_offset(SHAPES_SIZE)
         var contacts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE * CONTACTS_PER_ENV, owning=False
         )
-        ws = ws + BATCH_SIZE * CONTACTS_PER_ENV
+        ws = ws.unsafe_offset(BATCH_SIZE * CONTACTS_PER_ENV)
         var contact_counts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE, owning=False
         )
-        ws = ws + BATCH_SIZE
+        ws = ws.unsafe_offset(BATCH_SIZE)
         var edge_counts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE, owning=False
         )
-        ws = ws + BATCH_SIZE
+        ws = ws.unsafe_offset(BATCH_SIZE)
         var joint_counts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE, owning=False
         )
@@ -1654,19 +1654,19 @@ struct LunarLander[
         # Carve pre-allocated workspace into sub-buffers (no GPU allocation)
         var ws = workspace_ptr.value()
         var shapes_buf = DeviceBuffer[dtype](ctx, ws, SHAPES_SIZE, owning=False)
-        ws = ws + SHAPES_SIZE
+        ws = ws.unsafe_offset(SHAPES_SIZE)
         var contacts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE * CONTACTS_PER_ENV, owning=False
         )
-        ws = ws + BATCH_SIZE * CONTACTS_PER_ENV
+        ws = ws.unsafe_offset(BATCH_SIZE * CONTACTS_PER_ENV)
         var contact_counts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE, owning=False
         )
-        ws = ws + BATCH_SIZE
+        ws = ws.unsafe_offset(BATCH_SIZE)
         var edge_counts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE, owning=False
         )
-        ws = ws + BATCH_SIZE
+        ws = ws.unsafe_offset(BATCH_SIZE)
         var joint_counts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE, owning=False
         )

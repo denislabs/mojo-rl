@@ -273,7 +273,7 @@ def run_lewm_paper_protocol[
     for b in range(BATCH):
         var e = PushTEnv[DT](seed=UInt64(seed0 + b))
         _ = e.reset()
-        var s = start_states + b * 5
+        var s = start_states.unsafe_offset(b * 5)
         _ = e.set_state(s[unsafe_offset=0], s[unsafe_offset=1], s[unsafe_offset=2], s[unsafe_offset=3], s[unsafe_offset=4])
         envs.append(e^)
 
@@ -281,14 +281,14 @@ def run_lewm_paper_protocol[
     # consistent agent+block configuration, rendered in the same sim
     # domain as the per-cycle current-frame encodes).
     for b in range(BATCH):
-        var g = goal_states + b * 5
+        var g = goal_states.unsafe_offset(b * 5)
         sim_frame_chw_norm[IMG](
             g[unsafe_offset=2],
             g[unsafe_offset=3],
             g[unsafe_offset=4],
             g[unsafe_offset=0],
             g[unsafe_offset=1],
-            pix_host + (b * T) * IMG_DIM,
+            pix_host.unsafe_offset((b * T) * IMG_DIM),
         )
         for t in range(1, T):
             for i in range(IMG_DIM):
@@ -361,7 +361,7 @@ def run_lewm_paper_protocol[
                 bp[2],
                 ap[0],
                 ap[1],
-                pix_host + (b * T) * IMG_DIM,
+                pix_host.unsafe_offset((b * T) * IMG_DIM),
             )
             for t in range(1, T):
                 for i in range(IMG_DIM):
@@ -398,7 +398,7 @@ def run_lewm_paper_protocol[
                         continue
                     if j == 0:
                         # plan-time frame is still staged in pix_host
-                        tta_buf.push_frame(b, pix_host + (b * T) * IMG_DIM)
+                        tta_buf.push_frame(b, pix_host.unsafe_offset((b * T) * IMG_DIM))
                     else:
                         var bp = envs[b].block_pose()
                         var ap = envs[b].agent_pos()
@@ -439,7 +439,7 @@ def run_lewm_paper_protocol[
                         Float64(bp[0]),
                         Float64(bp[1]),
                         Float64(bp[2]),
-                        goal_states + b * 5,
+                        goal_states.unsafe_offset(b * 5),
                     )
                     if r[0] < _SUCCESS_POS_PX and r[1] < _SUCCESS_ANG_RAD:
                         succeeded[b] = True
@@ -451,7 +451,7 @@ def run_lewm_paper_protocol[
                 for b in range(BATCH):
                     if succeeded[b]:
                         continue
-                    tta_buf.push_action(b, plan + (b * NEEDED + blk) * ACT)
+                    tta_buf.push_action(b, plan.unsafe_offset((b * NEEDED + blk) * ACT))
 
         # ── AdaJEPA adapt step: masked gradient steps on the fresh windows,
         # re-sync the planner, and RE-ENCODE the goal latent (the training-
@@ -504,7 +504,7 @@ def run_lewm_paper_protocol[
                     Float64(bp[0]),
                     Float64(bp[1]),
                     Float64(bp[2]),
-                    goal_states + b * 5,
+                    goal_states.unsafe_offset(b * 5),
                 )
                 mp += r[0]
             print(
@@ -550,7 +550,7 @@ def run_lewm_paper_protocol[
             Float64(bp[0]),
             Float64(bp[1]),
             Float64(bp[2]),
-            goal_states + b * 5,
+            goal_states.unsafe_offset(b * 5),
         )
         mp += r[0]
     mp /= Float64(BATCH)

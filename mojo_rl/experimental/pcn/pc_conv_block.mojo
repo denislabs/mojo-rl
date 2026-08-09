@@ -213,7 +213,7 @@ struct ConvPCBlock[
                     cache.unsafe_ptr().unsafe_offset(b * Self.CACHE)
                 )
                 var out_b = rebind[Pointer[Float32, MutAnyOrigin]](
-                    mu.ptr + b * Self.OUT_DIM
+                    mu.ptr.unsafe_offset(b * Self.OUT_DIM)
                 )
                 try:
                     apple_sgemm_accum[transpose_a=False, transpose_b=True](
@@ -341,7 +341,7 @@ struct ConvPCBlock[
             var Wp = rebind[Pointer[Float32, ImmutAnyOrigin]](params.ptr)
             for b in range(BATCH):
                 var eps_b = rebind[Pointer[Float32, ImmutAnyOrigin]](
-                    eps_above.ptr + b * Self.OUT_DIM
+                    eps_above.ptr.unsafe_offset(b * Self.OUT_DIM)
                 )
                 var dcol_b = rebind[Pointer[Float32, MutAnyOrigin]](
                     dcol.unsafe_ptr().unsafe_offset(b * Self.CACHE)
@@ -502,7 +502,7 @@ struct ConvPCBlock[
             var Cw = rebind[Pointer[Float32, MutAnyOrigin]](grads.ptr)
             for b in range(BATCH):
                 var eps_b = rebind[Pointer[Float32, ImmutAnyOrigin]](
-                    eps_above.ptr + b * Self.OUT_DIM
+                    eps_above.ptr.unsafe_offset(b * Self.OUT_DIM)
                 )
                 var col_b = rebind[Pointer[Float32, ImmutAnyOrigin]](
                     cache.unsafe_ptr().unsafe_offset(b * Self.CACHE)

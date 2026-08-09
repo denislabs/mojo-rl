@@ -131,7 +131,7 @@ struct PCBlock[
         ](params.ptr)
         var b_view = LayoutTensor[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
-        ](params.ptr + Self.in_dim * Self.out_dim)
+        ](params.ptr.unsafe_offset(Self.in_dim * Self.out_dim))
         try:
             max_matmul[target="cpu"](
                 lt_to_tt(mu), lt_to_tt(a_below), lt_to_tt(W), None
@@ -251,7 +251,7 @@ struct PCBlock[
         ](grads.ptr)
         var b_grad = LayoutTensor[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
-        ](grads.ptr + Self.in_dim * Self.out_dim)
+        ](grads.ptr.unsafe_offset(Self.in_dim * Self.out_dim))
 
         # dE/dW = −(a_below^T @ eps_above), written into W_grad then negated.
         comptime if CompilationTarget.is_macos() and dtype == DType.float32:
@@ -434,7 +434,7 @@ struct PCBlock[
         ](params.ptr)
         var b_view = LayoutTensor[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
-        ](params.ptr + Self.in_dim * Self.out_dim)
+        ](params.ptr.unsafe_offset(Self.in_dim * Self.out_dim))
 
         # max_matmul writes mu = a_below @ W (no bias), then a separate
         # bias-add kernel folds in b. Apple + NVIDIA (nn convention).
@@ -552,7 +552,7 @@ struct PCBlock[
         ](grads.ptr)
         var b_grad = LayoutTensor[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
-        ](grads.ptr + Self.in_dim * Self.out_dim)
+        ](grads.ptr.unsafe_offset(Self.in_dim * Self.out_dim))
 
         # dW[IN, OUT] = -a_below^T[IN, BATCH] @ eps_above[BATCH, OUT]
         # max_matmul has no transpose_a, so materialize a_below^T into a

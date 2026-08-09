@@ -288,7 +288,7 @@ struct PCAdam[
         # Slot 1 → lr_scale view.
         var lr_scale_view = LayoutTensor[
             dtype, Layout.row_major(1), MutAnyOrigin
-        ](opt_global_state.ptr + 1)
+        ](opt_global_state.ptr.unsafe_offset(1))
 
         @parameter
         @always_inline
@@ -582,7 +582,7 @@ struct PCAdamW[
         ](opt_global_state.ptr.unsafe_bitcast[Scalar[DType.uint32]]())
         var lr_scale_view = LayoutTensor[
             dtype, Layout.row_major(1), MutAnyOrigin
-        ](opt_global_state.ptr + 1)
+        ](opt_global_state.ptr.unsafe_offset(1))
 
         @parameter
         @always_inline

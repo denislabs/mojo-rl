@@ -94,8 +94,8 @@ def _window_to_patches[
     for b in range(B):
         for t in range(T):
             var bt = b * T + t
-            var fsrc = pix + bt * IMG_DIM + (IN_CH - 1) * IMG * IMG
-            downscale_box[IMG, IMG, TGT, TGT](fsrc, frames + bt * TGT * TGT)
+            var fsrc = pix.unsafe_offset(bt * IMG_DIM + (IN_CH - 1) * IMG * IMG)
+            downscale_box[IMG, IMG, TGT, TGT](fsrc, frames.unsafe_offset(bt * TGT * TGT))
     temporal_patchify[BATCH, 1, TGT, TGT, PATCH](frames, patches)
 
 
@@ -107,7 +107,7 @@ def _frame_to_patches[
     patches: Pointer[Scalar[DT], MutAnyOrigin], # [NP*DP] out
 ) raises:
     """Downscale + patchify ONE obs frame (latest stacked channel)."""
-    var fsrc = obs + (IN_CH - 1) * IMG * IMG
+    var fsrc = obs.unsafe_offset((IN_CH - 1) * IMG * IMG)
     downscale_box[IMG, IMG, TGT, TGT](fsrc, frame)
     temporal_patchify[1, 1, TGT, TGT, PATCH](frame, patches)
 

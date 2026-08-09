@@ -125,17 +125,17 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
                 MutAnyOrigin,
-            ](grads.ptr + Self.NET._param_offset[i]())
+            ](grads.ptr.unsafe_offset(Self.NET._param_offset[i]()))
             var li_eps = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
             var li_a_below = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
                 MutAnyOrigin,
-            ](a_below_buf.ptr + BATCH * Self.NET._in_offset[i]())
+            ](a_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i]()))
 
             Self.NET.block_types[i].weight_grad[BATCH, Self.dtype](
                 li_eps, li_a_below, li_g
@@ -230,17 +230,17 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
                 MutAnyOrigin,
-            ](grads.ptr + Self.NET._param_offset[i]())
+            ](grads.ptr.unsafe_offset(Self.NET._param_offset[i]()))
             var li_eps = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
             var li_a_below = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
                 MutAnyOrigin,
-            ](a_below_buf.ptr + BATCH * Self.NET._in_offset[i]())
+            ](a_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i]()))
 
             Self.NET.block_types[i].weight_grad[BATCH, Self.dtype](
                 li_eps, li_a_below, li_g
@@ -329,17 +329,17 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
                 MutAnyOrigin,
-            ](grads.ptr + Self.NET._param_offset[i]())
+            ](grads.ptr.unsafe_offset(Self.NET._param_offset[i]()))
             var li_eps = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
             var li_a_below = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
                 MutAnyOrigin,
-            ](a_below_buf.ptr + BATCH * Self.NET._in_offset[i]())
+            ](a_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i]()))
 
             Self.NET.block_types[i].weight_grad[BATCH, Self.dtype](
                 li_eps, li_a_below, li_g
@@ -438,17 +438,17 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
                 MutAnyOrigin,
-            ](grads.ptr + Self.NET._param_offset[i]())
+            ](grads.ptr.unsafe_offset(Self.NET._param_offset[i]()))
             var li_eps = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
             var li_a_below = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
                 MutAnyOrigin,
-            ](a_below_buf.ptr + BATCH * Self.NET._in_offset[i]())
+            ](a_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i]()))
 
             # For the readout (i = N-1), li_eps already contains the
             # Jacobian-adjusted ε from `_modify_readout_eps_for_bounded`,
@@ -499,17 +499,17 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
                 MutAnyOrigin,
-            ](params.ptr + Self.NET._param_offset[i]())
+            ](params.ptr.unsafe_offset(Self.NET._param_offset[i]()))
             var li_a = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
                 MutAnyOrigin,
-            ](a_below_buf.ptr + BATCH * Self.NET._in_offset[i]())
+            ](a_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i]()))
             var li_mu = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
 
             comptime if i == 0:
                 var li_x_below = LayoutTensor[
@@ -525,7 +525,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                     Self.dtype,
                     Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
                     MutAnyOrigin,
-                ](latents.ptr + BATCH * Self.NET._latent_offset[i - 1]())
+                ](latents.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[i - 1]()))
                 Self.NET.block_types[i].predict[BATCH, Self.dtype](
                     li_x_below, li_p, li_mu, li_a
                 )
@@ -536,12 +536,12 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
             var li_eps_view = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
 
             comptime if i == Self.NET.N - 1:
                 var li_target = LayoutTensor[
@@ -557,7 +557,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                     Self.dtype,
                     Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
                     MutAnyOrigin,
-                ](latents.ptr + BATCH * Self.NET._latent_offset[i]())
+                ](latents.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[i]()))
                 Self.NET.block_types[i].eps_compute[BATCH, Self.dtype](
                     li_x_above, li_mu_view, li_eps_view
                 )
@@ -613,17 +613,17 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[upper].PARAM_SIZE),
                 MutAnyOrigin,
-            ](params.ptr + Self.NET._param_offset[upper]())
+            ](params.ptr.unsafe_offset(Self.NET._param_offset[upper]()))
             var li_eps_upper = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[upper].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[upper]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[upper]()))
             var li_z = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
                 MutAnyOrigin,
-            ](z_below_buf.ptr + BATCH * Self.NET._in_offset[upper]())
+            ](z_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[upper]()))
 
             # 1. z = pull_back(ε_upper, W_upper)
             Self.NET.block_types[upper].pull_back[BATCH, Self.dtype](
@@ -635,7 +635,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
                 MutAnyOrigin,
-            ](latents.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+            ](latents.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[l_idx]()))
             Self.NET.block_types[upper].act_derivative_mul[BATCH, Self.dtype](
                 li_x_l, li_z, li_z
             )
@@ -645,12 +645,12 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[l_idx].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[l_idx]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[l_idx]()))
             var li_dx = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[l_idx].OUT_DIM),
                 MutAnyOrigin,
-            ](dx_buf.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+            ](dx_buf.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[l_idx]()))
 
             for b in range(BATCH):
                 for k in range(Self.NET.block_types[l_idx].OUT_DIM):
@@ -693,7 +693,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         comptime out_dim_R = Self.NET.block_types[Self.NET.N - 1].OUT_DIM
         var li_eps_R = LayoutTensor[
             Self.dtype, Layout.row_major(BATCH, out_dim_R), MutAnyOrigin
-        ](mu_eps_buf.ptr + BATCH * offset_R)
+        ](mu_eps_buf.ptr.unsafe_offset(BATCH * offset_R))
         for b in range(BATCH):
             for j in range(out_dim_R):
                 var eps_lin = Float64(
@@ -770,17 +770,17 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[upper].PARAM_SIZE),
                 MutAnyOrigin,
-            ](params.ptr + Self.NET._param_offset[upper]())
+            ](params.ptr.unsafe_offset(Self.NET._param_offset[upper]()))
             var li_eps_upper = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[upper].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[upper]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[upper]()))
             var li_z = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
                 MutAnyOrigin,
-            ](z_below_buf.ptr + BATCH * Self.NET._in_offset[upper]())
+            ](z_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[upper]()))
 
             Self.NET.block_types[upper].pull_back[BATCH, Self.dtype](
                 li_eps_upper, li_p_upper, li_z
@@ -790,7 +790,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
                 MutAnyOrigin,
-            ](latents.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+            ](latents.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[l_idx]()))
             Self.NET.block_types[upper].act_derivative_mul[BATCH, Self.dtype](
                 li_x_l, li_z, li_z
             )
@@ -799,12 +799,12 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[l_idx].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[l_idx]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[l_idx]()))
             var li_dx = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[l_idx].OUT_DIM),
                 MutAnyOrigin,
-            ](dx_buf.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+            ](dx_buf.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[l_idx]()))
 
             for b in range(BATCH):
                 for k in range(Self.NET.block_types[l_idx].OUT_DIM):
@@ -946,17 +946,17 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
                 MutAnyOrigin,
-            ](params.ptr + Self.NET._param_offset[i]())
+            ](params.ptr.unsafe_offset(Self.NET._param_offset[i]()))
             var li_a = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
                 MutAnyOrigin,
-            ](a_below_buf.ptr + BATCH * Self.NET._in_offset[i]())
+            ](a_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i]()))
             var li_mu = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
 
             comptime if i == 0:
                 var li_x_below = LayoutTensor[
@@ -972,7 +972,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                     Self.dtype,
                     Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
                     MutAnyOrigin,
-                ](latents.ptr + BATCH * Self.NET._latent_offset[i - 1]())
+                ](latents.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[i - 1]()))
                 Self.NET.block_types[i].predict_gpu[BATCH, Self.dtype](
                     ctx, li_x_below, li_p, li_mu, li_a
                 )
@@ -983,12 +983,12 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
             var li_eps_view = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
 
             comptime if i == Self.NET.N - 1:
                 var li_target = LayoutTensor[
@@ -1004,7 +1004,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                     Self.dtype,
                     Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
                     MutAnyOrigin,
-                ](latents.ptr + BATCH * Self.NET._latent_offset[i]())
+                ](latents.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[i]()))
                 Self.NET.block_types[i].eps_compute_gpu[BATCH, Self.dtype](
                     ctx, li_x_above, li_mu_view, li_eps_view
                 )
@@ -1066,19 +1066,19 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[upper].PARAM_SIZE),
                 MutAnyOrigin,
-            ](params.ptr + Self.NET._param_offset[upper]())
+            ](params.ptr.unsafe_offset(Self.NET._param_offset[upper]()))
             var li_eps_upper = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(
                     BATCH, Self.NET.block_types[upper].OUT_DIM
                 ),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[upper]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[upper]()))
             var li_z = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
                 MutAnyOrigin,
-            ](z_below_buf.ptr + BATCH * Self.NET._in_offset[upper]())
+            ](z_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[upper]()))
 
             Self.NET.block_types[upper].pull_back_gpu[BATCH, Self.dtype](
                 ctx, li_eps_upper, li_p_upper, li_z
@@ -1088,7 +1088,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
                 MutAnyOrigin,
-            ](latents.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+            ](latents.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[l_idx]()))
             Self.NET.block_types[upper].act_derivative_mul_gpu[
                 BATCH, Self.dtype
             ](ctx, li_x_l, li_z, li_z)
@@ -1099,14 +1099,14 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                     BATCH, Self.NET.block_types[l_idx].OUT_DIM
                 ),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[l_idx]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[l_idx]()))
             var li_dx = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(
                     BATCH, Self.NET.block_types[l_idx].OUT_DIM
                 ),
                 MutAnyOrigin,
-            ](dx_buf.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+            ](dx_buf.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[l_idx]()))
 
             comptime sub_k = Self._dx_subtract_kernel[
                 BATCH, Self.NET.block_types[l_idx].OUT_DIM, Self.dtype
@@ -1210,17 +1210,17 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
                 MutAnyOrigin,
-            ](grads.ptr + Self.NET._param_offset[i]())
+            ](grads.ptr.unsafe_offset(Self.NET._param_offset[i]()))
             var li_eps = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
             var li_a_below = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
                 MutAnyOrigin,
-            ](a_below_buf.ptr + BATCH * Self.NET._in_offset[i]())
+            ](a_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i]()))
 
             Self.NET.block_types[i].weight_grad_gpu[BATCH, Self.dtype](
                 ctx, li_eps, li_a_below, li_g
@@ -1342,7 +1342,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(BATCH, out_dim_R),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * offset_eps_R)
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * offset_eps_R))
             for b in range(BATCH):
                 for k in range(out_dim_R):
                     li_eps_R[b, k] = Scalar[Self.dtype](0)
@@ -1355,17 +1355,17 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[upper].PARAM_SIZE),
                 MutAnyOrigin,
-            ](params.ptr + Self.NET._param_offset[upper]())
+            ](params.ptr.unsafe_offset(Self.NET._param_offset[upper]()))
             var li_eps_upper = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[upper].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[upper]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[upper]()))
             var li_z = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
                 MutAnyOrigin,
-            ](z_below_buf.ptr + BATCH * Self.NET._in_offset[upper]())
+            ](z_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[upper]()))
 
             Self.NET.block_types[upper].pull_back[BATCH, Self.dtype](
                 li_eps_upper, li_p_upper, li_z
@@ -1375,7 +1375,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
                 MutAnyOrigin,
-            ](latents.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+            ](latents.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[l_idx]()))
             Self.NET.block_types[upper].act_derivative_mul[BATCH, Self.dtype](
                 li_x_l, li_z, li_z
             )
@@ -1384,12 +1384,12 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[l_idx].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[l_idx]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[l_idx]()))
             var li_dx = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[l_idx].OUT_DIM),
                 MutAnyOrigin,
-            ](dx_buf.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+            ](dx_buf.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[l_idx]()))
 
             for b in range(BATCH):
                 for k in range(Self.NET.block_types[l_idx].OUT_DIM):
@@ -1511,17 +1511,17 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
                 MutAnyOrigin,
-            ](grads.ptr + Self.NET._param_offset[i]())
+            ](grads.ptr.unsafe_offset(Self.NET._param_offset[i]()))
             var li_eps = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
             var li_a_below = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
                 MutAnyOrigin,
-            ](a_below_buf.ptr + BATCH * Self.NET._in_offset[i]())
+            ](a_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i]()))
 
             Self.NET.block_types[i].weight_grad[BATCH, Self.dtype](
                 li_eps, li_a_below, li_g
@@ -1614,18 +1614,18 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
             Self.dtype,
             Layout.row_major(Self.NET.block_types[read_idx].PARAM_SIZE),
             MutAnyOrigin,
-        ](params.ptr + Self.NET._param_offset[read_idx]())
+        ](params.ptr.unsafe_offset(Self.NET._param_offset[read_idx]()))
         var li_a_read = LayoutTensor[
             Self.dtype,
             Layout.row_major(BATCH, Self.NET.block_types[read_idx].IN_DIM),
             MutAnyOrigin,
-        ](a_below_buf.ptr + BATCH * Self.NET._in_offset[read_idx]())
+        ](a_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[read_idx]()))
         # x_below for the readout = last interior latent
         var li_x_below = LayoutTensor[
             Self.dtype,
             Layout.row_major(BATCH, Self.NET.block_types[read_idx].IN_DIM),
             MutAnyOrigin,
-        ](latents.ptr + BATCH * Self.NET._latent_offset[Self.NET.N_LATENTS - 1]())
+        ](latents.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[Self.NET.N_LATENTS - 1]()))
         Self.NET.block_types[read_idx].predict[BATCH, Self.dtype](
             li_x_below, li_p_read, sample_out, li_a_read
         )
@@ -1807,7 +1807,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
             comptime out_dim_R = Self.NET.block_types[Self.NET.N - 1].OUT_DIM
             var li_eps_R = LayoutTensor[
                 Self.dtype, Layout.row_major(BATCH, out_dim_R), MutAnyOrigin
-            ](mu_eps_buf.ptr + BATCH * offset_eps_R)
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * offset_eps_R))
             comptime zero_k = Self._zero_eps_kernel[
                 BATCH, out_dim_R, Self.dtype
             ]
@@ -1826,19 +1826,19 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[upper].PARAM_SIZE),
                 MutAnyOrigin,
-            ](params.ptr + Self.NET._param_offset[upper]())
+            ](params.ptr.unsafe_offset(Self.NET._param_offset[upper]()))
             var li_eps_upper = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(
                     BATCH, Self.NET.block_types[upper].OUT_DIM
                 ),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[upper]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[upper]()))
             var li_z = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
                 MutAnyOrigin,
-            ](z_below_buf.ptr + BATCH * Self.NET._in_offset[upper]())
+            ](z_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[upper]()))
 
             Self.NET.block_types[upper].pull_back_gpu[BATCH, Self.dtype](
                 ctx, li_eps_upper, li_p_upper, li_z
@@ -1848,7 +1848,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
                 MutAnyOrigin,
-            ](latents.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+            ](latents.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[l_idx]()))
             Self.NET.block_types[upper].act_derivative_mul_gpu[
                 BATCH, Self.dtype
             ](ctx, li_x_l, li_z, li_z)
@@ -1859,14 +1859,14 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                     BATCH, Self.NET.block_types[l_idx].OUT_DIM
                 ),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[l_idx]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[l_idx]()))
             var li_dx = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(
                     BATCH, Self.NET.block_types[l_idx].OUT_DIM
                 ),
                 MutAnyOrigin,
-            ](dx_buf.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+            ](dx_buf.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[l_idx]()))
 
             comptime sub_k = Self._dx_subtract_kernel[
                 BATCH, Self.NET.block_types[l_idx].OUT_DIM, Self.dtype
@@ -1983,17 +1983,17 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
                 MutAnyOrigin,
-            ](grads.ptr + Self.NET._param_offset[i]())
+            ](grads.ptr.unsafe_offset(Self.NET._param_offset[i]()))
             var li_eps = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            ](mu_eps_buf.ptr.unsafe_offset(BATCH * Self.NET._out_offset[i]()))
             var li_a_below = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
                 MutAnyOrigin,
-            ](a_below_buf.ptr + BATCH * Self.NET._in_offset[i]())
+            ](a_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[i]()))
 
             Self.NET.block_types[i].weight_grad_gpu[BATCH, Self.dtype](
                 ctx, li_eps, li_a_below, li_g
@@ -2075,17 +2075,17 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
             Self.dtype,
             Layout.row_major(Self.NET.block_types[read_idx].PARAM_SIZE),
             MutAnyOrigin,
-        ](params.ptr + Self.NET._param_offset[read_idx]())
+        ](params.ptr.unsafe_offset(Self.NET._param_offset[read_idx]()))
         var li_a_read = LayoutTensor[
             Self.dtype,
             Layout.row_major(BATCH, Self.NET.block_types[read_idx].IN_DIM),
             MutAnyOrigin,
-        ](a_below_buf.ptr + BATCH * Self.NET._in_offset[read_idx]())
+        ](a_below_buf.ptr.unsafe_offset(BATCH * Self.NET._in_offset[read_idx]()))
         var li_x_below = LayoutTensor[
             Self.dtype,
             Layout.row_major(BATCH, Self.NET.block_types[read_idx].IN_DIM),
             MutAnyOrigin,
-        ](latents.ptr + BATCH * Self.NET._latent_offset[Self.NET.N_LATENTS - 1]())
+        ](latents.ptr.unsafe_offset(BATCH * Self.NET._latent_offset[Self.NET.N_LATENTS - 1]()))
         Self.NET.block_types[read_idx].predict_gpu[BATCH, Self.dtype](
             ctx, li_x_below, li_p_read, sample_out, li_a_read
         )

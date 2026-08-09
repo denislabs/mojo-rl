@@ -229,11 +229,11 @@ struct DualSampleStep[
                 state.mb_d.dev.value(),
             )
             # Synth partition → rows [REAL_BS, BATCH) via offset views.
-            var s_off = state.mb_s.dev.value().unsafe_ptr() + Self.REAL_BS * Self.OBS
-            var a_off = state.mb_a.dev.value().unsafe_ptr() + Self.REAL_BS * Self.ACT
-            var r_off = state.mb_r.dev.value().unsafe_ptr() + Self.REAL_BS
-            var sp_off = state.mb_sp.dev.value().unsafe_ptr() + Self.REAL_BS * Self.OBS
-            var d_off = state.mb_d.dev.value().unsafe_ptr() + Self.REAL_BS
+            var s_off = state.mb_s.dev.value().unsafe_ptr().unsafe_offset(Self.REAL_BS * Self.OBS)
+            var a_off = state.mb_a.dev.value().unsafe_ptr().unsafe_offset(Self.REAL_BS * Self.ACT)
+            var r_off = state.mb_r.dev.value().unsafe_ptr().unsafe_offset(Self.REAL_BS)
+            var sp_off = state.mb_sp.dev.value().unsafe_ptr().unsafe_offset(Self.REAL_BS * Self.OBS)
+            var d_off = state.mb_d.dev.value().unsafe_ptr().unsafe_offset(Self.REAL_BS)
             var vs = DeviceBuffer[DT](ctx, s_off, Self.SYNTH_BS * Self.OBS, owning=False)
             var va = DeviceBuffer[DT](ctx, a_off, Self.SYNTH_BS * Self.ACT, owning=False)
             var vr = DeviceBuffer[DT](ctx, r_off, Self.SYNTH_BS, owning=False)

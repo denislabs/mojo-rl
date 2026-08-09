@@ -255,7 +255,7 @@ struct PongOfflineBuffer(Movable, OfflineBuffer):
                 )
 
             # Bulk uint8 copy of (T, C, H, W) frames for this window.
-            var pix_dst = pixels_out + b * sample_pix_stride
+            var pix_dst = pixels_out.unsafe_offset(b * sample_pix_stride)
             var pix_src_base = start * PONG_FRAME_BYTES
             for t in range(T):
                 var src_off = pix_src_base + t * PONG_FRAME_BYTES
@@ -264,7 +264,7 @@ struct PongOfflineBuffer(Movable, OfflineBuffer):
                     pix_dst[unsafe_offset=dst_off + i] = self.frames[unsafe_offset=src_off + i]
 
             # Expand actions to one-hot for this window.
-            var act_dst = actions_out + b * sample_act_stride
+            var act_dst = actions_out.unsafe_offset(b * sample_act_stride)
             for t in range(T):
                 var a = Int(self.actions[unsafe_offset=start + t])
                 for k in range(PONG_NUM_ACTIONS):

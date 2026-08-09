@@ -924,7 +924,7 @@ struct PushTV2[DTYPE: DType](
         # 1-batch state view aliased at this env's row.
         var state_one = LayoutTensor[
             dtype, Layout.row_major(1, STATE_SIZE), MutAnyOrigin
-        ](state.ptr + env * STATE_SIZE)
+        ](state.ptr.unsafe_offset(env * STATE_SIZE))
 
         for _ in range(PConstants.N_SUBSTEPS):
             pusht_substep_single_env[

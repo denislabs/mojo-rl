@@ -165,7 +165,7 @@ trait OffPolicyAgent(Deinitable, Movable):
             for e in range(N_ENVS):
                 var obs_view = DeviceBuffer[DT](
                     c,
-                    obs.ptr + e * OBS,
+                    obs.ptr.unsafe_offset(e * OBS),
                     OBS,
                     owning=False,
                 )
@@ -174,7 +174,7 @@ trait OffPolicyAgent(Deinitable, Movable):
                 self.select_greedy_action(obs_h, act_h)
                 var act_view = DeviceBuffer[DT](
                     c,
-                    action.ptr + e * ACT,
+                    action.ptr.unsafe_offset(e * ACT),
                     ACT,
                     owning=False,
                 )

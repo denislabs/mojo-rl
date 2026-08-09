@@ -282,7 +282,7 @@ def run_lewm_closedloop[
                 bp[2],
                 ap[0],
                 ap[1],
-                pix_host + (b * T) * IMG_DIM,
+                pix_host.unsafe_offset((b * T) * IMG_DIM),
             )
             for t in range(1, T):
                 for i in range(IMG_DIM):
@@ -294,7 +294,7 @@ def run_lewm_closedloop[
             # overwrites pix_host below, so push must happen here)
             for b in range(BATCH):
                 if not envs[b].is_done():
-                    tta_buf.push_frame(b, pix_host + (b * T) * IMG_DIM)
+                    tta_buf.push_frame(b, pix_host.unsafe_offset((b * T) * IMG_DIM))
         ctx_v.enqueue_copy(pix_dev, pix_host)
         ctx_v.synchronize()
         var pix_t = TileTensor(pix_d_p, row_major[BATCH, PIX]())
@@ -317,7 +317,7 @@ def run_lewm_closedloop[
                 Scalar[DT](PConstants.GOAL_ANGLE),
                 Scalar[DT](gx),
                 Scalar[DT](gy),
-                pix_host + (b * T) * IMG_DIM,
+                pix_host.unsafe_offset((b * T) * IMG_DIM),
             )
             for t in range(1, T):
                 for i in range(IMG_DIM):
@@ -375,7 +375,7 @@ def run_lewm_closedloop[
             for b in range(BATCH):
                 if not envs[b].is_done():
                     tta_buf.push_action(
-                        b, plan + (b * NEEDED + (H - 1)) * ACT
+                        b, plan.unsafe_offset((b * NEEDED + (H - 1)) * ACT)
                     )
             if tta_buf.fill(pix_host, tta_act_host):
                 ctx_v.enqueue_copy(pix_dev, pix_host)

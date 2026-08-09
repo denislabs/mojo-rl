@@ -466,12 +466,12 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
 
             # Slice per-env scratch.
             var ws_base = e * Self.WORLD_GEN_WS_PER_ENV
-            var scratch_ptr = scratch.ptr + ws_base
+            var scratch_ptr = scratch.ptr.unsafe_offset(ws_base)
             var water_ptr = scratch_ptr
-            var mountain_ptr = scratch_ptr + MAP_SIZE_PER_FLOOR
-            var path_ptr = scratch_ptr + 2 * MAP_SIZE_PER_FLOOR
-            var tree_ptr = scratch_ptr + 3 * MAP_SIZE_PER_FLOOR
-            var state_ptr = states.ptr + e * STATE_SIZE
+            var mountain_ptr = scratch_ptr.unsafe_offset(MAP_SIZE_PER_FLOOR)
+            var path_ptr = scratch_ptr.unsafe_offset(2 * MAP_SIZE_PER_FLOOR)
+            var tree_ptr = scratch_ptr.unsafe_offset(3 * MAP_SIZE_PER_FLOOR)
+            var state_ptr = states.ptr.unsafe_offset(e * STATE_SIZE)
 
             var per_env_seed = UInt64(seed) * UInt64(BATCH_SIZE) + UInt64(e) + UInt64(1)
             var spawn = generate_full_world_inline(
@@ -577,16 +577,16 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
                 states[e, s] = Scalar[gpu_dtype](0.0)
 
             var ws_base = e * Self.WORLD_GEN_WS_PER_ENV
-            var scratch_ptr = scratch.ptr + ws_base
-            var state_ptr = states.ptr + e * STATE_SIZE
+            var scratch_ptr = scratch.ptr.unsafe_offset(ws_base)
+            var state_ptr = states.ptr.unsafe_offset(e * STATE_SIZE)
             var per_env_seed = UInt64(seed) * UInt64(BATCH_SIZE) + UInt64(e) + UInt64(1)
             var spawn = generate_full_world_inline(
                 per_env_seed,
                 state_ptr,
                 scratch_ptr,
-                scratch_ptr + MAP_SIZE_PER_FLOOR,
-                scratch_ptr + 2 * MAP_SIZE_PER_FLOOR,
-                scratch_ptr + 3 * MAP_SIZE_PER_FLOOR,
+                scratch_ptr.unsafe_offset(MAP_SIZE_PER_FLOOR),
+                scratch_ptr.unsafe_offset(2 * MAP_SIZE_PER_FLOOR),
+                scratch_ptr.unsafe_offset(3 * MAP_SIZE_PER_FLOOR),
             )
             states[e, S_PLAYER_LEVEL] = Scalar[gpu_dtype](0)
             states[e, S_PLAYER_POS] = Scalar[gpu_dtype](spawn[0])
@@ -700,7 +700,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
             var action = Int(actions[e])
             var per_env_seed = UInt64(seed) * UInt64(BATCH_SIZE) + UInt64(e) + UInt64(1)
             var rng = PhiloxRandom(seed=per_env_seed, offset=0)
-            var state_ptr = states.ptr + e * STATE_SIZE
+            var state_ptr = states.ptr.unsafe_offset(e * STATE_SIZE)
             var result = apply_step_inline(state_ptr, action, rng)
 
             rewards[e] = Scalar[gpu_dtype](result[0])
@@ -711,7 +711,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
 
             # Symbolic obs (8268-D). Reuses the same per-env CPU helper —
             # all pointer arithmetic, no Python.
-            var obs_ptr = obs.ptr + e * OBS_DIM
+            var obs_ptr = obs.ptr.unsafe_offset(e * OBS_DIM)
             encode_symbolic_obs(state_ptr, obs_ptr)
 
         ctx.enqueue_function[step_wrapper](
@@ -769,8 +769,8 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
             var e = Int(block_dim.x * block_idx.x + thread_idx.x)
             if e >= BATCH_SIZE:
                 return
-            var state_ptr = states.ptr + e * STATE_SIZE
-            var obs_ptr = obs.ptr + e * OBS_DIM
+            var state_ptr = states.ptr.unsafe_offset(e * STATE_SIZE)
+            var obs_ptr = obs.ptr.unsafe_offset(e * OBS_DIM)
             encode_symbolic_obs(state_ptr, obs_ptr)
 
         ctx.enqueue_function[extract_wrapper](
