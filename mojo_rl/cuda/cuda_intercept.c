@@ -184,10 +184,78 @@ static void note_unsafe(const char *name, void *arg) {
         return real_##NAME(a);                                                \
     }
 
-DEFINE_PTR1_WRAPPER(cuStreamSynchronize)
-DEFINE_PTR1_WRAPPER(cuStreamQuery)
 DEFINE_PTR1_WRAPPER(cuEventSynchronize)
 DEFINE_PTR1_WRAPPER(cuEventQuery)
+
+/* ---- Neutralizing MAX's sync of the stream it is capturing --------------
+ *
+ * MEASURED (NVIDIA, MAX 26.5.0rc2, 2026-08-09): between our successful
+ * `cuStreamBeginCapture` and the first captured kernel, MAX calls
+ * `cuStreamSynchronize` ON THE VERY STREAM BEING CAPTURED -- same handle in
+ * both trace lines. That is illegal in EVERY capture mode, which is exactly
+ * why GLOBAL / THREAD_LOCAL / RELAXED all aborted identically. It is MAX's
+ * call, not ours: our own wrappers only ever return rc codes, and the abort
+ * carries MAX's error text.
+ *
+ * ⚠ WHY ANSWERING "ALREADY DONE" IS CORRECT, NOT A LIE. Capture RECORDS work
+ * instead of executing it, so while a stream is capturing there is by
+ * construction nothing running on it to wait for. The precondition that
+ * makes this airtight is ours to keep, and we do keep it: the stream is
+ * fully drained before capture opens -- `CUDAGraph.__init__` calls
+ * `ctx.synchronize()`, and `maybe_capture_replay` synchronizes again before
+ * constructing the graph. So no work enqueued BEFORE the window can still be
+ * in flight, and no work enqueued DURING it executes. "Wait until idle" is
+ * already true. CUDA rejects the call because its meaning is ambiguous mid
+ * capture, not because there is anything pending.
+ *
+ * ⚠ WHAT WOULD MAKE IT A LIE. If a future caller opens a capture WITHOUT
+ * draining first, this turns a real wait into a no-op and reads back garbage
+ * silently. Any new capture site must sync before `begin_capture`. That is
+ * the invariant this whole comment exists to protect.
+ *
+ * ⚠ THIS IS NOT SELF-VALIDATING -- the gate is. Suppressing an error can
+ * always convert a loud failure into a quiet wrong answer, so it is only
+ * defensible because `test_cuda_graph_minimal` checks that the graph is
+ * non-empty (`num_nodes() > 0`) AND that replay produces exact counter
+ * arithmetic. If capture were silently recording nothing, both fail.
+ *
+ * Set MOJO_RL_CAPTURE_NEUTRALIZE_SYNC=0 to restore the raw behaviour and get
+ * the abort back (i.e. to re-measure this whenever MAX is upgraded).
+ */
+
+static int g_neutralized = 0;   /* count, per capture window */
+
+static int neutralize_enabled(void) {
+    const char *e = getenv("MOJO_RL_CAPTURE_NEUTRALIZE_SYNC");
+    return !(e && e[0] == '0');
+}
+
+static CUresult wrapped_cuStreamSynchronize(void *a) {
+    if (g_capturing && a == g_capture_stream && neutralize_enabled()) {
+        /* Log the first few only: a capture window in a real trainer holds
+           many kernels, and one line per call would drown the output. */
+        if (g_neutralized < 3) {
+            fprintf(stderr,
+                    "[intercept] cuStreamSynchronize(%p) on the CAPTURING "
+                    "stream -> answered SUCCESS without calling the driver "
+                    "(nothing executes during capture)\n", a);
+        }
+        g_neutralized++;
+        return 0;  /* CUDA_SUCCESS */
+    }
+    note_unsafe("cuStreamSynchronize", a);
+    return real_cuStreamSynchronize(a);
+}
+
+static CUresult wrapped_cuStreamQuery(void *a) {
+    /* Same argument: "is this stream idle?" is trivially yes during capture. */
+    if (g_capturing && a == g_capture_stream && neutralize_enabled()) {
+        g_neutralized++;
+        return 0;  /* CUDA_SUCCESS == all work complete */
+    }
+    note_unsafe("cuStreamQuery", a);
+    return real_cuStreamQuery(a);
+}
 
 static CUresult wrapped_cuCtxSynchronize(void) {
     /* Context-wide sync: hits the captured stream by definition. */
@@ -432,6 +500,7 @@ CUresult intercept_stream_begin_capture(void *stream) {
     if (r == 0) {
         g_capturing = 1;
         g_capture_stream = stream;
+        g_neutralized = 0;
     }
     fprintf(stderr, "[intercept] cuStreamBeginCapture rc=%d\n", (int)r);
     return r;
@@ -446,8 +515,10 @@ CUresult intercept_stream_end_capture(void *stream, void **graph_out) {
     g_capturing = 0;
     g_capture_stream = NULL;
     CUresult r = f(stream, graph_out);
-    fprintf(stderr, "[intercept] cuStreamEndCapture rc=%d graph=%p\n",
-            (int)r, graph_out ? *graph_out : NULL);
+    fprintf(stderr,
+            "[intercept] cuStreamEndCapture rc=%d graph=%p "
+            "(neutralized %d sync/query call(s) on the captured stream)\n",
+            (int)r, graph_out ? *graph_out : NULL, g_neutralized);
     return r;
 }
 

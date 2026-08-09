@@ -131,6 +131,25 @@ struct CUDAGraph(Movable):
             self._exec = _uninit[_CUptr]()
             self._graph = _uninit[_CUptr]()
 
+        # ⚠ DRAIN THE STREAM BEFORE OPENING THE CAPTURE. This is not
+        # belt-and-braces: the interceptor ANSWERS `cuStreamSynchronize` on
+        # the capturing stream with SUCCESS without calling the driver,
+        # because MAX 26.5.0rc2 synchronizes the stream it is capturing and
+        # CUDA forbids that in every capture mode (measured 2026-08-09; see
+        # the long note in `cuda_intercept.c`). That answer is only TRUE
+        # while nothing enqueued before the window is still in flight.
+        #
+        # `__init__` syncs, so the FIRST capture was always safe — but
+        # `begin_capture` is re-callable (the re-capture path just above
+        # destroys the previous graph), and on that path the stream may hold
+        # live work. Then a suppressed sync would silently skip a real wait.
+        # Syncing here makes the invariant hold by construction at every
+        # capture rather than by convention at the first one.
+        var pre_sync = self._lib.get_function[c_int](
+            "intercept_stream_synchronize"
+        )
+        _ = pre_sync(self._mojo_stream)
+
         var begin_capture = self._lib.get_function[c_int]("intercept_stream_begin_capture")
         var r = begin_capture(self._mojo_stream)
         if r != 0:
