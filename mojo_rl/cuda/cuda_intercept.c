@@ -601,15 +601,26 @@ CUresult intercept_stream_end_capture(void *stream, void **graph_out) {
        longer considers ours, so establish that BEFORE calling in, while we
        can still print. Refusing to call on a non-ACTIVE capture converts a
        segfault into an rc that `graph.mojo` raises as a clean Mojo error. */
+    /* ⚠ OPT-IN, BECAUSE THE PROBE ITSELF CRASHED THE DRIVER. Even called
+       with the full 6-argument `_v2` ABI and real locals for every
+       out-param, `cuStreamGetCaptureInfo_v2` faulted inside libcuda on this
+       driver. Whatever that means, a diagnostic that aborts the run is worse
+       than no diagnostic -- it displaced the real failure and cost a round
+       trip. Off by default; MOJO_RL_CAPTURE_PROBE=1 to re-enable. */
+    const char *probe = getenv("MOJO_RL_CAPTURE_PROBE");
     unsigned long long cap_id = 0;
-    int status = query_capture_status(stream, &cap_id);
-    fprintf(stderr,
-            "[intercept] pre-end capture status=%d (%s) id=%llu stream=%p\n",
-            status,
-            status == 0 ? "NONE — the stream is NOT capturing"
-                        : (status == 1 ? "ACTIVE"
-                        : (status == 2 ? "INVALIDATED" : "unknown/unavailable")),
-            cap_id, stream);
+    int status = (probe && probe[0] != '0')
+                     ? query_capture_status(stream, &cap_id)
+                     : 1 /* assume ACTIVE; do not touch the driver */;
+    if (probe && probe[0] != '0') {
+        fprintf(stderr,
+                "[intercept] pre-end capture status=%d (%s) id=%llu stream=%p\n",
+                status,
+                status == 0 ? "NONE — the stream is NOT capturing"
+                            : (status == 1 ? "ACTIVE"
+                            : (status == 2 ? "INVALIDATED" : "unavailable")),
+                cap_id, stream);
+    }
     if (status == 0 || status == 2) {
         fprintf(stderr,
                 "[intercept] refusing to call cuStreamEndCapture on a "
