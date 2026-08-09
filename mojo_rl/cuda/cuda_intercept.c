@@ -120,21 +120,24 @@ static CUresult wrapped_cuLaunchKernelEx(
     /* Capture the stream Mojo uses -- and the CONTEXT it was bound to. This
        hook runs on MAX's OWN thread, so this is the one place we can observe
        a context that is known-good for driver calls. */
-    if (!g_mojo_stream && config->hStream) {
+    /* ⚠ TRACK THE CURRENT STREAM, DO NOT CACHE THE FIRST ONE. MAX destroys
+       its stream (measured: cuStreamDestroy right after ctx.synchronize()),
+       so a handle saved once is a dangling pointer minutes later and every
+       driver call we make with it is a use-after-free. Re-recording on every
+       launch means `intercept_get_mojo_stream` answers with a stream that was
+       alive as of the last launch, and the cuStreamDestroy hook NULLs it the
+       moment it dies -- so callers get NULL (a clean, checkable answer)
+       rather than a freed pointer that faults somewhere inside libcuda. */
+    if (config->hStream && config->hStream != g_mojo_stream) {
+        if (g_mojo_stream) {
+            fprintf(stderr, "[intercept] Mojo stream CHANGED: %p -> %p\n",
+                    g_mojo_stream, config->hStream);
+        } else {
+            fprintf(stderr, "[intercept] Mojo stream: %p (ctx=%p)\n",
+                    config->hStream, current_ctx_fwd());
+        }
         g_mojo_stream = config->hStream;
         g_launch_ctx = current_ctx_fwd();
-        fprintf(stderr, "[intercept] Captured Mojo stream: %p (ctx=%p)\n",
-                g_mojo_stream, g_launch_ctx);
-    }
-
-    /* ⚠ IS OUR SAVED HANDLE STILL THE ONE MAX USES? If MAX pools or recycles
-       streams, the handle we captured at the first launch is stale, and every
-       driver call we make with it is a use-after-free -- which is exactly what
-       an rc=0 here and a fault there looks like. */
-    if (g_mojo_stream && config->hStream && config->hStream != g_mojo_stream) {
-        fprintf(stderr, "[intercept] !! MAX LAUNCHED ON A DIFFERENT STREAM: "
-                "%p (we saved %p) -- our handle is stale\n",
-                config->hStream, g_mojo_stream);
     }
 
     if (g_recording && g_num_records < MAX_RECORDS) {

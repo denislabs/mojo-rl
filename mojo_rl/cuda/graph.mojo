@@ -40,7 +40,8 @@ struct CUDAGraph(Movable):
     All CUDA driver calls go through the interceptor library wrappers.
     """
 
-    var _state: Int  # 0=init, 1=capturing, 2=captured
+    # 0=init, 1=capturing, 2=captured, 3=DISABLED (no usable Mojo stream)
+    var _state: Int
     var _num_nodes: Int
     var _graph: _CUptr
     var _exec: _CUptr
@@ -91,9 +92,25 @@ struct CUDAGraph(Movable):
             self._mojo_stream = get_stream()
 
             if Int(self._mojo_stream) == 0:
+                # ⚠ THE COMMON CAUSE IS NOT "no kernel ran yet" ANY MORE.
+                # MAX 26.5.0rc2 DESTROYS its stream after `ctx.synchronize()`
+                # (measured 2026-08-09: `cuStreamDestroy` on exactly the
+                # handle the launch hook had just reported). The interceptor
+                # NULLs the handle when that happens, so a zero here means
+                # "the stream MAX was using is gone", and capture cannot
+                # proceed — there is no long-lived stream to borrow.
+                #
+                # Reaching this branch is therefore the EXPECTED outcome on
+                # this MAX, not an anomaly, and it must not crash: calling
+                # into the driver with the freed handle is the use-after-free
+                # that produced every fault in this arc.
+                self._state = 3  # DISABLED
                 print(
-                    "[CUDAGraph] WARNING: Mojo stream not discovered. "
-                    "Run at least one GPU kernel before creating CUDAGraph."
+                    "[CUDAGraph] DISABLED: no live Mojo stream to capture."
+                    " MAX destroys its stream after a synchronize, so the"
+                    " borrowed-stream design has nothing stable to capture."
+                    " Falling back to running the step directly — correct,"
+                    " just without the graph-replay speedup."
                 )
             else:
                 # Create replay stream
@@ -270,6 +287,17 @@ struct CUDAGraph(Movable):
         var stream_sync = self._lib.get_function[c_int]("intercept_stream_synchronize")
         _ = stream_sync(self._replay_stream)
 
+    def is_disabled(self) -> Bool:
+        """No usable stream — the caller must run its work directly.
+
+        True when construction found no live Mojo stream to capture. Callers
+        must check this INSTEAD OF assuming capture is available; see the note
+        in `__init__` for why this is the normal state under MAX 26.5.0rc2.
+        """
+        comptime if not has_nvidia_gpu_accelerator():
+            return False
+        return self._state == 3
+
     def is_captured(self) -> Bool:
         """Whether a graph is ready for replay."""
         comptime if not has_nvidia_gpu_accelerator():
@@ -318,6 +346,17 @@ def maybe_capture_replay[
             STEP()
             ctx.synchronize()
             var g = CUDAGraph(ctx)
+
+            # ⚠ NO USABLE STREAM -> RUN DIRECTLY, FOREVER, WITHOUT CRASHING.
+            # `STEP()` has already run for this call, so returning here is
+            # correct, not a skipped update. The disabled graph is STORED so
+            # later calls take the `else` branch below instead of retrying
+            # construction (which would re-`synchronize()` every single call
+            # and re-print the warning).
+            if g.is_disabled():
+                graph = g^
+                return
+
             g.begin_capture()
             STEP()
             g.end_capture()
@@ -331,6 +370,9 @@ def maybe_capture_replay[
                 "nodes",
             )
             graph = g^
+        elif graph.value().is_disabled():
+            # Capture was never possible; the closure is the whole step.
+            STEP()
         else:
             graph.value().replay_on_mojo_stream()
     else:
