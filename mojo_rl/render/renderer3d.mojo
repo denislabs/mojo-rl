@@ -1303,29 +1303,33 @@ struct Renderer3D(Movable):
             input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX,
             instance_step_rate=0,
         )
-        var solid_attrs = alloc[GPUVertexAttribute](3)
-        solid_attrs[unsafe_offset=0] = GPUVertexAttribute(
+        # `List`, not `alloc`: this pipeline setup raises in many places between
+        # here and the frees at the end, so every one of those paths leaked the
+        # attribute array. `GPUVertexInputState.vertex_attributes` is
+        # origin-parameterised, so the list is kept alive by the borrow.
+        var solid_attrs = List[GPUVertexAttribute]()
+        solid_attrs.append(GPUVertexAttribute(
             location=0,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=0,
-        )
-        solid_attrs[unsafe_offset=1] = GPUVertexAttribute(
+        ))
+        solid_attrs.append(GPUVertexAttribute(
             location=1,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=12,
-        )
-        solid_attrs[unsafe_offset=2] = GPUVertexAttribute(
+        ))
+        solid_attrs.append(GPUVertexAttribute(
             location=2,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
             offset=24,
-        )
+        ))
         var solid_vi = GPUVertexInputState(
             vertex_buffer_descriptions=Ptr(to=solid_buf_desc),
             num_vertex_buffers=1,
-            vertex_attributes=solid_attrs,
+            vertex_attributes=solid_attrs.unsafe_ptr(),
             num_vertex_attributes=3,
         )
 
@@ -1442,29 +1446,33 @@ struct Renderer3D(Movable):
             input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX,
             instance_step_rate=0,
         )
-        var ground_attrs = alloc[GPUVertexAttribute](3)
-        ground_attrs[unsafe_offset=0] = GPUVertexAttribute(
+        # `List`, not `alloc`: this pipeline setup raises in many places between
+        # here and the frees at the end, so every one of those paths leaked the
+        # attribute array. `GPUVertexInputState.vertex_attributes` is
+        # origin-parameterised, so the list is kept alive by the borrow.
+        var ground_attrs = List[GPUVertexAttribute]()
+        ground_attrs.append(GPUVertexAttribute(
             location=0,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=0,
-        )
-        ground_attrs[unsafe_offset=1] = GPUVertexAttribute(
+        ))
+        ground_attrs.append(GPUVertexAttribute(
             location=1,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=12,
-        )
-        ground_attrs[unsafe_offset=2] = GPUVertexAttribute(
+        ))
+        ground_attrs.append(GPUVertexAttribute(
             location=2,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
             offset=24,
-        )
+        ))
         var ground_vi = GPUVertexInputState(
             vertex_buffer_descriptions=Ptr(to=ground_buf_desc),
             num_vertex_buffers=1,
-            vertex_attributes=ground_attrs,
+            vertex_attributes=ground_attrs.unsafe_ptr(),
             num_vertex_attributes=3,
         )
 
@@ -1652,29 +1660,33 @@ struct Renderer3D(Movable):
             input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX,
             instance_step_rate=0,
         )
-        var shadow_attrs = alloc[GPUVertexAttribute](3)
-        shadow_attrs[unsafe_offset=0] = GPUVertexAttribute(
+        # `List`, not `alloc`: this pipeline setup raises in many places between
+        # here and the frees at the end, so every one of those paths leaked the
+        # attribute array. `GPUVertexInputState.vertex_attributes` is
+        # origin-parameterised, so the list is kept alive by the borrow.
+        var shadow_attrs = List[GPUVertexAttribute]()
+        shadow_attrs.append(GPUVertexAttribute(
             location=0,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=0,
-        )
-        shadow_attrs[unsafe_offset=1] = GPUVertexAttribute(
+        ))
+        shadow_attrs.append(GPUVertexAttribute(
             location=1,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=12,
-        )
-        shadow_attrs[unsafe_offset=2] = GPUVertexAttribute(
+        ))
+        shadow_attrs.append(GPUVertexAttribute(
             location=2,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
             offset=24,
-        )
+        ))
         var shadow_vi = GPUVertexInputState(
             vertex_buffer_descriptions=Ptr(to=shadow_buf_desc),
             num_vertex_buffers=1,
-            vertex_attributes=shadow_attrs,
+            vertex_attributes=shadow_attrs.unsafe_ptr(),
             num_vertex_attributes=3,
         )
 
@@ -1775,29 +1787,33 @@ struct Renderer3D(Movable):
             input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX,
             instance_step_rate=0,
         )
-        var refl_attrs = alloc[GPUVertexAttribute](3)
-        refl_attrs[unsafe_offset=0] = GPUVertexAttribute(
+        # `List`, not `alloc`: this pipeline setup raises in many places between
+        # here and the frees at the end, so every one of those paths leaked the
+        # attribute array. `GPUVertexInputState.vertex_attributes` is
+        # origin-parameterised, so the list is kept alive by the borrow.
+        var refl_attrs = List[GPUVertexAttribute]()
+        refl_attrs.append(GPUVertexAttribute(
             location=0,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=0,
-        )
-        refl_attrs[unsafe_offset=1] = GPUVertexAttribute(
+        ))
+        refl_attrs.append(GPUVertexAttribute(
             location=1,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=12,
-        )
-        refl_attrs[unsafe_offset=2] = GPUVertexAttribute(
+        ))
+        refl_attrs.append(GPUVertexAttribute(
             location=2,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
             offset=24,
-        )
+        ))
         var refl_vi = GPUVertexInputState(
             vertex_buffer_descriptions=Ptr(to=refl_buf_desc),
             num_vertex_buffers=1,
-            vertex_attributes=refl_attrs,
+            vertex_attributes=refl_attrs.unsafe_ptr(),
             num_vertex_attributes=3,
         )
 
@@ -1965,11 +1981,15 @@ struct Renderer3D(Movable):
             self.device.value(), Ptr(to=skybox_pi)
         ))
 
-        # Free heap-allocated vertex attribute arrays
-        solid_attrs.unsafe_free()
-        ground_attrs.unsafe_free()
-        shadow_attrs.unsafe_free()
-        refl_attrs.unsafe_free()
+
+        # Keep the attribute lists alive until every pipeline is built. The
+        # borrow through `GPUVertexInputState` should already guarantee this,
+        # but the pointers cross an FFI boundary and a premature free here is
+        # silent — the same shape that made the HDF5 buffers read freed memory.
+        _ = solid_attrs
+        _ = ground_attrs
+        _ = shadow_attrs
+        _ = refl_attrs
 
         # Release shader objects (pipelines retain them)
         release_gpu_shader(self.device.value(), solid_vs)
@@ -2265,29 +2285,33 @@ struct Renderer3D(Movable):
             input_rate=GPUVertexInputRate.GPU_VERTEXINPUTRATE_VERTEX,
             instance_step_rate=0,
         )
-        var text_attrs = alloc[GPUVertexAttribute](3)
-        text_attrs[unsafe_offset=0] = GPUVertexAttribute(
+        # `List`, not `alloc`: this pipeline setup raises in many places between
+        # here and the frees at the end, so every one of those paths leaked the
+        # attribute array. `GPUVertexInputState.vertex_attributes` is
+        # origin-parameterised, so the list is kept alive by the borrow.
+        var text_attrs = List[GPUVertexAttribute]()
+        text_attrs.append(GPUVertexAttribute(
             location=0,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
             offset=0,
-        )
-        text_attrs[unsafe_offset=1] = GPUVertexAttribute(
+        ))
+        text_attrs.append(GPUVertexAttribute(
             location=1,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
             offset=8,
-        )
-        text_attrs[unsafe_offset=2] = GPUVertexAttribute(
+        ))
+        text_attrs.append(GPUVertexAttribute(
             location=2,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT4,
             offset=16,
-        )
+        ))
         var text_vi = GPUVertexInputState(
             vertex_buffer_descriptions=Ptr(to=text_buf_desc),
             num_vertex_buffers=1,
-            vertex_attributes=text_attrs,
+            vertex_attributes=text_attrs.unsafe_ptr(),
             num_vertex_attributes=3,
         )
 
@@ -2360,7 +2384,7 @@ struct Renderer3D(Movable):
         self.text_pipeline = untracked(create_gpu_graphics_pipeline(
             self.device.value(), Ptr(to=text_pi)
         ))
-        text_attrs.unsafe_free()
+        _ = text_attrs  # keep alive across pipeline creation
         release_gpu_shader(self.device.value(), text_vs)
         release_gpu_shader(self.device.value(), text_fs)
 

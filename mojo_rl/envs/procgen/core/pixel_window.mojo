@@ -75,22 +75,24 @@ struct PixelWindow:
         except:
             pass
 
-        var src = alloc[FRect](1)
-        src[] = FRect(c_float(0), c_float(0), c_float(src_w), c_float(src_h))
-        var dst = alloc[FRect](1)
-        dst[] = FRect(
+        # Stack values rather than `alloc`: these two rects exist only to hand
+        # SDL an address. Heap-allocating them meant the frees below were
+        # skipped whenever `render_texture` (or anything before it) raised, and
+        # `Pointer(to=)` keeps the origin tracked instead of erasing it.
+        var src = FRect(c_float(0), c_float(0), c_float(src_w), c_float(src_h))
+        var dst = FRect(
             c_float(0), c_float(0), c_float(self.win_w), c_float(self.win_h)
         )
         render_texture(
             self.renderer.sdl_renderer.value(),
             texture,
-            rebind[Pointer[FRect, ImmutAnyOrigin]](src),
-            rebind[Pointer[FRect, ImmutAnyOrigin]](dst),
+            rebind[Pointer[FRect, ImmutAnyOrigin]](Pointer(to=src)),
+            rebind[Pointer[FRect, ImmutAnyOrigin]](Pointer(to=dst)),
         )
+        _ = src  # keep both rects alive across the SDL call
+        _ = dst
 
         destroy_texture(texture)
         destroy_surface(surface)
-        src.unsafe_free()
-        dst.unsafe_free()
         _ = rgba  # keep pixel data alive through surface use
         self.renderer.flip()
