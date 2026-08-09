@@ -47,11 +47,13 @@ struct CUDAGraph(Movable):
     var _mojo_stream: _CUptr
     var _replay_stream: _CUptr
     var _lib: OwnedDLHandle
-    # Cached `intercept_graph_launch` pointer — resolved once in `__init__`
-    # instead of re-`dlsym`'d on every replay (replays happen tens of
-    # thousands of times per run). NVIDIA-only; uninit + never called on
-    # non-NVIDIA (the replay methods comptime-return there).
-    var _launch_fn: def (_CUptr, _CUptr) thin -> c_int
+    # `intercept_graph_launch` used to be cached here as a raw function
+    # pointer. Mojo 1.0's `get_function` returns a `_DLCallable` whose origin
+    # is `origin_of(self._lib)` — it deliberately borrows the handle so the
+    # library cannot be unloaded mid-call — and that origin cannot be named in
+    # a field type, so the callable is resolved per replay instead. `dlsym` on
+    # an already-open handle is a hash lookup; against a graph launch plus a
+    # stream synchronize it is not measurable.
 
     def __init__(out self, ctx: DeviceContext) raises:
         """Initialize CUDA graph capture.
@@ -69,28 +71,23 @@ struct CUDAGraph(Movable):
         self._mojo_stream = _uninit[_CUptr]()
         self._replay_stream = _uninit[_CUptr]()
 
-        self._launch_fn = _uninit[def (_CUptr, _CUptr) thin -> c_int]()
-
         comptime if has_nvidia_gpu_accelerator():
             ctx.synchronize()
             self._lib = OwnedDLHandle("./mojo_rl/cuda/libcuda_intercept.so")
 
-            # Resolve the hot graph-launch symbol once (used by every replay).
+            # ⚠ `get_function`'s parameter is the symbol's RETURN type, and
+            # the returned `_DLCallable` IS the callable — there is no unwrap
+            # step. This file previously used the pre-1.0 spelling
+            # `get_function[def(A, B) thin -> R](name)()`, where the parameter
+            # was the whole function type and the trailing `()` unwrapped it.
+            # Under 1.0 that spelling still COMPILES — a function type is a
+            # valid `RegisterPassable` return type — but the trailing `()`
+            # CALLS the C function with no arguments and types its return value
+            # as a function pointer, which the next call then jumps into. See
+            # `tests/cuda/test_dlhandle_get_function_arity.mojo`.
             #
-            # NOTE: `get_function` returns a `_DLCallable` wrapper that keeps the
-            # handle's origin alive; the trailing `()` unwraps it to the raw
-            # function pointer. `_DLCallable.__call__` is variadic and DISCARDS
-            # its arguments, so `get_function[T](name)(a, b)` does NOT call the
-            # C function — it silently returns the unwrapped pointer and drops
-            # `a, b`. Always unwrap into a named binding, then call it.
-            self._launch_fn = self._lib.get_function[
-                def (_CUptr, _CUptr) thin -> c_int
-            ]("intercept_graph_launch")()
-
             # Get Mojo's internal stream
-            var get_stream = self._lib.get_function[def() thin -> _CUptr](
-                "intercept_get_mojo_stream"
-            )()
+            var get_stream = self._lib.get_function[_CUptr]("intercept_get_mojo_stream")
             self._mojo_stream = get_stream()
 
             if Int(self._mojo_stream) == 0:
@@ -100,9 +97,7 @@ struct CUDAGraph(Movable):
                 )
             else:
                 # Create replay stream
-                var stream_create = self._lib.get_function[
-                    def(Pointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
-                ]("intercept_stream_create")()
+                var stream_create = self._lib.get_function[c_int]("intercept_stream_create")
                 var stream_buf = alloc[_CUptr](1)
                 stream_buf[] = _uninit[_CUptr]()
                 _ = stream_create(stream_buf)
@@ -126,20 +121,14 @@ struct CUDAGraph(Movable):
 
         # Destroy previous graph if re-capturing
         if self._state == 2:
-            var exec_destroy = self._lib.get_function[
-                def(_CUptr) thin -> c_int
-            ]("intercept_graph_exec_destroy")()
+            var exec_destroy = self._lib.get_function[c_int]("intercept_graph_exec_destroy")
             _ = exec_destroy(self._exec)
-            var graph_destroy = self._lib.get_function[
-                def(_CUptr) thin -> c_int
-            ]("intercept_graph_destroy")()
+            var graph_destroy = self._lib.get_function[c_int]("intercept_graph_destroy")
             _ = graph_destroy(self._graph)
             self._exec = _uninit[_CUptr]()
             self._graph = _uninit[_CUptr]()
 
-        var begin_capture = self._lib.get_function[def(_CUptr) thin -> c_int](
-            "intercept_stream_begin_capture"
-        )()
+        var begin_capture = self._lib.get_function[c_int]("intercept_stream_begin_capture")
         var r = begin_capture(self._mojo_stream)
         if r != 0:
             raise Error("[CUDAGraph] cuStreamBeginCapture failed: " + String(r))
@@ -156,9 +145,7 @@ struct CUDAGraph(Movable):
         # End capture
         var graph_buf = alloc[_CUptr](1)
         graph_buf[] = _uninit[_CUptr]()
-        var end_capture = self._lib.get_function[
-            def(_CUptr, Pointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
-        ]("intercept_stream_end_capture")()
+        var end_capture = self._lib.get_function[c_int]("intercept_stream_end_capture")
         var r_end = end_capture(self._mojo_stream, graph_buf)
         self._graph = graph_buf[]
         graph_buf.unsafe_free()
@@ -172,9 +159,7 @@ struct CUDAGraph(Movable):
         # Count nodes
         var num_buf = alloc[UInt64](1)
         num_buf[] = UInt64(0)
-        var get_nodes = self._lib.get_function[
-            def(_CUptr, Pointer[UInt64, MutUntrackedOrigin]) thin -> c_int
-        ]("intercept_graph_get_nodes")()
+        var get_nodes = self._lib.get_function[c_int]("intercept_graph_get_nodes")
         _ = get_nodes(self._graph, num_buf)
         self._num_nodes = Int(num_buf[])
         num_buf.unsafe_free()
@@ -189,9 +174,7 @@ struct CUDAGraph(Movable):
         # Instantiate
         var exec_buf = alloc[_CUptr](1)
         exec_buf[] = _uninit[_CUptr]()
-        var instantiate = self._lib.get_function[
-            def(Pointer[_CUptr, MutUntrackedOrigin], _CUptr) thin -> c_int
-        ]("intercept_graph_instantiate")()
+        var instantiate = self._lib.get_function[c_int]("intercept_graph_instantiate")
         var r_inst = instantiate(exec_buf, self._graph)
         self._exec = exec_buf[]
         exec_buf.unsafe_free()
@@ -212,11 +195,10 @@ struct CUDAGraph(Movable):
         if self._state != 2:
             raise Error("[CUDAGraph] No graph captured.")
 
-        _ = self._launch_fn(self._exec, self._replay_stream)
+        var launch = self._lib.get_function[c_int]("intercept_graph_launch")
+        _ = launch(self._exec, self._replay_stream)
 
-        var stream_sync = self._lib.get_function[def(_CUptr) thin -> c_int](
-            "intercept_stream_synchronize"
-        )()
+        var stream_sync = self._lib.get_function[c_int]("intercept_stream_synchronize")
         _ = stream_sync(self._replay_stream)
 
     def replay_async(self) raises:
@@ -228,7 +210,8 @@ struct CUDAGraph(Movable):
         if self._state != 2:
             raise Error("[CUDAGraph] No graph captured.")
 
-        _ = self._launch_fn(self._exec, self._replay_stream)
+        var launch = self._lib.get_function[c_int]("intercept_graph_launch")
+        _ = launch(self._exec, self._replay_stream)
 
     def replay_on_mojo_stream(self) raises:
         """Replay on Mojo's main stream (implicit ordering with other kernels).
@@ -248,16 +231,15 @@ struct CUDAGraph(Movable):
         if self._state != 2:
             raise Error("[CUDAGraph] No graph captured.")
 
-        _ = self._launch_fn(self._exec, self._mojo_stream)
+        var launch = self._lib.get_function[c_int]("intercept_graph_launch")
+        _ = launch(self._exec, self._mojo_stream)
 
     def sync(self) raises:
         """Synchronize the replay stream. No-op on non-NVIDIA."""
         comptime if not has_nvidia_gpu_accelerator():
             return
 
-        var stream_sync = self._lib.get_function[def(_CUptr) thin -> c_int](
-            "intercept_stream_synchronize"
-        )()
+        var stream_sync = self._lib.get_function[c_int]("intercept_stream_synchronize")
         _ = stream_sync(self._replay_stream)
 
     def is_captured(self) -> Bool:

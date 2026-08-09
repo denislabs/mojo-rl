@@ -29,7 +29,7 @@ SUPERSEDED HYPOTHESIS, kept because it shaped the probe: `graph.mojo` unwraps ev
 arguments. That works for symbols WITH arguments, where unwrap and call are
 distinguishable. `intercept_get_mojo_stream` is the only ZERO-ARGUMENT one:
 
-    var get_stream = lib.get_function[def() thin -> _CUptr](name)()
+    var get_stream = lib.get_function[_CUptr](name)
     self._mojo_stream = get_stream()
 
 For a 0-arg signature both spellings are `()`, so if the first one CALLS
@@ -110,16 +110,12 @@ def main() raises:
     # known to have worked. If its bits look like code and `get_stream`'s do
     # not, the difference is the symbol, not the machinery.
     print("[probe] resolving intercept_get_mojo_stream (0-arg) ...")
-    var get_stream = lib.get_function[def () thin -> _CUptr](
-        "intercept_get_mojo_stream"
-    )()
+    var get_stream = lib.get_function[_CUptr]("intercept_get_mojo_stream")
     var gs_bits = Pointer(to=get_stream).bitcast[Int]()[]
     print("[probe] get_stream  fn-value bits =", gs_bits)
 
     print("[probe] resolving intercept_stream_begin_capture (1-arg, CONTROL)")
-    var begin_cap = lib.get_function[def (_CUptr) thin -> c_int](
-        "intercept_stream_begin_capture"
-    )()
+    var begin_cap = lib.get_function[c_int]("intercept_stream_begin_capture")
     var bc_bits = Pointer(to=begin_cap).bitcast[Int]()[]
     print("[probe] begin_cap   fn-value bits =", bc_bits)
     print(
@@ -140,9 +136,7 @@ def main() raises:
 
     # ── 3. replay-stream creation ─────────────────────────────────────────
     print("[probe] intercept_stream_create ...")
-    var stream_create = lib.get_function[
-        def (Pointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
-    ]("intercept_stream_create")()
+    var stream_create = lib.get_function[c_int]("intercept_stream_create")
     var sbuf = alloc[_CUptr](1)
     var rc_create = stream_create(sbuf)
     print("[probe] stream_create rc =", Int(rc_create),
@@ -161,9 +155,7 @@ def main() raises:
     print("[probe] kernel enqueued under capture")
 
     var graph_buf = alloc[_CUptr](1)
-    var end_cap = lib.get_function[
-        def (_CUptr, Pointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
-    ]("intercept_stream_end_capture")()
+    var end_cap = lib.get_function[c_int]("intercept_stream_end_capture")
     var rc_end = end_cap(stream1, graph_buf)
     print("[probe] end_capture rc =", Int(rc_end),
           " graph =", Int(graph_buf[]))

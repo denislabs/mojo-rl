@@ -61,49 +61,27 @@ def main() raises:
     var cuda = OwnedDLHandle("libcuda.so")
 
     # --- Load all CUDA driver functions we need ---
-    var cuStreamCreate = cuda.get_function[
-        def (Pointer[CUptr, MutAnyOrigin], UInt32) -> c_int
-    ]("cuStreamCreate")
-    var cuStreamBeginCapture = cuda.get_function[
-        def (CUptr, c_int) -> c_int
-    ]("cuStreamBeginCapture")
-    var cuStreamEndCapture = cuda.get_function[
-        def (CUptr, Pointer[CUptr, MutAnyOrigin]) -> c_int
-    ]("cuStreamEndCapture")
-    var cuGraphInstantiate = cuda.get_function[
-        def (Pointer[CUptr, MutAnyOrigin], CUptr, UInt64) -> c_int
-    ]("cuGraphInstantiate")
-    var cuGraphLaunch = cuda.get_function[
-        def (CUptr, CUptr) -> c_int
-    ]("cuGraphLaunch")
-    var cuStreamSynchronize = cuda.get_function[
-        def (CUptr) -> c_int
-    ]("cuStreamSynchronize")
-    var cuGraphDestroy = cuda.get_function[
-        def (CUptr) -> c_int
-    ]("cuGraphDestroy")
-    var cuGraphExecDestroy = cuda.get_function[
-        def (CUptr) -> c_int
-    ]("cuGraphExecDestroy")
+    var cuStreamCreate = cuda.get_function[c_int]("cuStreamCreate")
+    var cuStreamBeginCapture = cuda.get_function[c_int]("cuStreamBeginCapture")
+    var cuStreamEndCapture = cuda.get_function[c_int]("cuStreamEndCapture")
+    var cuGraphInstantiate = cuda.get_function[c_int]("cuGraphInstantiate")
+    var cuGraphLaunch = cuda.get_function[c_int]("cuGraphLaunch")
+    var cuStreamSynchronize = cuda.get_function[c_int]("cuStreamSynchronize")
+    var cuGraphDestroy = cuda.get_function[c_int]("cuGraphDestroy")
+    var cuGraphExecDestroy = cuda.get_function[c_int]("cuGraphExecDestroy")
 
     # Diagnostic: count nodes in captured graph
     # cuGraphGetNodes(graph, nodes_ptr, numNodes_ptr) -> CUresult
     # When nodes_ptr is null, just fills numNodes with the count
-    var cuGraphGetNodes = cuda.get_function[
-        def (CUptr, CUptr, Pointer[UInt64, MutAnyOrigin]) -> c_int
-    ]("cuGraphGetNodes")
+    var cuGraphGetNodes = cuda.get_function[c_int]("cuGraphGetNodes")
 
     # Diagnostic: query capture status of a stream
     # cuStreamIsCapturing(stream, captureStatus_ptr) -> CUresult
-    var cuStreamIsCapturing = cuda.get_function[
-        def (CUptr, Pointer[c_int, MutAnyOrigin]) -> c_int
-    ]("cuStreamIsCapturing")
+    var cuStreamIsCapturing = cuda.get_function[c_int]("cuStreamIsCapturing")
 
     # Diagnostic: get capture info (CUDA 10.1+)
     # cuStreamGetCaptureInfo(stream, captureStatus_ptr, id_ptr) -> CUresult
-    var cuStreamGetCaptureInfo = cuda.get_function[
-        def (CUptr, Pointer[c_int, MutAnyOrigin], Pointer[UInt64, MutAnyOrigin]) -> c_int
-    ]("cuStreamGetCaptureInfo")
+    var cuStreamGetCaptureInfo = cuda.get_function[c_int]("cuStreamGetCaptureInfo")
 
     # --- Buffers ---
     comptime N = 8192
@@ -338,12 +316,8 @@ def main() raises:
     # Load interceptor — use the same dlopen pattern as libcuda.so
     var intercept = OwnedDLHandle("./benchmarks/libcuda_intercept.so")
 
-    var get_mojo_stream = intercept.get_function[
-        def () -> CUptr
-    ]("intercept_get_mojo_stream")
-    var set_logging = intercept.get_function[
-        def (c_int) -> NoneType
-    ]("intercept_set_logging")
+    var get_mojo_stream = intercept.get_function[CUptr]("intercept_get_mojo_stream")
+    var set_logging = intercept.get_function[NoneType]("intercept_set_logging")
 
     var mojo_stream = get_mojo_stream()
     print("  Mojo's internal stream:", Int(mojo_stream))
