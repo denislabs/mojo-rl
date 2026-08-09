@@ -21,15 +21,19 @@ between begin and end.
 
     faults    -> A. begin/end alone is broken. Stop.
     survives  -> B. Capture works empty; the fault comes from the contents.
-
-⚠ HISTORICAL NOTE: this probe FAULTED, and that was read as story A. It was
-neither. The real cause was that `ctx`'s last use was `CUDAGraph(ctx)`, so
-Mojo destroyed the DeviceContext — and MAX's destructor destroyed the stream
-— before `begin_capture` ran. `CUDAGraph` now holds the context, so the
-premise of the split above finally holds.
                  `end_capture` will then raise "Captured 0 nodes", which is
                  the EXPECTED, CORRECT outcome here — an empty capture really
                  does hold zero nodes. Reaching that error is a PASS.
+
+⚠ HISTORICAL NOTE — IT WAS NEITHER STORY. This probe faulted, and that was
+read as story A ("capture itself is broken"), which sent the investigation
+toward disabling CUDA graphs entirely. The real cause was outside both
+branches: `ctx`'s last use was `CUDAGraph(ctx)`, so Mojo destroyed the
+DeviceContext — and MAX's destructor destroyed the stream — before
+`begin_capture` ever ran. `CUDAGraph` now HOLDS the context, so the premise
+this split depends on (that the window is the only variable) finally holds.
+Kept as a lesson: a two-way split is only decisive if the answer is actually
+one of the two.
 
 ⚠ THE ZERO-NODE ERROR IS THE SUCCESS CASE. Do not "fix" it. The question is
 only whether we get there at all, or die inside the driver first.
