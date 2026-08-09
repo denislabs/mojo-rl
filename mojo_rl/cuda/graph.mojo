@@ -87,39 +87,11 @@ struct CUDAGraph(Movable):
                 def (_CUptr, _CUptr) thin -> c_int
             ]("intercept_graph_launch")()
 
-            # Get Mojo's internal stream.
-            #
-            # ⚠⚠ A ONE-ARGUMENT SIGNATURE FOR A ZERO-ARGUMENT C FUNCTION, ON
-            # PURPOSE. The unwrap idiom documented above
-            # (`get_function[T](name)()` -> raw pointer) works only when
-            # `_DLCallable.__call__`'s zero args are DISTINGUISHABLE from
-            # invoking the C function. `intercept_get_mojo_stream` is the only
-            # zero-argument symbol here, and for it they are not: the unwrap
-            # `()` CALLS, and the returned stream comes back TYPED AS THE
-            # FUNCTION POINTER. The type checker cannot see it — it reports
-            # `def() thin -> _CUptr` — so the following `get_stream()` compiles
-            # and then JUMPS TO THE STREAM ADDRESS. Measured on NVIDIA
-            # 2026-08-09:
-            #
-            #   [intercept] Captured Mojo stream: 0x60432c6a4d20
-            #   #7                                0x60432c6a4d20   <- faulted
-            #
-            # Declaring one argument restores the arity mismatch, so the `()`
-            # unwraps as intended and the call is explicit. Passing an extra
-            # argument to a zero-parameter C function is ABI-safe on x86-64
-            # SysV (it rides in a register the callee never reads).
-            #
-            # This took down EVERY CUDA-graph user: the failure surfaced as an
-            # AsyncRT segfault at the first `USE_TRAIN_CUDA_GRAPH` capture,
-            # ~10k steps into SAC training, nowhere near the cause.
-            # `tests/cuda/test_cuda_graph_minimal.mojo` reproduces it in 13 s
-            # and is the gate if `_DLCallable`'s semantics shift again.
-            var get_stream = self._lib.get_function[
-                def (_CUptr) thin -> _CUptr
-            ]("intercept_get_mojo_stream")()
-            self._mojo_stream = get_stream(
-                _CUptr(unsafe_from_address=Int(0))
-            )
+            # Get Mojo's internal stream
+            var get_stream = self._lib.get_function[def() thin -> _CUptr](
+                "intercept_get_mojo_stream"
+            )()
+            self._mojo_stream = get_stream()
 
             if Int(self._mojo_stream) == 0:
                 print(
