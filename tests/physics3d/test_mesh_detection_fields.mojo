@@ -48,6 +48,7 @@ from mojo_rl.physics3d.collision.contact_detection import (
 )
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
+    CONTACT_IDX_SOLREF_0,
     META_IDX_NUM_CONTACTS,
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
@@ -90,7 +91,28 @@ comptime GOLD_NCON = 2  # total contacts across both envs
 #          Fractional part unchanged for the same reason — an integer-valued
 #          float moved. The new direction is MuJoCo-verified by
 #          `test_narrow_phase_pairs.mojo`.
-comptime GOLD_CON = 479.781851073727  # order-sensitive contact-record checksum
+#
+# --- 2026-08-09: SPLIT AT THE SOLPARAM COLUMNS; the delta was NOT physics ----
+# This gate spent a week failing "expected contacts in these poses — gate is
+# vacuous", i.e. ZERO contacts, and the plan's filed hypothesis was that the
+# hardcoded qpos encoded a stale joint order. Both were wrong:
+#
+#  * the poses were always right — `objjoint` is `jnt_qposadr` 9 in MuJoCo,
+#    exactly where this file writes it;
+#  * the zero was a COMPILER bug. The O(N^2) GPU kernel stopped writing
+#    anything once `3dbc4c33` grew it with the plane-box/capsule-box manifold
+#    helpers; the same source on CPU, and the SAP kernel, both found the
+#    contacts throughout. Seeding the ncon slot with a sentinel proved the
+#    kernel never wrote it at all. Upgrading to Mojo 1.0.0rc2 fixed it, and GPU
+#    now matches CPU BIT-FOR-BIT here.
+#
+# What remained was a pure column delta: `11e188fd` began writing per-contact
+# solref/solimp into columns 23-29, which the whole-record checksum summed. The
+# geometry columns are UNCHANGED at the pre-existing golden below; the entire
+# 452.322002 delta is the solparam columns, and predicting it from the record
+# values reproduces 452.322002 exactly. Split so it cannot recur.
+comptime GOLD_CON = 479.781851073727  # geometry columns (k < 23), UNCHANGED
+comptime GOLD_SOL = 452.32200173288584  # solparam columns (k >= 23)
 
 
 def main() raises:
@@ -167,22 +189,30 @@ def main() raises:
     d.meta.download(ctx)
 
     var ncon_total = 0
-    var fp_con = Float64(0)
+    var fp_geom = Float64(0)
+    var fp_sol = Float64(0)
     for e in range(BATCH):
         var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         ncon_total += nc
         for c in range(nc):
             for k in range(CONTACT_SIZE):
-                fp_con += Float64(
+                var w = Float64(
                     d.contacts.data[e * MC * CONTACT_SIZE + c * CONTACT_SIZE + k]
                 ) * Float64((e + 1) * (c + 1) * (k + 1))
+                if k < CONTACT_IDX_SOLREF_0:
+                    fp_geom += w
+                else:
+                    fp_sol += w
     if ncon_total == 0:
         raise Error("expected contacts in these poses — gate is vacuous")
     print("  fields-GPU total contacts:", ncon_total)
+    # ALWAYS printed, pass or fail — one number cannot say WHICH half moved.
+    print("  split: geometry cols", fp_geom, " solparam cols", fp_sol)
 
     if HARVEST:
         print("  HARVEST GOLD_NCON =", ncon_total)
-        print("  HARVEST GOLD_CON  =", fp_con)
+        print("  HARVEST GOLD_CON  =", fp_geom)
+        print("  HARVEST GOLD_SOL  =", fp_sol)
     else:
         if ncon_total != GOLD_NCON and not has_nvidia_gpu_accelerator():
             raise Error(
@@ -190,12 +220,20 @@ def main() raises:
                 + String(GOLD_NCON)
             )
         var denom = abs(GOLD_CON) if abs(GOLD_CON) > 1e-9 else 1.0
-        if abs(fp_con - GOLD_CON) / denom > GOLD_RTOL and (
+        if abs(fp_geom - GOLD_CON) / denom > GOLD_RTOL and (
             not has_nvidia_gpu_accelerator()
         ):
             raise Error(
-                "contact-record fingerprint " + String(fp_con) + " != golden "
+                "GEOMETRY fingerprint " + String(fp_geom) + " != golden "
                 + String(GOLD_CON)
+            )
+        var sdenom = abs(GOLD_SOL) if abs(GOLD_SOL) > 1e-9 else 1.0
+        if abs(fp_sol - GOLD_SOL) / sdenom > GOLD_RTOL and (
+            not has_nvidia_gpu_accelerator()
+        ):
+            raise Error(
+                "SOLPARAM fingerprint " + String(fp_sol) + " != golden "
+                + String(GOLD_SOL)
             )
         print("  PASS: fields-GPU matches golden fingerprint")
 

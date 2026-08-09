@@ -135,7 +135,7 @@ comptime GOLD_CON_H = 28658.222165894345
 # — pairs GJK reported as penetrating that float64 puts centimetres apart —
 # and env1's pose moved to a z where the mesh contact is real. Two effects,
 # one direction: fewer, and now all genuine.
-comptime GOLD_NCON_S = 4  # Part B sawyer SAP: total contacts
+comptime GOLD_NCON_S = 2  # Part B sawyer SAP: total contacts (defect 24)
 # ⚠ GOLD_CON_S has moved TWICE on 2026-08-01, both accounted for exactly.
 #   +64.0  bug 35 (the double flip): fractional part unchanged; 64 = 32 * 2,
 #          one `(body_a, body_b)` relabel of the env1 obj(33)/table(1) contact
@@ -147,7 +147,30 @@ comptime GOLD_NCON_S = 4  # Part B sawyer SAP: total contacts
 #          unchanged because an integer-valued float moved. MuJoCo-verified by
 #          `test_narrow_phase_pairs.mojo`.
 # Part A (humanoid) did NOT move for bug 36 — no cylinder/box pair there.
-comptime GOLD_CON_S = 1158.0095018647844
+#
+# --- 2026-08-09: DEFECT 24 removed sawyer's bogus ground contacts -----------
+# `GOLD_NCON_S` was 4 (2/env) and had drifted to 10 (5/env). Neither number was
+# right: sawyer's `tablelink` is a JOINTLESS body, so `body_weldid == 0` — the
+# world's — and its collision box sits 7 mm through the floor plane by
+# construction. MuJoCo filters that pair via `filterBodyPair` and emits
+# nothing; our O(N^2) path filtered it too; the SAP PLANE loop had no body
+# filter at all and collided them. One bogus contact per env while plane/box
+# was single-point, FOUR once `3dbc4c33` made it a manifold. Fixed in
+# `pair_body_filtered`, shared by all three pair loops.
+# Sawyer is now 1 real contact per env, and the geometry/solparam split below
+# matches Part A's so a solref/solimp change can never again read as geometry.
+#
+# ⚠ CROSS-CHECKED, not merely harvested. With defect 24 fixed, sawyer's two
+# surviving contacts are body-body (no plane contact, so no BODY_B convention
+# difference), and this geometry fingerprint agrees with the O(N^2) golden that
+# `test_mesh_detection_fields` pins over the SAME scene —
+#     SAP     479.7818514164537
+#     O(N^2)  479.781851073727    (that file's GOLD_CON)
+# to 3.4e-10 absolute, 7e-13 relative. The two detection paths now emit the
+# same contact set here. If a future change moves one and not the other, they
+# have diverged.
+comptime GOLD_CON_S = 479.7818514164537  # geometry columns (k < 23)
+comptime GOLD_SOL_S = 452.32200173288584  # solparam columns (k >= 23)
 
 # ── Humanoid (Part A) ────────────────────────────────────────────────────
 comptime NQ_H = HumanoidModel.NQ  # 24
@@ -559,16 +582,24 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
 
     var ncon_s = 0
     var fp_s = Float64(0)
+    var fp_s_sol = Float64(0)
     for e in range(BATCH):
         var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         ncon_s += nc
         for c in range(nc):
             for k in range(CONTACT_SIZE):
-                fp_s += Float64(
+                var w = Float64(
                     d.contacts.data[
                         e * MC_S * CONTACT_SIZE + c * CONTACT_SIZE + k
                     ]
                 ) * Float64((e + 1) * (c + 1) * (k + 1))
+                # Same split Part A already carries: geometry columns apart
+                # from the solref/solimp ones, so a solparam change can never
+                # again look like a geometry regression.
+                if k < CONTACT_IDX_SOLREF_0:
+                    fp_s += w
+                else:
+                    fp_s_sol += w
     if ncon_s == 0:
         raise Error("sawyer SAP: no contacts — gate is vacuous")
     print("  sawyer fields-SAP total contacts:", ncon_s)
@@ -590,9 +621,14 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
                 Float64(d.contacts.data[o + CONTACT_IDX_NY]),
                 Float64(d.contacts.data[o + CONTACT_IDX_NZ]), "]",
             )
+    print(
+        "  sawyer fingerprint split: geometry cols", fp_s,
+        " solparam cols", fp_s_sol,
+    )
     if HARVEST:
         print("  HARVEST GOLD_NCON_S =", ncon_s)
         print("  HARVEST GOLD_CON_S  =", fp_s)
+        print("  HARVEST GOLD_SOL_S  =", fp_s_sol)
     else:
         if ncon_s != GOLD_NCON_S and not has_nvidia_gpu_accelerator():
             raise Error(
@@ -604,8 +640,16 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
             not has_nvidia_gpu_accelerator()
         ):
             raise Error(
-                "sawyer SAP fingerprint " + String(fp_s) + " != golden "
-                + String(GOLD_CON_S)
+                "sawyer SAP GEOMETRY fingerprint " + String(fp_s)
+                + " != golden " + String(GOLD_CON_S)
+            )
+        var sdenom = abs(GOLD_SOL_S) if abs(GOLD_SOL_S) > 1e-9 else 1.0
+        if abs(fp_s_sol - GOLD_SOL_S) / sdenom > GOLD_RTOL and (
+            not has_nvidia_gpu_accelerator()
+        ):
+            raise Error(
+                "sawyer SAP SOLPARAM fingerprint " + String(fp_s_sol)
+                + " != golden " + String(GOLD_SOL_S)
             )
         print("  PASS: sawyer fields-SAP matches golden fingerprint")
 

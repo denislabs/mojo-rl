@@ -50,6 +50,7 @@ from mojo_rl.physics3d.gpu.constants import (
     CONTACT_IDX_NY,
     CONTACT_IDX_NZ,
     CONTACT_IDX_DIST,
+    CONTACT_IDX_SOLREF_0,
     MAX_GPU_MESHES,
     METADATA_SIZE,
 )
@@ -92,10 +93,38 @@ comptime GOLD_RTOL = 1e-3
 # Both legs moved (the two legs collide different geom subsets, so their counts
 # were never expected to match each other). Regenerated with the HARVEST
 # procedure in the module docstring.
+# --- 2026-08-09: SPLIT AT THE SOLPARAM COLUMNS, and both deltas accounted ---
+# The single-number fingerprint summed all 30 record columns, so the day
+# `11e188fd` started writing per-contact solref/solimp into columns 23-29 every
+# gate that used one went red with no way to say whether GEOMETRY had moved.
+# It had not. Measured, O(N^2) leg: geometry cols = 401.17350097186863 against
+# the old whole-record golden 401.1735017262399 — same number to 1.9e-11, and
+# that residual is summation ORDER (two accumulators instead of one), not
+# physics. The whole 452.322002 delta is the solparam columns, and predicting
+# it from the record values gives 452.322002 exactly. `test_sap_fields` carries
+# the same split for the same reason.
+#
+# The SAP leg ALSO moved, for a completely different and real reason: defect 24
+# (`pair_body_filtered`). Its plane loop had no body filter, so sawyer's
+# jointless `tablelink` — welded to the world, collision box 7 mm through the
+# floor by construction — collided with the ground plane. That was ONE bogus
+# contact per env while plane/box was single-point, and became FOUR when
+# `3dbc4c33` made it a manifold: 2/env -> 5/env. MuJoCo emits none of them and
+# the O(N^2) leg never did either. Fixed, so the leg drops to the plane-mesh
+# record this gate exists for.
 comptime GOLD_NCON_A = 2  # O(N^2) leg
-comptime GOLD_CON_A = 401.1735017262399
-comptime GOLD_NCON_B = 4  # SAP leg
-comptime GOLD_CON_B = 988.7928031698102
+comptime GOLD_CON_A = 401.1735017262399  # geometry columns (k < 23)
+comptime GOLD_SOL_A = 452.322002  # solparam columns (k >= 23)
+#
+# ⚠ The two legs' GEOMETRY fingerprints now differ by EXACTLY 6.0, and that is
+# a cross-check rather than a coincidence: the only remaining difference
+# between them is the world body id in `CONTACT_IDX_BODY_B` (k = 1), which
+# `detect_contacts` writes as 0 and SAP as -1. Its weight is (e+1)(c+1)(k+1) =
+# (e+1)*2, so one contact per env costs 2 + 4 = 6. If a future change moves the
+# two legs by DIFFERENT amounts, they have diverged on real geometry.
+comptime GOLD_NCON_B = 2  # SAP leg — was 4, then 10; defect 24 removed the lot
+comptime GOLD_CON_B = 395.17350097186863  # = GOLD_CON_A - 6.0, see above
+comptime GOLD_SOL_B = 452.32200173288584
 
 
 def _qpos_for_env(e: Int) -> List[Float64]:
@@ -121,22 +150,35 @@ def _fp_check(
     d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
     gold_ncon: Int,
     gold_con: Float64,
+    gold_sol: Float64,
 ) raises:
     var ncon_total = 0
-    var fp = Float64(0)
+    var fp_geom = Float64(0)
+    var fp_sol = Float64(0)
     for e in range(BATCH):
         var nc = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
         ncon_total += nc
         for c in range(nc):
             for k in range(CONTACT_SIZE):
-                fp += Float64(
+                var w = Float64(
                     d.contacts.data[e * MC * CONTACT_SIZE + c * CONTACT_SIZE + k]
                 ) * Float64((e + 1) * (c + 1) * (k + 1))
+                if k < CONTACT_IDX_SOLREF_0:
+                    fp_geom += w
+                else:
+                    fp_sol += w
     if ncon_total == 0:
         raise Error(label + ": zero contacts — gate is vacuous")
+    # ALWAYS print the split, pass or fail: a single number cannot say WHICH
+    # half of the record moved, and that ambiguity is what made this gate sit
+    # red for a week (see the header).
+    print(
+        "  ", label, "split: geometry cols", fp_geom, " solparam cols", fp_sol
+    )
     if HARVEST:
         print("  HARVEST", label, "NCON =", ncon_total)
-        print("  HARVEST", label, "CON  =", fp)
+        print("  HARVEST", label, "GEOM =", fp_geom)
+        print("  HARVEST", label, "SOL  =", fp_sol)
     else:
         if ncon_total != gold_ncon and not has_nvidia_gpu_accelerator():
             raise Error(
@@ -144,12 +186,20 @@ def _fp_check(
                 + String(gold_ncon)
             )
         var denom = abs(gold_con) if abs(gold_con) > 1e-9 else 1.0
-        if abs(fp - gold_con) / denom > GOLD_RTOL and (
+        if abs(fp_geom - gold_con) / denom > GOLD_RTOL and (
             not has_nvidia_gpu_accelerator()
         ):
             raise Error(
-                label + ": record fingerprint " + String(fp) + " != golden "
-                + String(gold_con)
+                label + ": GEOMETRY fingerprint " + String(fp_geom)
+                + " != golden " + String(gold_con)
+            )
+        var sdenom = abs(gold_sol) if abs(gold_sol) > 1e-9 else 1.0
+        if abs(fp_sol - gold_sol) / sdenom > GOLD_RTOL and (
+            not has_nvidia_gpu_accelerator()
+        ):
+            raise Error(
+                label + ": SOLPARAM fingerprint " + String(fp_sol)
+                + " != golden " + String(gold_sol)
             )
         print("  [", label, "] PASS: counts + records match golden")
 
@@ -274,7 +324,7 @@ def main() raises:
     ](d_a, mf, ctx)
     d_a.contacts.download(ctx)
     d_a.meta.download(ctx)
-    _fp_check("O(N^2)", d_a, GOLD_NCON_A, GOLD_CON_A)
+    _fp_check("O(N^2)", d_a, GOLD_NCON_A, GOLD_CON_A, GOLD_SOL_A)
     _assert_plane_mesh_contact("O(N^2)", d_a, obj_body, 0)
     for e in range(BATCH):
         var ncon = Int(
@@ -310,7 +360,7 @@ def main() raises:
     ](d_b, mf, ctx)
     d_b.contacts.download(ctx)
     d_b.meta.download(ctx)
-    _fp_check("SAP", d_b, GOLD_NCON_B, GOLD_CON_B)
+    _fp_check("SAP", d_b, GOLD_NCON_B, GOLD_CON_B, GOLD_SOL_B)
     _assert_plane_mesh_contact("SAP", d_b, obj_body, -1)
     print("  [ SAP ] PASS: plane-mesh record present (BODY_B=-1)")
 

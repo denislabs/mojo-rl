@@ -121,6 +121,7 @@ from .gjk import gjk_epa
 from .multi_ccd import multi_ccd_pair_supported, multi_ccd_extra_contacts
 from .contact_detection import (
     mix_contact_params,
+    pair_body_filtered,
     _fill_pair_solparams,
     _plane_box_contacts,
     _plane_cylinder_contacts,
@@ -354,6 +355,16 @@ def _detect_contacts_sap_env[
                 rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_BODY])
             )
             if gj_body == 0:
+                continue
+            # DEFECT 24 — this loop had NO body filter. MuJoCo runs the plane
+            # path through `filterBodyPair` like every other pair
+            # (`engine_collision_driver.c:1277`), which discards on
+            # `weldbody1 == weldbody2`; a jointless body welds to the world, so
+            # every static geom was colliding with the ground here while the
+            # O(N^2) path correctly emitted nothing. See `pair_body_filtered`.
+            if pair_body_filtered[DTYPE, NBODY, NEXCLUDE](
+                gi_body, gj_body, bodies, mmeta, excludes
+            ):
                 continue
             var gj_contype = Int(
                 rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
@@ -826,50 +837,13 @@ def _detect_contacts_sap_env[
             var gj_body = Int(
                 rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_BODY])
             )
-            # MuJoCo-style weld body filtering (GPU SAP)
-            var weld_i = Int(
-                rebind[Scalar[DTYPE]](bodies[gi_body, BODY_IDX_WELDID])
-            )
-            var weld_j = Int(
-                rebind[Scalar[DTYPE]](bodies[gj_body, BODY_IDX_WELDID])
-            )
-            if weld_i == weld_j:
+            # MuJoCo's body-pair filter — weld, weld-parent and exclude. See
+            # `pair_body_filtered`; shared with the O(N^2) loop and the plane
+            # loop above, which had no body filter at all (defect 24).
+            if pair_body_filtered[DTYPE, NBODY, NEXCLUDE](
+                gi_body, gj_body, bodies, mmeta, excludes
+            ):
                 continue
-            if weld_i != 0 and weld_j != 0:
-                var wp_i = Int(
-                    rebind[Scalar[DTYPE]](bodies[weld_i, BODY_IDX_PARENT])
-                )
-                var wp_j = Int(
-                    rebind[Scalar[DTYPE]](bodies[weld_j, BODY_IDX_PARENT])
-                )
-                var weld_parent_i = Int(
-                    rebind[Scalar[DTYPE]](bodies[wp_i, BODY_IDX_WELDID])
-                )
-                var weld_parent_j = Int(
-                    rebind[Scalar[DTYPE]](bodies[wp_j, BODY_IDX_WELDID])
-                )
-                if weld_i == weld_parent_j or weld_j == weld_parent_i:
-                    continue
-                # Check contact exclusion pairs
-                var sap_n_ex = Int(
-                    rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NEXCLUDE])
-                )
-                if sap_n_ex > 0:
-                    var ba = gi_body if gi_body <= gj_body else gj_body
-                    var bb = gj_body if gi_body <= gj_body else gi_body
-                    var excluded = False
-                    for ex in range(sap_n_ex):
-                        var eb1 = Int(
-                            rebind[Scalar[DTYPE]](excludes[ex, 0])
-                        )
-                        var eb2 = Int(
-                            rebind[Scalar[DTYPE]](excludes[ex, 1])
-                        )
-                        if eb1 == ba and eb2 == bb:
-                            excluded = True
-                            break
-                    if excluded:
-                        continue
             var gj_contype = Int(
                 rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
             )
