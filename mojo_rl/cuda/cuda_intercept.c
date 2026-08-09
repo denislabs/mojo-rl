@@ -48,6 +48,8 @@ static int g_num_records = 0;
 static int g_recording = 0;
 static int g_logging = 0;  /* quiet by default — enable via intercept_set_logging(1) */
 static int g_launch_count = 0;
+static int g_stream_changes = 0;   /* rate limit: hot path */
+static int g_destroy_logged = 0;   /* rate limit: fires every synchronize */
 static CUstream g_mojo_stream = NULL;  /* the stream Mojo actually uses */
 
 /* ---- Real function pointers (resolved from libcuda.so) ---- */
@@ -64,7 +66,6 @@ typedef CUresult (*cuLaunchKernelEx_t)(
     void **kernelParams, void **extra);
 
 static void *g_launch_ctx;
-static void *current_ctx_fwd(void);
 
 static cuLaunchKernel_t real_cuLaunchKernel = NULL;
 static cuLaunchKernelEx_t real_cuLaunchKernelEx = NULL;
@@ -128,16 +129,25 @@ static CUresult wrapped_cuLaunchKernelEx(
        alive as of the last launch, and the cuStreamDestroy hook NULLs it the
        moment it dies -- so callers get NULL (a clean, checkable answer)
        rather than a freed pointer that faults somewhere inside libcuda. */
+    /* ⚠ THIS IS THE HOT PATH — EVERY KERNEL LAUNCH. Keep it to one pointer
+       compare and one store. It previously logged and called cuCtxGetCurrent
+       on each CHANGE, which looked cheap until we learned MAX destroys and
+       recreates its stream on EVERY ctx.synchronize(): that turned into an
+       unbuffered stderr write plus a dlopen+dlsym+driver round trip per sync,
+       and it measurably slowed training down. Diagnostics here are rate
+       limited and must stay that way. */
     if (config->hStream && config->hStream != g_mojo_stream) {
-        if (g_mojo_stream) {
-            fprintf(stderr, "[intercept] Mojo stream CHANGED: %p -> %p\n",
-                    g_mojo_stream, config->hStream);
-        } else {
-            fprintf(stderr, "[intercept] Mojo stream: %p (ctx=%p)\n",
-                    config->hStream, current_ctx_fwd());
+        if (g_stream_changes < 4) {
+            fprintf(stderr, "[intercept] Mojo stream: %p%s\n",
+                    config->hStream,
+                    g_mojo_stream ? " (changed)" : "");
+            if (g_stream_changes == 3) {
+                fprintf(stderr, "[intercept] (further stream changes silent —"
+                        " MAX recreates its stream on every synchronize)\n");
+            }
         }
+        g_stream_changes++;
         g_mojo_stream = config->hStream;
-        g_launch_ctx = current_ctx_fwd();
     }
 
     if (g_recording && g_num_records < MAX_RECORDS) {
@@ -313,12 +323,18 @@ static fn_ptr1_t real_cuStreamDestroy = NULL;
    returning an error, and would explain rc=0 from one entry point and a
    SIGSEGV from another. */
 static CUresult wrapped_cuStreamDestroy(void *a) {
-    fprintf(stderr, "[intercept] cuStreamDestroy(%p)%s\n", a,
-            (a && a == g_mojo_stream)
-                ? "   <-- THIS IS THE STREAM WE SAVED. Our handle is now"
-                  " DANGLING and every intercept_* call is use-after-free."
-                : "");
-    if (a && a == g_mojo_stream) g_mojo_stream = NULL;
+    /* ⚠ RATE LIMITED: MAX destroys its stream on EVERY ctx.synchronize(), so
+       an unconditional log here is one stderr syscall per sync in the
+       training loop. NULLing the handle is the part that must always run —
+       it is what turns a later use-after-free into a checkable NULL. */
+    if (a && a == g_mojo_stream) {
+        if (g_destroy_logged < 2) {
+            fprintf(stderr, "[intercept] cuStreamDestroy(%p) — the stream we"
+                    " tracked; handle cleared (further destroys silent)\n", a);
+            g_destroy_logged++;
+        }
+        g_mojo_stream = NULL;
+    }
     return real_cuStreamDestroy(a);
 }
 
@@ -579,8 +595,6 @@ static void *current_ctx(void) {
     return c;
 }
 
-static void *current_ctx_fwd(void) { return current_ctx(); }
-
 static int bind_ctx_enabled(void) {
     const char *e = getenv("MOJO_RL_CUDA_BIND_CTX");
     return e && e[0] != '0';
@@ -588,6 +602,9 @@ static int bind_ctx_enabled(void) {
 
 /* Call at the top of every exported entry point that touches the driver. */
 static void ensure_ctx(const char *who) {
+    /* Early-out once the log budget is spent AND the correction is off:
+       current_ctx() costs a dlsym plus a driver call, for nothing. */
+    if (g_ctx_logged >= 12 && !bind_ctx_enabled()) return;
     void *cur = current_ctx();
     if (g_ctx_logged < 12) {
         fprintf(stderr,
