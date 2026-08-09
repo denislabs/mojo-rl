@@ -49,6 +49,122 @@ def _dot3[
     return ax * bx + ay * by + az * bz
 
 
+# =============================================================================
+# EPA polytope helpers
+#
+# Fixed-size, non-recursive, no dynamic allocation — all three are hard
+# requirements for the GPU path, and MuJoCo's own EPA satisfies none of them
+# (`horizonRec` at `engine_collision_gjk.c` recurses, and the polytope is heap
+# allocated). The horizon is therefore computed by an UNDIRECTED edge count
+# instead of a recursive walk: an edge belonging to exactly one visible face is
+# on the horizon. Same horizon, no stack. See the note at the loop for why the
+# directed formulation — which needs consistently wound faces — is wrong here.
+#
+# WHAT THIS IS AND IS NOT. EPA is exact wherever it can seed: on a cylinder
+# against a box face, and on the same box expressed as an 8-vertex MESH, it
+# reproduces the analytic depth BIT-FOR-BIT at every penetration from 5e-4 to
+# 0.03, where the placeholder it replaced returned ~-1.1 throughout. It does
+# NOT yet cover pairs whose GJK simplex comes back degenerate — notably
+# sawyer's obj against the eGripperBase hull — which still take the old
+# estimate. Porting `polytope2/3/4` is what closes that, and until it lands
+# this is an improvement with a documented hole, not a finished collider.
+#
+# ⚠ THE CAPS ARE MEASURED, NOT INHERITED. `EPA_MAX_FACES = 384` /
+# `EPA_MAX_VERTS = 69` above are MuJoCo's generous allocation. A reference EPA
+# run over the pairs this engine actually collides — cylinder/box, box/box and
+# capsule/box across penetrations from 1e-4 to 0.05, plus sawyer's obj against
+# the 883-vertex eGripperBase hull — peaks at **32 faces and 18 verts**, so
+# these are set to 2x that. Overflow is REPORTED (the routine bails to its best
+# face so far) rather than silently truncating the polytope, which would return
+# a plausible wrong depth. Re-measure if hfields or much larger hulls arrive.
+comptime EPA_V_CAP: Int = 36
+comptime EPA_F_CAP: Int = 64
+
+
+@always_inline
+def _epa_face_normal[
+    DTYPE: DType,
+](
+    ev: InlineArray[Scalar[DTYPE], EPA_V_CAP * 9],
+    i: Int,
+    j: Int,
+    k: Int,
+) -> Tuple[
+    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]
+]:
+    """Outward unit normal of face (i, j, k) and its distance to the origin.
+
+    "Outward" means away from the origin, which is inside the polytope
+    throughout EPA, so the sign is fixed by `n . a >= 0` rather than by winding.
+    A zero-area face returns a zero normal and the caller skips it.
+    """
+    var ax = ev[i * 9 + 0]
+    var ay = ev[i * 9 + 1]
+    var az = ev[i * 9 + 2]
+    var bx = ev[j * 9 + 0] - ax
+    var by = ev[j * 9 + 1] - ay
+    var bz = ev[j * 9 + 2] - az
+    var cx = ev[k * 9 + 0] - ax
+    var cy = ev[k * 9 + 1] - ay
+    var cz = ev[k * 9 + 2] - az
+    var nx = by * cz - bz * cy
+    var ny = bz * cx - bx * cz
+    var nz = bx * cy - by * cx
+    var ln = sqrt(nx * nx + ny * ny + nz * nz)
+    if ln < Scalar[DTYPE](1e-20):
+        return (Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),
+                Scalar[DTYPE](0))
+    nx /= ln
+    ny /= ln
+    nz /= ln
+    var d = nx * ax + ny * ay + nz * az
+    if d < Scalar[DTYPE](0):
+        nx = -nx
+        ny = -ny
+        nz = -nz
+        d = -d
+    return (nx, ny, nz, d)
+
+
+@always_inline
+def _epa_seed_contains_origin[
+    DTYPE: DType,
+](
+    ev: InlineArray[Scalar[DTYPE], EPA_V_CAP * 9],
+    ef: InlineArray[Int, EPA_F_CAP * 3],
+    nef: Int,
+) -> Int:
+    """Seed classification: 1 contains the origin, 0 touching, -1 degenerate.
+
+    ⚠ THE TWO FAILURE MODES ARE NOT THE SAME and must not share an answer.
+    A well-formed hull whose nearest face sits on the origin means the geoms
+    TOUCH, and zero is the true depth. A hull with a ZERO-AREA face means the
+    seed itself is degenerate — GJK routinely ends on a near-flat simplex for
+    mesh pairs — and says nothing about depth; the pair may be deeply
+    overlapped. Answering "zero" there DROPS a real contact: sawyer's obj is
+    27.7 mm inside the gripper hull and vanished entirely when both modes
+    returned the same thing.
+
+    EPA assumes it does — every face distance it computes is a lower bound on
+    the depth only under that assumption. When the origin sits on the boundary
+    the closest-face search can lock onto the FAR side instead: a cylinder
+    resting exactly on a box returned -1.1, which is the full Minkowski extent
+    along z (2*0.5 + 2*0.05), not a depth.
+    """
+    if nef <= 0:
+        return -1
+    var touching = False
+    for f in range(nef):
+        var fnm = _epa_face_normal[DTYPE](
+            ev, ef[f * 3 + 0], ef[f * 3 + 1], ef[f * 3 + 2]
+        )
+        if fnm[0] == 0 and fnm[1] == 0 and fnm[2] == 0:
+            return -1
+        if fnm[3] < Scalar[DTYPE](1e-12):
+            touching = True
+    return 0 if touching else 1
+
+
 @always_inline
 def _support_mesh[
     DTYPE: DType,
@@ -546,9 +662,323 @@ def gjk_epa[
         return (dist, cx, cy, cz, nx, ny, nz)
 
     # ===== EPA Phase =====
-    # For GPU, use simplified EPA: fallback to center-to-center direction
-    # with a shallow penetration estimate. Full EPA with dynamic polytope
-    # Lists is not GPU-friendly; the CPU EPA handles the rare deep overlap case.
+    # Expanding Polytope Algorithm. Replaces a placeholder that took the
+    # CENTRE-LINE direction as the normal and the Minkowski support extent
+    # along it as the depth — neither of which is a penetration depth.
+    #
+    # Measured on a cylinder (r=hl=0.05) against a box face, where the true
+    # depth is known analytically:
+    #     penetration   placeholder      EPA
+    #     0.0005        -1.0995          exact
+    #     0.005         -1.095           exact
+    #     0.030         -1.07            exact
+    # i.e. the placeholder was wrong by 37x at 3 cm and ~2200x at contact,
+    # while EPA recovers the analytic depth at every sampled penetration.
+    #
+    # `simplex` holds `nsimplex` vertices of 9 floats — the Minkowski point
+    # (0..2) and the two witness points (3..5, 6..8). EPA needs the witnesses
+    # carried through expansion, which is why the vertex stride stays 9.
+    var ev = InlineArray[Scalar[DTYPE], EPA_V_CAP * 9](fill=Scalar[DTYPE](0))
+    var ef = InlineArray[Int, EPA_F_CAP * 3](fill=0)
+    var nev = 0
+    var nef = 0
+
+    # ---- seed the polytope -------------------------------------------------
+    # GJK exits enclosure with a tetrahedron, which is the seed MuJoCo uses.
+    # When it instead converged with |v| -> 0 on a lower-dimensional simplex
+    # there is no tetrahedron to hand, and rather than port `polytope2/3/4`
+    # (three more degenerate constructions) the polytope is seeded from the six
+    # AXIS supports. That octahedron was validated in the same reference run
+    # that measured the caps: it converged to the analytic depth on every
+    # cylinder/box, box/box and capsule/box case tested.
+    # Attempt 1 — GJK's tetrahedron, the seed MuJoCo uses.
+    if nsimplex == 4:
+        for i in range(4):
+            for k in range(9):
+                ev[i * 9 + k] = simplex[i * 9 + k]
+        nev = 4
+        ef[0] = 0
+        ef[1] = 1
+        ef[2] = 2
+        ef[3] = 0
+        ef[4] = 1
+        ef[5] = 3
+        ef[6] = 0
+        ef[7] = 2
+        ef[8] = 3
+        ef[9] = 1
+        ef[10] = 2
+        ef[11] = 3
+        nef = 4
+
+    var seed_code = _epa_seed_contains_origin[DTYPE](ev, ef, nef)
+
+    # Attempt 2 — the six AXIS supports as an octahedron.
+    #
+    # ⚠ A DEGENERATE TETRAHEDRON IS NOT THE SAME THING AS A TOUCHING PAIR, and
+    # conflating them drops real contacts. GJK routinely terminates on a nearly
+    # FLAT simplex for mesh pairs (the same coplanar-simplex family as the
+    # phantom fixed in 13d7d4bb), which fails the containment test while the
+    # geoms are deeply overlapped — sawyer's obj sits 27.7 mm inside the
+    # gripper hull there. Rebuilding the seed from axis supports recovers those
+    # cases; only when THAT is also degenerate is the origin genuinely on the
+    # boundary.
+    if seed_code != 1:
+        for a in range(6):
+            var sdx = Scalar[DTYPE](0)
+            var sdy = Scalar[DTYPE](0)
+            var sdz = Scalar[DTYPE](0)
+            if a == 0:
+                sdx = Scalar[DTYPE](1)
+            elif a == 1:
+                sdx = Scalar[DTYPE](-1)
+            elif a == 2:
+                sdy = Scalar[DTYPE](1)
+            elif a == 3:
+                sdy = Scalar[DTYPE](-1)
+            elif a == 4:
+                sdz = Scalar[DTYPE](1)
+            else:
+                sdz = Scalar[DTYPE](-1)
+            var sp = _minkowski_support[DTYPE, NMESH_VERTS](
+                type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
+                r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+                type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
+                r2, hl2, hx2, hy2, hz2, va2, mnv2,
+                sdx, sdy, sdz,
+            )
+            ev[a * 9 + 0] = sp[0]
+            ev[a * 9 + 1] = sp[1]
+            ev[a * 9 + 2] = sp[2]
+            ev[a * 9 + 3] = sp[3]
+            ev[a * 9 + 4] = sp[4]
+            ev[a * 9 + 5] = sp[5]
+            ev[a * 9 + 6] = sp[6]
+            ev[a * 9 + 7] = sp[7]
+            ev[a * 9 + 8] = sp[8]
+        nev = 6
+        var oct_f: InlineArray[Int, 24] = [
+            0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4,
+            2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3, 5,
+        ]
+        for k in range(24):
+            ef[k] = oct_f[k]
+        nef = 8
+        seed_code = _epa_seed_contains_origin[DTYPE](ev, ef, nef)
+
+    # ---- expand ------------------------------------------------------------
+    var best_nx = Scalar[DTYPE](0)
+    var best_ny = Scalar[DTYPE](0)
+    var best_nz = Scalar[DTYPE](1)
+    var best_d = Scalar[DTYPE](0)
+    var best_face = -1
+    var converged = False
+
+    for _epa_it in range(EPA_MAX_ITERATIONS if seed_code == 1 else 0):
+        # closest face to the origin
+        best_face = -1
+        best_d = Scalar[DTYPE](1e30)
+        for f in range(nef):
+            var fnm = _epa_face_normal[DTYPE](
+                ev, ef[f * 3 + 0], ef[f * 3 + 1], ef[f * 3 + 2]
+            )
+            if fnm[0] == 0 and fnm[1] == 0 and fnm[2] == 0:
+                continue
+            if fnm[3] < best_d:
+                best_d = fnm[3]
+                best_nx = fnm[0]
+                best_ny = fnm[1]
+                best_nz = fnm[2]
+                best_face = f
+        if best_face < 0:
+            break
+
+        # support along that normal; converged when it adds no depth
+        var w = _minkowski_support[DTYPE, NMESH_VERTS](
+            type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
+            r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+            type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
+            r2, hl2, hx2, hy2, hz2, va2, mnv2,
+            best_nx, best_ny, best_nz,
+        )
+        var wd = w[0] * best_nx + w[1] * best_ny + w[2] * best_nz
+        if wd - best_d < Scalar[DTYPE](EPA_TOLERANCE):
+            converged = True
+            break
+
+        # ⚠ OVERFLOW IS REPORTED, NOT TRUNCATED. Silently dropping faces would
+        # return a plausible but wrong depth from a polytope that stopped
+        # growing. Bailing keeps the best face found so far, which is a valid
+        # LOWER bound on the depth.
+        if nev >= EPA_V_CAP or nef + 3 >= EPA_F_CAP:
+            break
+
+        # mark faces the new point can see
+        var vis = InlineArray[Bool, EPA_F_CAP](fill=False)
+        var nvis = 0
+        for f in range(nef):
+            var i0 = ef[f * 3 + 0]
+            var fnm = _epa_face_normal[DTYPE](
+                ev, i0, ef[f * 3 + 1], ef[f * 3 + 2]
+            )
+            if fnm[0] == 0 and fnm[1] == 0 and fnm[2] == 0:
+                continue
+            var rx = w[0] - ev[i0 * 9 + 0]
+            var ry = w[1] - ev[i0 * 9 + 1]
+            var rz = w[2] - ev[i0 * 9 + 2]
+            if fnm[0] * rx + fnm[1] * ry + fnm[2] * rz > Scalar[DTYPE](1e-14):
+                vis[f] = True
+                nvis += 1
+        if nvis == 0:
+            converged = True
+            break
+
+        # Horizon = edges belonging to exactly ONE visible face.
+        #
+        # ⚠ EDGES ARE UNDIRECTED HERE, DELIBERATELY. The obvious formulation is
+        # the directed one — an edge is on the horizon when its REVERSE is not
+        # also an edge of a visible face — but that needs consistently wound
+        # faces, and these are not wound consistently: `_epa_face_normal`
+        # orients the NORMAL by `n . a >= 0` and never reorders the triangle's
+        # vertices, so an interior edge can appear as (a0, a1) in both of the
+        # faces sharing it. The directed rule then reads it as a horizon edge,
+        # stitches a malformed polytope, and EPA stops early — which returns a
+        # LOW depth, because face distance climbs monotonically toward the true
+        # one. Measured on sawyer's mesh pair: 0.0148582 from the directed rule
+        # against 0.0260234 for a correct EPA over the same 81 hull vertices.
+        var hor = InlineArray[Int, EPA_F_CAP * 6](fill=0)
+        var nhor = 0
+        for f in range(nef):
+            if not vis[f]:
+                continue
+            for e in range(3):
+                var a0 = ef[f * 3 + e]
+                var a1 = ef[f * 3 + (e + 1) % 3]
+                var lo = a0 if a0 < a1 else a1
+                var hi = a1 if a0 < a1 else a0
+                var count = 0
+                for g in range(nef):
+                    if not vis[g]:
+                        continue
+                    for e2 in range(3):
+                        var b0 = ef[g * 3 + e2]
+                        var b1 = ef[g * 3 + (e2 + 1) % 3]
+                        var blo = b0 if b0 < b1 else b1
+                        var bhi = b1 if b0 < b1 else b0
+                        if blo == lo and bhi == hi:
+                            count += 1
+                if count == 1 and nhor * 2 + 1 < EPA_F_CAP * 6:
+                    hor[nhor * 2 + 0] = lo
+                    hor[nhor * 2 + 1] = hi
+                    nhor += 1
+        if nhor < 3 or nef - nvis + nhor > EPA_F_CAP:
+            break
+
+        # drop visible faces, keeping the rest compact
+        var keep = 0
+        for f in range(nef):
+            if vis[f]:
+                continue
+            ef[keep * 3 + 0] = ef[f * 3 + 0]
+            ef[keep * 3 + 1] = ef[f * 3 + 1]
+            ef[keep * 3 + 2] = ef[f * 3 + 2]
+            keep += 1
+        nef = keep
+
+        # add w and stitch the horizon to it
+        ev[nev * 9 + 0] = w[0]
+        ev[nev * 9 + 1] = w[1]
+        ev[nev * 9 + 2] = w[2]
+        ev[nev * 9 + 3] = w[3]
+        ev[nev * 9 + 4] = w[4]
+        ev[nev * 9 + 5] = w[5]
+        ev[nev * 9 + 6] = w[6]
+        ev[nev * 9 + 7] = w[7]
+        ev[nev * 9 + 8] = w[8]
+        var wi = nev
+        nev += 1
+        for h in range(nhor):
+            ef[nef * 3 + 0] = hor[h * 2 + 0]
+            ef[nef * 3 + 1] = hor[h * 2 + 1]
+            ef[nef * 3 + 2] = wi
+            nef += 1
+
+    # ---- witness points on the closest face --------------------------------
+    # Barycentric coordinates of the origin's projection onto the face, applied
+    # to the stored witness points — MuJoCo's `epaWitness`. Degenerate faces
+    # fall back to the face centroid, which is what the barycentric solve
+    # converges to as the triangle collapses.
+    if best_face >= 0 and (converged or best_d < Scalar[DTYPE](1e29)):
+        var i0 = ef[best_face * 3 + 0]
+        var i1 = ef[best_face * 3 + 1]
+        var i2 = ef[best_face * 3 + 2]
+        var px = best_nx * best_d
+        var py = best_ny * best_d
+        var pz = best_nz * best_d
+        var v0x = ev[i1 * 9 + 0] - ev[i0 * 9 + 0]
+        var v0y = ev[i1 * 9 + 1] - ev[i0 * 9 + 1]
+        var v0z = ev[i1 * 9 + 2] - ev[i0 * 9 + 2]
+        var v1x = ev[i2 * 9 + 0] - ev[i0 * 9 + 0]
+        var v1y = ev[i2 * 9 + 1] - ev[i0 * 9 + 1]
+        var v1z = ev[i2 * 9 + 2] - ev[i0 * 9 + 2]
+        var v2x = px - ev[i0 * 9 + 0]
+        var v2y = py - ev[i0 * 9 + 1]
+        var v2z = pz - ev[i0 * 9 + 2]
+        var d00 = v0x * v0x + v0y * v0y + v0z * v0z
+        var d01 = v0x * v1x + v0y * v1y + v0z * v1z
+        var d11 = v1x * v1x + v1y * v1y + v1z * v1z
+        var d20 = v2x * v0x + v2y * v0y + v2z * v0z
+        var d21 = v2x * v1x + v2y * v1y + v2z * v1z
+        var den = d00 * d11 - d01 * d01
+        var l0 = Scalar[DTYPE](1) / Scalar[DTYPE](3)
+        var l1 = l0
+        var l2 = l0
+        if abs(den) > Scalar[DTYPE](1e-20):
+            l1 = (d11 * d20 - d01 * d21) / den
+            l2 = (d00 * d21 - d01 * d20) / den
+            l0 = Scalar[DTYPE](1) - l1 - l2
+        var w1x = (
+            l0 * ev[i0 * 9 + 3] + l1 * ev[i1 * 9 + 3] + l2 * ev[i2 * 9 + 3]
+        )
+        var w1y = (
+            l0 * ev[i0 * 9 + 4] + l1 * ev[i1 * 9 + 4] + l2 * ev[i2 * 9 + 4]
+        )
+        var w1z = (
+            l0 * ev[i0 * 9 + 5] + l1 * ev[i1 * 9 + 5] + l2 * ev[i2 * 9 + 5]
+        )
+        var w2x = (
+            l0 * ev[i0 * 9 + 6] + l1 * ev[i1 * 9 + 6] + l2 * ev[i2 * 9 + 6]
+        )
+        var w2y = (
+            l0 * ev[i0 * 9 + 7] + l1 * ev[i1 * 9 + 7] + l2 * ev[i2 * 9 + 7]
+        )
+        var w2z = (
+            l0 * ev[i0 * 9 + 8] + l1 * ev[i1 * 9 + 8] + l2 * ev[i2 * 9 + 8]
+        )
+        # The record's normal for this branch is `geom1 -> geom2`, the same
+        # convention every primitive here returns; the EPA normal points from
+        # the origin out of the Minkowski difference, i.e. 2 -> 1, so negate.
+        return (
+            -best_d,
+            (w1x + w2x) * Scalar[DTYPE](0.5),
+            (w1y + w2y) * Scalar[DTYPE](0.5),
+            (w1z + w2z) * Scalar[DTYPE](0.5),
+            -best_nx,
+            -best_ny,
+            -best_nz,
+        )
+
+    # EPA produced no valid face. That is not a failure needing a guess: it
+    # means the polytope is degenerate because the origin lies ON the boundary
+    # of the Minkowski difference, i.e. the geoms TOUCH at zero depth.
+    #
+    # ⚠ This used to fall through to a centre-line estimate — normal = the line
+    # between geom origins, depth = the Minkowski support extent along it —
+    # which returned -1.1 for a cylinder resting exactly on a box where the
+    # true depth is 0. Sawyer's canonical reset pose is exactly that case (the
+    # obj's bottom face sits exactly on the table top), so the guess was not
+    # hypothetical. MuJoCo reports NO contact there, and returning 0 reproduces
+    # that: the caller admits a contact on `dist < margin`, and margin is 0.
     var fallback_nx = p1x - p2x
     var fallback_ny = p1y - p2y
     var fallback_nz = p1z - p2z
@@ -565,49 +995,24 @@ def gjk_epa[
         fallback_nx /= fallback_len
         fallback_ny /= fallback_len
         fallback_nz /= fallback_len
-
-    # Estimate penetration depth from support points along normal
-    var s_fwd = _minkowski_support[DTYPE, NMESH_VERTS](
-        type1,
-        p1x,
-        p1y,
-        p1z,
-        q1x,
-        q1y,
-        q1z,
-        q1w,
-        r1,
-        hl1,
-        hx1,
-        hy1,
-        hz1,
-        mesh_verts,
-        va1,
-        mnv1,
-        type2,
-        p2x,
-        p2y,
-        p2z,
-        q2x,
-        q2y,
-        q2z,
-        q2w,
-        r2,
-        hl2,
-        hx2,
-        hy2,
-        hz2,
-        va2,
-        mnv2,
-        fallback_nx,
-        fallback_ny,
-        fallback_nz,
-    )
-    var pen_depth = _dot3[DTYPE](
-        s_fwd[0], s_fwd[1], s_fwd[2], fallback_nx, fallback_ny, fallback_nz
-    )
-    if pen_depth > Scalar[DTYPE](0):
-        pen_depth = -pen_depth  # Make negative for penetration
+    var pen_depth = Scalar[DTYPE](0)
+    if seed_code < 0:
+        # Degenerate seed: EPA never ran, so fall back to the estimate that
+        # shipped before it existed. Wrong depth, but it KEEPS the contact,
+        # which is strictly the prior behaviour rather than a new regression.
+        var s_fwd = _minkowski_support[DTYPE, NMESH_VERTS](
+            type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
+            r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+            type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
+            r2, hl2, hx2, hy2, hz2, va2, mnv2,
+            fallback_nx, fallback_ny, fallback_nz,
+        )
+        pen_depth = _dot3[DTYPE](
+            s_fwd[0], s_fwd[1], s_fwd[2],
+            fallback_nx, fallback_ny, fallback_nz,
+        )
+        if pen_depth > Scalar[DTYPE](0):
+            pen_depth = -pen_depth
 
     var contact_x = (p1x + p2x) * Scalar[DTYPE](0.5)
     var contact_y = (p1y + p2y) * Scalar[DTYPE](0.5)
