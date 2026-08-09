@@ -111,7 +111,31 @@ comptime GOLD_NCON = 2  # total contacts across both envs
 # geometry columns are UNCHANGED at the pre-existing golden below; the entire
 # 452.322002 delta is the solparam columns, and predicting it from the record
 # values reproduces 452.322002 exactly. Split so it cannot recur.
-comptime GOLD_CON = 479.781851073727  # geometry columns (k < 23), UNCHANGED
+#
+# --- 2026-08-09b: EPA now covers this pair (`polytope3`) -------------------
+# 479.781851073727 -> 481.2657020315528. ONE record moved, env1's obj/gripper
+# mesh contact; env0's is a cylinder/box primitive and is untouched, and the
+# count is still 2. The move is EPA replacing the centre-line estimate that
+# used to run here, and it is an IMPROVEMENT in correctness even though it
+# takes the number FURTHER from MuJoCo:
+#
+#     ours before (centre-line guess) -0.0264747
+#     ours now    (EPA)               -0.0148583
+#     MuJoCo                          -0.0276947
+#
+# ⚠ THE NEW NUMBER IS THE EXACT ANSWER FOR THE SHAPE WE HAND EPA. An
+# independent reference EPA, run on OUR OWN 81 hull vertices at OUR OWN pose,
+# returns 0.0148583 — agreeing with the engine to 7 significant figures. The
+# old value was closer to MuJoCo BY ACCIDENT: two errors partially cancelled.
+#
+# The whole 12.9 mm residual is therefore the mesh VERTEX SET, and it is not
+# mainly the direction sampler. Same sampler, different inputs:
+#     on MuJoCo's compiled mesh_vert  -> 0.0260234  (1.7 mm out)
+#     on our STL-derived vertices     -> 0.0148583  (12.9 mm out)
+# so our loader and MuJoCo's mesh compile disagree about the vertices
+# themselves, which is the next thing to chase. Sampling density is
+# second-order behind it (256 dirs -> 0.36 mm, 1024 -> 0.24 mm on MuJoCo's set).
+comptime GOLD_CON = 481.2657020315528  # geometry columns (k < 23)
 comptime GOLD_SOL = 452.32200173288584  # solparam columns (k >= 23)
 
 

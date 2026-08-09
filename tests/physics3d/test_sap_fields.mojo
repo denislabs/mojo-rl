@@ -169,7 +169,16 @@ comptime GOLD_NCON_S = 2  # Part B sawyer SAP: total contacts (defect 24)
 # to 3.4e-10 absolute, 7e-13 relative. The two detection paths now emit the
 # same contact set here. If a future change moves one and not the other, they
 # have diverged.
-comptime GOLD_CON_S = 479.7818514164537  # geometry columns (k < 23)
+#
+# --- 2026-08-09b: EPA now covers sawyer's mesh pair (`polytope3`) ----------
+# 479.7818514164537 -> 481.2657020315528, and the cross-check with
+# `test_mesh_detection_fields` STILL HOLDS: that file's O(N^2) golden moved to
+# the identical 481.2657020315528, so SAP and O(N^2) continue to agree exactly
+# on this scene. One record moved — env1's obj/gripper mesh contact — from a
+# centre-line estimate to a real EPA answer. See the long note in
+# test_mesh_detection_fields for why the number moved AWAY from MuJoCo while
+# getting more correct, and why the residual is the mesh VERTEX SET.
+comptime GOLD_CON_S = 481.2657020315528  # geometry columns (k < 23)
 comptime GOLD_SOL_S = 452.32200173288584  # solparam columns (k >= 23)
 
 # ── Humanoid (Part A) ────────────────────────────────────────────────────

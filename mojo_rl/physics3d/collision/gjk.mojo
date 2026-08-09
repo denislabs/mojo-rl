@@ -711,6 +711,73 @@ def gjk_epa[
         ef[11] = 3
         nef = 4
 
+    # Attempt 1b — GJK ended on a TRIANGLE: MuJoCo's `polytope3`.
+    #
+    # Measured, not guessed: sawyer's obj against the eGripperBase hull leaves
+    # GJK with `nsimplex == 3`, and both the tetrahedron seed (absent) and the
+    # axis octahedron (degenerate) fail on it, which is why that 27.7 mm
+    # contact fell through to the old estimate. `polytope3`
+    # (`engine_collision_gjk.c`) builds a hexahedron from the triangle by
+    # taking supports along BOTH triangle normals, giving 5 vertices and 6
+    # faces that straddle the plane the triangle lies in.
+    elif nsimplex == 3:
+        for i in range(3):
+            for k in range(9):
+                ev[i * 9 + k] = simplex[i * 9 + k]
+        var e1x = ev[9 + 0] - ev[0]
+        var e1y = ev[9 + 1] - ev[1]
+        var e1z = ev[9 + 2] - ev[2]
+        var e2x = ev[18 + 0] - ev[0]
+        var e2y = ev[18 + 1] - ev[1]
+        var e2z = ev[18 + 2] - ev[2]
+        var tnx = e1y * e2z - e1z * e2y
+        var tny = e1z * e2x - e1x * e2z
+        var tnz = e1x * e2y - e1y * e2x
+        var tln = sqrt(tnx * tnx + tny * tny + tnz * tnz)
+        if tln > Scalar[DTYPE](1e-20):
+            tnx /= tln
+            tny /= tln
+            tnz /= tln
+            var sp4 = _minkowski_support[DTYPE, NMESH_VERTS](
+                type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
+                r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+                type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
+                r2, hl2, hx2, hy2, hz2, va2, mnv2,
+                tnx, tny, tnz,
+            )
+            var sp5 = _minkowski_support[DTYPE, NMESH_VERTS](
+                type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
+                r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+                type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
+                r2, hl2, hx2, hy2, hz2, va2, mnv2,
+                -tnx, -tny, -tnz,
+            )
+            ev[27 + 0] = sp4[0]
+            ev[27 + 1] = sp4[1]
+            ev[27 + 2] = sp4[2]
+            ev[27 + 3] = sp4[3]
+            ev[27 + 4] = sp4[4]
+            ev[27 + 5] = sp4[5]
+            ev[27 + 6] = sp4[6]
+            ev[27 + 7] = sp4[7]
+            ev[27 + 8] = sp4[8]
+            ev[36 + 0] = sp5[0]
+            ev[36 + 1] = sp5[1]
+            ev[36 + 2] = sp5[2]
+            ev[36 + 3] = sp5[3]
+            ev[36 + 4] = sp5[4]
+            ev[36 + 5] = sp5[5]
+            ev[36 + 6] = sp5[6]
+            ev[36 + 7] = sp5[7]
+            ev[36 + 8] = sp5[8]
+            nev = 5
+            var hex_f: InlineArray[Int, 18] = [
+                3, 0, 1, 3, 2, 0, 3, 1, 2, 4, 1, 0, 4, 0, 2, 4, 2, 1,
+            ]
+            for k in range(18):
+                ef[k] = hex_f[k]
+            nef = 6
+
     var seed_code = _epa_seed_contains_origin[DTYPE](ev, ef, nef)
 
     # Attempt 2 — the six AXIS supports as an octahedron.
