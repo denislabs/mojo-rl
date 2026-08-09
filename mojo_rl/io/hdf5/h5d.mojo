@@ -130,7 +130,7 @@ def h5d_write(
 
 
 def h5d_set_extent(
-    dset_id: hid_t, size: Pointer[hsize_t, MutUntrackedOrigin]
+    dset_id: hid_t, size: Pointer[mut=False, hsize_t, _]
 ) raises -> herr_t:
     """``H5Dset_extent(hid_t dset_id, const hsize_t size[]) -> herr_t``.
 
@@ -138,12 +138,21 @@ def h5d_set_extent(
     possible: extend dim-0 by the batch, then write into the new tail rows.
     Any previously-obtained dataspace id is stale afterwards — re-fetch with
     ``h5d_get_space``.
+
+    ⚠ The array parameters are immutable and generic over the caller's origin rather than
+    fixed at `MutUntrackedOrigin`. Fixing them forced every caller to write
+    `.unsafe_mut_cast[True]().unsafe_origin_cast[MutUntrackedOrigin]()`, and that cast SEVERS the
+    borrow — Mojo then destroys the caller's buffer at its last mention, which
+    is the cast, and this call reads freed memory. Keeping the origin generic
+    lets the caller pass a `List`'s pointer directly and keeps the list alive
+    for the duration of the call; the cast to the C signature happens here,
+    where the tracked parameter is still live.
     """
     return _get_dylib_function[
         lib,
         "H5Dset_extent",
         def(hid_t, Pointer[hsize_t, MutUntrackedOrigin]) thin -> herr_t,
-    ]()(dset_id, size)
+    ]()(dset_id, size.unsafe_mut_cast[True]().unsafe_origin_cast[MutUntrackedOrigin]())
 
 
 def h5d_read(

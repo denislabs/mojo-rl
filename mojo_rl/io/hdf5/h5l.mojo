@@ -13,7 +13,6 @@ FFI. Index-based lookup needs neither: call with increasing `n` until it
 returns negative.
 """
 
-from std.memory import alloc
 
 from . import _get_dylib_function, c_char, c_int, c_size_t, lib, Ptr
 from .h5_types import H5P_DEFAULT, hid_t, hsize_t
@@ -37,7 +36,7 @@ def h5l_get_name_by_idx(
     idx_type: c_int,
     order: c_int,
     n: hsize_t,
-    name: Pointer[c_char, MutUntrackedOrigin],
+    name: Pointer[mut=True, c_char, _],
     size: c_size_t,
     lapl_id: hid_t,
 ) raises -> Int64:
@@ -46,6 +45,15 @@ def h5l_get_name_by_idx(
 
     Returns the name length (excluding NUL), or negative when `n` is past the
     end. Passing a null `name` returns the required buffer size.
+
+    ⚠ The array parameters are generic over the caller's origin rather than
+    fixed at `MutUntrackedOrigin`. Fixing them forced every caller to write
+    `.unsafe_origin_cast[MutUntrackedOrigin]()`, and that cast SEVERS the
+    borrow — Mojo then destroys the caller's buffer at its last mention, which
+    is the cast, and this call reads freed memory. Keeping the origin generic
+    lets the caller pass a `List`'s pointer directly and keeps the list alive
+    for the duration of the call; the cast to the C signature happens here,
+    where the tracked parameter is still live.
     """
     return _get_dylib_function[
         lib,
@@ -66,7 +74,7 @@ def h5l_get_name_by_idx(
         idx_type,
         order,
         n,
-        name,
+        name.unsafe_origin_cast[MutUntrackedOrigin](),
         size,
         lapl_id,
     )
@@ -83,7 +91,9 @@ def list_link_names(loc_id: hid_t) raises -> List[String]:
     _ = global_hid("H5T_NATIVE_FLOAT_g")
 
     var names = List[String]()
-    var buf = alloc[c_char](_NAME_BUF)
+    # `List` rather than `alloc`: `h5l_get_name_by_idx` raises and the overflow
+    # check below raises, so the manual free leaked the buffer on both paths.
+    var buf = List[c_char](length=_NAME_BUF, fill=c_char(0))
     var i = 0
     while True:
         var n = h5l_get_name_by_idx(
@@ -92,14 +102,13 @@ def list_link_names(loc_id: hid_t) raises -> List[String]:
             H5_INDEX_NAME,
             H5_ITER_INC,
             hsize_t(i),
-            buf,
+            buf.unsafe_ptr(),
             c_size_t(_NAME_BUF),
             H5P_DEFAULT,
         )
         if n < 0:
             break
         if Int(n) >= _NAME_BUF:
-            buf.unsafe_free()
             raise Error(
                 "hdf5: link name at index " + String(i) + " is "
                 + String(Int(n)) + " bytes, exceeding the "
@@ -107,8 +116,7 @@ def list_link_names(loc_id: hid_t) raises -> List[String]:
             )
         var s = String()
         for k in range(Int(n)):
-            s += chr(Int(buf[unsafe_offset=k]))
+            s += chr(Int(buf[k]))
         names.append(s)
         i += 1
-    buf.unsafe_free()
     return names^

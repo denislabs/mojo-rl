@@ -48,12 +48,21 @@ def h5p_close(plist_id: hid_t) raises -> herr_t:
 def h5p_set_chunk(
     plist_id: hid_t,
     ndims: c_int,
-    dim: Pointer[hsize_t, MutUntrackedOrigin],
+    dim: Pointer[mut=False, hsize_t, _],
 ) raises -> herr_t:
     """``H5Pset_chunk(hid_t plist_id, int ndims, const hsize_t *dim)``.
 
     Sets the chunk shape on a DCPL. Required for any dataset with an
     unlimited axis or any compression filter.
+
+    ⚠ The array parameters are immutable and generic over the caller's origin rather than
+    fixed at `MutUntrackedOrigin`. Fixing them forced every caller to write
+    `.unsafe_mut_cast[True]().unsafe_origin_cast[MutUntrackedOrigin]()`, and that cast SEVERS the
+    borrow — Mojo then destroys the caller's buffer at its last mention, which
+    is the cast, and this call reads freed memory. Keeping the origin generic
+    lets the caller pass a `List`'s pointer directly and keeps the list alive
+    for the duration of the call; the cast to the C signature happens here,
+    where the tracked parameter is still live.
     """
     return _get_dylib_function[
         lib,
@@ -61,7 +70,7 @@ def h5p_set_chunk(
         def(
             hid_t, c_int, Pointer[hsize_t, MutUntrackedOrigin]
         ) thin -> herr_t,
-    ]()(plist_id, ndims, dim)
+    ]()(plist_id, ndims, dim.unsafe_mut_cast[True]().unsafe_origin_cast[MutUntrackedOrigin]())
 
 
 def h5p_set_deflate(plist_id: hid_t, level: c_uint) raises -> herr_t:
