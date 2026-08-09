@@ -950,6 +950,24 @@ def build_model_fields_from_flat[
         mf.mesh_meta.data[m * MODEL_MESH_META_SIZE + 1] = Scalar[DTYPE](
             mesh_vertnum[m]
         )
+    # ⚠ CAPACITY IS ANNOUNCED, NOT SILENTLY TRUNCATED. This loop used to just
+    # `break` at the cap, which drops hull vertices from the LAST meshes and
+    # shrinks their collision shape — an error with one sign, invisible to
+    # every gate, and exactly the failure mode that let `mesh_vertadr`'s unit
+    # bug hide. Exact hulls need roughly 10x what support sampling did (sawyer:
+    # ~5.6k vertices against the 648 the sampler kept), so an under-sized
+    # NMESHV is now easy to hit.
+    if len(mesh_vert) > NMESH_VERTS * 3:
+        print(
+            "ERROR: mesh vertex capacity exceeded — NMESH_VERTS =",
+            NMESH_VERTS,
+            "holds",
+            NMESH_VERTS * 3,
+            "scalars but the hulls need",
+            len(mesh_vert),
+            ". Meshes are being TRUNCATED and their collision shapes will be"
+            " wrong. Raise NMESH_VERTS.",
+        )
     for i in range(len(mesh_vert)):
         if i >= NMESH_VERTS * 3:
             break

@@ -193,7 +193,13 @@ comptime GOLD_NCON_S = 2  # Part B sawyer SAP: total contacts (defect 24)
 # wrong answer for as long as it existed. No dm_control suite model does mesh
 # COLLISION (dog has 162 mesh geoms, all non-collidable), so nothing else could
 # have caught it.
-comptime GOLD_CON_S = 512.8892028308474  # geometry columns (k < 23)
+#
+# --- 2026-08-09d: EXACT convex hull ---------------------------------------
+# 512.8892028308474 -> 512.9645483070053, matching test_mesh_detection_fields
+# exactly once more. `compute_convex_hull` now computes a real hull instead of
+# sampling support points, so the obj/gripper depth reaches MuJoCo parity:
+# -0.0276952 against -0.0276947, i.e. 0.5 MICROMETRES.
+comptime GOLD_CON_S = 512.9645483070053  # geometry columns (k < 23)
 comptime GOLD_SOL_S = 452.32200173288584  # solparam columns (k >= 23)
 
 # ── Humanoid (Part A) ────────────────────────────────────────────────────
@@ -218,7 +224,10 @@ comptime NEQ_S = SawyerReachModel.MAX_EQUALITY
 comptime NTD_S = SawyerReachModel.MAX_TENDON
 comptime NSITE_S = SawyerReachModel.NSITE
 comptime MC_S = SawyerReachModel.MAX_CONTACTS
-comptime NMESHV_S = MAX_GPU_MESHES * 256
+# ⚠ 512, not 256: EXACT hulls need roughly 10x what support sampling
+# kept (sawyer's twelve meshes go ~648 -> ~5.6k vertices), and
+# `fields_build` TRUNCATES past this cap — silently, until now.
+comptime NMESHV_S = MAX_GPU_MESHES * 512
 
 # ── Walker2d (Part C) ────────────────────────────────────────────────────
 comptime NQ_W = Walker2dModel.NQ

@@ -124,143 +124,283 @@ def compute_convex_hull[
     num_verts: Int,
     mut hull_verts: List[Scalar[DTYPE]],
 ) -> Int:
-    """Approximate the convex hull by support-point sampling.
+    """EXACT 3D convex hull by incremental insertion.
 
-    26 directions (a 3x3x3 grid minus the centre), then 3 refinement passes
-    seeded from the vertex-to-centroid directions of the hull points found so
-    far.
+    Replaces support-point SAMPLING, which could only ever return a SUBSET of
+    the hull vertices. That subset is a strictly smaller solid, so GJK/EPA saw
+    a shrunken shape and lost shallow contacts — an error with ONE SIGN that no
+    gate could catch, because every mesh gate in the suite was frozen from an
+    implementation that had it. On eGripperBase the sampler kept 81 of 882 hull
+    vertices; raising its direction count was measured and did NOT help
+    (`3b1b19db`), because a subset of extreme points is the wrong object no
+    matter how it is chosen.
 
-    ⚠ THIS UNDER-APPROXIMATES, WITH ONE SIGN. Support sampling returns a SUBSET
-    of the true hull vertices, so the shape handed to GJK/EPA is smaller than
-    the real one and shallow contacts are lost; it never invents one. On
-    eGripperBase it keeps 81 of 883 true hull vertices.
+    The hull vertex set is exactly what a support query needs, so this gives
+    SHAPE PARITY with MuJoCo, which collides the convex hull of `mesh_vert`.
 
-    ⚠ The docstring used to claim "~242 uniformly distributed directions" while
-    the code sampled 26 — the count was aspirational and the code was never
-    changed to match.
+    Algorithm, matching the module docstring for the first time: seed a
+    tetrahedron from four non-degenerate extremes, then insert each remaining
+    point — delete the faces it can see, and stitch it to the horizon. The
+    horizon is the set of edges belonging to exactly ONE visible face
+    (UNDIRECTED, so it does not depend on consistent winding — the same rule
+    `gjk.mojo`'s EPA uses, and for the same reason).
 
-    ⚠ DENSER SAMPLING WAS TRIED AND MEASURED NO BETTER, so the 26 stay. A
-    256-direction Fibonacci sphere raises eGripperBase from 81 to 324..335 kept
-    vertices and sawyer's total from 648 to 1956, yet:
-      * end-to-end, the sawyer obj/gripper depth moved 0.32 mm -> 0.33 mm of
-        error against MuJoCo, i.e. nothing;
-      * over 40 random interior poses, comparing each sampled hull against the
-        FULL vertex set, the 26-direction hull was BETTER — mean 0.785 mm / max
-        1.826 mm, versus mean 1.311 mm / max 28.368 mm for 256 directions.
-    The sampled sets are not nested: a Fibonacci sphere can miss the
-    axis-extreme points the 3x3x3 grid always captures, and those extremes are
-    what bound the shape. (The 28 mm outlier was not diagnosed; it is reported
-    rather than dismissed.)
-
-    So the remaining ~0.32 mm of sawyer mesh-depth error is NOT the sampler
-    density. An independent EPA on MuJoCo's own full vertex set still differs
-    from MuJoCo by 0.18 mm, so most of what is left is the reference's own
-    routine, not this function. Real gains need a real hull algorithm (the
-    module docstring's incremental/quickhull description is still aspirational),
-    not more directions.
-
-    O(n*k) per mesh, run once at model build.
+    O(n*h). Runs once per mesh at model build.
     """
     if num_verts < 4:
         for i in range(num_verts * 3):
             hull_verts.append(verts[i])
         return num_verts
 
-    # Track which vertices are on the hull
+    # Tolerance scaled to the mesh, not absolute: these are metres and a fixed
+    # epsilon would be meaningless across a 3 cm gripper and a 1 m table.
+    var scale = Scalar[DTYPE](0)
+    for i in range(num_verts * 3):
+        var av = abs(verts[i])
+        if av > scale:
+            scale = av
+    if scale <= Scalar[DTYPE](0):
+        scale = Scalar[DTYPE](1)
+    var eps = scale * Scalar[DTYPE](1e-9)
+
+    # ---- seed tetrahedron ------------------------------------------------
+    var i0 = 0
+    var i1 = 0
+    var lo = verts[0]
+    var hi = verts[0]
+    for i in range(num_verts):
+        var x = verts[i * 3 + 0]
+        if x < lo:
+            lo = x
+            i0 = i
+        if x > hi:
+            hi = x
+            i1 = i
+    if i0 == i1:
+        for i in range(num_verts * 3):
+            hull_verts.append(verts[i])
+        return num_verts
+
+    var dx = verts[i1 * 3 + 0] - verts[i0 * 3 + 0]
+    var dy = verts[i1 * 3 + 1] - verts[i0 * 3 + 1]
+    var dz = verts[i1 * 3 + 2] - verts[i0 * 3 + 2]
+
+    var i2 = -1
+    var best = Scalar[DTYPE](0)
+    for i in range(num_verts):
+        var ax = verts[i * 3 + 0] - verts[i0 * 3 + 0]
+        var ay = verts[i * 3 + 1] - verts[i0 * 3 + 1]
+        var az = verts[i * 3 + 2] - verts[i0 * 3 + 2]
+        var cx = ay * dz - az * dy
+        var cy = az * dx - ax * dz
+        var cz = ax * dy - ay * dx
+        var l = sqrt(cx * cx + cy * cy + cz * cz)
+        if l > best:
+            best = l
+            i2 = i
+    if i2 < 0 or best <= eps:
+        for i in range(num_verts * 3):
+            hull_verts.append(verts[i])
+        return num_verts
+
+    var e1x = verts[i1 * 3 + 0] - verts[i0 * 3 + 0]
+    var e1y = verts[i1 * 3 + 1] - verts[i0 * 3 + 1]
+    var e1z = verts[i1 * 3 + 2] - verts[i0 * 3 + 2]
+    var e2x = verts[i2 * 3 + 0] - verts[i0 * 3 + 0]
+    var e2y = verts[i2 * 3 + 1] - verts[i0 * 3 + 1]
+    var e2z = verts[i2 * 3 + 2] - verts[i0 * 3 + 2]
+    var nx = e1y * e2z - e1z * e2y
+    var ny = e1z * e2x - e1x * e2z
+    var nz = e1x * e2y - e1y * e2x
+    var nl = sqrt(nx * nx + ny * ny + nz * nz)
+    nx /= nl
+    ny /= nl
+    nz /= nl
+
+    var i3 = -1
+    var bestd = Scalar[DTYPE](0)
+    for i in range(num_verts):
+        var ax = verts[i * 3 + 0] - verts[i0 * 3 + 0]
+        var ay = verts[i * 3 + 1] - verts[i0 * 3 + 1]
+        var az = verts[i * 3 + 2] - verts[i0 * 3 + 2]
+        var d = abs(ax * nx + ay * ny + az * nz)
+        if d > bestd:
+            bestd = d
+            i3 = i
+    if i3 < 0 or bestd <= eps:
+        for i in range(num_verts * 3):
+            hull_verts.append(verts[i])
+        return num_verts
+
+    # interior reference point: the seed centroid stays inside the hull for the
+    # whole construction, so it fixes every face's outward orientation.
+    var rx = (
+        verts[i0 * 3 + 0] + verts[i1 * 3 + 0] + verts[i2 * 3 + 0]
+        + verts[i3 * 3 + 0]
+    ) * Scalar[DTYPE](0.25)
+    var ry = (
+        verts[i0 * 3 + 1] + verts[i1 * 3 + 1] + verts[i2 * 3 + 1]
+        + verts[i3 * 3 + 1]
+    ) * Scalar[DTYPE](0.25)
+    var rz = (
+        verts[i0 * 3 + 2] + verts[i1 * 3 + 2] + verts[i2 * 3 + 2]
+        + verts[i3 * 3 + 2]
+    ) * Scalar[DTYPE](0.25)
+
+    var faces = List[Int]()
+    var seed: InlineArray[Int, 12] = [
+        i0, i1, i2, i0, i1, i3, i0, i2, i3, i1, i2, i3
+    ]
+    for f in range(4):
+        faces.append(seed[f * 3 + 0])
+        faces.append(seed[f * 3 + 1])
+        faces.append(seed[f * 3 + 2])
+
     var on_hull = List[Bool]()
     for _ in range(num_verts):
         on_hull.append(False)
+    on_hull[i0] = True
+    on_hull[i1] = True
+    on_hull[i2] = True
+    on_hull[i3] = True
 
-    # Sample directions: 6 axis-aligned + 8 cube corners + 12 edge midpoints
-    # + 24 face diagonals + ~192 icosphere subdivisions ≈ 242 directions
-    # For simplicity: axis-aligned (6) + cube corners (8) + all pairs of
-    # axis-aligned with offsets (3*8=24) + vertex-to-centroid directions
-    comptime EPS_SQ: Scalar[DTYPE] = 1e-12
-
-    # Compute centroid for vertex-to-centroid directions
-    var cx: Scalar[DTYPE] = 0
-    var cy: Scalar[DTYPE] = 0
-    var cz: Scalar[DTYPE] = 0
-    for i in range(num_verts):
-        cx += verts[i * 3 + 0]
-        cy += verts[i * 3 + 1]
-        cz += verts[i * 3 + 2]
-    var inv_n = Scalar[DTYPE](1) / Scalar[DTYPE](num_verts)
-    cx *= inv_n
-    cy *= inv_n
-    cz *= inv_n
-
-    # Generate directions: 26 from 3x3x3 grid (excluding center)
-    # plus vertex-to-centroid directions for all vertices
-    var dirs = List[Scalar[DTYPE]]()
+    # ---- insertion ORDER: extremes first ----------------------------------
+    # ⚠ ORDER IS A PERFORMANCE PROPERTY, NOT A COSMETIC ONE. Inserting points in
+    # array order makes the early insertions see most of the polytope, and both
+    # the horizon count (quadratic in the visible-edge count) and the face-list
+    # rebuild are paid at that size, for thousands of points. Measured: sawyer's
+    # model build did not finish in TEN MINUTES.
+    #
+    # Front-loading support points along a spread of directions gets the hull
+    # almost to its final shape within the first few dozen insertions, after
+    # which nearly every remaining point is interior, sees no face, and costs
+    # one visibility scan. Same hull either way — support points are hull
+    # vertices by definition, so this changes only the path, never the result.
+    var order = List[Int]()
+    var queued = List[Bool]()
+    for _ in range(num_verts):
+        queued.append(False)
     for sx in range(-1, 2):
         for sy in range(-1, 2):
             for sz in range(-1, 2):
                 if sx == 0 and sy == 0 and sz == 0:
                     continue
-                var dx = Scalar[DTYPE](sx)
-                var dy = Scalar[DTYPE](sy)
-                var dz = Scalar[DTYPE](sz)
-                var dl = sqrt(dx * dx + dy * dy + dz * dz)
-                dirs.append(dx / dl)
-                dirs.append(dy / dl)
-                dirs.append(dz / dl)
-    var num_dirs = 26
+                var ddx = Scalar[DTYPE](sx)
+                var ddy = Scalar[DTYPE](sy)
+                var ddz = Scalar[DTYPE](sz)
+                var bi = 0
+                var bd = Scalar[DTYPE](-1e30)
+                for i in range(num_verts):
+                    var dd = (
+                        ddx * verts[i * 3 + 0]
+                        + ddy * verts[i * 3 + 1]
+                        + ddz * verts[i * 3 + 2]
+                    )
+                    if dd > bd:
+                        bd = dd
+                        bi = i
+                if not queued[bi]:
+                    queued[bi] = True
+                    order.append(bi)
+    for i in range(num_verts):
+        if not queued[i]:
+            order.append(i)
 
-    # For each direction, find the support point
-    for d in range(num_dirs):
-        var dx = dirs[d * 3 + 0]
-        var dy = dirs[d * 3 + 1]
-        var dz = dirs[d * 3 + 2]
-        var best_dot: Scalar[DTYPE] = -1e30
-        var best_idx = 0
-        for i in range(num_verts):
-            var dot = (
-                dx * verts[i * 3]
-                + dy * verts[i * 3 + 1]
-                + dz * verts[i * 3 + 2]
-            )
-            if dot > best_dot:
-                best_dot = dot
-                best_idx = i
-        on_hull[best_idx] = True
+    # ---- insert the remaining points -------------------------------------
+    var vis = List[Bool]()
+    var edges = List[Int]()
+    for oi in range(len(order)):
+        var p = order[oi]
+        if on_hull[p]:
+            continue
+        var px = verts[p * 3 + 0]
+        var py = verts[p * 3 + 1]
+        var pz = verts[p * 3 + 2]
 
-    # Second pass: for each hull vertex found so far, use (vertex - centroid)
-    # as additional direction to find neighbors. Repeat a few times to
-    # capture all hull vertices near edges/corners.
-    for _ in range(3):
-        var new_dirs = List[Scalar[DTYPE]]()
-        for i in range(num_verts):
-            if not on_hull[i]:
-                continue
-            var dx = verts[i * 3 + 0] - cx
-            var dy = verts[i * 3 + 1] - cy
-            var dz = verts[i * 3 + 2] - cz
-            var dl = sqrt(dx * dx + dy * dy + dz * dz)
-            if dl > Scalar[DTYPE](1e-10):
-                new_dirs.append(dx / dl)
-                new_dirs.append(dy / dl)
-                new_dirs.append(dz / dl)
-
-        var n_new = len(new_dirs) // 3
-        for d in range(n_new):
-            var dx = new_dirs[d * 3 + 0]
-            var dy = new_dirs[d * 3 + 1]
-            var dz = new_dirs[d * 3 + 2]
-            var best_dot: Scalar[DTYPE] = -1e30
-            var best_idx = 0
-            for i in range(num_verts):
-                var dot = (
-                    dx * verts[i * 3]
-                    + dy * verts[i * 3 + 1]
-                    + dz * verts[i * 3 + 2]
+        var nf = len(faces) // 3
+        vis.clear()
+        var nvis = 0
+        for f in range(nf):
+            var a = faces[f * 3 + 0]
+            var b = faces[f * 3 + 1]
+            var c = faces[f * 3 + 2]
+            var ux = verts[b * 3 + 0] - verts[a * 3 + 0]
+            var uy = verts[b * 3 + 1] - verts[a * 3 + 1]
+            var uz = verts[b * 3 + 2] - verts[a * 3 + 2]
+            var vx = verts[c * 3 + 0] - verts[a * 3 + 0]
+            var vy = verts[c * 3 + 1] - verts[a * 3 + 1]
+            var vz = verts[c * 3 + 2] - verts[a * 3 + 2]
+            var fx = uy * vz - uz * vy
+            var fy = uz * vx - ux * vz
+            var fz = ux * vy - uy * vx
+            var fl = sqrt(fx * fx + fy * fy + fz * fz)
+            var seen = False
+            if fl > Scalar[DTYPE](0):
+                fx /= fl
+                fy /= fl
+                fz /= fl
+                # orient outward using the interior reference point
+                var inward = (
+                    fx * (rx - verts[a * 3 + 0])
+                    + fy * (ry - verts[a * 3 + 1])
+                    + fz * (rz - verts[a * 3 + 2])
                 )
-                if dot > best_dot:
-                    best_dot = dot
-                    best_idx = i
-            on_hull[best_idx] = True
+                if inward > Scalar[DTYPE](0):
+                    fx = -fx
+                    fy = -fy
+                    fz = -fz
+                var side = (
+                    fx * (px - verts[a * 3 + 0])
+                    + fy * (py - verts[a * 3 + 1])
+                    + fz * (pz - verts[a * 3 + 2])
+                )
+                if side > eps:
+                    seen = True
+            vis.append(seen)
+            if seen:
+                nvis += 1
+        if nvis == 0:
+            continue
 
-    # Collect hull vertices
+        # horizon: edges of visible faces that exactly ONE visible face owns
+        edges.clear()
+        for f in range(nf):
+            if not vis[f]:
+                continue
+            for e in range(3):
+                var a0 = faces[f * 3 + e]
+                var a1 = faces[f * 3 + (e + 1) % 3]
+                edges.append(a0 if a0 < a1 else a1)
+                edges.append(a1 if a0 < a1 else a0)
+        var ne = len(edges) // 2
+
+        var kept = List[Int]()
+        for f in range(nf):
+            if vis[f]:
+                continue
+            kept.append(faces[f * 3 + 0])
+            kept.append(faces[f * 3 + 1])
+            kept.append(faces[f * 3 + 2])
+        for e in range(ne):
+            var lo_e = edges[e * 2 + 0]
+            var hi_e = edges[e * 2 + 1]
+            var count = 0
+            for g in range(ne):
+                if edges[g * 2 + 0] == lo_e and edges[g * 2 + 1] == hi_e:
+                    count += 1
+            if count == 1:
+                kept.append(lo_e)
+                kept.append(hi_e)
+                kept.append(p)
+        faces = kept^
+        on_hull[p] = True
+
+    # ---- collect the vertices the surviving faces actually use ------------
+    for i in range(num_verts):
+        on_hull[i] = False
+    for i in range(len(faces)):
+        on_hull[faces[i]] = True
+
     var num_hull = 0
     for i in range(num_verts):
         if on_hull[i]:

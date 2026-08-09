@@ -67,7 +67,10 @@ comptime NTD = SawyerReachModel.MAX_TENDON
 comptime NSITE = SawyerReachModel.NSITE
 comptime MC = SawyerReachModel.MAX_CONTACTS
 comptime BATCH = 2
-comptime NMESHV = MAX_GPU_MESHES * 256
+# ⚠ 512, not 256: EXACT hulls need roughly 10x what support sampling
+# kept (sawyer's twelve meshes go ~648 -> ~5.6k vertices), and
+# `fields_build` TRUNCATES past this cap — silently, until now.
+comptime NMESHV = MAX_GPU_MESHES * 512
 
 comptime OBJ_Z_ENV0: Float64 = -0.900  # vertex dist = -0.017
 comptime OBJ_Z_ENV1: Float64 = -0.912  # vertex dist = -0.029

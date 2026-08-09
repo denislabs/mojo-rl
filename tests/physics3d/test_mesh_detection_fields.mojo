@@ -49,6 +49,9 @@ from mojo_rl.physics3d.collision.contact_detection import (
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_SOLREF_0,
+    CONTACT_IDX_DIST,
+    CONTACT_IDX_BODY_A,
+    CONTACT_IDX_BODY_B,
     META_IDX_NUM_CONTACTS,
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
@@ -71,7 +74,10 @@ comptime NTD = SawyerReachModel.MAX_TENDON
 comptime NSITE = SawyerReachModel.NSITE
 comptime MC = SawyerReachModel.MAX_CONTACTS
 comptime BATCH = 2
-comptime NMESHV = MAX_GPU_MESHES * 256
+# ⚠ 512, not 256: EXACT hulls need roughly 10x what support sampling
+# kept (sawyer's twelve meshes go ~648 -> ~5.6k vertices), and
+# `fields_build` TRUNCATES past this cap — silently, until now.
+comptime NMESHV = MAX_GPU_MESHES * 512
 
 # --- GOLDEN fingerprints (regenerated after the flat-simplex fix) ------------
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
@@ -155,7 +161,7 @@ comptime GOLD_NCON = 2  # total contacts across both envs
 # reason — the set was not merely coarse, it was the wrong memory. The 0.32 mm
 # that remains is the direction sampler (26 directions, 81 of 883 hull
 # vertices), which is now genuinely the next term.
-comptime GOLD_CON = 512.8892028308474  # geometry columns (k < 23)
+comptime GOLD_CON = 512.9645483070053  # geometry columns (k < 23)
 comptime GOLD_SOL = 452.32200173288584  # solparam columns (k >= 23)
 
 
@@ -280,6 +286,50 @@ def main() raises:
                 + String(GOLD_SOL)
             )
         print("  PASS: fields-GPU matches golden fingerprint")
+
+    # --- MuJoCo-ANCHORED DEPTH, because the fingerprint cannot see it -----
+    # ⚠ THE FINGERPRINT DOES NOT GATE DEPTH. `GOLD_RTOL` is 1e-3 RELATIVE to a
+    # checksum of ~513, i.e. 0.5 absolute, and `dist` enters that sum at weight
+    # (e+1)(c+1)(k+1) = 18. So this gate tolerates a depth change of ~28 mm on
+    # a 27.7 mm contact — it would pass with the penetration inverted. Every
+    # mesh-depth defect this file has hosted was caught by the POSITION and
+    # NORMAL columns moving alongside, never by the depth itself.
+    #
+    # So assert the depth directly, against MuJoCo 3.10.0 on the reference XML
+    # `references/Metaworld-master/.../sawyer_reach_v3.xml` at this exact pose:
+    # geom 36 (obj cylinder) vs geom 27 (eGripperBase mesh), dist -2.769469e-02.
+    # Hardcoded rather than computed in-process to keep this file free of the
+    # Python bridge; `test_narrow_phase_pairs.mojo` is the file that calls
+    # MuJoCo live, and it covers the primitive pairs.
+    comptime MUJOCO_MESH_DIST = -2.769469e-02
+    var mesh_dist = Float64(0)
+    var found_depth = False
+    for c in range(Int(d.meta.data[1 * METADATA_SIZE + META_IDX_NUM_CONTACTS])):
+        var b = 1 * MC * CONTACT_SIZE + c * CONTACT_SIZE
+        var ba = Int(d.contacts.data[b + CONTACT_IDX_BODY_A])
+        var bb = Int(d.contacts.data[b + CONTACT_IDX_BODY_B])
+        for mb in mesh_bodies:
+            if (ba == mb and bb == obj_body) or (bb == mb and ba == obj_body):
+                mesh_dist = Float64(d.contacts.data[b + CONTACT_IDX_DIST])
+                found_depth = True
+    if not found_depth:
+        raise Error("no mesh contact to check depth on — gate is vacuous")
+    var derr = abs(mesh_dist - MUJOCO_MESH_DIST)
+    print(
+        "  mesh depth", mesh_dist, " MuJoCo", MUJOCO_MESH_DIST,
+        " err(mm)", derr * 1000.0,
+    )
+    # 5 um. The exact convex hull brought this from 12.9 mm (mesh_vertadr in
+    # the wrong units) through 0.32 mm (support-sampled hull) to 5e-4 mm, so a
+    # micron-scale bound is what the code measurably does — not an inherited
+    # placeholder.
+    if derr > 5e-6:
+        raise Error(
+            "mesh contact depth " + String(mesh_dist) + " vs MuJoCo "
+            + String(MUJOCO_MESH_DIST) + " differs by "
+            + String(derr * 1000.0) + " mm"
+        )
+    print("  PASS: mesh depth matches MuJoCo within 5 um")
 
     # Non-vacuity: env1 must have a mesh-geom-body vs obj-body contact.
     var ncon1 = Int(d.meta.data[1 * METADATA_SIZE + META_IDX_NUM_CONTACTS])
