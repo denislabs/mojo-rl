@@ -186,7 +186,9 @@ def test_max_timesteps_done(mut counts: List[Int]) raises:
 def main() raises:
     print("Craftax-Full Phase-7C step smoke gate")
     print("=" * 50)
-    var counts = [0, 0]
+    # Mojo 1.0 builds an `Array` from a list literal by default; the
+    # helpers below take `List[Int]`, so the type must be stated.
+    var counts: List[Int] = [0, 0]
     test_reset(counts)
     test_step_each_action(counts)
     test_movement(counts)

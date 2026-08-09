@@ -204,7 +204,9 @@ def test_achievement_reward_tiers(mut counts: List[Int]) raises:
 def main() raises:
     print("Craftax-Full Phase-7A state layout gate")
     print("=" * 50)
-    var counts = [0, 0]
+    # Mojo 1.0 builds an `Array` from a list literal by default; the
+    # helpers below take `List[Int]`, so the type must be stated.
+    var counts: List[Int] = [0, 0]
     test_enum_sizes(counts)
     test_layout_monotonic(counts)
     test_map_indexer_range(counts)

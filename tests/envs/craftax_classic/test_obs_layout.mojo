@@ -286,8 +286,9 @@ def test_cow_outside_view_not_shown(mut counts: List[Int]) raises:
 def main() raises:
     print("Craftax-Classic Phase-4 observation gate")
     print("=" * 50)
-    var counts = [0, 0]
-
+    # Mojo 1.0 builds an `Array` from a list literal by default; the
+    # helpers below take `List[Int]`, so the type must be stated.
+    var counts: List[Int] = [0, 0]
     test_obs_dim(counts)
     test_center_tile_is_grass(counts)
     test_out_of_bounds_padding(counts)

@@ -196,7 +196,9 @@ def test_cpu_vs_gpu_pixel_parity(mut counts: List[Int]) raises:
 def main() raises:
     print("Craftax-Classic Phase-6B RGB pixel obs gate")
     print("=" * 50)
-    var counts = [0, 0]
+    # Mojo 1.0 builds an `Array` from a list literal by default; the
+    # helpers below take `List[Int]`, so the type must be stated.
+    var counts: List[Int] = [0, 0]
     test_obs_shape(counts)
     test_channel_first_layout(counts)
     test_inventory_region_renders(counts)

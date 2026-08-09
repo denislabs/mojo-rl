@@ -109,7 +109,9 @@ def test_gpu_pixel_obs_matches_cpu(mut counts: List[Int]) raises:
 def main() raises:
     print("Craftax-Full Phase-7H GPU pixel obs gate")
     print("=" * 50)
-    var counts = [0, 0]
+    # Mojo 1.0 builds an `Array` from a list literal by default; the
+    # helpers below take `List[Int]`, so the type must be stated.
+    var counts: List[Int] = [0, 0]
     test_gpu_pixel_obs_matches_cpu(counts)
     print()
     print("=" * 50)

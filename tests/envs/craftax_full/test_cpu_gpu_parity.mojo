@@ -301,7 +301,9 @@ def test_selective_reset(mut counts: List[Int]) raises:
 def main() raises:
     print("Craftax-Full Phase-7G CPU↔GPU parity gate")
     print("=" * 50)
-    var counts = [0, 0]
+    # Mojo 1.0 builds an `Array` from a list literal by default; the
+    # helpers below take `List[Int]`, so the type must be stated.
+    var counts: List[Int] = [0, 0]
     test_gpu_reset_validity(counts)
     test_extract_obs_parity_after_copy(counts)
     test_step_parity_from_cpu_state(counts)
