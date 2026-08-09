@@ -77,9 +77,9 @@ comptime N_ENVS = 32
 # Training duration (off-policy uses env steps, not episodes). Drop NUM_STEPS
 # to ~50_000 for a smoke run.
 comptime NUM_STEPS = 600_000
-comptime WARMUP_STEPS = 1_000
+comptime WARMUP_STEPS = 10_000
 comptime PRINT_EVERY = 50_000  # driver-cadence verbose + env/mean_ret emit
-comptime DIAG_EVERY = 200  # full metric-bundle flush cadence (mean_q, …)
+comptime DIAG_EVERY = 1000  # full metric-bundle flush cadence (mean_q, …)
 comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
 # Written by the batched trainer; loaded by `sac_half_cheetah_nn_eval_cpu.mojo`
 # (same fused-`LinearReLU` architecture, so the param layout matches).
