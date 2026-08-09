@@ -65,8 +65,6 @@ typedef CUresult (*cuLaunchKernelEx_t)(
     const CUlaunchConfig *config, CUfunction f,
     void **kernelParams, void **extra);
 
-static void *g_launch_ctx;
-
 static cuLaunchKernel_t real_cuLaunchKernel = NULL;
 static cuLaunchKernelEx_t real_cuLaunchKernelEx = NULL;
 
@@ -217,92 +215,30 @@ static void note_unsafe(const char *name, void *arg) {
 DEFINE_PTR1_WRAPPER(cuEventSynchronize)
 DEFINE_PTR1_WRAPPER(cuEventQuery)
 
-/* ---- Neutralizing MAX's sync of the stream it is capturing --------------
+/* ⚠ THE "NEUTRALIZE MAX'S MID-CAPTURE SYNC" MACHINERY WAS REMOVED.
+ * It existed because `cuStreamSynchronize` was seen on the capturing stream
+ * and read as MAX bookkeeping we had to suppress. It was not: it was MAX's
+ * DeviceContext DESTRUCTOR, running because Mojo destroys a value at its last
+ * use and `CUDAGraph` did not hold the context. With the context held, a
+ * capture reports `neutralized 0` — MAX does not synchronize inside the
+ * window at all. Suppressing a real synchronize is a lie about work being
+ * complete, so the code is gone rather than left switchable.
  *
- * MEASURED (NVIDIA, MAX 26.5.0rc2, 2026-08-09): between our successful
- * `cuStreamBeginCapture` and the first captured kernel, MAX calls
- * `cuStreamSynchronize` ON THE VERY STREAM BEING CAPTURED -- same handle in
- * both trace lines. That is illegal in EVERY capture mode, which is exactly
- * why GLOBAL / THREAD_LOCAL / RELAXED all aborted identically. It is MAX's
- * call, not ours: our own wrappers only ever return rc codes, and the abort
- * carries MAX's error text.
- *
- * ⚠ WHY ANSWERING "ALREADY DONE" IS CORRECT, NOT A LIE. Capture RECORDS work
- * instead of executing it, so while a stream is capturing there is by
- * construction nothing running on it to wait for. The precondition that
- * makes this airtight is ours to keep, and we do keep it: the stream is
- * fully drained before capture opens -- `CUDAGraph.__init__` calls
- * `ctx.synchronize()`, and `maybe_capture_replay` synchronizes again before
- * constructing the graph. So no work enqueued BEFORE the window can still be
- * in flight, and no work enqueued DURING it executes. "Wait until idle" is
- * already true. CUDA rejects the call because its meaning is ambiguous mid
- * capture, not because there is anything pending.
- *
- * ⚠ WHAT WOULD MAKE IT A LIE. If a future caller opens a capture WITHOUT
- * draining first, this turns a real wait into a no-op and reads back garbage
- * silently. Any new capture site must sync before `begin_capture`. That is
- * the invariant this whole comment exists to protect.
- *
- * ⚠ THIS IS NOT SELF-VALIDATING -- the gate is. Suppressing an error can
- * always convert a loud failure into a quiet wrong answer, so it is only
- * defensible because `test_cuda_graph_minimal` checks that the graph is
- * non-empty (`num_nodes() > 0`) AND that replay produces exact counter
- * arithmetic. If capture were silently recording nothing, both fail.
- *
- * Set MOJO_RL_CAPTURE_NEUTRALIZE_SYNC=0 to restore the raw behaviour and get
- * the abort back (i.e. to re-measure this whenever MAX is upgraded).
+ * The wrappers below still TRACE such calls, which costs nothing outside a
+ * capture and would immediately show a regression here.
  */
-
-static int g_neutralized = 0;   /* count, per capture window */
-
-/* ⚠⚠ DEFAULT OFF — THIS FIXED A SYMPTOM, NOT THE CAUSE, AND IS UNSAFE.
- *
- * MAX really does synchronize the stream it is capturing (measured), and
- * suppressing that really did let capture proceed further. But the empty-
- * capture probe then faulted in a PLAIN `cuStreamSynchronize` with NO
- * capture active at all, which proves the failure is not capture-specific
- * and never was: our shim cannot make driver calls on MAX's stream handle,
- * full stop. Suppressing MAX's synchronize was treating a symptom.
- *
- * Leaving it ON would be worse than useless: outside a genuinely drained
- * window it turns a real wait into a no-op and reads back garbage in
- * silence. Opt in with MOJO_RL_CAPTURE_NEUTRALIZE_SYNC=1 only to reproduce
- * the measurement.
- */
-static int neutralize_enabled(void) {
-    const char *e = getenv("MOJO_RL_CAPTURE_NEUTRALIZE_SYNC");
-    return e && e[0] != '0';
-}
-
 static CUresult wrapped_cuStreamSynchronize(void *a) {
-    if (g_capturing && a == g_capture_stream && neutralize_enabled()) {
-        /* Log the first few only: a capture window in a real trainer holds
-           many kernels, and one line per call would drown the output. */
-        if (g_neutralized < 3) {
-            fprintf(stderr,
-                    "[intercept] cuStreamSynchronize(%p) on the CAPTURING "
-                    "stream -> answered SUCCESS without calling the driver "
-                    "(nothing executes during capture)\n", a);
-        }
-        g_neutralized++;
-        return 0;  /* CUDA_SUCCESS */
-    }
     note_unsafe("cuStreamSynchronize", a);
     return real_cuStreamSynchronize(a);
 }
 
 static CUresult wrapped_cuStreamQuery(void *a) {
-    /* Same argument: "is this stream idle?" is trivially yes during capture. */
-    if (g_capturing && a == g_capture_stream && neutralize_enabled()) {
-        g_neutralized++;
-        return 0;  /* CUDA_SUCCESS == all work complete */
-    }
     note_unsafe("cuStreamQuery", a);
     return real_cuStreamQuery(a);
 }
 
 static CUresult wrapped_cuCtxSynchronize(void) {
-    /* Context-wide sync: hits the captured stream by definition. */
+    /* Context-wide sync: reaches the captured stream by definition. */
     note_unsafe("cuCtxSynchronize", g_capture_stream);
     return real_cuCtxSynchronize();
 }
@@ -554,77 +490,16 @@ static void* cuda_fn_versioned(const char *versioned, const char *base) {
     return cuda_fn(base);
 }
 
-/* ---- CUDA context affinity ---------------------------------------------
- *
- * ⚠⚠ MEASURED: `cuStreamSynchronize` ON MAX'S STREAM, CALLED FROM THIS
- * SHIM, FAULTS INSIDE THE DRIVER — with NO capture active (it was the
- * pre-capture drain in `begin_capture`). That reframes every crash in this
- * arc: cuStreamEndCapture, cuStreamGetCaptureInfo_v2 and cuStreamSynchronize
- * are all OUR calls on MAX's handle, and MAX makes the same calls on the
- * same handle continuously without trouble. The API is not the variable.
- * The CALLER is.
- *
- * The standard explanation is that a CUDA context is CURRENT PER THREAD.
- * MAX drives the driver from its AsyncRT worker, where a context is bound;
- * our exported functions run on Mojo's main thread, which may have none.
- * Driver calls with no current context are documented to return
- * CUDA_ERROR_INVALID_CONTEXT, but in practice fault.
- *
- * ⚠ THE HYPOTHESIS IS NOT PROVEN AND ONE FACT ARGUES AGAINST IT:
- * `cuStreamBeginCapture` previously returned rc=0 from this same thread,
- * which a missing context should have refused. So MEASURE FIRST — the
- * logging below prints the current context at every entry point, and
- * `g_launch_ctx` records what MAX had bound when it launched. If ours is
- * NULL and MAX's is not, that is the answer.
- *
- * The correction is gated OFF: MOJO_RL_CUDA_BIND_CTX=1 makes each entry
- * point bind MAX's context before touching the driver, so one run can test
- * the hypothesis and its fix without shipping the fix blind.
+/* ⚠ THE CUDA-CONTEXT-AFFINITY DIAGNOSTIC WAS REMOVED — THE THEORY WAS
+ * REFUTED. It checked whether a context was current on our thread, on the
+ * idea that MAX drove the driver from a worker thread where one was bound
+ * and we did not. Measured: the current context was IDENTICAL to MAX's, and
+ * binding it explicitly changed nothing. The faults were a freed stream, not
+ * a missing context. Removing it also removes a dlsym + driver round trip
+ * from every entry point.
  */
 
-static int   g_ctx_logged = 0;
-
-static void *current_ctx(void) {
-    typedef CUresult (*fn_t)(void**);
-    fn_t f = (fn_t)cuda_fn("cuCtxGetCurrent");
-    if (!f) return (void*)-1;       /* symbol unavailable */
-    void *c = NULL;
-    if (f(&c) != 0) return (void*)-1;
-    return c;
-}
-
-static int bind_ctx_enabled(void) {
-    const char *e = getenv("MOJO_RL_CUDA_BIND_CTX");
-    return e && e[0] != '0';
-}
-
-/* Call at the top of every exported entry point that touches the driver. */
-static void ensure_ctx(const char *who) {
-    /* Early-out once the log budget is spent AND the correction is off:
-       current_ctx() costs a dlsym plus a driver call, for nothing. */
-    if (g_ctx_logged >= 12 && !bind_ctx_enabled()) return;
-    void *cur = current_ctx();
-    if (g_ctx_logged < 12) {
-        fprintf(stderr,
-                "[intercept] %s: current ctx=%p, MAX's launch ctx=%p%s\n",
-                who, cur, g_launch_ctx,
-                (cur == NULL && g_launch_ctx)
-                    ? "   <-- NO CONTEXT ON THIS THREAD" : "");
-        g_ctx_logged++;
-    }
-    if (bind_ctx_enabled() && g_launch_ctx && cur != g_launch_ctx) {
-        typedef CUresult (*fn_t)(void*);
-        fn_t f = (fn_t)cuda_fn("cuCtxSetCurrent");
-        if (f) {
-            CUresult r = f(g_launch_ctx);
-            fprintf(stderr, "[intercept] %s: bound MAX's ctx, rc=%d\n",
-                    who, (int)r);
-        }
-    }
-}
-
 CUresult intercept_stream_create(void **out) {
-    ensure_ctx("stream_create");
     typedef CUresult (*fn_t)(void**, unsigned int);
     fn_t f = (fn_t)cuda_fn("cuStreamCreate");
     if (!f) return 1;
@@ -672,7 +547,6 @@ static int capture_mode(void) {
 }
 
 CUresult intercept_stream_begin_capture(void *stream) {
-    ensure_ctx("begin_capture");
     /* ⚠ _v2 IS THE ONE THAT TAKES A MODE. The base symbol is v1, which
        predates capture modes entirely and takes ONLY the stream — passing a
        mode to it is discarded in silence. See the note on cuda_fn_versioned. */
@@ -688,7 +562,6 @@ CUresult intercept_stream_begin_capture(void *stream) {
     if (r == 0) {
         g_capturing = 1;
         g_capture_stream = stream;
-        g_neutralized = 0;
     }
     fprintf(stderr, "[intercept] cuStreamBeginCapture rc=%d\n", (int)r);
     return r;
@@ -726,7 +599,6 @@ static int query_capture_status(void *stream, unsigned long long *id_out) {
 }
 
 CUresult intercept_stream_end_capture(void *stream, void **graph_out) {
-    ensure_ctx("end_capture");
     typedef CUresult (*fn_t)(void*, void**);
     fn_t f = (fn_t)cuda_fn("cuStreamEndCapture");
     if (!f) return 1;
@@ -754,6 +626,7 @@ CUresult intercept_stream_end_capture(void *stream, void **graph_out) {
     int status = (probe && probe[0] != '0')
                      ? query_capture_status(stream, &cap_id)
                      : 1 /* assume ACTIVE; do not touch the driver */;
+    (void)cap_id;
     if (probe && probe[0] != '0') {
         fprintf(stderr,
                 "[intercept] pre-end capture status=%d (%s) id=%llu stream=%p\n",
@@ -772,15 +645,12 @@ CUresult intercept_stream_end_capture(void *stream, void **graph_out) {
     }
 
     CUresult r = f(stream, graph_out);
-    fprintf(stderr,
-            "[intercept] cuStreamEndCapture rc=%d graph=%p "
-            "(neutralized %d sync/query call(s) on the captured stream)\n",
-            (int)r, graph_out ? *graph_out : NULL, g_neutralized);
+    fprintf(stderr, "[intercept] cuStreamEndCapture rc=%d graph=%p\n",
+            (int)r, graph_out ? *graph_out : NULL);
     return r;
 }
 
 CUresult intercept_graph_instantiate(void **exec_out, void *graph) {
-    ensure_ctx("graph_instantiate");
     /* ⚠ THE 3-ARG FORM IS `cuGraphInstantiateWithFlags`, NOT
        `cuGraphInstantiate`. The base symbol is the FIVE-argument
        (exec, graph, phErrorNode, logBuffer, bufferSize) form, and calling it
@@ -803,7 +673,6 @@ CUresult intercept_graph_instantiate(void **exec_out, void *graph) {
 }
 
 CUresult intercept_graph_launch(void *exec, void *stream) {
-    ensure_ctx("graph_launch");
     typedef CUresult (*fn_t)(void*, void*);
     fn_t f = (fn_t)cuda_fn("cuGraphLaunch");
     if (!f) return 1;
@@ -811,7 +680,6 @@ CUresult intercept_graph_launch(void *exec, void *stream) {
 }
 
 CUresult intercept_stream_synchronize(void *stream) {
-    ensure_ctx("stream_synchronize");
     typedef CUresult (*fn_t)(void*);
     fn_t f = (fn_t)cuda_fn("cuStreamSynchronize");
     if (!f) return 1;

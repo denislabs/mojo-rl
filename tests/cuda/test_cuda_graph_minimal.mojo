@@ -35,37 +35,44 @@ Platform contract, both halves gated here:
               That is what makes Apple a valid correctness (not performance)
               check, so it is worth pinning rather than assuming.
 
-⚠ IF THIS ABORTS WITH `CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED`, READ THE
-MESSAGE PREFIX BEFORE DEBUGGING OUR CODE. `"CUDA call failed: ..."` followed
-by `"set MODULAR_DEBUG=device-sync-mode"` is MAX's OWN error formatter — the
-interceptor never prints it, it returns rc codes that surface as Mojo errors
-tagged `[CUDAGraph]`. So that abort means OUR capture started fine (rc 0) and
-then MAX made a driver call the CUDA driver forbids mid-capture. It is not a
-bug in `CUDAGraph`; it is a collision with MAX internals, and the lever is
-the capture MODE (`MOJO_RL_CAPTURE_MODE`, see `cuda_intercept.c`), not the
-capture code. Measured 2026-08-09 on MAX 26.5.0rc2: mode GLOBAL aborts on a
-capture containing ONE one-thread kernel.
+⚠⚠ IF THIS CRASHES OR ABORTS, SUSPECT A DEAD DeviceContext FIRST.
+Mojo destroys a value at its LAST USE, not at end of scope. If a caller
+writes `var g = CUDAGraph(ctx)` and never mentions `ctx` again, the context
+is destroyed the moment `__init__` returns — and MAX's destructor
+SYNCHRONIZES AND DESTROYS the stream being captured. `CUDAGraph` now stores
+the context to make that impossible, but the same trap applies to anything
+holding a borrowed FFI handle.
 
-    MOJO_RL_CAPTURE_MODE=0  GLOBAL       policies every thread + resource
-    MOJO_RL_CAPTURE_MODE=1  THREAD_LOCAL policies our thread only
-    (default)            2  RELAXED      policies the captured stream only
+That single mechanism produced every symptom of the 2026-08-09 arc, and each
+one invited a different wrong theory:
 
-RELAXED is not "turning the check off": it narrows the check to the only
-invariant we depend on — that nothing else touches the stream we are
-recording. If capture fails even at RELAXED, THAT is our bug.
+    cuStreamDestroy on our handle           the destructor, not stream pooling
+    cuStreamSynchronize "during capture"    the destructor, not MAX bookkeeping
+    SIGSEGV in BeginCapture / EndCapture /  use-after-free on a freed stream —
+      GetCaptureInfo_v2                     undefined, hence INCONSISTENT
+                                            (rc=0 here, a fault there)
 
-⚠ `MODULAR_DEBUG=device-sync-mode` CANNOT BE USED TO DEBUG THIS. It makes MAX
-synchronize after every device op, and a synchronize during capture is itself
-illegal — so it manufactures the very error you are chasing. (Tested: the
-failure is identical with and without it, which is what ruled it out as the
-cause rather than a confound.)
+⚠ INCONSISTENCY ACROSS ENTRY POINTS IS THE TELL. Several APIs failing several
+different ways is far more likely to be ONE dangling handle than several
+bugs. Chasing them separately cost eight rounds here.
+
+⚠ `MODULAR_DEBUG=device-sync-mode` CANNOT DEBUG CAPTURE. It synchronizes after
+every device op, and a synchronize during capture is illegal — so it
+manufactures a CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED of its own.
+
+⚠ `"CUDA call failed: ..."` is MAX's error formatter; ours are tagged
+`[CUDAGraph]`. Read the prefix before assuming the fault is in this file.
 
 Run with:
     pixi run -e nvidia mojo run -I . tests/cuda/test_cuda_graph_minimal.mojo
     pixi run -e apple  mojo run -I . tests/cuda/test_cuda_graph_minimal.mojo
 
-    # localize the offending call rather than just working around it:
-    MOJO_RL_CAPTURE_MODE=1 pixi run -e nvidia mojo run -I . \
+    # bisect a suspected capture problem against a no-graph run:
+    MOJO_RL_CUDA_GRAPH=0 pixi run -e nvidia mojo run -I . \
+        tests/cuda/test_cuda_graph_minimal.mojo
+
+    # full driver tracing (launches, stream lifetime, capture rc):
+    MOJO_RL_INTERCEPT_LOG=1 pixi run -e nvidia mojo run -I . \
         tests/cuda/test_cuda_graph_minimal.mojo
 """
 
@@ -122,18 +129,11 @@ def test_capture_records_nodes() raises:
 
     var g = CUDAGraph(ctx)
 
-    # ⚠ MAX 26.5.0rc2 DESTROYS ITS STREAM AFTER A SYNCHRONIZE, so there is no
-    # long-lived stream to borrow and `CUDAGraph` comes back DISABLED. That is
-    # a known, measured limitation (`cuStreamDestroy` fires on exactly the
-    # handle the launch hook reported), not a regression to chase — so this
-    # test accepts it rather than failing on every run.
-    #
-    # It is still a tripwire in the direction that matters: capture must
-    # either WORK (non-empty graph) or be CLEANLY DISABLED. What it must never
-    # do again is call into the driver with a freed handle, which is what
-    # produced every fault in the 2026-08-09 arc. The day MAX keeps a stable
-    # stream, this branch stops firing and the real assertion below takes over
-    # with no edit needed.
+    # Only reachable via MOJO_RL_CUDA_GRAPH=0, which exists so a suspected
+    # capture problem can be bisected against a known-good run without a
+    # rebuild. Capture is ON by default and the assertion below is the real
+    # gate. (This branch briefly WAS the default, while we wrongly believed
+    # MAX destroyed its stream on every synchronize.)
     if g.is_disabled():
         print("  CUDAGraph DISABLED (no live Mojo stream) — capture skipped")
         print("  correctness is gated by test_maybe_capture_replay_lifecycle")
@@ -150,10 +150,13 @@ def test_capture_records_nodes() raises:
             g.num_nodes() > 0,
             "CUDA graph captured ZERO nodes. begin/end capture both"
             + " succeeded, so this is not a CUDA error — it means the"
-            + " interceptor is not seeing the stream Mojo enqueues on."
-            + " Check libcuda_intercept.so against the current Mojo runtime"
-            + " (stream discovery, and whether driver calls still resolve"
-            + " through dlsym rather than cuGetProcAddress).",
+            + " interceptor recorded no launches on the captured stream."
+            + " Check (a) that the DeviceContext is still alive — Mojo"
+            + " destroys it at its LAST USE and MAX's destructor takes the"
+            + " stream with it, which is what broke this in 2026-08; and"
+            + " (b) that libcuda_intercept.so still sees the launches, i.e."
+            + " that MAX has not moved them past both the dlsym and"
+            + " cuGetProcAddress hooks.",
         )
     else:
         assert_true(
