@@ -506,6 +506,22 @@ CUresult intercept_stream_begin_capture(void *stream) {
     return r;
 }
 
+/* Ask the driver what it thinks the capture's state is.
+   Returns the CUstreamCaptureStatus (0 NONE / 1 ACTIVE / 2 INVALIDATED), or
+   -1 if the symbol is unavailable. */
+static int query_capture_status(void *stream, unsigned long long *id_out) {
+    typedef CUresult (*fn_t)(void*, int*, unsigned long long*);
+    fn_t f = (fn_t)cuda_fn("cuStreamGetCaptureInfo");
+    if (!f) f = (fn_t)cuda_fn("cuStreamGetCaptureInfo_v2");
+    if (!f) return -1;
+    int status = -1;
+    unsigned long long id = 0;
+    CUresult r = f(stream, &status, &id);
+    if (id_out) *id_out = id;
+    if (r != 0) return -1;
+    return status;
+}
+
 CUresult intercept_stream_end_capture(void *stream, void **graph_out) {
     typedef CUresult (*fn_t)(void*, void**);
     fn_t f = (fn_t)cuda_fn("cuStreamEndCapture");
@@ -514,6 +530,32 @@ CUresult intercept_stream_end_capture(void *stream, void **graph_out) {
        operation on the capturing stream, and tracing it would be noise. */
     g_capturing = 0;
     g_capture_stream = NULL;
+
+    /* ⚠ ASK BEFORE ENDING. `cuStreamEndCapture` SEGFAULTED INSIDE THE DRIVER
+       here (measured NVIDIA 2026-08-09, stack: cuStreamEndCapture ->
+       libcuda+0x38895e -> fault), which is not a behaviour the API documents
+       — it should return CUDA_ERROR_STREAM_CAPTURE_INVALIDATED. A crash
+       inside the driver usually means we are ending a capture the driver no
+       longer considers ours, so establish that BEFORE calling in, while we
+       can still print. Refusing to call on a non-ACTIVE capture converts a
+       segfault into an rc that `graph.mojo` raises as a clean Mojo error. */
+    unsigned long long cap_id = 0;
+    int status = query_capture_status(stream, &cap_id);
+    fprintf(stderr,
+            "[intercept] pre-end capture status=%d (%s) id=%llu stream=%p\n",
+            status,
+            status == 0 ? "NONE — the stream is NOT capturing"
+                        : (status == 1 ? "ACTIVE"
+                        : (status == 2 ? "INVALIDATED" : "unknown/unavailable")),
+            cap_id, stream);
+    if (status == 0 || status == 2) {
+        fprintf(stderr,
+                "[intercept] refusing to call cuStreamEndCapture on a "
+                "non-ACTIVE capture (that is what crashed the driver)\n");
+        if (graph_out) *graph_out = NULL;
+        return 900;  /* distinct rc; surfaces as a [CUDAGraph] Mojo error */
+    }
+
     CUresult r = f(stream, graph_out);
     fprintf(stderr,
             "[intercept] cuStreamEndCapture rc=%d graph=%p "
@@ -564,8 +606,15 @@ CUresult intercept_graph_get_nodes(void *graph, unsigned long long *num_nodes) {
     return f(graph, NULL, num_nodes);
 }
 
-/* Constructor: print banner on load */
+/* Constructor: print banner on load.
+   MOJO_RL_INTERCEPT_LOG=1 turns on per-launch tracing from the very first
+   launch — `intercept_set_logging` can only be called from Mojo, i.e. too
+   late to see anything that happens during startup or inside a capture that
+   crashes before Mojo regains control. */
 __attribute__((constructor))
 static void on_load(void) {
-    fprintf(stderr, "[intercept] CUDA interceptor loaded (dlsym hooking mode)\n");
+    const char *e = getenv("MOJO_RL_INTERCEPT_LOG");
+    if (e && e[0] != '0') g_logging = 1;
+    fprintf(stderr, "[intercept] CUDA interceptor loaded (dlsym hooking mode)%s\n",
+            g_logging ? " [launch logging ON]" : "");
 }
