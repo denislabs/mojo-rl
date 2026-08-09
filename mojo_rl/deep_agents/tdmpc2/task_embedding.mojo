@@ -14,7 +14,7 @@ caller passes per-row task ids (a host `Tensor` whose `.data` holds DT-encoded
 ids; on GPU the same `Tensor`'s `.dev` is read by the kernels). `gather` reads
 rows; `accumulate` scatter-adds row grads (atomic-free: one thread per table
 element loops rows). All inputs/outputs are storage `Tensor`s — no raw
-`UnsafePointer` / `mptr` / `MutUntrackedOrigin` fields remain; the hand-rolled
+`Pointer` / `mptr` / `MutUntrackedOrigin` fields remain; the hand-rolled
 Adam math is identical to the legacy version.
 
 Built LAST in the agent (RNG discipline): a non-zero init draws from the global
@@ -25,7 +25,7 @@ RNG, which would shift the rollout stream — irrelevant to the single-task agen
 from std.math import sqrt
 from std.random import random_float64
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -105,7 +105,7 @@ def _zero_k[N: Int](
 
 
 struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
-    Movable & ImplicitlyDeletable
+    Movable & Deinitable
 ):
     comptime N = Self.NUM_TASKS * Self.TASK_EMB
 

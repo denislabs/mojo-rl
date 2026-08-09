@@ -24,7 +24,7 @@ Run: pixi run mojo run -I . tests/dm_control/test_finger_vs_dm_control.mojo
 from std.testing import assert_true, assert_equal, TestSuite
 from std.python import Python, PythonObject
 from std.math import abs, sin, cos, sqrt, log1p, pi
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.envs.dm_control.finger.finger_config import DMFingerTurnConfig

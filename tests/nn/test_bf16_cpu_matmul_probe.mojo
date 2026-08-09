@@ -21,9 +21,9 @@ def test_bf16_cpu_matmul() raises:
     comptime N = 4
 
     # fp32 host buffers (reference path).
-    var a_fp32: UnsafePointer[Scalar[FP32], MutAnyOrigin] = alloc[Scalar[FP32]](M * K).as_unsafe_any_origin()
-    var b_fp32: UnsafePointer[Scalar[FP32], MutAnyOrigin] = alloc[Scalar[FP32]](K * N).as_unsafe_any_origin()
-    var c_ref:  UnsafePointer[Scalar[FP32], MutAnyOrigin] = alloc[Scalar[FP32]](M * N).as_unsafe_any_origin()
+    var a_fp32: Pointer[Scalar[FP32], MutAnyOrigin] = alloc[Scalar[FP32]](M * K).as_unsafe_any_origin()
+    var b_fp32: Pointer[Scalar[FP32], MutAnyOrigin] = alloc[Scalar[FP32]](K * N).as_unsafe_any_origin()
+    var c_ref:  Pointer[Scalar[FP32], MutAnyOrigin] = alloc[Scalar[FP32]](M * N).as_unsafe_any_origin()
     for i in range(M * K):
         a_fp32[i] = Scalar[FP32](Float32(i) * 0.01)
     for i in range(K * N):
@@ -38,9 +38,9 @@ def test_bf16_cpu_matmul() raises:
             c_ref[m * N + n] = s
 
     # bf16 cast-around path.
-    var a_bf16: UnsafePointer[Scalar[BF16], MutAnyOrigin] = alloc[Scalar[BF16]](M * K).as_unsafe_any_origin()
-    var b_bf16: UnsafePointer[Scalar[BF16], MutAnyOrigin] = alloc[Scalar[BF16]](K * N).as_unsafe_any_origin()
-    var c_bf16: UnsafePointer[Scalar[BF16], MutAnyOrigin] = alloc[Scalar[BF16]](M * N).as_unsafe_any_origin()
+    var a_bf16: Pointer[Scalar[BF16], MutAnyOrigin] = alloc[Scalar[BF16]](M * K).as_unsafe_any_origin()
+    var b_bf16: Pointer[Scalar[BF16], MutAnyOrigin] = alloc[Scalar[BF16]](K * N).as_unsafe_any_origin()
+    var c_bf16: Pointer[Scalar[BF16], MutAnyOrigin] = alloc[Scalar[BF16]](M * N).as_unsafe_any_origin()
     for i in range(M * K):
         a_bf16[i] = a_fp32[i].cast[BF16]()
     for i in range(K * N):

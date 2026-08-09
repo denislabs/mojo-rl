@@ -22,8 +22,8 @@ accumulator drained at flush (no per-step D2H — capture-friendly). Shared by T
 """
 
 from std.gpu import thread_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB_REDUCE

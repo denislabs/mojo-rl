@@ -35,7 +35,7 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_equality_tendon_fields
 
 from std.math import abs
 from std.sys import has_nvidia_gpu_accelerator
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.types import ConeType

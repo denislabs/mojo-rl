@@ -38,6 +38,7 @@ Run with:
 
 from mojo_rl.envs import TaxiEnv
 from mojo_rl.agents import QLearningAgent, DoubleQLearningAgent, DynaQAgent
+from mojo_rl.core.fmt import fit
 
 
 def main() raises:
@@ -85,7 +86,7 @@ def main() raises:
     )
 
     var eval_q = agent_q.evaluate(env_q, num_episodes=20)
-    print("Q-Learning evaluation reward:", String(eval_q)[byte=:8])
+    print("Q-Learning evaluation reward:", fit(String(eval_q), 8))
     print("")
 
     # ========================================================================
@@ -118,7 +119,7 @@ def main() raises:
     )
 
     var eval_dq = agent_dq.evaluate(env_dq, num_episodes=20)
-    print("Double Q-Learning evaluation reward:", String(eval_dq)[byte=:8])
+    print("Double Q-Learning evaluation reward:", fit(String(eval_dq), 8))
     print("")
 
     # ========================================================================
@@ -152,7 +153,7 @@ def main() raises:
     )
 
     var eval_dyna = agent_dyna.evaluate(env_dyna, num_episodes=20)
-    print("Dyna-Q evaluation reward:", String(eval_dyna)[byte=:8])
+    print("Dyna-Q evaluation reward:", fit(String(eval_dyna), 8))
     print("")
 
     # ========================================================================
@@ -166,27 +167,27 @@ def main() raises:
     print("-" * 60)
     print(
         "Q-Learning      |",
-        String(metrics_q.mean_reward())[byte=:8],
+        fit(String(metrics_q.mean_reward()), 8),
         "     |",
-        String(metrics_q.max_reward())[byte=:8],
+        fit(String(metrics_q.max_reward()), 8),
         "  |",
-        String(eval_q)[byte=:8],
+        fit(String(eval_q), 8),
     )
     print(
         "Double Q-Learn  |",
-        String(metrics_dq.mean_reward())[byte=:8],
+        fit(String(metrics_dq.mean_reward()), 8),
         "     |",
-        String(metrics_dq.max_reward())[byte=:8],
+        fit(String(metrics_dq.max_reward()), 8),
         "  |",
-        String(eval_dq)[byte=:8],
+        fit(String(eval_dq), 8),
     )
     print(
         "Dyna-Q          |",
-        String(metrics_dyna.mean_reward())[byte=:8],
+        fit(String(metrics_dyna.mean_reward()), 8),
         "     |",
-        String(metrics_dyna.max_reward())[byte=:8],
+        fit(String(metrics_dyna.max_reward()), 8),
         "  |",
-        String(eval_dyna)[byte=:8],
+        fit(String(eval_dyna), 8),
     )
     print("")
     print("Good performance: Eval reward around +8 to +10")

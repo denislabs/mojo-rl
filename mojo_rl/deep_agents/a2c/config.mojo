@@ -14,7 +14,7 @@ default `max_grad_norm=0.5`).
         var agent = A2CDiscrete["cpu", OBS, N_ACT, ROLLOUT]()
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -33,7 +33,7 @@ from .agent import A2CAgent, A2CDiscreteAgent
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait A2CConfigT(Copyable, Movable, ImplicitlyDeletable):
+trait A2CConfigT(Copyable, Movable, Deinitable):
     """Compile-time descriptor of a continuous A2C algorithm."""
 
     comptime TARGET: StaticString
@@ -86,7 +86,7 @@ struct A2CConfig[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait A2CDiscreteConfigT(Copyable, Movable, ImplicitlyDeletable):
+trait A2CDiscreteConfigT(Copyable, Movable, Deinitable):
     """Compile-time descriptor of a discrete A2C algorithm."""
 
     comptime TARGET: StaticString

@@ -12,7 +12,7 @@ Run (Apple Metal):
     pixi run -e apple mojo run -I . tests/deep_agents/test_mz_selfplay_gpu_batched_pixel_smoke.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT

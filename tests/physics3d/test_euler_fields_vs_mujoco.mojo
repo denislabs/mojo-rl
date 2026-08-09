@@ -18,7 +18,7 @@ from std.testing import assert_true, TestSuite
 from std.python import Python
 from std.math import abs
 from std.collections import InlineArray
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator

@@ -17,7 +17,7 @@ held in an owned `Tensor` (CPU data + device dev). Param-free; identity vjp
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
@@ -44,8 +44,8 @@ def _pos_bt_add_kernel[
     var bt = idx // SD
     var local = idx % SD
     var t = bt % T
-    output.ptr[idx] = rebind[Scalar[DT]](input.ptr[idx]) + rebind[Scalar[DT]](
-        bias.ptr[t * SD + local]
+    output.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](input.ptr[unsafe_offset=idx]) + rebind[Scalar[DT]](
+        bias.ptr[unsafe_offset=t * SD + local]
     )
 
 
@@ -55,7 +55,7 @@ def _pos_bt_copy_kernel[BATCH: Int, SD: Int](
 ):
     var idx = Int(global_idx.x)
     if idx < BATCH * SD:
-        dst.ptr[idx] = rebind[Scalar[DT]](src.ptr[idx])
+        dst.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](src.ptr[unsafe_offset=idx])
 
 
 struct SinusoidalPosAddBT[

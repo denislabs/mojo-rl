@@ -50,7 +50,7 @@ Run with:
 from std.math import abs
 from std.python import Python
 from std.testing import assert_true, TestSuite
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf

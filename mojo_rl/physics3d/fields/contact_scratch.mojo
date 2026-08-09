@@ -8,7 +8,7 @@ consumers (constraints/contact_solve.mojo) are relative to the row
 start — the legacy `solver_idx` base is gone.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl

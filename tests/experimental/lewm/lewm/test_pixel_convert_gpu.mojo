@@ -7,7 +7,7 @@ Run:  pixi run -e apple mojo run -I . tests/experimental/lewm/test_pixel_convert
 """
 
 from std.memory import alloc
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
@@ -24,16 +24,16 @@ comptime BATCH = 3
 comptime N = BATCH * C * FH * FW
 
 
-def _u8p(b: DeviceBuffer[DType.uint8]) -> UnsafePointer[
+def _u8p(b: DeviceBuffer[DType.uint8]) -> Pointer[
     Scalar[DType.uint8], MutAnyOrigin
 ]:
-    return rebind[UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]](
+    return rebind[Pointer[Scalar[DType.uint8], MutAnyOrigin]](
         b.unsafe_ptr()
     )
 
 
-def _fp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+def _fp(b: DeviceBuffer[DT]) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
 
 
 def main() raises:
@@ -49,8 +49,8 @@ def main() raises:
         src_h.unsafe_ptr()[k] = UInt8((k * 37 + 11) % 256)
 
     # ── CPU reference
-    var cpu_dst: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
-    var src_host_ptr = rebind[UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]](
+    var cpu_dst: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
+    var src_host_ptr = rebind[Pointer[Scalar[DType.uint8], MutAnyOrigin]](
         src_h.unsafe_ptr().as_unsafe_any_origin()
     )
     u8_hwc_to_chw_norm["cpu", C, FH, FW, BATCH](src_host_ptr, cpu_dst)
@@ -90,7 +90,7 @@ def main() raises:
 
     # ── layout-preserving u8_to_fp32_norm (the CHW Pong path) ──────────
     print("u8_to_fp32_norm (layout-preserving) CPU↔GPU ...")
-    var lp_cpu: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
+    var lp_cpu: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
     u8_to_fp32_norm["cpu", N](src_host_ptr, lp_cpu)
     var lp_dst_d = ctx.enqueue_create_buffer[DT](N)
     u8_to_fp32_norm["gpu", N](_u8p(src_d), _fp(lp_dst_d), ctx=ctx)

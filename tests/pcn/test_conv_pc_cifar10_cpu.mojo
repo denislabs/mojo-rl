@@ -35,6 +35,7 @@ from mojo_rl.experimental.pcn import (
     PCTrainer,
 )
 from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock
+from mojo_rl.core.fmt import fit
 
 comptime BATCH = 125
 comptime EPOCHS = 6
@@ -180,7 +181,7 @@ def main() raises:
 
     print("\n  test accuracy =", acc, " (", correct, "/",
           N_TEST_BATCHES * BATCH, ")")
-    print("  train time =", String(train_t)[byte=:7], "s")
+    print("  train time =", fit(String(train_t), 7), "s")
     print("  (chance=0.10; a linear/MLP CIFAR baseline at this budget ≈ 0.35–0.45)")
     print("")
     if acc >= PASS_ACC:

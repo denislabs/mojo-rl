@@ -25,7 +25,7 @@ state-prefix obs extraction when OBS_DIM > STATE_SIZE and renders on first step)
 from std.math import sin, cos
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core import GPUDiscreteEnv
 from mojo_rl.physics2d import dtype
@@ -111,7 +111,7 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
         states: LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
         ],
-        vis_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        vis_ptr: Pointer[Scalar[dtype], MutAnyOrigin],
         vis_count: Int,
         dx: Int,
         dy: Int,
@@ -146,7 +146,7 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
 
         # Only test tiles the per-env cull found inside the camera view.
         for j in range(vis_count):
-            var i = Int(rebind[Scalar[dtype]](vis_ptr[j]))
+            var i = Int(rebind[Scalar[dtype]](vis_ptr[unsafe_offset=j]))
             var to = Self.D.TRACK_OFFSET + i * TILE_DATA_SIZE
             var v0x = rebind[Scalar[dtype]](states[env, to + 0])
             var v0y = rebind[Scalar[dtype]](states[env, to + 1])
@@ -181,8 +181,8 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
-        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[Pointer[Scalar[dtype], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[Pointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var st = LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)](states)
         var dn = LayoutTensor[dtype, Layout.row_major(BATCH_SIZE)](dones)
@@ -194,7 +194,7 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
         def sel_wrap(
             st: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
             dn: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-            ws_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+            ws_ptr: Pointer[Scalar[dtype], MutAnyOrigin],
             seed: Scalar[DType.uint64],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -207,7 +207,7 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
                 # Clear this env's frame stack + ring index.
                 var env_ws = ws_ptr + env * Self.STEP_WS_PER_ENV
                 for i in range(Self.STEP_WS_PER_ENV):
-                    env_ws[i] = Scalar[dtype](0.0)
+                    env_ws[unsafe_offset=i] = Scalar[dtype](0.0)
 
         ctx.enqueue_function[sel_wrap](
             st, dn, ws, Scalar[DType.uint64](rng_seed),
@@ -226,8 +226,8 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
         mut terminated: DeviceBuffer[dtype],
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
-        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[Pointer[Scalar[dtype], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[Pointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var st = LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)](states)
         var ac = LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, 1)](actions)
@@ -272,7 +272,7 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
         @always_inline
         def cull_wrap(
             st: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
-            ws_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+            ws_ptr: Pointer[Scalar[dtype], MutAnyOrigin],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
@@ -304,9 +304,9 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
                 var ddx = cx - car_x
                 var ddy = cy - car_y
                 if ddx * ddx + ddy * ddy < r2:
-                    env_ws[Self.WS_VIS + count] = Scalar[dtype](i)
+                    env_ws[unsafe_offset=Self.WS_VIS + count] = Scalar[dtype](i)
                     count += 1
-            env_ws[Self.WS_VIS_COUNT] = Scalar[dtype](count)
+            env_ws[unsafe_offset=Self.WS_VIS_COUNT] = Scalar[dtype](count)
 
         ctx.enqueue_function[cull_wrap](
             st, ws, grid_dim=(BLOCKS,), block_dim=(Self.TPB,)
@@ -321,8 +321,8 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
         @always_inline
         def render_wrap(
             st: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
-            ws_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-            o_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+            ws_ptr: Pointer[Scalar[dtype], MutAnyOrigin],
+            o_ptr: Pointer[Scalar[dtype], MutAnyOrigin],
         ):
             var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
             if tid >= RT:
@@ -333,19 +333,19 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
             var dx = pix % Self.OBS_W
 
             var env_ws = ws_ptr + env * Self.STEP_WS_PER_ENV
-            var vis_count = Int(rebind[Scalar[dtype]](env_ws[Self.WS_VIS_COUNT]))
+            var vis_count = Int(rebind[Scalar[dtype]](env_ws[unsafe_offset=Self.WS_VIS_COUNT]))
             var vis_ptr = env_ws + Self.WS_VIS
             var gray = CarRacingPixel[Self.dtype]._render_pixel[BATCH_SIZE, STATE_SIZE](
                 env, st, vis_ptr, vis_count, dx, dy
             )
 
-            var slot = Int(env_ws[Self.WS_IDX]) % Self.FRAME_STACK
-            env_ws[slot * Self.FRAME_SIZE + pix] = gray
+            var slot = Int(env_ws[unsafe_offset=Self.WS_IDX]) % Self.FRAME_STACK
+            env_ws[unsafe_offset=slot * Self.FRAME_SIZE + pix] = gray
 
             var env_obs = o_ptr + env * Self.OBS_DIM
             for f in range(Self.FRAME_STACK):
                 var rs = (slot + 1 + f) % Self.FRAME_STACK
-                env_obs[f * Self.FRAME_SIZE + pix] = env_ws[rs * Self.FRAME_SIZE + pix]
+                env_obs[unsafe_offset=f * Self.FRAME_SIZE + pix] = env_ws[unsafe_offset=rs * Self.FRAME_SIZE + pix]
 
         ctx.enqueue_function[render_wrap](
             st, ws, obs_ptr, grid_dim=(RBLOCKS,), block_dim=(RTPB,)
@@ -354,13 +354,13 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
         # ── Kernel C: advance ring index (1 thread / env) ──
         @parameter
         @always_inline
-        def adv_wrap(ws_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]):
+        def adv_wrap(ws_ptr: Pointer[Scalar[dtype], MutAnyOrigin]):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
                 return
             var env_ws = ws_ptr + env * Self.STEP_WS_PER_ENV
-            var slot = Int(env_ws[Self.WS_IDX])
-            env_ws[Self.WS_IDX] = Scalar[dtype]((slot + 1) % Self.FRAME_STACK)
+            var slot = Int(env_ws[unsafe_offset=Self.WS_IDX])
+            env_ws[unsafe_offset=Self.WS_IDX] = Scalar[dtype]((slot + 1) % Self.FRAME_STACK)
 
         ctx.enqueue_function[adv_wrap](
             ws, grid_dim=(BLOCKS,), block_dim=(Self.TPB,)
@@ -376,11 +376,11 @@ struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
 
         @parameter
         @always_inline
-        def zero_wrap(ws_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]):
+        def zero_wrap(ws_ptr: Pointer[Scalar[dtype], MutAnyOrigin]):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= WS_TOTAL:
                 return
-            ws_ptr[i] = Scalar[dtype](0.0)
+            ws_ptr[unsafe_offset=i] = Scalar[dtype](0.0)
 
         ctx.enqueue_function[zero_wrap](ws, grid_dim=(BLK,), block_dim=(256,))
 

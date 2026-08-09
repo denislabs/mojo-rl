@@ -30,7 +30,7 @@ from std.math import cos
 comptime _PI: Float64 = 3.141592653589793
 
 
-trait Scheduler(Copyable & ImplicitlyDeletable):
+trait Scheduler(Copyable & Deinitable):
     """LR-scale schedule over epochs."""
 
     comptime IS_CONSTANT: Bool

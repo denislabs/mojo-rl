@@ -208,7 +208,7 @@ def _nose_to_target_gpu[
     var out = InlineArray[Scalar[DTYPE], 2](fill=Scalar[DTYPE](0))
     out[0] = loc[0]
     out[1] = loc[1]
-    return out
+    return out^
 
 
 struct DMSwimmerConfig(Phyics3dEnvConfig):

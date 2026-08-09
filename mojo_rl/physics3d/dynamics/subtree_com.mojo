@@ -6,7 +6,7 @@ for both targets; per-body mass accumulator stays a per-thread InlineArray
 (local scratch, not a field)."""
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..fields import Data, Model

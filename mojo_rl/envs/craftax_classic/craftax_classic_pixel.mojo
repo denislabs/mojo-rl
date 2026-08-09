@@ -33,7 +33,7 @@ from mojo_rl.core import (
 from mojo_rl.nn.constants import DT as gpu_dtype
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 
 from .craftax_classic import CraftaxClassicEnv, CraftaxState, CraftaxAction
@@ -163,44 +163,44 @@ comptime ASSET_DIR: String = "mojo_rl/envs/craftax_classic/assets"
 
 @always_inline
 def _inv_cell_sprite_and_value(
-    state: UnsafePointer[Float32, MutAnyOrigin],
+    state: Pointer[Float32, MutAnyOrigin],
     row: Int,
     col: Int,
 ) -> Tuple[Int, Int]:
     if row == 0:
         if col == 0:
-            return (SPR_ICON_HEALTH, Int(state[S_INTRINSICS_BASE + INTRINSIC_HEALTH]))
+            return (SPR_ICON_HEALTH, Int(state[unsafe_offset=S_INTRINSICS_BASE + INTRINSIC_HEALTH]))
         elif col == 1:
-            return (SPR_ICON_FOOD, Int(state[S_INTRINSICS_BASE + INTRINSIC_FOOD]))
+            return (SPR_ICON_FOOD, Int(state[unsafe_offset=S_INTRINSICS_BASE + INTRINSIC_FOOD]))
         elif col == 2:
-            return (SPR_ICON_DRINK, Int(state[S_INTRINSICS_BASE + INTRINSIC_DRINK]))
+            return (SPR_ICON_DRINK, Int(state[unsafe_offset=S_INTRINSICS_BASE + INTRINSIC_DRINK]))
         elif col == 3:
-            return (SPR_ICON_ENERGY, Int(state[S_INTRINSICS_BASE + INTRINSIC_ENERGY]))
+            return (SPR_ICON_ENERGY, Int(state[unsafe_offset=S_INTRINSICS_BASE + INTRINSIC_ENERGY]))
         elif col == 4:
-            return (SPR_INV_SAPLING, Int(state[S_INV_BASE + INV_SAPLING]))
+            return (SPR_INV_SAPLING, Int(state[unsafe_offset=S_INV_BASE + INV_SAPLING]))
         elif col == 5:
-            return (SPR_INV_WOOD, Int(state[S_INV_BASE + INV_WOOD]))
+            return (SPR_INV_WOOD, Int(state[unsafe_offset=S_INV_BASE + INV_WOOD]))
         elif col == 6:
-            return (4, Int(state[S_INV_BASE + INV_STONE]))   # SPR_STONE
+            return (4, Int(state[unsafe_offset=S_INV_BASE + INV_STONE]))   # SPR_STONE
         elif col == 7:
-            return (8, Int(state[S_INV_BASE + INV_COAL]))    # SPR_COAL
+            return (8, Int(state[unsafe_offset=S_INV_BASE + INV_COAL]))    # SPR_COAL
         elif col == 8:
-            return (9, Int(state[S_INV_BASE + INV_IRON]))    # SPR_IRON
+            return (9, Int(state[unsafe_offset=S_INV_BASE + INV_IRON]))    # SPR_IRON
     else:  # row == 1
         if col == 0:
-            return (10, Int(state[S_INV_BASE + INV_DIAMOND]))  # SPR_DIAMOND
+            return (10, Int(state[unsafe_offset=S_INV_BASE + INV_DIAMOND]))  # SPR_DIAMOND
         elif col == 1:
-            return (SPR_INV_WOOD_PICKAXE, Int(state[S_INV_BASE + INV_WOOD_PICKAXE]))
+            return (SPR_INV_WOOD_PICKAXE, Int(state[unsafe_offset=S_INV_BASE + INV_WOOD_PICKAXE]))
         elif col == 2:
-            return (SPR_INV_STONE_PICKAXE, Int(state[S_INV_BASE + INV_STONE_PICKAXE]))
+            return (SPR_INV_STONE_PICKAXE, Int(state[unsafe_offset=S_INV_BASE + INV_STONE_PICKAXE]))
         elif col == 3:
-            return (SPR_INV_IRON_PICKAXE, Int(state[S_INV_BASE + INV_IRON_PICKAXE]))
+            return (SPR_INV_IRON_PICKAXE, Int(state[unsafe_offset=S_INV_BASE + INV_IRON_PICKAXE]))
         elif col == 4:
-            return (SPR_INV_WOOD_SWORD, Int(state[S_INV_BASE + INV_WOOD_SWORD]))
+            return (SPR_INV_WOOD_SWORD, Int(state[unsafe_offset=S_INV_BASE + INV_WOOD_SWORD]))
         elif col == 5:
-            return (SPR_INV_STONE_SWORD, Int(state[S_INV_BASE + INV_STONE_SWORD]))
+            return (SPR_INV_STONE_SWORD, Int(state[unsafe_offset=S_INV_BASE + INV_STONE_SWORD]))
         elif col == 6:
-            return (SPR_INV_IRON_SWORD, Int(state[S_INV_BASE + INV_IRON_SWORD]))
+            return (SPR_INV_IRON_SWORD, Int(state[unsafe_offset=S_INV_BASE + INV_IRON_SWORD]))
     return (-1, 0)
 
 
@@ -219,7 +219,7 @@ def _inv_cell_sprite_and_value(
 
 @always_inline
 def _atlas_sample(
-    atlas: UnsafePointer[Float32, MutAnyOrigin],
+    atlas: Pointer[Float32, MutAnyOrigin],
     sprite_idx: Int,
     ly: Int,
     lx: Int,
@@ -229,7 +229,7 @@ def _atlas_sample(
         sprite_idx * BLOCK_PIXEL_SIZE * BLOCK_PIXEL_SIZE * 4
         + (ly * BLOCK_PIXEL_SIZE + lx) * 4
     )
-    return (atlas[off + 0], atlas[off + 1], atlas[off + 2], atlas[off + 3])
+    return (atlas[unsafe_offset=off + 0], atlas[unsafe_offset=off + 1], atlas[unsafe_offset=off + 2], atlas[unsafe_offset=off + 3])
 
 
 @always_inline
@@ -274,14 +274,14 @@ def _arrow_sprite_for(dir_: Int) -> Int:
 
 @always_inline
 def _render_pixel_rgb(
-    state: UnsafePointer[Float32, MutAnyOrigin],
-    atlas: UnsafePointer[Float32, MutAnyOrigin],
+    state: Pointer[Float32, MutAnyOrigin],
+    atlas: Pointer[Float32, MutAnyOrigin],
     h: Int,
     w: Int,
 ) -> Tuple[Float32, Float32, Float32]:
     """Return RGB for output pixel (h, w) ∈ [0, 90)²."""
-    var py = Int(state[S_PLAYER_POS])
-    var px = Int(state[S_PLAYER_POS + 1])
+    var py = Int(state[unsafe_offset=S_PLAYER_POS])
+    var px = Int(state[unsafe_offset=S_PLAYER_POS + 1])
 
     if h < VIEW_PIX_H:
         # ---- Game view ----
@@ -297,7 +297,7 @@ def _render_pixel_rgb(
 
         var block_id = BLOCK_OUT_OF_BOUNDS
         if in_bounds:
-            block_id = Int(state[S_MAP_BASE + wy * MAP_W + wx])
+            block_id = Int(state[unsafe_offset=S_MAP_BASE + wy * MAP_W + wx])
 
         # Background = block sprite (always opaque for blocks).
         var base = _atlas_sample(atlas, block_id, ly, lx)
@@ -308,13 +308,13 @@ def _render_pixel_rgb(
         if in_bounds:
             # Plants (alpha-blended overlay).
             for i in range(MAX_PLANTS):
-                if state[s_plant_mask(i)] < Float32(0.5):
+                if state[unsafe_offset=s_plant_mask(i)] < Float32(0.5):
                     continue
                 if (
-                    Int(state[s_plant(i, PLANT_FY)]) == wy
-                    and Int(state[s_plant(i, PLANT_FX)]) == wx
+                    Int(state[unsafe_offset=s_plant(i, PLANT_FY)]) == wy
+                    and Int(state[unsafe_offset=s_plant(i, PLANT_FX)]) == wx
                 ):
-                    var age = Int(state[s_plant(i, PLANT_FAGE)])
+                    var age = Int(state[unsafe_offset=s_plant(i, PLANT_FAGE)])
                     var ps = SPR_PLANT_RIPE if age >= PLANT_RIPEN_AGE else SPR_PLANT_YOUNG
                     var p = _atlas_sample(atlas, ps, ly, lx)
                     var c = _composite(r, g, b, p[0], p[1], p[2], p[3])
@@ -322,39 +322,39 @@ def _render_pixel_rgb(
 
             # Cows, zombies, skeletons, arrows.
             for i in range(MAX_COWS):
-                if state[s_cow(i, MOB_HP)] > Float32(0.0):
+                if state[unsafe_offset=s_cow(i, MOB_HP)] > Float32(0.0):
                     if (
-                        Int(state[s_cow(i, MOB_FY)]) == wy
-                        and Int(state[s_cow(i, MOB_FX)]) == wx
+                        Int(state[unsafe_offset=s_cow(i, MOB_FY)]) == wy
+                        and Int(state[unsafe_offset=s_cow(i, MOB_FX)]) == wx
                     ):
                         var p = _atlas_sample(atlas, SPR_COW, ly, lx)
                         var c = _composite(r, g, b, p[0], p[1], p[2], p[3])
                         r = c[0]; g = c[1]; b = c[2]
             for i in range(MAX_ZOMBIES):
-                if state[s_zombie(i, MOB_HP)] > Float32(0.0):
+                if state[unsafe_offset=s_zombie(i, MOB_HP)] > Float32(0.0):
                     if (
-                        Int(state[s_zombie(i, MOB_FY)]) == wy
-                        and Int(state[s_zombie(i, MOB_FX)]) == wx
+                        Int(state[unsafe_offset=s_zombie(i, MOB_FY)]) == wy
+                        and Int(state[unsafe_offset=s_zombie(i, MOB_FX)]) == wx
                     ):
                         var p = _atlas_sample(atlas, SPR_ZOMBIE, ly, lx)
                         var c = _composite(r, g, b, p[0], p[1], p[2], p[3])
                         r = c[0]; g = c[1]; b = c[2]
             for i in range(MAX_SKELETONS):
-                if state[s_skeleton(i, MOB_HP)] > Float32(0.0):
+                if state[unsafe_offset=s_skeleton(i, MOB_HP)] > Float32(0.0):
                     if (
-                        Int(state[s_skeleton(i, MOB_FY)]) == wy
-                        and Int(state[s_skeleton(i, MOB_FX)]) == wx
+                        Int(state[unsafe_offset=s_skeleton(i, MOB_FY)]) == wy
+                        and Int(state[unsafe_offset=s_skeleton(i, MOB_FX)]) == wx
                     ):
                         var p = _atlas_sample(atlas, SPR_SKELETON, ly, lx)
                         var c = _composite(r, g, b, p[0], p[1], p[2], p[3])
                         r = c[0]; g = c[1]; b = c[2]
             for i in range(MAX_ARROWS):
-                if state[s_arrow(i, MOB_HP)] > Float32(0.0):
+                if state[unsafe_offset=s_arrow(i, MOB_HP)] > Float32(0.0):
                     if (
-                        Int(state[s_arrow(i, MOB_FY)]) == wy
-                        and Int(state[s_arrow(i, MOB_FX)]) == wx
+                        Int(state[unsafe_offset=s_arrow(i, MOB_FY)]) == wy
+                        and Int(state[unsafe_offset=s_arrow(i, MOB_FX)]) == wx
                     ):
-                        var ad = Int(state[s_arrow(i, ARROW_FDIR)])
+                        var ad = Int(state[unsafe_offset=s_arrow(i, ARROW_FDIR)])
                         var p = _atlas_sample(
                             atlas, _arrow_sprite_for(ad), ly, lx
                         )
@@ -363,15 +363,15 @@ def _render_pixel_rgb(
 
             # Player at view center.
             if wy == py and wx == px:
-                var pdir = Int(state[S_PLAYER_DIR])
-                var sleeping = state[S_IS_SLEEPING] > Float32(0.5)
+                var pdir = Int(state[unsafe_offset=S_PLAYER_DIR])
+                var sleeping = state[unsafe_offset=S_IS_SLEEPING] > Float32(0.5)
                 var ps_idx = _player_sprite_for(pdir, sleeping)
                 var p = _atlas_sample(atlas, ps_idx, ly, lx)
                 var c = _composite(r, g, b, p[0], p[1], p[2], p[3])
                 r = c[0]; g = c[1]; b = c[2]
 
         # Day/night dim, clamped so the agent always sees something.
-        var light = state[S_LIGHT_LEVEL]
+        var light = state[unsafe_offset=S_LIGHT_LEVEL]
         if light < Float32(0.3):
             light = Float32(0.3)
         if light > Float32(1.0):
@@ -428,7 +428,7 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
     comptime STEP_WS_PER_ENV: Int = 0
 
     var inner: CraftaxClassicEnv[Self.DTYPE]
-    var _atlas: UnsafePointer[Float32, MutUntrackedOrigin]   # CPU-side atlas
+    var _atlas: Pointer[Float32, MutUntrackedOrigin]   # CPU-side atlas
     var _atlas_loaded: Bool
 
     def __init__(out self):
@@ -443,11 +443,11 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
             print("Craftax pixel env: atlas load failed (", String(e), ")")
             self._atlas = alloc[Float32](ATLAS_FLOATS)
             for i in range(ATLAS_FLOATS):
-                self._atlas[i] = Float32(0.0)
+                self._atlas[unsafe_offset=i] = Float32(0.0)
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         if Int(self._atlas) != 0:
-            self._atlas.free()
+            self._atlas.unsafe_free()
 
     # ========================================================================
     # CPU: render current state into obs buffer
@@ -455,9 +455,9 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
 
     @always_inline
     def _render_current(
-        self, mut obs: UnsafePointer[Scalar[Self.DTYPE], MutAnyOrigin]
+        self, mut obs: Pointer[Scalar[Self.DTYPE], MutAnyOrigin]
     ):
-        var state_ptr = rebind[UnsafePointer[Float32, MutAnyOrigin]](
+        var state_ptr = rebind[Pointer[Float32, MutAnyOrigin]](
             self.inner.state.unsafe_ptr().unsafe_bitcast[Float32]()
         )
         var atlas = self._atlas
@@ -468,9 +468,9 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
                 var rgb = _render_pixel_rgb(
                     state_ptr, atlas.as_unsafe_any_origin(), h, w
                 )
-                obs[0 * HW + h * OBS_PIX_W + w] = Scalar[Self.DTYPE](rgb[0])
-                obs[1 * HW + h * OBS_PIX_W + w] = Scalar[Self.DTYPE](rgb[1])
-                obs[2 * HW + h * OBS_PIX_W + w] = Scalar[Self.DTYPE](rgb[2])
+                obs[unsafe_offset=0 * HW + h * OBS_PIX_W + w] = Scalar[Self.DTYPE](rgb[0])
+                obs[unsafe_offset=1 * HW + h * OBS_PIX_W + w] = Scalar[Self.DTYPE](rgb[1])
+                obs[unsafe_offset=2 * HW + h * OBS_PIX_W + w] = Scalar[Self.DTYPE](rgb[2])
 
     # ========================================================================
     # Env trait
@@ -516,14 +516,14 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
 
     def get_obs_list(self) -> List[Scalar[Self.DTYPE]]:
         var obs_arr = alloc[Scalar[Self.DTYPE]](PIXEL_OBS_DIM)
-        var obs_ptr = rebind[UnsafePointer[Scalar[Self.DTYPE], MutAnyOrigin]](
+        var obs_ptr = rebind[Pointer[Scalar[Self.DTYPE], MutAnyOrigin]](
             obs_arr
         )
         self._render_current(obs_ptr)
         var obs = List[Scalar[Self.DTYPE]](capacity=PIXEL_OBS_DIM)
         for i in range(PIXEL_OBS_DIM):
-            obs.append(obs_arr[i])
-        obs_arr.free()
+            obs.append(obs_arr[unsafe_offset=i])
+        obs_arr.unsafe_free()
         return obs^
 
     def reset_obs_list(mut self) -> List[Scalar[Self.DTYPE]]:
@@ -593,10 +593,10 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+            Pointer[Scalar[gpu_dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         CraftaxClassicEnv[Self.DTYPE].selective_reset_kernel_gpu[
@@ -641,7 +641,7 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
         var host = build_agent_atlas(ASSET_DIR, BLOCK_PIXEL_SIZE)
         ctx.enqueue_copy(workspace_buf, host)
         ctx.synchronize()
-        host.free()
+        host.unsafe_free()
 
     @staticmethod
     def update_curriculum_gpu(
@@ -671,7 +671,7 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
         var host = build_agent_atlas(ASSET_DIR, BLOCK_PIXEL_SIZE)
         ctx.enqueue_copy(atlas_buf, host)
         ctx.synchronize()
-        host.free()
+        host.unsafe_free()
 
         Self._render_kernel[BATCH_SIZE, STATE_SIZE](
             ctx,
@@ -689,7 +689,7 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
     ](
         ctx: DeviceContext,
         states_buf: DeviceBuffer[gpu_dtype],
-        atlas_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+        atlas_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],
         mut obs_buf: DeviceBuffer[gpu_dtype],
     ) raises:
         """One thread per output pixel. Writes 3 channels per pixel."""
@@ -707,9 +707,9 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
         @parameter
         @always_inline
         def render_wrapper(
-            states_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
-            atlas_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
-            obs_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+            states_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],
+            atlas_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],
+            obs_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],
         ):
             var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
             if tid >= PIX_TOTAL:
@@ -723,9 +723,9 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
             var state = states_ptr + env_idx * STATE_SIZE
             var rgb = _render_pixel_rgb(state, atlas_ptr, h, w)
             var env_obs = obs_ptr + env_idx * PIXEL_OBS_DIM
-            env_obs[0 * HW + pix] = rgb[0]
-            env_obs[1 * HW + pix] = rgb[1]
-            env_obs[2 * HW + pix] = rgb[2]
+            env_obs[unsafe_offset=0 * HW + pix] = rgb[0]
+            env_obs[unsafe_offset=1 * HW + pix] = rgb[1]
+            env_obs[unsafe_offset=2 * HW + pix] = rgb[2]
 
         ctx.enqueue_function[render_wrapper](
             states_ptr,
@@ -750,10 +750,10 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+            Pointer[Scalar[gpu_dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Full step: physics → render into obs."""
@@ -777,29 +777,29 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
         @parameter
         @always_inline
         def physics_wrapper(
-            states_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
-            actions_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
-            rewards_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
-            dones_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
-            terminated_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+            states_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],
+            actions_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],
+            rewards_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],
+            dones_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],
+            terminated_ptr: Pointer[Scalar[gpu_dtype], MutAnyOrigin],
             seed: Scalar[DType.uint64],
         ):
             var e = Int(block_dim.x * block_idx.x + thread_idx.x)
             if e >= BATCH_SIZE:
                 return
             var state = states_ptr + e * STATE_SIZE
-            var action = Int(actions_ptr[e])
+            var action = Int(actions_ptr[unsafe_offset=e])
             var per_env_seed = (
                 UInt64(seed) * UInt64(BATCH_SIZE) + UInt64(e) + UInt64(1)
             )
             var rng = PhiloxRandom(seed=per_env_seed, offset=0)
             var r_done = apply_step_inline(state, action, rng)
-            rewards_ptr[e] = Scalar[gpu_dtype](r_done[0])
+            rewards_ptr[unsafe_offset=e] = Scalar[gpu_dtype](r_done[0])
             if r_done[1]:
-                dones_ptr[e] = Scalar[gpu_dtype](1.0)
+                dones_ptr[unsafe_offset=e] = Scalar[gpu_dtype](1.0)
             else:
-                dones_ptr[e] = Scalar[gpu_dtype](0.0)
-            terminated_ptr[e] = Scalar[gpu_dtype](0.0)
+                dones_ptr[unsafe_offset=e] = Scalar[gpu_dtype](0.0)
+            terminated_ptr[unsafe_offset=e] = Scalar[gpu_dtype](0.0)
 
         ctx.enqueue_function[physics_wrapper](
             states_ptr,

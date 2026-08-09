@@ -73,15 +73,15 @@ def _read_flat(lines: List[String], name: String) raises -> List[Scalar[DT]]:
     raise Error("fixture: section not found: " + name)
 
 
-def _buf(src: List[Scalar[DT]]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](len(src)).as_unsafe_any_origin()
+def _buf(src: List[Scalar[DT]]) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    var p: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](len(src)).as_unsafe_any_origin()
     for i in range(len(src)):
         p[i] = src[i]
     return p
 
 
 def _diff(
-    got: UnsafePointer[Scalar[DT], MutAnyOrigin], expected: List[Scalar[DT]]
+    got: Pointer[Scalar[DT], MutAnyOrigin], expected: List[Scalar[DT]]
 ) -> Scalar[DT]:
     var m: Scalar[DT] = 0.0
     for i in range(len(expected)):
@@ -129,7 +129,7 @@ def test_twohot() raises:
     # symexp bin generation (255). Bins span ±4.85e8 → use RELATIVE diff
     # (absolute float32 error at that magnitude is ~hundreds, but relative
     # ~5e-7).
-    var sbins: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](255).as_unsafe_any_origin()
+    var sbins: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](255).as_unsafe_any_origin()
     symexp_twohot_bins[255](sbins)
     var sref = _read_flat(lines, "sbins255")
     var dsr: Scalar[DT] = 0.0

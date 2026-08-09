@@ -53,7 +53,7 @@ include the warmup. Keep WARMUP << N_STEPS.
 from std.sys import argv
 from std.random import seed
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.datasets import MNIST
 from mojo_rl.nn.constants import DT

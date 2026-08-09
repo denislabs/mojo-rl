@@ -12,7 +12,7 @@ step becomes a no-op rather than poisoning the moments.
 CPU: pure host loops over `grad.data`. GPU: per-Param block-reduction kernel
 (comptime `N` layout) writes the param's Σg² into a reusable [1] device scalar,
 D2H-accumulated on the host; then a per-Param scale kernel applies the host
-scalar. This is storage-clean (no UnsafePointer arrays, no runtime layouts) but
+scalar. This is storage-clean (no Pointer arrays, no runtime layouts) but
 NOT CUDA-graph-capturable (the per-param D2H + host branch); the D2H-free
 grouped version lands with the contiguous-arena optimizer (Phase D).
 
@@ -23,8 +23,8 @@ cross-model global norm (matches the deep_agents convention).
 
 from std.math import sqrt
 from std.gpu import global_idx, thread_idx, block_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -207,62 +207,71 @@ def clip_grad_norm[
 
 
 def _arena_sumsq_kernel(
-    grd: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    total: Int,
-    partials: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    grd: Pointer[Scalar[DT], MutAnyOrigin],
+    total_arg: Int64,
+    partials: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """Flat grid over the grad arena: each block reduces its chunk of `g²` via
     block.sum; thread 0 writes the block total to `partials[block_idx]`."""
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var total = Int(total_arg)
     var flat = Int(global_idx.x)
     var my_sum: Scalar[DT] = 0.0
     if flat < total:
-        var g = grd[flat]
+        var g = grd[unsafe_offset=flat]
         my_sum = g * g
     var tot = block.sum[block_size=TPB, broadcast=False](val=my_sum)
     if Int(thread_idx.x) == 0:
-        partials[Int(block_idx.x)] = tot[0]
+        partials[unsafe_offset=Int(block_idx.x)] = tot[0]
 
 
 def _arena_finalize_kernel(
-    partials: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    n_blocks: Int,
-    scale_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    norm_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    partials: Pointer[Scalar[DT], MutAnyOrigin],
+    n_blocks_arg: Int64,
+    scale_buf: Pointer[Scalar[DT], MutAnyOrigin],
+    norm_buf: Pointer[Scalar[DT], MutAnyOrigin],
     max_norm: Scalar[DT],
     eps: Scalar[DT],
 ):
     """Single-block reduction of the per-block partials → ‖grad‖, then
     `scale = min(1, max_norm/max(norm,eps))` (non-finite → 0). Writes both."""
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var n_blocks = Int(n_blocks_arg)
     var t = Int(thread_idx.x)
     var my_sum: Scalar[DT] = 0.0
     var k = t
     while k < n_blocks:
-        my_sum += partials[k]
+        my_sum += partials[unsafe_offset=k]
         k += GC_TPB
     var s = block.sum[block_size=GC_TPB, broadcast=False](val=my_sum)
     if t == 0:
         var norm = sqrt(s[0])
-        norm_buf[0] = norm
+        norm_buf[unsafe_offset=0] = norm
         if norm - norm != Scalar[DT](0.0):  # non-finite guard
-            scale_buf[0] = Scalar[DT](0.0)
+            scale_buf[unsafe_offset=0] = Scalar[DT](0.0)
         elif max_norm <= Scalar[DT](0.0):
-            scale_buf[0] = Scalar[DT](1.0)  # no clip
+            scale_buf[unsafe_offset=0] = Scalar[DT](1.0)  # no clip
         else:
             var denom = norm if norm > eps else eps
             var ratio = max_norm / denom
-            scale_buf[0] = ratio if ratio < Scalar[DT](1.0) else Scalar[DT](1.0)
+            scale_buf[unsafe_offset=0] = ratio if ratio < Scalar[DT](1.0) else Scalar[DT](1.0)
 
 
 def _arena_scale_kernel(
-    grd: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    total: Int,
-    scale_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    grd: Pointer[Scalar[DT], MutAnyOrigin],
+    total_arg: Int64,
+    scale_buf: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """`grd[i] *= scale_buf[0]` (scale 0 hard-zeroes — non-finite sentinel)."""
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var total = Int(total_arg)
     var i = Int(global_idx.x)
     if i < total:
-        var s = scale_buf[0]
-        grd[i] = grd[i] * s if s != Scalar[DT](0.0) else Scalar[DT](0.0)
+        var s = scale_buf[unsafe_offset=0]
+        grd[unsafe_offset=i] = grd[unsafe_offset=i] * s if s != Scalar[DT](0.0) else Scalar[DT](0.0)
 
 
 def _clip_arena_grads_kernels(
@@ -283,16 +292,16 @@ def _clip_arena_grads_kernels(
         return
     var nblk = (total + TPB - 1) // TPB
     ctx.enqueue_function[_arena_sumsq_kernel](
-        arena.grd.dev.value(), total, partials.dev.value(),
+        arena.grd.dev.value(), Int64(total), partials.dev.value(),
         grid_dim=nblk, block_dim=TPB,
     )
     ctx.enqueue_function[_arena_finalize_kernel](
-        partials.dev.value(), nblk, scale_buf.dev.value(),
+        partials.dev.value(), Int64(nblk), scale_buf.dev.value(),
         norm_buf.dev.value(), max_norm, eps,
         grid_dim=1, block_dim=GC_TPB,
     )
     ctx.enqueue_function[_arena_scale_kernel](
-        arena.grd.dev.value(), total, scale_buf.dev.value(),
+        arena.grd.dev.value(), Int64(total), scale_buf.dev.value(),
         grid_dim=nblk, block_dim=TPB,
     )
 

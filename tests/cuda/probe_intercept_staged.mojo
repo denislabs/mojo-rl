@@ -51,14 +51,14 @@ READ THE OUTPUT LIKE THIS:
 
 from std.ffi import OwnedDLHandle, c_int
 from std.gpu import thread_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 from std.memory import alloc
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
 
-comptime _CUptr = UnsafePointer[NoneType, MutUntrackedOrigin]
+comptime _CUptr = Pointer[NoneType, MutUntrackedOrigin]
 
 
 def main() raises:
@@ -113,14 +113,14 @@ def main() raises:
     var get_stream = lib.get_function[def () thin -> _CUptr](
         "intercept_get_mojo_stream"
     )()
-    var gs_bits = UnsafePointer(to=get_stream).bitcast[Int]()[]
+    var gs_bits = Pointer(to=get_stream).bitcast[Int]()[]
     print("[probe] get_stream  fn-value bits =", gs_bits)
 
     print("[probe] resolving intercept_stream_begin_capture (1-arg, CONTROL)")
     var begin_cap = lib.get_function[def (_CUptr) thin -> c_int](
         "intercept_stream_begin_capture"
     )()
-    var bc_bits = UnsafePointer(to=begin_cap).bitcast[Int]()[]
+    var bc_bits = Pointer(to=begin_cap).bitcast[Int]()[]
     print("[probe] begin_cap   fn-value bits =", bc_bits)
     print(
         "[probe] the two differ by", bc_bits - gs_bits,
@@ -141,7 +141,7 @@ def main() raises:
     # ── 3. replay-stream creation ─────────────────────────────────────────
     print("[probe] intercept_stream_create ...")
     var stream_create = lib.get_function[
-        def (UnsafePointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
+        def (Pointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
     ]("intercept_stream_create")()
     var sbuf = alloc[_CUptr](1)
     var rc_create = stream_create(sbuf)
@@ -162,7 +162,7 @@ def main() raises:
 
     var graph_buf = alloc[_CUptr](1)
     var end_cap = lib.get_function[
-        def (_CUptr, UnsafePointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
+        def (_CUptr, Pointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
     ]("intercept_stream_end_capture")()
     var rc_end = end_cap(stream1, graph_buf)
     print("[probe] end_capture rc =", Int(rc_end),

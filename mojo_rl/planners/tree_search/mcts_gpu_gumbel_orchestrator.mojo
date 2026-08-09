@@ -38,7 +38,7 @@ Output buffers exposed:
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as dtype
@@ -366,7 +366,7 @@ struct GumbelGPUMCTS[
     # nodes carry true game-state payloads and expansion is `env.step_gpu`
     # instead of the dynamics net. 0 (default) allocates no AZ buffers.
     STATE_SIZE: Int = 0,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     """GPU Gumbel-MCTS orchestrator (shared across EZv2 + MuZero).
 
     Comptime params:

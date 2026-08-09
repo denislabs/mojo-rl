@@ -136,8 +136,8 @@ def _gen_rollout_into[
     SEQ_LEN_T: Int
 ](
     mut rng: PhiloxRandom,
-    actions_buf: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
-    obs_buf: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    actions_buf: Pointer[Scalar[dtype], origin=MutAnyOrigin],
+    obs_buf: Pointer[Scalar[dtype], origin=MutAnyOrigin],
     actions_offset: Int,
     obs_offset: Int,
 ):
@@ -371,9 +371,9 @@ def main() raises:
                 "    ",
                 epoch,
                 "  ",
-                String(last_loss)[byte=:11],
+                fit(String(last_loss), 11),
                 "  ",
-                String(elapsed)[byte=:7],
+                fit(String(elapsed), 7),
             )
 
     var total_t = Float64(perf_counter_ns() - t0) / 1e9
@@ -529,22 +529,22 @@ def main() raises:
             "    ",
             t,
             "  ",
-            String(mse_step)[byte=:9],
+            fit(String(mse_step), 9),
             "  ",
-            String(persist_step)[byte=:9],
+            fit(String(persist_step), 9),
             "  [",
-            String(step_mse_0)[byte=:6],
+            fit(String(step_mse_0), 6),
             ",",
-            String(step_mse_1)[byte=:6],
+            fit(String(step_mse_1), 6),
             ",",
-            String(step_mse_2)[byte=:6],
+            fit(String(step_mse_2), 6),
             "]",
             "  [",
-            String(step_persist_0)[byte=:6],
+            fit(String(step_persist_0), 6),
             ",",
-            String(step_persist_1)[byte=:6],
+            fit(String(step_persist_1), 6),
             ",",
-            String(step_persist_2)[byte=:6],
+            fit(String(step_persist_2), 6),
             "]",
         )
 
@@ -644,13 +644,11 @@ def main() raises:
             "    ",
             t,
             "  ",
-            String(step_mse)[byte=:9],
+            fit(String(step_mse), 9),
             "  ",
-            String(step_persist)[byte=:9],
+            fit(String(step_persist), 9),
             "  ",
-            String(step_mse / step_persist if step_persist > 0 else 1.0)[
-                byte=:6
-            ],
+            fit(String(step_mse / step_persist if step_persist > 0 else 1.0), 6),
         )
 
         # Open-loop: prev_hidden = z_pred (NOT filtered).
@@ -727,3 +725,5 @@ def main() raises:
     s_pred_buf.free()
     a_s_pred_buf.free()
     print("=== Done ===")
+
+from mojo_rl.core.fmt import fit

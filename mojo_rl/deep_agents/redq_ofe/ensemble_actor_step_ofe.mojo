@@ -40,7 +40,7 @@ forwards/vjps use the storage Module surface over `TensorRefs`; the small
 elementwise helper kernels reuse REDQ's actor-loss kernels.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.constants import DT, TPB
@@ -72,7 +72,7 @@ struct EnsembleActorStepOFE[
     BATCH_: Int,
     PHI_S_DIM_: Int,
     ACT_: Int,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime N = Self.N_
     comptime BATCH = Self.BATCH_
     comptime PHI_S_DIM = Self.PHI_S_DIM_

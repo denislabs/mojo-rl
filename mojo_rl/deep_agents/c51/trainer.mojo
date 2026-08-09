@@ -23,7 +23,7 @@ Conforms to `OffPolicyDiscreteAgentGpu`.
 from std.math import exp as fexp, log as flog
 from std.random import random_float64
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.core.logger import Logger, NoOpLogger
@@ -532,11 +532,11 @@ struct C51Trainer[
         N_ENVS: Int,
     ](
         mut self,
-        prev_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        prev_obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        reward_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        next_obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        done_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         comptime assert (
             Self.train_target == "cpu"
@@ -547,12 +547,12 @@ struct C51Trainer[
         var nxt_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
         for env_idx in range(N_ENVS):
             for d in range(OBS):
-                obs_lane[d] = prev_obs_ptr[env_idx * OBS + d]
-                nxt_lane[d] = next_obs_ptr[env_idx * OBS + d]
-            act_lane[0] = action_ptr[env_idx]
+                obs_lane[d] = prev_obs_ptr[unsafe_offset=env_idx * OBS + d]
+                nxt_lane[d] = next_obs_ptr[unsafe_offset=env_idx * OBS + d]
+            act_lane[0] = action_ptr[unsafe_offset=env_idx]
             self.sample_blk.add(
-                obs_lane, act_lane, reward_ptr[env_idx], nxt_lane,
-                done_ptr[env_idx], ctx=self.ctx,
+                obs_lane, act_lane, reward_ptr[unsafe_offset=env_idx], nxt_lane,
+                done_ptr[unsafe_offset=env_idx], ctx=self.ctx,
             )
 
     # ─── Batched device record (GPU-batched-env driver) ──────────────
@@ -617,7 +617,7 @@ struct C51Trainer[
     def _bridge_obs_and_forward[
         N_ENVS: Int
     ](
-        mut self, obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut self, obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Copy raw obs into `_ob_scr`, run ONLINE forward into `_q_scr`, and
         (GPU) D2H the logits. After this `_q_scr.data` holds [N_ENVS, NA·NK]."""
@@ -625,7 +625,7 @@ struct C51Trainer[
         comptime OBS = Self.OBS_DIM
         comptime if Self.train_target == "cpu":
             for i in range(N_ENVS * OBS):
-                self._ob_scr.data[i] = obs_ptr[i]
+                self._ob_scr.data[i] = obs_ptr[unsafe_offset=i]
             call_forward["cpu", N_ENVS](
                 self.pair.online,
                 TensorRefs[Self.Q_NET.ARITY](self._ob_scr),
@@ -673,8 +673,8 @@ struct C51Trainer[
         N_ENVS: Int,
     ](
         mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
         step_idx: Int,
     ) raises:
         comptime NA = Self.NUM_ACTIONS
@@ -684,7 +684,7 @@ struct C51Trainer[
         if step_idx < self.learning_starts:
             comptime if Self.train_target == "cpu":
                 for i in range(N_ENVS):
-                    action_ptr[i] = Scalar[DT](
+                    action_ptr[unsafe_offset=i] = Scalar[DT](
                         Int(random_float64() * Float64(NA))
                     )
             else:
@@ -706,11 +706,11 @@ struct C51Trainer[
             for i in range(N_ENVS):
                 var r = random_float64()
                 if r < Float64(self.epsilon):
-                    action_ptr[i] = Scalar[DT](
+                    action_ptr[unsafe_offset=i] = Scalar[DT](
                         Int(random_float64() * Float64(NA))
                     )
                 else:
-                    action_ptr[i] = Scalar[DT](self._expected_q_argmax(i * NK))
+                    action_ptr[unsafe_offset=i] = Scalar[DT](self._expected_q_argmax(i * NK))
         else:
             var c = self.ctx.value()
             var act_h = self._act_host.unsafe_ptr()
@@ -734,8 +734,8 @@ struct C51Trainer[
         N_ENVS: Int,
     ](
         mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Pure greedy: batched forward + expected-Q argmax per env, no epsilon/
         warmup. Pair with `set_noise_scale(0)` for deterministic eval."""
@@ -745,7 +745,7 @@ struct C51Trainer[
         self._bridge_obs_and_forward[N_ENVS](obs_ptr)
         comptime if Self.train_target == "cpu":
             for i in range(N_ENVS):
-                action_ptr[i] = Scalar[DT](self._expected_q_argmax(i * NK))
+                action_ptr[unsafe_offset=i] = Scalar[DT](self._expected_q_argmax(i * NK))
         else:
             var c = self.ctx.value()
             var act_h = self._act_host.unsafe_ptr()
@@ -831,7 +831,7 @@ struct C51Trainer[
         L: Logger = NoOpLogger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> C51Metrics:
         """Drain accumulators into a C51Metrics bundle (+ optional logger
@@ -891,7 +891,7 @@ struct C51Trainer[
 
     def flush_metrics_through_logger[L: Logger](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
         _ = self.flush_metrics[L](logger, step)

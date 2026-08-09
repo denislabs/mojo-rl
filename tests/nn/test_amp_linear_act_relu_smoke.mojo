@@ -15,7 +15,7 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_amp_linear_act_relu_smoke.moj
 """
 
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import isnan, isinf
 
 from mojo_rl.nn.constants import DT

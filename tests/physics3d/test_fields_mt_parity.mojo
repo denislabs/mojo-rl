@@ -15,7 +15,7 @@ C. Integrator-level: RK4Integrator[..., PARALLEL_GPU=True] vs
 Run: pixi run -e apple mojo run -I . tests/physics3d/test_fields_mt_parity.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch

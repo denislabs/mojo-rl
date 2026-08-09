@@ -10,7 +10,7 @@ Run:
   pixi run -e nvidia mojo run -I . tests/envs/craftax_full/test_pixel_obs_gpu.mojo
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.envs.craftax_full import (
     CraftaxFullPixelEnv,

@@ -9,7 +9,7 @@ Black pieces: RGB(40,40,40) with 1px light outline RGB(200,200,200).
 Background: transparent (alpha=0).
 """
 
-from std.memory import UnsafePointer, unsafe_memset, alloc
+from std.memory import Pointer, unsafe_memset, alloc
 
 
 # Sprite sheet dimensions.
@@ -27,7 +27,7 @@ comptime SHEET_BYTES: Int = SHEET_WIDTH * SHEET_HEIGHT * BYTES_PER_PIXEL
 
 
 def _set_pixel(
-    mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
+    mut pixels: Pointer[UInt8, MutAnyOrigin],
     x: Int,
     y: Int,
     r: UInt8,
@@ -37,14 +37,14 @@ def _set_pixel(
 ):
     """Set a single pixel in the sprite sheet."""
     var offset = (y * SHEET_WIDTH + x) * BYTES_PER_PIXEL
-    pixels[offset] = r
-    pixels[offset + 1] = g
-    pixels[offset + 2] = b
-    pixels[offset + 3] = a
+    pixels[unsafe_offset=offset] = r
+    pixels[unsafe_offset=offset + 1] = g
+    pixels[unsafe_offset=offset + 2] = b
+    pixels[unsafe_offset=offset + 3] = a
 
 
 def _fill_rect(
-    mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
+    mut pixels: Pointer[UInt8, MutAnyOrigin],
     x0: Int,
     y0: Int,
     x1: Int,
@@ -61,17 +61,17 @@ def _fill_rect(
 
 
 def _is_filled(
-    mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
+    mut pixels: Pointer[UInt8, MutAnyOrigin],
     x: Int,
     y: Int,
 ) -> Bool:
     """Check if a pixel has non-zero alpha (i.e. was drawn)."""
     var offset = (y * SHEET_WIDTH + x) * BYTES_PER_PIXEL + 3
-    return pixels[offset] > 0
+    return pixels[unsafe_offset=offset] > 0
 
 
 def _add_outline(
-    mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
+    mut pixels: Pointer[UInt8, MutAnyOrigin],
     piece_idx: Int,
     or_: UInt8,
     og: UInt8,
@@ -114,7 +114,7 @@ def _add_outline(
 
 
 def _draw_king(
-    mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
+    mut pixels: Pointer[UInt8, MutAnyOrigin],
     ox: Int,
     r: UInt8,
     g: UInt8,
@@ -142,7 +142,7 @@ def _draw_king(
 
 
 def _draw_queen(
-    mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
+    mut pixels: Pointer[UInt8, MutAnyOrigin],
     ox: Int,
     r: UInt8,
     g: UInt8,
@@ -169,7 +169,7 @@ def _draw_queen(
 
 
 def _draw_rook(
-    mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
+    mut pixels: Pointer[UInt8, MutAnyOrigin],
     ox: Int,
     r: UInt8,
     g: UInt8,
@@ -189,7 +189,7 @@ def _draw_rook(
 
 
 def _draw_bishop(
-    mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
+    mut pixels: Pointer[UInt8, MutAnyOrigin],
     ox: Int,
     r: UInt8,
     g: UInt8,
@@ -220,7 +220,7 @@ def _draw_bishop(
 
 
 def _draw_knight(
-    mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
+    mut pixels: Pointer[UInt8, MutAnyOrigin],
     ox: Int,
     r: UInt8,
     g: UInt8,
@@ -253,7 +253,7 @@ def _draw_knight(
 
 
 def _draw_pawn(
-    mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
+    mut pixels: Pointer[UInt8, MutAnyOrigin],
     ox: Int,
     r: UInt8,
     g: UInt8,
@@ -287,7 +287,7 @@ def _draw_pawn(
 
 
 def _draw_piece(
-    mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
+    mut pixels: Pointer[UInt8, MutAnyOrigin],
     piece_idx: Int,
     r: UInt8,
     g: UInt8,
@@ -319,17 +319,17 @@ def _draw_piece(
 # ---------------------------------------------------------------------------
 
 
-def create_sprite_sheet() -> UnsafePointer[UInt8, MutAnyOrigin]:
+def create_sprite_sheet() -> Pointer[UInt8, MutAnyOrigin]:
     """Create and return a sprite sheet with all 12 chess piece sprites.
 
     Returns a heap-allocated RGBA pixel buffer (288x24, 27648 bytes).
-    Caller must free the returned pointer with ``UnsafePointer.free()``.
+    Caller must free the returned pointer with ``Pointer.free()``.
 
     Piece order: wK, wQ, wR, wB, wN, wP, bK, bQ, bR, bB, bN, bP.
     """
     var raw_pixels = alloc[UInt8](SHEET_BYTES)
     unsafe_memset(raw_pixels, 0, SHEET_BYTES)  # fully transparent
-    var pixels = rebind[UnsafePointer[UInt8, MutAnyOrigin]](raw_pixels)
+    var pixels = rebind[Pointer[UInt8, MutAnyOrigin]](raw_pixels)
 
     # --- White pieces (indices 0-5) ---
     # Draw fill colour.

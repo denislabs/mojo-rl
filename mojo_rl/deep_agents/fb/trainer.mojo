@@ -71,7 +71,7 @@ the GRADIENTS are identical either way, because the loss value never enters the
 update. Log every few hundred steps, not every step.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import abs, sqrt
 from std.random import random_float64
 
@@ -112,7 +112,7 @@ from .kernels import (
 )
 
 
-struct FBLosses(Movable & ImplicitlyDeletable):
+struct FBLosses(Movable & Deinitable):
     """Per-step diagnostics. `measure` and `ortho` are the two published terms;
     `f_norm` and `b_norm` are the collapse detectors — a `B` whose rows shrink
     towards zero is the failure `L_ortho` exists to prevent, and watching the
@@ -154,7 +154,7 @@ struct FBTrainer[
     D: Int,
     BATCH: Int,
     TARGET: StaticString = "cpu",
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime F_IN: Int = Self.OBS + Self.ACT + Self.D
     comptime A_IN: Int = Self.OBS + Self.D
     comptime _A_OFF: Int = Self.OBS

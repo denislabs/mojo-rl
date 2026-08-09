@@ -23,7 +23,7 @@ Usage (replaces a direct generic call):
     call_vjp[target, B](net, fin_refs, grad_out, gin_refs, ctx)
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from .module import Module
 from .tensor import TensorImpl

@@ -782,6 +782,38 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
     var solimp_eq_3: Float64
     var solimp_eq_4: Float64
 
+    def __init__(out self, *, copy: Self):
+        # Mojo 1.0: `Array` is no longer `ImplicitlyCopyable`, so the compiler
+        # can no longer synthesise this struct's copy constructor. Written out
+        # explicitly to keep the previous (implicitly copyable) semantics.
+        self.kind = copy.kind
+        self.is_equality = copy.is_equality
+        self.num_joints = copy.num_joints
+        self.joint_ids = copy.joint_ids.copy()
+        self.coefs = copy.coefs.copy()
+        self.length_ref = copy.length_ref
+        self.num_sites = copy.num_sites
+        self.site_ids = copy.site_ids.copy()
+        self.wrap_overflow = copy.wrap_overflow
+        self.limited = copy.limited
+        self.range_min = copy.range_min
+        self.range_max = copy.range_max
+        self.margin = copy.margin
+        self.solref_lim_0 = copy.solref_lim_0
+        self.solref_lim_1 = copy.solref_lim_1
+        self.solimp_lim_0 = copy.solimp_lim_0
+        self.solimp_lim_1 = copy.solimp_lim_1
+        self.solimp_lim_2 = copy.solimp_lim_2
+        self.solimp_lim_3 = copy.solimp_lim_3
+        self.solimp_lim_4 = copy.solimp_lim_4
+        self.solref_eq_0 = copy.solref_eq_0
+        self.solref_eq_1 = copy.solref_eq_1
+        self.solimp_eq_0 = copy.solimp_eq_0
+        self.solimp_eq_1 = copy.solimp_eq_1
+        self.solimp_eq_2 = copy.solimp_eq_2
+        self.solimp_eq_3 = copy.solimp_eq_3
+        self.solimp_eq_4 = copy.solimp_eq_4
+
     def __init__(out self):
         self.kind = _TENDON_KIND_FIXED
         self.is_equality = 0
@@ -1162,6 +1194,13 @@ struct NamedDefaultsList(Copyable, ImplicitlyCopyable, Movable):
 
     var items: InlineArray[NamedDefault, MAX_NAMED_DEFAULTS]
     var count: Int
+
+    def __init__(out self, *, copy: Self):
+        # Mojo 1.0: `Array` is no longer `ImplicitlyCopyable`, so the compiler
+        # can no longer synthesise this struct's copy constructor. Written out
+        # explicitly to keep the previous (implicitly copyable) semantics.
+        self.items = copy.items.copy()
+        self.count = copy.count
 
     def __init__(out self):
         self.items = InlineArray[NamedDefault, MAX_NAMED_DEFAULTS](

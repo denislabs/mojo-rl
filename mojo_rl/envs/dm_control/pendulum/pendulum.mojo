@@ -11,7 +11,7 @@ list. `DMPendulumConfig` now implements `custom_extract_obs_gpu`,
 docs/DM_CONTROL_GPU_TRAINING_G10.md.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from .pendulum_xml import DMPendulumModel
 from .pendulum_config import DMPendulumConfig

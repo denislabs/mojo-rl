@@ -31,12 +31,12 @@ def apple_sgemm_accum[
     N: Int,
     K: Int,
     alpha: Float32,
-    A: UnsafePointer[Float32, ImmutAnyOrigin],
+    A: Pointer[Float32, ImmutAnyOrigin],
     lda: Int,
-    B: UnsafePointer[Float32, ImmutAnyOrigin],
+    B: Pointer[Float32, ImmutAnyOrigin],
     ldb: Int,
     beta: Float32,
-    C: UnsafePointer[Float32, MutAnyOrigin],
+    C: Pointer[Float32, MutAnyOrigin],
     ldc: Int,
 ) raises:
     """C = alpha * op(A) @ op(B) + beta * C  (row-major fp32).

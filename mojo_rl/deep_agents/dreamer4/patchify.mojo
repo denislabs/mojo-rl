@@ -21,8 +21,8 @@ from mojo_rl.nn.constants import DT
 def downscale_box[
     H_IN: Int, W_IN: Int, H_OUT: Int, W_OUT: Int
 ](
-    src: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """Box-filter downscale of a single H_IN×W_IN grayscale image to
     H_OUT×W_OUT (averages the source pixels covering each output pixel).
@@ -41,16 +41,16 @@ def downscale_box[
             var count: Int = 0
             for sy in range(sy0, sy1):
                 for sx in range(sx0, sx1):
-                    total += Float64(src[sy * W_IN + sx])
+                    total += Float64(src[unsafe_offset=sy * W_IN + sx])
                     count += 1
-            dst[dy * W_OUT + dx] = Scalar[DT](total / Float64(count))
+            dst[unsafe_offset=dy * W_OUT + dx] = Scalar[DT](total / Float64(count))
 
 
 def temporal_patchify[
     BT: Int, C: Int, H: Int, W: Int, PATCH: Int
 ](
-    video: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    patches: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    video: Pointer[Scalar[DT], MutAnyOrigin],
+    patches: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     comptime assert H % PATCH == 0 and W % PATCH == 0, (
         "temporal_patchify: H, W must be divisible by PATCH"
@@ -71,7 +71,7 @@ def temporal_patchify[
                         for kx in range(PATCH):
                             var w = pc * PATCH + kx
                             var dp = c * PATCH * PATCH + ky * PATCH + kx
-                            patches[np_off + dp] = video[
+                            patches[unsafe_offset=np_off + dp] = video[unsafe_offset=
                                 vbase + c * H * W + h * W + w
                             ]
 
@@ -79,8 +79,8 @@ def temporal_patchify[
 def temporal_unpatchify[
     BT: Int, C: Int, H: Int, W: Int, PATCH: Int
 ](
-    patches: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    video: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    patches: Pointer[Scalar[DT], MutAnyOrigin],
+    video: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     comptime assert H % PATCH == 0 and W % PATCH == 0, (
         "temporal_unpatchify: H, W must be divisible by PATCH"
@@ -101,6 +101,6 @@ def temporal_unpatchify[
                         for kx in range(PATCH):
                             var w = pc * PATCH + kx
                             var dp = c * PATCH * PATCH + ky * PATCH + kx
-                            video[vbase + c * H * W + h * W + w] = patches[
+                            video[unsafe_offset=vbase + c * H * W + h * W + w] = patches[unsafe_offset=
                                 np_off + dp
                             ]

@@ -17,8 +17,9 @@ Run:
 """
 
 from mojo_rl.envs.arcade_games.pong import PongEnv
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_true
+from mojo_rl.core.fmt import fit
 
 comptime dt = DType.float32
 comptime SS = PongEnv[DType.float64].STATE_SIZE  # 12
@@ -117,9 +118,9 @@ def main() raises:
             break
         if step < 30 or od > Scalar[dt](1e-3):
             print(
-                String(step)[byte=:4], " | ", action, " | ",
-                String(crew)[byte=:7], " | ", String(hrew[0])[byte=:7],
-                " | ", String(od)[byte=:11], " | ", String(sd)[byte=:11],
+                fit(String(step), 4), " | ", action, " | ",
+                fit(String(crew), 7), " | ", fit(String(hrew[0]), 7),
+                " | ", fit(String(od), 11), " | ", fit(String(sd), 11),
             )
         if od > Scalar[dt](1e-3) and first_diverge < 0:
             first_diverge = step

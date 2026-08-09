@@ -47,7 +47,7 @@ from mojo_rl.nn.constants import DT
 # ──────────────────────────────────────────────────────────────────────
 
 
-struct OwnedLinear[IN: Int, OUT: Int](Movable & ImplicitlyDeletable):
+struct OwnedLinear[IN: Int, OUT: Int](Movable & Deinitable):
     """Tiny linear-bias layer: y[b, j] = sum_k input[b, k] * W[k, j] + b[j].
     Owns its weight + bias + output buffer (List). out_view() returns a
     TileTensor view into the owned buffer."""
@@ -97,14 +97,14 @@ struct OwnedLinear[IN: Int, OUT: Int](Movable & ImplicitlyDeletable):
                     s += input[b, k] * w_p[k * Self.OUT + j]
                 out_p[b * Self.OUT + j] = s
 
-    def out_ptr(ref self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def out_ptr(ref self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """Raw pointer into the owned output buffer. Caller wraps
         in TileTensor with their own layout. The Module-owned buffer
         eliminates the need for a separate scratch declaration on
         the caller side — but the TileTensor wrap stays (Mojo's type
         position can't accept `row_major[...]()`-as-TensorLayout from
         a method body)."""
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        return rebind[Pointer[Scalar[DT], MutAnyOrigin]](
             self.out_buf.unsafe_ptr()
         )
 

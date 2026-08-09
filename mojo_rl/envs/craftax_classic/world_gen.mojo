@@ -73,11 +73,11 @@ def calculate_light_level(timestep: Int, day_length: Int) -> Float32:
 
 @always_inline
 def apply_world_gen_rules(
-    water: UnsafePointer[Float32, MutAnyOrigin],
-    mountain: UnsafePointer[Float32, MutAnyOrigin],
-    path: UnsafePointer[Float32, MutAnyOrigin],
-    tree: UnsafePointer[Float32, MutAnyOrigin],
-    map_out: UnsafePointer[Float32, MutAnyOrigin],
+    water: Pointer[Float32, MutAnyOrigin],
+    mountain: Pointer[Float32, MutAnyOrigin],
+    path: Pointer[Float32, MutAnyOrigin],
+    tree: Pointer[Float32, MutAnyOrigin],
+    map_out: Pointer[Float32, MutAnyOrigin],
     mut rng: PhiloxRandom,
     always_diamond: Bool,
 ) -> Tuple[Int, Int]:
@@ -110,12 +110,12 @@ def apply_world_gen_rules(
                 prox = Float32(1.0)
 
             var i = y * MAP_W + x
-            var w_adj = water[i] + prox - Float32(1.0)
-            var m_adj = mountain[i] + Float32(0.05) + prox - Float32(1.0)
-            var path_x = path[i]
-            var path_y = path[x * MAP_W + y]  # reference uses path.T
-            var w_raw = water[i]
-            var m_raw = mountain[i]
+            var w_adj = water[unsafe_offset=i] + prox - Float32(1.0)
+            var m_adj = mountain[unsafe_offset=i] + Float32(0.05) + prox - Float32(1.0)
+            var path_x = path[unsafe_offset=i]
+            var path_y = path[unsafe_offset=x * MAP_W + y]  # reference uses path.T
+            var w_raw = water[unsafe_offset=i]
+            var m_raw = mountain[unsafe_offset=i]
 
             var b = BLOCK_GRASS
             if w_adj > Float32(0.7):
@@ -134,50 +134,50 @@ def apply_world_gen_rules(
             if m_raw > Float32(0.85) and w_raw > Float32(0.4):
                 b = BLOCK_PATH
 
-            map_out[i] = Float32(b)
+            map_out[unsafe_offset=i] = Float32(b)
 
     # ------------------------------------------------------------------
     # Pass 2: ores. Each stone tile draws independently — same RNG
     # ordering as reference (coal, iron, diamond).
     # ------------------------------------------------------------------
     for i in range(MAP_SIZE):
-        if Int(map_out[i]) == BLOCK_STONE:
+        if Int(map_out[unsafe_offset=i]) == BLOCK_STONE:
             var u = rng.step_uniform()
             if Float32(u[0]) < Float32(0.04):
-                map_out[i] = Float32(BLOCK_COAL)
+                map_out[unsafe_offset=i] = Float32(BLOCK_COAL)
 
     for i in range(MAP_SIZE):
-        if Int(map_out[i]) == BLOCK_STONE:
+        if Int(map_out[unsafe_offset=i]) == BLOCK_STONE:
             var u = rng.step_uniform()
             if Float32(u[0]) < Float32(0.03):
-                map_out[i] = Float32(BLOCK_IRON)
+                map_out[unsafe_offset=i] = Float32(BLOCK_IRON)
 
     for i in range(MAP_SIZE):
-        if Int(map_out[i]) == BLOCK_STONE and mountain[i] > Float32(0.8):
+        if Int(map_out[unsafe_offset=i]) == BLOCK_STONE and mountain[unsafe_offset=i] > Float32(0.8):
             var u = rng.step_uniform()
             if Float32(u[0]) < Float32(0.005):
-                map_out[i] = Float32(BLOCK_DIAMOND)
+                map_out[unsafe_offset=i] = Float32(BLOCK_DIAMOND)
 
     # Trees on grass with sparsity gate.
     for i in range(MAP_SIZE):
-        if Int(map_out[i]) == BLOCK_GRASS and tree[i] > Float32(0.5):
+        if Int(map_out[unsafe_offset=i]) == BLOCK_GRASS and tree[unsafe_offset=i] > Float32(0.5):
             var u = rng.step_uniform()
             if Float32(u[0]) > Float32(0.8):
-                map_out[i] = Float32(BLOCK_TREE)
+                map_out[unsafe_offset=i] = Float32(BLOCK_TREE)
 
     # Lava (overwrites everything inside the lava zone).
     for i in range(MAP_SIZE):
-        if mountain[i] > Float32(0.85) and tree[i] > Float32(0.7):
-            map_out[i] = Float32(BLOCK_LAVA)
+        if mountain[unsafe_offset=i] > Float32(0.85) and tree[unsafe_offset=i] > Float32(0.7):
+            map_out[unsafe_offset=i] = Float32(BLOCK_LAVA)
 
     # Player tile must be grass.
-    map_out[py * MAP_W + px] = Float32(BLOCK_GRASS)
+    map_out[unsafe_offset=py * MAP_W + px] = Float32(BLOCK_GRASS)
 
     # Optional always_diamond: pick a uniform stone tile and overwrite.
     if always_diamond:
         var stone_count = 0
         for i in range(MAP_SIZE):
-            if Int(map_out[i]) == BLOCK_STONE:
+            if Int(map_out[unsafe_offset=i]) == BLOCK_STONE:
                 stone_count += 1
         if stone_count > 0:
             var u = rng.step_uniform()
@@ -186,9 +186,9 @@ def apply_world_gen_rules(
                 k = stone_count - 1
             var seen = 0
             for i in range(MAP_SIZE):
-                if Int(map_out[i]) == BLOCK_STONE:
+                if Int(map_out[unsafe_offset=i]) == BLOCK_STONE:
                     if seen == k:
-                        map_out[i] = Float32(BLOCK_DIAMOND)
+                        map_out[unsafe_offset=i] = Float32(BLOCK_DIAMOND)
                         break
                     seen += 1
 
@@ -198,11 +198,11 @@ def apply_world_gen_rules(
 @always_inline
 def generate_world_inline(
     rng_seed: UInt64,
-    water: UnsafePointer[Float32, MutAnyOrigin],
-    mountain: UnsafePointer[Float32, MutAnyOrigin],
-    path: UnsafePointer[Float32, MutAnyOrigin],
-    tree: UnsafePointer[Float32, MutAnyOrigin],
-    map_out: UnsafePointer[Float32, MutAnyOrigin],
+    water: Pointer[Float32, MutAnyOrigin],
+    mountain: Pointer[Float32, MutAnyOrigin],
+    path: Pointer[Float32, MutAnyOrigin],
+    tree: Pointer[Float32, MutAnyOrigin],
+    map_out: Pointer[Float32, MutAnyOrigin],
     always_diamond: Bool = False,
 ) -> Tuple[Int, Int]:
     """End-to-end world gen: noise + rule application.
@@ -231,7 +231,7 @@ def generate_world_inline(
 
 def generate_world_cpu(
     rng_seed: UInt64,
-    map_out: UnsafePointer[Float32, MutAnyOrigin],
+    map_out: Pointer[Float32, MutAnyOrigin],
     always_diamond: Bool = False,
 ) -> Tuple[Int, Int]:
     """CPU entry point: stack-allocates noise scratch + calls inline core."""

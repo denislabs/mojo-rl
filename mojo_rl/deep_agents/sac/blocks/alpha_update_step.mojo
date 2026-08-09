@@ -9,7 +9,7 @@ it in `state.log_prob_mean`, so this step is target-agnostic host ScalarAdam.
 Holds `target_entropy` as a small hyperparam.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.optimizer.scalar_adam import ScalarAdam
 from ...training.trainer_block import TrainerState
@@ -19,7 +19,7 @@ struct AlphaUpdateStep[
     OBS_: Int,
     ACT_: Int,
     BATCH_: Int,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_

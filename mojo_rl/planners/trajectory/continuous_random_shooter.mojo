@@ -18,7 +18,7 @@ from .continuous_cem import _gauss
 
 
 struct ContinuousRandomShooter[BATCH: Int, ACT_DIM: Int](
-    ImplicitlyDeletable,
+    Deinitable,
     Movable,
 ):
     var horizon: Int
@@ -71,7 +71,7 @@ struct ContinuousRandomShooter[BATCH: Int, ACT_DIM: Int](
     ](
         mut self,
         mut callback: CB,
-        best_plan_out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        best_plan_out: Pointer[Scalar[dtype], MutAnyOrigin],
         verbose: Bool = True,
     ) raises -> Float64:
         var best_overall: Float64 = 1.0e30

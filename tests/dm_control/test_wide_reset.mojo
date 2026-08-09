@@ -59,7 +59,7 @@ comptime NarrowEnv = Phyics3dEnv[
 comptime WideEnv = Phyics3dEnv[DMWalkerModel, WideCfg, DType.float64, False]
 
 
-struct Spread(Movable & ImplicitlyDeletable):
+struct Spread(Movable & Deinitable):
     var lo: Float64
     var hi: Float64
     var mean: Float64

@@ -21,7 +21,7 @@ from mojo_rl.nn.core.metric import LogScalar
 
 
 @fieldwise_init
-struct TD3Metrics(Copyable, Movable, ImplicitlyDeletable):
+struct TD3Metrics(Copyable, Movable, Deinitable):
     var actor_loss:  LogScalar[DT]
     var critic_loss: LogScalar[DT]
     var mean_q:      LogScalar[DT]

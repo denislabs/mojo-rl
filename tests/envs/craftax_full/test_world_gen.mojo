@@ -64,7 +64,7 @@ def check(mut counts: List[Int], name: String, ok: Bool):
 
 @always_inline
 def _count_block(
-    state_ptr: UnsafePointer[Float32, MutAnyOrigin],
+    state_ptr: Pointer[Float32, MutAnyOrigin],
     floor: Int,
     target: Int,
 ) -> Int:
@@ -78,7 +78,7 @@ def _count_block(
 
 @always_inline
 def _count_item(
-    state_ptr: UnsafePointer[Float32, MutAnyOrigin],
+    state_ptr: Pointer[Float32, MutAnyOrigin],
     floor: Int,
     target: Int,
 ) -> Int:

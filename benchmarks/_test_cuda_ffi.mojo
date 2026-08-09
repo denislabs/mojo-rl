@@ -12,7 +12,7 @@ Run with:
     pixi run -e nvidia mojo run -I . benchmarks/_test_cuda_ffi.mojo
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu import thread_idx, block_idx, block_dim
 from std.ffi import OwnedDLHandle, c_int
 from std.memory import alloc
@@ -21,7 +21,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT as dtype
 
 
-comptime CUptr = UnsafePointer[NoneType, MutAnyOrigin]
+comptime CUptr = Pointer[NoneType, MutAnyOrigin]
 
 
 def add_kernel[N: Int](
@@ -62,16 +62,16 @@ def main() raises:
 
     # --- Load all CUDA driver functions we need ---
     var cuStreamCreate = cuda.get_function[
-        def (UnsafePointer[CUptr, MutAnyOrigin], UInt32) -> c_int
+        def (Pointer[CUptr, MutAnyOrigin], UInt32) -> c_int
     ]("cuStreamCreate")
     var cuStreamBeginCapture = cuda.get_function[
         def (CUptr, c_int) -> c_int
     ]("cuStreamBeginCapture")
     var cuStreamEndCapture = cuda.get_function[
-        def (CUptr, UnsafePointer[CUptr, MutAnyOrigin]) -> c_int
+        def (CUptr, Pointer[CUptr, MutAnyOrigin]) -> c_int
     ]("cuStreamEndCapture")
     var cuGraphInstantiate = cuda.get_function[
-        def (UnsafePointer[CUptr, MutAnyOrigin], CUptr, UInt64) -> c_int
+        def (Pointer[CUptr, MutAnyOrigin], CUptr, UInt64) -> c_int
     ]("cuGraphInstantiate")
     var cuGraphLaunch = cuda.get_function[
         def (CUptr, CUptr) -> c_int
@@ -90,19 +90,19 @@ def main() raises:
     # cuGraphGetNodes(graph, nodes_ptr, numNodes_ptr) -> CUresult
     # When nodes_ptr is null, just fills numNodes with the count
     var cuGraphGetNodes = cuda.get_function[
-        def (CUptr, CUptr, UnsafePointer[UInt64, MutAnyOrigin]) -> c_int
+        def (CUptr, CUptr, Pointer[UInt64, MutAnyOrigin]) -> c_int
     ]("cuGraphGetNodes")
 
     # Diagnostic: query capture status of a stream
     # cuStreamIsCapturing(stream, captureStatus_ptr) -> CUresult
     var cuStreamIsCapturing = cuda.get_function[
-        def (CUptr, UnsafePointer[c_int, MutAnyOrigin]) -> c_int
+        def (CUptr, Pointer[c_int, MutAnyOrigin]) -> c_int
     ]("cuStreamIsCapturing")
 
     # Diagnostic: get capture info (CUDA 10.1+)
     # cuStreamGetCaptureInfo(stream, captureStatus_ptr, id_ptr) -> CUresult
     var cuStreamGetCaptureInfo = cuda.get_function[
-        def (CUptr, UnsafePointer[c_int, MutAnyOrigin], UnsafePointer[UInt64, MutAnyOrigin]) -> c_int
+        def (CUptr, Pointer[c_int, MutAnyOrigin], Pointer[UInt64, MutAnyOrigin]) -> c_int
     ]("cuStreamGetCaptureInfo")
 
     # --- Buffers ---

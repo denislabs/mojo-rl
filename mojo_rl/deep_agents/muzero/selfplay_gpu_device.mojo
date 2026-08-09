@@ -34,7 +34,7 @@ handles a remainder round; the GPU one does not) — asserted at compile time.
 from std.math import exp, log
 from std.memory import alloc
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -60,9 +60,9 @@ from ..zero.sequence_replay_mcts import MCTSSequenceReplay
 from ..zero.temperature import visit_temperature
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Raw scratch for optional unroll outputs (loss_parts) + diag host buffers
-    — function-local, the unroll's optional-output params are Optional[UnsafePointer]."""
+    — function-local, the unroll's optional-output params are Optional[Pointer]."""
     return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
@@ -76,16 +76,16 @@ def _mz_emit_train_diag[
     d_obs: DeviceBuffer[DT],
     d_z: DeviceBuffer[DT],
     d_pred: DeviceBuffer[DT],
-    h_pred: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    h_pred: Pointer[Scalar[DT], MutAnyOrigin],
     t_obs0: List[Scalar[DT]],
     t_pol: List[Scalar[DT]],
     t_val: List[Scalar[DT]],
-    l_parts: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    l_parts: Pointer[Scalar[DT], MutAnyOrigin],
     v_min: Scalar[DT],
     v_max: Scalar[DT],
     last_loss: Float64,
     step: Int,
-    logger: UnsafePointer[L, MutAnyOrigin],
+    logger: Pointer[L, MutAnyOrigin],
 ) raises:
     """Re-forward the root prediction on device, D2H, and emit the MuZero
     per-batch metric set (loss + policy/value/reward split + head-fit diagnostics)
@@ -109,9 +109,9 @@ def _mz_emit_train_diag[
     var dn = List[String]()
     var dv = List[Float64]()
     dn.append(String("loss")); dv.append(last_loss)
-    dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
-    dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
-    dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
+    dn.append(String("loss_policy")); dv.append(Float64(l_parts[unsafe_offset=0]))
+    dn.append(String("loss_value")); dv.append(Float64(l_parts[unsafe_offset=1]))
+    dn.append(String("loss_reward")); dv.append(Float64(l_parts[unsafe_offset=2]))
     append_mz_train_diagnostics[ACT, BINS, B](
         h_pred, t_pol, t_val, v_min, v_max, dn, dv
     )
@@ -171,7 +171,7 @@ def run_muzero_selfplay_gpu_device[
     eval_episodes: Int = 5,
     diag_every: Int = 0,
     report_every: Int = 0,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
 ) raises -> Float64:
     comptime assert NUM_SIMS % BATCH_SIMS == 0, (
@@ -479,7 +479,7 @@ def run_muzero_selfplay_gpu_device[
             rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
-    l_parts.free(); h_diag_pred.free()
+    l_parts.unsafe_free(); h_diag_pred.unsafe_free()
     return last_loss
 
 
@@ -525,7 +525,7 @@ def run_muzero_gumbel_selfplay_gpu[
     eval_episodes: Int = 5,
     diag_every: Int = 0,
     report_every: Int = 0,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
 ) raises -> Float64:
     """Gumbel MuZero: same loop as `run_muzero_selfplay_gpu_device` but the
@@ -820,5 +820,5 @@ def run_muzero_gumbel_selfplay_gpu[
             rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
-    l_parts.free(); h_diag_pred.free()
+    l_parts.unsafe_free(); h_diag_pred.unsafe_free()
     return last_loss

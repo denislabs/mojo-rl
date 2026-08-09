@@ -179,7 +179,7 @@ struct TrajectoryStoreWriter(Movable):
     ](
         mut self,
         name: String,
-        buf: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        buf: Pointer[Scalar[dtype], MutAnyOrigin],
         n_rows: Int,
     ) raises:
         """Append `n_rows` rows to one column.
@@ -246,14 +246,14 @@ struct TrajectoryStoreWriter(Movable):
         var lb = alloc[Scalar[DType.int64]](n_ep).as_unsafe_any_origin()
         var ob = alloc[Scalar[DType.int64]](n_ep).as_unsafe_any_origin()
         for i in range(n_ep):
-            lb[i] = self._ep_len[i]
-            ob[i] = self._ep_offset[i]
+            lb[unsafe_offset=i] = self._ep_len[i]
+            ob[unsafe_offset=i] = self._ep_offset[i]
         var dl = self._file.create[DType.int64](String(EP_LEN_DATASET), 1, 4096, 0)
         dl.append[DType.int64](lb, n_ep)
         var do = self._file.create[DType.int64](String(EP_OFFSET_DATASET), 1, 4096, 0)
         do.append[DType.int64](ob, n_ep)
-        lb.free()
-        ob.free()
+        lb.unsafe_free()
+        ob.unsafe_free()
 
         # ── manifest ───────────────────────────────────────────────────
         var m = Manifest()
@@ -271,12 +271,12 @@ struct TrajectoryStoreWriter(Movable):
         var nbytes = len(tbytes)
         var mb = alloc[Scalar[DType.uint8]](nbytes).as_unsafe_any_origin()
         for i in range(nbytes):
-            mb[i] = Scalar[DType.uint8](tbytes[i])
+            mb[unsafe_offset=i] = Scalar[DType.uint8](tbytes[i])
         var dm = self._file.create[DType.uint8](
             String(MANIFEST_DATASET), 1, 4096, 0
         )
         dm.append[DType.uint8](mb, nbytes)
-        mb.free()
+        mb.unsafe_free()
 
         self._file.flush()
         self._closed = True
@@ -332,8 +332,8 @@ struct TrajectoryStore(Movable):
         ds.read_all[DType.uint8](buf)
         var text = String()
         for i in range(n):
-            text += chr(Int(buf[i]))
-        buf.free()
+            text += chr(Int(buf[unsafe_offset=i]))
+        buf.unsafe_free()
         return parse_manifest(text)
 
     def _infer_manifest(self, names: List[String]) raises -> Manifest:
@@ -391,14 +391,14 @@ struct TrajectoryStore(Movable):
             var b = alloc[Scalar[DType.int64]](n).as_unsafe_any_origin()
             ds.read_all[DType.int64](b)
             for i in range(n):
-                out.append(b[i])
-            b.free()
+                out.append(b[unsafe_offset=i])
+            b.unsafe_free()
         elif ds.elem_size == 4:
             var b = alloc[Scalar[DType.int32]](n).as_unsafe_any_origin()
             ds.read_all[DType.int32](b)
             for i in range(n):
-                out.append(Int64(b[i]))
-            b.free()
+                out.append(Int64(b[unsafe_offset=i]))
+            b.unsafe_free()
         else:
             raise Error(
                 "data: '" + name + "' has " + String(ds.elem_size)
@@ -439,7 +439,7 @@ struct TrajectoryStore(Movable):
         name: String,
         start: Int,
         end: Int,
-        buf: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        buf: Pointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         """Contiguous slab `[start, end)` of one column into `buf`.
 

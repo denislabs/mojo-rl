@@ -14,7 +14,7 @@ contribution while preserving any prior accumulation. Net result is identical to
 legacy's `vjp[mode="input_only"]`.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from ..core.initializer import Initializer

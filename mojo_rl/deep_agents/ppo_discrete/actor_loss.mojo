@@ -18,7 +18,7 @@ not an ACT_DIM-wide continuous sample. `forward_backward` returns the mean
 per-batch loss for logging.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module

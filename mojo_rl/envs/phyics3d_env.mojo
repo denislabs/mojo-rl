@@ -28,7 +28,7 @@ Scope (full parity with the legacy CPU env):
 from std.collections import InlineArray
 from std.memory import alloc
 from std.random import random_float64
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.env_traits import BoxContinuousActionEnv, RenderableEnv
 from mojo_rl.core.obs_state import ObsState
@@ -164,7 +164,7 @@ struct Phyics3dEnv[
     # Renderer (optional; RenderableEnv). Reads the fields FK products
     # (`self.d.xpos`/`xquat`), which the fields step refreshes every frame.
     var _renderer: Optional[
-        UnsafePointer[ModelRenderer[Self.MODEL_DEF], MutUntrackedOrigin]
+        Pointer[ModelRenderer[Self.MODEL_DEF], MutUntrackedOrigin]
     ]
     var _renderer_initialized: Bool
     # Owned device context: the model-record tensors upload to it once at build
@@ -658,7 +658,7 @@ struct Phyics3dEnv[
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
 
     def detach_renderer(mut self) raises -> Optional[RendererHandoff]:
@@ -675,7 +675,7 @@ struct Phyics3dEnv[
         if not self._renderer_initialized:
             return None
         var h = self._renderer.value()[].detach()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
         return h^
 

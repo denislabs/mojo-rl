@@ -14,7 +14,7 @@ from std.python import Python, PythonObject
 from std.math import abs
 from std.collections import InlineArray
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,

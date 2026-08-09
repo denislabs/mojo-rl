@@ -218,8 +218,8 @@ def main() raises:
             var elapsed = Float64(perf_counter_ns() - t0) / 1e9
             print(
                 "    ", epoch, "  ",
-                String(last_loss)[byte=:11], "  ",
-                String(elapsed)[byte=:7],
+                fit(String(last_loss), 11), "  ",
+                fit(String(elapsed), 7),
             )
 
     var total_t = Float64(perf_counter_ns() - t0) / 1e9
@@ -275,6 +275,7 @@ def main() raises:
         for b in range(BATCH):
             x_in_buf[b * AUG_DIM + HIDDEN] = actions_buf[b * SEQ_LEN + (t - 1)]
 
+from mojo_rl.core.fmt import fit
         # 1) Predict without settle: z_pred = block_0(x_in); s_pred = block_1(z_pred).
         NET.block_types[0].predict[BATCH, dtype](x_in, params_b0, z_pred, a_z_pred)
         NET.block_types[1].predict[BATCH, dtype](z_pred, params_b1, s_pred, a_s_pred)

@@ -17,7 +17,7 @@ Read flow:
     buf.free()
 """
 
-from std.memory import alloc, UnsafePointer
+from std.memory import alloc, Pointer
 
 from . import c_int, HDF5_PLUGIN_PATH
 from .h5_types import (
@@ -52,14 +52,14 @@ from .h5t import (
 
 
 @always_inline
-def _null_ptr[T: AnyType, O: Origin]() -> UnsafePointer[T, O]:
-    """NULL UnsafePointer for HDF5 FFI "optional output" args.
+def _null_ptr[T: AnyType, O: Origin]() -> Pointer[T, O]:
+    """NULL Pointer for HDF5 FFI "optional output" args.
 
     Mojo nightly's comptime `unsafe_from_address=0` literal is rejected;
     the runtime-Int overload still accepts 0 to produce a real NULL.
     """
     var addr: Int = 0
-    return UnsafePointer[T, O](unsafe_from_address=addr)
+    return Pointer[T, O](unsafe_from_address=addr)
 
 
 struct H5File(Movable):
@@ -82,7 +82,7 @@ struct H5File(Movable):
                 "H5Fopen failed: hid_t=" + String(Int(self.file_id))
             )
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         if self.file_id > 0:
             try:
                 _ = h5f_close(self.file_id)
@@ -152,7 +152,7 @@ struct H5Dataset(Movable):
 
         var dims_buf = alloc[hsize_t](ndims)
         for i in range(ndims):
-            dims_buf[i] = 0
+            dims_buf[unsafe_offset=i] = 0
         # HDF5 maxdims arg can be NULL ("don't return maxdims").
         _ = h5s_get_simple_extent_dims(
             space_id,
@@ -163,8 +163,8 @@ struct H5Dataset(Movable):
 
         var dims = List[hsize_t](capacity=ndims)
         for i in range(ndims):
-            dims.append(dims_buf[i])
-        dims_buf.free()
+            dims.append(dims_buf[unsafe_offset=i])
+        dims_buf.unsafe_free()
         self.dims = dims^
 
         # ── dtype (file → native) ──────────────────────────────────────
@@ -186,7 +186,7 @@ struct H5Dataset(Movable):
         else:
             self.signedness = H5T_SGN_NONE
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         if self.dset_id > 0:
             try:
                 _ = h5d_close(self.dset_id)
@@ -215,7 +215,7 @@ struct H5Dataset(Movable):
 
     def read_all[
         dtype: DType
-    ](self, buf: UnsafePointer[Scalar[dtype], MutAnyOrigin]) raises:
+    ](self, buf: Pointer[Scalar[dtype], MutAnyOrigin]) raises:
         """Read the entire dataset into ``buf``.
 
         ``buf`` must point to at least ``n_bytes()`` bytes. ``dtype`` must
@@ -228,7 +228,7 @@ struct H5Dataset(Movable):
             H5S_ALL,
             H5S_ALL,
             H5P_DEFAULT,
-            buf.bitcast[NoneType](),
+            buf.unsafe_bitcast[NoneType](),
         )
         if ret < 0:
             raise Error("H5Dread failed: ret=" + String(Int(ret)))
@@ -239,7 +239,7 @@ struct H5Dataset(Movable):
         self,
         start: Int,
         end: Int,
-        buf: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        buf: Pointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         """Read rows ``[start:end, :, :, ...]`` into ``buf``.
 
@@ -259,23 +259,23 @@ struct H5Dataset(Movable):
         # start_arr = [start, 0, 0, ...]; count_arr = [end-start, dim1, dim2, ...]
         var start_arr = alloc[hsize_t](ndims)
         var count_arr = alloc[hsize_t](ndims)
-        start_arr[0] = hsize_t(start)
-        count_arr[0] = hsize_t(end - start)
+        start_arr[unsafe_offset=0] = hsize_t(start)
+        count_arr[unsafe_offset=0] = hsize_t(end - start)
         for i in range(1, ndims):
-            start_arr[i] = 0
-            count_arr[i] = self.dims[i]
+            start_arr[unsafe_offset=i] = 0
+            count_arr[unsafe_offset=i] = self.dims[i]
 
         var file_space = h5d_get_space(self.dset_id)
         if file_space < 0:
-            start_arr.free()
-            count_arr.free()
+            start_arr.unsafe_free()
+            count_arr.unsafe_free()
             raise Error("H5Dget_space failed")
 
         var stride_unit = alloc[hsize_t](ndims)
         var block_unit = alloc[hsize_t](ndims)
         for i in range(ndims):
-            stride_unit[i] = hsize_t(1)  # contiguous
-            block_unit[i] = hsize_t(1)   # unit blocks
+            stride_unit[unsafe_offset=i] = hsize_t(1)  # contiguous
+            block_unit[unsafe_offset=i] = hsize_t(1)   # unit blocks
         var sel_ret = h5s_select_hyperslab(
             file_space,
             H5S_SELECT_SET,
@@ -284,12 +284,12 @@ struct H5Dataset(Movable):
             count_arr,
             block_unit,
         )
-        stride_unit.free()
-        block_unit.free()
+        stride_unit.unsafe_free()
+        block_unit.unsafe_free()
         if sel_ret < 0:
             _ = h5s_close(file_space)
-            start_arr.free()
-            count_arr.free()
+            start_arr.unsafe_free()
+            count_arr.unsafe_free()
             raise Error("H5Sselect_hyperslab failed")
 
         var mem_space = h5s_create_simple(
@@ -299,8 +299,8 @@ struct H5Dataset(Movable):
         )
         if mem_space < 0:
             _ = h5s_close(file_space)
-            start_arr.free()
-            count_arr.free()
+            start_arr.unsafe_free()
+            count_arr.unsafe_free()
             raise Error("H5Screate_simple failed")
 
         var read_ret = h5d_read(
@@ -309,12 +309,12 @@ struct H5Dataset(Movable):
             mem_space,
             file_space,
             H5P_DEFAULT,
-            buf.bitcast[NoneType](),
+            buf.unsafe_bitcast[NoneType](),
         )
         _ = h5s_close(mem_space)
         _ = h5s_close(file_space)
-        start_arr.free()
-        count_arr.free()
+        start_arr.unsafe_free()
+        count_arr.unsafe_free()
 
         if read_ret < 0:
             raise Error("H5Dread failed: ret=" + String(Int(read_ret)))
@@ -326,7 +326,7 @@ struct H5Dataset(Movable):
         start: Int,
         count: Int,
         stride: Int,
-        buf: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        buf: Pointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         """Strided dim-0 read: select rows ``[start, start+stride, …,
         start+(count-1)*stride]`` and write them contiguously into ``buf``.
@@ -357,28 +357,28 @@ struct H5Dataset(Movable):
         var stride_arr = alloc[hsize_t](ndims)
         var count_arr = alloc[hsize_t](ndims)
         var block_arr = alloc[hsize_t](ndims)
-        start_arr[0] = hsize_t(start)
-        stride_arr[0] = hsize_t(stride)
-        count_arr[0] = hsize_t(count)
-        block_arr[0] = 1
+        start_arr[unsafe_offset=0] = hsize_t(start)
+        stride_arr[unsafe_offset=0] = hsize_t(stride)
+        count_arr[unsafe_offset=0] = hsize_t(count)
+        block_arr[unsafe_offset=0] = 1
         # Memory-space shape: (count, dim1, dim2, ...) — the contiguous
         # destination layout after deinterleaving.
         var mem_dims = alloc[hsize_t](ndims)
-        mem_dims[0] = hsize_t(count)
+        mem_dims[unsafe_offset=0] = hsize_t(count)
         for i in range(1, ndims):
-            start_arr[i] = 0
-            stride_arr[i] = 1
-            count_arr[i] = 1
-            block_arr[i] = self.dims[i]
-            mem_dims[i] = self.dims[i]
+            start_arr[unsafe_offset=i] = 0
+            stride_arr[unsafe_offset=i] = 1
+            count_arr[unsafe_offset=i] = 1
+            block_arr[unsafe_offset=i] = self.dims[i]
+            mem_dims[unsafe_offset=i] = self.dims[i]
 
         var file_space = h5d_get_space(self.dset_id)
         if file_space < 0:
-            start_arr.free()
-            stride_arr.free()
-            count_arr.free()
-            block_arr.free()
-            mem_dims.free()
+            start_arr.unsafe_free()
+            stride_arr.unsafe_free()
+            count_arr.unsafe_free()
+            block_arr.unsafe_free()
+            mem_dims.unsafe_free()
             raise Error("H5Dget_space failed")
 
         var sel_ret = h5s_select_hyperslab(
@@ -391,11 +391,11 @@ struct H5Dataset(Movable):
         )
         if sel_ret < 0:
             _ = h5s_close(file_space)
-            start_arr.free()
-            stride_arr.free()
-            count_arr.free()
-            block_arr.free()
-            mem_dims.free()
+            start_arr.unsafe_free()
+            stride_arr.unsafe_free()
+            count_arr.unsafe_free()
+            block_arr.unsafe_free()
+            mem_dims.unsafe_free()
             raise Error("H5Sselect_hyperslab (strided) failed")
 
         var mem_space = h5s_create_simple(
@@ -405,11 +405,11 @@ struct H5Dataset(Movable):
         )
         if mem_space < 0:
             _ = h5s_close(file_space)
-            start_arr.free()
-            stride_arr.free()
-            count_arr.free()
-            block_arr.free()
-            mem_dims.free()
+            start_arr.unsafe_free()
+            stride_arr.unsafe_free()
+            count_arr.unsafe_free()
+            block_arr.unsafe_free()
+            mem_dims.unsafe_free()
             raise Error("H5Screate_simple failed")
 
         var read_ret = h5d_read(
@@ -418,15 +418,15 @@ struct H5Dataset(Movable):
             mem_space,
             file_space,
             H5P_DEFAULT,
-            buf.bitcast[NoneType](),
+            buf.unsafe_bitcast[NoneType](),
         )
         _ = h5s_close(mem_space)
         _ = h5s_close(file_space)
-        start_arr.free()
-        stride_arr.free()
-        count_arr.free()
-        block_arr.free()
-        mem_dims.free()
+        start_arr.unsafe_free()
+        stride_arr.unsafe_free()
+        count_arr.unsafe_free()
+        block_arr.unsafe_free()
+        mem_dims.unsafe_free()
 
         if read_ret < 0:
             raise Error("H5Dread (strided) failed: ret=" + String(Int(read_ret)))

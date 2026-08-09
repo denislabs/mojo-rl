@@ -21,7 +21,7 @@ Usage:
 For GPU: `PPODiscreteAgent["gpu", ...](ctx=ctx, ...)`.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
@@ -49,7 +49,7 @@ struct PPODiscreteAgent[
     MINIBATCH: Int,
     N_EPOCHS: Int,
     N_ENVS: Int = 1,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     """Thin facade over `PPODiscreteTrainer` + the discrete on-policy
     driver."""
 
@@ -102,7 +102,7 @@ struct PPODiscreteAgent[
         *,
         print_every: Int = 1_000,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
@@ -134,7 +134,7 @@ struct PPODiscreteAgent[
         rng_seed: UInt64 = UInt64(42),
         print_every: Int = 5_000,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
@@ -211,7 +211,7 @@ struct PPODiscreteAgent[
         L: Logger = NoOpLogger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> PPOMetrics:
         """Drain trainer accumulators into a PPOMetrics bundle."""

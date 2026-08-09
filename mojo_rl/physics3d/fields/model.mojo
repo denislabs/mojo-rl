@@ -22,7 +22,7 @@ Dtype note: all-`DTYPE` (int columns like `BODY_IDX_PARENT` are float-encoded).
 Honest `int32` record tensors are a later cleanup.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl

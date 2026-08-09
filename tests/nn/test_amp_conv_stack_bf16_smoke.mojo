@@ -12,7 +12,7 @@ Run:
 """
 
 from std.testing import assert_true, assert_equal
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.call import call_forward, call_vjp

@@ -185,8 +185,8 @@ def _ensure_extracted() raises -> String:
 
 def _load_batch(
     path: String,
-    dst_images: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    dst_labels: UnsafePointer[Int32, MutAnyOrigin],
+    dst_images: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    dst_labels: Pointer[Int32, MutAnyOrigin],
     offset_samples: Int,
 ) raises:
     """Read one .bin file (10000 samples) into dst_images/dst_labels at
@@ -210,19 +210,19 @@ def _load_batch(
     comptime CHAN_SZ = 32 * 32
     for i in range(_SAMPLES_PER_FILE):
         var base = i * _BYTES_PER_SAMPLE
-        dst_labels[offset_samples + i] = Int32(Int(bytes[base]))
+        dst_labels[unsafe_offset=offset_samples + i] = Int32(Int(bytes[base]))
         var img_dst = (offset_samples + i) * (3 * 32 * 32)
         # Channel R (first 1024 bytes)
         for p in range(CHAN_SZ):
             var raw = Scalar[DType.float32](Int(bytes[base + 1 + p])) * inv255
-            dst_images[img_dst + p] = (raw - _MEAN_R) * inv_std_r
+            dst_images[unsafe_offset=img_dst + p] = (raw - _MEAN_R) * inv_std_r
         # Channel G (next 1024 bytes)
         for p in range(CHAN_SZ):
             var raw = (
                 Scalar[DType.float32](Int(bytes[base + 1 + CHAN_SZ + p]))
                 * inv255
             )
-            dst_images[img_dst + CHAN_SZ + p] = (raw - _MEAN_G) * inv_std_g
+            dst_images[unsafe_offset=img_dst + CHAN_SZ + p] = (raw - _MEAN_G) * inv_std_g
         # Channel B (last 1024 bytes)
         for p in range(CHAN_SZ):
             var raw = (
@@ -231,7 +231,7 @@ def _load_batch(
                 )
                 * inv255
             )
-            dst_images[img_dst + 2 * CHAN_SZ + p] = (
+            dst_images[unsafe_offset=img_dst + 2 * CHAN_SZ + p] = (
                 (raw - _MEAN_B) * inv_std_b
             )
 

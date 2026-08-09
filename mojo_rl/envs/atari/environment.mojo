@@ -40,7 +40,7 @@ struct AtariEnvironment(Movable):
     """
 
     var state: AtariState
-    var rom: UnsafePointer[UInt8, MutUntrackedOrigin]
+    var rom: Pointer[UInt8, MutUntrackedOrigin]
     var rom_size: Int
     var frame_skip: Int
     var max_frames: Int  # Max frames per episode (0 = unlimited)
@@ -55,7 +55,7 @@ struct AtariEnvironment(Movable):
 
     def __init__(
         out self,
-        rom: UnsafePointer[UInt8, MutAnyOrigin],
+        rom: Pointer[UInt8, MutAnyOrigin],
         rom_size: Int,
         frame_skip: Int = 4,
         max_frames: Int = 108000,  # Standard ALE default (~30 min at 60fps)
@@ -314,7 +314,7 @@ trait GameDef:
 struct RomData(Movable):
     """Holds ROM data loaded from a file."""
 
-    var data: Optional[UnsafePointer[UInt8, MutUntrackedOrigin]]
+    var data: Optional[Pointer[UInt8, MutUntrackedOrigin]]
     var size: Int
 
     def __init__(out self):
@@ -340,6 +340,6 @@ def load_rom(path: String) raises -> RomData:
         result.data = alloc[UInt8](result.size)
         var raw = result.data.value()
         for i in range(result.size):
-            raw[i] = content[i]
+            raw[unsafe_offset=i] = content[i]
 
     return result^

@@ -28,7 +28,7 @@ Run:
     pixi run mojo run -I . tests/deep_agents/test_fb_trainer_gpu_parity.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import abs, sqrt
 from std.random import random_float64, seed
 from std.testing import assert_true

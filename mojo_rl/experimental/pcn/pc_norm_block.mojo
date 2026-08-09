@@ -24,7 +24,7 @@ CPU naive + GPU (per-row reduction kernels). Conforms to PCBlockTrait.
 
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import sqrt
 
 from .pc_constants import TPB
@@ -59,7 +59,7 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
     ) raises:
         """Init: γ = 1 (INIT unused — RMSNorm scale, not a weight)."""
         for i in range(Self.dim):
-            params.ptr[i] = Scalar[dtype](1)
+            params.ptr[unsafe_offset=i] = Scalar[dtype](1)
 
     # =========================================================================
     # predict:  μ = γ ⊙ (x_below / r);  a_below cached = x_below (raw)
@@ -249,12 +249,12 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
         var off = b * Self.dim
         var ss: Float64 = 0.0
         for i in range(Self.dim):
-            var v = Float64(x_below.ptr[off + i])
+            var v = Float64(x_below.ptr[unsafe_offset=off + i])
             ss += v * v
-            a_below.ptr[off + i] = x_below.ptr[off + i]
+            a_below.ptr[unsafe_offset=off + i] = x_below.ptr[unsafe_offset=off + i]
         var inv_r = Scalar[dtype](1.0 / sqrt(ss / Float64(Self.dim) + _RMS_EPS))
         for i in range(Self.dim):
-            mu.ptr[off + i] = params.ptr[i] * x_below.ptr[off + i] * inv_r
+            mu.ptr[unsafe_offset=off + i] = params.ptr[unsafe_offset=i] * x_below.ptr[unsafe_offset=off + i] * inv_r
 
     @staticmethod
     def _eps_kernel[
@@ -273,7 +273,7 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
-        eps.ptr[idx] = x_above.ptr[idx] - mu.ptr[idx]
+        eps.ptr[unsafe_offset=idx] = x_above.ptr[unsafe_offset=idx] - mu.ptr[unsafe_offset=idx]
 
     @staticmethod
     def _pull_back_kernel[
@@ -291,7 +291,7 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
         if idx >= BATCH * Self.dim:
             return
         var col = idx % Self.dim
-        z_below.ptr[idx] = eps_above.ptr[idx] * params.ptr[col]
+        z_below.ptr[unsafe_offset=idx] = eps_above.ptr[unsafe_offset=idx] * params.ptr[unsafe_offset=col]
 
     @staticmethod
     def _act_deriv_kernel[
@@ -313,21 +313,21 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
         var off = b * Self.dim
         var ss: Float64 = 0.0
         for i in range(Self.dim):
-            var v = Float64(x_below.ptr[off + i])
+            var v = Float64(x_below.ptr[unsafe_offset=off + i])
             ss += v * v
         var inv_r = 1.0 / sqrt(ss / Float64(Self.dim) + _RMS_EPS)
         var s: Float64 = 0.0
         for i in range(Self.dim):
             s += (
-                Float64(z_in.ptr[off + i])
-                * Float64(x_below.ptr[off + i])
+                Float64(z_in.ptr[unsafe_offset=off + i])
+                * Float64(x_below.ptr[unsafe_offset=off + i])
                 * inv_r
             )
         var s_over_d = s / Float64(Self.dim)
         for i in range(Self.dim):
-            var n_i = Float64(x_below.ptr[off + i]) * inv_r
-            z_out.ptr[off + i] = Scalar[dtype](
-                inv_r * (Float64(z_in.ptr[off + i]) - n_i * s_over_d)
+            var n_i = Float64(x_below.ptr[unsafe_offset=off + i]) * inv_r
+            z_out.ptr[unsafe_offset=off + i] = Scalar[dtype](
+                inv_r * (Float64(z_in.ptr[unsafe_offset=off + i]) - n_i * s_over_d)
             )
 
     @staticmethod
@@ -345,9 +345,9 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
         var off = b * Self.dim
         var ss: Float64 = 0.0
         for i in range(Self.dim):
-            var v = Float64(a_below.ptr[off + i])
+            var v = Float64(a_below.ptr[unsafe_offset=off + i])
             ss += v * v
-        inv_r_buf.ptr[b] = Scalar[dtype](
+        inv_r_buf.ptr[unsafe_offset=b] = Scalar[dtype](
             1.0 / sqrt(ss / Float64(Self.dim) + _RMS_EPS)
         )
 
@@ -370,9 +370,9 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
         var acc: Float64 = 0.0
         for b in range(BATCH):
             var off = b * Self.dim
-            var n_i = Float64(a_below.ptr[off + i]) * Float64(inv_r_buf.ptr[b])
-            acc += Float64(eps_above.ptr[off + i]) * n_i
-        grads.ptr[i] = Scalar[dtype](-acc)
+            var n_i = Float64(a_below.ptr[unsafe_offset=off + i]) * Float64(inv_r_buf.ptr[unsafe_offset=b])
+            acc += Float64(eps_above.ptr[unsafe_offset=off + i]) * n_i
+        grads.ptr[unsafe_offset=i] = Scalar[dtype](-acc)
 
     # ── GPU dispatchers ──────────────────────────────────────────────────────
 

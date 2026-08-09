@@ -19,7 +19,7 @@ one signature — collect over `src`, apply over `dst`, threaded by the Dict.
 """
 
 from std.collections import Dict
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -131,12 +131,12 @@ def apply_graph_params[
 struct _DevSnapshotVisitor(Movable, ParamVisitor):
     """name → source param DEVICE pointer (GPU-only; no host download)."""
 
-    var d: Dict[String, UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var d: Dict[String, Pointer[Scalar[DT], MutUntrackedOrigin]]
 
     def __init__(out self):
-        self.d = Dict[String, UnsafePointer[Scalar[DT], MutUntrackedOrigin]]()
+        self.d = Dict[String, Pointer[Scalar[DT], MutUntrackedOrigin]]()
 
-    def take(deinit self) -> Dict[String, UnsafePointer[Scalar[DT], MutUntrackedOrigin]]:
+    def take(deinit self) -> Dict[String, Pointer[Scalar[DT], MutUntrackedOrigin]]:
         return self.d^
 
     def visit[target: StaticString, N: Int](
@@ -151,7 +151,7 @@ struct _DevSnapshotVisitor(Movable, ParamVisitor):
     ) raises:
         comptime if target == "gpu":
             self.d[name] = rebind[
-                UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+                Pointer[Scalar[DT], MutUntrackedOrigin]
             ](param.dev.value().unsafe_ptr())
 
 
@@ -159,12 +159,12 @@ struct _DevImportVisitor(ParamVisitor):
     """For each dst param whose name is in the snapshot, device→device copy the
     source buffer in (no host upload). Names with no match are left as-is."""
 
-    var d: Dict[String, UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var d: Dict[String, Pointer[Scalar[DT], MutUntrackedOrigin]]
     var ctx: DeviceContext
 
     def __init__(
         out self,
-        var d: Dict[String, UnsafePointer[Scalar[DT], MutUntrackedOrigin]],
+        var d: Dict[String, Pointer[Scalar[DT], MutUntrackedOrigin]],
         ctx: DeviceContext,
     ):
         self.d = d^
@@ -191,7 +191,7 @@ def collect_graph_params_device[
 ](
     mut src: ComputeGraph[*DECLS],
     ctx: Optional[DeviceContext] = None,
-) raises -> Dict[String, UnsafePointer[Scalar[DT], MutUntrackedOrigin]]:
+) raises -> Dict[String, Pointer[Scalar[DT], MutUntrackedOrigin]]:
     """Snapshot each `src` param's DEVICE pointer by name (GPU; no download)."""
     var v = _DevSnapshotVisitor()
     src.for_each_param[target](v, ctx)
@@ -202,7 +202,7 @@ def apply_graph_params_device[
     target: StaticString, *DECLS: GraphDecl
 ](
     mut dst: ComputeGraph[*DECLS],
-    var snap: Dict[String, UnsafePointer[Scalar[DT], MutUntrackedOrigin]],
+    var snap: Dict[String, Pointer[Scalar[DT], MutUntrackedOrigin]],
     ctx: DeviceContext,
 ) raises:
     """Device→device copy each shared-name source buffer into `dst` (GPU; no

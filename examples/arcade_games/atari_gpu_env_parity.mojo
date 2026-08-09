@@ -14,7 +14,7 @@ Requires roms/pong.bin.
 from std.sys import has_accelerator
 from std.sys.info import size_of
 from std.math import abs
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.training.atari_gpu_env import AtariGpuBatchedEnv
@@ -35,9 +35,9 @@ comptime MAX_FRAMES = 108_000
 def cpu_step(
     mut st: AtariState,
     action_idx: Int,
-    rom: UnsafePointer[UInt8, MutAnyOrigin],
+    rom: Pointer[UInt8, MutAnyOrigin],
     rom_size: Int,
-    op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin],
+    op_table: Pointer[OpcodeEntry, MutAnyOrigin],
 ) -> Tuple[Int, Int]:
     """One env step on CPU (mirrors the GPU step kernel). Returns (reward, done)."""
     var ale = PongDef.map_action(action_idx)

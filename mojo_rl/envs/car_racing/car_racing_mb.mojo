@@ -124,7 +124,7 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False, PIX_RES: Int = 84](
     var reset_seed: UInt64
 
     # Renderer (RenderableEnv); transient — never copied/moved.
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     # CPU pixel-observation frame stack — lets a pixel-trained CNN agent be
@@ -202,7 +202,7 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False, PIX_RES: Int = 84](
         return LayoutTensor[
             dtype, Layout.row_major(1, Self.STATE_SIZE), MutAnyOrigin
         ](
-            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+            rebind[Pointer[Scalar[dtype], MutAnyOrigin]](
                 self.state_buffer.unsafe_ptr()
             )
         )
@@ -213,7 +213,7 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False, PIX_RES: Int = 84](
         return LayoutTensor[
             dtype, Layout.row_major(Self.MAX_TILES, TILE_DATA_SIZE), MutAnyOrigin
         ](
-            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+            rebind[Pointer[Scalar[dtype], MutAnyOrigin]](
                 self.tiles_buffer.unsafe_ptr()
             )
         )
@@ -540,18 +540,18 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False, PIX_RES: Int = 84](
     def step_obs_into(
         mut self,
         action: Int,
-        obs_out: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin],
+        obs_out: Pointer[Scalar[Self.dtype], MutAnyOrigin],
     ) -> Tuple[Scalar[Self.dtype], Bool]:
         """Allocation-light step: write the observation straight into obs_out."""
         comptime if Self.PIXEL_OBS:
             var r = self.step_action_pixel(action)
             for d in range(Self.PIX_DIM):
-                obs_out[d] = r[0][d]
+                obs_out[unsafe_offset=d] = r[0][d]
             return (Scalar[Self.dtype](r[1]), r[2])
         else:
             var r = self.step_action(action)
             for d in range(Self.OBS_DIM):
-                obs_out[d] = r[0][d]
+                obs_out[unsafe_offset=d] = r[0][d]
             return (Scalar[Self.dtype](r[1]), r[2])
 
     # --- remaining Env-trait surface (BatchedCpuDiscreteEnv uses the obs
@@ -670,7 +670,7 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False, PIX_RES: Int = 84](
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:

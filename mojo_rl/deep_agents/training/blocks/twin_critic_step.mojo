@@ -8,7 +8,7 @@ STORAGE migration (Stage 5): passes the storage `TrainerState` minibatch Tensors
 PER weight / TD-residual views are built via `state.mb_*.lt[target, layout]`.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
@@ -24,7 +24,7 @@ struct TwinCriticStep[
     ACT_: Int,
     BATCH_: Int,
     CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_

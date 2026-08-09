@@ -34,7 +34,7 @@ Run: pixi run mojo run -I . tests/dm_control/test_quadruped_vs_dm_control.mojo
 from std.testing import assert_true, TestSuite
 from std.python import Python, PythonObject
 from std.math import abs, sqrt, inf
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.envs.dm_control.quadruped import (
     DMQuadrupedWalk,

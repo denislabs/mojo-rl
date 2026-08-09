@@ -52,7 +52,7 @@ from std.testing import assert_true, TestSuite
 from std.python import Python
 from std.math import abs
 from std.collections import InlineArray
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator

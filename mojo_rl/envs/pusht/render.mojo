@@ -17,7 +17,7 @@ Pixel layout: `[BATCH, H, W, 3]` as Float32 in [0, 255].
 from std.math import cos, sin
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.physics2d import dtype, TPB
 from mojo_rl.physics2d.constants import IDX_X, IDX_Y, IDX_ANGLE

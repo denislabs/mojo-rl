@@ -18,8 +18,8 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.zero.nstep_targets import compute_nstep_value_targets
 
 
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
+def _alloc(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
 
 
 def main() raises:

@@ -9,7 +9,7 @@ arrays of the per-param value/grad pointer ADDRESSES (+ sizes + moment offsets)
 and let a 2-D grid (`grid.y = param index`) update every param in one launch.
 
 The open question this probes: can a Mojo GPU kernel load a pointer address from
-a device buffer (`UInt64`) and dereference it (`UnsafePointer(unsafe_from_address=…)`)?
+a device buffer (`UInt64`) and dereference it (`Pointer(unsafe_from_address=…)`)?
 - On CUDA this is just generic-address pointer arithmetic and should work.
 - On Apple Metal it may not (Metal dislikes raw pointer arrays in buffers).
 
@@ -27,7 +27,7 @@ This file wires NOTHING into Adam — it's a throwaway probe. Run:
 from std.math import sqrt
 from std.sys import has_nvidia_gpu_accelerator
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT, TPB
 
@@ -40,12 +40,12 @@ from mojo_rl.nn.constants import DT, TPB
 # the moment slab is contiguous (one m / one v buffer) addressed by offset[p].
 # ──────────────────────────────────────────────────────────────────────
 def _grouped_adam_kernel(
-    param_addrs: UnsafePointer[UInt64, MutAnyOrigin],
-    grad_addrs: UnsafePointer[UInt64, MutAnyOrigin],
-    sizes: UnsafePointer[Int32, MutAnyOrigin],
-    moment_offs: UnsafePointer[Int32, MutAnyOrigin],
-    m_base: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    v_base: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    param_addrs: Pointer[UInt64, MutAnyOrigin],
+    grad_addrs: Pointer[UInt64, MutAnyOrigin],
+    sizes: Pointer[Int32, MutAnyOrigin],
+    moment_offs: Pointer[Int32, MutAnyOrigin],
+    m_base: Pointer[Scalar[DT], MutAnyOrigin],
+    v_base: Pointer[Scalar[DT], MutAnyOrigin],
     bc1: Scalar[DT],
     bc2: Scalar[DT],
     lr: Scalar[DT],
@@ -57,10 +57,10 @@ def _grouped_adam_kernel(
     var e = Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
     if e < Int(sizes[p]):
         # Reconstruct the per-param pointers from their addresses.
-        var param = UnsafePointer[Scalar[DT], MutAnyOrigin](
+        var param = Pointer[Scalar[DT], MutAnyOrigin](
             unsafe_from_address=Int(param_addrs[p])
         )
-        var grad = UnsafePointer[Scalar[DT], MutAnyOrigin](
+        var grad = Pointer[Scalar[DT], MutAnyOrigin](
             unsafe_from_address=Int(grad_addrs[p])
         )
         var mo = Int(moment_offs[p]) + e
@@ -173,16 +173,16 @@ def main() raises:
         var blocks_x = (max_n + TPB - 1) // TPB
 
         ctx.enqueue_function[_grouped_adam_kernel](
-            rebind[UnsafePointer[UInt64, MutAnyOrigin]](
+            rebind[Pointer[UInt64, MutAnyOrigin]](
                 param_addr_dev.unsafe_ptr()
             ),
-            rebind[UnsafePointer[UInt64, MutAnyOrigin]](
+            rebind[Pointer[UInt64, MutAnyOrigin]](
                 grad_addr_dev.unsafe_ptr()
             ),
-            rebind[UnsafePointer[Int32, MutAnyOrigin]](sizes_dev.unsafe_ptr()),
-            rebind[UnsafePointer[Int32, MutAnyOrigin]](moff_dev.unsafe_ptr()),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](m_buf.unsafe_ptr()),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](v_buf.unsafe_ptr()),
+            rebind[Pointer[Int32, MutAnyOrigin]](sizes_dev.unsafe_ptr()),
+            rebind[Pointer[Int32, MutAnyOrigin]](moff_dev.unsafe_ptr()),
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](m_buf.unsafe_ptr()),
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](v_buf.unsafe_ptr()),
             bc1, bc2, LR, B1, B2, EPS,
             grid_dim=(blocks_x, n_params),
             block_dim=(TPB,),

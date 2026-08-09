@@ -38,8 +38,8 @@ never passes raw device pointers to kernels). The kernel BODY math is identical.
 """
 
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext
 from std.math import sin, cos, sqrt, log, exp, pi
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor, TileTensor, row_major
@@ -139,7 +139,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
     # ── random projection (deterministic from seed) ───────────────────
     @staticmethod
     def _generate_a_cpu(
-        seed: UInt64, a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+        seed: UInt64, a_ptr: Pointer[Scalar[DT], MutAnyOrigin]
     ):
         for d in range(Self.DIM):
             for p in range(Self.NUM_PROJ):
@@ -151,16 +151,16 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
                 if u1 < 1e-10:
                     u1 = 1e-10
                 var g = sqrt(-2.0 * log(u1)) * cos(2.0 * pi * u2)
-                a_ptr[idx] = Scalar[DT](g)
+                a_ptr[unsafe_offset=idx] = Scalar[DT](g)
         for p in range(Self.NUM_PROJ):
             var sum_sq = Float64(0.0)
             for d in range(Self.DIM):
-                var v = Float64(a_ptr[d * Self.NUM_PROJ + p])
+                var v = Float64(a_ptr[unsafe_offset=d * Self.NUM_PROJ + p])
                 sum_sq += v * v
             var norm = sqrt(sum_sq + 1e-12)
             for d in range(Self.DIM):
-                var v = Float64(a_ptr[d * Self.NUM_PROJ + p])
-                a_ptr[d * Self.NUM_PROJ + p] = Scalar[DT](v / norm)
+                var v = Float64(a_ptr[unsafe_offset=d * Self.NUM_PROJ + p])
+                a_ptr[unsafe_offset=d * Self.NUM_PROJ + p] = Scalar[DT](v / norm)
 
     # ── factory ───────────────────────────────────────────────────────
     @staticmethod
@@ -216,7 +216,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             var a = InlineArray[Scalar[DT], D * P](uninitialized=True)
             Self._generate_a_cpu(
                 seed,
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                     a.unsafe_ptr()
                 ),
             )
@@ -349,7 +349,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             var a = InlineArray[Scalar[DT], D * P](uninitialized=True)
             Self._generate_a_cpu(
                 seed,
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                     a.unsafe_ptr()
                 ),
             )

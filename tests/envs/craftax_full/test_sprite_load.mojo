@@ -39,7 +39,7 @@ from mojo_rl.envs.craftax_full.constants import (
 
 
 def _slot_has_content(
-    sheet: UnsafePointer[UInt8, MutAnyOrigin], slot: Int
+    sheet: Pointer[UInt8, MutAnyOrigin], slot: Int
 ) -> Bool:
     """Return True if any pixel in `slot` has alpha > 0."""
     for y in range(SPRITE_SIZE):

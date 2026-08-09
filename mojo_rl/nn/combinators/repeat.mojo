@@ -8,7 +8,7 @@ just stored in a `List[Inner]` indexed by the comptime stage. Requires
 per-application caches); pass the default `shared=False` (independent copies).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from ..core.initializer import Initializer

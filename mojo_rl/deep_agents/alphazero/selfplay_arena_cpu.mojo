@@ -12,7 +12,7 @@ the periodic eval/print/flush, mirroring the GPU driver's telemetry.
 """
 
 from mojo_rl.nn.core.ptr import untracked
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -51,7 +51,7 @@ def _xs(s: UInt64) -> UInt64:
 
 
 def _eval_both_colors_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & Deinitable,
     NET: Module,
     OPP: CPUEvaluator,
     N_GAMES: Int,
@@ -73,7 +73,7 @@ def _eval_both_colors_cpu[
 
 
 def run_alphazero_selfplay_arena_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & Deinitable,
     NET: Module,
     AUG: BoardAugmenter,
     NUM_SIMS: Int,
@@ -105,7 +105,7 @@ def run_alphazero_selfplay_arena_cpu[
     do_eval: Bool = True,
     do_eval2: Bool = False,
     verbose: Bool = True,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     max_grad_norm: Float64 = 0.0, # global grad-norm clip (0 = off ≡ plain Adam)
     weight_decay: Float64 = 0.0,  # decoupled (AdamW) weight decay (0 = off)
 ) raises -> ArenaRunResult:
@@ -175,8 +175,8 @@ def run_alphazero_selfplay_arena_cpu[
         # 1. MCTS search from the live env state, with the BEST net.
         net.set_attr["training"](Scalar[DT](0.0))
         env.save_env_state(root_save)
-        var env_ptr = UnsafePointer(to=env)
-        var net_ptr = UnsafePointer(to=net)
+        var env_ptr = Pointer(to=env)
+        var net_ptr = Pointer(to=net)
         var s_rep = AZRepCPU[ENV, OBS](env=untracked(env_ptr))
         var s_dyn = AZDynCPU[ENV, ACT](env=untracked(env_ptr))
         var s_pred = AZPredCPU[ENV, OBS, ACT, NET](

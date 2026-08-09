@@ -33,7 +33,7 @@ container + bit-identity vs twin `OnlineTargetPair` can be validated
 in isolation.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Initializer
@@ -43,7 +43,7 @@ from ..core.online_target_pair import OnlineTargetPair
 
 
 struct CriticEnsemble[CRITIC: Module, N: Int](
-    Movable & ImplicitlyDeletable,
+    Movable & Deinitable,
 ):
     var pairs: List[OnlineTargetPair[Self.CRITIC]]
     var opts: List[Adam]

@@ -151,8 +151,8 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
         mut self,
         B: Int,
         T: Int,
-        pixels_out: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
-        actions_out: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
+        pixels_out: Pointer[Scalar[DType.uint8], MutAnyOrigin],
+        actions_out: Pointer[Scalar[DType.float32], MutAnyOrigin],
     ) raises:
         """Fill `pixels_out` (uint8 HWC) / `actions_out` (fp32) with B clips.
 
@@ -214,10 +214,10 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
                 var base = actions_out + b * act_per_sample
                 for j in range(act_per_sample):
                     var d = j % adim
-                    var v = Float64(base[j])
+                    var v = Float64(base[unsafe_offset=j])
                     if isnan(v):
-                        base[j] = Scalar[DType.float32](0.0)
+                        base[unsafe_offset=j] = Scalar[DType.float32](0.0)
                     else:
-                        base[j] = Scalar[DType.float32](
+                        base[unsafe_offset=j] = Scalar[DType.float32](
                             (v - self.act_mean[d]) / self.act_std[d]
                         )

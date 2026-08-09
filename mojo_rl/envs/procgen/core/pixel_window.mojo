@@ -64,7 +64,7 @@ struct PixelWindow:
             c_int(src_w),
             c_int(src_h),
             PixelFormat.PIXELFORMAT_RGBA32,
-            rebind[UnsafePointer[NoneType, MutAnyOrigin]](rgba.unsafe_ptr()),
+            rebind[Pointer[NoneType, MutAnyOrigin]](rgba.unsafe_ptr()),
             c_int(src_w * 4),
         )
         var texture = create_texture_from_surface(
@@ -84,13 +84,13 @@ struct PixelWindow:
         render_texture(
             self.renderer.sdl_renderer.value(),
             texture,
-            rebind[UnsafePointer[FRect, ImmutAnyOrigin]](src),
-            rebind[UnsafePointer[FRect, ImmutAnyOrigin]](dst),
+            rebind[Pointer[FRect, ImmutAnyOrigin]](src),
+            rebind[Pointer[FRect, ImmutAnyOrigin]](dst),
         )
 
         destroy_texture(texture)
         destroy_surface(surface)
-        src.free()
-        dst.free()
+        src.unsafe_free()
+        dst.unsafe_free()
         _ = rgba  # keep pixel data alive through surface use
         self.renderer.flip()

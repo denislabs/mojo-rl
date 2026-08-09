@@ -14,7 +14,7 @@ Each mode runs ROLLOUT_LEN * 4 env-steps (4 K-epoch updates), asserts
 finite mean_return + that at least one K-epoch update fired.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import isnan, isinf
 from std.random import seed
 from std.testing import assert_true

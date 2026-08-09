@@ -15,7 +15,7 @@ typed_view gone; the trunk+heads are gated storage combinators so correctness is
 inherited. Walkers recurse into trunk + heads.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module

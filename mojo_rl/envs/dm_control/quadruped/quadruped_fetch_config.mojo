@@ -97,7 +97,7 @@ def _randn_pair() -> InlineArray[Float64, 2]:
     var out = InlineArray[Float64, 2](fill=0.0)
     out[0] = r * cos(2.0 * pi * u2)
     out[1] = r * sin(2.0 * pi * u2)
-    return out
+    return out^
 
 
 @always_inline
@@ -124,7 +124,7 @@ def _world_to_torso[
             + vy * xmat_elem(d, TORSO_BODY_IDX, 1 * 3 + k)
             + vz * xmat_elem(d, TORSO_BODY_IDX, 2 * 3 + k)
         )
-    return out
+    return out^
 
 
 struct DMQuadrupedFetchConfig(Phyics3dEnvConfig):

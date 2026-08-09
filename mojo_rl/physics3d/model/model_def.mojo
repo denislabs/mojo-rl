@@ -14,7 +14,7 @@ from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 from ..fields import Model, Data
 
 # GPU imports
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 

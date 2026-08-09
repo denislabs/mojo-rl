@@ -242,7 +242,7 @@ def _site_transport_gpu[
         o[3] = v3 - (dy * v2 - dz * v1)
         o[4] = v4 - (dz * v0 - dx * v2)
         o[5] = v5 - (dx * v1 - dy * v0)
-    return o
+    return o^
 
 
 @always_inline
@@ -270,7 +270,7 @@ def _site_com_offset_gpu[
         d[k] = rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + k]) - rebind[
             Scalar[DTYPE]
         ](subtree_com[env, root * 3 + k])
-    return d
+    return d^
 
 
 @always_inline
@@ -357,7 +357,7 @@ def site_accelerometer_gpu[
     out[0] = al[0] + (vl[1] * vv[2] - vl[2] * vv[1])
     out[1] = al[1] + (vl[2] * vv[0] - vl[0] * vv[2])
     out[2] = al[2] + (vl[0] * vv[1] - vl[1] * vv[0])
-    return out
+    return out^
 
 
 @always_inline
@@ -426,4 +426,4 @@ def site_force_torque_gpu[
     out[3] = trq[0]
     out[4] = trq[1]
     out[5] = trq[2]
-    return out
+    return out^

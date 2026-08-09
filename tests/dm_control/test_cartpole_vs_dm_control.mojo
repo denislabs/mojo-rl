@@ -39,7 +39,7 @@ from mojo_rl.physics3d.gpu.constants import (
     BODY_IDX_IPOS_X,
     BODY_IDX_IXX,
 )
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 
 comptime EnvDense = DMCartpoleSwingup[DType.float64]

@@ -10,7 +10,7 @@ Run: MODULAR_DEBUG=device-sync-mode pixi run -e nvidia mojo run -I . \
         tests/physics3d/test_humanoid_fields_sync_probe.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import Data, Model

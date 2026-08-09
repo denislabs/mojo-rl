@@ -44,7 +44,7 @@ Run:
     pixi run -e nvidia mojo run -I . examples/humanoid/sac_humanoid_training_gpu.mojo  # NVIDIA GPU
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.random import seed
 from std.time import perf_counter_ns
 
@@ -149,7 +149,7 @@ def main() raises:
         logger.set_config("n_envs", String(N_ENVS))
         logger.set_config("buffer_capacity", String(REPLAY_CAPACITY))
 
-        var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
+        var logger_ptr = Pointer(to=logger).as_unsafe_any_origin()
 
         # ─── Agent + batched GPU env ─────────────────────────────────────
         # `SAC[target, OBS, ACT, BATCH, CAP, HIDDEN]` reads like a
@@ -172,9 +172,9 @@ def main() raises:
         # training env's state or the replay buffer).
         var eval_env = EvalEnvT(ctx)
         # `.as_unsafe_any_origin()` — the facade takes
-        # Optional[UnsafePointer[EE, MutAnyOrigin]]; a tracked-origin
+        # Optional[Pointer[EE, MutAnyOrigin]]; a tracked-origin
         # pointer doesn't convert (same idiom as logger_ptr above).
-        var eval_env_ptr = UnsafePointer(to=eval_env).as_unsafe_any_origin()
+        var eval_env_ptr = Pointer(to=eval_env).as_unsafe_any_origin()
 
         # ─── Single train() call — batched GPU off-policy driver ─────────
         print("Starting GPU training...")

@@ -53,7 +53,7 @@ standalone path.
 
 from std.math import abs
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..joint_types import JNT_FREE, JNT_BALL

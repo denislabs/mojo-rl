@@ -25,7 +25,7 @@ Gymnasium half_cheetah.xml carries `angle="radian"`; this copy dropped it.
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser import parse_xml_full
 from mojo_rl.physics3d.parser.xml_parser import parse_xml_model_data
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,

@@ -77,7 +77,7 @@ struct MetricEntry(Copyable, Movable):
 # =============================================================================
 
 
-trait Logger(Copyable, ImplicitlyDeletable, Movable):
+trait Logger(Copyable, Deinitable, Movable):
     """Interface for training metrics loggers.
 
     All deep RL training loops and agent structs are parameterized on
@@ -465,7 +465,7 @@ struct CompositeLogger[A: Logger, B: Logger](Logger):
     def is_active(self) -> Bool:
         return True
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         _ = self.a^
         _ = self.b^
 

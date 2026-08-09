@@ -22,7 +22,7 @@ Run (NVIDIA):
     pixi run -e nvidia mojo run -I . benchmarks/bench_conv_gemm_shapes_gpu.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.time import perf_counter_ns
 from layout import TileTensor, row_major
 from linalg.matmul import matmul as max_matmul

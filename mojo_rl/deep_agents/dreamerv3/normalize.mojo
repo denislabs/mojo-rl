@@ -25,32 +25,32 @@ from mojo_rl.nn.constants import DT
 
 @always_inline
 def _percentile_linear(
-    sorted_buf: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int, q: Scalar[DT]
+    sorted_buf: Pointer[Scalar[DT], MutAnyOrigin], n: Int, q: Scalar[DT]
 ) -> Scalar[DT]:
     """`jnp.percentile(x, q)` with method='linear' over a pre-sorted buffer.
     virtual index = (q/100)·(n-1); linear interp between neighbours."""
     if n == 1:
-        return sorted_buf[0]
+        return sorted_buf[unsafe_offset=0]
     var idx = (q / Scalar[DT](100.0)) * Scalar[DT](n - 1)
     var lo = Int(idx)
     if lo >= n - 1:
-        return sorted_buf[n - 1]
+        return sorted_buf[unsafe_offset=n - 1]
     var frac = idx - Scalar[DT](lo)
-    return sorted_buf[lo] + frac * (sorted_buf[lo + 1] - sorted_buf[lo])
+    return sorted_buf[unsafe_offset=lo] + frac * (sorted_buf[unsafe_offset=lo + 1] - sorted_buf[unsafe_offset=lo])
 
 
 @always_inline
-def _insertion_sort(buf: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int):
+def _insertion_sort(buf: Pointer[Scalar[DT], MutAnyOrigin], n: Int):
     for i in range(1, n):
-        var key = buf[i]
+        var key = buf[unsafe_offset=i]
         var j = i - 1
-        while j >= 0 and buf[j] > key:
-            buf[j + 1] = buf[j]
+        while j >= 0 and buf[unsafe_offset=j] > key:
+            buf[unsafe_offset=j + 1] = buf[unsafe_offset=j]
             j -= 1
-        buf[j + 1] = key
+        buf[unsafe_offset=j + 1] = key
 
 
-struct PercentileNormalize(Movable & ImplicitlyDeletable):
+struct PercentileNormalize(Movable & Deinitable):
     # impl: "none" | "perc" | "meanstd"
     var impl: String
     var rate: Scalar[DT]
@@ -105,11 +105,11 @@ struct PercentileNormalize(Movable & ImplicitlyDeletable):
         if self.impl == "perc":
             # Sort a scratch copy for percentile reads.
             var tmp = List[Scalar[DT]](length=n, fill=Scalar[DT](0.0))
-            var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            var tp = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                 tmp.unsafe_ptr()
             )
             for i in range(n):
-                tp[i] = x[i]
+                tp[unsafe_offset=i] = x[i]
             _insertion_sort(tp, n)
             var plo = _percentile_linear(tp, n, self.perclo)
             var phi = _percentile_linear(tp, n, self.perchi)

@@ -35,7 +35,7 @@ def generate_perlin_noise_2d[
     H: Int, W: Int, RES_H: Int, RES_W: Int
 ](
     mut rng: PhiloxRandom,
-    out_data: UnsafePointer[Float32, MutAnyOrigin],
+    out_data: Pointer[Float32, MutAnyOrigin],
 ):
     """Generate a single-octave Perlin noise field of shape (H, W).
 
@@ -85,23 +85,23 @@ def generate_perlin_noise_2d[
 
             var n0 = n00 * one_minus_ty + n10 * ty
             var n1 = n01 * one_minus_ty + n11 * ty
-            out_data[y * W + x] = n0 * one_minus_tx + n1 * tx
+            out_data[unsafe_offset=y * W + x] = n0 * one_minus_tx + n1 * tx
 
 
 @always_inline
 def normalize_inplace[
     H: Int, W: Int
-](data: UnsafePointer[Float32, MutAnyOrigin]):
+](data: Pointer[Float32, MutAnyOrigin]):
     """Min–max normalize `data` (length H*W) in place to [0, 1].
 
     Matches reference: `(x - min) / (max - min)`. If max == min, leaves
     values unchanged (degenerate case).
     """
     comptime N: Int = H * W
-    var min_v = data[0]
-    var max_v = data[0]
+    var min_v = data[unsafe_offset=0]
+    var max_v = data[unsafe_offset=0]
     for i in range(1, N):
-        var v = data[i]
+        var v = data[unsafe_offset=i]
         if v < min_v:
             min_v = v
         if v > max_v:
@@ -111,7 +111,7 @@ def normalize_inplace[
         return
     var inv = Float32(1.0) / range_v
     for i in range(N):
-        data[i] = (data[i] - min_v) * inv
+        data[unsafe_offset=i] = (data[unsafe_offset=i] - min_v) * inv
 
 
 @always_inline
@@ -119,7 +119,7 @@ def generate_fractal_noise_2d_normalized[
     H: Int, W: Int, RES_H: Int, RES_W: Int
 ](
     mut rng: PhiloxRandom,
-    out_data: UnsafePointer[Float32, MutAnyOrigin],
+    out_data: Pointer[Float32, MutAnyOrigin],
 ):
     """Single-octave fractal noise (= Perlin) + min–max normalize to [0, 1]."""
     generate_perlin_noise_2d[H, W, RES_H, RES_W](rng, out_data)

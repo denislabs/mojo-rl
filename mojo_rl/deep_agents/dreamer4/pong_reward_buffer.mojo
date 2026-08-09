@@ -189,10 +189,10 @@ struct Dreamer4PongRewardBuffer(Movable):
         done_o: Origin[mut=True],
     ](
         mut self,
-        pix_fp32: UnsafePointer[Scalar[DType.float32], pix_fp32_o],  # [B*T*FRAME]
-        act_onehot: UnsafePointer[Scalar[DType.float32], act_onehot_o],  # [B*T*ACT]
-        rew: UnsafePointer[Scalar[DType.float32], rew_o],         # [B*T]
-        done: UnsafePointer[Scalar[DType.float32], done_o],        # [B*T]
+        pix_fp32: Pointer[Scalar[DType.float32], pix_fp32_o],  # [B*T*FRAME]
+        act_onehot: Pointer[Scalar[DType.float32], act_onehot_o],  # [B*T*ACT]
+        rew: Pointer[Scalar[DType.float32], rew_o],         # [B*T]
+        done: Pointer[Scalar[DType.float32], done_o],        # [B*T]
     ) raises:
         """Sample B contiguous-T windows. Fills, for each (b, t):
           pix_fp32:    fp32 pixels in [0, 1], CHW per frame.
@@ -229,17 +229,17 @@ struct Dreamer4PongRewardBuffer(Movable):
                 var src = (start + t) * PONG_FRAME_BYTES
                 var dst = bt * PONG_FRAME_BYTES
                 for i in range(PONG_FRAME_BYTES):
-                    pix_fp32[dst + i] = (
+                    pix_fp32[unsafe_offset=dst + i] = (
                         Scalar[DType.float32](Float64(self.frames[src + i]))
                         * Scalar[DType.float32](1.0 / 255.0)
                     )
                 var a = Int(self.actions[start + t])
                 for k in range(ACT):
-                    act_onehot[bt * ACT + k] = Scalar[DType.float32](0.0)
+                    act_onehot[unsafe_offset=bt * ACT + k] = Scalar[DType.float32](0.0)
                 if a >= 0 and a < ACT:
-                    act_onehot[bt * ACT + a] = Scalar[DType.float32](1.0)
-                rew[bt] = self.rewards[start + t]
-                done[bt] = Scalar[DType.float32](
+                    act_onehot[unsafe_offset=bt * ACT + a] = Scalar[DType.float32](1.0)
+                rew[unsafe_offset=bt] = self.rewards[start + t]
+                done[unsafe_offset=bt] = Scalar[DType.float32](
                     1.0 if self.dones[start + t] != 0 else 0.0
                 )
 

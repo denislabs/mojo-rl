@@ -98,7 +98,7 @@ def _support_mesh[
     result[0] = pos_x + world_pt[0]
     result[1] = pos_y + world_pt[1]
     result[2] = pos_z + world_pt[2]
-    return result
+    return result^
 
 
 @always_inline
@@ -199,7 +199,7 @@ def _support[
     result[0] = pos_x
     result[1] = pos_y
     result[2] = pos_z
-    return result
+    return result^
 
 
 @always_inline

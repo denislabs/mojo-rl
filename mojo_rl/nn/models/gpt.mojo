@@ -45,7 +45,7 @@ GPTDropTied child tree (for the surgery walks):
 from std.math import sqrt
 from std.memory import Pointer
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
@@ -228,12 +228,12 @@ comptime GPTDropTied[
 
 
 def _scale_kernel(
-    buf: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int, s: Scalar[DT]
+    buf: Pointer[Scalar[DT], MutAnyOrigin], n: Int, s: Scalar[DT]
 ):
     """`buf[i] *= s`. One thread per element."""
     var i = Int(global_idx.x)
     if i < n:
-        buf[i] = buf[i] * s
+        buf[unsafe_offset=i] = buf[unsafe_offset=i] * s
 
 
 def _gpt_scale_weight[target: StaticString, N: Int](

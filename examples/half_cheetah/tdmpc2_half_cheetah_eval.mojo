@@ -18,7 +18,7 @@ strong MPC-off run. Bump MPC_* toward the 512/24/64/6 reference to test budget.
 Run: `pixi run -e nvidia mojo run -I . examples/half_cheetah/tdmpc2_half_cheetah_eval.mojo`
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.tdmpc2.config import TDMPC2

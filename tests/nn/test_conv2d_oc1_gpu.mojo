@@ -22,7 +22,7 @@ Run (GPU env required):
 
 from std.random import seed, random_float64
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT, LAYOUT_NCHW
 from mojo_rl.nn.core.tensor import Tensor

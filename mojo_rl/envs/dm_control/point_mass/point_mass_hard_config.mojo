@@ -232,6 +232,13 @@ struct DMPointMassHardConfig(Phyics3dEnvConfig):
         pairing — the parity test pins it by checking each actuator's comptime
         transmission against its tendon's XML coefs.
         """
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_motor_ctrl_max = materialize[DMPointMassModel._acd.motor_ctrl_max]()
+        var _m_motor_ctrl_min = materialize[DMPointMassModel._acd.motor_ctrl_min]()
+        var _m_motor_gears = materialize[DMPointMassModel._acd.motor_gears]()
+
         for i in range(NV):
             d.qfrc.data[i] = Scalar[DTYPE](0)
 
@@ -240,11 +247,11 @@ struct DMPointMassHardConfig(Phyics3dEnvConfig):
             if a >= len(actions):
                 break
             var ctrl = actions[a]
-            if ctrl > DMPointMassModel._acd.motor_ctrl_max[a]:
-                ctrl = DMPointMassModel._acd.motor_ctrl_max[a]
-            elif ctrl < DMPointMassModel._acd.motor_ctrl_min[a]:
-                ctrl = DMPointMassModel._acd.motor_ctrl_min[a]
-            var gear = DMPointMassModel._acd.motor_gears[a]
+            if ctrl > _m_motor_ctrl_max[a]:
+                ctrl = _m_motor_ctrl_max[a]
+            elif ctrl < _m_motor_ctrl_min[a]:
+                ctrl = _m_motor_ctrl_min[a]
+            var gear = _m_motor_gears[a]
 
             var to = a * MODEL_TENDON_SIZE
             var njnt = Int(m_tendons[to + TENDON_IDX_NUM_JOINTS])

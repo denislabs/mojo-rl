@@ -7,7 +7,7 @@ has 3 unique vertices (simple approach suitable for meshes up to ~1000 triangles
 Auto-generates UV coordinates via box projection (largest face of bounding box).
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from std.math import abs as math_abs
 from .gpu_types import GPUVertex, MeshData
 

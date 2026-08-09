@@ -239,4 +239,4 @@ def site_frame_velocity_gpu[
     out[3] = wl[0]
     out[4] = wl[1]
     out[5] = wl[2]
-    return out
+    return out^

@@ -19,7 +19,7 @@ current weights); the optimizer + replay are session-local (recreated per
 incremental runs.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -49,7 +49,7 @@ from .eval import (
 @fieldwise_init
 struct AlphaZeroAgent[
     TARGET: StaticString,
-    ENV: GPUTwoPlayerDiscreteEnv & TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
+    ENV: GPUTwoPlayerDiscreteEnv & TwoPlayerDiscreteEnv & Saveable & Defaultable & Deinitable,
     NET: Module,
     N_ENVS: Int,
     NUM_SIMS: Int,
@@ -57,7 +57,7 @@ struct AlphaZeroAgent[
     BATCH: Int,
     CAP: Int,
     MAX_TRAJ: Int,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     var ctx: Optional[DeviceContext]
     var net: Self.NET
     var lr: Scalar[DT]
@@ -181,7 +181,7 @@ struct AlphaZeroAgent[
         do_eval: Bool = True,
         do_eval2: Bool = False,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         max_grad_norm: Float64 = 0.0,
         weight_decay: Float64 = 0.0,
         selfplay_open_plies: Int = 2,
@@ -264,7 +264,7 @@ struct AlphaZeroAgent[
         do_eval: Bool = True,
         do_eval2: Bool = False,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         max_grad_norm: Float64 = 0.0,
         weight_decay: Float64 = 0.0,
         eval_open_plies: Int = 0,  # GPU path only (CPU eval is single-line)

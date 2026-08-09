@@ -139,7 +139,7 @@ def geom_xquat_gpu[
         out[1] = gy
         out[2] = gz
         out[3] = gw
-        return out
+        return out^
 
     var q = gpu_quat_mul[DTYPE](
         rebind[Scalar[DTYPE]](xquat[env, body * 4 + 0]),
@@ -152,4 +152,4 @@ def geom_xquat_gpu[
     out[1] = q[1]
     out[2] = q[2]
     out[3] = q[3]
-    return out
+    return out^

@@ -27,8 +27,8 @@ kernels here. No trainable params → inherit the no-op `for_each_param`/
 
 from std.math import exp, log, log1p
 from std.gpu import global_idx, block_idx, thread_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
@@ -252,7 +252,7 @@ struct TwoHotLoss[BINS: Int](Module):
     def _mk_in_dims() -> InlineArray[Int, 2]:
         var d = InlineArray[Int, 2](fill=1)
         d[0] = Self.BINS
-        return d
+        return d^
 
     var bins: Tensor  # [BINS] symexp_twohot grid; host + device
 

@@ -41,7 +41,7 @@ discrete driver with the obs treated as a flat `FRAMES·84·84` vector
 (the same insight Phase 5.2 used for on-policy CNN PPO).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -131,7 +131,7 @@ PPO did on the on-policy side. Used by `DQNCNNConfig`."""
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait DQNConfigT(Copyable, Movable, ImplicitlyDeletable):
+trait DQNConfigT(Copyable, Movable, Deinitable):
     """Compile-time descriptor of a DQN-family algorithm. Bundles the
     deployment target, the replay block, the Q-net, the Double flag, and
     tuned scalar defaults. Conformers are zero-field comptime tags — never

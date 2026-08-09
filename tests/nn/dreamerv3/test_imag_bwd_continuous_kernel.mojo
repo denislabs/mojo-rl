@@ -12,7 +12,7 @@ Run: pixi run -e apple mojo run -I . tests/nn/dreamerv3/test_imag_bwd_continuous
 """
 
 from std.math import abs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_true
 from layout import Layout
 
@@ -37,8 +37,8 @@ comptime LAM = Scalar[DT](0.95)
 comptime INV_IM = Scalar[DT](1.0)
 
 
-def _hp(t: Tensor) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](t.data.unsafe_ptr())
+def _hp(t: Tensor) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](t.data.unsafe_ptr())
 
 
 def main() raises:

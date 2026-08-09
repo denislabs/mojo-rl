@@ -41,7 +41,7 @@ from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT, TPB
@@ -551,9 +551,9 @@ struct DDPGTrainer[
     ) raises:
         self.sample_blk.add(obs, action, reward, next_obs, done, ctx=self.ctx)
 
-    def _tracker_ptr(self) -> UnsafePointer[EpisodeTracker, MutAnyOrigin]:
-        return rebind[UnsafePointer[EpisodeTracker, MutAnyOrigin]](
-            UnsafePointer(to=self.tracker)
+    def _tracker_ptr(self) -> Pointer[EpisodeTracker, MutAnyOrigin]:
+        return rebind[Pointer[EpisodeTracker, MutAnyOrigin]](
+            Pointer(to=self.tracker)
         )
 
     # ─── GPU-batched record surface ────────────────────────────────────
@@ -600,7 +600,7 @@ struct DDPGTrainer[
         L: Logger = NoOpLogger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> DDPGMetrics:
         """Drain accumulators into a DDPGMetrics bundle. The per-batch
@@ -658,7 +658,7 @@ struct DDPGTrainer[
         L: Logger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
         _ = self.flush_metrics[L](logger, step)

@@ -13,7 +13,7 @@ from .pixel_convert import u8_hwc_to_chw_norm
 
 
 struct OfflineWindowBuffer[IMG_DIM: Int, ACT: Int, T: Int](
-    Movable & ImplicitlyDeletable
+    Movable & Deinitable
 ):
     var n_traj: Int
     var traj_len: Int
@@ -58,7 +58,7 @@ struct OfflineWindowBuffer[IMG_DIM: Int, ACT: Int, T: Int](
         C: Int, FH: Int, FW: Int,
     ](
         mut self, traj: Int, t: Int,
-        hwc: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
+        hwc: Pointer[Scalar[DType.uint8], MutAnyOrigin],
     ) raises:
         """Ingest one real `uint8` HWC frame at `(traj, t)`, converting to
         CHW/÷255 fp32 in place (host path of `u8_hwc_to_chw_norm`). Asserts
@@ -83,8 +83,8 @@ struct OfflineWindowBuffer[IMG_DIM: Int, ACT: Int, T: Int](
 
     def sample_into(
         mut self,
-        pix: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        act: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        pix: Pointer[Scalar[DT], MutAnyOrigin],
+        act: Pointer[Scalar[DT], MutAnyOrigin],
         batch: Int,
     ):
         """Fill pix (batch, T·IMG_DIM) and act (batch, T·ACT) with random
@@ -99,8 +99,8 @@ struct OfflineWindowBuffer[IMG_DIM: Int, ACT: Int, T: Int](
                 )
                 var dst_f = (b * Self.T + t) * Self.IMG_DIM
                 for d in range(Self.IMG_DIM):
-                    pix[dst_f + d] = self.frames[src_f + d]
+                    pix[unsafe_offset=dst_f + d] = self.frames[src_f + d]
                 var src_a = (traj * self.traj_len + start + t) * Self.ACT
                 var dst_a = (b * Self.T + t) * Self.ACT
                 for j in range(Self.ACT):
-                    act[dst_a + j] = self.actions[src_a + j]
+                    act[unsafe_offset=dst_a + j] = self.actions[src_a + j]

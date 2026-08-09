@@ -59,7 +59,7 @@ comptime Trainer = LeWMTrainer[
 comptime Buffer = OfflineWindowBuffer[IMG_DIM, ACT, T]
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 

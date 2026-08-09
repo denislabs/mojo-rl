@@ -21,7 +21,7 @@ in one place at instantiation. `agent.trainer` remains exposed for power
 users.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
@@ -45,7 +45,7 @@ struct DDPGAgent[
     SAMPLE: SampleBlock,
     ACTOR: Module,
     CRITIC: Module,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     """Thin facade over `DDPGTrainer` + off-policy drivers. Comptime
     parameters mirror `DDPGTrainer` one-for-one; dimensions derive from
     `SAMPLE`."""
@@ -121,7 +121,7 @@ struct DDPGAgent[
         print_every: Int = 5_000,
         verbose: Bool = True,
         nstep_gamma: Scalar[DT] = 0.99,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         episode_sync_every: Int = 1,
         checkpoint_path: String = "",
@@ -177,7 +177,7 @@ struct DDPGAgent[
         *,
         print_every: Int = 1_000,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
@@ -267,7 +267,7 @@ struct DDPGAgent[
         L: Logger = NoOpLogger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> DDPGMetrics:
         """Drain trainer accumulators into a DDPGMetrics bundle."""

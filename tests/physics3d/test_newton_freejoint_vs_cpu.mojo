@@ -25,7 +25,7 @@ Run on Apple : pixi run -e apple  mojo run -I . tests/physics3d/test_newton_free
 
 from std.math import abs
 from std.sys import has_nvidia_gpu_accelerator
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.physics3d.fields import (

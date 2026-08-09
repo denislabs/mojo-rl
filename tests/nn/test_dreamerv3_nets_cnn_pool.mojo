@@ -26,7 +26,7 @@ from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
     DreamerEncoderCNNPool,
     DreamerDecoderCNNPool,
 )
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 
 struct _GradAbsSum(ParamVisitor):

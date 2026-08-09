@@ -52,7 +52,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from std.math import abs, sin
 from std.sys import has_nvidia_gpu_accelerator
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl

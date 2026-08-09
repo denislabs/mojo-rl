@@ -15,7 +15,7 @@ stored at the slot the sampler picked (h_slots).
 Run on NVIDIA AND apple; apple is the baseline.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.zero.prioritized_sequence_replay_mcts import (
     PrioritizedMCTSSequenceReplay,

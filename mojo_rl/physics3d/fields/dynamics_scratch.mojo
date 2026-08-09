@@ -13,7 +13,7 @@ is NOT here — it lands with the stateful solver/integrator structs that own
 it (later P2 slices).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl

@@ -108,7 +108,7 @@ def h5d_write(
     mem_space_id: hid_t,
     file_space_id: hid_t,
     dxpl_id: hid_t,
-    buf: UnsafePointer[NoneType, MutAnyOrigin],
+    buf: Pointer[NoneType, MutAnyOrigin],
 ) raises -> herr_t:
     """``H5Dwrite(dset, mem_type, mem_space, file_space, dxpl, const void *buf)``.
 
@@ -124,13 +124,13 @@ def h5d_write(
             hid_t,
             hid_t,
             hid_t,
-            UnsafePointer[NoneType, MutAnyOrigin],
+            Pointer[NoneType, MutAnyOrigin],
         ) thin -> herr_t,
     ]()(dset_id, mem_type_id, mem_space_id, file_space_id, dxpl_id, buf)
 
 
 def h5d_set_extent(
-    dset_id: hid_t, size: UnsafePointer[hsize_t, MutUntrackedOrigin]
+    dset_id: hid_t, size: Pointer[hsize_t, MutUntrackedOrigin]
 ) raises -> herr_t:
     """``H5Dset_extent(hid_t dset_id, const hsize_t size[]) -> herr_t``.
 
@@ -142,7 +142,7 @@ def h5d_set_extent(
     return _get_dylib_function[
         lib,
         "H5Dset_extent",
-        def(hid_t, UnsafePointer[hsize_t, MutUntrackedOrigin]) thin -> herr_t,
+        def(hid_t, Pointer[hsize_t, MutUntrackedOrigin]) thin -> herr_t,
     ]()(dset_id, size)
 
 
@@ -152,7 +152,7 @@ def h5d_read(
     mem_space_id: hid_t,
     file_space_id: hid_t,
     dxpl_id: hid_t,
-    buf: UnsafePointer[NoneType, MutAnyOrigin],
+    buf: Pointer[NoneType, MutAnyOrigin],
 ) raises -> herr_t:
     """``H5Dread(dset, mem_type, mem_space, file_space, dxpl, void *buf)``.
 
@@ -178,6 +178,6 @@ def h5d_read(
             hid_t,
             hid_t,
             hid_t,
-            UnsafePointer[NoneType, MutAnyOrigin],
+            Pointer[NoneType, MutAnyOrigin],
         ) thin -> herr_t,
     ]()(dset_id, mem_type_id, mem_space_id, file_space_id, dxpl_id, buf)

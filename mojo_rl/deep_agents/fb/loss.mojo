@@ -55,7 +55,7 @@ passed in already scaled by `gamma`.
 """
 
 from std.math import abs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
 from mojo_rl.nn.core.tensor import Tensor
@@ -75,7 +75,7 @@ from .kernels import (
 )
 
 
-struct FBLossWorkspace[D: Int, BATCH: Int](Movable & ImplicitlyDeletable):
+struct FBLossWorkspace[D: Int, BATCH: Int](Movable & Deinitable):
     """Persistent scratch for one FB loss evaluation.
 
     The `[BATCH, BATCH]` matrices are the reason this exists. At BATCH = 1024

@@ -341,7 +341,7 @@ def set_scancode_name(scancode: Scancode, var name: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetScancodeName.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetScancodeName",
         def(Scancode, Ptr[c_char, ImmOrigin(origin_of(name))]) thin -> Bool,
@@ -480,7 +480,7 @@ def start_text_input(window: Ptr[Window, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_StartTextInput.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_StartTextInput",
         def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
@@ -627,7 +627,7 @@ def start_text_input_with_properties(
     Docs: https://wiki.libsdl.org/SDL3/SDL_StartTextInputWithProperties.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_StartTextInputWithProperties",
         def(window: Ptr[Window, MutAnyOrigin], props: PropertiesID) thin -> Bool,
@@ -677,7 +677,7 @@ def stop_text_input(window: Ptr[Window, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_StopTextInput.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_StopTextInput",
         def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
@@ -702,7 +702,7 @@ def clear_composition(window: Ptr[Window, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ClearComposition.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ClearComposition",
         def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
@@ -738,7 +738,7 @@ def set_text_input_area(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetTextInputArea.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetTextInputArea",
         def(
@@ -777,7 +777,7 @@ def get_text_input_area(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetTextInputArea.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetTextInputArea",
         def(

@@ -25,7 +25,7 @@ MCTS device buffers stay category-B raw `DeviceBuffer`s. The training batch is
 bridged into storage Tensors by `sample_batch_tensors` + `upload`.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT

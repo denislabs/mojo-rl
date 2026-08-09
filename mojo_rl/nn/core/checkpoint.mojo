@@ -32,7 +32,7 @@ download on save / upload on load.
 """
 
 from std.ffi import external_call
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.memory import unsafe_memcpy
 from std.sys.info import size_of
 

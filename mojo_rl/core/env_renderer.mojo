@@ -16,7 +16,7 @@ Usage:
     # Or call renderer directly with env ref
     renderer.render(env)
 
-Benefits over UnsafePointer approach:
+Benefits over Pointer approach:
 - Type safety at compile time
 - Lifetime tracking (renderer can't outlive env)
 - No raw pointer dereferencing
@@ -39,7 +39,7 @@ trait EnvRenderer:
     The key method is `render_env` which takes a reference to the environment
     state and draws it.
 
-    Using `ref` instead of UnsafePointer provides:
+    Using `ref` instead of Pointer provides:
     - Compile-time lifetime checking
     - No unsafe pointer dereferencing
     - Parametric mutability (can work with mut or immut refs)

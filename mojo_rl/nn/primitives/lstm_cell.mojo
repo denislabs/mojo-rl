@@ -2,7 +2,7 @@
 
 Transformed from legacy `nn.primitives.lstm_cell` (surface-only change): the
 gate math, the CPU BLAS pre-activation path, and the four GPU kernels are
-carried over VERBATIM; only the surface (UnsafePointer/TileTensor view args +
+carried over VERBATIM; only the surface (Pointer/TileTensor view args +
 `TargetStorage` → owning `Tensor` storage cells + `Param`/`make[target,INIT]`)
 changes.
 
@@ -32,8 +32,8 @@ Cache (per timestep, BATCH-major): [i | f | g | o | tanh(c_t)], 5·H wide.
 
 from std.math import exp, tanh
 from std.gpu import thread_idx, block_idx, global_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 
@@ -197,7 +197,7 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
         var d = InlineArray[Int, 2](fill=0)
         d[0] = Self.IN_
         d[1] = 2 * Self.HIDDEN
-        return d
+        return d^
 
     comptime W_IH_SIZE = Self.IN_ * (4 * Self.HIDDEN)
     comptime W_HH_SIZE = Self.HIDDEN * (4 * Self.HIDDEN)

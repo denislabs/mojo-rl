@@ -23,14 +23,14 @@ from mojo_rl.envs.atari.riot import set_action
 from std.memory import alloc
 
 
-def px_on(buf: UnsafePointer[UInt8, MutAnyOrigin], x: Int, y: Int) -> Bool:
+def px_on(buf: Pointer[UInt8, MutAnyOrigin], x: Int, y: Int) -> Bool:
     if x < 0 or x >= FRAME_WIDTH or y < 0 or y >= FRAME_HEIGHT:
         return False
     var off = (y * FRAME_WIDTH + x) * 4
     return (Int(buf[off]) + Int(buf[off + 1]) + Int(buf[off + 2])) > 24
 
 
-def band_lit(buf: UnsafePointer[UInt8, MutAnyOrigin], x0: Int, y: Int) -> Bool:
+def band_lit(buf: Pointer[UInt8, MutAnyOrigin], x0: Int, y: Int) -> Bool:
     var n = 0
     for dx in range(8):
         if px_on(buf, x0 + dx, y):

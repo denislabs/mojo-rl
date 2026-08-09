@@ -86,8 +86,8 @@ def main() raises:
 
         # Read mouse state
         var mouse_buttons = get_mouse_state(
-            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_x_ptr),
-            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_y_ptr),
+            rebind[Pointer[Float32, MutAnyOrigin]](mouse_x_ptr),
+            rebind[Pointer[Float32, MutAnyOrigin]](mouse_y_ptr),
         )
         var cur_mouse_left = (Int(mouse_buttons.value) & 1) != 0
         var cur_mouse_right = (Int(mouse_buttons.value) & 4) != 0

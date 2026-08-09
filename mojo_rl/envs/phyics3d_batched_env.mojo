@@ -34,7 +34,7 @@ fluid-force models (Swimmer) run via the integrators' passive seam
 """
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
@@ -466,7 +466,7 @@ struct Phyics3dBatchedEnv[
             done_t: LayoutTensor[
                 DT, Layout.row_major(Self.N_ENVS), MutAnyOrigin
             ],
-            z_adr: Int,
+            z_adr_arg: Int64,
             # ⚠ The HEIGHT, not the attempt index. Computing
             # `0.01 * Float64(attempt)` inside the kernel emits an
             # i64 -> double conversion, and Metal rejects a module
@@ -474,6 +474,9 @@ struct Phyics3dBatchedEnv[
             # `air.convert.f.f64.s.i64`, which is exactly this.
             z_val: Scalar[DT],
         ):
+            # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+            # a fixed-width `Int64` and re-binds the original name here.
+            var z_adr = Int(z_adr_arg)
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= Self.N_ENVS:
                 return
@@ -517,7 +520,7 @@ struct Phyics3dBatchedEnv[
             c.enqueue_function[raise_kernel](
                 self.d.qpos.lt["gpu", type_of(self.d).L_QPOS](),
                 done_t,
-                zadr,
+                Int64(zadr),
                 Scalar[DT](0.01 * Float64(attempt)),
                 grid_dim=(Self.BLOCKS,),
                 block_dim=(TPB,),
@@ -1149,8 +1152,11 @@ struct Phyics3dBatchedEnv[
                 MutAnyOrigin,
             ],
             geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
-            seed: Int,
+            seed_arg: Int64,
         ):
+            # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+            # a fixed-width `Int64` and re-binds the original name here.
+            var seed = Int(seed_arg)
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= Self.N_ENVS:
                 return
@@ -1172,7 +1178,7 @@ struct Phyics3dBatchedEnv[
             LayoutTensor[DT, Layout.row_major(Self.N_ENVS)](self._reset_mask),
             self.mf.bodies.lt["gpu", type_of(self.mf).L_BODY](),
             self.mf.geoms.lt["gpu", Self.L_GEOMS_HOOK](),
-            Int(rng_seed),
+            Int64(rng_seed),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1575,17 +1581,17 @@ struct Phyics3dBatchedEnv[
 
     # ── pointer accessors ─────────────────────────────────────────────
 
-    def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def obs_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._obs.unsafe_ptr())
 
-    def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def action_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._action.unsafe_ptr())
 
-    def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def reward_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._reward.unsafe_ptr())
 
-    def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def done_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._done.unsafe_ptr())
 
-    def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def terminated_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._terminated.unsafe_ptr())

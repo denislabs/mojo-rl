@@ -4,7 +4,7 @@ output weight (1.1.4.weight)? If policy stays 0 while value moves, the device
 update of the policy head is broken (a transfer/optimizer bug invisible to
 loss-only parity)."""
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.core.tensor import Tensor

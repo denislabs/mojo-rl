@@ -32,7 +32,7 @@ null = uniform replay, bit-identical to pre-PER). Mirrors the storage
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -106,7 +106,7 @@ struct DQNQUpdateBlock[
     BATCH: Int,
     OBS: Int,
     NA: Int,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     var mse_loss: MSELoss[1]
     var gather_cols: GatherCols[Self.NA]
 

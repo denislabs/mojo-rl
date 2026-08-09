@@ -33,7 +33,7 @@ top kernels by total time are the ones to attack first.
 
 from std.random import seed
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
@@ -44,6 +44,7 @@ from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.mbpo import MBPOAgent
 from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
+from mojo_rl.core.fmt import fit
 
 
 # ─── Profiling knobs (cost levers — flip and re-profile to isolate) ────────
@@ -177,7 +178,7 @@ def main() raises:
         var elapsed = Float64(perf_counter_ns() - start) / 1e9
 
         print()
-        print("Time:", String(elapsed)[byte=:6], "s")
+        print("Time:", fit(String(elapsed), 6), "s")
         print("mean ep return (last 100):", agent.mean_return())
         print("episodes:", agent.ep_count())
         print("=== Done ===")

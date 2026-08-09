@@ -115,20 +115,20 @@ struct MCTSNode[ACTION_DIM: Int](ImplicitlyCopyable, Movable):
         self.hidden_state_idx = hidden_idx
 
     def __init__(out self, *, copy: Self):
-        self.visit_count = copy.visit_count
-        self.total_value = copy.total_value
-        self.prior = copy.prior
-        self.reward = copy.reward
-        self.child_idx = copy.child_idx
+        self.visit_count = copy.visit_count.copy()
+        self.total_value = copy.total_value.copy()
+        self.prior = copy.prior.copy()
+        self.reward = copy.reward.copy()
+        self.child_idx = copy.child_idx.copy()
         self.total_visits = copy.total_visits
         self.hidden_state_idx = copy.hidden_state_idx
 
     def __init__(out self, *, deinit move: Self):
-        self.visit_count = move.visit_count
-        self.total_value = move.total_value
-        self.prior = move.prior
-        self.reward = move.reward
-        self.child_idx = move.child_idx
+        self.visit_count = move.visit_count.copy()
+        self.total_value = move.total_value.copy()
+        self.prior = move.prior.copy()
+        self.reward = move.reward.copy()
+        self.child_idx = move.child_idx.copy()
         self.total_visits = move.total_visits
         self.hidden_state_idx = move.hidden_state_idx
 
@@ -174,7 +174,7 @@ def _sample_dirichlet_approx[
         var inv = Float64(1.0) / Float64(ACTION_DIM)
         for a in range(ACTION_DIM):
             out[a] = inv
-    return out
+    return out^
 
 
 @always_inline
@@ -224,7 +224,7 @@ struct GenericCPUMCTS[
     BATCH_SIMS: Int = 1,
     VIRTUAL_LOSS: Int = 3,
     NORMALIZE_Q: Bool = True,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     """CPU MCTS parameterized by the model contract + strategy traits.
 
     Comptime params:
@@ -493,7 +493,7 @@ struct GenericCPUMCTS[
         else:
             for a in range(Self.ACTION_DIM):
                 policy[a] = 1.0 / Float64(Self.ACTION_DIM)
-        return policy
+        return policy^
 
     def root_value(self) -> Float64:
         """Visit-weighted Q at the root after ``search`` completed.

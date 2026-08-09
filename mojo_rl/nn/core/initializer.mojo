@@ -1,7 +1,7 @@
 """Initializer — storage-native weight/bias init (trait + structs).
 
 The storage replacement for legacy `nn.core.initializer`: target-aware and
-`Tensor`-based, with NO `UnsafePointer`. Each initializer fills the param's host
+`Tensor`-based, with NO `Pointer`. Each initializer fills the param's host
 `.data` (host RNG → reproducible) and, on GPU, uploads to the device buffer —
 exactly the legacy "host-fill then upload" recipe, but expressed over `Tensor`
 and parametrised by `target` so one method serves CPU and GPU.
@@ -20,7 +20,7 @@ Structs:
 
 from std.math import sqrt as fsqrt, log, cos, sin
 from std.random import random_float64
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from .tensor import Tensor

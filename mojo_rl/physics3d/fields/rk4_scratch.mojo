@@ -17,7 +17,7 @@ step. Region inventory mirrors the legacy layout exactly:
     C2 (NV)  — stage-3 velocity intermediate: v0 + dt/2 * A[1]
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl

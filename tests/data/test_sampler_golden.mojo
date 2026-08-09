@@ -22,7 +22,7 @@ Run:
     pixi run mojo run -I . tests/data/test_sampler_golden.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.random import seed
 from std.testing import assert_almost_equal, assert_equal, assert_true
 

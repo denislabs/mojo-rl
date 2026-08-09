@@ -4,7 +4,7 @@ Vertex structs, uniform buffer layouts, mesh handles, and conversion helpers
 for the SDL3 GPU-accelerated renderer.
 """
 
-from std.memory import UnsafePointer, unsafe_memcpy
+from std.memory import Pointer, unsafe_memcpy
 from std.math import sqrt, tan, sin, cos
 from mojo_rl.math3d import (
     Vec3 as Vec3Generic,
@@ -305,7 +305,7 @@ struct MeshData(Movable):
 struct MeshHandle(Copyable, Movable):
     """GPU-side mesh reference.
 
-    Mojo nightly removed nullable UnsafePointer, so there is no longer a
+    Mojo nightly removed nullable Pointer, so there is no longer a
     no-arg constructor that produces a sentinel "empty" handle. Callers
     that need a deferred-init field should wrap this in
     ``Optional[MeshHandle]`` and assign once a real mesh is uploaded.

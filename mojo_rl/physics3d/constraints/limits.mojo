@@ -13,7 +13,7 @@ and the finalize); contacts/equality/tendons follow at P4."""
 
 from std.math import abs, pow
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..joint_types import JNT_HINGE, JNT_SLIDE

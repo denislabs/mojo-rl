@@ -23,7 +23,7 @@ contact `condim` column and the metadata counters). Per-field `int32`
 upgrades happen after the code stops round-tripping through slabs.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl

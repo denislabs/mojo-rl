@@ -35,7 +35,7 @@ type and `trainer_from_config[CONFIG](...)` builds it with the config's
 tuned defaults.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT, LAYOUT_NCHW
 from mojo_rl.nn.core.module import Module
@@ -108,7 +108,7 @@ Used by `RainbowCNNConfig`."""
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait C51ConfigT(Copyable, Movable, ImplicitlyDeletable):
+trait C51ConfigT(Copyable, Movable, Deinitable):
     """Compile-time descriptor of a C51-family algorithm. Bundles the
     deployment target, the replay block, the Q-net, the distributional
     flags, and tuned scalar defaults. Conformers are zero-field comptime

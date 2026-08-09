@@ -13,8 +13,8 @@ from .h5_types import herr_t, hid_t, hsize_t
 
 def h5s_create_simple(
     rank: c_int,
-    dims: UnsafePointer[hsize_t, MutUntrackedOrigin],
-    maxdims: UnsafePointer[hsize_t, MutUntrackedOrigin],
+    dims: Pointer[hsize_t, MutUntrackedOrigin],
+    maxdims: Pointer[hsize_t, MutUntrackedOrigin],
 ) raises -> hid_t:
     """``H5Screate_simple(int rank, hsize_t *dims, hsize_t *maxdims) -> hid_t``.
 
@@ -28,8 +28,8 @@ def h5s_create_simple(
         "H5Screate_simple",
         def(
             c_int,
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
         ) thin -> hid_t,
     ]()(rank, dims, maxdims)
 
@@ -53,8 +53,8 @@ def h5s_get_simple_extent_ndims(space_id: hid_t) raises -> c_int:
 
 def h5s_get_simple_extent_dims(
     space_id: hid_t,
-    dims: UnsafePointer[hsize_t, MutUntrackedOrigin],
-    maxdims: UnsafePointer[hsize_t, MutUntrackedOrigin],
+    dims: Pointer[hsize_t, MutUntrackedOrigin],
+    maxdims: Pointer[hsize_t, MutUntrackedOrigin],
 ) raises -> c_int:
     """``H5Sget_simple_extent_dims(hid_t, hsize_t *dims, hsize_t *maxdims)``.
 
@@ -67,8 +67,8 @@ def h5s_get_simple_extent_dims(
         "H5Sget_simple_extent_dims",
         def(
             hid_t,
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
         ) thin -> c_int,
     ]()(space_id, dims, maxdims)
 
@@ -76,10 +76,10 @@ def h5s_get_simple_extent_dims(
 def h5s_select_hyperslab(
     space_id: hid_t,
     op: c_int,
-    start: UnsafePointer[hsize_t, MutUntrackedOrigin],
-    stride: UnsafePointer[hsize_t, MutUntrackedOrigin],
-    count: UnsafePointer[hsize_t, MutUntrackedOrigin],
-    block: UnsafePointer[hsize_t, MutUntrackedOrigin],
+    start: Pointer[hsize_t, MutUntrackedOrigin],
+    stride: Pointer[hsize_t, MutUntrackedOrigin],
+    count: Pointer[hsize_t, MutUntrackedOrigin],
+    block: Pointer[hsize_t, MutUntrackedOrigin],
 ) raises -> herr_t:
     """``H5Sselect_hyperslab(hid_t, H5S_seloper_t op, const hsize_t *start,
     *stride, *count, *block) -> herr_t``.
@@ -93,9 +93,9 @@ def h5s_select_hyperslab(
         def(
             hid_t,
             c_int,
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
-            UnsafePointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
+            Pointer[hsize_t, MutUntrackedOrigin],
         ) thin -> herr_t,
     ]()(space_id, op, start, stride, count, block)

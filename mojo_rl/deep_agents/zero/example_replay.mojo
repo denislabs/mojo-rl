@@ -7,7 +7,7 @@ sibling). Generic over ``TGT`` (the packed-target width = ``ACT + 1`` for AZ),
 so MuZero's per-step storage can reuse it.
 
 Storage-clean: the ring buffers are owned `List`s (RAII — freed by their own
-destructor, no manual `alloc`/`free`, no leak risk, no `UnsafePointer`). Inputs
+destructor, no manual `alloc`/`free`, no leak risk, no `Pointer`). Inputs
 arrive as `List` + offset (safe slices of the caller's trajectory buffer); the
 training batch is produced straight into storage `Tensor`s for the ComputeGraph.
 
@@ -29,7 +29,7 @@ def _xorshift64(s: UInt64) -> UInt64:
 
 
 struct MCTSExampleReplay[OBS: Int, TGT: Int, CAP: Int](
-    Movable, ImplicitlyDeletable, Sized
+    Movable, Deinitable, Sized
 ):
     var obs: List[Scalar[DT]]  # CAP * OBS (owned, RAII)
     var tgt: List[Scalar[DT]]  # CAP * TGT (owned, RAII)

@@ -8,7 +8,7 @@ Run: pixi run -e apple mojo run -I . tests/envs/test_car_racing_discrete_gpu.moj
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from mojo_rl.physics2d import dtype
 from mojo_rl.envs.car_racing import CarRacingDiscrete
 

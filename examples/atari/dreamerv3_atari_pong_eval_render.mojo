@@ -29,7 +29,7 @@ Reads dreamerv3_atari_pong_gpu.ckpt.
 """
 
 from std.memory import alloc, memcpy
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
@@ -86,7 +86,7 @@ comptime EVAL_EPISODES = 5
 comptime MAX_STEPS = 4000  # agent decisions per episode cap (Pong ends on 21 pts)
 
 
-def _argmax(p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int) -> Int:
+def _argmax(p: Pointer[Scalar[DT], MutAnyOrigin], n: Int) -> Int:
     var best = 0
     var bv = p[0]
     for i in range(1, n):

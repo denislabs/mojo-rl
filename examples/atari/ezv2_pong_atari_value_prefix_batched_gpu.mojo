@@ -23,8 +23,8 @@ support 601 over ±300, value-prefix horizon 5).
 Requires the Pong ROM at `roms/pong.bin`.
 """
 
-from std.memory import UnsafePointer
-from std.gpu.host import DeviceContext
+from std.memory import Pointer
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
@@ -70,7 +70,7 @@ comptime VPDyn = EZDynVPNetAtari[ACT, BINS]
 
 
 def _make_envs(
-    rom: UnsafePointer[UInt8, MutAnyOrigin], rom_size: Int
+    rom: Pointer[UInt8, MutAnyOrigin], rom_size: Int
 ) raises -> List[AtariPong]:
     var envs = List[AtariPong]()
     for _ in range(N_ENVS):
@@ -166,10 +166,10 @@ def main() raises:
             eval_every=5000,
             eval_episodes=10,
             eval_horizon=10000,
-            eval_env=UnsafePointer(to=eval_env).as_unsafe_any_origin(),
+            eval_env=Pointer(to=eval_env).as_unsafe_any_origin(),
             diag_every=200,
             report_every=500,
-            logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+            logger=Pointer(to=logger).as_unsafe_any_origin(),
             seed=42,
             verbose=True,
         )

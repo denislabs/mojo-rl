@@ -26,7 +26,7 @@ Run:
     pixi run mojo run -I . tests/nn/test_pairwise_dot.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import abs, sqrt
 from std.testing import assert_true
 

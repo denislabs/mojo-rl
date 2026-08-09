@@ -31,7 +31,7 @@ kernels are new here. Deliberately NOT ported yet (raise on use): fluid
 forces (density/viscosity > 0)."""
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_integrate, quat_normalize
@@ -205,9 +205,12 @@ def _qderiv_damping_kernel[
     joints: LayoutTensor[
         DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
     ],
-    njoint: Int,
+    njoint_arg: Int64,
     qderiv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
 ):
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var njoint = Int(njoint_arg)
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
@@ -392,7 +395,7 @@ struct ImplicitIntegrator[
                 ]
             ](
                 m.joints.lt["gpu", L_JOINT](),
-                njoint,
+                Int64(njoint),
                 self.iscratch.qderiv.lt["gpu", L_M](),
                 grid_dim=(BLOCKS,),
                 block_dim=(IM_TPB,),

@@ -27,7 +27,7 @@ train step (all gather/scatter on-device).
 """
 
 from std.random import random_float64
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.core.logger import Logger, NoOpLogger
@@ -475,11 +475,11 @@ struct DQNTrainer[
         N_ENVS: Int,
     ](
         mut self,
-        prev_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        prev_obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        reward_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        next_obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        done_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         comptime assert (
             Self.train_target == "cpu"
@@ -490,12 +490,12 @@ struct DQNTrainer[
         var nxt_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
         for env_idx in range(N_ENVS):
             for d in range(OBS):
-                obs_lane[d] = prev_obs_ptr[env_idx * OBS + d]
-                nxt_lane[d] = next_obs_ptr[env_idx * OBS + d]
-            act_lane[0] = action_ptr[env_idx]
+                obs_lane[d] = prev_obs_ptr[unsafe_offset=env_idx * OBS + d]
+                nxt_lane[d] = next_obs_ptr[unsafe_offset=env_idx * OBS + d]
+            act_lane[0] = action_ptr[unsafe_offset=env_idx]
             self.sample_blk.add(
-                obs_lane, act_lane, reward_ptr[env_idx], nxt_lane,
-                done_ptr[env_idx], ctx=self.ctx,
+                obs_lane, act_lane, reward_ptr[unsafe_offset=env_idx], nxt_lane,
+                done_ptr[unsafe_offset=env_idx], ctx=self.ctx,
             )
 
     # ─── Action selection ────────────────────────────────────────────
@@ -522,7 +522,7 @@ struct DQNTrainer[
     def _bridge_obs_and_forward[
         N_ENVS: Int
     ](
-        mut self, obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut self, obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Copy the driver's raw obs slab into `_ob_scr`, run the ONLINE Q-net
         forward into `_q_scr`, and (GPU) D2H the Q values into `_q_scr.data`.
@@ -532,7 +532,7 @@ struct DQNTrainer[
         comptime OBS = Self.OBS_DIM
         comptime if Self.train_target == "cpu":
             for i in range(N_ENVS * OBS):
-                self._ob_scr.data[i] = obs_ptr[i]
+                self._ob_scr.data[i] = obs_ptr[unsafe_offset=i]
             call_forward["cpu", N_ENVS](
                 self.pair.online,
                 TensorRefs[Self.Q_NET.ARITY](self._ob_scr),
@@ -568,8 +568,8 @@ struct DQNTrainer[
         N_ENVS: Int,
     ](
         mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
         step_idx: Int,
     ) raises:
         comptime NA = Self.NUM_ACTIONS
@@ -579,7 +579,7 @@ struct DQNTrainer[
         if step_idx < self.learning_starts:
             comptime if Self.train_target == "cpu":
                 for i in range(N_ENVS):
-                    action_ptr[i] = Scalar[DT](
+                    action_ptr[unsafe_offset=i] = Scalar[DT](
                         Int(random_float64() * Float64(NA))
                     )
             else:
@@ -602,11 +602,11 @@ struct DQNTrainer[
             for i in range(N_ENVS):
                 var r = random_float64()
                 if r < Float64(self.epsilon):
-                    action_ptr[i] = Scalar[DT](
+                    action_ptr[unsafe_offset=i] = Scalar[DT](
                         Int(random_float64() * Float64(NA))
                     )
                 else:
-                    action_ptr[i] = Scalar[DT](self._argmax_row(i * NA))
+                    action_ptr[unsafe_offset=i] = Scalar[DT](self._argmax_row(i * NA))
         else:
             var c = self.ctx.value()
             var act_h = self._act_host.unsafe_ptr()
@@ -696,8 +696,8 @@ struct DQNTrainer[
         N_ENVS: Int
     ](
         mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Pure greedy action selection for N_ENVS envs — argmax Q, no epsilon,
         no warmup gate. Writes N_ENVS action indices into `action_ptr`."""
@@ -706,7 +706,7 @@ struct DQNTrainer[
         self._bridge_obs_and_forward[N_ENVS](obs_ptr)
         comptime if Self.train_target == "cpu":
             for i in range(N_ENVS):
-                action_ptr[i] = Scalar[DT](self._argmax_row(i * NA))
+                action_ptr[unsafe_offset=i] = Scalar[DT](self._argmax_row(i * NA))
         else:
             var c = self.ctx.value()
             var act_h = self._act_host.unsafe_ptr()
@@ -771,7 +771,7 @@ struct DQNTrainer[
         L: Logger = NoOpLogger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> DQNMetrics:
         """Drain accumulators into a DQNMetrics bundle. If a logger pointer is
@@ -834,7 +834,7 @@ struct DQNTrainer[
 
     def flush_metrics_through_logger[L: Logger](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
         """Trait-uniform passthrough: drains the DQN metric accumulators

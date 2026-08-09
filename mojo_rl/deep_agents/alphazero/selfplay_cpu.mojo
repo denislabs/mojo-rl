@@ -18,7 +18,7 @@ batch is bridged into storage Tensors by `sample_batch_tensors`.
 """
 
 from mojo_rl.nn.core.ptr import untracked
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -54,7 +54,7 @@ def _xs(s: UInt64) -> UInt64:
 
 
 def run_alphazero_selfplay_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & Deinitable,
     NET: Module,
     NUM_SIMS: Int,
     MAX_NODES: Int,
@@ -126,8 +126,8 @@ def run_alphazero_selfplay_cpu[
         # stay `MutAnyOrigin` and we discard the origin explicitly via
         # `as_unsafe_any_origin()`. A clean fix needs the planner to take `env`
         # ONCE (e.g. thread it through `search`) instead of embedding 3 aliases.
-        var env_ptr = UnsafePointer(to=env)
-        var net_ptr = UnsafePointer(to=net)
+        var env_ptr = Pointer(to=env)
+        var net_ptr = Pointer(to=net)
         var rep = AZRepCPU[ENV, OBS](env=untracked(env_ptr))
         var dyn = AZDynCPU[ENV, ACT](env=untracked(env_ptr))
         var pred = AZPredCPU[ENV, OBS, ACT, NET](

@@ -21,7 +21,7 @@ running stats by orders of magnitude.
 from std.collections import InlineArray
 from std.math import sqrt
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as gpu_dtype
@@ -105,7 +105,7 @@ def apply_obs_norm_kernel[
 
     `mean`/`var_` are read-only here (declared `ImmutAnyOrigin`) so the
     apply path can build their views from a non-`mut` `self` without the
-    deprecated UnsafePointer->MutAnyOrigin laundering.
+    deprecated Pointer->MutAnyOrigin laundering.
     """
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= BATCH * OBS_DIM:

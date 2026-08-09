@@ -18,7 +18,7 @@ Run (NVIDIA): pixi run -e nvidia mojo run -I . examples/car_racing/dreamer4_car_
 
 from std.random import seed
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Xavier

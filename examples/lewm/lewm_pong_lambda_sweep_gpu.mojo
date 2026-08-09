@@ -13,7 +13,7 @@ Run (after collecting the buffer):
   pixi run -e nvidia mojo run -I . examples/lewm/lewm_pong_lambda_sweep_gpu.mojo
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
@@ -66,8 +66,8 @@ comptime Trainer = LeWMTrainer[
 comptime Source = WindowSource[IMG_DIM, ACT, T, B, "gpu"]
 
 
-def _p(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+def _p(b: DeviceBuffer[DT]) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
 
 
 def _run_one(

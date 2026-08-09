@@ -31,17 +31,17 @@ def h5e_set_auto2_off() raises -> herr_t:
     """``H5Eset_auto2(hid_t estack_id, H5E_auto2_t func, void *client_data)``
     with a NULL callback — disables automatic stack printing.
     """
-    # `UnsafePointer` is non-nullable at comptime; the runtime-Int overload
+    # `Pointer` is non-nullable at comptime; the runtime-Int overload
     # still yields a real NULL. Same trick as `reader.mojo::_null_ptr`.
     var addr: Int = 0
-    var null_fn = UnsafePointer[NoneType, MutAnyOrigin](unsafe_from_address=addr)
-    var null_data = UnsafePointer[NoneType, MutAnyOrigin](unsafe_from_address=addr)
+    var null_fn = Pointer[NoneType, MutAnyOrigin](unsafe_from_address=addr)
+    var null_data = Pointer[NoneType, MutAnyOrigin](unsafe_from_address=addr)
     return _get_dylib_function[
         lib,
         "H5Eset_auto2",
         def(
             hid_t,
-            UnsafePointer[NoneType, MutAnyOrigin],
-            UnsafePointer[NoneType, MutAnyOrigin],
+            Pointer[NoneType, MutAnyOrigin],
+            Pointer[NoneType, MutAnyOrigin],
         ) thin -> herr_t,
     ]()(H5E_DEFAULT, null_fn, null_data)

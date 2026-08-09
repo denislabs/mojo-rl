@@ -57,7 +57,7 @@ use the storage Module surface over `TensorRefs`; the loss/grad use the
 storage `kernels.mojo` functions. CPU + GPU.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -81,7 +81,7 @@ struct OFEAuxLossStep[
     OBS_: Int,
     ACT_: Int,
     BATCH_: Int,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_

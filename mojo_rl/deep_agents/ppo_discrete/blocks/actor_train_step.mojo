@@ -9,7 +9,7 @@ for logging.
 Sibling of `ppo/blocks/actor_train_step.mojo`.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -23,7 +23,7 @@ struct PPODiscreteActorTrainStep[
     OBS_: Int,
     MINIBATCH_: Int,
     ACTOR: Module,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime MINIBATCH = Self.MINIBATCH_
     comptime Inner = PPODiscreteActorLoss[Self.ACTOR, Self.MINIBATCH]

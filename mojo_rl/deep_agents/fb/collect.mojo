@@ -39,7 +39,7 @@ from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
 
 
-struct CollectStats(Movable & ImplicitlyDeletable):
+struct CollectStats(Movable & Deinitable):
     var rows: Int
     var episodes: Int
 

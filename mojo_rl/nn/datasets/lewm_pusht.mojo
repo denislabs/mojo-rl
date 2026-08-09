@@ -226,20 +226,20 @@ struct LewmPushTWindow(Movable):
     var proprio_dim: Int
     var state_dim: Int
 
-    var pixels: UnsafePointer[Scalar[DType.uint8], MutUntrackedOrigin]
+    var pixels: Pointer[Scalar[DType.uint8], MutUntrackedOrigin]
     """``[num_steps, H, W, 3]`` — native HDF5 layout; HWC."""
-    var pixels_dense: UnsafePointer[Scalar[DType.uint8], MutUntrackedOrigin]
+    var pixels_dense: Pointer[Scalar[DType.uint8], MutUntrackedOrigin]
     """``[num_steps * frameskip, H, W, 3]`` — scratch buffer for one
     dense HDF5 read. ``H5Sselect_hyperslab`` with ``stride>1`` is
     pathologically slow (~15× a contiguous read of the same chunk),
     so ``sample_window`` reads the dense span into this buffer and
     memcpys every ``frameskip``-th frame into ``pixels``.
     """
-    var action: UnsafePointer[Scalar[DType.float32], MutUntrackedOrigin]
+    var action: Pointer[Scalar[DType.float32], MutUntrackedOrigin]
     """``[num_steps, frameskip * action_dim]`` — dense actions, reshaped."""
-    var proprio: UnsafePointer[Scalar[DType.float32], MutUntrackedOrigin]
+    var proprio: Pointer[Scalar[DType.float32], MutUntrackedOrigin]
     """``[num_steps, proprio_dim]`` — subsampled by frameskip."""
-    var state: UnsafePointer[Scalar[DType.float32], MutUntrackedOrigin]
+    var state: Pointer[Scalar[DType.float32], MutUntrackedOrigin]
     """``[num_steps, state_dim]`` — subsampled by frameskip."""
 
     def __init__(
@@ -273,12 +273,12 @@ struct LewmPushTWindow(Movable):
         ))
         self.state = untracked(alloc[Scalar[DType.float32]](num_steps * state_dim))
 
-    def __del__(deinit self):
-        self.pixels.free()
-        self.pixels_dense.free()
-        self.action.free()
-        self.proprio.free()
-        self.state.free()
+    def __deinit__(deinit self):
+        self.pixels.unsafe_free()
+        self.pixels_dense.unsafe_free()
+        self.action.unsafe_free()
+        self.proprio.unsafe_free()
+        self.state.unsafe_free()
 
 
 struct LewmPushTExpert(Movable, Sized):
@@ -401,8 +401,8 @@ struct LewmPushTExpert(Movable, Sized):
         ep_len_ds.read_all[DType.int32](ep_len_buf)
         self.ep_len = List[Int32](capacity=self.n_episodes)
         for i in range(self.n_episodes):
-            self.ep_len.append(Int32(ep_len_buf[i]))
-        ep_len_buf.free()
+            self.ep_len.append(Int32(ep_len_buf[unsafe_offset=i]))
+        ep_len_buf.unsafe_free()
 
         # ep_offset (int64)
         var ep_off_ds = self._file.open_dataset(String("ep_offset"))
@@ -416,8 +416,8 @@ struct LewmPushTExpert(Movable, Sized):
         ep_off_ds.read_all[DType.int64](ep_off_buf)
         self.ep_offset = List[Int64](capacity=self.n_episodes)
         for i in range(self.n_episodes):
-            self.ep_offset.append(Int64(ep_off_buf[i]))
-        ep_off_buf.free()
+            self.ep_offset.append(Int64(ep_off_buf[unsafe_offset=i]))
+        ep_off_buf.unsafe_free()
 
         # action (flat)
         var n_act = self.n_total_frames * self.action_dim
@@ -425,8 +425,8 @@ struct LewmPushTExpert(Movable, Sized):
         self._dset_action.read_all[DType.float32](act_buf)
         self.action_flat = List[Float32](capacity=n_act)
         for i in range(n_act):
-            self.action_flat.append(Float32(act_buf[i]))
-        act_buf.free()
+            self.action_flat.append(Float32(act_buf[unsafe_offset=i]))
+        act_buf.unsafe_free()
 
         # proprio (flat)
         var n_pro = self.n_total_frames * self.proprio_dim
@@ -434,8 +434,8 @@ struct LewmPushTExpert(Movable, Sized):
         self._dset_proprio.read_all[DType.float32](pro_buf)
         self.proprio_flat = List[Float32](capacity=n_pro)
         for i in range(n_pro):
-            self.proprio_flat.append(Float32(pro_buf[i]))
-        pro_buf.free()
+            self.proprio_flat.append(Float32(pro_buf[unsafe_offset=i]))
+        pro_buf.unsafe_free()
 
         # state (flat)
         var n_st = self.n_total_frames * self.state_dim
@@ -443,8 +443,8 @@ struct LewmPushTExpert(Movable, Sized):
         self._dset_state.read_all[DType.float32](st_buf)
         self.state_flat = List[Float32](capacity=n_st)
         for i in range(n_st):
-            self.state_flat.append(Float32(st_buf[i]))
-        st_buf.free()
+            self.state_flat.append(Float32(st_buf[unsafe_offset=i]))
+        st_buf.unsafe_free()
 
         # ── sampling params + clip index ──────────────────────────────
         if frameskip <= 0:
@@ -535,7 +535,7 @@ struct LewmPushTExpert(Movable, Sized):
         # as a (span, action_dim) block, just reinterpreted.
         var act_total = self.span * self.action_dim
         for i in range(act_total):
-            into.action[i] = self.action_flat[g_start * self.action_dim + i]
+            into.action[unsafe_offset=i] = self.action_flat[g_start * self.action_dim + i]
 
         # ── proprio: subsample by frameskip from flat host buffer ──────
         for n in range(self.num_steps):
@@ -543,7 +543,7 @@ struct LewmPushTExpert(Movable, Sized):
             var src_base = src_row * self.proprio_dim
             var dst_base = n * self.proprio_dim
             for j in range(self.proprio_dim):
-                into.proprio[dst_base + j] = self.proprio_flat[
+                into.proprio[unsafe_offset=dst_base + j] = self.proprio_flat[
                     src_base + j
                 ]
 
@@ -553,14 +553,14 @@ struct LewmPushTExpert(Movable, Sized):
             var src_base = src_row * self.state_dim
             var dst_base = n * self.state_dim
             for j in range(self.state_dim):
-                into.state[dst_base + j] = self.state_flat[src_base + j]
+                into.state[unsafe_offset=dst_base + j] = self.state_flat[src_base + j]
 
     def sample_clip_pixels_uint8(
         self,
         idx: Int,
-        pixels_dst: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
-        actions_dst: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-        dense_scratch: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
+        pixels_dst: Pointer[Scalar[DType.uint8], MutAnyOrigin],
+        actions_dst: Pointer[Scalar[DType.float32], MutAnyOrigin],
+        dense_scratch: Pointer[Scalar[DType.uint8], MutAnyOrigin],
     ) raises:
         """Hot-path sample for the trainer's batch loop.
 

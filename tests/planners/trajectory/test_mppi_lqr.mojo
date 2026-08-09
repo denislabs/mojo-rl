@@ -33,7 +33,7 @@ from mojo_rl.planners.testing import LinearQuadratic1D
 
 @fieldwise_init
 struct LQRolloutCallback(
-    Movable, ImplicitlyDeletable, RolloutCallbackCPU
+    Movable, Deinitable, RolloutCallbackCPU
 ):
     """1D LinearQuadratic adapter for ``RolloutCallbackCPU``.
 

@@ -14,7 +14,7 @@ Run:
   pixi run -e nvidia mojo run -I . tests/envs/craftax_full/test_cpu_gpu_parity.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.envs.craftax_full import (
     CraftaxFullEnv,
@@ -70,7 +70,7 @@ def approx(a: Float64, b: Float64, eps: Float64 = 0.0001) -> Bool:
     return d < eps
 
 
-from std.gpu.host import DeviceBuffer
+from max.gpu.host import DeviceBuffer
 
 
 def _copy_cpu_to_device(

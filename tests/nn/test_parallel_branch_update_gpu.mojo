@@ -18,7 +18,7 @@ flight. Run: pixi run -e nvidia mojo run -I . tests/nn/test_parallel_branch_upda
 (and -e apple to compare — BatchNorm-style bugs were Apple-OK / NVIDIA-broken).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.core.tensor import Tensor

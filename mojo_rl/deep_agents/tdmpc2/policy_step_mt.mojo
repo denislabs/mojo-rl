@@ -17,7 +17,7 @@ no-op at MAX_ACT=1) — same spirit as the QP-dropout caveats.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -44,7 +44,7 @@ struct PolicyStepMT[
     NUM_TASKS: Int,
     TASK_EMB: Int,
     QP: Float64 = 0.0,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime PolicyT = TDMPC2PolicyMT[
         Self.LATENT, Self.MAX_ACT, Self.MLP, Self.TASK_EMB
     ]

@@ -10,7 +10,7 @@ so we can't selectively zero a single Linear via `make`'s INIT; this wrapper
 zero-fills regardless of INIT, then trains normally once gradients ramp it up.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from ..core.tensor import Tensor

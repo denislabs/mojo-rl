@@ -27,7 +27,7 @@ For Phase 1 (CPU), no alignment padding between blocks. Add for GPU later.
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 
 from .predictive_model import PCBlockTrait
@@ -146,7 +146,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
         """Init: per-block `pc_init_params` (vendored
         `PCInitializer`, legacy-`nn`-free). Mirror of `initialize_params`."""
         for i in range(Self.PARAM_SIZE):
-            params.ptr[i] = Scalar[dtype](0)
+            params.ptr[unsafe_offset=i] = Scalar[dtype](0)
 
         comptime for i in range(Self.N):
             var li_p = LayoutTensor[

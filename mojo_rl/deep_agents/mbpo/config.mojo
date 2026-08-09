@@ -25,7 +25,7 @@ net keeps `Linear` + `Swish` (no fused-Swish layer exists) and a plain
 linear mean/logvar head.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -76,7 +76,7 @@ for [reward, Δobs]. One member of the `DynamicsEnsembleBlock`."""
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait MBPOConfigT(Copyable, Movable, ImplicitlyDeletable):
+trait MBPOConfigT(Copyable, Movable, Deinitable):
     """Compile-time descriptor of an MBPO-family algorithm. Conformers are
     zero-field comptime tags."""
 

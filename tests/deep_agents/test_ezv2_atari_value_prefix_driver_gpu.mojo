@@ -13,9 +13,9 @@ Run:
     pixi run -e apple mojo run -I . tests/deep_agents/test_ezv2_atari_value_prefix_driver_gpu.mojo
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from std.math import isnan, isinf
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT, LAYOUT_NCHW

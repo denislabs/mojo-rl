@@ -31,7 +31,7 @@ Returns `EnsembleActorLossResult { loss, log_prob_mean }`. The trainer reads
 
 from std.gpu import global_idx
 from mojo_rl.nn.core.ptr import untracked
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
@@ -140,7 +140,7 @@ def _eal_loss_per_b_dev_kernel[
     q_sum: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
     lp: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
     loss_out: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
-    alpha_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    alpha_ptr: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """loss_out[b] = α·lp[b] − (1/N)·q_sum[b]. α read on-device. Per-b loss the
     device reductions average into `_loss_acc` (no D2H)."""
@@ -149,7 +149,7 @@ def _eal_loss_per_b_dev_kernel[
         return
     var inv_n = Scalar[DT](1.0) / Scalar[DT](N)
     var combined = rebind[Scalar[DT]](q_sum[b]) * inv_n
-    loss_out[b] = alpha_ptr[0] * rebind[Scalar[DT]](lp[b]) - combined
+    loss_out[b] = alpha_ptr[unsafe_offset=0] * rebind[Scalar[DT]](lp[b]) - combined
 
 
 def _eal_build_grad_alp_dev_kernel[
@@ -158,7 +158,7 @@ def _eal_build_grad_alp_dev_kernel[
     grad_sa_sum: LayoutTensor[DT, Layout.row_major(BATCH, SA_DIM), MutAnyOrigin],
     grad_alp: LayoutTensor[DT, Layout.row_major(BATCH, ALP_DIM), MutAnyOrigin],
     inv_b: Scalar[DT],
-    alpha_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    alpha_ptr: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """As `_eal_build_grad_alp_kernel` but grad_log_prob = α·inv_b with α read
     on-device from `alpha_ptr[0]`."""
@@ -171,11 +171,11 @@ def _eal_build_grad_alp_dev_kernel[
     if j < ACT:
         grad_alp[b, j] = rebind[Scalar[DT]](grad_sa_sum[b, OBS + j])
     else:
-        grad_alp[b, j] = alpha_ptr[0] * inv_b
+        grad_alp[b, j] = alpha_ptr[unsafe_offset=0] * inv_b
 
 
 @fieldwise_init
-struct EnsembleActorLossResult(Movable & ImplicitlyDeletable):
+struct EnsembleActorLossResult(Movable & Deinitable):
     """Forward/backward result: scalar loss + log_prob_mean."""
 
     var loss: Scalar[DT]
@@ -189,7 +189,7 @@ struct EnsembleActorLoss[
     BATCH_: Int,
     OBS_: Int,
     ACT_: Int,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime N = Self.N_
     comptime BATCH = Self.BATCH_
     comptime OBS = Self.OBS_
@@ -219,7 +219,7 @@ struct EnsembleActorLoss[
     # `_alpha_ptr` is set, the GPU forward_backward reads α on-device, reduces
     # loss/log_prob on-device (no D2H), and returns 0 sentinels — the trainer
     # drains `_loss_acc` at flush and the device ScalarAdam reads `_lp_mean`.
-    var _alpha_ptr: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _alpha_ptr: Optional[Pointer[Scalar[DT], MutUntrackedOrigin]]
     var _mb_loss_out: Tensor    # [BATCH] per-b loss (device reduction source)
     var _lp_mean: Tensor        # [1] mean(log_prob) — entropy grad for α
     var _loss_acc: Tensor       # [2] (Σmean, count) actor-loss accumulator
@@ -312,7 +312,7 @@ struct EnsembleActorLoss[
         return b^
 
     # ── Device-α accessors (GPU + CUDA-graph path) ────────────────────
-    def set_alpha_ptr(mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
+    def set_alpha_ptr(mut self, p: Pointer[Scalar[DT], MutAnyOrigin]):
         """Wire REDQ's on-device alpha buffer into the actor loss. After this,
         the GPU `forward_backward` reads α on-device and reduces loss/log_prob
         on-device (no per-step D2H / host α)."""

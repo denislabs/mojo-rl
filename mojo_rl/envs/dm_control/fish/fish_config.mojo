@@ -235,7 +235,7 @@ def _mouth_to_target_gpu[
     out[0] = loc[0]
     out[1] = loc[1]
     out[2] = loc[2]
-    return out
+    return out^
 
 
 @always_inline

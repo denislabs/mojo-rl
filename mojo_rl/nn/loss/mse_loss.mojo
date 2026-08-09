@@ -17,8 +17,8 @@ whose trait `backward(targets, grad)` forced caching the logits on forward.
 """
 
 from std.gpu import global_idx, thread_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
@@ -78,7 +78,7 @@ def _mse_bwd_kernel[
         ) / Scalar[DT](BATCH)
 
 
-struct MSELoss[DIM_: Int](Movable & ImplicitlyDeletable):
+struct MSELoss[DIM_: Int](Movable & Deinitable):
     var partial: Tensor  # GPU [BATCH] per-row partials (lazy)
     var loss_acc: Tensor  # GPU [2] = [sum_of_means, count]
     var _acc_sum: Scalar[DT]

@@ -38,7 +38,7 @@ Use via one-line aliases (see linear_tanh.mojo / linear_mish.mojo / …):
 
 from std.sys import CompilationTarget
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 from linalg.matmul.cpu.apple_accelerate import (
@@ -371,16 +371,16 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                         Int32(Self.OUT_),
                         Int32(B),
                         Float32(1.0),
-                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        rebind[Pointer[Float32, ImmutAnyOrigin]](
                             find.data.unsafe_ptr()
                         ),
                         Int32(Self.IN_),
-                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        rebind[Pointer[Float32, ImmutAnyOrigin]](
                             god.data.unsafe_ptr()
                         ),
                         Int32(Self.OUT_),
                         Float32(1.0),
-                        rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                        rebind[Pointer[Float32, MutAnyOrigin]](
                             self.weight.grd.data.unsafe_ptr()
                         ),
                         Int32(Self.OUT_),

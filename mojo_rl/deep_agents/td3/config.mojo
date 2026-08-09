@@ -24,7 +24,7 @@ NOTE: this replaces the former runtime `TD3Config` hyperparameter bag (a
 every other family.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -68,7 +68,7 @@ comptime TD3CriticNet[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait TD3ConfigT(Copyable, Movable, ImplicitlyDeletable):
+trait TD3ConfigT(Copyable, Movable, Deinitable):
     """Compile-time descriptor of a TD3-family algorithm. Conformers are
     zero-field comptime tags — never instantiated at runtime; only their
     comptime members are read."""

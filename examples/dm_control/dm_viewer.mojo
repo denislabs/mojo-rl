@@ -70,7 +70,7 @@ the fields facade still wants a `DeviceContext` for host staging.
 from std.random import seed, random_float64
 from std.math import sin, pi, min, max
 from std.sys import argv
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv, Phyics3dEnvConfig

@@ -42,7 +42,7 @@ from ..zero.sequence_replay_mcts import MCTSSequenceReplay
 from ..zero.temperature import visit_temperature
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Category-B raw batch/episode scratch feeding the raw-pointer replay +
     unroll-input boundary (not the nn surface)."""
     return alloc[Scalar[DT]](n).as_unsafe_any_origin()
@@ -90,7 +90,7 @@ def run_muzero_selfplay_cpu[
     eval_episodes: Int = 5,
     diag_every: Int = 0,
     report_every: Int = 0,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
 ) raises -> Float64:
     # PUCT defaults (c_base=19652, c_init=1.25) — matches legacy
@@ -106,13 +106,13 @@ def run_muzero_selfplay_cpu[
     var rb = MCTSSequenceReplay[OBS, ACT, CAP](seed=seed ^ UInt64(0xABCDEF))
 
     var rep_a = MZRepCPU[OBS, LATENT, REP](
-        net=untracked(UnsafePointer(to=rep))
+        net=untracked(Pointer(to=rep))
     )
     var dyn_a = MZDynCPU[LATENT, ACT, BINS, DYN](
-        net=untracked(UnsafePointer(to=dyn)), v_min=v_min, v_max=v_max
+        net=untracked(Pointer(to=dyn)), v_min=v_min, v_max=v_max
     )
     var pred_a = MZPredCPU[LATENT, ACT, BINS, PRED](
-        net=untracked(UnsafePointer(to=pred)),
+        net=untracked(Pointer(to=pred)),
         v_min=v_min, v_max=v_max
     )
 
@@ -258,13 +258,13 @@ def run_muzero_selfplay_cpu[
             var pred_t = Tensor.alloc(B * (ACT + BINS))
             call_forward["cpu", B](pred, TensorRefs[PRED.ARITY](z_t), pred_t, None)
             for i in range(B * (ACT + BINS)):
-                d_pred[i] = pred_t.data[i]
+                d_pred[unsafe_offset=i] = pred_t.data[i]
             var dn = List[String]()
             var dv = List[Float64]()
             dn.append(String("loss")); dv.append(last_loss)
-            dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
-            dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
-            dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
+            dn.append(String("loss_policy")); dv.append(Float64(l_parts[unsafe_offset=0]))
+            dn.append(String("loss_value")); dv.append(Float64(l_parts[unsafe_offset=1]))
+            dn.append(String("loss_reward")); dv.append(Float64(l_parts[unsafe_offset=2]))
             append_mz_train_diagnostics[ACT, BINS, B](
                 d_pred, t_pol, t_val, v_min, v_max, dn, dv
             )
@@ -379,5 +379,5 @@ def run_muzero_selfplay_cpu[
             rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
-    l_parts.free(); d_pred.free()
+    l_parts.unsafe_free(); d_pred.unsafe_free()
     return last_loss

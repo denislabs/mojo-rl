@@ -19,7 +19,7 @@ Run:
     pixi run mojo run -I . tests/data/test_resident_gather.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_equal, assert_true
 
 from mojo_rl.data import (

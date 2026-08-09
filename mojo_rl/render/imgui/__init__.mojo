@@ -179,8 +179,8 @@ def ig_init[
             UInt32,
         ) thin -> Bool,
     ]()(
-        untracked(window.bitcast[NoneType]()),
-        untracked(device.bitcast[NoneType]()),
+        untracked(window.unsafe_bitcast[NoneType]()),
+        untracked(device.unsafe_bitcast[NoneType]()),
         color_format,
     )
 
@@ -207,7 +207,7 @@ def ig_prepare[
     _get_dylib_function[
         lib, "mrl_ig_prepare",
         def(Ptr[NoneType, MutUntrackedOrigin]) thin -> None,
-    ]()(untracked(cmd_buf.bitcast[NoneType]()))
+    ]()(untracked(cmd_buf.unsafe_bitcast[NoneType]()))
 
 
 def ig_render[
@@ -221,8 +221,8 @@ def ig_render[
             Ptr[NoneType, MutUntrackedOrigin],
         ) thin -> None,
     ]()(
-        untracked(cmd_buf.bitcast[NoneType]()),
-        untracked(render_pass.bitcast[NoneType]()),
+        untracked(cmd_buf.unsafe_bitcast[NoneType]()),
+        untracked(render_pass.unsafe_bitcast[NoneType]()),
     )
 
 
@@ -233,7 +233,7 @@ def ig_process_event[
     _get_dylib_function[
         lib, "mrl_ig_process_event",
         def(Ptr[NoneType, MutUntrackedOrigin]) thin -> None,
-    ]()(untracked(event.bitcast[NoneType]()))
+    ]()(untracked(event.unsafe_bitcast[NoneType]()))
 
 
 def ig_want_mouse() raises -> Bool:
@@ -697,8 +697,8 @@ def ig_input_text(var label: String, mut buf: TextBuffer,
     # ⚠ VIA `Ptr(to=...)`, NOT `InlineArray.unsafe_ptr()`. The latter yields a
     # *safe* Pointer, whose `bitcast` is constrained away ("violated
     # constraint: not _safe"); pointing at the array itself gives the
-    # UnsafePointer the C ABI needs.
-    var ptr = untracked(Ptr(to=buf.data).bitcast[c_char]())
+    # Pointer the C ABI needs.
+    var ptr = untracked(Ptr(to=buf.data).unsafe_bitcast[c_char]())
     if hint.byte_length() > 0:
         return _get_dylib_function[
             lib, "mrl_ig_input_text_hint",

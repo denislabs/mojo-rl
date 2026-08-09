@@ -28,7 +28,7 @@ row once full. `TrajectoryStore` is append-only offline storage; the two are
 different objects and this is the online one.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.training.replay_buffer import ReplayBuffer

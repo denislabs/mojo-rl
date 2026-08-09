@@ -39,7 +39,7 @@ from ..zero.mcts_adapters_mz_cpu import MZRepCPU, MZDynCPU, MZPredCPU
 
 @fieldwise_init
 struct EZv2DiscreteAgent[
-    ENV: BoxDiscreteActionEnv & ImplicitlyDeletable,
+    ENV: BoxDiscreteActionEnv & Deinitable,
     REP: Module,
     DYN: Module,
     PRED: Module,
@@ -55,7 +55,7 @@ struct EZv2DiscreteAgent[
     B: Int,
     K: Int,
     N: Int,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     var rep: Self.REP
     var dyn: Self.DYN
     var pred: Self.PRED
@@ -105,7 +105,7 @@ struct EZv2DiscreteAgent[
         eval_episodes: Int = 5,
         diag_every: Int = 0,
         report_every: Int = 0,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         verbose: Bool = False,
     ) raises -> Float64:
         """Single-player self-play training (MuZero BPTT + SimSiam consistency).
@@ -158,16 +158,16 @@ struct EZv2DiscreteAgent[
             DirichletNoise[0.25, 0.25], SinglePlayer, 8, 3,
         ](gamma=Float64(self.gamma))
         var rep_a = MZRepCPU[Self.OBS, Self.LATENT, Self.REP](
-            net=untracked(UnsafePointer(to=self.rep)),
+            net=untracked(Pointer(to=self.rep)),
         )
         var dyn_a = MZDynCPU[Self.LATENT, Self.ACT, Self.BINS, Self.DYN](
-            net=untracked(UnsafePointer(to=self.dyn)),
+            net=untracked(Pointer(to=self.dyn)),
             v_min=self.v_min, v_max=self.v_max,
         )
         var pred_a = MZPredCPU[
             Self.LATENT, Self.ACT, Self.BINS, Self.PRED
         ](
-            net=untracked(UnsafePointer(to=self.pred)),
+            net=untracked(Pointer(to=self.pred)),
             v_min=self.v_min, v_max=self.v_max,
         )
         var total = 0.0

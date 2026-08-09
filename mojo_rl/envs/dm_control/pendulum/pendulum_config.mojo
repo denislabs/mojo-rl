@@ -16,7 +16,7 @@ all-zero learning curve for a broken env early in training.
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from std.math import pi
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data

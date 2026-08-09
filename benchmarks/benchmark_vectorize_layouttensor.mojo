@@ -66,8 +66,8 @@ def mish_lt_scalar(
 
 
 def relu_ptr_scalar(
-    inp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    res: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    inp: Pointer[Scalar[dtype], MutAnyOrigin],
+    res: Pointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
 ):
     for i in range(n):
@@ -76,8 +76,8 @@ def relu_ptr_scalar(
 
 
 def mish_ptr_scalar(
-    inp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    res: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    inp: Pointer[Scalar[dtype], MutAnyOrigin],
+    res: Pointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
 ):
     for i in range(n):
@@ -91,8 +91,8 @@ def mish_ptr_scalar(
 
 
 def relu_ptr_simd(
-    inp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    res: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    inp: Pointer[Scalar[dtype], MutAnyOrigin],
+    res: Pointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
 ):
     var i = 0
@@ -109,8 +109,8 @@ def relu_ptr_simd(
 
 
 def mish_ptr_simd(
-    inp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    res: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    inp: Pointer[Scalar[dtype], MutAnyOrigin],
+    res: Pointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
 ):
     var i = 0

@@ -23,7 +23,7 @@ covers them. The marker form still adds value:
   * **Storage in `LossBlockBundle[*BLOCKS]`**: variadic Tuple of any
     `LossBlock` conformers, lifecycle-uniform.
   * **Lifecycle invariants**: every block gets the same
-    `Defaultable & Movable & ImplicitlyDeletable` constraints, which
+    `Defaultable & Movable & Deinitable` constraints, which
     happens to match all today's blocks' bases.
 
 DreamerV3 / TD-MPC2 trainers will add 3–5 more loss blocks (reward head,
@@ -39,5 +39,5 @@ conformers stay green.
 """
 
 
-trait LossBlock(Defaultable & Movable & ImplicitlyDeletable):
+trait LossBlock(Defaultable & Movable & Deinitable):
     pass

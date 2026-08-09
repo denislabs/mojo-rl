@@ -97,7 +97,7 @@ struct ConvTransposePCBlock[
             dtype,
         ](W_view)
         for j in range(Self.out_channels):
-            params.ptr[Self.W_SIZE + j] = Scalar[dtype](0)
+            params.ptr[unsafe_offset=Self.W_SIZE + j] = Scalar[dtype](0)
 
     # =========================================================================
     # im2col of the BIG tensor (ε or x_above) → ecol[b, p_small·col_size + ocol]
@@ -192,12 +192,12 @@ struct ConvTransposePCBlock[
                 length=BATCH * Self.CACHE, fill=Scalar[dtype](0)
             )
             # cblas FFI boundary (Scalar→Float32 + origin), as nn.storage's Linear.
-            var Wp = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](params.ptr)
+            var Wp = rebind[Pointer[Float32, ImmutAnyOrigin]](params.ptr)
             for b in range(BATCH):
-                var a_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                var a_b = rebind[Pointer[Float32, ImmutAnyOrigin]](
                     a_below.ptr + b * Self.IN_DIM
                 )
-                var dcol_b = rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                var dcol_b = rebind[Pointer[Float32, MutAnyOrigin]](
                     dcol.unsafe_ptr().unsafe_offset(b * Self.CACHE)
                 )
                 try:
@@ -362,12 +362,12 @@ struct ConvTransposePCBlock[
             )
             Self._im2col_big[BATCH, dtype](eps_above, ecol)
             # cblas FFI boundary (Scalar→Float32 + origin), as nn.storage's Linear.
-            var Wp = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](params.ptr)
+            var Wp = rebind[Pointer[Float32, ImmutAnyOrigin]](params.ptr)
             for b in range(BATCH):
-                var ecol_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                var ecol_b = rebind[Pointer[Float32, ImmutAnyOrigin]](
                     ecol.unsafe_ptr().unsafe_offset(b * Self.CACHE)
                 )
-                var z_b = rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                var z_b = rebind[Pointer[Float32, MutAnyOrigin]](
                     z_below.ptr + b * Self.IN_DIM
                 )
                 try:
@@ -494,12 +494,12 @@ struct ConvTransposePCBlock[
             )
             Self._im2col_big[BATCH, dtype](eps_above, ecol)
             # cblas FFI boundary (Scalar→Float32 + origin), as nn.storage's Linear.
-            var Cw = rebind[UnsafePointer[Float32, MutAnyOrigin]](grads.ptr)
+            var Cw = rebind[Pointer[Float32, MutAnyOrigin]](grads.ptr)
             for b in range(BATCH):
-                var a_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                var a_b = rebind[Pointer[Float32, ImmutAnyOrigin]](
                     a_below.ptr + b * Self.IN_DIM
                 )
-                var ecol_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                var ecol_b = rebind[Pointer[Float32, ImmutAnyOrigin]](
                     ecol.unsafe_ptr().unsafe_offset(b * Self.CACHE)
                 )
                 try:

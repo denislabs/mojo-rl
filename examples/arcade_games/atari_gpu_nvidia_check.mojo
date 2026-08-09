@@ -30,7 +30,7 @@ from std.sys import has_accelerator
 from std.sys.info import size_of
 from std.time import perf_counter_ns
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
 from mojo_rl.envs.atari.atari_state import AtariState
@@ -63,11 +63,11 @@ def env_action(i: Int) -> UInt8:
 def atari_frames_kernel[
     UNIFORM: Bool
 ](
-    states: UnsafePointer[AtariState, MutAnyOrigin],
-    rom: UnsafePointer[UInt8, MutAnyOrigin],
+    states: Pointer[AtariState, MutAnyOrigin],
+    rom: Pointer[UInt8, MutAnyOrigin],
     rom_size: Int,
-    op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin],
-    actions: UnsafePointer[UInt8, MutAnyOrigin],
+    op_table: Pointer[OpcodeEntry, MutAnyOrigin],
+    actions: Pointer[UInt8, MutAnyOrigin],
     n_envs: Int,
     n_frames: Int,
 ):
@@ -88,11 +88,11 @@ def run_frames_gpu[
     UNIFORM: Bool
 ](
     ctx: DeviceContext,
-    states: UnsafePointer[AtariState, MutAnyOrigin],
+    states: Pointer[AtariState, MutAnyOrigin],
     n_envs: Int,
-    rom: UnsafePointer[UInt8, MutAnyOrigin],
+    rom: Pointer[UInt8, MutAnyOrigin],
     rom_size: Int,
-    actions: UnsafePointer[UInt8, MutAnyOrigin],
+    actions: Pointer[UInt8, MutAnyOrigin],
     n_frames: Int,
 ) raises:
     comptime SB = size_of[AtariState]()
@@ -148,7 +148,7 @@ def cpu_step[
     UNIFORM: Bool
 ](
     mut st: AtariState,
-    rom: UnsafePointer[UInt8, MutAnyOrigin],
+    rom: Pointer[UInt8, MutAnyOrigin],
     rom_size: Int,
     action: UInt8,
 ):
@@ -183,7 +183,7 @@ def bench_throughput[
     ctx: DeviceContext,
     n_envs: Int,
     s0: AtariState,
-    rom: UnsafePointer[UInt8, MutAnyOrigin],
+    rom: Pointer[UInt8, MutAnyOrigin],
     rom_size: Int,
 ) raises:
     comptime SB = size_of[AtariState]()
@@ -254,7 +254,7 @@ def parity_gate(
     n_envs: Int,
     n_frames: Int,
     s0: AtariState,
-    rom: UnsafePointer[UInt8, MutAnyOrigin],
+    rom: Pointer[UInt8, MutAnyOrigin],
     rom_size: Int,
 ) raises:
     var actions = List[UInt8]()

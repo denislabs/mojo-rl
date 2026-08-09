@@ -14,8 +14,8 @@ so the GPU kernels are flat 1-D grids.
 """
 
 from std.gpu import global_idx, thread_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, row_major
 
 from ...nn.constants import DT, TPB, TPB_REDUCE
@@ -42,16 +42,16 @@ def _replicate_kernel[BATCH: Int, H: Int, EMB: Int, ROLL_T: Int](
 def mpc_replicate_start[
     target: StaticString, BATCH: Int, H: Int, EMB: Int, ROLL_T: Int,
 ](
-    emb_start: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    emb_seq: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    emb_start: Pointer[Scalar[DT], MutAnyOrigin],
+    emb_seq: Pointer[Scalar[DT], MutAnyOrigin],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     comptime if target == "cpu":
         for b in range(BATCH):
             for p in range(ROLL_T):
                 for d in range(EMB):
-                    var v = emb_start[b * EMB + d] if p < H else Scalar[DT](0.0)
-                    emb_seq[b * ROLL_T * EMB + p * EMB + d] = v
+                    var v = emb_start[unsafe_offset=b * EMB + d] if p < H else Scalar[DT](0.0)
+                    emb_seq[unsafe_offset=b * ROLL_T * EMB + p * EMB + d] = v
     else:
         var c = ctx.value()
         comptime N = BATCH * ROLL_T * EMB
@@ -66,8 +66,11 @@ def mpc_replicate_start[
 def _slide_ctx_kernel[BATCH: Int, H: Int, EMB: Int, ROLL_T: Int](
     emb_seq: LayoutTensor[DT, Layout.row_major(BATCH * ROLL_T * EMB), MutAnyOrigin],
     latent_ctx: LayoutTensor[DT, Layout.row_major(BATCH * H * EMB), MutAnyOrigin],
-    k: Int,
+    k_arg: Int64,
 ):
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var k = Int(k_arg)
     var idx = Int(global_idx.x)
     if idx >= BATCH * H * EMB:
         return
@@ -81,8 +84,8 @@ def _slide_ctx_kernel[BATCH: Int, H: Int, EMB: Int, ROLL_T: Int](
 def mpc_slide_latent_ctx[
     target: StaticString, BATCH: Int, H: Int, EMB: Int, ROLL_T: Int,
 ](
-    emb_seq: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    latent_ctx: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    emb_seq: Pointer[Scalar[DT], MutAnyOrigin],
+    latent_ctx: Pointer[Scalar[DT], MutAnyOrigin],
     k: Int,
     ctx: Optional[DeviceContext] = None,
 ) raises:
@@ -90,7 +93,7 @@ def mpc_slide_latent_ctx[
         for b in range(BATCH):
             for p in range(H):
                 for d in range(EMB):
-                    latent_ctx[b * H * EMB + p * EMB + d] = emb_seq[
+                    latent_ctx[unsafe_offset=b * H * EMB + p * EMB + d] = emb_seq[unsafe_offset=
                         b * ROLL_T * EMB + (k + p) * EMB + d
                     ]
     else:
@@ -99,7 +102,7 @@ def mpc_slide_latent_ctx[
         c.enqueue_function[_slide_ctx_kernel[BATCH, H, EMB, ROLL_T]](
             LayoutTensor[DT, Layout.row_major(BATCH * ROLL_T * EMB), MutAnyOrigin](emb_seq),
             LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](latent_ctx),
-            k, grid_dim=(N + TPB - 1) // TPB, block_dim=TPB,
+            Int64(k), grid_dim=(N + TPB - 1) // TPB, block_dim=TPB,
         )
 
 
@@ -107,8 +110,11 @@ def mpc_slide_latent_ctx[
 def _slide_act_kernel[BATCH: Int, T: Int, H: Int, ACT: Int, NEEDED: Int](
     plan: LayoutTensor[DT, Layout.row_major(BATCH * NEEDED * ACT), MutAnyOrigin],
     actions_buf: LayoutTensor[DT, Layout.row_major(BATCH * T * ACT), MutAnyOrigin],
-    k: Int,
+    k_arg: Int64,
 ):
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var k = Int(k_arg)
     var idx = Int(global_idx.x)
     if idx >= BATCH * T * ACT:
         return
@@ -125,8 +131,8 @@ def _slide_act_kernel[BATCH: Int, T: Int, H: Int, ACT: Int, NEEDED: Int](
 def mpc_slide_actions[
     target: StaticString, BATCH: Int, T: Int, H: Int, ACT: Int, NEEDED: Int,
 ](
-    plan: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    actions_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    plan: Pointer[Scalar[DT], MutAnyOrigin],
+    actions_buf: Pointer[Scalar[DT], MutAnyOrigin],
     k: Int,
     ctx: Optional[DeviceContext] = None,
 ) raises:
@@ -135,17 +141,17 @@ def mpc_slide_actions[
             for p in range(T):
                 for a in range(ACT):
                     var v = (
-                        plan[b * NEEDED * ACT + (k + p) * ACT + a]
+                        plan[unsafe_offset=b * NEEDED * ACT + (k + p) * ACT + a]
                         if p < H else Scalar[DT](0.0)
                     )
-                    actions_buf[b * T * ACT + p * ACT + a] = v
+                    actions_buf[unsafe_offset=b * T * ACT + p * ACT + a] = v
     else:
         var c = ctx.value()
         comptime N = BATCH * T * ACT
         c.enqueue_function[_slide_act_kernel[BATCH, T, H, ACT, NEEDED]](
             LayoutTensor[DT, Layout.row_major(BATCH * NEEDED * ACT), MutAnyOrigin](plan),
             LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](actions_buf),
-            k, grid_dim=(N + TPB - 1) // TPB, block_dim=TPB,
+            Int64(k), grid_dim=(N + TPB - 1) // TPB, block_dim=TPB,
         )
 
 
@@ -153,8 +159,11 @@ def mpc_slide_actions[
 def _store_kernel[BATCH: Int, H: Int, EMB: Int, ROLL_T: Int](
     pred: LayoutTensor[DT, Layout.row_major(BATCH * H * EMB), MutAnyOrigin],
     emb_seq: LayoutTensor[DT, Layout.row_major(BATCH * ROLL_T * EMB), MutAnyOrigin],
-    k: Int,
+    k_arg: Int64,
 ):
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var k = Int(k_arg)
     var idx = Int(global_idx.x)
     if idx >= BATCH * EMB:
         return
@@ -168,15 +177,15 @@ def _store_kernel[BATCH: Int, H: Int, EMB: Int, ROLL_T: Int](
 def mpc_store_pred_last[
     target: StaticString, BATCH: Int, H: Int, EMB: Int, ROLL_T: Int,
 ](
-    pred: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    emb_seq: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    pred: Pointer[Scalar[DT], MutAnyOrigin],
+    emb_seq: Pointer[Scalar[DT], MutAnyOrigin],
     k: Int,
     ctx: Optional[DeviceContext] = None,
 ) raises:
     comptime if target == "cpu":
         for b in range(BATCH):
             for d in range(EMB):
-                emb_seq[b * ROLL_T * EMB + (k + H) * EMB + d] = pred[
+                emb_seq[unsafe_offset=b * ROLL_T * EMB + (k + H) * EMB + d] = pred[unsafe_offset=
                     b * H * EMB + (H - 1) * EMB + d
                 ]
     else:
@@ -185,7 +194,7 @@ def mpc_store_pred_last[
         c.enqueue_function[_store_kernel[BATCH, H, EMB, ROLL_T]](
             LayoutTensor[DT, Layout.row_major(BATCH * H * EMB), MutAnyOrigin](pred),
             LayoutTensor[DT, Layout.row_major(BATCH * ROLL_T * EMB), MutAnyOrigin](emb_seq),
-            k, grid_dim=(N + TPB - 1) // TPB, block_dim=TPB,
+            Int64(k), grid_dim=(N + TPB - 1) // TPB, block_dim=TPB,
         )
 
 
@@ -194,8 +203,11 @@ def _score_kernel[BATCH: Int, EMB: Int, ROLL_T: Int](
     emb_seq: LayoutTensor[DT, Layout.row_major(BATCH * ROLL_T * EMB), MutAnyOrigin],
     emb_goal: LayoutTensor[DT, Layout.row_major(BATCH * EMB), MutAnyOrigin],
     score_out: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
-    goal_pos: Int,
+    goal_pos_arg: Int64,
 ):
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var goal_pos = Int(goal_pos_arg)
     var t = Int(thread_idx.x)
     var my: Scalar[DT] = 0.0
     var k = t
@@ -217,8 +229,8 @@ def _score_kernel[BATCH: Int, EMB: Int, ROLL_T: Int](
 def mpc_score[
     target: StaticString, BATCH: Int, EMB: Int, ROLL_T: Int,
 ](
-    emb_seq: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    emb_goal: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    emb_seq: Pointer[Scalar[DT], MutAnyOrigin],
+    emb_goal: Pointer[Scalar[DT], MutAnyOrigin],
     goal_pos: Int,
     ctx: Optional[DeviceContext] = None,
 ) raises -> Float64:
@@ -229,8 +241,8 @@ def mpc_score[
         for b in range(BATCH):
             for d in range(EMB):
                 var diff = Float64(
-                    emb_seq[b * ROLL_T * EMB + goal_pos * EMB + d]
-                    - emb_goal[b * EMB + d]
+                    emb_seq[unsafe_offset=b * ROLL_T * EMB + goal_pos * EMB + d]
+                    - emb_goal[unsafe_offset=b * EMB + d]
                 )
                 s += diff * diff
         return s / Float64(BATCH * EMB)
@@ -241,11 +253,11 @@ def mpc_score[
             LayoutTensor[DT, Layout.row_major(BATCH * ROLL_T * EMB), MutAnyOrigin](emb_seq),
             LayoutTensor[DT, Layout.row_major(BATCH * EMB), MutAnyOrigin](emb_goal),
             LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin](
-                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](sd.unsafe_ptr())
+                rebind[Pointer[Scalar[DT], MutAnyOrigin]](sd.unsafe_ptr())
             ),
-            goal_pos, grid_dim=1, block_dim=TPB_REDUCE,
+            Int64(goal_pos), grid_dim=1, block_dim=TPB_REDUCE,
         )
         var hb = c.enqueue_create_host_buffer[DT](1)
         c.enqueue_copy(hb, sd)
         c.synchronize()
-        return Float64(hb.unsafe_ptr()[0]) / Float64(BATCH * EMB)
+        return Float64(hb.unsafe_ptr()[unsafe_offset=0]) / Float64(BATCH * EMB)

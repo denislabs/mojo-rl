@@ -16,7 +16,7 @@ permutation (the same map with T↔S swapped). Conforms to `Module`.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -87,18 +87,21 @@ def _stt_vec_kernel[
         var s = pos % S
         var sb = b * TSD + (s * T + t) * D + dv * STT_VEC
         var db = b * TSD + pos * D + dv * STT_VEC
-        dst.ptr.store(db, src.ptr.load[width=STT_VEC](sb))
+        dst.ptr.unsafe_store(db, src.ptr.unsafe_load[width=STT_VEC](sb))
     else:
         var s = pos // T
         var t = pos % T
         var sb = b * TSD + (t * S + s) * D + dv * STT_VEC
         var db = b * TSD + pos * D + dv * STT_VEC
-        dst.ptr.store(db, src.ptr.load[width=STT_VEC](sb))
+        dst.ptr.unsafe_store(db, src.ptr.unsafe_load[width=STT_VEC](sb))
 
 
 struct SpaceTimeTranspose[T: Int, S: Int, D: Int](Module):
     comptime ARITY: Int = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.T * Self.S * Self.D)
+    # `Array` is not `ImplicitlyCopyable` (Mojo 1.0): indexing the comptime
+    # `IN_DIMS` from a runtime context would materialize the whole array.
+    comptime IN_DIM0 = Self.T * Self.S * Self.D
     comptime OUT_DIM = Self.T * Self.S * Self.D
 
     def __init__(out self):
@@ -136,7 +139,7 @@ struct SpaceTimeTranspose[T: Int, S: Int, D: Int](Module):
                             op[
                                 b * Self.OUT_DIM + (s * Self.T + t) * Self.D + d
                             ] = ip[
-                                b * Self.IN_DIMS[0] + (t * Self.S + s) * Self.D + d
+                                b * Self.IN_DIM0 + (t * Self.S + s) * Self.D + d
                             ]
         else:
             var c = ctx.value()
@@ -156,7 +159,7 @@ struct SpaceTimeTranspose[T: Int, S: Int, D: Int](Module):
         grad_inputs: TensorRefs[1, ogi],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime N = B * Self.IN_DIMS[0]
+        comptime N = B * Self.IN_DIM0
         ref gin = grad_inputs[0]
         comptime if target == "cpu":
             gin.ensure(N)
@@ -168,7 +171,7 @@ struct SpaceTimeTranspose[T: Int, S: Int, D: Int](Module):
                     for s in range(Self.S):
                         for d in range(Self.D):
                             gip[
-                                b * Self.IN_DIMS[0] + (t * Self.S + s) * Self.D + d
+                                b * Self.IN_DIM0 + (t * Self.S + s) * Self.D + d
                             ] = gop[
                                 b * Self.OUT_DIM + (s * Self.T + t) * Self.D + d
                             ]

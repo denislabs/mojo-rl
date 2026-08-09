@@ -21,7 +21,7 @@ Concrete implementations:
 """
 
 
-trait OfflineBuffer(Movable, ImplicitlyDeletable):
+trait OfflineBuffer(Movable, Deinitable):
     """Minimal contract for a pixel-obs offline trajectory data source.
 
     A conformant type must fill ``pixels_out`` (uint8, layout per
@@ -43,7 +43,7 @@ trait OfflineBuffer(Movable, ImplicitlyDeletable):
         mut self,
         B: Int,
         T: Int,
-        pixels_out: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
-        actions_out: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
+        pixels_out: Pointer[Scalar[DType.uint8], MutAnyOrigin],
+        actions_out: Pointer[Scalar[DType.float32], MutAnyOrigin],
     ) raises:
         ...

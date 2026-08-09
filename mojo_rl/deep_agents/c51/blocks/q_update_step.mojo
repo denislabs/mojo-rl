@@ -10,7 +10,7 @@ PER IS-weights / per-sample-CE capture are `state.mb_w` / `state.td_residuals`
 `.lt` views. CPU + GPU.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
@@ -24,7 +24,7 @@ from ...training.trainer_block import TrainerState
 
 struct C51QUpdateStep[
     OBS_: Int, ACT_: Int, BATCH_: Int, NA_: Int, N_ATOMS_: Int, Q_NET: Module,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_

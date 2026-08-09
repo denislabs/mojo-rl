@@ -43,7 +43,7 @@ References:
 from std.gpu import block_dim, block_idx, thread_idx
 from std.random.philox import Random as PhiloxRandom
 from std.math import sqrt, log, exp
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT as dtype
 
@@ -1527,7 +1527,7 @@ def gpu_mcts_batched_select_and_copy_kernel[
     # from caching global memory reads across loop iterations.
     # Each thread gets ACT+1 slots: [tid*(ACT+1) .. tid*(ACT+1)+ACT) = per-action visits,
     # slot [tid*(ACT+1)+ACT] = total visits sum.
-    from std.gpu.memory import AddressSpace
+    from max.gpu.memory import AddressSpace
     comptime SLOTS_PER_THREAD = ACT + 1
     var s_root = LayoutTensor[
         dtype,

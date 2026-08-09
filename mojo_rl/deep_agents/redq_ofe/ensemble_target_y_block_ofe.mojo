@@ -25,7 +25,7 @@ just the first-input width — passing PHI_S_DIM there is correct).
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from std.random import random_float64
 
@@ -62,7 +62,7 @@ struct EnsembleTargetYBlockOFE[
     ACT_: Int,
     N_MIN_: Int,
     MODE_: Int,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime N = Self.N_
     comptime BATCH = Self.BATCH_
     comptime OBS = Self.OBS_
@@ -285,7 +285,7 @@ struct EnsembleTargetYBlockOFE[
                     self._mb_stacked_q.lt[
                         "gpu", Layout.row_major(Self.N * Self.BATCH)
                     ](),
-                    i * Self.BATCH,
+                    Int64(i * Self.BATCH),
                     grid_dim=nb, block_dim=TPB,
                 )
 

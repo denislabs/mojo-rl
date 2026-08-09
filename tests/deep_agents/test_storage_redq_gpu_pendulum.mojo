@@ -33,7 +33,7 @@ Run (Apple Metal or NVIDIA):
 
 from std.random import seed
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.redq.config import SmallREDQ

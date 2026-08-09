@@ -15,7 +15,7 @@ Run (after training):
 """
 
 from std.memory import alloc
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.experimental.lewm.trainer import LeWMTrainer
@@ -66,7 +66,7 @@ comptime Trainer = LeWMTrainer[
 ]
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     return alloc[Scalar[DT]](n)
 
 
@@ -84,7 +84,7 @@ def main() raises:
     tr.load_params(CKPT_PATH)
 
     # Sample one context window → host fp32 pixels + host one-hot actions.
-    var pix_u8: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin] = alloc[
+    var pix_u8: Pointer[Scalar[DType.uint8], MutAnyOrigin] = alloc[
         Scalar[DType.uint8]
     ](B * PIX)
     var act_host = _a(B * ACTIN)

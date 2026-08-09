@@ -649,7 +649,7 @@ def create_storage_directory(
     Docs: https://wiki.libsdl.org/SDL3/SDL_CreateStorageDirectory.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_CreateStorageDirectory",
         def(
@@ -695,7 +695,7 @@ def enumerate_storage_directory(
     Docs: https://wiki.libsdl.org/SDL3/SDL_EnumerateStorageDirectory.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_EnumerateStorageDirectory",
         def(
@@ -725,7 +725,7 @@ def remove_storage_path(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RemoveStoragePath.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RemoveStoragePath",
         def(
@@ -756,7 +756,7 @@ def rename_storage_path(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenameStoragePath.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenameStoragePath",
         def(
@@ -792,7 +792,7 @@ def copy_storage_file(
     Docs: https://wiki.libsdl.org/SDL3/SDL_CopyStorageFile.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_CopyStorageFile",
         def(
@@ -829,7 +829,7 @@ def get_storage_path_info(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetStoragePathInfo.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetStoragePathInfo",
         def(

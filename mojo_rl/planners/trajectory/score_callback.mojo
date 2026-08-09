@@ -45,7 +45,7 @@ from layout import TileTensor, TensorLayout
 from mojo_rl.nn.constants import DT as dtype
 
 
-trait ScorePlanCallback(ImplicitlyDeletable):
+trait ScorePlanCallback(Deinitable):
     """Score a candidate action plan for trajectory optimization.
 
     The callback owns whatever scratch is needed to evaluate a plan
@@ -72,7 +72,7 @@ trait ScorePlanCallback(ImplicitlyDeletable):
         ...
 
 
-trait BatchedScorePlanCallback(ImplicitlyDeletable):
+trait BatchedScorePlanCallback(Deinitable):
     """Score K candidate action plans in a single host call.
 
     Batched analogue of ``ScorePlanCallback``. The optimizer hands the

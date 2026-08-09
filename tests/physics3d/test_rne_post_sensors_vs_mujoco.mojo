@@ -33,7 +33,7 @@ Run: pixi run mojo run -I . tests/physics3d/test_rne_post_sensors_vs_mujoco.mojo
 from std.testing import assert_true, TestSuite
 from std.python import Python, PythonObject
 from std.math import abs, sqrt
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.fields import Data, Model

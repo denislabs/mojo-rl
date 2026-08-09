@@ -18,7 +18,7 @@ Only the persistent cross-body arrays live here; the tiny 6×6 / 6-vector
 loop temporaries stay as InlineArrays inside the kernel (GPU-safe).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl

@@ -39,7 +39,7 @@ CPU + GPU (the leaves + the pool-seed / grad-accumulate run on device).
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import Pointer
 from layout import Layout, LayoutTensor
 
@@ -68,7 +68,7 @@ def _cg_accum_kernel[
         dst[i] = rebind[Scalar[ADT]](dst[i]) + rebind[Scalar[ADT]](src[i])
 
 
-struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
+struct ComputeGraph[*DECLS: GraphDecl](Movable & Deinitable):
     comptime N = Self.DECLS.length
     comptime OUT_DIM = Self.DECLS[Self.N - 1].OUT_DIM
     comptime MAXARITY = Self._max_arity()
@@ -325,7 +325,7 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                     # wants its own (==Self.ACT_DT) — rebind the pack + out slot.
                     externals[ei].forward[target, B, POLICY=POLICY](
                         rebind[TensorRefs[AE, MutAnyOrigin, cei]](
-                            TensorRefs[AE, MutAnyOrigin, Self.ACT_DT](inrefs)
+                            TensorRefs[AE, MutAnyOrigin, Self.ACT_DT](inrefs^)
                         ),
                         rebind[TensorImpl[cei]](self.pool[i]),
                         ctx,
@@ -341,7 +341,7 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                         inrefs[k] = Pointer(to=self.pool[sk])
                     self.children[i].forward[target, B, POLICY=POLICY](
                         rebind[TensorRefs[A, MutAnyOrigin, ci]](
-                            TensorRefs[A, MutAnyOrigin, Self.ACT_DT](inrefs)
+                            TensorRefs[A, MutAnyOrigin, Self.ACT_DT](inrefs^)
                         ),
                         rebind[TensorImpl[ci]](self.pool[i]),
                         ctx,
@@ -435,11 +435,11 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                         girefs[k] = Pointer(to=self.tmp[k])
                     externals[ei].vjp[target, B, POLICY=POLICY](
                         rebind[TensorRefs[AE, MutAnyOrigin, cei]](
-                            TensorRefs[AE, MutAnyOrigin, Self.ACT_DT](firefs)
+                            TensorRefs[AE, MutAnyOrigin, Self.ACT_DT](firefs^)
                         ),
                         rebind[TensorImpl[cei]](self.gpool[i]),
                         rebind[TensorRefs[AE, MutAnyOrigin, cei]](
-                            TensorRefs[AE, MutAnyOrigin, Self.ACT_DT](girefs)
+                            TensorRefs[AE, MutAnyOrigin, Self.ACT_DT](girefs^)
                         ),
                         ctx,
                     )
@@ -466,11 +466,11 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                         girefs[k] = Pointer(to=self.tmp[k])
                     self.children[i].vjp[target, B, POLICY=POLICY](
                         rebind[TensorRefs[A, MutAnyOrigin, ci]](
-                            TensorRefs[A, MutAnyOrigin, Self.ACT_DT](firefs)
+                            TensorRefs[A, MutAnyOrigin, Self.ACT_DT](firefs^)
                         ),
                         rebind[TensorImpl[ci]](self.gpool[i]),
                         rebind[TensorRefs[A, MutAnyOrigin, ci]](
-                            TensorRefs[A, MutAnyOrigin, Self.ACT_DT](girefs)
+                            TensorRefs[A, MutAnyOrigin, Self.ACT_DT](girefs^)
                         ),
                         ctx,
                     )

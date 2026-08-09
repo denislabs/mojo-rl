@@ -4,7 +4,7 @@ Mirrors SAC's `SACActorStep`: reads `state.mb_s` / `state.alpha`, runs
 `forward_backward`, writes `state.actor_loss` + `state.log_prob_mean`.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -23,7 +23,7 @@ struct EnsembleActorStep[
     OBS_: Int,
     ACT_: Int,
     BATCH_: Int,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime N = Self.N_
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_

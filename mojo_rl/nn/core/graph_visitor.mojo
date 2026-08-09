@@ -23,7 +23,7 @@ struct DisplayStep(Copyable, Movable):
     var out_dim: Int
 
 
-trait GraphVisitor(ImplicitlyDeletable):
+trait GraphVisitor(Deinitable):
     """Sink for a ComputeGraph topology walk
     (begin → node*/node_inner*/edge* → end)."""
 

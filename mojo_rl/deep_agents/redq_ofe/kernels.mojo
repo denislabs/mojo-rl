@@ -6,7 +6,7 @@ function is a diagnostics-only host reduction.
 
 STORAGE migration (Stage 5): the public CPU/GPU functions take owning
 storage `Tensor`s (CPU `.data` host loop / GPU `.lt` device views) instead
-of raw `UnsafePointer`s — mirrors `redq/kernels.mojo`. The `rebind` /
+of raw `Pointer`s — mirrors `redq/kernels.mojo`. The `rebind` /
 raw-ptr usage that survives is confined to inside the GPU kernel (the GPU
 ABI).
 
@@ -16,7 +16,7 @@ Math:
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB

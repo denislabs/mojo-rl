@@ -26,7 +26,7 @@ Run with:
 from std.math import abs, sin, inf
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.envs.dm_control.cheetah import (
     DMCheetahRun,

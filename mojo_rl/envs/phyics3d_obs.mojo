@@ -12,7 +12,7 @@ extractors as they are ported; this covers the default-obs family
 (InvertedPendulum, hopper/walker-style qpos-skip envs)."""
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.core.tensor import TensorImpl

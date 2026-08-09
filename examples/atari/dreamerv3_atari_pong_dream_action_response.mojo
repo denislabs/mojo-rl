@@ -26,7 +26,7 @@ Run (checkpoint from the training run; C below MUST match it):
 
 from std.memory import alloc
 from std.random import seed
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
@@ -112,7 +112,7 @@ comptime HC = IMG
 
 
 def _centroid_y(
-    obs: UnsafePointer[Scalar[DT], MutAnyOrigin], x0: Int, x1: Int
+    obs: Pointer[Scalar[DT], MutAnyOrigin], x0: Int, x1: Int
 ) -> Tuple[Scalar[DT], Int]:
     """Weighted Y centroid of bright (>0.5) pixels in column band [x0,x1),
     rows [19,92) — EXCLUDES the top wall (rows 14-18) and bottom wall (92-95),
@@ -132,7 +132,7 @@ def _centroid_y(
 
 
 def _con_min(
-    heads: UnsafePointer[Scalar[DT], MutAnyOrigin], hor: Int
+    heads: Pointer[Scalar[DT], MutAnyOrigin], hor: Int
 ) -> Scalar[DT]:
     var m = heads[2]
     for h in range(1, hor):
@@ -141,7 +141,7 @@ def _con_min(
     return m
 
 
-def _argmax(p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int) -> Int:
+def _argmax(p: Pointer[Scalar[DT], MutAnyOrigin], n: Int) -> Int:
     var best = 0
     var bv = p[0]
     for i in range(1, n):

@@ -23,7 +23,7 @@ The fields integrators are NOT rewired to auto here (SAP emission ORDER
 differs from O(N^2), which would shift existing bit-exact gates)."""
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import gpu_quat_rotate

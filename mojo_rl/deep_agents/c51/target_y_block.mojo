@@ -26,7 +26,7 @@ kernels (argmax / projection, no atomics) are unchanged; views are built via
 
 from std.math import exp as fexp, log as flog
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -158,7 +158,7 @@ struct C51TargetYBlock[
     NA: Int,
     N_ATOMS: Int,
     DOUBLE: Bool = False,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     """Owns `_logits_t`/`_logits_on` (Q forward outputs), `_z` (atom support),
     `_best_a` (argmax action), and the γ^n / V_min / V_max / Δz scalars."""
 

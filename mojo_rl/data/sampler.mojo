@@ -38,7 +38,7 @@ it.
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.math import pow as fpow
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
@@ -55,7 +55,7 @@ from .resident import DYN1, IDX_DT, IndexBatch
 # Uniform — host
 # ══════════════════════════════════════════════════════════════════════════
 
-struct UniformSampler(Movable & ImplicitlyDeletable):
+struct UniformSampler(Movable & Deinitable):
     """Uniform with replacement, host RNG.
 
     Port of `CPUReplay.sample` (`cpu_replay.mojo:113`):
@@ -121,7 +121,7 @@ def _uniform_indices_kernel(
     indices[i] = Scalar[IDX_DT](idx)
 
 
-struct UniformDeviceSampler(Movable & ImplicitlyDeletable):
+struct UniformDeviceSampler(Movable & Deinitable):
     """Uniform with replacement, on device.
 
     Mirrors `GPUReplay`'s RNG bookkeeping: a fixed `seed`, plus an `offset`
@@ -190,7 +190,7 @@ struct UniformDeviceSampler(Movable & ImplicitlyDeletable):
 # Prioritized — stratified sum-tree
 # ══════════════════════════════════════════════════════════════════════════
 
-struct PrioritizedSampler(Movable & ImplicitlyDeletable):
+struct PrioritizedSampler(Movable & Deinitable):
     """Stratified proportional PER over a sum-tree.
 
     Port of `CPUPrioritizedReplay` (`cpu_per_replay.mojo`), split out of
@@ -359,7 +359,7 @@ struct PrioritizedSampler(Movable & ImplicitlyDeletable):
 # Sequence windows
 # ══════════════════════════════════════════════════════════════════════════
 
-struct SequenceWindowSampler(Movable & ImplicitlyDeletable):
+struct SequenceWindowSampler(Movable & Deinitable):
     """Draw start rows for length-`span` windows.
 
     Port of `SequenceReplay.sample_batch_fst`'s start draw

@@ -22,7 +22,7 @@ struct DualSampleCpuStep[
     SYNTH_CAP: Int,
     REAL_BS: Int,
     SYNTH_BS: Int,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_

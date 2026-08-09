@@ -16,7 +16,7 @@ Cast-around-matmul model (Apple Metal-probed: max-rel-err ~3.3e-3).
 """
 
 
-trait AMPPolicy(ImplicitlyDeletable):
+trait AMPPolicy(Deinitable):
     """Mixed-precision policy: where each tensor lives, what kernels run in."""
 
     comptime param_dtype: DType

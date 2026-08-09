@@ -9,7 +9,7 @@ Run (after the paper-width train run):
   pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_eval_gpu_paper.mojo
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
@@ -87,7 +87,7 @@ def main() raises:
         PRED_DIM_HEAD,
     ](
         tr, pix_t,
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](act_host.unsafe_ptr()),
+        rebind[Pointer[Scalar[DT], MutAnyOrigin]](act_host.unsafe_ptr()),
         ctx=ctx,
     )
     print()

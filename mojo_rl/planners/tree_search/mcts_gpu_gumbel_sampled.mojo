@@ -41,7 +41,7 @@ diagnostics: `root_visits[N_ENVS, K_ROOT]`.
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 from std.math import sqrt, log, exp, tanh, cos, pi
 from layout import Layout, LayoutTensor

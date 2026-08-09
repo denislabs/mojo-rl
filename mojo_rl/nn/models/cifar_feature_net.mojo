@@ -17,7 +17,7 @@ map resolution differs. Used as a FROZEN (BN-eval) feature extractor:
 Output: `64 * (H // 4) * (W // 4)` features per sample (NCHW, 64 × H/4 × W/4).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor

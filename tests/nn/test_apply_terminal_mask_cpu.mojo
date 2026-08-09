@@ -31,9 +31,9 @@ def main() raises:
     print("=" * 70)
 
     comptime N = 4
-    var r: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
-    var term: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
-    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
+    var r: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
+    var term: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
+    var y: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N).as_unsafe_any_origin()
 
     # Per-sample (reward, termination, bootstrap-entering-y).
     var rew = InlineArray[Scalar[DT], N](fill=0)

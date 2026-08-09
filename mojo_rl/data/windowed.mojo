@@ -37,7 +37,7 @@ from .resident import IDX_DT, IndexBatch
 from .store import TrajectoryStore
 
 
-struct WindowedColumn[dtype: DType](Movable & ImplicitlyDeletable):
+struct WindowedColumn[dtype: DType](Movable & Deinitable):
     """One column, with rows `[window_start, window_start + window_rows)`
     resident.
 
@@ -180,7 +180,7 @@ struct WindowedColumn[dtype: DType](Movable & ImplicitlyDeletable):
                 out[dst + d] = self.host[src + d]
 
 
-struct WindowSampler(Movable & ImplicitlyDeletable):
+struct WindowSampler(Movable & Deinitable):
     """Uniform draw restricted to a resident window.
 
     The locality-respecting counterpart of `UniformSampler`. Sampling is

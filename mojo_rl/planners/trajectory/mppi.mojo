@@ -23,7 +23,7 @@ Reference: Hansen et al., 2023 — TD-MPC2.
 
 from std.math import exp, sqrt, cos, log
 from std.random import random_float64
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as dtype
@@ -100,7 +100,7 @@ struct MPPICPU[
     NUM_PI_TRAJS: Int,
     NUM_ITERATIONS: Int,
     NUM_ELITES: Int,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     """CPU MPPI planner — reference implementation + test path.
 
     All hyperparameters that affect storage layout
@@ -406,7 +406,7 @@ struct MPPIGPUBatched[
     NUM_ELITES: Int,
     NUM_ITERATIONS: Int,
     N_ENVS: Int,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     """GPU-batched MPPI planner — plans for all ``N_ENVS`` envs in one
     kernel grid per horizon step.
 

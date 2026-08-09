@@ -12,7 +12,7 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_dreamer4_perceptual_loss_gpu.
 
 from std.math import abs
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor

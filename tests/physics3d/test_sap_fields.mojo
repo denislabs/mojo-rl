@@ -30,7 +30,7 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_sap_fields.mojo
 """
 
 from std.math import abs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 from std.testing import TestSuite
 

@@ -40,12 +40,12 @@ rejection + a separate term/trunc flag is a future enhancement to apply to
 both backends together.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 
 
-trait SequenceReplayBuffer(ImplicitlyDeletable, Movable):
+trait SequenceReplayBuffer(Deinitable, Movable):
     """Uniform surface over a sequence (window) replay buffer. `count` is
     named so as not to collide with conformers' `size` *field*."""
 
@@ -63,8 +63,8 @@ trait SequenceReplayBuffer(ImplicitlyDeletable, Movable):
 
     def record(
         mut self,
-        s: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        a: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        s: Pointer[Scalar[DT], MutAnyOrigin],
+        a: Pointer[Scalar[DT], MutAnyOrigin],
         r: Scalar[DT],
         d: Scalar[DT],
         ctx: Optional[DeviceContext] = None,
@@ -89,10 +89,10 @@ trait SequenceReplayBuffer(ImplicitlyDeletable, Movable):
         T: Int,
     ](
         mut self,
-        obs_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        act_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        rew_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        dne_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_out: Pointer[Scalar[DT], MutAnyOrigin],
+        act_out: Pointer[Scalar[DT], MutAnyOrigin],
+        rew_out: Pointer[Scalar[DT], MutAnyOrigin],
+        dne_out: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Draw `B` random length-`T` windows into the four **host** output
         regions:

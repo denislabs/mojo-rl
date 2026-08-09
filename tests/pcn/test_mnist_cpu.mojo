@@ -232,10 +232,10 @@ def main() raises:
                 var elapsed = Float64(perf_counter_ns() - epoch_start_ns) / 1e9
                 print(
                     "    ", epoch, "  ", batch_idx, "  ",
-                    String(result.energy_initial)[byte=:9], " ",
-                    String(result.energy_final)[byte=:9], " ",
-                    String(result.output_loss_final)[byte=:9], "  ",
-                    String(elapsed)[byte=:7],
+                    fit(String(result.energy_initial), 9), " ",
+                    fit(String(result.energy_final), 9), " ",
+                    fit(String(result.output_loss_final), 9), "  ",
+                    fit(String(elapsed), 7),
                 )
 
         # Inline eval at end of epoch
@@ -263,7 +263,7 @@ def main() raises:
         var avg_loss = loss_sum / Float64(loss_count) if loss_count > 0 else 0.0
         print(
             "  [epoch", epoch, "done]  avg_sup_loss=",
-            String(avg_loss)[byte=:9],
+            fit(String(avg_loss), 9),
             "  test_acc=", acc,
         )
 
@@ -317,3 +317,5 @@ def main() raises:
     x_batch_buf.free()
     y_batch_buf.free()
     print("=== Done ===")
+
+from mojo_rl.core.fmt import fit

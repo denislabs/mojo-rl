@@ -19,7 +19,7 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_amp_act_dt_spike.mojo
 
 from std.memory import Pointer
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 
@@ -51,7 +51,7 @@ struct TensorRefsA[N: Int, o: MutOrigin, ADT: DType = DT](Copyable, Movable):
 
 
 # ── module trait with ACT_DT as an ASSOCIATED COMPTIME ───────────────────
-trait ModuleA(Movable, Defaultable, ImplicitlyDeletable):
+trait ModuleA(Movable, Defaultable, Deinitable):
     comptime ARITY: Int
     comptime IN_DIM: Int
     comptime OUT_DIM: Int

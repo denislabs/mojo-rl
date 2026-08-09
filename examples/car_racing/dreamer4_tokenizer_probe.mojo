@@ -14,7 +14,7 @@ one component the isolated tests skip — to localize the gap.
 Run (NVIDIA): pixi run -e nvidia mojo run -I . examples/car_racing/dreamer4_tokenizer_probe.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.random import seed
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -29,8 +29,8 @@ from mojo_rl.deep_agents.dreamer4.patchify import downscale_box, temporal_patchi
 from mojo_rl.envs.car_racing.car_racing_mb import CarRacingMB
 
 
-def _dptr(mut t: Tensor) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+def _dptr(mut t: Tensor) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         t.dev.value().unsafe_ptr()
     )
 
@@ -38,9 +38,9 @@ def _dptr(mut t: Tensor) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 def _win_to_patches[
     B: Int, T: Int, IN_CH: Int, IMG: Int, TGT: Int, PATCH: Int
 ](
-    pix: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    frames: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    patches: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    pix: Pointer[Scalar[DT], MutAnyOrigin],
+    frames: Pointer[Scalar[DT], MutAnyOrigin],
+    patches: Pointer[Scalar[DT], MutAnyOrigin],
 ) raises:
     comptime IMG_DIM = IN_CH * IMG * IMG
     comptime BATCH = B * T

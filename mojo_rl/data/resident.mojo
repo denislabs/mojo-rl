@@ -36,7 +36,7 @@ columns as `float32`.
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import alloc
 from std.utils import IndexList
 from layout import Layout, LayoutTensor, RuntimeLayout
@@ -109,7 +109,7 @@ def _gather_rows_kernel[
 
 # ── index batch ───────────────────────────────────────────────────────────
 
-struct IndexBatch(Movable & ImplicitlyDeletable):
+struct IndexBatch(Movable & Deinitable):
     """A batch of row indices, host-side with an optional device mirror.
 
     Stage 3's samplers (uniform / PER / n-step / sequence-window / FB-dual)
@@ -155,7 +155,7 @@ struct IndexBatch(Movable & ImplicitlyDeletable):
 
 # ── resident column ───────────────────────────────────────────────────────
 
-struct ResidentColumn[dtype: DType](Movable & ImplicitlyDeletable):
+struct ResidentColumn[dtype: DType](Movable & Deinitable):
     """One whole column of a store, held in host memory and optionally
     mirrored on device.
 

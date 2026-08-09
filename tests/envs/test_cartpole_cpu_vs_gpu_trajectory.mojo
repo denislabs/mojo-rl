@@ -24,7 +24,7 @@ Run with:
 
 from std.math import abs
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.envs.cartpole import CartPoleEnv, CartPoleAction
 

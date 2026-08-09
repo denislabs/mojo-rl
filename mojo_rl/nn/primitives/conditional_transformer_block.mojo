@@ -47,7 +47,7 @@ Positional slot map (NUM_IN=2 → x=slot 0, c=slot 1; node i writes slot 2+i):
   node 14 x2   = Gate(x1, g2, mlp)     edges [12, 8, 15]  (graph output)
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from ..core.initializer import Initializer

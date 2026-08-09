@@ -12,8 +12,8 @@ synthetic examples (fixed obs -> fixed policy/value/reward targets) and overfits
 apple GPU should overfit. Run on NVIDIA to compare.
 """
 
-from std.memory import UnsafePointer
-from std.gpu.host import DeviceContext
+from std.memory import Pointer
+from max.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
@@ -74,7 +74,7 @@ def main() raises:
             reward_tgt[k * B + b] = Scalar[DT](0.5) if (b % 3 == 0) else Scalar[DT](0.0)
 
     var lp = List[Scalar[DT]](length=3, fill=0)
-    var lp_opt = Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var lp_opt = Optional[Pointer[Scalar[DT], MutAnyOrigin]](
         lp.unsafe_ptr().as_unsafe_any_origin()
     )
 

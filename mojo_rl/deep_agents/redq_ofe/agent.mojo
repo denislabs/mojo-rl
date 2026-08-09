@@ -30,7 +30,7 @@ supported today (the underlying trainer is CPU-only); GPU will land
 behind a `target == "gpu"` branch when the trainer gains GPU paths.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -60,7 +60,7 @@ struct REDQOFEAgent[
     UTD: Int,
     POLICY_DELAY: Int,
     Q_MODE: Int,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     """Thin facade over `REDQOFETrainer`.
 
     Dimensions (OBS / ACT / BATCH) are derived from `SAMPLE`. The 5
@@ -153,7 +153,7 @@ struct REDQOFEAgent[
         *,
         print_every: Int = 1_000,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,

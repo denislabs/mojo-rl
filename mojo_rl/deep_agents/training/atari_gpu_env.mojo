@@ -22,7 +22,7 @@ Design:
 
 from std.sys.info import size_of
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.ptr import mptr
@@ -51,11 +51,11 @@ def _splitmix(x: UInt64) -> UInt64:
 
 @always_inline
 def _write_obs(
-    st: AtariState, obs: UnsafePointer[Scalar[DT], MutAnyOrigin], i: Int
+    st: AtariState, obs: Pointer[Scalar[DT], MutAnyOrigin], i: Int
 ):
     """RAM (128 bytes) → obs[i*128 : i*128+128], normalized to [0,1]."""
     for b in range(128):
-        obs[i * 128 + b] = st.ram[b].cast[DT]() / 255.0
+        obs[unsafe_offset=i * 128 + b] = st.ram[b].cast[DT]() / 255.0
 
 
 # ---------------------------------------------------------------------------
@@ -66,13 +66,13 @@ def _write_obs(
 def _atari_reset_kernel[
     GAME: GameDef, NOOP_MAX: Int, SELECTIVE: Bool
 ](
-    states: UnsafePointer[AtariState, MutAnyOrigin],
-    s0: UnsafePointer[AtariState, MutAnyOrigin],
-    rom: UnsafePointer[UInt8, MutAnyOrigin],
+    states: Pointer[AtariState, MutAnyOrigin],
+    s0: Pointer[AtariState, MutAnyOrigin],
+    rom: Pointer[UInt8, MutAnyOrigin],
     rom_size: Int,
-    op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin],
-    dones: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    op_table: Pointer[OpcodeEntry, MutAnyOrigin],
+    dones: Pointer[Scalar[DT], MutAnyOrigin],
+    obs: Pointer[Scalar[DT], MutAnyOrigin],
     n_envs: Int,
     seed: UInt64,
 ):
@@ -80,9 +80,9 @@ def _atari_reset_kernel[
     if i >= n_envs:
         return
     comptime if SELECTIVE:
-        if dones[i] <= 0.5:
+        if dones[unsafe_offset=i] <= 0.5:
             return  # lane still running — leave it
-    var st = s0[0].copy()
+    var st = s0[unsafe_offset=0].copy()
     comptime if NOOP_MAX > 0:
         var k = Int(_splitmix(seed ^ UInt64(i)) % UInt64(NOOP_MAX + 1))
         var dummy = InlineArray[UInt8, 4](fill=0)
@@ -95,9 +95,9 @@ def _atari_reset_kernel[
     st.score = Int32(GAME.get_score(st.ram))
     st.frame_number = 0
     comptime if SELECTIVE:
-        dones[i] = 0.0
+        dones[unsafe_offset=i] = 0.0
     _write_obs(st, obs, i)
-    states[i] = st^
+    states[unsafe_offset=i] = st^
 
 
 # ---------------------------------------------------------------------------
@@ -107,22 +107,22 @@ def _atari_reset_kernel[
 def _atari_step_kernel[
     GAME: GameDef, FRAME_SKIP: Int, MAX_FRAMES: Int
 ](
-    states: UnsafePointer[AtariState, MutAnyOrigin],
-    rom: UnsafePointer[UInt8, MutAnyOrigin],
+    states: Pointer[AtariState, MutAnyOrigin],
+    rom: Pointer[UInt8, MutAnyOrigin],
     rom_size: Int,
-    op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin],
-    actions: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    rewards: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    dones: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    terminated: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    op_table: Pointer[OpcodeEntry, MutAnyOrigin],
+    actions: Pointer[Scalar[DT], MutAnyOrigin],
+    rewards: Pointer[Scalar[DT], MutAnyOrigin],
+    dones: Pointer[Scalar[DT], MutAnyOrigin],
+    terminated: Pointer[Scalar[DT], MutAnyOrigin],
+    obs: Pointer[Scalar[DT], MutAnyOrigin],
     n_envs: Int,
 ):
     var i = Int(global_idx.x)
     if i >= n_envs:
         return
-    var st = states[i].copy()
-    var ale = GAME.map_action(Int(actions[i]))
+    var st = states[unsafe_offset=i].copy()
+    var ale = GAME.map_action(Int(actions[unsafe_offset=i]))
     var prev_score = Int(st.score)
     var dummy = InlineArray[UInt8, 4](fill=0)
     for _ in range(FRAME_SKIP):
@@ -134,11 +134,11 @@ def _atari_step_kernel[
     st.score = Int32(new_score)
     var term = GAME.is_terminal(st.ram)
     var trunc = Int(st.frame_number) >= MAX_FRAMES
-    rewards[i] = Scalar[DT](new_score - prev_score)
-    terminated[i] = 1.0 if term else 0.0
-    dones[i] = 1.0 if (term or trunc) else 0.0
+    rewards[unsafe_offset=i] = Scalar[DT](new_score - prev_score)
+    terminated[unsafe_offset=i] = 1.0 if term else 0.0
+    dones[unsafe_offset=i] = 1.0 if (term or trunc) else 0.0
     _write_obs(st, obs, i)
-    states[i] = st^
+    states[unsafe_offset=i] = st^
 
 
 struct AtariGpuBatchedEnv[
@@ -172,7 +172,7 @@ struct AtariGpuBatchedEnv[
     def __init__(
         out self,
         ctx: DeviceContext,
-        rom_ptr: UnsafePointer[UInt8, MutAnyOrigin],
+        rom_ptr: Pointer[UInt8, MutAnyOrigin],
         rom_size: Int,
     ) raises:
         self.rom_size = rom_size
@@ -190,20 +190,20 @@ struct AtariGpuBatchedEnv[
         # --- upload rom / opcode table / s0 to device ---
         var h_rom = ctx.enqueue_create_host_buffer[DType.uint8](rom_size)
         for i in range(rom_size):
-            h_rom.unsafe_ptr()[i] = rom_ptr[i]
+            h_rom.unsafe_ptr()[unsafe_offset=i] = rom_ptr[unsafe_offset=i]
         self._rom = ctx.enqueue_create_buffer[DType.uint8](rom_size)
         ctx.enqueue_copy(self._rom, h_rom)
 
         var optab = materialize[OPCODE_TABLE]()
         var h_opt = ctx.enqueue_create_host_buffer[DType.uint8](OTB)
-        var hop = h_opt.unsafe_ptr().bitcast[OpcodeEntry]()
+        var hop = h_opt.unsafe_ptr().unsafe_bitcast[OpcodeEntry]()
         for i in range(256):
-            hop[i] = optab[i]
+            hop[unsafe_offset=i] = optab[i]
         self._optab = ctx.enqueue_create_buffer[DType.uint8](OTB)
         ctx.enqueue_copy(self._optab, h_opt)
 
         var h_s0 = ctx.enqueue_create_host_buffer[DType.uint8](SB)
-        h_s0.unsafe_ptr().bitcast[AtariState]()[0] = s0.copy()
+        h_s0.unsafe_ptr().unsafe_bitcast[AtariState]()[unsafe_offset=0] = s0.copy()
         self._s0 = ctx.enqueue_create_buffer[DType.uint8](SB)
         ctx.enqueue_copy(self._s0, h_s0)
 
@@ -227,7 +227,7 @@ struct AtariGpuBatchedEnv[
     # restores the pre-nightly typing — it grants no access the kernels did not
     # already have.
     @always_inline
-    def _states_p(self) -> UnsafePointer[AtariState, MutAnyOrigin]:
+    def _states_p(self) -> Pointer[AtariState, MutAnyOrigin]:
         return (
             self._states.unsafe_ptr()
             .unsafe_bitcast[AtariState]()
@@ -236,7 +236,7 @@ struct AtariGpuBatchedEnv[
         )
 
     @always_inline
-    def _s0_p(self) -> UnsafePointer[AtariState, MutAnyOrigin]:
+    def _s0_p(self) -> Pointer[AtariState, MutAnyOrigin]:
         return (
             self._s0.unsafe_ptr()
             .unsafe_bitcast[AtariState]()
@@ -245,7 +245,7 @@ struct AtariGpuBatchedEnv[
         )
 
     @always_inline
-    def _rom_p(self) -> UnsafePointer[UInt8, MutAnyOrigin]:
+    def _rom_p(self) -> Pointer[UInt8, MutAnyOrigin]:
         return (
             self._rom.unsafe_ptr()
             .as_unsafe_any_origin()
@@ -253,7 +253,7 @@ struct AtariGpuBatchedEnv[
         )
 
     @always_inline
-    def _opt_p(self) -> UnsafePointer[OpcodeEntry, MutAnyOrigin]:
+    def _opt_p(self) -> Pointer[OpcodeEntry, MutAnyOrigin]:
         return (
             self._optab.unsafe_ptr()
             .unsafe_bitcast[OpcodeEntry]()
@@ -328,17 +328,17 @@ struct AtariGpuBatchedEnv[
             block_dim=(_TPB,),
         )
 
-    def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def obs_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._obs.unsafe_ptr())
 
-    def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def action_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._action.unsafe_ptr())
 
-    def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def reward_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._reward.unsafe_ptr())
 
-    def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def done_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._done.unsafe_ptr())
 
-    def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def terminated_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._terminated.unsafe_ptr())

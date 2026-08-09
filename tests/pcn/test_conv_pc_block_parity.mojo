@@ -40,8 +40,8 @@ comptime TOL: Float32 = 1e-4
 
 
 def _max_abs_diff(
-    a: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    b: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    a: Pointer[Scalar[dtype], MutAnyOrigin],
+    b: Pointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
 ) -> Float32:
     var m: Float32 = 0.0
@@ -59,9 +59,9 @@ def _max_abs_diff(
 def _conv_eval[
     IC: Int, OC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, BATCH: Int
 ](
-    a: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    params: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    mu: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    a: Pointer[Scalar[dtype], MutAnyOrigin],
+    params: Pointer[Scalar[dtype], MutAnyOrigin],
+    mu: Pointer[Scalar[dtype], MutAnyOrigin],
 ):
     comptime OH = (H + 2 * P - K) // S + 1
     comptime OW = (W + 2 * P - K) // S + 1
@@ -95,11 +95,11 @@ def _conv_eval[
 def _conv_vjp[
     IC: Int, OC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, BATCH: Int
 ](
-    eps: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    a: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    params: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    gi: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    gp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    eps: Pointer[Scalar[dtype], MutAnyOrigin],
+    a: Pointer[Scalar[dtype], MutAnyOrigin],
+    params: Pointer[Scalar[dtype], MutAnyOrigin],
+    gi: Pointer[Scalar[dtype], MutAnyOrigin],
+    gp: Pointer[Scalar[dtype], MutAnyOrigin],
 ):
     """Standard conv backward → grad_input (gi), grad_W + grad_b (gp slab)."""
     comptime OH = (H + 2 * P - K) // S + 1

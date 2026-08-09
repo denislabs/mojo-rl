@@ -19,7 +19,7 @@ comptime TPB: Int = 256  # Threads per block for elementwise ops
 @always_inline
 def erase_origin[
     dt: DType, o: Origin
-](p: UnsafePointer[Scalar[dt], o]) -> UnsafePointer[Scalar[dt], MutAnyOrigin]:
+](p: Pointer[Scalar[dt], o]) -> Pointer[Scalar[dt], MutAnyOrigin]:
     """Explicitly rebind a device buffer's pointer origin to `MutAnyOrigin`.
 
     The physics2d GPU kernels build `LayoutTensor[..., MutAnyOrigin]` views over
@@ -29,7 +29,7 @@ def erase_origin[
     not an implicit conversion, so it preserves behavior while clearing the
     deprecation. (Kept here rather than importing nn to avoid a layer reversal.)
     """
-    return rebind[UnsafePointer[Scalar[dt], MutAnyOrigin]](p)
+    return rebind[Pointer[Scalar[dt], MutAnyOrigin]](p)
 
 # =============================================================================
 # Body State Layout

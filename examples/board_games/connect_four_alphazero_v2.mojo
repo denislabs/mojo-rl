@@ -30,8 +30,8 @@ With no `RL_MONITOR_URL` in the environment the RemoteLogger is a silent no-op;
 the per-report lines still print to stdout.
 """
 
-from std.memory import UnsafePointer
-from std.gpu.host import DeviceContext
+from std.memory import Pointer
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
@@ -158,7 +158,7 @@ def main() raises:
         do_eval=True,
         do_eval2=True,
         verbose=True,
-        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+        logger=Pointer(to=logger).as_unsafe_any_origin(),
         # Stability (legacy AlphaZero.jl): clip grad norm to 1.0 + decoupled
         # weight decay 1e-4. Without these the policy head diverged (CE climbed
         # back past uniform after ~2000 moves) on this 5-block ResNet at lr=2e-3.

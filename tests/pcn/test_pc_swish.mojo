@@ -13,7 +13,7 @@ Run:
 """
 
 from std.math import abs as mabs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.experimental.pcn import PCSwish

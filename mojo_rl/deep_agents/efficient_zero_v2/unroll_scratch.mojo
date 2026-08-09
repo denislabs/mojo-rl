@@ -12,7 +12,7 @@ so the storage ``forward(TensorRefs[Tensor])`` / ``.lt`` device views work; the
 ``h_*`` host mirrors stay ``HostBuffer`` (host staging for zero-fill + D2H).
 """
 
-from std.gpu.host import DeviceContext, HostBuffer
+from max.gpu.host import DeviceContext, HostBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -26,7 +26,7 @@ struct EZV2UnrollScratch[
     LATENT: Int,
     BINS: Int,
     PROJ: Int,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     """Discrete EZv2 unroll scratch — one field per per-step GPU buffer."""
     comptime PRED_OUT = Self.ACT + Self.BINS
     comptime DYN_IN = Self.LATENT + Self.ACT
@@ -144,7 +144,7 @@ struct EZV2UnrollScratch[
         s.h_prio = ctx.enqueue_create_host_buffer[DT](b)
         ctx.synchronize()
         for i in range(k * b):
-            s.h_cmask_ones.value().unsafe_ptr()[i] = Scalar[DT](1.0)
+            s.h_cmask_ones.value().unsafe_ptr()[unsafe_offset=i] = Scalar[DT](1.0)
         return s^
 
 
@@ -156,7 +156,7 @@ struct EZV2UnrollContScratch[
     LATENT: Int,
     BINS: Int,
     PROJ: Int,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     """Continuous EZv2 unroll scratch. The continuous GPU policy loss is a fused
     kernel, so no ``musig``/``ptgt`` scratch is needed (unlike the CPU path).
     Buffer set otherwise mirrors the discrete scratch."""
@@ -268,5 +268,5 @@ struct EZV2UnrollContScratch[
         s.h_loss = ctx.enqueue_create_host_buffer[DT](4 * b)
         ctx.synchronize()
         for i in range(k * b):
-            s.h_cmask_ones.value().unsafe_ptr()[i] = Scalar[DT](1.0)
+            s.h_cmask_ones.value().unsafe_ptr()[unsafe_offset=i] = Scalar[DT](1.0)
         return s^

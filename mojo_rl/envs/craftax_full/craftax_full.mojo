@@ -18,7 +18,7 @@ from std.random.philox import Random as PhiloxRandom
 
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core import (
     State,
@@ -242,9 +242,9 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
     var _rng_counter: UInt64
 
     # Renderer (allocated lazily by init_renderer)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
-    var _sprite_pixels: Optional[UnsafePointer[UInt8, MutUntrackedOrigin]]
+    var _sprite_pixels: Optional[Pointer[UInt8, MutUntrackedOrigin]]
     var _has_sprites: Bool
 
     def __init__(out self):
@@ -379,10 +379,10 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
     def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Build the 8268-D Craftax-Full symbolic observation."""
         var obs_arr = InlineArray[Float32, OBS_DIM](fill=Float32(0.0))
-        var obs_ptr = rebind[UnsafePointer[Float32, MutAnyOrigin]](
+        var obs_ptr = rebind[Pointer[Float32, MutAnyOrigin]](
             obs_arr.unsafe_ptr().unsafe_bitcast[Float32]()
         )
-        var state_ptr = rebind[UnsafePointer[Float32, MutAnyOrigin]](
+        var state_ptr = rebind[Pointer[Float32, MutAnyOrigin]](
             self.state.unsafe_ptr().unsafe_bitcast[Float32]()
         )
         encode_symbolic_obs(state_ptr, obs_ptr)
@@ -523,10 +523,10 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+            Pointer[Scalar[gpu_dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Reset only envs where done == 1."""
@@ -634,10 +634,10 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+            Pointer[Scalar[gpu_dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Apply one step + symbolic obs encode for every env."""
@@ -953,7 +953,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
         # Upload the sprite sheet as one SDL3 texture for this frame.
         var has_texture = False
         var texture: Optional[
-            UnsafePointer[Texture, MutAnyOrigin]
+            Pointer[Texture, MutAnyOrigin]
         ] = None
         if self._has_sprites:
             try:
@@ -961,7 +961,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
                     c_int(SPRITE_SHEET_WIDTH),
                     c_int(SPRITE_SHEET_HEIGHT),
                     PixelFormat.PIXELFORMAT_RGBA32,
-                    rebind[UnsafePointer[NoneType, MutAnyOrigin]](
+                    rebind[Pointer[NoneType, MutAnyOrigin]](
                         self._sprite_pixels.value()
                     ),
                     c_int(SPRITE_SHEET_WIDTH * SPRITE_BPP),
@@ -1003,13 +1003,13 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
                 render_texture(
                     renderer.sdl_renderer.value(),
                     texture.value(),
-                    rebind[UnsafePointer[FRect, ImmutAnyOrigin]](src),
-                    rebind[UnsafePointer[FRect, ImmutAnyOrigin]](dst),
+                    rebind[Pointer[FRect, ImmutAnyOrigin]](src),
+                    rebind[Pointer[FRect, ImmutAnyOrigin]](dst),
                 )
             except:
                 pass
-            src.free()
-            dst.free()
+            src.unsafe_free()
+            dst.unsafe_free()
 
         # --- Tiles in the 9×11 view (current floor) ---
         for vy in range(VIEW_H):
@@ -1307,7 +1307,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
             + "/"
             + String(NUM_ACHIEVEMENTS)
             + "  Light "
-            + String(Float64(Int(global_light * 100.0)) / 100.0)[byte=:4]
+            + fit(String(Float64(Int(global_light * 100.0)) / 100.0), 4)
         )
         if sleeping:
             foot_text = foot_text + "  Sleeping"
@@ -1327,10 +1327,10 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
         if self._has_sprites:
-            self._sprite_pixels.value().free()
+            self._sprite_pixels.value().unsafe_free()
             self._has_sprites = False
 
     def is_renderer_open(self) -> Bool:
@@ -1353,3 +1353,5 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
 
     def renderer_step_once(self) -> Bool:
         return False
+
+from mojo_rl.core.fmt import fit

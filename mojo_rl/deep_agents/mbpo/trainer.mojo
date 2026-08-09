@@ -24,7 +24,7 @@ from std.math import exp as fexp, sqrt as fsqrt, log as flog, tanh as ftanh
 from std.random import random_float64, randn_float64
 from std.time import perf_counter_ns
 from std.gpu import block_dim, block_idx, thread_idx, global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
@@ -841,9 +841,9 @@ struct MBPOTrainer[
             obs, action, reward, next_obs, done, ctx=self.ctx,
         )
 
-    def _tracker_ptr(self) -> UnsafePointer[EpisodeTracker, MutAnyOrigin]:
-        return rebind[UnsafePointer[EpisodeTracker, MutAnyOrigin]](
-            UnsafePointer(to=self.tracker)
+    def _tracker_ptr(self) -> Pointer[EpisodeTracker, MutAnyOrigin]:
+        return rebind[Pointer[EpisodeTracker, MutAnyOrigin]](
+            Pointer(to=self.tracker)
         )
 
     def train_step(mut self, step_idx: Int) raises -> Bool:
@@ -1156,7 +1156,7 @@ struct MBPOTrainer[
         L: Logger = NoOpLogger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> MBPOMetrics:
         var n = self._update_count if self._update_count > 0 else 1
@@ -1250,7 +1250,7 @@ struct MBPOTrainer[
         L: Logger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
         _ = step

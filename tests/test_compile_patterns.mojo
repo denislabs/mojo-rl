@@ -15,11 +15,13 @@ Run with:
 from std.time import perf_counter_ns
 from std.random import seed, random_float64
 
-from std.gpu import thread_idx, block_idx, block_dim, barrier
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu.sync import barrier
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import LayoutTensor, Layout
 
 from mojo_rl.nn.constants import DT as dtype
+from mojo_rl.core.fmt import fit
 
 comptime TILE = 16
 
@@ -235,7 +237,7 @@ def main() raises:
         var time_a = (
             Float64(perf_counter_ns() - start_a) / Float64(bench_iters) / 1e3
         )
-        print("  Batch 256: ", String(time_a)[byte=:8], " μs/iter")
+        print("  Batch 256: ", fit(String(time_a), 8), " μs/iter")
 
         print()
         print("-" * 70)
@@ -264,7 +266,7 @@ def main() raises:
                 / Float64(bench_iters)
                 / 1e3
             )
-            print("  Batch", batch, ":", String(time_b)[byte=:8], " μs/iter")
+            print("  Batch", batch, ":", fit(String(time_b), 8), " μs/iter")
 
         print()
         print("=" * 70)

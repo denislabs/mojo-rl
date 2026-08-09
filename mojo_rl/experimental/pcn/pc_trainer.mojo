@@ -20,7 +20,7 @@ recovered inside.
 
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import sqrt, log, cos, sin, tanh, pi
 from std.random.philox import Random as PhiloxRandom
 
@@ -143,7 +143,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
 
         # === 4. SGD weight step: params -= lr_w · grads ====================
         for i in range(Self.NET.PARAM_SIZE):
-            params.ptr[i] = params.ptr[i] - lr_w * grads.ptr[i]
+            params.ptr[unsafe_offset=i] = params.ptr[unsafe_offset=i] - lr_w * grads.ptr[unsafe_offset=i]
 
         return PCTrainResult(
             energy_initial=energy_initial,
@@ -856,7 +856,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         for b in range(BATCH):
             for k in range(out_dim):
                 var idx = BATCH * offset + b * out_dim + k
-                var v = Float64(mu_eps_buf.ptr[idx])
+                var v = Float64(mu_eps_buf.ptr[unsafe_offset=idx])
                 total += v * v
         return 0.5 * total
 
@@ -1263,11 +1263,11 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 u1 = 1e-10
             var r = sqrt(-2.0 * log(u1))
             var z0 = r * cos(2.0 * pi * u2)
-            buf.ptr[i] = Scalar[Self.dtype](z0)
+            buf.ptr[unsafe_offset=i] = Scalar[Self.dtype](z0)
             i += 1
             if i < size:
                 var z1 = r * sin(2.0 * pi * u2)
-                buf.ptr[i] = Scalar[Self.dtype](z1)
+                buf.ptr[unsafe_offset=i] = Scalar[Self.dtype](z1)
                 i += 1
 
     @staticmethod

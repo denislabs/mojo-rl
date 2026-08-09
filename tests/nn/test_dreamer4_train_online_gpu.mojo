@@ -14,7 +14,7 @@ Run: pixi run -e apple  mojo run -I . tests/nn/test_dreamer4_train_online_gpu.mo
 """
 
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Xavier

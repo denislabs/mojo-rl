@@ -94,7 +94,7 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_PRIORITY,
 )
 from mojo_rl.physics3d.joint_types import JNT_FREE
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 
 comptime TEST_PATH = "tests/dm_control"

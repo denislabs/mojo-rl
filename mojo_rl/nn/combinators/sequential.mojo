@@ -7,7 +7,7 @@ a `MutAnyOrigin` ref (load-bearing pin, §7.12); each child input is wrapped in
 a borrowing `TensorRefs[1]`. Slice scope: N >= 2.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from ..core.initializer import Initializer

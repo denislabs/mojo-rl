@@ -10,7 +10,7 @@ Run:  pixi run -e apple mojo run -I . tests/experimental/lewm/test_window_source
 """
 
 from std.memory import alloc
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
@@ -36,8 +36,8 @@ struct MockHWC(Movable, OfflineBuffer):
 
     def sample_batch_uint8(
         mut self, B_: Int, T_: Int,
-        pixels_out: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
-        actions_out: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
+        pixels_out: Pointer[Scalar[DType.uint8], MutAnyOrigin],
+        actions_out: Pointer[Scalar[DType.float32], MutAnyOrigin],
     ) raises:
         for i in range(B_ * T_ * IMG_DIM):
             pixels_out[i] = UInt8((i * 37 + 11) % 256)
@@ -53,7 +53,7 @@ def _byte(i: Int) -> Float64:
     return Float64((i * 37 + 11) % 256)
 
 
-def _check(pix: UnsafePointer[Scalar[DT], MutAnyOrigin]) raises:
+def _check(pix: Pointer[Scalar[DT], MutAnyOrigin]) raises:
     # dst is CHW: dst[f, c, h, w] @ f*IMG_DIM + (c*FRAME+h)*FRAME + w
     # src is HWC: src[f, h, w, c] @ f*IMG_DIM + (h*FRAME+w)*C + c
     var bad = 0

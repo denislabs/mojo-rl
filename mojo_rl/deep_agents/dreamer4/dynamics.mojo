@@ -52,8 +52,8 @@ no atomics are needed — the signal/step vocabs are tiny (KMAX+1, log2 KMAX+1).
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from max.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
@@ -115,20 +115,20 @@ def _dyn_assemble_kernel[
     var token = col // D
     var d = col % D
     if token == 0:
-        grid.ptr[idx] = rebind[Scalar[DT]](action_base.ptr[d])
+        grid.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](action_base.ptr[unsafe_offset=d])
     elif token == 1:
-        var si = Int(rebind[Scalar[DT]](sig.ptr[bt]) + Scalar[DT](0.5))
-        grid.ptr[idx] = rebind[Scalar[DT]](signal_table.ptr[si * D + d])
+        var si = Int(rebind[Scalar[DT]](sig.ptr[unsafe_offset=bt]) + Scalar[DT](0.5))
+        grid.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](signal_table.ptr[unsafe_offset=si * D + d])
     elif token == 2:
-        var pi = Int(rebind[Scalar[DT]](step.ptr[bt]) + Scalar[DT](0.5))
-        grid.ptr[idx] = rebind[Scalar[DT]](step_table.ptr[pi * D + d])
+        var pi = Int(rebind[Scalar[DT]](step.ptr[unsafe_offset=bt]) + Scalar[DT](0.5))
+        grid.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](step_table.ptr[unsafe_offset=pi * D + d])
     elif token < 3 + NSP:
-        grid.ptr[idx] = rebind[Scalar[DT]](
-            proj_out.ptr[bt * (NSP * D) + (token - 3) * D + d]
+        grid.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](
+            proj_out.ptr[unsafe_offset=bt * (NSP * D) + (token - 3) * D + d]
         )
     elif token < 3 + NSP + NREG:
-        grid.ptr[idx] = rebind[Scalar[DT]](
-            register.ptr[(token - (3 + NSP)) * D + d]
+        grid.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](
+            register.ptr[unsafe_offset=(token - (3 + NSP)) * D + d]
         )
     # else: agent token columns (token ≥ 3+NSP+NREG) are written separately by
     # `_dyn_set_agent_kernel` when AGENT; with NAGENT=0 there are no such cols.
@@ -144,7 +144,7 @@ def _dyn_grad_proj_kernel[BT: Int, S: Int, D: Int, NSP: Int](
         return
     var bt = idx // (NSP * D)
     var k = idx % (NSP * D)
-    gproj.ptr[idx] = rebind[Scalar[DT]](ggrid.ptr[bt * (S * D) + 3 * D + k])
+    gproj.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](ggrid.ptr[unsafe_offset=bt * (S * D) + 3 * D + k])
 
 
 # action_base grad: gbase[d] += Σ_bt ggrid[bt, d].
@@ -157,8 +157,8 @@ def _dyn_grad_base_kernel[BT: Int, S: Int, D: Int](
         return
     var acc = Scalar[DT](0.0)
     for bt in range(BT):
-        acc += rebind[Scalar[DT]](ggrid.ptr[bt * (S * D) + d])
-    gbase.ptr[d] = rebind[Scalar[DT]](gbase.ptr[d]) + acc
+        acc += rebind[Scalar[DT]](ggrid.ptr[unsafe_offset=bt * (S * D) + d])
+    gbase.ptr[unsafe_offset=d] = rebind[Scalar[DT]](gbase.ptr[unsafe_offset=d]) + acc
 
 
 # register grad: greg[k] += Σ_bt ggrid[bt, REG_OFF + k].
@@ -172,8 +172,8 @@ def _dyn_grad_reg_kernel[BT: Int, S: Int, D: Int, NSP: Int, NREG: Int](
     comptime REG_OFF = (3 + NSP) * D
     var acc = Scalar[DT](0.0)
     for bt in range(BT):
-        acc += rebind[Scalar[DT]](ggrid.ptr[bt * (S * D) + REG_OFF + k])
-    greg.ptr[k] = rebind[Scalar[DT]](greg.ptr[k]) + acc
+        acc += rebind[Scalar[DT]](ggrid.ptr[unsafe_offset=bt * (S * D) + REG_OFF + k])
+    greg.ptr[unsafe_offset=k] = rebind[Scalar[DT]](greg.ptr[unsafe_offset=k]) + acc
 
 
 # signal-table grad (index-masked batch reduction; signal token at col [D,2D)).
@@ -189,10 +189,10 @@ def _dyn_grad_sig_kernel[BT: Int, S: Int, D: Int, NSIG: Int](
     var d = e % D
     var acc = Scalar[DT](0.0)
     for bt in range(BT):
-        var si = Int(rebind[Scalar[DT]](sig.ptr[bt]) + Scalar[DT](0.5))
+        var si = Int(rebind[Scalar[DT]](sig.ptr[unsafe_offset=bt]) + Scalar[DT](0.5))
         if si == v:
-            acc += rebind[Scalar[DT]](ggrid.ptr[bt * (S * D) + D + d])
-    gsig.ptr[e] = rebind[Scalar[DT]](gsig.ptr[e]) + acc
+            acc += rebind[Scalar[DT]](ggrid.ptr[unsafe_offset=bt * (S * D) + D + d])
+    gsig.ptr[unsafe_offset=e] = rebind[Scalar[DT]](gsig.ptr[unsafe_offset=e]) + acc
 
 
 # step-table grad (index-masked; step token at col [2D,3D)).
@@ -208,10 +208,10 @@ def _dyn_grad_step_kernel[BT: Int, S: Int, D: Int, NSTEP: Int](
     var d = e % D
     var acc = Scalar[DT](0.0)
     for bt in range(BT):
-        var pi = Int(rebind[Scalar[DT]](step.ptr[bt]) + Scalar[DT](0.5))
+        var pi = Int(rebind[Scalar[DT]](step.ptr[unsafe_offset=bt]) + Scalar[DT](0.5))
         if pi == v:
-            acc += rebind[Scalar[DT]](ggrid.ptr[bt * (S * D) + 2 * D + d])
-    gstep.ptr[e] = rebind[Scalar[DT]](gstep.ptr[e]) + acc
+            acc += rebind[Scalar[DT]](ggrid.ptr[unsafe_offset=bt * (S * D) + 2 * D + d])
+    gstep.ptr[unsafe_offset=e] = rebind[Scalar[DT]](gstep.ptr[unsafe_offset=e]) + acc
 
 
 # action conditioning: add the act-MLP output into the action token (col [0,D))
@@ -225,9 +225,9 @@ def _dyn_add_act_kernel[BT: Int, S: Int, D: Int](
         return
     var bt = e // D
     var d = e % D
-    grid.ptr[bt * (S * D) + d] = (
-        rebind[Scalar[DT]](grid.ptr[bt * (S * D) + d])
-        + rebind[Scalar[DT]](aout.ptr[e])
+    grid.ptr[unsafe_offset=bt * (S * D) + d] = (
+        rebind[Scalar[DT]](grid.ptr[unsafe_offset=bt * (S * D) + d])
+        + rebind[Scalar[DT]](aout.ptr[unsafe_offset=e])
     )
 
 
@@ -242,7 +242,7 @@ def _dyn_extract_token0_kernel[BT: Int, S: Int, D: Int](
         return
     var bt = e // D
     var d = e % D
-    gaout.ptr[e] = rebind[Scalar[DT]](ggrid.ptr[bt * (S * D) + d])
+    gaout.ptr[unsafe_offset=e] = rebind[Scalar[DT]](ggrid.ptr[unsafe_offset=bt * (S * D) + d])
 
 
 # ── Agent-token GPU kernels (AGENT only). The agent columns start at
@@ -259,7 +259,7 @@ def _dyn_set_agent_kernel[BT: Int, S: Int, D: Int, NAGENT: Int](
         return
     var bt = e // AG
     var k = e % AG
-    grid.ptr[bt * (S * D) + OFF + k] = rebind[Scalar[DT]](agin.ptr[e])
+    grid.ptr[unsafe_offset=bt * (S * D) + OFF + k] = rebind[Scalar[DT]](agin.ptr[unsafe_offset=e])
 
 
 # extract h_t = transformer-output agent columns into a packed [BT, AG] buffer.
@@ -274,7 +274,7 @@ def _dyn_extract_agent_fwd_kernel[BT: Int, S: Int, D: Int, NAGENT: Int](
         return
     var bt = e // AG
     var k = e % AG
-    agout.ptr[e] = rebind[Scalar[DT]](tfout.ptr[bt * (S * D) + OFF + k])
+    agout.ptr[unsafe_offset=e] = rebind[Scalar[DT]](tfout.ptr[unsafe_offset=bt * (S * D) + OFF + k])
 
 
 # add the h_t grad into the agent columns of the transformer-output grad.
@@ -289,9 +289,9 @@ def _dyn_add_agent_grad_kernel[BT: Int, S: Int, D: Int, NAGENT: Int](
         return
     var bt = e // AG
     var k = e % AG
-    gtfout.ptr[bt * (S * D) + OFF + k] = (
-        rebind[Scalar[DT]](gtfout.ptr[bt * (S * D) + OFF + k])
-        + rebind[Scalar[DT]](gagout.ptr[e])
+    gtfout.ptr[unsafe_offset=bt * (S * D) + OFF + k] = (
+        rebind[Scalar[DT]](gtfout.ptr[unsafe_offset=bt * (S * D) + OFF + k])
+        + rebind[Scalar[DT]](gagout.ptr[unsafe_offset=e])
     )
 
 
@@ -307,7 +307,7 @@ def _dyn_extract_agent_grad_kernel[BT: Int, S: Int, D: Int, NAGENT: Int](
         return
     var bt = e // AG
     var k = e % AG
-    gagin.ptr[e] = rebind[Scalar[DT]](ggrid.ptr[bt * (S * D) + OFF + k])
+    gagin.ptr[unsafe_offset=e] = rebind[Scalar[DT]](ggrid.ptr[unsafe_offset=bt * (S * D) + OFF + k])
 
 
 struct Dreamer4Dynamics[
@@ -522,8 +522,8 @@ struct Dreamer4Dynamics[
 
     def set_indices(
         mut self,
-        sig: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        step: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        sig: Pointer[Scalar[DT], MutAnyOrigin],
+        step: Pointer[Scalar[DT], MutAnyOrigin],
         batch: Int,
     ):
         """Push the per-sample signal/step indices (fp buffers holding exact
@@ -533,13 +533,13 @@ struct Dreamer4Dynamics[
             self.cache_sig.resize(batch, 0)
             self.cache_step.resize(batch, 0)
         for bt in range(batch):
-            self.cache_sig[bt] = Int(Float64(sig[bt]) + 0.5)
-            self.cache_step[bt] = Int(Float64(step[bt]) + 0.5)
+            self.cache_sig[bt] = Int(Float64(sig[unsafe_offset=bt]) + 0.5)
+            self.cache_step[bt] = Int(Float64(step[unsafe_offset=bt]) + 0.5)
 
     def set_actions(
         mut self,
-        actions: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        act_mask: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        actions: Pointer[Scalar[DT], MutAnyOrigin],
+        act_mask: Pointer[Scalar[DT], MutAnyOrigin],
         batch: Int,
     ):
         """Push per-sample actions for the next forward/vjp (ACOND only;
@@ -555,7 +555,7 @@ struct Dreamer4Dynamics[
             self.cache_act.ensure(batch * Self.ADIM)
             for bt in range(batch):
                 for a in range(Self.ADIM):
-                    var v = actions[bt * Self.ADIM + a] * act_mask[a]
+                    var v = actions[unsafe_offset=bt * Self.ADIM + a] * act_mask[unsafe_offset=a]
                     if v > Scalar[DT](1.0):
                         v = Scalar[DT](1.0)
                     elif v < Scalar[DT](-1.0):
@@ -565,7 +565,7 @@ struct Dreamer4Dynamics[
     # ── Agent-token control inputs / outputs (AGENT only) ───────────────
     def set_agent_in(
         mut self,
-        agent_in: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        agent_in: Pointer[Scalar[DT], MutAnyOrigin],
         batch: Int,
     ):
         """Push the per-sample agent-token INPUT for the next forward/vjp
@@ -576,11 +576,11 @@ struct Dreamer4Dynamics[
         comptime if Self.AGENT:
             self.cache_agent_in.ensure(batch * Self.AG_DIM)
             for i in range(batch * Self.AG_DIM):
-                self.cache_agent_in.data[i] = agent_in[i]
+                self.cache_agent_in.data[i] = agent_in[unsafe_offset=i]
 
     def set_grad_h(
         mut self,
-        grad_h: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        grad_h: Pointer[Scalar[DT], MutAnyOrigin],
         batch: Int,
     ):
         """Push the gradient of the loss wrt the agent output h_t before vjp
@@ -589,9 +589,9 @@ struct Dreamer4Dynamics[
         comptime if Self.AGENT:
             self.grad_agent_out.ensure(batch * Self.AG_DIM)
             for i in range(batch * Self.AG_DIM):
-                self.grad_agent_out.data[i] = grad_h[i]
+                self.grad_agent_out.data[i] = grad_h[unsafe_offset=i]
 
-    def agent_out_ptr_cpu(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def agent_out_ptr_cpu(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """CPU pointer to h_t (the agent transformer outputs), valid after a
         CPU forward. Shape [BATCH, AG_DIM]. Sanctioned host control-output
         boundary (consumed by the BC loss / imagination rollout)."""
@@ -601,7 +601,7 @@ struct Dreamer4Dynamics[
         """Device buffer holding h_t, valid after a GPU forward."""
         return self.agent_out.dev.value()
 
-    def grad_agent_in_ptr_cpu(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def grad_agent_in_ptr_cpu(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """CPU pointer to the grad wrt the agent input, valid after a CPU vjp.
         Feeds the TaskEmbedder backward. Shape [BATCH, AG_DIM]."""
         return _mao(self.grad_agent_in.data.unsafe_ptr())
@@ -709,19 +709,19 @@ struct Dreamer4Dynamics[
             var sh = self.sig_stage.hbuf.value()
             var th = self.step_stage.hbuf.value()
             for bt in range(BATCH):
-                sh.unsafe_ptr()[bt] = Scalar[DT](Float64(self.cache_sig[bt]))
-                th.unsafe_ptr()[bt] = Scalar[DT](Float64(self.cache_step[bt]))
+                sh.unsafe_ptr()[unsafe_offset=bt] = Scalar[DT](Float64(self.cache_sig[bt]))
+                th.unsafe_ptr()[unsafe_offset=bt] = Scalar[DT](Float64(self.cache_step[bt]))
             c.enqueue_copy(self.sig_stage.dev.value(), sh)
             c.enqueue_copy(self.step_stage.dev.value(), th)
             comptime if Self.ACOND:
                 var ah = self.cache_act.hbuf.value()
                 for i in range(BATCH * Self.ADIM):
-                    ah.unsafe_ptr()[i] = self.cache_act.data[i]
+                    ah.unsafe_ptr()[unsafe_offset=i] = self.cache_act.data[i]
                 c.enqueue_copy(self.cache_act.dev.value(), ah)
             comptime if Self.AGENT:
                 var agh = self.cache_agent_in.hbuf.value()
                 for i in range(BATCH * Self.AG_DIM):
-                    agh.unsafe_ptr()[i] = self.cache_agent_in.data[i]
+                    agh.unsafe_ptr()[unsafe_offset=i] = self.cache_agent_in.data[i]
                 c.enqueue_copy(self.cache_agent_in.dev.value(), agh)
 
             self.proj_out.ensure_gpu(c, BATCH * Self.NSP * Self.D)
@@ -926,7 +926,7 @@ struct Dreamer4Dynamics[
                 # upload h_t grad (set via set_grad_h), add into agent columns
                 var goh2 = self.grad_agent_out.hbuf.value()
                 for i in range(BATCH * Self.AG_DIM):
-                    goh2.unsafe_ptr()[i] = self.grad_agent_out.data[i]
+                    goh2.unsafe_ptr()[unsafe_offset=i] = self.grad_agent_out.data[i]
                 c.enqueue_copy(self.grad_agent_out.dev.value(), goh2)
                 var gagout_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH * Self.AG_DIM), MutAnyOrigin

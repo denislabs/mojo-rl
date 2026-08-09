@@ -40,7 +40,7 @@ the call as needed. A `use_n_step: Bool` Saveable config flag in
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -53,7 +53,7 @@ from ..training.replay_buffer import ReplayBuffer
 
 
 @fieldwise_init
-struct NStepTransition[OBS: Int, ACT: Int](Movable & ImplicitlyDeletable):
+struct NStepTransition[OBS: Int, ACT: Int](Movable & Deinitable):
     """Compressed n-step transition returned by `NStepBuffer.add`.
 
     `valid=False` means the buffer accumulated but didn't emit (ring
@@ -91,7 +91,7 @@ struct NStepTransition[OBS: Int, ACT: Int](Movable & ImplicitlyDeletable):
 
 
 @fieldwise_init
-struct NStepBuffer[N: Int, OBS: Int, ACT: Int](Movable & ImplicitlyDeletable):
+struct NStepBuffer[N: Int, OBS: Int, ACT: Int](Movable & Deinitable):
     """CPU streaming n-step buffer for a single env.
 
     Accumulates up to `N` transitions; on emit (ring full or `done`),
@@ -410,7 +410,7 @@ def _nstep_copy_kernel[
 
 @fieldwise_init
 struct GPUNStepBuffer[N: Int, OBS: Int, ACT: Int, N_ENVS: Int](
-    Movable & ImplicitlyDeletable
+    Movable & Deinitable
 ):
     """GPU per-env streaming n-step buffer for `N_ENVS` parallel envs.
 

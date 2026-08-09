@@ -18,7 +18,7 @@ Usage:
 For GPU: `MBPOAgent["gpu", ...](ctx=ctx, ...)`.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
@@ -52,7 +52,7 @@ struct MBPOAgent[
     LOGVAR_MIN: Float64 = -10.0,
     LOGVAR_MAX: Float64 = -2.0,
     USE_TRAIN_CUDA_GRAPH: Bool = False,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     """Thin facade over `MBPOTrainer` + off-policy drivers."""
 
     comptime TrainerT = MBPOTrainer[
@@ -142,7 +142,7 @@ struct MBPOAgent[
         print_every: Int = 5_000,
         verbose: Bool = True,
         nstep_gamma: Scalar[DT] = 0.99,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         episode_sync_every: Int = 1,
         checkpoint_path: String = "",
@@ -187,7 +187,7 @@ struct MBPOAgent[
         *,
         print_every: Int = 1_000,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
@@ -259,7 +259,7 @@ struct MBPOAgent[
         L: Logger = NoOpLogger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> MBPOMetrics:
         """Drain trainer accumulators into an MBPOMetrics bundle."""

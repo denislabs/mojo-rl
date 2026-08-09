@@ -13,7 +13,7 @@ precision floor (bf16 plateaus above fp32).
 Run (NVIDIA): pixi run -e nvidia mojo run -I . tests/deep_agents/test_ezv2_vp_bf16_vs_fp32_lrsweep_gpu.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming

@@ -13,8 +13,8 @@ Run (GPU env required):
     pixi run -e apple mojo run -I . examples/pendulum/ezv2_pendulum_v2_gpu.mojo
 """
 
-from std.memory import UnsafePointer
-from std.gpu.host import DeviceContext
+from std.memory import Pointer
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming
@@ -121,7 +121,7 @@ def main() raises:
         eval_episodes=5,
         diag_every=200,
         report_every=500,
-        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+        logger=Pointer(to=logger).as_unsafe_any_origin(),
         seed=42,
         verbose=True,
     )

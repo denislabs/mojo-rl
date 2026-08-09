@@ -15,7 +15,7 @@ never happened.
 """
 
 
-struct EpisodeIndex(Movable & ImplicitlyDeletable):
+struct EpisodeIndex(Movable & Deinitable):
     var ep_len: List[Int64]
     var ep_offset: List[Int64]
 

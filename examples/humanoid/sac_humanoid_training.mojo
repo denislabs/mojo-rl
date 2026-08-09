@@ -33,7 +33,7 @@ from std.time import perf_counter_ns
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.deep_agents.sac import SAC
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv
@@ -104,7 +104,7 @@ def main() raises:
     logger.set_config("hidden", String(HIDDEN))
     logger.set_config("batch", String(BATCH))
 
-    var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
+    var logger_ptr = Pointer(to=logger).as_unsafe_any_origin()
 
     # ─── Agent + env ─────────────────────────────────────────────────────
     # `SAC[target, OBS, ACT, BATCH, CAP, HIDDEN]` builds the SACAgent with

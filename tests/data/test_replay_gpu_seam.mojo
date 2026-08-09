@@ -20,7 +20,7 @@ Run:
     pixi run mojo run -I . tests/data/test_replay_gpu_seam.mojo
 """
 
-from std.gpu.host import DeviceBuffer, DeviceContext
+from max.gpu.host import DeviceBuffer, DeviceContext
 from std.testing import assert_almost_equal, assert_equal, assert_true
 
 from mojo_rl.nn.constants import DT

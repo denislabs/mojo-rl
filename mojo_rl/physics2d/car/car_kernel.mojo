@@ -22,7 +22,7 @@ Example usage:
 
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from .constants import (
     TILE_DATA_SIZE,
@@ -154,9 +154,12 @@ struct CarPhysicsKernel:
                 Layout.row_major(MAX_TILES, TILE_DATA_SIZE),
                 MutAnyOrigin,
             ],
-            num_active_tiles: Int,
+            num_active_tiles_arg: Int64,
             dt: Scalar[dtype],
         ):
+            # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+            # a fixed-width `Int64` and re-binds the original name here.
+            var num_active_tiles = Int(num_active_tiles_arg)
             CarPhysicsKernel._step_kernel[
                 BATCH,
                 STATE_SIZE,
@@ -171,7 +174,7 @@ struct CarPhysicsKernel:
         ctx.enqueue_function[kernel_wrapper](
             state,
             tiles,
-            num_active_tiles,
+            Int64(num_active_tiles),
             dt,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),

@@ -21,7 +21,7 @@ same decorator subsumes the former GPU-only `NStepSampleGpuStep` /
 `NStepPerSampleGpuStep`.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from ...data.n_step_replay import NStepBuffer, GPUNStepBuffer

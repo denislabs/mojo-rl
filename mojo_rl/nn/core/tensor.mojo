@@ -9,13 +9,13 @@ builds its typed view INTERNALLY — `TileTensor(self.data, …)` on CPU, or
 the GPU path is the kernel-arg `MutAnyOrigin` (the GPU ABI).
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
 
 
-struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
+struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
     var data: List[Scalar[Self.dt]]
     var dev: Optional[DeviceBuffer[Self.dt]]
     var n: Int  # logical length (tracks the device buffer too)
@@ -102,7 +102,7 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
     @staticmethod
     def view_gpu(
         ctx: DeviceContext,
-        ptr: UnsafePointer[Scalar[Self.dt], MutAnyOrigin],
+        ptr: Pointer[Scalar[Self.dt], MutAnyOrigin],
         n: Int,
     ) raises -> Self:
         """BORROWING device view — wrap an EXTERNALLY-owned device buffer (e.g.
@@ -138,7 +138,7 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
     def copy_from_device(
         mut self,
         ctx: DeviceContext,
-        src: UnsafePointer[Scalar[Self.dt], MutAnyOrigin],
+        src: Pointer[Scalar[Self.dt], MutAnyOrigin],
         n: Int,
     ) raises:
         """Device→device copy an EXTERNALLY-owned buffer INTO this Tensor's own
@@ -154,7 +154,7 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
     def copy_to_device(
         mut self,
         ctx: DeviceContext,
-        dst: UnsafePointer[Scalar[Self.dt], MutAnyOrigin],
+        dst: Pointer[Scalar[Self.dt], MutAnyOrigin],
         n: Int,
     ) raises:
         """Device→device copy this Tensor's own device buffer OUT to an

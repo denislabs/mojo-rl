@@ -23,7 +23,7 @@ No params. Conforms to `Module`.
 
 from std.math import exp, sin, cos, sqrt, log
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
@@ -72,8 +72,8 @@ def _pos_add_kernel[
     if idx >= BATCH * N:
         return
     var i = idx % N
-    output.ptr[idx] = rebind[Scalar[DT]](input.ptr[idx]) + rebind[Scalar[DT]](
-        bias.ptr[i]
+    output.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](input.ptr[unsafe_offset=idx]) + rebind[Scalar[DT]](
+        bias.ptr[unsafe_offset=i]
     )
 
 
@@ -86,7 +86,7 @@ def _copy_kernel[
     var idx = Int(global_idx.x)
     if idx >= BATCH * N:
         return
-    dst.ptr[idx] = rebind[Scalar[DT]](src.ptr[idx])
+    dst.ptr[unsafe_offset=idx] = rebind[Scalar[DT]](src.ptr[unsafe_offset=idx])
 
 
 struct SinusoidalPosAdd[T_: Int, S_: Int, D_: Int, SCALE_: Bool = False](Module):

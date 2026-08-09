@@ -13,7 +13,7 @@ Backward: `grad_in[b, d] = OP.scale_factor[DIM]() · grad_out[b, 0]`
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
@@ -29,7 +29,7 @@ from ..core.amp import AMPPolicy, NoAMP
 # ReduceOp trait + SumOp / MeanOp impls (verbatim math from legacy
 # core/reduce_op.mojo + primitives/ops/{sum,mean}_op.mojo, inlined).
 # ──────────────────────────────────────────────────────────────────────
-trait ReduceOp(Movable & ImplicitlyDeletable):
+trait ReduceOp(Movable & Deinitable):
     """Marker trait — linear-reduction op providing a comptime scale factor."""
 
     @staticmethod

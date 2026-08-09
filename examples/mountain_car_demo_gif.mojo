@@ -9,6 +9,7 @@ Run with:
 
 from mojo_rl.envs import MountainCarEnv
 from mojo_rl.agents.tiled_qlearning import TiledQLearningAgent
+from mojo_rl.core.fmt import fit
 
 
 def main() raises:
@@ -94,7 +95,7 @@ def main() raises:
             "| Steps:",
             Int(-episode_reward),
             "| Reward:",
-            String(episode_reward)[byte=:10],
+            fit(String(episode_reward), 10),
         )
 
     env.stop_recording()

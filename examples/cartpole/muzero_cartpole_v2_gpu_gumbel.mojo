@@ -28,8 +28,8 @@ Run (GPU env required):
     pixi run -e apple mojo run -I . examples/cartpole/muzero_cartpole_v2_gpu_gumbel.mojo
 """
 
-from std.memory import UnsafePointer
-from std.gpu.host import DeviceContext
+from std.memory import Pointer
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.core.dotenv import load_dotenv
@@ -108,10 +108,10 @@ def main() raises:
         reanalyze_every=1,
         eval_every=1000,
         eval_episodes=10,           # mean of 10 complete greedy games
-        eval_env=UnsafePointer(to=eval_env).as_unsafe_any_origin(),
+        eval_env=Pointer(to=eval_env).as_unsafe_any_origin(),
         diag_every=100,
         report_every=200,
-        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+        logger=Pointer(to=logger).as_unsafe_any_origin(),
         seed=42,
         verbose=True,
     )

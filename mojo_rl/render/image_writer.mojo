@@ -7,7 +7,7 @@ Usage — pixel observations (e.g., 84x84 grayscale frame stacks):
 
     from mojo_rl.render.image_writer import save_reconstruction_grid
 
-    # originals, reconstructions: UnsafePointer[Scalar[float32]]
+    # originals, reconstructions: Pointer[Scalar[float32]]
     # laid out as [N, C, H, W] in CHW order, values in ~[0, 1] or [-1, 1]
     save_reconstruction_grid(
         "recon.ppm", originals, reconstructions,
@@ -18,7 +18,7 @@ Usage — flat observation vectors (e.g., Pendulum OBS_DIM=3):
 
     from mojo_rl.render.image_writer import save_vector_heatmap
 
-    # data: UnsafePointer[Scalar[float32]], shape [N, DIM]
+    # data: Pointer[Scalar[float32]], shape [N, DIM]
     save_vector_heatmap("obs_vs_recon.ppm", data, n_rows=16, dim=17)
 """
 
@@ -32,7 +32,7 @@ from std.math import min, max
 
 def save_ppm(
     path: String,
-    data: UnsafePointer[Scalar[DType.float32], _],
+    data: Pointer[Scalar[DType.float32], _],
     height: Int,
     width: Int,
     channels: Int = 1,
@@ -84,7 +84,7 @@ def save_ppm(
 
 def _write_pixel(
     mut buf: List[UInt8],
-    src: UnsafePointer[Scalar[DType.float32], _],
+    src: Pointer[Scalar[DType.float32], _],
     img_idx: Int,
     local_y: Int,
     local_x: Int,
@@ -118,8 +118,8 @@ def _write_pixel(
 
 def save_reconstruction_grid(
     path: String,
-    originals: UnsafePointer[Scalar[DType.float32], _],
-    reconstructions: UnsafePointer[Scalar[DType.float32], _],
+    originals: Pointer[Scalar[DType.float32], _],
+    reconstructions: Pointer[Scalar[DType.float32], _],
     n: Int,
     height: Int,
     width: Int,
@@ -199,7 +199,7 @@ def save_reconstruction_grid(
 
 def save_image_row(
     path: String,
-    data: UnsafePointer[Scalar[DType.float32], _],
+    data: Pointer[Scalar[DType.float32], _],
     n: Int,
     height: Int,
     width: Int,
@@ -379,7 +379,7 @@ def _viridis_rgb(t: Float32) -> Tuple[UInt8, UInt8, UInt8]:
 
 def save_vector_heatmap(
     path: String,
-    data: UnsafePointer[Scalar[DType.float32], _],
+    data: Pointer[Scalar[DType.float32], _],
     n_rows: Int,
     dim: Int,
     cell_w: Int = 16,
@@ -434,8 +434,8 @@ def save_vector_heatmap(
 
 def save_vector_comparison(
     path: String,
-    originals: UnsafePointer[Scalar[DType.float32], _],
-    reconstructions: UnsafePointer[Scalar[DType.float32], _],
+    originals: Pointer[Scalar[DType.float32], _],
+    reconstructions: Pointer[Scalar[DType.float32], _],
     n: Int,
     dim: Int,
     cell_w: Int = 16,
@@ -639,7 +639,7 @@ def _append_subblocks(mut buf: List[UInt8], data: List[UInt8]):
 
 def save_frame_sequence_gif(
     path: String,
-    frames: UnsafePointer[Scalar[DType.float32], _],
+    frames: Pointer[Scalar[DType.float32], _],
     n_frames: Int,
     height: Int,
     width: Int,

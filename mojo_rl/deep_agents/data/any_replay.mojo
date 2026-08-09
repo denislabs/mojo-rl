@@ -20,7 +20,7 @@ This is the conformer the C51 config presets plug into so a single
 no per-target block duplication.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from ..training.replay_buffer import ReplayBuffer

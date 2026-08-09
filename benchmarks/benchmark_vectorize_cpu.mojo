@@ -37,14 +37,14 @@ comptime SIMD_WIDTH = simd_width_of[dtype]()
 # =============================================================================
 
 
-def fill_random(p: UnsafePointer[Scalar[dtype], MutAnyOrigin], n: Int):
+def fill_random(p: Pointer[Scalar[dtype], MutAnyOrigin], n: Int):
     for i in range(n):
         p[i] = Scalar[dtype](random_float64(-1.0, 1.0))
 
 
 def max_abs_diff(
-    a: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    b: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    a: Pointer[Scalar[dtype], MutAnyOrigin],
+    b: Pointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
 ) -> Float64:
     var m: Float64 = 0.0
@@ -63,8 +63,8 @@ def max_abs_diff(
 
 
 def relu_scalar(
-    inp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    res: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    inp: Pointer[Scalar[dtype], MutAnyOrigin],
+    res: Pointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
 ):
     for i in range(n):
@@ -73,8 +73,8 @@ def relu_scalar(
 
 
 def relu_simd(
-    inp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    res: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    inp: Pointer[Scalar[dtype], MutAnyOrigin],
+    res: Pointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
 ):
     var i = 0
@@ -96,8 +96,8 @@ def relu_simd(
 
 
 def tanh_scalar(
-    inp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    res: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    inp: Pointer[Scalar[dtype], MutAnyOrigin],
+    res: Pointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
 ):
     for i in range(n):
@@ -105,8 +105,8 @@ def tanh_scalar(
 
 
 def tanh_simd(
-    inp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    res: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    inp: Pointer[Scalar[dtype], MutAnyOrigin],
+    res: Pointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
 ):
     var i = 0
@@ -125,8 +125,8 @@ def tanh_simd(
 
 
 def mish_scalar(
-    inp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    res: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    inp: Pointer[Scalar[dtype], MutAnyOrigin],
+    res: Pointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
 ):
     for i in range(n):
@@ -135,8 +135,8 @@ def mish_scalar(
 
 
 def mish_simd(
-    inp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    res: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    inp: Pointer[Scalar[dtype], MutAnyOrigin],
+    res: Pointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
 ):
     var i = 0
@@ -158,9 +158,9 @@ def mish_simd(
 
 
 def adam_scalar(
-    params: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    grads: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    state: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    params: Pointer[Scalar[dtype], MutAnyOrigin],
+    grads: Pointer[Scalar[dtype], MutAnyOrigin],
+    state: Pointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
     lr: Scalar[dtype],
     bc1: Scalar[dtype],
@@ -185,10 +185,10 @@ def adam_scalar(
 
 
 def adam_simd(
-    params: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    grads: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    state_m: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    state_v: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    params: Pointer[Scalar[dtype], MutAnyOrigin],
+    grads: Pointer[Scalar[dtype], MutAnyOrigin],
+    state_m: Pointer[Scalar[dtype], MutAnyOrigin],
+    state_v: Pointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
     lr: Scalar[dtype],
     bc1: Scalar[dtype],
@@ -233,10 +233,10 @@ def adam_simd(
 
 
 def ln_scalar(
-    inp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    res: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    gamma: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    bta: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    inp: Pointer[Scalar[dtype], MutAnyOrigin],
+    res: Pointer[Scalar[dtype], MutAnyOrigin],
+    gamma: Pointer[Scalar[dtype], MutAnyOrigin],
+    bta: Pointer[Scalar[dtype], MutAnyOrigin],
     batch: Int,
     dim: Int,
     eps: Scalar[dtype],
@@ -257,10 +257,10 @@ def ln_scalar(
 
 
 def ln_simd_row(
-    inp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    res: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    gamma: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    bta: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    inp: Pointer[Scalar[dtype], MutAnyOrigin],
+    res: Pointer[Scalar[dtype], MutAnyOrigin],
+    gamma: Pointer[Scalar[dtype], MutAnyOrigin],
+    bta: Pointer[Scalar[dtype], MutAnyOrigin],
     off: Int,
     dim: Int,
     eps: Scalar[dtype],
@@ -306,10 +306,10 @@ def ln_simd_row(
 
 
 def ln_simd(
-    inp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    res: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    gamma: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    bta: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    inp: Pointer[Scalar[dtype], MutAnyOrigin],
+    res: Pointer[Scalar[dtype], MutAnyOrigin],
+    gamma: Pointer[Scalar[dtype], MutAnyOrigin],
+    bta: Pointer[Scalar[dtype], MutAnyOrigin],
     batch: Int,
     dim: Int,
     eps: Scalar[dtype],
@@ -319,10 +319,10 @@ def ln_simd(
 
 
 def ln_par(
-    inp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    res: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    gamma: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    bta: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    inp: Pointer[Scalar[dtype], MutAnyOrigin],
+    res: Pointer[Scalar[dtype], MutAnyOrigin],
+    gamma: Pointer[Scalar[dtype], MutAnyOrigin],
+    bta: Pointer[Scalar[dtype], MutAnyOrigin],
     batch: Int,
     dim: Int,
     eps: Scalar[dtype],

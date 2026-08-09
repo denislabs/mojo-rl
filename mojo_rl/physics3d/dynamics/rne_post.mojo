@@ -48,7 +48,7 @@ rather than returning a plausible wrong number.
 """
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..fields import Data, Model, DynamicsScratch

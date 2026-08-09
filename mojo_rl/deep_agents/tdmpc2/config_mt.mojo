@@ -9,7 +9,7 @@ config surface; the single-task `config.mojo` is untouched.
     ](ctx=ctx, lr=..., bce_coef=...)
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 

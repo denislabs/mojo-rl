@@ -21,7 +21,7 @@ scalar columns like ``reward`` / ``done`` want — rank 1 rather than
 ``[N, 1]`` so h5py and our own reader both see a plain vector.
 """
 
-from std.memory import alloc, UnsafePointer
+from std.memory import alloc, Pointer
 
 from . import c_int, c_uint
 from .h5_types import (
@@ -67,7 +67,7 @@ struct H5DatasetWriter(Movable):
         self.n_rows = 0
         self.rank = rank
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         if self.dset_id > 0:
             try:
                 _ = h5d_close(self.dset_id)
@@ -78,7 +78,7 @@ struct H5DatasetWriter(Movable):
         dtype: DType
     ](
         mut self,
-        buf: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        buf: Pointer[Scalar[dtype], MutAnyOrigin],
         n_rows: Int,
     ) raises:
         """Append ``n_rows`` rows from ``buf`` to the end of the dataset.
@@ -94,11 +94,11 @@ struct H5DatasetWriter(Movable):
 
         # 1. Grow dim-0. Any dataspace obtained before this is stale.
         var ext = alloc[hsize_t](self.rank)
-        ext[0] = hsize_t(new_n)
+        ext[unsafe_offset=0] = hsize_t(new_n)
         if self.rank > 1:
-            ext[1] = hsize_t(self.row_dim)
+            ext[unsafe_offset=1] = hsize_t(self.row_dim)
         var ext_ret = h5d_set_extent(self.dset_id, ext)
-        ext.free()
+        ext.unsafe_free()
         if ext_ret < 0:
             raise Error("H5Dset_extent failed: ret=" + String(Int(ext_ret)))
 
@@ -110,27 +110,27 @@ struct H5DatasetWriter(Movable):
         var start = alloc[hsize_t](self.rank)
         var count = alloc[hsize_t](self.rank)
         var unit = alloc[hsize_t](self.rank)
-        start[0] = hsize_t(old_n)
-        count[0] = hsize_t(n_rows)
-        unit[0] = hsize_t(1)
+        start[unsafe_offset=0] = hsize_t(old_n)
+        count[unsafe_offset=0] = hsize_t(n_rows)
+        unit[unsafe_offset=0] = hsize_t(1)
         if self.rank > 1:
-            start[1] = hsize_t(0)
-            count[1] = hsize_t(self.row_dim)
-            unit[1] = hsize_t(1)
+            start[unsafe_offset=1] = hsize_t(0)
+            count[unsafe_offset=1] = hsize_t(self.row_dim)
+            unit[unsafe_offset=1] = hsize_t(1)
 
         var sel = h5s_select_hyperslab(
             file_space, H5S_SELECT_SET, start, unit, count, unit
         )
         if sel < 0:
             _ = h5s_close(file_space)
-            start.free(); count.free(); unit.free()
+            start.unsafe_free(); count.unsafe_free(); unit.unsafe_free()
             raise Error("H5Sselect_hyperslab failed (append)")
 
         # 3. Memory space is the compact [n_rows, row_dim] block in `buf`.
         var mem_space = h5s_create_simple(c_int(self.rank), count, count)
         if mem_space < 0:
             _ = h5s_close(file_space)
-            start.free(); count.free(); unit.free()
+            start.unsafe_free(); count.unsafe_free(); unit.unsafe_free()
             raise Error("H5Screate_simple failed (append)")
 
         var ret = h5d_write(
@@ -139,11 +139,11 @@ struct H5DatasetWriter(Movable):
             mem_space,
             file_space,
             H5P_DEFAULT,
-            buf.bitcast[NoneType](),
+            buf.unsafe_bitcast[NoneType](),
         )
         _ = h5s_close(mem_space)
         _ = h5s_close(file_space)
-        start.free(); count.free(); unit.free()
+        start.unsafe_free(); count.unsafe_free(); unit.unsafe_free()
 
         if ret < 0:
             raise Error("H5Dwrite failed: ret=" + String(Int(ret)))
@@ -165,7 +165,7 @@ struct H5Writer(Movable):
                 "H5Fcreate failed: hid_t=" + String(Int(self.file_id))
             )
 
-    def __del__(deinit self):
+    def __deinit__(deinit self):
         if self.file_id > 0:
             try:
                 _ = h5f_close(self.file_id)
@@ -207,15 +207,15 @@ struct H5Writer(Movable):
         # Dataspace: starts empty, dim-0 unlimited.
         var dims = alloc[hsize_t](rank)
         var maxdims = alloc[hsize_t](rank)
-        dims[0] = hsize_t(0)
-        maxdims[0] = H5S_UNLIMITED
+        dims[unsafe_offset=0] = hsize_t(0)
+        maxdims[unsafe_offset=0] = H5S_UNLIMITED
         if rank > 1:
-            dims[1] = hsize_t(row_dim)
-            maxdims[1] = hsize_t(row_dim)
+            dims[unsafe_offset=1] = hsize_t(row_dim)
+            maxdims[unsafe_offset=1] = hsize_t(row_dim)
 
         var space = h5s_create_simple(c_int(rank), dims, maxdims)
-        dims.free()
-        maxdims.free()
+        dims.unsafe_free()
+        maxdims.unsafe_free()
         if space < 0:
             raise Error("H5Screate_simple failed (create)")
 
@@ -226,11 +226,11 @@ struct H5Writer(Movable):
             raise Error("H5Pcreate failed")
 
         var chunk = alloc[hsize_t](rank)
-        chunk[0] = hsize_t(chunk_rows)
+        chunk[unsafe_offset=0] = hsize_t(chunk_rows)
         if rank > 1:
-            chunk[1] = hsize_t(row_dim)
+            chunk[unsafe_offset=1] = hsize_t(row_dim)
         var ck = h5p_set_chunk(dcpl, c_int(rank), chunk)
-        chunk.free()
+        chunk.unsafe_free()
         if ck < 0:
             _ = h5p_close(dcpl)
             _ = h5s_close(space)

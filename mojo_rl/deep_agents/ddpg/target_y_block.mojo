@@ -25,7 +25,7 @@ Surface:
         step[target, POLICY](mut state, mut actor_t, mut critic_t)
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.constants import DT

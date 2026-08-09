@@ -135,7 +135,7 @@ struct MountainCarEnv[DTYPE: DType](
     var num_bins: Int
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self, num_bins: Int = 20):
@@ -561,8 +561,8 @@ struct MountainCarEnv[DTYPE: DType](
         var info_lines = List[String]()
         info_lines.append("Step: " + String(self.steps))
         info_lines.append("Reward: " + String(Int(self.total_reward)))
-        info_lines.append("Pos: " + String(pos_f64)[byte=:6])
-        info_lines.append("Vel: " + String(vel_f64)[byte=:7])
+        info_lines.append("Pos: " + fit(String(pos_f64), 6))
+        info_lines.append("Vel: " + fit(String(vel_f64), 7))
         renderer.draw_info_box(info_lines)
 
         # Update display
@@ -572,7 +572,7 @@ struct MountainCarEnv[DTYPE: DType](
         """Clean up resources."""
         if self._renderer_initialized:
             self._renderer.value()[].close()
-            self._renderer.value().free()
+            self._renderer.value().unsafe_free()
             self._renderer_initialized = False
 
     def is_done(self) -> Bool:
@@ -698,7 +698,7 @@ struct MountainCarEnv[DTYPE: DType](
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
@@ -736,3 +736,5 @@ struct MountainCarEnv[DTYPE: DType](
         if not self._renderer_initialized:
             return
         self._renderer.value()[].stop_recording()
+
+from mojo_rl.core.fmt import fit

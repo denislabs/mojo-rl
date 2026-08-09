@@ -31,7 +31,7 @@ cache writes (eval bypasses the rollout buffer).
 """
 
 from std.math import exp as fexp, log as flog
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.random import random_float64
 
 from mojo_rl.nn.constants import DT
@@ -49,7 +49,7 @@ struct PPODiscreteActStep[
     N_ENVS_: Int,
     ACTOR: Module,
     CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime N_ACTIONS = Self.N_ACTIONS_
     comptime N_ENVS = Self.N_ENVS_
@@ -88,8 +88,8 @@ struct PPODiscreteActStep[
         ],
         mut actor: Self.ACTOR,
         mut critic: Self.CRITIC,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Sample N_ENVS categorical actions. Reads N_ENVS × OBS from
         obs_ptr, writes N_ENVS action indices (as floats) into action_ptr,
@@ -104,7 +104,7 @@ struct PPODiscreteActStep[
         # directly; obs_ptr is the driver trait ABI).
         for e in range(N_ENVS):
             for d in range(Self.OBS):
-                state.ob1.data[e * Self.OBS + d] = obs_ptr[e * Self.OBS + d]
+                state.ob1.data[e * Self.OBS + d] = obs_ptr[unsafe_offset=e * Self.OBS + d]
 
         comptime if target == "gpu":
             var ctx = state.ctx.value()
@@ -154,7 +154,7 @@ struct PPODiscreteActStep[
             var log_sum = flog(sum_exp)
             var log_p_a = (lg[base + a_idx] - max_l) - log_sum
             ca[e] = Scalar[DT](a_idx)
-            action_ptr[e] = Scalar[DT](a_idx)
+            action_ptr[unsafe_offset=e] = Scalar[DT](a_idx)
             clp[e] = log_p_a
             cval[e] = v1[e]
 

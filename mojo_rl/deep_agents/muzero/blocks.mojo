@@ -32,7 +32,7 @@ follows. The min-max latent scaling lives inside the nets (`MZRepNet`/`MZDynNet`
 from std.math import exp, log, sqrt
 from layout import Layout, LayoutTensor
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.module import Module
@@ -53,7 +53,7 @@ struct MZScratch[
     ACT: Int,
     LATENT: Int,
     BINS: Int,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     """Persistent device + host scratch for `mz_unroll_train_step_gpu`.
 
     Allocated **once** via `make` and reused every training step — per-step
@@ -171,7 +171,7 @@ def mz_unroll_train_step_cpu[
     v_max: Scalar[DT],
     value_coef: Scalar[DT] = Scalar[DT](1.0),
     max_grad_norm: Float64 = 0.0,
-    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    loss_parts: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """One CPU MuZero unroll training step. Returns the mean total loss
     (policy + value + reward, summed over the K+1 / K positions then averaged
@@ -341,9 +341,9 @@ def mz_unroll_train_step_cpu[
     if loss_parts:
         var lp = loss_parts.value()
         var inv = Scalar[DT](1.0) / Scalar[DT](B)
-        lp[0] = l_pol * inv   # policy
-        lp[1] = l_val * inv   # value
-        lp[2] = l_rew * inv   # reward
+        lp[unsafe_offset=0] = l_pol * inv   # policy
+        lp[unsafe_offset=1] = l_val * inv   # value
+        lp[unsafe_offset=2] = l_rew * inv   # reward
     return loss / Scalar[DT](B)
 
 
@@ -581,7 +581,7 @@ def _mz_train_prologue_gpu[
     policy_tgt: List[Scalar[DT]],
     value_tgt: List[Scalar[DT]],
     reward_tgt: List[Scalar[DT]],
-    is_weights: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    is_weights: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises:
     """EAGER prologue of the unroll step: H2D the host batch slabs into the
     persistent device scratch + zero the loss accumulators. Host work + unsafe_memcpy —
@@ -874,8 +874,8 @@ def _mz_train_epilogue_gpu[
     ctx: DeviceContext,
     mut scratch: MZScratch[B, K, OBS, ACT, LATENT, BINS],
     want_prio: Bool,
-    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-    out_prio: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    loss_parts: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
+    out_prio: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """EAGER epilogue: sync, D2H the loss components (+ priorities) and reduce on
     the host → returns the mean total loss (same reduction as the CPU path). Kept
@@ -894,7 +894,7 @@ def _mz_train_epilogue_gpu[
         var op = out_prio.value()
         var hpp = scratch.h_prio.value()
         for b in range(B):
-            op[b] = hpp[b]
+            op[unsafe_offset=b] = hpp[b]
     var l_pol = Scalar[DT](0.0)
     var l_val = Scalar[DT](0.0)
     var l_rew = Scalar[DT](0.0)
@@ -905,9 +905,9 @@ def _mz_train_epilogue_gpu[
     var inv = Scalar[DT](1.0) / Scalar[DT](B)
     if loss_parts:
         var lp = loss_parts.value()
-        lp[0] = l_pol * inv
-        lp[1] = l_val * inv
-        lp[2] = l_rew * inv
+        lp[unsafe_offset=0] = l_pol * inv
+        lp[unsafe_offset=1] = l_val * inv
+        lp[unsafe_offset=2] = l_rew * inv
     return (l_pol + l_val + l_rew) * inv
 
 
@@ -940,9 +940,9 @@ def mz_unroll_train_step_gpu[
     v_max: Scalar[DT],
     value_coef: Scalar[DT] = Scalar[DT](1.0),
     max_grad_norm: Float64 = 0.0,
-    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-    is_weights: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-    out_prio: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    loss_parts: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
+    is_weights: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
+    out_prio: Optional[Pointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """GPU MuZero K-step unroll training step — device mirror of
     `mz_unroll_train_step_cpu`.

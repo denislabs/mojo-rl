@@ -11,7 +11,7 @@ Run (no GPU):
     pixi run mojo run -I . examples/cartpole/muzero_cartpole_logged_cpu.mojo
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.core.logger import CsvLogger
@@ -55,7 +55,7 @@ def main() raises:
         eval_episodes=3,
         diag_every=200,
         report_every=200,
-        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+        logger=Pointer(to=logger).as_unsafe_any_origin(),
         verbose=True,
     )
     logger.close()

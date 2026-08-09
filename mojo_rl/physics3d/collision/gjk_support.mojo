@@ -34,7 +34,7 @@ def support_sphere[
     result[0] = pos_x + radius * dir_x
     result[1] = pos_y + radius * dir_y
     result[2] = pos_z + radius * dir_z
-    return result
+    return result^
 
 
 @always_inline
@@ -78,7 +78,7 @@ def support_capsule[
     result[0] = ex + radius * dir_x
     result[1] = ey + radius * dir_y
     result[2] = ez + radius * dir_z
-    return result
+    return result^
 
 
 @always_inline
@@ -132,7 +132,7 @@ def support_box[
     result[2] = (
         pos_z + sx * half_x * ax[2] + sy * half_y * ay[2] + sz * half_z * az[2]
     )
-    return result
+    return result^
 
 
 @always_inline
@@ -188,7 +188,7 @@ def support_cylinder[
         result[0] = cx + radius * local_x[0]
         result[1] = cy + radius * local_x[1]
         result[2] = cz + radius * local_x[2]
-    return result
+    return result^
 
 
 @always_inline
@@ -245,7 +245,7 @@ def support_mesh[
     result[0] = pos_x + local_pt[0]
     result[1] = pos_y + local_pt[1]
     result[2] = pos_z + local_pt[2]
-    return result
+    return result^
 
 
 @always_inline
@@ -296,7 +296,7 @@ def _closest_point_on_simplex[
         result[1] = simplex[1]
         result[2] = simplex[2]
         result[3] = Scalar[DTYPE](1)
-        return result
+        return result^
 
     if nsimplex == 2:
         # Line segment: project origin onto segment A→B
@@ -317,7 +317,7 @@ def _closest_point_on_simplex[
             result[1] = ay
             result[2] = az
             result[3] = Scalar[DTYPE](1)
-            return result
+            return result^
         elif t >= Scalar[DTYPE](1):
             # Keep only B
             for k in range(9):
@@ -326,13 +326,13 @@ def _closest_point_on_simplex[
             result[1] = by
             result[2] = bz
             result[3] = Scalar[DTYPE](1)
-            return result
+            return result^
         else:
             result[0] = ax + t * abx
             result[1] = ay + t * aby
             result[2] = az + t * abz
             result[3] = Scalar[DTYPE](2)
-            return result
+            return result^
 
     if nsimplex == 3:
         # Triangle: find closest point to origin using Voronoi regions
@@ -369,7 +369,7 @@ def _closest_point_on_simplex[
             result[2] = az
             # Keep only vertex A
             result[3] = Scalar[DTYPE](1)
-            return result
+            return result^
 
         # Vertex region B
         if d3 >= 0 and d4 <= d3:
@@ -380,7 +380,7 @@ def _closest_point_on_simplex[
             result[1] = by
             result[2] = bz
             result[3] = Scalar[DTYPE](1)
-            return result
+            return result^
 
         # Edge region AB
         var vc = d1 * d4 - d3 * d2
@@ -391,7 +391,7 @@ def _closest_point_on_simplex[
             result[2] = az + v * abz
             # Keep A and B (simplex[0] and simplex[9])
             result[3] = Scalar[DTYPE](2)
-            return result
+            return result^
 
         # Vertex region C
         if d6 >= 0 and d5 <= d6:
@@ -402,7 +402,7 @@ def _closest_point_on_simplex[
             result[1] = cy
             result[2] = cz
             result[3] = Scalar[DTYPE](1)
-            return result
+            return result^
 
         # Edge region AC
         var vb = d5 * d2 - d1 * d6
@@ -415,7 +415,7 @@ def _closest_point_on_simplex[
             for k in range(9):
                 simplex[9 + k] = simplex[18 + k]
             result[3] = Scalar[DTYPE](2)
-            return result
+            return result^
 
         # Edge region BC
         var va = d3 * d6 - d5 * d4
@@ -432,7 +432,7 @@ def _closest_point_on_simplex[
                 simplex[k] = simplex[9 + k]
                 simplex[9 + k] = simplex[18 + k]
             result[3] = Scalar[DTYPE](2)
-            return result
+            return result^
 
         # Inside triangle: project origin onto plane
         var denom = va + vb + vc
@@ -441,14 +441,14 @@ def _closest_point_on_simplex[
             result[1] = ay
             result[2] = az
             result[3] = Scalar[DTYPE](1)
-            return result
+            return result^
         var v = vb / denom
         var w = vc / denom
         result[0] = ax + abx * v + acx * w
         result[1] = ay + aby * v + acy * w
         result[2] = az + abz * v + acz * w
         result[3] = Scalar[DTYPE](3)
-        return result
+        return result^
 
     # nsimplex == 4: tetrahedron — check if origin is inside or find closest face
     # For each of the 4 faces, check if origin is on the outside
@@ -614,7 +614,7 @@ def _closest_point_on_simplex[
         result[1] = best_vy
         result[2] = best_vz
         result[3] = Scalar[DTYPE](3)
-        return result
+        return result^
 
     if not any_usable_face:
         # Every face was degenerate — the four points are collinear or
@@ -641,11 +641,11 @@ def _closest_point_on_simplex[
         result[1] = simplex[1]
         result[2] = simplex[2]
         result[3] = Scalar[DTYPE](1)
-        return result
+        return result^
 
     # Origin is inside all faces — truly inside tetrahedron
     result[0] = Scalar[DTYPE](0)
     result[1] = Scalar[DTYPE](0)
     result[2] = Scalar[DTYPE](0)
     result[3] = Scalar[DTYPE](4)
-    return result
+    return result^

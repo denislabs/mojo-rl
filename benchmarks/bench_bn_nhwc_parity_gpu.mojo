@@ -25,8 +25,8 @@ Run (Apple = parity only; 2D skipped):
 
 from std.math import sqrt
 from std.gpu import global_idx, thread_idx, block_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.sys.info import has_nvidia_gpu_accelerator
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor

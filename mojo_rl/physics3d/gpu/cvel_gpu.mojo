@@ -15,7 +15,7 @@ G5: operates on the per-field tensors (the `[BATCH, STATE_SIZE]` hook slab
 died with the fields sunset). Arithmetic verbatim from the slab kernel.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 

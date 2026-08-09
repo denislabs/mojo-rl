@@ -14,7 +14,7 @@ forwards to it. Combinators still override `for_each_param` / `zero_grad`
 to recurse into their (Module-typed, not IsParam) children.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.reflection import reflect
 
 from .param import IsParam, ParamVisitor

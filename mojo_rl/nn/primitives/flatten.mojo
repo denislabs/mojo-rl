@@ -16,7 +16,7 @@ by the channels_last checkpoint migration, not by this Module).
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, CPU_SIMD_W, TPB

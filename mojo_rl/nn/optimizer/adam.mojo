@@ -20,7 +20,7 @@ reference them (DeviceBuffer is refcounted → destruction order is safe).
 
 from std.math import sqrt
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -48,7 +48,7 @@ def _adam_update_kernel[
     bc1: Scalar[DT],
     bc2: Scalar[DT],
     wd: Scalar[DT],
-    apply_decay: Int,
+    apply_decay_arg: Int64,
 ):
     """Per-param update (one Param, comptime size N).
 
@@ -56,6 +56,9 @@ def _adam_update_kernel[
     per-param GPU walk, but NOT CUDA-graph-safe (they'd freeze at capture-time).
     The capture path uses `adopt` → `_grouped_adam_kernel`, which reads β^t from
     a device buffer. Don't capture a non-adopted GPU optimizer."""
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var apply_decay = Int(apply_decay_arg)
     var i = Int(global_idx.x)
     if i >= N:
         return
@@ -74,7 +77,7 @@ def _adam_update_kernel[
 
 
 def _adam_advance_pow_kernel(
-    powbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    powbuf: Pointer[Scalar[DT], MutAnyOrigin],
     beta1: Scalar[DT],
     beta2: Scalar[DT],
 ):
@@ -85,50 +88,53 @@ def _adam_advance_pow_kernel(
     on-device `β^t` state."""
     if Int(global_idx.x) != 0:
         return
-    powbuf[0] = powbuf[0] * beta1
-    powbuf[1] = powbuf[1] * beta2
+    powbuf[unsafe_offset=0] = powbuf[unsafe_offset=0] * beta1
+    powbuf[unsafe_offset=1] = powbuf[unsafe_offset=1] * beta2
 
 
 def _grouped_adam_kernel(
-    val: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    grd: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    m: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    v: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    decay: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    total: Int,
+    val: Pointer[Scalar[DT], MutAnyOrigin],
+    grd: Pointer[Scalar[DT], MutAnyOrigin],
+    m: Pointer[Scalar[DT], MutAnyOrigin],
+    v: Pointer[Scalar[DT], MutAnyOrigin],
+    decay: Pointer[Scalar[DT], MutAnyOrigin],
+    total_arg: Int64,
     lr: Scalar[DT],
     beta1: Scalar[DT],
     beta2: Scalar[DT],
     eps: Scalar[DT],
-    powbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    powbuf: Pointer[Scalar[DT], MutAnyOrigin],
     wd: Scalar[DT],
 ):
     """Arena update (all params at once over runtime-length flat buffers).
     `bc1/bc2` are read from the device `powbuf` (`[β₁ᵗ, β₂ᵗ]`, advanced by
     `_adam_advance_pow_kernel` just before) so they advance under graph replay.
     """
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var total = Int(total_arg)
     var i = Int(global_idx.x)
     if i >= total:
         return
     var one = Scalar[DT](1.0)
-    var bc1 = one - powbuf[0]
-    var bc2 = one - powbuf[1]
-    var p = val[i]
-    if decay[i] != Scalar[DT](0.0):
+    var bc1 = one - powbuf[unsafe_offset=0]
+    var bc2 = one - powbuf[unsafe_offset=1]
+    var p = val[unsafe_offset=i]
+    if decay[unsafe_offset=i] != Scalar[DT](0.0):
         p -= lr * wd * p
-    var g = grd[i]
-    var m_new = beta1 * m[i] + (one - beta1) * g
-    var v_new = beta2 * v[i] + (one - beta2) * g * g
-    m[i] = m_new
-    v[i] = v_new
+    var g = grd[unsafe_offset=i]
+    var m_new = beta1 * m[unsafe_offset=i] + (one - beta1) * g
+    var v_new = beta2 * v[unsafe_offset=i] + (one - beta2) * g * g
+    m[unsafe_offset=i] = m_new
+    v[unsafe_offset=i] = v_new
     var m_hat = m_new / bc1
     var v_hat = v_new / bc2
-    val[i] = p - lr * m_hat / (sqrt(v_hat) + eps)
+    val[unsafe_offset=i] = p - lr * m_hat / (sqrt(v_hat) + eps)
 
 
 def _adam_warmup_lr_kernel(
-    lr_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    step_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    lr_buf: Pointer[Scalar[DT], MutAnyOrigin],
+    step_buf: Pointer[Scalar[DT], MutAnyOrigin],
     target_lr: Scalar[DT],
     warmup: Scalar[DT],
 ):
@@ -138,49 +144,52 @@ def _adam_warmup_lr_kernel(
     at the capture-time (near-0 ramp) value. `warmup <= 0` → constant target."""
     if Int(global_idx.x) != 0:
         return
-    var t = step_buf[0]
+    var t = step_buf[unsafe_offset=0]
     var lr = target_lr
     if warmup > Scalar[DT](0.0) and t < warmup:
         lr = target_lr * t / warmup
-    lr_buf[0] = lr
-    step_buf[0] = t + Scalar[DT](1.0)
+    lr_buf[unsafe_offset=0] = lr
+    step_buf[unsafe_offset=0] = t + Scalar[DT](1.0)
 
 
 def _grouped_adam_kernel_devlr(
-    val: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    grd: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    m: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    v: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    decay: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    total: Int,
+    val: Pointer[Scalar[DT], MutAnyOrigin],
+    grd: Pointer[Scalar[DT], MutAnyOrigin],
+    m: Pointer[Scalar[DT], MutAnyOrigin],
+    v: Pointer[Scalar[DT], MutAnyOrigin],
+    decay: Pointer[Scalar[DT], MutAnyOrigin],
+    total_arg: Int64,
     beta1: Scalar[DT],
     beta2: Scalar[DT],
     eps: Scalar[DT],
-    powbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    lr_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    powbuf: Pointer[Scalar[DT], MutAnyOrigin],
+    lr_buf: Pointer[Scalar[DT], MutAnyOrigin],
     wd: Scalar[DT],
 ):
     """`_grouped_adam_kernel` but `lr` is read from the device `lr_buf` (written
     by `_adam_warmup_lr_kernel`) — the capture-safe scheduled-LR path. Identical
     math; only the LR source differs."""
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var total = Int(total_arg)
     var i = Int(global_idx.x)
     if i >= total:
         return
     var one = Scalar[DT](1.0)
-    var lr = lr_buf[0]
-    var bc1 = one - powbuf[0]
-    var bc2 = one - powbuf[1]
-    var p = val[i]
-    if decay[i] != Scalar[DT](0.0):
+    var lr = lr_buf[unsafe_offset=0]
+    var bc1 = one - powbuf[unsafe_offset=0]
+    var bc2 = one - powbuf[unsafe_offset=1]
+    var p = val[unsafe_offset=i]
+    if decay[unsafe_offset=i] != Scalar[DT](0.0):
         p -= lr * wd * p
-    var g = grd[i]
-    var m_new = beta1 * m[i] + (one - beta1) * g
-    var v_new = beta2 * v[i] + (one - beta2) * g * g
-    m[i] = m_new
-    v[i] = v_new
+    var g = grd[unsafe_offset=i]
+    var m_new = beta1 * m[unsafe_offset=i] + (one - beta1) * g
+    var v_new = beta2 * v[unsafe_offset=i] + (one - beta2) * g * g
+    m[unsafe_offset=i] = m_new
+    v[unsafe_offset=i] = v_new
     var m_hat = m_new / bc1
     var v_hat = v_new / bc2
-    val[i] = p - lr * m_hat / (sqrt(v_hat) + eps)
+    val[unsafe_offset=i] = p - lr * m_hat / (sqrt(v_hat) + eps)
 
 
 struct Adam(Movable, ParamVisitor, Optimizer):
@@ -350,7 +359,7 @@ struct Adam(Movable, ParamVisitor, Optimizer):
                 self.m_arena.dev.value(),
                 self.v_arena.dev.value(),
                 self.arena.decay_mask.dev.value(),
-                self.arena.total,
+                Int64(self.arena.total),
                 self.beta1,
                 self.beta2,
                 self.eps,
@@ -372,7 +381,7 @@ struct Adam(Movable, ParamVisitor, Optimizer):
                 self.m_arena.dev.value(),
                 self.v_arena.dev.value(),
                 self.arena.decay_mask.dev.value(),
-                self.arena.total,
+                Int64(self.arena.total),
                 self.beta1,
                 self.beta2,
                 self.eps,
@@ -389,7 +398,7 @@ struct Adam(Movable, ParamVisitor, Optimizer):
             self.m_arena.dev.value(),
             self.v_arena.dev.value(),
             self.arena.decay_mask.dev.value(),
-            self.arena.total,
+            Int64(self.arena.total),
             self.lr,
             self.beta1,
             self.beta2,
@@ -546,7 +555,7 @@ struct Adam(Movable, ParamVisitor, Optimizer):
                 self.bc1,
                 self.bc2,
                 self.wd,
-                Int(apply_decay),
+                Int64(apply_decay),
                 grid_dim=nblk,
                 block_dim=TPB,
             )

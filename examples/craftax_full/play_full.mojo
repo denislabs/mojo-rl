@@ -85,7 +85,7 @@ from mojo_rl.render.sdl.sdl_scancode import Scancode
 
 
 @always_inline
-def _read_action(keys: UnsafePointer[Bool, ImmutAnyOrigin]) -> Int:
+def _read_action(keys: Pointer[Bool, ImmutAnyOrigin]) -> Int:
     """Map current keyboard state to a Craftax-Full action. NOOP if no
     relevant key is held. First match wins — movement keys take priority
     over crafting / spell keys."""

@@ -31,7 +31,7 @@ and resolve to physical indices via `(_origin + s + k) mod CAP`.
 """
 
 from std.random import random_float64
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from .sequence_replay_buffer import SequenceReplayBuffer
@@ -44,8 +44,8 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
     comptime CAP = Self.CAP_
 
     # Owning RAII `List` rings (host-indexed only). Replaces the raw `alloc`'d
-    # `MutUntrackedOrigin` pointers, which — with no `__del__` and a trait that
-    # is `ImplicitlyDeletable` — were never freed (a genuine leak). `List`
+    # `MutUntrackedOrigin` pointers, which — with no `__deinit__` and a trait that
+    # is `Deinitable` — were never freed (a genuine leak). `List`
     # destruction frees them automatically.
     var obs: List[Scalar[DT]]
     var act: List[Scalar[DT]]
@@ -147,17 +147,17 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
 
     def record(
         mut self,
-        s: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        a: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        s: Pointer[Scalar[DT], MutAnyOrigin],
+        a: Pointer[Scalar[DT], MutAnyOrigin],
         r: Scalar[DT],
         d: Scalar[DT],
         ctx: Optional[DeviceContext] = None,
     ):
         var p = self.pos
         for i in range(Self.OBS):
-            self.obs[p * Self.OBS + i] = s[i]
+            self.obs[p * Self.OBS + i] = s[unsafe_offset=i]
         for j in range(Self.ACT):
-            self.act[p * Self.ACT + j] = a[j]
+            self.act[p * Self.ACT + j] = a[unsafe_offset=j]
         self.rew[p] = r
         self.dne[p] = d
         self.fst[p] = Scalar[DT](1.0) if self.pending_first else Scalar[DT](0.0)
@@ -170,7 +170,7 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
 
     def record_terminal(
         mut self,
-        s: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        s: Pointer[Scalar[DT], MutAnyOrigin],
     ):
         """Store a genuine TERMINAL observation as its own frame (no outgoing
         transition: act=0, rew=0, dne=0). Called right after a `record(done=1)`
@@ -181,7 +181,7 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
         frame — is flagged `is_first`."""
         var p = self.pos
         for i in range(Self.OBS):
-            self.obs[p * Self.OBS + i] = s[i]
+            self.obs[p * Self.OBS + i] = s[unsafe_offset=i]
         for j in range(Self.ACT):
             self.act[p * Self.ACT + j] = Scalar[DT](0.0)
         self.rew[p] = Scalar[DT](0.0)
@@ -194,8 +194,8 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
 
     def record_task(
         mut self,
-        s: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        a: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        s: Pointer[Scalar[DT], MutAnyOrigin],
+        a: Pointer[Scalar[DT], MutAnyOrigin],
         r: Scalar[DT],
         d: Scalar[DT],
         task_id: Int,
@@ -206,9 +206,9 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
         single-task `record` is left untouched so its path is bit-identical."""
         var p = self.pos
         for i in range(Self.OBS):
-            self.obs[p * Self.OBS + i] = s[i]
+            self.obs[p * Self.OBS + i] = s[unsafe_offset=i]
         for j in range(Self.ACT):
-            self.act[p * Self.ACT + j] = a[j]
+            self.act[p * Self.ACT + j] = a[unsafe_offset=j]
         self.rew[p] = r
         self.dne[p] = d
         self.fst[p] = Scalar[DT](1.0) if self.pending_first else Scalar[DT](0.0)
@@ -237,10 +237,10 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
         T: Int,
     ](
         mut self,
-        obs_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        act_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        rew_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        dne_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_out: Pointer[Scalar[DT], MutAnyOrigin],
+        act_out: Pointer[Scalar[DT], MutAnyOrigin],
+        rew_out: Pointer[Scalar[DT], MutAnyOrigin],
+        dne_out: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Draw `B` random length-`T` windows.
 
@@ -268,7 +268,7 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
                 var src = phys * Self.OBS
                 var dst = b * (T + 1) * Self.OBS + k * Self.OBS
                 for i in range(Self.OBS):
-                    obs_out[dst + i] = self.obs[src + i]
+                    obs_out[unsafe_offset=dst + i] = self.obs[src + i]
 
             # Copy T action/reward/done frames.
             for k in range(T):
@@ -276,20 +276,20 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
                 var src_a = phys * Self.ACT
                 var dst_a = b * T * Self.ACT + k * Self.ACT
                 for j in range(Self.ACT):
-                    act_out[dst_a + j] = self.act[src_a + j]
-                rew_out[b * T + k] = self.rew[phys]
-                dne_out[b * T + k] = self.dne[phys]
+                    act_out[unsafe_offset=dst_a + j] = self.act[src_a + j]
+                rew_out[unsafe_offset=b * T + k] = self.rew[phys]
+                dne_out[unsafe_offset=b * T + k] = self.dne[phys]
 
     def sample_batch_fst[
         B: Int,
         T: Int,
     ](
         mut self,
-        obs_out: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B, T+1, OBS]
-        act_out: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B, T, ACT]
-        rew_out: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B, T]
-        dne_out: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B, T]
-        fst_out: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B, T+1] per obs frame
+        obs_out: Pointer[Scalar[DT], MutAnyOrigin],   # [B, T+1, OBS]
+        act_out: Pointer[Scalar[DT], MutAnyOrigin],   # [B, T, ACT]
+        rew_out: Pointer[Scalar[DT], MutAnyOrigin],   # [B, T]
+        dne_out: Pointer[Scalar[DT], MutAnyOrigin],   # [B, T]
+        fst_out: Pointer[Scalar[DT], MutAnyOrigin],   # [B, T+1] per obs frame
     ) raises:
         """`sample_batch` + the per-obs-frame `is_first` flags ([B, T+1]). The WM
         keys its carry-reset mask on `fst` (frame t+1) instead of `dne` (transition
@@ -313,27 +313,27 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
                 var src = phys * Self.OBS
                 var dst = b * (T + 1) * Self.OBS + k * Self.OBS
                 for i in range(Self.OBS):
-                    obs_out[dst + i] = self.obs[src + i]
-                fst_out[b * (T + 1) + k] = self.fst[phys]
+                    obs_out[unsafe_offset=dst + i] = self.obs[src + i]
+                fst_out[unsafe_offset=b * (T + 1) + k] = self.fst[phys]
             for k in range(T):
                 var phys = (origin + s + k) % Self.CAP
                 var src_a = phys * Self.ACT
                 var dst_a = b * T * Self.ACT + k * Self.ACT
                 for j in range(Self.ACT):
-                    act_out[dst_a + j] = self.act[src_a + j]
-                rew_out[b * T + k] = self.rew[phys]
-                dne_out[b * T + k] = self.dne[phys]
+                    act_out[unsafe_offset=dst_a + j] = self.act[src_a + j]
+                rew_out[unsafe_offset=b * T + k] = self.rew[phys]
+                dne_out[unsafe_offset=b * T + k] = self.dne[phys]
 
     def sample_batch_task[
         B: Int,
         T: Int,
     ](
         mut self,
-        obs_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        act_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        rew_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        dne_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        task_out: UnsafePointer[
+        obs_out: Pointer[Scalar[DT], MutAnyOrigin],
+        act_out: Pointer[Scalar[DT], MutAnyOrigin],
+        rew_out: Pointer[Scalar[DT], MutAnyOrigin],
+        dne_out: Pointer[Scalar[DT], MutAnyOrigin],
+        task_out: Pointer[
             Scalar[DT], MutAnyOrigin
         ],  # [B] one task/window
     ) raises:
@@ -357,17 +357,17 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
                 var src = phys * Self.OBS
                 var dst = b * (T + 1) * Self.OBS + k * Self.OBS
                 for i in range(Self.OBS):
-                    obs_out[dst + i] = self.obs[src + i]
+                    obs_out[unsafe_offset=dst + i] = self.obs[src + i]
 
             for k in range(T):
                 var phys = (origin + s + k) % Self.CAP
                 var src_a = phys * Self.ACT
                 var dst_a = b * T * Self.ACT + k * Self.ACT
                 for j in range(Self.ACT):
-                    act_out[dst_a + j] = self.act[src_a + j]
-                rew_out[b * T + k] = self.rew[phys]
-                dne_out[b * T + k] = self.dne[phys]
+                    act_out[unsafe_offset=dst_a + j] = self.act[src_a + j]
+                rew_out[unsafe_offset=b * T + k] = self.rew[phys]
+                dne_out[unsafe_offset=b * T + k] = self.dne[phys]
 
             # Window task = task of the window-start frame.
             var phys0 = (origin + s) % Self.CAP
-            task_out[b] = self.task[phys0]
+            task_out[unsafe_offset=b] = self.task[phys0]

@@ -20,7 +20,7 @@ wrong backend, but the trainer only ever calls the one matching its target
 (both call sites sit under `comptime if train_target == ...`).
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from .sequence_replay import SequenceReplay
@@ -30,7 +30,7 @@ from .gpu_sequence_replay import GPUSequenceReplay
 @fieldwise_init
 struct AnySequenceReplay[
     target: StaticString, OBS_: Int, ACT_: Int, CAP_: Int,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime CAP = Self.CAP_
@@ -73,8 +73,8 @@ struct AnySequenceReplay[
 
     def record(
         mut self,
-        s: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        a: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        s: Pointer[Scalar[DT], MutAnyOrigin],
+        a: Pointer[Scalar[DT], MutAnyOrigin],
         r: Scalar[DT],
         d: Scalar[DT],
     ) raises:
@@ -84,7 +84,7 @@ struct AnySequenceReplay[
             self.gpu.value().record(s, a, r, d)
 
     def record_terminal(
-        mut self, s: UnsafePointer[Scalar[DT], MutAnyOrigin]
+        mut self, s: Pointer[Scalar[DT], MutAnyOrigin]
     ) raises:
         comptime if Self.target == "cpu":
             self.cpu.value().record_terminal(s)
@@ -95,11 +95,11 @@ struct AnySequenceReplay[
         B: Int, T: Int,
     ](
         mut self,
-        obs_out: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B, T+1, OBS]
-        act_out: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B, T, ACT]
-        rew_out: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B, T]
-        dne_out: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B, T]
-        fst_out: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B, T+1]
+        obs_out: Pointer[Scalar[DT], MutAnyOrigin],   # [B, T+1, OBS]
+        act_out: Pointer[Scalar[DT], MutAnyOrigin],   # [B, T, ACT]
+        rew_out: Pointer[Scalar[DT], MutAnyOrigin],   # [B, T]
+        dne_out: Pointer[Scalar[DT], MutAnyOrigin],   # [B, T]
+        fst_out: Pointer[Scalar[DT], MutAnyOrigin],   # [B, T+1]
     ) raises:
         comptime if Self.target == "cpu":
             self.cpu.value().sample_batch_fst[B, T](

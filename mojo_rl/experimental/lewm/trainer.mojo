@@ -28,9 +28,9 @@ via `read_loss_accum` / `reset_loss_accum`.
 
 from std.collections import Dict
 from std.gpu import thread_idx, global_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.math import sqrt
 
@@ -256,19 +256,19 @@ struct _ZeroMomentsV(ParamVisitor):
 def _reduce_mean_acc_kernel[
     BATCH: Int
 ](
-    src: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    acc: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     var t = Int(thread_idx.x)
     var my_sum: Scalar[DT] = 0.0
     var k = t
     while k < BATCH:
-        my_sum += src[k]
+        my_sum += src[unsafe_offset=k]
         k += TPB_REDUCE
     var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
     if t == 0:
-        acc[0] = acc[0] + total[0] / Scalar[DT](BATCH)
-        acc[1] = acc[1] + Scalar[DT](1.0)
+        acc[unsafe_offset=0] = acc[unsafe_offset=0] + total[0] / Scalar[DT](BATCH)
+        acc[unsafe_offset=1] = acc[unsafe_offset=1] + Scalar[DT](1.0)
 
 
 # ── checkpoint / export visitors (storage ParamVisitor signature) ──────
@@ -400,7 +400,7 @@ struct LeWMTrainer[
         ENC_PROJ_H,
         ENC_FF_MULT,
     ],
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime LG = LeWMLossGraph[
         Self.IN_CH,
         Self.IMG,
@@ -527,11 +527,11 @@ struct LeWMTrainer[
         comptime if Self.train_target == "cpu":
             tt.data = List[Scalar[DT]](length=N, fill=Scalar[DT](0))
             for i in range(N):
-                tt.data[i] = rebind[Scalar[DT]](src.ptr[i])
+                tt.data[i] = rebind[Scalar[DT]](src.ptr[unsafe_offset=i])
             tt.n = N
         else:
             var c = self.ctx.value()
-            var sp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](src.ptr)
+            var sp = rebind[Pointer[Scalar[DT], MutAnyOrigin]](src.ptr)
             tt.dev = DeviceBuffer[DT](c, sp, N, owning=False)
             tt.n = N
         self.graph.set_input[slot_name, Self.BATCH](tt, self.ctx)
@@ -725,8 +725,8 @@ struct LeWMTrainer[
             origin=MutAnyOrigin,
             ...,
         ],
-        pred_host: UnsafePointer[Scalar[DT], ph_o],
-        tgt_host: UnsafePointer[Scalar[DT], th_o],
+        pred_host: Pointer[Scalar[DT], ph_o],
+        tgt_host: Pointer[Scalar[DT], th_o],
     ) raises:
         """Forward-only readout for eval/planning: run the graph over
         (pix, act) and copy the predicted latents (`pred` node) and the
@@ -742,30 +742,30 @@ struct LeWMTrainer[
         ref tgt_src = self.graph.node_output["tgt"]()
         comptime if Self.train_target == "cpu":
             for i in range(N):
-                pred_host[i] = pred_src.data[i]
-                tgt_host[i] = tgt_src.data[i]
+                pred_host[unsafe_offset=i] = pred_src.data[i]
+                tgt_host[unsafe_offset=i] = tgt_src.data[i]
         else:
             var c = self.ctx.value()
             pred_src.download(c)
             tgt_src.download(c)
             for i in range(N):
-                pred_host[i] = pred_src.data[i]
-                tgt_host[i] = tgt_src.data[i]
+                pred_host[unsafe_offset=i] = pred_src.data[i]
+                tgt_host[unsafe_offset=i] = tgt_src.data[i]
 
     def read_node_into[
         name: StaticString,
         h_o: MutOrigin = MutAnyOrigin,
-    ](mut self, host: UnsafePointer[Scalar[DT], h_o], n: Int,) raises:
+    ](mut self, host: Pointer[Scalar[DT], h_o], n: Int,) raises:
         """Copy the named graph node's output (n elements) to a host buffer.
         Valid after a forward has populated the node buffers."""
         ref src = self.graph.node_output[name]()
         comptime if Self.train_target == "cpu":
             for i in range(n):
-                host[i] = src.data[i]
+                host[unsafe_offset=i] = src.data[i]
         else:
             src.download(self.ctx.value())
             for i in range(n):
-                host[i] = src.data[i]
+                host[unsafe_offset=i] = src.data[i]
 
     def export_named_params(mut self) raises -> Dict[String, List[Scalar[DT]]]:
         """Snapshot all graph params AND state (BatchNorm running stats) as
@@ -800,8 +800,8 @@ struct LeWMTrainer[
             var h = c.enqueue_create_host_buffer[DT](2)
             c.enqueue_copy(h, self._loss_acc_dev.value())
             c.synchronize()
-            var s = h.unsafe_ptr()[0]
-            var n = h.unsafe_ptr()[1]
+            var s = h.unsafe_ptr()[unsafe_offset=0]
+            var n = h.unsafe_ptr()[unsafe_offset=1]
             if n == Scalar[DT](0.0):
                 return Scalar[DT](0.0)
             return s / n

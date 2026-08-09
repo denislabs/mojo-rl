@@ -48,7 +48,7 @@ def h5p_close(plist_id: hid_t) raises -> herr_t:
 def h5p_set_chunk(
     plist_id: hid_t,
     ndims: c_int,
-    dim: UnsafePointer[hsize_t, MutUntrackedOrigin],
+    dim: Pointer[hsize_t, MutUntrackedOrigin],
 ) raises -> herr_t:
     """``H5Pset_chunk(hid_t plist_id, int ndims, const hsize_t *dim)``.
 
@@ -59,7 +59,7 @@ def h5p_set_chunk(
         lib,
         "H5Pset_chunk",
         def(
-            hid_t, c_int, UnsafePointer[hsize_t, MutUntrackedOrigin]
+            hid_t, c_int, Pointer[hsize_t, MutUntrackedOrigin]
         ) thin -> herr_t,
     ]()(plist_id, ndims, dim)
 

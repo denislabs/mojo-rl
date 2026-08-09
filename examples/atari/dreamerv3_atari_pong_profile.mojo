@@ -22,7 +22,7 @@ compares against the observed pace. Run on NVIDIA (Apple = build check only):
     pixi run -e nvidia mojo run -I . examples/atari/dreamerv3_atari_pong_profile.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.memory import alloc
 from std.random import seed, random_float64
 from std.time import perf_counter_ns

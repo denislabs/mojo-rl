@@ -18,6 +18,7 @@ from layout.tile_tensor import lt_to_tt
 from linalg.matmul import matmul as max_matmul
 
 from mojo_rl.nn.constants import DT as dtype
+from mojo_rl.core.fmt import fit
 
 
 @always_inline
@@ -45,16 +46,16 @@ def bench[M: Int, K: Int, N: Int, WARMUP: Int, ITERS: Int]() raises:
     print(label)
     print("─" * 72)
 
-    var a_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+    var a_buf: Pointer[Scalar[dtype], MutAnyOrigin] = alloc[
         Scalar[dtype]
     ](M * K)
-    var b_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+    var b_buf: Pointer[Scalar[dtype], MutAnyOrigin] = alloc[
         Scalar[dtype]
     ](K * N)
-    var c_naive_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+    var c_naive_buf: Pointer[Scalar[dtype], MutAnyOrigin] = alloc[
         Scalar[dtype]
     ](M * N)
-    var c_blas_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+    var c_blas_buf: Pointer[Scalar[dtype], MutAnyOrigin] = alloc[
         Scalar[dtype]
     ](M * N)
 
@@ -132,28 +133,28 @@ def bench[M: Int, K: Int, N: Int, WARMUP: Int, ITERS: Int]() raises:
     comptime if not skip_naive:
         print(
             "  naive          : "
-            + String(naive_ms)[byte=:10]
+            + fit(String(naive_ms), 10)
             + " ms   "
-            + String(naive_gflops)[byte=:7]
+            + fit(String(naive_gflops), 7)
             + " GFLOPS"
         )
     else:
         print("  naive          : skipped (too slow)")
     print(
         "  linalg[cpu]    : "
-        + String(blas_ms)[byte=:10]
+        + fit(String(blas_ms), 10)
         + " ms   "
-        + String(blas_gflops)[byte=:7]
+        + fit(String(blas_gflops), 7)
         + " GFLOPS"
     )
     comptime if not skip_naive:
         var speedup = naive_ms / blas_ms
-        print("  speedup        : " + String(speedup)[byte=:6] + "x")
+        print("  speedup        : " + fit(String(speedup), 6) + "x")
         print(
             "  max |diff|     : "
-            + String(max_abs_diff)[byte=:12]
+            + fit(String(max_abs_diff), 12)
             + "   max rel diff: "
-            + String(max_rel_diff)[byte=:12]
+            + fit(String(max_rel_diff), 12)
         )
     print()
 

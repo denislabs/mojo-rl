@@ -9,7 +9,7 @@ asserts finite outputs and that backward delivers non-zero gradients to
 
 from std.math import isnan, isinf
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn import Tensor, TensorRefs, TensorPack, ParamVisitor, Kaiming

@@ -48,8 +48,13 @@ scripts = ["scripts/build_cuda_intercept.sh"]
 python = ">=3.13.14,<3.14"
 
 [dependencies]
-mojo = ">=1.0.0b3.dev2026072906,<2"
-max = ">=26.5.0.dev2026072906,<27"
+# Mojo 1.0.0rc2 pairs with max 26.5.0rc2 (max-core 26.5.0rc2 → mojo-compiler
+# ==1.0.0rc2). Do NOT mix an rc `mojo` with a dated nightly `max`: the nightlies
+# carry mojo-compiler 1.0.0b3.dev*/1.1.0.dev*, which conflicts. Both live in the
+# max-nightly channel; `pixi upgrade` walks to the newest nightly, so keep these
+# two pinned together and bump them as a pair.
+mojo = "==1.0.0rc2"
+max = "==26.5.0rc2"
 gymnasium = ">=1.3.0,<2"
 # Atari ROM support. ale-py ships without ROMs; `pixi run setup-roms` downloads
 # the canonical Farama ROM bundle (see scripts/setup_roms.py) and symlinks them.
@@ -77,13 +82,13 @@ version = "0.1.0"
 backend = { name = "pixi-build-mojo", version = "0.1.*" }
 
 [package.host-dependencies]
-mojo-compiler = ">=1.0.0b3.dev2026072906,<2"
+mojo-compiler = "==1.0.0rc2"
 
 [package.build-dependencies]
-mojo-compiler = ">=1.0.0b3.dev2026072906,<2"
+mojo-compiler = "==1.0.0rc2"
 
 [package.run-dependencies]
-mojo-compiler = ">=1.0.0b3.dev2026072906,<2"
+mojo-compiler = "==1.0.0rc2"
 
 # Point Mojo's embedded Python at the *active* env (CONDA_PREFIX), not a hardcoded
 # `default` env — otherwise `pixi run -e nvidia/apple` loads the wrong libpython and

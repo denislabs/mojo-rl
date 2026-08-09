@@ -13,7 +13,7 @@ compiled in only when NMESH_VERTS > 0; zero-mesh models keep today's
 branch structure (mesh branches degrade to `continue`)."""
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from std.math import sqrt
@@ -397,7 +397,7 @@ def mix_contact_params[
         out[8] = si2_i if hi_i else si2_j
         out[9] = si3_i if hi_i else si3_j
         out[10] = si4_i if hi_i else si4_j
-        return out
+        return out^
 
     out[0] = Scalar[DTYPE](condim_i if condim_i > condim_j else condim_j)
     out[1] = fri_i if fri_i > fri_j else fri_j
@@ -417,7 +417,7 @@ def mix_contact_params[
     out[8] = HALF * (si2_i + si2_j)
     out[9] = HALF * (si3_i + si3_j)
     out[10] = HALF * (si4_i + si4_j)
-    return out
+    return out^
 
 
 def _plane_cylinder_contacts[

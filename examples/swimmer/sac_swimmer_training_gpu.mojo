@@ -28,7 +28,7 @@ Run:
     pixi run -e nvidia mojo run -I . examples/swimmer/sac_swimmer_training_gpu.mojo  # NVIDIA GPU
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.random import seed
 from std.time import perf_counter_ns
 
@@ -108,7 +108,7 @@ def main() raises:
         logger.set_config("n_envs", String(N_ENVS))
         logger.set_config("buffer_capacity", String(REPLAY_CAPACITY))
 
-        var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
+        var logger_ptr = Pointer(to=logger).as_unsafe_any_origin()
 
         # ─── Agent + batched GPU env ─────────────────────────────────────
         # `SAC[target, OBS, ACT, BATCH, CAP, HIDDEN]` reads like a

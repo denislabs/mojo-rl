@@ -9,7 +9,7 @@ Run:
     pixi run -e apple mojo run -I . examples/pendulum/pendulum_sac_nn_driver_gpu.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.random import seed
 from std.time import perf_counter_ns
 

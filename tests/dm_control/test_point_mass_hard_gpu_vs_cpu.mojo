@@ -40,7 +40,7 @@ Run with:
     pixi run -e nvidia mojo run -I . tests/dm_control/test_point_mass_hard_gpu_vs_cpu.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import abs, sin, sqrt
 from std.testing import assert_true, TestSuite
 

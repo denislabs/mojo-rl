@@ -517,7 +517,7 @@ def warp_mouse_global(x: c_float, y: c_float) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WarpMouseGlobal.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_WarpMouseGlobal", def(x: c_float, y: c_float) thin -> Bool
     ]()(x, y)
     if not ret:
@@ -555,7 +555,7 @@ def set_window_relative_mouse_mode(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetWindowRelativeMouseMode.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetWindowRelativeMouseMode",
         def(window: Ptr[Window, MutAnyOrigin], enabled: Bool) thin -> Bool,
@@ -637,7 +637,7 @@ def capture_mouse(enabled: Bool) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_CaptureMouse.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_CaptureMouse", def(enabled: Bool) thin -> Bool
     ]()(enabled)
     if not ret:
@@ -801,7 +801,7 @@ def set_cursor(cursor: Ptr[Cursor, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetCursor.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_SetCursor", def(cursor: Ptr[Cursor, MutAnyOrigin]) thin -> Bool
     ]()(cursor)
     if not ret:
@@ -884,7 +884,7 @@ def show_cursor() raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ShowCursor.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ShowCursor", def() thin -> Bool]()()
+    var ret = _get_dylib_function[lib, "SDL_ShowCursor", def() thin -> Bool]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -902,7 +902,7 @@ def hide_cursor() raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_HideCursor.
     """
 
-    ret = _get_dylib_function[lib, "SDL_HideCursor", def() thin -> Bool]()()
+    var ret = _get_dylib_function[lib, "SDL_HideCursor", def() thin -> Bool]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 

@@ -9,7 +9,7 @@ Attempts:
   A. Baseline partial-spec, no origin pinning — for regression check.
   B. Origin-pinned: `*inputs: TileTensor[..., origin=MutAnyOrigin, ...]`.
   C. Pointer-pack erasure (fallback): drop TileTensor at the variadic
-     boundary, pass raw `*ptrs: UnsafePointer[Scalar[DT], MutAnyOrigin]`.
+     boundary, pass raw `*ptrs: Pointer[Scalar[DT], MutAnyOrigin]`.
 
 Per-attempt feasibility is comptime-gated: if a body fails to compile,
 the entire test binary refuses to build. So each attempt is in its own
@@ -20,9 +20,9 @@ Body fixes vs v1 spike:
   - `output[b, d]` needs `comptime assert output.flat_rank == 2` first.
 """
 
-from std.gpu.memory import AddressSpace
+from max.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 from mojo_rl.nn.constants import DT
 
@@ -82,7 +82,7 @@ def sumN_origin_erased[
     # `inputs[k][b, d]` can't prove its rank. Workaround: extract `.ptr`
     # (already origin-erased) and rebuild a typed rank-2 view per iter.
     for k in range(len(inputs)):
-        var elem_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        var elem_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
             inputs[k].ptr
         )
         var view = TileTensor(elem_ptr, row_major[BATCH, DIM]())
@@ -100,7 +100,7 @@ def sumN_pointer_pack[
     BATCH: Int,
     DIM: Int,
 ](
-    var *input_ptrs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    var *input_ptrs: Pointer[Scalar[DT], MutAnyOrigin],
     mut output: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
         element_size=1, origin=MutAnyOrigin, ...,
@@ -144,7 +144,7 @@ def scatterN_grad[
     """
     comptime assert grad_output.flat_rank == 2
     for k in range(len(grad_inputs)):
-        var elem_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        var elem_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
             grad_inputs[k].ptr
         )
         var view = TileTensor(elem_ptr, row_major[BATCH, DIM]())
@@ -183,10 +183,10 @@ struct MockNaryBinarySub[DIM: Int]:
     ) raises:
         comptime assert output.flat_rank == 2
         comptime if Self.ARITY == 2:
-            var in0_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            var in0_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                 inputs[0].ptr
             )
-            var in1_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            var in1_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                 inputs[1].ptr
             )
             var in0 = TileTensor(in0_ptr, row_major[BATCH, Self.DIM]())
@@ -207,7 +207,7 @@ struct MockNaryBinarySub[DIM: Int]:
 # method. Probe whether Mojo accepts this signature in a TRAIT body.
 
 
-trait NaryModuleProto(Defaultable & Movable & ImplicitlyDeletable):
+trait NaryModuleProto(Defaultable & Movable & Deinitable):
     comptime ARITY: Int
     comptime OUT_DIM: Int
 
@@ -253,13 +253,13 @@ struct MockTraitConformingBinarySub[DIM: Int](NaryModuleProto):
     ) raises:
         # Rebind output to a typed rank-2 view first (LayoutType is opaque
         # from the variadic-style partial-spec signature).
-        var o_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+        var o_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](output.ptr)
         var out_view = TileTensor(o_ptr, row_major[BATCH, Self.DIM]())
         comptime if Self.ARITY == 2:
-            var in0_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            var in0_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                 inputs[0].ptr
             )
-            var in1_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            var in1_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                 inputs[1].ptr
             )
             var in0 = TileTensor(in0_ptr, row_major[BATCH, Self.DIM]())
@@ -284,10 +284,10 @@ def smoke_B() raises:
     var out = List[Scalar[DT]](length=4, fill=Scalar[DT](0.0))
 
     # Erase origin via rebind at the variadic boundary.
-    var a_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](a.unsafe_ptr())
-    var b_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
-    var c_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](c.unsafe_ptr())
-    var o_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var a_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](a.unsafe_ptr())
+    var b_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+    var c_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](c.unsafe_ptr())
+    var o_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         out.unsafe_ptr()
     )
 
@@ -312,10 +312,10 @@ def smoke_C() raises:
     var c = List[Scalar[DT]](length=4, fill=Scalar[DT](3.0))
     var out = List[Scalar[DT]](length=4, fill=Scalar[DT](0.0))
 
-    var a_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](a.unsafe_ptr())
-    var b_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
-    var c_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](c.unsafe_ptr())
-    var o_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var a_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](a.unsafe_ptr())
+    var b_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+    var c_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](c.unsafe_ptr())
+    var o_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         out.unsafe_ptr()
     )
     var to = TileTensor(o_ptr, row_major[2, 2]())
@@ -336,16 +336,16 @@ def smoke_D() raises:
     var gi1 = List[Scalar[DT]](length=4, fill=Scalar[DT](0.0))
     var gi2 = List[Scalar[DT]](length=4, fill=Scalar[DT](0.0))
 
-    var go_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var go_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         go.unsafe_ptr()
     )
-    var gi0_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var gi0_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         gi0.unsafe_ptr()
     )
-    var gi1_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var gi1_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         gi1.unsafe_ptr()
     )
-    var gi2_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var gi2_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         gi2.unsafe_ptr()
     )
 
@@ -370,9 +370,9 @@ def smoke_E() raises:
     var b = List[Scalar[DT]](length=4, fill=Scalar[DT](3.0))
     var out = List[Scalar[DT]](length=4, fill=Scalar[DT](0.0))
 
-    var a_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](a.unsafe_ptr())
-    var b_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
-    var o_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var a_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](a.unsafe_ptr())
+    var b_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+    var o_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         out.unsafe_ptr()
     )
     var ta = TileTensor(a_ptr, row_major[2, 2]())
@@ -395,9 +395,9 @@ def smoke_F() raises:
     var b = List[Scalar[DT]](length=4, fill=Scalar[DT](3.0))
     var out = List[Scalar[DT]](length=4, fill=Scalar[DT](0.0))
 
-    var a_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](a.unsafe_ptr())
-    var b_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
-    var o_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var a_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](a.unsafe_ptr())
+    var b_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+    var o_ptr = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         out.unsafe_ptr()
     )
     var ta = TileTensor(a_ptr, row_major[2, 2]())

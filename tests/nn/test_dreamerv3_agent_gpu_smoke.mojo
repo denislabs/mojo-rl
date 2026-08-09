@@ -14,7 +14,7 @@ Run: `pixi run -e apple mojo run -I . tests/nn/test_dreamerv3_agent_gpu_smoke.mo
 from std.memory import alloc
 from std.random import random_float64, seed
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent

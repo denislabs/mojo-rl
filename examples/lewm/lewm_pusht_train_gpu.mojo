@@ -29,7 +29,7 @@ Run (NVIDIA; first run downloads the dataset):
   pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_train_gpu.mojo
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT

@@ -33,7 +33,7 @@ from mojo_rl.nn.core.metric import LogScalar
 
 
 @fieldwise_init
-struct SACMetrics(Copyable, Movable, ImplicitlyDeletable):
+struct SACMetrics(Copyable, Movable, Deinitable):
     var actor_loss:      LogScalar[DT]
     var critic_loss:     LogScalar[DT]
     var alpha:           LogScalar[DT]

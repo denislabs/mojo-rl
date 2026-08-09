@@ -19,7 +19,7 @@ CPU-only machines).
 
 from std.sys import has_accelerator
 from std.gpu import block_idx, thread_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import abs as math_abs
 from std.testing import assert_true
 from layout import Layout, LayoutTensor
@@ -162,7 +162,7 @@ def lq_terminal_kernel[
 
 @fieldwise_init
 struct LQ1DGPUCallback(
-    Copyable, Movable, ImplicitlyDeletable, RolloutJacobianCallbackGPU
+    Copyable, Movable, Deinitable, RolloutJacobianCallbackGPU
 ):
     """Hand-rolled GPU adapter for 1-D LQ + iLQR oracle test."""
 

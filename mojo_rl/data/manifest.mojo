@@ -48,7 +48,7 @@ comptime MANIFEST_DATASET = "__manifest__"
 comptime SCHEMA_VERSION = 1
 
 
-struct Manifest(Movable & ImplicitlyDeletable):
+struct Manifest(Movable & Deinitable):
     var schema_version: Int
     var env_id: String
     var n_rows: Int

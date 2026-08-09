@@ -31,7 +31,7 @@ from .nstep_targets import compute_nstep_value_targets
 from mojo_rl.data.quantize import _obs_quant, _obs_dequant
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Local per-window scratch (w_rew/w_done/…) that feeds the shared
     `compute_nstep_value_targets` (raw-pointer, used by every replay incl.
     un-migrated GPU/continuous). Function-local: alloc'd + freed in one call."""
@@ -39,7 +39,7 @@ def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 
 
 struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT](
-    Movable, ImplicitlyDeletable
+    Movable, Deinitable
 ):
     """Ring of MCTS-labelled steps + episode index. ``CAP`` = max resident
     steps. Host-side (the CartPole lighthouse trains on CPU; the GPU search
@@ -158,7 +158,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
         field: List[Scalar[DT]],
         ep_idx: Int,
         offset: Int,
-        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut out: Pointer[Scalar[DT], MutAnyOrigin],
         out_base: Int,
     ):
         """Read ``FIELD_DIM`` cells of one ring field at episode-relative
@@ -167,11 +167,11 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
         those differ from zero)."""
         if offset >= self.ep_len[ep_idx]:
             for j in range(FIELD_DIM):
-                out[out_base + j] = Scalar[DT](0.0)
+                out[unsafe_offset=out_base + j] = Scalar[DT](0.0)
             return
         var slot = (self.ep_start[ep_idx] + offset) % Self.CAP
         for j in range(FIELD_DIM):
-            out[out_base + j] = field[slot * FIELD_DIM + j]
+            out[unsafe_offset=out_base + j] = field[slot * FIELD_DIM + j]
 
     def _read_obs_step(
         self,
@@ -252,14 +252,14 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
             for h in range(HR):
                 self._read_step[1](self.rew, e, s + h, w_rew, h)
                 if s + h >= L:
-                    w_done[h] = Scalar[DT](1.0)   # absorbing = terminal
+                    w_done[unsafe_offset=h] = Scalar[DT](1.0)   # absorbing = terminal
                 else:
                     self._read_step[1](self.done, e, s + h, w_done, h)
             # value / to_play horizon (HV).
             for h in range(HV):
                 if s + h >= L:
-                    w_val[h] = Scalar[DT](0.0)     # terminal value 0
-                    w_tp[h] = Scalar[DT](0.0)
+                    w_val[unsafe_offset=h] = Scalar[DT](0.0)     # terminal value 0
+                    w_tp[unsafe_offset=h] = Scalar[DT](0.0)
                 else:
                     self._read_step[1](self.val, e, s + h, w_val, h)
                     self._read_step[1](self.tp, e, s + h, w_tp, h)
@@ -270,7 +270,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
 
             # write time-major slabs.
             for k in range(K + 1):
-                value_tgt[k * B + b] = w_vt[k]
+                value_tgt[k * B + b] = w_vt[unsafe_offset=k]
                 # policy target at position s+k (absorbing → uniform).
                 var pbase = k * B * Self.ACT + b * Self.ACT
                 if s + k >= L:
@@ -288,9 +288,9 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
                 else:
                     var slot = (self.ep_start[e] + s + k) % Self.CAP
                     actions[k * B + b] = self.act[slot]
-                reward_tgt[k * B + b] = w_rew[k]
+                reward_tgt[k * B + b] = w_rew[unsafe_offset=k]
 
-        w_rew.free(); w_done.free(); w_val.free(); w_tp.free(); w_vt.free()
+        w_rew.unsafe_free(); w_done.unsafe_free(); w_val.unsafe_free(); w_tp.unsafe_free(); w_vt.unsafe_free()
 
     def sample_training_batch_seq[
         B: Int, K: Int, N: Int,
@@ -303,7 +303,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
         mut value_tgt: List[Scalar[DT]],  # [K+1, B]
         mut reward_tgt: List[Scalar[DT]], # [K, B]
         cons_mask: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+            Pointer[Scalar[DT], MutAnyOrigin]
         ] = None,                                                # [K, B]
     ):
         """EZv2 variant of ``sample_training_batch``: identical targets, but the
@@ -349,20 +349,20 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
             if cons_mask:
                 var cm = cons_mask.value()
                 for k in range(K):
-                    cm[k * B + b] = (
+                    cm[unsafe_offset=k * B + b] = (
                         Scalar[DT](1.0) if s + k + 1 < L else Scalar[DT](0.0)
                     )
 
             for h in range(HR):
                 self._read_step[1](self.rew, e, s + h, w_rew, h)
                 if s + h >= L:
-                    w_done[h] = Scalar[DT](1.0)
+                    w_done[unsafe_offset=h] = Scalar[DT](1.0)
                 else:
                     self._read_step[1](self.done, e, s + h, w_done, h)
             for h in range(HV):
                 if s + h >= L:
-                    w_val[h] = Scalar[DT](0.0)
-                    w_tp[h] = Scalar[DT](0.0)
+                    w_val[unsafe_offset=h] = Scalar[DT](0.0)
+                    w_tp[unsafe_offset=h] = Scalar[DT](0.0)
                 else:
                     self._read_step[1](self.val, e, s + h, w_val, h)
                     self._read_step[1](self.tp, e, s + h, w_tp, h)
@@ -372,7 +372,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
             )
 
             for k in range(K + 1):
-                value_tgt[k * B + b] = w_vt[k]
+                value_tgt[k * B + b] = w_vt[unsafe_offset=k]
                 var pbase = k * B * Self.ACT + b * Self.ACT
                 if s + k >= L:
                     var u = Scalar[DT](1.0) / Scalar[DT](Self.ACT)
@@ -388,9 +388,9 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
                 else:
                     var slot = (self.ep_start[e] + s + k) % Self.CAP
                     actions[k * B + b] = self.act[slot]
-                reward_tgt[k * B + b] = w_rew[k]
+                reward_tgt[k * B + b] = w_rew[unsafe_offset=k]
 
-        w_rew.free(); w_done.free(); w_val.free(); w_tp.free(); w_vt.free()
+        w_rew.unsafe_free(); w_done.unsafe_free(); w_val.unsafe_free(); w_tp.unsafe_free(); w_vt.unsafe_free()
 
     def update_targets(
         mut self,

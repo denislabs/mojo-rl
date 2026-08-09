@@ -44,7 +44,7 @@ Run with:
 from std.math import abs, sin, sqrt
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.collections import InlineArray
 from layout import Layout, LayoutTensor
 

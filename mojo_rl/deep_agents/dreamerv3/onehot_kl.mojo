@@ -33,7 +33,7 @@ test (`test_dreamer_pr2.mojo`).
 
 from std.math import exp, log
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -47,9 +47,9 @@ from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 @always_inline
 def _mptr[
     o: Origin
-](p: UnsafePointer[Scalar[DT], o]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+](p: Pointer[Scalar[DT], o]) -> Pointer[Scalar[DT], MutAnyOrigin]:
     """Erase a CPU pointer's origin (used only by the standalone `OneHotKL`)."""
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](p)
+    return rebind[Pointer[Scalar[DT], MutAnyOrigin]](p)
 
 
 # ── OneHotKLLoss GPU kernels. NG=B·STOCH groups of CLASSES lanes; NN=B·SC.
@@ -160,7 +160,7 @@ def _kl_bwd_kernel[NG: Int, C: Int, STOCH: Int](
             g_post[base + j] = wr * (one_m_u * rebind[Scalar[DT]](smpo[base + j]) * (lr_diff - W))
 
 
-struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDeletable):
+struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & Deinitable):
     comptime GROUP = Self.STOCH * Self.CLASSES
 
     var unimix: Scalar[DT]
@@ -217,29 +217,29 @@ struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDeletable):
         sm_out_o: Origin[mut=True],
         p_out_o: Origin[mut=True],
     ](
-        z: UnsafePointer[Scalar[DT], z_o],
+        z: Pointer[Scalar[DT], z_o],
         base: Int,
         u: Scalar[DT],
-        mut sm_out: UnsafePointer[Scalar[DT], sm_out_o],
-        mut p_out: UnsafePointer[Scalar[DT], p_out_o],
+        mut sm_out: Pointer[Scalar[DT], sm_out_o],
+        mut p_out: Pointer[Scalar[DT], p_out_o],
     ):
         """softmax + unimix mix for one (b,s) group of CLASSES lanes."""
-        var zmax = z[base]
+        var zmax = z[unsafe_offset=base]
         for c in range(1, Self.CLASSES):
-            if z[base + c] > zmax:
-                zmax = z[base + c]
+            if z[unsafe_offset=base + c] > zmax:
+                zmax = z[unsafe_offset=base + c]
         var ssum: Scalar[DT] = 0.0
         for c in range(Self.CLASSES):
-            var e = exp(z[base + c] - zmax)
-            sm_out[base + c] = e
+            var e = exp(z[unsafe_offset=base + c] - zmax)
+            sm_out[unsafe_offset=base + c] = e
             ssum += e
         var inv = Scalar[DT](1.0) / ssum
         var uni = u / Scalar[DT](Self.CLASSES)
         var one_m_u = Scalar[DT](1.0) - u
         for c in range(Self.CLASSES):
-            var sm = sm_out[base + c] * inv
-            sm_out[base + c] = sm
-            p_out[base + c] = one_m_u * sm + uni
+            var sm = sm_out[unsafe_offset=base + c] * inv
+            sm_out[unsafe_offset=base + c] = sm
+            p_out[unsafe_offset=base + c] = one_m_u * sm + uni
 
     def forward[
         BATCH: Int,
@@ -249,10 +249,10 @@ struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDeletable):
         rep_out_o: Origin[mut=True],
     ](
         mut self,
-        post_logits: UnsafePointer[Scalar[DT], post_logits_o],
-        prior_logits: UnsafePointer[Scalar[DT], prior_logits_o],
-        mut dyn_out: UnsafePointer[Scalar[DT], dyn_out_o],
-        mut rep_out: UnsafePointer[Scalar[DT], rep_out_o],
+        post_logits: Pointer[Scalar[DT], post_logits_o],
+        prior_logits: Pointer[Scalar[DT], prior_logits_o],
+        mut dyn_out: Pointer[Scalar[DT], dyn_out_o],
+        mut rep_out: Pointer[Scalar[DT], rep_out_o],
     ) raises:
         self._ensure_cache(BATCH)
         var smpo = _mptr(self.sm_post.unsafe_ptr())
@@ -266,11 +266,11 @@ struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDeletable):
                 Self._softmax_mix(post_logits, base, self.unimix, smpo, ppo)
                 Self._softmax_mix(prior_logits, base, self.unimix, smpr, ppr)
                 for c in range(Self.CLASSES):
-                    var pp = ppo[base + c]
-                    kl_sum += pp * (log(pp) - log(ppr[base + c]))
+                    var pp = ppo[unsafe_offset=base + c]
+                    kl_sum += pp * (log(pp) - log(ppr[unsafe_offset=base + c]))
             var clamped = kl_sum if kl_sum > self.free_nats else self.free_nats
-            dyn_out[b] = clamped
-            rep_out[b] = clamped
+            dyn_out[unsafe_offset=b] = clamped
+            rep_out[unsafe_offset=b] = clamped
             self.active[b] = (
                 Scalar[DT](1.0) if kl_sum > self.free_nats else Scalar[DT](0.0)
             )
@@ -283,10 +283,10 @@ struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDeletable):
         grad_prior_o: Origin[mut=True],
     ](
         mut self,
-        d_dyn: UnsafePointer[Scalar[DT], d_dyn_o],
-        d_rep: UnsafePointer[Scalar[DT], d_rep_o],
-        mut grad_post: UnsafePointer[Scalar[DT], grad_post_o],
-        mut grad_prior: UnsafePointer[Scalar[DT], grad_prior_o],
+        d_dyn: Pointer[Scalar[DT], d_dyn_o],
+        d_rep: Pointer[Scalar[DT], d_rep_o],
+        mut grad_post: Pointer[Scalar[DT], grad_post_o],
+        mut grad_prior: Pointer[Scalar[DT], grad_prior_o],
     ) raises:
         var smpo = _mptr(self.sm_post.unsafe_ptr())
         var smpr = _mptr(self.sm_prior.unsafe_ptr())
@@ -295,31 +295,31 @@ struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDeletable):
         var one_m_u = Scalar[DT](1.0) - self.unimix
         for b in range(BATCH):
             var act = self.active[b]
-            var wd = d_dyn[b] * act
-            var wr = d_rep[b] * act
+            var wd = d_dyn[unsafe_offset=b] * act
+            var wr = d_rep[unsafe_offset=b] * act
             for s in range(Self.STOCH):
                 var base = (b * Self.STOCH + s) * Self.CLASSES
                 # ── dyn → grad_prior ──
                 # S = Σ_c (p_post[c]/p_prior[c])·sm_prior[c]
                 var S: Scalar[DT] = 0.0
                 for c in range(Self.CLASSES):
-                    S += (ppo[base + c] / ppr[base + c]) * smpr[base + c]
+                    S += (ppo[unsafe_offset=base + c] / ppr[unsafe_offset=base + c]) * smpr[unsafe_offset=base + c]
                 # ── rep → grad_post ──
                 # W = Σ_c sm_post[c]·(log p_post[c] − log p_prior[c])
                 var W: Scalar[DT] = 0.0
                 for c in range(Self.CLASSES):
-                    W += smpo[base + c] * (
-                        log(ppo[base + c]) - log(ppr[base + c])
+                    W += smpo[unsafe_offset=base + c] * (
+                        log(ppo[unsafe_offset=base + c]) - log(ppr[unsafe_offset=base + c])
                     )
                 for j in range(Self.CLASSES):
                     # prior grad (dyn term).
-                    var a_over_p = ppo[base + j] / ppr[base + j]
-                    var gpr = -one_m_u * smpr[base + j] * (a_over_p - S)
-                    grad_prior[base + j] = wd * gpr
+                    var a_over_p = ppo[unsafe_offset=base + j] / ppr[unsafe_offset=base + j]
+                    var gpr = -one_m_u * smpr[unsafe_offset=base + j] * (a_over_p - S)
+                    grad_prior[unsafe_offset=base + j] = wd * gpr
                     # post grad (rep term).
-                    var lr_diff = log(ppo[base + j]) - log(ppr[base + j])
-                    var gpo = one_m_u * smpo[base + j] * (lr_diff - W)
-                    grad_post[base + j] = wr * gpo
+                    var lr_diff = log(ppo[unsafe_offset=base + j]) - log(ppr[unsafe_offset=base + j])
+                    var gpo = one_m_u * smpo[unsafe_offset=base + j] * (lr_diff - W)
+                    grad_post[unsafe_offset=base + j] = wr * gpo
 
 
 # ──────────────────────────────────────────────────────────────────────

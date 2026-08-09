@@ -11,7 +11,7 @@ Perfect for LunarLander with varying terrain heights.
 from std.math import cos, sin, sqrt
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from ..traits.collision import CollisionSystem
 
 from ..constants import (

@@ -15,9 +15,9 @@ Run (Apple Metal):
     pixi run -e apple mojo run -I . tests/deep_agents/test_az_telemetry.mojo
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import CsvLogger
 from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
@@ -81,7 +81,7 @@ def main() raises:
         do_eval=True,
         do_eval2=True,
         verbose=True,
-        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+        logger=Pointer(to=logger).as_unsafe_any_origin(),
     )
     logger.close()
 

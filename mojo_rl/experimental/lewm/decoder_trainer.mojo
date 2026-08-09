@@ -12,9 +12,9 @@ facade keeps raw `TileTensor`/host-pointer args, bridged into the graph.
 """
 
 from std.gpu import thread_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.memory import AddressSpace
 from layout import Layout, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB_REDUCE
@@ -37,19 +37,19 @@ from mojo_rl.deep_agents.loss.seed_grad_inv_batch import seed_grad_inv_batch
 def _dec_reduce_mean_acc_kernel[
     BATCH: Int
 ](
-    src: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    acc: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     var t = Int(thread_idx.x)
     var my_sum: Scalar[DT] = 0.0
     var k = t
     while k < BATCH:
-        my_sum += src[k]
+        my_sum += src[unsafe_offset=k]
         k += TPB_REDUCE
     var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
     if t == 0:
-        acc[0] = acc[0] + total[0] / Scalar[DT](BATCH)
-        acc[1] = acc[1] + Scalar[DT](1.0)
+        acc[unsafe_offset=0] = acc[unsafe_offset=0] + total[0] / Scalar[DT](BATCH)
+        acc[unsafe_offset=1] = acc[unsafe_offset=1] + Scalar[DT](1.0)
 
 
 struct _SaveVisitor(ParamVisitor):
@@ -114,7 +114,7 @@ struct LeWMDecoderTrainer[
     N_LAYERS: Int,
     BATCH: Int,
     train_target: StaticString = "cpu",
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime DG = LeWMDecoderLossGraph[
         Self.EMB, Self.HID, Self.N_Q, Self.PATCH_PX, Self.FF, Self.N_LAYERS
     ]
@@ -186,11 +186,11 @@ struct LeWMDecoderTrainer[
         comptime if Self.train_target == "cpu":
             tt.data = List[Scalar[DT]](length=N, fill=Scalar[DT](0))
             for i in range(N):
-                tt.data[i] = rebind[Scalar[DT]](src.ptr[i])
+                tt.data[i] = rebind[Scalar[DT]](src.ptr[unsafe_offset=i])
             tt.n = N
         else:
             var c = self.ctx.value()
-            var sp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](src.ptr)
+            var sp = rebind[Pointer[Scalar[DT], MutAnyOrigin]](src.ptr)
             tt.dev = DeviceBuffer[DT](c, sp, N, owning=False)
             tt.n = N
         self.graph.set_input[slot_name, Self.BATCH](tt, self.ctx)
@@ -254,7 +254,7 @@ struct LeWMDecoderTrainer[
             origin=MutAnyOrigin,
             ...,
         ],
-        recon_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        recon_host: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Forward-only readout of the `recon` node (B, N_Q·PATCH_PX, patch
         space) into a host buffer. Caller un-patchifies for display."""
@@ -271,12 +271,12 @@ struct LeWMDecoderTrainer[
         ref src = self.graph.node_output["recon"]()
         comptime if Self.train_target == "cpu":
             for i in range(N):
-                recon_host[i] = src.data[i]
+                recon_host[unsafe_offset=i] = src.data[i]
         else:
             var c = self.ctx.value()
             src.download(c)
             for i in range(N):
-                recon_host[i] = src.data[i]
+                recon_host[unsafe_offset=i] = src.data[i]
 
     def read_loss_accum(mut self) raises -> Scalar[DT]:
         comptime if Self.train_target == "gpu":
@@ -284,8 +284,8 @@ struct LeWMDecoderTrainer[
             var h = c.enqueue_create_host_buffer[DT](2)
             c.enqueue_copy(h, self._loss_acc_dev.value())
             c.synchronize()
-            var s = h.unsafe_ptr()[0]
-            var n = h.unsafe_ptr()[1]
+            var s = h.unsafe_ptr()[unsafe_offset=0]
+            var n = h.unsafe_ptr()[unsafe_offset=1]
             if n == Scalar[DT](0.0):
                 return Scalar[DT](0.0)
             return s / n

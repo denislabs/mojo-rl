@@ -52,7 +52,7 @@ crash disappears under ELLIPTIC, it is the blocked kernel, and that is a
 one-line bisect rather than an afternoon.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import sin
 
 from mojo_rl.nn.constants import DT

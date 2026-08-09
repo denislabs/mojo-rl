@@ -24,7 +24,7 @@ Run on NVIDIA:
 
 from std.random import seed
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.datasets import CharTokenizer, load_text, train_val_split
 from mojo_rl.nn.constants import DT

@@ -41,7 +41,7 @@ comptime Sampler = OnlinePongSampler[ScriptedPongPolicy, B, T]
 
 
 def _check_one_hot_fp32(
-    act: UnsafePointer[Scalar[DType.float32], MutAnyOrigin]
+    act: Pointer[Scalar[DType.float32], MutAnyOrigin]
 ) raises:
     var bad = 0
     for b in range(B):

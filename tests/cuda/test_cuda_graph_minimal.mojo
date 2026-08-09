@@ -41,7 +41,7 @@ Run with:
 """
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.sys import has_nvidia_gpu_accelerator
 from std.testing import assert_true, TestSuite
 from layout import Layout, LayoutTensor

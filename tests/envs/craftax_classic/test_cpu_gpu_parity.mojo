@@ -12,7 +12,7 @@ Run:
   pixi run mojo run -I . tests/envs/craftax_classic/test_cpu_gpu_parity.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.envs.craftax_classic import CraftaxClassicEnv
 from mojo_rl.envs.craftax_classic.constants import (

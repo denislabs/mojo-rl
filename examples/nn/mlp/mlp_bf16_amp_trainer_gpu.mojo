@@ -13,7 +13,7 @@ Run (NVIDIA): pixi run -e nvidia mojo run -I . examples/nn/mlp/mlp_bf16_amp_trai
 """
 
 from std.sys import has_accelerator
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming

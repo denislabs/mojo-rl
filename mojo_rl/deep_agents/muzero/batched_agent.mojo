@@ -27,8 +27,8 @@ quantization would corrupt physical state values). Device-ring constraints:
     var loss = agent.train[L=RemoteLogger](env, iterations=..., eval_env=...)
 """
 
-from std.memory import UnsafePointer
-from std.gpu.host import DeviceContext
+from std.memory import Pointer
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -58,7 +58,7 @@ struct MuZeroBatchedAgent[
     K: Int,
     N: Int,
     OBS_STORE_DT: DType = DType.uint8,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     var ctx: DeviceContext
     var rep: Self.REP
     var dyn: Self.DYN
@@ -114,10 +114,10 @@ struct MuZeroBatchedAgent[
         eval_every: Int = 0,
         eval_episodes: Int = 5,
         eval_horizon: Int = 0,
-        eval_env: Optional[UnsafePointer[Self.BENV, MutAnyOrigin]] = None,
+        eval_env: Optional[Pointer[Self.BENV, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         report_every: Int = 0,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         verbose: Bool = False,
         use_per: Bool = False,
         per_alpha: Scalar[DT] = Scalar[DT](1.0),

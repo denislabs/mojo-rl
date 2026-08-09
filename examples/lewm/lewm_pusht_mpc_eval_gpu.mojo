@@ -24,7 +24,7 @@ Run (NVIDIA; 224² + ~9k host-synced rollouts — a heavy one-shot eval):
 """
 
 from std.math import sqrt
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
@@ -121,7 +121,7 @@ def main() raises:
         "gpu", PRED_DIM_HEAD,
     ](
         tr, pix_t, act_t,
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](act_host.unsafe_ptr()),
+        rebind[Pointer[Scalar[DT], MutAnyOrigin]](act_host.unsafe_ptr()),
         num_random=NUM_RANDOM, cem_iters=CEM_ITERS, cem_samples=CEM_SAMPLES,
         cem_topk=CEM_TOPK, init_std=init_std, ctx=ctx,
     )

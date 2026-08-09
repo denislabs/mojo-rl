@@ -8,7 +8,7 @@ repo (pending the `ASSET_LICENSES.md` check — see `docs/PROCGEN_PORT.md`).
 
 Bulk loader: the naive `Int(py=raw[i])` per-byte path is ~fine for a few small
 sprites but prohibitive for backgrounds (9×~500²). Instead we take numpy's
-contiguous buffer address (`ctypes.data`), wrap it in an `UnsafePointer` via
+contiguous buffer address (`ctypes.data`), wrap it in an `Pointer` via
 `unsafe_from_address`, and `unsafe_memcpy` the whole image in one shot. The numpy array
 is kept alive until after the copy.
 """
@@ -46,7 +46,7 @@ def _load_rgba(pil: PythonObject, np: PythonObject, path: String) raises -> Spri
     var arr = np.ascontiguousarray(np.array(img).astype(np.uint8)).reshape(-1)
     var n = w * h * 4
     var addr = Int(py=arr.ctypes.data)
-    var src = UnsafePointer[UInt8, MutAnyOrigin](unsafe_from_address=addr)
+    var src = Pointer[UInt8, MutAnyOrigin](unsafe_from_address=addr)
     var s = Sprite()
     s.w = w
     s.h = h

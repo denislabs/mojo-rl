@@ -17,7 +17,7 @@ Backward: grad_in_i[b, :] = grad_output[b, off_i : off_i+DIMS[i]].
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -48,7 +48,7 @@ def _build_in_dims[*DIMS: Int]() -> InlineArray[Int, DIMS.size]:
     var d = InlineArray[Int, DIMS.size](fill=0)
     comptime for k in range(DIMS.size):
         d[k] = DIMS[k]
-    return d
+    return d^
 
 
 # ── per-slab copy kernels (one launch per input; legacy-style) ──────────

@@ -11,7 +11,7 @@ Lets the Rainbow config preset plug into a single
 gpu with no per-target block duplication.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from ..training.replay_buffer import ReplayBuffer

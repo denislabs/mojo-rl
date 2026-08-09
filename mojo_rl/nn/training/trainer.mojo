@@ -18,7 +18,7 @@ images, `train_y` = [N·NC] one-hot labels; `test_x` = [N·IN], `test_labels` =
 [N] integer class ids. Topology must match what was trained.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.gpu import global_idx
 from std.memory import unsafe_memcpy
 from std.time import perf_counter_ns
@@ -60,7 +60,7 @@ def _cast_kernel[
 
 
 @fieldwise_init
-struct TrainResult(Movable & ImplicitlyDeletable):
+struct TrainResult(Movable & Deinitable):
     """Per-epoch training history returned by `Trainer.train_gpu`."""
 
     var epoch_train_loss: List[Float64]
@@ -91,7 +91,7 @@ struct Trainer[
     # workspace per call, illegal under stream capture; enable only once that's
     # resolved. No-op on non-NVIDIA (runs eagerly, bit-identical).
     USE_TRAIN_CUDA_GRAPH: Bool = False,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     # Model activation-flow dtype: `DT` for an fp32 model, `bfloat16` for a
     # bf16-flow model (`Sequential[Linear[..,bf16], …]`). The CASTS only happen
     # at boundaries; the fp32 case (MADT == DT) is the EXISTING code path with

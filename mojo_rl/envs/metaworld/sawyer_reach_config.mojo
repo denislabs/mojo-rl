@@ -8,7 +8,7 @@ Reference: Metaworld-master/metaworld/envs/sawyer_reach_v3.py
 """
 
 from std.math import sqrt
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data

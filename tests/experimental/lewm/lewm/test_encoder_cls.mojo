@@ -7,7 +7,7 @@ forward + vjp finite, on CPU and GPU.
 Run:  pixi run -e apple mojo run -I . tests/experimental/lewm/lewm/test_encoder_cls.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT

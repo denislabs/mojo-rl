@@ -5,7 +5,7 @@ for true 3D rendering with Blinn-Phong lighting, depth buffering, and procedural
 checkerboard ground.
 """
 
-from std.memory import UnsafePointer, unsafe_memcpy, alloc
+from std.memory import Pointer, unsafe_memcpy, alloc
 from std.math import sqrt, sin, cos, tan
 from mojo_rl.math3d import (
     Vec3 as Vec3Generic,
@@ -428,7 +428,7 @@ struct Renderer3D(Movable):
     rendering with procedural checkerboard ground and flat-color line drawing.
     """
 
-    # SDL3 handles. Mojo nightly removed nullable UnsafePointer; these
+    # SDL3 handles. Mojo nightly removed nullable Pointer; these
     # GPU resources are populated by init() and need to be wrapped in
     # Optional[] so the field can start out empty.
     var window: Optional[Ptr[Window, MutUntrackedOrigin]]
@@ -1304,19 +1304,19 @@ struct Renderer3D(Movable):
             instance_step_rate=0,
         )
         var solid_attrs = alloc[GPUVertexAttribute](3)
-        solid_attrs[0] = GPUVertexAttribute(
+        solid_attrs[unsafe_offset=0] = GPUVertexAttribute(
             location=0,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=0,
         )
-        solid_attrs[1] = GPUVertexAttribute(
+        solid_attrs[unsafe_offset=1] = GPUVertexAttribute(
             location=1,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=12,
         )
-        solid_attrs[2] = GPUVertexAttribute(
+        solid_attrs[unsafe_offset=2] = GPUVertexAttribute(
             location=2,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
@@ -1443,19 +1443,19 @@ struct Renderer3D(Movable):
             instance_step_rate=0,
         )
         var ground_attrs = alloc[GPUVertexAttribute](3)
-        ground_attrs[0] = GPUVertexAttribute(
+        ground_attrs[unsafe_offset=0] = GPUVertexAttribute(
             location=0,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=0,
         )
-        ground_attrs[1] = GPUVertexAttribute(
+        ground_attrs[unsafe_offset=1] = GPUVertexAttribute(
             location=1,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=12,
         )
-        ground_attrs[2] = GPUVertexAttribute(
+        ground_attrs[unsafe_offset=2] = GPUVertexAttribute(
             location=2,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
@@ -1653,19 +1653,19 @@ struct Renderer3D(Movable):
             instance_step_rate=0,
         )
         var shadow_attrs = alloc[GPUVertexAttribute](3)
-        shadow_attrs[0] = GPUVertexAttribute(
+        shadow_attrs[unsafe_offset=0] = GPUVertexAttribute(
             location=0,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=0,
         )
-        shadow_attrs[1] = GPUVertexAttribute(
+        shadow_attrs[unsafe_offset=1] = GPUVertexAttribute(
             location=1,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=12,
         )
-        shadow_attrs[2] = GPUVertexAttribute(
+        shadow_attrs[unsafe_offset=2] = GPUVertexAttribute(
             location=2,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
@@ -1776,19 +1776,19 @@ struct Renderer3D(Movable):
             instance_step_rate=0,
         )
         var refl_attrs = alloc[GPUVertexAttribute](3)
-        refl_attrs[0] = GPUVertexAttribute(
+        refl_attrs[unsafe_offset=0] = GPUVertexAttribute(
             location=0,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=0,
         )
-        refl_attrs[1] = GPUVertexAttribute(
+        refl_attrs[unsafe_offset=1] = GPUVertexAttribute(
             location=1,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT3,
             offset=12,
         )
-        refl_attrs[2] = GPUVertexAttribute(
+        refl_attrs[unsafe_offset=2] = GPUVertexAttribute(
             location=2,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
@@ -1966,10 +1966,10 @@ struct Renderer3D(Movable):
         ))
 
         # Free heap-allocated vertex attribute arrays
-        solid_attrs.free()
-        ground_attrs.free()
-        shadow_attrs.free()
-        refl_attrs.free()
+        solid_attrs.unsafe_free()
+        ground_attrs.unsafe_free()
+        shadow_attrs.unsafe_free()
+        refl_attrs.unsafe_free()
 
         # Release shader objects (pipelines retain them)
         release_gpu_shader(self.device.value(), solid_vs)
@@ -2058,18 +2058,18 @@ struct Renderer3D(Movable):
 
         # Map and copy data
         var mapped = map_gpu_transfer_buffer(self.device.value(), transfer_buf, False)
-        var mapped_ptr = mapped.bitcast[UInt8]()
+        var mapped_ptr = mapped.unsafe_bitcast[UInt8]()
 
         # Copy vertices
         unsafe_memcpy(
             dest=mapped_ptr,
-            src=UnsafePointer(to=mesh_data.vertices[0]).bitcast[UInt8](),
+            src=Pointer(to=mesh_data.vertices[0]).unsafe_bitcast[UInt8](),
             count=Int(vb_size),
         )
         # Copy indices after vertices
         unsafe_memcpy(
             dest=mapped_ptr + Int(vb_size),
-            src=UnsafePointer(to=mesh_data.indices[0]).bitcast[UInt8](),
+            src=Pointer(to=mesh_data.indices[0]).unsafe_bitcast[UInt8](),
             count=Int(ib_size),
         )
 
@@ -2189,7 +2189,7 @@ struct Renderer3D(Movable):
             self.device.value(), Ptr(to=atlas_tb_info)
         ))
         var mapped = map_gpu_transfer_buffer(self.device.value(), atlas_tb, False)
-        var mapped_u8 = mapped.bitcast[UInt8]()
+        var mapped_u8 = mapped.unsafe_bitcast[UInt8]()
         for i in range(8192):
             (mapped_u8 + i)[] = atlas[i]
         unmap_gpu_transfer_buffer(self.device.value(), atlas_tb)
@@ -2266,19 +2266,19 @@ struct Renderer3D(Movable):
             instance_step_rate=0,
         )
         var text_attrs = alloc[GPUVertexAttribute](3)
-        text_attrs[0] = GPUVertexAttribute(
+        text_attrs[unsafe_offset=0] = GPUVertexAttribute(
             location=0,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
             offset=0,
         )
-        text_attrs[1] = GPUVertexAttribute(
+        text_attrs[unsafe_offset=1] = GPUVertexAttribute(
             location=1,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT2,
             offset=8,
         )
-        text_attrs[2] = GPUVertexAttribute(
+        text_attrs[unsafe_offset=2] = GPUVertexAttribute(
             location=2,
             buffer_slot=0,
             format=GPUVertexElementFormat.GPU_VERTEXELEMENTFORMAT_FLOAT4,
@@ -2360,7 +2360,7 @@ struct Renderer3D(Movable):
         self.text_pipeline = untracked(create_gpu_graphics_pipeline(
             self.device.value(), Ptr(to=text_pi)
         ))
-        text_attrs.free()
+        text_attrs.unsafe_free()
         release_gpu_shader(self.device.value(), text_vs)
         release_gpu_shader(self.device.value(), text_fs)
 
@@ -2405,7 +2405,7 @@ struct Renderer3D(Movable):
             self.device.value(), Ptr(to=idx_tb_info)
         ))
         var idx_mapped = map_gpu_transfer_buffer(self.device.value(), idx_tb, False)
-        var idx_ptr = idx_mapped.bitcast[UInt16]()
+        var idx_ptr = idx_mapped.unsafe_bitcast[UInt16]()
         for q in range(MAX_TEXT_CHARS):
             var base = UInt16(q * 4)
             (idx_ptr + q * 6 + 0)[] = base + 0
@@ -2454,7 +2454,7 @@ struct Renderer3D(Movable):
         )
         var tb = untracked(create_gpu_transfer_buffer(self.device.value(), Ptr(to=tb_info)))
         var mapped = map_gpu_transfer_buffer(self.device.value(), tb, False)
-        var mapped_u8 = mapped.bitcast[UInt8]()
+        var mapped_u8 = mapped.unsafe_bitcast[UInt8]()
         (mapped_u8 + 0)[] = UInt8(255)  # R
         (mapped_u8 + 1)[] = UInt8(255)  # G
         (mapped_u8 + 2)[] = UInt8(255)  # B
@@ -2554,7 +2554,7 @@ struct Renderer3D(Movable):
         )
         var tb = untracked(create_gpu_transfer_buffer(self.device.value(), Ptr(to=tb_info)))
         var mapped = map_gpu_transfer_buffer(self.device.value(), tb, False)
-        var mapped_u8 = mapped.bitcast[UInt8]()
+        var mapped_u8 = mapped.unsafe_bitcast[UInt8]()
         for i in range(Int(byte_size)):
             (mapped_u8 + i)[] = texture_data.pixels[i]
         unmap_gpu_transfer_buffer(self.device.value(), tb)
@@ -3412,8 +3412,8 @@ struct Renderer3D(Movable):
             self.device.value(), self.skin_cache[idx].transfer, True
         )
         unsafe_memcpy(
-            dest=mapped.bitcast[UInt8](),
-            src=UnsafePointer(to=self.skin_cache[idx].verts[0]).bitcast[
+            dest=mapped.unsafe_bitcast[UInt8](),
+            src=Pointer(to=self.skin_cache[idx].verts[0]).unsafe_bitcast[
                 UInt8
             ](),
             count=Int(vb_size),
@@ -3921,7 +3921,7 @@ struct Renderer3D(Movable):
             var mapped = map_gpu_transfer_buffer(
                 self.device.value(), self.line_transfer_buffer.value(), True
             )
-            var mapped_f32 = mapped.bitcast[Float32]()
+            var mapped_f32 = mapped.unsafe_bitcast[Float32]()
             for i in range(len(self.line_vertex_data)):
                 (mapped_f32 + i)[] = self.line_vertex_data[i]
             unmap_gpu_transfer_buffer(self.device.value(), self.line_transfer_buffer.value())
@@ -3954,7 +3954,7 @@ struct Renderer3D(Movable):
             var text_mapped = map_gpu_transfer_buffer(
                 self.device.value(), self.text_transfer_buffer.value(), True
             )
-            var text_mapped_f32 = text_mapped.bitcast[Float32]()
+            var text_mapped_f32 = text_mapped.unsafe_bitcast[Float32]()
             for i in range(n_text_floats):
                 (text_mapped_f32 + i)[] = self.text_vertex_data[i]
             unmap_gpu_transfer_buffer(self.device.value(), self.text_transfer_buffer.value())
@@ -4036,7 +4036,7 @@ struct Renderer3D(Movable):
             push_gpu_vertex_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=light_scene).bitcast[NoneType](),
+                Ptr(to=light_scene).unsafe_bitcast[NoneType](),
                 240,
             )
 
@@ -4044,7 +4044,7 @@ struct Renderer3D(Movable):
                 push_gpu_vertex_uniform_data(
                     cmd_buf,
                     1,
-                    Ptr(to=self.solid_draws[i].uniforms).bitcast[NoneType](),
+                    Ptr(to=self.solid_draws[i].uniforms).unsafe_bitcast[NoneType](),
                     96,
                 )
                 self._select_and_draw(shadow_pass, self.solid_draws[i])
@@ -4054,7 +4054,7 @@ struct Renderer3D(Movable):
         # ====================================================================
         # Acquire swapchain texture
         # ====================================================================
-        # Mojo nightly: UnsafePointer is non-nullable. _null_ptr returns a
+        # Mojo nightly: Pointer is non-nullable. _null_ptr returns a
         # zero-address Ptr via the runtime-Int overload of unsafe_from_address.
         # The SDL3 FFI call populates it; we check the raw address afterward.
         var swapchain_tex = _null_ptr[GPUTexture, MutAnyOrigin]()
@@ -4157,7 +4157,7 @@ struct Renderer3D(Movable):
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=self.skybox_uniforms).bitcast[NoneType](),
+                Ptr(to=self.skybox_uniforms).unsafe_bitcast[NoneType](),
                 UInt32(size_of[SkyboxUniforms]()),
             )
             # Draw fullscreen triangle (3 vertices, no vertex buffer)
@@ -4172,26 +4172,26 @@ struct Renderer3D(Movable):
             push_gpu_vertex_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
                 240,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
                 240,
             )
             # Push shadow uniforms to fragment slot 1
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 1,
-                Ptr(to=self.shadow_uniforms).bitcast[NoneType](),
+                Ptr(to=self.shadow_uniforms).unsafe_bitcast[NoneType](),
                 80,
             )
             push_gpu_vertex_uniform_data(
                 cmd_buf,
                 1,
-                Ptr(to=self.ground_uniforms).bitcast[NoneType](),
+                Ptr(to=self.ground_uniforms).unsafe_bitcast[NoneType](),
                 96,
             )
 
@@ -4263,13 +4263,13 @@ struct Renderer3D(Movable):
             push_gpu_vertex_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
                 240,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
                 240,
             )
 
@@ -4292,7 +4292,7 @@ struct Renderer3D(Movable):
                 push_gpu_vertex_uniform_data(
                     cmd_buf,
                     1,
-                    Ptr(to=mirrored_uniforms).bitcast[NoneType](),
+                    Ptr(to=mirrored_uniforms).unsafe_bitcast[NoneType](),
                     96,
                 )
                 self._select_and_draw(render_pass, self.solid_draws[i])
@@ -4306,20 +4306,20 @@ struct Renderer3D(Movable):
             push_gpu_vertex_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
                 240,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=self.scene_uniforms).bitcast[NoneType](),
+                Ptr(to=self.scene_uniforms).unsafe_bitcast[NoneType](),
                 240,
             )
             # Push shadow uniforms to fragment slot 1
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 1,
-                Ptr(to=self.shadow_uniforms).bitcast[NoneType](),
+                Ptr(to=self.shadow_uniforms).unsafe_bitcast[NoneType](),
                 80,
             )
 
@@ -4332,7 +4332,7 @@ struct Renderer3D(Movable):
                 push_gpu_vertex_uniform_data(
                     cmd_buf,
                     1,
-                    Ptr(to=self.solid_draws[i].uniforms).bitcast[NoneType](),
+                    Ptr(to=self.solid_draws[i].uniforms).unsafe_bitcast[NoneType](),
                     96,
                 )
                 # Bind texture at fragment sampler slot 1
@@ -4370,13 +4370,13 @@ struct Renderer3D(Movable):
                 push_gpu_vertex_uniform_data(
                     cmd_buf,
                     0,
-                    Ptr(to=lu).bitcast[NoneType](),
+                    Ptr(to=lu).unsafe_bitcast[NoneType](),
                     80,
                 )
                 push_gpu_fragment_uniform_data(
                     cmd_buf,
                     0,
-                    Ptr(to=lu).bitcast[NoneType](),
+                    Ptr(to=lu).unsafe_bitcast[NoneType](),
                     80,
                 )
 
@@ -4411,7 +4411,7 @@ struct Renderer3D(Movable):
             push_gpu_vertex_uniform_data(
                 cmd_buf,
                 0,
-                Ptr(to=self.text_uniforms).bitcast[NoneType](),
+                Ptr(to=self.text_uniforms).unsafe_bitcast[NoneType](),
                 64,
             )
             var atlas_binding = GPUTextureSamplerBinding(

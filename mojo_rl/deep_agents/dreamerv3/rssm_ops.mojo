@@ -21,7 +21,7 @@ inherits the no-op `for_each_param`/`zero_grad`.
 
 from std.math import tanh, exp
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
@@ -395,7 +395,7 @@ struct BlockGroupAssemble[DETER: Int, H: Int, BLOCKS: Int](Module):
     def _mk_in_dims() -> InlineArray[Int, 4]:
         var d = InlineArray[Int, 4](fill=Self.H)
         d[0] = Self.DETER
-        return d
+        return d^
 
     def __init__(out self):
         pass
@@ -550,7 +550,7 @@ struct GRUGate[DETER: Int, BLOCKS: Int](Module):
     def _mk_in_dims() -> InlineArray[Int, 2]:
         var d = InlineArray[Int, 2](fill=Self.DETER)
         d[0] = Self.GRU_DIM
-        return d
+        return d^
 
     def __init__(out self):
         pass

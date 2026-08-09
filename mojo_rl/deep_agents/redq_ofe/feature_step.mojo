@@ -29,7 +29,7 @@ TileTensor gone — scratch are owned `nn.storage.Tensor`s (alloc on target);
 TensorRefs, mut out, ctx)`).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -46,7 +46,7 @@ struct OFEFeatureStep[
     OBS_: Int,
     ACT_: Int,
     BATCH_: Int,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     """Pre-pass populating φ(s) and φ(s') scratches.
 
     Comptime params:

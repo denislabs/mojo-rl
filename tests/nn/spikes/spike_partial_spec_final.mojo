@@ -19,7 +19,7 @@ should bind their dtype slot to the same `DTP` and arithmetic should
 work across them.
 """
 
-from std.gpu.memory import AddressSpace
+from max.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT

@@ -85,8 +85,8 @@ def main() raises:
 
     print("")
     print("Tiled Q-Learning results:")
-    print("  Mean reward:", String(metrics_q.mean_reward())[byte=:8])
-    print("  Max reward:", String(metrics_q.max_reward())[byte=:8])
+    print("  Mean reward:", fit(String(metrics_q.mean_reward()), 8))
+    print("  Max reward:", fit(String(metrics_q.max_reward()), 8))
     print("  Best steps:", Int(-metrics_q.max_reward()))
     print("")
 
@@ -124,8 +124,8 @@ def main() raises:
 
     print("")
     print("Tiled SARSA(lambda) results:")
-    print("  Mean reward:", String(metrics_sl.mean_reward())[byte=:8])
-    print("  Max reward:", String(metrics_sl.max_reward())[byte=:8])
+    print("  Mean reward:", fit(String(metrics_sl.mean_reward()), 8))
+    print("  Max reward:", fit(String(metrics_sl.max_reward()), 8))
     print("  Best steps:", Int(-metrics_sl.max_reward()))
     print("")
 
@@ -140,13 +140,13 @@ def main() raises:
     print("-" * 60)
     print(
         "Tiled Q-Learning   |",
-        String(metrics_q.mean_reward())[byte=:8],
+        fit(String(metrics_q.mean_reward()), 8),
         "   |",
         Int(-metrics_q.max_reward()),
     )
     print(
         "Tiled SARSA(lambda)|",
-        String(metrics_sl.mean_reward())[byte=:8],
+        fit(String(metrics_sl.mean_reward()), 8),
         "   |",
         Int(-metrics_sl.max_reward()),
     )
@@ -189,3 +189,5 @@ def main() raises:
     print("")
     print("Demo complete!")
     print("=" * 60)
+
+from mojo_rl.core.fmt import fit

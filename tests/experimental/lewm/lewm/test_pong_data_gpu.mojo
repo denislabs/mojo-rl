@@ -9,7 +9,7 @@ nothing here runs the model.
 Run:  pixi run -e apple mojo run -I . tests/experimental/lewm/test_pong_data_gpu.mojo
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random import seed
 from std.testing import assert_true
 

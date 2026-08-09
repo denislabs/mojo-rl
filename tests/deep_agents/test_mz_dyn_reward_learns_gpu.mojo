@@ -12,7 +12,7 @@ output weight escapes zero-init.
   NVIDIA GPU: if it does NOT learn → an NVIDIA GPU dyn-graph vjp is broken = the bug.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.core.tensor import Tensor

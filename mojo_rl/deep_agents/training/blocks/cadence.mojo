@@ -174,7 +174,7 @@ struct DriverCadence(Movable):
         L: Logger, FLUSH: Bool
     ](
         self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         abs_step: Int,
         mean_ret: Scalar[DT],
         ep: Int,

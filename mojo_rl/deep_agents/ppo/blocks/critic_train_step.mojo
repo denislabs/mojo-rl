@@ -10,7 +10,7 @@ cache). All inputs are passed as storage `Tensor`s; the obs-side grad lands in
 an explicit `clip_grads` call between vjp and step, only when max_grad_norm > 0.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -26,7 +26,7 @@ struct PPOCriticTrainStep[
     OBS_: Int,
     MINIBATCH_: Int,
     CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime MINIBATCH = Self.MINIBATCH_
     comptime Inner = MSELoss[1]

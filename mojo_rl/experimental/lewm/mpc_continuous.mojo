@@ -14,8 +14,8 @@ reference floor.
 """
 
 from std.memory import alloc
-from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
+from max.gpu.host import DeviceContext
+from max.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
@@ -58,7 +58,7 @@ def lewm_mpc_eval_continuous[
         dtype=DT, address_space=AddressSpace.GENERIC,
         origin=MutAnyOrigin, ...,
     ],
-    expert_act_host: UnsafePointer[Scalar[DT], MutAnyOrigin],   # (B, T·ACT)
+    expert_act_host: Pointer[Scalar[DT], MutAnyOrigin],   # (B, T·ACT)
     num_random: Int = 300,
     cem_iters: Int = 30,
     cem_samples: Int = 300,
@@ -92,8 +92,8 @@ def lewm_mpc_eval_continuous[
     var goal_host = alloc[Scalar[DT]](BE)
     for b in range(BATCH):
         for d in range(EMB):
-            start_host[b * EMB + d] = emb_host[b * TE + d]
-            goal_host[b * EMB + d] = emb_host[b * TE + (T - 1) * EMB + d]
+            start_host[unsafe_offset=b * EMB + d] = emb_host[unsafe_offset=b * TE + d]
+            goal_host[unsafe_offset=b * EMB + d] = emb_host[unsafe_offset=b * TE + (T - 1) * EMB + d]
 
     var pred_net = Predictor.make(ctx=ctx)
     pred_net.sync_from_named(trainer.export_named_params())
@@ -105,7 +105,7 @@ def lewm_mpc_eval_continuous[
     for b in range(BATCH):
         for t in range(NEEDED):
             for a in range(ACT):
-                expert_plan[(b * NEEDED + t) * ACT + a] = expert_act_host[
+                expert_plan[unsafe_offset=(b * NEEDED + t) * ACT + a] = expert_act_host[unsafe_offset=
                     (b * T + t) * ACT + a
                 ]
     var expert_t = TileTensor(expert_plan, row_major[BATCH, NEEDED, ACT]())
@@ -120,7 +120,7 @@ def lewm_mpc_eval_continuous[
         scorer, rs_best.as_unsafe_any_origin(), verbose=False
     )
     var random_mean = _meanf(shooter.sample_scores)
-    rs_best.free()
+    rs_best.unsafe_free()
 
     # Gaussian CEM (paper config).
     var cem_score = expert
@@ -133,7 +133,7 @@ def lewm_mpc_eval_continuous[
         cem_score = cem.optimize(
             scorer, cem_best.as_unsafe_any_origin(), verbose=False
         )
-        cem_best.free()
+        cem_best.unsafe_free()
 
     if verbose:
         print("   [continuous MPC horizon=", MPC_HORIZON, "] expert=", expert)
@@ -142,7 +142,7 @@ def lewm_mpc_eval_continuous[
         print("   expert/random_min=", expert / random_min,
               "  cem/random_min=", cem_score / random_min)
 
-    pred_scratch.free(); tgt_scratch.free(); emb_host.free()
-    start_host.free(); goal_host.free(); expert_plan.free()
+    pred_scratch.unsafe_free(); tgt_scratch.unsafe_free(); emb_host.unsafe_free()
+    start_host.unsafe_free(); goal_host.unsafe_free(); expert_plan.unsafe_free()
     _ = scorer^
     return (expert, random_mean, random_min, cem_score)

@@ -48,7 +48,7 @@ from mojo_rl.render.sdl.sdl_scancode import Scancode
 
 
 @always_inline
-def _read_action(keys: UnsafePointer[Bool, ImmutAnyOrigin]) -> Int:
+def _read_action(keys: Pointer[Bool, ImmutAnyOrigin]) -> Int:
     """Map current keyboard state to a Craftax action. NOOP if no relevant key."""
     # Movement (arrows or WASD)
     if keys[Int(Scancode.SCANCODE_LEFT)] or keys[Int(Scancode.SCANCODE_A)]:

@@ -5,8 +5,9 @@ Pure scratch math: factor reads `scratch.M`, writes `scratch.L`/`scratch.D`
 (3 operands); solve reads `scratch.L`/`scratch.D`/`scratch.fnet`, writes
 `scratch.qacc_ws` (4 operands)."""
 
-from std.gpu import thread_idx, block_idx, block_dim, barrier
-from std.gpu.host import DeviceContext
+from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu.sync import barrier
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..fields import DynamicsScratch

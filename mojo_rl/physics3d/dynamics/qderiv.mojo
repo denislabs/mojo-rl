@@ -19,7 +19,7 @@ damping diagonal, exactly like the legacy integrator).
 """
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_mul
@@ -757,7 +757,7 @@ def _rne_vel_derivative_fields_kernel[
     NJOINT: Int,
     BATCH: Int,
 ](
-    njoint: Int,
+    njoint_arg: Int64,
     bodies: LayoutTensor[
         DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
     ],
@@ -790,6 +790,9 @@ def _rne_vel_derivative_fields_kernel[
     ],
     qderiv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
 ):
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var njoint = Int(njoint_arg)
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
@@ -871,7 +874,7 @@ def compute_rne_vel_derivative[
                 DTYPE, NV, NBODY, NJOINT, BATCH
             ]
         ](
-            njoint,
+            Int64(njoint),
             m.bodies.lt["gpu", L_BODY](),
             m.joints.lt["gpu", L_JOINT](),
             d.xipos.lt["gpu", L_B3](),

@@ -15,7 +15,7 @@ from mojo_rl.nn.constants import DT
 
 
 @fieldwise_init
-struct REDQOFEMetrics(Movable & ImplicitlyDeletable):
+struct REDQOFEMetrics(Movable & Deinitable):
     """Per-flush-window mean / count bundle.
 
     Means are computed as `sum / count`; if `count == 0` the

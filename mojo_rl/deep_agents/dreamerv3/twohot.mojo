@@ -43,7 +43,7 @@ def symexp_twohot_bins[
     BINS: Int,
     bins_out_o: Origin[mut=True],
 ](
-    bins_out: UnsafePointer[Scalar[DT], bins_out_o],
+    bins_out: Pointer[Scalar[DT], bins_out_o],
     lo: Scalar[DT] = Scalar[DT](-20.0),
 ):
     """Generate the `symexp_twohot` bins (assumes BINS odd, as 255).
@@ -61,10 +61,10 @@ def symexp_twohot_bins[
     # half[i] = symexp(lo + |lo|*i/(nhalf-1)), i=0..nhalf-1  (ascending to 0)
     for i in range(nhalf):
         var lin = lo - lo * Scalar[DT](i) / Scalar[DT](nhalf - 1)
-        bins_out[i] = _symexp(lin)
+        bins_out[unsafe_offset=i] = _symexp(lin)
     # -half[:-1][::-1]: for j=0..nhalf-2, append -half[nhalf-2-j]
     for j in range(nhalf - 1):
-        bins_out[nhalf + j] = -bins_out[(nhalf - 2) - j]
+        bins_out[unsafe_offset=nhalf + j] = -bins_out[unsafe_offset=(nhalf - 2) - j]
 
 
 @always_inline
@@ -73,22 +73,22 @@ def twohot_pred[
     logits_o: Origin[mut=True],
     bins_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], logits_o],
+    logits: Pointer[Scalar[DT], logits_o],
     base: Int,
-    bins: UnsafePointer[Scalar[DT], bins_o],
+    bins: Pointer[Scalar[DT], bins_o],
 ) -> Scalar[DT]:
     """Σ_c softmax(logits[base:base+BINS])_c · bins_c."""
-    var zmax = logits[base]
+    var zmax = logits[unsafe_offset=base]
     for c in range(1, BINS):
-        if logits[base + c] > zmax:
-            zmax = logits[base + c]
+        if logits[unsafe_offset=base + c] > zmax:
+            zmax = logits[unsafe_offset=base + c]
     var ssum: Scalar[DT] = 0.0
     for c in range(BINS):
-        ssum += exp(logits[base + c] - zmax)
+        ssum += exp(logits[unsafe_offset=base + c] - zmax)
     var inv = Scalar[DT](1.0) / ssum
     var acc: Scalar[DT] = 0.0
     for c in range(BINS):
-        acc += exp(logits[base + c] - zmax) * inv * bins[c]
+        acc += exp(logits[unsafe_offset=base + c] - zmax) * inv * bins[unsafe_offset=c]
     return acc
 
 
@@ -98,9 +98,9 @@ def twohot_loss[
     logits_o: Origin[mut=True],
     bins_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], logits_o],
+    logits: Pointer[Scalar[DT], logits_o],
     base: Int,
-    bins: UnsafePointer[Scalar[DT], bins_o],
+    bins: Pointer[Scalar[DT], bins_o],
     target: Scalar[DT],
 ) -> Scalar[DT]:
     """Twohot cross-entropy of `target` against logits[base:base+BINS]."""
@@ -108,7 +108,7 @@ def twohot_loss[
     var n_le = 0
     var n_gt = 0
     for c in range(BINS):
-        if bins[c] <= target:
+        if bins[unsafe_offset=c] <= target:
             n_le += 1
         else:
             n_gt += 1
@@ -130,8 +130,8 @@ def twohot_loss[
         w_below = Scalar[DT](0.5)
         w_above = Scalar[DT](0.5)
     else:
-        var db = bins[below] - target
-        var da = bins[above] - target
+        var db = bins[unsafe_offset=below] - target
+        var da = bins[unsafe_offset=above] - target
         db = db if db >= Scalar[DT](0.0) else -db
         da = da if da >= Scalar[DT](0.0) else -da
         var total = db + da
@@ -139,16 +139,16 @@ def twohot_loss[
         w_above = db / total
 
     # log_softmax(logits)
-    var zmax = logits[base]
+    var zmax = logits[unsafe_offset=base]
     for c in range(1, BINS):
-        if logits[base + c] > zmax:
-            zmax = logits[base + c]
+        if logits[unsafe_offset=base + c] > zmax:
+            zmax = logits[unsafe_offset=base + c]
     var ssum: Scalar[DT] = 0.0
     for c in range(BINS):
-        ssum += exp(logits[base + c] - zmax)
+        ssum += exp(logits[unsafe_offset=base + c] - zmax)
     var lse = zmax + log(ssum)
-    var lp_below = logits[base + below] - lse
-    var lp_above = logits[base + above] - lse
+    var lp_below = logits[unsafe_offset=base + below] - lse
+    var lp_above = logits[unsafe_offset=base + above] - lse
     return -(w_below * lp_below + w_above * lp_above)
 
 
@@ -159,19 +159,19 @@ def twohot_loss_backward[
     bins_o: Origin[mut=True],
     grad_logits_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], logits_o],
+    logits: Pointer[Scalar[DT], logits_o],
     base: Int,
-    bins: UnsafePointer[Scalar[DT], bins_o],
+    bins: Pointer[Scalar[DT], bins_o],
     target: Scalar[DT],
     upstream: Scalar[DT],
-    grad_logits: UnsafePointer[Scalar[DT], grad_logits_o],
+    grad_logits: Pointer[Scalar[DT], grad_logits_o],
 ):
     """Accumulate `upstream · (softmax(logits) − twohot(target))` into
     grad_logits[base:base+BINS] (target detached; standard CE gradient)."""
     # below/above + weights (identical to forward).
     var n_le = 0
     for c in range(BINS):
-        if bins[c] <= target:
+        if bins[unsafe_offset=c] <= target:
             n_le += 1
     var below = n_le - 1
     var above = n_le            # BINS - (#bins > target) = n_le
@@ -189,23 +189,23 @@ def twohot_loss_backward[
         w_below = Scalar[DT](0.5)
         w_above = Scalar[DT](0.5)
     else:
-        var db = bins[below] - target
-        var da = bins[above] - target
+        var db = bins[unsafe_offset=below] - target
+        var da = bins[unsafe_offset=above] - target
         db = db if db >= Scalar[DT](0.0) else -db
         da = da if da >= Scalar[DT](0.0) else -da
         var total = db + da
         w_below = da / total
         w_above = db / total
     # softmax(logits)
-    var zmax = logits[base]
+    var zmax = logits[unsafe_offset=base]
     for c in range(1, BINS):
-        if logits[base + c] > zmax:
-            zmax = logits[base + c]
+        if logits[unsafe_offset=base + c] > zmax:
+            zmax = logits[unsafe_offset=base + c]
     var ssum: Scalar[DT] = 0.0
     for c in range(BINS):
-        ssum += exp(logits[base + c] - zmax)
+        ssum += exp(logits[unsafe_offset=base + c] - zmax)
     var inv = Scalar[DT](1.0) / ssum
     for c in range(BINS):
-        grad_logits[base + c] += upstream * (exp(logits[base + c] - zmax) * inv)
-    grad_logits[base + below] -= upstream * w_below
-    grad_logits[base + above] -= upstream * w_above
+        grad_logits[unsafe_offset=base + c] += upstream * (exp(logits[unsafe_offset=base + c] - zmax) * inv)
+    grad_logits[unsafe_offset=base + below] -= upstream * w_below
+    grad_logits[unsafe_offset=base + above] -= upstream * w_above

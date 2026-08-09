@@ -24,8 +24,8 @@ Apple (sanity only — Metal perf is not the sign-off):
 
 from std.math import sqrt
 from std.gpu import thread_idx, block_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext
 from std.time import perf_counter_ns
 from std.utils.numerics import get_accum_type
 from layout import Layout, LayoutTensor

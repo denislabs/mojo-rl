@@ -23,7 +23,7 @@ GAE (advantage estimation) is inherited unchanged — A2C with
 bias/variance trade-off. Default `entropy_coef=0.01` (A2C convention).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
@@ -48,7 +48,7 @@ struct A2CDiscreteAgent[
     OBS_DIM: Int,
     N_ACTIONS: Int,
     ROLLOUT_LEN: Int,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     """Discrete A2C = PPODiscreteAgent[N_EPOCHS=1, MINIBATCH=ROLLOUT_LEN]."""
 
     comptime Inner = PPODiscreteAgent[
@@ -102,7 +102,7 @@ struct A2CDiscreteAgent[
         *,
         print_every: Int = 1_000,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
@@ -155,7 +155,7 @@ struct A2CDiscreteAgent[
         L: Logger = NoOpLogger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> PPOMetrics:
         return self.inner.flush_metrics[L](logger, step)
@@ -180,7 +180,7 @@ struct A2CAgent[
     ACT_DIM: Int,
     ROLLOUT_LEN: Int,
     N_ENVS: Int = 1,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     """Continuous A2C = PPOAgent[N_EPOCHS=1, MINIBATCH=ROLLOUT_LEN·N_ENVS]."""
 
     comptime Inner = PPOAgent[
@@ -236,7 +236,7 @@ struct A2CAgent[
         *,
         print_every: Int = 1_000,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
@@ -263,7 +263,7 @@ struct A2CAgent[
         rng_seed: UInt64 = 42,
         print_every: Int = 5_000,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
@@ -315,7 +315,7 @@ struct A2CAgent[
         L: Logger = NoOpLogger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> PPOMetrics:
         return self.inner.flush_metrics[L](logger, step)

@@ -26,6 +26,7 @@ Requires SDL2 for visualization: brew install sdl2 sdl2_ttf
 from mojo_rl.envs import AcrobotEnv
 from mojo_rl.agents import QLearningAgent, SARSALambdaAgent
 from mojo_rl.render import Renderer2D
+from mojo_rl.core.fmt import fit
 
 
 def main() raises:
@@ -82,7 +83,7 @@ def main() raises:
 
     var eval_q = agent_q.evaluate(env_q, num_episodes=10)
     print("")
-    print("Q-Learning evaluation avg reward:", String(eval_q)[byte=:8])
+    print("Q-Learning evaluation avg reward:", fit(String(eval_q), 8))
     print("(Lower is better - fewer steps to goal)")
     print("")
 
@@ -118,7 +119,7 @@ def main() raises:
 
     var eval_sl = agent_sl.evaluate(env_sl, num_episodes=10)
     print("")
-    print("SARSA(lambda) evaluation avg reward:", String(eval_sl)[byte=:8])
+    print("SARSA(lambda) evaluation avg reward:", fit(String(eval_sl), 8))
     print("")
 
     # ========================================================================
@@ -137,19 +138,19 @@ def main() raises:
 
     print(
         "Q-Learning      |",
-        String(metrics_q.mean_reward())[byte=:8],
+        fit(String(metrics_q.mean_reward()), 8),
         "   |",
-        String(metrics_q.max_reward())[byte=:8],
+        fit(String(metrics_q.max_reward()), 8),
         "  |",
-        String(eval_q)[byte=:8],
+        fit(String(eval_q), 8),
     )
     print(
         "SARSA(lambda)   |",
-        String(metrics_sl.mean_reward())[byte=:8],
+        fit(String(metrics_sl.mean_reward()), 8),
         "   |",
-        String(metrics_sl.max_reward())[byte=:8],
+        fit(String(metrics_sl.max_reward()), 8),
         "  |",
-        String(eval_sl)[byte=:8],
+        fit(String(eval_sl), 8),
     )
     print("")
     print("Best Q-Learning episode:", Int(best_steps_q), "steps")

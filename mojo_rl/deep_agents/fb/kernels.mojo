@@ -27,8 +27,8 @@ conditional RMW stores in reduction kernels.
 
 from std.math import sqrt
 from std.gpu import block_dim, block_idx, thread_idx, global_idx
-from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.primitives import block
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
@@ -47,9 +47,9 @@ from mojo_rl.data.resident import IDX_DT
 
 
 def gather_rows_kernel[ROW_DIM: Int, BATCH: Int](
-    src: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    idx: UnsafePointer[Scalar[IDX_DT], MutAnyOrigin],
-    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    idx: Pointer[Scalar[IDX_DT], MutAnyOrigin],
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """`dst[i, d] = src[idx[i], d]`.
 
@@ -62,13 +62,13 @@ def gather_rows_kernel[ROW_DIM: Int, BATCH: Int](
         return
     var i = t // ROW_DIM
     var d = t % ROW_DIM
-    dst[t] = src[Int(idx[i]) * ROW_DIM + d]
+    dst[unsafe_offset=t] = src[unsafe_offset=Int(idx[unsafe_offset=i]) * ROW_DIM + d]
 
 
 def gather_idx_kernel[BATCH: Int](
-    table: UnsafePointer[Scalar[IDX_DT], MutAnyOrigin],
-    idx: UnsafePointer[Scalar[IDX_DT], MutAnyOrigin],
-    dst: UnsafePointer[Scalar[IDX_DT], MutAnyOrigin],
+    table: Pointer[Scalar[IDX_DT], MutAnyOrigin],
+    idx: Pointer[Scalar[IDX_DT], MutAnyOrigin],
+    dst: Pointer[Scalar[IDX_DT], MutAnyOrigin],
 ):
     """`dst[i] = table[idx[i]]` — remaps sampled rows through a lookup.
 
@@ -83,14 +83,14 @@ def gather_idx_kernel[BATCH: Int](
     """
     var i = Int(global_idx.x)
     if i < BATCH:
-        dst[i] = table[Int(idx[i])]
+        dst[unsafe_offset=i] = table[unsafe_offset=Int(idx[unsafe_offset=i])]
 
 
 def pack3_kernel[A_DIM: Int, B_DIM: Int, C_DIM: Int, BATCH: Int](
-    a: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    b: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    c: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    a: Pointer[Scalar[DT], MutAnyOrigin],
+    b: Pointer[Scalar[DT], MutAnyOrigin],
+    c: Pointer[Scalar[DT], MutAnyOrigin],
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """`dst[i] = [a[i] | b[i] | c[i]]` — the `[s | a | z]` row of the F net."""
     comptime W = A_DIM + B_DIM + C_DIM
@@ -100,17 +100,17 @@ def pack3_kernel[A_DIM: Int, B_DIM: Int, C_DIM: Int, BATCH: Int](
     var i = t // W
     var k = t % W
     if k < A_DIM:
-        dst[t] = a[i * A_DIM + k]
+        dst[unsafe_offset=t] = a[unsafe_offset=i * A_DIM + k]
     elif k < A_DIM + B_DIM:
-        dst[t] = b[i * B_DIM + (k - A_DIM)]
+        dst[unsafe_offset=t] = b[unsafe_offset=i * B_DIM + (k - A_DIM)]
     else:
-        dst[t] = c[i * C_DIM + (k - A_DIM - B_DIM)]
+        dst[unsafe_offset=t] = c[unsafe_offset=i * C_DIM + (k - A_DIM - B_DIM)]
 
 
 def pack2_kernel[A_DIM: Int, B_DIM: Int, BATCH: Int](
-    a: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    b: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    a: Pointer[Scalar[DT], MutAnyOrigin],
+    b: Pointer[Scalar[DT], MutAnyOrigin],
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """`dst[i] = [a[i] | b[i]]` — the `[s | z]` row of the actor."""
     comptime W = A_DIM + B_DIM
@@ -119,14 +119,14 @@ def pack2_kernel[A_DIM: Int, B_DIM: Int, BATCH: Int](
         return
     var i = t // W
     var k = t % W
-    dst[t] = a[i * A_DIM + k] if k < A_DIM else b[i * B_DIM + (k - A_DIM)]
+    dst[unsafe_offset=t] = a[unsafe_offset=i * A_DIM + k] if k < A_DIM else b[unsafe_offset=i * B_DIM + (k - A_DIM)]
 
 
 def slice_cols_kernel[
     SRC_W: Int, OFFSET: Int, OUT_W: Int, BATCH: Int
 ](
-    src: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    src: Pointer[Scalar[DT], MutAnyOrigin],
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """`dst[i, k] = src[i, OFFSET + k]` — pulls the ACTION slice back out of
     the F net's input gradient for the actor update."""
@@ -135,7 +135,7 @@ def slice_cols_kernel[
         return
     var i = t // OUT_W
     var k = t % OUT_W
-    dst[t] = src[i * SRC_W + OFFSET + k]
+    dst[unsafe_offset=t] = src[unsafe_offset=i * SRC_W + OFFSET + k]
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -144,53 +144,53 @@ def slice_cols_kernel[
 
 
 def fill_kernel[N: Int](
-    y: UnsafePointer[Scalar[DT], MutAnyOrigin], v: Scalar[DT]
+    y: Pointer[Scalar[DT], MutAnyOrigin], v: Scalar[DT]
 ):
     var t = Int(global_idx.x)
     if t < N:
-        y[t] = v
+        y[unsafe_offset=t] = v
 
 
 def axpy_kernel[N: Int](
-    y: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    x: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    y: Pointer[Scalar[DT], MutAnyOrigin],
+    x: Pointer[Scalar[DT], MutAnyOrigin],
     alpha: Scalar[DT],
 ):
     """`y += alpha * x`."""
     var t = Int(global_idx.x)
     if t < N:
-        y[t] = y[t] + alpha * x[t]
+        y[unsafe_offset=t] = y[unsafe_offset=t] + alpha * x[unsafe_offset=t]
 
 
 def scale_kernel[N: Int](
-    y: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    x: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    y: Pointer[Scalar[DT], MutAnyOrigin],
+    x: Pointer[Scalar[DT], MutAnyOrigin],
     alpha: Scalar[DT],
 ):
     """`y = alpha * x`."""
     var t = Int(global_idx.x)
     if t < N:
-        y[t] = alpha * x[t]
+        y[unsafe_offset=t] = alpha * x[unsafe_offset=t]
 
 
 def sum3_scaled_kernel[N: Int](
-    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    a: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    b: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    c: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    a: Pointer[Scalar[DT], MutAnyOrigin],
+    b: Pointer[Scalar[DT], MutAnyOrigin],
+    c: Pointer[Scalar[DT], MutAnyOrigin],
     w: Scalar[DT],
 ):
     """`dst = a + b + w*c` — the three gradients arriving at `B(s+)`: one per
     twin from the measure loss, plus the orthonormality term."""
     var t = Int(global_idx.x)
     if t < N:
-        dst[t] = a[t] + b[t] + w * c[t]
+        dst[unsafe_offset=t] = a[unsafe_offset=t] + b[unsafe_offset=t] + w * c[unsafe_offset=t]
 
 
 def min_scale_kernel[N: Int](
-    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    m1: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    m2: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    m1: Pointer[Scalar[DT], MutAnyOrigin],
+    m2: Pointer[Scalar[DT], MutAnyOrigin],
     gamma: Scalar[DT],
 ):
     """`dst = gamma * min(m1, m2)` — the twin-min target, ENTRYWISE.
@@ -200,15 +200,15 @@ def min_scale_kernel[N: Int](
     """
     var t = Int(global_idx.x)
     if t < N:
-        var a = m1[t]
-        var b = m2[t]
-        dst[t] = gamma * (a if a < b else b)
+        var a = m1[unsafe_offset=t]
+        var b = m2[unsafe_offset=t]
+        dst[unsafe_offset=t] = gamma * (a if a < b else b)
 
 
 def residual_grad_kernel[N: Int](
-    go: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    m: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    mt: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    go: Pointer[Scalar[DT], MutAnyOrigin],
+    m: Pointer[Scalar[DT], MutAnyOrigin],
+    mt: Pointer[Scalar[DT], MutAnyOrigin],
     inv_n: Scalar[DT],
 ):
     """`go = 2·(m - mt)·inv_n` — the upstream gradient of `mean((m-mt)^2)`.
@@ -218,64 +218,64 @@ def residual_grad_kernel[N: Int](
     """
     var t = Int(global_idx.x)
     if t < N:
-        go[t] = Scalar[DT](2.0) * (m[t] - mt[t]) * inv_n
+        go[unsafe_offset=t] = Scalar[DT](2.0) * (m[unsafe_offset=t] - mt[unsafe_offset=t]) * inv_n
 
 
 def sq_diff_reduce_kernel[N: Int](
-    m: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    mt: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    m: Pointer[Scalar[DT], MutAnyOrigin],
+    mt: Pointer[Scalar[DT], MutAnyOrigin],
+    acc: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """`acc[0] = mean((m - mt)^2)` over `[N]`. ONE block, grid-stride."""
     var t = Int(thread_idx.x)
     var my_sum: Scalar[DT] = 0.0
     var k = t
     while k < N:
-        var r = m[k] - mt[k]
+        var r = m[unsafe_offset=k] - mt[unsafe_offset=k]
         my_sum += r * r
         k += TPB_REDUCE
     var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
     if t == 0:
-        acc[0] = total[0] / Scalar[DT](N)
+        acc[unsafe_offset=0] = total[0] / Scalar[DT](N)
 
 
 def sum_reduce_kernel[N: Int](
-    x: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    x: Pointer[Scalar[DT], MutAnyOrigin],
+    acc: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """`acc[0] = mean(x)` over `[N]`. ONE block, grid-stride."""
     var t = Int(thread_idx.x)
     var my_sum: Scalar[DT] = 0.0
     var k = t
     while k < N:
-        my_sum += x[k]
+        my_sum += x[unsafe_offset=k]
         k += TPB_REDUCE
     var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
     if t == 0:
-        acc[0] = total[0] / Scalar[DT](N)
+        acc[unsafe_offset=0] = total[0] / Scalar[DT](N)
 
 
 def sumsq_reduce_kernel[N: Int](
-    x: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    x: Pointer[Scalar[DT], MutAnyOrigin],
+    acc: Pointer[Scalar[DT], MutAnyOrigin],
 ):
     """`acc[0] = mean(x^2)` over `[N]`. ONE block, grid-stride."""
     var t = Int(thread_idx.x)
     var my_sum: Scalar[DT] = 0.0
     var k = t
     while k < N:
-        var v = x[k]
+        var v = x[unsafe_offset=k]
         my_sum += v * v
         k += TPB_REDUCE
     var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
     if t == 0:
-        acc[0] = total[0] / Scalar[DT](N)
+        acc[unsafe_offset=0] = total[0] / Scalar[DT](N)
 
 
 def smooth_action_kernel[N: Int](
-    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    pi: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    noise: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    dst: Pointer[Scalar[DT], MutAnyOrigin],
+    pi: Pointer[Scalar[DT], MutAnyOrigin],
+    noise: Pointer[Scalar[DT], MutAnyOrigin],
     sigma: Scalar[DT],
     clip: Scalar[DT],
 ):
@@ -283,21 +283,21 @@ def smooth_action_kernel[N: Int](
     var t = Int(global_idx.x)
     if t >= N:
         return
-    var n = noise[t] * sigma
+    var n = noise[unsafe_offset=t] * sigma
     if n > clip:
         n = clip
     elif n < -clip:
         n = -clip
-    var v = pi[t] + n
+    var v = pi[unsafe_offset=t] + n
     if v > Scalar[DT](1.0):
         v = Scalar[DT](1.0)
     elif v < Scalar[DT](-1.0):
         v = Scalar[DT](-1.0)
-    dst[t] = v
+    dst[unsafe_offset=t] = v
 
 
 def project_sphere_kernel[D: Int, BATCH: Int](
-    z: UnsafePointer[Scalar[DT], MutAnyOrigin], radius: Scalar[DT]
+    z: Pointer[Scalar[DT], MutAnyOrigin], radius: Scalar[DT]
 ):
     """Rescale each row of `z` onto the radius-`sqrt(D)` sphere, one thread per
     ROW.
@@ -315,24 +315,24 @@ def project_sphere_kernel[D: Int, BATCH: Int](
     var base = i * D
     var acc: Scalar[DT] = 0.0
     for k in range(D):
-        var v = z[base + k]
+        var v = z[unsafe_offset=base + k]
         acc += v * v
     var n = sqrt(acc)
     if n < Scalar[DT](1e-12):
         for k in range(D):
-            z[base + k] = Scalar[DT](0)
-        z[base] = radius
+            z[unsafe_offset=base + k] = Scalar[DT](0)
+        z[unsafe_offset=base] = radius
         return
     var s = radius / n
     for k in range(D):
-        z[base + k] = z[base + k] * s
+        z[unsafe_offset=base + k] = z[unsafe_offset=base + k] * s
 
 
 def z_mixture_kernel[D: Int, BATCH: Int](
-    z: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    gauss: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    b_states: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    pick: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    z: Pointer[Scalar[DT], MutAnyOrigin],
+    gauss: Pointer[Scalar[DT], MutAnyOrigin],
+    b_states: Pointer[Scalar[DT], MutAnyOrigin],
+    pick: Pointer[Scalar[DT], MutAnyOrigin],
     uniform_frac: Scalar[DT],
     n_b_rows: Int,
 ):
@@ -350,18 +350,18 @@ def z_mixture_kernel[D: Int, BATCH: Int](
     if i >= BATCH:
         return
     var base = i * D
-    var use_uniform = n_b_rows <= 0 or pick[2 * i] < uniform_frac
+    var use_uniform = n_b_rows <= 0 or pick[unsafe_offset=2 * i] < uniform_frac
     if use_uniform:
         for k in range(D):
-            z[base + k] = gauss[base + k]
+            z[unsafe_offset=base + k] = gauss[unsafe_offset=base + k]
     else:
-        var src = Int(pick[2 * i + 1] * Scalar[DT](n_b_rows))
+        var src = Int(pick[unsafe_offset=2 * i + 1] * Scalar[DT](n_b_rows))
         if src >= n_b_rows:
             src = n_b_rows - 1
         if src < 0:
             src = 0
         for k in range(D):
-            z[base + k] = b_states[src * D + k]
+            z[unsafe_offset=base + k] = b_states[unsafe_offset=src * D + k]
 
 
 # ══════════════════════════════════════════════════════════════════════

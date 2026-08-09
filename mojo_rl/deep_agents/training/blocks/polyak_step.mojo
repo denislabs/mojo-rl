@@ -25,7 +25,7 @@ struct PolyakStep[
     ACT_: Int,
     BATCH_: Int,
     CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_
@@ -59,7 +59,7 @@ struct SinglePolyakStep[
     ACT_: Int,
     BATCH_: Int,
     CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_

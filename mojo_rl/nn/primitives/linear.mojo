@@ -23,9 +23,10 @@ the whole function, then builds views from that.
 """
 
 from std.sys import CompilationTarget
-from std.gpu import global_idx, thread_idx, block_idx, barrier
-from std.gpu.memory import AddressSpace
-from std.gpu.host import DeviceContext
+from std.gpu import global_idx, thread_idx, block_idx
+from max.gpu.sync import barrier
+from max.gpu.memory import AddressSpace
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 from linalg.matmul.cpu.apple_accelerate import (
@@ -392,16 +393,16 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
                         Int32(Self.OUT_),
                         Int32(B),
                         Float32(1.0),
-                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        rebind[Pointer[Float32, ImmutAnyOrigin]](
                             find.data.unsafe_ptr()
                         ),
                         Int32(Self.IN_),
-                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        rebind[Pointer[Float32, ImmutAnyOrigin]](
                             god.data.unsafe_ptr()
                         ),
                         Int32(Self.OUT_),
                         Float32(1.0),
-                        rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                        rebind[Pointer[Float32, MutAnyOrigin]](
                             self.weight.grd.data.unsafe_ptr()
                         ),
                         Int32(Self.OUT_),

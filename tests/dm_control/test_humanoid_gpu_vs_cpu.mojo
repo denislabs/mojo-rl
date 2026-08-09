@@ -38,7 +38,7 @@ Run with:
     pixi run -e nvidia mojo run -I . tests/dm_control/test_humanoid_gpu_vs_cpu.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 from std.math import abs, sin
 from std.testing import assert_true, TestSuite

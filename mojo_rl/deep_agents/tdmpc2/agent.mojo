@@ -24,7 +24,7 @@ from std.math import tanh
 from std.random import random_float64
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -73,7 +73,7 @@ struct TDMPC2Agent[
     NUM_ELITES: Int = 64,
     NUM_ITERS: Int = 6,
     QP: Float64 = 0.0,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime EncT = TDMPC2Encoder[Self.OBS, Self.ENC, Self.LATENT, Self.SN]
     comptime DynT = TDMPC2Dynamics[Self.LATENT, Self.ACT, Self.MLP, Self.SN]
     comptime RewT = TDMPC2Reward[Self.LATENT, Self.ACT, Self.MLP, Self.BINS]
@@ -404,7 +404,7 @@ struct TDMPC2Agent[
         ctx.enqueue_copy(h, d_out)
         ctx.synchronize()
         for j in range(A):
-            act_out[j] = h.unsafe_ptr()[j]
+            act_out[j] = h.unsafe_ptr()[unsafe_offset=j]
 
     def record(
         mut self,
@@ -414,11 +414,11 @@ struct TDMPC2Agent[
         done: Scalar[DT],
     ) raises:
         self.replay.record(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=obs[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=obs[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=act[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=act[0])
             ),
             reward, done,
         )
@@ -448,7 +448,7 @@ struct TDMPC2Agent[
         L: Logger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises -> TDMPC2Metrics:
         var n = self._n_diag if self._n_diag > 0 else 1
@@ -499,7 +499,7 @@ struct TDMPC2Agent[
         L: Logger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
         _ = self.flush_metrics[L](logger, step)
@@ -647,17 +647,17 @@ struct TDMPC2Agent[
         var rb = List[Scalar[DT]](length=BB * HH, fill=0)
         var dbf = List[Scalar[DT]](length=BB * HH, fill=0)
         self.replay.sample_batch[BB, HH](
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=ob[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=ob[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=ab[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=ab[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=rb[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=rb[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=dbf[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=dbf[0])
             ),
         )
 
@@ -818,11 +818,11 @@ struct TDMPC2Agent[
         train_every: Int = 1,
         print_every: Int = 20_000,
         verbose: Bool = True,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         diag_every: Int = 0,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
-        eval_env: Optional[UnsafePointer[EE, MutAnyOrigin]] = None,
+        eval_env: Optional[Pointer[EE, MutAnyOrigin]] = None,
         eval_every: Int = 0,
         eval_episodes: Int = 2,
         eval_max_steps: Int = 1_000,

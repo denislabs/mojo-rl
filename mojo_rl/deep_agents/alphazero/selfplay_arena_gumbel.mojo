@@ -52,8 +52,8 @@ behaviour.
 """
 
 from std.math import exp, log, tanh
-from std.memory import UnsafePointer
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.memory import Pointer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
@@ -282,7 +282,7 @@ def run_alphazero_selfplay_arena_gumbel[
     do_eval: Bool = True,  # MCTS-eval the best vs OPP1 each report
     do_eval2: Bool = False,  # also MCTS-eval vs OPP2 each report
     verbose: Bool = True,  # print a per-report progress line
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     max_grad_norm: Float64 = 0.0,  # global grad-norm clip (0 = off). The 5-block
     #                               ResNet at lr=2e-3 spikes grad norms → policy
     #                               CE climbs back past uniform → arena

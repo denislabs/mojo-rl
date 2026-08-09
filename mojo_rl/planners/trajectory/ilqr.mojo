@@ -40,7 +40,7 @@ increase it on failure. Line search is plain backtracking on
 (no Armijo ratio test in v1).
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as dtype
@@ -205,7 +205,7 @@ struct ILQRCPU[
     LATENT_DIM: Int,
     ACTION_DIM: Int,
     HORIZON: Int,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     """CPU iLQR planner.
 
     Plans an open-loop ``HORIZON``-step control sequence for a single
@@ -751,7 +751,7 @@ struct ILQRGPUBatched[
     ACTION_DIM: Int,
     HORIZON: Int,
     N_ENVS: Int,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     """Batched GPU iLQR — ``N_ENVS`` independent problems planned in
     parallel.
 

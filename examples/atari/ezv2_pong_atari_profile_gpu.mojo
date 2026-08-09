@@ -38,8 +38,8 @@ Then interpret:
      utilization.
 """
 
-from std.memory import UnsafePointer
-from std.gpu.host import DeviceContext
+from std.memory import Pointer
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming
@@ -83,7 +83,7 @@ comptime BatchedPong = BatchedCpuDiscreteEnv[AtariPong, N_ENVS, OBS]
 
 
 def _make_envs(
-    rom: UnsafePointer[UInt8, MutAnyOrigin], rom_size: Int
+    rom: Pointer[UInt8, MutAnyOrigin], rom_size: Int
 ) raises -> List[AtariPong]:
     var envs = List[AtariPong]()
     for _ in range(N_ENVS):

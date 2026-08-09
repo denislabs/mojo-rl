@@ -17,7 +17,7 @@ Run:
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.time import perf_counter_ns
 from std.testing import assert_true
 from layout import Layout, LayoutTensor

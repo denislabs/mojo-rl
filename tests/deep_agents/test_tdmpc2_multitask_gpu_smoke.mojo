@@ -20,7 +20,7 @@ Run: `pixi run -e apple mojo run -I . tests/deep_agents/test_tdmpc2_multitask_gp
 from std.random import random_float64, seed
 from std.math import isfinite
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.tdmpc2.config_mt import TDMPC2MultiTask

@@ -72,7 +72,7 @@ from mojo_rl.nn.core.initializer import Initializer, Xavier
 from mojo_rl.nn.optimizer.adam import Adam
 
 
-struct RunningNorm[DIM: Int](Movable & ImplicitlyDeletable):
+struct RunningNorm[DIM: Int](Movable & Deinitable):
     """Per-dimension running mean/variance, Chan et al. parallel update.
 
     Host twin of `core/obs_norm.mojo`. `count_prior` defaults to 1e3 for the
@@ -145,7 +145,7 @@ struct RunningNorm[DIM: Int](Movable & ImplicitlyDeletable):
         self.frozen = True
 
 
-struct RNDStats(Movable & ImplicitlyDeletable):
+struct RNDStats(Movable & Deinitable):
     """What one `fit` call did. `loss` is the predictor's MSE against the
     frozen target; `mean_novelty` is that same quantity before normalisation,
     which is the coverage number worth reporting."""
@@ -163,7 +163,7 @@ struct RNDStats(Movable & ImplicitlyDeletable):
 
 
 struct RND[NET: Module, OBS: Int, FEAT: Int, BATCH: Int](
-    Movable & ImplicitlyDeletable
+    Movable & Deinitable
 ):
     """Frozen target + trained predictor, both `NET` ([OBS] -> [FEAT]).
 

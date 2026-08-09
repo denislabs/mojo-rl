@@ -27,7 +27,7 @@ step → Polyak. The embedding table's `zero_grad`/`step` bracket the whole step
 from std.math import tanh
 from std.random import random_float64
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -73,7 +73,7 @@ struct TDMPC2MultiTaskAgent[
     NUM_TASKS: Int,
     TASK_EMB: Int,
     QP: Float64 = 0.0,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     comptime EncT = TDMPC2EncoderMT[
         Self.MAX_OBS, Self.ENC, Self.LATENT, Self.SN, Self.TASK_EMB
     ]
@@ -423,11 +423,11 @@ struct TDMPC2MultiTaskAgent[
         done: Scalar[DT],
     ) raises:
         self.replay.record_task(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=obs[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=obs[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=act[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=act[0])
             ),
             reward, done, self.cur_task,
         )
@@ -457,7 +457,7 @@ struct TDMPC2MultiTaskAgent[
         L: Logger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises -> TDMPC2Metrics:
         var n = self._n_diag if self._n_diag > 0 else 1
@@ -508,7 +508,7 @@ struct TDMPC2MultiTaskAgent[
         L: Logger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
         _ = self.flush_metrics[L](logger, step)
@@ -663,20 +663,20 @@ struct TDMPC2MultiTaskAgent[
         var dbf = List[Scalar[DT]](length=BB * HH, fill=0)
         var tk = List[Scalar[DT]](length=BB, fill=0)
         self.replay.sample_batch_task[BB, HH](
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=ob[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=ob[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=ab[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=ab[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=rb[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=rb[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=dbf[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=dbf[0])
             ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                UnsafePointer(to=tk[0])
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                Pointer(to=tk[0])
             ),
         )
 

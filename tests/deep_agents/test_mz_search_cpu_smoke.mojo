@@ -45,12 +45,12 @@ def main() raises:
     var rep_net = Rep.make["cpu", Kaiming]()
     var dyn_net = Dyn.make["cpu", Kaiming]()
     var pred_net = Pred.make["cpu", Kaiming]()
-    var rep = MZRepCPU[OBS, LATENT, Rep](net=untracked(UnsafePointer(to=rep_net)))
+    var rep = MZRepCPU[OBS, LATENT, Rep](net=untracked(Pointer(to=rep_net)))
     var dyn = MZDynCPU[LATENT, ACT, BINS, Dyn](
-        net=untracked(UnsafePointer(to=dyn_net)), v_min=v_min, v_max=v_max
+        net=untracked(Pointer(to=dyn_net)), v_min=v_min, v_max=v_max
     )
     var pred = MZPredCPU[LATENT, ACT, BINS, Pred](
-        net=untracked(UnsafePointer(to=pred_net)), v_min=v_min, v_max=v_max
+        net=untracked(Pointer(to=pred_net)), v_min=v_min, v_max=v_max
     )
 
     var mcts = GenericCPUMCTS[

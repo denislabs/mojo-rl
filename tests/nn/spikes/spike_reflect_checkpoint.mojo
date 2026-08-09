@@ -33,7 +33,7 @@ from std.testing import assert_equal, assert_true
 # ---------------------------------------------------------------------
 # Saveable — marker trait. Containers + scalar wrappers both conform.
 # ---------------------------------------------------------------------
-trait Saveable(Copyable, Movable, ImplicitlyDeletable):
+trait Saveable(Copyable, Movable, Deinitable):
     def save(self, mut out: String, prefix: String) raises:
         ...
 
@@ -85,7 +85,7 @@ struct AdamState(Saveable):
 #   - non-Saveable field (run_id) that must be skipped
 # ---------------------------------------------------------------------
 @fieldwise_init
-struct TrainerLike(Copyable, Movable, ImplicitlyDeletable):
+struct TrainerLike(Copyable, Movable, Deinitable):
     var gamma: SaveScalar[DType.float32]
     var tau: SaveScalar[DType.float32]
     var step: SaveI
@@ -114,7 +114,7 @@ def dump_state[T: AnyType](t: T, mut out: String, prefix: String) raises:
 
 
 @fieldwise_init
-struct Flat(Copyable, Movable, ImplicitlyDeletable):
+struct Flat(Copyable, Movable, Deinitable):
     var gamma: SaveScalar[DType.float32]
     var tau: SaveScalar[DType.float32]
     var step: SaveI

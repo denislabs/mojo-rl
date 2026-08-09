@@ -22,7 +22,7 @@ reference's behaviour, gated to 2.7e-11 against dm_control's own
 
 from std.random import random_float64
 from std.math import pi, sqrt
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data

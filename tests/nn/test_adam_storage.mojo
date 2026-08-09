@@ -11,7 +11,7 @@ Run: pixi run -e apple mojo run -I . tests/nn/test_adam_storage.mojo
 
 from std.math import sqrt
 from std.testing import assert_true
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.param import Param

@@ -28,7 +28,7 @@ visited", and if `s+` were the batch's own next-states the matrix would only
 ever be evaluated on pairs one step apart.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.math import sqrt
 from std.random import random_float64, seed
 

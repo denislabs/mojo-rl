@@ -18,8 +18,8 @@ Backward: grad_µ_b = Σ_b go ; grad_σ_b = grad_µ_b · ε_out ; dW = xᵀ @ go
 from std.math import sqrt as fsqrt, log as flog, cos as fcos, pi
 from std.random import random_float64
 from std.gpu import global_idx, thread_idx, block_idx
-from std.gpu.host import DeviceContext
-from std.gpu.primitives import block
+from max.gpu.host import DeviceContext
+from max.gpu.primitives import block
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 

@@ -13,7 +13,7 @@ Run (NVIDIA): pixi run -e nvidia mojo run -I . tests/core/test_obs_norm_running_
 """
 
 from std.testing import assert_true
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT as gpu_dtype
 from mojo_rl.core.obs_norm import ObsNormStats

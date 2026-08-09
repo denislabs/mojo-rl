@@ -9,7 +9,7 @@ erasure is the kernel-arg `MutAnyOrigin` (the ABI). `grad_output` is `mut` so
 the GPU view can be built. `ctx` is the GPU `DeviceContext` (ignored on CPU).
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from .initializer import Initializer
@@ -22,7 +22,7 @@ from .amp import AMPPolicy, NoAMP
 from .graph_visitor import DisplayStep
 
 
-trait Module(Defaultable & Movable & ImplicitlyDeletable):
+trait Module(Defaultable & Movable & Deinitable):
     comptime ARITY: Int
     comptime IN_DIMS: InlineArray[Int, Self.ARITY]
     comptime OUT_DIM: Int

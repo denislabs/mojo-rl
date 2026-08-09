@@ -44,7 +44,7 @@ misread reproduction (see equality_tendon.mojo).
 
 from std.math import sqrt, pow, abs
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..types import _max_one, ConeType

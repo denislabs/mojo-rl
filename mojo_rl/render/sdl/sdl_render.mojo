@@ -254,7 +254,7 @@ def create_window_and_renderer(
     Docs: https://wiki.libsdl.org/SDL3/SDL_CreateWindowAndRenderer.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_CreateWindowAndRenderer",
         def(
@@ -622,7 +622,7 @@ def get_render_output_size(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRenderOutputSize.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetRenderOutputSize",
         def(
@@ -663,7 +663,7 @@ def get_current_render_output_size(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetCurrentRenderOutputSize.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetCurrentRenderOutputSize",
         def(
@@ -1037,7 +1037,7 @@ def get_texture_size(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetTextureSize.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetTextureSize",
         def(
@@ -1080,7 +1080,7 @@ def set_texture_color_mod(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetTextureColorMod.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetTextureColorMod",
         def(
@@ -1121,7 +1121,7 @@ def set_texture_color_mod_float(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetTextureColorModFloat.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetTextureColorModFloat",
         def(
@@ -1159,7 +1159,7 @@ def get_texture_color_mod(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetTextureColorMod.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetTextureColorMod",
         def(
@@ -1197,7 +1197,7 @@ def get_texture_color_mod_float(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetTextureColorModFloat.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetTextureColorModFloat",
         def(
@@ -1238,7 +1238,7 @@ def set_texture_alpha_mod(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetTextureAlphaMod.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetTextureAlphaMod",
         def(texture: Ptr[Texture, MutAnyOrigin], alpha: UInt8) thin -> Bool,
@@ -1274,7 +1274,7 @@ def set_texture_alpha_mod_float(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetTextureAlphaModFloat.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetTextureAlphaModFloat",
         def(texture: Ptr[Texture, MutAnyOrigin], alpha: c_float) thin -> Bool,
@@ -1302,7 +1302,7 @@ def get_texture_alpha_mod(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetTextureAlphaMod.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetTextureAlphaMod",
         def(
@@ -1333,7 +1333,7 @@ def get_texture_alpha_mod_float(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetTextureAlphaModFloat.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetTextureAlphaModFloat",
         def(
@@ -1367,7 +1367,7 @@ def set_texture_blend_mode(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetTextureBlendMode.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetTextureBlendMode",
         def(texture: Ptr[Texture, MutAnyOrigin], blend_mode: BlendMode) thin -> Bool,
@@ -1396,7 +1396,7 @@ def get_texture_blend_mode(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetTextureBlendMode.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetTextureBlendMode",
         def(
@@ -1431,7 +1431,7 @@ def set_texture_scale_mode[o: MutOrigin, //](
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetTextureScaleMode.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetTextureScaleMode",
         def(texture: Ptr[Texture, MutAnyOrigin], scale_mode: ScaleMode) thin -> Bool,
@@ -1460,7 +1460,7 @@ def get_texture_scale_mode(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetTextureScaleMode.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetTextureScaleMode",
         def(
@@ -1509,7 +1509,7 @@ def update_texture[o: MutOrigin, //](
     Docs: https://wiki.libsdl.org/SDL3/SDL_UpdateTexture.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_UpdateTexture",
         def(
@@ -1564,7 +1564,7 @@ def update_yuv_texture(
     Docs: https://wiki.libsdl.org/SDL3/SDL_UpdateYUVTexture.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_UpdateYUVTexture",
         def(
@@ -1617,7 +1617,7 @@ def update_nv_texture(
     Docs: https://wiki.libsdl.org/SDL3/SDL_UpdateNVTexture.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_UpdateNVTexture",
         def(
@@ -1670,7 +1670,7 @@ def lock_texture(
     Docs: https://wiki.libsdl.org/SDL3/SDL_LockTexture.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_LockTexture",
         def(
@@ -1724,7 +1724,7 @@ def lock_texture_to_surface(
     Docs: https://wiki.libsdl.org/SDL3/SDL_LockTextureToSurface.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_LockTextureToSurface",
         def(
@@ -1795,7 +1795,7 @@ def set_render_target(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetRenderTarget.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetRenderTarget",
         def(
@@ -1895,7 +1895,7 @@ def set_render_logical_presentation(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetRenderLogicalPresentation.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetRenderLogicalPresentation",
         def(
@@ -1939,7 +1939,7 @@ def get_render_logical_presentation(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRenderLogicalPresentation.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetRenderLogicalPresentation",
         def(
@@ -1981,7 +1981,7 @@ def get_render_logical_presentation_rect(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRenderLogicalPresentationRect.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetRenderLogicalPresentationRect",
         def(
@@ -2026,7 +2026,7 @@ def render_coordinates_from_window(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderCoordinatesFromWindow.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderCoordinatesFromWindow",
         def(
@@ -2076,7 +2076,7 @@ def render_coordinates_to_window(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderCoordinatesToWindow.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderCoordinatesToWindow",
         def(
@@ -2130,7 +2130,7 @@ def convert_event_to_render_coordinates(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ConvertEventToRenderCoordinates.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ConvertEventToRenderCoordinates",
         def(
@@ -2171,7 +2171,7 @@ def set_render_viewport(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetRenderViewport.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetRenderViewport",
         def(
@@ -2205,7 +2205,7 @@ def get_render_viewport(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRenderViewport.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetRenderViewport",
         def(
@@ -2273,7 +2273,7 @@ def get_render_safe_area(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRenderSafeArea.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetRenderSafeArea",
         def(
@@ -2308,7 +2308,7 @@ def set_render_clip_rect(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetRenderClipRect.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetRenderClipRect",
         def(
@@ -2343,7 +2343,7 @@ def get_render_clip_rect(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRenderClipRect.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetRenderClipRect",
         def(
@@ -2412,7 +2412,7 @@ def set_render_scale(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetRenderScale.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetRenderScale",
         def(
@@ -2450,7 +2450,7 @@ def get_render_scale(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRenderScale.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetRenderScale",
         def(
@@ -2494,7 +2494,7 @@ def set_render_draw_color[o: MutOrigin, //](
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetRenderDrawColor.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetRenderDrawColor",
         def(
@@ -2540,7 +2540,7 @@ def set_render_draw_color_float(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetRenderDrawColorFloat.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetRenderDrawColorFloat",
         def(
@@ -2585,7 +2585,7 @@ def get_render_draw_color(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRenderDrawColor.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetRenderDrawColor",
         def(
@@ -2630,7 +2630,7 @@ def get_render_draw_color_float(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRenderDrawColorFloat.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetRenderDrawColorFloat",
         def(
@@ -2672,7 +2672,7 @@ def set_render_color_scale(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetRenderColorScale.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetRenderColorScale",
         def(renderer: Ptr[Renderer, MutAnyOrigin], scale: c_float) thin -> Bool,
@@ -2701,7 +2701,7 @@ def get_render_color_scale(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRenderColorScale.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetRenderColorScale",
         def(
@@ -2734,7 +2734,7 @@ def set_render_draw_blend_mode(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetRenderDrawBlendMode.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetRenderDrawBlendMode",
         def(
@@ -2765,7 +2765,7 @@ def get_render_draw_blend_mode(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRenderDrawBlendMode.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetRenderDrawBlendMode",
         def(
@@ -2798,7 +2798,7 @@ def render_clear[o: MutOrigin, //](renderer: Ptr[Renderer, o]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderClear.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderClear",
         def(renderer: Ptr[Renderer, MutAnyOrigin]) thin -> Bool,
@@ -2827,7 +2827,7 @@ def render_point[o: MutOrigin, //](
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderPoint.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderPoint",
         def(
@@ -2860,7 +2860,7 @@ def render_points(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderPoints.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderPoints",
         def(
@@ -2899,7 +2899,7 @@ def render_line[o: MutOrigin, //](
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderLine.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderLine",
         def(
@@ -2937,7 +2937,7 @@ def render_lines(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderLines.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderLines",
         def(
@@ -2970,7 +2970,7 @@ def render_rect[o: MutOrigin, //](
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderRect.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderRect",
         def(
@@ -3005,7 +3005,7 @@ def render_rects(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderRects.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderRects",
         def(
@@ -3039,7 +3039,7 @@ def render_fill_rect[o: MutOrigin, //](
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderFillRect.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderFillRect",
         def(
@@ -3074,7 +3074,7 @@ def render_fill_rects(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderFillRects.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderFillRects",
         def(
@@ -3114,7 +3114,7 @@ def render_texture[ro: MutOrigin, to: MutOrigin, //](
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderTexture.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderTexture",
         def(
@@ -3165,7 +3165,7 @@ def render_texture_rotated(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderTextureRotated.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderTextureRotated",
         def(
@@ -3218,7 +3218,7 @@ def render_texture_affine(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderTextureAffine.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderTextureAffine",
         def(
@@ -3268,7 +3268,7 @@ def render_texture_tiled(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderTextureTiled.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderTextureTiled",
         def(
@@ -3328,7 +3328,7 @@ def render_texture_9grid(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderTexture9Grid.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderTexture9Grid",
         def(
@@ -3389,7 +3389,7 @@ def render_geometry(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderGeometry.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderGeometry",
         def(
@@ -3448,7 +3448,7 @@ def render_geometry_raw(
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderGeometryRaw.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderGeometryRaw",
         def(
@@ -3569,7 +3569,7 @@ def render_present[o: MutOrigin, //](renderer: Ptr[Renderer, o]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderPresent.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderPresent",
         def(renderer: Ptr[Renderer, MutAnyOrigin]) thin -> Bool,
@@ -3658,7 +3658,7 @@ def flush_renderer(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_FlushRenderer.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_FlushRenderer",
         def(renderer: Ptr[Renderer, MutAnyOrigin]) thin -> Bool,
@@ -3770,7 +3770,7 @@ def add_vulkan_render_semaphores(
     Docs: https://wiki.libsdl.org/SDL3/SDL_AddVulkanRenderSemaphores.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_AddVulkanRenderSemaphores",
         def(
@@ -3812,7 +3812,7 @@ def set_render_vsync(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetRenderVSync.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetRenderVSync",
         def(renderer: Ptr[Renderer, MutAnyOrigin], vsync: c_int) thin -> Bool,
@@ -3841,7 +3841,7 @@ def get_render_vsync(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetRenderVSync.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetRenderVSync",
         def(
@@ -3899,7 +3899,7 @@ def render_debug_text[o: MutOrigin, //](
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenderDebugText.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenderDebugText",
         def(

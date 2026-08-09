@@ -31,7 +31,7 @@ Run with (GPU env):
 """
 
 from std.memory import memcpy
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 

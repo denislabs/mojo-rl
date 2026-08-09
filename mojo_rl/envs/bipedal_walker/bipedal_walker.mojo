@@ -13,7 +13,7 @@ from std.math import sqrt, cos, sin, pi, tanh
 from std.memory import alloc
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 
 from mojo_rl.core import (
@@ -181,7 +181,7 @@ struct BipedalWalker[
     var cached_state: BipedalWalkerState[Self.dtype]
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -1230,7 +1230,7 @@ struct BipedalWalker[
         """Clean up resources."""
         if self._renderer_initialized:
             self._renderer.value()[].close()
-            self._renderer.value().free()
+            self._renderer.value().unsafe_free()
             self._renderer_initialized = False
 
     # =========================================================================
@@ -1257,7 +1257,7 @@ struct BipedalWalker[
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
@@ -1506,10 +1506,10 @@ struct BipedalWalker[
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """GPU step kernel for batched continuous actions."""
@@ -1641,10 +1641,10 @@ struct BipedalWalker[
         mut dones_buf: DeviceBuffer[dtype],
         rng_seed: UInt64,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """GPU selective reset kernel - resets only done environments."""

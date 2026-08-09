@@ -21,7 +21,7 @@ inside the struct body. All dimension parameters follow this convention.
 
 from std.collections import InlineArray
 
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 from std.random.philox import Random as PhiloxRandom
@@ -340,17 +340,25 @@ struct ModelDefFromXML[
         ],
     ):
         """Clamp qpos to joint range limits (limited joints only)."""
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_joint_is_limited = materialize[Self._acd.joint_is_limited]()
+        var _m_joint_qpos_adr = materialize[Self._acd.joint_qpos_adr]()
+        var _m_joint_range_max = materialize[Self._acd.joint_range_max]()
+        var _m_joint_range_min = materialize[Self._acd.joint_range_min]()
+
         for j in range(Self.NJOINT):
-            if Self._acd.joint_is_limited[j]:
-                var qp_adr = Self._acd.joint_qpos_adr[j]
+            if _m_joint_is_limited[j]:
+                var qp_adr = _m_joint_qpos_adr[j]
                 var v = d.qpos.data[qp_adr]
-                if v < Scalar[DTYPE](Self._acd.joint_range_min[j]):
+                if v < Scalar[DTYPE](_m_joint_range_min[j]):
                     d.qpos.data[qp_adr] = Scalar[DTYPE](
-                        Self._acd.joint_range_min[j]
+                        _m_joint_range_min[j]
                     )
-                elif v > Scalar[DTYPE](Self._acd.joint_range_max[j]):
+                elif v > Scalar[DTYPE](_m_joint_range_max[j]):
                     d.qpos.data[qp_adr] = Scalar[DTYPE](
-                        Self._acd.joint_range_max[j]
+                        _m_joint_range_max[j]
                     )
 
     @staticmethod
@@ -399,23 +407,46 @@ struct ModelDefFromXML[
         which zeroes it, and a CONFIG's `custom_apply_actions_cpu`, which
         returns True and suppresses this method entirely.
         """
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_motor_act_adr = materialize[Self._acd.motor_act_adr]()
+        var _m_motor_ctrl_max = materialize[Self._acd.motor_ctrl_max]()
+        var _m_motor_ctrl_min = materialize[Self._acd.motor_ctrl_min]()
+        var _m_motor_dyn_tau = materialize[Self._acd.motor_dyn_tau]()
+        var _m_motor_gears = materialize[Self._acd.motor_gears]()
+        var _m_motor_kind = materialize[Self._acd.motor_kind]()
+        var _m_motor_kp = materialize[Self._acd.motor_kp]()
+        var _m_motor_kv = materialize[Self._acd.motor_kv]()
+        var _m_motor_trn_coef = materialize[Self._acd.motor_trn_coef]()
+        var _m_motor_trn_dadr = materialize[Self._acd.motor_trn_dadr]()
+        var _m_motor_trn_n = materialize[Self._acd.motor_trn_n]()
+        var _m_motor_trn_qadr = materialize[Self._acd.motor_trn_qadr]()
+        var _m_tendon_spring_hi = materialize[Self._acd.tendon_spring_hi]()
+        var _m_tendon_spring_lo = materialize[Self._acd.tendon_spring_lo]()
+        var _m_tendon_stiffness = materialize[Self._acd.tendon_stiffness]()
+        var _m_tendon_trn_coef = materialize[Self._acd.tendon_trn_coef]()
+        var _m_tendon_trn_dadr = materialize[Self._acd.tendon_trn_dadr]()
+        var _m_tendon_trn_n = materialize[Self._acd.tendon_trn_n]()
+        var _m_tendon_trn_qadr = materialize[Self._acd.tendon_trn_qadr]()
+
         for i in range(Self.NV):
             d.qfrc.data[i] = Scalar[DTYPE](0)
 
         for i in range(Self.nact):
             if i >= len(actions):
                 break
-            var n = Self._acd.motor_trn_n[i]
+            var n = _m_motor_trn_n[i]
             if n == 0:
                 continue
             # Clamp to per-actuator ctrlrange (per-element overrides default).
             var ctrl = actions[i]
-            if ctrl > Self._acd.motor_ctrl_max[i]:
-                ctrl = Self._acd.motor_ctrl_max[i]
-            elif ctrl < Self._acd.motor_ctrl_min[i]:
-                ctrl = Self._acd.motor_ctrl_min[i]
+            if ctrl > _m_motor_ctrl_max[i]:
+                ctrl = _m_motor_ctrl_max[i]
+            elif ctrl < _m_motor_ctrl_min[i]:
+                ctrl = _m_motor_ctrl_min[i]
 
-            var gear = Self._acd.motor_gears[i]
+            var gear = _m_motor_gears[i]
 
             # ACTIVATION (MuJoCo `d->act`). `force = gain .* [ctrl/act]`
             # (mj_fwdActuation): an actuator with a `dyntype` feeds its
@@ -428,7 +459,7 @@ struct ModelDefFromXML[
             # of the same step (`actearly` is off here). This function runs
             # ONCE PER SUBSTEP, which is the same cadence, so the two agree
             # step for step.
-            var adr = Self._acd.motor_act_adr[i]
+            var adr = _m_motor_act_adr[i]
             var u = ctrl
             if adr >= 0 and adr < len(act):
                 u = Float64(act[adr])
@@ -437,14 +468,14 @@ struct ModelDefFromXML[
             # plain `<motor>`, which never writes it, is `force = ctrl`. A
             # bias-free `<general>` lands here too and its gain is real: dog's
             # actuators are `force = 0.02 * act`.
-            var force = Self._acd.motor_kp[i] * u
-            if Self._acd.motor_kind[i] == ACT_KIND_POSITION:
+            var force = _m_motor_kp[i] * u
+            if _m_motor_kind[i] == ACT_KIND_POSITION:
                 var length = Float64(0)
                 var vel = Float64(0)
                 for k in range(n):
-                    var qadr = Self._acd.motor_trn_qadr[i * MAX_COMPTIME_TENDON_WRAPS + k]
-                    var dadr = Self._acd.motor_trn_dadr[i * MAX_COMPTIME_TENDON_WRAPS + k]
-                    var coef = Self._acd.motor_trn_coef[i * MAX_COMPTIME_TENDON_WRAPS + k]
+                    var qadr = _m_motor_trn_qadr[i * MAX_COMPTIME_TENDON_WRAPS + k]
+                    var dadr = _m_motor_trn_dadr[i * MAX_COMPTIME_TENDON_WRAPS + k]
+                    var coef = _m_motor_trn_coef[i * MAX_COMPTIME_TENDON_WRAPS + k]
                     if qadr >= 0 and qadr < Self.NQ:
                         length += coef * Float64(d.qpos.data[qadr])
                     if dadr >= 0 and dadr < Self.NV:
@@ -455,16 +486,16 @@ struct ModelDefFromXML[
                 # is the ACTIVATION, which lags the control. They coincide
                 # only when the actuator has no activation (then u == ctrl).
                 force = (
-                    Self._acd.motor_kp[i] * (u - length)
-                    - Self._acd.motor_kv[i] * vel
+                    _m_motor_kp[i] * (u - length)
+                    - _m_motor_kv[i] * vel
                 )
 
             for k in range(n):
-                var dadr = Self._acd.motor_trn_dadr[i * MAX_COMPTIME_TENDON_WRAPS + k]
+                var dadr = _m_motor_trn_dadr[i * MAX_COMPTIME_TENDON_WRAPS + k]
                 if dadr < 0 or dadr >= Self.NV:
                     continue
                 d.qfrc.data[dadr] += Scalar[DTYPE](
-                    gear * Self._acd.motor_trn_coef[i * MAX_COMPTIME_TENDON_WRAPS + k] * force
+                    gear * _m_motor_trn_coef[i * MAX_COMPTIME_TENDON_WRAPS + k] * force
                 )
 
             # mjDYN_FILTER, integrated by Euler exactly as `nextActivation`
@@ -473,7 +504,7 @@ struct ModelDefFromXML[
             # `ctrl` here is already ctrlrange-clamped, matching MuJoCo, which
             # clamps `d->ctrl` before computing act_dot.
             if adr >= 0 and adr < len(act):
-                var tau = Self._acd.motor_dyn_tau[i]
+                var tau = _m_motor_dyn_tau[i]
                 if tau < 1e-10:
                     tau = 1e-10  # mjMINVAL guard, as MuJoCo applies
                 act[adr] = Scalar[DTYPE](
@@ -483,22 +514,22 @@ struct ModelDefFromXML[
         # Fixed-tendon springs (`engine_passive.c`, tendon-level spring):
         # a DEADBAND on `tendon_lengthspring`, zero inside the band.
         for t in range(Self._acd.ntendon):
-            var k_spring = Self._acd.tendon_stiffness[t]
+            var k_spring = _m_tendon_stiffness[t]
             if k_spring == 0.0:
                 continue
-            var n = Self._acd.tendon_trn_n[t]
+            var n = _m_tendon_trn_n[t]
             if n == 0:
                 continue
             var length = Float64(0)
             for k in range(n):
-                var qadr = Self._acd.tendon_trn_qadr[t * MAX_COMPTIME_TENDON_WRAPS + k]
+                var qadr = _m_tendon_trn_qadr[t * MAX_COMPTIME_TENDON_WRAPS + k]
                 if qadr >= 0 and qadr < Self.NQ:
                     length += (
-                        Self._acd.tendon_trn_coef[t * MAX_COMPTIME_TENDON_WRAPS + k]
+                        _m_tendon_trn_coef[t * MAX_COMPTIME_TENDON_WRAPS + k]
                         * Float64(d.qpos.data[qadr])
                     )
-            var lo = Self._acd.tendon_spring_lo[t]
-            var hi = Self._acd.tendon_spring_hi[t]
+            var lo = _m_tendon_spring_lo[t]
+            var hi = _m_tendon_spring_hi[t]
             var frc = Float64(0)
             if length > hi:
                 frc = k_spring * (hi - length)
@@ -507,11 +538,11 @@ struct ModelDefFromXML[
             if frc == 0.0:
                 continue
             for k in range(n):
-                var dadr = Self._acd.tendon_trn_dadr[t * MAX_COMPTIME_TENDON_WRAPS + k]
+                var dadr = _m_tendon_trn_dadr[t * MAX_COMPTIME_TENDON_WRAPS + k]
                 if dadr < 0 or dadr >= Self.NV:
                     continue
                 d.qfrc.data[dadr] += Scalar[DTYPE](
-                    Self._acd.tendon_trn_coef[t * MAX_COMPTIME_TENDON_WRAPS + k] * frc
+                    _m_tendon_trn_coef[t * MAX_COMPTIME_TENDON_WRAPS + k] * frc
                 )
 
     # =========================================================================
@@ -547,6 +578,11 @@ struct ModelDefFromXML[
         is computed fields-natively (G1) from the reference pose given by the
         fields `reset_data`. The legacy trait-default (setup_model_and_data →
         load_from_model) was deleted at G4."""
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_motor_trn_n = materialize[Self._acd.motor_trn_n]()
+
         var fmd = parse_xml_full(Self.xml)
 
         # ⚠ THE DIMENSION CHECK THAT REPLACED SILENT TRUNCATION.
@@ -834,7 +870,7 @@ struct ModelDefFromXML[
                 # check is on the comptime transmission list rather than on
                 # `joint_id`, which a tendon transmission legitimately leaves
                 # at its -1 sentinel.
-                if Self._acd.motor_trn_n[a] == 0:
+                if _m_motor_trn_n[a] == 0:
                     raise Error(
                         String(
                             "physics3d: actuator index ",
@@ -1312,24 +1348,43 @@ struct ModelDefFromXML[
     @staticmethod
     def setup_lights() raises -> List[Light]:
         """Return Light objects parsed from <light> elements in <worldbody>."""
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_light_ambient_b = materialize[Self._rcd.light_ambient_b]()
+        var _m_light_ambient_g = materialize[Self._rcd.light_ambient_g]()
+        var _m_light_ambient_r = materialize[Self._rcd.light_ambient_r]()
+        var _m_light_castshadow = materialize[Self._rcd.light_castshadow]()
+        var _m_light_diffuse_b = materialize[Self._rcd.light_diffuse_b]()
+        var _m_light_diffuse_g = materialize[Self._rcd.light_diffuse_g]()
+        var _m_light_diffuse_r = materialize[Self._rcd.light_diffuse_r]()
+        var _m_light_dir_x = materialize[Self._rcd.light_dir_x]()
+        var _m_light_dir_y = materialize[Self._rcd.light_dir_y]()
+        var _m_light_dir_z = materialize[Self._rcd.light_dir_z]()
+        var _m_light_directional = materialize[Self._rcd.light_directional]()
+        var _m_light_exponent = materialize[Self._rcd.light_exponent]()
+        var _m_light_specular_b = materialize[Self._rcd.light_specular_b]()
+        var _m_light_specular_g = materialize[Self._rcd.light_specular_g]()
+        var _m_light_specular_r = materialize[Self._rcd.light_specular_r]()
+
         var lights = List[Light]()
         for i in range(Self.nlight):
-            var mode = Int(1) if Self._rcd.light_directional[i] else Int(0)
-            var amb = (Self._rcd.light_ambient_r[i] + Self._rcd.light_ambient_g[i] + Self._rcd.light_ambient_b[i]) / 3.0
-            var spec_int = (Self._rcd.light_specular_r[i] + Self._rcd.light_specular_g[i] + Self._rcd.light_specular_b[i]) / 3.0
+            var mode = Int(1) if _m_light_directional[i] else Int(0)
+            var amb = (_m_light_ambient_r[i] + _m_light_ambient_g[i] + _m_light_ambient_b[i]) / 3.0
+            var spec_int = (_m_light_specular_r[i] + _m_light_specular_g[i] + _m_light_specular_b[i]) / 3.0
             lights.append(
                 Light(
                     mode=mode,
-                    dir_x=Self._rcd.light_dir_x[i],
-                    dir_y=Self._rcd.light_dir_y[i],
-                    dir_z=Self._rcd.light_dir_z[i],
-                    color_r=Self._rcd.light_diffuse_r[i],
-                    color_g=Self._rcd.light_diffuse_g[i],
-                    color_b=Self._rcd.light_diffuse_b[i],
+                    dir_x=_m_light_dir_x[i],
+                    dir_y=_m_light_dir_y[i],
+                    dir_z=_m_light_dir_z[i],
+                    color_r=_m_light_diffuse_r[i],
+                    color_g=_m_light_diffuse_g[i],
+                    color_b=_m_light_diffuse_b[i],
                     ambient=amb,
                     specular_intensity=spec_int,
-                    specular_exponent=Self._rcd.light_exponent[i],
-                    cast_shadow=Self._rcd.light_castshadow[i],
+                    specular_exponent=_m_light_exponent[i],
+                    cast_shadow=_m_light_castshadow[i],
                 )
             )
         return lights^
@@ -1372,13 +1427,25 @@ struct ModelDefFromXML[
         `xyaxes="1 0 0 0 0 1"` at (0,-3,0) resolves to the same +Y look with a
         +Z up it was getting by accident.
         """
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_cam_fovy = materialize[Self._rcd.cam_fovy]()
+        var _m_cam_pos_x = materialize[Self._rcd.cam_pos_x]()
+        var _m_cam_pos_y = materialize[Self._rcd.cam_pos_y]()
+        var _m_cam_pos_z = materialize[Self._rcd.cam_pos_z]()
+        var _m_cam_quat_w = materialize[Self._rcd.cam_quat_w]()
+        var _m_cam_quat_x = materialize[Self._rcd.cam_quat_x]()
+        var _m_cam_quat_y = materialize[Self._rcd.cam_quat_y]()
+        var _m_cam_quat_z = materialize[Self._rcd.cam_quat_z]()
+
         var cameras = List[Camera3D]()
         for i in range(Self.ncam):
-            var eye = _RVec3(Self._rcd.cam_pos_x[i], Self._rcd.cam_pos_y[i], Self._rcd.cam_pos_z[i])
-            var qx = Self._rcd.cam_quat_x[i]
-            var qy = Self._rcd.cam_quat_y[i]
-            var qz = Self._rcd.cam_quat_z[i]
-            var qw = Self._rcd.cam_quat_w[i]
+            var eye = _RVec3(_m_cam_pos_x[i], _m_cam_pos_y[i], _m_cam_pos_z[i])
+            var qx = _m_cam_quat_x[i]
+            var qy = _m_cam_quat_y[i]
+            var qz = _m_cam_quat_z[i]
+            var qw = _m_cam_quat_w[i]
             var look = Self._rcd_rotate_by_quat(qx, qy, qz, qw, 0.0, 0.0, -1.0)
             var up_v = Self._rcd_rotate_by_quat(qx, qy, qz, qw, 0.0, 1.0, 0.0)
             var target = _RVec3(
@@ -1389,7 +1456,7 @@ struct ModelDefFromXML[
                     eye=eye,
                     target=target,
                     up=_RVec3(up_v[0], up_v[1], up_v[2]),
-                    fov=Self._rcd.cam_fovy[i],
+                    fov=_m_cam_fovy[i],
                     aspect=Float64(width) / Float64(height),
                     near=Float64(0.1),
                     far=Float64(100.0),
@@ -1412,9 +1479,14 @@ struct ModelDefFromXML[
         orientation, targetbody holds the camera still and turns it. cartpole's
         `lookatcart` is the one model that asks for it.
         """
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_cam_mode = materialize[Self._rcd.cam_mode]()
+
         var modes = List[Int]()
         for i in range(Self.ncam):
-            var xml_mode = Self._rcd.cam_mode[i]
+            var xml_mode = _m_cam_mode[i]
             if xml_mode == 0:
                 modes.append(1)  # fixed
             elif xml_mode == 3 or xml_mode == 4:
@@ -1426,25 +1498,42 @@ struct ModelDefFromXML[
     @staticmethod
     def get_camera_target_bodies() -> List[Int]:
         """Body index each camera aims at, or -1. Parallel to `setup_cameras`."""
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_cam_target_body = materialize[Self._rcd.cam_target_body]()
+
         var out = List[Int]()
         for i in range(Self.ncam):
-            out.append(Self._rcd.cam_target_body[i])
+            out.append(_m_cam_target_body[i])
         return out^
 
     @staticmethod
     def get_skybox_colors() -> List[Float64]:
         """Return [top_r, top_g, top_b, bottom_r, bottom_g, bottom_b] from the
         first skybox/gradient texture, or an empty list if none exists."""
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_tex_builtin = materialize[Self._rcd.tex_builtin]()
+        var _m_tex_rgb1_b = materialize[Self._rcd.tex_rgb1_b]()
+        var _m_tex_rgb1_g = materialize[Self._rcd.tex_rgb1_g]()
+        var _m_tex_rgb1_r = materialize[Self._rcd.tex_rgb1_r]()
+        var _m_tex_rgb2_b = materialize[Self._rcd.tex_rgb2_b]()
+        var _m_tex_rgb2_g = materialize[Self._rcd.tex_rgb2_g]()
+        var _m_tex_rgb2_r = materialize[Self._rcd.tex_rgb2_r]()
+        var _m_tex_type = materialize[Self._rcd.tex_type]()
+
         # TEX_SKYBOX=1, TEX_BUILTIN_GRADIENT=1
         for i in range(Self.ntex):
-            if Self._rcd.tex_type[i] == 1 or Self._rcd.tex_builtin[i] == 1:
+            if _m_tex_type[i] == 1 or _m_tex_builtin[i] == 1:
                 var result = List[Float64]()
-                result.append(Self._rcd.tex_rgb1_r[i])
-                result.append(Self._rcd.tex_rgb1_g[i])
-                result.append(Self._rcd.tex_rgb1_b[i])
-                result.append(Self._rcd.tex_rgb2_r[i])
-                result.append(Self._rcd.tex_rgb2_g[i])
-                result.append(Self._rcd.tex_rgb2_b[i])
+                result.append(_m_tex_rgb1_r[i])
+                result.append(_m_tex_rgb1_g[i])
+                result.append(_m_tex_rgb1_b[i])
+                result.append(_m_tex_rgb2_r[i])
+                result.append(_m_tex_rgb2_g[i])
+                result.append(_m_tex_rgb2_b[i])
                 return result^
         return List[Float64]()
 
@@ -1460,14 +1549,25 @@ struct ModelDefFromXML[
         `edge` and `cross` mark 2D textures, not the sky, so they are ignored
         here rather than approximated.
         """
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_tex_builtin = materialize[Self._rcd.tex_builtin]()
+        var _m_tex_mark = materialize[Self._rcd.tex_mark]()
+        var _m_tex_markrgb_b = materialize[Self._rcd.tex_markrgb_b]()
+        var _m_tex_markrgb_g = materialize[Self._rcd.tex_markrgb_g]()
+        var _m_tex_markrgb_r = materialize[Self._rcd.tex_markrgb_r]()
+        var _m_tex_random = materialize[Self._rcd.tex_random]()
+        var _m_tex_type = materialize[Self._rcd.tex_type]()
+
         for i in range(Self.ntex):
-            if Self._rcd.tex_type[i] == 1 or Self._rcd.tex_builtin[i] == 1:
+            if _m_tex_type[i] == 1 or _m_tex_builtin[i] == 1:
                 var result = List[Float64]()
-                result.append(Float64(Self._rcd.tex_mark[i]))
-                result.append(Self._rcd.tex_markrgb_r[i])
-                result.append(Self._rcd.tex_markrgb_g[i])
-                result.append(Self._rcd.tex_markrgb_b[i])
-                result.append(Self._rcd.tex_random[i])
+                result.append(Float64(_m_tex_mark[i]))
+                result.append(_m_tex_markrgb_r[i])
+                result.append(_m_tex_markrgb_g[i])
+                result.append(_m_tex_markrgb_b[i])
+                result.append(_m_tex_random[i])
                 return result^
         return List[Float64]()
 
@@ -1475,13 +1575,21 @@ struct ModelDefFromXML[
     def get_checker_colors() -> List[Float64]:
         """Return [r, g, b] of the checker texture's secondary (light square) colour,
         or an empty list if no checker texture is found."""
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_tex_builtin = materialize[Self._rcd.tex_builtin]()
+        var _m_tex_rgb2_b = materialize[Self._rcd.tex_rgb2_b]()
+        var _m_tex_rgb2_g = materialize[Self._rcd.tex_rgb2_g]()
+        var _m_tex_rgb2_r = materialize[Self._rcd.tex_rgb2_r]()
+
         # TEX_BUILTIN_CHECKER=2
         for i in range(Self.ntex):
-            if Self._rcd.tex_builtin[i] == 2:
+            if _m_tex_builtin[i] == 2:
                 var result = List[Float64]()
-                result.append(Self._rcd.tex_rgb2_r[i])
-                result.append(Self._rcd.tex_rgb2_g[i])
-                result.append(Self._rcd.tex_rgb2_b[i])
+                result.append(_m_tex_rgb2_r[i])
+                result.append(_m_tex_rgb2_g[i])
+                result.append(_m_tex_rgb2_b[i])
                 return result^
         return List[Float64]()
 
@@ -1489,12 +1597,20 @@ struct ModelDefFromXML[
     def get_ground_rgba() -> List[Float64]:
         """Return [r, g, b] of the first plane geom's rgba color,
         or empty list if no plane geom exists."""
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_geom_rgba_b = materialize[Self._rcd.geom_rgba_b]()
+        var _m_geom_rgba_g = materialize[Self._rcd.geom_rgba_g]()
+        var _m_geom_rgba_r = materialize[Self._rcd.geom_rgba_r]()
+        var _m_geom_type = materialize[Self._rcd.geom_type]()
+
         for i in range(Self.NGEOM):
-            if Self._rcd.geom_type[i] == 0:  # GEOM_PLANE
+            if _m_geom_type[i] == 0:  # GEOM_PLANE
                 var result = List[Float64]()
-                result.append(Self._rcd.geom_rgba_r[i])
-                result.append(Self._rcd.geom_rgba_g[i])
-                result.append(Self._rcd.geom_rgba_b[i])
+                result.append(_m_geom_rgba_r[i])
+                result.append(_m_geom_rgba_g[i])
+                result.append(_m_geom_rgba_b[i])
                 return result^
         return List[Float64]()
 
@@ -1535,37 +1651,51 @@ struct ModelDefFromXML[
         than the path it takes. ball_in_cup has none, which is why this is
         enough for it and would not be for, say, a pulley.
         """
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_site_body_id = materialize[Self._rcd.site_body_id]()
+        var _m_site_pos_x = materialize[Self._rcd.site_pos_x]()
+        var _m_site_pos_y = materialize[Self._rcd.site_pos_y]()
+        var _m_site_pos_z = materialize[Self._rcd.site_pos_z]()
+        var _m_sten_nsite = materialize[Self._rcd.sten_nsite]()
+        var _m_sten_rgba_b = materialize[Self._rcd.sten_rgba_b]()
+        var _m_sten_rgba_g = materialize[Self._rcd.sten_rgba_g]()
+        var _m_sten_rgba_r = materialize[Self._rcd.sten_rgba_r]()
+        var _m_sten_sites = materialize[Self._rcd.sten_sites]()
+        var _m_sten_width = materialize[Self._rcd.sten_width]()
+
         var base = 0
         for t in range(Self._rcd.nsten):
-            var n = Self._rcd.sten_nsite[t]
-            var radius = Self._rcd.sten_width[t]
+            var n = _m_sten_nsite[t]
+            var radius = _m_sten_width[t]
             var col = Color(
-                UInt8(Self._rcd.sten_rgba_r[t] * 255),
-                UInt8(Self._rcd.sten_rgba_g[t] * 255),
-                UInt8(Self._rcd.sten_rgba_b[t] * 255),
+                UInt8(_m_sten_rgba_r[t] * 255),
+                UInt8(_m_sten_rgba_g[t] * 255),
+                UInt8(_m_sten_rgba_b[t] * 255),
                 255,
             )
             for k in range(n - 1):
-                var ia = Self._rcd.sten_sites[base + k]
-                var ib = Self._rcd.sten_sites[base + k + 1]
+                var ia = _m_sten_sites[base + k]
+                var ib = _m_sten_sites[base + k + 1]
                 if ia < 0 or ib < 0:
                     continue
-                var ba = Self._rcd.site_body_id[ia]
-                var bb = Self._rcd.site_body_id[ib]
+                var ba = _m_site_body_id[ia]
+                var bb = _m_site_body_id[ib]
                 if ba >= len(positions) or bb >= len(positions):
                     continue
                 var pa = positions[ba] + quaternions[ba].rotate_vec(
                     _RVec3(
-                        Self._rcd.site_pos_x[ia],
-                        Self._rcd.site_pos_y[ia],
-                        Self._rcd.site_pos_z[ia],
+                        _m_site_pos_x[ia],
+                        _m_site_pos_y[ia],
+                        _m_site_pos_z[ia],
                     )
                 )
                 var pb = positions[bb] + quaternions[bb].rotate_vec(
                     _RVec3(
-                        Self._rcd.site_pos_x[ib],
-                        Self._rcd.site_pos_y[ib],
-                        Self._rcd.site_pos_z[ib],
+                        _m_site_pos_x[ib],
+                        _m_site_pos_y[ib],
+                        _m_site_pos_z[ib],
                     )
                 )
                 var seg = pb - pa
@@ -1632,44 +1762,72 @@ struct ModelDefFromXML[
         at its origin's z with normal (0,0,1). Fixing the picture does not make
         an inclined plane collide correctly.
         """
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_geom_body_id = materialize[Self._rcd.geom_body_id]()
+        var _m_geom_half_x = materialize[Self._rcd.geom_half_x]()
+        var _m_geom_half_y = materialize[Self._rcd.geom_half_y]()
+        var _m_geom_material_id = materialize[Self._rcd.geom_material_id]()
+        var _m_geom_pos_x = materialize[Self._rcd.geom_pos_x]()
+        var _m_geom_pos_y = materialize[Self._rcd.geom_pos_y]()
+        var _m_geom_pos_z = materialize[Self._rcd.geom_pos_z]()
+        var _m_geom_quat_w = materialize[Self._rcd.geom_quat_w]()
+        var _m_geom_quat_x = materialize[Self._rcd.geom_quat_x]()
+        var _m_geom_quat_y = materialize[Self._rcd.geom_quat_y]()
+        var _m_geom_quat_z = materialize[Self._rcd.geom_quat_z]()
+        var _m_geom_radius = materialize[Self._rcd.geom_radius]()
+        var _m_geom_rgba_a = materialize[Self._rcd.geom_rgba_a]()
+        var _m_geom_rgba_b = materialize[Self._rcd.geom_rgba_b]()
+        var _m_geom_rgba_g = materialize[Self._rcd.geom_rgba_g]()
+        var _m_geom_rgba_r = materialize[Self._rcd.geom_rgba_r]()
+        var _m_geom_type = materialize[Self._rcd.geom_type]()
+        var _m_mat_rgba_a = materialize[Self._rcd.mat_rgba_a]()
+        var _m_mat_rgba_b = materialize[Self._rcd.mat_rgba_b]()
+        var _m_mat_rgba_g = materialize[Self._rcd.mat_rgba_g]()
+        var _m_mat_rgba_r = materialize[Self._rcd.mat_rgba_r]()
+        var _m_mat_tex_id = materialize[Self._rcd.mat_tex_id]()
+        var _m_mat_texrepeat_u = materialize[Self._rcd.mat_texrepeat_u]()
+        var _m_mat_texrepeat_v = materialize[Self._rcd.mat_texrepeat_v]()
+
         # GEOM_PLANE=0
         var has_plane = False
         var max_body_radius = Float64(0.0)
         for j in range(Self.NGEOM):
-            if Self._rcd.geom_body_id[j] > 0 and Self._rcd.geom_radius[j] > max_body_radius:
-                max_body_radius = Self._rcd.geom_radius[j]
+            if _m_geom_body_id[j] > 0 and _m_geom_radius[j] > max_body_radius:
+                max_body_radius = _m_geom_radius[j]
         for i in range(Self.NGEOM):
-            if Self._rcd.geom_type[i] == 0:  # PLANE
-                var pqx = Self._rcd.geom_quat_x[i]
-                var pqy = Self._rcd.geom_quat_y[i]
-                var pqz = Self._rcd.geom_quat_z[i]
-                var pqw = Self._rcd.geom_quat_w[i]
+            if _m_geom_type[i] == 0:  # PLANE
+                var pqx = _m_geom_quat_x[i]
+                var pqy = _m_geom_quat_y[i]
+                var pqz = _m_geom_quat_z[i]
+                var pqw = _m_geom_quat_w[i]
                 var upright = (
                     pqx == 0.0 and pqy == 0.0 and pqz == 0.0 and pqw == 1.0
                 )
-                var hx = Self._rcd.geom_half_x[i]
-                var hy = Self._rcd.geom_half_y[i]
+                var hx = _m_geom_half_x[i]
+                var hy = _m_geom_half_y[i]
                 if not upright and hx > 0.0 and hy > 0.0:
                     # A wall, a ramp or a backdrop. Half-extents come straight
                     # from MJCF `size="x y spacing"`; a zero there means the
                     # plane is INFINITE along that axis and there is no slab to
                     # draw, so it falls through to the grid path instead.
-                    var wall_r = Float32(Self._rcd.geom_rgba_r[i])
-                    var wall_g = Float32(Self._rcd.geom_rgba_g[i])
-                    var wall_b = Float32(Self._rcd.geom_rgba_b[i])
-                    var wall_a = Float32(Self._rcd.geom_rgba_a[i])
-                    var wmid = Self._rcd.geom_material_id[i]
+                    var wall_r = Float32(_m_geom_rgba_r[i])
+                    var wall_g = Float32(_m_geom_rgba_g[i])
+                    var wall_b = Float32(_m_geom_rgba_b[i])
+                    var wall_a = Float32(_m_geom_rgba_a[i])
+                    var wmid = _m_geom_material_id[i]
                     if wmid >= 0 and wmid < Self.nmat:
-                        wall_r = Float32(Self._rcd.mat_rgba_r[wmid])
-                        wall_g = Float32(Self._rcd.mat_rgba_g[wmid])
-                        wall_b = Float32(Self._rcd.mat_rgba_b[wmid])
-                        wall_a = Float32(Self._rcd.mat_rgba_a[wmid])
+                        wall_r = Float32(_m_mat_rgba_r[wmid])
+                        wall_g = Float32(_m_mat_rgba_g[wmid])
+                        wall_b = Float32(_m_mat_rgba_b[wmid])
+                        wall_a = Float32(_m_mat_rgba_a[wmid])
                     if wall_a >= 0.99:
                         renderer.draw_box(
                             center=_RVec3(
-                                Self._rcd.geom_pos_x[i],
-                                Self._rcd.geom_pos_y[i],
-                                Self._rcd.geom_pos_z[i],
+                                _m_geom_pos_x[i],
+                                _m_geom_pos_y[i],
+                                _m_geom_pos_z[i],
                             ),
                             orientation=_RQuat(pqw, pqx, pqy, pqz),
                             half_extents=_RVec3(hx, hy, 0.002),
@@ -1680,16 +1838,16 @@ struct ModelDefFromXML[
                         )
                     continue
                 has_plane = True
-                var ground_offset = Self._rcd.geom_pos_z[i] - max_body_radius * (visual_radius_scale - 1.0)
+                var ground_offset = _m_geom_pos_z[i] - max_body_radius * (visual_radius_scale - 1.0)
                 var grid_cx = torso_x if follow else Float64(0.0)
                 # Resolve material → texture for this plane geom
                 var tex_name = String("")
                 var tex_file = String("")
                 var texrep_u = Float64(1.0)
                 var texrep_v = Float64(1.0)
-                var mid = Self._rcd.geom_material_id[i]
+                var mid = _m_geom_material_id[i]
                 if mid >= 0 and mid < Self.nmat:
-                    var tex_id = Self._rcd.mat_tex_id[mid]
+                    var tex_id = _m_mat_tex_id[mid]
                     if tex_id >= 0 and tex_id < Self._rcd.ntex:
                         comptime for ti in range(Self._rcd.ntex):
                             if tex_id == ti:
@@ -1697,8 +1855,8 @@ struct ModelDefFromXML[
                                 comptime _tf: String = Self._rcd.tex_files[ti]
                                 tex_name = _tn
                                 tex_file = _tf
-                    texrep_u = Self._rcd.mat_texrepeat_u[mid]
-                    texrep_v = Self._rcd.mat_texrepeat_v[mid]
+                    texrep_u = _m_mat_texrepeat_u[mid]
+                    texrep_v = _m_mat_texrepeat_v[mid]
                 renderer.draw_ground_grid(
                     grid_cx, height=ground_offset,
                     texture_name=tex_name, texture_path=tex_file,
@@ -1717,13 +1875,46 @@ struct ModelDefFromXML[
         visual_radius_scale: Float64,
     ) raises:
         """Draw body-attached geoms using parsed geometry + colour."""
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_geom_body_id = materialize[Self._rcd.geom_body_id]()
+        var _m_geom_group = materialize[Self._rcd.geom_group]()
+        var _m_geom_half_length = materialize[Self._rcd.geom_half_length]()
+        var _m_geom_half_x = materialize[Self._rcd.geom_half_x]()
+        var _m_geom_half_y = materialize[Self._rcd.geom_half_y]()
+        var _m_geom_half_z = materialize[Self._rcd.geom_half_z]()
+        var _m_geom_material_id = materialize[Self._rcd.geom_material_id]()
+        var _m_geom_mesh_id = materialize[Self._rcd.geom_mesh_id]()
+        var _m_geom_pos_x = materialize[Self._rcd.geom_pos_x]()
+        var _m_geom_pos_y = materialize[Self._rcd.geom_pos_y]()
+        var _m_geom_pos_z = materialize[Self._rcd.geom_pos_z]()
+        var _m_geom_quat_w = materialize[Self._rcd.geom_quat_w]()
+        var _m_geom_quat_x = materialize[Self._rcd.geom_quat_x]()
+        var _m_geom_quat_y = materialize[Self._rcd.geom_quat_y]()
+        var _m_geom_quat_z = materialize[Self._rcd.geom_quat_z]()
+        var _m_geom_radius = materialize[Self._rcd.geom_radius]()
+        var _m_geom_rgba_a = materialize[Self._rcd.geom_rgba_a]()
+        var _m_geom_rgba_b = materialize[Self._rcd.geom_rgba_b]()
+        var _m_geom_rgba_g = materialize[Self._rcd.geom_rgba_g]()
+        var _m_geom_rgba_r = materialize[Self._rcd.geom_rgba_r]()
+        var _m_geom_type = materialize[Self._rcd.geom_type]()
+        var _m_mat_reflectance = materialize[Self._rcd.mat_reflectance]()
+        var _m_mat_rgba_a = materialize[Self._rcd.mat_rgba_a]()
+        var _m_mat_rgba_b = materialize[Self._rcd.mat_rgba_b]()
+        var _m_mat_rgba_g = materialize[Self._rcd.mat_rgba_g]()
+        var _m_mat_rgba_r = materialize[Self._rcd.mat_rgba_r]()
+        var _m_mat_shininess = materialize[Self._rcd.mat_shininess]()
+        var _m_mat_specular = materialize[Self._rcd.mat_specular]()
+        var _m_mat_tex_id = materialize[Self._rcd.mat_tex_id]()
+
         # SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4, MESH=5
         for i in range(Self.NGEOM):
-            var bid = Self._rcd.geom_body_id[i]
+            var bid = _m_geom_body_id[i]
             if bid < 0:
                 continue
             # Skip plane geoms (handled by render_ground_geoms)
-            if Self._rcd.geom_type[i] == 0:
+            if _m_geom_type[i] == 0:
                 continue
             if bid >= len(positions):
                 continue
@@ -1734,53 +1925,53 @@ struct ModelDefFromXML[
             # collision capsules in group 3 and its 162 bone meshes in group 5.
             # Drawing every group means drawing the collision proxy as if it
             # were the model.
-            if Self._rcd.geom_group[i] >= 3:
+            if _m_geom_group[i] >= 3:
                 continue
             # Skip geoms with alpha < 1 (collision-only / semi-transparent)
-            if Self._rcd.geom_rgba_a[i] < 0.99:
+            if _m_geom_rgba_a[i] < 0.99:
                 continue
             var body_pos = positions[bid]
             var body_quat = quaternions[bid]
-            var gx = Self._rcd.geom_pos_x[i]
-            var gy = Self._rcd.geom_pos_y[i]
-            var gz = Self._rcd.geom_pos_z[i]
+            var gx = _m_geom_pos_x[i]
+            var gy = _m_geom_pos_y[i]
+            var gz = _m_geom_pos_z[i]
             var geom_pos: _RVec3
             if gx == 0.0 and gy == 0.0 and gz == 0.0:
                 geom_pos = body_pos
             else:
                 geom_pos = body_pos + body_quat.rotate_vec(_RVec3(gx, gy, gz))
-            var gqx = Self._rcd.geom_quat_x[i]
-            var gqy = Self._rcd.geom_quat_y[i]
-            var gqz = Self._rcd.geom_quat_z[i]
-            var gqw = Self._rcd.geom_quat_w[i]
+            var gqx = _m_geom_quat_x[i]
+            var gqy = _m_geom_quat_y[i]
+            var gqz = _m_geom_quat_z[i]
+            var gqw = _m_geom_quat_w[i]
             var geom_quat: _RQuat
             if gqx == 0.0 and gqy == 0.0 and gqz == 0.0 and gqw == 1.0:
                 geom_quat = body_quat
             else:
                 geom_quat = body_quat * _RQuat(gqw, gqx, gqy, gqz)
-            var r = Float32(Self._rcd.geom_rgba_r[i])
-            var g = Float32(Self._rcd.geom_rgba_g[i])
-            var b = Float32(Self._rcd.geom_rgba_b[i])
-            var a = Float32(Self._rcd.geom_rgba_a[i])
-            var mid = Self._rcd.geom_material_id[i]
+            var r = Float32(_m_geom_rgba_r[i])
+            var g = Float32(_m_geom_rgba_g[i])
+            var b = Float32(_m_geom_rgba_b[i])
+            var a = Float32(_m_geom_rgba_a[i])
+            var mid = _m_geom_material_id[i]
             if mid >= 0 and mid < Self.nmat:
-                r = Float32(Self._rcd.mat_rgba_r[mid])
-                g = Float32(Self._rcd.mat_rgba_g[mid])
-                b = Float32(Self._rcd.mat_rgba_b[mid])
-                a = Float32(Self._rcd.mat_rgba_a[mid])
+                r = Float32(_m_mat_rgba_r[mid])
+                g = Float32(_m_mat_rgba_g[mid])
+                b = Float32(_m_mat_rgba_b[mid])
+                a = Float32(_m_mat_rgba_a[mid])
             var geom_color = Color(UInt8(r * 255), UInt8(g * 255), UInt8(b * 255), UInt8(a * 255))
             var shininess = Float32(0.5)
             var specular = Float32(0.5)
             var reflectance = Float32(0.0)
             if mid >= 0 and mid < Self.nmat:
-                shininess = Float32(Self._rcd.mat_shininess[mid])
-                specular = Float32(Self._rcd.mat_specular[mid])
-                reflectance = Float32(Self._rcd.mat_reflectance[mid])
+                shininess = Float32(_m_mat_shininess[mid])
+                specular = Float32(_m_mat_specular[mid])
+                reflectance = Float32(_m_mat_reflectance[mid])
             # Resolve material → texture chain for this geom
             var tex_name_str = String("")
             var tex_file_str = String("")
             if mid >= 0 and mid < Self.nmat:
-                var tex_id = Self._rcd.mat_tex_id[mid]
+                var tex_id = _m_mat_tex_id[mid]
                 if tex_id >= 0 and tex_id < Self._rcd.ntex:
                     comptime for ti in range(Self._rcd.ntex):
                         if tex_id == ti:
@@ -1789,27 +1980,27 @@ struct ModelDefFromXML[
                             tex_name_str = _tn
                             tex_file_str = _tf
 
-            var gt = Self._rcd.geom_type[i]
+            var gt = _m_geom_type[i]
             if gt == 2:  # CAPSULE
                 renderer.draw_capsule(center=geom_pos, orientation=geom_quat,
-                    radius=Self._rcd.geom_radius[i] * visual_radius_scale,
-                    half_height=Self._rcd.geom_half_length[i], axis=2,
+                    radius=_m_geom_radius[i] * visual_radius_scale,
+                    half_height=_m_geom_half_length[i], axis=2,
                     color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
                     texture_name=tex_name_str, texture_path=tex_file_str)
             elif gt == 1:  # SPHERE
                 renderer.draw_sphere(center=geom_pos,
-                    radius=Self._rcd.geom_radius[i] * visual_radius_scale,
+                    radius=_m_geom_radius[i] * visual_radius_scale,
                     color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
                     texture_name=tex_name_str, texture_path=tex_file_str)
             elif gt == 3:  # BOX
                 renderer.draw_box(center=geom_pos, orientation=geom_quat,
-                    half_extents=_RVec3(Self._rcd.geom_half_x[i], Self._rcd.geom_half_y[i], Self._rcd.geom_half_z[i]),
+                    half_extents=_RVec3(_m_geom_half_x[i], _m_geom_half_y[i], _m_geom_half_z[i]),
                     color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
                     texture_name=tex_name_str, texture_path=tex_file_str)
             elif gt == 4:  # CYLINDER
                 renderer.draw_cylinder(center=geom_pos, orientation=geom_quat,
-                    radius=Self._rcd.geom_radius[i] * visual_radius_scale,
-                    half_height=Self._rcd.geom_half_length[i], axis=2,
+                    radius=_m_geom_radius[i] * visual_radius_scale,
+                    half_height=_m_geom_half_length[i], axis=2,
                     color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
                     texture_name=tex_name_str, texture_path=tex_file_str)
             elif gt == 6:  # ELLIPSOID
@@ -1820,14 +2011,14 @@ struct ModelDefFromXML[
                 # live in half_x/y/z, the same slots a box uses.
                 renderer.draw_ellipsoid(center=geom_pos, orientation=geom_quat,
                     radii=_RVec3(
-                        Self._rcd.geom_half_x[i] * visual_radius_scale,
-                        Self._rcd.geom_half_y[i] * visual_radius_scale,
-                        Self._rcd.geom_half_z[i] * visual_radius_scale,
+                        _m_geom_half_x[i] * visual_radius_scale,
+                        _m_geom_half_y[i] * visual_radius_scale,
+                        _m_geom_half_z[i] * visual_radius_scale,
                     ),
                     color=geom_color, shininess=shininess, specular=specular,
                     reflectance=reflectance)
             elif gt == 5:  # MESH
-                var mid2 = Self._rcd.geom_mesh_id[i]
+                var mid2 = _m_geom_mesh_id[i]
                 # Draw mesh with optional texture
                 comptime for mi in range(Self._rcd.nmesh):
                     if mid2 == mi:
@@ -1862,7 +2053,12 @@ struct ModelDefFromXML[
         Exposed so a test can count what `render_body_geoms` will skip; see the
         group note there.
         """
-        return Self._rcd.geom_group[i]
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_geom_group = materialize[Self._rcd.geom_group]()
+
+        return _m_geom_group[i]
 
     @staticmethod
     def body_names() -> List[String]:
@@ -2005,21 +2201,30 @@ struct ModelDefFromXML[
         quaternions: List[_RQuat],
     ) raises:
         """Draw all sites as small bright-green spheres (visual markers)."""
+        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
+        # indexed at runtime must be materialized. Hoisted here so each array
+        # is copied once per call rather than once per access in the loops.
+        var _m_site_body_id = materialize[Self._rcd.site_body_id]()
+        var _m_site_pos_x = materialize[Self._rcd.site_pos_x]()
+        var _m_site_pos_y = materialize[Self._rcd.site_pos_y]()
+        var _m_site_pos_z = materialize[Self._rcd.site_pos_z]()
+        var _m_site_size_0 = materialize[Self._rcd.site_size_0]()
+
         for i in range(Self.NSITE):
-            var sbid = Self._rcd.site_body_id[i]
+            var sbid = _m_site_body_id[i]
             if sbid <= 0 or sbid >= len(positions):
                 continue
             var body_pos = positions[sbid]
             var body_quat = quaternions[sbid]
-            var sx = Self._rcd.site_pos_x[i]
-            var sy = Self._rcd.site_pos_y[i]
-            var sz = Self._rcd.site_pos_z[i]
+            var sx = _m_site_pos_x[i]
+            var sy = _m_site_pos_y[i]
+            var sz = _m_site_pos_z[i]
             var site_world_pos: _RVec3
             if sx == 0.0 and sy == 0.0 and sz == 0.0:
                 site_world_pos = body_pos
             else:
                 site_world_pos = body_pos + body_quat.rotate_vec(_RVec3(sx, sy, sz))
-            var radius = Self._rcd.site_size_0[i] if Self._rcd.site_size_0[i] > 0.0 else 0.005
+            var radius = _m_site_size_0[i] if _m_site_size_0[i] > 0.0 else 0.005
             renderer.draw_sphere(
                 center=site_world_pos,
                 radius=radius,

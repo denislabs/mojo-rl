@@ -92,7 +92,7 @@ def set_hint_with_priority(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetHintWithPriority.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetHintWithPriority",
         def(
@@ -130,7 +130,7 @@ def set_hint(var name: String, var value: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetHint.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetHint",
         def(
@@ -165,7 +165,7 @@ def reset_hint(var name: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ResetHint.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_ResetHint", def(Ptr[c_char, ImmOrigin(origin_of(name))]) thin -> Bool
     ]()(name.as_c_string_slice().unsafe_ptr())
     if not ret:
@@ -291,7 +291,7 @@ def add_hint_callback(
     Docs: https://wiki.libsdl.org/SDL3/SDL_AddHintCallback.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_AddHintCallback",
         def(

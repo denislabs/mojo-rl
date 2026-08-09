@@ -44,7 +44,7 @@ Run: pixi run mojo run -I . tests/physics3d/test_render_data_vs_physics.mojo
 
 from std.math import abs
 from std.testing import assert_true, TestSuite
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.fields import Model
 from mojo_rl.physics3d.model import ModelDefLike

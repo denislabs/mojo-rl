@@ -89,7 +89,7 @@ def _sweep_action(step: Int, steps: Int, k: Int, scale: Float64) -> Float64:
     return scale * v
 
 
-struct Rollout(Movable & ImplicitlyDeletable):
+struct Rollout(Movable & Deinitable):
     """Post-step states, the actions that produced them, and the online reward.
     """
 

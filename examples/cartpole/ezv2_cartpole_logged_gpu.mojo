@@ -10,7 +10,7 @@ Run (GPU env required):
     pixi run -e apple mojo run -I . examples/cartpole/ezv2_cartpole_logged_gpu.mojo
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming
@@ -87,7 +87,7 @@ def main() raises:
         eval_episodes=3,
         diag_every=200,
         report_every=200,
-        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
+        logger=Pointer(to=logger).as_unsafe_any_origin(),
         verbose=True,
     )
     logger.close()

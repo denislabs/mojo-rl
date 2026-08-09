@@ -27,7 +27,7 @@ Usage (after a training run has written the checkpoint):
 """
 
 from std.memory import alloc
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
@@ -145,8 +145,8 @@ def main() raises:
         var cur_r = Bool(keys[Int(Scancode.SCANCODE_R)])
 
         var mouse_buttons = get_mouse_state(
-            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_x_ptr),
-            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_y_ptr),
+            rebind[Pointer[Float32, MutAnyOrigin]](mouse_x_ptr),
+            rebind[Pointer[Float32, MutAnyOrigin]](mouse_y_ptr),
         )
         var cur_mouse_left = (Int(mouse_buttons.value) & 1) != 0
         var mouse_x = Int(mouse_x_ptr[])

@@ -34,7 +34,7 @@ comptime ENV_URL_KEY = "RL_MONITOR_URL"
 comptime ENV_API_KEY = "RL_MONITOR_API_KEY"
 
 
-struct RemoteCatalog(Movable & ImplicitlyDeletable):
+struct RemoteCatalog(Movable & Deinitable):
     """Client for the monitor's `/datasets` routes."""
 
     var base_url: String

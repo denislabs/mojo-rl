@@ -49,9 +49,10 @@ The legacy `ws_fnet_offset` comptime was declared but never read — dropped.
 """
 
 from std.math import sqrt, pow, abs
-from std.gpu import thread_idx, block_idx, block_dim, barrier
-from std.gpu.memory import AddressSpace
-from std.gpu.host import DeviceContext
+from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu.sync import barrier
+from max.gpu.memory import AddressSpace
+from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor
 

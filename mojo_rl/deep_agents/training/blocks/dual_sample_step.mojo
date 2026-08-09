@@ -20,7 +20,7 @@ synthetic transitions arrive host-side via `synth_add` (CPU rollout) or
 device-batched via `synth_add_batch` (GPU rollout).
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.data.replay import StoreReplay
@@ -36,7 +36,7 @@ struct DualSampleStep[
     SYNTH_CAP: Int,
     REAL_BS: Int,
     SYNTH_BS: Int,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_

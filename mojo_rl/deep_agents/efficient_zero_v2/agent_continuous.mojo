@@ -25,7 +25,7 @@ policy NLL).
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -42,7 +42,7 @@ from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZContPredGPU
 
 @fieldwise_init
 struct EZv2ContinuousAgent[
-    ENV: BoxContinuousActionEnv & ImplicitlyDeletable,
+    ENV: BoxContinuousActionEnv & Deinitable,
     REP: Module,
     DYN: Module,
     PRED: Module,
@@ -60,7 +60,7 @@ struct EZv2ContinuousAgent[
     B: Int,
     K: Int,
     N: Int,
-](ImplicitlyDeletable, Movable):
+](Deinitable, Movable):
     var rep: Self.REP
     var dyn: Self.DYN
     var pred: Self.PRED
@@ -142,7 +142,7 @@ struct EZv2ContinuousAgent[
         eval_episodes: Int = 5,
         diag_every: Int = 0,
         report_every: Int = 0,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
         verbose: Bool = False,
     ) raises -> Float64:
         """GPU sampled-Gumbel self-play training (MuZero BPTT + SimSiam

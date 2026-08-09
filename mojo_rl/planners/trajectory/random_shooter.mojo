@@ -30,7 +30,7 @@ from .score_callback import ScorePlanCallback, BatchedScorePlanCallback
 
 
 struct CategoricalRandomShooter[BATCH: Int, ACT_DIM: Int](
-    ImplicitlyDeletable,
+    Deinitable,
     Movable,
 ):
     """Uniform-categorical random shooter.
@@ -119,7 +119,7 @@ struct CategoricalRandomShooter[BATCH: Int, ACT_DIM: Int](
     ](
         mut self,
         mut callback: CB,
-        best_plan_out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        best_plan_out: Pointer[Scalar[dtype], MutAnyOrigin],
         verbose: Bool = True,
     ) raises -> Float64:
         """Sample ``num_samples`` random plans, score each, return min.
@@ -182,7 +182,7 @@ struct CategoricalRandomShooter[BATCH: Int, ACT_DIM: Int](
     ](
         mut self,
         mut callback: CB,
-        best_plan_out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        best_plan_out: Pointer[Scalar[dtype], MutAnyOrigin],
         verbose: Bool = True,
     ) raises -> Float64:
         """Sample ``num_samples`` random plans, score them in a single

@@ -51,13 +51,13 @@ inside the trait methods — the planner is allowed to enqueue all
 ``HORIZON`` rollout steps without any intervening sync.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as dtype
 
 
-trait RolloutCallbackCPU(ImplicitlyDeletable):
+trait RolloutCallbackCPU(Deinitable):
     """CPU-side per-step rollout contract.
 
     All operations are scalar (B = 1) — the planner loops over samples
@@ -108,7 +108,7 @@ trait RolloutCallbackCPU(ImplicitlyDeletable):
         ...
 
 
-trait RolloutCallbackGPU(ImplicitlyDeletable):
+trait RolloutCallbackGPU(Deinitable):
     """GPU-side per-step rollout contract.
 
     Operates on row-major ``LayoutTensor`` views with a method-level

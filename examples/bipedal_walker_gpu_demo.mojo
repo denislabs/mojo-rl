@@ -16,7 +16,7 @@ Features:
 This demo runs multiple environments in parallel on the GPU.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random import random_float64, seed
 from std.time import perf_counter
 

@@ -5175,7 +5175,7 @@ def claim_window_for_gpu_device[
     Docs: https://wiki.libsdl.org/SDL3/SDL_ClaimWindowForGPUDevice.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ClaimWindowForGPUDevice",
         def(
@@ -5374,7 +5374,7 @@ def acquire_gpu_swapchain_texture[
     Docs: https://wiki.libsdl.org/SDL3/SDL_AcquireGPUSwapchainTexture.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_AcquireGPUSwapchainTexture",
         def(
@@ -5416,7 +5416,7 @@ def wait_for_gpu_swapchain[_po0: MutOrigin, _po1: MutOrigin, //](
     Docs: https://wiki.libsdl.org/SDL3/SDL_WaitForGPUSwapchain.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WaitForGPUSwapchain",
         def(
@@ -5483,7 +5483,7 @@ def wait_and_acquire_gpu_swapchain_texture[
     Docs: https://wiki.libsdl.org/SDL3/SDL_WaitAndAcquireGPUSwapchainTexture.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WaitAndAcquireGPUSwapchainTexture",
         def(
@@ -5526,7 +5526,7 @@ def submit_gpu_command_buffer[_po0: MutOrigin, //](
     Docs: https://wiki.libsdl.org/SDL3/SDL_SubmitGPUCommandBuffer.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SubmitGPUCommandBuffer",
         def(command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin]) thin -> Bool,
@@ -5595,7 +5595,7 @@ def cancel_gpu_command_buffer[_po0: MutOrigin, //](
     Docs: https://wiki.libsdl.org/SDL3/SDL_CancelGPUCommandBuffer.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_CancelGPUCommandBuffer",
         def(command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin]) thin -> Bool,
@@ -5617,7 +5617,7 @@ def wait_for_gpu_idle[_po0: MutOrigin, //](device: Ptr[GPUDevice, _po0]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_WaitForGPUIdle.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WaitForGPUIdle",
         def(device: Ptr[GPUDevice, MutAnyOrigin]) thin -> Bool,
@@ -5648,7 +5648,7 @@ def wait_for_gpu_fences[_po0: MutOrigin, _po1: MutOrigin, //](
     Docs: https://wiki.libsdl.org/SDL3/SDL_WaitForGPUFences.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_WaitForGPUFences",
         def(

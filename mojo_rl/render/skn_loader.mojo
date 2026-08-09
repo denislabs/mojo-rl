@@ -37,7 +37,7 @@ file. `load_skn` raises when it does not, and `tests/render/test_skn_loader.mojo
 pins the counts a Python transcription of the same format produced.
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 comptime SKN_BONE_NAME_BYTES: Int = 40
 """Bytes in a bone's `bodyname` field. See the header — MuJoCo advances its

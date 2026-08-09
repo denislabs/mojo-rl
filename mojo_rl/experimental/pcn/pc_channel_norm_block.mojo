@@ -23,7 +23,7 @@ PCBlockTrait.
 
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import sqrt
 
 from .pc_constants import TPB
@@ -257,15 +257,15 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
         var off = b * Self.DIM + c * Self.spatial
         var ss: Float64 = 0.0
         for s in range(Self.spatial):
-            var v = Float64(x_below.ptr[off + s])
+            var v = Float64(x_below.ptr[unsafe_offset=off + s])
             ss += v * v
-            a_below.ptr[off + s] = x_below.ptr[off + s]
+            a_below.ptr[unsafe_offset=off + s] = x_below.ptr[unsafe_offset=off + s]
         var inv_r = Scalar[dtype](
             1.0 / sqrt(ss / Float64(Self.spatial) + _RMS_EPS)
         )
-        var g = params.ptr[c]
+        var g = params.ptr[unsafe_offset=c]
         for s in range(Self.spatial):
-            mu.ptr[off + s] = g * x_below.ptr[off + s] * inv_r
+            mu.ptr[unsafe_offset=off + s] = g * x_below.ptr[unsafe_offset=off + s] * inv_r
 
     @staticmethod
     def _eps_kernel[
@@ -284,7 +284,7 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.DIM:
             return
-        eps.ptr[idx] = x_above.ptr[idx] - mu.ptr[idx]
+        eps.ptr[unsafe_offset=idx] = x_above.ptr[unsafe_offset=idx] - mu.ptr[unsafe_offset=idx]
 
     @staticmethod
     def _pull_back_kernel[
@@ -304,7 +304,7 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
         if idx >= BATCH * Self.DIM:
             return
         var c = (idx % Self.DIM) // Self.spatial
-        z_below.ptr[idx] = eps_above.ptr[idx] * params.ptr[c]
+        z_below.ptr[unsafe_offset=idx] = eps_above.ptr[unsafe_offset=idx] * params.ptr[unsafe_offset=c]
 
     @staticmethod
     def _act_deriv_kernel[
@@ -328,21 +328,21 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
         var off = b * Self.DIM + c * Self.spatial
         var ss: Float64 = 0.0
         for s in range(Self.spatial):
-            var v = Float64(x_below.ptr[off + s])
+            var v = Float64(x_below.ptr[unsafe_offset=off + s])
             ss += v * v
         var inv_r = 1.0 / sqrt(ss / Float64(Self.spatial) + _RMS_EPS)
         var dot: Float64 = 0.0
         for s in range(Self.spatial):
             dot += (
-                Float64(z_in.ptr[off + s])
-                * Float64(x_below.ptr[off + s])
+                Float64(z_in.ptr[unsafe_offset=off + s])
+                * Float64(x_below.ptr[unsafe_offset=off + s])
                 * inv_r
             )
         var dot_over = dot / Float64(Self.spatial)
         for s in range(Self.spatial):
-            var n_s = Float64(x_below.ptr[off + s]) * inv_r
-            z_out.ptr[off + s] = Scalar[dtype](
-                inv_r * (Float64(z_in.ptr[off + s]) - n_s * dot_over)
+            var n_s = Float64(x_below.ptr[unsafe_offset=off + s]) * inv_r
+            z_out.ptr[unsafe_offset=off + s] = Scalar[dtype](
+                inv_r * (Float64(z_in.ptr[unsafe_offset=off + s]) - n_s * dot_over)
             )
 
     @staticmethod
@@ -364,9 +364,9 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
         var off = b * Self.DIM + c * Self.spatial
         var ss: Float64 = 0.0
         for s in range(Self.spatial):
-            var v = Float64(a_below.ptr[off + s])
+            var v = Float64(a_below.ptr[unsafe_offset=off + s])
             ss += v * v
-        inv_r_buf.ptr[bc] = Scalar[dtype](
+        inv_r_buf.ptr[unsafe_offset=bc] = Scalar[dtype](
             1.0 / sqrt(ss / Float64(Self.spatial) + _RMS_EPS)
         )
 
@@ -393,14 +393,14 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
         var acc: Float64 = 0.0
         for b in range(BATCH):
             var off = b * Self.DIM + c * Self.spatial
-            var inv_r = Float64(inv_r_buf.ptr[b * Self.channels + c])
+            var inv_r = Float64(inv_r_buf.ptr[unsafe_offset=b * Self.channels + c])
             for s in range(Self.spatial):
                 acc += (
-                    Float64(eps_above.ptr[off + s])
-                    * Float64(a_below.ptr[off + s])
+                    Float64(eps_above.ptr[unsafe_offset=off + s])
+                    * Float64(a_below.ptr[unsafe_offset=off + s])
                     * inv_r
                 )
-        grads.ptr[c] = Scalar[dtype](-acc)
+        grads.ptr[unsafe_offset=c] = Scalar[dtype](-acc)
 
     # ── GPU dispatchers ──────────────────────────────────────────────────────
 

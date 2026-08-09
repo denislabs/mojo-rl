@@ -40,7 +40,7 @@ device, the element-wise loss arithmetic stays on host, bit-identical to CPU).
 
 from std.memory import alloc
 from std.math import max
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -66,11 +66,11 @@ def _ilog2(n: Int) -> Int:
 # replacement for the legacy `nn.core.module.mptr` — no legacy-framework import.
 def _mao[
     dt: DType, o: Origin
-](p: UnsafePointer[Scalar[dt], o]) -> UnsafePointer[Scalar[dt], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[dt], MutAnyOrigin]](p)
+](p: Pointer[Scalar[dt], o]) -> Pointer[Scalar[dt], MutAnyOrigin]:
+    return rebind[Pointer[Scalar[dt], MutAnyOrigin]](p)
 
 
-trait ShortcutDynamics(Defaultable & Movable & ImplicitlyDeletable):
+trait ShortcutDynamics(Defaultable & Movable & Deinitable):
     """A dynamics module whose per-sample signal/step indices are pushed via
     `set_indices` before each forward (Dreamer4Dynamics). Optionally also
     accepts per-sample actions via `set_actions` for conditioned (labeled)
@@ -115,16 +115,16 @@ trait ShortcutDynamics(Defaultable & Movable & ImplicitlyDeletable):
 
     def set_indices(
         mut self,
-        sig: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        step: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        sig: Pointer[Scalar[DT], MutAnyOrigin],
+        step: Pointer[Scalar[DT], MutAnyOrigin],
         batch: Int,
     ):
         ...
 
     def set_actions(
         mut self,
-        actions: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        act_mask: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        actions: Pointer[Scalar[DT], MutAnyOrigin],
+        act_mask: Pointer[Scalar[DT], MutAnyOrigin],
         batch: Int,
     ):
         """Default: unconditional (ignore actions). Conditioned dynamics
@@ -133,7 +133,7 @@ trait ShortcutDynamics(Defaultable & Movable & ImplicitlyDeletable):
 
     def set_agent_in(
         mut self,
-        agent_in: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        agent_in: Pointer[Scalar[DT], MutAnyOrigin],
         batch: Int,
     ):
         """Default: no agent tokens (ignore). Agent-capable dynamics
@@ -149,14 +149,14 @@ trait AgentDynamics(ShortcutDynamics):
     (`imag_rollout.mojo`), which reads h_t per state to drive the policy /
     value / reward heads."""
 
-    def agent_out_ptr_cpu(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def agent_out_ptr_cpu(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         ...
 
     def agent_out_dev(self) -> DeviceBuffer[DT]:
         ...
 
 
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _alloc(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     return _mao(alloc[Scalar[DT]](n))
 
 
@@ -183,8 +183,8 @@ def _run_fwd[
     M: ShortcutDynamics, FWD: StaticString, BATCH: Int, ND: Int
 ](
     mut dyn: M,
-    in_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    out_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    in_host: Pointer[Scalar[DT], MutAnyOrigin],
+    out_host: Pointer[Scalar[DT], MutAnyOrigin],
     ctx: Optional[DeviceContext],
 ) raises:
     """Run one dynamics forward through the storage Module surface. Copies the
@@ -196,12 +196,12 @@ def _run_fwd[
     comptime N = BATCH * ND
     var in_t = Tensor.alloc(N)
     for i in range(N):
-        in_t.data[i] = in_host[i]
+        in_t.data[i] = in_host[unsafe_offset=i]
     comptime if FWD == "cpu":
         var out_t = Tensor.alloc(N)
         _dyn_fwd["cpu", BATCH](dyn, TensorRefs[M.ARITY](in_t), out_t, None)
         for i in range(N):
-            out_host[i] = out_t.data[i]
+            out_host[unsafe_offset=i] = out_t.data[i]
     else:
         var c = ctx.value()
         in_t.upload(c)
@@ -209,7 +209,7 @@ def _run_fwd[
         _dyn_fwd["gpu", BATCH](dyn, TensorRefs[M.ARITY](in_t), out_t, ctx)
         out_t.download(c)
         for i in range(N):
-            out_host[i] = out_t.data[i]
+            out_host[unsafe_offset=i] = out_t.data[i]
 
 
 def dynamics_pretrain_loss[
@@ -225,23 +225,23 @@ def dynamics_pretrain_loss[
     AGDIM: Int = 0,
 ](
     mut dyn: M,
-    z1: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BF, ND] clean targets
-    z0: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BF, ND] noise
-    sigma: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BF] signal level
-    sigma_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BF] signal index
-    step_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BF] step index
+    z1: Pointer[Scalar[DT], MutAnyOrigin],  # [BF, ND] clean targets
+    z0: Pointer[Scalar[DT], MutAnyOrigin],  # [BF, ND] noise
+    sigma: Pointer[Scalar[DT], MutAnyOrigin],  # [BF] signal level
+    sigma_idx: Pointer[Scalar[DT], MutAnyOrigin],  # [BF] signal index
+    step_idx: Pointer[Scalar[DT], MutAnyOrigin],  # [BF] step index
     do_boot: Bool,
-    grad_zhat: UnsafePointer[Scalar[DT], MutAnyOrigin],  # OUT [BF, ND]  dL/dẑ
-    zhat: UnsafePointer[Scalar[DT], MutAnyOrigin],  # OUT [BF, ND] main pred
+    grad_zhat: Pointer[Scalar[DT], MutAnyOrigin],  # OUT [BF, ND]  dL/dẑ
+    zhat: Pointer[Scalar[DT], MutAnyOrigin],  # OUT [BF, ND] main pred
     ctx: Optional[DeviceContext] = None,  # FWD="gpu" only
     actions: Optional[
-        UnsafePointer[Scalar[DT], MutAnyOrigin]
+        Pointer[Scalar[DT], MutAnyOrigin]
     ] = None,  # [BF,ADIM]
     act_mask: Optional[
-        UnsafePointer[Scalar[DT], MutAnyOrigin]
+        Pointer[Scalar[DT], MutAnyOrigin]
     ] = None,  # [ADIM]
     agent_in: Optional[
-        UnsafePointer[Scalar[DT], MutAnyOrigin]
+        Pointer[Scalar[DT], MutAnyOrigin]
     ] = None,  # [BF,AGDIM]
 ) raises -> Float64:
     """Shortcut-forcing loss. FWD="cpu" (default): all on host. FWD="gpu": the
@@ -266,11 +266,11 @@ def dynamics_pretrain_loss[
     # ── corrupt: z̃ = (1−σ)·z0 + σ·z1 ────────────────────────────────────
     var ztil = _alloc(BF * ND)
     for bt in range(BF):
-        var s = Float64(sigma[bt])
+        var s = Float64(sigma[unsafe_offset=bt])
         for i in range(ND):
             var idx = bt * ND + i
-            ztil[idx] = Scalar[DT](
-                (1.0 - s) * Float64(z0[idx]) + s * Float64(z1[idx])
+            ztil[unsafe_offset=idx] = Scalar[DT](
+                (1.0 - s) * Float64(z0[unsafe_offset=idx]) + s * Float64(z1[unsafe_offset=idx])
             )
 
     # ── bootstrap target v̄ (forward-only; clobbers caches → run FIRST) ──
@@ -280,7 +280,7 @@ def dynamics_pretrain_loss[
     var SELF0 = B_EMP * T
     for j in range(BS):
         for i in range(ND):
-            zts[j * ND + i] = ztil[(SELF0 + j) * ND + i]
+            zts[unsafe_offset=j * ND + i] = ztil[unsafe_offset=(SELF0 + j) * ND + i]
 
     if do_boot and B_SELF > 0:
         var sig_self = _alloc(BS)
@@ -298,16 +298,16 @@ def dynamics_pretrain_loss[
 
         for j in range(BS):
             var sb = SELF0 + j
-            var stp = Int(Float64(step_idx[sb]) + 0.5)
+            var stp = Int(Float64(step_idx[unsafe_offset=sb]) + 0.5)
             var dd = 1.0 / Float64(1 << stp)  # d = 1/2^step
             var dh = dd / 2.0
             d_half[j] = dh
-            sig_self[j] = sigma_idx[sb]  # σ_idx (unchanged)
-            step_half[j] = Scalar[DT](Float64(stp + 1))
-            sig_self_val[j] = Float64(sigma[sb])
+            sig_self[unsafe_offset=j] = sigma_idx[unsafe_offset=sb]  # σ_idx (unchanged)
+            step_half[unsafe_offset=j] = Scalar[DT](Float64(stp + 1))
+            sig_self_val[j] = Float64(sigma[unsafe_offset=sb])
             sig_plus_val[j] = sig_self_val[j] + dh
-            sig_plus[j] = Scalar[DT](
-                Float64(sig_self[j]) + Float64(Int(Float64(KMAX) * dh))
+            sig_plus[unsafe_offset=j] = Scalar[DT](
+                Float64(sig_self[unsafe_offset=j]) + Float64(Int(Float64(KMAX) * dh))
             )
 
         # half1: ẑ1_half1 = dyn(z̃_self; σ_idx, step+1) ; b′ ; z′
@@ -330,9 +330,9 @@ def dynamics_pretrain_loss[
             var denom = max(1.0 - sig_self_val[j], 1e-6)
             for i in range(ND):
                 var idx = j * ND + i
-                var bp = (Float64(zh1[idx]) - Float64(zts[idx])) / denom
-                zprime[idx] = Scalar[DT](Float64(zts[idx]) + bp * d_half[j])
-                vbar[idx] = Scalar[DT](bp)  # vbar := b′ (add b″ next)
+                var bp = (Float64(zh1[unsafe_offset=idx]) - Float64(zts[unsafe_offset=idx])) / denom
+                zprime[unsafe_offset=idx] = Scalar[DT](Float64(zts[unsafe_offset=idx]) + bp * d_half[j])
+                vbar[unsafe_offset=idx] = Scalar[DT](bp)  # vbar := b′ (add b″ next)
 
         # half2: ẑ1_half2 = dyn(z′; σ_idx+Δ, step+1) ; b″ ; v̄ = (b′+b″)/2
         dyn.set_indices(sig_plus, step_half, BS)
@@ -353,15 +353,15 @@ def dynamics_pretrain_loss[
             var denom = max(1.0 - sig_plus_val[j], 1e-6)
             for i in range(ND):
                 var idx = j * ND + i
-                var bpp = (Float64(zh2[idx]) - Float64(zprime[idx])) / denom
-                vbar[idx] = Scalar[DT]((Float64(vbar[idx]) + bpp) / 2.0)
+                var bpp = (Float64(zh2[unsafe_offset=idx]) - Float64(zprime[unsafe_offset=idx])) / denom
+                vbar[unsafe_offset=idx] = Scalar[DT]((Float64(vbar[unsafe_offset=idx]) + bpp) / 2.0)
 
-        zh1.free()
-        zh2.free()
-        zprime.free()
-        sig_self.free()
-        step_half.free()
-        sig_plus.free()
+        zh1.unsafe_free()
+        zh2.unsafe_free()
+        zprime.unsafe_free()
+        sig_self.unsafe_free()
+        step_half.unsafe_free()
+        sig_plus.unsafe_free()
 
     # ── MAIN forward (LAST forward → caches valid for the caller's vjp) ──
     dyn.set_indices(sigma_idx, step_idx, BF)
@@ -381,17 +381,17 @@ def dynamics_pretrain_loss[
     var pref = 1.0 / Float64(BF)
 
     for i in range(BF * ND):
-        grad_zhat[i] = Scalar[DT](0.0)
+        grad_zhat[unsafe_offset=i] = Scalar[DT](0.0)
 
     # empirical flow loss over emp rows
     for bt in range(B_EMP * T):
-        var w_emp = 0.9 * Float64(sigma[bt]) + 0.1
+        var w_emp = 0.9 * Float64(sigma[unsafe_offset=bt]) + 0.1
         var sse: Float64 = 0.0
         for i in range(ND):
             var idx = bt * ND + i
-            var diff = Float64(zhat[idx]) - Float64(z1[idx])
+            var diff = Float64(zhat[unsafe_offset=idx]) - Float64(z1[unsafe_offset=idx])
             sse += diff * diff
-            grad_zhat[idx] = Scalar[DT](
+            grad_zhat[unsafe_offset=idx] = Scalar[DT](
                 pref * w_emp * (2.0 / Float64(ND)) * diff
             )
         var flow_per = sse / Float64(ND)
@@ -402,7 +402,7 @@ def dynamics_pretrain_loss[
     if do_boot and B_SELF > 0:
         for j in range(BS):
             var sb = SELF0 + j
-            var sv = Float64(sigma[sb])
+            var sv = Float64(sigma[unsafe_offset=sb])
             var w_self = 0.9 * sv + 0.1
             var denom = max(1.0 - sv, 1e-6)
             var one_minus = 1.0 - sv
@@ -410,10 +410,10 @@ def dynamics_pretrain_loss[
             for i in range(ND):
                 var idx = j * ND + i  # self subset index
                 var midx = sb * ND + i  # main-pass index
-                var vhat = (Float64(zhat[midx]) - Float64(zts[idx])) / denom
-                var d = vhat - Float64(vbar[idx])
+                var vhat = (Float64(zhat[unsafe_offset=midx]) - Float64(zts[unsafe_offset=idx])) / denom
+                var d = vhat - Float64(vbar[unsafe_offset=idx])
                 sse += d * d
-                grad_zhat[midx] = Scalar[DT](
+                grad_zhat[unsafe_offset=midx] = Scalar[DT](
                     pref
                     * w_self
                     * (one_minus * one_minus)
@@ -429,7 +429,7 @@ def dynamics_pretrain_loss[
         loss_emp * Float64(B_EMP) + loss_self * Float64(B_SELF)
     ) / Float64(B)
 
-    ztil.free()
-    vbar.free()
-    zts.free()
+    ztil.unsafe_free()
+    vbar.unsafe_free()
+    zts.unsafe_free()
     return loss

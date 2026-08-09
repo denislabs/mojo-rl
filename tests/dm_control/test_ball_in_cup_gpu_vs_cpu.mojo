@@ -41,7 +41,7 @@ the ball's two slide DOFs by the residual. A model edit moves the start state
 with it instead of silently making the gate vacuous again.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import abs, sin
 from std.testing import assert_true, TestSuite
 

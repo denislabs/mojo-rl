@@ -11,7 +11,7 @@ re-ordering. We assert |gpu_loss - cpu_loss| < 1e-4 which is generous
 for FP32 across host+device exp() implementations.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.math import isnan, isinf
 from std.random import seed
 from std.testing import assert_true

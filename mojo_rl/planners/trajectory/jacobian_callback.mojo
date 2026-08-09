@@ -44,13 +44,13 @@ production world-model adapters implement GPU; CPU↔GPU parity tests
 implement both.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as dtype
 
 
-trait RolloutJacobianCallbackCPU(ImplicitlyDeletable):
+trait RolloutJacobianCallbackCPU(Deinitable):
     """CPU-side gradient-aware rollout contract for iLQR.
 
     All operations are scalar (B = 1) — the planner loops over horizon
@@ -110,7 +110,7 @@ trait RolloutJacobianCallbackCPU(ImplicitlyDeletable):
         ...
 
 
-trait RolloutJacobianCallbackGPU(ImplicitlyDeletable):
+trait RolloutJacobianCallbackGPU(Deinitable):
     """GPU-side gradient-aware rollout contract for iLQR.
 
     Operates on row-major ``LayoutTensor`` views with a method-level

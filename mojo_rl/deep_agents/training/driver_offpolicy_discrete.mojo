@@ -30,7 +30,7 @@ Batched driver (Tier-3) deferred until a consumer needs it.
 
 from std.time import perf_counter_ns
 from std.sys import has_nvidia_gpu_accelerator
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
@@ -52,7 +52,7 @@ from ..data.n_step_replay import GPUNStepBuffer
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait OffPolicyDiscreteAgent(ImplicitlyDeletable, Movable):
+trait OffPolicyDiscreteAgent(Deinitable, Movable):
     """Single-trait surface for the discrete off-policy drivers.
 
     Mirrors `OffPolicyAgent` (continuous) but adapted for discrete
@@ -75,8 +75,8 @@ trait OffPolicyDiscreteAgent(ImplicitlyDeletable, Movable):
         N_ENVS: Int
     ](
         mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
         step_idx: Int,
     ) raises:
         """Write N_ENVS discrete action indices into action_ptr.
@@ -141,11 +141,11 @@ trait OffPolicyDiscreteAgent(ImplicitlyDeletable, Movable):
         N_ENVS: Int
     ](
         mut self,
-        prev_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        prev_obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        reward_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        next_obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        done_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Push N transitions from host pointer slabs. action_ptr
         stores N_ENVS action indices as Scalar[DT]. Does NOT update
@@ -164,7 +164,7 @@ trait OffPolicyDiscreteAgent(ImplicitlyDeletable, Movable):
         L: Logger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
         pass
@@ -248,8 +248,8 @@ trait OffPolicyDiscreteAgentGpu(OffPolicyDiscreteAgent):
         N_ENVS: Int
     ](
         mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Pure greedy action selection for N_ENVS envs — argmax (expected-)Q,
         no epsilon, no warmup gate. Writes N_ENVS action indices (as
@@ -299,12 +299,12 @@ def run_offpolicy_discrete_train[
     ctx: Optional[DeviceContext] = None,
     print_every: Int = 1_000,
     verbose: Bool = True,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
     base_step: Int = 0,
-    eval_env: Optional[UnsafePointer[E, MutAnyOrigin]] = None,
+    eval_env: Optional[Pointer[E, MutAnyOrigin]] = None,
     eval_every: Int = 0,
     eval_episodes: Int = 10,
     eval_max_steps: Int = 20_000,
@@ -385,7 +385,7 @@ def run_offpolicy_discrete_train[
         for d in range(OBS):
             var v = Scalar[DT](env_obs[d])
             obs_list[d] = v
-            obs_scratch_h[d] = v
+            obs_scratch_h[unsafe_offset=d] = v
 
         comptime if needs_boundary_copy:
             var c = ctx.value()
@@ -406,7 +406,7 @@ def run_offpolicy_discrete_train[
             )
             c.synchronize()
 
-        var action_idx = Int(action_scratch.host_ptr()[0])
+        var action_idx = Int(action_scratch.host_ptr()[unsafe_offset=0])
 
         var step_res = env.step_obs(action_idx)
         var nxt = step_res[0].copy()
@@ -632,12 +632,12 @@ def run_offpolicy_discrete_train_gpu_batched[
     print_every: Int = 5_000,
     verbose: Bool = True,
     nstep_gamma: Scalar[DT] = Scalar[DT](0.99),
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     base_step: Int = 0,
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
-    eval_env: Optional[UnsafePointer[E, MutAnyOrigin]] = None,
+    eval_env: Optional[Pointer[E, MutAnyOrigin]] = None,
     eval_every: Int = 0,
     eval_episodes: Int = 16,
     eval_max_iters: Int = 20_000,
@@ -963,12 +963,12 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
     print_every: Int = 5_000,
     verbose: Bool = True,
     nstep_gamma: Scalar[DT] = Scalar[DT](0.99),
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     base_step: Int = 0,
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
-    eval_env: Optional[UnsafePointer[E, MutAnyOrigin]] = None,
+    eval_env: Optional[Pointer[E, MutAnyOrigin]] = None,
     eval_every: Int = 0,
     eval_episodes: Int = 16,
     eval_max_iters: Int = 20_000,
@@ -1267,8 +1267,8 @@ def run_offpolicy_discrete_eval_cpu_env_gpu_agent[
         var rew_h = eval_env.reward_ptr()
         var done_h = eval_env.done_ptr()
         for e in range(N_ENVS):
-            per_env[e] = per_env[e] + rew_h[e]
-            if done_h[e] > Scalar[DT](0.5):
+            per_env[e] = per_env[e] + rew_h[unsafe_offset=e]
+            if done_h[unsafe_offset=e] > Scalar[DT](0.5):
                 returns_sum = returns_sum + per_env[e]
                 per_env[e] = Scalar[DT](0.0)
                 n_done += 1

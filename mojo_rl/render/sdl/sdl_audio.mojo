@@ -495,7 +495,7 @@ def get_audio_device_format(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetAudioDeviceFormat.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetAudioDeviceFormat",
         def(
@@ -716,7 +716,7 @@ def pause_audio_device(devid: AudioDeviceID) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_PauseAudioDevice.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_PauseAudioDevice", def(devid: AudioDeviceID) thin -> Bool
     ]()(devid)
     if not ret:
@@ -751,7 +751,7 @@ def resume_audio_device(devid: AudioDeviceID) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ResumeAudioDevice.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib, "SDL_ResumeAudioDevice", def(devid: AudioDeviceID) thin -> Bool
     ]()(devid)
     if not ret:
@@ -850,7 +850,7 @@ def set_audio_device_gain(devid: AudioDeviceID, gain: c_float) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetAudioDeviceGain.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetAudioDeviceGain",
         def(devid: AudioDeviceID, gain: c_float) thin -> Bool,
@@ -927,7 +927,7 @@ def bind_audio_streams(
     Docs: https://wiki.libsdl.org/SDL3/SDL_BindAudioStreams.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_BindAudioStreams",
         def(
@@ -962,7 +962,7 @@ def bind_audio_stream(
     Docs: https://wiki.libsdl.org/SDL3/SDL_BindAudioStream.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_BindAudioStream",
         def(
@@ -1136,7 +1136,7 @@ def get_audio_stream_format(
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetAudioStreamFormat.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetAudioStreamFormat",
         def(
@@ -1190,7 +1190,7 @@ def set_audio_stream_format(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetAudioStreamFormat.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetAudioStreamFormat",
         def(
@@ -1259,7 +1259,7 @@ def set_audio_stream_frequency_ratio(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetAudioStreamFrequencyRatio.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetAudioStreamFrequencyRatio",
         def(stream: Ptr[AudioStream, MutAnyOrigin], ratio: c_float) thin -> Bool,
@@ -1327,7 +1327,7 @@ def set_audio_stream_gain(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetAudioStreamGain.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetAudioStreamGain",
         def(stream: Ptr[AudioStream, MutAnyOrigin], gain: c_float) thin -> Bool,
@@ -1477,7 +1477,7 @@ def set_audio_stream_input_channel_map(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetAudioStreamInputChannelMap.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetAudioStreamInputChannelMap",
         def(
@@ -1553,7 +1553,7 @@ def set_audio_stream_output_channel_map(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetAudioStreamOutputChannelMap.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetAudioStreamOutputChannelMap",
         def(
@@ -1598,7 +1598,7 @@ def put_audio_stream_data(
     Docs: https://wiki.libsdl.org/SDL3/SDL_PutAudioStreamData.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_PutAudioStreamData",
         def(
@@ -1758,7 +1758,7 @@ def flush_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_FlushAudioStream.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_FlushAudioStream",
         def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> Bool,
@@ -1786,7 +1786,7 @@ def clear_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ClearAudioStream.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ClearAudioStream",
         def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> Bool,
@@ -1820,7 +1820,7 @@ def pause_audio_stream_device(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_PauseAudioStreamDevice.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_PauseAudioStreamDevice",
         def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> Bool,
@@ -1853,7 +1853,7 @@ def resume_audio_stream_device(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ResumeAudioStreamDevice.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ResumeAudioStreamDevice",
         def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> Bool,
@@ -1919,7 +1919,7 @@ def lock_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_LockAudioStream.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_LockAudioStream",
         def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> Bool,
@@ -1947,7 +1947,7 @@ def unlock_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_UnlockAudioStream.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_UnlockAudioStream",
         def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> Bool,
@@ -2053,7 +2053,7 @@ def set_audio_stream_get_callback(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetAudioStreamGetCallback.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetAudioStreamGetCallback",
         def(
@@ -2120,7 +2120,7 @@ def set_audio_stream_put_callback(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetAudioStreamPutCallback.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetAudioStreamPutCallback",
         def(
@@ -2345,7 +2345,7 @@ def set_audio_postmix_callback(
     Docs: https://wiki.libsdl.org/SDL3/SDL_SetAudioPostmixCallback.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_SetAudioPostmixCallback",
         def(
@@ -2444,7 +2444,7 @@ def load_wav_io(
     Docs: https://wiki.libsdl.org/SDL3/SDL_LoadWAV_IO.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_LoadWAV_IO",
         def(
@@ -2500,7 +2500,7 @@ def load_wav(
     Docs: https://wiki.libsdl.org/SDL3/SDL_LoadWAV.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_LoadWAV",
         def(
@@ -2559,7 +2559,7 @@ def mix_audio(
     Docs: https://wiki.libsdl.org/SDL3/SDL_MixAudio.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_MixAudio",
         def(
@@ -2614,7 +2614,7 @@ def convert_audio_samples(
     Docs: https://wiki.libsdl.org/SDL3/SDL_ConvertAudioSamples.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_ConvertAudioSamples",
         def(

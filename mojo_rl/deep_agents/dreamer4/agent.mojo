@@ -30,7 +30,7 @@ v1 uses an UNCONDITIONAL dynamics (ADIM=0) — the action-conditioned video
 prediction (ADIM>0, already built) layers in for the real-env lighthouse.
 """
 
-from std.gpu.host import DeviceContext, HostBuffer
+from max.gpu.host import DeviceContext, HostBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -527,11 +527,11 @@ struct Dreamer4Agent[
         )
 
     # ── eval accessors ──────────────────────────────────────────────────
-    def agent_out_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def agent_out_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """Return h_t from the last forward (for inspection / eval heads)."""
         return self.dyn.agent_out_ptr_cpu()
 
-    def policy_logits_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def policy_logits_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """Return the [BF, NMTP·NACT] policy logits from the last bc_train_step
         (distance n at columns [n·NACT, (n+1)·NACT)) — greedy action = argmax of
         the distance-0 block."""
@@ -540,21 +540,21 @@ struct Dreamer4Agent[
     # Imagination internals from the last imag_train_step (diagnostics): the
     # reward-head prediction, value-head prediction, and λ-return per imagined
     # state — used to check whether imagination sees phantom rewards/values.
-    def im_rew_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:  # [BF]
+    def im_rew_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:  # [BF]
         return _mao(self.im_rew.unsafe_ptr())
 
-    def im_val_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:  # [BF]
+    def im_val_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:  # [BF]
         return _mao(self.im_val.unsafe_ptr())
 
-    def im_ret_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:  # [B*(T-1)]
+    def im_ret_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:  # [B*(T-1)]
         return _mao(self.im_ret.unsafe_ptr())
 
     # ── online acting (single-step inference) ────────────────────────────
     def act_from_latents(
         mut self,
-        z_window: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [n_ctx * ND]
+        z_window: Pointer[Scalar[DT], MutAnyOrigin],     # [n_ctx * ND]
         n_ctx: Int,
-        action_hist: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [T * ADIM]
+        action_hist: Pointer[Scalar[DT], MutAnyOrigin],  # [T * ADIM]
         task_id: Int,
         explore: Bool,
         u01: Float64,
@@ -605,9 +605,9 @@ struct Dreamer4Agent[
             sig[f] = Scalar[DT](Float64(Self.KMAX - 1))
             step[f] = Scalar[DT](Float64(Self.EMAX))
             for i in range(ND):
-                packed[f * ND + i] = z_window[f * ND + i]
+                packed[f * ND + i] = z_window[unsafe_offset=f * ND + i]
         for i in range(BF * ADIM):
-            act_oh[i] = action_hist[i]
+            act_oh[i] = action_hist[unsafe_offset=i]
 
         # task embedding → agent tokens [B=1, T]
         self.te.embed_into["cpu", 1, T](
@@ -657,10 +657,10 @@ struct Dreamer4Agent[
 
     def _run_bc_loss(
         mut self,
-        ht: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        actions: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        rewards: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ht: Pointer[Scalar[DT], MutAnyOrigin],
+        actions: Pointer[Scalar[DT], MutAnyOrigin],
+        rewards: Pointer[Scalar[DT], MutAnyOrigin],
+        bins: Pointer[Scalar[DT], MutAnyOrigin],
         policy_weight: Scalar[DT],
         reward_weight: Scalar[DT],
     ) raises -> Float64:
@@ -682,8 +682,8 @@ struct Dreamer4Agent[
 
     def _train_prior_bc(
         mut self,
-        ht: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B*T, AGD] clean h_t
-        actions: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B*T] class ids
+        ht: Pointer[Scalar[DT], MutAnyOrigin],       # [B*T, AGD] clean h_t
+        actions: Pointer[Scalar[DT], MutAnyOrigin],  # [B*T] class ids
         policy_weight: Scalar[DT] = Scalar[DT](1.0),
     ) raises:
         """BC-train the behavioral prior `ph_prior` (policy-only) on the SAME
@@ -709,16 +709,16 @@ struct Dreamer4Agent[
     # ── one joint BC + video-prediction training step (fills all grads) ──
     def bc_train_step(
         mut self,
-        z1: UnsafePointer[Scalar[DT], MutAnyOrigin],         # [BF, ND] latents
-        z0: UnsafePointer[Scalar[DT], MutAnyOrigin],         # [BF, ND] noise
-        sigma: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [BF]
-        sigma_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BF]
-        step_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [BF]
+        z1: Pointer[Scalar[DT], MutAnyOrigin],         # [BF, ND] latents
+        z0: Pointer[Scalar[DT], MutAnyOrigin],         # [BF, ND] noise
+        sigma: Pointer[Scalar[DT], MutAnyOrigin],      # [BF]
+        sigma_idx: Pointer[Scalar[DT], MutAnyOrigin],  # [BF]
+        step_idx: Pointer[Scalar[DT], MutAnyOrigin],   # [BF]
         do_boot: Bool,
-        task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B]
-        actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [BF] class ids
-        rewards: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [BF]
-        bins: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [NBINS]
+        task_ids: Pointer[Scalar[DT], MutAnyOrigin],   # [B]
+        actions: Pointer[Scalar[DT], MutAnyOrigin],    # [BF] class ids
+        rewards: Pointer[Scalar[DT], MutAnyOrigin],    # [BF]
+        bins: Pointer[Scalar[DT], MutAnyOrigin],       # [NBINS]
         policy_weight: Scalar[DT] = Scalar[DT](1.0),
         reward_weight: Scalar[DT] = Scalar[DT](1.0),
         clean_bc: Bool = True,
@@ -760,11 +760,11 @@ struct Dreamer4Agent[
         # main-pass input z̃ = (1−σ)·z0 + σ·z1 (the storage dyn.vjp recomputes
         # the spatial-proj forward from it; identical to the loss's internal z̃).
         for bt in range(Self.BF):
-            var s = Float64(sigma[bt])
+            var s = Float64(sigma[unsafe_offset=bt])
             for i in range(Self.ND):
                 var idx = bt * Self.ND + i
                 self.ztil[idx] = Scalar[DT](
-                    (1.0 - s) * Float64(z0[idx]) + s * Float64(z1[idx])
+                    (1.0 - s) * Float64(z0[unsafe_offset=idx]) + s * Float64(z1[unsafe_offset=idx])
                 )
 
         var loss_bc: Float64 = 0.0
@@ -799,7 +799,7 @@ struct Dreamer4Agent[
         var sig_bc = Float64(Self.KMAX - 1) / Float64(Self.KMAX)   # 0.75
         for i in range(Self.BF * Self.ND):
             self.bc_in[i] = Scalar[DT](
-                sig_bc * Float64(z1[i]) + (1.0 - sig_bc) * Float64(z0[i])
+                sig_bc * Float64(z1[unsafe_offset=i]) + (1.0 - sig_bc) * Float64(z0[unsafe_offset=i])
             )
         Self._dyn_fwd[Self.BF](self.dyn, self.bc_in, self.zhat)
 
@@ -822,16 +822,16 @@ struct Dreamer4Agent[
     # ── action-conditioned world-model + reward + BC step ────────────────
     def acwm_train_step(
         mut self,
-        z1: UnsafePointer[Scalar[DT], MutAnyOrigin],         # [BF, ND] latents
-        z0: UnsafePointer[Scalar[DT], MutAnyOrigin],         # [BF, ND] noise
-        sigma: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [BF]
-        sigma_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BF]
-        step_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [BF]
+        z1: Pointer[Scalar[DT], MutAnyOrigin],         # [BF, ND] latents
+        z0: Pointer[Scalar[DT], MutAnyOrigin],         # [BF, ND] noise
+        sigma: Pointer[Scalar[DT], MutAnyOrigin],      # [BF]
+        sigma_idx: Pointer[Scalar[DT], MutAnyOrigin],  # [BF]
+        step_idx: Pointer[Scalar[DT], MutAnyOrigin],   # [BF]
         do_boot: Bool,
-        task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B]
-        actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [BF] class ids
-        rewards: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [BF] transition reward
-        bins: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [NBINS]
+        task_ids: Pointer[Scalar[DT], MutAnyOrigin],   # [B]
+        actions: Pointer[Scalar[DT], MutAnyOrigin],    # [BF] class ids
+        rewards: Pointer[Scalar[DT], MutAnyOrigin],    # [BF] transition reward
+        bins: Pointer[Scalar[DT], MutAnyOrigin],       # [NBINS]
         policy_weight: Scalar[DT] = Scalar[DT](1.0),
         reward_weight: Scalar[DT] = Scalar[DT](1.0),
     ) raises -> Tuple[Float64, Float64]:
@@ -873,11 +873,11 @@ struct Dreamer4Agent[
         for b in range(Self.B):
             self.rew_shift[b * Self.T + 0] = Scalar[DT](0.0)
             for f in range(1, Self.T):
-                var a_prev = Int(Float64(actions[b * Self.T + f - 1]) + 0.5)
+                var a_prev = Int(Float64(actions[unsafe_offset=b * Self.T + f - 1]) + 0.5)
                 self.ac_tok[(b * Self.T + f) * Self.ADIM + a_prev] = Scalar[DT](
                     1.0
                 )
-                self.rew_shift[b * Self.T + f] = rewards[b * Self.T + f - 1]
+                self.rew_shift[b * Self.T + f] = rewards[unsafe_offset=b * Self.T + f - 1]
 
         # 1. task embeddings → agent token input
         self.te.embed_into["cpu", Self.B, Self.T](task_ids, agp, None)
@@ -895,11 +895,11 @@ struct Dreamer4Agent[
         # main-pass input z̃ (= the storage dyn.vjp forward_input for the video
         # vjp). The dyn cached its grid/tf_out/cache_sig from this same z̃.
         for bt in range(Self.BF):
-            var s = Float64(sigma[bt])
+            var s = Float64(sigma[unsafe_offset=bt])
             for i in range(Self.ND):
                 var idx = bt * Self.ND + i
                 self.ztil[idx] = Scalar[DT](
-                    (1.0 - s) * Float64(z0[idx]) + s * Float64(z1[idx])
+                    (1.0 - s) * Float64(z0[unsafe_offset=idx]) + s * Float64(z1[unsafe_offset=idx])
                 )
 
         # 3. video vjp ONLY (zero the agent-token grad) using the video caches;
@@ -933,7 +933,7 @@ struct Dreamer4Agent[
         var sig_bc = 1.0                       # clean latent (match imagination)
         for i in range(Self.BF * Self.ND):
             self.bc_in[i] = Scalar[DT](
-                sig_bc * Float64(z1[i]) + (1.0 - sig_bc) * Float64(z0[i])
+                sig_bc * Float64(z1[unsafe_offset=i]) + (1.0 - sig_bc) * Float64(z0[unsafe_offset=i])
             )
         Self._dyn_fwd[Self.BF](self.dyn, self.bc_in, self.zhat)
 
@@ -960,16 +960,16 @@ struct Dreamer4Agent[
 
     def acwm_train_step_gpu(
         mut self,
-        z1: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        z0: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        sigma: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        sigma_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        step_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        z1: Pointer[Scalar[DT], MutAnyOrigin],
+        z0: Pointer[Scalar[DT], MutAnyOrigin],
+        sigma: Pointer[Scalar[DT], MutAnyOrigin],
+        sigma_idx: Pointer[Scalar[DT], MutAnyOrigin],
+        step_idx: Pointer[Scalar[DT], MutAnyOrigin],
         do_boot: Bool,
-        task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        actions: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        rewards: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        task_ids: Pointer[Scalar[DT], MutAnyOrigin],
+        actions: Pointer[Scalar[DT], MutAnyOrigin],
+        rewards: Pointer[Scalar[DT], MutAnyOrigin],
+        bins: Pointer[Scalar[DT], MutAnyOrigin],
         dctx: DeviceContext,
         policy_weight: Scalar[DT] = Scalar[DT](1.0),
         reward_weight: Scalar[DT] = Scalar[DT](1.0),
@@ -1005,11 +1005,11 @@ struct Dreamer4Agent[
         for b in range(Self.B):
             self.rew_shift[b * Self.T + 0] = Scalar[DT](0.0)
             for f in range(1, Self.T):
-                var a_prev = Int(Float64(actions[b * Self.T + f - 1]) + 0.5)
+                var a_prev = Int(Float64(actions[unsafe_offset=b * Self.T + f - 1]) + 0.5)
                 self.ac_tok[(b * Self.T + f) * Self.ADIM + a_prev] = Scalar[DT](
                     1.0
                 )
-                self.rew_shift[b * Self.T + f] = rewards[b * Self.T + f - 1]
+                self.rew_shift[b * Self.T + f] = rewards[unsafe_offset=b * Self.T + f - 1]
 
         # 1. task embeddings → agent token input (host)
         self.te.embed_into["cpu", Self.B, Self.T](task_ids, agp, None)
@@ -1025,11 +1025,11 @@ struct Dreamer4Agent[
 
         # main-pass input z̃ (the video vjp forward_input)
         for bt in range(Self.BF):
-            var s = Float64(sigma[bt])
+            var s = Float64(sigma[unsafe_offset=bt])
             for i in range(Self.ND):
                 var idx = bt * Self.ND + i
                 self.ztil[idx] = Scalar[DT](
-                    (1.0 - s) * Float64(z0[idx]) + s * Float64(z1[idx])
+                    (1.0 - s) * Float64(z0[unsafe_offset=idx]) + s * Float64(z1[unsafe_offset=idx])
                 )
 
         # 3. video vjp ONLY (zero the agent-token grad), on device
@@ -1053,7 +1053,7 @@ struct Dreamer4Agent[
         var sig_bc = 1.0                       # clean latent (match imagination + CPU)
         for i in range(Self.BF * Self.ND):
             self.bc_in[i] = Scalar[DT](
-                sig_bc * Float64(z1[i]) + (1.0 - sig_bc) * Float64(z0[i])
+                sig_bc * Float64(z1[unsafe_offset=i]) + (1.0 - sig_bc) * Float64(z0[unsafe_offset=i])
             )
         Self._dyn_fwd_gpu[Self.BF](self.dyn, self.bc_in, self.zhat, dctx)
 
@@ -1085,18 +1085,18 @@ struct Dreamer4Agent[
         PMPO reverse-KL anchor). Call once before imagination training starts."""
         polyak_module["cpu", Self.PH](self.ph, self.ph_prior, Scalar[DT](1.0))
 
-    def imag_policy_logits_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    def imag_policy_logits_ptr(self) -> Pointer[Scalar[DT], MutAnyOrigin]:
         """Per-state policy logits [BF, PLOG] from the last `imag_train_step`
         (greedy action = argmax of the dist-0 block)."""
         return _mao(self.im_plog.unsafe_ptr())
 
     def imag_train_step(
         mut self,
-        ctx: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B, NCTX, ND]
-        u01: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B, T] action rng
-        znoise: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [B, T, ND] ODE seeds
-        task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B]
-        bins: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [NBINS]
+        ctx: Pointer[Scalar[DT], MutAnyOrigin],       # [B, NCTX, ND]
+        u01: Pointer[Scalar[DT], MutAnyOrigin],       # [B, T] action rng
+        znoise: Pointer[Scalar[DT], MutAnyOrigin],    # [B, T, ND] ODE seeds
+        task_ids: Pointer[Scalar[DT], MutAnyOrigin],  # [B]
+        bins: Pointer[Scalar[DT], MutAnyOrigin],      # [NBINS]
         gamma: Scalar[DT] = Scalar[DT](0.997),
         lam: Scalar[DT] = Scalar[DT](0.95),
         alpha: Scalar[DT] = Scalar[DT](0.5),

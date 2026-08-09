@@ -114,7 +114,7 @@ def _abs_int(v: Int) -> Int:
 
 @always_inline
 def _pick_random_block(
-    map_buf: UnsafePointer[Float32, MutAnyOrigin],
+    map_buf: Pointer[Float32, MutAnyOrigin],
     target_block: Int,
     mut rng: PhiloxRandom,
 ) -> Tuple[Int, Int]:
@@ -124,7 +124,7 @@ def _pick_random_block(
     """
     var count = 0
     for i in range(MAP_SIZE_PER_FLOOR):
-        if Int(map_buf[i]) == target_block:
+        if Int(map_buf[unsafe_offset=i]) == target_block:
             count += 1
     if count == 0:
         return (0, 0)
@@ -136,7 +136,7 @@ def _pick_random_block(
         k = 0
     var seen = 0
     for i in range(MAP_SIZE_PER_FLOOR):
-        if Int(map_buf[i]) == target_block:
+        if Int(map_buf[unsafe_offset=i]) == target_block:
             if seen == k:
                 return (i // MAP_W, i % MAP_W)
             seen += 1
@@ -153,13 +153,13 @@ def _generate_smoothworld_floor(
     config: SmoothGenConfig,
     player_y: Int,
     player_x: Int,
-    map_out: UnsafePointer[Float32, MutAnyOrigin],
-    item_map_out: UnsafePointer[Float32, MutAnyOrigin],
-    light_map_out: UnsafePointer[Float32, MutAnyOrigin],
-    water: UnsafePointer[Float32, MutAnyOrigin],
-    mountain: UnsafePointer[Float32, MutAnyOrigin],
-    path: UnsafePointer[Float32, MutAnyOrigin],
-    tree: UnsafePointer[Float32, MutAnyOrigin],
+    map_out: Pointer[Float32, MutAnyOrigin],
+    item_map_out: Pointer[Float32, MutAnyOrigin],
+    light_map_out: Pointer[Float32, MutAnyOrigin],
+    water: Pointer[Float32, MutAnyOrigin],
+    mountain: Pointer[Float32, MutAnyOrigin],
+    path: Pointer[Float32, MutAnyOrigin],
+    tree: Pointer[Float32, MutAnyOrigin],
 ) -> Tuple[Int, Int, Int, Int]:
     """Generate one smoothworld floor. Writes into the four maps.
 
@@ -196,12 +196,12 @@ def _generate_smoothworld_floor(
                 prox_m = config.mountain_max
 
             var i = y * MAP_W + x
-            var w_raw = water[i]
-            var m_raw = mountain[i]
+            var w_raw = water[unsafe_offset=i]
+            var m_raw = mountain[unsafe_offset=i]
             var w_adj = w_raw + prox_w - Float32(1.0)
             var m_adj = m_raw + Float32(0.05) + prox_m - Float32(1.0)
-            var path_x = path[i]
-            var path_y = path[x * MAP_W + y]  # transposed sample (matches ref)
+            var path_x = path[unsafe_offset=i]
+            var path_y = path[unsafe_offset=x * MAP_W + y]  # transposed sample (matches ref)
 
             var b = config.default_block
 
@@ -225,17 +225,17 @@ def _generate_smoothworld_floor(
             if m_raw > Float32(0.85) and w_raw > Float32(0.4):
                 b = config.inner_mountain_block
 
-            map_out[i] = Float32(b)
+            map_out[unsafe_offset=i] = Float32(b)
 
     # Pass 2: trees (per-tile uniform draw, only on tree_req tiles).
     for i in range(MAP_SIZE_PER_FLOOR):
         if (
-            Int(map_out[i]) == config.tree_req_block
-            and tree[i] > config.tree_threshold_perlin
+            Int(map_out[unsafe_offset=i]) == config.tree_req_block
+            and tree[unsafe_offset=i] > config.tree_threshold_perlin
         ):
             var u = rng.step_uniform()
             if Float32(u[0]) > config.tree_threshold_uniform:
-                map_out[i] = Float32(config.tree_block)
+                map_out[unsafe_offset=i] = Float32(config.tree_block)
 
     # Pass 3: 5 ore slots — each draws uniform per matching tile.
     for slot in range(5):
@@ -266,23 +266,23 @@ def _generate_smoothworld_floor(
         if chance <= Float32(0.0) or ore == BLOCK_OUT_OF_BOUNDS:
             continue
         for i in range(MAP_SIZE_PER_FLOOR):
-            if Int(map_out[i]) == req:
+            if Int(map_out[unsafe_offset=i]) == req:
                 var u = rng.step_uniform()
                 if Float32(u[0]) < chance:
-                    map_out[i] = Float32(ore)
+                    map_out[unsafe_offset=i] = Float32(ore)
 
     # Pass 4: lava overrides (uses raw noise, not adjusted).
     for i in range(MAP_SIZE_PER_FLOOR):
-        if mountain[i] > Float32(0.85) and tree[i] > Float32(0.7):
-            map_out[i] = Float32(config.lava_block)
+        if mountain[unsafe_offset=i] > Float32(0.85) and tree[unsafe_offset=i] > Float32(0.7):
+            map_out[unsafe_offset=i] = Float32(config.lava_block)
 
     # Pass 5: player spawn — fixed center tile.
-    map_out[player_y * MAP_W + player_x] = Float32(config.player_spawn_block)
+    map_out[unsafe_offset=player_y * MAP_W + player_x] = Float32(config.player_spawn_block)
 
     # Pass 6: item_map / light_map defaults.
     for i in range(MAP_SIZE_PER_FLOOR):
-        item_map_out[i] = Float32(ITEM_NONE)
-        light_map_out[i] = config.default_light
+        item_map_out[unsafe_offset=i] = Float32(ITEM_NONE)
+        light_map_out[unsafe_offset=i] = config.default_light
 
     # Pass 7: ladders on valid_ladder_block tiles.
     var (ld_y, ld_x) = _pick_random_block(
@@ -293,9 +293,9 @@ def _generate_smoothworld_floor(
     )
 
     if config.ladder_down:
-        item_map_out[ld_y * MAP_W + ld_x] = Float32(ITEM_LADDER_DOWN)
+        item_map_out[unsafe_offset=ld_y * MAP_W + ld_x] = Float32(ITEM_LADDER_DOWN)
     if config.ladder_up:
-        item_map_out[lu_y * MAP_W + lu_x] = Float32(ITEM_LADDER_UP)
+        item_map_out[unsafe_offset=lu_y * MAP_W + lu_x] = Float32(ITEM_LADDER_UP)
 
     # Pass 8: torch glow around ladder_up
     # (9×9 region, intensity = 1 - manhattan/5, blended with default_light).
@@ -318,8 +318,8 @@ def _generate_smoothworld_floor(
                 + config.default_light
             )
             var idx = ty * MAP_W + tx
-            if blended > light_map_out[idx]:
-                light_map_out[idx] = blended
+            if blended > light_map_out[unsafe_offset=idx]:
+                light_map_out[unsafe_offset=idx] = blended
 
     # Pass 9: lava light spread (only if lava is the volcanic kind).
     if config.lava_block == BLOCK_LAVA:
@@ -327,7 +327,7 @@ def _generate_smoothworld_floor(
         for y in range(MAP_H):
             for x in range(MAP_W):
                 var i = y * MAP_W + x
-                if Int(map_out[i]) != BLOCK_LAVA:
+                if Int(map_out[unsafe_offset=i]) != BLOCK_LAVA:
                     continue
                 # Add the kernel centered on this lava tile.
                 for ky in range(-1, 2):
@@ -346,10 +346,10 @@ def _generate_smoothworld_floor(
                         else:
                             w = Float32(0.2)
                         var ni = ny * MAP_W + nx
-                        var v = light_map_out[ni] + w
+                        var v = light_map_out[unsafe_offset=ni] + w
                         if v > Float32(1.0):
                             v = Float32(1.0)
-                        light_map_out[ni] = v
+                        light_map_out[unsafe_offset=ni] = v
 
     return (ld_y, ld_x, lu_y, lu_x)
 
@@ -370,9 +370,9 @@ comptime RARE_CHANCE: Float32 = 0.1
 def _generate_dungeon_floor(
     mut rng: PhiloxRandom,
     config: DungeonConfig,
-    map_out: UnsafePointer[Float32, MutAnyOrigin],
-    item_map_out: UnsafePointer[Float32, MutAnyOrigin],
-    light_map_out: UnsafePointer[Float32, MutAnyOrigin],
+    map_out: Pointer[Float32, MutAnyOrigin],
+    item_map_out: Pointer[Float32, MutAnyOrigin],
+    light_map_out: Pointer[Float32, MutAnyOrigin],
 ) -> Tuple[Int, Int, Int, Int]:
     """Room-based dungeon. Returns ladder positions like smoothworld."""
     # Pre-roll room sizes (uniform in [min_room_size, max_room_size)).
@@ -397,8 +397,8 @@ def _generate_dungeon_floor(
 
     # Initialize: all WALL, no items.
     for i in range(MAP_SIZE_PER_FLOOR):
-        map_out[i] = Float32(BLOCK_WALL)
-        item_map_out[i] = Float32(ITEM_NONE)
+        map_out[unsafe_offset=i] = Float32(BLOCK_WALL)
+        item_map_out[unsafe_offset=i] = Float32(ITEM_NONE)
 
     # Place rooms, each in a distinct chunk.
     var occupied = InlineArray[Bool, TOTAL_CHUNKS](fill=False)
@@ -450,13 +450,13 @@ def _generate_dungeon_floor(
         # Fill room interior with PATH.
         for ry in range(room_h[r]):
             for rx in range(room_w[r]):
-                map_out[(py + ry) * MAP_W + (px + rx)] = Float32(BLOCK_PATH)
+                map_out[unsafe_offset=(py + ry) * MAP_W + (px + rx)] = Float32(BLOCK_PATH)
 
         # Torches in 4 corners.
-        item_map_out[py * MAP_W + px] = Float32(ITEM_TORCH)
-        item_map_out[(py + room_h[r] - 1) * MAP_W + px] = Float32(ITEM_TORCH)
-        item_map_out[py * MAP_W + (px + room_w[r] - 1)] = Float32(ITEM_TORCH)
-        item_map_out[
+        item_map_out[unsafe_offset=py * MAP_W + px] = Float32(ITEM_TORCH)
+        item_map_out[unsafe_offset=(py + room_h[r] - 1) * MAP_W + px] = Float32(ITEM_TORCH)
+        item_map_out[unsafe_offset=py * MAP_W + (px + room_w[r] - 1)] = Float32(ITEM_TORCH)
+        item_map_out[unsafe_offset=
             (py + room_h[r] - 1) * MAP_W + (px + room_w[r] - 1)
         ] = Float32(ITEM_TORCH)
 
@@ -468,7 +468,7 @@ def _generate_dungeon_floor(
             cy_in = room_h[r] - 2
         if cx_in >= room_w[r] - 1:
             cx_in = room_w[r] - 2
-        map_out[(py + cy_in) * MAP_W + (px + cx_in)] = Float32(BLOCK_CHEST)
+        map_out[unsafe_offset=(py + cy_in) * MAP_W + (px + cx_in)] = Float32(BLOCK_CHEST)
 
         # Fountain at a random interior cell (50% chance).
         var u_fn = rng.step_uniform()
@@ -479,7 +479,7 @@ def _generate_dungeon_floor(
                 fy_in = room_h[r] - 2
             if fx_in >= room_w[r] - 1:
                 fx_in = room_w[r] - 2
-            map_out[(py + fy_in) * MAP_W + (px + fx_in)] = Float32(
+            map_out[unsafe_offset=(py + fy_in) * MAP_W + (px + fx_in)] = Float32(
                 config.fountain_block
             )
 
@@ -521,8 +521,8 @@ def _generate_dungeon_floor(
         var cx_run = sx
         while cx_run != tx:
             var idx = sy * MAP_W + cx_run
-            if Int(map_out[idx]) == BLOCK_WALL:
-                map_out[idx] = Float32(BLOCK_PATH)
+            if Int(map_out[unsafe_offset=idx]) == BLOCK_WALL:
+                map_out[unsafe_offset=idx] = Float32(BLOCK_PATH)
             cx_run += step_x
 
         # Then vertical from (sy, tx) to (ty, tx).
@@ -532,8 +532,8 @@ def _generate_dungeon_floor(
         var cy_run = sy
         while cy_run != ty:
             var idx = cy_run * MAP_W + tx
-            if Int(map_out[idx]) == BLOCK_WALL:
-                map_out[idx] = Float32(BLOCK_PATH)
+            if Int(map_out[unsafe_offset=idx]) == BLOCK_WALL:
+                map_out[unsafe_offset=idx] = Float32(BLOCK_PATH)
             cy_run += step_y
 
         included[i] = True
@@ -542,12 +542,12 @@ def _generate_dungeon_floor(
     var sp_y = room_y[0] + 2
     var sp_x = room_x[0] + 2
     if sp_y < MAP_H and sp_x < MAP_W:
-        map_out[sp_y * MAP_W + sp_x] = Float32(config.special_block)
+        map_out[unsafe_offset=sp_y * MAP_W + sp_x] = Float32(config.special_block)
 
     # Pre-compute c_path (non-wall) + adj_path (4-neighbor dilation).
     var c_path = InlineArray[Bool, MAP_SIZE_PER_FLOOR](fill=False)
     for i in range(MAP_SIZE_PER_FLOOR):
-        c_path[i] = Int(map_out[i]) != BLOCK_WALL
+        c_path[i] = Int(map_out[unsafe_offset=i]) != BLOCK_WALL
 
     var adj_path = InlineArray[Bool, MAP_SIZE_PER_FLOOR](fill=False)
     for y in range(MAP_H):
@@ -569,26 +569,26 @@ def _generate_dungeon_floor(
     for i in range(MAP_SIZE_PER_FLOOR):
         var u = rng.step_uniform()
         var is_rare = Float32(u[0]) < RARE_CHANCE
-        var b = Int(map_out[i])
-        var item = Int(item_map_out[i])
+        var b = Int(map_out[unsafe_offset=i])
+        var item = Int(item_map_out[unsafe_offset=i])
         if not adj_path[i]:
-            map_out[i] = Float32(BLOCK_DARKNESS)
+            map_out[unsafe_offset=i] = Float32(BLOCK_DARKNESS)
         elif b == BLOCK_WALL:
             if is_rare:
-                map_out[i] = Float32(BLOCK_WALL_MOSS)
+                map_out[unsafe_offset=i] = Float32(BLOCK_WALL_MOSS)
         elif b == BLOCK_PATH and item == ITEM_NONE:
             if is_rare:
-                map_out[i] = Float32(config.rare_path_replacement_block)
+                map_out[unsafe_offset=i] = Float32(config.rare_path_replacement_block)
 
     # Light map: always fully lit (per reference).
     for i in range(MAP_SIZE_PER_FLOOR):
-        light_map_out[i] = Float32(1.0)
+        light_map_out[unsafe_offset=i] = Float32(1.0)
 
     # Ladders: random PATH tile (post-rare).
     var (ld_y, ld_x) = _pick_random_block(map_out, BLOCK_PATH, rng)
-    item_map_out[ld_y * MAP_W + ld_x] = Float32(ITEM_LADDER_DOWN)
+    item_map_out[unsafe_offset=ld_y * MAP_W + ld_x] = Float32(ITEM_LADDER_DOWN)
     var (lu_y, lu_x) = _pick_random_block(map_out, BLOCK_PATH, rng)
-    item_map_out[lu_y * MAP_W + lu_x] = Float32(ITEM_LADDER_UP)
+    item_map_out[unsafe_offset=lu_y * MAP_W + lu_x] = Float32(ITEM_LADDER_UP)
 
     return (ld_y, ld_x, lu_y, lu_x)
 
@@ -606,11 +606,11 @@ def _floor_is_dungeon(floor: Int) -> Bool:
 @always_inline
 def generate_full_world_inline(
     seed: UInt64,
-    state_ptr: UnsafePointer[Float32, MutAnyOrigin],
-    water: UnsafePointer[Float32, MutAnyOrigin],
-    mountain: UnsafePointer[Float32, MutAnyOrigin],
-    path: UnsafePointer[Float32, MutAnyOrigin],
-    tree: UnsafePointer[Float32, MutAnyOrigin],
+    state_ptr: Pointer[Float32, MutAnyOrigin],
+    water: Pointer[Float32, MutAnyOrigin],
+    mountain: Pointer[Float32, MutAnyOrigin],
+    path: Pointer[Float32, MutAnyOrigin],
+    tree: Pointer[Float32, MutAnyOrigin],
 ) -> Tuple[Int, Int]:
     """GPU-safe core. Same world-gen as `generate_full_world` but takes
     pre-allocated scratch (`water/mountain/path/tree`, each
@@ -669,17 +669,17 @@ def generate_full_world_inline(
                 tree,
             )
 
-        state_ptr[s_down_ladder(floor, 0)] = Float32(ladders[0])
-        state_ptr[s_down_ladder(floor, 1)] = Float32(ladders[1])
-        state_ptr[s_up_ladder(floor, 0)] = Float32(ladders[2])
-        state_ptr[s_up_ladder(floor, 1)] = Float32(ladders[3])
+        state_ptr[unsafe_offset=s_down_ladder(floor, 0)] = Float32(ladders[0])
+        state_ptr[unsafe_offset=s_down_ladder(floor, 1)] = Float32(ladders[1])
+        state_ptr[unsafe_offset=s_up_ladder(floor, 0)] = Float32(ladders[2])
+        state_ptr[unsafe_offset=s_up_ladder(floor, 1)] = Float32(ladders[3])
 
     return (player_y, player_x)
 
 
 def generate_full_world(
     seed: UInt64,
-    state_ptr: UnsafePointer[Float32, MutAnyOrigin],
+    state_ptr: Pointer[Float32, MutAnyOrigin],
 ) -> Tuple[Int, Int]:
     """CPU entry — allocates scratch on the heap, delegates to the inline
     kernel, then frees.
@@ -705,8 +705,8 @@ def generate_full_world(
         path.as_unsafe_any_origin(),
         tree.as_unsafe_any_origin(),
     )
-    water.free()
-    mountain.free()
-    path.free()
-    tree.free()
+    water.unsafe_free()
+    mountain.unsafe_free()
+    path.unsafe_free()
+    tree.unsafe_free()
     return spawn

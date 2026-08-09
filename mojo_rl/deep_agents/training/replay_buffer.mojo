@@ -23,13 +23,13 @@ declare conformance — `blocks → data → replay_buffer → trainer_block`,
 no cycle.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from .trainer_block import TrainerState
 
 
-trait ReplayBuffer(Movable, ImplicitlyDeletable):
+trait ReplayBuffer(Movable, Deinitable):
     """Uniform surface over a transition replay buffer. `count` is named
     so as not to collide with conformers' `size` *field*."""
 

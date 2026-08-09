@@ -63,11 +63,11 @@ def continue_pred[
     logits_o: Origin[mut=True],
     out_c_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], logits_o],   # [N]
-    out_c: UnsafePointer[Scalar[DT], out_c_o],    # OUT [N] = sigmoid
+    logits: Pointer[Scalar[DT], logits_o],   # [N]
+    out_c: Pointer[Scalar[DT], out_c_o],    # OUT [N] = sigmoid
 ):
     for i in range(N):
-        out_c[i] = _sigmoid(logits[i])
+        out_c[unsafe_offset=i] = _sigmoid(logits[unsafe_offset=i])
 
 
 def continue_bce_loss[
@@ -75,14 +75,14 @@ def continue_bce_loss[
     logits_o: Origin[mut=True],
     target_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], logits_o],   # [N] continue logits
-    target: UnsafePointer[Scalar[DT], target_o],   # [N] continue flag 0/1
+    logits: Pointer[Scalar[DT], logits_o],   # [N] continue logits
+    target: Pointer[Scalar[DT], target_o],   # [N] continue flag 0/1
 ) raises -> Float64:
     """Σ binary cross-entropy of the continue flag (mean is the caller's job)."""
     var loss = Float64(0.0)
     for i in range(N):
-        var z = Float64(logits[i])
-        var y = Float64(target[i])
+        var z = Float64(logits[unsafe_offset=i])
+        var y = Float64(target[unsafe_offset=i])
         # stable BCE: max(z,0) − z·y + log(1+exp(−|z|))
         var az = z if z >= 0.0 else -z
         var mz = z if z >= 0.0 else 0.0
@@ -96,14 +96,14 @@ def continue_bce_backward[
     target_o: Origin[mut=True],
     grad_logits_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], logits_o],   # [N]
-    target: UnsafePointer[Scalar[DT], target_o],   # [N]
+    logits: Pointer[Scalar[DT], logits_o],   # [N]
+    target: Pointer[Scalar[DT], target_o],   # [N]
     upstream: Scalar[DT],
-    grad_logits: UnsafePointer[Scalar[DT], grad_logits_o],  # [N] (zeroed+filled)
+    grad_logits: Pointer[Scalar[DT], grad_logits_o],  # [N] (zeroed+filled)
 ):
     """∂BCE/∂logit = upstream·(σ(logit) − target)."""
     for i in range(N):
-        grad_logits[i] = upstream * (_sigmoid(logits[i]) - target[i])
+        grad_logits[unsafe_offset=i] = upstream * (_sigmoid(logits[unsafe_offset=i]) - target[unsafe_offset=i])
 from ..dreamerv3.dists_discrete import (
     cat_softmax_mix,
     cat_fwd,
@@ -143,25 +143,25 @@ def lambda_returns[
     con_o: Origin[mut=True],
     out_ret_o: Origin[mut=True],
 ](
-    rew: UnsafePointer[Scalar[DT], rew_o],   # [B,H]  reward ARRIVING at state t
-    val: UnsafePointer[Scalar[DT], val_o],   # [B,H]
-    con: UnsafePointer[Scalar[DT], con_o],   # [B,H]  = γ·(1−done) ARRIVING at t
+    rew: Pointer[Scalar[DT], rew_o],   # [B,H]  reward ARRIVING at state t
+    val: Pointer[Scalar[DT], val_o],   # [B,H]
+    con: Pointer[Scalar[DT], con_o],   # [B,H]  = γ·(1−done) ARRIVING at t
     lam: Scalar[DT],
-    out_ret: UnsafePointer[Scalar[DT], out_ret_o],  # OUT [B,H-1]
+    out_ret: Pointer[Scalar[DT], out_ret_o],  # OUT [B,H-1]
 ):
     comptime assert H >= 2, "lambda_returns needs H >= 2"
     comptime HM1 = H - 1
     for b in range(B):
-        var ret_next = val[b * H + (H - 1)]            # R_{H-1}^λ = v_{H-1}
+        var ret_next = val[unsafe_offset=b * H + (H - 1)]            # R_{H-1}^λ = v_{H-1}
         var t = H - 2
         while t >= 0:
-            var live = con[b * H + t + 1]              # γ·(1−done)_{t+1}
+            var live = con[unsafe_offset=b * H + t + 1]              # γ·(1−done)_{t+1}
             var interm = (
-                rew[b * H + t + 1]                     # reward for a'_t (arrives t+1)
-                + (Scalar[DT](1.0) - lam) * live * val[b * H + t + 1]
+                rew[unsafe_offset=b * H + t + 1]                     # reward for a'_t (arrives t+1)
+                + (Scalar[DT](1.0) - lam) * live * val[unsafe_offset=b * H + t + 1]
             )
             var cur = interm + live * lam * ret_next
-            out_ret[b * HM1 + t] = cur
+            out_ret[unsafe_offset=b * HM1 + t] = cur
             ret_next = cur
             t -= 1
 
@@ -177,16 +177,16 @@ def value_td_loss_cpu[
     ret_o: Origin[mut=True],
     out_loss_o: Origin[mut=True],
 ](
-    vlogits: UnsafePointer[Scalar[DT], vlogits_o],  # [B,H,BINS]
-    bins: UnsafePointer[Scalar[DT], bins_o],     # [BINS]
-    ret: UnsafePointer[Scalar[DT], ret_o],      # [B,H-1] sg target
-    out_loss: UnsafePointer[Scalar[DT], out_loss_o],  # OUT [B,H-1]
+    vlogits: Pointer[Scalar[DT], vlogits_o],  # [B,H,BINS]
+    bins: Pointer[Scalar[DT], bins_o],     # [BINS]
+    ret: Pointer[Scalar[DT], ret_o],      # [B,H-1] sg target
+    out_loss: Pointer[Scalar[DT], out_loss_o],  # OUT [B,H-1]
 ) raises:
     comptime HM1 = H - 1
     for b in range(B):
         for t in range(HM1):
-            out_loss[b * HM1 + t] = twohot_loss[BINS](
-                vlogits, (b * H + t) * BINS, bins, ret[b * HM1 + t]
+            out_loss[unsafe_offset=b * HM1 + t] = twohot_loss[BINS](
+                vlogits, (b * H + t) * BINS, bins, ret[unsafe_offset=b * HM1 + t]
             )
 
 
@@ -198,25 +198,25 @@ def value_td_loss_backward[
     d_loss_o: Origin[mut=True],
     grad_vlogits_o: Origin[mut=True],
 ](
-    vlogits: UnsafePointer[Scalar[DT], vlogits_o],  # [B,H,BINS]
-    bins: UnsafePointer[Scalar[DT], bins_o],     # [BINS]
-    ret: UnsafePointer[Scalar[DT], ret_o],      # [B,H-1]
-    d_loss: UnsafePointer[Scalar[DT], d_loss_o],   # [B,H-1] cotangent
-    grad_vlogits: UnsafePointer[Scalar[DT], grad_vlogits_o],  # [B,H,BINS]
+    vlogits: Pointer[Scalar[DT], vlogits_o],  # [B,H,BINS]
+    bins: Pointer[Scalar[DT], bins_o],     # [BINS]
+    ret: Pointer[Scalar[DT], ret_o],      # [B,H-1]
+    d_loss: Pointer[Scalar[DT], d_loss_o],   # [B,H-1] cotangent
+    grad_vlogits: Pointer[Scalar[DT], grad_vlogits_o],  # [B,H,BINS]
 ) raises:
     """Backward of `value_td_loss_cpu` (target sg'd). grad_vlogits ZEROED then
     accumulated."""
     comptime HM1 = H - 1
     for i in range(B * H * BINS):
-        grad_vlogits[i] = 0.0
+        grad_vlogits[unsafe_offset=i] = 0.0
     for b in range(B):
         for t in range(HM1):
             twohot_loss_backward[BINS](
                 vlogits,
                 (b * H + t) * BINS,
                 bins,
-                ret[b * HM1 + t],
-                d_loss[b * HM1 + t],
+                ret[unsafe_offset=b * HM1 + t],
+                d_loss[unsafe_offset=b * HM1 + t],
                 grad_vlogits,
             )
 
@@ -234,12 +234,12 @@ def _reverse_kl_fwd[
     p_o: Origin[mut=True],
     q_o: Origin[mut=True],
 ](
-    p: UnsafePointer[Scalar[DT], p_o],   # [C] policy mixed probs
-    q: UnsafePointer[Scalar[DT], q_o],   # [C] prior  mixed probs
+    p: Pointer[Scalar[DT], p_o],   # [C] policy mixed probs
+    q: Pointer[Scalar[DT], q_o],   # [C] prior  mixed probs
 ) -> Scalar[DT]:
     var kl = Scalar[DT](0.0)
     for a in range(C):
-        kl += p[a] * (log(p[a]) - log(q[a]))
+        kl += p[unsafe_offset=a] * (log(p[unsafe_offset=a]) - log(q[unsafe_offset=a]))
     return kl
 
 
@@ -251,23 +251,23 @@ def _reverse_kl_bwd[
     q_o: Origin[mut=True],
     grad_logits_o: Origin[mut=True],
 ](
-    sm: UnsafePointer[Scalar[DT], sm_o],  # [C] policy PRE-mix softmax
-    p: UnsafePointer[Scalar[DT], p_o],   # [C] policy mixed probs
-    q: UnsafePointer[Scalar[DT], q_o],   # [C] prior  mixed probs
+    sm: Pointer[Scalar[DT], sm_o],  # [C] policy PRE-mix softmax
+    p: Pointer[Scalar[DT], p_o],   # [C] policy mixed probs
+    q: Pointer[Scalar[DT], q_o],   # [C] prior  mixed probs
     u: Scalar[DT],
     upstream: Scalar[DT],
-    grad_logits: UnsafePointer[Scalar[DT], grad_logits_o],  # accumulate [.,C]
+    grad_logits: Pointer[Scalar[DT], grad_logits_o],  # accumulate [.,C]
     base: Int,
 ):
     var one_m_u = Scalar[DT](1.0) - u
     # g_a = ln p_a + 1 − ln q_a ; shared dot = Σ_a sm_a·g_a
     var dot = Scalar[DT](0.0)
     for a in range(C):
-        var g = log(p[a]) + Scalar[DT](1.0) - log(q[a])
-        dot += sm[a] * g
+        var g = log(p[unsafe_offset=a]) + Scalar[DT](1.0) - log(q[unsafe_offset=a])
+        dot += sm[unsafe_offset=a] * g
     for j in range(C):
-        var gj = log(p[j]) + Scalar[DT](1.0) - log(q[j])
-        grad_logits[base + j] += upstream * one_m_u * sm[j] * (gj - dot)
+        var gj = log(p[unsafe_offset=j]) + Scalar[DT](1.0) - log(q[unsafe_offset=j])
+        grad_logits[unsafe_offset=base + j] += upstream * one_m_u * sm[unsafe_offset=j] * (gj - dot)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -283,10 +283,10 @@ def pmpo_policy_loss_cpu[
     actions_o: Origin[mut=True],
     adv_o: Origin[mut=True],
 ](
-    plogits: UnsafePointer[Scalar[DT], plogits_o],       # [B,H,NACT]
-    prior_logits: UnsafePointer[Scalar[DT], prior_logits_o],  # [B,H,NACT] frozen
-    actions: UnsafePointer[Scalar[DT], actions_o],       # [B,H] class ids
-    adv: UnsafePointer[Scalar[DT], adv_o],           # [B,H-1]
+    plogits: Pointer[Scalar[DT], plogits_o],       # [B,H,NACT]
+    prior_logits: Pointer[Scalar[DT], prior_logits_o],  # [B,H,NACT] frozen
+    actions: Pointer[Scalar[DT], actions_o],       # [B,H] class ids
+    adv: Pointer[Scalar[DT], adv_o],           # [B,H-1]
     alpha: Scalar[DT],
     beta: Scalar[DT],
 ) raises -> Float64:
@@ -303,7 +303,7 @@ def pmpo_policy_loss_cpu[
     var n_neg = 0
     for b in range(B):
         for t in range(HM1):
-            if adv[b * HM1 + t] >= Scalar[DT](0.0):
+            if adv[unsafe_offset=b * HM1 + t] >= Scalar[DT](0.0):
                 n_pos += 1
             else:
                 n_neg += 1
@@ -316,24 +316,24 @@ def pmpo_policy_loss_cpu[
     for b in range(B):
         for t in range(HM1):
             var base = (b * H + t) * NACT
-            var k = Int(Float64(actions[b * H + t]) + 0.5)
+            var k = Int(Float64(actions[unsafe_offset=b * H + t]) + 0.5)
             # current-policy logp(a) (also fills sm/pp)
             var r = cat_fwd[NACT](plogits, base, UNIMIX, k, sm, pp)
             var logp = r[0]
             # prior probs at this state
             cat_softmax_mix[NACT](prior_logits, base, UNIMIX, qsm, qp)
             # max-likelihood term (sign of advantage)
-            if adv[b * HM1 + t] >= Scalar[DT](0.0):
+            if adv[unsafe_offset=b * HM1 + t] >= Scalar[DT](0.0):
                 loss += -(Scalar[DT](1.0) - alpha) * inv_pos * logp
             else:
                 loss += alpha * inv_neg * logp
             # reverse-KL prior term
             loss += beta * inv_N * _reverse_kl_fwd[NACT](pp, qp)
 
-    sm.free()
-    pp.free()
-    qsm.free()
-    qp.free()
+    sm.unsafe_free()
+    pp.unsafe_free()
+    qsm.unsafe_free()
+    qp.unsafe_free()
     return Float64(loss)
 
 
@@ -345,21 +345,21 @@ def pmpo_policy_loss_backward[
     adv_o: Origin[mut=True],
     grad_plogits_o: Origin[mut=True],
 ](
-    plogits: UnsafePointer[Scalar[DT], plogits_o],       # [B,H,NACT]
-    prior_logits: UnsafePointer[Scalar[DT], prior_logits_o],  # [B,H,NACT]
-    actions: UnsafePointer[Scalar[DT], actions_o],       # [B,H]
-    adv: UnsafePointer[Scalar[DT], adv_o],           # [B,H-1]
+    plogits: Pointer[Scalar[DT], plogits_o],       # [B,H,NACT]
+    prior_logits: Pointer[Scalar[DT], prior_logits_o],  # [B,H,NACT]
+    actions: Pointer[Scalar[DT], actions_o],       # [B,H]
+    adv: Pointer[Scalar[DT], adv_o],           # [B,H-1]
     alpha: Scalar[DT],
     beta: Scalar[DT],
     upstream: Scalar[DT],
-    grad_plogits: UnsafePointer[Scalar[DT], grad_plogits_o],  # [B,H,NACT]
+    grad_plogits: Pointer[Scalar[DT], grad_plogits_o],  # [B,H,NACT]
 ) raises:
     """Backward of `pmpo_policy_loss_cpu` w.r.t. the policy logits (advantages,
     actions, and prior are sg'd). grad_plogits ZEROED then accumulated.
     `upstream` scales the whole loss (typically 1.0)."""
     comptime HM1 = H - 1
     for i in range(B * H * NACT):
-        grad_plogits[i] = 0.0
+        grad_plogits[unsafe_offset=i] = 0.0
 
     var sm = alloc[Scalar[DT]](NACT)
     var pp = alloc[Scalar[DT]](NACT)
@@ -370,7 +370,7 @@ def pmpo_policy_loss_backward[
     var n_neg = 0
     for b in range(B):
         for t in range(HM1):
-            if adv[b * HM1 + t] >= Scalar[DT](0.0):
+            if adv[unsafe_offset=b * HM1 + t] >= Scalar[DT](0.0):
                 n_pos += 1
             else:
                 n_neg += 1
@@ -382,12 +382,12 @@ def pmpo_policy_loss_backward[
     for b in range(B):
         for t in range(HM1):
             var base = (b * H + t) * NACT
-            var k = Int(Float64(actions[b * H + t]) + 0.5)
+            var k = Int(Float64(actions[unsafe_offset=b * H + t]) + 0.5)
             cat_softmax_mix[NACT](plogits, base, UNIMIX, sm, pp)
             cat_softmax_mix[NACT](prior_logits, base, UNIMIX, qsm, qp)
             # max-likelihood: d_logp coefficient by advantage sign
             var d_logp: Scalar[DT]
-            if adv[b * HM1 + t] >= Scalar[DT](0.0):
+            if adv[unsafe_offset=b * HM1 + t] >= Scalar[DT](0.0):
                 d_logp = -(Scalar[DT](1.0) - alpha) * inv_pos
             else:
                 d_logp = alpha * inv_neg
@@ -400,7 +400,7 @@ def pmpo_policy_loss_backward[
                 sm, pp, qp, UNIMIX, upstream * beta * inv_N, grad_plogits, base
             )
 
-    sm.free()
-    pp.free()
-    qsm.free()
-    qp.free()
+    sm.unsafe_free()
+    pp.unsafe_free()
+    qsm.unsafe_free()
+    qp.unsafe_free()

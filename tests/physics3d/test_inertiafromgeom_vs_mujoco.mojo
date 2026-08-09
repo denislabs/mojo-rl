@@ -12,7 +12,7 @@ from std.math import abs
 from std.collections import InlineArray
 from std.testing import assert_true, TestSuite
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.fields import Model
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,

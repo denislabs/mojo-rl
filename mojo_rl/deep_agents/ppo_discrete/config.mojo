@@ -17,7 +17,7 @@ Hidden layers use FUSED `LinearTanh`; the logit head + value head are
 plain `Linear`.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -57,7 +57,7 @@ comptime PPODiscreteCriticNet[OBS: Int, HIDDEN: Int] = Sequential[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait PPODiscreteConfigT(Copyable, Movable, ImplicitlyDeletable):
+trait PPODiscreteConfigT(Copyable, Movable, Deinitable):
     """Compile-time descriptor of a discrete-PPO algorithm. Conformers are
     zero-field comptime tags."""
 

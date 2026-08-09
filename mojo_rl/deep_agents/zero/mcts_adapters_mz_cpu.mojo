@@ -16,7 +16,7 @@ contract (constructed with `.as_unsafe_any_origin()` by the driver).
 """
 
 from std.math import exp
-from std.memory import UnsafePointer
+from std.memory import Pointer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -39,14 +39,14 @@ def _mz_decode_one[BINS: Int](
 
 @fieldwise_init
 struct MZRepCPU[OBS: Int, LATENT: Int, NET: Module](
-    Movable, ImplicitlyDeletable, Representation
+    Movable, Deinitable, Representation
 ):
     """H: ``obs → z`` (latent min-max scaled by the net's tail)."""
 
     comptime OBS_DIM: Int = Self.OBS
     comptime LATENT_DIM: Int = Self.LATENT
 
-    var net: UnsafePointer[Self.NET, MutUntrackedOrigin]
+    var net: Pointer[Self.NET, MutUntrackedOrigin]
 
     def encode_cpu(
         mut self, obs: List[Float64], mut hidden_out: List[Float64]
@@ -64,14 +64,14 @@ struct MZRepCPU[OBS: Int, LATENT: Int, NET: Module](
 
 @fieldwise_init
 struct MZDynCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
-    Movable, ImplicitlyDeletable, Dynamics
+    Movable, Deinitable, Dynamics
 ):
     """G: ``[z ⊕ onehot(a)] → (z', reward)``; reward decoded from BINS bins."""
 
     comptime LATENT_DIM: Int = Self.LATENT
     comptime ACTION_DIM: Int = Self.ACT
 
-    var net: UnsafePointer[Self.NET, MutUntrackedOrigin]
+    var net: Pointer[Self.NET, MutUntrackedOrigin]
     var v_min: Scalar[DT]
     var v_max: Scalar[DT]
 
@@ -100,7 +100,7 @@ struct MZDynCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
 
 @fieldwise_init
 struct MZPredCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
-    Movable, ImplicitlyDeletable, Prediction
+    Movable, Deinitable, Prediction
 ):
     """F: ``z → (softmax policy, value)``; value decoded from BINS bins.
     Single-player — all actions legal, softmax over the full policy slice."""
@@ -108,7 +108,7 @@ struct MZPredCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
     comptime LATENT_DIM: Int = Self.LATENT
     comptime ACTION_DIM: Int = Self.ACT
 
-    var net: UnsafePointer[Self.NET, MutUntrackedOrigin]
+    var net: Pointer[Self.NET, MutUntrackedOrigin]
     var v_min: Scalar[DT]
     var v_max: Scalar[DT]
 

@@ -24,7 +24,7 @@ Compression filters distributed by the ``hdf5plugin`` Python package
 not need to be set as an environment variable.
 """
 
-from std.memory import UnsafePointer
+from std.memory import Pointer
 from std.ffi import (
     _Global,
     OwnedDLHandle,
@@ -52,7 +52,7 @@ from .reader import *
 from .writer import *
 
 
-comptime Ptr = UnsafePointer
+comptime Ptr = Pointer
 
 comptime lib = _Global["MOJO_RL_HDF5_LIB", _init_hdf5_handle]()
 

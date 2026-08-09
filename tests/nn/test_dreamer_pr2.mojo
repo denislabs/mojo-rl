@@ -65,8 +65,8 @@ def _max_abs_diff(a: List[Scalar[DT]], b: List[Scalar[DT]]) -> Scalar[DT]:
     return m
 
 
-def _buf(src: List[Scalar[DT]]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](len(src)).as_unsafe_any_origin()
+def _buf(src: List[Scalar[DT]]) -> Pointer[Scalar[DT], MutAnyOrigin]:
+    var p: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](len(src)).as_unsafe_any_origin()
     for i in range(len(src)):
         p[i] = src[i]
     return p
@@ -95,8 +95,8 @@ def test_onehot_kl() raises:
     var gprior_ref = _read_flat(lines, "kl.gprior")
 
     var kl = OneHotKL[STOCH, CLASSES].make(unimix, free)
-    var dyn: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](KB).as_unsafe_any_origin()
-    var rep: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](KB).as_unsafe_any_origin()
+    var dyn: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](KB).as_unsafe_any_origin()
+    var rep: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](KB).as_unsafe_any_origin()
     kl.forward[KB](post, prior, dyn, rep)
 
     var got_dyn = List[Scalar[DT]]()
@@ -111,13 +111,13 @@ def test_onehot_kl() raises:
     assert_true(dr < Scalar[DT](1e-4), "OneHotKL rep forward parity")
 
     # Upstream d_dyn = d_rep = 1 (matches fixture loss = Σ dyn + Σ rep).
-    var d_dyn: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](KB).as_unsafe_any_origin()
-    var d_rep: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](KB).as_unsafe_any_origin()
+    var d_dyn: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](KB).as_unsafe_any_origin()
+    var d_rep: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](KB).as_unsafe_any_origin()
     for b in range(KB):
         d_dyn[b] = 1.0
         d_rep[b] = 1.0
-    var gpost: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](KB * G).as_unsafe_any_origin()
-    var gprior: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](KB * G).as_unsafe_any_origin()
+    var gpost: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](KB * G).as_unsafe_any_origin()
+    var gprior: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](KB * G).as_unsafe_any_origin()
     kl.backward[KB](d_dyn, d_rep, gpost, gprior)
 
     var got_gpost = List[Scalar[DT]]()

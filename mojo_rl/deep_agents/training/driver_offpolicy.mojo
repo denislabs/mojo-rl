@@ -43,7 +43,7 @@ through the `BatchedEnv` trait.
 
 from std.time import perf_counter_ns
 from std.sys import has_nvidia_gpu_accelerator
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.core.logger import Logger, NoOpLogger
@@ -67,7 +67,7 @@ from .blocks.cadence import DriverCadence
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait OffPolicyAgent(ImplicitlyDeletable, Movable):
+trait OffPolicyAgent(Deinitable, Movable):
     """Single-trait surface for the off-policy drivers.
     Exposes `AGENT_TRAIN_TARGET` (so the driver can comptime-gate
     H2D/D2H around the env step) and routes all action selection
@@ -204,7 +204,7 @@ trait OffPolicyAgent(ImplicitlyDeletable, Movable):
     # read-receiver defaults (`mean_return`/`ep_count`) and the mut-receiver
     # ones (`end_episode`/`add_complete_return`) can share it.
 
-    def _tracker_ptr(self) -> UnsafePointer[EpisodeTracker, MutAnyOrigin]:
+    def _tracker_ptr(self) -> Pointer[EpisodeTracker, MutAnyOrigin]:
         """Handle to the conformer's `EpisodeTracker` field. The ONE
         required member behind the four delegator defaults below."""
         ...
@@ -269,11 +269,11 @@ trait OffPolicyAgent(ImplicitlyDeletable, Movable):
         N_ENVS: Int
     ](
         mut self,
-        prev_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        prev_obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        reward_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        next_obs_ptr: Pointer[Scalar[DT], MutAnyOrigin],
+        done_ptr: Pointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """Push N transitions from host pointer slabs into the trainer's
         replay buffer. Does NOT update the trainer's episode tracker —
@@ -296,16 +296,16 @@ trait OffPolicyAgent(ImplicitlyDeletable, Movable):
         var nxt_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
         for env_idx in range(N_ENVS):
             for d in range(OBS):
-                obs_lane[d] = prev_obs_ptr[env_idx * OBS + d]
-                nxt_lane[d] = next_obs_ptr[env_idx * OBS + d]
+                obs_lane[d] = prev_obs_ptr[unsafe_offset=env_idx * OBS + d]
+                nxt_lane[d] = next_obs_ptr[unsafe_offset=env_idx * OBS + d]
             for j in range(ACT):
-                act_lane[j] = action_ptr[env_idx * ACT + j]
+                act_lane[j] = action_ptr[unsafe_offset=env_idx * ACT + j]
             self._replay_add(
                 obs_lane,
                 act_lane,
-                reward_ptr[env_idx],
+                reward_ptr[unsafe_offset=env_idx],
                 nxt_lane,
-                done_ptr[env_idx],
+                done_ptr[unsafe_offset=env_idx],
             )
 
     # ─── Optional cadence hooks (default no-op) ──────────────────────
@@ -326,7 +326,7 @@ trait OffPolicyAgent(ImplicitlyDeletable, Movable):
         L: Logger
     ](
         mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        logger: Optional[Pointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
         pass
@@ -424,7 +424,7 @@ def run_offpolicy_train[
     ctx: Optional[DeviceContext] = None,
     print_every: Int = 1_000,
     verbose: Bool = True,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
@@ -512,7 +512,7 @@ def run_offpolicy_train[
         for d in range(OBS):
             var v = Scalar[DT](env_obs[d])
             obs_list[d] = v
-            obs_scratch_h[d] = v
+            obs_scratch_h[unsafe_offset=d] = v
 
         # Boundary copy: env_target != train_target requires H2D obs.
         # Elided when env_target == train_target.
@@ -551,7 +551,7 @@ def run_offpolicy_train[
 
         var action_h = action_scratch.host_ptr()
         for j in range(ACT):
-            var a = action_h[j]
+            var a = action_h[unsafe_offset=j]
             action_list[j] = a
             env_action[j] = Scalar[E.dtype](a)
 
@@ -760,8 +760,8 @@ def run_offpolicy_eval_batched[
             var rp = eval_env.reward_ptr()
             var dp = eval_env.done_ptr()
             for e in range(EVAL_ENVS):
-                per_env[e] = per_env[e] + rp[e]
-                if dp[e] > Scalar[DT](0.5):
+                per_env[e] = per_env[e] + rp[unsafe_offset=e]
+                if dp[unsafe_offset=e] > Scalar[DT](0.5):
                     returns.append(per_env[e])
                     per_env[e] = Scalar[DT](0.0)
         else:
@@ -828,13 +828,13 @@ def run_offpolicy_train_batched[
     print_every: Int = 5_000,
     verbose: Bool = True,
     nstep_gamma: Scalar[DT] = Scalar[DT](0.99),
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     base_step: Int = 0,
     diag_every: Int = 0,
     episode_sync_every: Int = 1,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
-    eval_env: Optional[UnsafePointer[EE, MutAnyOrigin]] = None,
+    eval_env: Optional[Pointer[EE, MutAnyOrigin]] = None,
     eval_every: Int = 0,
     eval_episodes: Int = 16,
     eval_max_steps: Int = 1_000,
@@ -1040,7 +1040,7 @@ def run_offpolicy_train_batched[
             var po_p = prev_obs.host_ptr()
             var ob_p = env.obs_ptr()
             for k in range(N_ENVS * OBS):
-                po_p[k] = ob_p[k]
+                po_p[unsafe_offset=k] = ob_p[unsafe_offset=k]
         else:
             # GPU env: D→D enqueue_copy. Reconstruct DeviceBuffer view
             # over env.obs_ptr() (owning=False — env still owns memory).
@@ -1459,7 +1459,7 @@ def run_offpolicy_train_cpu_env_gpu_agent[
     updates_per_step: Int = 1,
     print_every: Int = 5_000,
     verbose: Bool = True,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     diag_every: Int = 0,
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",

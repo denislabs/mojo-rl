@@ -15,7 +15,7 @@ grad_slice + the original action indices. ARITY 2, no params, no cache.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
@@ -31,7 +31,7 @@ def _dims2(d0: Int, d1: Int) -> InlineArray[Int, 2]:
     var a = InlineArray[Int, 2](fill=0)
     a[0] = d0
     a[1] = d1
-    return a
+    return a^
 
 
 # ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────

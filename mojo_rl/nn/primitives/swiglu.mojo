@@ -26,7 +26,7 @@ grad_output, not the forward input). Conforms to `Module`.
 
 from std.math import exp
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -88,6 +88,9 @@ def _swiglu_backward_kernel[
 struct SwiGLU[HIDDEN: Int](Module):
     comptime ARITY: Int = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=2 * Self.HIDDEN)
+    # `Array` is not `ImplicitlyCopyable` (Mojo 1.0): indexing the comptime
+    # `IN_DIMS` from a runtime context would materialize the whole array.
+    comptime IN_DIM0 = 2 * Self.HIDDEN
     comptime OUT_DIM = Self.HIDDEN
 
     # Output-caching: leaf-owned Tensor slabs (one buffer each), lazily sized.
@@ -132,8 +135,8 @@ struct SwiGLU[HIDDEN: Int](Module):
             ref cv = self.cache_v.data
             for b in range(B):
                 for k in range(Self.HIDDEN):
-                    var u = ip[b * Self.IN_DIMS[0] + k]
-                    var v = ip[b * Self.IN_DIMS[0] + Self.HIDDEN + k]
+                    var u = ip[b * Self.IN_DIM0 + k]
+                    var v = ip[b * Self.IN_DIM0 + Self.HIDDEN + k]
                     var s = Scalar[DT](1) / (Scalar[DT](1) + exp(-v))
                     cu[b * Self.HIDDEN + k] = u
                     cv[b * Self.HIDDEN + k] = v
@@ -174,7 +177,7 @@ struct SwiGLU[HIDDEN: Int](Module):
         comptime CN = B * Self.HIDDEN
         ref gin = grad_inputs[0]
         comptime if target == "cpu":
-            gin.ensure(B * Self.IN_DIMS[0])
+            gin.ensure(B * Self.IN_DIM0)
             ref gop = grad_output.data
             ref gip = gin.data
             ref cu = self.cache_u.data
@@ -187,11 +190,11 @@ struct SwiGLU[HIDDEN: Int](Module):
                     var s = Scalar[DT](1) / (Scalar[DT](1) + exp(-v))
                     var sv = v * s
                     var sp = s * (Scalar[DT](1) + v * (Scalar[DT](1) - s))
-                    gip[b * Self.IN_DIMS[0] + k] = g * sv
-                    gip[b * Self.IN_DIMS[0] + Self.HIDDEN + k] = g * u * sp
+                    gip[b * Self.IN_DIM0 + k] = g * sv
+                    gip[b * Self.IN_DIM0 + Self.HIDDEN + k] = g * u * sp
         else:
             var c = ctx.value()
-            gin.ensure_gpu(c, B * Self.IN_DIMS[0])
+            gin.ensure_gpu(c, B * Self.IN_DIM0)
             comptime lin = Layout.row_major(B, 2 * Self.HIDDEN)
             comptime lout = Layout.row_major(B, Self.HIDDEN)
             comptime n_blocks = (CN + TPB - 1) // TPB

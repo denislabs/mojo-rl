@@ -33,8 +33,9 @@ deliberately non-capturable (it would need an on-device anneal).
 dropping one of the two policies.
 """
 
-from std.gpu import barrier, block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu.sync import barrier
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.math import pow as fpow
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor

@@ -52,8 +52,8 @@ Returns (success_rate, mean_final_pos_diff_px).
 
 from std.memory import alloc
 from std.math import sqrt, pi
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from max.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
@@ -80,15 +80,15 @@ def _state_dist(
     bx: Float64,
     by: Float64,
     bang: Float64,
-    g: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [ax,ay,bx,by,bang]
+    g: Pointer[Scalar[DT], MutAnyOrigin],  # [ax,ay,bx,by,bang]
 ) -> Tuple[Float64, Float64]:
     """(4-vec positional distance, wrapped |block-angle diff|) vs goal."""
-    var d0 = ax - Float64(g[0])
-    var d1 = ay - Float64(g[1])
-    var d2 = bx - Float64(g[2])
-    var d3 = by - Float64(g[3])
+    var d0 = ax - Float64(g[unsafe_offset=0])
+    var d1 = ay - Float64(g[unsafe_offset=1])
+    var d2 = bx - Float64(g[unsafe_offset=2])
+    var d3 = by - Float64(g[unsafe_offset=3])
     var pos = sqrt(d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3)
-    var da = bang - Float64(g[4])
+    var da = bang - Float64(g[unsafe_offset=4])
     if da < 0.0:
         da = -da
     while da > 2.0 * pi:
@@ -166,8 +166,8 @@ def run_lewm_paper_protocol[
         PRED_DIM_HEAD,
         ENC,
     ],
-    start_states: UnsafePointer[Scalar[DT], MutAnyOrigin],  # (BATCH,5)
-    goal_states: UnsafePointer[Scalar[DT], MutAnyOrigin],  # (BATCH,5)
+    start_states: Pointer[Scalar[DT], MutAnyOrigin],  # (BATCH,5)
+    goal_states: Pointer[Scalar[DT], MutAnyOrigin],  # (BATCH,5)
     eval_budget: Int = 50,
     scale_x: Float64 = 100.0,
     scale_y: Float64 = 100.0,
@@ -261,10 +261,10 @@ def run_lewm_paper_protocol[
     var act_dev = ctx_v.enqueue_create_buffer[DT](BATCH * ACTIN)
     act_dev.enqueue_fill(0.0)  # emb depends only on pixels
     ctx_v.synchronize()
-    var pix_d_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var pix_d_p = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         pix_dev.unsafe_ptr()
     )
-    var act_d_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+    var act_d_p = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
         act_dev.unsafe_ptr()
     )
 
@@ -274,7 +274,7 @@ def run_lewm_paper_protocol[
         var e = PushTEnv[DT](seed=UInt64(seed0 + b))
         _ = e.reset()
         var s = start_states + b * 5
-        _ = e.set_state(s[0], s[1], s[2], s[3], s[4])
+        _ = e.set_state(s[unsafe_offset=0], s[unsafe_offset=1], s[unsafe_offset=2], s[unsafe_offset=3], s[unsafe_offset=4])
         envs.append(e^)
 
     # goal latent — encoded ONCE from each episode's goal STATE (real
@@ -283,16 +283,16 @@ def run_lewm_paper_protocol[
     for b in range(BATCH):
         var g = goal_states + b * 5
         sim_frame_chw_norm[IMG](
-            g[2],
-            g[3],
-            g[4],
-            g[0],
-            g[1],
+            g[unsafe_offset=2],
+            g[unsafe_offset=3],
+            g[unsafe_offset=4],
+            g[unsafe_offset=0],
+            g[unsafe_offset=1],
             pix_host + (b * T) * IMG_DIM,
         )
         for t in range(1, T):
             for i in range(IMG_DIM):
-                pix_host[(b * T + t) * IMG_DIM + i] = pix_host[
+                pix_host[unsafe_offset=(b * T + t) * IMG_DIM + i] = pix_host[unsafe_offset=
                     (b * T) * IMG_DIM + i
                 ]
     ctx_v.enqueue_copy(pix_dev, pix_host)
@@ -303,7 +303,7 @@ def run_lewm_paper_protocol[
     wm.read_node_into["emb"](emb_host, BATCH * TE)
     for b in range(BATCH):
         for d in range(EMB):
-            goal_lat[b * EMB + d] = emb_host[b * TE + d]
+            goal_lat[unsafe_offset=b * EMB + d] = emb_host[unsafe_offset=b * TE + d]
 
     var cem = ContinuousCEMOptimizer[BATCH, ACT](
         horizon=NEEDED,
@@ -332,7 +332,7 @@ def run_lewm_paper_protocol[
     var goal_pix_host = alloc[Scalar[DT]](BATCH * PIX if tta_enabled else 1)
     if tta_enabled:
         for i in range(BATCH * PIX):
-            goal_pix_host[i] = pix_host[i]  # goal windows just rendered
+            goal_pix_host[unsafe_offset=i] = pix_host[unsafe_offset=i]  # goal windows just rendered
     var snap = List[Scalar[DT]]()
     if tta_enabled:
         snap = wm.snapshot_all()  # restored at exit (fresh model/episode)
@@ -365,7 +365,7 @@ def run_lewm_paper_protocol[
             )
             for t in range(1, T):
                 for i in range(IMG_DIM):
-                    pix_host[(b * T + t) * IMG_DIM + i] = pix_host[
+                    pix_host[unsafe_offset=(b * T + t) * IMG_DIM + i] = pix_host[unsafe_offset=
                         (b * T) * IMG_DIM + i
                     ]
         ctx_v.enqueue_copy(pix_dev, pix_host)
@@ -376,7 +376,7 @@ def run_lewm_paper_protocol[
         wm.read_node_into["emb"](emb_host, BATCH * TE)
         for b in range(BATCH):
             for d in range(EMB):
-                start_lat[b * EMB + d] = emb_host[b * TE + d]
+                start_lat[unsafe_offset=b * EMB + d] = emb_host[unsafe_offset=b * TE + d]
         scorer.set_start_goal(start_lat, goal_lat)
 
         _ = cem.optimize(scorer, plan.as_unsafe_any_origin(), verbose=False)
@@ -415,14 +415,14 @@ def run_lewm_paper_protocol[
                     var ap = envs[b].agent_pos()
                     var dx = (
                         Float64(
-                            plan[(b * NEEDED + blk) * ACT + k * ACT_DIM + 0]
+                            plan[unsafe_offset=(b * NEEDED + blk) * ACT + k * ACT_DIM + 0]
                         )
                         * act_std_x
                         + act_mean_x
                     )
                     var dy = (
                         Float64(
-                            plan[(b * NEEDED + blk) * ACT + k * ACT_DIM + 1]
+                            plan[unsafe_offset=(b * NEEDED + blk) * ACT + k * ACT_DIM + 1]
                         )
                         * act_std_y
                         + act_mean_y
@@ -479,7 +479,7 @@ def run_lewm_paper_protocol[
             wm.read_node_into["emb"](emb_host, BATCH * TE)
             for b in range(BATCH):
                 for d in range(EMB):
-                    goal_lat[b * EMB + d] = emb_host[b * TE + d]
+                    goal_lat[unsafe_offset=b * EMB + d] = emb_host[unsafe_offset=b * TE + d]
             if verbose:
                 # step loss = training-mode loss at the PRE-update params;
                 # adaptation's effect shows in the NEXT cycle's pre value.
@@ -532,9 +532,9 @@ def run_lewm_paper_protocol[
             for c in range(IN_CH):
                 for y in range(VIZ):
                     for x in range(VIZ):
-                        viz_buf[
+                        viz_buf[unsafe_offset=
                             cyc * VIZN + c * VIZ * VIZ + y * VIZ + x
-                        ] = viz_tmp[(y * VIZ + x) * IN_CH + c]
+                        ] = viz_tmp[unsafe_offset=(y * VIZ + x) * IN_CH + c]
 
     # final metrics
     var ns = 0
@@ -571,15 +571,15 @@ def run_lewm_paper_protocol[
     if tta_enabled:
         wm.restore_all(snap)  # fresh-model-per-episode: undo the TTA steps
 
-    pix_host.free()
-    emb_host.free()
-    start_lat.free()
-    goal_lat.free()
-    plan.free()
-    viz_buf.free()
-    viz_tmp.free()
-    tta_act_host.free()
-    tta_frame.free()
-    goal_pix_host.free()
+    pix_host.unsafe_free()
+    emb_host.unsafe_free()
+    start_lat.unsafe_free()
+    goal_lat.unsafe_free()
+    plan.unsafe_free()
+    viz_buf.unsafe_free()
+    viz_tmp.unsafe_free()
+    tta_act_host.unsafe_free()
+    tta_frame.unsafe_free()
+    goal_pix_host.unsafe_free()
     _ = scorer^
     return (success_rate, mp)

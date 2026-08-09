@@ -35,7 +35,7 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_mesh_detection_fields.
 """
 
 from std.math import abs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER

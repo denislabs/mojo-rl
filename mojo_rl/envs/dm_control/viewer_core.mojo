@@ -20,7 +20,7 @@ tool can and cannot tell you.
 
 from std.random import random_float64
 from std.math import sin, pi, min, max
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv, Phyics3dEnvConfig

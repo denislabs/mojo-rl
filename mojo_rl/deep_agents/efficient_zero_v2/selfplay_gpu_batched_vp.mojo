@@ -67,7 +67,7 @@ from std.math import exp, log
 from std.memory import alloc, unsafe_memcpy
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -89,11 +89,11 @@ from ..zero.temperature import visit_temperature
 from ..muzero.selfplay_gpu_batched import _sample_action
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
-def _ai(n: Int) -> UnsafePointer[Int, MutAnyOrigin]:
+def _ai(n: Int) -> Pointer[Int, MutAnyOrigin]:
     return alloc[Int](n).as_unsafe_any_origin()
 
 
@@ -151,10 +151,10 @@ def run_ezv2_gumbel_selfplay_gpu_batched_vp[
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     eval_horizon: Int = 0,
-    eval_env: Optional[UnsafePointer[ENV, MutAnyOrigin]] = None,
+    eval_env: Optional[Pointer[ENV, MutAnyOrigin]] = None,
     diag_every: Int = 0,
     report_every: Int = 0,
-    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    logger: Optional[Pointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
     diag_sync: Bool = False,
 ) raises -> Float64:
@@ -238,7 +238,7 @@ def run_ezv2_gumbel_selfplay_gpu_batched_vp[
     # (cursor reset to 0, capacity retained → no reallocs after warmup). The
     # small label fields (act/rew/pol/val/tp/legal) stay Lists — a few appends/
     # step is negligible.
-    var eo_buf = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
+    var eo_buf = List[Pointer[Scalar[DT], MutAnyOrigin]]()
     var eo_cap = List[Int]()                  # capacity in ELEMENTS
     var e_act = List[List[Scalar[DT]]]()
     var e_rew = List[List[Scalar[DT]]]()
@@ -290,7 +290,7 @@ def run_ezv2_gumbel_selfplay_gpu_batched_vp[
     # pre-pass GPU-drain; [7]/[10] then = pure host enqueue.
     var phase_ns = alloc[Float64](18)
     for i in range(18):
-        phase_ns[i] = 0.0
+        phase_ns[unsafe_offset=i] = 0.0
 
     env.reset_batch[N_ENVS](ctx=ctx, rng_seed=seed)
 
@@ -331,17 +331,17 @@ def run_ezv2_gumbel_selfplay_gpu_batched_vp[
                     newcap = off + OBS
                 var nb = _a(newcap)
                 unsafe_memcpy(dest=nb, src=eo_buf[e], count=off)
-                eo_buf[e].free()
+                eo_buf[e].unsafe_free()
                 eo_buf[e] = nb
                 eo_cap[e] = newcap
             unsafe_memcpy(dest=eo_buf[e] + off, src=obs_host + e * OBS, count=OBS)
             e_act[e].append(Scalar[DT](action))
             for a in range(ACT):
-                e_pol[e].append(h_pol[e * ACT + a])
+                e_pol[e].append(h_pol[unsafe_offset=e * ACT + a])
                 e_legal[e].append(Scalar[DT](1.0))
-            e_val[e].append(h_val[e])
+            e_val[e].append(h_val[unsafe_offset=e])
             e_tp[e].append(Scalar[DT](0.0))
-            act_host[e] = Scalar[DT](action)
+            act_host[unsafe_offset=e] = Scalar[DT](action)
         ts_collect += Float64(perf_counter_ns() - _t0)
 
         # ── 4. step the CPU envs (host action → host reward/done/term) ──
@@ -355,17 +355,17 @@ def run_ezv2_gumbel_selfplay_gpu_batched_vp[
         # ── 5. accumulate, store + reset finished episodes ──
         var _t_store0 = perf_counter_ns()
         for e in range(N_ENVS):
-            e_rew[e].append(rew_host[e])
-            ep_return[e] += Float64(rew_host[e])
+            e_rew[e].append(rew_host[unsafe_offset=e])
+            ep_return[e] += Float64(rew_host[unsafe_offset=e])
             ep_len[e] += 1
-            var done = done_host[e] > Scalar[DT](0.5)
-            var terminated = term_host[e] > Scalar[DT](0.5)
+            var done = done_host[unsafe_offset=e] > Scalar[DT](0.5)
+            var terminated = term_host[unsafe_offset=e] > Scalar[DT](0.5)
             if done or ep_len[e] >= max_ep_steps:
                 # eo_buf[e] is a raw growable pixel buffer; store_episode takes a
                 # List, so copy the resident obs into one (episodes end rarely).
                 var eo_l = List[Scalar[DT]](length=ep_len[e] * OBS, fill=0)
                 for i in range(ep_len[e] * OBS):
-                    eo_l[i] = eo_buf[e][i]
+                    eo_l[i] = eo_buf[e][unsafe_offset=i]
                 rb.store_episode(
                     eo_l,
                     e_act[e],
@@ -453,10 +453,10 @@ def run_ezv2_gumbel_selfplay_gpu_batched_vp[
             var dn = List[String]()
             var dv = List[Float64]()
             dn.append(String("loss")); dv.append(last_loss)
-            dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
-            dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
-            dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
-            dn.append(String("loss_consistency")); dv.append(Float64(l_parts[3]))
+            dn.append(String("loss_policy")); dv.append(Float64(l_parts[unsafe_offset=0]))
+            dn.append(String("loss_value")); dv.append(Float64(l_parts[unsafe_offset=1]))
+            dn.append(String("loss_reward")); dv.append(Float64(l_parts[unsafe_offset=2]))
+            dn.append(String("loss_consistency")); dv.append(Float64(l_parts[unsafe_offset=3]))
             logger.value()[].log_scalars(dn, dv, it + 1)
 
         # ── reanalyze through the LIVE nets — WIDE searches (ratio≈1.0 when
@@ -549,14 +549,14 @@ def run_ezv2_gumbel_selfplay_gpu_batched_vp[
                   ts_t_step / 1e9, "| reana: host", ts_re_host / 1e9,
                   "search", ts_re_search / 1e9)
             # train-step host-enqueue phases (s)
-            print("    step phases: setup", phase_ns[0] / 1e9, "fwd",
-                  phase_ns[1] / 1e9, "tgt", phase_ns[2] / 1e9, "rev",
-                  phase_ns[3] / 1e9, "repvjp+opt", phase_ns[4] / 1e9,
-                  "finalize/sync", phase_ns[5] / 1e9)
+            print("    step phases: setup", phase_ns[unsafe_offset=0] / 1e9, "fwd",
+                  phase_ns[unsafe_offset=1] / 1e9, "tgt", phase_ns[unsafe_offset=2] / 1e9, "rev",
+                  phase_ns[unsafe_offset=3] / 1e9, "repvjp+opt", phase_ns[unsafe_offset=4] / 1e9,
+                  "finalize/sync", phase_ns[unsafe_offset=5] / 1e9)
             # reverse-scan per-model-call splits (s) — which nn call eats `rev`
-            print("    rev calls: pred.fwd", phase_ns[6] / 1e9, "pred.vjp",
-                  phase_ns[7] / 1e9, "cons", phase_ns[8] / 1e9, "dyn.fwd",
-                  phase_ns[9] / 1e9, "dyn.vjp", phase_ns[10] / 1e9)
+            print("    rev calls: pred.fwd", phase_ns[unsafe_offset=6] / 1e9, "pred.vjp",
+                  phase_ns[unsafe_offset=7] / 1e9, "cons", phase_ns[unsafe_offset=8] / 1e9, "dyn.fwd",
+                  phase_ns[unsafe_offset=9] / 1e9, "dyn.vjp", phase_ns[unsafe_offset=10] / 1e9)
 
         if logger and report_every > 0 and trained and (it + 1) % report_every == 0:
             var ravg = 0.0
@@ -590,41 +590,41 @@ def run_ezv2_gumbel_selfplay_gpu_batched_vp[
               "train", ts_train / 1e9, "reana", ts_reana / 1e9)
         print("  train = sample", ts_t_sample / 1e9, "+ step", ts_t_step / 1e9,
               "| reana = host", ts_re_host / 1e9, "+ search", ts_re_search / 1e9)
-        print("  step phases (s): setup", phase_ns[0] / 1e9, "fwd",
-              phase_ns[1] / 1e9, "tgt", phase_ns[2] / 1e9, "rev",
-              phase_ns[3] / 1e9, "repvjp+opt", phase_ns[4] / 1e9,
-              "finalize/sync", phase_ns[5] / 1e9)
-        print("  rev calls (s): pred.fwd", phase_ns[6] / 1e9, "pred.vjp",
-              phase_ns[7] / 1e9, "cons", phase_ns[8] / 1e9, "dyn.fwd",
-              phase_ns[9] / 1e9, "dyn.vjp", phase_ns[10] / 1e9)
+        print("  step phases (s): setup", phase_ns[unsafe_offset=0] / 1e9, "fwd",
+              phase_ns[unsafe_offset=1] / 1e9, "tgt", phase_ns[unsafe_offset=2] / 1e9, "rev",
+              phase_ns[unsafe_offset=3] / 1e9, "repvjp+opt", phase_ns[unsafe_offset=4] / 1e9,
+              "finalize/sync", phase_ns[unsafe_offset=5] / 1e9)
+        print("  rev calls (s): pred.fwd", phase_ns[unsafe_offset=6] / 1e9, "pred.vjp",
+              phase_ns[unsafe_offset=7] / 1e9, "cons", phase_ns[unsafe_offset=8] / 1e9, "dyn.fwd",
+              phase_ns[unsafe_offset=9] / 1e9, "dyn.vjp", phase_ns[unsafe_offset=10] / 1e9)
         if diag_sync:
-            print("  DIAG (diag_sync): pred.vjp host", phase_ns[7] / 1e9,
-                  "pred.vjp GPU", phase_ns[14] / 1e9,
-                  "| dyn.vjp host", phase_ns[10] / 1e9,
-                  "dyn.vjp GPU", phase_ns[12] / 1e9)
+            print("  DIAG (diag_sync): pred.vjp host", phase_ns[unsafe_offset=7] / 1e9,
+                  "pred.vjp GPU", phase_ns[unsafe_offset=14] / 1e9,
+                  "| dyn.vjp host", phase_ns[unsafe_offset=10] / 1e9,
+                  "dyn.vjp GPU", phase_ns[unsafe_offset=12] / 1e9)
             # pre-vjp drains = GPU work of the forward/cons/tiny-kernel ops
             # enqueued before each vjp; leftover = pure host enqueue of the
             # ~90 tiny element-wise kernels/step (rev minus everything timed).
-            var rev_timed = (phase_ns[6] + phase_ns[7] + phase_ns[8]
-                             + phase_ns[9] + phase_ns[10] + phase_ns[11]
-                             + phase_ns[12] + phase_ns[13] + phase_ns[14])
-            print("  DIAG drains: pred pre", phase_ns[11] / 1e9,
-                  "dyn pre", phase_ns[13] / 1e9,
+            var rev_timed = (phase_ns[unsafe_offset=6] + phase_ns[unsafe_offset=7] + phase_ns[unsafe_offset=8]
+                             + phase_ns[unsafe_offset=9] + phase_ns[unsafe_offset=10] + phase_ns[unsafe_offset=11]
+                             + phase_ns[unsafe_offset=12] + phase_ns[unsafe_offset=13] + phase_ns[unsafe_offset=14])
+            print("  DIAG drains: pred pre", phase_ns[unsafe_offset=11] / 1e9,
+                  "dyn pre", phase_ns[unsafe_offset=13] / 1e9,
                   "| rev untimed (host enqueue of tiny kernels)",
-                  (phase_ns[3] - rev_timed) / 1e9)
+                  (phase_ns[unsafe_offset=3] - rev_timed) / 1e9)
             print("  DIAG fwd/tgt GPU: fwd-scan (rep×1+dyn×K)",
-                  phase_ns[15] / 1e9,
-                  "target-prepass (rep×K+proj×K)", phase_ns[16] / 1e9)
+                  phase_ns[unsafe_offset=15] / 1e9,
+                  "target-prepass (rep×K+proj×K)", phase_ns[unsafe_offset=16] / 1e9)
         print("  TOTAL timed", total / 1e9, "s  (", (total / 1e9) / n,
               "s/iter )")
         print("=" * 60)
 
-    t_cmask.free(); l_parts.free()
+    t_cmask.unsafe_free(); l_parts.unsafe_free()
 
-    h_pol.free(); h_val.free()
+    h_pol.unsafe_free(); h_val.unsafe_free()
     for e in range(N_ENVS):
-        eo_buf[e].free()
-    phase_ns.free()
+        eo_buf[e].unsafe_free()
+    phase_ns.unsafe_free()
     return last_loss
 
 
@@ -646,7 +646,7 @@ def _ez_eval_greedy_cpu_batched[
     PA: PredictionGPU,
 ](
     ctx: DeviceContext,
-    eval_env: UnsafePointer[ENV, MutAnyOrigin],
+    eval_env: Pointer[ENV, MutAnyOrigin],
     mut planner: GumbelGPUMCTS[
         N_ENVS, ACT, LATENT, BINS, MAX_NODES, MAX_K, NUM_SIMS, SinglePlayer
     ],
@@ -654,7 +654,7 @@ def _ez_eval_greedy_cpu_batched[
     mut dyn_a: DA,
     mut pred_a: PA,
     d_obs: DeviceBuffer[DT],
-    h_pol: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    h_pol: Pointer[Scalar[DT], MutAnyOrigin],
     target_episodes: Int,
     max_steps: Int,
     rng_seed: UInt32,
@@ -690,16 +690,16 @@ def _ez_eval_greedy_cpu_batched[
         for e in range(N_ENVS):
             var best = 0
             for a in range(1, ACT):
-                if Float64(h_pol[e * ACT + a]) > Float64(h_pol[e * ACT + best]):
+                if Float64(h_pol[unsafe_offset=e * ACT + a]) > Float64(h_pol[unsafe_offset=e * ACT + best]):
                     best = a
-            act_host[e] = Scalar[DT](best)
+            act_host[unsafe_offset=e] = Scalar[DT](best)
         eval_env[].step_batch[N_ENVS](ctx=ctx, rng_seed=UInt64(es))
         var rew_host = eval_env[].reward_ptr()
         var done_host = eval_env[].done_ptr()
         for e in range(N_ENVS):
             if not counted[e]:
-                cur_ret[e] += Float64(rew_host[e])
-                if done_host[e] > Scalar[DT](0.5):
+                cur_ret[e] += Float64(rew_host[unsafe_offset=e])
+                if done_host[unsafe_offset=e] > Scalar[DT](0.5):
                     ret_sum += cur_ret[e]
                     counted[e] = True
                     done_count += 1

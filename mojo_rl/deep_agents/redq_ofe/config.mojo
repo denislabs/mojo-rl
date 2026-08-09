@@ -27,7 +27,7 @@ is the branch *depth* trade-off — 8 deeper layers, narrower per-block
 growth.)
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -79,7 +79,7 @@ comptime REDQOFECritic[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait REDQOFEConfigT(Copyable, Movable, ImplicitlyDeletable):
+trait REDQOFEConfigT(Copyable, Movable, Deinitable):
     """Compile-time descriptor of a REDQ-OFE-family algorithm.
     Zero-field conformer convention (never instantiated; only the
     comptime members are read)."""

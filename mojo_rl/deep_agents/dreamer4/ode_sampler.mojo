@@ -43,9 +43,9 @@ def sample_one_timestep[
     B: Int, T: Int, NSP: Int, DSP: Int, KMAX: Int, K: Int,
 ](
     mut dyn: M,
-    context: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B*(T-1), NSP*DSP] clean
-    z_init: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B, NSP*DSP] noise (τ=0)
-    out_frame: UnsafePointer[Scalar[DT], MutAnyOrigin],  # OUT [B, NSP*DSP]
+    context: Pointer[Scalar[DT], MutAnyOrigin],  # [B*(T-1), NSP*DSP] clean
+    z_init: Pointer[Scalar[DT], MutAnyOrigin],   # [B, NSP*DSP] noise (τ=0)
+    out_frame: Pointer[Scalar[DT], MutAnyOrigin],  # OUT [B, NSP*DSP]
 ) raises:
     comptime ND = NSP * DSP
     comptime BF = B * T
@@ -73,11 +73,11 @@ def sample_one_timestep[
             sig_idx[bt] = Scalar[DT](Float64(KMAX - 1))
             if t < T - 1:
                 for i in range(ND):
-                    packed[bt * ND + i] = context[(b * (T - 1) + t) * ND + i]
+                    packed[bt * ND + i] = context[unsafe_offset=(b * (T - 1) + t) * ND + i]
         # the denoised (last) frame uses the shortcut step
         step_idx[b * T + (T - 1)] = Scalar[DT](Float64(E))
     for i in range(B * ND):
-        z[i] = z_init[i]
+        z[i] = z_init[unsafe_offset=i]
 
     # Boundary tensors bridging the host-scratch buffers to the storage Module
     # surface (mirror shortcut_loss._run_fwd, CPU branch): copy `packed` into
@@ -110,4 +110,4 @@ def sample_one_timestep[
                 z[b * ND + k] = Scalar[DT](zv + bvel * dt)
 
     for i in range(B * ND):
-        out_frame[i] = z[i]
+        out_frame[unsafe_offset=i] = z[i]

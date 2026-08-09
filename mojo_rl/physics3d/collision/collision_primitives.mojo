@@ -3264,7 +3264,7 @@ def _bb_quat_mat[
     m[6] = c0[2]
     m[7] = c1[2]
     m[8] = c2[2]
-    return m
+    return m^
 
 
 @always_inline
@@ -4217,7 +4217,7 @@ def box_box_manifold[
 
     # Back to world: rw = (q2 ? mat2 : mat1) * rotmore^T.
     var rw = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
-    var mref = mat2 if q2 != 0 else mat1
+    var mref = mat2.copy() if q2 != 0 else mat1.copy()
     # rotmore^T has a single non-zero per column: column a is e_{idx[a]} * f_a.
     for row in range(3):
         rw[3 * row + 0] = mref[3 * row + i0] * f0

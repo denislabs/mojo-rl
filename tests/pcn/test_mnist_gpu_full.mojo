@@ -15,7 +15,7 @@ Run:
 
 from std.memory import alloc, memset
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as dtype
@@ -254,7 +254,7 @@ def main() raises:
                 var elapsed = Float64(perf_counter_ns() - epoch_start_ns) / 1e9
                 print(
                     "    ", epoch, "  ", batch_idx, "  ",
-                    String(elapsed)[byte=:7],
+                    fit(String(elapsed), 7),
                 )
 
         ctx.synchronize()
@@ -330,3 +330,5 @@ def main() raises:
         raise Error("MNIST GPU full test failed: final accuracy " + String(final_acc))
 
     print("=== Done ===")
+
+from mojo_rl.core.fmt import fit

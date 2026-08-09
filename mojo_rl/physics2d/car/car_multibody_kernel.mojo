@@ -15,7 +15,7 @@ Usage:
 
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import dtype, TPB
 from .car_multibody import CarDynamicsMB

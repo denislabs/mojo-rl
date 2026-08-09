@@ -32,12 +32,12 @@ from mojo_rl.envs.atari.riot import set_action
 from std.memory import alloc
 
 
-def px_on(buf: UnsafePointer[UInt8, MutAnyOrigin], x: Int, y: Int) -> Bool:
+def px_on(buf: Pointer[UInt8, MutAnyOrigin], x: Int, y: Int) -> Bool:
     var off = (y * FRAME_WIDTH + x) * 4
     return (Int(buf[off]) + Int(buf[off + 1]) + Int(buf[off + 2])) > 24
 
 
-def top_lit_row(buf: UnsafePointer[UInt8, MutAnyOrigin]) -> Int:
+def top_lit_row(buf: Pointer[UInt8, MutAnyOrigin]) -> Int:
     for y in range(FRAME_HEIGHT):
         for x in range(FRAME_WIDTH):
             if px_on(buf, x, y):

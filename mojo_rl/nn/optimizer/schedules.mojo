@@ -22,7 +22,7 @@ from mojo_rl.nn.constants import DT
 
 
 @fieldwise_init
-struct LinearWarmupSchedule(Copyable & ImplicitlyDeletable):
+struct LinearWarmupSchedule(Copyable & Deinitable):
     """Linear ramp `0 → target_lr` over `warmup_steps`, then constant.
     `warmup_steps == 0` collapses to a constant schedule (always target_lr)."""
 

@@ -37,6 +37,7 @@ from mojo_rl.experimental.pcn import (
     PCTrainer,
 )
 from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock
+from mojo_rl.core.fmt import fit
 
 comptime BATCH = 125
 comptime EPOCHS = 15
@@ -55,8 +56,8 @@ comptime PASS_ACC = 0.62
 
 @always_inline
 def _flip_into(
-    src: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    dst: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    src: Pointer[Scalar[dtype], MutAnyOrigin],
+    dst: Pointer[Scalar[dtype], MutAnyOrigin],
 ):
     for c in range(3):
         for h in range(32):
@@ -204,7 +205,7 @@ def main() raises:
         var el = Float64(perf_counter_ns() - t0) / 1e9
         print("    ", epoch, "  ", ep_loss / Float64(N_TRAIN_BATCHES), "  ",
               acc, "  ", best_acc, "  ", n_clips, "  ",
-              String(last_gn)[byte=:6], "  ", el)
+              fit(String(last_gn), 6), "  ", el)
 
     print("\n  best test accuracy =", best_acc)
     print("  (bigger-budget baseline 0.6165 @ 32/64/64)")

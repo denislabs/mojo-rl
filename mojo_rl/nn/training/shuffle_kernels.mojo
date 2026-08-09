@@ -38,7 +38,7 @@ def fisher_yates_shuffle_kernel[
     """
     if Int(thread_idx.x) != 0 or Int(block_idx.x) != 0:
         return
-    var s = seed_buf.ptr[0]
+    var s = seed_buf.ptr[unsafe_offset=0]
     var philox = PhiloxRandom(seed=s, offset=0)
     for i in range(N - 1, 0, -1):
         var r = philox.step_uniform()
@@ -58,7 +58,7 @@ def increment_seed_kernel(
     """Bump the device-side RNG seed so each epoch has a different
     permutation."""
     if Int(thread_idx.x) == 0 and Int(block_idx.x) == 0:
-        seed_buf.ptr[0] = seed_buf.ptr[0] + UInt64(1)
+        seed_buf.ptr[unsafe_offset=0] = seed_buf.ptr[unsafe_offset=0] + UInt64(1)
 
 
 @always_inline

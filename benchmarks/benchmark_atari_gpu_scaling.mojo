@@ -31,7 +31,7 @@ from std.sys import has_accelerator
 from std.sys.info import size_of
 from std.time import perf_counter_ns
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
 from mojo_rl.envs.atari.atari_state import AtariState
@@ -44,14 +44,19 @@ comptime F = 4  # frames per "step" (ALE frame_skip)
 
 
 def atari_frames_kernel(
-    states: UnsafePointer[AtariState, MutAnyOrigin],
-    rom: UnsafePointer[UInt8, MutAnyOrigin],
-    rom_size: Int,
-    op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin],
-    actions: UnsafePointer[UInt8, MutAnyOrigin],
-    n_envs: Int,
-    n_frames: Int,
+    states: Pointer[AtariState, MutAnyOrigin],
+    rom: Pointer[UInt8, MutAnyOrigin],
+    rom_size_arg: Int64,
+    op_table: Pointer[OpcodeEntry, MutAnyOrigin],
+    actions: Pointer[UInt8, MutAnyOrigin],
+    n_envs_arg: Int64,
+    n_frames_arg: Int64,
 ):
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var rom_size = Int(rom_size_arg)
+    var n_envs = Int(n_envs_arg)
+    var n_frames = Int(n_frames_arg)
     var i = Int(global_idx.x)
     if i < n_envs:
         var st = states[i].copy()
@@ -69,7 +74,7 @@ def bench_n(
     ctx: DeviceContext,
     n_envs: Int,
     s0: AtariState,
-    rom: UnsafePointer[UInt8, MutAnyOrigin],
+    rom: Pointer[UInt8, MutAnyOrigin],
     rom_size: Int,
 ) raises:
     comptime SB = size_of[AtariState]()
@@ -124,14 +129,14 @@ def bench_n(
     comptime REPS = 3
     print("  N=", n_envs, "warmup ...")
     ctx.enqueue_function[atari_frames_kernel](
-        sp, rp, rom_size, op, ap, n_envs, MEAS, grid_dim=blocks, block_dim=TPB
+        sp, rp, Int64(rom_size), op, ap, Int64(n_envs), Int64(MEAS), grid_dim=blocks, block_dim=TPB
     )
     ctx.synchronize()
 
     var t0 = perf_counter_ns()
     for _ in range(REPS):
         ctx.enqueue_function[atari_frames_kernel](
-            sp, rp, rom_size, op, ap, n_envs, MEAS, grid_dim=blocks, block_dim=TPB
+            sp, rp, Int64(rom_size), op, ap, Int64(n_envs), Int64(MEAS), grid_dim=blocks, block_dim=TPB
         )
         ctx.synchronize()
     var dt = Float64(perf_counter_ns() - t0) / 1e9

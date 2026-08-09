@@ -31,7 +31,7 @@ NOTE: this replaces the former runtime `DDPGConfig` hyperparameter bag (a
 every other family.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -75,7 +75,7 @@ comptime DDPGCriticNet[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait DDPGConfigT(Copyable, Movable, ImplicitlyDeletable):
+trait DDPGConfigT(Copyable, Movable, Deinitable):
     """Compile-time descriptor of a DDPG-family algorithm. Conformers are
     zero-field comptime tags — never instantiated at runtime; only their
     comptime members are read."""

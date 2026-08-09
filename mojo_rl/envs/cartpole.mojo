@@ -43,7 +43,7 @@ from mojo_rl.render import (
 )
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 
 # =============================================================================
@@ -249,7 +249,7 @@ struct CartPoleEnv[DTYPE: DType](
     var num_bins: Int
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self, num_bins: Int = 10):
@@ -596,7 +596,7 @@ struct CartPoleEnv[DTYPE: DType](
         """Clean up resources."""
         if self._renderer_initialized:
             self._renderer.value()[].close()
-            self._renderer.value().free()
+            self._renderer.value().unsafe_free()
             self._renderer_initialized = False
 
     # =========================================================================
@@ -620,7 +620,7 @@ struct CartPoleEnv[DTYPE: DType](
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
@@ -972,10 +972,10 @@ struct CartPoleEnv[DTYPE: DType](
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+            Pointer[Scalar[gpu_dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Launch step kernel on GPU with fused obs extraction.
@@ -1131,10 +1131,10 @@ struct CartPoleEnv[DTYPE: DType](
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+            Pointer[Scalar[gpu_dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Launch selective reset kernel on GPU - only resets done environments.

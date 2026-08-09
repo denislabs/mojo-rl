@@ -37,7 +37,7 @@ from ..zero.twohot_targets import mz_inverse_scalar_transform
 def append_mz_train_diagnostics[
     ACT: Int, BINS: Int, BATCH: Int,
 ](
-    pred: UnsafePointer[Scalar[DT], MutAnyOrigin],        # [BATCH, ACT+BINS]
+    pred: Pointer[Scalar[DT], MutAnyOrigin],        # [BATCH, ACT+BINS]
     policy_tgt: List[Scalar[DT]],  # [BATCH, ACT]
     value_tgt: List[Scalar[DT]],   # [BATCH] raw scalar
     v_min: Scalar[DT],
@@ -64,18 +64,18 @@ def append_mz_train_diagnostics[
         var tbase = b * ACT
 
         # ── policy: softmax(logits[0:ACT]) → CE vs MCTS target π + entropy ──
-        var maxl = Float64(pred[pbase])
+        var maxl = Float64(pred[unsafe_offset=pbase])
         for a in range(1, ACT):
-            var v = Float64(pred[pbase + a])
+            var v = Float64(pred[unsafe_offset=pbase + a])
             if v > maxl:
                 maxl = v
         var sume = 0.0
         for a in range(ACT):
-            sume += exp(Float64(pred[pbase + a]) - maxl)
+            sume += exp(Float64(pred[unsafe_offset=pbase + a]) - maxl)
         var ce = 0.0
         var ent = 0.0
         for a in range(ACT):
-            var prob = exp(Float64(pred[pbase + a]) - maxl) / sume
+            var prob = exp(Float64(pred[unsafe_offset=pbase + a]) - maxl) / sume
             var t = Float64(policy_tgt[tbase + a])
             if t > 1e-8:
                 var p_cl = prob if prob > 1e-12 else 1e-12
@@ -98,17 +98,17 @@ def append_mz_train_diagnostics[
         tmax_sum += tmax
 
         # ── value: decode categorical head (softmax·bins → h-space → h⁻¹) ──
-        var vmaxl = Float64(pred[pbase + ACT])
+        var vmaxl = Float64(pred[unsafe_offset=pbase + ACT])
         for i in range(1, BINS):
-            var v = Float64(pred[pbase + ACT + i])
+            var v = Float64(pred[unsafe_offset=pbase + ACT + i])
             if v > vmaxl:
                 vmaxl = v
         var vsum = 0.0
         for i in range(BINS):
-            vsum += exp(Float64(pred[pbase + ACT + i]) - vmaxl)
+            vsum += exp(Float64(pred[unsafe_offset=pbase + ACT + i]) - vmaxl)
         var hval = 0.0
         for i in range(BINS):
-            var p = exp(Float64(pred[pbase + ACT + i]) - vmaxl) / vsum
+            var p = exp(Float64(pred[unsafe_offset=pbase + ACT + i]) - vmaxl) / vsum
             hval += p * (Float64(v_min) + step * Float64(i))
         var pv = Float64(mz_inverse_scalar_transform(Scalar[DT](hval)))
         var z = Float64(value_tgt[b])
@@ -139,7 +139,7 @@ def append_mz_train_diagnostics[
 def append_value_diagnostics[
     ROW: Int, VOFF: Int, BINS: Int, B: Int,
 ](
-    pred: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B, ROW]
+    pred: Pointer[Scalar[DT], MutAnyOrigin],       # [B, ROW]
     value_tgt: List[Scalar[DT]],  # [B] raw scalar
     v_min: Scalar[DT],
     v_max: Scalar[DT],
@@ -160,17 +160,17 @@ def append_value_diagnostics[
     var vt_sum = 0.0
     for b in range(B):
         var base = b * ROW + VOFF
-        var vmaxl = Float64(pred[base])
+        var vmaxl = Float64(pred[unsafe_offset=base])
         for i in range(1, BINS):
-            var v = Float64(pred[base + i])
+            var v = Float64(pred[unsafe_offset=base + i])
             if v > vmaxl:
                 vmaxl = v
         var vsum = 0.0
         for i in range(BINS):
-            vsum += exp(Float64(pred[base + i]) - vmaxl)
+            vsum += exp(Float64(pred[unsafe_offset=base + i]) - vmaxl)
         var hval = 0.0
         for i in range(BINS):
-            var p = exp(Float64(pred[base + i]) - vmaxl) / vsum
+            var p = exp(Float64(pred[unsafe_offset=base + i]) - vmaxl) / vsum
             hval += p * (Float64(v_min) + step * Float64(i))
         var pv = Float64(mz_inverse_scalar_transform(Scalar[DT](hval)))
         var z = Float64(value_tgt[b])

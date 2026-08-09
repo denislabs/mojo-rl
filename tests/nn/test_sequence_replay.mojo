@@ -27,8 +27,8 @@ def test_basic_record_and_sample() raises:
     var buf = SequenceReplay[OBS, ACT, CAP].new()
 
     # Record 12 steps. Each obs[k] = (k, -k), act[k] = (k*0.1), rew[k] = k.
-    var s_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
-    var a_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
+    var s_buf: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var a_buf: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
     for k in range(12):
         s_buf[0] = Scalar[DT](k)
         s_buf[1] = Scalar[DT](-Float64(k))
@@ -38,10 +38,10 @@ def test_basic_record_and_sample() raises:
     assert_true(buf.size == 12, "size should be 12")
     assert_true(buf.pos == 12, "pos should be 12")
 
-    var obs_out: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * (T + 1) * OBS).as_unsafe_any_origin()
-    var act_out: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * T * ACT).as_unsafe_any_origin()
-    var rew_out: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
-    var dne_out: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
+    var obs_out: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * (T + 1) * OBS).as_unsafe_any_origin()
+    var act_out: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * T * ACT).as_unsafe_any_origin()
+    var rew_out: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
+    var dne_out: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
 
     buf.sample_batch[B, T](obs_out, act_out, rew_out, dne_out)
 
@@ -89,8 +89,8 @@ def test_circular_wrap() raises:
     comptime T = 3
     var buf = SequenceReplay[OBS, ACT, CAP].new()
 
-    var s_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
-    var a_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
+    var s_buf: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var a_buf: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
     # Record 20 steps into a CAP=8 buffer → wraps twice. The buffer
     # afterwards holds steps 12..19 (the 8 most recent).
     for k in range(20):
@@ -101,10 +101,10 @@ def test_circular_wrap() raises:
     assert_true(buf.size == CAP, "buffer should be full")
     assert_true(buf.pos == 20 % CAP, "pos should equal write count mod CAP")
 
-    var obs_out: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * (T + 1) * OBS).as_unsafe_any_origin()
-    var act_out: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * T * ACT).as_unsafe_any_origin()
-    var rew_out: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
-    var dne_out: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
+    var obs_out: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * (T + 1) * OBS).as_unsafe_any_origin()
+    var act_out: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * T * ACT).as_unsafe_any_origin()
+    var rew_out: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
+    var dne_out: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * T).as_unsafe_any_origin()
 
     # Sample many windows; every returned window must be chronological
     # (consecutive integers) AND every value must be in [12, 19].
@@ -136,8 +136,8 @@ def test_can_sample_guard() raises:
     var buf = SequenceReplay[OBS, ACT, CAP].new()
     assert_true(buf.can_sample[T=3]() == False, "empty buffer cannot sample")
 
-    var s_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
-    var a_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
+    var s_buf: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var a_buf: Pointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
     for _ in range(3):
         s_buf[0] = Scalar[DT](0.0)
         a_buf[0] = Scalar[DT](0.0)

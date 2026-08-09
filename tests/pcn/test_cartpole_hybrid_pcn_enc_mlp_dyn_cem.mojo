@@ -157,8 +157,8 @@ def _gen_rollout_into[
     SEQ_LEN_T: Int
 ](
     mut rng: PhiloxRandom,
-    actions_buf: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
-    obs_buf: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    actions_buf: Pointer[Scalar[dtype], origin=MutAnyOrigin],
+    obs_buf: Pointer[Scalar[dtype], origin=MutAnyOrigin],
     actions_offset: Int,
     obs_offset: Int,
 ):
@@ -210,7 +210,7 @@ def _gauss_pair(mut rng: PhiloxRandom) -> Tuple[Float64, Float64]:
 
 
 def _xavier_init_layer(
-    params: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    params: Pointer[Scalar[dtype], origin=MutAnyOrigin],
     in_dim: Int,
     out_dim: Int,
     seed: UInt64,
@@ -227,10 +227,10 @@ def _xavier_init_layer(
 def _lt_forward[
     BATCH_T: Int, IN: Int, OUT: Int
 ](
-    params: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
-    x: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
-    a: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
-    mu: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    params: Pointer[Scalar[dtype], origin=MutAnyOrigin],
+    x: Pointer[Scalar[dtype], origin=MutAnyOrigin],
+    a: Pointer[Scalar[dtype], origin=MutAnyOrigin],
+    mu: Pointer[Scalar[dtype], origin=MutAnyOrigin],
 ):
     for s in range(BATCH_T):
         for i in range(IN):
@@ -245,12 +245,12 @@ def _lt_forward[
 def _lt_backward_accum[
     BATCH_T: Int, IN: Int, OUT: Int
 ](
-    params: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
-    a: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
-    d_mu: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
-    d_W: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
-    d_b: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
-    d_x: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    params: Pointer[Scalar[dtype], origin=MutAnyOrigin],
+    a: Pointer[Scalar[dtype], origin=MutAnyOrigin],
+    d_mu: Pointer[Scalar[dtype], origin=MutAnyOrigin],
+    d_W: Pointer[Scalar[dtype], origin=MutAnyOrigin],
+    d_b: Pointer[Scalar[dtype], origin=MutAnyOrigin],
+    d_x: Pointer[Scalar[dtype], origin=MutAnyOrigin],
 ):
     for s in range(BATCH_T):
         for j in range(OUT):

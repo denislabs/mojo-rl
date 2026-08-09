@@ -11,7 +11,7 @@ All physics data is packed per-environment for efficient GPU access.
 from std.math import sqrt, cos, sin, pi, tanh
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import alloc
 from std.random.philox import Random as PhiloxRandom
 
@@ -219,7 +219,7 @@ struct LunarLander[
     var cached_state: LunarLanderState[Self.dtype]
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -769,7 +769,7 @@ struct LunarLander[
         obs[5] = Scalar[Self.dtype](omega_norm)
         obs[6] = left_contact
         obs[7] = right_contact
-        return obs
+        return obs^
 
     def _get_terrain_height(self, x: Float64) -> Float64:
         """Get terrain height at given x position."""
@@ -1456,7 +1456,7 @@ struct LunarLander[
         self.particles.clear()
         if self._renderer_initialized:
             self._renderer.value()[].close()
-            self._renderer.value().free()
+            self._renderer.value().unsafe_free()
             self._renderer_initialized = False
 
     # =========================================================================
@@ -1483,7 +1483,7 @@ struct LunarLander[
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
 
     def is_renderer_open(self) -> Bool:
@@ -1541,10 +1541,10 @@ struct LunarLander[
         mut obs_buf: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """Optimized GPU step kernel with fused obs extraction.
@@ -1634,10 +1634,10 @@ struct LunarLander[
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """GPU step kernel for continuous actions (GPUContinuousEnv trait).
@@ -1772,10 +1772,10 @@ struct LunarLander[
         mut dones_buf: DeviceBuffer[dtype],
         rng_seed: UInt64,
         workspace_ptr: Optional[
-            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+            Pointer[Scalar[dtype], MutAnyOrigin]
         ] = None,
         rng_counter_ptr: Optional[
-            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+            Pointer[Scalar[DType.uint64], MutAnyOrigin]
         ] = None,
     ) raises:
         """GPU selective reset kernel - resets only done environments.

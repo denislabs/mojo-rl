@@ -364,7 +364,7 @@ def create_directory(var path: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_CreateDirectory.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_CreateDirectory",
         def(Ptr[c_char, ImmOrigin(origin_of(path))]) thin -> Bool,
@@ -465,7 +465,7 @@ def enumerate_directory(
     Docs: https://wiki.libsdl.org/SDL3/SDL_EnumerateDirectory.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_EnumerateDirectory",
         def(
@@ -494,7 +494,7 @@ def remove_path(var path: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_RemovePath.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RemovePath",
         def(Ptr[c_char, ImmOrigin(origin_of(path))]) thin -> Bool,
@@ -528,7 +528,7 @@ def rename_path(var oldpath: String, var newpath: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_RenamePath.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_RenamePath",
         def(
@@ -585,7 +585,7 @@ def copy_file(var oldpath: String, var newpath: String) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_CopyFile.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_CopyFile",
         def(
@@ -615,7 +615,7 @@ def get_path_info(var path: String, info: Ptr[PathInfo, MutAnyOrigin]) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetPathInfo.
     """
 
-    ret = _get_dylib_function[
+    var ret = _get_dylib_function[
         lib,
         "SDL_GetPathInfo",
         def(

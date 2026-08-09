@@ -24,7 +24,7 @@ from mojo_rl.io.hdf5.h5_types import H5T_FLOAT, H5T_INTEGER, H5T_SGN_2
 from std.ffi import c_int
 
 
-struct ColumnSpec(Copyable & ImplicitlyDeletable):
+struct ColumnSpec(Copyable & Deinitable):
     var name: String
     var dtype: DType
     var shape: List[Int]

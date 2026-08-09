@@ -8,7 +8,7 @@ Usage:
 """
 
 from std.math import sqrt
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 from std.random import seed as set_seed
 
@@ -64,11 +64,11 @@ def compare_scalar(
         "  ",
         name,
         "| CPU:",
-        String(Float64(cpu_val))[byte=:10],
+        fit(String(Float64(cpu_val)), 10),
         "| GPU:",
-        String(Float64(gpu_val))[byte=:10],
+        fit(String(Float64(gpu_val)), 10),
         "| Diff:",
-        String(diff)[byte=:10],
+        fit(String(diff), 10),
         "|",
         status,
     )
@@ -134,8 +134,11 @@ def extract_gpu_observation[
         src: LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), ImmutAnyOrigin
         ],
-        env: Int,
+        env_arg: Int64,
     ):
+        # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+        # a fixed-width `Int64` and re-binds the original name here.
+        var env = Int(env_arg)
         for i in range(8):
             dst[i] = src[env, LLConstants.OBS_OFFSET + i]
 
@@ -147,7 +150,7 @@ def extract_gpu_observation[
     ](states_buf.unsafe_ptr())
 
     ctx.enqueue_function[copy_obs_kernel, copy_obs_kernel](
-        dst_tensor, src_tensor, env_idx, grid_dim=(1,), block_dim=(1,)
+        dst_tensor, src_tensor, Int64(env_idx), grid_dim=(1,), block_dim=(1,)
     )
     ctx.enqueue_copy(obs_host, obs_buf)
     ctx.synchronize()
@@ -178,9 +181,13 @@ def extract_gpu_body_state[
         src: LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), ImmutAnyOrigin
         ],
-        env: Int,
-        body: Int,
+        env_arg: Int64,
+        body_arg: Int64,
     ):
+        # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+        # a fixed-width `Int64` and re-binds the original name here.
+        var env = Int(env_arg)
+        var body = Int(body_arg)
         var body_off = LLConstants.BODIES_OFFSET + body * BODY_STATE_SIZE
         dst[0] = src[env, body_off + IDX_X]
         dst[1] = src[env, body_off + IDX_Y]
@@ -199,8 +206,8 @@ def extract_gpu_body_state[
     ctx.enqueue_function[copy_body_kernel, copy_body_kernel](
         dst_tensor,
         src_tensor,
-        env_idx,
-        body_idx,
+        Int64(env_idx),
+        Int64(body_idx),
         grid_dim=(1,),
         block_dim=(1,),
     )
@@ -233,8 +240,11 @@ def extract_gpu_metadata[
         src: LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), ImmutAnyOrigin
         ],
-        env: Int,
+        env_arg: Int64,
     ):
+        # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+        # a fixed-width `Int64` and re-binds the original name here.
+        var env = Int(env_arg)
         for i in range(4):
             dst[i] = src[env, LLConstants.METADATA_OFFSET + i]
 
@@ -246,7 +256,7 @@ def extract_gpu_metadata[
     ](states_buf.unsafe_ptr())
 
     ctx.enqueue_function[copy_meta_kernel, copy_meta_kernel](
-        dst_tensor, src_tensor, env_idx, grid_dim=(1,), block_dim=(1,)
+        dst_tensor, src_tensor, Int64(env_idx), grid_dim=(1,), block_dim=(1,)
     )
     ctx.enqueue_copy(meta_host, meta_buf)
     ctx.synchronize()
@@ -610,11 +620,11 @@ def test_flat_terrain_comparison(ctx: DeviceContext) raises -> Bool:
                 "  Step",
                 step + 1,
                 "| CPU reward:",
-                String(Float64(cpu_reward))[byte=:8],
+                fit(String(Float64(cpu_reward)), 8),
                 "| GPU reward:",
-                String(Float64(gpu_reward))[byte=:8],
+                fit(String(Float64(gpu_reward)), 8),
                 "| Diff:",
-                String(reward_diff)[byte=:8],
+                fit(String(reward_diff), 8),
             )
 
         if cpu_done:
@@ -781,11 +791,11 @@ def test_reward_accumulation(ctx: DeviceContext) raises -> Bool:
                 "  Steps 1-",
                 step + 1,
                 "| CPU total:",
-                String(cpu_total_reward)[byte=:8],
+                fit(String(cpu_total_reward), 8),
                 "| GPU total:",
-                String(gpu_total_reward)[byte=:8],
+                fit(String(gpu_total_reward), 8),
                 "| Max diff:",
-                String(max_reward_diff)[byte=:8],
+                fit(String(max_reward_diff), 8),
             )
 
         if cpu_done:
@@ -1423,11 +1433,11 @@ def test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
             action_name,
             ")",
             "| Reward diff:",
-            String(reward_diff)[byte=:8],
+            fit(String(reward_diff), 8),
             "| Pos diff:",
-            String(pos_diff)[byte=:8],
+            fit(String(pos_diff), 8),
             "| Vel diff:",
-            String(vel_diff)[byte=:8],
+            fit(String(vel_diff), 8),
             "|",
             "OK" if step_match else "MISMATCH",
         )
@@ -1683,11 +1693,11 @@ def test_gravity_only(ctx: DeviceContext) raises -> Bool:
                 "  Step",
                 step + 1,
                 "| Pos diff:",
-                String(pos_diff)[byte=:10],
+                fit(String(pos_diff), 10),
                 "| Vel diff:",
-                String(vel_diff)[byte=:10],
+                fit(String(vel_diff), 10),
                 "| Reward diff:",
-                String(reward_diff)[byte=:10],
+                fit(String(reward_diff), 10),
                 "|",
                 "OK" if step_match else "MISMATCH",
             )
@@ -2514,3 +2524,5 @@ def main() raises:
         )
     else:
         print("\nAll tests passed - CPU and GPU behavior appear consistent!")
+
+from mojo_rl.core.fmt import fit

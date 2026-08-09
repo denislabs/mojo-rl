@@ -25,6 +25,7 @@ from mojo_rl.experimental.pcn import (
     PCTrainer,
 )
 from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock
+from mojo_rl.core.fmt import fit
 
 comptime BATCH = 64
 comptime EPOCHS = 3
@@ -172,7 +173,7 @@ def main() raises:
 
     print("\n  test accuracy =", acc, " (", correct, "/",
           N_TEST_BATCHES * BATCH, ")")
-    print("  train time =", String(train_t)[byte=:7], "s  (GPU ref ~17.6s)")
+    print("  train time =", fit(String(train_t), 7), "s  (GPU ref ~17.6s)")
     print("")
     if acc >= PASS_ACC:
         print("✅ PASS — CPU conv-PCN learns MNIST (acc", acc, ")")

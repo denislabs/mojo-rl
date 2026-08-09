@@ -17,7 +17,7 @@ perf lever, not a correctness requirement.
 """
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..fields import DynamicsScratch

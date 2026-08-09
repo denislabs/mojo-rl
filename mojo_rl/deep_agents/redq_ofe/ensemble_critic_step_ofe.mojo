@@ -25,7 +25,7 @@ width-agnostic `concat_sa(_gpu)` glue (its "OBS" param is the first-input width
 — passing PHI_S_DIM there is correct). φ(s) comes in by `mut Tensor` ref.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.constants import DT
@@ -49,7 +49,7 @@ struct EnsembleCriticStepOFE[
     PHI_S_DIM_: Int,
     ACT_: Int,
     BATCH_: Int,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime PHI_S_DIM = Self.PHI_S_DIM_
     comptime ACT = Self.ACT_

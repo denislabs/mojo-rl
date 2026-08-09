@@ -21,7 +21,7 @@ kernels are parametrized by `ADT` (defaulting to DT → NoAMP unchanged).
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
@@ -73,8 +73,11 @@ def _par_write_kernel[
 ](
     slab: LayoutTensor[ADT, Layout.row_major(B, OI), MutAnyOrigin],
     packed: LayoutTensor[ADT, Layout.row_major(B, OD), MutAnyOrigin],
-    off: Int,
+    off_arg: Int64,
 ):
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var off = Int(off_arg)
     var idx = Int(global_idx.x)
     if idx < B * OI:
         var bi = idx // OI
@@ -87,8 +90,11 @@ def _par_read_kernel[
 ](
     packed: LayoutTensor[ADT, Layout.row_major(B, OD), MutAnyOrigin],
     slab: LayoutTensor[ADT, Layout.row_major(B, OI), MutAnyOrigin],
-    off: Int,
+    off_arg: Int64,
 ):
+    # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
+    # a fixed-width `Int64` and re-binds the original name here.
+    var off = Int(off_arg)
     var idx = Int(global_idx.x)
     if idx < B * OI:
         var bi = idx // OI
@@ -212,7 +218,7 @@ struct Parallel[*BRANCHES: Module](Module):
                 ](
                     self.slabs[i].lt["gpu", Layout.row_major(B, oi)](),
                     out.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
-                    off,
+                    Int64(off),
                     grid_dim=(B * oi + TPB - 1) // TPB,
                     block_dim=TPB,
                 )
@@ -257,7 +263,7 @@ struct Parallel[*BRANCHES: Module](Module):
                 ](
                     grad_output.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
                     self.slabs[i].lt["gpu", Layout.row_major(B, oi)](),
-                    off,
+                    Int64(off),
                     grid_dim=(B * oi + TPB - 1) // TPB,
                     block_dim=TPB,
                 )

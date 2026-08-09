@@ -38,7 +38,7 @@ comptime V_MAX = Scalar[DT](300.0)
 comptime GAMMA = Scalar[DT](0.997)
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _a(n: Int) -> Pointer[Scalar[DT], MutAnyOrigin]:
     # Raw scratch for the shared raw-pointer compute_nstep_value_targets.
     return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 

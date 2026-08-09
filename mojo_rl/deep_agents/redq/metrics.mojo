@@ -35,7 +35,7 @@ from mojo_rl.nn.core.metric import LogScalar
 
 
 @fieldwise_init
-struct REDQMetrics(Copyable, Movable, ImplicitlyDeletable):
+struct REDQMetrics(Copyable, Movable, Deinitable):
     var actor_loss:      LogScalar[DT]
     var critic_loss:     LogScalar[DT]
     var alpha:           LogScalar[DT]

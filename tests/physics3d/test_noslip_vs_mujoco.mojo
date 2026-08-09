@@ -58,7 +58,7 @@ from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.fields import Model, Data
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 
 comptime DTYPE = DType.float64

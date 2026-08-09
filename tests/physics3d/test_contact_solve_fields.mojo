@@ -19,7 +19,7 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_contact_solve_fields.m
 """
 
 from std.math import abs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.core.tensor import TensorImpl

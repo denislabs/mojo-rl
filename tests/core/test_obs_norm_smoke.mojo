@@ -4,7 +4,7 @@ Instantiates the running-obs-normalizer, pushes a few batches through
 `update_and_apply`, and checks that the device stats track a hand-computed
 running mean/var and that the in-place normalization is sane.
 
-This is the gate for the UnsafePointer->MutAnyOrigin migration of
+This is the gate for the Pointer->MutAnyOrigin migration of
 `mojo_rl/core/obs_norm.mojo`: it exercises BOTH the update kernel (reads obs,
 writes mean/var/count) and the apply kernel (writes obs, reads mean/var), so
 it surfaces any mutability mismatch that the package build can't (precompile
@@ -12,7 +12,7 @@ doesn't instantiate generics).
 """
 
 from std.math import sqrt
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT as gpu_dtype
 from mojo_rl.core.obs_norm import ObsNormStats

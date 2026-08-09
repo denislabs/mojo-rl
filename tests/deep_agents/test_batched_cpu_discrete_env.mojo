@@ -33,7 +33,7 @@ comptime PongRam = AtariEnv[0]
 
 
 def _make_envs(
-    rom: UnsafePointer[UInt8, MutAnyOrigin],
+    rom: Pointer[UInt8, MutAnyOrigin],
     rom_size: Int,
     max_frames: Int = 108000,
 ) -> List[PongRam]:

@@ -28,7 +28,7 @@ Run with:
 from std.math import abs, sin, cos
 from std.python import Python
 from std.testing import assert_true, TestSuite
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.kinematics.forward_kinematics import (

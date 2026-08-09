@@ -10,7 +10,7 @@ from std.math import isnan
 from std.random import seed, random_float64
 from mojo_rl.envs.metaworld import SawyerReach
 from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.fields import Model
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,

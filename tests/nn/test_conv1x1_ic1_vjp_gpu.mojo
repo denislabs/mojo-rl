@@ -11,7 +11,7 @@ conv: out[b,oc,p] = w[oc]*x[b,p] + bias[oc].
   grads WRONG            → GPU COL=1 conv vjp broken = the reward/dynamics bug
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.core.tensor import Tensor

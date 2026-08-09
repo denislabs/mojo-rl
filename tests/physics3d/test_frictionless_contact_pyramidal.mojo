@@ -51,7 +51,7 @@ from mojo_rl.physics3d.gpu.constants import (
     CONTACT_IDX_FORCE_T1,
     CONTACT_IDX_FORCE_T2,
 )
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 
 comptime DTYPE = DType.float64

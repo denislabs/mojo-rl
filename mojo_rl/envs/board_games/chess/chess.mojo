@@ -35,7 +35,7 @@ from std.random import random_float64
 from mojo_rl.nn.core.ptr import untracked
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import alloc, unsafe_memset
 from std.ffi import c_int, c_float
 from mojo_rl.core import (
@@ -462,9 +462,9 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     var done: Bool
 
     # Renderer
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
+    var _renderer: Optional[Pointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
-    var _sprite_pixels: Optional[UnsafePointer[UInt8, MutUntrackedOrigin]]
+    var _sprite_pixels: Optional[Pointer[UInt8, MutUntrackedOrigin]]
     var _has_sprites: Bool
 
     def __init__(out self):
@@ -1002,7 +1002,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     def close(mut self):
         if self._renderer_initialized:
             self._renderer.value()[].close()
-            self._renderer.value().free()
+            self._renderer.value().unsafe_free()
             self._renderer_initialized = False
 
     def action_from_index(self, action_idx: Int) -> BoardGameAction:
@@ -1240,7 +1240,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         # Create texture from sprite pixels (recreated each frame for simplicity)
         var has_texture = False
         var texture: Optional[
-            UnsafePointer[Texture, MutAnyOrigin]
+            Pointer[Texture, MutAnyOrigin]
         ] = None
         if self._has_sprites:
             try:
@@ -1248,7 +1248,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                     c_int(SPRITE_SHEET_WIDTH),
                     c_int(SPRITE_SHEET_HEIGHT),
                     PixelFormat.PIXELFORMAT_RGBA32,
-                    rebind[UnsafePointer[NoneType, MutAnyOrigin]](
+                    rebind[Pointer[NoneType, MutAnyOrigin]](
                         self._sprite_pixels
                     ),
                     c_int(SPRITE_SHEET_WIDTH * SPRITE_BPP),
@@ -1306,17 +1306,17 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                             render_texture(
                                 renderer.sdl_renderer.value(),
                                 texture.value(),
-                                rebind[UnsafePointer[FRect, ImmutAnyOrigin]](
+                                rebind[Pointer[FRect, ImmutAnyOrigin]](
                                     src_rect
                                 ),
-                                rebind[UnsafePointer[FRect, ImmutAnyOrigin]](
+                                rebind[Pointer[FRect, ImmutAnyOrigin]](
                                     dst_rect
                                 ),
                             )
                         except:
                             pass
-                        src_rect.free()
-                        dst_rect.free()
+                        src_rect.unsafe_free()
+                        dst_rect.unsafe_free()
                 elif piece != EMPTY:
                     # Fallback: draw text
                     var pc = _piece_char(piece)
@@ -1394,10 +1394,10 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         if not self._renderer_initialized:
             return
         self._renderer.value()[].close()
-        self._renderer.value().free()
+        self._renderer.value().unsafe_free()
         self._renderer_initialized = False
         if self._has_sprites:
-            self._sprite_pixels.value().free()
+            self._sprite_pixels.value().unsafe_free()
             self._has_sprites = False
 
     def is_renderer_open(self) -> Bool:
@@ -2359,7 +2359,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         mut obs_buf: DeviceBuffer[board_dtype],
         mut legal_masks_buf: DeviceBuffer[board_dtype],
         rng_seed: UInt64 = 0,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[Pointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
             board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
@@ -2472,7 +2472,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         mut states_buf: DeviceBuffer[board_dtype],
         mut dones_buf: DeviceBuffer[board_dtype],
         rng_seed: UInt64,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[Pointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
             board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
@@ -2516,7 +2516,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         var states = LayoutTensor[
             board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ](
-            rebind[UnsafePointer[Scalar[board_dtype], MutAnyOrigin]](
+            rebind[Pointer[Scalar[board_dtype], MutAnyOrigin]](
                 states_buf.unsafe_ptr()
             )
         )

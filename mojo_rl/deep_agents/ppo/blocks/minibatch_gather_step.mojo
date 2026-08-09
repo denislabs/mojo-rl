@@ -16,7 +16,7 @@ mirrors are `upload`ed so the actor/critic train steps read the device buffers.
 Indices stay an Int32 raw pointer on `state.indices` (Tensor is DT-only).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.random import random_float64
 from std.math import sqrt as fsqrt
 
@@ -29,7 +29,7 @@ struct PPOMinibatchGatherStep[
     ACT_: Int,
     ROLLOUT_LEN_: Int,
     MINIBATCH_: Int,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime ROLLOUT_LEN = Self.ROLLOUT_LEN_
@@ -60,7 +60,7 @@ struct PPOMinibatchGatherStep[
         resets once per rollout, not once per epoch)."""
         var idx_p = state.indices.value()
         for k in range(Self.ROLLOUT_LEN * N_ENVS):
-            idx_p[k] = Int32(k)
+            idx_p[unsafe_offset=k] = Int32(k)
 
     def shuffle_epoch[target: StaticString, N_ENVS: Int](
         mut self,
@@ -77,9 +77,9 @@ struct PPOMinibatchGatherStep[
             var j = Int(random_float64() * Float64(t + 1))
             if j > t:
                 j = t
-            var tmp = idx_p[t]
-            idx_p[t] = idx_p[j]
-            idx_p[j] = tmp
+            var tmp = idx_p[unsafe_offset=t]
+            idx_p[unsafe_offset=t] = idx_p[unsafe_offset=j]
+            idx_p[unsafe_offset=j] = tmp
 
     def gather[target: StaticString, N_ENVS: Int](
         mut self,
@@ -110,7 +110,7 @@ struct PPOMinibatchGatherStep[
         ref mb_ret = state.mb_ret.data
         var idx_p = state.indices.value()
         for k in range(Self.MINIBATCH):
-            var src = Int(idx_p[mb_idx * Self.MINIBATCH + k])
+            var src = Int(idx_p[unsafe_offset=mb_idx * Self.MINIBATCH + k])
             for d in range(Self.OBS):
                 mb_obs[k * Self.OBS + d] = obs[src * Self.OBS + d]
             for j in range(Self.ACT):

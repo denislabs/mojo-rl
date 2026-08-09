@@ -89,7 +89,7 @@ def _default_axis[
         out[1] = Scalar[DTYPE](1)
     else:
         out[2] = Scalar[DTYPE](1)
-    return out
+    return out^
 
 
 @always_inline
@@ -164,4 +164,4 @@ def contact_tangent_frame[
     out[3] = ny * t1z - nz * t1y
     out[4] = nz * t1x - nx * t1z
     out[5] = nx * t1y - ny * t1x
-    return out
+    return out^

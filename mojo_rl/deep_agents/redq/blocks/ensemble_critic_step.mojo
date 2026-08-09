@@ -15,7 +15,7 @@ already builds (s,a) internally via the storage `mb_*` Tensors) — so the legac
 `_mb_sa` scratch + `concat_sa` here are gone.
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.constants import DT
@@ -36,7 +36,7 @@ struct EnsembleCriticStep[
     OBS_: Int,
     ACT_: Int,
     BATCH_: Int,
-](Defaultable & Movable & ImplicitlyDeletable):
+](Defaultable & Movable & Deinitable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_

@@ -37,7 +37,7 @@ from mojo_rl.nn.constants import DT
 
 
 @fieldwise_init
-struct Timer(Movable & ImplicitlyDeletable):
+struct Timer(Movable & Deinitable):
     """Section-indexed wall-time accumulator. Labels are declared via
     `add_section`; index order matches declaration order."""
 

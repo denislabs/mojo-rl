@@ -17,7 +17,7 @@ go_*, gi_inner, out, grads) is `TensorImpl[Self.ACT_DT]` and the shared kernels
 run at that dtype (`ADT` defaults to DT → NoAMP unchanged).
 """
 
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W

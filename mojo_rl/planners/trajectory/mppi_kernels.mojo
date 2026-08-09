@@ -42,8 +42,9 @@ Kernels:
 """
 
 from layout import LayoutTensor, Layout
-from std.gpu import thread_idx, block_idx, block_dim, barrier
-from std.gpu.memory import AddressSpace
+from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu.sync import barrier
+from max.gpu.memory import AddressSpace
 from std.math import exp, log, sqrt, cos, isnan, isinf
 from std.random.philox import Random as PhiloxRandom
 

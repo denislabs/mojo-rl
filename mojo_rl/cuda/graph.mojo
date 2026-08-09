@@ -21,10 +21,10 @@ by pixi nvidia environment activation).
 from std.sys import has_nvidia_gpu_accelerator
 from std.ffi import OwnedDLHandle, c_int
 from std.memory import alloc
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 
 
-comptime _CUptr = UnsafePointer[NoneType, MutUntrackedOrigin]
+comptime _CUptr = Pointer[NoneType, MutUntrackedOrigin]
 
 
 @always_inline
@@ -101,13 +101,13 @@ struct CUDAGraph(Movable):
             else:
                 # Create replay stream
                 var stream_create = self._lib.get_function[
-                    def(UnsafePointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
+                    def(Pointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
                 ]("intercept_stream_create")()
                 var stream_buf = alloc[_CUptr](1)
                 stream_buf[] = _uninit[_CUptr]()
                 _ = stream_create(stream_buf)
                 self._replay_stream = stream_buf[]
-                stream_buf.free()
+                stream_buf.unsafe_free()
         else:
             self._lib = _uninit[OwnedDLHandle]()
 
@@ -157,11 +157,11 @@ struct CUDAGraph(Movable):
         var graph_buf = alloc[_CUptr](1)
         graph_buf[] = _uninit[_CUptr]()
         var end_capture = self._lib.get_function[
-            def(_CUptr, UnsafePointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
+            def(_CUptr, Pointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
         ]("intercept_stream_end_capture")()
         var r_end = end_capture(self._mojo_stream, graph_buf)
         self._graph = graph_buf[]
-        graph_buf.free()
+        graph_buf.unsafe_free()
 
         if r_end != 0:
             self._state = 0
@@ -173,11 +173,11 @@ struct CUDAGraph(Movable):
         var num_buf = alloc[UInt64](1)
         num_buf[] = UInt64(0)
         var get_nodes = self._lib.get_function[
-            def(_CUptr, UnsafePointer[UInt64, MutUntrackedOrigin]) thin -> c_int
+            def(_CUptr, Pointer[UInt64, MutUntrackedOrigin]) thin -> c_int
         ]("intercept_graph_get_nodes")()
         _ = get_nodes(self._graph, num_buf)
         self._num_nodes = Int(num_buf[])
-        num_buf.free()
+        num_buf.unsafe_free()
 
         if self._num_nodes == 0:
             self._state = 0
@@ -190,11 +190,11 @@ struct CUDAGraph(Movable):
         var exec_buf = alloc[_CUptr](1)
         exec_buf[] = _uninit[_CUptr]()
         var instantiate = self._lib.get_function[
-            def(UnsafePointer[_CUptr, MutUntrackedOrigin], _CUptr) thin -> c_int
+            def(Pointer[_CUptr, MutUntrackedOrigin], _CUptr) thin -> c_int
         ]("intercept_graph_instantiate")()
         var r_inst = instantiate(exec_buf, self._graph)
         self._exec = exec_buf[]
-        exec_buf.free()
+        exec_buf.unsafe_free()
 
         if r_inst != 0:
             self._state = 0

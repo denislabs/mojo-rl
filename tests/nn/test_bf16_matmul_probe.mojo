@@ -5,7 +5,7 @@ and we'd need a custom bf16 MMA kernel.
 """
 
 from std.math import abs as fabs
-from std.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext
 from std.testing import assert_true
 from layout import TileTensor, row_major
 from linalg.matmul import matmul as max_matmul

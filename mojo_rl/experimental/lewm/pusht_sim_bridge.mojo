@@ -28,7 +28,7 @@ def sim_frame_chw_norm[
     block_angle: Scalar[DT],
     agent_cx: Scalar[DT],
     agent_cy: Scalar[DT],
-    dst_chw: UnsafePointer[Scalar[DT], do],
+    dst_chw: Pointer[Scalar[DT], do],
 ) raises:
     """Render one PushT state at OUT×OUT and write CHW [0,1] (3·OUT·OUT) to
     `dst_chw` — the LeWM encoder's per-frame input layout."""
@@ -45,7 +45,7 @@ def sim_frame_chw_norm[
     for c in range(3):
         for y in range(OUT):
             for x in range(OUT):
-                dst_chw[c * HW + y * OUT + x] = (
-                    tmp[(y * OUT + x) * 3 + c] * inv
+                dst_chw[unsafe_offset=c * HW + y * OUT + x] = (
+                    tmp[unsafe_offset=(y * OUT + x) * 3 + c] * inv
                 )
-    tmp.free()
+    tmp.unsafe_free()

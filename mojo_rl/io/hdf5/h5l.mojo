@@ -37,7 +37,7 @@ def h5l_get_name_by_idx(
     idx_type: c_int,
     order: c_int,
     n: hsize_t,
-    name: UnsafePointer[c_char, MutUntrackedOrigin],
+    name: Pointer[c_char, MutUntrackedOrigin],
     size: c_size_t,
     lapl_id: hid_t,
 ) raises -> Int64:
@@ -56,7 +56,7 @@ def h5l_get_name_by_idx(
             c_int,
             c_int,
             hsize_t,
-            UnsafePointer[c_char, MutUntrackedOrigin],
+            Pointer[c_char, MutUntrackedOrigin],
             c_size_t,
             hid_t,
         ) thin -> Int64,
@@ -99,7 +99,7 @@ def list_link_names(loc_id: hid_t) raises -> List[String]:
         if n < 0:
             break
         if Int(n) >= _NAME_BUF:
-            buf.free()
+            buf.unsafe_free()
             raise Error(
                 "hdf5: link name at index " + String(i) + " is "
                 + String(Int(n)) + " bytes, exceeding the "
@@ -107,8 +107,8 @@ def list_link_names(loc_id: hid_t) raises -> List[String]:
             )
         var s = String()
         for k in range(Int(n)):
-            s += chr(Int(buf[k]))
+            s += chr(Int(buf[unsafe_offset=k]))
         names.append(s)
         i += 1
-    buf.free()
+    buf.unsafe_free()
     return names^

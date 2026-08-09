@@ -9,7 +9,7 @@ function that currently no-op so the rest of the pipeline stays
 correct. The next session fills them in.
 
 All functions operate on a single env's flat state slice
-(`UnsafePointer[Float32, MutAnyOrigin]`) so the same code can later be
+(`Pointer[Float32, MutAnyOrigin]`) so the same code can later be
 called from a GPU kernel.
 
 Mirrors `references/Craftax-main/craftax/craftax/game_logic.py`
@@ -318,7 +318,7 @@ from .state import (
 # Type alias
 # ============================================================================
 
-comptime State = UnsafePointer[Float32, MutAnyOrigin]
+comptime State = Pointer[Float32, MutAnyOrigin]
 
 
 # ============================================================================
@@ -380,37 +380,37 @@ def is_solid(block: Int) -> Bool:
 
 @always_inline
 def floor_idx(s: State) -> Int:
-    return Int(s[S_PLAYER_LEVEL])
+    return Int(s[unsafe_offset=S_PLAYER_LEVEL])
 
 
 @always_inline
 def get_map(s: State, floor: Int, y: Int, x: Int) -> Int:
-    return Int(s[s_map(floor, y, x)])
+    return Int(s[unsafe_offset=s_map(floor, y, x)])
 
 
 @always_inline
 def set_map(s: State, floor: Int, y: Int, x: Int, block: Int):
-    s[s_map(floor, y, x)] = Float32(block)
+    s[unsafe_offset=s_map(floor, y, x)] = Float32(block)
 
 
 @always_inline
 def get_item(s: State, floor: Int, y: Int, x: Int) -> Int:
-    return Int(s[s_item_map(floor, y, x)])
+    return Int(s[unsafe_offset=s_item_map(floor, y, x)])
 
 
 @always_inline
 def set_item(s: State, floor: Int, y: Int, x: Int, item: Int):
-    s[s_item_map(floor, y, x)] = Float32(item)
+    s[unsafe_offset=s_item_map(floor, y, x)] = Float32(item)
 
 
 @always_inline
 def get_mob_map(s: State, floor: Int, y: Int, x: Int) -> Int:
-    return Int(s[s_mob_map(floor, y, x)])
+    return Int(s[unsafe_offset=s_mob_map(floor, y, x)])
 
 
 @always_inline
 def set_mob_map(s: State, floor: Int, y: Int, x: Int, v: Int):
-    s[s_mob_map(floor, y, x)] = Float32(v)
+    s[unsafe_offset=s_mob_map(floor, y, x)] = Float32(v)
 
 
 @always_inline
@@ -424,23 +424,23 @@ def is_in_mob(s: State, floor: Int, y: Int, x: Int) -> Bool:
 
 @always_inline
 def player_pos(s: State) -> Tuple[Int, Int]:
-    return (Int(s[S_PLAYER_POS]), Int(s[S_PLAYER_POS + 1]))
+    return (Int(s[unsafe_offset=S_PLAYER_POS]), Int(s[unsafe_offset=S_PLAYER_POS + 1]))
 
 
 @always_inline
 def set_player_pos(s: State, y: Int, x: Int):
-    s[S_PLAYER_POS] = Float32(y)
-    s[S_PLAYER_POS + 1] = Float32(x)
+    s[unsafe_offset=S_PLAYER_POS] = Float32(y)
+    s[unsafe_offset=S_PLAYER_POS + 1] = Float32(x)
 
 
 @always_inline
 def player_dir(s: State) -> Int:
-    return Int(s[S_PLAYER_DIR])
+    return Int(s[unsafe_offset=S_PLAYER_DIR])
 
 
 @always_inline
 def set_player_dir(s: State, d: Int):
-    s[S_PLAYER_DIR] = Float32(d)
+    s[unsafe_offset=S_PLAYER_DIR] = Float32(d)
 
 
 # ============================================================================
@@ -449,7 +449,7 @@ def set_player_dir(s: State, d: Int):
 
 @always_inline
 def get_inv(s: State, slot: Int) -> Int:
-    return Int(s[s_inv(slot)])
+    return Int(s[unsafe_offset=s_inv(slot)])
 
 
 @always_inline
@@ -461,7 +461,7 @@ def set_inv(s: State, slot: Int, v: Int):
         # Tier slots (pickaxe/sword/bow/armour) are not counts — uncapped
         # via the INV_MAX_PER_SLOT rule; raw materials are capped.
         x = INV_MAX_PER_SLOT
-    s[s_inv(slot)] = Float32(x)
+    s[unsafe_offset=s_inv(slot)] = Float32(x)
 
 
 @always_inline
@@ -472,17 +472,17 @@ def add_inv(s: State, slot: Int, delta: Int):
 @always_inline
 def cap_inventory(s: State):
     for i in range(NUM_INVENTORY):
-        var v = Int(s[s_inv(i)])
+        var v = Int(s[unsafe_offset=s_inv(i)])
         if v < 0:
             v = 0
         elif v > INV_MAX_PER_SLOT and i != INV_PICKAXE and i != INV_SWORD:
             v = INV_MAX_PER_SLOT
-        s[s_inv(i)] = Float32(v)
+        s[unsafe_offset=s_inv(i)] = Float32(v)
 
 
 @always_inline
 def get_intr(s: State, slot: Int) -> Int:
-    return Int(s[s_intrinsic(slot)])
+    return Int(s[unsafe_offset=s_intrinsic(slot)])
 
 
 @always_inline
@@ -492,7 +492,7 @@ def set_intr(s: State, slot: Int, v: Int):
         x = 0
     if x > INTRINSIC_MAX:
         x = INTRINSIC_MAX
-    s[s_intrinsic(slot)] = Float32(x)
+    s[unsafe_offset=s_intrinsic(slot)] = Float32(x)
 
 
 @always_inline
@@ -502,12 +502,12 @@ def add_intr(s: State, slot: Int, delta: Int):
 
 @always_inline
 def get_intr_f(s: State, slot: Int) -> Float32:
-    return s[s_intrinsic_f(slot)]
+    return s[unsafe_offset=s_intrinsic_f(slot)]
 
 
 @always_inline
 def set_intr_f(s: State, slot: Int, v: Float32):
-    s[s_intrinsic_f(slot)] = v
+    s[unsafe_offset=s_intrinsic_f(slot)] = v
 
 
 @always_inline
@@ -542,12 +542,12 @@ def set_resting(s: State, v: Bool):
 
 @always_inline
 def get_attr(s: State, slot: Int) -> Int:
-    return Int(s[s_attribute(slot)])
+    return Int(s[unsafe_offset=s_attribute(slot)])
 
 
 @always_inline
 def set_attr(s: State, slot: Int, v: Int):
-    s[s_attribute(slot)] = Float32(v)
+    s[unsafe_offset=s_attribute(slot)] = Float32(v)
 
 
 @always_inline
@@ -561,12 +561,12 @@ def add_attr(s: State, slot: Int, delta: Int):
 
 @always_inline
 def set_achievement(s: State, idx: Int):
-    s[s_achievement(idx)] = Float32(1.0)
+    s[unsafe_offset=s_achievement(idx)] = Float32(1.0)
 
 
 @always_inline
 def get_ach(s: State, idx: Int) -> Bool:
-    return s[s_achievement(idx)] > Float32(0.5)
+    return s[unsafe_offset=s_achievement(idx)] > Float32(0.5)
 
 
 @always_inline
@@ -627,22 +627,22 @@ def best_sword_damage(s: State) -> Int:
 
 @always_inline
 def plant_mask_get(s: State, i: Int) -> Bool:
-    return s[s_plant_mask(i)] > 0
+    return s[unsafe_offset=s_plant_mask(i)] > 0
 
 
 @always_inline
 def plant_mask_set(s: State, i: Int, v: Bool):
-    s[s_plant_mask(i)] = Float32(1.0) if v else Float32(0.0)
+    s[unsafe_offset=s_plant_mask(i)] = Float32(1.0) if v else Float32(0.0)
 
 
 @always_inline
 def plant_get(s: State, i: Int, f: Int) -> Float32:
-    return s[s_plant(i, f)]
+    return s[unsafe_offset=s_plant(i, f)]
 
 
 @always_inline
 def plant_set(s: State, i: Int, f: Int, v: Float32):
-    s[s_plant(i, f)] = v
+    s[unsafe_offset=s_plant(i, f)] = v
 
 
 @always_inline
@@ -727,14 +727,14 @@ def change_floor(s: State, action: Int):
             return
         if floor >= NUM_FLOORS - 1:
             return
-        if Int(s[s_monsters_killed(floor)]) < MONSTERS_KILLED_TO_CLEAR_LEVEL:
+        if Int(s[unsafe_offset=s_monsters_killed(floor)]) < MONSTERS_KILLED_TO_CLEAR_LEVEL:
             return
         var nf = floor + 1
-        s[S_PLAYER_LEVEL] = Float32(nf)
+        s[unsafe_offset=S_PLAYER_LEVEL] = Float32(nf)
         # Spawn at the destination floor's ladder_up coords (so we land
         # next to a ladder going back).
-        var ny = Int(s[s_up_ladder(nf, 0)])
-        var nx = Int(s[s_up_ladder(nf, 1)])
+        var ny = Int(s[unsafe_offset=s_up_ladder(nf, 0)])
+        var nx = Int(s[unsafe_offset=s_up_ladder(nf, 1)])
         if in_bounds(ny, nx):
             set_player_pos(s, ny, nx)
         # Floor-entry achievements.
@@ -760,9 +760,9 @@ def change_floor(s: State, action: Int):
         if floor <= 0:
             return
         var nf = floor - 1
-        s[S_PLAYER_LEVEL] = Float32(nf)
-        var ny = Int(s[s_down_ladder(nf, 0)])
-        var nx = Int(s[s_down_ladder(nf, 1)])
+        s[unsafe_offset=S_PLAYER_LEVEL] = Float32(nf)
+        var ny = Int(s[unsafe_offset=s_down_ladder(nf, 0)])
+        var nx = Int(s[unsafe_offset=s_down_ladder(nf, 1)])
         if in_bounds(ny, nx):
             set_player_pos(s, ny, nx)
 
@@ -1057,7 +1057,7 @@ def do_action(s: State, action: Int, mut rng: PhiloxRandom):
         # the next session). For now: 1 wood, 1 stone — and the
         # achievement.
         set_map(s, floor, ty, tx, BLOCK_PATH)
-        s[s_chest_opened(floor)] = Float32(1.0)
+        s[unsafe_offset=s_chest_opened(floor)] = Float32(1.0)
         add_inv(s, INV_WOOD, 1)
         add_inv(s, INV_STONE, 1)
         set_achievement(s, ACH_OPEN_CHEST)
@@ -1083,36 +1083,36 @@ def _try_attack_mob(s: State, floor: Int, y: Int, x: Int):
     var dmg = best_sword_damage(s)
     # Scan melee mobs.
     for i in range(MAX_MELEE_MOBS):
-        if s[s_melee_mob(floor, i, MOB_MASK)] > 0:
-            var my = Int(s[s_melee_mob(floor, i, MOB_FY)])
-            var mx = Int(s[s_melee_mob(floor, i, MOB_FX)])
+        if s[unsafe_offset=s_melee_mob(floor, i, MOB_MASK)] > 0:
+            var my = Int(s[unsafe_offset=s_melee_mob(floor, i, MOB_FY)])
+            var mx = Int(s[unsafe_offset=s_melee_mob(floor, i, MOB_FX)])
             if my == y and mx == x:
                 var new_hp = Int(
-                    s[s_melee_mob(floor, i, MOB_HP)]
+                    s[unsafe_offset=s_melee_mob(floor, i, MOB_HP)]
                 ) - dmg
                 if new_hp < 0:
                     new_hp = 0
-                s[s_melee_mob(floor, i, MOB_HP)] = Float32(new_hp)
+                s[unsafe_offset=s_melee_mob(floor, i, MOB_HP)] = Float32(new_hp)
                 if new_hp == 0:
-                    s[s_melee_mob(floor, i, MOB_MASK)] = Float32(0.0)
+                    s[unsafe_offset=s_melee_mob(floor, i, MOB_MASK)] = Float32(0.0)
                     set_mob_map(s, floor, my, mx, 0)
-                    s[s_monsters_killed(floor)] += Float32(1.0)
+                    s[unsafe_offset=s_monsters_killed(floor)] += Float32(1.0)
                     # XP reward.
                     add_attr(s, ATTR_XP, 1)
                 return
     for i in range(MAX_PASSIVE_MOBS):
-        if s[s_passive_mob(floor, i, MOB_MASK)] > 0:
-            var my = Int(s[s_passive_mob(floor, i, MOB_FY)])
-            var mx = Int(s[s_passive_mob(floor, i, MOB_FX)])
+        if s[unsafe_offset=s_passive_mob(floor, i, MOB_MASK)] > 0:
+            var my = Int(s[unsafe_offset=s_passive_mob(floor, i, MOB_FY)])
+            var mx = Int(s[unsafe_offset=s_passive_mob(floor, i, MOB_FX)])
             if my == y and mx == x:
                 var new_hp = Int(
-                    s[s_passive_mob(floor, i, MOB_HP)]
+                    s[unsafe_offset=s_passive_mob(floor, i, MOB_HP)]
                 ) - dmg
                 if new_hp < 0:
                     new_hp = 0
-                s[s_passive_mob(floor, i, MOB_HP)] = Float32(new_hp)
+                s[unsafe_offset=s_passive_mob(floor, i, MOB_HP)] = Float32(new_hp)
                 if new_hp == 0:
-                    s[s_passive_mob(floor, i, MOB_MASK)] = Float32(0.0)
+                    s[unsafe_offset=s_passive_mob(floor, i, MOB_MASK)] = Float32(0.0)
                     set_mob_map(s, floor, my, mx, 0)
                     # Eat the corpse (cow/bat/snail boost).
                     add_intr(s, INTRINSIC_FOOD, COW_EAT_BOOST)
@@ -1120,20 +1120,20 @@ def _try_attack_mob(s: State, floor: Int, y: Int, x: Int):
                     set_achievement(s, ACH_EAT_COW)
                 return
     for i in range(MAX_RANGED_MOBS):
-        if s[s_ranged_mob(floor, i, MOB_MASK)] > 0:
-            var my = Int(s[s_ranged_mob(floor, i, MOB_FY)])
-            var mx = Int(s[s_ranged_mob(floor, i, MOB_FX)])
+        if s[unsafe_offset=s_ranged_mob(floor, i, MOB_MASK)] > 0:
+            var my = Int(s[unsafe_offset=s_ranged_mob(floor, i, MOB_FY)])
+            var mx = Int(s[unsafe_offset=s_ranged_mob(floor, i, MOB_FX)])
             if my == y and mx == x:
                 var new_hp = Int(
-                    s[s_ranged_mob(floor, i, MOB_HP)]
+                    s[unsafe_offset=s_ranged_mob(floor, i, MOB_HP)]
                 ) - dmg
                 if new_hp < 0:
                     new_hp = 0
-                s[s_ranged_mob(floor, i, MOB_HP)] = Float32(new_hp)
+                s[unsafe_offset=s_ranged_mob(floor, i, MOB_HP)] = Float32(new_hp)
                 if new_hp == 0:
-                    s[s_ranged_mob(floor, i, MOB_MASK)] = Float32(0.0)
+                    s[unsafe_offset=s_ranged_mob(floor, i, MOB_MASK)] = Float32(0.0)
                     set_mob_map(s, floor, my, mx, 0)
-                    s[s_monsters_killed(floor)] += Float32(1.0)
+                    s[unsafe_offset=s_monsters_killed(floor)] += Float32(1.0)
                     add_attr(s, ATTR_XP, 1)
                 return
 
@@ -1246,7 +1246,7 @@ def update_light_level(s: State, timestep_after: Int):
     ) + Float32(0.3)
     var c = math_cos(Float32(3.14159265) * progress)
     var ac = c if c >= Float32(0.0) else -c
-    s[S_LIGHT_LEVEL] = Float32(1.0) - ac * ac * ac
+    s[unsafe_offset=S_LIGHT_LEVEL] = Float32(1.0) - ac * ac * ac
 
 
 # ============================================================================
@@ -1267,14 +1267,14 @@ def shoot_projectile(s: State, action: Int):
 def cast_spell(s: State, action: Int):
     if action == ACTION_CAST_FIREBALL:
         if (
-            s[s_learned_spell(SPELL_FIREBALL)] > 0
+            s[unsafe_offset=s_learned_spell(SPELL_FIREBALL)] > 0
             and get_intr(s, INTRINSIC_MANA) >= MANA_COST_FIREBALL
         ):
             add_intr(s, INTRINSIC_MANA, -MANA_COST_FIREBALL)
             set_achievement(s, ACH_CAST_FIREBALL)
     elif action == ACTION_CAST_ICEBALL:
         if (
-            s[s_learned_spell(SPELL_ICEBALL)] > 0
+            s[unsafe_offset=s_learned_spell(SPELL_ICEBALL)] > 0
             and get_intr(s, INTRINSIC_MANA) >= MANA_COST_ICEBALL
         ):
             add_intr(s, INTRINSIC_MANA, -MANA_COST_ICEBALL)
@@ -1305,10 +1305,10 @@ def read_book(s: State, mut rng: PhiloxRandom, action: Int):
     add_inv(s, INV_BOOKS, -1)
     var u = rng.step_uniform()
     if Float32(u[0]) < Float32(0.5):
-        s[s_learned_spell(SPELL_FIREBALL)] = Float32(1.0)
+        s[unsafe_offset=s_learned_spell(SPELL_FIREBALL)] = Float32(1.0)
         set_achievement(s, ACH_LEARN_FIREBALL)
     else:
-        s[s_learned_spell(SPELL_ICEBALL)] = Float32(1.0)
+        s[unsafe_offset=s_learned_spell(SPELL_ICEBALL)] = Float32(1.0)
         set_achievement(s, ACH_LEARN_ICEBALL)
 
 
@@ -1335,16 +1335,16 @@ def enchant(s: State, mut rng: PhiloxRandom, action: Int):
 
     if action == ACTION_ENCHANT_SWORD:
         if sword_tier(s) >= 1:
-            s[S_SWORD_ENCHANT] = Float32(enchant_kind)
+            s[unsafe_offset=S_SWORD_ENCHANT] = Float32(enchant_kind)
             set_achievement(s, ACH_ENCHANT_SWORD)
     elif action == ACTION_ENCHANT_BOW:
         if get_inv(s, INV_BOW) >= 1:
-            s[S_BOW_ENCHANT] = Float32(enchant_kind)
+            s[unsafe_offset=S_BOW_ENCHANT] = Float32(enchant_kind)
     elif action == ACTION_ENCHANT_ARMOUR:
         for slot in [INV_ARMOUR_HEAD, INV_ARMOUR_BODY, INV_ARMOUR_LEGS, INV_ARMOUR_FEET]:
             if get_inv(s, slot) >= 1:
                 var idx = slot - INV_ARMOUR_HEAD
-                s[s_armour_enchant(idx)] = Float32(enchant_kind)
+                s[unsafe_offset=s_armour_enchant(idx)] = Float32(enchant_kind)
                 set_achievement(s, ACH_ENCHANT_ARMOUR)
                 break
 
@@ -1471,8 +1471,8 @@ def apply_step_inline(s: State, action: Int, mut rng: PhiloxRandom) -> Tuple[Flo
     var reward = ach_reward + hp_reward
 
     # Advance timestep + recompute light.
-    var t1 = Int(s[S_TIMESTEP]) + 1
-    s[S_TIMESTEP] = Float32(t1)
+    var t1 = Int(s[unsafe_offset=S_TIMESTEP]) + 1
+    s[unsafe_offset=S_TIMESTEP] = Float32(t1)
     update_light_level(s, t1)
 
     return (reward, is_game_over(s, t1))

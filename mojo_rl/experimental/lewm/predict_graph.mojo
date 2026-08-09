@@ -23,8 +23,8 @@ boundary (GPU ABI interop), not the framework.
 """
 
 from std.collections import Dict
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from max.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
@@ -118,7 +118,7 @@ struct LeWMPredictor[
     BATCH: Int,
     target: StaticString = "cpu",
     PRED_DIM_HEAD: Int = 0,
-](Movable & ImplicitlyDeletable):
+](Movable & Deinitable):
     # PRED_DIM_HEAD added last (after target) so existing positional call
     # sites (Pong, default 0 ⇒ EMB/PRED_HEADS) are unchanged; >0 selects the
     # paper's expanded predictor attention to match a paper-width WM.
@@ -198,11 +198,11 @@ struct LeWMPredictor[
         comptime if Self.target == "cpu":
             t.data = List[Scalar[DT]](length=N, fill=Scalar[DT](0))
             for i in range(N):
-                t.data[i] = rebind[Scalar[DT]](src.ptr[i])
+                t.data[i] = rebind[Scalar[DT]](src.ptr[unsafe_offset=i])
             t.n = N
         else:
             var c = self.ctx.value()
-            var sp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](src.ptr)
+            var sp = rebind[Pointer[Scalar[DT], MutAnyOrigin]](src.ptr)
             t.dev = DeviceBuffer[DT](c, sp, N, owning=False)
             t.n = N
         self.graph.set_input[slot_name, Self.BATCH](t, self.ctx)
@@ -239,10 +239,10 @@ struct LeWMPredictor[
         comptime N = Self.BATCH * Self.HE
         comptime if Self.target == "cpu":
             for i in range(N):
-                pred_out.ptr[i] = self.out_buf.data[i]
+                pred_out.ptr[unsafe_offset=i] = self.out_buf.data[i]
         else:
             var c = self.ctx.value()
-            var dp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            var dp = rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                 pred_out.ptr
             )
             var db = DeviceBuffer[DT](c, dp, N, owning=False)

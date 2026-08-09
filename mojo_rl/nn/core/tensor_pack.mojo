@@ -10,7 +10,7 @@ from .tensor import Tensor, TensorImpl
 
 
 struct TensorPack[N: Int, ADT: DType = DT](
-    Defaultable & Movable & ImplicitlyDeletable
+    Defaultable & Movable & Deinitable
 ):
     """`ADT` is the element (activation) dtype — `DT` (fp32) by default, so the
     bare `TensorPack[N]` is unchanged; bf16-flow combinators use the child's
