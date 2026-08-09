@@ -20,7 +20,7 @@ by pixi nvidia environment activation).
 
 from std.sys import has_nvidia_gpu_accelerator
 from std.ffi import OwnedDLHandle, c_int
-from std.memory import alloc
+from std.memory import alloc, dealloc
 from max.gpu.host import DeviceContext
 
 
@@ -97,12 +97,15 @@ struct CUDAGraph(Movable):
                 )
             else:
                 # Create replay stream
-                var stream_create = self._lib.get_function[c_int]("intercept_stream_create")
-                var stream_buf = alloc[_CUptr](1)
-                stream_buf[] = _uninit[_CUptr]()
+                var stream_create = self._lib.get_function[c_int](
+                    "intercept_stream_create"
+                )
+                var stream_alloc = alloc[_CUptr]({count = 1})
+                var stream_buf = stream_alloc.unsafe_ptr()
+                stream_buf.unsafe_write(_uninit[_CUptr]())
                 _ = stream_create(stream_buf)
                 self._replay_stream = stream_buf[]
-                stream_buf.unsafe_free()
+                dealloc(stream_alloc^)
         else:
             self._lib = _uninit[OwnedDLHandle]()
 
@@ -142,13 +145,24 @@ struct CUDAGraph(Movable):
         if self._state != 1:
             raise Error("[CUDAGraph] Not capturing.")
 
-        # End capture
-        var graph_buf = alloc[_CUptr](1)
-        graph_buf[] = _uninit[_CUptr]()
-        var end_capture = self._lib.get_function[c_int]("intercept_stream_end_capture")
+        # End capture.
+        #
+        # Symbol resolution is hoisted ABOVE each allocation throughout this
+        # method. `get_function` raises if the symbol is missing, and an
+        # `Allocation` must be consumed on every path out of the scope — so a
+        # raising call sandwiched between the allocation and its `dealloc`
+        # leaks the buffer (and does not compile). Resolving first leaves no
+        # raising call in the window, which is why none of these need a
+        # `try`/`except`.
+        var end_capture = self._lib.get_function[c_int](
+            "intercept_stream_end_capture"
+        )
+        var graph_alloc = alloc[_CUptr]({count = 1})
+        var graph_buf = graph_alloc.unsafe_ptr()
+        graph_buf.unsafe_write(_uninit[_CUptr]())
         var r_end = end_capture(self._mojo_stream, graph_buf)
         self._graph = graph_buf[]
-        graph_buf.unsafe_free()
+        dealloc(graph_alloc^)
 
         if r_end != 0:
             self._state = 0
@@ -157,12 +171,15 @@ struct CUDAGraph(Movable):
             )
 
         # Count nodes
-        var num_buf = alloc[UInt64](1)
-        num_buf[] = UInt64(0)
-        var get_nodes = self._lib.get_function[c_int]("intercept_graph_get_nodes")
+        var get_nodes = self._lib.get_function[c_int](
+            "intercept_graph_get_nodes"
+        )
+        var num_alloc = alloc[UInt64]({count = 1})
+        var num_buf = num_alloc.unsafe_ptr()
+        num_buf.unsafe_write(UInt64(0))
         _ = get_nodes(self._graph, num_buf)
         self._num_nodes = Int(num_buf[])
-        num_buf.unsafe_free()
+        dealloc(num_alloc^)
 
         if self._num_nodes == 0:
             self._state = 0
@@ -172,12 +189,15 @@ struct CUDAGraph(Movable):
             )
 
         # Instantiate
-        var exec_buf = alloc[_CUptr](1)
-        exec_buf[] = _uninit[_CUptr]()
-        var instantiate = self._lib.get_function[c_int]("intercept_graph_instantiate")
+        var instantiate = self._lib.get_function[c_int](
+            "intercept_graph_instantiate"
+        )
+        var exec_alloc = alloc[_CUptr]({count = 1})
+        var exec_buf = exec_alloc.unsafe_ptr()
+        exec_buf.unsafe_write(_uninit[_CUptr]())
         var r_inst = instantiate(exec_buf, self._graph)
         self._exec = exec_buf[]
-        exec_buf.unsafe_free()
+        dealloc(exec_alloc^)
 
         if r_inst != 0:
             self._state = 0
