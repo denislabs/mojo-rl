@@ -35,9 +35,38 @@ Platform contract, both halves gated here:
               That is what makes Apple a valid correctness (not performance)
               check, so it is worth pinning rather than assuming.
 
+⚠ IF THIS ABORTS WITH `CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED`, READ THE
+MESSAGE PREFIX BEFORE DEBUGGING OUR CODE. `"CUDA call failed: ..."` followed
+by `"set MODULAR_DEBUG=device-sync-mode"` is MAX's OWN error formatter — the
+interceptor never prints it, it returns rc codes that surface as Mojo errors
+tagged `[CUDAGraph]`. So that abort means OUR capture started fine (rc 0) and
+then MAX made a driver call the CUDA driver forbids mid-capture. It is not a
+bug in `CUDAGraph`; it is a collision with MAX internals, and the lever is
+the capture MODE (`MOJO_RL_CAPTURE_MODE`, see `cuda_intercept.c`), not the
+capture code. Measured 2026-08-09 on MAX 26.5.0rc2: mode GLOBAL aborts on a
+capture containing ONE one-thread kernel.
+
+    MOJO_RL_CAPTURE_MODE=0  GLOBAL       policies every thread + resource
+    MOJO_RL_CAPTURE_MODE=1  THREAD_LOCAL policies our thread only
+    (default)            2  RELAXED      policies the captured stream only
+
+RELAXED is not "turning the check off": it narrows the check to the only
+invariant we depend on — that nothing else touches the stream we are
+recording. If capture fails even at RELAXED, THAT is our bug.
+
+⚠ `MODULAR_DEBUG=device-sync-mode` CANNOT BE USED TO DEBUG THIS. It makes MAX
+synchronize after every device op, and a synchronize during capture is itself
+illegal — so it manufactures the very error you are chasing. (Tested: the
+failure is identical with and without it, which is what ruled it out as the
+cause rather than a confound.)
+
 Run with:
     pixi run -e nvidia mojo run -I . tests/cuda/test_cuda_graph_minimal.mojo
     pixi run -e apple  mojo run -I . tests/cuda/test_cuda_graph_minimal.mojo
+
+    # localize the offending call rather than just working around it:
+    MOJO_RL_CAPTURE_MODE=1 pixi run -e nvidia mojo run -I . \
+        tests/cuda/test_cuda_graph_minimal.mojo
 """
 
 from std.gpu import thread_idx, block_idx, block_dim

@@ -235,11 +235,54 @@ CUresult intercept_stream_create(void **out) {
     return f(out, 0);
 }
 
+/*
+ * Capture mode. CUDA defines three, in decreasing strictness:
+ *
+ *   0 GLOBAL       any "unsafe" CUDA call, ON ANY THREAD, in ANY resource,
+ *                  is an error for the whole duration of the capture.
+ *   1 THREAD_LOCAL the prohibition applies only to the capturing thread.
+ *   2 RELAXED      only actions on the capturing stream itself are policed.
+ *
+ * ⚠ WE USED TO PASS GLOBAL, AND THAT MADE US HOSTAGE TO MAX'S INTERNALS.
+ * We do not own every CUDA call in this process — MAX/AsyncRT is
+ * multithreaded and makes its own driver calls. Under GLOBAL, one
+ * synchronize or allocation ANYWHERE, on a stream we have nothing to do
+ * with, aborts the run with CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED. Measured
+ * on 2026-08-09: MAX (26.5.0rc2) trips this reliably during a capture of a
+ * single one-thread kernel, and the abort comes from MAX's error handler,
+ * not from any interceptor call — our cuStreamBeginCapture had already
+ * returned 0. GLOBAL was policing code we neither wrote nor can fix.
+ *
+ * RELAXED is what we actually mean: "nothing else may touch THIS stream
+ * while we record it". Overridable so the three modes are one env var apart
+ * rather than a rebuild apart, and because the choice is a DISCRIMINATING
+ * test, not just a workaround:
+ *
+ *   fails at GLOBAL, works at THREAD_LOCAL -> the offending call is on
+ *                                             another MAX thread
+ *   fails at THREAD_LOCAL, works at RELAXED -> it is on our thread, but on
+ *                                              some other stream/resource
+ *   fails at RELAXED                        -> something really is touching
+ *                                              the captured stream; that
+ *                                              WOULD be our bug
+ */
+static int capture_mode(void) {
+    const char *e = getenv("MOJO_RL_CAPTURE_MODE");
+    if (e && *e) {
+        int m = atoi(e);
+        if (m >= 0 && m <= 2) return m;
+    }
+    return 2;  /* CU_STREAM_CAPTURE_MODE_RELAXED */
+}
+
 CUresult intercept_stream_begin_capture(void *stream) {
     typedef CUresult (*fn_t)(void*, int);
     fn_t f = (fn_t)cuda_fn("cuStreamBeginCapture");
     if (!f) return 1;
-    return f(stream, 0);  /* CU_STREAM_CAPTURE_MODE_GLOBAL */
+    int mode = capture_mode();
+    fprintf(stderr, "[intercept] cuStreamBeginCapture mode=%d (%s)\n", mode,
+            mode == 0 ? "GLOBAL" : (mode == 1 ? "THREAD_LOCAL" : "RELAXED"));
+    return f(stream, mode);
 }
 
 CUresult intercept_stream_end_capture(void *stream, void **graph_out) {
