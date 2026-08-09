@@ -441,6 +441,49 @@ static void* cuda_fn(const char *name) {
     return real_dlsym(g_libcuda, name);
 }
 
+/* ⚠⚠ THE BASE SYMBOL NAME IS NOT THE ABI THE CUDA HEADER GIVES YOU.
+ *
+ * `cuda.h` is a nest of macros: `cuStreamBeginCapture` expands to
+ * `cuStreamBeginCapture_v2`, `cuGraphInstantiate` to `cuGraphInstantiate_v2`,
+ * `cuStreamGetCaptureInfo` to `..._v2`, and so on. libcuda.so.1 exports BOTH
+ * — the base name keeps the OLD ABI forever for binary compatibility. So
+ * `dlsym(lib, "cuStreamBeginCapture")` does NOT return what a program
+ * compiled against the header calls; it returns the ANCIENT one, with a
+ * DIFFERENT ARITY.
+ *
+ * On x86-64 SysV, calling with too FEW arguments is silent memory
+ * corruption: the callee reads whatever junk is in the remaining registers
+ * and, for out-parameters, WRITES THROUGH IT. Too many is harmless (extras
+ * are ignored). Measured here, all three from this file:
+ *
+ *   cuStreamGetCaptureInfo   base = 3 args, _v2 = 6. Called with 3
+ *                            -> driver wrote through 3 garbage pointers
+ *                            -> SIGSEGV inside cuStreamGetCaptureInfo.
+ *   cuGraphInstantiate       base = 5 args (exec, graph, phErrorNode,
+ *                            logBuffer, bufferSize). Called with 3
+ *                            -> logBuffer/bufferSize are garbage and the
+ *                            driver writes its error log into them.
+ *   cuStreamBeginCapture     base = 1 arg (v1 predates capture modes).
+ *                            Called with 2 -> THE MODE WAS SILENTLY
+ *                            DISCARDED. Every "capture mode" experiment we
+ *                            ran was really GLOBAL, which is exactly why
+ *                            GLOBAL/THREAD_LOCAL/RELAXED were byte-identical.
+ *
+ * ⚠ SO: RESOLVE THE VERSIONED NAME EXPLICITLY, and match its arity. Never
+ * add a `cuda_fn("cuSomething")` here without checking the base symbol's
+ * arity against the `_v2`/`_v3` the header actually selects. Symbols with a
+ * single lifelong ABI (cuStreamCreate, cuStreamEndCapture, cuGraphLaunch,
+ * cuGraphDestroy, cuGraphExecDestroy, cuGraphGetNodes, cuStreamSynchronize)
+ * are fine under the base name and are left alone.
+ */
+static void* cuda_fn_versioned(const char *versioned, const char *base) {
+    void *f = cuda_fn(versioned);
+    if (f) return f;
+    fprintf(stderr, "[intercept] WARNING: %s unavailable, falling back to %s "
+            "— CHECK THE ARITY MATCHES\n", versioned, base);
+    return cuda_fn(base);
+}
+
 CUresult intercept_stream_create(void **out) {
     typedef CUresult (*fn_t)(void**, unsigned int);
     fn_t f = (fn_t)cuda_fn("cuStreamCreate");
@@ -489,8 +532,12 @@ static int capture_mode(void) {
 }
 
 CUresult intercept_stream_begin_capture(void *stream) {
+    /* ⚠ _v2 IS THE ONE THAT TAKES A MODE. The base symbol is v1, which
+       predates capture modes entirely and takes ONLY the stream — passing a
+       mode to it is discarded in silence. See the note on cuda_fn_versioned. */
     typedef CUresult (*fn_t)(void*, int);
-    fn_t f = (fn_t)cuda_fn("cuStreamBeginCapture");
+    fn_t f = (fn_t)cuda_fn_versioned("cuStreamBeginCapture_v2",
+                                     "cuStreamBeginCapture");
     if (!f) return 1;
     int mode = capture_mode();
     fprintf(stderr, "[intercept] cuStreamBeginCapture stream=%p mode=%d (%s)\n",
@@ -510,15 +557,30 @@ CUresult intercept_stream_begin_capture(void *stream) {
    Returns the CUstreamCaptureStatus (0 NONE / 1 ACTIVE / 2 INVALIDATED), or
    -1 if the symbol is unavailable. */
 static int query_capture_status(void *stream, unsigned long long *id_out) {
-    typedef CUresult (*fn_t)(void*, int*, unsigned long long*);
-    fn_t f = (fn_t)cuda_fn("cuStreamGetCaptureInfo");
-    if (!f) f = (fn_t)cuda_fn("cuStreamGetCaptureInfo_v2");
+    /* ⚠ SIX ARGUMENTS. The `_v2` ABI is
+         (stream, status_out, id_out, graph_out, deps_out, num_deps_out)
+       and the base symbol takes only the first three. Calling the v2 symbol
+       with three arguments made the driver write through three garbage
+       registers -- that is the SIGSEGV inside cuStreamGetCaptureInfo we saw.
+       Every out-param below is a real local, so the call is safe whichever
+       ABI we land on: extra arguments are ignored by an older callee. */
+    typedef CUresult (*fn_t)(void*, int*, unsigned long long*,
+                             void**, const void**, size_t*);
+    fn_t f = (fn_t)cuda_fn_versioned("cuStreamGetCaptureInfo_v2",
+                                     "cuStreamGetCaptureInfo");
     if (!f) return -1;
+
     int status = -1;
     unsigned long long id = 0;
-    CUresult r = f(stream, &status, &id);
+    void *graph = NULL;
+    const void *deps = NULL;
+    size_t num_deps = 0;
+    CUresult r = f(stream, &status, &id, &graph, &deps, &num_deps);
     if (id_out) *id_out = id;
-    if (r != 0) return -1;
+    if (r != 0) {
+        fprintf(stderr, "[intercept] cuStreamGetCaptureInfo rc=%d\n", (int)r);
+        return -1;
+    }
     return status;
 }
 
@@ -565,10 +627,25 @@ CUresult intercept_stream_end_capture(void *stream, void **graph_out) {
 }
 
 CUresult intercept_graph_instantiate(void **exec_out, void *graph) {
+    /* ⚠ THE 3-ARG FORM IS `cuGraphInstantiateWithFlags`, NOT
+       `cuGraphInstantiate`. The base symbol is the FIVE-argument
+       (exec, graph, phErrorNode, logBuffer, bufferSize) form, and calling it
+       with three left logBuffer + bufferSize as garbage registers that the
+       driver writes its error log into. Prime suspect for the original
+       NVIDIA crash, which struck at the first graph instantiation. */
     typedef CUresult (*fn_t)(void**, void*, unsigned long long);
-    fn_t f = (fn_t)cuda_fn("cuGraphInstantiate");
-    if (!f) return 1;
-    return f(exec_out, graph, 0ULL);
+    fn_t f = (fn_t)cuda_fn("cuGraphInstantiateWithFlags");
+    if (f) return f(exec_out, graph, 0ULL);
+
+    /* Fallback: the genuine 5-arg form, called with all five. */
+    typedef CUresult (*fn5_t)(void**, void*, void**, char*, size_t);
+    fn5_t f5 = (fn5_t)cuda_fn("cuGraphInstantiate_v2");
+    if (!f5) f5 = (fn5_t)cuda_fn("cuGraphInstantiate");
+    if (!f5) return 1;
+    fprintf(stderr, "[intercept] cuGraphInstantiateWithFlags unavailable; "
+            "using the 5-arg cuGraphInstantiate\n");
+    void *err_node = NULL;
+    return f5(exec_out, graph, &err_node, NULL, 0);
 }
 
 CUresult intercept_graph_launch(void *exec, void *stream) {
