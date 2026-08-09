@@ -13,7 +13,18 @@ behind the wrapper.
 is a pipe, and a SIGSEGV never flushes it — you would lose exactly the lines
 that matter. If you must redirect, expect the tail to be missing.
 
-THE HYPOTHESIS IT TESTS. `graph.mojo` unwraps every symbol with a trailing
+⚠ THE ARITY HYPOTHESIS WAS TESTED AND REFUTED (NVIDIA, 2026-08-09).
+Declaring a 1-argument signature for the zero-argument C function produced
+the IDENTICAL crash at the IDENTICAL address, so `_DLCallable.__call__` is
+not secretly invoking the function. The stage below measures the resolved
+pointer rather than reasoning about it.
+
+⚠ AND THE ADDRESS MATCH MAY BE A COINCIDENCE. Frames #3 and #6 of that stack
+are the same libc trampoline, so the unwind is unreliable past #5; `#7` could
+be a stack word that merely HOLDS the stream rather than the faulting PC. The
+`fn-value bits` print below is what settles it — it needs no unwinder.
+
+SUPERSEDED HYPOTHESIS, kept because it shaped the probe: `graph.mojo` unwraps every symbol with a trailing
 `()`, per its own note that `_DLCallable.__call__` is variadic and discards
 arguments. That works for symbols WITH arguments, where unwrap and call are
 distinguishable. `intercept_get_mojo_stream` is the only ZERO-ARGUMENT one:
@@ -77,35 +88,49 @@ def main() raises:
     var lib = OwnedDLHandle("./mojo_rl/cuda/libcuda_intercept.so")
     print("[probe] dlopen ok")
 
-    # ── 1. the zero-argument symbol, the suspect ──────────────────────────
+    # ── 1. WHAT DID THE UNWRAP ACTUALLY PRODUCE? ─────────────────────────
+    #
+    # The arity hypothesis is DEAD: declaring a 1-arg signature for the 0-arg
+    # C function changed nothing (same crash, same address), so
+    # `_DLCallable.__call__` is not silently invoking the function.
+    #
+    # So measure the pointer instead of reasoning about it. A `thin` function
+    # value is one word, so reading the variable's own bytes as an Int gives
+    # the address the call will jump to. Three outcomes, all decisive:
+    #
+    #   bits == the stream address the interceptor printed
+    #        -> the unwrap really is handing back the stream. Wrong VALUE.
+    #   bits inside libcuda_intercept.so's mapped range (see /proc/self/maps)
+    #        -> the pointer is CORRECT and the CALL is what faults: an ABI or
+    #           calling-convention problem with `thin`, not a lookup problem.
+    #   bits == 0
+    #        -> dlsym never resolved the symbol; check the .so's exports.
+    #
+    # `begin_capture` is the control: a symbol resolved the same way that is
+    # known to have worked. If its bits look like code and `get_stream`'s do
+    # not, the difference is the symbol, not the machinery.
     print("[probe] resolving intercept_get_mojo_stream (0-arg) ...")
     var get_stream = lib.get_function[def () thin -> _CUptr](
         "intercept_get_mojo_stream"
     )()
-    print("[probe] get_stream unwrapped")
-    var stream = get_stream()
-    print("[probe] stream =", Int(stream))
+    var gs_bits = UnsafePointer(to=get_stream).bitcast[Int]()[]
+    print("[probe] get_stream  fn-value bits =", gs_bits)
 
-    # ── 2. the same symbol through a ONE-ARGUMENT signature ───────────────
-    # Calling a 0-arg C function through a 1-arg pointer is ABI-safe on
-    # x86-64 SysV (the extra argument sits in a register the callee ignores),
-    # and it makes unwrap and call textually distinct — so this reaches the C
-    # function even if the 0-arg spelling above does not.
-    print("[probe] resolving the same symbol as 1-arg ...")
-    var get_stream1 = lib.get_function[def (_CUptr) thin -> _CUptr](
-        "intercept_get_mojo_stream"
+    print("[probe] resolving intercept_stream_begin_capture (1-arg, CONTROL)")
+    var begin_cap = lib.get_function[def (_CUptr) thin -> c_int](
+        "intercept_stream_begin_capture"
     )()
-    print("[probe] get_stream1 unwrapped")
-    # A null pointer as the ignored argument.
-    var null_arg = alloc[_CUptr](1)
-    var stream1 = get_stream1(null_arg.bitcast[NoneType]())
-    null_arg.free()
-    print("[probe] stream via 1-arg =", Int(stream1))
+    var bc_bits = UnsafePointer(to=begin_cap).bitcast[Int]()[]
+    print("[probe] begin_cap   fn-value bits =", bc_bits)
     print(
-        "[probe] the two agree:",
-        Int(stream) == Int(stream1),
-        " (disagreement means the 0-arg spelling is the bug)",
+        "[probe] the two differ by", bc_bits - gs_bits,
+        "(a few KB apart => both are code in the same .so)",
     )
+
+    # ── 2. only now, call it ──────────────────────────────────────────────
+    print("[probe] calling get_stream() ...")
+    var stream1 = get_stream()
+    print("[probe] stream =", Int(stream1))
 
     if Int(stream1) == 0:
         print("[probe] STREAM NOT DISCOVERED — the interceptor never saw a")
@@ -126,9 +151,6 @@ def main() raises:
 
     # ── 4. begin / end capture around one launch ──────────────────────────
     print("[probe] intercept_stream_begin_capture ...")
-    var begin_cap = lib.get_function[def (_CUptr) thin -> c_int](
-        "intercept_stream_begin_capture"
-    )()
     var rc_begin = begin_cap(stream1)
     print("[probe] begin_capture rc =", Int(rc_begin))
     if Int(rc_begin) != 0:
