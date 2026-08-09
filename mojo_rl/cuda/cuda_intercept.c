@@ -127,6 +127,16 @@ static CUresult wrapped_cuLaunchKernelEx(
                 g_mojo_stream, g_launch_ctx);
     }
 
+    /* ⚠ IS OUR SAVED HANDLE STILL THE ONE MAX USES? If MAX pools or recycles
+       streams, the handle we captured at the first launch is stale, and every
+       driver call we make with it is a use-after-free -- which is exactly what
+       an rc=0 here and a fault there looks like. */
+    if (g_mojo_stream && config->hStream && config->hStream != g_mojo_stream) {
+        fprintf(stderr, "[intercept] !! MAX LAUNCHED ON A DIFFERENT STREAM: "
+                "%p (we saved %p) -- our handle is stale\n",
+                config->hStream, g_mojo_stream);
+    }
+
     if (g_recording && g_num_records < MAX_RECORDS) {
         KernelRecord *r = &g_records[g_num_records++];
         r->func = f;
@@ -232,9 +242,23 @@ DEFINE_PTR1_WRAPPER(cuEventQuery)
 
 static int g_neutralized = 0;   /* count, per capture window */
 
+/* ⚠⚠ DEFAULT OFF — THIS FIXED A SYMPTOM, NOT THE CAUSE, AND IS UNSAFE.
+ *
+ * MAX really does synchronize the stream it is capturing (measured), and
+ * suppressing that really did let capture proceed further. But the empty-
+ * capture probe then faulted in a PLAIN `cuStreamSynchronize` with NO
+ * capture active at all, which proves the failure is not capture-specific
+ * and never was: our shim cannot make driver calls on MAX's stream handle,
+ * full stop. Suppressing MAX's synchronize was treating a symptom.
+ *
+ * Leaving it ON would be worse than useless: outside a genuinely drained
+ * window it turns a real wait into a no-op and reads back garbage in
+ * silence. Opt in with MOJO_RL_CAPTURE_NEUTRALIZE_SYNC=1 only to reproduce
+ * the measurement.
+ */
 static int neutralize_enabled(void) {
     const char *e = getenv("MOJO_RL_CAPTURE_NEUTRALIZE_SYNC");
-    return !(e && e[0] == '0');
+    return e && e[0] != '0';
 }
 
 static CUresult wrapped_cuStreamSynchronize(void *a) {
@@ -278,6 +302,23 @@ static CUresult wrapped_cuMemAlloc(void **p, size_t n) {
 }
 
 /* Shared by the dlsym hook and the cuGetProcAddress hook. */
+static fn_ptr1_t real_cuStreamDestroy = NULL;
+
+/* ⚠ THE SMOKING GUN, IF IT FIRES. We hold MAX's stream handle for the whole
+   program. If MAX destroys it, every later intercept_* call is a
+   use-after-free on a driver object -- which faults erratically rather than
+   returning an error, and would explain rc=0 from one entry point and a
+   SIGSEGV from another. */
+static CUresult wrapped_cuStreamDestroy(void *a) {
+    fprintf(stderr, "[intercept] cuStreamDestroy(%p)%s\n", a,
+            (a && a == g_mojo_stream)
+                ? "   <-- THIS IS THE STREAM WE SAVED. Our handle is now"
+                  " DANGLING and every intercept_* call is use-after-free."
+                : "");
+    if (a && a == g_mojo_stream) g_mojo_stream = NULL;
+    return real_cuStreamDestroy(a);
+}
+
 static void *maybe_wrap(const char *symbol, void *real_fn) {
     if (!symbol || !real_fn) return real_fn;
 
@@ -292,6 +333,11 @@ static void *maybe_wrap(const char *symbol, void *real_fn) {
     HOOK_PTR1(cuEventQuery)
 #undef HOOK_PTR1
 
+    if (strcmp(symbol, "cuStreamDestroy") == 0
+        || strcmp(symbol, "cuStreamDestroy_v2") == 0) {
+        if (!real_cuStreamDestroy) real_cuStreamDestroy = (fn_ptr1_t)real_fn;
+        return (void*)wrapped_cuStreamDestroy;
+    }
     if (strcmp(symbol, "cuCtxSynchronize") == 0) {
         if (!real_cuCtxSynchronize) real_cuCtxSynchronize = (fn_void_t)real_fn;
         return (void*)wrapped_cuCtxSynchronize;
