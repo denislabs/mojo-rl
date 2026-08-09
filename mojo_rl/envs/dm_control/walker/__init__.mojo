@@ -1,4 +1,4 @@
-"""dm_control `walker` domain.
+"""`dm_control` `walker` domain.
 
 Tasks: stand, walk, run.
 Reference: references/dm_control-main/dm_control/suite/walker.py + .xml

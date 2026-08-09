@@ -1,4 +1,4 @@
-"""dm_control `pendulum-swingup` — Phyics3dEnv[DMPendulumModel, DMPendulumConfig].
+"""`dm_control` `pendulum-swingup` — Phyics3dEnv[DMPendulumModel, DMPendulumConfig].
 
     from mojo_rl.envs.dm_control.pendulum import DMPendulum, DMPendulumBatched
     var env = DMPendulum()                       # CPU, float64, one env

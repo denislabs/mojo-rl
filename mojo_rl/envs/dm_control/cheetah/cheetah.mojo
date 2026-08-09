@@ -1,4 +1,4 @@
-"""dm_control `cheetah` — the single registered task as an env alias.
+"""`dm_control` `cheetah` — the single registered task as an env alias.
 
     from mojo_rl.envs.dm_control.cheetah import DMCheetahRun
     var env = DMCheetahRun()

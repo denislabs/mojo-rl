@@ -1,4 +1,4 @@
-"""dm_control `dog` models — port of `dog.py` + `dog.xml` (Phase 4).
+"""`dm_control` `dog` models — port of `dog.py` + `dog.xml` (Phase 4).
 
 `dog.py::make_model(floor_size, remove_ball)` parses dog.xml with lxml and,
 for stand / walk / trot / run, DELETES the ball body, the target geom, the

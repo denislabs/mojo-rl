@@ -1,4 +1,4 @@
-"""dm_control `humanoid_CMU` model — port of `dm_control/suite/humanoid_CMU.xml`.
+"""`dm_control` `humanoid_CMU` model — port of `dm_control/suite/humanoid_CMU.xml`.
 
 Verbatim apart from the `<include>` lines and the `<sensor>` block. The body of
 this file was EXTRACTED FROM THE REFERENCE PROGRAMMATICALLY rather than

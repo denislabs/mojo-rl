@@ -1,4 +1,4 @@
-"""dm_control `cartpole` domain.
+"""`dm_control` `cartpole` domain.
 
 Tasks: balance, balance_sparse, swingup, swingup_sparse, two_poles, three_poles.
 Reference: references/dm_control-main/dm_control/suite/cartpole.py + .xml

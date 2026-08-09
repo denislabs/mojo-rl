@@ -1,4 +1,4 @@
-"""dm_control `ball_in_cup-catch` task config — port of `suite/ball_in_cup.py`.
+"""`dm_control` `ball_in_cup-catch` task config — port of `suite/ball_in_cup.py`.
 
     observation = [qpos(4), qvel(4)]                                     (8)
     reward      = in_target()  -- SPARSE, exactly 0 or 1

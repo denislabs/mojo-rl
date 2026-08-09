@@ -19,7 +19,7 @@ from .loss_block import LossBlock
 struct LossBlockBundle[*BLOCKS: LossBlock](
     Defaultable & Movable & ImplicitlyDeletable
 ):
-    comptime N = Self.BLOCKS.size
+    comptime N = Self.BLOCKS.length
 
     var items: Tuple[*Self.BLOCKS]
 

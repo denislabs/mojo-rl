@@ -1,4 +1,4 @@
-"""dm_control `point_mass` domain.
+"""`dm_control` `point_mass` domain.
 
 Tasks: easy, hard.
 Reference: references/dm_control-main/dm_control/suite/point_mass.py + .xml

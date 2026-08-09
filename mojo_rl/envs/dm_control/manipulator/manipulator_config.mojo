@@ -1,4 +1,4 @@
-"""dm_control `manipulator` task config — port of `suite/manipulator.py::Bring`.
+"""`dm_control` `manipulator` task config — port of `suite/manipulator.py::Bring`.
 
 ONE task class over four models. `Bring` is parameterised by `(use_peg,
 insert)` and so is this config; the four registered tasks are

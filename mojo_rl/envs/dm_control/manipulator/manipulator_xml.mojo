@@ -1,4 +1,4 @@
-"""dm_control `manipulator` models — port of `dm_control/suite/manipulator.xml`.
+"""`dm_control` `manipulator` models — port of `dm_control/suite/manipulator.xml`.
 
 FOUR MODELS, NOT ONE. No task uses `manipulator.xml` as written:
 `make_model(use_peg, insert)` DELETES the prop bodies the chosen task does not

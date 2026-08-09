@@ -1,4 +1,4 @@
-"""dm_control `humanoid` model — port of `dm_control/suite/humanoid.xml`.
+"""`dm_control` `humanoid` model — port of `dm_control/suite/humanoid.xml`.
 
 Verbatim apart from the `<include>` lines and the `<sensor>` block.
 

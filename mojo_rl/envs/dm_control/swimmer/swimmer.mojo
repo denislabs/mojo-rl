@@ -1,4 +1,4 @@
-"""dm_control `swimmer` — the two registered tasks as env aliases.
+"""`dm_control` `swimmer` — the two registered tasks as env aliases.
 
     from mojo_rl.envs.dm_control.swimmer import DMSwimmer6, DMSwimmer15
     var env = DMSwimmer6()

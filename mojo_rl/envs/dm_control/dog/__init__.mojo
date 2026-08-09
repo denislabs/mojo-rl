@@ -1,4 +1,4 @@
-"""dm_control `dog` domain — stand, walk, trot and run (Phase 4).
+"""`dm_control` `dog` domain — stand, walk, trot and run (Phase 4).
 
 `fetch` is Phase 5 and is not here yet.
 

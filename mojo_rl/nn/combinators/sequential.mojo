@@ -23,7 +23,7 @@ from ..core.graph_visitor import DisplayStep
 
 struct Sequential[*MODULES: Module](Module):
     comptime ARITY = 1
-    comptime N = Self.MODULES.size
+    comptime N = Self.MODULES.length
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.MODULES[0].IN_DIMS[0])
     comptime OUT_DIM = Self.MODULES[Self.N - 1].OUT_DIM
     # All children share one activation dtype (asserted in __init__); the chain's

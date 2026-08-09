@@ -1,4 +1,4 @@
-"""dm_control `reacher` task configs — port of `suite/reacher.py` (`Reacher`).
+"""`dm_control` `reacher` task configs — port of `suite/reacher.py` (`Reacher`).
 
 One parameterized config covers both registered tasks, which differ only in
 the target radius:

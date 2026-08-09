@@ -1,4 +1,4 @@
-"""dm_control `humanoid_CMU` task config — port of `suite/humanoid_CMU.py`.
+"""`dm_control` `humanoid_CMU` task config — port of `suite/humanoid_CMU.py`.
 
 One parameterized config covers all three registered tasks, which differ only
 in the target speed:

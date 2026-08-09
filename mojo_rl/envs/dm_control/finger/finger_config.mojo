@@ -1,4 +1,4 @@
-"""dm_control `finger` task configs — port of `suite/finger.py`.
+"""`dm_control` `finger` task configs — port of `suite/finger.py`.
 
 Two task shapes over one model:
 

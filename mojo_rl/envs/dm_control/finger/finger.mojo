@@ -1,4 +1,4 @@
-"""dm_control `finger` — the three registered tasks as env aliases.
+"""`dm_control` `finger` — the three registered tasks as env aliases.
 
     from mojo_rl.envs.dm_control.finger import DMFingerSpin, DMFingerTurnEasy
     var env = DMFingerSpin()

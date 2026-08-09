@@ -1,4 +1,4 @@
-"""dm_control `fish` model — port of `dm_control/suite/fish.xml`.
+"""`dm_control` `fish` model — port of `dm_control/suite/fish.xml`.
 
 Verbatim apart from the `<include>` lines and ONE deliberate substitution, the
 same gap-G4 one reacher, finger and swimmer needed.

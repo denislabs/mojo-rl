@@ -1,4 +1,4 @@
-"""dm_control `cheetah` task config — port of `suite/cheetah.py` (`Cheetah`).
+"""`dm_control` `cheetah` task config — port of `suite/cheetah.py` (`Cheetah`).
 
 The domain registers a single task:
 

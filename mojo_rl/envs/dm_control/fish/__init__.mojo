@@ -1,4 +1,4 @@
-"""dm_control `fish` domain.
+"""`dm_control` `fish` domain.
 
 Tasks: upright, swim.
 Reference: references/dm_control-main/dm_control/suite/fish.py + .xml

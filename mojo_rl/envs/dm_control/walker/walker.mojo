@@ -1,4 +1,4 @@
-"""dm_control `walker` — the three registered tasks as env aliases.
+"""`dm_control` `walker` — the three registered tasks as env aliases.
 
     from mojo_rl.envs.dm_control.walker import DMWalkerWalk
     var env = DMWalkerWalk()

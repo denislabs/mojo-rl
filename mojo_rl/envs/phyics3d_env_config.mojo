@@ -199,6 +199,10 @@ trait Phyics3dEnvConfig:
 
         Args:
             d: Fields physics state with qpos, qvel, xpos, etc.
+            m_bodies: Flat body records of the model.
+            m_joints: Flat joint records of the model.
+            m_geoms: Flat geom records of the model.
+            m_sites: Flat site records of the model.
             prev_x: Value saved by pre_step_cpu (e.g., previous x position).
             actions: Clamped action values.
             step_count: Current step count (for truncation checking outside).
@@ -753,7 +757,24 @@ trait Phyics3dEnvConfig:
             xquat: Body world orientations [x,y,z,w], [BATCH_SIZE, NBODY * 4].
                 Use `kinematics/xmat.xmat_elem_gpu` for MuJoCo `xmat` entries.
             xvel: Body world linear velocities, [BATCH_SIZE, NBODY * 3].
+            bodies: Model body records, [NBODY, MODEL_BODY_SIZE].
+            site_xpos: Site world positions, [BATCH_SIZE, SITE_DIM].
+            contacts: Contact records, [BATCH_SIZE, MC_F * CONTACT_SIZE].
+            sites: Model site records, [NSITE_F, MODEL_SITE_SIZE].
+            geoms: Model geom records, [NGEOM_F, MODEL_GEOM_SIZE].
+            meta: Per-env metadata slots, [BATCH_SIZE, METADATA_SIZE].
             obs: Output observation buffer to write into.
+            xipos: Body COM world positions, [BATCH_SIZE, NBODY * 3].
+            xangvel: Body world angular velocities, [BATCH_SIZE, NBODY * 3].
+            cvel: Body COM-frame spatial velocities, [BATCH_SIZE, NBODY * 6].
+            cacc: Body COM-frame spatial accelerations, [BATCH_SIZE, NBODY * 6].
+            cfrc_int: Body COM-frame interaction forces, [BATCH_SIZE, NBODY * 6].
+            subtree_com: Subtree COM positions, [BATCH_SIZE, NBODY * 3].
+            site_xpos_acc: `site_xpos` as it stood when `cacc`/`cfrc_int` were
+                written. Acceleration-stage sensors must read this, not the
+                post-integration `site_xpos` (see defect 19 in `fields/data`).
+            xquat_acc: `xquat` at the same instant as `site_xpos_acc`.
+            act: Actuator activations, [BATCH_SIZE, NA_F].
             env: Environment index.
 
         Returns:

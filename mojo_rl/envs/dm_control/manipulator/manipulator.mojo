@@ -1,4 +1,4 @@
-"""dm_control `manipulator` env facades — all four registered tasks.
+"""`dm_control` `manipulator` env facades — all four registered tasks.
 
     bring_ball   = DMManipulatorBringBall[DTYPE]
     bring_peg    = DMManipulatorBringPeg[DTYPE]

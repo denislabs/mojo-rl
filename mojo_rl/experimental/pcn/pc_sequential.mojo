@@ -47,7 +47,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
     """
 
     comptime block_types = Self.BLOCKS
-    comptime N = Self.block_types.size
+    comptime N = Self.block_types.length
     comptime N_LATENTS = Self.N - 1
 
     comptime IN_DIM: Int = Self.block_types[0].IN_DIM

@@ -1,4 +1,4 @@
-"""dm_control `walker` task config — port of `suite/walker.py` (`PlanarWalker`).
+"""`dm_control` `walker` task config — port of `suite/walker.py` (`PlanarWalker`).
 
 One parameterized config covers all three registered tasks; they differ only
 in the target speed:

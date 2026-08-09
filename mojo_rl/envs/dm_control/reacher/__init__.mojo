@@ -1,4 +1,4 @@
-"""dm_control `reacher` domain.
+"""`dm_control` `reacher` domain.
 
 Tasks: easy, hard.
 Reference: references/dm_control-main/dm_control/suite/reacher.py + .xml

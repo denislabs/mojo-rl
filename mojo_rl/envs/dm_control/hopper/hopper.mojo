@@ -1,4 +1,4 @@
-"""dm_control `hopper` — the two registered tasks as env aliases.
+"""`dm_control` `hopper` — the two registered tasks as env aliases.
 
     from mojo_rl.envs.dm_control.hopper import DMHopperStand
     var env = DMHopperStand()

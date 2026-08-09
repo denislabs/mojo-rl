@@ -1,4 +1,4 @@
-"""dm_control `point_mass-easy` task config — port of `suite/point_mass.py`.
+"""`dm_control` `point_mass-easy` task config — port of `suite/point_mass.py`.
 
     observation = [qpos(2), qvel(2)]                                     (4)
     reward      = near_target * small_control

@@ -1,4 +1,4 @@
-"""dm_control `finger` domain — spin, turn_easy, turn_hard."""
+"""`dm_control` `finger` domain — spin, turn_easy, turn_hard."""
 
 from .finger_xml import (
     dm_finger_xml,

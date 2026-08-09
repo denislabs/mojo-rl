@@ -1,4 +1,4 @@
-"""dm_control `hopper` model — port of `dm_control/suite/hopper.xml`.
+"""`dm_control` `hopper` model — port of `dm_control/suite/hopper.xml`.
 
 Verbatim apart from the three `<include>` lines.
 

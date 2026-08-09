@@ -1,4 +1,4 @@
-"""dm_control `swimmer` model — port of `dm_control/suite/swimmer.xml` PLUS the
+"""`dm_control` `swimmer` model — port of `dm_control/suite/swimmer.xml` PLUS the
 procedural body chain that `swimmer._make_model(n_bodies)` builds on top of it.
 
 This is the first domain in the port whose model is GENERATED, not written: the

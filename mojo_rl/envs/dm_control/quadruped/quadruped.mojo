@@ -1,4 +1,4 @@
-"""dm_control `quadruped` — the two in-scope tasks as env aliases.
+"""`dm_control` `quadruped` — the two in-scope tasks as env aliases.
 
     from mojo_rl.envs.dm_control.quadruped import DMQuadrupedWalk
     var env = DMQuadrupedWalk()

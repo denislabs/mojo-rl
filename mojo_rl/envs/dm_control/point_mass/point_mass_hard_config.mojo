@@ -1,4 +1,4 @@
-"""dm_control `point_mass-hard` task config — port of `suite/point_mass.py`.
+"""`dm_control` `point_mass-hard` task config — port of `suite/point_mass.py`.
 
 Identical to `easy` in observation, reward, episode length and model. The ONE
 difference is `initialize_episode`, which additionally randomizes the mapping

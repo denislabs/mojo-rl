@@ -1,4 +1,4 @@
-"""dm_control `fish` — the two registered tasks as env aliases.
+"""`dm_control` `fish` — the two registered tasks as env aliases.
 
     from mojo_rl.envs.dm_control.fish import DMFishUpright, DMFishSwim
     var env = DMFishSwim()

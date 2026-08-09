@@ -1,4 +1,4 @@
-"""dm_control `dog` — the four in-scope tasks as env aliases.
+"""`dm_control` `dog` — the four in-scope tasks as env aliases.
 
     from mojo_rl.envs.dm_control.dog import DMDogStand
     var env = DMDogStand()

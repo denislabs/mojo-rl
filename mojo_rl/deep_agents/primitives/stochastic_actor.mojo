@@ -39,7 +39,7 @@ struct StochasticActor[
     comptime ARITY: Int = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.OBS_DIM)
     comptime OUT_DIM = 2 * Self.ACT_DIM
-    comptime N_TRUNK = Self.TRUNK.size
+    comptime N_TRUNK = Self.TRUNK.length
     comptime HIDDEN = Self.TRUNK[Self.N_TRUNK - 1].OUT_DIM
     comptime Heads = Parallel[
         Linear[Self.HIDDEN, Self.ACT_DIM],

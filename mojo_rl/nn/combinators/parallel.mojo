@@ -53,7 +53,7 @@ def _par_accum_kernel[
 # ── comptime variadic helpers ──────────────────────────────────────────
 def _total_out_dim[*BRANCHES: Module]() -> Int:
     var s = 0
-    comptime for i in range(BRANCHES.size):
+    comptime for i in range(BRANCHES.length):
         s += BRANCHES[i].OUT_DIM
     return s
 
@@ -135,7 +135,7 @@ def _par_split_kernel[
 
 struct Parallel[*BRANCHES: Module](Module):
     comptime ARITY = 1
-    comptime N = Self.BRANCHES.size
+    comptime N = Self.BRANCHES.length
     comptime IN = Self.BRANCHES[0].IN_DIMS[0]
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.BRANCHES[0].IN_DIMS[0])
     comptime OUT_DIM = _total_out_dim[*Self.BRANCHES]()

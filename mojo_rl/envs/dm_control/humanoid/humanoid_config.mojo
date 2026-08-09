@@ -1,4 +1,4 @@
-"""dm_control `humanoid` task configs — port of `suite/humanoid.py`.
+"""`dm_control` `humanoid` task configs — port of `suite/humanoid.py`.
 
 One parameterized config covers all four registered tasks, which differ only
 in the target speed and the observation layout:

@@ -1,4 +1,4 @@
-"""dm_control `quadruped` models — port of `dm_control/suite/quadruped.xml`.
+"""`dm_control` `quadruped` models — port of `dm_control/suite/quadruped.xml`.
 
 The reference does NOT load that file as written. `quadruped.make_model()`
 (suite/quadruped.py:55) parses it with lxml and DELETES elements per task:

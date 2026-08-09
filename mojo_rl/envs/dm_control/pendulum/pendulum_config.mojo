@@ -1,4 +1,4 @@
-"""dm_control `pendulum-swingup` task config.
+"""`dm_control` `pendulum-swingup` task config.
 
 Port of `dm_control/suite/pendulum.py` (class `SwingUp`).
 

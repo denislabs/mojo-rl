@@ -1,4 +1,4 @@
-"""dm_control `humanoid_CMU` domain.
+"""`dm_control` `humanoid_CMU` domain.
 
 Tasks: stand, walk, run.
 Reference: references/dm_control-main/dm_control/suite/humanoid_CMU.py + .xml

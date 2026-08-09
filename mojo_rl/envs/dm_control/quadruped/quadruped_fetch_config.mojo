@@ -1,4 +1,4 @@
-"""dm_control `quadruped fetch` — port of `suite/quadruped.py`'s `Fetch`.
+"""`dm_control` `quadruped fetch` — port of `suite/quadruped.py`'s `Fetch`.
 
     observation = _common_observations(78) + ball_state(9) + target_position(3)
     reward      = _upright_reward * reach_reward * (0.5 + 0.5*fetch_reward)
@@ -233,56 +233,53 @@ struct DMQuadrupedFetchConfig(Phyics3dEnvConfig):
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """`_common_observations` then `ball_state` then `target_position`."""
-        try:
-            if not _common_obs_cpu[
-                DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE,
-                FETCH_TORSO_SITE_IDX, FETCH_TOE_SITE_0,
-            ](d, m_bodies, m_joints, m_geoms, m_sites, act, obs):
-                return False
-
-            # --- ball_state: three rows, each rotated into the torso frame ---
-            var tx = Float64(d.xpos.data[TORSO_BODY_IDX * 3 + 0])
-            var ty = Float64(d.xpos.data[TORSO_BODY_IDX * 3 + 1])
-            var tz = Float64(d.xpos.data[TORSO_BODY_IDX * 3 + 2])
-            var bx = Float64(d.xpos.data[FETCH_BALL_BODY_IDX * 3 + 0])
-            var by = Float64(d.xpos.data[FETCH_BALL_BODY_IDX * 3 + 1])
-            var bz = Float64(d.xpos.data[FETCH_BALL_BODY_IDX * 3 + 2])
-
-            var rel_pos = _world_to_torso(d, bx - tx, by - ty, bz - tz)
-            # `qvel['ball_root'][:3] - qvel['root'][:3]`. The root free joint
-            # is joint 0, so its dofs are 0..5.
-            var rel_vel = _world_to_torso(
-                d,
-                Float64(d.qvel.data[FETCH_BALL_DOF_0 + 0])
-                - Float64(d.qvel.data[0]),
-                Float64(d.qvel.data[FETCH_BALL_DOF_0 + 1])
-                - Float64(d.qvel.data[1]),
-                Float64(d.qvel.data[FETCH_BALL_DOF_0 + 2])
-                - Float64(d.qvel.data[2]),
-            )
-            # `qvel['ball_root'][3:]` — absolute, NOT relative to the root.
-            var rot_vel = _world_to_torso(
-                d,
-                Float64(d.qvel.data[FETCH_BALL_DOF_0 + 3]),
-                Float64(d.qvel.data[FETCH_BALL_DOF_0 + 4]),
-                Float64(d.qvel.data[FETCH_BALL_DOF_0 + 5]),
-            )
-            for k in range(3):
-                obs.append(Scalar[DTYPE](rel_pos[k]))
-            for k in range(3):
-                obs.append(Scalar[DTYPE](rel_vel[k]))
-            for k in range(3):
-                obs.append(Scalar[DTYPE](rot_vel[k]))
-
-            # --- target_position: site_xpos['target'] - xpos['torso'] --------
-            var gx = Float64(d.site_xpos.data[FETCH_TARGET_SITE_IDX * 3 + 0])
-            var gy = Float64(d.site_xpos.data[FETCH_TARGET_SITE_IDX * 3 + 1])
-            var gz = Float64(d.site_xpos.data[FETCH_TARGET_SITE_IDX * 3 + 2])
-            var tgt = _world_to_torso(d, gx - tx, gy - ty, gz - tz)
-            for k in range(3):
-                obs.append(Scalar[DTYPE](tgt[k]))
-        except:
+        if not _common_obs_cpu[
+            DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE,
+            FETCH_TORSO_SITE_IDX, FETCH_TOE_SITE_0,
+        ](d, m_bodies, m_joints, m_geoms, m_sites, act, obs):
             return False
+
+        # --- ball_state: three rows, each rotated into the torso frame ---
+        var tx = Float64(d.xpos.data[TORSO_BODY_IDX * 3 + 0])
+        var ty = Float64(d.xpos.data[TORSO_BODY_IDX * 3 + 1])
+        var tz = Float64(d.xpos.data[TORSO_BODY_IDX * 3 + 2])
+        var bx = Float64(d.xpos.data[FETCH_BALL_BODY_IDX * 3 + 0])
+        var by = Float64(d.xpos.data[FETCH_BALL_BODY_IDX * 3 + 1])
+        var bz = Float64(d.xpos.data[FETCH_BALL_BODY_IDX * 3 + 2])
+
+        var rel_pos = _world_to_torso(d, bx - tx, by - ty, bz - tz)
+        # `qvel['ball_root'][:3] - qvel['root'][:3]`. The root free joint
+        # is joint 0, so its dofs are 0..5.
+        var rel_vel = _world_to_torso(
+            d,
+            Float64(d.qvel.data[FETCH_BALL_DOF_0 + 0])
+            - Float64(d.qvel.data[0]),
+            Float64(d.qvel.data[FETCH_BALL_DOF_0 + 1])
+            - Float64(d.qvel.data[1]),
+            Float64(d.qvel.data[FETCH_BALL_DOF_0 + 2])
+            - Float64(d.qvel.data[2]),
+        )
+        # `qvel['ball_root'][3:]` — absolute, NOT relative to the root.
+        var rot_vel = _world_to_torso(
+            d,
+            Float64(d.qvel.data[FETCH_BALL_DOF_0 + 3]),
+            Float64(d.qvel.data[FETCH_BALL_DOF_0 + 4]),
+            Float64(d.qvel.data[FETCH_BALL_DOF_0 + 5]),
+        )
+        for k in range(3):
+            obs.append(Scalar[DTYPE](rel_pos[k]))
+        for k in range(3):
+            obs.append(Scalar[DTYPE](rel_vel[k]))
+        for k in range(3):
+            obs.append(Scalar[DTYPE](rot_vel[k]))
+
+        # --- target_position: site_xpos['target'] - xpos['torso'] --------
+        var gx = Float64(d.site_xpos.data[FETCH_TARGET_SITE_IDX * 3 + 0])
+        var gy = Float64(d.site_xpos.data[FETCH_TARGET_SITE_IDX * 3 + 1])
+        var gz = Float64(d.site_xpos.data[FETCH_TARGET_SITE_IDX * 3 + 2])
+        var tgt = _world_to_torso(d, gx - tx, gy - ty, gz - tz)
+        for k in range(3):
+            obs.append(Scalar[DTYPE](tgt[k]))
         return True
 
     @staticmethod

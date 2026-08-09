@@ -1,4 +1,4 @@
-"""dm_control `acrobot` model — port of `dm_control/suite/acrobot.xml`.
+"""`dm_control` `acrobot` model — port of `dm_control/suite/acrobot.xml`.
 
 Verbatim apart from the three `<include>` lines, which `merge_mjcf` replaces
 with the shared fragments (the reference's include order is skybox-last but

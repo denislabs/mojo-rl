@@ -1,4 +1,4 @@
-"""dm_control `stacker` models — port of `dm_control/suite/stacker.xml`.
+"""`dm_control` `stacker` models — port of `dm_control/suite/stacker.xml`.
 
 TWO MODELS, NOT ONE. As with `manipulator`, no task uses `stacker.xml` as
 written: `make_model(n_boxes)` DELETES `box{n_boxes..3}` from the parsed tree,
@@ -339,7 +339,7 @@ def target_site_idx(n_boxes: Int) -> Int:
 # convention. A box moving in one axis at a time hides it; the parity tests
 # drive all three at once.
 def box_vel_qadr(i: Int, k: Int) -> Int:
-    """qvel index of the k'th entry of box `i`'s observed velocity triple."""
+    """`qvel` index of the k'th entry of box `i`'s observed velocity triple."""
     var base = BOX_QADR_0 + 3 * i
     if k == 0:
         return base + 0  # x
@@ -349,8 +349,8 @@ def box_vel_qadr(i: Int, k: Int) -> Int:
 
 
 def stacker_obs_dim(n_boxes: Int) -> Int:
-    """arm_pos(16) + arm_vel(8) + touch(5) + hand_pos(4)
-    + box_pos(4n) + box_vel(3n) + target_pos(2)."""
+    """`arm_pos(16) + arm_vel(8) + touch(5) + hand_pos(4)
+    + box_pos(4n) + box_vel(3n) + target_pos(2)`."""
     return 2 * NARM_JOINTS + NARM_JOINTS + 5 + 4 + 7 * n_boxes + 2
 
 

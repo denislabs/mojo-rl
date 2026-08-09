@@ -1,4 +1,4 @@
-"""dm_control `cartpole` task configs — port of `suite/cartpole.py` (`Balance`).
+"""`dm_control` `cartpole` task configs — port of `suite/cartpole.py` (`Balance`).
 
 One parameterized config covers all six registered tasks:
 

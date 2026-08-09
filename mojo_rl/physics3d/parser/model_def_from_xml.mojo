@@ -172,14 +172,7 @@ struct ModelDefFromXML[
         ncam:          Camera count in <worldbody> (default 0).
         max_contacts:  Maximum contacts per step (default 50).
         max_equality:  Maximum equality constraints (default 0).
-        cone_type:     Friction cone type (default ELLIPTIC).
-        max_condim:    Largest condim over the model's geoms; pass
-                       `parse_xml(xml).MAX_CONDIM`. Over-estimating only
-                       costs unused rows, under-estimating is silent.
-        noslip_iter:   `<option noslip_iterations>`; pass
-                       `parse_xml(xml).NOSLIP_ITER`. 0 disables the pass,
-                       which is MuJoCo's default and correct for every suite
-                       model except dog.
+        cone_type:     Friction cone type (default PYRAMIDAL).
         max_tendon:    Maximum fixed tendons (default 0).
         nsite:   Total site count (default 0).
         neq:           Number of equality constraints (default 0).
@@ -199,6 +192,18 @@ struct ModelDefFromXML[
             entirely (returns True from `custom_apply_actions_cpu`) and drives
             those DOFs itself — SawyerReach does exactly this for its two
             kp=400 gripper servos.
+        max_condim:    Largest condim over the model's geoms; pass
+                       `parse_xml(xml).MAX_CONDIM`. Over-estimating only
+                       costs unused rows, under-estimating is silent.
+        noslip_iter:   `<option noslip_iterations>`; pass
+                       `parse_xml(xml).NOSLIP_ITER`. 0 disables the pass,
+                       which is MuJoCo's default and correct for every suite
+                       model except dog.
+        allow_missing_noslip: Accept `noslip_iter > 0` on an ELLIPTIC-cone
+            model. `mj_solNoSlip` is implemented for the pyramidal cone only,
+            so the elliptic path skips the pass silently; the build refuses
+            that combination unless this is True. Set it only to accept a
+            rollout that will NOT match MuJoCo.
     """
 
     # === Dimensions required by ModelDefLike ===

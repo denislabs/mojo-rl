@@ -1,4 +1,4 @@
-"""dm_control `quadruped` domain — walk, run and fetch.
+"""`dm_control` `quadruped` domain — walk, run and fetch.
 
     walk  = Phyics3dEnv[DMQuadrupedWalkModel,  DMQuadrupedWalkConfig]
     run   = Phyics3dEnv[DMQuadrupedRunModel,   DMQuadrupedRunConfig]

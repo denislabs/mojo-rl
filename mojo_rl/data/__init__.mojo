@@ -1,4 +1,4 @@
-"""mojo_rl.data — the shared trajectory store.
+"""`mojo_rl.data` — the shared trajectory store.
 
 One column-oriented format behind offline datasets, replay dumps,
 demonstrations and BFM trajectory data. See `docs/DATA_PLATFORM_PLAN.md`.

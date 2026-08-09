@@ -1,4 +1,4 @@
-"""dm_control `acrobot` domain.
+"""`dm_control` `acrobot` domain.
 
 Tasks: swingup, swingup_sparse.
 Reference: references/dm_control-main/dm_control/suite/acrobot.py + .xml

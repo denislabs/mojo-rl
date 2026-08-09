@@ -1,4 +1,4 @@
-"""dm_control `stacker` domain — stack_2 and stack_4 (Tier C).
+"""`dm_control` `stacker` domain — stack_2 and stack_4 (Tier C).
 
 TWO MODELS, ONE TASK CLASS. `make_model(n_boxes)` deletes `box{n..3}`, which
 renumbers the target body / geom / site after them, so the models cannot be a

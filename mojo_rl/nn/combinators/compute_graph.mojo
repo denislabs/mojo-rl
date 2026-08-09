@@ -69,7 +69,7 @@ def _cg_accum_kernel[
 
 
 struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
-    comptime N = Self.DECLS.size
+    comptime N = Self.DECLS.length
     comptime OUT_DIM = Self.DECLS[Self.N - 1].OUT_DIM
     comptime MAXARITY = Self._max_arity()
     # The graph's activation dtype = the output node's; all COMPUTE nodes

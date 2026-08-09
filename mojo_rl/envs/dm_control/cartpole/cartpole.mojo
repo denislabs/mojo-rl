@@ -1,4 +1,4 @@
-"""dm_control `cartpole` — the six registered tasks as env aliases.
+"""`dm_control` `cartpole` — the six registered tasks as env aliases.
 
     from mojo_rl.envs.dm_control.cartpole import DMCartpoleSwingup
     var env = DMCartpoleSwingup()

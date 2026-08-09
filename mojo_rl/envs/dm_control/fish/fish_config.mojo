@@ -1,4 +1,4 @@
-"""dm_control `fish` task configs — port of `suite/fish.py`.
+"""`dm_control` `fish` task configs — port of `suite/fish.py`.
 
 Two tasks over one model:
 

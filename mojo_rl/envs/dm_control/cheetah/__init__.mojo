@@ -1,4 +1,4 @@
-"""dm_control `cheetah` domain.
+"""`dm_control` `cheetah` domain.
 
 Task: run.
 Reference: references/dm_control-main/dm_control/suite/cheetah.py + .xml

@@ -1,4 +1,4 @@
-"""dm_control `hopper` task configs — port of `suite/hopper.py` (`Hopper`).
+"""`dm_control` `hopper` task configs — port of `suite/hopper.py` (`Hopper`).
 
 One parameterized config covers both registered tasks:
 

@@ -1,4 +1,4 @@
-"""dm_control `dog` task config — port of `suite/dog.py`'s `Stand` and `Move`.
+"""`dm_control` `dog` task config — port of `suite/dog.py`'s `Stand` and `Move`.
 
     stand = DMDogStandConfig
     walk  = DMDogMoveConfig[MOVE_SPEED=1.0]
@@ -468,7 +468,7 @@ struct DMDogStandConfig(Phyics3dEnvConfig):
         frame_skip: Int,
     ) -> Tuple[Scalar[DTYPE], Bool]:
         """`np.prod(get_reward_factors())`; never terminates early."""
-        var r = Float64(0)
+        var r: Float64
         try:
             r = _stand_factors[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
                 d, m_bodies, m_sites
@@ -571,7 +571,7 @@ struct DMDogMoveConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         step_count: Int,
         frame_skip: Int,
     ) -> Tuple[Scalar[DTYPE], Bool]:
-        var r = Float64(0)
+        var r: Float64
         try:
             var standing = _stand_factors[
                 DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE

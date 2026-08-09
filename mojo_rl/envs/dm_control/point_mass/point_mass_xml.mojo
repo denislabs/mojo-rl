@@ -1,4 +1,4 @@
-"""dm_control `point_mass` model — port of `dm_control/suite/point_mass.xml`.
+"""`dm_control` `point_mass` model — port of `dm_control/suite/point_mass.xml`.
 
 Verbatim apart from the `<include>` lines. Serves BOTH tasks: dm_control uses
 one XML for `easy` and `hard`, which differ only in `initialize_episode`.

@@ -1,4 +1,4 @@
-"""dm_control `quadruped` task config — port of `suite/quadruped.py`'s `Move`.
+"""`dm_control` `quadruped` task config — port of `suite/quadruped.py`'s `Move`.
 
 One parameterized config covers both in-scope tasks, which differ only in the
 target speed (and, in the XML, the floor's half-extent):

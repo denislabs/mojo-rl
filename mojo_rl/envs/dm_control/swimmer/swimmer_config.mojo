@@ -1,4 +1,4 @@
-"""dm_control `swimmer` task config — port of `suite/swimmer.py`.
+"""`dm_control` `swimmer` task config — port of `suite/swimmer.py`.
 
 ONE task shape (`Swimmer`) over two model sizes, so one config serves both:
 

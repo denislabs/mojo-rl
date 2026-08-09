@@ -1,4 +1,4 @@
-"""dm_control `ball_in_cup` model — port of `dm_control/suite/ball_in_cup.xml`.
+"""`dm_control` `ball_in_cup` model — port of `dm_control/suite/ball_in_cup.xml`.
 
 VERBATIM apart from the three `<include>` lines, which `merge_mjcf` splices
 in. Unlike `point_mass`, nothing here is substituted: this is the first ported

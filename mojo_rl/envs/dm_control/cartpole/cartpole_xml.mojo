@@ -1,4 +1,4 @@
-"""dm_control `cartpole` models — port of `dm_control/suite/cartpole.xml`.
+"""`dm_control` `cartpole` models — port of `dm_control/suite/cartpole.xml`.
 
 The reference builds the multi-pole variants procedurally with lxml
 (`cartpole._make_model(n_poles)`): it clones the first pole body, moves the

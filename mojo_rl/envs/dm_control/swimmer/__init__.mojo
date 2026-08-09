@@ -1,4 +1,4 @@
-"""dm_control `swimmer` domain.
+"""`dm_control` `swimmer` domain.
 
 Tasks: swimmer6, swimmer15.
 Reference: references/dm_control-main/dm_control/suite/swimmer.py + .xml

@@ -1,4 +1,4 @@
-"""dm_control `point_mass` — the `easy` and `hard` tasks as env aliases.
+"""`dm_control` `point_mass` — the `easy` and `hard` tasks as env aliases.
 
     from mojo_rl.envs.dm_control.point_mass import DMPointMassEasy
     var env = DMPointMassEasy()

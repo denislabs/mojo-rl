@@ -1,4 +1,4 @@
-"""dm_control `acrobot` task config — port of `suite/acrobot.py` (`Balance`).
+"""`dm_control` `acrobot` task config — port of `suite/acrobot.py` (`Balance`).
 
 One parameterized config covers both registered tasks:
 

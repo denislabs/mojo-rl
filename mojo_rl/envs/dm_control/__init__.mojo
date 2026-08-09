@@ -1,4 +1,4 @@
-"""dm_control suite ports.
+"""`dm_control` suite ports.
 
 Native Mojo ports of the DeepMind Control Suite tasks on the physics3d
 engine. See docs/DM_CONTROL_PORT.md for the staged plan, the engine gaps

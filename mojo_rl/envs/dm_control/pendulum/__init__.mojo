@@ -1,4 +1,4 @@
-"""dm_control `pendulum` domain (task: swingup).
+"""`dm_control` `pendulum` domain (task: swingup).
 
 Reference: references/dm_control-main/dm_control/suite/pendulum.py + .xml
 """

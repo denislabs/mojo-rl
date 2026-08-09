@@ -1,4 +1,4 @@
-"""dm_control `stacker` env facades — both registered tasks.
+"""`dm_control` `stacker` env facades — both registered tasks.
 
     stack_2 = DMStacker2[DTYPE]
     stack_4 = DMStacker4[DTYPE]

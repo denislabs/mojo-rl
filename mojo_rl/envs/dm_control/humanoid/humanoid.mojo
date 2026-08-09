@@ -1,4 +1,4 @@
-"""dm_control `humanoid` — the four registered tasks as env aliases.
+"""`dm_control` `humanoid` — the four registered tasks as env aliases.
 
     from mojo_rl.envs.dm_control.humanoid import DMHumanoidStand
     var env = DMHumanoidStand()

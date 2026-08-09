@@ -1,4 +1,4 @@
-"""dm_control `dog fetch` — port of `suite/dog.py`'s `Fetch` (Phase 5).
+"""`dm_control` `dog fetch` — port of `suite/dog.py`'s `Fetch` (Phase 5).
 
     observation = Stand's 223 + ball_state(6) + target_position(3) = 232
     reward      = prod(Stand's 6 factors) * reach_ball * fetch_ball
@@ -412,7 +412,7 @@ struct DMDogFetchConfig(Phyics3dEnvConfig):
     ) -> Tuple[Scalar[DTYPE], Bool]:
         """`prod(Stand's factors) * reach_ball * fetch_ball`; never
         terminates early."""
-        var r = Float64(0)
+        var r: Float64
         try:
             r = _stand_factors[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
                 d, m_bodies, m_sites

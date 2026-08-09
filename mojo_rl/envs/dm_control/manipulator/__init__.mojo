@@ -1,4 +1,4 @@
-"""dm_control `manipulator` domain — all four tasks (Tier C).
+"""`dm_control` `manipulator` domain — all four tasks (Tier C).
 
     bring_ball   bring_peg   insert_ball   insert_peg
 

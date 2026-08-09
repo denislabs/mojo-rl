@@ -1,4 +1,4 @@
-"""dm_control `ball_in_cup` domain.
+"""`dm_control` `ball_in_cup` domain.
 
 Task: catch. The first ported domain with a SPATIAL (site-routed) tendon and
 the first with a tendon LIMIT — see `ball_in_cup_xml` for what that required.

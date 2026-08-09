@@ -1,4 +1,4 @@
-"""dm_control `dog fetch` — the model Phase 5 needs (port of `dog.py`).
+"""`dm_control` `dog fetch` — the model Phase 5 needs (port of `dog.py`).
 
 `fetch` is the one dog task that calls `get_model_and_assets(remove_ball=False)`
 and so keeps what stand/walk/trot/run delete: the `ball` body and its

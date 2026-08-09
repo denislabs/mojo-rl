@@ -1,4 +1,4 @@
-"""dm_control `reacher` — the two registered tasks as env aliases.
+"""`dm_control` `reacher` — the two registered tasks as env aliases.
 
     from mojo_rl.envs.dm_control.reacher import DMReacherEasy, DMReacherHard
     var env = DMReacherEasy()

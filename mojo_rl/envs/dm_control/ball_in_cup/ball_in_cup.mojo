@@ -1,4 +1,4 @@
-"""dm_control `ball_in_cup` — the `catch` task as an env alias.
+"""`dm_control` `ball_in_cup` — the `catch` task as an env alias.
 
     from mojo_rl.envs.dm_control.ball_in_cup import DMBallInCupCatch
     var env = DMBallInCupCatch()

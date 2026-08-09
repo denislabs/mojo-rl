@@ -191,7 +191,7 @@ struct H5Writer(Movable):
                 of compression; it also sets the granularity at which a
                 reader can pull a slab. 4096 rows is a reasonable default
                 for state columns.
-            deflate: gzip level 0-9. ``0`` disables compression (plus the
+            deflate: Gzip level 0-9. ``0`` disables compression (plus the
                 shuffle filter). Worth it for pixels/uint8; usually a net
                 loss for fp32 state columns, where decompression costs
                 more than the bytes saved.

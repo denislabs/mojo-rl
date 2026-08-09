@@ -1,4 +1,4 @@
-"""dm_control `pendulum` model — port of `dm_control/suite/pendulum.xml`.
+"""`dm_control` `pendulum` model — port of `dm_control/suite/pendulum.xml`.
 
 Body/option/actuator content is byte-identical to the reference; the three
 `<include file="./common/*.xml"/>` lines are resolved by `merge_mjcf` over the

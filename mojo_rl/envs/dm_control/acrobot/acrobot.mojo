@@ -1,4 +1,4 @@
-"""dm_control `acrobot` — the two registered tasks as env aliases.
+"""`dm_control` `acrobot` — the two registered tasks as env aliases.
 
     from mojo_rl.envs.dm_control.acrobot import DMAcrobotSwingup
     var env = DMAcrobotSwingup()

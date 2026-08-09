@@ -1,4 +1,4 @@
-"""dm_control `reacher` model — port of `dm_control/suite/reacher.xml`.
+"""`dm_control` `reacher` model — port of `dm_control/suite/reacher.xml`.
 
 Verbatim apart from the `<include>` lines and ONE deliberate substitution.
 

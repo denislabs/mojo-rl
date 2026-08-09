@@ -1,4 +1,4 @@
-"""dm_control `cheetah` model — port of `dm_control/suite/cheetah.xml`.
+"""`dm_control` `cheetah` model — port of `dm_control/suite/cheetah.xml`.
 
 Body XML is the reference file verbatim apart from the three `<include>`
 lines, which `merge_mjcf` splices in instead (same order as the reference).

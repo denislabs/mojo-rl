@@ -1,4 +1,4 @@
-"""dm_control `stacker` task config — port of `suite/stacker.py::Stack`.
+"""`dm_control` `stacker` task config — port of `suite/stacker.py::Stack`.
 
 ONE task class over two models. `Stack` is parameterised by `n_boxes` and so is
 this config; the two registered tasks are

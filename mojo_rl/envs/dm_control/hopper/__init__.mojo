@@ -1,4 +1,4 @@
-"""dm_control `hopper` domain.
+"""`dm_control` `hopper` domain.
 
 Tasks: stand, hop.
 Reference: references/dm_control-main/dm_control/suite/hopper.py + .xml
