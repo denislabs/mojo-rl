@@ -21,6 +21,12 @@ between begin and end.
 
     faults    -> A. begin/end alone is broken. Stop.
     survives  -> B. Capture works empty; the fault comes from the contents.
+
+⚠ HISTORICAL NOTE: this probe FAULTED, and that was read as story A. It was
+neither. The real cause was that `ctx`'s last use was `CUDAGraph(ctx)`, so
+Mojo destroyed the DeviceContext — and MAX's destructor destroyed the stream
+— before `begin_capture` ran. `CUDAGraph` now holds the context, so the
+premise of the split above finally holds.
                  `end_capture` will then raise "Captured 0 nodes", which is
                  the EXPECTED, CORRECT outcome here — an empty capture really
                  does hold zero nodes. Reaching that error is a PASS.

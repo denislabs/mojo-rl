@@ -49,6 +49,27 @@ struct CUDAGraph(Movable):
     var _mojo_stream: _CUptr
     var _replay_stream: _CUptr
     var _lib: OwnedDLHandle
+    # ⚠⚠ HOLDING THE CONTEXT IS LOAD-BEARING, NOT TIDINESS.
+    #
+    # Mojo destroys a value at its LAST USE, not at end of scope. A caller
+    # that writes
+    #
+    #     var g = CUDAGraph(ctx)     # <- last mention of ctx
+    #     g.begin_capture()
+    #
+    # has `ctx` destroyed the instant `__init__` returns, and MAX's
+    # DeviceContext destructor SYNCHRONIZES AND DESTROYS the stream we are
+    # about to capture. Every symptom in the 2026-08-09 arc came from that:
+    # `cuStreamDestroy` on our handle, `cuStreamSynchronize` arriving "during
+    # capture" (it is the destructor's), and driver SIGSEGVs in
+    # cuStreamBeginCapture / EndCapture / GetCaptureInfo (use-after-free on a
+    # freed stream, which is undefined and therefore inconsistent — rc=0 from
+    # one entry point, a fault from the next).
+    #
+    # `AsyncRT_DeviceContext_release` was frame #12 of the very first stack
+    # trace we looked at. Storing the context makes the graph's lifetime an
+    # upper bound on the context's, so no caller can arrange this by accident.
+    var _ctx: DeviceContext
     # `intercept_graph_launch` used to be cached here as a raw function
     # pointer. Mojo 1.0's `get_function` returns a `_DLCallable` whose origin
     # is `origin_of(self._lib)` — it deliberately borrows the handle so the
@@ -64,6 +85,7 @@ struct CUDAGraph(Movable):
         Requires at least one prior kernel launch for stream discovery.
         On non-NVIDIA: disabled state, all methods are no-ops.
         """
+        self._ctx = ctx  # keep the context alive — see the field comment
         self._state = 0
         self._num_nodes = 0
         # Raw _CUptr fields: NVIDIA path overwrites via interceptor calls
@@ -77,42 +99,23 @@ struct CUDAGraph(Movable):
             ctx.synchronize()
             self._lib = OwnedDLHandle("./mojo_rl/cuda/libcuda_intercept.so")
 
-            # ⚠⚠ OFF BY DEFAULT: THE BORROWED-STREAM DESIGN IS DEAD ON MAX
-            # 26.5.0rc2. This whole file works by taking the stream MAX
-            # enqueues on and driving raw driver capture over it. Measured on
-            # 2026-08-09, that premise fails TWO independent ways, and they
-            # are not two bugs with two fixes:
+            # ⚠ ENABLED AGAIN AS OF THE LIFETIME FIX. This block briefly
+            # defaulted OFF, on the conclusion that MAX destroyed and
+            # synchronized the stream on its own and the borrowed-stream
+            # design was unsalvageable. That conclusion was WRONG. A probe
+            # with no CUDAGraph in the process (`probe_max_stream_lifetime`)
+            # showed MAX keeps ONE stream across repeated synchronizes and
+            # only tears it down when the DeviceContext dies — and the
+            # context was dying early because Mojo destroys a value at its
+            # LAST USE and `CUDAGraph` did not hold one. See the `_ctx` field.
             #
-            #   1. MAX DESTROYS the stream after `ctx.synchronize()`
-            #      (`cuStreamDestroy` on exactly the handle the launch hook
-            #      reported). Any later driver call with it is a
-            #      use-after-free — and a freed handle is UNDEFINED, not a
-            #      consistent error, which is why symptoms ranged from rc=0
-            #      to SIGSEGVs in four different driver entry points.
-            #   2. When the stream IS alive, MAX calls `cuStreamSynchronize`
-            #      on it INSIDE the capture window. CUDA forbids that in
-            #      every capture mode. Suppressing it (the interceptor can)
-            #      is a LIE about work being complete, so it is not a fix.
-            #
-            # Neither has an honest repair from our side: we do not own the
-            # stream and cannot stop MAX from tearing it down or syncing it.
-            # So refuse to capture rather than crash. `maybe_capture_replay`
-            # then runs the step directly — training stays CORRECT and only
-            # loses the replay speedup, which is why this is the right
-            # default rather than a regression.
-            #
-            # MOJO_RL_CUDA_GRAPH=1 re-enables the attempt. That is the
-            # tripwire: run `tests/cuda/test_cuda_graph_minimal.mojo` with it
-            # set after a MAX upgrade, and if it captures a non-empty graph,
-            # delete this block.
-            if getenv("MOJO_RL_CUDA_GRAPH", "0") == "0":
-                self._state = 3  # DISABLED
+            # MOJO_RL_CUDA_GRAPH=0 disables capture without a rebuild, for
+            # bisecting a suspected capture problem against a known-good run.
+            if getenv("MOJO_RL_CUDA_GRAPH", "1") == "0":
+                self._state = 3  # DISABLED by request
                 print(
-                    "[CUDAGraph] disabled on NVIDIA (MAX destroys and"
-                    " synchronizes the stream we would capture; see"
-                    " mojo_rl/cuda/graph.mojo). Running steps directly —"
-                    " correct, without the graph-replay speedup."
-                    " MOJO_RL_CUDA_GRAPH=1 to retry after a MAX upgrade."
+                    "[CUDAGraph] disabled by MOJO_RL_CUDA_GRAPH=0 — running"
+                    " steps directly (correct, no graph-replay speedup)."
                 )
                 return
 
