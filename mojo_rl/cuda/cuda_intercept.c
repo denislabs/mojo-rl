@@ -137,7 +137,7 @@ static CUresult wrapped_cuLaunchKernelEx(
        and it measurably slowed training down. Diagnostics here are rate
        limited and must stay that way. */
     if (config->hStream && config->hStream != g_mojo_stream) {
-        if (g_stream_changes < 4) {
+        if (g_logging || g_stream_changes < 4) {
             fprintf(stderr, "[intercept] Mojo stream: %p%s\n",
                     config->hStream,
                     g_mojo_stream ? " (changed)" : "");
@@ -327,14 +327,12 @@ static CUresult wrapped_cuStreamDestroy(void *a) {
        an unconditional log here is one stderr syscall per sync in the
        training loop. NULLing the handle is the part that must always run —
        it is what turns a later use-after-free into a checkable NULL. */
-    if (a && a == g_mojo_stream) {
-        if (g_destroy_logged < 2) {
-            fprintf(stderr, "[intercept] cuStreamDestroy(%p) — the stream we"
-                    " tracked; handle cleared (further destroys silent)\n", a);
-            g_destroy_logged++;
-        }
-        g_mojo_stream = NULL;
+    if (g_logging || g_destroy_logged < 2) {
+        fprintf(stderr, "[intercept] cuStreamDestroy(%p)%s\n", a,
+                (a && a == g_mojo_stream) ? "  <-- the stream we track" : "");
+        g_destroy_logged++;
     }
+    if (a && a == g_mojo_stream) g_mojo_stream = NULL;
     return real_cuStreamDestroy(a);
 }
 
