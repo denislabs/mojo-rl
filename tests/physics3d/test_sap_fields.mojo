@@ -178,7 +178,22 @@ comptime GOLD_NCON_S = 2  # Part B sawyer SAP: total contacts (defect 24)
 # centre-line estimate to a real EPA answer. See the long note in
 # test_mesh_detection_fields for why the number moved AWAY from MuJoCo while
 # getting more correct, and why the residual is the mesh VERTEX SET.
-comptime GOLD_CON_S = 481.2657020315528  # geometry columns (k < 23)
+#
+# --- 2026-08-09c: mesh_vertadr was in FLOATS, consumed as VERTICES ---------
+# 481.2657020315528 -> 512.8892028308474, matching `test_mesh_detection_fields`
+# EXACTLY once more, so SAP and O(N^2) still agree on this scene. This move is
+# TOWARD MuJoCo: the obj/gripper contact goes -0.0148583 -> -0.0273728 against
+# MuJoCo's -0.0276947, i.e. 12.9 mm of error down to 0.32 mm.
+#
+# `load_mesh_hull` stored a FLAT SCALAR offset where every consumer indexes
+# `[vertex, component]`, so eGripperBase read past the loaded vertices entirely
+# and collided as an empty shape. ⚠ THIS GATE FROZE THE BUG: its header says it
+# was "originally validated BIT-EXACT against the legacy FK + narrow-phase
+# kernels", and those kernels had the same defect, so the golden certified the
+# wrong answer for as long as it existed. No dm_control suite model does mesh
+# COLLISION (dog has 162 mesh geoms, all non-collidable), so nothing else could
+# have caught it.
+comptime GOLD_CON_S = 512.8892028308474  # geometry columns (k < 23)
 comptime GOLD_SOL_S = 452.32200173288584  # solparam columns (k >= 23)
 
 # ── Humanoid (Part A) ────────────────────────────────────────────────────

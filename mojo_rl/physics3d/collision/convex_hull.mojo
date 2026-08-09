@@ -280,15 +280,32 @@ def load_mesh_hull[
 
     # Compute convex hull
     var mesh_id = num_meshes
-    var vert_offset = len(mesh_vert)
-    mesh_vertadr.append(vert_offset)
+    # ⚠ TWO UNITS, ONE NAME. `mesh_vert` is a FLAT scalar list, so
+    # `len(mesh_vert)` is an offset in FLOATS — but every collision consumer
+    # indexes the packed `mesh_verts` tensor as `[vertex, component]`:
+    # `mesh_verts[vert_adr + i, k]` in `gjk._support_mesh`, in
+    # `_plane_mesh_contacts` and in the SAP plane-mesh branch. Storing the
+    # float offset made `mesh_vertadr` 3x too large for all three.
+    #
+    # Measured on sawyer: mesh 11 (eGripperBase) had vertadr 1701, which as a
+    # VERTEX index points past the 648 vertices actually loaded, so every read
+    # returned ZERO — the gripper hull collided as an empty shape. Meshes 1..10
+    # were worse than useless rather than empty: their float offsets land
+    # inside the populated region, so they collided against SOME OTHER MESH'S
+    # vertices. Only mesh 0, at offset 0, was ever right.
+    #
+    # `mesh_vertadr` is now a VERTEX index, which is also MuJoCo's convention
+    # for `mesh_vertadr`. `compute_bounding_radius_at` walks the flat list and
+    # still wants FLOATS, so it is given the float offset explicitly.
+    var vert_float_offset = len(mesh_vert)
+    mesh_vertadr.append(vert_float_offset // 3)
     var num_hull = compute_convex_hull[DTYPE](unique, num_unique, mesh_vert)
     mesh_vertnum.append(num_hull)
     num_meshes += 1
 
     # Compute bounding radius from hull vertices
     var rbound = compute_bounding_radius_at[DTYPE](
-        mesh_vert, vert_offset, num_hull
+        mesh_vert, vert_float_offset, num_hull
     )
 
     return (mesh_id, rbound)

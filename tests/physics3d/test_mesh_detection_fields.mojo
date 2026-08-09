@@ -135,7 +135,27 @@ comptime GOLD_NCON = 2  # total contacts across both envs
 # so our loader and MuJoCo's mesh compile disagree about the vertices
 # themselves, which is the next thing to chase. Sampling density is
 # second-order behind it (256 dirs -> 0.36 mm, 1024 -> 0.24 mm on MuJoCo's set).
-comptime GOLD_CON = 481.2657020315528  # geometry columns (k < 23)
+#
+# --- 2026-08-09c: mesh_vertadr was in FLOATS, consumed as VERTICES ---------
+# 481.2657020315528 -> 512.8892028308474, and this one moves TOWARD MuJoCo:
+#
+#     ours before  -0.0148583   (12.9 mm out)
+#     ours now     -0.0273728   ( 0.32 mm out)
+#     MuJoCo       -0.0276947
+#
+# `load_mesh_hull` stored `len(mesh_vert)` — a FLAT SCALAR offset — while every
+# collision consumer indexes the packed tensor as `[vertex, component]`. So
+# `mesh_vertadr` was 3x too large for all of them. eGripperBase's vertadr 1701
+# points past the 648 vertices actually loaded, so the gripper hull collided as
+# an EMPTY SHAPE; meshes 1..10 were worse than empty, colliding against some
+# OTHER mesh's vertices. Only mesh 0, at offset 0, was ever right.
+#
+# ⚠ This is what the previous refresh's 12.9 mm residual actually was, and the
+# reasoning that pinned it on "the hull vertex SET" was right for the wrong
+# reason — the set was not merely coarse, it was the wrong memory. The 0.32 mm
+# that remains is the direction sampler (26 directions, 81 of 883 hull
+# vertices), which is now genuinely the next term.
+comptime GOLD_CON = 512.8892028308474  # geometry columns (k < 23)
 comptime GOLD_SOL = 452.32200173288584  # solparam columns (k >= 23)
 
 

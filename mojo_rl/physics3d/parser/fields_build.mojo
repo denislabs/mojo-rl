@@ -915,9 +915,12 @@ def build_model_fields_from_flat[
             if loaded_mesh_ids[gd.mesh_id] >= 0:
                 var mid = loaded_mesh_ids[gd.mesh_id]
                 mf.geoms.data[o + GEOM_IDX_MESH_ID] = Scalar[DTYPE](mid)
+                # `mesh_vertadr` is a VERTEX index (MuJoCo's convention, and
+                # what every collision consumer expects); this helper walks the
+                # FLAT scalar list, so convert. See `load_mesh_hull`.
                 mf.geoms.data[o + GEOM_IDX_RBOUND] = (
                     compute_bounding_radius_at[DTYPE](
-                        mesh_vert, mesh_vertadr[mid], mesh_vertnum[mid]
+                        mesh_vert, mesh_vertadr[mid] * 3, mesh_vertnum[mid]
                     )
                 )
             else:
