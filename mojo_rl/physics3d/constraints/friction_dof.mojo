@@ -58,7 +58,9 @@ from layout import Layout, LayoutTensor
 
 from ..joint_types import JNT_FREE, JNT_BALL
 from ..fields import Data, Model, DynamicsScratch
+from .constraint_data import refsafe_timeconst
 from ..gpu.constants import (
+    MODEL_META_IDX_TIMESTEP,
     MODEL_JOINT_SIZE,
     JOINT_IDX_TYPE,
     JOINT_IDX_DOF_ADR,
@@ -99,6 +101,10 @@ def _friction_env[
     joints: LayoutTensor[
         DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
     ],
+    # ⚠ REFSAFE needs the timestep, and `_friction_env` has no `meta`.
+    # Passed as a scalar rather than threading the whole meta tensor: the
+    # only thing this row type needs from the model options is `2*dt`.
+    timestep: Scalar[DTYPE],
     dof_invweight0: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
     m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
     qacc_constrained: LayoutTensor[
@@ -166,9 +172,14 @@ def _friction_env[
     elif dmax > Scalar[DTYPE](MJF_MAXIMP):
         dmax = Scalar[DTYPE](MJF_MAXIMP)
     # K = 0 for a friction row, so only B survives: aref = -B*vel.
-    var B_damp = Scalar[DTYPE](2.0) / (
-        dmax * Scalar[DTYPE](DOF_SOLREF_TIMECONST)
+    # ⚠ THE HARDCODED DEFAULT IS STILL SUBJECT TO REFSAFE (defect 23).
+    # MuJoCo clamps `solreffriction[0]` to 2*timestep exactly as it clamps
+    # solref (engine_core_constraint.c:2039), and that applies to the DEFAULT
+    # 0.02 we substitute here just as much as to a declared value.
+    var f_tc = refsafe_timeconst[DTYPE](
+        Scalar[DTYPE](DOF_SOLREF_TIMECONST), timestep
     )
+    var B_damp = Scalar[DTYPE](2.0) / (dmax * f_tc)
 
     comptime MINVJ_FRIC_SIZE = _max_one[NV * NV]()
     var fric_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_FRIC_SIZE](
@@ -235,12 +246,16 @@ def _friction_fields_kernel[
     qacc_constrained: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
     ],
+    # A SCALAR, not the meta tensor: the friction rows need exactly `2*dt` from
+    # the model options, and a scalar kernel argument is the cheap, capture-safe
+    # way to carry it.
+    timestep: Scalar[DTYPE],
 ):
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
     _friction_env[DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS](
-        env, qvel, joints, dof_invweight0, m_inv, qacc_constrained
+        env, qvel, joints, timestep, dof_invweight0, m_inv, qacc_constrained
     )
 
 
@@ -285,6 +300,11 @@ def solve_friction[
     comptime L_DW = Layout.row_major(NV)
     comptime L_M = Layout.row_major(BATCH, NV * NV)
 
+    # REFSAFE (defect 23): the friction rows use the HARDCODED default
+    # timeconst, and MuJoCo clamps that to 2*timestep like any other. Read once
+    # here; both targets take it as a scalar.
+    var ts_v = m.meta.data[MODEL_META_IDX_TIMESTEP]
+
     comptime if target == "cpu":
         var qvel_v = d.qvel.lt["cpu", L_NV]()
         var joints_v = m.joints.lt["cpu", L_JOINT]()
@@ -293,7 +313,7 @@ def solve_friction[
         var qc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
         for e in range(BATCH):
             _friction_env[DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS](
-                e, qvel_v, joints_v, dw_v, mi_v, qc_v
+                e, qvel_v, joints_v, ts_v, dw_v, mi_v, qc_v
             )
     else:
         var c = ctx.value()
@@ -308,6 +328,7 @@ def solve_friction[
             m.dof_invweight0.lt["gpu", L_DW](),
             scratch.m_inv.lt["gpu", L_M](),
             scratch.qacc_constrained.lt["gpu", L_NV](),
+            ts_v,
             grid_dim=(BLOCKS,),
             block_dim=(FRIC_TPB,),
         )

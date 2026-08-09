@@ -1471,7 +1471,9 @@ def _contact_solve_env[
     # Dry-friction dof rows (MuJoCo mjCNSTR_FRICTION_DOF), solved
     # beside the limit rows. No-op for a model with no frictionloss.
     _friction_env[DTYPE, NQ, NV, NJOINT, BATCH, PGS_ITERATIONS](
-        env, qvel, joints, dof_invweight0, m_inv, qacc_constrained
+        env, qvel, joints,
+        rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
+        dof_invweight0, m_inv, qacc_constrained
     )
 
     # Equality constraints — legacy position (right after limits; the legacy

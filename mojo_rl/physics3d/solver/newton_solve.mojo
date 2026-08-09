@@ -149,7 +149,7 @@ from ..gpu.constants import (
 # BATCH — reserves that frame, and CUDA reserves it for max residency across
 # the device, which OOMs at humanoid scale (Metal doesn't pre-reserve). One
 # thread per block keeps the reservation to the envs actually running.
-from ..constraints.constraint_data import solref_spring_damper
+from ..constraints.constraint_data import refsafe_timeconst, solref_spring_damper
 
 comptime NS_TPB: Int = 1
 
@@ -951,9 +951,13 @@ def _newton_solve_env[
         # rows, clamped to +-frictionloss, hence kind_e = SROW_FRICTION.
         var f_imp = Scalar[DTYPE](DOF_SOLIMP_DMIN)
         var f_dmax = Scalar[DTYPE](DOF_SOLIMP_DMAX)
-        var f_B = Scalar[DTYPE](2.0) / (
-            f_dmax * Scalar[DTYPE](DOF_SOLREF_TIMECONST)
+        # REFSAFE applies to the hardcoded friction default too — see
+        # `refsafe_timeconst`.
+        var f_tc_p = refsafe_timeconst[DTYPE](
+            Scalar[DTYPE](DOF_SOLREF_TIMECONST),
+            rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
         )
+        var f_B = Scalar[DTYPE](2.0) / (f_dmax * f_tc_p)
         for j in range(NJOINT):
             var floss = rebind[Scalar[DTYPE]](
                 joints[j, JOINT_IDX_FRICTIONLOSS]
@@ -3205,9 +3209,13 @@ def _newton_blocked_fields_kernel[
         # at all. Arithmetic identical to the per-env pyramidal builder.
         var f_imp = Scalar[DTYPE](DOF_SOLIMP_DMIN)
         var f_dmax = Scalar[DTYPE](DOF_SOLIMP_DMAX)
-        var f_B = Scalar[DTYPE](2.0) / (
-            f_dmax * Scalar[DTYPE](DOF_SOLREF_TIMECONST)
+        # REFSAFE applies to the hardcoded friction default too — see
+        # `refsafe_timeconst`.
+        var f_tc_p = refsafe_timeconst[DTYPE](
+            Scalar[DTYPE](DOF_SOLREF_TIMECONST),
+            rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
         )
+        var f_B = Scalar[DTYPE](2.0) / (f_dmax * f_tc_p)
         for j in range(NJOINT):
             var floss = rebind[Scalar[DTYPE]](
                 joints[j, JOINT_IDX_FRICTIONLOSS]

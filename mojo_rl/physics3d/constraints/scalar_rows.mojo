@@ -98,7 +98,10 @@ from ..gpu.constants import (
 )
 
 # Row kinds
-from .constraint_data import solref_spring_damper
+from .constraint_data import (
+    solref_spring_damper,
+    refsafe_timeconst,
+)
 
 comptime SROW_LIMIT: Int = 0
 comptime SROW_FRICTION: Int = 1
@@ -372,7 +375,13 @@ def build_scalar_rows[
     # identically 0, so the impedance sits on the saturated branch at dmin.
     var f_imp = _clamp_imp[DTYPE](Scalar[DTYPE](DOF_SOLIMP_DMIN))
     var f_dmax = _clamp_imp[DTYPE](Scalar[DTYPE](DOF_SOLIMP_DMAX))
-    var f_B = Scalar[DTYPE](2.0) / (f_dmax * Scalar[DTYPE](DOF_SOLREF_TIMECONST))
+    # REFSAFE applies to the hardcoded friction default too — see
+    # `refsafe_timeconst` and friction_dof.mojo.
+    var f_tc = refsafe_timeconst[DTYPE](
+        Scalar[DTYPE](DOF_SOLREF_TIMECONST),
+        rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
+    )
+    var f_B = Scalar[DTYPE](2.0) / (f_dmax * f_tc)
 
     for j in range(NJOINT):
         var floss = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_FRICTIONLOSS])

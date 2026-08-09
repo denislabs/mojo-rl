@@ -272,3 +272,34 @@ def solref_spring_damper[
         b_out = -ref_dr / (d_width if d_width > MINVAL else MINVAL)
 
     return (k_out, b_out)
+
+
+@always_inline
+def refsafe_timeconst[
+    DTYPE: DType
+](ref_tc: Scalar[DTYPE], timestep: Scalar[DTYPE]) -> Scalar[DTYPE]:
+    """MuJoCo's REFSAFE clamp on its own — `max(ref_tc, 2*timestep)`.
+
+    `solref_spring_damper` applies this internally for constraint rows. The dry
+    FRICTION rows do not go through it — their `K` is identically 0, so they
+    compute only `B = 2/(dmax*timeconst)` inline from the HARDCODED default
+    `DOF_SOLREF_TIMECONST = 0.02` — and MuJoCo clamps that default exactly the
+    same way (`engine_core_constraint.c:2039`, the `solreffriction` twin of the
+    :2028 clamp). This exists so those three sites can apply the rule without a
+    fourth copy of the arithmetic.
+
+    ⚠ INERT ON EVERY MODEL IN THE REPO TODAY, and that is measured, not
+    assumed: `finger` is the only suite model with `frictionloss > 0`, and its
+    timestep is 0.01, so `2*dt` is exactly 0.02 and the clamp changes nothing.
+    It bites the first model that combines `frictionloss` with a timestep
+    above 0.01 — MuJoCo would then use `2*dt` where we would have used 0.02,
+    and `B` scales as 1/timeconst.
+
+    ⚠ ONLY THE STANDARD FORM IS CLAMPED. A non-positive `ref_tc` is the direct
+    (stiffness) form and passes through, matching MuJoCo's `solref[0] > 0`
+    guard.
+    """
+    if ref_tc <= Scalar[DTYPE](0):
+        return ref_tc
+    var two_dt = Scalar[DTYPE](2.0) * timestep
+    return two_dt if ref_tc < two_dt else ref_tc
