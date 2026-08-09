@@ -39,7 +39,7 @@ from mojo_rl.core.fmt import fit
 
 
 # ─── Profiling knobs ──────────────────────────────────────────────────────
-comptime USE_TRAIN_CUDA_GRAPH = True
+comptime USE_TRAIN_CUDA_GRAPH = False
 comptime EPISODE_SYNC_EVERY = 32
 
 # ─── Sizing (mirrors sac_half_cheetah_profile_graph.mojo exactly) ──────────
