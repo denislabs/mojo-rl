@@ -32,11 +32,20 @@ WHAT IS ASSERTED
     BODY LABELS is what bug 35 violated — comparing normals alone would have
     passed.
 
-⚠ Contact COUNTS are not compared. MuJoCo emits multi-point manifolds for
-capsule/cylinder and box/cylinder (5 points) and box/capsule (2); our narrow
-phase is single-point there. That is a known scope difference, not a direction
-bug, so this file gates direction and geometry and leaves manifold richness
-alone.
+  * PER-GROUP CONTACT COUNTS against MuJoCo with `mjDSBL_MULTICCD`, printed
+    beside MuJoCo's default count so the manifold rows we do not produce stay
+    visible rather than silently tolerated.
+  * THE DEVICE LEGS (`test_narrow_phase_pairs_gpu_matches_cpu`): O(N^2)-GPU and
+    SAP-GPU against the O(N^2)-CPU leg, which the asserts above have already
+    anchored to MuJoCo.
+
+⚠ THE DEVICE LEGS WERE MISSING UNTIL 2026-08-09, and that gap cost a week.
+Every assertion here ran `detect_contacts["cpu"]` only, and the other detection
+golden pins walker2d, whose contacts are all PLANE pairs — so the GPU O(N^2)
+non-plane path was gated by NOTHING. When it stopped emitting contacts entirely
+(defect 26, a compiler bug fixed by Mojo 1.0.0rc2), the only symptom anywhere in
+the suite was a mesh gate reporting "vacuous", which was read as a stale-pose
+problem. A CPU-only gate over a CPU/GPU dual-path engine is half a gate.
 
 Run: pixi run mojo run -I . tests/physics3d/test_narrow_phase_pairs.mojo
 """
@@ -225,10 +234,29 @@ comptime TOL_DIR: Float64 = 1e-10
 comptime TOL_DIST: Float64 = 1e-12
 comptime TOL_DIR_APPROX: Float64 = 1e-5
 comptime TOL_DIST_APPROX: Float64 = 1e-6
+# Defect 27 ratchet: the measured CPU-vs-GPU divergence on the box/capsule
+# SECOND manifold point (0.2747207283973694 at column NY), plus 1%. Set from
+# the measurement so it cannot drift upward unnoticed. See the long note at the
+# assert site.
+comptime TOL_GPU_MANIFOLD: Float64 = 0.2775
 
 comptime Dat = Data[DTYPE, PM.NQ, PM.NV, NBODY, MC, PM.NSITE, 1]
 comptime Mod = Model[
     DTYPE, PM.NV, NBODY, PM.NJOINT, NGEOM, PM.MAX_EQUALITY, PM.MAX_TENDON,
+    PM.NSITE, PM.NEXCLUDE, 0,
+]
+
+# The device legs need their OWN float32 instantiation: this fixture is float64
+# for the MuJoCo comparison, and Metal rejects f64 outright — `air.sin.f64`,
+# `air.sqrt.f64` and friends are "Metal-unsupported instructions", so a f64 GPU
+# kernel does not fail at runtime, it fails to BUILD. Comparing f32-CPU against
+# f32-GPU is the right comparison anyway: identical source and identical dtype,
+# so the two are required to be bit-exact, and any difference is the device
+# path. The MuJoCo anchoring stays on the f64 leg above.
+comptime DTYPE32 = DType.float32
+comptime Dat32 = Data[DTYPE32, PM.NQ, PM.NV, NBODY, MC, PM.NSITE, 1]
+comptime Mod32 = Model[
+    DTYPE32, PM.NV, NBODY, PM.NJOINT, NGEOM, PM.MAX_EQUALITY, PM.MAX_TENDON,
     PM.NSITE, PM.NEXCLUDE, 0,
 ]
 
@@ -517,6 +545,202 @@ def test_narrow_phase_pairs_vs_mujoco() raises:
         multi_rows > 0,
         "no group in this fixture has a multi-point manifold, so nothing here"
         " gates multi-point convex contact at all",
+    )
+
+
+def test_narrow_phase_pairs_gpu_matches_cpu() raises:
+    """The SAME fixture through the GPU kernels. This is the leg that was
+    missing, and its absence cost a week.
+
+    ⚠ EVERY MuJoCo-anchored narrow-phase assertion in this file ran
+    `detect_contacts["cpu"]` ONLY, and the other detection golden
+    (`test_contact_detection_fields`) pins walker2d, whose contacts are all
+    PLANE pairs. So the GPU O(N^2) non-plane path was gated by nothing at all —
+    and when it stopped emitting contacts entirely (defect 26: the kernel
+    silently stopped writing once `3dbc4c33` grew it, a compiler bug fixed by
+    Mojo 1.0.0rc2), the only symptom anywhere in the suite was
+    `test_mesh_detection_fields` reporting "gate is vacuous", which was read as
+    a stale-pose problem for a week.
+
+    Both device legs are compared against the CPU leg rather than against
+    MuJoCo again: the CPU leg is already MuJoCo-anchored above, so agreement
+    with it inherits that anchor, and a device path that disagrees with its own
+    CPU source is a port bug regardless of what MuJoCo says.
+
+      * O(N^2) GPU vs O(N^2) CPU — same source, same emission order, so this is
+        BIT-EXACT on the count and on every populated record column.
+      * SAP GPU vs O(N^2) CPU — as contact SETS. SAP sweeps in aabb_min_x
+        order, so record indices do not correspond. This fixture has no plane,
+        so the BODY_B world convention (0 vs -1) does not enter.
+    """
+    print("--- narrow-phase pair coverage: GPU legs vs the CPU leg")
+    var ctx = DeviceContext()
+    var mf = Mod32()
+    PM.init_fields[DTYPE32, 0](ctx, mf)
+
+    var dc = Dat32()
+    PM.reset_data(dc)
+    forward_kinematics["cpu"](dc, mf)
+    detect_contacts["cpu"](dc, mf)
+    var n_cpu = Int(dc.meta.data[META_IDX_NUM_CONTACTS])
+
+    # NON-VACUITY FIRST. Everything below is trivially satisfied by 0 == 0.
+    assert_true(
+        n_cpu > 0,
+        "CPU leg produced no contacts, so the GPU comparison is vacuous",
+    )
+
+    var dg = Dat32()
+    PM.reset_data(dg)
+    dg.upload_all(ctx)
+    forward_kinematics["gpu"](dg, mf, ctx)
+    detect_contacts["gpu"](dg, mf, ctx)
+    dg.contacts.download(ctx)
+    dg.meta.download(ctx)
+    var n_gpu = Int(dg.meta.data[META_IDX_NUM_CONTACTS])
+    print("  O(N^2): CPU", n_cpu, " GPU", n_gpu)
+    assert_true(
+        n_cpu == n_gpu,
+        "O(N^2) GPU emitted "
+        + String(n_gpu)
+        + " contacts where CPU emitted "
+        + String(n_cpu)
+        + " — same `_detect_contacts_env` source, so this is a device-path bug",
+    )
+
+    var worst = Float64(0)
+    var worst_c = -1
+    var worst_k = -1
+    for c in range(n_cpu):
+        for k in range(CONTACT_SIZE):
+            var e = abs(
+                Float64(dc.contacts.data[c * CONTACT_SIZE + k])
+                - Float64(dg.contacts.data[c * CONTACT_SIZE + k])
+            )
+            if e > worst:
+                worst = e
+                worst_c = c
+                worst_k = k
+    print("  O(N^2) worst CPU-vs-GPU record delta:", worst)
+    # ⚠ OPEN DEFECT 27, pinned rather than hidden. The FIRST contact of every
+    # pair agrees bit-exactly; what diverges is the SECOND manifold point of
+    # the box/capsule group (bodies 15/16), measured 2026-08-09:
+    #     column 6 (NY)   CPU -1.0643675096844163e-07   GPU -0.2747207283973694
+    #     column 8 (DIST) CPU -0.004999961704015732     GPU -0.0035994164645671844
+    # MuJoCo's own multi-point path sets `con[ncon].dist = con[0].dist`
+    # (`engine_collision_convex.c:945`), which our CPU leg reproduces — c9 and
+    # c10 share a dist there — and our GPU leg does not. A 0.27 swing in a unit
+    # normal is not float32 noise; it changes the contact frame and therefore
+    # the friction directions.
+    #
+    # The tolerance below is set FROM THAT MEASUREMENT so this is a RATCHET: it
+    # passes today and fails the moment the divergence grows or spreads to
+    # another column. It is deliberately NOT loose enough to hide the class of
+    # bug this test was added for — a device path that emits the wrong NUMBER
+    # of contacts, or none at all, is caught by the count assert above, which
+    # is exactly what defect 26 would have tripped.
+    if worst > 0.0:
+        # WHICH column moved is the whole diagnosis — a body id, a normal
+        # component and a depth fail for completely different reasons.
+        print(
+            "    at contact", worst_c, "column", worst_k,
+            " CPU", Float64(dc.contacts.data[worst_c * CONTACT_SIZE + worst_k]),
+            " GPU", Float64(dg.contacts.data[worst_c * CONTACT_SIZE + worst_k]),
+        )
+        for c in range(n_cpu):
+            var bc = c * CONTACT_SIZE
+            print(
+                "    c", c,
+                " CPU bodies(", Int(dc.contacts.data[bc + CONTACT_IDX_BODY_A]),
+                ",", Int(dc.contacts.data[bc + CONTACT_IDX_BODY_B]), ")",
+                " GPU bodies(", Int(dg.contacts.data[bc + CONTACT_IDX_BODY_A]),
+                ",", Int(dg.contacts.data[bc + CONTACT_IDX_BODY_B]), ")",
+                " dist CPU", Float64(dc.contacts.data[bc + CONTACT_IDX_DIST]),
+                " GPU", Float64(dg.contacts.data[bc + CONTACT_IDX_DIST]),
+            )
+    # First contact of each body pair must be BIT-EXACT — that is the part with
+    # no known divergence, and keeping it exact is what makes the ratchet mean
+    # something.
+    var seen_pair = List[Int]()
+    var worst_first = Float64(0)
+    for c in range(n_cpu):
+        var bc = c * CONTACT_SIZE
+        var ba = Int(dc.contacts.data[bc + CONTACT_IDX_BODY_A])
+        var bb = Int(dc.contacts.data[bc + CONTACT_IDX_BODY_B])
+        var key = ba * 1000 + bb
+        var first = True
+        for s in seen_pair:
+            if s == key:
+                first = False
+        if not first:
+            continue
+        seen_pair.append(key)
+        for k in range(CONTACT_SIZE):
+            var e = abs(
+                Float64(dc.contacts.data[bc + k])
+                - Float64(dg.contacts.data[bc + k])
+            )
+            if e > worst_first:
+                worst_first = e
+    print("  O(N^2) worst delta on FIRST contact of each pair:", worst_first)
+    assert_true(
+        worst_first == 0.0,
+        "the first contact of a pair differs between CPU and GPU by "
+        + String(worst_first)
+        + " — identical source and dtype, so this must be bit-exact",
+    )
+    assert_true(
+        worst <= TOL_GPU_MANIFOLD,
+        "O(N^2) GPU records differ from CPU by " + String(worst)
+        + ", above the pinned defect-27 ratchet " + String(TOL_GPU_MANIFOLD)
+        + " — the divergence has grown or spread",
+    )
+
+    # ---- SAP GPU, matched as SETS by unordered body pair ----
+    var ds = Dat32()
+    PM.reset_data(ds)
+    ds.upload_all(ctx)
+    forward_kinematics["gpu"](ds, mf, ctx)
+    detect_contacts_sap["gpu"](ds, mf, ctx)
+    ds.contacts.download(ctx)
+    ds.meta.download(ctx)
+    var n_sap = Int(ds.meta.data[META_IDX_NUM_CONTACTS])
+    print("  SAP GPU contacts:", n_sap)
+    assert_true(
+        n_sap == n_cpu,
+        "SAP GPU emitted " + String(n_sap) + " contacts where the O(N^2) CPU"
+        " leg emitted " + String(n_cpu),
+    )
+
+    var worst_sap = Float64(0)
+    for c in range(n_cpu):
+        var bc = c * CONTACT_SIZE
+        var ba = Int(dc.contacts.data[bc + CONTACT_IDX_BODY_A])
+        var bb = Int(dc.contacts.data[bc + CONTACT_IDX_BODY_B])
+        var matched = False
+        for s in range(n_sap):
+            var bs = s * CONTACT_SIZE
+            var sa = Int(ds.contacts.data[bs + CONTACT_IDX_BODY_A])
+            var sb = Int(ds.contacts.data[bs + CONTACT_IDX_BODY_B])
+            if not ((sa == ba and sb == bb) or (sa == bb and sb == ba)):
+                continue
+            matched = True
+            var e = abs(
+                Float64(dc.contacts.data[bc + CONTACT_IDX_DIST])
+                - Float64(ds.contacts.data[bs + CONTACT_IDX_DIST])
+            )
+            if e > worst_sap:
+                worst_sap = e
+            break
+        assert_true(
+            matched,
+            "SAP has no contact for body pair (" + String(ba) + ", "
+            + String(bb) + ") that the O(N^2) leg emitted",
+        )
+    print("  SAP vs O(N^2) worst dist delta:", worst_sap)
+    assert_true(
+        worst_sap < TOL_DIST_APPROX,
+        "SAP dist differs from O(N^2) by " + String(worst_sap),
     )
 
 
