@@ -62,16 +62,16 @@ def save_ppm(
     var scale = 255.0 / max(vmax - vmin, Float32(1e-8))
     if channels == 1:
         for i in range(n_pixels):
-            var v = Float32((data + i)[])
+            var v = Float32(data[unsafe_offset=i])
             var byte = UInt8(min(max((v - vmin) * scale, Float32(0.0)), Float32(255.0)))
             buf.append(byte)
             buf.append(byte)
             buf.append(byte)
     elif channels == 3:
         for i in range(n_pixels):
-            var r = Float32((data + i)[])
-            var g = Float32((data + n_pixels + i)[])
-            var b = Float32((data + 2 * n_pixels + i)[])
+            var r = Float32(data[unsafe_offset=i])
+            var g = Float32(data[unsafe_offset=n_pixels + i])
+            var b = Float32(data[unsafe_offset=2 * n_pixels + i])
             buf.append(UInt8(min(max((r - vmin) * scale, Float32(0.0)), Float32(255.0))))
             buf.append(UInt8(min(max((g - vmin) * scale, Float32(0.0)), Float32(255.0))))
             buf.append(UInt8(min(max((b - vmin) * scale, Float32(0.0)), Float32(255.0))))
@@ -97,15 +97,15 @@ def _write_pixel(
 ):
     var base = img_idx * img_size
     if channels == 1:
-        var v = Float32((src + base + local_y * width + local_x)[])
+        var v = Float32(src[unsafe_offset=base + local_y * width + local_x])
         var byte = UInt8(min(max((v - vmin) * scale, Float32(0.0)), Float32(255.0)))
         buf.append(byte)
         buf.append(byte)
         buf.append(byte)
     else:
-        var rv = Float32((src + base + local_y * width + local_x)[])
-        var gv = Float32((src + base + hw + local_y * width + local_x)[])
-        var bv = Float32((src + base + 2 * hw + local_y * width + local_x)[])
+        var rv = Float32(src[unsafe_offset=base + local_y * width + local_x])
+        var gv = Float32(src[unsafe_offset=base + hw + local_y * width + local_x])
+        var bv = Float32(src[unsafe_offset=base + 2 * hw + local_y * width + local_x])
         buf.append(UInt8(min(max((rv - vmin) * scale, Float32(0.0)), Float32(255.0))))
         buf.append(UInt8(min(max((gv - vmin) * scale, Float32(0.0)), Float32(255.0))))
         buf.append(UInt8(min(max((bv - vmin) * scale, Float32(0.0)), Float32(255.0))))
@@ -417,7 +417,7 @@ def save_vector_heatmap(
         var row = py // cell_h
         for px in range(img_w):
             var col = px // cell_w
-            var v = Float32((data + row * dim + col)[])
+            var v = Float32(data[unsafe_offset=row * dim + col])
             var t = min(max((v - vmin) * inv_range, Float32(0.0)), Float32(1.0))
             var rgb = _viridis_rgb(t)
             buf.append(rgb[0])
@@ -493,7 +493,7 @@ def save_vector_comparison(
                     buf.append(UInt8(230))
                 else:
                     var col = (px - marker_w) // cell_w
-                    var v = Float32((originals + pair_idx * dim + col)[])
+                    var v = Float32(originals[unsafe_offset=pair_idx * dim + col])
                     var t = min(max((v - vmin) * inv_range, Float32(0.0)), Float32(1.0))
                     var rgb = _viridis_rgb(t)
                     buf.append(rgb[0])
@@ -510,7 +510,7 @@ def save_vector_comparison(
                     buf.append(UInt8(50))
                 else:
                     var col = (px - marker_w) // cell_w
-                    var v = Float32((reconstructions + pair_idx * dim + col)[])
+                    var v = Float32(reconstructions[unsafe_offset=pair_idx * dim + col])
                     var t = min(max((v - vmin) * inv_range, Float32(0.0)), Float32(1.0))
                     var rgb = _viridis_rgb(t)
                     buf.append(rgb[0])
@@ -727,7 +727,7 @@ def save_frame_sequence_gif(
         indices.clear()
         var base = f * hw
         for p in range(hw):
-            var v = Float32((frames + base + p)[])
+            var v = Float32(frames[unsafe_offset=base + p])
             var idx = min(max((v - vmin) * scale, Float32(0.0)), Float32(255.0))
             indices.append(UInt8(idx))
         # LZW image data: min code size byte + packed sub-blocks

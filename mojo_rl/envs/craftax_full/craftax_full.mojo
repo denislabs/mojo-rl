@@ -12,7 +12,7 @@ Phase 7C/35 scope:
     the reference Python renderer.
 """
 
-from std.memory import alloc
+from std.memory import dealloc, alloc
 from std.ffi import c_int, c_float
 from std.random.philox import Random as PhiloxRandom
 
@@ -985,14 +985,16 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
         def _blit(idx: Int, dst_x: Int, dst_y: Int, dst_size: Int):
             if not has_texture:
                 return
-            var src = alloc[FRect](1)
+            var src_alloc = alloc[FRect]({count = 1})
+            var src = src_alloc.unsafe_ptr()
             src[] = FRect(
                 c_float(idx * SPRITE_SIZE),
                 c_float(0),
                 c_float(SPRITE_SIZE),
                 c_float(SPRITE_SIZE),
             )
-            var dst = alloc[FRect](1)
+            var dst_alloc = alloc[FRect]({count = 1})
+            var dst = dst_alloc.unsafe_ptr()
             dst[] = FRect(
                 c_float(dst_x),
                 c_float(dst_y),
@@ -1008,8 +1010,8 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
                 )
             except:
                 pass
-            src.unsafe_free()
-            dst.unsafe_free()
+            dealloc(src_alloc^)
+            dealloc(dst_alloc^)
 
         # --- Tiles in the 9×11 view (current floor) ---
         for vy in range(VIEW_H):

@@ -21,7 +21,7 @@ Actions: 0..N²-1 = intersection index, N² = pass.
 """
 
 from std.random import random_float64
-from std.memory import alloc
+from std.memory import dealloc, alloc
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
@@ -785,7 +785,8 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         # Simple iterative BFS using fixed-size stack on registers
         # For GPU, we unroll with bounded iteration
         var liberty_count = 0
-        var stack_data = alloc[Int](BS)
+        var stack_data_alloc = alloc[Int]({count = BS})
+        var stack_data = stack_data_alloc.unsafe_ptr()
         var stack_top: Int
         stack_data[unsafe_offset=0] = start
         stack_top = 1
@@ -841,7 +842,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
                         visited[unsafe_offset=nb] = True
                         liberty_count += 1
 
-        stack_data.unsafe_free()
+        dealloc(stack_data_alloc^)
         return liberty_count
 
     @staticmethod
@@ -868,7 +869,8 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
             visited[unsafe_offset=j] = False
 
         var count = 0
-        var stack_data = alloc[Int](BS)
+        var stack_data_alloc = alloc[Int]({count = BS})
+        var stack_data = stack_data_alloc.unsafe_ptr()
         var stack_top: Int
         stack_data[unsafe_offset=0] = start
         stack_top = 1
@@ -910,7 +912,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
                     stack_data[unsafe_offset=stack_top] = nb
                     stack_top += 1
 
-        stack_data.unsafe_free()
+        dealloc(stack_data_alloc^)
         return count
 
     @staticmethod
@@ -953,7 +955,8 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         var opp_mark = Scalar[board_dtype](2 - player)
 
         # Allocate visited buffer
-        var visited = alloc[Bool](BS)
+        var visited_alloc = alloc[Bool]({count = BS})
+        var visited = visited_alloc.unsafe_ptr()
 
         # Pass action
         if action == PASS_ACT:
@@ -994,14 +997,14 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
                 rewards[i] = 0.0
                 dones[i] = 0.0
 
-            visited.unsafe_free()
+            dealloc(visited_alloc^)
             return
 
         # Validate
         if action < 0 or action >= BS or states[i, action] != 0.0 or action == Int(states[i, S_KO]):
             rewards[i] = -1.0
             dones[i] = 0.0
-            visited.unsafe_free()
+            dealloc(visited_alloc^)
             return
 
         # Place stone
@@ -1051,7 +1054,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
             states[i, action] = 0.0  # undo
             rewards[i] = -1.0
             dones[i] = 0.0
-            visited.unsafe_free()
+            dealloc(visited_alloc^)
             return
 
         # Ko point
@@ -1066,7 +1069,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         rewards[i] = 0.0
         dones[i] = 0.0
 
-        visited.unsafe_free()
+        dealloc(visited_alloc^)
 
     @staticmethod
     @always_inline

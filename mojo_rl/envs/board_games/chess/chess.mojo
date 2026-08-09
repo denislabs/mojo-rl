@@ -36,7 +36,7 @@ from mojo_rl.nn.core.ptr import untracked
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
-from std.memory import alloc, unsafe_memset
+from std.memory import dealloc, unsafe_memset, alloc
 from std.ffi import c_int, c_float
 from mojo_rl.core import (
     State,
@@ -1288,14 +1288,16 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                     # Draw sprite
                     var sprite_idx = self._piece_to_sprite_idx(piece)
                     if sprite_idx >= 0:
-                        var src_rect = alloc[FRect](1)
+                        var src_rect_alloc = alloc[FRect]({count = 1})
+                        var src_rect = src_rect_alloc.unsafe_ptr()
                         src_rect[] = FRect(
                             c_float(sprite_idx * SPRITE_SIZE),
                             c_float(0),
                             c_float(SPRITE_SIZE),
                             c_float(SPRITE_SIZE),
                         )
-                        var dst_rect = alloc[FRect](1)
+                        var dst_rect_alloc = alloc[FRect]({count = 1})
+                        var dst_rect = dst_rect_alloc.unsafe_ptr()
                         dst_rect[] = FRect(
                             c_float(px + sprite_offset),
                             c_float(py + sprite_offset),
@@ -1315,8 +1317,8 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                             )
                         except:
                             pass
-                        src_rect.unsafe_free()
-                        dst_rect.unsafe_free()
+                        dealloc(src_rect_alloc^)
+                        dealloc(dst_rect_alloc^)
                 elif piece != EMPTY:
                     # Fallback: draw text
                     var pc = _piece_char(piece)

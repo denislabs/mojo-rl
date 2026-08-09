@@ -35,7 +35,7 @@ Run (GPU env required): see `tests/deep_agents/test_ezv2_atari_batched_smoke.moj
 """
 
 from std.math import exp, log
-from std.memory import alloc, unsafe_memcpy
+from std.memory import unsafe_memcpy, alloc
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext, DeviceBuffer

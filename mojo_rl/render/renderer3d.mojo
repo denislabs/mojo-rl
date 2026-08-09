@@ -2191,7 +2191,7 @@ struct Renderer3D(Movable):
         var mapped = map_gpu_transfer_buffer(self.device.value(), atlas_tb, False)
         var mapped_u8 = mapped.unsafe_bitcast[UInt8]()
         for i in range(8192):
-            (mapped_u8 + i)[] = atlas[i]
+            mapped_u8[unsafe_offset=i] = atlas[i]
         unmap_gpu_transfer_buffer(self.device.value(), atlas_tb)
 
         var atlas_cmd = acquire_gpu_command_buffer(self.device.value())
@@ -2408,12 +2408,12 @@ struct Renderer3D(Movable):
         var idx_ptr = idx_mapped.unsafe_bitcast[UInt16]()
         for q in range(MAX_TEXT_CHARS):
             var base = UInt16(q * 4)
-            (idx_ptr + q * 6 + 0)[] = base + 0
-            (idx_ptr + q * 6 + 1)[] = base + 1
-            (idx_ptr + q * 6 + 2)[] = base + 2
-            (idx_ptr + q * 6 + 3)[] = base + 2
-            (idx_ptr + q * 6 + 4)[] = base + 3
-            (idx_ptr + q * 6 + 5)[] = base + 0
+            idx_ptr[unsafe_offset=q * 6 + 0] = base + 0
+            idx_ptr[unsafe_offset=q * 6 + 1] = base + 1
+            idx_ptr[unsafe_offset=q * 6 + 2] = base + 2
+            idx_ptr[unsafe_offset=q * 6 + 3] = base + 2
+            idx_ptr[unsafe_offset=q * 6 + 4] = base + 3
+            idx_ptr[unsafe_offset=q * 6 + 5] = base + 0
         unmap_gpu_transfer_buffer(self.device.value(), idx_tb)
 
         var idx_cmd = acquire_gpu_command_buffer(self.device.value())
@@ -2455,10 +2455,10 @@ struct Renderer3D(Movable):
         var tb = untracked(create_gpu_transfer_buffer(self.device.value(), Ptr(to=tb_info)))
         var mapped = map_gpu_transfer_buffer(self.device.value(), tb, False)
         var mapped_u8 = mapped.unsafe_bitcast[UInt8]()
-        (mapped_u8 + 0)[] = UInt8(255)  # R
-        (mapped_u8 + 1)[] = UInt8(255)  # G
-        (mapped_u8 + 2)[] = UInt8(255)  # B
-        (mapped_u8 + 3)[] = UInt8(255)  # A
+        mapped_u8[unsafe_offset=0] = UInt8(255)  # R
+        mapped_u8[unsafe_offset=1] = UInt8(255)  # G
+        mapped_u8[unsafe_offset=2] = UInt8(255)  # B
+        mapped_u8[unsafe_offset=3] = UInt8(255)  # A
         unmap_gpu_transfer_buffer(self.device.value(), tb)
 
         var cmd = acquire_gpu_command_buffer(self.device.value())
@@ -2556,7 +2556,7 @@ struct Renderer3D(Movable):
         var mapped = map_gpu_transfer_buffer(self.device.value(), tb, False)
         var mapped_u8 = mapped.unsafe_bitcast[UInt8]()
         for i in range(Int(byte_size)):
-            (mapped_u8 + i)[] = texture_data.pixels[i]
+            mapped_u8[unsafe_offset=i] = texture_data.pixels[i]
         unmap_gpu_transfer_buffer(self.device.value(), tb)
 
         var cmd = acquire_gpu_command_buffer(self.device.value())
@@ -3923,7 +3923,7 @@ struct Renderer3D(Movable):
             )
             var mapped_f32 = mapped.unsafe_bitcast[Float32]()
             for i in range(len(self.line_vertex_data)):
-                (mapped_f32 + i)[] = self.line_vertex_data[i]
+                mapped_f32[unsafe_offset=i] = self.line_vertex_data[i]
             unmap_gpu_transfer_buffer(self.device.value(), self.line_transfer_buffer.value())
 
             var copy_pass = begin_gpu_copy_pass(cmd_buf)
@@ -3956,7 +3956,7 @@ struct Renderer3D(Movable):
             )
             var text_mapped_f32 = text_mapped.unsafe_bitcast[Float32]()
             for i in range(n_text_floats):
-                (text_mapped_f32 + i)[] = self.text_vertex_data[i]
+                text_mapped_f32[unsafe_offset=i] = self.text_vertex_data[i]
             unmap_gpu_transfer_buffer(self.device.value(), self.text_transfer_buffer.value())
 
             var text_copy_pass = begin_gpu_copy_pass(cmd_buf)

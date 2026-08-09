@@ -61,6 +61,7 @@ from .world_gen_configs import (
     sewer_config,
     vaults_config,
 )
+from std.memory import alloc, dealloc
 
 
 # ============================================================================
@@ -693,10 +694,14 @@ def generate_full_world(
     inventory, etc.). World gen only touches the map slabs and ladder
     coords.
     """
-    var water = alloc[Float32](MAP_SIZE_PER_FLOOR)
-    var mountain = alloc[Float32](MAP_SIZE_PER_FLOOR)
-    var path = alloc[Float32](MAP_SIZE_PER_FLOOR)
-    var tree = alloc[Float32](MAP_SIZE_PER_FLOOR)
+    var water_alloc = alloc[Float32]({count = MAP_SIZE_PER_FLOOR})
+    var water = water_alloc.unsafe_ptr()
+    var mountain_alloc = alloc[Float32]({count = MAP_SIZE_PER_FLOOR})
+    var mountain = mountain_alloc.unsafe_ptr()
+    var path_alloc = alloc[Float32]({count = MAP_SIZE_PER_FLOOR})
+    var path = path_alloc.unsafe_ptr()
+    var tree_alloc = alloc[Float32]({count = MAP_SIZE_PER_FLOOR})
+    var tree = tree_alloc.unsafe_ptr()
     var spawn = generate_full_world_inline(
         seed,
         state_ptr,
@@ -705,8 +710,8 @@ def generate_full_world(
         path.as_unsafe_any_origin(),
         tree.as_unsafe_any_origin(),
     )
-    water.unsafe_free()
-    mountain.unsafe_free()
-    path.unsafe_free()
-    tree.unsafe_free()
+    dealloc(water_alloc^)
+    dealloc(mountain_alloc^)
+    dealloc(path_alloc^)
+    dealloc(tree_alloc^)
     return spawn
