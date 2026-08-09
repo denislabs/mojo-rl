@@ -63,6 +63,9 @@ typedef CUresult (*cuLaunchKernelEx_t)(
     const CUlaunchConfig *config, CUfunction f,
     void **kernelParams, void **extra);
 
+static void *g_launch_ctx;
+static void *current_ctx_fwd(void);
+
 static cuLaunchKernel_t real_cuLaunchKernel = NULL;
 static cuLaunchKernelEx_t real_cuLaunchKernelEx = NULL;
 
@@ -114,10 +117,14 @@ static CUresult wrapped_cuLaunchKernelEx(
                 config->sharedMemBytes, config->hStream);
     }
 
-    /* Capture the stream Mojo uses */
+    /* Capture the stream Mojo uses -- and the CONTEXT it was bound to. This
+       hook runs on MAX's OWN thread, so this is the one place we can observe
+       a context that is known-good for driver calls. */
     if (!g_mojo_stream && config->hStream) {
         g_mojo_stream = config->hStream;
-        fprintf(stderr, "[intercept] Captured Mojo stream: %p\n", g_mojo_stream);
+        g_launch_ctx = current_ctx_fwd();
+        fprintf(stderr, "[intercept] Captured Mojo stream: %p (ctx=%p)\n",
+                g_mojo_stream, g_launch_ctx);
     }
 
     if (g_recording && g_num_records < MAX_RECORDS) {
@@ -484,7 +491,76 @@ static void* cuda_fn_versioned(const char *versioned, const char *base) {
     return cuda_fn(base);
 }
 
+/* ---- CUDA context affinity ---------------------------------------------
+ *
+ * ⚠⚠ MEASURED: `cuStreamSynchronize` ON MAX'S STREAM, CALLED FROM THIS
+ * SHIM, FAULTS INSIDE THE DRIVER — with NO capture active (it was the
+ * pre-capture drain in `begin_capture`). That reframes every crash in this
+ * arc: cuStreamEndCapture, cuStreamGetCaptureInfo_v2 and cuStreamSynchronize
+ * are all OUR calls on MAX's handle, and MAX makes the same calls on the
+ * same handle continuously without trouble. The API is not the variable.
+ * The CALLER is.
+ *
+ * The standard explanation is that a CUDA context is CURRENT PER THREAD.
+ * MAX drives the driver from its AsyncRT worker, where a context is bound;
+ * our exported functions run on Mojo's main thread, which may have none.
+ * Driver calls with no current context are documented to return
+ * CUDA_ERROR_INVALID_CONTEXT, but in practice fault.
+ *
+ * ⚠ THE HYPOTHESIS IS NOT PROVEN AND ONE FACT ARGUES AGAINST IT:
+ * `cuStreamBeginCapture` previously returned rc=0 from this same thread,
+ * which a missing context should have refused. So MEASURE FIRST — the
+ * logging below prints the current context at every entry point, and
+ * `g_launch_ctx` records what MAX had bound when it launched. If ours is
+ * NULL and MAX's is not, that is the answer.
+ *
+ * The correction is gated OFF: MOJO_RL_CUDA_BIND_CTX=1 makes each entry
+ * point bind MAX's context before touching the driver, so one run can test
+ * the hypothesis and its fix without shipping the fix blind.
+ */
+
+static int   g_ctx_logged = 0;
+
+static void *current_ctx(void) {
+    typedef CUresult (*fn_t)(void**);
+    fn_t f = (fn_t)cuda_fn("cuCtxGetCurrent");
+    if (!f) return (void*)-1;       /* symbol unavailable */
+    void *c = NULL;
+    if (f(&c) != 0) return (void*)-1;
+    return c;
+}
+
+static void *current_ctx_fwd(void) { return current_ctx(); }
+
+static int bind_ctx_enabled(void) {
+    const char *e = getenv("MOJO_RL_CUDA_BIND_CTX");
+    return e && e[0] != '0';
+}
+
+/* Call at the top of every exported entry point that touches the driver. */
+static void ensure_ctx(const char *who) {
+    void *cur = current_ctx();
+    if (g_ctx_logged < 12) {
+        fprintf(stderr,
+                "[intercept] %s: current ctx=%p, MAX's launch ctx=%p%s\n",
+                who, cur, g_launch_ctx,
+                (cur == NULL && g_launch_ctx)
+                    ? "   <-- NO CONTEXT ON THIS THREAD" : "");
+        g_ctx_logged++;
+    }
+    if (bind_ctx_enabled() && g_launch_ctx && cur != g_launch_ctx) {
+        typedef CUresult (*fn_t)(void*);
+        fn_t f = (fn_t)cuda_fn("cuCtxSetCurrent");
+        if (f) {
+            CUresult r = f(g_launch_ctx);
+            fprintf(stderr, "[intercept] %s: bound MAX's ctx, rc=%d\n",
+                    who, (int)r);
+        }
+    }
+}
+
 CUresult intercept_stream_create(void **out) {
+    ensure_ctx("stream_create");
     typedef CUresult (*fn_t)(void**, unsigned int);
     fn_t f = (fn_t)cuda_fn("cuStreamCreate");
     if (!f) return 1;
@@ -532,6 +608,7 @@ static int capture_mode(void) {
 }
 
 CUresult intercept_stream_begin_capture(void *stream) {
+    ensure_ctx("begin_capture");
     /* ⚠ _v2 IS THE ONE THAT TAKES A MODE. The base symbol is v1, which
        predates capture modes entirely and takes ONLY the stream — passing a
        mode to it is discarded in silence. See the note on cuda_fn_versioned. */
@@ -585,6 +662,7 @@ static int query_capture_status(void *stream, unsigned long long *id_out) {
 }
 
 CUresult intercept_stream_end_capture(void *stream, void **graph_out) {
+    ensure_ctx("end_capture");
     typedef CUresult (*fn_t)(void*, void**);
     fn_t f = (fn_t)cuda_fn("cuStreamEndCapture");
     if (!f) return 1;
@@ -638,6 +716,7 @@ CUresult intercept_stream_end_capture(void *stream, void **graph_out) {
 }
 
 CUresult intercept_graph_instantiate(void **exec_out, void *graph) {
+    ensure_ctx("graph_instantiate");
     /* ⚠ THE 3-ARG FORM IS `cuGraphInstantiateWithFlags`, NOT
        `cuGraphInstantiate`. The base symbol is the FIVE-argument
        (exec, graph, phErrorNode, logBuffer, bufferSize) form, and calling it
@@ -660,6 +739,7 @@ CUresult intercept_graph_instantiate(void **exec_out, void *graph) {
 }
 
 CUresult intercept_graph_launch(void *exec, void *stream) {
+    ensure_ctx("graph_launch");
     typedef CUresult (*fn_t)(void*, void*);
     fn_t f = (fn_t)cuda_fn("cuGraphLaunch");
     if (!f) return 1;
@@ -667,6 +747,7 @@ CUresult intercept_graph_launch(void *exec, void *stream) {
 }
 
 CUresult intercept_stream_synchronize(void *stream) {
+    ensure_ctx("stream_synchronize");
     typedef CUresult (*fn_t)(void*);
     fn_t f = (fn_t)cuda_fn("cuStreamSynchronize");
     if (!f) return 1;
