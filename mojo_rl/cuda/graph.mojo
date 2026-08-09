@@ -21,6 +21,7 @@ by pixi nvidia environment activation).
 from std.sys import has_nvidia_gpu_accelerator
 from std.ffi import OwnedDLHandle, c_int
 from std.memory import alloc, dealloc
+from std.os import getenv
 from max.gpu.host import DeviceContext
 
 
@@ -75,6 +76,45 @@ struct CUDAGraph(Movable):
         comptime if has_nvidia_gpu_accelerator():
             ctx.synchronize()
             self._lib = OwnedDLHandle("./mojo_rl/cuda/libcuda_intercept.so")
+
+            # ⚠⚠ OFF BY DEFAULT: THE BORROWED-STREAM DESIGN IS DEAD ON MAX
+            # 26.5.0rc2. This whole file works by taking the stream MAX
+            # enqueues on and driving raw driver capture over it. Measured on
+            # 2026-08-09, that premise fails TWO independent ways, and they
+            # are not two bugs with two fixes:
+            #
+            #   1. MAX DESTROYS the stream after `ctx.synchronize()`
+            #      (`cuStreamDestroy` on exactly the handle the launch hook
+            #      reported). Any later driver call with it is a
+            #      use-after-free — and a freed handle is UNDEFINED, not a
+            #      consistent error, which is why symptoms ranged from rc=0
+            #      to SIGSEGVs in four different driver entry points.
+            #   2. When the stream IS alive, MAX calls `cuStreamSynchronize`
+            #      on it INSIDE the capture window. CUDA forbids that in
+            #      every capture mode. Suppressing it (the interceptor can)
+            #      is a LIE about work being complete, so it is not a fix.
+            #
+            # Neither has an honest repair from our side: we do not own the
+            # stream and cannot stop MAX from tearing it down or syncing it.
+            # So refuse to capture rather than crash. `maybe_capture_replay`
+            # then runs the step directly — training stays CORRECT and only
+            # loses the replay speedup, which is why this is the right
+            # default rather than a regression.
+            #
+            # MOJO_RL_CUDA_GRAPH=1 re-enables the attempt. That is the
+            # tripwire: run `tests/cuda/test_cuda_graph_minimal.mojo` with it
+            # set after a MAX upgrade, and if it captures a non-empty graph,
+            # delete this block.
+            if getenv("MOJO_RL_CUDA_GRAPH", "0") == "0":
+                self._state = 3  # DISABLED
+                print(
+                    "[CUDAGraph] disabled on NVIDIA (MAX destroys and"
+                    " synchronizes the stream we would capture; see"
+                    " mojo_rl/cuda/graph.mojo). Running steps directly —"
+                    " correct, without the graph-replay speedup."
+                    " MOJO_RL_CUDA_GRAPH=1 to retry after a MAX upgrade."
+                )
+                return
 
             # ⚠ `get_function`'s parameter is the symbol's RETURN type, and
             # the returned `_DLCallable` IS the callable — there is no unwrap
@@ -131,6 +171,16 @@ struct CUDAGraph(Movable):
         comptime if not has_nvidia_gpu_accelerator():
             return
 
+        # ⚠ CHECK STATE FIRST. On the DISABLED path `_mojo_stream` was never
+        # assigned a real value, so reading it below would be reading
+        # uninitialized memory — and a non-zero garbage word would sail past
+        # the check and hand a junk pointer to the driver.
+        if self._state == 3:
+            raise Error(
+                "[CUDAGraph] disabled — capture is unavailable on this MAX."
+                " Callers should check is_disabled() and run their work"
+                " directly (maybe_capture_replay does)."
+            )
         if Int(self._mojo_stream) == 0:
             raise Error(
                 "[CUDAGraph] Mojo stream not discovered. "
