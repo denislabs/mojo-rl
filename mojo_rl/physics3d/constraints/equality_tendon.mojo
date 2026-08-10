@@ -11,8 +11,27 @@ functions called by the fields PGS contact solve
 the joint-limits pass, before the friction phase, with the legacy
 PGS_ITERATIONS iteration count.
 
-Legacy invweight0-offset quirk (reproduced bit-exactly — port the CODE, not
-the algorithm): the legacy builders compute their diagApprox offsets with
+⚠⚠ THE EQUALITY BUILDER NO LONGER REPRODUCES THE LEGACY OFFSET QUIRK BELOW —
+it reads `body_invweight0[body, 0|1]` directly, as MuJoCo does. The quirk was
+not a harmless addressing detail, it was a WRONG NUMBER: on sawyer (8 sites,
+0 tendons) the weld's `delta = 2*24 = 48` landed inside the SITE records and
+returned `sites[6, 0]` = **27.0**, which is column 0 of a site record, i.e.
+THE BODY INDEX THE SITE IS ATTACHED TO. A body id was being used as an inverse
+inertia. Correct diagApprox there is 6.1056, so R was 4.4x too large and the
+mocap weld 4.4x too soft — half of defect 28 (`docs/DM_CONTROL_PORT_PHASE2.md`
+§23); the other half was three phantom kilograms in the mass matrix.
+
+"Port the CODE, not the algorithm" is the right instinct for a reference whose
+quirks are load-bearing, but the reference here is MuJoCo, not our own deleted
+legacy. Reproducing OUR bug bit-exactly preserved nothing MuJoCo does. ⚠ The
+TENDON builder below still goes through `_legacy_invw_read` and still has this
+bug for any model with tendons or sites — deliberately left, because it moves
+goldens on models this change does not otherwise touch. It is a real defect,
+not an intended behaviour.
+
+Legacy invweight0-offset quirk (still reproduced bit-exactly on the TENDON
+path only — port the CODE, not the algorithm): the legacy builders compute
+their diagApprox offsets with
 NTENDON/NSITE left at their 0 defaults —
 `model_body_invweight0_offset[NBODY, NJOINT, NGEOM, MAX_EQUALITY]()` in the
 equality builder and `model_dof_invweight0_offset[NBODY, NJOINT, NGEOM,
@@ -810,18 +829,17 @@ def _equality_env[
             # is signed directly.
             var bias = eq_K_spring * imp * err_d + eq_B_damp * v_n
             eq_bias[num_eq_rows] = bias
-            # MuJoCo: R = (1-imp)/imp * diagApprox (translation weights)
-            # (legacy addresses body_invweight0 via the NTENDON/NSITE-less
-            # offset — see _legacy_invw_read)
+            # MuJoCo: R = (1-imp)/imp * diagApprox, and diagApprox for a
+            # connect/weld row is
+            #     body_invweight0[2*b1] + body_invweight0[2*b2]
+            # (engine_core_constraint.c:1447 / :1461). Read STRAIGHT out of
+            # body_invweight0 — see the ⚠ below for why this no longer goes
+            # through `_legacy_invw_read`.
             var diag_eq: Scalar[DTYPE] = 0
             if body_a > 0 and body_a < NBODY:
-                diag_eq += _legacy_invw_read[
-                    DTYPE, NV, NBODY, NTENDON, NSITE
-                ](body_a * 2, tendons, sites, body_invweight0, dof_invweight0)
+                diag_eq += rebind[Scalar[DTYPE]](body_invweight0[body_a, 0])
             if body_b > 0 and body_b < NBODY:
-                diag_eq += _legacy_invw_read[
-                    DTYPE, NV, NBODY, NTENDON, NSITE
-                ](body_b * 2, tendons, sites, body_invweight0, dof_invweight0)
+                diag_eq += rebind[Scalar[DTYPE]](body_invweight0[body_b, 0])
             if diag_eq < Scalar[DTYPE](1e-10):
                 diag_eq = rebind[Scalar[DTYPE]](k)
             var R_eq = (Scalar[DTYPE](1.0) - imp) / imp * diag_eq
@@ -975,29 +993,18 @@ def _equality_env[
                 # MuJoCo equality bias: bias = K*I*pos + B*vel (signed pos)
                 var bias = eq_K_spring * imp * err_d + eq_B_damp * v_n
                 eq_bias[num_eq_rows] = bias
-                # MuJoCo: R = (1-imp)/imp * diagApprox (rotation weights)
-                # (legacy addresses body_invweight0 via the NTENDON/NSITE-less
-                # offset — see _legacy_invw_read)
+                # MuJoCo takes the ROTATION half of the pair for the weld's
+                # orientation rows — `body_invweight0[2*b + (weldcnt > 2)]`,
+                # engine_core_constraint.c:1461. Same direct read as the
+                # translation rows above.
                 var diag_rot: Scalar[DTYPE] = 0
                 if body_a > 0 and body_a < NBODY:
-                    diag_rot += _legacy_invw_read[
-                        DTYPE, NV, NBODY, NTENDON, NSITE
-                    ](
-                        body_a * 2 + 1,
-                        tendons,
-                        sites,
-                        body_invweight0,
-                        dof_invweight0,
+                    diag_rot += rebind[Scalar[DTYPE]](
+                        body_invweight0[body_a, 1]
                     )
                 if body_b > 0 and body_b < NBODY:
-                    diag_rot += _legacy_invw_read[
-                        DTYPE, NV, NBODY, NTENDON, NSITE
-                    ](
-                        body_b * 2 + 1,
-                        tendons,
-                        sites,
-                        body_invweight0,
-                        dof_invweight0,
+                    diag_rot += rebind[Scalar[DTYPE]](
+                        body_invweight0[body_b, 1]
                     )
                 if diag_rot < Scalar[DTYPE](1e-10):
                     diag_rot = rebind[Scalar[DTYPE]](k)

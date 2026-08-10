@@ -267,6 +267,7 @@ def _inertia_from_geoms_staging[
     AUTO_MODE: Bool,
 ](
     geoms: List[Scalar[DTYPE]],  # packed [NGEOM * MODEL_GEOM_SIZE] records
+    bodies: List[Scalar[DTYPE]],  # packed [NBODY * MODEL_BODY_SIZE] records
     geom_mass: List[Scalar[DTYPE]],  # build-only (-1 = use density*volume)
     geom_group: List[Int],  # build-only (inertiagrouprange filter)
     body_has_explicit_inertia: List[Bool],
@@ -285,6 +286,7 @@ def _inertia_from_geoms_staging[
             if body_has_explicit_inertia[body_id]:
                 continue
 
+        var bo = body_id * MODEL_BODY_SIZE
         var total_mass = Scalar[DTYPE](0)
         var num_contributing = 0
 
@@ -308,6 +310,58 @@ def _inertia_from_geoms_staging[
                     total_mass += gm
 
         if num_contributing == 0:
+            # ⚠ A BODY WITH NOTHING TO WEIGH HAS ZERO MASS, NOT THE DEFAULT ONE.
+            #
+            # This used to `continue`, leaving `BodyData`'s constructor defaults
+            # (mass = 1.0, diaginertia = 0.01) standing. MuJoCo assigns 0/0:
+            # under `inertiafromgeom="auto"` a body with no explicit `<inertial>`
+            # takes its inertia from geoms, and if NONE qualify there is nothing
+            # to take, so it stays massless.
+            #
+            # "None qualify" is not the same as "no geoms". `inertiagrouprange`
+            # (default "0 5") filters by geom GROUP, so a body can be covered in
+            # geometry and still weigh nothing. MetaWorld's sawyer sets
+            # `inertiagrouprange="4 5"`, which excludes the group-1 visual shells:
+            # `hand` (the mocap weld's target), `rightpad` and `leftpad` each own
+            # a group-1 box and so each carried a PHANTOM KILOGRAM.
+            #
+            # That is defect 28. Three phantom kg at the wrist, ~1.15 m from the
+            # j0 axis, added 3 x 1.15^2 = 3.97 kg m^2 to the base joint —
+            # `dof_invweight0[j0]` was 0.4664x MuJoCo's, and the error compounded
+            # down the chain to 0.0249x at the hand. body_invweight0 feeds
+            # diagApprox, so the weld's R was 4.4x too large and the constraint
+            # 4.4x too soft: the commanded hand pose sagged 77.6 mm where MuJoCo
+            # tracks to 3.8 mm. It reached the weld through the constraint
+            # regularizer, but the phantom mass was in the MASS MATRIX — every
+            # force, acceleration and contact on those bodies was wrong too.
+            body_mass[body_id] = Scalar[DTYPE](0)
+            body_inv_mass[body_id] = Scalar[DTYPE](0)
+            for c in range(3):
+                body_inertia[body_id * 3 + c] = Scalar[DTYPE](0)
+                body_inv_inertia[body_id * 3 + c] = Scalar[DTYPE](0)
+
+            # ...and its INERTIAL FRAME is the body's own frame, not the origin.
+            #
+            # `mjCBody::Compile` (user_objects.cc:2738): once `InertiaFromGeom`
+            # has run and left `ipos` undefined, MuJoCo copies `pos`/`quat` into
+            # `ipos`/`iquat`. Note it copies the PARENT-frame pos into a
+            # BODY-frame field — quirk faithfully reproduced, because the value
+            # is observable.
+            #
+            # It is observable through `xipos`, which `mj_jacBodyCom` uses as
+            # the Jacobian reference point for `body_invweight0`. Zeroing the
+            # mass without this left the hand's translational weight at 2.168
+            # against MuJoCo's 6.106 — still 2.8x off, in the opposite
+            # direction, i.e. a weld 2.8x too STIFF where it had been 4.4x too
+            # soft. Verified across every zero-mass body in sawyer: ipos == pos
+            # and iquat == quat for all twelve of them.
+            body_ipos[body_id * 3 + 0] = bodies[bo + BODY_IDX_POS_X]
+            body_ipos[body_id * 3 + 1] = bodies[bo + BODY_IDX_POS_Y]
+            body_ipos[body_id * 3 + 2] = bodies[bo + BODY_IDX_POS_Z]
+            body_iquat[body_id * 4 + 0] = bodies[bo + BODY_IDX_QUAT_X]
+            body_iquat[body_id * 4 + 1] = bodies[bo + BODY_IDX_QUAT_Y]
+            body_iquat[body_id * 4 + 2] = bodies[bo + BODY_IDX_QUAT_Z]
+            body_iquat[body_id * 4 + 3] = bodies[bo + BODY_IDX_QUAT_W]
             continue
 
         if num_contributing == 1:
@@ -1158,6 +1212,7 @@ def build_model_fields_from_flat[
             DTYPE, NBODY, NGEOM, IGR_MIN, IGR_MAX, False
         ](
             mf.geoms.data,
+            mf.bodies.data,
             geom_mass,
             geom_group,
             body_has_explicit_inertia,
@@ -1173,6 +1228,7 @@ def build_model_fields_from_flat[
             DTYPE, NBODY, NGEOM, IGR_MIN, IGR_MAX, True
         ](
             mf.geoms.data,
+            mf.bodies.data,
             geom_mass,
             geom_group,
             body_has_explicit_inertia,

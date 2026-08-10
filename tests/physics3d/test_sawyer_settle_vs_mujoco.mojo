@@ -94,31 +94,52 @@ comptime SETTLED_VEL = 5e-2
 # `test_mesh_detection_fields`).
 comptime MIN_MANIFOLD_ROWS = 2
 
-# ⚠⚠ DEFECT 28 RATCHET — THIS IS NOT A TOLERANCE, IT IS A MEASURED BUG.
+# ⚠⚠ THIS GATES DEFECT 28 — FIXED 2026-08-10, KEEP IT TIGHT.
 #
-# The mocap WELD does not hold the hand. MuJoCo tracks the welded body to the
-# mocap target within 0.4 mm; ours sags to 77.6 mm away — 57 mm in y and 56 mm
-# in z, i.e. downward under gravity. Measured 2026-08-10:
+# The mocap weld holds the hand where it is commanded. Both sides settle ~4 mm
+# short of the target, which is not error but the true residual of a SOFT weld:
+# solref (0.02, 1) and solimp dmax 0.95 give K = 2770, and a soft equality
+# balances a load at pos = R*lambda/(K*imp) — 3.77e-3 m for MuJoCo's own
+# converged force, matching its efc_pos to 4 significant figures. A weld that
+# tracked to zero would mean the compliance was missing.
 #
 #     mocap target   [ 0.0      0.6      0.2     ]
-#     MuJoCo         [-0.000026 0.600395 0.196231]   0.4 mm from target
-#     ours           [-0.001391 0.542980 0.144079]   77.6 mm from MuJoCo
+#     MuJoCo         [-0.000026 0.600395 0.196231]   3.79 mm from target
+#     ours           [ 0.000009 0.599522 0.195983]   4.04 mm from target
+#                                                    0.91 mm from MuJoCo
 #
-# Both sides use an identity weld relpose (MetaWorld zeroes it on the reference
-# via `reset_mocap_welds`; ours never applies the XML's, or the hand would be a
-# METRE out), so this is not the relpose trap — it is the equality solve not
-# holding the constraint.
+# ⚠ SO THE QUANTITY ASSERTED IS OURS-vs-MUJOCO, NOT OURS-vs-TARGET. Against the
+# target, 4 mm of legitimate compliance would swamp the 1 mm of real
+# disagreement and the gate could not tell a stiffness bug from the physics.
+#
+# WHAT IT CAUGHT: the hand sagged to 77.6 mm — 57 mm in y, 56 mm in z, i.e.
+# downward under gravity. TWO independent defects, partially cancelling, which
+# is why neither was obvious:
+#
+#   1. Three PHANTOM KILOGRAMS. `hand`, `rightpad` and `leftpad` each own a
+#      group-1 visual box, and sawyer sets `inertiagrouprange="4 5"`, so MuJoCo
+#      weighs none of them; our model builder fell back to `BodyData`'s default
+#      mass of 1.0 kg. At ~1.15 m from the j0 axis that is 3.97 kg m^2 of
+#      invented base inertia — `dof_invweight0[j0]` was 0.4664x MuJoCo's.
+#   2. A BODY INDEX USED AS AN INVERSE INERTIA. The equality builder read
+#      diagApprox through an offset that omitted NTENDON/NSITE, so on sawyer it
+#      landed in the SITE records and returned 27.0 — column 0 of a site record,
+#      the body it is attached to. Correct value 6.1056, so R was 4.4x too big.
+#
+# Fixing only the mass left 43.7 mm; fixing only the read would have left the
+# constraint too stiff in the other direction. Both together: 0.91 mm.
 #
 # ⚠ THIS IS THE PATH EVERY METAWORLD ACTION DRIVES. SawyerReach's action space
-# is a mocap position delta; if the weld does not track, the commanded hand
-# pose is not the achieved one and every Phase 7 manipulation policy is
-# learning against a mis-actuated arm. It is invisible to every other gate
-# because the obj rests on the table, decoupled from the arm — which is how the
-# settling comparison agreed to 0.39 um while this was 77.6 mm wrong.
+# is a mocap position delta; if the weld does not track, the commanded hand pose
+# is not the achieved one and every Phase 7 manipulation policy trains against a
+# mis-actuated arm. It was invisible to every other gate because the obj rests
+# on the table, decoupled from the arm — which is how the settling comparison
+# agreed to 0.39 um while this was 77.6 mm wrong.
 #
-# Pinned at the measurement + 1% so it cannot silently worsen. It must come
-# DOWN to ~1e-3 (the reference's own tracking error), never be raised to pass.
-comptime HAND_TOL = 7.84e-2
+# Set at the measurement + ~30%. It must never be RAISED to make a change pass:
+# the two defects above moved it by 85x, so anything that needs more room here
+# is a physics regression, not tolerance drift.
+comptime HAND_TOL = 1.2e-3
 
 
 def _setup() raises -> PythonObject:
