@@ -19,7 +19,7 @@ Outputs `policy_loss`, `value_loss`, `ret` are `[BK, T-1]`. Forward only
 (PR5a). Validated ≤1e-4 vs the actual reference (extract_pr5.py).
 """
 
-from std.memory import alloc
+from std.memory import alloc, dealloc
 from std.math import tanh, exp
 
 from mojo_rl.nn.constants import DT
@@ -78,8 +78,8 @@ def imag_loss_cpu[
     comptime TM1 = T - 1
 
     # val[b,t] = TwoHot(vlogits).pred ; slowval[b,t] = TwoHot(svlogits).pred
-    var val = alloc[Scalar[DT]](BK * T)
-    var slowval = alloc[Scalar[DT]](BK * T)
+    var val = alloc[Scalar[DT]]({count = BK * T}).unsafe_leak()
+    var slowval = alloc[Scalar[DT]]({count = BK * T}).unsafe_leak()
     for b in range(BK):
         for t in range(T):
             val[unsafe_offset=b * T + t] = twohot_pred[BINS](
@@ -90,7 +90,7 @@ def imag_loss_cpu[
             )
 
     # weight = cumprod(con) along T
-    var weight = alloc[Scalar[DT]](BK * T)
+    var weight = alloc[Scalar[DT]]({count = BK * T}).unsafe_leak()
     for b in range(BK):
         var acc = Scalar[DT](1.0)
         for t in range(T):
@@ -137,13 +137,15 @@ def imag_loss_cpu[
                 # the sampled one-hot. k = argmax(act). `pstd_raw` unused.
                 var base = (b * T + t) * ACT
                 var k = _argmax[ACT](act, base)
-                var sm = alloc[Scalar[DT]](ACT)
-                var pp = alloc[Scalar[DT]](ACT)
+                var sm_a = alloc[Scalar[DT]]({count = ACT})
+                var sm = sm_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+                var pp_a = alloc[Scalar[DT]]({count = ACT})
+                var pp = pp_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
                 var r = cat_fwd[ACT](pmean, base, UNIMIX, k, sm, pp)
                 logpi = r[0]
                 ent = r[1]
-                sm.unsafe_free()
-                pp.unsafe_free()
+                dealloc(sm_a^)
+                dealloc(pp_a^)
             else:
                 # bounded_normal: Σ_a logp / entropy over the action dim
                 for a in range(ACT):
@@ -221,101 +223,109 @@ def imag_loss_backward[
         grad_pstd_raw[unsafe_offset=i] = 0.0
 
     # recompute val (= tarval), slowval, weight, ret
-    var val = alloc[Scalar[DT]](BK * T)
-    var slowval = alloc[Scalar[DT]](BK * T)
-    var weight = alloc[Scalar[DT]](BK * T)
-    var ret = alloc[Scalar[DT]](BK * TM1)
-    for b in range(BK):
-        var acc = Scalar[DT](1.0)
-        for t in range(T):
-            val[unsafe_offset=b * T + t] = twohot_pred[BINS](
-                vlogits, (b * T + t) * BINS, bins
-            )
-            slowval[unsafe_offset=b * T + t] = twohot_pred[BINS](
-                svlogits, (b * T + t) * BINS, bins
-            )
-            acc *= con[unsafe_offset=b * T + t]
-            weight[unsafe_offset=b * T + t] = acc
-    for b in range(BK):
-        var ret_next = slowval[unsafe_offset=b * T + (T - 1)] if slowtar else val[unsafe_offset=
-            b * T + (T - 1)
-        ]
-        var t = T - 2
-        while t >= 0:
-            var live = con[unsafe_offset=b * T + t + 1]
-            var vboot = slowval[unsafe_offset=b * T + t + 1] if slowtar else val[unsafe_offset=
-                b * T + t + 1
-            ]
-            var interm = (
-                rew[unsafe_offset=b * T + t + 1] + (Scalar[DT](1.0) - lam) * live * vboot
-            )
-            var cur = interm + live * lam * ret_next
-            ret[unsafe_offset=b * TM1 + t] = cur
-            ret_next = cur
-            t -= 1
-
-    for b in range(BK):
-        for t in range(TM1):
-            var w = weight[unsafe_offset=b * T + t]
-            var adv = (ret[unsafe_offset=b * TM1 + t] - val[unsafe_offset=b * T + t]) / rscale
-            # ── policy grads ─────────────────────────────────────────
-            # ∂loss/∂logpi = w·(−adv)·d_policy ; ∂loss/∂ent = w·(−actent)·d_policy
-            var dpl_dlogp = d_policy[unsafe_offset=b * TM1 + t] * w * (-adv)
-            var dpl_dent = d_policy[unsafe_offset=b * TM1 + t] * w * (-actent)
-            comptime if DISCRETE:
-                # unimix categorical: grads flow to `grad_pmean` (= logits);
-                # `grad_pstd_raw` stays 0 (zeroed above). k = argmax(act).
-                var base = (b * T + t) * ACT
-                var k = _argmax[ACT](act, base)
-                var sm = alloc[Scalar[DT]](ACT)
-                var pp = alloc[Scalar[DT]](ACT)
-                cat_softmax_mix[ACT](pmean, base, UNIMIX, sm, pp)
-                cat_bwd[ACT](
-                    sm, pp, UNIMIX, k, dpl_dlogp, dpl_dent, grad_pmean, base
+    var val_a = alloc[Scalar[DT]]({count = BK * T})
+    var val = val_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var slowval_a = alloc[Scalar[DT]]({count = BK * T})
+    var slowval = slowval_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var weight_a = alloc[Scalar[DT]]({count = BK * T})
+    var weight = weight_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var ret_a = alloc[Scalar[DT]]({count = BK * TM1})
+    var ret = ret_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    try:
+        for b in range(BK):
+            var acc = Scalar[DT](1.0)
+            for t in range(T):
+                val[unsafe_offset=b * T + t] = twohot_pred[BINS](
+                    vlogits, (b * T + t) * BINS, bins
                 )
-                sm.unsafe_free()
-                pp.unsafe_free()
-            else:
-                for a in range(ACT):
-                    var idx = (b * T + t) * ACT + a
-                    var mean = tanh(pmean[unsafe_offset=idx])
-                    var s = Scalar[DT](1.0) / (
-                        Scalar[DT](1.0)
-                        + exp(-(pstd_raw[unsafe_offset=idx] + Scalar[DT](2.0)))
-                    )
-                    var std = (maxstd - minstd) * s + minstd
-                    var z = (act[unsafe_offset=idx] - mean) / std
-                    var dlogp_dmean = z / std
-                    var dlogp_dstd = (z * z - Scalar[DT](1.0)) / std
-                    var dent_dstd = Scalar[DT](1.0) / std
-                    var dmean_draw = Scalar[DT](1.0) - mean * mean
-                    var dstd_draw = (
-                        (maxstd - minstd) * s * (Scalar[DT](1.0) - s)
-                    )
-                    grad_pmean[unsafe_offset=idx] = dpl_dlogp * dlogp_dmean * dmean_draw
-                    grad_pstd_raw[unsafe_offset=idx] = (
-                        dpl_dlogp * dlogp_dstd + dpl_dent * dent_dstd
-                    ) * dstd_draw
-            # ── value grads (twohot CE vs ret and vs slowval) ────────
-            var up = d_value[unsafe_offset=b * TM1 + t] * w
-            twohot_loss_backward[BINS](
-                vlogits,
-                (b * T + t) * BINS,
-                bins,
-                ret[unsafe_offset=b * TM1 + t],
-                up,
-                grad_vlogits,
-            )
-            twohot_loss_backward[BINS](
-                vlogits,
-                (b * T + t) * BINS,
-                bins,
-                slowval[unsafe_offset=b * T + t],
-                up * slowreg,
-                grad_vlogits,
-            )
+                slowval[unsafe_offset=b * T + t] = twohot_pred[BINS](
+                    svlogits, (b * T + t) * BINS, bins
+                )
+                acc *= con[unsafe_offset=b * T + t]
+                weight[unsafe_offset=b * T + t] = acc
+        for b in range(BK):
+            var ret_next = slowval[unsafe_offset=b * T + (T - 1)] if slowtar else val[unsafe_offset=
+                b * T + (T - 1)
+            ]
+            var t = T - 2
+            while t >= 0:
+                var live = con[unsafe_offset=b * T + t + 1]
+                var vboot = slowval[unsafe_offset=b * T + t + 1] if slowtar else val[unsafe_offset=
+                    b * T + t + 1
+                ]
+                var interm = (
+                    rew[unsafe_offset=b * T + t + 1] + (Scalar[DT](1.0) - lam) * live * vboot
+                )
+                var cur = interm + live * lam * ret_next
+                ret[unsafe_offset=b * TM1 + t] = cur
+                ret_next = cur
+                t -= 1
 
-    val.unsafe_free()
-    slowval.unsafe_free()
-    weight.unsafe_free()
-    ret.unsafe_free()
+        for b in range(BK):
+            for t in range(TM1):
+                var w = weight[unsafe_offset=b * T + t]
+                var adv = (ret[unsafe_offset=b * TM1 + t] - val[unsafe_offset=b * T + t]) / rscale
+                # ── policy grads ─────────────────────────────────────────
+                # ∂loss/∂logpi = w·(−adv)·d_policy ; ∂loss/∂ent = w·(−actent)·d_policy
+                var dpl_dlogp = d_policy[unsafe_offset=b * TM1 + t] * w * (-adv)
+                var dpl_dent = d_policy[unsafe_offset=b * TM1 + t] * w * (-actent)
+                comptime if DISCRETE:
+                    # unimix categorical: grads flow to `grad_pmean` (= logits);
+                    # `grad_pstd_raw` stays 0 (zeroed above). k = argmax(act).
+                    var base = (b * T + t) * ACT
+                    var k = _argmax[ACT](act, base)
+                    var sm_a = alloc[Scalar[DT]]({count = ACT})
+                    var sm = sm_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+                    var pp_a = alloc[Scalar[DT]]({count = ACT})
+                    var pp = pp_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+                    cat_softmax_mix[ACT](pmean, base, UNIMIX, sm, pp)
+                    cat_bwd[ACT](
+                        sm, pp, UNIMIX, k, dpl_dlogp, dpl_dent, grad_pmean, base
+                    )
+                    dealloc(sm_a^)
+                    dealloc(pp_a^)
+                else:
+                    for a in range(ACT):
+                        var idx = (b * T + t) * ACT + a
+                        var mean = tanh(pmean[unsafe_offset=idx])
+                        var s = Scalar[DT](1.0) / (
+                            Scalar[DT](1.0)
+                            + exp(-(pstd_raw[unsafe_offset=idx] + Scalar[DT](2.0)))
+                        )
+                        var std = (maxstd - minstd) * s + minstd
+                        var z = (act[unsafe_offset=idx] - mean) / std
+                        var dlogp_dmean = z / std
+                        var dlogp_dstd = (z * z - Scalar[DT](1.0)) / std
+                        var dent_dstd = Scalar[DT](1.0) / std
+                        var dmean_draw = Scalar[DT](1.0) - mean * mean
+                        var dstd_draw = (
+                            (maxstd - minstd) * s * (Scalar[DT](1.0) - s)
+                        )
+                        grad_pmean[unsafe_offset=idx] = dpl_dlogp * dlogp_dmean * dmean_draw
+                        grad_pstd_raw[unsafe_offset=idx] = (
+                            dpl_dlogp * dlogp_dstd + dpl_dent * dent_dstd
+                        ) * dstd_draw
+                # ── value grads (twohot CE vs ret and vs slowval) ────────
+                var up = d_value[unsafe_offset=b * TM1 + t] * w
+                twohot_loss_backward[BINS](
+                    vlogits,
+                    (b * T + t) * BINS,
+                    bins,
+                    ret[unsafe_offset=b * TM1 + t],
+                    up,
+                    grad_vlogits,
+                )
+                twohot_loss_backward[BINS](
+                    vlogits,
+                    (b * T + t) * BINS,
+                    bins,
+                    slowval[unsafe_offset=b * T + t],
+                    up * slowreg,
+                    grad_vlogits,
+                )
+
+    finally:
+        dealloc(val_a^)
+        dealloc(slowval_a^)
+        dealloc(weight_a^)
+        dealloc(ret_a^)

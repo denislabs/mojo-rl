@@ -36,7 +36,7 @@ the reverse-KL gradient is derived here (net-new). All CPU flat-pointer scalar
 helpers, matching the BC/shortcut loss style; GPU deferred.
 """
 
-from std.memory import alloc
+from std.memory import alloc, dealloc
 from std.math import log, exp
 
 from mojo_rl.nn.constants import DT
@@ -293,10 +293,14 @@ def pmpo_policy_loss_cpu[
     """Forward-only PMPO loss (eq. 11). Pure (no grad); use the `_backward`
     twin to fill gradients. Returns the total scalar loss."""
     comptime HM1 = H - 1
-    var sm = alloc[Scalar[DT]](NACT)
-    var pp = alloc[Scalar[DT]](NACT)
-    var qsm = alloc[Scalar[DT]](NACT)
-    var qp = alloc[Scalar[DT]](NACT)
+    var sm_a_ = alloc[Scalar[DT]]({count = NACT})
+    var sm = sm_a_.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var pp_a = alloc[Scalar[DT]]({count = NACT})
+    var pp = pp_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var qsm_a = alloc[Scalar[DT]]({count = NACT})
+    var qsm = qsm_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var qp_a = alloc[Scalar[DT]]({count = NACT})
+    var qp = qp_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
 
     # |D⁺|, |D⁻|
     var n_pos = 0
@@ -330,10 +334,10 @@ def pmpo_policy_loss_cpu[
             # reverse-KL prior term
             loss += beta * inv_N * _reverse_kl_fwd[NACT](pp, qp)
 
-    sm.unsafe_free()
-    pp.unsafe_free()
-    qsm.unsafe_free()
-    qp.unsafe_free()
+    dealloc(sm_a_^)
+    dealloc(pp_a^)
+    dealloc(qsm_a^)
+    dealloc(qp_a^)
     return Float64(loss)
 
 
@@ -361,10 +365,14 @@ def pmpo_policy_loss_backward[
     for i in range(B * H * NACT):
         grad_plogits[unsafe_offset=i] = 0.0
 
-    var sm = alloc[Scalar[DT]](NACT)
-    var pp = alloc[Scalar[DT]](NACT)
-    var qsm = alloc[Scalar[DT]](NACT)
-    var qp = alloc[Scalar[DT]](NACT)
+    var sm_a_ = alloc[Scalar[DT]]({count = NACT})
+    var sm = sm_a_.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var pp_a = alloc[Scalar[DT]]({count = NACT})
+    var pp = pp_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var qsm_a = alloc[Scalar[DT]]({count = NACT})
+    var qsm = qsm_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var qp_a = alloc[Scalar[DT]]({count = NACT})
+    var qp = qp_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
 
     var n_pos = 0
     var n_neg = 0
@@ -400,7 +408,7 @@ def pmpo_policy_loss_backward[
                 sm, pp, qp, UNIMIX, upstream * beta * inv_N, grad_plogits, base
             )
 
-    sm.unsafe_free()
-    pp.unsafe_free()
-    qsm.unsafe_free()
-    qp.unsafe_free()
+    dealloc(sm_a_^)
+    dealloc(pp_a^)
+    dealloc(qsm_a^)
+    dealloc(qp_a^)

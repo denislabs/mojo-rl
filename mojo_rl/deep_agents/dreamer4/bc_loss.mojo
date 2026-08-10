@@ -21,7 +21,7 @@ Convention: `actions`/`rewards` are per (b, window-position) — flat [B·T], wi
 position p = b·T + j (j ∈ [0,T)). `actions` holds class indices as fp ints.
 """
 
-from std.memory import alloc
+from std.memory import alloc, dealloc
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -109,8 +109,10 @@ def bc_mtp_loss[
     for i in range(BT * RLOG):
         grl[unsafe_offset=i] = Scalar[DT](0.0)
 
-    var sm = alloc[Scalar[DT]](NACT)
-    var pp = alloc[Scalar[DT]](NACT)
+    var sm_a = alloc[Scalar[DT]]({count = NACT})
+    var sm = sm_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var pp_a = alloc[Scalar[DT]]({count = NACT})
+    var pp = pp_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
     var loss: Float64 = 0.0
     for b in range(B):
         for j in range(T):                       # window-position of the frame
@@ -138,8 +140,8 @@ def bc_mtp_loss[
                 twohot_loss_backward[NBINS](
                     rlog, rbase, bins, tr, reward_weight * inv, grl
                 )
-    sm.unsafe_free()
-    pp.unsafe_free()
+    dealloc(sm_a^)
+    dealloc(pp_a^)
 
     # ── backprop through both heads, sum grad wrt h_t ───────────────────
     # The NLL loop filled the raw `gpl`/`grl` logit-grads; bridge those into
@@ -212,8 +214,10 @@ def bc_policy_only_loss[
     for i in range(BT * PLOG):
         gpl[unsafe_offset=i] = Scalar[DT](0.0)
 
-    var sm = alloc[Scalar[DT]](NACT)
-    var pp = alloc[Scalar[DT]](NACT)
+    var sm_a = alloc[Scalar[DT]]({count = NACT})
+    var sm = sm_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var pp_a = alloc[Scalar[DT]]({count = NACT})
+    var pp = pp_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
     var loss: Float64 = 0.0
     for b in range(B):
         for j in range(T):
@@ -231,8 +235,8 @@ def bc_policy_only_loss[
                     sm, pp, unimix, k,
                     -policy_weight * inv, Scalar[DT](0.0), gpl, pbase,
                 )
-    sm.unsafe_free()
-    pp.unsafe_free()
+    dealloc(sm_a^)
+    dealloc(pp_a^)
 
     var gpl_t = Tensor.alloc(BT * PLOG)
     for i in range(BT * PLOG):

@@ -32,7 +32,7 @@ Ingest of FOREIGN files (a HuggingFace dataset with no manifest of ours) works
 by enumerating the datasets and introspecting each one's shape and dtype.
 """
 
-from std.memory import alloc
+from std.memory import alloc, dealloc
 
 from mojo_rl.io.hdf5 import H5File, H5Dataset, H5Writer, H5DatasetWriter
 from .column import ColumnSpec, dtype_bytes, dtype_from_h5, dtype_name
@@ -243,17 +243,21 @@ struct TrajectoryStoreWriter(Movable):
 
         # ── episode index ──────────────────────────────────────────────
         var n_ep = len(self._ep_len)
-        var lb = alloc[Scalar[DType.int64]](n_ep).as_unsafe_any_origin()
-        var ob = alloc[Scalar[DType.int64]](n_ep).as_unsafe_any_origin()
-        for i in range(n_ep):
-            lb[unsafe_offset=i] = self._ep_len[i]
-            ob[unsafe_offset=i] = self._ep_offset[i]
-        var dl = self._file.create[DType.int64](String(EP_LEN_DATASET), 1, 4096, 0)
-        dl.append[DType.int64](lb, n_ep)
-        var do = self._file.create[DType.int64](String(EP_OFFSET_DATASET), 1, 4096, 0)
-        do.append[DType.int64](ob, n_ep)
-        lb.unsafe_free()
-        ob.unsafe_free()
+        var lb_a = alloc[Scalar[DType.int64]]({count = n_ep})
+        var lb = lb_a.unsafe_ptr().as_unsafe_any_origin()
+        var ob_a = alloc[Scalar[DType.int64]]({count = n_ep})
+        var ob = ob_a.unsafe_ptr().as_unsafe_any_origin()
+        try:
+            for i in range(n_ep):
+                lb[unsafe_offset=i] = self._ep_len[i]
+                ob[unsafe_offset=i] = self._ep_offset[i]
+            var dl = self._file.create[DType.int64](String(EP_LEN_DATASET), 1, 4096, 0)
+            dl.append[DType.int64](lb, n_ep)
+            var do = self._file.create[DType.int64](String(EP_OFFSET_DATASET), 1, 4096, 0)
+            do.append[DType.int64](ob, n_ep)
+        finally:
+            dealloc(lb_a^)
+            dealloc(ob_a^)
 
         # ── manifest ───────────────────────────────────────────────────
         var m = Manifest()
@@ -269,14 +273,17 @@ struct TrajectoryStoreWriter(Movable):
 
         var tbytes = text.as_bytes()
         var nbytes = len(tbytes)
-        var mb = alloc[Scalar[DType.uint8]](nbytes).as_unsafe_any_origin()
-        for i in range(nbytes):
-            mb[unsafe_offset=i] = Scalar[DType.uint8](tbytes[i])
-        var dm = self._file.create[DType.uint8](
-            String(MANIFEST_DATASET), 1, 4096, 0
-        )
-        dm.append[DType.uint8](mb, nbytes)
-        mb.unsafe_free()
+        var mb_a = alloc[Scalar[DType.uint8]]({count = nbytes})
+        var mb = mb_a.unsafe_ptr().as_unsafe_any_origin()
+        try:
+            for i in range(nbytes):
+                mb[unsafe_offset=i] = Scalar[DType.uint8](tbytes[i])
+            var dm = self._file.create[DType.uint8](
+                String(MANIFEST_DATASET), 1, 4096, 0
+            )
+            dm.append[DType.uint8](mb, nbytes)
+        finally:
+            dealloc(mb_a^)
 
         self._file.flush()
         self._closed = True
@@ -328,14 +335,17 @@ struct TrajectoryStore(Movable):
     def _read_manifest(self) raises -> Manifest:
         var ds = self._file.open_dataset(String(MANIFEST_DATASET))
         var n = ds.n_elements()
-        var buf = alloc[Scalar[DType.uint8]](n).as_unsafe_any_origin()
-        ds.read_all[DType.uint8](buf)
-        var text = String()
-        for i in range(n):
-            text += chr(Int(buf[unsafe_offset=i]))
-        buf.unsafe_free()
-        return parse_manifest(text)
+        var buf_a = alloc[Scalar[DType.uint8]]({count = n})
+        var buf = buf_a.unsafe_ptr().as_unsafe_any_origin()
+        try:
+            ds.read_all[DType.uint8](buf)
+            var text = String()
+            for i in range(n):
+                text += chr(Int(buf[unsafe_offset=i]))
+            return parse_manifest(text)
 
+        finally:
+            dealloc(buf_a^)
     def _infer_manifest(self, names: List[String]) raises -> Manifest:
         """Recover a schema from a file we did not write.
 

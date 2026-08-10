@@ -16,7 +16,7 @@ GPU support is deferred (#41 lands as CPU-only first); subsequent passes
 can lift the per-pixel helpers into a GPU kernel like Classic does.
 """
 
-from std.memory import alloc
+from std.memory import alloc, dealloc
 from mojo_rl.core import (
     State,
     Action,
@@ -778,7 +778,8 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
     # ------------------------------------------------------------------
 
     def get_obs_list(self) -> List[Scalar[Self.DTYPE]]:
-        var obs_arr = alloc[Scalar[Self.DTYPE]](PIXEL_OBS_DIM)
+        var obs_arr_a = alloc[Scalar[Self.DTYPE]]({count = PIXEL_OBS_DIM})
+        var obs_arr = obs_arr_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
         var obs_ptr = rebind[Pointer[Scalar[Self.DTYPE], MutAnyOrigin]](
             obs_arr
         )
@@ -786,7 +787,7 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
         var obs = List[Scalar[Self.DTYPE]](capacity=PIXEL_OBS_DIM)
         for i in range(PIXEL_OBS_DIM):
             obs.append(obs_arr[unsafe_offset=i])
-        obs_arr.unsafe_free()
+        dealloc(obs_arr_a^)
         return obs^
 
     def reset_obs_list(mut self) -> List[Scalar[Self.DTYPE]]:

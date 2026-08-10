@@ -253,10 +253,10 @@ def run_lewm_paper_protocol[
     var scorer = Scorer(pred_net^, ctx=ctx)
 
     # encoding IO
-    var pix_host = alloc[Scalar[DT]](BATCH * PIX)
-    var emb_host = alloc[Scalar[DT]](BATCH * TE)
-    var start_lat = alloc[Scalar[DT]](BE)
-    var goal_lat = alloc[Scalar[DT]](BE)
+    var pix_host = alloc[Scalar[DT]]({count = BATCH * PIX}).unsafe_leak()
+    var emb_host = alloc[Scalar[DT]]({count = BATCH * TE}).unsafe_leak()
+    var start_lat = alloc[Scalar[DT]]({count = BE}).unsafe_leak()
+    var goal_lat = alloc[Scalar[DT]]({count = BE}).unsafe_leak()
     var pix_dev = ctx_v.enqueue_create_buffer[DT](BATCH * PIX)
     var act_dev = ctx_v.enqueue_create_buffer[DT](BATCH * ACTIN)
     act_dev.enqueue_fill(0.0)  # emb depends only on pixels
@@ -312,7 +312,7 @@ def run_lewm_paper_protocol[
         cem_topk=cem_topk,
         init_std=init_std,
     )
-    var plan = alloc[Scalar[DT]](BATCH * NEEDED * ACT)
+    var plan = alloc[Scalar[DT]]({count = BATCH * NEEDED * ACT}).unsafe_leak()
 
     # ── AdaJEPA TTA state (docs/ADAJEPA_LEWM_TTA_PLAN.md §5) ────────────
     var keep = tta_keep.copy()
@@ -324,12 +324,12 @@ def run_lewm_paper_protocol[
             String("act_emb."),
         ]
     var tta_buf = TTAWindowBuffer[BATCH, T, IMG_DIM, ACT](enabled=tta_enabled)
-    var tta_act_host = alloc[Scalar[DT]](BATCH * ACTIN if tta_enabled else 1)
-    var tta_frame = alloc[Scalar[DT]](IMG_DIM if tta_enabled else 1)
+    var tta_act_host = alloc[Scalar[DT]]({count = BATCH * ACTIN if tta_enabled else 1}).unsafe_leak()
+    var tta_frame = alloc[Scalar[DT]]({count = IMG_DIM if tta_enabled else 1}).unsafe_leak()
     # Persistent copy of the goal pixel windows: the adapt steps move the
     # BN running stats, so the goal latent is re-encoded after each adapt
     # (start and goal latents must share the same statistics).
-    var goal_pix_host = alloc[Scalar[DT]](BATCH * PIX if tta_enabled else 1)
+    var goal_pix_host = alloc[Scalar[DT]]({count = BATCH * PIX if tta_enabled else 1}).unsafe_leak()
     if tta_enabled:
         for i in range(BATCH * PIX):
             goal_pix_host[unsafe_offset=i] = pix_host[unsafe_offset=i]  # goal windows just rendered
@@ -343,8 +343,8 @@ def run_lewm_paper_protocol[
     var steps_per_plan = n_exec * FRAMESKIP
     var n_plans = (eval_budget + steps_per_plan - 1) // steps_per_plan
     var do_viz = viz_path.byte_length() > 0
-    var viz_buf = alloc[Scalar[DT]](n_plans * VIZN if do_viz else 1)
-    var viz_tmp = alloc[Scalar[DT]](VIZN if do_viz else 1)
+    var viz_buf = alloc[Scalar[DT]]({count = n_plans * VIZN if do_viz else 1}).unsafe_leak()
+    var viz_tmp = alloc[Scalar[DT]]({count = VIZN if do_viz else 1}).unsafe_leak()
 
     var succeeded = List[Bool](length=BATCH, fill=False)
 

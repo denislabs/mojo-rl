@@ -225,9 +225,9 @@ def lewm_shuffled_eval[
     comptime HE = H * EMB
     comptime ACTIN = T * ACT
     comptime NP = BATCH * HE
-    var act_host = alloc[Scalar[DT]](BATCH * ACTIN)
-    var pred = alloc[Scalar[DT]](NP)
-    var tgt = alloc[Scalar[DT]](NP)
+    var act_host = alloc[Scalar[DT]]({count = BATCH * ACTIN}).unsafe_leak()
+    var pred = alloc[Scalar[DT]]({count = NP}).unsafe_leak()
+    var tgt = alloc[Scalar[DT]]({count = NP}).unsafe_leak()
     var act_dev: Optional[DeviceBuffer[DT]] = None
     comptime if target == "gpu":
         act_dev = ctx.value().enqueue_create_buffer[DT](BATCH * ACTIN)
@@ -345,7 +345,7 @@ def lewm_action_awareness_eval[
     scorer.prime()
 
     # ── Expert leg: the real recorded actions (first H steps).
-    var expert_plan = alloc[Scalar[DT]](BATCH * H * ACT)
+    var expert_plan = alloc[Scalar[DT]]({count = BATCH * H * ACT}).unsafe_leak()
     for b in range(BATCH):
         for t in range(H):
             for a in range(ACT):
@@ -359,7 +359,7 @@ def lewm_action_awareness_eval[
     var shooter = CategoricalRandomShooter[BATCH, ACT](
         horizon=H, num_samples=num_random
     )
-    var rs_best = alloc[Scalar[DT]](BATCH * H * ACT)
+    var rs_best = alloc[Scalar[DT]]({count = BATCH * H * ACT}).unsafe_leak()
     var random_min = shooter.optimize(
         scorer, rs_best.as_unsafe_any_origin(), verbose=False
     )
@@ -376,7 +376,7 @@ def lewm_action_awareness_eval[
             cem_topk=cem_topk,
             cem_smoothing=cem_smoothing,
         )
-        var cem_best = alloc[Scalar[DT]](BATCH * H * ACT)
+        var cem_best = alloc[Scalar[DT]]({count = BATCH * H * ACT}).unsafe_leak()
         cem_score = cem.optimize(
             scorer, cem_best.as_unsafe_any_origin(), verbose=False
         )

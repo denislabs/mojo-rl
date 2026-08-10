@@ -36,7 +36,7 @@ host buffer; `read_obs` gathers a single obs row device→host.
 
 from std.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext, DeviceBuffer
-from std.memory import alloc
+from std.memory import alloc, dealloc
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -680,26 +680,29 @@ struct GPUMCTSSequenceReplay[
         # one-row gather via tiny throwaway device buffers.
         var d_one = self.ctx.enqueue_create_buffer[DType.int32](1)
         var d_out = self.ctx.enqueue_create_buffer[DT](Self.OBS)
-        var hs = alloc[Int32](1).as_unsafe_any_origin()
-        hs[unsafe_offset=0] = Int32(slot)
-        self.ctx.enqueue_copy(d_one, hs)
-        var slots_t = LayoutTensor[
-            DType.int32, Layout.row_major(1), MutAnyOrigin
-        ](d_one.unsafe_ptr().as_unsafe_any_origin())
-        var buf_t = LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](self.obs_dev.unsafe_ptr().as_unsafe_any_origin())
-        var out_t = LayoutTensor[
-            DT, Layout.row_major(1, Self.OBS), MutAnyOrigin
-        ](d_out.unsafe_ptr().as_unsafe_any_origin())
-        comptime nb = (Self.OBS + TPB - 1) // TPB
-        self.ctx.enqueue_function[
-            _mz_obs_gather_kernel[1, Self.OBS, Self.CAP, Self.SDT]
-        ](slots_t, buf_t, out_t, grid_dim=nb, block_dim=TPB)
-        # `.unsafe_ptr()`: sanctioned D2H-staging boundary (device row → host List).
-        self.ctx.enqueue_copy(out.unsafe_ptr(), d_out)
-        self.ctx.synchronize()
-        hs.unsafe_free()
+        var hs_a = alloc[Int32]({count = 1})
+        var hs = hs_a.unsafe_ptr().as_unsafe_any_origin()
+        try:
+            hs[unsafe_offset=0] = Int32(slot)
+            self.ctx.enqueue_copy(d_one, hs)
+            var slots_t = LayoutTensor[
+                DType.int32, Layout.row_major(1), MutAnyOrigin
+            ](d_one.unsafe_ptr().as_unsafe_any_origin())
+            var buf_t = LayoutTensor[
+                Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+            ](self.obs_dev.unsafe_ptr().as_unsafe_any_origin())
+            var out_t = LayoutTensor[
+                DT, Layout.row_major(1, Self.OBS), MutAnyOrigin
+            ](d_out.unsafe_ptr().as_unsafe_any_origin())
+            comptime nb = (Self.OBS + TPB - 1) // TPB
+            self.ctx.enqueue_function[
+                _mz_obs_gather_kernel[1, Self.OBS, Self.CAP, Self.SDT]
+            ](slots_t, buf_t, out_t, grid_dim=nb, block_dim=TPB)
+            # `.unsafe_ptr()`: sanctioned D2H-staging boundary (device row → host List).
+            self.ctx.enqueue_copy(out.unsafe_ptr(), d_out)
+            self.ctx.synchronize()
+        finally:
+            dealloc(hs_a^)
 
     def update_targets(
         mut self,

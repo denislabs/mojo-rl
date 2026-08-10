@@ -14,7 +14,7 @@ Gated on `repval_loss=True` (the reference default). Forward only (PR5a),
 validated ≤1e-4 vs the actual reference.
 """
 
-from std.memory import alloc
+from std.memory import alloc, dealloc
 
 from mojo_rl.nn.constants import DT
 from .twohot import twohot_pred, twohot_loss, twohot_loss_backward
@@ -56,7 +56,8 @@ def repl_loss_cpu[
             ret_next = cur
             t -= 1
 
-    var slowval = alloc[Scalar[DT]](BK * T)
+    var slowval_a = alloc[Scalar[DT]]({count = BK * T})
+    var slowval = slowval_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
     for b in range(BK):
         for t in range(T):
             slowval[unsafe_offset=b * T + t] = twohot_pred[BINS](
@@ -74,7 +75,7 @@ def repl_loss_cpu[
             )
             out_repval[unsafe_offset=b * TM1 + t] = w * (l1 + slowreg * l2)
 
-    slowval.unsafe_free()
+    dealloc(slowval_a^)
 
 
 def repl_loss_backward[
@@ -101,8 +102,10 @@ def repl_loss_backward[
     for i in range(BK * T * BINS):
         grad_vlogits[unsafe_offset=i] = 0.0
 
-    var ret = alloc[Scalar[DT]](BK * TM1)
-    var slowval = alloc[Scalar[DT]](BK * T)
+    var ret_a = alloc[Scalar[DT]]({count = BK * TM1})
+    var ret = ret_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var slowval_a = alloc[Scalar[DT]]({count = BK * T})
+    var slowval = slowval_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
     for b in range(BK):
         var ret_next = boot[b * T + (T - 1)]
         var t = T - 2
@@ -141,5 +144,5 @@ def repl_loss_backward[
                 grad_vlogits,
             )
 
-    ret.unsafe_free()
-    slowval.unsafe_free()
+    dealloc(ret_a^)
+    dealloc(slowval_a^)

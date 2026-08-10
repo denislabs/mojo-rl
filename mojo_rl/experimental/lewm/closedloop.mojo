@@ -210,10 +210,10 @@ def run_lewm_closedloop[
     var scorer = Scorer(pred_net^, ctx=ctx)
 
     # encoding IO
-    var pix_host = alloc[Scalar[DT]](BATCH * PIX)
-    var emb_host = alloc[Scalar[DT]](BATCH * TE)
-    var start_lat = alloc[Scalar[DT]](BE)
-    var goal_lat = alloc[Scalar[DT]](BE)
+    var pix_host = alloc[Scalar[DT]]({count = BATCH * PIX}).unsafe_leak()
+    var emb_host = alloc[Scalar[DT]]({count = BATCH * TE}).unsafe_leak()
+    var start_lat = alloc[Scalar[DT]]({count = BE}).unsafe_leak()
+    var goal_lat = alloc[Scalar[DT]]({count = BE}).unsafe_leak()
     var pix_dev = ctx_v.enqueue_create_buffer[DT](BATCH * PIX)
     var act_dev = ctx_v.enqueue_create_buffer[DT](BATCH * ACTIN)
     # emb depends only on pixels, so act_dev's contents never affect the
@@ -249,11 +249,11 @@ def run_lewm_closedloop[
         cem_topk=cem_topk,
         init_std=init_std,
     )
-    var plan = alloc[Scalar[DT]](BATCH * NEEDED * ACT)
+    var plan = alloc[Scalar[DT]]({count = BATCH * NEEDED * ACT}).unsafe_leak()
 
     var do_viz = viz_path.byte_length() > 0
-    var viz_buf = alloc[Scalar[DT]](n_cycles * VIZN if do_viz else 1)
-    var viz_tmp = alloc[Scalar[DT]](VIZN if do_viz else 1)
+    var viz_buf = alloc[Scalar[DT]]({count = n_cycles * VIZN if do_viz else 1}).unsafe_leak()
+    var viz_tmp = alloc[Scalar[DT]]({count = VIZN if do_viz else 1}).unsafe_leak()
 
     # ── AdaJEPA TTA state (docs/ADAJEPA_LEWM_TTA_PLAN.md §5) ────────────
     var keep = tta_keep.copy()
@@ -265,7 +265,7 @@ def run_lewm_closedloop[
             String("act_emb."),
         ]
     var tta_buf = TTAWindowBuffer[BATCH, T, IMG_DIM, ACT](enabled=tta_enabled)
-    var tta_act_host = alloc[Scalar[DT]](BATCH * ACTIN if tta_enabled else 1)
+    var tta_act_host = alloc[Scalar[DT]]({count = BATCH * ACTIN if tta_enabled else 1}).unsafe_leak()
     var snap = List[Scalar[DT]]()
     if tta_enabled:
         snap = wm.snapshot_all()  # restored at exit (fresh model/episode)

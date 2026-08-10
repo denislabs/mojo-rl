@@ -274,13 +274,13 @@ def lewm_mpc_eval[
     ]
 
     # ── encode the window: read the emb node, slice start + goal latents.
-    var pred_scratch = alloc[Scalar[DT]](BATCH * H * EMB)
-    var tgt_scratch = alloc[Scalar[DT]](BATCH * H * EMB)
+    var pred_scratch = alloc[Scalar[DT]]({count = BATCH * H * EMB}).unsafe_leak()
+    var tgt_scratch = alloc[Scalar[DT]]({count = BATCH * H * EMB}).unsafe_leak()
     trainer.forward_into(pix_t, act_t, pred_scratch, tgt_scratch)
-    var emb_host = alloc[Scalar[DT]](BATCH * TE)
+    var emb_host = alloc[Scalar[DT]]({count = BATCH * TE}).unsafe_leak()
     trainer.read_node_into["emb"](emb_host, BATCH * TE)
-    var start_host = alloc[Scalar[DT]](BE)
-    var goal_host = alloc[Scalar[DT]](BE)
+    var start_host = alloc[Scalar[DT]]({count = BE}).unsafe_leak()
+    var goal_host = alloc[Scalar[DT]]({count = BE}).unsafe_leak()
     for b in range(BATCH):
         for d in range(EMB):
             start_host[unsafe_offset=b * EMB + d] = emb_host[unsafe_offset=b * TE + d]
@@ -293,7 +293,7 @@ def lewm_mpc_eval[
     scorer.set_start_goal(start_host, goal_host)
 
     # ── expert plan: first NEEDED recorded actions.
-    var expert_plan = alloc[Scalar[DT]](BATCH * NEEDED * ACT)
+    var expert_plan = alloc[Scalar[DT]]({count = BATCH * NEEDED * ACT}).unsafe_leak()
     for b in range(BATCH):
         for t in range(NEEDED):
             for a in range(ACT):
@@ -307,7 +307,7 @@ def lewm_mpc_eval[
     var shooter = CategoricalRandomShooter[BATCH, ACT](
         horizon=NEEDED, num_samples=num_random
     )
-    var rs_best = alloc[Scalar[DT]](BATCH * NEEDED * ACT)
+    var rs_best = alloc[Scalar[DT]]({count = BATCH * NEEDED * ACT}).unsafe_leak()
     var random_min = shooter.optimize(
         scorer, rs_best.as_unsafe_any_origin(), verbose=False
     )
@@ -321,7 +321,7 @@ def lewm_mpc_eval[
             horizon=NEEDED, cem_iters=cem_iters, cem_samples=cem_samples,
             cem_topk=cem_topk, cem_smoothing=cem_smoothing,
         )
-        var cem_best = alloc[Scalar[DT]](BATCH * NEEDED * ACT)
+        var cem_best = alloc[Scalar[DT]]({count = BATCH * NEEDED * ACT}).unsafe_leak()
         cem_score = cem.optimize(
             scorer, cem_best.as_unsafe_any_origin(), verbose=False
         )

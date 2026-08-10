@@ -20,7 +20,7 @@ softmax+mix already in `onehot_kl.mojo`; kept here as standalone scalar
 helpers for the imag-loss per-(b,t) policy term and for unit FD-gradcheck.
 """
 
-from std.memory import alloc
+from std.memory import alloc, dealloc
 from std.math import log, exp
 
 from mojo_rl.nn.constants import DT
@@ -69,8 +69,10 @@ def cat_sample[
     u01: Scalar[DT],  # uniform in [0,1)
 ) -> Int:
     """Inverse-CDF categorical sample from unimix(softmax(logits))."""
-    var sm = alloc[Scalar[DT]](C)
-    var pp = alloc[Scalar[DT]](C)
+    var sm_a = alloc[Scalar[DT]]({count = C})
+    var sm = sm_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
+    var pp_a = alloc[Scalar[DT]]({count = C})
+    var pp = pp_a.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin]()
     cat_softmax_mix[C](logits, base, u, sm, pp)
     var acc = Scalar[DT](0.0)
     var k = C - 1
@@ -79,8 +81,8 @@ def cat_sample[
         if u01 < acc:
             k = c
             break
-    sm.unsafe_free()
-    pp.unsafe_free()
+    dealloc(sm_a^)
+    dealloc(pp_a^)
     return k
 
 
