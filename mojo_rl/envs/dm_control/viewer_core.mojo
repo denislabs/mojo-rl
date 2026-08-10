@@ -14,6 +14,13 @@ dispatch in behind it.
 ⚠ SO NOTHING IN THIS FILE MAY NAME A CONCRETE TASK. The task table lives on
 `ViewerState`, supplied by the caller, precisely so that stays true.
 
+THE SAME RULE COVERS POLICIES. `DRIVE_POLICY` drives the actuators from an
+`ActionSource` — a four-method trait over HOST LISTS — and the conformer, its
+weights and its checkpoint paths all live in the front end
+(`examples/dm_control/dm_walker_policy_viewer.mojo` is the first one). So this
+module still depends on nothing from `nn` / `deep_agents`, and the 47-task
+viewer compiles no policy code at all: `POLICY` defaults to `NoPolicy`.
+
 Read `viewer.mojo`'s header for the controls, the drive modes, and what the
 tool can and cannot tell you.
 """
@@ -31,7 +38,7 @@ from mojo_rl.render.imgui import (
     ig_begin_panel, ig_end, ig_begin_child, ig_end_child,
     ig_text, ig_text_colored, ig_text_disabled,
     ig_separator_text, ig_same_line, ig_spacing,
-    ig_button, ig_toggle_button, ig_selectable,
+    ig_button, ig_toggle_button, ig_selectable, ig_checkbox,
     ig_slider_float, ig_combo, ig_input_text, ig_tree_node, ig_tree_pop,
     ig_set_next_item_width, ig_plot_lines,
     ig_push_id_int, ig_pop_id, ig_style_dark, ig_content_width,
@@ -48,9 +55,14 @@ from mojo_rl.render.imgui import (
 #   sweep   a slow out-of-phase sine per actuator (DEFAULT). The clearest way
 #           to read joint AXES and RANGES — each joint traces its full arc
 #           smoothly instead of jittering.
+#   policy  a TRAINED policy drives the actuators — available only when the
+#           front end passed an `ActionSource` to `run_view` (see the trait).
+#           This is the one mode whose picture is supposed to look like the
+#           task; the other three exist to inspect the MODEL, not the agent.
 comptime DRIVE_ZERO: Int = 0
 comptime DRIVE_RANDOM: Int = 1
 comptime DRIVE_SWEEP: Int = 2
+comptime DRIVE_POLICY: Int = 3
 
 comptime HOLD_STEPS: Int = 25
 comptime SWEEP_PERIOD: Float64 = 120.0
@@ -62,11 +74,20 @@ comptime PLOT_N: Int = 120
 write cursor as its offset and plots oldest-first without a rotation."""
 
 
-def drive_names() -> List[String]:
+def drive_names(with_policy: Bool = False) -> List[String]:
+    """Combo entries for the drive modes, in DRIVE_* index order.
+
+    `with_policy` appends "policy" — omitted when the front end passed no
+    `ActionSource`, so a viewer without one cannot offer a mode that would do
+    nothing. The flag rather than a constant list because the SAME sidebar code
+    serves both front ends.
+    """
     var d = List[String]()
     d.append(String("zero"))
     d.append(String("random"))
     d.append(String("sweep"))
+    if with_policy:
+        d.append(String("policy"))
     return d^
 
 
@@ -75,6 +96,8 @@ def parse_drive(name: String) -> Int:
         return DRIVE_ZERO
     if name == "random":
         return DRIVE_RANDOM
+    if name == "policy":
+        return DRIVE_POLICY
     return DRIVE_SWEEP
 
 
@@ -95,6 +118,93 @@ def _contains(haystack: String, needle: String) -> Bool:
     if needle.byte_length() == 0:
         return True
     return haystack.find(needle) != -1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# policy plug — what `DRIVE_POLICY` calls into
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+trait ActionSource:
+    """A trained policy the viewer can drive the actuators with.
+
+    ⚠ HOST LISTS, NOT TENSORS, AND DELIBERATELY SO. One env at 60 Hz makes the
+    per-step copy free, and the list interface is what keeps this trait — and
+    therefore `viewer_core` — free of any dependency on `nn` / `deep_agents`.
+    The 47-task viewer must stay compilable without them.
+
+    ⚠ THE DIMS ARE RUNTIME, so a mismatch cannot be a compile error. Report the
+    policy's own dims here and `run_view` refuses to drive a model they do not
+    fit, rather than reading past the end of an observation — the failure mode
+    when a walker checkpoint meets a cheetah.
+
+    VARIANTS ARE A FLAT LIST because the interesting selector — which rung of a
+    SAC training ladder — is one axis, and a flat list keeps the sidebar's combo
+    non-generic. A source with two axes (task x rung) flattens them in
+    task-major order, so the sidebar's +/- buttons still step the inner axis.
+    """
+
+    def obs_dim(self) -> Int:
+        ...
+
+    def act_dim(self) -> Int:
+        ...
+
+    def variant_labels(self) -> List[String]:
+        """Selectable variants, e.g. one per ladder rung. May be empty."""
+        ...
+
+    def choose(mut self, i: Int) raises:
+        """Make variant `i` the live policy (loads its weights)."""
+        ...
+
+    def status(self) -> String:
+        """One short line for the sidebar: which variant, and whether it
+        loaded. Called every frame, so keep it cheap."""
+        ...
+
+    def act(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
+        greedy: Bool,
+    ) raises:
+        """Write `act_dim()` actions for `obs`. `greedy` asks for the
+        deterministic action (the policy's mean) rather than a sample."""
+        ...
+
+
+@fieldwise_init
+struct NoPolicy(ActionSource, Copyable, Movable):
+    """The default `ActionSource`: there isn't one.
+
+    Exists so `run_view`'s policy parameter can have a default and the 47
+    existing call sites stay untouched. Every method is trivial, so the arm is
+    dead code the moment `policy=None`.
+    """
+
+    def obs_dim(self) -> Int:
+        return 0
+
+    def act_dim(self) -> Int:
+        return 0
+
+    def variant_labels(self) -> List[String]:
+        return List[String]()
+
+    def choose(mut self, i: Int) raises:
+        pass
+
+    def status(self) -> String:
+        return String("")
+
+    def act(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
+        greedy: Bool,
+    ) raises:
+        pass
 
 
 def _fmt2(v: Float64) -> String:
@@ -136,6 +246,18 @@ struct ViewerState(Copyable, Movable):
     """Set when the window closed for real, as opposed to for a switch."""
     var filter: TextBuffer
     var show_plot: Bool
+
+    var policy_variant: Int32
+    """Index into the `ActionSource`'s variant list — Int32 for `ig_combo`.
+
+    HERE AND NOT IN `run_view` for the same reason as `drive`: switching task
+    must not silently reset which policy is driving. The source itself lives in
+    the FRONT END (it holds weights and outlives every env), so this is only the
+    selection, and a source with fewer variants than this clamps on entry."""
+    var policy_greedy: Bool
+    """True = the deterministic action (the actor's mean). The default, because
+    a viewer is for reading the LEARNED GAIT; SAC's stochastic action adds the
+    entropy-calibrated jitter that is dataset coverage, not behaviour."""
 
     var tasks: List[String]
     var domains: List[String]
@@ -183,6 +305,8 @@ struct ViewerState(Copyable, Movable):
         self.quit = False
         self.filter = TextBuffer()
         self.show_plot = True
+        self.policy_variant = 0
+        self.policy_greedy = True
         self.tasks = tasks^
         self.domains = domains^
         self.domain_of = domain_of^
@@ -234,6 +358,12 @@ struct SidebarOut(Copyable, Movable):
     """Task id clicked in the tree, or -1."""
     var reset_episode: Bool
     var zero_now: Bool
+    var pick_variant: Int
+    """Policy variant chosen this frame, or -1 for "unchanged".
+
+    A REQUEST, not the selection: loading weights is the front end's job, so the
+    sidebar reports the click and `run_view` calls `choose`. `st.policy_variant`
+    is only updated once that succeeded."""
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -322,25 +452,72 @@ def ui_task_tree(
     return picked
 
 
-def ui_drive_controls(mut st: ViewerState) raises -> SidebarOut:
+def ui_drive_controls(
+    mut st: ViewerState, has_policy: Bool = False
+) raises -> SidebarOut:
     """Drive mode, action scale, and the two episode buttons."""
     ig_set_next_item_width(-60.0)
-    _ = ig_combo(String("mode"), st.drive, drive_names())
+    _ = ig_combo(String("mode"), st.drive, drive_names(has_policy))
 
     ig_set_next_item_width(-60.0)
     # A real DRAG: the value streams for the whole gesture. This is the
     # capability the hand-rolled widget layer could not provide at all, which
     # is why scale used to be two nudge buttons.
     _ = ig_slider_float(String("scale"), st.scale, 0.0, 8.0, String("%.2f"))
+    # ⚠ SAID OUT LOUD BECAUSE POLICY MODE IGNORES IT. Scaling a trained
+    # policy's output is a torque-limit experiment, not a viewing control, and
+    # inheriting a `scale 0.4` from argv would make a competent checkpoint look
+    # broken with no visible cause.
+    if Int(st.drive) == DRIVE_POLICY:
+        ig_text_disabled(String("(scale drives random/sweep only)"))
 
     var half = (ig_content_width() - 8.0) * 0.5
-    var out = SidebarOut(-1, False, False)
+    var out = SidebarOut(-1, False, False, -1)
     if ig_button(String("reset episode"), half, 0.0):
         out.reset_episode = True
     ig_same_line()
     if ig_button(String("zero torque"), half, 0.0):
         out.zero_now = True
     return out^
+
+
+def ui_policy_controls(
+    mut st: ViewerState, labels: List[String], status: String
+) raises -> Int:
+    """Variant picker + greedy toggle for the live `ActionSource`.
+
+    Returns the variant to load, or -1. NON-GENERIC like the rest of the
+    sidebar: it sees a label list and a status string, never the policy.
+    """
+    ig_separator_text(String("policy"))
+    ig_text_disabled(status)
+
+    var picked = -1
+    if len(labels) > 1:
+        # The combo is the direct jump; the two buttons are the sweep. Stepping
+        # matters more than jumping here — walking the ladder rung by rung is
+        # how the gait's emergence is actually read.
+        ig_set_next_item_width(-60.0)
+        var before = st.policy_variant
+        _ = ig_combo(String("ckpt"), st.policy_variant, labels)
+        if st.policy_variant != before:
+            picked = Int(st.policy_variant)
+            # ROLLED BACK HERE, RE-APPLIED BY `run_view` IF THE LOAD WORKED.
+            # `ig_combo` writes the field directly, so a rung that fails to load
+            # would otherwise leave the combo naming a policy that is not
+            # driving — the one lie a status line cannot correct.
+            st.policy_variant = before
+
+        var half = (ig_content_width() - 8.0) * 0.5
+        var cur = Int(st.policy_variant)
+        if ig_button(String("- rung"), half, 0.0) and cur > 0:
+            picked = cur - 1
+        ig_same_line()
+        if ig_button(String("+ rung"), half, 0.0) and cur + 1 < len(labels):
+            picked = cur + 1
+
+    _ = ig_checkbox(String("greedy (policy mean)"), st.policy_greedy)
+    return picked
 
 
 def ui_view_controls(mut vc: ViewControls) raises:
@@ -413,6 +590,9 @@ def build_sidebar(
     domains: List[String],
     domain_of: List[Int],
     mut vc: ViewControls,
+    has_policy: Bool = False,
+    variant_labels: List[String] = List[String](),
+    policy_status: String = String(""),
 ) raises -> SidebarOut:
     """The whole panel, in one NON-GENERIC function.
 
@@ -431,12 +611,16 @@ def build_sidebar(
     ig_separator_text(String("task"))
     # The tree takes what is left after the fixed-height sections below it, so
     # the list grows with the window instead of being clipped by a hardcoded
-    # row budget.
-    var picked = ui_task_tree(st, tasks, domains, domain_of, panel_h - 400.0)
+    # row budget. The policy block adds three rows, so it takes its own bite.
+    var reserved = Float32(500.0) if has_policy else Float32(400.0)
+    var picked = ui_task_tree(st, tasks, domains, domain_of, panel_h - reserved)
 
     ig_separator_text(String("drive"))
-    var out = ui_drive_controls(st)
+    var out = ui_drive_controls(st, has_policy)
     out.picked = picked
+
+    if has_policy:
+        out.pick_variant = ui_policy_controls(st, variant_labels, policy_status)
 
     ig_separator_text(String("view"))
     ui_view_controls(vc)
@@ -453,9 +637,21 @@ def build_sidebar(
 
 
 def run_view[
-    MODEL: ModelDefLike, CONFIG: Phyics3dEnvConfig
-](name: String, mut st: ViewerState) raises:
+    MODEL: ModelDefLike,
+    CONFIG: Phyics3dEnvConfig,
+    POLICY: ActionSource = NoPolicy,
+](
+    name: String,
+    mut st: ViewerState,
+    policy: Optional[Pointer[POLICY, MutAnyOrigin]] = None,
+) raises:
     """The viewer loop for one task, running until it quits or switches.
+
+    ⚠ `policy` IS OWNED BY THE FRONT END, and must be, for two reasons: it holds
+    network weights that would be reloaded on every task switch if it died with
+    the env, and it is the only part of the viewer that depends on
+    `deep_agents` — keeping it outside means the 47-task `dispatch` never
+    compiles a policy at all (`POLICY` defaults to the no-op `NoPolicy`).
 
     Returns through `st`: either `st.quit`, or `st.task` now naming a DIFFERENT
     task, which `run_viewer` then launches. It cannot call itself with the new
@@ -492,7 +688,47 @@ def run_view[
 
     var ctx = DeviceContext()
     var env = E(ctx)
-    _ = env.reset()
+
+    # The live observation, kept in step with the env so the policy always reads
+    # the state it is about to act on.
+    var obs_l = List[Scalar[DT]](length=E.OBS_DIM, fill=Scalar[DT](0))
+    var act_l = List[Scalar[DT]](length=ACT_DIM, fill=Scalar[DT](0))
+    var s0 = env.reset()
+    for i in range(E.OBS_DIM):
+        obs_l[i] = Scalar[DT](s0.data[i])
+
+    # ── policy plug ──────────────────────────────────────────────────────
+    var have_pol = Bool(policy)
+    var pol_labels = List[String]()
+    if have_pol:
+        var p = policy.value()
+        # ⚠ RUNTIME DIM CHECK, because the trait deals in host LISTS and cannot
+        # express the constraint at compile time. Without it a walker policy
+        # driving a cheetah reads 6 observations past the end and writes an
+        # action list that is the wrong length — a segfault at best, plausible
+        # nonsense at worst.
+        if p[].obs_dim() != E.OBS_DIM or p[].act_dim() != ACT_DIM:
+            print(
+                "  ⚠ policy is", p[].obs_dim(), "obs /", p[].act_dim(),
+                "act but this task is", E.OBS_DIM, "/", ACT_DIM,
+                "— POLICY MODE DISABLED here",
+            )
+            have_pol = False
+        else:
+            pol_labels = p[].variant_labels()
+            if Int(st.policy_variant) >= len(pol_labels):
+                st.policy_variant = Int32(
+                    len(pol_labels) - 1 if len(pol_labels) > 0 else 0
+                )
+            try:
+                p[].choose(Int(st.policy_variant))
+            except e:
+                print("  policy variant failed to load:", e)
+            print("  policy:", p[].status())
+    if not have_pol and Int(st.drive) == DRIVE_POLICY:
+        # The combo only lists the modes that exist, so an out-of-range index
+        # would leave it displaying a blank entry no click could correct.
+        st.drive = Int32(DRIVE_SWEEP)
 
     var adopt = st.handoff.copy()
     # Cleared BEFORE the call, not after: if `init_renderer` raised with `st`
@@ -558,17 +794,32 @@ def run_view[
             env.renderer_paused(), env.renderer_is_recording(),
             env.renderer_recording_frames(),
         )
-        var ui = SidebarOut(-1, False, False)
+        var ui = SidebarOut(-1, False, False, -1)
         if have_ui:
+            var pol_status = String("")
+            if have_pol:
+                pol_status = policy.value()[].status()
             ui = build_sidebar(
                 name, episode, step_i, ep_return, E.OBS_DIM, ACT_DIM,
                 history, cursor, Float32(E.RENDER_HEIGHT), st,
                 tasks, domains, domain_of, vc,
+                have_pol, pol_labels, pol_status,
             )
 
         # ── apply what the UI asked for ──────────────────────────────────
+        if have_pol and ui.pick_variant >= 0:
+            # `st.policy_variant` advances ONLY on a load that worked, so a
+            # missing rung leaves the previous policy driving instead of
+            # silently switching to an uninitialised net.
+            try:
+                policy.value()[].choose(ui.pick_variant)
+                st.policy_variant = Int32(ui.pick_variant)
+            except e:
+                print("  policy variant failed to load:", e)
         if ui.reset_episode:
-            _ = env.reset()
+            var sr = env.reset()
+            for i in range(E.OBS_DIM):
+                obs_l[i] = Scalar[DT](sr.data[i])
             step_i = 0
             ep_return = 0.0
         elif ui.zero_now:
@@ -640,8 +891,15 @@ def run_view[
                     action.data[a] = (
                         sin(2.0 * pi * (t + phase)) * Float64(st.scale)
                     )
+            elif Int(st.drive) == DRIVE_POLICY and have_pol:
+                # NOT scaled by `st.scale` — see `ui_drive_controls`.
+                policy.value()[].act(obs_l, act_l, st.policy_greedy)
+                for a in range(ACT_DIM):
+                    action.data[a] = Float64(act_l[a])
 
             var out = env.step(action)
+            for i in range(E.OBS_DIM):
+                obs_l[i] = Scalar[DT](out[0].data[i])
             ep_return += Float64(out[1])
             history[cursor] = Float32(out[1])
             cursor = (cursor + 1) % PLOT_N
@@ -651,7 +909,9 @@ def run_view[
                 episode += 1
                 print("  episode", episode, "ended after", step_i,
                       "steps, return =", ep_return)
-                _ = env.reset()
+                var sr = env.reset()
+                for i in range(E.OBS_DIM):
+                    obs_l[i] = Scalar[DT](sr.data[i])
                 step_i = 0
                 ep_return = 0.0
 
