@@ -354,15 +354,15 @@ struct DMHopperConfig[HOPPING: Bool](Phyics3dEnvConfig):
         # That is deliberate: the CPU hook's `except` writes 0.0, which reads
         # as "nothing is touching" and would be silent.
         var toe = touch_sphere_site_gpu[
-            DTYPE, BATCH_SIZE, MC_F, NSITE_F, SITE_DIM
+            DTYPE, BATCH_SIZE, MC_F, NSITE_F, SITE_DIM, NBODY_F
         ](
-            contacts, site_xpos, sites, meta, env, TOUCH_TOE_SITE_IDX,
+            contacts, site_xpos, sites, meta, xquat, env, TOUCH_TOE_SITE_IDX,
             Scalar[DTYPE](TOUCH_FORCE_SCALE),
         )
         var heel = touch_sphere_site_gpu[
-            DTYPE, BATCH_SIZE, MC_F, NSITE_F, SITE_DIM
+            DTYPE, BATCH_SIZE, MC_F, NSITE_F, SITE_DIM, NBODY_F
         ](
-            contacts, site_xpos, sites, meta, env, TOUCH_HEEL_SITE_IDX,
+            contacts, site_xpos, sites, meta, xquat, env, TOUCH_HEEL_SITE_IDX,
             Scalar[DTYPE](TOUCH_FORCE_SCALE),
         )
         obs[env, k] = log1p_dt[DTYPE](toe)

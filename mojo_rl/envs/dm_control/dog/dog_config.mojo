@@ -475,9 +475,9 @@ def _stand_factors_gpu[
     var tsum = Scalar[DTYPE](0)
     for t in range(4):
         tsum += touch_sphere_site_gpu[
-            DTYPE, BATCH_SIZE, MC_F, NSITE_F, SITE_DIM
+            DTYPE, BATCH_SIZE, MC_F, NSITE_F, SITE_DIM, NBODY
         ](
-            contacts, site_xpos, sites, meta, env, t_sites[t],
+            contacts, site_xpos, sites, meta, xquat, env, t_sites[t],
             Scalar[DTYPE](1.0),
         )
     var f_touch = tolerance[SIGMOID_LINEAR, 0.9, DTYPE](
@@ -687,8 +687,11 @@ def _dog_obs_gpu[
     t_sites[3] = DOG_SITE_SOLE_R
     for t in range(4):
         obs[env, k] = touch_sphere_site_gpu[
-            DTYPE, BATCH_SIZE, MC_F, NSITE_F, SITE_DIM
-        ](contacts, site_xpos, sites, meta, env, t_sites[t], Scalar[DTYPE](1.0))
+            DTYPE, BATCH_SIZE, MC_F, NSITE_F, SITE_DIM, NBODY
+        ](
+            contacts, site_xpos, sites, meta, xquat, env, t_sites[t],
+            Scalar[DTYPE](1.0),
+        )
         k += 1
 
     # --- actuator_state: data.act, all 38 --------------------------------

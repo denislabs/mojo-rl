@@ -355,6 +355,65 @@ def _ray_hits_sphere(
 
 
 @always_inline
+def _ray_hits_box_gpu[
+    DTYPE: DType
+](
+    cx: Scalar[DTYPE], cy: Scalar[DTYPE], cz: Scalar[DTYPE],
+    qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
+    hx: Scalar[DTYPE], hy: Scalar[DTYPE], hz: Scalar[DTYPE],
+    px: Scalar[DTYPE], py: Scalar[DTYPE], pz: Scalar[DTYPE],
+    dx: Scalar[DTYPE], dy: Scalar[DTYPE], dz: Scalar[DTYPE],
+) -> Bool:
+    """`mju_rayGeom(..., mjGEOM_BOX) >= 0`, batched twin of `_ray_hits_box`.
+
+    Transcribed from the CPU function expression for expression — same face
+    loop, same `mjMINVAL` guard, same acceptance test — so the two agree to
+    float32 rounding and a divergence here reads as a port bug rather than a
+    physics one. See the CPU version for why the bounding-sphere early-out is
+    skipped and why a ray originating INSIDE the box must hit.
+    """
+    comptime ZERO = Scalar[DTYPE](0)
+    comptime MINVAL = Scalar[DTYPE](1e-15)
+
+    # ray_map: into the box frame, i.e. rotate by the conjugate.
+    var lp = gpu_quat_rotate[DTYPE](
+        -qx, -qy, -qz, qw, px - cx, py - cy, pz - cz
+    )
+    var lv = gpu_quat_rotate[DTYPE](-qx, -qy, -qz, qw, dx, dy, dz)
+
+    var size = InlineArray[Scalar[DTYPE], 3](fill=ZERO)
+    size[0] = hx
+    size[1] = hy
+    size[2] = hz
+    # `iface[i]` = the two axes spanning the face normal to axis i.
+    var iface0 = InlineArray[Int, 3](fill=0)
+    var iface1 = InlineArray[Int, 3](fill=0)
+    iface0[0] = 1
+    iface1[0] = 2
+    iface0[1] = 0
+    iface1[1] = 2
+    iface0[2] = 0
+    iface1[2] = 1
+
+    for i in range(3):
+        if abs(lv[i]) <= MINVAL:
+            continue
+        for k in range(2):
+            var side = Scalar[DTYPE](-1.0) if k == 0 else Scalar[DTYPE](1.0)
+            var sol = (side * size[i] - lp[i]) / lv[i]
+            if sol < ZERO:
+                continue
+            var a0 = iface0[i]
+            var a1 = iface1[i]
+            var p0 = lp[a0] + sol * lv[a0]
+            var p1 = lp[a1] + sol * lv[a1]
+            if abs(p0) <= size[a0] and abs(p1) <= size[a1]:
+                return True
+    return False
+
+
+@always_inline
 def _ray_hits_sphere_gpu[
     DTYPE: DType
 ](
@@ -398,6 +457,7 @@ def touch_sphere_site_gpu[
     MAX_CONTACTS: Int,
     NSITE_F: Int,
     SITE_DIM: Int,
+    NBODY: Int,
 ](
     contacts: LayoutTensor[
         DTYPE,
@@ -413,17 +473,31 @@ def touch_sphere_site_gpu[
     meta: LayoutTensor[
         DTYPE, Layout.row_major(BATCH_SIZE, METADATA_SIZE), MutAnyOrigin
     ],
+    # ⚠ ADDED 2026-08-10 FOR THE BOX BRANCH. `site_xmat` is not stored — it is
+    # composed as `xquat[body] * site_localquat`, so the box path needs the
+    # BODY quaternions. The old signature had no way to get them, which is why
+    # a box zone used to bail out; the model table already carried the local
+    # quat (`SITE_IDX_QUAT_*`), so this parameter was the only missing piece.
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+    ],
     env: Int,
     site: Int,
     scale: Scalar[DTYPE],
 ) -> Scalar[DTYPE]:
     """`sensordata` for one `<touch>` sensor, one lane of the batched path.
 
-    SPHERE and ELLIPSOID zones only. ⚠ A BOX zone returns
-    `TOUCH_UNSUPPORTED_ZONE` rather than a wrong number — manipulator and
-    stacker (tranche 4) are the domains that need it, and the box ray test
-    wants `site_xmat`, which the hook ABI does not carry yet. Port it with
-    them, and gate it then.
+    SPHERE, ELLIPSOID and BOX zones. ⚠ A CAPSULE zone returns
+    `TOUCH_UNSUPPORTED_ZONE` rather than a wrong number — it needs its own ray
+    test, and no ported model has one.
+
+    ⚠ THE BOX BRANCH LANDED BECAUSE dog NEEDED IT, not manipulator/stacker.
+    This function used to reject box zones with a note saying tranche 4 would
+    bring them; dog's four touch sites (palm_L/R, sole_L/R) are `type="box"`,
+    so the batched dog reward and the four touch obs dims came back as a
+    CONSTANT -1.0 — caught by `test_dog_gpu_vs_cpu`'s per-block diff at
+    obs[181], cpu 0.0 vs gpu -1.0. A sentinel rather than a plausible number
+    is what made that a one-line diagnosis.
 
     ELLIPSOID is measured as a SPHERE of radius `size[0]`, exactly as the CPU
     version does — see its docstring for why that approximation is explicit
@@ -439,7 +513,11 @@ def touch_sphere_site_gpu[
     comptime ZERO = Scalar[DTYPE](0)
     var sbase = site * MODEL_SITE_SIZE
     var stype = Int(rebind[Scalar[DTYPE]](sites[site, SITE_IDX_TYPE]))
-    if stype != GEOM_SPHERE and stype != GEOM_ELLIPSOID:
+    if (
+        stype != GEOM_SPHERE
+        and stype != GEOM_ELLIPSOID
+        and stype != GEOM_BOX
+    ):
         return Scalar[DTYPE](TOUCH_UNSUPPORTED_ZONE)
 
     var sbody = Int(rebind[Scalar[DTYPE]](sites[site, SITE_IDX_BODY]))
@@ -447,6 +525,22 @@ def touch_sphere_site_gpu[
     var sx = rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 0])
     var sy = rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 1])
     var sz = rebind[Scalar[DTYPE]](site_xpos[env, site * 3 + 2])
+
+    # Box half-extents and the site's WORLD orientation — needed only by the
+    # box branch, composed exactly as the CPU twin does.
+    var hx = rebind[Scalar[DTYPE]](sites[site, SITE_IDX_SIZE_0])
+    var hy = rebind[Scalar[DTYPE]](sites[site, SITE_IDX_SIZE_1])
+    var hz = rebind[Scalar[DTYPE]](sites[site, SITE_IDX_SIZE_2])
+    var wq = gpu_quat_mul[DTYPE](
+        rebind[Scalar[DTYPE]](xquat[env, sbody * 4 + 0]),
+        rebind[Scalar[DTYPE]](xquat[env, sbody * 4 + 1]),
+        rebind[Scalar[DTYPE]](xquat[env, sbody * 4 + 2]),
+        rebind[Scalar[DTYPE]](xquat[env, sbody * 4 + 3]),
+        rebind[Scalar[DTYPE]](sites[site, SITE_IDX_QUAT_X]),
+        rebind[Scalar[DTYPE]](sites[site, SITE_IDX_QUAT_Y]),
+        rebind[Scalar[DTYPE]](sites[site, SITE_IDX_QUAT_Z]),
+        rebind[Scalar[DTYPE]](sites[site, SITE_IDX_QUAT_W]),
+    )
 
     var ncon = Int(rebind[Scalar[DTYPE]](meta[env, META_IDX_NUM_CONTACTS]))
     if ncon > MAX_CONTACTS:
@@ -483,9 +577,20 @@ def touch_sphere_site_gpu[
         var py = rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_POS_Y])
         var pz = rebind[Scalar[DTYPE]](contacts[env, base + CONTACT_IDX_POS_Z])
 
-        if _ray_hits_sphere_gpu[DTYPE](
-            sx, sy, sz, radius, px, py, pz, nx, ny, nz
-        ):
+        var hit: Bool
+        if stype == GEOM_BOX:
+            hit = _ray_hits_box_gpu[DTYPE](
+                sx, sy, sz,
+                wq[0], wq[1], wq[2], wq[3],
+                hx, hy, hz,
+                px, py, pz,
+                nx, ny, nz,
+            )
+        else:
+            hit = _ray_hits_sphere_gpu[DTYPE](
+                sx, sy, sz, radius, px, py, pz, nx, ny, nz
+            )
+        if hit:
             total += f_normal
     _ = sbase
     return total
