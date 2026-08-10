@@ -288,7 +288,7 @@ def main() raises:
             t.b_sp.dev.value().unsafe_ptr(),
             pick.dev.value().unsafe_ptr(),
             Scalar[DT](0.5),
-            BATCH,
+            Int32(BATCH),  # fixed-width: `Int` is not DevicePassable
             grid_dim=_blocks(BATCH),
             block_dim=TPB,
         )

@@ -334,7 +334,7 @@ def z_mixture_kernel[D: Int, BATCH: Int](
     b_states: Pointer[Scalar[DT], MutAnyOrigin],
     pick: Pointer[Scalar[DT], MutAnyOrigin],
     uniform_frac: Scalar[DT],
-    n_b_rows: Int,
+    n_b_rows: Int32,
 ):
     """Half the rows Gaussian, half copied from `B(s+)`. One thread per ROW.
 
@@ -345,19 +345,28 @@ def z_mixture_kernel[D: Int, BATCH: Int](
 
     Renormalisation is NOT done here — `project_sphere_kernel` runs immediately
     after, unconditionally, on both branches.
+
+    ⚠ `n_b_rows` is `Int32`, not `Int`, because a kernel's runtime scalar args
+    must be FIXED-WIDTH: nightly rejects `Int`/`UInt` with "do not conform to
+    DevicePassable". It was `Int` and compiled until the toolchain tightened,
+    so the failure appears at the CALL SITE (`enqueue_function`) as a chain of
+    "function instantiation failed" notes ending in that constraint — nothing
+    points at this line. Widen to `Int` once inside the body; keep the ABI
+    fixed-width.
     """
     var i = Int(global_idx.x)
     if i >= BATCH:
         return
     var base = i * D
-    var use_uniform = n_b_rows <= 0 or pick[unsafe_offset=2 * i] < uniform_frac
+    var nb = Int(n_b_rows)
+    var use_uniform = nb <= 0 or pick[unsafe_offset=2 * i] < uniform_frac
     if use_uniform:
         for k in range(D):
             z[unsafe_offset=base + k] = gauss[unsafe_offset=base + k]
     else:
-        var src = Int(pick[unsafe_offset=2 * i + 1] * Scalar[DT](n_b_rows))
-        if src >= n_b_rows:
-            src = n_b_rows - 1
+        var src = Int(pick[unsafe_offset=2 * i + 1] * Scalar[DT](nb))
+        if src >= nb:
+            src = nb - 1
         if src < 0:
             src = 0
         for k in range(D):
