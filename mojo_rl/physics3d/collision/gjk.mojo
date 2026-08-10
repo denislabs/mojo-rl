@@ -82,6 +82,44 @@ comptime EPA_F_CAP: Int = 64
 
 
 @always_inline
+def _gjk_signed_distance[
+    DTYPE: DType,
+](
+    simplex: InlineArray[Scalar[DTYPE], 36],
+    i1: Int, i2: Int, i3: Int,
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """Signed distance from the origin to the plane (v1, v2, v3), and its normal.
+
+    Port of `signedDistance` (`engine_collision_gjk.c:375`). The normal is
+    `cross(v3 - v1, v2 - v1)` normalised, and the distance is `n . v1`, so the
+    SIGN carries the tetrahedron's orientation — which is the whole mechanism
+    `_gjk_intersect` relies on. A degenerate face returns a huge distance so it
+    loses every minimum comparison, exactly as MuJoCo's `mjMAX_LIMIT` does.
+    """
+    var ax = simplex[i1 * 9 + 0]
+    var ay = simplex[i1 * 9 + 1]
+    var az = simplex[i1 * 9 + 2]
+    var d1x = simplex[i3 * 9 + 0] - ax
+    var d1y = simplex[i3 * 9 + 1] - ay
+    var d1z = simplex[i3 * 9 + 2] - az
+    var d2x = simplex[i2 * 9 + 0] - ax
+    var d2y = simplex[i2 * 9 + 1] - ay
+    var d2z = simplex[i2 * 9 + 2] - az
+    var nx = d1y * d2z - d1z * d2y
+    var ny = d1z * d2x - d1x * d2z
+    var nz = d1x * d2y - d1y * d2x
+    var n2 = nx * nx + ny * ny + nz * nz
+    if n2 > Scalar[DTYPE](1e-30) and n2 < Scalar[DTYPE](1e30):
+        var inv = Scalar[DTYPE](1) / sqrt(n2)
+        nx *= inv
+        ny *= inv
+        nz *= inv
+        return (nx * ax + ny * ay + nz * az, nx, ny, nz)
+    return (Scalar[DTYPE](1e30), Scalar[DTYPE](0), Scalar[DTYPE](0),
+            Scalar[DTYPE](0))
+
+
+@always_inline
 def _epa_face_normal[
     DTYPE: DType,
 ](
@@ -425,6 +463,204 @@ def _minkowski_support[
     )
 
 
+def _gjk_intersect[
+    DTYPE: DType,
+    NMESH_VERTS: Int,
+](
+    mut simplex: InlineArray[Scalar[DTYPE], 36],
+    type1: Int,
+    p1x: Scalar[DTYPE], p1y: Scalar[DTYPE], p1z: Scalar[DTYPE],
+    q1x: Scalar[DTYPE], q1y: Scalar[DTYPE], q1z: Scalar[DTYPE],
+    q1w: Scalar[DTYPE],
+    r1: Scalar[DTYPE], hl1: Scalar[DTYPE],
+    hx1: Scalar[DTYPE], hy1: Scalar[DTYPE], hz1: Scalar[DTYPE],
+    mesh_verts: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
+    va1: Int, mnv1: Int,
+    type2: Int,
+    p2x: Scalar[DTYPE], p2y: Scalar[DTYPE], p2z: Scalar[DTYPE],
+    q2x: Scalar[DTYPE], q2y: Scalar[DTYPE], q2z: Scalar[DTYPE],
+    q2w: Scalar[DTYPE],
+    r2: Scalar[DTYPE], hl2: Scalar[DTYPE],
+    hx2: Scalar[DTYPE], hy2: Scalar[DTYPE], hz2: Scalar[DTYPE],
+    va2: Int, mnv2: Int,
+) -> Int:
+    """Refine a 4-simplex until it ENCLOSES the origin. MuJoCo's `gjkIntersect`.
+
+    Returns 1 (origin enclosed; `simplex` rewritten as a valid tetrahedron),
+    0 (origin proven OUTSIDE the Minkowski difference — no collision), or -1
+    (inconclusive; the caller should fall back to its distance subalgorithm).
+
+    ⚠ THIS IS THE PIECE WHOSE ABSENCE BROKE EVERY ATTEMPT TO USE EPA ON
+    PENETRATING PRIMITIVES. Without it our GJK terminated on a 2-SIMPLEX for
+    pairs with millimetres of genuine overlap — a cylinder 5 mm into the RIM of
+    a box — and EPA was then handed a seed that does not contain the origin.
+    Two prior fixes failed for the same root reason: `polytope3` reconstructs a
+    hexahedron that need not enclose (MuJoCo only ever VALIDATES with
+    `testTetra`), and greedily growing the seed toward the most-violated face
+    CYCLES, requesting the same support point twice. An inscribed polytope of
+    the Minkowski difference need not contain the origin even when the origin
+    is inside it, so no amount of patching downstream substitutes for arriving
+    with a real enclosing tetrahedron.
+
+    The mechanism: keep the four faces of the current tetrahedron, each with an
+    ORIENTED signed distance to the origin. If the smallest is positive the
+    origin is inside every face and we are done. Otherwise replace the vertex
+    OPPOSITE the most-violated face with the support point along that face's
+    normal, which is the only direction that can bring the origin inside. The
+    trailing swap keeps the tetrahedron's orientation consistent so the signs
+    stay meaningful.
+
+    It also carries a real SEPARATION CERTIFICATE, which the engine has never
+    had: if that support point does not reach the origin's side of the face
+    plane, the whole Minkowski difference lies beyond it and the geoms provably
+    do not overlap.
+    """
+    var sidx: InlineArray[Int, 4] = [0, 1, 2, 3]
+
+    # ⚠ ORIENT THE TETRAHEDRON FIRST. Every signed distance below carries the
+    # simplex's winding, and the whole loop reads those SIGNS to decide whether
+    # the origin is inside — so an arbitrarily wound input makes the answer
+    # meaningless. MuJoCo can skip this because its `gjk` builds the simplex by
+    # appending support points and never reorders them; ours arrives via
+    # `_closest_point_on_simplex`, which REDUCES and re-packs the simplex, so
+    # the winding is whatever that left behind. Measured symptom: a cylinder
+    # touching a box rim reported a confident enclosure with a 0.0999 margin
+    # while the origin sat exactly ON the Minkowski boundary — an inscribed
+    # tetrahedron cannot strictly contain a boundary point, so the sign was
+    # simply being read upside down.
+    var o0x = simplex[0 * 9 + 0]
+    var o0y = simplex[0 * 9 + 1]
+    var o0z = simplex[0 * 9 + 2]
+    var e1x = simplex[1 * 9 + 0] - o0x
+    var e1y = simplex[1 * 9 + 1] - o0y
+    var e1z = simplex[1 * 9 + 2] - o0z
+    var e2x = simplex[2 * 9 + 0] - o0x
+    var e2y = simplex[2 * 9 + 1] - o0y
+    var e2z = simplex[2 * 9 + 2] - o0z
+    var e3x = simplex[3 * 9 + 0] - o0x
+    var e3y = simplex[3 * 9 + 1] - o0y
+    var e3z = simplex[3 * 9 + 2] - o0z
+    var tp = (
+        (e1y * e2z - e1z * e2y) * e3x
+        + (e1z * e2x - e1x * e2z) * e3y
+        + (e1x * e2y - e1y * e2x) * e3z
+    )
+    if tp < Scalar[DTYPE](0):
+        sidx[0] = 1
+        sidx[1] = 0
+
+    for _ in range(GJK_MAX_ITERATIONS):
+        # signed distance to each face; face i is the one OPPOSITE vertex i
+        var f0 = _gjk_signed_distance[DTYPE](
+            simplex, sidx[2], sidx[1], sidx[3]
+        )
+        var f1 = _gjk_signed_distance[DTYPE](
+            simplex, sidx[0], sidx[2], sidx[3]
+        )
+        var f2 = _gjk_signed_distance[DTYPE](
+            simplex, sidx[1], sidx[0], sidx[3]
+        )
+        var f3 = _gjk_signed_distance[DTYPE](
+            simplex, sidx[0], sidx[1], sidx[2]
+        )
+
+        # origin exactly on an affine hull -> the signs cannot converge
+        if (
+            f0[0] == Scalar[DTYPE](0)
+            or f1[0] == Scalar[DTYPE](0)
+            or f2[0] == Scalar[DTYPE](0)
+            or f3[0] == Scalar[DTYPE](0)
+        ):
+            return -1
+
+        var i = 0 if f0[0] < f1[0] else 1
+        var j = 2 if f2[0] < f3[0] else 3
+        var di = f0[0] if i == 0 else f1[0]
+        var dj = f2[0] if j == 2 else f3[0]
+        var index = i if di < dj else j
+
+        var best = di if di < dj else dj
+        # ⚠ ENCLOSURE NEEDS A MARGIN, NOT JUST A POSITIVE SIGN. MuJoCo tests
+        # `dist[index] > 0` and separately rejects an EXACTLY zero distance
+        # (`!dist[i]`, origin on the affine hull). In floating point an exactly
+        # touching pair lands a hair either side of zero instead, and reading
+        # that as enclosure sends EPA off to a far face: a cylinder resting
+        # exactly on a box rim returned -0.09998 with a sideways normal where
+        # the truth is 0. Scale the threshold to the simplex, since these are
+        # metres and a fixed epsilon means nothing across models.
+        var vscale = Scalar[DTYPE](0)
+        for vv in range(4):
+            for cc in range(3):
+                var av = abs(simplex[sidx[vv] * 9 + cc])
+                if av > vscale:
+                    vscale = av
+        if vscale <= Scalar[DTYPE](0):
+            vscale = Scalar[DTYPE](1)
+        if best > Scalar[DTYPE](0) and best <= vscale * Scalar[DTYPE](1e-12):
+            return -1  # touching: let the distance path report zero depth
+        if best > Scalar[DTYPE](0):
+            # enclosed: emit the tetrahedron in permutation order
+            var out = InlineArray[Scalar[DTYPE], 36](fill=Scalar[DTYPE](0))
+            for v in range(4):
+                for c in range(9):
+                    out[v * 9 + c] = simplex[sidx[v] * 9 + c]
+            for c in range(36):
+                simplex[c] = out[c]
+            return 1
+
+        var nx = Scalar[DTYPE](0)
+        var ny = Scalar[DTYPE](0)
+        var nz = Scalar[DTYPE](0)
+        if index == 0:
+            nx = f0[1]
+            ny = f0[2]
+            nz = f0[3]
+        elif index == 1:
+            nx = f1[1]
+            ny = f1[2]
+            nz = f1[3]
+        elif index == 2:
+            nx = f2[1]
+            ny = f2[2]
+            nz = f2[3]
+        else:
+            nx = f3[1]
+            ny = f3[2]
+            nz = f3[3]
+
+        var w = _minkowski_support[DTYPE, NMESH_VERTS](
+            type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
+            r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+            type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
+            r2, hl2, hx2, hy2, hz2, va2, mnv2,
+            nx, ny, nz,
+        )
+        var tgt = sidx[index]
+        simplex[tgt * 9 + 0] = w[0]
+        simplex[tgt * 9 + 1] = w[1]
+        simplex[tgt * 9 + 2] = w[2]
+        simplex[tgt * 9 + 3] = w[3]
+        simplex[tgt * 9 + 4] = w[4]
+        simplex[tgt * 9 + 5] = w[5]
+        simplex[tgt * 9 + 6] = w[6]
+        simplex[tgt * 9 + 7] = w[7]
+        simplex[tgt * 9 + 8] = w[8]
+
+        # separation certificate
+        if nx * w[0] + ny * w[1] + nz * w[2] < Scalar[DTYPE](0):
+            return 0
+
+        var a = (index + 1) & 3
+        var b = (index + 2) & 3
+        var tmp = sidx[a]
+        sidx[a] = sidx[b]
+        sidx[b] = tmp
+
+    return -1
+
+
 def gjk_epa[
     DTYPE: DType,
     NMESH_VERTS: Int,
@@ -604,6 +840,41 @@ def gjk_epa[
         simplex[si + 7] = sn[7]
         simplex[si + 8] = sn[8]
         nsimplex += 1
+
+        # ⚠ THE SIMPLEX IS AT FOUR VERTICES — REFINE IT BEFORE REDUCING IT.
+        # MuJoCo calls `gjkIntersect` at exactly this point
+        # (`engine_collision_gjk.c:238`, `if (n == 3 && backup_gjk)`), BEFORE
+        # the distance subalgorithm runs, because that subalgorithm's job is to
+        # find the closest FEATURE and it will happily drop back to a triangle
+        # or an edge. For a SEPARATED pair that is what you want; for a
+        # PENETRATING one it discards the enclosure and hands EPA a seed that
+        # does not contain the origin, which is the single root cause behind
+        # three failed attempts to use EPA on penetrating primitives.
+        if nsimplex == 4:
+            var gi = _gjk_intersect[DTYPE, NMESH_VERTS](
+                simplex,
+                type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
+                r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+                type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
+                r2, hl2, hx2, hy2, hz2, va2, mnv2,
+            )
+            if gi == 1:
+                # enclosed, and `simplex` now holds a valid tetrahedron
+                vx = Scalar[DTYPE](0)
+                vy = Scalar[DTYPE](0)
+                vz = Scalar[DTYPE](0)
+                break
+            elif gi == 0:
+                # proven outside the Minkowski difference: no collision. Report
+                # a separation the caller's `dist < margin` test will reject.
+                return (
+                    Scalar[DTYPE](1e30),
+                    (p1x + p2x) * Scalar[DTYPE](0.5),
+                    (p1y + p2y) * Scalar[DTYPE](0.5),
+                    (p1z + p2z) * Scalar[DTYPE](0.5),
+                    Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1),
+                )
+            # gi == -1: inconclusive, fall through to the subalgorithm below
 
         # Import and use the CPU closest_point function (works on InlineArray, no List)
 
@@ -970,6 +1241,59 @@ def gjk_epa[
             ef[nef * 3 + 2] = wi
             nef += 1
 
+    # ---- UPPER-BOUND CHECK on the depth ------------------------------------
+    # Penetration depth is `min` over all unit directions of the Minkowski
+    # support extent h(n) = support_M(n) . n, so EVERY direction sampled gives
+    # an upper bound the answer cannot exceed. This is a definition, not an
+    # approximation, which makes it a cheap and sound guard against EPA
+    # converging on a face that is genuinely on the boundary but is NOT the
+    # closest one.
+    #
+    # ⚠ IT FIRES ON EXACT CONTACT, which is where EPA is least trustworthy and
+    # where sawyer's reset pose sits. A cylinder resting exactly on a box
+    # returned -0.55 face-on and -0.0999 on the rim, both with confident
+    # normals, where the truth is 0 — the sampled bound along the contact
+    # normal is 0 and pulls it back. Seven support queries.
+    if best_face >= 0:
+        var ub = best_d
+        var ubx = best_nx
+        var uby = best_ny
+        var ubz = best_nz
+        for ax in range(7):
+            var dxx = best_nx
+            var dyy = best_ny
+            var dzz = best_nz
+            if ax == 0:
+                dxx = Scalar[DTYPE](1); dyy = Scalar[DTYPE](0); dzz = Scalar[DTYPE](0)
+            elif ax == 1:
+                dxx = Scalar[DTYPE](-1); dyy = Scalar[DTYPE](0); dzz = Scalar[DTYPE](0)
+            elif ax == 2:
+                dxx = Scalar[DTYPE](0); dyy = Scalar[DTYPE](1); dzz = Scalar[DTYPE](0)
+            elif ax == 3:
+                dxx = Scalar[DTYPE](0); dyy = Scalar[DTYPE](-1); dzz = Scalar[DTYPE](0)
+            elif ax == 4:
+                dxx = Scalar[DTYPE](0); dyy = Scalar[DTYPE](0); dzz = Scalar[DTYPE](1)
+            elif ax == 5:
+                dxx = Scalar[DTYPE](0); dyy = Scalar[DTYPE](0); dzz = Scalar[DTYPE](-1)
+            var sw = _minkowski_support[DTYPE, NMESH_VERTS](
+                type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
+                r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+                type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
+                r2, hl2, hx2, hy2, hz2, va2, mnv2,
+                dxx, dyy, dzz,
+            )
+            var hh = sw[0] * dxx + sw[1] * dyy + sw[2] * dzz
+            if hh < ub:
+                ub = hh
+                ubx = dxx
+                uby = dyy
+                ubz = dzz
+        if ub < best_d:
+            best_d = ub if ub > Scalar[DTYPE](0) else Scalar[DTYPE](0)
+            best_nx = ubx
+            best_ny = uby
+            best_nz = ubz
+
     # ---- witness points on the closest face --------------------------------
     # Barycentric coordinates of the origin's projection onto the face, applied
     # to the stored witness points — MuJoCo's `epaWitness`. Degenerate faces
@@ -1063,6 +1387,41 @@ def gjk_epa[
         fallback_ny /= fallback_len
         fallback_nz /= fallback_len
     var pen_depth = Scalar[DTYPE](0)
+    # The same upper bound applies here, and this path needs it MORE: the
+    # centre-line estimate is not a depth at all, so bounding it by the
+    # smallest sampled support extent is the only thing keeping it sane. A
+    # cylinder touching a box expressed as a mesh returned -1.1 -- the full
+    # Minkowski extent -- where the truth is 0.
+    var fb_ub = Scalar[DTYPE](1e30)
+    for ax in range(6):
+        var dxx = Scalar[DTYPE](0)
+        var dyy = Scalar[DTYPE](0)
+        var dzz = Scalar[DTYPE](0)
+        if ax == 0:
+            dxx = Scalar[DTYPE](1)
+        elif ax == 1:
+            dxx = Scalar[DTYPE](-1)
+        elif ax == 2:
+            dyy = Scalar[DTYPE](1)
+        elif ax == 3:
+            dyy = Scalar[DTYPE](-1)
+        elif ax == 4:
+            dzz = Scalar[DTYPE](1)
+        else:
+            dzz = Scalar[DTYPE](-1)
+        var sw = _minkowski_support[DTYPE, NMESH_VERTS](
+            type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
+            r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+            type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
+            r2, hl2, hx2, hy2, hz2, va2, mnv2,
+            dxx, dyy, dzz,
+        )
+        var hh = sw[0] * dxx + sw[1] * dyy + sw[2] * dzz
+        if hh < fb_ub:
+            fb_ub = hh
+            fallback_nx = dxx
+            fallback_ny = dyy
+            fallback_nz = dzz
     if seed_code < 0:
         # Degenerate seed: EPA never ran, so fall back to the estimate that
         # shipped before it existed. Wrong depth, but it KEEPS the contact,
@@ -1080,6 +1439,10 @@ def gjk_epa[
         )
         if pen_depth > Scalar[DTYPE](0):
             pen_depth = -pen_depth
+        if fb_ub < Scalar[DTYPE](1e29):
+            var cap = -fb_ub if fb_ub > Scalar[DTYPE](0) else Scalar[DTYPE](0)
+            if pen_depth < cap:
+                pen_depth = cap
 
     var contact_x = (p1x + p2x) * Scalar[DTYPE](0.5)
     var contact_y = (p1y + p2y) * Scalar[DTYPE](0.5)
