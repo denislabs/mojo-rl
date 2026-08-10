@@ -49,8 +49,19 @@ comptime CKPT: StaticString = "/tmp/test_fb_ckpt.ckpt"
 comptime FNet = Sequential[
     Linear[OBS + ACT + D, HID], ReLU[HID], Linear[HID, D]
 ]
-# LayerNorm here on purpose: the M2 architecture has one, and a checkpoint that
-# skipped State fields would restore Params and silently drop it.
+# ⚠ `LayerNorm`, NOT the `LayerNormNoAffine` production now uses. That is
+# DELIBERATE and should not be "fixed" to match: LayerNorm is the STRICTER
+# case. It carries gamma/beta Params, so it exercises the param-bearing
+# save/restore and polyak paths that a param-less layer cannot reach — and a
+# checkpoint path that round-trips a normalisation WITH params trivially
+# round-trips one without. Matching production here would silently weaken the
+# gate.
+#
+# The param-bearing path is not hypothetical: `LayerNorm.polyak_from` was
+# MISSING entirely until 2026-08-05, leaving every target net's gamma/beta
+# frozen at init while the online ones drifted. This test is where that class
+# of bug gets caught, and it stays reachable only while a Param-bearing norm
+# is wired here.
 comptime BNet = Sequential[
     Linear[OBS, HID], ReLU[HID], Linear[HID, D], LayerNorm[D]
 ]

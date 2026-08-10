@@ -48,7 +48,7 @@ from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.activations import ReLU, Tanh
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
+from mojo_rl.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
 
 from mojo_rl.data.store import TrajectoryStore
 from mojo_rl.data.resident import ResidentColumn
@@ -86,12 +86,19 @@ comptime SEED: Int = 20260805
 comptime F_IN = OBS + NACT + D
 comptime A_IN = OBS + D
 
-# ⚠ MUST match `fb_train_gpu.mojo` exactly, LayerNorm included — the checkpoint
-# is keyed by parameter name and a shape mismatch raises, but a MISSING
-# LayerNorm would load the Linears fine and silently drop B's output scale.
+# ⚠ MUST match `fb_train_gpu.mojo` exactly, the norm layer included — the
+# checkpoint is keyed by parameter name and a shape mismatch raises, but a
+# MISSING norm would load the Linears fine and silently drop B's output scale.
+#
+# ⚠⚠ `LayerNormNoAffine`, NOT `LayerNorm`: the learnable gamma let ||B|| drift
+# 11.31 -> 17.54 over 100 k steps with `L_ortho` rising 8.8x behind it. The
+# no-affine layer carries NO params, so a checkpoint written against one and
+# loaded into the other would restore every Linear without complaint and
+# differ only in B's scale — exactly the silent failure this comment warns
+# about, one layer deeper.
 comptime FNet = Sequential[Linear[F_IN, HID], ReLU[HID], Linear[HID, D]]
 comptime BNet = Sequential[
-    Linear[OBS, 256], ReLU[256], Linear[256, D], LayerNorm[D]
+    Linear[OBS, 256], ReLU[256], Linear[256, D], LayerNormNoAffine[D]
 ]
 comptime ANet = Sequential[
     Linear[A_IN, HID], ReLU[HID], Linear[HID, NACT], Tanh[NACT]

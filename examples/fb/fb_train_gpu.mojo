@@ -19,8 +19,9 @@ identical either way because the loss value never enters the update.
 ⚠ `s'` is taken through a precomputed `next_row` table rather than `idx + 1`.
 Without it, a row sampled at an episode boundary pairs a terminal state with the
 NEXT episode's reset — a transition that never happened, injected into the
-measure loss at a rate of 1/EP_LEN. With EP_LEN = 250 that is 0.4% of every
-batch, which is small enough to never look wrong and large enough to matter.
+measure loss once per episode. The table is built from the store's OWN episode
+index (`ep_offset` / `ep_len`), never from an assumed episode length, and the
+count of self-transitions it creates is asserted against `n_episodes` below.
 
 ⚠ `s+` comes from a SECOND, INDEPENDENT draw. It is not `s'`. See
 `fb/loss.mojo`: the successor measure asks "starting from s, how often is s+
@@ -38,7 +39,7 @@ from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.activations import ReLU, Tanh
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
+from mojo_rl.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
 from mojo_rl.nn.random.box_muller import box_muller_normal_gpu
 
 from mojo_rl.data.store import TrajectoryStore
@@ -57,12 +58,18 @@ from mojo_rl.deep_agents.fb.kernels import (
 
 
 # ── the dataset this reads ───────────────────────────────────────────────
-comptime STORE_PATH: StaticString = "fb_walker_walk_sac.h5"
+comptime STORE_PATH: StaticString = "fb_walker_all_sac.h5"
 comptime NQ: Int = 9
 comptime NV: Int = 9
 comptime NACT: Int = 6
 comptime OBS: Int = NQ + NV
-comptime EP_LEN: Int = 250
+# ⚠ There is deliberately NO `EP_LEN` here. It used to be one, and it was a
+# silent correctness bug: `next_row` marked a boundary at every multiple of a
+# COMPTIME 250 while the collected store runs 1000-step episodes, so 3 of every
+# 4 "boundaries" were fabricated and 0.3% of rows got a spurious
+# self-transition. Boundaries now come from the store's own episode index, so a
+# dataset with different episode lengths — or ragged ones, which early
+# termination produces — cannot desynchronise from this file.
 
 # ── the run ──────────────────────────────────────────────────────────────
 comptime D: Int = 128  # §13: 128 at M2 (50 was the M1 setting)
@@ -71,11 +78,11 @@ comptime HID: Int = 1024
 comptime TRAIN_STEPS: Int = 2_000_000
 comptime LOG_EVERY: Int = 2000  # see the want_loss note in the header
 comptime CKPT_EVERY: Int = 50_000
-comptime CKPT_PATH: StaticString = "fb_walker_walk_sac_d128.ckpt"
+comptime CKPT_PATH: StaticString = "fb_walker_all_d128.ckpt"
 
 # ⚠⚠ Global grad-norm clip. FB's measure loss scales as (||F||·sqrt(d))^2 and
 # was measured spiking to +2559 on walker at 1 M rows; the gradients spike with
-# it. `L_ortho` and the LayerNorm bound `B`, and NOTHING bounds `F` — clipping
+# it. `L_ortho` and the norm layer bound `B`, and NOTHING bounds `F` — clipping
 # is the cheap standard remedy and every reference FB implementation uses one.
 # 0 disables it.
 comptime MAX_GRAD_NORM: Float64 = 1.0
@@ -105,13 +112,48 @@ comptime FNet = Sequential[Linear[F_IN, HID], ReLU[HID], Linear[HID, D]]
 # went POSITIVE and grew 8x (21 -> 172 over 24 k steps) while `|B|` climbed
 # 7.2 -> 9.3 and the measure loss fell without bound (-59 -> -295).
 #
-# At the orthonormality optimum `L_ortho = E[(B·B+)^2] - 2E[||B||^2]` is
-# NEGATIVE (M1's converged point_mass run sat at -2.2 .. -3.5). A positive,
-# growing ortho loss means B is running away from orthonormal and the
-# regulariser is losing to the anchor term, which is unbounded below when F
-# and B both grow. Watch the SIGN of ortho, not just `|B|`.
+# ⚠⚠ **AND THE NORMALISATION MUST NOT BE LEARNABLE.** `LayerNorm[D]` pins
+# `||B||` at sqrt(d) only while its gamma is 1. Over the first 1 M-row run it
+# did not stay there: gamma grew and `|B|` drifted 11.31 -> 17.54 across 100 k
+# steps, monotonically, while `L_ortho` rose 8.8x tracking it (113.9 -> 998.6).
+#
+# `L_ortho` is `Q - 2S`, with `Q = (1/N^2) sum_ij (B(s_i)·B(s'_j))^2` and
+# `S = (1/N) sum_i ||B(s_i)||^2`. Under `B -> cB` those scale as `c^4` and
+# `c^2`, so the rise decomposes cleanly:
+#
+#            |B|      L_ortho      anchor -2|B|^2     implied Q
+#     2 k   11.99       113.9           -287.5           401.4
+#   100 k   17.54       998.6           -615.3          1613.9
+#
+# Q grew 4.02x against the 4.58x that pure scaling (c^4, c = 1.463) predicts —
+# slightly LESS, i.e. B's rows became marginally MORE orthogonal. So the whole
+# rise is the EXPANSION; there is no directional collapse. The optimizer grew B
+# because a larger B fits the TD targets more easily, and the quartic penalty
+# for doing so outruns the quadratic anchor that is supposed to hold it.
+#
+# ⚠ An earlier version of this comment called `L_ortho` a "pure quartic" and
+# read the undecomposed 8.8x rise as directional collapse. Both were wrong —
+# from stopping 40 lines into `fb_ortho_loss` and not reading the `-2S` term.
+#
+# `LayerNormNoAffine[D]` removes the degenerate direction outright: the output
+# row norm is sqrt(d) exactly, with no learnable escape. Nothing the theory
+# wants is lost — B's DIRECTION stays fully learnable in the Linear before it,
+# and FB wants B on the sqrt(d) sphere anyway (Meta Motivo's `"norm": true`).
+# It also conditions `L_ortho` better: with |B| fixed, ortho can only be
+# reduced by DECORRELATING, which is its actual job.
+#
+# ⚠ The pin is conditional on B's pre-norm per-row std staying above ~1e-3
+# (eps = 1e-6); below that the projection quietly stops projecting. Because it
+# is otherwise exact, `|B| != sqrt(d)` in the log below IS that alarm.
+# Gated by `tests/nn/test_layer_norm_no_affine.mojo`, which asserts sqrt(d) at
+# d = 128 and the closed-form degradation below eps.
+#
+# ⚠ Historical note, kept because it was the FIRST failure and the sign rule
+# it produced is WRONG now: with an UNNORMALISED B the diagnostic was "ortho
+# went POSITIVE and grew 8x while |B| climbed 7.2 -> 9.3". Once B is pinned,
+# ortho's sign carries no such meaning — read TRENDS, not signs.
 comptime BNet = Sequential[
-    Linear[OBS, 256], ReLU[256], Linear[256, D], LayerNorm[D]
+    Linear[OBS, 256], ReLU[256], Linear[256, D], LayerNormNoAffine[D]
 ]
 comptime ANet = Sequential[
     Linear[A_IN, HID], ReLU[HID], Linear[HID, NACT], Tanh[NACT]
@@ -190,12 +232,42 @@ def main() raises:
     # `next_row`, episode-safe. The last row of an episode maps to ITSELF
     # rather than to the next episode's first row — a self-transition is a
     # harmless approximation; a cross-episode one is a fabricated transition.
+    #
+    # ⚠ Boundaries come from the store's OWN index, not an assumed episode
+    # length. The previous version tested `(r + 1) % EP_LEN == 0` against a
+    # comptime 250 while the store held 1000-step episodes: every real boundary
+    # was still caught (1000 is a multiple of 250), so nothing was fabricated —
+    # but three quarters of the marks landed MID-EPISODE and threw away a real
+    # transition each, silently, at 0.3% of rows. Nothing in the loss curve
+    # could show that.
     var nxt = ctx.enqueue_create_host_buffer[IDX_DT](n_rows)
     for r in range(n_rows):
         var n = r + 1
-        if n >= n_rows or (n % EP_LEN) == 0:
+        if n >= n_rows:
             n = r
         nxt[r] = Scalar[IDX_DT](n)
+    var n_eps = store.episodes.n_episodes()
+    var marked = 0
+    for e in range(n_eps):
+        var off = Int(store.episodes.ep_offset[e])
+        var ln = Int(store.episodes.ep_len[e])
+        if ln <= 0:
+            continue
+        var last = off + ln - 1
+        if last < n_rows:
+            nxt[last] = Scalar[IDX_DT](last)
+            marked += 1
+    # A store whose episode index disagrees with its row count would silently
+    # mis-mark boundaries, which is the failure this replaced. Assert instead.
+    if marked != n_eps:
+        raise Error(
+            "episode index is inconsistent with the row count: marked "
+            + String(marked) + " of " + String(n_eps) + " episode ends"
+        )
+    print(
+        "      episode index:", n_eps, "episodes,", marked,
+        "self-transitions (", Float64(marked) * 100.0 / Float64(n_rows), "% of rows )",
+    )
     var nxt_dev = ctx.enqueue_create_buffer[IDX_DT](n_rows)
     ctx.enqueue_copy(nxt_dev, nxt)
     ctx.synchronize()
@@ -314,19 +386,34 @@ def main() raises:
                 " |B|",
                 l.b_norm,
             )
-            # ⚠ Read TRENDS, not signs. With `LayerNorm[D]` on B, ||B|| is
-            # pinned near sqrt(D) = 11.3 (observed ~13.6 once the learned gain
-            # settles), and at that scale `E[(B·B+)^2]` (~||B||^4) outweighs
-            # `-2E[||B||^2]`, so a POSITIVE ortho is the constrained optimum —
-            # not a failure. An earlier version of this comment demanded a
-            # NEGATIVE ortho, which was read off M1's UNNORMALISED B where
-            # ||B|| ~ 1.9; that criterion does not transfer.
+            # ⚠ Read TRENDS, not signs. `L_ortho = Q - 2S` (quartic minus
+            # the `-2E||B||^2` anchor) can sit either side of zero depending on
+            # the scale of B: M1's UNNORMALISED B (||B|| ~ 1.9) converged
+            # NEGATIVE at -2.2..-3.5, while at ||B|| ~ sqrt(128) the quartic
+            # dominates and a POSITIVE value is the constrained optimum. The
+            # sign is a fact about the scale, not about health.
             #
-            # The two real failure modes:
-            #   |B| -> 0                  collapse; L_ortho exists to stop it
-            #   ortho GROWING without bound   B running away from orthonormal
-            # Measured healthy here: measure ~-70 flat, |B| 13.5-14.5 flat,
-            # ortho oscillating 16-140 with no trend, over 54 k steps.
+            # ⚠ With `LayerNormNoAffine` the anchor `-2S` is now a CONSTANT
+            # (-2d = -256), so L_ortho is `Q - 256` and minimising it is
+            # exactly minimising the cross-correlations. That is the whole
+            # point of pinning the norm: the scale route out is closed, and
+            # the only way left to reduce ortho is to DECORRELATE.
+            #
+            # ⚠⚠ **`|B|` is now a HARD INVARIANT, not a trend.** With
+            # `LayerNormNoAffine[D]` it must read sqrt(128) = 11.314 at EVERY
+            # step. Any drift means B's pre-norm rows have collapsed below the
+            # eps floor (per-row std < ~1e-3) and the projection has stopped
+            # projecting — see the BNet comment. The previous run, on learnable
+            # `LayerNorm`, drifted 11.31 -> 17.54 over 100 k steps with ortho
+            # rising 8.8x behind it; that mode is now unreachable, so treat
+            # |B| != 11.314 as a hard fault rather than something to watch.
+            #
+            # The failure modes that REMAIN observable here:
+            #   ortho GROWING without bound   B's rows becoming co-linear
+            #                                 (directional collapse — the
+            #                                 magnitude route is now closed)
+            #   measure falling without bound  F running away; MAX_GRAD_NORM
+            #                                  is the guard
             # The measure loss descends in every case, so it diagnoses none.
         if step > 0 and (step % CKPT_EVERY) == 0:
             # ⚠⚠ STEP-STAMPED, not a single overwritten path. FB's loss can be
