@@ -25,12 +25,21 @@ Six of those nine produce a beautifully-agreeing pair of ZEROS, so the
 non-vacuity checks are the load-bearing part of this file, exactly as in the
 quadruped gate. Each block asserts the CPU side actually MOVED.
 
-⚠⚠ APPLE CANNOT EVEN BUILD THIS, and the reason is `noslip`, not NV=79.
-`solver/noslip.mojo` widens to Float64 internally and Metal rejects `double`;
-dog is the only model declaring `<option noslip_iterations="4">`. The build
-dies at `LLVM ERROR: Failed to verify LLVM IR for Metal` naming
-`mojo_rl_physics3d_solver_nosl...`. See the note in `dog.mojo`. NVIDIA
-supports double and is the only target where this gate means anything.
+⚠⚠ APPLE BUILDS THIS AND CANNOT RUN IT — NVIDIA is the only target where this
+gate means anything. Measured 2026-08-10: `mojo build` exits 0 and emits a
+binary, then all three tests fail at the FIRST kernel launch with
+
+    Failed to create compute pipeline state (GPU machine code generation):
+    Compute function exceeds available stack space
+
+dog is NV=79, past the per-thread-stack ceiling that already skips
+humanoid_CMU at NV=62. (An earlier, separate barrier — `solver/noslip.mojo`
+widening to Float64, which Metal rejects outright — was fixed in `4ca15f77`
+and is what let the build get this far.)
+
+⚠⚠ DO NOT READ A GREEN BUILD AS A WORKING KERNEL. Metal generates machine
+code lazily, at pipeline-state creation on first launch, so a successful build
+proves only that valid Metal IR was emitted. Running is the only check.
 
 ⚠ THE RESETS ARE NOT COMPARED, and dog's are further apart than quadruped's:
 `initialize_episode` draws `act[i] = uniform(*ctrlrange[i])` for all 38

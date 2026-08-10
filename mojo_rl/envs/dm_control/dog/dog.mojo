@@ -70,32 +70,40 @@ comptime DMDogFetch[DTYPE: DType = DType.float64] = Phyics3dEnv[
 # `TERMINATE_ON_UNHEALTHY=False` because no suite task terminates early — the
 # driver only ever sees truncation at MAX_STEPS.
 #
-# ⚠⚠ APPLE CANNOT COMPILE THESE — because of `noslip`, NOT because of NV=79.
-# Measured 2026-08-10, and worth stating precisely because the obvious guess
-# (dog is NV=79, and Metal refuses humanoid_CMU's blocked Newton kernel on
-# per-thread stack) is WRONG here. The actual build failure is:
+# ⚠⚠ APPLE BUILDS THESE AND CANNOT RUN THEM. There were TWO barriers, and
+# only the first is fixed. Both measured 2026-08-10.
+#
+# BARRIER 1 — `noslip` in Float64. FIXED (`4ca15f77`). The build failed with
 #
 #     Function 'air.convert.f.f64.f.f32' has Metal-unsupported instructions
-#     Function 'mojo_rl_physics3d_solver_nosl...' has Metal-unsupported ...
 #     LLVM ERROR: Failed to verify LLVM IR for Metal
 #
-# `solver/noslip.mojo` widens to `Float64` internally (25 sites), and Metal
-# rejects `double` outright. dog is the ONLY model in the tree that declares
-# `<option noslip_iterations="4">` — dog_fetch is the only other — so no
-# already-gated model is affected, and this is not a regression from
-# `c9ae9a33` (which began forwarding NOSLIP_ITER): before it, the batched env
-# hardcoded 0 and the pass simply never ran on GPU.
+# because `solver/noslip.mojo` widened to Float64 in 25 places and Metal
+# rejects `double`. dog and dog_fetch are the only models declaring `<option
+# noslip_iterations="4">`, so no already-gated model was affected and this was
+# NOT a regression from `c9ae9a33` — before it the batched env hardcoded
+# NOSLIP_ITER=0 and the pass never ran on GPU. That port was needed for NVIDIA
+# too, where Float64 is equally banned.
 #
-# NVIDIA supports double, so these aliases are expected to build and run
-# there. Making them build on Apple means porting `noslip` to DTYPE-native
-# arithmetic the way `dm_control/dtype_math` does — which changes GPU noslip
-# precision from float64 to float32 and is a physics decision, not a cleanup.
+# BARRIER 2 — the per-thread stack at NV=79. NOT FIXED, and probably not
+# fixable on Apple. `mojo build` now SUCCEEDS and emits a binary; the failure
+# has moved to run time, when Metal actually builds the pipeline state:
 #
-# ⚠ CONSEQUENCE FOR ANYONE WORKING ON THIS: an Apple build cannot gate dog's
-# GPU path at all. It DOES still type-check and Metal-codegen the config's
-# own hooks (the failure above is downstream, in the solver), so a clean
-# `extract_kernel` on Apple is real evidence about this file — but every
-# NUMERIC claim about batched dog has to come from an NVIDIA run.
+#     Failed to create compute pipeline state (GPU machine code generation):
+#     Compute function exceeds available stack space
+#
+# This is the same ceiling that skips humanoid_CMU (NV=62). dog is NV=79.
+#
+# ⚠⚠ A GREEN `mojo build` IS NOT EVIDENCE THAT METAL CAN RUN THE KERNEL.
+# Metal compiles lazily — machine-code generation happens at pipeline-state
+# creation, i.e. on the first launch — so a build that exits 0 proves only
+# that valid Metal IR was emitted. This cost a wrong "Apple builds dog"
+# conclusion; the only way to know is to RUN it.
+#
+# CONSEQUENCE: an Apple run cannot gate dog's GPU path. It still gates
+# BUILD-level correctness of everything here (type-checking and Metal IR for
+# the config's own hooks), which is real but is not numerics. Every NUMERIC
+# claim about batched dog has to come from an NVIDIA run.
 #
 # `fetch` is NOT offered batched: it is Phase 5, and its second free joint
 # (njnt 75 / nq 87) has never been through a parity gate at all.
