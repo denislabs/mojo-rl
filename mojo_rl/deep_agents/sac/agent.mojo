@@ -159,6 +159,7 @@ struct SACAgent[
         episode_sync_every: Int = 1,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
+        base_step: Int = 0,
         eval_env: Optional[Pointer[EE, MutAnyOrigin]] = None,
         eval_every: Int = 0,
         eval_episodes: Int = 16,
@@ -198,6 +199,15 @@ struct SACAgent[
         between iterations (D2H of live params on the GPU target) so it is
         CUDA-graph-capture safe. The replay buffer / episode tracker are NOT
         persisted, so resume starts with a fresh replay.
+
+        ⚠ `checkpoint_path` is OVERWRITTEN on every save, so a single `train`
+        call cannot produce a LADDER of policies (random → expert). To build
+        one, call `train` in segments on the SAME agent — the nets, replay
+        buffer and optimizer state all persist across calls — saving to a
+        step-stamped path after each, and pass `base_step` so the logger's
+        x-axis stays continuous instead of restarting per segment. That is
+        what `examples/dm_control/sac_dm_walker_training_gpu.mojo` does; the
+        ladder is what the FB dataset is collected from.
 
         Set `eval_every > 0` AND pass an ISOLATED `eval_env` (a second
         `BatchedGpuEnv[..., EVAL_ENVS, ...]` — NOT the training env) to run a
@@ -243,6 +253,7 @@ struct SACAgent[
             episode_sync_every=episode_sync_every,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            base_step=base_step,
             eval_env=eval_env,
             eval_every=eval_every,
             eval_episodes=eval_episodes,
