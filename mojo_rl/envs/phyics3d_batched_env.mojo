@@ -188,6 +188,22 @@ struct Phyics3dBatchedEnv[
         SOLVER = Self.SOLVER, PARALLEL_GPU = Self.PARALLEL_GPU,
         CRBA_TREEWALK = Self.CRBA_TREEWALK,
     ]
+    # ⚠⚠ MAX_CONDIM AND NOSLIP_ITER MUST COME FROM THE MODEL, NOT THE DEFAULT.
+    # Both were previously left unpassed, so every batched env silently ran
+    # `MAX_CONDIM=3` and `NOSLIP_ITER=0` regardless of its MJCF. That has been
+    # invisible only because EVERY GPU-ported env so far is condim 3 with no
+    # noslip — the moment one is not, the failure is silent and physical:
+    #
+    #   condim 6 at MAX_CONDIM=3 -> the pyramidal edge list is sized
+    #     2*(3-1)=4 rows per contact instead of 2*(6-1)=10, so the TORSIONAL
+    #     and ROLLING rows are never built (`model_def_from_xml` warns about
+    #     exactly this), and the GPU quietly solves a different contact model
+    #     than the CPU;
+    #   noslip_iter 4 at 0 -> `mj_solNoSlip` never runs, dropping a
+    #     friction-only post-pass that is first-order on dog.
+    #
+    # Passing the model's own values is a NO-OP for every currently-gated env
+    # (all are condim 3 / noslip 0) and correct for the ones that are not.
     comptime IntegEuler = EulerIntegrator[
         DT, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MC, Self.NGEOM,
         Self.MODEL_DEF.MAX_EQUALITY, Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
@@ -195,6 +211,8 @@ struct Phyics3dBatchedEnv[
         SOLVER = Self.SOLVER, PARALLEL_GPU = Self.PARALLEL_GPU,
         CRBA_TREEWALK = Self.CRBA_TREEWALK,
         RNE_POST = Self.CONFIG.RNE_POST,
+        MAX_CONDIM = Self.MODEL_DEF.MAX_CONDIM,
+        NOSLIP_ITER = Self.MODEL_DEF.NOSLIP_ITER,
     ]
     var integ_rk4: Self.IntegRK4
     var integ_euler: Self.IntegEuler
