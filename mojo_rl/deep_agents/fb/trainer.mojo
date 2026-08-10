@@ -967,6 +967,31 @@ struct FBTrainer[
             self.actor.online, TensorRefs[1, MutAnyOrigin](pack[0]), dst, c
         )
 
+    def forward_f[
+        N: Int
+    ](
+        mut self, mut s: Tensor, mut a: Tensor, mut z: Tensor, mut dst: Tensor
+    ) raises:
+        """`F(s, a, z)` for `N` rows through the ONLINE `f1`.
+
+        The read-only counterpart of `backward_embed`: `f_norm` in `FBLosses`
+        is the norm of exactly this, so an offline probe can reproduce the
+        logged quantity on a batch of its choosing.
+
+        ⚠ Same device convention as `backward_embed` — on the GPU target the
+        result is left ON DEVICE and the caller must download before reading
+        `dst.data`.
+        """
+        comptime T = Self.TARGET
+        var c = self.ctx
+        ensure_t[T](dst, N * Self.D, c)
+        var fin = Tensor()
+        ensure_t[T](fin, N * (Self.OBS + Self.ACT + Self.D), c)
+        pack3_t[T, Self.OBS, Self.ACT, Self.D, N](fin, s, a, z, c)
+        call_forward[T, N](
+            self.f1.online, TensorRefs[1, MutAnyOrigin](fin), dst, c
+        )
+
     def backward_embed[
         N: Int
     ](mut self, mut s: Tensor, mut dst: Tensor) raises:
