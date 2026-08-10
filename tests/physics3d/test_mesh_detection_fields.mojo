@@ -52,6 +52,9 @@ from mojo_rl.physics3d.gpu.constants import (
     CONTACT_IDX_DIST,
     CONTACT_IDX_BODY_A,
     CONTACT_IDX_BODY_B,
+    CONTACT_IDX_POS_X,
+    CONTACT_IDX_POS_Y,
+    CONTACT_IDX_POS_Z,
     CONTACT_IDX_NX,
     CONTACT_IDX_NY,
     CONTACT_IDX_NZ,
@@ -93,7 +96,26 @@ comptime GOLD_RTOL = 1e-3
 # through `mjc_Convex`'s GJK+EPA, as MuJoCo does, removes it.
 # env1's mesh contact is unchanged and still asserted, so this gate is not
 # weakened -- see the MuJoCo depth and direction checks below.
-comptime GOLD_NCON = 1  # total contacts across both envs
+# ⚠ 1 -> 4 on 2026-08-10: env1's mesh contact became a MANIFOLD. MuJoCo sends
+# MESH x CYLINDER through `mjc_Convex`'s perturbation loop (`maxContacts`
+# returns 4 only when BOTH geoms are box-or-mesh, so this pair comes back 1 and
+# does NOT take the native-CCD early return), and we were emitting the single
+# primary point. Measured on the reference at THIS EXACT POSE: 5 rows, all at
+# dist -0.02769469, four clustered within 3.1e-4 and one 3.9e-2 away.
+#
+# ⚠ WE PRODUCE 4, NOT 5, AND THAT IS NOT A MISSING PERTURBATION. MuJoCo's own
+# rows 2 and 3 are 3.624e-05 apart against an `isDistinctContact` tolerance of
+# 2.828e-05 (= 1e-3 * min rbound) -- 1.28x the merge threshold, 8 um of
+# headroom. Our EPA converges to EPA_TOLERANCE 1e-8, but its witness point on a
+# 1265-polygon hull differs from libccd's by more than 8 um, so that pair
+# merges for us. Chasing the 5th row means chasing an 8 um agreement on a
+# witness point, which no tolerance in this file could hold honestly.
+#
+# So the COUNT is not the gate -- MANIFOLD_SPAN below is. It asserts we found
+# both contact FEATURES (the tight cluster and the far row), which is what
+# decides whether a grasp holds; a count can be right with every row stacked on
+# one feature.
+comptime GOLD_NCON = 4  # total contacts across both envs
 # ⚠ GOLD_CON has moved TWICE on 2026-08-01, both times accounted for exactly
 # and neither re-recorded blind. Both changes are narrow-phase CONTACT
 # DIRECTION work; the fingerprint is `sum contacts[e,c,k] * (e+1)(c+1)(k+1)`.
@@ -182,8 +204,26 @@ comptime GOLD_NCON = 1  # total contacts across both envs
 # routed through the same function and tripped `test_narrow_phase_pairs`'
 # direction assert at 1.9999999999976286 -- a full reversal -- on an anchored
 # pair. Verified against MuJoCo directly by the new check below.
-comptime GOLD_CON = 336.28797102486715  # geometry columns (k < 23)
-comptime GOLD_SOL = 301.5480011552572  # solparam columns (k >= 23)
+# 2026-08-10: 336.28797102486715 -> 3361.63858178955 and 301.5480011552572 ->
+# 3015.4800115525723, both from the 1 -> 4 manifold above. The solparam column
+# sum scaling by ~10x is the expected shape: those columns are IDENTICAL on
+# every row of one pair (same geoms, same solref/solimp), so adding 3 rows at
+# contact weights (c+1) = 2,3,4 multiplies their contribution by 1+2+3+4 = 10
+# against the single row's 1. 301.5480011552572 * 10 = 3015.480011552572,
+# matching to 12 digits -- so the solparam change is fully accounted for and
+# carries no new information. The geometry columns do not scale that cleanly
+# because position differs per row, which is the point of a manifold.
+comptime GOLD_CON = 3361.63858178955  # geometry columns (k < 23)
+comptime GOLD_SOL = 3015.4800115525723  # solparam columns (k >= 23)
+
+# MuJoCo's manifold at this pose spans 3.867e-02 between its two contact
+# FEATURES: a tight cluster on one face and a single row 3.9 cm away. Matching
+# that span is the real assertion -- it says we found both features, which a
+# row count cannot. The bound is generous against witness-point drift (the
+# cluster itself is only 3e-4 wide, so 2e-3 cannot confuse the two features)
+# and still three orders tighter than collapsing onto a single point.
+comptime MANIFOLD_SPAN = 3.867e-02
+comptime MANIFOLD_SPAN_TOL = 2e-3
 
 
 def main() raises:
@@ -323,9 +363,19 @@ def main() raises:
     # Python bridge; `test_narrow_phase_pairs.mojo` is the file that calls
     # MuJoCo live, and it covers the primitive pairs.
     comptime MUJOCO_MESH_DIST = -2.769469e-02
+    # ⚠ FIRST matching row, not the last. Both anchors here are MuJoCo's
+    # `con[0]` values, so they must be read off OUR primary contact. This loop
+    # used to fall through and keep the LAST match, which was harmless while
+    # the pair emitted one row and became wrong the moment it emitted a
+    # manifold: the trailing rows are perturbed ones, tilted ~1e-3 off the
+    # primary normal BY CONSTRUCTION. Measured when it happened — the direction
+    # anchor silently went from dot 0.999999655 to 0.999999117, still passing,
+    # while comparing against a row MuJoCo never meant it to.
     var mesh_dist = Float64(0)
     var found_depth = False
     for c in range(Int(d.meta.data[1 * METADATA_SIZE + META_IDX_NUM_CONTACTS])):
+        if found_depth:
+            break
         var b = 1 * MC * CONTACT_SIZE + c * CONTACT_SIZE
         var ba = Int(d.contacts.data[b + CONTACT_IDX_BODY_A])
         var bb = Int(d.contacts.data[b + CONTACT_IDX_BODY_B])
@@ -333,6 +383,7 @@ def main() raises:
             if (ba == mb and bb == obj_body) or (bb == mb and ba == obj_body):
                 mesh_dist = Float64(d.contacts.data[b + CONTACT_IDX_DIST])
                 found_depth = True
+                break
     if not found_depth:
         raise Error("no mesh contact to check depth on — gate is vacuous")
     var derr = abs(mesh_dist - MUJOCO_MESH_DIST)
@@ -371,7 +422,11 @@ def main() raises:
     var onx = Float64(0)
     var ony = Float64(0)
     var onz = Float64(0)
+    # FIRST match — the primary contact. See the note at the depth anchor.
+    var found_norm = False
     for c in range(Int(d.meta.data[1 * METADATA_SIZE + META_IDX_NUM_CONTACTS])):
+        if found_norm:
+            break
         var b = 1 * MC * CONTACT_SIZE + c * CONTACT_SIZE
         var ba = Int(d.contacts.data[b + CONTACT_IDX_BODY_A])
         var bb = Int(d.contacts.data[b + CONTACT_IDX_BODY_B])
@@ -380,11 +435,14 @@ def main() raises:
                 onx = Float64(d.contacts.data[b + CONTACT_IDX_NX])
                 ony = Float64(d.contacts.data[b + CONTACT_IDX_NY])
                 onz = Float64(d.contacts.data[b + CONTACT_IDX_NZ])
+                found_norm = True
+                break
     var dotn = onx * MJ_NX + ony * MJ_NY + onz * MJ_NZ
     print("  mesh normal", onx, ony, onz, " dot(MuJoCo) =", dotn)
     # A reversal reads as dot = -1, which is what this is here to catch. The
-    # bound allows ~0.8 degrees, which is loose against our single-point answer
-    # versus MuJoCo's 5-point manifold and still four orders from a flip.
+    # bound allows ~0.8 degrees, which is loose against the per-row tilt a
+    # perturbed manifold carries by construction (MuJoCo's own extra rows sit
+    # ~1e-3 off the primary normal) and still four orders from a flip.
     if dotn < 0.9999:
         raise Error(
             "mesh contact NORMAL diverges from MuJoCo: dot = " + String(dotn)
@@ -408,6 +466,59 @@ def main() raises:
     if not mesh_contact_found:
         raise Error("no MESH-involved contact in env1 — gate is vacuous")
     print("  PASS: MESH-involved contact present (GJK/EPA fallback)")
+
+    # --- MANIFOLD SPAN, the assertion the row count cannot make -------------
+    # MESH x CYLINDER goes through MuJoCo's multi-CCD perturbation loop, and
+    # the manifold it builds has TWO features 3.9 cm apart. A single point
+    # cannot hold a grasp: the obj rotates about it and slides out. But a count
+    # of 4 proves nothing on its own — four rows stacked inside one 3e-4
+    # cluster would pass a count check and still be a single point physically.
+    # So measure what the manifold SPANS.
+    var mxs = List[Float64]()
+    var mys = List[Float64]()
+    var mzs = List[Float64]()
+    for c in range(ncon1):
+        var b = 1 * MC * CONTACT_SIZE + c * CONTACT_SIZE
+        var ba = Int(d.contacts.data[b + CONTACT_IDX_BODY_A])
+        var bb = Int(d.contacts.data[b + CONTACT_IDX_BODY_B])
+        for mb in mesh_bodies:
+            if (ba == mb and bb == obj_body) or (bb == mb and ba == obj_body):
+                mxs.append(Float64(d.contacts.data[b + CONTACT_IDX_POS_X]))
+                mys.append(Float64(d.contacts.data[b + CONTACT_IDX_POS_Y]))
+                mzs.append(Float64(d.contacts.data[b + CONTACT_IDX_POS_Z]))
+    print("  mesh manifold rows:", len(mxs))
+    var span = Float64(0)
+    for i in range(len(mxs)):
+        print(
+            "    row", i, "pos [", mxs[i], mys[i], mzs[i], "]"
+        )
+        for j in range(i + 1, len(mxs)):
+            var ddx = mxs[i] - mxs[j]
+            var ddy = mys[i] - mys[j]
+            var ddz = mzs[i] - mzs[j]
+            var sep = (ddx * ddx + ddy * ddy + ddz * ddz) ** 0.5
+            if sep > span:
+                span = sep
+    print(
+        "  manifold span", span, " MuJoCo", MANIFOLD_SPAN,
+        " err", abs(span - MANIFOLD_SPAN),
+    )
+    if len(mxs) < 2:
+        raise Error(
+            "mesh contact is a SINGLE POINT — MuJoCo builds a manifold here"
+            " (5 rows). A one-point grasp lets the object rotate about it and"
+            " slide out; check `multi_ccd_pair_supported` covers"
+            " MESH x CYLINDER and that `_convex_pair_single` answers it."
+        )
+    if abs(span - MANIFOLD_SPAN) > MANIFOLD_SPAN_TOL:
+        raise Error(
+            "mesh manifold SPAN " + String(span) + " != MuJoCo "
+            + String(MANIFOLD_SPAN) + ". A span near zero means every row"
+            " landed on ONE contact feature, which is a single point wearing a"
+            " row count; a larger span means a row sits somewhere MuJoCo has"
+            " no contact."
+        )
+    print("  PASS: mesh manifold spans both contact features")
 
     # --- fields-CPU vs fields-GPU records (fed GPU FK products) ---
     var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()

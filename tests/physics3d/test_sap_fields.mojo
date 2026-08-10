@@ -140,7 +140,17 @@ comptime GOLD_CON_H = 28658.222165894345
 # the obj's flat face rests exactly on the table; MuJoCo reports ZERO contacts
 # at that pose. Routing cylinder/box through GJK+EPA, as MuJoCo's own dispatch
 # does, removes it. env1's mesh contact is unchanged and still asserted.
-comptime GOLD_NCON_S = 1  # Part B sawyer SAP: total contacts
+# ⚠ 1 -> 4 on 2026-08-10: env1's obj-cylinder-into-gripper-mesh contact became
+# a MANIFOLD. MuJoCo routes MESH x CYLINDER through `mjc_Convex`'s perturbation
+# loop (`maxContacts` returns 4 only when BOTH geoms are box-or-mesh, so this
+# pair comes back 1 and does not take the native-CCD early return); we were
+# emitting only the primary point. Measured on the reference at this exact
+# pose: 5 rows. We emit 4 — MuJoCo's rows 2 and 3 are 1.28x the
+# `isDistinctContact` threshold apart (3.62e-05 vs 2.83e-05) and merge under
+# our EPA's witness point. See the long note in
+# `test_mesh_detection_fields.mojo`, which gates the manifold's SPAN; this file
+# gates that the SAP path agrees with the O(N^2) path on the same records.
+comptime GOLD_NCON_S = 4  # Part B sawyer SAP: total contacts
 # ⚠ GOLD_CON_S has moved TWICE on 2026-08-01, both accounted for exactly.
 #   +64.0  bug 35 (the double flip): fractional part unchanged; 64 = 32 * 2,
 #          one `(body_a, body_b)` relabel of the env1 obj(33)/table(1) contact
@@ -214,8 +224,15 @@ comptime GOLD_NCON_S = 1  # Part B sawyer SAP: total contacts
 # pointed the wrong way. It surfaced only when cylinder/box went through the
 # same function and tripped `test_narrow_phase_pairs`' direction assert at
 # 1.9999999999976286 -- a full reversal -- on an anchored pair.
-comptime GOLD_CON_S = 336.28797102486715  # geometry columns (k < 23)
-comptime GOLD_SOL_S = 301.5480011552572  # solparam columns (k >= 23)
+# 2026-08-10, from the 1 -> 4 manifold above. BOTH fingerprints match
+# `test_mesh_detection_fields`'s O(N^2) values to every digit
+# (3361.63858178955 / 3015.4800115525723), which is the cross-check that
+# matters here: the SAP path and the O(N^2) path built the same manifold, not
+# merely the same number of rows. The solparam sum is exactly 10x its old value
+# (301.5480011552572 * 10 = 3015.480011552572) because those columns are
+# identical on every row of one pair and the contact weights (c+1) sum 1+2+3+4.
+comptime GOLD_CON_S = 3361.63858178955  # geometry columns (k < 23)
+comptime GOLD_SOL_S = 3015.4800115525723  # solparam columns (k >= 23)
 
 # ── Humanoid (Part A) ────────────────────────────────────────────────────
 comptime NQ_H = HumanoidModel.NQ  # 24

@@ -46,32 +46,47 @@ which is exactly what this engine emitted before this file existed.
 oversight to "fix": a sphere or ellipsoid touches a convex body at ONE point,
 so a tilted requery finds the same point again and the manifold is a single
 row by geometry. Dog's 44 collidable ellipsoids are unaffected, as are fish,
-swimmer and humanoid_CMU whose only convex geoms are ellipsoids.
+swimmer and humanoid_CMU whose only convex geoms are ellipsoids. Measured:
+mesh/sphere is 1 row in the reference too.
 
-SCOPE: the CYLINDER family — the pairs this engine currently answers with a
-single point and MuJoCo answers with a manifold. Mesh pairs go through
-`gjk_epa` here and through native-CCD polygon clipping there, which is a
-different mechanism and a separate piece of work; they are deliberately NOT
-routed here, and `multi_ccd_pair_supported` says so rather than silently
-covering them.
-
-⚠⚠ THAT EXCLUSION IS MuJoCo'S OWN, NOT A SHORTCUT — verified after a design
-note claimed the opposite. `mjc_Convex` runs a SECOND guard before the
-perturbation loop (`engine_collision_convex.c:875`):
+SCOPE: the pairs `mjc_Convex` sends through this loop, which is decided by a
+SECOND guard sitting in front of it (`engine_collision_convex.c:875`):
 
     int max_contacts = maxContacts(m, &obj1, &obj2);
     int ncon = mjc_penetration(..., max_contacts, margin);
     if (!mjDISABLED(mjDSBL_NATIVECCD) && max_contacts > 1) return ncon;
 
-`maxContacts` (`:843`) gives 8 for BOX x BOX, 4 for any pair of {BOX, MESH} and
-1 for everything else, and `mjDSBL_NATIVECCD` is a DISABLE bit that is off by
-default — so on the 3.10.0 runtime every box/mesh and mesh/mesh pair takes the
-early return and NEVER reaches the code this file ports. Their manifold comes
-from `multicontact()` (`engine_collision_gjk.c:2111`), which clips the two
-contacting polygons and prunes to a max-area quad, and which bails out unless
-the mesh carries polygon topology (`mesh_polynum`) that our `mesh_meta` does
-not have. Adding mesh pairs HERE would fabricate a manifold by a mechanism the
-reference does not use for them.
+`maxContacts` (`:843`) gives 8 for BOX x BOX, 4 when BOTH geoms are box-or-mesh,
+and 1 for everything else; `mjDSBL_NATIVECCD` is a DISABLE bit that is off by
+default. So on the 3.10.0 runtime:
+
+  * BOX x BOX, BOX x MESH, MESH x MESH -> take the early return. Their manifold
+    comes from `multicontact()` (`engine_collision_gjk.c:2111`), which clips the
+    two contacting polygons and prunes to a max-area quad, and which needs mesh
+    polygon topology (`mesh_polynum`) that our `mesh_meta` does not carry. NOT
+    PORTED, deliberately, and NOT to be faked here.
+  * everything else, INCLUDING MESH x CYLINDER and MESH x CAPSULE -> reaches
+    this loop, because only one of the two geoms is box-or-mesh.
+
+⚠⚠ THAT SPLIT WAS GOT WRONG TWICE IN THIS FILE'S HISTORY, IN BOTH DIRECTIONS.
+First a design note claimed MuJoCo's only exclusions were sphere and ellipsoid,
+which would have routed box/mesh here; then the correction to it over-swung and
+claimed mesh pairs never reach this loop at all, which would have left
+mesh/cylinder at a single point forever. Measured against the runtime at ~5 mm
+of overlap — MuJoCo's row count vs ours:
+
+    block.stl / cylinder   5 vs 1      block.stl / box    4 vs 1  (native)
+    block.stl / capsule    5 vs 1      block.stl / mesh   4 vs 1  (native)
+    gripper   / cylinder   4 vs 1      gripper   / box    2 vs 1  (native)
+    gripper   / capsule    2 vs 1      gripper   / mesh   1 vs 1
+    either    / sphere     1 vs 1
+
+⚠ THE OBVIOUS DISCRIMINATOR IS CONFOUNDED AND GAVE THE WRONG ANSWER FIRST.
+Toggling `mjDSBL_MULTICCD` collapses EVERY pair above to a single row, which
+reads as "they all come from this loop" — but `maxContacts` itself branches on
+that bit (`return mjDISABLED(mjDSBL_MULTICCD) ? 1 : 4`), so disabling it also
+switches the native path off. The path is decided by geom TYPE, not by that
+flag.
 """
 
 from std.math import sqrt
@@ -84,6 +99,7 @@ from ..constants import (
     GEOM_ELLIPSOID,
     GEOM_CYLINDER,
     GEOM_BOX,
+    GEOM_MESH,
 )
 from ..kinematics.quat_math import (
     gpu_quat_mul,
@@ -147,6 +163,27 @@ def multi_ccd_pair_supported(gi_type: Int, gj_type: Int) -> Bool:
     if gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX:
         return True
     if gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER:
+        return True
+    # MESH x {CYLINDER, CAPSULE} — `maxContacts` returns 4 only when BOTH geoms
+    # are box-or-mesh, so these come back 1 and DO reach the perturbation loop.
+    # Measured against the 3.10.0 runtime at ~5 mm of overlap:
+    #
+    #   block.stl  / cylinder   MuJoCo 5   ours 1
+    #   block.stl  / capsule    MuJoCo 5   ours 1
+    #   gripper    / cylinder   MuJoCo 4   ours 1
+    #   gripper    / capsule    MuJoCo 2   ours 1
+    #
+    # `gripper` is sawyer's eGripperBase, and obj-cylinder-into-gripper-mesh is
+    # the pair `test_sap_fields` Part B collides — i.e. the pair Phase 7 grasps
+    # with. MESH x {BOX, MESH} is NOT here: those return 4 from `maxContacts`
+    # and take the early return into native polygon clipping instead.
+    if gi_type == GEOM_MESH and (
+        gj_type == GEOM_CYLINDER or gj_type == GEOM_CAPSULE
+    ):
+        return True
+    if gj_type == GEOM_MESH and (
+        gi_type == GEOM_CYLINDER or gi_type == GEOM_CAPSULE
+    ):
         return True
     return False
 
@@ -240,6 +277,30 @@ def _convex_pair_single[
         # `cylinder_box` needed two because the primitive is asymmetric in its
         # operands, but the convex query is symmetric and returns `gi -> gj`
         # either way.
+        var r = gjk_epa[DTYPE, NMESH_VERTS](
+            gi_type,
+            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+            ri, hli, hxi, hyi, hzi,
+            mesh_verts, va1, mnv1,
+            gj_type,
+            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+            rj, hlj, hxj, hyj, hzj,
+            va2, mnv2,
+        )
+        out[0] = r[0]
+        out[1] = r[1]
+        out[2] = r[2]
+        out[3] = r[3]
+        out[4] = r[4]
+        out[5] = r[5]
+        out[6] = r[6]
+    elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:
+        # Mirrors the dispatch's mesh branch, which sends ANY mesh pair to
+        # `gjk_epa` with the geoms in place. Only MESH x {CYLINDER, CAPSULE}
+        # reaches here — `multi_ccd_pair_supported` is the gate — but the
+        # condition is written as the dispatch writes it so the two read the
+        # same, and `gjk_epa` is symmetric and returns `gi -> gj` regardless of
+        # ordering, so there is no negation and no second branch.
         var r = gjk_epa[DTYPE, NMESH_VERTS](
             gi_type,
             pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
