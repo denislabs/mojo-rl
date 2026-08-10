@@ -24,6 +24,28 @@ classes override it (`lumbar` sets 40, a class nested inside it sets 60,
 between 25x and 3000x too weak, `act` still matches exactly, and only a DRIVEN
 rollout can see it.
 
+⚠⚠ RESULT (first successful run, 2026-08-10): THE SUSPICION IS REFUTED.
+
+    nu: ours 38  MuJoCo 38
+    MuJoCo distinct gainprm[0] values: 9
+    max |d(gainprm)| = 0.0
+    max |d(gear)|    = 0.0
+
+Gains match EXACTLY, and MuJoCo's nine distinct values are all present, so the
+nested `<default>` resolution is right and the engine is NOT stopping at the
+root `gainprm="0.02"`. Whatever causes `|d(qvel)| = 6.098` on the first
+contacting step, it is not the actuator gain — look elsewhere and do not
+re-derive this suspicion from the paragraphs above.
+
+(The `model_def_from_xml` comment claiming "force = 0.02 * act" is still wrong
+AS DOCUMENTATION — the compiled values are correct, the comment describes the
+un-overridden root default.)
+
+⚠⚠ THIS FILE DID NOT COMPILE FROM THE MOJO 1.0 MIGRATION UNTIL 2026-08-10, so
+none of the above was ever measured until now. A test that fails to BUILD is
+indistinguishable from one that passes unless somebody actually runs it —
+which is the argument for the CI coverage gap, not just a note about this file.
+
 ⚠ `_acd` RE-MATERIALIZES ON EVERY READ. Reading it field-by-field inside a loop
 yields garbage; §8 of the plan requires one explicit `materialize` into a local,
 which is what this file does.
@@ -55,6 +77,35 @@ def test_dog_actuator_gains_match_mujoco() raises:
     # ⚠ ONE materialize, per §8 — not a read per element.
     comptime acd = materialize[M._acd]()
 
+    # ⚠ A comptime `Array` CANNOT BE INDEXED BY A RUNTIME VALUE. `acd.motor_kp`
+    # is an `Array[Float64, 64]`, which is not `ImplicitlyCopyable`, so
+    # `acd.motor_kp[i]` with a runtime `i` asks the compiler to materialize the
+    # whole array into runtime storage and fails:
+    #
+    #     error: cannot materialize comptime value of type
+    #            'Array[Float64, Int(64)]' to runtime because it is not
+    #            'ImplicitlyCopyable'
+    #
+    # ⚠⚠ THIS FILE DID NOT COMPILE AT ALL FROM THE MOJO 1.0 MIGRATION UNTIL
+    # 2026-08-10, so dog's actuator-gain coverage was silently dead — a build
+    # failure and a pass look identical to anyone who is not running it. It was
+    # found by accident, while using this test as a regression check for an
+    # unrelated change.
+    #
+    # Copy once through a comptime-unrolled loop into runtime lists. A comptime
+    # index alone is NOT enough — `acd.motor_kp[ai]` still tries to materialize
+    # the ARRAY — so each ELEMENT is materialized explicitly, which is what the
+    # compiler's own `materialize[ ]()` hint asks for. `_acd` itself is still
+    # materialized exactly ONCE (into `acd` above), preserving §8's invariant;
+    # what is repeated here is only a scalar read out of that single copy.
+    comptime NACT = M.nact
+    var kp = List[Float64](capacity=NACT)
+    var gears = List[Float64](capacity=NACT)
+
+    comptime for ai in range(NACT):
+        kp.append(materialize[acd.motor_kp[ai]]())
+        gears.append(materialize[acd.motor_gears[ai]]())
+
     var nu = Int(py=m.nu)
     print("  nu: ours", M.nact, " MuJoCo", nu)
     assert_true(
@@ -70,7 +121,7 @@ def test_dog_actuator_gains_match_mujoco() raises:
     var n_distinct_mj = 0
     var seen = List[Float64]()
     for i in range(nu):
-        var g_ours = acd.motor_kp[i]
+        var g_ours = kp[i]
         var g_mj = Float64(py=m.actuator_gainprm[i][0])
         var e = abs(g_ours - g_mj)
         if e > worst_gain:
@@ -78,7 +129,7 @@ def test_dog_actuator_gains_match_mujoco() raises:
             worst_gain_i = i
         var d_mj = Float64(py=m.actuator_dynprm[i][0])
         var gr_mj = Float64(py=m.actuator_gear[i][0])
-        var e_gr = abs(acd.motor_gears[i] - gr_mj)
+        var e_gr = abs(gears[i] - gr_mj)
         if e_gr > worst_gear:
             worst_gear = e_gr
         # Count MuJoCo's distinct gains — the non-vacuity signal.
@@ -97,7 +148,7 @@ def test_dog_actuator_gains_match_mujoco() raises:
     if worst_gain_i >= 0:
         print(
             "      actuator", worst_gain_i,
-            " ours", acd.motor_kp[worst_gain_i],
+            " ours", kp[worst_gain_i],
             " MuJoCo", Float64(py=m.actuator_gainprm[worst_gain_i][0]),
         )
     print("  max |d(gear)| =", worst_gear)
