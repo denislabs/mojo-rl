@@ -52,6 +52,7 @@ from std.math import sqrt, pow, abs
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
+from std.sys.info import size_of
 from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor
@@ -239,6 +240,7 @@ def _matvec_mv_jve_coop[
     V_SIZE: Int,
     M_SIZE: Int,
     ME: Int,
+    JE_AS: AddressSpace = AddressSpace.SHARED,
 ](
     tid: Int,
     n_threads: Int,
@@ -249,11 +251,13 @@ def _matvec_mv_jve_coop[
         MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ],
+    # ⚠ `Je` is the ONE array whose address space varies — see JE_IN_SHARED at
+    # the allocation site. Everything else stays in threadgroup memory.
     Je_sh: LayoutTensor[
         DTYPE,
         Layout.row_major(ME * V_SIZE),
         MutAnyOrigin,
-        address_space=AddressSpace.SHARED,
+        address_space=JE_AS,
     ],
     search_sh: LayoutTensor[
         DTYPE,
@@ -298,13 +302,15 @@ def _recompute_jfq_coop[
     NV: Int,
     V_SIZE: Int,
     ME: Int,
+    JE_AS: AddressSpace = AddressSpace.SHARED,
 ](
     tid: Int,
     n_threads: Int,
     num_edges: Int,
+    # ⚠ address space varies — see JE_IN_SHARED at the allocation site.
     Je_sh: LayoutTensor[
         DTYPE, Layout.row_major(ME * V_SIZE), MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=JE_AS,
     ],
     De_sh: LayoutTensor[
         DTYPE, Layout.row_major(ME), MutAnyOrigin,
@@ -2796,6 +2802,94 @@ def _newton_blocked_fields_kernel[
     comptime MAX_TEQ = NTENDON  # one bilateral row per equality tendon
     comptime ME = NE * MC + MAX_LIM + MAX_FRIC + MAX_TLIM + MAX_TEQ
 
+    # ── Je: shared when it fits, spilled to global when it does not ───────
+    #
+    # ⚠⚠ MEASURED FAILURE THIS GUARD EXISTS FOR (humanoid_CMU, 2026-08-10):
+    #     ptxas error : Entry function ... uses too much shared data
+    #                   (0x2975c bytes, 0x18c00 max)
+    # i.e. 169,820 B requested against a 101,376 B limit. `Je_sh` is
+    # `ME * V_SIZE` scalars and dominates everything else combined:
+    #
+    #     humanoid      NV=27  MC=32  ME~150   Je ~16 KB   -> fits
+    #     humanoid_CMU  NV=62  MC=64  ME=432   Je ~107 KB  -> over the limit
+    #                                                        BY ITSELF
+    #
+    # ⚠ HALVING max_contacts DOES NOT FIX IT — 64->32 gives ME=304, Je 75 KB,
+    # total ~116 KB, still over. It would cost real contact fidelity and still
+    # not compile, so do not reach for that lever.
+    #
+    # Spilling ONLY Je leaves ~61 KB in threadgroup memory, which fits with
+    # room to spare. The spill is GATED because Je is read across up to
+    # NEWTON_ITER_GPU (200) iterations: putting it in global memory costs
+    # bandwidth on EVERY model taking this kernel, and only the oversized ones
+    # need to pay. Models that fit keep the fast path unchanged, bit for bit.
+    #
+    # ⚠ THE THRESHOLD IS A COMPILE-TIME GUESS AT A RUNTIME LIMIT. Shared
+    # memory per block is device-specific (99 KB on this box; 227 KB on an
+    # H100), and the kernel is compiled without knowing the target. 64 KB is
+    # deliberately conservative — the widely-supported opt-in floor — so a
+    # model that fits everywhere keeps shared, and anything near the edge
+    # spills rather than failing to compile on the smallest plausible device.
+    comptime _JE_ELEMS = ME * V_SIZE
+    comptime _JE_BYTES = _JE_ELEMS * size_of[Scalar[DTYPE]]()
+    comptime JE_SHARED_BUDGET = 64 * 1024
+    comptime JE_FITS_SHARED = _JE_BYTES <= JE_SHARED_BUDGET
+
+    # Where a spilled Je lives: the TAIL of the per-env solver workspace.
+    # `cscratch.solver` is sized for PGS (81*MC + 12*MC*NV) and Newton only
+    # ever uses a prefix, so the tail is already allocated and unused:
+    #
+    #     Newton high-water  27*MC + 6*MC*NV   (ws_cstate_idx + MC)
+    #     SOLVER_WS          81*MC + 12*MC*NV
+    #     free tail          54*MC + 6*MC*NV
+    #
+    # humanoid_CMU: 27,264 free vs 26,784 needed — it fits, with 1.8% to
+    # spare. ⚠⚠ THAT MARGIN IS TOO THIN TO TRUST BY INSPECTION, which is why
+    # `JE_FITS_WS` is a real comptime test and not a comment: ME grows with
+    # tendons and joint limits, and overrunning this region would silently
+    # corrupt a neighbouring solver's workspace rather than fail. A model that
+    # outgrows the tail falls back to shared (see the three-way gate below)
+    # rather than spilling into memory it does not own.
+    comptime JE_WS_START = 27 * MC + 6 * MC * NV
+    comptime JE_FITS_WS = JE_WS_START + _JE_ELEMS <= SOLVER_WS
+
+    # ⚠⚠ SPILL ONLY WHEN THE SPILL ACTUALLY FITS. A model can fit NEITHER,
+    # and the third case is not hypothetical — it is dm_control's dog:
+    #
+    #     model         Je shared   workspace tail   verdict
+    #     humanoid       20 KB          —            stays shared (unchanged)
+    #     quadruped      13 KB          —            stays shared (unchanged)
+    #     humanoid_CMU  104 KB      26784 <= 27264   SPILLS, fits
+    #     dog           151 KB      38789 >  12672   fits NEITHER
+    #     dog_fetch     178 KB      45815 >  15792   fits NEITHER
+    #
+    # ⚠ A `comptime assert` here would be WRONG: it fires during compilation
+    # on EVERY target, so rejecting the fits-neither case would turn dog's
+    # currently-passing Apple build into a build FAILURE. Falling back to
+    # shared leaves those models exactly as they are today — no better, no
+    # worse — and confines this change to the models it can actually help.
+    #
+    # ⚠⚠ FORWARD-LOOKING CONSTRAINT ON DOG — NOT A CURRENT BREAK. dog is
+    # PYRAMIDAL, so it WOULD instantiate this kernel, and its Je wants 151 KB
+    # of threadgroup memory against NVIDIA's ~99 KB — the same ptxas error
+    # humanoid_CMU hit. It does not bite today only because dog has NO
+    # GPU-batched env (no `Phyics3dBatchedEnv` alias, and no GPU-vs-CPU test),
+    # so the GPU path is never instantiated for it.
+    #
+    # The moment dog gets a batched env, this kernel stops compiling on
+    # NVIDIA and the workspace tail cannot absorb the spill either. That needs
+    # SOLVER_WS widened in `fields/contact_scratch.mojo` — roughly 26k more
+    # scalars per env for dog, 33k for dog_fetch — which is deliberately NOT
+    # done here: it costs memory for every model and should be paid when dog
+    # actually needs it, with a parity gate to prove it.
+    comptime JE_IN_SHARED = JE_FITS_SHARED or not JE_FITS_WS
+    comptime JE_AS = (
+        AddressSpace.SHARED if JE_IN_SHARED else AddressSpace.GENERIC
+    )
+
+    # Sized to 1 when spilling so the threadgroup allocation disappears.
+    comptime JE_SH_ELEMS = _JE_ELEMS if JE_IN_SHARED else 1
+
     # === SHARED memory (per-block == per-env) ===
     var M_sh = LayoutTensor[
         DTYPE, Layout.row_major(M_SIZE), MutAnyOrigin,
@@ -2805,10 +2899,27 @@ def _newton_blocked_fields_kernel[
         DTYPE, Layout.row_major(M_SIZE), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
-    var Je_sh = LayoutTensor[
-        DTYPE, Layout.row_major(ME * V_SIZE), MutAnyOrigin,
+    # ⚠ BOTH BRANCHES ARE TYPE-CHECKED even though only one is emitted
+    # (measured: an ill-typed untaken `comptime if` branch fails the build).
+    # `address_space_cast[JE_AS]()` on each side is what makes them agree —
+    # without it the SHARED build rejects the GENERIC branch and vice versa.
+    var _je_backing = LayoutTensor[
+        DTYPE, Layout.row_major(JE_SH_ELEMS), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
+    var _je_ptr: UnsafePointer[
+        Scalar[DTYPE], MutAnyOrigin, address_space=JE_AS
+    ]
+    comptime if JE_IN_SHARED:
+        _je_ptr = _je_backing.ptr.address_space_cast[JE_AS]()
+    else:
+        _je_ptr = (
+            solver.ptr + env * SOLVER_WS + JE_WS_START
+        ).address_space_cast[JE_AS]()
+    var Je_sh = LayoutTensor[
+        DTYPE, Layout.row_major(ME * V_SIZE), MutAnyOrigin,
+        address_space=JE_AS,
+    ](_je_ptr)
     var De_sh = LayoutTensor[
         DTYPE, Layout.row_major(ME), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
@@ -3371,7 +3482,7 @@ def _newton_blocked_fields_kernel[
 
         # --- Cooperative Mv = M·search and Jv_e = Je·search ---
         barrier()
-        _matvec_mv_jve_coop[DTYPE, NV, V_SIZE, M_SIZE, ME](
+        _matvec_mv_jve_coop[DTYPE, NV, V_SIZE, M_SIZE, ME, JE_AS](
             tid, THREADS, num_edges_b, M_sh, Je_sh, search_sh, Mv_sh, Jv_e_sh
         )
         barrier()
@@ -3507,7 +3618,7 @@ def _newton_blocked_fields_kernel[
         # Cooperative jar/force/qfrc recompute, then tid 0 reads back and
         # finishes the accept/revert.
         barrier()
-        _recompute_jfq_coop[DTYPE, NV, V_SIZE, ME](
+        _recompute_jfq_coop[DTYPE, NV, V_SIZE, ME, JE_AS](
             tid, THREADS, num_edges_b, Je_sh, De_sh, bias_e_sh,
             kind_e_sh, R_e_sh, floss_e_sh, state_e_sh, qacc_sh,
             jar_sh, force_sh, qfrc_sh,
