@@ -734,6 +734,31 @@ struct FBTrainer[
             sqrt(fn2 * Float64(Self.D)), sqrt(bn2 * Float64(Self.D)),
         )
 
+    def read_grad_norms(
+        mut self, mut f1: Float64, mut f2: Float64, mut b: Float64
+    ) raises:
+        """PRE-clip gradient norms from the last `clip_grads_device`.
+
+        The discriminating diagnostic for "is F running away". §13's defect 3
+        was F growing unbounded, and the only symptom in the log was the measure
+        loss falling — which is ALSO what F merely learning looks like. The
+        pre-clip norm separates them: a converging F clips rarely and its norm
+        settles; a diverging F pins against `max_grad_norm` every step.
+
+        ⚠ D2Hs three buffers, so FLUSH CADENCE ONLY — never per step. Returns
+        0 when `max_grad_norm <= 0` (nothing ever ran the device clip).
+        """
+        comptime T = Self.TARGET
+        f1 = 0.0
+        f2 = 0.0
+        b = 0.0
+        comptime if T == "gpu":
+            if self.max_grad_norm > 0.0:
+                var c = self.ctx.value()
+                f1 = Float64(self.opt_f1.read_clip_norm(c))
+                f2 = Float64(self.opt_f2.read_clip_norm(c))
+                b = Float64(self.opt_b.read_clip_norm(c))
+
     def train_device_kernels(mut self) raises:
         """The pure device-kernel train step — the body to hand to
         `maybe_capture_replay`.

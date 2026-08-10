@@ -27,6 +27,13 @@ Profiling knobs:
   * TRAIN_STEPS — 3000 is enough for a stable profile once the first-call
     capture (a settle run plus the captured run) has amortised.
 
+⚠ This is a SNAPSHOT of `fb_train_gpu.mojo`, not a wrapper around it, and it
+deliberately omits the `CompositeLogger` the real run now carries — CSV/HTTP
+writes inside a profiled loop measure the logger, not the step. The cost of
+that choice is divergence: a fix landing in `fb_train_gpu.mojo` does NOT reach
+here. Diff the two before trusting a profile taken after any change to the
+training loop.
+
 ⚠ The batch assembly ahead of the step — samplers, gathers, z mixture — stays
 EAGER and is NOT captured. It is a dozen small launches per step against the
 step's ~150, so it was not worth the extra capture-safety surface (both

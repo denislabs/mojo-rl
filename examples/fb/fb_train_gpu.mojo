@@ -32,6 +32,7 @@ ever be evaluated on pairs one step apart.
 from max.gpu.host import DeviceContext, DeviceBuffer
 from std.math import sqrt
 from std.random import random_float64, seed
+from std.time import perf_counter_ns
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.tensor import Tensor
@@ -46,6 +47,8 @@ from mojo_rl.data.store import TrajectoryStore
 from mojo_rl.data.resident import ResidentColumn, IDX_DT
 from mojo_rl.data.sampler import UniformDeviceSampler
 
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import CsvLogger, RemoteLogger, CompositeLogger
 from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 from mojo_rl.deep_agents.fb.trainer import FBTrainer, FBLosses
 from mojo_rl.deep_agents.fb.kernels import (
@@ -114,6 +117,15 @@ comptime BC_WEIGHT: Float64 = 1.0
 # frozen noise still trains. `tests/deep_agents/test_fb_cuda_graph_safety.mojo`
 # gates exactly that.
 comptime USE_TRAIN_CUDA_GRAPH: Bool = True
+
+# ── logging ──────────────────────────────────────────────────────────────
+# ⚠ The run logs to a LOCAL CSV **and** the remote monitor, via
+# `CompositeLogger`. Not redundancy for its own sake: a previous run's console
+# output was lost mid-arc and the interesting window went with it, because the
+# only record was a terminal scrollback. The CSV survives a dropped ssh session,
+# a killed monitor, and a laptop reboot.
+comptime CSV_PATH: StaticString = "fb_walker_all_d128_metrics.csv"
+comptime RUN_NAME: StaticString = "FB walker all-tasks d128"
 comptime SEED: Int = 20260805
 
 comptime F_IN = OBS + NACT + D
@@ -313,8 +325,38 @@ def main() raises:
     ensure_t["gpu"](pick, BATCH * 2, ctx)
     var rng_off = UInt64(1)
 
+    # ─── logging ─────────────────────────────────────────────────────────
+    var env_vars = load_dotenv()
+    var logger = CompositeLogger(
+        CsvLogger(String(CSV_PATH), buffer_size=64),
+        RemoteLogger(
+            server_url=env_vars.get("RL_MONITOR_URL", ""),
+            run_name=String(RUN_NAME),
+            buffer_size=64,
+            api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+        ),
+    )
+    logger.set_config("algorithm", "FB")
+    logger.set_config("env", "dm_control/walker-all")
+    logger.set_config("store", String(STORE_PATH))
+    logger.set_config("rows", String(n_rows))
+    logger.set_config("d", String(D))
+    logger.set_config("batch", String(BATCH))
+    logger.set_config("hidden", String(HID))
+    logger.set_config("train_steps", String(TRAIN_STEPS))
+    logger.set_config("max_grad_norm", String(MAX_GRAD_NORM))
+    logger.set_config("bc_weight", String(BC_WEIGHT))
+    logger.set_config("cuda_graph", String(USE_TRAIN_CUDA_GRAPH))
+    logger.set_config("epochs_over_dataset", String(epochs))
+
     # Lazily captured on the first non-logging step; replayed thereafter.
     var train_graph = Optional[CUDAGraph](None)
+    comptime SQRT_D = sqrt(Float64(D))
+    var t_log = perf_counter_ns()
+    var last_log_step = 0
+    var gn_f1 = Float64(0)
+    var gn_f2 = Float64(0)
+    var gn_b = Float64(0)
 
     print(
         "[2] training", TRAIN_STEPS, "steps  (d =", D, ", batch =", BATCH, ")"
@@ -407,17 +449,57 @@ def main() raises:
         else:
             l = t.train_step(want_loss=want)
         if want:
+            # ⚠ `|F|` was computed by `FBLosses` from the first version of this
+            # script and NEVER PRINTED — the struct's own docstring calls
+            # `f_norm` and `b_norm` "the collapse detectors" and only one of
+            # them reached the log. It cost a whole 484 k-step run's worth of
+            # ambiguity: the measure loss drifted from -129 to -305 and the
+            # single quantity that separates "F is learning" from "F is running
+            # away" was being discarded every 2000 steps.
+            t.read_grad_norms(gn_f1, gn_f2, gn_b)
+            var now = perf_counter_ns()
+            # ⚠ Steps SINCE the last emit, not LOG_EVERY. At step 0 exactly one
+            # step has run, so dividing by LOG_EVERY reported 1913 st/s against
+            # a true ~73 — a 26x-wrong first point in a CSV somebody will plot.
+            var since = step - last_log_step
+            var sps = 0.0
+            if since > 0:
+                sps = Float64(since) * 1e9 / Float64(now - t_log)
+            t_log = now
+            last_log_step = step
+
+            var names = List[String]()
+            var vals = List[Float64]()
+            names.append(String("fb/measure")); vals.append(l.measure)
+            names.append(String("fb/ortho")); vals.append(l.ortho)
+            names.append(String("fb/actor")); vals.append(l.actor)
+            names.append(String("fb/f_norm")); vals.append(l.f_norm)
+            names.append(String("fb/b_norm")); vals.append(l.b_norm)
+            # Derived, because reading the raw numbers needed hand arithmetic
+            # three separate times during the last run:
+            #   b_norm_deficit — the sqrt(d) pin is exact, so ANY deficit is the
+            #     eps floor being approached. Alarm at > 0.11 (|B| < 11.2).
+            #   ortho_Q — L_ortho = Q - 2*||B||^2. With |B| pinned the anchor is
+            #     a constant, so Q is the part that carries information.
+            names.append(String("fb/b_norm_deficit"))
+            vals.append(SQRT_D - l.b_norm)
+            names.append(String("fb/ortho_Q"))
+            vals.append(l.ortho + 2.0 * l.b_norm * l.b_norm)
+            names.append(String("fb/grad_norm_f1")); vals.append(gn_f1)
+            names.append(String("fb/grad_norm_f2")); vals.append(gn_f2)
+            names.append(String("fb/grad_norm_b")); vals.append(gn_b)
+            names.append(String("perf/steps_per_s")); vals.append(sps)
+            logger.log_scalars(names, vals, step)
+
             print(
-                "   step",
-                step,
-                " measure",
-                l.measure,
-                " ortho",
-                l.ortho,
-                " actor",
-                l.actor,
-                " |B|",
-                l.b_norm,
+                "   step", step,
+                " measure", l.measure,
+                " ortho", l.ortho,
+                " actor", l.actor,
+                " |F|", l.f_norm,
+                " |B|", l.b_norm,
+                " gF", gn_f1,
+                " ", sps, "st/s",
             )
             # ⚠ Read TRENDS, not signs. `L_ortho = Q - 2S` (quartic minus
             # the `-2E||B||^2` anchor) can sit either side of zero depending on
@@ -459,4 +541,9 @@ def main() raises:
             print("      checkpoint ->", p)
     var pf = String(CKPT_PATH) + ".final"
     t.save_state(pf)
+    # ⚠ Without this the tail of the buffer is lost — CsvLogger flushes at
+    # `buffer_size`, so up to 63 entries (the most recent ones) would never
+    # reach disk on a clean exit.
+    logger.close()
     print("[3] done. final checkpoint ->", pf)
+    print("      metrics CSV ->", CSV_PATH)
