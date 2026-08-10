@@ -907,10 +907,36 @@ def build_model_fields_from_flat[
     for i in range(len(fmd.geoms)):
         var gd = fmd.geoms[i]
         var o = i * MODEL_GEOM_SIZE
+        # ⚠ COLLIDABLE MESHES ONLY. This used to build a hull for EVERY mesh
+        # geom carrying a filename, ignoring `contype`/`conaffinity`. Dog has
+        # 162 mesh geoms and ALL of them are visual (`contype=0
+        # conaffinity=0`), so every dog model build ran the exact incremental
+        # hull — O(n*h) — over 162 meshes and threw the whole result away, then
+        # tripped the capacity message on vertices nothing could ever collide.
+        #
+        # A geom with neither bit set cannot pair with anything (MuJoCo's
+        # filter is `contype1 & conaffinity2 || contype2 & conaffinity1`), so
+        # its hull is dead weight in both time and capacity. Skipping it is
+        # also what lets the capacity check below be a hard error: otherwise
+        # dog would fail a check for a feature it does not use.
+        var mesh_collidable = gd.contype != 0 or gd.conaffinity != 0
+        # ⚠ A SKIPPED MESH GEOM MUST NOT KEEP ITS ASSET INDEX. The main geom
+        # loop writes `GEOM_IDX_MESH_ID = gd.mesh_id`, which is the index into
+        # the XML's mesh ASSETS; the loop below overwrites it with the
+        # COMPACTED runtime id for meshes it actually loads. Skipping the
+        # visual ones leaves that raw asset index in place, pointing past the
+        # end of `mesh_meta` — sawyer keeps 10 visual mesh geoms carrying ids
+        # up to 13 while only 2 meshes are loaded. Nothing dereferences it
+        # today (the collision filter rejects those geoms first), but a stale
+        # index that is only safe because of a check somewhere else is the
+        # shape of the `mesh_vertadr` unit bug. Make it unusable instead.
+        if gd.geom_type == GEOM_MESH and not mesh_collidable:
+            mf.geoms.data[o + GEOM_IDX_MESH_ID] = Scalar[DTYPE](-1)
         if (
             gd.geom_type == GEOM_MESH
             and gd.mesh_id >= 0
             and gd.mesh_filename.byte_length() > 0
+            and mesh_collidable
         ):
             if loaded_mesh_ids[gd.mesh_id] >= 0:
                 var mid = loaded_mesh_ids[gd.mesh_id]
@@ -957,16 +983,25 @@ def build_model_fields_from_flat[
     # bug hide. Exact hulls need roughly 10x what support sampling did (sawyer:
     # ~5.6k vertices against the 648 the sampler kept), so an under-sized
     # NMESHV is now easy to hit.
+    # ⚠⚠ THIS RAISES NOW, AND THE PRINT IT REPLACED IS WHY. Every environment
+    # ran with `NMESH_VERTS = 0` — `Phyics3dEnv` hardcoded it — so every mesh
+    # geom in every env emitted NO CONTACT (both narrow phases guard the mesh
+    # branch with `comptime if NMESH_VERTS > 0`). This message printed on every
+    # sawyer construction the whole time and nothing read it. A printed "ERROR"
+    # that no assert consumes is a comment, and it hid the entire mesh collider
+    # from the env layer while every gate stayed green.
+    #
+    # Only safe because the loop above now skips non-collidable meshes: dog
+    # carries 162 VISUAL meshes and would otherwise fail here for a feature it
+    # does not use.
     if len(mesh_vert) > NMESH_VERTS * 3:
-        print(
-            "ERROR: mesh vertex capacity exceeded — NMESH_VERTS =",
-            NMESH_VERTS,
-            "holds",
-            NMESH_VERTS * 3,
-            "scalars but the hulls need",
-            len(mesh_vert),
-            ". Meshes are being TRUNCATED and their collision shapes will be"
-            " wrong. Raise NMESH_VERTS.",
+        raise Error(
+            String("mesh vertex capacity exceeded — NMESH_VERTS = ")
+            + String(NMESH_VERTS) + " holds " + String(NMESH_VERTS * 3)
+            + " scalars but the COLLIDABLE hulls need " + String(len(mesh_vert))
+            + ". Truncating would shrink those collision shapes silently, so"
+            " this is fatal. Raise the config's NMESH_VERTS to at least "
+            + String((len(mesh_vert) + 2) // 3) + " vertices."
         )
     for i in range(len(mesh_vert)):
         if i >= NMESH_VERTS * 3:

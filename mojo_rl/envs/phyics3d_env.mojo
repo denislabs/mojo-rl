@@ -88,6 +88,12 @@ struct Phyics3dEnv[
     comptime NBODY: Int = Self.MODEL_DEF.NBODY
     comptime NJOINT: Int = Self.MODEL_DEF.NJOINT
     comptime MAX_CONTACTS: Int = Self.MODEL_DEF.MAX_CONTACTS
+    # ⚠ FROM THE CONFIG, NOT HARDCODED. This was a literal `0` at every one of
+    # the six sites below, which made mesh geoms non-colliding in EVERY
+    # environment — both narrow phases gate their mesh branch on
+    # `NMESH_VERTS > 0`. Default is still 0; only configs with collidable
+    # meshes override it. See `Phyics3dEnvConfig.NMESH_VERTS`.
+    comptime NMESH_VERTS: Int = Self.CONFIG.NMESH_VERTS
     comptime NGEOM: Int = Self.MODEL_DEF.NGEOM
     comptime NSITE: Int = Self.MODEL_DEF.NSITE
 
@@ -102,7 +108,7 @@ struct Phyics3dEnv[
         Self.MODEL_DEF.MAX_TENDON,
         Self.NSITE,
         Self.MODEL_DEF.NEXCLUDE,
-        0,  # NMESH_VERTS
+        Self.NMESH_VERTS,
     ]
     var d: Data[
         Self.DTYPE,
@@ -119,7 +125,8 @@ struct Phyics3dEnv[
     comptime IntegRK4 = RK4Integrator[
         Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
         Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
-        Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0,
+        Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE,
+        Self.NMESH_VERTS,
         Self.MODEL_DEF.CONE_TYPE, 1, SOLVER = Self.SOLVER,
     ]
     # ⚠ `MAX_CONDIM` AND `NOSLIP_ITER` MUST BE FORWARDED FROM THE MODEL DEF.
@@ -138,7 +145,8 @@ struct Phyics3dEnv[
     comptime IntegEuler = EulerIntegrator[
         Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
         Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
-        Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0,
+        Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE,
+        Self.NMESH_VERTS,
         Self.MODEL_DEF.CONE_TYPE, 1, SOLVER = Self.SOLVER,
         RNE_POST = Self.CONFIG.RNE_POST,
         MAX_CONDIM = Self.MODEL_DEF.MAX_CONDIM,
@@ -212,7 +220,7 @@ struct Phyics3dEnv[
         # every record tensor via load_from_model and computes invweight0
         # fields-natively (G1).
         self.mf = type_of(self.mf)()
-        Self.MODEL_DEF.init_fields[Self.DTYPE, 0](ctx, self.mf)
+        Self.MODEL_DEF.init_fields[Self.DTYPE, Self.NMESH_VERTS](ctx, self.mf)
 
         self.d = type_of(self.d)()
         self.integ_rk4 = Self.IntegRK4()
@@ -239,7 +247,7 @@ struct Phyics3dEnv[
                 "cpu", Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
                 Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
                 Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
-                Self.MODEL_DEF.NEXCLUDE, 0, 1,
+                Self.MODEL_DEF.NEXCLUDE, Self.NMESH_VERTS, 1,
             ](self.d, self.mf, None)
         except e:
             print("Phyics3dEnv._fields_fk: FK error:", e)
@@ -255,7 +263,7 @@ struct Phyics3dEnv[
                 "cpu", Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
                 Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
                 Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
-                Self.MODEL_DEF.NEXCLUDE, 0, 1,
+                Self.MODEL_DEF.NEXCLUDE, Self.NMESH_VERTS, 1,
             ](self.d, self.mf, None)
         except e:
             print("Phyics3dEnv._fields_vel: velocity error:", e)
@@ -374,7 +382,7 @@ struct Phyics3dEnv[
                     "cpu", Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                     Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
                     Self.MODEL_DEF.MAX_EQUALITY, Self.MODEL_DEF.MAX_TENDON,
-                    Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0, 1,
+                    Self.NSITE, Self.MODEL_DEF.NEXCLUDE, Self.NMESH_VERTS, 1,
                 ](self.d, self.mf, None)
             except:
                 return

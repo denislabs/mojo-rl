@@ -35,6 +35,29 @@ trait Phyics3dEnvConfig:
     # MetaWorld override to "euler".
     comptime INTEGRATOR: StaticString = "rk4"
 
+    # Convex-hull vertex capacity for COLLIDABLE mesh geoms.
+    #
+    # ⚠⚠ ZERO MEANS MESH GEOMS DO NOT COLLIDE — it is not a "size hint". Both
+    # narrow phases guard their mesh branch with `comptime if NMESH_VERTS > 0`
+    # and otherwise emit no contact for the pair. This was hardcoded to 0 in
+    # `Phyics3dEnv` for every environment, so the entire mesh collider was
+    # unreachable from the env layer while the fixtures that build `Model`
+    # directly kept passing.
+    #
+    # Default 0 is CORRECT for almost everything and must stay: of the ported
+    # models only sawyer has collidable meshes (2 geoms — `l6` and
+    # `eGripperBase`). Dog has 162 mesh geoms and every one is visual
+    # (`contype=0 conaffinity=0`); the rest of the suite has no meshes at all.
+    # A nonzero value compiles the whole GJK/EPA mesh branch into that model's
+    # collision kernel, which costs compile time and registers and risks the
+    # Metal wide-InlineArray cliff — so pay it only where a mesh can collide.
+    #
+    # It cannot be derived from the XML at comptime (mesh assets need file I/O
+    # and the comptime parser cannot read an STL), so it is hand-supplied like
+    # MAX_CONTACTS. `fields_build` RAISES if it is too small, quoting the
+    # required count — an undersized value can no longer truncate silently.
+    comptime NMESH_VERTS: Int = 0
+
     # Refresh forward kinematics AFTER the frame-skip loop, so that reward and
     # observation hooks see xpos/xquat/xipos/site_xpos consistent with the
     # INTEGRATED qpos.

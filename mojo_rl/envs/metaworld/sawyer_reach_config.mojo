@@ -66,6 +66,19 @@ def _clamp(val: Float64, lo: Float64, hi: Float64) -> Float64:
 
 struct SawyerReachConfig(Phyics3dEnvConfig):
     # === Physics ===
+    # Sawyer is the ONLY ported model with collidable mesh geoms: `l6` (the
+    # forearm, contype=4 conaffinity=2) and `eGripperBase` (the gripper shell,
+    # contype=1 conaffinity=1). Their exact convex hulls need 5597 vertices;
+    # 6144 = 24 * 256 leaves headroom without being open-ended, and
+    # `fields_build` raises with the exact requirement if a mesh is added.
+    #
+    # ⚠ WITHOUT THIS THE GRIPPER DOES NOT COLLIDE. `Phyics3dEnv` used to
+    # hardcode 0, so every mesh pair was skipped and the arm passed through
+    # objects — which is precisely what a manipulation task cannot tolerate.
+    # 5597 * 3 * 8 B = 134 KiB, one copy in `Model` (not batched), so the cost
+    # is compile time on the mesh branch, not memory.
+    comptime NMESH_VERTS: Int = 24 * 256
+
     comptime FRAME_SKIP: Int = 5  # MetaWorld frame_skip
     # GPU hooks implemented below — see Phyics3dEnvConfig.HAS_GPU_HOOKS.
     comptime HAS_GPU_HOOKS: Bool = True

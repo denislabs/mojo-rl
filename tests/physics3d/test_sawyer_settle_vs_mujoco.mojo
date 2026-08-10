@@ -47,7 +47,16 @@ from std.testing import assert_true, TestSuite
 
 from mojo_rl.core.cont_action import ContAction
 from mojo_rl.envs.metaworld import SawyerReach
-from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
+from mojo_rl.physics3d.gpu.constants import (
+    META_IDX_NUM_CONTACTS,
+    MODEL_GEOM_SIZE,
+    GEOM_IDX_TYPE,
+    GEOM_IDX_BODY,
+    CONTACT_SIZE,
+    CONTACT_IDX_BODY_A,
+    CONTACT_IDX_BODY_B,
+)
 
 comptime REF_XML = (
     "references/Metaworld-master/metaworld/assets/sawyer_xyz/"
@@ -234,8 +243,90 @@ def test_sawyer_rest_contact_is_a_manifold() raises:
     )
 
 
+def test_env_facade_collides_meshes() raises:
+    """POSITIVE CONTROL: a mesh contact must be reachable through the env.
+
+    ⚠ THIS EXISTS BECAUSE THE TWO GATES ABOVE CANNOT SEE THE BUG THEY WERE
+    WRITTEN AFTER. `Phyics3dEnv` hardcoded `NMESH_VERTS = 0`, so every mesh
+    geom in every environment emitted no contact — both narrow phases guard
+    their mesh branch with `comptime if NMESH_VERTS > 0`. Enabling meshes left
+    the settling numbers BIT-IDENTICAL (rest error 3.859900638120598e-07 either
+    way), because no mesh row is load-bearing at that equilibrium. Which is the
+    correct physics, and also indistinguishable from the fix doing nothing.
+
+    So assert the mesh path directly: put the obj inside the gripper hull and
+    require a contact between the obj body and a mesh-carrying body. If this
+    fails while the settle tests pass, mesh collision is off again.
+
+    Single detection step only — this pose is 2.77 cm deep and INTEGRATING from
+    it is a blowout (the reference ejects the obj at |qvel| 25.8), which is why
+    the settle tests start the obj on the table instead.
+    """
+    var env = SawyerReach()
+    _ = env.reset()
+
+    # Bodies that own a MESH geom, and the obj's body.
+    var mesh_bodies = List[Int]()
+    var obj_body = -1
+    for g in range(env.NGEOM):
+        var go = g * MODEL_GEOM_SIZE
+        var gt = Int(env.mf.geoms.data[go + GEOM_IDX_TYPE])
+        var gb = Int(env.mf.geoms.data[go + GEOM_IDX_BODY])
+        if gt == GEOM_MESH:
+            mesh_bodies.append(gb)
+        elif gt == GEOM_CYLINDER:
+            obj_body = gb
+    print("  mesh-geom bodies:", len(mesh_bodies), " obj body:", obj_body)
+    assert_true(
+        len(mesh_bodies) > 0 and obj_body >= 0,
+        "no mesh geom or no obj cylinder in the compiled model — this control"
+        " cannot mean anything",
+    )
+
+    # Teleport the obj into the eGripperBase hull (the fixture pose the
+    # single-frame mesh gates use), then take ONE step to run detection.
+    var qs = List[Float64]()
+    var vs = List[Float64]()
+    for i in range(env.NQ):
+        qs.append(Float64(env.d.qpos.data[i]))
+    for _ in range(env.NV):
+        vs.append(0.0)
+    qs[OBJ_QPOS + 0] = 0.005
+    qs[OBJ_QPOS + 1] = 0.601
+    qs[OBJ_QPOS + 2] = 0.28
+    qs[OBJ_QPOS + 3] = 1.0
+    qs[OBJ_QPOS + 4] = 0.0
+    qs[OBJ_QPOS + 5] = 0.0
+    qs[OBJ_QPOS + 6] = 0.0
+    env.set_state(qs, vs)
+
+    var action = ContAction[ACTION_DIM]()
+    for i in range(ACTION_DIM):
+        action.data[i] = 0.0
+    _ = env.step(action)
+
+    var ncon = Int(env.d.meta.data[META_IDX_NUM_CONTACTS])
+    var mesh_rows = 0
+    for c in range(ncon):
+        var b = c * CONTACT_SIZE
+        var ba = Int(env.d.contacts.data[b + CONTACT_IDX_BODY_A])
+        var bb = Int(env.d.contacts.data[b + CONTACT_IDX_BODY_B])
+        for mb in mesh_bodies:
+            if (ba == mb and bb == obj_body) or (bb == mb and ba == obj_body):
+                mesh_rows += 1
+    print("  contacts:", ncon, " obj-vs-MESH rows:", mesh_rows)
+    assert_true(
+        mesh_rows > 0,
+        "NO mesh contact through the env facade. Mesh geoms are not colliding"
+        " — check `CONFIG.NMESH_VERTS` is nonzero for this env and that"
+        " `Phyics3dEnv` forwards it instead of a literal 0. Every environment"
+        " shipped this way until 2026-08-10.",
+    )
+
+
 def main() raises:
     var suite = TestSuite()
     suite.test[test_sawyer_obj_settles_where_mujoco_does]()
     suite.test[test_sawyer_rest_contact_is_a_manifold]()
+    suite.test[test_env_facade_collides_meshes]()
     suite^.run()
