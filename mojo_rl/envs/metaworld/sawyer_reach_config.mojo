@@ -68,16 +68,24 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
     # === Physics ===
     # Sawyer is the ONLY ported model with collidable mesh geoms: `l6` (the
     # forearm, contype=4 conaffinity=2) and `eGripperBase` (the gripper shell,
-    # contype=1 conaffinity=1). Their exact convex hulls need 5597 vertices;
-    # 6144 = 24 * 256 leaves headroom without being open-ended, and
+    # contype=1 conaffinity=1). Their exact convex hulls are 345 and 883
+    # vertices — 1228 total, 3684 scalars. 2048 leaves ~65% headroom, and
     # `fields_build` raises with the exact requirement if a mesh is added.
+    #
+    # ⚠ NOT 5597. That figure is the total for ALL TWELVE mesh geoms and comes
+    # from the capacity ERROR printed BEFORE non-collidable meshes were
+    # skipped; ten of those twelve are visual and are no longer loaded. Sizing
+    # off a pre-filter measurement over-allocates by ~4.5x. The raw STL counts
+    # (l6 3021, eGripperBase 6693) are a different number again — the hull is a
+    # small subset of the mesh, so neither raw verts nor the old total is the
+    # quantity to size against.
     #
     # ⚠ WITHOUT THIS THE GRIPPER DOES NOT COLLIDE. `Phyics3dEnv` used to
     # hardcode 0, so every mesh pair was skipped and the arm passed through
     # objects — which is precisely what a manipulation task cannot tolerate.
     # 5597 * 3 * 8 B = 134 KiB, one copy in `Model` (not batched), so the cost
     # is compile time on the mesh branch, not memory.
-    comptime NMESH_VERTS: Int = 24 * 256
+    comptime NMESH_VERTS: Int = 2048
 
     comptime FRAME_SKIP: Int = 5  # MetaWorld frame_skip
     # GPU hooks implemented below — see Phyics3dEnvConfig.HAS_GPU_HOOKS.
