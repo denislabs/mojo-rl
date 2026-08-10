@@ -25,6 +25,16 @@ Six of those nine produce a beautifully-agreeing pair of ZEROS, so the
 non-vacuity checks are the load-bearing part of this file, exactly as in the
 quadruped gate. Each block asserts the CPU side actually MOVED.
 
+THE WINDOW SELF-TRUNCATES at the first contact rather than asserting it never
+comes. Measured on NVIDIA: dog picks up 6 contacts at step 9 of 12, with CPU
+and GPU AGREEING at 6 — so the original `assert ncon == 0` failed a gate whose
+subject was working, and blamed "N_STEPS/DROP_Z". Note the contacts are very
+unlikely to be the FLOOR (9 steps is 0.135 s, ~9 cm of fall from z=1.6);
+they are almost certainly SELF-contacts as the actuation swings the limbs
+together, which is why raising DROP_Z would not have helped. `steps_done` is
+asserted against MIN_AIRBORNE_STEPS so truncation cannot quietly shrink the
+window to nothing.
+
 ⚠⚠ APPLE BUILDS THIS AND CANNOT RUN IT — NVIDIA is the only target where this
 gate means anything. Measured 2026-08-10: `mojo build` exits 0 and emits a
 binary, then all three tests fail at the FIRST kernel launch with
@@ -77,6 +87,12 @@ comptime N_ENVS = 2
 # `ncon == 0` is ASSERTED every step rather than assumed.
 comptime N_STEPS = 12
 comptime DROP_Z: Float64 = 1.6
+# The window self-truncates at the first contact (see the loop). This is the
+# floor on how much of it must survive for the comparison to be worth making
+# — measured on NVIDIA, dog runs 9 contact-free steps, so 6 leaves headroom
+# without letting the gate degenerate. ⚠ If this ever fires, do NOT just lower
+# it: a window that short is not testing the sensors it claims to.
+comptime MIN_AIRBORNE_STEPS = 6
 
 # ── Block boundaries, in the order `_dog_obs_cpu` emits them ─────────────
 comptime N_BLOCKS: Int = 9
@@ -218,6 +234,14 @@ def _run[
     var rew_lo = 1e30
     var rew_hi = -1e30
 
+    # How many steps were actually compared before the first contact, and what
+    # stopped it. Both are printed; `steps_done` is asserted against
+    # MIN_AIRBORNE_STEPS so a window that collapses to nothing fails loudly
+    # instead of passing vacuously.
+    var steps_done = 0
+    var first_contact_step = -1
+    var first_contact_ncon = (0, 0)
+
     for t in range(N_STEPS):
         var act = ContAction[ACT_DIM]()
         for j in range(ACT_DIM):
@@ -238,22 +262,34 @@ def _run[
         if cpu_rew > rew_hi:
             rew_hi = cpu_rew
 
-        # The window must stay airborne — see the header.
+        # ── the window SELF-TRUNCATES at the first contact ──────────────────
+        # It used to ASSERT `ncon == 0` and fail the whole gate the moment a
+        # contact appeared. That made a correct engine look broken: measured
+        # on NVIDIA, dog picks up 6 contacts at step 9 of 12 with CPU and GPU
+        # AGREEING (6 vs 6), so nothing had diverged — the window was simply
+        # mis-sized, and the failure said "N_STEPS/DROP_Z need re-sizing"
+        # about a port that was fine.
+        #
+        # ⚠ AND THE CAUSE IS NOT NECESSARILY THE FLOOR. Dropped from z=1.6,
+        # 9 control steps is 0.135 s and about 9 cm of fall — nowhere near the
+        # ground. These are far more likely SELF-contacts as the sinusoidal
+        # actuation swings the limbs together. Re-sizing DROP_Z would
+        # therefore not have helped, which is exactly why this is a
+        # truncation and not a bigger number.
+        #
+        # Truncating keeps the gate honest in both directions: everything
+        # compared is genuinely contact-free, and `steps_done` below asserts
+        # the window was long enough to mean something rather than silently
+        # shrinking to one step.
         gpu.d.meta.download(ctx)
         ctx.synchronize()
-        assert_true(
-            Int(cpu.d.meta.data[META_IDX_NUM_CONTACTS]) == 0
-            and Int(gpu.d.meta.data[META_IDX_NUM_CONTACTS]) == 0,
-            String(label)
-            + ": the window reached the floor at step "
-            + String(t)
-            + " (ncon cpu "
-            + String(Int(cpu.d.meta.data[META_IDX_NUM_CONTACTS]))
-            + ", gpu "
-            + String(Int(gpu.d.meta.data[META_IDX_NUM_CONTACTS]))
-            + "). N_STEPS/DROP_Z need re-sizing — this gate is only valid"
-            + " while contact plays no part.",
-        )
+        var ncon_cpu = Int(cpu.d.meta.data[META_IDX_NUM_CONTACTS])
+        var ncon_gpu = Int(gpu.d.meta.data[META_IDX_NUM_CONTACTS])
+        if ncon_cpu != 0 or ncon_gpu != 0:
+            first_contact_step = t
+            first_contact_ncon = (ncon_cpu, ncon_gpu)
+            break
+        steps_done = t + 1
 
         for e in range(N_ENVS):
             for k in range(OBS_DIM):
@@ -305,7 +341,13 @@ def _run[
                 + String(Float64(h_rew[e])),
             )
 
-    print("  ", label, "—", N_STEPS, "airborne steps x", N_ENVS, "lanes")
+    if first_contact_step >= 0:
+        print(
+            "  ", label, "— window truncated at step", first_contact_step,
+            "(ncon cpu", first_contact_ncon[0],
+            ", gpu", first_contact_ncon[1], ")",
+        )
+    print("  ", label, "—", steps_done, "airborne steps x", N_ENVS, "lanes")
     for b in range(N_BLOCKS):
         print(
             "     ", _block_name(b),
@@ -318,6 +360,26 @@ def _run[
             worst = b_abs[b]
     print(
         "      reward", rew_lo, "..", rew_hi, " max|d| =", max_rew
+    )
+
+    # ⚠ FIRST, that the window existed at all. Every check below is over
+    # `steps_done` steps; if that collapsed to 0 or 1 they would all be
+    # trivially satisfiable and the gate would pass having tested nothing.
+    assert_true(
+        steps_done >= MIN_AIRBORNE_STEPS,
+        String(label)
+        + ": only "
+        + String(steps_done)
+        + " contact-free steps (need "
+        + String(MIN_AIRBORNE_STEPS)
+        + "); first contact at step "
+        + String(first_contact_step)
+        + " with ncon cpu "
+        + String(first_contact_ncon[0])
+        + " gpu "
+        + String(first_contact_ncon[1])
+        + ". If the two counts AGREE this is a window-sizing problem, not a"
+        + " divergence — but do not fix it by lowering MIN_AIRBORNE_STEPS.",
     )
 
     # ── Non-vacuity, one per block. Each is a distinct silent failure. ────
