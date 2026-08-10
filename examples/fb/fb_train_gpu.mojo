@@ -47,13 +47,17 @@ from mojo_rl.data.sampler import UniformDeviceSampler
 
 from mojo_rl.deep_agents.fb.trainer import FBTrainer
 from mojo_rl.deep_agents.fb.kernels import (
-    gather_rows_kernel, gather_idx_kernel, z_mixture_kernel,
-    project_sphere_kernel, ensure_t, _blocks,
+    gather_rows_kernel,
+    gather_idx_kernel,
+    z_mixture_kernel,
+    project_sphere_kernel,
+    ensure_t,
+    _blocks,
 )
 
 
 # ── the dataset this reads ───────────────────────────────────────────────
-comptime STORE_PATH: StaticString = "/tmp/fb_walker_wide.h5"
+comptime STORE_PATH: StaticString = "fb_walker_walk_sac.h5"
 comptime NQ: Int = 9
 comptime NV: Int = 9
 comptime NACT: Int = 6
@@ -61,13 +65,13 @@ comptime OBS: Int = NQ + NV
 comptime EP_LEN: Int = 250
 
 # ── the run ──────────────────────────────────────────────────────────────
-comptime D: Int = 128            # §13: 128 at M2 (50 was the M1 setting)
+comptime D: Int = 128  # §13: 128 at M2 (50 was the M1 setting)
 comptime BATCH: Int = 1024
 comptime HID: Int = 1024
 comptime TRAIN_STEPS: Int = 2_000_000
-comptime LOG_EVERY: Int = 2000   # see the want_loss note in the header
+comptime LOG_EVERY: Int = 2000  # see the want_loss note in the header
 comptime CKPT_EVERY: Int = 50_000
-comptime CKPT_PATH: StaticString = "/tmp/fb_walker_d128.ckpt"
+comptime CKPT_PATH: StaticString = "fb_walker_walk_sac_d128.ckpt"
 
 # ⚠⚠ Global grad-norm clip. FB's measure loss scales as (||F||·sqrt(d))^2 and
 # was measured spiking to +2559 on walker at 1 M rows; the gradients spike with
@@ -126,8 +130,10 @@ def main() raises:
     print("      ", n_rows, "rows")
     if n_rows < BATCH * 4:
         raise Error(
-            "store has only " + String(n_rows) + " rows; collect more before"
-            " training at BATCH=" + String(BATCH)
+            "store has only "
+            + String(n_rows)
+            + " rows; collect more before training at BATCH="
+            + String(BATCH)
         )
 
     # ⚠⚠ How many times will each transition be seen? This is the check that
@@ -140,15 +146,19 @@ def main() raises:
     # None of that looks like a code bug and none of it is one. Offline RL on
     # dm_control normally runs 1 M - 10 M transitions; a few hundred epochs is
     # ordinary, a few hundred THOUSAND is not.
-    var epochs = (
-        Float64(TRAIN_STEPS) * Float64(BATCH) / Float64(n_rows)
-    )
+    var epochs = Float64(TRAIN_STEPS) * Float64(BATCH) / Float64(n_rows)
     print("       each transition will be seen ~", epochs, "times")
     if epochs > 5000.0:
         raise Error(
-            "dataset far too small: " + String(n_rows) + " rows against "
-            + String(TRAIN_STEPS) + " steps at batch " + String(BATCH)
-            + " is ~" + String(epochs) + " epochs. FB will overfit and the TD"
+            "dataset far too small: "
+            + String(n_rows)
+            + " rows against "
+            + String(TRAIN_STEPS)
+            + " steps at batch "
+            + String(BATCH)
+            + " is ~"
+            + String(epochs)
+            + " epochs. FB will overfit and the TD"
             " bootstrap will oscillate rather than converge — this exact"
             " configuration blew up on the first M2 run. Collect ~1 M rows"
             " (raise N_EPISODES in collect_dm_control.mojo; walker runs at"
@@ -199,8 +209,13 @@ def main() raises:
     var samp_b = UniformDeviceSampler(n_rows, seed=UInt64(SEED) + 977)
 
     var t = Trainer.make(
-        lr=3e-4, gamma=0.98, tau=0.01, ctx=ctx, seed=UInt64(SEED) + 13,
-        max_grad_norm=MAX_GRAD_NORM, bc_weight=BC_WEIGHT,
+        lr=3e-4,
+        gamma=0.98,
+        tau=0.01,
+        ctx=ctx,
+        seed=UInt64(SEED) + 13,
+        max_grad_norm=MAX_GRAD_NORM,
+        bc_weight=BC_WEIGHT,
     )
     # Size the owned batch buffers before gathering straight into them.
     t.ensure_sized()
@@ -211,35 +226,48 @@ def main() raises:
     ensure_t["gpu"](pick, BATCH * 2, ctx)
     var rng_off = UInt64(1)
 
-    print("[2] training", TRAIN_STEPS, "steps  (d =", D, ", batch =", BATCH, ")")
+    print(
+        "[2] training", TRAIN_STEPS, "steps  (d =", D, ", batch =", BATCH, ")"
+    )
     for step in range(TRAIN_STEPS):
         # Two INDEPENDENT draws.
         samp_a.draw_into_device(ctx, idx_s, BATCH)
         samp_b.draw_into_device(ctx, idx_sp, BATCH)
         ctx.enqueue_function[gather_idx_kernel[BATCH]](
-            nxt_dev.unsafe_ptr(), idx_s.unsafe_ptr(), idx_sn.unsafe_ptr(),
-            grid_dim=_blocks(BATCH), block_dim=TPB,
+            nxt_dev.unsafe_ptr(),
+            idx_s.unsafe_ptr(),
+            idx_sn.unsafe_ptr(),
+            grid_dim=_blocks(BATCH),
+            block_dim=TPB,
         )
 
         ctx.enqueue_function[gather_rows_kernel[OBS, BATCH]](
-            obs_host.dev.value().unsafe_ptr(), idx_s.unsafe_ptr(),
+            obs_host.dev.value().unsafe_ptr(),
+            idx_s.unsafe_ptr(),
             t.bs.dev.value().unsafe_ptr(),
-            grid_dim=_blocks(BATCH * OBS), block_dim=TPB,
+            grid_dim=_blocks(BATCH * OBS),
+            block_dim=TPB,
         )
         ctx.enqueue_function[gather_rows_kernel[OBS, BATCH]](
-            obs_host.dev.value().unsafe_ptr(), idx_sn.unsafe_ptr(),
+            obs_host.dev.value().unsafe_ptr(),
+            idx_sn.unsafe_ptr(),
             t.bsn.dev.value().unsafe_ptr(),
-            grid_dim=_blocks(BATCH * OBS), block_dim=TPB,
+            grid_dim=_blocks(BATCH * OBS),
+            block_dim=TPB,
         )
         ctx.enqueue_function[gather_rows_kernel[OBS, BATCH]](
-            obs_host.dev.value().unsafe_ptr(), idx_sp.unsafe_ptr(),
+            obs_host.dev.value().unsafe_ptr(),
+            idx_sp.unsafe_ptr(),
             t.bsp.dev.value().unsafe_ptr(),
-            grid_dim=_blocks(BATCH * OBS), block_dim=TPB,
+            grid_dim=_blocks(BATCH * OBS),
+            block_dim=TPB,
         )
         ctx.enqueue_function[gather_rows_kernel[NACT, BATCH]](
-            act_host.dev.value().unsafe_ptr(), idx_s.unsafe_ptr(),
+            act_host.dev.value().unsafe_ptr(),
+            idx_s.unsafe_ptr(),
             t.ba.dev.value().unsafe_ptr(),
-            grid_dim=_blocks(BATCH * NACT), block_dim=TPB,
+            grid_dim=_blocks(BATCH * NACT),
+            block_dim=TPB,
         )
 
         # z: half uniform on the sphere, half from B(s+). The projection runs
@@ -259,20 +287,32 @@ def main() raises:
             gauss.dev.value().unsafe_ptr(),
             t.b_sp.dev.value().unsafe_ptr(),
             pick.dev.value().unsafe_ptr(),
-            Scalar[DT](0.5), BATCH,
-            grid_dim=_blocks(BATCH), block_dim=TPB,
+            Scalar[DT](0.5),
+            BATCH,
+            grid_dim=_blocks(BATCH),
+            block_dim=TPB,
         )
         ctx.enqueue_function[project_sphere_kernel[D, BATCH]](
-            t.bz.dev.value().unsafe_ptr(), Scalar[DT](sqrt(Float64(D))),
-            grid_dim=_blocks(BATCH), block_dim=TPB,
+            t.bz.dev.value().unsafe_ptr(),
+            Scalar[DT](sqrt(Float64(D))),
+            grid_dim=_blocks(BATCH),
+            block_dim=TPB,
         )
 
         var want = (step % LOG_EVERY) == 0 or step == TRAIN_STEPS - 1
         var l = t.train_step(want_loss=want)
         if want:
             print(
-                "   step", step, " measure", l.measure, " ortho", l.ortho,
-                " actor", l.actor, " |B|", l.b_norm,
+                "   step",
+                step,
+                " measure",
+                l.measure,
+                " ortho",
+                l.ortho,
+                " actor",
+                l.actor,
+                " |B|",
+                l.b_norm,
             )
             # ⚠ Read TRENDS, not signs. With `LayerNorm[D]` on B, ||B|| is
             # pinned near sqrt(D) = 11.3 (observed ~13.6 once the learned gain
