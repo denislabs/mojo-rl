@@ -406,7 +406,20 @@ def test_narrow_phase_pairs_vs_mujoco() raises:
             print("      WORLD group: ours a", ba, "b", bb,
                   " our n [", nx, ny, nz, "]  mj n [", mj_n0, mj_n1, mj_n2,
                   "]  mj bodies", mj_b1, mj_b2)
-        var approx = (g == 10 or g == 11)
+        # ⚠ GROUPS 10/11 KEEP A LOOSER BOUND, BUT THE REASON CHANGED. It used
+        # to be that `cylinder_box` APPROXIMATED the cylinder as a capsule.
+        # That is gone — they now run GJK+EPA like MuJoCo's own dispatch — and
+        # I tightened them to the closed-form bound on that basis, which
+        # FAILED: measured distance error 1.09e-07 against TOL_DIST = 1e-12.
+        #
+        # The right reason is that these two are now ITERATIVE rather than
+        # closed-form. Every other group is solved analytically and lands at
+        # machine precision; EPA converges to `EPA_TOLERANCE` (1e-8), so its
+        # residual is bounded by the algorithm's own stopping rule, not by
+        # float64. 1e-6 sits two orders above the measured 1.09e-07 and six
+        # orders below the millimetre scale this file is testing.
+        var iterative = (g == 10 or g == 11)
+        var approx = iterative
         var tol_d = TOL_DIST_APPROX if approx else TOL_DIST
         var tol_n = TOL_DIR_APPROX if approx else TOL_DIR
         # A perturbed manifold row is tilted off the primary normal BY
@@ -502,27 +515,30 @@ def test_narrow_phase_pairs_vs_mujoco() raises:
         # Groups 10 and 11 are box/cylinder and cylinder/box — the pair whose
         # primitive reduces the cylinder to a capsule. Same two groups the
         # tolerance block above calls `approx`.
+        # Label kept for the two GJK/EPA groups, but they are no longer
+        # APPROXIMATE — they are ITERATIVE. See the tolerance note above.
         var approx_group = (g == 10 or g == 11)
         print(
             "   ", names[g], "  ours", seen[g],
             " mj_nomulti", mj_nomulti[g], " mj_default", mj_multi[g],
-            "  (approx)" if approx_group else "",
+            "  (iterative)" if approx_group else "",
         )
         # THE CONTRACT: our narrow phase must equal DEFAULT MuJoCo, group by
         # group — except on the two groups whose PRIMITIVE is an approximation,
         # which are the same two this file already gives a looser distance and
         # direction tolerance.
         #
-        # ⚠ box/cylinder and cylinder/box reach 4 of MuJoCo's 5. `cylinder_box`
-        # reduces the cylinder to a CAPSULE (its own docstring says so), and a
-        # capsule is rotationally symmetric about its axis, so one of the four
-        # perturbed re-queries returns a point that is not distinct from one
-        # already found and is dropped. MuJoCo's own two z-tilt rows for that
-        # pair sit 1.64e-4 apart in y — real, but only resolvable by a query
-        # that sees the cylinder's flat rim. Recording 4 rather than widening
-        # the count to "4 or 5": the missing row is the approximation's
-        # residue, and it should fail here the day `cylinder_box` becomes exact.
-        var want = mj_multi[g] - 1 if approx_group else mj_multi[g]
+        # ⚠ THIS EXCEPTION IS RETIRED, AND IT RETIRED ITSELF. It used to read:
+        # "box/cylinder and cylinder/box reach 4 of MuJoCo's 5 ... recording 4
+        # rather than widening the count to '4 or 5': the missing row is the
+        # approximation's residue, and IT SHOULD FAIL HERE THE DAY
+        # `cylinder_box` BECOMES EXACT." That day arrived — cylinder/box now
+        # goes through `mjc_Convex`'s GJK+EPA like MuJoCo's own dispatch, the
+        # capsule reduction is gone, and both groups emit 5 of 5. The assert
+        # fired exactly as designed, on an improvement.
+        #
+        # Every group now equals DEFAULT MuJoCo with no exceptions.
+        var want = mj_multi[g]
         assert_true(
             seen[g] == want,
             String("group ") + names[g] + ": we emit " + String(seen[g])

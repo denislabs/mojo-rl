@@ -2298,10 +2298,38 @@ def _detect_contacts_env[
                 nx = r[4]
                 ny = r[5]
                 nz = r[6]
-            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX:
-                var r = cylinder_box[DTYPE](
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
+            elif (gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX) or (
+                gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER
+            ):
+                # MuJoCo routes CYLINDER x BOX to `mjc_Convex` — GJK plus EPA
+                # (`engine_collision_driver.c:41`), not to a primitive. Ours
+                # used `cylinder_box`, which REDUCES THE CYLINDER TO A CAPSULE,
+                # so the hemispherical cap dips a full radius below the flat
+                # face. Measured against the analytic depth that is an error of
+                # exactly -r in EVERY configuration, separated or penetrating:
+                # at 1 cm of CLEARANCE it still reported a 4 cm penetration. On
+                # sawyer (obj r = 0.02) it manufactured a 2 cm contact at the
+                # canonical reset pose, where MuJoCo has none and where all 13
+                # Phase 7 manipulation tasks begin.
+                #
+                # ⚠ THIS RE-ROUTE WAS ATTEMPTED ONCE BEFORE AND REVERTED. It
+                # dropped contacts at SHALLOW penetration in the RIM
+                # configuration, because GJK handed EPA a 2-simplex that did
+                # not enclose the origin. `gjkIntersect` (`4b773bdf`) is what
+                # made it viable; without that commit this branch is wrong.
+                #
+                # One branch for both orderings: `cylinder_box` needed two
+                # because the primitive is asymmetric in its operands, but the
+                # convex query is symmetric and returns `gi -> gj` either way.
+                var r = gjk_epa[DTYPE, NMESH_VERTS](
+                    gi_type,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                    ri, hli, hxi, hyi, hzi,
+                    mesh_verts, 0, 0,
+                    gj_type,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                    rj, hlj, hxj, hyj, hzj,
+                    0, 0,
                 )
                 dist = r[0]
                 cx = r[1]
@@ -2310,18 +2338,6 @@ def _detect_contacts_env[
                 nx = r[4]
                 ny = r[5]
                 nz = r[6]
-            elif gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER:
-                var r = cylinder_box[DTYPE](
-                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
-                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
-                )
-                dist = r[0]
-                cx = r[1]
-                cy = r[2]
-                cz = r[3]
-                nx = -r[4]
-                ny = -r[5]
-                nz = -r[6]
 
             # GJK/EPA fallback for any pair involving a mesh geom
             elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:

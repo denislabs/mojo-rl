@@ -52,6 +52,9 @@ from mojo_rl.physics3d.gpu.constants import (
     CONTACT_IDX_DIST,
     CONTACT_IDX_BODY_A,
     CONTACT_IDX_BODY_B,
+    CONTACT_IDX_NX,
+    CONTACT_IDX_NY,
+    CONTACT_IDX_NZ,
     META_IDX_NUM_CONTACTS,
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
@@ -82,7 +85,15 @@ comptime NMESHV = MAX_GPU_MESHES * 512
 # --- GOLDEN fingerprints (regenerated after the flat-simplex fix) ------------
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
 comptime GOLD_RTOL = 1e-3
-comptime GOLD_NCON = 2  # total contacts across both envs
+# ⚠ 2 -> 1 on 2026-08-10, and the contact that went away was NEVER REAL.
+# env0 (obj resting on the table) used to produce a cylinder/box contact from
+# `cylinder_box`'s capsule reduction, which is wrong by exactly -r and so
+# fabricated a 2 cm penetration where the obj's flat face rests exactly on the
+# table. MuJoCo reports ZERO contacts at that pose. Routing cylinder/box
+# through `mjc_Convex`'s GJK+EPA, as MuJoCo does, removes it.
+# env1's mesh contact is unchanged and still asserted, so this gate is not
+# weakened -- see the MuJoCo depth and direction checks below.
+comptime GOLD_NCON = 1  # total contacts across both envs
 # ⚠ GOLD_CON has moved TWICE on 2026-08-01, both times accounted for exactly
 # and neither re-recorded blind. Both changes are narrow-phase CONTACT
 # DIRECTION work; the fingerprint is `sum contacts[e,c,k] * (e+1)(c+1)(k+1)`.
@@ -161,8 +172,18 @@ comptime GOLD_NCON = 2  # total contacts across both envs
 # reason — the set was not merely coarse, it was the wrong memory. The 0.32 mm
 # that remains is the direction sampler (26 directions, 81 of 883 hull
 # vertices), which is now genuinely the next term.
-comptime GOLD_CON = 512.9645483070053  # geometry columns (k < 23)
-comptime GOLD_SOL = 452.32200173288584  # solparam columns (k >= 23)
+#
+# --- 2026-08-10: cylinder/box re-routed + the mesh NORMAL was reversed -----
+# 512.9645483070053 -> 336.28797102486715. Two accounted changes, both toward
+# MuJoCo: env0's phantom contact is gone (above), and env1's contact NORMAL was
+# REVERSED and is now correct. `gjk_epa` returned `gj -> gi` while every caller
+# assumed `gi -> gj`; no gate covered mesh direction, so every mesh contact this
+# engine has produced pointed the wrong way. Caught only when cylinder/box was
+# routed through the same function and tripped `test_narrow_phase_pairs`'
+# direction assert at 1.9999999999976286 -- a full reversal -- on an anchored
+# pair. Verified against MuJoCo directly by the new check below.
+comptime GOLD_CON = 336.28797102486715  # geometry columns (k < 23)
+comptime GOLD_SOL = 301.5480011552572  # solparam columns (k >= 23)
 
 
 def main() raises:
@@ -330,6 +351,46 @@ def main() raises:
             + String(derr * 1000.0) + " mm"
         )
     print("  PASS: mesh depth matches MuJoCo within 5 um")
+
+    # --- MuJoCo-ANCHORED DIRECTION -----------------------------------------
+    # ⚠ NOTHING GATED MESH CONTACT DIRECTION UNTIL NOW, and it was REVERSED.
+    # `test_narrow_phase_pairs` anchors direction against MuJoCo for every
+    # PRIMITIVE pair — that file exists because of the bug-35 double flip — but
+    # no gate covered a MESH pair, so `gjk_epa` returning `gj -> gi` where all
+    # its callers assume `gi -> gj` went unnoticed. It surfaced only when
+    # cylinder/box was routed through the same function and tripped that file's
+    # `dir err 1.9999999999976286`, a full reversal, on an anchored pair.
+    #
+    # MuJoCo at this pose: geom1 = 36 (obj), geom2 = 27 (gripper), normal
+    # geom1 -> geom2 = (-8.6e-05, 1.13e-03, -0.999999). Our record stores
+    # `body_b -> body_a` with body_a = 23 (gripper) and body_b = 33 (obj),
+    # which is the SAME direction, so the two compare without a sign flip.
+    comptime MJ_NX = -8.6e-05
+    comptime MJ_NY = 1.13e-03
+    comptime MJ_NZ = -0.999999
+    var onx = Float64(0)
+    var ony = Float64(0)
+    var onz = Float64(0)
+    for c in range(Int(d.meta.data[1 * METADATA_SIZE + META_IDX_NUM_CONTACTS])):
+        var b = 1 * MC * CONTACT_SIZE + c * CONTACT_SIZE
+        var ba = Int(d.contacts.data[b + CONTACT_IDX_BODY_A])
+        var bb = Int(d.contacts.data[b + CONTACT_IDX_BODY_B])
+        for mb in mesh_bodies:
+            if (ba == mb and bb == obj_body) or (bb == mb and ba == obj_body):
+                onx = Float64(d.contacts.data[b + CONTACT_IDX_NX])
+                ony = Float64(d.contacts.data[b + CONTACT_IDX_NY])
+                onz = Float64(d.contacts.data[b + CONTACT_IDX_NZ])
+    var dotn = onx * MJ_NX + ony * MJ_NY + onz * MJ_NZ
+    print("  mesh normal", onx, ony, onz, " dot(MuJoCo) =", dotn)
+    # A reversal reads as dot = -1, which is what this is here to catch. The
+    # bound allows ~0.8 degrees, which is loose against our single-point answer
+    # versus MuJoCo's 5-point manifold and still four orders from a flip.
+    if dotn < 0.9999:
+        raise Error(
+            "mesh contact NORMAL diverges from MuJoCo: dot = " + String(dotn)
+            + " (a value near -1 is a full reversal)"
+        )
+    print("  PASS: mesh normal matches MuJoCo direction")
 
     # Non-vacuity: env1 must have a mesh-geom-body vs obj-body contact.
     var ncon1 = Int(d.meta.data[1 * METADATA_SIZE + META_IDX_NUM_CONTACTS])

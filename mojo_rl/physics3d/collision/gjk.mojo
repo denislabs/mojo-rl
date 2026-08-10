@@ -927,9 +927,14 @@ def gjk_epa[
         var cx = (w1x + w2x) * Scalar[DTYPE](0.5)
         var cy = (w1y + w2y) * Scalar[DTYPE](0.5)
         var cz = (w1z + w2z) * Scalar[DTYPE](0.5)
-        var nx = vx / dist
-        var ny = vy / dist
-        var nz = vz / dist
+        # ⚠ SIGN: this function returns `gi -> gj`, the convention EVERY caller
+        # applies (the emit then negates once more to reach the record's
+        # `body_b -> body_a`). GJK's `v` and EPA's face normal both point OUT of
+        # the Minkowski difference, which is `gj -> gi`, so both return sites
+        # negate. See the note at the EPA return.
+        var nx = -vx / dist
+        var ny = -vy / dist
+        var nz = -vz / dist
         return (dist, cx, cy, cz, nx, ny, nz)
 
     # ===== EPA Phase =====
@@ -1346,17 +1351,29 @@ def gjk_epa[
         var w2z = (
             l0 * ev[i0 * 9 + 8] + l1 * ev[i1 * 9 + 8] + l2 * ev[i2 * 9 + 8]
         )
-        # The record's normal for this branch is `geom1 -> geom2`, the same
-        # convention every primitive here returns; the EPA normal points from
-        # the origin out of the Minkowski difference, i.e. 2 -> 1, so negate.
+        # ⚠ THIS SIGN WAS WRONG AND NOTHING CAUGHT IT FOR THE MESH PATH.
+        # `test_narrow_phase_pairs` anchors contact DIRECTION against MuJoCo for
+        # the primitive pairs, but no gate covered direction for a MESH pair, so
+        # every mesh contact this engine produced pointed the wrong way.
+        # Measured on sawyer's obj/eGripperBase contact, where MuJoCo reports
+        # `geom1(36) -> geom2(27)` = (-8.6e-05, 1.13e-03, -0.999999) and the
+        # record convention makes that the same direction we store: ours came
+        # out +z. The re-route of cylinder/box through this same function is
+        # what exposed it, via a `dir err 1.9999999999976286` — a full
+        # reversal — on a pair that IS anchored.
+        #
+        # EPA's face normal points out of the Minkowski difference, i.e.
+        # `gj -> gi`, so returning it negated gives the `gi -> gj` that callers
+        # expect. The previous code negated in the comment's direction but
+        # against the wrong baseline.
         return (
             -best_d,
             (w1x + w2x) * Scalar[DTYPE](0.5),
             (w1y + w2y) * Scalar[DTYPE](0.5),
             (w1z + w2z) * Scalar[DTYPE](0.5),
-            -best_nx,
-            -best_ny,
-            -best_nz,
+            best_nx,
+            best_ny,
+            best_nz,
         )
 
     # EPA produced no valid face. That is not a failure needing a guess: it

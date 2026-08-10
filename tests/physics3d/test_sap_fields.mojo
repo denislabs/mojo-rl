@@ -135,7 +135,12 @@ comptime GOLD_CON_H = 28658.222165894345
 # — pairs GJK reported as penetrating that float64 puts centimetres apart —
 # and env1's pose moved to a z where the mesh contact is real. Two effects,
 # one direction: fewer, and now all genuine.
-comptime GOLD_NCON_S = 2  # Part B sawyer SAP: total contacts (defect 24)
+# ⚠ 2 -> 1 on 2026-08-10: env0's contact was NEVER REAL. `cylinder_box`
+# reduced the cylinder to a capsule and so fabricated a 2 cm penetration where
+# the obj's flat face rests exactly on the table; MuJoCo reports ZERO contacts
+# at that pose. Routing cylinder/box through GJK+EPA, as MuJoCo's own dispatch
+# does, removes it. env1's mesh contact is unchanged and still asserted.
+comptime GOLD_NCON_S = 1  # Part B sawyer SAP: total contacts
 # ⚠ GOLD_CON_S has moved TWICE on 2026-08-01, both accounted for exactly.
 #   +64.0  bug 35 (the double flip): fractional part unchanged; 64 = 32 * 2,
 #          one `(body_a, body_b)` relabel of the env1 obj(33)/table(1) contact
@@ -199,8 +204,18 @@ comptime GOLD_NCON_S = 2  # Part B sawyer SAP: total contacts (defect 24)
 # exactly once more. `compute_convex_hull` now computes a real hull instead of
 # sampling support points, so the obj/gripper depth reaches MuJoCo parity:
 # -0.0276952 against -0.0276947, i.e. 0.5 MICROMETRES.
-comptime GOLD_CON_S = 512.9645483070053  # geometry columns (k < 23)
-comptime GOLD_SOL_S = 452.32200173288584  # solparam columns (k >= 23)
+#
+# --- 2026-08-10: cylinder/box re-routed + the mesh NORMAL was reversed -----
+# 512.9645483070053 -> 336.28797102486715, matching test_mesh_detection_fields
+# exactly once more. Two accounted changes, both toward MuJoCo: env0's phantom
+# is gone, and env1's contact NORMAL was REVERSED and is now correct.
+# `gjk_epa` returned `gj -> gi` while every caller assumed `gi -> gj`, and no
+# gate covered mesh DIRECTION, so every mesh contact this engine produced
+# pointed the wrong way. It surfaced only when cylinder/box went through the
+# same function and tripped `test_narrow_phase_pairs`' direction assert at
+# 1.9999999999976286 -- a full reversal -- on an anchored pair.
+comptime GOLD_CON_S = 336.28797102486715  # geometry columns (k < 23)
+comptime GOLD_SOL_S = 301.5480011552572  # solparam columns (k >= 23)
 
 # ── Humanoid (Part A) ────────────────────────────────────────────────────
 comptime NQ_H = HumanoidModel.NQ  # 24
