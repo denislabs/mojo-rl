@@ -71,7 +71,7 @@ the GRADIENTS are identical either way, because the loss value never enters the
 update. Log every few hundred steps, not every step.
 """
 
-from max.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.math import abs, sqrt
 from std.random import random_float64
 
@@ -109,6 +109,7 @@ from .kernels import (
     mean_sq_t,
     mean_t,
     gaussian_t,
+    gaussian_dev_t,
 )
 
 
@@ -265,6 +266,11 @@ struct FBTrainer[
     var steps: Int
     var _rng_seed: UInt64
     var _rng_offset: UInt64
+    # 1-elem device Philox offset, allocated on the GPU target by `_size_once`.
+    # ⚠ The HOST `_rng_offset` above cannot be used under CUDA-graph capture:
+    # it is passed BY VALUE into the draw kernel, so a captured step bakes it in
+    # and every replay redraws the identical noise. See `gaussian_dev_t`.
+    var _rng_off_dev: Optional[DeviceBuffer[DType.uint64]]
     var _sized: Bool
 
     def __init__(out self):
@@ -331,6 +337,7 @@ struct FBTrainer[
         self.steps = 0
         self._rng_seed = UInt64(0x5EED)
         self._rng_offset = UInt64(0)
+        self._rng_off_dev = None
         self._sized = False
 
     def __init__(out self, *, deinit move: Self):
@@ -397,6 +404,7 @@ struct FBTrainer[
         self.steps = move.steps
         self._rng_seed = move._rng_seed
         self._rng_offset = move._rng_offset
+        self._rng_off_dev = move._rng_off_dev^
         self._sized = move._sized
 
     @staticmethod
@@ -432,6 +440,17 @@ struct FBTrainer[
         t.opt_f2 = Adam(lr=Scalar[DT](lr))
         t.opt_b = Adam(lr=Scalar[DT](lr))
         t.opt_actor = Adam(lr=Scalar[DT](lr))
+        # ⚠ Arena adoption is NOT an optimisation here, it is a PRECONDITION:
+        # `adam.mojo` states "Don't capture a non-adopted GPU optimizer" — the
+        # non-arena step reads beta^t from the HOST, so a captured replay would
+        # apply a frozen bias correction. It also switches `clip_grads_device`
+        # off its D2H fallback, which would otherwise sync mid-capture. No-op on
+        # CPU, so this stays target-agnostic.
+        comptime if Self.TARGET == "gpu":
+            t.opt_f1.adopt[Self.TARGET, Self.FNET](t.f1.online, ctx)
+            t.opt_f2.adopt[Self.TARGET, Self.FNET](t.f2.online, ctx)
+            t.opt_b.adopt[Self.TARGET, Self.BNET](t.bnet.online, ctx)
+            t.opt_actor.adopt[Self.TARGET, Self.ANET](t.actor.online, ctx)
         t.gamma = gamma
         t.tau = tau
         t.ortho_weight = ortho_weight
@@ -446,6 +465,14 @@ struct FBTrainer[
             return
         comptime T = Self.TARGET
         var c = self.ctx
+        comptime if T == "gpu":
+            var d = c.value()
+            var ob = d.enqueue_create_buffer[DType.uint64](1)
+            var oh = d.enqueue_create_host_buffer[DType.uint64](1)
+            oh[0] = self._rng_offset
+            d.enqueue_copy(ob, oh)
+            d.synchronize()
+            self._rng_off_dev = ob^
         ensure_t[T](self.b_s, Self._ND, c)
         ensure_t[T](self.b_sp, Self._ND, c)
         ensure_t[T](self.b_sn, Self._ND, c)
@@ -575,7 +602,14 @@ struct FBTrainer[
         call_forward[T, Self.BATCH](
             self.actor.target_net, TensorRefs[1, MutAnyOrigin](self.ain_t), self.pi_t, c
         )
-        gaussian_t[T, Self._NA](self.noise, self._rng_seed, self._rng_offset, c)
+        gaussian_dev_t[T, Self._NA](
+            self.noise, self._rng_seed, self._rng_off_dev.value(), c
+        ) if T == "gpu" else gaussian_t[T, Self._NA](
+            self.noise, self._rng_seed, self._rng_offset, c
+        )
+        # Host mirror kept only so the CPU path and `save_state` stay unchanged;
+        # on GPU the authoritative counter is the device buffer, bumped inside
+        # `gaussian_dev_t` so the advance is part of any captured sequence.
         self._rng_offset += UInt64(Self._NA + (Self._NA % 2))
         smooth_action_t[T, Self._NA](
             self.a_next, self.pi_t, self.noise,
@@ -671,9 +705,13 @@ struct FBTrainer[
 
         if self.max_grad_norm > 0.0:
             var mgn = Scalar[DT](self.max_grad_norm)
-            _ = self.opt_f1.clip_grads[T](self.f1.online, mgn, c)
-            _ = self.opt_f2.clip_grads[T](self.f2.online, mgn, c)
-            _ = self.opt_b.clip_grads[T](self.bnet.online, mgn, c)
+            # ⚠ `clip_grads` D2Hs the norm — illegal inside a capture. The
+            # `_device` form keeps it on device over persistent scratch and is
+            # identical arithmetic; `read_clip_norm` retrieves it at flush
+            # cadence if ever needed.
+            self.opt_f1.clip_grads_device[T](self.f1.online, mgn, c)
+            self.opt_f2.clip_grads_device[T](self.f2.online, mgn, c)
+            self.opt_b.clip_grads_device[T](self.bnet.online, mgn, c)
         self.opt_f1.step[T](self.f1.online, c)
         self.opt_f2.step[T](self.f2.online, c)
         self.opt_b.step[T](self.bnet.online, c)
@@ -695,6 +733,31 @@ struct FBTrainer[
             0.5 * (l1 + l2), l_ortho, l_actor,
             sqrt(fn2 * Float64(Self.D)), sqrt(bn2 * Float64(Self.D)),
         )
+
+    def train_device_kernels(mut self) raises:
+        """The pure device-kernel train step — the body to hand to
+        `maybe_capture_replay`.
+
+        It is exactly `train_step(want_loss=False)`. That path already contains
+        no host work: every loss readback is behind `want_loss`, the grad-norm
+        clip goes through `clip_grads_device`, Adam runs the adopted-arena
+        kernel that reads beta^t from device, and the exploration noise draws
+        its Philox offset from a device buffer that a kernel bumps in-sequence.
+
+        ⚠ Do NOT call this with `want_loss=True` semantics, and do not add a
+        host read to the `want_loss=False` path. A `synchronize` or D2H inside a
+        capture is illegal and fails loudly; a host VALUE baked into a kernel
+        argument does not — it silently freezes at its capture-time value. The
+        second failure mode is the one that has cost this project a run before.
+
+        ⚠ The kernel SEQUENCE must be identical on every call for the captured
+        graph to stay valid. It is, because the only branch is
+        `self.max_grad_norm > 0.0` on a field fixed at construction.
+        """
+        comptime assert Self.TARGET == "gpu", (
+            "train_device_kernels is the CUDA-graph capture path (GPU only)"
+        )
+        _ = self.train_step(want_loss=False)
 
     def _actor_step(mut self, want_loss: Bool) raises -> Float64:
         """DPG through `F1`: maximise `F(s, pi_z(s,z), z) · z`.
@@ -882,7 +945,13 @@ struct FBTrainer[
     def backward_embed[
         N: Int
     ](mut self, mut s: Tensor, mut dst: Tensor) raises:
-        """`B(s)` for `N` rows — the input to `z_from_reward`."""
+        """`B(s)` for `N` rows — the input to `z_from_reward`.
+
+        ⚠ On the GPU target the result is left ON DEVICE. Callers that read
+        `dst.data` must `dst.download(ctx)` first; without it they read a host
+        buffer that was never written — all zeros, silently. Cost a debugging
+        pass in `test_fb_cuda_graph_safety.mojo`.
+        """
         comptime T = Self.TARGET
         var c = self.ctx
         ensure_t[T](dst, N * Self.D, c)

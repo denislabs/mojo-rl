@@ -1,32 +1,38 @@
-"""M2 — FB training on GPU, d = 128, from a collected dm_control dataset.
+"""FB training — SHORT run for nsys profiling.
 
-This is the run `docs/BFM_ZERO_SHOT_RL.md` §13 budgets at 2 M gradient steps and
-"a few hours on a rented 4090". Everything it needs is device-resident: the
-dataset is uploaded once, the sampler writes indices on device, and the batch is
-assembled by the gather/pack kernels. Nothing crosses PCIe in the training loop
-except the occasional logged loss.
+Profiling harness around the FB GPU train step, the counterpart of
+`examples/walker2d/sac_walker2d_profile_graph_nn.mojo`. Same dataset, same
+architecture and same dims as `fb_train_gpu.mojo` so the numbers transfer;
+only the step count is cut and logging/checkpointing removed.
 
-Prerequisite: run `examples/fb/collect_dm_control.mojo` first. This reads the
-store it writes.
+Run with:
+    pixi run -e nvidia nsys profile --trace=cuda --cuda-graph-trace=node \
+        --stats=true mojo run -I . \
+        examples/fb/fb_train_profile_gpu.mojo
 
-    pixi run -e nvidia mojo run -I . examples/fb/fb_train_gpu.mojo
+Prints host wall-clock so you can compare it against nsys's GPU-busy total:
+if elapsed >> GPU busy, the loop is CPU/launch-bound — the regime the capture
+toggle below exists for. An FB step issues ~150 kernel launches, and until
+this landed NONE of them were captured while the SAC driver captured from day
+one; that asymmetry is the first thing to measure, not the arithmetic.
 
-⚠⚠ **`want_loss` is on a stride, and that is not cosmetic.** Reading a loss back
-from the GPU is a full pipeline stall. At 2 M steps, logging every step is the
-difference between a few hours and most of a day, and the GRADIENTS are
-identical either way because the loss value never enters the update.
+Profiling knobs:
+  * USE_TRAIN_CUDA_GRAPH — capture the per-update device kernel sequence into a
+    CUDA graph and replay it, vs eager per-kernel launch. NVIDIA only (no-op on
+    Apple/Metal, so an Apple run cannot tell the two apart).
+  * LOG_EVERY — logging steps take the EAGER path because `want_loss=True`
+    D2Hs, which is illegal mid-capture. Set it above TRAIN_STEPS to profile a
+    pure-replay loop with no eager steps at all; keep it small to profile the
+    interleaving the real run actually does.
+  * TRAIN_STEPS — 3000 is enough for a stable profile once the first-call
+    capture (a settle run plus the captured run) has amortised.
 
-⚠ `s'` is taken through a precomputed `next_row` table rather than `idx + 1`.
-Without it, a row sampled at an episode boundary pairs a terminal state with the
-NEXT episode's reset — a transition that never happened, injected into the
-measure loss once per episode. The table is built from the store's OWN episode
-index (`ep_offset` / `ep_len`), never from an assumed episode length, and the
-count of self-transitions it creates is asserted against `n_episodes` below.
-
-⚠ `s+` comes from a SECOND, INDEPENDENT draw. It is not `s'`. See
-`fb/loss.mojo`: the successor measure asks "starting from s, how often is s+
-visited", and if `s+` were the batch's own next-states the matrix would only
-ever be evaluated on pairs one step apart.
+⚠ The batch assembly ahead of the step — samplers, gathers, z mixture — stays
+EAGER and is NOT captured. It is a dozen small launches per step against the
+step's ~150, so it was not worth the extra capture-safety surface (both
+`box_muller_normal_gpu` calls there still take HOST offsets and would freeze
+under capture). If the profile shows those launches mattering, that is the next
+thing to move, and it needs the device-offset treatment first.
 """
 
 from max.gpu.host import DeviceContext, DeviceBuffer
@@ -76,10 +82,10 @@ comptime OBS: Int = NQ + NV
 comptime D: Int = 128  # §13: 128 at M2 (50 was the M1 setting)
 comptime BATCH: Int = 1024
 comptime HID: Int = 1024
-comptime TRAIN_STEPS: Int = 2_000_000
-comptime LOG_EVERY: Int = 2000  # see the want_loss note in the header
-comptime CKPT_EVERY: Int = 50_000
-comptime CKPT_PATH: StaticString = "fb_walker_all_d128.ckpt"
+comptime TRAIN_STEPS: Int = 3_000
+comptime LOG_EVERY: Int = 1_000  # see the want_loss note in the header
+comptime CKPT_EVERY: Int = 10_000_000  # effectively off
+comptime CKPT_PATH: StaticString = "/tmp/fb_profile_unused.ckpt"
 
 # ⚠⚠ Global grad-norm clip. FB's measure loss scales as (||F||·sqrt(d))^2 and
 # was measured spiking to +2559 on walker at 1 M rows; the gradients spike with

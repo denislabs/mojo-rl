@@ -37,6 +37,8 @@ from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.nn.random.box_muller import (
     box_muller_normal,
     box_muller_normal_gpu,
+    box_muller_normal_gpu_dev,
+    advance_rng_offset_kernel,
 )
 from mojo_rl.data.resident import IDX_DT
 
@@ -632,4 +634,48 @@ def gaussian_t[target: StaticString, N: Int](
         var d = ctx.value()
         box_muller_normal_gpu[N](
             d, mptr(t.dev.value().unsafe_ptr()), seed, offset
+        )
+
+
+def gaussian_dev_t[target: StaticString, N: Int](
+    mut t: Tensor,
+    seed: UInt64,
+    ref [MutAnyOrigin] offset_buf: DeviceBuffer[DType.uint64],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """`gaussian_t` with the Philox offset held ON DEVICE — the CUDA-graph-safe
+    draw.
+
+    ⚠⚠ This exists because the host-offset form is a CAPTURE TRAP. `gaussian_t`
+    takes `offset: UInt64` by value, so capturing a step that calls it BAKES the
+    offset into the graph: every replay draws the IDENTICAL noise, forever, and
+    nothing raises. The training curve still descends — TD3 target smoothing
+    with frozen noise is just a slightly different (deterministic) regulariser —
+    so this fails silently in exactly the way `USE_ENV_CUDA_GRAPH` froze the
+    physics step and every GPU example trained against a stopped simulator.
+
+    The offset lives in a 1-element device buffer, is READ by the draw kernel
+    and BUMPED by `advance_rng_offset_kernel` immediately after, so the whole
+    advance is inside the captured sequence and each replay moves the stream.
+
+    CPU target ignores `offset_buf` and draws from the host RNG, matching
+    `gaussian_t`.
+    """
+    ensure_t[target](t, N, ctx)
+    comptime if target == "cpu":
+        box_muller_normal(t.data.unsafe_ptr(), N)
+    else:
+        var d = ctx.value()
+        var off = LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin](
+            mptr(offset_buf.unsafe_ptr())
+        )
+        box_muller_normal_gpu_dev[N](
+            d, mptr(t.dev.value().unsafe_ptr()), seed, off
+        )
+        # ⚠ AFTER the draw, and with the same rounding the host path used
+        # (`N + N % 2`), so a captured run and an eager run walk the SAME
+        # Philox stream rather than diverging by a half-pair every step.
+        comptime AMT = N + (N % 2)
+        d.enqueue_function[advance_rng_offset_kernel[AMT]](
+            off, grid_dim=1, block_dim=1
         )
