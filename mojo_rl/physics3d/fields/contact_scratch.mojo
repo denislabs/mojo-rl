@@ -19,6 +19,11 @@ struct ContactScratch[
     NV: Int,
     MAX_CONTACTS: Int,
     BATCH: Int = 1,
+    # Per-env scalars for the blocked-Newton constraint Jacobian spill. 0 (the
+    # default) means "Je fits threadgroup memory" and NO buffer is allocated —
+    # see `solver/je_budget.mojo`, which is the ONLY place this number should
+    # be computed. Callers pass `je_ws_size[...]()`; nothing else.
+    JE_WS: Int = 0,
 ](Movable):
     """PGS contact-solver workspace: one owned tensor, `[BATCH, SOLVER_WS]`
     with `SOLVER_WS = 81*MC + 12*MC*NV` (the legacy
@@ -62,14 +67,29 @@ struct ContactScratch[
     comptime SOLVER_WS = 81 * Self.MC + 12 * Self.MC * Self.NV
     comptime L_SOLVER = Layout.row_major(Self.BATCH, Self.SOLVER_WS)
 
+    # ⚠ `Je` GETS ITS OWN TENSOR RATHER THAN WIDENING `solver`. `SOLVER_WS` is
+    # the ROW STRIDE of a `[BATCH, SOLVER_WS]` view, and that literal is
+    # recomputed independently in five solver files. Growing the tensor without
+    # growing every one of those views would leave each row after 0 reading the
+    # wrong memory — silent corruption, not a crash. A separate tensor leaves
+    # every stride untouched and confines the change to the blocked path.
+    comptime JE_ELEMS = Self.JE_WS if Self.JE_WS > 0 else 1
+    comptime L_JE = Layout.row_major(Self.BATCH, Self.JE_ELEMS)
+
     var solver: TensorImpl[Self.DTYPE]  # [BATCH, SOLVER_WS]
+    var je: TensorImpl[Self.DTYPE]  # [BATCH, JE_ELEMS] — 1 scalar when unused
 
     def __init__(out self) raises:
         self.solver = TensorImpl[Self.DTYPE].alloc(
             Self.BATCH * Self.SOLVER_WS
         )
+        # ⚠ FLOORED AT 1: a zero-extent tensor operand SEGFAULTS rather than
+        # behaving as an empty allocation, so the non-spilling case pays one
+        # scalar per env instead of nothing.
+        self.je = TensorImpl[Self.DTYPE].alloc(Self.BATCH * Self.JE_ELEMS)
 
     def upload_all(mut self, ctx: DeviceContext) raises:
-        """Create the device buffer (once, at setup — contents are produced
+        """Create the device buffers (once, at setup — contents are produced
         on-device thereafter)."""
         self.solver.upload(ctx)
+        self.je.upload(ctx)

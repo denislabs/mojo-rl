@@ -53,6 +53,7 @@ from ..dynamics.qderiv import compute_rne_vel_derivative
 from ..constraints.limits import solve_limits
 from ..constraints.contact_solve import solve_contacts
 from ..solver.newton_solve import solve_newton
+from ..solver.je_budget import je_ws_size
 from ..solver.cg_solve import solve_cg
 from ..solver.island_pgs_solve import solve_island_pgs
 from ..collision.broadphase_sap import detect_contacts_auto
@@ -281,8 +282,17 @@ struct ImplicitIntegrator[
     stages are serial per-env."""
 
     var scratch: DynamicsScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
+    # Blocked-Newton Jacobian spill size — 0 unless `Je` overflows threadgroup
+    # memory. Computed HERE (not by the caller) because this struct already
+    # carries every dimension it depends on, and via `je_budget` so the buffer
+    # and the kernel that indexes it cannot drift apart.
+    comptime JE_WS = je_ws_size[
+        Self.DTYPE, Self.NV, Self.NJOINT, Self.NTENDON, Self.MAX_CONTACTS,
+        3,
+    ]()
+
     var cscratch: ContactScratch[
-        Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH
+        Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH, Self.JE_WS
     ]
     var iscratch: ImplicitScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
 
@@ -294,7 +304,7 @@ struct ImplicitIntegrator[
             Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ]()
         self.cscratch = ContactScratch[
-            Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH
+            Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH, Self.JE_WS
         ]()
         self.iscratch = ImplicitScratch[
             Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH

@@ -2564,7 +2564,7 @@ def solve_contacts[
         NMESH_VERTS,
     ],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
-    mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH],
+    mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH, _],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """PGS contact solve into `scratch.qacc_constrained` (+ solved forces

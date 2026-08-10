@@ -65,6 +65,7 @@ from ..dynamics.rne import compute_bias_forces_rne
 from ..dynamics.fluid_forces import compute_fluid_forces
 from ..constraints.contact_solve import solve_contacts
 from ..solver.newton_solve import solve_newton
+from ..solver.je_budget import je_ws_size
 from ..solver.cg_solve import solve_cg
 from ..solver.island_pgs_solve import solve_island_pgs
 from ..collision.broadphase_sap import detect_contacts_auto
@@ -398,6 +399,16 @@ struct RK4Integrator[
     SOLVER: StaticString = "pgs",
     PARALLEL_GPU: Bool = False,
     CRBA_TREEWALK: Bool = False,
+    # ⚠ BOTH DEFAULT TO "FEATURE OFF" (3 and 0), so a caller that forgets them
+    # gets DIFFERENT PHYSICS rather than an error. `EulerIntegrator` has
+    # carried them since the condim-6 divergence was found on the CPU path
+    # (2026-08-03); RK4 never gained them, so an RK4 model with condim > 3 or
+    # noslip iterations would silently build 2*(3-1) pyramidal edge rows per
+    # contact and skip mj_solNoSlip. No RK4 model needs them TODAY — every
+    # condim-6 model (dog, dog_fetch, quadruped_fetch) runs Euler — which is
+    # exactly why this must be wired before one does, not after.
+    MAX_CONDIM: Int = 3,
+    NOSLIP_ITER: Int = 0,
 ](Movable):
     """Owns its scratch; steps RK4 dynamics on either target. With
     CONTACTS=True (default), each stage is followed by contact detection +
@@ -415,8 +426,17 @@ struct RK4Integrator[
 
     var scratch: DynamicsScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
     var rk4: Rk4Scratch[Self.DTYPE, Self.NQ, Self.NV, Self.BATCH]
+    # Blocked-Newton Jacobian spill size — 0 unless `Je` overflows threadgroup
+    # memory. Computed HERE (not by the caller) because this struct already
+    # carries every dimension it depends on, and via `je_budget` so the buffer
+    # and the kernel that indexes it cannot drift apart.
+    comptime JE_WS = je_ws_size[
+        Self.DTYPE, Self.NV, Self.NJOINT, Self.NTENDON, Self.MAX_CONTACTS,
+        Self.MAX_CONDIM,
+    ]()
+
     var cscratch: ContactScratch[
-        Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH
+        Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH, Self.JE_WS
     ]
 
     def __init__(out self) raises:
@@ -429,7 +449,7 @@ struct RK4Integrator[
         ]()
         self.rk4 = Rk4Scratch[Self.DTYPE, Self.NQ, Self.NV, Self.BATCH]()
         self.cscratch = ContactScratch[
-            Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH
+            Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH, Self.JE_WS
         ]()
 
     def prepare_gpu(mut self, ctx: DeviceContext) raises:
@@ -707,6 +727,10 @@ struct RK4Integrator[
                         Self.NEQUALITY, Self.NTENDON, Self.NSITE,
                         Self.NEXCLUDE, Self.NMESH_VERTS, Self.CONE_TYPE,
                         Self.BATCH,
+                    
+                        MAX_CONDIM=Self.MAX_CONDIM,
+                        NOSLIP_ITER=Self.NOSLIP_ITER,
+                        JE_WS=Self.JE_WS,
                     ](d, m, self.scratch, self.cscratch, ctx)
                 else:
                     comptime if Self.SOLVER == "cg":
@@ -716,7 +740,8 @@ struct RK4Integrator[
                             Self.NEQUALITY, Self.NTENDON, Self.NSITE,
                             Self.NEXCLUDE, Self.NMESH_VERTS, Self.CONE_TYPE,
                             Self.BATCH,
-                        ](d, m, self.scratch, self.cscratch, ctx)
+                        
+                    ](d, m, self.scratch, self.cscratch, ctx)
                     else:
                         comptime if Self.SOLVER == "island":
                             solve_island_pgs[
@@ -725,7 +750,8 @@ struct RK4Integrator[
                                 Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
                                 Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
                                 Self.CONE_TYPE, Self.BATCH,
-                            ](d, m, self.scratch, self.cscratch, ctx)
+                            
+                    ](d, m, self.scratch, self.cscratch, ctx)
                         else:
                             solve_contacts[
                                 target, Self.DTYPE, Self.NQ, Self.NV,
@@ -733,7 +759,8 @@ struct RK4Integrator[
                                 Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
                                 Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
                                 Self.CONE_TYPE, Self.BATCH,
-                            ](d, m, self.scratch, self.cscratch, ctx)
+                            
+                    ](d, m, self.scratch, self.cscratch, ctx)
 
         comptime L_JOINT = Layout.row_major(Self.NJOINT, MODEL_JOINT_SIZE)
         comptime L_NV = Layout.row_major(Self.BATCH, Self.NV)

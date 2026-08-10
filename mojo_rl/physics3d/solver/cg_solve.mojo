@@ -962,7 +962,7 @@ def solve_cg[
         NMESH_VERTS,
     ],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
-    mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH],
+    mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH, _],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Primal CG contact solve into `scratch.qacc_constrained` (+ solved

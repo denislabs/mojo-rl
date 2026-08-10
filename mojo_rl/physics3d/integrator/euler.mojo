@@ -43,6 +43,7 @@ from ..constraints.limits import solve_limits
 from ..constraints.friction_dof import solve_friction
 from ..constraints.contact_solve import solve_contacts
 from ..solver.newton_solve import solve_newton
+from ..solver.je_budget import je_ws_size
 from ..solver.cg_solve import solve_cg
 from ..solver.island_pgs_solve import solve_island_pgs
 from ..collision.broadphase_sap import detect_contacts_auto
@@ -403,8 +404,17 @@ struct EulerIntegrator[
     dense, like legacy."""
 
     var scratch: DynamicsScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
+    # Blocked-Newton Jacobian spill size — 0 unless `Je` overflows threadgroup
+    # memory. Computed HERE (not by the caller) because this struct already
+    # carries every dimension it depends on, and via `je_budget` so the buffer
+    # and the kernel that indexes it cannot drift apart.
+    comptime JE_WS = je_ws_size[
+        Self.DTYPE, Self.NV, Self.NJOINT, Self.NTENDON, Self.MAX_CONTACTS,
+        Self.MAX_CONDIM,
+    ]()
+
     var cscratch: ContactScratch[
-        Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH
+        Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH, Self.JE_WS
     ]
 
     def __init__(out self) raises:
@@ -416,7 +426,7 @@ struct EulerIntegrator[
             Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ]()
         self.cscratch = ContactScratch[
-            Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH
+            Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH, Self.JE_WS
         ]()
 
     def prepare_gpu(mut self, ctx: DeviceContext) raises:
@@ -601,6 +611,7 @@ struct EulerIntegrator[
                     Self.NMESH_VERTS, Self.CONE_TYPE, Self.BATCH,
                     MAX_CONDIM=Self.MAX_CONDIM,
                     NOSLIP_ITER=Self.NOSLIP_ITER,
+                    JE_WS=Self.JE_WS,
                 ](d, m, self.scratch, self.cscratch, ctx)
             else:
                 comptime if Self.SOLVER == "cg":

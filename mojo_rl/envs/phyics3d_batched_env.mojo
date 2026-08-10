@@ -187,6 +187,8 @@ struct Phyics3dBatchedEnv[
         Self.MODEL_DEF.NEXCLUDE, 0, Self.MODEL_DEF.CONE_TYPE, Self.N_ENVS,
         SOLVER = Self.SOLVER, PARALLEL_GPU = Self.PARALLEL_GPU,
         CRBA_TREEWALK = Self.CRBA_TREEWALK,
+        MAX_CONDIM = Self.MODEL_DEF.MAX_CONDIM,
+        NOSLIP_ITER = Self.MODEL_DEF.NOSLIP_ITER,
     ]
     # ⚠⚠ MAX_CONDIM AND NOSLIP_ITER MUST COME FROM THE MODEL, NOT THE DEFAULT.
     # Both were previously left unpassed, so every batched env silently ran

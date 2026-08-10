@@ -52,6 +52,7 @@ from std.math import sqrt, pow, abs
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
+from .je_budget import je_spills
 from std.sys.info import size_of
 from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
@@ -2384,6 +2385,9 @@ def solve_newton[
     BATCH: Int = 1,
     MAX_CONDIM: Int = 3,
     NOSLIP_ITER: Int = 0,
+    # Per-env spill size for `Je`; 0 = it fits threadgroup memory. Comes
+    # from `je_budget.je_ws_size` via the integrator — never computed here.
+    JE_WS: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
@@ -2399,7 +2403,7 @@ def solve_newton[
         NMESH_VERTS,
     ],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
-    mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH],
+    mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH, JE_WS],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Primal Newton contact solve into `scratch.qacc_constrained` (+ solved
@@ -2495,6 +2499,9 @@ def solve_newton[
                     "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
                     NEQUALITY, NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, CONE_TYPE,
                     BATCH,
+                    MAX_CONDIM=MAX_CONDIM,
+                    NOSLIP_ITER=NOSLIP_ITER,
+                    JE_WS=JE_WS,
                 ](d, m, scratch, cscratch, ctx)
                 used_blocked = True
         if not used_blocked:
@@ -2575,6 +2582,9 @@ def _newton_blocked_fields_kernel[
     SOLVER_WS: Int,
     MAX_CONDIM: Int = 3,
     NOSLIP_ITER: Int = 0,
+    # Per-env spill size for `Je`; 0 = it fits threadgroup memory. Comes
+    # from `je_budget.je_ws_size` via the integrator — never computed here.
+    JE_WS: Int = 0,
 ](
     qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
     qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
@@ -2627,6 +2637,12 @@ def _newton_blocked_fields_kernel[
     ],
     solver: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, SOLVER_WS), MutAnyOrigin
+    ],
+    # Spill buffer for `Je` — [BATCH, 1] and untouched unless JE_WS > 0.
+    je_ws: LayoutTensor[
+        DTYPE,
+        Layout.row_major(BATCH, JE_WS if JE_WS > 0 else 1),
+        MutAnyOrigin,
     ],
 ):
     var env = Int(block_idx.x)
@@ -2831,58 +2847,29 @@ def _newton_blocked_fields_kernel[
     # model that fits everywhere keeps shared, and anything near the edge
     # spills rather than failing to compile on the smallest plausible device.
     comptime _JE_ELEMS = ME * V_SIZE
-    comptime _JE_BYTES = _JE_ELEMS * size_of[Scalar[DTYPE]]()
-    comptime JE_SHARED_BUDGET = 64 * 1024
-    comptime JE_FITS_SHARED = _JE_BYTES <= JE_SHARED_BUDGET
 
-    # Where a spilled Je lives: the TAIL of the per-env solver workspace.
-    # `cscratch.solver` is sized for PGS (81*MC + 12*MC*NV) and Newton only
-    # ever uses a prefix, so the tail is already allocated and unused:
+    # ⚠ WHERE A SPILLED Je LIVES: `cscratch.je`, a DEDICATED per-env buffer
+    # sized by `je_budget.je_ws_size` — the same function the integrator used
+    # to allocate it, so the size the kernel indexes and the size that was
+    # allocated cannot drift.
     #
-    #     Newton high-water  27*MC + 6*MC*NV   (ws_cstate_idx + MC)
-    #     SOLVER_WS          81*MC + 12*MC*NV
-    #     free tail          54*MC + 6*MC*NV
+    # An earlier version carved this out of the unused TAIL of the solver
+    # workspace instead. That worked for humanoid_CMU (26,784 needed vs 27,264
+    # free — 1.8% headroom) but not for dog (38,789 vs 12,672), which forced a
+    # third "fits neither" case that silently fell back to shared and left dog
+    # uncompilable on NVIDIA. A dedicated buffer is always exactly big enough,
+    # so the gate is two-way again: shared when it fits, spill when it does not.
     #
-    # humanoid_CMU: 27,264 free vs 26,784 needed — it fits, with 1.8% to
-    # spare. ⚠⚠ THAT MARGIN IS TOO THIN TO TRUST BY INSPECTION, which is why
-    # `JE_FITS_WS` is a real comptime test and not a comment: ME grows with
-    # tendons and joint limits, and overrunning this region would silently
-    # corrupt a neighbouring solver's workspace rather than fail. A model that
-    # outgrows the tail falls back to shared (see the three-way gate below)
-    # rather than spilling into memory it does not own.
-    comptime JE_WS_START = 27 * MC + 6 * MC * NV
-    comptime JE_FITS_WS = JE_WS_START + _JE_ELEMS <= SOLVER_WS
-
-    # ⚠⚠ SPILL ONLY WHEN THE SPILL ACTUALLY FITS. A model can fit NEITHER,
-    # and the third case is not hypothetical — it is dm_control's dog:
-    #
-    #     model         Je shared   workspace tail   verdict
-    #     humanoid       20 KB          —            stays shared (unchanged)
-    #     quadruped      13 KB          —            stays shared (unchanged)
-    #     humanoid_CMU  104 KB      26784 <= 27264   SPILLS, fits
-    #     dog           151 KB      38789 >  12672   fits NEITHER
-    #     dog_fetch     178 KB      45815 >  15792   fits NEITHER
-    #
-    # ⚠ A `comptime assert` here would be WRONG: it fires during compilation
-    # on EVERY target, so rejecting the fits-neither case would turn dog's
-    # currently-passing Apple build into a build FAILURE. Falling back to
-    # shared leaves those models exactly as they are today — no better, no
-    # worse — and confines this change to the models it can actually help.
-    #
-    # ⚠⚠ FORWARD-LOOKING CONSTRAINT ON DOG — NOT A CURRENT BREAK. dog is
-    # PYRAMIDAL, so it WOULD instantiate this kernel, and its Je wants 151 KB
-    # of threadgroup memory against NVIDIA's ~99 KB — the same ptxas error
-    # humanoid_CMU hit. It does not bite today only because dog has NO
-    # GPU-batched env (no `Phyics3dBatchedEnv` alias, and no GPU-vs-CPU test),
-    # so the GPU path is never instantiated for it.
-    #
-    # The moment dog gets a batched env, this kernel stops compiling on
-    # NVIDIA and the workspace tail cannot absorb the spill either. That needs
-    # SOLVER_WS widened in `fields/contact_scratch.mojo` — roughly 26k more
-    # scalars per env for dog, 33k for dog_fetch — which is deliberately NOT
-    # done here: it costs memory for every model and should be paid when dog
-    # actually needs it, with a parity gate to prove it.
-    comptime JE_IN_SHARED = JE_FITS_SHARED or not JE_FITS_WS
+    # ⚠ AND IT DOES NOT TOUCH `SOLVER_WS`. That literal is the row stride of a
+    # `[BATCH, SOLVER_WS]` view recomputed in FIVE solver files; growing the
+    # tensor without growing every view would make every row after 0 read the
+    # wrong memory — silent corruption, not a crash.
+    # ⚠ FLOORED AT 1 to match `ContactScratch.JE_ELEMS` and the operand's
+    # declared layout — a zero-extent tensor operand segfaults.
+    comptime JE_ELEMS = JE_WS if JE_WS > 0 else 1
+    comptime JE_IN_SHARED = not je_spills[
+        DTYPE, NV, NJOINT, NTENDON, MAX_CONTACTS, MAX_CONDIM
+    ]()
     comptime JE_AS = (
         AddressSpace.SHARED if JE_IN_SHARED else AddressSpace.GENERIC
     )
@@ -2914,7 +2901,7 @@ def _newton_blocked_fields_kernel[
         _je_ptr = _je_backing.ptr.unsafe_address_space_cast[JE_AS]()
     else:
         _je_ptr = (
-            solver.ptr.unsafe_offset(env * SOLVER_WS + JE_WS_START)
+            je_ws.ptr.unsafe_offset(env * JE_ELEMS)
         ).unsafe_address_space_cast[JE_AS]()
     var Je_sh = LayoutTensor[
         DTYPE, Layout.row_major(ME * V_SIZE), MutAnyOrigin,
@@ -3752,6 +3739,9 @@ def solve_newton_blocked[
     BATCH: Int = 1,
     MAX_CONDIM: Int = 3,
     NOSLIP_ITER: Int = 0,
+    # Per-env spill size for `Je`; 0 = it fits threadgroup memory. Comes
+    # from `je_budget.je_ws_size` via the integrator — never computed here.
+    JE_WS: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
@@ -3767,7 +3757,7 @@ def solve_newton_blocked[
         NMESH_VERTS,
     ],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
-    mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH],
+    mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH, JE_WS],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """PYRAMIDAL-only ONE-ENV-PER-BLOCK Newton contact solve (fields port of
@@ -3798,6 +3788,10 @@ def solve_newton_blocked[
     comptime L_M = Layout.row_major(BATCH, NV * NV)
     comptime L_SOLVER = Layout.row_major(BATCH, SOLVER_WS)
 
+    # ⚠ FLOORED AT 1 to match ContactScratch.JE_ELEMS — a zero-extent
+    # operand segfaults instead of being an empty tensor.
+    comptime JE_ELEMS = JE_WS if JE_WS > 0 else 1
+    comptime L_JE_WS = Layout.row_major(BATCH, JE_ELEMS)
     comptime L_QPOS = Layout.row_major(BATCH, NQ)
     comptime L_DW = Layout.row_major(NV)
 
@@ -3839,8 +3833,9 @@ def solve_newton_blocked[
             _newton_blocked_fields_kernel[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
                 NTENDON, NSITE, CONE_TYPE, BATCH, SOLVER_WS,
- MAX_CONDIM,
- NOSLIP_ITER,
+                MAX_CONDIM,
+                NOSLIP_ITER,
+                JE_WS,
             ]
         ](
             d.qpos.lt["gpu", L_QPOS](),
@@ -3863,6 +3858,7 @@ def solve_newton_blocked[
             scratch.m_inv.lt["gpu", L_M](),
             scratch.qacc_constrained.lt["gpu", L_NV](),
             cscratch.solver.lt["gpu", L_SOLVER](),
+            cscratch.je.lt["gpu", L_JE_WS](),
             grid_dim=(BATCH,),
             block_dim=(MC,),
         )
