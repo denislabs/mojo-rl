@@ -84,6 +84,43 @@ SCOPE, STATED RATHER THAN IMPLIED
     evaluated once at model-build time. Getting this wrong does not corrupt
     the sweep, it changes WHEN the loop stops, which is a subtler and more
     annoying divergence — hence spelling it out here.
+
+⚠⚠ EVERY SCALAR HERE IS `Scalar[DTYPE]`. IT USED TO BE `Float64` (2026-08-10)
+
+This module originally widened to `Float64` internally — the natural choice,
+since the arithmetic below is where MuJoCo's own solver is most sensitive to
+rounding. That made the whole pass UNCOMPILABLE ON GPU:
+
+    Function 'air.convert.f.f64.f.f32' has Metal-unsupported instructions
+    Function 'mojo_rl_physics3d_solver_nosl...' has Metal-unsupported ...
+    LLVM ERROR: Failed to verify LLVM IR for Metal
+
+and `Float64` is off the table on the NVIDIA path too. Since dog is the ONLY
+model in the tree that asks for this pass (`dog_xml`, `dog_fetch_xml`), that
+made "dog on GPU" and "noslip in Float64" mutually exclusive. The port is the
+resolution. The CPU path is UNAFFECTED — it instantiates at
+`DTYPE = float64`, so its arithmetic is bit-identical to before.
+
+⚠ WHAT THE GPU PATH GIVES UP, STATED RATHER THAN DISCOVERED LATER. At
+float32 three things below get noisier, and all three change WHEN the sweep
+stops rather than what it converges to:
+
+  * `improvement` accumulates `0.5*d*d*a_ii + d*res` over every row, then is
+    compared against `tolerance` (1e-6) after scaling. A float32 sum over
+    hundreds of rows carries ~1e-7 relative noise, which is the same order as
+    the threshold — so the GPU may run one more or one fewer iteration than
+    the CPU on the same state.
+  * `_COST_REJECT` (1e-10) gates a `change` built from differences of
+    products. That is catastrophic cancellation at float32, so a block the
+    CPU accepts may be rejected on GPU and vice versa.
+  * `k1 = a00 + a11 - a01 - a10` is a four-way cancellation feeding a
+    division. When it lands under `_MINVAL` the pair is left at `mid`.
+
+None of that can destabilise a contact — the `(mid + y, mid - y)` invariant
+below is structural, not numerical, so the NORMAL force is preserved exactly
+whatever the arithmetic does. It does mean a CPU-vs-GPU gate on a CONTACTING
+dog should expect iteration-count divergence, which is the same regime
+`test_quadruped_gpu_vs_cpu` already declines to bound.
 """
 
 from std.math import sqrt
@@ -97,6 +134,11 @@ from ..gpu.constants import (
 )
 
 
+# ⚠ These stay `Float64` DELIBERATELY: they are `comptime`, so they never
+# reach the emitted IR — `Scalar[DTYPE](_MINVAL)` folds at compile time. What
+# Metal rejects is a `double` VALUE or CONVERSION in the kernel body, not a
+# compile-time constant that happens to be spelled in double precision.
+# All three are representable at float32 (min normal ~1.2e-38).
 # `mjMINVAL`.
 comptime _MINVAL: Float64 = 1e-15
 # `extractBlock`'s diagonal floor when `flg_subR` is set.
@@ -171,22 +213,27 @@ def _refresh_jar[
 def _cost_change[
     DTYPE: DType
 ](
-    a00: Float64, a01: Float64, a10: Float64, a11: Float64,
-    f0: Float64, f1: Float64,
-    old0: Float64, old1: Float64,
-    r0: Float64, r1: Float64,
-) -> Float64:
+    a00: Scalar[DTYPE], a01: Scalar[DTYPE],
+    a10: Scalar[DTYPE], a11: Scalar[DTYPE],
+    f0: Scalar[DTYPE], f1: Scalar[DTYPE],
+    old0: Scalar[DTYPE], old1: Scalar[DTYPE],
+    r0: Scalar[DTYPE], r1: Scalar[DTYPE],
+) -> Scalar[DTYPE]:
     """`costChange` for a 2x2 block: `0.5 d^T A d + d . res`.
 
     The caller must REJECT the update when this is positive — MuJoCo restores
     the old forces and counts zero improvement. Returned unclamped so the
     caller can do exactly that.
+
+    ⚠ This is the cancellation-sensitive expression of the module: `f0 - old0`
+    and `f1 - old1` are small differences of comparable numbers, then squared
+    against `A`. See the float32 note in the module docstring.
     """
     var d0 = f0 - old0
     var d1 = f1 - old1
     var quad = (
         d0 * (a00 * d0 + a01 * d1) + d1 * (a10 * d0 + a11 * d1)
-    ) * 0.5
+    ) * Scalar[DTYPE](0.5)
     return quad + d0 * r0 + d1 * r1
 
 
@@ -219,8 +266,12 @@ def noslip_pyramidal[
     R_e: InlineArray[Scalar[DTYPE], ME],
     floss_e: InlineArray[Scalar[DTYPE], ME],
     qacc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
-    scale: Float64,
-    tolerance: Float64,
+    # ⚠ `Scalar[DTYPE]`, not `Float64` — the caller must build these in DTYPE
+    # too, or the conversion reappears at the CALL SITE and Metal rejects it
+    # there instead. `newton_solve` computes `1/(meaninertia*max(1,nv))` from
+    # a DTYPE tensor read, with `max(1,nv)` folded to a comptime constant.
+    scale: Scalar[DTYPE],
+    tolerance: Scalar[DTYPE],
     mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
     mut jar: InlineArray[Scalar[DTYPE], ME],
     mut force: InlineArray[Scalar[DTYPE], ME],
@@ -239,44 +290,53 @@ def noslip_pyramidal[
     var mj_a = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
     var mj_b = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
 
+    comptime ZERO = Scalar[DTYPE](0)
+    comptime HALF = Scalar[DTYPE](0.5)
+    comptime TWO = Scalar[DTYPE](2.0)
+    comptime MINVAL = Scalar[DTYPE](_MINVAL)
+    comptime DIAG_FLOOR = Scalar[DTYPE](_DIAG_FLOOR)
+    comptime COST_REJECT = Scalar[DTYPE](_COST_REJECT)
+
     for it in range(MAX_ITER):
-        var improvement = Float64(0)
+        var improvement = ZERO
 
         # `iter == 0` correction: MuJoCo folds in the R-weighted force energy
         # once, so the first iteration's improvement is comparable with the
         # primal solver's own.
         if it == 0:
             for i in range(num_edges):
-                var f = Float64(force[i])
-                improvement += 0.5 * f * f * Float64(R_e[i])
+                var f = force[i]
+                improvement += HALF * f * f * R_e[i]
 
         # ── sweep 1: dry-friction dof rows, box-clamped to +-frictionloss ──
         for i in range(num_edges):
             if kind_e[i] != SROW_FRICTION:
                 continue
             _minv_jt[DTYPE, NV, ME, V_SIZE, BATCH](env, m_inv, Je, i, mj_a)
-            var a_ii = Float64(_dot_row[DTYPE, NV, ME, V_SIZE](Je, i, mj_a))
-            var arinv = 1.0 / (a_ii if a_ii > _MINVAL else _MINVAL)
+            var a_ii = _dot_row[DTYPE, NV, ME, V_SIZE](Je, i, mj_a)
+            var arinv = Scalar[DTYPE](1.0) / (
+                a_ii if a_ii > MINVAL else MINVAL
+            )
 
-            var res = Float64(jar[i])
-            var old = Float64(force[i])
+            var res = jar[i]
+            var old = force[i]
             var f = old - res * arinv
-            var lim = Float64(floss_e[i])
+            var lim = floss_e[i]
             if f < -lim:
                 f = -lim
             elif f > lim:
                 f = lim
 
             var d = f - old
-            if d != 0.0:
-                force[i] = Scalar[DTYPE](f)
+            if d != ZERO:
+                force[i] = f
                 for k in range(NV):
-                    qacc[k] += Scalar[DTYPE](d) * mj_a[k]
+                    qacc[k] += d * mj_a[k]
                 _refresh_jar[DTYPE, NV, ME, V_SIZE](
                     num_edges, Je, bias_e, qacc, jar
                 )
             # `0.5*d^2/ARinv` — and `1/ARinv` is `a_ii`, so no division here.
-            improvement -= 0.5 * d * d * a_ii + d * res
+            improvement -= HALF * d * d * a_ii + d * res
 
         # ── sweep 2: contact friction, one opposing pyramid pair at a time ──
         for c in range(nc):
@@ -295,27 +355,19 @@ def noslip_pyramidal[
 
                 # `Ac` = A submatrix, diagonal clamped (flg_subR semantics:
                 # R is NOT part of it).
-                var a00 = Float64(
-                    _dot_row[DTYPE, NV, ME, V_SIZE](Je, j0, mj_a)
-                )
-                var a01 = Float64(
-                    _dot_row[DTYPE, NV, ME, V_SIZE](Je, j0, mj_b)
-                )
-                var a10 = Float64(
-                    _dot_row[DTYPE, NV, ME, V_SIZE](Je, j1, mj_a)
-                )
-                var a11 = Float64(
-                    _dot_row[DTYPE, NV, ME, V_SIZE](Je, j1, mj_b)
-                )
-                if a00 < _DIAG_FLOOR:
-                    a00 = _DIAG_FLOOR
-                if a11 < _DIAG_FLOOR:
-                    a11 = _DIAG_FLOOR
+                var a00 = _dot_row[DTYPE, NV, ME, V_SIZE](Je, j0, mj_a)
+                var a01 = _dot_row[DTYPE, NV, ME, V_SIZE](Je, j0, mj_b)
+                var a10 = _dot_row[DTYPE, NV, ME, V_SIZE](Je, j1, mj_a)
+                var a11 = _dot_row[DTYPE, NV, ME, V_SIZE](Je, j1, mj_b)
+                if a00 < DIAG_FLOOR:
+                    a00 = DIAG_FLOOR
+                if a11 < DIAG_FLOOR:
+                    a11 = DIAG_FLOOR
 
-                var r0 = Float64(jar[j0])
-                var r1 = Float64(jar[j1])
-                var old0 = Float64(force[j0])
-                var old1 = Float64(force[j1])
+                var r0 = jar[j0]
+                var r1 = jar[j1]
+                var old0 = force[j0]
+                var old1 = force[j1]
 
                 # `bc = res - Ac * oldforce`
                 var b0 = r0 - (a00 * old0 + a01 * old1)
@@ -323,21 +375,24 @@ def noslip_pyramidal[
 
                 # The pair is written as (mid + y, mid - y), so `mid` — the
                 # NORMAL contribution — is invariant no matter which branch
-                # fires. That is the whole "normal forces frozen" property.
-                var mid = 0.5 * (old0 + old1)
+                # fires. That is the whole "normal forces frozen" property,
+                # and it is STRUCTURAL: it survives the float32 port intact,
+                # because every branch below is symmetric about `mid` by
+                # construction rather than by cancellation.
+                var mid = HALF * (old0 + old1)
                 var k1 = a00 + a11 - a01 - a10
                 var k0 = mid * (a00 - a11) + b0 - b1
 
                 var f0 = mid
                 var f1 = mid
-                if k1 >= _MINVAL:
+                if k1 >= MINVAL:
                     var y = -k0 / k1
                     if y < -mid:
-                        f0 = 0.0
-                        f1 = 2.0 * mid
+                        f0 = ZERO
+                        f1 = TWO * mid
                     elif y > mid:
-                        f0 = 2.0 * mid
-                        f1 = 0.0
+                        f0 = TWO * mid
+                        f1 = ZERO
                     else:
                         f0 = mid + y
                         f1 = mid - y
@@ -345,20 +400,17 @@ def noslip_pyramidal[
                 var change = _cost_change[DTYPE](
                     a00, a01, a10, a11, f0, f1, old0, old1, r0, r1
                 )
-                if change > _COST_REJECT:
+                if change > COST_REJECT:
                     # Made it worse — MuJoCo restores and counts nothing.
                     continue
 
                 var d0 = f0 - old0
                 var d1 = f1 - old1
-                if d0 != 0.0 or d1 != 0.0:
-                    force[j0] = Scalar[DTYPE](f0)
-                    force[j1] = Scalar[DTYPE](f1)
+                if d0 != ZERO or d1 != ZERO:
+                    force[j0] = f0
+                    force[j1] = f1
                     for q in range(NV):
-                        qacc[q] += (
-                            Scalar[DTYPE](d0) * mj_a[q]
-                            + Scalar[DTYPE](d1) * mj_b[q]
-                        )
+                        qacc[q] += d0 * mj_a[q] + d1 * mj_b[q]
                     _refresh_jar[DTYPE, NV, ME, V_SIZE](
                         num_edges, Je, bias_e, qacc, jar
                     )

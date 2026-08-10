@@ -1229,6 +1229,10 @@ def _newton_solve_env[
         # the pass silently skipped — which is exactly why `ModelDefFromXML`
         # makes `noslip_iter > 0` a build error unless the model opts in.
         comptime if NOSLIP_ITER > 0:
+            # `max(1, nv)` folded at compile time — see the note on the
+            # `scale` argument below for why this must not be an int->float
+            # conversion in the kernel body.
+            comptime NV_SCALE: Float64 = Float64(NV if NV > 1 else 1)
             noslip_pyramidal[
                 DTYPE, NV, ME, V_SIZE, MC, MAX_CONTACTS, MAX_CONDIM,
                 BATCH, NOSLIP_ITER,
@@ -1248,16 +1252,20 @@ def _newton_solve_env[
                 # opt.noslip_tolerance. Both must be MuJoCo's or the sweep
                 # stops on a different iteration — see the note on
                 # MODEL_META_IDX_MEANINERTIA.
-                1.0
+                #
+                # ⚠ BUILT IN DTYPE, NOT Float64. This used to widen the
+                # meaninertia read to Float64 and multiply by `Float64(NV)`;
+                # both are `double` in the emitted kernel and Metal rejects
+                # them — porting `noslip` itself would have been pointless
+                # with the conversion still here at the call site. `NV_SCALE`
+                # is comptime so no int->float conversion survives either
+                # (Metal also rejects `air.convert.f.f64.s.i64`).
+                Scalar[DTYPE](1.0)
                 / (
-                    Float64(
-                        rebind[Scalar[DTYPE]](
-                            mmeta[MODEL_META_IDX_MEANINERTIA]
-                        )
-                    )
-                    * Float64(NV if NV > 1 else 1)
+                    rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_MEANINERTIA])
+                    * Scalar[DTYPE](NV_SCALE)
                 ),
-                NOSLIP_TOLERANCE,
+                Scalar[DTYPE](NOSLIP_TOLERANCE),
                 qacc,
                 jar,
                 force,
