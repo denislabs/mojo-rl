@@ -2911,11 +2911,11 @@ def _newton_blocked_fields_kernel[
         Scalar[DTYPE], MutAnyOrigin, address_space=JE_AS
     ]
     comptime if JE_IN_SHARED:
-        _je_ptr = _je_backing.ptr.address_space_cast[JE_AS]()
+        _je_ptr = _je_backing.ptr.unsafe_address_space_cast[JE_AS]()
     else:
         _je_ptr = (
-            solver.ptr + env * SOLVER_WS + JE_WS_START
-        ).address_space_cast[JE_AS]()
+            solver.ptr.unsafe_offset(env * SOLVER_WS + JE_WS_START)
+        ).unsafe_address_space_cast[JE_AS]()
     var Je_sh = LayoutTensor[
         DTYPE, Layout.row_major(ME * V_SIZE), MutAnyOrigin,
         address_space=JE_AS,
