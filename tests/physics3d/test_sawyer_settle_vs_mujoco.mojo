@@ -94,6 +94,32 @@ comptime SETTLED_VEL = 5e-2
 # `test_mesh_detection_fields`).
 comptime MIN_MANIFOLD_ROWS = 2
 
+# ⚠⚠ DEFECT 28 RATCHET — THIS IS NOT A TOLERANCE, IT IS A MEASURED BUG.
+#
+# The mocap WELD does not hold the hand. MuJoCo tracks the welded body to the
+# mocap target within 0.4 mm; ours sags to 77.6 mm away — 57 mm in y and 56 mm
+# in z, i.e. downward under gravity. Measured 2026-08-10:
+#
+#     mocap target   [ 0.0      0.6      0.2     ]
+#     MuJoCo         [-0.000026 0.600395 0.196231]   0.4 mm from target
+#     ours           [-0.001391 0.542980 0.144079]   77.6 mm from MuJoCo
+#
+# Both sides use an identity weld relpose (MetaWorld zeroes it on the reference
+# via `reset_mocap_welds`; ours never applies the XML's, or the hand would be a
+# METRE out), so this is not the relpose trap — it is the equality solve not
+# holding the constraint.
+#
+# ⚠ THIS IS THE PATH EVERY METAWORLD ACTION DRIVES. SawyerReach's action space
+# is a mocap position delta; if the weld does not track, the commanded hand
+# pose is not the achieved one and every Phase 7 manipulation policy is
+# learning against a mis-actuated arm. It is invisible to every other gate
+# because the obj rests on the table, decoupled from the arm — which is how the
+# settling comparison agreed to 0.39 um while this was 77.6 mm wrong.
+#
+# Pinned at the measurement + 1% so it cannot silently worsen. It must come
+# DOWN to ~1e-3 (the reference's own tracking error), never be raised to pass.
+comptime HAND_TOL = 7.84e-2
+
 
 def _setup() raises -> PythonObject:
     var mujoco = Python.import_module("mujoco")
@@ -113,6 +139,26 @@ def _reset_reference(mujoco: PythonObject, model: PythonObject,
     so this does too.
     """
     mujoco.mj_resetData(model, data)
+
+    # ⚠⚠ ZERO THE WELD RELPOSE — MetaWorld's `reset_mocap_welds`, and WITHOUT
+    # IT THIS REFERENCE IS NOT THE ENVIRONMENT WE PORT. sawyer_reach_v3's weld
+    # ships an `eq_data` relpose of pos (1.1355, 0.1603, 0.317) and quat
+    # (0.64279, -0.76604, 0, 0), so the hand tracks `mocap (x) relpose` — over a
+    # metre away — not the mocap itself. Left as-is, the arm is flung across the
+    # workspace (hand ends at x ~ 0.99-1.19 against a target of 0.0) and drags
+    # the obj 12 mm off its rest pose.
+    #
+    # That cost real time: the 12 mm gap and a 2.24 rad arm divergence looked
+    # exactly like a defect in our weld/mocap path, and I was one step from
+    # filing it as one. With the relpose zeroed the reference's hand tracks the
+    # mocap to 0.4 mm and its obj rest pose matches ours EXACTLY. The engine was
+    # right; the reference protocol was incomplete.
+    for i in range(Int(py=model.neq)):
+        if Int(py=model.eq_type[i]) == 1:  # mjEQ_WELD
+            for k in range(11):
+                model.eq_data[i][k] = 0.0
+            model.eq_data[i][6] = 1.0  # relpose quat w
+            model.eq_data[i][10] = 1.0  # torquescale
     # Arm pose: MetaWorld's post-`_reset_hand` warmup values, copied from the
     # port's reset so both sides start from the same configuration.
     data.qpos[0] = 1.889288
@@ -136,10 +182,17 @@ def _reset_reference(mujoco: PythonObject, model: PythonObject,
     data.mocap_pos[0][0] = 0.0
     data.mocap_pos[0][1] = 0.6
     data.mocap_pos[0][2] = 0.2
-    data.mocap_quat[0][0] = 0.0
-    data.mocap_quat[0][1] = 1.0
-    data.mocap_quat[0][2] = 0.0
-    data.mocap_quat[0][3] = 1.0
+    # ⚠ WXYZ HERE, XYZW IN THE PORT — THE SAME ORIENTATION, SPELLED DIFFERENTLY.
+    # MuJoCo's `mocap_quat` is (w,x,y,z); `custom_reset_cpu` stores (x,y,z,w)
+    # and writes (0,1,0,1), i.e. MetaWorld's wxyz [1,0,1,0]. Copying the port's
+    # literal into this field verbatim gives w=0,x=1,y=0,z=1 — a 180-degree
+    # rotation instead of 90, so the two sides held the hand in DIFFERENT
+    # orientations. This gate passed anyway because the obj it measures is
+    # decoupled from the arm, which is exactly why the arm is now compared too.
+    data.mocap_quat[0][0] = 1.0
+    data.mocap_quat[0][1] = 0.0
+    data.mocap_quat[0][2] = 1.0
+    data.mocap_quat[0][3] = 0.0
     mujoco.mj_forward(model, data)
 
 
@@ -178,6 +231,98 @@ def test_sawyer_obj_settles_where_mujoco_does() raises:
     print("  obj rest ours  [", ox, oy, oz, "]")
     print("  obj rest MuJoCo[", rx, ry, rz, "]")
     print("  anchor         [", MJ_REST_X, MJ_REST_Y, MJ_REST_Z, "]")
+
+    # --- ARM AGREEMENT — printed BEFORE any assert, deliberately -------------
+    # qpos[0..8] are the 7 arm hinges and 2 claw slides, driven by the mocap
+    # WELD equality. Nothing in this repo compares that constraint against
+    # MuJoCo over a rollout, and the obj comparison is blind to it: the obj
+    # falls to the table and rests there whatever the arm does. That blindness
+    # is exactly how a mismatched hand orientation survived here.
+    #
+    # This prints above the asserts so a failing gate still reports the
+    # diagnostic that explains it — a measurement that only runs when
+    # everything already passes cannot tell you why anything failed.
+    var arm_err = Float64(0)
+    var arm_worst = 0
+    for i in range(9):
+        var e = abs(Float64(py=data.qpos[i]) - Float64(env.d.qpos.data[i]))
+        if e > arm_err:
+            arm_err = e
+            arm_worst = i
+    print(
+        "  max |arm qpos| ours vs MuJoCo:", arm_err, " at joint", arm_worst,
+        " (DIAGNOSTIC ONLY — see below)",
+    )
+
+    # ⚠ JOINT ANGLES ARE THE WRONG QUANTITY TO ASSERT, and the measurement is
+    # what showed it: 0.271 rad at joint 4 while the hand poses agree to
+    # sub-millimetre. Sawyer's arm is 7-DOF under a 6-DOF weld, so the
+    # constraint leaves a ONE-DIMENSIONAL NULL SPACE — two solvers can land on
+    # different joint angles for the SAME hand pose, and neither is wrong.
+    # Gating qpos here would pin solver bookkeeping and fail on any legitimate
+    # change to the equality solve.
+    #
+    # The hand POSE is the physical quantity, and it is what a mesh contact
+    # fixture depends on: where the gripper actually is decides whether it
+    # touches anything.
+    #
+    # ⚠ COMPARE THE BODY THE WELD ACTUALLY CONSTRAINS — `eq_obj2id`, not the
+    # body carrying the eGripperBase mesh. Those are different (23 vs 24): the
+    # mesh body is a NEIGHBOUR of the welded one, so the arm's null-space
+    # freedom can move it while the weld is perfectly satisfied. Measured on
+    # geom 27's body the gap reads 62 mm, which invites a defect report about a
+    # constraint that is doing its job.
+    #
+    # Body ids DO line up between the two here (geom 27 -> body 23 on both
+    # sides), but they are still resolved rather than assumed, because geom
+    # order is XML order for us and MuJoCo sorts by body id — an alignment that
+    # happens to hold for sawyer is not one to rely on.
+    var mesh_body = Int(
+        env.mf.geoms.data[27 * MODEL_GEOM_SIZE + GEOM_IDX_BODY]
+    )
+    var hand_gtype = Int(
+        env.mf.geoms.data[27 * MODEL_GEOM_SIZE + GEOM_IDX_TYPE]
+    )
+    assert_true(
+        hand_gtype == GEOM_MESH,
+        "geom 27 is not a MESH — the eGripperBase index moved and this hand"
+        " comparison is measuring some other body",
+    )
+    var mj_mesh_body = Int(py=model.geom_bodyid[27])
+    print(
+        "  eGripperBase body ours", mesh_body, " MuJoCo", mj_mesh_body,
+        " ours [", Float64(env.d.xpos.data[mesh_body * 3 + 0]),
+        Float64(env.d.xpos.data[mesh_body * 3 + 1]),
+        Float64(env.d.xpos.data[mesh_body * 3 + 2]), "]",
+    )
+    var hand_body = Int(py=model.eq_obj2id[0])
+    var mj_hand_body = hand_body
+    var hx = Float64(env.d.xpos.data[hand_body * 3 + 0])
+    var hy = Float64(env.d.xpos.data[hand_body * 3 + 1])
+    var hz = Float64(env.d.xpos.data[hand_body * 3 + 2])
+    var mhx = Float64(py=data.xpos[mj_hand_body][0])
+    var mhy = Float64(py=data.xpos[mj_hand_body][1])
+    var mhz = Float64(py=data.xpos[mj_hand_body][2])
+    var hand_err = sqrt(
+        (hx - mhx) * (hx - mhx)
+        + (hy - mhy) * (hy - mhy)
+        + (hz - mhz) * (hz - mhz)
+    )
+    print("  WELDED body (eq_obj2id)", hand_body)
+    print("    ours  [", hx, hy, hz, "]")
+    print("    MuJoCo[", mhx, mhy, mhz, "]")
+    print("    mocap target [ 0.0 0.6 0.2 ]")
+    print("  welded-body pose err:", hand_err, " tol", HAND_TOL)
+    assert_true(
+        hand_err <= HAND_TOL,
+        String("the WELD-held gripper sits ") + String(hand_err)
+        + " m from MuJoCo's. This is the mocap-weld path every MetaWorld"
+        " action drives, and nothing else in the repo compares it against the"
+        " reference. ⚠ Check the weld RELPOSE is zeroed on the reference side"
+        " (MetaWorld's `reset_mocap_welds`) before suspecting the engine — a"
+        " non-identity relpose flings the arm a metre and looks exactly like"
+        " an engine defect.",
+    )
 
     # Guard the ANCHOR against reference drift first: if MuJoCo itself no longer
     # rests here, the hardcoded numbers are stale and every comparison below is
