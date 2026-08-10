@@ -2907,7 +2907,7 @@ def _newton_blocked_fields_kernel[
         DTYPE, Layout.row_major(JE_SH_ELEMS), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
-    var _je_ptr: UnsafePointer[
+    var _je_ptr: Pointer[
         Scalar[DTYPE], MutAnyOrigin, address_space=JE_AS
     ]
     comptime if JE_IN_SHARED:
