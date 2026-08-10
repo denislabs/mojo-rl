@@ -54,6 +54,24 @@ single point and MuJoCo answers with a manifold. Mesh pairs go through
 different mechanism and a separate piece of work; they are deliberately NOT
 routed here, and `multi_ccd_pair_supported` says so rather than silently
 covering them.
+
+⚠⚠ THAT EXCLUSION IS MuJoCo'S OWN, NOT A SHORTCUT — verified after a design
+note claimed the opposite. `mjc_Convex` runs a SECOND guard before the
+perturbation loop (`engine_collision_convex.c:875`):
+
+    int max_contacts = maxContacts(m, &obj1, &obj2);
+    int ncon = mjc_penetration(..., max_contacts, margin);
+    if (!mjDISABLED(mjDSBL_NATIVECCD) && max_contacts > 1) return ncon;
+
+`maxContacts` (`:843`) gives 8 for BOX x BOX, 4 for any pair of {BOX, MESH} and
+1 for everything else, and `mjDSBL_NATIVECCD` is a DISABLE bit that is off by
+default — so on the 3.10.0 runtime every box/mesh and mesh/mesh pair takes the
+early return and NEVER reaches the code this file ports. Their manifold comes
+from `multicontact()` (`engine_collision_gjk.c:2111`), which clips the two
+contacting polygons and prunes to a max-area quad, and which bails out unless
+the mesh carries polygon topology (`mesh_polynum`) that our `mesh_meta` does
+not have. Adding mesh pairs HERE would fabricate a manifold by a mechanism the
+reference does not use for them.
 """
 
 from std.math import sqrt
@@ -92,8 +110,8 @@ from ..gpu.constants import (
 from .collision_primitives import (
     cylinder_capsule,
     cylinder_cylinder,
-    cylinder_box,
 )
+from .gjk import gjk_epa
 
 # `mjc_Convex`'s two constants, named as MuJoCo names them.
 comptime MULTICCD_RELATIVE_TOLERANCE: Float64 = 1e-3
@@ -104,10 +122,13 @@ comptime MULTICCD_PERTURBATION_ANGLE: Float64 = 1e-3
 def multi_ccd_pair_supported(gi_type: Int, gj_type: Int) -> Bool:
     """Does this geom pair get a perturbed manifold?
 
-    MuJoCo's guard is "`mjc_Convex` handled it AND neither geom is a sphere or
-    an ellipsoid". Ours is narrower ON PURPOSE — it is the set of pairs where
-    this engine emits one point and the reference emits several, which is the
-    cylinder family. Mesh pairs are excluded; see the module docstring.
+    MuJoCo's guard is "`mjc_Convex` handled it, `maxContacts` came back as 1,
+    AND neither geom is a sphere or an ellipsoid". `maxContacts` is the part
+    that is easy to miss: it returns >1 for BOX x BOX and for {BOX, MESH}
+    pairs, and those take an early return before the perturbation loop. So the
+    set that reaches this loop in the reference IS the cylinder family, and
+    this function is not narrower than MuJoCo — it matches it. Mesh pairs are
+    excluded for the reference's own reason; see the module docstring.
 
     ⚠ Anything added here MUST also be answered by `_convex_pair_single`, or
     the perturbed query silently returns "no contact" and the manifold quietly
@@ -132,7 +153,7 @@ def multi_ccd_pair_supported(gi_type: Int, gj_type: Int) -> Bool:
 
 @always_inline
 def _convex_pair_single[
-    DTYPE: DType
+    DTYPE: DType, NMESH_VERTS: Int
 ](
     gi_type: Int,
     pi_x: Scalar[DTYPE], pi_y: Scalar[DTYPE], pi_z: Scalar[DTYPE],
@@ -140,12 +161,17 @@ def _convex_pair_single[
     qi_w: Scalar[DTYPE],
     ri: Scalar[DTYPE], hli: Scalar[DTYPE],
     hxi: Scalar[DTYPE], hyi: Scalar[DTYPE], hzi: Scalar[DTYPE],
+    mesh_verts: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
+    va1: Int, mnv1: Int,
     gj_type: Int,
     pj_x: Scalar[DTYPE], pj_y: Scalar[DTYPE], pj_z: Scalar[DTYPE],
     qj_x: Scalar[DTYPE], qj_y: Scalar[DTYPE], qj_z: Scalar[DTYPE],
     qj_w: Scalar[DTYPE],
     rj: Scalar[DTYPE], hlj: Scalar[DTYPE],
     hxj: Scalar[DTYPE], hyj: Scalar[DTYPE], hzj: Scalar[DTYPE],
+    va2: Int, mnv2: Int,
 ) -> InlineArray[Scalar[DTYPE], 7]:
     """One contact for a `multi_ccd_pair_supported` pair — `(dist, pos, normal)`.
 
@@ -156,6 +182,15 @@ def _convex_pair_single[
     divergence between the two would make the extra manifold points disagree
     with the point they are extending. `feedback_contact_direction_conventions`
     is the record of what that class of mistake costs.
+
+    ⚠ THAT MIRROR WAS BROKEN ONCE, SILENTLY. When the dispatch moved CYLINDER x
+    BOX from `cylinder_box` to `gjk_epa` (`d93b0a29`) this function kept calling
+    the primitive, so the first manifold point came from the convex query and
+    its four perturbed extensions came from the CAPSULE REDUCTION — which is
+    wrong by exactly `-r`. The gate did not catch it because MuJoCo copies
+    `con[0].dist` onto every extra row, so the depth error was overwritten and
+    only the perturbed POSITIONS carried it. Passing within tolerance is not the
+    same as consistent: when a branch here changes, this file changes with it.
     """
     var out = InlineArray[Scalar[DTYPE], 7](uninitialized=True)
     for k in range(7):
@@ -198,10 +233,22 @@ def _convex_pair_single[
         out[4] = r[4]
         out[5] = r[5]
         out[6] = r[6]
-    elif gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX:
-        var r = cylinder_box[DTYPE](
-            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
-            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
+    elif (gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX) or (
+        gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER
+    ):
+        # ONE branch for both orderings, exactly as the dispatch writes it:
+        # `cylinder_box` needed two because the primitive is asymmetric in its
+        # operands, but the convex query is symmetric and returns `gi -> gj`
+        # either way.
+        var r = gjk_epa[DTYPE, NMESH_VERTS](
+            gi_type,
+            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+            ri, hli, hxi, hyi, hzi,
+            mesh_verts, va1, mnv1,
+            gj_type,
+            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+            rj, hlj, hxj, hyj, hzj,
+            va2, mnv2,
         )
         out[0] = r[0]
         out[1] = r[1]
@@ -210,18 +257,6 @@ def _convex_pair_single[
         out[4] = r[4]
         out[5] = r[5]
         out[6] = r[6]
-    elif gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER:
-        var r = cylinder_box[DTYPE](
-            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
-            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
-        )
-        out[0] = r[0]
-        out[1] = r[1]
-        out[2] = r[2]
-        out[3] = r[3]
-        out[4] = -r[4]
-        out[5] = -r[5]
-        out[6] = -r[6]
 
     return out^
 
@@ -330,7 +365,7 @@ def _rotate_pose_about[
 
 @always_inline
 def multi_ccd_extra_contacts[
-    DTYPE: DType, MAX_CONTACTS: Int, BATCH: Int
+    DTYPE: DType, MAX_CONTACTS: Int, BATCH: Int, NMESH_VERTS: Int
 ](
     env: Int,
     body_a: Int,
@@ -343,6 +378,7 @@ def multi_ccd_extra_contacts[
     ri: Scalar[DTYPE], hli: Scalar[DTYPE],
     hxi: Scalar[DTYPE], hyi: Scalar[DTYPE], hzi: Scalar[DTYPE],
     rbound_i: Scalar[DTYPE],
+    va1: Int, mnv1: Int,
     gj_type: Int,
     pj_x: Scalar[DTYPE], pj_y: Scalar[DTYPE], pj_z: Scalar[DTYPE],
     qj_x: Scalar[DTYPE], qj_y: Scalar[DTYPE], qj_z: Scalar[DTYPE],
@@ -350,6 +386,10 @@ def multi_ccd_extra_contacts[
     rj: Scalar[DTYPE], hlj: Scalar[DTYPE],
     hxj: Scalar[DTYPE], hyj: Scalar[DTYPE], hzj: Scalar[DTYPE],
     rbound_j: Scalar[DTYPE],
+    va2: Int, mnv2: Int,
+    mesh_verts: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
     c0x: Scalar[DTYPE], c0y: Scalar[DTYPE], c0z: Scalar[DTYPE],
     n0x: Scalar[DTYPE], n0y: Scalar[DTYPE], n0z: Scalar[DTYPE],
     dist0: Scalar[DTYPE],
@@ -426,13 +466,15 @@ def multi_ccd_extra_contacts[
                 pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
             )
 
-            var r = _convex_pair_single[DTYPE](
+            var r = _convex_pair_single[DTYPE, NMESH_VERTS](
                 gi_type,
                 pi[0], pi[1], pi[2], pi[3], pi[4], pi[5], pi[6],
                 ri, hli, hxi, hyi, hzi,
+                mesh_verts, va1, mnv1,
                 gj_type,
                 pj[0], pj[1], pj[2], pj[3], pj[4], pj[5], pj[6],
                 rj, hlj, hxj, hyj, hzj,
+                va2, mnv2,
             )
             if not (r[0] < contact_margin):
                 continue

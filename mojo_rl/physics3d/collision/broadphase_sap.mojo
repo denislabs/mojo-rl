@@ -937,6 +937,13 @@ def _detect_contacts_sap_env[
             # while every row constant matched to 15 digits.
             var body_a = gi_body
             var body_b = gj_body
+            # Mesh vertex ranges, hoisted out of the mesh branch so multi-CCD
+            # can re-run the SAME convex query at its perturbed poses. Zero for
+            # every non-mesh pair, which is what `gjk_epa` wants there.
+            var va1 = 0
+            var mnv1 = 0
+            var va2 = 0
+            var mnv2 = 0
 
             if gi_type == GEOM_SPHERE and gj_type == GEOM_SPHERE:
                 var r = sphere_sphere[DTYPE](
@@ -1286,13 +1293,9 @@ def _detect_contacts_sap_env[
                         rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MESH_ID])
                     )
                     # Resolve mesh vertex ranges from mesh_meta records
-                    var va1 = 0
-                    var mnv1 = 0
                     if mi_id >= 0:
                         va1 = Int(rebind[Scalar[DTYPE]](mesh_meta[mi_id, 0]))
                         mnv1 = Int(rebind[Scalar[DTYPE]](mesh_meta[mi_id, 1]))
-                    var va2 = 0
-                    var mnv2 = 0
                     if mj_id >= 0:
                         va2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 0]))
                         mnv2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 1]))
@@ -1380,14 +1383,17 @@ def _detect_contacts_sap_env[
                 # it is why this hook is duplicated rather than "left for
                 # later". The two must move together.
                 if multi_ccd_pair_supported(gi_type, gj_type):
-                    _ = multi_ccd_extra_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                    _ = multi_ccd_extra_contacts[
+                        DTYPE, MAX_CONTACTS, BATCH, NMESH_VERTS
+                    ](
                         env, body_a, body_b, mccd_first,
                         gi_type,
                         pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
-                        ri, hli, hxi, hyi, hzi, rbound_i,
+                        ri, hli, hxi, hyi, hzi, rbound_i, va1, mnv1,
                         gj_type,
                         pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
-                        rj, hlj, hxj, hyj, hzj, rbound_j,
+                        rj, hlj, hxj, hyj, hzj, rbound_j, va2, mnv2,
+                        mesh_verts,
                         cx, cy, cz,
                         mccd_nx, mccd_ny, mccd_nz,
                         dist,
