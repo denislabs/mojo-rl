@@ -592,6 +592,31 @@ struct BatchedGpuEnv[
     var _env_rng_counter: DeviceBuffer[DType.uint64]
 
     def __init__(out self, ctx: DeviceContext) raises:
+        # ⚠ `OBS_DIM_` / `ACT_DIM_` are CALLER-SUPPLIED, so nothing stopped them
+        # disagreeing with the wrapped env's own dims — the same
+        # caller-passes-wrong-value bug this struct's docstring records for
+        # STATE_SIZE, left open for the other two. It bites harder than it
+        # looks: a driver's `E.ACT_DIM == trainer.ACT` check reads the
+        # WRAPPER's declared value, so a wrong one satisfies every assert and
+        # the env kernel then strides the action slab wrong — garbage actions,
+        # no error. (Wrapping a 1-action Pendulum as 2-action cost a debug
+        # cycle on the multi-task MPC gate.)
+        #
+        # ⚠ RUNTIME `raise`, NOT `comptime assert`: a `comptime assert` in this
+        # non-parametric `__init__` is silently never evaluated — verified by
+        # putting `comptime assert False` here and watching it compile clean.
+        # (The ones in `reset_batch[BATCH]` / `step_batch[BATCH]` do fire;
+        # those methods carry their own comptime params.) Construction runs
+        # once per env, so a runtime check costs nothing.
+        if Self.OBS_DIM_ != Self.E.OBS_DIM:
+            raise Error(
+                "BatchedGpuEnv: OBS_DIM_ must equal the wrapped env's OBS_DIM"
+            )
+        if Self.ACT_DIM_ != Self.E.ACTION_DIM:
+            raise Error(
+                "BatchedGpuEnv: ACT_DIM_ must equal the wrapped env's"
+                " ACTION_DIM"
+            )
         self._states = ctx.enqueue_create_buffer[DT](
             Self.N_ENVS * Self.STATE_SIZE
         )

@@ -245,3 +245,73 @@ def tdmpc2_mt_select_action_batched[
                 grid_dim=(tot_act + TPB - 1) // TPB,
                 block_dim=TPB,
             )
+
+
+def mt_apply_mask_kernel[
+    N: Int, ACT: Int
+](
+    action: LayoutTensor[DT, Layout.row_major(N, ACT), MutAnyOrigin],
+    mask: LayoutTensor[DT, Layout.row_major(ACT), MutAnyOrigin],
+):
+    """`action[n,j] *= mask[j]`, in place.
+
+    The MPPI planner knows nothing about per-task action masks — it optimizes
+    over all `MAX_ACT` columns — so the mask is applied to its output. A no-op
+    when every task uses the full action space."""
+    var i = Int(global_idx.x)
+    if i >= N * ACT:
+        return
+    var n = i // ACT
+    var j = i % ACT
+    action[n, j] = rebind[Scalar[DT]](action[n, j]) * rebind[Scalar[DT]](
+        mask[j]
+    )
+
+
+def tdmpc2_mt_encode_batched[
+    ENC_M: Module,
+    target: StaticString,
+    N_ENVS: Int,
+    MAX_OBS: Int,
+    LATENT: Int,
+    EMB: Int,
+](
+    mut encoder: ENC_M,
+    mut ob_scr: Tensor,
+    mut ein_scr: Tensor,
+    mut z_scr: Tensor,
+    mut tem: Tensor,
+    obs: LayoutTensor[DT, Layout.row_major(N_ENVS, MAX_OBS), MutAnyOrigin],
+    ctx: Optional[DeviceContext],
+) raises:
+    """`z_scr ← encode([obs | tem])` for N envs — the MPPI planner's roots.
+
+    The multi-task sibling of `tdmpc2_encode_batched`: the encoder is
+    task-conditioned, so the root latent must be built from the augmented
+    input, not from `obs` alone."""
+    comptime assert target == "gpu", (
+        "tdmpc2_mt_encode_batched: MPC planning is GPU-only"
+    )
+    comptime AOBS = MAX_OBS + EMB
+    var c = ctx.value()
+    ob_scr.ensure_gpu(c, N_ENVS * MAX_OBS)
+    ein_scr.ensure_gpu(c, N_ENVS * AOBS)
+    z_scr.ensure_gpu(c, N_ENVS * LATENT)
+    comptime tot_obs = N_ENVS * MAX_OBS
+    c.enqueue_function[offpolicy_copy2d_kernel[N_ENVS, MAX_OBS]](
+        obs,
+        ob_scr.lt["gpu", Layout.row_major(N_ENVS, MAX_OBS)](),
+        grid_dim=(tot_obs + TPB - 1) // TPB,
+        block_dim=TPB,
+    )
+    comptime tot_ein = N_ENVS * AOBS
+    c.enqueue_function[mt_concat2_kernel[N_ENVS, MAX_OBS, EMB]](
+        ob_scr.lt["gpu", Layout.row_major(N_ENVS, MAX_OBS)](),
+        tem.lt["gpu", Layout.row_major(N_ENVS, EMB)](),
+        ein_scr.lt["gpu", Layout.row_major(N_ENVS, AOBS)](),
+        grid_dim=(tot_ein + TPB - 1) // TPB,
+        block_dim=TPB,
+    )
+    call_forward[target, N_ENVS](
+        encoder, TensorRefs[ENC_M.ARITY](ein_scr), z_scr, ctx
+    )

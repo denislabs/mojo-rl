@@ -15,8 +15,10 @@ guarded dispatch so two DISTINCT fields are threaded. Adam via ctor+adopt+step;
 polyak via `Module.polyak_from`; storage CheckpointWriter/Reader (task_emb body
 appended last); action/record entry points take `List[Scalar[DT]]`.
 
-Acting is MPC-off (`a = π(encode([obs|task_emb]))`); the MPPI planner is NOT built
-for the multi-task path (deferred).
+Acting: MPC-off (`a = π(encode([obs|task_emb]))`) by default, or MPPI planning
+via `select_action_mpc` on the GPU target — the planner is task-conditioned
+through `TDMPC2RolloutCallbackGPUMT` (`callback_mt.mojo`), which splices the
+task embedding into every net input in the order `wm_graph_mt` uses.
 
 train_step: sample length-T windows + per-window task id (host) → t-major →
 gather task embeddings → TD targets (stop-grad) → WM BPTT (accumulates embedding
@@ -30,7 +32,7 @@ from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 from max.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.initializer import Kaiming, Zero
@@ -46,8 +48,15 @@ from mojo_rl.deep_agents.training.batched_env import BatchedEnv
 from mojo_rl.deep_agents.training.blocks.action_select import (
     warmup_uniform_batched,
 )
+from mojo_rl.planners.trajectory.mppi import MPPIGPUBatched
+from max.gpu.host import HostBuffer
 from .agent import _crossed
-from .batched_acting_mt import tdmpc2_mt_select_action_batched
+from .callback_mt import TDMPC2RolloutCallbackGPUMT
+from .batched_acting_mt import (
+    tdmpc2_mt_select_action_batched,
+    tdmpc2_mt_encode_batched,
+    mt_apply_mask_kernel,
+)
 from .metrics import TDMPC2Metrics
 
 from .nets_mt import (
@@ -80,6 +89,12 @@ struct TDMPC2MultiTaskAgent[
     NUM_TASKS: Int,
     TASK_EMB: Int,
     QP: Float64 = 0.0,
+    # MPPI planning budget. Defaulted and placed LAST so every existing
+    # call site keeps working; only `select_action_mpc` reads them.
+    NUM_SAMPLES: Int = 512,
+    NUM_PI_TRAJS: Int = 24,
+    NUM_ELITES: Int = 64,
+    NUM_ITERS: Int = 8 if MAX_ACT >= 20 else 6,
 ](Movable & Deinitable):
     comptime EncT = TDMPC2EncoderMT[
         Self.MAX_OBS, Self.ENC, Self.LATENT, Self.SN, Self.TASK_EMB
@@ -104,6 +119,15 @@ struct TDMPC2MultiTaskAgent[
         Self.VMAX, Self.TASK_EMB, Self.QP,
     ]
     comptime EmbT = TaskEmbedding[Self.NUM_TASKS, Self.TASK_EMB]
+    comptime MPC_BT = Self.NUM_SAMPLES + Self.NUM_PI_TRAJS
+    comptime PlannerT = MPPIGPUBatched[
+        Self.LATENT, Self.MAX_ACT, Self.H, Self.NUM_SAMPLES,
+        Self.NUM_PI_TRAJS, Self.NUM_ELITES, Self.NUM_ITERS, 1,
+    ]
+    comptime MpcCB = TDMPC2RolloutCallbackGPUMT[
+        Self.MAX_ACT, Self.LATENT, Self.MLP, Self.BINS, Self.SN, Self.VMIN,
+        Self.VMAX, Self.TASK_EMB, NQ, Self.MPC_BT, Self.QP,
+    ]
     comptime PB = (Self.H + 1) * Self.B
     comptime AOBS = Self.MAX_OBS + Self.TASK_EMB
     comptime PIN = Self.LATENT + Self.TASK_EMB
@@ -176,6 +200,25 @@ struct TDMPC2MultiTaskAgent[
     var act_tem: Tensor
     var act_mask: Tensor
     var act_tids: Tensor
+    # ── MPC (GPU only) — planner + rollout callback + landing buffers ────
+    # Built lazily on first plan; `_mpc_ready` rebuilds the callback if the
+    # agent has MOVED, since it holds raw pointers into our own modules.
+    var planner: Optional[Self.PlannerT]
+    var mpc_cb: Optional[Self.MpcCB]
+    var mpc_out: Optional[DeviceBuffer[DT]]
+    var mpc_host: Optional[HostBuffer[DT]]
+    var mpc_row: Tensor
+    # ⚠ A DEDICATED single-row task-id tensor. Reusing `act_tids` for both the
+    # 1-row gather (the planner's broadcast) and the N-row gather (the encode)
+    # resizes one tensor between 1 and N every iteration — and
+    # `Tensor.upload_resident` CANNOT GROW an existing device buffer:
+    # `ensure_gpu(ctx, self.n)` compares `self.n < n` after the host-side
+    # `ensure` already bumped `self.n`, so it silently keeps the old, smaller
+    # device buffer and the next copy dies with "Copy size exceeds Metal
+    # buffer length". Two tensors, two fixed sizes, no resize.
+    var mpc_tids: Tensor
+    var mpc_ob: Tensor
+    var mpc_z0: Tensor
 
     var gamma: Scalar[DT]
     var tau: Scalar[DT]
@@ -338,6 +381,9 @@ struct TDMPC2MultiTaskAgent[
             act_ob=Tensor(), act_ein=Tensor(), act_z=Tensor(),
             act_pin=Tensor(), act_pio=Tensor(), act_alp=Tensor(),
             act_tem=Tensor(), act_mask=Tensor(), act_tids=Tensor(),
+            planner=None, mpc_cb=None, mpc_out=None, mpc_host=None,
+            mpc_row=Tensor(), mpc_tids=Tensor(),
+            mpc_ob=Tensor(), mpc_z0=Tensor(),
             gamma=gamma, tau=tau, bce_coef=bce_coef, action_scale=action_scale,
             learning_starts=learning_starts, step_count=0,
             _last_wm=Scalar[DT](0.0), _last_pi=Scalar[DT](0.0),
@@ -435,6 +481,111 @@ struct TDMPC2MultiTaskAgent[
         mut act_out: List[Scalar[DT]],
     ) raises:
         self.select_action(obs, act_out, explore=False)
+
+    # ── acting (MPC): plan with the task-conditioned world model ─────────
+
+    def mpc_start_episode(mut self) raises:
+        """Drop the planner's warm-start mean — call after an env reset, and
+        after a TASK switch: a plan carried over from another task's segment
+        is a mean optimized for a different reward."""
+        comptime if Self.target == "gpu":
+            if self.planner:
+                self.planner.value().start_episode(0)
+
+    def _mpc_ready(mut self, ctx: DeviceContext) raises:
+        """Build the planner + callback on first use, and REBUILD the callback
+        if this agent has moved since.
+
+        Same hazard as the single-task agent: `MpcCB` holds raw
+        `MutUntrackedOrigin` pointers into our own modules, which the compiler
+        will not flag when they go stale, so a cached callback that survived a
+        move would plan against freed memory and return plausible actions. The
+        guard compares the cached `dyn` pointer against a fresh one.
+        """
+        comptime A = Self.MAX_ACT
+        if not self.planner:
+            self.planner = Optional(Self.PlannerT(ctx))
+        var fresh = rebind[Pointer[Self.DynT, MutUntrackedOrigin]](
+            Pointer(to=self.dynamics)
+        )
+        var stale = True
+        if self.mpc_cb:
+            stale = self.mpc_cb.value().dyn != fresh
+        if stale:
+            self.mpc_cb = Optional(
+                Self.MpcCB.make(
+                    self.dynamics, self.reward, self.policy,
+                    self.qt0, self.qt1, self.qt2, self.qt3, self.qt4,
+                    self.action_scale, ctx,
+                )
+            )
+        if not self.mpc_out:
+            self.mpc_out = Optional(ctx.enqueue_create_buffer[DT](A))
+            self.mpc_host = Optional(ctx.enqueue_create_host_buffer[DT](A))
+
+    def select_action_mpc(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        mut act_out: List[Scalar[DT]],
+        explore: Bool = True,
+    ) raises:
+        """MPC acting for `cur_task`: plan in latent space with the
+        task-conditioned world model. GPU only.
+
+        ⚠ The task embedding is re-gathered and re-broadcast on EVERY call.
+        The table is trained, so a row captured once would plan against an
+        embedding the world model has already moved away from — the same
+        staleness the batched acting path avoids.
+        """
+        comptime assert Self.target == "gpu", (
+            "select_action_mpc requires target='gpu' (CPU MPPI is eval-only)"
+        )
+        comptime A = Self.MAX_ACT
+        comptime MO = Self.MAX_OBS
+        comptime LAT = Self.LATENT
+        comptime EMB = Self.TASK_EMB
+        var ctx = self.ctx.value()
+        self._mpc_ready(ctx)
+
+        # tem row for cur_task → broadcast over the planning candidates.
+        self._mt_gather_row(self.cur_task, Optional(ctx))
+        self.mpc_cb.value().set_task_embedding(self.mpc_row, ctx)
+
+        # z0 = encode([obs | tem]) — the encoder is task-conditioned too, so
+        # the root latent needs the embedding before the plan starts.
+        self.mpc_row.download(ctx)
+        self.mpc_ob.ensure(Self.AOBS)
+        for i in range(MO):
+            self.mpc_ob.data[i] = obs[i]
+        for e in range(EMB):
+            self.mpc_ob.data[MO + e] = self.mpc_row.data[e]
+        self.mpc_ob.upload_resident(ctx)
+        self.mpc_z0.ensure_gpu(ctx, LAT)
+        self.encoder.forward[Self.target, 1](
+            TensorRefs[1](self.mpc_ob), self.mpc_z0, Optional(ctx)
+        )
+
+        var out_lt = LayoutTensor[DT, Layout.row_major(1 * A), MutAnyOrigin](
+            self.mpc_out.value()
+        )
+        self.planner.value().plan_gpu[Self.MpcCB](
+            ctx, self.mpc_cb.value(),
+            self.mpc_z0.lt["gpu", Layout.row_major(1, LAT)](),
+            out_lt,
+            gamma=Float64(self.gamma),
+            temperature=Float64(self.temperature),
+            action_scale=Float64(self.action_scale),
+            deterministic=not explore,
+        )
+        ctx.enqueue_copy(self.mpc_host.value(), self.mpc_out.value())
+        ctx.synchronize()
+        # The planner knows nothing about per-task action masks, so pad
+        # columns are zeroed here (a no-op when every task uses MAX_ACT).
+        for j in range(A):
+            act_out[j] = (
+                self.mpc_host.value().unsafe_ptr()[unsafe_offset=j]
+                * self.action_mask[self.cur_task * A + j]
+            )
 
     def record(
         mut self,
@@ -879,9 +1030,25 @@ struct TDMPC2MultiTaskAgent[
         self.act_tem.ensure[tg](N_ENVS * EMB, ctx)
         self.task_emb.gather[tg, N_ENVS](self.act_tids, self.act_tem, ctx)
 
+    def _mt_gather_row(
+        mut self, task_id: Int, ctx: Optional[DeviceContext]
+    ) raises:
+        """Gather ONE `[TASK_EMB]` embedding row into `mpc_row` — what the
+        planner's rollout callback broadcasts over its candidates. Uses its own
+        fixed-size tensors (see the `mpc_tids` note)."""
+        comptime tg = Self.target
+        comptime EMB = Self.TASK_EMB
+        self.mpc_tids.ensure(1)
+        self.mpc_tids.data[0] = Scalar[DT](task_id)
+        comptime if tg == "gpu":
+            self.mpc_tids.upload_resident(ctx.value())
+        self.mpc_row.ensure[tg](EMB, ctx)
+        self.task_emb.gather[tg, 1](self.mpc_tids, self.mpc_row, ctx)
+
     def evaluate_batched_mt[
         E: BatchedEnv,
         EVAL_ENVS: Int,
+        USE_MPC: Bool = False,
     ](
         mut self,
         mut env: E,
@@ -891,7 +1058,12 @@ struct TDMPC2MultiTaskAgent[
         rng_seed: UInt64 = 12345,
     ) raises -> Scalar[DT]:
         """Deterministic eval of ONE task over `EVAL_ENVS` envs → mean return
-        over COMPLETED episodes (0.0 if none finished within `max_steps`)."""
+        over COMPLETED episodes (0.0 if none finished within `max_steps`).
+
+        `USE_MPC=True` evaluates the MPPI planner (GPU only) instead of the
+        policy prior — the two are different controllers and generally score
+        differently, so an eval number is only comparable to another taken in
+        the SAME mode."""
         comptime tg = Self.target
         comptime MO = Self.MAX_OBS
         comptime A = Self.MAX_ACT
@@ -904,8 +1076,38 @@ struct TDMPC2MultiTaskAgent[
             "evaluate_batched_mt: env dims must equal MAX_OBS / MAX_ACT"
         )
 
+        comptime if USE_MPC:
+            comptime assert tg == "gpu", "MPC eval is GPU-only"
         var ctx = self.ctx
         self._mt_prepare(task_id, ctx)
+
+        # An EVAL_ENVS-wide planner + callback (the agent's own pair is the
+        # N=1 one `select_action_mpc` uses). Built once per eval call, which is
+        # periodic — not per step.
+        comptime EV_BT = EVAL_ENVS * Self.MPC_BT
+        comptime EvPlannerT = MPPIGPUBatched[
+            Self.LATENT, Self.MAX_ACT, Self.H, Self.NUM_SAMPLES,
+            Self.NUM_PI_TRAJS, Self.NUM_ELITES, Self.NUM_ITERS, EVAL_ENVS,
+        ]
+        comptime EvCB = TDMPC2RolloutCallbackGPUMT[
+            Self.MAX_ACT, Self.LATENT, Self.MLP, Self.BINS, Self.SN,
+            Self.VMIN, Self.VMAX, Self.TASK_EMB, NQ, EV_BT, Self.QP,
+        ]
+        var ev_planner: Optional[EvPlannerT] = None
+        var ev_cb: Optional[EvCB] = None
+        comptime if USE_MPC:
+            var c = ctx.value()
+            ev_planner = Optional(EvPlannerT(c))
+            ev_cb = Optional(
+                EvCB.make(
+                    self.dynamics, self.reward, self.policy,
+                    self.qt0, self.qt1, self.qt2, self.qt3, self.qt4,
+                    self.action_scale, c,
+                )
+            )
+            for e in range(EVAL_ENVS):
+                ev_planner.value().start_episode(e)
+
         env.reset_batch[EVAL_ENVS](ctx=ctx, rng_seed=rng_seed)
 
         var per_env = List[Scalar[DT]](length=EVAL_ENVS, fill=Scalar[DT](0.0))
@@ -914,21 +1116,62 @@ struct TDMPC2MultiTaskAgent[
         var returns = List[Scalar[DT]]()
 
         for s in range(max_steps):
-            self._mt_gather_emb[EVAL_ENVS](task_id, ctx)
-            tdmpc2_mt_select_action_batched[
-                Self.EncT, Self.PolicyT, tg, EVAL_ENVS, MO, A, LAT, EMB
-            ](
-                self.encoder, self.policy, self.act_rsample,
-                self.act_ob, self.act_ein, self.act_z, self.act_pin,
-                self.act_pio, self.act_alp, self.act_tem, self.act_mask,
-                LayoutTensor[DT, Layout.row_major(EVAL_ENVS, MO), MutAnyOrigin](
-                    env.obs_ptr()
-                ),
-                LayoutTensor[DT, Layout.row_major(EVAL_ENVS, A), MutAnyOrigin](
-                    env.action_ptr()
-                ),
-                self.action_scale, False, ctx,
-            )
+            comptime if USE_MPC:
+                # ⚠ Two gathers, and the ORDER matters. `set_task_embedding`
+                # broadcasts a ONE-row `[EMB]` tensor across the planning
+                # candidates, so `act_tem` must hold a single row at that
+                # moment; the encode below then needs it EVAL_ENVS rows wide.
+                self._mt_gather_row(task_id, ctx)
+                ev_cb.value().set_task_embedding(self.mpc_row, ctx.value())
+                self._mt_gather_emb[EVAL_ENVS](task_id, ctx)
+                tdmpc2_mt_encode_batched[
+                    Self.EncT, tg, EVAL_ENVS, MO, LAT, EMB
+                ](
+                    self.encoder, self.act_ob, self.act_ein, self.act_z,
+                    self.act_tem,
+                    LayoutTensor[
+                        DT, Layout.row_major(EVAL_ENVS, MO), MutAnyOrigin
+                    ](env.obs_ptr()),
+                    ctx,
+                )
+                ev_planner.value().plan_gpu[EvCB](
+                    ctx.value(), ev_cb.value(),
+                    self.act_z.lt["gpu", Layout.row_major(EVAL_ENVS, LAT)](),
+                    LayoutTensor[
+                        DT, Layout.row_major(EVAL_ENVS * A), MutAnyOrigin
+                    ](env.action_ptr()),
+                    gamma=Float64(self.gamma),
+                    temperature=Float64(self.temperature),
+                    action_scale=Float64(self.action_scale),
+                    deterministic=True,
+                    rng_base_seed=UInt32(rng_seed) + UInt32(s),
+                )
+                ctx.value().enqueue_function[
+                    mt_apply_mask_kernel[EVAL_ENVS, A]
+                ](
+                    LayoutTensor[
+                        DT, Layout.row_major(EVAL_ENVS, A), MutAnyOrigin
+                    ](env.action_ptr()),
+                    self.act_mask.lt["gpu", Layout.row_major(A)](),
+                    grid_dim=(EVAL_ENVS * A + TPB - 1) // TPB,
+                    block_dim=TPB,
+                )
+            else:
+                self._mt_gather_emb[EVAL_ENVS](task_id, ctx)
+                tdmpc2_mt_select_action_batched[
+                    Self.EncT, Self.PolicyT, tg, EVAL_ENVS, MO, A, LAT, EMB
+                ](
+                    self.encoder, self.policy, self.act_rsample,
+                    self.act_ob, self.act_ein, self.act_z, self.act_pin,
+                    self.act_pio, self.act_alp, self.act_tem, self.act_mask,
+                    LayoutTensor[
+                        DT, Layout.row_major(EVAL_ENVS, MO), MutAnyOrigin
+                    ](env.obs_ptr()),
+                    LayoutTensor[
+                        DT, Layout.row_major(EVAL_ENVS, A), MutAnyOrigin
+                    ](env.action_ptr()),
+                    self.action_scale, False, ctx,
+                )
             env.step_batch[EVAL_ENVS](
                 ctx=ctx, rng_seed=rng_seed + UInt64(s + 1)
             )
@@ -970,6 +1213,7 @@ struct TDMPC2MultiTaskAgent[
         E: BatchedEnv,
         N_ENVS: Int = 1,
         L: Logger = NoOpLogger,
+        USE_MPC: Bool = False,
         EE: BatchedEnv = E,
         EVAL_ENVS: Int = N_ENVS,
     ](
@@ -1026,6 +1270,10 @@ struct TDMPC2MultiTaskAgent[
         if task_id < 0 or task_id >= Self.NUM_TASKS:
             raise Error("train_batched_mt: task_id out of range")
 
+        comptime if USE_MPC:
+            comptime assert tg == "gpu", (
+                "train_batched_mt[USE_MPC=True] requires target='gpu'"
+            )
         var ctx = self.ctx
         # ⚠ Not optional: N envs interleave into one ring, so windows must be
         # walked with stride N or they hop between envs every frame.
@@ -1033,6 +1281,33 @@ struct TDMPC2MultiTaskAgent[
         self._mt_prepare(task_id, ctx)
 
         var iters = total_env_steps // N_ENVS
+
+        # ── MPC: an N_ENVS-wide planner + callback, HOISTED out of the loop ──
+        # (`MpcCB.make` allocates nine device tensors; building one per step is
+        # the hot-loop allocation footgun.)
+        comptime TR_BT = N_ENVS * Self.MPC_BT
+        comptime TrPlannerT = MPPIGPUBatched[
+            Self.LATENT, Self.MAX_ACT, Self.H, Self.NUM_SAMPLES,
+            Self.NUM_PI_TRAJS, Self.NUM_ELITES, Self.NUM_ITERS, N_ENVS,
+        ]
+        comptime TrCB = TDMPC2RolloutCallbackGPUMT[
+            Self.MAX_ACT, Self.LATENT, Self.MLP, Self.BINS, Self.SN,
+            Self.VMIN, Self.VMAX, Self.TASK_EMB, NQ, TR_BT, Self.QP,
+        ]
+        var tr_planner: Optional[TrPlannerT] = None
+        var tr_cb: Optional[TrCB] = None
+        comptime if USE_MPC:
+            var c = ctx.value()
+            tr_planner = Optional(TrPlannerT(c))
+            tr_cb = Optional(
+                TrCB.make(
+                    self.dynamics, self.reward, self.policy,
+                    self.qt0, self.qt1, self.qt2, self.qt3, self.qt4,
+                    self.action_scale, c,
+                )
+            )
+            for e in range(N_ENVS):
+                tr_planner.value().start_episode(e)
 
         var obs_h = List[Scalar[DT]](length=N_ENVS * MO, fill=Scalar[DT](0.0))
         var act_h = List[Scalar[DT]](length=N_ENVS * A, fill=Scalar[DT](0.0))
@@ -1079,19 +1354,59 @@ struct TDMPC2MultiTaskAgent[
                 )
             else:
                 # Re-gather EVERY iteration: the table is being trained.
-                self._mt_gather_emb[N_ENVS](task_id, ctx)
-                tdmpc2_mt_select_action_batched[
-                    Self.EncT, Self.PolicyT, tg, N_ENVS, MO, A, LAT, EMB
-                ](
-                    self.encoder, self.policy, self.act_rsample,
-                    self.act_ob, self.act_ein, self.act_z, self.act_pin,
-                    self.act_pio, self.act_alp, self.act_tem, self.act_mask,
-                    LayoutTensor[
-                        DT, Layout.row_major(N_ENVS, MO), MutAnyOrigin
-                    ](env.obs_ptr()),
-                    act_lt,
-                    self.action_scale, True, ctx,
-                )
+                comptime if USE_MPC:
+                    # One row for the callback's broadcast, then N rows for
+                    # the encode — see the note in `evaluate_batched_mt`.
+                    self._mt_gather_row(task_id, ctx)
+                    tr_cb.value().set_task_embedding(
+                        self.mpc_row, ctx.value()
+                    )
+                    self._mt_gather_emb[N_ENVS](task_id, ctx)
+                    tdmpc2_mt_encode_batched[
+                        Self.EncT, tg, N_ENVS, MO, LAT, EMB
+                    ](
+                        self.encoder, self.act_ob, self.act_ein, self.act_z,
+                        self.act_tem,
+                        LayoutTensor[
+                            DT, Layout.row_major(N_ENVS, MO), MutAnyOrigin
+                        ](env.obs_ptr()),
+                        ctx,
+                    )
+                    tr_planner.value().plan_gpu[TrCB](
+                        ctx.value(), tr_cb.value(),
+                        self.act_z.lt["gpu", Layout.row_major(N_ENVS, LAT)](),
+                        LayoutTensor[
+                            DT, Layout.row_major(N_ENVS * A), MutAnyOrigin
+                        ](env.action_ptr()),
+                        gamma=Float64(self.gamma),
+                        temperature=Float64(self.temperature),
+                        action_scale=Float64(self.action_scale),
+                        deterministic=False,
+                        rng_base_seed=UInt32(rng_seed) + UInt32(it),
+                    )
+                    ctx.value().enqueue_function[
+                        mt_apply_mask_kernel[N_ENVS, A]
+                    ](
+                        act_lt,
+                        self.act_mask.lt["gpu", Layout.row_major(A)](),
+                        grid_dim=(N_ENVS * A + TPB - 1) // TPB,
+                        block_dim=TPB,
+                    )
+                else:
+                    self._mt_gather_emb[N_ENVS](task_id, ctx)
+                    tdmpc2_mt_select_action_batched[
+                        Self.EncT, Self.PolicyT, tg, N_ENVS, MO, A, LAT, EMB
+                    ](
+                        self.encoder, self.policy, self.act_rsample,
+                        self.act_ob, self.act_ein, self.act_z, self.act_pin,
+                        self.act_pio, self.act_alp, self.act_tem,
+                        self.act_mask,
+                        LayoutTensor[
+                            DT, Layout.row_major(N_ENVS, MO), MutAnyOrigin
+                        ](env.obs_ptr()),
+                        act_lt,
+                        self.action_scale, True, ctx,
+                    )
 
             # ── 2. step ──────────────────────────────────────────────────
             env.step_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed + UInt64(it + 1))
@@ -1148,6 +1463,8 @@ struct TDMPC2MultiTaskAgent[
                     if w_cnt < 100:
                         w_cnt += 1
                     per_env_ret[e] = Scalar[DT](0.0)
+                    comptime if USE_MPC:
+                        tr_planner.value().start_episode(e)
 
             # ── 5. reset finished lanes, stage the next `s` ──────────────
             env.selective_reset_batch[N_ENVS](
@@ -1192,7 +1509,7 @@ struct TDMPC2MultiTaskAgent[
             )
             if do_eval:
                 var ep = eval_env.value()
-                var ret = self.evaluate_batched_mt[EE, EVAL_ENVS](
+                var ret = self.evaluate_batched_mt[EE, EVAL_ENVS, USE_MPC](
                     ep[], task_id,
                     max_steps=eval_max_steps,
                     rng_seed=rng_seed + UInt64(gstep),

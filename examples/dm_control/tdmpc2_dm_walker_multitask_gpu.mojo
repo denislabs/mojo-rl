@@ -38,10 +38,23 @@ ACTING policy is driving.
 episode per env) or a segment cannot finish an episode and its `mean_ret` is
 stale from the previous round.
 
-⚠ MPC is NOT available on the multi-task agent (no planner is built for it), so
-this run is MPC-off on both acting and eval. The single-task comparison should
-therefore be read against an MPC-off single-task run, not against the 932 that
-the MPC run reached — the planner is worth a large fraction of that number.
+## MPC
+
+`USE_MPC` picks the controller, and it decides what this run is comparable to:
+
+  * False (default) — `a = π(encode([obs|tem]))`. Fast, and it tests exactly
+    the conditioning question: can one world model + one prior serve three
+    rewards? Compare against an MPC-OFF single-task run.
+  * True — MPPI planning through the task-conditioned world model
+    (`TDMPC2RolloutCallbackGPUMT`). This is TD-MPC2 as published, and the
+    only setting comparable to the single-task MPC numbers. It costs a full
+    MPPI search per env-step: at N_ENVS=8 the planner's grid is
+    8 × (MPC_SAMPLES + MPC_PI_TRAJS) rows through the world model, every
+    horizon step, every iteration.
+
+⚠ Do not compare an MPC-off multi-task run against a single-task MPC number.
+On walker the planner is worth a large fraction of the score, so that
+comparison charges the planner's absence to multi-task conditioning.
 
 Run:
     pixi run -e nvidia mojo run -I . examples/dm_control/tdmpc2_dm_walker_multitask_gpu.mojo
@@ -60,6 +73,15 @@ from mojo_rl.envs.dm_control.walker.walker_xml import DMWalkerModel
 from mojo_rl.envs.dm_control.walker.walker_config import DMWalkerConfig
 
 comptime TARGET = "gpu"
+
+# ── acting mode ──────────────────────────────────────────────────────────
+comptime USE_MPC = False
+# MPPI budget (only read when USE_MPC). Reference TD-MPC2 is 512/24/64/6;
+# these are the lighter numbers the single-task walker scripts use.
+comptime MPC_SAMPLES = 256
+comptime MPC_PI_TRAJS = 12
+comptime MPC_ELITES = 32
+comptime MPC_ITERS = 4
 
 comptime N_ENVS = 8
 comptime EVAL_ENVS = 8
@@ -133,7 +155,12 @@ def main() raises:
     print("  latent   =", LATENT, " B =", B, " H =", H)
     print("  segment  =", SEGMENT_STEPS, "env-steps x", N_ROUNDS, "rounds")
     print("  total    =", SEGMENT_STEPS * N_ROUNDS * NUM_TASKS, "env-steps")
-    print("  MPC      = OFF (no planner on the multi-task agent)")
+    var mode = "MPC" if USE_MPC else "MPC-off (policy prior)"
+    print("  acting   =", mode)
+    comptime if USE_MPC:
+        print("  MPPI     =", MPC_SAMPLES, "+", MPC_PI_TRAJS, "trajs x",
+              MPC_ITERS, "iters → grid",
+              N_ENVS * (MPC_SAMPLES + MPC_PI_TRAJS), "rows")
     print("=" * 70)
     seed(0)
     var ctx = DeviceContext()
@@ -151,6 +178,13 @@ def main() raises:
     var ag = TDMPC2MultiTask[
         TARGET, MAX_OBS, MAX_ACT, NUM_TASKS, TASK_EMB, B, CAP,
         ENC, LATENT, MLP, BINS, SN, VMIN, VMAX, H,
+        # ⚠ KEYWORDS, not positional. `TDMPC2MultiTask` takes QP BEFORE the
+        # MPPI budget while the single-task `TDMPC2` takes it LAST, so the
+        # positional spelling that works there silently shifts every value by
+        # one here (MPC_SAMPLES lands in QP). Keywords also survive any future
+        # param insertion.
+        NUM_SAMPLES=MPC_SAMPLES, NUM_PI_TRAJS=MPC_PI_TRAJS,
+        NUM_ELITES=MPC_ELITES, NUM_ITERS=MPC_ITERS,
     ](
         ctx=ctx, lr=Scalar[DT](LR),
         action_scale=Scalar[DT](ACTION_SCALE), learning_starts=LEARN_START,
@@ -190,7 +224,7 @@ def main() raises:
         # dashboard shows N_ROUNDS x 3 overlapping runs. The warmup gate reads
         # the replay count, not this, so it is a logging axis only.
         var b0 = ag.train_batched_mt[
-            StandEnv, N_ENVS, RemoteLogger, StandEval, EVAL_ENVS
+            StandEnv, N_ENVS, RemoteLogger, USE_MPC, StandEval, EVAL_ENVS
         ](
             stand, T_STAND, SEGMENT_STEPS,
             rng_seed=UInt64(100 + rnd), updates_per_step=UPDATES_PER_STEP,
@@ -205,7 +239,7 @@ def main() raises:
             best_stand = b0
 
         var b1 = ag.train_batched_mt[
-            WalkEnv, N_ENVS, RemoteLogger, WalkEval, EVAL_ENVS
+            WalkEnv, N_ENVS, RemoteLogger, USE_MPC, WalkEval, EVAL_ENVS
         ](
             walk, T_WALK, SEGMENT_STEPS,
             rng_seed=UInt64(200 + rnd), updates_per_step=UPDATES_PER_STEP,
@@ -220,7 +254,7 @@ def main() raises:
             best_walk = b1
 
         var b2 = ag.train_batched_mt[
-            RunEnv, N_ENVS, RemoteLogger, RunEval, EVAL_ENVS
+            RunEnv, N_ENVS, RemoteLogger, USE_MPC, RunEval, EVAL_ENVS
         ](
             run_e, T_RUN, SEGMENT_STEPS,
             rng_seed=UInt64(300 + rnd), updates_per_step=UPDATES_PER_STEP,
@@ -261,7 +295,9 @@ def main() raises:
     print("=" * 70)
     print("Read it against the SINGLE-TASK, MPC-OFF baseline per task —")
     print("  examples/dm_control/tdmpc2_dm_walker_batched_gpu.mojo (USE_MPC=False)")
-    print("  MPC is off here, so the 932 from the MPC run is NOT the baseline.")
+    print("  ⚠ match the ACTING MODE across the comparison: an MPC-off")
+    print("    multi-task run vs a single-task MPC number charges the")
+    print("    planner's absence to multi-task conditioning.")
     print("")
     print("  3 tasks at parity with single-task  → conditioning works.")
     print("  stand fine, run collapsed           → the shared model is being")
