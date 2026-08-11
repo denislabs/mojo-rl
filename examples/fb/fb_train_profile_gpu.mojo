@@ -126,7 +126,7 @@ comptime BC_WEIGHT: Float64 = 1.0
 # at capture and every replay would redraw identical noise — silently, since
 # frozen noise still trains. `tests/deep_agents/test_fb_cuda_graph_safety.mojo`
 # gates exactly that.
-comptime USE_TRAIN_CUDA_GRAPH: Bool = False
+comptime USE_TRAIN_CUDA_GRAPH: Bool = True
 comptime SEED: Int = 20260805
 
 comptime F_IN = OBS + NACT + D
