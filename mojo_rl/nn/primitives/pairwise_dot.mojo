@@ -56,35 +56,51 @@ from std.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.bmm import batched_matmul
+from linalg.matmul import matmul as max_matmul
 
 from mojo_rl.nn.constants import DT, TPB
 
 
-# ⚠⚠ The FORWARD goes through `batched_matmul[transpose_b=True]` — the same
-# `linalg.bmm` entry point `attention.mojo` uses for QK^T, which is the identical
-# shape of operation (A @ C^T contracting the feature axis).
+# ⚠⚠ The FORWARD dispatches to a GEMM. `M = A @ C^T` is the same operation
+# `attention.mojo` computes for QK^T, so the library already had it — but WHICH
+# entry point matters enormously, and only an on-target profile can tell you.
 #
-# Measured on NVIDIA, 3000 FB steps under nsys, with the naive kernel:
+# Measured on NVIDIA over 3000 FB steps (per step, forward only):
 #
-#     pairwise FORWARD   15000 inst   279.7 us   42.6% of ALL GPU time
-#     pairwise bwd dA     9000 inst    51.1 us
-#     pairwise bwd dC     9000 inst    48.1 us
+#     naive kernel      1 kernel  x 5/step @ 279.7 us  = 1.40 ms
+#     batched_matmul   ~27 `matmul_kernel_naive`/step  = 2.46 ms   <- WORSE
+#     max_matmul        target: `multistage_gemm` 46 us = 0.23 ms
 #
-# The forward was 5.6x slower than its OWN BACKWARD at identical FLOPs, which
-# rules out arithmetic and points at memory: the forward has adjacent threads
-# reading `C[j*D + k]` with `j` varying — a D*4 = 512-byte-stride scatter — while
-# backward dA has them varying `k`, fully coalesced. So only the FORWARD is
-# replaced; the backwards are already at the right order and their naive kernels
-# stay (see the note on `_pd_da_kernel`).
+# `batched_matmul` with a batch of ONE does not reach the tiled/tensor-core
+# path: it fans out into ~5.4 `matmul_kernel_naive` launches per call and ends
+# up 1.75x SLOWER than the hand kernel it replaced. `max_matmul` — the 2D entry
+# point `linear.mojo` uses, which is where `multistage_gemm_kernel` comes from —
+# is the right target when there is no batch axis.
 #
-# ⚠ This is NOT the `max_matmul` the header warns about. That warning is about
-# `max_matmul`'s silent miscompute at N=1; `batched_matmul` is a different entry
-# point, and PairwiseDot's N is BATCH, never 1.
+# ⚠ On Apple the SAME `batched_matmul` swap measured 5.1x FASTER (2.39 ms ->
+# 0.468 ms, 112 -> 573 GFLOP/s). The two platforms disagreed in DIRECTION, not
+# just magnitude. An Apple benchmark cannot choose between these; profile on the
+# box that runs the training.
 #
-# Set False to fall back to the naive kernel — kept because the whole reason the
-# naive kernels exist is that heavy blocked kernels have hard-crashed the Metal
-# compiler on Apple, and a library GEMM is not automatically exempt.
-comptime PD_USE_BMM: Bool = True
+# ⚠ This is NOT the `max_matmul` N=1 hazard the header warns about. That is
+# about a silent miscompute when the output's N is 1; PairwiseDot's output is
+# [BATCH, BATCH], so M and N are both BATCH and never 1.
+#
+# `PD_BATCH_DIM` is the rule rather than a hardcoded choice: a genuine batch
+# axis (> 1) belongs in `batched_matmul`, which is what it is for; a batch of 1
+# is a plain 2D GEMM and belongs in `max_matmul`. PairwiseDot contracts ONE
+# [B, D] pair, so it is always 1 — but the dispatch states the reason instead of
+# leaving the next reader to rediscover it.
+#
+# Override `PD_FORWARD` to profile a specific path; "naive" restores the hand
+# kernel, kept because heavy blocked kernels have hard-crashed the Metal
+# compiler on Apple before and a library GEMM is not automatically exempt.
+comptime PD_BATCH_DIM: Int = 1
+comptime PD_FORWARD: StaticString = "auto"
+"""`"auto"` | `"max_matmul"` | `"batched_matmul"` | `"naive"`."""
+
+comptime PD_FORWARD_RESOLVED: StaticString = PD_FORWARD if PD_FORWARD
+    != "auto" else ("max_matmul" if PD_BATCH_DIM == 1 else "batched_matmul")
 from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
@@ -196,17 +212,35 @@ struct PairwiseDot[D_: Int, BATCH: Int](Module):
         else:
             var dc = ctx.value()
             out.ensure_gpu(dc, B * B)
-            comptime if PD_USE_BMM:
-                # M = A @ C^T, as a batch of ONE. Same call shape as
-                # `attention.mojo`'s QK^T.
+            comptime if PD_FORWARD_RESOLVED == "max_matmul":
+                # 2D `M = A @ C^T` — the entry point `linear.mojo` uses, which
+                # is what dispatches to `multistage_gemm_kernel`.
+                # ⚠ Bound to separate locals FIRST. `a` and `c` arrive from
+                # one `TensorRefs[2, o]`, so they share an origin, and
+                # `max_matmul` takes both mutably — passing
+                # `a.dev.value()` / `c.dev.value()` inline trips the
+                # exclusivity checker ("aliasing values passed mutably to 'a'
+                # and 'b'"). `batched_matmul` accepted the inline form, which is
+                # why this only appeared on the switch.
+                var a_buf = a.dev.value()
+                var c_buf = c.dev.value()
+                var m_buf = out.dev.value()
+                var m_v = TileTensor(m_buf, row_major[B, B]())
+                var a_v = TileTensor(a_buf, row_major[B, Self.D_]())
+                var c_v = TileTensor(c_buf, row_major[B, Self.D_]())
+                max_matmul[transpose_b=True, target="gpu"](m_v, a_v, c_v, dc)
+            elif PD_FORWARD_RESOLVED == "batched_matmul":
+                # Kept for profiling and for the day this primitive grows a real
+                # batch axis. At PD_BATCH_DIM == 1 it is measurably WORSE on
+                # NVIDIA — see the note above.
                 var m_tt = TileTensor(
-                    out.dev.value(), row_major[1, B, B]()
+                    out.dev.value(), row_major[PD_BATCH_DIM, B, B]()
                 )
                 var a_tt = TileTensor(
-                    a.dev.value(), row_major[1, B, Self.D_]()
+                    a.dev.value(), row_major[PD_BATCH_DIM, B, Self.D_]()
                 )
                 var c_tt = TileTensor(
-                    c.dev.value(), row_major[1, B, Self.D_]()
+                    c.dev.value(), row_major[PD_BATCH_DIM, B, Self.D_]()
                 )
                 batched_matmul[transpose_b=True, target="gpu"](
                     m_tt, a_tt, c_tt, context=dc

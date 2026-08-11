@@ -24,10 +24,21 @@ QK^T), and the same Apple benchmark now reads:
     8 PairwiseDot kernels     5.4 ms   -> 14% of the step (was 23%)
     one PairwiseDot forward   0.47 ms  -> 573 GFLOP/s (was 112)
 
+⚠⚠ And that Apple reading then chose the WRONG kernel. On NVIDIA
+`batched_matmul` at batch=1 fans out into ~5.4 `matmul_kernel_naive` launches
+per call and came out 1.75x SLOWER than the hand kernel it replaced — while the
+same swap measured 5.1x FASTER on Apple. The platforms disagreed in DIRECTION.
+`PairwiseDot` now dispatches to `max_matmul` (the 2D entry point `linear.mojo`
+uses) whenever there is no batch axis; see `PD_FORWARD` there.
+
+**Do not choose a kernel from this benchmark.** Use it to see WHERE the time is;
+decide WHICH kernel from an nsys run on the training box.
+
 The remaining bulk is the nets, the optimizer, and — the thing that actually
-differed from SAC — uncaptured kernel launches plus per-step device allocation
-(`cuMemAlloc`/`cuMemFree` were 81% of CUDA API time until the trainer stopped
-allocating vjp sinks every step).
+differed from SAC — uncaptured kernel launches plus per-step device allocation.
+Both are fixed: the NVIDIA profile went from 87226 allocations to 3364 and from
+636k eager launches to 49k + 2995 graph replays, taking CUDA API time 33.9 s ->
+14.6 s (2.33x) and the steady-state step ~12.4 ms -> ~4.5 ms.
 
 ⚠ Absolute numbers here do not transfer between Apple and NVIDIA (this project
 has measured the two INVERT on conv kernels). Treat the 23/77 SPLIT as
