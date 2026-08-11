@@ -86,6 +86,23 @@ comptime CKPT: StaticString = "checkpoints/fb_walker_all_d128.ckpt.500000"
 # computed z from a local 10 k store while the checkpoint had trained on 1 M —
 # the numbers were not wrong so much as unattributable.
 comptime STORE: StaticString = "fb_walker_all_sac.h5"
+# ⚠ `z = E[B(s)·r(s)]` is NOT invariant to a constant offset in `r`: adding `c`
+# adds `c·E[B(s)]` — the dataset-mean direction, which carries no task
+# information. It should be near-harmless in exact FB (a constant reward shifts
+# every action's return equally) and is not with a learned B.
+#
+# MEASURED on the 500 k checkpoint over 4096 rows, cosine between task z's:
+#
+#            stand-walk   walk-run   stand-run
+#   uncentered   0.885      0.949      0.905
+#   centered     0.618      0.846      0.648
+#
+# So the three "tasks" currently query policies 88-95% aligned in z-space, and
+# centering genuinely separates them. But this was measured against a BANG-BANG
+# actor, where z barely reaches the behaviour at all — so it is a HYPOTHESIS
+# with support, not a fix. Flip the flag and compare once a non-saturated
+# policy exists; do not change the default on the strength of the table above.
+comptime Z_CENTER: Bool = False
 comptime RELABEL_ROWS: Int = 4096
 comptime EVAL_EPISODES: Int = 10
 comptime EVAL_LEN: Int = 1000       # dm_control's own episode length
@@ -173,6 +190,10 @@ def _z_for_task[
         " range [", lo, ",", hi, "]",
     )
 
+    comptime if Z_CENTER:
+        var mu = sm / Float64(n)
+        for i in range(n):
+            rewards[i] = Scalar[DT](Float64(rewards[i]) - mu)
     var zl = z_from_reward[D](b_flat, rewards, n)
     var z = Tensor.alloc(D)
     for k in range(D):
