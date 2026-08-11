@@ -3119,6 +3119,134 @@ def _xml_find_joint_index(xml: String, jname: String) -> Int:
     return -1
 
 
+struct _JointAdrTable(Copyable, Movable):
+    """Every joint's qpos/dof address and `ref`, from ONE worldbody walk.
+
+    Replaces ~340 O(n) re-walks per model in `parse_xml_model_data` (each of
+    which copied the whole <worldbody> and allocated a String per tag) with one
+    walk plus linear lookups over ~75 entries.
+    """
+
+    var names: List[String]
+    var qadr: List[Int]
+    var dadr: List[Int]
+    var refs: List[Float64]
+
+    def __init__(out self):
+        self.names = List[String]()
+        self.qadr = List[Int]()
+        self.dadr = List[Int]()
+        self.refs = List[Float64]()
+
+    def qpos_adr(self, jname: String) -> Int:
+        """-1 when absent, matching `_xml_find_joint_qpos_adr`."""
+        for i in range(len(self.names)):
+            if self.names[i] == jname:
+                return self.qadr[i]
+        return -1
+
+    def dof_adr(self, jname: String) -> Int:
+        """-1 when absent, matching `_xml_find_joint_dof_adr`."""
+        for i in range(len(self.names)):
+            if self.names[i] == jname:
+                return self.dadr[i]
+        return -1
+
+    def ref(self, jname: String) -> Float64:
+        """0.0 when absent, which IS MuJoCo's default reference pose."""
+        for i in range(len(self.names)):
+            if self.names[i] == jname:
+                return self.refs[i]
+        return 0.0
+
+
+def _build_joint_adr_table(xml: String, deg_factor: Float64) -> _JointAdrTable:
+    """One walk of <worldbody>, emitting every joint's addresses.
+
+    ⚠ TRANSCRIBED FROM `_xml_joint_adr_grouped`, PASS FOR PASS. MuJoCo emits
+    joints GROUPED BY BODY -- all of body 0's, then body 1's, declaration order
+    preserved inside each -- and that coincides with text order only when every
+    body declares its joints before its nested <body> children. dm_control's
+    dog does not. Changing the rule here changes every actuator and tendon
+    transmission in the tree; the gate that catches it is
+    `test_dog_actuator_transmission`'s `max|d(moment)|`.
+    """
+    var out = _JointAdrTable()
+    var wb = _extract_section(xml, "worldbody")
+    var n = wb.byte_length()
+
+    # Pass 1: every joint in text order, tagged with the body it belongs to.
+    var jbody = List[Int]()
+    var jqw = List[Int]()
+    var jdw = List[Int]()
+    var pos = 0
+    var next_body = 0
+    var cur = 0  # the world body, which cannot carry a joint
+    var stack = List[Int]()
+    while pos < n:
+        var t_open = _find_tag(wb, "<body", pos)
+        var t_joint = _find_tag(wb, "<joint", pos)
+        var t_close = wb.find("</body", pos)
+        var t = _min_valid_pos(_min_valid_pos(t_open, t_joint), t_close)
+        if t == -1:
+            break
+        var tag_end = wb.find(">", t)
+        if tag_end == -1:
+            break
+        if t == t_close:
+            if len(stack) > 0:
+                cur = stack.pop()
+            else:
+                cur = 0
+        elif t == t_open:
+            # The id is consumed even by a childless body, or later siblings
+            # would be numbered as though it had never existed.
+            next_body += 1
+            var self_closed = (
+                tag_end >= 1
+                and String(wb[byte = tag_end - 1 : tag_end]) == "/"
+            )
+            if not self_closed:
+                stack.append(cur)
+                cur = next_body
+        else:
+            var tag = String(wb[byte = t : tag_end + 1])
+            var jtype = _trim(_extract_attr(tag, "type"))
+            var qw = 1
+            var dw = 1
+            if jtype == "ball":
+                qw = 4
+                dw = 3
+            elif jtype == "free":
+                qw = 7
+                dw = 6
+            out.names.append(_trim(_extract_attr(tag, "name")))
+            # `ref`, by `_xml_find_joint_ref`'s rule: deg->rad for angular
+            # joints only, because a slide ref is in metres.
+            var rs = _extract_attr(tag, "ref")
+            var rv = Float64(0.0)
+            if rs.byte_length() > 0:
+                var angular = jtype == "" or jtype == "hinge" or jtype == "ball"
+                rv = _parse_float(rs) * (deg_factor if angular else 1.0)
+            out.refs.append(rv)
+            jbody.append(cur)
+            jqw.append(qw)
+            jdw.append(dw)
+        pos = tag_end + 1
+
+    # Pass 2: for each joint, sum the widths of every joint MuJoCo emits first.
+    for i in range(len(jbody)):
+        var qa = 0
+        var da = 0
+        for j in range(len(jbody)):
+            if jbody[j] < jbody[i] or (jbody[j] == jbody[i] and j < i):
+                qa += jqw[j]
+                da += jdw[j]
+        out.qadr.append(qa)
+        out.dadr.append(da)
+    return out^
+
+
 def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](xml: String) -> ComptimeActData[NACT, NJNT, NQ0, NTEN, WRAPS]:
     """Parse XML and return actuator/joint data as InlineArrays.
 
@@ -3151,6 +3279,12 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
     var deg_factor = Float64(
         3.141592653589793 / 180.0
     ) if angle_deg else Float64(1.0)
+
+    # ⚠ BUILT ONCE. The tendon and actuator loops below resolve joint names to
+    # qpos/dof addresses; doing that per lookup re-walked the whole <worldbody>
+    # (~340 times on dog, each copying ~75 KB). Measured at ~286 s + ~300 s of
+    # dog's ~543 s comptime cost.
+    var jtab = _build_joint_adr_table(xml_clean, deg_factor)
 
     # ---- Default motor gear / ctrlrange (fallbacks for per-motor values) -----
     var def_ctrl_min = Float64(-1.0)
@@ -3222,14 +3356,10 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
                 var jn = _trim(_extract_attr(jtag, "joint"))
                 var cf = _extract_attr(jtag, "coef")
                 var coef = _parse_float(cf) if cf.byte_length() > 0 else 1.0
-                data.tendon_trn_qadr[ti * WRAPS + n] = _xml_find_joint_qpos_adr(
-                    xml_clean, jn
-                )
-                data.tendon_trn_dadr[ti * WRAPS + n] = _xml_find_joint_dof_adr(
-                    xml_clean, jn
-                )
+                data.tendon_trn_qadr[ti * WRAPS + n] = jtab.qpos_adr(jn)
+                data.tendon_trn_dadr[ti * WRAPS + n] = jtab.dof_adr(jn)
                 data.tendon_trn_coef[ti * WRAPS + n] = coef
-                length0 += coef * _xml_find_joint_ref(xml_clean, jn, deg_factor)
+                length0 += coef * jtab.ref(jn)
                 n += 1
                 jscan = jte + 1
             data.tendon_trn_n[ti] = n
@@ -3428,8 +3558,8 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
         var jname = _trim(_extract_attr(tag, "joint"))
         var tname = _trim(_extract_attr(tag, "tendon"))
         if jname.byte_length() > 0:
-            var dadr = _xml_find_joint_dof_adr(xml_clean, jname)
-            var qadr = _xml_find_joint_qpos_adr(xml_clean, jname)
+            var dadr = jtab.dof_adr(jname)
+            var qadr = jtab.qpos_adr(jname)
             data.motor_dof_adr[act_count] = dadr
             if dadr >= 0:
                 data.motor_trn_qadr[act_count * WRAPS] = qadr
