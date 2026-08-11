@@ -209,6 +209,21 @@ struct FBTrainer[
     var g_bsn: Tensor
     var g_bs: Tensor
     var acc: Tensor
+    # ⚠⚠ Persistent vjp GRAD-INPUT sinks. These were `TensorPack[1]()` locals
+    # created inside `train_step` / `_actor_step`, i.e. a device alloc + free on
+    # EVERY step. Two consequences, both measured on a 3000-step nsys profile:
+    #   * `cuMemAlloc` + `cuMemFree` were 81% of all CUDA API time (27.5 s
+    #     against 9.9 s of actual kernels).
+    #   * CUDA-graph capture FAILED outright — "graph capturing in progress, no
+    #     driver fallback", on a 608 KB request, which is exactly
+    #     BATCH * F_IN * 4 = 1024 * 152 * 4. Allocation during capture is
+    #     illegal, so a single per-step temporary is enough to block it.
+    # Sized once in `_size_once` and reused. `sink` is sized to the LARGEST
+    # consumer (F's input, BATCH*F_IN) and reused by B's vjps, whose grad-input
+    # is smaller — `ensure_gpu` only grows, so that is safe and saves a buffer.
+    var sink: Tensor
+    var sink_a: Tensor
+    var g_fin_a: Tensor
     # ── the batch itself ────────────────────────────────────────────────
     # Owned, not passed per step. `TensorRefs[N, o]` requires every tensor in
     # a pack to share ONE origin, so a `train_step(s, a, ...)` taking five
@@ -315,6 +330,9 @@ struct FBTrainer[
         self.g_bsn = Tensor()
         self.g_bs = Tensor()
         self.acc = Tensor()
+        self.sink = Tensor()
+        self.sink_a = Tensor()
+        self.g_fin_a = Tensor()
         self.bs = Tensor()
         self.ba = Tensor()
         self.bsn = Tensor()
@@ -382,6 +400,9 @@ struct FBTrainer[
         self.g_bsn = move.g_bsn^
         self.g_bs = move.g_bs^
         self.acc = move.acc^
+        self.sink = move.sink^
+        self.sink_a = move.sink_a^
+        self.g_fin_a = move.g_fin_a^
         self.bs = move.bs^
         self.ba = move.ba^
         self.bsn = move.bsn^
@@ -473,6 +494,9 @@ struct FBTrainer[
             d.enqueue_copy(ob, oh)
             d.synchronize()
             self._rng_off_dev = ob^
+        ensure_t[T](self.sink, Self.BATCH * Self.F_IN, c)
+        ensure_t[T](self.sink_a, Self.BATCH * (Self.OBS + Self.D), c)
+        ensure_t[T](self.g_fin_a, Self.BATCH * Self.F_IN, c)
         ensure_t[T](self.b_s, Self._ND, c)
         ensure_t[T](self.b_sp, Self._ND, c)
         ensure_t[T](self.b_sn, Self._ND, c)
@@ -669,14 +693,13 @@ struct FBTrainer[
         )
 
         # ── 5. backprop ──────────────────────────────────────────────────
-        var sink = TensorPack[1]()
         call_vjp[T, Self.BATCH](
             self.f1.online, TensorRefs[1, MutAnyOrigin](self.fin), self.g_f1,
-            TensorRefs[1, MutAnyOrigin](sink[0]), c,
+            TensorRefs[1, MutAnyOrigin](self.sink), c,
         )
         call_vjp[T, Self.BATCH](
             self.f2.online, TensorRefs[1, MutAnyOrigin](self.fin), self.g_f2,
-            TensorRefs[1, MutAnyOrigin](sink[0]), c,
+            TensorRefs[1, MutAnyOrigin](self.sink), c,
         )
 
         # B: three vjps, accumulating into one set of parameter gradients.
@@ -692,15 +715,15 @@ struct FBTrainer[
 
         call_vjp[T, Self.BATCH](
             self.bnet.online, TensorRefs[1, MutAnyOrigin](self.bsp), self.g_bsp,
-            TensorRefs[1, MutAnyOrigin](sink[0]), c,
+            TensorRefs[1, MutAnyOrigin](self.sink), c,
         )
         call_vjp[T, Self.BATCH](
             self.bnet.online, TensorRefs[1, MutAnyOrigin](self.bsn), self.g_bsn,
-            TensorRefs[1, MutAnyOrigin](sink[0]), c,
+            TensorRefs[1, MutAnyOrigin](self.sink), c,
         )
         call_vjp[T, Self.BATCH](
             self.bnet.online, TensorRefs[1, MutAnyOrigin](self.bs), self.g_bs,
-            TensorRefs[1, MutAnyOrigin](sink[0]), c,
+            TensorRefs[1, MutAnyOrigin](self.sink), c,
         )
 
         if self.max_grad_norm > 0.0:
@@ -836,15 +859,14 @@ struct FBTrainer[
         # already stepped them above, and folding a second, differently-scaled
         # critic gradient into the next step would be silent. The vjp
         # accumulates into params, so F1's grads are zeroed right after.
-        var g_fin = TensorPack[1]()
         call_vjp[T, Self.BATCH](
             self.f1.online, TensorRefs[1, MutAnyOrigin](self.fin_a), self.g_fa,
-            TensorRefs[1, MutAnyOrigin](g_fin[0]), c,
+            TensorRefs[1, MutAnyOrigin](self.g_fin_a), c,
         )
         self.f1.online.zero_grad[T](c)
 
         slice_cols_t[T, Self.F_IN, Self._A_OFF, Self.ACT, Self.BATCH](
-            self.g_pi, g_fin[0], c
+            self.g_pi, self.g_fin_a, c
         )
         # + BC: d/dpi of `bc_weight · mean_i mean_k (pi - a_data)^2`.
         # `axpy` twice rather than a bespoke kernel: g_pi += w·pi, g_pi -= w·a.
@@ -856,13 +878,15 @@ struct FBTrainer[
             axpy_t[T, Self._NA](self.g_pi, self.pi, w, c)
             axpy_t[T, Self._NA](self.g_pi, self.ba, -w, c)
 
-        var sink = TensorPack[1]()
         call_vjp[T, Self.BATCH](
             self.actor.online, TensorRefs[1, MutAnyOrigin](self.ain), self.g_pi,
-            TensorRefs[1, MutAnyOrigin](sink[0]), c,
+            TensorRefs[1, MutAnyOrigin](self.sink_a), c,
         )
         if self.max_grad_norm > 0.0:
-            _ = self.opt_actor.clip_grads[T](
+            # ⚠ `clip_grads` (D2H) was still here after the other three were
+            # moved to `clip_grads_device` — one missed call site is enough to
+            # make a capture illegal, and it is a per-step sync besides.
+            self.opt_actor.clip_grads_device[T](
                 self.actor.online, Scalar[DT](self.max_grad_norm), c
             )
         self.opt_actor.step[T](self.actor.online, c)
