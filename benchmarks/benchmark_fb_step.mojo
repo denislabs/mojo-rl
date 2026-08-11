@@ -17,7 +17,7 @@ NVIDIA." First measurement (Apple M-series, so indicative only):
 ⚠ That Apple reading UNDERSTATED it badly. The NVIDIA profile put PairwiseDot at
 52.6% of GPU kernel time, not 23% — the Apple/NVIDIA inversion this project has
 hit before, 2.3x here. The forward has since moved to
- (the entry point  uses for
+`batched_matmul[transpose_b=True]` (the entry point `attention.mojo` uses for
 QK^T), and the same Apple benchmark now reads:
 
     full train_step          37.8 ms   (was 56.6)
@@ -26,7 +26,7 @@ QK^T), and the same Apple benchmark now reads:
 
 The remaining bulk is the nets, the optimizer, and — the thing that actually
 differed from SAC — uncaptured kernel launches plus per-step device allocation
-(/ were 81% of CUDA API time until the trainer stopped
+(`cuMemAlloc`/`cuMemFree` were 81% of CUDA API time until the trainer stopped
 allocating vjp sinks every step).
 
 ⚠ Absolute numbers here do not transfer between Apple and NVIDIA (this project
