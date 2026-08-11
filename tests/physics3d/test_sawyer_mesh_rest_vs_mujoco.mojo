@@ -375,9 +375,32 @@ def test_obj_stays_on_the_mesh_where_mujoco_does() raises:
       steps, and reaches 0 at step ~56 while the obj is still inside the shell
       -- i.e. detection DROPS OUT rather than the obj clearing the geometry.
 
-    5 mm of extra sink puts the obj on a differently-sloped part of a curved
-    shell, so the two are unlikely to be independent: fixing the depth may fix
-    the sliding. That is a hypothesis, NOT a measurement, and is written as one.
+    NARROWED 2026-08-11 — IT IS THE COLLIDER AT SHALLOW DEPTH, NOT THE SOLVER:
+
+    * Started the obj AT MuJoCo's exact rest pose with ZERO velocity, so there
+      is no impact energy and no transient. Our first step produces **2 mesh
+      rows where MuJoCo produces 5**, and the obj sinks 0.75 mm immediately.
+      At 6.8 mm deep we DO produce 5 rows. So the manifold thins as the contact
+      gets SHALLOW, and the obj sinks until the depth is one our collider
+      handles — by which point it is rocking on too few rows.
+    * Solver parameters are EXACT, so this is not a formulation error:
+      K = 4723.60978 (MuJoCo 4723.6), diagApprox = 2.00508242615119 (MuJoCo
+      2.005082), B = 137.457, and `imp` differs only because the penetration
+      does (0.97 at our depth vs 0.945 at MuJoCo's — both correct for their
+      own `pos`). Rows are spread ~10 mm in y, not coincident.
+    * CONE RULED OUT by experiment: switching sawyer to PYRAMIDAL gives 46
+      steps held and -7.019e-03 sink against elliptic's 50 and -7.019e-03.
+      Effectively identical, so the untested elliptic leg is not the cause.
+
+    ⚠ This is the region §20 already measured as the collider's weak point:
+    "GJK is EXACT where it applies and catastrophic where it does not — 1e-17
+    against truth while separated, then ~-1.1 the moment the origin enters the
+    Minkowski difference". MuJoCo rests this contact at 4.4e-05 m, i.e. 44
+    microns, which is exactly that transition band. EPA fixed the deep case;
+    the shallow case is what this gate now measures.
+
+    Two rows carrying EXACTLY zero force while three carry 0.6/1.4/6.4 N is the
+    same thinning seen from the force side.
 
     ⚠ NOT the same defect as 28 and not fixed by it — this is a CONTACT
     manifold, not an equality row, and `body_invweight0` (which defect 28
