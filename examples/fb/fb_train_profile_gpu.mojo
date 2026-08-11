@@ -126,7 +126,7 @@ comptime BC_WEIGHT: Float64 = 1.0
 # at capture and every replay would redraw identical noise — silently, since
 # frozen noise still trains. `tests/deep_agents/test_fb_cuda_graph_safety.mojo`
 # gates exactly that.
-comptime USE_TRAIN_CUDA_GRAPH: Bool = True
+comptime USE_TRAIN_CUDA_GRAPH: Bool = False
 comptime SEED: Int = 20260805
 
 comptime F_IN = OBS + NACT + D
@@ -290,11 +290,19 @@ def main() raises:
     if marked != n_eps:
         raise Error(
             "episode index is inconsistent with the row count: marked "
-            + String(marked) + " of " + String(n_eps) + " episode ends"
+            + String(marked)
+            + " of "
+            + String(n_eps)
+            + " episode ends"
         )
     print(
-        "      episode index:", n_eps, "episodes,", marked,
-        "self-transitions (", Float64(marked) * 100.0 / Float64(n_rows), "% of rows )",
+        "      episode index:",
+        n_eps,
+        "episodes,",
+        marked,
+        "self-transitions (",
+        Float64(marked) * 100.0 / Float64(n_rows),
+        "% of rows )",
     )
     var nxt_dev = ctx.enqueue_create_buffer[IDX_DT](n_rows)
     ctx.enqueue_copy(nxt_dev, nxt)
@@ -413,6 +421,7 @@ def main() raises:
             if want:
                 l = t.train_step(want_loss=True)
             else:
+
                 def _captured_step() capturing raises -> None:
                     t.train_device_kernels()
 
