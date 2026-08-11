@@ -477,17 +477,19 @@ def test_dog_walk_gpu_matches_cpu() raises:
 
 
 def test_contacting_regime_is_reported() raises:
-    """Report, do NOT assert, the contact-regime spread — INCLUDING touch.
+    """Mostly report; the ONE bound here is the only gate on box touch zones.
 
-    The airborne window above cannot see the touch block at all, and dog's
-    touch sum is the one quantity with a known model indeterminacy: it spans
-    22.6% over root yaw on the reference ALONE (filed as an engine bug twice
-    before it was measured). So this is the only place touch appears, and it
-    is printed rather than bounded.
+    Every per-block number below is printed rather than asserted, following
+    `test_quadruped_gpu_vs_cpu`'s equivalent: one step from an identical state
+    is enough for float32-vs-float64 to change the contact SET, and everything
+    downstream follows.
 
-    Everything else here follows `test_quadruped_gpu_vs_cpu`'s equivalent: one
-    step from an identical state is enough for float32-vs-float64 to change
-    the contact SET, and everything downstream follows.
+    ⚠⚠ THE EXCEPTION IS TOUCH, AND IT IS LOAD-BEARING. The airborne window in
+    `_run` reads `touch_sensors max|d| = 0.0` with `peak|cpu| = 0.0` — right,
+    and vacuous. `_ray_hits_box_gpu` is therefore exercised NOWHERE except
+    here, so the peak-vs-peak bound at the end of this function is the only
+    thing standing between a wrong box ray test and a green 3/3. See the
+    comment there for why a peak bound rather than an element-wise one.
     """
     var ctx = DeviceContext()
     comptime MODEL = DMDogStandWalkModel
@@ -586,6 +588,41 @@ def test_contacting_regime_is_reported() raises:
         "dog: the CPU touch block read 0 even settled on the floor after 60"
         " steps — the contact record never reached the sensor, and the"
         " airborne gate above cannot see this block at all.",
+    )
+
+    # ── the ONE assertion in this otherwise report-only test ───────────────
+    # ⚠⚠ WITHOUT THIS, THE BOX RAY TEST IS UNGATED. Measured on NVIDIA, the
+    # airborne window reads `touch_sensors max|d| = 0.0, peak|cpu| = 0.0` —
+    # correct (free fall, no contact) and completely vacuous. So the airborne
+    # gate catches only a TOTAL regression to TOUCH_UNSUPPORTED_ZONE (-1.0 vs
+    # 0.0 fails there); a box ray test that is merely WRONG — flipped ray,
+    # transposed quat composition, half-extents off — reads 0.0 airborne on
+    # both sides and sails through. `_ray_hits_box_gpu` would have been
+    # shipped untested on the strength of a green 3/3.
+    #
+    # A PEAK-vs-PEAK bound is deliberately chosen over an element-wise one:
+    # the header explains that float32-vs-float64 can change the contact SET
+    # step by step, so per-step touch is legitimately flaky. The PEAK over the
+    # window is not — it is dominated by the settled load, which both paths
+    # see. Measured 45.8893 vs 45.8928, i.e. 7.5e-5 relative; 5% is ~660x
+    # headroom and still catches every failure above by an order of magnitude.
+    #
+    # ⚠ The 22.6%-over-yaw indeterminacy in the module docstring does NOT
+    # apply here and must not be used to justify loosening this. That is
+    # OURS-vs-dm_control across different root orientations; this is CPU vs
+    # GPU on a SHARED, injected state.
+    assert_true(
+        abs(touch_gpu_hi - touch_cpu_hi) <= 0.05 * touch_cpu_hi,
+        "dog: the GPU touch peak is "
+        + String(touch_gpu_hi)
+        + " against the CPU's "
+        + String(touch_cpu_hi)
+        + " (>5%). A value near -1 means the box zone fell back to"
+        + " TOUCH_UNSUPPORTED_ZONE; a value near 0 means the box ray test"
+        + " never registers a hit; anything else means the ray direction or"
+        + " the xquat*site_localquat composition is wrong. This is the only"
+        + " assertion covering `_ray_hits_box_gpu` — the airborne window"
+        + " compares 0.0 against 0.0 and cannot see it.",
     )
 
 
