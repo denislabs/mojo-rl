@@ -65,11 +65,15 @@ from mojo_rl.nn.constants import DT, TPB
 # `attention.mojo` computes for QK^T, so the library already had it — but WHICH
 # entry point matters enormously, and only an on-target profile can tell you.
 #
-# Measured on NVIDIA over 3000 FB steps (per step, forward only):
+# MEASURED on NVIDIA, 3000 FB steps each, forward only, per step:
 #
-#     naive kernel      1 kernel  x 5/step @ 279.7 us  = 1.40 ms
-#     batched_matmul   ~27 `matmul_kernel_naive`/step  = 2.46 ms   <- WORSE
-#     max_matmul        target: `multistage_gemm` 46 us = 0.23 ms
+#     naive kernel     5 x 279.70 us  = 1.399 ms
+#     batched_matmul  ~27 `matmul_kernel_naive`  = 2.46 ms   <- 1.75x WORSE
+#     max_matmul       5 x   8.07 us  = 0.040 ms   <- 35x, `multistage_gemm`
+#
+# 35x, not the ~6x predicted from the nn Linears' 46 us `multistage_gemm` —
+# that is a different (larger) shape. Whole-run GPU kernel totals: 14.38 s
+# naive / 12.50 s batched / 10.25 s max_matmul.
 #
 # `batched_matmul` with a batch of ONE does not reach the tiled/tensor-core
 # path: it fans out into ~5.4 `matmul_kernel_naive` launches per call and ends
