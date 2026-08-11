@@ -433,10 +433,108 @@ def test_gpu_parity() raises:
     assert_true(wc < 1e-4, "GPU dC parity: " + String(wc))
 
 
+comptime BIG_B = 256
+comptime BIG_D = 128
+
+
+def test_gpu_parity_production_shape() raises:
+    """[6] CPU vs GPU at the shape FB ACTUALLY runs.
+
+    ⚠⚠ [5] runs at B=6, D=8. That is far too small to reach the library GEMM
+    the forward now dispatches to — a 6x8 problem lands in whatever fallback
+    `batched_matmul` keeps for tiny inputs, so [5] passing says NOTHING about
+    the production path. It reports EXACTLY 0.0, which is the tell: a real GEMM
+    and a triple loop do not agree bit-for-bit by accident.
+
+    FB runs B=1024, D=128. This gates B=256, D=128 — big enough to take the
+    tiled/tensor-core path, small enough that the CPU reference (8.4 M MACs)
+    stays quick.
+
+    ⚠ Tolerance is RELATIVE and looser than [5]'s 1e-5. Accumulating 128 terms
+    in a different order than the triple loop is a genuine fp32 difference, not
+    a bug. On NVIDIA it may be larger still: `batched_matmul` can dispatch to
+    TF32 tensor cores, whose 10-bit mantissa is a real precision reduction over
+    the naive kernel's fp32 MACs. That trade is almost certainly fine for a TD
+    loss — but it IS a numerical change on NVIDIA that an Apple run cannot
+    observe, so if FB's losses ever look different after a toolchain bump,
+    start here.
+    """
+    print("[6] CPU vs GPU at FB's production shape (B=", BIG_B, "D=", BIG_D, ") ...")
+    comptime RTOL = Float64(2e-3)
+    var ctx = DeviceContext()
+
+    var a = Tensor.alloc(BIG_B * BIG_D)
+    var c = Tensor.alloc(BIG_B * BIG_D)
+    for i in range(BIG_B):
+        for k in range(BIG_D):
+            # Asymmetric in i and k, and A != C, so a transposed or
+            # wrong-axis contraction cannot pass.
+            a.data[i * BIG_D + k] = Scalar[DT](
+                0.013 * Float64((i * 7 + k * 3) % 29) - 0.19
+            )
+            c.data[i * BIG_D + k] = Scalar[DT](
+                0.017 * Float64((i * 5 + k * 11) % 23) + 0.07
+            )
+
+    var op_cpu = PairwiseDot[BIG_D, BIG_B].make["cpu", Deterministic](None)
+    var ic = TensorPack[2]()
+    ic[0].ensure(BIG_B * BIG_D)
+    ic[1].ensure(BIG_B * BIG_D)
+    for i in range(BIG_B * BIG_D):
+        ic[0].data[i] = a.data[i]
+        ic[1].data[i] = c.data[i]
+    var m_cpu = Tensor.alloc(BIG_B * BIG_B)
+    op_cpu.forward["cpu", BIG_B](TensorRefs[2](ic[0], ic[1]), m_cpu, None)
+
+    var op_gpu = PairwiseDot[BIG_D, BIG_B].make["gpu", Deterministic](ctx)
+    var ig = TensorPack[2]()
+    ig[0].ensure(BIG_B * BIG_D)
+    ig[1].ensure(BIG_B * BIG_D)
+    for i in range(BIG_B * BIG_D):
+        ig[0].data[i] = a.data[i]
+        ig[1].data[i] = c.data[i]
+    ig[0].upload(ctx)
+    ig[1].upload(ctx)
+    var m_gpu = Tensor()
+    op_gpu.forward["gpu", BIG_B](TensorRefs[2](ig[0], ig[1]), m_gpu, ctx)
+    m_gpu.download(ctx)
+
+    var worst = Float64(0)
+    var scale = Float64(0)
+    var exact = 0
+    for i in range(BIG_B * BIG_B):
+        var x = Float64(m_cpu.data[i])
+        var y = Float64(m_gpu.data[i])
+        if abs(x) > scale:
+            scale = abs(x)
+        var e = abs(x - y)
+        if e > worst:
+            worst = e
+        if e == 0.0:
+            exact += 1
+    var rel = worst / scale if scale > 0 else 0.0
+    print("      worst |Δ| =", worst, " max|M| =", scale, " rel =", rel)
+    print("      bit-exact elements:", exact, "/", BIG_B * BIG_B)
+    assert_true(
+        rel < RTOL,
+        "GPU forward disagrees with the CPU reference by " + String(rel)
+        + " relative at the production shape",
+    )
+    # ⚠ The magnitude must be non-trivial, or "agreement" is agreement on
+    # zeros. [5]'s exact-0.0 result is only reassuring if the values are real.
+    assert_true(
+        scale > 1e-3,
+        "the reference matrix is ~0 (max " + String(scale) + ") — this gate"
+        " would pass on a kernel that wrote nothing",
+    )
+    print("      OK")
+
+
 def main() raises:
     test_forward_closed_form()
     test_vjp_finite_differences()
     test_transpose_not_swapped()
     test_rowdot_is_the_diagonal()
     test_gpu_parity()
+    test_gpu_parity_production_shape()
     print("\n[PASS] PairwiseDot / RowDot gate")

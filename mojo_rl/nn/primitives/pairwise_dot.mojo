@@ -55,8 +55,36 @@ inference path reusing this primitive would land exactly on that bug.
 from std.gpu import global_idx
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
+from linalg.bmm import batched_matmul
 
 from mojo_rl.nn.constants import DT, TPB
+
+
+# ⚠⚠ The FORWARD goes through `batched_matmul[transpose_b=True]` — the same
+# `linalg.bmm` entry point `attention.mojo` uses for QK^T, which is the identical
+# shape of operation (A @ C^T contracting the feature axis).
+#
+# Measured on NVIDIA, 3000 FB steps under nsys, with the naive kernel:
+#
+#     pairwise FORWARD   15000 inst   279.7 us   42.6% of ALL GPU time
+#     pairwise bwd dA     9000 inst    51.1 us
+#     pairwise bwd dC     9000 inst    48.1 us
+#
+# The forward was 5.6x slower than its OWN BACKWARD at identical FLOPs, which
+# rules out arithmetic and points at memory: the forward has adjacent threads
+# reading `C[j*D + k]` with `j` varying — a D*4 = 512-byte-stride scatter — while
+# backward dA has them varying `k`, fully coalesced. So only the FORWARD is
+# replaced; the backwards are already at the right order and their naive kernels
+# stay (see the note on `_pd_da_kernel`).
+#
+# ⚠ This is NOT the `max_matmul` the header warns about. That warning is about
+# `max_matmul`'s silent miscompute at N=1; `batched_matmul` is a different entry
+# point, and PairwiseDot's N is BATCH, never 1.
+#
+# Set False to fall back to the naive kernel — kept because the whole reason the
+# naive kernels exist is that heavy blocked kernels have hard-crashed the Metal
+# compiler on Apple, and a library GEMM is not automatically exempt.
+comptime PD_USE_BMM: Bool = True
 from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
@@ -168,16 +196,32 @@ struct PairwiseDot[D_: Int, BATCH: Int](Module):
         else:
             var dc = ctx.value()
             out.ensure_gpu(dc, B * B)
-            comptime lay_in = Layout.row_major(B, Self.D_)
-            comptime lay_m = Layout.row_major(B, B)
-            comptime n_blocks = (B * B + TPB - 1) // TPB
-            dc.enqueue_function[_pd_forward_kernel[B, Self.D_]](
-                a.lt["gpu", lay_in](),
-                c.lt["gpu", lay_in](),
-                out.lt["gpu", lay_m](),
-                grid_dim=n_blocks,
-                block_dim=TPB,
-            )
+            comptime if PD_USE_BMM:
+                # M = A @ C^T, as a batch of ONE. Same call shape as
+                # `attention.mojo`'s QK^T.
+                var m_tt = TileTensor(
+                    out.dev.value(), row_major[1, B, B]()
+                )
+                var a_tt = TileTensor(
+                    a.dev.value(), row_major[1, B, Self.D_]()
+                )
+                var c_tt = TileTensor(
+                    c.dev.value(), row_major[1, B, Self.D_]()
+                )
+                batched_matmul[transpose_b=True, target="gpu"](
+                    m_tt, a_tt, c_tt, context=dc
+                )
+            else:
+                comptime lay_in = Layout.row_major(B, Self.D_)
+                comptime lay_m = Layout.row_major(B, B)
+                comptime n_blocks = (B * B + TPB - 1) // TPB
+                dc.enqueue_function[_pd_forward_kernel[B, Self.D_]](
+                    a.lt["gpu", lay_in](),
+                    c.lt["gpu", lay_in](),
+                    out.lt["gpu", lay_m](),
+                    grid_dim=n_blocks,
+                    block_dim=TPB,
+                )
 
     def vjp[
         target: StaticString,

@@ -14,10 +14,20 @@ NVIDIA." First measurement (Apple M-series, so indicative only):
     8 PairwiseDot kernels    13.1 ms   -> 23% of the step
     one PairwiseDot forward   2.39 ms  -> 112 GFLOP/s
 
-So the comment holds: PairwiseDot is NOT where the time goes, and converting it
-to a GEMM would buy back ~15-18% rather than the bulk. The 77% is the nets, the
-optimizer, and — the thing that actually differs from SAC — ~150 uncaptured
-kernel launches per step.
+⚠ That Apple reading UNDERSTATED it badly. The NVIDIA profile put PairwiseDot at
+52.6% of GPU kernel time, not 23% — the Apple/NVIDIA inversion this project has
+hit before, 2.3x here. The forward has since moved to
+ (the entry point  uses for
+QK^T), and the same Apple benchmark now reads:
+
+    full train_step          37.8 ms   (was 56.6)
+    8 PairwiseDot kernels     5.4 ms   -> 14% of the step (was 23%)
+    one PairwiseDot forward   0.47 ms  -> 573 GFLOP/s (was 112)
+
+The remaining bulk is the nets, the optimizer, and — the thing that actually
+differed from SAC — uncaptured kernel launches plus per-step device allocation
+(/ were 81% of CUDA API time until the trainer stopped
+allocating vjp sinks every step).
 
 ⚠ Absolute numbers here do not transfer between Apple and NVIDIA (this project
 has measured the two INVERT on conv kernels). Treat the 23/77 SPLIT as
