@@ -327,17 +327,25 @@ def test_root_default_survives_nested_classes() raises:
         timestep = pm.TIMESTEP,
     ]
 
+    # Bind the elements at comptime. Subscripting a comptime `InlineArray`
+    # inside a runtime expression materializes the WHOLE array, which rc2
+    # rejects (`Array` is no longer `ImplicitlyCopyable`); a scalar element is.
+    comptime GEAR0 = XmlModel._acd.motor_gears[0]
+    comptime CTRL_MIN0 = XmlModel._acd.motor_ctrl_min[0]
+    comptime CTRL_MAX0 = XmlModel._acd.motor_ctrl_max[0]
+    comptime LIMITED0 = XmlModel._acd.joint_is_limited[0]
+    comptime LIMITED1 = XmlModel._acd.joint_is_limited[1]
+
     print("=== nested-default regression ===")
-    print("motor gear =", XmlModel._acd.motor_gears[0], " (expected 0.0005)")
+    print("motor gear =", GEAR0, " (expected 0.0005)")
     assert_true(
-        abs(XmlModel._acd.motor_gears[0] - 5e-4) <= 1e-18,
+        abs(GEAR0 - 5e-4) <= 1e-18,
         "the top-level <default><motor gear=...> is declared after two named"
         " class blocks and was not picked up — gear fell back to 1.0, a 2000x"
         " actuator force error with no diagnostic (bug 24)",
     )
     assert_true(
-        abs(XmlModel._acd.motor_ctrl_min[0] + 1.0) <= 1e-15
-        and abs(XmlModel._acd.motor_ctrl_max[0] - 1.0) <= 1e-15,
+        abs(CTRL_MIN0 + 1.0) <= 1e-15 and abs(CTRL_MAX0 - 1.0) <= 1e-15,
         "the same <motor>'s ctrlrange",
     )
 
@@ -346,17 +354,15 @@ def test_root_default_survives_nested_classes() raises:
     # is resolvable by this class-blind scan, so `limited` follows MuJoCo's
     # `compiler/autolimits`: a joint with a range is limited.
     print(
-        "joint limited =", XmlModel._acd.joint_is_limited[0],
-        XmlModel._acd.joint_is_limited[1],
-        " (expected False True)",
+        "joint limited =", LIMITED0, LIMITED1, " (expected False True)",
     )
     assert_true(
-        not XmlModel._acd.joint_is_limited[0],
+        not LIMITED0,
         "the UNLIMITED slide came out limited — a nested class's"
         " limited=\"true\" is being read as the global default (bug 24)",
     )
     assert_true(
-        XmlModel._acd.joint_is_limited[1],
+        LIMITED1,
         "the ranged hinge came out unlimited — autolimits is not being"
         " applied, so a class-set `limited` is the only signal left",
     )

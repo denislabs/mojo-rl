@@ -88,7 +88,7 @@ def test_dog_actuator_moments_match_mujoco() raises:
     )
 
     # ⚠ ONE materialize, per §8 — not a read per element.
-    comptime acd = materialize[M._acd]()
+    var acd = materialize[M._acd]()
 
     var worst = 0.0
     var worst_a = -1
@@ -201,7 +201,7 @@ def test_dog_actuator_dynamics_match_mujoco() raises:
     print("--- dog: actuator dynprm/ctrlrange vs MuJoCo ---")
     var h = _ref()
     var m = h[1]
-    comptime acd = materialize[M._acd]()
+    var acd = materialize[M._acd]()
 
     var nu = Int(py=m.nu)
     var worst_tau = 0.0

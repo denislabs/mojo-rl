@@ -171,20 +171,37 @@ def test_point_mass_hard_model_matches_mujoco() raises:
             )
 
     # …and our COMPTIME transmission tables agree, which is what `easy` runs on.
+    # `_acd` is comptime: a RUNTIME index would materialize the whole `Array`,
+    # which rc2 refuses. Hoist the elements under comptime indices first.
+    var trn_n = List[Int]()
+    var gears = List[Float64]()
+    comptime for a in range(NACT):
+        trn_n.append(materialize[DMPointMassModel._acd.motor_trn_n[a]]())
+        gears.append(materialize[DMPointMassModel._acd.motor_gears[a]]())
+    var trn_coef = List[Float64]()
+    comptime for a in range(NACT):
+        comptime for k in range(2):
+            trn_coef.append(
+                materialize[
+                    DMPointMassModel._acd.motor_trn_coef[
+                        a * MAX_COMPTIME_TENDON_WRAPS + k
+                    ]
+                ]()
+            )
+
     for a in range(NACT):
         assert_true(
-            DMPointMassModel._acd.motor_trn_n[a] == 2,
+            trn_n[a] == 2,
             "comptime transmission is not the 2-joint tendon",
         )
         for k in range(2):
             var want = 1.0 if a == k else 0.0
             assert_true(
-                abs(DMPointMassModel._acd.motor_trn_coef[a * MAX_COMPTIME_TENDON_WRAPS + k] - want)
-                <= 1e-15,
+                abs(trn_coef[a * 2 + k] - want) <= 1e-15,
                 "comptime tendon coefs are not the XML's identity mixing",
             )
         assert_true(
-            abs(DMPointMassModel._acd.motor_gears[a] - 0.1) <= 1e-15,
+            abs(gears[a] - 0.1) <= 1e-15,
             "motor gear is not the default .1",
         )
 
@@ -398,8 +415,8 @@ def test_point_mass_hard_randomization_matches_reference() raises:
         # Drive control 0 only, from rest at the origin, and check the mass
         # accelerates along dir1. Free of joint limits and of the target, so
         # the only thing steering it is the transmission.
-        var qs = [0.0, 0.0]
-        var vs = [0.0, 0.0]
+        var qs: List[Float64] = [0.0, 0.0]
+        var vs: List[Float64] = [0.0, 0.0]
         env.set_state(qs, vs)
         var act = Env.ActionType()
         act.data[0] = 1.0

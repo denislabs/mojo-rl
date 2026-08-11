@@ -640,7 +640,7 @@ def test_finger_contact_free_dynamics_and_obs_match_mujoco() raises:
     Contacts are excluded here and measured separately below — see that test
     for why.
     """
-    var far = [-1.7, -1.0, 0.0]  # folded away from the spinner
+    var far: List[Float64] = [-1.7, -1.0, 0.0]  # folded away from the spinner
     var r = _rollout[BIG_TARGET](0.0, far)
     print("finger turn_easy (contact-free) vs MuJoCo,", N_STEPS_F, "steps:")
     print("  contact-free prefix =", r[0], " contact steps =", r[9])
@@ -660,7 +660,7 @@ def test_finger_reward_gates_both_branches() raises:
     """`float(dist_to_target <= 0)` is a HARD indicator, so a run that only
     ever sees one side of the threshold gates nothing. Two target angles put
     the tip inside and outside the disc."""
-    var far = [-1.7, -1.0, 0.0]
+    var far: List[Float64] = [-1.7, -1.0, 0.0]
     var inside = _rollout[BIG_TARGET](0.0, far)
     var outside = _rollout[BIG_TARGET](pi, far)
     print(
@@ -770,7 +770,7 @@ def test_finger_contact_phase_residual_is_bounded() raises:
 
     Never relax the bound. If it trips, the contact phase regressed.
     """
-    var near = [-0.9, 0.6, -2.0]
+    var near: List[Float64] = [-0.9, 0.6, -2.0]
     var r = _rollout[BIG_TARGET](1.6, near)
     print("finger turn_easy (through contact) vs MuJoCo:")
     print("  contact steps =", r[9], " of", N_STEPS_F)

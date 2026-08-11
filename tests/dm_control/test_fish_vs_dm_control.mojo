@@ -192,13 +192,13 @@ def test_fish_actuators_are_position_servos() raises:
     var trn_n = List[Int]()
 
     comptime for a in range(M.ACTION_DIM):
-        kind.append(M._acd.motor_kind[a])
-        kp.append(M._acd.motor_kp[a])
-        kv.append(M._acd.motor_kv[a])
-        gears.append(M._acd.motor_gears[a])
-        cmin.append(M._acd.motor_ctrl_min[a])
-        cmax.append(M._acd.motor_ctrl_max[a])
-        trn_n.append(M._acd.motor_trn_n[a])
+        kind.append(materialize[M._acd.motor_kind[a]]())
+        kp.append(materialize[M._acd.motor_kp[a]]())
+        kv.append(materialize[M._acd.motor_kv[a]]())
+        gears.append(materialize[M._acd.motor_gears[a]]())
+        cmin.append(materialize[M._acd.motor_ctrl_min[a]]())
+        cmax.append(materialize[M._acd.motor_ctrl_max[a]]())
+        trn_n.append(materialize[M._acd.motor_trn_n[a]]())
 
     var saw_tendon = False
     for i in range(M.ACTION_DIM):
@@ -283,23 +283,23 @@ def test_fish_tendons_match_mujoco() raises:
     var t_dadr = List[Int]()
     var t_coef = List[Float64]()
     comptime for a in range(8):
-        t_k.append(M._acd.tendon_stiffness[a])
-        t_lo.append(M._acd.tendon_spring_lo[a])
-        t_hi.append(M._acd.tendon_spring_hi[a])
-        t_n.append(M._acd.tendon_trn_n[a])
+        t_k.append(materialize[M._acd.tendon_stiffness[a]]())
+        t_lo.append(materialize[M._acd.tendon_spring_lo[a]]())
+        t_hi.append(materialize[M._acd.tendon_spring_hi[a]]())
+        t_n.append(materialize[M._acd.tendon_trn_n[a]]())
     # ⚠ 8 tendons * the WRAP STRIDE, not a literal 32. The stride moved
     # 4 -> 16 with defect 17; copying 32 entries then took two tendons'
     # worth instead of eight, and the `t * 4 + k` reads below compounded it.
     comptime for a in range(8 * MAX_COMPTIME_TENDON_WRAPS):
-        t_qadr.append(M._acd.tendon_trn_qadr[a])
-        t_dadr.append(M._acd.tendon_trn_dadr[a])
-        t_coef.append(M._acd.tendon_trn_coef[a])
+        t_qadr.append(materialize[M._acd.tendon_trn_qadr[a]]())
+        t_dadr.append(materialize[M._acd.tendon_trn_dadr[a]]())
+        t_coef.append(materialize[M._acd.tendon_trn_coef[a]]())
 
     var saw_spring = False
     for t in range(Int(py=mj.ntendon)):
         var n_mj = Int(py=tnum[t])
         print(
-            "   tendon", t, " stiffness ours", M._acd.tendon_stiffness[t],
+            "   tendon", t, " stiffness ours", t_k[t],
             " mj", Float64(py=stiff[t]),
             " band [", t_lo[t], ",", t_hi[t], "] mj [",
             Float64(py=lspring[t][0]), ",", Float64(py=lspring[t][1]), "]",
@@ -897,8 +897,8 @@ def test_fish_servo_force_changes_within_a_control_step() raises:
     env.set_state(qs, vs)
 
     # Actuator 0 drives `tail1` (qpos 7) with kp = 5e-4.
-    var qadr = M._acd.motor_trn_qadr[0]
-    var kp = M._acd.motor_kp[0]
+    var qadr = materialize[M._acd.motor_trn_qadr[0]]()
+    var kp = materialize[M._acd.motor_kp[0]]()
     var ctrl = 0.9
 
     var worst_drift = Float64(0)

@@ -85,7 +85,7 @@ def _tumbling_qpos() -> InlineArray[Float64, NQ]:
     qpos[10] = -0.9  # ankle_2
     qpos[12] = -0.9  # ankle_3
     qpos[14] = 0.9  # ankle_4
-    return qpos
+    return qpos^
 
 
 def _tumbling_qvel() -> InlineArray[Float64, NV]:
@@ -93,7 +93,7 @@ def _tumbling_qvel() -> InlineArray[Float64, NV]:
     qvel[3] = 2.0
     qvel[4] = 1.0
     qvel[5] = 0.5
-    return qvel
+    return qvel^
 
 
 def _make_model(

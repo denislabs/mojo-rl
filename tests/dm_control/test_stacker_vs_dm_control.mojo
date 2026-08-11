@@ -296,18 +296,18 @@ def test_stacker_ordering_matches_mujoco() raises:
     """
     var mujoco = Python.import_module("mujoco")
 
-    var arm_bodies = [
+    var arm_bodies: List[String] = [
         String("world"), String("upper_arm"), String("middle_arm"),
         String("lower_arm"), String("hand"), String("pinch site"),
         String("thumb"), String("thumbtip"), String("finger"),
         String("fingertip"),
     ]
-    var arm_joints = [
+    var arm_joints: List[String] = [
         String("arm_root"), String("arm_shoulder"), String("arm_elbow"),
         String("arm_wrist"), String("thumb"), String("thumbtip"),
         String("finger"), String("fingertip"),
     ]
-    var arm_geoms = [
+    var arm_geoms: List[String] = [
         String("floor"), String("wall1"), String("wall2"), String("background"),
         String("arm_root"), String("upper_arm"), String("middle_arm"),
         String("lower_arm"), String("hand"), String("palm1"), String("palm2"),
@@ -318,7 +318,7 @@ def test_stacker_ordering_matches_mujoco() raises:
     # ⚠ `palm_touch` is SECOND here, not third as it appears in the XML text:
     # it belongs to `hand` and MuJoCo groups by body, so it precedes `pinch`
     # (which sits on the nested `pinch site` body). Our parser now agrees.
-    var arm_sites = [
+    var arm_sites: List[String] = [
         String("grasp"), String("palm_touch"), String("pinch"),
         String("thumb_touch"), String("thumbtip_touch"),
         String("finger_touch"), String("fingertip_touch"),

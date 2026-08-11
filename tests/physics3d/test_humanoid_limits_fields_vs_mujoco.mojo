@@ -213,13 +213,13 @@ def _pose_qpos() -> InlineArray[Float64, NQ]:
     qpos[13] = -0.15  # right knee
     qpos[17] = -0.15  # left knee
     qpos[ELBOW_QPOS_ADR] = ELBOW_QPOS  # right elbow — VIOLATED
-    return qpos
+    return qpos^
 
 
 def _pose_qvel() -> InlineArray[Float64, NV]:
     var qvel = InlineArray[Float64, NV](fill=0.0)
     qvel[19] = ELBOW_QVEL  # right elbow dof, closing into the limit
-    return qvel
+    return qvel^
 
 
 comptime MJ_EQUALITY_BLOCK = """    <equality>

@@ -385,13 +385,28 @@ def test_swimmer_actuators_match_mujoco() raises:
     var dofadr = mj.actuator_trnid.tolist()
     var jdof = mj.jnt_dofadr.tolist()
 
+    # `M._acd` is a COMPTIME value: indexing it with a RUNTIME `i` asks the
+    # compiler to materialize the whole `Array`, which rc2 refuses (`Array` is
+    # no longer `ImplicitlyCopyable`). Hoist each ELEMENT once, under a
+    # comptime index, into runtime lists — the idiom of
+    # `test_dog_actuator_gain.mojo`.
+    var a_gears = List[Float64]()
+    var a_cmin = List[Float64]()
+    var a_cmax = List[Float64]()
+    var a_dof_adr = List[Int]()
+    comptime for a in range(M.ACTION_DIM):
+        a_gears.append(materialize[M._acd.motor_gears[a]]())
+        a_cmin.append(materialize[M._acd.motor_ctrl_min[a]]())
+        a_cmax.append(materialize[M._acd.motor_ctrl_max[a]]())
+        a_dof_adr.append(materialize[M._acd.motor_dof_adr[a]]())
+
     for i in range(M.ACTION_DIM):
-        var ours = M._acd.motor_gears[i]
+        var ours = a_gears[i]
         var mref = Float64(py=gear[i][0])
         print(
             "   motor", i, " gear ours", ours, " mj", mref,
-            " ctrl [", M._acd.motor_ctrl_min[i], ",",
-            M._acd.motor_ctrl_max[i], "] dof", M._acd.motor_dof_adr[i],
+            " ctrl [", a_cmin[i], ",",
+            a_cmax[i], "] dof", a_dof_adr[i],
         )
         assert_true(
             _close(ours, mref),
@@ -399,21 +414,21 @@ def test_swimmer_actuators_match_mujoco() raises:
             " declared after a nested <default class=...> block (bug 24)",
         )
         assert_true(
-            _close(M._acd.motor_ctrl_min[i], Float64(py=cr[i][0]))
-            and _close(M._acd.motor_ctrl_max[i], Float64(py=cr[i][1])),
+            _close(a_cmin[i], Float64(py=cr[i][0]))
+            and _close(a_cmax[i], Float64(py=cr[i][1])),
             "actuator ctrlrange",
         )
         # The motor drives the joint the reference says it does.
         var mj_jnt = Int(py=dofadr[i][0])
         assert_equal(
-            M._acd.motor_dof_adr[i], Int(py=jdof[mj_jnt]),
+            a_dof_adr[i], Int(py=jdof[mj_jnt]),
             "actuator transmission dof",
         )
 
     # Non-vacuity: gear 1.0 is exactly the value the bug produced, so a model
     # whose real gear IS 1.0 could not detect the regression.
     assert_true(
-        abs(M._acd.motor_gears[0] - 1.0) > 1e-9,
+        abs(a_gears[0] - 1.0) > 1e-9,
         "swimmer's gear is 1.0 now — this gate can no longer distinguish a"
         " parsed gear from the fallback",
     )
@@ -492,7 +507,7 @@ def test_swimmer_sensor_layout_matches_body_velocities_slice() raises:
     )
 
     # Rows: (head_vel, head_gyro), then (velocimeter_i, gyro_i) per segment.
-    var names = ["head_vel", "head_gyro"]
+    var names: List[String] = ["head_vel", "head_gyro"]
     for i in range(5):
         names.append(String("velocimeter_") + String(i))
         names.append(String("gyro_") + String(i))
