@@ -217,6 +217,24 @@ struct TDMPC2Agent[
     var mpc_out: Optional[DeviceBuffer[DT]]
     var mpc_host: Optional[HostBuffer[DT]]
 
+    # ── train_step scratch — allocated ONCE, reused every gradient step ───
+    # The replay sample (b-major host) and its t-major transpose. Previously
+    # four Lists + five Tensors per step, each Tensor's `.upload()` creating a
+    # fresh device buffer.
+    var smp_ob: List[Scalar[DT]]
+    var smp_ab: List[Scalar[DT]]
+    var smp_rb: List[Scalar[DT]]
+    var smp_dbf: List[Scalar[DT]]
+    var tr_ot: Tensor
+    var tr_at: Tensor
+    var tr_rt: Tensor
+    var tr_dt: Tensor
+    var tr_td: Tensor
+    # Policy-update inputs: `tr_zpol` is PB x LATENT — 2 MB at the reference
+    # dims, and it was being recreated on every single gradient step.
+    var tr_obs_pb: Tensor
+    var tr_zpol: Tensor
+
     # ── comptime accessors: distinct online / target Q field by index ──────
     def get_q[i: Int](mut self) -> ref[MutAnyOrigin] Self.QNetT:
         comptime if i == 0:
@@ -362,6 +380,11 @@ struct TDMPC2Agent[
             act_ob=Tensor(), act_z=Tensor(),
             act_pio=Tensor(), act_alp=Tensor(),
             mpc_cb=None, mpc_out=None, mpc_host=None,
+            smp_ob=List[Scalar[DT]](), smp_ab=List[Scalar[DT]](),
+            smp_rb=List[Scalar[DT]](), smp_dbf=List[Scalar[DT]](),
+            tr_ot=Tensor(), tr_at=Tensor(), tr_rt=Tensor(),
+            tr_dt=Tensor(), tr_td=Tensor(),
+            tr_obs_pb=Tensor(), tr_zpol=Tensor(),
         )
 
     # ── acting (MPC-off): a = π(encode(obs)) ───────────────────────────
@@ -457,6 +480,15 @@ struct TDMPC2Agent[
         ctx.synchronize()
         for j in range(A):
             act_out[j] = self.mpc_host.value().unsafe_ptr()[unsafe_offset=j]
+
+    @staticmethod
+    def _ensure_list(mut buf: List[Scalar[DT]], n: Int):
+        """Lazy-grow a host scratch List to >= n, zero-filled — the `List`
+        counterpart of `Tensor.ensure`. Reallocating only on growth is what
+        makes the per-step cost zero after the first call; every consumer
+        overwrites the whole span before reading it."""
+        if len(buf) < n:
+            buf = List[Scalar[DT]](length=n, fill=Scalar[DT](0))
 
     def _mpc_ready(mut self, ctx: DeviceContext) raises:
         """Build the MPC scratch on first use, and REBUILD the callback if this
@@ -680,10 +712,24 @@ struct TDMPC2Agent[
     def _td_dispatch(
         mut self,
         a: Int, b: Int,
-        mut obs: Tensor, mut rew: Tensor, mut done: Tensor, mut td: Tensor,
+        obs_p: Pointer[Tensor, MutUntrackedOrigin],
+        rew_p: Pointer[Tensor, MutUntrackedOrigin],
+        done_p: Pointer[Tensor, MutUntrackedOrigin],
+        td_p: Pointer[Tensor, MutUntrackedOrigin],
         gamma: Scalar[DT],
         ctx: Optional[DeviceContext],
     ) raises:
+        """⚠ The four tensors arrive as POINTERS, not `mut` refs, because the
+        caller now passes AGENT-OWNED scratch (`self.tr_ot`, …). A `mut Tensor`
+        parameter bound to a field of the same `self` this method already
+        borrows mutably is an exclusivity violation — the compiler rejects it.
+        Untracked pointers are the sanctioned escape (the same one the rollout
+        callback uses for its module handles); they stay valid for the call
+        because the caller's `self` outlives it."""
+        ref obs = obs_p[]
+        ref rew = rew_p[]
+        ref done = done_p[]
+        ref td = td_p[]
         comptime tg = Self.target
         comptime for i in range(NQ):
             comptime for j in range(NQ):
@@ -698,8 +744,11 @@ struct TDMPC2Agent[
     def _policy_dispatch(
         mut self,
         a: Int, b: Int,
-        mut zpol: Tensor,
+        zpol_p: Pointer[Tensor, MutUntrackedOrigin],
     ) raises -> Scalar[DT]:
+        """Pointer parameter for the same exclusivity reason as
+        `_td_dispatch` — the caller passes `self.tr_zpol`."""
+        ref zpol = zpol_p[]
         comptime tg = Self.target
         comptime for i in range(NQ):
             comptime for j in range(NQ):
@@ -726,10 +775,28 @@ struct TDMPC2Agent[
         comptime BB = Self.B
 
         # ── sample (b-major) + transpose to t-major (host) ─────────────
-        var ob = List[Scalar[DT]](length=BB * (HH + 1) * OBSD, fill=0)
-        var ab = List[Scalar[DT]](length=BB * HH * ACTD, fill=0)
-        var rb = List[Scalar[DT]](length=BB * HH, fill=0)
-        var dbf = List[Scalar[DT]](length=BB * HH, fill=0)
+        # All of this is AGENT-OWNED scratch, sized once. It used to be
+        # allocated per train_step: four host Lists plus seven Tensors whose
+        # `.upload()` re-created its device buffer every call — ~7 device
+        # buffer creations per GRADIENT STEP, `tr_zpol` alone being
+        # PB x LATENT (2 MB at the reference dims). See the acting-scratch
+        # note on the fields: same footgun, hotter loop.
+        #
+        # ⚠ Caching is only sound because every one of these is FULLY
+        # overwritten before it is read. `ob/ab/rb/dbf` are filled by
+        # `sample_batch`, `tr_ot/at/rt/dt` by the transpose below,
+        # `tr_obs_pb` by the copy, `tr_zpol` by `encoder.forward`. `tr_td` is
+        # the exception — it is written on DEVICE by `_td_dispatch` — so it is
+        # explicitly re-zeroed each step, reproducing what `Tensor.alloc` did
+        # and keeping this change independent of what that step writes.
+        self._ensure_list(self.smp_ob, BB * (HH + 1) * OBSD)
+        self._ensure_list(self.smp_ab, BB * HH * ACTD)
+        self._ensure_list(self.smp_rb, BB * HH)
+        self._ensure_list(self.smp_dbf, BB * HH)
+        ref ob = self.smp_ob
+        ref ab = self.smp_ab
+        ref rb = self.smp_rb
+        ref dbf = self.smp_dbf
         self.replay.sample_batch[BB, HH](
             rebind[Pointer[Scalar[DT], MutAnyOrigin]](
                 Pointer(to=ob[0])
@@ -745,12 +812,19 @@ struct TDMPC2Agent[
             ),
         )
 
-        # t-major input Tensors.
-        var ot = Tensor.alloc((HH + 1) * BB * OBSD)
-        var at = Tensor.alloc(HH * BB * ACTD)
-        var rt = Tensor.alloc(HH * BB)
-        var dt = Tensor.alloc(HH * BB)
-        var td = Tensor.alloc(HH * BB)
+        # t-major input Tensors (agent-owned; host side sized here).
+        self.tr_ot.ensure((HH + 1) * BB * OBSD)
+        self.tr_at.ensure(HH * BB * ACTD)
+        self.tr_rt.ensure(HH * BB)
+        self.tr_dt.ensure(HH * BB)
+        self.tr_td.ensure(HH * BB)
+        ref ot = self.tr_ot
+        ref at = self.tr_at
+        ref rt = self.tr_rt
+        ref dt = self.tr_dt
+        ref td = self.tr_td
+        for i in range(HH * BB):
+            td.data[i] = Scalar[DT](0.0)   # see the note above
         for b in range(BB):
             for t in range(HH + 1):
                 for i in range(OBSD):
@@ -774,14 +848,24 @@ struct TDMPC2Agent[
 
         var ctx = self.ctx
         comptime if tg == "gpu":
-            ot.upload(ctx.value())
-            at.upload(ctx.value())
-            rt.upload(ctx.value())
-            dt.upload(ctx.value())
-            td.upload(ctx.value())
+            # `upload_resident`, NOT `upload`: the latter re-creates the device
+            # buffer on every call, which is the allocation this scratch exists
+            # to remove. Same bytes copied either way.
+            ot.upload_resident(ctx.value())
+            at.upload_resident(ctx.value())
+            rt.upload_resident(ctx.value())
+            dt.upload_resident(ctx.value())
+            td.upload_resident(ctx.value())
 
         # ── TD targets (stop-grad) ─────────────────────────────────────
-        self._td_dispatch(ta, tb, ot, rt, dt, td, self.gamma, ctx)
+        self._td_dispatch(
+            ta, tb,
+            rebind[Pointer[Tensor, MutUntrackedOrigin]](Pointer(to=ot)),
+            rebind[Pointer[Tensor, MutUntrackedOrigin]](Pointer(to=rt)),
+            rebind[Pointer[Tensor, MutUntrackedOrigin]](Pointer(to=dt)),
+            rebind[Pointer[Tensor, MutUntrackedOrigin]](Pointer(to=td)),
+            self.gamma, ctx,
+        )
 
         # ── WM BPTT ─────────────────────────────────────────────────────
         var wl = self.wm_step.step[tg](
@@ -798,14 +882,21 @@ struct TDMPC2Agent[
         self._last_wm = wl.total()
 
         # ── policy update on encoded latents ───────────────────────────
-        var zpol = Tensor.make[tg](Self.PB * LAT, ctx)
-        var obs_pb = Tensor.alloc(Self.PB * OBSD)
+        self.tr_zpol.ensure[tg](Self.PB * LAT, ctx)
+        self.tr_obs_pb.ensure(Self.PB * OBSD)
         for i in range(Self.PB * OBSD):
-            obs_pb.data[i] = ot.data[i]
+            self.tr_obs_pb.data[i] = ot.data[i]
         comptime if tg == "gpu":
-            obs_pb.upload(ctx.value())
-        self.encoder.forward[tg, Self.PB](TensorRefs[1](obs_pb), zpol, ctx)
-        self._last_pi = self._policy_dispatch(pa, pb, zpol)
+            self.tr_obs_pb.upload_resident(ctx.value())
+        self.encoder.forward[tg, Self.PB](
+            TensorRefs[1](self.tr_obs_pb), self.tr_zpol, ctx
+        )
+        self._last_pi = self._policy_dispatch(
+            pa, pb,
+            rebind[Pointer[Tensor, MutUntrackedOrigin]](
+                Pointer(to=self.tr_zpol)
+            ),
+        )
 
         # ── Polyak (target ← online) ────────────────────────────────────
         self.qt0.polyak_from[tg](self.q0, self.tau, ctx)
