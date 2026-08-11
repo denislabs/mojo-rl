@@ -1192,45 +1192,47 @@ struct NamedDefault(Copyable, ImplicitlyCopyable, Movable):
 struct NamedDefaultsList(Copyable, ImplicitlyCopyable, Movable):
     """List of named default classes for <default class="..."> resolution."""
 
-    var items: InlineArray[NamedDefault, MAX_NAMED_DEFAULTS]
+    # ⚠ HEAP-BACKED, AND THE REASON IS COMPILE TIME, NOT MEMORY.
+    #
+    # This was `InlineArray[NamedDefault, MAX_NAMED_DEFAULTS]`. A `NamedDefault`
+    # is a `String` plus `DefaultsData`'s 59 fields (20 of them `String`), so at
+    # MAX_NAMED_DEFAULTS=128 the struct carried ~7,700 fields INLINE — and
+    # `parse_xml_full` holds it live across ~14 raising calls, each of which
+    # needs a cleanup path that destroys the whole thing.
+    #
+    # Measured 2026-08-11 by truncating `parse_xml_full` one statement at a
+    # time: cutting just BEFORE `_parse_defaults` built in 2 s, cutting just
+    # AFTER it built in 284 s. Three lines, 142x. Every other function in this
+    # 2935-line parser is free by comparison — gutting 70% of them changed the
+    # build by 0%.
+    #
+    # A `List` puts one pointer in the struct instead, so the destructor the
+    # compiler has to emit at every cleanup path is a single call. Same move
+    # `FlatModelDef` got on 2026-08-05, for a related reason.
+    #
+    # Bonus: the cap is gone, and with it the overflow error path. A `List`
+    # cannot truncate, so the "more than N named <default> blocks" failure mode
+    # this class used to raise on simply cannot occur.
+    var items: List[NamedDefault]
     var count: Int
 
     def __init__(out self, *, copy: Self):
-        # Mojo 1.0: `Array` is no longer `ImplicitlyCopyable`, so the compiler
-        # can no longer synthesise this struct's copy constructor. Written out
-        # explicitly to keep the previous (implicitly copyable) semantics.
         self.items = copy.items.copy()
         self.count = copy.count
 
     def __init__(out self):
-        self.items = InlineArray[NamedDefault, MAX_NAMED_DEFAULTS](
-            fill=NamedDefault()
-        )
+        self.items = List[NamedDefault]()
         self.count = 0
 
     def add(mut self, class_name: String, defaults: DefaultsData) raises:
-        """Add a named default class. RAISES rather than dropping silently.
+        """Add a named default class.
 
-        The old `if self.count < MAX_NAMED_DEFAULTS` swallowed the overflow,
-        and because `find()` falls back to MuJoCo's global defaults the model
-        then built and simulated with the wrong constants. See the note on
-        `MAX_NAMED_DEFAULTS`.
+        No cap: a `List` grows. The previous `InlineArray` version raised once
+        it hit `MAX_NAMED_DEFAULTS`, and before that it dropped the class
+        SILENTLY — every element naming it then took MuJoCo's global defaults
+        instead, with no diagnostic anywhere.
         """
-        if self.count >= MAX_NAMED_DEFAULTS:
-            raise Error(
-                String(
-                    "physics3d: more than ",
-                    MAX_NAMED_DEFAULTS,
-                    ' named <default class="..."> blocks (at "',
-                    class_name,
-                    '"). Raise MAX_NAMED_DEFAULTS in parser/flat_model.mojo.',
-                    " This used to drop the class silently, and every element",
-                    " naming it then took MuJoCo's global defaults instead of",
-                    " the class's — wrong condim, friction, armature and",
-                    " stiffness, with no diagnostic anywhere.",
-                )
-            )
-        self.items[self.count] = NamedDefault(class_name, defaults)
+        self.items.append(NamedDefault(class_name, defaults))
         self.count += 1
 
     def find(self, class_name: String) -> DefaultsData:
