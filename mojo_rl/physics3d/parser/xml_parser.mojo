@@ -3247,6 +3247,62 @@ def _build_joint_adr_table(xml: String, deg_factor: Float64) -> _JointAdrTable:
     return out^
 
 
+struct _ClassAttrCache(Copyable, Movable):
+    """Memoizes `_class_attr_inherited` on (class, element kind, attribute).
+
+    That helper re-walks the whole XML per lookup — its own docstring says so —
+    and `parse_xml_model_data`'s actuator loop asks for 8 attributes per
+    actuator. dog paid ~304 walks to resolve a handful of distinct classes.
+
+    Keyed on all three parts because the same attribute resolves differently
+    for a `<motor>` than a `<general>` of the same class.
+    """
+
+    var keys: List[String]
+    var vals: List[String]
+
+    def __init__(out self):
+        self.keys = List[String]()
+        self.vals = List[String]()
+
+    def get(
+        mut self, xml: String, cls: String, tag_name: String, attr: String
+    ) -> String:
+        """The memoized `_class_attr_inherited`. Identical result, one walk."""
+        var key = cls + "|" + tag_name + "|" + attr
+        for i in range(len(self.keys)):
+            if self.keys[i] == key:
+                return self.vals[i]
+        var v = _class_attr_inherited(xml, cls, tag_name, attr)
+        self.keys.append(key)
+        self.vals.append(v)
+        return v
+
+
+def _attr_3way_cached(
+    xml: String,
+    elem: String,
+    cls: String,
+    tag_name: String,
+    root_tag: String,
+    name: String,
+    mut cache: _ClassAttrCache,
+) -> String:
+    """`_attr_3way` with the class level memoized.
+
+    Same three-level order — element, then class, then the root `<default>`
+    block — so this is a drop-in. Only the middle lookup changes, from a fresh
+    XML walk to a cache hit.
+    """
+    var v = _extract_attr(elem, name)
+    if v.byte_length() > 0:
+        return v
+    var c = cache.get(xml, cls, tag_name, name)
+    if c.byte_length() > 0:
+        return c
+    return _extract_attr(root_tag, name)
+
+
 def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](xml: String) -> ComptimeActData[NACT, NJNT, NQ0, NTEN, WRAPS]:
     """Parse XML and return actuator/joint data as InlineArrays.
 
@@ -3410,6 +3466,12 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
     var act_sec = _extract_section(xml_clean, "actuator")
     var act_pos = 0
     var act_count = 0
+    # ⚠ HOISTED OUT OF THE LOOP. `_root_defaults` is a pure function of the XML
+    # that extracts and strips the whole <default> section; it was being rebuilt
+    # once per actuator. The cache below does the same for the class level,
+    # which `_class_attr_inherited` otherwise re-walks per lookup.
+    var rootdef = _root_defaults(xml_clean)
+    var cacache = _ClassAttrCache()
     while act_count < NACT:
         var nm = _find_tag(act_sec, "<motor", act_pos)
         var npos = _find_tag(act_sec, "<position", act_pos)
@@ -3435,13 +3497,13 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
         var tag_name = String("general") if is_general else (
             String("position") if is_position else String("motor")
         )
-        var root_tag = _first_tag(_root_defaults(xml_clean), tag_name)
+        var root_tag = _first_tag(rootdef, tag_name)
 
         data.motor_kind[act_count] = (
             ACT_KIND_POSITION if (is_position or is_general) else ACT_KIND_MOTOR
         )
 
-        var g = _attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "gear")
+        var g = _attr_3way_cached(xml_clean, tag, elem_cls, tag_name, root_tag, "gear", cacache)
         if g.byte_length() > 0:
             data.motor_gears[act_count] = _parse_float(g)
         else:
@@ -3458,7 +3520,7 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
         # hard failure to compile, not a slow build. Seven other `_attr_3way`
         # calls in this same loop are fine because each is consumed on the
         # spot. Keep every string lookup here short-lived.
-        var cr = _attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "ctrlrange")
+        var cr = _attr_3way_cached(xml_clean, tag, elem_cls, tag_name, root_tag, "ctrlrange", cacache)
         var used_default = True
         if cr.byte_length() > 0:
             var parts = List[String]()
@@ -3499,12 +3561,12 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
             # position servos and refused them.
             #
             # Anything else is a different actuator and is refused below.
-            var gaintype = _trim(_attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "gaintype"))
-            var biastype = _trim(_attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "biastype"))
-            var gainprm = _attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "gainprm")
-            var biasprm = _attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "biasprm")
-            var dyntype = _trim(_attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "dyntype"))
-            var dynprm = _attr_3way(xml_clean, tag, elem_cls, tag_name, root_tag, "dynprm")
+            var gaintype = _trim(_attr_3way_cached(xml_clean, tag, elem_cls, tag_name, root_tag, "gaintype", cacache))
+            var biastype = _trim(_attr_3way_cached(xml_clean, tag, elem_cls, tag_name, root_tag, "biastype", cacache))
+            var gainprm = _attr_3way_cached(xml_clean, tag, elem_cls, tag_name, root_tag, "gainprm", cacache)
+            var biasprm = _attr_3way_cached(xml_clean, tag, elem_cls, tag_name, root_tag, "biasprm", cacache)
+            var dyntype = _trim(_attr_3way_cached(xml_clean, tag, elem_cls, tag_name, root_tag, "dyntype", cacache))
+            var dynprm = _attr_3way_cached(xml_clean, tag, elem_cls, tag_name, root_tag, "dynprm", cacache)
 
             var gain = _nth_float(gainprm, 0, 1.0)  # MuJoCo gainprm default 1
             var b0 = _nth_float(biasprm, 0, 0.0)
