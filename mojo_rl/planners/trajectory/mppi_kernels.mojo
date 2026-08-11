@@ -115,7 +115,11 @@ def mppi_sample_actions_batched_kernel[
         Layout.row_major(BATCH_TOTAL * HORIZON * ACTION_DIM),
         MutAnyOrigin,
     ],
-    step: Int,
+    # ⚠ Int32, NOT Int: `Int`/`UInt` do not conform to `DevicePassable` since
+    # Mojo 1.0.0rc2, so an `Int` here fails to compile AT THE LAUNCH SITE with
+    # a constraint error inside `SIMD`. The call site must pass `Int32(t)` too
+    # — a bare `t` re-introduces the same failure through implicit conversion.
+    step: Int32,
     rng_seed: Scalar[DType.uint32],
 ) where dtype.is_floating_point():
     """Sample actions for every env's MPPI candidates at one horizon
@@ -138,6 +142,7 @@ def mppi_sample_actions_batched_kernel[
 
     var env_idx = i // TOTAL_SAMPLES
     var local_s = i % TOTAL_SAMPLES
+    var step_i = Int(step)
 
     for j in range(ACTION_DIM):
         var philox = PhiloxRandom(
@@ -158,7 +163,7 @@ def mppi_sample_actions_batched_kernel[
             act = pi_mean + noise * Scalar[dtype](0.1)
         else:
             var mean_idx = (
-                env_idx * HORIZON * ACTION_DIM + step * ACTION_DIM + j
+                env_idx * HORIZON * ACTION_DIM + step_i * ACTION_DIM + j
             )
             var mu = Scalar[dtype](mean[mean_idx][0])
             var sigma = Scalar[dtype](std[mean_idx][0])
@@ -170,7 +175,7 @@ def mppi_sample_actions_batched_kernel[
             act = Scalar[dtype](1.0)
 
         act_step[i, j] = act
-        all_actions[i * HORIZON * ACTION_DIM + step * ACTION_DIM + j] = act
+        all_actions[i * HORIZON * ACTION_DIM + step_i * ACTION_DIM + j] = act
 
 
 @always_inline

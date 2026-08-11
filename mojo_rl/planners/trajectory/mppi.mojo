@@ -847,7 +847,9 @@ def _run_mppi_iteration[
             std_tensor,
             act_step_tensor,
             all_actions_tensor,
-            t,
+            # Int32, not `t`: `Int` is not `DevicePassable` (rc2). The kernel
+            # param is Int32 and the CALL SITE has to say so.
+            Int32(t),
             Scalar[DType.uint32](step_seed),
             grid_dim=(MPPI_BLOCKS,),
             block_dim=(TPB,),
