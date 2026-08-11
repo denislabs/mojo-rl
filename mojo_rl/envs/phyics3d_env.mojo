@@ -19,7 +19,10 @@ Scope (full parity with the legacy CPU env):
 - Equality/tendon constraints: solved by the SOLVER (newton) — Humanoid
   tendons, and SawyerReach's weld-equality mocap control (the mocap body pose
   is preset via `_sync_mocap_to_fields` and skipped in FK; the weld solve makes
-  the hand track the target). Validated in `test_sawyer_fields_parity`.
+  the hand track the target). Gated by `test_sawyer_settle_vs_mujoco`'s
+  welded-body pose assertion, NOT by `test_sawyer_fields_parity` — that file
+  has never existed, and defect 28 lived behind the citation for as long as
+  it stood. Name the ASSERTION, and grep the file before believing it.
 - Fluid forces (Swimmer) applied inside the fields integrator step.
 - CPU target (single-env driver ABI). The GPU-batched facade is
   `phyics3d_batched_env`.
