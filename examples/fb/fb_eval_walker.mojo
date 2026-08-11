@@ -76,8 +76,16 @@ comptime BATCH: Int = 1024          # must match the trained checkpoint
 # latest one: FB's measure loss cycles, and the last file written is not
 # necessarily the best model. Read the log for a run of consistently NEGATIVE
 # measure with a small, non-growing `actor` before choosing.
-comptime CKPT: StaticString = "checkpoints/fb_walker_d128.ckpt.100000"
-comptime STORE: StaticString = "/tmp/fb_walker_wide.h5"
+# ⚠ These defaults were STALE and dangerous: they pointed at
+# `fb_walker_d128.ckpt.100000`, which is from the LEARNABLE-`LayerNorm` run.
+# That BNet carries gamma/beta Params this architecture does not have, so the
+# load either fails or silently skips them — and a silently-skipped norm layer
+# is exactly the failure this file's own BNet comment warns about.
+comptime CKPT: StaticString = "checkpoints/fb_walker_all_d128.ckpt.500000"
+# ⚠ MUST be the store the checkpoint TRAINED on. §13 records an eval that
+# computed z from a local 10 k store while the checkpoint had trained on 1 M —
+# the numbers were not wrong so much as unattributable.
+comptime STORE: StaticString = "fb_walker_all_sac.h5"
 comptime RELABEL_ROWS: Int = 4096
 comptime EVAL_EPISODES: Int = 10
 comptime EVAL_LEN: Int = 1000       # dm_control's own episode length

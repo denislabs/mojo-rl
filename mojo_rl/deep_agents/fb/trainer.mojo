@@ -110,6 +110,8 @@ from .kernels import (
     mean_t,
     gaussian_t,
     gaussian_dev_t,
+    mean_into_t,
+    scale_by_inv_mag_t,
 )
 
 
@@ -221,6 +223,11 @@ struct FBTrainer[
     # Sized once in `_size_once` and reused. `sink` is sized to the LARGEST
     # consumer (F's input, BATCH*F_IN) and reused by B's vjps, whose grad-input
     # is smaller — `ensure_gpu` only grows, so that is safe and saves a buffer.
+    # Dedicated: `acc` is reused by the f_norm/b_norm diagnostics later in the
+    # step, and the adaptive scale must not share scratch with something that
+    # overwrites it on logging steps only — that is the same shape of bug this
+    # buffer exists to fix.
+    var acc_lam: Tensor
     var sink: Tensor
     var sink_a: Tensor
     var g_fin_a: Tensor
@@ -330,6 +337,7 @@ struct FBTrainer[
         self.g_bsn = Tensor()
         self.g_bs = Tensor()
         self.acc = Tensor()
+        self.acc_lam = Tensor()
         self.sink = Tensor()
         self.sink_a = Tensor()
         self.g_fin_a = Tensor()
@@ -400,6 +408,7 @@ struct FBTrainer[
         self.g_bsn = move.g_bsn^
         self.g_bs = move.g_bs^
         self.acc = move.acc^
+        self.acc_lam = move.acc_lam^
         self.sink = move.sink^
         self.sink_a = move.sink_a^
         self.g_fin_a = move.g_fin_a^
@@ -494,6 +503,7 @@ struct FBTrainer[
             d.enqueue_copy(ob, oh)
             d.synchronize()
             self._rng_off_dev = ob^
+        ensure_t[T](self.acc_lam, 1, c)
         ensure_t[T](self.sink, Self.BATCH * Self.F_IN, c)
         ensure_t[T](self.sink_a, Self.BATCH * (Self.OBS + Self.D), c)
         ensure_t[T](self.g_fin_a, Self.BATCH * Self.F_IN, c)
@@ -830,30 +840,49 @@ struct FBTrainer[
             self.f1.online, TensorRefs[1, MutAnyOrigin](self.fin_a), self.fo, c
         )
 
+        # ⚠⚠ Rowwise F·z and its mean are computed on EVERY step, not only
+        # when a loss is wanted. They feed TD3+BC's adaptive scale below, and
+        # gating them on `want_loss` made the ACTOR OBJECTIVE depend on the
+        # LOGGING CADENCE.
+        self.ws1.rd.forward[T, Self.BATCH](
+            TensorRefs[2, MutAnyOrigin](self.fo, self.bz), self.rz, c
+        )
+        mean_into_t[T, Self.BATCH](self.rz, self.acc_lam, c)
+
         var loss = Float64(0)
         if want_loss:
-            # rowwise F·z, then the batch mean — reusing RowDot rather than a
-            # bespoke kernel keeps the CPU and GPU numbers identical.
-            self.ws1.rd.forward[T, Self.BATCH](
-                TensorRefs[2, MutAnyOrigin](self.fo, self.bz), self.rz, c
-            )
-            var m = mean_t[T, Self.BATCH](self.rz, self.acc, c)
-            loss = -m
+            comptime if T == "cpu":
+                loss = -Float64(self.acc_lam.data[0])
+            else:
+                self.acc_lam.download(c.value())
+                loss = -Float64(self.acc_lam.data[0])
 
         # dL/dF = -lambda·z / BATCH. TD3+BC's adaptive scale: normalising the
         # value term by its own magnitude makes `bc_weight` a RATIO between the
         # two objectives instead of an absolute that has to be retuned whenever
         # ||F|| moves — and ||F|| moves a lot here.
-        var lam = Float64(1.0)
+        #
+        # ⚠⚠ This USED to read `abs(loss) if want_loss else 1.0`, so the scale
+        # was applied on ONE step in `LOG_EVERY` and skipped on the other 1999 —
+        # and under CUDA-graph capture (`want_loss=False` always) it was applied
+        # NEVER. `||F||` then grew 2.65x over 214 k steps while `bc_weight`
+        # stayed fixed, the value term outgrew the BC term, and `pi_z` went
+        # bang-bang: 70-79% of actions at |a| > 0.99 and WORSE than random on
+        # all three walker tasks. The dataset is not saturated (mean|a| 0.635,
+        # 4.9% at the rail), so this was the policy's own doing.
+        #
+        # The magnitude now stays on device and the scale kernel reads it, so
+        # the normalisation is unconditional AND capture-safe.
         if self.bc_weight > 0.0:
-            var mag = abs(loss) if want_loss else 1.0
-            if mag < 1e-6:
-                mag = 1e-6
-            lam = 1.0 / mag
-        scale_t[T, Self._ND](
-            self.g_fa, self.bz,
-            Scalar[DT](-lam / Float64(Self.BATCH)), c,
-        )
+            scale_by_inv_mag_t[T, Self._ND](
+                self.g_fa, self.bz, self.acc_lam,
+                Scalar[DT](-1.0 / Float64(Self.BATCH)), Scalar[DT](1e-6), c,
+            )
+        else:
+            scale_t[T, Self._ND](
+                self.g_fa, self.bz,
+                Scalar[DT](-1.0 / Float64(Self.BATCH)), c,
+            )
 
         # ⚠ Through F1 WITHOUT keeping F1's parameter grads: the optimizer has
         # already stepped them above, and folding a second, differently-scaled

@@ -256,9 +256,69 @@ def test_bc_weight_curbs_action_saturation() raises:
     )
 
 
+def test_actor_update_independent_of_want_loss() raises:
+    """[5] The actor update must be IDENTICAL with and without `want_loss`.
+
+    ⚠⚠ It was not. TD3+BC's adaptive scale read `abs(loss) if want_loss else
+    1.0`, so the value term was normalised on one step in `LOG_EVERY` and left
+    raw on the rest — and under CUDA-graph capture (`want_loss=False` always)
+    it was never normalised at all. `||F||` then grew 2.65x over 214 k steps
+    while `bc_weight` stayed fixed, the value term outgrew BC, and `pi_z` went
+    bang-bang: 70-79% saturated, WORSE than random on all three walker tasks.
+
+    A loss flag silently changing the OBJECTIVE is the worst shape this can
+    take, because every diagnostic that would reveal it is computed on exactly
+    the steps where the bug is absent.
+    """
+    print("[5] actor update is independent of want_loss ...")
+    seed(SEED)
+    var a = Trainer.make(lr=1e-2, bc_weight=1.0)
+    seed(SEED)
+    var b = Trainer.make(lr=1e-2, bc_weight=1.0)
+
+    var s_ = _rand_tensor(BATCH * OBS, 1.0)
+    var ac = _rand_tensor(BATCH * ACT, 1.0)
+    var sn = _rand_tensor(BATCH * OBS, 1.0)
+    var sp = _rand_tensor(BATCH * OBS, 1.0)
+    var z = _z_tensor(BATCH)
+
+    a.load_batch(s_, ac, sn, sp, z)
+    b.load_batch(s_, ac, sn, sp, z)
+    # ⚠ Reseed before EACH step. `gaussian_t` draws the target-smoothing noise
+    # from the GLOBAL host RNG on the cpu target, so running `a` then `b`
+    # otherwise hands them different noise and the comparison measures the RNG
+    # rather than `want_loss`. That is exactly how this test first "failed"
+    # (0.055) against a fix that was already correct.
+    seed(SEED + 77)
+    _ = a.train_step(want_loss=True)
+    seed(SEED + 77)
+    _ = b.train_step(want_loss=False)
+
+    var probe = _rand_tensor(BATCH * OBS, 1.0)
+    var zp = _z_tensor(BATCH)
+    var pa = Tensor()
+    var pb = Tensor()
+    a.act[BATCH](probe, zp, pa)
+    b.act[BATCH](probe, zp, pb)
+
+    var worst = Float64(0)
+    for i in range(BATCH * ACT):
+        var e = abs(Float64(pa.data[i]) - Float64(pb.data[i]))
+        if e > worst:
+            worst = e
+    print("      worst |pi_z(want_loss=True) - pi_z(want_loss=False)| =", worst)
+    assert_true(
+        worst < 1e-6,
+        "the actor update DIFFERS by " + String(worst) + " depending on"
+        " want_loss — the logging cadence is changing the objective",
+    )
+    print("      OK")
+
+
 def main() raises:
     test_step_runs_and_reports()
     test_b_does_not_collapse()
     test_ortho_weight_changes_the_update()
     test_bc_weight_curbs_action_saturation()
+    test_actor_update_independent_of_want_loss()
     print("\n[PASS] FB trainer smoke gate")

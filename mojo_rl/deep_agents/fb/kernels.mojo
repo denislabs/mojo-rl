@@ -241,6 +241,34 @@ def sq_diff_reduce_kernel[N: Int](
         acc[unsafe_offset=0] = total[0] / Scalar[DT](N)
 
 
+def scale_by_inv_mag_kernel[N: Int](
+    y: Pointer[Scalar[DT], MutAnyOrigin],
+    x: Pointer[Scalar[DT], MutAnyOrigin],
+    mag: Pointer[Scalar[DT], MutAnyOrigin],
+    base: Scalar[DT],
+    eps: Scalar[DT],
+):
+    """`y = (base / max(|mag[0]|, eps)) * x` — TD3+BC's adaptive scale, with
+    the magnitude read FROM DEVICE.
+
+    ⚠⚠ Exists because the host form was silently conditional on logging. The
+    trainer computed `lam = 1/|loss|` only when `want_loss` was true — one step
+    in `LOG_EVERY` — and ran `lam = 1.0` otherwise; under CUDA-graph capture
+    (`want_loss=False` always) it was NEVER applied. Reading the magnitude from
+    a device buffer makes the scale unconditional AND capture-safe, because
+    nothing crosses to the host.
+    """
+    var t = Int(global_idx.x)
+    if t >= N:
+        return
+    var m = mag[unsafe_offset=0]
+    if m < 0:
+        m = -m
+    if m < eps:
+        m = eps
+    y[unsafe_offset=t] = (base / m) * x[unsafe_offset=t]
+
+
 def sum_reduce_kernel[N: Int](
     x: Pointer[Scalar[DT], MutAnyOrigin],
     acc: Pointer[Scalar[DT], MutAnyOrigin],
@@ -594,6 +622,49 @@ def mean_sq_t[target: StaticString, N: Int](
         )
         acc.download(d)
         return Float64(acc.data[0])
+
+
+def mean_into_t[target: StaticString, N: Int](
+    mut x: Tensor, mut acc: Tensor, ctx: Optional[DeviceContext] = None
+) raises:
+    """`acc[0] = mean(x)` — NO download, so it is capture-safe. The sibling
+    `mean_t` returns the value to the host and therefore syncs; use this one
+    anywhere inside the train step."""
+    ensure_t[target](acc, 1, ctx)
+    comptime if target == "cpu":
+        var s = Float64(0)
+        for i in range(N):
+            s += Float64(x.data[i])
+        acc.data[0] = Scalar[DT](s / Float64(N))
+    else:
+        var d = ctx.value()
+        d.enqueue_function[sum_reduce_kernel[N]](
+            x.dev.value().unsafe_ptr(), acc.dev.value().unsafe_ptr(),
+            grid_dim=1, block_dim=TPB_REDUCE,
+        )
+
+
+def scale_by_inv_mag_t[target: StaticString, N: Int](
+    mut y: Tensor, mut x: Tensor, mut mag: Tensor,
+    base: Scalar[DT], eps: Scalar[DT] = 1e-6,
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """`y = (base / max(|mag[0]|, eps)) * x`, with `mag` staying on device."""
+    ensure_t[target](y, N, ctx)
+    comptime if target == "cpu":
+        var m = abs(Float64(mag.data[0]))
+        if m < Float64(eps):
+            m = Float64(eps)
+        var a = Scalar[DT](Float64(base) / m)
+        for i in range(N):
+            y.data[i] = a * x.data[i]
+    else:
+        var d = ctx.value()
+        d.enqueue_function[scale_by_inv_mag_kernel[N]](
+            y.dev.value().unsafe_ptr(), x.dev.value().unsafe_ptr(),
+            mag.dev.value().unsafe_ptr(), base, eps,
+            grid_dim=_blocks(N), block_dim=TPB,
+        )
 
 
 def mean_t[target: StaticString, N: Int](
