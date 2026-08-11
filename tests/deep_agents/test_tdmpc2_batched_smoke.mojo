@@ -112,6 +112,73 @@ def test_strided_windows_stay_within_one_env() raises:
     print("  strided windows: 20 batches x", B, "rows — all single-env ✓")
 
 
+def test_strided_task_windows_are_single_task() raises:
+    """Multi-task + batched: a window must carry ONE task, and the right one.
+
+    A segment-alternating collector (task 0 for a while, then task 1) leaves
+    windows straddling the switch in every lane. Labelled by their first frame,
+    those train the world model on task-1 dynamics under task-0's embedding.
+    The obs here carries its own task id in channel 2, so the label can be
+    checked against the frames themselves rather than trusted.
+    """
+    comptime T = 3
+    comptime SEG = 40
+    var buf = SequenceReplay[OBS, ACT, CAP].new()
+    buf.set_env_stride(N_ENVS)
+
+    var o = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0))
+    var a = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0))
+    for task in range(2):                      # two segments, two tasks
+        for t in range(SEG):
+            for e in range(N_ENVS):
+                o[0] = Scalar[DT](e)
+                o[1] = Scalar[DT](t)
+                o[2] = Scalar[DT](task)        # the frame's OWN task
+                a[0] = Scalar[DT](task)
+                buf.record_task(
+                    rebind[Pointer[Scalar[DT], MutAnyOrigin]](Pointer(to=o[0])),
+                    rebind[Pointer[Scalar[DT], MutAnyOrigin]](Pointer(to=a[0])),
+                    Scalar[DT](0),
+                    Scalar[DT](0),
+                    task,
+                )
+
+    var ob = List[Scalar[DT]](length=B * (T + 1) * OBS, fill=Scalar[DT](0))
+    var ab = List[Scalar[DT]](length=B * T * ACT, fill=Scalar[DT](0))
+    var rb = List[Scalar[DT]](length=B * T, fill=Scalar[DT](0))
+    var db = List[Scalar[DT]](length=B * T, fill=Scalar[DT](0))
+    var tk = List[Scalar[DT]](length=B, fill=Scalar[DT](0))
+
+    var seen_t0 = False
+    var seen_t1 = False
+    for _trial in range(40):
+        buf.sample_batch_task[B, T](
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](Pointer(to=ob[0])),
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](Pointer(to=ab[0])),
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](Pointer(to=rb[0])),
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](Pointer(to=db[0])),
+            rebind[Pointer[Scalar[DT], MutAnyOrigin]](Pointer(to=tk[0])),
+        )
+        for b in range(B):
+            var lane = ob[b * (T + 1) * OBS + 0]
+            for k in range(T + 1):
+                var base = b * (T + 1) * OBS + k * OBS
+                assert_true(
+                    ob[base + 0] == lane, "window crossed envs"
+                )
+                assert_true(
+                    ob[base + 2] == tk[b],
+                    "window frame's task disagrees with the window's task"
+                    " label — a straddling window was not rejected",
+                )
+            if tk[b] == Scalar[DT](0):
+                seen_t0 = True
+            else:
+                seen_t1 = True
+    assert_true(seen_t0 and seen_t1, "both tasks should be sampled")
+    print("  strided task windows: single-env, single-task, labelled ✓")
+
+
 def test_contiguous_path_unchanged() raises:
     """stride=1 keeps the original contiguous walk (single-env parity)."""
     comptime T = 2

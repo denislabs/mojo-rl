@@ -397,6 +397,73 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
                 rew_out[unsafe_offset=b * T + k] = self.rew[phys]
                 dne_out[unsafe_offset=b * T + k] = self.dne[phys]
 
+    def _sample_batch_task_strided[
+        B: Int,
+        T: Int,
+    ](
+        mut self,
+        obs_out: Pointer[Scalar[DT], MutAnyOrigin],
+        act_out: Pointer[Scalar[DT], MutAnyOrigin],
+        rew_out: Pointer[Scalar[DT], MutAnyOrigin],
+        dne_out: Pointer[Scalar[DT], MutAnyOrigin],
+        task_out: Pointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """`_sample_batch_strided` + the per-window task id.
+
+        Two things differ from the single-task strided walk. The task column is
+        carried out, and a window whose first and last frame disagree on the
+        task is REDRAWN: a segment-alternating collector (train task 0 for a
+        while, then task 1, …) leaves exactly one straddling window per lane
+        per switch, and that window would train the world model on task-1
+        dynamics while the task embedding says task 0. Rare, silent, and
+        precisely the kind of thing that shows up as "multi-task just learns
+        worse".
+
+        The redraw is bounded — after `MAX_TRIES` the last draw is accepted so
+        a buffer that legitimately holds one task per lane (or is mid-fill)
+        cannot spin. At that point the straddle rate is already negligible.
+        """
+        comptime MAX_TRIES = 8
+        var n = self.env_stride
+        var per_env = self.size // n
+        var n_valid = per_env - T
+        if n_valid < 1:
+            raise (
+                "SequenceReplay._sample_batch_task_strided: not enough per-env"
+                " data to sample a length-T window"
+            )
+        var origin = self._origin()
+
+        for b in range(B):
+            var e = self._draw_start(n)
+            var s = self._draw_start(n_valid)
+            # Reject windows that straddle a task change (see docstring).
+            for _try in range(MAX_TRIES):
+                var p_first = (origin + s * n + e) % Self.CAP
+                var p_last = (origin + (s + T) * n + e) % Self.CAP
+                if self.task[p_first] == self.task[p_last]:
+                    break
+                e = self._draw_start(n)
+                s = self._draw_start(n_valid)
+
+            for k in range(T + 1):
+                var phys = (origin + (s + k) * n + e) % Self.CAP
+                var src = phys * Self.OBS
+                var dst = b * (T + 1) * Self.OBS + k * Self.OBS
+                for i in range(Self.OBS):
+                    obs_out[unsafe_offset=dst + i] = self.obs[src + i]
+
+            for k in range(T):
+                var phys = (origin + (s + k) * n + e) % Self.CAP
+                var src_a = phys * Self.ACT
+                var dst_a = b * T * Self.ACT + k * Self.ACT
+                for j in range(Self.ACT):
+                    act_out[unsafe_offset=dst_a + j] = self.act[src_a + j]
+                rew_out[unsafe_offset=b * T + k] = self.rew[phys]
+                dne_out[unsafe_offset=b * T + k] = self.dne[phys]
+
+            task_out[unsafe_offset=b] = self.task[(origin + s * n + e) % Self.CAP]
+
     def sample_batch_fst[
         B: Int,
         T: Int,
@@ -468,16 +535,17 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
         start frame — one env per window so the task is constant across it).
         Additive; not part of the trait.
 
-        ⚠ Single-stream only: the strided walk lives in
-        `_sample_batch_strided`, which does not carry the task column. A
-        BATCHED multi-task collector has to extend that first — this raise is
-        the marker for it."""
+        With `env_stride = N > 1` the walk is the strided one (lane `e`, frames
+        N apart) and windows that would SPAN A TASK CHANGE are rejected: a
+        multi-task collector switches task between segments, so a window
+        straddling the boundary carries frames of task B under the label of
+        task A. The task is compared at the window's first and last frame and
+        the row is redrawn (bounded, then accepted) when they disagree."""
         if self.env_stride > 1:
-            raise (
-                "SequenceReplay.sample_batch_task: env_stride > 1 is not"
-                " supported on the task path yet — extend"
-                " _sample_batch_strided with the task column"
+            self._sample_batch_task_strided[B, T](
+                obs_out, act_out, rew_out, dne_out, task_out
             )
+            return
         if self.size < T + 1:
             raise "SequenceReplay.sample_batch_task: not enough data to sample a length-T window"
 

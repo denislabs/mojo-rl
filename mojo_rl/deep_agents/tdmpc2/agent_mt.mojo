@@ -26,8 +26,9 @@ step → Polyak. The embedding table's `zero_grad`/`step` bracket the whole step
 
 from std.math import tanh
 from std.random import random_float64
+from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
-from max.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -40,7 +41,13 @@ from mojo_rl.nn.core.checkpoint import (
 )
 
 from mojo_rl.deep_agents.data.sequence_replay import SequenceReplay
-from mojo_rl.core.logger import Logger
+from mojo_rl.core.logger import Logger, NoOpLogger
+from mojo_rl.deep_agents.training.batched_env import BatchedEnv
+from mojo_rl.deep_agents.training.blocks.action_select import (
+    warmup_uniform_batched,
+)
+from .agent import _crossed
+from .batched_acting_mt import tdmpc2_mt_select_action_batched
 from .metrics import TDMPC2Metrics
 
 from .nets_mt import (
@@ -158,6 +165,17 @@ struct TDMPC2MultiTaskAgent[
     var action_mask: List[Scalar[DT]]
     # Acting task id (set by the driver before select_action / record).
     var cur_task: Int
+
+    # ── batched-acting scratch — allocated ONCE (see batched_acting_mt) ───
+    var act_ob: Tensor
+    var act_ein: Tensor
+    var act_z: Tensor
+    var act_pin: Tensor
+    var act_pio: Tensor
+    var act_alp: Tensor
+    var act_tem: Tensor
+    var act_mask: Tensor
+    var act_tids: Tensor
 
     var gamma: Scalar[DT]
     var tau: Scalar[DT]
@@ -317,6 +335,9 @@ struct TDMPC2MultiTaskAgent[
                 Self.MAX_OBS, Self.MAX_ACT, Self.CAP
             ].new(),
             action_mask=amask^, cur_task=0,
+            act_ob=Tensor(), act_ein=Tensor(), act_z=Tensor(),
+            act_pin=Tensor(), act_pio=Tensor(), act_alp=Tensor(),
+            act_tem=Tensor(), act_mask=Tensor(), act_tids=Tensor(),
             gamma=gamma, tau=tau, bce_coef=bce_coef, action_scale=action_scale,
             learning_starts=learning_starts, step_count=0,
             _last_wm=Scalar[DT](0.0), _last_pi=Scalar[DT](0.0),
@@ -798,3 +819,436 @@ struct TDMPC2MultiTaskAgent[
         self._td_max_last = td_mx
         self._n_diag += 1
         return True
+
+    # ── batched multi-task drivers ────────────────────────────────────────
+    #
+    # ⚠ SCOPE: this driver trains ONE task per call — a SEGMENT — and the
+    # example loops over tasks. That is genuinely multi-task learning rather
+    # than sequential fine-tuning, because the replay keeps every task and
+    # `train_step` samples windows uniformly across all of them: the gradient
+    # steps taken during task 2's segment still see tasks 0 and 1. What it is
+    # NOT is simultaneous collection: at any instant the acting policy is
+    # driving one task's envs.
+    #
+    # The reason is typing, not preference. Each dm_control task is a distinct
+    # `Phyics3dEnvConfig` and therefore a distinct env TYPE, so a simultaneous
+    # driver would have to be parameterized on one type per task. Segments
+    # need one, and the replay does the mixing.
+    #
+    # ⚠ REQUIRES `E.OBS_DIM == MAX_OBS` and `E.ACT_DIM == MAX_ACT`. The
+    # obs/action padding that lets tasks have DIFFERENT dims lives in the agent
+    # (and in `action_mask`), but nothing pads an env's slabs yet, so today the
+    # tasks must share dims — true for walker's stand/walk/run, which share one
+    # model. Heterogeneous bodies need a padding `BatchedEnv` wrapper first.
+
+    def _mt_prepare(
+        mut self, task_id: Int, ctx: Optional[DeviceContext]
+    ) raises:
+        """Point the agent at `task_id` and refresh the acting-side task state.
+
+        ⚠ The embedding is RE-GATHERED every iteration, not once per segment:
+        `train_step` updates the task-embedding table, so a row cached at the
+        top of a segment would drive the whole segment with an embedding the
+        world model has already moved away from.
+        """
+        comptime tg = Self.target
+        comptime A = Self.MAX_ACT
+        self.cur_task = task_id
+        # The mask is constant for the whole segment (it is a property of the
+        # task, not of training), so this uploads once per call rather than
+        # per step — unlike the embedding, which the table keeps moving.
+        self.act_mask.ensure(A)
+        for j in range(A):
+            self.act_mask.data[j] = self.action_mask[task_id * A + j]
+        comptime if tg == "gpu":
+            self.act_mask.upload_resident(ctx.value())
+
+    def _mt_gather_emb[
+        N_ENVS: Int
+    ](mut self, task_id: Int, ctx: Optional[DeviceContext]) raises:
+        """`act_tem[n] = task_emb[task_id]` for all N lanes (one task per
+        segment, so every lane gathers the same row — which keeps the concat in
+        `batched_acting_mt` a plain elementwise copy)."""
+        comptime tg = Self.target
+        comptime EMB = Self.TASK_EMB
+        self.act_tids.ensure(N_ENVS)
+        for e in range(N_ENVS):
+            self.act_tids.data[e] = Scalar[DT](task_id)
+        comptime if tg == "gpu":
+            self.act_tids.upload_resident(ctx.value())
+        self.act_tem.ensure[tg](N_ENVS * EMB, ctx)
+        self.task_emb.gather[tg, N_ENVS](self.act_tids, self.act_tem, ctx)
+
+    def evaluate_batched_mt[
+        E: BatchedEnv,
+        EVAL_ENVS: Int,
+    ](
+        mut self,
+        mut env: E,
+        task_id: Int,
+        *,
+        max_steps: Int = 1_000,
+        rng_seed: UInt64 = 12345,
+    ) raises -> Scalar[DT]:
+        """Deterministic eval of ONE task over `EVAL_ENVS` envs → mean return
+        over COMPLETED episodes (0.0 if none finished within `max_steps`)."""
+        comptime tg = Self.target
+        comptime MO = Self.MAX_OBS
+        comptime A = Self.MAX_ACT
+        comptime LAT = Self.LATENT
+        comptime EMB = Self.TASK_EMB
+        comptime assert E.ENV_TARGET == tg, (
+            "evaluate_batched_mt: env target must equal the train target"
+        )
+        comptime assert E.OBS_DIM == MO and E.ACT_DIM == A, (
+            "evaluate_batched_mt: env dims must equal MAX_OBS / MAX_ACT"
+        )
+
+        var ctx = self.ctx
+        self._mt_prepare(task_id, ctx)
+        env.reset_batch[EVAL_ENVS](ctx=ctx, rng_seed=rng_seed)
+
+        var per_env = List[Scalar[DT]](length=EVAL_ENVS, fill=Scalar[DT](0.0))
+        var rew_h = List[Scalar[DT]](length=EVAL_ENVS, fill=Scalar[DT](0.0))
+        var done_h = List[Scalar[DT]](length=EVAL_ENVS, fill=Scalar[DT](0.0))
+        var returns = List[Scalar[DT]]()
+
+        for s in range(max_steps):
+            self._mt_gather_emb[EVAL_ENVS](task_id, ctx)
+            tdmpc2_mt_select_action_batched[
+                Self.EncT, Self.PolicyT, tg, EVAL_ENVS, MO, A, LAT, EMB
+            ](
+                self.encoder, self.policy, self.act_rsample,
+                self.act_ob, self.act_ein, self.act_z, self.act_pin,
+                self.act_pio, self.act_alp, self.act_tem, self.act_mask,
+                LayoutTensor[DT, Layout.row_major(EVAL_ENVS, MO), MutAnyOrigin](
+                    env.obs_ptr()
+                ),
+                LayoutTensor[DT, Layout.row_major(EVAL_ENVS, A), MutAnyOrigin](
+                    env.action_ptr()
+                ),
+                self.action_scale, False, ctx,
+            )
+            env.step_batch[EVAL_ENVS](
+                ctx=ctx, rng_seed=rng_seed + UInt64(s + 1)
+            )
+            # Read done BEFORE selective_reset_batch — it zeroes the slab.
+            comptime if E.ENV_TARGET == "cpu":
+                var rp = env.reward_ptr()
+                var dp = env.done_ptr()
+                for e in range(EVAL_ENVS):
+                    rew_h[e] = rp[unsafe_offset=e]
+                    done_h[e] = dp[unsafe_offset=e]
+            else:
+                var c = ctx.value()
+                var rv = DeviceBuffer[DT](
+                    c, env.reward_ptr(), EVAL_ENVS, owning=False
+                )
+                var dv = DeviceBuffer[DT](
+                    c, env.done_ptr(), EVAL_ENVS, owning=False
+                )
+                c.enqueue_copy(rew_h.unsafe_ptr(), rv)
+                c.enqueue_copy(done_h.unsafe_ptr(), dv)
+                c.synchronize()
+            for e in range(EVAL_ENVS):
+                per_env[e] = per_env[e] + rew_h[e]
+                if done_h[e] > Scalar[DT](0.5):
+                    returns.append(per_env[e])
+                    per_env[e] = Scalar[DT](0.0)
+            env.selective_reset_batch[EVAL_ENVS](
+                ctx=ctx, rng_seed=rng_seed + UInt64(s + 1) * UInt64(7)
+            )
+
+        if len(returns) == 0:
+            return Scalar[DT](0.0)
+        var tot = Scalar[DT](0.0)
+        for i in range(len(returns)):
+            tot += returns[i]
+        return tot / Scalar[DT](len(returns))
+
+    def train_batched_mt[
+        E: BatchedEnv,
+        N_ENVS: Int = 1,
+        L: Logger = NoOpLogger,
+        EE: BatchedEnv = E,
+        EVAL_ENVS: Int = N_ENVS,
+    ](
+        mut self,
+        mut env: E,
+        task_id: Int,
+        total_env_steps: Int,
+        *,
+        rng_seed: UInt64 = 42,
+        updates_per_step: Int = 1,
+        print_every: Int = 20_000,
+        verbose: Bool = True,
+        logger: Optional[Pointer[L, MutAnyOrigin]] = None,
+        diag_every: Int = 0,
+        checkpoint_path: String = "",
+        checkpoint_every: Int = 0,
+        base_step: Int = 0,
+        eval_env: Optional[Pointer[EE, MutAnyOrigin]] = None,
+        eval_every: Int = 0,
+        eval_max_steps: Int = 1_000,
+        task_label: String = "",
+    ) raises -> Scalar[DT]:
+        """Collect ONE task's segment with N envs in lockstep, training on the
+        WHOLE replay → best eval return for this task.
+
+        The multi-task sibling of `TDMPC2Agent.train_batched`; see the block
+        comment above for what "segment" buys and costs. `total_env_steps`
+        counts steps across all envs, so the loop runs `total // N_ENVS`
+        iterations. Call once per task, in a loop, on the same agent — nets,
+        replay, embedding table and optimizers all persist across calls.
+
+        Every transition is stored with `task_id`, and the strided sampler
+        rejects windows that straddle a task change, so the batches this call
+        trains on mix tasks without mixing them WITHIN a window.
+        """
+        comptime tg = Self.target
+        comptime env_target = E.ENV_TARGET
+        comptime MO = Self.MAX_OBS
+        comptime A = Self.MAX_ACT
+        comptime LAT = Self.LATENT
+        comptime EMB = Self.TASK_EMB
+
+        comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+        comptime assert env_target == tg, (
+            "train_batched_mt: env target must equal the agent's train target"
+        )
+        comptime assert E.OBS_DIM == MO and E.ACT_DIM == A, (
+            "train_batched_mt: env dims must equal MAX_OBS / MAX_ACT — the"
+            " padding wrapper for heterogeneous tasks does not exist yet"
+        )
+        comptime assert Self.CAP % N_ENVS == 0, (
+            "train_batched_mt: replay CAP must be a multiple of N_ENVS"
+        )
+        if task_id < 0 or task_id >= Self.NUM_TASKS:
+            raise Error("train_batched_mt: task_id out of range")
+
+        var ctx = self.ctx
+        # ⚠ Not optional: N envs interleave into one ring, so windows must be
+        # walked with stride N or they hop between envs every frame.
+        self.replay.set_env_stride(N_ENVS)
+        self._mt_prepare(task_id, ctx)
+
+        var iters = total_env_steps // N_ENVS
+
+        var obs_h = List[Scalar[DT]](length=N_ENVS * MO, fill=Scalar[DT](0.0))
+        var act_h = List[Scalar[DT]](length=N_ENVS * A, fill=Scalar[DT](0.0))
+        var rew_h = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
+        var done_h = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
+        var term_h = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
+
+        env.reset_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed)
+        self._mt_stage_obs[E, N_ENVS](env, obs_h, ctx)
+        comptime if env_target != "cpu":
+            ctx.value().synchronize()
+
+        var per_env_ret = List[Scalar[DT]](
+            length=N_ENVS, fill=Scalar[DT](0.0)
+        )
+        var window = List[Scalar[DT]](length=100, fill=Scalar[DT](0.0))
+        var w_idx = 0
+        var w_cnt = 0
+        var best: Scalar[DT] = Scalar[DT](-1.0e30)
+        var t_start = perf_counter_ns()
+        var warm_off: UInt64 = 0
+        var warm_seed = rng_seed
+        var tag = task_label if task_label else String("task ") + String(task_id)
+
+        for it in range(iters):
+            var step = it * N_ENVS
+            var gstep = base_step + step
+
+            var act_lt = LayoutTensor[
+                DT, Layout.row_major(N_ENVS, A), MutAnyOrigin
+            ](env.action_ptr())
+
+            # ── 1. actions ───────────────────────────────────────────────
+            # ⚠ Gate on the REPLAY COUNT, not the per-call step counter:
+            # these drivers are called once per SEGMENT (a task's turn, or a
+            # ladder rung) and `step` restarts at 0 every call, so a step-based
+            # gate re-runs the random warmup at the top of every segment,
+            # quietly poisoning an agent that is already trained. On the first
+            # call the two are the same quantity; `replay.count()` is also
+            # exactly what `train_step` itself gates on.
+            if self.replay.count() < self.learning_starts:
+                warmup_uniform_batched[tg, N_ENVS, A](
+                    act_lt, self.action_scale, ctx, warm_seed, warm_off
+                )
+            else:
+                # Re-gather EVERY iteration: the table is being trained.
+                self._mt_gather_emb[N_ENVS](task_id, ctx)
+                tdmpc2_mt_select_action_batched[
+                    Self.EncT, Self.PolicyT, tg, N_ENVS, MO, A, LAT, EMB
+                ](
+                    self.encoder, self.policy, self.act_rsample,
+                    self.act_ob, self.act_ein, self.act_z, self.act_pin,
+                    self.act_pio, self.act_alp, self.act_tem, self.act_mask,
+                    LayoutTensor[
+                        DT, Layout.row_major(N_ENVS, MO), MutAnyOrigin
+                    ](env.obs_ptr()),
+                    act_lt,
+                    self.action_scale, True, ctx,
+                )
+
+            # ── 2. step ──────────────────────────────────────────────────
+            env.step_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed + UInt64(it + 1))
+
+            # ── 3. one D2H (BEFORE selective_reset zeroes `done`) ────────
+            comptime if env_target == "cpu":
+                var ap = env.action_ptr()
+                for k in range(N_ENVS * A):
+                    act_h[k] = ap[unsafe_offset=k]
+                var rp = env.reward_ptr()
+                var dp = env.done_ptr()
+                var tp = env.terminated_ptr()
+                for e in range(N_ENVS):
+                    rew_h[e] = rp[unsafe_offset=e]
+                    done_h[e] = dp[unsafe_offset=e]
+                    term_h[e] = tp[unsafe_offset=e]
+            else:
+                var c = ctx.value()
+                var av = DeviceBuffer[DT](
+                    c, env.action_ptr(), N_ENVS * A, owning=False
+                )
+                var rv = DeviceBuffer[DT](
+                    c, env.reward_ptr(), N_ENVS, owning=False
+                )
+                var dv = DeviceBuffer[DT](
+                    c, env.done_ptr(), N_ENVS, owning=False
+                )
+                var tv = DeviceBuffer[DT](
+                    c, env.terminated_ptr(), N_ENVS, owning=False
+                )
+                c.enqueue_copy(act_h.unsafe_ptr(), av)
+                c.enqueue_copy(rew_h.unsafe_ptr(), rv)
+                c.enqueue_copy(done_h.unsafe_ptr(), dv)
+                c.enqueue_copy(term_h.unsafe_ptr(), tv)
+                c.synchronize()
+
+            # ── 4. record N transitions, lockstep, TAGGED with the task ──
+            for e in range(N_ENVS):
+                self.replay.record_task(
+                    rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                        Pointer(to=obs_h[e * MO])
+                    ),
+                    rebind[Pointer[Scalar[DT], MutAnyOrigin]](
+                        Pointer(to=act_h[e * A])
+                    ),
+                    rew_h[e],
+                    term_h[e],
+                    task_id,
+                )
+                per_env_ret[e] = per_env_ret[e] + rew_h[e]
+                if done_h[e] > Scalar[DT](0.5):
+                    window[w_idx] = per_env_ret[e]
+                    w_idx = (w_idx + 1) % 100
+                    if w_cnt < 100:
+                        w_cnt += 1
+                    per_env_ret[e] = Scalar[DT](0.0)
+
+            # ── 5. reset finished lanes, stage the next `s` ──────────────
+            env.selective_reset_batch[N_ENVS](
+                ctx=ctx, rng_seed=rng_seed + UInt64(it + 1) * UInt64(7)
+            )
+            self._mt_stage_obs[E, N_ENVS](env, obs_h, ctx)
+
+            # ── 6. updates (over the WHOLE replay — every task) ──────────
+            if self.replay.count() >= self.learning_starts:
+                for _ in range(updates_per_step):
+                    _ = self.train_step()
+
+            # ── 7. logging / checkpoint / eval ──────────────────────────
+            var prev = step
+            var now = step + N_ENVS
+            if diag_every > 0 and _crossed(prev, now, diag_every):
+                self.flush_metrics_through_logger[L](logger, gstep)
+                if Bool(logger):
+                    var lg = logger.value()
+                    if w_cnt > 0:
+                        var acc: Scalar[DT] = 0.0
+                        for k in range(w_cnt):
+                            acc += window[k]
+                        lg[].log_scalar(
+                            String("avg_reward/") + tag,
+                            Float64(acc / Scalar[DT](w_cnt)),
+                            gstep,
+                        )
+                    lg[].flush()
+
+            if (
+                checkpoint_every > 0
+                and checkpoint_path.byte_length() > 0
+                and _crossed(prev, now, checkpoint_every)
+            ):
+                self.save_state(checkpoint_path)
+
+            var do_eval = (
+                eval_every > 0
+                and Bool(eval_env)
+                and _crossed(prev, now, eval_every)
+            )
+            if do_eval:
+                var ep = eval_env.value()
+                var ret = self.evaluate_batched_mt[EE, EVAL_ENVS](
+                    ep[], task_id,
+                    max_steps=eval_max_steps,
+                    rng_seed=rng_seed + UInt64(gstep),
+                )
+                if ret > best:
+                    best = ret
+                if Bool(logger):
+                    var lg = logger.value()
+                    lg[].log_scalar(
+                        String("eval/") + tag, Float64(ret), gstep
+                    )
+                if verbose:
+                    var el = Float64(perf_counter_ns() - t_start) / 1e9
+                    print(
+                        "  [", tag, "] step", gstep, " eval=", ret,
+                        " best=", best, " wm=", self.last_wm_loss(),
+                        " pi=", self.last_pi_loss(), " (", el, "s )",
+                    )
+            elif verbose and print_every > 0 and _crossed(
+                prev, now, print_every
+            ):
+                var el = Float64(perf_counter_ns() - t_start) / 1e9
+                var mean_ret: Scalar[DT] = 0.0
+                if w_cnt > 0:
+                    for k in range(w_cnt):
+                        mean_ret += window[k]
+                    mean_ret /= Scalar[DT](w_cnt)
+                print(
+                    "  [", tag, "] step", gstep, " mean_ret(100)=", mean_ret,
+                    " wm=", self.last_wm_loss(),
+                    " pi=", self.last_pi_loss(), " (", el, "s )",
+                )
+
+        if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
+            self.save_state(checkpoint_path)
+        return best
+
+    def _mt_stage_obs[
+        E: BatchedEnv, N_ENVS: Int
+    ](
+        mut self,
+        mut env: E,
+        mut obs_h: List[Scalar[DT]],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """Enqueue the [N, MAX_OBS] obs copy without synchronizing — it lands
+        before the next iteration's sync, so the loop pays ONE sync per
+        iteration. (Same idiom as the single-task driver.)"""
+        comptime MO = Self.MAX_OBS
+        comptime if E.ENV_TARGET == "cpu":
+            var op = env.obs_ptr()
+            for k in range(N_ENVS * MO):
+                obs_h[k] = op[unsafe_offset=k]
+        else:
+            var c = ctx.value()
+            var ov = DeviceBuffer[DT](
+                c, env.obs_ptr(), N_ENVS * MO, owning=False
+            )
+            c.enqueue_copy(obs_h.unsafe_ptr(), ov)

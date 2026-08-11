@@ -1054,7 +1054,7 @@ struct TDMPC2Agent[
             for d in range(OBSD):
                 obs_l[d] = Scalar[DT](obs[d])
 
-            if step < self.learning_starts:
+            if self.replay.count() < self.learning_starts:
                 for j in range(ACTD):
                     act_l[j] = Scalar[DT](random_float64() * 2.0 - 1.0)
             else:
@@ -1086,7 +1086,10 @@ struct TDMPC2Agent[
                 comptime if USE_MPC:
                     self.mpc_start_episode()
 
-            if step >= self.learning_starts and step % train_every == 0:
+            if (
+                self.replay.count() >= self.learning_starts
+                and step % train_every == 0
+            ):
                 _ = self.train_step()
 
             if diag_every > 0 and step > 0 and step % diag_every == 0:
@@ -1471,7 +1474,14 @@ struct TDMPC2Agent[
             ](env.action_ptr())
 
             # ── 1. actions → env.action_ptr() ────────────────────────────
-            if step < self.learning_starts:
+            # ⚠ Gate on the REPLAY COUNT, not the per-call step counter:
+            # these drivers are called once per SEGMENT (a task's turn, or a
+            # ladder rung) and `step` restarts at 0 every call, so a step-based
+            # gate re-runs the random warmup at the top of every segment,
+            # quietly poisoning an agent that is already trained. On the first
+            # call the two are the same quantity; `replay.count()` is also
+            # exactly what `train_step` itself gates on.
+            if self.replay.count() < self.learning_starts:
                 warmup_uniform_batched[tg, N_ENVS, ACTD](
                     act_lt, self.action_scale, ctx, warm_seed, warm_off
                 )
@@ -1573,7 +1583,7 @@ struct TDMPC2Agent[
             self._stage_obs[E, N_ENVS](env, obs_h, ctx)
 
             # ── 6. updates ───────────────────────────────────────────────
-            if step >= self.learning_starts:
+            if self.replay.count() >= self.learning_starts:
                 for _ in range(updates_per_step):
                     _ = self.train_step()
 
