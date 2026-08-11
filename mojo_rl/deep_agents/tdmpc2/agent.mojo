@@ -24,7 +24,7 @@ from std.math import tanh
 from std.random import random_float64
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
-from max.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -195,6 +195,28 @@ struct TDMPC2Agent[
     var planner: Optional[Self.PlannerT]
     var temperature: Scalar[DT]
 
+    # ── acting scratch — allocated ONCE, reused every step ────────────────
+    # `select_action` / `select_action_mpc` run per ENV-STEP. Building their
+    # staging tensors per call meant ~5 (MPC-off) to ~13 (MPC) device/pinned
+    # buffer creations per action: at 1 M env-steps that is ~13 M calls into
+    # `enqueue_create_buffer`, which is both slow (~5 ms/action measured on
+    # Metal) and a known way to hammer the disk on CUDA.
+    var act_ob: Tensor
+    var act_z: Tensor
+    var act_pio: Tensor
+    var act_alp: Tensor
+    # MPC only: the rollout callback (9 device scratch tensors) + the selected
+    # action's device/host landing buffers.
+    #
+    # ⚠ `MpcCB` stores RAW POINTERS to this agent's own modules, so a cached
+    # one is invalidated by MOVING the agent (`var a = TDMPC2[...](...)`, or
+    # storing it in a struct field, both of which happen). `_mpc_ready` checks
+    # the cached callback still points at OUR `dynamics` and rebuilds if not —
+    # the alternative is a use-after-free that reads plausible garbage.
+    var mpc_cb: Optional[Self.MpcCB]
+    var mpc_out: Optional[DeviceBuffer[DT]]
+    var mpc_host: Optional[HostBuffer[DT]]
+
     # ── comptime accessors: distinct online / target Q field by index ──────
     def get_q[i: Int](mut self) -> ref[MutAnyOrigin] Self.QNetT:
         comptime if i == 0:
@@ -333,6 +355,13 @@ struct TDMPC2Agent[
             _n_diag=0,
             ctx=ctx,
             planner=planner^, temperature=temperature,
+            # Acting scratch starts EMPTY and is sized on first use: building
+            # it here would allocate MPC buffers for agents that never plan,
+            # and the callback in particular must not be built until the agent
+            # has stopped moving (see the field comment).
+            act_ob=Tensor(), act_z=Tensor(),
+            act_pio=Tensor(), act_alp=Tensor(),
+            mpc_cb=None, mpc_out=None, mpc_host=None,
         )
 
     # ── acting (MPC-off): a = π(encode(obs)) ───────────────────────────
@@ -346,28 +375,35 @@ struct TDMPC2Agent[
         comptime A = Self.ACT
         comptime LAT = Self.LATENT
         var ctx = self.ctx
-        # stage obs into a Tensor, upload on GPU.
-        var ob = Tensor.alloc(Self.OBS)
+        # Stage obs into the AGENT-OWNED tensor and refresh the device copy in
+        # place. `upload_resident` (not `upload`) is load-bearing: `upload`
+        # re-creates `self.dev` on every call, which is exactly the per-step
+        # buffer creation this scratch exists to avoid.
+        self.act_ob.ensure(Self.OBS)
         for d in range(Self.OBS):
-            ob.data[d] = obs[d]
+            self.act_ob.data[d] = obs[d]
         comptime if tg == "gpu":
-            ob.upload(ctx.value())
-        var z = Tensor.make[tg](LAT, ctx)
-        self.encoder.forward[tg, 1](TensorRefs[1](ob), z, ctx)
-        var pio = Tensor.make[tg](2 * A, ctx)
-        self.policy.forward[tg, 1](TensorRefs[1](z), pio, ctx)
+            self.act_ob.upload_resident(ctx.value())
+        self.act_z.ensure[tg](LAT, ctx)
+        self.encoder.forward[tg, 1](TensorRefs[1](self.act_ob), self.act_z, ctx)
+        self.act_pio.ensure[tg](2 * A, ctx)
+        self.policy.forward[tg, 1](
+            TensorRefs[1](self.act_z), self.act_pio, ctx
+        )
         if explore:
-            var alp = Tensor.make[tg](A + 1, ctx)
-            self.act_rsample.forward[tg, 1](TensorRefs[1](pio), alp, ctx)
+            self.act_alp.ensure[tg](A + 1, ctx)
+            self.act_rsample.forward[tg, 1](
+                TensorRefs[1](self.act_pio), self.act_alp, ctx
+            )
             comptime if tg == "gpu":
-                alp.download(ctx.value())
+                self.act_alp.download(ctx.value())
             for j in range(A):
-                act_out[j] = alp.data[j]
+                act_out[j] = self.act_alp.data[j]
         else:
             comptime if tg == "gpu":
-                pio.download(ctx.value())
+                self.act_pio.download(ctx.value())
             for j in range(A):
-                act_out[j] = tanh(pio.data[j]) * self.action_scale
+                act_out[j] = tanh(self.act_pio.data[j]) * self.action_scale
 
     def select_greedy_action(
         mut self,
@@ -395,39 +431,64 @@ struct TDMPC2Agent[
         comptime LAT = Self.LATENT
         var ctx = self.ctx.value()
 
-        var ob = Tensor.alloc(Self.OBS)
+        self._mpc_ready(ctx)
+
+        self.act_ob.ensure(Self.OBS)
         for d in range(Self.OBS):
-            ob.data[d] = obs[d]
-        ob.upload(ctx)
-        var z0 = Tensor.alloc_gpu(ctx, LAT)
+            self.act_ob.data[d] = obs[d]
+        self.act_ob.upload_resident(ctx)
+        self.act_z.ensure_gpu(ctx, LAT)
         self.encoder.forward[Self.target, 1](
-            TensorRefs[1](ob), z0, Optional(ctx)
+            TensorRefs[1](self.act_ob), self.act_z, Optional(ctx)
         )
 
-        # transient callback over self's modules (target Q for the bootstrap).
-        var cb = Self.MpcCB.make(
-            self.dynamics, self.reward, self.policy,
-            self.qt0, self.qt1, self.qt2, self.qt3, self.qt4,
-            self.action_scale, ctx,
-        )
-
-        var d_out = ctx.enqueue_create_buffer[DT](A)
-        var z0_lt = z0.lt["gpu", Layout.row_major(1, LAT)]()
+        var z0_lt = self.act_z.lt["gpu", Layout.row_major(1, LAT)]()
         var out_lt = LayoutTensor[DT, Layout.row_major(1 * A), MutAnyOrigin](
-            d_out
+            self.mpc_out.value()
         )
         self.planner.value().plan_gpu[Self.MpcCB](
-            ctx, cb, z0_lt, out_lt,
+            ctx, self.mpc_cb.value(), z0_lt, out_lt,
             gamma=Float64(self.gamma),
             temperature=Float64(self.temperature),
             action_scale=Float64(self.action_scale),
             deterministic=not explore,
         )
-        var h = ctx.enqueue_create_host_buffer[DT](A)
-        ctx.enqueue_copy(h, d_out)
+        ctx.enqueue_copy(self.mpc_host.value(), self.mpc_out.value())
         ctx.synchronize()
         for j in range(A):
-            act_out[j] = h.unsafe_ptr()[unsafe_offset=j]
+            act_out[j] = self.mpc_host.value().unsafe_ptr()[unsafe_offset=j]
+
+    def _mpc_ready(mut self, ctx: DeviceContext) raises:
+        """Build the MPC scratch on first use, and REBUILD the callback if this
+        agent has moved since.
+
+        `MpcCB` holds raw `MutUntrackedOrigin` pointers to `self.dynamics`,
+        `self.reward`, `self.policy` and the five target-Q heads. Those are
+        untracked by construction — the compiler will not complain when they go
+        stale — so a cached callback that survived a move of the agent would
+        plan against freed memory and return plausible-looking actions. The
+        guard compares the cached `dyn` pointer with a fresh one: same address
+        means the modules have not moved and the whole callback is still valid.
+        """
+        comptime A = Self.ACT
+        var fresh = rebind[Pointer[Self.DynT, MutUntrackedOrigin]](
+            Pointer(to=self.dynamics)
+        )
+        var stale = True
+        if self.mpc_cb:
+            stale = self.mpc_cb.value().dyn != fresh
+        if stale:
+            self.mpc_cb = Optional(
+                Self.MpcCB.make(
+                    self.dynamics, self.reward, self.policy,
+                    self.qt0, self.qt1, self.qt2, self.qt3, self.qt4,
+                    self.action_scale, ctx,
+                )
+            )
+        # These own their memory outright, so a move carries them along.
+        if not self.mpc_out:
+            self.mpc_out = Optional(ctx.enqueue_create_buffer[DT](A))
+            self.mpc_host = Optional(ctx.enqueue_create_host_buffer[DT](A))
 
     def record(
         mut self,
