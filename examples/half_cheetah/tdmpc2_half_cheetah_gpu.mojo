@@ -9,8 +9,12 @@ the collect → record → train_step loop plus warmup, periodic deterministic e
 Built for the NVIDIA run (`pixi run -e nvidia`): on CUDA the GPU path is fast
 (low per-launch overhead + grouped multi-tensor Adam + big-matmul-dominated),
 whereas on Apple/Metal TD-MPC2 is kernel-launch-bound and CPU is faster (see
-tests/deep_agents/test_tdmpc2_perf.mojo). TD-MPC2 acts single-env (the MPPI
-planner + world-model BPTT are per-env), so there is no batched driver.
+tests/deep_agents/test_tdmpc2_perf.mojo).
+
+This script uses the SINGLE-env driver. `agent.train_batched[E: BatchedEnv,
+N_ENVS]` also exists now (added 2026-08-11): the MPPI planner has always been
+N_ENVS-batched, and the world-model update never depended on how the data was
+collected — see `examples/dm_control/tdmpc2_dm_walker_batched_gpu.mojo`.
 
 Acting mode (comptime `USE_MPC`):
   * False → `a = π(encode(obs))` (MPC-off, fast).
