@@ -109,11 +109,15 @@ comptime REST_XY_TOL = 5e-3
 # The reference's own residual is 1.1e-02 and still decaying, so this bounds
 # motion rather than demanding zero.
 comptime SETTLED_VEL = 5e-2
-# MuJoCo emits 5 rows. Requiring >= 3 catches a collapse toward a point while
-# leaving room for `isDistinctContact` to legitimately shave one — the same
-# reasoning as `test_mesh_detection_fields`'s 4-vs-5 note. A single-point mesh
-# contact cannot hold a cylinder still on a curved shell, which is precisely
-# the failure this gate exists to see.
+# MuJoCo emits 5 rows, so >= 3 catches a collapse toward a point.
+#
+# ⚠ THE ORIGINAL RATIONALE HERE WAS WRONG AND IS KEPT AS A CORRECTION. It read
+# "a single-point mesh contact cannot hold a cylinder still on a curved shell,
+# which is precisely the failure this gate exists to see". MEASURED — it can.
+# With `mjDSBL_MULTICCD` set MuJoCo produces exactly ONE mesh row and still
+# rests the obj at z = 0.306983, against 0.307594 with five. ROW COUNT IS NOT
+# WHAT HOLDS THE OBJECT UP, so this threshold is a regression signal on the
+# perturbation loop, not the thing defect 29 is about.
 comptime MIN_MESH_ROWS = 3
 # The table top is at z ~ 0.04. Resting at 0.3076 means the mesh is holding it;
 # if the manifold failed the obj would be on the table and this would be ~0.02.
@@ -338,9 +342,9 @@ def test_mesh_manifold_forms_and_arrests_a_falling_object() raises:
     assert_true(
         r[0] >= MIN_MESH_ROWS,
         String("the mesh manifold never reached ") + String(MIN_MESH_ROWS)
-        + " rows (peak " + String(r[0]) + "). MuJoCo builds 5 here; a single"
-        " point cannot hold a cylinder on a curved shell, which is what a"
-        " manifold is for.",
+        + " rows (peak " + String(r[0]) + "); MuJoCo builds 5 here. (Row"
+        " count is not what holds the obj up — MuJoCo holds it with 1 — but a"
+        " collapse still signals the perturbation loop regressing.)",
     )
     assert_true(
         r[1] >= MIN_HOLD_STEPS,
