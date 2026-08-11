@@ -1034,6 +1034,617 @@ def _fill_assets(
 # =============================================================================
 
 
+def _parse_one_joint(
+    worldbody: String,
+    next_joint: Int,
+    current_body: Int,
+    inherited_class: String,
+    defaults: DefaultsData,
+    named_defaults: NamedDefaultsList,
+    deg_factor: Float64,
+) raises -> JointData:
+    """Parse ONE `<joint>` opening tag into a `JointData`.
+
+    Lifted out of `_fill_model`'s dispatch (lever 3, 2026-08-11): that function
+    was a single ~1050-line `while` loop nested 7 deep, and `parse_xml_full` is
+    most of the per-binary compile floor.
+
+    `current_body` is `body_id_stack[depth]` and `inherited_class` is
+    `childclass_stack[depth]` at the call site -- the caller owns the DFS
+    stacks, this only reads the resolved values. Appending to `result` and
+    advancing the cursor stay with the caller too, so this is pure.
+    """
+    var tag = _extract_opening_tag(worldbody, next_joint)
+
+    var jd = JointData()
+    jd.body_id = current_body
+
+    # Effective defaults: the joint's own class="..." wins, else
+    # the enclosing body's childclass, else the top-level block.
+    # (Joints resolved NO class at all before 2026-07-29 — only
+    # geoms did — so a class-defined joint silently became a
+    # default hinge about the x axis.)
+    var joint_class = _extract_attr(tag, "class")
+    if joint_class.byte_length() == 0:
+        joint_class = inherited_class
+    var jdef = defaults
+    if joint_class.byte_length() > 0:
+        jdef = named_defaults.find(joint_class)
+
+    # type
+    var type_s = _extract_attr(tag, "type")
+    if type_s.byte_length() == 0:
+        type_s = jdef.joint_type_s
+    var t = _trim(type_s)
+    if t == "hinge" or t == "":
+        jd.jnt_type = JNT_HINGE
+        jd.nq = 1
+        jd.nv = 1
+    elif t == "slide":
+        jd.jnt_type = JNT_SLIDE
+        jd.nq = 1
+        jd.nv = 1
+    elif t == "ball":
+        jd.jnt_type = JNT_BALL
+        jd.nq = 4
+        jd.nv = 3
+    elif t == "free":
+        jd.jnt_type = JNT_FREE
+        jd.nq = 7
+        jd.nv = 6
+
+    # pos
+    var pos_s = _extract_attr(tag, "pos")
+    if pos_s.byte_length() == 0:
+        pos_s = jdef.joint_pos_s
+    if pos_s.byte_length() > 0:
+        var pv = _parse_vec3(pos_s)
+        jd.pos_x = pv[0]
+        jd.pos_y = pv[1]
+        jd.pos_z = pv[2]
+
+    # axis (MuJoCo normalizes joint axes during compilation)
+    var axis_s = _extract_attr(tag, "axis")
+    if axis_s.byte_length() == 0:
+        axis_s = jdef.joint_axis_s
+    if axis_s.byte_length() > 0:
+        var av = _parse_vec3(axis_s)
+        var ax = av[0]
+        var ay = av[1]
+        var az = av[2]
+        var ax_sq = ax*ax + ay*ay + az*az
+        # Normalize if not already unit length
+        var inv_len = Float64(1.0) / _sqrt_f64(ax_sq)
+        ax = ax * inv_len
+        ay = ay * inv_len
+        az = az * inv_len
+        jd.axis_x = ax
+        jd.axis_y = ay
+        jd.axis_z = az
+
+    # range — deg→rad, but ONLY for angular joints. MuJoCo's
+    # mjCJoint::Compile guards the conversion with
+    # `type == mjJNT_HINGE || type == mjJNT_BALL`, because a SLIDE
+    # range is in metres and must pass through untouched. Now that
+    # degree is the default this matters: cartpole's
+    # `<joint type="slide" range="-1.8 1.8">` would otherwise be
+    # scaled to +-0.03 m and pin the cart at the origin.
+    var range_s = _extract_attr(tag, "range")
+    if range_s.byte_length() == 0:
+        range_s = jdef.joint_range_s
+    if range_s.byte_length() > 0:
+        var angular = (
+            jd.jnt_type == JNT_HINGE or jd.jnt_type == JNT_BALL
+        )
+        var rf = deg_factor if angular else Float64(1.0)
+        var rv = _parse_vec3(range_s)
+        jd.range_min = rv[0] * rf
+        jd.range_max = rv[1] * rf
+        jd.is_limited = True
+
+    # limited (explicit override)
+    var lim_s = _extract_attr(tag, "limited")
+    if lim_s == "false":
+        jd.is_limited = False
+        jd.range_min = Float64(-1e10)
+        jd.range_max = Float64(1e10)
+    elif lim_s == "true":
+        jd.is_limited = True
+
+    # armature (explicit or default)
+    var arm_s = _extract_attr(tag, "armature")
+    if arm_s.byte_length() > 0:
+        jd.armature = _parse_float(arm_s)
+    else:
+        jd.armature = jdef.joint_armature
+
+    # damping
+    var damp_s = _extract_attr(tag, "damping")
+    if damp_s.byte_length() > 0:
+        jd.damping = _parse_float(damp_s)
+    else:
+        jd.damping = jdef.joint_damping
+
+    # stiffness
+    var stiff_s = _extract_attr(tag, "stiffness")
+    if stiff_s.byte_length() > 0:
+        jd.stiffness = _parse_float(stiff_s)
+    else:
+        jd.stiffness = jdef.joint_stiffness
+
+    # springdamper — element wins over the resolved class. Both
+    # values must be > 0 for MuJoCo to act on them, so 0/0 is the
+    # "absent" encoding and needs no separate flag.
+    var sd_s = _extract_attr(tag, "springdamper")
+    if sd_s.byte_length() > 0:
+        var sdv = _parse_vec3(sd_s)
+        jd.springdamper_0 = sdv[0]
+        jd.springdamper_1 = sdv[1]
+    else:
+        jd.springdamper_0 = jdef.joint_springdamper_0
+        jd.springdamper_1 = jdef.joint_springdamper_1
+
+    # springref — deg→rad, HINGE ONLY.
+    #
+    # ⚠ THIS CONVERSION WAS MISSING and `range` two blocks up plus
+    # `ref` just below both had it, which is what made the gap
+    # invisible on a read. dog's jaw spells `springref="-11.0"`
+    # (degrees, `-0.191986` rad) with `stiffness="2.0"`, so the
+    # mandible spring pulled towards -11 RADIANS — a rest position 56
+    # revolutions away — and the resulting passive torque wrecked the
+    # whole solve. Measured against MuJoCo's `qpos_spring`: max|d| was
+    # 10.808 rad, which is exactly `|-11 - (-0.191986)|`.
+    #
+    # The guard is `mjJNT_HINGE` alone, NOT hinge-or-ball
+    # (`user_objects.cc:3276`, byte-identical in 3.3.6, 3.6.0 and
+    # main). `ref` below uses hinge-or-ball; that is inert rather than
+    # wrong, because MuJoCo rejects a non-zero `ref` on a ball joint
+    # outright, so the extra branch can only ever scale a zero.
+    #
+    # The class default is scaled here too rather than at the
+    # `<default>` block, for the same reason `range` is kept as a
+    # STRING until this point: the conversion depends on the JOINT's
+    # type, which a default block does not know.
+    var sr_s = _extract_attr(tag, "springref")
+    var sr_raw = (
+        _parse_float(sr_s) if sr_s.byte_length() > 0
+        else jdef.joint_springref
+    )
+    var sr_f = deg_factor if jd.jnt_type == JNT_HINGE else Float64(1.0)
+    jd.springref = sr_raw * sr_f
+
+    # ref (MuJoCo joint reference position → qpos0). Same deg→rad
+    # gate as `range` above — `ref` is an ANGLE for hinge/ball and
+    # a LENGTH for slide. Without this, finger's `ref="-90"` became
+    # -90 rad instead of -pi/2, which (per bug 18) silently skews
+    # every constraint inverse weight since they are built at qpos0.
+    var ref_s = _extract_attr(tag, "ref")
+    if ref_s.byte_length() > 0:
+        var r_angular = (
+            jd.jnt_type == JNT_HINGE or jd.jnt_type == JNT_BALL
+        )
+        var rrf = deg_factor if r_angular else Float64(1.0)
+        jd.ref_val = _parse_float(ref_s) * rrf
+    else:
+        jd.ref_val = 0.0
+
+    # frictionloss
+    var fl_s = _extract_attr(tag, "frictionloss")
+    if fl_s.byte_length() > 0:
+        jd.frictionloss = _parse_float(fl_s)
+    else:
+        jd.frictionloss = jdef.joint_frictionloss
+
+    # `solreffriction` / `solimpfriction` set the dof-FRICTION
+    # solver parameters, a DIFFERENT pair from the LIMIT ones
+    # below — MuJoCo keeps them in dof_solref/dof_solimp, and a
+    # model setting solimplimit leaves solimpfriction at the
+    # default. `constraints/friction_dof.mojo` hardcodes MuJoCo's
+    # defaults, exact for every model in the repo (none sets
+    # these). Flag it here; `init_fields` raises, so the day one
+    # does set them it is loud, not a silently wrong friction.
+    jd.has_friction_solparams = (
+        _extract_attr(tag, "solreffriction").byte_length() > 0
+        or _extract_attr(tag, "solimpfriction").byte_length() > 0
+    )
+
+    # solreflimit (per-joint or default)
+    var srl_s = _extract_attr(tag, "solreflimit")
+    if srl_s.byte_length() > 0:
+        var sv = _parse_vec3(srl_s)
+        jd.solref_limit_0 = sv[0]
+        jd.solref_limit_1 = sv[1]
+    else:
+        jd.solref_limit_0 = jdef.joint_solref_limit_0
+        jd.solref_limit_1 = jdef.joint_solref_limit_1
+
+    # solimplimit (per-joint or default)
+    var sil_s = _extract_attr(tag, "solimplimit")
+    if sil_s.byte_length() > 0:
+        var parts2 = List[String]()
+
+        _split_spaces(sil_s, parts2)
+        if len(parts2) >= 1:
+            jd.solimp_limit_0 = _parse_float(parts2[0])
+        if len(parts2) >= 2:
+            jd.solimp_limit_1 = _parse_float(parts2[1])
+        if len(parts2) >= 3:
+            jd.solimp_limit_2 = _parse_float(parts2[2])
+        if len(parts2) >= 4:
+            jd.solimp_limit_3 = _parse_float(parts2[3])
+        if len(parts2) >= 5:
+            jd.solimp_limit_4 = _parse_float(parts2[4])
+    else:
+        jd.solimp_limit_0 = jdef.joint_solimp_limit_0
+        jd.solimp_limit_1 = jdef.joint_solimp_limit_1
+        jd.solimp_limit_2 = jdef.joint_solimp_limit_2
+        jd.solimp_limit_3 = jdef.joint_solimp_limit_3
+        jd.solimp_limit_4 = jdef.joint_solimp_limit_4
+
+    return jd
+
+
+def _parse_one_geom(
+    worldbody: String,
+    next_geom: Int,
+    current_body: Int,
+    inherited_class: String,
+    defaults: DefaultsData,
+    named_defaults: NamedDefaultsList,
+    deg_factor: Float64,
+    eulerseq: String,
+    assets: FlatModelDef,
+) raises -> GeomData:
+    """Parse ONE `<geom>` opening tag into a `GeomData`.
+
+    Companion to `_parse_one_joint`; see it for why these were lifted.
+
+    `assets` is the partially-built `FlatModelDef`, borrowed READ-ONLY and
+    used for one thing: resolving `mesh="name"` against the asset tables that
+    `_fill_assets` already populated. It is deliberately not `mut` -- the
+    caller does the `result.geoms.append`.
+    """
+    var tag = _extract_opening_tag(worldbody, next_geom)
+
+    var gd = GeomData()
+    gd.body_id = current_body
+
+    # Resolve effective defaults: the geom's own class="..." wins,
+    # else the enclosing body's childclass, else top-level.
+    var geom_class = _extract_attr(tag, "class")
+    if geom_class.byte_length() == 0:
+        geom_class = inherited_class
+    var eff_defaults = defaults
+    if geom_class.byte_length() > 0:
+        eff_defaults = named_defaults.find(geom_class)
+
+    # type
+    var type_s = _extract_attr(tag, "type")
+    if type_s.byte_length() == 0:
+        type_s = eff_defaults.geom_type_s
+    gd.geom_type = _geom_type_from_str(type_s)
+
+    # mesh reference: mesh="name" → resolve to file path from asset section
+    if gd.geom_type == _GEOM_MESH:
+        var mesh_attr = _extract_attr(tag, "mesh")
+        if mesh_attr.byte_length() > 0:
+            for mi in range(assets.num_mesh_assets):
+                if assets.mesh_asset_names[mi] == mesh_attr:
+                    gd.mesh_id = mi
+                    gd.mesh_filename = assets.mesh_asset_files[mi]
+                    break
+
+    # fromto — overrides pos and quat for capsule
+    var fromto_s = _extract_attr(tag, "fromto")
+    if fromto_s.byte_length() == 0:
+        fromto_s = eff_defaults.geom_fromto_s
+    if fromto_s.byte_length() > 0:
+        var ft = _fromto_to_pos_quat(fromto_s)
+        gd.pos_x = ft[0]
+        gd.pos_y = ft[1]
+        gd.pos_z = ft[2]
+        gd.quat_x = ft[3]
+        gd.quat_y = ft[4]
+        gd.quat_z = ft[5]
+        gd.quat_w = ft[6]
+        gd.half_length = ft[7]
+        # radius from size attr (parsed below)
+    else:
+        # pos
+        var pos_s = _extract_attr(tag, "pos")
+        if pos_s.byte_length() == 0:
+            pos_s = eff_defaults.geom_pos_s
+        if pos_s.byte_length() > 0:
+            var pv = _parse_vec3(pos_s)
+            gd.pos_x = pv[0]
+            gd.pos_y = pv[1]
+            gd.pos_z = pv[2]
+
+        # orientation: quat > axisangle > xyaxes > zaxis > euler
+        var quat_s = _extract_attr(tag, "quat")
+        if quat_s.byte_length() == 0:
+            quat_s = eff_defaults.geom_quat_s
+        var gq = _orientation_to_quat(
+            quat_s,
+            _extract_attr(tag, "axisangle"),
+            _extract_attr(tag, "xyaxes"),
+            _extract_attr(tag, "zaxis"),
+            _extract_attr(tag, "euler"),
+            deg_factor,
+            eulerseq,
+        )
+        gd.quat_x = gq[0]
+        gd.quat_y = gq[1]
+        gd.quat_z = gq[2]
+        gd.quat_w = gq[3]
+
+    # size — interpretation depends on geom_type
+    var size_s = _extract_attr(tag, "size")
+    if size_s.byte_length() == 0:
+        size_s = eff_defaults.geom_size_s
+    if size_s.byte_length() > 0:
+        var size_parts = List[String]()
+
+        _split_spaces(size_s, size_parts)
+        var s0 = Float64(0)
+        var s1 = Float64(0)
+        var s2 = Float64(0)
+        if len(size_parts) >= 1:
+            s0 = _parse_float(size_parts[0])
+        if len(size_parts) >= 2:
+            s1 = _parse_float(size_parts[1])
+        if len(size_parts) >= 3:
+            s2 = _parse_float(size_parts[2])
+
+        if gd.geom_type == _GEOM_SPHERE:
+            gd.radius = s0
+            gd.half_x = s0
+            gd.half_y = s0
+            gd.half_z = s0
+        elif gd.geom_type == _GEOM_CAPSULE:
+            gd.radius = s0
+            # Only use size[1] as half-length if no fromto
+            # (fromto already computed the correct value).
+            if len(size_parts) >= 2 and fromto_s.byte_length() == 0:
+                gd.half_length = s1
+        elif gd.geom_type == _GEOM_BOX:
+            gd.half_x = s0
+            gd.half_y = s1
+            gd.half_z = s2
+            gd.radius = _sqrt_f64(s0 * s0 + s1 * s1 + s2 * s2)
+        elif gd.geom_type == _GEOM_CYLINDER:
+            gd.radius = s0
+            if fromto_s.byte_length() == 0:
+                gd.half_length = s1
+        elif gd.geom_type == _GEOM_ELLIPSOID:
+            # `size` is the three SEMI-AXES, stored like a box's
+            # half-extents. `radius` keeps size[0] so the broad
+            # phase's bounding radius stays conservative.
+            gd.half_x = s0
+            gd.half_y = s1
+            gd.half_z = s2
+            gd.radius = s0
+        elif gd.geom_type == _GEOM_PLANE:
+            gd.half_x = s0
+            gd.half_y = s1
+            # s2 = grid spacing — not needed for collision
+        else:
+            gd.radius = s0
+
+    # friction (explicit or default)
+    # ⚠ PARTIAL `friction` KEEPS THE INHERITED COMPONENTS — see the
+    # identical guard in the `<default>` block above. MuJoCo starts a
+    # geom's friction from its class (ultimately the global
+    # `1 0.005 0.0001`) and overwrites only what the attribute spells,
+    # so `friction="0.9"` is `(0.9, 0.005, 0.0001)` and NOT
+    # `(0.9, 0, 0)`.
+    #
+    # Currently INERT on every gated pose — the torsional and rolling
+    # coefficients are read only at condim >= 4, and dog's condim-6
+    # teeth spell all three values — but it is a wrong number in
+    # `geom_friction` (86 of dog's 128 geoms) and would bite the first
+    # condim >= 4 contact against a partially-specified geom.
+    var fric_s = _extract_attr(tag, "friction")
+    gd.friction = eff_defaults.geom_friction
+    gd.friction_spin = eff_defaults.geom_friction_spin
+    gd.friction_roll = eff_defaults.geom_friction_roll
+    if fric_s.byte_length() > 0:
+        var fparts = List[String]()
+        _split_spaces(fric_s, fparts)
+        if len(fparts) >= 1:
+            gd.friction = _parse_float(fparts[0])
+        if len(fparts) >= 2:
+            gd.friction_spin = _parse_float(fparts[1])
+        if len(fparts) >= 3:
+            gd.friction_roll = _parse_float(fparts[2])
+
+    # contype / conaffinity / condim
+    var ct_s = _extract_attr(tag, "contype")
+    gd.contype = (
+        _parse_int_str(ct_s) if ct_s.byte_length()
+        > 0 else eff_defaults.geom_contype
+    )
+
+    var ca_s = _extract_attr(tag, "conaffinity")
+    gd.conaffinity = (
+        _parse_int_str(ca_s) if ca_s.byte_length()
+        > 0 else eff_defaults.geom_conaffinity
+    )
+
+    var cd_s = _extract_attr(tag, "condim")
+    gd.condim = (
+        _parse_int_str(cd_s) if cd_s.byte_length()
+        > 0 else eff_defaults.geom_condim
+    )
+
+    # `priority` — when two geoms differ, the higher one dictates
+    # condim, solref, solimp AND friction wholesale, with no mixing
+    # (`engine_collision_driver.c:1427-1438`). Default 0.
+    # ⚠ THE CLASS FALLBACK IS LOAD-BEARING, and it was missing.
+    # `condim` on the line above has always had one; `priority`
+    # took the element attribute or 0, full stop. quadruped's ball
+    # writes `priority="1"` inline so the gap never showed, and
+    # dog's 42 teeth write only `class="tooth_primitive"` — so all
+    # 42 came out priority 0 and silently lost the condim-6,
+    # friction and solref override they exist to impose.
+    var prio_s = _extract_attr(tag, "priority")
+    gd.priority = (
+        _parse_int_str(prio_s) if prio_s.byte_length()
+        > 0 else eff_defaults.geom_priority
+    )
+
+    # ⚠ `solmix` IS NOT SUPPORTED, AND IS REJECTED RATHER THAN
+    # IGNORED. At equal priority MuJoCo blends the two geoms'
+    # solref/solimp with `mix = solmix1/(solmix1+solmix2)`; every
+    # geom defaults to `solmix=1`, giving mix = 0.5 (a plain mean),
+    # which is what the mixing code implements. A model that
+    # declares a non-default solmix would silently get the mean
+    # instead of its intended weighting — the same silent-default
+    # shape as the dof friction solparams, which raise for the same
+    # reason. No dm_control suite model sets it.
+    var solmix_s = _extract_attr(tag, "solmix")
+    if solmix_s.byte_length() > 0:
+        var sm = _parse_float(solmix_s)
+        if sm < 0.999999 or sm > 1.000001:
+            raise Error(
+                "physics3d: <geom solmix> is not supported (only"
+                " the default 1.0). At equal priority it weights"
+                " the solref/solimp blend; ignoring it would"
+                " silently substitute a plain mean."
+            )
+
+    # solref / solimp
+    var sr_s = _extract_attr(tag, "solref")
+    if sr_s.byte_length() > 0:
+        var sv = _parse_vec3(sr_s)
+        gd.solref_0 = sv[0]
+        gd.solref_1 = sv[1]
+    else:
+        gd.solref_0 = eff_defaults.geom_solref_0
+        gd.solref_1 = eff_defaults.geom_solref_1
+
+    var si_s = _extract_attr(tag, "solimp")
+    if si_s.byte_length() > 0:
+        var sip = List[String]()
+
+        _split_spaces(si_s, sip)
+        if len(sip) >= 1:
+            gd.solimp_0 = _parse_float(sip[0])
+        if len(sip) >= 2:
+            gd.solimp_1 = _parse_float(sip[1])
+        if len(sip) >= 3:
+            gd.solimp_2 = _parse_float(sip[2])
+        if len(sip) >= 4:
+            gd.solimp_3 = _parse_float(sip[3])
+        if len(sip) >= 5:
+            gd.solimp_4 = _parse_float(sip[4])
+    else:
+        gd.solimp_0 = eff_defaults.geom_solimp_0
+        gd.solimp_1 = eff_defaults.geom_solimp_1
+        gd.solimp_2 = eff_defaults.geom_solimp_2
+        gd.solimp_3 = eff_defaults.geom_solimp_3
+        gd.solimp_4 = eff_defaults.geom_solimp_4
+
+    # margin
+    var mg_s = _extract_attr(tag, "margin")
+    gd.margin = (
+        _parse_float(mg_s) if mg_s.byte_length()
+        > 0 else eff_defaults.geom_margin
+    )
+
+    # density (per-geom overrides default; used when mass is absent)
+    var dens_s = _extract_attr(tag, "density")
+    gd.density = (
+        _parse_float(dens_s) if dens_s.byte_length()
+        > 0 else eff_defaults.geom_density
+    )
+
+    # mass: explicit if provided, else compute from density * volume
+    var ms_s = _extract_attr(tag, "mass")
+    if ms_s.byte_length() == 0:
+        ms_s = eff_defaults.geom_mass_s
+    if ms_s.byte_length() > 0:
+        gd.mass = _parse_float(ms_s)
+    else:
+        # Compute mass = density * volume based on geom type and size
+        var PI: Float64 = 3.14159265358979323846
+        var vol: Float64 = 0.0
+        if gd.geom_type == _GEOM_SPHERE:
+            vol = (
+                (Float64(4.0) / Float64(3.0))
+                * PI
+                * gd.radius
+                * gd.radius
+                * gd.radius
+            )
+        elif gd.geom_type == _GEOM_CAPSULE:
+            var cyl_vol = (
+                PI
+                * gd.radius
+                * gd.radius
+                * (Float64(2.0) * gd.half_length)
+            )
+            var sph_vol = (
+                (Float64(4.0) / Float64(3.0))
+                * PI
+                * gd.radius
+                * gd.radius
+                * gd.radius
+            )
+            vol = cyl_vol + sph_vol
+        elif gd.geom_type == _GEOM_BOX:
+            vol = Float64(8.0) * gd.half_x * gd.half_y * gd.half_z
+        elif gd.geom_type == _GEOM_CYLINDER:
+            vol = (
+                PI
+                * gd.radius
+                * gd.radius
+                * (Float64(2.0) * gd.half_length)
+            )
+        elif gd.geom_type == _GEOM_ELLIPSOID:
+            vol = (
+                (Float64(4.0) / Float64(3.0))
+                * PI
+                * gd.half_x
+                * gd.half_y
+                * gd.half_z
+            )
+        # PLANE has no volume → mass stays 0
+        if vol > Float64(0):
+            gd.mass = gd.density * vol
+        else:
+            gd.mass = Float64(-1)
+
+    # group (visual/collision grouping, 0-5)
+    var grp_s = _extract_attr(tag, "group")
+    if grp_s.byte_length() == 0:
+        grp_s = eff_defaults.geom_group_s
+    if grp_s.byte_length() > 0:
+        gd.group = _parse_int_str(grp_s)
+
+    # rgba colour: per-geom > default > GeomData fallback (0.7 grey)
+    var rgba_s = _extract_attr(tag, "rgba")
+    if rgba_s.byte_length() > 0:
+        var cv = _parse_rgba4(rgba_s)
+        gd.rgba_r = cv[0]
+        gd.rgba_g = cv[1]
+        gd.rgba_b = cv[2]
+        gd.rgba_a = cv[3]
+    elif eff_defaults.geom_rgba_r >= Float64(0):
+        gd.rgba_r = eff_defaults.geom_rgba_r
+        gd.rgba_g = eff_defaults.geom_rgba_g
+        gd.rgba_b = eff_defaults.geom_rgba_b
+        gd.rgba_a = eff_defaults.geom_rgba_a
+
+    # material reference — stored as index into materials[]
+    # (index resolved by caller if needed; stored as -1 when absent)
+    # We store the raw name match here via a linear scan of asset_sec
+    # NOTE: asset_sec is not available in _fill_model; material_id
+    # is resolved in a post-pass inside parse_xml_full.
+
+    return gd
+
+
 def _fill_model(
 
     worldbody: String,
@@ -1286,234 +1897,15 @@ def _fill_model(
 
         elif earliest == next_joint:
             # <joint ...>
-            var current_body = body_id_stack[depth]
-            var tag = _extract_opening_tag(worldbody, next_joint)
-
-            var jd = JointData()
-            jd.body_id = current_body
-
-            # Effective defaults: the joint's own class="..." wins, else
-            # the enclosing body's childclass, else the top-level block.
-            # (Joints resolved NO class at all before 2026-07-29 — only
-            # geoms did — so a class-defined joint silently became a
-            # default hinge about the x axis.)
-            var joint_class = _extract_attr(tag, "class")
-            if joint_class.byte_length() == 0:
-                joint_class = childclass_stack[depth]
-            var jdef = defaults
-            if joint_class.byte_length() > 0:
-                jdef = named_defaults.find(joint_class)
-
-            # type
-            var type_s = _extract_attr(tag, "type")
-            if type_s.byte_length() == 0:
-                type_s = jdef.joint_type_s
-            var t = _trim(type_s)
-            if t == "hinge" or t == "":
-                jd.jnt_type = JNT_HINGE
-                jd.nq = 1
-                jd.nv = 1
-            elif t == "slide":
-                jd.jnt_type = JNT_SLIDE
-                jd.nq = 1
-                jd.nv = 1
-            elif t == "ball":
-                jd.jnt_type = JNT_BALL
-                jd.nq = 4
-                jd.nv = 3
-            elif t == "free":
-                jd.jnt_type = JNT_FREE
-                jd.nq = 7
-                jd.nv = 6
-
-            # pos
-            var pos_s = _extract_attr(tag, "pos")
-            if pos_s.byte_length() == 0:
-                pos_s = jdef.joint_pos_s
-            if pos_s.byte_length() > 0:
-                var pv = _parse_vec3(pos_s)
-                jd.pos_x = pv[0]
-                jd.pos_y = pv[1]
-                jd.pos_z = pv[2]
-
-            # axis (MuJoCo normalizes joint axes during compilation)
-            var axis_s = _extract_attr(tag, "axis")
-            if axis_s.byte_length() == 0:
-                axis_s = jdef.joint_axis_s
-            if axis_s.byte_length() > 0:
-                var av = _parse_vec3(axis_s)
-                var ax = av[0]
-                var ay = av[1]
-                var az = av[2]
-                var ax_sq = ax*ax + ay*ay + az*az
-                # Normalize if not already unit length
-                var inv_len = Float64(1.0) / _sqrt_f64(ax_sq)
-                ax = ax * inv_len
-                ay = ay * inv_len
-                az = az * inv_len
-                jd.axis_x = ax
-                jd.axis_y = ay
-                jd.axis_z = az
-
-            # range — deg→rad, but ONLY for angular joints. MuJoCo's
-            # mjCJoint::Compile guards the conversion with
-            # `type == mjJNT_HINGE || type == mjJNT_BALL`, because a SLIDE
-            # range is in metres and must pass through untouched. Now that
-            # degree is the default this matters: cartpole's
-            # `<joint type="slide" range="-1.8 1.8">` would otherwise be
-            # scaled to +-0.03 m and pin the cart at the origin.
-            var range_s = _extract_attr(tag, "range")
-            if range_s.byte_length() == 0:
-                range_s = jdef.joint_range_s
-            if range_s.byte_length() > 0:
-                var angular = (
-                    jd.jnt_type == JNT_HINGE or jd.jnt_type == JNT_BALL
-                )
-                var rf = deg_factor if angular else Float64(1.0)
-                var rv = _parse_vec3(range_s)
-                jd.range_min = rv[0] * rf
-                jd.range_max = rv[1] * rf
-                jd.is_limited = True
-
-            # limited (explicit override)
-            var lim_s = _extract_attr(tag, "limited")
-            if lim_s == "false":
-                jd.is_limited = False
-                jd.range_min = Float64(-1e10)
-                jd.range_max = Float64(1e10)
-            elif lim_s == "true":
-                jd.is_limited = True
-
-            # armature (explicit or default)
-            var arm_s = _extract_attr(tag, "armature")
-            if arm_s.byte_length() > 0:
-                jd.armature = _parse_float(arm_s)
-            else:
-                jd.armature = jdef.joint_armature
-
-            # damping
-            var damp_s = _extract_attr(tag, "damping")
-            if damp_s.byte_length() > 0:
-                jd.damping = _parse_float(damp_s)
-            else:
-                jd.damping = jdef.joint_damping
-
-            # stiffness
-            var stiff_s = _extract_attr(tag, "stiffness")
-            if stiff_s.byte_length() > 0:
-                jd.stiffness = _parse_float(stiff_s)
-            else:
-                jd.stiffness = jdef.joint_stiffness
-
-            # springdamper — element wins over the resolved class. Both
-            # values must be > 0 for MuJoCo to act on them, so 0/0 is the
-            # "absent" encoding and needs no separate flag.
-            var sd_s = _extract_attr(tag, "springdamper")
-            if sd_s.byte_length() > 0:
-                var sdv = _parse_vec3(sd_s)
-                jd.springdamper_0 = sdv[0]
-                jd.springdamper_1 = sdv[1]
-            else:
-                jd.springdamper_0 = jdef.joint_springdamper_0
-                jd.springdamper_1 = jdef.joint_springdamper_1
-
-            # springref — deg→rad, HINGE ONLY.
-            #
-            # ⚠ THIS CONVERSION WAS MISSING and `range` two blocks up plus
-            # `ref` just below both had it, which is what made the gap
-            # invisible on a read. dog's jaw spells `springref="-11.0"`
-            # (degrees, `-0.191986` rad) with `stiffness="2.0"`, so the
-            # mandible spring pulled towards -11 RADIANS — a rest position 56
-            # revolutions away — and the resulting passive torque wrecked the
-            # whole solve. Measured against MuJoCo's `qpos_spring`: max|d| was
-            # 10.808 rad, which is exactly `|-11 - (-0.191986)|`.
-            #
-            # The guard is `mjJNT_HINGE` alone, NOT hinge-or-ball
-            # (`user_objects.cc:3276`, byte-identical in 3.3.6, 3.6.0 and
-            # main). `ref` below uses hinge-or-ball; that is inert rather than
-            # wrong, because MuJoCo rejects a non-zero `ref` on a ball joint
-            # outright, so the extra branch can only ever scale a zero.
-            #
-            # The class default is scaled here too rather than at the
-            # `<default>` block, for the same reason `range` is kept as a
-            # STRING until this point: the conversion depends on the JOINT's
-            # type, which a default block does not know.
-            var sr_s = _extract_attr(tag, "springref")
-            var sr_raw = (
-                _parse_float(sr_s) if sr_s.byte_length() > 0
-                else jdef.joint_springref
+            var jd = _parse_one_joint(
+                worldbody,
+                next_joint,
+                body_id_stack[depth],
+                childclass_stack[depth],
+                defaults,
+                named_defaults,
+                deg_factor,
             )
-            var sr_f = deg_factor if jd.jnt_type == JNT_HINGE else Float64(1.0)
-            jd.springref = sr_raw * sr_f
-
-            # ref (MuJoCo joint reference position → qpos0). Same deg→rad
-            # gate as `range` above — `ref` is an ANGLE for hinge/ball and
-            # a LENGTH for slide. Without this, finger's `ref="-90"` became
-            # -90 rad instead of -pi/2, which (per bug 18) silently skews
-            # every constraint inverse weight since they are built at qpos0.
-            var ref_s = _extract_attr(tag, "ref")
-            if ref_s.byte_length() > 0:
-                var r_angular = (
-                    jd.jnt_type == JNT_HINGE or jd.jnt_type == JNT_BALL
-                )
-                var rrf = deg_factor if r_angular else Float64(1.0)
-                jd.ref_val = _parse_float(ref_s) * rrf
-            else:
-                jd.ref_val = 0.0
-
-            # frictionloss
-            var fl_s = _extract_attr(tag, "frictionloss")
-            if fl_s.byte_length() > 0:
-                jd.frictionloss = _parse_float(fl_s)
-            else:
-                jd.frictionloss = jdef.joint_frictionloss
-
-            # `solreffriction` / `solimpfriction` set the dof-FRICTION
-            # solver parameters, a DIFFERENT pair from the LIMIT ones
-            # below — MuJoCo keeps them in dof_solref/dof_solimp, and a
-            # model setting solimplimit leaves solimpfriction at the
-            # default. `constraints/friction_dof.mojo` hardcodes MuJoCo's
-            # defaults, exact for every model in the repo (none sets
-            # these). Flag it here; `init_fields` raises, so the day one
-            # does set them it is loud, not a silently wrong friction.
-            jd.has_friction_solparams = (
-                _extract_attr(tag, "solreffriction").byte_length() > 0
-                or _extract_attr(tag, "solimpfriction").byte_length() > 0
-            )
-
-            # solreflimit (per-joint or default)
-            var srl_s = _extract_attr(tag, "solreflimit")
-            if srl_s.byte_length() > 0:
-                var sv = _parse_vec3(srl_s)
-                jd.solref_limit_0 = sv[0]
-                jd.solref_limit_1 = sv[1]
-            else:
-                jd.solref_limit_0 = jdef.joint_solref_limit_0
-                jd.solref_limit_1 = jdef.joint_solref_limit_1
-
-            # solimplimit (per-joint or default)
-            var sil_s = _extract_attr(tag, "solimplimit")
-            if sil_s.byte_length() > 0:
-                var parts2 = List[String]()
-
-                _split_spaces(sil_s, parts2)
-                if len(parts2) >= 1:
-                    jd.solimp_limit_0 = _parse_float(parts2[0])
-                if len(parts2) >= 2:
-                    jd.solimp_limit_1 = _parse_float(parts2[1])
-                if len(parts2) >= 3:
-                    jd.solimp_limit_2 = _parse_float(parts2[2])
-                if len(parts2) >= 4:
-                    jd.solimp_limit_3 = _parse_float(parts2[3])
-                if len(parts2) >= 5:
-                    jd.solimp_limit_4 = _parse_float(parts2[4])
-            else:
-                jd.solimp_limit_0 = jdef.joint_solimp_limit_0
-                jd.solimp_limit_1 = jdef.joint_solimp_limit_1
-                jd.solimp_limit_2 = jdef.joint_solimp_limit_2
-                jd.solimp_limit_3 = jdef.joint_solimp_limit_3
-                jd.solimp_limit_4 = jdef.joint_solimp_limit_4
-
             result.joints.append(jd)
             joint_count += 1
             var tag_end = worldbody.find(">", next_joint)
@@ -1758,345 +2150,17 @@ def _fill_model(
 
         else:  # earliest == next_geom
             # <geom ...>
-            var current_body = body_id_stack[depth]
-            var tag = _extract_opening_tag(worldbody, next_geom)
-
-            var gd = GeomData()
-            gd.body_id = current_body
-
-            # Resolve effective defaults: the geom's own class="..." wins,
-            # else the enclosing body's childclass, else top-level.
-            var geom_class = _extract_attr(tag, "class")
-            if geom_class.byte_length() == 0:
-                geom_class = childclass_stack[depth]
-            var eff_defaults = defaults
-            if geom_class.byte_length() > 0:
-                eff_defaults = named_defaults.find(geom_class)
-
-            # type
-            var type_s = _extract_attr(tag, "type")
-            if type_s.byte_length() == 0:
-                type_s = eff_defaults.geom_type_s
-            gd.geom_type = _geom_type_from_str(type_s)
-
-            # mesh reference: mesh="name" → resolve to file path from asset section
-            if gd.geom_type == _GEOM_MESH:
-                var mesh_attr = _extract_attr(tag, "mesh")
-                if mesh_attr.byte_length() > 0:
-                    for mi in range(result.num_mesh_assets):
-                        if result.mesh_asset_names[mi] == mesh_attr:
-                            gd.mesh_id = mi
-                            gd.mesh_filename = result.mesh_asset_files[mi]
-                            break
-
-            # fromto — overrides pos and quat for capsule
-            var fromto_s = _extract_attr(tag, "fromto")
-            if fromto_s.byte_length() == 0:
-                fromto_s = eff_defaults.geom_fromto_s
-            if fromto_s.byte_length() > 0:
-                var ft = _fromto_to_pos_quat(fromto_s)
-                gd.pos_x = ft[0]
-                gd.pos_y = ft[1]
-                gd.pos_z = ft[2]
-                gd.quat_x = ft[3]
-                gd.quat_y = ft[4]
-                gd.quat_z = ft[5]
-                gd.quat_w = ft[6]
-                gd.half_length = ft[7]
-                # radius from size attr (parsed below)
-            else:
-                # pos
-                var pos_s = _extract_attr(tag, "pos")
-                if pos_s.byte_length() == 0:
-                    pos_s = eff_defaults.geom_pos_s
-                if pos_s.byte_length() > 0:
-                    var pv = _parse_vec3(pos_s)
-                    gd.pos_x = pv[0]
-                    gd.pos_y = pv[1]
-                    gd.pos_z = pv[2]
-
-                # orientation: quat > axisangle > xyaxes > zaxis > euler
-                var quat_s = _extract_attr(tag, "quat")
-                if quat_s.byte_length() == 0:
-                    quat_s = eff_defaults.geom_quat_s
-                var gq = _orientation_to_quat(
-                    quat_s,
-                    _extract_attr(tag, "axisangle"),
-                    _extract_attr(tag, "xyaxes"),
-                    _extract_attr(tag, "zaxis"),
-                    _extract_attr(tag, "euler"),
-                    deg_factor,
-                    eulerseq,
-                )
-                gd.quat_x = gq[0]
-                gd.quat_y = gq[1]
-                gd.quat_z = gq[2]
-                gd.quat_w = gq[3]
-
-            # size — interpretation depends on geom_type
-            var size_s = _extract_attr(tag, "size")
-            if size_s.byte_length() == 0:
-                size_s = eff_defaults.geom_size_s
-            if size_s.byte_length() > 0:
-                var size_parts = List[String]()
-
-                _split_spaces(size_s, size_parts)
-                var s0 = Float64(0)
-                var s1 = Float64(0)
-                var s2 = Float64(0)
-                if len(size_parts) >= 1:
-                    s0 = _parse_float(size_parts[0])
-                if len(size_parts) >= 2:
-                    s1 = _parse_float(size_parts[1])
-                if len(size_parts) >= 3:
-                    s2 = _parse_float(size_parts[2])
-
-                if gd.geom_type == _GEOM_SPHERE:
-                    gd.radius = s0
-                    gd.half_x = s0
-                    gd.half_y = s0
-                    gd.half_z = s0
-                elif gd.geom_type == _GEOM_CAPSULE:
-                    gd.radius = s0
-                    # Only use size[1] as half-length if no fromto
-                    # (fromto already computed the correct value).
-                    if len(size_parts) >= 2 and fromto_s.byte_length() == 0:
-                        gd.half_length = s1
-                elif gd.geom_type == _GEOM_BOX:
-                    gd.half_x = s0
-                    gd.half_y = s1
-                    gd.half_z = s2
-                    gd.radius = _sqrt_f64(s0 * s0 + s1 * s1 + s2 * s2)
-                elif gd.geom_type == _GEOM_CYLINDER:
-                    gd.radius = s0
-                    if fromto_s.byte_length() == 0:
-                        gd.half_length = s1
-                elif gd.geom_type == _GEOM_ELLIPSOID:
-                    # `size` is the three SEMI-AXES, stored like a box's
-                    # half-extents. `radius` keeps size[0] so the broad
-                    # phase's bounding radius stays conservative.
-                    gd.half_x = s0
-                    gd.half_y = s1
-                    gd.half_z = s2
-                    gd.radius = s0
-                elif gd.geom_type == _GEOM_PLANE:
-                    gd.half_x = s0
-                    gd.half_y = s1
-                    # s2 = grid spacing — not needed for collision
-                else:
-                    gd.radius = s0
-
-            # friction (explicit or default)
-            # ⚠ PARTIAL `friction` KEEPS THE INHERITED COMPONENTS — see the
-            # identical guard in the `<default>` block above. MuJoCo starts a
-            # geom's friction from its class (ultimately the global
-            # `1 0.005 0.0001`) and overwrites only what the attribute spells,
-            # so `friction="0.9"` is `(0.9, 0.005, 0.0001)` and NOT
-            # `(0.9, 0, 0)`.
-            #
-            # Currently INERT on every gated pose — the torsional and rolling
-            # coefficients are read only at condim >= 4, and dog's condim-6
-            # teeth spell all three values — but it is a wrong number in
-            # `geom_friction` (86 of dog's 128 geoms) and would bite the first
-            # condim >= 4 contact against a partially-specified geom.
-            var fric_s = _extract_attr(tag, "friction")
-            gd.friction = eff_defaults.geom_friction
-            gd.friction_spin = eff_defaults.geom_friction_spin
-            gd.friction_roll = eff_defaults.geom_friction_roll
-            if fric_s.byte_length() > 0:
-                var fparts = List[String]()
-                _split_spaces(fric_s, fparts)
-                if len(fparts) >= 1:
-                    gd.friction = _parse_float(fparts[0])
-                if len(fparts) >= 2:
-                    gd.friction_spin = _parse_float(fparts[1])
-                if len(fparts) >= 3:
-                    gd.friction_roll = _parse_float(fparts[2])
-
-            # contype / conaffinity / condim
-            var ct_s = _extract_attr(tag, "contype")
-            gd.contype = (
-                _parse_int_str(ct_s) if ct_s.byte_length()
-                > 0 else eff_defaults.geom_contype
+            var gd = _parse_one_geom(
+                worldbody,
+                next_geom,
+                body_id_stack[depth],
+                childclass_stack[depth],
+                defaults,
+                named_defaults,
+                deg_factor,
+                eulerseq,
+                result,
             )
-
-            var ca_s = _extract_attr(tag, "conaffinity")
-            gd.conaffinity = (
-                _parse_int_str(ca_s) if ca_s.byte_length()
-                > 0 else eff_defaults.geom_conaffinity
-            )
-
-            var cd_s = _extract_attr(tag, "condim")
-            gd.condim = (
-                _parse_int_str(cd_s) if cd_s.byte_length()
-                > 0 else eff_defaults.geom_condim
-            )
-
-            # `priority` — when two geoms differ, the higher one dictates
-            # condim, solref, solimp AND friction wholesale, with no mixing
-            # (`engine_collision_driver.c:1427-1438`). Default 0.
-            # ⚠ THE CLASS FALLBACK IS LOAD-BEARING, and it was missing.
-            # `condim` on the line above has always had one; `priority`
-            # took the element attribute or 0, full stop. quadruped's ball
-            # writes `priority="1"` inline so the gap never showed, and
-            # dog's 42 teeth write only `class="tooth_primitive"` — so all
-            # 42 came out priority 0 and silently lost the condim-6,
-            # friction and solref override they exist to impose.
-            var prio_s = _extract_attr(tag, "priority")
-            gd.priority = (
-                _parse_int_str(prio_s) if prio_s.byte_length()
-                > 0 else eff_defaults.geom_priority
-            )
-
-            # ⚠ `solmix` IS NOT SUPPORTED, AND IS REJECTED RATHER THAN
-            # IGNORED. At equal priority MuJoCo blends the two geoms'
-            # solref/solimp with `mix = solmix1/(solmix1+solmix2)`; every
-            # geom defaults to `solmix=1`, giving mix = 0.5 (a plain mean),
-            # which is what the mixing code implements. A model that
-            # declares a non-default solmix would silently get the mean
-            # instead of its intended weighting — the same silent-default
-            # shape as the dof friction solparams, which raise for the same
-            # reason. No dm_control suite model sets it.
-            var solmix_s = _extract_attr(tag, "solmix")
-            if solmix_s.byte_length() > 0:
-                var sm = _parse_float(solmix_s)
-                if sm < 0.999999 or sm > 1.000001:
-                    raise Error(
-                        "physics3d: <geom solmix> is not supported (only"
-                        " the default 1.0). At equal priority it weights"
-                        " the solref/solimp blend; ignoring it would"
-                        " silently substitute a plain mean."
-                    )
-
-            # solref / solimp
-            var sr_s = _extract_attr(tag, "solref")
-            if sr_s.byte_length() > 0:
-                var sv = _parse_vec3(sr_s)
-                gd.solref_0 = sv[0]
-                gd.solref_1 = sv[1]
-            else:
-                gd.solref_0 = eff_defaults.geom_solref_0
-                gd.solref_1 = eff_defaults.geom_solref_1
-
-            var si_s = _extract_attr(tag, "solimp")
-            if si_s.byte_length() > 0:
-                var sip = List[String]()
-
-                _split_spaces(si_s, sip)
-                if len(sip) >= 1:
-                    gd.solimp_0 = _parse_float(sip[0])
-                if len(sip) >= 2:
-                    gd.solimp_1 = _parse_float(sip[1])
-                if len(sip) >= 3:
-                    gd.solimp_2 = _parse_float(sip[2])
-                if len(sip) >= 4:
-                    gd.solimp_3 = _parse_float(sip[3])
-                if len(sip) >= 5:
-                    gd.solimp_4 = _parse_float(sip[4])
-            else:
-                gd.solimp_0 = eff_defaults.geom_solimp_0
-                gd.solimp_1 = eff_defaults.geom_solimp_1
-                gd.solimp_2 = eff_defaults.geom_solimp_2
-                gd.solimp_3 = eff_defaults.geom_solimp_3
-                gd.solimp_4 = eff_defaults.geom_solimp_4
-
-            # margin
-            var mg_s = _extract_attr(tag, "margin")
-            gd.margin = (
-                _parse_float(mg_s) if mg_s.byte_length()
-                > 0 else eff_defaults.geom_margin
-            )
-
-            # density (per-geom overrides default; used when mass is absent)
-            var dens_s = _extract_attr(tag, "density")
-            gd.density = (
-                _parse_float(dens_s) if dens_s.byte_length()
-                > 0 else eff_defaults.geom_density
-            )
-
-            # mass: explicit if provided, else compute from density * volume
-            var ms_s = _extract_attr(tag, "mass")
-            if ms_s.byte_length() == 0:
-                ms_s = eff_defaults.geom_mass_s
-            if ms_s.byte_length() > 0:
-                gd.mass = _parse_float(ms_s)
-            else:
-                # Compute mass = density * volume based on geom type and size
-                var PI: Float64 = 3.14159265358979323846
-                var vol: Float64 = 0.0
-                if gd.geom_type == _GEOM_SPHERE:
-                    vol = (
-                        (Float64(4.0) / Float64(3.0))
-                        * PI
-                        * gd.radius
-                        * gd.radius
-                        * gd.radius
-                    )
-                elif gd.geom_type == _GEOM_CAPSULE:
-                    var cyl_vol = (
-                        PI
-                        * gd.radius
-                        * gd.radius
-                        * (Float64(2.0) * gd.half_length)
-                    )
-                    var sph_vol = (
-                        (Float64(4.0) / Float64(3.0))
-                        * PI
-                        * gd.radius
-                        * gd.radius
-                        * gd.radius
-                    )
-                    vol = cyl_vol + sph_vol
-                elif gd.geom_type == _GEOM_BOX:
-                    vol = Float64(8.0) * gd.half_x * gd.half_y * gd.half_z
-                elif gd.geom_type == _GEOM_CYLINDER:
-                    vol = (
-                        PI
-                        * gd.radius
-                        * gd.radius
-                        * (Float64(2.0) * gd.half_length)
-                    )
-                elif gd.geom_type == _GEOM_ELLIPSOID:
-                    vol = (
-                        (Float64(4.0) / Float64(3.0))
-                        * PI
-                        * gd.half_x
-                        * gd.half_y
-                        * gd.half_z
-                    )
-                # PLANE has no volume → mass stays 0
-                if vol > Float64(0):
-                    gd.mass = gd.density * vol
-                else:
-                    gd.mass = Float64(-1)
-
-            # group (visual/collision grouping, 0-5)
-            var grp_s = _extract_attr(tag, "group")
-            if grp_s.byte_length() == 0:
-                grp_s = eff_defaults.geom_group_s
-            if grp_s.byte_length() > 0:
-                gd.group = _parse_int_str(grp_s)
-
-            # rgba colour: per-geom > default > GeomData fallback (0.7 grey)
-            var rgba_s = _extract_attr(tag, "rgba")
-            if rgba_s.byte_length() > 0:
-                var cv = _parse_rgba4(rgba_s)
-                gd.rgba_r = cv[0]
-                gd.rgba_g = cv[1]
-                gd.rgba_b = cv[2]
-                gd.rgba_a = cv[3]
-            elif eff_defaults.geom_rgba_r >= Float64(0):
-                gd.rgba_r = eff_defaults.geom_rgba_r
-                gd.rgba_g = eff_defaults.geom_rgba_g
-                gd.rgba_b = eff_defaults.geom_rgba_b
-                gd.rgba_a = eff_defaults.geom_rgba_a
-
-            # material reference — stored as index into materials[]
-            # (index resolved by caller if needed; stored as -1 when absent)
-            # We store the raw name match here via a linear scan of asset_sec
-            # NOTE: asset_sec is not available in _fill_model; material_id
-            # is resolved in a post-pass inside parse_xml_full.
-
             result.geoms.append(gd)
             geom_count += 1
             var tag_end = worldbody.find(">", next_geom)
