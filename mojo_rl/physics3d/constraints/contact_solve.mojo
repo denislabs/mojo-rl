@@ -1481,11 +1481,11 @@ def _contact_solve_env[
     # this call-site gate matches bit-identically for NEQUALITY == 0).
     comptime if NEQUALITY > 0:
         _equality_env[
-            DTYPE, NV, NBODY, NJOINT, NEQUALITY, NTENDON, NSITE, V_SIZE,
+            DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE,
             BATCH, PGS_ITERATIONS,
         ](
             env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
-            equality, tendons, sites, body_invweight0, dof_invweight0, cdof,
+            equality, body_invweight0, cdof,
             m_inv, qacc_constrained,
         )
 

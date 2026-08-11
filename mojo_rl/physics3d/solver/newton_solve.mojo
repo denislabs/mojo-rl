@@ -1337,11 +1337,11 @@ def _newton_solve_env[
         comptime SOLVER_ITER_GPU: Int = 50
         comptime if NEQUALITY > 0:
             _equality_env[
-                DTYPE, NV, NBODY, NJOINT, NEQUALITY, NTENDON, NSITE, V_SIZE,
+                DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE,
                 BATCH, SOLVER_ITER_GPU,
             ](
                 env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
-                equality, tendons, sites, body_invweight0, dof_invweight0,
+                equality, body_invweight0,
                 cdof, m_inv, qacc_constrained,
             )
         # SKIP_FIXED: the fixed-tendon equalities are rows of the system
@@ -2257,11 +2257,11 @@ def _newton_solve_env[
 
     comptime if NEQUALITY > 0:
         _equality_env[
-            DTYPE, NV, NBODY, NJOINT, NEQUALITY, NTENDON, NSITE, V_SIZE,
+            DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE,
             BATCH, SOLVER_ITER_GPU,
         ](
             env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
-            equality, tendons, sites, body_invweight0, dof_invweight0, cdof,
+            equality, body_invweight0, cdof,
             m_inv, qacc_constrained,
         )
 
@@ -3712,11 +3712,11 @@ def _newton_blocked_fields_kernel[
     comptime SOLVER_ITER_GPU: Int = 50
     comptime if NEQUALITY > 0:
         _equality_env[
-            DTYPE, NV, NBODY, NJOINT, NEQUALITY, NTENDON, NSITE, V_SIZE,
+            DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE,
             BATCH, SOLVER_ITER_GPU,
         ](
             env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
-            equality, tendons, sites, body_invweight0, dof_invweight0, cdof,
+            equality, body_invweight0, cdof,
             m_inv, qacc_constrained,
         )
     comptime if NTENDON > 0:

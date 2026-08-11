@@ -11,39 +11,43 @@ functions called by the fields PGS contact solve
 the joint-limits pass, before the friction phase, with the legacy
 PGS_ITERATIONS iteration count.
 
-⚠⚠ THE EQUALITY BUILDER NO LONGER REPRODUCES THE LEGACY OFFSET QUIRK BELOW —
-it reads `body_invweight0[body, 0|1]` directly, as MuJoCo does. The quirk was
-not a harmless addressing detail, it was a WRONG NUMBER: on sawyer (8 sites,
-0 tendons) the weld's `delta = 2*24 = 48` landed inside the SITE records and
-returned `sites[6, 0]` = **27.0**, which is column 0 of a site record, i.e.
-THE BODY INDEX THE SITE IS ATTACHED TO. A body id was being used as an inverse
-inertia. Correct diagApprox there is 6.1056, so R was 4.4x too large and the
-mocap weld 4.4x too soft — half of defect 28 (`docs/DM_CONTROL_PORT_PHASE2.md`
-§23); the other half was three phantom kilograms in the mass matrix.
+✅ THE LEGACY invweight0-OFFSET QUIRK IS GONE FROM BOTH BUILDERS, and
+`_legacy_invw_read` / `_legacy_tendon_col` are deleted. Recorded because the
+quirk was NOT a harmless addressing detail, and because this docstring itself
+outlived it by long enough to mislead.
 
-"Port the CODE, not the algorithm" is the right instinct for a reference whose
-quirks are load-bearing, but the reference here is MuJoCo, not our own deleted
-legacy. Reproducing OUR bug bit-exactly preserved nothing MuJoCo does. ⚠ The
-TENDON builder below still goes through `_legacy_invw_read` and still has this
-bug for any model with tendons or sites — deliberately left, because it moves
-goldens on models this change does not otherwise touch. It is a real defect,
-not an intended behaviour.
+What it was: the legacy builders computed their diagApprox offsets with
+NTENDON/NSITE left at their 0 defaults, so on any model with tendons and/or
+sites the reads landed NTENDON*MODEL_TENDON_SIZE + NSITE*MODEL_SITE_SIZE BEFORE
+the invweight0 records — inside the tendon / site records. A helper reproduced
+that addressing BIT-EXACTLY, "including the misreads".
 
-Legacy invweight0-offset quirk (still reproduced bit-exactly on the TENDON
-path only — port the CODE, not the algorithm): the legacy builders compute
-their diagApprox offsets with
-NTENDON/NSITE left at their 0 defaults —
-`model_body_invweight0_offset[NBODY, NJOINT, NGEOM, MAX_EQUALITY]()` in the
-equality builder and `model_dof_invweight0_offset[NBODY, NJOINT, NGEOM,
-MAX_EQUALITY]()` in the tendon builder — so on any model with tendons
-and/or sites the reads land NTENDON*MODEL_TENDON_SIZE +
-NSITE*MODEL_SITE_SIZE BEFORE the true invweight0 records, i.e. inside the
-tendon / site records (Humanoid's tendon builder, for example, reads its
-diag from body_invweight0 entries of unrelated bodies). `_legacy_invw_read`
-reproduces that addressing exactly by mapping the legacy slab offset
-(relative to the tendon-records start, which is what the legacy shift-free
-base equals) onto the concatenated
-[tendons | sites | body_invweight0 | dof_invweight0] record tensors."""
+What it cost: on sawyer (8 sites, 0 tendons) the weld's `delta = 2*24 = 48`
+landed in the SITE records and returned `sites[6, 0]` = **27.0** — column 0 of a
+site record is THE BODY INDEX THE SITE IS ATTACHED TO. A body id served as an
+inverse inertia where the correct diagApprox is 6.1056, so R was 4.4x too large
+and the mocap weld 4.4x too soft: half of defect 28
+(`docs/DM_CONTROL_PORT_PHASE2.md` §23). The other half was three phantom
+kilograms in the mass matrix.
+
+⚠ "Port the CODE, not the algorithm" is the right instinct for a reference whose
+quirks are load-bearing — but the reference is MuJoCo, not our own deleted
+legacy. Reproducing OUR bug bit-exactly preserved nothing MuJoCo does.
+
+Both builders now read the quantity MuJoCo reads:
+  * connect/weld -> `body_invweight0[b, 0]` (translation rows) and
+    `[b, 1]` (weld orientation rows), summed over the two bodies
+    (engine_core_constraint.c:1447 / :1461).
+  * equality TENDON -> `tendon_invweight0[id]`, ONE number, the tendon's own
+    J M^-1 J^T at qpos0 (:1091) — NOT the sum of `dof_invweight0` over its
+    joints, which is the mjEQ_JOINT rule (:1090) applied to the wrong
+    constraint type. Fixed earlier in `01f7b62f`; see the note at the tendon
+    R computation below.
+
+⚠⚠ THIS PARAGRAPH USED TO SAY THE TENDON PATH STILL HAD THE BUG. It did not —
+`01f7b62f` had already fixed it — and the stale claim was read off this
+docstring and reported as an open defect. A comment describing code is a
+hypothesis about the code. GREP THE CALL SITES."""
 
 from std.math import abs, pow
 from layout import Layout, LayoutTensor
@@ -108,128 +112,6 @@ from ..gpu.constants import (
 
 
 from .constraint_data import solref_spring_damper
-
-
-@always_inline
-def _legacy_tendon_col(c: Int) -> Int:
-    """Legacy tendon-record column -> its column in the CURRENT record.
-
-    The legacy record was 17 wide and laid out
-
-        0        num_joints
-        1..4     joint_0..3
-        5..8     coef_0..3
-        9        length_ref
-        10..11   solref_0..1
-        12..16   solimp_0..4
-
-    `_legacy_invw_read` reproduces a historical misread BIT-EXACTLY, so it must
-    keep naming those same quantities however the live record is arranged. It
-    used the column index raw, which worked only while every layout change
-    APPENDED. `TENDON_MAX_WRAPS` 4 -> 16 widened the joint and coef runs in
-    place instead, so columns 5..16 changed meaning underneath it.
-
-    Written as a mapping rather than a second frozen copy of the values
-    because the point is to track the live record: if a wrap run moves again,
-    this moves with it, and only a genuine reordering of the SCALAR fields
-    would need an edit here.
-    """
-    if c <= 0:
-        return TENDON_IDX_NUM_JOINTS
-    if c <= 4:
-        return TENDON_IDX_JOINT_0 + (c - 1)
-    if c <= 8:
-        return TENDON_IDX_COEF_0 + (c - 5)
-    if c == 9:
-        return TENDON_IDX_LENGTH_REF
-    if c <= 11:
-        return TENDON_IDX_SOLREF_0 + (c - 10)
-    return TENDON_IDX_SOLIMP_0 + (c - 12)
-
-
-@always_inline
-def _legacy_invw_read[
-    DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    NTENDON: Int,
-    NSITE: Int,
-](
-    delta: Int,
-    tendons: LayoutTensor[
-        DTYPE, Layout.row_major(NTENDON, MODEL_TENDON_SIZE), MutAnyOrigin
-    ],
-    sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
-    ],
-    body_invweight0: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
-    ],
-    dof_invweight0: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
-) -> Scalar[DTYPE]:
-    """Read the slab element the LEGACY equality/tendon builders address.
-
-    The legacy diagApprox offsets omit NTENDON/NSITE, so their base equals
-    the true tendon-records start; `delta` is the legacy offset from that
-    base (`body*2` / `body*2+1` for the equality builder, `NBODY*2 +
-    dof_adr` for the tendon builder). Mapped address-faithfully onto the
-    record tensors so the value read is bit-identical to the legacy slab
-    read (including the misreads on models with tendons/sites).
-
-    ⚠ THE SLAB GEOMETRY IS PINNED TO THE HISTORICAL RECORD WIDTHS, not to the
-    current `MODEL_TENDON_SIZE`. This function's entire contract is "reproduce
-    the legacy addressing exactly", so it must not move when a record grows.
-    It did move on 2026-07-31, when `MODEL_TENDON_SIZE` went 17 -> 36 for
-    spatial tendons: `T_END` doubled, every `delta` landed in a different
-    record, and `test_equality_tendon_fields`'s golden shifted 0.26% for a
-    reason that had nothing to do with the change under test.
-
-    Pinning is safe precisely because both growths APPENDED columns:
-    `tendons[r, c]` for `c < 17` and `sites[r, c]` for `c < 8` still return
-    exactly what the legacy slab held. (`MODEL_SITE_SIZE` went 8 -> 12 on
-    2026-08-01 for the site quaternion; `LEGACY_SITE_SIZE` stayed 8, so this
-    read did not move.) A record growth that REORDERS or INSERTS columns would
-    break the contract silently — the values would still be finite and
-    plausible, and only a golden would notice."""
-    comptime LEGACY_TENDON_SIZE = 17
-    comptime LEGACY_SITE_SIZE = 8
-    comptime T_END = NTENDON * LEGACY_TENDON_SIZE
-    comptime S_END = T_END + NSITE * LEGACY_SITE_SIZE
-    comptime B_END = S_END + NBODY * 2
-    if delta < T_END:
-        # ⚠ THE COLUMN IS REMAPPED, NOT USED RAW — the paragraph above called
-        # this exactly. `TENDON_MAX_WRAPS` 4 -> 16 did not append, it WIDENED
-        # two runs in the middle: COEF_0 went 5 -> 17 and LENGTH_REF 9 -> 33,
-        # so a raw `delta % 17` stopped naming the legacy quantity.
-        #
-        # ⚠ THIS WAS NOT THE CAUSE OF THE GOLDEN THAT MOVED, though it was
-        # confidently reported as such at the time. Adding the remap left
-        # `test_equality_tendon_fields`'s Part A fingerprint bit-identical
-        # (-664336.7153001489) because this reader is reached only from the
-        # weld/connect builders, not from the tendon path Part A exercises;
-        # the real cause was 16-wide per-thread arrays in the kernel below.
-        # The remap is kept because it is independently correct — the weld
-        # path WOULD have read the wrong columns at width 16 — but it is a
-        # latent fix, not the explanation. Recorded because a plausible
-        # mechanism read off a docstring is not a measurement.
-        return rebind[Scalar[DTYPE]](
-            tendons[
-                delta // LEGACY_TENDON_SIZE,
-                _legacy_tendon_col(delta % LEGACY_TENDON_SIZE),
-            ]
-        )
-    if delta < S_END:
-        return rebind[Scalar[DTYPE]](
-            sites[
-                (delta - T_END) // LEGACY_SITE_SIZE,
-                (delta - T_END) % LEGACY_SITE_SIZE,
-            ]
-        )
-    if delta < B_END:
-        return rebind[Scalar[DTYPE]](
-            body_invweight0[(delta - S_END) // 2, (delta - S_END) % 2]
-        )
-    return rebind[Scalar[DTYPE]](dof_invweight0[delta - B_END])
 
 
 # =============================================================================
@@ -507,8 +389,6 @@ def _equality_env[
     NBODY: Int,
     NJOINT: Int,
     NEQUALITY: Int,
-    NTENDON: Int,
-    NSITE: Int,
     V_SIZE: Int,
     BATCH: Int,
     NUM_ITERATIONS: Int,
@@ -536,16 +416,9 @@ def _equality_env[
     equality: LayoutTensor[
         DTYPE, Layout.row_major(NEQUALITY, MODEL_EQ_SIZE), MutAnyOrigin
     ],
-    tendons: LayoutTensor[
-        DTYPE, Layout.row_major(NTENDON, MODEL_TENDON_SIZE), MutAnyOrigin
-    ],
-    sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
-    ],
     body_invweight0: LayoutTensor[
         DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
     ],
-    dof_invweight0: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
     cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
     m_inv: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin
@@ -554,12 +427,18 @@ def _equality_env[
         DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
     ],
 ):
-    """Build and solve equality constraints (connect + weld) for one env
-    (verbatim from build_and_solve_equality_gpu).
+    """Build and solve equality constraints (connect + weld) for one env.
 
     Reads equality constraint definitions from the equality record tensor,
     computes world anchors, Jacobians, impedance, and runs bilateral PGS
     iterations (no lambda >= 0 clamping) on `qacc_constrained`.
+
+    ⚠ IT DOES NOT TAKE `tendons` / `sites` / `dof_invweight0`, and must not be
+    given them again. It used to, purely so the deleted `_legacy_invw_read`
+    could index across the concatenated record slab — which is how a SITE
+    record came to supply a weld's diagApprox (see the module docstring). The
+    equality solver has no business reading a tendon or a site; dropping the
+    parameters makes that unrepresentable rather than merely unused.
     """
 
     comptime if NEQUALITY == 0:
