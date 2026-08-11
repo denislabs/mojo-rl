@@ -247,7 +247,36 @@ struct ModelDefFromXML[
     # Precomputed XML actuator/joint data — evaluated at struct level by the
     # regular Mojo interpreter (not the GPU kernel compiler), so String ops work.
     # GPU kernels access Self._acd.motor_gears[i] etc. with no String operations.
-    comptime _acd: ComptimeActData = parse_xml_model_data(Self.xml)
+    # ⚠ SIZED FROM THIS MODEL, NOT FROM A GLOBAL CAP. Every array in
+    # `ComptimeActData` used to be a fixed MAX_COMPTIME_* (64 actuators / 96
+    # joints / 128 nq / 16 tendons x 16 wraps) = ~5056 comptime scalars, so a
+    # 1-actuator cartpole materialized exactly what dog did. `_acd` is forced
+    # by ANY use of this struct -- `NA` reads it, and BOTH facades read `NA`
+    # (`Phyics3dEnv.__init__`, and `Phyics3dBatchedEnv` via `NA_F` at type
+    # elaboration) -- so every binary paid the full cap. That was the fixed
+    # floor under every dm_control build.
+    #
+    # This cannot truncate what the caps admitted: the four `comptime assert`s
+    # below already prove `nact`/`njoint`/`nq`/`max_tendon` fit, and these ARE
+    # those values. Floored at 1 -- a zero-length InlineArray is not a shape to
+    # hand the comptime interpreter, and most models have no tendons.
+    comptime _NACT: Int = Self.nact if Self.nact > 0 else 1
+    comptime _NJNT: Int = Self.njoint if Self.njoint > 0 else 1
+    comptime _NQ0: Int = Self.nq if Self.nq > 0 else 1
+    comptime _NTEN: Int = Self.max_tendon if Self.max_tendon > 0 else 1
+    # The wrap cap stays GLOBAL for a model that HAS tendons: how many joints a
+    # `<fixed>` wraps is not something `parse_xml` counts, and guessing it low
+    # is the exact silent truncation this cap documents (dog wraps 11; the
+    # bound was once a bare 4). A model with NO tendons cannot reach the tendon
+    # branch at all -- `parse_xml_model_data` writes a joint transmission at
+    # offset 0 only and sets `motor_trn_n = 1` (xml_parser.mojo:3435-3438) --
+    # so it drops the whole 3 x nact x 16 transmission block.
+    comptime _WRAPS: Int = MAX_COMPTIME_TENDON_WRAPS if Self.max_tendon > 0 else 1
+    comptime _acd: ComptimeActData[
+        Self._NACT, Self._NJNT, Self._NQ0, Self._NTEN, Self._WRAPS
+    ] = parse_xml_model_data[
+        Self._NACT, Self._NJNT, Self._NQ0, Self._NTEN, Self._WRAPS
+    ](Self.xml)
 
     # Precomputed rendering data — evaluated once at struct level.
     # Replaces 11 separate parse_xml_full calls that crashed the comptime
@@ -473,9 +502,9 @@ struct ModelDefFromXML[
                 var length = Float64(0)
                 var vel = Float64(0)
                 for k in range(n):
-                    var qadr = _m_motor_trn_qadr[i * MAX_COMPTIME_TENDON_WRAPS + k]
-                    var dadr = _m_motor_trn_dadr[i * MAX_COMPTIME_TENDON_WRAPS + k]
-                    var coef = _m_motor_trn_coef[i * MAX_COMPTIME_TENDON_WRAPS + k]
+                    var qadr = _m_motor_trn_qadr[i * Self._WRAPS + k]
+                    var dadr = _m_motor_trn_dadr[i * Self._WRAPS + k]
+                    var coef = _m_motor_trn_coef[i * Self._WRAPS + k]
                     if qadr >= 0 and qadr < Self.NQ:
                         length += coef * Float64(d.qpos.data[qadr])
                     if dadr >= 0 and dadr < Self.NV:
@@ -491,11 +520,11 @@ struct ModelDefFromXML[
                 )
 
             for k in range(n):
-                var dadr = _m_motor_trn_dadr[i * MAX_COMPTIME_TENDON_WRAPS + k]
+                var dadr = _m_motor_trn_dadr[i * Self._WRAPS + k]
                 if dadr < 0 or dadr >= Self.NV:
                     continue
                 d.qfrc.data[dadr] += Scalar[DTYPE](
-                    gear * _m_motor_trn_coef[i * MAX_COMPTIME_TENDON_WRAPS + k] * force
+                    gear * _m_motor_trn_coef[i * Self._WRAPS + k] * force
                 )
 
             # mjDYN_FILTER, integrated by Euler exactly as `nextActivation`
@@ -522,10 +551,10 @@ struct ModelDefFromXML[
                 continue
             var length = Float64(0)
             for k in range(n):
-                var qadr = _m_tendon_trn_qadr[t * MAX_COMPTIME_TENDON_WRAPS + k]
+                var qadr = _m_tendon_trn_qadr[t * Self._WRAPS + k]
                 if qadr >= 0 and qadr < Self.NQ:
                     length += (
-                        _m_tendon_trn_coef[t * MAX_COMPTIME_TENDON_WRAPS + k]
+                        _m_tendon_trn_coef[t * Self._WRAPS + k]
                         * Float64(d.qpos.data[qadr])
                     )
             var lo = _m_tendon_spring_lo[t]
@@ -538,11 +567,11 @@ struct ModelDefFromXML[
             if frc == 0.0:
                 continue
             for k in range(n):
-                var dadr = _m_tendon_trn_dadr[t * MAX_COMPTIME_TENDON_WRAPS + k]
+                var dadr = _m_tendon_trn_dadr[t * Self._WRAPS + k]
                 if dadr < 0 or dadr >= Self.NV:
                     continue
                 d.qfrc.data[dadr] += Scalar[DTYPE](
-                    _m_tendon_trn_coef[t * MAX_COMPTIME_TENDON_WRAPS + k] * frc
+                    _m_tendon_trn_coef[t * Self._WRAPS + k] * frc
                 )
 
     # =========================================================================
@@ -682,7 +711,7 @@ struct ModelDefFromXML[
             raise Error(
                 String(
                     "physics3d: a fixed tendon wraps more joints than",
-                    " MAX_COMPTIME_TENDON_WRAPS=", MAX_COMPTIME_TENDON_WRAPS,
+                    " effective tendon-wrap cap=", Self._WRAPS,
                     " (overflow ", _acd_wrap.tendon_wrap_overflow,
                     " on the worst tendon). Raise the cap in xml_parser.mojo;",
                     " it is NOT safe to truncate — the actuator would drive a",
@@ -1145,13 +1174,13 @@ struct ModelDefFromXML[
                         var vel = Scalar[DTYPE](0)
                         comptime for k in range(n):
                             comptime qadr = Self._acd.motor_trn_qadr[
-                                act_i * MAX_COMPTIME_TENDON_WRAPS + k
+                                act_i * Self._WRAPS + k
                             ]
                             comptime dadr = Self._acd.motor_trn_dadr[
-                                act_i * MAX_COMPTIME_TENDON_WRAPS + k
+                                act_i * Self._WRAPS + k
                             ]
                             comptime coef = Self._acd.motor_trn_coef[
-                                act_i * MAX_COMPTIME_TENDON_WRAPS + k
+                                act_i * Self._WRAPS + k
                             ]
                             comptime if qadr >= 0 and qadr < Self.NQ:
                                 length += Scalar[DTYPE](coef) * rebind[
@@ -1172,10 +1201,10 @@ struct ModelDefFromXML[
 
                     comptime for k in range(n):
                         comptime dadr = Self._acd.motor_trn_dadr[
-                            act_i * MAX_COMPTIME_TENDON_WRAPS + k
+                            act_i * Self._WRAPS + k
                         ]
                         comptime coef = Self._acd.motor_trn_coef[
-                            act_i * MAX_COMPTIME_TENDON_WRAPS + k
+                            act_i * Self._WRAPS + k
                         ]
                         comptime if dadr >= 0 and dadr < Self.NV:
                             qfrc[env, dadr] = qfrc[env, dadr] + Scalar[DTYPE](
@@ -1207,10 +1236,10 @@ struct ModelDefFromXML[
                     var tlen = Scalar[DTYPE](0)
                     comptime for k in range(nt):
                         comptime qadr = Self._acd.tendon_trn_qadr[
-                            t * MAX_COMPTIME_TENDON_WRAPS + k
+                            t * Self._WRAPS + k
                         ]
                         comptime tcoef = Self._acd.tendon_trn_coef[
-                            t * MAX_COMPTIME_TENDON_WRAPS + k
+                            t * Self._WRAPS + k
                         ]
                         comptime if qadr >= 0 and qadr < Self.NQ:
                             tlen += Scalar[DTYPE](tcoef) * rebind[
@@ -1228,10 +1257,10 @@ struct ModelDefFromXML[
                     if frc != Scalar[DTYPE](0):
                         comptime for k in range(nt):
                             comptime dadr = Self._acd.tendon_trn_dadr[
-                                t * MAX_COMPTIME_TENDON_WRAPS + k
+                                t * Self._WRAPS + k
                             ]
                             comptime tcoef = Self._acd.tendon_trn_coef[
-                                t * MAX_COMPTIME_TENDON_WRAPS + k
+                                t * Self._WRAPS + k
                             ]
                             comptime if dadr >= 0 and dadr < Self.NV:
                                 qfrc[env, dadr] = qfrc[

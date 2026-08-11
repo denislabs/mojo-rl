@@ -147,7 +147,13 @@ def test_model_def_from_xml() raises:
     # Step 3: parse_xml_model_data — precomputed InlineArray checks
     # =========================================================================
     print("=== parse_xml_model_data checks ===")
-    comptime acd = parse_xml_model_data(half_cheetah_xml)
+    # `ComptimeActData` is sized from the MODEL's dims, not from global caps
+    # (see `ModelDefFromXML._NACT` and friends). Derive them here the same way
+    # production does, so this test exercises the real sizing rule rather than
+    # a hand-picked one. half_cheetah has no tendons, so the wrap cap is 1.
+    comptime acd = parse_xml_model_data[
+        pm.NACT, pm.NJOINT, pm.NQ, 1, 1
+    ](half_cheetah_xml)
 
     # Motor 0 = bthigh, gear=120, dof_adr=3 (3 preceding joints: rootx,rootz,rooty)
     comptime gear0 = acd.motor_gears[0]
