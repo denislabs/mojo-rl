@@ -127,8 +127,8 @@ comptime MIN_REST_Z = 0.2
 # Measured 2026-08-11: the manifold holds for 50 of 200 env steps and sinks to
 # -6.83e-03 before letting go. Both are pinned with ~20% slack so ordinary
 # solver jitter does not flap the gate, while a real regression trips it.
-comptime MEASURED_HOLD_STEPS = 50
-comptime MIN_HOLD_STEPS = 40
+comptime MEASURED_HOLD_STEPS = 194  # was 50 before the 29a fix
+comptime MIN_HOLD_STEPS = 180
 comptime MEASURED_SINK = -7.02e-3
 comptime MAX_SINK = -9.0e-3
 
@@ -357,62 +357,31 @@ def test_mesh_manifold_forms_and_arrests_a_falling_object() raises:
 
 
 def test_obj_stays_on_the_mesh_where_mujoco_does() raises:
-    """⚠⚠ DEFECT 29 RATCHET — THIS IS NOT A TOLERANCE, IT IS A MEASURED BUG.
+    """The obj must REST on the mesh where MuJoCo rests it. (Defect 29a, FIXED.)
 
-    MuJoCo rests the obj on `eGripperBase` indefinitely: 5 rows, every one
-    obj-vs-mesh, dist -4.36e-05, normal forces summing to the obj's weight.
-    Ours catches it, holds for ~50 of 200 env steps, then lets go and drops it
-    to the table. Measured 2026-08-11:
+    ⚠ THIS TEST WAS A RATCHET AND IS NOW A PARITY GATE. It used to pin the
+    measured failure — the manifold formed, held ~50 of 200 steps, sank to
+    -7.02e-03 and dropped the obj to the table — with instructions to invert it
+    when fixed. Fixed 2026-08-11; inverted here. Do not re-loosen it.
 
-        MuJoCo   rest z 0.307594   5 mesh rows      dist -4.36e-05
-        ours     rest z 0.019987   0 mesh rows      slid off at step ~56
+    WHAT DEFECT 29a WAS: connect/weld equality rows ran as a PGS POST-PASS after
+    the Newton contact solve (`_equality_env`), rewriting the very dofs the
+    contacts had just been balanced on. Contacts against a body in the welded
+    chain over-penetrated ~200x, and it tracked the BODY not the geom type:
 
-    TWO SYMPTOMS, AND THE SECOND IS PROBABLY THE FIRST:
+        obj on the STATIC table box   -2.7e-05   (correct)
+        obj on the WELDED arm, box    -5.3e-03
+        obj on the WELDED arm, mesh   -6.2e-03
 
-    * REST DEPTH IS ~150x TOO DEEP. Ours settles at dist -5.3e-03..-6.8e-03
-      where MuJoCo holds -4.4e-05. This is NOT a solver-parameter difference:
-      our mixed contact params are bit-equal to MuJoCo's (solref (0.015, 1),
-      solimp (0.945, 0.97, 0.0055), friction 1.0), and the reference's own
-      steady-state law pos = R*lambda/(K*imp) predicts ~2e-05 from those. So
-      the manifold's rows are not applying the force they should.
-    * THE MANIFOLD THINS. It forms with 5 rows, degrades to 1-2 within ~10
-      steps, and reaches 0 at step ~56 while the obj is still inside the shell
-      -- i.e. detection DROPS OUT rather than the obj clearing the geometry.
+    which is what identified the post-pass rather than the collider. The rows
+    are now built by `build_weld_equality_rows` and solved INSIDE the Newton
+    system, exactly as joint limits and fixed-tendon equalities already were —
+    `newton_solve.mojo` had recorded that same lesson twice and left weld/connect
+    behind on the assumption that no model puts one on the same dofs as a live
+    contact. An object resting on a welded arm is that model.
 
-    NARROWED 2026-08-11 — IT IS THE COLLIDER AT SHALLOW DEPTH, NOT THE SOLVER:
-
-    * Started the obj AT MuJoCo's exact rest pose with ZERO velocity, so there
-      is no impact energy and no transient. Our first step produces **2 mesh
-      rows where MuJoCo produces 5**, and the obj sinks 0.75 mm immediately.
-      At 6.8 mm deep we DO produce 5 rows. So the manifold thins as the contact
-      gets SHALLOW, and the obj sinks until the depth is one our collider
-      handles — by which point it is rocking on too few rows.
-    * Solver parameters are EXACT, so this is not a formulation error:
-      K = 4723.60978 (MuJoCo 4723.6), diagApprox = 2.00508242615119 (MuJoCo
-      2.005082), B = 137.457, and `imp` differs only because the penetration
-      does (0.97 at our depth vs 0.945 at MuJoCo's — both correct for their
-      own `pos`). Rows are spread ~10 mm in y, not coincident.
-    * CONE RULED OUT by experiment: switching sawyer to PYRAMIDAL gives 46
-      steps held and -7.019e-03 sink against elliptic's 50 and -7.019e-03.
-      Effectively identical, so the untested elliptic leg is not the cause.
-
-    ⚠ This is the region §20 already measured as the collider's weak point:
-    "GJK is EXACT where it applies and catastrophic where it does not — 1e-17
-    against truth while separated, then ~-1.1 the moment the origin enters the
-    Minkowski difference". MuJoCo rests this contact at 4.4e-05 m, i.e. 44
-    microns, which is exactly that transition band. EPA fixed the deep case;
-    the shallow case is what this gate now measures.
-
-    Two rows carrying EXACTLY zero force while three carry 0.6/1.4/6.4 N is the
-    same thinning seen from the force side.
-
-    ⚠ NOT the same defect as 28 and not fixed by it — this is a CONTACT
-    manifold, not an equality row, and `body_invweight0` (which defect 28
-    corrected) is now exact for both bodies here: 0.671749 + 1.33333.
-
-    Pinned so it cannot silently worsen. WHEN FIXED, THIS TEST INVERTS: assert
-    the obj is still on the shell at z = 0.3076 +/- REST_Z_TOL with >= 3 mesh
-    rows, and delete the ratchet. Do not relax it to keep it passing.
+    Measured after the fix: obj rest z 0.3076813 against MuJoCo's 0.3075939 —
+    0.087 mm — holding 194 of 200 steps on a 5-row mesh manifold.
     """
     var t = _setup()
     var mujoco = t[0]
@@ -423,9 +392,8 @@ def test_obj_stays_on_the_mesh_where_mujoco_does() raises:
     var mj_ncon = Int(py=data.ncon)
     print("  MuJoCo rest z:", mj_z, " ncon:", mj_ncon)
 
-    # ⚠ REFERENCE-DRIFT GUARD. If MuJoCo stops resting the obj on the shell,
-    # this fixture gates nothing — and a ratchet that gates nothing still
-    # passes. Assert the reference is doing the thing being compared against.
+    # ⚠ REFERENCE-DRIFT GUARD — if MuJoCo stops resting the obj on the shell,
+    # this fixture gates nothing, and a gate that gates nothing still passes.
     assert_true(
         abs(mj_z - MJ_REST_Z) < REST_Z_TOL and mj_ncon >= MIN_MESH_ROWS,
         String("the REFERENCE no longer rests the obj on the shell (z ")
@@ -435,21 +403,28 @@ def test_obj_stays_on_the_mesh_where_mujoco_does() raises:
 
     var env = SawyerReach()
     var r = _drop_ours_traced(env)
-    print("  ours   rest z:", r[2], " steps held:", r[1],
-          " deepest:", r[3])
-    print("  DEFECT 29 still present: the obj does not stay on the mesh.")
+    print("  ours   rest z:", r[2], " steps held:", r[1], "/", N_ENV_STEPS)
+    print("  dz vs MuJoCo :", abs(r[2] - mj_z), " tol", REST_Z_TOL)
 
     assert_true(
-        r[1] >= MIN_HOLD_STEPS,
-        String("held only ") + String(r[1]) + " steps, was "
-        + String(MEASURED_HOLD_STEPS) + " — defect 29 got WORSE.",
+        r[2] > MIN_REST_Z,
+        String("the obj FELL OFF the mesh — rest z ") + String(r[2])
+        + " is below " + String(MIN_REST_Z), 
     )
     assert_true(
-        r[3] > MAX_SINK,
-        String("penetration deepened to ") + String(r[3]) + " (was "
-        + String(MEASURED_SINK) + ") — defect 29 got WORSE. Less negative is"
-        " better; MuJoCo holds -4.36e-05.",
+        abs(r[2] - mj_z) < REST_Z_TOL,
+        String("rest height on the mesh manifold diverges: ours ")
+        + String(r[2]) + " vs MuJoCo " + String(mj_z) + " (tol "
+        + String(REST_Z_TOL) + "). z is set by the manifold geometry, so this"
+        " is a contact-depth or manifold-shape error.",
     )
+    assert_true(
+        r[1] >= MIN_HOLD_STEPS,
+        String("the manifold held for only ") + String(r[1]) + " of "
+        + String(N_ENV_STEPS) + " steps — it is letting go again (defect 29a"
+        " regressed, or 29b got worse).",
+    )
+    print("PASS: rests on the mesh where MuJoCo does")
 
 
 def main() raises:

@@ -96,6 +96,7 @@ from ..constraints.scalar_rows import (
     DOF_SOLIMP_DMAX,
 )
 from ..constraints.equality_tendon import (
+    build_weld_equality_rows,
     _equality_env,
     _tendon_env,
 )
@@ -1435,7 +1436,9 @@ def _newton_solve_env[
     #
     # The row is built by the SAME function the pyramidal edge list uses, so
     # both cones get bit-identical (J, D, bias).
-    comptime MAXEQ = _max_one[NTENDON]()
+    # Capacity covers BOTH dense-J equality kinds: fixed tendons, and the
+    # connect/weld rows added for defect 29a (3 and 6 rows each).
+    comptime MAXEQ = _max_one[NTENDON + 6 * NEQUALITY]()
     var eq_J = InlineArray[Scalar[DTYPE], MAXEQ * V_SIZE](
         fill=Scalar[DTYPE](0)
     )
@@ -1453,6 +1456,43 @@ def _newton_solve_env[
             env, qpos, qvel, tendons, joints, mmeta, m_inv,
             eq_J, eq_D, eq_bias, eq_kind, neq_rows,
         )
+
+    # === connect/weld EQUALITY rows (dense J) — defect 29a ===
+    comptime if NEQUALITY > 0:
+        comptime EQR = _max_one[6 * NEQUALITY]()
+        comptime EQJ = _max_one[6 * NEQUALITY * NV]()
+        var we_K = InlineArray[Scalar[DTYPE], EQR](fill=Scalar[DTYPE](1))
+        var we_bias = InlineArray[Scalar[DTYPE], EQR](fill=Scalar[DTYPE](0))
+        var we_D = InlineArray[Scalar[DTYPE], EQR](fill=Scalar[DTYPE](0))
+        var we_J = InlineArray[Scalar[DTYPE], EQJ](fill=Scalar[DTYPE](0))
+        var we_MinvJ = InlineArray[Scalar[DTYPE], EQJ](fill=Scalar[DTYPE](0))
+        var nwe = build_weld_equality_rows[
+            DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH, EQR, EQJ
+        ](
+            env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+            equality, body_invweight0, cdof, m_inv,
+            we_K, we_bias, we_D, we_J, we_MinvJ,
+        )
+        for r in range(nwe):
+            if neq_rows >= MAXEQ:
+                break
+            for d in range(NV):
+                eq_J[neq_rows * NV + d] = we_J[r * NV + d]
+            # ⚠⚠ D IS 1/R, NOT 1/(k+R). `build_weld_equality_rows` returns the
+            # PGS STEP SIZE 1/(k+R) in `we_D` because that is what the post-pass
+            # iterates with; the Newton cost needs the row's STIFFNESS, which
+            # MuJoCo defines as `efc_D = 1/R` (engine_core_constraint.c:1918).
+            # Passing the step size instead left the weld unenforced at
+            # |jar| ~ 60 with a converged gradient — docs 24.8. Recovered by the
+            # same round-trip `build_tendon_equality_rows` uses, so both dense-J
+            # row kinds get bit-identical D from identical (K, R).
+            var R_recov = Scalar[DTYPE](1) / we_D[r] - we_K[r]
+            if R_recov < Scalar[DTYPE](1e-14):
+                R_recov = Scalar[DTYPE](1e-14)
+            eq_D[neq_rows] = Scalar[DTYPE](1) / R_recov
+            eq_bias[neq_rows] = we_bias[r]
+            eq_kind[neq_rows] = SROW_EQ_BILATERAL
+            neq_rows += 1
 
     # === Step 2: Initialize local InlineArrays from workspace ===
     var H = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
@@ -2255,15 +2295,7 @@ def _newton_solve_env[
     # and both need a dense body Jacobian rather than a joint-coefficient one.
     comptime SOLVER_ITER_GPU: Int = 50
 
-    comptime if NEQUALITY > 0:
-        _equality_env[
-            DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE,
-            BATCH, SOLVER_ITER_GPU,
-        ](
-            env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
-            equality, body_invweight0, cdof,
-            m_inv, qacc_constrained,
-        )
+    # (defect 29a) weld/connect are ROWS of the system above now.
 
     comptime if NTENDON > 0:
         # SKIP_FIXED: the fixed-tendon equalities are rows of the system above,

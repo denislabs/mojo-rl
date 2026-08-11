@@ -383,7 +383,7 @@ def _angular_jacobian_row_eq[
 
 
 @always_inline
-def _equality_env[
+def build_weld_equality_rows[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -391,7 +391,8 @@ def _equality_env[
     NEQUALITY: Int,
     V_SIZE: Int,
     BATCH: Int,
-    NUM_ITERATIONS: Int,
+    MAX_EQ_ROWS: Int,
+    MINVJ_EQ_SIZE: Int,
 ](
     env: Int,
     qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
@@ -423,58 +424,32 @@ def _equality_env[
     m_inv: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin
     ],
-    qacc_constrained: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
-    ],
-):
-    """Build and solve equality constraints (connect + weld) for one env.
+    mut eq_K: InlineArray[Scalar[DTYPE], MAX_EQ_ROWS],
+    mut eq_bias: InlineArray[Scalar[DTYPE], MAX_EQ_ROWS],
+    mut eq_inv_K_imp: InlineArray[Scalar[DTYPE], MAX_EQ_ROWS],
+    mut eq_J: InlineArray[Scalar[DTYPE], MINVJ_EQ_SIZE],
+    mut eq_MinvJ: InlineArray[Scalar[DTYPE], MINVJ_EQ_SIZE],
+) -> Int:
+    """Build the connect/weld equality ROWS — J, bias, K and 1/(K+R). NO SOLVE.
 
-    Reads equality constraint definitions from the equality record tensor,
-    computes world anchors, Jacobians, impedance, and runs bilateral PGS
-    iterations (no lambda >= 0 clamping) on `qacc_constrained`.
-
-    ⚠ IT DOES NOT TAKE `tendons` / `sites` / `dof_invweight0`, and must not be
-    given them again. It used to, purely so the deleted `_legacy_invw_read`
-    could index across the concatenated record slab — which is how a SITE
-    record came to supply a weld's diagApprox (see the module docstring). The
-    equality solver has no business reading a tendon or a site; dropping the
-    parameters makes that unrepresentable rather than merely unused.
+    Split out so the Newton solver can put these rows in its system (defect
+    29a). Body lifted VERBATIM from `_equality_env`, so the PGS post-pass
+    (still used by the PGS / CG / island solvers) and the Newton rows stay
+    bit-identical by construction rather than by review.
     """
 
     comptime if NEQUALITY == 0:
-        return
+        return 0
 
-    # Read number of equality constraints from model metadata
-    var neq = Int(
-        rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NEQUALITY])
-    )
+    var neq = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NEQUALITY]))
     if neq == 0:
-        return
+        return 0
     if neq > NEQUALITY:
         neq = NEQUALITY
 
-    # Max rows: 6 per constraint (3 connect + 3 weld orientation)
-    comptime MAX_EQ_ROWS = _max_one[6 * NEQUALITY]()
-    comptime MINVJ_EQ_SIZE = _max_one[6 * NEQUALITY * NV]()
-
-    var eq_K = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](fill=Scalar[DTYPE](1))
-    var eq_bias = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](fill=Scalar[DTYPE](0))
-    var eq_inv_K_imp = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](
-        fill=Scalar[DTYPE](0)
-    )
-    var eq_lambda = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](
-        fill=Scalar[DTYPE](0)
-    )
-    var eq_J = InlineArray[Scalar[DTYPE], MINVJ_EQ_SIZE](fill=Scalar[DTYPE](0))
-    var eq_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_EQ_SIZE](
-        fill=Scalar[DTYPE](0)
-    )
-
     var J_row = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
-
     var num_eq_rows = 0
 
-    # Build rows for each equality constraint
     for eq_i in range(neq):
         var eq_type = Int(rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_TYPE]))
         var body_a = Int(
@@ -893,6 +868,99 @@ def _equality_env[
                 )
 
                 num_eq_rows += 1
+
+    return num_eq_rows
+
+
+@always_inline
+def _equality_env[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    NEQUALITY: Int,
+    V_SIZE: Int,
+    BATCH: Int,
+    NUM_ITERATIONS: Int,
+](
+    env: Int,
+    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    subtree_com: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    mmeta: LayoutTensor[
+        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+    ],
+    equality: LayoutTensor[
+        DTYPE, Layout.row_major(NEQUALITY, MODEL_EQ_SIZE), MutAnyOrigin
+    ],
+    body_invweight0: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
+    ],
+    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    m_inv: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin
+    ],
+    qacc_constrained: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+    ],
+):
+    """Build and solve equality constraints (connect + weld) for one env.
+
+    Reads equality constraint definitions from the equality record tensor,
+    computes world anchors, Jacobians, impedance, and runs bilateral PGS
+    iterations (no lambda >= 0 clamping) on `qacc_constrained`.
+
+    ⚠ IT DOES NOT TAKE `tendons` / `sites` / `dof_invweight0`, and must not be
+    given them again. It used to, purely so the deleted `_legacy_invw_read`
+    could index across the concatenated record slab — which is how a SITE
+    record came to supply a weld's diagApprox (see the module docstring). The
+    equality solver has no business reading a tendon or a site; dropping the
+    parameters makes that unrepresentable rather than merely unused.
+    """
+
+
+    comptime if NEQUALITY == 0:
+        return
+
+    comptime MAX_EQ_ROWS = _max_one[6 * NEQUALITY]()
+    comptime MINVJ_EQ_SIZE = _max_one[6 * NEQUALITY * NV]()
+
+    var eq_K = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](fill=Scalar[DTYPE](1))
+    var eq_bias = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](
+        fill=Scalar[DTYPE](0)
+    )
+    var eq_inv_K_imp = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](
+        fill=Scalar[DTYPE](0)
+    )
+    var eq_lambda = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](
+        fill=Scalar[DTYPE](0)
+    )
+    var eq_J = InlineArray[Scalar[DTYPE], MINVJ_EQ_SIZE](fill=Scalar[DTYPE](0))
+    var eq_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_EQ_SIZE](
+        fill=Scalar[DTYPE](0)
+    )
+
+    var num_eq_rows = build_weld_equality_rows[
+        DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH,
+        MAX_EQ_ROWS, MINVJ_EQ_SIZE,
+    ](
+        env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+        equality, body_invweight0, cdof, m_inv,
+        eq_K, eq_bias, eq_inv_K_imp, eq_J, eq_MinvJ,
+    )
 
     if num_eq_rows == 0:
         return
