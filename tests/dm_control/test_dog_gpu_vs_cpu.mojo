@@ -579,9 +579,10 @@ def test_contacting_regime_is_reported() raises:
         "| steps where ncon disagreed =", ncon_disagreements, "/ 10",
     )
     print(
-        "     ^ reported, not asserted — float32 vs float64 changes the"
-        " contact SET, and dog's touch sum spans 22.6% over root yaw on the"
-        " REFERENCE alone. See the module docstring."
+        "     ^ the per-block max|d| above are REPORTED, not asserted —"
+        " float32 vs float64 changes the contact SET. The touch PEAKS are"
+        " the exception: they carry the only bound on the box ray test"
+        " (5% relative), because the airborne window compares 0.0 to 0.0."
     )
     assert_true(
         touch_cpu_hi > 1e-9,
