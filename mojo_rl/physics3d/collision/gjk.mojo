@@ -700,6 +700,7 @@ def gjk_epa_witness[
     mnv2: Int,
     mut wf1: InlineArray[Scalar[DTYPE], 9],
     mut wf2: InlineArray[Scalar[DTYPE], 9],
+    mut wx: InlineArray[Scalar[DTYPE], 6],
     mut wf_ok: Int,
 ) -> Tuple[
     Scalar[DTYPE],
@@ -715,8 +716,16 @@ def gjk_epa_witness[
 
     `wf1` / `wf2` receive the SUPPORT POINTS, on geom 1 and geom 2
     respectively, of the three vertices of the EPA face the answer came from —
-    MuJoCo's `pt->verts[face->verts[i]].vert1 / .vert2`. `wf_ok` is set to 1
-    when they are valid and left at 0 on every early return.
+    MuJoCo's `pt->verts[face->verts[i]].vert1 / .vert2`. `wx` receives the two
+    witness points themselves (`status->x1`, then `status->x2`), whose
+    difference is MuJoCo's `dir`. `wf_ok` is set to 1 when they are valid and
+    left at 0 on every early return.
+
+    ⚠ `dir` IS NOT `normal * depth` AND MUST NOT BE REBUILT THAT WAY. The
+    returned normal has already been negated into the `gi -> gj` convention
+    callers expect, while `multicontact` wants `x2 - x1` in the reference's own
+    orientation; deriving one from the other is a sign guess in a routine where
+    a sign error silently mirrors the whole manifold.
 
     ⚠ THAT FACE IS THE ONLY THING THAT IDENTIFIES THE CONTACT FEATURE, which is
     why it is plumbed out rather than recomputed. `multicontact` has to know
@@ -1395,6 +1404,12 @@ def gjk_epa_witness[
         wf2[6] = ev[i2 * 9 + 6]
         wf2[7] = ev[i2 * 9 + 7]
         wf2[8] = ev[i2 * 9 + 8]
+        wx[0] = w1x
+        wx[1] = w1y
+        wx[2] = w1z
+        wx[3] = w2x
+        wx[4] = w2y
+        wx[5] = w2z
         wf_ok = 1
         # ⚠ THIS SIGN WAS WRONG AND NOTHING CAUGHT IT FOR THE MESH PATH.
         # `test_narrow_phase_pairs` anchors contact DIRECTION against MuJoCo for
@@ -1561,6 +1576,7 @@ def gjk_epa[
     """
     var wf1 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     var wf2 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var wx = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
     var wf_ok = 0
     return gjk_epa_witness[DTYPE, NMESH_VERTS](
         type1,
@@ -1571,5 +1587,5 @@ def gjk_epa[
         p2x, p2y, p2z, q2x, q2y, q2z, q2w,
         r2, hl2, hx2, hy2, hz2,
         va2, mnv2,
-        wf1, wf2, wf_ok,
+        wf1, wf2, wx, wf_ok,
     )

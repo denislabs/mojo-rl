@@ -91,9 +91,7 @@ struct Model[
     )
     comptime L_MESH_POLYVERT = Layout.row_major(Self.NMESH_POLYVERT)
     comptime L_MESH_POLYMAP = Layout.row_major(Self.NMESH_POLYVERT)
-    comptime L_MESH_VERT_POLYMAP = Layout.row_major(
-        _at_least_one(Self.NMESH_VERTS), 2
-    )
+    comptime L_MESH_VERT_POLYMAP = Layout.row_major(Self.NMESH_VERTS, 2)
 
     var bodies: TensorImpl[Self.DTYPE]  # [NBODY, MODEL_BODY_SIZE]
     var joints: TensorImpl[Self.DTYPE]  # [NJOINT, MODEL_JOINT_SIZE]
