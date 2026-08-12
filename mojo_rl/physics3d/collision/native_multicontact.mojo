@@ -286,9 +286,26 @@ def _plane_normal[
 ) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     """`planeNormal` — the clipping plane through edge (v1, v2), returns (n, d).
 
-    ⚠ THE NORMALISE IS NOT REDUNDANT even though it cancels algebraically; the
-    reference keeps it "to avoid asymmetric rounding later on" and dropping it
-    changes which side of the plane a borderline vertex lands on.
+    ⚠⚠ DO NOT NORMALISE `res` HERE, AND CHECK THE TREE BEFORE QUOTING A
+    REFERENCE COMMENT. This function carried a `mju_normalize3` and a docstring
+    asserting "the reference keeps it to avoid asymmetric rounding later on".
+    That comment is real but it belongs to **3.11.0 ONLY** — 3.6.0, 3.3.6 and
+    `mujoco-main` all omit the normalise, and the pixi runtime we gate against
+    is **3.10.0**, which predates 3.11. I transcribed 3.11's comment into a port
+    of the older routine and then cited it as justification.
+
+    The normalise is very nearly a no-op either way, which is why it survived so
+    long: `planeIntersect` divides `(pd - dot(pn, a))` by `dot(pn, ab)` and both
+    scale linearly with |pn|, so `t` is scale-invariant, and `halfspace` only
+    reads the SIGN. It shifts one thing — the fixed `-mjMINVAL` (1e-15) epsilon
+    in `halfspace` becomes an effectively different threshold once |pn| changes,
+    so a vertex sitting exactly on a clipping plane can fall the other way.
+
+    🎯 WHEN THE RUNTIME MOVES TO 3.11: put the normalise BACK, guarded on the
+    runtime version, not on the newest tree lying around. conda-forge topped out
+    at 3.10.0 as of 2026-08-12 (3.11.0 is on PyPI); `pixi search mujoco` is the
+    check. The 3.11 form is `mju_normalize3(res)` immediately before the
+    `dot3(res, v1)` return — nothing else in the routine changed.
     """
     var d1x = v2x - v1x
     var d1y = v2y - v1y
@@ -297,11 +314,6 @@ def _plane_normal[
     var rx = d1y * nz - d1z * ny
     var ry = d1z * nx - d1x * nz
     var rz = d1x * ny - d1y * nx
-    var l = sqrt(rx * rx + ry * ry + rz * rz)
-    if l > Scalar[DTYPE](0):
-        rx /= l
-        ry /= l
-        rz /= l
     return (rx, ry, rz, rx * v1x + ry * v1y + rz * v1z)
 
 
