@@ -788,6 +788,16 @@ def _run_mppi_iteration[
     inside the inliner's safe range, and lets future planners reuse
     the same iteration body without copy-paste.
     """
+    # ⚠ `mppi_broadcast_z0_zero_returns_batched_kernel` and `mppi_copy_z_kernel`
+    # are indexed ONE THREAD PER ELEMENT (see their docstrings), so they need a
+    # grid over BATCH_TOTAL * LATENT_DIM, NOT the row-count `MPPI_BLOCKS` the
+    # rest of the kernels here use. Launching them with `MPPI_BLOCKS` would
+    # silently copy only the first `TPB * MPPI_BLOCKS` elements — a partially
+    # rolled latent, which reads as a planner that plans badly rather than as a
+    # crash.
+    comptime Z_ELEMS = BATCH_TOTAL * LATENT_DIM
+    comptime Z_BLOCKS = (Z_ELEMS + TPB - 1) // TPB
+
     # 1. Broadcast z0 + zero returns
     comptime broadcast_z0_zero = (
         mppi_broadcast_z0_zero_returns_batched_kernel[
@@ -798,7 +808,7 @@ def _run_mppi_iteration[
         z0_tensor,
         z_tensor,
         returns_tensor,
-        grid_dim=(MPPI_BLOCKS,),
+        grid_dim=(Z_BLOCKS,),
         block_dim=(TPB,),
     )
 
@@ -873,11 +883,11 @@ def _run_mppi_iteration[
             block_dim=(TPB,),
         )
 
-        # 2e. Copy z_next → z (planner)
+        # 2e. Copy z_next → z (planner). Element-indexed → `Z_BLOCKS`.
         ctx.enqueue_function[copy_z](
             z_tensor,
             z_next_tensor,
-            grid_dim=(MPPI_BLOCKS,),
+            grid_dim=(Z_BLOCKS,),
             block_dim=(TPB,),
         )
 

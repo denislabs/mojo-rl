@@ -71,15 +71,24 @@ def mppi_broadcast_z0_zero_returns_batched_kernel[
     """Fused: broadcast per-env ``z0`` to every candidate row + zero
     the returns accumulator. One kernel launch replaces the legacy
     two-kernel pair.
+
+    ⚠ ONE THREAD PER ELEMENT — same fix, and same reason, as
+    ``mppi_copy_z_kernel``: the row-per-thread form ran a private
+    512-float loop per thread on a 9-block grid, measured at 92 us x
+    800 launches = 2.4% of GPU time on an RTX 5090 to write 4.4 MB.
+    The ``returns`` zeroing rides along on the ``k == 0`` threads so
+    this stays a single launch.
     """
+    comptime N = BATCH_TOTAL * LATENT_DIM
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= BATCH_TOTAL:
+    if i >= N:
         return
 
-    var env_idx = i // TOTAL_SAMPLES
-    for k in range(LATENT_DIM):
-        z_all[i, k] = z0[env_idx, k]
-    returns[i] = Scalar[dtype](0.0)
+    var row = i // LATENT_DIM
+    var k = i % LATENT_DIM
+    z_all[row, k] = z0[row // TOTAL_SAMPLES, k]
+    if k == 0:
+        returns[row] = Scalar[dtype](0.0)
 
 
 # =============================================================================
@@ -221,12 +230,24 @@ def mppi_copy_z_kernel[
 
     Used between horizon steps to roll ``z_next`` back into ``z``
     for the next step's input.
+
+    ⚠ ONE THREAD PER ELEMENT, not per row. The row-per-thread version
+    (``for k in range(LATENT_DIM)``) gave each thread a 512-float
+    private run, so adjacent threads touched addresses 512 floats
+    apart — fully uncoalesced — and the grid was only
+    ``ceil(BATCH_TOTAL / TPB)`` = 9 blocks on a card with ~170 SMs.
+    Measured on an RTX 5090 at BATCH_TOTAL=2144: 104 us per launch,
+    2400 launches, **8.0% of all GPU time** to move 8.8 MB, i.e.
+    ~84 GB/s on a ~1.5 TB/s part. Flat indexing makes the access
+    contiguous across a warp and the grid 4288 blocks.
     """
+    comptime N = TOTAL_SAMPLES * LATENT_DIM
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= TOTAL_SAMPLES:
+    if i >= N:
         return
-    for k in range(LATENT_DIM):
-        dst[i, k] = src[i, k]
+    dst[i // LATENT_DIM, i % LATENT_DIM] = src[
+        i // LATENT_DIM, i % LATENT_DIM
+    ]
 
 
 # =============================================================================
