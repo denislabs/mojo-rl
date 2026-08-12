@@ -96,6 +96,11 @@ from ..gpu.constants import (
     GEOM_IDX_MESH_ID,
     MAX_GPU_MESHES,
     MODEL_MESH_META_SIZE,
+    MODEL_MESH_POLY_SIZE,
+    MESH_META_IDX_POLYADR,
+    MESH_META_IDX_POLYNUM,
+    mesh_max_poly,
+    mesh_max_polyvert,
 )
 from .collision_primitives import (
     sphere_sphere,
@@ -117,8 +122,12 @@ from .plane_frame import (
     from_plane_frame,
     quat_to_plane_frame,
 )
-from .gjk import gjk_epa
+from .gjk import gjk_epa, gjk_epa_witness
 from .multi_ccd import multi_ccd_pair_supported, multi_ccd_extra_contacts
+from .native_multicontact import (
+    native_multicontact_contacts,
+    MC_ENABLED,
+)
 from .contact_detection import (
     mix_contact_params,
     pair_body_filtered,
@@ -233,6 +242,20 @@ def _detect_contacts_sap_env[
     ],
     mesh_verts: LayoutTensor[
         DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
+    mesh_polys: LayoutTensor[
+        DTYPE,
+        Layout.row_major(mesh_max_poly(NMESH_VERTS), MODEL_MESH_POLY_SIZE),
+        MutAnyOrigin,
+    ],
+    mesh_polyvert: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_polyvert(NMESH_VERTS)), MutAnyOrigin
+    ],
+    mesh_polymap: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_polyvert(NMESH_VERTS)), MutAnyOrigin
+    ],
+    mesh_vert_polymap: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS, 2), MutAnyOrigin
     ],
     contacts: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
@@ -1299,7 +1322,32 @@ def _detect_contacts_sap_env[
                     if mj_id >= 0:
                         va2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 0]))
                         mnv2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 1]))
-                    var result = gjk_epa[DTYPE, NMESH_VERTS](
+
+                    # NATIVE MULTI-CONTACT — the SAME dispatch as
+                    # `contact_detection.mojo`. ⚠ THIS FILE IS A SECOND COPY OF
+                    # THE NARROW PHASE, and when the manifold path landed there
+                    # first the two producers disagreed: an env on the SAP path
+                    # got ONE point for a mesh pair where the O(N^2) path gave
+                    # four. Same model, different contacts, decided by which
+                    # broadphase the config happened to select. See
+                    # `feedback_one_field_two_producers`.
+                    var mc_pair = (
+                        MC_ENABLED
+                        and (gi_type == GEOM_MESH or gi_type == GEOM_BOX)
+                        and (gj_type == GEOM_MESH or gj_type == GEOM_BOX)
+                        and cm <= Scalar[DTYPE](0)
+                    )
+                    var wf1 = InlineArray[Scalar[DTYPE], 9](
+                        fill=Scalar[DTYPE](0)
+                    )
+                    var wf2 = InlineArray[Scalar[DTYPE], 9](
+                        fill=Scalar[DTYPE](0)
+                    )
+                    var wxx = InlineArray[Scalar[DTYPE], 6](
+                        fill=Scalar[DTYPE](0)
+                    )
+                    var wf_ok = 0
+                    var result = gjk_epa_witness[DTYPE, NMESH_VERTS](
                         gi_type,
                         pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
                         ri, hli, hxi, hyi, hzi,
@@ -1308,6 +1356,7 @@ def _detect_contacts_sap_env[
                         pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
                         rj, hlj, hxj, hyj, hzj,
                         va2, mnv2,
+                        wf1, wf2, wxx, wf_ok,
                     )
                     dist = result[0]
                     cx = result[1]
@@ -1318,6 +1367,93 @@ def _detect_contacts_sap_env[
                     nz = result[6]
                     body_a = gi_body
                     body_b = gj_body
+
+                    if (
+                        mc_pair
+                        and wf_ok == 1
+                        and dist < cm
+                        and num_contacts < MAX_CONTACTS
+                    ):
+                        var pa1 = 0
+                        var pn1 = 0
+                        var pa2 = 0
+                        var pn2 = 0
+                        if mi_id >= 0:
+                            pa1 = Int(rebind[Scalar[DTYPE]](
+                                mesh_meta[mi_id, MESH_META_IDX_POLYADR]
+                            ))
+                            pn1 = Int(rebind[Scalar[DTYPE]](
+                                mesh_meta[mi_id, MESH_META_IDX_POLYNUM]
+                            ))
+                        if mj_id >= 0:
+                            pa2 = Int(rebind[Scalar[DTYPE]](
+                                mesh_meta[mj_id, MESH_META_IDX_POLYADR]
+                            ))
+                            pn2 = Int(rebind[Scalar[DTYPE]](
+                                mesh_meta[mj_id, MESH_META_IDX_POLYNUM]
+                            ))
+                        # Operands in MuJoCo's order (lower geom type first),
+                        # and the witness pair swaps with them — `dir` is a
+                        # SIGNED input to `boxNormals2`, not a magnitude.
+                        var mc_swap = gi_type > gj_type
+                        var wxs = InlineArray[Scalar[DTYPE], 6](
+                            fill=Scalar[DTYPE](0)
+                        )
+                        wxs[0] = wxx[3]
+                        wxs[1] = wxx[4]
+                        wxs[2] = wxx[5]
+                        wxs[3] = wxx[0]
+                        wxs[4] = wxx[1]
+                        wxs[5] = wxx[2]
+                        var mcn = 0
+                        if mc_swap:
+                            mcn = native_multicontact_contacts[
+                                DTYPE, NMESH_VERTS,
+                                mesh_max_poly(NMESH_VERTS),
+                                mesh_max_polyvert(NMESH_VERTS),
+                                MAX_CONTACTS, BATCH,
+                            ](
+                                env, body_a, body_b,
+                                gj_type,
+                                pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                                hxj, hyj, hzj, rbound_j, va2, mnv2, pa2, pn2,
+                                gi_type,
+                                pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                                hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
+                                mesh_verts, mesh_polys, mesh_polyvert,
+                                mesh_polymap, mesh_vert_polymap,
+                                wf2, wf1, wxs,
+                                dist, cm, cf, cfs, cfr, cdim,
+                                True,
+                                contacts, num_contacts,
+                            )
+                        else:
+                            mcn = native_multicontact_contacts[
+                                DTYPE, NMESH_VERTS,
+                                mesh_max_poly(NMESH_VERTS),
+                                mesh_max_polyvert(NMESH_VERTS),
+                                MAX_CONTACTS, BATCH,
+                            ](
+                                env, body_a, body_b,
+                                gi_type,
+                                pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                                hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
+                                gj_type,
+                                pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                                hxj, hyj, hzj, rbound_j, va2, mnv2, pa2, pn2,
+                                mesh_verts, mesh_polys, mesh_polyvert,
+                                mesh_polymap, mesh_vert_polymap,
+                                wf1, wf2, wxx,
+                                dist, cm, cf, cfs, cfr, cdim,
+                                False,
+                                contacts, num_contacts,
+                            )
+                        # The manifold REPLACES the single point.
+                        if mcn > 0:
+                            _fill_pair_solparams[
+                                DTYPE, MAX_CONTACTS, BATCH
+                            ](env, _n0, num_contacts, _mx, contacts)
+                            continue
                 else:
                     _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
                         env, _n0, num_contacts, _mx, contacts
@@ -1446,6 +1582,20 @@ def _detect_contacts_sap_fields_kernel[
     mesh_verts: LayoutTensor[
         DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
     ],
+    mesh_polys: LayoutTensor[
+        DTYPE,
+        Layout.row_major(mesh_max_poly(NMESH_VERTS), MODEL_MESH_POLY_SIZE),
+        MutAnyOrigin,
+    ],
+    mesh_polyvert: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_polyvert(NMESH_VERTS)), MutAnyOrigin
+    ],
+    mesh_polymap: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_polyvert(NMESH_VERTS)), MutAnyOrigin
+    ],
+    mesh_vert_polymap: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS, 2), MutAnyOrigin
+    ],
     contacts: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
         MutAnyOrigin,
@@ -1462,7 +1612,8 @@ def _detect_contacts_sap_fields_kernel[
         NMESH_VERTS, BATCH,
     ](
         env, xpos, xquat, geoms, bodies, mmeta, excludes, mesh_meta,
-        mesh_verts, contacts, smeta,
+        mesh_verts, mesh_polys, mesh_polyvert, mesh_polymap,
+        mesh_vert_polymap, contacts, smeta,
     )
 
 
@@ -1510,6 +1661,11 @@ def detect_contacts_sap[
         MAX_GPU_MESHES, MODEL_MESH_META_SIZE
     )
     comptime L_MESH_VERT = Layout.row_major(NMESH_VERTS, 3)
+    comptime L_MESH_POLY = Layout.row_major(
+        mesh_max_poly(NMESH_VERTS), MODEL_MESH_POLY_SIZE
+    )
+    comptime L_MESH_POLYVERT = Layout.row_major(mesh_max_polyvert(NMESH_VERTS))
+    comptime L_MESH_VPMAP = Layout.row_major(NMESH_VERTS, 2)
     comptime L_CONTACTS = Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE)
     comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
 
@@ -1522,6 +1678,10 @@ def detect_contacts_sap[
         var excludes_v = m.excludes.lt["cpu", L_EXCLUDE]()
         var mesh_meta_v = m.mesh_meta.lt["cpu", L_MESH_META]()
         var mesh_verts_v = m.mesh_verts.lt["cpu", L_MESH_VERT]()
+        var mesh_polys_v = m.mesh_polys.lt["cpu", L_MESH_POLY]()
+        var mesh_polyvert_v = m.mesh_polyvert.lt["cpu", L_MESH_POLYVERT]()
+        var mesh_polymap_v = m.mesh_polymap.lt["cpu", L_MESH_POLYVERT]()
+        var mesh_vert_polymap_v = m.mesh_vert_polymap.lt["cpu", L_MESH_VPMAP]()
         var contacts_v = d.contacts.lt["cpu", L_CONTACTS]()
         var smeta_v = d.meta.lt["cpu", L_SMETA]()
         for e in range(BATCH):
@@ -1530,7 +1690,9 @@ def detect_contacts_sap[
                 NEXCLUDE, NMESH_VERTS, BATCH,
             ](
                 e, xpos_v, xquat_v, geoms_v, bodies_v, mmeta_v,
-                excludes_v, mesh_meta_v, mesh_verts_v, contacts_v, smeta_v,
+                excludes_v, mesh_meta_v, mesh_verts_v, mesh_polys_v,
+                mesh_polyvert_v, mesh_polymap_v, mesh_vert_polymap_v,
+                contacts_v, smeta_v,
             )
     else:
         var c = ctx.value()
@@ -1549,6 +1711,10 @@ def detect_contacts_sap[
             m.excludes.lt["gpu", L_EXCLUDE](),
             m.mesh_meta.lt["gpu", L_MESH_META](),
             m.mesh_verts.lt["gpu", L_MESH_VERT](),
+            m.mesh_polys.lt["gpu", L_MESH_POLY](),
+            m.mesh_polyvert.lt["gpu", L_MESH_POLYVERT](),
+            m.mesh_polymap.lt["gpu", L_MESH_POLYVERT](),
+            m.mesh_vert_polymap.lt["gpu", L_MESH_VPMAP](),
             d.contacts.lt["gpu", L_CONTACTS](),
             d.meta.lt["gpu", L_SMETA](),
             grid_dim=(BLOCKS,),
