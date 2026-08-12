@@ -2847,6 +2847,21 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
     # worst tendon. Zero on every well-sized model; `init_fields` RAISES when
     # it is not — the half of a cap that actually prevents bugs.
     var tendon_wrap_overflow: Int
+    # How many `<fixed>` tendons did not fit in NTEN. Same job as the field
+    # above, one level up: that one guards the WIDTH of a tendon, this one the
+    # COUNT of them.
+    #
+    # ⚠ THIS EXISTS BECAUSE THE CAP WENT LIVE WITHOUT IT. `NTEN` used to be a
+    # global `MAX_COMPTIME_TENDONS`, which nobody could under-declare; sizing
+    # it from `ModelDefFromXML.max_tendon` (2026-08-11, cc7021d0) turned that
+    # parameter — a hand-written `Int = 0` default — into a real bound. fish
+    # had never declared it and has two tendons, so it silently ran with one
+    # from that commit until 2026-08-12. `while data.ntendon < NTEN` just
+    # stops, and a dropped tendon's actuator resolves to `motor_trn_n == 0`,
+    # which `apply_actions` skips: no diagnostic anywhere. Same failure the
+    # 2026-07-31 comment above describes for quadruped, re-introduced by the
+    # fix that made the array small enough to matter again.
+    var tendon_count_overflow: Int
     var tendon_trn_n: InlineArray[Int, Self.NTEN]
     var tendon_trn_qadr: InlineArray[Int, Self.NTEN * Self.WRAPS]
     var tendon_trn_dadr: InlineArray[Int, Self.NTEN * Self.WRAPS]
@@ -2894,6 +2909,7 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
             fill=0.0
         )
         self.tendon_wrap_overflow = 0
+        self.tendon_count_overflow = 0
         self.tendon_trn_n = InlineArray[Int, Self.NTEN](fill=0)
         self.tendon_trn_qadr = InlineArray[Int, Self.NTEN * Self.WRAPS](
             fill=-1
@@ -2945,6 +2961,7 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
         # ⚠ CARRY IT. Resetting to 0 in the copy ctor would lose the overflow
         # precisely when the data is copied, which is how a cap diagnostic dies.
         self.tendon_wrap_overflow = copy.tendon_wrap_overflow
+        self.tendon_count_overflow = copy.tendon_count_overflow
         self.tendon_trn_n = InlineArray[Int, Self.NTEN](fill=0)
         self.tendon_trn_qadr = InlineArray[Int, Self.NTEN * Self.WRAPS](
             fill=-1
@@ -3020,6 +3037,7 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
         self.tendon_spring_lo = move.tendon_spring_lo^
         self.tendon_spring_hi = move.tendon_spring_hi^
         self.tendon_wrap_overflow = move.tendon_wrap_overflow
+        self.tendon_count_overflow = move.tendon_count_overflow
         self.tendon_trn_n = move.tendon_trn_n^
         self.tendon_trn_qadr = move.tendon_trn_qadr^
         self.tendon_trn_dadr = move.tendon_trn_dadr^
@@ -3587,6 +3605,11 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
     var ten_sec = _extract_section(xml_clean, "tendon")
     var ten_names = List[String]()
     if ten_sec.byte_length() > 0:
+        # ⚠ COUNTED BEFORE THE LOOP, because the loop's own bound is what hides
+        # the problem: `while data.ntendon < NTEN` stops without a word.
+        var n_fixed = _count_tag(ten_sec, "fixed")
+        if n_fixed > NTEN:
+            data.tendon_count_overflow = n_fixed - NTEN
         var tpos = 0
         while data.ntendon < NTEN:
             var ft = ten_sec.find("<fixed", tpos)

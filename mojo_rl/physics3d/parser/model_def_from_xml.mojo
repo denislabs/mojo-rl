@@ -719,6 +719,29 @@ struct ModelDefFromXML[
                 )
             )
 
+        # The COUNT of tendons, guarded like their WIDTH above.
+        #
+        # ⚠ `max_tendon` defaults to 0 and is written by hand on each model, so
+        # a model with tendons that never passes it asks for a 1-slot array.
+        # That was harmless while `_NTEN` was a global cap and became a silent
+        # truncation the moment it was not (cc7021d0); fish shipped with one of
+        # its two tendons dropped for a day. An unset parameter must fail the
+        # build, not quietly resize the model.
+        if _acd_wrap.tendon_count_overflow > 0:
+            raise Error(
+                String(
+                    "physics3d: this model declares ",
+                    _acd_wrap.tendon_count_overflow + Self._NTEN,
+                    " <fixed> tendons but max_tendon=", Self.max_tendon,
+                    " gives room for ", Self._NTEN,
+                    ". Pass `max_tendon = <parse>.NTENDON` on the",
+                    " ModelDefFromXML declaration. Truncating is NOT safe: a",
+                    " dropped tendon's actuator resolves to motor_trn_n == 0,",
+                    " which apply_actions skips, so the env builds and runs",
+                    " with that degree of freedom simply inert.",
+                )
+            )
+
         # Reject unplumbed dof-friction solver params LOUDLY, for the same
         # reason as the actuator guard below: the parser sees the attribute,
         # the model would build, and `friction_dof.mojo` would quietly use

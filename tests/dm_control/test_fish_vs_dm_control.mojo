@@ -75,7 +75,6 @@ from mojo_rl.envs.dm_control.fish.fish_xml import (
 )
 
 # The comptime tendon tables are strided by this, not by a literal.
-from mojo_rl.physics3d.parser.xml_parser import MAX_COMPTIME_TENDON_WRAPS
 
 comptime DTYPE = DType.float64
 comptime REF_XML: StaticString = (
@@ -282,15 +281,19 @@ def test_fish_tendons_match_mujoco() raises:
     var t_qadr = List[Int]()
     var t_dadr = List[Int]()
     var t_coef = List[Float64]()
-    comptime for a in range(8):
+    # ⚠ THE MODEL'S OWN DIMS, not a global cap. This read `range(8)` and
+    # `8 * MAX_COMPTIME_TENDON_WRAPS` while `_acd`'s tendon arrays were sized
+    # by fixed `MAX_COMPTIME_*` caps. cc7021d0 sized them from the model, and
+    # since fish then declared no `max_tendon` its arrays became length 1 —
+    # this loop went out of bounds and the whole gate stopped compiling. That
+    # build failure WAS the bug report for a real truncation (see
+    # fish_xml.mojo); do not paper over it with a literal again.
+    comptime for a in range(M._NTEN):
         t_k.append(materialize[M._acd.tendon_stiffness[a]]())
         t_lo.append(materialize[M._acd.tendon_spring_lo[a]]())
         t_hi.append(materialize[M._acd.tendon_spring_hi[a]]())
         t_n.append(materialize[M._acd.tendon_trn_n[a]]())
-    # ⚠ 8 tendons * the WRAP STRIDE, not a literal 32. The stride moved
-    # 4 -> 16 with defect 17; copying 32 entries then took two tendons'
-    # worth instead of eight, and the `t * 4 + k` reads below compounded it.
-    comptime for a in range(8 * MAX_COMPTIME_TENDON_WRAPS):
+    comptime for a in range(M._NTEN * M._WRAPS):
         t_qadr.append(materialize[M._acd.tendon_trn_qadr[a]]())
         t_dadr.append(materialize[M._acd.tendon_trn_dadr[a]]())
         t_coef.append(materialize[M._acd.tendon_trn_coef[a]]())
@@ -320,15 +323,15 @@ def test_fish_tendons_match_mujoco() raises:
             var w = Int(py=tadr[t]) + k
             var jnt = Int(py=wobj[w])
             assert_equal(
-                t_dadr[t * MAX_COMPTIME_TENDON_WRAPS + k], Int(py=jdof[jnt]),
+                t_dadr[t * M._WRAPS + k], Int(py=jdof[jnt]),
                 "tendon joint dof address",
             )
             assert_equal(
-                t_qadr[t * MAX_COMPTIME_TENDON_WRAPS + k], Int(py=jqpos[jnt]),
+                t_qadr[t * M._WRAPS + k], Int(py=jqpos[jnt]),
                 "tendon joint qpos address",
             )
             assert_true(
-                _close(t_coef[t * MAX_COMPTIME_TENDON_WRAPS + k], Float64(py=wprm[w])),
+                _close(t_coef[t * M._WRAPS + k], Float64(py=wprm[w])),
                 "tendon coefficient (wrap_prm) — the sign is what makes"
                 " fins_flap antisymmetric and fins_sym symmetric",
             )

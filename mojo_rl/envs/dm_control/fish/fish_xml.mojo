@@ -175,6 +175,13 @@ comptime DMFishUprightModel = ModelDefFromXML[
     ngeom = pf.NGEOM, nact = pf.NACT, ntex = pf.NTEX, nmat = pf.NMAT,
     nlight = pf.NLIGHT, ncam = pf.NCAM, nsite = pf.NSITE,
     max_contacts=1,
+    # ⚠ REQUIRED, not optional. `max_tendon` sizes `_acd`'s tendon arrays;
+    # unset it defaults to 0, which rounds up to one slot and silently drops
+    # every tendon past the first. fish has two — `fins_flap` (an actuator
+    # transmission) and `fins_sym` (a passive spring) — and ran with one from
+    # cc7021d0 until this line was added. `ModelDefFromXML` now refuses to
+    # build a model that under-declares it.
+    max_tendon = pf.NTENDON,
     obs_dim_override=21,
     timestep = pf.TIMESTEP,
 ]
@@ -186,6 +193,8 @@ comptime DMFishSwimModel = ModelDefFromXML[
     ngeom = pf.NGEOM, nact = pf.NACT, ntex = pf.NTEX, nmat = pf.NMAT,
     nlight = pf.NLIGHT, ncam = pf.NCAM, nsite = pf.NSITE,
     max_contacts=1,
+    # See the note on DMFishUprightModel above.
+    max_tendon = pf.NTENDON,
     obs_dim_override=24,
     timestep = pf.TIMESTEP,
 ]
