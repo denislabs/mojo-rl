@@ -130,6 +130,73 @@ def check[DIM: Int, B: Int, OP: ElementOp](
     _cmp("grad_beta ", ln.beta.grd, fused.beta.grd, DIM, 1e-4)
 
 
+def check_cpu[DIM: Int, B: Int, OP: ElementOp](
+    ctx: DeviceContext, label: String
+) raises:
+    """CPU vs GPU for the SAME fused module.
+
+    The GPU path is already pinned to the unfused pair by `check`, so agreeing
+    with it transitively validates the CPU path. Worth its own gate because the
+    CPU forward is hand-vectorized with raw-pointer SIMD loads/stores — a
+    different failure surface from the GPU kernel entirely.
+    """
+    print("  ", label, "  DIM=", DIM, " B=", B, sep="")
+    var mc = LayerNormAct[DIM, OP].make["cpu", INIT=Kaiming]()
+    var mg = LayerNormAct[DIM, OP].make["gpu", INIT=Kaiming](ctx=ctx)
+    mg.gamma.val.ensure_host(ctx, DIM)
+    mg.beta.val.ensure_host(ctx, DIM)
+    for j in range(DIM):
+        var g = Scalar[DT](1.0) + Scalar[DT](0.01) * Scalar[DT]((j % 17) - 8)
+        var bt = Scalar[DT](0.02) * Scalar[DT]((j % 13) - 6)
+        mc.gamma.val.data[j] = g
+        mc.beta.val.data[j] = bt
+        mg.gamma.val.data[j] = g
+        mg.beta.val.data[j] = bt
+    mg.gamma.val.upload_resident(ctx)
+    mg.beta.val.upload_resident(ctx)
+
+    var xc = Tensor.alloc(B * DIM)
+    for i in range(B * DIM):
+        xc.data[i] = Scalar[DT](0.13) * Scalar[DT]((i % 41) - 20)
+    var xg = Tensor.alloc(B * DIM)
+    for i in range(B * DIM):
+        xg.data[i] = xc.data[i]
+    xg.upload(ctx)
+    var yc = Tensor.alloc(B * DIM)
+    var yg = Tensor.alloc_gpu(ctx, B * DIM)
+    mc.forward["cpu", B](TensorRefs[1](xc), yc, None)
+    mg.forward["gpu", B](TensorRefs[1](xg), yg, Optional(ctx))
+    yg.download(ctx)
+    ctx.synchronize()
+    _cmp("fused    cpu vs gpu", yg, yc, B * DIM, 5e-3)
+
+    # CONTROL: the same comparison for PLAIN LayerNorm, to show the gap is
+    # inherited, not introduced by the fusion. The GPU computes variance from
+    # raw moments (E[x^2] - mean^2, one block reduce) while the CPU uses the
+    # two-pass sum((x-mean)^2); those disagree in fp32 by ~1e-3 relative on
+    # cancelling data, and Mish amplifies it. Verified independently: disabling
+    # the CPU SIMD block reproduces the fused number to 16 digits, so the
+    # hand-vectorization is exact and contributes nothing here.
+    var lc = LayerNorm[DIM].make["cpu", INIT=Kaiming]()
+    var lg = LayerNorm[DIM].make["gpu", INIT=Kaiming](ctx=ctx)
+    lg.gamma.val.ensure_host(ctx, DIM)
+    lg.beta.val.ensure_host(ctx, DIM)
+    for j in range(DIM):
+        lc.gamma.val.data[j] = mc.gamma.val.data[j]
+        lc.beta.val.data[j] = mc.beta.val.data[j]
+        lg.gamma.val.data[j] = mc.gamma.val.data[j]
+        lg.beta.val.data[j] = mc.beta.val.data[j]
+    lg.gamma.val.upload_resident(ctx)
+    lg.beta.val.upload_resident(ctx)
+    var lyc = Tensor.alloc(B * DIM)
+    var lyg = Tensor.alloc_gpu(ctx, B * DIM)
+    lc.forward["cpu", B](TensorRefs[1](xc), lyc, None)
+    lg.forward["gpu", B](TensorRefs[1](xg), lyg, Optional(ctx))
+    lyg.download(ctx)
+    ctx.synchronize()
+    _cmp("bare LN  cpu vs gpu", lyg, lyc, B * DIM, 5e-3)
+
+
 def main() raises:
     var ctx = DeviceContext()
     print("LayerNormAct vs LayerNorm+Act —", ctx.name())
@@ -141,5 +208,12 @@ def main() raises:
     print()
     # DIM=2048 -> ELEMS = 16 > LN_REG_CAP, so this takes the WHILE-LOOP path.
     check[2048, 64, MishOp](ctx, "Mish, DIM=2048 (non-register path)  ")
+    print()
+    print("== CPU forward vs the (already-validated) GPU forward ==")
+    # DIM=512 is a multiple of CPU_SIMD_W; 100 is NOT, so it exercises the
+    # scalar remainder tail of the hand-vectorized loop.
+    check_cpu[512, 64, MishOp](ctx, "Mish DIM=512 (no tail)   ")
+    check_cpu[100, 64, MishOp](ctx, "Mish DIM=100 (SIMD tail) ")
+    check_cpu[512, 64, TanhOp](ctx, "Tanh DIM=512             ")
     print()
     print("ALL PASSED")

@@ -60,7 +60,7 @@ from max.gpu.host import DeviceContext
 from std.utils.numerics import get_accum_type
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, CPU_SIMD_W
 from mojo_rl.nn.core.element_op import ElementOp
 from ..core.tensor import Tensor, TensorImpl
 from ..core.polyak import polyak_tensor
@@ -369,11 +369,34 @@ struct LayerNormAct[DIM_: Int, OP: ElementOp, ADT: DType = DT](Module):
                 vr /= Scalar[DT](Self.DIM_)
                 var inv_std = Scalar[DT](1.0) / sqrt(vr + LN_EPS)
                 self.cache_inv_std.data[b] = inv_std
-                for j in range(Self.DIM_):
+                # ⚠ SIMD, not a scalar loop. `Elementwise`'s CPU path is
+                # vectorized (`forward_simd[CPU_SIMD_W]`), so fusing the
+                # activation in scalar form would make the CPU SLOWER than the
+                # pair this module replaces — Mish is exp/log/tanh per element.
+                var xp = in0d.data.unsafe_ptr()
+                var op = outd.data.unsafe_ptr()
+                var cp = self.cache_xhat.data.unsafe_ptr()
+                var gp = self.gamma.val.data.unsafe_ptr()
+                var bp = self.beta.val.data.unsafe_ptr()
+                var j = 0
+                while j + CPU_SIMD_W <= Self.DIM_:
+                    var xh = (
+                        xp.unsafe_load[width=CPU_SIMD_W](row + j) - mean
+                    ) * inv_std
+                    cp.unsafe_store(row + j, xh)
+                    var z = gp.unsafe_load[width=CPU_SIMD_W](
+                        j
+                    ) * xh + bp.unsafe_load[width=CPU_SIMD_W](j)
+                    op.unsafe_store(
+                        row + j, Self.OP.forward_simd[CPU_SIMD_W](z)
+                    )
+                    j += CPU_SIMD_W
+                while j < Self.DIM_:
                     var xh = (in0d.data[row + j] - mean) * inv_std
                     self.cache_xhat.data[row + j] = xh
                     var z = self.gamma.val.data[j] * xh + self.beta.val.data[j]
                     outd.data[row + j] = Self.OP.forward_scalar(z)
+                    j += 1
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.DIM_)
