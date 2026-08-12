@@ -131,6 +131,13 @@ comptime MC_ENABLED: Bool = True
 # produced the wrong numbers in the first place.
 comptime MC_DEBUG: Bool = False
 
+# Dumps the full clipped ring before the quad pruner. This is what proved the
+# manifold residual is a PRUNER TIE-BREAK and not a clip defect: MuJoCo's four
+# emitted points are vertices of the very ring we compute, it just keeps a
+# different four of them. Leave it here — the ring is the only thing that
+# distinguishes "we clipped differently" from "we pruned differently".
+comptime MC_DEBUG_RING: Bool = False
+
 
 @always_inline
 def _dot3[
@@ -511,6 +518,13 @@ def _polygon_clip[
 
     if npolygon < 1:
         return 0
+
+    comptime if MC_DEBUG_RING:
+        print("  [ring] npolygon =", npolygon, " nface1 =", nface1,
+              " nface2 =", nface2)
+        for i in range(npolygon):
+            print("    [ring] v", i, "=", poly[i * 3 + 0],
+                  poly[i * 3 + 1], poly[i * 3 + 2])
 
     # More than a quad, and only four rows are wanted: keep the largest quad.
     if max_contacts < 5 and npolygon > 4:

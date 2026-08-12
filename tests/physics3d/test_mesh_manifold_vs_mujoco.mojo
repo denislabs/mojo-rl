@@ -275,6 +275,8 @@ def test_mesh_manifold_vs_mujoco() raises:
     # reproduced instead of averaged away.
     var g_worst_pose = List[Int](length=NGROUP, fill=-1)
     var g_worst_n = List[Int](length=NGROUP, fill=0)
+    # How many diagnostic manifold dumps each group has already emitted.
+    var dumped = List[Int](length=NGROUP, fill=0)
 
     for p in range(NPOSE):
         MMM.reset_data(d)
@@ -460,6 +462,7 @@ def test_mesh_manifold_vs_mujoco() raises:
                 g_worst_dir[g] = e
 
             # Hausdorff: every MuJoCo point must have one of ours near it.
+            var pose_worst = Float64(0)
             for t in range(len(mj_idx)):
                 var mc = dat.contact[mj_idx[t]]
                 var mx = Float64(py=mc.pos[0])
@@ -474,10 +477,52 @@ def test_mesh_manifold_vs_mujoco() raises:
                     var dist = sqrt(ex * ex + ey * ey + ez * ez)
                     if dist < nearest:
                         nearest = dist
+                if nearest > pose_worst:
+                    pose_worst = nearest
                 if nearest > g_worst_pos[g]:
                     g_worst_pos[g] = nearest
                     g_worst_pose[g] = p
                     g_worst_n[g] = len(mj_idx)
+
+            # ---- TRACE: dump both manifolds so the two quads can be compared
+            # for COPLANARITY. If they lie on different face planes the defect
+            # is face SELECTION (`_aligned_faces` picks the first normal within
+            # tol, so it depends on polygon ORDER, which the polygon gate never
+            # checked); if they share a plane the defect is the CLIP extent.
+            if pose_worst > 1e-3 and dumped[g] < 2:
+                dumped[g] += 1
+                print(
+                    "  [trace]", _group_name(g), " pose", p,
+                    " regime", p % 4, " worst", pose_worst,
+                )
+                print(
+                    "    mj  n =", Float64(py=con.frame[0]),
+                    Float64(py=con.frame[1]), Float64(py=con.frame[2]),
+                )
+                for t in range(len(mj_idx)):
+                    var mc2 = dat.contact[mj_idx[t]]
+                    print(
+                        "    mj  p", t, "=", Float64(py=mc2.pos[0]),
+                        Float64(py=mc2.pos[1]), Float64(py=mc2.pos[2]),
+                        " d =", Float64(py=mc2.dist),
+                    )
+                print(
+                    "    our n =",
+                    Float64(d.contacts.data[o_off + CONTACT_IDX_NX]),
+                    Float64(d.contacts.data[o_off + CONTACT_IDX_NY]),
+                    Float64(d.contacts.data[o_off + CONTACT_IDX_NZ]),
+                    " sgn", sgn,
+                )
+                for u in range(len(our_idx)):
+                    var oo2 = our_idx[u] * CONTACT_SIZE
+                    print(
+                        "    our p", u, "=",
+                        Float64(d.contacts.data[oo2 + CONTACT_IDX_POS_X]),
+                        Float64(d.contacts.data[oo2 + CONTACT_IDX_POS_Y]),
+                        Float64(d.contacts.data[oo2 + CONTACT_IDX_POS_Z]),
+                        " d =",
+                        Float64(d.contacts.data[oo2 + CONTACT_IDX_DIST]),
+                    )
 
     print(
         "  group                  poses  MuJoCo pts  ours  cnt!=  maxMJ "

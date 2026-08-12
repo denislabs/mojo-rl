@@ -103,6 +103,7 @@ def test_mesh_polygons_vs_mujoco() raises:
     print("--- mesh polygons: nmesh =", nmesh)
 
     var total_matched = 0
+    var rotated = 0
     for mi in range(nmesh):
         var mj_va = Int(py=m.mesh_vertadr[mi])
         var mj_vn = Int(py=m.mesh_vertnum[mi])
@@ -219,8 +220,20 @@ def test_mesh_polygons_vs_mujoco() raises:
                 " reversed",
             )
             total_matched += 1
+            if found_shift != 0:
+                rotated += 1
+                print(
+                    "    mesh", mi, " polygon n = (", mnx, mny, mnz,
+                    ") nvert", mnum, " starts at MuJoCo index", found_shift,
+                )
 
     print("  polygons matched (normal + cycle):", total_matched)
+    # ⚠ A ROTATION IS NOT COSMETIC. `polygonQuad` is a GREEDY four-pointer walk
+    # seeded at ring index 0, not a global maximiser, so the clipped ring's
+    # starting vertex changes which quad survives whenever the clip leaves more
+    # than four points. Rotation is invisible to every group whose clip returns
+    # <= 4 (no pruning runs), which is exactly why the box groups looked exact.
+    print("  polygons whose cycle START differs from MuJoCo's:", rotated)
     assert_true(
         total_matched == 14,
         String("expected 14 polygons across the two fixtures (cube 6, hex 8),"
