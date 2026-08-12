@@ -384,6 +384,21 @@ def mat3_to_quat[
     return (qx, qy, qz, qw)
 
 
+def _mulquat[
+    DTYPE: DType
+](
+    ax: Scalar[DTYPE], ay: Scalar[DTYPE], az: Scalar[DTYPE], aw: Scalar[DTYPE],
+    bx: Scalar[DTYPE], by: Scalar[DTYPE], bz: Scalar[DTYPE], bw: Scalar[DTYPE],
+) -> InlineArray[Scalar[DTYPE], 4]:
+    """`mjuu_mulquat` in OUR (x, y, z, w) storage order."""
+    var r = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    r[3] = aw * bw - ax * bx - ay * by - az * bz
+    r[0] = aw * bx + ax * bw + ay * bz - az * by
+    r[1] = aw * by - ax * bz + ay * bw + az * bx
+    r[2] = aw * bz + ax * by - ay * bx + az * bw
+    return r^
+
+
 def eig3_symmetric[
     DTYPE: DType
 ](
@@ -397,157 +412,172 @@ def eig3_symmetric[
     Scalar[DTYPE],
     Scalar[DTYPE],
 ]:
-    """Jacobi eigendecomposition of symmetric 3x3 inertia tensor.
+    """`mjuu_eig3` — quaternion-accumulating Jacobi, decreasing eigenvalues.
 
     Input: full_inertia = [Ixx, Iyy, Izz, Ixy, Ixz, Iyz]
     Returns: (eigval0, eigval1, eigval2, qx, qy, qz, qw)
-    Eigenvalues sorted in decreasing order (matches MuJoCo mjuu_eig3).
+
+    ⚠⚠ THIS IS A TRANSCRIPTION, NOT "AN" EIGENSOLVER, AND THE DIFFERENCE IS
+    OBSERVABLE. The previous implementation was a perfectly valid symmetric
+    Jacobi — it accumulated an eigenvector MATRIX, sorted by swapping columns,
+    and repaired handedness by negating the last column. It produced the same
+    EIGENVALUES as MuJoCo and a different FRAME: measured against
+    `mjModel.mesh_quat` on Jaco's 9 meshes, 3 matched to 1e-13 and 6 were out
+    by 0.75 to 1.0 — whole axis relabelings and sign flips, not drift.
+
+    That is not merely cosmetic. `body_iquat` is a model constant a gate
+    compares directly, and for a body with two near-equal principal moments the
+    frame is genuinely underdetermined: only reproducing MuJoCo's exact
+    iteration reproduces its answer. Three details do the work, and all three
+    were different before:
+
+      * **The pivot test uses strict `>`**, in MuJoCo's order. `>=` picks a
+        different axis on ties, and ties are common in near-symmetric parts.
+      * **The rotation is accumulated as a QUATERNION** with MuJoCo's sign:
+        `tmp[rotk] = -sqrt(0.5-0.5c)` for `tau >= 0`, negated again when
+        `rotk == 1`. A rotation matrix built with the opposite off-diagonal
+        sign diagonalizes just as well and lands on the mirrored frame.
+      * **The sort rotates the quaternion by 90 degrees** about axis
+        `(j1+2)%3` rather than swapping columns, so the result stays
+        right-handed by construction. The old column-swap could produce a
+        left-handed triple, and the negate-last-column repair is a REFLECTION
+        MuJoCo never applies.
+
+    ⚠ The bubblesort is MuJoCo's exact three-step `j1 = j % 2` (indices
+    0, 1, 0), not a full sort, and it only swaps when the difference exceeds
+    `kEigEPS`. A general sort would reorder equal eigenvalues that MuJoCo
+    leaves alone, which puts the frame back off by a 90-degree rotation.
     """
-    # Build symmetric 3x3 matrix (row-major)
+    comptime EPS = Scalar[DTYPE](1e-12)  # kEigEPS
+
     var mat = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
-    mat[0] = full_inertia[0]  # Ixx
-    mat[1] = full_inertia[3]  # Ixy
-    mat[2] = full_inertia[4]  # Ixz
-    mat[3] = full_inertia[3]  # Ixy
-    mat[4] = full_inertia[1]  # Iyy
-    mat[5] = full_inertia[5]  # Iyz
-    mat[6] = full_inertia[4]  # Ixz
-    mat[7] = full_inertia[5]  # Iyz
-    mat[8] = full_inertia[2]  # Izz
+    mat[0] = full_inertia[0]
+    mat[1] = full_inertia[3]
+    mat[2] = full_inertia[4]
+    mat[3] = full_inertia[3]
+    mat[4] = full_inertia[1]
+    mat[5] = full_inertia[5]
+    mat[6] = full_inertia[4]
+    mat[7] = full_inertia[5]
+    mat[8] = full_inertia[2]
 
-    # Eigenvector matrix (starts as identity, row-major)
-    var eigvec = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
-    eigvec[0] = Scalar[DTYPE](1)
-    eigvec[4] = Scalar[DTYPE](1)
-    eigvec[8] = Scalar[DTYPE](1)
+    var qx = Scalar[DTYPE](0)
+    var qy = Scalar[DTYPE](0)
+    var qz = Scalar[DTYPE](0)
+    var qw = Scalar[DTYPE](1)
 
-    # Jacobi iteration (matches MuJoCo: up to 500 iterations)
+    var eigvals = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+
     for _ in range(500):
-        # Compute D = eigvec^T * mat * eigvec
+        # D = V^T * mat * V, with V = quat2mat(quat)
+        var V = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+        quat_to_mat[DTYPE](qx, qy, qz, qw, V)
         var D = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
         for i in range(3):
             for j in range(3):
-                var s = Scalar[DTYPE](0)
+                var acc = Scalar[DTYPE](0)
                 for k in range(3):
                     for l in range(3):
-                        s += (
-                            eigvec[k * 3 + i]
-                            * mat[k * 3 + l]
-                            * eigvec[l * 3 + j]
-                        )
-                D[i * 3 + j] = s
+                        acc += V[k * 3 + i] * mat[k * 3 + l] * V[l * 3 + j]
+                D[i * 3 + j] = acc
 
-        # Find largest off-diagonal element
-        # Off-diagonal pairs: (0,1), (0,2), (1,2)
-        var max_val: Scalar[DTYPE]
+        eigvals[0] = D[0]
+        eigvals[1] = D[4]
+        eigvals[2] = D[8]
+
+        # ⚠ STRICT `>`, in this order — see the docstring.
+        var a01 = math_abs(D[1])
+        var a02 = math_abs(D[2])
+        var a12 = math_abs(D[5])
         var rk: Int
         var ck: Int
-
-        var abs01 = math_abs(D[0 * 3 + 1])
-        var abs02 = math_abs(D[0 * 3 + 2])
-        var abs12 = math_abs(D[1 * 3 + 2])
-
-        if abs01 >= abs02 and abs01 >= abs12:
-            max_val = abs01
+        var rotk: Int
+        if a01 > a02 and a01 > a12:
             rk = 0
             ck = 1
-        elif abs02 >= abs12:
-            max_val = abs02
+            rotk = 2
+        elif a02 > a12:
             rk = 0
             ck = 2
+            rotk = 1
         else:
-            max_val = abs12
             rk = 1
             ck = 2
+            rotk = 0
 
-        # Check convergence
-        if max_val < Scalar[DTYPE](1e-12):
+        if math_abs(D[rk * 3 + ck]) < EPS:
             break
 
-        # 2x2 Schur decomposition
-        var d_diff = D[ck * 3 + ck] - D[rk * 3 + rk]
-        var tau = d_diff / (Scalar[DTYPE](2) * D[rk * 3 + ck])
+        var tau = (D[4 * ck] - D[4 * rk]) / (
+            Scalar[DTYPE](2) * D[rk * 3 + ck]
+        )
         var t: Scalar[DTYPE]
         if tau >= Scalar[DTYPE](0):
             t = Scalar[DTYPE](1) / (tau + sqrt(Scalar[DTYPE](1) + tau * tau))
         else:
             t = Scalar[DTYPE](-1) / (-tau + sqrt(Scalar[DTYPE](1) + tau * tau))
         var c = Scalar[DTYPE](1) / sqrt(Scalar[DTYPE](1) + t * t)
-        var s = t * c
+        if c > Scalar[DTYPE](1) - EPS:
+            break
 
-        # Apply Jacobi rotation: eigvec = eigvec * Rot
-        # Build rotation matrix for this Jacobi rotation
-        var rot_mat = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
-        rot_mat[0] = Scalar[DTYPE](1)
-        rot_mat[4] = Scalar[DTYPE](1)
-        rot_mat[8] = Scalar[DTYPE](1)
-        rot_mat[rk * 3 + rk] = c
-        rot_mat[ck * 3 + ck] = c
-        rot_mat[rk * 3 + ck] = s
-        rot_mat[ck * 3 + rk] = -s
+        var half = sqrt(Scalar[DTYPE](0.5) - Scalar[DTYPE](0.5) * c)
+        var axis = -half if tau >= Scalar[DTYPE](0) else half
+        if rotk == 1:
+            axis = -axis
+        var tx = Scalar[DTYPE](0)
+        var ty = Scalar[DTYPE](0)
+        var tz = Scalar[DTYPE](0)
+        if rotk == 0:
+            tx = axis
+        elif rotk == 1:
+            ty = axis
+        else:
+            tz = axis
+        var tw = sqrt(Scalar[DTYPE](1) - axis * axis)
+        var tn = sqrt(tx * tx + ty * ty + tz * tz + tw * tw)
+        tx /= tn
+        ty /= tn
+        tz /= tn
+        tw /= tn
 
-        # new_eigvec = eigvec * rot_mat
-        var new_eigvec = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
-        for i in range(3):
-            for j in range(3):
-                var val = Scalar[DTYPE](0)
-                for k in range(3):
-                    val += eigvec[i * 3 + k] * rot_mat[k * 3 + j]
-                new_eigvec[i * 3 + j] = val
-        eigvec = new_eigvec^
+        var q = _mulquat[DTYPE](qx, qy, qz, qw, tx, ty, tz, tw)
+        var qn = sqrt(
+            q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]
+        )
+        qx = q[0] / qn
+        qy = q[1] / qn
+        qz = q[2] / qn
+        qw = q[3] / qn
 
-    # Extract eigenvalues from D = eigvec^T * mat * eigvec
-    var eigvals = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-    for i in range(3):
-        var s = Scalar[DTYPE](0)
-        for k in range(3):
-            for l in range(3):
-                s += eigvec[k * 3 + i] * mat[k * 3 + l] * eigvec[l * 3 + i]
-        eigvals[i] = s
+    # Decreasing-order bubblesort: lead index 0, 1, 0.
+    for j in range(3):
+        var j1 = j % 2
+        if eigvals[j1] + EPS < eigvals[j1 + 1]:
+            var tmp = eigvals[j1]
+            eigvals[j1] = eigvals[j1 + 1]
+            eigvals[j1 + 1] = tmp
+            # 90-degree rotation about axis (j1+2)%3
+            var hs = Scalar[DTYPE](0.707106781186548)
+            var ax = Scalar[DTYPE](0)
+            var ay = Scalar[DTYPE](0)
+            var az = Scalar[DTYPE](0)
+            var which = (j1 + 2) % 3
+            if which == 0:
+                ax = hs
+            elif which == 1:
+                ay = hs
+            else:
+                az = hs
+            var q2 = _mulquat[DTYPE](qx, qy, qz, qw, ax, ay, az, hs)
+            var q2n = sqrt(
+                q2[0] * q2[0] + q2[1] * q2[1] + q2[2] * q2[2] + q2[3] * q2[3]
+            )
+            qx = q2[0] / q2n
+            qy = q2[1] / q2n
+            qz = q2[2] / q2n
+            qw = q2[3] / q2n
 
-    # Bubble sort eigenvalues in DECREASING order (matching MuJoCo)
-    # Also swap eigenvector columns
-    for _ in range(3):
-        for i in range(2):
-            if eigvals[i] < eigvals[i + 1]:
-                # Swap eigenvalues
-                var tmp = eigvals[i]
-                eigvals[i] = eigvals[i + 1]
-                eigvals[i + 1] = tmp
-                # Swap eigenvector columns
-                for r in range(3):
-                    var tmp2 = eigvec[r * 3 + i]
-                    eigvec[r * 3 + i] = eigvec[r * 3 + (i + 1)]
-                    eigvec[r * 3 + (i + 1)] = tmp2
-
-    # Ensure right-handed coordinate system (det(eigvec) > 0)
-    # det = eigvec col0 . (col1 x col2)
-    var cross_x = (
-        eigvec[1 * 3 + 1] * eigvec[2 * 3 + 2]
-        - eigvec[2 * 3 + 1] * eigvec[1 * 3 + 2]
-    )
-    var cross_y = (
-        eigvec[2 * 3 + 1] * eigvec[0 * 3 + 2]
-        - eigvec[0 * 3 + 1] * eigvec[2 * 3 + 2]
-    )
-    var cross_z = (
-        eigvec[0 * 3 + 1] * eigvec[1 * 3 + 2]
-        - eigvec[1 * 3 + 1] * eigvec[0 * 3 + 2]
-    )
-    var det = (
-        eigvec[0 * 3 + 0] * cross_x
-        + eigvec[1 * 3 + 0] * cross_y
-        + eigvec[2 * 3 + 0] * cross_z
-    )
-    if det < Scalar[DTYPE](0):
-        # Negate last column
-        for r in range(3):
-            eigvec[r * 3 + 2] = -eigvec[r * 3 + 2]
-
-    # Convert eigenvector matrix to quaternion
-    var q = mat3_to_quat(eigvec)
-
-    return (eigvals[0], eigvals[1], eigvals[2], q[0], q[1], q[2], q[3])
+    return (eigvals[0], eigvals[1], eigvals[2], qx, qy, qz, qw)
 
 
 # =============================================================================
