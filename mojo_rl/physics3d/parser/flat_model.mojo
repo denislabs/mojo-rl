@@ -1040,6 +1040,12 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var geom_fromto_s: String
     var geom_size_s: String
     var geom_mass_s: String
+    # ⚠ `mesh=` FROM A CLASS. Jaco's finger geoms are bare `<geom name="..."/>`
+    # elements whose type, mass AND mesh all come from a `childclass`; without
+    # this the type resolved to mesh and then no mesh was ever attached
+    # (`mesh_id` -1), so six geoms became massless nothings. Every model ported
+    # before Jaco spells `mesh=` on the element.
+    var geom_mesh_s: String
     # NOTE: captured but not yet consumed. Materials are resolved in a second
     # pass over the worldbody that has no class/childclass context, so a
     # class-supplied `material` currently does not reach the geom. Cosmetic
@@ -1158,6 +1164,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.geom_fromto_s = ""
         self.geom_size_s = ""
         self.geom_mass_s = ""
+        self.geom_mesh_s = ""
         self.geom_material_s = ""
         self.geom_pos_s = ""
         self.geom_quat_s = ""

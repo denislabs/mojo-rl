@@ -377,6 +377,9 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var gm_s = _extract_attr(gtag, "mass")
         if gm_s.byte_length() > 0:
             d.geom_mass_s = gm_s
+        var gmesh_s = _extract_attr(gtag, "mesh")
+        if gmesh_s.byte_length() > 0:
+            d.geom_mesh_s = gmesh_s
         var gmat_s = _extract_attr(gtag, "material")
         if gmat_s.byte_length() > 0:
             d.geom_material_s = gmat_s
@@ -473,6 +476,13 @@ def _strip_nested_defaults(sec: String) -> String:
             out += String(sec[byte=i:n])
             break
         out += String(sec[byte=i:open_t])
+        # ⚠ A self-closing `<default class="x"/>` encloses NOTHING. Walking for
+        # its `</default>` swallows the NEXT class's whole block — see
+        # `_is_self_closing_tag`. Drop just the tag and carry on.
+        if _is_self_closing_tag(sec, open_t):
+            var self_end = sec.find(">", open_t)
+            i = self_end + 1 if self_end != -1 else n
+            continue
         # Walk forward to this block's matching </default>.
         var depth_ = 0
         var j = open_t
@@ -525,16 +535,47 @@ def _parse_defaults(
     return (top, named)
 
 
+def _is_self_closing_tag(sec: String, open_pos: Int) -> Bool:
+    """Does the tag starting at `open_pos` end in `/>` rather than `>`?
+
+    ⚠⚠ THIS IS WHY JACO WOULD NOT LOAD. PyMJCF emits an EMPTY root class as
+    `<default class="/"/>` — self-closing, no `</default>`. The depth tracker
+    below counted it as an opening block, so the outer `<default>`'s matching
+    close was never found (`_find_matching_default_close` returned -1) and NOT
+    ONE named class was registered. Every geom that takes its `type` from a
+    class then fell through to the sphere default: all 14 of Jaco's mesh geoms
+    and all 6 of its cylinders became spheres of radius 0.5, and since the
+    type was never MESH, `mesh=` was never resolved either — `mesh_id` stayed
+    -1 across the board.
+
+    It is invisible on every model ported before this one because none of them
+    emits an empty `<default class="..."/>`; hand-written MJCF always puts
+    something inside. It is also invisible in the COUNTS — ngeom, nbody and the
+    body ids all came out right, so nothing upstream complained.
+    """
+    var end = sec.find(">", open_pos)
+    if end <= open_pos:
+        return False
+    return sec[byte = end - 1 : end] == "/"
+
+
 def _find_matching_default_close(sec: String, open_pos: Int) -> Int:
     """Index of the `</default>` matching the `<default` at `open_pos`.
 
     Returns -1 if unbalanced. Depth-tracked, because `<default>` blocks nest.
+
+    ⚠ A SELF-CLOSING `<default .../>` opens nothing — see
+    `_is_self_closing_tag` for what that cost.
     """
     var n = sec.byte_length()
     var depth = 0
     var i = open_pos
     while i < n:
         var next_open = sec.find("<default", i + 1)
+        # Skip self-closing `<default .../>`: it has no `</default>` to pair
+        # with, so counting it would leave the scan permanently one deep.
+        while next_open != -1 and _is_self_closing_tag(sec, next_open):
+            next_open = sec.find("<default", next_open + 1)
         var next_close = sec.find("</default>", i + 1)
         if next_close == -1:
             return -1
@@ -607,6 +648,22 @@ def _collect_named_defaults(
             var dt = text.find("<default", scan)
             if dt == -1:
                 break
+            # ⚠ Self-closing `<default class="x"/>`: an EMPTY class, which is
+            # legal MJCF and is what PyMJCF emits for its root (`class="/"`).
+            # It owns no block, so registering it and advancing past the tag is
+            # the whole job — asking `_find_matching_default_close` for its
+            # close would hand back the NEXT class's, and that class would then
+            # be registered under the wrong name and skipped.
+            if _is_self_closing_tag(text, dt):
+                var sc_end = text.find(">", dt)
+                if sc_end == -1:
+                    break
+                var sc_tag = _extract_opening_tag(text, dt)
+                var sc_name = _extract_attr(sc_tag, "class")
+                if sc_name.byte_length() > 0:
+                    named.add(sc_name, DefaultsData(copy=par))
+                scan = sc_end + 1
+                continue
             var close = _find_matching_default_close(text, dt)
             if close == -1:
                 break
@@ -1329,9 +1386,15 @@ def _parse_one_geom(
         type_s = eff_defaults.geom_type_s
     gd.geom_type = _geom_type_from_str(type_s)
 
-    # mesh reference: mesh="name" → resolve to file path from asset section
+    # mesh reference: mesh="name" → resolve to file path from asset section.
+    # ⚠ Element first, then the class — the same precedence every other
+    # attribute here uses. Reading the element ONLY is what left Jaco's six
+    # finger geoms with `mesh_id -1`: they are bare `<geom name="..."/>` tags
+    # that take type, mass and mesh from a `childclass`.
     if gd.geom_type == _GEOM_MESH:
         var mesh_attr = _extract_attr(tag, "mesh")
+        if mesh_attr.byte_length() == 0:
+            mesh_attr = eff_defaults.geom_mesh_s
         if mesh_attr.byte_length() > 0:
             for mi in range(assets.num_mesh_assets):
                 if assets.mesh_asset_names[mi] == mesh_attr:
