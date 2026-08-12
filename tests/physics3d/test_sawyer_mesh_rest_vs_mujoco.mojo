@@ -127,8 +127,8 @@ comptime MIN_REST_Z = 0.2
 # Measured 2026-08-11: the manifold holds for 50 of 200 env steps and sinks to
 # -6.83e-03 before letting go. Both are pinned with ~20% slack so ordinary
 # solver jitter does not flap the gate, while a real regression trips it.
-comptime MEASURED_HOLD_STEPS = 194  # was 50 before the 29a fix
-comptime MIN_HOLD_STEPS = 180
+# ⚠ NO "held steps" THRESHOLD ANY MORE — see `_drop_ours_traced`. The gate
+# asserts ZERO contact gaps after first touch, which is what "it holds" means.
 comptime MEASURED_SINK = -7.02e-3
 comptime MAX_SINK = -9.0e-3
 
@@ -296,8 +296,10 @@ def _drop_ours_traced(mut env: SawyerReach) raises -> Tuple[Int, Int, Float64,
 
     var peak = 0
     var held = 0
+    var first = -1
+    var gaps = 0
     var deepest: Float64 = 0
-    for _ in range(N_ENV_STEPS):
+    for _step in range(N_ENV_STEPS):
         _ = env.step(action)
         var ncon = Int(env.d.meta.data[META_IDX_NUM_CONTACTS])
         var rows = 0
@@ -319,8 +321,19 @@ def _drop_ours_traced(mut env: SawyerReach) raises -> Tuple[Int, Int, Float64,
             peak = rows
         if rows > 0:
             held += 1
+            if first < 0:
+                first = _step
+        elif first >= 0:
+            # ⚠ A GAP IS A LOSS OF GRIP; STEPS BEFORE FIRST CONTACT ARE NOT.
+            # `held` alone counts the FREE FALL from the release height too, so
+            # it can never reach N_ENV_STEPS and always looks like a partial
+            # failure. That is what made "194/200" read as a residual defect
+            # (29b) after 29a was fixed: first contact is at step 6, 200-6=194,
+            # and there are ZERO gaps after it. The obj never lets go.
+            gaps += 1
     var final_z = Float64(env.d.qpos.data[OBJ_QPOS + 2])
-    return (peak, held, final_z, deepest)
+    _ = held
+    return (peak, gaps, final_z, deepest)
 
 
 def test_mesh_manifold_forms_and_arrests_a_falling_object() raises:
@@ -335,7 +348,7 @@ def test_mesh_manifold_forms_and_arrests_a_falling_object() raises:
     var env = SawyerReach()
     var r = _drop_ours_traced(env)
     print("  peak obj-vs-MESH rows :", r[0])
-    print("  steps holding contact :", r[1], "/", N_ENV_STEPS)
+    print("  contact GAPS after first touch :", r[1])
     print("  deepest penetration   :", r[3])
     print("  final obj z           :", r[2])
 
@@ -347,11 +360,10 @@ def test_mesh_manifold_forms_and_arrests_a_falling_object() raises:
         " collapse still signals the perturbation loop regressing.)",
     )
     assert_true(
-        r[1] >= MIN_HOLD_STEPS,
-        String("the manifold held for only ") + String(r[1])
-        + " steps (was " + String(MEASURED_HOLD_STEPS) + "). It is arresting"
-        " the obj later or not at all — a regression in mesh detection or in"
-        " the contact solve.",
+        r[1] == 0,
+        String("the manifold LET GO ") + String(r[1]) + " time(s) after first"
+        " contact. Gaps after first contact are the real grip measure; steps"
+        " before it are just the fall from the release height.",
     )
     print("PASS: the manifold forms and arrests the fall")
 
@@ -403,7 +415,7 @@ def test_obj_stays_on_the_mesh_where_mujoco_does() raises:
 
     var env = SawyerReach()
     var r = _drop_ours_traced(env)
-    print("  ours   rest z:", r[2], " steps held:", r[1], "/", N_ENV_STEPS)
+    print("  ours   rest z:", r[2], " contact gaps:", r[1])
     print("  dz vs MuJoCo :", abs(r[2] - mj_z), " tol", REST_Z_TOL)
 
     assert_true(
@@ -419,10 +431,9 @@ def test_obj_stays_on_the_mesh_where_mujoco_does() raises:
         " is a contact-depth or manifold-shape error.",
     )
     assert_true(
-        r[1] >= MIN_HOLD_STEPS,
-        String("the manifold held for only ") + String(r[1]) + " of "
-        + String(N_ENV_STEPS) + " steps — it is letting go again (defect 29a"
-        " regressed, or 29b got worse).",
+        r[1] == 0,
+        String("the manifold LET GO ") + String(r[1]) + " time(s) after first"
+        " contact — defect 29a has regressed.",
     )
     print("PASS: rests on the mesh where MuJoCo does")
 
