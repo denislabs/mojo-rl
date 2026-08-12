@@ -176,6 +176,8 @@ struct Phyics3dBatchedEnv[
         Self.MODEL_DEF.MAX_TENDON,
         Self.NSITE,
         Self.MODEL_DEF.NEXCLUDE,
+        0,
+        Self.MODEL_DEF.NPAIR,
     ]
     # Both integrators are held; the step comptime-dispatches on
     # CONFIG.INTEGRATOR (HalfCheetah/Pusher/MetaWorld = Euler+Newton, the
@@ -189,6 +191,10 @@ struct Phyics3dBatchedEnv[
         CRBA_TREEWALK = Self.CRBA_TREEWALK,
         MAX_CONDIM = Self.MODEL_DEF.MAX_CONDIM,
         NOSLIP_ITER = Self.MODEL_DEF.NOSLIP_ITER,
+        # By KEYWORD — `NPAIR` is the LAST integrator parameter, not a
+        # neighbour of `NEXCLUDE`. Same forwarding argument as MAX_CONDIM
+        # below: the default silently disables the feature.
+        NPAIR = Self.MODEL_DEF.NPAIR,
     ]
     # ⚠⚠ MAX_CONDIM AND NOSLIP_ITER MUST COME FROM THE MODEL, NOT THE DEFAULT.
     # Both were previously left unpassed, so every batched env silently ran
@@ -215,6 +221,7 @@ struct Phyics3dBatchedEnv[
         RNE_POST = Self.CONFIG.RNE_POST,
         MAX_CONDIM = Self.MODEL_DEF.MAX_CONDIM,
         NOSLIP_ITER = Self.MODEL_DEF.NOSLIP_ITER,
+        NPAIR = Self.MODEL_DEF.NPAIR,
     ]
     var integ_rk4: Self.IntegRK4
     var integ_euler: Self.IntegEuler
@@ -551,6 +558,7 @@ struct Phyics3dBatchedEnv[
                 Self.MC, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
                 Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
                 Self.MODEL_DEF.NEXCLUDE, 0, Self.N_ENVS,
+                NPAIR = Self.MODEL_DEF.NPAIR,
             ](self.d, self.mf, c)
             c.enqueue_function[settle_kernel](
                 self.d.meta.lt["gpu", type_of(self.d).L_META](),
@@ -721,7 +729,7 @@ struct Phyics3dBatchedEnv[
             "gpu", DT, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MC,
             Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
             Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0,
-            Self.N_ENVS,
+            Self.N_ENVS, NPAIR = Self.MODEL_DEF.NPAIR,
         ](self.d, self.mf, c)
 
     def _run_fields_vel(mut self, c: DeviceContext) raises:
@@ -733,7 +741,7 @@ struct Phyics3dBatchedEnv[
             "gpu", DT, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MC,
             Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
             Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0,
-            Self.N_ENVS,
+            Self.N_ENVS, NPAIR = Self.MODEL_DEF.NPAIR,
         ](self.d, self.mf, c)
 
     # ── hook kernels (legacy Phyics3dEnv GPU code, verbatim) ──────────
