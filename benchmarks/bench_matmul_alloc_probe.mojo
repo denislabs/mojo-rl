@@ -27,14 +27,9 @@ belongs to `linalg.matmul`.
 
 Compare `cuMemAlloc_v2`'s `Num Calls` against `REPS` (printed at the end):
 
-    ~= REPS or a small multiple  ->  CONFIRMED: the GEMM allocates per call.
-                                     Fixing it is a MAX-level concern (a
-                                     workspace cache), and worth an upstream
-                                     report with these numbers.
-    ~= a handful (< 50)          ->  REFUTED: the GEMM is not the source, and
-                                     the allocations come from somewhere else
-                                     in the agent. Fall back to a backtrace
-                                     capture of the full profile:
+    ~= one loop's calls  ->  that shape allocates per call.
+    ~= a handful (< 50)  ->  REFUTED: the GEMM is not the source. Fall back to
+                             a backtrace capture of the full profile:
 
         nsys profile --trace=cuda,osrt --cudabacktrace=memory:10000 \
              --sample=cpu --backtrace=dwarf -o alloc --force-overwrite=true \
@@ -44,13 +39,28 @@ Compare `cuMemAlloc_v2`'s `Num Calls` against `REPS` (printed at the end):
     `cuMemAlloc_v2` row. (`--cudabacktrace` needs `--sample`, and it is slow —
     shrink COLLECT_STEPS/TRAIN_STEPS in that script before using it.)
 
-The shape is the TD-MPC2 walker planner's dominant one at N_ENVS=8:
-`[BATCH_TOTAL x K_PAD] @ [K_PAD x MLP]`, K already padded to a multiple of 32
-so this measures the FAST path (25.3 us/call in the capture above).
+## MEASURED, RTX 5090, 2026-08-12
 
-⚠ Two loops run: a `splitK`-prone tall-skinny shape and a square-ish one. If
-only one of them allocates, the workspace is shape-dependent — worth knowing,
-because then the fix might be a shape choice rather than an upstream ask.
+    cuMemAlloc_v2  2016 calls    cuMemFree_v2  2016 calls
+    cuMemsetD8Async 2010 calls   [CUDA memset] 67.4 GB, avg 33.5 MB
+
+2016 = 2010 + 6 startup, and 2010 is ONE loop, not both (4020). The kernel
+summary names it:
+
+    N=512 planner  -> multistage_gemm x2010,  26.3 us/call,  NO allocation
+    N=101 two-hot  -> cutlass ...nn_align1 x2010
+                      + splitKreduce_kernel x2010, 217 us/call
+
+cuBLAS picks a SPLIT-K path for the narrow N, and split-K needs a workspace:
+allocated, memset and freed EVERY call. 2144*101*32 splits*4 B = 27.7 MB
+against the measured 33.5 MB median, and the kernel is literally
+`splitKreduce_kernel<(int)32, ...>`. The allocation is most of the 217 us.
+
+So this is NOT a MAX bug to report upstream — split-K genuinely needs scratch.
+It is our SHAPE: N = BINS = 101, an unaligned narrow OUTPUT width, in the
+reward head, all five Q heads and termination. It also explains why
+`[268x512]@[512x101]` measured 312 us against `[512x128]`'s 24.8 us in
+`bench_matmul_k_alignment.mojo` — that was this, not kernel selection.
 """
 
 from std.time import perf_counter_ns
@@ -72,6 +82,18 @@ comptime M2 = 2144
 comptime K2 = 512
 comptime N2 = 101
 comptime REPS2 = 2000
+
+# Third: the SAME shape with N padded to a multiple of 32. On an RTX 5090 the
+# N=101 loop was measured at 2010 allocations for 2010 calls — one workspace
+# alloc + a 33.5 MB memset + a free PER CALL, because cuBLAS picks a split-K
+# path (`splitKreduce_kernel<32, ...>`, and 2144*101*32*4 B = 27.7 MB matches
+# the measured 33.5 MB median). N=128 should take a single-kernel path with no
+# workspace at all. This loop is the PROOF that padding N fixes it, and must be
+# run before anyone writes the padding into `Linear`.
+comptime M3 = 2144
+comptime K3 = 512
+comptime N3 = 128
+comptime REPS3 = 2000
 
 
 def run[M_: Int, K_: Int, N_: Int](
@@ -110,14 +132,21 @@ def main() raises:
     print("=" * 70)
     print("max_matmul per-call allocation probe —", ctx.name())
     print("=" * 70)
-    run[M, K, N](ctx, REPS, "planner GEMM ")
-    run[M2, K2, N2](ctx, REPS2, "two-hot head")
+    run[M, K, N](ctx, REPS, "planner GEMM  N=512")
+    run[M2, K2, N2](ctx, REPS2, "two-hot head  N=101")
+    run[M3, K3, N3](ctx, REPS3, "two-hot PADDED N=128")
     print("=" * 70)
-    print("  total max_matmul calls in the timed loops:", REPS + REPS2)
-    print("  (plus 20 warm-up calls before them)")
+    print("  max_matmul calls per loop:", REPS, "(+10 warm-up each)")
     print()
-    print("  Now read `cuMemAlloc_v2 / Num Calls` from the CUDA API Summary.")
-    print("  ~= 4020 (or a multiple)  -> the GEMM allocates per call.")
-    print("  < 50                     -> it does not; backtrace the agent run")
-    print("                              (see this file's header).")
+    print("  Read `cuMemAlloc_v2 / Num Calls` from the CUDA API Summary:")
+    print("    ~2010  -> ONLY the N=101 loop allocates. Padding N to a")
+    print("              multiple of 32 removes the split-K workspace, and")
+    print("              the fix belongs in Linear alongside the K padding.")
+    print("    ~4020  -> N=128 allocates too; padding N is NOT the fix and")
+    print("              the workspace is not split-K-specific.")
+    print("    ~6030  -> all three allocate; it is per-call regardless of")
+    print("              shape, i.e. a MAX-level workspace-cache issue.")
+    print()
+    print("  Cross-check with `splitKreduce_kernel` in the kernel summary —")
+    print("  its instance count should equal the allocating loop's calls.")
     print("=" * 70)
