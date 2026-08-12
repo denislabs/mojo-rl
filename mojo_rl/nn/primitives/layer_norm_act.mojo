@@ -356,18 +356,36 @@ struct LayerNormAct[DIM_: Int, OP: ElementOp, ADT: DType = DT](Module):
             outd.ensure(B * Self.DIM_)
             self.cache_xhat.ensure(B * Self.DIM_)
             self.cache_inv_std.ensure(B)
+            # Reductions are SIMD, mirroring `LayerNorm`'s CPU forward — it
+            # was already vectorized and this module must not regress it.
+            comptime W = CPU_SIMD_W
+            var inv_dim: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.DIM_)
+            var in_p = in0d.data.unsafe_ptr()
             for b in range(B):
                 var row = b * Self.DIM_
-                var mean = Scalar[DT](0)
-                for j in range(Self.DIM_):
-                    mean += in0d.data[row + j]
-                mean /= Scalar[DT](Self.DIM_)
-                var vr = Scalar[DT](0)
-                for j in range(Self.DIM_):
-                    var d = in0d.data[row + j] - mean
-                    vr += d * d
-                vr /= Scalar[DT](Self.DIM_)
-                var inv_std = Scalar[DT](1.0) / sqrt(vr + LN_EPS)
+                var acc = SIMD[DT, W](0)
+                var d = 0
+                while d + W <= Self.DIM_:
+                    acc += in_p.unsafe_load[width=W](row + d)
+                    d += W
+                var sm = acc.reduce_add()
+                while d < Self.DIM_:
+                    sm += in_p[unsafe_offset=row + d]
+                    d += 1
+                var mean = sm * inv_dim
+                var meanv = SIMD[DT, W](mean)
+                var vacc = SIMD[DT, W](0)
+                d = 0
+                while d + W <= Self.DIM_:
+                    var df = in_p.unsafe_load[width=W](row + d) - meanv
+                    vacc += df * df
+                    d += W
+                var sv = vacc.reduce_add()
+                while d < Self.DIM_:
+                    var df = in_p[unsafe_offset=row + d] - mean
+                    sv += df * df
+                    d += 1
+                var inv_std = Scalar[DT](1.0) / sqrt(sv * inv_dim + LN_EPS)
                 self.cache_inv_std.data[b] = inv_std
                 # ⚠ SIMD, not a scalar loop. `Elementwise`'s CPU path is
                 # vectorized (`forward_simd[CPU_SIMD_W]`), so fusing the
