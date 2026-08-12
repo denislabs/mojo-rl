@@ -2378,7 +2378,36 @@ def _fill_equality(
         if earliest == nw:
             ed.eq_type = _EQ_WELD
         else:
-            ed.eq_type = _EQ_CONNECT
+            # ⚠ `<connect>` RAISES rather than parsing WRONG. `anchor_b` —
+            # MuJoCo's `eq_data[3:6]`, the anchor expressed in body2's frame —
+            # is never populated by this parser, so body2 would be anchored at
+            # its OWN ORIGIN instead of the shared point. MuJoCo's compiler
+            # derives that value at qpos0; `mj_equalityAnchors` then reads
+            # `pos1 = body1 * data[0:3]`, `pos2 = body2 * data[3:6]`
+            # (engine_core_constraint.c:570). Silently wrong unless the two
+            # frames happen to coincide.
+            #
+            # No model in the tree uses `<connect>`, so nothing is broken by
+            # this raise — and the same "no model asks for it" is exactly what
+            # let a spatial `<equality><tendon>` sit unimplemented behind four
+            # comments claiming it was handled (see
+            # `constraints/tendon_limit.build_tendon_equality_rows`). Loud
+            # beats latent.
+            #
+            # ⚠ FIXING `anchor_b` ALONE WOULD NOT MAKE `<connect>` USABLE FOR
+            # THE MODEL THAT WANTS IT. ToddlerBot's four connect equalities are
+            # SITE-based (`site1=`/`site2=`) and this scanner reads only
+            # `body1`/`body2`/`anchor`, so both halves have to be built —
+            # and gated — together. Deriving `anchor_b` is the same shape as
+            # the weld `relpose` derivation in `dynamics/invweight.mojo`
+            # (at qpos0, `anchor_b = R(qb)^T (world_anchor - pb)`).
+            raise Error(
+                "physics3d: <equality><connect> is not implemented. The"
+                " body2-side anchor (MuJoCo's eq_data[3:6], derived at qpos0)"
+                " is never populated here, so the constraint would anchor"
+                " body2 at its own origin. Site-based <connect site1= site2=>"
+                " is likewise unparsed. See the note at this raise."
+            )
 
         # body1 / body2 — resolve names to indices
         var b1_name = _extract_attr(tag, "body1")
