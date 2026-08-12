@@ -68,18 +68,40 @@ raising the ratio 8x reads as "7x slower" and is the wrong comparison: at
 UTD=1, 150k env-steps costs ~2.2h and buys 150k updates, where the 220k-step
 control run took ~20 min and bought 27.5k. Fewer steps, far more learning.
 
-Measured controls to compare against (single-task walk, N_ENVS=8, UTD=0.125,
-post-`1cc6f779`; `mean_ret(100)`):
+Measured (single-task walk, N_ENVS=8, post-`1cc6f779`):
 
-| env-steps | MPC off | MPC on |
-|-----------|---------|--------|
-| 120k      | 196     | 181    |
-| 210k      | 302     | 529    |
+| config          | steps to eval ~800 | wall-clock | steps/s |
+|-----------------|--------------------|------------|---------|
+| UTD=1,     off  | 62k                | 38.9 min   | 26.3    |
+| UTD=0.125, on   | 200k               | 26.5 min   | 125.8   |
+| UTD=0.125, off  | never (377 @ 220k) | —          | 185.4   |
 
-The two controllers are indistinguishable below ~120k and only then does the
-planner pull away (final evals ~300 vs ~880). That is why the UTD test runs
-MPC-OFF: below the crossover the planner buys nothing, so leaving it on would
-cost 1.47x wall-clock to confound the one variable under test.
+UTD=1 is **3.2x more sample-efficient and 1.5x slower in wall-clock**. It beat
+the entire 220k-step MPC-off control by 2.1x on under a third of the data.
+Training returns confirm it is not eval luck: 62 → 111 → 214 → 309 across the
+bins where the control managed 36 → 56 → 91 → 119.
+
+The critic was the thing that was starved. Implied value from realized returns
+vs `q_mean`: at UTD=0.125 / 100k, implied ~37.7 against 12.05 — under by 3x;
+at UTD=1 / 75-100k, implied ~80 against 69.9 — under by 13%. No instability at
+8x either: `q_mean` tracks `td_target_mean` within 1%, `pi_scale`/`q_mean`
+holds at 0.47 against the control's 0.41.
+
+⚠ Cost decomposition, from those three throughputs: ~37 ms per update, ~6 ms
+env+acting per iteration, ~21 ms for MPC. So the planner is 47% at UTD=0.125
+and **~7% at UTD=1** — the update budget dwarfs it. Hence MPC ON here.
+
+⚠ An earlier version of this file ran the UTD test MPC-OFF, reasoning that the
+controllers are indistinguishable below ~120k. That crossover was measured at
+UTD=0.125; at UTD=1 the model is far better far earlier, so it almost certainly
+moves down — plausibly inside the 40-60k range where that run did its work. Do
+not reuse a crossover measured at one update ratio to justify a choice at
+another.
+
+⚠ UTD=1 sat at 798/797 across two evals while the UTD=0.125 MPC-on control was
+still climbing (872, 891) when it stopped. Two points is not a plateau, but if
+UTD=1 does cap near 800 while the slower config keeps going, that matters
+before this becomes the recipe for the multi-task rerun.
 
 ⚠⚠ Both control curves above are only valid post-`1cc6f779`. Runs built in the
 `517084c2`..`baeaa9bc` window had FROZEN target Q nets (a version-gated weight
@@ -112,10 +134,10 @@ comptime MOVE_SPEED: Float64 = 0.0 if TASK == "stand" else (
 )
 
 comptime TARGET = "gpu"        # batched driver requires env target == this
-# MPC-off for the UTD test: the two controllers are indistinguishable below
-# ~120k env-steps (measured — see the UTD block below), so leaving the planner
-# off isolates the update ratio and costs 1.47x less wall-clock.
-comptime USE_MPC = False
+# MPC ON. At UTD=1 the update budget dwarfs everything else, so the planner
+# costs ~7% here against 47% at UTD=0.125 — see the UTD block below. There is
+# no longer a reason to run this configuration without it.
+comptime USE_MPC = True
 comptime MPC_SAMPLES = 256
 comptime MPC_PI_TRAJS = 12
 comptime MPC_ELITES = 32
@@ -143,10 +165,12 @@ comptime ACTION_SCALE = 1.0
 # the driver runs `TOTAL // N_ENVS` iterations.
 comptime LEARN_START = 5_000
 # ⚠ TOTAL is deliberately SHORT here. At UTD=1 the run is priced in GRADIENT
-# STEPS, not env-steps: 150k env-steps buys 150k updates, against the 27.5k
+# STEPS, not env-steps: 100k env-steps buys 100k updates, against the 27.5k
 # that a 220k-step run at UPDATES_PER_STEP=1 delivered. Do not "restore" this
-# to 1M without also dropping UPDATES_PER_STEP — that is a ~20h run.
-comptime TOTAL = 150_000
+# to 1M without also dropping UPDATES_PER_STEP — that is a ~14h run.
+# 100k because MPC-off already cleared 798 at 62k; this leaves headroom past
+# that without paying for a long tail nobody is going to read.
+comptime TOTAL = 100_000
 # Per ITERATION, and an iteration is N_ENVS env-steps — so this value IS the
 # UTD numerator: N_ENVS gives the reference ratio of 1 update per env-step,
 # 1 gives 0.125. Every walker run before 2026-08-12 used 1, i.e. 1/8 of the
