@@ -222,6 +222,15 @@ struct CheckpointReader(ParamVisitor):
             )
         for i in range(N):
             param.data[i] = Scalar[DT](atof(self._next()))
+        # ⚠ RESTORING A WEIGHT IS A WRITE, so it must advance `version` — the
+        # same contract the optimizer honours via `ParamVersionBump`. Leaves
+        # cache DERIVED copies of the weight gated on this counter (`w_pad`,
+        # the K-alignment pad; `w_bf`, the AMP bf16 recast), and without the
+        # bump a `make -> forward -> load_state -> forward` sequence keeps
+        # serving the PRE-LOAD weight: the checkpoint loads, reports success,
+        # and is silently ignored. A viewer switching checkpoints after it has
+        # already acted hits exactly that.
+        param.version += 1
         if self.mode == 0 and len(toks) >= 4 and toks[3] == "1":
             m.ensure(N)
             v.ensure(N)
@@ -341,6 +350,10 @@ struct BinaryCheckpointReader(ParamVisitor):
                 + String(N) + ", checkpoint " + toks[2]
             )
         self._take_vals(param, N)
+        # See the note in `CheckpointReader.visit` — restoring a weight must
+        # advance `version` or the version-gated derived caches (`w_pad`,
+        # `w_bf`) keep serving the pre-load weight.
+        param.version += 1
         if self.mode == 0 and len(toks) >= 4 and toks[3] == "1":
             m.ensure(N)
             v.ensure(N)
