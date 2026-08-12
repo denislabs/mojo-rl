@@ -930,14 +930,21 @@ def _run_mppi_iteration[
     )
 
     # 6. Weighted mean/std refit
+    # ⚠ ONE BLOCK PER OUTPUT, not per thread. `MEAN_STD_BLOCKS` sized the grid
+    # from the OUTPUT count (N_ENVS*H*ACT = 144 at the walker's dims), which is
+    # smaller than one block — so the old launch was a single block reducing
+    # 268 samples serially, 1.4% of GPU time for 144 numbers. The parallelism
+    # has to come from the reduction, so the grid is the output count and each
+    # block reduces with `TPB` threads. `MEAN_STD_BLOCKS` is now unused here.
+    comptime MEAN_STD_DIMS = N_ENVS * HORIZON * ACTION_DIM
     comptime weighted_mean_std = mppi_weighted_mean_std_kernel[
-        dtype, N_ENVS, TOTAL_SAMPLES, HORIZON, ACTION_DIM
+        dtype, N_ENVS, TOTAL_SAMPLES, HORIZON, ACTION_DIM, TPB
     ]
     ctx.enqueue_function[weighted_mean_std](
         weights_tensor,
         all_actions_tensor,
         mean_tensor,
         std_tensor,
-        grid_dim=(MEAN_STD_BLOCKS,),
+        grid_dim=(MEAN_STD_DIMS,),
         block_dim=(TPB,),
     )

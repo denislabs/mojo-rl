@@ -414,6 +414,7 @@ def mppi_weighted_mean_std_kernel[
     TOTAL_SAMPLES: Int,
     HORIZON: Int,
     ACTION_DIM: Int,
+    BLOCK_SIZE: Int,
 ](
     weights: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * TOTAL_SAMPLES), MutAnyOrigin
@@ -432,54 +433,105 @@ def mppi_weighted_mean_std_kernel[
 ) where dtype.is_floating_point():
     """Refit ``(mean, std)`` per env using elite-weighted actions.
 
-    One thread per ``(env, t, a)`` triplet, reducing over
-    ``TOTAL_SAMPLES``. Std is clamped to ``[STD_MIN=0.05,
-    STD_MAX=2.0]`` (TD-MPC2 reference defaults). The ``+1e-8`` inside
-    ``sqrt`` keeps gradients well-defined at near-zero variance —
-    safe because elite weights are guaranteed non-degenerate by
-    ``mppi_softmax_weights_kernel``'s normalization.
-    """
-    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
-    comptime TOTAL_DIMS = N_ENVS * HORIZON * ACTION_DIM
-    if tid >= TOTAL_DIMS:
-        return
+    ONE BLOCK per ``(env, t, a)`` triplet, reducing over ``TOTAL_SAMPLES``
+    inside the block. Std is clamped to ``[STD_MIN=0.05, STD_MAX=2.0]``
+    (TD-MPC2 reference defaults). The ``+1e-8`` inside ``sqrt`` keeps gradients
+    well-defined at near-zero variance — safe because elite weights are
+    guaranteed non-degenerate by ``mppi_softmax_weights_kernel``.
 
-    var env_idx = tid // (HORIZON * ACTION_DIM)
-    var rem = tid % (HORIZON * ACTION_DIM)
+    ⚠ THE OUTPUT COUNT IS SMALLER THAN ONE BLOCK, so a thread-per-output grid
+    cannot be widened. At the walker's dims ``TOTAL_DIMS = 8*3*6 = 144``, and
+    the previous one-thread-per-output form launched
+    ``ceil(144 / 256) = 1 BLOCK`` — one SM of ~170 on an RTX 5090 — with each
+    thread running two serial 268-iteration passes. Measured at 53.3 us x 800
+    launches = 42.6 ms, **1.4% of all GPU time** to produce 144 numbers.
+    Widening the grid is not an option here; the parallelism has to come from
+    the REDUCTION, hence block-per-output. 144 blocks x BLOCK_SIZE threads,
+    each thread covering ``ceil(268 / BLOCK_SIZE)`` samples.
+
+    ⚠ The tree reduction changes the fp32 SUMMATION ORDER versus the old
+    serial loop, so refit means/stds move by ~1 ulp and a long MPPI rollout
+    will diverge from previously recorded numbers. That is a reordering, not a
+    regression — but it does mean this kernel is not bit-comparable across the
+    change.
+    """
+    comptime TOTAL_DIMS = N_ENVS * HORIZON * ACTION_DIM
+    var out_idx = Int(block_idx.x)
+    if out_idx >= TOTAL_DIMS:
+        return
+    var tid = Int(thread_idx.x)
+
+    var env_idx = out_idx // (HORIZON * ACTION_DIM)
+    var rem = out_idx % (HORIZON * ACTION_DIM)
     var t = rem // ACTION_DIM
     var a = rem % ACTION_DIM
 
     var w_off = env_idx * TOTAL_SAMPLES
-    var act_off = env_idx * TOTAL_SAMPLES * HORIZON * ACTION_DIM
+    # Fold the fixed (t, a) offset in once — the per-sample stride is then a
+    # flat `HORIZON * ACTION_DIM`.
+    var act_off = (
+        env_idx * TOTAL_SAMPLES * HORIZON * ACTION_DIM
+        + t * ACTION_DIM
+        + a
+    )
+    comptime ASTRIDE = HORIZON * ACTION_DIM
 
-    var wm = Scalar[dtype](0.0)
-    for s in range(TOTAL_SAMPLES):
-        var w = Scalar[dtype](weights[w_off + s][0])
-        var act = Scalar[dtype](
-            all_actions[
-                act_off + s * HORIZON * ACTION_DIM + t * ACTION_DIM + a
-            ][0]
+    var smem = LayoutTensor[
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # ── pass 1: weighted mean ────────────────────────────────────────
+    var acc = Scalar[dtype](0.0)
+    var s = tid
+    while s < TOTAL_SAMPLES:
+        acc += Scalar[dtype](weights[w_off + s][0]) * Scalar[dtype](
+            all_actions[act_off + s * ASTRIDE][0]
         )
-        wm += w * act
-    mean_out[tid] = wm
+        s += BLOCK_SIZE
+    smem[tid] = acc
+    barrier()
 
-    var wv = Scalar[dtype](0.0)
-    for s in range(TOTAL_SAMPLES):
-        var w = Scalar[dtype](weights[w_off + s][0])
-        var act = Scalar[dtype](
-            all_actions[
-                act_off + s * HORIZON * ACTION_DIM + t * ACTION_DIM + a
-            ][0]
-        )
-        var diff = act - wm
-        wv += w * diff * diff
+    var stride = BLOCK_SIZE >> 1
+    while stride > 0:
+        if tid < stride:
+            smem[tid] = smem[tid] + smem[tid + stride]
+        barrier()
+        stride >>= 1
 
-    var std_val = sqrt(wv + Scalar[dtype](1e-8))
-    if std_val < Scalar[dtype](0.05):
-        std_val = Scalar[dtype](0.05)
-    if std_val > Scalar[dtype](2.0):
-        std_val = Scalar[dtype](2.0)
-    std_out[tid] = std_val
+    var wm = Scalar[dtype](smem[0][0])
+    # ⚠ Every thread must READ smem[0] before pass 2 overwrites smem[tid].
+    barrier()
+
+    # ── pass 2: weighted variance about that mean ────────────────────
+    var acc2 = Scalar[dtype](0.0)
+    s = tid
+    while s < TOTAL_SAMPLES:
+        var diff = Scalar[dtype](
+            all_actions[act_off + s * ASTRIDE][0]
+        ) - wm
+        acc2 += Scalar[dtype](weights[w_off + s][0]) * diff * diff
+        s += BLOCK_SIZE
+    smem[tid] = acc2
+    barrier()
+
+    stride = BLOCK_SIZE >> 1
+    while stride > 0:
+        if tid < stride:
+            smem[tid] = smem[tid] + smem[tid + stride]
+        barrier()
+        stride >>= 1
+
+    if tid == 0:
+        mean_out[out_idx] = wm
+        var std_val = sqrt(Scalar[dtype](smem[0][0]) + Scalar[dtype](1e-8))
+        if std_val < Scalar[dtype](0.05):
+            std_val = Scalar[dtype](0.05)
+        if std_val > Scalar[dtype](2.0):
+            std_val = Scalar[dtype](2.0)
+        std_out[out_idx] = std_val
 
 
 # =============================================================================
