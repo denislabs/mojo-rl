@@ -56,6 +56,37 @@ stale from the previous round.
 On walker the planner is worth a large fraction of the score, so that
 comparison charges the planner's absence to multi-task conditioning.
 
+## Which regime — and why the first multi-task run does not count (2026-08-12)
+
+The first multi-task run (130k steps, MPC-off, UTD=0.125) produced a striking
+result: stand climbed, walk and run stalled, the embedding table collapsed
+(rows grew 22x while their pairwise cosines converged to 0.9995), and a
+cross-task eval matrix showed the STAND task id beating the correct id in every
+environment. It was read as multi-task conditioning failing. That reading does
+not survive the single-task controls measured afterwards:
+
+  * At UTD=0.125 the planner buys nothing before ~120k env-steps in SINGLE-task
+    either (eval 148 with vs 159 without at 50k). So "MPC adds nothing on
+    walk/run" was the normal result at that data scale, not evidence of a
+    task-blind model.
+  * UTD=0.125 starves the critic outright: implied value from realized returns
+    ~37.7 against `q_mean` 12.05, under by 3x, with `value_loss` and
+    `reward_loss` flat from 50k while `consistency_loss` kept falling. At
+    UTD=1 the same comparison is 80 vs 69.9, and `value_loss` finally drops.
+  * UTD=1 is ~3.2x more sample-efficient: eval 750+ at 62-99k env-steps where
+    UTD=0.125 needed 200k.
+
+So the entire first multi-task run happened in a regime where the critic never
+converged, and nothing measured in it — the embedding collapse included —
+should be carried forward. This configuration re-runs it at UTD=1 with the
+planner on, which is the first setting where the single-task critic actually
+fits.
+
+⚠ Wall-clock across runs is NOT comparable right now: Linear and MPPI were
+optimised mid-sequence, and the UTD=1 MPC run clocked 33.2 steps/s against 26.3
+for the UTD=1 MPC-OFF run that preceded it. Sample efficiency (score vs
+env-steps) is unaffected; any cost claim needs a fresh A/B on one build.
+
 Run:
     pixi run -e nvidia mojo run -I . examples/dm_control/tdmpc2_dm_walker_multitask_gpu.mojo
 """
@@ -107,14 +138,26 @@ comptime CAP = 1_000_000  # MUST be a multiple of N_ENVS
 comptime LR = 3e-4
 comptime ACTION_SCALE = 1.0
 comptime LEARN_START = 5_000  # replay frames before the policy takes over
-comptime UPDATES_PER_STEP = 1  # per ITERATION (= N_ENVS env-steps)
+# Per ITERATION (= N_ENVS env-steps), so this value IS the UTD numerator:
+# N_ENVS = the reference ratio of one update per env-step. The first
+# multi-task run used 1 (UTD=0.125) and its conclusions do not carry over —
+# see "Which regime" below.
+comptime UPDATES_PER_STEP = N_ENVS
 comptime EPISODE_LEN = 1_000
 comptime SEGMENT_STEPS = EPISODE_LEN * N_ENVS  # 8 000 — one episode per env
-comptime N_ROUNDS = 40  # 3 x 40 x 8 000 = 960 k env-steps total
+# 3 x 13 x 8 000 = 312 k env-steps, i.e. ~100 k PER TASK. Sized off the
+# single-task UTD=1 runs, which reached eval 750+ at 62-99 k env-steps; 960 k
+# was sized for UTD=0.125, where the same score took 200 k.
+comptime N_ROUNDS = 13
 comptime EVAL_EVERY = SEGMENT_STEPS  # once per segment, on that task
 comptime DIAG_EVERY = 1_000
 comptime PRINT_EVERY = 4_000
-comptime CKPT = "tdmpc2_dm_walker_multitask.ckpt"
+# ⚠ Built at RUNTIME (`var ckpt` in main), not as a comptime String — comptime
+# String stores do not survive here. Tagged with the acting mode and UTD:
+# `tdmpc2_dm_walker_multitask.ckpt` is the 130k MPC-off / UTD=0.125 run
+# analysed on 2026-08-12, the control for every comparison here, and an
+# untagged name overwrites it.
+comptime CKPT_STEM = "tdmpc2_dm_walker_multitask"
 
 comptime MAX_RETURN = 1000.0
 
@@ -172,6 +215,12 @@ def main() raises:
     print("=" * 70)
     seed(0)
     var ctx = DeviceContext()
+
+    var CKPT = (
+        String(CKPT_STEM)
+        + ("_mpc" if USE_MPC else "_mpcoff")
+        + "_utd" + String(UPDATES_PER_STEP) + ".ckpt"
+    )
 
     var stand = StandEnv(ctx)
     var walk = WalkEnv(ctx)
