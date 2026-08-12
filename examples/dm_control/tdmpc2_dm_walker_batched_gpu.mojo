@@ -53,6 +53,39 @@ N_ENVS up and the MPPI budget down together, or run MPC-off.
 single-env ratio of one gradient step per env-step (the reference ratio);
 lower it to trade sample-efficiency for wall-clock.
 
+## UTD — what this file is currently configured to test (2026-08-12)
+
+Every walker run before today used `updates_per_step=1`, i.e. UTD=0.125 —
+**one eighth of the reference ratio**. The diagnostics say that is the binding
+constraint: over a clean 220k-step run, `consistency_loss` fell all the way
+(0.045 → 0.011) while `value_loss` and `reward_loss` went FLAT at ~0.028 from
+50k onward. The dynamics model kept learning; the two heads that decide control
+stopped. `q_mean` tracks `td_target_mean` to within 0.5% and sits 7-18% under
+realized returns, so the critic is calibrated — under-trained, not broken.
+
+⚠ Price a UTD change in GRADIENT STEPS, not env-steps. Holding TOTAL fixed and
+raising the ratio 8x reads as "7x slower" and is the wrong comparison: at
+UTD=1, 150k env-steps costs ~2.2h and buys 150k updates, where the 220k-step
+control run took ~20 min and bought 27.5k. Fewer steps, far more learning.
+
+Measured controls to compare against (single-task walk, N_ENVS=8, UTD=0.125,
+post-`1cc6f779`; `mean_ret(100)`):
+
+| env-steps | MPC off | MPC on |
+|-----------|---------|--------|
+| 120k      | 196     | 181    |
+| 210k      | 302     | 529    |
+
+The two controllers are indistinguishable below ~120k and only then does the
+planner pull away (final evals ~300 vs ~880). That is why the UTD test runs
+MPC-OFF: below the crossover the planner buys nothing, so leaving it on would
+cost 1.47x wall-clock to confound the one variable under test.
+
+⚠⚠ Both control curves above are only valid post-`1cc6f779`. Runs built in the
+`517084c2`..`baeaa9bc` window had FROZEN target Q nets (a version-gated weight
+cache the polyak write never invalidated) and scored 74.7 at 150k where the
+fixed build scores 230.5. Do not compare against a number from that window.
+
 Run:
     pixi run -e nvidia mojo run -I . examples/dm_control/tdmpc2_dm_walker_batched_gpu.mojo
     pixi run -e apple  mojo run -I . examples/dm_control/tdmpc2_dm_walker_batched_gpu.mojo
@@ -79,7 +112,10 @@ comptime MOVE_SPEED: Float64 = 0.0 if TASK == "stand" else (
 )
 
 comptime TARGET = "gpu"        # batched driver requires env target == this
-comptime USE_MPC = True
+# MPC-off for the UTD test: the two controllers are indistinguishable below
+# ~120k env-steps (measured — see the UTD block below), so leaving the planner
+# off isolates the update ratio and costs 1.47x less wall-clock.
+comptime USE_MPC = False
 comptime MPC_SAMPLES = 256
 comptime MPC_PI_TRAJS = 12
 comptime MPC_ELITES = 32
@@ -106,9 +142,21 @@ comptime ACTION_SCALE = 1.0
 # All step counts below are TOTAL env-steps ACROSS ALL ENVS (SAC's convention):
 # the driver runs `TOTAL // N_ENVS` iterations.
 comptime LEARN_START = 5_000
-comptime TOTAL = 1_000_000
-comptime UPDATES_PER_STEP = 1  # per ITERATION; N_ENVS = the reference ratio
-comptime EVAL_EVERY = 25_000
+# ⚠ TOTAL is deliberately SHORT here. At UTD=1 the run is priced in GRADIENT
+# STEPS, not env-steps: 150k env-steps buys 150k updates, against the 27.5k
+# that a 220k-step run at UPDATES_PER_STEP=1 delivered. Do not "restore" this
+# to 1M without also dropping UPDATES_PER_STEP — that is a ~20h run.
+comptime TOTAL = 150_000
+# Per ITERATION, and an iteration is N_ENVS env-steps — so this value IS the
+# UTD numerator: N_ENVS gives the reference ratio of 1 update per env-step,
+# 1 gives 0.125. Every walker run before 2026-08-12 used 1, i.e. 1/8 of the
+# published recipe, which is why the reward and value heads flatlined at 50k
+# while consistency_loss kept falling.
+comptime UPDATES_PER_STEP = N_ENVS
+# Halved vs the control run's 25k: eval spread on this task is ~±65, so the
+# curve needs points. Every SECOND point still lands on a 25k multiple and so
+# lines up exactly with the UPDATES_PER_STEP=1 control.
+comptime EVAL_EVERY = 12_500
 comptime EP_LEN = 1_000        # dm_control's own limit
 comptime DIAG_EVERY = 1_000
 comptime PRINT_EVERY = 10_000
@@ -155,9 +203,13 @@ def main() raises:
     var eval_env = EvalEnv(ctx)
     var eval_env_ptr = Pointer(to=eval_env).as_unsafe_any_origin()
 
+    # ⚠ The UTD tag is part of the name on purpose: without it this run
+    # overwrites the UPDATES_PER_STEP=1 checkpoint, which is the CONTROL for
+    # the comparison it exists to make.
     var ckpt = (
         String("tdmpc2_dm_walker_batched_") + String(TASK)
-        + ("_mpc" if USE_MPC else "_mpcoff") + ".ckpt"
+        + ("_mpc" if USE_MPC else "_mpcoff")
+        + "_utd" + String(UPDATES_PER_STEP) + ".ckpt"
     )
 
     var ag = TDMPC2[
