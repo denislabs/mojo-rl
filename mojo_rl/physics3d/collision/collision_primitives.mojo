@@ -1855,6 +1855,39 @@ comptime _CB_NO_SECOND: Float64 = -4.0
 
 
 @always_inline
+def _sel3[
+    DTYPE: DType
+](i: Int, a: Scalar[DTYPE], b: Scalar[DTYPE], c: Scalar[DTYPE]) -> Scalar[
+    DTYPE
+]:
+    """Pick component `i` of a 3-vector held in three SCALARS.
+
+    ⚠⚠ THIS EXISTS BECAUSE A PER-THREAD ARRAY MISCOMPUTES ON METAL — defect
+    27. `_capsule_box_second_pos` held `s`/`hax`/`pos`/`axis` as
+    `InlineArray[Scalar, 3]` and indexed them by a runtime axis. Measured from
+    the LIVE GPU detection run, with the parameter and the array element
+    smuggled out side by side through the contact record:
+
+        hax_y (param)   CPU 0.059999994933605194   GPU 0.059999994933605194
+        hax[1] (array)  CPU 0.059999994933605194   GPU -0.0
+
+    The value arrives correctly and reads back as -0.0 from the array. That
+    made `e1 = 2*s/|hax|` a nan, so BOTH `if e1 < secondpos` clamps silently
+    failed and `secondpos` kept its initial `1 - bestsegmentpos` — a 0.27 swing
+    in a unit normal on the second manifold point, which is defect 27 entire.
+
+    Same class as the RK4 elliptic OOM and the 16-wide wrap arrays in
+    `_tendon_env`, whose comment already prescribes the cure: read components
+    INLINE and never buffer them. WRONG NUMBERS, not a crash.
+    """
+    if i == 0:
+        return a
+    if i == 1:
+        return b
+    return c
+
+
+@always_inline
 def _capsule_box_second_pos[
     DTYPE: DType
 ](
@@ -1887,18 +1920,9 @@ def _capsule_box_second_pos[
     closest to — a corner, an edge, or a face — and the answer is always
     "walk along the capsule until it leaves the box, then clamp".
     """
-    var s = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-    s[0] = sx
-    s[1] = sy
-    s[2] = sz
-    var hax = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-    hax[0] = hax_x
-    hax[1] = hax_y
-    hax[2] = hax_z
-    var pos = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-    pos[0] = pos_x
-    pos[1] = pos_y
-    pos[2] = pos_z
+    # NO PER-THREAD ARRAYS HERE — see `_sel3`. Components are selected inline
+    # from scalars; on Metal a 3-element per-thread array indexed by a runtime
+    # axis reads back garbage (defect 27).
 
     # `axisdir` is the octant the capsule's half-axis points into; XORing it
     # with `clcorner` is MuJoCo's trick for the RELATIVE orientation of the
@@ -1916,10 +1940,9 @@ def _capsule_box_second_pos[
         return Scalar[DTYPE](_CB_NO_SECOND)
     # MuJoCo's `axis` is the UNIT capsule direction; `halfaxis` is that scaled
     # by the half-length. Only `axis` is compared against 0.5 below.
-    var axis = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-    axis[0] = hax_x / hlen
-    axis[1] = hax_y / hlen
-    axis[2] = hax_z / hlen
+    var axis_x = hax_x / hlen
+    var axis_y = hax_y / hlen
+    var axis_z = hax_z / hlen
 
     var secondpos = Scalar[DTYPE](_CB_NO_SECOND)
 
@@ -1956,20 +1979,20 @@ def _capsule_box_second_pos[
             ax1 = 0
             ax2 = 1
 
-        if axis[ax] * axis[ax] > Scalar[DTYPE](0.5):
+        if _sel3[DTYPE](ax, axis_x, axis_y, axis_z) * _sel3[DTYPE](ax, axis_x, axis_y, axis_z) > Scalar[DTYPE](0.5):
             # Second point along the box EDGE the capsule runs down.
             secondpos = de
-            var e1 = Scalar[DTYPE](2) * s[ax] / abs(hax[ax])
+            var e1 = Scalar[DTYPE](2) * _sel3[DTYPE](ax, sx, sy, sz) / abs(_sel3[DTYPE](ax, hax_x, hax_y, hax_z))
             if e1 < secondpos:
                 secondpos = e1
             secondpos *= mul
         else:
             # Second point along a box FACE.
             secondpos = dp
-            var e1 = Scalar[DTYPE](2) * s[ax1] / abs(hax[ax1])
+            var e1 = Scalar[DTYPE](2) * _sel3[DTYPE](ax1, sx, sy, sz) / abs(_sel3[DTYPE](ax1, hax_x, hax_y, hax_z))
             if e1 < secondpos:
                 secondpos = e1
-            e1 = Scalar[DTYPE](2) * s[ax2] / abs(hax[ax2])
+            e1 = Scalar[DTYPE](2) * _sel3[DTYPE](ax2, sx, sy, sz) / abs(_sel3[DTYPE](ax2, hax_x, hax_y, hax_z))
             if e1 < secondpos:
                 secondpos = e1
             secondpos *= -mul
@@ -1994,7 +2017,7 @@ def _capsule_box_second_pos[
             ax2 = 1
 
         # Whichever of the two adjacent faces the capsule lies flatter against.
-        if abs(axis[ax1]) > abs(axis[ax2]):
+        if abs(_sel3[DTYPE](ax1, axis_x, axis_y, axis_z)) > abs(_sel3[DTYPE](ax2, axis_x, axis_y, axis_z)):
             ax1 = ax2
         ax2 = 3 - ax - ax1
 
@@ -2006,7 +2029,7 @@ def _capsule_box_second_pos[
             mul = Scalar[DTYPE](-1)
             secondpos = Scalar[DTYPE](1) + bestsegmentpos
 
-        var e1 = Scalar[DTYPE](2) * s[ax2] / abs(hax[ax2])
+        var e1 = Scalar[DTYPE](2) * _sel3[DTYPE](ax2, sx, sy, sz) / abs(_sel3[DTYPE](ax2, hax_x, hax_y, hax_z))
         if e1 < secondpos:
             secondpos = e1
 
@@ -2014,7 +2037,7 @@ def _capsule_box_second_pos[
         if ((axisdir & (1 << ax)) != 0) == ((c1 & (1 << ax2)) != 0):
             e2 = Scalar[DTYPE](1) - bestboxpos
 
-        e1 = s[ax] * e2 / abs(hax[ax])
+        e1 = _sel3[DTYPE](ax, sx, sy, sz) * e2 / abs(_sel3[DTYPE](ax, hax_x, hax_y, hax_z))
         if e1 < secondpos:
             secondpos = e1
         secondpos *= mul
@@ -2030,17 +2053,17 @@ def _capsule_box_second_pos[
             mul = Scalar[DTYPE](1)
 
         secondpos = Scalar[DTYPE](2)
-        var t = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-        for i in range(3):
-            t[i] = pos[i] - hax[i] * mul
+        var t_x = pos_x - hax_x * mul
+        var t_y = pos_y - hax_y * mul
+        var t_z = pos_z - hax_z * mul
 
         for i in range(3):
             if i == clface:
                 continue
-            var e1 = (s[i] - t[i]) / hax[i] * mul
+            var e1 = (_sel3[DTYPE](i, sx, sy, sz) - _sel3[DTYPE](i, t_x, t_y, t_z)) / _sel3[DTYPE](i, hax_x, hax_y, hax_z) * mul
             if e1 > Scalar[DTYPE](0) and e1 < secondpos:
                 secondpos = e1
-            e1 = (-s[i] - t[i]) / hax[i] * mul
+            e1 = (-_sel3[DTYPE](i, sx, sy, sz) - _sel3[DTYPE](i, t_x, t_y, t_z)) / _sel3[DTYPE](i, hax_x, hax_y, hax_z) * mul
             if e1 > Scalar[DTYPE](0) and e1 < secondpos:
                 secondpos = e1
         secondpos *= mul

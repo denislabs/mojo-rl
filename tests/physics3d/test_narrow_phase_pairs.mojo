@@ -234,11 +234,13 @@ comptime TOL_DIR: Float64 = 1e-10
 comptime TOL_DIST: Float64 = 1e-12
 comptime TOL_DIR_APPROX: Float64 = 1e-5
 comptime TOL_DIST_APPROX: Float64 = 1e-6
-# Defect 27 ratchet: the measured CPU-vs-GPU divergence on the box/capsule
-# SECOND manifold point (0.2747207283973694 at column NY), plus 1%. Set from
-# the measurement so it cannot drift upward unnoticed. See the long note at the
-# assert site.
-comptime TOL_GPU_MANIFOLD: Float64 = 0.2775
+# Defect 27 is FIXED (2026-08-12) and this is no longer a defect ratchet — it
+# is an ordinary float32 CPU-vs-GPU tolerance. It was 0.2775, pinned to the
+# divergence on the box/capsule SECOND manifold point; the measurement is now
+# 1.943426397588155e-08, so this is set at the float32 rounding scale (~1 ulp
+# at unit magnitude) rather than at that number, to leave room for ordinary
+# device noise without ever readmitting a branch-level divergence.
+comptime TOL_GPU_MANIFOLD: Float64 = 1e-7
 
 comptime Dat = Data[DTYPE, PM.NQ, PM.NV, NBODY, MC, PM.NSITE, 1]
 comptime Mod = Model[
@@ -643,108 +645,35 @@ def test_narrow_phase_pairs_gpu_matches_cpu() raises:
     # the box/capsule group (bodies 15/16), measured 2026-08-09:
     #     column 6 (NY)   CPU -1.0643675096844163e-07   GPU -0.2747207283973694
     #     column 8 (DIST) CPU -0.004999961704015732     GPU -0.0035994164645671844
-    # ⚠⚠ THE DIAGNOSIS BELOW REPLACES TWO EARLIER ONES, BOTH WRONG ABOUT THE
-    # LOCATION (2026-08-12). It is NOT the `con[ncon].dist = con[0].dist` copy,
-    # and it is NOT `_capsule_box_second_pos`'s `axisdir` sign test — which is
-    # why a tie-break there left the delta EXACTLY unchanged.
+    # ✅ DEFECT 27 — FIXED 2026-08-12. It was a METAL PER-THREAD ARRAY
+    # MISCOMPUTE, not a collision-algorithm bug. `_capsule_box_second_pos`
+    # held `s`/`hax`/`pos`/`axis` as `InlineArray[Scalar, 3]` and indexed them
+    # by a runtime axis; on Metal the value arrived correctly and read back
+    # WRONG. Measured from the live GPU run with the parameter and the array
+    # element smuggled out side by side through this very record:
     #
-    # The whole divergence funnels through one scalar. `box_capsule_manifold`
-    # emits point k=1 at `t = bestsegmentpos + secondpos`; the first point is
-    # bit-exact, so `bestsegmentpos` agrees and only `secondpos` can differ.
-    # Measured on the CPU for this exact pair (box .05^3 at x=7.0, capsule
-    # r=.04 along Y at x=7.085, both identity-oriented):
+    #     hax_y (param)   CPU 0.059999994933605194   GPU 0.059999994933605194
+    #     hax[1] (array)  CPU 0.059999994933605194   GPU -0.0
     #
-    #     cltype 4  clcorner 0  cledge 2   bestsegmentpos -0.8333333730697632
-    #     secondpos +1.6666667461395264
-    #     -> two points at t = -+0.8333, BOTH dist -0.004999961704015732
+    # `e1 = 2*s/|hax|` then became nan, BOTH `if e1 < secondpos` clamps
+    # silently failed, and `secondpos` kept its initial `1 - bestsegmentpos`
+    # (1.8333 instead of 1.6667) — the 0.27 swing in a unit normal. Fixed by
+    # reading components inline via `_sel3`; delta 0.2747206219606184 ->
+    # 1.943426397588155e-08, contact COUNT unchanged at 31, MuJoCo-anchored
+    # numbers unmoved.
     #
-    # which reproduces c9 and c10 exactly. Inverting the GPU's recorded second
-    # point (dist -0.0035994164645671844, ny -0.2747207283973694) by sweeping
-    # `t` gives t = -1.0, i.e. GPU `secondpos = -0.16666662693023682`.
-    #
-    # Brute-forcing the classifier outputs that yield that value, with the same
-    # `bestsegmentpos`/`bestboxpos`, gives ONLY `cltype` in {0,1,2} — the
-    # CORNER branch (`cltype//3 == 0`) — with `clcorner` in {3,6,7}. The CPU
-    # takes the EDGE branch (`cltype = 4`).
-    #
-    # ⚠ THAT NARROWING IS CONDITIONAL, and the condition is not verified: the
-    # brute force holds `bestboxpos` at the CPU's value (-0.0). `bestboxpos` is
-    # an OUTPUT of the classifier that does NOT affect the first contact, so it
-    # can differ on the GPU silently, and other
-    # (cltype, clcorner, cledge, bestboxpos) combinations may reach the same
-    # `secondpos`. Read it as "consistent with a classifier divergence", NOT as
-    # "the GPU takes the corner branch".
-    #
-    # So the classification in `_capsule_box_best_segment_pos` is the leading
-    # suspect, one level ABOVE where both previous attempts looked. The closest POINT is unambiguous (hence a bit-exact
-    # first contact) but the FEATURE LABEL is a genuine tie here — the capsule
-    # axis is parallel to a box face, so several features are equidistant and
-    # the strict `>` comparisons resolve it differently once Metal's rounding
-    # (FMA contraction) moves the last bits.
-    #
-    # ⚠⚠ A THIRD FIX ATTEMPT ALSO CHANGED NOTHING (2026-08-12). The edge
-    # loop's tie-break `d2 < best_d2 - MINVAL` is a NO-OP IN FLOAT32 — `d2` is
-    # ~2.5e-05 here and `2.5e-05 - 1e-15` is exactly `2.5e-05` — so MuJoCo's
-    # guard against round-off moving the contact between equidistant edges is
-    # simply absent at this precision. That observation is REAL and worth
-    # keeping. Restoring the guard with a few-ulp relative margin (zero for
-    # float64, so that path cannot move) left the delta EXACTLY unchanged at
-    # 0.2747206219606184, so it is not this defect's cause either, and the
-    # change was reverted rather than carried unproven.
-    #
-    # ⚠⚠ THE DEVICE SIDE HAS NOW BEEN OBSERVED, and it EXONERATES THE
-    # COLLISION MATH (2026-08-12). A throwaway probe called
-    # `_capsule_box_best_segment_pos` / `_capsule_box_second_pos` from a tiny
-    # Metal kernel of its own — no `print` needed — and compared against the
-    # same call on the CPU:
-    #
-    #     cltype 4/4   clface -1/-1   clcorner 0/0   cledge 2/2
-    #     bestboxpos -0.0/-0.0   bestsegmentpos and secondpos BIT-IDENTICAL
-    #
-    # Then the same for `box_capsule_manifold`'s PROLOGUE (the quaternion
-    # transforms that build `pos`/`hax` from the geom poses):
-    #
-    #     cap_axis, pos_x/y/z, hax_x/y/z all BIT-IDENTICAL; hax_x = 0.0 on BOTH
-    #
-    # So neither the classifier, nor the second-point construction, nor the
-    # frame transform is device-divergent for inputs of this shape. THE
-    # DIVERGENCE IS IN THE DATA THEY ARE FED — the geom records or the FK
-    # products (`xpos`/`xquat`) for this pair — not in `collision_primitives`
-    # at all. That is a different subsystem from the one three fixes targeted.
-    #
-    # ⚠ Caveat on what that proved: the probe used IDEALISED inputs. It shows
-    # the FUNCTIONS agree on inputs of that shape; not that the engine feeds
-    # them identical values.
-    #
-    # ✅ MEASURED FROM THE REAL DETECTION RUN (2026-08-12), by temporarily
-    # smuggling the classifier's outputs through the second point's pos/normal
-    # columns and downloading them. Upstream is IDENTICAL:
-    #
-    #     FK products (xpos/xquat), ALL bodies      worst |d| 0.0
-    #     uploaded geom records, host vs device     worst |d| 0.0
-    #     cltype 4/4  cledge 2/2  clcorner 1/1
-    #     bestsegmentpos -0.8333333730697632        IDENTICAL
-    #     hax_x -0.0                                IDENTICAL
-    #
-    #     secondpos   CPU 1.666666865348816   GPU 1.8333333730697632   <<<
-    #
-    # So the divergence is INSIDE `_capsule_box_second_pos`, and the numbers
-    # name the mechanism: 1.8333333730697632 is EXACTLY `1 - bestsegmentpos`,
-    # the value `secondpos` is initialised to in the edge branch before the two
-    # `if e1 < secondpos` clamps. The CPU clamps it to `2*s[ax2]/|hax[ax2]|` =
-    # 1.6667; THE GPU DOES NOT CLAMP AT ALL.
-    #
-    # ⚠ NOT the classifier (identical), not the frame transform (identical),
-    # not FK, not the model records. Everything feeding this function agrees;
-    # only the clamp arithmetic inside it diverges. The next step is to smuggle
-    # `ax1`, `ax2` and the two `e1` values out of that function the same way —
-    # an `|hax[ax2]|` that is zero on one device makes `e1` infinite and the
-    # clamp silently vanish, which fits `secondpos` staying at its initial
-    # value exactly.
-    #
-    # ⚠ THE LAST TIE-BREAK ATTEMPT BROKE CAPSULE/BOX (2 contacts where MuJoCo
-    # emits 1). Whatever is done must make the tie resolve identically on both
-    # devices WITHOUT changing which feature wins in the non-tied cases.
+    # ⚠⚠ WHAT IT COST, because the pattern is worth more than the fix. THREE
+    # fixes were aimed at INFERRED locations and all three changed nothing:
+    # an `axisdir` sign tie-break; a relative tie margin on the edge
+    # comparison (that one is a real observation — `d2 < best_d2 - 1e-15` IS a
+    # no-op in float32 — but not this defect); and reasoning from a
+    # reconstruction of the call. A probe that called the same function in
+    # ISOLATION with reconstructed inputs AGREED, a FALSE NEGATIVE, because
+    # the reconstruction's `clcorner` was 0 where the real call's is 1.
+    # Only instrumenting the LIVE call found it. `print` is unavailable inside
+    # a Metal kernel, but a kernel already writes a downloadable contact
+    # record — so temporarily overwriting the second point's pos/normal
+    # columns smuggles internals out.
     #
     # The tolerance below is set FROM THAT MEASUREMENT so this is a RATCHET: it
     # passes today and fails the moment the divergence grows or spreads to
