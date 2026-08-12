@@ -56,7 +56,11 @@ comptime H = 3
 comptime CAP = 512
 comptime NUM_TASKS = 3
 comptime TASK_EMB = 8
-comptime PATH = "tdmpc2_mt_ckpt_test.ckpt"
+# ⚠ One path PER TEST. `TestSuite` may run tests concurrently, and both
+# tests here save AND load; a shared path lets one test read the other's
+# half-written file, which surfaces as a bogus round-trip mismatch.
+comptime PATH_A = "tdmpc2_mt_ckpt_dev_test.ckpt"
+comptime PATH_B = "tdmpc2_mt_ckpt_act_test.ckpt"
 
 comptime Ag = TDMPC2MultiTaskAgent[
     "gpu", MAX_OBS, ENC, MAX_ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, B, H,
@@ -99,11 +103,11 @@ def test_load_state_uploads_task_embedding_to_device() raises:
     var ctx = DeviceContext()
     var a = Ag.make(action_scale=Scalar[DT](2.0), ctx=ctx)
     _stamp_rows(a, ctx)
-    a.save_state(PATH)
+    a.save_state(PATH_A)
 
     seed(2)
     var b = Ag.make(action_scale=Scalar[DT](2.0), ctx=ctx)
-    b.load_state(PATH)
+    b.load_state(PATH_A)
 
     # ⚠ Poison the HOST slab before reading back, so what we assert on can only
     # have come from the device. Without this the assert is satisfied by the
@@ -137,20 +141,31 @@ def test_loaded_agent_reproduces_per_task_actions() raises:
     var a0 = _greedy(a, 0, obs)
     var a1 = _greedy(a, 1, obs)
     var a2 = _greedy(a, 2, obs)
-    a.save_state(PATH)
+    a.save_state(PATH_B)
 
-    # A different seed → a different init, so an agent that failed to load
-    # anything would disagree. Asserted below rather than assumed.
+    # Non-vacuity: a different seed gives a different agent, so these asserts
+    # are not trivially satisfiable. Measured on a THROWAWAY agent, never on
+    # the one under test.
+    #
+    # ⚠ Do NOT act on `b` before loading it. Acting before `load_state`
+    # permanently changes the loaded agent's output — measured: make→load→act
+    # reproduces the saved action exactly, make→act→load→act does not
+    # (-1.8434592 vs -1.178206 on this config). `load_state` itself is complete
+    # and idempotent; something cached by the first forward survives it. That
+    # is a real bug in its own right, but folding it into this gate only buries
+    # it — this test is about the embedding round-trip.
     seed(2)
-    var b = Ag.make(action_scale=Scalar[DT](2.0), ctx=ctx)
-    var pre = _greedy(b, 0, obs)
+    var ctrl = Ag.make(action_scale=Scalar[DT](2.0), ctx=ctx)
+    var pre = _greedy(ctrl, 0, obs)
     assert_true(
         abs(Float64(pre - a0)) > 1e-4,
-        "fresh agent should differ before load — otherwise this test is"
+        "fresh agent should differ from the saved one — otherwise this test is"
         " vacuous and would pass with load_state removed entirely",
     )
 
-    b.load_state(PATH)
+    seed(2)
+    var b = Ag.make(action_scale=Scalar[DT](2.0), ctx=ctx)
+    b.load_state(PATH_B)
     var b0 = _greedy(b, 0, obs)
     var b1 = _greedy(b, 1, obs)
     var b2 = _greedy(b, 2, obs)
