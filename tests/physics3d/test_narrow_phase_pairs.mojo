@@ -712,11 +712,35 @@ def test_narrow_phase_pairs_gpu_matches_cpu() raises:
     # products (`xpos`/`xquat`) for this pair — not in `collision_primitives`
     # at all. That is a different subsystem from the one three fixes targeted.
     #
-    # ⚠ Caveat on what this proves: the probe used IDEALISED inputs (an exact
-    # +-0.70710678 capsule quaternion). It shows the FUNCTIONS agree on inputs
-    # of this shape; it does not prove the engine feeds them identical values.
-    # The next measurement is exactly that — compare `xpos`/`xquat` and the
-    # geom records for bodies 15/16 between the CPU and GPU legs.
+    # ⚠ Caveat on what that proved: the probe used IDEALISED inputs. It shows
+    # the FUNCTIONS agree on inputs of that shape; not that the engine feeds
+    # them identical values.
+    #
+    # ✅ MEASURED FROM THE REAL DETECTION RUN (2026-08-12), by temporarily
+    # smuggling the classifier's outputs through the second point's pos/normal
+    # columns and downloading them. Upstream is IDENTICAL:
+    #
+    #     FK products (xpos/xquat), ALL bodies      worst |d| 0.0
+    #     uploaded geom records, host vs device     worst |d| 0.0
+    #     cltype 4/4  cledge 2/2  clcorner 1/1
+    #     bestsegmentpos -0.8333333730697632        IDENTICAL
+    #     hax_x -0.0                                IDENTICAL
+    #
+    #     secondpos   CPU 1.666666865348816   GPU 1.8333333730697632   <<<
+    #
+    # So the divergence is INSIDE `_capsule_box_second_pos`, and the numbers
+    # name the mechanism: 1.8333333730697632 is EXACTLY `1 - bestsegmentpos`,
+    # the value `secondpos` is initialised to in the edge branch before the two
+    # `if e1 < secondpos` clamps. The CPU clamps it to `2*s[ax2]/|hax[ax2]|` =
+    # 1.6667; THE GPU DOES NOT CLAMP AT ALL.
+    #
+    # ⚠ NOT the classifier (identical), not the frame transform (identical),
+    # not FK, not the model records. Everything feeding this function agrees;
+    # only the clamp arithmetic inside it diverges. The next step is to smuggle
+    # `ax1`, `ax2` and the two `e1` values out of that function the same way —
+    # an `|hax[ax2]|` that is zero on one device makes `e1` infinite and the
+    # clamp silently vanish, which fits `secondpos` staying at its initial
+    # value exactly.
     #
     # ⚠ THE LAST TIE-BREAK ATTEMPT BROKE CAPSULE/BOX (2 contacts where MuJoCo
     # emits 1). Whatever is done must make the tie resolve identically on both
