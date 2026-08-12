@@ -566,6 +566,7 @@ struct MPPIGPUBatched[
         action_scale: Float64 = 1.0,
         deterministic: Bool = False,
         rng_base_seed: UInt32 = 42,
+        num_iters: Int = 0,
     ) raises:
         """Plan one timestep for all N_ENVS envs.
 
@@ -640,8 +641,15 @@ struct MPPIGPUBatched[
         ](self.weights_buf)
 
         # ── 3. Main MPPI iterations ──────────────────────────────
+        # `num_iters` overrides `NUM_ITERATIONS` at RUNTIME (0 = use the
+        # comptime default). Iteration count is the one budget knob that can be
+        # runtime: it is purely a loop bound, whereas NUM_SAMPLES /
+        # NUM_PI_TRAJS size every device buffer in `__init__` and cannot change
+        # without reallocating. Cost is very close to linear in it, so this is
+        # the lever for trading plan quality against frame rate.
         var temp_scalar = Scalar[dtype](temperature)
-        for mppi_iter in range(Self.NUM_ITERATIONS):
+        var n_iters = num_iters if num_iters > 0 else Self.NUM_ITERATIONS
+        for mppi_iter in range(n_iters):
             var rng_seed = rng_base_seed + UInt32(
                 mppi_iter
                 * Self.BATCH_TOTAL

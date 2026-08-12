@@ -21,7 +21,22 @@ network `π` is a prior that seeds and regularizes that search; it is not the
 deployed controller. `train_batched`'s eval inherits the training `USE_MPC`, so
 a reported `eval/mean_return` from an MPC run is the PLANNER's score.
 
-Both are offered here as variants, and they will not look alike:
+## The iteration ladder — the frame-rate knob
+
+MPPI cost is near-linear in `MPC_ITERS`, and iterations are the ONLY budget
+parameter that can change at runtime (samples and pi-trajs size the planner's
+device buffers at construction). So each checkpoint contributes one MPC row per
+rung of `MPC_ITER_LADDER` plus a `prior` row, and the sidebar's +/- buttons
+walk that ladder live.
+
+⚠ THE LADDER IS A SPEED/QUALITY TRADE, NOT A FREE SPEEDUP. Only the rung equal
+to `MPC_ITERS` matches what training used and what the reported eval return
+measured; the cheaper rungs plan less and will act worse. The viewer opens on
+the training rung for that reason. Watching WHERE the gait breaks as you step
+down is the useful part — a policy that still walks at i1 has absorbed the plan
+into the prior, one that collapses at i3 is leaning on the planner.
+
+Both acting modes are offered as variants, and they will not look alike:
 
   * `MPC`   — `select_action_mpc`, the thing the eval return measured. GPU
     only, and it runs the full MPPI budget PER FRAME, so expect single-digit
@@ -104,6 +119,20 @@ comptime MPC_SAMPLES = 256
 comptime MPC_PI_TRAJS = 12
 comptime MPC_ELITES = 32
 comptime MPC_ITERS = 4
+# ── the live frame-rate knob ────────────────────────────────────────────
+# MPPI cost is near-linear in the iteration count, and it is the ONLY budget
+# parameter that can vary at runtime — NUM_SAMPLES / NUM_PI_TRAJS size the
+# planner's device buffers at construction. So the variant list crosses
+# checkpoint x mode x THIS, and the sidebar's +/- buttons walk it.
+#
+# Measured on an M1 Pro at the walker's dims (S=256, H=3): iters=4 is ~53 ms
+# (~19 Hz) and the cost scales down close to linearly, so the low rungs are
+# what make an interactive frame rate reachable. The gait degrades gracefully
+# as the budget shrinks — watching WHERE it breaks is the point of having the
+# knob, not just the Hz.
+# ⚠ A list-returning `def`, not a comptime array: a comptime `Array` cannot be
+# materialized to runtime (it is not ImplicitlyCopyable). Same pattern as
+# `task_names()` / `ckpt_tasks()` below.
 
 # Viewer-only sizes (see the header): never trains, never fills a replay.
 comptime B = 8
@@ -113,6 +142,17 @@ comptime AgentT = TDMPC2Agent[
     "gpu", OBS_DIM, ENC, ACT_DIM, LATENT, MLP, BINS, SN, VMIN, VMAX, B, H,
     CAP, MPC_SAMPLES, MPC_PI_TRAJS, MPC_ELITES, MPC_ITERS,
 ]
+
+
+def mpc_iter_ladder() -> List[Int]:
+    """MPPI iteration budgets offered as variants, cheapest first."""
+    var v = List[Int]()
+    v.append(1)
+    v.append(2)
+    v.append(3)
+    v.append(4)
+    v.append(6)
+    return v^
 
 
 def ckpt_dirs() -> List[String]:
@@ -169,6 +209,9 @@ struct TDMPC2Walker(ActionSource, Movable, Deinitable):
     var labels: List[String]
     var use_mpc: List[Bool]
     """Acting mode per variant, parallel to `paths`."""
+    var iters: List[Int]
+    """MPPI iteration budget per variant, parallel to `paths`. 0 on the
+    `prior` rows, which never plan."""
     var current: Int
     var loaded: Bool
 
@@ -184,6 +227,7 @@ struct TDMPC2Walker(ActionSource, Movable, Deinitable):
         self.paths = List[String]()
         self.labels = List[String]()
         self.use_mpc = List[Bool]()
+        self.iters = List[Int]()
         self.current = -1
         self.loaded = False
 
@@ -206,12 +250,19 @@ struct TDMPC2Walker(ActionSource, Movable, Deinitable):
             var short = names[i].replace("tdmpc2_dm_walker_", "").replace(
                 ".ckpt", ""
             )
-            self.paths.append(found)
-            self.labels.append(short + " MPC")
-            self.use_mpc.append(True)
+            # One MPC row per iteration budget, cheapest first, then the
+            # non-planning prior. +/- therefore steps the frame-rate knob.
+            var ladder = mpc_iter_ladder()
+            for k in range(len(ladder)):
+                var it = ladder[k]
+                self.paths.append(found)
+                self.labels.append(short + " MPC i" + String(it))
+                self.use_mpc.append(True)
+                self.iters.append(it)
             self.paths.append(found)
             self.labels.append(short + " prior")
             self.use_mpc.append(False)
+            self.iters.append(0)
 
         print("  checkpoints found:", n_found, "→", len(self.paths), "variants")
         for i in range(len(self.labels)):
@@ -276,7 +327,10 @@ struct TDMPC2Walker(ActionSource, Movable, Deinitable):
         if self.use_mpc[self.current]:
             # `greedy` → the eval-time planner (no exploration noise on the
             # selected action), which is what produced the eval return.
-            self.agent.select_action_mpc(obs, action_out, explore=not greedy)
+            self.agent.select_action_mpc(
+                obs, action_out, explore=not greedy,
+                num_iters=self.iters[self.current],
+            )
         else:
             self.agent.select_action(obs, action_out, explore=not greedy)
 
@@ -374,9 +428,17 @@ def main() raises:
     var st = ViewerState(
         task, drive, scale, task_names(), domain_names(), task_domain()
     )
-    # Open on variant 0 — the first checkpoint found, in MPC mode, i.e. the
-    # configuration whose return the training run actually reported.
-    st.policy_variant = Int32(0)
+    # Open on the rung whose iteration budget MATCHES TRAINING (`MPC_ITERS`),
+    # not variant 0 — variant 0 is now the cheapest rung (i1), and opening
+    # there would show a deliberately under-budgeted planner while claiming to
+    # show "the checkpoint". The eval return the training run reported is the
+    # MPC_ITERS one; every other rung is a speed/quality probe off it.
+    var open_at = 0
+    var ladder = mpc_iter_ladder()
+    for k in range(len(ladder)):
+        if ladder[k] == MPC_ITERS:
+            open_at = k
+    st.policy_variant = Int32(open_at)
 
     # ⚠ THE POLICY OUTLIVES EVERY ENV, and must: it holds the loaded weights
     # and the planner's device scratch, so a task switch reuses them instead of

@@ -444,9 +444,16 @@ struct TDMPC2Agent[
         ref obs: List[Scalar[DT]],
         mut act_out: List[Scalar[DT]],
         explore: Bool = True,
+        num_iters: Int = 0,
     ) raises:
         """MPC acting: plan in latent space via MPPIGPUBatched (single env).
-        GPU only."""
+        GPU only.
+
+        `num_iters` overrides the comptime MPPI iteration budget for THIS call
+        (0 = use `NUM_ITERS`). Cost is near-linear in it, and it is the only
+        budget knob that can vary at runtime — `NUM_SAMPLES` / `NUM_PI_TRAJS`
+        size the planner's device buffers at construction. Use it to trade plan
+        quality for frame rate in an interactive viewer."""
         comptime assert Self.target == "gpu", (
             "select_action_mpc requires target='gpu' (CPU MPPI is eval-only)"
         )
@@ -475,6 +482,7 @@ struct TDMPC2Agent[
             temperature=Float64(self.temperature),
             action_scale=Float64(self.action_scale),
             deterministic=not explore,
+            num_iters=num_iters,
         )
         ctx.enqueue_copy(self.mpc_host.value(), self.mpc_out.value())
         ctx.synchronize()
