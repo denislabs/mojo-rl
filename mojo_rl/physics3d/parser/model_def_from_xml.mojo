@@ -448,6 +448,11 @@ struct ModelDefFromXML[
         # is copied once per call rather than once per access in the loops.
         var _m_motor_act_adr = materialize[Self._acd.motor_act_adr]()
         var _m_motor_ctrl_max = materialize[Self._acd.motor_ctrl_max]()
+        var _m_motor_force_limited = materialize[
+            Self._acd.motor_force_limited
+        ]()
+        var _m_motor_force_min = materialize[Self._acd.motor_force_min]()
+        var _m_motor_force_max = materialize[Self._acd.motor_force_max]()
         var _m_motor_ctrl_min = materialize[Self._acd.motor_ctrl_min]()
         var _m_motor_dyn_tau = materialize[Self._acd.motor_dyn_tau]()
         var _m_motor_gears = materialize[Self._acd.motor_gears]()
@@ -534,6 +539,18 @@ struct ModelDefFromXML[
                 # only when the actuator has no activation (then u == ctrl).
                 var setpoint = u - length if _m_motor_kind[i] == _POS else u
                 force = _m_motor_kp[i] * setpoint - _m_motor_kv[i] * vel
+
+            # `forcerange` (mj_fwdActuation). ⚠ THE CLAMP IS HERE — on the
+            # SCALAR force, BEFORE the moment loop below multiplies by
+            # `gear * coef`. Measured on 3.10.0: `<motor gear="3"
+            # forcerange="-1 1">` at ctrl 5 gives actuator_force 1, moment 3,
+            # qfrc 3. Clamping the accumulated `qfrc` instead would cap this
+            # actuator at 1 N·m where MuJoCo delivers 3.
+            if _m_motor_force_limited[i] != 0:
+                if force > _m_motor_force_max[i]:
+                    force = _m_motor_force_max[i]
+                elif force < _m_motor_force_min[i]:
+                    force = _m_motor_force_min[i]
 
             for k in range(n):
                 var dadr = _m_motor_trn_dadr[i * Self._WRAPS + k]
@@ -1257,6 +1274,16 @@ struct ModelDefFromXML[
                             Scalar[DTYPE](kp) * setpoint
                             - Scalar[DTYPE](kv) * vel
                         )
+
+                    # `forcerange` — the CPU twin's comment explains why the
+                    # clamp sits here, on the scalar force, and not on `qfrc`.
+                    comptime if Self._acd.motor_force_limited[act_i] != 0:
+                        comptime f_lo = Self._acd.motor_force_min[act_i]
+                        comptime f_hi = Self._acd.motor_force_max[act_i]
+                        if force > Scalar[DTYPE](f_hi):
+                            force = Scalar[DTYPE](f_hi)
+                        elif force < Scalar[DTYPE](f_lo):
+                            force = Scalar[DTYPE](f_lo)
 
                     comptime for k in range(n):
                         comptime dadr = Self._acd.motor_trn_dadr[

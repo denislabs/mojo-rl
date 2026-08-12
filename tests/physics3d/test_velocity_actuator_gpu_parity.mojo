@@ -85,7 +85,23 @@ comptime XML_MIX = (
     + '</actuator></mujoco>'
 )
 
+# ⚠ Jaco's shape: kv=500 against forcerange 30.5. The GPU kernel applies the
+# clamp with a `comptime if motor_force_limited[act_i]`, which is a SEPARATE
+# spelling from the CPU path's runtime `if` — the two can disagree silently.
+# a1 saturates, a2 does not, so one fixture covers both sides of the branch.
+comptime XML_FR = (
+    "<mujoco>"
+    + _BODY
+    + '<actuator>'
+    + '<velocity ctrllimited="true" ctrlrange="-5 5" forcelimited="true"'
+    + ' forcerange="-30.5 30.5" name="a1" joint="j1" kv="500"/>'
+    + '<velocity ctrllimited="true" ctrlrange="-5 5" name="a2" joint="j2"'
+    + ' kv="2.5"/>'
+    + '</actuator></mujoco>'
+)
+
 comptime p_vel = parse_xml(XML_VEL)
+comptime p_fr = parse_xml(XML_FR)
 comptime p_gen = parse_xml(XML_GEN)
 comptime p_mix = parse_xml(XML_MIX)
 
@@ -123,7 +139,19 @@ def _m_mix() -> ModelDefFromXML[
     return {}
 
 
+def _m_fr() -> ModelDefFromXML[
+    xml=XML_FR, nbody=p_fr.NBODY, njoint=p_fr.NJOINT, nq=p_fr.NQ,
+    nv=p_fr.NV, ngeom=p_fr.NGEOM, nact=p_fr.NACT, ntex=p_fr.NTEX,
+    nmat=p_fr.NMAT, nlight=p_fr.NLIGHT, ncam=p_fr.NCAM, nsite=p_fr.NSITE,
+    max_tendon=p_fr.NTENDON, cone_type=ConeType.PYRAMIDAL, max_contacts=8,
+    max_condim=p_fr.MAX_CONDIM, nexclude=p_fr.NEXCLUDE, npair=p_fr.NPAIR,
+    obs_dim_override=1, obs_qpos_skip=0, timestep=p_fr.TIMESTEP,
+]:
+    return {}
+
+
 comptime M_VEL = _m_vel()
+comptime M_FR = _m_fr()
 comptime M_GEN = _m_gen()
 comptime M_MIX = _m_mix()
 
@@ -247,6 +275,9 @@ def test_velocity_actuator_gpu_parity() raises:
     _gate[M_VEL]("velocity_only", 0.7, -0.4, 0.3, -0.9, 1.5, -0.6, failures)
     _gate[M_GEN]("general_form ", 0.7, -0.4, 0.3, -0.9, 1.5, -0.6, failures)
     _gate[M_MIX]("mixed_pos_vel", 0.7, -0.4, 0.3, -0.9, 1.5, -0.6, failures)
+    # a1 saturates (500*1.2 >> 30.5), a2 is unlimited — both sides of the
+    # comptime clamp branch in one model.
+    _gate[M_FR]("forcerange   ", 0.7, -0.4, 0.3, -0.9, 1.5, -0.6, failures)
     assert_true(
         failures == 0, String(failures) + " GPU-parity case(s) failed"
     )

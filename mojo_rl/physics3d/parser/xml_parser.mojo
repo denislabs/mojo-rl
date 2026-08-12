@@ -2780,6 +2780,32 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
     var motor_dof_adr: InlineArray[Int, Self.NACT]
     var motor_ctrl_min: InlineArray[Float64, Self.NACT]
     var motor_ctrl_max: InlineArray[Float64, Self.NACT]
+    # ── `forcerange` / `forcelimited` (mj_fwdActuation's force clamp) ────────
+    #
+    # ⚠ THE CLAMP IS ON THE SCALAR ACTUATOR FORCE, BEFORE THE MOMENT. MEASURED:
+    # `<motor gear="3" forcerange="-1 1">` at ctrl 5 gives
+    # `actuator_force 1`, `actuator_moment 3`, `qfrc_actuator 3` — so the limit
+    # bounds `gain*u + bias`, and `gear` multiplies AFTERWARDS. Clamping
+    # `qfrc` instead would cap this actuator at 1 N·m rather than 3.
+    #
+    # `motor_force_limited` is MuJoCo's `actuator_forcelimited`, resolved from
+    # `forcelimited="auto"` (the default): limited IFF a `forcerange` other than
+    # "0 0" is defined. MEASURED, all four spellings:
+    #   <motor/>                                 -> limited 0, range [0, 0]
+    #   <motor forcerange="0 0"/>                -> limited 0, range [0, 0]
+    #   <motor forcerange="-1 1"/>               -> limited 1, range [-1, 1]
+    #   <motor forcerange="-1 1" forcelimited="false"/> -> limited 0
+    # and `forcelimited="true"` with no range is a COMPILE ERROR in MuJoCo
+    # ("invalid force range for actuator"), so a limited-but-zero-range
+    # actuator is unrepresentable and needs no handling here.
+    #
+    # ⚠ Stored as an explicit 0/1 rather than inferred from `min >= max`. The
+    # "undefined" marker really is [0, 0], but leaning on that would make an
+    # asymmetric range like [-0.5, 4] and a degenerate one indistinguishable
+    # from the storage alone.
+    var motor_force_limited: InlineArray[Int, Self.NACT]
+    var motor_force_min: InlineArray[Float64, Self.NACT]
+    var motor_force_max: InlineArray[Float64, Self.NACT]
     # ── Actuator transmission + gain, as a single flat representation ────────
     #
     # MuJoCo's actuator force is `moment^T * (gain*ctrl + bias)`, and both
@@ -2924,6 +2950,9 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
         self.motor_dof_adr = InlineArray[Int, Self.NACT](fill=-1)
         self.motor_ctrl_min = InlineArray[Float64, Self.NACT](fill=-1.0)
         self.motor_ctrl_max = InlineArray[Float64, Self.NACT](fill=1.0)
+        self.motor_force_limited = InlineArray[Int, Self.NACT](fill=0)
+        self.motor_force_min = InlineArray[Float64, Self.NACT](fill=0.0)
+        self.motor_force_max = InlineArray[Float64, Self.NACT](fill=0.0)
         self.motor_kind = InlineArray[Int, Self.NACT](fill=0)  # ACT_KIND_MOTOR
         self.motor_kp = InlineArray[Float64, Self.NACT](fill=1.0)
         self.motor_kv = InlineArray[Float64, Self.NACT](fill=0.0)
@@ -2974,6 +3003,9 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
         self.motor_dof_adr = InlineArray[Int, Self.NACT](fill=-1)
         self.motor_ctrl_min = InlineArray[Float64, Self.NACT](fill=-1.0)
         self.motor_ctrl_max = InlineArray[Float64, Self.NACT](fill=1.0)
+        self.motor_force_limited = InlineArray[Int, Self.NACT](fill=0)
+        self.motor_force_min = InlineArray[Float64, Self.NACT](fill=0.0)
+        self.motor_force_max = InlineArray[Float64, Self.NACT](fill=0.0)
         self.motor_kind = InlineArray[Int, Self.NACT](fill=0)
         self.motor_kp = InlineArray[Float64, Self.NACT](fill=1.0)
         self.motor_kv = InlineArray[Float64, Self.NACT](fill=0.0)
@@ -3024,6 +3056,9 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
             self.motor_dof_adr[i] = copy.motor_dof_adr[i]
             self.motor_ctrl_min[i] = copy.motor_ctrl_min[i]
             self.motor_ctrl_max[i] = copy.motor_ctrl_max[i]
+            self.motor_force_limited[i] = copy.motor_force_limited[i]
+            self.motor_force_min[i] = copy.motor_force_min[i]
+            self.motor_force_max[i] = copy.motor_force_max[i]
             self.motor_kind[i] = copy.motor_kind[i]
             self.motor_kp[i] = copy.motor_kp[i]
             self.motor_kv[i] = copy.motor_kv[i]
@@ -3058,6 +3093,9 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
         self.motor_dof_adr = move.motor_dof_adr^
         self.motor_ctrl_min = move.motor_ctrl_min^
         self.motor_ctrl_max = move.motor_ctrl_max^
+        self.motor_force_limited = move.motor_force_limited^
+        self.motor_force_min = move.motor_force_min^
+        self.motor_force_max = move.motor_force_max^
         self.motor_kind = move.motor_kind^
         self.motor_kp = move.motor_kp^
         self.motor_kv = move.motor_kv^
@@ -3822,6 +3860,41 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
         if used_default:
             data.motor_ctrl_min[act_count] = def_ctrl_min
             data.motor_ctrl_max[act_count] = def_ctrl_max
+
+        # forcerange / forcelimited — see the field comments on
+        # `ComptimeActData.motor_force_limited` for the measured semantics.
+        # Same 3-way resolution and the same keep-it-short-lived rule as
+        # ctrlrange above.
+        var fr = _attr_3way_cached(
+            xml_clean, tag, elem_cls, tag_name, root_tag, "forcerange", cacache
+        )
+        var f_lo = Float64(0)
+        var f_hi = Float64(0)
+        if fr.byte_length() > 0:
+            var fparts = List[String]()
+            _split_spaces(fr, fparts)
+            if len(fparts) >= 2:
+                f_lo = _parse_float(fparts[0])
+                f_hi = _parse_float(fparts[1])
+        data.motor_force_min[act_count] = f_lo
+        data.motor_force_max[act_count] = f_hi
+        # `forcelimited` defaults to "auto" = limited iff the range is defined,
+        # and "0 0" IS the undefined marker (measured — an explicit
+        # `forcerange="0 0"` still reports forcelimited 0). An explicit
+        # true/false overrides. MuJoCo REFUSES `forcelimited="true"` with no
+        # range, so the true-with-zero-range combination cannot reach us.
+        var fl = _trim(
+            _attr_3way_cached(
+                xml_clean, tag, elem_cls, tag_name, root_tag, "forcelimited",
+                cacache,
+            )
+        )
+        var limited = f_lo != 0.0 or f_hi != 0.0
+        if fl == "true" or fl == "1":
+            limited = True
+        elif fl == "false" or fl == "0":
+            limited = False
+        data.motor_force_limited[act_count] = 1 if limited else 0
 
         # `<position>` is `<general>` with gaintype=fixed, biastype=affine:
         # gainprm = [kp, 0, 0] and biasprm = [0, -kp, -kv]. MuJoCo's kp
