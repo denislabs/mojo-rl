@@ -79,6 +79,14 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
+    MODEL_EQ_SIZE,
+    EQ_IDX_ANCHOR_AX,
+    EQ_IDX_ANCHOR_AY,
+    EQ_IDX_ANCHOR_AZ,
+    EQ_IDX_RELPOSE_X,
+    EQ_IDX_RELPOSE_Y,
+    EQ_IDX_RELPOSE_Z,
+    EQ_IDX_RELPOSE_W,
 )
 from mojo_rl.physics3d.types import ConeType
 from layout import Layout
@@ -101,7 +109,7 @@ comptime _RAW = """
     </body>
   </worldbody>
   <equality>
-    <weld name="hold" body1="arm" relpose="0 0 -0.3 1 0 0 0" solref="0.1 1"/>
+    <weld name="hold" body1="arm" solref="0.1 1"/>
   </equality>
 </mujoco>
 """
@@ -130,6 +138,45 @@ comptime M = ModelDefFromXML[
     nexclude = pm.NEXCLUDE,
     timestep = pm.TIMESTEP,
 ]
+
+# The SAME model with `relpose` written out by hand. MuJoCo derives
+# `(0, 0, -0.3, 1, 0, 0, 0)` for the model above, so these two are physically
+# identical — which is the assertion: deriving must reproduce writing it out.
+# ⚠ Written out in full rather than `_RAW.replace(...)`: `_RAW` is a
+# StringLiteral, which has no `replace`, and comptime String slicing is a known
+# trap in this codebase.
+comptime _RAW_EXPLICIT = """
+<mujoco model="weld_contact">
+  <option timestep="0.002" gravity="0 0 -9.81" solver="Newton" cone="pyramidal"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 .1"/>
+    <body name="arm" pos="0 0 0.3">
+      <freejoint/>
+      <geom name="g_arm" type="box" size="0.15 0.15 0.05" mass="0.5"/>
+    </body>
+    <body name="obj" pos="0 0 0.42">
+      <freejoint/>
+      <geom name="g_obj" type="box" size="0.05 0.05 0.05" mass="10"/>
+    </body>
+  </worldbody>
+  <equality>
+    <weld name="hold" body1="arm" relpose="0 0 -0.3 1 0 0 0" solref="0.1 1"/>
+  </equality>
+</mujoco>
+"""
+comptime XML_EXPLICIT = merge_mjcf(_RAW_EXPLICIT)
+comptime pmx = parse_xml(XML_EXPLICIT)
+comptime MX = ModelDefFromXML[
+    xml=XML_EXPLICIT,
+    nbody = pmx.NBODY, njoint = pmx.NJOINT, nq = pmx.NQ, nv = pmx.NV,
+    ngeom = pmx.NGEOM, nact = pmx.NACT, ntex = pmx.NTEX, nmat = pmx.NMAT,
+    nlight = pmx.NLIGHT, ncam = pmx.NCAM, nsite = pmx.NSITE,
+    max_tendon = pmx.NTENDON, cone_type = ConeType.PYRAMIDAL,
+    max_contacts=16, max_condim = pmx.MAX_CONDIM,
+    neq = pmx.NEQ, max_equality = pmx.NEQ, nexclude = pmx.NEXCLUDE,
+    timestep = pmx.TIMESTEP,
+]
+
 
 # qpos = [arm(7), obj(7)]; z is index 2 of each free joint.
 comptime ARM_Z = 2
@@ -380,6 +427,118 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
         worst < 1e-9,
         "the blocked kernel and the per-env pyramidal solver disagree on the"
         " weld rows (|d| " + String(worst) + ")",
+    )
+
+
+def test_relpose_default_is_derived_from_qpos0() raises:
+    """MJCF's default `relpose` means "derive from qpos0", NOT "identity".
+
+    We defaulted to identity until 2026-08-12, which welds the two bodies
+    COINCIDENT rather than holding the offset they start with — here it dragged
+    the arm to the world origin until the floor stopped it. Invisible because
+    sawyer, the only model in the tree with a weld, has mocap and hand at the
+    same pose at qpos0, so identity was accidentally right.
+
+    Gated two ways, because a rollout alone would not say WHICH value is wrong:
+    the stored record against MuJoCo's `eq_data`, and the derived model against
+    a twin with `relpose` written out by hand.
+    """
+    print("--- weld rows: relpose default derives from qpos0 ---")
+    var mujoco = Python.import_module("mujoco")
+    var m = mujoco.MjModel.from_xml_string(materialize[XML]())
+
+    var ctx = DeviceContext()
+    var mf = Model[
+        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
+        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+    ]()
+    M.init_fields[DTYPE, 0](ctx, mf)
+
+    # MuJoCo eq_data for a weld: [anchor(3), relpose_pos(3), relpose_quat(4),
+    # torquescale]. `mj_equalityAnchors` anchors body1 at relpose_pos, which is
+    # our `anchor_a`; the quaternion is (w,x,y,z) against our (x,y,z,w).
+    var want_px = Float64(py=m.eq_data[0][3])
+    var want_py = Float64(py=m.eq_data[0][4])
+    var want_pz = Float64(py=m.eq_data[0][5])
+    var want_qw = Float64(py=m.eq_data[0][6])
+    var want_qx = Float64(py=m.eq_data[0][7])
+    var want_qy = Float64(py=m.eq_data[0][8])
+    var want_qz = Float64(py=m.eq_data[0][9])
+    print("  MuJoCo relpose pos", want_px, want_py, want_pz,
+          " quat(wxyz)", want_qw, want_qx, want_qy, want_qz)
+
+    assert_true(
+        abs(want_pz) > 1e-6,
+        "MuJoCo derived a ZERO relpose position — the fixture no longer"
+        " distinguishes 'derive from qpos0' from 'identity' and this test"
+        " would pass with the old default",
+    )
+
+    var got_px = Float64(mf.equality.data[EQ_IDX_ANCHOR_AX])
+    var got_py = Float64(mf.equality.data[EQ_IDX_ANCHOR_AY])
+    var got_pz = Float64(mf.equality.data[EQ_IDX_ANCHOR_AZ])
+    var got_qx = Float64(mf.equality.data[EQ_IDX_RELPOSE_X])
+    var got_qy = Float64(mf.equality.data[EQ_IDX_RELPOSE_Y])
+    var got_qz = Float64(mf.equality.data[EQ_IDX_RELPOSE_Z])
+    var got_qw = Float64(mf.equality.data[EQ_IDX_RELPOSE_W])
+    print("  ours   relpose pos", got_px, got_py, got_pz,
+          " quat(wxyz)", got_qw, got_qx, got_qy, got_qz)
+
+    var worst = abs(got_px - want_px)
+    if abs(got_py - want_py) > worst:
+        worst = abs(got_py - want_py)
+    if abs(got_pz - want_pz) > worst:
+        worst = abs(got_pz - want_pz)
+    if abs(got_qw - want_qw) > worst:
+        worst = abs(got_qw - want_qw)
+    if abs(got_qx - want_qx) > worst:
+        worst = abs(got_qx - want_qx)
+    if abs(got_qy - want_qy) > worst:
+        worst = abs(got_qy - want_qy)
+    if abs(got_qz - want_qz) > worst:
+        worst = abs(got_qz - want_qz)
+    print("  worst |d| =", worst)
+    assert_true(
+        worst < 1e-12,
+        "the derived relpose disagrees with MuJoCo's by " + String(worst),
+    )
+
+
+def test_explicit_relpose_is_still_honoured() raises:
+    """Writing `relpose` out by hand must give the same model as deriving it.
+
+    MuJoCo derives exactly `0 0 -0.3 1 0 0 0` for the fixture, so the twin is
+    physically identical — and an EXPLICIT identity quaternion has to stay
+    identity rather than being re-derived, which is why the "unset" test is on
+    the quaternion rather than on whether the attribute was written.
+    """
+    print("--- weld rows: explicit relpose ---")
+    var ctx = DeviceContext()
+    var mf = Model[
+        DTYPE, MX.NV, MX.NBODY, MX.NJOINT, MX.NGEOM, MX.MAX_EQUALITY,
+        MX.MAX_TENDON, MX.NSITE, MX.NEXCLUDE, 0,
+    ]()
+    MX.init_fields[DTYPE, 0](ctx, mf)
+
+    var d = Data[DTYPE, MX.NQ, MX.NV, MX.NBODY, MX.MAX_CONTACTS, MX.NSITE, 1]()
+    MX.reset_data[DTYPE](d)
+    forward_kinematics["cpu"](d, mf)
+    var integ = EulerIntegrator[
+        DTYPE, MX.NQ, MX.NV, MX.NBODY, MX.NJOINT, MX.MAX_CONTACTS, MX.NGEOM,
+        MX.MAX_EQUALITY, MX.MAX_TENDON, MX.NSITE, MX.NEXCLUDE, 0,
+        MX.CONE_TYPE, 1, SOLVER="newton",
+        MAX_CONDIM = MX.MAX_CONDIM, NOSLIP_ITER = MX.NOSLIP_ITER,
+    ]()
+    for _ in range(NSTEPS):
+        integ.step["cpu", CONTACTS=True](d, mf)
+
+    var mj = _mujoco_roll(False)
+    var arm = Float64(d.qpos.data[ARM_Z])
+    print("  arm_z ours", arm, " MuJoCo", mj[0], " |d|", abs(arm - mj[0]))
+    assert_true(
+        abs(arm - mj[0]) < 1e-6,
+        "an EXPLICIT relpose no longer reproduces MuJoCo — check that the"
+        " all-zero-quaternion 'unset' test is not swallowing written values",
     )
 
 

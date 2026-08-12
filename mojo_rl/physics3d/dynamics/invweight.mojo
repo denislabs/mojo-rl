@@ -96,6 +96,23 @@ from mojo_rl.physics3d.gpu.constants import (
     TENDON_IDX_COEF_0,
     TENDON_IDX_INVWEIGHT0,
     TENDON_IDX_LENGTH_REF,
+    MODEL_EQ_SIZE,
+    EQ_IDX_TYPE,
+    EQ_IDX_BODY_A,
+    EQ_IDX_BODY_B,
+    EQ_IDX_ANCHOR_AX,
+    EQ_IDX_ANCHOR_AY,
+    EQ_IDX_ANCHOR_AZ,
+    EQ_IDX_RELPOSE_X,
+    EQ_IDX_RELPOSE_Y,
+    EQ_IDX_RELPOSE_Z,
+    EQ_IDX_RELPOSE_W,
+)
+from mojo_rl.physics3d.types import EQ_WELD
+from mojo_rl.physics3d.kinematics.quat_math import (
+    quat_mul,
+    quat_conjugate,
+    quat_rotate,
 )
 from .tendon import spatial_tendon_length_jac
 
@@ -525,3 +542,75 @@ def compute_invweight0[
             mf.tendons.data[
                 t * MODEL_TENDON_SIZE + TENDON_IDX_INVWEIGHT0
             ] = iw
+
+    # ── weld relpose = the qpos0 relative pose (mjCEquality::Compile) ─────────
+    # MJCF's default `relpose` is `0 0 0 0 0 0 0`, and a ZERO QUATERNION means
+    # "derive it": MuJoCo's compiler writes the relative pose the two bodies
+    # already have at the reference configuration. Verified against the
+    # runtime (MuJoCo 3.10.0) — a body at z = 0.3 welded to the world compiles
+    # to `(0, 0, -0.3, 1, 0, 0, 0)`, and an EXPLICIT identity quaternion is
+    # kept as identity, so the test really is on the quaternion and not on
+    # whether the attribute was written.
+    #
+    # ⚠ WE DEFAULTED TO IDENTITY UNTIL 2026-08-12, which welds the two bodies
+    # COINCIDENT instead of holding their initial offset. On a body welded to
+    # the world at z = 0.3 that dragged it to the origin until the floor
+    # stopped it. Invisible because sawyer — the only model in the tree with a
+    # weld — has mocap and hand at the SAME pose at qpos0, so identity was
+    # accidentally the right answer. Third such default in this arc, after the
+    # phantom body mass and `tendon_length0`.
+    #
+    # Here rather than in the parser because it needs the WORLD poses, which
+    # exist only after FK; this function has already run FK at qpos0 for the
+    # inverse weights above, which is the same reference configuration
+    # `mjCEquality::Compile` uses.
+    comptime if NEQUALITY > 0:
+        for e in range(NEQUALITY):
+            var eo = e * MODEL_EQ_SIZE
+            if Int(mf.equality.data[eo + EQ_IDX_TYPE]) != EQ_WELD:
+                continue
+
+            var rq_x = mf.equality.data[eo + EQ_IDX_RELPOSE_X]
+            var rq_y = mf.equality.data[eo + EQ_IDX_RELPOSE_Y]
+            var rq_z = mf.equality.data[eo + EQ_IDX_RELPOSE_Z]
+            var rq_w = mf.equality.data[eo + EQ_IDX_RELPOSE_W]
+            if (
+                rq_x * rq_x + rq_y * rq_y + rq_z * rq_z + rq_w * rq_w
+                > Scalar[DTYPE](1e-12)
+            ):
+                continue  # written explicitly — leave it alone
+
+            var ba = Int(mf.equality.data[eo + EQ_IDX_BODY_A])
+            var bb = Int(mf.equality.data[eo + EQ_IDX_BODY_B])
+            if ba < 0 or ba >= NBODY or bb < 0 or bb >= NBODY:
+                continue
+
+            var qa = quat_conjugate[DTYPE](
+                d.xquat.data[ba * 4 + 0],
+                d.xquat.data[ba * 4 + 1],
+                d.xquat.data[ba * 4 + 2],
+                d.xquat.data[ba * 4 + 3],
+            )
+            # Pose of body B expressed in body A's frame — the direction
+            # `mj_equalityAnchors` then reads back as body A's anchor.
+            var rel = quat_rotate[DTYPE](
+                qa[0], qa[1], qa[2], qa[3],
+                d.xpos.data[bb * 3 + 0] - d.xpos.data[ba * 3 + 0],
+                d.xpos.data[bb * 3 + 1] - d.xpos.data[ba * 3 + 1],
+                d.xpos.data[bb * 3 + 2] - d.xpos.data[ba * 3 + 2],
+            )
+            var relq = quat_mul[DTYPE](
+                qa[0], qa[1], qa[2], qa[3],
+                d.xquat.data[bb * 4 + 0],
+                d.xquat.data[bb * 4 + 1],
+                d.xquat.data[bb * 4 + 2],
+                d.xquat.data[bb * 4 + 3],
+            )
+
+            mf.equality.data[eo + EQ_IDX_ANCHOR_AX] = rel[0]
+            mf.equality.data[eo + EQ_IDX_ANCHOR_AY] = rel[1]
+            mf.equality.data[eo + EQ_IDX_ANCHOR_AZ] = rel[2]
+            mf.equality.data[eo + EQ_IDX_RELPOSE_X] = relq[0]
+            mf.equality.data[eo + EQ_IDX_RELPOSE_Y] = relq[1]
+            mf.equality.data[eo + EQ_IDX_RELPOSE_Z] = relq[2]
+            mf.equality.data[eo + EQ_IDX_RELPOSE_W] = relq[3]

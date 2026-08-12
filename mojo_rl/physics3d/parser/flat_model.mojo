@@ -868,7 +868,17 @@ struct EqualityData(Copyable, ImplicitlyCopyable, Movable):
     var anchor_b_x: Float64
     var anchor_b_y: Float64
     var anchor_b_z: Float64
-    var relpose_x: Float64  # weld only: relative orientation quaternion
+    # Weld only: target relative orientation, (x, y, z, w).
+    #
+    # ⚠ AN ALL-ZERO QUATERNION IS THE "UNSET" MARKER, NOT A VALUE — it is
+    # MJCF's own default (`relpose="0 0 0 0 0 0 0"`) and means "derive from the
+    # qpos0 relative pose". `compute_invweight0` fills it in; anything reading
+    # this before that runs sees a degenerate quaternion. `w` therefore
+    # defaults to 0, NOT 1: an identity default is a real relative pose and
+    # silently welds the bodies coincident. That is what it did until
+    # 2026-08-12, and it was invisible because sawyer's mocap and hand ARE
+    # coincident at qpos0.
+    var relpose_x: Float64
     var relpose_y: Float64
     var relpose_z: Float64
     var relpose_w: Float64
@@ -894,7 +904,7 @@ struct EqualityData(Copyable, ImplicitlyCopyable, Movable):
         relpose_x: Float64 = 0.0,
         relpose_y: Float64 = 0.0,
         relpose_z: Float64 = 0.0,
-        relpose_w: Float64 = 1.0,
+        relpose_w: Float64 = 0.0,  # all-zero = UNSET, see the field comment
         solref_0: Float64 = 0.02,
         solref_1: Float64 = 1.0,
         solimp_0: Float64 = 0.9,

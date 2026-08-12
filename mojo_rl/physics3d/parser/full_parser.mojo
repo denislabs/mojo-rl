@@ -2389,15 +2389,46 @@ def _fill_equality(
         if b2_name.byte_length() > 0:
             ed.body_b = _find_body_index_by_name(worldbody, b2_name)
 
-        # anchor (connect) — point in body1 frame
+        # `anchor` — WHICH BODY IT ANCHORS DEPENDS ON THE TYPE.
+        # `mj_equalityAnchors` (engine_core_constraint.c:561) is explicit:
+        #
+        #   CONNECT: pos1 = body1 * data[0:3],  pos2 = body2 * data[3:6]
+        #   WELD:    pos1 = body1 * data[3:6],  pos2 = body2 * data[0:3]
+        #            ("weld uses data+3*(1-j) for anchor")
+        #
+        # `data[0:3]` is the `anchor` attribute and `data[3:6]` is the relpose
+        # POSITION, so on a weld the roles are SWAPPED relative to connect:
+        # `anchor` rides on body2 and the relpose position rides on body1.
+        #
+        # ⚠ THIS USED TO PUT `anchor` ON BODY A FOR BOTH TYPES, and never set
+        # `anchor_b` at all. Latent because no model in the tree gives a weld an
+        # explicit `anchor` (sawyer's is `<weld body1="mocap" body2="hand"
+        # solref="0.02 1"/>`), so both slots were 0 and the swap was invisible.
         var anchor_s = _extract_attr(tag, "anchor")
         if anchor_s.byte_length() > 0:
             var av = _parse_vec3(anchor_s)
-            ed.anchor_a_x = av[0]
-            ed.anchor_a_y = av[1]
-            ed.anchor_a_z = av[2]
+            if ed.eq_type == _EQ_WELD:
+                ed.anchor_b_x = av[0]
+                ed.anchor_b_y = av[1]
+                ed.anchor_b_z = av[2]
+            else:
+                ed.anchor_a_x = av[0]
+                ed.anchor_a_y = av[1]
+                ed.anchor_a_z = av[2]
 
-        # relpose (weld) — relative position + quaternion (7 values: x y z qw qx qy qz)
+        # relpose (weld) — position + quaternion, 7 values "x y z qw qx qy qz".
+        # The position half is body1's anchor (see above); the quaternion half
+        # is the target relative orientation.
+        #
+        # ⚠ AN ABSENT `relpose`, OR ONE WHOSE QUATERNION IS ALL ZEROS, MEANS
+        # "DERIVE IT FROM qpos0" — MJCF's default is literally `0 0 0 0 0 0 0`
+        # and MuJoCo's compiler fills in the relative pose the two bodies
+        # already have at the reference configuration. Verified against the
+        # runtime: a body at z=0.3 welded to the world compiles to
+        # `(0, 0, -0.3, 1, 0, 0, 0)`, and an EXPLICIT identity quaternion
+        # (`relpose="0 0 0 1 0 0 0"`) is kept as identity. `relpose_w` is left
+        # at 0 here so `compute_invweight0` can tell the two apart; it fills
+        # the derived value in at qpos0, where the FK products already exist.
         var relpose_s = _extract_attr(tag, "relpose")
         if relpose_s.byte_length() > 0:
             var parts = List[String]()

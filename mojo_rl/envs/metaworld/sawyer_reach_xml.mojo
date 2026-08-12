@@ -69,7 +69,23 @@ comptime sawyer_reach_task_xml = """
     </actuator>
 
     <equality>
-        <weld body1="mocap" body2="hand" solref="0.02 1"/>
+        <!-- relpose is MetaWorld's `reset_mocap_welds`, baked in.
+             `SawyerMocapBase.reset_mocap_welds` (metaworld/sawyer_xyz_env.py)
+             OVERWRITES eq_data at reset with
+             `[0,0,0, 0,0,0, -1,0,0,0, 5]` — relpose position zero and an
+             identity quaternion — so the hand tracks the mocap body itself.
+             MuJoCo's COMPILER derives something else entirely from qpos0 here:
+             pos (1.1355, 0.1603, 0.317), quat (0.64279, -0.76604, 0, 0), which
+             makes the hand track `mocap (x) relpose`, over a metre away.
+             ⚠ WRITING IT OUT IS NOT A DEVIATION FROM METAWORLD, IT IS THE PORT
+             OF A RUNTIME STEP METAWORLD PERFORMS. We used to get it by
+             accident: `relpose` defaulted to identity in our parser, so the
+             derived value never existed. Once that default was fixed to follow
+             MuJoCo (2026-08-12) the arm was flung across the workspace and the
+             obj fell off the gripper — see
+             tests/physics3d/test_sawyer_settle_vs_mujoco, whose reference side
+             performs exactly this zeroing. -->
+        <weld body1="mocap" body2="hand" relpose="0 0 0 1 0 0 0" solref="0.02 1"/>
     </equality>
 </mujoco>
 """
