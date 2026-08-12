@@ -35,7 +35,7 @@ from linalg.matmul.cpu.apple_accelerate import (
     _CBLASTranspose,
 )
 
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, CPU_SIMD_W
 from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
@@ -489,16 +489,74 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
             ref outd = rebind[Tensor](out)
             comptime if target == "cpu":
                 outd.ensure(B * Self.OUT_)
-                var x_v = TileTensor(in0d.data, row_major[B, Self.IN_]())
-                var w_v = TileTensor(
-                    self.weight.val.data, row_major[Self.IN_, Self.OUT_]()
+                # ── Apple fp32: ONE cblas_sgemm, as `vjp` already does ──────
+                # `max_matmul[target="cpu"]` collapses at small M. Measured on
+                # an M1 Pro:
+                #
+                #     [1x512]@[512x512]   max_matmul 300.8 us (1.7 GFLOPS)
+                #                         cblas        7.8 us ( 67 GFLOPS)
+                #
+                # — 38x, and B=1 is exactly the single-env acting path. At the
+                # MPPI batch the two are comparable ([268x518]@[518x512]:
+                # 146.8 vs 155.8 us), so this is a pure win at small B and a
+                # wash at large B. `vjp` has called cblas directly on this path
+                # since it was written (see `IS_APPLE_F32` below); only
+                # `forward` was left on the generic dispatch.
+                comptime IS_APPLE_F32 = (
+                    CompilationTarget.is_macos() and DT == DType.float32
                 )
-                var out_v = TileTensor(outd.data, row_major[B, Self.OUT_]())
-                max_matmul[target="cpu"](out_v, x_v, w_v, None)
-                var bt = TileTensor(self.bias.val.data, row_major[Self.OUT_]())
+                comptime if IS_APPLE_F32:
+                    var cblas = get_cblas_f32_function()
+                    cblas(
+                        _CBLASOrder.ROW_MAJOR,
+                        _CBLASTranspose.NO_TRANSPOSE,
+                        _CBLASTranspose.NO_TRANSPOSE,
+                        Int32(B),           # M
+                        Int32(Self.OUT_),   # N
+                        Int32(Self.IN_),    # K
+                        Float32(1.0),
+                        rebind[Pointer[Float32, ImmutAnyOrigin]](
+                            in0d.data.unsafe_ptr()
+                        ),
+                        Int32(Self.IN_),    # lda
+                        rebind[Pointer[Float32, ImmutAnyOrigin]](
+                            self.weight.val.data.unsafe_ptr()
+                        ),
+                        Int32(Self.OUT_),   # ldb
+                        Float32(0.0),       # beta: overwrite, bias added below
+                        rebind[Pointer[Float32, MutAnyOrigin]](
+                            outd.data.unsafe_ptr()
+                        ),
+                        Int32(Self.OUT_),   # ldc
+                    )
+                else:
+                    var x_v = TileTensor(in0d.data, row_major[B, Self.IN_]())
+                    var w_v = TileTensor(
+                        self.weight.val.data, row_major[Self.IN_, Self.OUT_]()
+                    )
+                    var out_v = TileTensor(
+                        outd.data, row_major[B, Self.OUT_]()
+                    )
+                    max_matmul[target="cpu"](out_v, x_v, w_v, None)
+                # bias add, SIMD over the row (the scalar double loop was part
+                # of the non-GEMM cost that dominates CPU trunks).
+                var op = outd.data.unsafe_ptr()
+                var bp = self.bias.val.data.unsafe_ptr()
                 for b in range(B):
-                    for j in range(Self.OUT_):
-                        out_v[b, j] += bt[j]
+                    var row = b * Self.OUT_
+                    var j = 0
+                    while j + CPU_SIMD_W <= Self.OUT_:
+                        op.unsafe_store(
+                            row + j,
+                            op.unsafe_load[width=CPU_SIMD_W](row + j)
+                            + bp.unsafe_load[width=CPU_SIMD_W](j),
+                        )
+                        j += CPU_SIMD_W
+                    while j < Self.OUT_:
+                        op[unsafe_offset=row + j] = (
+                            op[unsafe_offset=row + j] + bp[unsafe_offset=j]
+                        )
+                        j += 1
             else:
                 var c = ctx.value()
                 outd.ensure_gpu(c, B * Self.OUT_)
