@@ -692,13 +692,31 @@ def test_narrow_phase_pairs_gpu_matches_cpu() raises:
     # 0.2747206219606184, so it is not this defect's cause either, and the
     # change was reverted rather than carried unproven.
     #
-    # ⚠ NEXT STEP, and the thing three attempts have avoided: OBSERVE the GPU's
-    # classifier outputs rather than inferring them. `print` inside a Metal
-    # kernel is not available, but the values can be stashed into spare
-    # contact-record columns and downloaded. Until `cltype`/`clcorner`/
-    # `cledge`/`bestboxpos` are read off the DEVICE, any localisation here is
-    # inference. Two fixes have now been aimed at inferred locations and both
-    # changed nothing.
+    # ⚠⚠ THE DEVICE SIDE HAS NOW BEEN OBSERVED, and it EXONERATES THE
+    # COLLISION MATH (2026-08-12). A throwaway probe called
+    # `_capsule_box_best_segment_pos` / `_capsule_box_second_pos` from a tiny
+    # Metal kernel of its own — no `print` needed — and compared against the
+    # same call on the CPU:
+    #
+    #     cltype 4/4   clface -1/-1   clcorner 0/0   cledge 2/2
+    #     bestboxpos -0.0/-0.0   bestsegmentpos and secondpos BIT-IDENTICAL
+    #
+    # Then the same for `box_capsule_manifold`'s PROLOGUE (the quaternion
+    # transforms that build `pos`/`hax` from the geom poses):
+    #
+    #     cap_axis, pos_x/y/z, hax_x/y/z all BIT-IDENTICAL; hax_x = 0.0 on BOTH
+    #
+    # So neither the classifier, nor the second-point construction, nor the
+    # frame transform is device-divergent for inputs of this shape. THE
+    # DIVERGENCE IS IN THE DATA THEY ARE FED — the geom records or the FK
+    # products (`xpos`/`xquat`) for this pair — not in `collision_primitives`
+    # at all. That is a different subsystem from the one three fixes targeted.
+    #
+    # ⚠ Caveat on what this proves: the probe used IDEALISED inputs (an exact
+    # +-0.70710678 capsule quaternion). It shows the FUNCTIONS agree on inputs
+    # of this shape; it does not prove the engine feeds them identical values.
+    # The next measurement is exactly that — compare `xpos`/`xquat` and the
+    # geom records for bodies 15/16 between the CPU and GPU legs.
     #
     # ⚠ THE LAST TIE-BREAK ATTEMPT BROKE CAPSULE/BOX (2 contacts where MuJoCo
     # emits 1). Whatever is done must make the tie resolve identically on both
