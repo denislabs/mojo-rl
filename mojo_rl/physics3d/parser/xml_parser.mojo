@@ -1609,7 +1609,210 @@ def _class_attr_inherited(
     #
     # If a model ever needs it, the fix is not to re-add the call but to make
     # the resolution cheaper — resolve every class ONCE into a table before
-    # the worldbody scan instead of lazily per class.
+    # the worldbody scan instead of lazily per class. `_DefaultsIndex` below
+    # is that table, and `_class_attr_inherited_indexed` is this function over
+    # it; wiring `parse_xml_render_data` to them is the prerequisite for
+    # reinstating the root-level tail. ⚠ Measured 2026-08-12: routing the
+    # render path through the index changes its build time by NOTHING (28 s
+    # either way), so it stays on the rescanning path here and the two
+    # implementations are diffed against each other in
+    # `tests/physics3d/test_defaults_index_equivalence.mojo`.
+    return String("")
+
+
+struct _DefaultsIndex(Copyable, Movable):
+    """Every `<default ...>` block in the XML, located in ONE pass.
+
+    `_class_attr` and `_class_parent` each re-scan the whole document per
+    lookup, and `_class_attr_inherited` calls both once per link of the
+    inheritance chain. dog resolves ~190 distinct (class, kind, attribute)
+    triples over a chain two to three deep, so that is on the order of a
+    thousand walks of an 80 KB string — in the comptime interpreter, where
+    every `<default` tag encountered allocates a String.
+
+    This holds each block as a pair of INDICES INTO THE ORIGINAL `xml` rather
+    than as extracted text. That is not a micro-optimisation: `_class_attr`'s
+    docstring documents at length that slicing a String which was itself
+    produced by slicing another String defeats the comptime interpreter, and
+    that it fails only on the paths that HIT — so a table of block TEXT would
+    compile clean and then break the first time a class actually resolved.
+    Index arithmetic over the original `xml`, one slice at the end, is the
+    only shape that survives.
+
+    Blocks appear in the order their opening tags appear in the text, which is
+    what makes `find` below reproduce the original "first match wins" rule.
+    """
+
+    var cls: List[String]
+    """Trimmed `class` attribute; "" for the top-level `<default>` block."""
+    var inner: List[Int]
+    """First byte after the opening tag's `>`."""
+    var stop: List[Int]
+    """Index of the matching `</default>`, or -1 if there is none."""
+    var parent: List[Int]
+    """Index of the enclosing block, -1 when this one is top level."""
+
+    def __init__(out self):
+        self.cls = List[String]()
+        self.inner = List[Int]()
+        self.stop = List[Int]()
+        self.parent = List[Int]()
+
+    def find(self, cls: String) -> Int:
+        """The FIRST block whose class is `cls`, or -1.
+
+        First-match, not last: `_class_attr` scanned forward from byte 0 and
+        took the first `<default>` whose class matched, so a model that
+        declares the same class name twice must keep resolving to the earlier
+        block.
+        """
+        for i in range(len(self.cls)):
+            if self.cls[i] == cls:
+                return i
+        return -1
+
+    def innermost(self, at: Int) -> Int:
+        """The deepest block containing byte `at`, or -1 if none does.
+
+        Blocks are stored in opening-tag order, so among those that contain
+        `at` the deepest is the LAST — a nested block always opens after its
+        parent. This replaces the open/close counting `_class_attr` did from
+        the block start to each candidate tag.
+        """
+        var best = -1
+        for j in range(len(self.cls)):
+            if self.stop[j] >= 0 and self.inner[j] <= at and at < self.stop[j]:
+                best = j
+        return best
+
+
+def _build_defaults_index(xml: String) -> _DefaultsIndex:
+    """Locate every `<default>` block and its parent in one forward scan.
+
+    ⚠ THE SPAN LOOP IS TRANSCRIBED FROM `_class_attr`, and the parent stack
+    from `_class_parent`, deliberately — including where they are loose. Both
+    match the bare text `"<default"`, which also fires inside a comment, and
+    both give a self-closing `<default class="x"/>` a span running to the next
+    `</default>`, swallowing its following siblings. Those quirks decide which
+    block a class resolves to, so reproducing them is the difference between a
+    memoization and a silent reparse of the model. MJCF class resolution is
+    where defect `ab219882` lived (dog's gains came out between 25x and 3000x
+    too weak, invisible outside a driven rollout), so this stays faithful and
+    the gates stay the judge.
+    """
+    var out = _DefaultsIndex()
+    var n = xml.byte_length()
+    # Indices of the blocks currently open at this point in the scan.
+    var stack = List[Int]()
+    var scan = 0
+    while scan < n:
+        var t = xml.find("<default", scan)
+        if t == -1:
+            break
+        var te = xml.find(">", t)
+        if te == -1:
+            break
+
+        # Matching `</default>`, skipping nested pairs — `_class_attr`'s loop.
+        var inner = te + 1
+        var depth = 0
+        var j = inner
+        var stop = -1
+        while j < n:
+            var no = xml.find("<default", j)
+            var nc = xml.find("</default>", j)
+            if nc == -1:
+                break
+            if no != -1 and no < nc:
+                depth += 1
+                j = no + 8  # len("<default")
+                continue
+            if depth == 0:
+                stop = nc
+                break
+            depth -= 1
+            j = nc + 10  # len("</default>")
+
+        # Anything on the stack that ended before this tag is no longer open.
+        while len(stack) > 0:
+            var top = stack[len(stack) - 1]
+            if out.stop[top] >= 0 and out.stop[top] > t:
+                break
+            _ = stack.pop()
+
+        out.cls.append(
+            _trim(_extract_attr(String(xml[byte = t : te + 1]), "class"))
+        )
+        out.inner.append(inner)
+        out.stop.append(stop)
+        out.parent.append(stack[len(stack) - 1] if len(stack) > 0 else -1)
+        stack.append(len(out.cls) - 1)
+        scan = te + 1
+    return out^
+
+
+def _class_attr_indexed(
+    xml: String, idx: _DefaultsIndex, ci: Int, tag_name: String, attr: String
+) -> String:
+    """`_class_attr` against the prebuilt index. Same answer, no rescan."""
+    if ci < 0:
+        return String("")
+    var stop = idx.stop[ci]
+    if stop < 0:
+        return String("")
+    var marker = "<" + tag_name
+    var p = idx.inner[ci]
+    while p < stop:
+        var tt = _find_tag(xml, marker, p)
+        if tt == -1 or tt >= stop:
+            return String("")
+        # `_class_attr` accepted the tag only at depth 0 relative to the block,
+        # i.e. not inside a nested `<default>`; that is exactly "the innermost
+        # block containing it is this one".
+        if idx.innermost(tt) == ci:
+            var tte = xml.find(">", tt)
+            if tte == -1 or tte > stop:
+                return String("")
+            return _extract_attr(String(xml[byte = tt : tte + 1]), attr)
+        p = tt + 1
+    return String("")
+
+
+def _class_parent_indexed(idx: _DefaultsIndex, cls: String) -> String:
+    """`_class_parent` against the prebuilt index."""
+    if cls.byte_length() == 0:
+        return String("")
+    var ci = idx.find(cls)
+    if ci < 0:
+        return String("")
+    var pi = idx.parent[ci]
+    if pi < 0:
+        return String("")
+    return idx.cls[pi]
+
+
+def _class_attr_inherited_indexed(
+    xml: String, idx: _DefaultsIndex, cls: String, tag_name: String, attr: String
+) -> String:
+    """`_class_attr_inherited` against the prebuilt index.
+
+    The chain is walked BY NAME, not by parent index, because the original
+    did: it took `_class_parent`'s answer and fed it back to `_class_attr`,
+    which re-resolves the name from the top. With a duplicated class name the
+    two disagree, and matching the original is the point.
+
+    The 16-link bound and the deliberate omission of the top-level `<default>`
+    block are the original's; see `_class_attr_inherited` for why the tail is
+    not routed through the root.
+    """
+    var c = cls
+    for _ in range(16):
+        if c.byte_length() == 0:
+            break
+        var v = _class_attr_indexed(xml, idx, idx.find(c), tag_name, attr)
+        if v.byte_length() > 0:
+            return v
+        c = _class_parent_indexed(idx, c)
     return String("")
 
 
@@ -3248,32 +3451,43 @@ def _build_joint_adr_table(xml: String, deg_factor: Float64) -> _JointAdrTable:
 
 
 struct _ClassAttrCache(Copyable, Movable):
-    """Memoizes `_class_attr_inherited` on (class, element kind, attribute).
+    """Class-attribute resolution for `parse_xml_model_data`'s actuator loop.
 
-    That helper re-walks the whole XML per lookup — its own docstring says so —
-    and `parse_xml_model_data`'s actuator loop asks for 8 attributes per
-    actuator. dog paid ~304 walks to resolve a handful of distinct classes.
+    Two layers, because the loop repeats itself in two different ways. It asks
+    for 8 attributes per actuator, and many actuators share a class, so the
+    (class, kind, attribute) memo below kills the repeats — dog's 38 actuators
+    make 304 requests over ~190 distinct triples. What remains is one
+    resolution per distinct triple, and each of those used to walk the whole
+    document once per link of the inheritance chain; `_DefaultsIndex` locates
+    every `<default>` block once instead.
 
-    Keyed on all three parts because the same attribute resolves differently
-    for a `<motor>` than a `<general>` of the same class.
+    The memo is keyed on all three parts because the same attribute resolves
+    differently for a `<motor>` than for a `<general>` of the same class.
     """
 
+    var idx: _DefaultsIndex
     var keys: List[String]
     var vals: List[String]
 
-    def __init__(out self):
+    def __init__(out self, xml: String):
+        self.idx = _build_defaults_index(xml)
         self.keys = List[String]()
         self.vals = List[String]()
 
     def get(
         mut self, xml: String, cls: String, tag_name: String, attr: String
     ) -> String:
-        """The memoized `_class_attr_inherited`. Identical result, one walk."""
+        """`_class_attr_inherited`, memoized and index-backed.
+
+        Equivalence with the rescanning original is not assumed: every
+        (class, kind, attribute) triple these models use is diffed against it
+        in `tests/physics3d/test_defaults_index_equivalence.mojo`.
+        """
         var key = cls + "|" + tag_name + "|" + attr
         for i in range(len(self.keys)):
             if self.keys[i] == key:
                 return self.vals[i]
-        var v = _class_attr_inherited(xml, cls, tag_name, attr)
+        var v = _class_attr_inherited_indexed(xml, self.idx, cls, tag_name, attr)
         self.keys.append(key)
         self.vals.append(v)
         return v
@@ -3471,7 +3685,7 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
     # once per actuator. The cache below does the same for the class level,
     # which `_class_attr_inherited` otherwise re-walks per lookup.
     var rootdef = _root_defaults(xml_clean)
-    var cacache = _ClassAttrCache()
+    var cacache = _ClassAttrCache(xml_clean)
     while act_count < NACT:
         var nm = _find_tag(act_sec, "<motor", act_pos)
         var npos = _find_tag(act_sec, "<position", act_pos)
