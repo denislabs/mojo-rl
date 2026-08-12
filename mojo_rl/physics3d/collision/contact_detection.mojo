@@ -2454,32 +2454,86 @@ def _detect_contacts_env[
                             pn2 = Int(rebind[Scalar[DTYPE]](
                                 mesh_meta[mj_id, MESH_META_IDX_POLYNUM]
                             ))
-                        var mcn = native_multicontact_contacts[
-                            DTYPE,
-                            NMESH_VERTS,
-                            mesh_max_poly(NMESH_VERTS),
-                            mesh_max_polyvert(NMESH_VERTS),
-                            MAX_CONTACTS,
-                            BATCH,
-                        ](
-                            env, body_a, body_b,
-                            gi_type,
-                            pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
-                            hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
-                            gj_type,
-                            pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
-                            hxj, hyj, hzj, rbound_j, va2, mnv2, pa2, pn2,
-                            mesh_verts, mesh_polys, mesh_polyvert,
-                            mesh_polymap, mesh_vert_polymap,
-                            wf1, wf2, wxx,
-                            dist,
-                            contact_margin,
-                            contact_friction,
-                            contact_friction_spin,
-                            contact_friction_roll,
-                            contact_condim,
-                            contacts, num_contacts,
+                        # ⚠ OPERANDS IN MuJoCo'S ORDER, LOWER GEOM TYPE
+                        # FIRST. `mj_collideGeoms` sorts the pair before
+                        # dispatch and BOX sorts before MESH, so the reference
+                        # always runs a box/mesh pair box-first; `multicontact`
+                        # is asymmetric, so running it in geom-index order
+                        # picks a different feature. The record still carries
+                        # `body_a = gi`, so the swap only flips the normal.
+                        var mc_swap = gi_type > gj_type
+                        # ⚠ THE WITNESS PAIR SWAPS WITH THE OPERANDS. `dir` is
+                        # `x2 - x1`, and the routine hands `-dir` to obj1 and
+                        # `+dir` to obj2 as `boxNormals2`'s fallback direction —
+                        # a SIGNED input. Swapping the geoms without swapping
+                        # (x1, x2) would feed both of them the wrong sign and
+                        # recover the opposite box face.
+                        var wxs = InlineArray[Scalar[DTYPE], 6](
+                            fill=Scalar[DTYPE](0)
                         )
+                        wxs[0] = wxx[3]
+                        wxs[1] = wxx[4]
+                        wxs[2] = wxx[5]
+                        wxs[3] = wxx[0]
+                        wxs[4] = wxx[1]
+                        wxs[5] = wxx[2]
+                        var mcn = 0
+                        if mc_swap:
+                            mcn = native_multicontact_contacts[
+                                DTYPE,
+                                NMESH_VERTS,
+                                mesh_max_poly(NMESH_VERTS),
+                                mesh_max_polyvert(NMESH_VERTS),
+                                MAX_CONTACTS,
+                                BATCH,
+                            ](
+                                env, body_a, body_b,
+                                gj_type,
+                                pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                                hxj, hyj, hzj, rbound_j, va2, mnv2, pa2, pn2,
+                                gi_type,
+                                pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                                hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
+                                mesh_verts, mesh_polys, mesh_polyvert,
+                                mesh_polymap, mesh_vert_polymap,
+                                wf2, wf1, wxs,
+                                dist,
+                                contact_margin,
+                                contact_friction,
+                                contact_friction_spin,
+                                contact_friction_roll,
+                                contact_condim,
+                                True,
+                                contacts, num_contacts,
+                            )
+                        else:
+                            mcn = native_multicontact_contacts[
+                                DTYPE,
+                                NMESH_VERTS,
+                                mesh_max_poly(NMESH_VERTS),
+                                mesh_max_polyvert(NMESH_VERTS),
+                                MAX_CONTACTS,
+                                BATCH,
+                            ](
+                                env, body_a, body_b,
+                                gi_type,
+                                pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                                hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
+                                gj_type,
+                                pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                                hxj, hyj, hzj, rbound_j, va2, mnv2, pa2, pn2,
+                                mesh_verts, mesh_polys, mesh_polyvert,
+                                mesh_polymap, mesh_vert_polymap,
+                                wf1, wf2, wxx,
+                                dist,
+                                contact_margin,
+                                contact_friction,
+                                contact_friction_spin,
+                                contact_friction_roll,
+                                contact_condim,
+                                False,
+                                contacts, num_contacts,
+                            )
                         # ⚠ THE MANIFOLD REPLACES THE POINT, it does not extend
                         # it — the reference overwrites `status->nx`. Falling
                         # through to the single-point emit as well would leave a

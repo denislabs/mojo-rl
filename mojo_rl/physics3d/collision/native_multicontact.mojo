@@ -123,7 +123,13 @@ comptime MC_CLIP_CAP: Int = 2 * MC_MAX_POLYVERT
 # on the same pose. Three separate defects in this arc were "fixed" at inferred
 # locations and changed nothing; see
 # `feedback_confirm_the_code_under_test_actually_runs`.
-comptime MC_ENABLED: Bool = False
+comptime MC_ENABLED: Bool = True
+
+# Debug tracing for the arc above. CPU only (a Metal kernel cannot `print`), and
+# off in every committed state — it is here so the NEXT person instruments the
+# live call instead of re-deriving the branch from the reference, which is what
+# produced the wrong numbers in the first place.
+comptime MC_DEBUG: Bool = False
 
 
 @always_inline
@@ -894,7 +900,7 @@ def _mesh_normals[
             if c >= MC_MAX_DEG:
                 break
             var p = Int(rebind[Scalar[DTYPE]](mesh_polymap[a1 + i]))
-            var po = (poly_adr + p) * MODEL_MESH_POLY_SIZE
+            var po = poly_adr + p  # ROW index: mesh_polys is [poly, field]
             var w = quat_rotate[DTYPE](
                 qx, qy, qz, qw,
                 rebind[Scalar[DTYPE]](mesh_polys[po, MESH_POLY_IDX_NX]),
@@ -934,7 +940,7 @@ def _mesh_normals[
         var c = 0
         for i in range(ne):
             var p = e0 if i == 0 else e1
-            var po = (poly_adr + p) * MODEL_MESH_POLY_SIZE
+            var po = poly_adr + p  # ROW index: mesh_polys is [poly, field]
             var w = quat_rotate[DTYPE](
                 qx, qy, qz, qw,
                 rebind[Scalar[DTYPE]](mesh_polys[po, MESH_POLY_IDX_NX]),
@@ -962,7 +968,7 @@ def _mesh_normals[
             break
     if face < 0:
         return 0
-    var po = (poly_adr + face) * MODEL_MESH_POLY_SIZE
+    var po = poly_adr + face  # ROW index, not a flat offset
     var w = quat_rotate[DTYPE](
         qx, qy, qz, qw,
         rebind[Scalar[DTYPE]](mesh_polys[po, MESH_POLY_IDX_NX]),
@@ -1040,7 +1046,7 @@ def _mesh_edge_normals[
             if c >= MC_MAX_DEG:
                 break
             var p = Int(rebind[Scalar[DTYPE]](mesh_polymap[a1 + i]))
-            var po = (poly_adr + p) * MODEL_MESH_POLY_SIZE
+            var po = poly_adr + p  # ROW index: mesh_polys is [poly, field]
             var adr = Int(
                 rebind[Scalar[DTYPE]](mesh_polys[po, MESH_POLY_IDX_VERTADR])
             )
@@ -1106,7 +1112,7 @@ def _mesh_face[
     makes a mesh face agree in winding with `boxFace`'s clockwise order. Our
     stored polygons are CCW as seen from outside, matching `m.mesh_polyvert`.
     """
-    var po = (poly_adr + face_id) * MODEL_MESH_POLY_SIZE
+    var po = poly_adr + face_id  # ROW index, not a flat offset
     var adr = Int(rebind[Scalar[DTYPE]](mesh_polys[po, MESH_POLY_IDX_VERTADR]))
     var num = Int(rebind[Scalar[DTYPE]](mesh_polys[po, MESH_POLY_IDX_VERTNUM]))
     if num > MC_MAX_POLYVERT:
@@ -1221,6 +1227,7 @@ def native_multicontact_contacts[
     contact_friction_spin: Scalar[DTYPE],
     contact_friction_roll: Scalar[DTYPE],
     contact_condim: Int,
+    flip_normal: Bool,
     contacts: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
         MutAnyOrigin,
@@ -1233,6 +1240,23 @@ def native_multicontact_contacts[
     contact features do not line up as face/face, edge/face or face/edge, and
     the caller must emit its single EPA point instead — that is exactly what
     the reference does by leaving `status->nx` at 1.
+
+    ⚠ THE OPERANDS MUST ARRIVE IN MuJoCo'S ORDER, LOWER GEOM TYPE FIRST, and
+    `flip_normal` is what lets the caller do that without disturbing the
+    record's `body_a = gi` invariant. `mj_collideGeoms` sorts the pair so
+    `type1 <= type2` before dispatching, and BOX (6) sorts before MESH (7), so
+    the reference ALWAYS runs a box/mesh pair with the box as obj1. This
+    routine is not symmetric in its operands — the edge/face branch tests
+    `nface1 < 3 and nface1 <= nface2`, which prefers geom1 as the edge — so
+    running it in geom-index order picks a different feature on exactly the
+    poses where the two disagree. Measured: with the operands in our own order,
+    `box x mesh` matched MuJoCo exactly (339/339 points, |dn| 2.8e-13) while
+    `mesh x box`, the SAME PAIR declared the other way round, had 9 count
+    mismatches and fell back to the single EPA point often enough to leave
+    |dn| at 1.5e-3.
+
+    When the caller swaps, the manifold normal comes out as `obj2 -> obj1`,
+    which is `gi -> gj`; the record wants `body_b -> body_a`, so it is negated.
     """
     # A mesh with no polygons (a degenerate hull) is skipped, as MuJoCo skips
     # `!obj->data.mesh.mesh_polynum`.
@@ -1360,6 +1384,18 @@ def native_multicontact_contacts[
     var rj = 0
     var edgecon1 = False
     var edgecon2 = False
+    comptime if MC_DEBUG:
+        print(
+            "    [mc] types", gi_type, gj_type,
+            " nface", nface1, nface2, " nnorms", nn1, nn2,
+            " dirlen", dirlen,
+        )
+        for t in range(nn1):
+            print("      n1[", t, "] =", n1[t * 3 + 0], n1[t * 3 + 1],
+                  n1[t * 3 + 2], " idx", idx1[t])
+        for t in range(nn2):
+            print("      n2[", t, "] =", n2[t * 3 + 0], n2[t * 3 + 1],
+                  n2[t * 3 + 2], " idx", idx2[t])
     if not _aligned_faces[DTYPE](n1, nn1, n2, nn2, ri, rj):
         if nface1 < 3 and nface1 <= nface2:
             nn1 = 0
@@ -1490,6 +1526,12 @@ def native_multicontact_contacts[
             n1[ri * 3 + 0], n1[ri * 3 + 1], n1[ri * 3 + 2], 4, out,
         )
 
+    comptime if MC_DEBUG:
+        print(
+            "    [mc] branch edge1", edgecon1, " edge2", edgecon2,
+            " ri", ri, " rj", rj, " nf", nf1, nf2, " nx_out", nx_out,
+            " ad", adx, ady, adz,
+        )
     if nx_out < 1:
         return 0
 
@@ -1510,6 +1552,10 @@ def native_multicontact_contacts[
     rnx /= rl
     rny /= rl
     rnz /= rl
+    if flip_normal:
+        rnx = -rnx
+        rny = -rny
+        rnz = -rnz
 
     var written = 0
     for k in range(nx_out):
