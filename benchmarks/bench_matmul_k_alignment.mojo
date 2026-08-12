@@ -95,24 +95,49 @@ def report[M: Int, K: Int, N: Int](ctx: DeviceContext, reps: Int) raises:
     )
 
 
-def pair[M: Int, K: Int, K_PAD: Int, N: Int](
+def pair[M: Int, K: Int, K16: Int, K32: Int, K64: Int, N: Int](
     ctx: DeviceContext, note: String, reps: Int
 ) raises:
-    """The decision line: one unaligned K against its round-16 padding.
+    """The decision line: one real shape against SEVERAL padding targets.
 
-    `K_PAD > K`, so the padded call does strictly MORE arithmetic. A ratio
-    above 1 is therefore a pure win and understates the real benefit.
+    ⚠ The first version of this benchmark tested round-up-to-16 ONLY, and that
+    made the RTX 5090 look like it had no cliff at all: K=518 is 8x slower than
+    K=512 there, but K=528 (round-16) is *also* on the slow path, so the ratio
+    came out ~1.0 and read as "nothing to fix". K=544 (round-32) is fast. A
+    single hardcoded target cannot answer "should we pad" — it can only answer
+    "is THIS target good", which is a different and much less useful question.
+
+    Every target is >= K, so every padded call does strictly MORE arithmetic;
+    any ratio above 1 is a pure win and understates the real benefit.
     """
     var raw = time_shape[M, K, N](ctx, reps)
-    var pad = time_shape[M, K_PAD, N](ctx, reps)
-    var ratio = raw / pad
+    var p16 = time_shape[M, K16, N](ctx, reps)
+    var p32 = time_shape[M, K32, N](ctx, reps)
+    var p64 = time_shape[M, K64, N](ctx, reps)
+
+    var best = p16
+    var best_k = K16
+    if p32 < best:
+        best = p32
+        best_k = K32
+    if p64 < best:
+        best = p64
+        best_k = K64
+    var ratio = raw / best
+    # 1.2x is inside the run-to-run spread seen on the 5090 — do not call
+    # anything below it a win.
     var verdict = String("PAD") if ratio > 1.25 else (
-        String("no-op") if ratio > 0.9 else String("PADDING COSTS")
+        String("no-op") if ratio > 0.85 else String("PADDING COSTS")
+    )
+    print("   ", note, sep="")
+    print(
+        "      K=", K, " (%16=", K % 16, " %32=", K % 32, "): ", raw,
+        " us   |  ->", K16, ": ", p16, "   ->", K32, ": ", p32,
+        "   ->", K64, ": ", p64, sep="",
     )
     print(
-        "   M=", M, " N=", N, "  K=", K, " (%16=", K % 16, ") ", raw,
-        " us  ->  K=", K_PAD, " ", pad, " us   ratio=", ratio, "x   ",
-        verdict, "   ", note, sep="",
+        "      best target K=", best_k, "  ratio=", ratio, "x   ", verdict,
+        sep="",
     )
 
 
@@ -124,7 +149,9 @@ def main() raises:
     print()
 
     print("A. K sweep at the TD-MPC2 planner's shape (M=268, N=512)")
-    print("   Apple reference: 512/528/544 are ~1000 GFLOPS, 513..524 are ~100.")
+    print("   Apple  : 512/528/544 ~1000 GFLOPS; 513..524 ~100.  (rule: K%16)")
+    print("   RTX5090: 512/544 ~5500 GFLOPS; 513..528 ~680.      (rule: K%32)")
+    print("   ⚠ 528 is %16=0 but %32=16 — fast on Metal, SLOW on the 5090.")
     report[268, 512, 512](ctx, 200)
     report[268, 513, 512](ctx, 200)
     report[268, 514, 512](ctx, 200)
@@ -132,12 +159,21 @@ def main() raises:
     report[268, 518, 512](ctx, 200)   # <- TD-MPC2 walker: ZA = 512 + 6
     report[268, 520, 512](ctx, 200)   # <- multiple of 8, still slow on Metal
     report[268, 524, 512](ctx, 200)
-    report[268, 528, 512](ctx, 200)
+    report[268, 528, 512](ctx, 200)   # <- %16=0, %32=16: THE DISCRIMINATOR
     report[268, 544, 512](ctx, 200)
     print()
 
+    print("A2. Is the rule K%32? Multiples of 32 vs the %16-only values")
+    print("    If %32 is the rule, the left column is fast and the right slow.")
+    report[268, 576, 512](ctx, 200)   # %32=0
+    report[268, 560, 512](ctx, 200)   # %16=0, %32=16
+    report[268, 640, 512](ctx, 200)   # %32=0
+    report[268, 624, 512](ctx, 200)   # %16=0, %32=16
+    print()
+
     print("B. Controls — is it K only? Sweep M and N, hold K aligned.")
-    print("   Apple reference: neither M nor N matters; only K.")
+    print("   Apple  : neither M nor N matters; only K.")
+    print("   RTX5090: N MATTERS TOO (96/101/518 slow, 128/512 fast).")
     report[256, 512, 512](ctx, 200)
     report[264, 512, 512](ctx, 200)
     report[272, 512, 512](ctx, 200)
@@ -147,17 +183,30 @@ def main() raises:
     report[256, 512, 518](ctx, 200)   # unaligned N, aligned K
     print()
 
-    print("C. THE DECISION — real repo shapes, unaligned vs round-16 padded")
-    print("   ratio >> 1 => pad on this backend;  ratio ~ 1 => do not pad.")
-    pair[268, 518, 528, 512](ctx, "TD-MPC2 MPPI plan (za = latent|act)", 200)
-    pair[256, 518, 528, 512](ctx, "TD-MPC2 TRAINING batch (same za)", 200)
-    pair[256, 264, 272, 512](ctx, "larger latent|act concat", 200)
-    pair[256, 101, 112, 512](ctx, "BINS=101 used as an input width", 300)
-    pair[256, 30, 32, 256](ctx, "SAC/TD3 critic, walker obs|act = 30", 300)
-    pair[256, 24, 32, 256](ctx, "walker obs alone = 24", 300)
+    print("C. THE DECISION — real repo shapes vs SEVERAL padding targets")
+    print("   Each shape is padded up to the next multiple of 16, 32 and 64;")
+    print("   the best of the three sets the ratio. A single target cannot")
+    print("   answer this — see the note on `pair`.")
+    pair[268, 518, 528, 544, 576, 512](
+        ctx, "TD-MPC2 MPPI plan (za = latent|act)", 200
+    )
+    pair[256, 518, 528, 544, 576, 512](
+        ctx, "TD-MPC2 TRAINING batch (same za)", 200
+    )
+    pair[256, 264, 272, 288, 320, 512](ctx, "larger latent|act concat", 200)
+    pair[256, 101, 112, 128, 128, 512](
+        ctx, "BINS=101 used as an input width", 300
+    )
+    pair[256, 30, 32, 32, 64, 256](
+        ctx, "SAC/TD3 critic, walker obs|act = 30", 300
+    )
+    pair[256, 24, 32, 32, 64, 256](ctx, "walker obs alone = 24", 300)
     print()
 
     print("=" * 78)
-    print("Read column `ratio`. If every line in C is ~1x, the padding policy")
-    print("in nn/primitives/linear.mojo should stay OFF for this backend.")
+    print("Read the `best target` lines in C. If the winning target is the")
+    print("same on both backends, the padding policy in linear.mojo needs no")
+    print("platform gate — just round K up to that multiple when IN_ is off it.")
+    print("If they disagree, the TARGET is platform-specific, not the decision")
+    print("to pad at all.")
     print("=" * 78)
