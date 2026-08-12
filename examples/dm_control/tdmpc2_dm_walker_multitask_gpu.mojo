@@ -75,7 +75,7 @@ from mojo_rl.envs.dm_control.walker.walker_config import DMWalkerConfig
 comptime TARGET = "gpu"
 
 # ── acting mode ──────────────────────────────────────────────────────────
-comptime USE_MPC = False
+comptime USE_MPC = True
 # MPPI budget (only read when USE_MPC). Reference TD-MPC2 is 512/24/64/6;
 # these are the lighter numbers the single-task walker scripts use.
 comptime MPC_SAMPLES = 256
@@ -86,8 +86,8 @@ comptime MPC_ITERS = 4
 comptime N_ENVS = 8
 comptime EVAL_ENVS = 8
 
-comptime MAX_OBS = DMWalkerModel.OBS_DIM      # 24 — shared by all three
-comptime MAX_ACT = DMWalkerModel.ACTION_DIM   #  6 — shared by all three
+comptime MAX_OBS = DMWalkerModel.OBS_DIM  # 24 — shared by all three
+comptime MAX_ACT = DMWalkerModel.ACTION_DIM  #  6 — shared by all three
 comptime NUM_TASKS = 3
 # Reference multi-task TD-MPC2 uses 96 for MT80. Three tasks over one body need
 # far less; this is the knob to raise if the tasks start interfering.
@@ -102,16 +102,16 @@ comptime VMIN = -10
 comptime VMAX = 10
 comptime B = 256
 comptime H = 3
-comptime CAP = 1_000_000       # MUST be a multiple of N_ENVS
+comptime CAP = 1_000_000  # MUST be a multiple of N_ENVS
 
 comptime LR = 3e-4
 comptime ACTION_SCALE = 1.0
-comptime LEARN_START = 5_000   # replay frames before the policy takes over
+comptime LEARN_START = 5_000  # replay frames before the policy takes over
 comptime UPDATES_PER_STEP = 1  # per ITERATION (= N_ENVS env-steps)
 comptime EPISODE_LEN = 1_000
-comptime SEGMENT_STEPS = EPISODE_LEN * N_ENVS   # 8 000 — one episode per env
-comptime N_ROUNDS = 40         # 3 x 40 x 8 000 = 960 k env-steps total
-comptime EVAL_EVERY = SEGMENT_STEPS   # once per segment, on that task
+comptime SEGMENT_STEPS = EPISODE_LEN * N_ENVS  # 8 000 — one episode per env
+comptime N_ROUNDS = 40  # 3 x 40 x 8 000 = 960 k env-steps total
+comptime EVAL_EVERY = SEGMENT_STEPS  # once per segment, on that task
 comptime DIAG_EVERY = 1_000
 comptime PRINT_EVERY = 4_000
 comptime CKPT = "tdmpc2_dm_walker_multitask.ckpt"
@@ -158,9 +158,17 @@ def main() raises:
     var mode = "MPC" if USE_MPC else "MPC-off (policy prior)"
     print("  acting   =", mode)
     comptime if USE_MPC:
-        print("  MPPI     =", MPC_SAMPLES, "+", MPC_PI_TRAJS, "trajs x",
-              MPC_ITERS, "iters → grid",
-              N_ENVS * (MPC_SAMPLES + MPC_PI_TRAJS), "rows")
+        print(
+            "  MPPI     =",
+            MPC_SAMPLES,
+            "+",
+            MPC_PI_TRAJS,
+            "trajs x",
+            MPC_ITERS,
+            "iters → grid",
+            N_ENVS * (MPC_SAMPLES + MPC_PI_TRAJS),
+            "rows",
+        )
     print("=" * 70)
     seed(0)
     var ctx = DeviceContext()
@@ -176,18 +184,35 @@ def main() raises:
     var run_ev_p = Pointer(to=run_ev).as_unsafe_any_origin()
 
     var ag = TDMPC2MultiTask[
-        TARGET, MAX_OBS, MAX_ACT, NUM_TASKS, TASK_EMB, B, CAP,
-        ENC, LATENT, MLP, BINS, SN, VMIN, VMAX, H,
+        TARGET,
+        MAX_OBS,
+        MAX_ACT,
+        NUM_TASKS,
+        TASK_EMB,
+        B,
+        CAP,
+        ENC,
+        LATENT,
+        MLP,
+        BINS,
+        SN,
+        VMIN,
+        VMAX,
+        H,
         # ⚠ KEYWORDS, not positional. `TDMPC2MultiTask` takes QP BEFORE the
         # MPPI budget while the single-task `TDMPC2` takes it LAST, so the
         # positional spelling that works there silently shifts every value by
         # one here (MPC_SAMPLES lands in QP). Keywords also survive any future
         # param insertion.
-        NUM_SAMPLES=MPC_SAMPLES, NUM_PI_TRAJS=MPC_PI_TRAJS,
-        NUM_ELITES=MPC_ELITES, NUM_ITERS=MPC_ITERS,
+        NUM_SAMPLES=MPC_SAMPLES,
+        NUM_PI_TRAJS=MPC_PI_TRAJS,
+        NUM_ELITES=MPC_ELITES,
+        NUM_ITERS=MPC_ITERS,
     ](
-        ctx=ctx, lr=Scalar[DT](LR),
-        action_scale=Scalar[DT](ACTION_SCALE), learning_starts=LEARN_START,
+        ctx=ctx,
+        lr=Scalar[DT](LR),
+        action_scale=Scalar[DT](ACTION_SCALE),
+        learning_starts=LEARN_START,
     )
 
     var env_vars = load_dotenv()
@@ -226,13 +251,22 @@ def main() raises:
         var b0 = ag.train_batched_mt[
             StandEnv, N_ENVS, RemoteLogger, USE_MPC, StandEval, EVAL_ENVS
         ](
-            stand, T_STAND, SEGMENT_STEPS,
-            rng_seed=UInt64(100 + rnd), updates_per_step=UPDATES_PER_STEP,
-            print_every=PRINT_EVERY, verbose=True, logger=lg,
-            diag_every=DIAG_EVERY, base_step=at,
-            checkpoint_path=CKPT, checkpoint_every=0,
-            eval_env=stand_ev_p, eval_every=EVAL_EVERY,
-            eval_max_steps=EPISODE_LEN, task_label=String("stand"),
+            stand,
+            T_STAND,
+            SEGMENT_STEPS,
+            rng_seed=UInt64(100 + rnd),
+            updates_per_step=UPDATES_PER_STEP,
+            print_every=PRINT_EVERY,
+            verbose=True,
+            logger=lg,
+            diag_every=DIAG_EVERY,
+            base_step=at,
+            checkpoint_path=CKPT,
+            checkpoint_every=0,
+            eval_env=stand_ev_p,
+            eval_every=EVAL_EVERY,
+            eval_max_steps=EPISODE_LEN,
+            task_label=String("stand"),
         )
         at += SEGMENT_STEPS
         if b0 > best_stand:
@@ -241,13 +275,22 @@ def main() raises:
         var b1 = ag.train_batched_mt[
             WalkEnv, N_ENVS, RemoteLogger, USE_MPC, WalkEval, EVAL_ENVS
         ](
-            walk, T_WALK, SEGMENT_STEPS,
-            rng_seed=UInt64(200 + rnd), updates_per_step=UPDATES_PER_STEP,
-            print_every=PRINT_EVERY, verbose=True, logger=lg,
-            diag_every=DIAG_EVERY, base_step=at,
-            checkpoint_path=CKPT, checkpoint_every=0,
-            eval_env=walk_ev_p, eval_every=EVAL_EVERY,
-            eval_max_steps=EPISODE_LEN, task_label=String("walk"),
+            walk,
+            T_WALK,
+            SEGMENT_STEPS,
+            rng_seed=UInt64(200 + rnd),
+            updates_per_step=UPDATES_PER_STEP,
+            print_every=PRINT_EVERY,
+            verbose=True,
+            logger=lg,
+            diag_every=DIAG_EVERY,
+            base_step=at,
+            checkpoint_path=CKPT,
+            checkpoint_every=0,
+            eval_env=walk_ev_p,
+            eval_every=EVAL_EVERY,
+            eval_max_steps=EPISODE_LEN,
+            task_label=String("walk"),
         )
         at += SEGMENT_STEPS
         if b1 > best_walk:
@@ -256,13 +299,22 @@ def main() raises:
         var b2 = ag.train_batched_mt[
             RunEnv, N_ENVS, RemoteLogger, USE_MPC, RunEval, EVAL_ENVS
         ](
-            run_e, T_RUN, SEGMENT_STEPS,
-            rng_seed=UInt64(300 + rnd), updates_per_step=UPDATES_PER_STEP,
-            print_every=PRINT_EVERY, verbose=True, logger=lg,
-            diag_every=DIAG_EVERY, base_step=at,
-            checkpoint_path=CKPT, checkpoint_every=0,
-            eval_env=run_ev_p, eval_every=EVAL_EVERY,
-            eval_max_steps=EPISODE_LEN, task_label=String("run"),
+            run_e,
+            T_RUN,
+            SEGMENT_STEPS,
+            rng_seed=UInt64(300 + rnd),
+            updates_per_step=UPDATES_PER_STEP,
+            print_every=PRINT_EVERY,
+            verbose=True,
+            logger=lg,
+            diag_every=DIAG_EVERY,
+            base_step=at,
+            checkpoint_path=CKPT,
+            checkpoint_every=0,
+            eval_env=run_ev_p,
+            eval_every=EVAL_EVERY,
+            eval_max_steps=EPISODE_LEN,
+            task_label=String("run"),
         )
         at += SEGMENT_STEPS
         if b2 > best_run:
@@ -272,9 +324,19 @@ def main() raises:
         # the file is never a mid-round snapshot biased to the last task.
         ag.save_state(CKPT)
         print(
-            "  ── round", rnd + 1, "/", N_ROUNDS, " @", at, "env-steps",
-            "  best: stand", best_stand, " walk", best_walk,
-            " run", best_run,
+            "  ── round",
+            rnd + 1,
+            "/",
+            N_ROUNDS,
+            " @",
+            at,
+            "env-steps",
+            "  best: stand",
+            best_stand,
+            " walk",
+            best_walk,
+            " run",
+            best_run,
         )
 
     _ = stand_ev
@@ -289,12 +351,21 @@ def main() raises:
     print("Multi-task training complete")
     print("  total env_steps =", at)
     print("  elapsed         =", elapsed, "s")
-    print("  best eval — stand:", best_stand, " walk:", best_walk,
-          " run:", best_run)
+    print(
+        "  best eval — stand:",
+        best_stand,
+        " walk:",
+        best_walk,
+        " run:",
+        best_run,
+    )
     print("  checkpoint      =", CKPT)
     print("=" * 70)
     print("Read it against the SINGLE-TASK, MPC-OFF baseline per task —")
-    print("  examples/dm_control/tdmpc2_dm_walker_batched_gpu.mojo (USE_MPC=False)")
+    print(
+        "  examples/dm_control/tdmpc2_dm_walker_batched_gpu.mojo"
+        " (USE_MPC=False)"
+    )
     print("  ⚠ match the ACTING MODE across the comparison: an MPC-off")
     print("    multi-task run vs a single-task MPC number charges the")
     print("    planner's absence to multi-task conditioning.")
