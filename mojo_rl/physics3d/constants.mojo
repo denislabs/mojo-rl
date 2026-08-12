@@ -33,3 +33,8 @@ comptime GEOM_MESH: Int = 5
 # ellipsoid geom can actually collide, rather than silently colliding it as a
 # sphere. See `geom_volume` / `geom_inertia`.
 comptime GEOM_ELLIPSOID: Int = 6
+
+# `kAngleTol` in `mjCMesh::MakePolygons` (`user_mesh.cc:2905`): the bucket width,
+# in radians, used to decide that two hull triangles are coplanar and belong to
+# the same polygon. Faces whose normals differ by less than this merge.
+comptime MESH_POLY_ANGLE_TOL: Float64 = 0.01

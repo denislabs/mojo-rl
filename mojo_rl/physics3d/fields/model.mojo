@@ -37,7 +37,10 @@ from ..gpu.constants import (
     MODEL_TENDON_SIZE,
     MODEL_SITE_SIZE,
     MODEL_MESH_META_SIZE,
+    MODEL_MESH_POLY_SIZE,
     MAX_GPU_MESHES,
+    mesh_max_poly,
+    mesh_max_polyvert,
 )
 
 @always_inline
@@ -78,6 +81,19 @@ struct Model[
     comptime L_EXCLUDE = Layout.row_major(Self.NEXCLUDE, 2)
     comptime L_MESH_META = Layout.row_major(MAX_GPU_MESHES, MODEL_MESH_META_SIZE)
     comptime L_MESH_VERT = Layout.row_major(Self.NMESH_VERTS, 3)
+    # Mesh POLYGON topology for the native multi-contact path. The capacities
+    # are Euler's formula on NMESH_VERTS, so they need no type parameter of
+    # their own — see `mesh_max_poly` / `mesh_max_polyvert`.
+    comptime NMESH_POLY = mesh_max_poly(Self.NMESH_VERTS)
+    comptime NMESH_POLYVERT = mesh_max_polyvert(Self.NMESH_VERTS)
+    comptime L_MESH_POLY = Layout.row_major(
+        Self.NMESH_POLY, MODEL_MESH_POLY_SIZE
+    )
+    comptime L_MESH_POLYVERT = Layout.row_major(Self.NMESH_POLYVERT)
+    comptime L_MESH_POLYMAP = Layout.row_major(Self.NMESH_POLYVERT)
+    comptime L_MESH_VERT_POLYMAP = Layout.row_major(
+        _at_least_one(Self.NMESH_VERTS), 2
+    )
 
     var bodies: TensorImpl[Self.DTYPE]  # [NBODY, MODEL_BODY_SIZE]
     var joints: TensorImpl[Self.DTYPE]  # [NJOINT, MODEL_JOINT_SIZE]
@@ -90,8 +106,12 @@ struct Model[
     var body_invweight0: TensorImpl[Self.DTYPE]  # [NBODY, 2]
     var dof_invweight0: TensorImpl[Self.DTYPE]  # [NV]
     var excludes: TensorImpl[Self.DTYPE]  # [NEXCLUDE, 2]
-    var mesh_meta: TensorImpl[Self.DTYPE]  # [MAX_GPU_MESHES, 2]
+    var mesh_meta: TensorImpl[Self.DTYPE]  # [MAX_GPU_MESHES, 4]
     var mesh_verts: TensorImpl[Self.DTYPE]  # [NMESH_VERTS, 3]
+    var mesh_polys: TensorImpl[Self.DTYPE]  # [NMESH_POLY, 5]
+    var mesh_polyvert: TensorImpl[Self.DTYPE]  # [NMESH_POLYVERT]
+    var mesh_polymap: TensorImpl[Self.DTYPE]  # [NMESH_POLYVERT]
+    var mesh_vert_polymap: TensorImpl[Self.DTYPE]  # [NMESH_VERTS, 2] adr,num
 
     def __init__(out self) raises:
         self.bodies = TensorImpl[Self.DTYPE].alloc(
@@ -117,6 +137,18 @@ struct Model[
             MAX_GPU_MESHES * MODEL_MESH_META_SIZE
         )
         self.mesh_verts = TensorImpl[Self.DTYPE].alloc(_at_least_one(Self.NMESH_VERTS * 3))
+        self.mesh_polys = TensorImpl[Self.DTYPE].alloc(
+            _at_least_one(Self.NMESH_POLY * MODEL_MESH_POLY_SIZE)
+        )
+        self.mesh_polyvert = TensorImpl[Self.DTYPE].alloc(
+            _at_least_one(Self.NMESH_POLYVERT)
+        )
+        self.mesh_polymap = TensorImpl[Self.DTYPE].alloc(
+            _at_least_one(Self.NMESH_POLYVERT)
+        )
+        self.mesh_vert_polymap = TensorImpl[Self.DTYPE].alloc(
+            _at_least_one(Self.NMESH_VERTS * 2)
+        )
 
     def upload_all(mut self, ctx: DeviceContext) raises:
         """Host -> device for every record tensor (static config: called once
@@ -134,6 +166,10 @@ struct Model[
         self.excludes.upload(ctx)
         self.mesh_meta.upload(ctx)
         self.mesh_verts.upload(ctx)
+        self.mesh_polys.upload(ctx)
+        self.mesh_polyvert.upload(ctx)
+        self.mesh_polymap.upload(ctx)
+        self.mesh_vert_polymap.upload(ctx)
 
     # `load_from_model` (CPU `Model` -> record fill) was deleted at the G4
     # fields sunset — the spec-direct build is

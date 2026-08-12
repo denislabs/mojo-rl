@@ -661,7 +661,7 @@ def _gjk_intersect[
     return -1
 
 
-def gjk_epa[
+def gjk_epa_witness[
     DTYPE: DType,
     NMESH_VERTS: Int,
 ](
@@ -698,6 +698,9 @@ def gjk_epa[
     hz2: Scalar[DTYPE],
     va2: Int,
     mnv2: Int,
+    mut wf1: InlineArray[Scalar[DTYPE], 9],
+    mut wf2: InlineArray[Scalar[DTYPE], 9],
+    mut wf_ok: Int,
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -708,7 +711,24 @@ def gjk_epa[
     Scalar[DTYPE],
 ]:
     """GJK distance + EPA penetration depth between two convex shapes
-    (verbatim from gjk_epa_gpu; mesh reads via record tensor)."""
+    (verbatim from gjk_epa_gpu; mesh reads via record tensor).
+
+    `wf1` / `wf2` receive the SUPPORT POINTS, on geom 1 and geom 2
+    respectively, of the three vertices of the EPA face the answer came from —
+    MuJoCo's `pt->verts[face->verts[i]].vert1 / .vert2`. `wf_ok` is set to 1
+    when they are valid and left at 0 on every early return.
+
+    ⚠ THAT FACE IS THE ONLY THING THAT IDENTIFIES THE CONTACT FEATURE, which is
+    why it is plumbed out rather than recomputed. `multicontact` has to know
+    whether the contact came from a vertex, an edge or a face of each geom, and
+    the ONLY evidence for that is which support points the winning face's three
+    vertices resolved to: three distinct points mean a face, two mean an edge,
+    one means a vertex. It cannot be recovered from the returned witness point,
+    which is already a barycentric BLEND of all three.
+
+    Callers that do not need the feature use `gjk_epa`, which wraps this.
+    """
+    wf_ok = 0
     # ===== GJK Phase =====
     var simplex = InlineArray[Scalar[DTYPE], 36](fill=Scalar[DTYPE](0))
     var nsimplex = 0
@@ -1351,6 +1371,31 @@ def gjk_epa[
         var w2z = (
             l0 * ev[i0 * 9 + 8] + l1 * ev[i1 * 9 + 8] + l2 * ev[i2 * 9 + 8]
         )
+
+        # The winning face's three vertices, as support points on each geom.
+        # Written with CONSTANT indices on the destination and only the polytope
+        # vertex id varying, so no per-thread array is indexed by a runtime
+        # value on the way out — see
+        # `feedback_metal_wide_per_thread_inlinearray_miscompute`.
+        wf1[0] = ev[i0 * 9 + 3]
+        wf1[1] = ev[i0 * 9 + 4]
+        wf1[2] = ev[i0 * 9 + 5]
+        wf1[3] = ev[i1 * 9 + 3]
+        wf1[4] = ev[i1 * 9 + 4]
+        wf1[5] = ev[i1 * 9 + 5]
+        wf1[6] = ev[i2 * 9 + 3]
+        wf1[7] = ev[i2 * 9 + 4]
+        wf1[8] = ev[i2 * 9 + 5]
+        wf2[0] = ev[i0 * 9 + 6]
+        wf2[1] = ev[i0 * 9 + 7]
+        wf2[2] = ev[i0 * 9 + 8]
+        wf2[3] = ev[i1 * 9 + 6]
+        wf2[4] = ev[i1 * 9 + 7]
+        wf2[5] = ev[i1 * 9 + 8]
+        wf2[6] = ev[i2 * 9 + 6]
+        wf2[7] = ev[i2 * 9 + 7]
+        wf2[8] = ev[i2 * 9 + 8]
+        wf_ok = 1
         # ⚠ THIS SIGN WAS WRONG AND NOTHING CAUGHT IT FOR THE MESH PATH.
         # `test_narrow_phase_pairs` anchors contact DIRECTION against MuJoCo for
         # the primitive pairs, but no gate covered direction for a MESH pair, so
@@ -1472,4 +1517,59 @@ def gjk_epa[
         fallback_nx,
         fallback_ny,
         fallback_nz,
+    )
+
+
+@always_inline
+def gjk_epa[
+    DTYPE: DType,
+    NMESH_VERTS: Int,
+](
+    type1: Int,
+    p1x: Scalar[DTYPE], p1y: Scalar[DTYPE], p1z: Scalar[DTYPE],
+    q1x: Scalar[DTYPE], q1y: Scalar[DTYPE], q1z: Scalar[DTYPE],
+    q1w: Scalar[DTYPE],
+    r1: Scalar[DTYPE], hl1: Scalar[DTYPE],
+    hx1: Scalar[DTYPE], hy1: Scalar[DTYPE], hz1: Scalar[DTYPE],
+    mesh_verts: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
+    va1: Int, mnv1: Int,
+    type2: Int,
+    p2x: Scalar[DTYPE], p2y: Scalar[DTYPE], p2z: Scalar[DTYPE],
+    q2x: Scalar[DTYPE], q2y: Scalar[DTYPE], q2z: Scalar[DTYPE],
+    q2w: Scalar[DTYPE],
+    r2: Scalar[DTYPE], hl2: Scalar[DTYPE],
+    hx2: Scalar[DTYPE], hy2: Scalar[DTYPE], hz2: Scalar[DTYPE],
+    va2: Int, mnv2: Int,
+) -> Tuple[
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+]:
+    """`gjk_epa_witness` for callers that only want `(dist, pos, normal)`.
+
+    Kept as a separate entry point rather than making the witness arguments
+    optional so that the sixteen existing call sites — two narrow phases, the
+    perturbation loop and ten tests — are untouched by the native
+    multi-contact work. The scratch arrays are dead stores everywhere the
+    result is discarded.
+    """
+    var wf1 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var wf2 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+    var wf_ok = 0
+    return gjk_epa_witness[DTYPE, NMESH_VERTS](
+        type1,
+        p1x, p1y, p1z, q1x, q1y, q1z, q1w,
+        r1, hl1, hx1, hy1, hz1,
+        mesh_verts, va1, mnv1,
+        type2,
+        p2x, p2y, p2z, q2x, q2y, q2z, q2w,
+        r2, hl2, hx2, hy2, hz2,
+        va2, mnv2,
+        wf1, wf2, wf_ok,
     )

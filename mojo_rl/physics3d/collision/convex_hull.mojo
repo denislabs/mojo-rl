@@ -10,6 +10,8 @@ Runs once at model load time.
 
 from std.math import sqrt, abs
 
+from .mesh_polygons import build_mesh_polygons
+
 
 def deduplicate_vertices[
     DTYPE: DType,
@@ -123,6 +125,7 @@ def compute_convex_hull[
     verts: List[Scalar[DTYPE]],
     num_verts: Int,
     mut hull_verts: List[Scalar[DTYPE]],
+    mut hull_faces: List[Int],
 ) -> Int:
     """EXACT 3D convex hull by incremental insertion.
 
@@ -137,6 +140,14 @@ def compute_convex_hull[
 
     The hull vertex set is exactly what a support query needs, so this gives
     SHAPE PARITY with MuJoCo, which collides the convex hull of `mesh_vert`.
+
+    `hull_faces` receives the surviving triangles as vertex triples in
+    COMPACTED numbering, wound OUTWARD — see the emit loop for why the winding
+    has to be established there. A degenerate input (fewer than four points, or
+    points that are collinear or coplanar) takes one of the early returns and
+    leaves `hull_faces` EMPTY; that is the same state MuJoCo represents with
+    `mesh_polynum == 0`, and `multicontact` skips such a mesh rather than
+    guessing a face for it.
 
     Algorithm, matching the module docstring for the first time: seed a
     tetrahedron from four non-degenerate extremes, then insert each remaining
@@ -401,13 +412,60 @@ def compute_convex_hull[
     for i in range(len(faces)):
         on_hull[faces[i]] = True
 
+    # `remap[i]` is vertex i's index in the COMPACTED hull, or -1. The faces
+    # are emitted in compacted numbering because that is what every consumer
+    # sees: `mesh_vertadr` addresses the compacted block, and MuJoCo's
+    # `mesh_polyvert` is likewise relative to `mesh_vertadr`.
+    var remap = List[Int](length=num_verts, fill=-1)
     var num_hull = 0
     for i in range(num_verts):
         if on_hull[i]:
             hull_verts.append(verts[i * 3 + 0])
             hull_verts.append(verts[i * 3 + 1])
             hull_verts.append(verts[i * 3 + 2])
+            remap[i] = num_hull
             num_hull += 1
+
+    # ---- emit the faces, WOUND OUTWARD ------------------------------------
+    #
+    # ⚠ THE WINDING IS NOT COSMETIC AND THIS LOOP IS WHERE IT IS ESTABLISHED.
+    # The construction above never fixes an orientation: the visibility test
+    # re-derives each face's outward normal from the interior reference point
+    # every time it is used, and the horizon stitch appends `(lo, hi, p)` in
+    # whatever order the edge happened to be stored. That is fine for a hull
+    # whose faces are only ever tested one at a time, and it is FATAL to
+    # `mesh_polygons.build_mesh_polygons`, which merges two triangles by
+    # cancelling a shared edge traversed in OPPOSITE directions. With mixed
+    # winding the cancellation silently fails, no edges are removed, and every
+    # face stays its own polygon — a cube would come back as 12 triangles
+    # instead of 6 quads, which is exactly the bug this whole path exists to
+    # avoid. So orient here, once, against the same interior point.
+    for f in range(len(faces) // 3):
+        var a = faces[f * 3 + 0]
+        var b = faces[f * 3 + 1]
+        var c = faces[f * 3 + 2]
+        var ux = verts[b * 3 + 0] - verts[a * 3 + 0]
+        var uy = verts[b * 3 + 1] - verts[a * 3 + 1]
+        var uz = verts[b * 3 + 2] - verts[a * 3 + 2]
+        var vx = verts[c * 3 + 0] - verts[a * 3 + 0]
+        var vy = verts[c * 3 + 1] - verts[a * 3 + 1]
+        var vz = verts[c * 3 + 2] - verts[a * 3 + 2]
+        var fx = uy * vz - uz * vy
+        var fy = uz * vx - ux * vz
+        var fz = ux * vy - uy * vx
+        # Outward means pointing AWAY from the interior reference point.
+        var outward = (
+            fx * (verts[a * 3 + 0] - rx)
+            + fy * (verts[a * 3 + 1] - ry)
+            + fz * (verts[a * 3 + 2] - rz)
+        )
+        hull_faces.append(remap[a])
+        if outward >= Scalar[DTYPE](0):
+            hull_faces.append(remap[b])
+            hull_faces.append(remap[c])
+        else:
+            hull_faces.append(remap[c])
+            hull_faces.append(remap[b])
 
     return num_hull
 
@@ -425,11 +483,25 @@ def load_mesh_hull[
     mut mesh_vertadr: List[Int],
     mut mesh_vertnum: List[Int],
     mut num_meshes: Int,
+    mut mesh_polyadr: List[Int],
+    mut mesh_polynum: List[Int],
+    mut poly_vert: List[Int],
+    mut poly_vertadr: List[Int],
+    mut poly_vertnum: List[Int],
+    mut poly_normal: List[Scalar[DTYPE]],
+    mut polymap: List[Int],
+    mut polymap_adr: List[Int],
+    mut polymap_num: List[Int],
 ) raises -> Tuple[Int, Scalar[DTYPE]]:
     """Load STL mesh, deduplicate, compute convex hull, store in model arrays.
 
     Returns (mesh_id, rbound) for this mesh.
     Vertices are stored in the mesh's LOCAL frame.
+
+    The `poly_*` / `polymap*` lists accumulate the hull's POLYGON topology
+    across every mesh, exactly as `mesh_polyvert` and `mesh_polymap` do in
+    `mjModel`; `mesh_polyadr` / `mesh_polynum` index into them per mesh. See
+    `collision/mesh_polygons.mojo` for what they are for.
     """
     from mojo_rl.render.stl_loader import load_stl
 
@@ -468,9 +540,31 @@ def load_mesh_hull[
     # still wants FLOATS, so it is given the float offset explicitly.
     var vert_float_offset = len(mesh_vert)
     mesh_vertadr.append(vert_float_offset // 3)
-    var num_hull = compute_convex_hull[DTYPE](unique, num_unique, mesh_vert)
+    var hull_faces = List[Int]()
+    var num_hull = compute_convex_hull[DTYPE](
+        unique, num_unique, mesh_vert, hull_faces
+    )
     mesh_vertnum.append(num_hull)
     num_meshes += 1
+
+    # Polygons for the native multi-contact path. `polymap_adr` / `polymap_num`
+    # are appended one entry per HULL VERTEX, so they stay parallel to the
+    # vertex block this mesh just wrote.
+    mesh_polyadr.append(len(poly_vertadr))
+    var npoly = build_mesh_polygons[DTYPE](
+        mesh_vert,
+        vert_float_offset,
+        num_hull,
+        hull_faces,
+        poly_vert,
+        poly_vertadr,
+        poly_vertnum,
+        poly_normal,
+        polymap,
+        polymap_adr,
+        polymap_num,
+    )
+    mesh_polynum.append(npoly)
 
     # Compute bounding radius from hull vertices
     var rbound = compute_bounding_radius_at[DTYPE](

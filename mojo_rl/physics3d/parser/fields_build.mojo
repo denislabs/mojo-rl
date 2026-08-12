@@ -68,6 +68,16 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_EQ_SIZE,
     MODEL_SITE_SIZE,
     MODEL_MESH_META_SIZE,
+    MODEL_MESH_POLY_SIZE,
+    MESH_META_IDX_POLYADR,
+    MESH_META_IDX_POLYNUM,
+    MESH_POLY_IDX_VERTADR,
+    MESH_POLY_IDX_VERTNUM,
+    MESH_POLY_IDX_NX,
+    MESH_POLY_IDX_NY,
+    MESH_POLY_IDX_NZ,
+    mesh_max_poly,
+    mesh_max_polyvert,
     MAX_GPU_MESHES,
     BODY_IDX_MASS,
     BODY_IDX_INV_MASS,
@@ -958,6 +968,17 @@ def build_model_fields_from_flat[
     var mesh_vertadr = List[Int]()
     var mesh_vertnum = List[Int]()
     var num_meshes = 0
+    # Polygon topology, accumulated across meshes exactly as `mesh_polyvert`
+    # and `mesh_polymap` are in `mjModel`. See `collision/mesh_polygons.mojo`.
+    var mesh_polyadr = List[Int]()
+    var mesh_polynum = List[Int]()
+    var poly_vert = List[Int]()
+    var poly_vertadr = List[Int]()
+    var poly_vertnum = List[Int]()
+    var poly_normal = List[Scalar[DTYPE]]()
+    var polymap = List[Int]()
+    var polymap_adr = List[Int]()
+    var polymap_num = List[Int]()
     var loaded_mesh_ids = List[Int](length=fmd.num_mesh_assets, fill=-1)
     for i in range(len(fmd.geoms)):
         var gd = fmd.geoms[i]
@@ -1012,6 +1033,15 @@ def build_model_fields_from_flat[
                         mesh_vertadr,
                         mesh_vertnum,
                         num_meshes,
+                        mesh_polyadr,
+                        mesh_polynum,
+                        poly_vert,
+                        poly_vertadr,
+                        poly_vertnum,
+                        poly_normal,
+                        polymap,
+                        polymap_adr,
+                        polymap_num,
                     )
                     var mesh_id = result[0]
                     mf.geoms.data[o + GEOM_IDX_MESH_ID] = Scalar[DTYPE](
@@ -1031,6 +1061,12 @@ def build_model_fields_from_flat[
         mf.mesh_meta.data[m * MODEL_MESH_META_SIZE + 1] = Scalar[DTYPE](
             mesh_vertnum[m]
         )
+        mf.mesh_meta.data[
+            m * MODEL_MESH_META_SIZE + MESH_META_IDX_POLYADR
+        ] = Scalar[DTYPE](mesh_polyadr[m])
+        mf.mesh_meta.data[
+            m * MODEL_MESH_META_SIZE + MESH_META_IDX_POLYNUM
+        ] = Scalar[DTYPE](mesh_polynum[m])
     # ⚠ CAPACITY IS ANNOUNCED, NOT SILENTLY TRUNCATED. This loop used to just
     # `break` at the cap, which drops hull vertices from the LAST meshes and
     # shrinks their collision shape — an error with one sign, invisible to
@@ -1062,6 +1098,47 @@ def build_model_fields_from_flat[
         if i >= NMESH_VERTS * 3:
             break
         mf.mesh_verts.data[i] = mesh_vert[i]
+
+    # ── mesh polygon topology ────────────────────────────────────────────
+    #
+    # The capacities here are Euler's formula on NMESH_VERTS (see
+    # `mesh_max_poly` / `mesh_max_polyvert`), so a convex hull that fits in the
+    # vertex budget cannot overflow them. They are still checked, because the
+    # bound holds for a CONVEX hull and a builder bug is exactly what would
+    # break that assumption — and a silent overrun here would corrupt the
+    # tensor allocated next to it.
+    comptime NMESH_POLY = mesh_max_poly(NMESH_VERTS)
+    comptime NMESH_POLYVERT = mesh_max_polyvert(NMESH_VERTS)
+    if len(poly_vertadr) > NMESH_POLY or len(poly_vert) > NMESH_POLYVERT:
+        raise Error(
+            String("mesh POLYGON capacity exceeded: ")
+            + String(len(poly_vertadr)) + " polygons (cap " + String(NMESH_POLY)
+            + ") and " + String(len(poly_vert)) + " polygon-vertices (cap "
+            + String(NMESH_POLYVERT) + ") for NMESH_VERTS = "
+            + String(NMESH_VERTS) + ". These caps are Euler's formula for a"
+            " CONVEX hull, so exceeding them means the hull or the polygon"
+            " merge is wrong, not that the budget is too small."
+        )
+    for p in range(len(poly_vertadr)):
+        var o = p * MODEL_MESH_POLY_SIZE
+        mf.mesh_polys.data[o + MESH_POLY_IDX_VERTADR] = Scalar[DTYPE](
+            poly_vertadr[p]
+        )
+        mf.mesh_polys.data[o + MESH_POLY_IDX_VERTNUM] = Scalar[DTYPE](
+            poly_vertnum[p]
+        )
+        mf.mesh_polys.data[o + MESH_POLY_IDX_NX] = poly_normal[p * 3 + 0]
+        mf.mesh_polys.data[o + MESH_POLY_IDX_NY] = poly_normal[p * 3 + 1]
+        mf.mesh_polys.data[o + MESH_POLY_IDX_NZ] = poly_normal[p * 3 + 2]
+    for k in range(len(poly_vert)):
+        mf.mesh_polyvert.data[k] = Scalar[DTYPE](poly_vert[k])
+    for k in range(len(polymap)):
+        mf.mesh_polymap.data[k] = Scalar[DTYPE](polymap[k])
+    for v in range(len(polymap_adr)):
+        if v >= NMESH_VERTS:
+            break
+        mf.mesh_vert_polymap.data[v * 2 + 0] = Scalar[DTYPE](polymap_adr[v])
+        mf.mesh_vert_polymap.data[v * 2 + 1] = Scalar[DTYPE](polymap_num[v])
 
     # ── sites (INTENTIONAL FIX: legacy load_from_model left these zero) ───
     for i in range(NSITE):

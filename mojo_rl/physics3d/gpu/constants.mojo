@@ -523,7 +523,43 @@ comptime MODEL_EXCLUDE_PAIR_SIZE: Int = 2  # body1, body2
 # mesh_verts: flattened [x0,y0,z0, x1,y1,z1, ...] in local frame
 comptime MAX_HULL_VERTS_PER_MESH: Int = 256
 comptime MAX_GPU_MESHES: Int = 16
-comptime MODEL_MESH_META_SIZE: Int = 2  # vertadr, vertnum per mesh
+# vertadr, vertnum, polyadr, polynum per mesh — the last two added with the
+# native multi-contact path, mirroring `mesh_polyadr` / `mesh_polynum`.
+comptime MODEL_MESH_META_SIZE: Int = 4
+comptime MESH_META_IDX_VERTADR: Int = 0
+comptime MESH_META_IDX_VERTNUM: Int = 1
+comptime MESH_META_IDX_POLYADR: Int = 2
+comptime MESH_META_IDX_POLYNUM: Int = 3
+
+# ---- Mesh POLYGON topology (native multi-contact) ---------------------------
+#
+# `multicontact` (`engine_collision_gjk.c:2111`) recovers the face a contact
+# came from and clips it against the opposing face. For a mesh that needs the
+# hull's polygons, which `collision/mesh_polygons.mojo` builds at model load.
+#
+# ⚠ THE CAPS ARE EULER'S FORMULA, NOT A GUESS, which is why none of these need
+# to become `Model` type parameters. For a convex polyhedron with V vertices a
+# TRIANGULATED hull has at most F = 2V - 4 faces and E = 3V - 6 edges; merging
+# coplanar triangles into polygons only ever REDUCES F, and the total number of
+# polygon-vertex incidences is exactly 2E <= 6V - 12. The vertex -> polygon map
+# holds the same 2E entries. So sizing off NMESH_VERTS is exact, not generous,
+# and a mesh cannot overflow these without violating convexity.
+comptime MODEL_MESH_POLY_SIZE: Int = 5  # vertadr, vertnum, nx, ny, nz
+comptime MESH_POLY_IDX_VERTADR: Int = 0
+comptime MESH_POLY_IDX_VERTNUM: Int = 1
+comptime MESH_POLY_IDX_NX: Int = 2
+comptime MESH_POLY_IDX_NY: Int = 3
+comptime MESH_POLY_IDX_NZ: Int = 4
+
+
+def mesh_max_poly(nmesh_verts: Int) -> Int:
+    """Polygon capacity for a hull budget of `nmesh_verts` vertices."""
+    return 2 * nmesh_verts if nmesh_verts > 0 else 1
+
+
+def mesh_max_polyvert(nmesh_verts: Int) -> Int:
+    """Polygon-vertex (and vertex->polygon map) capacity. See above."""
+    return 6 * nmesh_verts if nmesh_verts > 0 else 1
 
 
 # =============================================================================
