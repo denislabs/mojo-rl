@@ -643,11 +643,42 @@ def test_narrow_phase_pairs_gpu_matches_cpu() raises:
     # the box/capsule group (bodies 15/16), measured 2026-08-09:
     #     column 6 (NY)   CPU -1.0643675096844163e-07   GPU -0.2747207283973694
     #     column 8 (DIST) CPU -0.004999961704015732     GPU -0.0035994164645671844
-    # MuJoCo's own multi-point path sets `con[ncon].dist = con[0].dist`
-    # (`engine_collision_convex.c:945`), which our CPU leg reproduces — c9 and
-    # c10 share a dist there — and our GPU leg does not. A 0.27 swing in a unit
-    # normal is not float32 noise; it changes the contact frame and therefore
-    # the friction directions.
+    # ⚠⚠ THE DIAGNOSIS BELOW REPLACES TWO EARLIER ONES, BOTH WRONG ABOUT THE
+    # LOCATION (2026-08-12). It is NOT the `con[ncon].dist = con[0].dist` copy,
+    # and it is NOT `_capsule_box_second_pos`'s `axisdir` sign test — which is
+    # why a tie-break there left the delta EXACTLY unchanged.
+    #
+    # The whole divergence funnels through one scalar. `box_capsule_manifold`
+    # emits point k=1 at `t = bestsegmentpos + secondpos`; the first point is
+    # bit-exact, so `bestsegmentpos` agrees and only `secondpos` can differ.
+    # Measured on the CPU for this exact pair (box .05^3 at x=7.0, capsule
+    # r=.04 along Y at x=7.085, both identity-oriented):
+    #
+    #     cltype 4  clcorner 0  cledge 2   bestsegmentpos -0.8333333730697632
+    #     secondpos +1.6666667461395264
+    #     -> two points at t = -+0.8333, BOTH dist -0.004999961704015732
+    #
+    # which reproduces c9 and c10 exactly. Inverting the GPU's recorded second
+    # point (dist -0.0035994164645671844, ny -0.2747207283973694) by sweeping
+    # `t` gives t = -1.0, i.e. GPU `secondpos = -0.16666662693023682`.
+    #
+    # Brute-forcing the classifier outputs that yield that value, with the same
+    # `bestsegmentpos`/`bestboxpos`, gives ONLY `cltype` in {0,1,2} — the
+    # CORNER branch (`cltype//3 == 0`) — with `clcorner` in {3,6,7}. The CPU
+    # takes the EDGE branch (`cltype = 4`).
+    #
+    # So THE FEATURE CLASSIFICATION DIVERGES, in
+    # `_capsule_box_best_segment_pos`, one level ABOVE where both previous
+    # attempts looked. The closest POINT is unambiguous (hence a bit-exact
+    # first contact) but the FEATURE LABEL is a genuine tie here — the capsule
+    # axis is parallel to a box face, so several features are equidistant and
+    # the strict `>` comparisons resolve it differently once Metal's rounding
+    # (FMA contraction) moves the last bits.
+    #
+    # ⚠ THE FIX IS NOT OBVIOUS AND THE LAST TIE-BREAK ATTEMPT BROKE
+    # CAPSULE/BOX (2 contacts where MuJoCo emits 1). Whatever is done must make
+    # the classifier's tie resolve identically on both devices WITHOUT changing
+    # which feature wins in the non-tied cases.
     #
     # The tolerance below is set FROM THAT MEASUREMENT so this is a RATCHET: it
     # passes today and fails the moment the divergence grows or spreads to
