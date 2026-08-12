@@ -834,8 +834,8 @@ def _cg_solve_env[
             DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
             SOLVER_ITER_GPU,
         ](
-            env, qpos, qvel, joints, mmeta, tendons, sites, body_invweight0,
-            dof_invweight0, m_inv, qacc_constrained,
+            env, qpos, qvel, joints, mmeta, tendons, sites, bodies,
+            subtree_com, cdof, xpos, xquat, m_inv, qacc_constrained,
         )
 
 

@@ -95,6 +95,7 @@ from mojo_rl.physics3d.gpu.constants import (
     TENDON_IDX_JOINT_0,
     TENDON_IDX_COEF_0,
     TENDON_IDX_INVWEIGHT0,
+    TENDON_IDX_LENGTH_REF,
 )
 from .tendon import spatial_tendon_length_jac
 
@@ -440,6 +441,17 @@ def compute_invweight0[
     # stiffness is set. Evaluated at the SAME qpos0 pose as everything above —
     # a spatial tendon's Jacobian is configuration-dependent, so this is a
     # reference value, exactly like body_invweight0.
+    #
+    # ⚠ AND `tendon_length0` (LENGTH_REF), which nothing assigned until
+    # 2026-08-12. `TendonData.length_ref` defaulted to 0.0 and no parser ever
+    # wrote it, so every `<equality><tendon>` was solved against a target of
+    # ZERO rather than the tendon's rest length. It went unnoticed because
+    # `m.tendon_length0` is 0.0 for every equality tendon in the tree —
+    # quadruped's four leg couplings and manipulator/stacker's `coupling` all
+    # constrain a signed sum of joint angles that vanishes at qpos0 — so the
+    # default was accidentally right on the only models that read it. The
+    # first tendon with a nonzero rest length would have been welded to zero.
+    # This is the same pose the invweights use, which is what qpos0 means.
     comptime if NTENDON > 0:
         comptime L_META = Layout.row_major(MODEL_META_SIZE)
         comptime L_TEN = Layout.row_major(NTENDON, MODEL_TENDON_SIZE)
@@ -463,15 +475,16 @@ def compute_invweight0[
         var tJ = InlineArray[Scalar[DTYPE], NV](fill=Scalar[DTYPE](0))
         for t in range(NTENDON):
             var kind = Int(mf.tendons.data[t * MODEL_TENDON_SIZE + TENDON_IDX_KIND])
+            var len0 = Scalar[DTYPE](0)
             if kind == TENDON_KIND_SPATIAL:
-                _ = spatial_tendon_length_jac[
+                len0 = spatial_tendon_length_jac[
                     DTYPE, NV, NBODY, NJOINT, NSITE, NTENDON, NV, 1
                 ](
                     0, t, ten_v, site_v, bodies_v, joints_v, meta_v,
                     stcom_v, cdof_v, xpos_v, xquat_v, tJ,
                 )
             else:
-                # Fixed tendon: J[dof_adr(j)] = coef_j.
+                # Fixed tendon: J[dof_adr(j)] = coef_j, length = sum coef*qpos0.
                 for i in range(NV):
                     tJ[i] = Scalar[DTYPE](0)
                 var nj = Int(
@@ -488,9 +501,20 @@ def compute_invweight0[
                     var dadr = Int(
                         mf.joints.data[jid * MODEL_JOINT_SIZE + JOINT_IDX_DOF_ADR]
                     )
-                    tJ[dadr] += mf.tendons.data[
+                    var qadr_t = Int(
+                        mf.joints.data[
+                            jid * MODEL_JOINT_SIZE + JOINT_IDX_QPOS_ADR
+                        ]
+                    )
+                    var coef_t = mf.tendons.data[
                         t * MODEL_TENDON_SIZE + TENDON_IDX_COEF_0 + k
                     ]
+                    tJ[dadr] += coef_t
+                    len0 += coef_t * d.qpos.data[qadr_t]
+
+            mf.tendons.data[
+                t * MODEL_TENDON_SIZE + TENDON_IDX_LENGTH_REF
+            ] = len0
 
             for q in range(NV):
                 sc.fnet.data[q] = tJ[q]

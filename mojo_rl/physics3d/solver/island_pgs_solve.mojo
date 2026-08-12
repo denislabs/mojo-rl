@@ -489,8 +489,8 @@ def _island_pgs_solve_env[
             DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
             PGS_ITERATIONS,
         ](
-            env, qpos, qvel, joints, mmeta, tendons, sites, body_invweight0,
-            dof_invweight0, m_inv, qacc_constrained,
+            env, qpos, qvel, joints, mmeta, tendons, sites, bodies,
+            subtree_com, cdof, xpos, xquat, m_inv, qacc_constrained,
         )
 
     # === PHASE 3: friction precompute (legacy: parallel, guarded

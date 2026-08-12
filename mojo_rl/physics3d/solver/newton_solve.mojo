@@ -27,10 +27,10 @@ from contact_solve.mojo (`_init_common_normal_ws`,
 Cone-dependent tails at the exact legacy positions with the legacy
 iteration count (SOLVER_ITER_GPU=50):
 - ELLIPTIC: after the Newton core, `_limits_env` (port of
-  `detect_and_solve_limits_gpu`) then `_equality_env` /
-  `_tendon_env`.
+  `detect_and_solve_limits_gpu`). Nothing else — joint limits, tendon
+  equalities and connect/weld are all rows of the system now.
 - PYRAMIDAL: joint limits are edge rows INSIDE the Newton optimization
-  (part of the verbatim core); equality/tendon after.
+  (part of the verbatim core); connect/weld after.
 Equality/tendon are call-site gated `comptime if NEQUALITY > 0` /
 `NTENDON > 0` (the legacy calls are unconditional with a comptime gate
 inside the builder — bit-identical for zero counts, same as the PGS port).
@@ -98,7 +98,6 @@ from ..constraints.scalar_rows import (
 from ..constraints.equality_tendon import (
     build_weld_equality_rows,
     _equality_env,
-    _tendon_env,
 )
 from ..fields import Data, Model, DynamicsScratch, ContactScratch
 from ..gpu.constants import (
@@ -940,16 +939,18 @@ def _newton_solve_env[
                 Je, De, bias_e, num_edges,
             )
 
-        # Fixed-tendon equality rows (MuJoCo mjEQ_TENDON). BILATERAL — always
-        # active, never clamped. These used to be a post-solve Gauss-Seidel
-        # pass; with contacts live that split cost a standing quadruped two
-        # thirds of its ground reaction force. See
+        # Tendon equality rows (MuJoCo mjEQ_TENDON), FIXED and SPATIAL alike.
+        # BILATERAL — always active, never clamped. These used to be a
+        # post-solve Gauss-Seidel pass; with contacts live that split cost a
+        # standing quadruped two thirds of its ground reaction force. See
         # constraints/tendon_limit.build_tendon_equality_rows.
         comptime if NTENDON > 0:
             build_tendon_equality_rows[
-                DTYPE, NQ, NV, NJOINT, NTENDON, V_SIZE, ME, BATCH
+                DTYPE, NQ, NV, NBODY, NJOINT, NSITE, NTENDON, V_SIZE, ME,
+                BATCH,
             ](
-                env, qpos, qvel, tendons, joints, mmeta, m_inv,
+                env, qpos, qvel, tendons, sites, bodies, joints, mmeta,
+                subtree_com, cdof, xpos, xquat, m_inv,
                 Je, De, bias_e, kind_e, num_edges,
             )
 
@@ -1345,17 +1346,11 @@ def _newton_solve_env[
                 equality, body_invweight0,
                 cdof, m_inv, qacc_constrained,
             )
-        # SKIP_FIXED: the fixed-tendon equalities are rows of the system
-        # solved above. Only SPATIAL equality tendons (none in the tree, but
-        # the builder skips them by design) are left for this pass.
-        comptime if NTENDON > 0:
-            _tendon_env[
-                DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
-                SOLVER_ITER_GPU, SKIP_FIXED=True,
-            ](
-                env, qpos, qvel, joints, mmeta, tendons, sites,
-                body_invweight0, dof_invweight0, m_inv, qacc_constrained,
-            )
+        # NO `_tendon_env` HERE. `build_tendon_equality_rows` above builds a
+        # row for EVERY `<equality><tendon>`, fixed and spatial, so the
+        # post-pass had nothing left to do — it was kept alive by a
+        # `SKIP_FIXED` flag that let spatial tendons through into code with no
+        # spatial branch. Calling it now would double-apply the constraint.
         return  # PYRAMIDAL path complete
 
     # === ELLIPTIC path (existing code) ===
@@ -1451,9 +1446,10 @@ def _newton_solve_env[
     var neq_rows = 0
     comptime if NTENDON > 0:
         build_tendon_equality_rows[
-            DTYPE, NQ, NV, NJOINT, NTENDON, V_SIZE, MAXEQ, BATCH
+            DTYPE, NQ, NV, NBODY, NJOINT, NSITE, NTENDON, V_SIZE, MAXEQ, BATCH
         ](
-            env, qpos, qvel, tendons, joints, mmeta, m_inv,
+            env, qpos, qvel, tendons, sites, bodies, joints, mmeta,
+            subtree_com, cdof, xpos, xquat, m_inv,
             eq_J, eq_D, eq_bias, eq_kind, neq_rows,
         )
 
@@ -2286,29 +2282,17 @@ def _newton_solve_env[
         contacts[env, c_off + CONTACT_IDX_FORCE_T1] = ft1_arr[c]
         contacts[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_arr[c]
 
-    # Joint limits, dry-friction dofs AND fixed-tendon equalities are rows of
-    # the Newton system above (`build_scalar_rows` /
-    # `build_tendon_equality_rows`), not post-passes — solving them after the
-    # contacts is what made the contact force wrong. `_equality_env` (connect /
-    # weld) and SPATIAL tendon equalities still run as post-passes; neither has
-    # a model in the tree that puts them on the same dofs as a live contact,
-    # and both need a dense body Jacobian rather than a joint-coefficient one.
-    comptime SOLVER_ITER_GPU: Int = 50
-
-    # (defect 29a) weld/connect are ROWS of the system above now.
-
-    comptime if NTENDON > 0:
-        # SKIP_FIXED: the fixed-tendon equalities are rows of the system above,
-        # so re-applying them here would double the constraint force. Spatial
-        # equality tendons are never row-built and stay this pass's job, which
-        # is why the guard tests the KIND rather than skipping wholesale.
-        _tendon_env[
-            DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
-            SOLVER_ITER_GPU, SKIP_FIXED=True,
-        ](
-            env, qpos, qvel, joints, mmeta, tendons, sites, body_invweight0,
-            dof_invweight0, m_inv, qacc_constrained,
-        )
+    # NOTHING RUNS AFTER THE SOLVE ON THIS PATH ANY MORE. Joint limits,
+    # dry-friction dofs, tendon equalities (`build_scalar_rows` /
+    # `build_tendon_equality_rows`) and connect/weld (defect 29a,
+    # `build_weld_equality_rows`) are all rows of the Newton system above —
+    # solving any of them after the contacts is what made the contact force
+    # wrong, twice, on two different constraint types.
+    #
+    # The last holdout was the SPATIAL tendon equality, kept here by a
+    # `SKIP_FIXED` guard that deliberately let it past. The pass it was
+    # handed to could not express it (no spatial branch, zero Jacobian), so
+    # the constraint was silently absent rather than merely mis-sequenced.
 
 
 def _newton_solve_fields_kernel[
@@ -3314,8 +3298,8 @@ def _newton_blocked_fields_kernel[
                 bias_e_sh[num_edges] = t_bias[r]
                 num_edges += 1
 
-            # Fixed-tendon equality rows — same staging, and the same reason
-            # they are rows: see the CPU pyramidal path.
+            # Tendon equality rows (fixed and spatial) — same staging, and the
+            # same reason they are rows: see the CPU pyramidal path.
             var q_je = InlineArray[Scalar[DTYPE], MAX_TEQ * V_SIZE](
                 fill=Scalar[DTYPE](0)
             )
@@ -3328,9 +3312,11 @@ def _newton_blocked_fields_kernel[
             var q_kind = InlineArray[Int, MAX_TEQ](fill=SROW_EQ_BILATERAL)
             var q_n = 0
             build_tendon_equality_rows[
-                DTYPE, NQ, NV, NJOINT, NTENDON, V_SIZE, MAX_TEQ, BATCH
+                DTYPE, NQ, NV, NBODY, NJOINT, NSITE, NTENDON, V_SIZE, MAX_TEQ,
+                BATCH,
             ](
-                env, qpos, qvel, tendons, joints, mmeta, m_inv,
+                env, qpos, qvel, tendons, sites, bodies, joints, mmeta,
+                subtree_com, cdof, xpos, xquat, m_inv,
                 q_je, q_de, q_bias, q_kind, q_n,
             )
             for r in range(q_n):
@@ -3736,11 +3722,13 @@ def _newton_blocked_fields_kernel[
         contacts[env, c_off + CONTACT_IDX_FORCE_T1] = ft1_c
         contacts[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_c
 
-    # Joint limits and fixed-tendon equalities are handled as edges above;
-    # weld/connect equalities (and any SPATIAL equality tendon) remain a
-    # separate post-solve step. Mirrors the PYRAMIDAL per-env path's gating,
-    # including SKIP_FIXED — without it the tendon rows would be applied
-    # twice, once inside the solve and once after.
+    # Joint limits and tendon equalities (fixed AND spatial) are edges above;
+    # weld/connect remain a separate post-solve step on this kernel — the
+    # defect-29a conversion has only been done on the ELLIPTIC per-env path so
+    # far. The tendon post-pass is GONE: `build_tendon_equality_rows` now
+    # covers both kinds, so calling it here would double the constraint force
+    # rather than complete the coverage, which is what its `SKIP_FIXED` guard
+    # used to arrange.
     comptime SOLVER_ITER_GPU: Int = 50
     comptime if NEQUALITY > 0:
         _equality_env[
@@ -3750,14 +3738,6 @@ def _newton_blocked_fields_kernel[
             env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
             equality, body_invweight0, cdof,
             m_inv, qacc_constrained,
-        )
-    comptime if NTENDON > 0:
-        _tendon_env[
-            DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
-            SOLVER_ITER_GPU, SKIP_FIXED=True,
-        ](
-            env, qpos, qvel, joints, mmeta, tendons, sites, body_invweight0,
-            dof_invweight0, m_inv, qacc_constrained,
         )
 
 

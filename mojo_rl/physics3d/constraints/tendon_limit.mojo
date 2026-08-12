@@ -291,7 +291,9 @@ def build_tendon_equality_rows[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
+    NBODY: Int,
     NJOINT: Int,
+    NSITE: Int,
     NTENDON: Int,
     V_SIZE: Int,
     ME: Int,
@@ -303,10 +305,24 @@ def build_tendon_equality_rows[
     tendons: LayoutTensor[
         DTYPE, Layout.row_major(NTENDON, MODEL_TENDON_SIZE), MutAnyOrigin
     ],
+    sites: LayoutTensor[
+        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
     joints: LayoutTensor[
         DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
     ],
     mmeta: LayoutTensor[DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin],
+    subtree_com: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
     m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
     mut Je: InlineArray[Scalar[DTYPE], ME * V_SIZE],
     mut De: InlineArray[Scalar[DTYPE], ME],
@@ -315,7 +331,7 @@ def build_tendon_equality_rows[
     mut num_edges: Int,
 ):
     """Append one BILATERAL row per `<equality><tendon>` to the pyramidal edge
-    list — `mjEQ_TENDON` on a FIXED tendon.
+    list — `mjEQ_TENDON`, on a FIXED or a SPATIAL tendon.
 
     WHY THIS IS A ROW AND NOT A POST-PASS. `_tendon_env` solved these after
     the Newton solve returned, as a separate Gauss-Seidel sweep. With only
@@ -331,12 +347,27 @@ def build_tendon_equality_rows[
     `SROW_EQ_BILATERAL`, whose state is unconditionally QUADRATIC, and
     `R_e`/`floss_e` stay 0 because only the box branch reads them.
 
-    FIXED tendons only. A spatial tendon equality would need
-    `spatial_tendon_length_jac` here (as the limit builder above uses it) and
-    the residual would be the same; no model in the tree asks for one, and
-    letting one through with a fixed tendon's coefficient reading would
-    fabricate a constraint out of unrelated joints — so it is SKIPPED, and the
-    `_tendon_env` post-pass still covers it on the paths that run it.
+    BOTH KINDS, since 2026-08-12. This used to skip SPATIAL tendons, on the
+    written grounds that "the `_tendon_env` post-pass still covers it". IT DID
+    NOT. `_tendon_env` has no spatial branch at all — it computes a FIXED
+    tendon's length from joint coefficients, and a spatial tendon has
+    `num_joints == 0`, so it built a row with a ZERO Jacobian, converged it,
+    and applied `qacc += M^-1 J^T dlambda == 0`. A spatial `<equality><tendon>`
+    was therefore not constrained ANYWHERE in the engine: on the specimen in
+    `tests/physics3d/test_spatial_tendon_equality_vs_mujoco.mojo` (a bob whose
+    only support is the constraint) we reproduced MuJoCo's FREE FALL to 13
+    digits, -3.1470479999999923 against a true answer of -0.000367181842.
+
+    Four comments asserted the handoff and they cited each other in a ring:
+    this one skipped spatial BECAUSE the post-pass covered it, and the
+    post-pass's guard tested `kind != SPATIAL` specifically TO LET IT THROUGH,
+    into code that could not express it. Nobody ever ran the pair — no model
+    in the tree pairs a spatial tendon with an equality, so the whole
+    arrangement was inert. See `docs/DM_CONTROL_PORT_PHASE2.md` section 25.
+
+    The residual is the same for both kinds (`ten_length - tendon_length0`);
+    only the length and its moment arm differ, and `spatial_tendon_length_jac`
+    already computes those for the limit builder above.
     """
     comptime if NTENDON == 0:
         return
@@ -347,42 +378,67 @@ def build_tendon_equality_rows[
     if nten > NTENDON:
         nten = NTENDON
 
+    var eqJ = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
+
     for t in range(nten):
         if Int(rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_IS_EQUALITY])) == 0:
-            continue
-        if (
-            Int(rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_KIND]))
-            == TENDON_KIND_SPATIAL
-        ):
             continue
         if num_edges >= ME:
             break
 
-        # --- fixed-tendon length, rate and Jacobian ------------------------
-        var njnt = Int(
-            rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_NUM_JOINTS])
-        )
+        # --- length, rate and moment arm, per kind -------------------------
         for i in range(NV):
             Je[num_edges * NV + i] = Scalar[DTYPE](0)
         var ten_len = Scalar[DTYPE](0)
+
+        if (
+            Int(rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_KIND]))
+            == TENDON_KIND_SPATIAL
+        ):
+            # The polyline length and its dense moment arm — the same call the
+            # limit builder above makes, and the piece whose absence made this
+            # constraint a no-op.
+            ten_len = spatial_tendon_length_jac[
+                DTYPE, NV, NBODY, NJOINT, NSITE, NTENDON, V_SIZE, BATCH
+            ](
+                env, t, tendons, sites, bodies, joints, mmeta, subtree_com,
+                cdof, xpos, xquat, eqJ,
+            )
+            for i in range(NV):
+                Je[num_edges * NV + i] = eqJ[i]
+        else:
+            var njnt = Int(
+                rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_NUM_JOINTS])
+            )
+            for k in range(TENDON_MAX_JOINTS):
+                if k >= njnt:
+                    break
+                var j = Int(
+                    rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_JOINT_0 + k])
+                )
+                if j < 0 or j >= NJOINT:
+                    continue
+                var coef = rebind[Scalar[DTYPE]](
+                    tendons[t, TENDON_IDX_COEF_0 + k]
+                )
+                var qadr = Int(
+                    rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_QPOS_ADR])
+                )
+                var dadr = Int(
+                    rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR])
+                )
+                ten_len += coef * rebind[Scalar[DTYPE]](qpos[env, qadr])
+                Je[num_edges * NV + dadr] = (
+                    Je[num_edges * NV + dadr] + coef
+                )
+
+        # `ten_vel` comes off the ASSEMBLED row rather than being accumulated
+        # alongside it, so the two kinds share one expression. Identical for a
+        # fixed tendon, which had `J[dof] = coef` by construction.
         var ten_vel = Scalar[DTYPE](0)
-        for k in range(TENDON_MAX_JOINTS):
-            if k >= njnt:
-                break
-            var j = Int(
-                rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_JOINT_0 + k])
-            )
-            if j < 0 or j >= NJOINT:
-                continue
-            var coef = rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_COEF_0 + k])
-            var qadr = Int(
-                rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_QPOS_ADR])
-            )
-            var dadr = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
-            ten_len += coef * rebind[Scalar[DTYPE]](qpos[env, qadr])
-            ten_vel += coef * rebind[Scalar[DTYPE]](qvel[env, dadr])
-            Je[num_edges * NV + dadr] = (
-                Je[num_edges * NV + dadr] + coef
+        for i in range(NV):
+            ten_vel += Je[num_edges * NV + i] * rebind[Scalar[DTYPE]](
+                qvel[env, i]
             )
 
         # --- K = J M^-1 J^T at the CURRENT pose ----------------------------

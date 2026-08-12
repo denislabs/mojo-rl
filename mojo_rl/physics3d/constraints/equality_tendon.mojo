@@ -112,6 +112,7 @@ from ..gpu.constants import (
 
 
 from .constraint_data import solref_spring_damper
+from ..dynamics.tendon import spatial_tendon_length_jac
 
 
 # =============================================================================
@@ -1013,7 +1014,6 @@ def _tendon_env[
     NSITE: Int,
     BATCH: Int,
     NUM_ITERATIONS: Int,
-    SKIP_FIXED: Bool = False,
 ](
     env: Int,
     qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
@@ -1030,10 +1030,17 @@ def _tendon_env[
     sites: LayoutTensor[
         DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
     ],
-    body_invweight0: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
     ],
-    dof_invweight0: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
+    subtree_com: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
     m_inv: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin
     ],
@@ -1041,18 +1048,27 @@ def _tendon_env[
         DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
     ],
 ):
-    """Build and solve fixed tendon equality constraints for one env
-    (verbatim from build_and_solve_tendon_gpu).
+    """Build and solve `<equality><tendon>` rows for one env, as a POST-PASS.
 
-    A fixed tendon is: ten_length = Σ(coef_i * qpos[joint_qposadr_i]).
-    Equality constraint: ten_length - length_ref = 0.
+    The constraint is `ten_length - length_ref == 0`, bilateral. A FIXED
+    tendon's length is `Σ coef_i * qpos[qposadr_i]`; a SPATIAL one's is the
+    site polyline, from `spatial_tendon_length_jac`.
 
-    ⚠ `sites`, `body_invweight0` and `dof_invweight0` are NO LONGER READ. They
-    fed the `_legacy_invw_read` diagApprox, which was the mjEQ_JOINT rule
-    applied to a tendon row; the row now takes `TENDON_IDX_INVWEIGHT0` (see
-    below). Kept in the signature only to avoid churning four solver call
-    sites ahead of the rewrite that moves these rows INTO the Newton/CG
-    systems — do not read them back in on the assumption they still matter.
+    ⚠ THE SPATIAL BRANCH DID NOT EXIST UNTIL 2026-08-12, and four comments
+    across the solvers said this pass covered spatial tendons. It could not:
+    it read `num_joints`, which is 0 for a spatial tendon, so it built a row
+    with a ZERO Jacobian and applied `qacc += M^-1 J^T dlambda == 0`. A
+    spatial `<equality><tendon>` was silently unconstrained. See
+    `constraints/tendon_limit.build_tendon_equality_rows` for the measurement.
+
+    ⚠ THIS IS THE WRONG PLACE FOR THESE ROWS and the Newton paths no longer
+    call it — a post-pass computes the contact force as if the coupling were
+    absent, which cost a standing quadruped two thirds of its ground reaction
+    force (defect 29a's finding, one constraint type earlier). It remains only
+    for the CG, island-PGS and PGS contact solvers, which have no row list to
+    append to. `body_invweight0`/`dof_invweight0` are gone from the signature
+    with the Newton call sites that carried them; the row's diagApprox is
+    `TENDON_IDX_INVWEIGHT0`.
     """
 
     comptime if NTENDON == 0:
@@ -1109,22 +1125,12 @@ def _tendon_env[
         ):
             continue
 
-        # SKIP_FIXED: the caller already put this row INSIDE its solver
-        # (`build_tendon_equality_rows`), so re-applying it here would double
-        # the constraint force. Set by the PYRAMIDAL Newton paths; the
-        # elliptic, CG and PGS paths still solve these here. Spatial equality
-        # tendons are never row-built, so they stay this pass's job either way
-        # — which is why the guard tests the KIND rather than skipping wholesale.
-        comptime if SKIP_FIXED:
-            if (
-                Int(rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_KIND]))
-                != TENDON_KIND_SPATIAL
-            ):
-                continue
-
-        var num_joints = Int(
-            rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_NUM_JOINTS])
-        )
+        # ⚠ NO `SKIP_FIXED` GUARD ANY MORE. Every Newton path used to pass
+        # `SKIP_FIXED=True` and this guard then let SPATIAL tendons through
+        # into the fixed-only code below. The Newton paths now build rows for
+        # both kinds and do not call this function at all, so a caller
+        # reaching here owns every equality tendon — adding a kind test back
+        # would drop one on the floor exactly as before.
         var length_ref = rebind[Scalar[DTYPE]](
             tendons[t_i, TENDON_IDX_LENGTH_REF]
         )
@@ -1153,33 +1159,69 @@ def _tendon_env[
         # holds less local state than before this change, and the cap it obeys
         # is the record's rather than one of its own.
         var ten_length: Scalar[DTYPE] = 0
-        var ten_vel: Scalar[DTYPE] = 0
         var r = num_ten_rows
 
-        for ji in range(TENDON_MAX_WRAPS):
-            if ji >= num_joints:
-                break
-            var jnt_idx = Int(
-                rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_JOINT_0 + ji])
+        for i in range(NV):
+            ten_J[r * NV + i] = Scalar[DTYPE](0)
+
+        if (
+            Int(rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_KIND]))
+            == TENDON_KIND_SPATIAL
+        ):
+            # The site polyline and its dense moment arm. `sp_J` is the one
+            # per-thread buffer this branch costs; see the Metal local-memory
+            # warning above before adding a second.
+            var sp_J = InlineArray[Scalar[DTYPE], _max_one[NV]()](
+                fill=Scalar[DTYPE](0)
             )
-            if jnt_idx < 0 or jnt_idx >= NJOINT:
-                continue
-            # Read joint's qpos_adr and dof_adr from the joint records
-            var qpos_adr = Int(
-                rebind[Scalar[DTYPE]](joints[jnt_idx, JOINT_IDX_QPOS_ADR])
+            ten_length = spatial_tendon_length_jac[
+                DTYPE, NV, NBODY, NJOINT, NSITE, NTENDON, _max_one[NV](), BATCH
+            ](
+                env, t_i, tendons, sites, bodies, joints, mmeta, subtree_com,
+                cdof, xpos, xquat, sp_J,
             )
-            var dof_adr = Int(
-                rebind[Scalar[DTYPE]](joints[jnt_idx, JOINT_IDX_DOF_ADR])
+            for i in range(NV):
+                ten_J[r * NV + i] = sp_J[i]
+        else:
+            var num_joints = Int(
+                rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_NUM_JOINTS])
             )
-            var c = rebind[Scalar[DTYPE]](
-                tendons[t_i, TENDON_IDX_COEF_0 + ji]
+            for ji in range(TENDON_MAX_WRAPS):
+                if ji >= num_joints:
+                    break
+                var jnt_idx = Int(
+                    rebind[Scalar[DTYPE]](
+                        tendons[t_i, TENDON_IDX_JOINT_0 + ji]
+                    )
+                )
+                if jnt_idx < 0 or jnt_idx >= NJOINT:
+                    continue
+                # Read joint's qpos_adr and dof_adr from the joint records
+                var qpos_adr = Int(
+                    rebind[Scalar[DTYPE]](joints[jnt_idx, JOINT_IDX_QPOS_ADR])
+                )
+                var dof_adr = Int(
+                    rebind[Scalar[DTYPE]](joints[jnt_idx, JOINT_IDX_DOF_ADR])
+                )
+                var c = rebind[Scalar[DTYPE]](
+                    tendons[t_i, TENDON_IDX_COEF_0 + ji]
+                )
+                ten_length += c * rebind[Scalar[DTYPE]](
+                    qpos[env, qpos_adr]
+                )
+                # ⚠ ACCUMULATE. This was a bare `=`, so a fixed tendon naming
+                # the same joint twice kept only the last coefficient instead
+                # of their sum. No model in the tree does that, and
+                # `build_tendon_equality_rows` already accumulated.
+                ten_J[r * NV + dof_adr] = ten_J[r * NV + dof_adr] + c
+
+        # Off the ASSEMBLED row, so both kinds share one expression — and
+        # identical to the old per-wrap accumulation for a fixed tendon.
+        var ten_vel: Scalar[DTYPE] = 0
+        for i in range(NV):
+            ten_vel += ten_J[r * NV + i] * rebind[Scalar[DTYPE]](
+                qvel[env, i]
             )
-            ten_length += c * rebind[Scalar[DTYPE]](
-                qpos[env, qpos_adr]
-            )
-            ten_vel += c * rebind[Scalar[DTYPE]](qvel[env, dof_adr])
-            # Trivial Jacobian: J[dof_adr] = coef
-            ten_J[r * NV + dof_adr] = c
 
         # Tendon position error (bilateral)
         var pos_err = ten_length - length_ref
