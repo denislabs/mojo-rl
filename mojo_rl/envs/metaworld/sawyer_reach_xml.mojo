@@ -72,8 +72,9 @@ comptime sawyer_reach_task_xml = """
         <!-- relpose is MetaWorld's `reset_mocap_welds`, baked in.
              `SawyerMocapBase.reset_mocap_welds` (metaworld/sawyer_xyz_env.py)
              OVERWRITES eq_data at reset with
-             `[0,0,0, 0,0,0, -1,0,0,0, 5]` — relpose position zero and an
-             identity quaternion — so the hand tracks the mocap body itself.
+             `[0,0,0, 0,0,0, -1,0,0,0, 5]` — relpose position zero, an
+             identity quaternion AND TORQUESCALE 5 — so the hand tracks the
+             mocap body itself, with the orientation rows scaled by 5.
              MuJoCo's COMPILER derives something else entirely from qpos0 here:
              pos (1.1355, 0.1603, 0.317), quat (0.64279, -0.76604, 0, 0), which
              makes the hand track `mocap (x) relpose`, over a metre away.
@@ -85,7 +86,7 @@ comptime sawyer_reach_task_xml = """
              obj fell off the gripper — see
              tests/physics3d/test_sawyer_settle_vs_mujoco, whose reference side
              performs exactly this zeroing. -->
-        <weld body1="mocap" body2="hand" relpose="0 0 0 1 0 0 0" solref="0.02 1"/>
+        <weld body1="mocap" body2="hand" relpose="0 0 0 1 0 0 0" torquescale="5" solref="0.02 1"/>
     </equality>
 </mujoco>
 """

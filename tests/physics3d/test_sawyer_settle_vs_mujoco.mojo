@@ -179,7 +179,14 @@ def _reset_reference(mujoco: PythonObject, model: PythonObject,
             for k in range(11):
                 model.eq_data[i][k] = 0.0
             model.eq_data[i][6] = 1.0  # relpose quat w
-            model.eq_data[i][10] = 1.0  # torquescale
+            # ⚠ 5.0, NOT 1.0. MetaWorld's `reset_mocap_welds` writes
+            # `[0,0,0, 0,0,0, -1,0,0,0, 5]`, and this line said 1.0 for as
+            # long as our engine ignored `eq_data[10]` entirely — the
+            # reference protocol had been written to match OUR limitation, so
+            # sawyer's weld orientation was 5x too soft against the
+            # environment we port and no gate could see it. Fixed with the
+            # torquescale implementation, 2026-08-12.
+            model.eq_data[i][10] = 5.0  # torquescale
     # Arm pose: MetaWorld's post-`_reset_hand` warmup values, copied from the
     # port's reset so both sides start from the same configuration.
     data.qpos[0] = 1.889288

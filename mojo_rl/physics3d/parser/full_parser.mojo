@@ -2444,6 +2444,12 @@ def _fill_equality(
                 ed.relpose_z = _parse_float(parts[6])
                 ed.relpose_w = _parse_float(parts[3])
 
+        # torquescale (weld) — MuJoCo's eq_data[10], scaling BOTH the
+        # orientation residual and the rotational Jacobian. Default 1.
+        var ts_s = _trim(_extract_attr(tag, "torquescale"))
+        if ts_s.byte_length() > 0:
+            ed.torquescale = _parse_float(ts_s)
+
         # solref
         var sr_s = _extract_attr(tag, "solref")
         if sr_s.byte_length() > 0:

@@ -329,7 +329,7 @@ comptime GEOM_IDX_PRIORITY: Int = 30
 # Model Buffer Layout - Equality Constraints
 # =============================================================================
 
-comptime MODEL_EQ_SIZE: Int = 20  # Per equality constraint
+comptime MODEL_EQ_SIZE: Int = 21  # Per equality constraint
 
 comptime EQ_IDX_TYPE: Int = 0  # EQ_CONNECT=0 or EQ_WELD=1
 comptime EQ_IDX_BODY_A: Int = 1
@@ -351,6 +351,17 @@ comptime EQ_IDX_SOLIMP_1: Int = 16
 comptime EQ_IDX_SOLIMP_2: Int = 17
 comptime EQ_IDX_SOLIMP_3: Int = 18  # solimp midpoint
 comptime EQ_IDX_SOLIMP_4: Int = 19  # solimp power
+
+# Weld only — MuJoCo's `eq_data[10]`, scaling the three ORIENTATION rows.
+#
+# ⚠ NOT COSMETIC AND NOT ALWAYS 1. MuJoCo applies it twice: to the orientation
+# residual (`mju_scl3(cpos+3, quat2+1, torquescale)`) and to the rotational
+# Jacobian (`mju_scl(jac+3*NV, ..., torquescale, 3*NV)`), so it scales the
+# whole rotational half of the constraint. MJCF defaults it to 1, which is why
+# ignoring it went unnoticed — but MetaWorld's `reset_mocap_welds` sets **5.0**,
+# so sawyer's weld orientation was 5x too soft against the environment we port.
+# Unimplemented until 2026-08-12.
+comptime EQ_IDX_TORQUESCALE: Int = 20
 
 
 # =============================================================================

@@ -198,6 +198,7 @@ from mojo_rl.physics3d.gpu.constants import (
     EQ_IDX_SOLIMP_2,
     EQ_IDX_SOLIMP_3,
     EQ_IDX_SOLIMP_4,
+    EQ_IDX_TORQUESCALE,
     SITE_IDX_BODY,
     SITE_IDX_POS_X,
     MODEL_TENDON_SIZE,
@@ -1197,6 +1198,11 @@ def build_model_fields_from_flat[
         mf.equality.data[o + EQ_IDX_SOLIMP_2] = Scalar[DTYPE](ed.solimp_2)
         mf.equality.data[o + EQ_IDX_SOLIMP_3] = Scalar[DTYPE](0.5)
         mf.equality.data[o + EQ_IDX_SOLIMP_4] = Scalar[DTYPE](2.0)
+        # Weld only (MuJoCo's eq_data[10]); connect has no orientation rows,
+        # so 1 keeps the multiply a no-op rather than zeroing anything.
+        mf.equality.data[o + EQ_IDX_TORQUESCALE] = Scalar[DTYPE](
+            ed.torquescale if ed.eq_type == _EQ_WELD else 1.0
+        )
         num_eq += 1
     mf.meta.data[MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](num_eq)
 

@@ -75,11 +75,18 @@ from mojo_rl.physics3d.solver.newton_solve import (
     solve_newton,
     solve_newton_blocked,
 )
+from mojo_rl.physics3d.constraints.equality_tendon import (
+    build_weld_equality_rows,
+)
+from mojo_rl.physics3d.types import _max_one
+from mojo_rl.physics3d.dynamics.ldl import compute_m_inv as _compute_m_inv
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
     MODEL_EQ_SIZE,
+    MODEL_BODY_SIZE,
+    MODEL_META_SIZE,
     EQ_IDX_ANCHOR_AX,
     EQ_IDX_ANCHOR_AY,
     EQ_IDX_ANCHOR_AZ,
@@ -175,6 +182,75 @@ comptime MX = ModelDefFromXML[
     max_contacts=16, max_condim = pmx.MAX_CONDIM,
     neq = pmx.NEQ, max_equality = pmx.NEQ, nexclude = pmx.NEXCLUDE,
     timestep = pmx.TIMESTEP,
+]
+
+
+# ── torque specimen: an OFFSET MASS on a welded body, NO CONTACTS ────────────
+#
+# Gravity acts on a centre of mass 0.25 m to the side of the weld, so it applies
+# a pure MOMENT and the orientation rows carry the whole load. `ncon = 0` in
+# both engines — deliberately.
+#
+# ⚠ THE FIRST VERSION OF THIS FIXTURE PUT THE TORQUE ON THROUGH A CONTACT (an
+# off-centre object resting on the arm) AND MEASURED THE WRONG THING. Stepping
+# both engines in lockstep showed |d| = 0.0 for the first 20 steps — while the
+# object was still falling — and divergence only once contacts formed, with
+# MuJoCo reporting ncon = 2 where we report 4. That is the box-box multicontact
+# gap (section 20, deliberately unported), not the weld. A weld gate must not
+# route its load through a contact manifold.
+comptime _RAW_TQ1 = """
+<mujoco model="weld_torque">
+  <option timestep="0.002" gravity="0 0 -9.81" solver="Newton" cone="pyramidal"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.5">
+      <freejoint/>
+      <geom name="g_arm" type="box" size="0.05 0.05 0.05" pos="0.25 0 0" mass="2"/>
+    </body>
+  </worldbody>
+  <equality>
+    <weld name="hold" body1="arm" torquescale="1" relpose="0 0 -0.5 1 0 0 0" solref="0.1 1"/>
+  </equality>
+</mujoco>
+"""
+
+comptime _RAW_TQ5 = """
+<mujoco model="weld_torque">
+  <option timestep="0.002" gravity="0 0 -9.81" solver="Newton" cone="pyramidal"/>
+  <worldbody>
+    <body name="arm" pos="0 0 0.5">
+      <freejoint/>
+      <geom name="g_arm" type="box" size="0.05 0.05 0.05" pos="0.25 0 0" mass="2"/>
+    </body>
+  </worldbody>
+  <equality>
+    <weld name="hold" body1="arm" torquescale="5" relpose="0 0 -0.5 1 0 0 0" solref="0.1 1"/>
+  </equality>
+</mujoco>
+"""
+
+comptime XML_TQ1 = merge_mjcf(_RAW_TQ1)
+comptime XML_TQ5 = merge_mjcf(_RAW_TQ5)
+comptime pq1 = parse_xml(XML_TQ1)
+comptime pq5 = parse_xml(XML_TQ5)
+comptime MTQ1 = ModelDefFromXML[
+    xml=XML_TQ1,
+    nbody = pq1.NBODY, njoint = pq1.NJOINT, nq = pq1.NQ, nv = pq1.NV,
+    ngeom = pq1.NGEOM, nact = pq1.NACT, ntex = pq1.NTEX, nmat = pq1.NMAT,
+    nlight = pq1.NLIGHT, ncam = pq1.NCAM, nsite = pq1.NSITE,
+    max_tendon = pq1.NTENDON, cone_type = ConeType.PYRAMIDAL,
+    max_contacts=4, max_condim = pq1.MAX_CONDIM,
+    neq = pq1.NEQ, max_equality = pq1.NEQ, nexclude = pq1.NEXCLUDE,
+    timestep = pq1.TIMESTEP,
+]
+comptime MTQ5 = ModelDefFromXML[
+    xml=XML_TQ5,
+    nbody = pq5.NBODY, njoint = pq5.NJOINT, nq = pq5.NQ, nv = pq5.NV,
+    ngeom = pq5.NGEOM, nact = pq5.NACT, ntex = pq5.NTEX, nmat = pq5.NMAT,
+    nlight = pq5.NLIGHT, ncam = pq5.NCAM, nsite = pq5.NSITE,
+    max_tendon = pq5.NTENDON, cone_type = ConeType.PYRAMIDAL,
+    max_contacts=4, max_condim = pq5.MAX_CONDIM,
+    neq = pq5.NEQ, max_equality = pq5.NEQ, nexclude = pq5.NEXCLUDE,
+    timestep = pq5.TIMESTEP,
 ]
 
 
@@ -540,6 +616,314 @@ def test_explicit_relpose_is_still_honoured() raises:
         "an EXPLICIT relpose no longer reproduces MuJoCo — check that the"
         " all-zero-quaternion 'unset' test is not swallowing written values",
     )
+
+
+def _mujoco_arm_qpos(xml: String) raises -> List[Float64]:
+    """Roll MuJoCo on `xml` and return the arm free joint's 7 qpos."""
+    var mujoco = Python.import_module("mujoco")
+    var m = mujoco.MjModel.from_xml_string(xml)
+    var dat = mujoco.MjData(m)
+    for _ in range(NSTEPS):
+        mujoco.mj_step(m, dat)
+    var out = List[Float64]()
+    for i in range(7):
+        out.append(Float64(py=dat.qpos[i]))
+    return out^
+
+
+
+def test_weld_orientation_rows_match_mujoco() raises:
+    """Weld rows vs MuJoCo's `efc_*` at a TILTED pose, torquescale = 1.
+
+    ROWS, not a rollout. This fixture is a heavy offset mass on a soft weld —
+    an unstable swinging system — and stepping it 600 steps amplifies a
+    ~1e-10 solver-tolerance difference into 0.39 by the end while agreeing to
+    1.0e-19 at step ONE. A trajectory comparison there measures Lyapunov
+    growth, not the constraint. `efc_J` / `efc_aref` / `efc_D` are exact and
+    pose-local, so they say what the rows are.
+    """
+    print("--- weld rows vs efc, torquescale = 1 ---")
+    var mujoco = Python.import_module("mujoco")
+    var np = Python.import_module("numpy")
+    var m = mujoco.MjModel.from_xml_string(materialize[XML_TQ1]())
+    var dat = mujoco.MjData(m)
+    var th = 0.4
+    dat.qpos[0] = 0.07
+    dat.qpos[1] = -0.02
+    dat.qpos[2] = 0.33
+    dat.qpos[3] = np.cos(th / 2)
+    dat.qpos[4] = 0.0
+    dat.qpos[5] = np.sin(th / 2)
+    dat.qpos[6] = 0.0
+    mujoco.mj_forward(m, dat)
+    var nefc = Int(py=dat.nefc)
+    assert_true(
+        nefc == 6,
+        "expected the weld's 6 rows and nothing else; got " + String(nefc),
+    )
+
+    var ctx = DeviceContext()
+    var mf = Model[
+        DTYPE, MTQ1.NV, MTQ1.NBODY, MTQ1.NJOINT, MTQ1.NGEOM, MTQ1.MAX_EQUALITY,
+        MTQ1.MAX_TENDON, MTQ1.NSITE, MTQ1.NEXCLUDE, 0,
+    ]()
+    MTQ1.init_fields[DTYPE, 0](ctx, mf)
+    var d = Data[
+        DTYPE, MTQ1.NQ, MTQ1.NV, MTQ1.NBODY, MTQ1.MAX_CONTACTS, MTQ1.NSITE, 1
+    ]()
+    MTQ1.reset_data[DTYPE](d)
+    d.qpos.data[0] = 0.07
+    d.qpos.data[1] = -0.02
+    d.qpos.data[2] = 0.33
+    d.qpos.data[3] = Float64(py=np.cos(th / 2))
+    d.qpos.data[4] = 0.0
+    d.qpos.data[5] = Float64(py=np.sin(th / 2))
+    d.qpos.data[6] = 0.0
+    for i in range(MTQ1.NV):
+        d.qvel.data[i] = 0
+
+    var sc = DynamicsScratch[DTYPE, MTQ1.NV, MTQ1.NBODY, 1]()
+    forward_kinematics["cpu"](d, mf, None)
+    compute_body_velocities["cpu"](d, mf, None)
+    compute_subtree_com["cpu"](d, mf, None)
+    compute_cdof["cpu"](d, mf, sc, None)
+    compute_mass_matrix["cpu"](d, mf, sc, None)
+    ldl_factor["cpu", DTYPE, MTQ1.NV, MTQ1.NBODY, 1](sc, None)
+    _compute_m_inv["cpu", DTYPE, MTQ1.NV, MTQ1.NBODY, 1](sc, None)
+
+    comptime WR = _max_one[6 * MTQ1.MAX_EQUALITY]()
+    comptime WJ = _max_one[6 * MTQ1.MAX_EQUALITY * MTQ1.NV]()
+    var w_K = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](1))
+    var w_bias = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
+    var w_D = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
+    var w_J = InlineArray[Scalar[DTYPE], WJ](fill=Scalar[DTYPE](0))
+    var w_MinvJ = InlineArray[Scalar[DTYPE], WJ](fill=Scalar[DTYPE](0))
+
+    comptime L_B3 = Layout.row_major(1, MTQ1.NBODY * 3)
+    comptime L_B4 = Layout.row_major(1, MTQ1.NBODY * 4)
+    comptime L_NV = Layout.row_major(1, MTQ1.NV)
+    comptime L_JT = Layout.row_major(MTQ1.NJOINT, MODEL_JOINT_SIZE)
+    comptime L_BD = Layout.row_major(MTQ1.NBODY, MODEL_BODY_SIZE)
+    comptime L_MT = Layout.row_major(MODEL_META_SIZE)
+    comptime L_EQ = Layout.row_major(MTQ1.MAX_EQUALITY, MODEL_EQ_SIZE)
+    comptime L_IW = Layout.row_major(MTQ1.NBODY, 2)
+    comptime L_CD = Layout.row_major(1, MTQ1.NV * 6)
+    comptime L_MI = Layout.row_major(1, MTQ1.NV * MTQ1.NV)
+
+    var n = build_weld_equality_rows[
+        DTYPE, MTQ1.NV, MTQ1.NBODY, MTQ1.NJOINT, MTQ1.MAX_EQUALITY,
+        MTQ1.NV, 1, WR, WJ,
+    ](
+        0,
+        d.qvel.lt["cpu", L_NV](),
+        d.xpos.lt["cpu", L_B3](),
+        d.xquat.lt["cpu", L_B4](),
+        d.subtree_com.lt["cpu", L_B3](),
+        mf.joints.lt["cpu", L_JT](),
+        mf.bodies.lt["cpu", L_BD](),
+        mf.meta.lt["cpu", L_MT](),
+        mf.equality.lt["cpu", L_EQ](),
+        mf.body_invweight0.lt["cpu", L_IW](),
+        sc.cdof.lt["cpu", L_CD](),
+        sc.m_inv.lt["cpu", L_MI](),
+        w_K, w_bias, w_D, w_J, w_MinvJ,
+    )
+    assert_true(n == 6, "expected 6 weld rows, built " + String(n))
+
+    var efc = dat.efc_J.reshape(nefc, Int(py=m.nv))
+    var wJ = Float64(0)
+    var off_diag = Float64(0)
+    for r in range(6):
+        for j in range(MTQ1.NV):
+            var ours = Float64(w_J[r * MTQ1.NV + j])
+            var theirs = Float64(py=efc[r][j])
+            var e = abs(ours - theirs)
+            if e > wJ:
+                wJ = e
+            # rotational block, off-diagonal: zero iff the world-axis
+            # approximation would have been good enough here
+            if r >= 3 and j >= 3 and (r - 3) != (j - 3):
+                if abs(theirs) > off_diag:
+                    off_diag = abs(theirs)
+    print("  worst |d(J)| =", wJ, "  rotational off-diagonal =", off_diag)
+    assert_true(
+        off_diag > 0.01,
+        "MuJoCo's rotational Jacobian is diagonal at this pose, so the"
+        " quaternion correction is invisible and three world-axis rows would"
+        " pass — tilt the fixture",
+    )
+    assert_true(wJ < 1e-12, "weld Jacobian disagrees by " + String(wJ))
+
+    # `bias` is MuJoCo's -aref (qvel = 0 here, so it is K*imp*pos).
+    var wB = Float64(0)
+    for r in range(6):
+        var ours = Float64(w_bias[r])
+        var theirs = -Float64(py=dat.efc_aref[r])
+        var e = abs(ours - theirs)
+        if e > wB:
+            wB = e
+    print("  worst |d(bias vs -aref)| =", wB)
+    assert_true(wB < 1e-9, "weld bias disagrees by " + String(wB))
+
+    # D: the builder returns the PGS step size 1/(k+R); recover R the way the
+    # Newton paths do and compare 1/R against MuJoCo's efc_D.
+    var wD = Float64(0)
+    for r in range(6):
+        var R = 1.0 / Float64(w_D[r]) - Float64(w_K[r])
+        var ours = 1.0 / R
+        var theirs = Float64(py=dat.efc_D[r])
+        var rel = abs(ours - theirs) / (abs(theirs) if abs(theirs) > 1e-12 else 1.0)
+        if rel > wD:
+            wD = rel
+    print("  worst rel |d(D)| =", wD)
+    assert_true(wD < 1e-9, "weld efc_D disagrees by rel " + String(wD))
+
+
+def test_weld_torquescale_matches_mujoco() raises:
+    """Weld rows vs MuJoCo's `efc_*` at a TILTED pose, torquescale = 5.
+
+    ROWS, not a rollout. This fixture is a heavy offset mass on a soft weld —
+    an unstable swinging system — and stepping it 600 steps amplifies a
+    ~1e-10 solver-tolerance difference into 0.39 by the end while agreeing to
+    1.0e-19 at step ONE. A trajectory comparison there measures Lyapunov
+    growth, not the constraint. `efc_J` / `efc_aref` / `efc_D` are exact and
+    pose-local, so they say what the rows are.
+    """
+    print("--- weld rows vs efc, torquescale = 5 ---")
+    var mujoco = Python.import_module("mujoco")
+    var np = Python.import_module("numpy")
+    var m = mujoco.MjModel.from_xml_string(materialize[XML_TQ5]())
+    var dat = mujoco.MjData(m)
+    var th = 0.4
+    dat.qpos[0] = 0.07
+    dat.qpos[1] = -0.02
+    dat.qpos[2] = 0.33
+    dat.qpos[3] = np.cos(th / 2)
+    dat.qpos[4] = 0.0
+    dat.qpos[5] = np.sin(th / 2)
+    dat.qpos[6] = 0.0
+    mujoco.mj_forward(m, dat)
+    var nefc = Int(py=dat.nefc)
+    assert_true(
+        nefc == 6,
+        "expected the weld's 6 rows and nothing else; got " + String(nefc),
+    )
+
+    var ctx = DeviceContext()
+    var mf = Model[
+        DTYPE, MTQ5.NV, MTQ5.NBODY, MTQ5.NJOINT, MTQ5.NGEOM, MTQ5.MAX_EQUALITY,
+        MTQ5.MAX_TENDON, MTQ5.NSITE, MTQ5.NEXCLUDE, 0,
+    ]()
+    MTQ5.init_fields[DTYPE, 0](ctx, mf)
+    var d = Data[
+        DTYPE, MTQ5.NQ, MTQ5.NV, MTQ5.NBODY, MTQ5.MAX_CONTACTS, MTQ5.NSITE, 1
+    ]()
+    MTQ5.reset_data[DTYPE](d)
+    d.qpos.data[0] = 0.07
+    d.qpos.data[1] = -0.02
+    d.qpos.data[2] = 0.33
+    d.qpos.data[3] = Float64(py=np.cos(th / 2))
+    d.qpos.data[4] = 0.0
+    d.qpos.data[5] = Float64(py=np.sin(th / 2))
+    d.qpos.data[6] = 0.0
+    for i in range(MTQ5.NV):
+        d.qvel.data[i] = 0
+
+    var sc = DynamicsScratch[DTYPE, MTQ5.NV, MTQ5.NBODY, 1]()
+    forward_kinematics["cpu"](d, mf, None)
+    compute_body_velocities["cpu"](d, mf, None)
+    compute_subtree_com["cpu"](d, mf, None)
+    compute_cdof["cpu"](d, mf, sc, None)
+    compute_mass_matrix["cpu"](d, mf, sc, None)
+    ldl_factor["cpu", DTYPE, MTQ5.NV, MTQ5.NBODY, 1](sc, None)
+    _compute_m_inv["cpu", DTYPE, MTQ5.NV, MTQ5.NBODY, 1](sc, None)
+
+    comptime WR = _max_one[6 * MTQ5.MAX_EQUALITY]()
+    comptime WJ = _max_one[6 * MTQ5.MAX_EQUALITY * MTQ5.NV]()
+    var w_K = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](1))
+    var w_bias = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
+    var w_D = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
+    var w_J = InlineArray[Scalar[DTYPE], WJ](fill=Scalar[DTYPE](0))
+    var w_MinvJ = InlineArray[Scalar[DTYPE], WJ](fill=Scalar[DTYPE](0))
+
+    comptime L_B3 = Layout.row_major(1, MTQ5.NBODY * 3)
+    comptime L_B4 = Layout.row_major(1, MTQ5.NBODY * 4)
+    comptime L_NV = Layout.row_major(1, MTQ5.NV)
+    comptime L_JT = Layout.row_major(MTQ5.NJOINT, MODEL_JOINT_SIZE)
+    comptime L_BD = Layout.row_major(MTQ5.NBODY, MODEL_BODY_SIZE)
+    comptime L_MT = Layout.row_major(MODEL_META_SIZE)
+    comptime L_EQ = Layout.row_major(MTQ5.MAX_EQUALITY, MODEL_EQ_SIZE)
+    comptime L_IW = Layout.row_major(MTQ5.NBODY, 2)
+    comptime L_CD = Layout.row_major(1, MTQ5.NV * 6)
+    comptime L_MI = Layout.row_major(1, MTQ5.NV * MTQ5.NV)
+
+    var n = build_weld_equality_rows[
+        DTYPE, MTQ5.NV, MTQ5.NBODY, MTQ5.NJOINT, MTQ5.MAX_EQUALITY,
+        MTQ5.NV, 1, WR, WJ,
+    ](
+        0,
+        d.qvel.lt["cpu", L_NV](),
+        d.xpos.lt["cpu", L_B3](),
+        d.xquat.lt["cpu", L_B4](),
+        d.subtree_com.lt["cpu", L_B3](),
+        mf.joints.lt["cpu", L_JT](),
+        mf.bodies.lt["cpu", L_BD](),
+        mf.meta.lt["cpu", L_MT](),
+        mf.equality.lt["cpu", L_EQ](),
+        mf.body_invweight0.lt["cpu", L_IW](),
+        sc.cdof.lt["cpu", L_CD](),
+        sc.m_inv.lt["cpu", L_MI](),
+        w_K, w_bias, w_D, w_J, w_MinvJ,
+    )
+    assert_true(n == 6, "expected 6 weld rows, built " + String(n))
+
+    var efc = dat.efc_J.reshape(nefc, Int(py=m.nv))
+    var wJ = Float64(0)
+    var off_diag = Float64(0)
+    for r in range(6):
+        for j in range(MTQ5.NV):
+            var ours = Float64(w_J[r * MTQ5.NV + j])
+            var theirs = Float64(py=efc[r][j])
+            var e = abs(ours - theirs)
+            if e > wJ:
+                wJ = e
+            # rotational block, off-diagonal: zero iff the world-axis
+            # approximation would have been good enough here
+            if r >= 3 and j >= 3 and (r - 3) != (j - 3):
+                if abs(theirs) > off_diag:
+                    off_diag = abs(theirs)
+    print("  worst |d(J)| =", wJ, "  rotational off-diagonal =", off_diag)
+    assert_true(
+        off_diag > 0.01,
+        "MuJoCo's rotational Jacobian is diagonal at this pose, so the"
+        " quaternion correction is invisible and three world-axis rows would"
+        " pass — tilt the fixture",
+    )
+    assert_true(wJ < 1e-12, "weld Jacobian disagrees by " + String(wJ))
+
+    # `bias` is MuJoCo's -aref (qvel = 0 here, so it is K*imp*pos).
+    var wB = Float64(0)
+    for r in range(6):
+        var ours = Float64(w_bias[r])
+        var theirs = -Float64(py=dat.efc_aref[r])
+        var e = abs(ours - theirs)
+        if e > wB:
+            wB = e
+    print("  worst |d(bias vs -aref)| =", wB)
+    assert_true(wB < 1e-9, "weld bias disagrees by " + String(wB))
+
+    # D: the builder returns the PGS step size 1/(k+R); recover R the way the
+    # Newton paths do and compare 1/R against MuJoCo's efc_D.
+    var wD = Float64(0)
+    for r in range(6):
+        var R = 1.0 / Float64(w_D[r]) - Float64(w_K[r])
+        var ours = 1.0 / R
+        var theirs = Float64(py=dat.efc_D[r])
+        var rel = abs(ours - theirs) / (abs(theirs) if abs(theirs) > 1e-12 else 1.0)
+        if rel > wD:
+            wD = rel
+    print("  worst rel |d(D)| =", wD)
+    assert_true(wD < 1e-9, "weld efc_D disagrees by rel " + String(wD))
 
 
 def main() raises:

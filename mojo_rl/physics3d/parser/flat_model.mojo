@@ -889,6 +889,9 @@ struct EqualityData(Copyable, ImplicitlyCopyable, Movable):
     var solimp_2: Float64
     var solimp_3: Float64
     var solimp_4: Float64
+    # Weld only: MuJoCo's `eq_data[10]`, scaling the three orientation rows.
+    # MJCF's default is 1; MetaWorld's `reset_mocap_welds` sets 5.
+    var torquescale: Float64
 
     def __init__(
         out self,
@@ -912,6 +915,7 @@ struct EqualityData(Copyable, ImplicitlyCopyable, Movable):
         solimp_2: Float64 = 0.001,
         solimp_3: Float64 = 0.5,
         solimp_4: Float64 = 2.0,
+        torquescale: Float64 = 1.0,
     ):
         self.eq_type = eq_type
         self.body_a = body_a
@@ -933,6 +937,7 @@ struct EqualityData(Copyable, ImplicitlyCopyable, Movable):
         self.solimp_2 = solimp_2
         self.solimp_3 = solimp_3
         self.solimp_4 = solimp_4
+        self.torquescale = torquescale
 
 
 # =============================================================================

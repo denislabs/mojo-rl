@@ -49,7 +49,7 @@ Both builders now read the quantity MuJoCo reads:
 docstring and reported as an open defect. A comment describing code is a
 hypothesis about the code. GREP THE CALL SITES."""
 
-from std.math import abs, pow
+from std.math import abs, pow, sqrt
 from layout import Layout, LayoutTensor
 
 from ..types import _max_one, EQ_WELD
@@ -92,6 +92,7 @@ from ..gpu.constants import (
     EQ_IDX_SOLIMP_2,
     EQ_IDX_SOLIMP_3,
     EQ_IDX_SOLIMP_4,
+    EQ_IDX_TORQUESCALE,
     TENDON_IDX_NUM_JOINTS,
     TENDON_IDX_IS_EQUALITY,
     TENDON_IDX_JOINT_0,
@@ -589,6 +590,161 @@ def build_weld_equality_rows[
         pos_errs[1] = pos_err_y
         pos_errs[2] = pos_err_z
 
+        # ── weld orientation residual, hoisted, and ONE impedance ────────────
+        #
+        # MuJoCo's impedance argument for an equality is the NORM OVER ALL ITS
+        # ROWS, not the per-row residual: `mj_constraintUpdate` sets
+        # `*pos = mju_norm(efc_pos+i, 6)` for a weld and `norm(..., 3)` for a
+        # connect (engine_core_constraint.c:2071), with `dim` 6 and 3.
+        #
+        # ⚠ WE USED THE PER-ROW VALUE, AND THE BIAS CANNOT SEE IT: a row whose
+        # own residual is 0 contributes `K*imp*0 = 0` for any `imp`. It shows
+        # up only through `R = (1-imp)/imp * diagApprox`. On a tilted weld,
+        # rows 3 and 5 have zero individual residual and so took imp = dmin =
+        # 0.9 against MuJoCo's 0.95 — `efc_D` 0.0300 against 0.0633, 53% off on
+        # the compliance of two of the six rows, on every weld in the repo.
+        # Found only once the rows were diffed against `efc_D` directly;
+        # `efc_J` and `efc_aref` both matched exactly with the bug present.
+        var rot_errs = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+        var ts = Scalar[DTYPE](1)
+        var cqb = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        var qrel = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        cqb[3] = Scalar[DTYPE](1)
+        qrel[3] = Scalar[DTYPE](1)
+        if eq_type == EQ_WELD:
+            # Read relpose
+            var rp_x = rebind[Scalar[DTYPE]](
+                equality[eq_i, EQ_IDX_RELPOSE_X]
+            )
+            var rp_y = rebind[Scalar[DTYPE]](
+                equality[eq_i, EQ_IDX_RELPOSE_Y]
+            )
+            var rp_z = rebind[Scalar[DTYPE]](
+                equality[eq_i, EQ_IDX_RELPOSE_Z]
+            )
+            var rp_w = rebind[Scalar[DTYPE]](
+                equality[eq_i, EQ_IDX_RELPOSE_W]
+            )
+
+            # Compute orientation error: 0.5 * imag(conj(quat_b) * quat_a * relpose)
+            var qa_x = xquat_a_x
+            var qa_y = xquat_a_y
+            var qa_z = xquat_a_z
+            var qa_w = xquat_a_w
+
+            var qb_x: Scalar[DTYPE]
+            var qb_y: Scalar[DTYPE]
+            var qb_z: Scalar[DTYPE]
+            var qb_w: Scalar[DTYPE]
+            if body_b > 0:
+                qb_x = rebind[Scalar[DTYPE]](
+                    xquat[env, body_b * 4 + 0]
+                )
+                qb_y = rebind[Scalar[DTYPE]](
+                    xquat[env, body_b * 4 + 1]
+                )
+                qb_z = rebind[Scalar[DTYPE]](
+                    xquat[env, body_b * 4 + 2]
+                )
+                qb_w = rebind[Scalar[DTYPE]](
+                    xquat[env, body_b * 4 + 3]
+                )
+            else:
+                qb_x = Scalar[DTYPE](0)
+                qb_y = Scalar[DTYPE](0)
+                qb_z = Scalar[DTYPE](0)
+                qb_w = Scalar[DTYPE](1)
+
+            # MuJoCo's two working quaternions (engine_core_constraint.c:686):
+            #   quat  = q0 (x) relpose        `qrel` here
+            #   quat1 = neg(q1)               `cqb` here
+            var cqb_t = quat_conjugate[DTYPE](qb_x, qb_y, qb_z, qb_w)
+            var qrel_t = quat_mul[DTYPE](
+                qa_x, qa_y, qa_z, qa_w, rp_x, rp_y, rp_z, rp_w
+            )
+            cqb[0] = cqb_t[0]
+            cqb[1] = cqb_t[1]
+            cqb[2] = cqb_t[2]
+            cqb[3] = cqb_t[3]
+            qrel[0] = qrel_t[0]
+            qrel[1] = qrel_t[1]
+            qrel[2] = qrel_t[2]
+            qrel[3] = qrel_t[3]
+            var err_q = quat_mul[DTYPE](
+                cqb[0], cqb[1], cqb[2], cqb[3],
+                qrel[0], qrel[1], qrel[2], qrel[3],
+            )
+            # imaginary part, SCALED BY TORQUESCALE.
+            #
+            # ⚠ NO 0.5 HERE. MuJoCo's residual is `mju_scl3(cpos+3, quat2+1,
+            # torquescale)` — the 0.5 belongs to the JACOBIAN
+            # (`jac = 0.5*quat3[1..3]`), not to the error. We had it on the
+            # residual and not on the Jacobian, which is a different constraint:
+            # scaling one side of `J qacc + bias = 0` without the other moves
+            # the row's effective stiffness.
+            #
+            # MuJoCo applies `eq_data[10]` twice — to the residual
+            # (`mju_scl3(cpos+3, quat2+1, torquescale)`,
+            # engine_core_constraint.c:701) and to the rotational Jacobian
+            # (`mju_scl(jac[0]+3*NV, ..., torquescale, 3*NV)`, :721) — so it
+            # scales the whole rotational half of the weld, not just its error.
+            # Both are needed: scaling only the residual changes the target
+            # without changing the row's effective stiffness, which is a
+            # different constraint from MuJoCo's.
+            #
+            # ⚠ UNIMPLEMENTED UNTIL 2026-08-12. MJCF defaults it to 1, so this
+            # was inert on every dm_control model — but MetaWorld's
+            # `reset_mocap_welds` sets 5.0, so sawyer's mocap weld was 5x too
+            # soft in orientation against the environment we claim to port. It
+            # stayed invisible because the gate's REFERENCE side also set 1.0:
+            # the protocol had been written to match our limitation.
+            ts = rebind[Scalar[DTYPE]](
+                equality[eq_i, EQ_IDX_TORQUESCALE]
+            )
+            rot_errs[0] = err_q[0] * ts
+            rot_errs[1] = err_q[1] * ts
+            rot_errs[2] = err_q[2] * ts
+
+        var pn_sq = (
+            pos_errs[0] * pos_errs[0]
+            + pos_errs[1] * pos_errs[1]
+            + pos_errs[2] * pos_errs[2]
+        )
+        if eq_type == EQ_WELD:
+            pn_sq += (
+                rot_errs[0] * rot_errs[0]
+                + rot_errs[1] * rot_errs[1]
+                + rot_errs[2] * rot_errs[2]
+            )
+        var pos_norm = sqrt(pn_sq)
+        var imp_eq: Scalar[DTYPE]
+        if si_dmin == si_dmax or si_width <= Scalar[DTYPE](0):
+            imp_eq = Scalar[DTYPE](0.5) * (si_dmin + si_dmax)
+        else:
+            var xe = pos_norm / si_width
+            var ye: Scalar[DTYPE]
+            if xe <= Scalar[DTYPE](0):
+                ye = Scalar[DTYPE](0)
+            elif xe >= Scalar[DTYPE](1):
+                ye = Scalar[DTYPE](1)
+            elif si_power == Scalar[DTYPE](1):
+                ye = xe
+            elif xe <= si_midpoint:
+                ye = pow(xe, si_power) / pow(
+                    si_midpoint, si_power - Scalar[DTYPE](1)
+                )
+            else:
+                ye = Scalar[DTYPE](1) - pow(
+                    Scalar[DTYPE](1) - xe, si_power
+                ) / pow(
+                    Scalar[DTYPE](1) - si_midpoint,
+                    si_power - Scalar[DTYPE](1),
+                )
+            imp_eq = si_dmin + ye * (si_dmax - si_dmin)
+        if imp_eq < Scalar[DTYPE](1e-6):
+            imp_eq = Scalar[DTYPE](1e-6)
+
+
         for d in range(3):
             if num_eq_rows >= MAX_EQ_ROWS:
                 break
@@ -646,37 +802,9 @@ def build_weld_equality_rows[
                 k = Scalar[DTYPE](1e-10)
             eq_K[num_eq_rows] = k
 
-            # Impedance: MuJoCo piecewise power formula
+            # ONE impedance for the whole constraint — see the hoisted block.
             var err_d = pos_errs[d]
-            var penetration = abs(err_d)
-            var imp: Scalar[DTYPE]
-            if si_dmin == si_dmax or si_width <= Scalar[DTYPE](0):
-                imp = Scalar[DTYPE](0.5) * (si_dmin + si_dmax)
-            else:
-                var x = penetration / si_width
-                var y: Scalar[DTYPE]
-                if x <= Scalar[DTYPE](0):
-                    y = Scalar[DTYPE](0)
-                elif x >= Scalar[DTYPE](1):
-                    y = Scalar[DTYPE](1)
-                elif si_power == Scalar[DTYPE](1):
-                    y = x
-                elif x <= si_midpoint:
-                    var a = Scalar[DTYPE](1) / pow(
-                        si_midpoint, si_power - Scalar[DTYPE](1)
-                    )
-                    y = a * pow(x, si_power)
-                else:
-                    var b = Scalar[DTYPE](1) / pow(
-                        Scalar[DTYPE](1) - si_midpoint,
-                        si_power - Scalar[DTYPE](1),
-                    )
-                    y = Scalar[DTYPE](1) - b * pow(
-                        Scalar[DTYPE](1) - x, si_power
-                    )
-                imp = si_dmin + y * (si_dmax - si_dmin)
-            if imp < Scalar[DTYPE](1e-6):
-                imp = Scalar[DTYPE](1e-6)
+            var imp = imp_eq
 
             # MuJoCo equality bias: bias = -aref = B*vel + K*I*pos
             # where pos is the SIGNED error (not abs). Contact formula uses
@@ -706,89 +834,120 @@ def build_weld_equality_rows[
 
         # --- 3 orientation rows (weld only) ---
         if eq_type == EQ_WELD:
-            # Read relpose
-            var rp_x = rebind[Scalar[DTYPE]](
-                equality[eq_i, EQ_IDX_RELPOSE_X]
-            )
-            var rp_y = rebind[Scalar[DTYPE]](
-                equality[eq_i, EQ_IDX_RELPOSE_Y]
-            )
-            var rp_z = rebind[Scalar[DTYPE]](
-                equality[eq_i, EQ_IDX_RELPOSE_Z]
-            )
-            var rp_w = rebind[Scalar[DTYPE]](
-                equality[eq_i, EQ_IDX_RELPOSE_W]
-            )
 
-            # Compute orientation error: 0.5 * imag(conj(quat_b) * quat_a * relpose)
-            var qa_x = xquat_a_x
-            var qa_y = xquat_a_y
-            var qa_z = xquat_a_z
-            var qa_w = xquat_a_w
+            # ── the ROTATIONAL JACOBIAN, ported exactly ──────────────────────
+            #
+            # MuJoCo (engine_core_constraint.c:704-721), per dof j:
+            #     axis  = [jac0 - jac1]_col(j)         angular difference
+            #     quat2 = neg(q1) (x) axis             `mju_mulQuatAxis`
+            #     quat3 = quat2 (x) q0 (x) relpose
+            #     jac[3+k][j] = 0.5 * quat3[k+1]
+            # then the whole 3xNV block is scaled by torquescale.
+            #
+            # ⚠⚠ WE USED TO BUILD THREE WORLD-AXIS ROWS INSTEAD —
+            # `J = (w_a - w_b) . e_k` for k = x, y, z — which is the same thing
+            # ONLY to first order in the orientation error and in the relative
+            # orientation. Every gated weld sat at ~0 orientation error
+            # (sawyer's mocap tracks the hand), so nothing measured it. The
+            # first specimen to put a real moment on a weld disagreed with
+            # MuJoCo by 0.086 rad of tilt AT torquescale 1, where the
+            # torquescale code above is a no-op.
+            #
+            # Written straight into `eq_J` rather than through a staging row:
+            # the three rows share one pass over the joints, and a per-row
+            # buffer would be a fourth V_SIZE array in a Metal-compiled kernel.
+            if num_eq_rows + 3 > MAX_EQ_ROWS:
+                continue
+            for r in range(3):
+                for i in range(NV):
+                    eq_J[(num_eq_rows + r) * NV + i] = Scalar[DTYPE](0)
 
-            var qb_x: Scalar[DTYPE]
-            var qb_y: Scalar[DTYPE]
-            var qb_z: Scalar[DTYPE]
-            var qb_w: Scalar[DTYPE]
-            if body_b > 0:
-                qb_x = rebind[Scalar[DTYPE]](
-                    xquat[env, body_b * 4 + 0]
+            var n_j = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NJOINT]))
+            for j_idx in range(n_j):
+                var jt_o = Int(
+                    rebind[Scalar[DTYPE]](joints[j_idx, JOINT_IDX_TYPE])
                 )
-                qb_y = rebind[Scalar[DTYPE]](
-                    xquat[env, body_b * 4 + 1]
+                var jb_o = Int(
+                    rebind[Scalar[DTYPE]](joints[j_idx, JOINT_IDX_BODY_ID])
                 )
-                qb_z = rebind[Scalar[DTYPE]](
-                    xquat[env, body_b * 4 + 2]
+                var ja_o = Int(
+                    rebind[Scalar[DTYPE]](joints[j_idx, JOINT_IDX_DOF_ADR])
                 )
-                qb_w = rebind[Scalar[DTYPE]](
-                    xquat[env, body_b * 4 + 3]
-                )
-            else:
-                qb_x = Scalar[DTYPE](0)
-                qb_y = Scalar[DTYPE](0)
-                qb_z = Scalar[DTYPE](0)
-                qb_w = Scalar[DTYPE](1)
 
-            # conj(qb) * qa
-            var cqb = quat_conjugate[DTYPE](qb_x, qb_y, qb_z, qb_w)
-            var temp = quat_mul[DTYPE](
-                cqb[0], cqb[1], cqb[2], cqb[3], qa_x, qa_y, qa_z, qa_w
-            )
-            # * relpose
-            var err_q = quat_mul[DTYPE](
-                temp[0], temp[1], temp[2], temp[3], rp_x, rp_y, rp_z, rp_w
-            )
-            # 0.5 * imaginary part
-            var rot_errs = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
-            rot_errs[0] = Scalar[DTYPE](0.5) * err_q[0]
-            rot_errs[1] = Scalar[DTYPE](0.5) * err_q[1]
-            rot_errs[2] = Scalar[DTYPE](0.5) * err_q[2]
+                var aff_a = body_a == jb_o
+                if not aff_a:
+                    var cur = body_a
+                    while cur > 0:
+                        var par = Int(
+                            rebind[Scalar[DTYPE]](bodies[cur, BODY_IDX_PARENT])
+                        )
+                        if par == jb_o:
+                            aff_a = True
+                            break
+                        cur = par
+                var aff_b = False
+                if body_b > 0:
+                    aff_b = body_b == jb_o
+                    if not aff_b:
+                        var curb = body_b
+                        while curb > 0:
+                            var parb = Int(
+                                rebind[Scalar[DTYPE]](
+                                    bodies[curb, BODY_IDX_PARENT]
+                                )
+                            )
+                            if parb == jb_o:
+                                aff_b = True
+                                break
+                            curb = parb
+
+                # A dof reachable from BOTH bodies cancels, exactly as the
+                # +=/-= in `_angular_jacobian_row_eq` did.
+                var sgn = Scalar[DTYPE](0)
+                if aff_a:
+                    sgn += Scalar[DTYPE](1)
+                if aff_b:
+                    sgn -= Scalar[DTYPE](1)
+                if sgn == Scalar[DTYPE](0):
+                    continue
+
+                var ndof_o = 1
+                if jt_o == JNT_FREE:
+                    ndof_o = 6
+                elif jt_o == JNT_BALL:
+                    ndof_o = 3
+
+                for dd in range(ndof_o):
+                    var dof_i = ja_o + dd
+                    var wx = (
+                        rebind[Scalar[DTYPE]](cdof[env, dof_i * 6 + 0]) * sgn
+                    )
+                    var wy = (
+                        rebind[Scalar[DTYPE]](cdof[env, dof_i * 6 + 1]) * sgn
+                    )
+                    var wz = (
+                        rebind[Scalar[DTYPE]](cdof[env, dof_i * 6 + 2]) * sgn
+                    )
+
+                    # quat2 = cqb (x) (0, w) — MuJoCo's `mju_mulQuatAxis`,
+                    # in our (x, y, z, w) storage.
+                    var q2w = -(cqb[0] * wx + cqb[1] * wy + cqb[2] * wz)
+                    var q2x = cqb[3] * wx + cqb[1] * wz - cqb[2] * wy
+                    var q2y = cqb[3] * wy + cqb[2] * wx - cqb[0] * wz
+                    var q2z = cqb[3] * wz + cqb[0] * wy - cqb[1] * wx
+
+                    var q3 = quat_mul[DTYPE](
+                        q2x, q2y, q2z, q2w,
+                        qrel[0], qrel[1], qrel[2], qrel[3],
+                    )
+                    var half_ts = Scalar[DTYPE](0.5) * ts
+                    eq_J[(num_eq_rows + 0) * NV + dof_i] = half_ts * q3[0]
+                    eq_J[(num_eq_rows + 1) * NV + dof_i] = half_ts * q3[1]
+                    eq_J[(num_eq_rows + 2) * NV + dof_i] = half_ts * q3[2]
 
             for d in range(3):
-                if num_eq_rows >= MAX_EQ_ROWS:
-                    break
-                var dx = dirs[d * 3 + 0]
-                var dy = dirs[d * 3 + 1]
-                var dz = dirs[d * 3 + 2]
-
-                # Angular Jacobian
-                for i in range(V_SIZE):
-                    J_row[i] = 0
-                _angular_jacobian_row_eq[
-                    DTYPE, NV, NBODY, NJOINT, V_SIZE, BATCH
-                ](
-                    env,
-                    joints,
-                    bodies,
-                    mmeta,
-                    cdof,
-                    body_a,
-                    body_b,
-                    dx,
-                    dy,
-                    dz,
-                    J_row,
-                )
+                for i in range(NV):
+                    J_row[i] = eq_J[num_eq_rows * NV + i]
 
                 # K, store J and MinvJ
                 var k: Scalar[DTYPE] = 0
@@ -813,37 +972,9 @@ def build_weld_equality_rows[
                     k = Scalar[DTYPE](1e-10)
                 eq_K[num_eq_rows] = k
 
-                # Impedance for orientation: MuJoCo piecewise power formula
+                # ONE impedance for the whole constraint — see above.
                 var err_d = rot_errs[d]
-                var penetration = abs(err_d)
-                var imp: Scalar[DTYPE]
-                if si_dmin == si_dmax or si_width <= Scalar[DTYPE](0):
-                    imp = Scalar[DTYPE](0.5) * (si_dmin + si_dmax)
-                else:
-                    var x = penetration / si_width
-                    var y: Scalar[DTYPE]
-                    if x <= Scalar[DTYPE](0):
-                        y = Scalar[DTYPE](0)
-                    elif x >= Scalar[DTYPE](1):
-                        y = Scalar[DTYPE](1)
-                    elif si_power == Scalar[DTYPE](1):
-                        y = x
-                    elif x <= si_midpoint:
-                        var a = Scalar[DTYPE](1) / pow(
-                            si_midpoint, si_power - Scalar[DTYPE](1)
-                        )
-                        y = a * pow(x, si_power)
-                    else:
-                        var b = Scalar[DTYPE](1) / pow(
-                            Scalar[DTYPE](1) - si_midpoint,
-                            si_power - Scalar[DTYPE](1),
-                        )
-                        y = Scalar[DTYPE](1) - b * pow(
-                            Scalar[DTYPE](1) - x, si_power
-                        )
-                    imp = si_dmin + y * (si_dmax - si_dmin)
-                if imp < Scalar[DTYPE](1e-6):
-                    imp = Scalar[DTYPE](1e-6)
+                var imp = imp_eq
 
                 # MuJoCo equality bias: bias = K*I*pos + B*vel (signed pos)
                 var bias = eq_K_spring * imp * err_d + eq_B_damp * v_n

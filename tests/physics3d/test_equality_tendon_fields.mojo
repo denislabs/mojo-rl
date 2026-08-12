@@ -215,7 +215,27 @@ comptime GOLD_NCON_B = 6  # Part B equality: total contacts over the steps
 # truth: it preserves whatever it captured. Per the note above, this number is
 # still a REGRESSION PIN and still not a correctness statement — the weld path
 # remains ungated against MuJoCo.
-comptime GOLD_B = 29331.575603858786  # Part B final qpos/qvel/qacc/contacts checksum
+# Re-harvested 2026-08-12 (29331.575603858786 -> 23698.22404074709) for the
+# WELD ROW FIXES, and this is the "separate, unfinished work" the paragraph
+# above names — the weld path is now gated against MuJoCo in
+# tests/physics3d/test_weld_rows_pyramidal_vs_mujoco.mojo (efc_J 0.0,
+# efc_aref 0.0, efc_D 2.7e-14). Four defects, all of which moved this model:
+#   * `relpose` defaulted to IDENTITY instead of the qpos0 relative pose. On
+#     THIS model MuJoCo derives (0.32, 0, 0.051) — link2 and anchor are not
+#     coincident — so the old golden pinned a weld aimed at the wrong pose.
+#     Ours now reads (0.32, 0, 0.051), matching exactly.
+#   * the rotational Jacobian was three world-axis rows, not MuJoCo's
+#     quaternion-corrected construction.
+#   * the 0.5 was on the residual instead of the Jacobian.
+#   * the impedance used the per-row residual, not `norm(efc_pos, 6)`.
+# Measured against MuJoCo on this model: the disagreement recorded above
+# (qvel -7.4 vs -0.43) is now 1.2e-2 worst on qvel over three steps. The
+# residual is the FRICTION BASIS difference this file already documents (the
+# capsule tangent-frame hint), not the weld.
+#
+# ⚠ STILL A REGRESSION PIN, NOT A CORRECTNESS STATEMENT — the number is a
+# self-golden and the remaining 1.2e-2 is unexplained-by-the-weld, not zero.
+comptime GOLD_B = 23698.22404074709  # Part B final qpos/qvel/qacc/contacts checksum
 # Re-harvested 2026-08-03 (was 29033.456920214216, a +298.119 move) for the SAME
 # reason as GOLD_A: `CONTACT_SIZE` grew 23 -> 30 and this fingerprint sums
 # `range(CONTACT_SIZE)`. Predicted definitional delta for a pair of default
