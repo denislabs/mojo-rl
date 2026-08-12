@@ -817,11 +817,14 @@ def compute_rne_vel_derivative[
     NEXCLUDE: Int,
     NMESH_VERTS: Int,
     BATCH: Int,
+    # Appended, not grouped with NEXCLUDE — see `fields.Model`.
+    NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
         DTYPE, NV, NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE, NEXCLUDE,
         NMESH_VERTS,
+        NPAIR,
     ],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
     mut iscratch: ImplicitScratch[DTYPE, NV, NBODY, BATCH],

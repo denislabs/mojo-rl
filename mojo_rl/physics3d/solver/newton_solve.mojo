@@ -2453,6 +2453,8 @@ def solve_newton[
     # Per-env spill size for `Je`; 0 = it fits threadgroup memory. Comes
     # from `je_budget.je_ws_size` via the integrator — never computed here.
     JE_WS: Int = 0,
+    # Appended, not grouped with NEXCLUDE — see `fields.Model`.
+    NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
@@ -2466,6 +2468,7 @@ def solve_newton[
         NSITE,
         NEXCLUDE,
         NMESH_VERTS,
+        NPAIR,
     ],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
     mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH, JE_WS],
@@ -3835,6 +3838,8 @@ def solve_newton_blocked[
     # Per-env spill size for `Je`; 0 = it fits threadgroup memory. Comes
     # from `je_budget.je_ws_size` via the integrator — never computed here.
     JE_WS: Int = 0,
+    # Appended, not grouped with NEXCLUDE — see `fields.Model`.
+    NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
@@ -3848,6 +3853,7 @@ def solve_newton_blocked[
         NSITE,
         NEXCLUDE,
         NMESH_VERTS,
+        NPAIR,
     ],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
     mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH, JE_WS],

@@ -40,6 +40,14 @@ trait ModelDefLike:
     comptime NA: Int
     comptime NA_F: Int
     comptime NEXCLUDE: Int
+    # `<contact><pair>` count — sizes the predefined-pair table.
+    #
+    # ⚠ ON THE TRAIT FOR THE SAME REASON `MAX_CONDIM` IS (see below). The env
+    # forwards these dims into the integrator, and a dimension the trait does
+    # not expose is one the env can quietly forget: the model would still
+    # build, the pair table would be empty, and the declared collisions would
+    # simply not happen. Declaring it here makes omitting it a compile error.
+    comptime NPAIR: Int
     # Largest `condim` in the model — sizes the PYRAMIDAL edge list at
     # `2*(MAX_CONDIM-1)` rows per contact.
     #
@@ -157,6 +165,7 @@ trait ModelDefLike:
             Self.NSITE,
             Self.NEXCLUDE,
             NMESHV,
+            Self.NPAIR,
         ],
     ) raises:
         """Build the Model record tensors + fields-native invweight0

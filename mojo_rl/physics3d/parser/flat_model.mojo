@@ -1291,6 +1291,52 @@ struct ExcludeData(Copyable, ImplicitlyCopyable, Movable):
 
 
 # =============================================================================
+# PairData — predefined contact pair parsed from <contact><pair>
+# =============================================================================
+
+
+struct PairData(Copyable, ImplicitlyCopyable, Movable):
+    """A geom pair that collides unconditionally, with its own parameters.
+
+    The defaults below are MuJoCo's `mjs_defaultPair`, NOT values derived from
+    the two geoms — see the long note on `MODEL_PAIR_SIZE` in
+    `physics3d/gpu/constants.mojo` for why the derivation in `mjCPair::Compile`
+    is dead code on the XML path, and what the 3.10.0 runtime actually returns.
+    """
+
+    var geom1: Int  # geom index, sorted so geom1 < geom2 (as MuJoCo sorts)
+    var geom2: Int
+    var condim: Int
+    var friction: Float64  # sliding
+    var friction_spin: Float64  # torsional
+    var friction_roll: Float64  # rolling
+    var solref_0: Float64
+    var solref_1: Float64
+    var solimp_0: Float64
+    var solimp_1: Float64
+    var solimp_2: Float64
+    var solimp_3: Float64
+    var solimp_4: Float64
+    var margin: Float64
+
+    def __init__(out self, geom1: Int = 0, geom2: Int = 0):
+        self.geom1 = geom1
+        self.geom2 = geom2
+        self.condim = 3
+        self.friction = 1.0
+        self.friction_spin = 0.005
+        self.friction_roll = 0.0001
+        self.solref_0 = 0.02
+        self.solref_1 = 1.0
+        self.solimp_0 = 0.9
+        self.solimp_1 = 0.95
+        self.solimp_2 = 0.001
+        self.solimp_3 = 0.5
+        self.solimp_4 = 2.0
+        self.margin = 0.0
+
+
+# =============================================================================
 # FlatModelDef
 # =============================================================================
 
@@ -1350,6 +1396,7 @@ struct FlatModelDef(Movable):
     var sites: List[SiteData]
     var equalities: List[EqualityData]
     var excludes: List[ExcludeData]
+    var pairs: List[PairData]
     var tendons: List[TendonData]
     var gravity_x: Float64
     var gravity_y: Float64
@@ -1375,6 +1422,7 @@ struct FlatModelDef(Movable):
         self.sites = List[SiteData]()
         self.equalities = List[EqualityData]()
         self.excludes = List[ExcludeData]()
+        self.pairs = List[PairData]()
         self.tendons = List[TendonData]()
         self.gravity_x = Float64(0)
         self.gravity_y = Float64(0)

@@ -231,7 +231,7 @@ comptime JOINT_IDX_QPOS0: Int = 25  # Joint reference position (MuJoCo qpos0 / r
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 27
+comptime MODEL_META_SIZE: Int = 28
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -278,6 +278,8 @@ comptime MODEL_META_IDX_NEXCLUDE: Int = 25  # Number of contact exclude pairs
 # suppressing the early exit entirely moves a 120-step rollout by 2.2e-6 of
 # qvel, so the stopping rule is not something to approximate.
 comptime MODEL_META_IDX_MEANINERTIA: Int = 26
+# Number of `<contact><pair>` records — MuJoCo's `npair`.
+comptime MODEL_META_IDX_NPAIR: Int = 27
 
 
 # =============================================================================
@@ -540,6 +542,65 @@ comptime SITE_IDX_QUAT_W: Int = 11
 
 
 comptime MODEL_EXCLUDE_PAIR_SIZE: Int = 2  # body1, body2
+
+
+# =============================================================================
+# Model Buffer Layout - Predefined contact pairs (`<contact><pair>`)
+# =============================================================================
+#
+# One record per `<contact><pair>`, mirroring MuJoCo's `m->pair_*` arrays.
+#
+# ⚠ A PREDEFINED PAIR IS NOT A FILTERED PAIR. It collides UNCONDITIONALLY:
+# `mj_collideGeoms` skips the contype/conaffinity test whenever `ipair >= 0`
+# (`engine_collision_driver.c:1583`), and the whole merge loop runs BEFORE the
+# `canCollide2` / `exclude_signature` tests at `:398-412`. Confirmed against the
+# 3.10.0 runtime, which emits the contact for every one of: masks cleared to
+# `contype=0 conaffinity=0`, an `<exclude>` naming both bodies, two geoms on the
+# SAME body, and a welded parent/child. So the pair path must bypass
+# `pair_body_filtered` AND the mask AND the plane-vs-world skips — not just one
+# of them.
+#
+# ⚠ THE PARAMETERS ARE PLAIN DEFAULTS, NOT DERIVED FROM THE TWO GEOMS.
+# `mjCPair::Compile` (`user/user_objects.cc`) reads as though an omitted
+# attribute is filled in from the geoms — max margin, max gap, max condim, max
+# friction, solmix-weighted solref/solimp. That code is DEAD on the XML path:
+# `mjs_defaultPair` (`user/user_init.c`) memsets the spec and writes concrete
+# defaults (condim 3, friction 1/1/0.005/1e-4/1e-4, `mj_defaultSolRefImp`), so
+# `mjuu_defined()` is true for every field and no derivation branch is ever
+# taken. Measured on 3.10.0 with two geoms deliberately given DIFFERENT solref,
+# friction, margin and condim:
+#
+#     dynamic geom pair -> condim 6, friction 1.5,  solref 0.0125  (mixed)
+#     <pair> no attrs   -> condim 3, friction 1.0,  solref 0.02    (defaults)
+#
+# Transcribing `mjCPair::Compile` would therefore have silently given every
+# attribute-less pair the WRONG friction and condim. ToddlerBot's `scene*.xml`
+# pairs carry `geom1`/`geom2` and nothing else, so this is the path that matters
+# and the error would have been invisible in the geometry.
+#
+# ⚠ `gap` IS NOT STORED. `mj_setContact` is called with `margin-gap` in every
+# reference tree here (3.3.6, 3.6.0, main), but the 3.10.0 runtime reports
+# `includemargin == margin` for a pair with `margin=.05 gap=.02`, and 3.11.0
+# filters on `margin + gap` instead — three different behaviours across the
+# versions. This engine models no gap anywhere (there is no `GEOM_IDX_GAP`), so
+# `full_parser` REJECTS a non-zero `gap` on a pair rather than pick one of the
+# three and silently drop it, the same way it rejects a non-default `solmix`.
+comptime MODEL_PAIR_SIZE: Int = 14
+
+comptime PAIR_IDX_GEOM1: Int = 0  # Geom index (compiler-sorted, g1 < g2)
+comptime PAIR_IDX_GEOM2: Int = 1
+comptime PAIR_IDX_CONDIM: Int = 2
+comptime PAIR_IDX_FRICTION: Int = 3  # Sliding (MuJoCo pair_friction[0..1])
+comptime PAIR_IDX_FRICTION_SPIN: Int = 4  # Torsional (pair_friction[2])
+comptime PAIR_IDX_FRICTION_ROLL: Int = 5  # Rolling (pair_friction[3..4])
+comptime PAIR_IDX_SOLREF_0: Int = 6
+comptime PAIR_IDX_SOLREF_1: Int = 7
+comptime PAIR_IDX_SOLIMP_0: Int = 8
+comptime PAIR_IDX_SOLIMP_1: Int = 9
+comptime PAIR_IDX_SOLIMP_2: Int = 10
+comptime PAIR_IDX_SOLIMP_3: Int = 11
+comptime PAIR_IDX_SOLIMP_4: Int = 12
+comptime PAIR_IDX_MARGIN: Int = 13
 
 
 # =============================================================================

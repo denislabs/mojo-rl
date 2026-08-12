@@ -392,6 +392,10 @@ struct EulerIntegrator[
     RNE_POST: Bool = False,
     MAX_CONDIM: Int = 3,
     NOSLIP_ITER: Int = 0,
+    # ⚠ APPENDED, NOT GROUPED WITH `NEXCLUDE`. These are all `Int`, so a
+    # mid-list insertion silently shifts every positional instantiation
+    # in `mojo_rl/envs/` — see the same note on `fields.Model`.
+    NPAIR: Int = 0,
 ](Movable):
     """Owns its scratch; steps contact-free dynamics on either target. See
     module docstring for what is deliberately not yet ported.
@@ -446,6 +450,7 @@ struct EulerIntegrator[
             Self.DTYPE, Self.NV, Self.NBODY, Self.NJOINT, Self.NGEOM,
             Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
             Self.NMESH_VERTS,
+            Self.NPAIR,
         ],
         ctx: Optional[DeviceContext] = None,
     ) raises:

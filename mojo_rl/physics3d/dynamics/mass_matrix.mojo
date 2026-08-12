@@ -638,6 +638,8 @@ def compute_mass_matrix[
     BATCH: Int = 1,
     PARALLEL: Bool = False,
     TREEWALK: Bool = False,
+    # Appended, not grouped with NEXCLUDE — see `fields.Model`.
+    NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
@@ -651,6 +653,7 @@ def compute_mass_matrix[
         NSITE,
         NEXCLUDE,
         NMESH_VERTS,
+        NPAIR,
     ],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
     ctx: Optional[DeviceContext] = None,

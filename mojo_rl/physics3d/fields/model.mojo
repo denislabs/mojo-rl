@@ -36,6 +36,7 @@ from ..gpu.constants import (
     MODEL_EQ_SIZE,
     MODEL_TENDON_SIZE,
     MODEL_SITE_SIZE,
+    MODEL_PAIR_SIZE,
     MODEL_MESH_META_SIZE,
     MODEL_MESH_POLY_SIZE,
     MAX_GPU_MESHES,
@@ -62,6 +63,13 @@ struct Model[
     NSITE: Int = 0,
     NEXCLUDE: Int = 0,
     NMESH_VERTS: Int = 0,
+    # ⚠ APPENDED, NOT GROUPED WITH `NEXCLUDE`. Every parameter here is an
+    # `Int`, so inserting one mid-list shifts every positional instantiation
+    # silently — `NMESH_VERTS` would take `NPAIR`'s value and mesh collision
+    # would switch itself off across the tree with nothing to compile-error
+    # on. That exact failure has happened here before. New dimensions go on
+    # the END.
+    NPAIR: Int = 0,
 ](Movable):
     """Static model config as one packed tensor per record family (13
     tensors). See module docstring."""
@@ -79,6 +87,7 @@ struct Model[
     comptime L_BODY_INVW = Layout.row_major(Self.NBODY, 2)
     comptime L_DOF_INVW = Layout.row_major(Self.NV)
     comptime L_EXCLUDE = Layout.row_major(Self.NEXCLUDE, 2)
+    comptime L_PAIR = Layout.row_major(Self.NPAIR, MODEL_PAIR_SIZE)
     comptime L_MESH_META = Layout.row_major(MAX_GPU_MESHES, MODEL_MESH_META_SIZE)
     comptime L_MESH_VERT = Layout.row_major(Self.NMESH_VERTS, 3)
     # Mesh POLYGON topology for the native multi-contact path. The capacities
@@ -104,6 +113,7 @@ struct Model[
     var body_invweight0: TensorImpl[Self.DTYPE]  # [NBODY, 2]
     var dof_invweight0: TensorImpl[Self.DTYPE]  # [NV]
     var excludes: TensorImpl[Self.DTYPE]  # [NEXCLUDE, 2]
+    var pairs: TensorImpl[Self.DTYPE]  # [NPAIR, MODEL_PAIR_SIZE]
     var mesh_meta: TensorImpl[Self.DTYPE]  # [MAX_GPU_MESHES, 4]
     var mesh_verts: TensorImpl[Self.DTYPE]  # [NMESH_VERTS, 3]
     var mesh_polys: TensorImpl[Self.DTYPE]  # [NMESH_POLY, 5]
@@ -131,6 +141,9 @@ struct Model[
         self.body_invweight0 = TensorImpl[Self.DTYPE].alloc(Self.NBODY * 2)
         self.dof_invweight0 = TensorImpl[Self.DTYPE].alloc(Self.NV)
         self.excludes = TensorImpl[Self.DTYPE].alloc(_at_least_one(Self.NEXCLUDE * 2))
+        self.pairs = TensorImpl[Self.DTYPE].alloc(
+            _at_least_one(Self.NPAIR * MODEL_PAIR_SIZE)
+        )
         self.mesh_meta = TensorImpl[Self.DTYPE].alloc(
             MAX_GPU_MESHES * MODEL_MESH_META_SIZE
         )
@@ -162,6 +175,7 @@ struct Model[
         self.body_invweight0.upload(ctx)
         self.dof_invweight0.upload(ctx)
         self.excludes.upload(ctx)
+        self.pairs.upload(ctx)
         self.mesh_meta.upload(ctx)
         self.mesh_verts.upload(ctx)
         self.mesh_polys.upload(ctx)

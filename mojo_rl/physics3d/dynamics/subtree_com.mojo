@@ -132,6 +132,8 @@ def compute_subtree_com[
     NEXCLUDE: Int = 0,
     NMESH_VERTS: Int = 0,
     BATCH: Int = 1,
+    # Appended, not grouped with NEXCLUDE — see `fields.Model`.
+    NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
@@ -145,6 +147,7 @@ def compute_subtree_com[
         NSITE,
         NEXCLUDE,
         NMESH_VERTS,
+        NPAIR,
     ],
     ctx: Optional[DeviceContext] = None,
 ) raises:

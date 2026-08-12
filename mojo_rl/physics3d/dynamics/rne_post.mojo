@@ -456,11 +456,14 @@ def compute_rne_post[
     NEXCLUDE: Int = 0,
     NMESH_VERTS: Int = 0,
     BATCH: Int = 1,
+    # Appended, not grouped with NEXCLUDE — see `fields.Model`.
+    NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
         DTYPE, NV, NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE,
         NEXCLUDE, NMESH_VERTS,
+        NPAIR,
     ],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
     ctx: Optional[DeviceContext] = None,

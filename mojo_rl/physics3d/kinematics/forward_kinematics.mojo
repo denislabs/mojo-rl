@@ -778,6 +778,8 @@ def forward_kinematics[
     NMESH_VERTS: Int = 0,
     BATCH: Int = 1,
     PARALLEL: Bool = False,
+    # Appended, not grouped with NEXCLUDE — see `fields.Model`.
+    NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
@@ -791,6 +793,7 @@ def forward_kinematics[
         NSITE,
         NEXCLUDE,
         NMESH_VERTS,
+        NPAIR,
     ],
     ctx: Optional[DeviceContext] = None,
 ) raises:
@@ -1419,6 +1422,8 @@ def compute_body_velocities[
     NMESH_VERTS: Int = 0,
     BATCH: Int = 1,
     PARALLEL: Bool = False,
+    # Appended, not grouped with NEXCLUDE — see `fields.Model`.
+    NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
@@ -1432,6 +1437,7 @@ def compute_body_velocities[
         NSITE,
         NEXCLUDE,
         NMESH_VERTS,
+        NPAIR,
     ],
     ctx: Optional[DeviceContext] = None,
 ) raises:

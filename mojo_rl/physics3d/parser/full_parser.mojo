@@ -35,6 +35,7 @@ from .xml_parser import (
     _find_joint_index_by_name,
     _find_body_index_by_name,
     _find_site_index_by_name,
+    _find_geom_index_by_name,
     _sqrt_f64,
 )
 from .flat_model import (
@@ -53,6 +54,7 @@ from .flat_model import (
     DefaultsData,
     EqualityData,
     ExcludeData,
+    PairData,
     TendonData,
     _TENDON_KIND_FIXED,
     _TENDON_KIND_SPATIAL,
@@ -3139,6 +3141,168 @@ def _fill_excludes(
         scan_pos = tag_end + 1 if tag_end != -1 else ne + 1
 
 
+def _fill_pairs(
+
+    contact_sec: String,
+    worldbody: String,
+    mut result: FlatModelDef,
+) raises:
+    """Parse `<contact><pair>`: fill result.pairs[] with predefined geom pairs.
+
+    ⚠ EVERY PARAMETER DEFAULTS TO MuJoCo'S GLOBAL DEFAULT, NOT TO A VALUE MIXED
+    FROM THE TWO GEOMS. `mjCPair::Compile` looks like it derives an omitted
+    attribute from `geom1`/`geom2` (max condim, max friction, max margin,
+    solmix-weighted solref/solimp) but `mjs_defaultPair` has already written
+    concrete defaults into every field, so `mjuu_defined()` is true throughout
+    and not one of those branches runs. Measured on the 3.10.0 runtime with two
+    deliberately mismatched geoms: an attribute-less pair reports condim 3,
+    friction 1.0 and solref 0.02 while the same two geoms colliding dynamically
+    report condim 6, friction 1.5 and solref 0.0125. See `MODEL_PAIR_SIZE`.
+
+    Everything this engine cannot represent is REJECTED here rather than
+    silently dropped, following the `solmix` precedent:
+
+      * `gap` — the three reference trees and the runtime disagree about what
+        gap even does (`margin-gap` in 3.3.6/3.6.0/main, `includemargin ==
+        margin` measured on 3.10.0, `margin + gap` in 3.11.0), and this engine
+        models no gap at all.
+      * anisotropic `friction` — `pair_friction` is a FIVE-vector filled
+        positionally, so `friction=".7"` leaves `friction[1]` at its default 1.0
+        and means an ELLIPTIC cone. Our contact record carries one sliding
+        coefficient for both tangent directions and one rolling coefficient for
+        both. Every `<pair friction=...>` in Menagerie is isotropic (`"1 1"`,
+        `"2 2 0.01 0.0001 0.0001"`), so this rejects nothing that exists today.
+    """
+    var scan_pos = 0
+    var clen = contact_sec.byte_length()
+
+    while scan_pos < clen:
+        var np = contact_sec.find("<pair", scan_pos)
+        if np == -1:
+            break
+        var tag = _extract_opening_tag(contact_sec, np)
+
+        var g1_name = _trim(_extract_attr(tag, "geom1"))
+        var g2_name = _trim(_extract_attr(tag, "geom2"))
+        if g1_name.byte_length() == 0 or g2_name.byte_length() == 0:
+            raise Error(
+                "physics3d: <contact><pair> requires both geom1 and geom2."
+            )
+
+        var g1 = _find_geom_index_by_name(worldbody, g1_name)
+        if g1 < 0:
+            raise Error(
+                "physics3d: <contact><pair> references unknown geom1='"
+                + g1_name
+                + "'."
+            )
+        var g2 = _find_geom_index_by_name(worldbody, g2_name)
+        if g2 < 0:
+            raise Error(
+                "physics3d: <contact><pair> references unknown geom2='"
+                + g2_name
+                + "'."
+            )
+
+        # MuJoCo's compiler SORTS the two geoms — declaring `geom1="b"
+        # geom2="a"` still yields pair_geom1 < pair_geom2 (measured). The
+        # duplicate-suppression test in the detection loops compares an
+        # ordered (gi, gj) against this record, so the order has to be the
+        # same one the loops iterate in.
+        var pd = PairData(g1, g2) if g1 <= g2 else PairData(g2, g1)
+
+        var gap_s = _trim(_extract_attr(tag, "gap"))
+        if gap_s.byte_length() > 0 and _parse_float(gap_s) != 0.0:
+            raise Error(
+                "physics3d: <contact><pair gap=> is not supported (this"
+                " engine models no contact gap, and MuJoCo 3.3.6/3.6.0,"
+                " 3.10.0 and 3.11.0 disagree about its meaning). Remove the"
+                " attribute or extend the contact record."
+            )
+
+        var condim_s = _trim(_extract_attr(tag, "condim"))
+        if condim_s.byte_length() > 0:
+            pd.condim = Int(_parse_float(condim_s))
+            if (
+                pd.condim != 1
+                and pd.condim != 3
+                and pd.condim != 4
+                and pd.condim != 6
+            ):
+                raise Error(
+                    "physics3d: invalid condim in <contact><pair> (must be"
+                    " 1, 3, 4 or 6)."
+                )
+
+        var fr_s = _extract_attr(tag, "friction")
+        if fr_s.byte_length() > 0:
+            # Positional fill over MuJoCo's five-vector
+            # [slide1, slide2, spin, roll1, roll2]; anything not given keeps
+            # the default, which is what makes a lone value anisotropic.
+            var f0 = 1.0
+            var f1 = 1.0
+            var f2 = 0.005
+            var f3 = 0.0001
+            var f4 = 0.0001
+            var fv = List[String]()
+            _split_spaces(fr_s, fv)
+            if len(fv) >= 1:
+                f0 = _parse_float(fv[0])
+            if len(fv) >= 2:
+                f1 = _parse_float(fv[1])
+            if len(fv) >= 3:
+                f2 = _parse_float(fv[2])
+            if len(fv) >= 4:
+                f3 = _parse_float(fv[3])
+            if len(fv) >= 5:
+                f4 = _parse_float(fv[4])
+            if f0 != f1 or f3 != f4:
+                raise Error(
+                    "physics3d: anisotropic <contact><pair friction=> is not"
+                    " supported — friction[0] must equal friction[1] and"
+                    " friction[3] must equal friction[4]. Note MuJoCo fills"
+                    " this five-vector POSITIONALLY, so a single value such"
+                    " as friction='0.7' leaves friction[1] at its default"
+                    " 1.0 and is anisotropic."
+                )
+            pd.friction = f0
+            pd.friction_spin = f2
+            pd.friction_roll = f3
+
+        var sr_s = _extract_attr(tag, "solref")
+        if sr_s.byte_length() > 0:
+            var sv = List[String]()
+            _split_spaces(sr_s, sv)
+            if len(sv) >= 1:
+                pd.solref_0 = _parse_float(sv[0])
+            if len(sv) >= 2:
+                pd.solref_1 = _parse_float(sv[1])
+
+        var si_s = _extract_attr(tag, "solimp")
+        if si_s.byte_length() > 0:
+            var iv = List[String]()
+            _split_spaces(si_s, iv)
+            if len(iv) >= 1:
+                pd.solimp_0 = _parse_float(iv[0])
+            if len(iv) >= 2:
+                pd.solimp_1 = _parse_float(iv[1])
+            if len(iv) >= 3:
+                pd.solimp_2 = _parse_float(iv[2])
+            if len(iv) >= 4:
+                pd.solimp_3 = _parse_float(iv[3])
+            if len(iv) >= 5:
+                pd.solimp_4 = _parse_float(iv[4])
+
+        var mg_s = _trim(_extract_attr(tag, "margin"))
+        if mg_s.byte_length() > 0:
+            pd.margin = _parse_float(mg_s)
+
+        result.pairs.append(pd)
+
+        var tag_end = contact_sec.find(">", np)
+        scan_pos = tag_end + 1 if tag_end != -1 else np + 1
+
+
 def _resolve_geom_materials(
 
     worldbody: String,
@@ -3305,6 +3469,9 @@ xml_in: String) raises -> FlatModelDef:
     _fill_tendon_equalities(equality_sec, _extract_section(xml, "tendon"), xml, result)
     # Contact exclusion pairs
     _fill_excludes(contact_sec, worldbody, result)
+    # Predefined contact pairs — resolved by GEOM name, so this must run
+    # after the worldbody walk has grouped geoms by body.
+    _fill_pairs(contact_sec, worldbody, result)
     # Post-pass: resolve geom material="name" references
     _resolve_geom_materials(worldbody, asset_sec, result)
 

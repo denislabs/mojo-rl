@@ -55,6 +55,7 @@ struct ParsedModel:
     var NSITE: Int  # number of <site> entries in <worldbody>
     var NEQ: Int  # number of equality constraints (<weld> + <connect> in <equality>)
     var NEXCLUDE: Int  # number of <exclude> entries in <contact>
+    var NPAIR: Int  # number of <pair> entries in <contact>
     var NTENDON: Int  # number of <fixed> + <spatial> entries in <tendon>
     var ANGLE_DEG: Bool  # True when <compiler angle="degree"/>
     var TIMESTEP: Float64  # <option timestep="..."/>
@@ -76,6 +77,7 @@ struct ParsedModel:
         nsite: Int = 0,
         neq: Int = 0,
         nexclude: Int = 0,
+        npair: Int = 0,
         ntendon: Int = 0,
         angle_deg: Bool = False,
         timestep: Float64 = 0.01,
@@ -95,6 +97,7 @@ struct ParsedModel:
         self.NSITE = nsite
         self.NEQ = neq
         self.NEXCLUDE = nexclude
+        self.NPAIR = npair
         self.NTENDON = ntendon
         self.ANGLE_DEG = angle_deg
         self.TIMESTEP = timestep
@@ -928,6 +931,22 @@ def _find_site_index_by_name(worldbody: String, site_name: String) -> Int:
     function is a claim with a shelf life.
     """
     return _index_by_name_grouped(worldbody, "<site", site_name)
+
+
+def _find_geom_index_by_name(worldbody: String, geom_name: String) -> Int:
+    """0-based index of `<geom name="geom_name">` in MuJoCo order, or -1.
+
+    Added for `<contact><pair geom1= geom2=>`, whose two references are named
+    geoms.
+
+    Body-grouped for the same reason the joint and site resolvers are:
+    `_fill_model` ends with `_stable_group_by_body_geoms(result.geoms)`, so a
+    raw text ordinal would index a permuted array. The failure would be quiet
+    and total — a pair is a geom-index pair and nothing downstream re-checks it,
+    so a mis-resolved index collides two unrelated geoms with the pair's
+    parameters and drops the one the model asked for.
+    """
+    return _index_by_name_grouped(worldbody, "<geom", geom_name)
 
 
 def _count_joints_with_type(xml: String, joint_type: String) -> Int:
@@ -2202,8 +2221,11 @@ def merge_mjcf(*xmls: String) -> String:
     ⚠ ANYTHING NOT IN THAT LIST IS SILENTLY DROPPED, with no diagnostic. No
     section is dropped deliberately any more — <contact> was, on the stale
     grounds of "no exclude/pair support yet", until 2026-08-03; see the note
-    at `all_contact` below. `<pair>` remains unparsed, but that is a gap in
-    `full_parser`, not here.
+    at `all_contact` below. `<pair>` inside it was likewise unparsed until
+    2026-08-12; `full_parser._fill_pairs` reads it now, and carrying the
+    section here is what makes that work for an included model — Menagerie
+    declares its pairs in `scene.xml` and the geoms they name in the robot
+    file it includes.
 
     <sensor> was in that dropped list until 2026-07-31. Our parser ignores the
     section either way — the ported configs read the underlying fields through
@@ -2258,8 +2280,11 @@ def merge_mjcf(*xmls: String) -> String:
     # is not an error. This is the THIRD section dropped this way (<tendon>,
     # then <option>'s <flag> children, now <contact>); the pattern each time is
     # a stale claim in the docstring outliving the limitation that justified it.
-    # ⚠ `<pair>` inside the section is still unparsed and still silently
-    # ignored — carrying the text does not change that.
+    # `<pair>` inside the section was ALSO silently ignored until 2026-08-12,
+    # when `_fill_pairs` and the three detection loops landed. Carrying the
+    # text here is what makes that work for a merged model, which is the case
+    # that matters: Menagerie declares its pairs in `scene.xml` and the geoms
+    # they name in the robot file it includes.
     var all_contact = String("")
     # <option> is merged attribute-wise, but MJCF also allows <flag> CHILDREN
     # inside it. Those were silently dropped before 2026-07-29, which quietly
@@ -2528,6 +2553,7 @@ def parse_xml(xml: String) -> ParsedModel:
     # ---- Contact exclusions (<contact> section) -----------------------------
     var contact_sec = _extract_section(xml_clean, "contact")
     var nexclude = _count_tag(contact_sec, "exclude")
+    var npair = _count_tag(contact_sec, "pair")
 
     # ---- Tendons (<tendon> section) -----------------------------------------
     var tendon_sec = _extract_section(xml_clean, "tendon")
@@ -2563,6 +2589,7 @@ def parse_xml(xml: String) -> ParsedModel:
         nsite,
         neq,
         nexclude,
+        npair,
         ntendon,
         angle_deg,
         timestep,

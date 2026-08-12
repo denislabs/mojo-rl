@@ -135,7 +135,7 @@ def _roll[M: ModelDefFromXML, SOLVER: StaticString]() raises -> Float64:
     var ctx = DeviceContext()
     var mf = Model[
         DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0, M.NPAIR,
     ]()
     M.init_fields[DTYPE, 0](ctx, mf)
 
@@ -148,6 +148,7 @@ def _roll[M: ModelDefFromXML, SOLVER: StaticString]() raises -> Float64:
         M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
         M.CONE_TYPE, 1, SOLVER=SOLVER,
         MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER,
+        NPAIR = M.NPAIR,
     ]()
     for _ in range(NSTEPS):
         integ.step["cpu", CONTACTS=True](d, mf)

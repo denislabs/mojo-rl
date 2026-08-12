@@ -499,7 +499,7 @@ def _check_rows[M: ModelDefFromXML](xml: String, label: String) raises:
     var ctx = DeviceContext()
     var mf = Model[
         DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0, M.NPAIR,
     ]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[
@@ -647,7 +647,7 @@ def _our_roll[M: ModelDefFromXML]() raises -> Float64:
     var ctx = DeviceContext()
     var mf = Model[
         DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0, M.NPAIR,
     ]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
@@ -659,6 +659,10 @@ def _our_roll[M: ModelDefFromXML]() raises -> Float64:
         M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
         M.CONE_TYPE, 1, SOLVER="newton",
         MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER,
+        # By keyword: `NPAIR` is the LAST integrator parameter, not a
+        # neighbour of `NEXCLUDE`, so a positional slot here would land in
+        # `CONE_TYPE`.
+        NPAIR = M.NPAIR,
     ]()
     for _ in range(NSTEPS_ROLL):
         integ.step["cpu", CONTACTS=True](d, mf)

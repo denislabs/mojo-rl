@@ -137,7 +137,7 @@ def _parity[M: ModelDefFromXML, SOLVER: StaticString](
     """Step CPU and GPU side by side, then prove the connect actually ran."""
     var mf = Model[
         DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
+        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0, M.NPAIR,
     ]()
     M.init_fields[DTYPE, 0](ctx, mf)
 
@@ -166,6 +166,7 @@ def _parity[M: ModelDefFromXML, SOLVER: StaticString](
         M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
         M.CONE_TYPE, BATCH, SOLVER=SOLVER,
         MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER,
+        NPAIR = M.NPAIR,
     ]()
     ig.prepare_gpu(ctx)
     var ic = EulerIntegrator[
@@ -173,6 +174,7 @@ def _parity[M: ModelDefFromXML, SOLVER: StaticString](
         M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
         M.CONE_TYPE, BATCH, SOLVER=SOLVER,
         MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER,
+        NPAIR = M.NPAIR,
     ]()
 
     # Step-0 GPU qvel, kept for the non-vacuity comparison below.

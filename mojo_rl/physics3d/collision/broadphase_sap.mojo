@@ -43,6 +43,11 @@ from ..gpu.constants import (
     MODEL_META_SIZE,
     METADATA_SIZE,
     MODEL_META_IDX_NEXCLUDE,
+    MODEL_META_IDX_NPAIR,
+    MODEL_PAIR_SIZE,
+    PAIR_IDX_GEOM1,
+    PAIR_IDX_GEOM2,
+    PAIR_IDX_MARGIN,
     BODY_IDX_PARENT,
     BODY_IDX_WELDID,
     META_IDX_NUM_CONTACTS,
@@ -56,6 +61,7 @@ from ..gpu.constants import (
     CONTACT_IDX_NY,
     CONTACT_IDX_NZ,
     CONTACT_IDX_DIST,
+    CONTACT_IDX_INCLUDEMARGIN,
     CONTACT_IDX_FRICTION,
     CONTACT_IDX_FRICTION_SPIN,
     CONTACT_IDX_FRICTION_ROLL,
@@ -131,6 +137,8 @@ from .native_multicontact import (
 from .contact_detection import (
     mix_contact_params,
     pair_body_filtered,
+    find_predefined_pair,
+    pair_params,
     _fill_pair_solparams,
     _plane_box_contacts,
     _plane_cylinder_contacts,
@@ -215,6 +223,8 @@ def _detect_contacts_sap_env[
     NEXCLUDE: Int,
     NMESH_VERTS: Int,
     BATCH: Int,
+    # Appended rather than grouped with NEXCLUDE — see `fields.Model`.
+    NPAIR: Int,
 ](
     env: Int,
     xpos: LayoutTensor[
@@ -234,6 +244,9 @@ def _detect_contacts_sap_env[
     ],
     excludes: LayoutTensor[
         DTYPE, Layout.row_major(NEXCLUDE, 2), MutAnyOrigin
+    ],
+    pairs: LayoutTensor[
+        DTYPE, Layout.row_major(NPAIR, MODEL_PAIR_SIZE), MutAnyOrigin
     ],
     mesh_meta: LayoutTensor[
         DTYPE,
@@ -329,6 +342,43 @@ def _detect_contacts_sap_env[
         aabb_min_z[g] = wpz[g] - he[2]
         aabb_max_z[g] = wpz[g] + he[2]
 
+    # Inflate by any predefined pair's margin. MuJoCo never subjects a
+    # `<contact><pair>` to the broadphase at all — the merge loop collides it
+    # whatever the AABBs say — so a pair whose two geoms sit further apart
+    # than their extents but closer than its margin has to survive the sweep
+    # below. Conservative by construction: a wider AABB only offers the narrow
+    # phase more candidates, it never changes a contact.
+    #
+    # ⚠ ONLY the pair margin. The geoms' own `margin` is NOT folded in here,
+    # though `mj_filterSphere` does exactly that and this sweep is the same
+    # kind of bound — that is a separate pre-existing divergence, latent while
+    # every geom margin in the tree is small next to the geometry, and one
+    # that would move dog/quadruped/sawyer if changed. Left alone deliberately
+    # rather than smuggled into a commit about pairs.
+    var n_pair_aabb = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NPAIR]))
+    if n_pair_aabb > NPAIR:
+        n_pair_aabb = NPAIR
+    for p in range(n_pair_aabb):
+        var pm = rebind[Scalar[DTYPE]](pairs[p, PAIR_IDX_MARGIN])
+        if pm <= Scalar[DTYPE](0):
+            continue
+        for side in range(2):
+            var g = Int(
+                rebind[Scalar[DTYPE]](
+                    pairs[p, PAIR_IDX_GEOM1 if side == 0 else PAIR_IDX_GEOM2]
+                )
+            )
+            if Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_TYPE])) == (
+                GEOM_PLANE
+            ):
+                continue  # planes have no AABB here
+            aabb_min_x[g] -= pm
+            aabb_max_x[g] += pm
+            aabb_min_y[g] -= pm
+            aabb_max_y[g] += pm
+            aabb_min_z[g] -= pm
+            aabb_max_z[g] += pm
+
     # ------------------------------------------------------------------
     # 3. Plane vs non-plane pairs.
     # ------------------------------------------------------------------
@@ -377,33 +427,46 @@ def _detect_contacts_sap_env[
             var gj_body = Int(
                 rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_BODY])
             )
-            if gj_body == 0:
-                continue
-            # DEFECT 24 — this loop had NO body filter. MuJoCo runs the plane
-            # path through `filterBodyPair` like every other pair
-            # (`engine_collision_driver.c:1277`), which discards on
-            # `weldbody1 == weldbody2`; a jointless body welds to the world, so
-            # every static geom was colliding with the ground here while the
-            # O(N^2) path correctly emitted nothing. See `pair_body_filtered`.
-            if pair_body_filtered[DTYPE, NBODY, NEXCLUDE](
-                gi_body, gj_body, bodies, mmeta, excludes
-            ):
-                continue
-            var gj_contype = Int(
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
+            # `<contact><pair>` bypasses every filter below — see the same
+            # gate in `_detect_contacts_env`. A plane/geom pair is a normal
+            # thing to declare (it is the ONLY form ToddlerBot's scene files
+            # use), and the world plane's body is 0, so without this the
+            # `gj_body == 0` skip and the weld test would drop it.
+            var ipair = find_predefined_pair[DTYPE, NPAIR](
+                gi, gj, pairs, mmeta
             )
-            var gj_conaffinity = Int(
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONAFFINITY])
-            )
-            if (gi_contype & gj_conaffinity) == 0 and (
-                gj_contype & gi_conaffinity
-            ) == 0:
-                continue
+            if ipair < 0:
+                if gj_body == 0:
+                    continue
+                # DEFECT 24 — this loop had NO body filter. MuJoCo runs the
+                # plane path through `filterBodyPair` like every other pair
+                # (`engine_collision_driver.c:1277`), which discards on
+                # `weldbody1 == weldbody2`; a jointless body welds to the
+                # world, so every static geom was colliding with the ground
+                # here while the O(N^2) path correctly emitted nothing. See
+                # `pair_body_filtered`.
+                if pair_body_filtered[DTYPE, NBODY, NEXCLUDE](
+                    gi_body, gj_body, bodies, mmeta, excludes
+                ):
+                    continue
+                var gj_contype = Int(
+                    rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
+                )
+                var gj_conaffinity = Int(
+                    rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONAFFINITY])
+                )
+                if (gi_contype & gj_conaffinity) == 0 and (
+                    gj_contype & gi_conaffinity
+                ) == 0:
+                    continue
 
             # MuJoCo's full contact-parameter rule, PRIORITY FIRST — shared
             # with `detect_contacts` so the two paths cannot drift, which is
-            # exactly how the SAP ellipsoid branch went missing.
-            var _mx = mix_contact_params[DTYPE](
+            # exactly how the SAP ellipsoid branch went missing. A predefined
+            # pair supplies its own parameters instead, unmixed.
+            var _mx = pair_params[DTYPE, NPAIR](
+                ipair, pairs
+            ) if ipair >= 0 else mix_contact_params[DTYPE](
                 Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
                 Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])),
                 rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION]),
@@ -436,7 +499,10 @@ def _detect_contacts_sap_env[
             var _n0 = num_contacts
             var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
             var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
+            # Sum of the two geoms' margins, or the PAIR's own — never both.
             var cm = mgi + mgj  # MuJoCo 3.5+: sum of margins
+            if ipair >= 0:
+                cm = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_MARGIN])
 
             # Pose IN THE PLANE'S FRAME, so `ground_z` below is 0 and the
             # branch arithmetic is the same as it always was.
@@ -483,6 +549,7 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
                     contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
                     contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cm
                     contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                     contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                     contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
@@ -534,6 +601,7 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
                     contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
                     contacts[env, c_off + CONTACT_IDX_DIST] = dist1
+                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cm
                     contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                     contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                     contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
@@ -568,6 +636,7 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
                     contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
                     contacts[env, c_off + CONTACT_IDX_DIST] = dist2
+                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cm
                     contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                     contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                     contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
@@ -664,6 +733,7 @@ def _detect_contacts_sap_env[
                     contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
                     contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
                     contacts[env, c_off + CONTACT_IDX_DIST] = diste
+                    contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cm
                     contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                     contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                     contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
@@ -860,28 +930,42 @@ def _detect_contacts_sap_env[
             var gj_body = Int(
                 rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_BODY])
             )
-            # MuJoCo's body-pair filter — weld, weld-parent and exclude. See
-            # `pair_body_filtered`; shared with the O(N^2) loop and the plane
-            # loop above, which had no body filter at all (defect 24).
-            if pair_body_filtered[DTYPE, NBODY, NEXCLUDE](
-                gi_body, gj_body, bodies, mmeta, excludes
-            ):
-                continue
-            var gj_contype = Int(
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
+            # `<contact><pair>` bypasses every filter below — see the same
+            # gate in `_detect_contacts_env`. The AABB tests above still
+            # apply, which is why the AABBs are inflated by the pair margin
+            # where they are built: MuJoCo collides predefined pairs outside
+            # the broadphase entirely, so a pair must not be prunable by a
+            # bound that ignores its margin.
+            var ipair = find_predefined_pair[DTYPE, NPAIR](
+                gi, gj, pairs, mmeta
             )
-            var gj_conaffinity = Int(
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONAFFINITY])
-            )
-            if (gi_contype & gj_conaffinity) == 0 and (
-                gj_contype & gi_conaffinity
-            ) == 0:
-                continue
+            if ipair < 0:
+                # MuJoCo's body-pair filter — weld, weld-parent and exclude.
+                # See `pair_body_filtered`; shared with the O(N^2) loop and
+                # the plane loop above, which had no body filter at all
+                # (defect 24).
+                if pair_body_filtered[DTYPE, NBODY, NEXCLUDE](
+                    gi_body, gj_body, bodies, mmeta, excludes
+                ):
+                    continue
+                var gj_contype = Int(
+                    rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
+                )
+                var gj_conaffinity = Int(
+                    rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONAFFINITY])
+                )
+                if (gi_contype & gj_conaffinity) == 0 and (
+                    gj_contype & gi_conaffinity
+                ) == 0:
+                    continue
 
             # MuJoCo's full contact-parameter rule, PRIORITY FIRST — shared
             # with `detect_contacts` so the two paths cannot drift, which is
-            # exactly how the SAP ellipsoid branch went missing.
-            var _mx = mix_contact_params[DTYPE](
+            # exactly how the SAP ellipsoid branch went missing. A predefined
+            # pair supplies its own parameters instead, unmixed.
+            var _mx = pair_params[DTYPE, NPAIR](
+                ipair, pairs
+            ) if ipair >= 0 else mix_contact_params[DTYPE](
                 Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
                 Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])),
                 rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION]),
@@ -914,7 +998,10 @@ def _detect_contacts_sap_env[
             var _n0 = num_contacts
             var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
             var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
+            # Sum of the two geoms' margins, or the PAIR's own — never both.
             var cm = mgi + mgj  # MuJoCo 3.5+: sum of margins
+            if ipair >= 0:
+                cm = rebind[Scalar[DTYPE]](pairs[ipair, PAIR_IDX_MARGIN])
 
             var pj_x = wpx[gj]
             var pj_y = wpy[gj]
@@ -1506,6 +1593,7 @@ def _detect_contacts_sap_env[
                 contacts[env, c_off + CONTACT_IDX_NY] = ny
                 contacts[env, c_off + CONTACT_IDX_NZ] = nz
                 contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                contacts[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = cm
                 contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
                 contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                 contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
@@ -1562,6 +1650,8 @@ def _detect_contacts_sap_fields_kernel[
     NEXCLUDE: Int,
     NMESH_VERTS: Int,
     BATCH: Int,
+    # Appended rather than grouped with NEXCLUDE — see `fields.Model`.
+    NPAIR: Int,
 ](
     xpos: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
@@ -1580,6 +1670,9 @@ def _detect_contacts_sap_fields_kernel[
     ],
     excludes: LayoutTensor[
         DTYPE, Layout.row_major(NEXCLUDE, 2), MutAnyOrigin
+    ],
+    pairs: LayoutTensor[
+        DTYPE, Layout.row_major(NPAIR, MODEL_PAIR_SIZE), MutAnyOrigin
     ],
     mesh_meta: LayoutTensor[
         DTYPE,
@@ -1616,9 +1709,9 @@ def _detect_contacts_sap_fields_kernel[
         return
     _detect_contacts_sap_env[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEXCLUDE,
-        NMESH_VERTS, BATCH,
+        NMESH_VERTS, BATCH, NPAIR,
     ](
-        env, xpos, xquat, geoms, bodies, mmeta, excludes, mesh_meta,
+        env, xpos, xquat, geoms, bodies, mmeta, excludes, pairs, mesh_meta,
         mesh_verts, mesh_polys, mesh_polyvert, mesh_polymap,
         mesh_vert_polymap, contacts, smeta,
     )
@@ -1639,6 +1732,7 @@ def detect_contacts_sap[
     NEXCLUDE: Int = 0,
     NMESH_VERTS: Int = 0,
     BATCH: Int = 1,
+    NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
@@ -1652,6 +1746,7 @@ def detect_contacts_sap[
         NSITE,
         NEXCLUDE,
         NMESH_VERTS,
+        NPAIR,
     ],
     ctx: Optional[DeviceContext] = None,
 ) raises:
@@ -1664,6 +1759,7 @@ def detect_contacts_sap[
     comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
     comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
     comptime L_EXCLUDE = Layout.row_major(NEXCLUDE, 2)
+    comptime L_PAIR = Layout.row_major(NPAIR, MODEL_PAIR_SIZE)
     comptime L_MESH_META = Layout.row_major(
         MAX_GPU_MESHES, MODEL_MESH_META_SIZE
     )
@@ -1683,6 +1779,7 @@ def detect_contacts_sap[
         var bodies_v = m.bodies.lt["cpu", L_BODY]()
         var mmeta_v = m.meta.lt["cpu", L_MMETA]()
         var excludes_v = m.excludes.lt["cpu", L_EXCLUDE]()
+        var pairs_v = m.pairs.lt["cpu", L_PAIR]()
         var mesh_meta_v = m.mesh_meta.lt["cpu", L_MESH_META]()
         var mesh_verts_v = m.mesh_verts.lt["cpu", L_MESH_VERT]()
         var mesh_polys_v = m.mesh_polys.lt["cpu", L_MESH_POLY]()
@@ -1694,10 +1791,10 @@ def detect_contacts_sap[
         for e in range(BATCH):
             _detect_contacts_sap_env[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-                NEXCLUDE, NMESH_VERTS, BATCH,
+                NEXCLUDE, NMESH_VERTS, BATCH, NPAIR,
             ](
                 e, xpos_v, xquat_v, geoms_v, bodies_v, mmeta_v,
-                excludes_v, mesh_meta_v, mesh_verts_v, mesh_polys_v,
+                excludes_v, pairs_v, mesh_meta_v, mesh_verts_v, mesh_polys_v,
                 mesh_polyvert_v, mesh_polymap_v, mesh_vert_polymap_v,
                 contacts_v, smeta_v,
             )
@@ -1707,7 +1804,7 @@ def detect_contacts_sap[
         c.enqueue_function[
             _detect_contacts_sap_fields_kernel[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-                NEXCLUDE, NMESH_VERTS, BATCH,
+                NEXCLUDE, NMESH_VERTS, BATCH, NPAIR,
             ]
         ](
             d.xpos.lt["gpu", L_B3](),
@@ -1716,6 +1813,7 @@ def detect_contacts_sap[
             m.bodies.lt["gpu", L_BODY](),
             m.meta.lt["gpu", L_MMETA](),
             m.excludes.lt["gpu", L_EXCLUDE](),
+            m.pairs.lt["gpu", L_PAIR](),
             m.mesh_meta.lt["gpu", L_MESH_META](),
             m.mesh_verts.lt["gpu", L_MESH_VERT](),
             m.mesh_polys.lt["gpu", L_MESH_POLY](),
@@ -1744,6 +1842,7 @@ def detect_contacts_auto[
     NEXCLUDE: Int = 0,
     NMESH_VERTS: Int = 0,
     BATCH: Int = 1,
+    NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
@@ -1757,6 +1856,7 @@ def detect_contacts_auto[
         NSITE,
         NEXCLUDE,
         NMESH_VERTS,
+        NPAIR,
     ],
     ctx: Optional[DeviceContext] = None,
 ) raises:
@@ -1771,10 +1871,10 @@ def detect_contacts_auto[
     comptime if NGEOM >= SAP_THRESHOLD:
         detect_contacts_sap[
             target, DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            NEQUALITY, NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, BATCH,
+            NEQUALITY, NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, BATCH, NPAIR,
         ](d, m, ctx)
     else:
         detect_contacts[
             target, DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            NEQUALITY, NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, BATCH,
+            NEQUALITY, NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, BATCH, NPAIR,
         ](d, m, ctx)

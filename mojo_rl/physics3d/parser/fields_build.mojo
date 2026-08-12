@@ -157,6 +157,22 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_NEQUALITY,
     MODEL_META_IDX_NTENDON,
     MODEL_META_IDX_NEXCLUDE,
+    MODEL_META_IDX_NPAIR,
+    MODEL_PAIR_SIZE,
+    PAIR_IDX_GEOM1,
+    PAIR_IDX_GEOM2,
+    PAIR_IDX_CONDIM,
+    PAIR_IDX_FRICTION,
+    PAIR_IDX_FRICTION_SPIN,
+    PAIR_IDX_FRICTION_ROLL,
+    PAIR_IDX_SOLREF_0,
+    PAIR_IDX_SOLREF_1,
+    PAIR_IDX_SOLIMP_0,
+    PAIR_IDX_SOLIMP_1,
+    PAIR_IDX_SOLIMP_2,
+    PAIR_IDX_SOLIMP_3,
+    PAIR_IDX_SOLIMP_4,
+    PAIR_IDX_MARGIN,
     GEOM_IDX_TYPE,
     GEOM_IDX_BODY,
     GEOM_IDX_POS_X,
@@ -556,6 +572,8 @@ def build_model_fields_from_flat[
     IGR_MIN: Int,
     IGR_MAX: Int,
     SETTOTALMASS: Float64,
+    # Appended rather than grouped with NEXCLUDE — see `fields.Model`.
+    NPAIR: Int = 0,
 ](
     fmd: FlatModelDef,
     mut mf: Model[
@@ -569,6 +587,7 @@ def build_model_fields_from_flat[
         NSITE,
         NEXCLUDE,
         NMESH_VERTS,
+        NPAIR,
     ],
 ) raises:
     """Fill every `mf` record tensor from the parsed `fmd` — see module
@@ -598,6 +617,7 @@ def build_model_fields_from_flat[
         else MAX_TENDON
     )
     mf.meta.data[MODEL_META_IDX_NEXCLUDE] = Scalar[DTYPE](len(fmd.excludes))
+    mf.meta.data[MODEL_META_IDX_NPAIR] = Scalar[DTYPE](len(fmd.pairs))
 
     # Contact solref/solimp: MuJoCo model defaults, then geom[0]'s parsed
     # values (floor / first worldbody geom inherits <default><geom>).
@@ -1294,6 +1314,43 @@ def build_model_fields_from_flat[
         var ex = fmd.excludes[i]
         mf.excludes.data[i * 2 + 0] = Scalar[DTYPE](ex.body1)
         mf.excludes.data[i * 2 + 1] = Scalar[DTYPE](ex.body2)
+
+    # ── predefined contact pairs ───────────────────────────────────────────
+    # ⚠ RAISES rather than clamping. `NPAIR` is the sole knob and is derived
+    # from the same `<contact>` text `_fill_pairs` walks, so a mismatch means
+    # the two disagree about the model — and a clamp would drop the tail
+    # pairs, which is invisible: the model still simulates, just without some
+    # of the collisions it declared. Compare the tendon count above, which
+    # clamps to `MAX_TENDON`.
+    if len(fmd.pairs) > NPAIR:
+        raise Error(
+            "physics3d: parsed "
+            + String(len(fmd.pairs))
+            + " <contact><pair> records but NPAIR is "
+            + String(NPAIR)
+            + ". Pass npair=<count> to ModelDefFromXML."
+        )
+    for i in range(len(fmd.pairs)):
+        var pr = fmd.pairs[i]
+        var o = i * MODEL_PAIR_SIZE
+        mf.pairs.data[o + PAIR_IDX_GEOM1] = Scalar[DTYPE](pr.geom1)
+        mf.pairs.data[o + PAIR_IDX_GEOM2] = Scalar[DTYPE](pr.geom2)
+        mf.pairs.data[o + PAIR_IDX_CONDIM] = Scalar[DTYPE](pr.condim)
+        mf.pairs.data[o + PAIR_IDX_FRICTION] = Scalar[DTYPE](pr.friction)
+        mf.pairs.data[o + PAIR_IDX_FRICTION_SPIN] = Scalar[DTYPE](
+            pr.friction_spin
+        )
+        mf.pairs.data[o + PAIR_IDX_FRICTION_ROLL] = Scalar[DTYPE](
+            pr.friction_roll
+        )
+        mf.pairs.data[o + PAIR_IDX_SOLREF_0] = Scalar[DTYPE](pr.solref_0)
+        mf.pairs.data[o + PAIR_IDX_SOLREF_1] = Scalar[DTYPE](pr.solref_1)
+        mf.pairs.data[o + PAIR_IDX_SOLIMP_0] = Scalar[DTYPE](pr.solimp_0)
+        mf.pairs.data[o + PAIR_IDX_SOLIMP_1] = Scalar[DTYPE](pr.solimp_1)
+        mf.pairs.data[o + PAIR_IDX_SOLIMP_2] = Scalar[DTYPE](pr.solimp_2)
+        mf.pairs.data[o + PAIR_IDX_SOLIMP_3] = Scalar[DTYPE](pr.solimp_3)
+        mf.pairs.data[o + PAIR_IDX_SOLIMP_4] = Scalar[DTYPE](pr.solimp_4)
+        mf.pairs.data[o + PAIR_IDX_MARGIN] = Scalar[DTYPE](pr.margin)
 
     # ── <compiler inertiafromgeom> + settotalmass (staging mutations) ─────
     comptime if IFG_MODE == 1:

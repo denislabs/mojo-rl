@@ -138,6 +138,7 @@ struct ModelDefFromXML[
     nsite: Int = 0,
     neq: Int = 0,
     nexclude: Int = 0,
+    npair: Int = 0,
     obs_qpos_skip: Int = 1,
     obs_dim_override: Int = -1,
     action_dim_override: Int = -1,
@@ -177,6 +178,10 @@ struct ModelDefFromXML[
         nsite:   Total site count (default 0).
         neq:           Number of equality constraints (default 0).
         nexclude:      Number of contact exclusion pairs (default 0).
+        npair:         Number of `<contact><pair>` records (default 0). This is
+            the ONLY knob — it both counts and sizes the slab. Contrast
+            `neq`/`max_equality`, where passing the count alone leaves storage
+            at zero and the constraint silently vanishes.
         obs_qpos_skip: Leading qpos DOF to exclude from obs (default 1).
         obs_dim_override: Override OBS_DIM (default -1 = compute from nq-skip+nv).
             Use when custom_extract_obs_gpu produces different dimensionality than
@@ -235,6 +240,7 @@ struct ModelDefFromXML[
     # tensor — a zero-extent operand segfaults.
     comptime NA_F: Int = Self.NA if Self.NA > 0 else 1
     comptime NEXCLUDE: Int = Self.nexclude
+    comptime NPAIR: Int = Self.npair
     comptime OBS_DIM: Int = Self.obs_dim_override if Self.obs_dim_override > 0 else (
         Self.nq - Self.obs_qpos_skip + Self.nv
     )
@@ -598,6 +604,7 @@ struct ModelDefFromXML[
             Self.NSITE,
             Self.NEXCLUDE,
             NMESHV,
+            Self.NPAIR,
         ],
     ) raises:
         """Spec-direct fields model build (G4): parse the XML into a
@@ -984,6 +991,7 @@ struct ModelDefFromXML[
             igr[0],
             igr[1],
             stm,
+            Self.NPAIR,
         ](fmd, mf)
 
         # Reference pose + fields-native invweight0 (G1).

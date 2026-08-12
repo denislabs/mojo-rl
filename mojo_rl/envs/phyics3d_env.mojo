@@ -112,6 +112,7 @@ struct Phyics3dEnv[
         Self.NSITE,
         Self.MODEL_DEF.NEXCLUDE,
         Self.NMESH_VERTS,
+        Self.MODEL_DEF.NPAIR,
     ]
     var d: Data[
         Self.DTYPE,
@@ -131,6 +132,10 @@ struct Phyics3dEnv[
         Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE,
         Self.NMESH_VERTS,
         Self.MODEL_DEF.CONE_TYPE, 1, SOLVER = Self.SOLVER,
+        # Forwarded for the same reason `MAX_CONDIM` is (see below): the
+        # default silently disables the feature. By KEYWORD because `NPAIR`
+        # is the last integrator parameter, not a neighbour of `NEXCLUDE`.
+        NPAIR = Self.MODEL_DEF.NPAIR,
     ]
     # ⚠ `MAX_CONDIM` AND `NOSLIP_ITER` MUST BE FORWARDED FROM THE MODEL DEF.
     # Both default to a value that silently disables the feature (3 and 0), and
@@ -154,6 +159,7 @@ struct Phyics3dEnv[
         RNE_POST = Self.CONFIG.RNE_POST,
         MAX_CONDIM = Self.MODEL_DEF.MAX_CONDIM,
         NOSLIP_ITER = Self.MODEL_DEF.NOSLIP_ITER,
+        NPAIR = Self.MODEL_DEF.NPAIR,
     ]
     var integ_rk4: Self.IntegRK4
     var integ_euler: Self.IntegEuler
@@ -251,6 +257,7 @@ struct Phyics3dEnv[
                 Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
                 Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
                 Self.MODEL_DEF.NEXCLUDE, Self.NMESH_VERTS, 1,
+                NPAIR = Self.MODEL_DEF.NPAIR,
             ](self.d, self.mf, None)
         except e:
             print("Phyics3dEnv._fields_fk: FK error:", e)
@@ -267,6 +274,7 @@ struct Phyics3dEnv[
                 Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
                 Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
                 Self.MODEL_DEF.NEXCLUDE, Self.NMESH_VERTS, 1,
+                NPAIR = Self.MODEL_DEF.NPAIR,
             ](self.d, self.mf, None)
         except e:
             print("Phyics3dEnv._fields_vel: velocity error:", e)
@@ -386,6 +394,7 @@ struct Phyics3dEnv[
                     Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
                     Self.MODEL_DEF.MAX_EQUALITY, Self.MODEL_DEF.MAX_TENDON,
                     Self.NSITE, Self.MODEL_DEF.NEXCLUDE, Self.NMESH_VERTS, 1,
+                    NPAIR = Self.MODEL_DEF.NPAIR,
                 ](self.d, self.mf, None)
             except:
                 return

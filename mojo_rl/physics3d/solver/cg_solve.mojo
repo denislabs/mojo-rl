@@ -947,6 +947,8 @@ def solve_cg[
     NMESH_VERTS: Int = 0,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     BATCH: Int = 1,
+    # Appended, not grouped with NEXCLUDE — see `fields.Model`.
+    NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
     mut m: Model[
@@ -960,6 +962,7 @@ def solve_cg[
         NSITE,
         NEXCLUDE,
         NMESH_VERTS,
+        NPAIR,
     ],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
     mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH, _],

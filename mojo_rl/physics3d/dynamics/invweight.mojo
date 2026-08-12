@@ -134,11 +134,13 @@ def compute_invweight0[
     NSITE: Int = 0,
     NEXCLUDE: Int = 0,
     NMESH_VERTS: Int = 0,
+    # Appended, not grouped with NEXCLUDE — see `fields.Model`.
+    NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
     mut mf: Model[
         DTYPE, NV, NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE, NEXCLUDE,
-        NMESH_VERTS,
+        NMESH_VERTS, NPAIR,
     ],
     mut sc: DynamicsScratch[DTYPE, NV, NBODY, 1],
 ) raises:
@@ -179,19 +181,19 @@ def compute_invweight0[
     # ── fields pipeline: FK -> subtree_com -> cdof -> CRBA -> +armature -> LDL -> M^-1
     forward_kinematics[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
-        NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1,
+        NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1, NPAIR=NPAIR,
     ](d, mf, None)
     compute_subtree_com[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
-        NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1,
+        NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1, NPAIR=NPAIR,
     ](d, mf, None)
     compute_cdof[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
-        NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1,
+        NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1, NPAIR=NPAIR,
     ](d, mf, sc, None)
     compute_mass_matrix[
         "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
-        NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1,
+        NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1, NPAIR=NPAIR,
     ](d, mf, sc, None)
 
     # Add armature to the diagonal (matches legacy mass_matrix.mojo:447-457).

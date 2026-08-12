@@ -274,6 +274,10 @@ struct ImplicitIntegrator[
     SOLVER: StaticString = "pgs",
     PARALLEL_GPU: Bool = False,
     CRBA_TREEWALK: Bool = False,
+    # ⚠ APPENDED, NOT GROUPED WITH `NEXCLUDE`. These are all `Int`, so a
+    # mid-list insertion silently shifts every positional instantiation
+    # in `mojo_rl/envs/` — see the same note on `fields.Model`.
+    NPAIR: Int = 0,
 ](Movable):
     """Owns its scratch (dynamics + contact + implicit); steps full-implicit
     dynamics on either target. See module docstring for the algorithm and
@@ -327,6 +331,7 @@ struct ImplicitIntegrator[
             Self.DTYPE, Self.NV, Self.NBODY, Self.NJOINT, Self.NGEOM,
             Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
             Self.NMESH_VERTS,
+            Self.NPAIR,
         ],
         ctx: Optional[DeviceContext] = None,
     ) raises:
