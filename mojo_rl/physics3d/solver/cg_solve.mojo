@@ -821,11 +821,11 @@ def _cg_solve_env[
 
     comptime if NEQUALITY > 0:
         _equality_env[
-            DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE,
+            DTYPE, NQ, NV, NBODY, NJOINT, NEQUALITY, V_SIZE,
             BATCH, SOLVER_ITER_GPU,
         ](
-            env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
-            equality, body_invweight0, cdof,
+            env, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+            equality, body_invweight0, dof_invweight0, cdof,
             m_inv, qacc_constrained,
         )
 

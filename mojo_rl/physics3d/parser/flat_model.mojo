@@ -854,6 +854,7 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
 # Equality constraint type constants (matches physics3d/types.mojo)
 comptime _EQ_CONNECT: Int = 0
 comptime _EQ_WELD: Int = 1
+comptime _EQ_JOINT: Int = 2  # mjEQ_JOINT — objects are JOINTS, data is polycoef
 
 # Equality object semantics (matches EQ_OBJ_* in physics3d/types.mojo).
 comptime _EQ_OBJ_BODY: Int = 0

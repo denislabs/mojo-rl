@@ -19,9 +19,16 @@ def _max_one[n: Int]() -> Int:
 
 
 # Equality constraint types (MuJoCo mjtEq subset)
+# ⚠ THESE ARE MuJoCo's `mjtEq` VALUES AND MUST STAY THAT WAY. `EQ_TENDON` was
+# 2 until 2026-08-12, which is `mjEQ_JOINT` in MuJoCo — harmless only because
+# the constant was declared and never read anywhere (tendon equalities live on
+# the TENDON record, flagged by `TENDON_IDX_IS_EQUALITY`, not in the equality
+# slab). Renumbered when `mjEQ_JOINT` landed, so the packed `EQ_IDX_TYPE`
+# values can be diffed against `m.eq_type` directly.
 comptime EQ_CONNECT: Int = 0  # Point-to-point ball joint (3 position rows)
 comptime EQ_WELD: Int = 1  # Rigid attachment (3 position + 3 orientation rows)
-comptime EQ_TENDON: Int = 2  # Fixed tendon (1 bilateral row)
+comptime EQ_JOINT: Int = 2  # Couple two scalar joints with a quartic (1 row)
+comptime EQ_TENDON: Int = 3  # Tendon equality (1 bilateral row; on the tendon)
 
 # Equality object semantics (MuJoCo `eq_objtype`, mjOBJ_BODY / mjOBJ_SITE).
 # See `EQ_IDX_OBJTYPE` in `gpu/constants.mojo` for why the site form is stored

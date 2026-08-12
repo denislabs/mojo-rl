@@ -52,7 +52,7 @@ hypothesis about the code. GREP THE CALL SITES."""
 from std.math import abs, pow, sqrt
 from layout import Layout, LayoutTensor
 
-from ..types import _max_one, EQ_WELD
+from ..types import _max_one, EQ_WELD, EQ_JOINT
 from ..joint_types import JNT_FREE, JNT_BALL
 from ..kinematics.quat_math import quat_mul, quat_conjugate, quat_rotate
 from ..gpu.constants import (
@@ -72,6 +72,7 @@ from ..gpu.constants import (
     JOINT_IDX_BODY_ID,
     JOINT_IDX_DOF_ADR,
     JOINT_IDX_QPOS_ADR,
+    JOINT_IDX_QPOS0,
     EQ_IDX_TYPE,
     EQ_IDX_BODY_A,
     EQ_IDX_BODY_B,
@@ -387,6 +388,7 @@ def _angular_jacobian_row_eq[
 @always_inline
 def build_weld_equality_rows[
     DTYPE: DType,
+    NQ: Int,
     NV: Int,
     NBODY: Int,
     NJOINT: Int,
@@ -397,6 +399,7 @@ def build_weld_equality_rows[
     MINVJ_EQ_SIZE: Int,
 ](
     env: Int,
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
     qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
     xpos: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
@@ -421,6 +424,9 @@ def build_weld_equality_rows[
     ],
     body_invweight0: LayoutTensor[
         DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
+    ],
+    dof_invweight0: LayoutTensor[
+        DTYPE, Layout.row_major(NV), MutAnyOrigin
     ],
     cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
     m_inv: LayoutTensor[
@@ -502,6 +508,140 @@ def build_weld_equality_rows[
             sr_tc, sr_dr, si_dmax,
             rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
         )
+
+        # ── mjEQ_JOINT — ONE row coupling two scalar joints ──────────────────
+        #
+        # engine_core_constraint.c:556. With `dif = q2 - q2_ref`:
+        #
+        #   cpos  = q1 - q1_ref - p0 - (p1*dif + p2*dif^2 + p3*dif^3 + p4*dif^4)
+        #   deriv = p1 + 2*p2*dif + 3*p3*dif^2 + 4*p4*dif^3
+        #   J     = e_dof1 - deriv * e_dof2
+        #
+        # With joint2 absent (`eq_obj2id < 0`) the polynomial drops out and the
+        # row is `q1 - q1_ref - p0` against `e_dof1` alone.
+        #
+        # ⚠ THE REFERENCE IS `qpos0`, NOT ZERO. MuJoCo subtracts
+        # `m->qpos0[jnt_qposadr]` from BOTH joints; on a joint with a nonzero
+        # `ref` the two differ and the pair would be held at the wrong offset.
+        #
+        # ⚠ `body_a`/`body_b` ARE JOINT INDICES HERE — the slots are reused
+        # per type exactly as MuJoCo reuses `eq_obj1id`. See `EQ_IDX_TYPE`.
+        #
+        # ⚠ `eq_K` IS `J M^-1 J^T`, NOT the spring constant. The callers
+        # recover `R = 1/eq_inv_K_imp - eq_K` and use `1/R` as `efc_D`, so
+        # putting the stiffness here silently changes every consumer's R. The
+        # weld path above has the same contract; this branch mirrors it.
+        # diagApprox for a joint equality is `dof_invweight0` summed over the
+        # one or two dofs (engine_core_constraint.c, mj_diagApprox).
+        if eq_type == EQ_JOINT:
+            if num_eq_rows >= MAX_EQ_ROWS:
+                break
+            if body_a < 0 or body_a >= NJOINT:
+                continue
+            var jdadr1 = Int(
+                rebind[Scalar[DTYPE]](joints[body_a, JOINT_IDX_DOF_ADR])
+            )
+            if jdadr1 < 0 or jdadr1 >= NV:
+                continue
+
+            var p0 = rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_ANCHOR_AX])
+            var p1 = rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_ANCHOR_AY])
+            var p2 = rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_ANCHOR_AZ])
+            var p3 = rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_ANCHOR_BX])
+            var p4 = rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_ANCHOR_BY])
+
+            var jqadr1 = Int(
+                rebind[Scalar[DTYPE]](joints[body_a, JOINT_IDX_QPOS_ADR])
+            )
+            var jres = (
+                rebind[Scalar[DTYPE]](qpos[env, jqadr1])
+                - rebind[Scalar[DTYPE]](joints[body_a, JOINT_IDX_QPOS0])
+                - p0
+            )
+
+            for i in range(V_SIZE):
+                J_row[i] = Scalar[DTYPE](0)
+            J_row[jdadr1] = Scalar[DTYPE](1)
+            var jdA = rebind[Scalar[DTYPE]](dof_invweight0[jdadr1])
+
+            if body_b >= 0 and body_b < NJOINT:
+                var jqadr2 = Int(
+                    rebind[Scalar[DTYPE]](joints[body_b, JOINT_IDX_QPOS_ADR])
+                )
+                var jdadr2 = Int(
+                    rebind[Scalar[DTYPE]](joints[body_b, JOINT_IDX_DOF_ADR])
+                )
+                var jdif = (
+                    rebind[Scalar[DTYPE]](qpos[env, jqadr2])
+                    - rebind[Scalar[DTYPE]](joints[body_b, JOINT_IDX_QPOS0])
+                )
+                var jd2 = jdif * jdif
+                jres -= p1 * jdif + p2 * jd2 + p3 * jd2 * jdif + p4 * jd2 * jd2
+                var jderiv = (
+                    p1
+                    + Scalar[DTYPE](2) * p2 * jdif
+                    + Scalar[DTYPE](3) * p3 * jd2
+                    + Scalar[DTYPE](4) * p4 * jd2 * jdif
+                )
+                if jdadr2 >= 0 and jdadr2 < NV:
+                    J_row[jdadr2] = J_row[jdadr2] - jderiv
+                    jdA += rebind[Scalar[DTYPE]](dof_invweight0[jdadr2])
+
+            # Impedance on the row's own residual. `dim` is 1 here, so
+            # MuJoCo's `mju_norm(efc_pos+i, dim)` is exactly |jres| — none of
+            # the weld's norm-over-six-rows subtlety applies.
+            var jimp: Scalar[DTYPE]
+            if si_dmin == si_dmax or si_width <= Scalar[DTYPE](0):
+                jimp = Scalar[DTYPE](0.5) * (si_dmin + si_dmax)
+            else:
+                var jxe = abs(jres) / si_width
+                var jye: Scalar[DTYPE]
+                if jxe <= Scalar[DTYPE](0):
+                    jye = Scalar[DTYPE](0)
+                elif jxe >= Scalar[DTYPE](1):
+                    jye = Scalar[DTYPE](1)
+                elif si_power == Scalar[DTYPE](1):
+                    jye = jxe
+                elif jxe <= si_midpoint:
+                    jye = pow(jxe, si_power) / pow(
+                        si_midpoint, si_power - Scalar[DTYPE](1)
+                    )
+                else:
+                    jye = Scalar[DTYPE](1) - pow(
+                        Scalar[DTYPE](1) - jxe, si_power
+                    ) / pow(
+                        Scalar[DTYPE](1) - si_midpoint,
+                        si_power - Scalar[DTYPE](1),
+                    )
+                jimp = si_dmin + jye * (si_dmax - si_dmin)
+            if jimp < Scalar[DTYPE](1e-6):
+                jimp = Scalar[DTYPE](1e-6)
+
+            var jk = Scalar[DTYPE](0)
+            var jv = Scalar[DTYPE](0)
+            for i in range(NV):
+                eq_J[num_eq_rows * NV + i] = J_row[i]
+                var jmij = Scalar[DTYPE](0)
+                for k2 in range(NV):
+                    jmij += (
+                        rebind[Scalar[DTYPE]](m_inv[env, i * NV + k2])
+                        * J_row[k2]
+                    )
+                eq_MinvJ[num_eq_rows * NV + i] = jmij
+                jk += J_row[i] * jmij
+                jv += J_row[i] * rebind[Scalar[DTYPE]](qvel[env, i])
+            if jk < Scalar[DTYPE](1e-10):
+                jk = Scalar[DTYPE](1e-10)
+
+            var jR = (Scalar[DTYPE](1) - jimp) / jimp * jdA
+            if jR < Scalar[DTYPE](1e-14):
+                jR = Scalar[DTYPE](1e-14)
+
+            eq_K[num_eq_rows] = jk
+            eq_bias[num_eq_rows] = eq_K_spring * jimp * jres + eq_B_damp * jv
+            eq_inv_K_imp[num_eq_rows] = Scalar[DTYPE](1) / (jk + jR)
+            num_eq_rows += 1
+            continue
 
         # Compute world anchor A: xpos[body_a] + quat_rotate(xquat[body_a], anchor_a)
         var xpos_a_x = rebind[Scalar[DTYPE]](
@@ -1007,6 +1147,7 @@ def build_weld_equality_rows[
 @always_inline
 def _equality_env[
     DTYPE: DType,
+    NQ: Int,
     NV: Int,
     NBODY: Int,
     NJOINT: Int,
@@ -1016,6 +1157,7 @@ def _equality_env[
     NUM_ITERATIONS: Int,
 ](
     env: Int,
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
     qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
     xpos: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
@@ -1040,6 +1182,9 @@ def _equality_env[
     ],
     body_invweight0: LayoutTensor[
         DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
+    ],
+    dof_invweight0: LayoutTensor[
+        DTYPE, Layout.row_major(NV), MutAnyOrigin
     ],
     cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
     m_inv: LayoutTensor[
@@ -1086,11 +1231,11 @@ def _equality_env[
     )
 
     var num_eq_rows = build_weld_equality_rows[
-        DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH,
+        DTYPE, NQ, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH,
         MAX_EQ_ROWS, MINVJ_EQ_SIZE,
     ](
-        env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
-        equality, body_invweight0, cdof, m_inv,
+        env, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+        equality, body_invweight0, dof_invweight0, cdof, m_inv,
         eq_K, eq_bias, eq_inv_K_imp, eq_J, eq_MinvJ,
     )
 

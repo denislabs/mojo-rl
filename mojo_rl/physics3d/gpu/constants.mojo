@@ -331,14 +331,28 @@ comptime GEOM_IDX_PRIORITY: Int = 30
 
 comptime MODEL_EQ_SIZE: Int = 22  # Per equality constraint
 
-comptime EQ_IDX_TYPE: Int = 0  # EQ_CONNECT=0 or EQ_WELD=1
-comptime EQ_IDX_BODY_A: Int = 1
-comptime EQ_IDX_BODY_B: Int = 2  # -1 for world
-comptime EQ_IDX_ANCHOR_AX: Int = 3
-comptime EQ_IDX_ANCHOR_AY: Int = 4
-comptime EQ_IDX_ANCHOR_AZ: Int = 5
-comptime EQ_IDX_ANCHOR_BX: Int = 6
-comptime EQ_IDX_ANCHOR_BY: Int = 7
+# ⚠ THE SLOTS ARE REUSED PER TYPE, exactly as MuJoCo reuses `eq_obj1id` /
+# `eq_obj2id` / `eq_data` for every `mjtEq`. Read the type FIRST:
+#
+#   EQ_CONNECT / EQ_WELD : BODY_A/BODY_B are BODY indices, ANCHOR_A* and
+#                          ANCHOR_B* are `eq_data[0:3]` / `eq_data[3:6]`.
+#   EQ_JOINT             : BODY_A/BODY_B are JOINT indices (BODY_B = -1 for
+#                          the single-joint form), and ANCHOR_AX..ANCHOR_BY
+#                          are `polycoef[0..4]` — MuJoCo's `eq_data[0:5]`,
+#                          the same five floats in the same order.
+#
+# Naming them BODY_*/ANCHOR_* is a wart inherited from when connect and weld
+# were the only types; the alternative was renaming them across nine files
+# mid-arc. The rule that matters is: NEVER read these without branching on
+# EQ_IDX_TYPE.
+comptime EQ_IDX_TYPE: Int = 0  # EQ_CONNECT=0, EQ_WELD=1, EQ_JOINT=2 (mjtEq)
+comptime EQ_IDX_BODY_A: Int = 1  # body index, or JOINT index when EQ_JOINT
+comptime EQ_IDX_BODY_B: Int = 2  # -1 for world / for a single-joint EQ_JOINT
+comptime EQ_IDX_ANCHOR_AX: Int = 3  # EQ_JOINT: polycoef[0]
+comptime EQ_IDX_ANCHOR_AY: Int = 4  # EQ_JOINT: polycoef[1]
+comptime EQ_IDX_ANCHOR_AZ: Int = 5  # EQ_JOINT: polycoef[2]
+comptime EQ_IDX_ANCHOR_BX: Int = 6  # EQ_JOINT: polycoef[3]
+comptime EQ_IDX_ANCHOR_BY: Int = 7  # EQ_JOINT: polycoef[4]
 comptime EQ_IDX_ANCHOR_BZ: Int = 8
 comptime EQ_IDX_RELPOSE_X: Int = 9
 comptime EQ_IDX_RELPOSE_Y: Int = 10

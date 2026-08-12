@@ -474,11 +474,11 @@ def _island_pgs_solve_env[
     # this call-site gate matches bit-identically for NEQUALITY == 0).
     comptime if NEQUALITY > 0:
         _equality_env[
-            DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE,
+            DTYPE, NQ, NV, NBODY, NJOINT, NEQUALITY, V_SIZE,
             BATCH, PGS_ITERATIONS,
         ](
-            env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
-            equality, body_invweight0, cdof,
+            env, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+            equality, body_invweight0, dof_invweight0, cdof,
             m_inv, qacc_constrained,
         )
 

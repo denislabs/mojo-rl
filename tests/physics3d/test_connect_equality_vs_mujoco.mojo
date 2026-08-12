@@ -537,6 +537,8 @@ def _check_rows[M: ModelDefFromXML](xml: String, label: String) raises:
     comptime L_B3 = Layout.row_major(1, M.NBODY * 3)
     comptime L_B4 = Layout.row_major(1, M.NBODY * 4)
     comptime L_NV = Layout.row_major(1, M.NV)
+    comptime L_NQ = Layout.row_major(1, M.NQ)
+    comptime L_DW = Layout.row_major(M.NV)
     comptime L_JT = Layout.row_major(M.NJOINT, MODEL_JOINT_SIZE)
     comptime L_BD = Layout.row_major(M.NBODY, MODEL_BODY_SIZE)
     comptime L_MT = Layout.row_major(MODEL_META_SIZE)
@@ -546,9 +548,10 @@ def _check_rows[M: ModelDefFromXML](xml: String, label: String) raises:
     comptime L_MI = Layout.row_major(1, M.NV * M.NV)
 
     var n = build_weld_equality_rows[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.MAX_EQUALITY, M.NV, 1, WR, WJ,
+        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_EQUALITY, M.NV, 1, WR, WJ,
     ](
         0,
+        d.qpos.lt["cpu", L_NQ](),
         d.qvel.lt["cpu", L_NV](),
         d.xpos.lt["cpu", L_B3](),
         d.xquat.lt["cpu", L_B4](),
@@ -558,6 +561,7 @@ def _check_rows[M: ModelDefFromXML](xml: String, label: String) raises:
         mf.meta.lt["cpu", L_MT](),
         mf.equality.lt["cpu", L_EQ](),
         mf.body_invweight0.lt["cpu", L_IW](),
+        mf.dof_invweight0.lt["cpu", L_DW](),
         sc.cdof.lt["cpu", L_CD](),
         sc.m_inv.lt["cpu", L_MI](),
         w_K, w_bias, w_D, w_J, w_MinvJ,

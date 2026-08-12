@@ -251,7 +251,7 @@ from mojo_rl.physics3d.gpu.constants import (
     SITE_IDX_QUAT_Y,
     SITE_IDX_QUAT_Z,
 )
-from .flat_model import FlatModelDef, _EQ_CONNECT, _EQ_WELD
+from .flat_model import FlatModelDef, _EQ_CONNECT, _EQ_WELD, _EQ_JOINT
 
 
 def _jnt_qpos_size(jnt_type: Int) -> Int:
@@ -1239,7 +1239,11 @@ def build_model_fields_from_flat[
         if num_eq >= MAX_EQUALITY:
             break
         var ed = fmd.equalities[i]
-        if ed.eq_type != _EQ_CONNECT and ed.eq_type != _EQ_WELD:
+        if (
+            ed.eq_type != _EQ_CONNECT
+            and ed.eq_type != _EQ_WELD
+            and ed.eq_type != _EQ_JOINT
+        ):
             continue
         var o = num_eq * MODEL_EQ_SIZE
         mf.equality.data[o + EQ_IDX_TYPE] = Scalar[DTYPE](ed.eq_type)

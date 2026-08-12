@@ -982,10 +982,10 @@ def _newton_solve_env[
                 fill=Scalar[DTYPE](0)
             )
             var n_w = build_weld_equality_rows[
-                DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH, WR, WJ
+                DTYPE, NQ, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH, WR, WJ
             ](
-                env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
-                equality, body_invweight0, cdof, m_inv,
+                env, qpos, qvel, xpos, xquat, subtree_com, joints, bodies,
+                mmeta, equality, body_invweight0, dof_invweight0, cdof, m_inv,
                 w_K, w_bias, w_D, w_J, w_MinvJ,
             )
             for r in range(n_w):
@@ -1504,10 +1504,10 @@ def _newton_solve_env[
         var we_J = InlineArray[Scalar[DTYPE], EQJ](fill=Scalar[DTYPE](0))
         var we_MinvJ = InlineArray[Scalar[DTYPE], EQJ](fill=Scalar[DTYPE](0))
         var nwe = build_weld_equality_rows[
-            DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH, EQR, EQJ
+            DTYPE, NQ, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH, EQR, EQJ
         ](
-            env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
-            equality, body_invweight0, cdof, m_inv,
+            env, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+            equality, body_invweight0, dof_invweight0, cdof, m_inv,
             we_K, we_bias, we_D, we_J, we_MinvJ,
         )
         for r in range(nwe):
@@ -3394,10 +3394,10 @@ def _newton_blocked_fields_kernel[
                 fill=Scalar[DTYPE](0)
             )
             var n_w = build_weld_equality_rows[
-                DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH, WR, WJ
+                DTYPE, NQ, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH, WR, WJ
             ](
-                env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
-                equality, body_invweight0, cdof, m_inv,
+                env, qpos, qvel, xpos, xquat, subtree_com, joints, bodies,
+                mmeta, equality, body_invweight0, dof_invweight0, cdof, m_inv,
                 w_K, w_bias, w_D, w_J, w_MinvJ,
             )
             for r in range(n_w):

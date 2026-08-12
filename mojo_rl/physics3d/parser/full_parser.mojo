@@ -60,6 +60,7 @@ from .flat_model import (
     FlatModelDef,
     _EQ_CONNECT,
     _EQ_WELD,
+    _EQ_JOINT,
     _EQ_OBJ_BODY,
     _EQ_OBJ_SITE,
     _GEOM_PLANE,
@@ -2353,6 +2354,46 @@ def _fill_actuators(
 # =============================================================================
 
 
+def _fill_equality_solparams(tag: String, mut ed: EqualityData) raises:
+    """Read the attributes EVERY equality type shares: torquescale, solref,
+    solimp.
+
+    ⚠ EXTRACTED SO THERE IS EXACTLY ONE COPY. `_fill_equality`'s loop has
+    three exits now (weld/connect body, connect site, joint), and the site
+    branch originally `continue`d straight past this block — so every
+    site-based equality silently took the MJCF defaults instead of its own
+    solref/solimp. ToddlerBot's connects carry `solref="0.004 1"`, a far
+    stiffer constraint than the 0.02/1 they were getting. A shared tail that
+    any branch can skip is a defect waiting to be re-introduced; a call is not.
+    """
+    # torquescale (weld) — MuJoCo's eq_data[10], scaling BOTH the orientation
+    # residual and the rotational Jacobian. Default 1.
+    var ts_s = _trim(_extract_attr(tag, "torquescale"))
+    if ts_s.byte_length() > 0:
+        ed.torquescale = _parse_float(ts_s)
+
+    var sr_s = _extract_attr(tag, "solref")
+    if sr_s.byte_length() > 0:
+        var sv = _parse_vec3(sr_s)
+        ed.solref_0 = sv[0]
+        ed.solref_1 = sv[1]
+
+    var si_s = _extract_attr(tag, "solimp")
+    if si_s.byte_length() > 0:
+        var parts = List[String]()
+        _split_spaces(si_s, parts)
+        if len(parts) >= 1:
+            ed.solimp_0 = _parse_float(parts[0])
+        if len(parts) >= 2:
+            ed.solimp_1 = _parse_float(parts[1])
+        if len(parts) >= 3:
+            ed.solimp_2 = _parse_float(parts[2])
+        if len(parts) >= 4:
+            ed.solimp_3 = _parse_float(parts[3])
+        if len(parts) >= 5:
+            ed.solimp_4 = _parse_float(parts[4])
+
+
 def _fill_equality(
 
     equality_sec: String,
@@ -2365,11 +2406,17 @@ def _fill_equality(
     var elen = equality_sec.byte_length()
 
     while scan_pos < elen:
-        # Find next <weld or <connect tag
+        # Find next <weld, <connect or <joint tag.
+        #
+        # `<joint>` inside `<equality>` is `mjEQ_JOINT` — a coupling between
+        # two scalar joints — and has nothing to do with `<worldbody>`'s
+        # `<joint>`. `equality_sec` is the `<equality>` section only, so the
+        # names cannot collide.
         var nw = equality_sec.find("<weld", scan_pos)
         var nc = equality_sec.find("<connect", scan_pos)
+        var nj = equality_sec.find("<joint", scan_pos)
 
-        var earliest = _min_valid(nw, nc)
+        var earliest = _min_valid(_min_valid(nw, nc), nj)
         if earliest == -1:
             break
 
@@ -2379,8 +2426,80 @@ def _fill_equality(
         # Determine type
         if earliest == nw:
             ed.eq_type = _EQ_WELD
+        elif earliest == nj:
+            ed.eq_type = _EQ_JOINT
         else:
             ed.eq_type = _EQ_CONNECT
+
+        # ── mjEQ_JOINT: q1 coupled to q2 by a quartic in (q2 - q2_ref) ───────
+        #
+        # A different shape from connect/weld — the objects are JOINTS, there
+        # is no anchor, and the five `polycoef` values ride in the slots
+        # connect/weld use for anchors. That is MuJoCo's own arrangement:
+        # `eq_obj1id`/`eq_obj2id` and `eq_data[0:5]` are reused per `mjtEq`
+        # (engine_core_constraint.c:556). Handled here and skipped by the
+        # body/site machinery below.
+        if ed.eq_type == _EQ_JOINT:
+            ed.objtype = _EQ_OBJ_BODY  # unused for this type; keep it defined
+
+            var j1_name = _extract_attr(tag, "joint1")
+            if j1_name.byte_length() == 0:
+                raise Error(
+                    "physics3d: <equality><joint> requires joint1."
+                )
+            ed.body_a = _find_joint_index_by_name(worldbody, j1_name)
+            if ed.body_a < 0:
+                raise Error(
+                    "physics3d: <equality><joint> references unknown"
+                    " joint1='" + j1_name + "'."
+                )
+
+            # joint2 is OPTIONAL. Absent means "hold joint1 at its reference
+            # plus polycoef[0]" — MuJoCo's `id[1] < 0` branch, which drops the
+            # polynomial entirely. -1 is the marker, matching `eq_obj2id`.
+            var j2_name = _extract_attr(tag, "joint2")
+            if j2_name.byte_length() > 0:
+                ed.body_b = _find_joint_index_by_name(worldbody, j2_name)
+                if ed.body_b < 0:
+                    raise Error(
+                        "physics3d: <equality><joint> references unknown"
+                        " joint2='" + j2_name + "'."
+                    )
+            else:
+                ed.body_b = -1
+
+            # polycoef — MJCF default "0 1 0 0 0", i.e. q1 tracks q2 one-to-one.
+            # ⚠ The DEFAULT IS NOT ALL ZEROS. All-zero would pin q1 to its own
+            # reference and ignore joint2 completely, which looks like a
+            # working constraint and is a different one.
+            ed.anchor_a_x = 0.0
+            ed.anchor_a_y = 1.0
+            ed.anchor_a_z = 0.0
+            ed.anchor_b_x = 0.0
+            ed.anchor_b_y = 0.0
+            var pc_s = _extract_attr(tag, "polycoef")
+            if pc_s.byte_length() > 0:
+                var pc = List[String]()
+                _split_spaces(pc_s, pc)
+                if len(pc) >= 1:
+                    ed.anchor_a_x = _parse_float(pc[0])
+                if len(pc) >= 2:
+                    ed.anchor_a_y = _parse_float(pc[1])
+                else:
+                    ed.anchor_a_y = 0.0
+                if len(pc) >= 3:
+                    ed.anchor_a_z = _parse_float(pc[2])
+                if len(pc) >= 4:
+                    ed.anchor_b_x = _parse_float(pc[3])
+                if len(pc) >= 5:
+                    ed.anchor_b_y = _parse_float(pc[4])
+
+            _fill_equality_solparams(tag, ed)
+            result.equalities.append(ed)
+            eq_count += 1
+            var j_end = equality_sec.find(">", earliest)
+            scan_pos = j_end + 1 if j_end != -1 else elen
+            continue
 
         # ── BODY vs SITE semantics (MuJoCo's `eq_objtype`) ───────────────────
         #
@@ -2585,34 +2704,7 @@ def _fill_equality(
                 ed.relpose_z = _parse_float(parts[6])
                 ed.relpose_w = _parse_float(parts[3])
 
-        # torquescale (weld) — MuJoCo's eq_data[10], scaling BOTH the
-        # orientation residual and the rotational Jacobian. Default 1.
-        var ts_s = _trim(_extract_attr(tag, "torquescale"))
-        if ts_s.byte_length() > 0:
-            ed.torquescale = _parse_float(ts_s)
-
-        # solref
-        var sr_s = _extract_attr(tag, "solref")
-        if sr_s.byte_length() > 0:
-            var sv = _parse_vec3(sr_s)
-            ed.solref_0 = sv[0]
-            ed.solref_1 = sv[1]
-
-        # solimp
-        var si_s = _extract_attr(tag, "solimp")
-        if si_s.byte_length() > 0:
-            var parts = List[String]()
-            _split_spaces(si_s, parts)
-            if len(parts) >= 1:
-                ed.solimp_0 = _parse_float(parts[0])
-            if len(parts) >= 2:
-                ed.solimp_1 = _parse_float(parts[1])
-            if len(parts) >= 3:
-                ed.solimp_2 = _parse_float(parts[2])
-            if len(parts) >= 4:
-                ed.solimp_3 = _parse_float(parts[3])
-            if len(parts) >= 5:
-                ed.solimp_4 = _parse_float(parts[4])
+        _fill_equality_solparams(tag, ed)
 
         result.equalities.append(ed)
         eq_count += 1

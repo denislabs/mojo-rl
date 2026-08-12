@@ -2513,7 +2513,17 @@ def parse_xml(xml: String) -> ParsedModel:
 
     # ---- Equality constraints (<equality> section) --------------------------
     var eq_sec = _extract_section(xml_clean, "equality")
-    var neq = _count_tag(eq_sec, "weld") + _count_tag(eq_sec, "connect")
+    # ⚠ `<joint>` HERE IS `mjEQ_JOINT`, NOT A `<worldbody>` joint — `eq_sec`
+    # is the `<equality>` section only, so there is no collision. Omitting it
+    # sizes the equality slab too small and `_fill_equality`'s records fall off
+    # the end of `MAX_EQUALITY` silently (see the `neq`-vs-`max_equality`
+    # trap). `<tendon>` equalities are NOT counted: they live on the tendon
+    # record, flagged by `TENDON_IDX_IS_EQUALITY`, not in this slab.
+    var neq = (
+        _count_tag(eq_sec, "weld")
+        + _count_tag(eq_sec, "connect")
+        + _count_tag(eq_sec, "joint")
+    )
 
     # ---- Contact exclusions (<contact> section) -----------------------------
     var contact_sec = _extract_section(xml_clean, "contact")
