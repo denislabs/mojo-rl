@@ -11,6 +11,7 @@ Runs once at model load time.
 from std.math import sqrt, abs
 
 from .mesh_polygons import build_mesh_polygons
+from ..model.mesh_inertia import MeshInertia, transform_verts_to_principal_frame
 
 
 def deduplicate_vertices[
@@ -492,11 +493,19 @@ def load_mesh_hull[
     mut polymap: List[Int],
     mut polymap_adr: List[Int],
     mut polymap_num: List[Int],
+    mi: MeshInertia[DTYPE],
 ) raises -> Tuple[Int, Scalar[DTYPE]]:
     """Load STL mesh, deduplicate, compute convex hull, store in model arrays.
 
     Returns (mesh_id, rbound) for this mesh.
-    Vertices are stored in the mesh's LOCAL frame.
+
+    ⚠ VERTICES ARE STORED IN THE MESH'S PRINCIPAL FRAME, not the STL's frame.
+    `mi` carries the centre of mass and principal-axis rotation MuJoCo bakes
+    into every mesh (`mesh_pos` / `mesh_quat`), and they are applied here —
+    BEFORE the hull, the polygon normals and `rbound`, so all three are built
+    in the same frame MuJoCo uses. The caller must compose the same `mi` into
+    the geom's `pos`/`quat`, or the mesh will collide in the wrong place: the
+    two changes are only equivalent TOGETHER.
 
     The `poly_*` / `polymap*` lists accumulate the hull's POLYGON topology
     across every mesh, exactly as `mesh_polyvert` and `mesh_polymap` do in
@@ -518,6 +527,12 @@ def load_mesh_hull[
     # Deduplicate into temp buffer
     var unique = List[Scalar[DTYPE]]()
     var num_unique = deduplicate_vertices[DTYPE](raw, num_raw, unique)
+
+    # Into the principal frame, exactly where MuJoCo does it (`mjCMesh::
+    # Compute` translates by -CoM then `Rotate`s by the conjugate, then records
+    # the pair as mesh_pos/mesh_quat). Everything below — hull, polygons,
+    # rbound — is therefore computed in MuJoCo's frame rather than the STL's.
+    transform_verts_to_principal_frame[DTYPE](unique, num_unique, mi)
 
     # Compute convex hull
     var mesh_id = num_meshes

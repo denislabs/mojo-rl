@@ -1406,6 +1406,14 @@ struct FlatModelDef(Movable):
     var timestep: Float64
     var opt_density: Float64  # Fluid density (kg/m³), 0 = disabled
     var opt_viscosity: Float64  # Fluid dynamic viscosity (Pa·s), 0 = disabled
+    # `<compiler boundmass= boundinertia=>`. MuJoCo clamps EVERY body (id > 0)
+    # after its inertial frame is set: `mass = max(mass, boundmass)` and the
+    # same per principal moment. Default 0, i.e. no bound. Load-bearing on
+    # composer models — 3 of Jaco's 17 bodies (two attachment frames carrying
+    # no geoms at all, plus one whose only geom has mass 1e-9) take their
+    # ENTIRE mass and inertia from these.
+    var boundmass: Float64
+    var boundinertia: Float64
 
     # Mesh assets: name → file path mapping.
     var mesh_asset_names: List[String]
@@ -1413,6 +1421,8 @@ struct FlatModelDef(Movable):
     var num_mesh_assets: Int
 
     def __init__(out self):
+        self.boundmass = 0.0
+        self.boundinertia = 0.0
         self.bodies = List[BodyData]()
         self.joints = List[JointData]()
         self.geoms = List[GeomData]()

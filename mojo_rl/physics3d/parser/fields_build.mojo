@@ -60,6 +60,13 @@ from mojo_rl.physics3d.model.inertia_from_geom import (
     globalinertia,
     offcenter,
     eig3_symmetric,
+    quat_to_mat,
+    MJ_DEFAULT_DENSITY,
+    _mulquat as _mulquat_xyzw,
+)
+from mojo_rl.physics3d.model.mesh_inertia import (
+    MeshInertia,
+    mesh_inertia_from_file,
 )
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
@@ -286,6 +293,57 @@ def _jnt_qvel_size(jnt_type: Int) -> Int:
     return 1
 
 
+def _geom_mass_and_inertia[
+    DTYPE: DType
+](
+    g: Int,
+    geom_type: Int,
+    stored_mass: Scalar[DTYPE],
+    radius: Scalar[DTYPE],
+    half_length: Scalar[DTYPE],
+    half_x: Scalar[DTYPE],
+    half_y: Scalar[DTYPE],
+    half_z: Scalar[DTYPE],
+    geom_mesh_vol: List[Scalar[DTYPE]],
+    geom_mesh_eig: List[Scalar[DTYPE]],
+) -> InlineArray[Scalar[DTYPE], 4]:
+    """(mass, Ixx, Iyy, Izz) for one geom, meshes included.
+
+    ⚠ A MESH's moments are `eigval * (mass / volume)`, and both halves matter:
+    the eigenvalues are UNITLESS (length^5, volume-weighted), and the volume is
+    the one MuJoCo recomputes in its inertia pass, not the one from its
+    centre-of-mass pass. `geom_inertia`'s `else` branch returns (0, 0, 0) for a
+    mesh — silently — which is what this exists to stop.
+    """
+    var out = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    if geom_type == GEOM_MESH:
+        var vol = geom_mesh_vol[g]
+        if vol <= Scalar[DTYPE](1e-30):
+            return out^
+        # mass= wins; otherwise density * volume, the same rule
+        # `geom_effective_mass` applies to every other type.
+        var m = stored_mass
+        if m < Scalar[DTYPE](0):
+            m = Scalar[DTYPE](MJ_DEFAULT_DENSITY) * vol
+        var dens = m / vol
+        out[0] = m
+        out[1] = geom_mesh_eig[g * 3 + 0] * dens
+        out[2] = geom_mesh_eig[g * 3 + 1] * dens
+        out[3] = geom_mesh_eig[g * 3 + 2] * dens
+        return out^
+    var m2 = geom_effective_mass[DTYPE](
+        geom_type, stored_mass, radius, half_length, half_x, half_y, half_z
+    )
+    var d = geom_inertia[DTYPE](
+        geom_type, m2, radius, half_length, half_x, half_y, half_z
+    )
+    out[0] = m2
+    out[1] = d[0]
+    out[2] = d[1]
+    out[3] = d[2]
+    return out^
+
+
 def _inertia_from_geoms_staging[
     DTYPE: DType,
     NBODY: Int,
@@ -298,6 +356,13 @@ def _inertia_from_geoms_staging[
     bodies: List[Scalar[DTYPE]],  # packed [NBODY * MODEL_BODY_SIZE] records
     geom_mass: List[Scalar[DTYPE]],  # build-only (-1 = use density*volume)
     geom_group: List[Int],  # build-only (inertiagrouprange filter)
+    # Mesh geoms only. `geom_inertia` takes scalar dims and cannot reach a
+    # vertex list, so a mesh's volume and UNITLESS principal moments are
+    # resolved during the geom pass and read back here. Zero for every
+    # non-mesh geom, and for a mesh whose frame was never computed (see the
+    # cache filter in `build_model_fields_from_flat`).
+    geom_mesh_vol: List[Scalar[DTYPE]],
+    geom_mesh_eig: List[Scalar[DTYPE]],  # [NGEOM * 3]
     body_has_explicit_inertia: List[Bool],
     mut body_mass: List[Scalar[DTYPE]],
     mut body_inv_mass: List[Scalar[DTYPE]],
@@ -324,7 +389,8 @@ def _inertia_from_geoms_staging[
             if ggrp < INERTIA_GROUP_MIN or ggrp > INERTIA_GROUP_MAX:
                 continue
             if Int(geoms[go + GEOM_IDX_BODY]) == body_id:
-                var gm = geom_effective_mass[DTYPE](
+                var gmi0 = _geom_mass_and_inertia[DTYPE](
+                    g,
                     Int(geoms[go + GEOM_IDX_TYPE]),
                     geom_mass[g],
                     geoms[go + GEOM_IDX_RADIUS],
@@ -332,7 +398,10 @@ def _inertia_from_geoms_staging[
                     geoms[go + GEOM_IDX_HALF_X],
                     geoms[go + GEOM_IDX_HALF_Y],
                     geoms[go + GEOM_IDX_HALF_Z],
+                    geom_mesh_vol,
+                    geom_mesh_eig,
                 )
+                var gm = gmi0[0]
                 if gm > Scalar[DTYPE](1e-10):
                     num_contributing += 1
                     total_mass += gm
@@ -399,7 +468,8 @@ def _inertia_from_geoms_staging[
                 if ggrp1 < INERTIA_GROUP_MIN or ggrp1 > INERTIA_GROUP_MAX:
                     continue
                 if Int(geoms[go + GEOM_IDX_BODY]) == body_id:
-                    var gm = geom_effective_mass[DTYPE](
+                    var gmi = _geom_mass_and_inertia[DTYPE](
+                        g,
                         Int(geoms[go + GEOM_IDX_TYPE]),
                         geom_mass[g],
                         geoms[go + GEOM_IDX_RADIUS],
@@ -407,7 +477,10 @@ def _inertia_from_geoms_staging[
                         geoms[go + GEOM_IDX_HALF_X],
                         geoms[go + GEOM_IDX_HALF_Y],
                         geoms[go + GEOM_IDX_HALF_Z],
+                        geom_mesh_vol,
+                        geom_mesh_eig,
                     )
+                    var gm = gmi[0]
                     if gm > Scalar[DTYPE](1e-10):
                         body_ipos[body_id * 3 + 0] = geoms[go + GEOM_IDX_POS_X]
                         body_ipos[body_id * 3 + 1] = geoms[go + GEOM_IDX_POS_Y]
@@ -426,15 +499,12 @@ def _inertia_from_geoms_staging[
                         ]
                         body_mass[body_id] = gm
                         body_inv_mass[body_id] = Scalar[DTYPE](1.0) / gm
-                        var inertia = geom_inertia[DTYPE](
-                            Int(geoms[go + GEOM_IDX_TYPE]),
-                            gm,
-                            geoms[go + GEOM_IDX_RADIUS],
-                            geoms[go + GEOM_IDX_HALF_LENGTH],
-                            geoms[go + GEOM_IDX_HALF_X],
-                            geoms[go + GEOM_IDX_HALF_Y],
-                            geoms[go + GEOM_IDX_HALF_Z],
+                        var inertia = InlineArray[Scalar[DTYPE], 3](
+                            fill=Scalar[DTYPE](0)
                         )
+                        inertia[0] = gmi[1]
+                        inertia[1] = gmi[2]
+                        inertia[2] = gmi[3]
                         body_inertia[body_id * 3 + 0] = inertia[0]
                         body_inertia[body_id * 3 + 1] = inertia[1]
                         body_inertia[body_id * 3 + 2] = inertia[2]
@@ -458,7 +528,8 @@ def _inertia_from_geoms_staging[
                 if ggrp2 < INERTIA_GROUP_MIN or ggrp2 > INERTIA_GROUP_MAX:
                     continue
                 if Int(geoms[go + GEOM_IDX_BODY]) == body_id:
-                    var gm = geom_effective_mass[DTYPE](
+                    var gmi = _geom_mass_and_inertia[DTYPE](
+                        g,
                         Int(geoms[go + GEOM_IDX_TYPE]),
                         geom_mass[g],
                         geoms[go + GEOM_IDX_RADIUS],
@@ -466,7 +537,10 @@ def _inertia_from_geoms_staging[
                         geoms[go + GEOM_IDX_HALF_X],
                         geoms[go + GEOM_IDX_HALF_Y],
                         geoms[go + GEOM_IDX_HALF_Z],
+                        geom_mesh_vol,
+                        geom_mesh_eig,
                     )
+                    var gm = gmi[0]
                     if gm > Scalar[DTYPE](1e-10):
                         com_x += gm * geoms[go + GEOM_IDX_POS_X]
                         com_y += gm * geoms[go + GEOM_IDX_POS_Y]
@@ -490,7 +564,8 @@ def _inertia_from_geoms_staging[
                 if ggrp3 < INERTIA_GROUP_MIN or ggrp3 > INERTIA_GROUP_MAX:
                     continue
                 if Int(geoms[go + GEOM_IDX_BODY]) == body_id:
-                    var gm = geom_effective_mass[DTYPE](
+                    var gmi = _geom_mass_and_inertia[DTYPE](
+                        g,
                         Int(geoms[go + GEOM_IDX_TYPE]),
                         geom_mass[g],
                         geoms[go + GEOM_IDX_RADIUS],
@@ -498,17 +573,17 @@ def _inertia_from_geoms_staging[
                         geoms[go + GEOM_IDX_HALF_X],
                         geoms[go + GEOM_IDX_HALF_Y],
                         geoms[go + GEOM_IDX_HALF_Z],
+                        geom_mesh_vol,
+                        geom_mesh_eig,
                     )
+                    var gm = gmi[0]
                     if gm > Scalar[DTYPE](1e-10):
-                        var diag = geom_inertia[DTYPE](
-                            Int(geoms[go + GEOM_IDX_TYPE]),
-                            gm,
-                            geoms[go + GEOM_IDX_RADIUS],
-                            geoms[go + GEOM_IDX_HALF_LENGTH],
-                            geoms[go + GEOM_IDX_HALF_X],
-                            geoms[go + GEOM_IDX_HALF_Y],
-                            geoms[go + GEOM_IDX_HALF_Z],
+                        var diag = InlineArray[Scalar[DTYPE], 3](
+                            fill=Scalar[DTYPE](0)
                         )
+                        diag[0] = gmi[1]
+                        diag[1] = gmi[2]
+                        diag[2] = gmi[3]
 
                         var inert_global = InlineArray[Scalar[DTYPE], 6](
                             fill=Scalar[DTYPE](0)
@@ -899,9 +974,62 @@ def build_model_fields_from_flat[
             body_weldid[bi]
         )
 
+    # ── mesh frames + unitless principal moments (MuJoCo `mjCMesh::Compute`)
+    #
+    # Computed BEFORE the geom loop because both consumers need it: the geom's
+    # pos/quat are composed with the mesh frame right below, and
+    # `load_mesh_hull` bakes the same frame into the vertices further down. The
+    # two are only equivalent TOGETHER — moving the vertices without composing
+    # the frame collides the mesh in the wrong place, and vice versa.
+    #
+    # ⚠ COMPUTED ONLY WHERE IT IS USED: a mesh geom that is neither collidable
+    # nor a source of body inertia (its body carries an explicit `<inertial>`)
+    # gets nothing, and keeps its declared frame. That is dog — 162 visual-only
+    # meshes whose frames reach nothing but the renderer — and it is what keeps
+    # this off dog's build path entirely. The same filter §22 applied to hull
+    # construction, for the same reason.
+    var mesh_inertia_cache = List[MeshInertia[DTYPE]]()
+    var mesh_inertia_valid = List[Bool](
+        length=fmd.num_mesh_assets, fill=False
+    )
+    for _ in range(fmd.num_mesh_assets):
+        mesh_inertia_cache.append(MeshInertia[DTYPE]())
+    for i in range(len(fmd.geoms)):
+        var gd_m = fmd.geoms[i]
+        if gd_m.geom_type != GEOM_MESH:
+            continue
+        if gd_m.mesh_id < 0 or gd_m.mesh_filename.byte_length() == 0:
+            continue
+        if mesh_inertia_valid[gd_m.mesh_id]:
+            continue
+        var collidable = gd_m.contype != 0 or gd_m.conaffinity != 0
+        var needs_inertia = not body_has_explicit_inertia[gd_m.body_id]
+        if not (collidable or needs_inertia):
+            continue
+        try:
+            mesh_inertia_cache[gd_m.mesh_id] = mesh_inertia_from_file[DTYPE](
+                gd_m.mesh_filename
+            )
+            mesh_inertia_valid[gd_m.mesh_id] = True
+        except:
+            print(
+                "Warning: failed to compute mesh inertia:",
+                gd_m.mesh_filename,
+            )
+
     # ── geoms (+ build-only mass/group staging for inertiafromgeom) ───────
     var geom_mass = List[Scalar[DTYPE]](length=NGEOM, fill=Scalar[DTYPE](0))
     var geom_group = List[Int](length=NGEOM, fill=0)
+    # Per-geom mesh volume + UNITLESS principal moments, staged for the inertia
+    # assembly. `geom_inertia` cannot compute these — it takes scalar dims and
+    # has no way to reach a vertex list — so the mesh case is resolved here and
+    # read back as a table.
+    var geom_mesh_vol = List[Scalar[DTYPE]](
+        length=NGEOM, fill=Scalar[DTYPE](0)
+    )
+    var geom_mesh_eig = List[Scalar[DTYPE]](
+        length=NGEOM * 3, fill=Scalar[DTYPE](0)
+    )
     for i in range(len(fmd.geoms)):
         var gd = fmd.geoms[i]
         var o = i * MODEL_GEOM_SIZE
@@ -943,6 +1071,53 @@ def build_model_fields_from_flat[
         mf.geoms.data[o + GEOM_IDX_MESH_ID] = Scalar[DTYPE](gd.mesh_id)
         geom_mass[i] = Scalar[DTYPE](gd.mass)
         geom_group[i] = gd.group
+
+        # Compose the mesh frame into the geom frame, as MuJoCo's compiler
+        # does: `geom_pos = declared_pos + R(declared_quat) * mesh_pos` and
+        # `geom_quat = declared_quat (x) mesh_quat`. Measured on Jaco, whose
+        # mesh geoms declare no pos/quat: `geom_pos == mesh_pos` and
+        # `geom_quat == mesh_quat` for all 13 of them.
+        if (
+            gd.geom_type == GEOM_MESH
+            and gd.mesh_id >= 0
+            and mesh_inertia_valid[gd.mesh_id]
+        ):
+            var mi_g = mesh_inertia_cache[gd.mesh_id]
+            var rm = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
+            quat_to_mat[DTYPE](
+                Scalar[DTYPE](gd.quat_x),
+                Scalar[DTYPE](gd.quat_y),
+                Scalar[DTYPE](gd.quat_z),
+                Scalar[DTYPE](gd.quat_w),
+                rm,
+            )
+            mf.geoms.data[o + GEOM_IDX_POS_X] = Scalar[DTYPE](gd.pos_x) + (
+                rm[0] * mi_g.com_x + rm[1] * mi_g.com_y + rm[2] * mi_g.com_z
+            )
+            mf.geoms.data[o + GEOM_IDX_POS_Y] = Scalar[DTYPE](gd.pos_y) + (
+                rm[3] * mi_g.com_x + rm[4] * mi_g.com_y + rm[5] * mi_g.com_z
+            )
+            mf.geoms.data[o + GEOM_IDX_POS_Z] = Scalar[DTYPE](gd.pos_z) + (
+                rm[6] * mi_g.com_x + rm[7] * mi_g.com_y + rm[8] * mi_g.com_z
+            )
+            var cq = _mulquat_xyzw[DTYPE](
+                Scalar[DTYPE](gd.quat_x),
+                Scalar[DTYPE](gd.quat_y),
+                Scalar[DTYPE](gd.quat_z),
+                Scalar[DTYPE](gd.quat_w),
+                mi_g.qx,
+                mi_g.qy,
+                mi_g.qz,
+                mi_g.qw,
+            )
+            mf.geoms.data[o + GEOM_IDX_QUAT_X] = cq[0]
+            mf.geoms.data[o + GEOM_IDX_QUAT_Y] = cq[1]
+            mf.geoms.data[o + GEOM_IDX_QUAT_Z] = cq[2]
+            mf.geoms.data[o + GEOM_IDX_QUAT_W] = cq[3]
+            geom_mesh_vol[i] = mi_g.volume
+            geom_mesh_eig[i * 3 + 0] = mi_g.eig0
+            geom_mesh_eig[i * 3 + 1] = mi_g.eig1
+            geom_mesh_eig[i * 3 + 2] = mi_g.eig2
 
         # Bounding sphere radius for broad-phase (legacy per-type formulas).
         var rbound = Scalar[DTYPE](gd.radius)
@@ -1063,6 +1238,7 @@ def build_model_fields_from_flat[
                         polymap,
                         polymap_adr,
                         polymap_num,
+                        mesh_inertia_cache[gd.mesh_id],
                     )
                     var mesh_id = result[0]
                     mf.geoms.data[o + GEOM_IDX_MESH_ID] = Scalar[DTYPE](
@@ -1361,6 +1537,8 @@ def build_model_fields_from_flat[
             mf.bodies.data,
             geom_mass,
             geom_group,
+            geom_mesh_vol,
+            geom_mesh_eig,
             body_has_explicit_inertia,
             body_mass,
             body_inv_mass,
@@ -1377,6 +1555,8 @@ def build_model_fields_from_flat[
             mf.bodies.data,
             geom_mass,
             geom_group,
+            geom_mesh_vol,
+            geom_mesh_eig,
             body_has_explicit_inertia,
             body_mass,
             body_inv_mass,
@@ -1385,6 +1565,31 @@ def build_model_fields_from_flat[
             body_ipos,
             body_iquat,
         )
+    # ── <compiler boundmass / boundinertia> ──────────────────────────────
+    #
+    # `mjCBody::Compile`: for EVERY body with id > 0, after the inertial frame
+    # is set, `mass = max(mass, boundmass)` and the same per principal moment.
+    # ⚠ Applied to every body, not only the ones `inertiafromgeom` touched —
+    # a body with an explicit `<inertial>` is bounded too, and so is one with
+    # no geoms at all. That last case is the whole point on composer models:
+    # `jaco_arm/` and `jaco_arm/jaco_hand/` are pure attachment frames carrying
+    # NO geoms, and `b_6`'s only geom has mass 1e-9. All three take their
+    # entire mass (1e-05) and inertia (1e-11) from these two numbers.
+    #
+    # ⚠ Runs AFTER the inertia staging and BEFORE settotalmass, matching
+    # MuJoCo's order — settotalmass rescales whatever the bound produced.
+    if fmd.boundmass > 0.0 or fmd.boundinertia > 0.0:
+        var bm = Scalar[DTYPE](fmd.boundmass)
+        var bi = Scalar[DTYPE](fmd.boundinertia)
+        for i in range(1, NBODY):
+            if body_mass[i] < bm:
+                body_mass[i] = bm
+                body_inv_mass[i] = Scalar[DTYPE](1.0) / bm
+            for k in range(3):
+                if body_inertia[i * 3 + k] < bi:
+                    body_inertia[i * 3 + k] = bi
+                    body_inv_inertia[i * 3 + k] = Scalar[DTYPE](1.0) / bi
+
     comptime if IFG_MODE > 0:
         comptime if SETTOTALMASS > 0.0:
             var total_mass = Scalar[DTYPE](0)

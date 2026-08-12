@@ -3421,6 +3421,13 @@ xml_in: String) raises -> FlatModelDef:
             var seq_val = _trim(_extract_attr(ctag, "eulerseq"))
             if seq_val.byte_length() == 3:
                 eulerseq = seq_val
+            # boundmass / boundinertia — see `FlatModelDef.boundmass`.
+            var bm_s = _trim(_extract_attr(ctag, "boundmass"))
+            if bm_s.byte_length() > 0:
+                result.boundmass = _parse_float(bm_s)
+            var bi_s = _trim(_extract_attr(ctag, "boundinertia"))
+            if bi_s.byte_length() > 0:
+                result.boundinertia = _parse_float(bi_s)
 
     # Assets: textures and materials
     _fill_assets(asset_sec, result)

@@ -315,3 +315,26 @@ def transform_verts_to_principal_frame[
         verts[o + 0] = mat[0] * vx + mat[3] * vy + mat[6] * vz
         verts[o + 1] = mat[1] * vx + mat[4] * vy + mat[7] * vz
         verts[o + 2] = mat[2] * vx + mat[5] * vy + mat[8] * vz
+
+
+def mesh_inertia_from_file[
+    DTYPE: DType
+](mesh_filename: String) raises -> MeshInertia[DTYPE]:
+    """`mesh_legacy_inertia` straight off an STL path.
+
+    ⚠ Reads the RAW triangle soup — `load_stl` yields three vertices per face
+    in winding order, which is exactly legacy's input. Do NOT feed this the
+    deduplicated/hulled vertices `load_mesh_hull` builds: the hull is
+    `mjMESH_INERTIA_CONVEX`, a different and non-default mode, and on Jaco's
+    `base` it moves the centre of mass by 1.5e-03.
+    """
+    from mojo_rl.render.stl_loader import load_stl
+
+    var mesh_data = load_stl(mesh_filename)
+    var n = len(mesh_data.vertices)
+    var tris = List[Scalar[DTYPE]]()
+    for i in range(n):
+        tris.append(Scalar[DTYPE](mesh_data.vertices[i].px))
+        tris.append(Scalar[DTYPE](mesh_data.vertices[i].py))
+        tris.append(Scalar[DTYPE](mesh_data.vertices[i].pz))
+    return mesh_legacy_inertia[DTYPE](tris, n // 3)
