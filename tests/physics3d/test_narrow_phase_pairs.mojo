@@ -667,18 +667,42 @@ def test_narrow_phase_pairs_gpu_matches_cpu() raises:
     # CORNER branch (`cltype//3 == 0`) — with `clcorner` in {3,6,7}. The CPU
     # takes the EDGE branch (`cltype = 4`).
     #
-    # So THE FEATURE CLASSIFICATION DIVERGES, in
-    # `_capsule_box_best_segment_pos`, one level ABOVE where both previous
-    # attempts looked. The closest POINT is unambiguous (hence a bit-exact
+    # ⚠ THAT NARROWING IS CONDITIONAL, and the condition is not verified: the
+    # brute force holds `bestboxpos` at the CPU's value (-0.0). `bestboxpos` is
+    # an OUTPUT of the classifier that does NOT affect the first contact, so it
+    # can differ on the GPU silently, and other
+    # (cltype, clcorner, cledge, bestboxpos) combinations may reach the same
+    # `secondpos`. Read it as "consistent with a classifier divergence", NOT as
+    # "the GPU takes the corner branch".
+    #
+    # So the classification in `_capsule_box_best_segment_pos` is the leading
+    # suspect, one level ABOVE where both previous attempts looked. The closest POINT is unambiguous (hence a bit-exact
     # first contact) but the FEATURE LABEL is a genuine tie here — the capsule
     # axis is parallel to a box face, so several features are equidistant and
     # the strict `>` comparisons resolve it differently once Metal's rounding
     # (FMA contraction) moves the last bits.
     #
-    # ⚠ THE FIX IS NOT OBVIOUS AND THE LAST TIE-BREAK ATTEMPT BROKE
-    # CAPSULE/BOX (2 contacts where MuJoCo emits 1). Whatever is done must make
-    # the classifier's tie resolve identically on both devices WITHOUT changing
-    # which feature wins in the non-tied cases.
+    # ⚠⚠ A THIRD FIX ATTEMPT ALSO CHANGED NOTHING (2026-08-12). The edge
+    # loop's tie-break `d2 < best_d2 - MINVAL` is a NO-OP IN FLOAT32 — `d2` is
+    # ~2.5e-05 here and `2.5e-05 - 1e-15` is exactly `2.5e-05` — so MuJoCo's
+    # guard against round-off moving the contact between equidistant edges is
+    # simply absent at this precision. That observation is REAL and worth
+    # keeping. Restoring the guard with a few-ulp relative margin (zero for
+    # float64, so that path cannot move) left the delta EXACTLY unchanged at
+    # 0.2747206219606184, so it is not this defect's cause either, and the
+    # change was reverted rather than carried unproven.
+    #
+    # ⚠ NEXT STEP, and the thing three attempts have avoided: OBSERVE the GPU's
+    # classifier outputs rather than inferring them. `print` inside a Metal
+    # kernel is not available, but the values can be stashed into spare
+    # contact-record columns and downloaded. Until `cltype`/`clcorner`/
+    # `cledge`/`bestboxpos` are read off the DEVICE, any localisation here is
+    # inference. Two fixes have now been aimed at inferred locations and both
+    # changed nothing.
+    #
+    # ⚠ THE LAST TIE-BREAK ATTEMPT BROKE CAPSULE/BOX (2 contacts where MuJoCo
+    # emits 1). Whatever is done must make the tie resolve identically on both
+    # devices WITHOUT changing which feature wins in the non-tied cases.
     #
     # The tolerance below is set FROM THAT MEASUREMENT so this is a RATCHET: it
     # passes today and fails the moment the divergence grows or spreads to
