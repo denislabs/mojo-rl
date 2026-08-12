@@ -123,6 +123,19 @@ struct Dropout[
     # path); `Dropout[DIM, p, SEED, bfloat16]` flows activations at bf16.
     comptime ACT_DT = Self.ADT
 
+    # ⚠ p == 0 IS IDENTITY, AND THE TRAIN PATH STILL RAN.
+    # `NormedLinearDropout` is structurally always present (Mojo cannot
+    # conditionally alias two type shapes — see nets.mojo), and TD-MPC2's
+    # default `QP = 0.0` makes this layer mathematically a no-op: mask =
+    # 1/(1-0) = 1 and threshold = 0, so every element passes scaled by exactly
+    # 1.0. But `training` defaults to True, so each call still launched the
+    # masked-forward kernel AND `advance_rng_offset_kernel` — the latter a
+    # grid_dim=1, one-thread launch to increment a counter nothing reads.
+    # In a TD-MPC2 MPC plan that is 8 Q-head forwards x 2 launches.
+    # The eval kernel is already an exact copy, so p==0 routes there: same
+    # values (x * 1.0 is exact), one launch instead of two, and no mask buffer.
+    comptime IS_IDENTITY = Self.p == 0.0
+
     # Runtime state.
     var training: Bool
     var call_counter: UInt64  # host CPU Philox counter (legacy slot 0)
@@ -187,7 +200,7 @@ struct Dropout[
             ref maskd = rebind[Tensor](self.cache_mask)
             comptime if target == "cpu":
                 outd.ensure(N)
-                if not self.training:
+                if Self.IS_IDENTITY or not self.training:
                     for i in range(N):
                         outd.data[i] = in0d.data[i]
                     # Eval pass doesn't bump the counter — keeps training
@@ -218,7 +231,7 @@ struct Dropout[
                 comptime n_blocks = (N + TPB - 1) // TPB
                 comptime lN = Layout.row_major(N)
                 comptime loff = Layout.row_major(1)
-                if not self.training:
+                if Self.IS_IDENTITY or not self.training:
                     comptime eval_kernel = _dropout_eval_kernel[N]
                     c.enqueue_function[eval_kernel](
                         in0d.lt["gpu", lN](),
@@ -258,7 +271,7 @@ struct Dropout[
             comptime n_blocks = (N + TPB - 1) // TPB
             comptime lN = Layout.row_major(N)
             comptime loff = Layout.row_major(1)
-            if not self.training:
+            if Self.IS_IDENTITY or not self.training:
                 comptime eval_kernel = _dropout_eval_kernel[N, Self.ADT]
                 c.enqueue_function[eval_kernel](
                     in0.lt["gpu", lN](),
@@ -311,7 +324,7 @@ struct Dropout[
             ref maskd = rebind[Tensor](self.cache_mask)
             comptime if target == "cpu":
                 gind.ensure(N)
-                if not self.training:
+                if Self.IS_IDENTITY or not self.training:
                     for i in range(N):
                         gind.data[i] = god.data[i]
                     return
@@ -322,7 +335,7 @@ struct Dropout[
                 gind.ensure_gpu(c, N)
                 comptime n_blocks = (N + TPB - 1) // TPB
                 comptime lN = Layout.row_major(N)
-                if not self.training:
+                if Self.IS_IDENTITY or not self.training:
                     comptime eval_kernel = _dropout_eval_kernel[N]
                     c.enqueue_function[eval_kernel](
                         god.lt["gpu", lN](),
@@ -348,7 +361,7 @@ struct Dropout[
             gin.ensure_gpu(c, N)
             comptime n_blocks = (N + TPB - 1) // TPB
             comptime lN = Layout.row_major(N)
-            if not self.training:
+            if Self.IS_IDENTITY or not self.training:
                 comptime eval_kernel = _dropout_eval_kernel[N, Self.ADT]
                 c.enqueue_function[eval_kernel](
                     grad_output.lt["gpu", lN](),
