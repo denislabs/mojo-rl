@@ -2302,11 +2302,12 @@ def _fill_actuators(
 
         var ad = ActuatorData()
 
-        # Record WHICH tag this was. Only <motor> (direct force = gear * ctrl)
-        # is implemented; <position>/<velocity>/<general> are position/velocity
-        # servos whose gainprm/biasprm this struct does not carry. Recording the
-        # kind lets `init_fields` reject them instead of silently simulating a
-        # servo as a torque motor. See docs/DM_CONTROL_PORT.md (gap G3).
+        # Record WHICH tag this was. The gains themselves come from the OTHER
+        # parser: `xml_parser`'s comptime `ComptimeActData` carries
+        # `motor_kp`/`motor_kv` (MuJoCo's `gainprm[0]` / `-biasprm[2]`) and
+        # `apply_actions` reads them from there. This struct carries the kind
+        # alone, which is what `init_fields` needs to refuse a transmission
+        # neither path models. See docs/DM_CONTROL_PORT.md (gap G3).
         if earliest == np_:
             ad.kind = ACT_KIND_POSITION
         elif earliest == nv_:

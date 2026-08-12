@@ -53,6 +53,7 @@ from .fields_build import build_model_fields_from_flat
 from .flat_model import (
     ACT_KIND_MOTOR,
     ACT_KIND_POSITION,
+    ACT_KIND_VELOCITY,
     ACT_KIND_GENERAL,
     act_kind_name,
     _GEOM_ELLIPSOID,
@@ -504,7 +505,9 @@ struct ModelDefFromXML[
             # bias-free `<general>` lands here too and its gain is real: dog's
             # actuators are `force = 0.02 * act`.
             var force = _m_motor_kp[i] * u
-            if _m_motor_kind[i] == ACT_KIND_POSITION:
+            comptime _POS = ACT_KIND_POSITION
+            comptime _VEL = ACT_KIND_VELOCITY
+            if _m_motor_kind[i] == _POS or _m_motor_kind[i] == _VEL:
                 var length = Float64(0)
                 var vel = Float64(0)
                 for k in range(n):
@@ -517,13 +520,20 @@ struct ModelDefFromXML[
                         vel += coef * Float64(d.qvel.data[dadr])
                 length *= gear
                 vel *= gear
+                # MuJoCo writes the same gaintype/biastype for both servo laws;
+                # the ONLY difference is `biasprm[1]`, which is `-gainprm[0]`
+                # for `<position>` and 0 for `<velocity>`. So the two share this
+                # whole transmission walk and differ in one term:
+                #     POSITION  force = kp*(u - length) - kv*vel
+                #     VELOCITY  force = kp*u            - kv*vel
+                # ⚠ VELOCITY must NOT subtract `length`. Doing so would add a
+                # position feedback MuJoCo does not have, and on Jaco (kv=500)
+                # a 0.1 rad offset would inject 50 N·m of phantom torque.
                 # `u`, not `ctrl` — for a dyntype actuator the servo setpoint
                 # is the ACTIVATION, which lags the control. They coincide
                 # only when the actuator has no activation (then u == ctrl).
-                force = (
-                    _m_motor_kp[i] * (u - length)
-                    - _m_motor_kv[i] * vel
-                )
+                var setpoint = u - length if _m_motor_kind[i] == _POS else u
+                force = _m_motor_kp[i] * setpoint - _m_motor_kv[i] * vel
 
             for k in range(n):
                 var dadr = _m_motor_trn_dadr[i * Self._WRAPS + k]
@@ -893,16 +903,16 @@ struct ModelDefFromXML[
 
         # Reject unimplemented actuator transmissions LOUDLY. Building the
         # model anyway would simulate a servo as a torque motor with no error
-        # at all. `<motor>`, `<position>` and the `<general>` shape validated
-        # just above are modelled (see `apply_actions`); `<velocity>` is
-        # recognized by the parser purely so the tag count is right, and is
-        # rejected here. See docs/DM_CONTROL_PORT.md (gap G3).
+        # at all. `<motor>`, `<position>`, `<velocity>` and the `<general>`
+        # shape validated just above are modelled (see `apply_actions`).
+        # See docs/DM_CONTROL_PORT.md (gap G3).
         comptime if not Self.allow_unsupported_actuators:
             for a in range(Self.nact):
                 var kind = fmd.actuators[a].kind
                 if (
                     kind != ACT_KIND_MOTOR
                     and kind != ACT_KIND_POSITION
+                    and kind != ACT_KIND_VELOCITY
                     and kind != ACT_KIND_GENERAL
                 ):
                     raise Error(
@@ -912,10 +922,10 @@ struct ModelDefFromXML[
                             " at actuator index ",
                             a,
                             ". <motor> (force = gear*ctrl), <position>",
-                            " (force = kp*(ctrl - length) - kv*velocity) and",
+                            " (force = kp*(ctrl - length) - kv*velocity),",
+                            " <velocity> (force = kv*(ctrl - velocity)) and",
                             " <general> restricted to that same affine shape",
-                            " are supported; <velocity> needs its own",
-                            " gainprm/biasprm handling. If this env's CONFIG",
+                            " are supported. If this env's CONFIG",
                             " drives those DOFs itself",
                             " (custom_apply_actions_cpu -> True), pass",
                             " allow_unsupported_actuators=True.",
@@ -1197,8 +1207,13 @@ struct ModelDefFromXML[
                         u = rebind[Scalar[DTYPE]](act[env, adr])
                     var force = Scalar[DTYPE](kp) * u
 
+                    # The CPU twin's comment explains why POSITION and VELOCITY
+                    # share this block: MuJoCo gives them the same
+                    # gaintype/biastype and they differ only in `biasprm[1]`,
+                    # i.e. in whether `length` is subtracted from the setpoint.
+                    comptime _kind = Self._acd.motor_kind[act_i]
                     comptime if (
-                        Self._acd.motor_kind[act_i] == ACT_KIND_POSITION
+                        _kind == ACT_KIND_POSITION or _kind == ACT_KIND_VELOCITY
                     ):
                         comptime kv = Self._acd.motor_kv[act_i]
                         var length = Scalar[DTYPE](0)
@@ -1213,7 +1228,15 @@ struct ModelDefFromXML[
                             comptime coef = Self._acd.motor_trn_coef[
                                 act_i * Self._WRAPS + k
                             ]
-                            comptime if qadr >= 0 and qadr < Self.NQ:
+                            # `_kind == POSITION` in the guard so a VELOCITY
+                            # actuator does not emit a qpos load it will not
+                            # use — this loop is comptime-unrolled into the
+                            # kernel, so a dead read is a real one.
+                            comptime if (
+                                _kind == ACT_KIND_POSITION
+                                and qadr >= 0
+                                and qadr < Self.NQ
+                            ):
                                 length += Scalar[DTYPE](coef) * rebind[
                                     Scalar[DTYPE]
                                 ](qpos[env, qadr])
@@ -1225,8 +1248,13 @@ struct ModelDefFromXML[
                         vel *= Scalar[DTYPE](gear)
                         # `u`, not `ctrl` — for a dyntype actuator the servo
                         # setpoint is the ACTIVATION, which lags the control.
+                        # ⚠ VELOCITY does NOT subtract `length`; folding it in
+                        # would add position feedback MuJoCo does not have.
+                        var setpoint = u
+                        comptime if _kind == ACT_KIND_POSITION:
+                            setpoint = u - length
                         force = (
-                            Scalar[DTYPE](kp) * (u - length)
+                            Scalar[DTYPE](kp) * setpoint
                             - Scalar[DTYPE](kv) * vel
                         )
 

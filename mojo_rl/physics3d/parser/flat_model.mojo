@@ -380,9 +380,11 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     var ctrl_min: Float64
     var ctrl_max: Float64
     var is_ctrl_limited: Bool
-    # ACT_KIND_*. Anything other than MOTOR is UNIMPLEMENTED: this struct
-    # carries no gainprm/biasprm, so a servo would silently simulate as a
-    # torque motor. `init_fields` raises on a non-MOTOR kind.
+    # ACT_KIND_*. This struct carries no gainprm/biasprm — the gains live in
+    # `xml_parser`'s comptime `ComptimeActData` (`motor_kp`/`motor_kv`), which
+    # is what `apply_actions` reads. The kind is here so `init_fields` can
+    # refuse a transmission neither parser models rather than silently run it
+    # as a torque motor.
     var kind: Int
 
     def __init__(

@@ -24,7 +24,7 @@ by searching for four explicit suffix patterns: `<foo `, `<foo>`, `<foo/`,
 
 from std.collections import InlineArray
 
-from .flat_model import ACT_KIND_MOTOR, ACT_KIND_POSITION
+from .flat_model import ACT_KIND_MOTOR, ACT_KIND_POSITION, ACT_KIND_VELOCITY
 
 
 # =============================================================================
@@ -3734,9 +3734,19 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
 
     # ---- Actuators ------------------------------------------------------------
     #
-    # `<motor>` and `<position>` are scanned TOGETHER in document order, which
-    # is the order MuJoCo indexes actuators in — scanning one tag type and then
-    # the other would permute `ctrl` on any model that mixes them.
+    # `<motor>`, `<position>`, `<velocity>` and `<general>` are scanned TOGETHER
+    # in document order, which is the order MuJoCo indexes actuators in —
+    # scanning one tag type and then the other would permute `ctrl` on any model
+    # that mixes them.
+    #
+    # ⚠⚠ `<velocity` WAS MISSING FROM THIS SCAN while `_count_model_elements`
+    # (:2525) counted it, so NACT was right and the loop found nothing: those
+    # slots kept `motor_trn_n == 0`, and both `apply_actions` paths skip a
+    # zero-transmission actuator. A `<velocity>` model would have run with the
+    # actuator applying NO FORCE AT ALL rather than the wrong one. The runtime
+    # `full_parser` refuses `ACT_KIND_VELOCITY` outright, which is the only
+    # reason this was never reachable — an env passing
+    # `allow_unsupported_actuators=True` would have hit it silently.
     var act_sec = _extract_section(xml_clean, "actuator")
     var act_pos = 0
     var act_count = 0
@@ -3749,11 +3759,15 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
     while act_count < NACT:
         var nm = _find_tag(act_sec, "<motor", act_pos)
         var npos = _find_tag(act_sec, "<position", act_pos)
+        var nvel = _find_tag(act_sec, "<velocity", act_pos)
         var ngen = _find_tag(act_sec, "<general", act_pos)
-        var t = _min_valid_pos(_min_valid_pos(nm, npos), ngen)
+        var t = _min_valid_pos(
+            _min_valid_pos(nm, npos), _min_valid_pos(nvel, ngen)
+        )
         if t == -1:
             break
         var is_position = t == npos
+        var is_velocity = t == nvel
         var is_general = t == ngen
         var tag_end = act_sec.find(">", t)
         if tag_end == -1:
@@ -3769,11 +3783,13 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
         # loop makes the COMPTIME INTERPRETER fail outright ("write clobbers a
         # pointer region" out of `String._iadd`'s memcpy), not merely slowly.
         var tag_name = String("general") if is_general else (
-            String("position") if is_position else String("motor")
+            String("position") if is_position else (
+                String("velocity") if is_velocity else String("motor")
+            )
         )
         var root_tag = _first_tag(rootdef, tag_name)
 
-        data.motor_kind[act_count] = (
+        data.motor_kind[act_count] = ACT_KIND_VELOCITY if is_velocity else (
             ACT_KIND_POSITION if (is_position or is_general) else ACT_KIND_MOTOR
         )
 
@@ -3819,6 +3835,31 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
             data.motor_kv[act_count] = (
                 _parse_float(kv_s) if kv_s.byte_length() > 0 else 0.0
             )
+        elif is_velocity:
+            # `<velocity kv=K>` is `<general>` with gaintype=fixed,
+            # biastype=affine, gainprm = [K, 0, 0] and biasprm = [0, 0, -K] —
+            # i.e. `force = K*(ctrl - vel)`. MEASURED on MuJoCo 3.10.0, all four
+            # spellings (bare, kv=, gear=, and the equivalent `<general>`):
+            #
+            #     <velocity kv="3"/>  -> gainprm [3 0 0]  biasprm [0 0 -3]
+            #     <velocity/>         -> gainprm [1 0 0]  biasprm [0 0 -1]
+            #
+            # ⚠ The kv DEFAULT IS 1, not 0. `<position>`'s kv defaults to 0
+            # because there the damping term is optional; here it IS the
+            # actuator, and a 0 default would give a dead motor.
+            #
+            # ⚠ Resolved 3-way (element -> class -> root default) because the
+            # class level is live: a `<default><velocity kv="7"/></default>`
+            # reaches an attribute-less `<velocity/>`, measured above.
+            # `<position>` above reads the element only — a separate,
+            # pre-existing gap, not widened here.
+            var vkv_s = _attr_3way_cached(
+                xml_clean, tag, elem_cls, tag_name, root_tag, "kv", cacache
+            )
+            var vkv = _parse_float(vkv_s) if vkv_s.byte_length() > 0 else 1.0
+            # gainprm[0] AND -biasprm[2] are both K, so both slots carry it.
+            data.motor_kp[act_count] = vkv
+            data.motor_kv[act_count] = vkv
         elif is_general:
             # Spelled-out form of the same law. MuJoCo (mj_fwdActuation):
             #     force = gain * [ctrl | act] + bias
@@ -3861,7 +3902,7 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
                 if data.bad_actuator < 0:
                     data.bad_actuator = act_count
                     data.bad_actuator_code = 2
-            elif (not no_bias) and b1 != -gain:
+            elif (not no_bias) and b1 != -gain and b1 != 0.0:
                 if data.bad_actuator < 0:
                     data.bad_actuator = act_count
                     data.bad_actuator_code = 3
@@ -3869,8 +3910,28 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
             # A bias-free `<general>` is a gained torque motor, not a servo.
             # The unconditional ACT_KIND_POSITION written above is corrected
             # here, once `biastype` has actually been read.
+            #
+            # `biasprm[1]` is what separates the two servo laws, and it is the
+            # ONLY thing that does — MuJoCo writes the same gaintype/biastype
+            # for both:
+            #     b1 == -gain  ->  force = gain*(u - length) - kv*vel  POSITION
+            #     b1 == 0      ->  force = gain*u            - kv*vel  VELOCITY
+            # Code 3 used to reject `b1 == 0` outright, so a `<general>` spelled
+            # the way MuJoCo itself expands `<velocity>` was refused while the
+            # `<velocity>` tag was silently ignored. Both spellings compile to
+            # an identical mjModel (measured), so both land here.
+            #
+            # ⚠ gain and -b2 are INDEPENDENT. `<velocity>` happens to set both
+            # to K, but `gainprm="5 0 0" biasprm="0 0 -3"` is legal and means
+            # `force = 5*u - 3*vel`; kp/kv carry them separately for that
+            # reason. Do not collapse them.
             if no_bias:
                 data.motor_kind[act_count] = ACT_KIND_MOTOR
+            elif b1 == 0.0 and gain != 0.0:
+                # `gain != 0` only to keep the two branches disjoint: at gain 0
+                # both laws collapse to `force = -kv*vel`, so which one is
+                # picked cannot matter, and POSITION keeps it.
+                data.motor_kind[act_count] = ACT_KIND_VELOCITY
 
             data.motor_kp[act_count] = gain
             data.motor_kv[act_count] = 0.0 if no_bias else -b2
