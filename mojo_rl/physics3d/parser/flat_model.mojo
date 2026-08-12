@@ -855,11 +855,23 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
 comptime _EQ_CONNECT: Int = 0
 comptime _EQ_WELD: Int = 1
 
+# Equality object semantics (matches EQ_OBJ_* in physics3d/types.mojo).
+comptime _EQ_OBJ_BODY: Int = 0
+comptime _EQ_OBJ_SITE: Int = 1
+
 
 struct EqualityData(Copyable, ImplicitlyCopyable, Movable):
     """Flat runtime equality constraint data parsed from <equality> section."""
 
     var eq_type: Int  # _EQ_CONNECT or _EQ_WELD
+    # `_EQ_OBJ_BODY` or `_EQ_OBJ_SITE` — MuJoCo's `eq_objtype`.
+    #
+    # A SITE reference is stored REDUCED to the body form: `body_*` is the
+    # site's body and `anchor_*` is the site's body-local `pos`, which is
+    # exactly what `site_xpos` expands to. The flag is still carried because
+    # the qpos0 anchor derivation in `compute_invweight0` must skip the site
+    # form — MuJoCo zeroes `eq_data` for it and never derives an anchor.
+    var objtype: Int
     var body_a: Int  # first body index
     var body_b: Int  # second body index (0 = worldbody)
     var anchor_a_x: Float64
@@ -896,6 +908,7 @@ struct EqualityData(Copyable, ImplicitlyCopyable, Movable):
     def __init__(
         out self,
         eq_type: Int = _EQ_WELD,
+        objtype: Int = _EQ_OBJ_BODY,
         body_a: Int = 0,
         body_b: Int = 0,
         anchor_a_x: Float64 = 0.0,
@@ -918,6 +931,7 @@ struct EqualityData(Copyable, ImplicitlyCopyable, Movable):
         torquescale: Float64 = 1.0,
     ):
         self.eq_type = eq_type
+        self.objtype = objtype
         self.body_a = body_a
         self.body_b = body_b
         self.anchor_a_x = anchor_a_x

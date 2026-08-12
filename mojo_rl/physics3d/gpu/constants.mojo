@@ -329,7 +329,7 @@ comptime GEOM_IDX_PRIORITY: Int = 30
 # Model Buffer Layout - Equality Constraints
 # =============================================================================
 
-comptime MODEL_EQ_SIZE: Int = 21  # Per equality constraint
+comptime MODEL_EQ_SIZE: Int = 22  # Per equality constraint
 
 comptime EQ_IDX_TYPE: Int = 0  # EQ_CONNECT=0 or EQ_WELD=1
 comptime EQ_IDX_BODY_A: Int = 1
@@ -362,6 +362,21 @@ comptime EQ_IDX_SOLIMP_4: Int = 19  # solimp power
 # so sawyer's weld orientation was 5x too soft against the environment we port.
 # Unimplemented until 2026-08-12.
 comptime EQ_IDX_TORQUESCALE: Int = 20
+
+# MuJoCo's `eq_objtype` — BODY or SITE semantics. MJCF lets both `connect` and
+# `weld` name either two bodies (+ an `anchor` in body1's frame) or two SITES,
+# and `mj_instantiateEquality` branches on it: the body form builds the anchor
+# as `xmat[b]*eq_data + xpos[b]`, the site form reads `site_xpos` directly and
+# ignores `eq_data` entirely (engine_core_constraint.c:448).
+#
+# WE STORE THE SITE FORM REDUCED TO THE BODY FORM: at parse time a site
+# reference becomes `(body = site_bodyid, anchor = site local pos)`, which is
+# exactly what `site_xpos` expands to in FK. That keeps the row builder and
+# every solver path unchanged. The flag still has to be carried because the
+# qpos0 derivation below must NOT run on the site form — MuJoCo zeroes
+# `eq_data` there, and re-deriving would overwrite the site offsets with the
+# anchor MuJoCo never computed.
+comptime EQ_IDX_OBJTYPE: Int = 21  # EQ_OBJ_BODY=0 or EQ_OBJ_SITE=1
 
 
 # =============================================================================

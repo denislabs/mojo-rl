@@ -60,6 +60,8 @@ from .flat_model import (
     FlatModelDef,
     _EQ_CONNECT,
     _EQ_WELD,
+    _EQ_OBJ_BODY,
+    _EQ_OBJ_SITE,
     _GEOM_PLANE,
     _GEOM_SPHERE,
     _GEOM_CAPSULE,
@@ -2378,45 +2380,151 @@ def _fill_equality(
         if earliest == nw:
             ed.eq_type = _EQ_WELD
         else:
-            # ⚠ `<connect>` RAISES rather than parsing WRONG. `anchor_b` —
-            # MuJoCo's `eq_data[3:6]`, the anchor expressed in body2's frame —
-            # is never populated by this parser, so body2 would be anchored at
-            # its OWN ORIGIN instead of the shared point. MuJoCo's compiler
-            # derives that value at qpos0; `mj_equalityAnchors` then reads
-            # `pos1 = body1 * data[0:3]`, `pos2 = body2 * data[3:6]`
-            # (engine_core_constraint.c:570). Silently wrong unless the two
-            # frames happen to coincide.
-            #
-            # No model in the tree uses `<connect>`, so nothing is broken by
-            # this raise — and the same "no model asks for it" is exactly what
-            # let a spatial `<equality><tendon>` sit unimplemented behind four
-            # comments claiming it was handled (see
-            # `constraints/tendon_limit.build_tendon_equality_rows`). Loud
-            # beats latent.
-            #
-            # ⚠ FIXING `anchor_b` ALONE WOULD NOT MAKE `<connect>` USABLE FOR
-            # THE MODEL THAT WANTS IT. ToddlerBot's four connect equalities are
-            # SITE-based (`site1=`/`site2=`) and this scanner reads only
-            # `body1`/`body2`/`anchor`, so both halves have to be built —
-            # and gated — together. Deriving `anchor_b` is the same shape as
-            # the weld `relpose` derivation in `dynamics/invweight.mojo`
-            # (at qpos0, `anchor_b = R(qb)^T (world_anchor - pb)`).
+            ed.eq_type = _EQ_CONNECT
+
+        # ── BODY vs SITE semantics (MuJoCo's `eq_objtype`) ───────────────────
+        #
+        # MJCF gives `connect` and `weld` two mutually exclusive spellings, and
+        # `mjXReader::OneEquality` (xml_native_reader.cc:2118) validates the
+        # choice rather than guessing:
+        #
+        #   connect: EITHER (body1 + anchor [+ body2])  OR  (site1 + site2)
+        #   weld:    EITHER (body1 [+ body2, anchor, relpose])
+        #                                                OR  (site1 + site2)
+        #
+        # Mixing the two is an error, and so is satisfying neither.
+        #
+        # ⚠ THE SITE FORM USED TO FALL THROUGH TO THE BODY FORM AND PRODUCE A
+        # SELF-WELD. `body1`/`body2` are absent on a site-based equality, so
+        # both indices stayed at their default 0 and the model got an equality
+        # binding the WORLD TO ITSELF — three or six rows of pure zero. MuJoCo
+        # rejects `obj1id == obj2id` outright ("element is repeated in equality
+        # constraint"). Nothing caught it because the only weld in the tree
+        # (sawyer's) is body-based.
+        var b1_name = _extract_attr(tag, "body1")
+        var b2_name = _extract_attr(tag, "body2")
+        var s1_name = _extract_attr(tag, "site1")
+        var s2_name = _extract_attr(tag, "site2")
+        var anchor_s = _extract_attr(tag, "anchor")
+        var relpose_s = _extract_attr(tag, "relpose")
+
+        var has_s1 = s1_name.byte_length() > 0
+        var has_s2 = s2_name.byte_length() > 0
+        var has_b1 = b1_name.byte_length() > 0
+        var has_b2 = b2_name.byte_length() > 0
+        var has_anchor = anchor_s.byte_length() > 0
+        var has_relpose = relpose_s.byte_length() > 0
+
+        var maybe_site = has_s1 or has_s2
+        # `relpose` counts as a body-side attribute on a weld only — connect
+        # has no orientation half and so no relpose.
+        var maybe_body = (
+            has_b1
+            or has_b2
+            or has_anchor
+            or (has_relpose and ed.eq_type == _EQ_WELD)
+        )
+
+        var kind = "weld" if ed.eq_type == _EQ_WELD else "connect"
+        if maybe_site and maybe_body:
             raise Error(
-                "physics3d: <equality><connect> is not implemented. The"
-                " body2-side anchor (MuJoCo's eq_data[3:6], derived at qpos0)"
-                " is never populated here, so the constraint would anchor"
-                " body2 at its own origin. Site-based <connect site1= site2=>"
-                " is likewise unparsed. See the note at this raise."
+                "physics3d: <equality><"
+                + kind
+                + "> mixes body and site semantics. Give EITHER body1 (+"
+                " body2/anchor) OR site1 and site2, not both."
             )
 
-        # body1 / body2 — resolve names to indices
-        var b1_name = _extract_attr(tag, "body1")
-        if b1_name.byte_length() > 0:
-            ed.body_a = _find_body_index_by_name(worldbody, b1_name)
+        var site_semantic = has_s1 and has_s2
+        # A connect needs its anchor to be body-semantic; a weld does not
+        # (an absent anchor means the body origin).
+        var body_semantic = has_b1 and (
+            has_anchor if ed.eq_type == _EQ_CONNECT else True
+        )
+        if site_semantic == body_semantic:
+            raise Error(
+                "physics3d: <equality><"
+                + kind
+                + "> needs exactly one of: body1"
+                + (" and anchor" if ed.eq_type == _EQ_CONNECT else "")
+                + ", or site1 and site2."
+            )
 
-        var b2_name = _extract_attr(tag, "body2")
-        if b2_name.byte_length() > 0:
-            ed.body_b = _find_body_index_by_name(worldbody, b2_name)
+        if site_semantic:
+            # ⚠ WELD + SITES IS STILL UNIMPLEMENTED, and raises for the same
+            # reason `<connect>` used to: the three ORIENTATION rows compare
+            # body quaternions, and a site carries its own `quat` on top of
+            # its body's, so the residual needs `site_xmat` — which the
+            # position reduction below does not give us. Doing it would mean
+            # deriving the relpose from the SITE frames at qpos0. The
+            # position half would work today; shipping half a weld is how the
+            # spatial `<equality><tendon>` gap survived behind four comments
+            # claiming it was handled.
+            if ed.eq_type == _EQ_WELD:
+                raise Error(
+                    "physics3d: site-based <equality><weld site1= site2=> is"
+                    " not implemented — the orientation rows need the SITE"
+                    " frames (site_xmat), not the body frames. Use the"
+                    " body form, or see the note at this raise."
+                )
+
+            # SITE SEMANTICS REDUCES EXACTLY TO THE BODY FORM. MuJoCo reads
+            # `pos[j] = site_xpos[id[j]]` and takes the bodies from
+            # `site_bodyid` (engine_core_constraint.c:459); FK defines
+            # `site_xpos = xpos[body] + xmat[body] * site_pos`, which is the
+            # same expression the body form builds from
+            # `(body, anchor)`. So storing `(site_bodyid, site local pos)`
+            # leaves the row builder and every solver path untouched.
+            ed.objtype = _EQ_OBJ_SITE
+
+            var s1 = _find_site_index_by_name(worldbody, s1_name)
+            if s1 < 0 or s1 >= len(result.sites):
+                raise Error(
+                    "physics3d: <equality><"
+                    + kind
+                    + "> references unknown site1='"
+                    + s1_name
+                    + "'."
+                )
+            var s2 = _find_site_index_by_name(worldbody, s2_name)
+            if s2 < 0 or s2 >= len(result.sites):
+                raise Error(
+                    "physics3d: <equality><"
+                    + kind
+                    + "> references unknown site2='"
+                    + s2_name
+                    + "'."
+                )
+
+            ed.body_a = result.sites[s1].body_id
+            ed.anchor_a_x = result.sites[s1].pos_x
+            ed.anchor_a_y = result.sites[s1].pos_y
+            ed.anchor_a_z = result.sites[s1].pos_z
+            ed.body_b = result.sites[s2].body_id
+            ed.anchor_b_x = result.sites[s2].pos_x
+            ed.anchor_b_y = result.sites[s2].pos_y
+            ed.anchor_b_z = result.sites[s2].pos_z
+
+        # ── body semantics ───────────────────────────────────────────────────
+        #
+        # ⚠ THE SITE BRANCH ABOVE FALLS THROUGH TO THE SHARED TAIL — it must
+        # NOT `append` and `continue` here. It did at first, which jumped
+        # clean over `solref` / `solimp` / `torquescale` below, so every
+        # site-based equality silently took the MJCF defaults. ToddlerBot's
+        # four connects all carry `solref="0.004 1"` and
+        # `solimp="0.9999 0.9999 0.001 0.5 2"` — a far stiffer constraint than
+        # the 0.02/1, 0.9/0.95 defaults they would have been given, and
+        # nothing downstream could have told the difference.
+        # `test_site_connect_leaves_eq_data_alone` pins solref/solimp against
+        # the runtime for exactly this reason.
+        if not site_semantic:
+            ed.objtype = _EQ_OBJ_BODY
+
+            # body1 / body2 — resolve names to indices
+            if has_b1:
+                ed.body_a = _find_body_index_by_name(worldbody, b1_name)
+
+            if has_b2:
+                ed.body_b = _find_body_index_by_name(worldbody, b2_name)
 
         # `anchor` — WHICH BODY IT ANCHORS DEPENDS ON THE TYPE.
         # `mj_equalityAnchors` (engine_core_constraint.c:561) is explicit:
@@ -2433,8 +2541,7 @@ def _fill_equality(
         # `anchor_b` at all. Latent because no model in the tree gives a weld an
         # explicit `anchor` (sawyer's is `<weld body1="mocap" body2="hand"
         # solref="0.02 1"/>`), so both slots were 0 and the swap was invisible.
-        var anchor_s = _extract_attr(tag, "anchor")
-        if anchor_s.byte_length() > 0:
+        if has_anchor:
             var av = _parse_vec3(anchor_s)
             if ed.eq_type == _EQ_WELD:
                 ed.anchor_b_x = av[0]
@@ -2458,8 +2565,13 @@ def _fill_equality(
         # (`relpose="0 0 0 1 0 0 0"`) is kept as identity. `relpose_w` is left
         # at 0 here so `compute_invweight0` can tell the two apart; it fills
         # the derived value in at qpos0, where the FK products already exist.
-        var relpose_s = _extract_attr(tag, "relpose")
-        if relpose_s.byte_length() > 0:
+        # ⚠ `not site_semantic` guards a clobber. The position half of
+        # `relpose` writes `anchor_a`, which on the site path already holds
+        # site1's local offset. MJCF's schema gives `relpose` to `weld` only,
+        # so a site-based equality carrying one is invalid input rather than a
+        # real case — but "invalid input silently moves an anchor" is the kind
+        # of thing that surfaces years later as a wrong model.
+        if has_relpose and not site_semantic:
             var parts = List[String]()
             _split_spaces(relpose_s, parts)
             if len(parts) >= 3:

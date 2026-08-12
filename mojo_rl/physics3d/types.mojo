@@ -23,6 +23,12 @@ comptime EQ_CONNECT: Int = 0  # Point-to-point ball joint (3 position rows)
 comptime EQ_WELD: Int = 1  # Rigid attachment (3 position + 3 orientation rows)
 comptime EQ_TENDON: Int = 2  # Fixed tendon (1 bilateral row)
 
+# Equality object semantics (MuJoCo `eq_objtype`, mjOBJ_BODY / mjOBJ_SITE).
+# See `EQ_IDX_OBJTYPE` in `gpu/constants.mojo` for why the site form is stored
+# reduced to the body form and why the flag still has to be carried.
+comptime EQ_OBJ_BODY: Int = 0
+comptime EQ_OBJ_SITE: Int = 1
+
 
 struct ConeType:
     comptime PYRAMIDAL: Int = 0

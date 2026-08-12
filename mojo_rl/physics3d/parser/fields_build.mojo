@@ -189,6 +189,7 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_MARGIN,
     GEOM_IDX_MESH_ID,
     EQ_IDX_TYPE,
+    EQ_IDX_OBJTYPE,
     EQ_IDX_BODY_A,
     EQ_IDX_BODY_B,
     EQ_IDX_ANCHOR_AX,
@@ -1242,6 +1243,7 @@ def build_model_fields_from_flat[
             continue
         var o = num_eq * MODEL_EQ_SIZE
         mf.equality.data[o + EQ_IDX_TYPE] = Scalar[DTYPE](ed.eq_type)
+        mf.equality.data[o + EQ_IDX_OBJTYPE] = Scalar[DTYPE](ed.objtype)
         mf.equality.data[o + EQ_IDX_BODY_A] = Scalar[DTYPE](ed.body_a)
         mf.equality.data[o + EQ_IDX_BODY_B] = Scalar[DTYPE](ed.body_b)
         mf.equality.data[o + EQ_IDX_ANCHOR_AX] = Scalar[DTYPE](ed.anchor_a_x)

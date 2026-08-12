@@ -103,12 +103,16 @@ from mojo_rl.physics3d.gpu.constants import (
     EQ_IDX_ANCHOR_AX,
     EQ_IDX_ANCHOR_AY,
     EQ_IDX_ANCHOR_AZ,
+    EQ_IDX_ANCHOR_BX,
+    EQ_IDX_ANCHOR_BY,
+    EQ_IDX_ANCHOR_BZ,
+    EQ_IDX_OBJTYPE,
     EQ_IDX_RELPOSE_X,
     EQ_IDX_RELPOSE_Y,
     EQ_IDX_RELPOSE_Z,
     EQ_IDX_RELPOSE_W,
 )
-from mojo_rl.physics3d.types import EQ_WELD
+from mojo_rl.physics3d.types import EQ_WELD, EQ_CONNECT, EQ_OBJ_SITE
 from mojo_rl.physics3d.kinematics.quat_math import (
     quat_mul,
     quat_conjugate,
@@ -564,6 +568,74 @@ def compute_invweight0[
     # exist only after FK; this function has already run FK at qpos0 for the
     # inverse weights above, which is the same reference configuration
     # `mjCEquality::Compile` uses.
+    # ── connect anchor_b = the qpos0 anchor in body2's frame (mj_setConst) ───
+    # MuJoCo stores a connect's anchor TWICE — `eq_data[0:3]` in body1's frame
+    # (the MJCF `anchor` attribute) and `eq_data[3:6]` in body2's — and derives
+    # the second at the reference configuration:
+    #
+    #   pos = xpos[b1] + xmat[b1] * data[0:3]          (mj_local2Global)
+    #   data[3:6] = xmat[b2]^T * (pos - xpos[b2])
+    #
+    # `engine_setconst.c`, "compute missing eq_data for body constraints".
+    # BYTE-IDENTICAL in MuJoCo 3.3.6, 3.6.0, 3.11.0 and `mujoco-main`, so
+    # there is no version risk here even though none of those trees is the
+    # 3.10.0 runtime. Confirmed against that runtime directly: bodies at
+    # (0.1,0.2,0.3) and (0.7,-0.3,0.4) with `anchor="0.05 0.06 0.07"` compile
+    # to `eq_data[3:6] = (-0.55, 0.56, -0.03)`.
+    #
+    # ⚠ UNCONDITIONAL, unlike the weld derivation below — there is no "the
+    # user already wrote it" escape, because MJCF gives a connect no attribute
+    # that lands in `eq_data[3:6]`. Do NOT copy the weld's zero-quaternion
+    # guard here.
+    #
+    # ⚠ SKIPPED FOR SITE SEMANTICS. MuJoCo zeroes `eq_data` for a site-based
+    # connect and reads `site_xpos` instead; we store the site offsets in the
+    # anchor slots (see `_fill_equality`), so deriving would overwrite site2's
+    # offset with a value MuJoCo never computes.
+    comptime if NEQUALITY > 0:
+        for e in range(NEQUALITY):
+            var eo = e * MODEL_EQ_SIZE
+            if Int(mf.equality.data[eo + EQ_IDX_TYPE]) != EQ_CONNECT:
+                continue
+            if Int(mf.equality.data[eo + EQ_IDX_OBJTYPE]) == EQ_OBJ_SITE:
+                continue
+
+            var cba = Int(mf.equality.data[eo + EQ_IDX_BODY_A])
+            var cbb = Int(mf.equality.data[eo + EQ_IDX_BODY_B])
+            if cba < 0 or cba >= NBODY or cbb < 0 or cbb >= NBODY:
+                continue
+
+            # world anchor = xpos[b1] + R(xquat[b1]) * anchor_a
+            var wrot = quat_rotate[DTYPE](
+                d.xquat.data[cba * 4 + 0],
+                d.xquat.data[cba * 4 + 1],
+                d.xquat.data[cba * 4 + 2],
+                d.xquat.data[cba * 4 + 3],
+                mf.equality.data[eo + EQ_IDX_ANCHOR_AX],
+                mf.equality.data[eo + EQ_IDX_ANCHOR_AY],
+                mf.equality.data[eo + EQ_IDX_ANCHOR_AZ],
+            )
+            var wax = d.xpos.data[cba * 3 + 0] + wrot[0]
+            var way = d.xpos.data[cba * 3 + 1] + wrot[1]
+            var waz = d.xpos.data[cba * 3 + 2] + wrot[2]
+
+            # anchor_b = R(xquat[b2])^T * (world anchor - xpos[b2])
+            var qb = quat_conjugate[DTYPE](
+                d.xquat.data[cbb * 4 + 0],
+                d.xquat.data[cbb * 4 + 1],
+                d.xquat.data[cbb * 4 + 2],
+                d.xquat.data[cbb * 4 + 3],
+            )
+            var ab = quat_rotate[DTYPE](
+                qb[0], qb[1], qb[2], qb[3],
+                wax - d.xpos.data[cbb * 3 + 0],
+                way - d.xpos.data[cbb * 3 + 1],
+                waz - d.xpos.data[cbb * 3 + 2],
+            )
+            mf.equality.data[eo + EQ_IDX_ANCHOR_BX] = ab[0]
+            mf.equality.data[eo + EQ_IDX_ANCHOR_BY] = ab[1]
+            mf.equality.data[eo + EQ_IDX_ANCHOR_BZ] = ab[2]
+
     comptime if NEQUALITY > 0:
         for e in range(NEQUALITY):
             var eo = e * MODEL_EQ_SIZE
