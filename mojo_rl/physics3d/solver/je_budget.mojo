@@ -44,7 +44,12 @@ def _max_one[N: Int]() -> Int:
 
 
 def je_edge_rows[
-    NV: Int, NJOINT: Int, NTENDON: Int, MAX_CONTACTS: Int, MAX_CONDIM: Int
+    NV: Int,
+    NJOINT: Int,
+    NTENDON: Int,
+    NEQUALITY: Int,
+    MAX_CONTACTS: Int,
+    MAX_CONDIM: Int,
 ]() -> Int:
     """`ME` — the blocked solver's constraint-row count.
 
@@ -56,26 +61,40 @@ def je_edge_rows[
         MAX_FRIC = max(1, NV)         one dry-friction row per dof
         MAX_TLIM = 2*NTENDON          tendon limits (lo + hi)
         MAX_TEQ  = NTENDON            one bilateral row per equality tendon
+        MAX_WELD = 6*NEQUALITY        connect (3) / weld (6) rows
 
-    ⚠ The last three were MISSING from the blocked path until 2026-07-31, so a
-    model with `frictionloss` or a limited tendon silently had no such rows.
-    Growing this function grows the spill buffer with it — that is the point of
-    routing both through here.
+    ⚠ The friction and tendon terms were MISSING from the blocked path until
+    2026-07-31, so a model with `frictionloss` or a limited tendon silently had
+    no such rows. `MAX_WELD` arrived 2026-08-12 with the defect-29a conversion
+    of connect/weld from a post-pass into rows. Growing this function grows the
+    spill buffer with it — that is the point of routing both through here.
+
+    ⚠ NEQUALITY IS A PARAMETER, not a term folded into another. It was
+    tempting to reuse NTENDON's slot since both are "equality" counts; they are
+    different models' dimensions and a model can have either without the other.
     """
     return (
         2 * (MAX_CONDIM - 1) * _max_one[MAX_CONTACTS]()
         + _max_one[2 * NJOINT]()
         + _max_one[NV]()
         + 3 * NTENDON
+        + 6 * NEQUALITY
     )
 
 
 def je_elems[
-    NV: Int, NJOINT: Int, NTENDON: Int, MAX_CONTACTS: Int, MAX_CONDIM: Int
+    NV: Int,
+    NJOINT: Int,
+    NTENDON: Int,
+    NEQUALITY: Int,
+    MAX_CONTACTS: Int,
+    MAX_CONDIM: Int,
 ]() -> Int:
     """Scalars in `Je` for ONE env: `ME * V_SIZE`."""
     return (
-        je_edge_rows[NV, NJOINT, NTENDON, MAX_CONTACTS, MAX_CONDIM]()
+        je_edge_rows[
+            NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM
+        ]()
         * _max_one[NV]()
     )
 
@@ -85,12 +104,13 @@ def je_spills[
     NV: Int,
     NJOINT: Int,
     NTENDON: Int,
+    NEQUALITY: Int,
     MAX_CONTACTS: Int,
     MAX_CONDIM: Int,
 ]() -> Bool:
     """Does `Je` exceed the threadgroup budget and need the global buffer?"""
     return (
-        je_elems[NV, NJOINT, NTENDON, MAX_CONTACTS, MAX_CONDIM]()
+        je_elems[NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM]()
         * size_of[Scalar[DTYPE]]()
     ) > JE_SHARED_BUDGET
 
@@ -100,6 +120,7 @@ def je_ws_size[
     NV: Int,
     NJOINT: Int,
     NTENDON: Int,
+    NEQUALITY: Int,
     MAX_CONTACTS: Int,
     MAX_CONDIM: Int,
 ]() -> Int:
@@ -109,7 +130,9 @@ def je_ws_size[
     spill pays one scalar per env, not a buffer.
     """
     comptime if je_spills[
-        DTYPE, NV, NJOINT, NTENDON, MAX_CONTACTS, MAX_CONDIM
+        DTYPE, NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM
     ]():
-        return je_elems[NV, NJOINT, NTENDON, MAX_CONTACTS, MAX_CONDIM]()
+        return je_elems[
+            NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM
+        ]()
     return 0

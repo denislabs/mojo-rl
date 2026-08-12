@@ -409,8 +409,8 @@ struct EulerIntegrator[
     # carries every dimension it depends on, and via `je_budget` so the buffer
     # and the kernel that indexes it cannot drift apart.
     comptime JE_WS = je_ws_size[
-        Self.DTYPE, Self.NV, Self.NJOINT, Self.NTENDON, Self.MAX_CONTACTS,
-        Self.MAX_CONDIM,
+        Self.DTYPE, Self.NV, Self.NJOINT, Self.NTENDON, Self.NEQUALITY,
+        Self.MAX_CONTACTS, Self.MAX_CONDIM,
     ]()
 
     var cscratch: ContactScratch[

@@ -29,11 +29,11 @@ iteration count (SOLVER_ITER_GPU=50):
 - ELLIPTIC: after the Newton core, `_limits_env` (port of
   `detect_and_solve_limits_gpu`). Nothing else — joint limits, tendon
   equalities and connect/weld are all rows of the system now.
-- PYRAMIDAL: joint limits are edge rows INSIDE the Newton optimization
-  (part of the verbatim core); connect/weld after.
-Equality/tendon are call-site gated `comptime if NEQUALITY > 0` /
-`NTENDON > 0` (the legacy calls are unconditional with a comptime gate
-inside the builder — bit-identical for zero counts, same as the PGS port).
+- PYRAMIDAL: joint limits, dry friction, tendon limits, tendon equalities
+  and connect/weld are ALL edge rows INSIDE the Newton optimization.
+  Nothing runs after the solve.
+Row building is call-site gated `comptime if NEQUALITY > 0` /
+`NTENDON > 0` — bit-identical to the unconditional form for zero counts.
 Excluded: the legacy `dt` metadata read, whose only consumer was the
 (unused-arg) limits call.
 
@@ -95,10 +95,7 @@ from ..constraints.scalar_rows import (
     DOF_SOLIMP_DMIN,
     DOF_SOLIMP_DMAX,
 )
-from ..constraints.equality_tendon import (
-    build_weld_equality_rows,
-    _equality_env,
-)
+from ..constraints.equality_tendon import build_weld_equality_rows
 from ..fields import Data, Model, DynamicsScratch, ContactScratch
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
@@ -667,8 +664,13 @@ def _newton_solve_env[
         comptime MAX_FRIC = V_SIZE  # one friction row per dof
         comptime MAX_TLIM = 2 * NTENDON  # lo + hi per tendon
         comptime MAX_TEQ = NTENDON  # one bilateral row per equality tendon
-        # contact + limit + dry-friction + tendon-limit + tendon-equality rows
-        comptime ME = NE * MC + MAX_LIM + MAX_FRIC + MAX_TLIM + MAX_TEQ
+        # connect is 3 rows, weld is 6; sized for the worst case per equality.
+        comptime MAX_WELD = 6 * NEQUALITY
+        # contact + limit + dry-friction + tendon-limit + tendon-equality
+        # + connect/weld rows
+        comptime ME = (
+            NE * MC + MAX_LIM + MAX_FRIC + MAX_TLIM + MAX_TEQ + MAX_WELD
+        )
 
         # Cache edge data from PYRAMIDAL workspace layout
         var pyr_sc = ws_Jt1_idx + NE * MC * NV
@@ -953,6 +955,51 @@ def _newton_solve_env[
                 subtree_com, cdof, xpos, xquat, m_inv,
                 Je, De, bias_e, kind_e, num_edges,
             )
+
+        # connect / weld EQUALITY rows (defect 29a), dense J, BILATERAL.
+        #
+        # Same conversion the ELLIPTIC path got in `d22144ee`, mirrored here
+        # 2026-08-12. As a post-pass these rewrote the dofs the contacts had
+        # just balanced: on sawyer the mocap weld left the object 77.6 mm from
+        # where MuJoCo rests it, and moving the rows INSIDE the solve brought
+        # that to 0.087 mm.
+        #
+        # ⚠ `eq_D` IS `1/R`, NOT `1/(k+R)`. `build_weld_equality_rows` returns
+        # the PGS step size in `we_D`; MuJoCo's Newton cost wants the row
+        # STIFFNESS `efc_D = 1/R` (engine_core_constraint.c:1918). Passing the
+        # step size instead is what regressed defect 28 from 0.91 mm to
+        # 7.86 mm on the first attempt at the elliptic conversion, and it looks
+        # exactly like an iteration-budget problem while being nothing of the
+        # kind.
+        comptime if NEQUALITY > 0:
+            comptime WR = _max_one[6 * NEQUALITY]()
+            comptime WJ = _max_one[6 * NEQUALITY * NV]()
+            var w_K = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](1))
+            var w_bias = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
+            var w_D = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
+            var w_J = InlineArray[Scalar[DTYPE], WJ](fill=Scalar[DTYPE](0))
+            var w_MinvJ = InlineArray[Scalar[DTYPE], WJ](
+                fill=Scalar[DTYPE](0)
+            )
+            var n_w = build_weld_equality_rows[
+                DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH, WR, WJ
+            ](
+                env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+                equality, body_invweight0, cdof, m_inv,
+                w_K, w_bias, w_D, w_J, w_MinvJ,
+            )
+            for r in range(n_w):
+                if num_edges >= ME:
+                    break
+                for i in range(NV):
+                    Je[num_edges * NV + i] = w_J[r * NV + i]
+                var R_recov = Scalar[DTYPE](1) / w_D[r] - w_K[r]
+                if R_recov < Scalar[DTYPE](1e-14):
+                    R_recov = Scalar[DTYPE](1e-14)
+                De[num_edges] = Scalar[DTYPE](1) / R_recov
+                bias_e[num_edges] = w_bias[r]
+                kind_e[num_edges] = SROW_EQ_BILATERAL
+                num_edges += 1
 
         # Dry-friction dof rows (MuJoCo mjCNSTR_FRICTION_DOF). These were
         # MISSING from the pyramidal path entirely — `_friction_env` was only
@@ -1334,23 +1381,17 @@ def _newton_solve_env[
             contacts[env, c_off + CONTACT_IDX_FORCE_T1] = ft1_c
             contacts[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_c
 
-        # Joint limits are now handled as edges in the Newton solver above.
-        # Only equality constraints remain as a separate post-solve step.
-        comptime SOLVER_ITER_GPU: Int = 50
-        comptime if NEQUALITY > 0:
-            _equality_env[
-                DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE,
-                BATCH, SOLVER_ITER_GPU,
-            ](
-                env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
-                equality, body_invweight0,
-                cdof, m_inv, qacc_constrained,
-            )
-        # NO `_tendon_env` HERE. `build_tendon_equality_rows` above builds a
-        # row for EVERY `<equality><tendon>`, fixed and spatial, so the
-        # post-pass had nothing left to do — it was kept alive by a
-        # `SKIP_FIXED` flag that let spatial tendons through into code with no
-        # spatial branch. Calling it now would double-apply the constraint.
+        # NOTHING RUNS AFTER THE SOLVE ON THIS PATH. Joint limits,
+        # dry-friction dofs, tendon equalities and connect/weld are all edge
+        # rows of the Newton system above; calling `_equality_env` or
+        # `_tendon_env` here would double-apply constraints the solve already
+        # balanced, not complete them.
+        #
+        # Both post-passes were removed on 2026-08-12: the tendon one because
+        # `build_tendon_equality_rows` covers spatial as well as fixed now, and
+        # the weld one because `build_weld_equality_rows` feeds the edge list
+        # above — the same defect-29a conversion the ELLIPTIC path got in
+        # `d22144ee`.
         return  # PYRAMIDAL path complete
 
     # === ELLIPTIC path (existing code) ===
@@ -2840,7 +2881,11 @@ def _newton_blocked_fields_kernel[
     # large model that can push the block over the device's shared-memory
     # limit, which shows up as a LAUNCH FAILURE (loud), not a wrong answer.
     comptime MAX_TEQ = NTENDON  # one bilateral row per equality tendon
-    comptime ME = NE * MC + MAX_LIM + MAX_FRIC + MAX_TLIM + MAX_TEQ
+    # connect is 3 rows, weld is 6; sized for the worst case per equality.
+    comptime MAX_WELD = 6 * NEQUALITY
+    comptime ME = (
+        NE * MC + MAX_LIM + MAX_FRIC + MAX_TLIM + MAX_TEQ + MAX_WELD
+    )
 
     # ── Je: shared when it fits, spilled to global when it does not ───────
     #
@@ -2892,7 +2937,7 @@ def _newton_blocked_fields_kernel[
     # declared layout — a zero-extent tensor operand segfaults.
     comptime JE_ELEMS = JE_WS if JE_WS > 0 else 1
     comptime JE_IN_SHARED = not je_spills[
-        DTYPE, NV, NJOINT, NTENDON, MAX_CONTACTS, MAX_CONDIM
+        DTYPE, NV, NJOINT, NTENDON, NEQUALITY, MAX_CONTACTS, MAX_CONDIM
     ]()
     comptime JE_AS = (
         AddressSpace.SHARED if JE_IN_SHARED else AddressSpace.GENERIC
@@ -3329,6 +3374,45 @@ def _newton_blocked_fields_kernel[
                 kind_e_sh[num_edges] = Scalar[DTYPE](q_kind[r])
                 num_edges += 1
 
+        # connect / weld EQUALITY rows (defect 29a) — the same conversion the
+        # per-env paths have, mirrored here 2026-08-12. Dense J, BILATERAL,
+        # `De = 1/R` recovered from the builder's PGS step size (see the
+        # per-env pyramidal path for why that distinction is load-bearing).
+        #
+        # ⚠ STAGED BY `WR`/`WJ` — THE ROWS BEING BUILT — NOT BY `ME`. These are
+        # PER-THREAD local arrays, and sizing one by total edge capacity is
+        # exactly the tens-of-KB local-memory blowout this cooperative kernel
+        # exists to avoid; the tendon-limit rows made that mistake first.
+        comptime if NEQUALITY > 0:
+            comptime WR = _max_one[6 * NEQUALITY]()
+            comptime WJ = _max_one[6 * NEQUALITY * NV]()
+            var w_K = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](1))
+            var w_bias = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
+            var w_D = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
+            var w_J = InlineArray[Scalar[DTYPE], WJ](fill=Scalar[DTYPE](0))
+            var w_MinvJ = InlineArray[Scalar[DTYPE], WJ](
+                fill=Scalar[DTYPE](0)
+            )
+            var n_w = build_weld_equality_rows[
+                DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH, WR, WJ
+            ](
+                env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+                equality, body_invweight0, cdof, m_inv,
+                w_K, w_bias, w_D, w_J, w_MinvJ,
+            )
+            for r in range(n_w):
+                if num_edges >= ME:
+                    break
+                for i in range(NV):
+                    Je_sh[num_edges * NV + i] = w_J[r * NV + i]
+                var R_recov = Scalar[DTYPE](1) / w_D[r] - w_K[r]
+                if R_recov < Scalar[DTYPE](1e-14):
+                    R_recov = Scalar[DTYPE](1e-14)
+                De_sh[num_edges] = Scalar[DTYPE](1) / R_recov
+                bias_e_sh[num_edges] = w_bias[r]
+                kind_e_sh[num_edges] = Scalar[DTYPE](SROW_EQ_BILATERAL)
+                num_edges += 1
+
         # Dry-friction dof rows (mjCNSTR_FRICTION_DOF). BOX rows, clamped to
         # +-frictionloss, so they are the reason this kernel needs row states
         # at all. Arithmetic identical to the per-env pyramidal builder.
@@ -3722,23 +3806,12 @@ def _newton_blocked_fields_kernel[
         contacts[env, c_off + CONTACT_IDX_FORCE_T1] = ft1_c
         contacts[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_c
 
-    # Joint limits and tendon equalities (fixed AND spatial) are edges above;
-    # weld/connect remain a separate post-solve step on this kernel — the
-    # defect-29a conversion has only been done on the ELLIPTIC per-env path so
-    # far. The tendon post-pass is GONE: `build_tendon_equality_rows` now
-    # covers both kinds, so calling it here would double the constraint force
-    # rather than complete the coverage, which is what its `SKIP_FIXED` guard
-    # used to arrange.
-    comptime SOLVER_ITER_GPU: Int = 50
-    comptime if NEQUALITY > 0:
-        _equality_env[
-            DTYPE, NV, NBODY, NJOINT, NEQUALITY, V_SIZE,
-            BATCH, SOLVER_ITER_GPU,
-        ](
-            env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
-            equality, body_invweight0, cdof,
-            m_inv, qacc_constrained,
-        )
+    # NOTHING RUNS AFTER THE SOLVE ON THIS KERNEL EITHER. Joint limits,
+    # dry-friction dofs, tendon equalities (fixed and spatial) and
+    # connect/weld are all edge rows above. Both post-passes were removed on
+    # 2026-08-12 — the tendon one because `build_tendon_equality_rows` covers
+    # both kinds now, and `_equality_env` with the defect-29a conversion that
+    # reached this kernel last of the three.
 
 
 def solve_newton_blocked[
