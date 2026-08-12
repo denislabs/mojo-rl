@@ -43,7 +43,7 @@ from max.gpu.host import DeviceContext
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn.constants import DT, TPB
+from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
 from mojo_rl.nn.random.box_muller import advance_rng_offset_kernel
 from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
@@ -201,8 +201,17 @@ struct Dropout[
             comptime if target == "cpu":
                 outd.ensure(N)
                 if Self.IS_IDENTITY or not self.training:
-                    for i in range(N):
-                        outd.data[i] = in0d.data[i]
+                    # SIMD copy — the scalar loop this replaces cost 247 us at
+                    # B=268, DIM=512 (1.8 ns/element) to move 137k floats.
+                    var sp = in0d.data.unsafe_ptr()
+                    var dp = outd.data.unsafe_ptr()
+                    var i = 0
+                    while i + CPU_SIMD_W <= N:
+                        dp.unsafe_store(i, sp.unsafe_load[width=CPU_SIMD_W](i))
+                        i += CPU_SIMD_W
+                    while i < N:
+                        dp[unsafe_offset=i] = sp[unsafe_offset=i]
+                        i += 1
                     # Eval pass doesn't bump the counter — keeps training
                     # determinism cleanly separated from eval calls.
                     return
