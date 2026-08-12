@@ -39,6 +39,7 @@ from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
+from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
 from mojo_rl.physics3d.collision.native_multicontact import MC_ENABLED
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
@@ -360,6 +361,131 @@ def test_mesh_manifold_cpu_vs_gpu() raises:
         worst_dist <= TOL and worst_dir <= TOL,
         String("worst CPU-vs-GPU depth ") + String(worst_dist)
         + " / normal " + String(worst_dir),
+    )
+
+
+def test_sap_matches_on2_on_mesh_manifolds() raises:
+    """SAP and the O(N^2) phase must agree — both now dispatch the clipper.
+
+    The multicontact dispatch is written TWICE, once in `contact_detection` and
+    once in `broadphase_sap`, so the two can drift. This runs both phases over
+    the same poses and compares their contact SETS.
+
+    ⚠ AS SETS, NOT POSITIONALLY. SAP can order a pair the opposite way round to
+    the O(N^2) phase, which swaps body_a/body_b and negates the normal. An
+    earlier positional version of this probe reported `worst |d record| = 2.0`
+    and sent me looking for a sign bug in the clipper that did not exist.
+    """
+    print("--- SAP vs O(N^2) on mesh manifolds:", NPOSE, "poses")
+    var ctx = DeviceContext()
+    var mf = Mod()
+    MMM.init_fields[DTYPE, NMESHV](ctx, mf)
+    var d = Dat()
+    var rng = Lcg(0x9E3779B97F4A7C15)
+
+    var worst_pos = Float64(0)
+    var worst_pose = -1
+    var cnt_bad = 0
+    var total = 0
+    var multi_poses = 0
+
+    for p in range(NPOSE):
+        MMM.reset_data(d)
+        for g in range(NGROUP):
+            var qo = g * 7
+            var regime = p % 3
+            var ang: Float64
+            if regime == 0:
+                ang = 0.0
+            elif regime == 1:
+                ang = rng.sym(0.008)
+            else:
+                ang = rng.sym(0.09)
+
+            var pen = 0.002 + 0.003 * rng.next()
+            var px = Float64(g) * 2.0 + rng.sym(0.01)
+            var py = rng.sym(0.01)
+            var pz = 0.5 + _stack_z(g) - pen
+
+            var ax = rng.sym(1.0)
+            var ay = rng.sym(1.0)
+            var az = rng.sym(1.0)
+            var an = sqrt(ax * ax + ay * ay + az * az)
+            if an < 1e-9:
+                ax = 1.0
+                ay = 0.0
+                az = 0.0
+                an = 1.0
+            var s = sin(0.5 * ang) / an
+            var qw = cos(0.5 * ang)
+            var qx = ax * s
+            var qy = ay * s
+            var qz = az * s
+
+            d.qpos.data[qo + 0] = Scalar[DTYPE](px)
+            d.qpos.data[qo + 1] = Scalar[DTYPE](py)
+            d.qpos.data[qo + 2] = Scalar[DTYPE](pz)
+            d.qpos.data[qo + 3] = Scalar[DTYPE](qw)
+            d.qpos.data[qo + 4] = Scalar[DTYPE](qx)
+            d.qpos.data[qo + 5] = Scalar[DTYPE](qy)
+            d.qpos.data[qo + 6] = Scalar[DTYPE](qz)
+
+        forward_kinematics["cpu"](d, mf)
+
+        detect_contacts["cpu"](d, mf)
+        var n2 = Int(d.meta.data[META_IDX_NUM_CONTACTS])
+        var n2_rows = List[Float64]()
+        for c in range(n2):
+            for k in range(CONTACT_SIZE):
+                n2_rows.append(Float64(d.contacts.data[c * CONTACT_SIZE + k]))
+        if n2 > NGROUP:
+            multi_poses += 1
+
+        # Same `Data`, same poses — only the broadphase differs.
+        detect_contacts_sap["cpu"](d, mf)
+        var ns = Int(d.meta.data[META_IDX_NUM_CONTACTS])
+        total += n2
+        if n2 != ns:
+            cnt_bad += 1
+            print("  pose", p, " count O(N^2)", n2, " SAP", ns)
+            continue
+
+        for i in range(n2):
+            var bd = Float64(1e30)
+            for j in range(ns):
+                var jo = j * CONTACT_SIZE
+                var ex = Float64(d.contacts.data[jo + CONTACT_IDX_POS_X]) \
+                    - n2_rows[i * CONTACT_SIZE + CONTACT_IDX_POS_X]
+                var ey = Float64(d.contacts.data[jo + CONTACT_IDX_POS_Y]) \
+                    - n2_rows[i * CONTACT_SIZE + CONTACT_IDX_POS_Y]
+                var ez = Float64(d.contacts.data[jo + CONTACT_IDX_POS_Z]) \
+                    - n2_rows[i * CONTACT_SIZE + CONTACT_IDX_POS_Z]
+                var dd = sqrt(ex * ex + ey * ey + ez * ez)
+                if dd < bd:
+                    bd = dd
+            if bd > worst_pos:
+                worst_pos = bd
+                worst_pose = p
+
+    print("  contacts O(N^2)", total, " count mismatches", cnt_bad, "/", NPOSE)
+    print("  poses with a multi-point manifold:", multi_poses, "/", NPOSE)
+    print("  worst |dpos|", worst_pos, " at pose", worst_pose)
+
+    assert_true(
+        multi_poses > 0,
+        "no multi-point manifold, so the clipper never ran in either phase and"
+        " this comparison is vacuous",
+    )
+    assert_true(
+        cnt_bad == 0,
+        String("SAP and the O(N^2) phase disagree on the contact COUNT on ")
+        + String(cnt_bad) + " of " + String(NPOSE) + " poses — the multicontact"
+        " dispatch is written twice and the two have drifted",
+    )
+    assert_true(
+        worst_pos <= TOL,
+        String("worst SAP-vs-O(N^2) contact position error ")
+        + String(worst_pos) + " m at pose " + String(worst_pose),
     )
 
 

@@ -2461,7 +2461,19 @@ def _detect_contacts_env[
                         # is asymmetric, so running it in geom-index order
                         # picks a different feature. The record still carries
                         # `body_a = gi`, so the swap only flips the normal.
-                        var mc_swap = gi_type > gj_type
+                        # ⚠ TYPE ALONE DOES NOT ORDER A PAIR. For EQUAL types
+                        # (mesh x mesh) this comparison is false either way, so
+                        # face1/face2 fell out of whichever order the
+                        # broadphase emitted — and SAP emits some pairs the
+                        # opposite way to the O(N^2) loop. `multicontact` is
+                        # asymmetric, so the two phases then clipped different
+                        # faces and disagreed with EACH OTHER by up to 0.054 m,
+                        # losing a contact outright on 2 of 24 poses. MuJoCo's
+                        # `mj_collideGeoms` sorts by type and keeps geom-id
+                        # order within a type; tie-break on the index to match.
+                        var mc_swap = gi_type > gj_type or (
+                            gi_type == gj_type and gi > gj
+                        )
                         # ⚠ THE WITNESS PAIR SWAPS WITH THE OPERANDS. `dir` is
                         # `x2 - x1`, and the routine hands `-dir` to obj1 and
                         # `+dir` to obj2 as `boxNormals2`'s fallback direction —

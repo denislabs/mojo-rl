@@ -1395,7 +1395,14 @@ def _detect_contacts_sap_env[
                         # Operands in MuJoCo's order (lower geom type first),
                         # and the witness pair swaps with them — `dir` is a
                         # SIGNED input to `boxNormals2`, not a magnitude.
-                        var mc_swap = gi_type > gj_type
+                        # ⚠ TYPE ALONE DOES NOT ORDER A PAIR — for EQUAL types
+                        # this is false either way and the operand order fell
+                        # out of the broadphase, which is exactly how SAP and
+                        # the O(N^2) loop came to disagree with each other.
+                        # Tie-break on geom index, as `mj_collideGeoms` does.
+                        var mc_swap = gi_type > gj_type or (
+                            gi_type == gj_type and gi > gj
+                        )
                         var wxs = InlineArray[Scalar[DTYPE], 6](
                             fill=Scalar[DTYPE](0)
                         )
