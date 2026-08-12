@@ -1172,6 +1172,7 @@ struct Phyics3dBatchedEnv[
                 MutAnyOrigin,
             ],
             geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
+            act: LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin],
             seed_arg: Int64,
         ):
             # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
@@ -1182,7 +1183,7 @@ struct Phyics3dBatchedEnv[
                 return
             Self._reset_env_lane(
                 qpos, qvel, qacc, qfrc, meta, joints, mocap_pos,
-                mocap_quat, bodies, geoms, i, seed,
+                mocap_quat, bodies, geoms, act, i, seed,
             )
             reset_mask[i] = Scalar[DT](1)
 
@@ -1198,6 +1199,7 @@ struct Phyics3dBatchedEnv[
             LayoutTensor[DT, Layout.row_major(Self.N_ENVS)](self._reset_mask),
             self.mf.bodies.lt["gpu", type_of(self.mf).L_BODY](),
             self.mf.geoms.lt["gpu", Self.L_GEOMS_HOOK](),
+            self._act_operand(),
             Int64(rng_seed),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
@@ -1487,6 +1489,7 @@ struct Phyics3dBatchedEnv[
                 MutAnyOrigin,
             ],
             geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
+            act: LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= Self.N_ENVS:
@@ -1504,6 +1507,7 @@ struct Phyics3dBatchedEnv[
                     mocap_quat,
                     bodies,
                     geoms,
+                    act,
                     i,
                     Int(rebind[Scalar[DType.uint64]](counter[0])),
                 )
@@ -1527,6 +1531,7 @@ struct Phyics3dBatchedEnv[
             LayoutTensor[DT, Layout.row_major(Self.N_ENVS)](self._reset_mask),
             self.mf.bodies.lt["gpu", type_of(self.mf).L_BODY](),
             self.mf.geoms.lt["gpu", Self.L_GEOMS_HOOK](),
+            self._act_operand(),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1573,6 +1578,7 @@ struct Phyics3dBatchedEnv[
             DT, Layout.row_major(Self.NBODY, MODEL_BODY_SIZE), MutAnyOrigin
         ],
         geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
+        act: LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin],
         env: Int,
         seed: Int,
     ):
@@ -1596,6 +1602,26 @@ struct Phyics3dBatchedEnv[
             qpos, qvel, joints, mocap_pos, mocap_quat, bodies, geoms,
             meta, env, seed,
         )
+
+        # ⚠⚠ `mj_resetData` ZEROES `act`, AND THIS PATH DID NOT — a real bug,
+        # not just a dog gap. `_act` was zeroed ONCE at construction and never
+        # again, so on GPU an actuator activation SURVIVED the episode
+        # boundary: a lane that finished with a loaded filter started its next
+        # episode already actuated. `Phyics3dEnv._reset_state` has always
+        # zeroed it ("MuJoCo's mj_resetData zeroes `act` along with
+        # qpos/qvel"), so CPU and GPU disagreed about what a reset IS.
+        #
+        # ⚠ IT AFFECTS EVERY MODEL WITH A `dyntype`, INCLUDING QUADRUPED,
+        # which has been gated and trained in this state. The GPU-vs-CPU gates
+        # cannot see it: they inject a shared qpos/qvel and compare a window
+        # that never crosses a reset, and the reset tests only check
+        # height/ncon. Dog is simply the model that made someone look.
+        for a in range(Self.NA_F):
+            act[env, a] = Scalar[DT](0)
+        # Then the episode's draw, for the models whose `initialize_episode`
+        # makes one (default: no-op, leaving MuJoCo's zero).
+        Self.CONFIG.init_act_gpu[DT, Self.N_ENVS, Self.NA_F](act, env, seed)
+
         meta[env, META_IDX_STEP_COUNT] = Scalar[DT](0.0)
         Self.CONFIG.pre_step_gpu[DT, Self.N_ENVS, Self.NQ](qpos, meta, env)
 

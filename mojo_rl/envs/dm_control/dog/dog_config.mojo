@@ -792,6 +792,49 @@ def _dog_init_qpos_gpu[
     )
 
 
+@always_inline
+def _dog_init_act_gpu[
+    DTYPE: DType, BATCH_SIZE: Int, NA_F: Int
+](
+    act: LayoutTensor[DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin],
+    env: Int,
+    seed: Int,
+):
+    """`for i in range(nu): act[i] = uniform(*ctrlrange[i])` — all 38.
+
+    The half of `Stand.initialize_episode` that `_dog_init_qpos_gpu` cannot
+    reach. ⚠ IT IS NOT COSMETIC: every dog actuator is
+    `<general dyntype="filter">` whose force IS `gainprm[0] * act`, so an
+    episode starting at act = 0 begins completely limp. That makes the task
+    materially EASIER than the reference's, and no parity gate that injects a
+    shared qpos/qvel can see the difference.
+
+    ⚠ ctrlrange IS [-1, 1] FOR ALL 38, and that is a fact about the model, not
+    an assumption: `dog.xml` sets `ctrlrange="-1 1"` once in `<default>` for
+    `<general>` and no actuator overrides it (one occurrence in the whole
+    file, matching the reference). If a future dog variant adds a per-actuator
+    range, this must read the actuator table instead — which the hook ABI does
+    not carry, so it would need widening first.
+
+    ⚠ OFFSET 64, NOT 0. `_dog_init_qpos_gpu` builds its Philox stream from the
+    same `reset_seed(env, seed)` and consumes offsets 0-1; reusing them here
+    would correlate the activations with the root velocities. 64 is far past
+    the 10 steps this draw needs (38 values, 4 per step).
+    """
+    var rng = PhiloxRandom(seed=reset_seed(env, seed), offset=64)
+    var i = 0
+    while i < NA_F:
+        var p = rng.step_uniform()
+        for k in range(4):
+            if i + k >= NA_F:
+                break
+            # uniform(-1, 1) from u in [0, 1).
+            act[env, i + k] = Scalar[DTYPE](2.0) * Scalar[DTYPE](
+                p[k]
+            ) - Scalar[DTYPE](1.0)
+        i += 4
+
+
 struct DMDogStandConfig(Phyics3dEnvConfig):
     """`Stand` — hold the default pose, upright, with the feet loaded."""
 
@@ -878,6 +921,20 @@ struct DMDogStandConfig(Phyics3dEnvConfig):
     ):
         """`Stand.initialize_episode` — see `_dog_init_qpos_gpu`."""
         _dog_init_qpos_gpu[DTYPE, BATCH_SIZE, NQ, NV](qpos, qvel, env, seed)
+
+    @always_inline
+    @staticmethod
+    def init_act_gpu[
+        DTYPE: DType, BATCH_SIZE: Int, NA_F: Int
+    ](
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """The other half of `Stand.initialize_episode` — the 38 `act` draws."""
+        _dog_init_act_gpu[DTYPE, BATCH_SIZE, NA_F](act, env, seed)
 
     @staticmethod
     def compute_reward_and_done_gpu[
@@ -1209,6 +1266,20 @@ struct DMDogMoveConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
     ):
         """`Move` inherits `Stand.initialize_episode` — the same draw."""
         _dog_init_qpos_gpu[DTYPE, BATCH_SIZE, NQ, NV](qpos, qvel, env, seed)
+
+    @always_inline
+    @staticmethod
+    def init_act_gpu[
+        DTYPE: DType, BATCH_SIZE: Int, NA_F: Int
+    ](
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """`Move` inherits `Stand.initialize_episode` — the same 38 draws."""
+        _dog_init_act_gpu[DTYPE, BATCH_SIZE, NA_F](act, env, seed)
 
     @staticmethod
     def compute_reward_and_done_gpu[

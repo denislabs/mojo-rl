@@ -683,6 +683,43 @@ trait Phyics3dEnvConfig:
         """
         pass
 
+    # === GPU inline: initial ACTUATOR ACTIVATION (2026-08-12) ===
+    @always_inline
+    @staticmethod
+    def init_act_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        NA_F: Int,
+    ](
+        act: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, NA_F), MutAnyOrigin
+        ],
+        env: Int,
+        seed: Int,
+    ):
+        """Draw the episode's initial `d->act` (default: leave it at zero).
+
+        ⚠ THE CALLER HAS ALREADY ZEROED `act[env, :]` — that is `mj_resetData`
+        and it is NOT this hook's job, so a config that does not override this
+        still gets correct MuJoCo reset semantics. Override only when the
+        reference's `initialize_episode` draws a NON-ZERO activation.
+
+        ⚠⚠ WHY THIS IS A SEPARATE HOOK RATHER THAN AN ARGUMENT TO
+        `init_qpos_gpu`: that signature is implemented by ~20 configs, and
+        widening it would touch every one of them to express something only
+        dog needs. Cost of the split: two hooks fire per reset instead of one.
+
+        Only relevant to actuators with a `dyntype` — a plain `<motor>` never
+        reads `act`. dm_control's dog is the in-scope model that draws one
+        (`act[i] = uniform(*ctrlrange[i])` for all 38 `dyntype="filter"`
+        actuators, whose force IS `gainprm[0] * act`, so a zero activation
+        makes the task materially easier).
+
+        `seed` is the reset seed; derive an independent Philox stream from it
+        rather than reusing a key another draw already consumed.
+        """
+        pass
+
     # === GPU inline: Custom observation extraction (per-field; G5) ===
     @always_inline
     @staticmethod

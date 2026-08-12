@@ -627,5 +627,103 @@ def test_contacting_regime_is_reported() raises:
     )
 
 
+def test_reset_redraws_the_activation() raises:
+    """`act` is re-drawn on EVERY reset, not just the first.
+
+    ⚠⚠ THIS TEST EXISTS BECAUSE ITS ABSENCE HID A REAL BUG. The batched env
+    zeroed `_act` ONCE at construction and never again, so on GPU an actuator
+    activation SURVIVED the episode boundary — a lane that finished with a
+    loaded filter began its next episode already actuated, while
+    `Phyics3dEnv._reset_state` had always zeroed it ("MuJoCo's mj_resetData
+    zeroes `act`"). It went unnoticed for months because EVERY existing gate
+    injects a shared qpos/qvel and compares a window that never crosses a
+    reset, and the reset tests only checked height and ncon. Nothing had ever
+    looked at `act` across a reset.
+
+    ⚠ It affected QUADRUPED too (12 dyntype="filter" servos, gated and
+    trained in that state), not just dog — dog is only the model that made
+    someone look.
+
+    Two things are asserted, and the first is the one that catches the bug:
+
+      1. resetting from a DELIBERATELY DIRTIED `act` produces a value that
+         does not depend on the dirt. Without the zeroing this fails; with
+         zeroing but no draw it passes trivially, which is why (2) exists.
+      2. the values are the reference's draw — in [-1, 1], not all equal, and
+         actually re-drawn per lane.
+    """
+    var ctx = DeviceContext()
+    comptime MODEL = DMDogStandWalkModel
+    comptime NA_F = MODEL.NA_F
+    var gpu = Phyics3dBatchedEnv[
+        MODEL, DMDogStandConfig, N_ENVS, TERMINATE_ON_UNHEALTHY=False
+    ](ctx)
+
+    var h_act = ctx.enqueue_create_host_buffer[DT](N_ENVS * NA_F)
+    ctx.synchronize()
+
+    gpu.reset_batch[N_ENVS](Optional(ctx), UInt64(5))
+    ctx.enqueue_copy(h_act, gpu._act)
+    ctx.synchronize()
+    var clean = List[Float64](capacity=N_ENVS * NA_F)
+    for i in range(N_ENVS * NA_F):
+        clean.append(Float64(h_act[i]))
+
+    # Dirty every activation with a value no draw could produce, then reset
+    # again with the SAME seed. A correct reset overwrites all of it.
+    for i in range(N_ENVS * NA_F):
+        h_act[i] = Scalar[DT](7.5)
+    ctx.enqueue_copy(gpu._act, h_act)
+    ctx.synchronize()
+
+    gpu.reset_batch[N_ENVS](Optional(ctx), UInt64(5))
+    ctx.enqueue_copy(h_act, gpu._act)
+    ctx.synchronize()
+
+    var worst = 0.0
+    var lo = 1e30
+    var hi = -1e30
+    var n_distinct = 0
+    for i in range(N_ENVS * NA_F):
+        var v = Float64(h_act[i])
+        var d = abs(v - clean[i])
+        if d > worst:
+            worst = d
+        if v < lo:
+            lo = v
+        if v > hi:
+            hi = v
+        if i > 0 and abs(v - Float64(h_act[i - 1])) > 1e-12:
+            n_distinct += 1
+
+    print(
+        "  reset redraw: worst |dirty-run - clean-run| =", worst,
+        "| act range", lo, "..", hi, "| distinct neighbours", n_distinct,
+        "/", N_ENVS * NA_F - 1,
+    )
+
+    assert_true(
+        worst <= 1e-12,
+        "dog: resetting from a dirtied `act` gave a DIFFERENT result than"
+        " resetting from a clean one (worst " + String(worst) + "). The"
+        " previous episode's activation is leaking across the reset —"
+        " `_reset_env_lane` is not zeroing `act`.",
+    )
+    assert_true(
+        lo >= -1.0 and hi <= 1.0,
+        "dog: `act` left dog.xml's ctrlrange [-1, 1] — got "
+        + String(lo) + " .. " + String(hi),
+    )
+    assert_true(
+        hi - lo > 0.1 and n_distinct > (N_ENVS * NA_F) // 2,
+        "dog: `act` is not a per-actuator DRAW — range "
+        + String(lo) + " .. " + String(hi) + ", "
+        + String(n_distinct) + " distinct neighbours. Zeroing without the"
+        " uniform(*ctrlrange) draw would look like this, and it makes the"
+        " batched task easier than the reference's (every actuator is"
+        " dyntype=filter with force gainprm[0]*act).",
+    )
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
