@@ -61,6 +61,7 @@ from .linear import (
     _transpose_tiled_kernel,
     _accum_kernel,
     _cast_f2b_kernel,
+    _pad_cols_kernel,
     _T_TILE,
     _T_BR,
 )
@@ -136,6 +137,25 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_)
     comptime OUT_DIM = Self.OUT_
     comptime W_SIZE = Self.IN_ * Self.OUT_
+
+    # ── K-alignment padding (GPU fp32 forward) ───────────────────────────
+    # Same cliff, same fix, same constants as `Linear` — see the long comment
+    # there and `benchmarks/bench_matmul_k_alignment.mojo`. `max_matmul` runs
+    # ~10x slower when the contraction dim is misaligned, on Metal (needs %16)
+    # and on an RTX 5090 (needs %32), so 32 satisfies both.
+    #
+    # This matters MORE here than in `Linear`: `LinearAct` backs LinearReLU /
+    # LinearMish / LinearTanh / LinearSwish / LinearSigmoid, i.e. the critic and
+    # actor trunks of DQN, C51, DDPG, TD3, SAC, PPO, PPO-discrete, REDQ,
+    # REDQ-OFE, MBPO, AlphaZero, MuZero and EZv2. Their first layer is almost
+    # always an `obs | act` concatenation — 23, 30, 46, ... — none of which is a
+    # multiple of 32.
+    comptime PAD_TO = 32
+    comptime NEEDS_PAD = Self.IN_ % Self.PAD_TO != 0
+    comptime K_PAD = (
+        (Self.IN_ + Self.PAD_TO - 1) // Self.PAD_TO
+    ) * Self.PAD_TO
+    comptime WPAD_SIZE = Self.K_PAD * Self.OUT_
     # Activation-flow dtype. `LinearAct[IN, OUT, OP]` = fp32 (ACT_DT == DT, the
     # legacy path); `LinearAct[IN, OUT, OP, bfloat16]` flows activations at bf16.
     comptime ACT_DT = Self.ADT
@@ -161,6 +181,14 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
     var b_a: TensorImpl[Self.ADT]
     var cacheT_bf: TensorImpl[Self.ADT]
     var _w_cast_version: Int  # `weight.val.version` at last bf16 weight cast
+    # K-alignment scratch (lazy; GPU fp32 forward only, and only when
+    # `NEEDS_PAD`). `w_pad` is the zero-tailed [K_PAD, OUT_] weight, re-padded
+    # only on a `weight.val.version` bump — once per optimizer step, exactly
+    # like `w_bf`. `x_pad` is the zero-tailed [B, K_PAD] activation, rebuilt
+    # every forward since the input is a fresh upstream tensor each time.
+    var w_pad: Tensor
+    var x_pad: Tensor
+    var _w_pad_version: Int
     # Capture mode (set via `set_attr["capture_recast"]`): when True, the bf16
     # weight recast is UNCONDITIONAL so the cast kernel is always recorded into a
     # CUDA graph and reads the live fp32 master on every replay — the version
@@ -178,10 +206,32 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
         self.cacheT_bf = TensorImpl[Self.ADT]()
         self._w_cast_version = -1
         self._force_recast = False
+        self.w_pad = Tensor()
+        self.x_pad = Tensor()
+        self._w_pad_version = -1  # < any real version → first forward pads
 
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         comptime if ATTR == "capture_recast":
             self._force_recast = value != Scalar[DT](0.0)
+
+    def _ensure_w_pad(mut self, c: DeviceContext) raises:
+        """Ensure `w_pad` is `weight.val` with `K_PAD - IN_` rows of zeros
+        appended. Mirror of `Linear._ensure_w_pad` — re-pads only on a
+        `val.version` bump, and UNCONDITIONALLY under `_force_recast` so a
+        CUDA-graph replay cannot serve a stale weight."""
+        self.w_pad.ensure_gpu(c, Self.WPAD_SIZE)
+        if self._force_recast or self.weight.val.version != self._w_pad_version:
+            # weight is [IN_, OUT_] row-major, so padding the contraction dim
+            # appends whole rows — a flat copy with a zero tail (ROWS=1).
+            c.enqueue_function[
+                _pad_cols_kernel[1, Self.W_SIZE, Self.WPAD_SIZE]
+            ](
+                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                self.w_pad.lt["gpu", Layout.row_major(Self.WPAD_SIZE)](),
+                grid_dim=(Self.WPAD_SIZE + 255) // 256,
+                block_dim=256,
+            )
+            self._w_pad_version = self.weight.val.version
 
     def _ensure_w_bf(mut self, c: DeviceContext) raises:
         """Ensure the cached bf16 weight `w_bf` reflects the current fp32
@@ -265,12 +315,39 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
                 var c = ctx.value()
                 outd.ensure_gpu(c, B * Self.OUT_)
                 cached.ensure_gpu(c, B * Self.OUT_)
-                var x_v = TileTensor(in0d.dev.value(), row_major[B, Self.IN_]())
-                var w_v = TileTensor(
-                    self.weight.val.dev.value(), row_major[Self.IN_, Self.OUT_]()
-                )
                 var out_v = TileTensor(outd.dev.value(), row_major[B, Self.OUT_]())
-                max_matmul[target="gpu"](out_v, x_v, w_v, c)
+                comptime if Self.NEEDS_PAD:
+                    # Zero-pad the contraction dim to `K_PAD` — see `PAD_TO` on
+                    # the struct. The appended columns are exactly 0, so the dot
+                    # products are unchanged; only the GEMM's tiling (and hence
+                    # its fp32 reduction ORDER) moves.
+                    self._ensure_w_pad(c)
+                    self.x_pad.ensure_gpu(c, B * Self.K_PAD)
+                    c.enqueue_function[
+                        _pad_cols_kernel[B, Self.IN_, Self.K_PAD]
+                    ](
+                        in0d.lt["gpu", Layout.row_major(B * Self.IN_)](),
+                        self.x_pad.lt["gpu", Layout.row_major(B * Self.K_PAD)](),
+                        grid_dim=(B * Self.K_PAD + 255) // 256,
+                        block_dim=256,
+                    )
+                    var xp_v = TileTensor(
+                        self.x_pad.dev.value(), row_major[B, Self.K_PAD]()
+                    )
+                    var wp_v = TileTensor(
+                        self.w_pad.dev.value(),
+                        row_major[Self.K_PAD, Self.OUT_](),
+                    )
+                    max_matmul[target="gpu"](out_v, xp_v, wp_v, c)
+                else:
+                    var x_v = TileTensor(
+                        in0d.dev.value(), row_major[B, Self.IN_]()
+                    )
+                    var w_v = TileTensor(
+                        self.weight.val.dev.value(),
+                        row_major[Self.IN_, Self.OUT_](),
+                    )
+                    max_matmul[target="gpu"](out_v, x_v, w_v, c)
                 c.enqueue_function[_bias_act_cache_kernel[B, Self.OUT_, Self.OP]](
                     outd.lt["gpu", Layout.row_major(B, Self.OUT_)](),
                     self.bias.val.lt["gpu", Layout.row_major(Self.OUT_)](),
@@ -540,3 +617,10 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp, ADT: DType = DT](Module):
         polyak_tensor[target, Self.B_SIZE](
             self.bias.val, src.bias.val, tau, ctx
         )
+        # ⚠ See the identical note in `Linear.polyak_from`: `polyak_tensor`
+        # writes `weight.val` in place WITHOUT bumping `val.version`, so both
+        # derived caches would serve the pre-sync weight forever. A target
+        # network frozen at its init weights is the symptom, and no forward
+        # numerics test can see it.
+        self._w_pad_version = -1
+        self._w_cast_version = -1

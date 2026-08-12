@@ -666,3 +666,12 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
         polyak_tensor[target, Self.B_SIZE](
             self.bias.val, src.bias.val, tau, ctx
         )
+        # ⚠ `polyak_tensor` writes `weight.val` IN PLACE and does NOT bump
+        # `val.version` — so both derived weight caches below would keep
+        # serving the PRE-SYNC weight forever. That is invisible in a forward
+        # numerics test (which never syncs) and shows up only as a target
+        # network frozen at its init weights: `tests/deep_agents/
+        # test_storage_dqn_gpu_smoke.mojo` went from eval 200 to eval 9.
+        # Invalidate both caches so the next forward rebuilds them.
+        self._w_pad_version = -1
+        self._w_cast_version = -1
