@@ -167,12 +167,59 @@ def _cast_b2f_kernel[
         dst[i] = src[i].cast[DT]()
 
 
+def _pad_cols_kernel[
+    ROWS: Int, SRC_COLS: Int, DST_COLS: Int
+](
+    src: LayoutTensor[DT, Layout.row_major(ROWS * SRC_COLS), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(ROWS * DST_COLS), MutAnyOrigin],
+):
+    """`dst[r, :SRC_COLS] = src[r]`, `dst[r, SRC_COLS:] = 0`.
+
+    Serves BOTH K-alignment pads: the activation ([B, IN_] -> [B, K_PAD], a
+    real per-row widening) and the weight ([IN_, OUT_] -> [K_PAD, OUT_], which
+    is row-appending and so is the ROWS=1 flat case).
+    """
+    var i = Int(global_idx.x)
+    if i < ROWS * DST_COLS:
+        var r = i // DST_COLS
+        var c = i % DST_COLS
+        if c < SRC_COLS:
+            dst[i] = src[r * SRC_COLS + c]
+        else:
+            dst[i] = Scalar[DT](0)
+
+
 # ── Linear ─────────────────────────────────────────────────────────────
 struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
     comptime ARITY = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_)
     comptime OUT_DIM = Self.OUT_
     comptime W_SIZE = Self.IN_ * Self.OUT_
+
+    # ── K-alignment padding (GPU fp32 forward) ───────────────────────────
+    # `max_matmul` falls off a ~10x cliff when the CONTRACTION dim is
+    # misaligned, on BOTH backends — Metal wants K%16, an RTX 5090 wants K%32,
+    # so 32 satisfies both (it costs Metal ~4% against its own optimum and is
+    # worth 7-24x on the 5090). Measured by
+    # `benchmarks/bench_matmul_k_alignment.mojo`; run it before changing PAD_TO.
+    #
+    #     [268 x 518] @ [518 x 512]   1356 us (Metal)    206 us (5090)
+    #     [268 x 544] @ [544 x 512]    150 us            27 us
+    #
+    # `IN_` is a concatenation width in most of the repo — TD-MPC2's
+    # `ZA = LATENT + ACT` = 518, a SAC critic's `obs|act`, a two-hot `BINS`
+    # vector — so it lands on an arbitrary K constantly.
+    #
+    # ⚠ The padding is INTERNAL. `IN_` and the checkpointed `weight` Param stay
+    # at their logical size, so this changes no on-disk format and no existing
+    # checkpoint. The alternative (widening the caller's concat) would have
+    # changed every TD-MPC2 net shape and invalidated every checkpoint.
+    comptime PAD_TO = 32
+    comptime NEEDS_PAD = Self.IN_ % Self.PAD_TO != 0
+    comptime K_PAD = (
+        (Self.IN_ + Self.PAD_TO - 1) // Self.PAD_TO
+    ) * Self.PAD_TO
+    comptime WPAD_SIZE = Self.K_PAD * Self.OUT_
     # Activation-flow dtype (satisfies the Module trait). `Linear[IN, OUT]` =
     # fp32 (ACT_DT == DT, the legacy path); `Linear[IN, OUT, bfloat16]` flows
     # activations at bf16 (the AMP "Step B" memory win).
@@ -203,6 +250,15 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
     var b_a: TensorImpl[Self.ADT]        # cached bf16 bias (forward bias-add)
     var cacheT_bf: TensorImpl[Self.ADT]  # transposed-x bf16 (backward grad_w)
     var _w_cast_version: Int  # `weight.val.version` at last bf16 weight cast
+    # K-alignment scratch (lazy; GPU fp32 forward only, and only when
+    # `NEEDS_PAD`). `w_pad` is the zero-tailed [K_PAD, OUT_] weight, re-padded
+    # only when the optimizer bumped `weight.val.version` — once per optimizer
+    # step, not per forward, exactly like `w_bf` above. `x_pad` is the
+    # zero-tailed [B, K_PAD] activation, which DOES have to be rebuilt every
+    # forward because the input is a fresh upstream tensor each time.
+    var w_pad: Tensor
+    var x_pad: Tensor
+    var _w_pad_version: Int
     # Capture mode (set via `set_attr["capture_recast"]`): when True, the bf16
     # weight recast in `_ensure_w_bf` is UNCONDITIONAL so the cast kernel is
     # always recorded into a CUDA graph and reads the live fp32 master on every
@@ -220,10 +276,36 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
         self.cacheT_bf = TensorImpl[Self.ADT]()
         self._w_cast_version = -1  # < any real version → first forward casts
         self._force_recast = False
+        self.w_pad = Tensor()
+        self.x_pad = Tensor()
+        self._w_pad_version = -1  # < any real version → first forward pads
 
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         comptime if ATTR == "capture_recast":
             self._force_recast = value != Scalar[DT](0.0)
+
+    def _ensure_w_pad(mut self, c: DeviceContext) raises:
+        """Ensure `w_pad` is `weight.val` with `K_PAD - IN_` rows of zeros
+        appended. Re-pads ONLY when the optimizer bumped `val.version` since the
+        last pad, so training pays it once per step and inference once ever.
+
+        ⚠ `_force_recast` (CUDA-graph capture) must make this UNCONDITIONAL for
+        the same reason it does for the bf16 cast: the version gate would skip
+        the pad on replay and the GEMM would read a STALE weight.
+        """
+        self.w_pad.ensure_gpu(c, Self.WPAD_SIZE)
+        if self._force_recast or self.weight.val.version != self._w_pad_version:
+            # The weight is [IN_, OUT_] row-major, so padding the CONTRACTION
+            # dim appends whole rows — a flat copy with a zero tail (ROWS=1).
+            c.enqueue_function[
+                _pad_cols_kernel[1, Self.W_SIZE, Self.WPAD_SIZE]
+            ](
+                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                self.w_pad.lt["gpu", Layout.row_major(Self.WPAD_SIZE)](),
+                grid_dim=(Self.WPAD_SIZE + 255) // 256,
+                block_dim=256,
+            )
+            self._w_pad_version = self.weight.val.version
 
     def _ensure_w_bf(mut self, c: DeviceContext) raises:
         """Ensure the cached bf16 weight `w_bf` reflects the current fp32
@@ -287,15 +369,42 @@ struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
             else:
                 var c = ctx.value()
                 outd.ensure_gpu(c, B * Self.OUT_)
-                var x_v = TileTensor(in0d.dev.value(), row_major[B, Self.IN_]())
-                var w_v = TileTensor(
-                    self.weight.val.dev.value(),
-                    row_major[Self.IN_, Self.OUT_](),
-                )
                 var out_v = TileTensor(
                     outd.dev.value(), row_major[B, Self.OUT_]()
                 )
-                max_matmul[target="gpu"](out_v, x_v, w_v, c)
+                comptime if Self.NEEDS_PAD:
+                    # Zero-pad the contraction dim to `K_PAD` — see the
+                    # `PAD_TO` comment on the struct. The appended columns are
+                    # exactly 0, so the dot products are unchanged; only the
+                    # GEMM's tiling (and hence its fp32 reduction ORDER) moves,
+                    # which can shift results by an ulp.
+                    self._ensure_w_pad(c)
+                    self.x_pad.ensure_gpu(c, B * Self.K_PAD)
+                    c.enqueue_function[
+                        _pad_cols_kernel[B, Self.IN_, Self.K_PAD]
+                    ](
+                        in0d.lt["gpu", Layout.row_major(B * Self.IN_)](),
+                        self.x_pad.lt["gpu", Layout.row_major(B * Self.K_PAD)](),
+                        grid_dim=(B * Self.K_PAD + 255) // 256,
+                        block_dim=256,
+                    )
+                    var xp_v = TileTensor(
+                        self.x_pad.dev.value(), row_major[B, Self.K_PAD]()
+                    )
+                    var wp_v = TileTensor(
+                        self.w_pad.dev.value(),
+                        row_major[Self.K_PAD, Self.OUT_](),
+                    )
+                    max_matmul[target="gpu"](out_v, xp_v, wp_v, c)
+                else:
+                    var x_v = TileTensor(
+                        in0d.dev.value(), row_major[B, Self.IN_]()
+                    )
+                    var w_v = TileTensor(
+                        self.weight.val.dev.value(),
+                        row_major[Self.IN_, Self.OUT_](),
+                    )
+                    max_matmul[target="gpu"](out_v, x_v, w_v, c)
                 var ol = outd.lt["gpu", Layout.row_major(B, Self.OUT_)]()
                 var bl = self.bias.val.lt[
                     "gpu", Layout.row_major(Self.OUT_)
