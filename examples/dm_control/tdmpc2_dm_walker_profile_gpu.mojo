@@ -86,11 +86,20 @@ from mojo_rl.envs.dm_control.walker.walker_config import DMWalkerConfig
 # make it Apple-viable, drop to N_ENVS=4 and 400/800 steps, or set USE_MPC=False.
 comptime USE_MPC = True        # False → policy-prior acting (~40x cheaper)
 comptime N_ENVS = 8
-comptime LEARN_START = 1_000     # prefill: replay must pass this before the
+comptime LEARN_START = 512       # prefill: replay must pass this before the
                                  # driver stops taking uniform-random actions
-comptime COLLECT_STEPS = 4_000   # phase 1: acting only, no gradient steps
-comptime TRAIN_STEPS = 8_000     # phase 2: acting + updates
+comptime COLLECT_STEPS = 800     # phase 1: acting only, no gradient steps
+comptime TRAIN_STEPS = 800       # phase 2: acting + updates
 comptime UPDATES_PER_STEP = 1    # per ITERATION, not per env-step
+
+# ⚠ KEEP THE TOTAL SMALL. The first two attempts at this file used
+# 1_000/4_000/8_000 = 13_000 env-steps = 1_625 iterations, and both nsys
+# captures contained ~104 instances of each physics kernel — i.e. ~104
+# iterations, ~832 env-steps. The run was being cut off inside the PREFILL, so
+# acting never engaged and the second trace looked identical to the first.
+# 512/800/800 = 2_112 env-steps = 264 iterations, and the prefill clears in 64.
+# Averaging over 100 iterations per phase is plenty for a throughput number;
+# scale up only once a trace confirms the phases are doing what they claim.
 
 # ─── MPPI budget (mirrors tdmpc2_dm_walker_batched_gpu.mojo) ──────────────
 comptime MPC_SAMPLES = 256
@@ -206,6 +215,11 @@ def main() raises:
     var collect_per_step_ms = collect_s * 1000.0 / Float64(COLLECT_STEPS)
 
     # ── phase 2: env + acting + updates ──────────────────────────────────
+    print(
+        "  phase 1 done —", COLLECT_STEPS // N_ENVS,
+        "iterations of ACTING ran; a trace of this phase must contain matmul"
+        " / MPPI kernels",
+    )
     print("PHASE 2 — collect + train")
     var t2 = perf_counter_ns()
     _ = ag.train_batched[Env, N_ENVS, USE_MPC=USE_MPC](
