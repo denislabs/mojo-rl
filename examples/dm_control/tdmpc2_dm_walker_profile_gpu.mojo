@@ -16,10 +16,24 @@ TD-MPC2's wall-clock splits into acting (MPPI planning, or the policy prior)
 and `train_step` (the world-model gradient step). An optimization usually moves
 ONE of them, and a single env-steps/s figure hides which:
 
-  * PHASE 1 runs `COLLECT_STEPS` env-steps with `learning_starts` set beyond
-    them, so NO gradient step runs. This is pure env + acting.
-  * PHASE 2 continues with updates enabled. Subtracting phase 1's per-step cost
+  * PREFILL fills replay past `learning_starts` so the nets engage. UNTIMED.
+  * PHASE 1 runs with `updates_per_step=0` — acting runs, no gradient step.
+  * PHASE 2 runs with updates enabled. Subtracting phase 1's per-step cost
     attributes the remainder to `train_step`.
+
+⚠⚠ `learning_starts` IS NOT AN UPDATES SWITCH — it gates ACTING TOO.
+`agent.mojo:1484` takes the `warmup_uniform_batched` branch (uniform random
+actions, no encoder, no policy, no MPPI) whenever
+`replay.count() < learning_starts`, and `agent.mojo:1586` gates `train_step` on
+the SAME condition. The first version of this file set
+`learning_starts = COLLECT_STEPS` to suppress updates in phase 1 and thereby
+suppressed ACTING for the whole phase: an nsys capture showed physics3d kernels
+and nothing else — no matmul, no MPPI — and looked like a broken profiler
+rather than a broken harness. `updates_per_step=0` is the correct separator
+(`agent.mojo:1587` is a plain `for _ in range(updates_per_step)`).
+
+This script now ASSERTS it left warmup before timing anything, so that failure
+cannot recur silently.
 
 ⚠ Phase 2's per-step cost is NOT `train_step` alone — `updates_per_step`
 gradient steps run per ITERATION (i.e. per N_ENVS env-steps), so read the
@@ -37,9 +51,11 @@ end-to-end training number, which the microbenchmarks consistently
 over-predicted — the MPPI planner is partly bound by its ~700-launch dependent
 kernel chain, and the chain absorbs GEMM savings.
 
-⚠ NO BASELINE HAS BEEN RECORDED YET. This file has never been executed — it was
-written on a machine where the MPC path costs ~10 minutes at these counts.
-Record a first run before quoting any before/after.
+⚠ NO VALID BASELINE HAS BEEN RECORDED YET. The first nsys capture measured the
+warmup bug described above — physics3d kernels only — and is not a baseline.
+Record a fresh run before quoting any before/after; the run should show
+`max_matmul` and MPPI kernels dominating, and if it does not, read the PREFILL
+assertion output first.
 
 ⚠ MPC ON is the expensive path by design — it runs the full MPPI budget per
 env-step. `USE_MPC = False` profiles the policy-prior path instead, which is
@@ -70,6 +86,8 @@ from mojo_rl.envs.dm_control.walker.walker_config import DMWalkerConfig
 # make it Apple-viable, drop to N_ENVS=4 and 400/800 steps, or set USE_MPC=False.
 comptime USE_MPC = True        # False → policy-prior acting (~40x cheaper)
 comptime N_ENVS = 8
+comptime LEARN_START = 1_000     # prefill: replay must pass this before the
+                                 # driver stops taking uniform-random actions
 comptime COLLECT_STEPS = 4_000   # phase 1: acting only, no gradient steps
 comptime TRAIN_STEPS = 8_000     # phase 2: acting + updates
 comptime UPDATES_PER_STEP = 1    # per ITERATION, not per env-step
@@ -96,7 +114,8 @@ comptime VMIN = -10
 comptime VMAX = 10
 comptime B = 256
 comptime H = 3
-# CAP must be a multiple of N_ENVS (the driver asserts) and hold both phases.
+# CAP must be a multiple of N_ENVS (the driver asserts) and hold prefill +
+# both phases (1_000 + 4_000 + 8_000 = 13_000).
 comptime CAP = 64_000
 comptime LR = 3e-4
 
@@ -114,7 +133,11 @@ comptime AgentT = TDMPC2[
 def main() raises:
     comptime assert (
         COLLECT_STEPS % N_ENVS == 0 and TRAIN_STEPS % N_ENVS == 0
+        and LEARN_START % N_ENVS == 0
     ), "step counts must be multiples of N_ENVS"
+    comptime assert (
+        CAP >= LEARN_START + COLLECT_STEPS + TRAIN_STEPS
+    ), "CAP must hold prefill + both phases"
     comptime assert CAP % N_ENVS == 0, "CAP must be a multiple of N_ENVS"
 
     var mode = "MPC" if USE_MPC else "prior"
@@ -130,7 +153,8 @@ def main() raises:
             "  MPPI =", MPC_SAMPLES, "+", MPC_PI_TRAJS, "trajs x", MPC_ITERS,
             "iters → grid", N_ENVS * (MPC_SAMPLES + MPC_PI_TRAJS), "rows",
         )
-    print("  phase 1:", COLLECT_STEPS, "env-steps, NO updates")
+    print("  prefill:", LEARN_START, "env-steps (untimed; learning_starts)")
+    print("  phase 1:", COLLECT_STEPS, "env-steps, updates_per_step=0")
     print("  phase 2:", TRAIN_STEPS, "env-steps,", UPDATES_PER_STEP,
           "update(s)/iteration")
     print("=" * 70)
@@ -139,22 +163,43 @@ def main() raises:
     var ctx = DeviceContext()
     var env = Env(ctx)
 
-    # `learning_starts = COLLECT_STEPS` is what makes phase 1 update-free: the
-    # driver gates `train_step` on the all-env step counter reaching it.
+    # ⚠ `learning_starts` gates ACTING, not just updates — keep it SMALL and
+    # suppress updates with `updates_per_step=0` instead. See the header.
     var ag = AgentT(
         ctx=ctx,
         lr=Scalar[DT](LR),
         action_scale=Scalar[DT](1.0),
-        learning_starts=COLLECT_STEPS,
+        learning_starts=LEARN_START,
     )
 
-    # ── phase 1: env + acting only ───────────────────────────────────────
+    # ── prefill: get replay past `learning_starts`. UNTIMED. ─────────────
+    # Until `replay.count() >= learning_starts` the driver takes uniform-random
+    # actions and never touches a net, so timing this would measure physics
+    # alone.
+    print("PREFILL —", LEARN_START, "env-steps (untimed, random actions)")
+    _ = ag.train_batched[Env, N_ENVS, USE_MPC=USE_MPC](
+        env, LEARN_START, rng_seed=UInt64(41),
+        updates_per_step=0, print_every=LEARN_START, verbose=False,
+    )
+    if ag.replay.count() < LEARN_START:
+        raise Error(
+            "prefill did not leave warmup: replay.count()="
+            + String(ag.replay.count()) + " < learning_starts="
+            + String(LEARN_START) + " — every timed phase below would be"
+            " uniform-random actions with no network in the trace. Raise"
+            " LEARN_START's prefill or check the replay's counting unit."
+        )
+    print("  replay.count() =", ag.replay.count(), ">= learning_starts —"
+          " acting is live")
+
+    # ── phase 1: env + acting only (updates_per_step=0) ──────────────────
     print("PHASE 1 — collect (acting only)")
     var t0 = perf_counter_ns()
     _ = ag.train_batched[Env, N_ENVS, USE_MPC=USE_MPC](
         env, COLLECT_STEPS, rng_seed=UInt64(42),
-        updates_per_step=UPDATES_PER_STEP,
+        updates_per_step=0,
         print_every=COLLECT_STEPS, verbose=False,
+        base_step=LEARN_START,
     )
     var t1 = perf_counter_ns()
     var collect_s = Float64(t1 - t0) / 1e9
@@ -167,7 +212,7 @@ def main() raises:
         env, TRAIN_STEPS, rng_seed=UInt64(43),
         updates_per_step=UPDATES_PER_STEP,
         print_every=TRAIN_STEPS, verbose=False,
-        base_step=COLLECT_STEPS,
+        base_step=LEARN_START + COLLECT_STEPS,
     )
     var t3 = perf_counter_ns()
     var train_s = Float64(t3 - t2) / 1e9
