@@ -33,12 +33,25 @@ itself from the same state with only `noslip_iterations` changed, `max|d(qacc)|`
 is **7.4e+2 on step 1** against a `|qacc|` of 1.7e+4 — 4.2%, at 55 contacts.
 Skipping the pass was never a small approximation.
 
-⚠ ONE REAL GAP REMAINS, AND IT IS NOT NOSLIP. Our ELLIPTIC solver caches three
-Jacobian rows per contact (normal + two tangents) and one isotropic `mu`, i.e.
-condim 3. This model has geoms at `condim="4"` — the hand's fingertips — and 3
-of its 55 contacts at qpos0 are condim 4, which lose their torsional row. That
-is a property of the primal solver, not of the friction sweep, and it is
-tracked separately. It is the remaining obstacle to a strict step-parity gate.
+CONDIM 4 IS ALSO SUPPORTED as of 2026-08-13 (task #55). This model has geoms at
+`condim="4"` — the hand's fingertips — and 3 of its 55 contacts at qpos0 are
+condim 4. The elliptic solver used to cache exactly three Jacobian rows per
+contact (normal + two tangents) and one isotropic `mu`, so those three lost
+their torsional row; it now carries `dim-1` tangential rows with per-direction
+friction and `R`. Gated by
+`tests/physics3d/test_elliptic_condim46_vs_mujoco.mojo`.
+
+⚠ THIS MODEL STILL DOES NOT STEP IN PARITY, AND THE REASON IS NO LONGER THE
+SOLVER. Measured from MuJoCo's `qpos0` with zero `qvel` and zero `ctrl`, five
+steps of the model alone:
+
+    step 0   ncon  ours 57 / MuJoCo 55   max|d(qvel)| 2.97e+1
+    step 1         ours 54 / MuJoCo 59   max|d(qvel)| 3.35e+1
+
+The CONTACT SET differs at step 0, before any solve can. So what remains is
+narrow-phase generation on Jaco's meshes, not the friction cone — a different
+subsystem from the two (noslip, condim) that were closed to get here. Tracked
+separately; do NOT read the residual above as a cone-solver number.
 """
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
@@ -69,7 +82,9 @@ comptime ReachSiteFeaturesModel = ModelDefFromXML[
     #                  `fields_build`, not a diagnostic.
     #   npair     0 -> `<contact><pair>` rows dropped (that one does raise).
     #   max_tendon 0 -> tendons clamped away.
-    #   max_condim 3 -> condim 4/6 geoms lose their torsional/rolling rows.
+    #   max_condim 3 -> condim 4/6 geoms lose their torsional/rolling rows
+    #                  (this model HAS condim-4 geoms; measured at 1.6e+3 of
+    #                   qacc on the gate's ball).
     #   noslip_iter 0 -> the noslip pass is simply not run.
     # `max_equality` is the one that SIZES storage — `neq` alone does not, so
     # passing only `neq` makes equality constraints vanish silently.

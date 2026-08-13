@@ -51,6 +51,15 @@ from layout import Layout, LayoutTensor
 
 from ..types import _max_one, ConeType
 from .cholesky import chol_factor_inline, chol_solve_inline
+from .elliptic_layout import (
+    ell_jt,
+    ell_mu,
+    ell_dn,
+    ell_dt,
+    ell_bt,
+    ell_ntc,
+    ell_end,
+)
 from ..constraints.contact_solve import (
     _init_common_normal_ws,
     _precompute_contact_normal,
@@ -183,19 +192,35 @@ def _cg_solve_env[
     comptime ws_pos_bias_idx = 11 * MC
     comptime ws_J_n_idx = 15 * MC
 
-    # Primal-specific offsets (after common normal block)
-    comptime PRIMAL_START = 15 * MC + 2 * MC * NV
-    comptime ws_Jt1_idx = PRIMAL_START + 0 * MC * NV
-    comptime ws_Jt2_idx = PRIMAL_START + 1 * MC * NV
-    comptime ws_MinvJt1_idx = PRIMAL_START + 2 * MC * NV
-    comptime ws_MinvJt2_idx = PRIMAL_START + 3 * MC * NV
-    comptime SC = PRIMAL_START + 4 * MC * NV
-    comptime ws_mu_idx = SC + 0 * MC
-    comptime ws_D_n_idx = SC + 1 * MC
-    comptime ws_D_f_idx = SC + 2 * MC
-    comptime ws_bt1_idx = SC + 3 * MC
-    comptime ws_bt2_idx = SC + 4 * MC
-    comptime CVS = SC + 5 * MC
+    # Primal-specific offsets, from `solver/elliptic_layout` — the ONE source
+    # of truth shared with the producer and with `newton_solve`.
+    #
+    # ⚠ THIS PATH IS CONDIM-3 BY CONSTRUCTION AND SAYS SO. `solve_cg` takes no
+    # `MAX_CONDIM` parameter — its cone math below is written for exactly two
+    # tangents — so it pins the layout at 3 and `_precompute_contact_friction`
+    # clamps each contact's `condim` to it. A condim-4 geom therefore loses its
+    # torsional row HERE even though the Newton path now keeps it. That is not
+    # a regression (this path never had it) but it IS a real difference between
+    # the two solvers on the same model; Newton is the default, and the CG path
+    # is a legacy alternate selected only by `<option solver="CG">`.
+    comptime CG_MAX_CONDIM = 3
+    comptime ws_Jt1_idx = ell_jt[MC, NV]() + 0 * MC * NV
+    comptime ws_Jt2_idx = ell_jt[MC, NV]() + 1 * MC * NV
+    comptime ws_mu_idx = ell_mu[MC, NV, CG_MAX_CONDIM]()
+    comptime ws_D_n_idx = ell_dn[MC, NV, CG_MAX_CONDIM]()
+    # Tangent row 0's `D`. Row 1 has its own slot now (the two differ once
+    # slide friction is anisotropic), but this path's cone math carries a
+    # single `D_f`, so it reads row 0's and applies it to both — which is
+    # exact for the isotropic slide the contact record can express.
+    comptime ws_D_f_idx = ell_dt[MC, NV, CG_MAX_CONDIM]() + 0 * MC
+    comptime ws_bt1_idx = ell_bt[MC, NV, CG_MAX_CONDIM]() + 0 * MC
+    comptime ws_bt2_idx = ell_bt[MC, NV, CG_MAX_CONDIM]() + 1 * MC
+    comptime ws_ntc_idx = ell_ntc[MC, NV, CG_MAX_CONDIM]()
+    # Per-contact solve state. ⚠ THESE ARE LIVE HERE, unlike on the Newton
+    # path, which keeps the same quantities in InlineArrays and left these
+    # slots write-only; that is why they hang off `ell_end` rather than being
+    # part of the shared layout.
+    comptime CVS = ell_end[MC, NV, CG_MAX_CONDIM]()
     comptime ws_jar_n_idx = CVS + 0 * MC
     comptime ws_jar_t1_idx = CVS + 1 * MC
     comptime ws_jar_t2_idx = CVS + 2 * MC
@@ -203,6 +228,14 @@ def _cg_solve_env[
     comptime ws_ft1_idx = CVS + 4 * MC
     comptime ws_ft2_idx = CVS + 5 * MC
     comptime ws_cstate_idx = CVS + 6 * MC
+    # ⚠ Overrunning `SOLVER_WS` would not crash — `solver` is
+    # `[BATCH, SOLVER_WS]`, so a write past the row lands in the NEXT ENV's
+    # workspace. Caught at compile time instead.
+    comptime assert CVS + 7 * MC <= SOLVER_WS, (
+        "the ELLIPTIC contact region plus CG's per-contact state does not fit"
+        " ContactScratch.solver — raise SOLVER_WS in"
+        " fields/contact_scratch.mojo and the four files that recompute it"
+    )
 
     # === Initialize workspace (legacy: parallel, one thread per slot) ===
     for contact_tid in range(MC):
@@ -212,13 +245,12 @@ def _cg_solve_env[
         for d in range(NV):
             solver[env, ws_Jt1_idx + contact_tid * NV + d] = 0
             solver[env, ws_Jt2_idx + contact_tid * NV + d] = 0
-            solver[env, ws_MinvJt1_idx + contact_tid * NV + d] = 0
-            solver[env, ws_MinvJt2_idx + contact_tid * NV + d] = 0
         solver[env, ws_mu_idx + contact_tid] = 0
         solver[env, ws_D_n_idx + contact_tid] = 0
         solver[env, ws_D_f_idx + contact_tid] = 0
         solver[env, ws_bt1_idx + contact_tid] = 0
         solver[env, ws_bt2_idx + contact_tid] = 0
+        solver[env, ws_ntc_idx + contact_tid] = 0
         solver[env, ws_jar_n_idx + contact_tid] = 0
         solver[env, ws_jar_t1_idx + contact_tid] = 0
         solver[env, ws_jar_t2_idx + contact_tid] = 0
@@ -320,6 +352,7 @@ def _cg_solve_env[
             BATCH,
             SOLVER_WS,
             CONE_TYPE,
+            CG_MAX_CONDIM,
         ](
             env,
             contact_tid,
@@ -335,13 +368,6 @@ def _cg_solve_env[
             B_damp,
             impratio,
             K_spring,
-            ws_Jt1_idx,
-            ws_Jt2_idx,
-            ws_mu_idx,
-            ws_D_n_idx,
-            ws_D_f_idx,
-            ws_bt1_idx,
-            ws_bt2_idx,
         )
 
     # === SEQUENTIAL: primal CG (legacy: thread 0) ===

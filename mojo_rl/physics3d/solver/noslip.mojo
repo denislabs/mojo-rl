@@ -23,6 +23,11 @@ GATES
     file also records which fixtures do NOT work and why: a hard normal
     impulse is the ingredient, not contact count, and every gently resting
     fixture is inert to round-off.
+    ⚠ That fixture is condim 3, so it only reaches `mju_QCQP2`. The other two
+    dispatches ride on `tests/physics3d/test_elliptic_condim46_vs_mujoco.mojo`,
+    whose spinning ball runs the pass at condim 4 and 6 — MuJoCo moves `qacc`
+    by 3.0e+1 and 3.6e+2 there with only `noslip_iterations` changed, so
+    `mju_QCQP3` and `mju_QCQP` are exercised rather than merely compiled.
 
 WHAT IT IS
 
@@ -169,7 +174,7 @@ from ..gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_CONDIM,
 )
-from .qcqp import mj_qcqp2
+from .qcqp import mj_qcqp2, mj_qcqp3, mj_qcqp5
 
 
 # ⚠ These stay `Float64` DELIBERATELY: they are `comptime`, so they never
@@ -487,20 +492,23 @@ def noslip_pyramidal[
 
 @always_inline
 def _minv_dense[
-    DTYPE: DType, NV: Int, ROWS: Int, V_SIZE: Int, BATCH: Int
+    DTYPE: DType, NV: Int, ROWS: Int, V_SIZE: Int, NT: Int, BATCH: Int
 ](
     env: Int,
     m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
     J: InlineArray[Scalar[DTYPE], ROWS * V_SIZE],
     row: Int,
-    mut out_v: InlineArray[Scalar[DTYPE], V_SIZE],
+    mut out_v: InlineArray[Scalar[DTYPE], NT * V_SIZE],
+    slot: Int,
 ):
-    """`out_v = M^-1 J_row^T` for a row of a dense `[ROWS, NV]` Jacobian.
+    """`out_v[slot] = M^-1 J_row^T` for a row of a dense `[ROWS, NV]` Jacobian.
 
-    The elliptic path stores its three contact Jacobians in SEPARATE arrays
-    (`Jn_c`, `Jt1_c`, `Jt2_c`), each `[MC, NV]`, rather than one interleaved
-    edge list — hence a helper keyed on the array rather than on a global row
-    index. Stride is NV, matching how `_newton_solve_env` fills them.
+    The elliptic path stores its contact Jacobians as a flat `[MC*NT, NV]`
+    tangential block plus a separate `[MC, NV]` normal one, rather than one
+    interleaved edge list — hence a helper keyed on the array and a row index
+    within it. `out_v` holds one column per tangential row of the contact
+    being swept, so the whole `nt x nt` AR block can be built from it without
+    recomputing the matvecs.
     """
     for i in range(NV):
         var acc = Scalar[DTYPE](0)
@@ -508,22 +516,114 @@ def _minv_dense[
             acc += rebind[Scalar[DTYPE]](m_inv[env, i * NV + k]) * J[
                 row * NV + k
             ]
-        out_v[i] = acc
+        out_v[slot * V_SIZE + i] = acc
 
 
 @always_inline
 def _dot_dense[
-    DTYPE: DType, NV: Int, ROWS: Int, V_SIZE: Int
+    DTYPE: DType, NV: Int, ROWS: Int, V_SIZE: Int, NT: Int
 ](
     J: InlineArray[Scalar[DTYPE], ROWS * V_SIZE],
     row: Int,
-    v: InlineArray[Scalar[DTYPE], V_SIZE],
+    v: InlineArray[Scalar[DTYPE], NT * V_SIZE],
+    slot: Int,
 ) -> Scalar[DTYPE]:
-    """`J_row . v`."""
+    """`J_row . v[slot]`."""
     var acc = Scalar[DTYPE](0)
     for i in range(NV):
-        acc += J[row * NV + i] * v[i]
+        acc += J[row * NV + i] * v[slot * V_SIZE + i]
     return acc
+
+
+@always_inline
+def _solve_contact_qcqp[
+    DTYPE: DType, NT: Int, TN: Int
+](
+    nt: Int,
+    cb: Int,
+    Ac: InlineArray[Scalar[DTYPE], NT * NT],
+    bc: InlineArray[Scalar[DTYPE], NT],
+    fr_c: InlineArray[Scalar[DTYPE], TN],
+    fn_v: Scalar[DTYPE],
+    mut vf: InlineArray[Scalar[DTYPE], NT],
+) -> Bool:
+    """MuJoCo's QCQP dispatch by contact dimension. Returns `flg_active`.
+
+        dim 3 -> nt 2 -> mju_QCQP2
+        dim 4 -> nt 3 -> mju_QCQP3
+        else  ->         mju_QCQP   (n = dim-1; only dim 6 -> nt 5 occurs)
+
+    ⚠ THE `comptime if NT >= n` GUARDS ARE NOT DEFENSIVE, THEY ARE A COMPILE
+    BUDGET. `mj_qcqp5` is a 20-iteration Cholesky loop; instantiating it for a
+    condim-3 model would be pure compile time for a branch that cannot be
+    reached, and this file is already inside the per-env solve body that Metal
+    has to fit. A model whose `MAX_CONDIM` is 3 therefore compiles exactly what
+    it compiled before this generalization.
+
+    ⚠ MuJoCo's own `else` is a general `mju_QCQP(n)`, ours is fixed at 5.
+    `condim` is one of {1, 3, 4, 6} in MuJoCo (`mjCGeom`), so `nt` is one of
+    {0, 2, 3, 5} and nothing else is reachable. A hypothetical `nt == 4` still
+    behaves: `mj_qcqp5` scales by `d` and unscales by it, so a padded row with
+    `d = 0` contributes nothing and returns 0.
+    """
+    comptime ZERO = Scalar[DTYPE](0)
+    if nt == 2:
+        var A2 = InlineArray[Scalar[DTYPE], 4](fill=ZERO)
+        A2[0] = Ac[0]
+        A2[1] = Ac[1]
+        A2[2] = Ac[NT]
+        A2[3] = Ac[NT + 1]
+        var b2 = InlineArray[Scalar[DTYPE], 2](fill=ZERO)
+        b2[0] = bc[0]
+        b2[1] = bc[1]
+        var d2 = InlineArray[Scalar[DTYPE], 2](fill=ZERO)
+        d2[0] = fr_c[cb]
+        d2[1] = fr_c[cb + 1]
+        var f0 = ZERO
+        var f1 = ZERO
+        var act = mj_qcqp2[DTYPE](f0, f1, A2, b2, d2, fn_v)
+        vf[0] = f0
+        vf[1] = f1
+        return act
+
+    comptime if NT >= 3:
+        if nt == 3:
+            var A3 = InlineArray[Scalar[DTYPE], 9](fill=ZERO)
+            for t in range(3):
+                for u in range(3):
+                    A3[t * 3 + u] = Ac[t * NT + u]
+            var b3 = InlineArray[Scalar[DTYPE], 3](fill=ZERO)
+            var d3 = InlineArray[Scalar[DTYPE], 3](fill=ZERO)
+            for t in range(3):
+                b3[t] = bc[t]
+                d3[t] = fr_c[cb + t]
+            var f0 = ZERO
+            var f1 = ZERO
+            var f2 = ZERO
+            var act = mj_qcqp3[DTYPE](f0, f1, f2, A3, b3, d3, fn_v)
+            vf[0] = f0
+            vf[1] = f1
+            vf[2] = f2
+            return act
+
+    comptime if NT >= 4:
+        var A5 = InlineArray[Scalar[DTYPE], 25](fill=ZERO)
+        for t in range(nt):
+            for u in range(nt):
+                A5[t * 5 + u] = Ac[t * NT + u]
+        var b5 = InlineArray[Scalar[DTYPE], 5](fill=ZERO)
+        var d5 = InlineArray[Scalar[DTYPE], 5](fill=ZERO)
+        for t in range(nt):
+            b5[t] = bc[t]
+            d5[t] = fr_c[cb + t]
+        var v5 = InlineArray[Scalar[DTYPE], 5](fill=ZERO)
+        var act = mj_qcqp5[DTYPE](v5, A5, b5, d5, fn_v)
+        for t in range(nt):
+            vf[t] = v5[t]
+        return act
+
+    return False
+
 
 
 @always_inline
@@ -531,6 +631,8 @@ def _refresh_jar_elliptic[
     DTYPE: DType,
     NV: Int,
     MC: Int,
+    NT: Int,
+    TN: Int,
     V_SIZE: Int,
     MAXS: Int,
     MAXEQ: Int,
@@ -538,12 +640,11 @@ def _refresh_jar_elliptic[
     nc: Int,
     ns: Int,
     neq_rows: Int,
+    nt_c: InlineArray[Int, MC],
     Jn_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
-    Jt1_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
-    Jt2_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
+    Jt_c: InlineArray[Scalar[DTYPE], TN * V_SIZE],
     pb_c: InlineArray[Scalar[DTYPE], MC],
-    bt1_c: InlineArray[Scalar[DTYPE], MC],
-    bt2_c: InlineArray[Scalar[DTYPE], MC],
+    bt_c: InlineArray[Scalar[DTYPE], TN],
     sr_dof: InlineArray[Int, MAXS],
     sr_sign: InlineArray[Scalar[DTYPE], MAXS],
     sr_bias: InlineArray[Scalar[DTYPE], MAXS],
@@ -551,8 +652,7 @@ def _refresh_jar_elliptic[
     eq_bias: InlineArray[Scalar[DTYPE], MAXEQ],
     qacc: InlineArray[Scalar[DTYPE], V_SIZE],
     mut jar_n: InlineArray[Scalar[DTYPE], MC],
-    mut jar_t1: InlineArray[Scalar[DTYPE], MC],
-    mut jar_t2: InlineArray[Scalar[DTYPE], MC],
+    mut jar_t: InlineArray[Scalar[DTYPE], TN],
     mut sr_jar: InlineArray[Scalar[DTYPE], MAXS],
     mut eq_jar: InlineArray[Scalar[DTYPE], MAXEQ],
 ):
@@ -566,16 +666,15 @@ def _refresh_jar_elliptic[
     """
     for c in range(nc):
         var jn = pb_c[c]
-        var j1 = bt1_c[c]
-        var j2 = bt2_c[c]
+        var nt = nt_c[c]
+        for t in range(nt):
+            jar_t[c * NT + t] = bt_c[c * NT + t]
         for i in range(NV):
             var qa = qacc[i]
             jn += Jn_c[c * NV + i] * qa
-            j1 += Jt1_c[c * NV + i] * qa
-            j2 += Jt2_c[c * NV + i] * qa
+            for t in range(nt):
+                jar_t[c * NT + t] += Jt_c[(c * NT + t) * NV + i] * qa
         jar_n[c] = jn
-        jar_t1[c] = j1
-        jar_t2[c] = j2
     for s in range(ns):
         sr_jar[s] = sr_bias[s] + sr_sign[s] * qacc[sr_dof[s]]
     for e in range(neq_rows):
@@ -589,6 +688,8 @@ def noslip_elliptic[
     DTYPE: DType,
     NV: Int,
     MC: Int,
+    NT: Int,
+    TN: Int,
     V_SIZE: Int,
     MAXS: Int,
     MAXEQ: Int,
@@ -600,16 +701,15 @@ def noslip_elliptic[
     ns: Int,
     neq_rows: Int,
     m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
-    # ── contact rows: normal, tangent 1, tangent 2 (condim 3) ──
+    # ── contact rows: one normal + `nt_c[c]` tangential, `nt_c[c] = dim-1` ──
+    nt_c: InlineArray[Int, MC],
     Jn_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
-    Jt1_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
-    Jt2_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
-    mu_c: InlineArray[Scalar[DTYPE], MC],
+    Jt_c: InlineArray[Scalar[DTYPE], TN * V_SIZE],
+    fr_c: InlineArray[Scalar[DTYPE], TN],
     D_n_c: InlineArray[Scalar[DTYPE], MC],
-    D_f_c: InlineArray[Scalar[DTYPE], MC],
+    D_t_c: InlineArray[Scalar[DTYPE], TN],
     pb_c: InlineArray[Scalar[DTYPE], MC],
-    bt1_c: InlineArray[Scalar[DTYPE], MC],
-    bt2_c: InlineArray[Scalar[DTYPE], MC],
+    bt_c: InlineArray[Scalar[DTYPE], TN],
     # ── scalar rows: joint limits + dry-friction dofs (J = sign * e_dof) ──
     sr_dof: InlineArray[Int, MAXS],
     sr_kind: InlineArray[Int, MAXS],
@@ -626,11 +726,9 @@ def noslip_elliptic[
     tolerance: Scalar[DTYPE],
     mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
     mut fn_a: InlineArray[Scalar[DTYPE], MC],
-    mut ft1_a: InlineArray[Scalar[DTYPE], MC],
-    mut ft2_a: InlineArray[Scalar[DTYPE], MC],
+    mut ft_a: InlineArray[Scalar[DTYPE], TN],
     mut jar_n_a: InlineArray[Scalar[DTYPE], MC],
-    mut jar_t1_a: InlineArray[Scalar[DTYPE], MC],
-    mut jar_t2_a: InlineArray[Scalar[DTYPE], MC],
+    mut jar_t_a: InlineArray[Scalar[DTYPE], TN],
     mut sr_f: InlineArray[Scalar[DTYPE], MAXS],
     mut sr_jar: InlineArray[Scalar[DTYPE], MAXS],
     mut eq_f: InlineArray[Scalar[DTYPE], MAXEQ],
@@ -654,23 +752,30 @@ def noslip_elliptic[
         it has no such row to leave alone.
       * SOLVE. Pyramidal minimises a 1-D quadratic in `y` over `[-mid, mid]`,
         which is closed form. Elliptic solves a QCQP over the friction
-        ellipsoid `sum (f_j/mu_j)^2 <= f_n^2` — `mju_QCQP2` for dim 3, and
-        that is Newton's method on the dual variable, not a projection.
+        ellipsoid `sum (f_j/mu_j)^2 <= f_n^2` — Newton's method on the dual
+        variable, not a projection.
       * A FEASIBLE ANSWER IS STILL RE-PROJECTED. When the QCQP reports the
         constraint active, MuJoCo pushes `v` back onto the ellipsoid boundary
         ("in case QCQP is approximate"). That is not a clamp — it can move a
         point that is already inside — and skipping it leaves a slowly
         drifting friction force under sustained sliding.
 
-    ⚠ CONDIM 3 ONLY, because the SOLVER is. `_newton_solve_env`'s elliptic path
-    caches exactly three Jacobian rows per contact (`Jn_c`/`Jt1_c`/`Jt2_c`) and
-    one isotropic `mu`, so a condim-4 or -6 contact already loses its
-    torsional/rolling rows BEFORE this function is reached. MuJoCo would
-    dispatch those to `mju_QCQP3`/`mju_QCQP`; `solver/qcqp.mojo` has both
-    ported and unused. Writing the dim-4/5 branches here would be dead code
-    that could not be exercised, and would read as support the path does not
-    have — `reach_site_features` has 3 condim-4 contacts out of 55 at qpos0,
-    so this is a real gap, tracked separately from noslip.
+    ⚠ ANY CONDIM, as of 2026-08-13. This used to say "condim 3 only, because
+    the SOLVER is", which was true: the primal path cached exactly three
+    Jacobian rows per contact and one isotropic `mu`, so a condim-4 contact
+    lost its torsional row before this function was reached, and writing the
+    dim-4/5 branches here would have been unreachable code. The primal path
+    now carries `dim-1` rows with per-direction friction, so all three of
+    MuJoCo's dispatches are live and reachable:
+
+        nt == 2   mju_QCQP2    condim 3   slide x2
+        nt == 3   mju_QCQP3    condim 4   slide x2 + torsion
+        nt == 5   mju_QCQP     condim 6   slide x2 + torsion + roll x2
+
+    `nt == 0` is a FRICTIONLESS contact and is skipped entirely — there is no
+    friction row to sweep. The QCQP3/QCQP5 instantiations are `comptime if`-ed
+    on `NT` so a condim-3 model compiles exactly what it compiled before;
+    QCQP5's 20-iteration Cholesky loop is not free to instantiate.
 
     ⚠ THE `improvement` ACCUMULATOR SPANS EVERY ROW KIND. The iteration-0
     correction is `0.5 f^2 R` over ALL `nefc` rows — contact normal AND
@@ -692,8 +797,13 @@ def noslip_elliptic[
     comptime DIAG_FLOOR = Scalar[DTYPE](_DIAG_FLOOR)
     comptime COST_REJECT = Scalar[DTYPE](_COST_REJECT)
 
-    var mj_a = InlineArray[Scalar[DTYPE], V_SIZE](fill=ZERO)
-    var mj_b = InlineArray[Scalar[DTYPE], V_SIZE](fill=ZERO)
+    # `M^-1 J_t^T`, one column per tangential row of the contact being swept.
+    var MinvJ = InlineArray[Scalar[DTYPE], NT * V_SIZE](fill=ZERO)
+    # The `nt x nt` AR block, its rhs, the solved force and the old one.
+    var Ac = InlineArray[Scalar[DTYPE], NT * NT](fill=ZERO)
+    var bc = InlineArray[Scalar[DTYPE], NT](fill=ZERO)
+    var vf = InlineArray[Scalar[DTYPE], NT](fill=ZERO)
+    var oldf = InlineArray[Scalar[DTYPE], NT](fill=ZERO)
 
     for it in range(MAX_ITER):
         var improvement = ZERO
@@ -705,12 +815,13 @@ def noslip_elliptic[
         if it == 0:
             for c in range(nc):
                 var f_n = fn_a[c]
-                var f1 = ft1_a[c]
-                var f2 = ft2_a[c]
                 if D_n_c[c] > ZERO:
                     improvement += HALF * f_n * f_n / D_n_c[c]
-                if D_f_c[c] > ZERO:
-                    improvement += HALF * (f1 * f1 + f2 * f2) / D_f_c[c]
+                for t in range(nt_c[c]):
+                    var d = D_t_c[c * NT + t]
+                    if d > ZERO:
+                        var f = ft_a[c * NT + t]
+                        improvement += HALF * f * f / d
             for s in range(ns):
                 improvement += HALF * sr_f[s] * sr_f[s] * sr_R[s]
             for e in range(neq_rows):
@@ -744,11 +855,12 @@ def noslip_elliptic[
                     qacc[k] += d * sgn * rebind[Scalar[DTYPE]](
                         m_inv[env, k * NV + dof]
                     )
-                _refresh_jar_elliptic[DTYPE, NV, MC, V_SIZE, MAXS, MAXEQ](
-                    nc, ns, neq_rows,
-                    Jn_c, Jt1_c, Jt2_c, pb_c, bt1_c, bt2_c,
+                _refresh_jar_elliptic[
+                    DTYPE, NV, MC, NT, TN, V_SIZE, MAXS, MAXEQ
+                ](
+                    nc, ns, neq_rows, nt_c, Jn_c, Jt_c, pb_c, bt_c,
                     sr_dof, sr_sign, sr_bias, eq_J, eq_bias, qacc,
-                    jar_n_a, jar_t1_a, jar_t2_a, sr_jar, eq_jar,
+                    jar_n_a, jar_t_a, sr_jar, eq_jar,
                 )
             # ⚠ `/ arinv`, matching MuJoCo literally. That is `a_ii` clamped
             # from below, and the reciprocal round-trip is a 1-ulp difference
@@ -757,85 +869,96 @@ def noslip_elliptic[
             # almost right.
             improvement -= HALF * d * d / arinv + d * res
 
-        # ── sweep 2: contact friction, one 2x2 tangential block per contact ─
+        # ── sweep 2: contact friction, the whole tangential block at once ──
         for c in range(nc):
+            var nt = nt_c[c]
+            # A FRICTIONLESS contact has no friction rows: MuJoCo's loop
+            # `for j=0; j<dim-1` is empty and `costChange(..., dim-1=0)` is 0.
+            if nt <= 0:
+                continue
+            var cb = c * NT
+
             # MuJoCo's order, and the order matters: the block is extracted
             # and `bc` formed BEFORE the zero-normal guard, because a contact
             # whose normal force has collapsed may still be carrying tangential
             # force that has to be zeroed AND accounted for.
-            var r0 = jar_t1_a[c]
-            var r1 = jar_t2_a[c]
-            var old0 = ft1_a[c]
-            var old1 = ft2_a[c]
-
-            _minv_dense[DTYPE, NV, MC, V_SIZE, BATCH](env, m_inv, Jt1_c, c, mj_a)
-            _minv_dense[DTYPE, NV, MC, V_SIZE, BATCH](env, m_inv, Jt2_c, c, mj_b)
+            for t in range(nt):
+                oldf[t] = ft_a[cb + t]
+                _minv_dense[DTYPE, NV, TN, V_SIZE, NT, BATCH](
+                    env, m_inv, Jt_c, cb + t, MinvJ, t
+                )
 
             # `Ac` = the AR submatrix with R subtracted off the diagonal and
             # the diagonal floored (`extractBlock`, flg_subR=1) — so R is not
             # in it at all.
-            var a00 = _dot_dense[DTYPE, NV, MC, V_SIZE](Jt1_c, c, mj_a)
-            var a01 = _dot_dense[DTYPE, NV, MC, V_SIZE](Jt1_c, c, mj_b)
-            var a10 = _dot_dense[DTYPE, NV, MC, V_SIZE](Jt2_c, c, mj_a)
-            var a11 = _dot_dense[DTYPE, NV, MC, V_SIZE](Jt2_c, c, mj_b)
-            if a00 < DIAG_FLOOR:
-                a00 = DIAG_FLOOR
-            if a11 < DIAG_FLOOR:
-                a11 = DIAG_FLOOR
+            for t in range(nt):
+                for u in range(nt):
+                    Ac[t * NT + u] = _dot_dense[
+                        DTYPE, NV, TN, V_SIZE, NT
+                    ](Jt_c, cb + t, MinvJ, u)
+                if Ac[t * NT + t] < DIAG_FLOOR:
+                    Ac[t * NT + t] = DIAG_FLOOR
 
             # `bc = res - Ac * oldforce`
-            var b0 = r0 - (a00 * old0 + a01 * old1)
-            var b1 = r1 - (a10 * old0 + a11 * old1)
+            for t in range(nt):
+                var b = jar_t_a[cb + t]
+                for u in range(nt):
+                    b -= Ac[t * NT + u] * oldf[u]
+                bc[t] = b
 
-            var f0 = ZERO
-            var f1 = ZERO
-            var fn_c = fn_a[c]
-            if fn_c >= MINVAL:
-                var mu = mu_c[c]
-                var A = InlineArray[Scalar[DTYPE], 4](fill=ZERO)
-                A[0] = a00
-                A[1] = a01
-                A[2] = a10
-                A[3] = a11
-                var b = InlineArray[Scalar[DTYPE], 2](fill=ZERO)
-                b[0] = b0
-                b[1] = b1
-                # `d` is the per-direction friction coefficient. The elliptic
-                # path carries ONE isotropic `mu` per contact, so both
-                # directions get it; MuJoCo reads `con->friction[0..1]`, which
-                # differ only for an anisotropic `<geom friction>`.
-                var dsc = InlineArray[Scalar[DTYPE], 2](fill=mu)
-                var active = mj_qcqp2[DTYPE](f0, f1, A, b, dsc, fn_c)
+            for t in range(nt):
+                vf[t] = ZERO
+            var fn_v = fn_a[c]
+            if fn_v >= MINVAL:
+                var active = _solve_contact_qcqp[DTYPE, NT, TN](
+                    nt, cb, Ac, bc, fr_c, fn_v, vf
+                )
                 if active:
                     # `projectEllipsoid(..., feasible=0)` — ALWAYS scales to
                     # the boundary, even from inside. Not a clamp.
-                    var sq = (f0 * f0 + f1 * f1) / (mu * mu)
+                    var sq = ZERO
+                    for t in range(nt):
+                        var mu = fr_c[cb + t]
+                        if mu > ZERO:
+                            sq += vf[t] * vf[t] / (mu * mu)
                     var scl = sqrt(
-                        fn_c * fn_c / (sq if sq > MINVAL else MINVAL)
+                        fn_v * fn_v / (sq if sq > MINVAL else MINVAL)
                     )
-                    f0 *= scl
-                    f1 *= scl
+                    for t in range(nt):
+                        vf[t] *= scl
 
-            var change = _cost_change[DTYPE](
-                a00, a01, a10, a11, f0, f1, old0, old1, r0, r1
-            )
+            # `costChange`: `0.5 d^T Ac d + d . res`.
+            #
+            # ⚠ This is the cancellation-sensitive expression of the module —
+            # `vf[t] - oldf[t]` is a small difference of comparable numbers,
+            # then squared against `Ac`.
+            var change = ZERO
+            var any_change = False
+            for t in range(nt):
+                var dt = vf[t] - oldf[t]
+                if dt != ZERO:
+                    any_change = True
+                var quad = ZERO
+                for u in range(nt):
+                    quad += Ac[t * NT + u] * (vf[u] - oldf[u])
+                change += HALF * dt * quad + dt * jar_t_a[cb + t]
             if change > COST_REJECT:
                 # `costChange` restores `force` and returns 0 — the update is
                 # dropped, not merely uncounted.
                 continue
 
-            var d0 = f0 - old0
-            var d1 = f1 - old1
-            if d0 != ZERO or d1 != ZERO:
-                ft1_a[c] = f0
-                ft2_a[c] = f1
-                for q in range(NV):
-                    qacc[q] += d0 * mj_a[q] + d1 * mj_b[q]
-                _refresh_jar_elliptic[DTYPE, NV, MC, V_SIZE, MAXS, MAXEQ](
-                    nc, ns, neq_rows,
-                    Jn_c, Jt1_c, Jt2_c, pb_c, bt1_c, bt2_c,
+            if any_change:
+                for t in range(nt):
+                    var dt = vf[t] - oldf[t]
+                    ft_a[cb + t] = vf[t]
+                    for q in range(NV):
+                        qacc[q] += dt * MinvJ[t * V_SIZE + q]
+                _refresh_jar_elliptic[
+                    DTYPE, NV, MC, NT, TN, V_SIZE, MAXS, MAXEQ
+                ](
+                    nc, ns, neq_rows, nt_c, Jn_c, Jt_c, pb_c, bt_c,
                     sr_dof, sr_sign, sr_bias, eq_J, eq_bias, qacc,
-                    jar_n_a, jar_t1_a, jar_t2_a, sr_jar, eq_jar,
+                    jar_n_a, jar_t_a, sr_jar, eq_jar,
                 )
             improvement -= change
 
@@ -855,16 +978,11 @@ def noslip_elliptic[
         qfrc[i] = ZERO
     for c in range(nc):
         var f_n = fn_a[c]
-        var f1 = ft1_a[c]
-        var f2 = ft2_a[c]
-        if f_n == ZERO and f1 == ZERO and f2 == ZERO:
-            continue
         for i in range(NV):
-            qfrc[i] += (
-                Jn_c[c * NV + i] * f_n
-                + Jt1_c[c * NV + i] * f1
-                + Jt2_c[c * NV + i] * f2
-            )
+            var acc = Jn_c[c * NV + i] * f_n
+            for t in range(nt_c[c]):
+                acc += Jt_c[(c * NT + t) * NV + i] * ft_a[c * NT + t]
+            qfrc[i] += acc
     for s in range(ns):
         qfrc[sr_dof[s]] += sr_sign[s] * sr_f[s]
     for e in range(neq_rows):

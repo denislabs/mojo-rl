@@ -224,9 +224,17 @@ struct ModelDefFromXML[
     comptime MAX_EQUALITY: Int = Self.max_equality
     comptime CONE_TYPE: Int = Self.cone_type
     # Largest condim in the model — sizes the PYRAMIDAL edge list at
-    # 2*(MAX_CONDIM-1) rows per contact. Pass `parse_xml(xml).MAX_CONDIM`;
-    # leaving it at 3 on a model with condim 4/6 geoms builds the torsional
-    # and rolling rows into a workspace the solver never reads.
+    # 2*(MAX_CONDIM-1) rows per contact and the ELLIPTIC tangential block at
+    # MAX_CONDIM-1. Pass `parse_xml(xml).MAX_CONDIM`.
+    #
+    # ⚠ LEAVING IT AT 3 ON A MODEL WITH condim 4/6 GEOMS SILENTLY DROPS THEIR
+    # TORSIONAL AND ROLLING ROWS. `_precompute_contact_friction` clamps each
+    # contact's own `condim` to this, so the rows are not merely unread — they
+    # are never built, the contact solves as if it were condim 3, and nothing
+    # reports it. Measured on a spinning ball
+    # (`tests/physics3d/test_elliptic_condim46_vs_mujoco.mojo`): dropping the
+    # torsional row moves `qacc` by 1.6e+3 against a `|qacc|` of 3e+3, and the
+    # rolling pair by another 1.1e+3.
     comptime MAX_CONDIM: Int = Self.max_condim
     # `<option noslip_iterations>`. Runs MuJoCo's `mj_solNoSlip` after the
     # primal solve: a friction-only Gauss-Seidel sweep with the normal forces

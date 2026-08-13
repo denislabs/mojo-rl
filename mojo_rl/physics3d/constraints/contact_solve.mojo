@@ -111,6 +111,16 @@ from ..gpu.constants import (
     JOINT_IDX_DOF_ADR,
 )
 from ..collision.contact_frame import contact_tangent_frame
+from ..solver.elliptic_layout import (
+    ell_nt,
+    ell_jt,
+    ell_mu,
+    ell_dn,
+    ell_dt,
+    ell_fr,
+    ell_bt,
+    ell_ntc,
+)
 
 from .constraint_data import solref_spring_damper
 
@@ -748,21 +758,30 @@ def _precompute_contact_friction[
     B_damp: Scalar[DTYPE],
     impratio: Scalar[DTYPE],
     K_spring: Scalar[DTYPE],
-    # Workspace offsets for friction output (caller provides)
-    ws_Jt1_idx: Int,
-    ws_Jt2_idx: Int,
-    ws_mu_idx: Int,
-    ws_D_n_idx: Int,
-    ws_D_f_idx: Int,
-    ws_bt1_idx: Int,
-    ws_bt2_idx: Int,
 ):
     """Build friction tangent data for one contact (verbatim from
     precompute_contact_friction_gpu — the SHARED CG/Newton friction builder;
     NOT called by the PGS env body below, which inlines its own legacy
     friction phase 3). The legacy pyramidal branch declared an unused
-    M_inv offset, dropped here."""
+    M_inv offset, dropped here.
+
+    ⚠ THE WORKSPACE OFFSETS USED TO BE ARGUMENTS. Each of the three callers
+    declared its own `comptime ws_*_idx = SC + k*MC` chain and passed seven of
+    them in; that was safe only while the chain was a fixed seven entries. The
+    ELLIPTIC region is now `MAX_CONDIM`-dependent (`solver/elliptic_layout`),
+    and a caller left on a stale stride would read a DIFFERENT contact's
+    friction rather than fail. They are derived here and read back through the
+    same functions.
+    """
     comptime MC = _max_one[MAX_CONTACTS]()
+    comptime NT = ell_nt[MAX_CONDIM]()
+    comptime ws_Jt1_idx = ell_jt[MC, NV]()
+    comptime ws_mu_idx = ell_mu[MC, NV, MAX_CONDIM]()
+    comptime ws_D_n_idx = ell_dn[MC, NV, MAX_CONDIM]()
+    comptime ws_Dt_idx = ell_dt[MC, NV, MAX_CONDIM]()
+    comptime ws_fr_idx = ell_fr[MC, NV, MAX_CONDIM]()
+    comptime ws_bt_idx = ell_bt[MC, NV, MAX_CONDIM]()
+    comptime ws_ntc_idx = ell_ntc[MC, NV, MAX_CONDIM]()
     # Pyramid edges per contact: MuJoCo emits one OPPOSING PAIR per friction
     # dimension (engine_core_constraint.c `make pyramidal friction cone`), so
     # a condim-d contact owns 2*(d-1) rows — 4 at condim 3, 6 at 4, 10 at 6.
@@ -790,9 +809,16 @@ def _precompute_contact_friction[
         # Zero friction outputs for non-active contacts
         solver[env, ws_mu_idx + c] = 0
         solver[env, ws_D_n_idx + c] = 0
-        solver[env, ws_D_f_idx + c] = 0
-        solver[env, ws_bt1_idx + c] = 0
-        solver[env, ws_bt2_idx + c] = 0
+        comptime if CONE_TYPE == ConeType.ELLIPTIC:
+            # ⚠ EVERY tangential row, and the row COUNT with them. A contact
+            # that stopped touching keeps its slot; leaving `ntc` at the
+            # previous step's value would make the solver read Jacobians it
+            # just zeroed as if they were live rows.
+            for t in range(NT):
+                solver[env, ws_Dt_idx + t * MC + c] = 0
+                solver[env, ws_fr_idx + t * MC + c] = 0
+                solver[env, ws_bt_idx + t * MC + c] = 0
+            solver[env, ws_ntc_idx + c] = 0
         comptime if CONE_TYPE == ConeType.PYRAMIDAL:
             # ⚠ ZERO EVERY EDGE, not just the two `ws_Jt1/Jt2` slots. Those
             # two names alias pyramid edges 0 and 1; edges 2.. live further
@@ -805,9 +831,9 @@ def _precompute_contact_friction[
                 solver[env, pyr_sc_z + e * MC + c] = 0
                 solver[env, pyr_sc_z + NE_PYR * MC + e * MC + c] = 0
         else:
-            for i in range(NV):
-                solver[env, ws_Jt1_idx + c * NV + i] = 0
-                solver[env, ws_Jt2_idx + c * NV + i] = 0
+            for t in range(NT):
+                for i in range(NV):
+                    solver[env, ws_Jt1_idx + t * MC * NV + c * NV + i] = 0
         return
 
     var nx = rebind[Scalar[DTYPE]](solver[env, ws_c_nx + c])
@@ -1064,15 +1090,64 @@ def _precompute_contact_friction[
             solver[env, pyr_sc + NE_PYR * MC + edge * MC + c] = bias_e
 
     else:
-        # === ELLIPTIC: Store separate J_t1, J_t2, D_n, D_f, mu, bias ===
-        for i in range(NV):
-            solver[env, ws_Jt1_idx + c * NV + i] = J_t1[i]
-            solver[env, ws_Jt2_idx + c * NV + i] = J_t2[i]
+        # === ELLIPTIC: one normal row + `dim-1` tangential rows ===
+        #
+        # ⚠ THIS USED TO BUILD EXACTLY TWO TANGENTS AND ONE ISOTROPIC `mu`,
+        # i.e. condim 3, whatever the geoms declared. `MAX_CONDIM` was already
+        # threaded through to here and consumed only by the PYRAMIDAL branch,
+        # so a `condim="4"` geom under `cone="elliptic"` silently lost its
+        # torsional row — `manipulation/reach_site_features` has 3 such
+        # contacts of 55 at qpos0 and every dm_control manipulation model
+        # declares `cone="elliptic"`.
+        #
+        # Row `t` pairs with `con->friction[t]`: t=0,1 SLIDE (the linear
+        # Jacobians along t1/t2 already built above), t=2 TORSION about the
+        # normal, t=3,4 ROLLING about t1/t2 — the last three from the ANGULAR
+        # Jacobian, which is why they cannot reuse `J_t1`/`J_t2`. Identical
+        # direction convention to the pyramidal edge builder above; the cones
+        # differ in how rows are COMBINED, not in what the rows are.
+        var condim_e = Int(
+            rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_CONDIM])
+        )
+        if condim_e < 1:
+            condim_e = 3
+        if condim_e > MAX_CONDIM:
+            condim_e = MAX_CONDIM
+        # A FRICTIONLESS contact (`condim="1"`) is one normal row and NOTHING
+        # else — `nt_c = 0`. The cone then degenerates to `T == 0`, whose top /
+        # bottom zones are exactly the one-sided normal constraint MuJoCo emits
+        # as `mjCNSTR_CONTACT_FRICTIONLESS`. Before this, the elliptic path had
+        # no condim branch at all and gave such a contact full sliding friction.
+        var nt_c = condim_e - 1
+        if nt_c < 0:
+            nt_c = 0
+        solver[env, ws_ntc_idx + c] = Scalar[DTYPE](nt_c)
+
+        var mu_spin_e = rebind[Scalar[DTYPE]](
+            contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN]
+        )
+        var mu_roll_e = rebind[Scalar[DTYPE]](
+            contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL]
+        )
 
         var D_n_c = Scalar[DTYPE](1.0) / R_n_c
         solver[env, ws_D_n_idx + c] = D_n_c
-        solver[env, ws_D_f_idx + c] = D_n_c / impratio
-        solver[env, ws_mu_idx + c] = mu_c
+
+        # ⚠ `con->mu` IS NOT `friction[0]`; it is the REGULARIZED coefficient
+        # `friction[0] * sqrt(R[1]/R[0])` (engine_core_constraint.c:1886), and
+        # `R[1] = R[0]/impratio` — so `mu = friction[0]/sqrt(impratio)` and
+        # `D[1] = D[0]*impratio`. This branch had the impratio exponent the
+        # WRONG WAY (`D_f = D_n/impratio`, i.e. `R[1] = R[0]*impratio`) and
+        # `mu` unregularized. Both are exact no-ops at the default
+        # `impratio = 1`, which is what every model in the tree uses — no gate
+        # here can move, and none did. Corrected rather than left in place
+        # because the per-row `R` formula below is built ON `R[1]`, so
+        # encoding it wrongly would have propagated to the torsional and
+        # rolling rows where the error is no longer a scalar factor.
+        var R_t0 = R_n_c / impratio
+        if R_t0 < Scalar[DTYPE](1e-14):
+            R_t0 = Scalar[DTYPE](1e-14)
+        solver[env, ws_mu_idx + c] = mu_c * sqrt(R_t0 / R_n_c)
 
         # Friction velocity-damping bias: bt = B_damp * J_t * qvel, with THIS
         # CONTACT's mixed damper rather than the model-level one the caller
@@ -1087,14 +1162,88 @@ def _precompute_contact_friction[
             rebind[Scalar[DTYPE]](contacts[env, c_off + CONTACT_IDX_SOLIMP_1]),
             rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
         )
-        var bt1_c: Scalar[DTYPE] = 0
-        var bt2_c: Scalar[DTYPE] = 0
-        for i in range(NV):
-            var qv_i = rebind[Scalar[DTYPE]](qvel[env, i])
-            bt1_c += J_t1[i] * qv_i
-            bt2_c += J_t2[i] * qv_i
-        solver[env, ws_bt1_idx + c] = _kb_e[1] * bt1_c
-        solver[env, ws_bt2_idx + c] = _kb_e[1] * bt2_c
+
+        var J_te = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        for t in range(NT):
+            var ws_Jte = ws_Jt1_idx + t * MC * NV
+            if t >= nt_c:
+                # Dead row: zero Jacobian, zero stiffness, zero friction. The
+                # consumers loop to `nt_c`, but a stale Jacobian left here
+                # would still be read by anything that loops to NT.
+                for i in range(NV):
+                    solver[env, ws_Jte + c * NV + i] = 0
+                solver[env, ws_Dt_idx + t * MC + c] = 0
+                solver[env, ws_fr_idx + t * MC + c] = 0
+                solver[env, ws_bt_idx + t * MC + c] = 0
+                continue
+
+            # ⚠ `friction[0]` AND `friction[1]` ARE THE SAME NUMBER HERE. The
+            # contact record carries ONE slide coefficient
+            # (`CONTACT_IDX_FRICTION`) where MuJoCo has two, so an anisotropic
+            # `<geom friction="1 0.5 ...">` slides isotropically. That is a
+            # property of the contact record, not of this cone, and the
+            # pyramidal builder above shares it.
+            var fr_t = mu_c
+            if t == 2:
+                fr_t = mu_spin_e
+            elif t >= 3:
+                fr_t = mu_roll_e
+            solver[env, ws_fr_idx + t * MC + c] = fr_t
+
+            if t == 0:
+                for i in range(NV):
+                    J_te[i] = J_t1[i]
+            elif t == 1:
+                for i in range(NV):
+                    J_te[i] = J_t2[i]
+            else:
+                var ax = nx
+                var ay = ny
+                var az = nz
+                if t == 3:
+                    ax = t1x
+                    ay = t1y
+                    az = t1z
+                elif t == 4:
+                    ax = t2x
+                    ay = t2y
+                    az = t2z
+                _angular_jacobian_row[
+                    DTYPE, NV, NBODY, NJOINT, V_SIZE, BATCH
+                ](
+                    env, joints, bodies, mmeta, cdof,
+                    body_a, body_b, ax, ay, az, J_te,
+                )
+
+            var bt_t: Scalar[DTYPE] = 0
+            for i in range(NV):
+                solver[env, ws_Jte + c * NV + i] = J_te[i]
+                bt_t += J_te[i] * rebind[Scalar[DTYPE]](qvel[env, i])
+            solver[env, ws_bt_idx + t * MC + c] = _kb_e[1] * bt_t
+
+            # ⚠ EVERY TANGENTIAL ROW HAS ITS OWN `R`, SET SO THAT
+            # `R[j]*friction[j]^2` IS CONSTANT — `R[j+1] = R[1]*f0^2/fj^2`
+            # (engine_core_constraint.c:1893). That is what makes the cone
+            # ELLIPTIC rather than circular: the torsional row of a ball at
+            # `friction="0.7 0.7 0.05"` is 196x stiffer than its slide rows.
+            # The single `D_f` shared by both tangents this replaces was the
+            # right answer only because both were slide rows with the same
+            # coefficient.
+            #
+            # A ZERO COEFFICIENT IS A REAL SETTING, not a missing one:
+            # `<geom friction="1 0.005 0">` gives `R = inf`, `D = 0`, a row
+            # that carries no force and contributes nothing to the cone. The
+            # division would produce `inf` and then `1/inf`; taken explicitly
+            # so float32 cannot turn it into a NaN.
+            if t == 0:
+                solver[env, ws_Dt_idx + t * MC + c] = Scalar[DTYPE](1.0) / R_t0
+            elif fr_t <= Scalar[DTYPE](0):
+                solver[env, ws_Dt_idx + t * MC + c] = 0
+            else:
+                var R_t = R_t0 * (mu_c * mu_c) / (fr_t * fr_t)
+                if R_t < Scalar[DTYPE](1e-14):
+                    R_t = Scalar[DTYPE](1e-14)
+                solver[env, ws_Dt_idx + t * MC + c] = Scalar[DTYPE](1.0) / R_t
 
 
 @always_inline

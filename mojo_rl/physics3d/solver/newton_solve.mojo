@@ -41,7 +41,19 @@ Workspace: the legacy Newton scratch is 35*MC + 6*MC*NV floats based at
 `ws_solver_offset`. This port keeps the exact layout as row-relative
 offsets into the fields `ContactScratch.solver` tensor, which is sized for
 PGS (81*MC + 12*MC*NV) — strictly larger, so Newton uses a PREFIX of it
-(no new scratch struct).
+(no new scratch struct). ⚠ The ELLIPTIC region's offsets are no longer written
+out here: they are `MAX_CONDIM`-dependent and live in
+`solver/elliptic_layout.mojo`, which the PRODUCER
+(`_precompute_contact_friction`) and all three consumers share. Worst case is
+33*MC + 7*MC*NV at condim 6, still inside the PGS budget.
+
+CONDIM. Both cones carry every tangential row a contact declares. PYRAMIDAL
+emits `2*(dim-1)` edge rows, ELLIPTIC one normal row plus `dim-1` tangential
+ones with per-direction friction and `R` — the elliptic cone math is in
+`solver/elliptic_cone.mojo` and is written in MuJoCo's U-space so it does not
+assume the tangential rows share a coefficient. Until 2026-08-13 the elliptic
+path hard-coded two tangents and one isotropic `mu`, i.e. condim 3 whatever the
+geoms declared.
 
 Operands (20): the 19 of `solve_contacts` + `M` (the Newton core
 reads the mass matrix for the Gauss term / Hessian; legacy `ws_M_offset`).
@@ -62,6 +74,26 @@ from ..types import _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JNT_BALL
 from .cholesky import chol_factor_inline, chol_solve_inline
 from .noslip import noslip_pyramidal, noslip_elliptic
+from .elliptic_layout import (
+    ell_nt,
+    ell_jt,
+    ell_end,
+    ell_mu,
+    ell_dn,
+    ell_dt,
+    ell_fr,
+    ell_bt,
+    ell_ntc,
+)
+from .elliptic_cone import (
+    ell_state_force,
+    ell_hessian_block,
+    ell_add_contact_hessian,
+    ell_line_deriv,
+    ELL_SATISFIED,
+    ELL_QUADRATIC,
+    ELL_CONE,
+)
 
 # `mjModel.opt.noslip_tolerance`, MuJoCo's default — the value used when a
 # model's `<option>` does not set the attribute.
@@ -120,6 +152,9 @@ from ..gpu.constants import (
     CONTACT_IDX_FORCE_N,
     CONTACT_IDX_FORCE_T1,
     CONTACT_IDX_FORCE_T2,
+    CONTACT_IDX_FORCE_TORSION,
+    CONTACT_IDX_FORCE_ROLL1,
+    CONTACT_IDX_FORCE_ROLL2,
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_MEANINERTIA,
     MODEL_META_IDX_NOSLIP_TOLERANCE,
@@ -481,51 +516,59 @@ def _newton_solve_env[
     comptime ws_pos_bias_idx = 11 * MC
     comptime ws_J_n_idx = 15 * MC
 
-    # Primal-specific offsets (after common normal block)
-    comptime PRIMAL_START = 15 * MC + 2 * MC * NV
-    comptime ws_Jt1_idx = PRIMAL_START + 0 * MC * NV
-    comptime ws_Jt2_idx = PRIMAL_START + 1 * MC * NV
-    comptime ws_MinvJt1_idx = PRIMAL_START + 2 * MC * NV
-    comptime ws_MinvJt2_idx = PRIMAL_START + 3 * MC * NV
-    comptime SC = PRIMAL_START + 4 * MC * NV
-    comptime ws_mu_idx = SC + 0 * MC
-    comptime ws_D_n_idx = SC + 1 * MC
-    comptime ws_D_f_idx = SC + 2 * MC
-    comptime ws_bt1_idx = SC + 3 * MC
-    comptime ws_bt2_idx = SC + 4 * MC
-    comptime CVS = SC + 5 * MC
-    comptime ws_jar_n_idx = CVS + 0 * MC
-    comptime ws_jar_t1_idx = CVS + 1 * MC
-    comptime ws_jar_t2_idx = CVS + 2 * MC
-    comptime ws_fn_idx = CVS + 3 * MC
-    comptime ws_ft1_idx = CVS + 4 * MC
-    comptime ws_ft2_idx = CVS + 5 * MC
-    comptime ws_cstate_idx = CVS + 6 * MC
+    # Primal-specific offsets (after common normal block). ⚠ ONE SOURCE OF
+    # TRUTH — `solver/elliptic_layout` — because the region is now
+    # `MAX_CONDIM`-dependent and the producer indexes the same slots. `NT` is
+    # the tangential rows per contact: 2 at condim 3, 3 at 4, 5 at 6.
+    comptime NT = ell_nt[MAX_CONDIM]()
+    comptime ws_Jt_idx = ell_jt[MC, NV]()
+    comptime ws_mu_idx = ell_mu[MC, NV, MAX_CONDIM]()
+    comptime ws_D_n_idx = ell_dn[MC, NV, MAX_CONDIM]()
+    comptime ws_Dt_idx = ell_dt[MC, NV, MAX_CONDIM]()
+    comptime ws_fr_idx = ell_fr[MC, NV, MAX_CONDIM]()
+    comptime ws_bt_idx = ell_bt[MC, NV, MAX_CONDIM]()
+    comptime ws_ntc_idx = ell_ntc[MC, NV, MAX_CONDIM]()
+    # ⚠ THE ONE FAILURE MODE THIS LAYOUT HAS IS OVERRUNNING `SOLVER_WS`, and
+    # it would not crash: `solver` is `[BATCH, SOLVER_WS]`, so writing past the
+    # row lands in the NEXT ENV's workspace. Caught at compile time rather than
+    # as a lane-dependent wrong answer.
+    comptime assert ell_end[MC, NV, MAX_CONDIM]() <= SOLVER_WS, (
+        "the ELLIPTIC contact region does not fit ContactScratch.solver —"
+        " raise SOLVER_WS in fields/contact_scratch.mojo (and in the four"
+        " other files that recompute the literal) before raising MAX_CONDIM"
+    )
 
     # === Initialize workspace (legacy: parallel, one thread per slot; the
     # legacy `contact_tid < MC` guard is vacuous with block_dim.y = MC) ===
+    #
+    # The `jar_*` / `f*` / `cstate` slots that used to be zeroed here are gone:
+    # they were written by nothing and read by nothing after this loop (the
+    # solve keeps that state in InlineArrays), and the tangent Jacobian region
+    # now extends over the two `MinvJt` blocks they followed.
+    #
+    # ⚠ THE ROW COUNT IS CONE-SPECIFIC. A pyramidal contact owns `2*(dim-1)`
+    # Jacobian blocks, an elliptic one `dim-1`; zeroing the elliptic count on
+    # the pyramidal path would leave half the edge list holding the previous
+    # step's Jacobian for a slot the producer skips. The old loop zeroed a
+    # fixed FOUR blocks and got away with it only because the pyramidal
+    # producer re-zeros every edge itself.
+    comptime NZ = 2 * NT if CONE_TYPE == ConeType.PYRAMIDAL else NT
     for contact_tid in range(MC):
         _init_common_normal_ws[
             DTYPE, NV, MAX_CONTACTS, BATCH, SOLVER_WS
         ](env, contact_tid, solver)
         # Zero primal workspace for this contact slot
-        for d in range(NV):
-            solver[env, ws_Jt1_idx + contact_tid * NV + d] = 0
-            solver[env, ws_Jt2_idx + contact_tid * NV + d] = 0
-            solver[env, ws_MinvJt1_idx + contact_tid * NV + d] = 0
-            solver[env, ws_MinvJt2_idx + contact_tid * NV + d] = 0
-        solver[env, ws_mu_idx + contact_tid] = 0
-        solver[env, ws_D_n_idx + contact_tid] = 0
-        solver[env, ws_D_f_idx + contact_tid] = 0
-        solver[env, ws_bt1_idx + contact_tid] = 0
-        solver[env, ws_bt2_idx + contact_tid] = 0
-        solver[env, ws_jar_n_idx + contact_tid] = 0
-        solver[env, ws_jar_t1_idx + contact_tid] = 0
-        solver[env, ws_jar_t2_idx + contact_tid] = 0
-        solver[env, ws_fn_idx + contact_tid] = 0
-        solver[env, ws_ft1_idx + contact_tid] = 0
-        solver[env, ws_ft2_idx + contact_tid] = 0
-        solver[env, ws_cstate_idx + contact_tid] = 0
+        for t in range(NZ):
+            for d in range(NV):
+                solver[env, ws_Jt_idx + t * MC * NV + contact_tid * NV + d] = 0
+        comptime if CONE_TYPE == ConeType.ELLIPTIC:
+            for t in range(NT):
+                solver[env, ws_Dt_idx + t * MC + contact_tid] = 0
+                solver[env, ws_fr_idx + t * MC + contact_tid] = 0
+                solver[env, ws_bt_idx + t * MC + contact_tid] = 0
+            solver[env, ws_mu_idx + contact_tid] = 0
+            solver[env, ws_D_n_idx + contact_tid] = 0
+            solver[env, ws_ntc_idx + contact_tid] = 0
 
     # Read metadata (legacy `dt` read dropped — only the unused-arg limits
     # call consumed it)
@@ -644,13 +687,6 @@ def _newton_solve_env[
             B_damp,
             impratio,
             K_spring,
-            ws_Jt1_idx,
-            ws_Jt2_idx,
-            ws_mu_idx,
-            ws_D_n_idx,
-            ws_D_f_idx,
-            ws_bt1_idx,
-            ws_bt2_idx,
         )
 
     # === SEQUENTIAL: primal Newton (legacy: thread 0) ===
@@ -683,7 +719,7 @@ def _newton_solve_env[
         )
 
         # Cache edge data from PYRAMIDAL workspace layout
-        var pyr_sc = ws_Jt1_idx + NE * MC * NV
+        var pyr_sc = ws_Jt_idx + NE * MC * NV
         var Je = InlineArray[Scalar[DTYPE], ME * V_SIZE](uninitialized=True)
         var De = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
         var bias_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
@@ -702,7 +738,7 @@ def _newton_solve_env[
                 var idx = c * NE + e
                 for i in range(NV):
                     Je[idx * NV + i] = rebind[Scalar[DTYPE]](
-                        solver[env, ws_Jt1_idx + e * MC * NV + c * NV + i]
+                        solver[env, ws_Jt_idx + e * MC * NV + c * NV + i]
                     )
                 De[idx] = rebind[Scalar[DTYPE]](
                     solver[env, pyr_sc + e * MC + c]
@@ -1406,42 +1442,65 @@ def _newton_solve_env[
         # `d22144ee`.
         return  # PYRAMIDAL path complete
 
-    # === ELLIPTIC path (existing code) ===
+    # === ELLIPTIC path ===
     # === Cache loop-invariant contact data into local InlineArrays ===
-    # Jn, Jt1, Jt2, mu, D_n, D_f, dist, pos_bias, bt1, bt2 never change
-    # during Newton iterations — load once to avoid ~1000 workspace reads/iter.
+    # Jn, the NT tangent Jacobians, mu, D_n, per-row D and friction, dist,
+    # pos_bias and per-row bias never change during Newton iterations — load
+    # once to avoid ~1000 workspace reads/iter.
+    #
+    # ⚠ TANGENT ROWS ARE A FLAT `[MC, NT]` BLOCK, NOT TWO NAMED ARRAYS. The
+    # old `Jt1_c`/`Jt2_c`/`bt1_cache`/`bt2_cache` pairs WERE the condim-3
+    # restriction — there was nowhere to put a torsional row. Index is
+    # `c*NT + t` for scalars and `(c*NT + t)*NV + i` for Jacobians, i.e.
+    # CONTACT-major, unlike the workspace's block-major `t*MC + c`; the solve
+    # touches all of one contact's rows together and none of the arrays outlive
+    # this function.
     var Jn_c = InlineArray[Scalar[DTYPE], MC * V_SIZE](uninitialized=True)
-    var Jt1_c = InlineArray[Scalar[DTYPE], MC * V_SIZE](uninitialized=True)
-    var Jt2_c = InlineArray[Scalar[DTYPE], MC * V_SIZE](uninitialized=True)
+    var Jt_c = InlineArray[Scalar[DTYPE], MC * NT * V_SIZE](
+        uninitialized=True
+    )
     var mu_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
     var D_n_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-    var D_f_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var D_t_cache = InlineArray[Scalar[DTYPE], MC * NT](uninitialized=True)
+    var fr_cache = InlineArray[Scalar[DTYPE], MC * NT](uninitialized=True)
     var dist_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
     var pb_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-    var bt1_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-    var bt2_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var bt_cache = InlineArray[Scalar[DTYPE], MC * NT](uninitialized=True)
+    # How many of the NT rows this contact actually has (`dim-1`). 0 for a
+    # frictionless (`condim="1"`) contact, which is one normal row and nothing
+    # else — the cone then degenerates to `T == 0` and the zone logic reduces
+    # to the one-sided normal constraint.
+    var nt_cache = InlineArray[Int, MC](fill=0)
     for c in range(nc):
         dist_cache[c] = rebind[Scalar[DTYPE]](
             solver[env, ws_c_dist_idx + c]
         )
         mu_cache[c] = rebind[Scalar[DTYPE]](solver[env, ws_mu_idx + c])
         D_n_cache[c] = rebind[Scalar[DTYPE]](solver[env, ws_D_n_idx + c])
-        D_f_cache[c] = rebind[Scalar[DTYPE]](solver[env, ws_D_f_idx + c])
         pb_cache[c] = rebind[Scalar[DTYPE]](
             solver[env, ws_pos_bias_idx + c]
         )
-        bt1_cache[c] = rebind[Scalar[DTYPE]](solver[env, ws_bt1_idx + c])
-        bt2_cache[c] = rebind[Scalar[DTYPE]](solver[env, ws_bt2_idx + c])
+        nt_cache[c] = Int(
+            rebind[Scalar[DTYPE]](solver[env, ws_ntc_idx + c])
+        )
+        for t in range(NT):
+            D_t_cache[c * NT + t] = rebind[Scalar[DTYPE]](
+                solver[env, ws_Dt_idx + t * MC + c]
+            )
+            fr_cache[c * NT + t] = rebind[Scalar[DTYPE]](
+                solver[env, ws_fr_idx + t * MC + c]
+            )
+            bt_cache[c * NT + t] = rebind[Scalar[DTYPE]](
+                solver[env, ws_bt_idx + t * MC + c]
+            )
         for i in range(NV):
             Jn_c[c * NV + i] = rebind[Scalar[DTYPE]](
                 solver[env, ws_J_n_idx + c * NV + i]
             )
-            Jt1_c[c * NV + i] = rebind[Scalar[DTYPE]](
-                solver[env, ws_Jt1_idx + c * NV + i]
-            )
-            Jt2_c[c * NV + i] = rebind[Scalar[DTYPE]](
-                solver[env, ws_Jt2_idx + c * NV + i]
-            )
+            for t in range(NT):
+                Jt_c[(c * NT + t) * NV + i] = rebind[Scalar[DTYPE]](
+                    solver[env, ws_Jt_idx + t * MC * NV + c * NV + i]
+                )
 
     # === Scalar rows: joint limits + dry-friction dofs ===
     # These used to be PGS post-passes that ran AFTER this solve, so the
@@ -1595,63 +1654,43 @@ def _newton_solve_env[
     )
 
     # === Mutable per-contact state: kept in InlineArrays, written to state buffer at end ===
+    # Tangential quantities are flat `[MC, NT]`, indexed `c*NT + t`.
+    comptime TN = MC * NT
     var fn_arr = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-    var ft1_arr = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-    var ft2_arr = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var ft_arr = InlineArray[Scalar[DTYPE], TN](fill=Scalar[DTYPE](0))
     var jar_n_arr = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-    var jar_t1_arr = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-    var jar_t2_arr = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var jar_t_arr = InlineArray[Scalar[DTYPE], TN](fill=Scalar[DTYPE](0))
     var cs_arr = InlineArray[Int, MC](uninitialized=True)
 
     # === Step 3: Compute initial jar and forces via 3-zone cone logic ===
     for c in range(nc):
+        var nt_c = nt_cache[c]
         if dist_cache[c] >= Scalar[DTYPE](0):
             fn_arr[c] = 0
-            ft1_arr[c] = 0
-            ft2_arr[c] = 0
             jar_n_arr[c] = 0
-            jar_t1_arr[c] = 0
-            jar_t2_arr[c] = 0
-            cs_arr[c] = 0
+            for t in range(NT):
+                ft_arr[c * NT + t] = 0
+                jar_t_arr[c * NT + t] = 0
+            cs_arr[c] = ELL_SATISFIED
             continue
 
         var jar_n: Scalar[DTYPE] = pb_cache[c]
-        var jar_t1: Scalar[DTYPE] = bt1_cache[c]
-        var jar_t2: Scalar[DTYPE] = bt2_cache[c]
+        for t in range(nt_c):
+            jar_t_arr[c * NT + t] = bt_cache[c * NT + t]
         for i in range(NV):
             var qa_i = qacc[i]
             jar_n += Jn_c[c * NV + i] * qa_i
-            jar_t1 += Jt1_c[c * NV + i] * qa_i
-            jar_t2 += Jt2_c[c * NV + i] * qa_i
+            for t in range(nt_c):
+                jar_t_arr[c * NT + t] += Jt_c[(c * NT + t) * NV + i] * qa_i
         jar_n_arr[c] = jar_n
-        jar_t1_arr[c] = jar_t1
-        jar_t2_arr[c] = jar_t2
 
-        var mu = mu_cache[c]
-        var D_n = D_n_cache[c]
-        var D_f = D_f_cache[c]
-        var T = sqrt(jar_t1 * jar_t1 + jar_t2 * jar_t2)
-        var T_safe = T
-        if T_safe < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-            T_safe = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-
-        if jar_n >= mu * T_safe:
-            fn_arr[c] = 0
-            ft1_arr[c] = 0
-            ft2_arr[c] = 0
-            cs_arr[c] = 0  # SATISFIED
-        elif mu * jar_n + T <= Scalar[DTYPE](0):
-            fn_arr[c] = -D_n * jar_n
-            ft1_arr[c] = -D_f * jar_t1
-            ft2_arr[c] = -D_f * jar_t2
-            cs_arr[c] = 1  # QUADRATIC
-        else:
-            var s = jar_n - mu * T_safe
-            var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
-            fn_arr[c] = -Dm * s
-            ft1_arr[c] = Dm * mu * s * jar_t1 / T_safe
-            ft2_arr[c] = Dm * mu * s * jar_t2 / T_safe
-            cs_arr[c] = 2  # CONE
+        var f_n_c = Scalar[DTYPE](0)
+        cs_arr[c] = ell_state_force[DTYPE, NT, TN](
+            nt_c, c * NT, jar_n, jar_t_arr,
+            mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
+            f_n_c, ft_arr,
+        )
+        fn_arr[c] = f_n_c
 
     # Scalar rows: same 3-zone logic, one dof each.
     for s in range(ns):
@@ -1688,81 +1727,13 @@ def _newton_solve_env[
                 continue
             for b in range(NV):
                 H[a * NV + b] += eq_D[e] * Ja * eq_J[e * NV + b]
-    for c in range(nc):
-        var cs = cs_arr[c]
-        if cs == 0:  # SATISFIED
-            continue
-
-        var mu = mu_cache[c]
-        var D_n = D_n_cache[c]
-        var D_f = D_f_cache[c]
-
-        if cs == 1:  # QUADRATIC: standard rank-1 updates
-            for i in range(NV):
-                for j in range(NV):
-                    H[i * NV + j] += (
-                        D_n * Jn_c[c * NV + i] * Jn_c[c * NV + j]
-                        + D_f * Jt1_c[c * NV + i] * Jt1_c[c * NV + j]
-                        + D_f * Jt2_c[c * NV + i] * Jt2_c[c * NV + j]
-                    )
-        else:  # CONE: cone Hessian (coupled normal+friction)
-            var jar_n = jar_n_arr[c]
-            var jar_t1 = jar_t1_arr[c]
-            var jar_t2 = jar_t2_arr[c]
-            var T_sq = jar_t1 * jar_t1 + jar_t2 * jar_t2
-            var T = sqrt(T_sq)
-            var T_safe = T
-            if T_safe < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                T_safe = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-            var s = jar_n - mu * T_safe
-            var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
-            var h_nt1 = -Dm * mu * jar_t1 / T_safe
-            var h_nt2 = -Dm * mu * jar_t2 / T_safe
-            var T2_safe = T_safe * T_safe
-            var h_t1t1 = (
-                Dm * mu * mu * jar_t1 * jar_t1 / T2_safe
-                + Dm
-                * mu
-                * s
-                / T_safe
-                * (jar_t1 * jar_t1 / T2_safe - Scalar[DTYPE](1.0))
-            )
-            var h_t2t2 = (
-                Dm * mu * mu * jar_t2 * jar_t2 / T2_safe
-                + Dm
-                * mu
-                * s
-                / T_safe
-                * (jar_t2 * jar_t2 / T2_safe - Scalar[DTYPE](1.0))
-            )
-            var h_t1t2 = (
-                (Dm * mu * mu + Dm * mu * s / T_safe)
-                * jar_t1
-                * jar_t2
-                / T2_safe
-            )
-            for i in range(NV):
-                for j in range(NV):
-                    H[i * NV + j] += (
-                        Dm * Jn_c[c * NV + i] * Jn_c[c * NV + j]
-                        + h_nt1
-                        * (
-                            Jn_c[c * NV + i] * Jt1_c[c * NV + j]
-                            + Jt1_c[c * NV + i] * Jn_c[c * NV + j]
-                        )
-                        + h_nt2
-                        * (
-                            Jn_c[c * NV + i] * Jt2_c[c * NV + j]
-                            + Jt2_c[c * NV + i] * Jn_c[c * NV + j]
-                        )
-                        + h_t1t1 * Jt1_c[c * NV + i] * Jt1_c[c * NV + j]
-                        + h_t2t2 * Jt2_c[c * NV + i] * Jt2_c[c * NV + j]
-                        + h_t1t2
-                        * (
-                            Jt1_c[c * NV + i] * Jt2_c[c * NV + j]
-                            + Jt2_c[c * NV + i] * Jt1_c[c * NV + j]
-                        )
-                    )
+    comptime HN = (NT + 1) * (NT + 1)
+    ell_add_contact_hessian[
+        DTYPE, NV, MC, NT, TN, V_SIZE, M_SIZE, HN
+    ](
+        nc, cs_arr, nt_cache, Jn_c, Jt_c, jar_n_arr, jar_t_arr,
+        mu_cache, D_n_cache, D_t_cache, fr_cache, H,
+    )
 
     # Cholesky factorize H (with regularization on rank deficiency)
     var chol_ok_gpu = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
@@ -1777,14 +1748,13 @@ def _newton_solve_env[
     for i in range(NV):
         qfrc_c[i] = Scalar[DTYPE](0)
     for c in range(nc):
-        if cs_arr[c] == 0:
+        if cs_arr[c] == ELL_SATISFIED:
             continue
         for i in range(NV):
-            qfrc_c[i] += (
-                Jn_c[c * NV + i] * fn_arr[c]
-                + Jt1_c[c * NV + i] * ft1_arr[c]
-                + Jt2_c[c * NV + i] * ft2_arr[c]
-            )
+            var acc = Jn_c[c * NV + i] * fn_arr[c]
+            for t in range(nt_cache[c]):
+                acc += Jt_c[(c * NT + t) * NV + i] * ft_arr[c * NT + t]
+            qfrc_c[i] += acc
     for s in range(ns):
         qfrc_c[sr_dof[s]] += sr_sign[s] * sr_f[s]
     for e in range(neq_rows):
@@ -1822,25 +1792,23 @@ def _newton_solve_env[
 
         # Precompute J * search per contact (using cached Jacobians — no workspace access)
         var Js_n = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var Js_t1 = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
-        var Js_t2 = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+        var Js_t = InlineArray[Scalar[DTYPE], TN](fill=Scalar[DTYPE](0))
         for c in range(nc):
+            var nt_c = nt_cache[c]
             if dist_cache[c] >= Scalar[DTYPE](0):
                 Js_n[c] = 0
-                Js_t1[c] = 0
-                Js_t2[c] = 0
+                for t in range(NT):
+                    Js_t[c * NT + t] = 0
                 continue
             var js_n: Scalar[DTYPE] = 0
-            var js_t1: Scalar[DTYPE] = 0
-            var js_t2: Scalar[DTYPE] = 0
+            for t in range(NT):
+                Js_t[c * NT + t] = 0
             for i in range(NV):
                 var s_i = search[i]
                 js_n += Jn_c[c * NV + i] * s_i
-                js_t1 += Jt1_c[c * NV + i] * s_i
-                js_t2 += Jt2_c[c * NV + i] * s_i
+                for t in range(nt_c):
+                    Js_t[c * NT + t] += Jt_c[(c * NT + t) * NV + i] * s_i
             Js_n[c] = js_n
-            Js_t1[c] = js_t1
-            Js_t2[c] = js_t2
         for s in range(ns):
             sr_Js[s] = sr_sign[s] * search[sr_dof[s]]
         for e in range(neq_rows):
@@ -1863,37 +1831,12 @@ def _newton_solve_env[
         for c in range(nc):
             if dist_cache[c] >= Scalar[DTYPE](0):
                 continue
-            var N0 = jar_n_arr[c]
-            var T10 = jar_t1_arr[c]
-            var T20 = jar_t2_arr[c]
-            var mu = mu_cache[c]
-            var D_n = D_n_cache[c]
-            var D_f = D_f_cache[c]
-            var T0_sq = T10 * T10 + T20 * T20
-            var T0 = sqrt(T0_sq)
-            var T0_safe = T0
-            if T0_safe < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                T0_safe = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-            if N0 >= Scalar[DTYPE](0) and N0 * N0 >= mu * mu * T0_sq:
-                pass  # SATISFIED
-            elif mu * N0 + T0 <= Scalar[DTYPE](0):
-                # QUADRATIC
-                p0_d1 += D_n * N0 * Js_n[c] + D_f * (
-                    T10 * Js_t1[c] + T20 * Js_t2[c]
-                )
-                p0_d2 += D_n * Js_n[c] * Js_n[c] + D_f * (
-                    Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
-                )
-            else:
-                # CONE
-                var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
-                var s0 = N0 - mu * T0
-                var dTda = (T10 * Js_t1[c] + T20 * Js_t2[c]) / T0_safe
-                var dsda = Js_n[c] - mu * dTda
-                p0_d1 += Dm * s0 * dsda
-                var Jv_f_sq = Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
-                var d2sda2 = -mu * (Jv_f_sq - dTda * dTda) / T0_safe
-                p0_d2 += Dm * (dsda * dsda + s0 * d2sda2)
+            ell_line_deriv[DTYPE, NT, TN](
+                nt_cache[c], c * NT, Scalar[DTYPE](0),
+                jar_n_arr[c], jar_t_arr, Js_n[c], Js_t,
+                mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
+                p0_d1, p0_d2,
+            )
         # Scalar rows. d(cost)/dalpha = -f*Jv in EVERY state, and the second
         # derivative is D*Jv^2 only where the row is quadratic.
         for s in range(ns):
@@ -1925,35 +1868,12 @@ def _newton_solve_env[
             for c in range(nc):
                 if dist_cache[c] >= Scalar[DTYPE](0):
                     continue
-                var tN = jar_n_arr[c] + p1_alpha * Js_n[c]
-                var tT1 = jar_t1_arr[c] + p1_alpha * Js_t1[c]
-                var tT2 = jar_t2_arr[c] + p1_alpha * Js_t2[c]
-                var mu = mu_cache[c]
-                var D_n = D_n_cache[c]
-                var D_f = D_f_cache[c]
-                var tT_sq = tT1 * tT1 + tT2 * tT2
-                var tT = sqrt(tT_sq)
-                var tT_s = tT
-                if tT_s < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                    tT_s = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-                if tN >= Scalar[DTYPE](0) and tN * tN >= mu * mu * tT_sq:
-                    pass
-                elif mu * tN + tT <= Scalar[DTYPE](0):
-                    p1_d1 += D_n * tN * Js_n[c] + D_f * (
-                        tT1 * Js_t1[c] + tT2 * Js_t2[c]
-                    )
-                    p1_d2_v += D_n * Js_n[c] * Js_n[c] + D_f * (
-                        Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
-                    )
-                else:
-                    var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
-                    var s_v = tN - mu * tT
-                    var dTda = (tT1 * Js_t1[c] + tT2 * Js_t2[c]) / tT_s
-                    var dsda = Js_n[c] - mu * dTda
-                    p1_d1 += Dm * s_v * dsda
-                    var Jvf = Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
-                    var d2s = -mu * (Jvf - dTda * dTda) / tT_s
-                    p1_d2_v += Dm * (dsda * dsda + s_v * d2s)
+                ell_line_deriv[DTYPE, NT, TN](
+                    nt_cache[c], c * NT, p1_alpha,
+                    jar_n_arr[c], jar_t_arr, Js_n[c], Js_t,
+                    mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
+                    p1_d1, p1_d2_v,
+                )
             for s in range(ns):
                 var tj = sr_jar[s] + p1_alpha * sr_Js[s]
                 var tst = scalar_row_state[DTYPE](
@@ -1994,42 +1914,12 @@ def _newton_solve_env[
                     for c in range(nc):
                         if dist_cache[c] >= Scalar[DTYPE](0):
                             continue
-                        var tN = jar_n_arr[c] + p1_alpha * Js_n[c]
-                        var tT1 = jar_t1_arr[c] + p1_alpha * Js_t1[c]
-                        var tT2 = jar_t2_arr[c] + p1_alpha * Js_t2[c]
-                        var mu = mu_cache[c]
-                        var D_n = D_n_cache[c]
-                        var D_f = D_f_cache[c]
-                        var tT_sq = tT1 * tT1 + tT2 * tT2
-                        var tT = sqrt(tT_sq)
-                        var tT_s = tT
-                        if tT_s < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                            tT_s = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-                        if (
-                            tN >= Scalar[DTYPE](0)
-                            and tN * tN >= mu * mu * tT_sq
-                        ):
-                            pass
-                        elif mu * tN + tT <= Scalar[DTYPE](0):
-                            p1_d1 += D_n * tN * Js_n[c] + D_f * (
-                                tT1 * Js_t1[c] + tT2 * Js_t2[c]
-                            )
-                            p1_d2_v += D_n * Js_n[c] * Js_n[c] + D_f * (
-                                Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
-                            )
-                        else:
-                            var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
-                            var s_v = tN - mu * tT
-                            var dTda = (
-                                tT1 * Js_t1[c] + tT2 * Js_t2[c]
-                            ) / tT_s
-                            var dsda = Js_n[c] - mu * dTda
-                            p1_d1 += Dm * s_v * dsda
-                            var Jvf = (
-                                Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
-                            )
-                            var d2s = -mu * (Jvf - dTda * dTda) / tT_s
-                            p1_d2_v += Dm * (dsda * dsda + s_v * d2s)
+                        ell_line_deriv[DTYPE, NT, TN](
+                            nt_cache[c], c * NT, p1_alpha,
+                            jar_n_arr[c], jar_t_arr, Js_n[c], Js_t,
+                            mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
+                            p1_d1, p1_d2_v,
+                        )
                     for s in range(ns):
                         var tj = sr_jar[s] + p1_alpha * sr_Js[s]
                         var tst = scalar_row_state[DTYPE](
@@ -2060,39 +1950,22 @@ def _newton_solve_env[
                     for _ in range(LINESEARCH_ITER):
                         var mid = (p1_alpha + p2_alpha) * Scalar[DTYPE](0.5)
                         var mid_d1 = ga * mid + gb
+                        # `mid_d2` is written and discarded — the bisection
+                        # only brackets on the sign of `d1`. Kept so the
+                        # bracketing evaluates the SAME function as the two
+                        # Newton phases above rather than a hand-trimmed copy
+                        # of it, which is how the four inlined versions of
+                        # this block used to differ from each other.
+                        var mid_d2 = Scalar[DTYPE](0)
                         for c in range(nc):
                             if dist_cache[c] >= Scalar[DTYPE](0):
                                 continue
-                            var tN = jar_n_arr[c] + mid * Js_n[c]
-                            var tT1 = jar_t1_arr[c] + mid * Js_t1[c]
-                            var tT2 = jar_t2_arr[c] + mid * Js_t2[c]
-                            var mu = mu_cache[c]
-                            var D_n = D_n_cache[c]
-                            var D_f = D_f_cache[c]
-                            var tT_sq = tT1 * tT1 + tT2 * tT2
-                            var tT = sqrt(tT_sq)
-                            var tT_s = tT
-                            if tT_s < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                                tT_s = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-                            if (
-                                tN >= Scalar[DTYPE](0)
-                                and tN * tN >= mu * mu * tT_sq
-                            ):
-                                pass
-                            elif mu * tN + tT <= Scalar[DTYPE](0):
-                                mid_d1 += D_n * tN * Js_n[c] + D_f * (
-                                    tT1 * Js_t1[c] + tT2 * Js_t2[c]
-                                )
-                            else:
-                                var Dm = D_n / (
-                                    Scalar[DTYPE](1.0) + mu * mu
-                                )
-                                var s_v = tN - mu * tT
-                                var dTda = (
-                                    tT1 * Js_t1[c] + tT2 * Js_t2[c]
-                                ) / tT_s
-                                var dsda = Js_n[c] - mu * dTda
-                                mid_d1 += Dm * s_v * dsda
+                            ell_line_deriv[DTYPE, NT, TN](
+                                nt_cache[c], c * NT, mid,
+                                jar_n_arr[c], jar_t_arr, Js_n[c], Js_t,
+                                mu_cache[c], D_n_cache[c], D_t_cache,
+                                fr_cache, mid_d1, mid_d2,
+                            )
                         for s in range(ns):
                             var tj = sr_jar[s] + mid * sr_Js[s]
                             var tst = scalar_row_state[DTYPE](
@@ -2143,42 +2016,24 @@ def _newton_solve_env[
             if dist_cache[c] >= Scalar[DTYPE](0):
                 continue
             var old_cs = cs_arr[c]
+            var nt_c = nt_cache[c]
             var jar_n: Scalar[DTYPE] = pb_cache[c]
-            var jar_t1: Scalar[DTYPE] = bt1_cache[c]
-            var jar_t2: Scalar[DTYPE] = bt2_cache[c]
+            for t in range(nt_c):
+                jar_t_arr[c * NT + t] = bt_cache[c * NT + t]
             for i in range(NV):
                 var qa_i = qacc[i]
                 jar_n += Jn_c[c * NV + i] * qa_i
-                jar_t1 += Jt1_c[c * NV + i] * qa_i
-                jar_t2 += Jt2_c[c * NV + i] * qa_i
+                for t in range(nt_c):
+                    jar_t_arr[c * NT + t] += Jt_c[(c * NT + t) * NV + i] * qa_i
             jar_n_arr[c] = jar_n
-            jar_t1_arr[c] = jar_t1
-            jar_t2_arr[c] = jar_t2
 
-            var mu = mu_cache[c]
-            var D_n = D_n_cache[c]
-            var D_f = D_f_cache[c]
-            var T = sqrt(jar_t1 * jar_t1 + jar_t2 * jar_t2)
-            var T_safe = T
-            if T_safe < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                T_safe = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-            if jar_n >= mu * T_safe:
-                fn_arr[c] = 0
-                ft1_arr[c] = 0
-                ft2_arr[c] = 0
-                cs_arr[c] = 0
-            elif mu * jar_n + T <= Scalar[DTYPE](0):
-                fn_arr[c] = -D_n * jar_n
-                ft1_arr[c] = -D_f * jar_t1
-                ft2_arr[c] = -D_f * jar_t2
-                cs_arr[c] = 1
-            else:
-                var s = jar_n - mu * T_safe
-                var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
-                fn_arr[c] = -Dm * s
-                ft1_arr[c] = Dm * mu * s * jar_t1 / T_safe
-                ft2_arr[c] = Dm * mu * s * jar_t2 / T_safe
-                cs_arr[c] = 2
+            var f_n_c = Scalar[DTYPE](0)
+            cs_arr[c] = ell_state_force[DTYPE, NT, TN](
+                nt_c, c * NT, jar_n, jar_t_arr,
+                mu_cache[c], D_n_cache[c], D_t_cache, fr_cache,
+                f_n_c, ft_arr,
+            )
+            fn_arr[c] = f_n_c
             if cs_arr[c] != old_cs:
                 state_changed = True
         for s in range(ns):
@@ -2205,14 +2060,13 @@ def _newton_solve_env[
         for i in range(NV):
             qfrc_c[i] = Scalar[DTYPE](0)
         for c in range(nc):
-            if cs_arr[c] == 0:
+            if cs_arr[c] == ELL_SATISFIED:
                 continue
             for i in range(NV):
-                qfrc_c[i] += (
-                    Jn_c[c * NV + i] * fn_arr[c]
-                    + Jt1_c[c * NV + i] * ft1_arr[c]
-                    + Jt2_c[c * NV + i] * ft2_arr[c]
-                )
+                var acc = Jn_c[c * NV + i] * fn_arr[c]
+                for t in range(nt_cache[c]):
+                    acc += Jt_c[(c * NT + t) * NV + i] * ft_arr[c * NT + t]
+                qfrc_c[i] += acc
         for s in range(ns):
             qfrc_c[sr_dof[s]] += sr_sign[s] * sr_f[s]
         for e in range(neq_rows):
@@ -2236,86 +2090,12 @@ def _newton_solve_env[
                         continue
                     for b in range(NV):
                         H[a * NV + b] += eq_D[e] * Ja * eq_J[e * NV + b]
-            for c in range(nc):
-                var cs = cs_arr[c]
-                if cs == 0:
-                    continue
-                var mu = mu_cache[c]
-                var D_n = D_n_cache[c]
-                var D_f = D_f_cache[c]
-                if cs == 1:
-                    for i in range(NV):
-                        for j in range(NV):
-                            H[i * NV + j] += (
-                                D_n * Jn_c[c * NV + i] * Jn_c[c * NV + j]
-                                + D_f
-                                * Jt1_c[c * NV + i]
-                                * Jt1_c[c * NV + j]
-                                + D_f
-                                * Jt2_c[c * NV + i]
-                                * Jt2_c[c * NV + j]
-                            )
-                else:
-                    var jar_n = jar_n_arr[c]
-                    var jar_t1 = jar_t1_arr[c]
-                    var jar_t2 = jar_t2_arr[c]
-                    var T_sq = jar_t1 * jar_t1 + jar_t2 * jar_t2
-                    var T_s = sqrt(T_sq)
-                    if T_s < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                        T_s = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-                    var s = jar_n - mu * T_s
-                    var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
-                    var h_nt1 = -Dm * mu * jar_t1 / T_s
-                    var h_nt2 = -Dm * mu * jar_t2 / T_s
-                    var T2_s = T_s * T_s
-                    var h_t1t1 = (
-                        Dm * mu * mu * jar_t1 * jar_t1 / T2_s
-                        + Dm
-                        * mu
-                        * s
-                        / T_s
-                        * (jar_t1 * jar_t1 / T2_s - Scalar[DTYPE](1.0))
-                    )
-                    var h_t2t2 = (
-                        Dm * mu * mu * jar_t2 * jar_t2 / T2_s
-                        + Dm
-                        * mu
-                        * s
-                        / T_s
-                        * (jar_t2 * jar_t2 / T2_s - Scalar[DTYPE](1.0))
-                    )
-                    var h_t1t2 = (
-                        (Dm * mu * mu + Dm * mu * s / T_s)
-                        * jar_t1
-                        * jar_t2
-                        / T2_s
-                    )
-                    for i in range(NV):
-                        for j in range(NV):
-                            H[i * NV + j] += (
-                                Dm * Jn_c[c * NV + i] * Jn_c[c * NV + j]
-                                + h_nt1
-                                * (
-                                    Jn_c[c * NV + i] * Jt1_c[c * NV + j]
-                                    + Jt1_c[c * NV + i] * Jn_c[c * NV + j]
-                                )
-                                + h_nt2
-                                * (
-                                    Jn_c[c * NV + i] * Jt2_c[c * NV + j]
-                                    + Jt2_c[c * NV + i] * Jn_c[c * NV + j]
-                                )
-                                + h_t1t1
-                                * Jt1_c[c * NV + i]
-                                * Jt1_c[c * NV + j]
-                                + h_t2t2
-                                * Jt2_c[c * NV + i]
-                                * Jt2_c[c * NV + j]
-                                + h_t1t2
-                                * (
-                                    Jt1_c[c * NV + i] * Jt2_c[c * NV + j]
-                                    + Jt2_c[c * NV + i] * Jt1_c[c * NV + j]
-                                )
-                            )
+            ell_add_contact_hessian[
+                DTYPE, NV, MC, NT, TN, V_SIZE, M_SIZE, HN
+            ](
+                nc, cs_arr, nt_cache, Jn_c, Jt_c, jar_n_arr, jar_t_arr,
+                mu_cache, D_n_cache, D_t_cache, fr_cache, H,
+            )
             var chol_ok_gpu2 = chol_factor_inline[DTYPE, NV, M_SIZE](
                 H, L_chol
             )
@@ -2340,16 +2120,17 @@ def _newton_solve_env[
     # so there is no runtime test to get wrong.
     comptime if NOSLIP_ITER > 0:
         noslip_elliptic[
-            DTYPE, NV, MC, V_SIZE, MAXS, MAXEQ, BATCH, NOSLIP_ITER
+            DTYPE, NV, MC, NT, TN, V_SIZE, MAXS, MAXEQ, BATCH, NOSLIP_ITER
         ](
             env,
             nc,
             ns,
             neq_rows,
             m_inv,
-            Jn_c, Jt1_c, Jt2_c,
-            mu_cache, D_n_cache, D_f_cache,
-            pb_cache, bt1_cache, bt2_cache,
+            nt_cache,
+            Jn_c, Jt_c,
+            fr_cache, D_n_cache, D_t_cache,
+            pb_cache, bt_cache,
             sr_dof, sr_kind, sr_sign, sr_R, sr_bias, sr_floss,
             eq_J, eq_D, eq_bias,
             qacc_sm,
@@ -2360,8 +2141,8 @@ def _newton_solve_env[
             # models set 0; the constant is only the absent-attribute default.
             rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NOSLIP_TOLERANCE]),
             qacc,
-            fn_arr, ft1_arr, ft2_arr,
-            jar_n_arr, jar_t1_arr, jar_t2_arr,
+            fn_arr, ft_arr,
+            jar_n_arr, jar_t_arr,
             sr_f, sr_jar,
             eq_f, eq_jar,
             qfrc_c,
@@ -2371,12 +2152,29 @@ def _newton_solve_env[
     for i in range(NV):
         qacc_constrained[env, i] = qacc[i]
 
-    # Write forces to state buffer for display/warmstart (directly from InlineArrays)
+    # Write forces to state buffer for display/warmstart (directly from
+    # InlineArrays).
+    #
+    # ⚠ THE TORSIONAL AND ROLLING SLOTS ARE WRITTEN NOW. `rne_post` and
+    # `cfrc_ext_gpu` have READ `CONTACT_IDX_FORCE_TORSION`/`_ROLL1`/`_ROLL2`
+    # since they were added, and NOTHING wrote them — so a condim-4 or -6
+    # contact contributed its normal and slide forces to `cfrc_ext` and
+    # silently dropped its torque. The pyramidal path still does not write
+    # them; its forces live on edge rows, not per-direction ones, so
+    # recovering them there is a separate change.
     for c in range(nc):
         var c_off = c * CONTACT_SIZE
         contacts[env, c_off + CONTACT_IDX_FORCE_N] = fn_arr[c]
-        contacts[env, c_off + CONTACT_IDX_FORCE_T1] = ft1_arr[c]
-        contacts[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_arr[c]
+        contacts[env, c_off + CONTACT_IDX_FORCE_T1] = 0
+        contacts[env, c_off + CONTACT_IDX_FORCE_T2] = 0
+        contacts[env, c_off + CONTACT_IDX_FORCE_TORSION] = 0
+        contacts[env, c_off + CONTACT_IDX_FORCE_ROLL1] = 0
+        contacts[env, c_off + CONTACT_IDX_FORCE_ROLL2] = 0
+        for t in range(nt_cache[c]):
+            var slot = CONTACT_IDX_FORCE_T1 + t
+            if t >= 2:
+                slot = CONTACT_IDX_FORCE_TORSION + (t - 2)
+            contacts[env, c_off + slot] = ft_arr[c * NT + t]
 
     # NOTHING RUNS AFTER THE SOLVE ON THIS PATH ANY MORE. Joint limits,
     # dry-friction dofs, tendon equalities (`build_scalar_rows` /
@@ -2782,27 +2580,19 @@ def _newton_blocked_fields_kernel[
     # base is 0 in the fields solver tensor)
     comptime ws_J_n_idx = 15 * MC
 
-    # Primal-specific offsets (after common normal block)
-    comptime PRIMAL_START = 15 * MC + 2 * MC * NV
-    comptime ws_Jt1_idx = PRIMAL_START + 0 * MC * NV
-    comptime ws_Jt2_idx = PRIMAL_START + 1 * MC * NV
-    comptime ws_MinvJt1_idx = PRIMAL_START + 2 * MC * NV
-    comptime ws_MinvJt2_idx = PRIMAL_START + 3 * MC * NV
-    comptime SC = PRIMAL_START + 4 * MC * NV
-    comptime ws_mu_idx = SC + 0 * MC
-    comptime ws_D_n_idx = SC + 1 * MC
-    comptime ws_D_f_idx = SC + 2 * MC
-    comptime ws_bt1_idx = SC + 3 * MC
-    comptime ws_bt2_idx = SC + 4 * MC
-    comptime CVS = SC + 5 * MC
-    comptime ws_jar_n_idx = CVS + 0 * MC
-    comptime ws_jar_t1_idx = CVS + 1 * MC
-    comptime ws_jar_t2_idx = CVS + 2 * MC
-    comptime ws_fn_idx = CVS + 3 * MC
-    comptime ws_ft1_idx = CVS + 4 * MC
-    comptime ws_ft2_idx = CVS + 5 * MC
-    comptime ws_cstate_idx = CVS + 6 * MC
-    comptime pyr_sc = ws_Jt1_idx + 2 * (MAX_CONDIM - 1) * MC * NV
+    # Edge-list base, from `solver/elliptic_layout` — the same base both cones
+    # start their Jacobian region at (that module owns the arithmetic; only
+    # what follows it differs by cone).
+    #
+    # ⚠ THIS KERNEL IS PYRAMIDAL ONLY. `solve_newton` reaches it exclusively
+    # under `comptime if CONE_TYPE == ConeType.PYRAMIDAL` — Metal cannot fit
+    # its threadgroup memory and the elliptic cone has no cooperative port —
+    # so the elliptic scalar slots are not zeroed here at all. They were
+    # before, and it was dead work: the producer's elliptic branch is not
+    # reached on this path either.
+    comptime NE_ZERO = 2 * (MAX_CONDIM - 1)
+    comptime ws_Jt_idx = ell_jt[MC, NV]()
+    comptime pyr_sc = ws_Jt_idx + NE_ZERO * MC * NV
 
     # === PARALLEL: Initialize common normal workspace (one thread/contact) ===
     if valid_env:
@@ -2810,23 +2600,14 @@ def _newton_blocked_fields_kernel[
             DTYPE, NV, MAX_CONTACTS, BATCH, SOLVER_WS
         ](env, contact_tid, solver)
         if contact_tid < MC:
-            for d in range(NV):
-                solver[env, ws_Jt1_idx + contact_tid * NV + d] = 0
-                solver[env, ws_Jt2_idx + contact_tid * NV + d] = 0
-                solver[env, ws_MinvJt1_idx + contact_tid * NV + d] = 0
-                solver[env, ws_MinvJt2_idx + contact_tid * NV + d] = 0
-            solver[env, ws_mu_idx + contact_tid] = 0
-            solver[env, ws_D_n_idx + contact_tid] = 0
-            solver[env, ws_D_f_idx + contact_tid] = 0
-            solver[env, ws_bt1_idx + contact_tid] = 0
-            solver[env, ws_bt2_idx + contact_tid] = 0
-            solver[env, ws_jar_n_idx + contact_tid] = 0
-            solver[env, ws_jar_t1_idx + contact_tid] = 0
-            solver[env, ws_jar_t2_idx + contact_tid] = 0
-            solver[env, ws_fn_idx + contact_tid] = 0
-            solver[env, ws_ft1_idx + contact_tid] = 0
-            solver[env, ws_ft2_idx + contact_tid] = 0
-            solver[env, ws_cstate_idx + contact_tid] = 0
+            # ⚠ ALL `2*(dim-1)` EDGE BLOCKS, not the four this used to zero.
+            # The producer re-zeros every edge of a non-penetrating contact
+            # itself, which is the only reason the short version was survivable.
+            for e in range(NE_ZERO):
+                for d in range(NV):
+                    solver[
+                        env, ws_Jt_idx + e * MC * NV + contact_tid * NV + d
+                    ] = 0
 
     # === Read metadata (all threads; legacy `dt` read dropped — unused) ===
     var nc = 0
@@ -2907,9 +2688,7 @@ def _newton_blocked_fields_kernel[
             CONE_TYPE, MAX_CONDIM,
         ](
             env, contact_tid, nc, qvel, subtree_com, contacts, joints, bodies,
-            mmeta, cdof, solver, B_damp, impratio, K_spring, ws_Jt1_idx,
-            ws_Jt2_idx, ws_mu_idx, ws_D_n_idx, ws_D_f_idx, ws_bt1_idx,
-            ws_bt2_idx,
+            mmeta, cdof, solver, B_damp, impratio, K_spring,
         )
 
     barrier()
@@ -3116,7 +2895,7 @@ def _newton_blocked_fields_kernel[
                 var idx = c * NE + e
                 for i in range(NV):
                     Je_sh[idx * NV + i] = rebind[Scalar[DTYPE]](
-                        solver[env, ws_Jt1_idx + e * MC * NV + c * NV + i]
+                        solver[env, ws_Jt_idx + e * MC * NV + c * NV + i]
                     )
                 De_sh[idx] = rebind[Scalar[DTYPE]](
                     solver[env, pyr_sc + e * MC + c]
