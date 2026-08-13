@@ -1089,3 +1089,172 @@ def prop_pose_accepted(qpos, task_name='reach_duplo_features', seed=0):
     p.forward()
     bad = task._prop_placer._has_collisions_with_prop(p, task._prop)
     return (not bool(bad), int(p.data.ncon))
+
+
+# -- the generic task layer --------------------------------------------------
+#
+# `reach_state` / `lift_state` / `reach_duplo_state` above each hard-code their
+# task's observable names, which was right while there were three tasks and is
+# not right for thirteen. This does the same job for any of them.
+
+def manip_obs_order(task_name, seed=0):
+    """`observation_spec()`'s key order — what a policy sees when the dict is
+    flattened, and the order a Mojo `custom_extract_obs_cpu` must reproduce.
+
+    ⚠ THIS IS COMPOSER'S ORDER AND IT IS NOT DECLARATION ORDER: task
+    observables first, then each entity in ATTACHMENT order, alphabetically
+    within an entity. Read off the real env rather than transcribed, because
+    every hand-written version of it so far has been wrong at least once.
+    """
+    _bootstrap()
+    return list(_load(task_name, seed=seed).observation_spec().keys())
+
+
+def manip_state(task_name, qpos, qvel, ctrl=None, target_height=None, seed=0):
+    """Evaluate ANY manipulation `_features` task at an injected state.
+
+    Returns `{'reward', 'ncon', 'nefc', 'flat', <observable name>: [...]}`.
+
+    ⚠ THE OBSERVABLE MAP IS `task.observables`, COMPOSER'S OWN — it merges
+    every attached entity's `as_dict()` with `task_observables`, so a task that
+    adds a prop, a pedestal or a `desired_order` needs nothing here. Only the
+    ORDER comes from `observation_spec()`; the map's own order is entities
+    first, which is not it.
+
+    ⚠ `mj_forward` fills `sensordata`, so any acceleration-stage observable
+    (`joints_torque`) is evaluated AT THIS STATE. A Mojo side must produce
+    `cfrc_int` at the same state — one substep FROM here — not after a full
+    control step. Same trap as `reach_state`; see its docstring.
+
+    ⚠ `target_height` IS EPISODE STATE for the `Lift` tasks and does not exist
+    until `initialize_episode` has run. A caller that cares about the reward
+    passes the same value it gave the Mojo side.
+    """
+    _bootstrap()
+    import numpy as np
+    env = _load(task_name, seed=seed)
+    task, p = env.task, env.physics
+    p.data.qpos[:] = np.asarray(qpos, dtype=float)
+    p.data.qvel[:] = np.asarray(qvel, dtype=float)
+    p.data.ctrl[:] = 0.0 if ctrl is None else np.asarray(ctrl, dtype=float)
+    p.forward()
+    if target_height is not None:
+        task._target_height = float(target_height)
+    elif hasattr(task, '_get_height_of_lowest_vertex') and not hasattr(
+            task, '_target_height'):
+        task._target_height = 0.0
+    rs = np.random.RandomState(0)
+    obs = {k: v for k, v in task.observables.items() if v.enabled}
+    out = {'reward': float(task.get_reward(p)),
+           'ncon': int(p.data.ncon),
+           'nefc': int(p.data.nefc),
+           'flat': []}
+    if hasattr(task, '_get_height_of_lowest_vertex'):
+        out['lowest_vertex_z'] = float(task._get_height_of_lowest_vertex(p))
+        out['target_height'] = float(task._target_height)
+    for name in manip_obs_order(task_name, seed=seed):
+        v = np.asarray(obs[name](p, rs), dtype=float).ravel()
+        out[name] = list(v)
+        out['flat'].extend(float(x) for x in v)
+    return out
+
+
+def manip_robot_indices(task_name, seed=0):
+    """The element ids the ROBOT half of every config hardcodes.
+
+    ⚠⚠ `site_base` IS PER TASK. The Jaco's 9 sites are consecutive but start
+    after the TASK's own worldbody sites, and that count is 3 or 2 depending on
+    whether the task put its target site on the arena or on a prop. Assuming it
+    read a brick's `bounding_box` as the pinch site on `reach_duplo`; see
+    `manipulation_obs`. Derived here from `joint_1_site` so a gate asserts it
+    rather than inherits it.
+    """
+    _bootstrap()
+    import mujoco
+    m = model(task_name, seed=seed)
+    env = _load(task_name, seed=seed)
+    task, p = env.task, env.physics
+    sid = lambda n: mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, n)
+    return {
+        'site_base': int(sid('jaco_arm/joint_1_site')),
+        'pinch_site': int(p.bind(task._hand.tool_center_point).element_id),
+        'pinch_body': int(m.site_bodyid[
+            p.bind(task._hand.tool_center_point).element_id]),
+        'torque_sites': [int(m.sensor_objid[i]) for i in range(m.nsensor)
+                         if int(m.sensor_type[i]) == 5],
+        'torque_bodies': [int(m.site_bodyid[m.sensor_objid[i]])
+                          for i in range(m.nsensor)
+                          if int(m.sensor_type[i]) == 5],
+        'nq': int(m.nq), 'nv': int(m.nv), 'nbody': int(m.nbody),
+        'ngeom': int(m.ngeom), 'nsite': int(m.nsite),
+    }
+
+
+def manip_prop_indices(task_name, prop_prefix, seed=0):
+    """The element ids the PROP half of a config hardcodes, by name prefix.
+
+    `prop_prefix` is the entity's namespace in the baked model —
+    `duplo2x4/` for a Duplo, `unnamed_model/` for a `props.Primitive`. Bricks
+    in a multi-prop task get `duplo2x4/`, `duplo2x4_2/`, ... so the prefix is
+    what selects one.
+
+    ⚠ `frame_objtype` MATTERS. `props.Primitive` puts its `framepos`/
+    `framequat`/`framelinvel`/`frameangvel` sensors on a GEOM; the Duplo puts
+    them on the `bounding_box` SITE, 11.9 mm above the body origin. The Mojo
+    side has a separate entry point per case and reading the wrong one is a
+    small plausible offset, not a failure.
+    """
+    _bootstrap()
+    import mujoco
+    m = model(task_name, seed=seed)
+    name = lambda o, i: (mujoco.mj_id2name(m, o, i) or '')
+    fp = None
+    for i in range(m.nsensor):
+        n = name(mujoco.mjtObj.mjOBJ_SENSOR, i)
+        if n == prop_prefix + 'position':
+            fp = i
+    if fp is None:
+        raise ValueError('no `{}position` sensor in {!r}'
+                         .format(prop_prefix, task_name))
+    geoms = [g for g in range(m.ngeom)
+             if name(mujoco.mjtObj.mjOBJ_GEOM, g).startswith(prop_prefix)]
+    body = int(m.geom_bodyid[geoms[0]])
+    jnt = [j for j in range(m.njnt) if int(m.jnt_bodyid[j]) == body]
+    verts = sorted(s for s in range(m.nsite)
+                   if name(mujoco.mjtObj.mjOBJ_SITE, s)
+                   .startswith(prop_prefix + 'vertex_'))
+    return {
+        'body': body,
+        'frame_elem': int(m.sensor_objid[fp]),
+        'frame_objtype': int(m.sensor_objtype[fp]),
+        'n_geoms': len(geoms),
+        # Geoms the compiler-default (1, 1) arm and ground can actually touch.
+        'n_collidable_geoms': len([g for g in geoms
+                                   if (int(m.geom_contype[g]) & 1)
+                                   or (int(m.geom_conaffinity[g]) & 1)]),
+        'qposadr': int(m.jnt_qposadr[jnt[0]]) if jnt else -1,
+        'dofadr': int(m.jnt_dofadr[jnt[0]]) if jnt else -1,
+        'jnt_type': int(m.jnt_type[jnt[0]]) if jnt else -1,
+        'vertex_sites': verts,
+    }
+
+
+def manip_reset(n, task_name, seed=0):
+    """`n` real `initialize_episode` draws — the state after dm_control's own
+    reset, for any task. Reports what OUR reset has to land in the region of.
+    """
+    _bootstrap()
+    env = _load(task_name, seed=seed)
+    out = []
+    for _ in range(n):
+        env.reset()
+        p, task = env.physics, env.task
+        row = {'qpos': [float(x) for x in p.data.qpos],
+               'reward': float(task.get_reward(p)),
+               'ncon': int(p.data.ncon)}
+        if hasattr(task, '_get_height_of_lowest_vertex'):
+            row['lowest_vertex_z'] = float(
+                task._get_height_of_lowest_vertex(p))
+            row['target_height'] = float(task._target_height)
+        out.append(row)
+    return out
