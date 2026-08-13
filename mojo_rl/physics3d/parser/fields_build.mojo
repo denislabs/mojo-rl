@@ -1517,6 +1517,27 @@ def build_model_fields_from_flat[
     mf.meta.data[MODEL_META_IDX_NEQUALITY] = Scalar[DTYPE](num_eq)
 
     # ── contact exclusion pairs ────────────────────────────────────────────
+    # ⚠ ANNOUNCED, like the pair check below and for the same reason. This
+    # loop used to write `len(fmd.excludes)` entries into a tensor sized by
+    # NEXCLUDE with nothing in between, so a model def that left `nexclude` at
+    # its default of 0 ran off the end of a 1-element allocation. That
+    # surfaced as `index 1 is out of bounds` from deep inside `fields_build` —
+    # a stack trace that names neither the parameter nor the model, and costs
+    # a bisect to trace back to a missing `nexclude=pm.NEXCLUDE`.
+    #
+    # ⚠ It is a HARD ERROR rather than a clamp because dropping exclusions
+    # ADDS collisions: the excluded pairs start colliding, and the model still
+    # simulates. Same argument as `<pair>` below.
+    if len(fmd.excludes) > NEXCLUDE:
+        raise Error(
+            String("physics3d: parsed ")
+            + String(len(fmd.excludes))
+            + " <contact><exclude> entries but NEXCLUDE = "
+            + String(NEXCLUDE)
+            + ". Pass `nexclude=parse_xml(xml).NEXCLUDE` to the model def."
+            " Truncating would let the excluded geom pairs collide, which"
+            " leaves a model that still runs and is quietly wrong."
+        )
     for i in range(len(fmd.excludes)):
         var ex = fmd.excludes[i]
         mf.excludes.data[i * 2 + 0] = Scalar[DTYPE](ex.body1)
