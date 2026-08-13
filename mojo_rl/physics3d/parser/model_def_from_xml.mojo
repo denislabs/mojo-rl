@@ -807,6 +807,41 @@ struct ModelDefFromXML[
                 )
             )
 
+        # The COUNT of equalities — the last member of this family that still
+        # truncated in silence.
+        #
+        # ⚠⚠ `max_equality` DOES DOUBLE DUTY, which is why this was missed.
+        # `fields_build`'s fill loop breaks on `num_eq >= MAX_EQUALITY`, so it
+        # is a RECORD cap there; every model in the tree instead sizes it as a
+        # ROW budget (sawyer passes 6 for a single weld, "1 weld = 6 rows").
+        # Both readings are over-satisfied by a generous number, so nobody
+        # noticed that the record cap can also be UNDER-satisfied — and then
+        # `MODEL_META_IDX_NEQUALITY` is clamped to the cap and the surplus
+        # equalities are gone. Measured before this guard existed: a model with
+        # two `<weld>`s and `max_equality=1` BUILT, reported `nequality = 1`,
+        # and simply did not enforce the second weld.
+        #
+        # ⚠ Its siblings all already raised — `nexclude` and `npair` in
+        # `fields_build` (a model with one `<exclude>` and `nexclude=0` raises),
+        # and `max_tendon` directly above. Equality was the only hole, so the
+        # rule is now uniform: an under-declared dimension fails the build.
+        #
+        # ⚠ `>` not `!=`: over-allocating is legitimate and universal here,
+        # because the row reading needs more slots than the record reading.
+        if len(fmd.equalities) > Self.MAX_EQUALITY:
+            raise Error(
+                String(
+                    "physics3d: this model declares ", len(fmd.equalities),
+                    " <equality> records but max_equality=", Self.MAX_EQUALITY,
+                    ". Pass a value at least that large — and note it is ALSO",
+                    " read as a ROW budget elsewhere, where a weld needs 6",
+                    " rows and a connect 3, so size it for the rows and it",
+                    " covers the records. Truncating is NOT safe: the fill",
+                    " loop stops at the cap and the model builds, runs, and",
+                    " simply does not enforce the constraints past it.",
+                )
+            )
+
         # Reject unplumbed dof-friction solver params LOUDLY, for the same
         # reason as the actuator guard below: the parser sees the attribute,
         # the model would build, and `friction_dof.mojo` would quietly use
