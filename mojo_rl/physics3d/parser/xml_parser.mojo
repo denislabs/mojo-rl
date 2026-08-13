@@ -2818,8 +2818,26 @@ at 8 next to a 32 just invites the next model to trip it."""
 # Sized from the measured maxima with headroom (dog 128 geoms, quadruped 30
 # sites), and `init_fields` now RAISES when a model exceeds them rather than
 # truncating — the same rule as MAX_COMPTIME_TENDON_WRAPS.
-comptime MAX_COMPTIME_RENDER_GEOMS: Int = 160
-comptime MAX_COMPTIME_RENDER_SITES: Int = 48
+# ⚠ 160 -> 448 and 48 -> 192 for dm_control manipulation's BRICK tasks, whose
+# models carry a translucent contactless HINT twin of every brick:
+#
+#     stack_2_bricks   185 geoms   79 sites
+#     stack_3_bricks   267        113
+#     reassemble_5     431        181
+#
+# `stack_2_bricks` raised the 160 cap, which did exactly what it was written to
+# do — `init_fields` RAISED and named the constant and the file.
+#
+# ⚠ THE COST WAS MEASURED INTERLEAVED, and the first attempt at measuring it
+# was wrong. A single before/after on a 62-geom model def read 8.3 s -> 12.1 s
+# and looked like a 46% regression; alternating the two builds gives
+# 12.01 / 8.17 for the OLD cap against 7.91 / 8.61 for the NEW one, i.e. the
+# widening costs nothing and the machine was simply busy. Report the MIN of an
+# interleaved pair, never a single sequential pair. These are `InlineArray`s of
+# Int/Float64; the comptime cliff is the STRUCT case
+# (`feedback_inlinearray_of_nontrivial_structs_is_a_compile_cliff`).
+comptime MAX_COMPTIME_RENDER_GEOMS: Int = 448
+comptime MAX_COMPTIME_RENDER_SITES: Int = 192
 
 # ⚠ WAS A BARE LITERAL 16 IN THREE PLACES, WITH A SILENT FILL GUARD
 # (`if data.nmesh < 16`) — the exact shape `init_fields` already documents for

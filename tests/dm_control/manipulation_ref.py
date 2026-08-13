@@ -1404,3 +1404,158 @@ def has_relevant_collisions_at_with_pedestal(qpos, pedestal_pos,
         return has_relevant_collisions_at(qpos, task_name=task_name, seed=seed)
     finally:
         bound.pos = saved
+
+
+# -- the `stack_*` / `reassemble_*` task layer -------------------------------
+
+def stack_indices(task_name, seed=0):
+    """The element ids a `Stack` config hardcodes.
+
+    ⚠⚠ THE REAL BRICKS AND THEIR HINT TWINS INTERLEAVE. `_Common.__init__`
+    appends a translucent contactless copy of every brick immediately after it,
+    so with two bricks the bodies are real, hint, real, hint — 17, 18, 19, 20 —
+    and the second brick is 19, not 18. Read from `task._brick_frames` rather
+    than by counting.
+
+    ⚠ WHICH BRICK IS FIXED IS AN EPISODE DECISION. `_add_or_remove_freejoints`
+    strips the freejoint from `desired_order[0]` when `moveable_base` is False,
+    so `free` below is only stable for the tasks with `randomize_order=False`.
+    Returned per brick so a gate can assert it rather than assume it.
+    """
+    _bootstrap()
+    import mujoco
+    import numpy as np
+    from dm_control import mjcf
+    m = model(task_name, seed=seed)
+    env = _load(task_name, seed=seed)
+    task, p = env.task, env.physics
+    name = lambda o, i: (mujoco.mj_id2name(m, o, i) or '')
+    out = {'bricks': [], 'nbody': int(m.nbody), 'njnt': int(m.njnt),
+           'nq': int(m.nq), 'ngeom': int(m.ngeom), 'nsite': int(m.nsite),
+           'desired_order': [int(x) for x in task._desired_order]}
+    for i, brick in enumerate(task._bricks):
+        frame = task._brick_frames[i]
+        body = int(p.bind(frame).element_id)
+        fj = mjcf.get_frame_freejoint(brick.mjcf_model)
+        prefix = brick.mjcf_model.model + '/'
+        studs = sorted(s for s in range(m.nsite)
+                       if name(mujoco.mjtObj.mjOBJ_SITE, s)
+                       .startswith(prefix + 'stud_'))
+        holes = sorted(s for s in range(m.nsite)
+                       if name(mujoco.mjtObj.mjOBJ_SITE, s)
+                       .startswith(prefix + 'hole_'))
+        out['bricks'].append({
+            'prefix': prefix,
+            'body': body,
+            'free': fj is not None,
+            'qposadr': int(np.atleast_1d(p.bind(fj).qposadr)[0]) if fj is not None else -1,
+            'dofadr': int(np.atleast_1d(p.bind(fj).dofadr)[0]) if fj is not None else -1,
+            'frame_site': int(mujoco.mj_name2id(
+                m, mujoco.mjtObj.mjOBJ_SITE, prefix + 'bounding_box')),
+            'stud_0': studs[0], 'hole_0': holes[0],
+            # `studs[[0, -1], [0, -1]]` — the two CORNER sites the reward uses.
+            'corner_studs': [int(p.bind(
+                brick.studs[[0, -1], [0, -1]][k]).element_id) for k in range(2)],
+            'corner_holes': [int(p.bind(
+                brick.holes[[0, -1], [0, -1]][k]).element_id) for k in range(2)],
+        })
+    return out
+
+
+def stack_state(task_name, qpos, qvel, fixed_poses=None, ctrl=None, seed=0):
+    """Evaluate a `Stack` task at an injected state.
+
+    `fixed_poses` is `{brick index: ([x, y, z], [w, x, y, z])}` for the bricks
+    with NO freejoint — the base brick of a fixed-base stack, whose pose is a
+    MODEL field (`body_pos` / `body_quat` on its attachment frame) exactly like
+    `Place`'s pedestal. ⚠ A gate that injects only `qpos` leaves that brick
+    wherever the reference's last reset put it, which is not where ours is.
+
+    All edits are restored before returning.
+    """
+    _bootstrap()
+    import numpy as np
+    env = _load(task_name, seed=seed)
+    task, p = env.task, env.physics
+    saved = []
+    if fixed_poses:
+        for i, (pos, quat) in fixed_poses.items():
+            bound = p.bind(task._brick_frames[i])
+            saved.append((bound, np.array(bound.pos), np.array(bound.quat)))
+            bound.pos = np.asarray(pos, dtype=float)
+            bound.quat = np.asarray(quat, dtype=float)
+    try:
+        p.data.qpos[:] = np.asarray(qpos, dtype=float)
+        p.data.qvel[:] = np.asarray(qvel, dtype=float)
+        p.data.ctrl[:] = 0.0 if ctrl is None else np.asarray(ctrl, dtype=float)
+        p.forward()
+        rs = np.random.RandomState(0)
+        obs = {k: v for k, v in task.observables.items() if v.enabled}
+        out = {'reward': float(task.get_reward(p)),
+               'ncon': int(p.data.ncon), 'nefc': int(p.data.nefc),
+               'flat': []}
+        for name in manip_obs_order(task_name, seed=seed):
+            v = np.asarray(obs[name](p, rs), dtype=float).ravel()
+            out[name] = list(v)
+            out['flat'].extend(float(x) for x in v)
+        return out
+    finally:
+        for bound, pos, quat in saved:
+            bound.pos = pos
+            bound.quat = quat
+
+
+def stack_reset(n, task_name, seed=0):
+    """`n` real `initialize_episode` draws for a brick task.
+
+    Reports the fixed bricks' MODEL poses alongside `qpos`, because a fixed
+    brick is invisible in the state.
+    """
+    _bootstrap()
+    import numpy as np
+    env = _load(task_name, seed=seed)
+    out = []
+    for _ in range(n):
+        env.reset()
+        p, task = env.physics, env.task
+        fixed = {}
+        for i, frame in enumerate(task._brick_frames):
+            if not frame.freejoint:
+                b = p.bind(frame)
+                fixed[i] = ([float(x) for x in np.atleast_1d(b.pos)],
+                            [float(x) for x in np.atleast_1d(b.quat)])
+        out.append({
+            'qpos': [float(x) for x in p.data.qpos],
+            'fixed': fixed,
+            'reward': float(task.get_reward(p)),
+            'ncon': int(p.data.ncon),
+            'tcp_xpos': [float(x) for x in
+                         p.bind(task._hand.tool_center_point).xpos],
+        })
+    return out
+
+
+def has_relevant_collisions_at_with_fixed(qpos, fixed_poses,
+                                          task_name, seed=0):
+    """`has_relevant_collisions_at` with the FIXED bricks where we have them.
+
+    Same reason as `has_relevant_collisions_at_with_pedestal`: a brick without
+    a freejoint is not in `qpos`, so judging our arm without placing it asks
+    the predicate about a different scene.
+    """
+    _bootstrap()
+    import numpy as np
+    env = _load(task_name, seed=seed)
+    task, p = env.task, env.physics
+    saved = []
+    for i, (pos, quat) in fixed_poses.items():
+        bound = p.bind(task._brick_frames[i])
+        saved.append((bound, np.array(bound.pos), np.array(bound.quat)))
+        bound.pos = np.asarray(pos, dtype=float)
+        bound.quat = np.asarray(quat, dtype=float)
+    try:
+        return has_relevant_collisions_at(qpos, task_name=task_name, seed=seed)
+    finally:
+        for bound, pos, quat in saved:
+            bound.pos = pos
+            bound.quat = quat

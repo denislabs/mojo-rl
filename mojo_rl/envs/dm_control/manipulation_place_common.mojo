@@ -335,6 +335,10 @@ def place_reset_full[
     hi_g[0] = TARGET_BBOX_UPPER_X
     hi_g[1] = TARGET_BBOX_UPPER_Y
     hi_g[2] = TARGET_BBOX_UPPER_Z
+    # `ignore_contacts_with_entities=[self._prop]` — the brick has not been
+    # placed yet and is wherever the last episode left it.
+    var ignore = List[Int]()
+    ignore.append(PROP_BODY)
     var ped_poses = List[Scalar[DTYPE]]()
     for _ in range(MAX_PEDESTAL_ATTEMPTS):
         var gd = InlineArray[Float64, 3](fill=0.0)
@@ -343,11 +347,18 @@ def place_reset_full[
         var gp = sample_bbox_uniform[DTYPE](lo_g, hi_g, gd)
         for k in range(3):
             ped_poses.append(gp[k])
+        # ⚠ IDENTITY, and only because `Place`'s pedestal placer leaves
+        # `quaternion` at `rotations.IDENTITY_QUATERNION`. `Stack` passes a
+        # yaw distribution through the same call.
+        ped_poses.append(Scalar[DTYPE](0))
+        ped_poses.append(Scalar[DTYPE](0))
+        ped_poses.append(Scalar[DTYPE](0))
+        ped_poses.append(Scalar[DTYPE](1))
     var gres = place_fixed_prop[
         DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV,
         NPAIR, MAX_CONTACTS,
     ](
-        d, mf, PEDESTAL_BODY, PEDESTAL_N_BODIES, PROP_BODY, ped_poses,
+        d, mf, PEDESTAL_BODY, PEDESTAL_N_BODIES, ignore, ped_poses,
         MAX_PEDESTAL_ATTEMPTS,
     )
     if not gres.success:
@@ -464,8 +475,8 @@ def place_reset_full[
         DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
         NMESHV, NPAIR, MAX_CONTACTS,
     ](
-        d, mf, PROP_BODY, PROP_QPOS_ADR, PROP_DOF_ADR, poses, False,
-        MAX_PROP_ATTEMPTS,
+        d, mf, PROP_BODY, PROP_QPOS_ADR, PROP_DOF_ADR, poses,
+        List[Int](), False, MAX_PROP_ATTEMPTS,
     )
     if not pres.success:
         raise Error(

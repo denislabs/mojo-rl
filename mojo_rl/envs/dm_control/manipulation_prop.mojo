@@ -129,6 +129,7 @@ def prop_has_penetrating_contact[
 ](
     d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
     prop_body: Int,
+    ignore_bodies: List[Int],
 ) -> Bool:
     """`PropPlacer._has_collisions_with_prop` — the placer's reject predicate.
 
@@ -162,7 +163,15 @@ def prop_has_penetrating_contact[
             continue
         var ba = Int(Float64(d.contacts.data[o + CONTACT_IDX_BODY_A]))
         var bb = Int(Float64(d.contacts.data[o + CONTACT_IDX_BODY_B]))
-        if ba == prop_body or bb == prop_body:
+        if ba != prop_body and bb != prop_body:
+            continue
+        # `ignore_bodies` — props not yet placed, whose contacts the reference
+        # has switched off. See `place_free_prop`.
+        var skip = False
+        for k in range(len(ignore_bodies)):
+            if ba == ignore_bodies[k] or bb == ignore_bodies[k]:
+                skip = True
+        if not skip:
             return True
     return False
 
@@ -203,6 +212,7 @@ def place_free_prop[
     qpos_adr: Int,
     dof_adr: Int,
     poses: List[Scalar[DTYPE]],
+    ignore_bodies: List[Int],
     ignore_collisions: Bool = False,
     max_attempts: Int = 20,
 ) raises -> PropPlaceResult:
@@ -218,11 +228,19 @@ def place_free_prop[
     with the arm ALREADY PLACED (see `Reach.initialize_episode`'s order) a
     brick drawn under the gripper is genuinely rejected.
 
-    ⚠ CONTACT DISABLING IS NOT REPRODUCED, and for a single-prop task that is
-    exact. The reference zeroes `contype`/`conaffinity` on every prop it is
-    about to place before the loop, purely to free contact-buffer space while
-    the OTHERS are unplaced; with one prop there are no others. A multi-prop
-    task needs it, and needs this function extended rather than reused.
+    ⚠⚠ `ignore_bodies` IS THE REFERENCE'S CONTACT-DISABLING PASS.
+    `PropPlacer.__call__` zeroes `contype`/`conaffinity` on EVERY prop it is
+    about to place, then restores them one prop at a time as it places each.
+    So while brick 1 is being drawn, brick 2 is invisible to collision — and it
+    has to be, because brick 2 is still sitting wherever the last episode left
+    it. With ONE prop the list is empty and this is a no-op, which is why the
+    four single-prop tasks never exercised it.
+
+    ⚠ WE IGNORE CONTACTS RATHER THAN DISABLE THEM, and the difference is the
+    contact BUFFER. The reference disables to free buffer space as well as to
+    skip the test; ignoring costs buffer entries that a 400-`nconmax` model
+    might miss. Ours is 128 and the measured worst case is far below it, but a
+    6-brick task would want the real thing.
 
     ⚠ ON EXHAUSTION THE LAST DRAW IS LEFT IN PLACE. The reference raises, so it
     never has to say; a caller here must check `success` rather than assume the
@@ -249,7 +267,7 @@ def place_free_prop[
         detect_contacts["cpu"](d, mf)
         if not prop_has_penetrating_contact[
             DTYPE, NQ, NV, NBODY, MAXC, NSITE
-        ](d, prop_body):
+        ](d, prop_body, ignore_bodies):
             return PropPlaceResult(True, a + 1)
     return PropPlaceResult(False, n)
 
@@ -275,7 +293,7 @@ def place_fixed_prop[
     ],
     frame_body: Int,
     n_bodies: Int,
-    ignore_body: Int,
+    ignore_bodies: List[Int],
     poses: List[Scalar[DTYPE]],
     max_attempts: Int = 20,
 ) raises -> PropPlaceResult:
@@ -289,19 +307,24 @@ def place_fixed_prop[
     only 10 joints — counting bodies and expecting a matching joint is the
     natural mistake here.
 
-    `poses` is `3 * n` injected positions. ⚠ NO QUATERNION: `Place`'s pedestal
-    placer leaves `quaternion` at `rotations.IDENTITY_QUATERNION`, so the frame
-    quaternion is written to identity and never varies. Passing draws for it
-    would be inventing a distribution the reference does not have.
+    `poses` is `7 * n` injected values — three position then a (x, y, z, w)
+    quaternion per attempt, in OUR order, exactly like `place_free_prop`.
+
+    ⚠ THE QUATERNION IS NOT ALWAYS IDENTITY, and assuming it was is a mistake
+    this function made first. `Place`'s pedestal placer leaves `quaternion` at
+    `rotations.IDENTITY_QUATERNION`, so there it is — but `Stack`'s brick
+    placer passes `workspaces.uniform_z_rotation`, and with a FIXED base brick
+    that yaw lands on the attachment frame's `body_quat`. Same code path, one
+    task varies it and the other does not.
 
     `frame_body` is the attachment frame and `n_bodies` how many consecutive
     bodies the entity spans (the pedestal is 2: the pillar and its cradle), so
     the rejection test can ask about the whole entity.
 
-    ⚠ `ignore_body` REPRODUCES `ignore_contacts_with_entities`. `Place` passes
-    `[self._prop]` — the brick has not been placed yet and is sitting wherever
-    the last episode left it, so its contacts must not veto the pedestal. Pass
-    a negative value for none.
+    ⚠ `ignore_bodies` REPRODUCES `ignore_contacts_with_entities` and the
+    contact-disabling pass. `Place` passes `[self._prop]` — the brick has not
+    been placed yet and is sitting wherever the last episode left it, so its
+    contacts must not veto the pedestal. Empty list for none.
 
     ⚠⚠ THE REJECTION LOOP IS PRESENT BUT NOT EXERCISED BY `place_*`, and saying
     so is better than implying coverage. Measured on the reference: over 5
@@ -317,19 +340,18 @@ def place_fixed_prop[
     got the weld filter wrong would see a permanent ground contact here and
     nowhere else in this family.
     """
-    var n = len(poses) // 3
+    var n = len(poses) // 7
     if n > max_attempts:
         n = max_attempts
     var fb = frame_body * MODEL_BODY_SIZE
-    # The identity quaternion, written once — see above, it never varies.
-    mf.bodies.data[fb + BODY_IDX_QUAT_X] = Scalar[DTYPE](0)
-    mf.bodies.data[fb + BODY_IDX_QUAT_Y] = Scalar[DTYPE](0)
-    mf.bodies.data[fb + BODY_IDX_QUAT_Z] = Scalar[DTYPE](0)
-    mf.bodies.data[fb + BODY_IDX_QUAT_W] = Scalar[DTYPE](1)
     for a in range(n):
-        mf.bodies.data[fb + BODY_IDX_POS_X] = poses[a * 3 + 0]
-        mf.bodies.data[fb + BODY_IDX_POS_Y] = poses[a * 3 + 1]
-        mf.bodies.data[fb + BODY_IDX_POS_Z] = poses[a * 3 + 2]
+        mf.bodies.data[fb + BODY_IDX_POS_X] = poses[a * 7 + 0]
+        mf.bodies.data[fb + BODY_IDX_POS_Y] = poses[a * 7 + 1]
+        mf.bodies.data[fb + BODY_IDX_POS_Z] = poses[a * 7 + 2]
+        mf.bodies.data[fb + BODY_IDX_QUAT_X] = poses[a * 7 + 3]
+        mf.bodies.data[fb + BODY_IDX_QUAT_Y] = poses[a * 7 + 4]
+        mf.bodies.data[fb + BODY_IDX_QUAT_Z] = poses[a * 7 + 5]
+        mf.bodies.data[fb + BODY_IDX_QUAT_W] = poses[a * 7 + 6]
         forward_kinematics["cpu"](d, mf)
         detect_contacts["cpu"](d, mf)
         var bad = False
@@ -340,7 +362,11 @@ def place_fixed_prop[
                 continue
             var ba = Int(Float64(d.contacts.data[o + CONTACT_IDX_BODY_A]))
             var bb = Int(Float64(d.contacts.data[o + CONTACT_IDX_BODY_B]))
-            if ba == ignore_body or bb == ignore_body:
+            var skip = False
+            for k in range(len(ignore_bodies)):
+                if ba == ignore_bodies[k] or bb == ignore_bodies[k]:
+                    skip = True
+            if skip:
                 continue
             var a_in = ba >= frame_body and ba < frame_body + n_bodies
             var b_in = bb >= frame_body and bb < frame_body + n_bodies

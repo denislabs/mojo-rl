@@ -423,7 +423,7 @@ struct ReachDuploConfig(Phyics3dEnvConfig):
             NMESHV, NPAIR, MAX_CONTACTS,
         ](
             d, mf, PROP_BODY, PROP_QPOS_ADR, PROP_DOF_ADR, poses,
-            False, MAX_PROP_ATTEMPTS,
+            List[Int](), False, MAX_PROP_ATTEMPTS,
         )
         if not pres.success:
             raise Error(
