@@ -427,6 +427,7 @@ def set_site_to_xpos[
     upper: InlineArray[Float64, NDOF],
     retry_poses: List[Scalar[DTYPE]],
     max_ik_attempts: Int = 10,
+    retry_offset: Int = 0,
 ) raises -> SetSiteResult:
     """`entities/manipulators/base.py::set_site_to_xpos`.
 
@@ -443,6 +444,13 @@ def set_site_to_xpos[
     draws with the same seed — which is exactly what
     `test_set_site_to_xpos_vs_dm_control` does. Production callers can pass
     whatever sampler they like.
+
+    `retry_offset` indexes into that same flat list, so a CALLER THAT LOOPS —
+    `tool_center_point_initializer` draws up to `max_rejection_samples` target
+    poses and each gets its own attempt budget — can hand over one contiguous
+    draw sequence and advance a cursor, rather than slicing a fresh `List` per
+    sample. The reference's draws come off one `RandomState` in exactly that
+    order, so a single flat list IS the faithful shape.
 
     ⚠ `rot_weight = 2` is not this function's choice to make; it is what the
     reference passes, and `qpos_from_site_pose` defaults to it here.
@@ -466,7 +474,7 @@ def set_site_to_xpos[
         if success or max_ik_attempts <= 1:
             break
 
-        var base = attempt * NDOF
+        var base = retry_offset + attempt * NDOF
         if base + NDOF > len(retry_poses):
             # Out of injected poses — stop rather than silently repeat the
             # same attempt, which would look like convergence failure.

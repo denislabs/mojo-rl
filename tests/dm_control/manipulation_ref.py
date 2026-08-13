@@ -472,3 +472,125 @@ def target_placer_reference(rng_seed, task_name='reach_site_features',
     pos = dist(random_state=np.random.RandomState(rng_seed))
     u = np.random.RandomState(rng_seed).random_sample(3)
     return list(np.atleast_1d(pos)), list(u)
+
+
+# -- collision rejection ----------------------------------------------------
+#
+# `ToolCenterPointInitializer._has_relevant_collisions` classifies a GEOM by
+# which entity model owns it. A baked MJCF is flat and our parser keeps no
+# body names, so the Mojo port takes the classification as input; these
+# helpers derive it here, with dm_control's own objects, so a gate tests the
+# RULE rather than a second guess at the labelling.
+
+# Must match `envs/dm_control/manipulation_reset.mojo`.
+BODY_ARM, BODY_HAND, BODY_FREE, BODY_FIXED = 0, 1, 2, 3
+
+
+def body_classes_reference(task_name='reach_site_features', seed=0):
+    """Per-BODY class array, indexed by MuJoCo body id.
+
+    The reference works per geom (`geom.root is arm_model`); this maps that
+    onto bodies, which is what our contact records carry. ⚠ That is only
+    equivalent if no body owns geoms from two different entity roots — asserted
+    below rather than assumed, because the whole predicate silently changes
+    meaning if it is ever false.
+
+    ⚠ GEOMLESS BODIES KEEP THE `BODY_FIXED` DEFAULT, and two of Jaco's do:
+    `jaco_arm/` (body 1) and `jaco_arm/jaco_hand/` (body 9) are the entity
+    ATTACHMENT FRAMES and own no geoms at all. Labelling them "external" is
+    wrong in spirit and harmless in fact — a body with no geoms cannot appear
+    in a contact, so the entry is never read. `test_tcp_initializer_vs_dm_control`
+    asserts exactly that rather than leaving it to luck.
+    """
+    _bootstrap()
+    from dm_control import mjcf
+    env = _load(task_name, seed=seed)
+    physics = env.physics
+    m = physics.model.ptr
+    task = env.task
+    arm_model = task._arm.mjcf_model          # pylint: disable=protected-access
+    hand_model = task._hand.mjcf_model        # pylint: disable=protected-access
+    mjcf_root = arm_model.root_model
+
+    free_body_geoms = set()
+    for body in mjcf_root.worldbody.get_children('body'):
+        if mjcf.get_freejoint(body):
+            free_body_geoms.update(body.find_all('geom'))
+
+    def geom_class(g):
+        if g.root is arm_model:
+            return BODY_ARM
+        if g.root is hand_model:
+            return BODY_HAND
+        if g in free_body_geoms:
+            return BODY_FREE
+        return BODY_FIXED
+
+    all_geoms = mjcf_root.find_all('geom')
+    # World starts FIXED: it owns the arena plane and has no freejoint, which
+    # is exactly what makes arm-versus-ground a relevant collision.
+    classes = [BODY_FIXED] * m.nbody
+    seen = {}
+    for gid, g in enumerate(all_geoms):
+        b = int(m.geom_bodyid[gid])
+        c = geom_class(g)
+        if b in seen and seen[b] != c:
+            raise AssertionError(
+                'body %d owns geoms of two entity classes (%d and %d) — the '
+                'body-level port of _has_relevant_collisions is invalid'
+                % (b, seen[b], c))
+        seen[b] = c
+        classes[b] = c
+    return classes
+
+
+def has_relevant_collisions_at(qpos, task_name='reach_site_features', seed=0):
+    """dm_control's predicate at a given `qpos`. Returns `(verdict, ncon)`."""
+    _bootstrap()
+    import numpy as np
+    import mujoco
+    from dm_control import mjcf
+    env = _load(task_name, seed=seed)
+    physics = env.physics
+    m, d = physics.model.ptr, physics.data.ptr
+    task = env.task
+    arm_model = task._arm.mjcf_model          # pylint: disable=protected-access
+    hand_model = task._hand.mjcf_model        # pylint: disable=protected-access
+    mjcf_root = arm_model.root_model
+    all_geoms = mjcf_root.find_all('geom')
+
+    free_body_geoms = set()
+    for body in mjcf_root.worldbody.get_children('body'):
+        if mjcf.get_freejoint(body):
+            free_body_geoms.update(body.find_all('geom'))
+
+    def is_robot(g):
+        return g.root is arm_model or g.root is hand_model
+
+    def is_external_fixed(g):
+        return not (is_robot(g) or g in free_body_geoms)
+
+    d.qpos[:] = np.asarray(qpos, dtype=float)
+    mujoco.mj_forward(m, d)
+
+    for k in range(d.ncon):
+        con = d.contact[k]
+        g1, g2 = all_geoms[con.geom1], all_geoms[con.geom2]
+        if con.dist > 0:
+            continue
+        if ((g1.root is arm_model and g2.root is arm_model) or
+                (g1.root is arm_model and g2.root is hand_model) or
+                (g1.root is hand_model and g2.root is arm_model) or
+                (is_robot(g1) and is_external_fixed(g2)) or
+                (is_external_fixed(g1) and is_robot(g2))):
+            return True, int(d.ncon)
+    return False, int(d.ncon)
+
+
+def bodies_without_geoms(task_name='reach_site_features', seed=0):
+    """Body ids owning no geoms — the entries of `body_classes_reference`
+    that keep the default label because nothing ever reads them."""
+    _bootstrap()
+    import numpy as np
+    m = model(task_name, seed=seed)
+    return [b for b in range(m.nbody) if not (m.geom_bodyid == b).any()]
