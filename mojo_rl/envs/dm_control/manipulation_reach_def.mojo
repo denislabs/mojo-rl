@@ -41,17 +41,34 @@ their torsional row; it now carries `dim-1` tangential rows with per-direction
 friction and `R`. Gated by
 `tests/physics3d/test_elliptic_condim46_vs_mujoco.mojo`.
 
-⚠ THIS MODEL STILL DOES NOT STEP IN PARITY, AND THE REASON IS NO LONGER THE
-SOLVER. Measured from MuJoCo's `qpos0` with zero `qvel` and zero `ctrl`, five
-steps of the model alone:
+⚠ THIS MODEL STILL DOES NOT STEP IN PARITY, AND THE REASON IS NOT THE SOLVER.
+Measured over 40 in-range poses, comparing `qvel` after `mj_step` on both
+sides, the divergence tracks CONTACT GEOMETRY and nothing else:
 
-    step 0   ncon  ours 57 / MuJoCo 55   max|d(qvel)| 2.97e+1
-    step 1         ours 54 / MuJoCo 59   max|d(qvel)| 3.35e+1
+    worst |d(pos)| on a PENETRATING contact     |d(qvel)|
+    ~1e-9                                       1e-9 .. 4e-6
+    ~2e-2                                       2e-1 .. 1.9
 
-The CONTACT SET differs at step 0, before any solve can. So what remains is
-narrow-phase generation on Jaco's meshes, not the friction cone — a different
-subsystem from the two (noslip, condim) that were closed to get here. Tracked
-separately; do NOT read the residual above as a cone-solver number.
+The solve itself is exact where the geometry is. On the one-contact condim-4
+pose our rows match MuJoCo's `efc` table to 7+ digits — every `D` (4836.150
+normal and slide, 0.1209 torsional), every `aref`, every constraint force
+(17028.905 normal, 6268.873 / 3221.375 slide, 77.509 torsional) and all nine
+dry-friction dof rows.
+
+What differs is the up-to-two EXTRA plane-mesh contacts: our DEEPEST contact
+agrees with MuJoCo's to 1e-10 or better on every plane-mesh pose, so the
+support point is right and only the neighbourhood extras — which
+`mjc_PlaneConvex` picks in qhull's facet order — land elsewhere. Plus a
+smaller cylinder-mesh normal disagreement. Both tracked separately.
+
+⚠ AN EARLIER VERSION OF THIS NOTE SAID "the CONTACT SET differs, 57 vs 55 at
+step 0". Counts actually match on 38 of 40 poses, and the `qacc` numbers that
+claim rested on were an artefact: they compared our post-step `qvel/dt`
+against MuJoCo's PRE-step `qacc` from `mj_forward`, which ignores `mj_Euler`'s
+IMPLICIT treatment of `dof_damping` — 0.75 on the fingers against an inertia
+of ~0.1, i.e. exactly the 1.5% that read as a residual. Kept here rather than
+deleted, because it is the shape of mistake this file is most likely to
+attract again.
 """
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
