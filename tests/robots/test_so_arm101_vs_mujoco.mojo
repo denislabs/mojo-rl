@@ -1,0 +1,321 @@
+"""SO-ARM101 — layer-2 parity: our `fields.Model` and rollout vs MuJoCo.
+
+    pixi run mojo run -I . tests/robots/test_so_arm101_vs_mujoco.mojo
+
+⚠ THIS IS LAYER 2 AND DOES NOT REPLACE LAYER 1. Both sides here compile from
+OUR OWN XML string, so a defect in that string is invisible by construction.
+`tests/robots/so_arm_ref.py` is the layer-1 gate that proves the string IS the
+TheRobotStudio model — run it too, and run it FIRST.
+
+⚠ RUN FROM THE REPO ROOT. Mesh `file=` paths are repo-root-relative (our parser
+does not implement `<compiler meshdir>`; see `so_arm_bake.py`), so both MuJoCo
+and our loader resolve them against the cwd.
+
+WHAT EACH GATE IS FOR, and what it caught:
+
+  · `test_model_counts` — dimensions, INCLUDING `nexclude`. `ModelDefFromXML`
+    defaults `nexclude`/`npair` to 0 and omitting them is SILENT: `parse_xml`
+    reported NEXCLUDE 1 while the built model carried 0, so the two adjacent
+    base geoms would have collided forever. Caught by asserting the model's
+    counts and not just the parser's.
+
+  · `test_actuator_law` — kp / kv / forcerange / ctrlrange per actuator. ⚠⚠
+    THIS IS THE ONE THAT MATTERS. Our comptime parser resolves an attribute as
+    element -> named class -> ROOT default, and does NOT walk the class chain
+    in between. SO-100's `kp="50"` lives in the grandparent class `so_arm101`
+    while each actuator names a nested child (`Rotation`, `Pitch`, ...), so
+    every servo silently ran at **kp = 1.0**, the fallback — a 50x weak
+    controller that reads as bad tuning, not as a parse failure. The bake now
+    writes every gain onto the element; this gate is what keeps it that way.
+
+  · `test_zero_ctrl_rollout` — the discriminating one. With kp wrong the arm
+    still moved TOWARD its target, just ~50x too slowly, and every static gate
+    passed. Only stepping both sides from the same state showed it.
+
+⚠ A ZERO-CONTACT MODEL. Measured: `ncon = 0` for the bare arm at every pose
+these gates visit. So nothing here exercises the mesh collision path, however
+green it is. Contacts need a manipuland; see `so_arm101_xml.mojo`.
+"""
+
+from std.math import abs
+from std.python import Python, PythonObject
+from std.testing import assert_true, TestSuite
+
+from mojo_rl.core.cont_action import ContAction
+from mojo_rl.envs.robots.so_arm101 import SoArm101Reach
+from mojo_rl.envs.robots.so_arm101_xml import (
+    SoArm101Model,
+    SO_ARM101_XML,
+    MOVING_JAW_BODY_IDX,
+    TARGET_BODY_IDX,
+)
+
+comptime NQ = SoArm101Model.NQ
+comptime NU = 6
+comptime FRAME_SKIP = 10
+
+# The two rollout regimes, measured on the reference and NOT assumed:
+#
+#   commanded pose -> max nefc 6   (the six `dof_frictionloss` rows only)
+#   ctrl = 0       -> max nefc 6   (the same — NO limit ever engages)
+#
+# ⚠⚠ MEASURED FOR THIS MODEL, NOT COPIED FROM SO-100. There the zero-ctrl
+# rollout rides three joint limits and lands 4 000x looser than the commanded
+# one; HERE neither trajectory touches a limit, because `new_calib` puts every
+# joint's zero in the MIDDLE of its range while SO-100's `qpos0` sits against
+# two of its own. This file first shipped with SO-100's claim pasted in, which
+# would have described a constraint regime that never occurs.
+#
+# They are gated separately because they exercise different code and agree to
+# very different tolerances. Collapsing them into one gate would either hide
+# the exact one or fail the constrained one.
+comptime NEFC_UNCONSTRAINED = 6
+
+
+def _pose(i: Int) -> Float64:
+    if i == 0:
+        return 0.35
+    if i == 1:
+        return -1.10
+    if i == 2:
+        return 0.90
+    if i == 3:
+        return 0.40
+    if i == 4:
+        return -0.60
+    return 0.25
+
+
+def _ctrl(i: Int) -> Float64:
+    """A commanded pose distinct from `_pose`, so tracking is observable."""
+    if i == 0:
+        return -0.20
+    if i == 1:
+        return -1.60
+    if i == 2:
+        return 1.40
+    if i == 3:
+        return 0.80
+    if i == 4:
+        return 0.30
+    return 1.00
+
+
+def _mj() raises -> PythonObject:
+    var mujoco = Python.import_module("mujoco")
+    return mujoco.MjModel.from_xml_string(String(SO_ARM101_XML))
+
+
+def test_model_counts() raises:
+    """Dimensions, and `nexclude` — the one that was silently zero."""
+    var m = _mj()
+    assert_true(Int(py=m.nbody) == SoArm101Model.NBODY, "nbody")
+    assert_true(Int(py=m.njnt) == SoArm101Model.NJOINT, "njnt")
+    assert_true(Int(py=m.nq) == SoArm101Model.NQ, "nq")
+    assert_true(Int(py=m.nv) == SoArm101Model.NV, "nv")
+    assert_true(Int(py=m.ngeom) == SoArm101Model.NGEOM, "ngeom")
+    assert_true(
+        Int(py=m.nexclude) == SoArm101Model.NEXCLUDE,
+        "nexclude mismatch between MuJoCo and our model",
+    )
+    # ⚠ 0 is CORRECT here and 1 on SO-100. Pinned so that a future task
+    # fragment adding an `<exclude>` cannot land unnoticed.
+    assert_true(
+        Int(py=m.nexclude) == 0,
+        "upstream SO-101 defines no <contact> section; a non-zero count means"
+        " something added one",
+    )
+    assert_true(Int(py=m.nsite) == SoArm101Model.NSITE, "nsite")
+    print("  counts OK — nbody", Int(py=m.nbody), " ngeom", Int(py=m.ngeom),
+          " nexclude", Int(py=m.nexclude))
+
+
+def test_body_indices() raises:
+    """The indices the config indexes by NAME, so a reorder cannot pass.
+
+    ⚠ `MOVING_JAW_BODY_IDX` and `TARGET_BODY_IDX` are plain integers in the
+    reward and the observation. If a future task fragment inserts a body, the
+    reward silently starts measuring a different link and every other gate
+    stays green.
+    """
+    var mujoco = Python.import_module("mujoco")
+    var m = _mj()
+    var ee = mujoco.mj_id2name(
+        m, mujoco.mjtObj.mjOBJ_BODY, MOVING_JAW_BODY_IDX
+    )
+    var tg = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, TARGET_BODY_IDX)
+    assert_true(
+        String(ee) == "moving_jaw_so101_v1",
+        "EE body index names " + String(ee),
+    )
+    assert_true(String(tg) == "target", "target body index names " + String(tg))
+    print("  body indices OK —", MOVING_JAW_BODY_IDX, "=", String(ee), ",",
+          TARGET_BODY_IDX, "=", String(tg))
+
+
+def test_actuator_law() raises:
+    """kp / kv / forcerange / ctrlrange, per actuator, against `mjModel`.
+
+    MuJoCo's `<position>` compiles to `gainprm = [kp,0,0]`,
+    `biasprm = [0,-kp,-kv]`. Ours stores `motor_kp` = `gainprm[0]` and
+    `motor_kv` = `-biasprm[2]`, so this is a direct comparison and the
+    tolerance is 0.0 — both numbers came from the same XML text.
+    """
+    var m = _mj()
+    var kp = materialize[SoArm101Model._acd.motor_kp]()
+    var kv = materialize[SoArm101Model._acd.motor_kv]()
+    var fmin = materialize[SoArm101Model._acd.motor_force_min]()
+    var fmax = materialize[SoArm101Model._acd.motor_force_max]()
+    var cmin = materialize[SoArm101Model._acd.motor_ctrl_min]()
+    var cmax = materialize[SoArm101Model._acd.motor_ctrl_max]()
+
+    var worst = 0.0
+    for i in range(NU):
+        var ref_kp = Float64(py=m.actuator_gainprm[i][0])
+        var ref_kv = -Float64(py=m.actuator_biasprm[i][2])
+        var ref_fl = Float64(py=m.actuator_forcerange[i][0])
+        var ref_fh = Float64(py=m.actuator_forcerange[i][1])
+        var ref_cl = Float64(py=m.actuator_ctrlrange[i][0])
+        var ref_ch = Float64(py=m.actuator_ctrlrange[i][1])
+        worst = max(worst, abs(kp[i] - ref_kp))
+        worst = max(worst, abs(kv[i] - ref_kv))
+        worst = max(worst, abs(fmin[i] - ref_fl))
+        worst = max(worst, abs(fmax[i] - ref_fh))
+        worst = max(worst, abs(cmin[i] - ref_cl))
+        worst = max(worst, abs(cmax[i] - ref_ch))
+        # ⚠ Asserted separately AND loudly: kp falling back to 1.0 is the
+        # documented failure, and a max-over-everything would report it as a
+        # 49.0 residual without naming the cause.
+        assert_true(
+            abs(kp[i] - ref_kp) == 0.0,
+            "actuator " + String(i) + " kp is " + String(kp[i])
+            + " but MuJoCo compiles " + String(ref_kp)
+            + " — a value of 1.0 means the class-default lookup missed"
+            " `<position kp>` and the servo is running at the fallback gain",
+        )
+    # ⚠ 1 ULP, NOT 0.0. `kp` IS exact (asserted above, and it is the value
+    # that broke), but the 17-significant-digit literals the bake writes for
+    # `kv` / `ctrlrange` come back ~2.8e-17 different: MuJoCo parses them with
+    # a correctly-rounded `strtod` and our `_parse_float` is not, so the two
+    # land one unit apart in the last place. Real, tiny, and worth a bound
+    # rather than a pretend zero.
+    assert_true(worst < 1e-15, "actuator law residual " + String(worst))
+    print("  actuator law matches — worst |d| =", worst,
+          " (kp exact; kv/ctrlrange within 1 ULP)")
+
+
+def _load_reference(mujoco: PythonObject, m: PythonObject,
+                    d: PythonObject) raises:
+    """Both sides from the SAME state — the shared-state protocol.
+
+    ⚠ `custom_reset_cpu` adds uniform noise, so `env.reset()` alone gives the
+    two sides different initial conditions and any residual is meaningless.
+    `set_state` overwrites it on our side; this writes the same numbers here.
+    """
+    mujoco.mj_resetData(m, d)
+    for i in range(NQ):
+        d.qpos[i] = _pose(i)
+    mujoco.mj_forward(m, d)
+
+
+def _rollout_residual(ctrl_from_pose: Bool) raises -> Float64:
+    var mujoco = Python.import_module("mujoco")
+    var m = _mj()
+    var d = mujoco.MjData(m)
+    _load_reference(mujoco, m, d)
+
+    var env = SoArm101Reach[DType.float64]()
+    _ = env.reset()
+    var qp = List[Float64]()
+    var qv = List[Float64]()
+    for i in range(NQ):
+        qp.append(_pose(i))
+        qv.append(0.0)
+    env.set_state(qp, qv)
+
+    var a = ContAction[SoArm101Model.ACTION_DIM]()
+    for i in range(NU):
+        var c = _ctrl(i) if ctrl_from_pose else 0.0
+        a.data[i] = c
+        d.ctrl[i] = c
+
+    var worst = 0.0
+    for _ in range(200):
+        for _ in range(FRAME_SKIP):
+            mujoco.mj_step(m, d)
+        _ = env.step(a)
+        for i in range(NQ):
+            var e = abs(Float64(env.d.qpos.data[i]) - Float64(py=d.qpos[i]))
+            worst = max(worst, e)
+    return worst
+
+
+def test_limit_free_rollout_is_exact() raises:
+    """200 control steps under a commanded pose — the STRONG gate.
+
+    Unconstrained (max `nefc` 6), so this isolates FK + CRBA + RNE + the
+    `<position>` servo + Euler with nothing else in the loop. Measured
+    residual **2.7e-11**.
+
+    ⚠ THAT IS 5 ORDERS LOOSER THAN SO-100'S 2.2e-16 ON THE SAME GATE, and the
+    reason is the servo, not the engine: `kp = 998.22` here against SO-100's
+    50. A 20x stiffer spring integrated explicitly amplifies the last-place
+    difference in `qacc` every substep, 2 000 substeps deep. The bound below
+    is set from the measurement rather than copied from the other file — an
+    inherited tolerance is a placeholder.
+
+    ⚠⚠ THIS IS THE GATE THAT FOUND THE DEAD SERVO. With `kp`/`kv` unresolved
+    the classifier demoted all six actuators to plain `<motor>`, so `ctrl`
+    applied no force at all and the arm fell to its limits — 1.26 rad off on
+    `shoulder_pan` alone. Every static comparison in this file passed anyway.
+    """
+    var worst = _rollout_residual(True)
+    print("  commanded 200-step worst |dqpos| =", worst)
+    assert_true(worst < 1e-9, "commanded rollout residual " + String(worst))
+
+
+def test_zero_ctrl_rollout() raises:
+    """The same rollout at ctrl = 0 — a DIFFERENT trajectory, same regime.
+
+    ⚠ Unlike SO-100, this does NOT engage a joint limit (measured: max `nefc`
+    stays at 6 for both drives), so it is a second unconstrained trajectory
+    rather than a probe of the limit path. It is kept because a servo bug can
+    be direction-dependent, not because it covers anything the gate above
+    does not.
+
+    ⚠⚠ SO SO-101 GATES NOTHING ABOUT JOINT LIMITS. SO-100's zero-ctrl gate
+    does, at 2.4e-4. If the limit constraint regresses, only that file sees it.
+    """
+    var worst = _rollout_residual(False)
+    print("  zero-ctrl (no limits engaged) 200-step worst |dqpos| =", worst)
+    assert_true(worst < 1e-9, "zero-ctrl rollout residual " + String(worst))
+
+
+def test_arm_is_contact_free() raises:
+    """Pinned, because it bounds what every other gate here can prove.
+
+    MuJoCo produces `ncon = 0` for the bare arm at these poses. If that ever
+    stops being true the gates above start covering the mesh path — and if it
+    stays true, nothing here does. Either way it should be a measurement.
+    """
+    var mujoco = Python.import_module("mujoco")
+    var m = _mj()
+    var d = mujoco.MjData(m)
+    _load_reference(mujoco, m, d)
+    var worst_ncon = 0
+    for i in range(2000):
+        for k in range(NU):
+            d.ctrl[k] = _ctrl(k)
+        mujoco.mj_step(m, d)
+        worst_ncon = max(worst_ncon, Int(py=d.ncon))
+    print("  MuJoCo max ncon over the commanded rollout:", worst_ncon)
+    assert_true(
+        worst_ncon == 0,
+        "the arm now makes contact (ncon " + String(worst_ncon) + ") — the"
+        " gates in this file no longer bound the mesh path the way the header"
+        " claims; re-read it",
+    )
+
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()
