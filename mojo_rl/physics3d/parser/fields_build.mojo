@@ -1284,6 +1284,19 @@ def build_model_fields_from_flat[
                 except:
                     print("Warning: failed to load mesh:", gd.mesh_filename)
 
+    # ⚠ THE SECOND SILENT TRUNCATION OF THE SAME KIND. A collidable mesh past
+    # `MAX_GPU_MESHES` gets a hull built and an id assigned above, then no
+    # `mesh_meta` row here — so every consumer reads vertadr/vertnum 0 and
+    # collides against an empty mesh. The `<mesh>` asset cap that this comment's
+    # sibling in `full_parser.mojo` describes cost SO-ARM100 two collision
+    # surfaces exactly this way, and it took a per-geom `rbound` diff against
+    # MuJoCo to notice. Say so rather than break quietly.
+    if num_meshes > MAX_GPU_MESHES:
+        print(
+            "ERROR: model needs", num_meshes,
+            "collidable meshes but MAX_GPU_MESHES is", MAX_GPU_MESHES,
+            "- meshes", MAX_GPU_MESHES, "and up have NO collision geometry.",
+        )
     for m in range(num_meshes):
         if m >= MAX_GPU_MESHES:
             break

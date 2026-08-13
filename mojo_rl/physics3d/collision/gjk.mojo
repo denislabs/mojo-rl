@@ -278,6 +278,99 @@ comptime _HILLCLIMB_MIN: Int = 10
 
 
 @always_inline
+def hillclimb_support_index[
+    DTYPE: DType,
+    NMESH_VERTS: Int,
+](
+    ld_x: Scalar[DTYPE],
+    ld_y: Scalar[DTYPE],
+    ld_z: Scalar[DTYPE],
+    mesh_verts: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+    ],
+    vert_adr: Int,
+    num_verts: Int,
+    warm: Int,
+) -> Int:
+    """LOCAL index of the hull vertex maximising `dot(vertex, ld)`, or -1.
+
+    `ld` is the direction in the MESH'S OWN frame — callers holding a world or
+    plane-frame direction must rotate it in first (`quat_rotate_inverse`).
+
+    -1 means "this mesh has no usable graph": either it is below
+    `_HILLCLIMB_MIN` vertices or its adjacency is absent, and the caller must
+    fall back to a linear scan. Returning a sentinel rather than silently
+    scanning here keeps the fallback visible at each call site, which matters
+    because the two call sites want DIFFERENT things from it — `_support_mesh`
+    needs the point, `_plane_mesh_contacts` needs the index AND the heights it
+    computes along the way.
+
+    ⚠⚠ EXTRACTED SO THERE IS ONE HILL CLIMB, NOT TWO. `_plane_mesh_contacts`
+    reproduced this function's job as a full linear argmin over every hull
+    vertex — the very scan this replaced inside GJK — while its NEIGHBOUR walk
+    already used the graph. Measured with per-stage timers, that one scan was
+    8.1 µs/step on SO-ARM100 and 11.1 µs/step on SO-ARM101, i.e. 23-25% of the
+    whole physics step, and on SO-101 it was a SINGLE call per step. MuJoCo
+    calls `mjccd_support` there for exactly this reason
+    (`mjc_PlaneConvex`, `engine_collision_convex.c:1010`).
+    """
+    var graph_head = Int(rebind[Scalar[DTYPE]](mesh_vert_edgeadr[vert_adr]))
+    if num_verts < _HILLCLIMB_MIN or graph_head < 0:
+        return -1
+
+    # Greedy walk. `imax` is a LOCAL vertex index; `mesh_edges` holds
+    # GLOBAL ones, so neighbours are converted on the way in.
+    # ⚠ THE GUARD IS NOT PARANOIA ABOUT CALLERS, IT IS THE THING THAT MAKES
+    # A CROSSED INDEX HARMLESS. `warm` arrives as -1 on the first call of a
+    # pair, and a caller that threaded object 1's index into object 2 would
+    # otherwise walk off the end of a smaller mesh into whatever vertices
+    # follow it in the model-wide slab. Clamping to 0 turns that into lost
+    # speed rather than a support point belonging to another geom.
+    var imax = warm if (warm >= 0 and warm < num_verts) else 0
+    var best_dot = (
+        ld_x * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + imax, 0])
+        + ld_y * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + imax, 1])
+        + ld_z * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + imax, 2])
+    )
+    var prev = -1
+    # ⚠ THE STEP BUDGET IS A HANG GUARD, NOT AN ALGORITHMIC BOUND. The
+    # walk is monotone in `best_dot` and so cannot cycle on a well-formed
+    # graph; it terminates in far fewer than `num_verts` steps. A malformed
+    # adjacency would otherwise spin forever inside the physics step, and a
+    # frozen viewer is the one failure mode here that costs a debugging
+    # session rather than a test run.
+    var budget = num_verts
+    while imax != prev and budget > 0:
+        budget -= 1
+        prev = imax
+        var e = Int(
+            rebind[Scalar[DTYPE]](mesh_vert_edgeadr[vert_adr + imax])
+        )
+        if e < 0:
+            break
+        while True:
+            var nb = Int(rebind[Scalar[DTYPE]](mesh_edges[e]))
+            if nb < 0:
+                break
+            var d = (
+                ld_x * rebind[Scalar[DTYPE]](mesh_verts[nb, 0])
+                + ld_y * rebind[Scalar[DTYPE]](mesh_verts[nb, 1])
+                + ld_z * rebind[Scalar[DTYPE]](mesh_verts[nb, 2])
+            )
+            if d > best_dot:
+                best_dot = d
+                imax = nb - vert_adr
+            e += 1
+    return imax
+
+
+@always_inline
 def _support_mesh[
     DTYPE: DType,
     NMESH_VERTS: Int,
@@ -388,51 +481,12 @@ def _support_mesh[
     var best_y: Scalar[DTYPE] = 0
     var best_z: Scalar[DTYPE] = 0
 
-    var graph_head = Int(rebind[Scalar[DTYPE]](mesh_vert_edgeadr[vert_adr]))
-    if num_verts >= _HILLCLIMB_MIN and graph_head >= 0:
-        # Greedy walk. `imax` is a LOCAL vertex index; `mesh_edges` holds
-        # GLOBAL ones, so neighbours are converted on the way in.
-        # ⚠ THE GUARD IS NOT PARANOIA ABOUT CALLERS, IT IS THE THING THAT MAKES
-        # A CROSSED INDEX HARMLESS. `warm` arrives as -1 on the first call of a
-        # pair, and a caller that threaded object 1's index into object 2 would
-        # otherwise walk off the end of a smaller mesh into whatever vertices
-        # follow it in the model-wide slab. Clamping to 0 turns that into lost
-        # speed rather than a support point belonging to another geom.
-        var imax = warm if (warm >= 0 and warm < num_verts) else 0
-        var best_dot = (
-            ld_x * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + imax, 0])
-            + ld_y * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + imax, 1])
-            + ld_z * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + imax, 2])
-        )
-        var prev = -1
-        # ⚠ THE STEP BUDGET IS A HANG GUARD, NOT AN ALGORITHMIC BOUND. The
-        # walk is monotone in `best_dot` and so cannot cycle on a well-formed
-        # graph; it terminates in far fewer than `num_verts` steps. A malformed
-        # adjacency would otherwise spin forever inside the physics step, and a
-        # frozen viewer is the one failure mode here that costs a debugging
-        # session rather than a test run.
-        var budget = num_verts
-        while imax != prev and budget > 0:
-            budget -= 1
-            prev = imax
-            var e = Int(
-                rebind[Scalar[DTYPE]](mesh_vert_edgeadr[vert_adr + imax])
-            )
-            if e < 0:
-                break
-            while True:
-                var nb = Int(rebind[Scalar[DTYPE]](mesh_edges[e]))
-                if nb < 0:
-                    break
-                var d = (
-                    ld_x * rebind[Scalar[DTYPE]](mesh_verts[nb, 0])
-                    + ld_y * rebind[Scalar[DTYPE]](mesh_verts[nb, 1])
-                    + ld_z * rebind[Scalar[DTYPE]](mesh_verts[nb, 2])
-                )
-                if d > best_dot:
-                    best_dot = d
-                    imax = nb - vert_adr
-                e += 1
+    var imax = hillclimb_support_index[DTYPE, NMESH_VERTS](
+        ld_x, ld_y, ld_z,
+        mesh_verts, mesh_vert_edgeadr, mesh_edges,
+        vert_adr, num_verts, warm,
+    )
+    if imax >= 0:
         # Hand the landing vertex back so the next call starts here. Dropping
         # this line does not break a single result — it silently reverts the
         # walk to starting from vertex 0 every time, which is why

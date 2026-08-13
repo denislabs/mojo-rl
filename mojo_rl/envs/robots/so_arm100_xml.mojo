@@ -475,4 +475,12 @@ comptime SO_ARM100_OBS_DIM: Int = 21
 #
 # ⚠ NOT the raw STL total of 16 939 either; the hull is a small subset. See
 # `sawyer_reach_config.mojo` on getting that wrong by 4.5x.
-comptime SO_ARM100_NMESH_VERTS: Int = 2560
+#
+# ⚠⚠ RAISED 2560 -> 2746 WHEN TWO COLLISION MESHES CAME BACK. The `<mesh>`
+# asset parser stopped at 16 entries, and this model declares 18, so
+# `Moving_Jaw_Collision_2` and `_3` never reached the asset table:
+# `mesh_id -1`, no hull, no collision geometry, and `rbound` left at the mesh
+# default 0.5 against MuJoCo's 0.0279 and 0.0309. 2560 was measured with those
+# two absent, so it was a budget for the wrong model. See `full_parser.mojo`'s
+# mesh-asset loop.
+comptime SO_ARM100_NMESH_VERTS: Int = 2746

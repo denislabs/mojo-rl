@@ -1150,9 +1150,30 @@ def _fill_assets(
         mat_pos = tag_end + 1
 
     # ---- Mesh assets ----------------------------------------------------------
+    #
+    # ⚠⚠ THIS LOOP USED TO STOP AT 16 ASSETS, SILENTLY. `<mesh>` number 17
+    # onwards never entered `mesh_asset_names`, so the name lookup below found
+    # nothing and left the geom at `mesh_id = -1`. A mesh geom with no mesh does
+    # not fail loudly: `fields_build` skips the hull load, `rbound` keeps its
+    # per-type fallback (`gd.radius`, i.e. MuJoCo's default size 0.5 for a
+    # mesh) and the geom carries NO COLLISION GEOMETRY while still being 16-18x
+    # too big for every broadphase test it takes part in.
+    #
+    # Measured on SO-ARM100, which declares 18 mesh assets: geoms 26 and 27 —
+    # `Moving_Jaw_Collision_2` and `_3`, the moving jaw's actual contact
+    # surfaces — had `mesh_id -1` and `rbound 0.5` against MuJoCo's 0.0279 and
+    # 0.0309. The visible symptom was performance, not a missing contact: the
+    # bounding-sphere reject let 11 pairs per step into GJK where MuJoCo
+    # narrow-phases 2, because those two spheres swallow the whole arm.
+    #
+    # ⚠ THE CAP WAS NOT `MAX_GPU_MESHES` AND MUST NOT BE CONFUSED WITH IT. That
+    # limit is on LOADED (collidable) meshes and is enforced in `fields_build`;
+    # this list is the XML's asset table, most of which is usually visual-only.
+    # SO-ARM100 loads 8 collidable meshes out of 18 declared, so it was nowhere
+    # near the real limit when this silently truncated it.
     var mesh_pos = 0
     var mesh_count = 0
-    while mesh_count < 16:
+    while True:
         var t = asset_sec.find("<mesh", mesh_pos)
         if t == -1:
             break

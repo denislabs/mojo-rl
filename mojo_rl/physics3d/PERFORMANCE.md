@@ -1,188 +1,251 @@
 # physics3d CPU performance — where the time goes, and what is left
 
-Measured 2026-08-13 on Apple M1 Pro, `float32`, single env, against MuJoCo
-3.10.0 (`float64`) stepping the same two XMLs.
+Measured 2026-08-13, revised 2026-08-14, on Apple M1 Pro, `float32`, single
+env, against MuJoCo 3.10.0 (`float64`) stepping the same two XMLs.
 
-The short version: **the remaining gap to MuJoCo is algorithmic, not Mojo-vs-C.**
-Every phase where we run the same algorithm runs at MuJoCo's speed or faster.
-All of the gap is collision, and most of the collision gap is one missing
-acceleration structure.
+The short version: **the gap to MuJoCo is algorithmic, not Mojo-vs-C.** Every
+phase where we run the same algorithm runs at MuJoCo's speed or faster, and all
+of the gap is collision.
+
+⚠⚠ **THE 2026-08-13 REVISION GOT THE CAUSE WRONG AND §4 IS ITS RETRACTION.** It
+named a missing mid-phase BVH as the largest prize, from a node count that is
+99.99% mesh-face BVH the collision path never reads. What the gap actually was:
+one linear scan that should have been a hill climb (§3), one silently truncated
+model (§5.2), and — all that is left — the cost of a single support query
+(§6.1). Two optimisations aimed at the broadphase measured exactly zero, twice,
+because the broadphase is 0.91 µs (§5.1).
 
 ---
 
 ## 1. Headline
 
-Per **physics** step (env step ÷ `FRAME_SKIP=10`):
+Per **physics** step (env step ÷ `FRAME_SKIP=10`), `float32`, against MuJoCo
+3.10.0 (`float64`) stepping the same two XMLs.
 
-| model | ours | MuJoCo | ratio |
+| model | before | after | speedup |
 |---|---|---|---|
-| SO-ARM100 | 34.6 µs | 7.8 µs | 4.4× |
-| SO-ARM101 | 45.5 µs | 12.3 µs | 3.7× |
+| SO-ARM100 | 15.42 s | **9.47 s** | **1.63×** |
+| SO-ARM101 | 20.33 s | **15.85 s** | **1.28×** |
 
-⚠ **WE ARE 4× SLOWER WHILE CARRYING HALF THE PRECISION.** These runs are
-`float32`; MuJoCo is `float64` throughout. The honest gap is therefore worse
-than 4×, not better.
+(40 000 env steps = 400 000 physics steps; MIN of 4 interleaved rounds against
+a pristine worktree. ⚠ SO-ARM100's "after" carries **two more collision meshes
+than its "before"** — see §5.2 — so it is doing strictly more work.)
 
-Both models are `nq = nv = nu = 6`, `nbody = 8`, and sit at `ncon` 1 and 0
-respectively — so what is being compared is almost entirely **the cost of
-proving that geoms are apart**, not the cost of resolving contact.
+⚠ **WE ARE STILL SLOWER WHILE CARRYING HALF THE PRECISION.** These runs are
+`float32`; MuJoCo is `float64` throughout. The honest gap is worse than the
+ratio, not better.
+
+Both models are `nq = nv = nu = 6`, `nbody = 8`, and sit at `ncon` 1 and 0 — so
+what is compared is almost entirely **the cost of proving that geoms are
+apart**, not the cost of resolving contact.
 
 ---
 
-## 2. Phase breakdown
+## 2. What landed, and what it was worth
 
-Ours from `sample` on a built binary, attributed exclusively (every sample
-charged to the deepest phase on its stack, so phases partition the step).
-MuJoCo from its own `mjTIMER_*` counters, calibrated against wall clock.
-
-### SO-ARM100 — 34.6 µs vs 7.8 µs
-
-| phase | ours | MuJoCo | ratio |
-|---|---|---|---|
-| forward kinematics + `cdof` + `subtree_com` | 0.76 | 0.60 | 1.3× |
-| mass matrix (CRBA) + LDL | 0.47 | 0.16 | 2.9× |
-| constraint build + solve | 3.5 | 2.0 | 1.8× |
-| **collision, total** | **29.0** | **4.2** | **7.0×** |
-| — broadphase + primitive narrow phase (unsplit, see §5) | 15.2 | 1.0 | — |
-| — mid-phase BVH | **0** | 1.1 | — |
-| — GJK/EPA | 13.8 | 2.0 | 6.8× |
-| env glue (obs, reward, action) | 0.87 | — | — |
-
-### SO-ARM101 — 45.5 µs vs 12.3 µs
-
-| phase | ours | MuJoCo | ratio |
-|---|---|---|---|
-| forward kinematics + `cdof` + `subtree_com` | 0.83 | 0.61 | 1.4× |
-| mass matrix (CRBA) + LDL | 0.53 | 0.16 | 3.4× |
-| constraint build + solve | 1.08 | 1.85 | **0.6×** |
-| **collision, total** | **42.1** | **8.6** | **4.9×** |
-| — broadphase + primitive narrow phase (unsplit) | 16.4 | 0.9 | — |
-| — mid-phase BVH | **0** | 5.5 | — |
-| — GJK/EPA | 25.7 | 2.2 | 11.5× |
-| env glue | 0.84 | — | — |
-
-Collision is **84% / 93%** of our step against **53% / 71%** of MuJoCo's.
-
----
-
-## 3. This is not a codegen gap
-
-The parts of the engine that implement the same algorithm as MuJoCo, on the
-same data, land between **0.6× and 3.4×** — and our constraint path on
-SO-ARM101 is *faster* than MuJoCo's. CRBA, RNE, forward kinematics, LDL and the
-Newton solve are all dense scalar float code with no acceleration structure on
-either side, which makes them the clean control for the language question.
-They pass.
-
-⚠ **A SECOND, INDEPENDENT CHECK POINTS THE SAME WAY.** Both pair loops in
-`broadphase_sap.mojo` called `mix_contact_params` — a 24-field read plus
-MuJoCo's priority-mixing rule — *before* the bounding-sphere reject, so nearly
-every rejected pair paid for parameters it discarded. That looks like free
-money. Hoisting the reject above the mix and re-measuring over 12 interleaved
-rounds gave **16.46 s → 16.29 s mean** on SO-ARM100, inside the round-to-round
-variance, with the modified arm *slower* in 4 of the last 5 rounds. The change
-was reverted.
-
-The compiler was already sinking those dead loads past the branch. We are not
-losing time to the kind of redundancy a compiler cannot see — which is exactly
-what "not a codegen gap" predicts.
-
----
-
-## 4. What MuJoCo has that we do not: a mid-phase BVH
-
-MuJoCo builds a bounding-volume hierarchy per mesh, over triangles, plus a
-per-body BVH over geoms (`mjModel.mesh_bvhadr`, `body_bvhadr`, `nbvh`):
-
-| model | mesh verts | MuJoCo BVH nodes |
+| change | SO-ARM100 | SO-ARM101 |
 |---|---|---|
-| SO-ARM100 | 30 172 | 123 136 |
-| SO-ARM101 | 160 796 | 645 136 |
-
-We have none. And the trade is visible in the numbers above: on SO-ARM101
-MuJoCo **spends 5.5 µs** descending that tree so that its narrow phase finishes
-in **2.2 µs**. Ours skips the tree and pays **25.7 µs** in GJK. MuJoCo nets 7.7 µs
-against our 25.7 — it pays to save.
-
-⚠ **THIS IS WHY THE RATIO GETS WORSE AS GEOMETRY GROWS.** SO-ARM101 carries 5×
-the mesh vertices of SO-ARM100 and our GJK cost nearly doubles while MuJoCo's
-narrow phase moves 2.0 → 2.2 µs. A cost that tracks model size where the
-reference's does not is the signature of a missing acceleration structure, not
-of slow arithmetic.
+| plane-mesh support point: full argmin → hill climb (§3) | 1.21× | 1.28× |
+| `<mesh>` asset cap silently truncating the model (§5.2) | 1.63× cumulative | n/a (13 assets) |
+| per-pair static filter decode hoisted out of the sweep | **reverted, 0** | **reverted, 0** |
 
 ---
 
-## 5. ⚠ THE LARGEST SINGLE BUCKET IS NOT YET ATTRIBUTED
+## 3. `_plane_mesh_contacts` was scanning every hull vertex
 
-15.2 µs (SO-ARM100) and 16.4 µs (SO-ARM101) are charged to
-`broadphase_sap::detect_contacts_sap`, which `sample` reports as a **leaf** —
-everything except the out-of-line `gjk_epa_witness` call is inlined into it.
-That bucket therefore contains, undifferentiated:
+MuJoCo's `mjc_PlaneConvex` calls `mjccd_support` — the hill climb — to find the
+deepest vertex, then walks only that vertex's hull-edge neighbours
+(`engine_collision_convex.c:1010`). Ours hill-climbed for the *neighbours* but
+took a **full linear argmin over every hull vertex** for the support point
+itself. The docstring said so in plain sight.
 
-- world pose + AABB for all ~32 geoms,
-- the SAP sweep,
-- the pair filters (`find_predefined_pair`, `pair_body_filtered`, contype/
-  conaffinity, both bounding-sphere rejects),
-- **every primitive narrow-phase branch** (sphere, capsule, box, plane-*),
-  including `_plane_mesh_contacts`.
+Measured with per-stage timers over 20 000 physics steps:
 
-So "our broadphase is 15× MuJoCo's" **is not a claim this profile supports** —
-MuJoCo's 1.0 µs `COL_BROAD` is broadphase alone. Splitting our bucket needs
-counters or ablation builds and is the prerequisite for optimising it.
+| stage | SO-ARM100 | SO-ARM101 |
+|---|---|---|
+| 1 world poses | 0.23 | 0.24 |
+| 2 AABBs + pair margins | 0.11 | 0.10 |
+| **3 plane loop** | **8.06** | **11.12** |
+| 4 SAP sweep + narrow phase | 23.34 | 36.26 |
 
-A hint worth following: the bucket is **nearly identical** across two models
-whose hull sizes differ by 13× (15.2 vs 16.4 µs). Whatever dominates it scales
-with **geom and pair count**, not with mesh size — which points at per-pair
-setup rather than at any vertex loop.
+On SO-ARM101 that 11.12 µs was **one call per step**, scanning one ~4 000-vertex
+hull — 23–25% of the whole physics step on both arms. After the change: **1.29
+µs** and **0.29 µs**.
+
+Minimising height above a plane *is* a support query: height is
+`p_z + dot(v, Rᵀe_z)`, so the lowest vertex maximises `dot(v, Rᵀ(0,0,−1))`. The
+hill climb is exact from any start vertex (a local maximum of a linear
+functional on a convex polytope's 1-skeleton is global), so this is a pure
+speed change — and it moves us *toward* the reference, not away.
+
+⚠ ONE TIE-BREAK CHANGES. On an exact plateau (a facet lying flat on the plane)
+the climb stops at the first local maximum, where the argmin took the lowest
+index. `best_h` is identical either way, but the up-to-two EXTRA contacts are
+drawn from that vertex's neighbours, so which extras appear can differ. The
+Jaco plane-mesh contact-set gate against MuJoCo passes unchanged.
 
 ---
 
-## 6. Levers, ranked
+## 4. ⚠ RETRACTED: "MuJoCo has a mid-phase BVH worth 5–12×"
 
-### 6.1 Split the 15 µs bucket (prerequisite, cheap)
+**The previous version of this document was wrong, and this was its main
+recommendation.** It reported that MuJoCo builds 123 136 BVH nodes for
+SO-ARM100 and 645 136 for SO-ARM101 while we build none, and ranked
+implementing one as the largest available prize. Splitting that node count by
+consumer kills the claim:
 
-Counters on: candidate pairs entering the pair loop, pairs surviving each
-filter, GJK calls, `_plane_mesh_contacts` vertex iterations. Or ablation
-builds that stub out one stage at a time. Nothing below should be built before
-this says where the time is.
+| model | body-geom BVH nodes | mesh-face BVH nodes |
+|---|---|---|
+| SO-ARM100 | **30** | 123 106 |
+| SO-ARM101 | **21** | 645 115 |
 
-### 6.2 Mid-phase BVH (largest measured prize, largest build)
+`mj_collideTree` — the mid-phase — descends `body_bvhadr`, and that is the
+30-and-21 column. Six of SO-ARM100's eight bodies have a **single** node, i.e.
+no pruning at all. The other 99.99% are `mesh_bvhadr`, a BVH over mesh *faces*
+whose only consumers in the source are `engine_ray.c`, `engine_collision_sdf.c`
+and the visualiser. **Both models have zero SDF geoms and cast no rays**, so
+the collision path never touches those nodes.
 
-Worth 5–12× on narrow phase by the §4 comparison. Also the change most likely
-to disturb contact parity, so it wants the existing MuJoCo-comparison suites
-green at every step. MuJoCo's own hull graph is already parsed for the hill
-climb, so some of the input structure exists.
+⚠ **AND THE PAIR COUNTS SAY THE MID-PHASE IS NOT WHERE THE GAP IS.** Replicating
+`filterBodyPair` + `mj_filterSphere` on MuJoCo's own per-step state and
+comparing against our stage counters:
 
-### 6.3 Temporal coherence: a per-pair separation cache (best value/cost)
+| | static pairs, MuJoCo / ours | reaching narrow phase, MuJoCo / ours |
+|---|---|---|
+| SO-ARM100 | 65 + 17 / **65 + 17** | 2.0 + 5.0 / **2.02 + 4.97** |
+| SO-ARM101 | 45 + 13 / **45 + 13** | 4.0 + 1.0 / **4.0 + 1.0** |
 
-GJK already returns a **distance**, and we already carry per-pair warm-start
-state. If a pair was 17 cm apart last step, and a bound on how far the two
-geoms can have moved since is smaller than that, the pair **cannot** be
-touching and needs no narrow phase at all.
+Our broadphase now selects **the same pairs MuJoCo does, pair for pair, on both
+models**. There is no pruning left to win. (Before §5.2 it was 11.0 + 6.97 on
+SO-ARM100 — that gap was a model bug, not a missing acceleration structure.)
 
-⚠ **MAKE IT CONSERVATIVE, NOT APPROXIMATE.** Bound the closing speed from the
-geoms' body velocities and their bounding radii, subtract `dt ×` that bound
-from the cached distance, and only skip while the result stays positive. Built
-that way it is exact — it can lose speed, never a contact — which is what keeps
-the parity suites meaningful. Built as a heuristic it silently drops contacts
-and no existing gate would catch it.
+---
 
-MuJoCo does **not** do this, so it is a place where we could go faster than the
-reference rather than merely catch up.
+## 5. Splitting the 15 µs bucket — and what was hiding in it
 
-### 6.4 Hoist static geoms
+The previous §5 flagged 15.2 / 16.4 µs charged to `detect_contacts_sap`, which
+`sample` reports as a leaf, and called splitting it the prerequisite for
+everything else. That was right. Two instruments did it: stage counters written
+into a widened `smeta`, and `perf_counter_ns` around each stage.
 
-Geoms welded to the world never move, yet their world pose and AABB are
-recomputed every step in stage 1/2 of `_detect_contacts_sap_env`. Small, cheap,
-and it attacks the §5 bucket directly.
+### 5.1 ⚠ The pair loop was NOT the bucket — the earlier inference was wrong
 
-### 6.5 SIMD / vectorisation — see §7
+The counters showed ~465 candidate pairs per step on **both** arms, with the
+body/weld/contype filter — pure static model data — discarding 86% and 90% of
+them. The x-sweep rejects 8 of 496 possible pairs on SO-ARM100 and **none** on
+SO-ARM101 (an arm is a compact object; every geom overlaps every other in x),
+and the y/z AABB test rejects 4% and 0%.
 
-### 6.6 Newton iteration count on SO-ARM100
+That looked conclusive, and it was wrong. Hoisting the static decode to once
+per geom measured **15.60 → 15.72 s over 5 interleaved rounds** — nothing —
+and was reverted. The ablation says why: stubbing the geom-geom narrow phase
+leaves the **entire sweep** — 487 iterations, 466 AABB tests, 65 filter and mix
+evaluations, 65 bounding-sphere tests — at **0.91 µs/step**.
 
-Our constraint phase is 1.8× MuJoCo's on SO-ARM100 but **0.6×** on SO-ARM101,
-which is odd for 9 rows against 6. MuJoCo converges in a single iteration on
-both (`d.solver_niter == 1`). Ours is unmeasured. Worth one counter.
+⚠ **THE BROADPHASE IS 0.91 µs AND WAS NEVER THE PROBLEM.** Two separate
+optimisations aimed at it (this one, and the `mix_contact_params` hoist in the
+previous revision) both measured zero, because there is under a microsecond
+there to win. The invariance that pointed at the pair loop — the bucket being
+~15 µs on both arms while `_plane_mesh_contacts` ran 7×/step on one and 1× on
+the other — was a coincidence of two different costs summing alike.
+
+### 5.2 The `<mesh>` asset table was silently truncated at 16
+
+`full_parser.mojo` parsed `<mesh>` assets under `while mesh_count < 16`.
+SO-ARM100 declares **18**, so `Moving_Jaw_Collision_2` and `_3` never entered
+the asset table. A mesh geom whose name does not resolve keeps `mesh_id = -1`,
+which fails silently in every direction:
+
+- no hull is built, so **the geom has no collision geometry at all**;
+- `rbound` keeps its per-type fallback — `gd.radius`, i.e. MuJoCo's default
+  size **0.5** — against MuJoCo's 0.0279 and 0.0309, **16–18× too large**.
+
+The visible symptom was performance, not a missing contact: two bounding
+spheres that swallow the whole arm let **11 pairs per step into GJK where
+MuJoCo narrow-phases 2**. After the fix both `rbound` values match MuJoCo to
+six digits, the two hulls load at 8 and 187 vertices (MuJoCo: 8 and 187), and
+the call counts match exactly (§4).
+
+⚠ THE CAP WAS NOT `MAX_GPU_MESHES` AND MUST NOT BE CONFUSED WITH IT. That limit
+is on **loaded, collidable** meshes; this was the XML's **asset table**, most of
+which is usually visual-only. SO-ARM100 loads 8 collidable meshes out of 18
+declared — nowhere near the real limit when this truncated it. `fields_build`
+had the same silent `break` on `MAX_GPU_MESHES`; it now prints an error.
+
+⚠ `NMESH_VERTS` HAD TO RISE 2560 → 2746, and that number had been *measured* —
+with the two meshes absent. A capacity constant calibrated against a model that
+is silently missing part of itself is a budget for the wrong model.
+
+Among the repo's own baked models only SO-ARM100 exceeds 16 assets (SO-ARM101
+has 13, the dm_control manipulation set 9). Menagerie trees parsed at runtime
+go far higher — `trossen_wxai` 125, `flybody` 85 — so anything ported from
+there was affected.
+
+---
+
+## 6. Where the time is now, and the levers that are left
+
+Final stage split, 20 000 physics steps (⚠ stage timers are optimisation
+barriers and add ~2%; use these for proportions, not absolutes):
+
+| stage | SO-ARM100 | SO-ARM101 |
+|---|---|---|
+| world poses + AABBs | 0.52 | 0.49 |
+| plane loop | 1.44 | 0.29 |
+| SAP sweep proper (ablation, §5.1) | 0.91 | ~0.9 |
+| **GJK/EPA** | **11.21** (2.02 calls, 5.56 µs ea) | **34.94** (4 calls, 8.74 µs ea) |
+| rest of narrow phase (multicontact, contact emission) | ~8.8 | ~8.5 |
+
+### 6.1 GJK per-call cost is now the whole story
+
+We run **the same number of convex calls as MuJoCo on the same pairs** (§4),
+and MuJoCo's entire narrow phase — sphere rejects included — is 2.57 µs
+(SO-ARM100) and 2.77 µs (SO-ARM101). Ours is ~20 µs and ~43 µs. That is
+**~8–16× per call**, and it is not explained by hull size: our hulls total
+2 746 and 33 280 vertices against MuJoCo's 15 689 and 50 162.
+
+Where it goes, from a de-inlined build under `sample` (SO-ARM101):
+
+| symbol | % of physics step |
+|---|---|
+| `gjk::hillclimb_support_index` | **54.1** |
+| `broadphase_sap::detect_contacts_sap` | 17.9 |
+| `gjk::gjk_epa_witness` | 10.8 |
+| `gjk::_support` / `_support_mesh` | 8.4 |
+
+**The support walk is 62% of the step.** The open question is whether that is
+*many* queries or *long* walks per query — the counters to answer it are a step
+counter threaded through `hillclimb_support_index`, which is the next thing to
+build. Calibration measured so far: disabling the intra-call warm start costs
+**16.45 → 21.38 s** (+30%), so walks are long enough for the seed to matter,
+but the first query is only one of ~N per call, which caps a cross-step warm
+cache at well under that.
+
+### 6.2 The unattributed ~8.5 µs of narrow phase
+
+GJK is 11.2 of the 20 µs on SO-ARM100; the rest is multi-CCD / native
+multicontact / `_fill_pair_solparams` for **two pairs**. MuJoCo's multicontact
+runs up to four extra perturbed CCD passes, so this is plausibly more support
+walks — i.e. the same root cause as §6.1 — but it has not been separated. Ablate
+`MC_ENABLED` and re-time.
+
+### 6.3 Temporal coherence: a per-pair separation cache
+
+Unchanged from the previous revision, and now the only structural idea left.
+GJK already returns a **distance** and we already carry per-pair warm state. If
+a pair was 17 cm apart last step and a bound on how far the geoms can have moved
+is smaller than that, the pair cannot be touching and needs no narrow phase.
+
+⚠ MAKE IT CONSERVATIVE, NOT APPROXIMATE. Bound closing speed from body
+velocities and bounding radii, subtract `dt ×` that bound, and skip only while
+the result stays positive. Built that way it can lose speed, never a contact.
+MuJoCo does **not** do this, so it is a place to go faster than the reference
+rather than catch up.
+
+### 6.4 Newton iteration count on SO-ARM100
+
+Still unmeasured. MuJoCo converges in one iteration on both models
+(`d.solver_niter == 1`). Worth one counter.
 
 ---
 
@@ -217,8 +280,9 @@ in nightly and it emits the same code as the explicit loop.
 
 ### ⚠ 7.2 The hottest loop in the engine is the wrong shape for SIMD
 
-`_support_mesh`'s hill climb (`collision/gjk.mojo`) is where narrow-phase time
-goes, and it is hostile to vectorisation on three counts at once:
+The hill climb in `collision/gjk.mojo` is where narrow-phase time goes —
+`hillclimb_support_index` alone is **54% of the SO-ARM101 physics step**
+(§6.1) — and it is hostile to vectorisation on three counts at once:
 
 - **Gather, not contiguous load.** Neighbours come from `mesh_edges`, so the
   vertex reads are `mesh_verts[nb, 0..2]` at scattered `nb`.
@@ -231,26 +295,28 @@ This loop is **latency-bound, not throughput-bound**. Expect ~0 from SIMD here.
 The linear-scan fallback below it *is* contiguous and vectorisable — and by
 construction only runs for meshes under `_HILLCLIMB_MIN = 10` vertices.
 
-### 7.3 Where SIMD could actually pay
+### ⚠ 7.3 There is no longer a candidate worth vectorising
 
-**The broadphase pair loop is the one good fit.** Hundreds of independent pair
-tests per step, pure arithmetic, no dependencies — the textbook case. The
-blocker is layout: geoms live in an AoS `LayoutTensor[NGEOM, MODEL_GEOM_SIZE]`,
-so testing 4 pairs at once means 4 strided gathers. Getting real width needs
-**SoA columns** (`pos_x[]`, `pos_y[]`, `pos_z[]`, `rbound[]`), at which point
-one AABB or bounding-sphere test per lane is straightforward. That is a data
-layout change, not a loop rewrite, and it should follow §6.1 — there is no
-point vectorising a stage before knowing what fraction of 15 µs it is.
+The previous revision named the broadphase pair loop as "the one good fit" —
+hundreds of independent pair tests, pure arithmetic, no dependencies — and
+proposed an SoA geom layout to feed it. **§5.1 killed that: the entire sweep is
+0.91 µs/step.** An SoA rewrite of the geom tables to vectorise a stage that
+costs under a microsecond cannot repay itself, and the two scalar optimisations
+already aimed at the same loop both measured zero.
 
-**Dynamics is contiguous and vectorisable and not worth it.** CRBA, LDL and the
-Jacobians are dense small-matrix loops. They are also **1.2 µs of a 34.6 µs
-step** — Amdahl caps the whole category at ~3%.
+That leaves nothing:
 
-⚠ **DO THE AMDAHL ARITHMETIC FIRST.** Collision is 84–93% of the step; the hill
-climb inside it cannot be vectorised; dynamics is ~3% of it. A realistic ceiling
-for SIMD on the step *as it stands today* is single-digit percent. It becomes
-worth real effort only **after** §6.1 identifies a vectorisable stage inside the
-15 µs bucket, or alongside the SoA change in §7.3.
+- **the support walk** — 62% of the step — is latency-bound and un-vectorisable
+  (§7.2);
+- **the broadphase** is 0.91 µs;
+- **dynamics** (CRBA, LDL, Jacobians) is contiguous and vectorisable and is
+  **1.2 µs of the step** — Amdahl caps the whole category at ~3%.
+
+⚠ **DO THE AMDAHL ARITHMETIC FIRST, AND THIS TIME IT SAYS DON'T.** SIMD is not
+a lever on this workload as it stands. It becomes one only if §6.1 turns the
+support query into a bulk operation — e.g. evaluating a whole neighbour ring
+per step rather than one vertex at a time, which *is* a gather but is at least
+wide.
 
 ### 7.4 A note on the GPU path
 
@@ -281,6 +347,38 @@ python3 benchmarks/physics3d_sample_phases.py /tmp/s.txt
 ```
 
 ⚠ **`mojo run` PROFILES THE JIT.** Build a binary or the sample is warmup.
+
+⚠ **`sample` CANNOT SEE INSIDE `gjk_epa_witness`** — the support functions, the
+simplex and EPA are all inlined into it, so it reports as a leaf holding 72% of
+the step. To break it open, mark `hillclimb_support_index` / `_support_mesh` /
+`_support` `@no_inline` **in a throwaway worktree** and re-sample; that is where
+the 54% in §6.1 comes from. It changes codegen, so use it for proportions only.
+
+**Stage counters and stage timers** — what actually split §5's bucket, and
+neither is in the repo (both are throwaway instrumentation):
+
+1. Widen `METADATA_SIZE` (`gpu/constants.mojo`) from 8 to ~40 in a worktree.
+   Everything that allocates `smeta` sizes from that constant, so slots 8+
+   become free scratch reachable from `_detect_contacts_sap_env` with **no
+   signature changes** — which matters, because Mojo nightly has no
+   module-level mutable global to hang a counter on.
+2. Increment `smeta[env, k]` at each filter stage for counts, or bracket each
+   stage with `perf_counter_ns()` for times, then read `e.d.meta.data[k]` after
+   the rollout.
+
+⚠ **ACCUMULATE MICROSECONDS, NOT NANOSECONDS.** `smeta` is the model dtype;
+float32's 24-bit mantissa stops resolving unit increments past ~1.7e7, and a
+nanosecond total over 20 000 steps sails past that — the counter silently stops
+advancing rather than overflowing.
+
+⚠ **STAGE TIMERS ARE OPTIMISATION BARRIERS.** They prevent the compiler sinking
+work across a stage boundary, so they measure a slightly different build.
+Proportions are trustworthy; absolutes are not.
+
+⚠ **PREFER ABLATION TO INFERENCE FOR THE LAST STEP.** The counters said the pair
+loop dominated and that was wrong (§5.1). Stubbing the stage and re-timing is
+what settled it — an ablation answers "how much does this cost" directly, where
+a counter only answers "how often does this run".
 
 ⚠ **RUN THE BINARY FROM THE REPO ROOT.** Mesh assets resolve by repo-relative
 path; from anywhere else the STLs fail to load, the engine prints a warning

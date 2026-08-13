@@ -55,7 +55,14 @@ from ..dm_control.rewards import tolerance
 
 
 struct SoArmReachConfig[
-    NMESHV: Int,
+    # ⚠ NOT `NMESHV`. `Phyics3dEnvConfig.custom_reset_full_cpu` is a default
+    # trait method carrying its own `NMESHV` parameter, and a struct parameter
+    # of the same name shadows it — which the compiler rejects outright
+    # ("name conflict between parameter 'NMESHV' in the default trait method
+    # and a parameter in the struct"), taking both SO-ARM envs down with it.
+    # Any parameter named after one of that trait's is a build break waiting
+    # for the next hook to be added.
+    NMESHVERT: Int,
     EE_BODY: Int,
     TARGET_BODY: Int,
     TIMESTEP: Float64,
@@ -118,7 +125,7 @@ struct SoArmReachConfig[
     # ⚠⚠ NOT A SIZE HINT. Zero silently disables every mesh contact — both
     # narrow phases guard their mesh branch on `NMESH_VERTS > 0`. The value is
     # the measured convex-hull vertex total, NOT the raw STL count.
-    comptime NMESH_VERTS: Int = Self.NMESHV
+    comptime NMESH_VERTS: Int = Self.NMESHVERT
 
     @staticmethod
     def _home(i: Int) -> Float64:

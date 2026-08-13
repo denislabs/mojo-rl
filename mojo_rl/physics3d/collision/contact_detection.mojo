@@ -18,7 +18,11 @@ from layout import Layout, LayoutTensor
 
 from std.math import sqrt
 
-from ..kinematics.quat_math import gpu_quat_rotate, gpu_quat_mul
+from ..kinematics.quat_math import (
+    gpu_quat_rotate,
+    gpu_quat_mul,
+    quat_rotate_inverse,
+)
 from ..constants import (
     GEOM_SPHERE,
     GEOM_CAPSULE,
@@ -147,7 +151,7 @@ from .collision_primitives import (
     cylinder_cylinder,
     cylinder_box,
 )
-from .gjk import gjk_epa, gjk_epa_witness
+from .gjk import gjk_epa, gjk_epa_witness, hillclimb_support_index
 from .native_multicontact import (
     native_multicontact_contacts,
     MC_ENABLED,
@@ -412,21 +416,69 @@ def _plane_mesh_contacts[
         return
 
     # ── contact 0: the support point in -normal, i.e. the lowest vertex ──
+    #
+    # ⚠⚠ THIS WAS A FULL ARGMIN OVER EVERY HULL VERTEX, AND IT WAS THE SINGLE
+    # LARGEST LINE ITEM IN THE STEP. Per-stage timers over 20 000 physics
+    # steps put the SAP plane loop at 8.1 µs/step on SO-ARM100 and 11.1 µs on
+    # SO-ARM101 — 23-25% of the entire physics step — against 0.23 µs for
+    # world poses and 0.11 µs for AABBs. On SO-101 that was ONE call per step
+    # scanning one ~4 000-vertex hull. The neighbour walk below already used
+    # the edge graph; only this search did not.
+    #
+    # Minimising height above the plane IS a support query. Height is
+    # `p_z + (R v)_z = p_z + dot(v, R^T ez)`, so the lowest vertex maximises
+    # `dot(v, R^T(0,0,-1))` — the same hill climb GJK runs, in the direction
+    # the plane's own frame calls straight down. This is also what MuJoCo does
+    # (`mjc_PlaneConvex` calls `mjccd_support`), so it moves us TOWARD the
+    # reference rather than away from it.
+    #
+    # ⚠ THE FALLBACK IS NOT DEAD CODE. `hillclimb_support_index` returns -1
+    # for a mesh below `_HILLCLIMB_MIN` vertices or without adjacency, and
+    # MuJoCo has the same two branches (`mesh_graphadr < 0`). Small collision
+    # primitives baked as meshes take it every step.
+    #
+    # ⚠ TIE-BREAK, on an exact PLATEAU (a facet lying flat on the plane): the
+    # climb stops at the first local maximum it reaches, the old argmin took
+    # the lowest index. Both are legitimate support points and `best_h` is
+    # identical, but the EXTRAS are drawn from this vertex's neighbours, so
+    # which extras appear can differ on such a pose. See the note above on the
+    # candidate set already differing from MuJoCo's by triangulation.
     var best = -1
     var best_h = Scalar[DTYPE](0)
     var best_x = Scalar[DTYPE](0)
     var best_y = Scalar[DTYPE](0)
-    for vi in range(pm_vnum):
-        var vx = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 0])
-        var vy = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 1])
-        var vz = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 2])
+
+    # Straight down in the PLANE's frame, expressed in the mesh's own frame.
+    var ld = quat_rotate_inverse[DTYPE](
+        q_x, q_y, q_z, q_w,
+        Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](-1),
+    )
+    var hc = hillclimb_support_index[DTYPE, NMESH_VERTS](
+        ld[0], ld[1], ld[2],
+        mesh_verts, mesh_vert_edgeadr, mesh_edges,
+        pm_vadr, pm_vnum, -1,
+    )
+    if hc >= 0:
+        var vx = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + hc, 0])
+        var vy = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + hc, 1])
+        var vz = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + hc, 2])
         var lp = gpu_quat_rotate(q_x, q_y, q_z, q_w, vx, vy, vz)
-        var h = (p_z + lp[2]) - ground_z
-        if best < 0 or h < best_h:
-            best = vi
-            best_h = h
-            best_x = p_x + lp[0]
-            best_y = p_y + lp[1]
+        best = hc
+        best_h = (p_z + lp[2]) - ground_z
+        best_x = p_x + lp[0]
+        best_y = p_y + lp[1]
+    else:
+        for vi in range(pm_vnum):
+            var vx = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 0])
+            var vy = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 1])
+            var vz = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 2])
+            var lp = gpu_quat_rotate(q_x, q_y, q_z, q_w, vx, vy, vz)
+            var h = (p_z + lp[2]) - ground_z
+            if best < 0 or h < best_h:
+                best = vi
+                best_h = h
+                best_x = p_x + lp[0]
+                best_y = p_y + lp[1]
 
     # `if (dist > margin) return 0` — NON-strict acceptance, unlike the
     # extras below, which use a strict `vdot > threshold`. Kept distinct
@@ -596,6 +648,16 @@ def pair_body_filtered[
         )
         if weld_i == weld_parent_j or weld_j == weld_parent_i:
             return True
+
+    # ⚠ DECODING THESE PER PAIR IS NOT WORTH HOISTING, WHICH IS A MEASUREMENT
+    # AND NOT AN ASSUMPTION. Every field above is static model data and the SAP
+    # sweep re-reads it for ~465 pairs per step against ~33 geoms, so hoisting
+    # the decode to once per geom looks like free money. Built and measured
+    # interleaved over 5 rounds on SO-ARM100: 15.60 s -> 15.72 s, i.e. nothing,
+    # and reverted. The reason is in the ablation: stubbing the geom-geom
+    # narrow phase leaves the ENTIRE sweep — 487 iterations, 466 AABB tests, 65
+    # filter and mix evaluations — at 0.91 µs/step. There is no time here to
+    # win. See `physics3d/PERFORMANCE.md` §5.
 
     # Body-pair exclusion, at the SAME level as the weld tests — not nested.
     var n_ex = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NEXCLUDE]))
