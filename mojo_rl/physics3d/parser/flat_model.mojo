@@ -153,9 +153,23 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
         pos_x: Float64 = 0.0,
         pos_y: Float64 = 0.0,
         pos_z: Float64 = 0.0,
+        # ⚠ MuJoCo's default joint axis is Z, not Y — `mjCJoint::mjCJoint`
+        # sets `axis[0] = axis[1] = 0; axis[2] = 1` (user_objects.cc:3247),
+        # confirmed on the 3.10.0 runtime with an axis-less `<joint
+        # type="hinge"/>`, which compiles to `jnt_axis = [0, 0, 1]`.
+        #
+        # This was Y until 2026-08-13, and `full_parser` only assigns an axis
+        # when the element OR its default class supplies one — so ANY joint
+        # relying on the MuJoCo default silently became a hinge about the
+        # WRONG AXIS. It hid because almost every hand-written MJCF spells
+        # `axis` out; Jaco's `<joint name="jaco_arm/joint_1"
+        # class="jaco_arm/large_joint"/>` does not, and neither does its
+        # class. The visible symptom was forward kinematics: body b_1 exact,
+        # every body below it wrong by up to 0.154 m, because a body's own
+        # orientation only reaches its CHILDREN.
         axis_x: Float64 = 0.0,
-        axis_y: Float64 = 1.0,
-        axis_z: Float64 = 0.0,
+        axis_y: Float64 = 0.0,
+        axis_z: Float64 = 1.0,
         range_min: Float64 = -1e10,
         range_max: Float64 = 1e10,
         is_limited: Bool = False,

@@ -1124,8 +1124,12 @@ def _parse_one_joint(
     # Effective defaults: the joint's own class="..." wins, else
     # the enclosing body's childclass, else the top-level block.
     # (Joints resolved NO class at all before 2026-07-29 — only
-    # geoms did — so a class-defined joint silently became a
-    # default hinge about the x axis.)
+    # geoms did — so a class-defined joint silently fell back to the
+    # default axis.)
+    # ⚠ AND WHEN NEITHER SIDE SUPPLIES ONE, the `axis` block below is
+    # skipped entirely and `JointData`'s default stands. That default was
+    # WRONG (Y, where MuJoCo uses Z) until 2026-08-13 — see the note on
+    # `JointData.__init__` in flat_model.mojo.
     var joint_class = _extract_attr(tag, "class")
     if joint_class.byte_length() == 0:
         joint_class = inherited_class
