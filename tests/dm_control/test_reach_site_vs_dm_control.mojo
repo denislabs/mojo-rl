@@ -53,15 +53,17 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.envs.dm_control.manipulation_reach import DMReachSiteFeatures
 from mojo_rl.envs.dm_control.manipulation_reach_config import (
-    N_ARM,
-    N_HAND,
     OBS_DIM,
     SITE_TARGET,
+    TARGET_RADIUS,
+)
+from mojo_rl.envs.dm_control.manipulation_obs import (
+    N_ARM,
+    N_HAND,
     SITE_PINCH,
     BODY_PINCH,
-    TARGET_RADIUS,
-    _torque_body_of,
-    _torque_site_of,
+    torque_body_of,
+    torque_site_of,
 )
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
@@ -243,22 +245,22 @@ def test_reach_element_indices_match_mujoco() raises:
             "  torque",
             i,
             " site",
-            _torque_site_of(i),
+            torque_site_of(i),
             "/",
             ms,
             "  body",
-            _torque_body_of(i),
+            torque_body_of(i),
             "/",
             mb,
         )
         assert_true(
-            _torque_site_of(i) == ms,
+            torque_site_of(i) == ms,
             "torque sensor site index disagrees with MuJoCo — note this is"
             " NOT 3 + i, `wristsite` sits between joint_5_site and"
             " joint_6_site",
         )
         assert_true(
-            _torque_body_of(i) == mb,
+            torque_body_of(i) == mb,
             "torque sensor BODY disagrees with MuJoCo; `site_force_torque`"
             " reads `cfrc_int[body]`, so a wrong body is a different link's"
             " wrench transported to the right site",

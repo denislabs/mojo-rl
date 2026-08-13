@@ -126,12 +126,15 @@ from mojo_rl.physics3d.gpu.constants import (
     SITE_IDX_POS_Y,
     SITE_IDX_POS_Z,
 )
-from mojo_rl.physics3d.sensors.site_acc import site_force_torque
-from mojo_rl.physics3d.kinematics.site_frame import site_world_quat_list
-from mojo_rl.physics3d.kinematics.xmat import quat_xmat_elem
 from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
 from mojo_rl.envs.dm_control.rewards import tolerance
-from mojo_rl.envs.dm_control.dtype_math import log1p_accurate
+from mojo_rl.envs.dm_control.manipulation_obs import (
+    append_robot_block,
+    N_ARM,
+    N_HAND,
+    SITE_PINCH,
+    BODY_PINCH,
+)
 
 from .manipulation_reset import (
     set_grasp,
@@ -147,11 +150,9 @@ from .manipulation_reset import (
 # `mj_id2name` on the baked `reach_site_features` model; asserted against it in
 # `tests/dm_control/test_reach_site_vs_dm_control.mojo` so a model change
 # cannot leave these pointing at the wrong element.
-comptime N_ARM: Int = 6  # jaco_arm/joint_1 .. joint_6
-comptime N_HAND: Int = 3  # jaco_hand/finger_1 .. finger_3
 comptime SITE_TARGET: Int = 0  # `target_site`, on the WORLD body
-comptime SITE_PINCH: Int = 11  # `jaco_arm/jaco_hand/pinchsite`
-comptime BODY_PINCH: Int = 10  # `jaco_arm/jaco_hand/hand`, which owns it
+# `N_ARM`, `N_HAND`, `SITE_PINCH`, `BODY_PINCH` and the torque site/body
+# tables are shared with the other 12 tasks — see `manipulation_obs`.
 
 comptime OBS_DIM: Int = 45
 
@@ -173,42 +174,6 @@ comptime TWO_PI: Float64 = 6.283185307179586
 # `workspaces.DOWN_QUATERNION` = (w, x, y, z) (0, .7071, .7071, 0) in MuJoCo
 # order; both non-zero components share this value.
 comptime DOWN_QUAT_XY: Float64 = 0.70710678118
-
-
-@always_inline
-def _torque_site_of(i: Int) -> Int:
-    """Site id of arm joint `i`'s `<torque>` sensor.
-
-    ⚠ NOT `3 + i`. `jaco_arm/wristsite` is declared between `joint_5_site` and
-    `joint_6_site`, so the last one is 9 rather than 8.
-    """
-    return 3 + i if i < 5 else 9
-
-
-@always_inline
-def _torque_body_of(i: Int) -> Int:
-    """Body owning arm joint `i`'s torque site — the joint's PARENT body."""
-    return 3 + i
-
-
-@always_inline
-def _symlog1p(x: Float64) -> Float64:
-    """`observations._symlog1p` — the FTT corruptor, `sign(x) * log1p(|x|)`.
-
-    ⚠ `log1p_accurate`, NOT `std.math.log1p`. The latter carries up to 2e-08
-    RELATIVE error on float64 and put a 3.3e-07 hole in this very observable
-    while every physical input to it matched MuJoCo to 1e-15. See
-    `dtype_math.log1p_accurate` for the measurements.
-
-    `np.sign(0)` is 0 and `log1p(0)` is 0, so the zero branch agrees with the
-    reference either way; it is written out because the odd extension is what
-    makes the negative branch exact rather than a cancellation.
-    """
-    if x > 0.0:
-        return log1p_accurate(x)
-    if x < 0.0:
-        return -log1p_accurate(-x)
-    return 0.0
 
 
 struct ReachSiteFeaturesConfig(Phyics3dEnvConfig):
@@ -260,72 +225,22 @@ struct ReachSiteFeaturesConfig(Phyics3dEnvConfig):
         act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
-        """The eight `_features` observables, in `observation_spec()` order."""
+        """The eight `_features` observables, in `observation_spec()` order.
+
+        `target_position` is a TASK observable, so composer emits it FIRST;
+        the remaining 42 are the shared robot block.
+        """
         try:
-            # --- target_position: the site's MODEL pos, not its xpos --------
+            # target_position: the site's MODEL pos, not its xpos. The two
+            # agree here only because the target site hangs off the worldbody
+            # — on every OTHER reach variant the target rides a prop.
             var tb = SITE_TARGET * MODEL_SITE_SIZE
             obs.append(m_sites[tb + SITE_IDX_POS_X])
             obs.append(m_sites[tb + SITE_IDX_POS_Y])
             obs.append(m_sites[tb + SITE_IDX_POS_Z])
-
-            # --- jaco_arm/joints_pos: [sin, cos] pairs, SINE FIRST ----------
-            for i in range(N_ARM):
-                var q = Float64(d.qpos.data[i])
-                obs.append(Scalar[DTYPE](sin(q)))
-                obs.append(Scalar[DTYPE](cos(q)))
-
-            # --- jaco_arm/joints_torque ------------------------------------
-            # ⚠ `site_xpos_acc`/`xquat_acc`, NOT the live FK products: this
-            # transports `cfrc_int` to the site and rotates into the site
-            # frame, so it needs the geometry from the instant `cfrc_int` was
-            # written. Defect 19 — mixing them read 1.484 for dog where
-            # dm_control reads -6.386.
-            for i in range(N_ARM):
-                var ft = site_force_torque[DTYPE](
-                    d.cfrc_int.data,
-                    d.subtree_com.data,
-                    d.site_xpos_acc.data,
-                    d.xquat_acc.data,
-                    m_bodies,
-                    m_sites,
-                    _torque_body_of(i),
-                    _torque_site_of(i),
-                )
-                # `site_force_torque` returns force first, then torque.
-                var jb = i * MODEL_JOINT_SIZE
-                var tau = (
-                    ft[3] * Float64(m_joints[jb + JOINT_IDX_AXIS_X])
-                    + ft[4] * Float64(m_joints[jb + JOINT_IDX_AXIS_Y])
-                    + ft[5] * Float64(m_joints[jb + JOINT_IDX_AXIS_Z])
-                )
-                obs.append(Scalar[DTYPE](_symlog1p(tau)))
-
-            # --- jaco_arm/joints_vel ---------------------------------------
-            for i in range(N_ARM):
-                obs.append(d.qvel.data[i])
-
-            # --- jaco_hand/joints_pos: RAW angles, not sin/cos -------------
-            for i in range(N_HAND):
-                obs.append(d.qpos.data[N_ARM + i])
-
-            # --- jaco_hand/joints_vel --------------------------------------
-            for i in range(N_HAND):
-                obs.append(d.qvel.data[N_ARM + i])
-
-            # --- jaco_hand/pinch_site_pos ----------------------------------
-            for k in range(3):
-                obs.append(d.site_xpos.data[SITE_PINCH * 3 + k])
-
-            # --- jaco_hand/pinch_site_rmat: site_xmat, row-major ------------
-            var sq = site_world_quat_list[DTYPE](
-                m_sites, d.xquat.data, BODY_PINCH, SITE_PINCH
+            append_robot_block[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+                d, m_bodies, m_joints, m_sites, obs
             )
-            var qx = Scalar[DTYPE](sq[0])
-            var qy = Scalar[DTYPE](sq[1])
-            var qz = Scalar[DTYPE](sq[2])
-            var qw = Scalar[DTYPE](sq[3])
-            for k in range(9):
-                obs.append(quat_xmat_elem[DTYPE](qx, qy, qz, qw, k))
         except:
             return False
         return True

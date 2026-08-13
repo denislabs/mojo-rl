@@ -772,3 +772,121 @@ def reach_indices(task_name='reach_site_features', seed=0):
         'hand_range': [list(map(float, m.jnt_range[j])) for j in range(6, 9)],
         'nq': int(m.nq), 'nv': int(m.nv), 'nsite': int(m.nsite),
     }
+
+
+# -- the `lift_large_box_features` task layer --------------------------------
+
+LIFT_OBS_ORDER = (
+    'jaco_arm/joints_pos',
+    'jaco_arm/joints_torque',
+    'jaco_arm/joints_vel',
+    'jaco_arm/jaco_hand/joints_pos',
+    'jaco_arm/jaco_hand/joints_vel',
+    'jaco_arm/jaco_hand/pinch_site_pos',
+    'jaco_arm/jaco_hand/pinch_site_rmat',
+    'unnamed_model/angular_velocity',
+    'unnamed_model/linear_velocity',
+    'unnamed_model/orientation',
+    'unnamed_model/position',
+)
+
+
+def _lift_observables(task):
+    """`{spec name: Observable}` — the arm, the hand and the prop.
+
+    ⚠ `as_dict()` keys are already fully qualified (the entities are
+    ATTACHED); prefixing them again yields `jaco_arm/jaco_arm/...`.
+    """
+    out = {}
+    for entity in (task._arm, task._hand, task._prop):
+        for k, v in entity.observables.as_dict().items():
+            if v.enabled:
+                out[k] = v
+    return out
+
+
+def lift_state(qpos, qvel, ctrl=None, target_height=None,
+               task_name='lift_large_box_features', seed=0):
+    """Evaluate `Lift` at an injected state. Returns a plain dict.
+
+    ⚠ `target_height` IS EPISODE STATE, not a model constant: `Lift` computes
+    it in `initialize_episode` from where the prop settled. A gate must pass
+    the same value it gave the Mojo side, or the two rewards are answering
+    different questions.
+
+    ⚠ `mj_forward` fills `sensordata`, so `jaco_arm/joints_torque` here is the
+    ACCELERATION STAGE AT THIS STATE — the Mojo side must produce `cfrc_int`
+    at the same state (one substep FROM here), not after a control step.
+    """
+    _bootstrap()
+    import numpy as np
+    env = _load(task_name, seed=seed)
+    task, p = env.task, env.physics
+    p.data.qpos[:] = np.asarray(qpos, dtype=float)
+    p.data.qvel[:] = np.asarray(qvel, dtype=float)
+    p.data.ctrl[:] = 0.0 if ctrl is None else np.asarray(ctrl, dtype=float)
+    p.forward()
+    # ⚠ `_target_height` DOES NOT EXIST until `initialize_episode` has run —
+    # it is episode state, not a task attribute. A caller that only wants the
+    # observation must still give `get_reward` something to read, so an absent
+    # one defaults to 0. A gate that cares about the reward passes its own.
+    if target_height is not None:
+        task._target_height = float(target_height)
+    elif not hasattr(task, '_target_height'):
+        task._target_height = 0.0
+    rs = np.random.RandomState(0)
+    obs = _lift_observables(task)
+    out = {'reward': float(task.get_reward(p)),
+           'ncon': int(p.data.ncon),
+           'lowest_vertex_z': float(task._get_height_of_lowest_vertex(p)),
+           'target_height': float(task._target_height),
+           'flat': []}
+    for name in LIFT_OBS_ORDER:
+        v = np.asarray(obs[name](p, rs), dtype=float).ravel()
+        out[name] = list(v)
+        out['flat'].extend(float(x) for x in v)
+    return out
+
+
+def lift_indices(task_name='lift_large_box_features', seed=0):
+    """The element ids `manipulation_lift_box_config` hardcodes."""
+    _bootstrap()
+    import mujoco
+    m = model(task_name, seed=seed)
+    env = _load(task_name, seed=seed)
+    task, p = env.task, env.physics
+    prop_geoms = task._prop.mjcf_model.find_all('geom')
+    return {
+        'prop_geom': int(p.bind(prop_geoms[0]).element_id),
+        'prop_body': int(m.geom_bodyid[p.bind(prop_geoms[0]).element_id]),
+        'vertex_sites': [int(p.bind(v).element_id) for v in task._prop.vertices],
+        'target_height_site': int(p.bind(task._target_height_site).element_id),
+        # The prop's free joint.
+        'prop_qposadr': int(m.jnt_qposadr[m.njnt - 1]),
+        'prop_dofadr': int(m.jnt_dofadr[m.njnt - 1]),
+        'prop_jnt_type': int(m.jnt_type[m.njnt - 1]),
+        'nbody': int(m.nbody), 'nq': int(m.nq), 'nv': int(m.nv),
+    }
+
+
+def lift_reset_qpos(n, task_name='lift_large_box_features', seed=0):
+    """`n` real `initialize_episode` draws — qpos after dm_control's own reset.
+
+    Used to check that OUR reset produces poses from the same region, and to
+    report what the reference's settle actually does to the prop.
+    """
+    _bootstrap()
+    import numpy as np
+    env = _load(task_name, seed=seed)
+    out = []
+    for _ in range(n):
+        env.reset()
+        p = env.physics
+        out.append({
+            'qpos': [float(x) for x in p.data.qpos],
+            'lowest_vertex_z': float(
+                env.task._get_height_of_lowest_vertex(p)),
+            'target_height': float(env.task._target_height),
+            'ncon': int(p.data.ncon),
+        })
+    return out
