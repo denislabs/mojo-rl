@@ -634,6 +634,36 @@ struct TDMPC2MultiTaskAgent[
     def pi_scale(self) -> Scalar[DT]:
         return self.pol_step.scale.value
 
+    def task_pi_scale(self, t: Int) -> Scalar[DT]:
+        """Per-task policy-loss scale — 1.0 until `set_per_task_pi_scale`
+        turns the table on. Log it: whether the per-task spreads actually
+        SEPARATE is what makes the experiment readable."""
+        return self.pol_step.task_scale(t)
+
+    def set_per_task_pi_scale(
+        mut self, enable: Bool, max_reweight: Scalar[DT] = Scalar[DT](10.0)
+    ):
+        """⚠ A DEVIATION FROM THE REFERENCE, off by default.
+
+        TD-MPC2 normalizes the policy loss by ONE running scale across every
+        task (`tdmpc2/tdmpc2.py:34` — a single `RunningScale`, even for MT80).
+        Enabling this gives each task its own, which makes each task's policy
+        gradient invariant to its OWN Q spread instead of the mixed-batch one.
+
+        Motivation (`docs/TDMPC2_MULTITASK_VALIDATION.md`): on walker
+        stand+walk+run the shared scale was set by the two solved tasks
+        (Q ~98) while run sat at ~16 and collapsed to the standing floor — with
+        a MATCHED run-weighted gradient budget (104k vs 99k), so it was not a
+        data problem.
+
+        `max_reweight` clamps the per-row weight symmetrically; a task whose Q
+        spread collapses toward zero would otherwise swamp the batch.
+
+        Leave it off to reproduce the reference and every result measured
+        before 2026-08-13."""
+        self.pol_step.per_task_scale = enable
+        self.pol_step.max_reweight = max_reweight
+
     def flush_metrics[
         L: Logger
     ](

@@ -114,6 +114,22 @@ comptime MPC_PI_TRAJS = 12
 comptime MPC_ELITES = 32
 comptime MPC_ITERS = 4
 
+# ── PER-TASK POLICY-LOSS SCALE — a DEVIATION from TD-MPC2, default OFF ───
+# The reference normalizes the policy loss by ONE running scale across every
+# task (`tdmpc2/tdmpc2.py:34` — a single `RunningScale`, even for MT80). False
+# reproduces that and every result measured before 2026-08-13.
+#
+# Turn it on to test the run hypothesis: at 312k steps the shared scale was set
+# by the two SOLVED tasks (Q ~98) while run sat at ~16 and collapsed to the
+# standing floor of 164 — with a MATCHED run-weighted gradient budget (104k vs
+# 99k), so it was not a data problem. See `docs/TDMPC2_MULTITASK_VALIDATION.md`.
+#
+# ⚠ PASS/FAIL: run climbs off 164 while stand and walk HOLD ~980. Run improving
+# at the cost of the other two is not a win — it is the same interference
+# pointed the other way.
+comptime PER_TASK_PI_SCALE = False
+comptime PI_SCALE_MAX_REWEIGHT = 10.0
+
 comptime N_ENVS = 8
 comptime EVAL_ENVS = 8
 
@@ -219,7 +235,12 @@ def main() raises:
     var CKPT = (
         String(CKPT_STEM)
         + ("_mpc" if USE_MPC else "_mpcoff")
-        + "_utd" + String(UPDATES_PER_STEP) + ".ckpt"
+        + "_utd" + String(UPDATES_PER_STEP)
+        # ⚠ The deviation is in the filename. A per-task-scale run and a
+        # reference run must never land on the same checkpoint — the whole
+        # experiment is the comparison between them.
+        + ("_ptscale" if PER_TASK_PI_SCALE else "")
+        + ".ckpt"
     )
 
     var stand = StandEnv(ctx)
@@ -263,6 +284,11 @@ def main() raises:
         action_scale=Scalar[DT](ACTION_SCALE),
         learning_starts=LEARN_START,
     )
+    # ⚠ Runtime, not a construction parameter — so the DEVIATION is one visible
+    # call rather than something buried in a preset's defaults.
+    ag.set_per_task_pi_scale(
+        PER_TASK_PI_SCALE, Scalar[DT](PI_SCALE_MAX_REWEIGHT)
+    )
 
     var env_vars = load_dotenv()
     var logger = RemoteLogger(
@@ -278,6 +304,9 @@ def main() raises:
     logger.set_config("num_tasks", String(NUM_TASKS))
     logger.set_config("task_emb", String(TASK_EMB))
     logger.set_config("segment_steps", String(SEGMENT_STEPS))
+    logger.set_config(
+        "per_task_pi_scale", String("1") if PER_TASK_PI_SCALE else String("0")
+    )
     var lg = Pointer(to=logger).as_unsafe_any_origin()
     if env_vars.get("RL_MONITOR_URL", "").byte_length() > 0:
         print("  logger: ENABLED → eval/<task> + avg_reward/<task>")
@@ -372,6 +401,26 @@ def main() raises:
         # One checkpoint per ROUND — after all three tasks have collected, so
         # the file is never a mid-round snapshot biased to the last task.
         ag.save_state(CKPT)
+        # ⚠ Log the per-task scales, not just the shared one: whether the three
+        # spreads actually SEPARATE is what makes this experiment readable. If
+        # they stay near-equal, the reweight is ~1 and a null result says
+        # nothing about the hypothesis — only that the mechanism never engaged.
+        comptime if PER_TASK_PI_SCALE:
+            logger.log_scalar(
+                "pi_scale/stand", Float64(ag.task_pi_scale(T_STAND)), at
+            )
+            logger.log_scalar(
+                "pi_scale/walk", Float64(ag.task_pi_scale(T_WALK)), at
+            )
+            logger.log_scalar(
+                "pi_scale/run", Float64(ag.task_pi_scale(T_RUN)), at
+            )
+            print(
+                "     pi_scale — shared", ag.pi_scale(),
+                " stand", ag.task_pi_scale(T_STAND),
+                " walk", ag.task_pi_scale(T_WALK),
+                " run", ag.task_pi_scale(T_RUN),
+            )
         print(
             "  ── round",
             rnd + 1,
