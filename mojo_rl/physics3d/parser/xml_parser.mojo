@@ -2913,6 +2913,30 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
     var motor_dof_adr: InlineArray[Int, Self.NACT]
     var motor_ctrl_min: InlineArray[Float64, Self.NACT]
     var motor_ctrl_max: InlineArray[Float64, Self.NACT]
+    # `actuator_ctrllimited` — whether the ctrlrange above is APPLIED at all.
+    # Exactly the `forcelimited` story below, one field up: `ctrllimited`
+    # defaults to "auto", so the absent attribute is NOT "false", it is "true
+    # iff a range was defined". MEASURED against the 3.10.0 runtime, all
+    # spellings, with `qfrc_actuator` at `ctrl = 5.0` as the observable:
+    #   <motor/>                                     -> limited 0, [0, 0], +5.0
+    #   <motor ctrlrange="-1 1"/>                    -> limited 1, [-1, 1], +1.0
+    #   <motor ctrlrange="-2 3"/>                    -> limited 1, [-2, 3], +3.0
+    #   <motor ctrlrange="0 0"/>                     -> limited 0,          +5.0
+    #   <motor ctrlrange="-1 1" ctrllimited="false"/>-> limited 0,          +5.0
+    #   <motor ctrllimited="false"/>                 -> limited 0,          +5.0
+    # and `ctrllimited="true"` with no range is a COMPILE ERROR in MuJoCo
+    # ("invalid control range for actuator"), so limited-with-zero-range is
+    # unrepresentable and needs no handling — same as `forcelimited`.
+    #
+    # ⚠⚠ WITHOUT THIS FIELD THE CLAMP RAN UNCONDITIONALLY, against a ctrlrange
+    # that FALLS BACK TO (-1, 1) when no level of the model supplies one. So an
+    # actuator MuJoCo leaves unclamped was silently squeezed into +-1. Zero of
+    # the 254 actuators in the 31 dm_control/Gymnasium reference models are
+    # unlimited, which is why nothing here ever saw it — but 423 of Menagerie's
+    # 2244 are, and ToddlerBot is 30 of 30 on every variant. Its `<position>`
+    # actuators take a target ANGLE as `ctrl`, over joints ranging to 18.5 rad,
+    # so that robot could not have been commanded past 1 radian.
+    var motor_ctrl_limited: InlineArray[Int, Self.NACT]
     # ── `forcerange` / `forcelimited` (mj_fwdActuation's force clamp) ────────
     #
     # ⚠ THE CLAMP IS ON THE SCALAR ACTUATOR FORCE, BEFORE THE MOMENT. MEASURED:
@@ -3083,6 +3107,7 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
         self.motor_dof_adr = InlineArray[Int, Self.NACT](fill=-1)
         self.motor_ctrl_min = InlineArray[Float64, Self.NACT](fill=-1.0)
         self.motor_ctrl_max = InlineArray[Float64, Self.NACT](fill=1.0)
+        self.motor_ctrl_limited = InlineArray[Int, Self.NACT](fill=0)
         self.motor_force_limited = InlineArray[Int, Self.NACT](fill=0)
         self.motor_force_min = InlineArray[Float64, Self.NACT](fill=0.0)
         self.motor_force_max = InlineArray[Float64, Self.NACT](fill=0.0)
@@ -3136,6 +3161,7 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
         self.motor_dof_adr = InlineArray[Int, Self.NACT](fill=-1)
         self.motor_ctrl_min = InlineArray[Float64, Self.NACT](fill=-1.0)
         self.motor_ctrl_max = InlineArray[Float64, Self.NACT](fill=1.0)
+        self.motor_ctrl_limited = InlineArray[Int, Self.NACT](fill=0)
         self.motor_force_limited = InlineArray[Int, Self.NACT](fill=0)
         self.motor_force_min = InlineArray[Float64, Self.NACT](fill=0.0)
         self.motor_force_max = InlineArray[Float64, Self.NACT](fill=0.0)
@@ -3189,6 +3215,7 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
             self.motor_dof_adr[i] = copy.motor_dof_adr[i]
             self.motor_ctrl_min[i] = copy.motor_ctrl_min[i]
             self.motor_ctrl_max[i] = copy.motor_ctrl_max[i]
+            self.motor_ctrl_limited[i] = copy.motor_ctrl_limited[i]
             self.motor_force_limited[i] = copy.motor_force_limited[i]
             self.motor_force_min[i] = copy.motor_force_min[i]
             self.motor_force_max[i] = copy.motor_force_max[i]
@@ -3226,6 +3253,7 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
         self.motor_dof_adr = move.motor_dof_adr^
         self.motor_ctrl_min = move.motor_ctrl_min^
         self.motor_ctrl_max = move.motor_ctrl_max^
+        self.motor_ctrl_limited = move.motor_ctrl_limited^
         self.motor_force_limited = move.motor_force_limited^
         self.motor_force_min = move.motor_force_min^
         self.motor_force_max = move.motor_force_max^
@@ -3993,6 +4021,34 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
         if used_default:
             data.motor_ctrl_min[act_count] = def_ctrl_min
             data.motor_ctrl_max[act_count] = def_ctrl_max
+
+        # `ctrllimited` — see the field comment on
+        # `ComptimeActData.motor_ctrl_limited` for the measured semantics.
+        # Identical shape to `forcelimited` below: "auto" means limited iff a
+        # range was DEFINED, "0 0" is the undefined marker, and an explicit
+        # true/false overrides.
+        #
+        # ⚠ `used_default` IS THE "no range was defined" TEST, and it has to
+        # be. `_attr_3way_cached` already searched element -> class chain ->
+        # root `<default>`, so `used_default` means no level supplied one and
+        # `motor_ctrl_min/max` now hold OUR (-1, 1) fallback rather than
+        # anything from the model. Deciding limitedness from those values
+        # instead would read the fallback as a real range and re-introduce
+        # exactly the unconditional +-1 clamp this field exists to remove.
+        var c_lo = data.motor_ctrl_min[act_count]
+        var c_hi = data.motor_ctrl_max[act_count]
+        var cl = _trim(
+            _attr_3way_cached(
+                xml_clean, tag, elem_cls, tag_name, root_tag, "ctrllimited",
+                cacache,
+            )
+        )
+        var c_limited = (not used_default) and (c_lo != 0.0 or c_hi != 0.0)
+        if cl == "true" or cl == "1":
+            c_limited = True
+        elif cl == "false" or cl == "0":
+            c_limited = False
+        data.motor_ctrl_limited[act_count] = 1 if c_limited else 0
 
         # forcerange / forcelimited — see the field comments on
         # `ComptimeActData.motor_force_limited` for the measured semantics.

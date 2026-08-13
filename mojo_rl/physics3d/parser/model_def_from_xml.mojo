@@ -429,6 +429,22 @@ struct ModelDefFromXML[
         return materialize[Self._acd.motor_ctrl_max]()[i]
 
     @staticmethod
+    def ctrl_limited_at(i: Int) -> Bool:
+        """`actuator_ctrllimited[i]` — whether the range above is APPLIED.
+
+        ⚠ READ THIS BEFORE READING `ctrl_min_at`/`ctrl_max_at`. MuJoCo's
+        `ctrllimited` defaults to "auto", so an actuator that declares no
+        range is UNLIMITED and its stored range is meaningless — ours holds a
+        (-1, 1) fallback there, MuJoCo reports [0, 0], and neither is a bound
+        anyone should clamp to. `apply_actions` consults this first, and so
+        should any caller deriving an action space: for an unlimited actuator
+        the honest bound is unbounded, not (-1, 1).
+        """
+        if i < 0 or i >= Self.nact:
+            return False
+        return materialize[Self._acd.motor_ctrl_limited]()[i] != 0
+
+    @staticmethod
     def apply_actions[
         DTYPE: DType
     ](
@@ -485,6 +501,9 @@ struct ModelDefFromXML[
         var _m_motor_force_min = materialize[Self._acd.motor_force_min]()
         var _m_motor_force_max = materialize[Self._acd.motor_force_max]()
         var _m_motor_ctrl_min = materialize[Self._acd.motor_ctrl_min]()
+        var _m_motor_ctrl_limited = materialize[
+            Self._acd.motor_ctrl_limited
+        ]()
         var _m_motor_dyn_tau = materialize[Self._acd.motor_dyn_tau]()
         var _m_motor_gears = materialize[Self._acd.motor_gears]()
         var _m_motor_kind = materialize[Self._acd.motor_kind]()
@@ -511,12 +530,22 @@ struct ModelDefFromXML[
             var n = _m_motor_trn_n[i]
             if n == 0:
                 continue
-            # Clamp to per-actuator ctrlrange (per-element overrides default).
+            # Clamp to per-actuator ctrlrange (per-element overrides default),
+            # but ONLY when the actuator is `ctrllimited`.
+            #
+            # ⚠⚠ THE GUARD IS THE POINT. This clamp used to be unconditional,
+            # against a `ctrlrange` that falls back to (-1, 1) when the model
+            # supplies none — so an actuator MuJoCo leaves unclamped had its
+            # command silently squeezed into +-1. See
+            # `ComptimeActData.motor_ctrl_limited` for the measured semantics
+            # and for why no dm_control or Gymnasium model here could reveal it
+            # (0 of 254 actuators unlimited) while ToddlerBot is 30 of 30.
             var ctrl = actions[i]
-            if ctrl > _m_motor_ctrl_max[i]:
-                ctrl = _m_motor_ctrl_max[i]
-            elif ctrl < _m_motor_ctrl_min[i]:
-                ctrl = _m_motor_ctrl_min[i]
+            if _m_motor_ctrl_limited[i] != 0:
+                if ctrl > _m_motor_ctrl_max[i]:
+                    ctrl = _m_motor_ctrl_max[i]
+                elif ctrl < _m_motor_ctrl_min[i]:
+                    ctrl = _m_motor_ctrl_min[i]
 
             var gear = _m_motor_gears[i]
 
@@ -1263,13 +1292,22 @@ struct ModelDefFromXML[
                     comptime gear = Self._acd.motor_gears[act_i]
                     comptime c_min = Self._acd.motor_ctrl_min[act_i]
                     comptime c_max = Self._acd.motor_ctrl_max[act_i]
+                    comptime c_lim = Self._acd.motor_ctrl_limited[act_i]
                     comptime kp = Self._acd.motor_kp[act_i]
 
+                    # ⚠ GATED ON `ctrllimited`, and this is the SECOND site —
+                    # the CPU `apply_actions` above is the other. Both were
+                    # unconditional, so fixing one would have left the two
+                    # targets computing different forces from the same action,
+                    # which is the shape of defect #54 all over again. The
+                    # guard is `comptime`, so an unlimited actuator emits no
+                    # comparison at all rather than a runtime branch.
                     var ctrl = rebind[Scalar[DTYPE]](actions[env, act_i])
-                    if ctrl > Scalar[DTYPE](c_max):
-                        ctrl = Scalar[DTYPE](c_max)
-                    elif ctrl < Scalar[DTYPE](c_min):
-                        ctrl = Scalar[DTYPE](c_min)
+                    comptime if c_lim != 0:
+                        if ctrl > Scalar[DTYPE](c_max):
+                            ctrl = Scalar[DTYPE](c_max)
+                        elif ctrl < Scalar[DTYPE](c_min):
+                            ctrl = Scalar[DTYPE](c_min)
 
                     # ACTIVATION (MuJoCo `d->act`): `force = gain .* [ctrl/act]`
                     # (mj_fwdActuation). An actuator with a `dyntype` feeds its
