@@ -42,6 +42,7 @@ from ..gpu.constants import (
     MAX_GPU_MESHES,
     mesh_max_poly,
     mesh_max_polyvert,
+    mesh_max_edge,
 )
 
 @always_inline
@@ -101,6 +102,9 @@ struct Model[
     comptime L_MESH_POLYVERT = Layout.row_major(Self.NMESH_POLYVERT)
     comptime L_MESH_POLYMAP = Layout.row_major(Self.NMESH_POLYVERT)
     comptime L_MESH_VERT_POLYMAP = Layout.row_major(Self.NMESH_VERTS, 2)
+    comptime NMESH_EDGE = mesh_max_edge(Self.NMESH_VERTS)
+    comptime L_MESH_VERT_EDGEADR = Layout.row_major(Self.NMESH_VERTS)
+    comptime L_MESH_EDGE = Layout.row_major(Self.NMESH_EDGE)
 
     var bodies: TensorImpl[Self.DTYPE]  # [NBODY, MODEL_BODY_SIZE]
     var joints: TensorImpl[Self.DTYPE]  # [NJOINT, MODEL_JOINT_SIZE]
@@ -120,6 +124,12 @@ struct Model[
     var mesh_polyvert: TensorImpl[Self.DTYPE]  # [NMESH_POLYVERT]
     var mesh_polymap: TensorImpl[Self.DTYPE]  # [NMESH_POLYVERT]
     var mesh_vert_polymap: TensorImpl[Self.DTYPE]  # [NMESH_VERTS, 2] adr,num
+    # Hull vertex adjacency for `mjc_PlaneConvex`'s graph path — see
+    # `collision/convex_hull.mojo::build_hull_edge_graph`. `mesh_vert_edgeadr`
+    # is indexed by GLOBAL hull vertex (parallel to `mesh_verts`) and points
+    # into `mesh_edges`, whose per-vertex runs are -1 terminated.
+    var mesh_vert_edgeadr: TensorImpl[Self.DTYPE]  # [NMESH_VERTS]
+    var mesh_edges: TensorImpl[Self.DTYPE]  # [NMESH_EDGE_SLOTS(NMESH_VERTS)]
 
     def __init__(out self) raises:
         self.bodies = TensorImpl[Self.DTYPE].alloc(
@@ -160,6 +170,27 @@ struct Model[
         self.mesh_vert_polymap = TensorImpl[Self.DTYPE].alloc(
             _at_least_one(Self.NMESH_VERTS * 2)
         )
+        self.mesh_vert_edgeadr = TensorImpl[Self.DTYPE].alloc(
+            _at_least_one(Self.NMESH_VERTS)
+        )
+        # ⚠⚠ -1 MEANS "NO GRAPH", AND ZERO WOULD NOT. Zero is a valid offset
+        # into `mesh_edges`, so a vertex whose adjacency was never built would
+        # silently borrow the FIRST mesh's neighbour list and collide against
+        # unrelated vertices. That is not hypothetical: it is what
+        # `test_plane_mesh_fields` does — it appends a synthetic tetrahedron
+        # straight into the packed tensors, past everything `fields_build`
+        # wrote — and it turned 1 contact into 3. `_plane_mesh_contacts` reads
+        # -1 as MuJoCo reads `mesh_graphadr < 0` and takes the exhaustive
+        # branch instead.
+        for v in range(_at_least_one(Self.NMESH_VERTS)):
+            self.mesh_vert_edgeadr.data[v] = Scalar[Self.DTYPE](-1)
+        self.mesh_edges = TensorImpl[Self.DTYPE].alloc(Self.NMESH_EDGE)
+        # Pre-filled with the terminator, not zero: a neighbour walk reads
+        # until it sees -1, and zero is a VALID vertex index. The real guard
+        # against an unbuilt graph is the -1 in `mesh_vert_edgeadr` above; this
+        # is belt and braces for a run that is entered anyway.
+        for k in range(Self.NMESH_EDGE):
+            self.mesh_edges.data[k] = Scalar[Self.DTYPE](-1)
 
     def upload_all(mut self, ctx: DeviceContext) raises:
         """Host -> device for every record tensor (static config: called once
@@ -182,6 +213,8 @@ struct Model[
         self.mesh_polyvert.upload(ctx)
         self.mesh_polymap.upload(ctx)
         self.mesh_vert_polymap.upload(ctx)
+        self.mesh_vert_edgeadr.upload(ctx)
+        self.mesh_edges.upload(ctx)
 
     # `load_from_model` (CPU `Model` -> record fill) was deleted at the G4
     # fields sunset — the spec-direct build is

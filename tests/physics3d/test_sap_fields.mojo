@@ -150,7 +150,7 @@ comptime GOLD_CON_H = 28658.222165894345
 # our EPA's witness point. See the long note in
 # `test_mesh_detection_fields.mojo`, which gates the manifold's SPAN; this file
 # gates that the SAP path agrees with the O(N^2) path on the same records.
-comptime GOLD_NCON_S = 4  # Part B sawyer SAP: total contacts
+comptime GOLD_NCON_S = 5  # Part B sawyer SAP: total contacts
 # ⚠ GOLD_CON_S has moved TWICE on 2026-08-01, both accounted for exactly.
 #   +64.0  bug 35 (the double flip): fractional part unchanged; 64 = 32 * 2,
 #          one `(body_a, body_b)` relabel of the env1 obj(33)/table(1) contact
@@ -231,8 +231,19 @@ comptime GOLD_NCON_S = 4  # Part B sawyer SAP: total contacts
 # merely the same number of rows. The solparam sum is exactly 10x its old value
 # (301.5480011552572 * 10 = 3015.480011552572) because those columns are
 # identical on every row of one pair and the contact weights (c+1) sum 1+2+3+4.
-comptime GOLD_CON_S = 3361.63858178955  # geometry columns (k < 23)
-comptime GOLD_SOL_S = 3015.4800115525723  # solparam columns (k >= 23)
+# --- 2026-08-13: mesh `rbound` fix -----------------------------------------
+# 4 -> 5 contacts; GOLD_CON_S 3361.63858178955 -> 5042.802909596139 and
+# GOLD_SOL_S 3015.4800115525723 -> 4523.220017328858. ⚠ THESE ARE THE SAME
+# THREE NUMBERS `test_mesh_detection_fields` HARVESTED, which is the point of
+# this leg: SAP and O(N^2) still agree record-for-record on this fixture.
+# `geom_rbound` for a mesh was measured from the vertex centroid rather than
+# MuJoCo's AABB corner, under-sizing it and making `mj_filterSphere` reject a
+# pair MuJoCo tests — so this is a contact we were MISSING. The plane-mesh
+# `maxplanemesh` cap landed in the same commit but moves counts DOWN, not up,
+# and does not touch this fixture. Justification and the MuJoCo comparisons
+# that back the new value are in `test_mesh_detection_fields.mojo`.
+comptime GOLD_CON_S = 5042.802909596139  # geometry columns (k < 23)
+comptime GOLD_SOL_S = 4523.220017328858  # solparam columns (k >= 23)
 
 # ── Humanoid (Part A) ────────────────────────────────────────────────────
 comptime NQ_H = HumanoidModel.NQ  # 24

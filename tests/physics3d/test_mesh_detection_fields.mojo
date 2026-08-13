@@ -115,7 +115,7 @@ comptime GOLD_RTOL = 1e-3
 # both contact FEATURES (the tight cluster and the far row), which is what
 # decides whether a grasp holds; a count can be right with every row stacked on
 # one feature.
-comptime GOLD_NCON = 4  # total contacts across both envs
+comptime GOLD_NCON = 5  # total contacts across both envs
 # ⚠ GOLD_CON has moved TWICE on 2026-08-01, both times accounted for exactly
 # and neither re-recorded blind. Both changes are narrow-phase CONTACT
 # DIRECTION work; the fingerprint is `sum contacts[e,c,k] * (e+1)(c+1)(k+1)`.
@@ -213,8 +213,28 @@ comptime GOLD_NCON = 4  # total contacts across both envs
 # matching to 12 digits -- so the solparam change is fully accounted for and
 # carries no new information. The geometry columns do not scale that cleanly
 # because position differs per row, which is the point of a manifold.
-comptime GOLD_CON = 3361.63858178955  # geometry columns (k < 23)
-comptime GOLD_SOL = 3015.4800115525723  # solparam columns (k >= 23)
+# --- 2026-08-13: plane-mesh `maxplanemesh` cap + mesh `rbound` fix ----------
+# 4 -> 5 contacts; GOLD_CON 3361.63858178955 -> 5042.802909596139 and GOLD_SOL
+# 3015.4800115525723 -> 4523.220017328858.
+#
+# TWO engine fixes landed together (see `_plane_mesh_contacts` and
+# `compute_mesh_rbound_at`). ⚠ THE COUNT WENT UP, WHICH IS THE OPPOSITE OF
+# WHAT THE PLANE-MESH CAP DOES — so the cap is not what moved this fixture.
+# `geom_rbound` for a mesh was measured from the VERTEX CENTROID instead of
+# MuJoCo's AABB corner about the frame origin, which made it 0.72x-0.95x of
+# MuJoCo's on most hulls. `rbound` feeds `mj_filterSphere`
+# (`rbound1 + rbound2 + margin`), so an under-sized value REJECTED pairs
+# MuJoCo tests: we were missing contacts, and the extra row is one of them.
+#
+# ⚠ REGENERATED, NOT RE-BASELINED BLINDLY. This file's own MuJoCo comparisons
+# — which are NOT frozen goldens — all pass at the new value:
+#     mesh depth   ours -0.0276952  MuJoCo -0.02769469   (0.49 um)
+#     mesh normal  dot(MuJoCo) = 0.9999996550
+#     manifold span ours 0.0392871  MuJoCo 0.03867       (0.62 mm)
+# and `test_sawyer_settle_vs_mujoco` reports 5 contacts at rest against
+# MuJoCo's 5. The golden of 4 was frozen from the engine WITH the rbound bug.
+comptime GOLD_CON = 5042.802909596139  # geometry columns (k < 23)
+comptime GOLD_SOL = 4523.220017328858  # solparam columns (k >= 23)
 
 # MuJoCo's manifold at this pose spans 3.867e-02 between its two contact
 # FEATURES: a tight cluster on one face and a single row 3.9 cm away. Matching

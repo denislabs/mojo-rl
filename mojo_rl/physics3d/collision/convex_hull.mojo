@@ -53,7 +53,7 @@ def deduplicate_vertices[
     return num_unique
 
 
-def compute_bounding_radius_at[
+def compute_mesh_rbound_at[
     DTYPE: DType,
 ](
     verts: List[Scalar[DTYPE]],
@@ -62,29 +62,65 @@ def compute_bounding_radius_at[
 ) -> Scalar[
     DTYPE
 ]:
-    """Compute bounding sphere radius for vertices starting at vert_offset."""
+    """`geom_rbound` for a mesh geom — `mjCGeom::GetRBound`'s mesh case.
+
+    MuJoCo takes the mesh's axis-aligned bounds `aamm`, folds them about the
+    FRAME ORIGIN (`haabb[k] = max(|min_k|, |max_k|)`) and returns the AABB
+    corner radius `sqrt(sum haabb^2)`. That is the radius of a sphere centred
+    on the geom frame enclosing the box enclosing the mesh — deliberately
+    LOOSER than the tightest enclosing sphere.
+
+    ⚠⚠ WAS `compute_bounding_radius_at`, WHICH MEASURED FROM THE VERTEX
+    CENTROID — renamed as well as rewritten, so that anything still calling
+    the old name fails to compile rather than silently changing meaning.
+    Three different quantities are easy to confuse here, and only one is
+    MuJoCo's:
+
+        max |v - centroid(V)|   <- what this used to return
+        max |v|                 <- tightest sphere about the FRAME ORIGIN
+        sqrt(sum max(|min|,|max|)^2)  <- MuJoCo, the AABB corner
+
+    The centroid version is not even ordered against the other two: on Jaco's
+    mesh 3 it returned 0.1586 against MuJoCo's 0.1364, EXCEEDING a bound that
+    max |v| cannot exceed, because it is measured from a different centre.
+    Measured on all nine Jaco meshes, ours spanned 0.72x to 1.16x of MuJoCo's.
+
+    This is not cosmetic. `rbound` sets the plane-mesh spread filter
+    (`0.3 * rbound` in `_plane_mesh_contacts`), so it decides how many contacts
+    a plane-mesh pair emits; it also feeds broadphase culling, where MuJoCo's
+    looser value can only widen the candidate set.
+
+    Taken over HULL vertices rather than all vertices, which is the same
+    answer: an axis extreme is always a hull vertex.
+    """
     if num_verts == 0:
         return Scalar[DTYPE](0)
-    var cx: Scalar[DTYPE] = 0
-    var cy: Scalar[DTYPE] = 0
-    var cz: Scalar[DTYPE] = 0
-    for i in range(num_verts):
-        cx += verts[vert_offset + i * 3 + 0]
-        cy += verts[vert_offset + i * 3 + 1]
-        cz += verts[vert_offset + i * 3 + 2]
-    var n = Scalar[DTYPE](num_verts)
-    cx /= n
-    cy /= n
-    cz /= n
-    var max_dist_sq: Scalar[DTYPE] = 0
-    for i in range(num_verts):
-        var dx = verts[vert_offset + i * 3 + 0] - cx
-        var dy = verts[vert_offset + i * 3 + 1] - cy
-        var dz = verts[vert_offset + i * 3 + 2] - cz
-        var d_sq = dx * dx + dy * dy + dz * dz
-        if d_sq > max_dist_sq:
-            max_dist_sq = d_sq
-    return sqrt(max_dist_sq)
+    var lo_x = verts[vert_offset + 0]
+    var lo_y = verts[vert_offset + 1]
+    var lo_z = verts[vert_offset + 2]
+    var hi_x = lo_x
+    var hi_y = lo_y
+    var hi_z = lo_z
+    for i in range(1, num_verts):
+        var vx = verts[vert_offset + i * 3 + 0]
+        var vy = verts[vert_offset + i * 3 + 1]
+        var vz = verts[vert_offset + i * 3 + 2]
+        if vx < lo_x:
+            lo_x = vx
+        if vy < lo_y:
+            lo_y = vy
+        if vz < lo_z:
+            lo_z = vz
+        if vx > hi_x:
+            hi_x = vx
+        if vy > hi_y:
+            hi_y = vy
+        if vz > hi_z:
+            hi_z = vz
+    var hx = max(abs(lo_x), abs(hi_x))
+    var hy = max(abs(lo_y), abs(hi_y))
+    var hz = max(abs(lo_z), abs(hi_z))
+    return sqrt(hx * hx + hy * hy + hz * hz)
 
 
 # =============================================================================
@@ -476,6 +512,90 @@ def compute_convex_hull[
 # =============================================================================
 
 
+def build_hull_edge_graph(
+    num_hull: Int,
+    hull_faces: List[Int],
+    vert_base: Int,
+    mut edge_adr: List[Int],
+    mut edge_list: List[Int],
+):
+    """The hull's VERTEX ADJACENCY, in the form `mjc_PlaneConvex` consumes.
+
+    MuJoCo keeps this per mesh in `mesh_graph` and builds it in
+    `mjCMesh::MakeGraph`: run qhull, `qh_triangulate`, `qh_vertexneighbors`,
+    then for each vertex walk its neighbouring FACETS and collect the other two
+    vertices of each, deduplicated, terminated by -1.
+
+    ⚠ THE ADJACENCY IS THE TRIANGULATED HULL'S, NOT THE MERGED-POLYGON HULL'S.
+    `qh_triangulate` splits coplanar facets, so the diagonals it introduces
+    across a flat face ARE edges here. That is not a detail: those diagonals
+    are the LONG edges, and `mjc_PlaneConvex` only accepts a neighbour that
+    lies at least `0.3 * rbound` from the first contact. Deriving neighbours
+    from `mesh_polygons.mojo`'s MERGED polygons instead would drop exactly the
+    edges most likely to pass that filter, and a flat face resting on the
+    plane would yield one contact where MuJoCo yields three.
+
+    Confirmed against the 3.6.0 tree and the 3.10.0 runtime: for all nine Jaco
+    meshes `mesh_graph[graphadr+1] == 2 * numvert - 4`, which is Euler's
+    relation for a fully triangulated polytope — so qhull's stored graph really
+    is simplicial, and `compute_convex_hull`'s triangles are the same object.
+
+    ⚠ NEIGHBOUR ORDER IS NOT MUJOCO'S AND CANNOT BE. MuJoCo's per-vertex order
+    follows qhull's internal facet set; ours follows `hull_faces`. Order only
+    decides WHICH neighbours are taken when more than two pass the filter, so
+    contact COUNTS still agree — see `_plane_mesh_contacts` for the measured
+    consequence.
+
+    `edge_adr` gets one entry per hull vertex, appended in the packed vertex
+    order, so it is indexed by the same GLOBAL vertex index as `mesh_verts`;
+    neighbours in `edge_list` are stored as global indices too (`vert_base` is
+    this mesh's first vertex). MuJoCo needs its `vert_globalid` indirection
+    because `mesh_vert` holds ALL vertices and only some are on the hull; ours
+    holds hull vertices only, so local and global numbering coincide.
+    """
+    var nface = len(hull_faces) // 3
+
+    # Vertex -> incident faces, CSR. The obvious alternative — rescanning
+    # every face for every vertex — is O(V*F), which is ~5M comparisons on
+    # sawyer's largest hull and grows quadratically with mesh size.
+    var inc_count = List[Int](length=num_hull, fill=0)
+    for k in range(nface * 3):
+        inc_count[hull_faces[k]] += 1
+    var inc_adr = List[Int](length=num_hull, fill=0)
+    var run = 0
+    for v in range(num_hull):
+        inc_adr[v] = run
+        run += inc_count[v]
+    var filled = List[Int](length=num_hull, fill=0)
+    var inc = List[Int](length=run, fill=0)
+    for f in range(nface):
+        for j in range(3):
+            var v = hull_faces[f * 3 + j]
+            inc[inc_adr[v] + filled[v]] = f
+            filled[v] += 1
+
+    for v in range(num_hull):
+        edge_adr.append(len(edge_list))
+        var start = len(edge_list)
+        for t in range(inc_adr[v], inc_adr[v] + filled[v]):
+            var f = inc[t]
+            for j in range(3):
+                var w = hull_faces[f * 3 + j]
+                if w == v:
+                    continue
+                var g = vert_base + w
+                var found = False
+                for e in range(start, len(edge_list)):
+                    if edge_list[e] == g:
+                        found = True
+                        break
+                if not found:
+                    edge_list.append(g)
+        # The -1 separator is MuJoCo's own terminator, and the consumer walks
+        # to it rather than to a stored degree.
+        edge_list.append(-1)
+
+
 def load_mesh_hull[
     DTYPE: DType,
 ](
@@ -493,6 +613,8 @@ def load_mesh_hull[
     mut polymap: List[Int],
     mut polymap_adr: List[Int],
     mut polymap_num: List[Int],
+    mut edge_adr: List[Int],
+    mut edge_list: List[Int],
     mi: MeshInertia[DTYPE],
 ) raises -> Tuple[Int, Scalar[DTYPE]]:
     """Load STL mesh, deduplicate, compute convex hull, store in model arrays.
@@ -551,7 +673,7 @@ def load_mesh_hull[
     # vertices. Only mesh 0, at offset 0, was ever right.
     #
     # `mesh_vertadr` is now a VERTEX index, which is also MuJoCo's convention
-    # for `mesh_vertadr`. `compute_bounding_radius_at` walks the flat list and
+    # for `mesh_vertadr`. `compute_mesh_rbound_at` walks the flat list and
     # still wants FLOATS, so it is given the float offset explicitly.
     var vert_float_offset = len(mesh_vert)
     mesh_vertadr.append(vert_float_offset // 3)
@@ -581,8 +703,15 @@ def load_mesh_hull[
     )
     mesh_polynum.append(npoly)
 
+    # Vertex adjacency for the plane-mesh path. Built from the SAME triangles
+    # the polygons were merged from, and indexed by global vertex id, so it
+    # stays parallel to the vertex block written above.
+    build_hull_edge_graph(
+        num_hull, hull_faces, vert_float_offset // 3, edge_adr, edge_list
+    )
+
     # Compute bounding radius from hull vertices
-    var rbound = compute_bounding_radius_at[DTYPE](
+    var rbound = compute_mesh_rbound_at[DTYPE](
         mesh_vert, vert_float_offset, num_hull
     )
 

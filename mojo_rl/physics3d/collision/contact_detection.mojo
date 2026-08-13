@@ -117,6 +117,7 @@ from ..gpu.constants import (
     MESH_META_IDX_POLYNUM,
     mesh_max_poly,
     mesh_max_polyvert,
+    mesh_max_edge,
 )
 from .plane_frame import (
     plane_world_normal,
@@ -231,6 +232,13 @@ def _geom_world_pos[
     out_qw = wq[3]
 
 
+# `mjc_PlaneConvex`'s two constants, `engine_collision_convex.c`. ⚠ VERIFIED
+# IDENTICAL in the 3.3.6, 3.6.0 and 3.11.0 trees, so the 3.10.0 runtime shares
+# them — one of the few places in this engine with no version drift to resolve.
+comptime MAXPLANEMESH: Int = 3
+comptime TOLPLANEMESH: Float64 = 0.3
+
+
 @always_inline
 def _plane_mesh_contacts[
     DTYPE: DType,
@@ -238,6 +246,9 @@ def _plane_mesh_contacts[
     NGEOM: Int,
     NMESH_VERTS: Int,
     BATCH: Int,
+    BODY_B: Int,
+    MARGIN_IN_DIST: Bool,
+    WRITE_INCLUDEMARGIN: Bool,
 ](
     env: Int,
     g: Int,
@@ -273,73 +284,198 @@ def _plane_mesh_contacts[
     mesh_verts: LayoutTensor[
         DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
     ],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+    ],
     contacts: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
 ):
-    """Plane-mesh: scan hull vertices below plane (verbatim from the
-    detect_contacts_gpu plane-mesh branches; both i/j orientations reduce to
-    this after substituting the mesh geom's pose).
+    """Plane-mesh, after `mjc_PlaneConvex` (`engine_collision_convex.c`).
 
     `p_*` / `q_*` are the mesh geom's pose IN THE PLANE'S FRAME and `ground_z`
     is 0 there, so the vertex heights below are heights above the plane
     whatever way the plane faces. `plp_*` / `plq_*` are the plane's own world
     pose, used only to put the contact point and normal back into world —
-    see `collision/plane_frame.mojo`."""
+    see `collision/plane_frame.mojo`.
+
+    ⚠⚠ THIS USED TO EMIT ONE CONTACT PER HULL VERTEX BELOW THE PLANE, WITH NO
+    CAP. MuJoCo emits at most `maxplanemesh = 3`. Measured on Jaco
+    `reach_site_features` over 60 in-range poses before the fix: 3311 contacts
+    against MuJoCo's 433, and one pose produced 256 — the contact buffer's
+    capacity, reached by a SINGLE plane-mesh pair. The failure did not look
+    like over-generation: that one pair filled the buffer before other pairs
+    were reached, so we found FEWER distinct penetrating body-pairs than
+    MuJoCo (78 missing, 0 spurious). A count bug presenting as missing
+    collisions. See `tests/physics3d/test_jaco_contacts_vs_mujoco.mojo`.
+
+    The three contacts are:
+
+      * contact 0, ALWAYS the support point in the `-normal` direction — the
+        lowest hull vertex. MuJoCo hill-climbs the edge graph to find it; we
+        take the global argmin, which is the same vertex whenever the minimum
+        is unique. ⚠ They can differ on an exact PLATEAU (a face lying flat on
+        the plane, every vertex at one height): hill-climbing stops at
+        whichever tied vertex it reached, the argmin below takes the lowest
+        index. Both are legitimate support points, and the contact SET that
+        follows is the same size either way.
+      * up to two more, each below `margin` and at least
+        `tolplanemesh * rbound` from contact 0. Candidates come from that
+        vertex's hull-edge NEIGHBOURS when the mesh has a graph, and from a
+        scan of every vertex when it does not — MuJoCo's two branches on
+        `mesh_graphadr < 0`, which we signal with a -1 edge address. The
+        neighbour restriction is not an optimisation: scanning all vertices
+        for a mesh that HAS a graph would find candidates all over the shape
+        and return 3 contacts almost always, where MuJoCo returns 1 or 2 for
+        89 of 644 pairs (measured). Every Jaco mesh has a graph.
+
+    ⚠ THE SPREAD FILTER IS ASYMMETRIC, AND DELIBERATELY SO: it measures from
+    the RAW candidate vertex to contact 0's POS, which has already been pushed
+    half its penetration depth along the normal. It also compares only against
+    contact 0, never against the other extra — so contacts 1 and 2 may be
+    arbitrarily close to each other. Both are `addplanemesh`'s behaviour.
+
+    ⚠ WHICH extras are chosen is NOT bit-comparable with MuJoCo when more than
+    two neighbours pass: MuJoCo takes them in qhull's internal facet order,
+    which nothing here reproduces. The COUNT matches (it depends only on the
+    candidate set), and so does contact 0. See `build_hull_edge_graph`.
+    """
     var pn = plane_world_normal[DTYPE](plq_x, plq_y, plq_z, plq_w)
     var m_id = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_MESH_ID]))
-    if m_id >= 0:
-        var pm_vadr = Int(rebind[Scalar[DTYPE]](mesh_meta[m_id, 0]))
-        var pm_vnum = Int(rebind[Scalar[DTYPE]](mesh_meta[m_id, 1]))
-        for vi in range(pm_vnum):
-            if num_contacts >= MAX_CONTACTS:
+    if m_id < 0:
+        return
+    var pm_vadr = Int(rebind[Scalar[DTYPE]](mesh_meta[m_id, 0]))
+    var pm_vnum = Int(rebind[Scalar[DTYPE]](mesh_meta[m_id, 1]))
+    if pm_vnum <= 0:
+        return
+
+    # ── contact 0: the support point in -normal, i.e. the lowest vertex ──
+    var best = -1
+    var best_h = Scalar[DTYPE](0)
+    var best_x = Scalar[DTYPE](0)
+    var best_y = Scalar[DTYPE](0)
+    for vi in range(pm_vnum):
+        var vx = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 0])
+        var vy = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 1])
+        var vz = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 2])
+        var lp = gpu_quat_rotate(q_x, q_y, q_z, q_w, vx, vy, vz)
+        var h = (p_z + lp[2]) - ground_z
+        if best < 0 or h < best_h:
+            best = vi
+            best_h = h
+            best_x = p_x + lp[0]
+            best_y = p_y + lp[1]
+
+    # `if (dist > margin) return 0` — NON-strict acceptance, unlike the
+    # extras below, which use a strict `vdot > threshold`. Kept distinct
+    # because they are distinct in the reference.
+    if best_h > contact_margin:
+        return
+
+    # Contact 0's POS, which the spread filter measures against.
+    var first_z = ground_z + best_h * Scalar[DTYPE](0.5)
+
+    # ── up to two extra contacts around the support vertex ───────────────
+    var sel_x = InlineArray[Scalar[DTYPE], MAXPLANEMESH](fill=Scalar[DTYPE](0))
+    var sel_y = InlineArray[Scalar[DTYPE], MAXPLANEMESH](fill=Scalar[DTYPE](0))
+    var sel_h = InlineArray[Scalar[DTYPE], MAXPLANEMESH](fill=Scalar[DTYPE](0))
+    sel_x[0] = best_x
+    sel_y[0] = best_y
+    sel_h[0] = best_h
+    var nsel = 1
+
+    var rbound = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_RBOUND])
+    var min_spread = rbound * Scalar[DTYPE](TOLPLANEMESH)
+    # MuJoCo has TWO candidate sources and picks on `mesh_graphadr < 0`; ours
+    # signals the same thing with a -1 edge address. The graph branch walks the
+    # support vertex's neighbours; the no-graph branch scans every vertex in
+    # index order, skipping the support vertex (`i != obj.meshindex`). Both
+    # then apply the SAME margin and spread tests, which is why they share the
+    # body below rather than being written out twice.
+    var e = Int(rebind[Scalar[DTYPE]](mesh_vert_edgeadr[pm_vadr + best]))
+    var use_graph = e >= 0
+    var scan = 0
+    while nsel < MAXPLANEMESH:
+        var nb: Int
+        if use_graph:
+            nb = Int(rebind[Scalar[DTYPE]](mesh_edges[e]))
+            if nb < 0:
                 break
-            var vx = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 0])
-            var vy = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 1])
-            var vz = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 2])
-            var local_pt = gpu_quat_rotate(q_x, q_y, q_z, q_w, vx, vy, vz)
-            var wx = p_x + local_pt[0]
-            var wy = p_y + local_pt[1]
-            var wz = p_z + local_pt[2]
-            var dist_v = wz - ground_z
-            if dist_v < contact_margin:
-                var c_off = num_contacts * CONTACT_SIZE
-                contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
-                    g_body
-                )
-                contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](0)
-                var cw = from_plane_frame[DTYPE](
-                    plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
-                    wx, wy, ground_z + dist_v * Scalar[DTYPE](0.5),
-                )
-                contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
-                contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
-                contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
-                contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
-                contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
-                contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
-                contacts[env, c_off + CONTACT_IDX_DIST] = dist_v
-                contacts[
-                    env, c_off + CONTACT_IDX_INCLUDEMARGIN
-                ] = contact_margin
-                contacts[
-                    env, c_off + CONTACT_IDX_FRICTION
-                ] = contact_friction
-                contacts[
-                    env, c_off + CONTACT_IDX_FRICTION_SPIN
-                ] = contact_friction_spin
-                contacts[
-                    env, c_off + CONTACT_IDX_FRICTION_ROLL
-                ] = contact_friction_roll
-                contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
-                    contact_condim
-                )
-                num_contacts += 1
+            e += 1
+        else:
+            if scan >= pm_vnum:
+                break
+            # `nb` is assigned before the skip so that it is definitely
+            # initialised on every path out of this branch.
+            nb = pm_vadr + scan
+            var vi = scan
+            scan += 1
+            if vi == best:
+                continue
+        var vx = rebind[Scalar[DTYPE]](mesh_verts[nb, 0])
+        var vy = rebind[Scalar[DTYPE]](mesh_verts[nb, 1])
+        var vz = rebind[Scalar[DTYPE]](mesh_verts[nb, 2])
+        var lp = gpu_quat_rotate(q_x, q_y, q_z, q_w, vx, vy, vz)
+        var wx = p_x + lp[0]
+        var wy = p_y + lp[1]
+        var wz = p_z + lp[2]
+        var h = wz - ground_z
+        if h >= contact_margin:
+            continue
+        var dx = wx - best_x
+        var dy = wy - best_y
+        var dz = wz - first_z
+        if sqrt(dx * dx + dy * dy + dz * dz) < min_spread:
+            continue
+        sel_x[nsel] = wx
+        sel_y[nsel] = wy
+        sel_h[nsel] = h
+        nsel += 1
+
+    # ── emit ─────────────────────────────────────────────────────────────
+    for k in range(nsel):
+        if num_contacts >= MAX_CONTACTS:
+            break
+        var dist_v = sel_h[k]
+        var c_off = num_contacts * CONTACT_SIZE
+        contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](g_body)
+        contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](BODY_B)
+        var cw = from_plane_frame[DTYPE](
+            plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w,
+            sel_x[k], sel_y[k], ground_z + dist_v * Scalar[DTYPE](0.5),
+        )
+        contacts[env, c_off + CONTACT_IDX_POS_X] = cw[0]
+        contacts[env, c_off + CONTACT_IDX_POS_Y] = cw[1]
+        contacts[env, c_off + CONTACT_IDX_POS_Z] = cw[2]
+        contacts[env, c_off + CONTACT_IDX_NX] = pn[0]
+        contacts[env, c_off + CONTACT_IDX_NY] = pn[1]
+        contacts[env, c_off + CONTACT_IDX_NZ] = pn[2]
+        comptime if MARGIN_IN_DIST:
+            contacts[env, c_off + CONTACT_IDX_DIST] = dist_v - contact_margin
+        else:
+            contacts[env, c_off + CONTACT_IDX_DIST] = dist_v
+        comptime if WRITE_INCLUDEMARGIN:
+            contacts[
+                env, c_off + CONTACT_IDX_INCLUDEMARGIN
+            ] = contact_margin
+        contacts[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
+        contacts[
+            env, c_off + CONTACT_IDX_FRICTION_SPIN
+        ] = contact_friction_spin
+        contacts[
+            env, c_off + CONTACT_IDX_FRICTION_ROLL
+        ] = contact_friction_roll
+        contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+            contact_condim
+        )
+        num_contacts += 1
 
 
-@always_inline
 @always_inline
 def pair_body_filtered[
     DTYPE: DType, NBODY: Int, NEXCLUDE: Int
@@ -1288,6 +1424,12 @@ def _detect_contacts_env[
     mesh_vert_polymap: LayoutTensor[
         DTYPE, Layout.row_major(NMESH_VERTS, 2), MutAnyOrigin
     ],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+    ],
     contacts: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
         MutAnyOrigin,
@@ -1800,7 +1942,8 @@ def _detect_contacts_env[
                     # Plane-mesh: scan hull vertices below plane
                     comptime if NMESH_VERTS > 0:
                         _plane_mesh_contacts[
-                            DTYPE, MAX_CONTACTS, NGEOM, NMESH_VERTS, BATCH
+                            DTYPE, MAX_CONTACTS, NGEOM, NMESH_VERTS, BATCH,
+                            0, False, True,
                         ](
                             env,
                             gj,
@@ -1823,6 +1966,8 @@ def _detect_contacts_env[
                             geoms,
                             mesh_meta,
                             mesh_verts,
+                            mesh_vert_edgeadr,
+                            mesh_edges,
                             contacts,
                             num_contacts,
                         )
@@ -2109,7 +2254,8 @@ def _detect_contacts_env[
                 elif gi_type == GEOM_MESH:
                     comptime if NMESH_VERTS > 0:
                         _plane_mesh_contacts[
-                            DTYPE, MAX_CONTACTS, NGEOM, NMESH_VERTS, BATCH
+                            DTYPE, MAX_CONTACTS, NGEOM, NMESH_VERTS, BATCH,
+                            0, False, True,
                         ](
                             env,
                             gi,
@@ -2132,6 +2278,8 @@ def _detect_contacts_env[
                             geoms,
                             mesh_meta,
                             mesh_verts,
+                            mesh_vert_edgeadr,
+                            mesh_edges,
                             contacts,
                             num_contacts,
                         )
@@ -2853,6 +3001,12 @@ def _detect_contacts_fields_kernel[
     mesh_vert_polymap: LayoutTensor[
         DTYPE, Layout.row_major(NMESH_VERTS, 2), MutAnyOrigin
     ],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+    ],
     contacts: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
         MutAnyOrigin,
@@ -2870,7 +3024,7 @@ def _detect_contacts_fields_kernel[
     ](
         env, xpos, xquat, geoms, bodies, mmeta, excludes, pairs, mesh_meta,
         mesh_verts, mesh_polys, mesh_polyvert, mesh_polymap,
-        mesh_vert_polymap, contacts, smeta,
+        mesh_vert_polymap, mesh_vert_edgeadr, mesh_edges, contacts, smeta,
     )
 
 
@@ -2928,6 +3082,8 @@ def detect_contacts[
         mesh_max_polyvert(NMESH_VERTS)
     )
     comptime L_MESH_VPMAP = Layout.row_major(NMESH_VERTS, 2)
+    comptime L_MESH_VEADR = Layout.row_major(NMESH_VERTS)
+    comptime L_MESH_EDGE = Layout.row_major(mesh_max_edge(NMESH_VERTS))
     comptime L_CONTACTS = Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE)
     comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
 
@@ -2947,6 +3103,10 @@ def detect_contacts[
         var mesh_vert_polymap_v = m.mesh_vert_polymap.lt[
             "cpu", L_MESH_VPMAP
         ]()
+        var mesh_vert_edgeadr_v = m.mesh_vert_edgeadr.lt[
+            "cpu", L_MESH_VEADR
+        ]()
+        var mesh_edges_v = m.mesh_edges.lt["cpu", L_MESH_EDGE]()
         var contacts_v = d.contacts.lt["cpu", L_CONTACTS]()
         var smeta_v = d.meta.lt["cpu", L_SMETA]()
         for e in range(BATCH):
@@ -2957,6 +3117,7 @@ def detect_contacts[
                 e, xpos_v, xquat_v, geoms_v, bodies_v, mmeta_v,
                 excludes_v, pairs_v, mesh_meta_v, mesh_verts_v, mesh_polys_v,
                 mesh_polyvert_v, mesh_polymap_v, mesh_vert_polymap_v,
+                mesh_vert_edgeadr_v, mesh_edges_v,
                 contacts_v, smeta_v,
             )
     else:
@@ -2981,6 +3142,8 @@ def detect_contacts[
             m.mesh_polyvert.lt["gpu", L_MESH_POLYVERT](),
             m.mesh_polymap.lt["gpu", L_MESH_POLYVERT](),
             m.mesh_vert_polymap.lt["gpu", L_MESH_VPMAP](),
+            m.mesh_vert_edgeadr.lt["gpu", L_MESH_VEADR](),
+            m.mesh_edges.lt["gpu", L_MESH_EDGE](),
             d.contacts.lt["gpu", L_CONTACTS](),
             d.meta.lt["gpu", L_SMETA](),
             grid_dim=(BLOCKS,),

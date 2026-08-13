@@ -29,32 +29,52 @@ predicate, which classifies a geom by which entity owns it — a body property �
 and it avoids having to establish a geom index mapping on top of everything
 else.
 
-⚠⚠ THIS TEST IS GREEN WITH A KNOWN, UNFIXED DEFECT. Do not read a pass here
-as "Jaco's contacts match MuJoCo". Measured over 60 in-range poses:
+THIS TEST FOUND TWO DEFECTS, BOTH NOW FIXED. What it measured first:
 
     total contacts     ours 3311   MuJoCo 433     (~7.6x over-generation)
     worst single pose  ours 256    MuJoCo 24      (256 IS OUR BUFFER CAP)
     penetrating body-pairs   both 53, ours-only 0, MUJOCO-ONLY 78
 
-ROOT CAUSE, pinned: `_plane_mesh_contacts` emits ONE CONTACT PER HULL VERTEX
-below the plane, unbounded. MuJoCo's `mjc_PlaneConvex` emits AT MOST THREE —
-`maxplanemesh = 3` — being the support point in -normal direction plus up to
-two further vertices that pass a spread filter, `addplanemesh` rejecting any
-candidate with `dist3(pnt, first) < tolplanemesh * rbound`,
-`tolplanemesh = 0.3`. Both constants are identical in the 3.3.6, 3.6.0 and
-3.11.0 trees, so the 3.10.0 runtime uses them too.
+1. `_plane_mesh_contacts` emitted ONE CONTACT PER HULL VERTEX below the plane,
+   unbounded. `mjc_PlaneConvex` emits AT MOST THREE (`maxplanemesh = 3`): the
+   support point in -normal, plus up to two vertices from ITS HULL-EDGE
+   NEIGHBOURHOOD passing `addplanemesh`'s spread filter, which rejects
+   `dist3(pnt, first) < tolplanemesh * rbound`, `tolplanemesh = 0.3`. Both
+   constants are identical in the 3.3.6, 3.6.0 and 3.11.0 trees.
+2. `geom_rbound` for a mesh measured from the VERTEX CENTROID, where MuJoCo
+   uses the AABB corner radius about the frame origin (`mjCGeom::GetRBound`).
+   Ours spanned 0.72x to 1.16x of MuJoCo's across Jaco's nine meshes. Only the
+   first fix made this observable: `rbound` scales the spread filter, so it
+   decides how many contacts a plane-mesh pair emits.
 
-⚠ THE OVER-GENERATION PLAUSIBLY CAUSES THE MISSING PAIRS. We are a strict
-SUBSET at pair level (ours-only is 0), and one pose saturated the 256-contact
-buffer — so a single plane-mesh pair can flood the buffer before other pairs
-are ever emitted. The 78 missing pairs are therefore not independent evidence
-of a second bug until the count is fixed and this is re-measured.
+⚠⚠ THE OVER-GENERATION WAS CAUSING THE MISSING PAIRS, AS SUSPECTED. This was
+recorded here as unproven — "not independent evidence of a second bug until
+the count is fixed and this is re-measured" — and the re-measurement settled
+it: with the cap in place `mujoco-only` went 78 -> 0 with no other change. One
+plane-mesh pair had been flooding the buffer before other pairs were reached,
+so a COUNT bug presented as MISSING COLLISIONS.
 
-WHAT IS ASSERTED, and why those and not more: body FK (a hard precondition),
-that we never INVENT a body-pair MuJoCo does not have, and the ANY-penetration
-predicate — which is the only thing the rejection sampler actually reads. The
-contact COUNTS are printed, not gated, because gating them at today's values
-would lock in the defect.
+AFTER (same 60 poses): totals ours 436 vs MuJoCo 433, per-pose counts equal on
+58/60, body-pairs both 131 with ours-only 0 AND mujoco-only 0.
+
+⚠ THE RESIDUAL IS NOT ZERO, AND IS NOT EXPECTED TO BE. MuJoCo picks its two
+extra contacts in qhull's internal facet order, which nothing here reproduces,
+and our hull differs from qhull's on one of the nine meshes (199 vertices
+against 198). Counts survive that — they depend only on the candidate SET —
+but the two poses that still differ are t=43 (+4, plane-mesh dominated: 15 of
+MuJoCo's 23 contacts there) and t=20 (-1, only 2 plane-mesh contacts of 23, so
+it lives in the cylinder-mesh / mesh-mesh paths instead). Both have IDENTICAL
+body-pair sets, which is what the rejection sampler reads.
+
+WHAT IS ASSERTED: body FK (a hard precondition), that we neither invent nor
+miss a penetrating body-pair, the ANY-penetration predicate the sampler
+reduces to, that no pose comes near the contact-buffer cap, and contact counts
+against MuJoCo's — the last three added once the defects above were fixed.
+
+⚠ THE COUNT BOUNDS CARRY HEADROOM RATHER THAN TODAY'S EXACT NUMBERS. Freezing
+58/60 and 436 would make this fail on any hull-triangulation change, including
+a correct one, while telling nobody what actually moved. The bounds are set to
+catch a return of the 7.6x over-generation, not to pin the residual.
 
 Run with:
     pixi run mojo run -I . tests/physics3d/test_jaco_contacts_vs_mujoco.mojo
@@ -183,6 +203,7 @@ def test_jaco_contacts_vs_mujoco() raises:
     var pair_mj_only = 0
     var worst_dist = 0.0
     var n_pred_agree = 0
+    var max_our_ncon = 0
 
     for t in range(N_POSES):
         for i in range(NQ):
@@ -208,6 +229,8 @@ def test_jaco_contacts_vs_mujoco() raises:
         sum_mj += mj_n
         if mj_n > 0 or our_n > 0:
             n_contact_poses += 1
+        if our_n > max_our_ncon:
+            max_our_ncon = our_n
         if our_n == mj_n:
             n_ncon_equal += 1
         var dn = our_n - mj_n
@@ -279,11 +302,12 @@ def test_jaco_contacts_vs_mujoco() raises:
         if ours_any == mj_any:
             n_pred_agree += 1
 
-        if t < 10:
+        if t < 10 or our_n != mj_n:
             print(
                 "   t", t, " ncon ours", our_n, " mj", mj_n,
                 "  penetrating body-pairs ours", len(ours_a),
                 " mj", len(mj_a),
+                "  <-- NCON DIFFERS" if our_n != mj_n else "",
             )
 
     print("  poses:", N_POSES, " with any contact:", n_contact_poses)
@@ -294,10 +318,7 @@ def test_jaco_contacts_vs_mujoco() raises:
           " ours-only", pair_ours_only, " mujoco-only", pair_mj_only)
     print("  ANY-penetration predicate agrees on", n_pred_agree, "/", N_POSES)
 
-    print("")
-    print("  ⚠⚠ KNOWN DEFECT, NOT GATED HERE: plane-mesh emits one contact")
-    print("     per hull vertex; MuJoCo caps it at maxplanemesh=3 with a")
-    print("     0.3*rbound spread filter. See the module docstring.")
+    print("  worst single-pose ncon (ours):", max_our_ncon, " buffer cap", MAXC)
 
     assert_true(
         n_contact_poses >= 8,
@@ -309,6 +330,44 @@ def test_jaco_contacts_vs_mujoco() raises:
         "we reported a penetrating body-pair MuJoCo does not have — a FALSE"
         " collision, which would make the rejection sampler throw away valid"
         " arm poses",
+    )
+    assert_true(
+        pair_mj_only == 0,
+        "MuJoCo found a penetrating body-pair we did not — a MISSED"
+        " collision, which would let the rejection sampler accept a pose that"
+        " is actually in collision. This was 78 before the plane-mesh cap"
+        " landed, and it was NOT a detection gap: one plane-mesh pair filled"
+        " the contact buffer before the other pairs were reached",
+    )
+    # The saturation guard, and the reason the missed pairs above existed.
+    # A pose that reaches MAXC has silently stopped emitting, so every set
+    # comparison in this test would be measuring the buffer, not the engine.
+    assert_true(
+        max_our_ncon < MAXC // 2,
+        "a single pose produced enough contacts to approach the buffer cap"
+        " — with the cap reached, contacts are dropped in emission order and"
+        " the body-pair sets above stop meaning anything",
+    )
+    # Contact COUNT parity. The candidate set for plane-mesh extras is the
+    # support vertex's hull neighbourhood, so counts agree even though WHICH
+    # extras are chosen is not bit-comparable with qhull's ordering.
+    # Measured 2026-08-13: 58/60 exact, totals 436 vs 433, worst |d| 4.
+    # The two differing poses have IDENTICAL body-pair sets, and only one of
+    # them is plane-mesh dominated (t=43: 15 of MuJoCo's 23 contacts there are
+    # plane-mesh; t=20 has just 2, so its -1 lives in the cylinder-mesh /
+    # mesh-mesh paths, which this fix does not touch). Bounds are set with
+    # headroom rather than frozen at today's numbers.
+    assert_true(
+        n_ncon_equal >= 54,
+        "per-pose contact counts drifted from MuJoCo's — measured 58/60"
+        " exact, so falling below 54 means a real change, not the known"
+        " hull-triangulation residual",
+    )
+    assert_true(
+        sum_ours <= sum_mj + sum_mj // 10,
+        "total contact count exceeded MuJoCo's by more than 10% — the"
+        " over-generation this test exists to catch. It was 3311 against 433"
+        " (7.6x) before `maxplanemesh`",
     )
     assert_true(
         n_pred_agree == N_POSES,

@@ -52,7 +52,7 @@ from mojo_rl.physics3d.constants import (
 from mojo_rl.physics3d.fields import Model
 from mojo_rl.physics3d.collision.convex_hull import (
     load_mesh_hull,
-    compute_bounding_radius_at,
+    compute_mesh_rbound_at,
 )
 from mojo_rl.physics3d.model.inertia_from_geom import (
     geom_effective_mass,
@@ -85,6 +85,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MESH_POLY_IDX_NZ,
     mesh_max_poly,
     mesh_max_polyvert,
+    mesh_max_edge,
     MAX_GPU_MESHES,
     BODY_IDX_MASS,
     BODY_IDX_INV_MASS,
@@ -1175,6 +1176,9 @@ def build_model_fields_from_flat[
     var polymap = List[Int]()
     var polymap_adr = List[Int]()
     var polymap_num = List[Int]()
+    # Hull vertex adjacency (MuJoCo's `mesh_graph`), for the plane-mesh path.
+    var edge_adr = List[Int]()
+    var edge_list = List[Int]()
     var loaded_mesh_ids = List[Int](length=fmd.num_mesh_assets, fill=-1)
     for i in range(len(fmd.geoms)):
         var gd = fmd.geoms[i]
@@ -1217,7 +1221,7 @@ def build_model_fields_from_flat[
                 # what every collision consumer expects); this helper walks the
                 # FLAT scalar list, so convert. See `load_mesh_hull`.
                 mf.geoms.data[o + GEOM_IDX_RBOUND] = (
-                    compute_bounding_radius_at[DTYPE](
+                    compute_mesh_rbound_at[DTYPE](
                         mesh_vert, mesh_vertadr[mid] * 3, mesh_vertnum[mid]
                     )
                 )
@@ -1238,6 +1242,8 @@ def build_model_fields_from_flat[
                         polymap,
                         polymap_adr,
                         polymap_num,
+                        edge_adr,
+                        edge_list,
                         mesh_inertia_cache[gd.mesh_id],
                     )
                     var mesh_id = result[0]
@@ -1336,6 +1342,31 @@ def build_model_fields_from_flat[
             break
         mf.mesh_vert_polymap.data[v * 2 + 0] = Scalar[DTYPE](polymap_adr[v])
         mf.mesh_vert_polymap.data[v * 2 + 1] = Scalar[DTYPE](polymap_num[v])
+
+    # ── hull edge graph ──────────────────────────────────────────────────
+    # `Model` sizes this at 8 * NMESH_VERTS against MuJoCo's exact
+    # `numvert + 3*numface` = 7V - 12. Checked rather than assumed, for the
+    # same reason as the polygon caps above: the identity holds for a
+    # TRIANGULATED CONVEX hull, so overflowing it means the hull builder is
+    # wrong. Truncating would leave some vertices with a neighbour list that
+    # runs off the end of the block, and `_plane_mesh_contacts` walks to a -1
+    # terminator that would no longer be there.
+    comptime NMESH_EDGE = mesh_max_edge(NMESH_VERTS)
+    if len(edge_list) > NMESH_EDGE:
+        raise Error(
+            String("mesh hull EDGE capacity exceeded: ")
+            + String(len(edge_list)) + " edge slots (cap "
+            + String(NMESH_EDGE) + ") for NMESH_VERTS = "
+            + String(NMESH_VERTS) + ". A triangulated convex hull needs"
+            " 7V - 12, so exceeding 8V means the hull is not simplicial or"
+            " the adjacency build is wrong, not that the budget is too small."
+        )
+    for v in range(len(edge_adr)):
+        if v >= NMESH_VERTS:
+            break
+        mf.mesh_vert_edgeadr.data[v] = Scalar[DTYPE](edge_adr[v])
+    for k in range(len(edge_list)):
+        mf.mesh_edges.data[k] = Scalar[DTYPE](edge_list[k])
 
     # ── sites (INTENTIONAL FIX: legacy load_from_model left these zero) ───
     for i in range(NSITE):

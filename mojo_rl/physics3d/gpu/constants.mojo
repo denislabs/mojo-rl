@@ -652,6 +652,16 @@ def mesh_max_polyvert(nmesh_verts: Int) -> Int:
     return 6 * nmesh_verts if nmesh_verts > 0 else 1
 
 
+def mesh_max_edge(nmesh_verts: Int) -> Int:
+    """Hull edge-graph capacity for a budget of `nmesh_verts` vertices.
+
+    MuJoCo sizes the same block at `numvert + 3*numface`; a triangulated
+    polytope has `F = 2V - 4`, so that is `7V - 12`. 8V leaves headroom rather
+    than trusting the identity, and `fields_build` still raises on overflow.
+    """
+    return 8 * nmesh_verts if nmesh_verts > 0 else 1
+
+
 # =============================================================================
 # Workspace Buffer Layout (per-environment scratch space for GPU kernels)
 # =============================================================================
