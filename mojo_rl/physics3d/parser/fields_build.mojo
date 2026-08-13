@@ -125,6 +125,7 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_AXIS_Z,
     JOINT_IDX_TAU_LIMIT,
     JOINT_IDX_RANGE_MIN,
+    JOINT_RANGE_UNLIMITED,
     JOINT_IDX_RANGE_MAX,
     JOINT_IDX_ARMATURE,
     JOINT_IDX_DAMPING,
@@ -904,8 +905,15 @@ def build_model_fields_from_flat[
             mf.joints.data[o + JOINT_IDX_AXIS_Y] = Scalar[DTYPE](0)
             mf.joints.data[o + JOINT_IDX_AXIS_Z] = Scalar[DTYPE](1)
             mf.joints.data[o + JOINT_IDX_TAU_LIMIT] = Scalar[DTYPE](0)
-            mf.joints.data[o + JOINT_IDX_RANGE_MIN] = Scalar[DTYPE](-1e10)
-            mf.joints.data[o + JOINT_IDX_RANGE_MAX] = Scalar[DTYPE](1e10)
+            # The record has no `limited` flag; a wide range IS the encoding.
+            # See `JOINT_RANGE_UNLIMITED` — a consumer must test against it,
+            # not against `min < max`.
+            mf.joints.data[o + JOINT_IDX_RANGE_MIN] = Scalar[DTYPE](
+                -JOINT_RANGE_UNLIMITED
+            )
+            mf.joints.data[o + JOINT_IDX_RANGE_MAX] = Scalar[DTYPE](
+                JOINT_RANGE_UNLIMITED
+            )
             mf.joints.data[o + JOINT_IDX_ARMATURE] = Scalar[DTYPE](jd.armature)
             mf.joints.data[o + JOINT_IDX_DAMPING] = Scalar[DTYPE](jd.damping)
             mf.joints.data[o + JOINT_IDX_STIFFNESS] = Scalar[DTYPE](0)

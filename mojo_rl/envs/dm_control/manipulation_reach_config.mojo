@@ -74,28 +74,31 @@ pinch site and the target site — both `xpos`, unlike the observation's `pos`.
 Default gaussian sigmoid, `value_at_margin` 0.1. A hand exactly one target
 radius outside the target scores 0.1, not 0.
 
-RESET, and ⚠ IT IS NOT COMPLETE. `Reach.initialize_episode` is three
-statements; this config performs the FIRST and THIRD:
+RESET. `Reach.initialize_episode` is three statements and all three are here:
 
-    self._hand.set_grasp(physics, close_factors=random_state.uniform())  <- here
-    self._tcp_initializer(physics, random_state)                        <- NOT
-    physics.bind(self._target).pos = self._target_placer(random_state)  <- here
+    self._hand.set_grasp(physics, close_factors=random_state.uniform())
+        -> `custom_reset_cpu`, ONE draw broadcast to three fingers
+    self._tcp_initializer(physics, random_state)
+        -> `custom_reset_full_cpu`, site IK under collision rejection
+    physics.bind(self._target).pos = self._target_placer(random_state)
+        -> `custom_reset_model_cpu`, the site's model `pos`
 
-The middle one is damped-least-squares site IK under collision rejection. It
-is IMPLEMENTED and gated (`dynamics/ik_site.mojo`,
-`dm_control/manipulation_reset.mojo`,
-`tests/dm_control/test_tcp_initializer_vs_dm_control.mojo` — the predicate
-agrees with dm_control 60/60) but it cannot run from here: it needs the full
-`Model` for the site Jacobian and it re-runs FK and the narrow phase, and a
-`Phyics3dEnvConfig` reset hook is handed the record LISTS only. So
-`reset()` leaves the arm at qpos0 with a closed grasp and a placed target,
-which is a REACHABLE but not a dm_control-distributed start pose.
+⚠ THE MIDDLE ONE NEEDS A HOOK THE TRAIT DID NOT HAVE. It runs forward
+kinematics, builds a site Jacobian and re-runs the narrow phase, all of which
+take `Model` itself — and `custom_reset_cpu` is handed the record LISTS.
+`Phyics3dEnvConfig.custom_reset_full_cpu` exists for that.
 
-⚠ Do not read the parity gate as covering the reset. It drives both engines
-from injected qpos/qvel, which is this suite's standing discipline (see
-`manipulator_config`'s closing note) and is exactly why the gap above is
-survivable — but an agent trained through `reset()` today trains on a
-narrower initial distribution than dm_control's.
+⚠⚠ WITHOUT IT `reset()` LEFT THE ARM AT qpos0, WHICH IS A 55-CONTACT POSE.
+Not "a different distribution" — an invalid one: the links are inside each
+other and inside the floor. Gated by
+`tests/dm_control/test_reach_site_reset_vs_dm_control.mojo`, which judges our
+reset poses with DM_CONTROL'S OWN acceptance predicate rather than with ours.
+
+⚠ THE PARITY GATE DOES NOT COVER THE RESET, and never did. It drives both
+engines from injected qpos/qvel, which is this suite's standing discipline
+(see `manipulator_config`'s closing note). Reproducing a specific dm_control
+episode is not a goal — its draws come from a numpy `RandomState` — so what
+is gated is that every pose we produce is one the reference would accept.
 
 ⚠ `set_grasp` DOES NOT ZERO THE HAND'S `ctrl`, and the reference's
 `JacoHand.set_grasp` does. The fingers run `<velocity>` actuators, so a stale
@@ -109,7 +112,7 @@ from std.collections import InlineArray
 from std.math import sin, cos, sqrt, abs
 from std.random import random_float64
 
-from mojo_rl.physics3d.fields import Data
+from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     JOINT_IDX_AXIS_X,
@@ -117,6 +120,7 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_AXIS_Z,
     JOINT_IDX_RANGE_MIN,
     JOINT_IDX_RANGE_MAX,
+    JOINT_RANGE_UNLIMITED,
     MODEL_SITE_SIZE,
     SITE_IDX_POS_X,
     SITE_IDX_POS_Y,
@@ -129,7 +133,14 @@ from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
 from mojo_rl.envs.dm_control.rewards import tolerance
 from mojo_rl.envs.dm_control.dtype_math import log1p_accurate
 
-from .manipulation_reset import set_grasp, sample_bbox_uniform
+from .manipulation_reset import (
+    set_grasp,
+    sample_bbox_uniform,
+    tool_center_point_initializer,
+    BODY_ARM,
+    BODY_HAND,
+    BODY_FIXED,
+)
 
 
 # ── model indices, all read off MuJoCo's own tables ────────────────────────
@@ -155,6 +166,13 @@ comptime TARGET_BBOX_UPPER_Y: Float64 = 0.2
 comptime TARGET_BBOX_UPPER_Z: Float64 = 0.4
 
 comptime TARGET_RADIUS: Float64 = 0.05  # `reach.py::_TARGET_RADIUS`
+
+# `base.py::_get_joint_pos_sampling_bounds` gives an UNLIMITED HINGE this as
+# its upper bound. Four of Jaco's six arm joints are unlimited.
+comptime TWO_PI: Float64 = 6.283185307179586
+# `workspaces.DOWN_QUATERNION` = (w, x, y, z) (0, .7071, .7071, 0) in MuJoCo
+# order; both non-zero components share this value.
+comptime DOWN_QUAT_XY: Float64 = 0.70710678118
 
 
 @always_inline
@@ -441,3 +459,157 @@ struct ReachSiteFeaturesConfig(Phyics3dEnvConfig):
             )
         except:
             pass
+
+    # === CPU: the TCP initializer — needs the whole Model =================
+    @staticmethod
+    def custom_reset_full_cpu[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        NGEOM: Int,
+        NEQ: Int,
+        NTEN: Int,
+        NSITE: Int,
+        NEXCL: Int,
+        NMESHV: Int,
+        NPAIR: Int,
+        MAX_CONTACTS: Int,
+    ](
+        mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        mut mf: Model[
+            DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
+            NMESHV, NPAIR,
+        ],
+    ) raises:
+        """`self._tcp_initializer(physics, random_state)` — the middle
+        statement of `Reach.initialize_episode`.
+
+        Damped-least-squares site IK onto a TCP pose drawn from `tcp_bbox`,
+        under rejection sampling against the arm/hand/ground collision
+        predicate. All of it already exists and is gated
+        (`dynamics/ik_site.mojo`, `manipulation_reset.mojo`); this is the
+        wiring, which needed a hook that gets `Model` rather than the record
+        lists.
+
+        ⚠ WHY THIS IS NOT OPTIONAL. Without it the arm resets to qpos0, and
+        MuJoCo reports **55 contacts** there — the links are inside each other
+        and inside the floor. Every episode would begin in a pose the task
+        never produces, and nothing raises.
+
+        ⚠⚠ THE BOUNDS ARE NOT `jnt_range`, AND "UNLIMITED" IS NOT SPELLED THE
+        WAY MuJoCo SPELLS IT. `base.py::_get_joint_pos_sampling_bounds` gives
+        an unlimited HINGE `[0, 2*pi]` rather than its (absent) range, and four
+        of Jaco's six arm joints are unlimited. MuJoCo marks those with
+        `jnt_range = [0, 0]` and `jnt_limited = 0`; OUR record has no `limited`
+        column and encodes them as `[-1e10, +1e10]` instead
+        (`JOINT_RANGE_UNLIMITED`).
+
+        The first version of this hook tested `range_max <= range_min` — the
+        MuJoCo spelling — so the test never fired, the four unlimited joints
+        got `[-1e10, 1e10]`, and every IK retry pose was drawn from that. The
+        TCP initializer then exhausted on **7 of 24 resets with 10/10 IK
+        failures**, while dm_control's own IK reaches 30/30 of the same targets
+        in a mean of 2.4 attempts. Nothing about the bound itself looked wrong;
+        only the failure rate did.
+
+        Read from the model rather than transcribed, so a rebake cannot leave a
+        stale number here.
+
+        ⚠ BODY CLASSES ARE AN INPUT AND CANNOT BE DERIVED. The predicate asks
+        which ENTITY owns a body; a baked MJCF is flat and `flat_model.mojo`
+        keeps no body names. The array below is dm_control's own labelling
+        (`manipulation_ref.body_classes_reference`), asserted against it in
+        `tests/dm_control/test_reach_site_reset_vs_dm_control.mojo`. Bodies 1
+        and 9 are the entity ATTACHMENT FRAMES: they own no geoms, so their
+        `BODY_FIXED` label is never read — asserted, not assumed.
+
+        ⚠ ON EXHAUSTION THIS RAISES, and that is deliberate. The reference
+        raises `EpisodeInitializationError` too, and the alternative here is
+        worse than an exception: a silent fallthrough leaves the arm at the
+        55-contact qpos0, i.e. exactly the state this hook exists to prevent,
+        with a plausible-looking observation on top of it.
+        """
+        comptime MAX_ATT: Int = 10  # `max_ik_attempts`
+        comptime MAX_SAMP: Int = 10  # `max_rejection_samples`
+
+        # `_get_joint_pos_sampling_bounds`, read off the model.
+        var dof_idx = InlineArray[Int, N_ARM](fill=0)
+        var qpos_adr = InlineArray[Int, N_ARM](fill=0)
+        var lower = InlineArray[Float64, N_ARM](fill=0.0)
+        var upper = InlineArray[Float64, N_ARM](fill=0.0)
+        for a in range(N_ARM):
+            var jb = a * MODEL_JOINT_SIZE
+            dof_idx[a] = a
+            qpos_adr[a] = a
+            var lo = Float64(mf.joints.data[jb + JOINT_IDX_RANGE_MIN])
+            var hi = Float64(mf.joints.data[jb + JOINT_IDX_RANGE_MAX])
+            if hi >= JOINT_RANGE_UNLIMITED or lo <= -JOINT_RANGE_UNLIMITED:
+                lo = 0.0
+                hi = TWO_PI
+            lower[a] = lo
+            upper[a] = hi
+
+        # `distributions.Uniform(*tcp_bbox)`, one draw per rejection sample.
+        var targets = List[Scalar[DTYPE]]()
+        var lo_b = InlineArray[Float64, 3](fill=0.0)
+        lo_b[0] = TARGET_BBOX_LOWER_X
+        lo_b[1] = TARGET_BBOX_LOWER_Y
+        lo_b[2] = TARGET_BBOX_LOWER_Z
+        var hi_b = InlineArray[Float64, 3](fill=0.0)
+        hi_b[0] = TARGET_BBOX_UPPER_X
+        hi_b[1] = TARGET_BBOX_UPPER_Y
+        hi_b[2] = TARGET_BBOX_UPPER_Z
+        for _ in range(MAX_SAMP):
+            var draws = InlineArray[Float64, 3](fill=0.0)
+            for k in range(3):
+                draws[k] = random_float64()
+            var p = sample_bbox_uniform[DTYPE](lo_b, hi_b, draws)
+            for k in range(3):
+                targets.append(p[k])
+
+        # `randomize_arm_joints` between IK attempts — uniform over the SAME
+        # bounds, which is why they are computed before this.
+        var retry = List[Scalar[DTYPE]]()
+        for _ in range(MAX_SAMP * (MAX_ATT - 1)):
+            for a in range(N_ARM):
+                retry.append(
+                    Scalar[DTYPE](
+                        lower[a] + (upper[a] - lower[a]) * random_float64()
+                    )
+                )
+
+        # `workspaces.DOWN_QUATERNION`. ⚠ MuJoCo spells it (w, x, y, z) =
+        # (0, .7071, .7071, 0); our quaternions are (x, y, z, w), so the two
+        # leading components are the ones that carry it.
+        var down = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+        down[0] = Scalar[DTYPE](DOWN_QUAT_XY)
+        down[1] = Scalar[DTYPE](DOWN_QUAT_XY)
+
+        var body_class = InlineArray[Int, NBODY](fill=BODY_FIXED)
+        for b in range(NBODY):
+            if b >= 2 and b <= 8:
+                body_class[b] = BODY_ARM
+            elif b >= 10:
+                body_class[b] = BODY_HAND
+
+        var res = tool_center_point_initializer[
+            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
+            NMESHV, NPAIR, MAX_CONTACTS, N_ARM,
+        ](
+            d, mf, SITE_PINCH, targets, down, dof_idx, qpos_adr,
+            lower, upper, retry, body_class, False, MAX_ATT, MAX_SAMP,
+        )
+        if not res.success:
+            raise Error(
+                "reach_site_features: the TCP initializer exhausted "
+                + String(res.samples)
+                + " samples ("
+                + String(res.ik_failures)
+                + " IK failures, "
+                + String(res.collision_rejections)
+                + " collision rejections). dm_control raises"
+                " EpisodeInitializationError here; falling through would reset"
+                " the arm into qpos0, which carries 55 contacts."
+            )

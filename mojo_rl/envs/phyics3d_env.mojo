@@ -343,6 +343,29 @@ struct Phyics3dEnv[
             self.mf.geoms.data,
             self.mf.sites.data,
         )
+        # Reset logic that needs the whole `Model` — forward kinematics, a
+        # site Jacobian, the narrow phase. Last, so it sees what both hooks
+        # above wrote: dm_control's manipulation reset closes the grasp in the
+        # state hook and the IK here restores only the ARM joints on a
+        # rejected sample, which is what keeps that grasp.
+        #
+        # ⚠ THE FAILURE CANNOT PROPAGATE, so it is PRINTED rather than
+        # swallowed. `Env` / `ContinuousStateEnv` / `ContinuousActionEnv` all
+        # declare a non-raising `reset`, and widening that contract would touch
+        # ~40 environments and every driver — out of proportion to a hook two
+        # configs use. The hook itself is `raises` because the routines it
+        # exists to call are (`detect_contacts`, mesh collision).
+        #
+        # ⚠ A CONFIG MUST NOT TREAT THIS AS RECOVERABLE. dm_control raises
+        # `EpisodeInitializationError` in the same place; what lands here on
+        # failure is whatever the hook left, which for the manipulation reset
+        # is the ENTRY pose — and that is qpos0, a 55-contact pose for Jaco.
+        # Retry inside the hook, where the budget is visible, rather than
+        # relying on this.
+        try:
+            Self.CONFIG.custom_reset_full_cpu(self.d, self.mf)
+        except e:
+            print("Phyics3dEnv: custom_reset_full_cpu FAILED —", e)
         comptime if Self.CONFIG.RESET_FIND_HEIGHT:
             self._find_non_contacting_height()
         self._sync_mocap_to_fields()

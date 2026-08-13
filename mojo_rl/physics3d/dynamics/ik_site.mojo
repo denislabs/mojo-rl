@@ -156,12 +156,21 @@ def qpos_from_site_pose[
     NSITE: Int,
     NEXCL: Int,
     NMESHV: Int,
+    # ⚠ NPAIR WAS A HARDCODED `0` HERE, AND THAT IS NOT THE SAME AS "no pairs".
+    # A model def built by `parse_xml` carries NPAIR as the SYMBOLIC
+    # `parse_xml(XML).NPAIR`, which the compiler will not unify with the
+    # literal `Int(0)` even when the model declares no `<contact><pair>` at
+    # all. So the literal never restricted the FEATURE, it restricted which
+    # CALLERS could compile — and it locked out every env going through
+    # `Phyics3dEnv`, whose `Model` type comes from the model def. The gate
+    # that exercised this code passed `0` explicitly and could not see it.
+    NPAIR: Int,
     MAXC: Int,
     NDOF: Int,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
     mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, 0
+        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
     ],
     site: Int,
     target_pos: InlineArray[Scalar[DTYPE], 3],
@@ -411,12 +420,21 @@ def set_site_to_xpos[
     NSITE: Int,
     NEXCL: Int,
     NMESHV: Int,
+    # ⚠ NPAIR WAS A HARDCODED `0` HERE, AND THAT IS NOT THE SAME AS "no pairs".
+    # A model def built by `parse_xml` carries NPAIR as the SYMBOLIC
+    # `parse_xml(XML).NPAIR`, which the compiler will not unify with the
+    # literal `Int(0)` even when the model declares no `<contact><pair>` at
+    # all. So the literal never restricted the FEATURE, it restricted which
+    # CALLERS could compile — and it locked out every env going through
+    # `Phyics3dEnv`, whose `Model` type comes from the model def. The gate
+    # that exercised this code passed `0` explicitly and could not see it.
+    NPAIR: Int,
     MAXC: Int,
     NDOF: Int,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
     mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, 0
+        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
     ],
     site: Int,
     target_pos: InlineArray[Scalar[DTYPE], 3],
@@ -461,7 +479,7 @@ def set_site_to_xpos[
         attempts = attempt + 1
         var res = qpos_from_site_pose[
             DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, MAXC, NDOF,
+            NMESHV, NPAIR, MAXC, NDOF,
         ](d, mf, site, target_pos, target_quat, dof_idx)
         success = res.success
 

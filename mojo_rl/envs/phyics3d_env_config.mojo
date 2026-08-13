@@ -12,7 +12,7 @@ and termination — no hardcoded assumptions about which joints matter.
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.fields import Data
+from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     MODEL_SITE_SIZE,
@@ -256,6 +256,62 @@ trait Phyics3dEnvConfig:
         """Custom reset logic (e.g., set initial mocap position, pin goal
         joints). The facade runs the fields FK after this hook, so writes to
         qpos/mocap take effect before the first observation. Default: no-op."""
+        pass
+
+    # === CPU: Reset hook with the FULL model (kinematics + collision) ===
+    @staticmethod
+    def custom_reset_full_cpu[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        NGEOM: Int,
+        NEQ: Int,
+        NTEN: Int,
+        NSITE: Int,
+        NEXCL: Int,
+        NMESHV: Int,
+        NPAIR: Int,
+        MAX_CONTACTS: Int,
+    ](
+        mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        mut mf: Model[
+            DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
+            NMESHV, NPAIR,
+        ],
+    ) raises:
+        """Reset logic that needs the whole `Model`. Default: no-op.
+
+        ⚠ WHY THIS EXISTS ALONGSIDE `custom_reset_cpu`. That hook is handed the
+        record LISTS (`bodies`/`joints`/`geoms`/`sites`), which is enough to
+        read a joint range or write a mocap pose and NOT enough to run forward
+        kinematics, build a Jacobian or detect contacts — all of which take
+        `Model` itself. dm_control's manipulation reset is exactly that shape:
+        `ToolCenterPointInitializer` solves site IK and re-runs the narrow
+        phase to reject colliding poses. Before this hook it could not be
+        reached from a config at all, so `reach_site_features` reset to qpos0
+        — a 55-contact pose.
+
+        ⚠ RUNS AFTER `custom_reset_model_cpu` AND `custom_reset_cpu`, so it
+        sees whatever they wrote. That ordering is load-bearing for
+        manipulation: `set_grasp` closes the fingers in the state hook, and the
+        IK here restores ONLY the arm joints on a rejected sample precisely so
+        that the grasp survives.
+
+        ⚠ IT MAY LEAVE `d` MID-KINEMATICS. The facade re-runs `_fields_fk` and
+        `_fields_vel` after this returns, so a hook that moved `qpos` need not
+        refresh them itself — but a hook that CACHED an FK product locally
+        across the call is reading a stale one.
+
+        `raises` because the routines it exists to call do (mesh collision,
+        `detect_contacts`). The default body cannot raise; overriders may.
+
+        Cf. `RESET_FIND_HEIGHT`, which solved the same problem for one env by
+        putting a comptime flag on the config and the code on `Phyics3dEnv`.
+        That does not generalise — the next env needs different code, not the
+        same code behind a second flag.
+        """
         pass
 
     # === CPU: Per-episode MODEL randomization (called before custom_reset_cpu) ===

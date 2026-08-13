@@ -308,7 +308,7 @@ def test_tcp_initializer_rejection_loop() raises:
         bad_targets.append(Scalar[DTYPE](-0.25))
     var rbad = tool_center_point_initializer[
         DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-        NMESH_VERTS, MAXC, NDOF,
+        NMESH_VERTS, 0, MAXC, NDOF,
     ](
         fx.d, fx.mf, our_tcp, bad_targets, down, dof_idx, qpos_adr,
         lower, upper, retry, fx.body_class, False, MAX_ATT, MAX_SAMP,
@@ -350,7 +350,7 @@ def test_tcp_initializer_rejection_loop() raises:
         good_targets.append(Scalar[DTYPE](0.36 + 0.01 * Float64(s)))
     var rgood = tool_center_point_initializer[
         DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-        NMESH_VERTS, MAXC, NDOF,
+        NMESH_VERTS, 0, MAXC, NDOF,
     ](
         fx.d, fx.mf, our_tcp, good_targets, down, dof_idx, qpos_adr,
         lower, upper, retry, fx.body_class, False, MAX_ATT, MAX_SAMP,
@@ -395,7 +395,7 @@ def test_tcp_initializer_rejection_loop() raises:
         fx.d.qpos.data[i] = Scalar[DTYPE](entry[i])
     var rign = tool_center_point_initializer[
         DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-        NMESH_VERTS, MAXC, NDOF,
+        NMESH_VERTS, 0, MAXC, NDOF,
     ](
         fx.d, fx.mf, our_tcp, bad_targets, down, dof_idx, qpos_adr,
         lower, upper, retry, fx.body_class, True, MAX_ATT, MAX_SAMP,
@@ -438,7 +438,7 @@ def test_tcp_initializer_rejection_loop() raises:
         mixed.append(Scalar[DTYPE](0.36 + 0.01 * Float64(s)))
     var rmix = tool_center_point_initializer[
         DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-        NMESH_VERTS, MAXC, NDOF,
+        NMESH_VERTS, 0, MAXC, NDOF,
     ](
         fx.d, fx.mf, our_tcp, mixed, down, dof_idx, qpos_adr,
         lower, upper, retry, fx.body_class, False, MAX_ATT, MAX_SAMP,
@@ -477,7 +477,7 @@ def test_tcp_initializer_rejection_loop() raises:
         far.append(Scalar[DTYPE](5.0))
     var rfar = tool_center_point_initializer[
         DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-        NMESH_VERTS, MAXC, NDOF,
+        NMESH_VERTS, 0, MAXC, NDOF,
     ](
         fx.d, fx.mf, our_tcp, far, down, dof_idx, qpos_adr,
         lower, upper, retry, fx.body_class, False, MAX_ATT, MAX_SAMP,

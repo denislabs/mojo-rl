@@ -227,6 +227,31 @@ comptime JOINT_IDX_SOLIMP_LIMIT_3: Int = 23  # Per-joint limit solimp midpoint
 comptime JOINT_IDX_SOLIMP_LIMIT_4: Int = 24  # Per-joint limit solimp power
 comptime JOINT_IDX_QPOS0: Int = 25  # Joint reference position (MuJoCo qpos0 / ref)
 
+# ⚠⚠ HOW AN UNLIMITED JOINT IS ENCODED, AND IT IS NOT MuJoCo'S ENCODING.
+# The record has NO `limited` flag: `FlatModelDef`'s `JointData.is_limited` is
+# known by the parser and dropped by `fields_build`. An unlimited joint instead
+# carries a range of `[-JOINT_RANGE_UNLIMITED, +JOINT_RANGE_UNLIMITED]`, wide
+# enough that the limit row can never activate.
+#
+# MuJoCo stores the opposite: `jnt_range = [0, 0]` with `jnt_limited = 0`. So
+# **`range_min < range_max` DOES NOT MEAN "limited" HERE** — it is true for
+# every joint in every model. Code ported from a routine that tests MuJoCo's
+# `[0, 0]` (or resolves `limited="auto"` that way) reads every unlimited joint
+# as limited to +-1e10, which is not a compile error and not a wrong number
+# anywhere the range is only a clamp — it goes wrong where the range is used as
+# a SAMPLING BOUND.
+#
+# That is exactly how it was found: `manipulation_reach_config` draws IK retry
+# poses uniformly over each arm joint's range, and four of Jaco's six arm
+# joints are unlimited. dm_control gives an unlimited HINGE `[0, 2*pi]`
+# (`entities/manipulators/base._get_joint_pos_sampling_bounds`); we drew from
+# +-1e10, so every retry started from a meaningless pose and the TCP
+# initializer exhausted on 7 of 24 resets with 10/10 IK failures. dm_control's
+# own IK reaches 30/30 of the same targets in 2.4 attempts.
+#
+# Test against THIS constant, never against `min < max`.
+comptime JOINT_RANGE_UNLIMITED: Float64 = 1e10
+
 
 # =============================================================================
 # Model Buffer Layout - Global Metadata

@@ -273,7 +273,7 @@ def test_ik_site_matches_dm_control() raises:
 
         var res = qpos_from_site_pose[
             DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-            NMESH_VERTS, MAXC, NDOF,
+            NMESH_VERTS, 0, MAXC, NDOF,
         ](d, mf, our_tcp, tp, down, dof_idx)
 
         assert_true(
@@ -480,7 +480,7 @@ def test_set_site_to_xpos_matches_dm_control() raises:
 
         var sres = set_site_to_xpos[
             DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-            NMESH_VERTS, MAXC, NDOF,
+            NMESH_VERTS, 0, MAXC, NDOF,
         ](
             d, mf, our_tcp, tp, down, dof_idx, qpos_adr, lower, upper,
             retry, MAX_ATT,

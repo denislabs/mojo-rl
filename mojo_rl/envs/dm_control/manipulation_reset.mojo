@@ -232,12 +232,15 @@ def tool_center_point_initializer[
     NSITE: Int,
     NEXCL: Int,
     NMESHV: Int,
+    # See `ik_site.set_site_to_xpos` — a literal `0` here restricts CALLERS,
+    # not models.
+    NPAIR: Int,
     MAXC: Int,
     NDOF: Int,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
     mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, 0
+        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
     ],
     site: Int,
     target_positions: List[Scalar[DTYPE]],
@@ -304,7 +307,7 @@ def tool_center_point_initializer[
 
         var res = set_site_to_xpos[
             DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, MAXC, NDOF,
+            NMESHV, NPAIR, MAXC, NDOF,
         ](
             d, mf, site, target_pos, target_quat, dof_idx, qpos_adr,
             lower, upper, retry_poses, max_ik_attempts, s * per_sample,
