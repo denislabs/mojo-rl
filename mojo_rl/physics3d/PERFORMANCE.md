@@ -194,7 +194,8 @@ barriers and add ~2%; use these for proportions, not absolutes):
 | plane loop | 1.44 | 0.29 |
 | SAP sweep proper (ablation, §5.1) | 0.91 | ~0.9 |
 | **GJK/EPA** | **11.21** (2.02 calls, 5.56 µs ea) | **34.94** (4 calls, 8.74 µs ea) |
-| rest of narrow phase (multicontact, contact emission) | ~8.8 | ~8.5 |
+| `multi_ccd_extra_contacts` (§6.2) | ~5.2 | — (`ncon` 0, never runs) |
+| contact emission + primitive branches | ~3.6 | ~8.5 |
 
 ### 6.1 GJK per-call cost is now the whole story
 
@@ -221,13 +222,28 @@ build. Calibration measured so far: disabling the intra-call warm start costs
 but the first query is only one of ~N per call, which caps a cross-step warm
 cache at well under that.
 
-### 6.2 The unattributed ~8.5 µs of narrow phase
+### 6.2 The rest of narrow phase is `multi_ccd`, and it is §6.1 again
 
-GJK is 11.2 of the 20 µs on SO-ARM100; the rest is multi-CCD / native
-multicontact / `_fill_pair_solparams` for **two pairs**. MuJoCo's multicontact
-runs up to four extra perturbed CCD passes, so this is plausibly more support
-walks — i.e. the same root cause as §6.1 — but it has not been separated. Ablate
-`MC_ENABLED` and re-time.
+Separated by ablation, SO-ARM100, total `detect_contacts_sap` per step:
+
+| build | total |
+|---|---|
+| as shipped | 22.90 µs |
+| `MC_ENABLED = False` (native multicontact off) | 22.28 µs — **not it** |
+| `multi_ccd_extra_contacts` stubbed out | **17.74 µs** |
+
+So `multi_ccd_extra_contacts` is **~5.2 µs/step for the ONE contacting pair**,
+and native multicontact is noise. That is not waste — MuJoCo runs multi-CCD too
+(`mjDSBL_MULTICCD` is off by default in the 3.10.0 runtime, see
+`collision/multi_ccd.mojo`) — but it works by re-running `gjk_epa` up to four
+more times with perturbed directions. **It is the support walk again**, at 4×
+the multiplier, which is why it does not appear in the GJK call counter (a
+different call site) and why fixing §6.1 fixes this too.
+
+⚠ THE ABSOLUTE µs MOVE BETWEEN ABLATION BUILDS — removing a large inlined block
+changes register allocation in the enclosing function, and `gjk_epa_witness`'s
+own measured cost fell 11.2 → 8.3 µs for the *same 2.02 calls* when multi-CCD
+was stubbed. Read the TOTAL row, not the sub-rows, across builds.
 
 ### 6.3 Temporal coherence: a per-pair separation cache
 
