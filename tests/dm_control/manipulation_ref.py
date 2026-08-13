@@ -1258,3 +1258,149 @@ def manip_reset(n, task_name, seed=0):
             row['target_height'] = float(task._target_height)
         out.append(row)
     return out
+
+
+# -- the `place_*` task layer ------------------------------------------------
+
+def place_indices(task_name, seed=0):
+    """The element ids `manipulation_place_common` hardcodes.
+
+    ⚠ THE PEDESTAL HAS NO SENSORS, so `manip_prop_indices` cannot see it — its
+    single observable is `MJCFFeature('xpos', target_site)`, a direct read of
+    `data.site_xpos`, not a `framepos` sensor like a free prop's. That is why
+    this exists rather than another prefix lookup.
+
+    ⚠ `pedestal_n_bodies` counts the frame AND the cradle attached to it. The
+    rejection predicate has to ask about the whole entity, and the cradle is
+    where the contact would actually happen.
+    """
+    _bootstrap()
+    import mujoco
+    from dm_control import mjcf
+    m = model(task_name, seed=seed)
+    env = _load(task_name, seed=seed)
+    task, p = env.task, env.physics
+    frame = mjcf.get_attachment_frame(task._pedestal.mjcf_model)
+    ped_body = int(p.bind(frame).element_id)
+    name = lambda o, i: (mujoco.mj_id2name(m, o, i) or '')
+    ped_bodies = [b for b in range(m.nbody)
+                  if name(mujoco.mjtObj.mjOBJ_BODY, b).startswith('pedestal/')]
+    return {
+        'prop_body': int(p.bind(task._prop_frame).element_id),
+        'pedestal_body': ped_body,
+        'pedestal_n_bodies': len(ped_bodies),
+        'target_site': int(p.bind(task._pedestal.target_site).element_id),
+        # ⚠ mjJNT_FREE == 0 for the brick; the pedestal must have NO joint.
+        'pedestal_njnt': len([j for j in range(m.njnt)
+                              if int(m.jnt_bodyid[j]) in
+                              [b for b in range(m.nbody)
+                               if name(mujoco.mjtObj.mjOBJ_BODY, b)
+                               .startswith('pedestal/')]]),
+        'nbody': int(m.nbody), 'njnt': int(m.njnt), 'nq': int(m.nq),
+        'ngeom': int(m.ngeom), 'nsite': int(m.nsite),
+    }
+
+
+def place_state(task_name, qpos, qvel, pedestal_pos, ctrl=None, seed=0):
+    """Evaluate `Place` at an injected state INCLUDING the pedestal's pose.
+
+    ⚠⚠ `pedestal_pos` IS A MODEL EDIT, not state. `Place` attaches its pedestal
+    without a freejoint, so `set_pose` writes the attachment frame's `body_pos`
+    — an `mjModel` field. A gate that only injects `qpos` would be comparing
+    two engines with the pedestal in DIFFERENT places and no `qpos` difference
+    to show for it.
+
+    The edit is restored before returning: a leaked model edit would make every
+    later call in the process measure a different model.
+    """
+    _bootstrap()
+    import numpy as np
+    from dm_control import mjcf
+    env = _load(task_name, seed=seed)
+    task, p = env.task, env.physics
+    frame = mjcf.get_attachment_frame(task._pedestal.mjcf_model)
+    bound = p.bind(frame)
+    saved = np.array(bound.pos)
+    bound.pos = np.asarray(pedestal_pos, dtype=float)
+    try:
+        p.data.qpos[:] = np.asarray(qpos, dtype=float)
+        p.data.qvel[:] = np.asarray(qvel, dtype=float)
+        p.data.ctrl[:] = 0.0 if ctrl is None else np.asarray(ctrl, dtype=float)
+        p.forward()
+        rs = np.random.RandomState(0)
+        obs = {k: v for k, v in task.observables.items() if v.enabled}
+        tcp = p.bind(task._hand.tool_center_point).xpos
+        obj = p.bind(task._prop_frame).xpos
+        tgt = p.bind(task._pedestal.target_site).xpos
+        out = {'reward': float(task.get_reward(p)),
+               'ncon': int(p.data.ncon),
+               'nefc': int(p.data.nefc),
+               'tcp_to_obj': float(np.linalg.norm(obj - tcp)),
+               'obj_to_target': float(np.linalg.norm(obj - tgt)),
+               'tcp_to_target': float(np.linalg.norm(tcp - tgt)),
+               'flat': []}
+        for name in manip_obs_order(task_name, seed=seed):
+            v = np.asarray(obs[name](p, rs), dtype=float).ravel()
+            out[name] = list(v)
+            out['flat'].extend(float(x) for x in v)
+        return out
+    finally:
+        bound.pos = saved
+
+
+def place_reset(n, task_name, seed=0):
+    """`n` real `initialize_episode` draws for a `place_*` task.
+
+    Reports the pedestal's placement as well as `qpos`, because the pedestal is
+    a model edit and would otherwise be invisible in the state.
+    """
+    _bootstrap()
+    import numpy as np
+    from dm_control import mjcf
+    env = _load(task_name, seed=seed)
+    out = []
+    for _ in range(n):
+        env.reset()
+        p, task = env.physics, env.task
+        frame = mjcf.get_attachment_frame(task._pedestal.mjcf_model)
+        out.append({
+            'qpos': [float(x) for x in p.data.qpos],
+            'pedestal_pos': [float(x) for x in np.atleast_1d(
+                p.bind(frame).pos)],
+            'target_xpos': [float(x) for x in
+                            p.bind(task._pedestal.target_site).xpos],
+            'tcp_xpos': [float(x) for x in
+                         p.bind(task._hand.tool_center_point).xpos],
+            'reward': float(task.get_reward(p)),
+            'ncon': int(p.data.ncon),
+        })
+    return out
+
+
+def has_relevant_collisions_at_with_pedestal(qpos, pedestal_pos,
+                                             task_name='place_cradle_features',
+                                             seed=0):
+    """`has_relevant_collisions_at`, with the PEDESTAL put where the caller
+    has it.
+
+    ⚠⚠ WITHOUT THIS THE PREDICATE JUDGES OUR ARM AGAINST A DIFFERENT SCENE.
+    The pedestal is not in `qpos` — it is a `body_pos` model field — so a gate
+    that passes only `qpos` is asking "would dm_control accept this arm, with
+    the pedestal wherever ITS last reset happened to leave it". On a task whose
+    whole point is a fixed obstacle in the workspace that is not the same
+    question.
+
+    The edit is restored before returning.
+    """
+    _bootstrap()
+    import numpy as np
+    from dm_control import mjcf
+    env = _load(task_name, seed=seed)
+    frame = mjcf.get_attachment_frame(env.task._pedestal.mjcf_model)
+    bound = env.physics.bind(frame)
+    saved = np.array(bound.pos)
+    bound.pos = np.asarray(pedestal_pos, dtype=float)
+    try:
+        return has_relevant_collisions_at(qpos, task_name=task_name, seed=seed)
+    finally:
+        bound.pos = saved

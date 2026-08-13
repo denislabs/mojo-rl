@@ -49,6 +49,14 @@ from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_BODY_SIZE,
+    BODY_IDX_POS_X,
+    BODY_IDX_POS_Y,
+    BODY_IDX_POS_Z,
+    BODY_IDX_QUAT_X,
+    BODY_IDX_QUAT_Y,
+    BODY_IDX_QUAT_Z,
+    BODY_IDX_QUAT_W,
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
     CONTACT_IDX_BODY_B,
@@ -242,6 +250,104 @@ def place_free_prop[
         if not prop_has_penetrating_contact[
             DTYPE, NQ, NV, NBODY, MAXC, NSITE
         ](d, prop_body):
+            return PropPlaceResult(True, a + 1)
+    return PropPlaceResult(False, n)
+
+
+def place_fixed_prop[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    NGEOM: Int,
+    NEQ: Int,
+    NTEN: Int,
+    NSITE: Int,
+    NEXCL: Int,
+    NMESHV: Int,
+    NPAIR: Int,
+    MAXC: Int,
+](
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    mut mf: Model[
+        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
+    ],
+    frame_body: Int,
+    n_bodies: Int,
+    ignore_body: Int,
+    poses: List[Scalar[DTYPE]],
+    max_attempts: Int = 20,
+) raises -> PropPlaceResult:
+    """`PropPlacer.__call__` for a prop with NO FREE JOINT — `Place`'s pedestal.
+
+    ⚠⚠ THIS WRITES A MODEL CONSTANT, NOT STATE. `composer.Entity.set_pose`
+    branches on `mjcf.get_frame_freejoint`: with one it writes `qpos`, and
+    WITHOUT one it writes the attachment frame's `body_pos`. `Place` attaches
+    its pedestal with `arena.attach`, not `add_free_entity`, so the pedestal
+    moves by editing `mf.bodies`. That is why `place_*` has 20 bodies and still
+    only 10 joints — counting bodies and expecting a matching joint is the
+    natural mistake here.
+
+    `poses` is `3 * n` injected positions. ⚠ NO QUATERNION: `Place`'s pedestal
+    placer leaves `quaternion` at `rotations.IDENTITY_QUATERNION`, so the frame
+    quaternion is written to identity and never varies. Passing draws for it
+    would be inventing a distribution the reference does not have.
+
+    `frame_body` is the attachment frame and `n_bodies` how many consecutive
+    bodies the entity spans (the pedestal is 2: the pillar and its cradle), so
+    the rejection test can ask about the whole entity.
+
+    ⚠ `ignore_body` REPRODUCES `ignore_contacts_with_entities`. `Place` passes
+    `[self._prop]` — the brick has not been placed yet and is sitting wherever
+    the last episode left it, so its contacts must not veto the pedestal. Pass
+    a negative value for none.
+
+    ⚠⚠ THE REJECTION LOOP IS PRESENT BUT NOT EXERCISED BY `place_*`, and saying
+    so is better than implying coverage. Measured on the reference: over 5
+    resets the pedestal placer's predicate was called 5 times and rejected 0,
+    and at qpos0 no penetrating contact touches the pedestal at all. It is here
+    because the reference has it and because the multi-prop tasks will lean on
+    it, not because this task proves it works.
+
+    ⚠ A STATIC BODY CANNOT COLLIDE WITH ANOTHER STATIC BODY. The pedestal's
+    capsule reaches well below z = 0 and MuJoCo reports no ground contact,
+    because both are welded to the world. Our narrow phase agrees — 8/8
+    contacts and 4/4 pedestal-touching at two in-range poses — but a port that
+    got the weld filter wrong would see a permanent ground contact here and
+    nowhere else in this family.
+    """
+    var n = len(poses) // 3
+    if n > max_attempts:
+        n = max_attempts
+    var fb = frame_body * MODEL_BODY_SIZE
+    # The identity quaternion, written once — see above, it never varies.
+    mf.bodies.data[fb + BODY_IDX_QUAT_X] = Scalar[DTYPE](0)
+    mf.bodies.data[fb + BODY_IDX_QUAT_Y] = Scalar[DTYPE](0)
+    mf.bodies.data[fb + BODY_IDX_QUAT_Z] = Scalar[DTYPE](0)
+    mf.bodies.data[fb + BODY_IDX_QUAT_W] = Scalar[DTYPE](1)
+    for a in range(n):
+        mf.bodies.data[fb + BODY_IDX_POS_X] = poses[a * 3 + 0]
+        mf.bodies.data[fb + BODY_IDX_POS_Y] = poses[a * 3 + 1]
+        mf.bodies.data[fb + BODY_IDX_POS_Z] = poses[a * 3 + 2]
+        forward_kinematics["cpu"](d, mf)
+        detect_contacts["cpu"](d, mf)
+        var bad = False
+        var ncon = Int(Float64(d.meta.data[META_IDX_NUM_CONTACTS]))
+        for c in range(ncon):
+            var o = c * CONTACT_SIZE
+            if Float64(d.contacts.data[o + CONTACT_IDX_DIST]) > 0.0:
+                continue
+            var ba = Int(Float64(d.contacts.data[o + CONTACT_IDX_BODY_A]))
+            var bb = Int(Float64(d.contacts.data[o + CONTACT_IDX_BODY_B]))
+            if ba == ignore_body or bb == ignore_body:
+                continue
+            var a_in = ba >= frame_body and ba < frame_body + n_bodies
+            var b_in = bb >= frame_body and bb < frame_body + n_bodies
+            if a_in or b_in:
+                bad = True
+                break
+        if not bad:
             return PropPlaceResult(True, a + 1)
     return PropPlaceResult(False, n)
 
