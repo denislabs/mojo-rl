@@ -166,6 +166,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_NTENDON,
     MODEL_META_IDX_NEXCLUDE,
     MODEL_META_IDX_NPAIR,
+    MODEL_META_IDX_NOSLIP_TOLERANCE,
     MODEL_PAIR_SIZE,
     PAIR_IDX_GEOM1,
     PAIR_IDX_GEOM2,
@@ -694,6 +695,14 @@ def build_model_fields_from_flat[
     )
     mf.meta.data[MODEL_META_IDX_NEXCLUDE] = Scalar[DTYPE](len(fmd.excludes))
     mf.meta.data[MODEL_META_IDX_NPAIR] = Scalar[DTYPE](len(fmd.pairs))
+    # ⚠ COPIED VERBATIM, INCLUDING 0. `<option noslip_tolerance="0">` is
+    # dm_control's manipulation setting and means "run every noslip
+    # iteration"; clamping it to a positive floor here would silently restore
+    # the early exit. `_parse_option` supplies MuJoCo's 1e-6 default when the
+    # attribute is absent, so a 0 that arrives here was WRITTEN by the model.
+    mf.meta.data[MODEL_META_IDX_NOSLIP_TOLERANCE] = Scalar[DTYPE](
+        fmd.noslip_tolerance
+    )
 
     # Contact solref/solimp: MuJoCo model defaults, then geom[0]'s parsed
     # values (floor / first worldbody geom inherits <default><geom>).

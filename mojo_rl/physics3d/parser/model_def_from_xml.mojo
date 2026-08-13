@@ -205,11 +205,14 @@ struct ModelDefFromXML[
                        `parse_xml(xml).NOSLIP_ITER`. 0 disables the pass,
                        which is MuJoCo's default and correct for every suite
                        model except dog.
-        allow_missing_noslip: Accept `noslip_iter > 0` on an ELLIPTIC-cone
-            model. `mj_solNoSlip` is implemented for the pyramidal cone only,
-            so the elliptic path skips the pass silently; the build refuses
-            that combination unless this is True. Set it only to accept a
-            rollout that will NOT match MuJoCo.
+        allow_missing_noslip: DEPRECATED, and a no-op since 2026-08-13. It used
+            to be the opt-in for `noslip_iter > 0` on an ELLIPTIC-cone model,
+            back when `mj_solNoSlip` existed for the pyramidal cone only and
+            the elliptic path skipped the pass in silence. Both branches are
+            implemented now (`solver/noslip.mojo`) and the solver dispatches on
+            the cone, so there is nothing to permit. Kept as an accepted
+            parameter so existing model defs still compile; new code must not
+            pass it.
     """
 
     # === Dimensions required by ModelDefLike ===
@@ -906,27 +909,18 @@ struct ModelDefFromXML[
             " flat colour — including the skybox."
         )
 
-        # `<option noslip_iterations>` — `mj_solNoSlip` is implemented for the
-        # PYRAMIDAL cone only (`solver/noslip.mojo`), and only the pyramidal
-        # branch of the Newton solver calls it.
+        # `<option noslip_iterations>` used to be refused here on an
+        # ELLIPTIC-cone model, because `mj_solNoSlip` was implemented for the
+        # pyramidal cone only and the elliptic solve path had no call — the
+        # pass would have vanished without a word. `solver/noslip.mojo` now
+        # carries BOTH branches and `_newton_solve_env` dispatches to the
+        # matching one inside each cone's solve body, so the combination is
+        # supported and the assert is gone (2026-08-13, task #53).
         #
-        # ⚠ AN ELLIPTIC MODEL WITH noslip_iterations SET WOULD SKIP THE PASS
-        # SILENTLY — the elliptic solve path has no call — so it is refused
-        # here instead. That is the caller-side dispatch obligation
-        # `noslip.mojo` documents, enforced at the one place that knows both
-        # the cone type and the option.
-        comptime assert (
-            Self.noslip_iter == 0
-            or Self.cone_type == ConeType.PYRAMIDAL
-            or Self.allow_missing_noslip
-        ), (
-            "physics3d: <option noslip_iterations> is set on an ELLIPTIC-cone"
-            " model, but mj_solNoSlip is implemented for the pyramidal cone"
-            " only — the elliptic solve path would skip the pass without a"
-            " word. Use cone=\"pyramidal\", or pass"
-            " allow_missing_noslip=True to accept a rollout that will not"
-            " match MuJoCo."
-        )
+        # ⚠ `allow_missing_noslip` IS NOW A NO-OP and is kept only so the
+        # model defs that pass it still compile. It is deprecated; see the
+        # parameter's doc entry. Do not add new uses — there is nothing left
+        # for it to permit.
 
         # A `<general>` whose gain/bias/dyn shape we do not implement. The
         # comptime parser cannot raise, so it records the offender and we turn

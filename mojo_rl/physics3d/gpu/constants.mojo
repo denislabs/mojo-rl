@@ -17,8 +17,9 @@ Model buffer (static, same for all environments):
   Per joint (MODEL_JOINT_SIZE=26): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss,
     solref_limit(2), solimp_limit(5), qpos0]
-  Metadata (MODEL_META_SIZE=26): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
-    solref_contact(2), solimp_contact(5), solref_limit(2), solimp_limit(5), impratio, nequality, ntendon]
+  Metadata (MODEL_META_SIZE=29): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
+    solref_contact(2), solimp_contact(5), solref_limit(2), solimp_limit(5), impratio, nequality,
+    ntendon, nexclude, meaninertia, npair, noslip_tolerance]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
   Per geom (MODEL_GEOM_SIZE=29): [type, body, pos(3), quat(4), radius, half_length,
     half_x/y/z, friction, contype, conaffinity, condim, friction_spin, friction_roll,
@@ -231,7 +232,7 @@ comptime JOINT_IDX_QPOS0: Int = 25  # Joint reference position (MuJoCo qpos0 / r
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 28
+comptime MODEL_META_SIZE: Int = 29
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -280,6 +281,16 @@ comptime MODEL_META_IDX_NEXCLUDE: Int = 25  # Number of contact exclude pairs
 comptime MODEL_META_IDX_MEANINERTIA: Int = 26
 # Number of `<contact><pair>` records — MuJoCo's `npair`.
 comptime MODEL_META_IDX_NPAIR: Int = 27
+# `mjModel.opt.noslip_tolerance` — the improvement threshold `mj_solNoSlip`
+# breaks on. Carried in META rather than as a comptime parameter because it is
+# a plain runtime number the solver reads next to MEANINERTIA, and threading a
+# Float64 through env -> integrator -> solver -> kernel would touch every
+# caller for something that never needs to be known at compile time.
+#
+# ⚠ 0 IS A REAL SETTING, NOT "UNSET". dm_control's manipulation models use it
+# to mean "run all `noslip_iterations`". Any consumer that treats a 0 here as
+# "fall back to the default" reintroduces the truncation this slot fixes.
+comptime MODEL_META_IDX_NOSLIP_TOLERANCE: Int = 28
 
 
 # =============================================================================

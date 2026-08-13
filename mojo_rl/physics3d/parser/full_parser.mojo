@@ -145,10 +145,35 @@ def _option_flag_disabled(xml: String, flag: String) -> Bool:
 # =============================================================================
 
 
-def _parse_option(xml: String) -> Tuple[Float64, Float64, Float64, Float64, Float64, Float64]:
-    """Extract (gravity_x, gravity_y, gravity_z, timestep, density, viscosity) from <option .../>.
+def _parse_option(
+    xml: String,
+) -> Tuple[Float64, Float64, Float64, Float64, Float64, Float64, Float64]:
+    """Extract (gravity_x, gravity_y, gravity_z, timestep, density, viscosity,
+    noslip_tolerance) from <option .../>.
 
-    Defaults: gravity=(0,0,-9.81), timestep=0.002, density=0.0, viscosity=0.0.
+    Defaults: gravity=(0,0,-9.81), timestep=0.002, density=0.0, viscosity=0.0,
+    noslip_tolerance=1e-6.
+
+    `noslip_tolerance` is not the solver's `tolerance`. It is the threshold
+    `mj_solNoSlip` compares its scaled per-iteration improvement against, so it
+    decides how many of the `noslip_iterations` sweeps actually run.
+    dm_control's manipulation models set it to **0**, meaning "never stop
+    early" — the loop then runs the full count unless improvement goes
+    negative. We hardcoded MuJoCo's 1e-6 default until 2026-08-13.
+
+    ⚠ PARSED FOR FIDELITY, NOT BECAUSE A DIVERGENCE WAS MEASURED, and saying so
+    because an earlier draft of this comment claimed 4.2e-2 of qacc from a
+    CONFOUNDED experiment (two rollouts settled separately, so 400 steps of
+    divergence were attributed to the attribute). Re-measured with a shared
+    settled state, MuJoCo against itself with only this attribute changed:
+    **8.9e-10** worst over 20 steps on the elliptic slam fixture, 4.3e-10 on a
+    plain sliding chain, **0.0** on `reach_site_features`, at 5, 20 and 50
+    iterations alike. So no fixture available today can tell 0 from 1e-6.
+
+    It is parsed anyway because the algorithm reads it, the model declares it,
+    and substituting a different value is a divergence by construction — but a
+    reader should know this line is unexercised rather than assume a gate
+    covers it.
 
     ⚠ The timestep default was 0.01 until 2026-07-31 — 5x MuJoCo's actual
     default (mjOption.timestep = 0.002) and, worse, 5x what the OTHER parser
@@ -170,10 +195,11 @@ def _parse_option(xml: String) -> Tuple[Float64, Float64, Float64, Float64, Floa
     var ts = Float64(0.002)
     var dens = Float64(0)
     var visc = Float64(0)
+    var nstol = Float64(1e-6)
 
     var pos = xml.find("<option")
     if pos == -1:
-        return (gx, gy, gz, ts, dens, visc)
+        return (gx, gy, gz, ts, dens, visc, nstol)
 
     var tag = _extract_opening_tag(xml, pos)
 
@@ -196,7 +222,15 @@ def _parse_option(xml: String) -> Tuple[Float64, Float64, Float64, Float64, Floa
     if visc_str.byte_length() > 0:
         visc = _parse_float(visc_str)
 
-    return (gx, gy, gz, ts, dens, visc)
+    # ⚠ `byte_length() > 0` is the presence test, NOT a truthiness test on the
+    # value: `noslip_tolerance="0"` is the setting dm_control actually uses, so
+    # a check that treated 0 as absent would restore the 1e-6 default on
+    # exactly the models this exists for.
+    var nstol_str = _extract_attr(tag, "noslip_tolerance")
+    if nstol_str.byte_length() > 0:
+        nstol = _parse_float(nstol_str)
+
+    return (gx, gy, gz, ts, dens, visc, nstol)
 
 
 # =============================================================================
@@ -3465,6 +3499,7 @@ xml_in: String) raises -> FlatModelDef:
     result.timestep = opt[3]
     result.opt_density = opt[4]
     result.opt_viscosity = opt[5]
+    result.noslip_tolerance = opt[6]
 
     # <flag gravity="disable"/> — zero the gravity vector.
     if _option_flag_disabled(xml, "gravity"):

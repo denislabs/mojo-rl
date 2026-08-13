@@ -20,19 +20,25 @@ number was chosen while plane-mesh was emitting a contact per hull vertex and a
 single pair could saturate the buffer. With `maxplanemesh` in place the real
 ceiling is small, and an oversized contact buffer costs memory in every env.
 
-⚠⚠ ELLIPTIC CONE + 5 NOSLIP ITERATIONS IS A COMBINATION WE CANNOT YET
-REPRODUCE, and this model def declares that rather than hiding it. The baked
-XML carries `<option cone="elliptic" noslip_iterations="5">`. Our `mj_solNoSlip`
-is implemented for the PYRAMIDAL cone only, so on an elliptic model the pass is
-skipped — `init_fields` has a comptime guard that says exactly this and refuses
-to build without `allow_missing_noslip=True`.
+ELLIPTIC CONE + 5 NOSLIP ITERATIONS IS SUPPORTED as of 2026-08-13 (task #53).
+The baked XML carries `<option cone="elliptic" noslip_iterations="5"
+noslip_tolerance="0">`, and `solver/noslip.mojo` now has the elliptic branch of
+`mj_solNoSlip` with `_newton_solve_env` dispatching to it. This file used to
+pass `allow_missing_noslip=True` to get past a comptime guard, and to state
+that the resulting rollout would NOT match MuJoCo; both the guard and the flag
+are gone.
 
-That flag is passed here, deliberately and with the consequence stated: THIS
-MODEL WILL NOT MATCH A MUJOCO ROLLOUT under sliding friction. It is enough to
-build, do kinematics and detect contacts — which is what the model probe needs
-— and it is NOT enough for a step-parity gate. Switching to `cone="pyramidal"`
-would silence the guard by changing the friction model the task was tuned
-against, which is worse than a known gap. See task #53.
+That mattered here more than anywhere: measured on this model, MuJoCo against
+itself from the same state with only `noslip_iterations` changed, `max|d(qacc)|`
+is **7.4e+2 on step 1** against a `|qacc|` of 1.7e+4 — 4.2%, at 55 contacts.
+Skipping the pass was never a small approximation.
+
+⚠ ONE REAL GAP REMAINS, AND IT IS NOT NOSLIP. Our ELLIPTIC solver caches three
+Jacobian rows per contact (normal + two tangents) and one isotropic `mu`, i.e.
+condim 3. This model has geoms at `condim="4"` — the hand's fingertips — and 3
+of its 55 contacts at qpos0 are condim 4, which lose their torsional row. That
+is a property of the primal solver, not of the friction sweep, and it is
+tracked separately. It is the remaining obstacle to a strict step-parity gate.
 """
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
@@ -75,9 +81,8 @@ comptime ReachSiteFeaturesModel = ModelDefFromXML[
     max_contacts=128,
     timestep=pm.TIMESTEP,
     cone_type=ConeType.ELLIPTIC,
+    # The elliptic branch of `mj_solNoSlip` runs for this now — see the module
+    # docstring. `noslip_tolerance="0"` reaches the solver through model META,
+    # not through this parameter list.
     noslip_iter=pm.NOSLIP_ITER,
-    # ⚠ See the module docstring: elliptic + noslip is not reproducible today.
-    # Accepting it here keeps the TASK'S friction model and makes the gap
-    # explicit; it does not make a rollout correct.
-    allow_missing_noslip=True,
 ]

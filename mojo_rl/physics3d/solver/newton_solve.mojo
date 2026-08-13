@@ -61,13 +61,22 @@ from layout import Layout, LayoutTensor
 from ..types import _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JNT_BALL
 from .cholesky import chol_factor_inline, chol_solve_inline
-from .noslip import noslip_pyramidal
+from .noslip import noslip_pyramidal, noslip_elliptic
 
-# `mjModel.opt.noslip_tolerance`, MuJoCo's default. dm_control's dog does not
-# override it, and no ported model sets it, so it is a constant here rather
-# than another parameter threaded through five call sites. The moment a model
-# DOES set it, this must become one — the sweep stops on a different iteration
-# otherwise.
+# `mjModel.opt.noslip_tolerance`, MuJoCo's default — the value used when a
+# model's `<option>` does not set the attribute.
+#
+# ⚠ THIS IS THE FALLBACK, NOT THE VALUE. It was the value until 2026-08-13, on
+# the reasoning that no ported model overrode it; dm_control's manipulation
+# models all do, with `noslip_tolerance="0"` ("run every iteration"). The real
+# number now arrives per-model in `MODEL_META_IDX_NOSLIP_TOLERANCE`; read it
+# from there, and note that a 0 read out of META is a SETTING, never "unset"
+# to be replaced by this.
+#
+# ⚠ NO FIXTURE DISTINGUISHES 0 FROM 1e-6 TODAY — measured 8.9e-10 worst, and
+# exactly 0.0 on `reach_site_features`. This is a fidelity fix, not a measured
+# bug fix; see `_parse_option` in `parser/full_parser.mojo` for the numbers and
+# for the confounded experiment that first, wrongly, said otherwise.
 comptime NOSLIP_TOLERANCE: Float64 = 1e-6
 from .primal import pyramidal_edge_forces, pyramidal_linesearch
 from ..constraints.contact_solve import (
@@ -113,6 +122,7 @@ from ..gpu.constants import (
     CONTACT_IDX_FORCE_T2,
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_MEANINERTIA,
+    MODEL_META_IDX_NOSLIP_TOLERANCE,
     MODEL_META_IDX_SOLREF_CONTACT_0,
     MODEL_META_IDX_SOLREF_CONTACT_1,
     MODEL_META_IDX_SOLIMP_CONTACT_0,
@@ -1314,7 +1324,9 @@ def _newton_solve_env[
                     rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_MEANINERTIA])
                     * Scalar[DTYPE](NV_SCALE)
                 ),
-                Scalar[DTYPE](NOSLIP_TOLERANCE),
+                rebind[Scalar[DTYPE]](
+                    mmeta[MODEL_META_IDX_NOSLIP_TOLERANCE]
+                ),
                 qacc,
                 jar,
                 force,
@@ -2311,6 +2323,49 @@ def _newton_solve_env[
                 for i in range(NV):
                     H[i * NV + i] = H[i * NV + i] + Scalar[DTYPE](1e-6)
                 _ = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+
+    # ── mj_solNoSlip (ELLIPTIC branch) ─────────────────────────────────────
+    # The friction-only Gauss-Seidel sweep, with the normal forces frozen, run
+    # after the primal solve. Off unless the model asks for it
+    # (`<option noslip_iterations>`); EVERY dm_control manipulation model does,
+    # and there it is first-order — `reach_site_features` moves `qacc` by
+    # 7.4e+2 on step 1 with the option alone. Until 2026-08-13 this path had no
+    # call at all and `ModelDefFromXML` refused to build an elliptic model that
+    # asked for the pass, rather than let it vanish quietly.
+    #
+    # ELLIPTIC branch specifically — `noslip_elliptic`, not `noslip_pyramidal`.
+    # The two are different algorithms over different row layouts (see
+    # `noslip.mojo`), and this is the dispatch the module's header calls the
+    # caller's obligation. It sits inside the already-cone-split solve body,
+    # so there is no runtime test to get wrong.
+    comptime if NOSLIP_ITER > 0:
+        noslip_elliptic[
+            DTYPE, NV, MC, V_SIZE, MAXS, MAXEQ, BATCH, NOSLIP_ITER
+        ](
+            env,
+            nc,
+            ns,
+            neq_rows,
+            m_inv,
+            Jn_c, Jt1_c, Jt2_c,
+            mu_cache, D_n_cache, D_f_cache,
+            pb_cache, bt1_cache, bt2_cache,
+            sr_dof, sr_kind, sr_sign, sr_R, sr_bias, sr_floss,
+            eq_J, eq_D, eq_bias,
+            qacc_sm,
+            # `scale` is the SAME model constant the primal loop above uses —
+            # `1 / (meaninertia * max(1, nv))`, already computed and guarded.
+            scale,
+            # ⚠ FROM META, NOT `NOSLIP_TOLERANCE`. dm_control's manipulation
+            # models set 0; the constant is only the absent-attribute default.
+            rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NOSLIP_TOLERANCE]),
+            qacc,
+            fn_arr, ft1_arr, ft2_arr,
+            jar_n_arr, jar_t1_arr, jar_t2_arr,
+            sr_f, sr_jar,
+            eq_f, eq_jar,
+            qfrc_c,
+        )
 
     # Write solved qacc back to workspace
     for i in range(NV):

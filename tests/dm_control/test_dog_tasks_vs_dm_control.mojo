@@ -8,13 +8,19 @@ is not, and two files that each build one env beat one file that builds two.
 WHAT THIS GATES, AND WHAT IT DELIBERATELY DOES NOT
 
 It gates the ACCESSORS and the REWARD ALGEBRA at a state both engines are
-given explicitly. It does NOT gate a rollout, and it cannot yet: dog.xml sets
-`noslip_iterations="4"` and `mj_solNoSlip` is not implemented, which moves
-MuJoCo's own trajectory by 2.9e-2 of qvel on the first contacting step. The
-model defs therefore pass `allow_missing_noslip=True` and a rollout gate is
-owed once the pass lands. Saying that here rather than shipping a rollout
-comparison with a loose tolerance is the point — an inherited tolerance is a
-placeholder, and nine orders of slack means the gate cannot fail.
+given explicitly. It does NOT gate a rollout. Saying that here rather than
+shipping a rollout comparison with a loose tolerance is the point — an
+inherited tolerance is a placeholder, and nine orders of slack means the gate
+cannot fail.
+
+⚠ THE REASON GIVEN HERE USED TO BE WRONG, and is corrected rather than quietly
+deleted. This said "`mj_solNoSlip` is not implemented" and that the model defs
+"pass `allow_missing_noslip=True`". Neither has been true since the pyramidal
+pass landed (2026-08-03); dog is PYRAMIDAL and has been running the sweep all
+along, `dog_xml` passes `noslip_iter=dsp.NOSLIP_ITER` and no
+`allow_missing_noslip`. The elliptic branch landed 2026-08-13. So the rollout
+gate this file says is owed is no longer blocked on the solver — it is simply
+not written.
 
 THE `act` PROBLEM, and why the test writes it on both sides
 

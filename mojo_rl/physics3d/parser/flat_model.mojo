@@ -1427,6 +1427,11 @@ struct FlatModelDef(Movable):
     var timestep: Float64
     var opt_density: Float64  # Fluid density (kg/m³), 0 = disabled
     var opt_viscosity: Float64  # Fluid dynamic viscosity (Pa·s), 0 = disabled
+    # `<option noslip_tolerance>` — the improvement threshold `mj_solNoSlip`
+    # stops on, NOT the primal solver's `tolerance`. MuJoCo's default is 1e-6;
+    # dm_control's manipulation models set 0 ("run every iteration"). See
+    # `_parse_option` for the measurement that made this worth parsing.
+    var noslip_tolerance: Float64
     # `<compiler boundmass= boundinertia=>`. MuJoCo clamps EVERY body (id > 0)
     # after its inertial frame is set: `mass = max(mass, boundmass)` and the
     # same per principal moment. Default 0, i.e. no bound. Load-bearing on
@@ -1463,6 +1468,7 @@ struct FlatModelDef(Movable):
         self.timestep = Float64(0.01)
         self.opt_density = Float64(0)
         self.opt_viscosity = Float64(0)
+        self.noslip_tolerance = Float64(1e-6)
         self.mesh_asset_names = List[String]()
         self.mesh_asset_files = List[String]()
         self.num_mesh_assets = 0

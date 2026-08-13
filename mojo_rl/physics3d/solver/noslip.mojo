@@ -1,34 +1,58 @@
-"""`mj_solNoSlip` — the friction-only post-solver sweep (PYRAMIDAL cone).
+"""`mj_solNoSlip` — the friction-only post-solver sweep (BOTH cones).
 
-WIRED IN as of 2026-08-03: `solver/newton_solve.mojo`'s PYRAMIDAL per-env path
-calls this after the primal solve, under `comptime if NOSLIP_ITER > 0`, with
-`NOSLIP_ITER` threaded from `<option noslip_iterations>` via
-`ModelDefFromXML` -> `Phyics3dEnv` -> `EulerIntegrator` -> `solve_newton`.
-Gated by `tests/physics3d/test_noslip_vs_mujoco.mojo` (compiles, runs, and does
-not perturb an already-converged solve) and, for the case where it actually
-bites, by dm_control's dog.
+WIRED IN: `solver/newton_solve.mojo` calls `noslip_pyramidal` from its
+PYRAMIDAL per-env path (2026-08-03) and `noslip_elliptic` from its ELLIPTIC one
+(2026-08-13), each under `comptime if NOSLIP_ITER > 0`, with `NOSLIP_ITER`
+threaded from `<option noslip_iterations>` via `ModelDefFromXML` ->
+`Phyics3dEnv` -> `EulerIntegrator` -> `solve_newton`.
 
-⚠ THE ELLIPTIC PATH DOES NOT CALL THIS, so an elliptic model with
-`noslip_iterations` set would skip the pass in silence. `ModelDefFromXML`
-refuses to build that combination — see the `allow_missing_noslip` assert
-there. That refusal IS the dispatch guarantee this module depends on.
+⚠ THE TWO ARE DIFFERENT ALGORITHMS OVER DIFFERENT ROW LAYOUTS, not one routine
+with a flag — see the header on each. The dispatch is therefore a real
+obligation on the caller: routing a model to the wrong one would apply the
+wrong friction law rather than fail. `newton_solve` dispatches inside the
+already-cone-split solve bodies, so the two cannot be confused.
+
+GATES
+  * pyramidal: `tests/physics3d/test_noslip_vs_mujoco.mojo` (compiles, runs,
+    and does not perturb an already-converged solve — the pass is INERT on
+    that fixture and the file says so) and dm_control's dog, where it bites.
+  * elliptic: `tests/physics3d/test_noslip_elliptic_vs_mujoco.mojo`, a
+    3-capsule chain SLAMMED into the floor at 40 m/s while sliding, where
+    MuJoCo-against-MuJoCo with only the option changed moves `qacc` by
+    **9.8e+1** — the pass is first-order there, so the gate can fail. That
+    file also records which fixtures do NOT work and why: a hard normal
+    impulse is the ingredient, not contact count, and every gently resting
+    fixture is inert to round-off.
 
 WHAT IT IS
 
 After the primal solve converges, MuJoCo optionally runs a Gauss-Seidel sweep
 over the FRICTION dimensions only, with the normal forces held fixed, to
-remove residual slip. dm_control's dog is the one suite model that asks for it
-(`<option timestep="0.005" noslip_iterations="4"/>`).
+remove residual slip. dm_control's dog asks for it in the suite
+(`<option timestep="0.005" noslip_iterations="4"/>`), and EVERY manipulation
+model asks for it with the elliptic cone
+(`<option cone="elliptic" noslip_iterations="5" noslip_tolerance="0"/>`).
 
 It is NOT a refinement that can be skipped. Measured MuJoCo-against-MuJoCo with
-only the option changed: `max|d(qvel)|` is **2.9e-2 on the FIRST contacting
-step**. (Over 200 steps it reaches 2.7, which proves nothing on its own — a
-contact-rich rollout is chaotic and any perturbation grows. The first-step
-number is the one that settles it, because there is nothing yet to amplify.)
+only the option changed:
 
-`mj_solNoSlip` is byte-identical across MuJoCo 3.3.6, 3.6.0 and main, so for
-once there is no version-drift question — see `feedback_reference_tree_version
-_drift`. Transcribed from `engine_solver.c:537`.
+  * dog (pyramidal): `max|d(qvel)|` **2.9e-2 on the FIRST contacting step**.
+  * `reach_site_features` (elliptic): `max|d(qacc)|` **7.4e+2 on step 1**, at
+    55 contacts. Not a tail correction — the same order as the answer.
+
+(Multi-step numbers prove nothing on their own — a contact-rich rollout is
+chaotic and any perturbation grows. The first-step number is the one that
+settles it, because there is nothing yet to amplify.)
+
+VERSION DRIFT: none that reaches us. `mj_solNoSlip` is byte-identical across
+MuJoCo 3.3.6, 3.6.0 and main; 3.11.0 refactors it into a static `solNoSlip`
+with island support, hoists `dualFinish` to the caller (which still runs it
+whenever `noslip_iterations > 0`, `engine_forward.c:1152`) and moves the
+elliptic QCQP block into `solveQCQP`/`projectEllipsoid` helpers — all three
+changes are structural, and the arithmetic is unchanged. So the runtime's
+3.10.0, which no tree here matches, is bracketed rather than guessed at. See
+`feedback_reference_tree_version_drift`. Transcribed from
+`engine_solver.c:537` (3.6.0) / `:767` (3.11.0).
 
 THE TWO SIMPLIFICATIONS THAT MAKE THIS TRACTABLE
 
@@ -63,27 +87,39 @@ means operationally, and it is why this cannot destabilise a contact.
 
 SCOPE, STATED RATHER THAN IMPLIED
 
-  * PYRAMIDAL only, BY CONSTRUCTION — the pair arithmetic below IS the
-    pyramidal branch, so there is nothing here to check at runtime and this
-    function does not take a cone type. The elliptic branch of `mj_solNoSlip`
-    is a different algorithm (`mju_QCQP2/3` over the dual block; `solver/
-    qcqp.mojo` has those). No in-scope model combines `cone="elliptic"` with
-    `noslip_iterations`, so writing it now would be unmeasured code.
+  * `noslip_pyramidal` is PYRAMIDAL only BY CONSTRUCTION and
+    `noslip_elliptic` is ELLIPTIC only BY CONSTRUCTION — the cone is baked
+    into each one's arithmetic and row layout, so neither takes a cone type
+    and neither has anything to check at runtime.
     ⚠ THE OBLIGATION IS ON THE CALLER: the wiring must dispatch on
-    `CONE_TYPE` and must NOT route an elliptic model here, because doing so
-    would silently apply the wrong friction law rather than fail. When the
-    wiring lands, that dispatch is the thing to gate.
-  * `scale` and `tolerance` are CALLER-SUPPLIED, and both must be MuJoCo's or
-    the iteration count diverges. `tolerance` is `m->opt.noslip_tolerance`
-    (default 1e-6). `scale` is `1 / (stat.meaninertia * max(1, nv))`, and
-    `stat.meaninertia` is the mean of the mass matrix DIAGONAL —
+    `CONE_TYPE`, because calling the wrong one applies the wrong friction law
+    rather than failing.
+  * `scale` and `tolerance` are CALLER-SUPPLIED for both, and both must be
+    MuJoCo's or the iteration count diverges. `tolerance` is
+    `m->opt.noslip_tolerance` — MuJoCo's default is 1e-6, dm_control's
+    manipulation models set **0** ("run every iteration"). It is parsed and
+    carried in `MODEL_META_IDX_NOSLIP_TOLERANCE`; it was a hardcoded 1e-6
+    until 2026-08-13. ⚠ That change is a FIDELITY fix, not a measured one: no
+    fixture here can tell 0 from 1e-6 (worst 8.9e-10, and exactly 0.0 on
+    `reach_site_features`). `scale` is `1 / (stat.meaninertia * max(1, nv))`,
+    and `stat.meaninertia` is the mean of the mass matrix DIAGONAL —
     `engine_setconst.c:1139-1146`:
 
         meaninertia = (1/nv) * sum_i qM[dof_Madr[i]]
 
-    evaluated once at model-build time. Getting this wrong does not corrupt
+    evaluated once at model-build time. Getting either wrong does not corrupt
     the sweep, it changes WHEN the loop stops, which is a subtler and more
     annoying divergence — hence spelling it out here.
+  * NEITHER runs on `solve_newton_blocked`, the NVIDIA production kernel:
+    it accepts `NOSLIP_ITER` and never reads it. That is a live silent gap on
+    that path, not a property of this module.
+
+⚠ THE REJECTION IS INSIDE `costChange`, NOT AT ITS CALL SITE. MuJoCo's helper
+restores `force` from `oldforce` and returns 0 when the change comes out above
+1e-10; the call sites just do `improvement -= costChange(...)` and look
+rejection-free. Both functions here therefore test the returned change and skip
+the write — reading the call site alone would have produced a solver that
+happily accepts cost-increasing steps.
 
 ⚠⚠ EVERY SCALAR HERE IS `Scalar[DTYPE]`. IT USED TO BE `Float64` (2026-08-10)
 
@@ -95,10 +131,11 @@ rounding. That made the whole pass UNCOMPILABLE ON GPU:
     Function 'mojo_rl_physics3d_solver_nosl...' has Metal-unsupported ...
     LLVM ERROR: Failed to verify LLVM IR for Metal
 
-and `Float64` is off the table on the NVIDIA path too. Since dog is the ONLY
-model in the tree that asks for this pass (`dog_xml`, `dog_fetch_xml`), that
+and `Float64` is off the table on the NVIDIA path too. Dog was then the only
+model in the tree asking for this pass (`dog_xml`, `dog_fetch_xml`), so that
 made "dog on GPU" and "noslip in Float64" mutually exclusive. The port is the
-resolution. The CPU path is UNAFFECTED — it instantiates at
+resolution, and it now also covers every manipulation model. The CPU path is
+UNAFFECTED — it instantiates at
 `DTYPE = float64`, so its arithmetic is bit-identical to before.
 
 ⚠ WHAT THE GPU PATH GIVES UP, STATED RATHER THAN DISCOVERED LATER. At
@@ -132,6 +169,7 @@ from ..gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_CONDIM,
 )
+from .qcqp import mj_qcqp2
 
 
 # ⚠ These stay `Float64` DELIBERATELY: they are `comptime`, so they never
@@ -437,6 +475,406 @@ def noslip_pyramidal[
             qfrc[i] += Je[e * V_SIZE + i] * f
     for i in range(NV):
         var acc = Scalar[DTYPE](0)
+        for k in range(NV):
+            acc += rebind[Scalar[DTYPE]](m_inv[env, i * NV + k]) * qfrc[k]
+        qacc[i] = acc + qacc_smooth[i]
+
+
+# =============================================================================
+# ELLIPTIC cone
+# =============================================================================
+
+
+@always_inline
+def _minv_dense[
+    DTYPE: DType, NV: Int, ROWS: Int, V_SIZE: Int, BATCH: Int
+](
+    env: Int,
+    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    J: InlineArray[Scalar[DTYPE], ROWS * V_SIZE],
+    row: Int,
+    mut out_v: InlineArray[Scalar[DTYPE], V_SIZE],
+):
+    """`out_v = M^-1 J_row^T` for a row of a dense `[ROWS, NV]` Jacobian.
+
+    The elliptic path stores its three contact Jacobians in SEPARATE arrays
+    (`Jn_c`, `Jt1_c`, `Jt2_c`), each `[MC, NV]`, rather than one interleaved
+    edge list — hence a helper keyed on the array rather than on a global row
+    index. Stride is NV, matching how `_newton_solve_env` fills them.
+    """
+    for i in range(NV):
+        var acc = Scalar[DTYPE](0)
+        for k in range(NV):
+            acc += rebind[Scalar[DTYPE]](m_inv[env, i * NV + k]) * J[
+                row * NV + k
+            ]
+        out_v[i] = acc
+
+
+@always_inline
+def _dot_dense[
+    DTYPE: DType, NV: Int, ROWS: Int, V_SIZE: Int
+](
+    J: InlineArray[Scalar[DTYPE], ROWS * V_SIZE],
+    row: Int,
+    v: InlineArray[Scalar[DTYPE], V_SIZE],
+) -> Scalar[DTYPE]:
+    """`J_row . v`."""
+    var acc = Scalar[DTYPE](0)
+    for i in range(NV):
+        acc += J[row * NV + i] * v[i]
+    return acc
+
+
+@always_inline
+def _refresh_jar_elliptic[
+    DTYPE: DType,
+    NV: Int,
+    MC: Int,
+    V_SIZE: Int,
+    MAXS: Int,
+    MAXEQ: Int,
+](
+    nc: Int,
+    ns: Int,
+    neq_rows: Int,
+    Jn_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
+    Jt1_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
+    Jt2_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
+    pb_c: InlineArray[Scalar[DTYPE], MC],
+    bt1_c: InlineArray[Scalar[DTYPE], MC],
+    bt2_c: InlineArray[Scalar[DTYPE], MC],
+    sr_dof: InlineArray[Int, MAXS],
+    sr_sign: InlineArray[Scalar[DTYPE], MAXS],
+    sr_bias: InlineArray[Scalar[DTYPE], MAXS],
+    eq_J: InlineArray[Scalar[DTYPE], MAXEQ * V_SIZE],
+    eq_bias: InlineArray[Scalar[DTYPE], MAXEQ],
+    qacc: InlineArray[Scalar[DTYPE], V_SIZE],
+    mut jar_n: InlineArray[Scalar[DTYPE], MC],
+    mut jar_t1: InlineArray[Scalar[DTYPE], MC],
+    mut jar_t2: InlineArray[Scalar[DTYPE], MC],
+    mut sr_jar: InlineArray[Scalar[DTYPE], MAXS],
+    mut eq_jar: InlineArray[Scalar[DTYPE], MAXEQ],
+):
+    """`jar = J qacc + bias` for EVERY row of the elliptic system.
+
+    ⚠ EVERY row, not just the friction ones. MuJoCo's `residual()` reads
+    `efc_AR * efc_force` over the whole constraint block, so a friction update
+    is visible to every subsequent block — including the normal and limit rows
+    this sweep never writes. Refreshing only the rows the sweep touches would
+    turn a Gauss-Seidel pass into a Jacobi one against the rest of the system.
+    """
+    for c in range(nc):
+        var jn = pb_c[c]
+        var j1 = bt1_c[c]
+        var j2 = bt2_c[c]
+        for i in range(NV):
+            var qa = qacc[i]
+            jn += Jn_c[c * NV + i] * qa
+            j1 += Jt1_c[c * NV + i] * qa
+            j2 += Jt2_c[c * NV + i] * qa
+        jar_n[c] = jn
+        jar_t1[c] = j1
+        jar_t2[c] = j2
+    for s in range(ns):
+        sr_jar[s] = sr_bias[s] + sr_sign[s] * qacc[sr_dof[s]]
+    for e in range(neq_rows):
+        var je = eq_bias[e]
+        for d in range(NV):
+            je += eq_J[e * NV + d] * qacc[d]
+        eq_jar[e] = je
+
+
+def noslip_elliptic[
+    DTYPE: DType,
+    NV: Int,
+    MC: Int,
+    V_SIZE: Int,
+    MAXS: Int,
+    MAXEQ: Int,
+    BATCH: Int,
+    MAX_ITER: Int,
+](
+    env: Int,
+    nc: Int,
+    ns: Int,
+    neq_rows: Int,
+    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    # ── contact rows: normal, tangent 1, tangent 2 (condim 3) ──
+    Jn_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
+    Jt1_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
+    Jt2_c: InlineArray[Scalar[DTYPE], MC * V_SIZE],
+    mu_c: InlineArray[Scalar[DTYPE], MC],
+    D_n_c: InlineArray[Scalar[DTYPE], MC],
+    D_f_c: InlineArray[Scalar[DTYPE], MC],
+    pb_c: InlineArray[Scalar[DTYPE], MC],
+    bt1_c: InlineArray[Scalar[DTYPE], MC],
+    bt2_c: InlineArray[Scalar[DTYPE], MC],
+    # ── scalar rows: joint limits + dry-friction dofs (J = sign * e_dof) ──
+    sr_dof: InlineArray[Int, MAXS],
+    sr_kind: InlineArray[Int, MAXS],
+    sr_sign: InlineArray[Scalar[DTYPE], MAXS],
+    sr_R: InlineArray[Scalar[DTYPE], MAXS],
+    sr_bias: InlineArray[Scalar[DTYPE], MAXS],
+    sr_floss: InlineArray[Scalar[DTYPE], MAXS],
+    # ── equality rows: tendon + connect/weld (dense J) ──
+    eq_J: InlineArray[Scalar[DTYPE], MAXEQ * V_SIZE],
+    eq_D: InlineArray[Scalar[DTYPE], MAXEQ],
+    eq_bias: InlineArray[Scalar[DTYPE], MAXEQ],
+    qacc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
+    scale: Scalar[DTYPE],
+    tolerance: Scalar[DTYPE],
+    mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
+    mut fn_a: InlineArray[Scalar[DTYPE], MC],
+    mut ft1_a: InlineArray[Scalar[DTYPE], MC],
+    mut ft2_a: InlineArray[Scalar[DTYPE], MC],
+    mut jar_n_a: InlineArray[Scalar[DTYPE], MC],
+    mut jar_t1_a: InlineArray[Scalar[DTYPE], MC],
+    mut jar_t2_a: InlineArray[Scalar[DTYPE], MC],
+    mut sr_f: InlineArray[Scalar[DTYPE], MAXS],
+    mut sr_jar: InlineArray[Scalar[DTYPE], MAXS],
+    mut eq_f: InlineArray[Scalar[DTYPE], MAXEQ],
+    mut eq_jar: InlineArray[Scalar[DTYPE], MAXEQ],
+    mut qfrc: InlineArray[Scalar[DTYPE], V_SIZE],
+):
+    """One `mj_solNoSlip` call on the ELLIPTIC cone: up to `MAX_ITER` sweeps.
+
+    Transcribed from the `mjCNSTR_CONTACT_ELLIPTIC` branch of MuJoCo's
+    `mj_solNoSlip` (`engine_solver.c:653` in 3.6.0, `solveQCQP` in 3.11.0).
+
+    HOW THIS DIFFERS FROM THE PYRAMIDAL BRANCH — the two share a name and
+    almost nothing else:
+
+      * ROW LAYOUT. A pyramidal contact of dim d has `2*(d-1)` rows, all of
+        them friction, and the normal force is only implicit in their sum.
+        An elliptic contact has ONE normal row followed by `d-1` tangential
+        ones. So `force[i]` here IS the normal force, and freezing it needs no
+        arithmetic trick at all: the sweep simply never writes that row. The
+        pyramidal `(mid + y, mid - y)` construction exists precisely because
+        it has no such row to leave alone.
+      * SOLVE. Pyramidal minimises a 1-D quadratic in `y` over `[-mid, mid]`,
+        which is closed form. Elliptic solves a QCQP over the friction
+        ellipsoid `sum (f_j/mu_j)^2 <= f_n^2` — `mju_QCQP2` for dim 3, and
+        that is Newton's method on the dual variable, not a projection.
+      * A FEASIBLE ANSWER IS STILL RE-PROJECTED. When the QCQP reports the
+        constraint active, MuJoCo pushes `v` back onto the ellipsoid boundary
+        ("in case QCQP is approximate"). That is not a clamp — it can move a
+        point that is already inside — and skipping it leaves a slowly
+        drifting friction force under sustained sliding.
+
+    ⚠ CONDIM 3 ONLY, because the SOLVER is. `_newton_solve_env`'s elliptic path
+    caches exactly three Jacobian rows per contact (`Jn_c`/`Jt1_c`/`Jt2_c`) and
+    one isotropic `mu`, so a condim-4 or -6 contact already loses its
+    torsional/rolling rows BEFORE this function is reached. MuJoCo would
+    dispatch those to `mju_QCQP3`/`mju_QCQP`; `solver/qcqp.mojo` has both
+    ported and unused. Writing the dim-4/5 branches here would be dead code
+    that could not be exercised, and would read as support the path does not
+    have — `reach_site_features` has 3 condim-4 contacts out of 55 at qpos0,
+    so this is a real gap, tracked separately from noslip.
+
+    ⚠ THE `improvement` ACCUMULATOR SPANS EVERY ROW KIND. The iteration-0
+    correction is `0.5 f^2 R` over ALL `nefc` rows — contact normal AND
+    tangents AND limits AND dry friction AND equalities — because MuJoCo's
+    `improvement` is comparable with the primal solver's cost. Summing it over
+    only the rows the sweep writes makes the loop stop on a different
+    iteration, which is the one failure mode here that produces a plausible
+    wrong answer rather than an obviously wrong one.
+
+    On entry `qacc`, the `jar_*` arrays and the force arrays are the primal
+    solver's converged output. On exit the TANGENTIAL forces have been
+    re-solved with the normal ones frozen, and `qacc` / `qfrc` are recomputed
+    from the final forces exactly as `dualFinish` does.
+    """
+    comptime ZERO = Scalar[DTYPE](0)
+    comptime HALF = Scalar[DTYPE](0.5)
+    comptime ONE = Scalar[DTYPE](1)
+    comptime MINVAL = Scalar[DTYPE](_MINVAL)
+    comptime DIAG_FLOOR = Scalar[DTYPE](_DIAG_FLOOR)
+    comptime COST_REJECT = Scalar[DTYPE](_COST_REJECT)
+
+    var mj_a = InlineArray[Scalar[DTYPE], V_SIZE](fill=ZERO)
+    var mj_b = InlineArray[Scalar[DTYPE], V_SIZE](fill=ZERO)
+
+    for it in range(MAX_ITER):
+        var improvement = ZERO
+
+        # `iter == 0` correction: MuJoCo folds in the R-weighted force energy
+        # once so the first iteration's improvement is comparable with the
+        # primal solver's own. `efc_D = 1/R`, so a row's R is the reciprocal
+        # of the stiffness the primal solve used for it.
+        if it == 0:
+            for c in range(nc):
+                var f_n = fn_a[c]
+                var f1 = ft1_a[c]
+                var f2 = ft2_a[c]
+                if D_n_c[c] > ZERO:
+                    improvement += HALF * f_n * f_n / D_n_c[c]
+                if D_f_c[c] > ZERO:
+                    improvement += HALF * (f1 * f1 + f2 * f2) / D_f_c[c]
+            for s in range(ns):
+                improvement += HALF * sr_f[s] * sr_f[s] * sr_R[s]
+            for e in range(neq_rows):
+                if eq_D[e] > ZERO:
+                    improvement += HALF * eq_f[e] * eq_f[e] / eq_D[e]
+
+        # ── sweep 1: dry-friction dof rows, box-clamped to +-frictionloss ──
+        # J = sign * e_dof, so `M^-1 J^T` is a COLUMN of m_inv scaled by the
+        # sign and `a_ii` is a single diagonal entry — no matvec.
+        for s in range(ns):
+            if sr_kind[s] != SROW_FRICTION:
+                continue
+            var dof = sr_dof[s]
+            var sgn = sr_sign[s]
+            var a_ii = rebind[Scalar[DTYPE]](m_inv[env, dof * NV + dof])
+            var arinv = ONE / (a_ii if a_ii > MINVAL else MINVAL)
+
+            var res = sr_jar[s]
+            var old = sr_f[s]
+            var f = old - res * arinv
+            var lim = sr_floss[s]
+            if f < -lim:
+                f = -lim
+            elif f > lim:
+                f = lim
+
+            var d = f - old
+            if d != ZERO:
+                sr_f[s] = f
+                for k in range(NV):
+                    qacc[k] += d * sgn * rebind[Scalar[DTYPE]](
+                        m_inv[env, k * NV + dof]
+                    )
+                _refresh_jar_elliptic[DTYPE, NV, MC, V_SIZE, MAXS, MAXEQ](
+                    nc, ns, neq_rows,
+                    Jn_c, Jt1_c, Jt2_c, pb_c, bt1_c, bt2_c,
+                    sr_dof, sr_sign, sr_bias, eq_J, eq_bias, qacc,
+                    jar_n_a, jar_t1_a, jar_t2_a, sr_jar, eq_jar,
+                )
+            # ⚠ `/ arinv`, matching MuJoCo literally. That is `a_ii` clamped
+            # from below, and the reciprocal round-trip is a 1-ulp difference
+            # from using `a_ii` directly — kept because this feeds the
+            # termination test, where the cheapest way to diverge is to be
+            # almost right.
+            improvement -= HALF * d * d / arinv + d * res
+
+        # ── sweep 2: contact friction, one 2x2 tangential block per contact ─
+        for c in range(nc):
+            # MuJoCo's order, and the order matters: the block is extracted
+            # and `bc` formed BEFORE the zero-normal guard, because a contact
+            # whose normal force has collapsed may still be carrying tangential
+            # force that has to be zeroed AND accounted for.
+            var r0 = jar_t1_a[c]
+            var r1 = jar_t2_a[c]
+            var old0 = ft1_a[c]
+            var old1 = ft2_a[c]
+
+            _minv_dense[DTYPE, NV, MC, V_SIZE, BATCH](env, m_inv, Jt1_c, c, mj_a)
+            _minv_dense[DTYPE, NV, MC, V_SIZE, BATCH](env, m_inv, Jt2_c, c, mj_b)
+
+            # `Ac` = the AR submatrix with R subtracted off the diagonal and
+            # the diagonal floored (`extractBlock`, flg_subR=1) — so R is not
+            # in it at all.
+            var a00 = _dot_dense[DTYPE, NV, MC, V_SIZE](Jt1_c, c, mj_a)
+            var a01 = _dot_dense[DTYPE, NV, MC, V_SIZE](Jt1_c, c, mj_b)
+            var a10 = _dot_dense[DTYPE, NV, MC, V_SIZE](Jt2_c, c, mj_a)
+            var a11 = _dot_dense[DTYPE, NV, MC, V_SIZE](Jt2_c, c, mj_b)
+            if a00 < DIAG_FLOOR:
+                a00 = DIAG_FLOOR
+            if a11 < DIAG_FLOOR:
+                a11 = DIAG_FLOOR
+
+            # `bc = res - Ac * oldforce`
+            var b0 = r0 - (a00 * old0 + a01 * old1)
+            var b1 = r1 - (a10 * old0 + a11 * old1)
+
+            var f0 = ZERO
+            var f1 = ZERO
+            var fn_c = fn_a[c]
+            if fn_c >= MINVAL:
+                var mu = mu_c[c]
+                var A = InlineArray[Scalar[DTYPE], 4](fill=ZERO)
+                A[0] = a00
+                A[1] = a01
+                A[2] = a10
+                A[3] = a11
+                var b = InlineArray[Scalar[DTYPE], 2](fill=ZERO)
+                b[0] = b0
+                b[1] = b1
+                # `d` is the per-direction friction coefficient. The elliptic
+                # path carries ONE isotropic `mu` per contact, so both
+                # directions get it; MuJoCo reads `con->friction[0..1]`, which
+                # differ only for an anisotropic `<geom friction>`.
+                var dsc = InlineArray[Scalar[DTYPE], 2](fill=mu)
+                var active = mj_qcqp2[DTYPE](f0, f1, A, b, dsc, fn_c)
+                if active:
+                    # `projectEllipsoid(..., feasible=0)` — ALWAYS scales to
+                    # the boundary, even from inside. Not a clamp.
+                    var sq = (f0 * f0 + f1 * f1) / (mu * mu)
+                    var scl = sqrt(
+                        fn_c * fn_c / (sq if sq > MINVAL else MINVAL)
+                    )
+                    f0 *= scl
+                    f1 *= scl
+
+            var change = _cost_change[DTYPE](
+                a00, a01, a10, a11, f0, f1, old0, old1, r0, r1
+            )
+            if change > COST_REJECT:
+                # `costChange` restores `force` and returns 0 — the update is
+                # dropped, not merely uncounted.
+                continue
+
+            var d0 = f0 - old0
+            var d1 = f1 - old1
+            if d0 != ZERO or d1 != ZERO:
+                ft1_a[c] = f0
+                ft2_a[c] = f1
+                for q in range(NV):
+                    qacc[q] += d0 * mj_a[q] + d1 * mj_b[q]
+                _refresh_jar_elliptic[DTYPE, NV, MC, V_SIZE, MAXS, MAXEQ](
+                    nc, ns, neq_rows,
+                    Jn_c, Jt1_c, Jt2_c, pb_c, bt1_c, bt2_c,
+                    sr_dof, sr_sign, sr_bias, eq_J, eq_bias, qacc,
+                    jar_n_a, jar_t1_a, jar_t2_a, sr_jar, eq_jar,
+                )
+            improvement -= change
+
+        improvement *= scale
+        if improvement < tolerance:
+            break
+
+    # ── dualFinish ─────────────────────────────────────────────────────────
+    # `qfrc_constraint = J^T f`, then `qacc = M^-1 qfrc + qacc_smooth`.
+    #
+    # ⚠ RECOMPUTED FROM THE FINAL FORCES over EVERY row, not carried over from
+    # the in-sweep `qacc +=` updates and not restricted to the friction rows.
+    # The normal, limit and equality forces are unchanged by the sweep but they
+    # are still part of `qfrc_constraint`; dropping them would silently release
+    # every contact this pass just refined.
+    for i in range(NV):
+        qfrc[i] = ZERO
+    for c in range(nc):
+        var f_n = fn_a[c]
+        var f1 = ft1_a[c]
+        var f2 = ft2_a[c]
+        if f_n == ZERO and f1 == ZERO and f2 == ZERO:
+            continue
+        for i in range(NV):
+            qfrc[i] += (
+                Jn_c[c * NV + i] * f_n
+                + Jt1_c[c * NV + i] * f1
+                + Jt2_c[c * NV + i] * f2
+            )
+    for s in range(ns):
+        qfrc[sr_dof[s]] += sr_sign[s] * sr_f[s]
+    for e in range(neq_rows):
+        var fe = eq_f[e]
+        if fe == ZERO:
+            continue
+        for d in range(NV):
+            qfrc[d] += eq_J[e * NV + d] * fe
+    for i in range(NV):
+        var acc = ZERO
         for k in range(NV):
             acc += rebind[Scalar[DTYPE]](m_inv[env, i * NV + k]) * qfrc[k]
         qacc[i] = acc + qacc_smooth[i]
