@@ -18,6 +18,7 @@ from std.collections import InlineArray
 from .xml_parser import (
     _split_spaces,
     _strip_xml_comments,
+    _normalize_freejoint,
     _extract_section,
     _extract_section_inner,
     _extract_opening_tag,
@@ -3521,7 +3522,21 @@ xml_in: String) raises -> FlatModelDef:
     # wrote a site nobody had declared. It stayed invisible because the old
     # capacity-bounded writes dropped the overflow without a word; the
     # dimension check in `ModelDefFromXML` now turns exactly this into a raise.
-    var xml = _strip_xml_comments(xml_in)
+    #
+    # ⚠⚠ AND NORMALIZE `<freejoint>` FOR THE SAME REASON, ONE LAYER UP. This
+    # parser has never known the tag: `_normalize_freejoint` lived only in
+    # `merge_mjcf`, so a single-file MJCF reached here with `<freejoint/>`
+    # intact and every `find("<joint")` below missed it. The body then got no
+    # dofs and `body_weldid` stayed 0, which makes
+    # `pair_body_filtered`'s `weld_i == weld_j` clause discard every contact
+    # pair it belongs to — a body that can neither move nor collide, reported
+    # as nothing at all. Measured: free sphere overlapping a static box,
+    # MuJoCo 1 contact, ours 0.
+    #
+    # THE TWO PARSERS DISAGREEING IS THE HAZARD, not either one being wrong:
+    # `parse_xml` now normalizes too, and a model where only one of them did
+    # would raise the dimension check rather than mis-simulate.
+    var xml = _strip_xml_comments(_normalize_freejoint(xml_in))
 
     # Extract top-level sections
     var worldbody = _extract_section(xml, "worldbody")

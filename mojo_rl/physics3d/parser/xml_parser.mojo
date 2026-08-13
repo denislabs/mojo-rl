@@ -2600,7 +2600,24 @@ def parse_xml(xml: String) -> ParsedModel:
     """
 
     # ---- Strip XML comments to avoid counting commented-out tags ------------
-    var xml_clean = _strip_xml_comments(xml)
+    #
+    # ⚠⚠ `_normalize_freejoint` RUNS HERE, NOT ONLY IN `merge_mjcf`. It used to
+    # live only there, so `<freejoint/>` was rewritten for models built by the
+    # composer and INVISIBLE to every model handed straight to `parse_xml`.
+    # The failure is silent and total: `<freejoint` matches none of the ~20
+    # `find("<joint")` sites, so NJOINT/NQ/NV come out 0, the body welds to the
+    # world, and `pair_body_filtered`'s first clause (`weld_i == weld_j`)
+    # then discards EVERY contact pair it is in. Measured on a free sphere
+    # overlapping a static box: MuJoCo 1 contact, ours 0, and the body could
+    # not have moved either since it had no dofs.
+    #
+    # Every model shipped today goes through `merge_mjcf` first and is
+    # unaffected — the exposure is single-file MJCF, which is exactly the shape
+    # Menagerie / SO-ARM / ToddlerBot ports arrive in.
+    #
+    # Idempotent: after one pass no `<freejoint` remains, so the composer path
+    # normalizing first and this normalizing again is a no-op.
+    var xml_clean = _strip_xml_comments(_normalize_freejoint(xml))
 
     # ---- Isolate sections to avoid counting <default> entries ---------------
     var worldbody = _extract_section(xml_clean, "worldbody")
