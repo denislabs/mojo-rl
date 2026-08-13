@@ -42,6 +42,7 @@ usual first-compile corrections before trusting a number out of it.
 
 from std.math import abs, sqrt
 from std.random import random_float64, seed
+from std.sys import argv
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -81,7 +82,7 @@ comptime BATCH: Int = 1024          # must match the trained checkpoint
 # That BNet carries gamma/beta Params this architecture does not have, so the
 # load either fails or silently skips them — and a silently-skipped norm layer
 # is exactly the failure this file's own BNet comment warns about.
-comptime CKPT: StaticString = "checkpoints/fb_walker_all_d128.ckpt.500000"
+comptime CKPT: StaticString = "checkpoints/fb_walker_all_d128.ckpt.1200000"
 # ⚠ MUST be the store the checkpoint TRAINED on. §13 records an eval that
 # computed z from a local 10 k store while the checkpoint had trained on 1 M —
 # the numbers were not wrong so much as unattributable.
@@ -123,6 +124,43 @@ comptime RELABEL_ROWS: Int = 4096
 # than silently called "within noise" at a sample size that could never say
 # otherwise.
 comptime EVAL_EPISODES: Int = 64
+
+# ⚠⚠ **ONE CHECKPOINT IS NOT A MEASUREMENT OF THE METHOD.** Swept across 11
+# rungs of the same 1.22 M run (64 episodes each, centered z, deterministic
+# eval — the random baseline is bit-identical at every rung, so these are real
+# weight differences, not eval noise):
+#
+#     step   stand   walk    run
+#     100k   1.154  0.927  1.066
+#     300k   1.430  1.273  1.671
+#     500k   1.323  1.233  1.244
+#     800k   1.415  1.696  1.570
+#     900k   1.417  1.523  1.160
+#     950k   1.621  1.633  1.277
+#    1000k   1.333  0.942  1.121   <- walk goes NULL
+#    1050k   1.376  1.236  1.344
+#    1100k   1.525  1.519  1.488
+#    1150k   1.399  1.544  1.457
+#    1200k   1.609  2.413  1.998   <- best of 11
+#
+# Late-region mean (8 checkpoints, 800k-1200k):
+#     stand 1.462 (sd 0.11)   walk 1.563 (sd 0.42)   run 1.427 (sd 0.28)
+#
+# So walk swings 0.94 -> 2.41 between checkpoints 200 k apart, and the last
+# rung is 1.54x / 1.40x the TYPICAL late checkpoint on walk / run. Quoting the
+# final checkpoint reports the best of eleven draws.
+#
+# ⚠ Two consequences for anyone reading a number out of this file:
+#   * Report the MEAN over several late rungs, not the last one. The sweep is
+#     ~90 s per rung with the runtime checkpoint argument.
+#   * A single rung can say "walk does not work" (1000k) or "walk works at
+#     2.4x" (1200k) about the SAME run.
+#
+# ⚠ And the curve is FLAT past ~300 k: 300-500k means 1.377 / 1.253 / 1.458 vs
+# 800-1200k 1.462 / 1.563 / 1.427. More gradient steps are not what closes the
+# remaining gap to the SAC experts in the data (~19% / ~5% / ~5% of expert at
+# the late mean) — that is what the FB-CPR milestone is for.
+comptime _EVAL_EPISODES_NOTE: Int = 0
 comptime EVAL_LEN: Int = 1000       # dm_control's own episode length
 comptime SEED: Int = 20260805
 
@@ -328,9 +366,17 @@ def _eval_task[
 
 
 def main() raises:
-    print("[1] loading checkpoint", CKPT, "...")
+    # ⚠ Checkpoint path is a RUNTIME argument when one is given. `CKPT` is
+    # comptime, so sweeping rungs would otherwise cost one full rebuild per
+    # checkpoint — which is how "does more training help?" becomes an
+    # afternoon instead of ten minutes.
+    var ck = String(CKPT)
+    var av = argv()
+    if len(av) > 1:
+        ck = String(av[1])
+    print("[1] loading checkpoint", ck, "...")
     var t = Trainer.make(lr=3e-4, ctx=None)
-    t.load_state(String(CKPT))
+    t.load_state(ck)
 
     print("[2] loading", STORE, "for relabelling ...")
     var store = TrajectoryStore(String(STORE))
