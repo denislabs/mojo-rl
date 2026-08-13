@@ -41,13 +41,37 @@ their torsional row; it now carries `dim-1` tangential rows with per-direction
 friction and `R`. Gated by
 `tests/physics3d/test_elliptic_condim46_vs_mujoco.mojo`.
 
-⚠ THIS MODEL STILL DOES NOT STEP IN PARITY, AND THE REASON IS NOT THE SOLVER.
-Measured over 40 in-range poses, comparing `qvel` after `mj_step` on both
-sides, the divergence tracks CONTACT GEOMETRY and nothing else:
+⚠⚠ THIS MODEL DOES STEP IN PARITY, AND THE NOTE THAT SAID OTHERWISE WAS
+MEASURED OFF-DISTRIBUTION. Every reach parity number here came from a 40-pose
+sweep that draws `qpos` uniformly from dm_control's sampling bounds and steps
+whatever comes out. dm_control's OWN reset draws from those same bounds and
+then REJECTS anything in contact — 10 of 10 episodes reset with zero contacts.
+Dropping the rejection does not perturb the distribution, it replaces it:
+
+                            the sweep          the task
+    deepest penetration     -317 mm            -0.55 mm      (575x)
+    simultaneous contacts   up to 45           up to 2
+
+Measured where the task actually operates
+(`tests/dm_control/test_reach_parity_in_distribution.mojo`):
+
+    contact-free, 400 random-control steps      |d(qvel)| 2.8e-17
+    shallow contacts, 12 poses in [-1.4 mm, 0)  |d(qvel)| worst 4.2e-4,
+                                                typical ~1e-7,
+                                                contact COUNTS 12/12 exact
+
+against the sweep's 62.3. Four to sixteen orders, depending which pose you ask.
+
+⚠ THE OLD TABLE IS KEPT BELOW because the conclusions drawn from it are still
+in the tree and in the task list, and because "our numbers were fine, our
+sample was not" is the failure this file should teach:
 
     worst |d(pos)| on a PENETRATING contact     |d(qvel)|
     ~1e-9                                       1e-9 .. 4e-6
     ~2e-2                                       2e-1 .. 1.9
+
+Those 2e-1..1.9 rows are poses penetrating 100-300 mm. They are real
+divergences of a real regime; they are not this task's regime.
 
 The solve itself is exact where the geometry is. On the one-contact condim-4
 pose our rows match MuJoCo's `efc` table to 7+ digits — every `D` (4836.150
@@ -55,12 +79,18 @@ normal and slide, 0.1209 torsional), every `aref`, every constraint force
 (17028.905 normal, 6268.873 / 3221.375 slide, 77.509 torsional) and all nine
 dry-friction dof rows.
 
-What differs is the up-to-two EXTRA plane-mesh contacts: our DEEPEST contact
-agrees with MuJoCo's to 1e-10 or better on every plane-mesh pose, so the
-support point is right and only the neighbourhood extras — which
+What differs THERE is the up-to-two EXTRA plane-mesh contacts: our DEEPEST
+contact agrees with MuJoCo's to 1e-10 or better on every plane-mesh pose, so
+the support point is right and only the neighbourhood extras — which
 `mjc_PlaneConvex` picks in qhull's facet order — land elsewhere. Tracked as
 task #56; `_plane_mesh_contacts` and `build_hull_edge_graph` carry the
 per-mesh numbers. Closing it means running qhull, not tightening a tolerance.
+
+⚠ AND IT IS WORTH LESS THAN IT LOOKS. Injecting MuJoCo's OWN `mesh_graph`
+collapses five sweep poses from 0.198-1.908 to ~1e-7 — so the graph really is
+the cause there — but all five penetrate 100-300 mm. In the shallow band the
+task reaches, contact counts already match 12/12 and the worst divergence is
+4.2e-4. Do not read #56 as blocking reach.
 
 ⚠⚠ THE CYLINDER-MESH NORMAL WAS FILED HERE AS A SECOND DEFECT (task #57) AND
 IT IS NOT ONE. At the one clean 1-vs-1 pose our normal sits 9.4e-3 from
