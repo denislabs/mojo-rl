@@ -280,3 +280,62 @@ if __name__ == '__main__':
     names = sys.argv[1:] or list(ALL_FEATURES)
     for n in names:
         print('{:46s} {}'.format(n, counts(n)))
+
+
+# -- inverse kinematics -----------------------------------------------------
+#
+# The reset path's TCP initializer runs dm_control's OWN damped-least-squares
+# site IK. These helpers expose it so a Mojo gate can compare against the real
+# `qpos_from_site_pose` rather than a transcription of it.
+
+# `entities/manipulators/base.py::DOWN_QUATERNION`, MuJoCo order (w, x, y, z).
+DOWN_QUATERNION = (0.0, 0.70710678118, 0.70710678118, 0.0)
+
+# The site the TCP initializer drives, and the joints it is allowed to move.
+# ⚠ `set_site_to_xpos` passes `joint_names=arm_joint_names`, restricting the
+# solve to the ARM — the hand's finger joints are held. That restriction is
+# what keeps the normal matrix full rank; see `physics3d/dynamics/ik_site.mojo`.
+TCP_SITE = 'jaco_arm/jaco_hand/pinchsite'
+
+
+def arm_joint_names(task_name='reach_site_features', seed=0):
+    """Names of the arm joints, in model order, excluding the hand's."""
+    env = _load(task_name, seed=seed)
+    arm = env.task._arm  # pylint: disable=protected-access
+    return [j.full_identifier for j in arm.joints]
+
+
+def ik_reference(task_name, q0, target_pos, target_quat=None,
+                 rot_weight=2.0, max_steps=100, seed=0):
+    """Run dm_control's `qpos_from_site_pose` from `q0`.
+
+    Arguments mirror `set_site_to_xpos`'s call, NOT the IK function's own
+    defaults — in particular `rot_weight=2` and the arm-only joint set.
+
+    Returns `(qpos, err_norm, steps, success, site_xpos)`; `qpos` is the FULL
+    nq vector. ⚠ `success` is not implied by `qpos` looking reasonable: the
+    progress guard breaks out with `success=False` while leaving `qpos` at the
+    last accepted step.
+    """
+    _bootstrap()
+    import numpy as np
+    from dm_control.utils import inverse_kinematics
+    env = _load(task_name, seed=seed)
+    physics_ = env.physics
+    with physics_.reset_context():
+        physics_.data.qpos[:] = np.asarray(q0, dtype=float)
+    if target_quat is None:
+        target_quat = DOWN_QUATERNION
+    result = inverse_kinematics.qpos_from_site_pose(
+        physics=physics_,
+        site_name=TCP_SITE,
+        target_pos=np.asarray(target_pos, dtype=float),
+        target_quat=np.asarray(target_quat, dtype=float),
+        joint_names=arm_joint_names(task_name, seed=seed),
+        rot_weight=rot_weight,
+        max_steps=max_steps,
+        inplace=True)
+    physics_.forward()
+    sid = physics_.model.name2id(TCP_SITE, 'site')
+    return (list(result.qpos), float(result.err_norm), int(result.steps),
+            bool(result.success), list(physics_.data.site_xpos[sid]))
