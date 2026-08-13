@@ -152,6 +152,14 @@ comptime ReachSiteFeaturesModel = ModelDefFromXML[
     max_condim=pm.MAX_CONDIM,
     max_equality=pm.NEQ * 6,
     max_contacts=128,
+    # ⚠ THE OBSERVATION IS NOT qpos+qvel. `Reach`'s `_features` observation is
+    # 45 numbers assembled by `manipulation_reach_config`, and the default
+    # formula here would advertise nq - skip + nv = 17. `Phyics3dEnv` sizes the
+    # observation buffer from THIS, not from the config's hook, so leaving it
+    # at the default truncates the observation to its first 17 entries with
+    # nothing raised. `obs_qpos_skip=0` because the hook indexes qpos itself.
+    obs_dim_override=45,
+    obs_qpos_skip=0,
     timestep=pm.TIMESTEP,
     cone_type=ConeType.ELLIPTIC,
     # The elliptic branch of `mj_solNoSlip` runs for this now — see the module

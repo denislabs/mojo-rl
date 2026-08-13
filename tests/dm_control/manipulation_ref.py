@@ -625,3 +625,150 @@ def suite_action_spec_reference(domain, task):
     spec = env.action_spec()
     return (list(np.atleast_1d(spec.minimum).astype(float)),
             list(np.atleast_1d(spec.maximum).astype(float)))
+
+
+# -- the `reach_site_features` task layer -----------------------------------
+#
+# `Reach.get_reward` and the eight `_features` observables, evaluated at an
+# INJECTED state so a Mojo gate can drive both engines from the same numbers.
+# Everything here calls dm_control's own objects: the observables are the real
+# `Observable` instances (so the FTT corruptor runs), and the reward is
+# `task.get_reward`. Nothing is re-implemented.
+
+# `observation_spec()` order, which is what a policy sees when the dict is
+# flattened. NOT declaration order — the task's own observable comes first.
+REACH_OBS_ORDER = (
+    'target_position',
+    'jaco_arm/joints_pos',
+    'jaco_arm/joints_torque',
+    'jaco_arm/joints_vel',
+    'jaco_arm/jaco_hand/joints_pos',
+    'jaco_arm/jaco_hand/joints_vel',
+    'jaco_arm/jaco_hand/pinch_site_pos',
+    'jaco_arm/jaco_hand/pinch_site_rmat',
+)
+
+
+def _reach_observables(task):
+    """`{spec name: Observable}` for the enabled `_features` observables.
+
+    ⚠ `entity.observables.as_dict()` keys are ALREADY the fully-qualified
+    names composer puts in `observation_spec()` (`jaco_arm/joints_pos`, not
+    `joints_pos`), because the entities are ATTACHED. Prefixing them again
+    yields `jaco_arm/jaco_arm/joints_pos` and a KeyError far from here.
+    """
+    out = {'target_position': task.task_observables['target_position']}
+    for entity in (task._arm, task._hand):
+        for k, v in entity.observables.as_dict().items():
+            if v.enabled:
+                out[k] = v
+    return out
+
+
+def reach_state(qpos, qvel, ctrl=None, target_pos=None,
+                task_name='reach_site_features', seed=0,
+                zero_frictionloss=False):
+    """Evaluate the task at an injected state. Returns a plain dict.
+
+    ⚠ `target_pos` writes the SITE's model `pos`, which is where dm_control
+    keeps it (`physics.bind(self._target).pos = ...`) — the target is a model
+    constant that `initialize_episode` rewrites, not a body pose. Passing None
+    leaves whatever the last reset drew, which is not reproducible across
+    dm_control versions; a gate should always pass one.
+
+    ⚠ `mj_forward` is what fills `sensordata`, so the returned
+    `jaco_arm/joints_torque` is the ACCELERATION STAGE AT THIS STATE — not at
+    the state some previous step left. A Mojo side comparing it must produce
+    `cfrc_int` at the same state (one integrator substep FROM here), not after
+    a full control step.
+    """
+    _bootstrap()
+    import numpy as np
+    env = _load(task_name, seed=seed)
+    task, p = env.task, env.physics
+    if target_pos is not None:
+        p.bind(task._target).pos = np.asarray(target_pos, dtype=float)
+    p.data.qpos[:] = np.asarray(qpos, dtype=float)
+    p.data.qvel[:] = np.asarray(qvel, dtype=float)
+    p.data.ctrl[:] = (0.0 if ctrl is None
+                      else np.asarray(ctrl, dtype=float))
+    # ⚠ `zero_frictionloss` REMOVES ALL NINE CONSTRAINT ROWS. Every dof of this
+    # model carries `frictionloss` (2 / 1 / 0.1 by joint class), so `nefc` is 9
+    # at every contact-free pose and the acceleration comes out of an iterative
+    # solve. Zeroing it leaves an unconstrained forward dynamics, which is how
+    # a gate can ask whether a residual belongs to the solver or to what reads
+    # its output. Restored before returning — a leaked model edit would make
+    # every later call in the process measure a different model.
+    saved = None
+    if zero_frictionloss:
+        saved = np.array(p.model.ptr.dof_frictionloss)
+        p.model.ptr.dof_frictionloss[:] = 0.0
+    p.forward()
+    rs = np.random.RandomState(0)
+    obs = _reach_observables(task)
+    # ⚠ EVERYTHING BELOW `flat` IS DIAGNOSTIC, and it is here because it paid
+    # for itself: a 3.3e-07 disagreement in `joints_torque` was localised by
+    # walking `cfrc_int` -> `cacc` -> `subtree_com` -> `site_xpos` -> `xquat`
+    # -> raw `sensordata`, finding every one of them exact to 1e-15, and so
+    # arriving at the arithmetic (`std.math.log1p`) rather than the physics.
+    # Keep them; the next residual will want the same ladder.
+    #
+    # ⚠⚠ `qacc` IS A TRAP TO COMPARE NAIVELY. This is `mj_forward`'s, i.e. the
+    # acceleration BEFORE integration. A Mojo side reading `d.qacc` after an
+    # Euler substep holds a different quantity — `mj_Euler` treats
+    # `dof_damping` implicitly — and the two differ by ~1.5% on this model with
+    # nothing wrong. See `feedback_mj_forward_qacc_is_not_what_mj_step_
+    # integrates`.
+    out = {'reward': float(task.get_reward(p)),
+           'ncon': int(p.data.ncon),
+           'nefc': int(p.data.nefc),
+           'qacc': [float(x) for x in p.data.qacc],
+           'qfrc_constraint': [float(x) for x in p.data.qfrc_constraint],
+           'cfrc_int': [float(x) for x in np.asarray(p.data.cfrc_int).ravel()],
+           'cacc': [float(x) for x in np.asarray(p.data.cacc).ravel()],
+           'subtree_com': [float(x) for x in
+                           np.asarray(p.data.subtree_com).ravel()],
+           'site_xpos': [float(x) for x in
+                         np.asarray(p.data.site_xpos).ravel()],
+           'sensordata': [float(x) for x in np.asarray(p.data.sensordata)],
+           # ⚠ MuJoCo's xquat is (w, x, y, z); ours is (x, y, z, w).
+           'xquat': [float(x) for x in np.asarray(p.data.xquat)[:, [1, 2, 3, 0]].ravel()],
+           'flat': []}
+    for name in REACH_OBS_ORDER:
+        v = np.asarray(obs[name](p, rs), dtype=float).ravel()
+        out[name] = list(v)
+        out['flat'].extend(float(x) for x in v)
+    if saved is not None:
+        p.model.ptr.dof_frictionloss[:] = saved
+    return out
+
+
+def reach_indices(task_name='reach_site_features', seed=0):
+    """The element ids `manipulation_reach_config` hardcodes, from MuJoCo.
+
+    Returned so the gate can assert them rather than trust a comment: a model
+    rebake that renumbers a site would otherwise leave the config reading the
+    wrong element with every shape still correct.
+    """
+    _bootstrap()
+    import mujoco
+    import numpy as np
+    m = model(task_name, seed=seed)
+    task = _load(task_name, seed=seed).task
+    p = _load(task_name, seed=seed).physics
+    sid = lambda n: mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, n)
+    return {
+        'site_target': int(p.bind(task._target).element_id),
+        'site_pinch': int(p.bind(task._hand.tool_center_point).element_id),
+        'body_pinch': int(m.site_bodyid[
+            p.bind(task._hand.tool_center_point).element_id]),
+        # `<torque site=...>` sensors, in arm joint order, and the body each
+        # site hangs off.
+        'torque_sites': [int(m.sensor_objid[i]) for i in range(m.nsensor)],
+        'torque_bodies': [int(m.site_bodyid[m.sensor_objid[i]])
+                          for i in range(m.nsensor)],
+        'sensor_types': [int(m.sensor_type[i]) for i in range(m.nsensor)],
+        'arm_axes': [list(map(float, m.jnt_axis[j])) for j in range(6)],
+        'hand_range': [list(map(float, m.jnt_range[j])) for j in range(6, 9)],
+        'nq': int(m.nq), 'nv': int(m.nv), 'nsite': int(m.nsite),
+    }

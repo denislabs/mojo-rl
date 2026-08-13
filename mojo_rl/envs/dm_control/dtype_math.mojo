@@ -18,7 +18,49 @@ See `feedback_where_clause_cannot_cross_trait_boundary`. Add shims here as
 hooks need them; do NOT widen a trait signature to satisfy `std.math`.
 """
 
-from std.math import log, sin, cos, sqrt, inf, abs
+from std.math import log, sin, cos, sqrt, inf, abs, atanh
+
+
+@always_inline
+def log1p_accurate(x: Float64) -> Float64:
+    """`log(1 + x)` to full float64, for a term gated against numpy.
+
+    ⚠⚠ `std.math.log1p` IS NOT ACCURATE ENOUGH TO GATE AGAINST `np.log1p`, and
+    neither is `log(1 + x)`. Measured against libm over 54 samples spanning
+    1e-12 to 2e3 (both signs), worst RELATIVE error:
+
+        std.math.log1p(x)                     1.99e-08
+        log(1+x) * (x / ((1+x) - 1))          1.09e-09    (Kahan; bounded by
+                                                           `log`'s own error)
+        2 * atanh(x / (2 + x))                1.67e-15
+
+    `std.math.log` is itself only ~1e-10 relative here — `log(10.0)` comes back
+    2.6e-10 low — so no formula spelled in terms of it can do better. The
+    `atanh` identity avoids `log` entirely and is the only one that reaches
+    float64.
+
+    That is not academic. This showed up as a **3.3e-07** disagreement in
+    `reach_site_features`' `joints_torque` observable while every input to it
+    (`cfrc_int`, `cacc`, `subtree_com`, `site_xpos_acc`, `xquat_acc`, and the
+    raw sensor 3-vector) matched MuJoCo to 1e-15. Two wrong causes were filed
+    and refuted first — the constraint solver (the residual survives zeroing
+    every `frictionloss`, and MuJoCo does not move when tightened to 500
+    iterations at 1e-14) and `qacc` (post-`mj_Euler` `qacc` is not
+    `mj_forward`'s, a known 1.5% false alarm). The arithmetic was last on the
+    list and it was the culprit.
+
+    ⚠ THE IDENTITY INVERTS FOR LARGE x, hence the crossover. As x grows,
+    `x / (2 + x)` approaches 1 and `atanh` loses the precision the small-x case
+    gains: measured absolute error 1.1e-14 at x=1e4, 1.3e-11 at 1e6, 2.6e-08 at
+    1e9, 8e-04 at 1e15, and `inf` from ~1e17 where the argument rounds to
+    exactly 1. Above the crossover there is no cancellation left to correct, so
+    `log(1 + x)` is both adequate and safe.
+
+    Domain matches `np.log1p`: `-inf` at x = -1, NaN below it.
+    """
+    if x > 1.0e4:
+        return log(1.0 + x)
+    return 2.0 * atanh(x / (2.0 + x))
 
 
 @always_inline
@@ -30,6 +72,13 @@ def log1p_dt[DTYPE: DType](x: Scalar[DTYPE]) -> Scalar[DTYPE]:
     `log(1.0 + toe)`), and the two paths are diffed element-wise. A more
     accurate `log1p` here would be a REAL divergence from the gated CPU path
     for small x, not an improvement.
+
+    ⚠ DELIBERATELY NOT `log1p_accurate` ABOVE, and this is the one place the
+    distinction is a choice rather than an oversight. The touch observables in
+    `manipulator` / `dog` are transcribed as `log(1.0 + x)` on BOTH paths and
+    gated as such; swapping one side would move numbers that are currently
+    green for a reason unrelated to those ports. Making them accurate is worth
+    doing, with its own before/after — not as a side effect of a shared helper.
 
     ⚠ `x` may be NEGATIVE by design: `touch_sphere_site_gpu` returns
     `TOUCH_UNSUPPORTED_ZONE` (-1.0) for a zone type it does not implement, and
