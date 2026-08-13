@@ -77,7 +77,7 @@ comptime SO_ARM101_ROBOT_XML = """<?xml version="1.0" ?>
 <!-- Generated using onshape-to-robot -->
 <!-- Onshape https://cad.onshape.com/documents/7715cc284bb430fe6dab4ffd/w/4fd0791b683777b02f8d975a/e/826c553ede3b7592eb9ca800 -->
 <mujoco model="so101_new_calib">
-  <compiler angle="radian" autolimits="true"/>
+  <compiler angle="radian" meshdir="mojo_rl/envs/robots/assets/so_arm101/" autolimits="true"/>
   <default>
     <default class="so101_new_calib">
       <joint damping="1" frictionloss="0.1" armature="0.005"/>
@@ -202,19 +202,19 @@ comptime SO_ARM101_ROBOT_XML = """<?xml version="1.0" ?>
     <geom name="floor" size="0 0 0.05" pos="0 0 0" type="plane" material="groundplane"/>
   </worldbody>
   <asset>
-    <mesh name="waveshare_mounting_plate_so101_v2" file="mojo_rl/envs/robots/assets/so_arm101/waveshare_mounting_plate_so101_v2.stl"/>
-    <mesh name="sts3215_03a_v1" file="mojo_rl/envs/robots/assets/so_arm101/sts3215_03a_v1.stl"/>
-    <mesh name="motor_holder_so101_base_v1" file="mojo_rl/envs/robots/assets/so_arm101/motor_holder_so101_base_v1.stl"/>
-    <mesh name="wrist_roll_follower_so101_v1" file="mojo_rl/envs/robots/assets/so_arm101/wrist_roll_follower_so101_v1.stl"/>
-    <mesh name="moving_jaw_so101_v1" file="mojo_rl/envs/robots/assets/so_arm101/moving_jaw_so101_v1.stl"/>
-    <mesh name="base_motor_holder_so101_v1" file="mojo_rl/envs/robots/assets/so_arm101/base_motor_holder_so101_v1.stl"/>
-    <mesh name="upper_arm_so101_v1" file="mojo_rl/envs/robots/assets/so_arm101/upper_arm_so101_v1.stl"/>
-    <mesh name="wrist_roll_pitch_so101_v2" file="mojo_rl/envs/robots/assets/so_arm101/wrist_roll_pitch_so101_v2.stl"/>
-    <mesh name="under_arm_so101_v1" file="mojo_rl/envs/robots/assets/so_arm101/under_arm_so101_v1.stl"/>
-    <mesh name="rotation_pitch_so101_v1" file="mojo_rl/envs/robots/assets/so_arm101/rotation_pitch_so101_v1.stl"/>
-    <mesh name="motor_holder_so101_wrist_v1" file="mojo_rl/envs/robots/assets/so_arm101/motor_holder_so101_wrist_v1.stl"/>
-    <mesh name="sts3215_03a_no_horn_v1" file="mojo_rl/envs/robots/assets/so_arm101/sts3215_03a_no_horn_v1.stl"/>
-    <mesh name="base_so101_v2" file="mojo_rl/envs/robots/assets/so_arm101/base_so101_v2.stl"/>
+    <mesh name="waveshare_mounting_plate_so101_v2" file="waveshare_mounting_plate_so101_v2.stl"/>
+    <mesh name="sts3215_03a_v1" file="sts3215_03a_v1.stl"/>
+    <mesh name="motor_holder_so101_base_v1" file="motor_holder_so101_base_v1.stl"/>
+    <mesh name="wrist_roll_follower_so101_v1" file="wrist_roll_follower_so101_v1.stl"/>
+    <mesh name="moving_jaw_so101_v1" file="moving_jaw_so101_v1.stl"/>
+    <mesh name="base_motor_holder_so101_v1" file="base_motor_holder_so101_v1.stl"/>
+    <mesh name="upper_arm_so101_v1" file="upper_arm_so101_v1.stl"/>
+    <mesh name="wrist_roll_pitch_so101_v2" file="wrist_roll_pitch_so101_v2.stl"/>
+    <mesh name="under_arm_so101_v1" file="under_arm_so101_v1.stl"/>
+    <mesh name="rotation_pitch_so101_v1" file="rotation_pitch_so101_v1.stl"/>
+    <mesh name="motor_holder_so101_wrist_v1" file="motor_holder_so101_wrist_v1.stl"/>
+    <mesh name="sts3215_03a_no_horn_v1" file="sts3215_03a_no_horn_v1.stl"/>
+    <mesh name="base_so101_v2" file="base_so101_v2.stl"/>
     <material name="base_motor_holder_so101_v1_material" rgba="1 0.82 0.12 1"/>
     <material name="base_so101_v2_material" rgba="1 0.82 0.12 1"/>
     <material name="sts3215_03a_v1_material" rgba="0.1 0.1 0.1 1"/>
@@ -249,7 +249,7 @@ comptime SO_ARM101_XML = """<?xml version="1.0" ?>
 <!-- Generated using onshape-to-robot -->
 <!-- Onshape https://cad.onshape.com/documents/7715cc284bb430fe6dab4ffd/w/4fd0791b683777b02f8d975a/e/826c553ede3b7592eb9ca800 -->
 <mujoco model="so101_new_calib">
-  <compiler angle="radian" autolimits="true"/>
+  <compiler angle="radian" meshdir="mojo_rl/envs/robots/assets/so_arm101/" autolimits="true"/>
   <default>
     <default class="so101_new_calib">
       <joint damping="1" frictionloss="0.1" armature="0.005"/>
@@ -378,19 +378,19 @@ comptime SO_ARM101_XML = """<?xml version="1.0" ?>
     </body>
   </worldbody>
   <asset>
-    <mesh name="waveshare_mounting_plate_so101_v2" file="mojo_rl/envs/robots/assets/so_arm101/waveshare_mounting_plate_so101_v2.stl"/>
-    <mesh name="sts3215_03a_v1" file="mojo_rl/envs/robots/assets/so_arm101/sts3215_03a_v1.stl"/>
-    <mesh name="motor_holder_so101_base_v1" file="mojo_rl/envs/robots/assets/so_arm101/motor_holder_so101_base_v1.stl"/>
-    <mesh name="wrist_roll_follower_so101_v1" file="mojo_rl/envs/robots/assets/so_arm101/wrist_roll_follower_so101_v1.stl"/>
-    <mesh name="moving_jaw_so101_v1" file="mojo_rl/envs/robots/assets/so_arm101/moving_jaw_so101_v1.stl"/>
-    <mesh name="base_motor_holder_so101_v1" file="mojo_rl/envs/robots/assets/so_arm101/base_motor_holder_so101_v1.stl"/>
-    <mesh name="upper_arm_so101_v1" file="mojo_rl/envs/robots/assets/so_arm101/upper_arm_so101_v1.stl"/>
-    <mesh name="wrist_roll_pitch_so101_v2" file="mojo_rl/envs/robots/assets/so_arm101/wrist_roll_pitch_so101_v2.stl"/>
-    <mesh name="under_arm_so101_v1" file="mojo_rl/envs/robots/assets/so_arm101/under_arm_so101_v1.stl"/>
-    <mesh name="rotation_pitch_so101_v1" file="mojo_rl/envs/robots/assets/so_arm101/rotation_pitch_so101_v1.stl"/>
-    <mesh name="motor_holder_so101_wrist_v1" file="mojo_rl/envs/robots/assets/so_arm101/motor_holder_so101_wrist_v1.stl"/>
-    <mesh name="sts3215_03a_no_horn_v1" file="mojo_rl/envs/robots/assets/so_arm101/sts3215_03a_no_horn_v1.stl"/>
-    <mesh name="base_so101_v2" file="mojo_rl/envs/robots/assets/so_arm101/base_so101_v2.stl"/>
+    <mesh name="waveshare_mounting_plate_so101_v2" file="waveshare_mounting_plate_so101_v2.stl"/>
+    <mesh name="sts3215_03a_v1" file="sts3215_03a_v1.stl"/>
+    <mesh name="motor_holder_so101_base_v1" file="motor_holder_so101_base_v1.stl"/>
+    <mesh name="wrist_roll_follower_so101_v1" file="wrist_roll_follower_so101_v1.stl"/>
+    <mesh name="moving_jaw_so101_v1" file="moving_jaw_so101_v1.stl"/>
+    <mesh name="base_motor_holder_so101_v1" file="base_motor_holder_so101_v1.stl"/>
+    <mesh name="upper_arm_so101_v1" file="upper_arm_so101_v1.stl"/>
+    <mesh name="wrist_roll_pitch_so101_v2" file="wrist_roll_pitch_so101_v2.stl"/>
+    <mesh name="under_arm_so101_v1" file="under_arm_so101_v1.stl"/>
+    <mesh name="rotation_pitch_so101_v1" file="rotation_pitch_so101_v1.stl"/>
+    <mesh name="motor_holder_so101_wrist_v1" file="motor_holder_so101_wrist_v1.stl"/>
+    <mesh name="sts3215_03a_no_horn_v1" file="sts3215_03a_no_horn_v1.stl"/>
+    <mesh name="base_so101_v2" file="base_so101_v2.stl"/>
     <material name="base_motor_holder_so101_v1_material" rgba="1 0.82 0.12 1"/>
     <material name="base_so101_v2_material" rgba="1 0.82 0.12 1"/>
     <material name="sts3215_03a_v1_material" rgba="0.1 0.1 0.1 1"/>

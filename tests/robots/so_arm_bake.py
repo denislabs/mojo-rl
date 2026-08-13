@@ -176,20 +176,6 @@ def mujoco_name(m, i):
     return mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_ACTUATOR, i)
 
 
-def _prefix_mesh_files(src, meshdir):
-    """`file="x.stl"` -> `file="<meshdir>x.stl"`, since `meshdir` is unparsed.
-
-    ⚠ Idempotence is asserted rather than assumed: running the bake twice must
-    not produce a doubled prefix, and the count must match the `<mesh>` count.
-    """
-    assert meshdir not in src, "already prefixed"
-    n = src.count('file="')
-    assert n > 0, "no mesh files found"
-    src = src.replace('file="', 'file="' + meshdir)
-    assert src.count('file="' + meshdir) == n
-    return src
-
-
 def bake_so_arm100():
     import mujoco
 
@@ -197,24 +183,21 @@ def bake_so_arm100():
     m = mujoco.MjModel.from_xml_path(os.path.join(SO100_REF, "scene.xml"))
     src = open(os.path.join(SO100_REF, "so_arm100.xml")).read()
 
-    # 1. meshdir -> a FULL PATH on every `file=`, and the attribute DROPPED.
+    # 1. meshdir REPOINTED at our vendored copy — the attribute stays.
     #
-    # ⚠⚠ FOURTH DEVIATION, AND IT WAS FOUND BY RUNNING, NOT BY READING.
-    # `<compiler meshdir>` is UNSUPPORTED by our parser — zero hits for
-    # "meshdir" anywhere under `mojo_rl/physics3d/`. With the attribute left
-    # in, `full_parser` hands `load_mesh_hull` the bare stem ("Base.stl"),
-    # every collidable mesh fails to open, and `fields_build` prints
-    # `Warning: failed to load mesh:` and CARRIES ON. The arm then runs with
-    # mesh collision entirely off — which is `feedback_a_change_can_invalidate
-    # _its_own_justification` verbatim: "an error PRINTED that nobody read".
+    # ⚠ This used to drop `meshdir` and bake a full path onto every `file=`,
+    # because `<compiler meshdir>` was UNPARSED and every collidable mesh
+    # silently failed to open (`fields_build` printed a warning and carried
+    # on, leaving the arm with no mesh collision at all). The parser resolves
+    # it as of 2026-08-13 — `tests/physics3d/test_compiler_meshdir.mojo` —
+    # so the workaround is GONE and these two models are now a live check of
+    # it on real geometry, rather than a fixture-only guarantee.
     #
-    # Full paths are also what `sawyer_deps_xml` already does, so this is the
-    # repo's existing spelling rather than a new one. Paths are REPO-ROOT
-    # RELATIVE, so anything loading these models must run from the repo root.
-    src = src.replace('<compiler angle="radian" meshdir="assets/"/>',
-                      '<compiler angle="radian"/>')
-    assert 'meshdir' not in src, "meshdir attribute survived"
-    src = _prefix_mesh_files(src, SO100_MESHDIR)
+    # ⚠ The path is REPO-ROOT RELATIVE: MuJoCo resolves `meshdir` against the
+    # model FILE, we resolve it against the process CWD. Anything loading
+    # these models must run from the repo root.
+    src = src.replace('meshdir="assets/"', 'meshdir="{}"'.format(SO100_MESHDIR))
+    assert SO100_MESHDIR in src, "meshdir substitution missed"
 
     # 2. dampratio -> nothing here; kv is per-actuator (it depends on each
     #    joint's effective inertia), so the class default only keeps kp and
@@ -274,11 +257,10 @@ def bake_so_arm101(calib="new"):
         os.path.join(SO101_REF, "so101_{}_calib.xml".format(calib))
     ).read()
 
-    # 1. meshdir -> full paths, attribute dropped. See bake_so_arm100 step 1
-    #    for why; the failure is silent and the arm still "works".
-    src = src.replace(' meshdir="assets"', '')
-    assert 'meshdir' not in src, "meshdir attribute survived"
-    src = _prefix_mesh_files(src, SO101_MESHDIR)
+    # 1. meshdir repointed. See `bake_so_arm100` step 1 — the full-path
+    #    workaround is gone now that the parser resolves the attribute.
+    src = src.replace('meshdir="assets"', 'meshdir="{}"'.format(SO101_MESHDIR))
+    assert SO101_MESHDIR in src, "meshdir substitution missed"
 
     # 2. fullinertia -> quat + diaginertia, per body, at full precision.
     #

@@ -65,7 +65,7 @@ from mojo_rl.physics3d.types import ConeType
 
 # --- BEGIN GENERATED XML (tests/robots/so_arm_bake.py) ---
 comptime SO_ARM100_ROBOT_XML = """<mujoco model="so_arm100">
-  <compiler angle="radian"/>
+  <compiler angle="radian" meshdir="mojo_rl/envs/robots/assets/so_arm100/"/>
 
   <option cone="elliptic" impratio="10"/>
 
@@ -73,24 +73,24 @@ comptime SO_ARM100_ROBOT_XML = """<mujoco model="so_arm100">
     <material name="white" rgba="1 1 1 1"/>
     <material name="black" rgba="0.1 0.1 0.1 1"/>
 
-    <mesh name="Base" file="mojo_rl/envs/robots/assets/so_arm100/Base.stl"/>
-    <mesh name="Base_Motor" file="mojo_rl/envs/robots/assets/so_arm100/Base_Motor.stl"/>
-    <mesh name="Rotation_Pitch" file="mojo_rl/envs/robots/assets/so_arm100/Rotation_Pitch.stl"/>
-    <mesh name="Rotation_Pitch_Motor" file="mojo_rl/envs/robots/assets/so_arm100/Rotation_Pitch_Motor.stl"/>
-    <mesh name="Upper_Arm" file="mojo_rl/envs/robots/assets/so_arm100/Upper_Arm.stl"/>
-    <mesh name="Upper_Arm_Motor" file="mojo_rl/envs/robots/assets/so_arm100/Upper_Arm_Motor.stl"/>
-    <mesh name="Lower_Arm" file="mojo_rl/envs/robots/assets/so_arm100/Lower_Arm.stl"/>
-    <mesh name="Lower_Arm_Motor" file="mojo_rl/envs/robots/assets/so_arm100/Lower_Arm_Motor.stl"/>
-    <mesh name="Wrist_Pitch_Roll" file="mojo_rl/envs/robots/assets/so_arm100/Wrist_Pitch_Roll.stl"/>
-    <mesh name="Wrist_Pitch_Roll_Motor" file="mojo_rl/envs/robots/assets/so_arm100/Wrist_Pitch_Roll_Motor.stl"/>
-    <mesh name="Fixed_Jaw" file="mojo_rl/envs/robots/assets/so_arm100/Fixed_Jaw.stl"/>
-    <mesh name="Fixed_Jaw_Motor" file="mojo_rl/envs/robots/assets/so_arm100/Fixed_Jaw_Motor.stl"/>
-    <mesh name="Fixed_Jaw_Collision_1" file="mojo_rl/envs/robots/assets/so_arm100/Fixed_Jaw_Collision_1.stl"/>
-    <mesh name="Fixed_Jaw_Collision_2" file="mojo_rl/envs/robots/assets/so_arm100/Fixed_Jaw_Collision_2.stl"/>
-    <mesh name="Moving_Jaw" file="mojo_rl/envs/robots/assets/so_arm100/Moving_Jaw.stl"/>
-    <mesh name="Moving_Jaw_Collision_1" file="mojo_rl/envs/robots/assets/so_arm100/Moving_Jaw_Collision_1.stl"/>
-    <mesh name="Moving_Jaw_Collision_2" file="mojo_rl/envs/robots/assets/so_arm100/Moving_Jaw_Collision_2.stl"/>
-    <mesh name="Moving_Jaw_Collision_3" file="mojo_rl/envs/robots/assets/so_arm100/Moving_Jaw_Collision_3.stl"/>
+    <mesh name="Base" file="Base.stl"/>
+    <mesh name="Base_Motor" file="Base_Motor.stl"/>
+    <mesh name="Rotation_Pitch" file="Rotation_Pitch.stl"/>
+    <mesh name="Rotation_Pitch_Motor" file="Rotation_Pitch_Motor.stl"/>
+    <mesh name="Upper_Arm" file="Upper_Arm.stl"/>
+    <mesh name="Upper_Arm_Motor" file="Upper_Arm_Motor.stl"/>
+    <mesh name="Lower_Arm" file="Lower_Arm.stl"/>
+    <mesh name="Lower_Arm_Motor" file="Lower_Arm_Motor.stl"/>
+    <mesh name="Wrist_Pitch_Roll" file="Wrist_Pitch_Roll.stl"/>
+    <mesh name="Wrist_Pitch_Roll_Motor" file="Wrist_Pitch_Roll_Motor.stl"/>
+    <mesh name="Fixed_Jaw" file="Fixed_Jaw.stl"/>
+    <mesh name="Fixed_Jaw_Motor" file="Fixed_Jaw_Motor.stl"/>
+    <mesh name="Fixed_Jaw_Collision_1" file="Fixed_Jaw_Collision_1.stl"/>
+    <mesh name="Fixed_Jaw_Collision_2" file="Fixed_Jaw_Collision_2.stl"/>
+    <mesh name="Moving_Jaw" file="Moving_Jaw.stl"/>
+    <mesh name="Moving_Jaw_Collision_1" file="Moving_Jaw_Collision_1.stl"/>
+    <mesh name="Moving_Jaw_Collision_2" file="Moving_Jaw_Collision_2.stl"/>
+    <mesh name="Moving_Jaw_Collision_3" file="Moving_Jaw_Collision_3.stl"/>
     <!-- from trs_so_arm100/scene.xml -->
     <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
       markrgb="0.8 0.8 0.8" width="300" height="300"/>
@@ -228,7 +228,7 @@ comptime SO_ARM100_ROBOT_XML = """<mujoco model="so_arm100">
 """
 
 comptime SO_ARM100_XML = """<mujoco model="so_arm100">
-  <compiler angle="radian"/>
+  <compiler angle="radian" meshdir="mojo_rl/envs/robots/assets/so_arm100/"/>
 
   <option cone="elliptic" impratio="10"/>
 
@@ -236,24 +236,24 @@ comptime SO_ARM100_XML = """<mujoco model="so_arm100">
     <material name="white" rgba="1 1 1 1"/>
     <material name="black" rgba="0.1 0.1 0.1 1"/>
 
-    <mesh name="Base" file="mojo_rl/envs/robots/assets/so_arm100/Base.stl"/>
-    <mesh name="Base_Motor" file="mojo_rl/envs/robots/assets/so_arm100/Base_Motor.stl"/>
-    <mesh name="Rotation_Pitch" file="mojo_rl/envs/robots/assets/so_arm100/Rotation_Pitch.stl"/>
-    <mesh name="Rotation_Pitch_Motor" file="mojo_rl/envs/robots/assets/so_arm100/Rotation_Pitch_Motor.stl"/>
-    <mesh name="Upper_Arm" file="mojo_rl/envs/robots/assets/so_arm100/Upper_Arm.stl"/>
-    <mesh name="Upper_Arm_Motor" file="mojo_rl/envs/robots/assets/so_arm100/Upper_Arm_Motor.stl"/>
-    <mesh name="Lower_Arm" file="mojo_rl/envs/robots/assets/so_arm100/Lower_Arm.stl"/>
-    <mesh name="Lower_Arm_Motor" file="mojo_rl/envs/robots/assets/so_arm100/Lower_Arm_Motor.stl"/>
-    <mesh name="Wrist_Pitch_Roll" file="mojo_rl/envs/robots/assets/so_arm100/Wrist_Pitch_Roll.stl"/>
-    <mesh name="Wrist_Pitch_Roll_Motor" file="mojo_rl/envs/robots/assets/so_arm100/Wrist_Pitch_Roll_Motor.stl"/>
-    <mesh name="Fixed_Jaw" file="mojo_rl/envs/robots/assets/so_arm100/Fixed_Jaw.stl"/>
-    <mesh name="Fixed_Jaw_Motor" file="mojo_rl/envs/robots/assets/so_arm100/Fixed_Jaw_Motor.stl"/>
-    <mesh name="Fixed_Jaw_Collision_1" file="mojo_rl/envs/robots/assets/so_arm100/Fixed_Jaw_Collision_1.stl"/>
-    <mesh name="Fixed_Jaw_Collision_2" file="mojo_rl/envs/robots/assets/so_arm100/Fixed_Jaw_Collision_2.stl"/>
-    <mesh name="Moving_Jaw" file="mojo_rl/envs/robots/assets/so_arm100/Moving_Jaw.stl"/>
-    <mesh name="Moving_Jaw_Collision_1" file="mojo_rl/envs/robots/assets/so_arm100/Moving_Jaw_Collision_1.stl"/>
-    <mesh name="Moving_Jaw_Collision_2" file="mojo_rl/envs/robots/assets/so_arm100/Moving_Jaw_Collision_2.stl"/>
-    <mesh name="Moving_Jaw_Collision_3" file="mojo_rl/envs/robots/assets/so_arm100/Moving_Jaw_Collision_3.stl"/>
+    <mesh name="Base" file="Base.stl"/>
+    <mesh name="Base_Motor" file="Base_Motor.stl"/>
+    <mesh name="Rotation_Pitch" file="Rotation_Pitch.stl"/>
+    <mesh name="Rotation_Pitch_Motor" file="Rotation_Pitch_Motor.stl"/>
+    <mesh name="Upper_Arm" file="Upper_Arm.stl"/>
+    <mesh name="Upper_Arm_Motor" file="Upper_Arm_Motor.stl"/>
+    <mesh name="Lower_Arm" file="Lower_Arm.stl"/>
+    <mesh name="Lower_Arm_Motor" file="Lower_Arm_Motor.stl"/>
+    <mesh name="Wrist_Pitch_Roll" file="Wrist_Pitch_Roll.stl"/>
+    <mesh name="Wrist_Pitch_Roll_Motor" file="Wrist_Pitch_Roll_Motor.stl"/>
+    <mesh name="Fixed_Jaw" file="Fixed_Jaw.stl"/>
+    <mesh name="Fixed_Jaw_Motor" file="Fixed_Jaw_Motor.stl"/>
+    <mesh name="Fixed_Jaw_Collision_1" file="Fixed_Jaw_Collision_1.stl"/>
+    <mesh name="Fixed_Jaw_Collision_2" file="Fixed_Jaw_Collision_2.stl"/>
+    <mesh name="Moving_Jaw" file="Moving_Jaw.stl"/>
+    <mesh name="Moving_Jaw_Collision_1" file="Moving_Jaw_Collision_1.stl"/>
+    <mesh name="Moving_Jaw_Collision_2" file="Moving_Jaw_Collision_2.stl"/>
+    <mesh name="Moving_Jaw_Collision_3" file="Moving_Jaw_Collision_3.stl"/>
     <!-- from trs_so_arm100/scene.xml -->
     <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
       markrgb="0.8 0.8 0.8" width="300" height="300"/>

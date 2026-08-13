@@ -3515,6 +3515,9 @@ xml_in: String) raises -> FlatModelDef:
     # Compiler angle units (MuJoCo's MJCF default is degree) and euler order.
     var deg_factor = _compiler_deg_factor(xml)
     var eulerseq = String("xyz")
+    # `<compiler meshdir>` / `assetdir` — see `_apply_meshdir` below.
+    var meshdir = String("")
+    var assetdir = String("")
     var compiler_t = xml.find("<compiler")
     if compiler_t != -1:
         var compiler_end = xml.find(">", compiler_t)
@@ -3530,9 +3533,54 @@ xml_in: String) raises -> FlatModelDef:
             var bi_s = _trim(_extract_attr(ctag, "boundinertia"))
             if bi_s.byte_length() > 0:
                 result.boundinertia = _parse_float(bi_s)
+            meshdir = _trim(_extract_attr(ctag, "meshdir"))
+            assetdir = _trim(_extract_attr(ctag, "assetdir"))
 
     # Assets: textures and materials
     _fill_assets(asset_sec, result)
+
+    # `<compiler meshdir>` — UNPARSED until 2026-08-13, and silently.
+    #
+    # ⚠⚠ WHAT IT USED TO DO. `mesh_asset_files` held the `file=` attribute
+    # verbatim, so `load_mesh_hull` was handed the bare stem ("Base.stl"), the
+    # open failed, and `fields_build` printed `Warning: failed to load mesh:`
+    # and CARRIED ON. The model built and stepped with every mesh geom
+    # non-colliding — `feedback_a_change_can_invalidate_its_own_justification`
+    # verbatim, "an error PRINTED that nobody read".
+    #
+    # ⚠ AND IT IS WORSE THAN "COLLISION OFF". Measured on a one-mesh fixture:
+    # the failed geom keeps `GEOM_IDX_MESH_ID` pointing at its ASSET index
+    # while no hull was loaded, and its `rbound` is left at the 0.5 fallback
+    # rather than 0 — so the broadphase still accepts pairs for it and the
+    # narrow phase indexes a table that has nothing in it. A zero rbound would
+    # at least have filtered it out.
+    #
+    # ⚠ 96 XML FILES ACROSS 69 MENAGERIE MODELS declare `meshdir`/`assetdir`,
+    # so this was a precondition for loading almost any of them unmodified.
+    #
+    # PRECEDENCE, MEASURED ON THE 3.10.0 RUNTIME rather than transcribed:
+    #     meshdir="m"              -> m/       (works)
+    #     assetdir="m"             -> m/       (assetdir is the fallback)
+    #     assetdir="." meshdir="m" -> m/       (meshdir WINS)
+    #     absolute meshdir         -> used as-is
+    #
+    # ⚠ MuJoCo resolves the directory relative to the MODEL FILE. We parse a
+    # STRING and have no file path, so the base here is the PROCESS CWD. That
+    # is a real difference, stated rather than papered over: every ported model
+    # already uses repo-root-relative paths and is run from the repo root.
+    #
+    # ⚠ `texturedir` is NOT handled. Textures are renderer-only and no ported
+    # model loads one from disk; adding it belongs with whatever first needs it.
+    var effective_dir = meshdir if meshdir.byte_length() > 0 else assetdir
+    if effective_dir.byte_length() > 0:
+        var base = effective_dir
+        if not base.endswith("/"):
+            base = base + "/"
+        for i in range(len(result.mesh_asset_files)):
+            var f = result.mesh_asset_files[i]
+            # An absolute path ignores meshdir, as MuJoCo does.
+            if f.byte_length() > 0 and not f.startswith("/"):
+                result.mesh_asset_files[i] = base + f
 
     # Single DFS pass: bodies + joints + geoms + lights + cameras + sites
     _fill_model(worldbody, defaults, named_defaults, result, deg_factor, eulerseq)
