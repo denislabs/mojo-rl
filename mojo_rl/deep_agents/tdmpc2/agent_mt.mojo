@@ -528,9 +528,17 @@ struct TDMPC2MultiTaskAgent[
         ref obs: List[Scalar[DT]],
         mut act_out: List[Scalar[DT]],
         explore: Bool = True,
+        num_iters: Int = 0,
     ) raises:
         """MPC acting for `cur_task`: plan in latent space with the
         task-conditioned world model. GPU only.
+
+        `num_iters` overrides the comptime MPPI iteration budget for THIS call
+        (0 = use `NUM_ITERS`), mirroring the single-task agent. Cost is
+        near-linear in it and it is the only budget knob that can vary at
+        runtime — `NUM_SAMPLES` / `NUM_PI_TRAJS` size the planner's device
+        buffers at construction. Use it to trade plan quality for frame rate
+        in an interactive viewer.
 
         ⚠ The task embedding is re-gathered and re-broadcast on EVERY call.
         The table is trained, so a row captured once would plan against an
@@ -576,6 +584,7 @@ struct TDMPC2MultiTaskAgent[
             temperature=Float64(self.temperature),
             action_scale=Float64(self.action_scale),
             deterministic=not explore,
+            num_iters=num_iters,
         )
         ctx.enqueue_copy(self.mpc_host.value(), self.mpc_out.value())
         ctx.synchronize()
