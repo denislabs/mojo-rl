@@ -305,14 +305,11 @@ def bake_so_arm101(calib="new"):
     #    and `backlash`; MuJoCo merges them, and relying on our parser to do
     #    the same would be an untested assumption inside an untested port.
     #
-    # ⚠⚠ THE REPLACEMENT COMMENT MUST NOT CONTAIN A TAG-LIKE SUBSTRING. It
-    # used to read "merged from the reference's SECOND top-level <default>",
-    # and that literal `<default>` inside a COMMENT is what made
-    # `merge_mjcf` delete the whole `<default>` section —
-    # `_extract_section_inner` depth-counts raw text and never strips
-    # comments, so the comment counted as an opener. Measured: the identical
-    # fixture with an angle-bracket-free comment merges fine. See
-    # `docs/PHYSICS3D_PARSER_GAPS_2026_08_13.md` §3.
+    # ⚠ This comment used to read "...SECOND top-level <default>", and that
+    # literal `<default>` inside a COMMENT made `merge_mjcf` delete the whole
+    # `<default>` section. Fixed 2026-08-13 (comments are stripped before
+    # scanning), so the wording no longer matters — kept angle-bracket free
+    # anyway, because nothing else in the tree depends on that fix holding.
     src = src.replace(
         "  </default>\n  <!-- Additional joints_properties.xml -->\n  <default>\n",
         "    <!-- merged from the reference's SECOND top-level default block;"
@@ -368,19 +365,15 @@ def bake_so_arm101(calib="new"):
 # ---------------------------------------------------------------------------
 # The reach target, inlined into the robot XML to produce the FULL model.
 #
-# ⚠ NOT `merge_mjcf`, though the original reason was WRONG. That call did
-# mangle SO-101 — `<default>` vanished and MuJoCo refused the model with
-# "unknown default class name 'sts3215'" — but the cause was NOT nested
-# defaults. `_extract_section_inner` depth-counts raw text without stripping
-# comments, and the comment this bake inserted contained the literal
-# `<default>`; that alone deleted the section. With an angle-bracket-free
-# comment (see `bake_so_arm101` step 3) `merge_mjcf` handles this model fine.
-#
-# Emitting the finished model directly is KEPT anyway: it is one less
-# dependency on a function with three recorded instances of silently dropping
-# a section (`feedback_merge_mjcf_drops_sections`: <tendon>, <option><flag>,
-# <contact>). ⚠ Do not inherit "merge_mjcf cannot do nested defaults" from
-# this comment — it can. See `docs/PHYSICS3D_PARSER_GAPS_2026_08_13.md` §3.
+# ⚠ NOT `merge_mjcf` — kept for simplicity, no longer for correctness.
+# That call did mangle SO-101 once (`<default>` vanished; MuJoCo refused the
+# model with "unknown default class name 'sts3215'"), but NOT because the
+# defaults are nested. `_extract_section_inner` depth-counted raw text without
+# stripping comments, and the comment this bake inserted contained the literal
+# `<default>`. FIXED 2026-08-13 — `merge_mjcf` strips comments first, gated by
+# `tests/physics3d/test_merge_mjcf_comments.mojo`. Emitting the finished model
+# directly is simply fewer moving parts. ⚠ Do not inherit "merge_mjcf cannot
+# do nested defaults" from this comment — it never could not.
 #
 # The target is a MOCAP body, for the reason `reacher_xml` documents: the
 # per-episode target must be per-ENV state, and `Model` is not batched while

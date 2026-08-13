@@ -46,7 +46,9 @@ and keep the baked values as a REGRESSION FIXTURE — 7 near-symmetric robot
 links are a much better probe of `mjuu_eig3`'s tie-breaking than a synthetic
 tensor, and near-symmetric is exactly where those details bite.
 
-⚠ THE TASK BODY IS INLINED BY THE BAKE, NOT BY `merge_mjcf` — and the reason
+⚠ THE TASK BODY IS INLINED BY THE BAKE, NOT BY `merge_mjcf`. The bug that
+prompted this is FIXED (2026-08-13, comments are stripped before scanning);
+direct emission is kept only because it is fewer moving parts. The reason
 first recorded here was WRONG. That call did mangle this model (`<default>`
 vanished; MuJoCo rejected it with "unknown default class name 'sts3215'"), but
 NOT because the defaults are nested. `_extract_section_inner` depth-counts raw

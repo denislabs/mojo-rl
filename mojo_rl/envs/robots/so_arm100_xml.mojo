@@ -19,7 +19,8 @@ TWO STRINGS, AND THE DIFFERENCE MATTERS:
     and would make the layer-1 diff impossible, and "the gate had to be
     loosened to fit the task" is how a model stops being the reference model.
 
-⚠ THE TASK BODY IS INLINED BY THE BAKE, NOT BY `merge_mjcf` — see
+⚠ THE TASK BODY IS INLINED BY THE BAKE, NOT BY `merge_mjcf` (whose bug is
+now FIXED; direct emission is kept for simplicity) — see
 `so_arm101_xml.mojo` and `docs/PHYSICS3D_PARSER_GAPS_2026_08_13.md` §3. The
 short version: `merge_mjcf` deletes a whole section when a COMMENT contains
 that section's tag, because `_extract_section_inner` depth-counts raw text

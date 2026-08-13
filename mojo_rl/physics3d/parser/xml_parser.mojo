@@ -2293,11 +2293,44 @@ def merge_mjcf(*xmls: String) -> String:
     var all_option_flags = String("")
 
     for i in range(len(xmls)):
+        # ⚠⚠ COMMENTS COME OFF FIRST, AND THAT IS A FIX, NOT HYGIENE.
+        # `_extract_section_inner` depth-counts `"<" + tag` over RAW TEXT, so a
+        # comment that merely MENTIONS a section tag was counted as an opener,
+        # the depth never balanced, and the section was emitted EMPTY. Measured
+        # on three fixtures differing by one comment line:
+        #
+        #   two nested default classes, no comments        -> <default> present
+        #   + "<!-- an ordinary remark, no brackets -->"   -> <default> present
+        #   + "<!-- ... top-level <default>; ... -->"      -> <default> ABSENT
+        #
+        # MuJoCo then rejects the merged model with "unknown default class
+        # name". ⚠ NESTING IS IRRELEVANT — the bug was filed as "merge_mjcf
+        # cannot do nested defaults" and that is false; it handles them fine.
+        #
+        # This is the THIRD instance of the same shape in this function, after
+        # a self-closing `<equality/>` inside a default class emptying
+        # `<equality>` for a whole file (quadruped's leg couplings) and
+        # `<tendon>` missing from the accumulator list entirely (fish). Both
+        # parsers already strip comments at their entry points —
+        # `parse_xml_model_data` always has, and `full_parser` was fixed for
+        # this exact class after a commented-out `<site>` in Gymnasium's
+        # `half_cheetah.xml` was parsed as a REAL site. `merge_mjcf` was the
+        # last one reading raw text.
+        #
+        # ⚠ It runs BEFORE `_strip_wrapper` / `_strip_include_tags` on purpose:
+        # a commented-out `<mujoco>` or `<include>` would mislead those two the
+        # same way.
+        #
+        # ⚠ NOT A FULL TOKENISER. A `<` inside a string ATTRIBUTE VALUE would
+        # still miscount. No model in the tree has one, and all three recorded
+        # instances are comments; widening this to real tokenisation is a
+        # separate job with a separate justification.
+        #
         # `<freejoint>` -> `<joint type="free">` before ANY scanning, so the
         # ~20 `find("<joint")` sites downstream all see it. See
         # `_normalize_freejoint` for why this is textual rather than per-site.
         var stripped = _normalize_freejoint(
-            _strip_include_tags(_strip_wrapper(xmls[i]))
+            _strip_include_tags(_strip_wrapper(_strip_xml_comments(xmls[i])))
         )
 
         # Singleton tags
