@@ -102,9 +102,27 @@ comptime STORE: StaticString = "fb_walker_all_sac.h5"
 # actor, where z barely reaches the behaviour at all — so it is a HYPOTHESIS
 # with support, not a fix. Flip the flag and compare once a non-saturated
 # policy exists; do not change the default on the strength of the table above.
-comptime Z_CENTER: Bool = False
+#
+# MEASURED 2026-08-13 on the fixed 500 k checkpoint, 64 episodes, paired:
+#
+#             uncentered           centered
+#   stand   ratio 1.152 t 1.23   ratio 1.323 t 3.37  p 0.0013
+#   walk    ratio 1.007 t 0.07   ratio 1.233 t 2.62  p 0.0110
+#   run     ratio 1.135 t 1.84   ratio 1.244 t 3.54  p 0.0008
+#
+# Centering turns three null results into three positive ones and more than
+# doubles the task separation (|z_stand - z_walk|_1: 44 -> 101). THAT is why
+# the default is now True — a policy-level A/B, not the cosine proxy that
+# suggested it.
+comptime Z_CENTER: Bool = True
 comptime RELABEL_ROWS: Int = 4096
-comptime EVAL_EPISODES: Int = 10
+# ⚠ 10 episodes CANNOT resolve these effects. At the measured spreads the
+# episode counts needed for t=2 are ~49 (stand), ~97 (run) and ~916 (walk) —
+# walk's effect is small against a large per-episode variance. 64 makes stand
+# and run decidable and leaves walk honestly reported as underpowered rather
+# than silently called "within noise" at a sample size that could never say
+# otherwise.
+comptime EVAL_EPISODES: Int = 64
 comptime EVAL_LEN: Int = 1000       # dm_control's own episode length
 comptime SEED: Int = 20260805
 
@@ -374,6 +392,13 @@ def main() raises:
     _eval_task[DMWalkerConfig[1.0]](t, z_walk, String("walk "))
     _eval_task[DMWalkerConfig[8.0]](t, z_run, String("run  "))
     print("")
-    print("  A ratio > 1 on a task means one set of weights, given only that")
-    print("  task's reward AFTER training, beat the random policy that")
-    print("  produced the data. That is the zero-shot claim.")
+    print("  A ratio > 1 means one set of weights, given only that task's")
+    print("  reward AFTER training, beat a uniform-random policy. That is the")
+    print("  zero-shot claim.")
+    print("")
+    print("  ⚠ The baseline is UNIFORM RANDOM, not the data-generating policy.")
+    print("  This store came from SAC ladders whose top rungs score ~983 /")
+    print("  ~965 / ~720, so beating random is the floor, not the ceiling:")
+    print("  pi_z currently recovers ~17% / ~4% / ~4% of expert. The earlier")
+    print("  wording here said \'the random policy that produced the data\',")
+    print("  which was true of the M1 store and is not true of this one.")
