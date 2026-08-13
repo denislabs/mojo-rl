@@ -127,7 +127,7 @@ comptime MPC_ITERS = 4
 # ⚠ PASS/FAIL: run climbs off 164 while stand and walk HOLD ~980. Run improving
 # at the cost of the other two is not a win — it is the same interference
 # pointed the other way.
-comptime PER_TASK_PI_SCALE = True
+comptime PER_TASK_PI_SCALE = False
 comptime PI_SCALE_MAX_REWEIGHT = 10.0
 
 comptime N_ENVS = 8
@@ -136,9 +136,21 @@ comptime EVAL_ENVS = 8
 comptime MAX_OBS = DMWalkerModel.OBS_DIM  # 24 — shared by all three
 comptime MAX_ACT = DMWalkerModel.ACTION_DIM  #  6 — shared by all three
 comptime NUM_TASKS = 3
-# Reference multi-task TD-MPC2 uses 96 for MT80. Three tasks over one body need
-# far less; this is the knob to raise if the tasks start interfering.
-comptime TASK_EMB = 32
+# ⚠ RAISED 32 -> 96 (2026-08-13). The reference never uses 32: `task_dim` is
+# 64 for MT30 and 96 for MT80 (`common/parser.py:75`), and `walker-run` is in
+# BOTH sets alongside walker-stand and walker-walk — i.e. the reference's
+# multi-task configuration contains exactly our three tasks plus 27 or 77
+# others, and the paper reports walker-run around 600-700. Our 163 is a real
+# gap against a setting that solves it.
+#
+# 96 rather than 64: this is a capacity EXPERIMENT, so err toward the upper
+# reference value. The extra fan-in is negligible at 3 tasks.
+#
+# ⚠⚠ CHANGES EVERY NET'S FIRST-LAYER SHAPE. Checkpoints do not transfer across
+# TASK_EMB, which is why it is in the filename. The viewer and probe hardcode
+# 32 to stay compatible with the validated 312k checkpoint — edit theirs to
+# match before pointing them at a 96 run.
+comptime TASK_EMB = 96
 
 comptime ENC = 256
 comptime LATENT = 512
@@ -241,6 +253,9 @@ def main() raises:
         # reference run must never land on the same checkpoint — the whole
         # experiment is the comparison between them.
         + ("_ptscale" if PER_TASK_PI_SCALE else "")
+        # ⚠ TASK_EMB changes every net's first-layer shape, so a checkpoint
+        # from another value cannot load. Keep it in the name.
+        + "_emb" + String(TASK_EMB)
         + ".ckpt"
     )
 
