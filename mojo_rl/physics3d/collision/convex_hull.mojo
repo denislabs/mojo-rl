@@ -156,45 +156,13 @@ def _hull_dot[
     return ax * bx + ay * by + az * bz
 
 
-def compute_convex_hull[
-    DTYPE: DType,
-](
-    verts: List[Scalar[DTYPE]],
+def _convex_hull_f64(
+    verts: List[Float64],
     num_verts: Int,
-    mut hull_verts: List[Scalar[DTYPE]],
+    mut hull_verts: List[Float64],
     mut hull_faces: List[Int],
 ) -> Int:
-    """EXACT 3D convex hull by incremental insertion.
-
-    Replaces support-point SAMPLING, which could only ever return a SUBSET of
-    the hull vertices. That subset is a strictly smaller solid, so GJK/EPA saw
-    a shrunken shape and lost shallow contacts — an error with ONE SIGN that no
-    gate could catch, because every mesh gate in the suite was frozen from an
-    implementation that had it. On eGripperBase the sampler kept 81 of 882 hull
-    vertices; raising its direction count was measured and did NOT help
-    (`3b1b19db`), because a subset of extreme points is the wrong object no
-    matter how it is chosen.
-
-    The hull vertex set is exactly what a support query needs, so this gives
-    SHAPE PARITY with MuJoCo, which collides the convex hull of `mesh_vert`.
-
-    `hull_faces` receives the surviving triangles as vertex triples in
-    COMPACTED numbering, wound OUTWARD — see the emit loop for why the winding
-    has to be established there. A degenerate input (fewer than four points, or
-    points that are collinear or coplanar) takes one of the early returns and
-    leaves `hull_faces` EMPTY; that is the same state MuJoCo represents with
-    `mesh_polynum == 0`, and `multicontact` skips such a mesh rather than
-    guessing a face for it.
-
-    Algorithm, matching the module docstring for the first time: seed a
-    tetrahedron from four non-degenerate extremes, then insert each remaining
-    point — delete the faces it can see, and stitch it to the horizon. The
-    horizon is the set of edges belonging to exactly ONE visible face
-    (UNDIRECTED, so it does not depend on consistent winding — the same rule
-    `gjk.mojo`'s EPA uses, and for the same reason).
-
-    O(n*h). Runs once per mesh at model build.
-    """
+    """The hull itself, ALWAYS float64. See `compute_convex_hull`."""
     if num_verts < 4:
         for i in range(num_verts * 3):
             hull_verts.append(verts[i])
@@ -202,41 +170,17 @@ def compute_convex_hull[
 
     # Tolerance scaled to the mesh, not absolute: these are metres and a fixed
     # epsilon would be meaningless across a 3 cm gripper and a 1 m table.
-    var scale = Scalar[DTYPE](0)
+    var scale = Float64(0)
     for i in range(num_verts * 3):
         var av = abs(verts[i])
         if av > scale:
             scale = av
-    if scale <= Scalar[DTYPE](0):
-        scale = Scalar[DTYPE](1)
-    # ⚠⚠ THE RELATIVE FACTOR IS DTYPE-DEPENDENT, AND 1e-9 HUNG float32.
-    #
-    # Scaling to the mesh (above) is right and stays. What was wrong is that
-    # `1e-9` is a FLOAT64 relative tolerance: float32's machine epsilon is
-    # ~1.19e-7, so `scale * 1e-9` sits about two orders of magnitude BELOW the
-    # noise floor and `side > eps` at the expansion loop becomes a coin flip.
-    # A point then reads as outside a face it is actually on, the horizon is
-    # rebuilt, and the hull never converges.
-    #
-    # MEASURED on SO-ARM100's collision meshes (10 hulls, 2 551 vertices),
-    # `ModelDefFromXML.init_fields` end to end:
-    #
-    #     float64   0.55 s
-    #     float32   >180 s, still spinning, 99% of one core
-    #
-    # It is not a slowdown, it is non-termination: `sample` put 2 456 of 2 459
-    # stack samples inside `compute_convex_hull` recursing on itself.
-    #
-    # ⚠ WHY NOTHING CAUGHT IT. Every mesh gate builds at float64, and every
-    # dm_control model in the viewer leaves `NMESH_VERTS` at 0 — which skips
-    # the mesh branch entirely. The SO-ARM ports are the first COLLIDABLE
-    # meshes to reach the float32 renderer path, so they are the first model
-    # that could hang, and it hangs before the window is ever created.
-    #
-    # 1e-5 is ~100x float32's epsilon, the usual margin for a geometric
-    # predicate. float64 keeps 1e-9 so no existing hull moves.
-    comptime REL: Float64 = 1e-9 if DTYPE == DType.float64 else 1e-5
-    var eps = scale * Scalar[DTYPE](REL)
+    if scale <= Float64(0):
+        scale = Float64(1)
+    # ⚠ A SINGLE 1e-9, because this routine is always float64 now. It was
+    # briefly dtype-aware (1e-5 for float32) to stop float32 hanging
+    # outright; building in float64 removes the reason for that.
+    var eps = scale * 1e-9
 
     # ---- seed tetrahedron ------------------------------------------------
     var i0 = 0
@@ -261,7 +205,7 @@ def compute_convex_hull[
     var dz = verts[i1 * 3 + 2] - verts[i0 * 3 + 2]
 
     var i2 = -1
-    var best = Scalar[DTYPE](0)
+    var best = Float64(0)
     for i in range(num_verts):
         var ax = verts[i * 3 + 0] - verts[i0 * 3 + 0]
         var ay = verts[i * 3 + 1] - verts[i0 * 3 + 1]
@@ -293,7 +237,7 @@ def compute_convex_hull[
     nz /= nl
 
     var i3 = -1
-    var bestd = Scalar[DTYPE](0)
+    var bestd = Float64(0)
     for i in range(num_verts):
         var ax = verts[i * 3 + 0] - verts[i0 * 3 + 0]
         var ay = verts[i * 3 + 1] - verts[i0 * 3 + 1]
@@ -312,15 +256,15 @@ def compute_convex_hull[
     var rx = (
         verts[i0 * 3 + 0] + verts[i1 * 3 + 0] + verts[i2 * 3 + 0]
         + verts[i3 * 3 + 0]
-    ) * Scalar[DTYPE](0.25)
+    ) * Float64(0.25)
     var ry = (
         verts[i0 * 3 + 1] + verts[i1 * 3 + 1] + verts[i2 * 3 + 1]
         + verts[i3 * 3 + 1]
-    ) * Scalar[DTYPE](0.25)
+    ) * Float64(0.25)
     var rz = (
         verts[i0 * 3 + 2] + verts[i1 * 3 + 2] + verts[i2 * 3 + 2]
         + verts[i3 * 3 + 2]
-    ) * Scalar[DTYPE](0.25)
+    ) * Float64(0.25)
 
     var faces = List[Int]()
     var seed: InlineArray[Int, 12] = [
@@ -360,11 +304,11 @@ def compute_convex_hull[
             for sz in range(-1, 2):
                 if sx == 0 and sy == 0 and sz == 0:
                     continue
-                var ddx = Scalar[DTYPE](sx)
-                var ddy = Scalar[DTYPE](sy)
-                var ddz = Scalar[DTYPE](sz)
+                var ddx = Float64(sx)
+                var ddy = Float64(sy)
+                var ddz = Float64(sz)
                 var bi = 0
-                var bd = Scalar[DTYPE](-1e30)
+                var bd = Float64(-1e30)
                 for i in range(num_verts):
                     var dd = (
                         ddx * verts[i * 3 + 0]
@@ -400,7 +344,7 @@ def compute_convex_hull[
     # ⚠ BIT-IDENTICAL BY CONSTRUCTION: the same expression over the same
     # inputs, evaluated once per face instead of once per (face, point). The
     # mesh goldens are the gate — nothing about the hull may move.
-    var fplane = List[Scalar[DTYPE]]()
+    var fplane = List[Float64]()
 
     @parameter
     def _rebuild_planes():
@@ -423,7 +367,7 @@ def compute_convex_hull[
             var fy = uz * vx - ux * vz
             var fz = ux * vy - uy * vx
             var fl = sqrt(fx * fx + fy * fy + fz * fz)
-            if fl > Scalar[DTYPE](0):
+            if fl > Float64(0):
                 fx /= fl
                 fy /= fl
                 fz /= fl
@@ -432,7 +376,7 @@ def compute_convex_hull[
                     + fy * (ry - verts[a * 3 + 1])
                     + fz * (rz - verts[a * 3 + 2])
                 )
-                if inward > Scalar[DTYPE](0):
+                if inward > Float64(0):
                     fx = -fx
                     fy = -fy
                     fz = -fz
@@ -445,10 +389,10 @@ def compute_convex_hull[
                     + fz * verts[a * 3 + 2]
                 )
             else:
-                fplane.append(Scalar[DTYPE](0))
-                fplane.append(Scalar[DTYPE](0))
-                fplane.append(Scalar[DTYPE](0))
-                fplane.append(Scalar[DTYPE](0))
+                fplane.append(Float64(0))
+                fplane.append(Float64(0))
+                fplane.append(Float64(0))
+                fplane.append(Float64(0))
 
     _rebuild_planes()
 
@@ -573,7 +517,7 @@ def compute_convex_hull[
             + fz * (verts[a * 3 + 2] - rz)
         )
         hull_faces.append(remap[a])
-        if outward >= Scalar[DTYPE](0):
+        if outward >= Float64(0):
             hull_faces.append(remap[b])
             hull_faces.append(remap[c])
         else:
@@ -587,6 +531,81 @@ def compute_convex_hull[
 # Mesh loading pipeline
 # =============================================================================
 
+
+
+
+def compute_convex_hull[
+    DTYPE: DType,
+](
+    verts: List[Scalar[DTYPE]],
+    num_verts: Int,
+    mut hull_verts: List[Scalar[DTYPE]],
+    mut hull_faces: List[Int],
+) -> Int:
+    """EXACT 3D convex hull by incremental insertion.
+
+    Replaces support-point SAMPLING, which could only ever return a SUBSET of
+    the hull vertices. That subset is a strictly smaller solid, so GJK/EPA saw
+    a shrunken shape and lost shallow contacts — an error with ONE SIGN that no
+    gate could catch, because every mesh gate in the suite was frozen from an
+    implementation that had it. On eGripperBase the sampler kept 81 of 882 hull
+    vertices; raising its direction count was measured and did NOT help
+    (`3b1b19db`), because a subset of extreme points is the wrong object no
+    matter how it is chosen.
+
+    The hull vertex set is exactly what a support query needs, so this gives
+    SHAPE PARITY with MuJoCo, which collides the convex hull of `mesh_vert`.
+
+    `hull_faces` receives the surviving triangles as vertex triples in
+    COMPACTED numbering, wound OUTWARD — see the emit loop for why the winding
+    has to be established there. A degenerate input (fewer than four points, or
+    points that are collinear or coplanar) takes one of the early returns and
+    leaves `hull_faces` EMPTY; that is the same state MuJoCo represents with
+    `mesh_polynum == 0`, and `multicontact` skips such a mesh rather than
+    guessing a face for it.
+
+    Algorithm, matching the module docstring for the first time: seed a
+    tetrahedron from four non-degenerate extremes, then insert each remaining
+    point — delete the faces it can see, and stitch it to the horizon. The
+    horizon is the set of edges belonging to exactly ONE visible face
+    (UNDIRECTED, so it does not depend on consistent winding — the same rule
+    `gjk.mojo`'s EPA uses, and for the same reason).
+
+    O(n*h). Runs once per mesh at model build.
+    """
+    # ⚠⚠ THE HULL IS BUILT IN FLOAT64 NO MATTER WHAT `DTYPE` IS, AND THAT IS A
+    # CORRECTNESS FIX, NOT A SPEED ONE.
+    #
+    # This used to run in DTYPE, and float32 built a DIFFERENT HULL: on
+    # SO-ARM100's ten collision meshes, 2 636 vertices against float64's 2 551.
+    # So a float32 env and a float64 env of the SAME model carried different
+    # collision geometry — and every mesh gate we own runs at float64, so the
+    # float32 path (the renderer, and the GPU batch) was never gated at all.
+    #
+    # ⚠ THE SPEED WAS THE SYMPTOM, NOT THE DEFECT. This is plain CPU code and
+    # float32 arithmetic is not slower per operation — it was doing MORE WORK,
+    # because the construction took a different path. Measured `init_fields`:
+    #
+    #     SO-ARM100    float64  0.48 s     float32  ~3 s
+    #     SO-ARM101    float64  19.2 s     float32  >280 s
+    #
+    # Building in float64 always makes those identical AND makes the hull
+    # dtype-independent, which `test_convex_hull_dtype_invariance` pins.
+    #
+    # ⚠ This is also what MuJoCo does — its compiler works in double regardless
+    # of anything downstream. A convex hull is BUILD-TIME geometry and has no
+    # reason to track the runtime dtype.
+    #
+    # Cost is one conversion pass in and one out against an O(n * faces)
+    # construction: unmeasurable.
+    var w = List[Float64](capacity=num_verts * 3)
+    for i in range(num_verts * 3):
+        w.append(Float64(verts[i]))
+    var hw = List[Float64]()
+    var n = _convex_hull_f64(w, num_verts, hw, hull_faces)
+    for i in range(len(hw)):
+        hull_verts.append(Scalar[DTYPE](hw[i]))
+    return n
 
 def build_hull_edge_graph(
     num_hull: Int,
