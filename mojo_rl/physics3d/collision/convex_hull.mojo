@@ -382,6 +382,76 @@ def compute_convex_hull[
             order.append(i)
 
     # ---- insert the remaining points -------------------------------------
+    #
+    # ⚠⚠ FACE PLANES ARE CACHED, AND THAT IS A COMPLEXITY FIX, NOT A TIDY-UP.
+    # This loop used to recompute every face's normal FROM SCRATCH for every
+    # candidate point — a cross product, a `sqrt`, a normalise and an
+    # orientation dot, per face, per point. The comment on the insertion order
+    # above already says the steady state is "nearly every remaining point is
+    # interior, sees no face, and costs one visibility scan"; that scan was the
+    # expensive part.
+    #
+    # MEASURED on SO-ARM101, whose collision meshes are the raw visual ones
+    # (136 832 input vertices over 10 meshes, ~33 000 hull vertices): the
+    # scan is ~1.6e8 sqrt-bearing normal computations for ONE mesh, and
+    # `init_fields` did not finish in 250 s with 100% of the samples in here.
+    # Cached, each face costs one dot product.
+    #
+    # ⚠ BIT-IDENTICAL BY CONSTRUCTION: the same expression over the same
+    # inputs, evaluated once per face instead of once per (face, point). The
+    # mesh goldens are the gate — nothing about the hull may move.
+    var fplane = List[Scalar[DTYPE]]()
+
+    @parameter
+    def _rebuild_planes():
+        """(nx, ny, nz, offset) per face, outward-oriented. Degenerate faces
+        get a zero plane, which is never visible — matching the old `fl > 0`
+        guard exactly."""
+        fplane.clear()
+        var nfc = len(faces) // 3
+        for f in range(nfc):
+            var a = faces[f * 3 + 0]
+            var b = faces[f * 3 + 1]
+            var c = faces[f * 3 + 2]
+            var ux = verts[b * 3 + 0] - verts[a * 3 + 0]
+            var uy = verts[b * 3 + 1] - verts[a * 3 + 1]
+            var uz = verts[b * 3 + 2] - verts[a * 3 + 2]
+            var vx = verts[c * 3 + 0] - verts[a * 3 + 0]
+            var vy = verts[c * 3 + 1] - verts[a * 3 + 1]
+            var vz = verts[c * 3 + 2] - verts[a * 3 + 2]
+            var fx = uy * vz - uz * vy
+            var fy = uz * vx - ux * vz
+            var fz = ux * vy - uy * vx
+            var fl = sqrt(fx * fx + fy * fy + fz * fz)
+            if fl > Scalar[DTYPE](0):
+                fx /= fl
+                fy /= fl
+                fz /= fl
+                var inward = (
+                    fx * (rx - verts[a * 3 + 0])
+                    + fy * (ry - verts[a * 3 + 1])
+                    + fz * (rz - verts[a * 3 + 2])
+                )
+                if inward > Scalar[DTYPE](0):
+                    fx = -fx
+                    fy = -fy
+                    fz = -fz
+                fplane.append(fx)
+                fplane.append(fy)
+                fplane.append(fz)
+                fplane.append(
+                    fx * verts[a * 3 + 0]
+                    + fy * verts[a * 3 + 1]
+                    + fz * verts[a * 3 + 2]
+                )
+            else:
+                fplane.append(Scalar[DTYPE](0))
+                fplane.append(Scalar[DTYPE](0))
+                fplane.append(Scalar[DTYPE](0))
+                fplane.append(Scalar[DTYPE](0))
+
+    _rebuild_planes()
+
     var vis = List[Bool]()
     var edges = List[Int]()
     for oi in range(len(order)):
@@ -396,41 +466,15 @@ def compute_convex_hull[
         vis.clear()
         var nvis = 0
         for f in range(nf):
-            var a = faces[f * 3 + 0]
-            var b = faces[f * 3 + 1]
-            var c = faces[f * 3 + 2]
-            var ux = verts[b * 3 + 0] - verts[a * 3 + 0]
-            var uy = verts[b * 3 + 1] - verts[a * 3 + 1]
-            var uz = verts[b * 3 + 2] - verts[a * 3 + 2]
-            var vx = verts[c * 3 + 0] - verts[a * 3 + 0]
-            var vy = verts[c * 3 + 1] - verts[a * 3 + 1]
-            var vz = verts[c * 3 + 2] - verts[a * 3 + 2]
-            var fx = uy * vz - uz * vy
-            var fy = uz * vx - ux * vz
-            var fz = ux * vy - uy * vx
-            var fl = sqrt(fx * fx + fy * fy + fz * fz)
-            var seen = False
-            if fl > Scalar[DTYPE](0):
-                fx /= fl
-                fy /= fl
-                fz /= fl
-                # orient outward using the interior reference point
-                var inward = (
-                    fx * (rx - verts[a * 3 + 0])
-                    + fy * (ry - verts[a * 3 + 1])
-                    + fz * (rz - verts[a * 3 + 2])
-                )
-                if inward > Scalar[DTYPE](0):
-                    fx = -fx
-                    fy = -fy
-                    fz = -fz
-                var side = (
-                    fx * (px - verts[a * 3 + 0])
-                    + fy * (py - verts[a * 3 + 1])
-                    + fz * (pz - verts[a * 3 + 2])
-                )
-                if side > eps:
-                    seen = True
+            # ⚠ The zero plane of a degenerate face gives side == 0, which is
+            # never > eps — the old `fl > 0` guard, preserved.
+            var side = (
+                fplane[f * 4 + 0] * px
+                + fplane[f * 4 + 1] * py
+                + fplane[f * 4 + 2] * pz
+                - fplane[f * 4 + 3]
+            )
+            var seen = side > eps
             vis.append(seen)
             if seen:
                 nvis += 1
@@ -468,6 +512,11 @@ def compute_convex_hull[
                 kept.append(hi_e)
                 kept.append(p)
         faces = kept^
+        # The face set changed, so the cached planes must follow it. ⚠ This is
+        # the ONLY place `faces` is reassigned; if that stops being true, this
+        # call has to move with it or the visibility test reads stale planes —
+        # which would not crash, it would quietly build a different hull.
+        _rebuild_planes()
         on_hull[p] = True
 
     # ---- collect the vertices the surviving faces actually use ------------
