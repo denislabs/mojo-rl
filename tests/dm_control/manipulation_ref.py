@@ -409,3 +409,66 @@ def set_site_to_xpos_reference(task_name, q0, target_pos, rng_seed,
         target_quat=np.asarray(target_quat, dtype=float),
         max_ik_attempts=max_ik_attempts)
     return bool(ok), list(physics_.data.qpos)
+
+
+def hand_joint_info(task_name='reach_site_features', seed=0):
+    """(names, qpos addresses, lower, upper) for the HAND's finger joints."""
+    import mujoco
+    env = _load(task_name, seed=seed)
+    hand = env.task._hand  # pylint: disable=protected-access
+    mm = env.physics.model.ptr
+    names, adr, lo, hi = [], [], [], []
+    for j in hand.joints:
+        n = j.full_identifier
+        jid = mujoco.mj_name2id(mm, mujoco.mjtObj.mjOBJ_JOINT, n)
+        names.append(n)
+        adr.append(int(mm.jnt_qposadr[jid]))
+        lo.append(float(mm.jnt_range[jid][0]))
+        hi.append(float(mm.jnt_range[jid][1]))
+    return names, adr, lo, hi
+
+
+def set_grasp_reference(close_factor, task_name='reach_site_features',
+                        seed=0):
+    """`hand.set_grasp(physics, close_factors=close_factor)` — returns qpos.
+
+    ⚠ `reach` passes a SCALAR, which the hand broadcasts to every finger.
+    """
+    _bootstrap()
+    env = _load(task_name, seed=seed)
+    physics_ = env.physics
+    env.task._hand.set_grasp(  # pylint: disable=protected-access
+        physics_, close_factors=close_factor)
+    return list(physics_.data.qpos)
+
+
+def reach_workspace(task_name='reach_site_features', seed=0):
+    """(tcp_bbox, target_bbox) as ((lo3), (hi3)) pairs, from reach.py.
+
+    ⚠ For `reach_site_features` these two boxes are IDENTICAL, so a gate on
+    this task cannot detect them being swapped. `reach_duplo` differs.
+    """
+    _bootstrap()
+    from dm_control.manipulation import reach
+    ws = reach._SITE_WORKSPACE  # pylint: disable=protected-access
+    return ((tuple(ws.tcp_bbox.lower), tuple(ws.tcp_bbox.upper)),
+            (tuple(ws.target_bbox.lower), tuple(ws.target_bbox.upper)))
+
+
+def target_placer_reference(rng_seed, task_name='reach_site_features',
+                            seed=0):
+    """What `reach`'s `_target_placer` yields, plus the raw uniforms.
+
+    Returns `(pos, u)` where `pos` is the sampled target position and `u` are
+    the three [0, 1) draws that reproduce it as
+    `lower + (upper - lower) * u`. A Mojo port fed `u` must land on `pos`.
+    """
+    _bootstrap()
+    import numpy as np
+    from dm_control.composer.variation import distributions
+    from dm_control.manipulation import reach
+    ws = reach._SITE_WORKSPACE  # pylint: disable=protected-access
+    dist = distributions.Uniform(*ws.target_bbox)
+    pos = dist(random_state=np.random.RandomState(rng_seed))
+    u = np.random.RandomState(rng_seed).random_sample(3)
+    return list(np.atleast_1d(pos)), list(u)

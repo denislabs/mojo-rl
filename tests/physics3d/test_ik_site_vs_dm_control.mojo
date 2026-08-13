@@ -59,6 +59,10 @@ from mojo_rl.physics3d.dynamics.ik_site import (
     qpos_from_site_pose,
     set_site_to_xpos,
 )
+from mojo_rl.envs.dm_control.manipulation_reset import (
+    set_grasp,
+    sample_bbox_uniform,
+)
 
 comptime DTYPE = DType.float64
 
@@ -540,6 +544,99 @@ def test_set_site_to_xpos_matches_dm_control() raises:
         worst_dq <= 1e-9,
         "qpos diverged from dm_control's despite identical injected retry"
         " draws, so the two took different trajectories",
+    )
+
+
+def test_set_grasp_and_target_sample_match_dm_control() raises:
+    """`set_grasp` and the target-site sampler — the other two statements of
+    `Reach.initialize_episode`.
+
+    Needs no model build: both are pure arithmetic over joint ranges and a
+    bounding box, so this compares them directly against the reference.
+
+    ⚠ ONLY THE HAND JOINTS ARE COMPARED. `set_grasp_reference` returns the
+    FULL qpos of a CACHED reference env whose arm joints still hold whatever
+    the previous test left there, so comparing all of qpos would be comparing
+    unrelated state.
+    """
+    print("=== set_grasp + target sample vs dm_control ===")
+    var sys = Python.import_module("sys")
+    _ = sys.path.insert(0, "tests/dm_control")
+    var warnings = Python.import_module("warnings")
+    _ = warnings.filterwarnings("ignore")
+    var np = Python.import_module("numpy")
+    var refmod = Python.import_module("manipulation_ref")
+
+    comptime NHAND = 3
+    var info = refmod.hand_joint_info()
+    assert_true(
+        Int(py=Python.evaluate("len")(info[0])) == NHAND,
+        "the reference hand does not have " + String(NHAND) + " joints",
+    )
+    var hadr = InlineArray[Int, NHAND](fill=0)
+    var hlo = InlineArray[Float64, NHAND](fill=0.0)
+    var hhi = InlineArray[Float64, NHAND](fill=0.0)
+    for i in range(NHAND):
+        hadr[i] = Int(py=info[1][i])
+        hlo[i] = Float64(py=info[2][i])
+        hhi[i] = Float64(py=info[3][i])
+    print("  hand qpos adr:", hadr[0], hadr[1], hadr[2],
+          " range:", hlo[0], "..", hhi[0])
+    # A degenerate range would make set_grasp a constant and the comparison
+    # below vacuous for any close factor.
+    assert_true(
+        hhi[0] - hlo[0] > 1e-6,
+        "the finger joint range is degenerate — set_grasp would be constant"
+        " and this test could not distinguish any two close factors",
+    )
+
+    var worst_grasp = 0.0
+    var n_g = 0
+    for t in range(11):
+        var f = 0.1 * Float64(t)
+        var refq = refmod.set_grasp_reference(f)
+        var qpos = List[Scalar[DTYPE]](length=NQ, fill=Scalar[DTYPE](0))
+        var factors = InlineArray[Float64, NHAND](fill=f)
+        set_grasp[DTYPE, NHAND](qpos, hadr, hlo, hhi, factors)
+        for i in range(NHAND):
+            var e = abs(
+                Float64(qpos[hadr[i]]) - Float64(py=refq[hadr[i]])
+            )
+            if e > worst_grasp:
+                worst_grasp = e
+        n_g += 1
+    print("  set_grasp: close factors checked", n_g,
+          " worst |d qpos|", worst_grasp)
+
+    # ── target site sampler ──────────────────────────────────────────────
+    var ws = refmod.reach_workspace()
+    var lo = InlineArray[Float64, 3](fill=0.0)
+    var hi = InlineArray[Float64, 3](fill=0.0)
+    for k in range(3):
+        lo[k] = Float64(py=ws[1][0][k])
+        hi[k] = Float64(py=ws[1][1][k])
+    print("  target_bbox:", lo[0], lo[1], lo[2], " ..", hi[0], hi[1], hi[2])
+
+    var worst_pos = 0.0
+    for sd in range(20):
+        var rr = refmod.target_placer_reference(sd)
+        var u = InlineArray[Float64, 3](fill=0.0)
+        for k in range(3):
+            u[k] = Float64(py=rr[1][k])
+        var got = sample_bbox_uniform[DTYPE](lo, hi, u)
+        for k in range(3):
+            var e = abs(Float64(got[k]) - Float64(py=rr[0][k]))
+            if e > worst_pos:
+                worst_pos = e
+    print("  target sample: 20 seeds, worst |d pos|", worst_pos)
+
+    assert_true(
+        worst_grasp <= 1e-15, "set_grasp differs from the reference"
+    )
+    assert_true(
+        worst_pos <= 1e-15,
+        "the target sampler differs from distributions.Uniform(*target_bbox)"
+        " given the same underlying draws",
     )
 
 
