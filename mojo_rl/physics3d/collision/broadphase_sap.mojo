@@ -545,6 +545,41 @@ def _detect_contacts_sap_env[
             var qj_z = lqj[2]
             var qj_w = lqj[3]
             var ground_z = Scalar[DTYPE](0)
+
+            # ── PLANE-SIDE BOUNDING-SPHERE REJECT — MuJoCo's second
+            # `mj_filterSphere` arm. In the plane's own frame `pj_z` IS
+            # `planeGeomDist`: the signed distance from the plane to the geom
+            # centre. If the geom's bounding sphere cannot reach the plane,
+            # nothing downstream can produce a contact.
+            #
+            # ⚠⚠ WITHOUT THIS, A PLANE PAIRED WITH A MESH SCANS EVERY HULL
+            # VERTEX, EVERY STEP, FOREVER. `_plane_mesh_contacts` has no early
+            # out — it transforms all `pm_vnum` vertices looking for the
+            # deepest. SO-ARM101 carries 30 mesh geoms totalling 33 076 hull
+            # vertices and a floor its arm never touches, and that scan was
+            # 72% of its entire physics step. It is also why the arm-to-arm
+            # cost ratio tracked HULL SIZE rather than anything physical.
+            #
+            #     SO-ARM101   1.86 -> 0.65 ms/env step   ( 539 -> 1544 Hz)
+            #     SO-ARM100   1.11 -> 1.04 ms/env step   ( 901 ->  959 Hz)
+            #
+            # ⚠ THE TWO ARMS SEPARATE HERE, AND THAT IS THE POINT. SO-ARM100
+            # barely moves: 2 551 hull vertices is a scan it could afford.
+            # SO-ARM101's 33 076 is not, and removing it INVERTS the pair —
+            # the arm with 13x the geometry is now the FASTER of the two,
+            # because what remains is no longer proportional to hull size.
+            # SO-ARM100's residual is elsewhere (its Newton solve is ~25% of
+            # its step, against ~0.5% of SO-ARM101's).
+            #
+            # ⚠ `+ cm` AGAIN, for the same silent reason as the geom-geom arm
+            # above: a geom hovering within its margin of the floor is a
+            # contact MuJoCo reports.
+            var rbound_j_pl = rebind[Scalar[DTYPE]](
+                geoms[gj, GEOM_IDX_RBOUND]
+            )
+            if rbound_j_pl > Scalar[DTYPE](0) and pj_z > cm + rbound_j_pl:
+                continue
+
             var rj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RADIUS])
             var hlj = rebind[Scalar[DTYPE]](
                 geoms[gj, GEOM_IDX_HALF_LENGTH]

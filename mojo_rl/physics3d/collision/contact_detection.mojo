@@ -1757,6 +1757,24 @@ def _detect_contacts_env[
                 var fq_z = lfq[2]
                 var fq_w = lfq[3]
                 var ground_z = Scalar[DTYPE](0)
+                # PLANE-SIDE BOUNDING-SPHERE REJECT — MuJoCo's second
+                # `mj_filterSphere` arm. In the plane's frame `fp_z` IS
+                # `planeGeomDist`. Kept in step with the SAP path, which is
+                # where it actually pays: `_plane_mesh_contacts` scans EVERY
+                # hull vertex with no early out, so a floor a mesh never
+                # touches costs its full vertex count every step.
+                # ⚠ `+ contact_margin` — a geom hovering within its margin of
+                # the floor is a contact MuJoCo reports; without the term it
+                # vanishes silently. Gated by `plane_margin/{naive,sap}` in
+                # `test_contact_pair_vs_mujoco.mojo`.
+                # ⚠ Skipping the `_fill_pair_solparams` tail below is safe ONLY
+                # because nothing has been emitted yet — it stamps the range
+                # [_n0, num_contacts), which is empty here.
+                var rb_pl_gj = rebind[Scalar[DTYPE]](
+                    geoms[gj, GEOM_IDX_RBOUND]
+                )
+                if rb_pl_gj > Scalar[DTYPE](0) and fp_z > contact_margin + rb_pl_gj:
+                    continue
                 if gj_type == GEOM_CAPSULE:
                     # MuJoCo mjc_PlaneCapsule: test BOTH endpoints, up to 2 contacts
                     var axis_w = gpu_quat_rotate(
@@ -2077,6 +2095,24 @@ def _detect_contacts_env[
                 var fq_z = lfq[2]
                 var fq_w = lfq[3]
                 var ground_z = Scalar[DTYPE](0)
+                # PLANE-SIDE BOUNDING-SPHERE REJECT — MuJoCo's second
+                # `mj_filterSphere` arm. In the plane's frame `fp_z` IS
+                # `planeGeomDist`. Kept in step with the SAP path, which is
+                # where it actually pays: `_plane_mesh_contacts` scans EVERY
+                # hull vertex with no early out, so a floor a mesh never
+                # touches costs its full vertex count every step.
+                # ⚠ `+ contact_margin` — a geom hovering within its margin of
+                # the floor is a contact MuJoCo reports; without the term it
+                # vanishes silently. Gated by `plane_margin/{naive,sap}` in
+                # `test_contact_pair_vs_mujoco.mojo`.
+                # ⚠ Skipping the `_fill_pair_solparams` tail below is safe ONLY
+                # because nothing has been emitted yet — it stamps the range
+                # [_n0, num_contacts), which is empty here.
+                var rb_pl_gi = rebind[Scalar[DTYPE]](
+                    geoms[gi, GEOM_IDX_RBOUND]
+                )
+                if rb_pl_gi > Scalar[DTYPE](0) and fp_z > contact_margin + rb_pl_gi:
+                    continue
                 if gi_type == GEOM_CAPSULE:
                     # MuJoCo mjc_PlaneCapsule: test BOTH endpoints, up to 2 contacts
                     var axis_w = gpu_quat_rotate(

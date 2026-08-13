@@ -217,6 +217,30 @@ comptime XML_MARGIN = """
 """
 
 
+# --- 7. plane margin: the plane-side bounding-sphere reject -----------------
+# A sphere hovering 0.06 above the floor, inside a 0.1 pair margin. The
+# plane-side reject compares `planeGeomDist` against `margin + rbound`; drop
+# the margin term and this contact vanishes with no error anywhere, which is
+# the ONLY failure mode that arm has (it cannot produce a wrong contact, only
+# lose one). ⚠ The floor's masks are cleared so the pair is the sole reason
+# the two are tested at all — the same trick fixture 5 uses.
+comptime XML_PLANE_MARGIN = """
+<mujoco model="plane_margin">
+  <option timestep="0.002" gravity="0 0 0"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 .1" contype="0" conaffinity="0"/>
+    <body name="b1" pos="0 0 .16">
+      <joint name="j1" type="slide" axis="0 0 1"/>
+      <geom name="g1" type="sphere" size=".1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <contact>
+    <pair geom1="floor" geom2="g1" margin="0.1"/>
+  </contact>
+</mujoco>
+"""
+
+
 def _report(
     label: String,
     n_ours: Int,
@@ -533,6 +557,38 @@ def _m_g() -> ModelDefFromXML[
 comptime MG = _m_g()
 
 
+comptime ppm = parse_xml(XML_PLANE_MARGIN)
+
+
+def _m_pm() -> ModelDefFromXML[
+    xml = XML_PLANE_MARGIN,
+    nbody = ppm.NBODY,
+    njoint = ppm.NJOINT,
+    nq = ppm.NQ,
+    nv = ppm.NV,
+    ngeom = ppm.NGEOM,
+    nact = ppm.NACT,
+    ntex = ppm.NTEX,
+    nmat = ppm.NMAT,
+    nlight = ppm.NLIGHT,
+    ncam = ppm.NCAM,
+    nsite = ppm.NSITE,
+    max_tendon = ppm.NTENDON,
+    cone_type = ConeType.PYRAMIDAL,
+    max_contacts=32,
+    max_condim = ppm.MAX_CONDIM,
+    nexclude = ppm.NEXCLUDE,
+    npair = ppm.NPAIR,
+    obs_dim_override=1,
+    obs_qpos_skip=0,
+    timestep = ppm.TIMESTEP,
+]:
+    return {}
+
+
+comptime MPM = _m_pm()
+
+
 def test_pair_explicit_params() raises:
     """A pair's own condim/friction/solref/solimp reach the contact.
 
@@ -599,6 +655,20 @@ def test_pair_margin_survives_the_broadphase() raises:
     print("--- pair: margin, contact at positive separation ---")
     _gate[MG](materialize[XML_MARGIN](), String("margin/naive"), 1, False)
     _gate[MG](materialize[XML_MARGIN](), String("margin/sap"), 1, True)
+
+
+def test_plane_margin_survives_the_plane_reject() raises:
+    """A geom hovering inside its margin above a plane still contacts it.
+
+    ⚠⚠ THE PLANE ARM'S ONLY FAILURE MODE IS A LOST CONTACT, NOT A WRONG ONE.
+    It decides whether narrow phase runs at all, so a bug there subtracts a
+    contact and nothing downstream complains — no NaN, no count assertion, just
+    a floor that stopped existing for geoms near it. Both paths are exercised
+    because both carry their own copy of the reject.
+    """
+    print("--- plane: margin, contact at positive separation ---")
+    _gate[MPM](materialize[XML_PLANE_MARGIN](), String("plane_margin/naive"), 1, False)
+    _gate[MPM](materialize[XML_PLANE_MARGIN](), String("plane_margin/sap"), 1, True)
 
 
 def main() raises:
