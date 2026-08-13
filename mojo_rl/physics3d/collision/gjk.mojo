@@ -25,14 +25,79 @@ from ..constants import (
     GEOM_MESH,
 )
 from ..kinematics.quat_math import quat_rotate, quat_rotate_inverse
+from ..gpu.constants import MJ_CCD_TOLERANCE, MJ_CCD_ITERATIONS
 
 # Reuse CPU GJK parameters (verbatim from gjk_gpu.mojo)
 comptime GJK_MAX_ITERATIONS: Int = 100
 comptime GJK_TOLERANCE: Float64 = 1e-10
-comptime EPA_MAX_ITERATIONS: Int = 64
 comptime EPA_MAX_VERTS: Int = 69
 comptime EPA_MAX_FACES: Int = 384
-comptime EPA_TOLERANCE: Float64 = 1e-8
+
+# ⚠⚠ `EPA_MAX_ITERATIONS` AND `EPA_TOLERANCE` ARE GONE. They were 64 and 1e-8
+# — MuJoCo's are `opt.ccd_iterations` = 35 and `opt.ccd_tolerance` = 1e-6, and
+# a model that set either was ignored. They now arrive as runtime arguments
+# (`ccd_iter`, `ccd_tol`) carried in model META, defaulting to MuJoCo's, which
+# is why the constants are DELETED rather than retuned: anything still reading
+# them fails to compile instead of quietly keeping the old stopping rule.
+#
+# ⚠ TIGHTER WAS NOT SAFER. EPA's stopping rule picks WHICH boundary face it
+# settles on and the contact NORMAL is that face's, so iterating past the
+# reference walks away from it rather than toward it.
+comptime EPA_ITER_HARD_CAP: Int = 64
+
+# `mjMINVAL` (`mjtnum.h`).
+comptime MJ_MINVAL: Float64 = 1e-15
+
+
+@always_inline
+def _epa_tolerance[
+    DTYPE: DType
+](
+    type1: Int,
+    type2: Int,
+    margin: Scalar[DTYPE],
+    ccd_tol: Scalar[DTYPE],
+) -> Scalar[DTYPE]:
+    """MuJoCo's `discreteGeoms` switch: `ccd_tolerance` is for SMOOTH pairs.
+
+    `epa()` opens with
+
+        int discrete = discreteGeoms(obj1, obj2);
+        if (discrete && sizeof(mjtNum) == sizeof(double)) tolerance = mjMINVAL;
+
+    and `discreteGeoms` is "both geoms are MESH/BOX/HFIELD **and** both margins
+    are zero" (`engine_collision_gjk.c:159`). A polytope pair has finitely many
+    faces, so EPA lands on the exact one and there is nothing for a tolerance to
+    trade off; a curved surface has no exact face, so `ccd_tolerance` decides
+    where to stop.
+
+    ⚠⚠ MISSING THIS MAKES `ccd_tolerance` A REGRESSION RATHER THAN A FIX, and
+    that is how it was found. Wiring `opt.ccd_tolerance` through and applying it
+    to EVERYTHING moved mesh-vs-box depth from 1e-16 to 4.98e-7 against MuJoCo
+    — inside `ccd_tolerance` and therefore invisible to any check phrased in
+    those terms, but a 5e-7 regression on pairs that were EXACT.
+    `test_mesh_manifold_vs_mujoco`'s `TOL_DIST = 1e-9` caught it, and the
+    tempting response — relax the gate, the number is under 1e-6 — would have
+    locked the regression in.
+
+    ⚠ A NON-ZERO MARGIN MAKES A DISCRETE PAIR SMOOTH. That is MuJoCo's first
+    line, not an afterthought: margin inflates each geom by a rounded offset
+    surface, so the Minkowski boundary stops being piecewise planar.
+
+    ⚠ DOUBLE PRECISION ONLY, matching the `sizeof(mjtNum)` guard. At float32,
+    1e-15 is far below epsilon: the convergence test could never fire and EPA
+    would run to its iteration cap on every mesh pair.
+    """
+    comptime if DTYPE != DType.float64:
+        return ccd_tol
+    else:
+        if margin != 0:
+            return ccd_tol
+        var d1 = type1 == GEOM_BOX or type1 == GEOM_MESH
+        var d2 = type2 == GEOM_BOX or type2 == GEOM_MESH
+        if d1 and d2:
+            return Scalar[DTYPE](MJ_MINVAL)
+        return ccd_tol
 
 
 @always_inline
@@ -702,6 +767,9 @@ def gjk_epa_witness[
     mut wf2: InlineArray[Scalar[DTYPE], 9],
     mut wx: InlineArray[Scalar[DTYPE], 6],
     mut wf_ok: Int,
+    ccd_tol: Scalar[DTYPE] = Scalar[DTYPE](MJ_CCD_TOLERANCE),
+    ccd_iter: Int = MJ_CCD_ITERATIONS,
+    ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -1146,7 +1214,18 @@ def gjk_epa_witness[
     var best_face = -1
     var converged = False
 
-    for _epa_it in range(EPA_MAX_ITERATIONS if seed_code == 1 else 0):
+    # `ccd_iterations` from model META, but never past what the polytope arrays
+    # can hold — MuJoCo grows its polytope on the heap and has no equivalent
+    # cap, so a model asking for more than `EPA_ITER_HARD_CAP` gets the arrays'
+    # limit and NOT what it asked for. The `nev`/`nef` guard below is the one
+    # that actually reports it.
+    var _epa_tol = _epa_tolerance[DTYPE](type1, type2, ccd_margin, ccd_tol)
+    var _epa_iters = ccd_iter
+    if _epa_iters > EPA_ITER_HARD_CAP:
+        _epa_iters = EPA_ITER_HARD_CAP
+    if _epa_iters < 1:
+        _epa_iters = 1
+    for _epa_it in range(_epa_iters if seed_code == 1 else 0):
         # closest face to the origin
         best_face = -1
         best_d = Scalar[DTYPE](1e30)
@@ -1174,7 +1253,7 @@ def gjk_epa_witness[
             best_nx, best_ny, best_nz,
         )
         var wd = w[0] * best_nx + w[1] * best_ny + w[2] * best_nz
-        if wd - best_d < Scalar[DTYPE](EPA_TOLERANCE):
+        if wd - best_d < _epa_tol:
             converged = True
             break
 
@@ -1557,6 +1636,9 @@ def gjk_epa[
     r2: Scalar[DTYPE], hl2: Scalar[DTYPE],
     hx2: Scalar[DTYPE], hy2: Scalar[DTYPE], hz2: Scalar[DTYPE],
     va2: Int, mnv2: Int,
+    ccd_tol: Scalar[DTYPE] = Scalar[DTYPE](MJ_CCD_TOLERANCE),
+    ccd_iter: Int = MJ_CCD_ITERATIONS,
+    ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -1588,4 +1670,5 @@ def gjk_epa[
         r2, hl2, hx2, hy2, hz2,
         va2, mnv2,
         wf1, wf2, wx, wf_ok,
+        ccd_tol, ccd_iter, ccd_margin,
     )

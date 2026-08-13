@@ -44,6 +44,10 @@ from ..gpu.constants import (
     METADATA_SIZE,
     MODEL_META_IDX_NEXCLUDE,
     MODEL_META_IDX_NPAIR,
+    MODEL_META_IDX_CCD_TOLERANCE,
+    MODEL_META_IDX_CCD_ITERATIONS,
+    MJ_CCD_TOLERANCE,
+    MJ_CCD_ITERATIONS,
     MODEL_PAIR_SIZE,
     PAIR_IDX_GEOM1,
     PAIR_IDX_GEOM2,
@@ -364,6 +368,17 @@ def _detect_contacts_sap_env[
     # that would move dog/quadruped/sawyer if changed. Left alone deliberately
     # rather than smuggled into a commit about pairs.
     var n_pair_aabb = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NPAIR]))
+    # EPA's stopping rule, from model META — see `_detect_contacts_env` for
+    # why it is read rather than hardcoded, and why a non-positive value falls
+    # back instead of meaning "zero iterations".
+    var ccd_tol = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_CCD_TOLERANCE])
+    if ccd_tol <= 0:
+        ccd_tol = Scalar[DTYPE](MJ_CCD_TOLERANCE)
+    var ccd_iter = Int(
+        rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_CCD_ITERATIONS])
+    )
+    if ccd_iter < 1:
+        ccd_iter = MJ_CCD_ITERATIONS
     if n_pair_aabb > NPAIR:
         n_pair_aabb = NPAIR
     for p in range(n_pair_aabb):
@@ -1356,6 +1371,7 @@ def _detect_contacts_sap_env[
                     pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
                     rj, hlj, hxj, hyj, hzj,
                     0, 0,
+                    ccd_tol, ccd_iter, cm,
                 )
                 dist = r[0]
                 cx = r[1]
@@ -1417,6 +1433,7 @@ def _detect_contacts_sap_env[
                         rj, hlj, hxj, hyj, hzj,
                         va2, mnv2,
                         wf1, wf2, wxx, wf_ok,
+                        ccd_tol, ccd_iter, cm,
                     )
                     dist = result[0]
                     cx = result[1]
@@ -1603,6 +1620,7 @@ def _detect_contacts_sap_env[
                         dist,
                         cm, cf, cfs, cfr, cdim,
                         contacts, num_contacts,
+                        ccd_tol, ccd_iter, cm,
                     )
 
             _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](

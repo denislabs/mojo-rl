@@ -17,9 +17,9 @@ Model buffer (static, same for all environments):
   Per joint (MODEL_JOINT_SIZE=26): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss,
     solref_limit(2), solimp_limit(5), qpos0]
-  Metadata (MODEL_META_SIZE=29): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
+  Metadata (MODEL_META_SIZE=31): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
     solref_contact(2), solimp_contact(5), solref_limit(2), solimp_limit(5), impratio, nequality,
-    ntendon, nexclude, meaninertia, npair, noslip_tolerance]
+    ntendon, nexclude, meaninertia, npair, noslip_tolerance, ccd_tolerance, ccd_iterations]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
   Per geom (MODEL_GEOM_SIZE=29): [type, body, pos(3), quat(4), radius, half_length,
     half_x/y/z, friction, contype, conaffinity, condim, friction_spin, friction_roll,
@@ -232,7 +232,7 @@ comptime JOINT_IDX_QPOS0: Int = 25  # Joint reference position (MuJoCo qpos0 / r
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 29
+comptime MODEL_META_SIZE: Int = 31
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -291,6 +291,35 @@ comptime MODEL_META_IDX_NPAIR: Int = 27
 # to mean "run all `noslip_iterations`". Any consumer that treats a 0 here as
 # "fall back to the default" reintroduces the truncation this slot fixes.
 comptime MODEL_META_IDX_NOSLIP_TOLERANCE: Int = 28
+# `mjModel.opt.ccd_tolerance` / `.ccd_iterations` — EPA's stopping rule.
+# Defaults 1e-6 and 35 (`mjcPhysics/schema.usda`, and confirmed against the
+# 3.10.0 runtime: `m.opt.ccd_tolerance == 1e-06`, `m.opt.ccd_iterations == 35`).
+#
+# ⚠⚠ THESE WERE HARDCODED AT 1e-8 AND 64, i.e. TIGHTER THAN MUJOCO'S, and a
+# model that sets them was ignored outright. That is a parity gap in the
+# direction that is easy to mistake for safety: EPA's stopping rule decides
+# WHICH boundary face it settles on, and the contact NORMAL is that face's,
+# so running longer than the reference does not converge toward it — it
+# converges away from it. Measured on Jaco `reach_site_features` pose 38,
+# ours at 1e-8 sits 9.4e-3 from MuJoCo's normal and at 1e-6 sits 7.6e-3.
+#
+# ⚠ MATCHING THE TOLERANCE IS NECESSARY, NOT SUFFICIENT. The polytope
+# expansion, face ordering and horizon construction all differ from
+# `engine_collision_gjk.c`'s, so identical stopping rules still stop on
+# different faces. See `test_epa_optimality_cylinder_mesh`, which gates the
+# quantity that IS well-posed.
+#
+# In META rather than as comptime parameters for the reason
+# `MODEL_META_IDX_NOSLIP_TOLERANCE` gives above: plain runtime numbers, read
+# next to the geoms they apply to, with no compile-time consumer.
+comptime MODEL_META_IDX_CCD_TOLERANCE: Int = 29
+comptime MODEL_META_IDX_CCD_ITERATIONS: Int = 30
+
+# MuJoCo's defaults, used wherever a Model is built without a parser (hand-made
+# fixtures, the GPU env specs) so that those paths behave like the reference
+# rather than like whatever the old constants happened to be.
+comptime MJ_CCD_TOLERANCE: Float64 = 1e-6
+comptime MJ_CCD_ITERATIONS: Int = 35
 
 
 # =============================================================================

@@ -128,6 +128,7 @@ from .collision_primitives import (
     cylinder_cylinder,
 )
 from .gjk import gjk_epa
+from ..gpu.constants import MJ_CCD_TOLERANCE, MJ_CCD_ITERATIONS
 
 # `mjc_Convex`'s two constants, named as MuJoCo names them.
 comptime MULTICCD_RELATIVE_TOLERANCE: Float64 = 1e-3
@@ -209,6 +210,9 @@ def _convex_pair_single[
     rj: Scalar[DTYPE], hlj: Scalar[DTYPE],
     hxj: Scalar[DTYPE], hyj: Scalar[DTYPE], hzj: Scalar[DTYPE],
     va2: Int, mnv2: Int,
+    ccd_tol: Scalar[DTYPE] = Scalar[DTYPE](MJ_CCD_TOLERANCE),
+    ccd_iter: Int = MJ_CCD_ITERATIONS,
+    ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
 ) -> InlineArray[Scalar[DTYPE], 7]:
     """One contact for a `multi_ccd_pair_supported` pair — `(dist, pos, normal)`.
 
@@ -286,6 +290,7 @@ def _convex_pair_single[
             pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
             rj, hlj, hxj, hyj, hzj,
             va2, mnv2,
+            ccd_tol, ccd_iter, ccd_margin,
         )
         out[0] = r[0]
         out[1] = r[1]
@@ -310,6 +315,7 @@ def _convex_pair_single[
             pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
             rj, hlj, hxj, hyj, hzj,
             va2, mnv2,
+            ccd_tol, ccd_iter, ccd_margin,
         )
         out[0] = r[0]
         out[1] = r[1]
@@ -464,6 +470,9 @@ def multi_ccd_extra_contacts[
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
+    ccd_tol: Scalar[DTYPE] = Scalar[DTYPE](MJ_CCD_TOLERANCE),
+    ccd_iter: Int = MJ_CCD_ITERATIONS,
+    ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
 ) -> Int:
     """Append the perturbed manifold points for one already-emitted contact.
 
@@ -536,6 +545,7 @@ def multi_ccd_extra_contacts[
                 pj[0], pj[1], pj[2], pj[3], pj[4], pj[5], pj[6],
                 rj, hlj, hxj, hyj, hzj,
                 va2, mnv2,
+                ccd_tol, ccd_iter, ccd_margin,
             )
             if not (r[0] < contact_margin):
                 continue

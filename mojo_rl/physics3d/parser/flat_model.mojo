@@ -15,7 +15,11 @@ from mojo_rl.physics3d.joint_types import (
 )
 # The single source for how many joints/sites one tendon may wrap. `TendonData`
 # and the packed field layout must agree, so both read it from here.
-from mojo_rl.physics3d.gpu.constants import TENDON_MAX_WRAPS
+from mojo_rl.physics3d.gpu.constants import (
+    TENDON_MAX_WRAPS,
+    MJ_CCD_TOLERANCE,
+    MJ_CCD_ITERATIONS,
+)
 
 
 # =============================================================================
@@ -1432,6 +1436,12 @@ struct FlatModelDef(Movable):
     # dm_control's manipulation models set 0 ("run every iteration"). See
     # `_parse_option` for the measurement that made this worth parsing.
     var noslip_tolerance: Float64
+    # `<option ccd_tolerance= ccd_iterations=>` — EPA's stopping rule. MuJoCo's
+    # defaults are 1e-6 and 35; ours were hardcoded at 1e-8 and 64 and a model
+    # setting either was ignored. See `_scan_ccd_tolerance` in `xml_parser` for
+    # why tighter is not safer.
+    var ccd_tolerance: Float64
+    var ccd_iterations: Int
     # `<compiler boundmass= boundinertia=>`. MuJoCo clamps EVERY body (id > 0)
     # after its inertial frame is set: `mass = max(mass, boundmass)` and the
     # same per principal moment. Default 0, i.e. no bound. Load-bearing on
@@ -1469,6 +1479,8 @@ struct FlatModelDef(Movable):
         self.opt_density = Float64(0)
         self.opt_viscosity = Float64(0)
         self.noslip_tolerance = Float64(1e-6)
+        self.ccd_tolerance = Float64(MJ_CCD_TOLERANCE)
+        self.ccd_iterations = MJ_CCD_ITERATIONS
         self.mesh_asset_names = List[String]()
         self.mesh_asset_files = List[String]()
         self.num_mesh_assets = 0

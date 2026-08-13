@@ -16,9 +16,13 @@ Run against itself at this pose with only `ccd_tolerance` moving:
     libccd          -2.879689378564938e-03  identical to the 1e-6 native answer
 
 Its "converged" answer is 6.1e-2 from its own default one, and — measured
-below — 4.01 degrees from the true optimum, against 0.51 degrees for the
+below — 4.01 degrees from the sampled optimum, against 0.42 degrees for the
 default. So "agree with MuJoCo" is not a well-posed target for this quantity,
 and neither is "agree with MuJoCo once it has converged".
+
+⚠ THE TEST PRINTS AN ANGLE FROM *OUR* NORMAL, NOT FROM THE OPTIMUM — they are
+close here but they are not the same quantity, and reading one as the other is
+how the 0.51/0.42 discrepancy between drafts of this docstring arose.
 
 WHAT IS WELL-POSED is the definition. For convex A and B the penetration depth
 is
@@ -30,28 +34,39 @@ with `h_X` the support extent of X along a direction. That makes any candidate
 equal `h` along the normal, and no direction may beat it. This file asserts
 both, against a dense sweep plus deterministic local refinement.
 
-Measured, at the frozen pose below (smaller `h` is better; it is what the
-penetration depth minimises):
+Measured, at the frozen pose below, with BOTH engines now running the same
+stopping rule (smaller `h` is better; it is what the penetration depth
+minimises, and the sampled optimum is 2.880402e-03):
 
-    ours                            h = 2.880261e-03
-    MuJoCo @ ccd_tolerance 1e-6     h = 2.883992e-03   3.73e-06 worse, 0.54 deg away
-    MuJoCo @ ccd_tolerance 1e-12    h = 2.964017e-03   8.38e-05 worse, 4.01 deg away
+    ours                            h = 2.880567e-03   1.64e-07 above the optimum
+    MuJoCo @ ccd_tolerance 1e-6     h = 2.883992e-03   3.43e-06 above, 0.42 deg away
+    MuJoCo @ ccd_tolerance 1e-12    h = 2.964017e-03   8.36e-05 above, 4.01 deg away
+
+i.e. at MuJoCo's own tolerance we land 21x closer to the optimum than MuJoCo
+does. This is a fact about the two EPA implementations, not about the
+tolerance, which is now shared.
 
 ⚠ THE NORMAL HERE IS NOT BIT-IDENTICAL TO THE ONE THE MODEL PATH PRODUCES, and
 that is the fixture's doing, not a defect: the vertices below are MuJoCo's
 `mesh_vert`, i.e. float32-quantised, while the engine builds its hull in
 float64 from the STL. Same pose through `ReachSiteFeaturesModel` gives
-(0.13173373, 0.46035369, 0.87790700) against this file's
-(0.13175957, 0.46036354, 0.87789796) — 2.6e-05 apart, the size of the 7.5e-9
+(0.13339824, 0.46098917, 0.87732200) against this file's
+(0.13364544, 0.46108063, 0.87723631) — 2.6e-05 apart, the size of the 7.5e-9
 vertex difference propagated through. Running on MuJoCo's own numbers is the
 deliberate choice: it removes "you two disagree about the shape" as an escape
 route for a failure.
 
+⚠ THE NUMBERS ABOVE MOVED ONCE ALREADY, when `ccd_tolerance` stopped being
+hardcoded at 1e-8. Cylinder-vs-mesh is a SMOOTH pair, so it takes
+`opt.ccd_tolerance`; a mesh-vs-mesh or mesh-vs-box pair would take `mjMINVAL`
+instead via `discreteGeoms`, and this fixture would then be gating almost
+nothing. If this file is ever re-pointed at a different pair, check which
+branch of `_epa_tolerance` it lands in first.
+
 ⚠ OUR EPA WAS ALREADY CONVERGED — the caps are not the story either. Traced at
-this pose it brackets the depth to 6.6e-9 (lower 0.00288025, upper 0.00288026)
-in 18 iterations, and neither raising `EPA_V_CAP`/`EPA_F_CAP` (36/64 -> 72/140)
-nor loosening `EPA_TOLERANCE` to MuJoCo's 1e-6 moves the answer by more than
-2e-3 of the normal. Both were checked before this conclusion was written,
+this pose under the old hardcoded 1e-8 it bracketed the depth to 6.6e-9 in 18
+iterations, and raising `EPA_V_CAP`/`EPA_F_CAP` (36/64 -> 72/140) changed the
+answer by ZERO bits. Both were checked before this conclusion was written,
 because "we ran out of budget" is the explanation a capped solver invites.
 
 ⚠ THE GEOMETRY WAS RULED OUT FIRST, and had to be: two correct EPAs cannot
@@ -109,19 +124,25 @@ comptime MJ_NX: Float64 = 0.14009430423374564
 comptime MJ_NY: Float64 = 0.4635333423892305
 comptime MJ_NZ: Float64 = 0.8749345269302906
 
-# ⚠ BOTH TOLERANCES ARE SET BY EPA'S OWN CONVERGENCE BRACKET, NOT BY TASTE.
-# Traced at this pose EPA brackets the depth to 6.6e-9 (lower 0.00288025,
-# upper 0.00288026) and stops, so `dist` — the closest FACE PLANE's distance,
-# a lower bound — sits up to that far below `h` along the same normal. The
-# first draft of this file used 1e-9 for the self-consistency check and failed
-# at 9.3e-9, which is the bracket, not a defect.
+# ⚠ BOTH TOLERANCES ARE SET BY `ccd_tolerance`, NOT BY TASTE. EPA stops when
+# its bound gap falls below `mjModel.opt.ccd_tolerance` = 1e-6, so `dist` — the
+# closest FACE PLANE's distance, a lower bound — sits up to that far below `h`
+# along the same normal, and the normal itself is only optimal to the same
+# order. 2e-6 is one doubling of the stopping rule.
 #
-# 1e-7 is ~15x the bracket and still 37x tighter than MuJoCo's own default
-# answer is wrong by (3.7e-6), so it separates us from the reference rather
-# than merely admitting us.
-comptime SELF_CONSISTENCY_TOL: Float64 = 1e-7
+# ⚠ THIS FILE HAS BEEN WRONG ABOUT THESE TWICE, both times by pinning them to
+# something other than the engine's actual stopping rule. First 1e-9, which is
+# below any bracket EPA has ever had. Then 1e-7, which matched the hardcoded
+# 1e-8 tolerance that `ccd_tolerance` replaced — correct for a day, then stale
+# the moment the engine adopted MuJoCo's looser rule. A tolerance that is not
+# derived from the thing it is measuring will drift out from under the gate.
+#
+# It still SEPARATES rather than merely admits: MuJoCo's own default answer is
+# 3.43e-6 above the optimum here, so it fails this budget by 1.7x, and its
+# 1e-12 answer fails by 42x.
+comptime SELF_CONSISTENCY_TOL: Float64 = 2e-6
 # No sampled direction may beat ours by more than this.
-comptime OPTIMALITY_TOL: Float64 = 1e-7
+comptime OPTIMALITY_TOL: Float64 = 2e-6
 
 
 def _hull() raises -> TensorImpl[DT]:

@@ -167,6 +167,8 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_NEXCLUDE,
     MODEL_META_IDX_NPAIR,
     MODEL_META_IDX_NOSLIP_TOLERANCE,
+    MODEL_META_IDX_CCD_TOLERANCE,
+    MODEL_META_IDX_CCD_ITERATIONS,
     MODEL_PAIR_SIZE,
     PAIR_IDX_GEOM1,
     PAIR_IDX_GEOM2,
@@ -702,6 +704,16 @@ def build_model_fields_from_flat[
     # attribute is absent, so a 0 that arrives here was WRITTEN by the model.
     mf.meta.data[MODEL_META_IDX_NOSLIP_TOLERANCE] = Scalar[DTYPE](
         fmd.noslip_tolerance
+    )
+    # EPA's stopping rule. `Model.__init__` already seeded MuJoCo's defaults,
+    # so this only ever OVERWRITES with what `<option>` actually said — but it
+    # must run unconditionally, because a model that sets them and a model that
+    # does not have to end up with different values in the same slot.
+    mf.meta.data[MODEL_META_IDX_CCD_TOLERANCE] = Scalar[DTYPE](
+        fmd.ccd_tolerance
+    )
+    mf.meta.data[MODEL_META_IDX_CCD_ITERATIONS] = Scalar[DTYPE](
+        fmd.ccd_iterations
     )
 
     # Contact solref/solimp: MuJoCo model defaults, then geom[0]'s parsed

@@ -115,7 +115,36 @@ comptime GOLD_RTOL = 1e-3
 # both contact FEATURES (the tight cluster and the far row), which is what
 # decides whether a grasp holds; a count can be right with every row stacked on
 # one feature.
-comptime GOLD_NCON = 5  # total contacts across both envs
+#
+# ⚠ 5 -> 4 on 2026-08-13, AND THE ROW THAT WENT IS env0's. Per-env counts
+# before: env0 1, env1 4; after: env0 0, env1 4. env1's mesh manifold is
+# UNTOUCHED — still 4 rows, depth within 5 um of MuJoCo, normal direction dot
+# 0.99999965, MANIFOLD_SPAN 0.038894 against MuJoCo's 0.03867 — so no contact
+# FEATURE was lost and the MuJoCo-anchored asserts below all still hold.
+#
+# ⚠⚠ WHETHER env0 SHOULD BE 0 OR 1 IS **NOT VERIFIED**. The tempting reading is
+# that the note above already settles it ("MuJoCo reports ZERO contacts at that
+# pose") — it does not: that sentence was written about the pre-2026-08-10
+# geometry and this file has no MuJoCo reference for env0 at the current pose.
+# It is also exactly the direction task #59 makes suspicious, where a plainly
+# overlapping cylinder/box pair produces zero contacts through
+# `detect_contacts` while MuJoCo reports three. Re-freezing the count here is
+# BOOKKEEPING, not a claim that 0 is right; if #59 turns out to be a dispatch
+# gap, come back to this line.
+#
+# THE CAUSE IS `opt.ccd_tolerance`, which the engine now reads from the model
+# instead of hardcoding 1e-8. Cylinder-vs-box is a SMOOTH pair (`discreteGeoms`
+# is mesh/box/hfield on BOTH sides), so it takes MuJoCo's 1e-6 and EPA stops
+# where MuJoCo stops. Note the direction of the surprise: the LOOSER tolerance
+# is the one that agrees with the reference.
+#
+# ⚠ AN EARLIER 4 -> 5 WENT UNLOGGED. Every other move of this constant is
+# accounted for above (2 -> 1, 1 -> 4); nothing explains 4 -> 5, so env0
+# regained its spurious contact at some point without anyone noticing. That is
+# the failure mode a self-frozen golden has and a MuJoCo-anchored assert does
+# not — which is why the depth / normal / span checks below are the real gate
+# and this number is bookkeeping.
+comptime GOLD_NCON = 4  # total contacts across both envs
 # ⚠ GOLD_CON has moved TWICE on 2026-08-01, both times accounted for exactly
 # and neither re-recorded blind. Both changes are narrow-phase CONTACT
 # DIRECTION work; the fingerprint is `sum contacts[e,c,k] * (e+1)(c+1)(k+1)`.
@@ -233,8 +262,8 @@ comptime GOLD_NCON = 5  # total contacts across both envs
 #     manifold span ours 0.0392871  MuJoCo 0.03867       (0.62 mm)
 # and `test_sawyer_settle_vs_mujoco` reports 5 contacts at rest against
 # MuJoCo's 5. The golden of 4 was frozen from the engine WITH the rbound bug.
-comptime GOLD_CON = 5042.802909596139  # geometry columns (k < 23)
-comptime GOLD_SOL = 4523.220017328858  # solparam columns (k >= 23)
+comptime GOLD_CON = 3361.6499817769654  # geometry columns (k < 23)
+comptime GOLD_SOL = 3015.4800115525723  # solparam columns (k >= 23)
 
 # MuJoCo's manifold at this pose spans 3.867e-02 between its two contact
 # FEATURES: a tight cluster on one face and a single row 3.9 cm away. Matching

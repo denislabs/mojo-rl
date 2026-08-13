@@ -96,7 +96,11 @@ from .flat_model import (
 )
 # How many joints/sites one tendon may wrap — shared with the packed field
 # layout so the parser and the record cannot disagree.
-from mojo_rl.physics3d.gpu.constants import TENDON_MAX_WRAPS
+from mojo_rl.physics3d.gpu.constants import (
+    TENDON_MAX_WRAPS,
+    MJ_CCD_TOLERANCE,
+    MJ_CCD_ITERATIONS,
+)
 from mojo_rl.physics3d.joint_types import (
     JNT_HINGE,
     JNT_SLIDE,
@@ -147,12 +151,28 @@ def _option_flag_disabled(xml: String, flag: String) -> Bool:
 
 def _parse_option(
     xml: String,
-) -> Tuple[Float64, Float64, Float64, Float64, Float64, Float64, Float64]:
+) -> Tuple[
+    Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Int
+]:
     """Extract (gravity_x, gravity_y, gravity_z, timestep, density, viscosity,
-    noslip_tolerance) from <option .../>.
+    noslip_tolerance, ccd_tolerance, ccd_iterations) from <option .../>.
 
     Defaults: gravity=(0,0,-9.81), timestep=0.002, density=0.0, viscosity=0.0,
-    noslip_tolerance=1e-6.
+    noslip_tolerance=1e-6, ccd_tolerance=1e-6, ccd_iterations=35.
+
+    ⚠ `ccd_tolerance` / `ccd_iterations` ARE EXERCISED, unlike
+    `noslip_tolerance` below. They set EPA's stopping rule, which decides which
+    boundary face it settles on and therefore the contact NORMAL. We hardcoded
+    1e-8 / 64 — TIGHTER than MuJoCo — until 2026-08-13, and tighter is not
+    safer here: iterating past the reference walks away from its answer rather
+    than toward it. Measured on Jaco `reach_site_features` pose 38, the
+    cylinder-mesh normal sits 9.4e-3 from MuJoCo's at 1e-8 and 7.6e-3 at 1e-6.
+
+    ⚠ MATCHING THE STOPPING RULE IS NECESSARY, NOT SUFFICIENT: our polytope
+    expansion, face ordering and horizon construction all differ from
+    `engine_collision_gjk.c`'s, so identical rules still stop on different
+    faces. `test_epa_optimality_cylinder_mesh` gates the well-posed quantity
+    instead.
 
     `noslip_tolerance` is not the solver's `tolerance`. It is the threshold
     `mj_solNoSlip` compares its scaled per-iteration improvement against, so it
@@ -196,10 +216,12 @@ def _parse_option(
     var dens = Float64(0)
     var visc = Float64(0)
     var nstol = Float64(1e-6)
+    var ccdtol = Float64(MJ_CCD_TOLERANCE)
+    var ccditer = MJ_CCD_ITERATIONS
 
     var pos = xml.find("<option")
     if pos == -1:
-        return (gx, gy, gz, ts, dens, visc, nstol)
+        return (gx, gy, gz, ts, dens, visc, nstol, ccdtol, ccditer)
 
     var tag = _extract_opening_tag(xml, pos)
 
@@ -230,7 +252,24 @@ def _parse_option(
     if nstol_str.byte_length() > 0:
         nstol = _parse_float(nstol_str)
 
-    return (gx, gy, gz, ts, dens, visc, nstol)
+    # `ccd_tolerance` / `ccd_iterations` — EPA's stopping rule. Unlike
+    # `noslip_tolerance` a 0 is NOT a meaningful setting for either (it would
+    # mean "iterate to the array cap on every pair" and "never iterate"), so
+    # a non-positive value falls back to MuJoCo's default rather than being
+    # copied verbatim.
+    var ccdt_str = _extract_attr(tag, "ccd_tolerance")
+    if ccdt_str.byte_length() > 0:
+        var v = _parse_float(ccdt_str)
+        if v > 0.0:
+            ccdtol = v
+
+    var ccdi_str = _extract_attr(tag, "ccd_iterations")
+    if ccdi_str.byte_length() > 0:
+        var vi = Int(_parse_float(ccdi_str))
+        if vi > 0:
+            ccditer = vi
+
+    return (gx, gy, gz, ts, dens, visc, nstol, ccdtol, ccditer)
 
 
 # =============================================================================
@@ -3500,6 +3539,8 @@ xml_in: String) raises -> FlatModelDef:
     result.opt_density = opt[4]
     result.opt_viscosity = opt[5]
     result.noslip_tolerance = opt[6]
+    result.ccd_tolerance = opt[7]
+    result.ccd_iterations = opt[8]
 
     # <flag gravity="disable"/> — zero the gravity vector.
     if _option_flag_disabled(xml, "gravity"):

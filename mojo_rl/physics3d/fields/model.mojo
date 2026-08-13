@@ -43,6 +43,10 @@ from ..gpu.constants import (
     mesh_max_poly,
     mesh_max_polyvert,
     mesh_max_edge,
+    MODEL_META_IDX_CCD_TOLERANCE,
+    MODEL_META_IDX_CCD_ITERATIONS,
+    MJ_CCD_TOLERANCE,
+    MJ_CCD_ITERATIONS,
 )
 
 @always_inline
@@ -139,6 +143,19 @@ struct Model[
             Self.NJOINT * MODEL_JOINT_SIZE
         )
         self.meta = TensorImpl[Self.DTYPE].alloc(MODEL_META_SIZE)
+        # ⚠ MUJOCO'S CCD DEFAULTS, SEEDED HERE BECAUSE A ZERO IS A LEGAL-LOOKING
+        # VALUE FOR BOTH. `alloc` does not promise zeroed memory and a zero
+        # tolerance / zero iteration count would silently mean "iterate to the
+        # array cap on every pair" and "never iterate" respectively — neither of
+        # which resembles the reference. Every hand-built Model (the GPU env
+        # specs, test fixtures) gets MuJoCo's behaviour without knowing this
+        # slot exists; `fields_build` overwrites both from `<option>`.
+        self.meta.data[MODEL_META_IDX_CCD_TOLERANCE] = Scalar[Self.DTYPE](
+            MJ_CCD_TOLERANCE
+        )
+        self.meta.data[MODEL_META_IDX_CCD_ITERATIONS] = Scalar[Self.DTYPE](
+            MJ_CCD_ITERATIONS
+        )
         self.curriculum = TensorImpl[Self.DTYPE].alloc(MODEL_CURRICULUM_SIZE)
         self.geoms = TensorImpl[Self.DTYPE].alloc(_at_least_one(Self.NGEOM * MODEL_GEOM_SIZE))
         self.equality = TensorImpl[Self.DTYPE].alloc(

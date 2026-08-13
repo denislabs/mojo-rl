@@ -25,6 +25,7 @@ by searching for four explicit suffix patterns: `<foo `, `<foo>`, `<foo/`,
 from std.collections import InlineArray
 
 from .flat_model import ACT_KIND_MOTOR, ACT_KIND_POSITION, ACT_KIND_VELOCITY
+from ..gpu.constants import MJ_CCD_TOLERANCE, MJ_CCD_ITERATIONS
 
 
 # =============================================================================
@@ -61,6 +62,8 @@ struct ParsedModel:
     var TIMESTEP: Float64  # <option timestep="..."/>
     var MAX_CONDIM: Int  # largest `condim=` anywhere in the file (>= 3)
     var NOSLIP_ITER: Int  # <option noslip_iterations="..."/>, 0 = pass off
+    var CCD_TOL: Float64  # <option ccd_tolerance="..."/>, MuJoCo default 1e-6
+    var CCD_ITER: Int  # <option ccd_iterations="..."/>, MuJoCo default 35
 
     def __init__(
         out self,
@@ -83,6 +86,8 @@ struct ParsedModel:
         timestep: Float64 = 0.01,
         max_condim: Int = 3,
         noslip_iter: Int = 0,
+        ccd_tol: Float64 = MJ_CCD_TOLERANCE,
+        ccd_iter: Int = MJ_CCD_ITERATIONS,
     ):
         self.NBODY = nbody
         self.NJOINT = njoint
@@ -103,6 +108,8 @@ struct ParsedModel:
         self.TIMESTEP = timestep
         self.MAX_CONDIM = max_condim
         self.NOSLIP_ITER = noslip_iter
+        self.CCD_TOL = ccd_tol
+        self.CCD_ITER = ccd_iter
 
     def __str__(self) -> String:
         return (
@@ -2504,6 +2511,73 @@ def _scan_noslip_iterations(xml: String) -> Int:
     return val
 
 
+def _scan_ccd_tolerance(xml: String) -> Float64:
+    """`<option ccd_tolerance="X">`, or MuJoCo's 1e-6 default.
+
+    EPA's stopping rule: it breaks when the gap between its lower bound (the
+    closest polytope face's distance) and its running upper bound falls below
+    this. `mjc_penetration` copies it into `mjCCDConfig.tolerance` and also
+    uses it as MPR's, so one number governs both.
+
+    ⚠ TIGHTER IS NOT SAFER HERE. The stopping rule decides WHICH boundary face
+    EPA settles on, and the contact NORMAL is that face's, so running past the
+    reference does not converge toward it. We hardcoded 1e-8 — tighter than
+    MuJoCo's — and a model setting this was ignored outright.
+
+    ⚠ THE DEFAULT IS NOT DOCUMENTED IN THE ENGINE SOURCE, only in the USD
+    schema (`src/experimental/usd/mjcPhysics/schema.usda`: `ccd_tolerance =
+    1e-06`, `ccd_iterations = 35`). Confirmed against the 3.10.0 runtime on a
+    model whose `<option>` sets neither — `m.opt.ccd_tolerance` reads 1e-06 and
+    `m.opt.ccd_iterations` reads 35 — because a schema file in an
+    `experimental/` directory is not evidence about the runtime by itself, and
+    no reference tree here matches that runtime
+    (`feedback_reference_tree_version_drift`).
+
+    Like `_scan_noslip_iterations` this reads only the REAL `<option>`
+    element: a value inside a comment or a `<default>` must not count.
+    """
+    var opt = _first_tag(xml, "option")
+    if opt.byte_length() == 0:
+        return MJ_CCD_TOLERANCE
+    var s = _trim(_extract_attr(opt, "ccd_tolerance"))
+    if s.byte_length() == 0:
+        return MJ_CCD_TOLERANCE
+    var v = _parse_float(s)
+    # A zero or negative tolerance would make the loop run to its iteration
+    # cap on every pair. MuJoCo does not guard this, but MuJoCo also does not
+    # have our fixed polytope caps, so the failure mode differs: fall back
+    # rather than silently changing what the caps mean.
+    if v <= 0.0:
+        return MJ_CCD_TOLERANCE
+    return v
+
+
+def _scan_ccd_iterations(xml: String) -> Int:
+    """`<option ccd_iterations="N">`, or MuJoCo's 35 default.
+
+    The EPA expansion cap. Ours is additionally bounded by `EPA_V_CAP` /
+    `EPA_F_CAP`, which MuJoCo has no equivalent of — it grows the polytope on
+    the heap — so a model asking for more iterations than the arrays can hold
+    gets the arrays' limit. That is a real difference and it is why `gjk.mojo`
+    takes the min explicitly rather than trusting the parsed value.
+    """
+    var opt = _first_tag(xml, "option")
+    if opt.byte_length() == 0:
+        return MJ_CCD_ITERATIONS
+    var s = _trim(_extract_attr(opt, "ccd_iterations"))
+    if s.byte_length() == 0:
+        return MJ_CCD_ITERATIONS
+    var val = 0
+    for i in range(s.byte_length()):
+        var ch = Int(s.as_bytes()[i])
+        if ch < ord("0") or ch > ord("9"):
+            return MJ_CCD_ITERATIONS
+        val = val * 10 + (ch - ord("0"))
+    if val <= 0:
+        return MJ_CCD_ITERATIONS
+    return val
+
+
 def parse_xml(xml: String) -> ParsedModel:
     """Parse a MuJoCo XML string and return dimension counts.
 
@@ -2628,6 +2702,8 @@ def parse_xml(xml: String) -> ParsedModel:
         timestep,
         _scan_max_condim(xml),
         _scan_noslip_iterations(xml),
+        _scan_ccd_tolerance(xml),
+        _scan_ccd_iterations(xml),
     )
 
 
