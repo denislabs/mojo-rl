@@ -1007,6 +1007,46 @@ def _detect_contacts_sap_env[
             var hzj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Z])
             var rbound_j = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RBOUND])
 
+            # ── BOUNDING-SPHERE REJECT — MuJoCo's `mj_filterSphere` ────────
+            # ⚠⚠ THIS PATH RAN WITHOUT IT AND THE O(N^2) PATH DID NOT. MuJoCo
+            # applies the test inside `mj_collideGeoms`, which sits DOWNSTREAM
+            # of whichever broadphase produced the pair, so it covers every
+            # candidate. Ours lived only in `contact_detection.mojo`, so every
+            # model big enough to take the SAP branch (`NGEOM >= 16` — which is
+            # every interesting one) sent pairs into GJK that MuJoCo rejects
+            # with three subtractions. The AABB tests above do NOT subsume it:
+            # a sweep overlap on inflated world AABBs is far weaker than the
+            # two bounding spheres actually touching.
+            #
+            # Measured, ms per env step (`FRAME_SKIP=10`), MIN of two
+            # interleaved rounds against a pristine worktree of the parent:
+            #
+            #     SO-ARM100   2.87 -> 1.09   (349 -> 918 Hz)
+            #     SO-ARM101   4.77 -> 1.84   (210 -> 544 Hz)
+            #
+            # MuJoCo steps the same two XMLs at 0.078 and 0.121 ms, so the
+            # remaining gap is 14x and 15x, down from 37x and 39x.
+            #
+            # ⚠ `+ cm` IS LOAD-BEARING, and its absence is silent. A pair
+            # separated by more than the two radii but LESS than its margin is
+            # a contact MuJoCo reports; drop the term and it vanishes with no
+            # error anywhere. This is the same trap the O(N^2) copy documents,
+            # which is where the term was missing once before.
+            #
+            # ⚠ PLANES ARE EXCLUDED BY `rbound > 0`, which is how MuJoCo
+            # detects them here too (a plane's `rbound` is 0 because it is
+            # unbounded). MuJoCo additionally has a plane-specific arm using
+            # `planeGeomDist`; that is NOT implemented here or in the O(N^2)
+            # path, so plane pairs fall through to narrow phase exactly as
+            # they did before this change.
+            if rbound_i > Scalar[DTYPE](0) and rbound_j > Scalar[DTYPE](0):
+                var sfx = pi_x - pj_x
+                var sfy = pi_y - pj_y
+                var sfz = pi_z - pj_z
+                var sfb = rbound_i + rbound_j + cm
+                if sfx * sfx + sfy * sfy + sfz * sfz > sfb * sfb:
+                    continue
+
             var dist: Scalar[DTYPE] = 1.0
             var cx: Scalar[DTYPE] = 0
             var cy: Scalar[DTYPE] = 0

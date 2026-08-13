@@ -318,7 +318,12 @@ def _support_mesh[
         SO-ARM100      2 551    11.95 ms   5.35 ms    2.82 ms   ->  354 Hz
         SO-ARM101     33 076    76.03 ms  12.79 ms    4.74 ms   ->  211 Hz
 
-    (Every column re-measured INTERLEAVED against a pristine worktree of the
+    (Both arms have since dropped further, to 1.09 and 1.84 ms, by giving the
+    SAP broadphase the bounding-sphere reject it was missing — see
+    `broadphase_sap.mojo`. That change removes CALLS to this function; it does
+    not make a call cheaper, so the columns above still measure what they say.
+
+    Every column re-measured INTERLEAVED against a pristine worktree of the
     commit before it, reported as the MIN of two rounds — a baseline taken
     earlier in a session has drifted by 1.4-1.7x here before, which would have
     inflated this. The MuJoCo figures are a scale reference, not a like-for-like
