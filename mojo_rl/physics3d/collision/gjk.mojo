@@ -25,7 +25,11 @@ from ..constants import (
     GEOM_MESH,
 )
 from ..kinematics.quat_math import quat_rotate, quat_rotate_inverse
-from ..gpu.constants import MJ_CCD_TOLERANCE, MJ_CCD_ITERATIONS
+from ..gpu.constants import (
+    MJ_CCD_TOLERANCE,
+    MJ_CCD_ITERATIONS,
+    mesh_max_edge,
+)
 
 # Reuse CPU GJK parameters (verbatim from gjk_gpu.mojo)
 comptime GJK_MAX_ITERATIONS: Int = 100
@@ -268,6 +272,11 @@ def _epa_seed_contains_origin[
     return 0 if touching else 1
 
 
+# MuJoCo's `mjMESH_HILLCLIMB_MIN` (`engine_collision_convex.h`): below this many
+# vertices the linear scan beats walking the graph, and MuJoCo keeps the scan.
+comptime _HILLCLIMB_MIN: Int = 10
+
+
 @always_inline
 def _support_mesh[
     DTYPE: DType,
@@ -286,10 +295,62 @@ def _support_mesh[
     mesh_verts: LayoutTensor[
         DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
     ],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+    ],
     vert_adr: Int,
     num_verts: Int,
 ) -> InlineArray[Scalar[DTYPE], 3]:
-    """Support point on mesh reading vertices from the mesh_verts tensor."""
+    """Support point on the mesh — HILL CLIMB over the hull edge graph.
+
+    This is the hottest function in mesh collision: GJK and EPA call it 10-30
+    times per geom pair per step, and it used to be a LINEAR SCAN over every
+    hull vertex. That made narrow-phase cost O(hull size), and the bill arrives
+    as soon as a model carries CAD-resolution collision meshes:
+
+                       hull verts    before     after
+        SO-ARM100        2 551        11.95 ms   5.46 ms    84 ->  183 Hz
+        SO-ARM101       33 076        76.03 ms  13.11 ms    13 ->   76 Hz
+
+    (Both arms re-measured INTERLEAVED against a pristine HEAD worktree and
+    reported as the MIN of two rounds — a baseline taken earlier in a session
+    has drifted by 1.4-1.7x here before, which would have inflated this.)
+
+    ⚠ THE 6.6x IS NOT THE MODEL'S FAULT, AND THAT IS THE MEASUREMENT THAT
+    MATTERS. The two arms have IDENTICAL dynamics — `nq = nv = nu = 6`,
+    `nbody = 8` — so nothing but collision can differ. MuJoCo steps the very
+    same two XMLs at 0.092 ms and 0.136 ms, a ratio of 1.5x against our 6.6x.
+    A reference that barely notices 13x the vertices is telling you the scaling
+    is the implementation's, not the input's.
+
+    MuJoCo's answer is `mjc_hillclimbSupport` (`engine_collision_convex.c`):
+    walk the hull's vertex adjacency, greedily stepping to whichever neighbour
+    scores higher on `dir`, until no neighbour improves. On a CONVEX hull the
+    dot product has no local maximum other than the global one, so the walk is
+    exact — it is not an approximation. It keeps `mjc_meshSupport`'s linear
+    scan only below `mjMESH_HILLCLIMB_MIN = 10` vertices, where the graph
+    overhead outweighs the scan; `_HILLCLIMB_MIN` below is that constant.
+
+    ⚠ THE ADJACENCY WAS ALREADY THERE. `mesh_vert_edgeadr` / `mesh_edges` are
+    built by `build_hull_edge_graph` for the plane-mesh path. Ours needs no
+    `vert_globalid` indirection because `mesh_verts` holds hull vertices only —
+    `mesh_edges` already stores global vertex ids, `-1` terminated.
+
+    ⚠ NO WARM START, DELIBERATELY. MuJoCo caches the previous support vertex on
+    the `mjCCDObj` and resumes from it, which is a large further win; that state
+    would have to be threaded through six functions here, so this starts every
+    walk at the mesh's vertex 0 and takes the O(graph diameter) cost instead.
+    Worth revisiting if narrow phase is still hot.
+
+    ⚠ FALLS BACK TO THE SCAN when the graph is absent (`edgeadr < 0`, which is
+    how `fields/model.mojo` marks an unbuilt graph) or the mesh is tiny. Both
+    paths must return the same point — `test_gjk_hillclimb_support.mojo` pins
+    that on real hulls, because a support function that is merely CLOSE yields
+    plausible contacts in the wrong place rather than an obvious failure.
+    """
     var local_dir = quat_rotate_inverse[DTYPE](
         qx, qy, qz, qw, dir_x, dir_y, dir_z
     )
@@ -297,20 +358,64 @@ def _support_mesh[
     var ld_y = local_dir[1]
     var ld_z = local_dir[2]
 
-    var best_dot: Scalar[DTYPE] = -1e30
     var best_x: Scalar[DTYPE] = 0
     var best_y: Scalar[DTYPE] = 0
     var best_z: Scalar[DTYPE] = 0
-    for i in range(num_verts):
-        var vx = rebind[Scalar[DTYPE]](mesh_verts[vert_adr + i, 0])
-        var vy = rebind[Scalar[DTYPE]](mesh_verts[vert_adr + i, 1])
-        var vz = rebind[Scalar[DTYPE]](mesh_verts[vert_adr + i, 2])
-        var d = ld_x * vx + ld_y * vy + ld_z * vz
-        if d > best_dot:
-            best_dot = d
-            best_x = vx
-            best_y = vy
-            best_z = vz
+
+    var graph_head = Int(rebind[Scalar[DTYPE]](mesh_vert_edgeadr[vert_adr]))
+    if num_verts >= _HILLCLIMB_MIN and graph_head >= 0:
+        # Greedy walk. `imax` is a LOCAL vertex index; `mesh_edges` holds
+        # GLOBAL ones, so neighbours are converted on the way in.
+        var imax = 0
+        var best_dot = (
+            ld_x * rebind[Scalar[DTYPE]](mesh_verts[vert_adr, 0])
+            + ld_y * rebind[Scalar[DTYPE]](mesh_verts[vert_adr, 1])
+            + ld_z * rebind[Scalar[DTYPE]](mesh_verts[vert_adr, 2])
+        )
+        var prev = -1
+        # ⚠ THE STEP BUDGET IS A HANG GUARD, NOT AN ALGORITHMIC BOUND. The
+        # walk is monotone in `best_dot` and so cannot cycle on a well-formed
+        # graph; it terminates in far fewer than `num_verts` steps. A malformed
+        # adjacency would otherwise spin forever inside the physics step, and a
+        # frozen viewer is the one failure mode here that costs a debugging
+        # session rather than a test run.
+        var budget = num_verts
+        while imax != prev and budget > 0:
+            budget -= 1
+            prev = imax
+            var e = Int(
+                rebind[Scalar[DTYPE]](mesh_vert_edgeadr[vert_adr + imax])
+            )
+            if e < 0:
+                break
+            while True:
+                var nb = Int(rebind[Scalar[DTYPE]](mesh_edges[e]))
+                if nb < 0:
+                    break
+                var d = (
+                    ld_x * rebind[Scalar[DTYPE]](mesh_verts[nb, 0])
+                    + ld_y * rebind[Scalar[DTYPE]](mesh_verts[nb, 1])
+                    + ld_z * rebind[Scalar[DTYPE]](mesh_verts[nb, 2])
+                )
+                if d > best_dot:
+                    best_dot = d
+                    imax = nb - vert_adr
+                e += 1
+        best_x = rebind[Scalar[DTYPE]](mesh_verts[vert_adr + imax, 0])
+        best_y = rebind[Scalar[DTYPE]](mesh_verts[vert_adr + imax, 1])
+        best_z = rebind[Scalar[DTYPE]](mesh_verts[vert_adr + imax, 2])
+    else:
+        var best_dot: Scalar[DTYPE] = -1e30
+        for i in range(num_verts):
+            var vx = rebind[Scalar[DTYPE]](mesh_verts[vert_adr + i, 0])
+            var vy = rebind[Scalar[DTYPE]](mesh_verts[vert_adr + i, 1])
+            var vz = rebind[Scalar[DTYPE]](mesh_verts[vert_adr + i, 2])
+            var d = ld_x * vx + ld_y * vy + ld_z * vz
+            if d > best_dot:
+                best_dot = d
+                best_x = vx
+                best_y = vy
+                best_z = vz
 
     var world_pt = quat_rotate[DTYPE](qx, qy, qz, qw, best_x, best_y, best_z)
     var result = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
@@ -340,6 +445,12 @@ def _support[
     half_z: Scalar[DTYPE],
     mesh_verts: LayoutTensor[
         DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
     ],
     vert_adr: Int,
     mesh_num_verts: Int,
@@ -411,6 +522,8 @@ def _support[
             qz,
             qw,
             mesh_verts,
+            mesh_vert_edgeadr,
+            mesh_edges,
             vert_adr,
             mesh_num_verts,
         )
@@ -441,6 +554,12 @@ def _minkowski_support[
     hz1: Scalar[DTYPE],
     mesh_verts: LayoutTensor[
         DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
     ],
     va1: Int,
     mnv1: Int,
@@ -488,6 +607,8 @@ def _minkowski_support[
         hy1,
         hz1,
         mesh_verts,
+        mesh_vert_edgeadr,
+        mesh_edges,
         va1,
         mnv1,
         dir_x,
@@ -509,6 +630,8 @@ def _minkowski_support[
         hy2,
         hz2,
         mesh_verts,
+        mesh_vert_edgeadr,
+        mesh_edges,
         va2,
         mnv2,
         -dir_x,
@@ -541,6 +664,12 @@ def _gjk_intersect[
     hx1: Scalar[DTYPE], hy1: Scalar[DTYPE], hz1: Scalar[DTYPE],
     mesh_verts: LayoutTensor[
         DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
     ],
     va1: Int, mnv1: Int,
     type2: Int,
@@ -697,7 +826,7 @@ def _gjk_intersect[
 
         var w = _minkowski_support[DTYPE, NMESH_VERTS](
             type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-            r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+            r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
             r2, hl2, hx2, hy2, hz2, va2, mnv2,
             nx, ny, nz,
@@ -745,6 +874,12 @@ def gjk_epa_witness[
     hz1: Scalar[DTYPE],
     mesh_verts: LayoutTensor[
         DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
     ],
     va1: Int,
     mnv1: Int,
@@ -838,6 +973,8 @@ def gjk_epa_witness[
         hy1,
         hz1,
         mesh_verts,
+        mesh_vert_edgeadr,
+        mesh_edges,
         va1,
         mnv1,
         type2,
@@ -899,6 +1036,8 @@ def gjk_epa_witness[
             hy1,
             hz1,
             mesh_verts,
+            mesh_vert_edgeadr,
+            mesh_edges,
             va1,
             mnv1,
             type2,
@@ -951,7 +1090,7 @@ def gjk_epa_witness[
             var gi = _gjk_intersect[DTYPE, NMESH_VERTS](
                 simplex,
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-                r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+                r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
             )
@@ -1154,14 +1293,14 @@ def gjk_epa_witness[
             tnz /= tln
             var sp4 = _minkowski_support[DTYPE, NMESH_VERTS](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-                r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+                r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
                 tnx, tny, tnz,
             )
             var sp5 = _minkowski_support[DTYPE, NMESH_VERTS](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-                r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+                r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
                 -tnx, -tny, -tnz,
@@ -1223,7 +1362,7 @@ def gjk_epa_witness[
                 sdz = Scalar[DTYPE](-1)
             var sp = _minkowski_support[DTYPE, NMESH_VERTS](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-                r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+                r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
                 sdx, sdy, sdz,
@@ -1288,7 +1427,7 @@ def gjk_epa_witness[
         # support along that normal; converged when it adds no depth
         var w = _minkowski_support[DTYPE, NMESH_VERTS](
             type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-            r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+            r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
             r2, hl2, hx2, hy2, hz2, va2, mnv2,
             best_nx, best_ny, best_nz,
@@ -1431,7 +1570,7 @@ def gjk_epa_witness[
                 dxx = Scalar[DTYPE](0); dyy = Scalar[DTYPE](0); dzz = Scalar[DTYPE](-1)
             var sw = _minkowski_support[DTYPE, NMESH_VERTS](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-                r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+                r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
                 dxx, dyy, dzz,
@@ -1608,7 +1747,7 @@ def gjk_epa_witness[
             dzz = Scalar[DTYPE](-1)
         var sw = _minkowski_support[DTYPE, NMESH_VERTS](
             type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-            r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+            r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
             r2, hl2, hx2, hy2, hz2, va2, mnv2,
             dxx, dyy, dzz,
@@ -1625,7 +1764,7 @@ def gjk_epa_witness[
         # which is strictly the prior behaviour rather than a new regression.
         var s_fwd = _minkowski_support[DTYPE, NMESH_VERTS](
             type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-            r1, hl1, hx1, hy1, hz1, mesh_verts, va1, mnv1,
+            r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
             r2, hl2, hx2, hy2, hz2, va2, mnv2,
             fallback_nx, fallback_ny, fallback_nz,
@@ -1669,6 +1808,12 @@ def gjk_epa[
     mesh_verts: LayoutTensor[
         DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
     ],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+    ],
     va1: Int, mnv1: Int,
     type2: Int,
     p2x: Scalar[DTYPE], p2y: Scalar[DTYPE], p2z: Scalar[DTYPE],
@@ -1705,7 +1850,7 @@ def gjk_epa[
         type1,
         p1x, p1y, p1z, q1x, q1y, q1z, q1w,
         r1, hl1, hx1, hy1, hz1,
-        mesh_verts, va1, mnv1,
+        mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
         type2,
         p2x, p2y, p2z, q2x, q2y, q2z, q2w,
         r2, hl2, hx2, hy2, hz2,

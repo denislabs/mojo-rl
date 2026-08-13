@@ -106,6 +106,7 @@ from ..kinematics.quat_math import (
     gpu_quat_rotate,
     gpu_axis_angle_to_quat,
 )
+from ..gpu.constants import mesh_max_edge
 from ..gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
@@ -202,6 +203,12 @@ def _convex_pair_single[
     mesh_verts: LayoutTensor[
         DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
     ],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+    ],
     va1: Int, mnv1: Int,
     gj_type: Int,
     pj_x: Scalar[DTYPE], pj_y: Scalar[DTYPE], pj_z: Scalar[DTYPE],
@@ -285,7 +292,7 @@ def _convex_pair_single[
             gi_type,
             pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
             ri, hli, hxi, hyi, hzi,
-            mesh_verts, va1, mnv1,
+            mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
             gj_type,
             pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
             rj, hlj, hxj, hyj, hzj,
@@ -310,7 +317,7 @@ def _convex_pair_single[
             gi_type,
             pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
             ri, hli, hxi, hyi, hzi,
-            mesh_verts, va1, mnv1,
+            mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
             gj_type,
             pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
             rj, hlj, hxj, hyj, hzj,
@@ -457,6 +464,12 @@ def multi_ccd_extra_contacts[
     mesh_verts: LayoutTensor[
         DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
     ],
+    mesh_vert_edgeadr: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+    ],
+    mesh_edges: LayoutTensor[
+        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+    ],
     c0x: Scalar[DTYPE], c0y: Scalar[DTYPE], c0z: Scalar[DTYPE],
     n0x: Scalar[DTYPE], n0y: Scalar[DTYPE], n0z: Scalar[DTYPE],
     dist0: Scalar[DTYPE],
@@ -540,7 +553,7 @@ def multi_ccd_extra_contacts[
                 gi_type,
                 pi[0], pi[1], pi[2], pi[3], pi[4], pi[5], pi[6],
                 ri, hli, hxi, hyi, hzi,
-                mesh_verts, va1, mnv1,
+                mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 gj_type,
                 pj[0], pj[1], pj[2], pj[3], pj[4], pj[5], pj[6],
                 rj, hlj, hxj, hyj, hzj,

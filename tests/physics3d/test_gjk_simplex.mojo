@@ -30,11 +30,35 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.collision.gjk import gjk_epa
 from mojo_rl.physics3d.collision.gjk_support import _closest_point_on_simplex
+from mojo_rl.physics3d.gpu.constants import mesh_max_edge
 from mojo_rl.physics3d.constants import GEOM_CYLINDER, GEOM_MESH
 
 comptime DT = DType.float64
 comptime NMV = 8
 comptime L_MV = Layout.row_major(NMV, 3)
+
+# ⚠ NO EDGE GRAPH. `_support_mesh` hill-climbs the hull adjacency when it is
+# present and falls back to the exhaustive scan when `edgeadr < 0`, which is
+# how `fields/model.mojo` marks an unbuilt graph. These fixtures only need the
+# tensors present and marked absent; the two paths are compared against each
+# other in `test_gjk_hillclimb_support.mojo`.
+comptime L_VEADR_G = Layout.row_major(NMV)
+comptime L_EDGES_G = Layout.row_major(mesh_max_edge(NMV))
+
+
+def _no_graph_G() raises -> TensorImpl[DT]:
+    var t = TensorImpl[DT].alloc(NMV)
+    for i in range(NMV):
+        t.data[i] = -1.0
+    return t^
+
+
+def _no_edges_G() raises -> TensorImpl[DT]:
+    var t = TensorImpl[DT].alloc(mesh_max_edge(NMV))
+    for i in range(mesh_max_edge(NMV)):
+        t.data[i] = -1.0
+    return t^
+
 
 
 def _put(
@@ -173,13 +197,15 @@ def test_flat_face_query_reports_exact_gap() raises:
     """
     print("=== cylinder cap over plate reports the exact gap ===")
     var mv = _plate(0.0)
+    var _ng = _no_graph_G()
+    var _ne = _no_edges_G()
     var result = gjk_epa[DT, NMV](
         GEOM_CYLINDER,
         0.0, 0.0, 0.72,
         0.0, 0.0, 0.0, 1.0,
         0.2, 0.02,  # radius, half-length
         0.0, 0.0, 0.0,
-        mv.lt["cpu", L_MV](), 0, 0,
+        mv.lt["cpu", L_MV](), _ng.lt["cpu", L_VEADR_G](), _ne.lt["cpu", L_EDGES_G](), 0, 0,
         GEOM_MESH,
         0.0, 0.0, 0.0,
         0.0, 0.0, 0.0, 1.0,

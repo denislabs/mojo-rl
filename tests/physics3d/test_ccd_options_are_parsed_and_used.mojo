@@ -41,6 +41,7 @@ from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.collision.gjk import gjk_epa
 from mojo_rl.physics3d.constants import GEOM_BOX, GEOM_CYLINDER
 from mojo_rl.physics3d.gpu.constants import (
+    mesh_max_edge,
     MODEL_META_IDX_CCD_TOLERANCE,
     MODEL_META_IDX_CCD_ITERATIONS,
     MJ_CCD_TOLERANCE,
@@ -58,6 +59,25 @@ comptime NMV: Int = 4096
 # primitives) but `gjk_epa` binds it unconditionally.
 comptime NMV_EPA: Int = 8
 comptime L_MV_EPA = Layout.row_major(NMV_EPA, 3)
+# ⚠ Both geoms here are PRIMITIVES, so the mesh operand is never read; these
+# just have to bind. All -1 is how `fields/model.mojo` marks "no hull graph",
+# which is also the state `_support_mesh` falls back to its scan on.
+comptime L_VEADR_EPA = Layout.row_major(NMV_EPA)
+comptime L_EDGES_EPA = Layout.row_major(mesh_max_edge(NMV_EPA))
+
+
+def _no_graph_epa() raises -> TensorImpl[DTYPE]:
+    var t = TensorImpl[DTYPE].alloc(NMV_EPA)
+    for i in range(NMV_EPA):
+        t.data[i] = -1.0
+    return t^
+
+
+def _no_edges_epa() raises -> TensorImpl[DTYPE]:
+    var t = TensorImpl[DTYPE].alloc(mesh_max_edge(NMV_EPA))
+    for i in range(mesh_max_edge(NMV_EPA)):
+        t.data[i] = -1.0
+    return t^
 
 # MuJoCo 3.10.0 on the same cylinder/box pose, `mj_forward`: 3 contacts, all at
 # this depth. Frozen so the "does the tolerance change anything" check cannot
@@ -218,6 +238,8 @@ def test_epa_actually_consumes_the_tolerance() raises:
     """
     print("=== EPA consumes ccd_tolerance ===")
     var mv = TensorImpl[DTYPE].alloc(NMV_EPA * 3)
+    var _ng = _no_graph_epa()
+    var _ne = _no_edges_epa()
     var out = InlineArray[Float64, 8](fill=0.0)
     for i in range(2):
         var tol = 1e-6 if i == 0 else 2e-2
@@ -228,7 +250,7 @@ def test_epa_actually_consumes_the_tolerance() raises:
             Scalar[DTYPE](1),
             Scalar[DTYPE](0), Scalar[DTYPE](0),
             Scalar[DTYPE](0.05), Scalar[DTYPE](0.04), Scalar[DTYPE](0.03),
-            mv.lt["cpu", L_MV_EPA](), 0, 0,
+            mv.lt["cpu", L_MV_EPA](), _ng.lt["cpu", L_VEADR_EPA](), _ne.lt["cpu", L_EDGES_EPA](), 0, 0,
             GEOM_CYLINDER,
             Scalar[DTYPE](0.030), Scalar[DTYPE](0.020), Scalar[DTYPE](0.038),
             Scalar[DTYPE](0.29), Scalar[DTYPE](0.41), Scalar[DTYPE](0.24),

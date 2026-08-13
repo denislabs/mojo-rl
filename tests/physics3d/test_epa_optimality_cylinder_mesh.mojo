@@ -100,11 +100,35 @@ from mojo_rl.physics3d.collision.gjk_support import (
     support_cylinder,
     support_mesh,
 )
+from mojo_rl.physics3d.gpu.constants import mesh_max_edge
 from mojo_rl.physics3d.constants import GEOM_CYLINDER, GEOM_MESH
 
 comptime DT = DType.float64
 comptime NV_HULL: Int = 130
 comptime L_MV = Layout.row_major(NV_HULL, 3)
+
+# ⚠ NO EDGE GRAPH. `_support_mesh` hill-climbs the hull adjacency when it is
+# present and falls back to the exhaustive scan when `edgeadr < 0`, which is
+# how `fields/model.mojo` marks an unbuilt graph. These fixtures only need the
+# tensors present and marked absent; the two paths are compared against each
+# other in `test_gjk_hillclimb_support.mojo`.
+comptime L_VEADR_H = Layout.row_major(NV_HULL)
+comptime L_EDGES_H = Layout.row_major(mesh_max_edge(NV_HULL))
+
+
+def _no_graph_H() raises -> TensorImpl[DType.float64]:
+    var t = TensorImpl[DType.float64].alloc(NV_HULL)
+    for i in range(NV_HULL):
+        t.data[i] = -1.0
+    return t^
+
+
+def _no_edges_H() raises -> TensorImpl[DType.float64]:
+    var t = TensorImpl[DType.float64].alloc(mesh_max_edge(NV_HULL))
+    for i in range(mesh_max_edge(NV_HULL)):
+        t.data[i] = -1.0
+    return t^
+
 
 comptime CYL_R: Float64 = 0.035
 comptime CYL_HL: Float64 = 0.009
@@ -578,6 +602,8 @@ def _h(
 def _epa() raises -> Tuple[Float64, Float64, Float64, Float64]:
     """Our narrow phase on the frozen pair: (dist, nx, ny, nz)."""
     var mv = _hull()
+    var _ng = _no_graph_H()
+    var _ne = _no_edges_H()
     var r = gjk_epa[DT, NV_HULL](
         GEOM_CYLINDER,
         Scalar[DT](CYL_PX), Scalar[DT](CYL_PY), Scalar[DT](CYL_PZ),
@@ -585,7 +611,7 @@ def _epa() raises -> Tuple[Float64, Float64, Float64, Float64]:
         Scalar[DT](CYL_QW),
         Scalar[DT](CYL_R), Scalar[DT](CYL_HL),
         Scalar[DT](0), Scalar[DT](0), Scalar[DT](0),
-        mv.lt["cpu", L_MV](), 0, 0,
+        mv.lt["cpu", L_MV](), _ng.lt["cpu", L_VEADR_H](), _ne.lt["cpu", L_EDGES_H](), 0, 0,
         GEOM_MESH,
         Scalar[DT](0), Scalar[DT](0), Scalar[DT](0),
         Scalar[DT](0), Scalar[DT](0), Scalar[DT](0), Scalar[DT](1),

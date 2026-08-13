@@ -43,6 +43,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MESH_META_IDX_POLYNUM,
     mesh_max_poly,
     mesh_max_polyvert,
+    mesh_max_edge,
 )
 from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_TYPE,
@@ -154,6 +155,8 @@ def main() raises:
         mesh_max_poly(NMESHV), MODEL_MESH_POLY_SIZE
     )
     comptime L_MESH_PV = Layout.row_major(mesh_max_polyvert(NMESHV))
+    comptime L_MESH_VEADR = Layout.row_major(NMESHV)
+    comptime L_MESH_EDGE = Layout.row_major(mesh_max_edge(NMESHV))
     comptime L_MESH_VPM = Layout.row_major(NMESHV, 2)
     comptime L_CONTACTS = Layout.row_major(1, MC * CONTACT_SIZE)
     comptime L_B3 = Layout.row_major(1, NBODY * 3)
@@ -162,6 +165,8 @@ def main() raises:
     var geoms_v = mf.geoms.lt["cpu", L_GEOM]()
     var mesh_meta_v = mf.mesh_meta.lt["cpu", L_MESH_META]()
     var mesh_verts_v = mf.mesh_verts.lt["cpu", L_MESH_VERT]()
+    var mesh_veadr_v = mf.mesh_vert_edgeadr.lt["cpu", L_MESH_VEADR]()
+    var mesh_edges_v = mf.mesh_edges.lt["cpu", L_MESH_EDGE]()
     var mesh_polys_v = mf.mesh_polys.lt["cpu", L_MESH_POLY]()
     var mesh_pv_v = mf.mesh_polyvert.lt["cpu", L_MESH_PV]()
     var mesh_pm_v = mf.mesh_polymap.lt["cpu", L_MESH_PV]()
@@ -221,7 +226,7 @@ def main() raises:
         Scalar[DTYPE](pix), Scalar[DTYPE](piy), Scalar[DTYPE](piz),
         z, z, z, one,
         z, z, z, z, z,
-        mesh_verts_v, va1, mnv1,
+        mesh_verts_v, mesh_veadr_v, mesh_edges_v, va1, mnv1,
         gj_type,
         Scalar[DTYPE](pjx), Scalar[DTYPE](pjy), Scalar[DTYPE](pjz),
         z, z, z, one,
