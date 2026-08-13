@@ -344,3 +344,134 @@ def qpos_from_site_pose[
         forward_kinematics["cpu"](d, mf)
 
     return IKResult(err_norm, steps, success, rank_deficient)
+
+
+@fieldwise_init
+struct SetSiteResult(Copyable, Movable):
+    """Outcome of `set_site_to_xpos`."""
+
+    var success: Bool
+    var attempts: Int
+    """How many IK attempts were consumed, 1-based. ⚠ Reported so a gate can
+    prove the RETRY path ran: if every trial happens to succeed first time,
+    the re-randomisation and the injected pose sequence are never exercised
+    and a green test says nothing about them."""
+
+
+def canonicalize_arm_joints[
+    DTYPE: DType, NQ: Int, NDOF: Int
+](
+    mut qpos: List[Scalar[DTYPE]],
+    qpos_adr: InlineArray[Int, NDOF],
+    lower: InlineArray[Float64, NDOF],
+    upper: InlineArray[Float64, NDOF],
+) -> Bool:
+    """`set_site_to_xpos`'s "canonicalise the angle to [0, 2*pi]" block.
+
+    Returns False if any joint could not be brought inside its bounds.
+
+    ⚠ TWO THINGS HERE ARE EASY TO TRANSCRIBE WRONG.
+
+    1. The reference's `break` on failure exits the INNER `while` only — the
+       `for` over joints carries on and keeps canonicalising the REST. So a
+       failed joint does not stop the others from being rewritten, and this
+       must return False while still having mutated everything after it.
+    2. It runs for UNLIMITED hinges too, which `_get_joint_pos_sampling_bounds`
+       gives the bounds `[0, 2*pi]`. Those joints are wrapped into that window
+       even though nothing physical constrains them.
+
+    Wrapping a hinge by a multiple of 2*pi does not move the arm, so the site
+    pose IK just solved for is preserved exactly.
+    """
+    var ok = True
+    comptime TWO_PI = 6.283185307179586
+    for a in range(NDOF):
+        var p = qpos_adr[a]
+        var v = Float64(qpos[p])
+        while v >= upper[a]:
+            v -= TWO_PI
+        while v < lower[a]:
+            v += TWO_PI
+            if v > upper[a]:
+                ok = False
+                break
+        qpos[p] = Scalar[DTYPE](v)
+    return ok
+
+
+def set_site_to_xpos[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    NGEOM: Int,
+    NEQ: Int,
+    NTEN: Int,
+    NSITE: Int,
+    NEXCL: Int,
+    NMESHV: Int,
+    MAXC: Int,
+    NDOF: Int,
+](
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    mut mf: Model[
+        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, 0
+    ],
+    site: Int,
+    target_pos: InlineArray[Scalar[DTYPE], 3],
+    target_quat: InlineArray[Scalar[DTYPE], 4],
+    dof_idx: InlineArray[Int, NDOF],
+    qpos_adr: InlineArray[Int, NDOF],
+    lower: InlineArray[Float64, NDOF],
+    upper: InlineArray[Float64, NDOF],
+    retry_poses: List[Scalar[DTYPE]],
+    max_ik_attempts: Int = 10,
+) raises -> SetSiteResult:
+    """`entities/manipulators/base.py::set_site_to_xpos`.
+
+    IK, then canonicalise; on failure re-randomise the arm and try again, up
+    to `max_ik_attempts`.
+
+    ⚠ THE RETRY POSES ARE INJECTED, NOT DRAWN. The reference calls
+    `randomize_arm_joints`, i.e. `random_state.uniform(lower, upper)` on a
+    numpy `RandomState`. Reproducing that bit stream in Mojo is neither
+    possible nor desirable, so the caller supplies the sequence:
+    `retry_poses` is `(max_ik_attempts - 1) * NDOF` values, consumed one
+    NDOF-block per failed attempt, in order. A gate can therefore drive both
+    implementations down IDENTICAL trajectories by precomputing the same
+    draws with the same seed — which is exactly what
+    `test_set_site_to_xpos_vs_dm_control` does. Production callers can pass
+    whatever sampler they like.
+
+    ⚠ `rot_weight = 2` is not this function's choice to make; it is what the
+    reference passes, and `qpos_from_site_pose` defaults to it here.
+    """
+    var success = False
+    var attempts = 0
+    for attempt in range(max_ik_attempts):
+        attempts = attempt + 1
+        var res = qpos_from_site_pose[
+            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
+            NMESHV, MAXC, NDOF,
+        ](d, mf, site, target_pos, target_quat, dof_idx)
+        success = res.success
+
+        if success:
+            success = canonicalize_arm_joints[DTYPE, NQ, NDOF](
+                d.qpos.data, qpos_adr, lower, upper
+            )
+
+        # "If succeeded or only one attempt, break and do not randomize."
+        if success or max_ik_attempts <= 1:
+            break
+
+        var base = attempt * NDOF
+        if base + NDOF > len(retry_poses):
+            # Out of injected poses — stop rather than silently repeat the
+            # same attempt, which would look like convergence failure.
+            break
+        for a in range(NDOF):
+            d.qpos.data[qpos_adr[a]] = retry_poses[base + a]
+
+    return SetSiteResult(success, attempts)

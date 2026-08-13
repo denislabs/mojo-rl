@@ -339,3 +339,73 @@ def ik_reference(task_name, q0, target_pos, target_quat=None,
     sid = physics_.model.name2id(TCP_SITE, 'site')
     return (list(result.qpos), float(result.err_norm), int(result.steps),
             bool(result.success), list(physics_.data.site_xpos[sid]))
+
+
+def arm_joint_bounds(task_name='reach_site_features', seed=0):
+    """`_get_joint_pos_sampling_bounds` — (lower, upper) per arm joint.
+
+    ⚠ Unlimited HINGES get `[0, 2*pi]`, not their (absent) range; non-hinge
+    joints without limits are a hard error in the reference.
+    """
+    env = _load(task_name, seed=seed)
+    arm = env.task._arm  # pylint: disable=protected-access
+    # pylint: disable=protected-access
+    lower, upper = arm._get_joint_pos_sampling_bounds(env.physics)
+    return list(lower), list(upper)
+
+
+def arm_qpos_adr(task_name='reach_site_features', seed=0):
+    """`jnt_qposadr` for each arm joint, in the same order as the bounds."""
+    import mujoco
+    env = _load(task_name, seed=seed)
+    mm = env.physics.model.ptr
+    out = []
+    for n in arm_joint_names(task_name, seed=seed):
+        out.append(int(mm.jnt_qposadr[
+            mujoco.mj_name2id(mm, mujoco.mjtObj.mjOBJ_JOINT, n)]))
+    return out
+
+
+def retry_pose_draws(n_draws, rng_seed, task_name='reach_site_features',
+                     seed=0):
+    """The exact poses `randomize_arm_joints` would draw, flattened.
+
+    `set_site_to_xpos` re-randomises with `random_state.uniform(lower, upper)`
+    once per FAILED attempt. Reproducing that stream here — same
+    `RandomState`, same seed, same call order — lets a Mojo port be driven
+    down an identical trajectory instead of merely a statistically similar
+    one.
+    """
+    import numpy as np
+    lower, upper = arm_joint_bounds(task_name, seed=seed)
+    rs = np.random.RandomState(rng_seed)
+    out = []
+    for _ in range(n_draws):
+        out.extend(list(rs.uniform(lower, upper)))
+    return out
+
+
+def set_site_to_xpos_reference(task_name, q0, target_pos, rng_seed,
+                               target_quat=None, max_ik_attempts=10, seed=0):
+    """dm_control's own `set_site_to_xpos`, from `q0`.
+
+    Returns `(success, qpos)`. The `RandomState` is seeded with `rng_seed`, so
+    `retry_pose_draws(k, rng_seed)` yields the poses it will use.
+    """
+    _bootstrap()
+    import numpy as np
+    env = _load(task_name, seed=seed)
+    physics_ = env.physics
+    arm = env.task._arm  # pylint: disable=protected-access
+    with physics_.reset_context():
+        physics_.data.qpos[:] = np.asarray(q0, dtype=float)
+    if target_quat is None:
+        target_quat = DOWN_QUATERNION
+    ok = arm.set_site_to_xpos(
+        physics=physics_,
+        random_state=np.random.RandomState(rng_seed),
+        site=TCP_SITE,
+        target_pos=np.asarray(target_pos, dtype=float),
+        target_quat=np.asarray(target_quat, dtype=float),
+        max_ik_attempts=max_ik_attempts)
+    return bool(ok), list(physics_.data.qpos)

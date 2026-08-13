@@ -55,7 +55,10 @@ from mojo_rl.physics3d.fields import Model, Data
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
 from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
-from mojo_rl.physics3d.dynamics.ik_site import qpos_from_site_pose
+from mojo_rl.physics3d.dynamics.ik_site import (
+    qpos_from_site_pose,
+    set_site_to_xpos,
+)
 
 comptime DTYPE = DType.float64
 
@@ -329,6 +332,214 @@ def test_ik_site_matches_dm_control() raises:
         worst_site_err <= SITE_TOL,
         "a converged solve did not put the site on the target — this is the"
         " routine's actual contract",
+    )
+
+
+def test_set_site_to_xpos_matches_dm_control() raises:
+    """The full `set_site_to_xpos`: IK, canonicalise, retry on failure.
+
+    ⚠ THE RETRY DRAWS ARE PINNED, so this is a trajectory comparison and not
+    a statistical one. The reference re-randomises the arm with
+    `random_state.uniform(lower, upper)` once per failed attempt; the test
+    reproduces that exact stream (same `RandomState`, same seed, same call
+    order) via `manipulation_ref.retry_pose_draws` and injects it into ours.
+    Both sides therefore visit the SAME sequence of start poses, and qpos can
+    be compared directly — which it cannot be for IK alone.
+
+    ⚠ If the two ever disagree about whether attempt k succeeded, the
+    injected draws desynchronise from the reference's and every later attempt
+    diverges. That is a feature: the qpos comparison below turns a
+    single-attempt disagreement into a loud failure rather than a near-miss.
+    """
+    print("=== Jaco: set_site_to_xpos (IK + canonicalise + retry) ===")
+    var sys = Python.import_module("sys")
+    _ = sys.path.insert(0, "tests/dm_control")
+    var warnings = Python.import_module("warnings")
+    _ = warnings.filterwarnings("ignore")
+    var tempfile = Python.import_module("tempfile")
+    var os = Python.import_module("os")
+    var mujoco = Python.import_module("mujoco")
+    var np = Python.import_module("numpy")
+    var refmod = Python.import_module("manipulation_ref")
+
+    var tmp = String(tempfile.mkdtemp(prefix="jaco_sstx_"))
+    var xml_path = String(refmod.bake("reach_site_features", tmp))
+    var cwd = String(os.getcwd())
+    _ = os.chdir(tmp)
+    var mm = mujoco.MjModel.from_xml_path(xml_path)
+    var dat = mujoco.MjData(mm)
+    var fmd = parse_xml_full(_read(xml_path))
+    var ctx = DeviceContext()
+    var mf = Model[
+        DTYPE, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
+        NMESH_VERTS, 0,
+    ]()
+    build_model_fields_from_flat[
+        DTYPE, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
+        NMESH_VERTS, IFG_MODE, IGR_MIN, IGR_MAX, -1.0, 0,
+    ](fmd, mf)
+    _ = os.chdir(cwd)
+    var d = Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1]()
+
+    # Locate our index for the TCP site by position, as above.
+    for i in range(NQ):
+        var qv = 0.11 * Float64(i + 1) - 0.4
+        dat.qpos[i] = qv
+        d.qpos.data[i] = Scalar[DTYPE](qv)
+    mujoco.mj_forward(mm, dat)
+    forward_kinematics["cpu"](d, mf)
+    var mj_tcp = Int(
+        py=mujoco.mj_name2id(mm, mujoco.mjtObj.mjOBJ_SITE, refmod.TCP_SITE)
+    )
+    var our_tcp = -1
+    var best_e = 1e30
+    for s_ours in range(NSITE):
+        var e = 0.0
+        for k in range(3):
+            var dd = abs(
+                Float64(d.site_xpos.data[s_ours * 3 + k])
+                - Float64(py=dat.site_xpos[mj_tcp][k])
+            )
+            if dd > e:
+                e = dd
+        if e < best_e:
+            best_e = e
+            our_tcp = s_ours
+    assert_true(best_e < 1e-9, "could not locate our TCP site by position")
+
+    # Arm DOFs, qpos addresses and sampling bounds — all from the reference.
+    var arm_names = refmod.arm_joint_names()
+    var bounds = refmod.arm_joint_bounds()
+    var adr_py = refmod.arm_qpos_adr()
+    var dof_idx = InlineArray[Int, NDOF](fill=0)
+    var qpos_adr = InlineArray[Int, NDOF](fill=0)
+    var lower = InlineArray[Float64, NDOF](fill=0.0)
+    var upper = InlineArray[Float64, NDOF](fill=0.0)
+    for a in range(NDOF):
+        var jid = Int(
+            py=mujoco.mj_name2id(mm, mujoco.mjtObj.mjOBJ_JOINT, arm_names[a])
+        )
+        dof_idx[a] = Int(py=mm.jnt_dofadr[jid])
+        qpos_adr[a] = Int(py=adr_py[a])
+        lower[a] = Float64(py=bounds[0][a])
+        upper[a] = Float64(py=bounds[1][a])
+    print("  bounds[0]:", lower[0], lower[1], lower[2], lower[3], lower[4],
+          lower[5])
+    print("  bounds[1]:", upper[0], upper[1], upper[2], upper[3], upper[4],
+          upper[5])
+    # An unlimited hinge must come back as [0, 2pi] — if the reference ever
+    # stopped doing that, the canonicalisation below would be wrapping into
+    # the wrong window and still look plausible.
+    assert_true(
+        abs(upper[0] - 6.283185307179586) < 1e-9 and abs(lower[0]) < 1e-12,
+        "the first arm joint is unlimited and should sample over [0, 2*pi]",
+    )
+
+    var down = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    down[0] = Scalar[DTYPE](0.70710678118)
+    down[1] = Scalar[DTYPE](0.70710678118)
+
+    comptime MAX_ATT: Int = 10
+    var rng = np.random.default_rng(23)
+    var n_agree = 0
+    var n_ok = 0
+    var worst_dq = 0.0
+    var worst_oob = 0.0
+    var max_attempts_used = 0
+
+    for t in range(N_TRIALS):
+        var q0 = np.zeros(NQ)
+        for i in range(NDOF):
+            q0[i] = Float64(py=rng.uniform(-2.0, 2.0))
+        var tgt = np.zeros(3)
+        tgt[0] = Float64(py=rng.uniform(-0.10, 0.10))
+        tgt[1] = Float64(py=rng.uniform(-0.10, 0.10))
+        tgt[2] = Float64(py=rng.uniform(0.28, 0.42))
+        var rng_seed = 100 + t
+
+        var rr = refmod.set_site_to_xpos_reference(
+            "reach_site_features", q0, tgt, rng_seed
+        )
+        var ref_ok = Bool(py=rr[0])
+
+        # The SAME draws the reference will make, in the same order.
+        var draws = refmod.retry_pose_draws(MAX_ATT - 1, rng_seed)
+        var retry = List[Scalar[DTYPE]]()
+        for k in range((MAX_ATT - 1) * NDOF):
+            retry.append(Scalar[DTYPE](Float64(py=draws[k])))
+
+        for i in range(NQ):
+            d.qpos.data[i] = Scalar[DTYPE](Float64(py=q0[i]))
+        var tp = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
+        for k in range(3):
+            tp[k] = Scalar[DTYPE](Float64(py=tgt[k]))
+
+        var sres = set_site_to_xpos[
+            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
+            NMESH_VERTS, MAXC, NDOF,
+        ](
+            d, mf, our_tcp, tp, down, dof_idx, qpos_adr, lower, upper,
+            retry, MAX_ATT,
+        )
+        var ok = sres.success
+        if sres.attempts > max_attempts_used:
+            max_attempts_used = sres.attempts
+
+        if ok == ref_ok:
+            n_agree += 1
+        var dq = 0.0
+        for i in range(NQ):
+            var e = abs(Float64(d.qpos.data[i]) - Float64(py=rr[1][i]))
+            if e > dq:
+                dq = e
+        if dq > worst_dq:
+            worst_dq = dq
+        if ok:
+            n_ok += 1
+            # A success must leave every arm joint INSIDE its bounds — that
+            # is what the canonicalisation is for, so check it rather than
+            # trusting the flag.
+            for a in range(NDOF):
+                var v = Float64(d.qpos.data[qpos_adr[a]])
+                var oob = 0.0
+                if v < lower[a]:
+                    oob = lower[a] - v
+                elif v > upper[a]:
+                    oob = v - upper[a]
+                if oob > worst_oob:
+                    worst_oob = oob
+        print("   t", t, " ours", ok, " attempts", sres.attempts,
+              " ref", ref_ok, " |dq|", dq)
+
+    print("  success agrees:", n_agree, "/", N_TRIALS, "  ours succeeded:",
+          n_ok)
+    print("  worst |d qpos|:", worst_dq, "  worst bound violation:",
+          worst_oob, "  max attempts used:", max_attempts_used)
+
+    assert_true(
+        n_ok >= 4,
+        "fewer than four trials succeeded — the bound and qpos checks would"
+        " then be nearly vacuous",
+    )
+    assert_true(
+        n_agree == N_TRIALS,
+        "our set_site_to_xpos disagrees with dm_control's about success",
+    )
+    assert_true(
+        worst_oob <= 1e-12,
+        "a SUCCESSFUL result left an arm joint outside its sampling bounds —"
+        " the canonicalisation did not do its job",
+    )
+    assert_true(
+        max_attempts_used > 1,
+        "every trial succeeded on the FIRST attempt, so the re-randomisation"
+        " path and the injected draw sequence never ran — the trajectory"
+        " pinning this test claims to verify is untested",
+    )
+    assert_true(
+        worst_dq <= 1e-9,
+        "qpos diverged from dm_control's despite identical injected retry"
+        " draws, so the two took different trajectories",
     )
 
 
