@@ -8,12 +8,14 @@ relative path.
 WHY THIS EXISTS. `_support_mesh` is the hottest function in mesh collision —
 GJK and EPA call it 10-30 times per geom pair per step — and it used to scan
 every hull vertex. It now walks the hull's edge graph instead, greedily
-stepping to whichever neighbour scores higher on `dir`. On a CONVEX hull the
-dot product has exactly one local maximum, so the walk is EXACT rather than
+stepping to whichever neighbour scores higher on `dir`, RESUMING FROM THE
+VERTEX THE PREVIOUS CALL LANDED ON. On a CONVEX hull the dot product has
+exactly one local maximum, so the walk is EXACT from any start rather than
 approximate, and this file is what holds that claim to account:
 
-    SO-ARM101, 33 076 hull verts    76.03 ms/step -> 13.11 ms   (13 -> 76 Hz)
-    SO-ARM100,  2 551 hull verts    11.95 ms/step ->  5.46 ms   (84 -> 183 Hz)
+                          scan     + climb   + warm start
+    SO-ARM101 33 076 v   76.03 ms  12.79 ms    4.74 ms   ( 13 -> 211 Hz)
+    SO-ARM100  2 551 v   11.95 ms   5.35 ms    2.82 ms   ( 84 -> 354 Hz)
 
 ⚠⚠ A WRONG SUPPORT POINT DOES NOT CRASH. It yields a contact in a plausible
 but wrong place, or a slightly shallow penetration, and everything downstream
@@ -145,13 +147,18 @@ def _check(name: String, path: String) raises:
         var dx = r * cos(phi)
         var dy = r * sin(phi)
 
+        # ⚠ A FRESH SEED PER DIRECTION, so this arm stays the COLD-START
+        # comparison it has always been; the warm-started walk is gated
+        # separately below, where a carried seed is the point.
+        var w_cold = -1
+        var w_none = -1
         var hc = _support_mesh[D, NV](
             dx, dy, z, px, py, pz, qx, qy, qz, qw,
-            verts, eadr, edges, 0, nverts,
+            verts, eadr, edges, 0, nverts, w_cold,
         )
         var sc = _support_mesh[D, NV](
             dx, dy, z, px, py, pz, qx, qy, qz, qw,
-            verts, no_graph, edges, 0, nverts,
+            verts, no_graph, edges, 0, nverts, w_none,
         )
         var e0 = hc[0] - sc[0]
         var e1 = hc[1] - sc[1]
@@ -171,6 +178,143 @@ def _check(name: String, path: String) raises:
         )
     print("  ", name, " hull", nverts, " edges", len(edge_list),
           " directions", NDIR, " worst error", worst)
+
+    # ================================================================
+    # WARM START. Everything above starts each walk from scratch. The
+    # optimisation that matters is `warm`: the seed carried from the previous
+    # call, which is where GJK and EPA get their cheapness because consecutive
+    # directions barely move. Three separate things have to hold, and NONE of
+    # them is visible to the sweep above.
+    # ================================================================
+
+    # (1) A CARRIED SEED STILL FINDS THE EXTREME VERTEX. Same directions, but
+    # `warm` now threads through the whole sweep, so every walk starts from a
+    # vertex chosen by the PREVIOUS direction rather than from 0.
+    # ⚠ COMPARED ON THE SUPPORT VALUE, NOT THE POINT. If two vertices tie
+    # exactly on `dir` — a facet perpendicular to it — then both are correct
+    # answers and which one the walk stops at legitimately depends on where it
+    # started. The extremal VALUE is the property GJK actually relies on;
+    # demanding the same vertex would be demanding an accident.
+    var warm = -1
+    var worst_warm = Scalar[D](0)
+    for k in range(NDIR):
+        var t = (Scalar[D](k) + Scalar[D](0.5)) / Scalar[D](NDIR)
+        var z = Scalar[D](1) - Scalar[D](2) * t
+        var r = sqrt(Scalar[D](1) - z * z)
+        var phi = Scalar[D](k) * Scalar[D](2.399963229728653)
+        var dx = r * cos(phi)
+        var dy = r * sin(phi)
+
+        var hw = _support_mesh[D, NV](
+            dx, dy, z, px, py, pz, qx, qy, qz, qw,
+            verts, eadr, edges, 0, nverts, warm,
+        )
+        var w_none = -1
+        var sc = _support_mesh[D, NV](
+            dx, dy, z, px, py, pz, qx, qy, qz, qw,
+            verts, no_graph, edges, 0, nverts, w_none,
+        )
+        var vw = (hw[0] - px) * dx + (hw[1] - py) * dy + (hw[2] - pz) * z
+        var vs = (sc[0] - px) * dx + (sc[1] - py) * dy + (sc[2] - pz) * z
+        var derr = vw - vs
+        if derr < Scalar[D](0):
+            derr = -derr
+        if derr > worst_warm:
+            worst_warm = derr
+        assert_true(
+            derr <= Scalar[D](1e-12),
+            name + ": direction " + String(k) + " — warm-started from vertex "
+            + String(warm) + " the walk reaches support value " + String(vw)
+            + " but the exhaustive scan reaches " + String(vs) + ". A hill"
+            " climb on a convex hull is supposed to converge to the extreme"
+            " vertex from ANY starting vertex; if a carried seed can strand it,"
+            " the seed is being written back as something that is not a vertex"
+            " of THIS mesh, or the graph is not the hull's full adjacency",
+        )
+
+    # (2) THE SEED IS ACTUALLY WRITTEN BACK, AND NAMES THE VERTEX RETURNED.
+    # ⚠⚠ THIS IS THE ONLY CHECK THAT CAN SEE THE OPTIMISATION AT ALL. Delete
+    # `warm = imax` from `_support_mesh` and every other assertion in this file
+    # stays green — the walk simply restarts from vertex 0 forever and is
+    # correct but slow, which is exactly the failure a correctness gate cannot
+    # notice. Under an IDENTITY pose the returned point IS the local vertex, so
+    # `verts[warm]` can be compared to it bit-for-bit with no rotation rounding
+    # in the way.
+    var idq = Scalar[D](0)
+    var carried = -1
+    for k in range(NDIR):
+        var t = (Scalar[D](k) + Scalar[D](0.5)) / Scalar[D](NDIR)
+        var z = Scalar[D](1) - Scalar[D](2) * t
+        var r = sqrt(Scalar[D](1) - z * z)
+        var phi = Scalar[D](k) * Scalar[D](2.399963229728653)
+        var dx = r * cos(phi)
+        var dy = r * sin(phi)
+        var hp = _support_mesh[D, NV](
+            dx, dy, z, idq, idq, idq, idq, idq, idq, Scalar[D](1),
+            verts, eadr, edges, 0, nverts, carried,
+        )
+        assert_true(
+            carried >= 0 and carried < nverts,
+            name + ": after a support call the carried index is "
+            + String(carried) + ", outside [0, " + String(nverts) + ")",
+        )
+        assert_true(
+            hp[0] == rebind[Scalar[D]](verts[carried, 0])
+            and hp[1] == rebind[Scalar[D]](verts[carried, 1])
+            and hp[2] == rebind[Scalar[D]](verts[carried, 2]),
+            name + ": direction " + String(k) + " returned ("
+            + String(hp[0]) + ", " + String(hp[1]) + ", " + String(hp[2])
+            + ") but the carried seed " + String(carried) + " names vertex ("
+            + String(verts[carried, 0]) + ", " + String(verts[carried, 1])
+            + ", " + String(verts[carried, 2]) + "). The write-back is not the"
+            " vertex the walk landed on, so the next call resumes from the"
+            " wrong place — correct, but paying full graph diameter every time",
+        )
+
+    # (3) ANY SEED, INCLUDING A NONSENSICAL ONE, REACHES THE SAME EXTREME.
+    # This is what licenses the guard in `_support_mesh` to clamp instead of
+    # trusting the caller, and it is the reason a crossed `warm1`/`warm2` costs
+    # only speed. The out-of-range entries are the sharp ones: without the
+    # guard they index past this mesh into whatever the model-wide vertex slab
+    # holds next (here, zero-filled padding), and the walk terminates
+    # immediately on an absent edge list and returns that.
+    var seeds = List[Int]()
+    seeds.append(-1)
+    seeds.append(0)
+    seeds.append(1)
+    seeds.append(nverts // 4)
+    seeds.append(nverts // 2)
+    seeds.append(nverts - 1)
+    seeds.append(nverts)          # one past the end
+    seeds.append(nverts + 1000)   # deep into another mesh's vertices
+    seeds.append(-7)              # a stale sentinel that is not -1
+    var sdx = Scalar[D](0.37139068)
+    var sdy = Scalar[D](-0.55708601)
+    var sdz = Scalar[D](0.74278135)
+    var w_ref = -1
+    var scan_pt = _support_mesh[D, NV](
+        sdx, sdy, sdz, idq, idq, idq, idq, idq, idq, Scalar[D](1),
+        verts, no_graph, edges, 0, nverts, w_ref,
+    )
+    var vref = scan_pt[0] * sdx + scan_pt[1] * sdy + scan_pt[2] * sdz
+    for i in range(len(seeds)):
+        var seed = seeds[i]
+        var got = _support_mesh[D, NV](
+            sdx, sdy, sdz, idq, idq, idq, idq, idq, idq, Scalar[D](1),
+            verts, eadr, edges, 0, nverts, seed,
+        )
+        var vgot = got[0] * sdx + got[1] * sdy + got[2] * sdz
+        assert_true(
+            vgot == vref,
+            name + ": seeded at " + String(seeds[i]) + " the walk reaches "
+            + String(vgot) + ", the exhaustive scan reaches " + String(vref)
+            + ". An in-range seed that strands the walk means the graph is"
+            " incomplete; an out-of-range one means the seed is being trusted"
+            " unguarded and is reading vertices that belong to another mesh",
+        )
+    print("   ", name, " warm sweep worst |dvalue|", worst_warm,
+          " — seeds tried", len(seeds), " all reach", vref)
+
     # Keep the backing storage alive past the last tensor read — see above.
     _ = vbuf^
     _ = abuf^
@@ -236,11 +380,12 @@ def test_below_hillclimb_min_uses_the_scan() raises:
     var edges = LayoutTensor[D, Layout.row_major(NE), MutAnyOrigin](
         ebuf.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]()
     )
+    var w = -1
     var s = _support_mesh[D, NV](
         Scalar[D](0), Scalar[D](0), Scalar[D](1),
         Scalar[D](0), Scalar[D](0), Scalar[D](0),
         Scalar[D](0), Scalar[D](0), Scalar[D](0), Scalar[D](1),
-        verts, eadr, edges, 0, 8,
+        verts, eadr, edges, 0, 8, w,
     )
     print("   cube (8 verts, below the threshold) +z support z =", s[2])
     assert_true(

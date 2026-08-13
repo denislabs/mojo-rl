@@ -303,21 +303,27 @@ def _support_mesh[
     ],
     vert_adr: Int,
     num_verts: Int,
+    mut warm: Int,
 ) -> InlineArray[Scalar[DTYPE], 3]:
     """Support point on the mesh — HILL CLIMB over the hull edge graph.
 
     This is the hottest function in mesh collision: GJK and EPA call it 10-30
     times per geom pair per step, and it used to be a LINEAR SCAN over every
     hull vertex. That made narrow-phase cost O(hull size), and the bill arrives
-    as soon as a model carries CAD-resolution collision meshes:
+    as soon as a model carries CAD-resolution collision meshes. Two changes,
+    each measured on its own (ms per env step, which is `FRAME_SKIP=10` physics
+    steps; MuJoCo on the same two XMLs is 0.078 and 0.121 for reference):
 
-                       hull verts    before     after
-        SO-ARM100        2 551        11.95 ms   5.46 ms    84 ->  183 Hz
-        SO-ARM101       33 076        76.03 ms  13.11 ms    13 ->   76 Hz
+                   hull verts    scan     + climb   + warm start
+        SO-ARM100      2 551    11.95 ms   5.35 ms    2.82 ms   ->  354 Hz
+        SO-ARM101     33 076    76.03 ms  12.79 ms    4.74 ms   ->  211 Hz
 
-    (Both arms re-measured INTERLEAVED against a pristine HEAD worktree and
-    reported as the MIN of two rounds — a baseline taken earlier in a session
-    has drifted by 1.4-1.7x here before, which would have inflated this.)
+    (Every column re-measured INTERLEAVED against a pristine worktree of the
+    commit before it, reported as the MIN of two rounds — a baseline taken
+    earlier in a session has drifted by 1.4-1.7x here before, which would have
+    inflated this. The MuJoCo figures are a scale reference, not a like-for-like
+    gate: both models sit at `ncon = 0` there, so what is being compared is the
+    cost of proving pairs APART, which is where GJK spends its time anyway.)
 
     ⚠ THE 6.6x IS NOT THE MODEL'S FAULT, AND THAT IS THE MEASUREMENT THAT
     MATTERS. The two arms have IDENTICAL dynamics — `nq = nv = nu = 6`,
@@ -339,11 +345,26 @@ def _support_mesh[
     `vert_globalid` indirection because `mesh_verts` holds hull vertices only —
     `mesh_edges` already stores global vertex ids, `-1` terminated.
 
-    ⚠ NO WARM START, DELIBERATELY. MuJoCo caches the previous support vertex on
-    the `mjCCDObj` and resumes from it, which is a large further win; that state
-    would have to be threaded through six functions here, so this starts every
-    walk at the mesh's vertex 0 and takes the O(graph diameter) cost instead.
-    Worth revisiting if narrow phase is still hot.
+    `warm` IS THE WARM START, AND IT IS WHAT MAKES THE WALK CHEAP IN PRACTICE.
+    It is a LOCAL vertex index — MuJoCo's `mjCCDObj.meshindex` — carrying the
+    vertex the previous call landed on, in and out. GJK and EPA ask for support
+    points in directions that move a little at a time, so the previous answer is
+    usually a neighbour of this one: from vertex 0 the walk costs O(graph
+    diameter), from the previous answer it costs a handful of steps. Callers own
+    the state; `gjk_epa_witness` keeps one per object for the whole GJK+EPA run,
+    which is exactly the lifetime of MuJoCo's `mjCCDObj`.
+
+    ⚠ THE SEED CANNOT MAKE THE ANSWER WRONG, ONLY SLOW. On a convex hull the
+    walk is monotone and has no local maximum to be trapped by, so it converges
+    to the extreme vertex from ANY starting vertex. That is why the guard below
+    can silently clamp a nonsensical seed instead of trusting the caller: a
+    crossed or stale index costs steps, never correctness.
+
+    ⚠ THE SCAN ARM DELIBERATELY IGNORES `warm`. MuJoCo's `mjc_meshSupport` seeds
+    its running max from the cache, which only shifts tie-breaking (it still
+    scans everything). Leaving it out keeps the scan an INDEPENDENT exhaustive
+    reference, which is the only reason the hill climb has anything to be
+    checked against in `test_gjk_hillclimb_support.mojo`.
 
     ⚠ FALLS BACK TO THE SCAN when the graph is absent (`edgeadr < 0`, which is
     how `fields/model.mojo` marks an unbuilt graph) or the mesh is tiny. Both
@@ -366,11 +387,17 @@ def _support_mesh[
     if num_verts >= _HILLCLIMB_MIN and graph_head >= 0:
         # Greedy walk. `imax` is a LOCAL vertex index; `mesh_edges` holds
         # GLOBAL ones, so neighbours are converted on the way in.
-        var imax = 0
+        # ⚠ THE GUARD IS NOT PARANOIA ABOUT CALLERS, IT IS THE THING THAT MAKES
+        # A CROSSED INDEX HARMLESS. `warm` arrives as -1 on the first call of a
+        # pair, and a caller that threaded object 1's index into object 2 would
+        # otherwise walk off the end of a smaller mesh into whatever vertices
+        # follow it in the model-wide slab. Clamping to 0 turns that into lost
+        # speed rather than a support point belonging to another geom.
+        var imax = warm if (warm >= 0 and warm < num_verts) else 0
         var best_dot = (
-            ld_x * rebind[Scalar[DTYPE]](mesh_verts[vert_adr, 0])
-            + ld_y * rebind[Scalar[DTYPE]](mesh_verts[vert_adr, 1])
-            + ld_z * rebind[Scalar[DTYPE]](mesh_verts[vert_adr, 2])
+            ld_x * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + imax, 0])
+            + ld_y * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + imax, 1])
+            + ld_z * rebind[Scalar[DTYPE]](mesh_verts[vert_adr + imax, 2])
         )
         var prev = -1
         # ⚠ THE STEP BUDGET IS A HANG GUARD, NOT AN ALGORITHMIC BOUND. The
@@ -401,6 +428,11 @@ def _support_mesh[
                     best_dot = d
                     imax = nb - vert_adr
                 e += 1
+        # Hand the landing vertex back so the next call starts here. Dropping
+        # this line does not break a single result — it silently reverts the
+        # walk to starting from vertex 0 every time, which is why
+        # `test_gjk_hillclimb_support.mojo` asserts on `warm` itself.
+        warm = imax
         best_x = rebind[Scalar[DTYPE]](mesh_verts[vert_adr + imax, 0])
         best_y = rebind[Scalar[DTYPE]](mesh_verts[vert_adr + imax, 1])
         best_z = rebind[Scalar[DTYPE]](mesh_verts[vert_adr + imax, 2])
@@ -457,8 +489,14 @@ def _support[
     dir_x: Scalar[DTYPE],
     dir_y: Scalar[DTYPE],
     dir_z: Scalar[DTYPE],
+    mut warm: Int,
 ) -> InlineArray[Scalar[DTYPE], 3]:
-    """Unified support function — reads mesh verts from the record tensor."""
+    """Unified support function — reads mesh verts from the record tensor.
+
+    `warm` is the mesh hill-climb's start vertex, in and out; every other geom
+    type leaves it untouched, so one variable per object is enough regardless
+    of what that object turns out to be. See `_support_mesh`.
+    """
     if geom_type == GEOM_SPHERE:
         return support_sphere[DTYPE](
             dir_x, dir_y, dir_z, pos_x, pos_y, pos_z, radius
@@ -526,6 +564,7 @@ def _support[
             mesh_edges,
             vert_adr,
             mesh_num_verts,
+            warm,
         )
     var result = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     result[0] = pos_x
@@ -581,6 +620,8 @@ def _minkowski_support[
     dir_x: Scalar[DTYPE],
     dir_y: Scalar[DTYPE],
     dir_z: Scalar[DTYPE],
+    mut warm1: Int,
+    mut warm2: Int,
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -614,6 +655,7 @@ def _minkowski_support[
         dir_x,
         dir_y,
         dir_z,
+        warm1,
     )
     var s2 = _support[DTYPE, NMESH_VERTS](
         type2,
@@ -637,6 +679,7 @@ def _minkowski_support[
         -dir_x,
         -dir_y,
         -dir_z,
+        warm2,
     )
     return (
         s1[0] - s2[0],
@@ -679,6 +722,7 @@ def _gjk_intersect[
     r2: Scalar[DTYPE], hl2: Scalar[DTYPE],
     hx2: Scalar[DTYPE], hy2: Scalar[DTYPE], hz2: Scalar[DTYPE],
     va2: Int, mnv2: Int,
+    mut warm1: Int, mut warm2: Int,
 ) -> Int:
     """Refine a 4-simplex until it ENCLOSES the origin. MuJoCo's `gjkIntersect`.
 
@@ -830,6 +874,7 @@ def _gjk_intersect[
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
             r2, hl2, hx2, hy2, hz2, va2, mnv2,
             nx, ny, nz,
+            warm1, warm2,
         )
         var tgt = sidx[index]
         simplex[tgt * 9 + 0] = w[0]
@@ -941,6 +986,19 @@ def gjk_epa_witness[
     Callers that do not need the feature use `gjk_epa`, which wraps this.
     """
     wf_ok = 0
+    # ⚠ ONE HILL-CLIMB SEED PER OBJECT, LIVING FOR THE WHOLE GJK+EPA RUN. This
+    # is MuJoCo's `mjCCDObj.meshindex`, whose lifetime is exactly one
+    # `mjc_initCCDObj` .. collision call — so the scope here matches by
+    # construction rather than by luck. Every support request inside GJK, inside
+    # `_gjk_intersect`, and inside EPA resumes from where the last one landed;
+    # -1 means "no previous answer", and `_support_mesh` starts at vertex 0.
+    # ⚠ THEY MUST NOT BE SWAPPED at a call site: object 1's index is a local
+    # vertex id in object 1's mesh and means nothing in object 2's. Crossing
+    # them is not a correctness bug (the guard in `_support_mesh` clamps an
+    # out-of-range seed, and any in-range seed still converges) but it throws
+    # the speed-up away silently, which is the worse failure to debug.
+    var warm1 = -1
+    var warm2 = -1
     # ===== GJK Phase =====
     var simplex = InlineArray[Scalar[DTYPE], 36](fill=Scalar[DTYPE](0))
     var nsimplex = 0
@@ -995,6 +1053,8 @@ def gjk_epa_witness[
         dx,
         dy,
         dz,
+        warm1,
+        warm2,
     )
     simplex[0] = s[0]
     simplex[1] = s[1]
@@ -1058,6 +1118,8 @@ def gjk_epa_witness[
             ndx,
             ndy,
             ndz,
+            warm1,
+            warm2,
         )
 
         var w_dot = sn[0] * ndx + sn[1] * ndy + sn[2] * ndz
@@ -1093,6 +1155,7 @@ def gjk_epa_witness[
                 r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
+                warm1, warm2,
             )
             if gi == 1:
                 # enclosed, and `simplex` now holds a valid tetrahedron
@@ -1297,6 +1360,7 @@ def gjk_epa_witness[
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
                 tnx, tny, tnz,
+                warm1, warm2,
             )
             var sp5 = _minkowski_support[DTYPE, NMESH_VERTS](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
@@ -1304,6 +1368,7 @@ def gjk_epa_witness[
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
                 -tnx, -tny, -tnz,
+                warm1, warm2,
             )
             ev[27 + 0] = sp4[0]
             ev[27 + 1] = sp4[1]
@@ -1366,6 +1431,7 @@ def gjk_epa_witness[
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
                 sdx, sdy, sdz,
+                warm1, warm2,
             )
             ev[a * 9 + 0] = sp[0]
             ev[a * 9 + 1] = sp[1]
@@ -1431,6 +1497,7 @@ def gjk_epa_witness[
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
             r2, hl2, hx2, hy2, hz2, va2, mnv2,
             best_nx, best_ny, best_nz,
+            warm1, warm2,
         )
         var wd = w[0] * best_nx + w[1] * best_ny + w[2] * best_nz
         if wd - best_d < _epa_tol:
@@ -1574,6 +1641,7 @@ def gjk_epa_witness[
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
                 r2, hl2, hx2, hy2, hz2, va2, mnv2,
                 dxx, dyy, dzz,
+                warm1, warm2,
             )
             var hh = sw[0] * dxx + sw[1] * dyy + sw[2] * dzz
             if hh < ub:
@@ -1751,6 +1819,7 @@ def gjk_epa_witness[
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
             r2, hl2, hx2, hy2, hz2, va2, mnv2,
             dxx, dyy, dzz,
+            warm1, warm2,
         )
         var hh = sw[0] * dxx + sw[1] * dyy + sw[2] * dzz
         if hh < fb_ub:
@@ -1768,6 +1837,7 @@ def gjk_epa_witness[
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
             r2, hl2, hx2, hy2, hz2, va2, mnv2,
             fallback_nx, fallback_ny, fallback_nz,
+            warm1, warm2,
         )
         pen_depth = _dot3[DTYPE](
             s_fwd[0], s_fwd[1], s_fwd[2],
