@@ -108,6 +108,33 @@ before this becomes the recipe for the multi-task rerun.
 cache the polyak write never invalidated) and scored 74.7 at 150k where the
 fixed build scores 230.5. Do not compare against a number from that window.
 
+## The run baseline — what this file is set to measure (2026-08-13)
+
+Multi-task TD-MPC2 (`tdmpc2_dm_walker_multitask_gpu.mojo`, post-`8d7f07d8`,
+UTD=1 + MPC) solved two of its three tasks and left one behind:
+
+    stand  988      walk  976      run  ~160        @ 288k total env-steps
+                                                     (~96k per task)
+
+Walk did not merely survive multi-task — 976 at ~85k walk-steps beats the
+dedicated single-task run's 845 at 99k. So the multi-task machinery is sound
+and the open question is run alone, which has never been trained by itself.
+
+TASK="run" answers it, and the two outcomes point opposite ways:
+
+  * run alone also lands ~160 → multi-task costs run NOTHING. It is simply the
+    hard task (speed 8; SAC needed a long run to reach 730). Reallocating
+    collection away from the solved tasks would buy nothing, and the answer is
+    more steps or more capacity.
+  * run alone reaches 500+ → multi-task is genuinely starving run, and a
+    learning-progress curriculum — cut stand/walk collection once they hit
+    ceiling, spend it on run — is well motivated with a number behind it.
+
+⚠ Read the MATCHED point (~96k env-steps) for the comparison, and the TAIL
+(96k → 150k) for whether run is still climbing. They answer different
+questions and only the first one is a like-for-like comparison against the
+multi-task result.
+
 Run:
     pixi run -e nvidia mojo run -I . examples/dm_control/tdmpc2_dm_walker_batched_gpu.mojo
     pixi run -e apple  mojo run -I . examples/dm_control/tdmpc2_dm_walker_batched_gpu.mojo
@@ -127,7 +154,10 @@ from mojo_rl.envs.dm_control.walker.walker_config import DMWalkerConfig
 
 
 # ── pick ONE ─────────────────────────────────────────────────────────────
-comptime TASK: StaticString = "walk"  # "stand" | "walk" | "run"
+# ⚠ "run" — this is the RUN BASELINE (see "The run baseline" in the docstring).
+# The checkpoint name carries TASK, so flipping this back to "walk" recovers
+# the earlier baseline without clobbering anything.
+comptime TASK: StaticString = "run"  # "stand" | "walk" | "run"
 
 comptime MOVE_SPEED: Float64 = 0.0 if TASK == "stand" else (
     1.0 if TASK == "walk" else 8.0
@@ -165,12 +195,14 @@ comptime ACTION_SCALE = 1.0
 # the driver runs `TOTAL // N_ENVS` iterations.
 comptime LEARN_START = 5_000
 # ⚠ TOTAL is deliberately SHORT here. At UTD=1 the run is priced in GRADIENT
-# STEPS, not env-steps: 100k env-steps buys 100k updates, against the 27.5k
+# STEPS, not env-steps: 150k env-steps buys 150k updates, against the 27.5k
 # that a 220k-step run at UPDATES_PER_STEP=1 delivered. Do not "restore" this
-# to 1M without also dropping UPDATES_PER_STEP — that is a ~14h run.
-# 100k because MPC-off already cleared 798 at 62k; this leaves headroom past
-# that without paying for a long tail nobody is going to read.
-comptime TOTAL = 100_000
+# to 1M without also dropping UPDATES_PER_STEP — that is a ~20h run.
+# 150k, not 100k: the multi-task run gave each task ~96k of its own env-steps,
+# so 96k is the MATCHED-BUDGET point the comparison needs — and the extra 54k
+# says whether run is still climbing past it, which is the difference between
+# "starved by multi-task" and "just needs more steps".
+comptime TOTAL = 150_000
 # Per ITERATION, and an iteration is N_ENVS env-steps — so this value IS the
 # UTD numerator: N_ENVS gives the reference ratio of 1 update per env-step,
 # 1 gives 0.125. Every walker run before 2026-08-12 used 1, i.e. 1/8 of the
