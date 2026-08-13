@@ -466,6 +466,16 @@ comptime SO_ARM100_OBS_DIM: Int = 21
 # the exact requirement — `load_mesh_hull` refuses to truncate rather than
 # silently shrinking the collision shapes.
 #
+# ⚠⚠ AND IT IS DTYPE-DEPENDENT. The hull's outside-test tolerance is relative
+# to the dtype's epsilon, so float32 keeps a few more vertices than float64:
+#
+#     float64  2 551      float32  2 636
+#
+# One constant serves both, so it is sized for the LARGER. Getting this wrong
+# is not subtle any more — `load_mesh_hull` raises with the exact requirement —
+# but it did cost a viewer session: the value covered float64 and the renderer
+# builds at float32.
+#
 # ⚠ NOT the raw STL total of 16 939 either; the hull is a small subset. See
 # `sawyer_reach_config.mojo` on getting that wrong by 4.5x.
-comptime SO_ARM100_NMESH_VERTS: Int = 2560
+comptime SO_ARM100_NMESH_VERTS: Int = 2688

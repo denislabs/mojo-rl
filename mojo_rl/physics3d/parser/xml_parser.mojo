@@ -2707,6 +2707,13 @@ at 8 next to a 32 just invites the next model to trip it."""
 comptime MAX_COMPTIME_RENDER_GEOMS: Int = 160
 comptime MAX_COMPTIME_RENDER_SITES: Int = 48
 
+# ⚠ WAS A BARE LITERAL 16 IN THREE PLACES, WITH A SILENT FILL GUARD
+# (`if data.nmesh < 16`) — the exact shape `init_fields` already documents for
+# render geoms and sites. SO-ARM100 declares 18 meshes, so two were dropped
+# without a word and any geom naming them simply did not draw. 32 covers every
+# ported model; the guard below now RAISES instead of truncating.
+comptime MAX_COMPTIME_RENDER_MESHES: Int = 32
+
 # Body NAMES are deliberately NOT recorded here.
 #
 # A `<skin>`'s bones name the bodies they follow, so binding one needs names —
@@ -4372,8 +4379,8 @@ struct ComptimeRenderData(Copyable, Movable):
 
     # Mesh assets (max 16) — name and file path for STL loading
     var nmesh: Int
-    var mesh_names: InlineArray[String, 16]
-    var mesh_files: InlineArray[String, 16]
+    var mesh_names: InlineArray[String, MAX_COMPTIME_RENDER_MESHES]
+    var mesh_files: InlineArray[String, MAX_COMPTIME_RENDER_MESHES]
 
     # Lights (max 8)
     var light_dir_x: InlineArray[Float64, 8]
@@ -4504,8 +4511,8 @@ struct ComptimeRenderData(Copyable, Movable):
         self.geom_mesh_id = InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS](fill=-1)
         self.geom_group = InlineArray[Int, MAX_COMPTIME_RENDER_GEOMS](fill=0)
         self.nmesh = 0
-        self.mesh_names = InlineArray[String, 16](fill=String(""))
-        self.mesh_files = InlineArray[String, 16](fill=String(""))
+        self.mesh_names = InlineArray[String, MAX_COMPTIME_RENDER_MESHES](fill=String(""))
+        self.mesh_files = InlineArray[String, MAX_COMPTIME_RENDER_MESHES](fill=String(""))
 
         self.light_dir_x = InlineArray[Float64, 8](fill=0.0)
         self.light_dir_y = InlineArray[Float64, 8](fill=0.0)
@@ -4653,9 +4660,13 @@ struct ComptimeRenderData(Copyable, Movable):
             self.geom_mesh_id[i] = copy.geom_mesh_id[i]
             self.geom_group[i] = copy.geom_group[i]
         self.nmesh = copy.nmesh
-        self.mesh_names = InlineArray[String, 16](fill=String(""))
-        self.mesh_files = InlineArray[String, 16](fill=String(""))
-        for i in range(16):
+        self.mesh_names = InlineArray[String, MAX_COMPTIME_RENDER_MESHES](fill=String(""))
+        self.mesh_files = InlineArray[String, MAX_COMPTIME_RENDER_MESHES](fill=String(""))
+        # ⚠ BOUNDED BY THE CAP, NOT A LITERAL. This loop said 16 while the
+        # arrays grew to MAX_COMPTIME_RENDER_MESHES, which would have dropped
+        # the extra meshes on every COPY — a fresh instance of the same silent
+        # truncation the cap itself was raised to fix.
+        for i in range(MAX_COMPTIME_RENDER_MESHES):
             self.mesh_names[i] = copy.mesh_names[i]
             self.mesh_files[i] = copy.mesh_files[i]
 
@@ -5149,6 +5160,31 @@ def _rcd_tex_mark_from_str(s: String) -> Int:
     return 0
 
 
+def _render_meshdir(xml_clean: String) -> String:
+    """`<compiler meshdir>` (or `assetdir`) with a trailing slash, or "".
+
+    The render twin of `full_parser`'s resolution, and it must stay in step
+    with it: `meshdir` WINS over `assetdir`, and an absolute `file=` ignores
+    both. Measured on the 3.10.0 runtime — see that function's note for the
+    four cases.
+    """
+    var t = xml_clean.find("<compiler")
+    if t == -1:
+        return String("")
+    var e = xml_clean.find(">", t)
+    if e == -1:
+        return String("")
+    var ctag = String(xml_clean[byte = t : e + 1])
+    var d = _trim(_extract_attr(ctag, "meshdir"))
+    if d.byte_length() == 0:
+        d = _trim(_extract_attr(ctag, "assetdir"))
+    if d.byte_length() == 0:
+        return String("")
+    if not d.endswith("/"):
+        d = d + "/"
+    return d
+
+
 def _rcd_min_valid(a: Int, b: Int) -> Int:
     """Return the smaller of a and b, treating -1 as +infinity."""
     if a == -1:
@@ -5338,7 +5374,18 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
         var tag = String(asset_sec[byte=t : tag_end + 1])
         var mesh_name = _extract_attr(tag, "name")
         var mesh_file = _extract_attr(tag, "file")
-        if mesh_name.byte_length() > 0 and data.nmesh < 16:
+        # ⚠⚠ `meshdir` APPLIES HERE TOO, AND FIXING ONLY `full_parser` LEFT THE
+        # ROBOT INVISIBLE. `renderer.draw_mesh(file_path=...)` opens this string
+        # directly, so a bare stem ("Base.stl") silently draws nothing. On the
+        # SO-ARM viewer that showed as a floor with NO ARM ON IT — the physics
+        # was correct (the runtime parser had already been fixed), only the
+        # picture was empty. Textbook `feedback_physics3d_two_parser_paths`:
+        # the same attribute has to be honoured on BOTH paths or the halves
+        # disagree about where the model's geometry lives.
+        var _mdir = _render_meshdir(xml_clean)
+        if _mdir.byte_length() > 0 and not mesh_file.startswith("/"):
+            mesh_file = _mdir + mesh_file
+        if mesh_name.byte_length() > 0 and data.nmesh < MAX_COMPTIME_RENDER_MESHES:
             data.mesh_names[data.nmesh] = mesh_name
             data.mesh_files[data.nmesh] = mesh_file
             data.nmesh += 1

@@ -209,7 +209,34 @@ def compute_convex_hull[
             scale = av
     if scale <= Scalar[DTYPE](0):
         scale = Scalar[DTYPE](1)
-    var eps = scale * Scalar[DTYPE](1e-9)
+    # ⚠⚠ THE RELATIVE FACTOR IS DTYPE-DEPENDENT, AND 1e-9 HUNG float32.
+    #
+    # Scaling to the mesh (above) is right and stays. What was wrong is that
+    # `1e-9` is a FLOAT64 relative tolerance: float32's machine epsilon is
+    # ~1.19e-7, so `scale * 1e-9` sits about two orders of magnitude BELOW the
+    # noise floor and `side > eps` at the expansion loop becomes a coin flip.
+    # A point then reads as outside a face it is actually on, the horizon is
+    # rebuilt, and the hull never converges.
+    #
+    # MEASURED on SO-ARM100's collision meshes (10 hulls, 2 551 vertices),
+    # `ModelDefFromXML.init_fields` end to end:
+    #
+    #     float64   0.55 s
+    #     float32   >180 s, still spinning, 99% of one core
+    #
+    # It is not a slowdown, it is non-termination: `sample` put 2 456 of 2 459
+    # stack samples inside `compute_convex_hull` recursing on itself.
+    #
+    # ⚠ WHY NOTHING CAUGHT IT. Every mesh gate builds at float64, and every
+    # dm_control model in the viewer leaves `NMESH_VERTS` at 0 — which skips
+    # the mesh branch entirely. The SO-ARM ports are the first COLLIDABLE
+    # meshes to reach the float32 renderer path, so they are the first model
+    # that could hang, and it hangs before the window is ever created.
+    #
+    # 1e-5 is ~100x float32's epsilon, the usual margin for a geometric
+    # predicate. float64 keeps 1e-9 so no existing hull moves.
+    comptime REL: Float64 = 1e-9 if DTYPE == DType.float64 else 1e-5
+    var eps = scale * Scalar[DTYPE](REL)
 
     # ---- seed tetrahedron ------------------------------------------------
     var i0 = 0
