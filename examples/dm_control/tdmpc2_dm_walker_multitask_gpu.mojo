@@ -127,7 +127,7 @@ comptime MPC_ITERS = 4
 # ⚠ PASS/FAIL: run climbs off 164 while stand and walk HOLD ~980. Run improving
 # at the cost of the other two is not a win — it is the same interference
 # pointed the other way.
-comptime PER_TASK_PI_SCALE = False
+comptime PER_TASK_PI_SCALE = True
 comptime PI_SCALE_MAX_REWEIGHT = 10.0
 
 comptime N_ENVS = 8
@@ -235,7 +235,8 @@ def main() raises:
     var CKPT = (
         String(CKPT_STEM)
         + ("_mpc" if USE_MPC else "_mpcoff")
-        + "_utd" + String(UPDATES_PER_STEP)
+        + "_utd"
+        + String(UPDATES_PER_STEP)
         # ⚠ The deviation is in the filename. A per-task-scale run and a
         # reference run must never land on the same checkpoint — the whole
         # experiment is the comparison between them.
@@ -416,10 +417,14 @@ def main() raises:
                 "pi_scale/run", Float64(ag.task_pi_scale(T_RUN)), at
             )
             print(
-                "     pi_scale — shared", ag.pi_scale(),
-                " stand", ag.task_pi_scale(T_STAND),
-                " walk", ag.task_pi_scale(T_WALK),
-                " run", ag.task_pi_scale(T_RUN),
+                "     pi_scale — shared",
+                ag.pi_scale(),
+                " stand",
+                ag.task_pi_scale(T_STAND),
+                " walk",
+                ag.task_pi_scale(T_WALK),
+                " run",
+                ag.task_pi_scale(T_RUN),
             )
         print(
             "  ── round",
