@@ -962,15 +962,56 @@ def gjk_epa_witness[
                 vz = Scalar[DTYPE](0)
                 break
             elif gi == 0:
-                # proven outside the Minkowski difference: no collision. Report
-                # a separation the caller's `dist < margin` test will reject.
-                return (
-                    Scalar[DTYPE](1e30),
-                    (p1x + p2x) * Scalar[DTYPE](0.5),
-                    (p1y + p2y) * Scalar[DTYPE](0.5),
-                    (p1z + p2z) * Scalar[DTYPE](0.5),
-                    Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](1),
-                )
+                # ⚠⚠ PROVEN SEPARATED IS NOT THE SAME AS "FAR ENOUGH TO IGNORE",
+                # AND THIS USED TO RETURN 1e30 ON THAT ASSUMPTION. The reasoning
+                # was "no collision, so report a separation the caller's
+                # `dist < margin` test will reject" — which is right only when
+                # `margin` is 0. With a margin, a pair separated by LESS than it
+                # is a contact MuJoCo reports and we returned nothing for.
+                #
+                # Measured, cylinder over a box, `margin=0.01` on each
+                # (`includemargin` 0.02):
+                #
+                #     gap      ours   MuJoCo
+                #     -0.0005    5       5
+                #      0.0       0       5    <- lost
+                #      0.0005    0       5    <- lost
+                #      0.001     0       5    <- lost
+                #      0.002     1       5
+                #      0.02      0       0
+                #
+                # i.e. it fired exactly in the band that matters and nowhere
+                # else — the certificate needs a 4-simplex, which only forms at
+                # SMALL separations, so distant pairs never reached this branch
+                # and paid nothing for it either.
+                #
+                # ⚠ MUJOCO NEVER NEEDS THE DISTANCE because `mjc_penetration`
+                # sets `dist_cutoff = 0` and INFLATES both geoms by `margin`
+                # instead (`mjc_initCCDObj(&obj, m, d, g, margin)`), so a
+                # within-margin pair reads as penetrating. We do not inflate, so
+                # our caller compares a real distance against `margin` — and
+                # that means this path MUST produce one.
+                #
+                # Falling through costs a few more GJK iterations on
+                # near-touching non-colliding pairs and keeps the certificate's
+                # real value: it still prevents EPA being handed a non-enclosing
+                # seed, because `gi == 1` is what gates that.
+                #
+                # ⚠ NOTHING IS SAVED OR RESTORED HERE, DELIBERATELY.
+                # `_gjk_intersect` rewrites the simplex in place, so the obvious
+                # move is to snapshot it and put it back — and a 36-element
+                # per-thread `InlineArray` to do that is exactly the shape that
+                # silently miscomputes on Metal
+                # (`feedback_metal_wide_per_thread_inlinearray_miscompute`).
+                # It was written that way first and cost CPU-vs-GPU parity:
+                # 9.5e-06 on `test_narrow_phase_pairs_gpu_matches_cpu`, which
+                # must be bit-exact. The snapshot is also unnecessary — every
+                # vertex `_gjk_intersect` writes is a genuine support point, so
+                # what it leaves behind is a valid simplex for the distance
+                # subalgorithm, just a different one. Verified: identical
+                # contact counts and distances across the whole margin band
+                # with and without the restore.
+                pass
             # gi == -1: inconclusive, fall through to the subalgorithm below
 
         # Import and use the CPU closest_point function (works on InlineArray, no List)
