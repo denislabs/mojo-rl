@@ -398,6 +398,26 @@ struct ModelDefFromXML[
                     )
 
     @staticmethod
+    def ctrl_min_at(i: Int) -> Float64:
+        """`actuator_ctrlrange[i][0]` — the bound `apply_actions` clamps to.
+
+        ⚠ NOT `CTRL_MIN`. That is a single model-wide pair read from a root
+        `<default><motor ctrlrange>` and it falls back to (-1, 1) on any model
+        that keeps its ranges per actuator or per default class. This reads
+        the array the clamp itself uses.
+        """
+        if i < 0 or i >= Self.nact:
+            return 0.0
+        return materialize[Self._acd.motor_ctrl_min]()[i]
+
+    @staticmethod
+    def ctrl_max_at(i: Int) -> Float64:
+        """`actuator_ctrlrange[i][1]`. See `ctrl_min_at`."""
+        if i < 0 or i >= Self.nact:
+            return 0.0
+        return materialize[Self._acd.motor_ctrl_max]()[i]
+
+    @staticmethod
     def apply_actions[
         DTYPE: DType
     ](

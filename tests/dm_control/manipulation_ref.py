@@ -594,3 +594,34 @@ def bodies_without_geoms(task_name='reach_site_features', seed=0):
     import numpy as np
     m = model(task_name, seed=seed)
     return [b for b in range(m.nbody) if not (m.geom_bodyid == b).any()]
+
+
+def action_spec_reference(task_name='reach_site_features', seed=0):
+    """dm_control's `action_spec()` bounds for a MANIPULATION task.
+
+    Returns `(minimum, maximum)` as plain lists, one entry per actuator. This
+    is the spec a policy is handed — per-actuator, not a scalar pair — and is
+    what `Phyics3dEnv.action_low_at/action_high_at` must reproduce.
+    """
+    _bootstrap()
+    import numpy as np
+    env = _load(task_name, seed=seed)
+    spec = env.action_spec()
+    return (list(np.atleast_1d(spec.minimum).astype(float)),
+            list(np.atleast_1d(spec.maximum).astype(float)))
+
+
+def suite_action_spec_reference(domain, task):
+    """The same, for a `dm_control.suite` task (quadruped, walker, ...).
+
+    Separate from `action_spec_reference` because `manipulation` and `suite`
+    are different registries with different loaders; `_load` only knows the
+    manipulation one.
+    """
+    _bootstrap()
+    import numpy as np
+    from dm_control import suite
+    env = suite.load(domain, task)
+    spec = env.action_spec()
+    return (list(np.atleast_1d(spec.minimum).astype(float)),
+            list(np.atleast_1d(spec.maximum).astype(float)))

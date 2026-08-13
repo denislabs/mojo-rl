@@ -911,10 +911,49 @@ struct Phyics3dEnv[
         return Self.ACTION_DIM
 
     def action_low(self) -> Scalar[Self.dtype]:
+        """⚠ A SINGLE SCALAR, AND IT IS WRONG FOR NON-UNIFORM MODELS.
+
+        `BoxContinuousActionEnv` declares symmetric scalar bounds and points
+        asymmetric environments at "additional methods" — those are
+        `action_low_at` / `action_high_at` below, and anything that cares
+        should use them.
+
+        This returns `MODEL_DEF.CTRL_MIN`, which is read from a ROOT
+        `<default><motor ctrlrange>` and silently falls back to (-1, 1) when a
+        model keeps its ranges per actuator or per default class. Measured
+        against dm_control's `action_spec`: `reach_site_features` advertises
+        (-1, 1) where the real bounds are +/-0.6283, +/-0.8378 and +/-5.0, and
+        `quadruped walk` advertises (-1, 1) against lo in [-1, -0.8] and hi in
+        [0.8, 1.1].
+
+        ⚠ THE SIMULATION IS NOT AFFECTED — `apply_actions` clamps each
+        actuator to its OWN range. What is affected is the space a policy is
+        told to sample from: too wide and part of its output is clamped away,
+        too narrow and part of the actuator's authority is unreachable.
+
+        Left as-is deliberately. Redefining it would change the action scaling
+        of every shipped env, which is a behaviour change owed its own
+        before/after measurement rather than a quiet ride-along on a bug fix.
+        """
         return Scalar[Self.dtype](Self.MODEL_DEF.CTRL_MIN)
 
     def action_high(self) -> Scalar[Self.dtype]:
+        """The upper half of `action_low`'s caveat. Read it."""
         return Scalar[Self.dtype](Self.MODEL_DEF.CTRL_MAX)
+
+    def action_low_at(self, i: Int) -> Scalar[Self.dtype]:
+        """Lower bound of actuator `i` — MuJoCo's `actuator_ctrlrange[i][0]`.
+
+        The per-actuator answer, equal to what `apply_actions` clamps to and
+        to dm_control's `action_spec.minimum[i]`. Gated for both a uniform and
+        a non-uniform model in
+        `tests/dm_control/test_per_actuator_action_bounds.mojo`.
+        """
+        return Scalar[Self.dtype](Self.MODEL_DEF.ctrl_min_at(i))
+
+    def action_high_at(self, i: Int) -> Scalar[Self.dtype]:
+        """Upper bound of actuator `i`. See `action_low_at`."""
+        return Scalar[Self.dtype](Self.MODEL_DEF.ctrl_max_at(i))
 
     # ── BoxContinuousActionEnv ────────────────────────────────────────────
     def step_continuous[

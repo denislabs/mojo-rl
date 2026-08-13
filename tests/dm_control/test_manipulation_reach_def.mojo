@@ -23,23 +23,29 @@ WHAT IS CHECKED, in the order that localises a failure:
   4. the actuators' control ranges — and this one FAILS, which is the most
      useful thing the probe found.
 
-⚠⚠ TWO BLOCKERS FOUND, NEITHER FIXED HERE. Do not read a pass as "this model
-can be stepped".
+⚠⚠ A CORRECTION LIVES HERE, because this file is where the mistake was made.
+The first version of this probe reported that per-actuator `ctrlrange` did not
+exist on the comptime path. THAT WAS WRONG. It measured
+`ModelDefFromXML.CTRL_MIN/CTRL_MAX` — a model-wide summary read from a ROOT
+`<default><motor ctrlrange>` — and generalised from it. The per-actuator
+arrays (`_acd.motor_ctrl_min/max`) were always there, always resolved through
+element -> `class=` -> root default, always handled `<velocity>`, and
+`apply_actions` always clamped with them. Section 4 below now measures THOSE,
+and they match MuJoCo exactly. Measure the quantity that is used, not the one
+that is easy to reach.
 
-  * PER-ACTUATOR `ctrlrange` DOES NOT EXIST on the comptime path. It keeps a
-    single model-wide `(CTRL_MIN, CTRL_MAX)`, read only from a root
-    `<default><motor ctrlrange>` — and only from `<motor>`, while Jaco
-    actuates with `<velocity>`. Measured: ours (-1, 1) against MuJoCo's
-    ±0.6283 (3 joints), ±0.8378 (3 joints) and ±5.0 (3 fingers). All 9
-    disagree. The arm would be clamped LOOSER than its real limit and the
-    fingers to a FIFTH of theirs. Task #52, and the wider relative of #48.
-  * ELLIPTIC CONE + `noslip_iterations=5` is this task's option block, and our
-    `mj_solNoSlip` is pyramidal-only. The model def carries
-    `allow_missing_noslip=True` to build at all, which is honest but means a
-    rollout will not match MuJoCo under sliding friction. Task #53.
+What was really wrong was one layer up — the env advertised a single scalar
+action bound — and that is fixed and gated in
+`test_per_actuator_action_bounds.mojo`.
 
-⚠ WHAT THIS DOES NOT CHECK: that a STEP matches MuJoCo — with both of the
-above open it could not. That gate comes after they are closed.
+⚠ ONE BLOCKER REMAINS, NOT FIXED HERE. Do not read a pass as "this model can
+be stepped": ELLIPTIC CONE + `noslip_iterations=5` is this task's option
+block, and our `mj_solNoSlip` is pyramidal-only. The model def carries
+`allow_missing_noslip=True` to build at all, which is honest but means a
+rollout will not match MuJoCo under sliding friction. Task #53.
+
+⚠ WHAT THIS DOES NOT CHECK: that a STEP matches MuJoCo — with #53 open it
+could not. That gate comes after it is closed.
 
 Run with:
     pixi run mojo run -I . tests/dm_control/test_manipulation_reach_def.mojo
@@ -103,33 +109,36 @@ def test_manipulation_reach_def_matches_mujoco() raises:
         " comparing different amounts of elapsed time",
     )
 
-    # ── 4. the actuator control ranges ──────────────────────────────────
-    print("  CTRL_MIN / CTRL_MAX (model-wide):", M.CTRL_MIN, M.CTRL_MAX)
-    var n_range_mismatch = 0
+    # ── 4. the actuator control ranges, PER ACTUATOR ────────────────────
+    # ⚠ `M.CTRL_MIN` / `M.CTRL_MAX` are NOT what the clamp uses. They are a
+    # single model-wide pair from `_xml_default_motor_ctrlrange`, which reads
+    # only a ROOT `<default><motor ctrlrange>`; `apply_actions` clamps with
+    # `_acd.motor_ctrl_min[i]` / `[i]`, resolved three ways (element, then
+    # `class=`, then the root default) and for `<velocity>` too. Measuring the
+    # model-wide pair and concluding the per-actuator ranges were missing is
+    # exactly the mistake this comment exists to stop.
+    print("  model-wide CTRL_MIN/CTRL_MAX (NOT the clamp):",
+          M.CTRL_MIN, M.CTRL_MAX)
+    var cmin = materialize[M._acd.motor_ctrl_min]()
+    var cmax = materialize[M._acd.motor_ctrl_max]()
+    var worst_ctrl = 0.0
     for a in range(Int(py=mm.nu)):
         var mlo = Float64(py=mm.actuator_ctrlrange[a][0])
         var mhi = Float64(py=mm.actuator_ctrlrange[a][1])
-        if abs(mlo - M.CTRL_MIN) > 1e-9 or abs(mhi - M.CTRL_MAX) > 1e-9:
-            n_range_mismatch += 1
-        if a < 9:
-            print("    act", a, " MuJoCo [", mlo, ",", mhi, "]")
-    print("  actuators whose range differs from the model-wide pair:",
-          n_range_mismatch, "of", Int(py=mm.nu))
-    print("")
-    print("  ⚠⚠ KNOWN GAP, NOT GATED HERE: the comptime path stores ONE")
-    print("     model-wide (CTRL_MIN, CTRL_MAX) read from <default><motor")
-    print("     ctrlrange>. Jaco declares THREE different ranges on")
-    print("     <velocity> actuators, so all 9 disagree. Task #52 — this")
-    print("     must be fixed before any step or policy work.")
-    print("")
-    # ⚠ ASSERTED AS A KNOWN GAP, so that FIXING it fails this test and forces
-    # the note above to be revisited. A test that merely printed the problem
-    # would go stale silently the moment someone repaired the parser.
+        var e0 = abs(cmin[a] - mlo)
+        var e1 = abs(cmax[a] - mhi)
+        if e0 > worst_ctrl:
+            worst_ctrl = e0
+        if e1 > worst_ctrl:
+            worst_ctrl = e1
+        print("    act", a, " ours [", cmin[a], ",", cmax[a],
+              "]  MuJoCo [", mlo, ",", mhi, "]")
+    print("  worst |d ctrlrange| over", Int(py=mm.nu), "actuators:", worst_ctrl)
     assert_true(
-        n_range_mismatch == Int(py=mm.nu) and abs(M.CTRL_MIN + 1.0) < 1e-12,
-        "the model-wide ctrlrange is no longer (-1, 1) with every actuator"
-        " disagreeing — per-actuator ranges may have landed. Re-check the"
-        " banner above and turn this into a real per-actuator comparison",
+        worst_ctrl < 1e-12,
+        "per-actuator ctrlrange disagrees with MuJoCo. `apply_actions` clamps"
+        " with these, so a wrong range silently rescales what a policy's"
+        " action means",
     )
 
     # ── 1/3. it builds, and the built model reproduces MuJoCo's FK ───────

@@ -64,6 +64,25 @@ trait ModelDefLike:
     comptime OBS_DIM: Int
     comptime ACTION_DIM: Int
     comptime TIMESTEP: Float64
+    # ⚠⚠ THESE ARE A SUMMARY, NOT THE CLAMP, AND THEY LIE ON SOME MODELS.
+    # A single pair for the whole model, read by
+    # `_xml_default_motor_ctrlrange` from a ROOT `<default><motor ctrlrange>`
+    # — only that, and only a `<motor>` tag. A model that sets its ranges per
+    # actuator or per default CLASS falls back to (-1, 1) here while
+    # `apply_actions` correctly clamps each actuator to its own range.
+    #
+    # MEASURED against dm_control's `action_spec`:
+    #   reach_site_features  advertised (-1, 1); real +/-0.6283 x3,
+    #                        +/-0.8378 x3, +/-5.0 x3  -> every one wrong
+    #   quadruped walk       advertised (-1, 1); real lo in [-1, -0.8],
+    #                        hi in [0.8, 1.1]        -> already live
+    #   dog / humanoid / walker / cheetah / finger    -> uniform +/-1, fine
+    #
+    # Use `ctrl_min_at` / `ctrl_max_at` for anything that matters. These two
+    # stay because `BoxContinuousActionEnv.action_low/high` are scalars by
+    # contract, and changing THAT changes the action scaling of every shipped
+    # env — a behaviour change that needs its own before/after, not a
+    # side-effect of a bug fix.
     comptime CTRL_MIN: Float64
     comptime CTRL_MAX: Float64
 
@@ -144,6 +163,24 @@ trait ModelDefLike:
         actions: List[Float64],
         mut act: List[Scalar[DTYPE]],
     ):
+        ...
+
+    @staticmethod
+    def ctrl_min_at(i: Int) -> Float64:
+        """Lower `ctrlrange` bound of actuator `i` — MuJoCo's
+        `actuator_ctrlrange[i][0]`, and what `apply_actions` actually clamps
+        against.
+
+        The per-actuator answer that `CTRL_MIN` cannot give. Resolved through
+        the element attribute, then `class=`, then the root default, so a
+        model that keeps its ranges in a default class (quadruped does, and so
+        does the Jaco manipulation task) reports them correctly here.
+        """
+        ...
+
+    @staticmethod
+    def ctrl_max_at(i: Int) -> Float64:
+        """Upper `ctrlrange` bound of actuator `i`. See `ctrl_min_at`."""
         ...
 
     # === CPU: Float getters (can't use Float64 as comptime in traits) ===
