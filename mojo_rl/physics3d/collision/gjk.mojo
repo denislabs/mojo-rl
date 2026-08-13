@@ -1129,7 +1129,33 @@ def gjk_epa_witness[
 
         var w_dot = sn[0] * ndx + sn[1] * ndy + sn[2] * ndz
         var v_dot = vx * ndx + vy * ndy + vz * ndz
-        if w_dot - v_dot < Scalar[DTYPE](GJK_TOLERANCE):
+        # ⚠⚠ THE FLOAT32 FLOOR IS NOT A LOOSENING, IT IS WHAT MAKES THE TEST
+        # ABLE TO FIRE AT ALL. `w_dot - v_dot` is a difference of two dot
+        # products of magnitude |v|, so at float32 its rounding floor is about
+        # `1e-7 * |v|` — for robot-scale geometry, HUNDREDS of times above
+        # `GJK_TOLERANCE = 1e-10`. Without the relative term the comparison
+        # never succeeds, GJK runs to `GJK_MAX_ITERATIONS`, and it returns
+        # whatever it is holding at the cap. Measured over a 256-pose sweep of
+        # two real hulls, that produced three PHANTOM CONTACTS: `-0.0` returned
+        # for pairs float64 places 7.2, 16.5 and 16.9 cm apart. A phantom
+        # contact at 17 cm hands the solver a constraint row out of nowhere and
+        # is indistinguishable downstream from a real one.
+        #
+        # ⚠ MUJOCO'S THRESHOLD HERE IS ZERO, AND THAT IS NOT A LOOPHOLE WE CAN
+        # COPY. `engine_collision_gjk.c` sets it to 0 for mesh pairs because
+        # "if both geoms are discrete, finite convergence is guaranteed" — an
+        # exact-arithmetic guarantee that float64 nearly honours and float32
+        # does not. It is relative to |v| so it is scale-invariant, unlike the
+        # absolute constant it adds to.
+        #
+        # ⚠ FLOAT64 IS UNTOUCHED — the term is exactly 0 there, so every
+        # float64 gate is bit-identical. Which also means none of them covers
+        # this; `test_gjk_float32_no_phantom_contacts.mojo` does, and it is RED
+        # without the term.
+        var gjk_eps = Scalar[DTYPE](GJK_TOLERANCE) + Scalar[DTYPE](
+            0.0 if DTYPE == DType.float64 else 1e-6
+        ) * sqrt(v_dot_v)
+        if w_dot - v_dot < gjk_eps:
             break
 
         var si = nsimplex * 9
