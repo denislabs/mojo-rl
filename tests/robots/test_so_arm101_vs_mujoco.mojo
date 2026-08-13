@@ -264,10 +264,9 @@ def test_limit_free_rollout_is_exact() raises:
     is set from the measurement rather than copied from the other file — an
     inherited tolerance is a placeholder.
 
-    ⚠⚠ THIS IS THE GATE THAT FOUND THE DEAD SERVO. With `kp`/`kv` unresolved
-    the classifier demoted all six actuators to plain `<motor>`, so `ctrl`
-    applied no force at all and the arm fell to its limits — 1.26 rad off on
-    `shoulder_pan` alone. Every static comparison in this file passed anyway.
+    ⚠⚠ THIS IS THE GATE THAT FOUND THE DEAD SERVO. With `kp`/`kv` unresolved they fell back to
+    MuJoCo's defaults (1.0 / 0.0), the servo could not hold against gravity,
+    and the arm fell to its limits — 1.26 rad off on `shoulder_pan` alone. Every static comparison in this file passed anyway.
     """
     var worst = _rollout_residual(True)
     print("  commanded 200-step worst |dqpos| =", worst)

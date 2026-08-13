@@ -92,23 +92,30 @@ def _need(path, what):
 def _explicit_actuators(src, m):
     """Write kp / kv / forcerange / ctrlrange onto every `<position>` element.
 
-    ⚠⚠ FIFTH DEVIATION, AND THE ONE THAT ACTUALLY BROKE BOTH ARMS. Our
-    comptime actuator parser resolves an attribute as element -> the named
-    `class` -> the ROOT `<default>`, and does not walk the class CHAIN in
-    between. Measured, by printing `_acd` for both models:
+    ⚠⚠ FIFTH DEVIATION, AND THE ONE THAT ACTUALLY BROKE BOTH ARMS.
+    `<position>`'s `kp` and `kv` are read with `_extract_attr(tag, ...)` — the
+    ELEMENT ONLY — while every attribute around them (`gear`, `ctrlrange`,
+    `forcerange`, `gainprm`, and `<velocity>`'s own `kv`) goes through
+    `_attr_3way_cached`. So a gain declared in ANY `<default>` class is
+    missed, and MuJoCo's defaults take over: kp 1, kv 0.
 
-        SO-100  kp 1.0 (MuJoCo 50)     — `kp` lives in the GRANDPARENT class
-                                          `so_arm100`; the actuators name the
-                                          nested child `Rotation`/`Pitch`/...
-        SO-101  kp 1.0, kv 0.0, and `motor_kind = 0` (MOTOR, not POSITION)
-                                        — with no `kp` found, the classifier
-                                          demotes the servo to a plain motor,
-                                          so `ctrl = 0` applies NO force and
-                                          the arm falls to its joint limits.
+    ⚠ NOT a class-CHAIN problem — chain walking works. Measured with a
+    one-class fixture, no nesting: kp still parses as 1.0. An earlier note here
+    blamed the chain, and a four-line fixture refutes that.
+
+        SO-100  kp 50 -> 1.0            servo 50x weak; the arm still moved
+                                        TOWARD its target, just far too slowly.
+        SO-101  kp 998.22 -> 1.0,       torque ~1 N.m short of the gravity
+                kv 2.731 -> 0.0         load, so the arm FELL to its joint
+                                        limits, 1.26 rad off on shoulder_pan.
+
+    ⚠ An earlier version of this note also claimed SO-101's actuators were
+    "demoted to plain <motor> (motor_kind = 0)". That is FALSE — all six are
+    kind 1. The 0 came from a probe that materialized four comptime arrays and
+    read them afterwards. One root cause, not two.
 
     Both are SILENT: the model builds, the env steps, the numbers look like a
-    badly tuned controller. SO-100 crept toward its target ~50x too slowly and
-    SO-101 moved AWAY from it; only diffing against MuJoCo's own 2 000-step
+    badly tuned controller. Only diffing against MuJoCo's own 2 000-step
     rollout showed it, which is why `test_so_arm10x_vs_mujoco.mojo` gates the
     gains explicitly and not just the trajectory.
 
@@ -294,9 +301,18 @@ def bake_so_arm101(calib="new"):
     #    `so101_new_calib` classes and then a second block holding `sts3215`
     #    and `backlash`; MuJoCo merges them, and relying on our parser to do
     #    the same would be an untested assumption inside an untested port.
+    #
+    # ⚠⚠ THE REPLACEMENT COMMENT MUST NOT CONTAIN A TAG-LIKE SUBSTRING. It
+    # used to read "merged from the reference's SECOND top-level <default>",
+    # and that literal `<default>` inside a COMMENT is what made
+    # `merge_mjcf` delete the whole `<default>` section —
+    # `_extract_section_inner` depth-counts raw text and never strips
+    # comments, so the comment counted as an opener. Measured: the identical
+    # fixture with an angle-bracket-free comment merges fine. See
+    # `docs/PHYSICS3D_PARSER_GAPS_2026_08_13.md` §3.
     src = src.replace(
         "  </default>\n  <!-- Additional joints_properties.xml -->\n  <default>\n",
-        "    <!-- merged from the reference's SECOND top-level <default>;"
+        "    <!-- merged from the reference's SECOND top-level default block;"
         " see so_arm_bake.py -->\n",
         1,
     )
@@ -349,15 +365,19 @@ def bake_so_arm101(calib="new"):
 # ---------------------------------------------------------------------------
 # The reach target, inlined into the robot XML to produce the FULL model.
 #
-# ⚠⚠ NOT `merge_mjcf`. That is the repo's normal way to bolt a task fragment
-# onto a robot, and it MANGLES SO-101: `<default>` disappears from the merged
-# string entirely and the `sts3215` block resurfaces inside `<asset>`, so
-# MuJoCo refuses the model with "unknown default class name 'sts3215'". SO-100
-# survives the same call, which is what makes it a trap rather than an outage
-# — see `feedback_merge_mjcf_drops_sections` for the two earlier instances
-# (<tendon>, <option><flag>, <contact>). Filed, not worked around in the
-# engine: this bake sidesteps it by emitting the finished model directly, so
-# the ports do not block on a parser fix.
+# ⚠ NOT `merge_mjcf`, though the original reason was WRONG. That call did
+# mangle SO-101 — `<default>` vanished and MuJoCo refused the model with
+# "unknown default class name 'sts3215'" — but the cause was NOT nested
+# defaults. `_extract_section_inner` depth-counts raw text without stripping
+# comments, and the comment this bake inserted contained the literal
+# `<default>`; that alone deleted the section. With an angle-bracket-free
+# comment (see `bake_so_arm101` step 3) `merge_mjcf` handles this model fine.
+#
+# Emitting the finished model directly is KEPT anyway: it is one less
+# dependency on a function with three recorded instances of silently dropping
+# a section (`feedback_merge_mjcf_drops_sections`: <tendon>, <option><flag>,
+# <contact>). ⚠ Do not inherit "merge_mjcf cannot do nested defaults" from
+# this comment — it can. See `docs/PHYSICS3D_PARSER_GAPS_2026_08_13.md` §3.
 #
 # The target is a MOCAP body, for the reason `reacher_xml` documents: the
 # per-episode target must be per-ENV state, and `Model` is not batched while

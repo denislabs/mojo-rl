@@ -19,15 +19,12 @@ TWO STRINGS, AND THE DIFFERENCE MATTERS:
     and would make the layer-1 diff impossible, and "the gate had to be
     loosened to fit the task" is how a model stops being the reference model.
 
-⚠⚠ THE TASK BODY IS INLINED BY THE BAKE, NOT BY `merge_mjcf`. That function is
-this repo's normal way to bolt a task fragment onto a robot and it MANGLES
-SO-101: `<default>` vanishes from the merged string and the `sts3215` block
-resurfaces inside `<asset>`, so MuJoCo rejects the model with "unknown default
-class name 'sts3215'". SO-100 survives the identical call, which makes it a
-trap rather than an outage. That is the FOURTH section `merge_mjcf` has
-silently moved or dropped (`feedback_merge_mjcf_drops_sections`: `<tendon>`,
-`<option><flag>`, `<contact>`, now nested `<default>`). Filed, not fixed here
-— these ports should not block on a parser repair.
+⚠ THE TASK BODY IS INLINED BY THE BAKE, NOT BY `merge_mjcf` — see
+`so_arm101_xml.mojo` and `docs/PHYSICS3D_PARSER_GAPS_2026_08_13.md` §3. The
+short version: `merge_mjcf` deletes a whole section when a COMMENT contains
+that section's tag, because `_extract_section_inner` depth-counts raw text
+without stripping comments. Nesting has nothing to do with it. Direct emission
+is kept as one less dependency on that function.
 
 ⚠⚠ THREE DELIBERATE DEVIATIONS, all of them re-spellings of values MuJoCo
 derives at compile time and our parser does not implement:

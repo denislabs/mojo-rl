@@ -22,10 +22,9 @@ WHAT EACH GATE IS FOR, and what it caught:
   · `test_actuator_law` — kp / kv / forcerange / ctrlrange per actuator. ⚠⚠
     THIS IS THE ONE THAT MATTERS. Our comptime parser resolves an attribute as
     element -> named class -> ROOT default, and does NOT walk the class chain
-    in between. SO-100's `kp="50"` lives in the grandparent class `so_arm100`
-    while each actuator names a nested child (`Rotation`, `Pitch`, ...), so
-    every servo silently ran at **kp = 1.0**, the fallback — a 50x weak
-    controller that reads as bad tuning, not as a parse failure. The bake now
+    in between. SO-100 declares `kp="50"` in a `<default>` class, so every servo
+    silently ran at **kp = 1.0**, MuJoCo's default — a 50x weak controller that
+    reads as bad tuning, not as a parse failure. The bake now
     writes every gain onto the element; this gate is what keeps it that way.
 
   · `test_zero_ctrl_rollout` — the discriminating one. With kp wrong the arm

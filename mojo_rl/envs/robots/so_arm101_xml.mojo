@@ -46,17 +46,17 @@ and keep the baked values as a REGRESSION FIXTURE — 7 near-symmetric robot
 links are a much better probe of `mjuu_eig3`'s tie-breaking than a synthetic
 tensor, and near-symmetric is exactly where those details bite.
 
-⚠⚠ THE TASK BODY IS INLINED BY THE BAKE, NOT BY `merge_mjcf` — AND THIS MODEL
-IS WHY. That function is the repo's normal way to bolt a task fragment onto a
-robot, and on SO-101 it MANGLES the model: `<default>` vanishes from the merged
-string entirely and the `sts3215` block resurfaces inside `<asset>`, so MuJoCo
-rejects it with "unknown default class name 'sts3215'". SO-100 survives the
-identical call, which makes this a trap rather than an outage — a task fragment
-that works on one arm silently breaks the other. That is the FOURTH section
-`merge_mjcf` has quietly moved or dropped (`feedback_merge_mjcf_drops_sections`:
-`<tendon>`, `<option><flag>`, `<contact>`, now nested `<default>`). Filed, not
-fixed here; `tests/robots/so_arm_bake.py` emits the finished model directly so
-these ports do not block on a parser repair.
+⚠ THE TASK BODY IS INLINED BY THE BAKE, NOT BY `merge_mjcf` — and the reason
+first recorded here was WRONG. That call did mangle this model (`<default>`
+vanished; MuJoCo rejected it with "unknown default class name 'sts3215'"), but
+NOT because the defaults are nested. `_extract_section_inner` depth-counts raw
+text without stripping comments, and the comment the bake inserted contained
+the literal `<default>` — that alone deleted the section. Measured: the same
+fixture with an angle-bracket-free comment merges fine, and a CLEAN nested
+model merges fine too. ⚠ Do not inherit "merge_mjcf cannot do nested defaults"
+from this file; it can. Direct emission is kept anyway, as one less dependency
+on a function with three recorded silent section drops. Full analysis:
+`docs/PHYSICS3D_PARSER_GAPS_2026_08_13.md` §3.
 
 ⚠⚠ COLLISION IS 10x SO-100'S AND BUYS NOTHING PHYSICAL. Ten collidable meshes
 totalling **26 198 convex-hull vertices** (raw 136 832) against SO-100's
@@ -89,7 +89,7 @@ comptime SO_ARM101_ROBOT_XML = """<?xml version="1.0" ?>
         <geom group="3"/>
       </default>
     </default>
-    <!-- merged from the reference's SECOND top-level <default>; see so_arm_bake.py -->
+    <!-- merged from the reference's SECOND top-level default block; see so_arm_bake.py -->
     <default class="sts3215">
       <geom contype="0" conaffinity="0"/>
       <joint damping="0.60" frictionloss="0.052" armature="0.028"/>
@@ -261,7 +261,7 @@ comptime SO_ARM101_XML = """<?xml version="1.0" ?>
         <geom group="3"/>
       </default>
     </default>
-    <!-- merged from the reference's SECOND top-level <default>; see so_arm_bake.py -->
+    <!-- merged from the reference's SECOND top-level default block; see so_arm_bake.py -->
     <default class="sts3215">
       <geom contype="0" conaffinity="0"/>
       <joint damping="0.60" frictionloss="0.052" armature="0.028"/>
