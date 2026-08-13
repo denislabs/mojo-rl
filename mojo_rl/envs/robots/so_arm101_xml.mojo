@@ -234,12 +234,12 @@ comptime SO_ARM101_ROBOT_XML = """<?xml version="1.0" ?>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
   </asset>
   <actuator>
-    <position class="sts3215"  joint="shoulder_pan" name="shoulder_pan" kp="998.22" kv="2.731" forcerange="-3.35 3.35" ctrlrange="-1.91986 1.91986"/>
-    <position class="sts3215"  joint="shoulder_lift" name="shoulder_lift" kp="998.22" kv="2.731" forcerange="-3.35 3.35" ctrlrange="-1.74533 1.74533"/>
-    <position class="sts3215"  joint="elbow_flex" name="elbow_flex" kp="998.22" kv="2.731" forcerange="-3.35 3.35" ctrlrange="-1.69 1.69"/>
-    <position class="sts3215"  joint="wrist_flex" name="wrist_flex" kp="998.22" kv="2.731" forcerange="-3.35 3.35" ctrlrange="-1.65806 1.65806"/>
-    <position class="sts3215"  joint="wrist_roll" name="wrist_roll" kp="998.22" kv="2.731" forcerange="-3.35 3.35" ctrlrange="-2.74385 2.84121"/>
-    <position class="sts3215"  joint="gripper" name="gripper" kp="998.22" kv="2.731" forcerange="-3.35 3.35" ctrlrange="-0.17453 1.74533"/>
+    <position class="sts3215" name="shoulder_pan" joint="shoulder_pan" forcerange="-3.35 3.35" ctrlrange="-1.91986 1.91986"/>
+    <position class="sts3215" name="shoulder_lift" joint="shoulder_lift" forcerange="-3.35 3.35" ctrlrange="-1.74533 1.74533"/>
+    <position class="sts3215" name="elbow_flex" joint="elbow_flex" forcerange="-3.35 3.35" ctrlrange="-1.69 1.69"/>
+    <position class="sts3215" name="wrist_flex" joint="wrist_flex" forcerange="-3.35 3.35" ctrlrange="-1.65806 1.65806"/>
+    <position class="sts3215" name="wrist_roll" joint="wrist_roll" forcerange="-3.35 3.35" ctrlrange="-2.74385 2.84121"/>
+    <position class="sts3215" name="gripper" joint="gripper" forcerange="-3.35 3.35" ctrlrange="-0.17453 1.74533"/>
   </actuator>
   <equality/>
 </mujoco>
@@ -410,12 +410,12 @@ comptime SO_ARM101_XML = """<?xml version="1.0" ?>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
   </asset>
   <actuator>
-    <position class="sts3215"  joint="shoulder_pan" name="shoulder_pan" kp="998.22" kv="2.731" forcerange="-3.35 3.35" ctrlrange="-1.91986 1.91986"/>
-    <position class="sts3215"  joint="shoulder_lift" name="shoulder_lift" kp="998.22" kv="2.731" forcerange="-3.35 3.35" ctrlrange="-1.74533 1.74533"/>
-    <position class="sts3215"  joint="elbow_flex" name="elbow_flex" kp="998.22" kv="2.731" forcerange="-3.35 3.35" ctrlrange="-1.69 1.69"/>
-    <position class="sts3215"  joint="wrist_flex" name="wrist_flex" kp="998.22" kv="2.731" forcerange="-3.35 3.35" ctrlrange="-1.65806 1.65806"/>
-    <position class="sts3215"  joint="wrist_roll" name="wrist_roll" kp="998.22" kv="2.731" forcerange="-3.35 3.35" ctrlrange="-2.74385 2.84121"/>
-    <position class="sts3215"  joint="gripper" name="gripper" kp="998.22" kv="2.731" forcerange="-3.35 3.35" ctrlrange="-0.17453 1.74533"/>
+    <position class="sts3215" name="shoulder_pan" joint="shoulder_pan" forcerange="-3.35 3.35" ctrlrange="-1.91986 1.91986"/>
+    <position class="sts3215" name="shoulder_lift" joint="shoulder_lift" forcerange="-3.35 3.35" ctrlrange="-1.74533 1.74533"/>
+    <position class="sts3215" name="elbow_flex" joint="elbow_flex" forcerange="-3.35 3.35" ctrlrange="-1.69 1.69"/>
+    <position class="sts3215" name="wrist_flex" joint="wrist_flex" forcerange="-3.35 3.35" ctrlrange="-1.65806 1.65806"/>
+    <position class="sts3215" name="wrist_roll" joint="wrist_roll" forcerange="-3.35 3.35" ctrlrange="-2.74385 2.84121"/>
+    <position class="sts3215" name="gripper" joint="gripper" forcerange="-3.35 3.35" ctrlrange="-0.17453 1.74533"/>
   </actuator>
   <equality/>
 </mujoco>

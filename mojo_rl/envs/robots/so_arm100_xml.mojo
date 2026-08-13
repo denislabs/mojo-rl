@@ -208,12 +208,12 @@ comptime SO_ARM100_ROBOT_XML = """<mujoco model="so_arm100">
   </worldbody>
 
   <actuator>
-    <position class="Rotation"  joint="Rotation" name="Rotation" kp="50.0" kv="5.12815011462096" forcerange="-3.5 3.5" ctrlrange="-1.92 1.92"/>
-    <position class="Pitch"  joint="Pitch" name="Pitch" kp="50.0" kv="5.0017601635440885" forcerange="-3.5 3.5" ctrlrange="-3.32 0.17399999999999993"/>
-    <position class="Elbow"  joint="Elbow" name="Elbow" kp="50.0" kv="4.666305248385883" forcerange="-3.5 3.5" ctrlrange="-0.17399999999999993 3.14"/>
-    <position class="Wrist_Pitch"  joint="Wrist_Pitch" name="Wrist_Pitch" kp="50.0" kv="4.497993395502867" forcerange="-3.5 3.5" ctrlrange="-1.66 1.66"/>
-    <position class="Wrist_Roll"  joint="Wrist_Roll" name="Wrist_Roll" kp="50.0" kv="4.473104837677079" forcerange="-3.5 3.5" ctrlrange="-2.79 2.79"/>
-    <position class="Jaw"  joint="Jaw" name="Jaw" kp="50.0" kv="4.472755053189025" forcerange="-3.5 3.5" ctrlrange="-0.17399999999999993 1.75"/>
+    <position class="Rotation"  joint="Rotation" name="Rotation" kv="5.12815011462096" ctrlrange="-1.92 1.92"/>
+    <position class="Pitch"  joint="Pitch" name="Pitch" kv="5.0017601635440885" ctrlrange="-3.32 0.17399999999999993"/>
+    <position class="Elbow"  joint="Elbow" name="Elbow" kv="4.666305248385883" ctrlrange="-0.17399999999999993 3.14"/>
+    <position class="Wrist_Pitch"  joint="Wrist_Pitch" name="Wrist_Pitch" kv="4.497993395502867" ctrlrange="-1.66 1.66"/>
+    <position class="Wrist_Roll"  joint="Wrist_Roll" name="Wrist_Roll" kv="4.473104837677079" ctrlrange="-2.79 2.79"/>
+    <position class="Jaw"  joint="Jaw" name="Jaw" kv="4.472755053189025" ctrlrange="-0.17399999999999993 1.75"/>
   </actuator>
 
   <contact>
@@ -375,12 +375,12 @@ comptime SO_ARM100_XML = """<mujoco model="so_arm100">
   </worldbody>
 
   <actuator>
-    <position class="Rotation"  joint="Rotation" name="Rotation" kp="50.0" kv="5.12815011462096" forcerange="-3.5 3.5" ctrlrange="-1.92 1.92"/>
-    <position class="Pitch"  joint="Pitch" name="Pitch" kp="50.0" kv="5.0017601635440885" forcerange="-3.5 3.5" ctrlrange="-3.32 0.17399999999999993"/>
-    <position class="Elbow"  joint="Elbow" name="Elbow" kp="50.0" kv="4.666305248385883" forcerange="-3.5 3.5" ctrlrange="-0.17399999999999993 3.14"/>
-    <position class="Wrist_Pitch"  joint="Wrist_Pitch" name="Wrist_Pitch" kp="50.0" kv="4.497993395502867" forcerange="-3.5 3.5" ctrlrange="-1.66 1.66"/>
-    <position class="Wrist_Roll"  joint="Wrist_Roll" name="Wrist_Roll" kp="50.0" kv="4.473104837677079" forcerange="-3.5 3.5" ctrlrange="-2.79 2.79"/>
-    <position class="Jaw"  joint="Jaw" name="Jaw" kp="50.0" kv="4.472755053189025" forcerange="-3.5 3.5" ctrlrange="-0.17399999999999993 1.75"/>
+    <position class="Rotation"  joint="Rotation" name="Rotation" kv="5.12815011462096" ctrlrange="-1.92 1.92"/>
+    <position class="Pitch"  joint="Pitch" name="Pitch" kv="5.0017601635440885" ctrlrange="-3.32 0.17399999999999993"/>
+    <position class="Elbow"  joint="Elbow" name="Elbow" kv="4.666305248385883" ctrlrange="-0.17399999999999993 3.14"/>
+    <position class="Wrist_Pitch"  joint="Wrist_Pitch" name="Wrist_Pitch" kv="4.497993395502867" ctrlrange="-1.66 1.66"/>
+    <position class="Wrist_Roll"  joint="Wrist_Roll" name="Wrist_Roll" kv="4.473104837677079" ctrlrange="-2.79 2.79"/>
+    <position class="Jaw"  joint="Jaw" name="Jaw" kv="4.472755053189025" ctrlrange="-0.17399999999999993 1.75"/>
   </actuator>
 
   <contact>

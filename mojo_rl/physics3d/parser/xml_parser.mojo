@@ -3900,11 +3900,48 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
         # gainprm = [kp, 0, 0] and biasprm = [0, -kp, -kv]. MuJoCo's kp
         # default is 1 and kv's is 0.
         if is_position:
-            var kp_s = _extract_attr(tag, "kp")
+            # ⚠⚠ RESOLVED 3-WAY (element -> class chain -> root `<default>`).
+            # These two read `_extract_attr(tag, ...)` — the ELEMENT ONLY —
+            # until 2026-08-13, while EVERY neighbouring attribute (`gear`,
+            # `ctrlrange`, `forcerange`, `forcelimited`, `gaintype`,
+            # `biastype`, `gainprm`, `biasprm`, and `<velocity>`'s own `kv`)
+            # already went through `_attr_3way_cached`. A gain declared in a
+            # `<default>` class was therefore MISSED and MuJoCo's defaults took
+            # over — kp 1, kv 0.
+            #
+            # ⚠ IT WAS NOT A CLASS-CHAIN DEFECT, and it was filed as one first.
+            # `_class_attr_inherited` walks the chain correctly. The
+            # discriminating fixture is ONE class, no nesting, `kp` in the
+            # class: it still parsed 1.0. See
+            # `tests/physics3d/test_position_gain_defaults.mojo`.
+            #
+            # ⚠ WHY IT HID: the fallback is a PLAUSIBLE number. Measured on the
+            # two SO-ARM ports, which is where it surfaced —
+            #
+            #     SO-100  kp 50     -> 1.0   servo 50x weak; the arm still
+            #                                moved TOWARD its target, just far
+            #                                too slowly, i.e. "bad tuning"
+            #     SO-101  kp 998.22 -> 1.0   torque ~1 N.m short of the gravity
+            #             kv 2.731  -> 0.0   load, so the arm FELL to its limits
+            #
+            # Nothing raises either way, and every static gate passed. Only a
+            # lockstep rollout against MuJoCo could see it.
+            #
+            # ⚠ BLAST RADIUS AT THE TIME OF THE FIX: nil. Every model in the
+            # tree with `<position>` actuators (fish, manipulator, sawyer, both
+            # SO-ARMs) writes its gains on the ELEMENT, so all five compared
+            # EXACT against `mjModel` both before and after. This change can
+            # only make previously-broken input work; it cannot move a model
+            # that was already right.
+            var kp_s = _attr_3way_cached(
+                xml_clean, tag, elem_cls, tag_name, root_tag, "kp", cacache
+            )
             data.motor_kp[act_count] = (
                 _parse_float(kp_s) if kp_s.byte_length() > 0 else 1.0
             )
-            var kv_s = _extract_attr(tag, "kv")
+            var kv_s = _attr_3way_cached(
+                xml_clean, tag, elem_cls, tag_name, root_tag, "kv", cacache
+            )
             data.motor_kv[act_count] = (
                 _parse_float(kv_s) if kv_s.byte_length() > 0 else 0.0
             )
@@ -3924,8 +3961,10 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
             # ⚠ Resolved 3-way (element -> class -> root default) because the
             # class level is live: a `<default><velocity kv="7"/></default>`
             # reaches an attribute-less `<velocity/>`, measured above.
-            # `<position>` above reads the element only — a separate,
-            # pre-existing gap, not widened here.
+            # `<position>` above used to read the element only — this note
+            # recorded that as "a separate, pre-existing gap, not widened
+            # here", and it stayed unfixed until the SO-ARM ports gave it two
+            # consumers. Both branches resolve the same way now.
             var vkv_s = _attr_3way_cached(
                 xml_clean, tag, elem_cls, tag_name, root_tag, "kv", cacache
             )

@@ -89,8 +89,8 @@ def _need(path, what):
 
 
 
-def _explicit_actuators(src, m):
-    """Write kp / kv / forcerange / ctrlrange onto every `<position>` element.
+def _explicit_actuators(src, m, which):
+    """Write the named attributes onto every `<position>` element.
 
     ⚠⚠ FIFTH DEVIATION, AND THE ONE THAT ACTUALLY BROKE BOTH ARMS.
     `<position>`'s `kp` and `kv` are read with `_extract_attr(tag, ...)` — the
@@ -119,10 +119,23 @@ def _explicit_actuators(src, m):
     rollout showed it, which is why `test_so_arm10x_vs_mujoco.mojo` gates the
     gains explicitly and not just the trajectory.
 
-    Making the element self-describing sidesteps the gap entirely and is
-    invisible to MuJoCo (an element attribute overrides a class default), so
-    the layer-1 diff stays exact. ⚠ It does NOT fix the parser; the gap is
-    real and belongs in `docs/SO_ARM101_PORT_ASSESSMENT.md`'s gap table.
+    Making the element self-describing sidesteps the gap and is invisible to
+    MuJoCo (an element attribute overrides a class default), so the layer-1
+    diff stays exact.
+
+    ⚠⚠ `kp` IS NO LONGER WRITTEN — the parser resolves it now (fixed
+    2026-08-13, `tests/physics3d/test_position_gain_defaults.mojo`). It is
+    dropped rather than left in place ON PURPOSE: a workaround kept after its
+    cause is fixed silently stops being tested, and `test_actuator_law` on both
+    arms is now a live check that the class lookup works on a REAL model
+    instead of only on a synthetic fixture. SO-100 needs the chain (`kp` sits
+    in the grandparent class `so_arm100`); SO-101 needs only its own class.
+
+    What remains is genuinely underivable by our parser today:
+      kv         only on SO-100, where MuJoCo DERIVES it from `dampratio`
+      ctrlrange  only on SO-100, where it comes from `inheritrange="1"`
+    SO-101 needs neither — upstream writes both on the element — so it no
+    longer calls this at all.
     """
     import re as _re
 
@@ -141,10 +154,16 @@ def _explicit_actuators(src, m):
         keep = (mo.group(1) + mo.group(2)).strip()
         keep = _re.sub(r'\s*inheritrange="[^"]*"', "", keep)
         keep = _re.sub(r'\s*(kp|kv|forcerange|ctrlrange)="[^"]*"', "", keep)
-        new = (
-            '<position {0} name="{1}" kp="{2}" kv="{3}"'
-            ' forcerange="{4} {5}" ctrlrange="{6} {7}"/>'
-        ).format(keep, name, _f(kp), _f(kv), _f(flo), _f(fhi), _f(clo), _f(chi))
+        parts = ["<position", keep, 'name="{}"'.format(name)]
+        if "kp" in which:
+            parts.append('kp="{}"'.format(_f(kp)))
+        if "kv" in which:
+            parts.append('kv="{}"'.format(_f(kv)))
+        if "forcerange" in which:
+            parts.append('forcerange="{} {}"'.format(_f(flo), _f(fhi)))
+        if "ctrlrange" in which:
+            parts.append('ctrlrange="{} {}"'.format(_f(clo), _f(chi)))
+        new = " ".join(parts) + "/>"
         out = out[: mo.start()] + new + out[mo.end() :]
         n += 1
     assert n == m.nu, "rewrote {} of {} actuators".format(n, m.nu)
@@ -210,8 +229,10 @@ def bake_so_arm100():
     # ⚠ the ATTRIBUTE, not the word — the DEVIATION comment names it too.
     assert 'dampratio="' not in src
 
-    # 3. Every `<position>` made SELF-DESCRIBING — see `_explicit_actuators`.
-    src = _explicit_actuators(src, m)
+    # 3. Only what our parser still cannot derive: `kv` (MuJoCo computes it
+    #    from `dampratio`) and `ctrlrange` (from `inheritrange="1"`). `kp` is
+    #    left in the class on purpose — see `_explicit_actuators`.
+    src = _explicit_actuators(src, m, ("kv", "ctrlrange"))
     assert 'inheritrange="' not in src
 
     # 4. Inline scene.xml's floor + ground material.
@@ -317,12 +338,12 @@ def bake_so_arm101(calib="new"):
         1,
     )
 
-    # 3b. Every `<position>` made SELF-DESCRIBING — see `_explicit_actuators`.
-    #     ⚠ SO-101 needs this even harder than SO-100: with `kp` left in the
-    #     `sts3215` class our parser classified all six actuators as plain
-    #     `<motor>` (`motor_kind = 0`, kp 1.0, kv 0.0), so `ctrl = 0` applied
-    #     NO servo at all and the arm simply fell to its joint limits.
-    src = _explicit_actuators(src, m)
+    # 3b. NOTHING to rewrite on the actuators any more. `kp`/`kv`/`forcerange`
+    #     live in the `sts3215` class and the parser resolves all three;
+    #     `ctrlrange` is already on the element upstream. This call used to
+    #     write all four — dropping it is the PROOF that the class lookup
+    #     works on a real model, and `test_so_arm101_vs_mujoco::
+    #     test_actuator_law` is what would catch a regression.
 
     # 4. Explicit mesh names. The reference writes `<mesh file="x.stl"/>` and
     #    leans on MuJoCo naming the asset after the stem.
