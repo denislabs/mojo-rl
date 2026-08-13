@@ -15,6 +15,12 @@ with arithmetic helpers defined in xml_parser.mojo.
 """
 
 from std.collections import InlineArray
+
+# `mjuu_eig3`, for <inertial fullinertia>. `parse_xml_full` is a RUNTIME
+# function (non-generic since 2026-08-05), so pulling in a `std.math`-using
+# helper here does not violate the comptime constraint the docstring above
+# describes — that constraint belongs to `xml_parser.parse_xml`.
+from ..model.inertia_from_geom import eig3_symmetric
 from .xml_parser import (
     _split_spaces,
     _strip_xml_comments,
@@ -2003,18 +2009,10 @@ def _fill_model(
                     b.has_explicit_inertia = True
 
                 # `fullinertia` is the 6-vector (ixx iyy izz ixy ixz iyz).
-                # `BodyData` stores a DIAGONAL inertia plus `iquat`, so a
-                # genuinely off-diagonal one would need eigendecomposition —
-                # raise rather than silently dropping the off-diagonal terms,
-                # which would read as a mild dynamics divergence.
-                var ifi_s = _extract_attr(tag, "fullinertia")
-                if ifi_s.byte_length() > 0:
-                    raise Error(
-                        "physics3d: <inertial fullinertia=...> needs an"
-                        " eigendecomposition into diaginertia + iquat, which"
-                        " BodyData cannot express; only diaginertia is"
-                        " implemented."
-                    )
+                # It is APPLIED BELOW, after the orientation block, because
+                # MuJoCo's compiler diagonalises it into `iquat` and that
+                # write has to be the last one to land.
+                var ifi_s = _trim(_extract_attr(tag, "fullinertia"))
 
                 var ip_s = _extract_attr(tag, "pos")
                 if ip_s.byte_length() > 0:
@@ -2023,12 +2021,18 @@ def _fill_model(
                     b.ipos_y = iv[1]
                     b.ipos_z = iv[2]
 
+                var iquat_s = _trim(_extract_attr(tag, "quat"))
+                var iaa_s = _trim(_extract_attr(tag, "axisangle"))
+                var ixy_s = _trim(_extract_attr(tag, "xyaxes"))
+                var iza_s = _trim(_extract_attr(tag, "zaxis"))
+                var ieu_s = _trim(_extract_attr(tag, "euler"))
+
                 var iq = _orientation_to_quat(
-                    _extract_attr(tag, "quat"),
-                    _extract_attr(tag, "axisangle"),
-                    _extract_attr(tag, "xyaxes"),
-                    _extract_attr(tag, "zaxis"),
-                    _extract_attr(tag, "euler"),
+                    iquat_s,
+                    iaa_s,
+                    ixy_s,
+                    iza_s,
+                    ieu_s,
                     deg_factor,
                     eulerseq,
                 )
@@ -2036,6 +2040,84 @@ def _fill_model(
                 b.iquat_y = iq[1]
                 b.iquat_z = iq[2]
                 b.iquat_w = iq[3]
+
+                # ── <inertial fullinertia="ixx iyy izz ixy ixz iyz"> ────────
+                #
+                # MuJoCo's compiler diagonalises the 6-vector into
+                # `diaginertia` + `iquat` (`mjCBody::Compile` ->
+                # `mjuu_fullInertia` -> `mjuu_eig3`), which is exactly the
+                # pair `BodyData` already stores. So this is a parser-side
+                # DECOMPOSITION into existing fields, not a schema change —
+                # and `eig3_symmetric` is already a transcription of
+                # `mjuu_eig3`, landed for the mesh-inertia work.
+                #
+                # ⚠ IT MUST BE THE EIGENSOLVER, NOT AN EIGENSOLVER. MuJoCo's
+                # Jacobi forms the half-angle as `sqrt(0.5 - 0.5c)`, which
+                # cancels catastrophically as it converges: measured against
+                # numpy on the 3.10.0 runtime, its eigenVALUES are good to
+                # 1e-13 but its eigenVECTORS carry ~1e-7 of deterministic
+                # noise. Any independently-correct solver therefore DISAGREES
+                # with `body_iquat` at 1e-7 while looking perfectly valid.
+                # `eig3_symmetric` reproduces it to 2e-16 on all twelve probe
+                # cases, degenerate ones included.
+                #
+                # ⚠ MEASURED, not assumed — `fullinertia` is MUTUALLY
+                # EXCLUSIVE with `diaginertia` and with EVERY inertial
+                # orientation spelling, including a redundant `quat="1 0 0 0"`.
+                # MuJoCo raises rather than picking a winner. So do we: with
+                # both present there is no way to tell which the author meant,
+                # and silently letting one override the other is exactly how a
+                # wrong inertia FRAME hides behind a right inertia MAGNITUDE.
+                if ifi_s.byte_length() > 0:
+                    if idi_s.byte_length() > 0:
+                        raise Error(
+                            "physics3d: <inertial>: fullinertia and diagonal"
+                            " inertia cannot both be specified"
+                        )
+                    if (
+                        iquat_s.byte_length() > 0
+                        or iaa_s.byte_length() > 0
+                        or ixy_s.byte_length() > 0
+                        or iza_s.byte_length() > 0
+                        or ieu_s.byte_length() > 0
+                    ):
+                        raise Error(
+                            "physics3d: <inertial>: fullinertia and inertial"
+                            " orientation cannot both be specified"
+                        )
+
+                    var fi_parts = List[String]()
+                    _split_spaces(ifi_s, fi_parts)
+                    if len(fi_parts) != 6:
+                        raise Error(
+                            "physics3d: <inertial fullinertia=...> needs"
+                            " exactly 6 values (ixx iyy izz ixy ixz iyz)"
+                        )
+                    var fi = InlineArray[Float64, 6](fill=Float64(0))
+                    for fk in range(6):
+                        fi[fk] = _parse_float(fi_parts[fk])
+
+                    var ev = eig3_symmetric[DType.float64](fi)
+                    # `mjuu_fullInertia` rejects a non-PSD tensor on the
+                    # SMALLEST eigenvalue, and eig3 sorts DECREASING, so that
+                    # is ev[2]. Without this a non-physical tensor would reach
+                    # `body_inv_inertia = 1/eig` and produce a negative or
+                    # infinite inverse inertia — a garbage rollout with no
+                    # error anywhere.
+                    if ev[2] < 1e-14:  # mjEPS
+                        raise Error(
+                            "physics3d: <inertial fullinertia=...>: inertia"
+                            " must have positive eigenvalues"
+                        )
+
+                    b.ixx = ev[0]
+                    b.iyy = ev[1]
+                    b.izz = ev[2]
+                    b.iquat_x = ev[3]
+                    b.iquat_y = ev[4]
+                    b.iquat_z = ev[5]
+                    b.iquat_w = ev[6]
+                    b.has_explicit_inertia = True
 
                 result.bodies[cur_body - 1] = b
             var tag_end = worldbody.find(">", next_inertial)
