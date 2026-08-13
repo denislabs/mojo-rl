@@ -58,8 +58,9 @@ from mojo_rl.envs.dm_control.manipulation_lift_box_config import (
     TCP_BBOX_LOWER_Z,
     TCP_BBOX_UPPER_Z,
     lowest_vertex_z,
+    SITE_PINCH,
 )
-from mojo_rl.envs.dm_control.manipulation_obs import N_ARM, N_HAND, SITE_PINCH
+from mojo_rl.envs.dm_control.manipulation_obs import N_ARM, N_HAND
 from mojo_rl.physics3d.gpu.constants import META_IDX_TASK_PARAM_0
 
 comptime DTYPE = DType.float64

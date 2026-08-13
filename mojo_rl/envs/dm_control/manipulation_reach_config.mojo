@@ -132,7 +132,6 @@ from mojo_rl.envs.dm_control.manipulation_obs import (
     append_robot_block,
     N_ARM,
     N_HAND,
-    SITE_PINCH,
     BODY_PINCH,
 )
 
@@ -151,8 +150,16 @@ from .manipulation_reset import (
 # `tests/dm_control/test_reach_site_vs_dm_control.mojo` so a model change
 # cannot leave these pointing at the wrong element.
 comptime SITE_TARGET: Int = 0  # `target_site`, on the WORLD body
-# `N_ARM`, `N_HAND`, `SITE_PINCH`, `BODY_PINCH` and the torque site/body
-# tables are shared with the other 12 tasks — see `manipulation_obs`.
+# `N_ARM`, `N_HAND`, `BODY_PINCH` and the torque site/body tables are shared
+# with the other 12 tasks — see `manipulation_obs`.
+
+# ⚠⚠ THE ROBOT'S SITE IDS ARE PER TASK, NOT INVARIANT. The 9 robot sites start
+# after the task's own worldbody sites, and how many of those there are depends
+# on where the task put its target site — 3 here (`target_site`,
+# `tcp_spawn_area`, `target_spawn_area`), 2 for `reach_duplo`, whose target
+# site goes on the brick. See `manipulation_obs`' table.
+comptime ROBOT_SITE_BASE: Int = 3
+comptime SITE_PINCH: Int = ROBOT_SITE_BASE + 8  # `jaco_hand/pinchsite`
 
 comptime OBS_DIM: Int = 45
 
@@ -239,7 +246,7 @@ struct ReachSiteFeaturesConfig(Phyics3dEnvConfig):
             obs.append(m_sites[tb + SITE_IDX_POS_Y])
             obs.append(m_sites[tb + SITE_IDX_POS_Z])
             append_robot_block[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
-                d, m_bodies, m_joints, m_sites, obs
+                d, m_bodies, m_joints, m_sites, ROBOT_SITE_BASE, obs
             )
         except:
             return False

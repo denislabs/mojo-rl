@@ -39,6 +39,8 @@ instantiation carries a float32 `scale`. That costs ~1e-7 relative and is what
 
 from std.math import sqrt, exp, log, cos, cosh, tanh, acos, acosh, atanh, pi
 
+from mojo_rl.envs.dm_control.dtype_math import log_accurate
+
 
 # The value returned by tolerance() at `margin` distance from `bounds`.
 comptime DEFAULT_VALUE_AT_MARGIN: Float64 = 0.1
@@ -146,7 +148,18 @@ def _sigmoids_impl[
     comptime V = Scalar[DTYPE](value_at_1)
 
     comptime if sigmoid == SIGMOID_GAUSSIAN:
-        var scale = sqrt(Scalar[DTYPE](-2.0) * log(V))
+        # ⚠⚠ `log_accurate`, NOT `std.math.log`. `log(0.1)` comes back 8.0e-11
+        # low, which makes this scale 4.0e-11 low, and the exponent below
+        # AMPLIFIES that by u^2/2 — 3.9e-09 relative at u = 9.9, measured on
+        # `reach_duplo_features`' reward ramp against a 1e-12 gate. See
+        # `dtype_math.log_accurate`.
+        #
+        # ⚠ `std.math.exp` IS ALSO INEXACT and is deliberately left alone:
+        # measured 2.8e-13 relative at exp(-1) growing to 8.2e-12 at exp(-20).
+        # That is below every reward gate in this tree and there is no
+        # identity to escape to, unlike `log`. Recorded so the next residual
+        # here starts from a number rather than a guess.
+        var scale = sqrt(Scalar[DTYPE](-2.0) * log_accurate[DTYPE](V))
         return exp(Scalar[DTYPE](-0.5) * (x * scale) * (x * scale))
 
     elif sigmoid == SIGMOID_HYPERBOLIC:

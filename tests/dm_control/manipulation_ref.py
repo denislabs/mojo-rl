@@ -188,6 +188,29 @@ def _load(task_name, seed=0):
     goes out of scope takes the model with it and the next attribute access
     raises `ReferenceError` — from the line that reads the model, not from the
     line that dropped the env.
+
+    ⚠⚠ A FRESHLY CONSTRUCTED ENVIRONMENT DOES NOT HOLD THE TASK'S MODEL.
+    `composer.Environment.__init__` compiles the MJCF as authored;
+    `initialize_episode_mjcf` — which is allowed to EDIT the MJCF and is
+    followed by a recompile — runs from `reset()`. So the model an episode
+    actually uses only exists after one reset, and the two differ for every
+    task with a Duplo:
+
+        `props.Duplo.initialize_episode_mjcf` draws the stud radius, and the
+        `stud` default class goes 0.0047 -> 0.004647 (`variation=0.0` makes the
+        draw deterministic, so it is always exactly that). Every stud cylinder
+        in the brick shrinks by 1.1%.
+
+    That is a MODEL constant read by a comptime port, so baking the
+    pre-reset tree would ship 16 geoms sized to a value no episode ever runs
+    with. One reset here, once per cached env, and every consumer —
+    `bake`, `model`, `counts`, the `*_state` helpers — sees the same model.
+
+    ⚠ This is deliberately UNCONDITIONAL rather than duplo-only. It was
+    verified to be a no-op where nothing edits the MJCF: `reach_site_features`
+    and `lift_large_box_features` export byte-identical XML (15695 and 18078
+    bytes) with and without it, so the two committed XML modules and every
+    gate measured against them are unaffected.
     """
     _bootstrap()
     if task_name not in ALL_FEATURES:
@@ -197,7 +220,9 @@ def _load(task_name, seed=0):
     key = (task_name, seed)
     if key not in _env_cache:
         from dm_control import manipulation
-        _env_cache[key] = manipulation.load(task_name, seed=seed)
+        env = manipulation.load(task_name, seed=seed)
+        env.reset()
+        _env_cache[key] = env
     return _env_cache[key]
 
 
@@ -890,3 +915,177 @@ def lift_reset_qpos(n, task_name='lift_large_box_features', seed=0):
             'ncon': int(p.data.ncon),
         })
     return out
+
+
+# -- the `reach_duplo_features` task layer -----------------------------------
+#
+# `Reach` again, but with `prop=Duplo` instead of `use_site=True`, which
+# changes three things and nothing else:
+#
+#   * the `target_position` task observable DISAPPEARS (the prop IS the
+#     target), and the free-prop block appears — 55 numbers, not 45;
+#   * `get_reward` measures to `physics.bind(self._target).xpos`, and
+#     `self._target` is the ATTACHMENT FRAME `add_free_entity` returned, i.e.
+#     the prop's body — not the invisible `target_site` bolted to it;
+#   * `initialize_episode` runs `_prop_placer` in place of `_target_placer`,
+#     which is a rejection loop plus a settle rather than one assignment.
+
+REACH_DUPLO_OBS_ORDER = (
+    'jaco_arm/joints_pos',
+    'jaco_arm/joints_torque',
+    'jaco_arm/joints_vel',
+    'jaco_arm/jaco_hand/joints_pos',
+    'jaco_arm/jaco_hand/joints_vel',
+    'jaco_arm/jaco_hand/pinch_site_pos',
+    'jaco_arm/jaco_hand/pinch_site_rmat',
+    'duplo2x4/angular_velocity',
+    'duplo2x4/linear_velocity',
+    'duplo2x4/orientation',
+    'duplo2x4/position',
+)
+
+
+def reach_duplo_state(qpos, qvel, ctrl=None,
+                      task_name='reach_duplo_features', seed=0):
+    """Evaluate `Reach` with a Duplo at an injected state. Returns a dict.
+
+    ⚠ The reward's target is `p.bind(task._target).xpos` and `task._target` is
+    a `_AttachmentFrame`, so this binds a BODY. The `target_site` the task also
+    creates is invisible, sits at the frame origin and is read by nothing —
+    checking against it would agree by accident and stop agreeing for the
+    `place_*` tasks, where the two are not the same element.
+
+    ⚠ `mj_forward` fills `sensordata`, so `jaco_arm/joints_torque` is the
+    ACCELERATION STAGE AT THIS STATE; the Mojo side must produce `cfrc_int` at
+    the same state, not after a control step. Same trap as `reach_state`.
+    """
+    _bootstrap()
+    import numpy as np
+    env = _load(task_name, seed=seed)
+    task, p = env.task, env.physics
+    p.data.qpos[:] = np.asarray(qpos, dtype=float)
+    p.data.qvel[:] = np.asarray(qvel, dtype=float)
+    p.data.ctrl[:] = 0.0 if ctrl is None else np.asarray(ctrl, dtype=float)
+    p.forward()
+    rs = np.random.RandomState(0)
+    obs = {}
+    for entity in (task._arm, task._hand, task._prop):
+        for k, v in entity.observables.as_dict().items():
+            if v.enabled:
+                obs[k] = v
+    hand_pos = p.bind(task._hand.tool_center_point).xpos
+    target_pos = p.bind(task._target).xpos
+    out = {'reward': float(task.get_reward(p)),
+           'ncon': int(p.data.ncon),
+           'nefc': int(p.data.nefc),
+           'tcp_xpos': [float(x) for x in hand_pos],
+           'target_xpos': [float(x) for x in target_pos],
+           'distance': float(np.linalg.norm(hand_pos - target_pos)),
+           'flat': []}
+    for name in REACH_DUPLO_OBS_ORDER:
+        v = np.asarray(obs[name](p, rs), dtype=float).ravel()
+        out[name] = list(v)
+        out['flat'].extend(float(x) for x in v)
+    return out
+
+
+def reach_duplo_indices(task_name='reach_duplo_features', seed=0):
+    """The element ids `manipulation_reach_duplo_config` hardcodes.
+
+    ⚠ `frame_site` is the element the prop's `framepos`/`framequat`/
+    `framelinvel`/`frameangvel` sensors NAME, read out of `sensor_objid`
+    rather than looked up by name — the whole point is to catch a rebake that
+    moves it. For the Duplo it is `bounding_box`, a SITE 11.9 mm above the
+    body origin; for `props.Primitive` it is a GEOM. Same observable, different
+    element type, and reading the wrong one is a small plausible offset.
+    """
+    _bootstrap()
+    import mujoco
+    m = model(task_name, seed=seed)
+    env = _load(task_name, seed=seed)
+    task, p = env.task, env.physics
+    prop_geoms = task._prop.mjcf_model.find_all('geom')
+    sensor_of = {}
+    for i in range(m.nsensor):
+        n = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_SENSOR, i)
+        sensor_of[n] = i
+    fp = sensor_of['duplo2x4/position']
+    # Which duplo geoms can actually collide with the arm or the ground, by
+    # MuJoCo's own contype/conaffinity rule against the compiler default (1, 1).
+    collidable = [int(g) for g in range(m.ngeom)
+                  if m.geom_bodyid[g] == m.geom_bodyid[
+                      p.bind(prop_geoms[0]).element_id]
+                  and ((int(m.geom_contype[g]) & 1)
+                       or (int(m.geom_conaffinity[g]) & 1))]
+    return {
+        'prop_body': int(p.bind(task._target).element_id),
+        # ⚠ The TCP and the six torque sites, so a gate can assert the ROBOT
+        # SITE BASE rather than inherit another task's. `Reach` with a prop
+        # puts its target site on the brick, so this model has one fewer
+        # worldbody site than `reach_site_features` or `lift_large_box` and
+        # every robot site shifts down by one.
+        'pinch_site': int(p.bind(task._hand.tool_center_point).element_id),
+        'torque_sites': [int(m.sensor_objid[i]) for i in range(m.nsensor)
+                         if int(m.sensor_type[i]) == 5],
+        'frame_site': int(m.sensor_objid[fp]),
+        'frame_objtype': int(m.sensor_objtype[fp]),
+        'n_prop_geoms': len(prop_geoms),
+        'n_collidable_prop_geoms': len(collidable),
+        'prop_qposadr': int(m.jnt_qposadr[m.njnt - 1]),
+        'prop_dofadr': int(m.jnt_dofadr[m.njnt - 1]),
+        'prop_jnt_type': int(m.jnt_type[m.njnt - 1]),
+        'stud_radius': float(max(
+            m.geom_size[g][0] for g in range(m.ngeom)
+            if (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g) or '')
+            .startswith('duplo2x4/stud_'))),
+        'nbody': int(m.nbody), 'nq': int(m.nq), 'nv': int(m.nv),
+        'ngeom': int(m.ngeom), 'nsite': int(m.nsite),
+    }
+
+
+def reach_duplo_reset_qpos(n, task_name='reach_duplo_features', seed=0):
+    """`n` real `initialize_episode` draws — qpos after dm_control's own reset.
+
+    Reports where the brick came to rest and how far the TCP ended up from it,
+    which is what OUR reset has to land in the same region of.
+    """
+    _bootstrap()
+    import numpy as np
+    env = _load(task_name, seed=seed)
+    out = []
+    for _ in range(n):
+        env.reset()
+        p, task = env.physics, env.task
+        hand_pos = p.bind(task._hand.tool_center_point).xpos
+        target_pos = p.bind(task._target).xpos
+        out.append({
+            'qpos': [float(x) for x in p.data.qpos],
+            'tcp_xpos': [float(x) for x in hand_pos],
+            'prop_xpos': [float(x) for x in target_pos],
+            'distance': float(np.linalg.norm(hand_pos - target_pos)),
+            'reward': float(task.get_reward(p)),
+            'ncon': int(p.data.ncon),
+        })
+    return out
+
+
+def prop_pose_accepted(qpos, task_name='reach_duplo_features', seed=0):
+    """dm_control's OWN `PropPlacer` rejection predicate at an injected state.
+
+    `_has_collisions_with_prop` — any contact with `dist <= 0` touching a geom
+    of the prop. Returns `(accepted, ncon)`; `accepted` is the negation, i.e.
+    what the placer's loop breaks on.
+
+    ⚠ NOT the same predicate as `tcp_pose_accepted`. The TCP initializer
+    ignores robot-versus-FREE-body contacts entirely; this one is only about
+    the prop, and a prop resting on the table IS a rejection — which is why
+    `reach.py` places it 1 mm up (`_PROP_Z_OFFSET`) and settles afterwards.
+    """
+    _bootstrap()
+    import numpy as np
+    env = _load(task_name, seed=seed)
+    task, p = env.task, env.physics
+    p.data.qpos[:] = np.asarray(qpos, dtype=float)
+    p.forward()
+    bad = task._prop_placer._has_collisions_with_prop(p, task._prop)
+    return (not bool(bad), int(p.data.ncon))

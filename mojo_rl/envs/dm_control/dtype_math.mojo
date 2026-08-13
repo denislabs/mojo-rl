@@ -64,6 +64,50 @@ def log1p_accurate(x: Float64) -> Float64:
 
 
 @always_inline
+def log_accurate[
+    DTYPE: DType
+](x: Scalar[DTYPE]) -> Scalar[DTYPE] where DTYPE.is_floating_point():
+    """`log(x)` to full float64 over [1e-5, 1e5], for a gated constant.
+
+    ⚠⚠ `std.math.log` IS NOT FLOAT64-ACCURATE, AND IT IS WORST EXACTLY WHERE
+    IT IS USED. Measured against `np.log` over a decade sweep:
+
+        x      1e-6    1e-5    1e-3    0.01    0.1     10      100     1e4
+        std   4.3e-14 3.4e-11 3.3e-14 1.9e-11 8.0e-11 1.1e-10 5.6e-11 2.0e-11
+        this  4.1e-13 8.2e-15 4.9e-15 0.0     0.0     0.0     1.9e-16 1.8e-14
+
+    Its error is ERRATIC rather than monotone — exact at 0.5 and 2.0, 1.1e-10
+    at 10 — so no bound can be inferred from a single spot check.
+
+    `2*atanh((x-1)/(x+1))` is the same identity `log1p_accurate` uses, and it
+    reaches float64 for the same reason: it never calls `log`. It INVERTS
+    outside [1e-5, 1e5], where `(x-1)/(x+1)` approaches +-1 and `atanh` loses
+    what the identity gains (4.1e-13 at 1e-6, 6.7e-12 at 1e7) — and there
+    `std.math.log` happens to be at its best, so the fallback is not a
+    compromise.
+
+    ⚠ THIS IS NOT ACADEMIC EITHER. `rewards.sigmoids`' gaussian scale is
+    `sqrt(-2 log(value_at_1))`, and `log(0.1)` being 8.0e-11 low made the
+    scale 4.0e-11 low — which the exponent AMPLIFIES BY u^2/2. On
+    `reach_duplo_features`' reward ramp that reached **3.9e-09 relative** at 28
+    cm, against a gate written at 1e-12. See `log1p_accurate` for the same
+    lesson found through `joints_torque`.
+
+    ⚠ THE CALLER MUST CARRY THE FLOATING-POINT EVIDENCE. Unlike the `*_dt`
+    shims below this is a plain constrained generic, so it is NOT callable from
+    an unconstrained trait method — see the module docstring. Add a dispatching
+    `log_dt` if a GPU hook ever needs it.
+    """
+    comptime LO = Scalar[DTYPE](1.0e-5)
+    comptime HI = Scalar[DTYPE](1.0e5)
+    if x < LO or x > HI:
+        return log(x)
+    return Scalar[DTYPE](2.0) * atanh(
+        (x - Scalar[DTYPE](1.0)) / (x + Scalar[DTYPE](1.0))
+    )
+
+
+@always_inline
 def log1p_dt[DTYPE: DType](x: Scalar[DTYPE]) -> Scalar[DTYPE]:
     """`log(1 + x)`, callable from a GPU hook.
 

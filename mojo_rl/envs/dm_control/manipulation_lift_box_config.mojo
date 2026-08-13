@@ -52,8 +52,6 @@ from std.math import abs, sqrt, inf
 from std.random import random_float64
 
 from mojo_rl.physics3d.fields import Data, Model
-from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     JOINT_IDX_RANGE_MIN,
@@ -70,14 +68,11 @@ from mojo_rl.envs.dm_control.manipulation_obs import (
     append_free_prop_block,
     N_ARM,
     N_HAND,
-    SITE_PINCH,
 )
 from mojo_rl.envs.dm_control.manipulation_prop import (
     set_free_prop_pose,
+    settle_free_prop,
     uniform_z_rotation,
-    SETTLE_QVEL_TOL,
-    SETTLE_QACC_TOL,
-    SETTLE_MAX_TIME,
 )
 from mojo_rl.envs.dm_control.manipulation_reset import (
     set_grasp,
@@ -100,6 +95,14 @@ comptime PROP_QPOS_ADR: Int = 9  # its free joint
 comptime PROP_DOF_ADR: Int = 9
 comptime VERTEX_SITE_0: Int = 12  # `vertex_0` .. `vertex_7` are 12..19
 comptime N_VERTICES: Int = 8
+
+# ⚠⚠ THE ROBOT'S SITE IDS ARE PER TASK, NOT INVARIANT. The 9 robot sites start
+# after the task's own worldbody sites, and how many of those there are depends
+# on where the task put its target site — 3 here (`target_height`,
+# `tcp_spawn_area`, `prop_spawn_area`), 2 for `reach_duplo`, whose target
+# site goes on the brick. See `manipulation_obs`' table.
+comptime ROBOT_SITE_BASE: Int = 3
+comptime SITE_PINCH: Int = ROBOT_SITE_BASE + 8  # `jaco_hand/pinchsite`
 
 comptime OBS_DIM: Int = 55
 
@@ -180,7 +183,7 @@ struct LiftLargeBoxConfig(Phyics3dEnvConfig):
         none, so the robot block leads."""
         try:
             append_robot_block[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
-                d, m_bodies, m_joints, m_sites, obs
+                d, m_bodies, m_joints, m_sites, ROBOT_SITE_BASE, obs
             )
             append_free_prop_block[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
                 d, m_geoms, PROP_GEOM, obs
@@ -313,49 +316,15 @@ struct LiftLargeBoxConfig(Phyics3dEnvConfig):
             d, PROP_QPOS_ADR, PROP_DOF_ADR, ppos, pquat
         )
 
-        # ── 2. settle it, with the arm held static ──────────────────────
-        # ⚠ THE ARM SNAPSHOT IS TAKEN ONCE AND RESTORED EVERY STEP. That is
-        # `JointStaticIsolator`'s contract; letting the arm integrate here
-        # would drop it under gravity for up to 2 s before the episode starts.
-        var arm_qpos = InlineArray[Float64, 9](fill=0.0)
-        var arm_qvel = InlineArray[Float64, 9](fill=0.0)
-        for i in range(N_ARM + N_HAND):
-            arm_qpos[i] = Float64(d.qpos.data[i])
-            arm_qvel[i] = Float64(d.qvel.data[i])
-
-        var integ = EulerIntegrator[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQ, NTEN,
-            NSITE, NEXCL, NMESHV,
-            # ⚠ FROM THE MODEL DEF, NOT DEFAULTED. `MAX_CONDIM` and
-            # `NOSLIP_ITER` both default to a value that silently disables the
-            # feature (3 and 0), so a settle run with the defaults is a
-            # DIFFERENT PHYSICS from the one the episode then steps — and the
-            # prop would settle against contacts the env does not have.
-            # `RNE_POST` is off here alone: the settle takes no observation.
-            LiftLargeBoxModel.CONE_TYPE, 1,
-            RNE_POST=False,
-            MAX_CONDIM=LiftLargeBoxModel.MAX_CONDIM,
-            NOSLIP_ITER=LiftLargeBoxModel.NOSLIP_ITER,
-            NPAIR=NPAIR,
-        ]()
-        var max_steps = Int(SETTLE_MAX_TIME / Self.get_timestep())
-        for _ in range(max_steps):
-            integ.step["cpu"](d, mf)
-            for i in range(N_ARM + N_HAND):
-                d.qpos.data[i] = Scalar[DTYPE](arm_qpos[i])
-                d.qvel.data[i] = Scalar[DTYPE](arm_qvel[i])
-            var mv = 0.0
-            var ma = 0.0
-            for k in range(6):
-                var v = abs(Float64(d.qvel.data[PROP_DOF_ADR + k]))
-                var a = abs(Float64(d.qacc.data[PROP_DOF_ADR + k]))
-                if v > mv:
-                    mv = v
-                if a > ma:
-                    ma = a
-            if mv < SETTLE_QVEL_TOL and ma < SETTLE_QACC_TOL:
-                break
-        forward_kinematics["cpu"](d, mf)
+        # ── 2. settle it, with the robot held static ────────────────────
+        _ = settle_free_prop[
+            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
+            NMESHV, NPAIR, MAX_CONTACTS,
+            LiftLargeBoxModel.CONE_TYPE,
+            LiftLargeBoxModel.MAX_CONDIM,
+            LiftLargeBoxModel.NOSLIP_ITER,
+            N_ARM + N_HAND,
+        ](d, mf, PROP_DOF_ADR, Self.get_timestep())
 
         # ── 3. the TCP initializer ──────────────────────────────────────
         var dof_idx = InlineArray[Int, N_ARM](fill=0)

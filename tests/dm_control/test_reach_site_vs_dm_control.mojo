@@ -56,11 +56,12 @@ from mojo_rl.envs.dm_control.manipulation_reach_config import (
     OBS_DIM,
     SITE_TARGET,
     TARGET_RADIUS,
+    ROBOT_SITE_BASE,
+    SITE_PINCH,
 )
 from mojo_rl.envs.dm_control.manipulation_obs import (
     N_ARM,
     N_HAND,
-    SITE_PINCH,
     BODY_PINCH,
     torque_body_of,
     torque_site_of,
@@ -245,7 +246,7 @@ def test_reach_element_indices_match_mujoco() raises:
             "  torque",
             i,
             " site",
-            torque_site_of(i),
+            torque_site_of(ROBOT_SITE_BASE, i),
             "/",
             ms,
             "  body",
@@ -254,7 +255,7 @@ def test_reach_element_indices_match_mujoco() raises:
             mb,
         )
         assert_true(
-            torque_site_of(i) == ms,
+            torque_site_of(ROBOT_SITE_BASE, i) == ms,
             "torque sensor site index disagrees with MuJoCo — note this is"
             " NOT 3 + i, `wristsite` sits between joint_5_site and"
             " joint_6_site",
