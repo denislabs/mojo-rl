@@ -10,6 +10,12 @@ Runs once at model load time.
 
 from std.math import sqrt, abs
 
+from .hull_cache import (
+    HullPayload,
+    hull_cache_load,
+    hull_cache_path,
+    hull_cache_store,
+)
 from .mesh_polygons import build_mesh_polygons
 from ..model.mesh_inertia import MeshInertia, transform_verts_to_principal_frame
 
@@ -731,27 +737,73 @@ def load_mesh_hull[
     """
     from mojo_rl.render.stl_loader import load_stl
 
-    var mesh_data = load_stl(mesh_filename)
+    # ── The cache ────────────────────────────────────────────────────────────
+    # Everything between here and `rbound` costs 18.9 s on SO-ARM101, and the
+    # viewer re-pays it on every env switch. `hull_cache` stores this mesh's
+    # WHOLE output keyed on the STL's contents AND `mi`'s frame; see that
+    # module for why the frame belongs in the key and for the rebasing table
+    # the append block below implements.
+    var cache_path = hull_cache_path[DTYPE](mesh_filename, mi)
+    var p = HullPayload()
 
-    # Extract positions from GPUVertex structs into flat array
-    var raw = List[Scalar[DTYPE]]()
-    var num_raw = len(mesh_data.vertices)
-    for i in range(num_raw):
-        raw.append(Scalar[DTYPE](mesh_data.vertices[i].px))
-        raw.append(Scalar[DTYPE](mesh_data.vertices[i].py))
-        raw.append(Scalar[DTYPE](mesh_data.vertices[i].pz))
+    if not hull_cache_load(cache_path, p):
+        var mesh_data = load_stl(mesh_filename)
 
-    # Deduplicate into temp buffer
-    var unique = List[Scalar[DTYPE]]()
-    var num_unique = deduplicate_vertices[DTYPE](raw, num_raw, unique)
+        # Extract positions from GPUVertex structs into flat array
+        var raw = List[Scalar[DTYPE]]()
+        var num_raw = len(mesh_data.vertices)
+        for i in range(num_raw):
+            raw.append(Scalar[DTYPE](mesh_data.vertices[i].px))
+            raw.append(Scalar[DTYPE](mesh_data.vertices[i].py))
+            raw.append(Scalar[DTYPE](mesh_data.vertices[i].pz))
 
-    # Into the principal frame, exactly where MuJoCo does it (`mjCMesh::
-    # Compute` translates by -CoM then `Rotate`s by the conjugate, then records
-    # the pair as mesh_pos/mesh_quat). Everything below — hull, polygons,
-    # rbound — is therefore computed in MuJoCo's frame rather than the STL's.
-    transform_verts_to_principal_frame[DTYPE](unique, num_unique, mi)
+        # Deduplicate into temp buffer
+        var unique = List[Scalar[DTYPE]]()
+        var num_unique = deduplicate_vertices[DTYPE](raw, num_raw, unique)
 
-    # Compute convex hull
+        # Into the principal frame, exactly where MuJoCo does it (`mjCMesh::
+        # Compute` translates by -CoM then `Rotate`s by the conjugate, then
+        # records the pair as mesh_pos/mesh_quat). Everything below — hull,
+        # polygons, rbound — is therefore computed in MuJoCo's frame rather
+        # than the STL's.
+        transform_verts_to_principal_frame[DTYPE](unique, num_unique, mi)
+
+        # ⚠ BUILT INTO FRESH, EMPTY LISTS AT `vert_base = 0`. That is what
+        # makes the payload position-independent: every `*_adr` these three
+        # calls emit is `len()` of a list that started empty, and every global
+        # vertex id in `edge_list` is `0 + w`. A cached mesh is therefore
+        # exactly what a from-scratch build of a ONE-MESH model would produce,
+        # and the append block below applies the shift `load_mesh_hull` has
+        # always applied.
+        var lvert = List[Scalar[DTYPE]]()
+        var lfaces = List[Int]()
+        var nh = compute_convex_hull[DTYPE](unique, num_unique, lvert, lfaces)
+        var lnormal = List[Scalar[DTYPE]]()
+        var np_local = build_mesh_polygons[DTYPE](
+            lvert,
+            0,
+            nh,
+            lfaces,
+            p.poly_vert,
+            p.poly_vertadr,
+            p.poly_vertnum,
+            lnormal,
+            p.polymap,
+            p.polymap_adr,
+            p.polymap_num,
+        )
+        build_hull_edge_graph(nh, lfaces, 0, p.edge_adr, p.edge_list)
+
+        p.num_hull = nh
+        p.npoly = np_local
+        p.rbound = Float64(compute_mesh_rbound_at[DTYPE](lvert, 0, nh))
+        for i in range(len(lvert)):
+            p.hull_vert.append(Float64(lvert[i]))
+        for i in range(len(lnormal)):
+            p.poly_normal.append(Float64(lnormal[i]))
+
+        hull_cache_store(cache_path, p)
+
     var mesh_id = num_meshes
     # ⚠ TWO UNITS, ONE NAME. `mesh_vert` is a FLAT scalar list, so
     # `len(mesh_vert)` is an offset in FLOATS — but every collision consumer
@@ -770,12 +822,21 @@ def load_mesh_hull[
     # `mesh_vertadr` is now a VERTEX index, which is also MuJoCo's convention
     # for `mesh_vertadr`. `compute_mesh_rbound_at` walks the flat list and
     # still wants FLOATS, so it is given the float offset explicitly.
+    # ── Append into the model-wide arrays ────────────────────────────────────
+    # ⚠⚠ THIS IS THE REBASING, AND IT IS WHERE A CACHE BUG WOULD HIDE. `p`
+    # holds offsets relative to zero; the shared arrays already contain every
+    # earlier mesh. The three `*_adr` arrays are offsets and shift; `poly_vert`
+    # and `polymap` hold LOCAL ids and do NOT; `edge_list` holds GLOBAL vertex
+    # ids and shifts by the vertex base, with -1 terminators passed through.
+    # The table in `hull_cache.mojo` is the reference, and
+    # `test_hull_cache.mojo` compares a cold build against a warm one for
+    # exactly this block.
     var vert_float_offset = len(mesh_vert)
-    mesh_vertadr.append(vert_float_offset // 3)
-    var hull_faces = List[Int]()
-    var num_hull = compute_convex_hull[DTYPE](
-        unique, num_unique, mesh_vert, hull_faces
-    )
+    var vert_base = vert_float_offset // 3
+    mesh_vertadr.append(vert_base)
+    for i in range(len(p.hull_vert)):
+        mesh_vert.append(Scalar[DTYPE](p.hull_vert[i]))
+    var num_hull = p.num_hull
     mesh_vertnum.append(num_hull)
     num_meshes += 1
 
@@ -783,31 +844,35 @@ def load_mesh_hull[
     # are appended one entry per HULL VERTEX, so they stay parallel to the
     # vertex block this mesh just wrote.
     mesh_polyadr.append(len(poly_vertadr))
-    var npoly = build_mesh_polygons[DTYPE](
-        mesh_vert,
-        vert_float_offset,
-        num_hull,
-        hull_faces,
-        poly_vert,
-        poly_vertadr,
-        poly_vertnum,
-        poly_normal,
-        polymap,
-        polymap_adr,
-        polymap_num,
-    )
-    mesh_polynum.append(npoly)
+    var poly_vert_base = len(poly_vert)
+    for i in range(p.npoly):
+        poly_vertadr.append(p.poly_vertadr[i] + poly_vert_base)
+        poly_vertnum.append(p.poly_vertnum[i])
+    for i in range(len(p.poly_vert)):
+        poly_vert.append(p.poly_vert[i])  # LOCAL vertex id — no shift
+    for i in range(len(p.poly_normal)):
+        poly_normal.append(Scalar[DTYPE](p.poly_normal[i]))
+    mesh_polynum.append(p.npoly)
+
+    var polymap_base = len(polymap)
+    for i in range(num_hull):
+        polymap_adr.append(p.polymap_adr[i] + polymap_base)
+        polymap_num.append(p.polymap_num[i])
+    for i in range(len(p.polymap)):
+        polymap.append(p.polymap[i])  # LOCAL polygon id — no shift
 
     # Vertex adjacency for the plane-mesh path. Built from the SAME triangles
     # the polygons were merged from, and indexed by global vertex id, so it
     # stays parallel to the vertex block written above.
-    build_hull_edge_graph(
-        num_hull, hull_faces, vert_float_offset // 3, edge_adr, edge_list
-    )
+    var edge_list_base = len(edge_list)
+    for i in range(num_hull):
+        edge_adr.append(p.edge_adr[i] + edge_list_base)
+    for i in range(len(p.edge_list)):
+        var e = p.edge_list[i]
+        # ⚠ -1 IS THE TERMINATOR, NOT A VERTEX. Shifting it would turn every
+        # per-vertex neighbour walk into a run off the end of the list.
+        edge_list.append(e if e < 0 else e + vert_base)
 
-    # Compute bounding radius from hull vertices
-    var rbound = compute_mesh_rbound_at[DTYPE](
-        mesh_vert, vert_float_offset, num_hull
-    )
+    var rbound = Scalar[DTYPE](p.rbound)
 
     return (mesh_id, rbound)
