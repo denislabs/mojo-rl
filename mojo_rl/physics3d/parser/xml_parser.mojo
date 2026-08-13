@@ -2223,7 +2223,7 @@ def merge_mjcf(*xmls: String) -> String:
     Singleton tags (<option>, <compiler>): attributes merged, last wins per attr.
     Accumulator tags — inner content concatenated from all inputs:
     <asset>, <default>, <worldbody>, <tendon>, <actuator>, <equality>,
-    <visual>, <sensor>, <contact>, and <option>'s <flag> children.
+    <visual>, <sensor>, <contact>, <keyframe>, and <option>'s <flag> children.
 
     ⚠ ANYTHING NOT IN THAT LIST IS SILENTLY DROPPED, with no diagnostic. No
     section is dropped deliberately any more — <contact> was, on the stale
@@ -2240,6 +2240,11 @@ def merge_mjcf(*xmls: String) -> String:
     reference: MuJoCo built a model with nsensor == 0, so no parity gate could
     ask it what a sensor should read. Accumulating it costs nothing and makes
     the merged text a faithful copy of what the model declares.
+
+    <keyframe> joined on 2026-08-13, for ToddlerBot — which declares
+    `<key name="home">` in the INCLUDED robot file while the scene is what
+    gets loaded, so the section never survived the merge. Its qpos differs
+    from qpos0 in 26 of 51 slots by up to 1.5708 rad, and nothing raised.
 
     This list used to CLAIM <sensor> was accumulated while omitting <tendon>,
     which was both wrong and the reason a dropped `<tendon>` went unnoticed
@@ -2277,6 +2282,11 @@ def merge_mjcf(*xmls: String) -> String:
     # Carried for the MuJoCo side of parity gates (see the docstring); our own
     # parser never looks at it.
     var all_sensor = String("")
+    # <keyframe> — ToddlerBot declares `<key name="home">` in the INCLUDED
+    # robot file, not the scene, so before this the section was dropped by the
+    # merge before any parser could see it. Silent, like every other dropped
+    # section: a model with no keyframe is a model that resets to qpos0.
+    var all_keyframe = String("")
     # <contact> joined the accumulators on 2026-08-03, for humanoid_CMU. The
     # docstring above had said "no exclude/pair support yet" since the function
     # was written, and by then that was FALSE at both ends: `full_parser`
@@ -2361,6 +2371,9 @@ def merge_mjcf(*xmls: String) -> String:
         all_tendon = all_tendon + _extract_section_inner(stripped, "tendon")
         all_sensor = all_sensor + _extract_section_inner(stripped, "sensor")
         all_contact = all_contact + _extract_section_inner(stripped, "contact")
+        all_keyframe = all_keyframe + _extract_section_inner(
+            stripped, "keyframe"
+        )
         all_visual = all_visual + _extract_section_inner(stripped, "visual")
 
     # Build merged XML
@@ -2429,9 +2442,17 @@ def merge_mjcf(*xmls: String) -> String:
     if _trim(all_sensor).byte_length() > 0:
         result = result + "  <sensor>\n" + all_sensor + "  </sensor>\n"
 
-    # Contact — <exclude> pairs are parsed and honoured; <pair> is not.
+    # Contact — <exclude> and <pair> are both parsed and honoured.
     if _trim(all_contact).byte_length() > 0:
         result = result + "  <contact>\n" + all_contact + "  </contact>\n"
+
+    # Keyframe — emitted LAST, where hand-written models put it. Joined the
+    # accumulators on 2026-08-13 for ToddlerBot, whose `<key name="home">`
+    # lives in the INCLUDED robot file rather than the scene, so without this
+    # the section never reached any parser. Fourth section to be dropped this
+    # way after <tendon>, <option>'s <flag> children and <contact>.
+    if _trim(all_keyframe).byte_length() > 0:
+        result = result + "  <keyframe>\n" + all_keyframe + "  </keyframe>\n"
 
     result = result + "</mujoco>"
     return result
@@ -2828,6 +2849,24 @@ comptime MAX_COMPTIME_RENDER_MESHES: Int = 32
 # instead, where none of this applies — see its note. The XML is already carried
 # as a comptime parameter, so nothing extra is stored to make that possible.
 
+comptime MAX_COMPTIME_KEYFRAMES: Int = 8
+"""Cap on `<keyframe><key>` entries the comptime parser records.
+
+⚠ MEASURED with MuJoCo, not grep — a `<key>` inside an XML comment is a real
+hazard here: `rethink_robotics_sawyer/sawyer.xml` carries a commented-out
+second `<key name="home">` whose qpos is one slot LONGER than nq, and a text
+scan reads it as a live over-length keyframe.
+
+Across all of Menagerie the histogram is `{1: 105, 2: 14, 3: 1}` — the maximum
+is THREE (`franka_emika_panda/mjx_single_cube.xml`). 8 is headroom over that
+rather than a slot above it, per `MAX_COMPTIME_NQ`'s note. Exceeding it sets
+`bad_keyframe_code = 1` and `ModelDefFromXML` fails the build, rather than the
+silent truncation `MAX_COMPTIME_TENDONS` and `MAX_COMPTIME_ACTUATORS` both
+shipped with.
+
+⚠ These arrays are `NKEYS * NQ0` and are materialized by the comptime
+interpreter; raising this is not free. Measure the build time if you do."""
+
 comptime MAX_COMPTIME_ACTUATORS: Int = 64
 """Cap on actuators the comptime parser records (humanoid_CMU needs 56).
 
@@ -2908,6 +2947,8 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
         comptime _acd = parse_xml_model_data(Self.xml)
         # In GPU kernel:  Self._acd.motor_gears[i]  (no String ops)
     """
+
+    comptime NKEYS: Int = MAX_COMPTIME_KEYFRAMES
 
     var motor_gears: InlineArray[Float64, Self.NACT]
     var motor_dof_adr: InlineArray[Int, Self.NACT]
@@ -3100,6 +3141,36 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
     # qpos address of the first free joint (-1 if no free joint present).
     var free_joint_qpos_adr: Int
 
+    # ---- <keyframe><key> ---------------------------------------------------
+    #
+    # ⚠ A KEYFRAME IS NOT A RESET. Measured on the 3.10.0 runtime: with a
+    # keyframe present, `mj_resetData` still writes `qpos0` — only an explicit
+    # `mj_resetDataKeyframe(m, d, i)` applies one. So these are RECORDED here
+    # and applied only by `ModelDefFromXML.reset_data_keyframe`; `reset_data`
+    # is deliberately unchanged. Making the default reset "prefer" a keyframe
+    # would silently diverge from MuJoCo on every model that has one, which is
+    # the same shape as the `ctrlrange` fallback that became a hard clamp.
+    #
+    # `key_qvel` is sized by NQ0 rather than by nv, which is never smaller
+    # than it needs to be (nv <= nq always) and saves a sixth type parameter.
+    var nkey: Int
+    var key_time: InlineArray[Float64, Self.NKEYS]
+    # Value COUNT supplied per key, 0 when the attribute was absent. MuJoCo
+    # fills an omitted `qpos` from qpos0 and an omitted `qvel`/`ctrl` with
+    # zeros, so "absent" and "all zeros" are different and must stay so.
+    var key_nqpos: InlineArray[Int, Self.NKEYS]
+    var key_nqvel: InlineArray[Int, Self.NKEYS]
+    var key_nctrl: InlineArray[Int, Self.NKEYS]
+    var key_qpos: InlineArray[Float64, Self.NKEYS * Self.NQ0]
+    var key_qvel: InlineArray[Float64, Self.NKEYS * Self.NQ0]
+    var key_ctrl: InlineArray[Float64, Self.NKEYS * Self.NACT]
+    # Non-zero => the model uses a keyframe feature we do not model. Reported
+    # by `ModelDefFromXML`'s asserts rather than raised here, mirroring
+    # `bad_actuator_code` — the comptime parser has no good way to raise.
+    #   1 = more keys than MAX_COMPTIME_KEYFRAMES
+    #   2 = `act` / `mpos` / `mquat` present (we model none of them)
+    var bad_keyframe_code: Int
+
     def __init__(out self):
         """Initialize with safe defaults: gears=1.0, dof_adr=-1, all others=0/False.
         """
@@ -3154,6 +3225,15 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
         self.qpos0 = InlineArray[Float64, Self.NQ0](fill=0.0)
         self.nq = 0
         self.free_joint_qpos_adr = -1
+        self.nkey = 0
+        self.key_time = InlineArray[Float64, Self.NKEYS](fill=0.0)
+        self.key_nqpos = InlineArray[Int, Self.NKEYS](fill=0)
+        self.key_nqvel = InlineArray[Int, Self.NKEYS](fill=0)
+        self.key_nctrl = InlineArray[Int, Self.NKEYS](fill=0)
+        self.key_qpos = InlineArray[Float64, Self.NKEYS * Self.NQ0](fill=0.0)
+        self.key_qvel = InlineArray[Float64, Self.NKEYS * Self.NQ0](fill=0.0)
+        self.key_ctrl = InlineArray[Float64, Self.NKEYS * Self.NACT](fill=0.0)
+        self.bad_keyframe_code = 0
 
     def __init__(out self, *, copy: Self):
         # InlineArray is not ImplicitlyCopyable; copy element-by-element.
@@ -3210,6 +3290,27 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
         self.qpos0 = InlineArray[Float64, Self.NQ0](fill=0.0)
         self.nq = copy.nq
         self.free_joint_qpos_adr = copy.free_joint_qpos_adr
+        self.nkey = copy.nkey
+        self.bad_keyframe_code = copy.bad_keyframe_code
+        self.key_time = InlineArray[Float64, Self.NKEYS](fill=0.0)
+        self.key_nqpos = InlineArray[Int, Self.NKEYS](fill=0)
+        self.key_nqvel = InlineArray[Int, Self.NKEYS](fill=0)
+        self.key_nctrl = InlineArray[Int, Self.NKEYS](fill=0)
+        self.key_qpos = InlineArray[Float64, Self.NKEYS * Self.NQ0](fill=0.0)
+        self.key_qvel = InlineArray[Float64, Self.NKEYS * Self.NQ0](fill=0.0)
+        self.key_ctrl = InlineArray[Float64, Self.NKEYS * Self.NACT](fill=0.0)
+        # Each of these is copied over ITS OWN length, matching how every
+        # other array in this constructor is handled.
+        for k in range(Self.NKEYS):
+            self.key_time[k] = copy.key_time[k]
+            self.key_nqpos[k] = copy.key_nqpos[k]
+            self.key_nqvel[k] = copy.key_nqvel[k]
+            self.key_nctrl[k] = copy.key_nctrl[k]
+        for i in range(Self.NKEYS * Self.NQ0):
+            self.key_qpos[i] = copy.key_qpos[i]
+            self.key_qvel[i] = copy.key_qvel[i]
+        for i in range(Self.NKEYS * Self.NACT):
+            self.key_ctrl[i] = copy.key_ctrl[i]
         for i in range(Self.NACT):
             self.motor_gears[i] = copy.motor_gears[i]
             self.motor_dof_adr[i] = copy.motor_dof_adr[i]
@@ -3288,6 +3389,15 @@ struct ComptimeActData[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](Co
         self.qpos0 = move.qpos0^
         self.nq = move.nq
         self.free_joint_qpos_adr = move.free_joint_qpos_adr
+        self.nkey = move.nkey
+        self.bad_keyframe_code = move.bad_keyframe_code
+        self.key_time = move.key_time^
+        self.key_nqpos = move.key_nqpos^
+        self.key_nqvel = move.key_nqvel^
+        self.key_nctrl = move.key_nctrl^
+        self.key_qpos = move.key_qpos^
+        self.key_qvel = move.key_qvel^
+        self.key_ctrl = move.key_ctrl^
 
 
 def _xml_find_joint_dof_adr(xml: String, jname: String) -> Int:
@@ -4456,6 +4566,96 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
         # For free joints, ensure qw=1 (identity quaternion)
         if data.free_joint_qpos_adr >= 0:
             data.qpos0[data.free_joint_qpos_adr + 3] = 1.0
+
+    # ---- <keyframe><key qpos= qvel= ctrl= time=> ---------------------------
+    #
+    # ⚠ RECORDED, NOT APPLIED. See the field block on `ComptimeActData`:
+    # `mj_resetData` ignores keyframes, so `reset_data` must too.
+    #
+    # ⚠ A WRONG-LENGTH ATTRIBUTE IS REJECTED RATHER THAN PADDED. MuJoCo pads a
+    # SHORT one, but measurably not from `qpos0`: for a model whose
+    # `qpos0[7]` is 0.00436332 (a `ref="0.25"` in degrees), a short `qpos`
+    # comes back with 0.25 in that slot — the RAW attribute value, before unit
+    # conversion. That is spec-level default state leaking through, it differs
+    # from anything else in the model, and it is not worth reproducing.
+    # Nothing real depends on it: across Menagerie's 66 keyframed models,
+    # 145 of 145 attributes are EXACTLY full length and none is short.
+    var kf_sec = _extract_section(xml_clean, "keyframe")
+    if kf_sec.byte_length() > 0:
+        var kpos = 0
+        var kcount = 0
+        while True:
+            var t = _find_tag(kf_sec, "<key", kpos)
+            if t == -1:
+                break
+            var tag_end = kf_sec.find(">", t)
+            if tag_end == -1:
+                break
+            var ktag = String(kf_sec[byte = t : tag_end + 1])
+            kpos = tag_end + 1
+
+            if kcount >= MAX_COMPTIME_KEYFRAMES:
+                data.bad_keyframe_code = 1
+                break
+
+            # `act` / `mpos` / `mquat` are REJECTED, not dropped. Zero of the
+            # 147 keyframe attributes in Menagerie use any of them (na == 0 in
+            # all 66 models), so this refuses nothing that exists — but a
+            # silently ignored `act` would be a wrong actuator state at reset
+            # with nothing to notice it. Same call as `<pair gap=>`.
+            if (
+                _trim(_extract_attr(ktag, "act")).byte_length() > 0
+                or _trim(_extract_attr(ktag, "mpos")).byte_length() > 0
+                or _trim(_extract_attr(ktag, "mquat")).byte_length() > 0
+            ):
+                data.bad_keyframe_code = 2
+                break
+
+            var ktime = _trim(_extract_attr(ktag, "time"))
+            if ktime.byte_length() > 0:
+                data.key_time[kcount] = _parse_float(ktime)
+
+            var kq = _trim(_extract_attr(ktag, "qpos"))
+            if kq.byte_length() > 0:
+                var parts = List[String]()
+                _split_spaces(kq, parts)
+                var n = len(parts)
+                if n > NQ0:
+                    n = NQ0
+                for i in range(n):
+                    data.key_qpos[kcount * NQ0 + i] = _parse_float(
+                        parts[i]
+                    )
+                data.key_nqpos[kcount] = len(parts)
+
+            var kv = _trim(_extract_attr(ktag, "qvel"))
+            if kv.byte_length() > 0:
+                var parts_v = List[String]()
+                _split_spaces(kv, parts_v)
+                var nv_ = len(parts_v)
+                if nv_ > NQ0:
+                    nv_ = NQ0
+                for i in range(nv_):
+                    data.key_qvel[kcount * NQ0 + i] = _parse_float(
+                        parts_v[i]
+                    )
+                data.key_nqvel[kcount] = len(parts_v)
+
+            var kc = _trim(_extract_attr(ktag, "ctrl"))
+            if kc.byte_length() > 0:
+                var parts_c = List[String]()
+                _split_spaces(kc, parts_c)
+                var nc = len(parts_c)
+                if nc > NACT:
+                    nc = NACT
+                for i in range(nc):
+                    data.key_ctrl[kcount * NACT + i] = _parse_float(
+                        parts_c[i]
+                    )
+                data.key_nctrl[kcount] = len(parts_c)
+
+            kcount += 1
+        data.nkey = kcount
 
     return data^
 

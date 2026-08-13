@@ -351,6 +351,89 @@ struct ModelDefFromXML[
             d.qacc.data[i] = Scalar[DTYPE](0)
             d.qfrc.data[i] = Scalar[DTYPE](0)
 
+    comptime nkey: Int = Self._acd.nkey
+    """Number of `<keyframe><key>` entries, in XML order (MuJoCo's `nkey`)."""
+
+    # ⚠ THE ROW STRIDE IS `Self._NQ0` / `Self._NACT`, NOT the MAX_COMPTIME_*
+    # caps. `_acd` is instantiated with the MODEL's own nq/nact (see `_NQ0`
+    # above), so the key arrays are `NKEYS * nq`, not `NKEYS * 128`. Using the
+    # cap as a stride reads a wildly out-of-range slot on every model.
+    @staticmethod
+    def key_qpos_at(k: Int, i: Int) -> Float64:
+        """`mjModel.key_qpos[k][i]`, falling back to qpos0 when qpos is absent.
+        """
+        if k < 0 or k >= Self.nkey or i < 0 or i >= Self._NQ0:
+            return 0.0
+        if materialize[Self._acd.key_nqpos]()[k] == 0:
+            return materialize[Self._acd.qpos0]()[i]
+        return materialize[Self._acd.key_qpos]()[k * Self._NQ0 + i]
+
+    @staticmethod
+    def key_qvel_at(k: Int, i: Int) -> Float64:
+        """`mjModel.key_qvel[k][i]` — zero when absent, as MuJoCo fills it."""
+        if k < 0 or k >= Self.nkey or i < 0 or i >= Self._NQ0:
+            return 0.0
+        if materialize[Self._acd.key_nqvel]()[k] == 0:
+            return 0.0
+        return materialize[Self._acd.key_qvel]()[k * Self._NQ0 + i]
+
+    @staticmethod
+    def key_ctrl_at(k: Int, i: Int) -> Float64:
+        """`mjModel.key_ctrl[k][i]` — zero when absent, as MuJoCo fills it."""
+        if k < 0 or k >= Self.nkey or i < 0 or i >= Self._NACT:
+            return 0.0
+        if materialize[Self._acd.key_nctrl]()[k] == 0:
+            return 0.0
+        return materialize[Self._acd.key_ctrl]()[k * Self._NACT + i]
+
+    @staticmethod
+    def key_time_at(k: Int) -> Float64:
+        """`mjModel.key_time[k]`."""
+        if k < 0 or k >= Self.nkey:
+            return 0.0
+        return materialize[Self._acd.key_time]()[k]
+
+    @staticmethod
+    def reset_data_keyframe[
+        DTYPE: DType
+    ](
+        mut d: Data[
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.MAX_CONTACTS,
+            Self.NSITE,
+            1,
+        ],
+        k: Int,
+    ):
+        """`mj_resetDataKeyframe(m, d, k)` — reset to keyframe `k`.
+
+        ⚠⚠ THIS IS DELIBERATELY SEPARATE FROM `reset_data`, AND CALLING IT IS
+        THE CALLER'S CHOICE. Measured on the 3.10.0 runtime: with a keyframe
+        present, `mj_resetData` still writes `qpos0` — only an explicit
+        `mj_resetDataKeyframe` applies one. Having `reset_data` silently
+        "prefer" a keyframe would change the reset pose of every model that
+        declares one, away from what MuJoCo does, with nothing to notice it.
+
+        That distinction is the whole point of the feature for ToddlerBot: its
+        reference env resets from `keyframe("home").qpos`, whose values differ
+        from qpos0 in 26 of 51 slots by up to 1.5708 rad. The env asks for the
+        keyframe; the engine does not assume it.
+
+        `qacc`/`qfrc` are zeroed like `mj_resetData` does. `ctrl` lives on the
+        caller's action path rather than in `Data`, so read it with
+        `key_ctrl_at` — ToddlerBot's `home` sets 18 of its 30 controls, and
+        dropping them would leave the actuators commanding zero at t=0.
+        """
+        for i in range(Self.NQ):
+            d.qpos.data[i] = Scalar[DTYPE](Self.key_qpos_at(k, i))
+        for i in range(Self.NV):
+            d.qvel.data[i] = Scalar[DTYPE](Self.key_qvel_at(k, i))
+            d.qacc.data[i] = Scalar[DTYPE](0)
+            d.qfrc.data[i] = Scalar[DTYPE](0)
+
     @staticmethod
     def extract_obs[
         DTYPE: DType
@@ -993,6 +1076,45 @@ struct ModelDefFromXML[
         # model defs that pass it still compile. It is deprecated; see the
         # parameter's doc entry. Do not add new uses — there is nothing left
         # for it to permit.
+
+        # `<keyframe>` features we do not model, turned into compile errors
+        # the same way. Codes are documented on `bad_keyframe_code`.
+        comptime assert Self._acd.bad_keyframe_code != 1, (
+            "physics3d: this model has more <keyframe><key> entries than"
+            " MAX_COMPTIME_KEYFRAMES; raise it in xml_parser.mojo. Menagerie's"
+            " maximum is 3, so a model over the cap is worth a second look"
+            " before widening it."
+        )
+        comptime assert Self._acd.bad_keyframe_code != 2, (
+            "physics3d: <key act=/mpos=/mquat=> is not modelled. We carry no"
+            " actuator activation state and no mocap pose in a keyframe, and"
+            " applying the key while ignoring those would reset to a DIFFERENT"
+            " state than MuJoCo does. Zero of Menagerie's 147 keyframe"
+            " attributes use any of the three, so this refuses nothing that"
+            " exists today."
+        )
+        # ⚠ A wrong-length qpos/qvel/ctrl is caught here rather than padded.
+        # MuJoCo pads a SHORT attribute, but from spec-level default state in
+        # RAW units, not from qpos0 — see the note in `parse_xml_model_data`.
+        # 145 of Menagerie's 145 real keyframe attributes are exactly full
+        # length, so nothing depends on reproducing it.
+        comptime for _k in range(Self._acd.nkey):
+            comptime assert (
+                Self._acd.key_nqpos[_k] == 0
+                or Self._acd.key_nqpos[_k] == Self.nq
+            ), (
+                "physics3d: <key qpos=...> has a length other than nq. MuJoCo"
+                " pads a short one from unconverted spec defaults; we refuse"
+                " it instead."
+            )
+            comptime assert (
+                Self._acd.key_nctrl[_k] == 0
+                or Self._acd.key_nctrl[_k] == Self.nact
+            ), "physics3d: <key ctrl=...> has a length other than nu."
+            comptime assert (
+                Self._acd.key_nqvel[_k] == 0
+                or Self._acd.key_nqvel[_k] == Self.nv
+            ), "physics3d: <key qvel=...> has a length other than nv."
 
         # A `<general>` whose gain/bias/dyn shape we do not implement. The
         # comptime parser cannot raise, so it records the offender and we turn
