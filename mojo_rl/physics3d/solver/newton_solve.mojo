@@ -1328,6 +1328,19 @@ def _newton_solve_env[
             # `scale` argument below for why this must not be an int->float
             # conversion in the kernel body.
             comptime NV_SCALE: Float64 = Float64(NV if NV > 1 else 1)
+            # ⚠ DTYPE MIRROR OF `kind_e`. `noslip_pyramidal` takes the row kind
+            # as DTYPE so the blocked kernel can hand it `kind_e_sh.ptr`
+            # directly (its shared slab is single-dtype, and keeping that
+            # caller allocation-free is the point). This path holds `Int`s, so
+            # it converts here. Built immediately before the call from the
+            # authoritative array and never written after, so it cannot go
+            # stale; and it is inside the `comptime if NOSLIP_ITER > 0` above,
+            # so a model without the pass reserves nothing for it.
+            var kind_dt = InlineArray[Scalar[DTYPE], ME](
+                fill=Scalar[DTYPE](0)
+            )
+            for e_k in range(num_edges):
+                kind_dt[e_k] = Scalar[DTYPE](kind_e[e_k])
             noslip_pyramidal[
                 DTYPE, NV, ME, V_SIZE, MC, MAX_CONTACTS, MAX_CONDIM,
                 BATCH, NOSLIP_ITER,
@@ -1337,11 +1350,17 @@ def _newton_solve_env[
                 num_edges,
                 contacts,
                 m_inv,
-                Je,
-                bias_e,
-                kind_e,
-                R_e,
-                floss_e,
+                # ⚠ POINTERS, not the arrays. `noslip_pyramidal` takes its row
+                # storage as address-space-parameterized pointers so the SAME
+                # routine can also be called from the blocked kernel, whose
+                # rows live in threadgroup (or, for `Je`, global) memory. Here
+                # everything is a per-thread `InlineArray`, so every address
+                # space is the GENERIC default.
+                Je.unsafe_ptr(),
+                bias_e.unsafe_ptr(),
+                kind_dt.unsafe_ptr(),
+                R_e.unsafe_ptr(),
+                floss_e.unsafe_ptr(),
                 qacc_smooth,
                 # `scale` = 1 / (meaninertia * max(1, nv)) and `tolerance` =
                 # opt.noslip_tolerance. Both must be MuJoCo's or the sweep
@@ -1365,7 +1384,7 @@ def _newton_solve_env[
                 ),
                 qacc,
                 jar,
-                force,
+                force.unsafe_ptr(),
                 qfrc,
             )
 
@@ -3603,6 +3622,68 @@ def _newton_blocked_fields_kernel[
     # === THREAD 0: write back + reconstruct forces + equality/tendon ===
     if not valid_env or tid != 0:
         return
+
+    # ── mj_solNoSlip (BLOCKED kernel) ──────────────────────────────────────
+    # The friction-only Gauss-Seidel sweep with the normal forces frozen, run
+    # after the primal solve. Off unless the model asks for it
+    # (`<option noslip_iterations>`).
+    #
+    # ⚠⚠ THIS KERNEL ACCEPTED `NOSLIP_ITER` AND NEVER READ IT until 2026-08-13,
+    # so the pass ran on the CPU branch of `solve_newton_blocked` (which
+    # delegates to `_newton_solve_env`) and silently vanished on the GPU one.
+    # That is not a latent trap: `solve_newton` routes PYRAMIDAL + NVIDIA here,
+    # and dm_control's dog is PYRAMIDAL with `noslip_iterations="4"` and is
+    # trained batched on GPU — so the two branches of ONE function were
+    # computing different physics from identical inputs. Measured on the dog
+    # model, MuJoCo against itself with only the option changed moves
+    # `max|d(qvel)|` by 2.9e-2 on the FIRST contacting step.
+    #
+    # PYRAMIDAL branch, matching this kernel — `noslip_pyramidal`, never
+    # `noslip_elliptic`. There is no runtime test to get wrong: the elliptic
+    # cone has no cooperative port and `solve_newton` cannot route it here.
+    #
+    # Runs on THREAD 0 ONLY, and safely: every other thread returned at the
+    # guard above, so the shared rows it rewrites have no concurrent reader.
+    # `mj_solNoSlip` is Gauss-Seidel — sequential by construction — so this
+    # costs no parallelism that the algorithm could have used.
+    #
+    # ⚠ POSITION IS PART OF THE PORT. It must run BEFORE the `qacc` write-back
+    # and the contact-force reconstruction below, because it rewrites both
+    # `qacc` and `force_sh`. Same placement as the per-env path.
+    comptime if NOSLIP_ITER > 0:
+        noslip_pyramidal[
+            DTYPE, NV, ME, V_SIZE, MC, MAX_CONTACTS, MAX_CONDIM,
+            BATCH, NOSLIP_ITER,
+            # `Je` is SHARED or GLOBAL depending on whether it fit (see
+            # `JE_IN_SHARED`); the other rows are always threadgroup memory.
+            JE_AS,
+            AddressSpace.SHARED,
+        ](
+            env,
+            nc,
+            num_edges_b,
+            contacts,
+            m_inv,
+            Je_sh.ptr,
+            bias_e_sh.ptr,
+            kind_e_sh.ptr,
+            R_e_sh.ptr,
+            floss_e_sh.ptr,
+            qacc_smooth,
+            # ⚠ THE KERNEL'S OWN `scale`, not a recomputation. It is the same
+            # `1 / (meaninertia * max(1, nv))` model constant the primal loop
+            # above used, already guarded against a degenerate meaninertia.
+            # Recomputing it here would be a second expression for one
+            # quantity, and `scale` decides WHEN the sweep stops.
+            scale,
+            # ⚠ FROM META, NOT the `NOSLIP_TOLERANCE` constant — that constant
+            # is only the absent-attribute default. See the per-env path.
+            rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NOSLIP_TOLERANCE]),
+            qacc,
+            jar,
+            force_sh.ptr,
+            qfrc,
+        )
 
     for i in range(NV):
         qacc_constrained[env, i] = qacc[i]

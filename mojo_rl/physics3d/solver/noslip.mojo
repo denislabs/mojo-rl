@@ -16,6 +16,9 @@ GATES
   * pyramidal: `tests/physics3d/test_noslip_vs_mujoco.mojo` (compiles, runs,
     and does not perturb an already-converged solve — the pass is INERT on
     that fixture and the file says so) and dm_control's dog, where it bites.
+    ⚠ That file gates the PER-ENV path only. The blocked NVIDIA kernel is
+    gated separately by `tests/physics3d/test_noslip_blocked_kernel.mojo`,
+    because for a long time it ran neither and nothing noticed.
   * elliptic: `tests/physics3d/test_noslip_elliptic_vs_mujoco.mojo`, a
     3-capsule chain SLAMMED into the floor at 40 m/s while sliding, where
     MuJoCo-against-MuJoCo with only the option changed moves `qacc` by
@@ -115,9 +118,24 @@ SCOPE, STATED RATHER THAN IMPLIED
     evaluated once at model-build time. Getting either wrong does not corrupt
     the sweep, it changes WHEN the loop stops, which is a subtler and more
     annoying divergence — hence spelling it out here.
-  * NEITHER runs on `solve_newton_blocked`, the NVIDIA production kernel:
-    it accepts `NOSLIP_ITER` and never reads it. That is a live silent gap on
-    that path, not a property of this module.
+  * `noslip_pyramidal` DOES now run on `solve_newton_blocked`, the NVIDIA
+    production kernel, on BOTH of its branches. Until 2026-08-13 that kernel
+    accepted `NOSLIP_ITER` and never read it, so the pass ran on its CPU
+    branch (which delegates to `_newton_solve_env`) and silently vanished on
+    its GPU one — two branches of one function computing different physics
+    from identical inputs, on the path dm_control's dog is trained on.
+    `noslip_elliptic` still does not, and cannot: the blocked kernel is
+    PYRAMIDAL-only and `solve_newton` will not route an elliptic model to it.
+    Gate: `tests/physics3d/test_noslip_blocked_kernel.mojo`.
+
+    ⚠ THAT WIRING IS WHY THE ROW ARRAYS BELOW ARE POINTERS. The blocked kernel
+    keeps `Je`/`bias_e`/`force`/... in THREADGROUP memory (and spills `Je` to
+    global on models where it does not fit), while `_newton_solve_env` holds
+    per-thread `InlineArray`s. A signature naming either storage excludes the
+    other caller, and copying into locals is exactly what that kernel exists
+    to avoid. An address-space-parameterized pointer is what they share — see
+    the note above `_minv_jt`. Do not "simplify" it back to one storage kind
+    without re-reading that note; it would fork this routine in two.
 
 ⚠ THE REJECTION IS INSIDE `costChange`, NOT AT ITS CALL SITE. MuJoCo's helper
 restores `force` from `oldforce` and returns 0 when the change comes out above
@@ -167,6 +185,7 @@ dog should expect iteration-count divergence, which is the same regime
 
 from std.math import sqrt
 from std.collections import InlineArray
+from max.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
 from ..constraints.scalar_rows import SROW_FRICTION
@@ -190,13 +209,40 @@ comptime _DIAG_FLOOR: Float64 = 1e-10
 comptime _COST_REJECT: Float64 = 1e-10
 
 
+# ⚠⚠ THE ROW ARRAYS ARE POINTERS, NOT `InlineArray`s, AND THAT IS THE WHOLE
+# REASON ONE COPY OF THIS ROUTINE CAN SERVE BOTH SOLVERS.
+#
+# `_newton_solve_env` holds `Je`/`bias_e`/... as per-thread `InlineArray`s;
+# `_newton_blocked_fields_kernel` holds the same rows in THREADGROUP memory
+# (`Je_sh`, `bias_e_sh`, ... — and `Je` itself spills to GLOBAL on models where
+# it does not fit, so its address space is not even fixed across builds). A
+# signature naming either storage excludes the other caller, and the blocked
+# kernel cannot copy them into locals: `Je` is `ME * V_SIZE` scalars — ~38 kB
+# on dog — and this kernel exists precisely to keep per-thread local memory
+# small (see the `je_spills` note in `newton_solve`).
+#
+# A pointer with the address space as a PARAMETER is what both storages have in
+# common: `InlineArray.unsafe_ptr()` is GENERIC, `LayoutTensor.ptr` is SHARED or
+# GENERIC, and everything downstream is identical. Verified on Metal for both
+# address spaces including WRITE-THROUGH, since a per-thread buffer is exactly
+# the shape that miscomputes there
+# (`feedback_metal_wide_per_thread_inlinearray_miscompute`).
+#
+# ⚠ Read-only pointers leave the origin unbound (`_`); `force` is written, so
+# it takes a real `MutOrigin` parameter.
+
+
 @always_inline
 def _minv_jt[
-    DTYPE: DType, NV: Int, ME: Int, V_SIZE: Int, BATCH: Int
+    DTYPE: DType,
+    NV: Int,
+    V_SIZE: Int,
+    BATCH: Int,
+    JE_AS: AddressSpace = AddressSpace.GENERIC,
 ](
     env: Int,
     m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
-    Je: InlineArray[Scalar[DTYPE], ME * V_SIZE],
+    Je: Pointer[Scalar[DTYPE], _, address_space=JE_AS],
     row: Int,
     mut out_v: InlineArray[Scalar[DTYPE], V_SIZE],
 ):
@@ -219,9 +265,12 @@ def _minv_jt[
 
 @always_inline
 def _dot_row[
-    DTYPE: DType, NV: Int, ME: Int, V_SIZE: Int
+    DTYPE: DType,
+    NV: Int,
+    V_SIZE: Int,
+    JE_AS: AddressSpace = AddressSpace.GENERIC,
 ](
-    Je: InlineArray[Scalar[DTYPE], ME * V_SIZE],
+    Je: Pointer[Scalar[DTYPE], _, address_space=JE_AS],
     row: Int,
     v: InlineArray[Scalar[DTYPE], V_SIZE],
 ) -> Scalar[DTYPE]:
@@ -234,11 +283,16 @@ def _dot_row[
 
 @always_inline
 def _refresh_jar[
-    DTYPE: DType, NV: Int, ME: Int, V_SIZE: Int
+    DTYPE: DType,
+    NV: Int,
+    ME: Int,
+    V_SIZE: Int,
+    JE_AS: AddressSpace = AddressSpace.GENERIC,
+    ROW_AS: AddressSpace = AddressSpace.GENERIC,
 ](
     num_edges: Int,
-    Je: InlineArray[Scalar[DTYPE], ME * V_SIZE],
-    bias_e: InlineArray[Scalar[DTYPE], ME],
+    Je: Pointer[Scalar[DTYPE], _, address_space=JE_AS],
+    bias_e: Pointer[Scalar[DTYPE], _, address_space=ROW_AS],
     qacc: InlineArray[Scalar[DTYPE], V_SIZE],
     mut jar: InlineArray[Scalar[DTYPE], ME],
 ):
@@ -249,7 +303,7 @@ def _refresh_jar[
     at most `noslip_iterations` times per step.
     """
     for e in range(num_edges):
-        jar[e] = _dot_row[DTYPE, NV, ME, V_SIZE](Je, e, qacc) + bias_e[e]
+        jar[e] = _dot_row[DTYPE, NV, V_SIZE, JE_AS](Je, e, qacc) + bias_e[e]
 
 
 @always_inline
@@ -281,6 +335,7 @@ def _cost_change[
 
 
 def noslip_pyramidal[
+    FO: MutOrigin, //,
     DTYPE: DType,
     NV: Int,
     ME: Int,
@@ -290,6 +345,11 @@ def noslip_pyramidal[
     MAX_CONDIM: Int,
     BATCH: Int,
     MAX_ITER: Int,
+    # GENERIC/GENERIC is the per-env caller (per-thread `InlineArray`s); the
+    # blocked kernel passes SHARED rows and a `Je` that is SHARED or GLOBAL
+    # depending on whether it fit. See the note above `_minv_jt`.
+    JE_AS: AddressSpace = AddressSpace.GENERIC,
+    ROW_AS: AddressSpace = AddressSpace.GENERIC,
 ](
     env: Int,
     nc: Int,
@@ -303,11 +363,24 @@ def noslip_pyramidal[
         MutAnyOrigin,
     ],
     m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
-    Je: InlineArray[Scalar[DTYPE], ME * V_SIZE],
-    bias_e: InlineArray[Scalar[DTYPE], ME],
-    kind_e: InlineArray[Int, ME],
-    R_e: InlineArray[Scalar[DTYPE], ME],
-    floss_e: InlineArray[Scalar[DTYPE], ME],
+    # ⚠ `Je` is indexed with stride `V_SIZE`, and both callers lay it out with
+    # stride `NV`. Those agree because `V_SIZE = _max_one[NV]()`, i.e. they
+    # differ only at NV == 0, where there are no rows to sweep.
+    Je: Pointer[Scalar[DTYPE], _, address_space=JE_AS],
+    bias_e: Pointer[Scalar[DTYPE], _, address_space=ROW_AS],
+    # ⚠ DTYPE, NOT `Int`, and the row kind is an enum — so this reads
+    # `Int(kind_e[i])`. The two callers store it differently: the blocked
+    # kernel's shared-memory slab is single-dtype (`kind_e_sh` is DTYPE), while
+    # `_newton_solve_env` holds an `InlineArray[Int, ME]`. DTYPE is the side to
+    # unify on because it makes the BLOCKED caller free — it passes
+    # `kind_e_sh.ptr` straight through — and that kernel is the one whose
+    # reason for existing is small per-thread local memory. The per-env caller
+    # pays an ME-scalar mirror instead, built at the call site under the same
+    # `comptime if NOSLIP_ITER > 0` guard, so a model without the pass pays
+    # nothing on either path.
+    kind_e: Pointer[Scalar[DTYPE], _, address_space=ROW_AS],
+    R_e: Pointer[Scalar[DTYPE], _, address_space=ROW_AS],
+    floss_e: Pointer[Scalar[DTYPE], _, address_space=ROW_AS],
     qacc_smooth: InlineArray[Scalar[DTYPE], V_SIZE],
     # ⚠ `Scalar[DTYPE]`, not `Float64` — the caller must build these in DTYPE
     # too, or the conversion reappears at the CALL SITE and Metal rejects it
@@ -317,7 +390,9 @@ def noslip_pyramidal[
     tolerance: Scalar[DTYPE],
     mut qacc: InlineArray[Scalar[DTYPE], V_SIZE],
     mut jar: InlineArray[Scalar[DTYPE], ME],
-    mut force: InlineArray[Scalar[DTYPE], ME],
+    # The one array this routine WRITES through — hence a real `MutOrigin`
+    # rather than the unbound `_` its read-only siblings use.
+    force: Pointer[Scalar[DTYPE], FO, address_space=ROW_AS],
     mut qfrc: InlineArray[Scalar[DTYPE], V_SIZE],
 ):
     """One `mj_solNoSlip` call: up to `MAX_ITER` friction-only sweeps.
@@ -353,10 +428,10 @@ def noslip_pyramidal[
 
         # ── sweep 1: dry-friction dof rows, box-clamped to +-frictionloss ──
         for i in range(num_edges):
-            if kind_e[i] != SROW_FRICTION:
+            if Int(kind_e[i]) != SROW_FRICTION:
                 continue
-            _minv_jt[DTYPE, NV, ME, V_SIZE, BATCH](env, m_inv, Je, i, mj_a)
-            var a_ii = _dot_row[DTYPE, NV, ME, V_SIZE](Je, i, mj_a)
+            _minv_jt[DTYPE, NV, V_SIZE, BATCH, JE_AS](env, m_inv, Je, i, mj_a)
+            var a_ii = _dot_row[DTYPE, NV, V_SIZE, JE_AS](Je, i, mj_a)
             var arinv = Scalar[DTYPE](1.0) / (
                 a_ii if a_ii > MINVAL else MINVAL
             )
@@ -375,7 +450,7 @@ def noslip_pyramidal[
                 force[i] = f
                 for k in range(NV):
                     qacc[k] += d * mj_a[k]
-                _refresh_jar[DTYPE, NV, ME, V_SIZE](
+                _refresh_jar[DTYPE, NV, ME, V_SIZE, JE_AS, ROW_AS](
                     num_edges, Je, bias_e, qacc, jar
                 )
             # `0.5*d^2/ARinv` — and `1/ARinv` is `a_ii`, so no division here.
@@ -393,15 +468,19 @@ def noslip_pyramidal[
                 if j1 >= num_edges:
                     break
 
-                _minv_jt[DTYPE, NV, ME, V_SIZE, BATCH](env, m_inv, Je, j0, mj_a)
-                _minv_jt[DTYPE, NV, ME, V_SIZE, BATCH](env, m_inv, Je, j1, mj_b)
+                _minv_jt[DTYPE, NV, V_SIZE, BATCH, JE_AS](
+                    env, m_inv, Je, j0, mj_a
+                )
+                _minv_jt[DTYPE, NV, V_SIZE, BATCH, JE_AS](
+                    env, m_inv, Je, j1, mj_b
+                )
 
                 # `Ac` = A submatrix, diagonal clamped (flg_subR semantics:
                 # R is NOT part of it).
-                var a00 = _dot_row[DTYPE, NV, ME, V_SIZE](Je, j0, mj_a)
-                var a01 = _dot_row[DTYPE, NV, ME, V_SIZE](Je, j0, mj_b)
-                var a10 = _dot_row[DTYPE, NV, ME, V_SIZE](Je, j1, mj_a)
-                var a11 = _dot_row[DTYPE, NV, ME, V_SIZE](Je, j1, mj_b)
+                var a00 = _dot_row[DTYPE, NV, V_SIZE, JE_AS](Je, j0, mj_a)
+                var a01 = _dot_row[DTYPE, NV, V_SIZE, JE_AS](Je, j0, mj_b)
+                var a10 = _dot_row[DTYPE, NV, V_SIZE, JE_AS](Je, j1, mj_a)
+                var a11 = _dot_row[DTYPE, NV, V_SIZE, JE_AS](Je, j1, mj_b)
                 if a00 < DIAG_FLOOR:
                     a00 = DIAG_FLOOR
                 if a11 < DIAG_FLOOR:
