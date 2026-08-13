@@ -58,8 +58,19 @@ dry-friction dof rows.
 What differs is the up-to-two EXTRA plane-mesh contacts: our DEEPEST contact
 agrees with MuJoCo's to 1e-10 or better on every plane-mesh pose, so the
 support point is right and only the neighbourhood extras — which
-`mjc_PlaneConvex` picks in qhull's facet order — land elsewhere. Plus a
-smaller cylinder-mesh normal disagreement. Both tracked separately.
+`mjc_PlaneConvex` picks in qhull's facet order — land elsewhere. Tracked as
+task #56; `_plane_mesh_contacts` and `build_hull_edge_graph` carry the
+per-mesh numbers. Closing it means running qhull, not tightening a tolerance.
+
+⚠⚠ THE CYLINDER-MESH NORMAL WAS FILED HERE AS A SECOND DEFECT (task #57) AND
+IT IS NOT ONE. At the one clean 1-vs-1 pose our normal sits 9.4e-3 from
+MuJoCo's, which read as ours being wrong. Arbitrated against the DEFINITION of
+penetration depth — `min over unit n of h(n)`, needing no second
+implementation — ours is 0.03 deg from the minimising direction and MuJoCo's
+is 0.54 deg. MuJoCo is not converged here at its default `ccd_tolerance`, and
+tightening it to 1e-12 moves it to 4.01 deg, i.e. FURTHER away. Gated by
+`tests/physics3d/test_epa_optimality_cylinder_mesh.mojo`, which runs on
+MuJoCo's own float32 `mesh_vert` so the shape cannot be the excuse.
 
 ⚠ AN EARLIER VERSION OF THIS NOTE SAID "the CONTACT SET differs, 57 vs 55 at
 step 0". Counts actually match on 38 of 40 poses, and the `qacc` numbers that

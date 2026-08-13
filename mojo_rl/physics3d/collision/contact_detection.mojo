@@ -344,6 +344,59 @@ def _plane_mesh_contacts[
     two neighbours pass: MuJoCo takes them in qhull's internal facet order,
     which nothing here reproduces. The COUNT matches (it depends only on the
     candidate set), and so does contact 0. See `build_hull_edge_graph`.
+
+    ⚠⚠ AND THE CANDIDATE SET ITSELF DIFFERS, SO THIS IS NOT PURELY AN ORDERING
+    QUESTION. `build_hull_edge_graph` says order is the only difference; that
+    is what was believed, and it is measurably incomplete. Against MuJoCo's
+    `mesh_graph` for all nine Jaco meshes:
+
+        mesh  hull verts (ours/MuJoCo)  vertices whose neighbour SET differs
+          0        207 / 207              47 of 207   (82 extra, 82 missing)
+          1        199 / 198              67 of 198   (98 extra, 96 missing)
+          2        130 / 130              10 of 130    (8 extra,  8 missing)
+          3        136 / 136              31 of 136   (56 extra, 56 missing)
+          4        230 / 230              14 of 230    (8 extra,  8 missing)
+          5        151 / 151              39 of 151   (72 extra, 72 missing)
+          6         35 /  35               0 of  35
+          7        156 / 156              46 of 156   (28 extra, 28 missing)
+          8        213 / 213              10 of 213    (6 extra,  6 missing)
+
+    EXTRA AND MISSING ARE EQUAL ON EVERY MESH and the mean degree matches to
+    two decimals — the signature of a different TRIANGULATION of the SAME
+    polytope (edge count fixed by Euler, diagonals across coplanar facets
+    chosen differently), not of a different polytope.
+
+    ⚠ THE HULL ITSELF IS NOT IN QUESTION, which is what makes this a tie-break
+    rather than a defect. Vertex sets are in BIJECTION on eight of the nine
+    meshes (worst position mismatch 7.5e-9 = float32 quantisation of
+    `mesh_vert`), and every one of our vertices lies within MuJoCo's own
+    facet-plane slack of its hull: per mesh, our max overshoot equals MuJoCo's
+    OWN to three significant figures (mesh 0: 3.929e-3 for both, qhull's merge
+    tolerance). Mesh 1 is the exception — we keep one extra vertex, and it
+    sits INSIDE MuJoCo's hull by 8.5e-10, i.e. on the surface: a coplanar
+    point qhull merged away and `compute_convex_hull` does not.
+
+    MEASURED CONSEQUENCE, Jaco `reach_site_features`, 40 in-range poses,
+    comparing `qvel` after a full `mj_step` on both sides:
+
+        worst |d(pos)| on a PENETRATING contact     |d(qvel)|
+        ~1e-9                                       1e-9 .. 4e-6
+        ~2e-2                                       2e-1 .. 1.9
+
+    Contact 0 is exact wherever the pair is plane-mesh (our deepest contact
+    agrees with MuJoCo's to 1e-10 or better on every such pose), so the whole
+    residual is carried by the up-to-two extras landing ~2e-2 m away with a
+    different penetration depth, hence a different `aref`. The counts agree on
+    38 of the 40 poses.
+
+    ⚠ ANY MEASUREMENT HERE MUST FILTER ON `dist < 0`. A contact inside the
+    margin but not touching carries no force, so including it measures this
+    routine's bookkeeping rather than anything the solve can see: pose 17 of
+    that sweep has |d(pos)| = 1.8e-2 against |d(qvel)| = 3.6e-7.
+
+    CLOSING THIS MEANS RUNNING QHULL, not tightening a tolerance — the choice
+    lives in `qh_triangulate`'s diagonals and in the facet order
+    `vertex->neighbors` happens to hold.
     """
     var pn = plane_world_normal[DTYPE](plq_x, plq_y, plq_z, plq_w)
     var m_id = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_MESH_ID]))
