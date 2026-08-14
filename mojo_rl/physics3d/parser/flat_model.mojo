@@ -830,6 +830,17 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
     var joint_ids: InlineArray[Int, TENDON_MAX_WRAPS]
     var coefs: InlineArray[Float64, TENDON_MAX_WRAPS]
     var length_ref: Float64
+    # `<fixed stiffness=>` and `<fixed springlength=>`. Mirrors
+    # `ComptimeActData.tendon_stiffness` / `_spring_lo` / `_spring_hi`
+    # (`xml_parser.mojo:3994`, `:4045-4057`).
+    # ⚠ WHEN `springlength` IS ABSENT BOTH BOUNDS DEFAULT TO `length0`, the
+    # tendon's rest length `sum(coef * joint.ref)` — NOT to zero. A zero
+    # default would make the deadband spring pull toward a length the tendon
+    # never has. fish is the only model in the tree that declares a tendon
+    # spring at all (two `<fixed stiffness="1e-4">`).
+    var stiffness: Float64
+    var spring_lo: Float64
+    var spring_hi: Float64
 
     # spatial
     var num_sites: Int
@@ -876,6 +887,9 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
         self.joint_ids = copy.joint_ids.copy()
         self.coefs = copy.coefs.copy()
         self.length_ref = copy.length_ref
+        self.stiffness = copy.stiffness
+        self.spring_lo = copy.spring_lo
+        self.spring_hi = copy.spring_hi
         self.num_sites = copy.num_sites
         self.site_ids = copy.site_ids.copy()
         self.wrap_overflow = copy.wrap_overflow
@@ -905,6 +919,9 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
         self.joint_ids = InlineArray[Int, TENDON_MAX_WRAPS](fill=-1)
         self.coefs = InlineArray[Float64, TENDON_MAX_WRAPS](fill=0.0)
         self.length_ref = 0.0
+        self.stiffness = 0.0
+        self.spring_lo = 0.0
+        self.spring_hi = 0.0
         self.num_sites = 0
         self.site_ids = InlineArray[Int, TENDON_MAX_WRAPS](fill=-1)
         self.wrap_overflow = 0

@@ -73,6 +73,7 @@ from mojo_rl.envs.dm_control.dog.dog_xml import DMDogStandWalkModel
 from mojo_rl.envs.dm_control.manipulation_reach_def import (
     ReachSiteFeaturesModel,
 )
+from mojo_rl.envs.dm_control.fish.fish_xml import DMFishSwimModel
 
 
 @fieldwise_init
@@ -125,6 +126,10 @@ def _compare(
     kps: List[Float64],
     kvs: List[Float64],
     bad_acd: Int,
+    ten_k: List[Float64],
+    ten_lo: List[Float64],
+    ten_hi: List[Float64],
+    nten_acd: Int,
 ) raises -> _Report:
     """Runtime `FlatModelDef.actuators[i]` against the comptime `_acd` arrays."""
     var fmd = parse_xml_full(xml)
@@ -268,6 +273,36 @@ def _compare(
     assert_true(fmd.bad_actuator == bad_acd,
         String(name, ": bad_actuator runtime ", fmd.bad_actuator,
                " vs `_acd` ", bad_acd))
+    # ── tendon springs (a different list, so compared separately) ────────
+    var n_ten = len(fmd.tendons)
+    print("    tendons: runtime =", n_ten, "  _acd ntendon =", nten_acd)
+    var n_tk = 0
+    var n_tsp = 0
+    var spring_seen = False
+    var nt = n_ten if n_ten < nten_acd else nten_acd
+    for t in range(nt):
+        var td = fmd.tendons[t]
+        if abs(td.stiffness - ten_k[t]) > 0.0:
+            n_tk += 1
+        if ten_k[t] != 0.0:
+            spring_seen = True
+        if (
+            abs(td.spring_lo - ten_lo[t]) > 0.0
+            or abs(td.spring_hi - ten_hi[t]) > 0.0
+        ):
+            n_tsp += 1
+    print("    tendon stiffness =", n_tk, "  springlength =", n_tsp,
+          "  (a tendon with stiffness != 0 here:", spring_seen, ")")
+    if nt > 0 and not spring_seen:
+        print("  ⚠ no tendon has stiffness — the tendon-spring rows are"
+              " VACUOUS here")
+    assert_true(n_ten == nten_acd,
+        String(name, ": tendon COUNT runtime ", n_ten, " vs `_acd` ",
+               nten_acd))
+    assert_true(n_tk == 0 and n_tsp == 0,
+        String(name, ": tendon springs disagree with `_acd` — stiffness ",
+               n_tk, " springlength ", n_tsp))
+
     assert_true(r.n_dyn == 0 and r.n_aadr == 0,
         String(name, ": dyn_tau/act_adr disagree with `_acd` — ",
                r.n_dyn, "/", r.n_aadr))
@@ -317,6 +352,13 @@ def test_cartpole() raises:
     var tc = List[Float64]()
     var kps = List[Float64](capacity=NACT)
     var kvs = List[Float64](capacity=NACT)
+    var ten_k = List[Float64]()
+    var ten_lo = List[Float64]()
+    var ten_hi = List[Float64]()
+    comptime for ti in range(M._NTEN):
+        ten_k.append(materialize[acd.tendon_stiffness[ti]]())
+        ten_lo.append(materialize[acd.tendon_spring_lo[ti]]())
+        ten_hi.append(materialize[acd.tendon_spring_hi[ti]]())
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -342,6 +384,7 @@ def test_cartpole() raises:
         dyn, aadr, materialize[acd.na](),
         dofa, trnn, tq, td_, tc, M._WRAPS,
         kps, kvs, materialize[acd.bad_actuator](),
+        ten_k, ten_lo, ten_hi, materialize[acd.ntendon](),
     )
 
 
@@ -366,6 +409,13 @@ def test_quadruped() raises:
     var tc = List[Float64]()
     var kps = List[Float64](capacity=NACT)
     var kvs = List[Float64](capacity=NACT)
+    var ten_k = List[Float64]()
+    var ten_lo = List[Float64]()
+    var ten_hi = List[Float64]()
+    comptime for ti in range(M._NTEN):
+        ten_k.append(materialize[acd.tendon_stiffness[ti]]())
+        ten_lo.append(materialize[acd.tendon_spring_lo[ti]]())
+        ten_hi.append(materialize[acd.tendon_spring_hi[ti]]())
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -391,6 +441,7 @@ def test_quadruped() raises:
         dyn, aadr, materialize[acd.na](),
         dofa, trnn, tq, td_, tc, M._WRAPS,
         kps, kvs, materialize[acd.bad_actuator](),
+        ten_k, ten_lo, ten_hi, materialize[acd.ntendon](),
     )
 
 
@@ -415,6 +466,13 @@ def test_dog() raises:
     var tc = List[Float64]()
     var kps = List[Float64](capacity=NACT)
     var kvs = List[Float64](capacity=NACT)
+    var ten_k = List[Float64]()
+    var ten_lo = List[Float64]()
+    var ten_hi = List[Float64]()
+    comptime for ti in range(M._NTEN):
+        ten_k.append(materialize[acd.tendon_stiffness[ti]]())
+        ten_lo.append(materialize[acd.tendon_spring_lo[ti]]())
+        ten_hi.append(materialize[acd.tendon_spring_hi[ti]]())
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -440,6 +498,7 @@ def test_dog() raises:
         dyn, aadr, materialize[acd.na](),
         dofa, trnn, tq, td_, tc, M._WRAPS,
         kps, kvs, materialize[acd.bad_actuator](),
+        ten_k, ten_lo, ten_hi, materialize[acd.ntendon](),
     )
 
 
@@ -472,6 +531,13 @@ def test_reach_forcerange() raises:
     var tc = List[Float64]()
     var kps = List[Float64](capacity=NACT)
     var kvs = List[Float64](capacity=NACT)
+    var ten_k = List[Float64]()
+    var ten_lo = List[Float64]()
+    var ten_hi = List[Float64]()
+    comptime for ti in range(M._NTEN):
+        ten_k.append(materialize[acd.tendon_stiffness[ti]]())
+        ten_lo.append(materialize[acd.tendon_spring_lo[ti]]())
+        ten_hi.append(materialize[acd.tendon_spring_hi[ti]]())
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -497,6 +563,76 @@ def test_reach_forcerange() raises:
         dyn, aadr, materialize[acd.na](),
         dofa, trnn, tq, td_, tc, M._WRAPS,
         kps, kvs, materialize[acd.bad_actuator](),
+        ten_k, ten_lo, ten_hi, materialize[acd.ntendon](),
+    )
+
+
+def test_fish() raises:
+    """Added BEFORE the tendon-spring fields, not after.
+
+    fish is the ONLY model in the tree with tendon springs — two `<fixed
+    stiffness="1e-4">`. Every other model here declares none, so a
+    `tendon_stiffness` row gated on cartpole/quadruped/dog/jaco alone would
+    read 0 mismatches while testing nothing. That trap has already fired three
+    times in this file (`gear`, `force_*`, `dyn_tau`); adding the model first
+    is the cheap way not to make it four.
+
+    fish also carries a tendon-TRANSMISSION actuator, so it independently
+    re-covers the multi-wrap path that quadruped and dog exercise.
+    """
+    comptime M = DMFishSwimModel
+    comptime acd = materialize[M._acd]()
+    comptime NACT = M.nact
+    var gears = List[Float64](capacity=NACT)
+    var cmin = List[Float64](capacity=NACT)
+    var cmax = List[Float64](capacity=NACT)
+    var clim = List[Int](capacity=NACT)
+    var kinds = List[Int](capacity=NACT)
+    var flim = List[Int](capacity=NACT)
+    var fmin = List[Float64](capacity=NACT)
+    var fmax = List[Float64](capacity=NACT)
+    var dyn = List[Float64](capacity=NACT)
+    var aadr = List[Int](capacity=NACT)
+    var dofa = List[Int](capacity=NACT)
+    var trnn = List[Int](capacity=NACT)
+    var tq = List[Int]()
+    var td_ = List[Int]()
+    var tc = List[Float64]()
+    var kps = List[Float64](capacity=NACT)
+    var kvs = List[Float64](capacity=NACT)
+    var ten_k = List[Float64]()
+    var ten_lo = List[Float64]()
+    var ten_hi = List[Float64]()
+    comptime for ti in range(M._NTEN):
+        ten_k.append(materialize[acd.tendon_stiffness[ti]]())
+        ten_lo.append(materialize[acd.tendon_spring_lo[ti]]())
+        ten_hi.append(materialize[acd.tendon_spring_hi[ti]]())
+    comptime for ai in range(NACT):
+        gears.append(materialize[acd.motor_gears[ai]]())
+        cmin.append(materialize[acd.motor_ctrl_min[ai]]())
+        cmax.append(materialize[acd.motor_ctrl_max[ai]]())
+        clim.append(materialize[acd.motor_ctrl_limited[ai]]())
+        kinds.append(materialize[acd.motor_kind[ai]]())
+        flim.append(materialize[acd.motor_force_limited[ai]]())
+        fmin.append(materialize[acd.motor_force_min[ai]]())
+        fmax.append(materialize[acd.motor_force_max[ai]]())
+        dyn.append(materialize[acd.motor_dyn_tau[ai]]())
+        aadr.append(materialize[acd.motor_act_adr[ai]]())
+        dofa.append(materialize[acd.motor_dof_adr[ai]]())
+        trnn.append(materialize[acd.motor_trn_n[ai]]())
+        kps.append(materialize[acd.motor_kp[ai]]())
+        kvs.append(materialize[acd.motor_kv[ai]]())
+        comptime for wk in range(M._WRAPS):
+            tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
+            td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
+            tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
+    _ = _compare(
+        "fish swim (the ONLY model with tendon springs)",
+        NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
+        dyn, aadr, materialize[acd.na](),
+        dofa, trnn, tq, td_, tc, M._WRAPS,
+        kps, kvs, materialize[acd.bad_actuator](),
+        ten_k, ten_lo, ten_hi, materialize[acd.ntendon](),
     )
 
 

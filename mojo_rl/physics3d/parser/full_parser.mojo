@@ -3665,6 +3665,34 @@ def _fill_tendons(
                 + " agree) rather than letting the tendon run truncated"
             )
 
+        # ── springs ──────────────────────────────────────────────────────
+        # `stiffness` is a plain attribute. `springlength` is one value (both
+        # bounds) or two (the band); ABSENT means both bounds are `length0`,
+        # the rest length implied by the joint refs — not zero.
+        var st_s = _extract_attr(open_tag, "stiffness")
+        if st_s.byte_length() > 0:
+            td.stiffness = _parse_float(st_s)
+
+        var length0 = Float64(0)
+        for k in range(td.num_joints):
+            var jid = td.joint_ids[k]
+            if jid >= 0 and jid < len(result.joints):
+                length0 += td.coefs[k] * result.joints[jid].ref_val
+
+        var sl_s = _extract_attr(open_tag, "springlength")
+        if sl_s.byte_length() > 0:
+            var sparts = List[String]()
+            _split_spaces(sl_s, sparts)
+            if len(sparts) >= 2:
+                td.spring_lo = _parse_float(sparts[0])
+                td.spring_hi = _parse_float(sparts[1])
+            elif len(sparts) == 1:
+                td.spring_lo = _parse_float(sparts[0])
+                td.spring_hi = _parse_float(sparts[0])
+        else:
+            td.spring_lo = length0
+            td.spring_hi = length0
+
         result.tendons.append(td)
         count += 1
 
