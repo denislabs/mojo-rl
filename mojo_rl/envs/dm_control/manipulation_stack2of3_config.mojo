@@ -1,13 +1,13 @@
-"""`dm_control` `manipulation/stack_3_bricks_random_order_features` task config.
+"""`dm_control` `manipulation/stack_2_of_3_bricks_random_order_features` task config.
 
 `bricks.py::Stack` with three bricks, a fixed base and `randomize_order=True`,
-`target_height=3`. Everything the task DOES — the relabeling, the
+`target_height=2`. Everything the task DOES — the relabeling, the
 observation, the reward and the four-statement reset — is shared with
-`stack_2_of_3_bricks_random_order_features` and lives in `manipulation_stack_random`;
+`stack_3_bricks_random_order_features` and lives in `manipulation_stack_random`;
 this file is the model wiring and the two numbers that differ.
 
-    observation = desired_order(3) + robot(42) + 3 x brick(13)   (84)
-    reward      = mean over the two stacked pairs
+    observation = desired_order(2) + robot(42) + 3 x brick(13)   (83)
+    reward      = mean over the one stacked pair
 
 ⚠⚠ THE REFERENCE'S MODEL CHANGES EVERY EPISODE AND OURS DOES NOT. Read
 `manipulation_stack_random`'s header before touching anything here: the task is
@@ -17,8 +17,17 @@ obvious alternative — keeping every brick free and freezing the base — is
 measurably wrong, because a brick with no freejoint is welded to the WORLD and
 so cannot contact the ground at all.
 
-⚠ `target_height` DEFAULTS TO `num_bricks` — `_stack(target_height=None)` —
-so all three bricks are in the order and the reward averages two pairs.
+⚠⚠ `desired_order` IS A 2-SUBSET, NOT A PERMUTATION.
+`random_state.choice(3, size=2, replace=False)` leaves one brick out of the
+order entirely — it is still placed, still observed and still a physical
+obstacle, it is just in no stacked pair. `sigma` maps it anyway (it only needs
+`order[0]` plus the "remaining indices in increasing order" rule), and the
+observation still emits all three blocks.
+
+⚠ SO THE OBSERVATION IS 83, NOT 84 — one fewer `desired_order` entry and the
+same 42 + 39. That single number is the only thing in the model def that
+differs from `stack_3_bricks_random_order`, whose baked XML this task shares
+BYTE-FOR-BYTE.
 
 """
 
@@ -31,14 +40,14 @@ from mojo_rl.envs.dm_control.manipulation_stack_random import (
     stack_random_reset_full,
 )
 
-from .manipulation_stack3r_def import Stack3RandomModel
+from .manipulation_stack2of3_def import Stack2of3Model
 
 
-comptime TARGET_HEIGHT: Int = 3
-comptime OBS_DIM: Int = 84
+comptime TARGET_HEIGHT: Int = 2
+comptime OBS_DIM: Int = 83
 
 
-struct Stack3RandomConfig(Phyics3dEnvConfig):
+struct Stack2of3Config(Phyics3dEnvConfig):
     # === Physics === (identical to every other task in this family)
     comptime FRAME_SKIP: Int = 20
     comptime MAX_STEPS: Int = 250
@@ -158,7 +167,7 @@ struct Stack3RandomConfig(Phyics3dEnvConfig):
         stack_random_reset_full[
             DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
             NMESHV, NPAIR, MAX_CONTACTS,
-            Stack3RandomModel.CONE_TYPE,
-            Stack3RandomModel.MAX_CONDIM,
-            Stack3RandomModel.NOSLIP_ITER,
+            Stack2of3Model.CONE_TYPE,
+            Stack2of3Model.MAX_CONDIM,
+            Stack2of3Model.NOSLIP_ITER,
         ](d, mf, Self.get_timestep())

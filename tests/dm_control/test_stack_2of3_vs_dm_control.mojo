@@ -1,7 +1,21 @@
-"""`manipulation/stack_3_bricks_random_order_features` against dm_control.
+"""`manipulation/stack_2_of_3_bricks_random_order_features` vs dm_control.
 
-Phase 7's eighth task, and the first whose REFERENCE MODEL CHANGES EVERY
-EPISODE. `initialize_episode_mjcf` draws `desired_order` and then removes the
+Phase 7's ninth task: the SAME model as
+`stack_3_bricks_random_order_features` — the baked XML is byte-identical and
+the same brick is welded down — with `target_height` 2 instead of 3. So this
+file is not re-gating the relabeling; it gates the two things that differ and
+the one that is genuinely new:
+
+  * `desired_order` IS A 2-SUBSET, NOT A PERMUTATION.
+    `random_state.choice(3, size=2, replace=False)` leaves one brick out of
+    the order entirely. It is still placed, still observed and still a
+    physical obstacle — it is simply in no stacked pair, and `sigma` still has
+    to map it. Leg 2 gives that leftover brick a pose of its own so a mapping
+    that dropped it would show up.
+  * THE OBSERVATION IS 83, not 84 — one fewer `desired_order` entry — and the
+    reward averages ONE pair rather than two.
+
+The rest of the header applies unchanged. `initialize_episode_mjcf` draws `desired_order` and then removes the
 freejoint from the brick at `desired_order[0]`, so which body is welded to the
 world permutes — measured over 30 resets, all three choices occur (14 / 7 / 9)
 with `nq` 23 throughout.
@@ -18,7 +32,7 @@ shape differs from the other gates:
     function, an error in it would cancel and the leg would pass on a wrong
     mapping.
   * LEG 2 THEN RUNS ALL SIX ORDERS, giving the reference its matching model
-    each time and comparing all 84 numbers. This is the leg that would catch
+    each time and comparing all 83 numbers. This is the leg that would catch
     the observation being emitted in physical rather than reference order.
 
 ⚠ THE REFERENCE'S ORDER MUST BE FORCED, NOT OBSERVED. It is drawn inside
@@ -46,7 +60,7 @@ FIVE LEGS:
   5. `reset()` — orders vary, bricks in `prop_bbox`, dm_control accepts.
 
 Run with:
-    pixi run mojo run -I . tests/dm_control/test_stack_3_random_vs_dm_control.mojo
+    pixi run mojo run -I . tests/dm_control/test_stack_2of3_vs_dm_control.mojo
 """
 
 from std.collections import InlineArray
@@ -55,8 +69,8 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.envs.dm_control.manipulation_stack3r import DMStack3Random
-from mojo_rl.envs.dm_control.manipulation_stack3r_config import (
+from mojo_rl.envs.dm_control.manipulation_stack2of3 import DMStack2of3
+from mojo_rl.envs.dm_control.manipulation_stack2of3_config import (
     OBS_DIM,
     TARGET_HEIGHT,
 )
@@ -96,24 +110,24 @@ from mojo_rl.physics3d.gpu.constants import (
 )
 
 comptime DTYPE = DType.float64
-comptime ENV = DMStack3Random[DTYPE]
-comptime TASK: StaticString = "stack_3_bricks_random_order_features"
+comptime ENV = DMStack2of3[DTYPE]
+comptime TASK: StaticString = "stack_2_of_3_bricks_random_order_features"
 
 comptime OBS_TOL: Float64 = 1e-12
 comptime TORQUE_TOL: Float64 = 1e-12
 comptime REWARD_TOL: Float64 = 1e-12
 
-# Offsets into the flat 84-vector. ⚠ `desired_order` LEADS — task observables
-# come before any entity's.
-comptime OFF_ORDER: Int = 0  # 3
-comptime OFF_ARM_POS: Int = 3  # 12
-comptime OFF_ARM_TORQUE: Int = 15  # 6
-comptime OFF_ARM_VEL: Int = 21  # 6
-comptime OFF_HAND_POS: Int = 27  # 3
-comptime OFF_HAND_VEL: Int = 30  # 3
-comptime OFF_PINCH_POS: Int = 33  # 3
-comptime OFF_PINCH_RMAT: Int = 36  # 9
-comptime OFF_BRICK_0: Int = 45  # 13 each, in REFERENCE order
+# Offsets into the flat 83-vector. ⚠ `desired_order` LEADS and is TWO numbers
+# here, so every later offset is one lower than `stack_3_bricks_random_order`'s.
+comptime OFF_ORDER: Int = 0  # 2
+comptime OFF_ARM_POS: Int = 2  # 12
+comptime OFF_ARM_TORQUE: Int = 14  # 6
+comptime OFF_ARM_VEL: Int = 20  # 6
+comptime OFF_HAND_POS: Int = 26  # 3
+comptime OFF_HAND_VEL: Int = 29  # 3
+comptime OFF_PINCH_POS: Int = 32  # 3
+comptime OFF_PINCH_RMAT: Int = 35  # 9
+comptime OFF_BRICK_0: Int = 44  # 13 each, in REFERENCE order
 comptime BRICK_BLOCK: Int = 13
 
 comptime N_RESETS: Int = 12
@@ -291,14 +305,21 @@ def _ref_scene(
 
 
 def _pyorder(order: InlineArray[Int, N_BRICKS]) raises -> PythonObject:
+    """The reference's `desired_order` — only the first `TARGET_HEIGHT`.
+
+    ⚠ TWO ENTRIES, NOT THREE. `choice(3, size=2, replace=False)` is a subset;
+    our `meta` still carries all three (the third is the leftover brick, which
+    `sigma` needs), but the reference's `_desired_order` is length 2 and its
+    `desired_order` observable is two numbers.
+    """
     var out = Python.list()
-    for i in range(N_BRICKS):
+    for i in range(TARGET_HEIGHT):
         _ = out.append(order[i])
     return out^
 
 
 # ── leg 1 ──────────────────────────────────────────────────────────────────
-def test_stack_3_random_indices_and_sigma() raises:
+def test_stack_2of3_indices_and_sigma() raises:
     print("=== 1. element ids, the bake-time fixed brick, and sigma ===")
     var refmod = _refmod()
     var rob = refmod.manip_robot_indices(TASK)
@@ -419,7 +440,7 @@ def test_stack_3_random_indices_and_sigma() raises:
 
 
 # ── leg 2 ──────────────────────────────────────────────────────────────────
-def test_stack_3_random_observation_over_all_orders() raises:
+def test_stack_2of3_observation_over_all_orders() raises:
     print("=== 2. the observation over all six orders ===")
     var refmod = _refmod()
     var env = ENV()
@@ -452,7 +473,7 @@ def test_stack_3_random_observation_over_all_orders() raises:
             "the reference did not fix the brick we asked it to",
         )
         var obs = env.obs_at(st[0], st[1])
-        assert_true(len(obs.data) == OBS_DIM, "the observation is not 84 long")
+        assert_true(len(obs.data) == OBS_DIM, "the observation is not 83 long")
         for i in range(OBS_DIM):
             # skip the acceleration stage — leg 3
             if i >= OFF_ARM_TORQUE and i < OFF_ARM_VEL:
@@ -484,7 +505,7 @@ def test_stack_3_random_observation_over_all_orders() raises:
 
 
 # ── leg 3 ──────────────────────────────────────────────────────────────────
-def test_stack_3_random_joints_torque_matches_dm_control() raises:
+def test_stack_2of3_joints_torque_matches_dm_control() raises:
     print("=== 3. joints_torque — the acceleration stage ===")
     var refmod = _refmod()
     # ⚠ frame_skip 1 so `rne_post` fires AT the injected state.
@@ -525,7 +546,7 @@ def test_stack_3_random_joints_torque_matches_dm_control() raises:
 
 
 # ── leg 4 ──────────────────────────────────────────────────────────────────
-def test_stack_3_random_reward_follows_the_order() raises:
+def test_stack_2of3_reward_follows_the_order() raises:
     print("=== 4. the reward on a built stack, and that it FOLLOWS order ===")
     var refmod = _refmod()
     var env = ENV()
@@ -534,8 +555,10 @@ def test_stack_3_random_reward_follows_the_order() raises:
     var stacked_rewards = List[Float64]()
     for k in range(6):
         var order = _perm_of(k)
-        # Level i of the physical stack is reference brick `order[i]` — i.e.
-        # the stack is built IN the desired order, so the reward should be 1.
+        # Level i of the physical stack is reference brick `order[i]` — the
+        # stack is built IN the desired order, so the reward should be 1. ⚠ The
+        # LEFTOVER brick (order[2], in no pair) goes on level 2, where it
+        # cannot affect a reward that only reads the (order[0], order[1]) pair.
         var level = InlineArray[Int, N_BRICKS](fill=0)
         for i in range(N_BRICKS):
             level[order[i]] = i
@@ -572,7 +595,8 @@ def test_stack_3_random_reward_follows_the_order() raises:
         min_stacked > 0.999,
         "a stack built IN the desired order does not score 1 for every order."
         " ⚠ The pair is the lower brick's STUDS against the upper brick's"
-        " HOLES, and the mean is over `target_height - 1` pairs",
+        " HOLES, and with `target_height=2` there is exactly ONE pair — a"
+        " reward that averaged two would be pulled down by the leftover brick",
     )
 
     # ⚠ NON-VACUITY 2: THE REWARD MUST DEPEND ON THE ORDER. Build the stack in
@@ -609,7 +633,7 @@ def test_stack_3_random_reward_follows_the_order() raises:
 
 
 # ── leg 5 ──────────────────────────────────────────────────────────────────
-def test_stack_3_random_reset_matches_dm_control() raises:
+def test_stack_2of3_reset_matches_dm_control() raises:
     print("=== 5. reset(): the order varies and the scene is accepted ===")
     var refmod = _refmod()
     var env = ENV()
