@@ -441,6 +441,15 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     var tendon_id: Int
     var dof_adr: Int
     var trn_n: Int
+    # Servo gains. MuJoCo `gainprm[0]` and `-biasprm[2]`.
+    #   MOTOR     force = kp * u                 (kp is the bare gain)
+    #   POSITION  force = kp * (u - length) - kv * vel
+    #   VELOCITY  force = kp * u            - kv * vel
+    # ⚠ kp and kv are INDEPENDENT. `<velocity>` happens to set both to K, but
+    # `gainprm="5 0 0" biasprm="0 0 -3"` is legal and means
+    # `force = 5*u - 3*vel`. Do not collapse them.
+    var kp: Float64
+    var kv: Float64
 
     def __init__(
         out self,
@@ -467,6 +476,14 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
         self.tendon_id = -1
         self.dof_adr = -1
         self.trn_n = 0
+        # ⚠ kp DEFAULTS TO 1.0, NOT 0.0 — MuJoCo's `gainprm[0]` default, and
+        # the comptime twin inits the same way (`fill=1.0`, xml_parser:3204).
+        # `apply_actions` computes `force = kp * u` for EVERY kind, including
+        # MOTOR, so a 0.0 default silently produces ZERO FORCE on every plain
+        # `<motor>` — cartpole, half_cheetah, ant, the lot. There is no
+        # `<motor>` branch to set it; the default IS the value.
+        self.kp = 1.0
+        self.kv = 0.0
 
 
 # =============================================================================
@@ -1102,6 +1119,15 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     # rather than on the element, so the class path is the one that matters.
     var motor_dyntype_s: String
     var motor_dynprm_s: String
+    # `<general>`/`<position>`/`<velocity>` gain attributes, raw. dog and
+    # quadruped both declare gainprm/biasprm/biastype in a <default> block,
+    # so the class path is the one that carries them.
+    var motor_kp_s: String
+    var motor_kv_s: String
+    var motor_gaintype_s: String
+    var motor_biastype_s: String
+    var motor_gainprm_s: String
+    var motor_biasprm_s: String
 
     # Structural attributes, kept as raw strings ("" = not set by this class).
     # Set by `_parse_one_default_block`, consumed by the joint/geom element
@@ -1235,6 +1261,12 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.motor_force_max = 0.0
         self.motor_dyntype_s = ""
         self.motor_dynprm_s = ""
+        self.motor_kp_s = ""
+        self.motor_kv_s = ""
+        self.motor_gaintype_s = ""
+        self.motor_biastype_s = ""
+        self.motor_gainprm_s = ""
+        self.motor_biasprm_s = ""
         self.joint_type_s = ""
         self.joint_axis_s = ""
         self.joint_range_s = ""
@@ -1520,6 +1552,14 @@ struct FlatModelDef(Movable):
     var na: Int
     # Actuator transmission wraps, `ai * TENDON_MAX_WRAPS + k`. Sized by
     # `_fill_actuator_transmission` once the actuator count is known.
+    # First actuator whose gaintype/biastype shape we do not model, and why.
+    # Mirrors `ComptimeActData.bad_actuator` / `_code`, which
+    # `ModelDefFromXML` already refuses at BUILD time (`:1122`). Ported here so
+    # the runtime path can make the same refusal in 1a.3; nothing reads it yet.
+    #   0 gaintype != fixed        2 biasprm[0] != 0
+    #   1 biastype not none/affine 3 biasprm[1] not in {-gain, 0}
+    var bad_actuator: Int
+    var bad_actuator_code: Int
     var motor_trn_qadr: List[Int]
     var motor_trn_dadr: List[Int]
     var motor_trn_coef: List[Float64]
@@ -1537,6 +1577,8 @@ struct FlatModelDef(Movable):
         self.geoms = List[GeomData]()
         self.actuators = List[ActuatorData]()
         self.na = 0
+        self.bad_actuator = -1
+        self.bad_actuator_code = -1
         self.motor_trn_qadr = List[Int]()
         self.motor_trn_dadr = List[Int]()
         self.motor_trn_coef = List[Float64]()

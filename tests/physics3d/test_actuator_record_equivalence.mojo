@@ -95,6 +95,8 @@ struct _Report(Copyable, Movable):
     var n_trnn: Int
     var n_trn: Int
     var n_ten_act: Int
+    var n_kp: Int
+    var n_kv: Int
     var worst_gear: Float64
     var worst_gear_i: Int
 
@@ -120,6 +122,9 @@ def _compare(
     td_: List[Int],
     tc: List[Float64],
     wraps: Int,
+    kps: List[Float64],
+    kvs: List[Float64],
+    bad_acd: Int,
 ) raises -> _Report:
     """Runtime `FlatModelDef.actuators[i]` against the comptime `_acd` arrays."""
     var fmd = parse_xml_full(xml)
@@ -133,7 +138,7 @@ def _compare(
             " different actuators; treat the field counts as meaningless."
         )
 
-    var r = _Report(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, -1)
+    var r = _Report(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, -1)
     var n = n_rt if n_rt < nact else nact
     for i in range(n):
         var a = fmd.actuators[i]
@@ -165,6 +170,10 @@ def _compare(
             r.n_dofa += 1
         if a.trn_n != trnn[i]:
             r.n_trnn += 1
+        if abs(a.kp - kps[i]) > 0.0:
+            r.n_kp += 1
+        if abs(a.kv - kvs[i]) > 0.0:
+            r.n_kv += 1
         if trnn[i] > 1:
             r.n_ten_act += 1  # multi-wrap == a TENDON transmission
         # Only the first trn_n entries are meaningful on either side.
@@ -223,6 +232,9 @@ def _compare(
     print("    act_adr      =", r.n_aadr)
     print("    dof_adr      =", r.n_dofa)
     print("    trn_n        =", r.n_trnn)
+    print("    kp           =", r.n_kp)
+    print("    kv           =", r.n_kv)
+    print("    bad_actuator: runtime =", fmd.bad_actuator, " _acd =", bad_acd)
     print("    trn wraps    =", r.n_trn,
           "  (multi-wrap/tendon actuators here:", r.n_ten_act, ")")
     print("    na: runtime  =", fmd.na, "  _acd =", na_acd,
@@ -248,6 +260,14 @@ def _compare(
     assert_true(r.n_flim == 0 and r.n_fmin == 0 and r.n_fmax == 0,
         String(name, ": forcerange/forcelimited disagree with `_acd` — ",
                r.n_flim, "/", r.n_fmin, "/", r.n_fmax))
+    assert_true(r.n_kind == 0,
+        String(name, ": `kind` disagrees with `_acd` in ", r.n_kind,
+               " — the force LAW, not a label"))
+    assert_true(r.n_kp == 0 and r.n_kv == 0,
+        String(name, ": kp/kv disagree with `_acd` — ", r.n_kp, "/", r.n_kv))
+    assert_true(fmd.bad_actuator == bad_acd,
+        String(name, ": bad_actuator runtime ", fmd.bad_actuator,
+               " vs `_acd` ", bad_acd))
     assert_true(r.n_dyn == 0 and r.n_aadr == 0,
         String(name, ": dyn_tau/act_adr disagree with `_acd` — ",
                r.n_dyn, "/", r.n_aadr))
@@ -257,8 +277,8 @@ def _compare(
     assert_true(fmd.na == na_acd,
         String(name, ": na runtime ", fmd.na, " vs `_acd` ", na_acd,
                " — phase 1a.4 asserts a comptime NA against this"))
-    # NOT asserted yet: `kind` (encoding decision, phase 1a.3) and every
-    # field group still unported.
+    # Every ported group is asserted. Still unported: qpos0, keyframes,
+    # tendon stiffness/springs/limits.
 
     # ⚠ A COUNT SAYS "THEY DIFFER", NOT "ONE IS WRONG". An encoding mismatch
     # and a parse defect both read as N/N. Dump the first few so the DIRECTION
@@ -295,6 +315,8 @@ def test_cartpole() raises:
     var tq = List[Int]()
     var td_ = List[Int]()
     var tc = List[Float64]()
+    var kps = List[Float64](capacity=NACT)
+    var kvs = List[Float64](capacity=NACT)
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -308,6 +330,8 @@ def test_cartpole() raises:
         aadr.append(materialize[acd.motor_act_adr[ai]]())
         dofa.append(materialize[acd.motor_dof_adr[ai]]())
         trnn.append(materialize[acd.motor_trn_n[ai]]())
+        kps.append(materialize[acd.motor_kp[ai]]())
+        kvs.append(materialize[acd.motor_kv[ai]]())
         comptime for wk in range(M._WRAPS):
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
@@ -317,6 +341,7 @@ def test_cartpole() raises:
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
         dofa, trnn, tq, td_, tc, M._WRAPS,
+        kps, kvs, materialize[acd.bad_actuator](),
     )
 
 
@@ -339,6 +364,8 @@ def test_quadruped() raises:
     var tq = List[Int]()
     var td_ = List[Int]()
     var tc = List[Float64]()
+    var kps = List[Float64](capacity=NACT)
+    var kvs = List[Float64](capacity=NACT)
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -352,6 +379,8 @@ def test_quadruped() raises:
         aadr.append(materialize[acd.motor_act_adr[ai]]())
         dofa.append(materialize[acd.motor_dof_adr[ai]]())
         trnn.append(materialize[acd.motor_trn_n[ai]]())
+        kps.append(materialize[acd.motor_kp[ai]]())
+        kvs.append(materialize[acd.motor_kv[ai]]())
         comptime for wk in range(M._WRAPS):
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
@@ -361,6 +390,7 @@ def test_quadruped() raises:
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
         dofa, trnn, tq, td_, tc, M._WRAPS,
+        kps, kvs, materialize[acd.bad_actuator](),
     )
 
 
@@ -383,6 +413,8 @@ def test_dog() raises:
     var tq = List[Int]()
     var td_ = List[Int]()
     var tc = List[Float64]()
+    var kps = List[Float64](capacity=NACT)
+    var kvs = List[Float64](capacity=NACT)
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -396,6 +428,8 @@ def test_dog() raises:
         aadr.append(materialize[acd.motor_act_adr[ai]]())
         dofa.append(materialize[acd.motor_dof_adr[ai]]())
         trnn.append(materialize[acd.motor_trn_n[ai]]())
+        kps.append(materialize[acd.motor_kp[ai]]())
+        kvs.append(materialize[acd.motor_kv[ai]]())
         comptime for wk in range(M._WRAPS):
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
@@ -405,6 +439,7 @@ def test_dog() raises:
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
         dofa, trnn, tq, td_, tc, M._WRAPS,
+        kps, kvs, materialize[acd.bad_actuator](),
     )
 
 
@@ -435,6 +470,8 @@ def test_reach_forcerange() raises:
     var tq = List[Int]()
     var td_ = List[Int]()
     var tc = List[Float64]()
+    var kps = List[Float64](capacity=NACT)
+    var kvs = List[Float64](capacity=NACT)
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -448,6 +485,8 @@ def test_reach_forcerange() raises:
         aadr.append(materialize[acd.motor_act_adr[ai]]())
         dofa.append(materialize[acd.motor_dof_adr[ai]]())
         trnn.append(materialize[acd.motor_trn_n[ai]]())
+        kps.append(materialize[acd.motor_kp[ai]]())
+        kvs.append(materialize[acd.motor_kv[ai]]())
         comptime for wk in range(M._WRAPS):
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
@@ -457,6 +496,7 @@ def test_reach_forcerange() raises:
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
         dofa, trnn, tq, td_, tc, M._WRAPS,
+        kps, kvs, materialize[acd.bad_actuator](),
     )
 
 

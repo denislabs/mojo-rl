@@ -31,6 +31,7 @@ from .xml_parser import (
     _extract_attr,
     _trim,
     _parse_float,
+    _nth_float,
     _parse_int_str,
     _parse_vec3,
     _parse_quat,
@@ -50,6 +51,7 @@ from .flat_model import (
     JointData,
     GeomData,
     ActuatorData,
+    ACT_KIND_MOTOR,
     ACT_KIND_POSITION,
     ACT_KIND_VELOCITY,
     ACT_KIND_GENERAL,
@@ -605,6 +607,27 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var dp_s = _extract_attr(mtag, "dynprm")
         if dp_s.byte_length() > 0:
             d.motor_dynprm_s = dp_s
+
+        # Gain attrs, raw. Absent leaves the parent's value so a class
+        # inherits rather than resetting to "".
+        var kp_s = _extract_attr(mtag, "kp")
+        if kp_s.byte_length() > 0:
+            d.motor_kp_s = kp_s
+        var kv_s = _extract_attr(mtag, "kv")
+        if kv_s.byte_length() > 0:
+            d.motor_kv_s = kv_s
+        var gt_s = _extract_attr(mtag, "gaintype")
+        if gt_s.byte_length() > 0:
+            d.motor_gaintype_s = gt_s
+        var bt_s = _extract_attr(mtag, "biastype")
+        if bt_s.byte_length() > 0:
+            d.motor_biastype_s = bt_s
+        var gp_s = _extract_attr(mtag, "gainprm")
+        if gp_s.byte_length() > 0:
+            d.motor_gainprm_s = gp_s
+        var bp_s = _extract_attr(mtag, "biasprm")
+        if bp_s.byte_length() > 0:
+            d.motor_biasprm_s = bp_s
 
     return d
 
@@ -2634,6 +2657,9 @@ def _fill_actuators(
         var tag = _extract_opening_tag(actuator_sec, earliest)
 
         var ad = ActuatorData()
+        var is_position = earliest == np_
+        var is_velocity = earliest == nv_
+        var is_general = earliest == ng
 
         # Effective defaults: the actuator's own class="..." wins, else the
         # top-level block. Same precedence geoms/joints/sites already use.
@@ -2650,12 +2676,26 @@ def _fill_actuators(
         # `apply_actions` reads them from there. This struct carries the kind
         # alone, which is what `init_fields` needs to refuse a transmission
         # neither path models. See docs/DM_CONTROL_PORT.md (gap G3).
-        if earliest == np_:
-            ad.kind = ACT_KIND_POSITION
-        elif earliest == nv_:
+        # ⚠ SEMANTIC, NOT SYNTACTIC. `kind` selects the FORCE LAW in
+        # `apply_actions` — POSITION subtracts the transmission length,
+        # VELOCITY does not, MOTOR skips the servo path — so it must describe
+        # the compiled actuator, not the tag that was typed. This mirrors
+        # `xml_parser.mojo:4119` exactly, including `<general>` starting as
+        # POSITION and being corrected below once `biastype` has been read.
+        #
+        # ⚠⚠ `ACT_KIND_GENERAL` IS NEVER PRODUCED. The comptime twin never
+        # emits it either; the engine's real domain is the three laws. Mapping
+        # `<general>` to GENERAL (which this did until 2026-08-14) made
+        # quadruped's twelve leg servos read as plain torque motors — a
+        # different robot — while dog happened to survive because its
+        # bias-free `<general>` is a motor anyway. That accidental agreement on
+        # the LARGER model is why the tag encoding looked fine.
+        if is_velocity:
             ad.kind = ACT_KIND_VELOCITY
-        elif earliest == ng:
-            ad.kind = ACT_KIND_GENERAL
+        elif is_position or is_general:
+            ad.kind = ACT_KIND_POSITION
+        else:
+            ad.kind = ACT_KIND_MOTOR
 
         # gear (element attribute wins, else the <default><motor> class)
         var gear_s = _extract_attr(tag, "gear")
@@ -2708,6 +2748,77 @@ def _fill_actuators(
             ad.force_min,
             ad.force_max,
         )
+
+        # ── gains, and for `<general>` the force-law classification ───────
+        if is_position:
+            # kp default 1, kv default 0 (the damping term is optional here).
+            var pkp = _extract_attr(tag, "kp")
+            if pkp.byte_length() == 0:
+                pkp = eff.motor_kp_s
+            ad.kp = _parse_float(pkp) if pkp.byte_length() > 0 else 1.0
+            var pkv = _extract_attr(tag, "kv")
+            if pkv.byte_length() == 0:
+                pkv = eff.motor_kv_s
+            ad.kv = _parse_float(pkv) if pkv.byte_length() > 0 else 0.0
+        elif is_velocity:
+            # ⚠ kv DEFAULTS TO 1 here, not 0 — it IS the actuator, and 0 would
+            # be a dead motor. gainprm[0] and -biasprm[2] are both K.
+            var vkv = _extract_attr(tag, "kv")
+            if vkv.byte_length() == 0:
+                vkv = eff.motor_kv_s
+            var vk = _parse_float(vkv) if vkv.byte_length() > 0 else 1.0
+            ad.kp = vk
+            ad.kv = vk
+        elif is_general:
+            var gt = _trim(_extract_attr(tag, "gaintype"))
+            if gt.byte_length() == 0:
+                gt = _trim(eff.motor_gaintype_s)
+            var bt = _trim(_extract_attr(tag, "biastype"))
+            if bt.byte_length() == 0:
+                bt = _trim(eff.motor_biastype_s)
+            var gp = _extract_attr(tag, "gainprm")
+            if gp.byte_length() == 0:
+                gp = eff.motor_gainprm_s
+            var bp = _extract_attr(tag, "biasprm")
+            if bp.byte_length() == 0:
+                bp = eff.motor_biasprm_s
+
+            var gain = _nth_float(gp, 0, 1.0)  # MuJoCo gainprm default 1
+            var b0 = _nth_float(bp, 0, 0.0)
+            var b1 = _nth_float(bp, 1, 0.0)
+            var b2 = _nth_float(bp, 2, 0.0)
+            var no_bias = bt.byte_length() == 0 or bt == "none"
+
+            # Shapes we do not model. First offender wins, as in the twin.
+            if gt.byte_length() > 0 and gt != "fixed":
+                if result.bad_actuator < 0:
+                    result.bad_actuator = act_count
+                    result.bad_actuator_code = 0
+            elif not (no_bias or bt == "affine"):
+                if result.bad_actuator < 0:
+                    result.bad_actuator = act_count
+                    result.bad_actuator_code = 1
+            elif (not no_bias) and b0 != 0.0:
+                if result.bad_actuator < 0:
+                    result.bad_actuator = act_count
+                    result.bad_actuator_code = 2
+            elif (not no_bias) and b1 != -gain and b1 != 0.0:
+                if result.bad_actuator < 0:
+                    result.bad_actuator = act_count
+                    result.bad_actuator_code = 3
+
+            ad.kp = gain
+            ad.kv = 0.0 if no_bias else -b2
+
+            # Correct the provisional POSITION now that biastype is known.
+            #   no bias   -> gained torque motor
+            #   b1 == 0   -> velocity servo  (b1 == -gain stays POSITION)
+            if no_bias:
+                ad.kind = ACT_KIND_MOTOR
+            elif b1 == 0.0 and gain != 0.0:
+                # `gain != 0` only keeps the branches disjoint: at gain 0 both
+                # laws collapse to `force = -kv*vel` and POSITION keeps it.
+                ad.kind = ACT_KIND_VELOCITY
 
         # dyntype/dynprm -> dyn_tau + act_adr, and the running `na`.
         #
