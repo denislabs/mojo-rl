@@ -2599,6 +2599,7 @@ def _fill_actuators(
 
     actuator_sec: String,
     worldbody: String,
+    tendon_sec: String,
     defaults: DefaultsData,
     named_defaults: NamedDefaultsList,
     mut result: FlatModelDef,
@@ -2667,6 +2668,14 @@ def _fill_actuators(
         var jname = _extract_attr(tag, "joint")
         if jname.byte_length() > 0:
             ad.joint_id = _find_joint_index_by_name(worldbody, jname)
+        else:
+            # `tendon=` transmission. Resolved off the SECTION TEXT (which
+            # exists now) rather than `result.tendons` (which does not yet) —
+            # `_tendon_index_by_name` numbers in XML order exactly as
+            # `_fill_tendons` will.
+            var tname = _trim(_extract_attr(tag, "tendon"))
+            if tname.byte_length() > 0:
+                ad.tendon_id = _tendon_index_by_name(tendon_sec, tname)
 
         # ctrlrange / ctrllimited
         var cr_s = _extract_attr(tag, "ctrlrange")
@@ -3186,6 +3195,71 @@ def _default_class_tag(xml: String, cls: String, tag_name: String) -> String:
             return String("")
         return String(inner[byte = it : ite + 1])
     return String("")
+
+
+def _fill_actuator_transmission(mut result: FlatModelDef):
+    """Fill `dof_adr` / `trn_*` once joints AND tendons both exist.
+
+    Mirrors `xml_parser.parse_xml_model_data` (`:4381`) exactly:
+
+      * `joint=`  -> one `(qadr, dadr, 1.0)` triple, `trn_n = 1`
+      * `tendon=` -> the named tendon's whole wrap list, and `dof_adr` from
+                     its FIRST wrap
+
+    ⚠ SEPARATE PASS ON PURPOSE. `_fill_actuators` runs before `_fill_tendons`,
+    so the tendon branch cannot be done in place. Reordering those two calls
+    in a ~3900-line parser is a bigger change than adding a pass, and
+    `_fill_tendon_equalities` already establishes the shape.
+
+    Joint qpos/dof addresses are a cumulative sum over `result.joints` in XML
+    order — the same order `_acd`'s joint table walks — so no extra parse is
+    needed to recover them.
+    """
+    var nj = len(result.joints)
+    var qadr = List[Int](capacity=nj)
+    var dadr = List[Int](capacity=nj)
+    var q = 0
+    var d = 0
+    for i in range(nj):
+        qadr.append(q)
+        dadr.append(d)
+        q += result.joints[i].nq
+        d += result.joints[i].nv
+
+    var na_ = len(result.actuators)
+    result.motor_trn_qadr = List[Int](length=na_ * TENDON_MAX_WRAPS, fill=-1)
+    result.motor_trn_dadr = List[Int](length=na_ * TENDON_MAX_WRAPS, fill=-1)
+    result.motor_trn_coef = List[Float64](
+        length=na_ * TENDON_MAX_WRAPS, fill=0.0
+    )
+
+    for ai in range(na_):
+        var a = result.actuators[ai]
+        var base = ai * TENDON_MAX_WRAPS
+        if a.joint_id >= 0 and a.joint_id < nj:
+            a.dof_adr = dadr[a.joint_id]
+            result.motor_trn_qadr[base] = qadr[a.joint_id]
+            result.motor_trn_dadr[base] = dadr[a.joint_id]
+            result.motor_trn_coef[base] = 1.0
+            a.trn_n = 1
+        elif a.tendon_id >= 0 and a.tendon_id < len(result.tendons):
+            var td = result.tendons[a.tendon_id]
+            var n = td.num_joints
+            if n > TENDON_MAX_WRAPS:
+                n = TENDON_MAX_WRAPS
+            for k in range(n):
+                var jid = td.joint_ids[k]
+                if jid >= 0 and jid < nj:
+                    result.motor_trn_qadr[base + k] = qadr[jid]
+                    result.motor_trn_dadr[base + k] = dadr[jid]
+                result.motor_trn_coef[base + k] = td.coefs[k]
+            a.trn_n = n
+            if n > 0:
+                a.dof_adr = result.motor_trn_dadr[base]
+        # ⚠ WRITE BACK. `result.actuators[ai].field = ...` does not stick —
+        # the subscript yields a copy. Same trap `_fill_tendon_equalities`
+        # documents at `:3264`.
+        result.actuators[ai] = a
 
 
 def _fill_tendon_equalities(
@@ -3912,13 +3986,22 @@ xml_in: String) raises -> FlatModelDef:
 
     # Actuators
     _fill_actuators(
-        actuator_sec, worldbody, defaults, named_defaults, result
+        actuator_sec,
+        worldbody,
+        _extract_section(xml, "tendon"),
+        defaults,
+        named_defaults,
+        result,
     )
 
     # Equality constraints
     _fill_equality(equality_sec, worldbody, result)
     # Tendons
     _fill_tendons(_extract_section(xml, "tendon"), worldbody, result)
+
+    # Actuator transmission: needs BOTH joints and tendons, so it runs here
+    # rather than inside `_fill_actuators`.
+    _fill_actuator_transmission(result)
     # AFTER the tendons exist — this marks them by name. Note it is NOT
     # gated on NEQ: a tendon equality does not occupy an EqualityData
     # slot (it lives on the tendon record), so quadruped has neq==0 while

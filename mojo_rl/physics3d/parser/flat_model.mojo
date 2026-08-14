@@ -422,6 +422,25 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     # `_acd` silently disagree.
     var dyn_tau: Float64
     var act_adr: Int
+    # Transmission. Mirrors `ComptimeActData.motor_trn_*`
+    # (`xml_parser.mojo:4381`): a `joint=` actuator is ONE (qadr, dadr, 1.0)
+    # triple with `trn_n = 1`; a `tendon=` actuator copies the named tendon's
+    # whole wrap list and takes `dof_adr` from its FIRST wrap. `dof_adr` is
+    # the single dof the actuator is reported against.
+    #
+    # ⚠ FILLED BY A SECOND PASS, `_fill_actuator_transmission`, because
+    # `_fill_actuators` runs BEFORE `_fill_tendons` and the tendon branch
+    # needs `result.tendons` populated. `tendon_id` is resolved in the first
+    # pass (off the `<tendon>` SECTION TEXT, which does exist by then) so the
+    # second pass needs no re-scan of the actuator tags.
+    # ⚠ THE WRAP ARRAYS LIVE ON `FlatModelDef`, NOT HERE. `ActuatorData` is
+    # `ImplicitlyCopyable` and `InlineArray` is not, so inline wrap arrays
+    # cannot synthesize a copy constructor. Flat `motor_trn_*` lists on the
+    # parent, indexed `ai * TENDON_MAX_WRAPS + k`, also match the comptime
+    # twin's own layout (`motor_trn_qadr[act_count * WRAPS + k]`) exactly.
+    var tendon_id: Int
+    var dof_adr: Int
+    var trn_n: Int
 
     def __init__(
         out self,
@@ -445,6 +464,9 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
         self.force_max = 0.0
         self.dyn_tau = 0.0
         self.act_adr = -1
+        self.tendon_id = -1
+        self.dof_adr = -1
+        self.trn_n = 0
 
 
 # =============================================================================
@@ -1496,6 +1518,11 @@ struct FlatModelDef(Movable):
     # sizes the `act` tensor); this field is what that parameter gets asserted
     # against at construction so a wrong value is loud instead of silent.
     var na: Int
+    # Actuator transmission wraps, `ai * TENDON_MAX_WRAPS + k`. Sized by
+    # `_fill_actuator_transmission` once the actuator count is known.
+    var motor_trn_qadr: List[Int]
+    var motor_trn_dadr: List[Int]
+    var motor_trn_coef: List[Float64]
 
     # Mesh assets: name → file path mapping.
     var mesh_asset_names: List[String]
@@ -1510,6 +1537,9 @@ struct FlatModelDef(Movable):
         self.geoms = List[GeomData]()
         self.actuators = List[ActuatorData]()
         self.na = 0
+        self.motor_trn_qadr = List[Int]()
+        self.motor_trn_dadr = List[Int]()
+        self.motor_trn_coef = List[Float64]()
         self.textures = List[TextureData]()
         self.materials = List[MaterialData]()
         self.lights = List[LightData]()
