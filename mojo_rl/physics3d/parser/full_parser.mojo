@@ -284,6 +284,38 @@ def _parse_option(
 # =============================================================================
 
 
+def _apply_forcerange(
+    fr: String,
+    fl_raw: String,
+    mut limited: Bool,
+    mut lo: Float64,
+    mut hi: Float64,
+):
+    """MuJoCo's forcerange/forcelimited resolution, mirrored from
+    `xml_parser.parse_xml_model_data` (the comptime twin) so the two agree.
+
+    `forcelimited` defaults to "auto" = limited iff the range is DEFINED, and
+    `"0 0"` is the undefined marker: an explicit `forcerange="0 0"` still
+    reports forcelimited 0. An explicit true/false overrides. MuJoCo refuses
+    `forcelimited="true"` with no range, so that combination cannot arrive.
+
+    Writes nothing when the attribute is absent, so a class inherits its
+    parent's value rather than being reset to zero.
+    """
+    if fr.byte_length() > 0:
+        var parts = List[String]()
+        _split_spaces(fr, parts)
+        if len(parts) >= 2:
+            lo = _parse_float(parts[0])
+            hi = _parse_float(parts[1])
+            limited = lo != 0.0 or hi != 0.0
+    var fl = _trim(fl_raw)
+    if fl == "true" or fl == "1":
+        limited = True
+    elif fl == "false" or fl == "0":
+        limited = False
+
+
 def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> DefaultsData:
     """Parse joint/geom/motor attrs from a default section, inheriting from parent."""
     var d = parent  # start with parent defaults
@@ -508,8 +540,31 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         if seu_s.byte_length() > 0:
             d.site_euler_s = seu_s
 
-    # Find default <motor
+    # Find the default actuator tag.
+    #
+    # ⚠ THIS SCANNED ONLY `<motor` UNTIL 2026-08-14, so a `<default>` block
+    # declaring `<general>`, `<position>` or `<velocity>` was INVISIBLE here —
+    # root block and named class alike. dm_control's dog and quadruped use
+    # `<general>` exclusively (77 occurrences between them), so every one of
+    # their actuator defaults was silently dropped and the fields below kept
+    # their struct defaults. Measured by
+    # `tests/physics3d/test_actuator_record_equivalence.mojo`: quadruped
+    # ctrl_min 4/12 and ctrl_max 8/12 wrong, ctrl_limited wrong on 12/12 and
+    # 38/38. `gear` looked correct only because 1.0 IS the struct default.
+    #
+    # ⚠ ONE tag kind per block. MJCF lets a block declare several
+    # (`<motor gear=.../><general ctrlrange=.../>`) and `DefaultsData` has a
+    # single `motor_*` set, so it cannot represent that. Verified across every
+    # `*_xml.mojo` in the tree: NO `<default>` block mixes actuator tags. If
+    # one ever does, this silently takes `<motor>` and drops the rest — make
+    # `DefaultsData` carry a set per ACT_KIND before that day.
     var mpos = defaults_sec.find("<motor")
+    if mpos == -1:
+        mpos = defaults_sec.find("<general")
+    if mpos == -1:
+        mpos = defaults_sec.find("<position")
+    if mpos == -1:
+        mpos = defaults_sec.find("<velocity")
     if mpos != -1:
         var mtag = _extract_opening_tag(defaults_sec, mpos)
 
@@ -529,6 +584,18 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var mg_s = _extract_attr(mtag, "gear")
         if mg_s.byte_length() > 0:
             d.motor_gear = _parse_float(mg_s)
+
+        # forcerange / forcelimited (phase 1a.1). `_apply_forcerange` holds the
+        # shared "auto" rule so the block path and the element path cannot
+        # drift — the two-parser split started as exactly that kind of
+        # duplication.
+        _apply_forcerange(
+            _extract_attr(mtag, "forcerange"),
+            _extract_attr(mtag, "forcelimited"),
+            d.motor_force_limited,
+            d.motor_force_min,
+            d.motor_force_max,
+        )
 
     return d
 
@@ -2524,9 +2591,21 @@ def _fill_actuators(
     actuator_sec: String,
     worldbody: String,
     defaults: DefaultsData,
+    named_defaults: NamedDefaultsList,
     mut result: FlatModelDef,
 ) raises:
-    """Parse <actuator> section and populate result.actuators[]."""
+    """Parse <actuator> section and populate result.actuators[].
+
+    ⚠ THIS RESOLVED NO `<default class=...>` UNTIL 2026-08-14. It read element
+    attributes and fell back to the ROOT defaults, while joints (`:1239`),
+    geoms (`:1486`) and sites (`:2302`) had resolved classes all along — the
+    actuator path simply never got it, the same shape as
+    `feedback_a_normalizer_on_one_entry_point_only`. dog resolves 24 distinct
+    classes over 38 actuators whose tags carry only `name`/`class`/`tendon`,
+    so essentially every dog and quadruped actuator value came from the root.
+    Gated by `tests/physics3d/test_actuator_record_equivalence.mojo` against
+    the comptime `_acd`, which had the resolution and is the side the engine
+    reads."""
     var act_count = 0
     var scan_pos = 0
     var alen = actuator_sec.byte_length()
@@ -2546,6 +2625,15 @@ def _fill_actuators(
 
         var ad = ActuatorData()
 
+        # Effective defaults: the actuator's own class="..." wins, else the
+        # top-level block. Same precedence geoms/joints/sites already use.
+        # `NamedDefaultsList` folds the parent chain in at COLLECTION time
+        # (`_collect_named_defaults`), so `find` returns fully-resolved values.
+        var act_class = _extract_attr(tag, "class")
+        var eff = defaults
+        if act_class.byte_length() > 0:
+            eff = named_defaults.find(act_class)
+
         # Record WHICH tag this was. The gains themselves come from the OTHER
         # parser: `xml_parser`'s comptime `ComptimeActData` carries
         # `motor_kp`/`motor_kv` (MuJoCo's `gainprm[0]` / `-biasprm[2]`) and
@@ -2564,7 +2652,7 @@ def _fill_actuators(
         if gear_s.byte_length() > 0:
             ad.gear = _parse_float(gear_s)
         else:
-            ad.gear = defaults.motor_gear
+            ad.gear = eff.motor_gear
 
         # joint name → joint index
         var jname = _extract_attr(tag, "joint")
@@ -2579,15 +2667,29 @@ def _fill_actuators(
             ad.ctrl_max = cv[1]
             ad.is_ctrl_limited = True
         else:
-            ad.ctrl_min = defaults.motor_ctrl_min
-            ad.ctrl_max = defaults.motor_ctrl_max
-            ad.is_ctrl_limited = defaults.motor_ctrl_limited
+            ad.ctrl_min = eff.motor_ctrl_min
+            ad.ctrl_max = eff.motor_ctrl_max
+            ad.is_ctrl_limited = eff.motor_ctrl_limited
 
         var cl_s = _extract_attr(tag, "ctrllimited")
         if cl_s == "true":
             ad.is_ctrl_limited = True
         elif cl_s == "false":
             ad.is_ctrl_limited = False
+
+        # forcerange / forcelimited: start from the class-resolved defaults,
+        # then let the element override. Same 3-way order `_acd` uses
+        # (element -> class chain -> root).
+        ad.force_limited = eff.motor_force_limited
+        ad.force_min = eff.motor_force_min
+        ad.force_max = eff.motor_force_max
+        _apply_forcerange(
+            _extract_attr(tag, "forcerange"),
+            _extract_attr(tag, "forcelimited"),
+            ad.force_limited,
+            ad.force_min,
+            ad.force_max,
+        )
 
         result.actuators.append(ad)
         act_count += 1
@@ -3773,7 +3875,9 @@ xml_in: String) raises -> FlatModelDef:
             result.joints[ji].range_max = Float64(1e10)
 
     # Actuators
-    _fill_actuators(actuator_sec, worldbody, defaults, result)
+    _fill_actuators(
+        actuator_sec, worldbody, defaults, named_defaults, result
+    )
 
     # Equality constraints
     _fill_equality(equality_sec, worldbody, result)

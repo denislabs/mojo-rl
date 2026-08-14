@@ -404,6 +404,14 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     # refuse a transmission neither parser models rather than silently run it
     # as a torque motor.
     var kind: Int
+    # forcerange / forcelimited. Phase 1a.1 — previously these lived ONLY on
+    # the comptime `ComptimeActData`. Semantics mirrored from it exactly:
+    # `forcelimited` defaults to "auto" = limited iff the range is defined,
+    # and `"0 0"` IS the undefined marker (measured — an explicit
+    # `forcerange="0 0"` still reports forcelimited 0).
+    var force_limited: Bool
+    var force_min: Float64
+    var force_max: Float64
 
     def __init__(
         out self,
@@ -420,6 +428,11 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
         self.ctrl_max = ctrl_max
         self.is_ctrl_limited = is_ctrl_limited
         self.kind = kind
+        # Not ctor params — set by `_fill_actuators`, like the structural
+        # attrs on `DefaultsData`, so no existing call site changes.
+        self.force_limited = False
+        self.force_min = 0.0
+        self.force_max = 0.0
 
 
 # =============================================================================
@@ -1046,6 +1059,10 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var motor_ctrl_min: Float64
     var motor_ctrl_max: Float64
     var motor_gear: Float64
+    # Phase 1a.1. Assignment-initialised like the structural attrs below.
+    var motor_force_limited: Bool
+    var motor_force_min: Float64
+    var motor_force_max: Float64
 
     # Structural attributes, kept as raw strings ("" = not set by this class).
     # Set by `_parse_one_default_block`, consumed by the joint/geom element
@@ -1174,6 +1191,9 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.motor_gear = motor_gear
         # Structural attrs are never passed positionally — a <default> block
         # sets them by assignment in `_parse_one_default_block`.
+        self.motor_force_limited = False
+        self.motor_force_min = 0.0
+        self.motor_force_max = 0.0
         self.joint_type_s = ""
         self.joint_axis_s = ""
         self.joint_range_s = ""
