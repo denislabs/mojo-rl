@@ -403,14 +403,18 @@ def _mass_matrix_fields_mt_kernel[
 # composite-inertia pass at all (the dense fields kernel also builds its
 # per-body I_world in registers), so there is nothing to skip here — this
 # kernel simply does not do that dead work, mirroring legacy production.
-def _mass_matrix_treewalk_fields_mt_kernel[
+@always_inline
+def _mm_treewalk_env[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
     NJOINT: Int,
     BATCH: Int,
     N_THREADS: Int,
+    GPU: Bool,
 ](
+    env: Int,
+    tid: Int,
     xquat: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
     ],
@@ -429,8 +433,14 @@ def _mass_matrix_treewalk_fields_mt_kernel[
     cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
     M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
 ):
-    var env = Int(block_idx.x)
-    var tid = Int(thread_idx.x)
+    """Tree-walk CRBA for ONE env — O(NV*depth), shared by CPU and GPU.
+
+    ⚠ THE ONLY DIFFERENCE BETWEEN THE TWO TARGETS IS `GPU`, WHICH GATES THE
+    BARRIERS. Everything arithmetic is one copy, so the CPU result is
+    bit-exact against the cooperative GPU kernel (N_THREADS=1, tid=0 simply
+    collapses the striding); it stays float-tolerance-equal, not bit-exact,
+    against the DENSE kernels, which sum the same terms in a different order.
+    """
 
     comptime NV_S = _ensure_positive[NV]()
     comptime NB_S = _ensure_positive[NBODY]()
@@ -540,7 +550,8 @@ def _mass_matrix_treewalk_fields_mt_kernel[
     # zero M (distributed)
     for idx in range(tid, NV * NV, N_THREADS):
         M[env, idx] = Scalar[DTYPE](0)
-    barrier()
+    comptime if GPU:
+        barrier()
 
     # per-DOF row, distributed: f_i = comp[body_i]·cdof_i, walk ancestor DOFs
     for i in range(tid, NV, N_THREADS):
@@ -585,7 +596,40 @@ def _mass_matrix_treewalk_fields_mt_kernel[
             if i != j:
                 M[env, j * NV + i] = mij
             j = dof_parent[j]
-    barrier()
+    comptime if GPU:
+        barrier()
+
+
+def _mass_matrix_treewalk_fields_mt_kernel[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    BATCH: Int,
+    N_THREADS: Int,
+](
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    xipos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    subtree_com: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+):
+    _mm_treewalk_env[DTYPE, NV, NBODY, NJOINT, BATCH, N_THREADS, True](
+        Int(block_idx.x), Int(thread_idx.x),
+        xquat, xipos, subtree_com, bodies, joints, cdof, M,
+    )
 
 
 def _mass_matrix_fields_kernel[
@@ -661,15 +705,21 @@ def compute_mass_matrix[
     """CRBA mass matrix from FK products + cdof, both targets, one body.
     Reads `scratch.cdof`, writes `scratch.M`. PARALLEL=True (GPU only):
     cooperative row-striped kernel, bit-exact vs serial. CPU ignores
-    PARALLEL. TREEWALK=True (requires PARALLEL): the cooperative TREE-WALK
-    CRBA — the legacy PRODUCTION GPU algorithm (O(NV·depth), verbatim port
-    of `compute_mass_matrix_treewalk_gpu_mt`) — float-tolerance-equal to
-    the dense kernels, NOT bit-exact vs them. CPU ignores TREEWALK too
-    (mirrors legacy production: CPU dense, GPU treewalk)."""
-    comptime assert not (TREEWALK and not PARALLEL), (
-        "compute_mass_matrix: TREEWALK requires PARALLEL (the"
-        " treewalk is inherently cooperative; CPU and serial GPU stay dense)"
-    )
+    PARALLEL. TREEWALK=True: the TREE-WALK CRBA (O(NV·depth)) —
+    float-tolerance-equal to the dense kernels, NOT bit-exact vs them.
+
+    ⚠ THE DENSE KERNEL IS O(NV²·NBODY) AND THAT IS NOT A CONSTANT FACTOR.
+    It evaluates every (i, j) dof pair against every body through a subtree
+    mask, so it costs 4 080 inner iterations on Sawyer (NV=15, NBODY=34)
+    where the treewalk costs ~110 — measured at **5.6 µs vs 0.44 µs**, i.e.
+    12.6× — against MuJoCo's `mj_crb` at 0.81 µs. On SO-ARM100 (NV=6,
+    NBODY=8) the same gap is worth 0.3 µs, which is why it hid for so long:
+    **this defect is invisible on small models and grows as NV·NBODY.**
+
+    ⚠ TREEWALK USED TO REQUIRE PARALLEL, so every CPU caller silently got
+    the dense kernel — the viewer, every test and every single-env rollout.
+    The requirement was never real: the cooperative kernel's only
+    parallelism is two strided loops, and N_THREADS=1 collapses them."""
     comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
     comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
     comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
@@ -685,10 +735,18 @@ def compute_mass_matrix[
         var joints_v = m.joints.lt["cpu", L_JOINT]()
         var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
         var M_v = scratch.M.lt["cpu", L_M]()
-        for e in range(BATCH):
-            _mass_matrix_env[DTYPE, NV, NBODY, NJOINT, BATCH](
-                e, xquat_v, xipos_v, stcom_v, bodies_v, joints_v, cdof_v, M_v
-            )
+        comptime if TREEWALK:
+            for e in range(BATCH):
+                _mm_treewalk_env[DTYPE, NV, NBODY, NJOINT, BATCH, 1, False](
+                    e, 0,
+                    xquat_v, xipos_v, stcom_v, bodies_v, joints_v, cdof_v, M_v,
+                )
+        else:
+            for e in range(BATCH):
+                _mass_matrix_env[DTYPE, NV, NBODY, NJOINT, BATCH](
+                    e, xquat_v, xipos_v, stcom_v, bodies_v, joints_v, cdof_v,
+                    M_v,
+                )
     elif PARALLEL and TREEWALK:
         var c = ctx.value()
         comptime MT_T = NV

@@ -301,9 +301,6 @@ struct ImplicitIntegrator[
     var iscratch: ImplicitScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
 
     def __init__(out self) raises:
-        comptime assert Self.PARALLEL_GPU or (not Self.CRBA_TREEWALK), (
-            "ImplicitIntegrator: CRBA_TREEWALK requires PARALLEL_GPU"
-        )
         self.scratch = DynamicsScratch[
             Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ]()

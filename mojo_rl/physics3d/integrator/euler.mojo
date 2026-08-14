@@ -402,10 +402,11 @@ struct EulerIntegrator[
     PARALLEL_GPU=True: the GPU FK / body-velocity / cdof / CRBA /
     LDL-factor / M^-1 / RNE stages run their cooperative within-env (_mt)
     kernels (bit-exact vs serial; other stages stay serial). CPU ignores
-    it. CRBA_TREEWALK=True (requires PARALLEL_GPU): the GPU CRBA runs the
-    legacy-production tree-walk algorithm (O(NV·depth)) instead of the
-    dense one — float-tolerance-equal, NOT bit-exact vs dense. CPU stays
-    dense, like legacy."""
+    it. CRBA_TREEWALK=True: the CRBA runs the tree-walk algorithm
+    (O(NV·depth)) instead of the dense O(NV²·NBODY) one —
+    float-tolerance-equal, NOT bit-exact vs dense. ⚠ IT APPLIES ON BOTH
+    TARGETS NOW; it used to be GPU-only, which left every CPU caller on the
+    dense kernel — 12.6× slower on Sawyer (NV=15, NBODY=34)."""
 
     var scratch: DynamicsScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
     # Blocked-Newton Jacobian spill size — 0 unless `Je` overflows threadgroup
@@ -422,10 +423,6 @@ struct EulerIntegrator[
     ]
 
     def __init__(out self) raises:
-        comptime assert Self.PARALLEL_GPU or (not Self.CRBA_TREEWALK), (
-            "EulerIntegrator: CRBA_TREEWALK requires PARALLEL_GPU (the"
-            " tree-walk CRBA is inherently cooperative)"
-        )
         self.scratch = DynamicsScratch[
             Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ]()

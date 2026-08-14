@@ -74,10 +74,15 @@ struct Phyics3dEnv[
     docstring for the bridge design and scope.
 
     SOLVER defaults to "newton" — the legacy env default physics
-    (CONFIG.physics_substep = RK4 + Newton). This facade steps on CPU,
-    where the GPU-only PARALLEL_GPU / CRBA_TREEWALK knobs never apply
-    (CPU is always serial + dense, matching legacy production's CPU
-    side)."""
+    (CONFIG.physics_substep = RK4 + Newton). This facade steps on CPU, so
+    PARALLEL_GPU never applies.
+
+    ⚠ `CRBA_TREEWALK = True` ON BOTH INTEGRATORS, AND THAT IS A FIX, NOT A
+    TUNING KNOB. The knob used to be rejected on CPU, so this facade — the
+    viewer, every test, every single-env rollout — ran the DENSE CRBA,
+    which is O(NV²·NBODY) against the treewalk's O(NV·depth). On Sawyer
+    (NV=15, NBODY=34) that was 5.6 µs of a 38 µs step; on the small arms it
+    is 0.3 µs, which is why nothing noticed. See `dynamics/mass_matrix`."""
 
     comptime dtype = Self.DTYPE
     comptime StateType = ObsState[Self.MODEL_DEF.OBS_DIM]
@@ -132,6 +137,7 @@ struct Phyics3dEnv[
         Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE,
         Self.NMESH_VERTS,
         Self.MODEL_DEF.CONE_TYPE, 1, SOLVER = Self.SOLVER,
+        CRBA_TREEWALK = True,
         # Forwarded for the same reason `MAX_CONDIM` is (see below): the
         # default silently disables the feature. By KEYWORD because `NPAIR`
         # is the last integrator parameter, not a neighbour of `NEXCLUDE`.
@@ -156,6 +162,7 @@ struct Phyics3dEnv[
         Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE,
         Self.NMESH_VERTS,
         Self.MODEL_DEF.CONE_TYPE, 1, SOLVER = Self.SOLVER,
+        CRBA_TREEWALK = True,
         RNE_POST = Self.CONFIG.RNE_POST,
         MAX_CONDIM = Self.MODEL_DEF.MAX_CONDIM,
         NOSLIP_ITER = Self.MODEL_DEF.NOSLIP_ITER,
