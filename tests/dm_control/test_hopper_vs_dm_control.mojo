@@ -348,10 +348,23 @@ def test_hopper_airborne_matches_mujoco() raises:
                 if smooth and d_o > max_obs_smooth:
                     max_obs_smooth = d_o
                 oi += 1
+            # ⚠⚠ THE REFERENCE COMES FROM NUMPY, NOT FROM MOJO. This used to
+            # be `log(1.0 + ref_toe)` — the same expression the config under
+            # test computed — so any error in our log1p arithmetic appeared on
+            # BOTH sides and cancelled exactly. The gate was structurally
+            # blind to the whole class: measured, `log(1.0 + x)` carries up to
+            # 1.02e-09 absolute against `np.log1p` on real touch forces, and
+            # `std.math.log1p` up to 3.70e-07, and this leg could not see
+            # either. `np.log1p` is what `hopper.py` actually calls.
             var ref_toe = Float64(py=data.sensordata[REF_TOUCH_TOE_ADR])
             var ref_heel = Float64(py=data.sensordata[REF_TOUCH_HEEL_ADR])
-            var d_t0 = abs(log(1.0 + ref_toe) - Float64(obs.data[oi]))
-            var d_t1 = abs(log(1.0 + ref_heel) - Float64(obs.data[oi + 1]))
+            var np_ = Python.import_module("numpy")
+            var d_t0 = abs(
+                Float64(py=np_.log1p(ref_toe)) - Float64(obs.data[oi])
+            )
+            var d_t1 = abs(
+                Float64(py=np_.log1p(ref_heel)) - Float64(obs.data[oi + 1])
+            )
             if smooth and d_t0 > max_obs_smooth:
                 max_obs_smooth = d_t0
             if smooth and d_t1 > max_obs_smooth:

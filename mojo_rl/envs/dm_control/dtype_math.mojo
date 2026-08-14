@@ -109,24 +109,38 @@ def log_accurate[
 
 @always_inline
 def log1p_dt[DTYPE: DType](x: Scalar[DTYPE]) -> Scalar[DTYPE]:
-    """`log(1 + x)`, callable from a GPU hook.
+    """`np.log1p(x)`, callable from a GPU hook.
 
-    Spelled `log(1 + x)` rather than a true `log1p` because that is exactly
-    what the CPU hooks compute (`np.log1p` on the touch sensors, transcribed as
-    `log(1.0 + toe)`), and the two paths are diffed element-wise. A more
-    accurate `log1p` here would be a REAL divergence from the gated CPU path
-    for small x, not an improvement.
+    ⚠⚠ THIS USED TO BE `log(1 + x)` ON PURPOSE, AND THE BEFORE/AFTER THAT NOTE
+    ASKED FOR IS DONE. The old docstring said the touch observables in
+    `manipulator` / `dog` were transcribed as `log(1.0 + x)` on BOTH paths and
+    gated as such, so making them accurate was "worth doing, with its own
+    before/after — not as a side effect of a shared helper." This is that
+    change. It moves BOTH the CPU and GPU touch paths together, which is what
+    keeps the element-wise CPU/GPU diff meaningful.
 
-    ⚠ DELIBERATELY NOT `log1p_accurate` ABOVE, and this is the one place the
-    distinction is a choice rather than an oversight. The touch observables in
-    `manipulator` / `dog` are transcribed as `log(1.0 + x)` on BOTH paths and
-    gated as such; swapping one side would move numbers that are currently
-    green for a reason unrelated to those ports. Making them accurate is worth
-    doing, with its own before/after — not as a side effect of a shared helper.
+    ⚠ WHY IT WAS WORTH IT, measured on 252 REAL touch values pulled from
+    `manipulator`, `stacker`, `dog`, `finger` and `hopper` rollouts, as
+    ABSOLUTE error in the observation term against exact `log1p`:
+
+        std.math.log1p(x)   3.70e-07     <- worst at x = 0.408
+        log(1.0 + x)        1.02e-09     <- what this used to be
+        2*atanh(x/(2+x))    2.84e-14     <- what it is now
+
+    28% of `manipulator`'s and 43% of `stacker`'s non-zero touch readings land
+    in [0.05, 0.42], which is exactly where the two worse forms are worst.
+
+    ⚠ AND `std.math.log1p` IS NOT THE FIX — it is the WORST of the three here.
+    It carries up to 1.01e-06 relative error on x in [0.05, 0.42], rising
+    smoothly to a peak at x ~ 0.404 and collapsing to 9.6e-11 by x ~ 0.424 —
+    the signature of a branch cutover set too high. libm is 1e-16 across the
+    same range. Do not "simplify" this to `log1p`.
 
     ⚠ `x` may be NEGATIVE by design: `touch_sphere_site_gpu` returns
     `TOUCH_UNSUPPORTED_ZONE` (-1.0) for a zone type it does not implement, and
-    the resulting NaN is the intended loud signal. Do not clamp it away.
+    the resulting NaN is the intended loud signal. Do not clamp it away. The
+    identity preserves that: `atanh(-1)` is `-inf` and `atanh` of |arg| > 1 is
+    NaN, matching `np.log1p` at and below -1.
     """
     comptime if DTYPE == DType.float32:
         return rebind[Scalar[DTYPE]](
@@ -148,8 +162,44 @@ def _log1p_impl[
     DTYPE: DType
 ](x: Scalar[DTYPE]) -> Scalar[DTYPE] where DTYPE.is_floating_point():
     """The body. Reached only through `log1p_dt`, which binds `DTYPE` to a
-    concrete float type first — see the module docstring."""
-    return log(Scalar[DTYPE](1.0) + x)
+    concrete float type first — see the module docstring.
+
+    ⚠⚠ THE CROSSOVER IS PER-DTYPE, AND THE FLOAT64 VALUE IS WRONG FOR FLOAT32.
+    The `atanh` identity wins by orders of magnitude near 0 and LOSES at large
+    x, where `x / (2 + x)` approaches 1; where that turn happens depends on the
+    precision. Measured RELATIVE error against exact `log1p`:
+
+        float64   x=1e-3  1e-2   0.4      1258     1e5
+          log(1+x)  1.3e-13 2.0e-12 2.6e-09  3.1e-11  1.3e-11
+          identity  1.8e-16 2.0e-16 1.8e-16  5.1e-16  8.4e-14
+
+        float32   x=1e-3  0.4     6.6      1258     4783
+          log(1+x)  4.7e-05 8.2e-08 1.8e-08  9.3e-09  5.2e-08
+          identity  1.2e-08 8.2e-08 1.0e-07  2.6e-06  7.8e-06   <- loses past ~1
+
+    So float64 crosses over at 1e4 and float32 at 1.0. Carrying the float64
+    number into float32 would make a hopper-scale touch force (1258 N, its real
+    maximum) 280x WORSE than the form it replaced.
+
+    ⚠ THE FLOAT64 CROSSOVER IS CONSERVATIVE AND DELIBERATELY SO. The identity
+    is still ahead at 1e5 (8.4e-14 against 1.3e-11) and at 1e6, so 1e4 gives
+    away some accuracy above it. It is kept because it is the number
+    `log1p_accurate` already uses and having the two disagree is worse than
+    either value — and because the largest touch force measured anywhere in
+    the suite is 4.7e3, so this branch never fires for the consumers that
+    prompted the change. Raise both together, with a measurement, or neither.
+
+    ⚠ THE DOMAIN IS UNCHANGED, and that is checked rather than assumed: at
+    x = -1 both forms give -inf (`atanh(-1)`), and below -1 both give NaN
+    (`atanh` of |arg| > 1). `touch_sphere_site_gpu` returns -1.0 for an
+    unimplemented zone type on purpose, so that NaN is a signal, not a bug.
+    """
+    comptime CROSSOVER = Scalar[DTYPE](
+        1.0e4
+    ) if DTYPE == DType.float64 else Scalar[DTYPE](1.0)
+    if x > CROSSOVER:
+        return log(Scalar[DTYPE](1.0) + x)
+    return Scalar[DTYPE](2.0) * atanh(x / (Scalar[DTYPE](2.0) + x))
 
 
 @always_inline
@@ -192,29 +242,53 @@ def _cos_impl[
 def asinh_dt[DTYPE: DType](x: Scalar[DTYPE]) -> Scalar[DTYPE]:
     """`np.arcsinh`, callable from a GPU hook. See the module docstring.
 
-    Spelled `log(x + sqrt(x*x + 1))` because that is exactly what the CPU
-    twin computes (`quadruped_config._asinh`), and the two paths are diffed
-    element-wise. `std.math` has no `asinh`, so there is no more accurate
-    form available to diverge to.
+    ⚠⚠ THE CLAIM THIS DOCSTRING USED TO MAKE WAS WRONG, AND THE CONCLUSION IS
+    STILL RIGHT — FOR A DIFFERENT REASON. It said "`std.math` has no `asinh`,
+    so there is no more accurate form available to diverge to." `std.math.asinh`
+    EXISTS on this toolchain and is far better (below). But it **does not lower
+    to the GPU target**: switching `_asinh_impl` to it fails
+    `test_quadruped_gpu_vs_cpu` at compile time with "failed to run the pass
+    manager for offload functions" on every `asinh_dt` call site in
+    `phyics3d_batched_env`.
+    
+    So the fold stays, and the reason is now recorded accurately: not "there is
+    nothing better" but "the better one is CPU-only, and this observable has a
+    GPU twin diffed against it element-wise." Taking the accuracy on CPU alone
+    would trade a KNOWN error for an UNKNOWN CPU/GPU divergence — the exact bug
+    this session fixed in `dreamerv3/wm_loss_ops`, where the two paths of one
+    loss used two spellings of symlog.
+    
+    ⚠ RE-CHECK A CLAIM BEFORE TRUSTING IT, AND RE-CHECK THE REPLACEMENT BEFORE
+    LANDING IT. The original claim was stale; the obvious fix was untestable on
+    half the paths. Both only surfaced by measuring.
 
-    ⚠⚠ THE SIGN FOLD IS LOAD-BEARING, NOT TIDINESS. Evaluated directly at
-    large NEGATIVE x, `x + sqrt(x*x + 1)` is a catastrophic cancellation: in
-    float32, `x*x` for x = -1435 already discards the `+ 1`, and the sum of
-    two ~1435 numbers of opposite sign is pure rounding residue. Measured on
-    quadruped's four toe force sensors, whose z components were
-    -1435.0, -1440.9, -1406.7, -1435.9:
+    Re-measured 2026-08-14 against exact `asinh`, RELATIVE error:
 
-        direct form  ->  -7.9123010635 for ALL FOUR, bit-identical
-        stable form  ->  -7.9621, -7.9662, -7.9421, -7.9627
+        float64   x=1e-18   0.1      100      4737
+          log form  1.0e+00  2.2e-10  4.9e-11  4.7e-12
+          std.math  1.7e-37  7.3e-17  8.1e-18  8.0e-17
 
-    Four distinct forces collapsing onto one number is not an error bar, it
-    is the dim ceasing to carry information — and it agreed with itself
-    perfectly, so only a CPU cross-check could see it.
+    The `1.0e+00` is not a typo: below x ~ 1e-8 the `+1` swamps `x` and the log
+    form returns exactly 0 where `asinh(x)` is x. It is a 100% error on every
+    lightly-loaded sensor, which no ABSOLUTE-tolerance gate can see.
 
-    `asinh` is ODD, so evaluating on |x| and restoring the sign is exact and
-    removes the cancellation entirely (`|x| + sqrt(x*x+1)` sums two positives).
-    `quadruped_config._asinh` carries the same fold for the same reason —
-    float64 merely degrades later, it does not escape.
+    ⚠ THE FOLD'S OWN FAILURE CASE WAS RE-RUN BEFORE REMOVING IT, because a
+    replacement that reintroduced it would be a regression dressed as a
+    cleanup. At large NEGATIVE x the DIRECT form cancels catastrophically —
+    in float32 `x*x` for x = -1435 discards the `+1` and the sum of two ~1435
+    numbers of opposite sign is rounding residue. On quadruped's four toe
+    z-forces (-1435.0, -1440.9, -1406.7, -1435.9):
+
+        direct log form  ->  -7.9123010635 for ALL FOUR, bit-identical
+        folded log form  ->  -7.96206760, -7.96617031, -7.94214916, -7.96269417
+        std.math.asinh   ->  -7.96206760, -7.96617031, -7.94214916, -7.96269464
+        exact            ->  -7.96206743, -7.96617050, -7.94214912, -7.96269441
+
+    `std.math.asinh` keeps all four distinct and is CLOSER than the fold on the
+    fourth — which is why it is worth revisiting the moment `asinh` lowers to
+    the GPU. Four distinct forces collapsing onto one number is the dim ceasing
+    to carry information, and it agreed with itself perfectly — only a
+    cross-check could ever see it, which is why it is re-checked here.
     """
     comptime if DTYPE == DType.float32:
         return rebind[Scalar[DTYPE]](
@@ -232,6 +306,8 @@ def asinh_dt[DTYPE: DType](x: Scalar[DTYPE]) -> Scalar[DTYPE]:
 def _asinh_impl[
     DTYPE: DType
 ](x: Scalar[DTYPE]) -> Scalar[DTYPE] where DTYPE.is_floating_point():
+    """The folded identity. ⚠ NOT `std.math.asinh` — see `asinh_dt`: it exists
+    and is better, and it does not compile for the GPU target."""
     var a = abs(x)
     var r = log(a + sqrt(a * a + Scalar[DTYPE](1.0)))
     return -r if x < Scalar[DTYPE](0) else r

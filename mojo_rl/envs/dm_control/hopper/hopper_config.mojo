@@ -133,8 +133,8 @@ struct DMHopperConfig[HOPPING: Bool](Phyics3dEnvConfig):
             var heel = touch_sphere_site(
                 d, m_sites, TOUCH_HEEL_SITE_IDX, TOUCH_FORCE_SCALE
             )
-            obs.append(Scalar[DTYPE](log(1.0 + toe)))
-            obs.append(Scalar[DTYPE](log(1.0 + heel)))
+            obs.append(log1p_dt[DTYPE](Scalar[DTYPE](toe)))
+            obs.append(log1p_dt[DTYPE](Scalar[DTYPE](heel)))
         except:
             # touch_sphere_site only raises on a non-sphere site, which is a
             # model-authoring error rather than a runtime condition. Keep the

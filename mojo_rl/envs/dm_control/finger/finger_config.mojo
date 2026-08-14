@@ -44,7 +44,8 @@ therefore compiles from its OWN XML with the .03 already substituted — see
 """
 
 from std.random import random_float64
-from std.math import pi, sqrt, log1p, sin, cos
+from std.math import pi, sqrt, sin, cos
+from ..dtype_math import log1p_dt
 
 from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.sensors.touch import touch_sphere_site
@@ -135,8 +136,8 @@ def _append_shared_obs[
     # extracting obs after the integrator step.
     var top = touch_sphere_site(d, m_sites, TOUCHTOP_SITE_IDX, 1.0)
     var bot = touch_sphere_site(d, m_sites, TOUCHBOTTOM_SITE_IDX, 1.0)
-    obs.append(Scalar[DTYPE](log1p(top)))
-    obs.append(Scalar[DTYPE](log1p(bot)))
+    obs.append(Scalar[DTYPE](log1p_dt[DTYPE](Scalar[DTYPE](top))))
+    obs.append(Scalar[DTYPE](log1p_dt[DTYPE](Scalar[DTYPE](bot))))
 
 
 def _randomize_joints[

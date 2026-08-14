@@ -86,6 +86,7 @@ WHAT THIS PORT DOES DIFFERENTLY, and why:
 
 from std.random import random_float64
 from std.math import sin, cos, sqrt, log, pi, inf
+from ..dtype_math import log1p_dt
 
 from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
@@ -209,7 +210,7 @@ struct DMStackerConfig[N_BOXES: Int](Phyics3dEnvConfig):
                 # it degrades to 0 here and the parity tests gate the real values
                 # against MuJoCo's `sensordata`.
                 f = 0.0
-            obs.append(Scalar[DTYPE](log(1.0 + f)))
+            obs.append(log1p_dt[DTYPE](Scalar[DTYPE](f)))
 
         # hand_pos, then every box's 2-D pose.
         Self._append_2d_pose[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](

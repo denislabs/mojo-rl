@@ -588,11 +588,20 @@ def _rollout[
             touch_seen = top
         if bot > touch_seen:
             touch_seen = bot
+        # ⚠⚠ THE TOUCH TERMS COME FROM NUMPY, NOT FROM MOJO. They used to be
+        # `log1p(top), log1p(bot)` — the same `std.math.log1p` the config under
+        # test called — so the two sides shared any error and it cancelled
+        # exactly. That made this leg structurally blind to the arithmetic:
+        # `std.math.log1p` carries up to 1.01e-06 RELATIVE error on
+        # x in [0.05, 0.42] (libm: 1e-16), and nothing here could have seen it.
+        # `finger.py` calls `np.log1p`, so that is the reference.
+        var np_ = Python.import_module("numpy")
         var ref_obs = [
             Float64(py=sd[adr[0]]), Float64(py=sd[adr[1]]), tipx, tipz,
             Float64(py=sd[adr[2]]), Float64(py=sd[adr[3]]),
             Float64(py=sd[adr[4]]),
-            log1p(top), log1p(bot), tgx, tgz, dist,
+            Float64(py=np_.log1p(top)), Float64(py=np_.log1p(bot)),
+            tgx, tgz, dist,
         ]
         var do_ = 0.0
         for i in range(12):

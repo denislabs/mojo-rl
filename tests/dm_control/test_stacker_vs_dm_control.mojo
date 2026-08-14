@@ -140,9 +140,16 @@ comptime TOL_QACC_COUPLED: Float64 = 1e-8
 # Observation and reward are pure readbacks of state the physics layer already
 # gates, so they sit at the FK floor.
 comptime TOL_OBS: Float64 = 1e-9
-# TOUCH reads POST-SOLVE contact forces, so it inherits the contact solve's
-# floor rather than FK's.
-comptime TOL_TOUCH: Float64 = 1e-8
+# TOUCH reads POST-SOLVE contact forces, so it COULD inherit the contact
+# solve's floor rather than FK's.
+#
+# ⚠ IT DID NOT — the floor here was our own arithmetic, as on `manipulator`.
+# The observable was transcribed as `log(1.0 + f)`, worth up to 1.02e-09
+# ABSOLUTE against `np.log1p`, and 43% of this task's non-zero touch readings
+# land in [0.05, 0.42] where that form is worst — the highest share of any
+# task in the suite. With `dtype_math.log1p_dt` the measured worst touch
+# deviation is 3.38e-14.
+comptime TOL_TOUCH: Float64 = 1e-11
 
 
 # OUR site order IS MuJoCo's, as of the element-order fix (2026-08-03).

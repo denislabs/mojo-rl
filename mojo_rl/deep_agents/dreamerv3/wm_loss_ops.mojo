@@ -49,16 +49,43 @@ from .twohot import symexp_twohot_bins, DREAMER_REWARD_GRID_LO
 
 @always_inline
 def _symlog(x: Scalar[DT]) -> Scalar[DT]:
+    """`sign(x) * log(1 + |x|)` — used by the CPU path AND the GPU kernels.
+
+    ⚠⚠ THESE WERE TWO DIFFERENT FUNCTIONS NINE LINES APART, AND THE CPU AND GPU
+    PATHS OF THE SAME LOSS USED ONE EACH. `_symlog` was `s * log1p(a)`
+    (`SymlogMSELoss.forward` / `.vjp`) and `_symk` was `s * log(1 + a)`
+    (`_symmse_fwd_kernel` / `_symmse_bwd_kernel`). They are the same function
+    mathematically and NOT the same function numerically: `std.math.log1p`
+    carries up to 1.01e-06 RELATIVE error for |x| in [0.05, 0.42] — rising
+    smoothly to a peak at ~0.404 and collapsing by ~0.424, the signature of a
+    branch cutover set too high — where libm is 1e-16.
+
+    So a recon target in that band was symlogged differently on the two paths,
+    and `test_wm_loss_ops_storage.test_symmse` compares them at a tolerance of
+    1e-4, which is 100x too loose to notice. It read as GPU numerics.
+
+    ⚠ THE SURVIVING SPELLING IS `log(1 + a)`, THE GPU ONE, ON PURPOSE — it
+    leaves the GPU kernels bit-identical and moves only the CPU path, by at
+    most ~1e-06 relative, toward it. Making BOTH accurate (the
+    `2*atanh(a/(2+a))` identity, 2.8e-14 where these are 1e-09 and 1e-06) is a
+    real improvement and a SEPARATE change: it moves every DreamerV3 number
+    and needs its own before/after, exactly as the dm_control touch sensors got
+    in `dm_control/dtype_math.log1p_dt`.
+
+    ⚠ `mojo_rl/nn/primitives/ops/symlog_math.mojo` calls itself the "single
+    source of truth (audit L4)" for this formula and this file does not use it,
+    which is how the drift happened in the first place. Routing through it is
+    the right follow-up; it is a cross-package import, not a one-line change.
+    """
     var s = Scalar[DT](1.0) if x >= Scalar[DT](0.0) else Scalar[DT](-1.0)
     var a = x if x >= Scalar[DT](0.0) else -x
-    return s * log1p(a)
+    return s * log(Scalar[DT](1.0) + a)
 
 
 @always_inline
 def _symk(x: Scalar[DT]) -> Scalar[DT]:
-    var s = Scalar[DT](1.0) if x >= Scalar[DT](0.0) else Scalar[DT](-1.0)
-    var a = x if x >= Scalar[DT](0.0) else -x
-    return s * log(Scalar[DT](1.0) + a)
+    """Kept as the GPU kernels' name for `_symlog`, which they now share."""
+    return _symlog(x)
 
 
 @always_inline

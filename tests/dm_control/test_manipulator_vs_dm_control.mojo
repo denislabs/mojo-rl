@@ -124,11 +124,23 @@ comptime TOL_QACC_COUPLED: Float64 = 1e-8
 # gates, so they sit at the FK floor. Measured 2026-08-01: arm_pos/arm_vel/
 # object_vel/target_pos exact, hand_pos and object_pos 5.0e-11, reward 1.8e-11.
 comptime TOL_OBS: Float64 = 1e-9
-# TOUCH is different in kind: it reads POST-SOLVE contact forces, so it
-# inherits the contact solve's floor (the qacc buckets sit at ~4e-9) rather
-# than FK's. Measured 1.36e-9 through `log1p` of 2-4 N. Split out so the
-# state-readback blocks stay pinned at 1e-9 and cannot drift behind it.
-comptime TOL_TOUCH: Float64 = 1e-8
+# TOUCH reads POST-SOLVE contact forces, so it could in principle inherit the
+# contact solve's floor (the qacc buckets sit at ~4e-9) rather than FK's.
+#
+# ⚠⚠ THAT IS WHAT THIS COMMENT USED TO CLAIM, AND IT WAS WRONG. It read:
+# "Measured 1.36e-9 through `log1p` of 2-4 N" and attributed the residual to
+# the solve. The residual was OUR ARITHMETIC: the touch observable was
+# transcribed as `log(1.0 + f)`, which carries up to 1.02e-09 ABSOLUTE error
+# against `np.log1p` on real touch forces, and 28% of this task's non-zero
+# readings land in [0.05, 0.42] where it is worst. Switching to
+# `dtype_math.log1p_dt` (the `2*atanh(f/(2+f))` identity) dropped the measured
+# worst touch deviation from 1.36e-9 to 3.84e-14 — 35000x — with the contact
+# solve untouched. The solve was never the floor here.
+#
+# Tightened to 1e-11 accordingly: at 3.84e-14 that is still 260x of headroom,
+# and a tolerance three orders above the measurement cannot catch a
+# regression. See `dm_control/dtype_math.log1p_dt` for the measurements.
+comptime TOL_TOUCH: Float64 = 1e-11
 
 # OUR site order IS MuJoCo's, as of the element-order fix (2026-08-03).
 #

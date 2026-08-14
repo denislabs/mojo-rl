@@ -91,7 +91,7 @@ comptime QUADRUPED_FRAME_SKIP: Int = 4
 
 @always_inline
 def _asinh(x: Float64) -> Float64:
-    """`np.arcsinh`. Not in `std.math`, so the identity, folded onto |x|.
+    """`np.arcsinh`. The identity, folded onto |x| — see the note below.
 
     ⚠ THE FOLD IS NOT COSMETIC. `x + sqrt(x*x + 1)` cancels catastrophically
     for large negative x, and a loaded toe here reaches |force| ~ 1.4e3 — far
@@ -100,7 +100,12 @@ def _asinh(x: Float64) -> Float64:
     measurement). float64 degrades later rather than escaping, and the two
     paths are diffed element-wise, so both use the same stable form.
 
-    `asinh` is odd, so this is exact, not an approximation.
+    ⚠⚠ `std.math.asinh` EXISTS AND IS BETTER AND WE STILL CANNOT USE IT — see
+    `dtype_math.asinh_dt` for the measurements and the reason. It does not
+    lower to the GPU target, and this observable has a GPU twin that is diffed
+    against this one element-wise, so switching only here would trade a known
+    accuracy loss for an unknown CPU/GPU divergence. The fold stays until the
+    GPU side can follow.
     """
     var a = abs(x)
     var r = log(a + sqrt(a * a + 1.0))
