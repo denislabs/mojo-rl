@@ -1559,3 +1559,142 @@ def has_relevant_collisions_at_with_fixed(qpos, fixed_poses,
         for bound, pos, quat in saved:
             bound.pos = pos
             bound.quat = quat
+
+
+def bake_time_stack_indices(task_name, seed=0):
+    """`stack_indices` for the model the GENERATOR baked, not the cached one.
+
+    ⚠⚠ `_load` CACHES, AND A RANDOM-ORDER TASK'S MODEL MOVES UNDER IT. Every
+    `env.reset()` re-runs `initialize_episode_mjcf`, which redraws
+    `desired_order` and strips the freejoint from a possibly different brick.
+    So `stack_indices(task)` answers "which brick is fixed RIGHT NOW", which is
+    not a fact about the committed XML and is useless to assert against.
+
+    A freshly constructed env reset exactly once is what `bake()` saw, because
+    `_load` resets once at construction and `bake()` does not reset again. This
+    builds one and throws it away.
+    """
+    _bootstrap()
+    from dm_control import manipulation
+    saved = _env_cache.pop((task_name, seed), None)
+    env = manipulation.load(task_name, seed=seed)
+    env.reset()
+    _env_cache[(task_name, seed)] = env
+    try:
+        return stack_indices(task_name, seed=seed)
+    finally:
+        _env_cache.pop((task_name, seed), None)
+        if saved is not None:
+            _env_cache[(task_name, seed)] = saved
+
+
+def stack_random_state(task_name, order, brick_poses, arm_qpos, arm_qvel,
+                       brick_qvel=None, ctrl=None, seed=0):
+    """Evaluate a RANDOM-ORDER `Stack` task at an injected state and order.
+
+    `order` is the `desired_order` to force; `brick_poses` is a list of
+    `(pos, quat)` indexed by REFERENCE brick index, with `quat` in MuJoCo's
+    (w, x, y, z).
+
+    ⚠⚠ THE ORDER HAS TO BE FORCED, NOT OBSERVED. `initialize_episode_mjcf`
+    draws it and then rebuilds the model around it, so a gate cannot ask "what
+    order did you pick" and then match — it has to say which order, get the
+    matching model, and inject state into THAT. This turns `_randomize_order`
+    off, writes `_desired_order`, and resets: with randomisation off,
+    `initialize_episode_mjcf` keeps the order it was given and fixes
+    `order[0]`.
+
+    ⚠ `env.reset()` REPLACES `env.physics`, so everything is re-bound after it.
+
+    The task's flags are restored before returning; a leaked
+    `_randomize_order = False` would silently freeze every later episode in the
+    process.
+    """
+    _bootstrap()
+    import numpy as np
+    env = _load(task_name, seed=seed)
+    task = env.task
+    saved_rand = task._randomize_order
+    saved_order = np.array(task._desired_order)
+    try:
+        task._randomize_order = False
+        task._desired_order = np.asarray(order, dtype=int)
+        env.reset()
+        p = env.physics
+        # The fixed brick's pose is a MODEL field; the free ones are qpos.
+        for i, frame in enumerate(task._brick_frames):
+            pos, quat = brick_poses[i]
+            if frame.freejoint is None:
+                b = p.bind(frame)
+                b.pos = np.asarray(pos, dtype=float)
+                b.quat = np.asarray(quat, dtype=float)
+            else:
+                adr = int(np.atleast_1d(p.bind(frame.freejoint).qposadr)[0])
+                p.data.qpos[adr:adr + 3] = np.asarray(pos, dtype=float)
+                p.data.qpos[adr + 3:adr + 7] = np.asarray(quat, dtype=float)
+                dadr = int(np.atleast_1d(p.bind(frame.freejoint).dofadr)[0])
+                p.data.qvel[dadr:dadr + 6] = (
+                    0.0 if brick_qvel is None
+                    else np.asarray(brick_qvel[i], dtype=float))
+        p.data.qpos[:9] = np.asarray(arm_qpos, dtype=float)
+        p.data.qvel[:9] = np.asarray(arm_qvel, dtype=float)
+        p.data.ctrl[:] = 0.0 if ctrl is None else np.asarray(ctrl, dtype=float)
+        p.forward()
+        rs = np.random.RandomState(0)
+        obs = {k: v for k, v in task.observables.items() if v.enabled}
+        out = {'reward': float(task.get_reward(p)),
+               'ncon': int(p.data.ncon), 'nefc': int(p.data.nefc),
+               'fixed_index': int(order[0]),
+               'flat': []}
+        for name in manip_obs_order(task_name, seed=seed):
+            v = np.asarray(obs[name](p, rs), dtype=float).ravel()
+            out[name] = list(v)
+            out['flat'].extend(float(x) for x in v)
+        return out
+    finally:
+        task._randomize_order = saved_rand
+        task._desired_order = saved_order
+
+
+def stack_random_collisions_at(task_name, order, brick_poses, arm_qpos,
+                               seed=0):
+    """dm_control's TCP rejection predicate on a RANDOM-ORDER brick task.
+
+    Forces `order` (so the reference's fixed brick is `order[0]`, matching the
+    one our relabeling put there), places every brick, then asks the same
+    predicate `has_relevant_collisions_at` uses.
+
+    ⚠ THE VERDICT DEPENDS ON WHICH BRICK IS FIXED, which is the whole point:
+    a brick with a freejoint can be pushed aside so resting on it is fine, and
+    a brick without one cannot. Asking without forcing the order would judge
+    our arm against a scene with a different brick welded down.
+    """
+    _bootstrap()
+    import numpy as np
+    import mujoco
+    from dm_control import mjcf
+    env = _load(task_name, seed=seed)
+    task = env.task
+    saved_rand = task._randomize_order
+    saved_order = np.array(task._desired_order)
+    try:
+        task._randomize_order = False
+        task._desired_order = np.asarray(order, dtype=int)
+        env.reset()
+        p = env.physics
+        for i, frame in enumerate(task._brick_frames):
+            pos, quat = brick_poses[i]
+            if frame.freejoint is None:
+                b = p.bind(frame)
+                b.pos = np.asarray(pos, dtype=float)
+                b.quat = np.asarray(quat, dtype=float)
+            else:
+                adr = int(np.atleast_1d(p.bind(frame.freejoint).qposadr)[0])
+                p.data.qpos[adr:adr + 3] = np.asarray(pos, dtype=float)
+                p.data.qpos[adr + 3:adr + 7] = np.asarray(quat, dtype=float)
+        p.data.qpos[:9] = np.asarray(arm_qpos, dtype=float)
+        return has_relevant_collisions_at(
+            [float(x) for x in p.data.qpos], task_name=task_name, seed=seed)
+    finally:
+        task._randomize_order = saved_rand
+        task._desired_order = saved_order

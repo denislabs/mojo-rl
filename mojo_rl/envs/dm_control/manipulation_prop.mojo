@@ -394,7 +394,7 @@ struct SettleResult(Copyable, Movable):
     var max_qacc: Float64
 
 
-def settle_free_prop[
+def settle_free_props[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -425,10 +425,16 @@ def settle_free_prop[
     mut mf: Model[
         DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
     ],
-    dof_adr: Int,
+    dof_adrs: List[Int],
     timestep: Float64,
 ) raises -> SettleResult:
-    """`PropPlacer`'s `place_and_settle` inner loop, for ONE free prop.
+    """`PropPlacer`'s `place_and_settle` inner loop, for N free props.
+
+    ⚠ THE TOLERANCE IS OVER EVERY PROP JOINT AT ONCE. The reference binds
+    `self._prop_joints` — ALL of them — and tests `np.max(np.abs(qvel))`, so a
+    scene settles when the LAST prop has settled. Looping per prop and
+    stopping at the first one to go quiet would return while another is still
+    moving.
 
     Steps until the prop's six dofs are below `SETTLE_QVEL_TOL` /
     `SETTLE_QACC_TOL` or `SETTLE_MAX_TIME` of simulated time runs out, holding
@@ -479,16 +485,53 @@ def settle_free_prop[
             d.qvel.data[i] = Scalar[DTYPE](hold_qvel[i])
         mv = 0.0
         ma = 0.0
-        for k in range(6):
-            var v = abs(Float64(d.qvel.data[dof_adr + k]))
-            var a = abs(Float64(d.qacc.data[dof_adr + k]))
-            if v > mv:
-                mv = v
-            if a > ma:
-                ma = a
+        for p in range(len(dof_adrs)):
+            for k in range(6):
+                var v = abs(Float64(d.qvel.data[dof_adrs[p] + k]))
+                var a = abs(Float64(d.qacc.data[dof_adrs[p] + k]))
+                if v > mv:
+                    mv = v
+                if a > ma:
+                    ma = a
         steps = s + 1
         if mv < SETTLE_QVEL_TOL and ma < SETTLE_QACC_TOL:
             forward_kinematics["cpu"](d, mf)
             return SettleResult(True, steps, mv, ma)
     forward_kinematics["cpu"](d, mf)
     return SettleResult(False, steps, mv, ma)
+
+
+def settle_free_prop[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    NGEOM: Int,
+    NEQ: Int,
+    NTEN: Int,
+    NSITE: Int,
+    NEXCL: Int,
+    NMESHV: Int,
+    NPAIR: Int,
+    MAXC: Int,
+    CONE: Int,
+    MAX_CONDIM: Int,
+    NOSLIP_ITER: Int,
+    NHOLD: Int,
+](
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    mut mf: Model[
+        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
+    ],
+    dof_adr: Int,
+    timestep: Float64,
+) raises -> SettleResult:
+    """`settle_free_props` for the single-prop case — the seven tasks with one
+    free prop read better this way, and it keeps their call sites unchanged."""
+    var adrs = List[Int]()
+    adrs.append(dof_adr)
+    return settle_free_props[
+        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV,
+        NPAIR, MAXC, CONE, MAX_CONDIM, NOSLIP_ITER, NHOLD,
+    ](d, mf, adrs, timestep)
