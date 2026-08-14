@@ -5,13 +5,17 @@ MuJoCo 3.10.0 stepping the same XMLs. Three models: SO-ARM100, SO-ARM101
 (`float32` ours vs `float64` MuJoCo) and Sawyer Reach-v3 (`float64` both).
 
 The short version: **the gap to MuJoCo is algorithmic, not Mojo-vs-C, and it is
-entirely collision.** Forward kinematics is faster than MuJoCo's on all three
-models; nothing outside collision is worse than 1.7×. §10 is that table.
+entirely collision.** Nothing outside collision is worse than 1.7×, and forward
+kinematics is faster than MuJoCo's on two of the three models. §10 is that
+table; §10.1 splits the narrow phase into calls × cost per call.
 
-⚠⚠ **THE MuJoCo BASELINE ITSELF WAS WRONG UNTIL 2026-08-14 — SEE §9.** Stock
+⚠⚠ **BOTH SIDES OF THE COMPARISON WERE WRONG UNTIL 2026-08-14.** (a) Stock
 MuJoCo memsets its whole BVH-active array every step for the *visualiser*, and
-every ratio this project published included it: up to **51% of the reference's
-step** on SO-ARM101. Correcting it makes our numbers worse, not better.
+every ratio this project published included it — up to **45% of the
+reference's step** on SO-ARM101 (§9). (b) SO-ARM101 was being compared against
+Menagerie's `robotstudio_so101`, which is **not the model we ported** and
+collides with boxes where ours collides with 27 k-vertex meshes (§1). Both
+corrections make our numbers worse, not better.
 
 ⚠⚠ **THE 2026-08-13 REVISION GOT THE CAUSE WRONG AND §4 IS ITS RETRACTION.** It
 named a missing mid-phase BVH as the largest prize, from a node count that is
@@ -46,19 +50,27 @@ than its "before"** — see §5.2 — so it is doing strictly more work.)
 And against MuJoCo, per physics step, ours and MuJoCo **interleaved with each
 other**, MIN of 3 rounds:
 
-| model | ours | MuJoCo 3.10.0 | ratio |
-|---|---|---|---|
-| SO-ARM100 | 18.09 µs | 7.53 µs | **2.40×** |
-| SO-ARM101 | 24.54 µs | 5.84 µs | **4.20×** |
-| Sawyer Reach-v3 | 33.40 µs | 15.49 µs | **2.16×** |
+| model | ours | MuJoCo 3.10.0 | ratio | reference XML |
+|---|---|---|---|---|
+| SO-ARM100 | 18.09 µs | 7.53 µs | **2.40×** | `mujoco_menagerie-main/trs_so_arm100/scene.xml` |
+| SO-ARM101 | 25.07 µs | 7.63 µs | **3.29×** | `SO-ARM100-main/Simulation/SO101/scene.xml` |
+| Sawyer Reach-v3 | 33.40 µs | 15.49 µs | **2.16×** | `Metaworld-master/.../sawyer_reach_v3.xml` |
 
-⚠⚠ **THESE ARE WORSE THAN THE 1.93× / 1.78× THIS DOCUMENT PUBLISHED ON
-2026-08-13, AND THE OLD NUMBERS WERE THE WRONG ONES.** Every MuJoCo baseline
-this project has ever quoted was measured with `bvactive` on, i.e. against
-MuJoCo's physics **plus a per-step 700 kB memset that nothing in the dynamics
-reads**. §9 has the proof. Correcting it moves SO-ARM101 from our best model
-to our worst — 1.78× → 4.20× — because that model has the largest mesh BVH in
-the tree and was therefore flattered the most.
+⚠⚠ **QUOTE THE REFERENCE XML WITH THE RATIO, BECAUSE SO-ARM101 HAS TWO AND
+THEY ARE NOT THE SAME ROBOT.** Menagerie's `robotstudio_so101` collides with
+~20 **boxes** plus three 124-vertex gripper hulls — every full-body mesh in it
+is `class="visual" contype="0" conaffinity="0"`. The model we ported is The
+Robot Studio's own (`references/SO-ARM100-main/`), which collides **13
+full-resolution meshes** up to 27 k vertices. Benchmarking our mesh collision
+against MuJoCo's box collision is not an engine comparison, and this document
+did exactly that earlier on 2026-08-14: it published **4.20×** against
+menagerie, where the model we actually run gives **3.29×**.
+
+⚠⚠ **THESE ARE STILL WORSE THAN THE 1.93× / 1.78× PUBLISHED ON 2026-08-13.**
+Every MuJoCo baseline this project has ever quoted was measured with `bvactive`
+on, i.e. against MuJoCo's physics **plus a per-step 645 kB memset that nothing
+in the dynamics reads**. §9 has the proof. That correction is independent of
+the XML one above and both point the same way.
 
 ⚠ **DO NOT COMPARE ANY OF THESE ACROSS SESSIONS.** Only within-session,
 interleaved pairs mean anything; identical code has drifted 1.4–1.7× on this
@@ -560,19 +572,21 @@ every node of every mesh BVH, so it is enormous on mesh-heavy scenes. Measured,
 | model | `nbvh` | bvactive=1 | bvactive=0 | delta |
 |---|---|---|---|---|
 | SO-ARM100 | 123 136 | 8.705 µs | 7.720 µs | 0.985 µs (11.3%) |
-| **SO-ARM101** | **696 364** | 12.160 µs | **5.987 µs** | **6.173 µs (50.8%)** |
+| **SO-ARM101** | **645 136** | 13.364 µs | **7.372 µs** | **5.992 µs (44.8%)** |
 | Sawyer | 133 936 | 17.016 µs | 15.595 µs | 1.421 µs (8.4%) |
 
 ⚠ **THE DELTA IS memset BANDWIDTH, WHICH IS HOW YOU KNOW IT IS REAL AND NOT
-NOISE.** 123 kB/0.985 µs, 696 kB/6.173 µs and 134 kB/1.421 µs are 125, 113 and
+NOISE.** 123 kB/0.985 µs, 645 kB/5.992 µs and 134 kB/1.421 µs are 125, 108 and
 94 GB/s — all three land on M1 Pro's memset rate for that byte count. A
-timing artefact would not track the byte count that precisely across a 5.7×
-range.
+timing artefact would not track the byte count that precisely across a 5.2×
+range. (Menagerie's `robotstudio_so101` — the *wrong* so101, see §1 — gives
+696 364 nbvh and 6.173 µs, i.e. 113 GB/s. The finding is the same on either.)
 
 **Consequences, in order of how much they hurt:**
 
-- SO-ARM101 went from **1.78× (our best model) to 4.20× (our worst)**. It has
-  by far the largest `nbvh` in the tree, so it was the most flattered.
+- SO-ARM101 went from **1.78× (our best model) to 3.29× (our worst)**. It has
+  by far the largest `nbvh`, so it was the most flattered. (An earlier version
+  of this section said 4.20×; that also carried the wrong-XML error of §1.)
 - The 2026-08-13 revision named a missing mid-phase BVH as the largest prize
   partly from MuJoCo's BVH node count. That claim was already retracted (§4) on
   other grounds; this is a second, independent reason it pointed the wrong way.
@@ -608,44 +622,67 @@ kinematics + `cdof` + `subtree_com`; its `POS_INERTIA` is `mj_crb` +
 
 | phase | SO-ARM100 | SO-ARM101 | Sawyer |
 |---|---|---|---|
-| **collision** (broad + narrow) | 11.74 / 3.61 = **3.25×** | 20.93 / 1.95 = **10.7×** | 12.75 / 6.77 = **1.88×** |
-| constraint build + solve | 3.98 / 2.36 = 1.69× | 1.24 / 1.80 = **0.69×** | 11.47 / 6.77 = 1.69× |
-| mass matrix + LDL | 0.54 / 0.19 = 2.8× | 0.49 / 0.21 = 2.3× | 1.19 / 0.46 = 2.6× (§11) |
-| kinematics + cdof + subtree com | 0.81 / 0.96 = **0.85×** | 0.96 / 1.13 = **0.85×** | 1.58 / 2.05 = **0.77×** |
+| **collision** (broad + narrow) | 11.74 / 3.61 = **3.25×** | 20.93 / 3.58 = **5.84×** | 12.75 / 6.77 = **1.88×** |
+| constraint build + solve | 3.98 / 2.36 = 1.69× | 1.24 / 1.75 = **0.71×** | 11.47 / 6.77 = 1.69× |
+| mass matrix + LDL | 0.54 / 0.19 = 2.8× | 0.49 / 0.18 = 2.7× | 1.19 / 0.46 = 2.6× (§11) |
+| kinematics + cdof + subtree com | 0.81 / 0.96 = **0.85×** | 0.96 / 0.71 = 1.36× | 1.58 / 2.05 = **0.77×** |
 | our env glue (no MuJoCo counterpart) | 0.99 | 0.89 | ~2.2 |
 
 (µs per physics step, ours / MuJoCo.)
 
 **The finding is that there is only one finding.** Outside collision nothing is
-worse than 1.7×; forward kinematics is **faster than MuJoCo on all three
-models**, and SO-ARM101's constraint stage is faster too. Collision carries the
-entire gap:
+worse than 1.7×, forward kinematics is faster than MuJoCo on two of the three
+models, and SO-ARM101's constraint stage is faster. Collision carries the gap:
 
-- **SO-ARM101: collision is 19.0 µs of excess against a total gap of 18.7 µs.**
-  Everything else nets out slightly in our favour. There is no second target on
-  this model — it is the narrow phase or nothing.
+- SO-ARM101: **17.3 µs of a 17.4 µs gap.** Everything else nets out. There is
+  no second target on this model — it is the narrow phase or nothing.
 - SO-ARM100: 8.1 µs of a 10.6 µs gap.
 - Sawyer: 6.0 µs of a 17.9 µs gap — the only model where the solver (4.7 µs of
   excess) is in the same league, because it is the only one with real contacts
   (`ncon = 5`, `nefc = 29`).
 
-⚠⚠ **THE NEXT STEP IS A CALL COUNTER, AND THE ARITHMETIC ALREADY SAYS SO.**
-MuJoCo's whole narrow phase on SO-ARM101 is **0.41 µs/step**; ours is ~20 µs.
-§4 measured both engines selecting the same pairs, **4.0 plane + 1.0 geom-geom
-per step on each side** — and if that is also the `gjk_epa_witness` call count,
-then one geom-geom call is costing us ~20 µs, which **contradicts §6.1's own
-8.74 µs/call before a 1.59× cutoff**. Those two cannot both be right. Either a
-pair issues more than one call (multi-contact re-invocation is the obvious
-suspect), or the `sample` bucket is charging `gjk_epa_witness` work it does not
-own. **Do not design against either story until a counter at the call site says
-which.** A Python replay of MuJoCo's filter chain bounds its narrow-phase pairs
-at ≤24/step here, but that ignores its body-level broadphase and settles
-nothing.
+### 10.1 The narrow phase, split into calls × cost per call
 
-⚠ This probe wants the widened-`smeta` build of §8, and on 2026-08-14 it was
-**abandoned mid-setup because the machine ran out of disk** — a `git worktree`
-of this repo makes pixi materialise a fresh 1.8 GB environment, and the volume
-was already at 99%. Instrument in place and revert, or free space first.
+Counters at the `gjk_epa_witness` and `_plane_mesh_contacts` call sites in
+`_detect_contacts_sap_env` (widened `smeta`, 200 000 physics steps, §8):
+
+| | calls/step | µs/step | **µs per call** |
+|---|---|---|---|
+| SO-ARM100 geom-geom GJK | 2.00 | 2.37 | **1.18** |
+| SO-ARM100 plane-mesh | 5.00 | 1.08 | 0.22 |
+| SO-ARM100 **narrow total** | 7.00 | **3.45** | vs MuJoCo **2.49** = **1.4×** |
+| SO-ARM101 geom-geom GJK | **4.00** | 14.26 | **3.56** |
+| SO-ARM101 plane-mesh | 1.00 | 0.05 | 0.05 |
+| SO-ARM101 **narrow total** | 5.00 | **14.31** | vs MuJoCo **2.49** = **5.7×** |
+
+**The call counts are MuJoCo's exactly** — §4 measured 2.0 + 5.0 and 4.0 + 1.0
+on both sides, and these are 2.00 + 5.00 and 4.00 + 1.00. So the whole
+difference is **cost per call**, and it is not uniform: SO-ARM100's narrow
+phase is already within **1.4×** of MuJoCo's, while SO-ARM101's is 5.7×.
+
+⚠⚠ **THE INTERESTING NUMBER IS NOT THE RATIO TO MuJoCo, IT IS THE RATIO TO
+OURSELVES: 3.56 µs/call on SO-ARM101 against 1.18 µs on SO-ARM100, same code.**
+That is a property of the *geometry*, not the algorithm — SO-ARM101 collides 13
+full-resolution meshes (up to 27 k vertices; one hull is ~4 000 by §3) where
+SO-ARM100's collision meshes are 8–187-vertex `*_Collision_*.stl` proxies plus
+4 boxes. **The support walk is doing more work because it is walking a bigger
+polytope, and the model is why.**
+
+⚠ **THIS RETRACTS THE CONTRADICTION THIS SECTION FLAGGED HOURS EARLIER.** It
+read §4's "4.0 + 1.0" as *plane + geom-geom* when the column order is
+*geom-geom + plane*, inferred one 20 µs GJK call from it, and called the result
+irreconcilable with §6.1's 8.74 µs/call. There was never a contradiction —
+4 calls at 3.56 µs. **The counter cost one build; the misreading cost a
+paragraph of confident nonsense in a document whose whole point is that
+inference loses to measurement.**
+
+⚠ **§10.1 BELOW IS THAT SPLIT, MEASURED.** It replaces an inference this
+section carried for a few hours and which was wrong in both directions.
+
+⚠ The probe wants the widened-`smeta` build of §8. A `git worktree` of this
+repo cannot host it — `references/` alone is 5.3 GB and pixi materialises a
+fresh multi-GB environment per manifest — so **instrument in place, measure,
+`git checkout --` the two files**. Total cost: one build.
 
 ⚠ **`sample` CANNOT SEE A FUNCTION THAT BECAME SMALL ENOUGH TO INLINE.** After
 §11 the `mass_matrix` bucket vanished from Sawyer's profile entirely — not
@@ -711,12 +748,33 @@ not be written that way.
 
 ## 12. What is left, in the order the measurements support
 
-1. **SO-ARM101's narrow phase** — 20 µs against MuJoCo's 0.41. Biggest item in
-   the tree by a wide margin, and the *only* item on that model. First step is
-   a call counter, not a rewrite (§10).
-2. **SO-ARM100's collision** — 11.7 vs 3.6 µs, same shape of problem.
+1. **The support walk on big hulls.** SO-ARM101's geom-geom GJK costs
+   **3.56 µs/call against SO-ARM100's 1.18 µs — same code, 3× apart** (§10.1).
+   The call counts already match MuJoCo exactly on both models, so there is no
+   pruning left to win; the cost is per call and it tracks hull size. Two
+   candidates, in order of what the evidence supports:
+
+   ⚠⚠ **"OUR HULLS ARE TOO BIG" WAS THE OBVIOUS EXPLANATION AND IT IS FALSE.**
+   MuJoCo collides against `mesh_graph` — the convex hull plus its edge graph —
+   and the reduction from the raw mesh is large (`wrist_roll_pitch_so101_v2`
+   26 967 verts → **7 296** hull). Summed over the collidable meshes MuJoCo
+   walks **76 320** hull vertices on SO-ARM101; our whole mesh table is
+   `NMESH_VERTS = 33 280`, and `fields_build` RAISES on overflow rather than
+   truncating, so that total is real. **We walk a polytope less than half
+   MuJoCo's size and are still ~6× slower per call.** That makes the remaining
+   gap a code problem, not a data problem — which is the opposite of what this
+   list said before the query was run. Cost of the check: one Python call.
+
+   So the target is the walk itself, and §7.2 already says it is latency-bound
+   and hostile to SIMD. Expect this to be hard, and re-derive the per-call cost
+   on SO-ARM100 (1.18 µs on a 2 746-vertex table) versus SO-ARM101 (3.56 µs on
+   33 280) before assuming the walk length is what scales.
+
+2. **SO-ARM100's collision** — 11.7 vs 3.6 µs total, though its *narrow phase*
+   is already within 1.4× (§10.1). The excess is in `detect_contacts_sap`
+   outside the 0.91 µs sweep and outside GJK, which is not yet split.
 3. **Sawyer's solver** — 11.5 vs 6.8 µs. The only model where the solver is a
    real target, and the one place the Newton warm start of §6.4 would show up
    against a `ncon = 5` workload rather than a contact-free one.
-4. Nothing else. Kinematics is already faster than MuJoCo, the mass matrix is
-   fixed, and the broadphase sweep is 0.91 µs.
+4. Nothing else. The mass matrix is fixed (§11), the broadphase sweep is
+   0.91 µs, and kinematics is at or better than MuJoCo.
