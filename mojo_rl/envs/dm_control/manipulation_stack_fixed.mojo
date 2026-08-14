@@ -7,6 +7,11 @@ THREE TASKS COME THROUGH HERE:
     stack_3_bricks                3 bricks, brick 0 fixed     obs 81
     stack_2_bricks_moveable_base  2 bricks, NONE fixed        obs 68
 
+and `reassemble_3_bricks_fixed_order` reuses the index arithmetic and
+`brick_tcp_initializer` below, but NOT `stack_fixed_reset_full` — it starts
+from an assembled stack rather than scattering one, so its reset is
+`manipulation_reassemble`'s `build_stack` instead of the placer and settle.
+
 `_stack(randomize_order=False)` leaves `desired_order = arange(target_height)`,
 so the order is the identity every episode and there is no `desired_order`
 observable and no relabeling — the reference's model is stable and ours matches
@@ -273,6 +278,134 @@ def stack_fixed_set_grasp[
     set_grasp[DTYPE, N_HAND](d.qpos.data, qadr, rmin, rmax, factors)
 
 
+def brick_tcp_initializer[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    NGEOM: Int,
+    NEQ: Int,
+    NTEN: Int,
+    NSITE: Int,
+    NEXCL: Int,
+    NMESHV: Int,
+    NPAIR: Int,
+    MAX_CONTACTS: Int,
+](
+    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    mut mf: Model[
+        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
+    ],
+    n_bricks: Int,
+    fixed_brick: Int,
+    caller: String,
+) raises:
+    """`ToolCenterPointInitializer` as every brick task configures it.
+
+    THE LAST STATEMENT OF `initialize_episode` FOR ALL FIVE FIXED-ORDER BRICK
+    TASKS, and identical in all of them: the same `tcp_bbox`, the same
+    `DOWN_QUATERNION`, the same 10-sample / 10-attempt budget, and a body
+    classification that differs only in which bricks carry a freejoint. It is
+    shared rather than copied because the classification is the part that is
+    easy to get subtly wrong, and getting it wrong changes the ACCEPTED SET
+    rather than failing.
+
+    ⚠⚠ THE FIXED BRICK IS `BODY_FIXED` AND THE REST ARE `BODY_FREE`, because
+    dm_control's predicate asks whether a body's top-level body carries a
+    freejoint. An arm pose resting on the base of a fixed-base stack is
+    REJECTED and one resting on a moveable brick is not — so with
+    `moveable_base` (`fixed_brick = -1`) nothing is rejected on those grounds,
+    which is a real widening of the accepted set and not a detail.
+
+    ⚠ THE HINT BRICKS STAY `BODY_FIXED`, harmless only because they are
+    contactless and so can never appear in a contact at all.
+
+    ⚠ ARM JOINTS WITH NO LIMIT RESAMPLE OVER [0, 2*pi). `JOINT_RANGE_UNLIMITED`
+    is our spelling of "unlimited"; using the stored +-1e10 as a sampling bound
+    would draw nothing usable.
+
+    `caller` only names the task in the error message.
+    """
+    comptime MAX_ATT: Int = 10
+    comptime MAX_SAMP: Int = 10
+
+    var dof_idx = InlineArray[Int, N_ARM](fill=0)
+    var qpos_adr = InlineArray[Int, N_ARM](fill=0)
+    var lower = InlineArray[Float64, N_ARM](fill=0.0)
+    var upper = InlineArray[Float64, N_ARM](fill=0.0)
+    for a in range(N_ARM):
+        var jb = a * MODEL_JOINT_SIZE
+        dof_idx[a] = a
+        qpos_adr[a] = a
+        var lo = Float64(mf.joints.data[jb + JOINT_IDX_RANGE_MIN])
+        var hi = Float64(mf.joints.data[jb + JOINT_IDX_RANGE_MAX])
+        if hi >= JOINT_RANGE_UNLIMITED or lo <= -JOINT_RANGE_UNLIMITED:
+            lo = 0.0
+            hi = TWO_PI
+        lower[a] = lo
+        upper[a] = hi
+
+    var targets = List[Scalar[DTYPE]]()
+    var lo_t = InlineArray[Float64, 3](fill=0.0)
+    lo_t[0] = TCP_BBOX_LOWER_X
+    lo_t[1] = TCP_BBOX_LOWER_Y
+    lo_t[2] = TCP_BBOX_LOWER_Z
+    var hi_t = InlineArray[Float64, 3](fill=0.0)
+    hi_t[0] = TCP_BBOX_UPPER_X
+    hi_t[1] = TCP_BBOX_UPPER_Y
+    hi_t[2] = TCP_BBOX_UPPER_Z
+    for _ in range(MAX_SAMP):
+        var td = InlineArray[Float64, 3](fill=0.0)
+        for k in range(3):
+            td[k] = random_float64()
+        var pt = sample_bbox_uniform[DTYPE](lo_t, hi_t, td)
+        for k in range(3):
+            targets.append(pt[k])
+
+    var retry = List[Scalar[DTYPE]]()
+    for _ in range(MAX_SAMP * (MAX_ATT - 1)):
+        for a in range(N_ARM):
+            retry.append(
+                Scalar[DTYPE](
+                    lower[a] + (upper[a] - lower[a]) * random_float64()
+                )
+            )
+
+    var down = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
+    down[0] = Scalar[DTYPE](DOWN_QUAT_XY)
+    down[1] = Scalar[DTYPE](DOWN_QUAT_XY)
+
+    var body_class = InlineArray[Int, NBODY](fill=BODY_FIXED)
+    for b in range(NBODY):
+        if b >= 2 and b <= 8:
+            body_class[b] = BODY_ARM
+        elif b >= 10 and b <= 16:
+            body_class[b] = BODY_HAND
+    for p in range(n_bricks):
+        if p != fixed_brick:
+            body_class[stack_brick_body_of(p)] = BODY_FREE
+
+    var res = tool_center_point_initializer[
+        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
+        NMESHV, NPAIR, MAX_CONTACTS, N_ARM,
+    ](
+        d, mf, SITE_PINCH, targets, down, dof_idx, qpos_adr,
+        lower, upper, retry, body_class, False, MAX_ATT, MAX_SAMP,
+    )
+    if not res.success:
+        raise Error(
+            caller
+            + ": the TCP initializer exhausted "
+            + String(res.samples)
+            + " samples ("
+            + String(res.ik_failures)
+            + " IK failures, "
+            + String(res.collision_rejections)
+            + " collision rejections)"
+        )
+
+
 def stack_fixed_reset_full[
     DTYPE: DType,
     NQ: Int,
@@ -310,9 +443,6 @@ def stack_fixed_reset_full[
     the free path. Defaulting it to 0 would write a `body_pos` that `qpos` then
     overrides — silently, because brick 0 would also still have coordinates.
     """
-    comptime MAX_ATT: Int = 10
-    comptime MAX_SAMP: Int = 10
-
     var lo_p = InlineArray[Float64, 3](fill=0.0)
     lo_p[0] = PROP_BBOX_LOWER_X
     lo_p[1] = PROP_BBOX_LOWER_Y
@@ -385,85 +515,7 @@ def stack_fixed_reset_full[
     ](d, mf, dofs, timestep)
 
     # ── the TCP initializer ─────────────────────────────────────────────
-    var dof_idx = InlineArray[Int, N_ARM](fill=0)
-    var qpos_adr = InlineArray[Int, N_ARM](fill=0)
-    var lower = InlineArray[Float64, N_ARM](fill=0.0)
-    var upper = InlineArray[Float64, N_ARM](fill=0.0)
-    for a in range(N_ARM):
-        var jb = a * MODEL_JOINT_SIZE
-        dof_idx[a] = a
-        qpos_adr[a] = a
-        var lo = Float64(mf.joints.data[jb + JOINT_IDX_RANGE_MIN])
-        var hi = Float64(mf.joints.data[jb + JOINT_IDX_RANGE_MAX])
-        if hi >= JOINT_RANGE_UNLIMITED or lo <= -JOINT_RANGE_UNLIMITED:
-            lo = 0.0
-            hi = TWO_PI
-        lower[a] = lo
-        upper[a] = hi
-
-    var targets = List[Scalar[DTYPE]]()
-    var lo_t = InlineArray[Float64, 3](fill=0.0)
-    lo_t[0] = TCP_BBOX_LOWER_X
-    lo_t[1] = TCP_BBOX_LOWER_Y
-    lo_t[2] = TCP_BBOX_LOWER_Z
-    var hi_t = InlineArray[Float64, 3](fill=0.0)
-    hi_t[0] = TCP_BBOX_UPPER_X
-    hi_t[1] = TCP_BBOX_UPPER_Y
-    hi_t[2] = TCP_BBOX_UPPER_Z
-    for _ in range(MAX_SAMP):
-        var td = InlineArray[Float64, 3](fill=0.0)
-        for k in range(3):
-            td[k] = random_float64()
-        var pt = sample_bbox_uniform[DTYPE](lo_t, hi_t, td)
-        for k in range(3):
-            targets.append(pt[k])
-
-    var retry = List[Scalar[DTYPE]]()
-    for _ in range(MAX_SAMP * (MAX_ATT - 1)):
-        for a in range(N_ARM):
-            retry.append(
-                Scalar[DTYPE](
-                    lower[a] + (upper[a] - lower[a]) * random_float64()
-                )
-            )
-
-    var down = InlineArray[Scalar[DTYPE], 4](fill=Scalar[DTYPE](0))
-    down[0] = Scalar[DTYPE](DOWN_QUAT_XY)
-    down[1] = Scalar[DTYPE](DOWN_QUAT_XY)
-
-    # ⚠⚠ THE FIXED BRICK IS `BODY_FIXED` AND THE REST ARE `BODY_FREE`, because
-    # dm_control's predicate asks whether a body's top-level body carries a
-    # freejoint. So an arm pose resting on the base of a fixed-base stack is
-    # REJECTED and one resting on a moveable brick is not — and with
-    # `moveable_base` NOTHING is rejected on those grounds, which is a real
-    # difference in the accepted set, not a detail.
-    #
-    # ⚠ THE HINT BRICKS STAY `BODY_FIXED`, harmless only because they are
-    # contactless and so can never appear in a contact.
-    var body_class = InlineArray[Int, NBODY](fill=BODY_FIXED)
-    for b in range(NBODY):
-        if b >= 2 and b <= 8:
-            body_class[b] = BODY_ARM
-        elif b >= 10 and b <= 16:
-            body_class[b] = BODY_HAND
-    for p in range(n_bricks):
-        if p != fixed_brick:
-            body_class[stack_brick_body_of(p)] = BODY_FREE
-
-    var res = tool_center_point_initializer[
+    brick_tcp_initializer[
         DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-        NMESHV, NPAIR, MAX_CONTACTS, N_ARM,
-    ](
-        d, mf, SITE_PINCH, targets, down, dof_idx, qpos_adr,
-        lower, upper, retry, body_class, False, MAX_ATT, MAX_SAMP,
-    )
-    if not res.success:
-        raise Error(
-            "stack: the TCP initializer exhausted "
-            + String(res.samples)
-            + " samples ("
-            + String(res.ik_failures)
-            + " IK failures, "
-            + String(res.collision_rejections)
-            + " collision rejections)"
-        )
+        NMESHV, NPAIR, MAX_CONTACTS,
+    ](d, mf, n_bricks, fixed_brick, "stack")

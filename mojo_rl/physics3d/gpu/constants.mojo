@@ -120,7 +120,20 @@ comptime CONTACT_IDX_SOLIMP_4: Int = 29  # mixed solimp power
 # State Buffer Layout - Metadata
 # =============================================================================
 
-comptime METADATA_SIZE: Int = 8
+comptime METADATA_SIZE: Int = 16
+"""Per-env metadata words: 4 fixed slots plus `META_IDX_TASK_PARAM_0..11`.
+
+⚠ RAISED FROM 8 FOR `reassemble_5_bricks_random_order`, which stores TWO
+five-entry orders — `desired_order` and `initial_order`, the second because its
+relabeling is built from the first entry of it. Four slots were not enough for
+even one of them, and the encodings that would have made four enough (a Lehmer
+code, base-5 packing, deriving the last entry from the other four) all buy the
+space by hiding the layout.
+
+⚠ EVERY INDEX INTO `meta` IS `env * METADATA_SIZE + META_IDX_*`, never a
+literal, so widening is a buffer-size change and nothing else. It costs 8
+floats per env — `Data.meta` is `alloc(B * METADATA_SIZE)` — which is noise
+next to a single body's state."""
 
 comptime META_IDX_NUM_CONTACTS: Int = 0
 comptime META_IDX_STEP_COUNT: Int = 1  # Episode step counter for truncation
@@ -149,10 +162,22 @@ comptime META_IDX_PREV_COM_X: Int = 3  # Reserved for prev CoM x (unused with cv
 # sets `META_IDX_STEP_COUNT` and leaves the rest, exactly as it always did for
 # `META_IDX_PREV_X`. A hook that reads a slot it never wrote gets the previous
 # episode's value.
+# ⚠ ALSO THE HOME OF PER-EPISODE TASK STATE THAT IS NOT A MODEL FIELD. The
+# brick tasks' `desired_order` and relabeling live here for the same reason:
+# they are per-episode, they are a handful of floats, and `prev_x` — the only
+# other per-env scalar — is rewritten every step and would lose them.
 comptime META_IDX_TASK_PARAM_0: Int = 4
 comptime META_IDX_TASK_PARAM_1: Int = 5
 comptime META_IDX_TASK_PARAM_2: Int = 6
 comptime META_IDX_TASK_PARAM_3: Int = 7
+comptime META_IDX_TASK_PARAM_4: Int = 8
+comptime META_IDX_TASK_PARAM_5: Int = 9
+comptime META_IDX_TASK_PARAM_6: Int = 10
+comptime META_IDX_TASK_PARAM_7: Int = 11
+comptime META_IDX_TASK_PARAM_8: Int = 12
+comptime META_IDX_TASK_PARAM_9: Int = 13
+comptime META_IDX_TASK_PARAM_10: Int = 14
+comptime META_IDX_TASK_PARAM_11: Int = 15
 
 
 # =============================================================================

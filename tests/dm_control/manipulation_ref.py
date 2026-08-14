@@ -1698,3 +1698,385 @@ def stack_random_collisions_at(task_name, order, brick_poses, arm_qpos,
     finally:
         task._randomize_order = saved_rand
         task._desired_order = saved_order
+
+
+# ── `bricks.py::Reassemble` ────────────────────────────────────────────────
+#
+# ⚠⚠ `Reassemble` DOES NOT USE `PropPlacer` AT ALL. `Stack` scatters its bricks
+# and settles them; `Reassemble` starts from an ASSEMBLED stack, built by
+# `_build_stack`, which places each brick by lining its hole up with the stud of
+# the brick below. There is no rejection loop and no settle, so the whole
+# `place_free_prop` / `settle_free_props` path is absent from this task and a
+# gate written against `stack_reset` measures nothing here.
+
+
+def reassemble_orders(task_name, seed=0):
+    """`Reassemble`'s two orders and the flags that decide whether they move.
+
+    ⚠ THE TWO ORDERS ARE DIFFERENT ARRAYS AND ONLY THE FIRST ENTRY IS SHARED.
+    `initialize_episode_mjcf` sets `desired_order[0] = initial_order[0]` —
+    because that brick is welded to the table and cannot be restacked — and
+    then REVERSES the rest: `desired_order[1:] = initial_order[-1:0:-1]`. So
+    with three bricks in the identity initial order the desired order is
+    [0, 2, 1] and not the identity, which is why the reward at a freshly built
+    initial stack is 0 rather than 1.
+    """
+    _bootstrap()
+    env = _load(task_name, seed=seed)
+    task = env.task
+    return {
+        'initial': [int(x) for x in task._initial_order],
+        'desired': [int(x) for x in task._desired_order],
+        'n_bricks': len(task._bricks),
+        'randomize_initial': bool(task._randomize_initial_order),
+        'randomize_desired': bool(task._randomize_desired_order),
+    }
+
+
+def build_stack_reference(task_name, base_pos, base_quat, order, flips,
+                          seed=0):
+    """`bricks.py::_build_stack` driven by INJECTED draws.
+
+    Calls the reference function itself rather than a transcription of it, with
+    a stub `random_state` supplying the only two things it draws: nothing for
+    `base_pos`/`base_quat` (plain arrays pass through `variation.evaluate`
+    untouched) and one `rand()` per stacked pair, where `< 0.5` means "rotate
+    the top brick 180 degrees about z and line up the OPPOSITE corner hole".
+
+    `flips[i]` is that decision for pair `i`, as a bool.
+
+    ⚠⚠ THE STATE IS RESET TO `qpos0` FIRST, AND THAT IS A PRECONDITION OF THE
+    REFERENCE, NOT TIDINESS. `_build_stack` computes the top brick's position as
+    `stud_pos - hole_xpos`, which lines the hole up with the stud only while the
+    top brick's own position is still the ORIGIN — it is subtracting a world
+    position and using it as a local offset. Every brick's freejoint has
+    `qpos0 = (0, 0, 0, 1, 0, 0, 0)` and each brick is moved exactly once, so the
+    reference never violates it. A port that reuses the function on an
+    already-placed brick silently gets a different stack.
+
+    ⚠ THE BASE BRICK'S POSE MAY BE A MODEL FIELD. `order[0]` is the brick whose
+    freejoint was removed, so `set_pose` writes its attachment frame's
+    `body_pos`/`body_quat`. Both are returned and both are restored.
+    """
+    _bootstrap()
+    import numpy as np
+    import mujoco
+    from dm_control.manipulation import bricks as _bricks
+    env = _load(task_name, seed=seed)
+    task, p = env.task, env.physics
+
+    class _Stub:
+        def __init__(self, f):
+            self._f = list(f)
+            self._i = 0
+
+        def rand(self):
+            v = self._f[self._i]
+            self._i += 1
+            # `_build_stack` flips when `rand() < 0.5`.
+            return 0.25 if v else 0.75
+
+    saved = []
+    for frame in task._brick_frames:
+        if frame.freejoint is None:
+            b = p.bind(frame)
+            saved.append((b, np.array(b.pos), np.array(b.quat)))
+    try:
+        mujoco.mj_resetData(p.model._model, p.data._data)
+        p.forward()
+        _bricks._build_stack(
+            p, bricks=task._bricks,
+            base_pos=np.asarray(base_pos, dtype=float),
+            base_quat=np.asarray(base_quat, dtype=float),
+            order=np.asarray(order, dtype=int),
+            random_state=_Stub(flips))
+        p.forward()
+        fixed = {}
+        for i, frame in enumerate(task._brick_frames):
+            if frame.freejoint is None:
+                b = p.bind(frame)
+                fixed[i] = ([float(x) for x in np.atleast_1d(b.pos)],
+                            [float(x) for x in np.atleast_1d(b.quat)])
+        return {
+            'qpos': [float(x) for x in p.data.qpos],
+            'fixed': fixed,
+            'ncon': int(p.data.ncon),
+            'reward': float(task.get_reward(p)),
+        }
+    finally:
+        for b, pos, quat in saved:
+            b.pos = pos
+            b.quat = quat
+
+
+def reassemble_pairwise_reward(distances, close_coef=0.0):
+    """`_get_pairwise_stacking_rewards` on RAW distances, per pair.
+
+    Exists so a gate can pin the `close_coef = 0` that `Reassemble.get_reward`
+    passes — a value that is invisible in the reward of a stacked pair (both
+    coefficients give 1) and dominant everywhere else.
+    """
+    _bootstrap()
+    import numpy as np
+    from dm_control.utils import rewards as _rewards
+    from dm_control.manipulation import bricks as _bricks
+    d = np.asarray(distances, dtype=float)
+    close = _rewards.tolerance(
+        d, bounds=(0, _bricks._CLOSE_THRESHOLD),
+        margin=(_bricks._CLOSE_THRESHOLD * 10))
+    clicked = _rewards.tolerance(
+        d, bounds=(0, _bricks._CLICK_THRESHOLD),
+        margin=_bricks._CLICK_THRESHOLD)
+    return [float(x) for x in
+            np.average([close, clicked], weights=[close_coef, 1.], axis=0)]
+
+
+def xml_matches_reference(xml_string_, task_name, seed=0):
+    """Is our committed XML BYTE-IDENTICAL to this task's export?
+
+    Stronger and cheaper than `compare_xml_to_reference`, which compiles both
+    and diffs `mjModel` tables — byte identity implies table identity and also
+    catches text a compiler would normalise away. Used where one committed
+    document backs TWO tasks, so that a later upstream change to either one
+    fails here instead of silently giving the second task the first one's model.
+
+    Returns `(matches, len_ours, len_theirs, first_difference_index)`.
+    """
+    theirs = xml_string(task_name, seed=seed)
+    if xml_string_ == theirs:
+        return (True, len(xml_string_), len(theirs), -1)
+    n = min(len(xml_string_), len(theirs))
+    at = n
+    for i in range(n):
+        if xml_string_[i] != theirs[i]:
+            at = i
+            break
+    return (False, len(xml_string_), len(theirs), at)
+
+
+def compare_xml_excluding_hint_bricks(xml_string_, task_name, seed=0):
+    """`compare_xml_to_reference`, minus the rows every reset rewrites.
+
+    ⚠⚠ THE REFERENCE'S `mjModel` IS NOT ITS XML IN THIS FAMILY. Both `Stack`
+    and `Reassemble` end `initialize_episode` by arranging the translucent GOAL
+    HINT bricks into a stack with `_build_stack`, and those bricks have no
+    freejoint — so `set_pose` writes their attachment frames' `body_pos` and
+    `body_quat`, which are MODEL fields. A cached, once-reset reference env
+    therefore differs from its own export on exactly those rows, and a
+    layer-1 XML gate that does not know this fails on every brick task.
+
+    The hint bricks are renderer-only: contactless (`contype = conaffinity = 0`)
+    with no observables and no joints, so their pose reaches neither the
+    physics nor the agent, and our port does not build their stack at all.
+
+    Returns `(other_diffs, n_hint_diffs, hint_bodies)`. `other_diffs` empty is
+    the pass condition; `n_hint_diffs` being 0 too would mean the reset did not
+    move them and the exclusion is untested.
+    """
+    _bootstrap()
+    import re as _re
+    p = physics(task_name, seed=seed)
+    task = _load(task_name, seed=seed).task
+    hint = set()
+    for b in task._goal_hint_bricks:
+        from dm_control import mjcf as _mjcf
+        frame = _mjcf.get_attachment_frame(b.mjcf_model)
+        hint.add(int(p.bind(frame).element_id))
+    diffs = compare_xml_to_reference(xml_string_, task_name, seed=seed)
+    other, n_hint = [], 0
+    for d in diffs:
+        m = _re.match(r'^(body_pos|body_quat)\[.*?int64\((\d+)\)', str(d))
+        if m and int(m.group(2)) in hint:
+            n_hint += 1
+        else:
+            other.append(str(d))
+    return (other, n_hint, sorted(hint))
+
+
+def _force_reassemble_orders(task, initial, desired):
+    """Turn BOTH randomisations off and pin the two orders.
+
+    ⚠⚠ THE ORDERS HAVE TO BE FORCED, NOT OBSERVED. `initialize_episode_mjcf`
+    draws `initial_order` and then rebuilds the model around it, so a gate
+    cannot ask "which order did you pick" and match — it has to say which
+    order, get the matching model, and inject into THAT.
+
+    ⚠ IT MUST WRITE `_initial_order` IN PLACE. `initialize_episode_mjcf` does
+    `self._desired_order[0] = self._initial_order[0]` and
+    `self._desired_order[1:] = self._initial_order[-1:0:-1]` unconditionally,
+    so `_desired_order` is REWRITTEN from `_initial_order` on every reset no
+    matter what we set it to. The desired order therefore has to be restored
+    AFTER `env.reset()`, not before.
+    """
+    import numpy as np
+    task._randomize_initial_order = False
+    task._randomize_desired_order = False
+    task._initial_order[:] = np.asarray(initial, dtype=task._initial_order.dtype)
+
+
+def reassemble_random_state(task_name, initial, desired, brick_poses,
+                            arm_qpos, arm_qvel, brick_qvel=None, ctrl=None,
+                            seed=0):
+    """Evaluate a RANDOM-ORDER `Reassemble` task at an injected state.
+
+    `initial` and `desired` are the two orders to force, in REFERENCE brick
+    indices; `brick_poses` is a list of `(pos, quat)` indexed by reference
+    brick index, with `quat` in MuJoCo's (w, x, y, z).
+
+    ⚠ `env.reset()` REPLACES `env.physics`, so everything is re-bound after it.
+
+    The task's flags are restored before returning; a leaked
+    `_randomize_initial_order = False` would silently freeze every later
+    episode in the process.
+    """
+    _bootstrap()
+    import numpy as np
+    env = _load(task_name, seed=seed)
+    task = env.task
+    saved = (task._randomize_initial_order, task._randomize_desired_order,
+             np.array(task._initial_order), np.array(task._desired_order))
+    try:
+        _force_reassemble_orders(task, initial, desired)
+        env.reset()
+        p = env.physics
+        # ⚠ AFTER the reset — `initialize_episode_mjcf` derives it from
+        # `_initial_order` and would overwrite anything set earlier.
+        task._desired_order[:] = np.asarray(
+            desired, dtype=task._desired_order.dtype)
+        for i, frame in enumerate(task._brick_frames):
+            pos, quat = brick_poses[i]
+            if frame.freejoint is None:
+                b = p.bind(frame)
+                b.pos = np.asarray(pos, dtype=float)
+                b.quat = np.asarray(quat, dtype=float)
+            else:
+                adr = int(np.atleast_1d(p.bind(frame.freejoint).qposadr)[0])
+                p.data.qpos[adr:adr + 3] = np.asarray(pos, dtype=float)
+                p.data.qpos[adr + 3:adr + 7] = np.asarray(quat, dtype=float)
+                dadr = int(np.atleast_1d(p.bind(frame.freejoint).dofadr)[0])
+                p.data.qvel[dadr:dadr + 6] = (
+                    0.0 if brick_qvel is None
+                    else np.asarray(brick_qvel[i], dtype=float))
+        p.data.qpos[:9] = np.asarray(arm_qpos, dtype=float)
+        p.data.qvel[:9] = np.asarray(arm_qvel, dtype=float)
+        p.data.ctrl[:] = 0.0 if ctrl is None else np.asarray(ctrl, dtype=float)
+        p.forward()
+        rs = np.random.RandomState(0)
+        obs = {k: v for k, v in task.observables.items() if v.enabled}
+        out = {'reward': float(task.get_reward(p)),
+               'ncon': int(p.data.ncon), 'nefc': int(p.data.nefc),
+               'fixed_index': int(initial[0]),
+               'free': [f.freejoint is not None for f in task._brick_frames],
+               'qposadr': [
+                   (int(np.atleast_1d(p.bind(f.freejoint).qposadr)[0])
+                    if f.freejoint is not None else -1)
+                   for f in task._brick_frames],
+               'flat': []}
+        for name in manip_obs_order(task_name, seed=seed):
+            v = np.asarray(obs[name](p, rs), dtype=float).ravel()
+            out[name] = list(v)
+            out['flat'].extend(float(x) for x in v)
+        return out
+    finally:
+        task._randomize_initial_order = saved[0]
+        task._randomize_desired_order = saved[1]
+        task._initial_order[:] = saved[2]
+        task._desired_order[:] = saved[3]
+
+
+def reassemble_random_build(task_name, initial, desired, base_pos, base_quat,
+                            flips, seed=0):
+    """`_build_stack` on a forced-order `Reassemble`, from `qpos0`.
+
+    Same contract as `build_stack_reference`, but for a task whose model
+    depends on the order: the order is forced FIRST so the reset welds the
+    right brick, and only then is the stack built.
+    """
+    _bootstrap()
+    import numpy as np
+    import mujoco
+    from dm_control.manipulation import bricks as _bricks
+    env = _load(task_name, seed=seed)
+    task = env.task
+    saved = (task._randomize_initial_order, task._randomize_desired_order,
+             np.array(task._initial_order), np.array(task._desired_order))
+
+    class _Stub:
+        def __init__(self, f):
+            self._f = list(f)
+            self._i = 0
+
+        def rand(self):
+            v = self._f[self._i]
+            self._i += 1
+            return 0.25 if v else 0.75
+
+    try:
+        _force_reassemble_orders(task, initial, desired)
+        env.reset()
+        p = env.physics
+        task._desired_order[:] = np.asarray(
+            desired, dtype=task._desired_order.dtype)
+        mujoco.mj_resetData(p.model._model, p.data._data)
+        p.forward()
+        _bricks._build_stack(
+            p, bricks=task._bricks,
+            base_pos=np.asarray(base_pos, dtype=float),
+            base_quat=np.asarray(base_quat, dtype=float),
+            order=np.asarray(initial, dtype=int),
+            random_state=_Stub(flips))
+        p.forward()
+        fixed = {}
+        for i, frame in enumerate(task._brick_frames):
+            if frame.freejoint is None:
+                b = p.bind(frame)
+                fixed[i] = ([float(x) for x in np.atleast_1d(b.pos)],
+                            [float(x) for x in np.atleast_1d(b.quat)])
+        return {
+            'qpos': [float(x) for x in p.data.qpos],
+            'fixed': fixed,
+            'ncon': int(p.data.ncon),
+            'reward': float(task.get_reward(p)),
+            'qposadr': [
+                (int(np.atleast_1d(p.bind(f.freejoint).qposadr)[0])
+                 if f.freejoint is not None else -1)
+                for f in task._brick_frames],
+        }
+    finally:
+        task._randomize_initial_order = saved[0]
+        task._randomize_desired_order = saved[1]
+        task._initial_order[:] = saved[2]
+        task._desired_order[:] = saved[3]
+
+
+def reassemble_random_collisions_at(task_name, initial, desired, brick_poses,
+                                    arm_qpos, seed=0):
+    """dm_control's TCP rejection predicate on a forced-order `Reassemble`."""
+    _bootstrap()
+    import numpy as np
+    env = _load(task_name, seed=seed)
+    task = env.task
+    saved = (task._randomize_initial_order, task._randomize_desired_order,
+             np.array(task._initial_order), np.array(task._desired_order))
+    try:
+        _force_reassemble_orders(task, initial, desired)
+        env.reset()
+        p = env.physics
+        for i, frame in enumerate(task._brick_frames):
+            pos, quat = brick_poses[i]
+            if frame.freejoint is None:
+                b = p.bind(frame)
+                b.pos = np.asarray(pos, dtype=float)
+                b.quat = np.asarray(quat, dtype=float)
+            else:
+                adr = int(np.atleast_1d(p.bind(frame.freejoint).qposadr)[0])
+                p.data.qpos[adr:adr + 3] = np.asarray(pos, dtype=float)
+                p.data.qpos[adr + 3:adr + 7] = np.asarray(quat, dtype=float)
+        p.data.qpos[:9] = np.asarray(arm_qpos, dtype=float)
+        return has_relevant_collisions_at(
+            [float(x) for x in p.data.qpos], task_name=task_name, seed=seed)
+    finally:
+        task._randomize_initial_order = saved[0]
+        task._randomize_desired_order = saved[1]
+        task._initial_order[:] = saved[2]
+        task._desired_order[:] = saved[3]
