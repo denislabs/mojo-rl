@@ -43,6 +43,22 @@ print(f"opt    solver={mujoco.mjtSolver(m.opt.solver).name} "
       f"integrator={mujoco.mjtIntegrator(m.opt.integrator).name} "
       f"timestep={m.opt.timestep}")
 
+# ⚠⚠ TURN OFF `bvactive` OR MOST OF WHAT YOU MEASURE IS A DEBUG MEMSET.
+# `mj_collision` opens with `memset(d->bvh_active, 0, m->nbvh)` whenever
+# `m->vis.global.bvactive` is set -- and it is set BY DEFAULT. `nbvh` counts
+# every node of every MESH BVH, so it is enormous on mesh-heavy scenes:
+# 696 364 on robotstudio_so101, which is 6.17 us/step of pure memset --
+# **51% of that model's step**. Measured on M1 Pro at ~115 GB/s, i.e. exactly
+# memset bandwidth for that byte count. It is a VISUALISATION feature; nothing
+# in the dynamics reads `bvh_active`, and our engine has no counterpart, so
+# leaving it on compares our physics against MuJoCo's physics plus a memset.
+# ⚠ EVERY MuJoCo NUMBER PUBLISHED IN `PERFORMANCE.md` BEFORE 2026-08-14 HAD
+# THIS ON, which flattered our ratios -- badly on so101 (1.78x -> 4.16x).
+BVACTIVE = int(sys.argv[4]) if len(sys.argv) > 4 else 0
+m.vis.global_.bvactive = BVACTIVE
+print(f"vis    bvactive={BVACTIVE}  nbvh={m.nbvh} "
+      f"({m.nbvh/1e3:.0f} kB memset/step if on)")
+
 # The env drives every actuator with a constant; mirror that.
 d.ctrl[:] = 0.1
 
@@ -52,18 +68,24 @@ for _ in range(2000):
 
 TIMERS = {n: t.value for n, t in mujoco.mjtTimer.__members__.items()
           if n.startswith("mjTIMER")}
-for v in TIMERS.values():
-    d.timer[v].duration = 0
-    d.timer[v].number = 0
-t0 = time.perf_counter()
+# Work counts come from their OWN loop. Reading d.ncon/d.nefc through pybind11
+# costs ~0.4 us/step, and inside the timed loop that inflates `wall_us`, hence
+# SCALE, hence EVERY phase number below by 3-5%.
 ncon = []
 nefc = []
 niter = []
-for _ in range(N):
+for _ in range(min(N, 2000)):
     mujoco.mj_step(m, d)
     ncon.append(d.ncon)
     nefc.append(d.nefc)
     niter.append(int(d.solver_niter[0]))
+
+for v in TIMERS.values():
+    d.timer[v].duration = 0
+    d.timer[v].number = 0
+t0 = time.perf_counter()
+for _ in range(N):
+    mujoco.mj_step(m, d)
 
 wall_us = 1e6 * (time.perf_counter() - t0) / N
 T = {n: (d.timer[v].duration, d.timer[v].number) for n, v in TIMERS.items()}

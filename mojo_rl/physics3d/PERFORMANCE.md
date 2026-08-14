@@ -1,11 +1,17 @@
 # physics3d CPU performance — where the time goes, and what is left
 
-Measured 2026-08-13, revised 2026-08-14, on Apple M1 Pro, `float32`, single
-env, against MuJoCo 3.10.0 (`float64`) stepping the same two XMLs.
+Measured 2026-08-13, revised 2026-08-14, on Apple M1 Pro, single env, against
+MuJoCo 3.10.0 stepping the same XMLs. Three models: SO-ARM100, SO-ARM101
+(`float32` ours vs `float64` MuJoCo) and Sawyer Reach-v3 (`float64` both).
 
-The short version: **the gap to MuJoCo is algorithmic, not Mojo-vs-C.** Every
-phase where we run the same algorithm runs at MuJoCo's speed or faster, and all
-of the gap is collision.
+The short version: **the gap to MuJoCo is algorithmic, not Mojo-vs-C, and it is
+entirely collision.** Forward kinematics is faster than MuJoCo's on all three
+models; nothing outside collision is worse than 1.7×. §10 is that table.
+
+⚠⚠ **THE MuJoCo BASELINE ITSELF WAS WRONG UNTIL 2026-08-14 — SEE §9.** Stock
+MuJoCo memsets its whole BVH-active array every step for the *visualiser*, and
+every ratio this project published included it: up to **51% of the reference's
+step** on SO-ARM101. Correcting it makes our numbers worse, not better.
 
 ⚠⚠ **THE 2026-08-13 REVISION GOT THE CAUSE WRONG AND §4 IS ITS RETRACTION.** It
 named a missing mid-phase BVH as the largest prize, from a node count that is
@@ -42,26 +48,36 @@ other**, MIN of 3 rounds:
 
 | model | ours | MuJoCo 3.10.0 | ratio |
 |---|---|---|---|
-| SO-ARM100 | 18.20 µs | 9.413 µs | **1.93×** (was 4.2×) |
-| SO-ARM101 | 24.90 µs | 13.966 µs | **1.78×** (was 3.7×) |
+| SO-ARM100 | 18.09 µs | 7.53 µs | **2.40×** |
+| SO-ARM101 | 24.54 µs | 5.84 µs | **4.20×** |
+| Sawyer Reach-v3 | 33.40 µs | 15.49 µs | **2.16×** |
 
-⚠ **DO NOT COMPARE THESE AGAINST THIS DOCUMENT'S EARLIER 4.4× / 3.7×.** Those
-were taken on a quieter machine — MuJoCo itself measured 7.8 and 12.3 µs then
-against 9.37 and 13.85 µs here, i.e. the box is 15-20% slower this session.
-Only within-session, interleaved pairs mean anything; the "was" column above is
-this session's baseline, not the old document's.
+⚠⚠ **THESE ARE WORSE THAN THE 1.93× / 1.78× THIS DOCUMENT PUBLISHED ON
+2026-08-13, AND THE OLD NUMBERS WERE THE WRONG ONES.** Every MuJoCo baseline
+this project has ever quoted was measured with `bvactive` on, i.e. against
+MuJoCo's physics **plus a per-step 700 kB memset that nothing in the dynamics
+reads**. §9 has the proof. Correcting it moves SO-ARM101 from our best model
+to our worst — 1.78× → 4.20× — because that model has the largest mesh BVH in
+the tree and was therefore flattered the most.
 
-⚠ Our column is the **whole env step ÷ 10**, so it includes ~0.85 µs/step of
-obs/reward/action glue that MuJoCo's `mj_step` does not do. Physics-only is
-roughly 2.4× and 2.8×.
+⚠ **DO NOT COMPARE ANY OF THESE ACROSS SESSIONS.** Only within-session,
+interleaved pairs mean anything; identical code has drifted 1.4–1.7× on this
+box.
 
-⚠ **WE ARE STILL SLOWER WHILE CARRYING HALF THE PRECISION.** These runs are
-`float32`; MuJoCo is `float64` throughout. The honest gap is worse than the
-ratio, not better.
+⚠ Our column is the **whole env step ÷ FRAME_SKIP**, so it includes obs/reward/
+action glue that MuJoCo's `mj_step` does not do — 0.99, 0.89 and ~2.2 µs/step
+respectively (§10).
 
-Both models are `nq = nv = nu = 6`, `nbody = 8`, and sit at `ncon` 1 and 0 — so
-what is compared is almost entirely **the cost of proving that geoms are
-apart**, not the cost of resolving contact.
+⚠ **THE ARMS ARE SLOWER WHILE CARRYING HALF THE PRECISION.** Both SO-ARM runs
+are `float32` against MuJoCo's `float64`, so their honest gap is worse than the
+ratio. **Sawyer is not** — it runs `float64` on both sides, which is why it is
+the fair one of the three.
+
+The two arms are `nq = nv = nu = 6`, `nbody = 8/9`, at `ncon` 1 and 0 — so what
+they compare is almost entirely **the cost of proving that geoms are apart**.
+Sawyer is the opposite corner (`nv = 15`, `nbody = 34`, `ncon = 5`) and was
+added on 2026-08-14 precisely because a single-shape workload cannot tell a
+constant factor from an `O()` defect: §11 is one that only Sawyer could see.
 
 ---
 
@@ -519,3 +535,188 @@ child).
 Timings are the **MIN of interleaved rounds** against a pristine `git worktree`,
 never a baseline measured earlier in a session — identical code has drifted
 1.4–1.7× here.
+
+---
+
+## ⚠⚠ 9. The MuJoCo baseline was carrying a per-step debug memset
+
+**Every MuJoCo number this project has published was inflated**, by between 8%
+and 51%, and the correction is not uniform across models — so it changed the
+ranking, not just the scale.
+
+`mj_collision` (`engine_collision_driver.c`) opens with
+
+```c
+  if (m->vis.global.bvactive) {
+    memset(d->bvh_active, 0, m->nbvh);
+  }
+```
+
+`bvactive` is a **visualisation** flag — it exists so the viewer can highlight
+which bounding volumes were touched — and **it defaults to 1**. `nbvh` counts
+every node of every mesh BVH, so it is enormous on mesh-heavy scenes. Measured,
+`mj_step` with the flag on and off, 20 000 steps, MIN of 5:
+
+| model | `nbvh` | bvactive=1 | bvactive=0 | delta |
+|---|---|---|---|---|
+| SO-ARM100 | 123 136 | 8.705 µs | 7.720 µs | 0.985 µs (11.3%) |
+| **SO-ARM101** | **696 364** | 12.160 µs | **5.987 µs** | **6.173 µs (50.8%)** |
+| Sawyer | 133 936 | 17.016 µs | 15.595 µs | 1.421 µs (8.4%) |
+
+⚠ **THE DELTA IS memset BANDWIDTH, WHICH IS HOW YOU KNOW IT IS REAL AND NOT
+NOISE.** 123 kB/0.985 µs, 696 kB/6.173 µs and 134 kB/1.421 µs are 125, 113 and
+94 GB/s — all three land on M1 Pro's memset rate for that byte count. A
+timing artefact would not track the byte count that precisely across a 5.7×
+range.
+
+**Consequences, in order of how much they hurt:**
+
+- SO-ARM101 went from **1.78× (our best model) to 4.20× (our worst)**. It has
+  by far the largest `nbvh` in the tree, so it was the most flattered.
+- The 2026-08-13 revision named a missing mid-phase BVH as the largest prize
+  partly from MuJoCo's BVH node count. That claim was already retracted (§4) on
+  other grounds; this is a second, independent reason it pointed the wrong way.
+  **A number that large sitting in the reference is worth explaining before it
+  is used as evidence.**
+- `benchmarks/physics3d_mujoco_phases.py` now sets `bvactive = 0` by default
+  and prints the flag and `nbvh` on every run. Pass a 4th argument `1` to get
+  the old behaviour back.
+
+⚠ **A SECOND, SMALLER INFLATION IN THE SAME SCRIPT, ALSO FIXED.** The
+calibration loop appended `d.ncon` / `d.nefc` / `d.solver_niter` to Python lists
+**inside the timed region**. That pybind11 traffic is ~0.4 µs/step, and since
+every phase is scaled by `wall_us / raw_STEP`, it inflated *every phase
+number the script has ever printed* by 3–5%. Work counts now come from their
+own untimed loop.
+
+⚠ **IS TURNING IT OFF FAIR?** Yes, and state why rather than assume it: nothing
+in the dynamics reads `bvh_active`, our engine has no counterpart, and a
+headless benchmark is not drawing anything. But it *is* what a user gets from
+stock MuJoCo, so quote it when the question is "what does MuJoCo cost me",
+and quote `bvactive=0` when the question is "whose physics is faster".
+
+---
+
+## 10. Where the difference actually is: collision, on every model
+
+Ours from `sample` (exclusive attribution, `benchmarks/physics3d_sample_phases.py`)
+scaled onto the interleaved wall-clock totals of §1; MuJoCo from its own
+`mjTimerStat` phases with `bvactive=0`. Grouped so the two sides line up —
+MuJoCo's `POS_KINEMATICS` covers `mj_kinematics` + `mj_comPos`, which is our
+kinematics + `cdof` + `subtree_com`; its `POS_INERTIA` is `mj_crb` +
+`mj_factorM`, which is our mass matrix + LDL.
+
+| phase | SO-ARM100 | SO-ARM101 | Sawyer |
+|---|---|---|---|
+| **collision** (broad + narrow) | 11.74 / 3.61 = **3.25×** | 20.93 / 1.95 = **10.7×** | 12.75 / 6.77 = **1.88×** |
+| constraint build + solve | 3.98 / 2.36 = 1.69× | 1.24 / 1.80 = **0.69×** | 11.47 / 6.77 = 1.69× |
+| mass matrix + LDL | 0.54 / 0.19 = 2.8× | 0.49 / 0.21 = 2.3× | 1.19 / 0.46 = 2.6× (§11) |
+| kinematics + cdof + subtree com | 0.81 / 0.96 = **0.85×** | 0.96 / 1.13 = **0.85×** | 1.58 / 2.05 = **0.77×** |
+| our env glue (no MuJoCo counterpart) | 0.99 | 0.89 | ~2.2 |
+
+(µs per physics step, ours / MuJoCo.)
+
+**The finding is that there is only one finding.** Outside collision nothing is
+worse than 1.7×; forward kinematics is **faster than MuJoCo on all three
+models**, and SO-ARM101's constraint stage is faster too. Collision carries the
+entire gap:
+
+- **SO-ARM101: collision is 19.0 µs of excess against a total gap of 18.7 µs.**
+  Everything else nets out slightly in our favour. There is no second target on
+  this model — it is the narrow phase or nothing.
+- SO-ARM100: 8.1 µs of a 10.6 µs gap.
+- Sawyer: 6.0 µs of a 17.9 µs gap — the only model where the solver (4.7 µs of
+  excess) is in the same league, because it is the only one with real contacts
+  (`ncon = 5`, `nefc = 29`).
+
+⚠⚠ **THE NEXT STEP IS A CALL COUNTER, AND THE ARITHMETIC ALREADY SAYS SO.**
+MuJoCo's whole narrow phase on SO-ARM101 is **0.41 µs/step**; ours is ~20 µs.
+§4 measured both engines selecting the same pairs, **4.0 plane + 1.0 geom-geom
+per step on each side** — and if that is also the `gjk_epa_witness` call count,
+then one geom-geom call is costing us ~20 µs, which **contradicts §6.1's own
+8.74 µs/call before a 1.59× cutoff**. Those two cannot both be right. Either a
+pair issues more than one call (multi-contact re-invocation is the obvious
+suspect), or the `sample` bucket is charging `gjk_epa_witness` work it does not
+own. **Do not design against either story until a counter at the call site says
+which.** A Python replay of MuJoCo's filter chain bounds its narrow-phase pairs
+at ≤24/step here, but that ignores its body-level broadphase and settles
+nothing.
+
+⚠ This probe wants the widened-`smeta` build of §8, and on 2026-08-14 it was
+**abandoned mid-setup because the machine ran out of disk** — a `git worktree`
+of this repo makes pixi materialise a fresh 1.8 GB environment, and the volume
+was already at 99%. Instrument in place and revert, or free space first.
+
+⚠ **`sample` CANNOT SEE A FUNCTION THAT BECAME SMALL ENOUGH TO INLINE.** After
+§11 the `mass_matrix` bucket vanished from Sawyer's profile entirely — not
+because the work went to zero, but because the tree-walk is small enough that
+`compute_mass_matrix` now inlines into the step and its residue is charged to
+`env/other` (which "grew" 6.77 → 7.47 µs while the step shrank 4.58 µs). **The
+wall clock is the authority; the profile only says where to look.**
+
+---
+
+## 11. LANDED: the CPU CRBA was O(NV²·NBODY) — 1.14× on Sawyer
+
+`dynamics/mass_matrix.mojo` has two algorithms. The **dense** one evaluates
+every `(i, j)` DOF pair against every body through a subtree mask; the
+**tree-walk** one (`_mm_treewalk_env`) accumulates composite inertia leaf→root
+and then walks each DOF's ancestor chain, which is what `mj_crb` does. Their
+costs are not a constant apart:
+
+| | dense | tree-walk |
+|---|---|---|
+| inner iterations, SO-ARM100 (NV=6, NBODY=8) | 168 | ~44 |
+| inner iterations, Sawyer (NV=15, NBODY=34) | **4 080** | **~110** |
+
+**The tree-walk was unreachable from the CPU.** `compute_mass_matrix` carried
+`comptime assert not (TREEWALK and not PARALLEL)`, and all three integrators
+carried the matching `PARALLEL_GPU or not CRBA_TREEWALK`. So the whole CPU side
+— the viewer, every test, every single-env rollout — ran the dense kernel.
+
+⚠ **THE REQUIREMENT WAS NEVER REAL.** The "inherently cooperative" tree-walk
+kernel's only parallelism is two `range(tid, N, N_THREADS)` loops and two
+`barrier()` calls; `N_THREADS = 1, tid = 0` collapses them exactly. The fix is
+one shared `@always_inline` helper with the barriers behind a `comptime if GPU`,
+called by both the GPU kernel and a new CPU branch — so there is still exactly
+one copy of the arithmetic and the GPU path stays bit-identical.
+
+Measured, interleaved, MIN of 3 rounds:
+
+| model | dense | tree-walk | |
+|---|---|---|---|
+| **Sawyer** (NV=15, NBODY=34) | 37.98 µs | **33.40 µs** | **1.14×** |
+| SO-ARM100 (NV=6, NBODY=8) | 18.17 | 18.42 | noise |
+| SO-ARM101 (NV=6, NBODY=9) | 24.73 | 24.54 | noise |
+
+⚠ **THIS DEFECT IS INVISIBLE ON SMALL MODELS AND THAT IS THE LESSON.** On the
+arms it was worth 0.3 µs and sat inside a 6.9% "kinematics + CRBA + LDL + cdof"
+line nobody would ever pick as a target. It took a model with 34 bodies to make
+it 13.7% of the step. **A profile taken on one shape of model cannot distinguish
+a constant factor from a growth rate** — the arms said "CRBA is 3% of the step",
+which was true and useless. Every model larger than the arms was paying:
+humanoid, quadruped, dog, and every dm_control manipulation scene.
+
+Gates, all green: `test_crba_treewalk_fields` (bit-exact vs the legacy GPU
+tree-walk; tolerance vs dense), `test_sawyer_settle_vs_mujoco`,
+`test_sawyer_mesh_rest_vs_mujoco`, `test_euler_fields_vs_mujoco`,
+`test_humanoid_limits_fields_vs_mujoco`, `test_constraints_vs_mujoco`.
+
+⚠ The tree-walk is float-tolerance-equal to the dense kernel, **not bit-exact**
+— it sums the same terms in a different order. Tests that pin CPU `M` bitwise
+against the dense kernel would move; none in the suite do, but a new one should
+not be written that way.
+
+---
+
+## 12. What is left, in the order the measurements support
+
+1. **SO-ARM101's narrow phase** — 20 µs against MuJoCo's 0.41. Biggest item in
+   the tree by a wide margin, and the *only* item on that model. First step is
+   a call counter, not a rewrite (§10).
+2. **SO-ARM100's collision** — 11.7 vs 3.6 µs, same shape of problem.
+3. **Sawyer's solver** — 11.5 vs 6.8 µs. The only model where the solver is a
+   real target, and the one place the Newton warm start of §6.4 would show up
+   against a `ncon = 5` workload rather than a contact-free one.
+4. Nothing else. Kinematics is already faster than MuJoCo, the mass matrix is
+   fixed, and the broadphase sweep is 0.91 µs.
