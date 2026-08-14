@@ -2879,6 +2879,9 @@ def _detect_contacts_env[
                         va2, mnv2,
                         wf1, wf2, wxx, wf_ok,
                         ccd_tol, ccd_iter, contact_margin,
+                        # Same opt-in as the SAP path — the two narrow phases
+                        # must move together (`feedback_sap_path_missing_a_whole_geom_type`).
+                        contact_margin,
                     )
                     dist = result[0]
                     cx = result[1]

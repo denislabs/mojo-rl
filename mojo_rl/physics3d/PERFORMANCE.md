@@ -24,12 +24,30 @@ Per **physics** step (env step ÷ `FRAME_SKIP=10`), `float32`, against MuJoCo
 
 | model | before | after | speedup |
 |---|---|---|---|
-| SO-ARM100 | 15.42 s | **9.47 s** | **1.63×** |
-| SO-ARM101 | 20.33 s | **15.85 s** | **1.28×** |
+| SO-ARM100 | 15.42 s | **7.28 s** | **2.13×** |
+| SO-ARM101 | 20.33 s | **9.96 s** | **2.03×** |
 
-(40 000 env steps = 400 000 physics steps; MIN of 4 interleaved rounds against
-a pristine worktree. ⚠ SO-ARM100's "after" carries **two more collision meshes
+(40 000 env steps = 400 000 physics steps; MIN of interleaved rounds against a
+pristine worktree. ⚠ SO-ARM100's "after" carries **two more collision meshes
 than its "before"** — see §5.2 — so it is doing strictly more work.)
+
+And against MuJoCo, per physics step, ours and MuJoCo **interleaved with each
+other**, MIN of 3 rounds:
+
+| model | ours | MuJoCo 3.10.0 | ratio |
+|---|---|---|---|
+| SO-ARM100 | 18.20 µs | 9.413 µs | **1.93×** (was 4.2×) |
+| SO-ARM101 | 24.90 µs | 13.966 µs | **1.78×** (was 3.7×) |
+
+⚠ **DO NOT COMPARE THESE AGAINST THIS DOCUMENT'S EARLIER 4.4× / 3.7×.** Those
+were taken on a quieter machine — MuJoCo itself measured 7.8 and 12.3 µs then
+against 9.37 and 13.85 µs here, i.e. the box is 15-20% slower this session.
+Only within-session, interleaved pairs mean anything; the "was" column above is
+this session's baseline, not the old document's.
+
+⚠ Our column is the **whole env step ÷ 10**, so it includes ~0.85 µs/step of
+obs/reward/action glue that MuJoCo's `mj_step` does not do. Physics-only is
+roughly 2.4× and 2.8×.
 
 ⚠ **WE ARE STILL SLOWER WHILE CARRYING HALF THE PRECISION.** These runs are
 `float32`; MuJoCo is `float64` throughout. The honest gap is worse than the
@@ -47,6 +65,8 @@ apart**, not the cost of resolving contact.
 |---|---|---|
 | plane-mesh support point: full argmin → hill climb (§3) | 1.21× | 1.28× |
 | `<mesh>` asset cap silently truncating the model (§5.2) | 1.63× cumulative | n/a (13 assets) |
+| GJK cutoff exit — stop bounding a distance nobody reads (§6.1) | 1.31× | 1.59× |
+| **cumulative** | **2.13×** | **2.03×** |
 | per-pair static filter decode hoisted out of the sweep | **reverted, 0** | **reverted, 0** |
 
 ---
@@ -197,15 +217,10 @@ barriers and add ~2%; use these for proportions, not absolutes):
 | `multi_ccd_extra_contacts` (§6.2) | ~5.2 | — (`ncon` 0, never runs) |
 | contact emission + primitive branches | ~3.6 | ~8.5 |
 
-### 6.1 GJK per-call cost is now the whole story
+### 6.1 GJK converged to a distance nobody read — CLOSED, 1.31× / 1.59×
 
-We run **the same number of convex calls as MuJoCo on the same pairs** (§4),
-and MuJoCo's entire narrow phase — sphere rejects included — is 2.57 µs
-(SO-ARM100) and 2.77 µs (SO-ARM101). Ours is ~20 µs and ~43 µs. That is
-**~8–16× per call**, and it is not explained by hull size: our hulls total
-2 746 and 33 280 vertices against MuJoCo's 15 689 and 50 162.
-
-Where it goes, from a de-inlined build under `sample` (SO-ARM101):
+From a de-inlined build under `sample` (SO-ARM101), the support machinery was
+**62% of the physics step**:
 
 | symbol | % of physics step |
 |---|---|
@@ -214,13 +229,59 @@ Where it goes, from a de-inlined build under `sample` (SO-ARM101):
 | `gjk::gjk_epa_witness` | 10.8 |
 | `gjk::_support` / `_support_mesh` | 8.4 |
 
-**The support walk is 62% of the step.** The open question is whether that is
-*many* queries or *long* walks per query — the counters to answer it are a step
-counter threaded through `hillclimb_support_index`, which is the next thing to
-build. Calibration measured so far: disabling the intra-call warm start costs
-**16.45 → 21.38 s** (+30%), so walks are long enough for the seed to matter,
-but the first query is only one of ~N per call, which caps a cross-step warm
-cache at well under that.
+Counters inside the hill climb (SO-ARM101, per physics step) say it is **not**
+walking badly:
+
+| | |
+|---|---|
+| support queries | 119 (≈30 per GJK call ⇒ ~15 iterations) |
+| walk steps per query | **7.05** (cold 20.4, warm 5.95) |
+| neighbour dots per query | 55.3 |
+| mean degree of the hull graph | **6.0005** (MuJoCo's: 5.995) |
+| cold starts | 7.6% of queries, **21% of the work** |
+
+⚠ **THREE PLAUSIBLE CULPRITS DIED HERE.** The edge graph is not over-connected
+— 6.0005 against MuJoCo's 5.995, both the Euler value for a triangulation. The
+walks are not long — 7 steps. GJK is not running to its cap — ~15 iterations
+against `GJK_MAX_ITERATIONS = 100`, so this was *not* another instance of
+[the float32 tolerance trap](#) that bit Newton and GJK before. And a
+cross-step warm cache is capped at 21% of the walk, not the 30% the
+warm-start-off experiment (16.45 → 21.38 s) suggested.
+
+**The actual difference is that MuJoCo never computes the distance.**
+`engine_collision_convex.c:106` sets `config.dist_cutoff = 0` — *"no geom
+distances needed"* — so `mj_gjk` returns the moment it can bound the pair
+apart, in 1–3 iterations. Ours converged all ~15 to produce a `dist` whose only
+consumer is `if dist < cm`. Confirmed from the other side: `mj_geomDistance`,
+which *must* converge, costs MuJoCo **3.72 µs/call** on these very pairs —
+close to our 8.74 — against ~0.6 µs/call for its in-step path. The gap was
+never per-iteration speed. It was doing 15 iterations instead of 2.
+
+**The fix** is MuJoCo's `dist_cutoff` arm (`engine_collision_gjk.c:225`): with
+`nd = -v/|v|`, `-w_dot` is `dot(w, v)/|v|`, the standard GJK **lower bound** on
+the distance. Once that bound reaches `cm`, no further iteration can change
+`dist < cm`, so the loop returns.
+
+⚠⚠ **THIS IS SAFE WHERE THE `gi == 0` CERTIFICATE WAS NOT, AND THE DIFFERENCE
+IS THE BOUND.** That branch proved "separated" and returned 1e30 — equivalent
+to "no contact" only at margin 0, and with a margin it lost every contact in
+the band (0 against MuJoCo's 5). The cutoff exits only when a lower bound on
+the true distance has reached the exact threshold the caller compares against,
+so it can cost iterations, never a contact. A penetrating pair has the origin
+inside, hence `dot(w, v) < 0`, so it can never fire on one.
+
+⚠ **DO NOT ALSO COPY MuJoCo'S OTHER EARLY-OUT** (`!get_dist`, one branch up),
+which returns on *any* separating hyperplane. That is safe only because
+`mjc_penetration` inflates both geoms by margin first — a transformation we
+have never ported. See
+`feedback_copying_control_flow_without_its_precondition`.
+
+⚠ **THE CUTOFF IS OPT-IN AND ITS DEFAULT MUST STAY DISABLED.** Passing it makes
+`gjk_epa_witness` return a *lower bound* rather than the true separation, which
+every distance gate in the tree would fail
+(`test_gjk_float32_no_phantom_contacts` asserts on separations of 7–17 cm).
+Only the two narrow-phase call sites, which read the result solely through
+`if dist < cm`, pass one.
 
 ### 6.2 The rest of narrow phase is `multi_ccd`, and it is §6.1 again
 

@@ -1509,6 +1509,10 @@ def _detect_contacts_sap_env[
                         va2, mnv2,
                         wf1, wf2, wxx, wf_ok,
                         ccd_tol, ccd_iter, cm,
+                        # Opt in to the cutoff exit: `dist` below is read ONLY
+                        # by `if dist < cm`, and everything that consumes the
+                        # witness sits inside that branch.
+                        cm,
                     )
                     dist = result[0]
                     cx = result[1]

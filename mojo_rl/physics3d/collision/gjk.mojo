@@ -1009,6 +1009,12 @@ def gjk_epa_witness[
     ccd_tol: Scalar[DTYPE] = Scalar[DTYPE](MJ_CCD_TOLERANCE),
     ccd_iter: Int = MJ_CCD_ITERATIONS,
     ccd_margin: Scalar[DTYPE] = Scalar[DTYPE](0),
+    # ⚠⚠ OPT-IN, AND THE DEFAULT MUST STAY "DISABLED". Negative means
+    # "converge to the true distance", which is what every distance gate in the
+    # tree asserts on (`test_gjk_float32_no_phantom_contacts` compares
+    # separations of 7-17 cm). Only a caller that uses the result SOLELY for a
+    # `dist < margin` contact test may pass a cutoff. See the exit in the loop.
+    dist_cutoff: Scalar[DTYPE] = Scalar[DTYPE](-1),
 ) -> Tuple[
     Scalar[DTYPE],
     Scalar[DTYPE],
@@ -1183,6 +1189,36 @@ def gjk_epa_witness[
 
         var w_dot = sn[0] * ndx + sn[1] * ndy + sn[2] * ndz
         var v_dot = vx * ndx + vy * ndy + vz * ndz
+
+        # ── CUTOFF EXIT — MuJoCo's `dist_cutoff` arm of `mj_gjk`
+        # (`engine_collision_gjk.c:225`). `nd = -v/|v|`, so `-w_dot` is
+        # `dot(w, v)/|v|`, the standard GJK LOWER BOUND on the distance from
+        # the origin to the Minkowski difference. Once that bound reaches the
+        # cutoff the pair is proven at least `cutoff` apart and no further
+        # iteration can change the caller's `dist < margin` answer.
+        #
+        # ⚠⚠ THIS IS SAFE WHERE THE `gi == 0` CERTIFICATE BELOW WAS NOT, AND
+        # THE DIFFERENCE IS THE BOUND. That branch proved "separated" and
+        # returned 1e30, which is only equivalent to "no contact" when the
+        # margin is 0 — with a margin it silently lost every contact in the
+        # band, 0 against MuJoCo's 5 (see the comment there). This exits only
+        # when a LOWER BOUND on the true distance has reached the very
+        # threshold the caller compares against, so it can cost iterations,
+        # never a contact. A penetrating pair has the origin inside, hence
+        # `dot(w, v) < 0` and `-w_dot < 0`, so it can never fire on one.
+        #
+        # ⚠ MuJoCo's OTHER early-out (`!get_dist`, one branch up) returns on
+        # ANY separating hyperplane. That one is safe only because
+        # `mjc_penetration` INFLATES both geoms by margin first, which we have
+        # never ported — do not copy it. See
+        # `feedback_copying_control_flow_without_its_precondition`.
+        #
+        # Measured, SO-ARM101: GJK runs ~15 iterations per call converging to a
+        # distance nobody reads; its 4 pairs sit 0.9-7.6 cm apart with margin 0.
+        if dist_cutoff >= Scalar[DTYPE](0) and -w_dot >= dist_cutoff:
+            wf_ok = 0
+            return (-w_dot, Scalar[DTYPE](0), Scalar[DTYPE](0),
+                    Scalar[DTYPE](0), ndx, ndy, ndz)
         # ⚠⚠ THE FLOAT32 FLOOR IS NOT A LOOSENING, IT IS WHAT MAKES THE TEST
         # ABLE TO FIRE AT ALL. `w_dot - v_dot` is a difference of two dot
         # products of magnitude |v|, so at float32 its rounding floor is about
