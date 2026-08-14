@@ -597,6 +597,15 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
             d.motor_force_max,
         )
 
+        # dyntype / dynprm, kept RAW. Absent leaves the parent's value so a
+        # class inherits rather than resetting to "".
+        var dt_s = _extract_attr(mtag, "dyntype")
+        if dt_s.byte_length() > 0:
+            d.motor_dyntype_s = dt_s
+        var dp_s = _extract_attr(mtag, "dynprm")
+        if dp_s.byte_length() > 0:
+            d.motor_dynprm_s = dp_s
+
     return d
 
 
@@ -2690,6 +2699,33 @@ def _fill_actuators(
             ad.force_min,
             ad.force_max,
         )
+
+        # dyntype/dynprm -> dyn_tau + act_adr, and the running `na`.
+        #
+        # ⚠ `<general>` ONLY, mirroring `xml_parser.mojo:4292`'s
+        # `elif is_general:`. `earliest == ng` is that test.
+        if earliest == ng:
+            var dyntype = _trim(_extract_attr(tag, "dyntype"))
+            if dyntype.byte_length() == 0:
+                dyntype = _trim(eff.motor_dyntype_s)
+            var dynprm = _trim(_extract_attr(tag, "dynprm"))
+            if dynprm.byte_length() == 0:
+                dynprm = _trim(eff.motor_dynprm_s)
+
+            if dyntype.byte_length() == 0 or dyntype == "none":
+                ad.dyn_tau = 0.0
+                ad.act_adr = -1
+            elif dyntype == "filter":
+                # dynprm[0], defaulting to 1.0 — MuJoCo's mjDYN_FILTER tau.
+                var parts = List[String]()
+                _split_spaces(dynprm, parts)
+                ad.dyn_tau = _parse_float(parts[0]) if len(parts) > 0 else 1.0
+                ad.act_adr = result.na
+                result.na += 1
+            # Any other dyntype is an unsupported transmission. The comptime
+            # twin records `bad_actuator_code = 4` and `init_fields` raises on
+            # it; this path leaves dyn_tau 0 / act_adr -1 and lets that
+            # existing guard stay the single place that refuses the model.
 
         result.actuators.append(ad)
         act_count += 1

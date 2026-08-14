@@ -412,6 +412,16 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     var force_limited: Bool
     var force_min: Float64
     var force_max: Float64
+    # mjDYN_FILTER: act_dot = (ctrl - act) / dynprm[0]. `dyn_tau > 0` means
+    # this actuator owns ONE activation variable and `act_adr` is its index;
+    # otherwise dyn_tau is 0 and act_adr is -1.
+    # ⚠ ONLY `<general>` HONOURS `dyntype` HERE, mirroring the comptime twin
+    # (`xml_parser.mojo:4292` `elif is_general:` encloses the whole block).
+    # MJCF permits `dyntype` on <position>/<velocity> too; if that ever needs
+    # supporting it must change on BOTH parsers at once, or this record and
+    # `_acd` silently disagree.
+    var dyn_tau: Float64
+    var act_adr: Int
 
     def __init__(
         out self,
@@ -433,6 +443,8 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
         self.force_limited = False
         self.force_min = 0.0
         self.force_max = 0.0
+        self.dyn_tau = 0.0
+        self.act_adr = -1
 
 
 # =============================================================================
@@ -1063,6 +1075,11 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var motor_force_limited: Bool
     var motor_force_min: Float64
     var motor_force_max: Float64
+    # Raw, like the structural attrs below ("" = not set by this class). dog
+    # and quadruped both declare `dyntype="filter"` in a <default> block
+    # rather than on the element, so the class path is the one that matters.
+    var motor_dyntype_s: String
+    var motor_dynprm_s: String
 
     # Structural attributes, kept as raw strings ("" = not set by this class).
     # Set by `_parse_one_default_block`, consumed by the joint/geom element
@@ -1194,6 +1211,8 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         self.motor_force_limited = False
         self.motor_force_min = 0.0
         self.motor_force_max = 0.0
+        self.motor_dyntype_s = ""
+        self.motor_dynprm_s = ""
         self.joint_type_s = ""
         self.joint_axis_s = ""
         self.joint_range_s = ""
@@ -1470,6 +1489,13 @@ struct FlatModelDef(Movable):
     # ENTIRE mass and inertia from these.
     var boundmass: Float64
     var boundinertia: Float64
+    # MuJoCo `m->na` — ACTIVATION variables, not `nu`. Derived by
+    # `_fill_actuators` as it walks the actuators, exactly as the comptime twin
+    # does. Phase 1a.4 turns `na` into a comptime PARAMETER of
+    # `ModelDefFromXML` (a dimension cannot come from a runtime record — it
+    # sizes the `act` tensor); this field is what that parameter gets asserted
+    # against at construction so a wrong value is loud instead of silent.
+    var na: Int
 
     # Mesh assets: name → file path mapping.
     var mesh_asset_names: List[String]
@@ -1483,6 +1509,7 @@ struct FlatModelDef(Movable):
         self.joints = List[JointData]()
         self.geoms = List[GeomData]()
         self.actuators = List[ActuatorData]()
+        self.na = 0
         self.textures = List[TextureData]()
         self.materials = List[MaterialData]()
         self.lights = List[LightData]()

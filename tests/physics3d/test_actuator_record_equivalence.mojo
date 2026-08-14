@@ -83,6 +83,8 @@ struct _Report(Copyable, Movable):
     var n_flim: Int
     var n_fmin: Int
     var n_fmax: Int
+    var n_dyn: Int
+    var n_aadr: Int
     var worst_gear: Float64
     var worst_gear_i: Int
 
@@ -99,6 +101,9 @@ def _compare(
     flim: List[Int],
     fmin: List[Float64],
     fmax: List[Float64],
+    dyn: List[Float64],
+    aadr: List[Int],
+    na_acd: Int,
 ) raises -> _Report:
     """Runtime `FlatModelDef.actuators[i]` against the comptime `_acd` arrays."""
     var fmd = parse_xml_full(xml)
@@ -112,7 +117,7 @@ def _compare(
             " different actuators; treat the field counts as meaningless."
         )
 
-    var r = _Report(0, 0, 0, 0, 0, 0, 0, 0, 0.0, -1)
+    var r = _Report(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, -1)
     var n = n_rt if n_rt < nact else nact
     for i in range(n):
         var a = fmd.actuators[i]
@@ -136,6 +141,10 @@ def _compare(
             r.n_fmin += 1
         if abs(a.force_max - fmax[i]) > 0.0:
             r.n_fmax += 1
+        if abs(a.dyn_tau - dyn[i]) > 0.0:
+            r.n_dyn += 1
+        if a.act_adr != aadr[i]:
+            r.n_aadr += 1
 
     # ⚠ NON-VACUITY. `gear` matched on every model in round 1 — but dog's and
     # quadruped's gears are ALL 1.0, so that agreement discriminates NOTHING
@@ -155,6 +164,13 @@ def _compare(
         if g_flat:
             print("  ⚠ all", n, "gears are", gears[0],
                   "— `gear` is VACUOUS here")
+        var dyn_flat = True
+        for i in range(1, n):
+            if dyn[i] != dyn[0]:
+                dyn_flat = False
+        if dyn_flat and dyn[0] == 0.0:
+            print("  ⚠ no actuator has a dyntype — `dyn_tau`/`act_adr`/`na`"
+                  " are VACUOUS here")
         if fl_flat and flim[0] == 0:
             print("  ⚠ no actuator is force-limited — `force_*` is VACUOUS"
                   " here")
@@ -171,6 +187,10 @@ def _compare(
     print("    force_limited=", r.n_flim)
     print("    force_min    =", r.n_fmin)
     print("    force_max    =", r.n_fmax)
+    print("    dyn_tau      =", r.n_dyn)
+    print("    act_adr      =", r.n_aadr)
+    print("    na: runtime  =", fmd.na, "  _acd =", na_acd,
+          "->", "OK" if fmd.na == na_acd else "DIFFERS")
 
     # ⚠ A COUNT SAYS "THEY DIFFER", NOT "ONE IS WRONG". An encoding mismatch
     # and a parse defect both read as N/N. Dump the first few so the DIRECTION
@@ -200,6 +220,8 @@ def test_cartpole() raises:
     var flim = List[Int](capacity=NACT)
     var fmin = List[Float64](capacity=NACT)
     var fmax = List[Float64](capacity=NACT)
+    var dyn = List[Float64](capacity=NACT)
+    var aadr = List[Int](capacity=NACT)
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -209,9 +231,12 @@ def test_cartpole() raises:
         flim.append(materialize[acd.motor_force_limited[ai]]())
         fmin.append(materialize[acd.motor_force_min[ai]]())
         fmax.append(materialize[acd.motor_force_max[ai]]())
+        dyn.append(materialize[acd.motor_dyn_tau[ai]]())
+        aadr.append(materialize[acd.motor_act_adr[ai]]())
     _ = _compare(
         "cartpole (1 actuator, no <default> class)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
+        dyn, aadr, materialize[acd.na](),
     )
 
 
@@ -227,6 +252,8 @@ def test_quadruped() raises:
     var flim = List[Int](capacity=NACT)
     var fmin = List[Float64](capacity=NACT)
     var fmax = List[Float64](capacity=NACT)
+    var dyn = List[Float64](capacity=NACT)
+    var aadr = List[Int](capacity=NACT)
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -236,9 +263,12 @@ def test_quadruped() raises:
         flim.append(materialize[acd.motor_force_limited[ai]]())
         fmin.append(materialize[acd.motor_force_min[ai]]())
         fmax.append(materialize[acd.motor_force_max[ai]]())
+        dyn.append(materialize[acd.motor_dyn_tau[ai]]())
+        aadr.append(materialize[acd.motor_act_adr[ai]]())
     _ = _compare(
         "quadruped (3 classes / 12 actuators, tendons + dyntype)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
+        dyn, aadr, materialize[acd.na](),
     )
 
 
@@ -254,6 +284,8 @@ def test_dog() raises:
     var flim = List[Int](capacity=NACT)
     var fmin = List[Float64](capacity=NACT)
     var fmax = List[Float64](capacity=NACT)
+    var dyn = List[Float64](capacity=NACT)
+    var aadr = List[Int](capacity=NACT)
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -263,9 +295,12 @@ def test_dog() raises:
         flim.append(materialize[acd.motor_force_limited[ai]]())
         fmin.append(materialize[acd.motor_force_min[ai]]())
         fmax.append(materialize[acd.motor_force_max[ai]]())
+        dyn.append(materialize[acd.motor_dyn_tau[ai]]())
+        aadr.append(materialize[acd.motor_act_adr[ai]]())
     _ = _compare(
         "dog stand/walk (24 classes / 38 actuators — the sharp case)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
+        dyn, aadr, materialize[acd.na](),
     )
 
 
@@ -289,6 +324,8 @@ def test_reach_forcerange() raises:
     var flim = List[Int](capacity=NACT)
     var fmin = List[Float64](capacity=NACT)
     var fmax = List[Float64](capacity=NACT)
+    var dyn = List[Float64](capacity=NACT)
+    var aadr = List[Int](capacity=NACT)
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -298,9 +335,12 @@ def test_reach_forcerange() raises:
         flim.append(materialize[acd.motor_force_limited[ai]]())
         fmin.append(materialize[acd.motor_force_min[ai]]())
         fmax.append(materialize[acd.motor_force_max[ai]]())
+        dyn.append(materialize[acd.motor_dyn_tau[ai]]())
+        aadr.append(materialize[acd.motor_act_adr[ai]]())
     _ = _compare(
         "jaco reach (3 distinct forceranges — the non-vacuous force case)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
+        dyn, aadr, materialize[acd.na](),
     )
 
 
