@@ -8,7 +8,12 @@ silent-bug generator — UNLESS it is diffed against the thing it replaces.
 This is that diff, and it only works while `_acd` still exists. Same instrument
 as `tests/physics3d/test_defaults_index_equivalence.mojo` (`585216bb`).
 
-Round 1 covers the fields BOTH sides already carry, which is deliberately a
+Ported field groups are ASSERTED; groups not yet ported are only printed, so
+a new group's mismatches stay visible without disarming the ones already
+landed. Verified by negative control (perturb one field -> the gate fails with
+the field named), per `feedback_confirm_the_code_under_test_actually_runs`.
+
+Round 1 covered the fields BOTH sides already carried, which was deliberately a
 measurement and not an assumption: `full_parser._fill_actuators` resolves `gear`
 from `defaults.motor_gear` — the ROOT `<default>` only — while `_acd` walks the
 full nested class chain via `_class_attr_inherited`. dog has 24 distinct classes
@@ -57,7 +62,7 @@ Run with:
 """
 
 from std.math import abs
-from std.testing import TestSuite
+from std.testing import assert_true, TestSuite
 
 from mojo_rl.physics3d.parser import parse_xml_full
 
@@ -191,6 +196,35 @@ def _compare(
     print("    act_adr      =", r.n_aadr)
     print("    na: runtime  =", fmd.na, "  _acd =", na_acd,
           "->", "OK" if fmd.na == na_acd else "DIFFERS")
+
+    # ── ASSERT what is PORTED; only MEASURE what is not ──────────────────
+    #
+    # Until now `_compare` printed and never failed, so the groups already
+    # landed (`224135af`, `3f8cb6df`) could regress silently — a measurement
+    # probe, not a gate. These assertions close that. A field group graduates
+    # from the printed block to here the moment its port lands, so the next
+    # group's mismatches stay visible without disarming the previous ones.
+    assert_true(
+        n_rt == nact,
+        String(name, ": actuator COUNT differs (", n_rt, " vs ", nact,
+               ") — every per-index comparison is meaningless"),
+    )
+    assert_true(r.n_cmin == 0 and r.n_cmax == 0 and r.n_clim == 0,
+        String(name, ": ctrlrange/ctrllimited disagree with `_acd` — ",
+               r.n_cmin, "/", r.n_cmax, "/", r.n_clim))
+    assert_true(r.n_gear == 0,
+        String(name, ": gear disagrees with `_acd` in ", r.n_gear))
+    assert_true(r.n_flim == 0 and r.n_fmin == 0 and r.n_fmax == 0,
+        String(name, ": forcerange/forcelimited disagree with `_acd` — ",
+               r.n_flim, "/", r.n_fmin, "/", r.n_fmax))
+    assert_true(r.n_dyn == 0 and r.n_aadr == 0,
+        String(name, ": dyn_tau/act_adr disagree with `_acd` — ",
+               r.n_dyn, "/", r.n_aadr))
+    assert_true(fmd.na == na_acd,
+        String(name, ": na runtime ", fmd.na, " vs `_acd` ", na_acd,
+               " — phase 1a.4 asserts a comptime NA against this"))
+    # NOT asserted yet: `kind` (encoding decision, phase 1a.3) and every
+    # field group still unported.
 
     # ⚠ A COUNT SAYS "THEY DIFFER", NOT "ONE IS WRONG". An encoding mismatch
     # and a parse defect both read as N/N. Dump the first few so the DIRECTION
@@ -347,6 +381,7 @@ def test_reach_forcerange() raises:
 def main() raises:
     print("Phase 1a.1 differential gate — runtime records vs comptime `_acd`")
     print("see docs/PHYSICS3D_RUNTIME_DIMS_ASSESSMENT.md §10.9")
-    print("⚠ ROUND 1 IS A MEASUREMENT, NOT A PASS/FAIL — it sizes the split.")
+    print("Ported groups ASSERT; unported ones only print. `kind` is a")
+    print("pending encoding decision (phase 1a.3), not a defect.")
     print("")
     TestSuite.discover_tests[__functions_in_module()]().run()
