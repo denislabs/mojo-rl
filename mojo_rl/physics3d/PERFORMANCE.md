@@ -9,11 +9,17 @@ of the gap is collision.
 
 ⚠⚠ **THE 2026-08-13 REVISION GOT THE CAUSE WRONG AND §4 IS ITS RETRACTION.** It
 named a missing mid-phase BVH as the largest prize, from a node count that is
-99.99% mesh-face BVH the collision path never reads. What the gap actually was:
-one linear scan that should have been a hill climb (§3), one silently truncated
-model (§5.2), and — all that is left — the cost of a single support query
-(§6.1). Two optimisations aimed at the broadphase measured exactly zero, twice,
-because the broadphase is 0.91 µs (§5.1).
+99.99% mesh-face BVH the collision path never reads. What the gap actually was,
+in three parts, none of them the BVH: one linear scan that should have been a
+hill climb (§3), one silently truncated model (§5.2), and GJK converging to a
+distance nobody reads (§6.1). Together **2.13× / 2.03×**.
+
+⚠ **THIS DOCUMENT RECORDS ITS DEAD ENDS ON PURPOSE**, because every one of them
+looked like the obvious next move and four were measured to zero or worse: the
+BVH (§4), the broadphase filter hoist (§5.1, twice), a cross-step warm cache for
+the hill climb (§6.3, *16% slower*), and both multicontact paths (§6.2, ~1%).
+The pattern is consistent — a counter tells you how OFTEN something runs, and
+an ablation tells you what it COSTS. Only the second one picks targets.
 
 ---
 
@@ -205,17 +211,23 @@ there was affected.
 
 ## 6. Where the time is now, and the levers that are left
 
-Final stage split, 20 000 physics steps (⚠ stage timers are optimisation
-barriers and add ~2%; use these for proportions, not absolutes):
+⚠ EVERY FIGURE BELOW THE CUTOFF LANDED IS RE-MEASURED. §6.1 cut GJK by 2.6×,
+which reshuffled the ranking; the pre-cutoff stage split that used to sit here
+described a build that no longer exists.
 
-| stage | SO-ARM100 | SO-ARM101 |
+`sample`, exclusive attribution, current build:
+
+| phase | SO-ARM100 (18.20 µs) | SO-ARM101 (24.90 µs) |
 |---|---|---|
-| world poses + AABBs | 0.52 | 0.49 |
-| plane loop | 1.44 | 0.29 |
-| SAP sweep proper (ablation, §5.1) | 0.91 | ~0.9 |
-| **GJK/EPA** | **11.21** (2.02 calls, 5.56 µs ea) | **34.94** (4 calls, 8.74 µs ea) |
-| `multi_ccd_extra_contacts` (§6.2) | ~5.2 | — (`ncon` 0, never runs) |
-| contact emission + primitive branches | ~3.6 | ~8.5 |
+| `detect_contacts_sap` (broadphase + everything inlined into it) | 51.1% | 31.3% |
+| `gjk_epa_witness` (out-of-line) | 12.6% | **53.9%** |
+| **Newton solver** | **23.3%** | 4.6% |
+| kinematics + CRBA + LDL + cdof | 6.9% | 6.0% |
+| env glue | 5.7% | 3.9% |
+
+⚠ THE TWO ARMS NOW WANT DIFFERENT WORK. SO-ARM101 is still a narrow-phase
+story; SO-ARM100 is not — its solver is now the second-largest item, because
+collision shrank around it.
 
 ### 6.1 GJK converged to a distance nobody read — CLOSED, 1.31× / 1.59×
 
@@ -283,48 +295,82 @@ every distance gate in the tree would fail
 Only the two narrow-phase call sites, which read the result solely through
 `if dist < cm`, pass one.
 
-### 6.2 The rest of narrow phase is `multi_ccd`, and it is §6.1 again
+### ⚠ 6.2 RETRACTED: `multi_ccd` is ~1%, not ~5.2 µs
 
-Separated by ablation, SO-ARM100, total `detect_contacts_sap` per step:
+The previous revision measured `multi_ccd_extra_contacts` at ~5.2 µs/step by
+diffing two **stage-timer** builds (22.90 → 17.74 µs) — and warned in the same
+breath that absolutes move between ablation builds because removing a large
+inlined block changes register allocation. That warning applied to its own
+number. Re-measured on the current build with plain wall clock, MIN of 3
+interleaved rounds:
 
-| build | total |
+| SO-ARM100 | MIN |
 |---|---|
-| as shipped | 22.90 µs |
-| `MC_ENABLED = False` (native multicontact off) | 22.28 µs — **not it** |
-| `multi_ccd_extra_contacts` stubbed out | **17.74 µs** |
+| current | 7.26 s |
+| `multi_ccd_extra_contacts` stubbed | 7.30 s |
+| `MC_ENABLED = False` (native multicontact) | 7.18 s |
 
-So `multi_ccd_extra_contacts` is **~5.2 µs/step for the ONE contacting pair**,
-and native multicontact is noise. That is not waste — MuJoCo runs multi-CCD too
-(`mjDSBL_MULTICCD` is off by default in the 3.10.0 runtime, see
-`collision/multi_ccd.mojo`) — but it works by re-running `gjk_epa` up to four
-more times with perturbed directions. **It is the support walk again**, at 4×
-the multiplier, which is why it does not appear in the GJK call counter (a
-different call site) and why fixing §6.1 fixes this too.
+Both are ~1%, i.e. inside the noise. **Neither multicontact path is a lever.**
+⚠ Use undistorted wall-clock A/B for attribution whenever the stage can be
+stubbed; keep stage timers for finding *which* stage, not *how much*.
 
-⚠ THE ABSOLUTE µs MOVE BETWEEN ABLATION BUILDS — removing a large inlined block
-changes register allocation in the enclosing function, and `gjk_epa_witness`'s
-own measured cost fell 11.2 → 8.3 µs for the *same 2.02 calls* when multi-CCD
-was stubbed. Read the TOTAL row, not the sub-rows, across builds.
+### ⚠ 6.3 KILLED: a cross-step warm cache for the hill climb
 
-### 6.3 Temporal coherence: a per-pair separation cache
+The obvious read of §6.1's counters is that cold starts dominate: after the
+cutoff, support queries fell 119 → 17 per step while **steps per query rose
+7.05 → 27**, with cold starts 53% of queries and 40% of walk work. So carry the
+last support vertex across steps.
 
-Unchanged from the previous revision, and now the only structural idea left.
-GJK already returns a **distance** and we already carry per-pair warm state. If
-a pair was 17 cm apart last step and a bound on how far the geoms can have moved
-is smaller than that, the pair cannot be touching and needs no narrow phase.
+Built as a ceiling probe — one warm slot per mesh parked in the free tail of
+`mesh_edges`, so no plumbing — and measured:
 
-⚠ MAKE IT CONSERVATIVE, NOT APPROXIMATE. Bound closing speed from body
-velocities and bounding radii, subtract `dt ×` that bound, and skip only while
-the result stays positive. Built that way it can lose speed, never a contact.
-MuJoCo does **not** do this, so it is a place to go faster than the reference
-rather than catch up.
+| | current | with warm cache |
+|---|---|---|
+| SO-ARM100 | 7.44 s | 7.41 s (nothing) |
+| SO-ARM101 | 10.02 s | **11.19 s (16% SLOWER)** |
 
-### 6.4 Newton iteration count on SO-ARM100
+A vertex cached from a *different search direction* is a worse seed than vertex
+0, and jumping to it thrashes the locality that a consistent start point keeps.
+⚠ The probe cost one file edit and one build; the real version would have been
+a new `Data` field threaded through both narrow phases and the GPU kernel. Test
+the payoff before the implementation.
 
-Still unmeasured. MuJoCo converges in one iteration on both models
-(`d.solver_niter == 1`). Worth one counter.
+### 6.4 Newton runs 5 iterations where MuJoCo runs 1 — MEASURED, not fixed
 
----
+Now the largest single item on SO-ARM100 at **23.3% of the step**. Counted over
+20 000 physics steps (elliptic cone — ⚠ the pyramidal loop one branch up is
+dead for both arms, and instrumenting it first returned zero calls):
+
+| | |
+|---|---|
+| mean iterations per solve | **5.13** |
+| MuJoCo `solver_niter` on the same model | **1** |
+| max | 200 (the cap) |
+
+⚠ THERE IS NO PATHOLOGICAL TAIL, WHICH IS WHAT THE HISTOGRAM IS FOR. From the
+mean of 5.13 against a max of 200 it is tempting to infer a few non-converging
+solves carrying the cost — arithmetic gives ~1.6% at the cap. Measured: **14
+solves (0.07%) hit the cap and account for 2.7% of Newton work**, 15 more sit
+in 11–199, and **99.855% of solves take ≤10 iterations and carry 96.6% of the
+work**. The cost is the ordinary case, not the tail.
+
+**What MuJoCo does that we do not: warm-start `qacc`.** `mj_warmstart`
+(`engine_forward.c:611`) starts from `d->qacc_warmstart` — the previous step's
+solution — after picking the better of it and `qacc_smooth` by cost. At steady
+state that lands on the answer, hence one iteration. We start cold every step.
+
+The storage already exists: `qacc_constrained` is a per-env `[BATCH, NV]` that
+already holds the previous solution. What is missing is the cost comparison and
+the choice.
+
+⚠ WORTH ~1.1× AND ON ONE MODEL ONLY — SO-ARM101's solver is 4.6% of its step,
+so this is a SO-ARM100 change. It also alters the solver's starting point for
+every model in the tree, so it wants the full parity suite. Sized honestly
+before building, not after.
+
+⚠ It should be a pure speed change: the constrained problem is convex, so
+Newton converges to the same minimum from any start. If a parity gate moves,
+that is evidence of a convergence bug, not of the warm start.
 
 ## 7. SIMD: what to expect before writing any
 
