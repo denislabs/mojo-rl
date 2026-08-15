@@ -34,11 +34,14 @@ tendon limit rows are built on the pyramidal edge list only, and
 `ModelDefFromXML` raises if a model asks for elliptic with a limited tendon.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 from mojo_rl.physics3d.types import ConeType
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.ball_in_cup.ball_in_cup_dims import (
+    DM_BALL_IN_CUP_DIMS,
+)
 
 
 comptime _ball_in_cup_body = """
@@ -98,7 +101,7 @@ comptime dm_ball_in_cup_xml = merge_mjcf(
     dm_skybox_xml, dm_visual_xml, dm_materials_xml, _ball_in_cup_body
 )
 
-comptime bicp = parse_xml(dm_ball_in_cup_xml)
+comptime bicp = DM_BALL_IN_CUP_DIMS
 
 # obs = position (qpos, 4) + velocity (qvel, 4) = 8
 comptime DMBallInCupModel = ModelDefFromXML[

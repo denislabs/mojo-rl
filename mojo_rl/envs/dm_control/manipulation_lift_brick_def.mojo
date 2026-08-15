@@ -22,12 +22,15 @@ radius, and `manipulation_reach_def` for the elliptic cone / noslip / condim-4
 measurements that every task in this family shares.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
 from .manipulation_lift_brick_xml import lift_brick_xml
+from mojo_rl.envs.dm_control.manipulation_lift_brick_dims import (
+    LIFT_BRICK_DIMS,
+)
 
-comptime pm = parse_xml(lift_brick_xml)
+comptime pm = LIFT_BRICK_DIMS
 
 comptime LiftBrickModel = ModelDefFromXML[
     xml=lift_brick_xml,

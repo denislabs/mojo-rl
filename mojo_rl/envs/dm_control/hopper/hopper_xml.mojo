@@ -22,10 +22,11 @@ Note the floor is at `pos="48 0 0"` with `size="50 1 .2"`, i.e. it spans
 x in [-2, 98]: the hopper starts near one end and hops forward along +x.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.hopper.hopper_dims import DM_HOPPER_DIMS
 
 
 comptime _hopper_body = """
@@ -98,7 +99,7 @@ comptime dm_hopper_xml = merge_mjcf(
     dm_skybox_xml, dm_visual_xml, dm_materials_xml, _hopper_body
 )
 
-comptime pmh = parse_xml(dm_hopper_xml)
+comptime pmh = DM_HOPPER_DIMS
 
 # obs = position (qpos[1:], nq-1 = 6) + velocity (nv = 7) + touch (2) = 15
 comptime DMHopperModel = ModelDefFromXML[

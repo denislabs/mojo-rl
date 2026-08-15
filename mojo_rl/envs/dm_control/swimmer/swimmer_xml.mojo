@@ -67,6 +67,10 @@ from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.swimmer.swimmer_dims import (
+    DM_SWIMMER6_DIMS,
+    DM_SWIMMER15_DIMS,
+)
 
 
 def _f(x: Float64) -> String:
@@ -229,9 +233,9 @@ comptime dm_swimmer15_xml = merge_mjcf(
     dm_visual_xml, dm_skybox_xml, dm_materials_xml, _swimmer15_body
 )
 
-comptime ps6 = parse_xml(dm_swimmer6_xml)
-comptime ps15 = parse_xml(dm_swimmer15_xml)
+comptime ps6 = DM_SWIMMER6_DIMS
 
+comptime ps15 = DM_SWIMMER15_DIMS
 
 # obs = joints (n-1) + to_target (2) + body_velocities (3n)
 comptime DMSwimmer6Model = ModelDefFromXML[

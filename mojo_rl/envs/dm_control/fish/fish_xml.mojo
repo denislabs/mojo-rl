@@ -62,10 +62,11 @@ parity test pins the two indices this port reads by NAME on the reference side.
 Reference: references/dm_control-main/dm_control/suite/fish.py + .xml
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 
 from ..common_xml import dm_visual_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.fish.fish_dims import DM_FISH_DIMS
 
 
 # fish.xml includes visual.xml and materials.xml but declares its OWN skybox
@@ -159,8 +160,7 @@ comptime _fish_body = """
 
 comptime dm_fish_xml = merge_mjcf(dm_visual_xml, dm_materials_xml, _fish_body)
 
-comptime pf = parse_xml(dm_fish_xml)
-
+comptime pf = DM_FISH_DIMS
 
 # `<sensor>` is neither an accumulator in `merge_mjcf` nor read by the parser,
 # so both sensors are dropped on the way in. That costs nothing here: fish

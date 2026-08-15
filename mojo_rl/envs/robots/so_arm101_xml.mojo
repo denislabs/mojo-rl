@@ -72,6 +72,7 @@ hand-authored collision onto these kinematics — label it a deviation if taken.
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
+from mojo_rl.envs.robots.so_arm101_dims import SO_ARM101_DIMS
 
 
 # --- BEGIN GENERATED XML (tests/robots/so_arm_bake.py) ---
@@ -425,7 +426,7 @@ comptime SO_ARM101_XML = """<?xml version="1.0" ?>
 # --- END GENERATED XML ---
 
 
-comptime _pm = parse_xml(SO_ARM101_XML)
+comptime _pm = SO_ARM101_DIMS
 
 comptime SoArm101Model = ModelDefFromXML[
     xml=SO_ARM101_XML,

@@ -20,10 +20,11 @@ Sites are indexed in worldbody DFS order, so `target` (declared before the
 arm chain) is site 0 and `tip` (inside `lower_arm`) is site 1.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.acrobot.acrobot_dims import DM_ACROBOT_DIMS
 
 
 comptime _acrobot_body = """
@@ -65,7 +66,7 @@ comptime dm_acrobot_xml = merge_mjcf(
     dm_visual_xml, dm_skybox_xml, dm_materials_xml, _acrobot_body
 )
 
-comptime pma = parse_xml(dm_acrobot_xml)
+comptime pma = DM_ACROBOT_DIMS
 
 # obs = orientations (2 bodies x xz, then 2 bodies x zz = 4) + velocity (2) = 6
 comptime DMAcrobotModel = ModelDefFromXML[

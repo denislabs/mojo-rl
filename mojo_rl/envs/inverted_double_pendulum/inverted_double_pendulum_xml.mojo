@@ -1,6 +1,9 @@
 """InvertedDoublePendulum model definition from embedded MJCF XML."""
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
+from mojo_rl.envs.inverted_double_pendulum.inverted_double_pendulum_dims import (
+    INVERTED_DOUBLE_PENDULUM_DIMS,
+)
 
 comptime inverted_double_pendulum_xml = """
 <mujoco model="cartpole">
@@ -38,7 +41,7 @@ comptime inverted_double_pendulum_xml = """
 </mujoco>
 """
 
-comptime pm = parse_xml(inverted_double_pendulum_xml)
+comptime pm = INVERTED_DOUBLE_PENDULUM_DIMS
 
 # OBS_DIM=9: [cart_x, sin(q1), sin(q2), cos(q1), cos(q2), clip(qvel[0:3],-10,10), 0.0]
 # Formula nq-skip+nv = 3-0+3 = 6 but we need 9 for the sin/cos encoding.

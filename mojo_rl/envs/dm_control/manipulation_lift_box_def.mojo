@@ -28,12 +28,15 @@ mesh collision path — is `reach_site_features`' story unchanged; see
 `manipulation_reach_def` for the measurements behind each.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
 from .manipulation_lift_box_xml import lift_large_box_xml
+from mojo_rl.envs.dm_control.manipulation_lift_box_dims import (
+    LIFT_LARGE_BOX_DIMS,
+)
 
-comptime pm = parse_xml(lift_large_box_xml)
+comptime pm = LIFT_LARGE_BOX_DIMS
 
 comptime LiftLargeBoxModel = ModelDefFromXML[
     xml=lift_large_box_xml,

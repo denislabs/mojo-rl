@@ -42,10 +42,13 @@ Body order is the tree DFS in both engines, so our indices match MuJoCo's here
 — asserted in the parity test rather than assumed.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.humanoid_cmu.humanoid_cmu_dims import (
+    DM_HUMANOID_CMU_DIMS,
+)
 
 
 comptime _humanoid_cmu_body = """
@@ -326,7 +329,7 @@ comptime dm_humanoid_cmu_xml = merge_mjcf(
     dm_skybox_xml, dm_visual_xml, dm_materials_xml, _humanoid_cmu_body
 )
 
-comptime pmhc = parse_xml(dm_humanoid_cmu_xml)
+comptime pmhc = DM_HUMANOID_CMU_DIMS
 
 # observation = joint_angles (nq-7 = 56) + head_height (1) + extremities (12)
 #             + torso_vertical (3) + com_velocity (3) + velocity (nv = 62)

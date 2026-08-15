@@ -1,6 +1,9 @@
 """HumanoidStandup model definition from embedded MJCF XML."""
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
+from mojo_rl.envs.humanoid_standup.humanoid_standup_dims import (
+    HUMANOID_STANDUP_DIMS,
+)
 
 comptime humanoid_standup_xml = """
 <mujoco model="humanoidstandup">
@@ -122,7 +125,7 @@ comptime humanoid_standup_xml = """
 </mujoco>
 """
 
-comptime pm = parse_xml(humanoid_standup_xml)
+comptime pm = HUMANOID_STANDUP_DIMS
 
 # OBS_DIM = (NQ - obs_qpos_skip) + NV = (24 - 2) + 23 = 45
 # Simplified obs: qpos[2:] + qvel (excludes free joint x/y translation).

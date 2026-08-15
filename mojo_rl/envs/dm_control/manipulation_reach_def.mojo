@@ -116,8 +116,11 @@ from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
 from .manipulation_reach_xml import reach_site_features_xml
+from mojo_rl.envs.dm_control.manipulation_reach_dims import (
+    REACH_SITE_FEATURES_DIMS,
+)
 
-comptime pm = parse_xml(reach_site_features_xml)
+comptime pm = REACH_SITE_FEATURES_DIMS
 
 comptime ReachSiteFeaturesModel = ModelDefFromXML[
     xml=reach_site_features_xml,

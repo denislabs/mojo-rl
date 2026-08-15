@@ -19,12 +19,15 @@ See `manipulation_stack3r_def` for the freejoint permutation this family has,
 and `manipulation_stack_random` for the relabeling that answers it.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
 from .manipulation_stack3r_xml import stack_3_random_xml
+from mojo_rl.envs.dm_control.manipulation_stack3r_dims import (
+    STACK_3_RANDOM_DIMS,
+)
 
-comptime pm = parse_xml(stack_3_random_xml)
+comptime pm = STACK_3_RANDOM_DIMS
 
 comptime Stack2of3Model = ModelDefFromXML[
     xml=stack_3_random_xml,

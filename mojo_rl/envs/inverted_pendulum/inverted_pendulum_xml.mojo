@@ -1,4 +1,7 @@
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
+from mojo_rl.envs.inverted_pendulum.inverted_pendulum_dims import (
+    INVERTED_PENDULUM_DIMS,
+)
 
 comptime inverted_pendulum_xml = """
 <mujoco model="inverted pendulum">
@@ -29,7 +32,7 @@ comptime inverted_pendulum_xml = """
 </mujoco>
 """
 
-comptime pm = parse_xml(inverted_pendulum_xml)
+comptime pm = INVERTED_PENDULUM_DIMS
 
 comptime InvertedPendulumModel = ModelDefFromXML[
     xml=inverted_pendulum_xml,

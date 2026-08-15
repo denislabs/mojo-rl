@@ -23,12 +23,15 @@ default formula would truncate.
 `num_bricks > 3`.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
 from .manipulation_stack_2_bricks_moveable_base_xml import stack_2_bricks_moveable_base_xml
+from mojo_rl.envs.dm_control.manipulation_stack_2_bricks_moveable_base_dims import (
+    STACK_2_BRICKS_MOVEABLE_BASE_DIMS,
+)
 
-comptime pm = parse_xml(stack_2_bricks_moveable_base_xml)
+comptime pm = STACK_2_BRICKS_MOVEABLE_BASE_DIMS
 
 comptime Stack2MoveableModel = ModelDefFromXML[
     xml=stack_2_bricks_moveable_base_xml,

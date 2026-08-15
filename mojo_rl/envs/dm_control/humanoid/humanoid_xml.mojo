@@ -31,10 +31,11 @@ Body order is the tree DFS in both engines, so our indices match MuJoCo's
 here — unlike the GEOM order, which still differs (see `point_mass_xml`).
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.humanoid.humanoid_dims import DM_HUMANOID_DIMS
 
 
 comptime _humanoid_body = """
@@ -199,7 +200,7 @@ comptime dm_humanoid_xml = merge_mjcf(
     dm_skybox_xml, dm_visual_xml, dm_materials_xml, _humanoid_body
 )
 
-comptime pmh = parse_xml(dm_humanoid_xml)
+comptime pmh = DM_HUMANOID_DIMS
 
 # Shared model parameters — the two obs layouts differ only in `OBS_DIM`.
 #

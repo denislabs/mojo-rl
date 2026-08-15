@@ -55,6 +55,11 @@ from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 from mojo_rl.physics3d.types import ConeType
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.quadruped.quadruped_dims import (
+    DM_QUADRUPED_FETCH_DIMS,
+    DM_QUADRUPED_WALK_DIMS,
+    DM_QUADRUPED_RUN_DIMS,
+)
 
 
 # --- everything before the floor geom ---------------------------------------
@@ -447,12 +452,11 @@ comptime dm_quadruped_fetch_xml = merge_mjcf(
     _QUADRUPED_FETCH_BALL,
 )
 
-comptime qfp = parse_xml(dm_quadruped_fetch_xml)
+comptime qfp = DM_QUADRUPED_FETCH_DIMS
 
+comptime qwp = DM_QUADRUPED_WALK_DIMS
 
-comptime qwp = parse_xml(dm_quadruped_walk_xml)
-comptime qrp = parse_xml(dm_quadruped_run_xml)
-
+comptime qrp = DM_QUADRUPED_RUN_DIMS
 
 # obs = egocentric_state (16 hinge qpos + 16 hinge qvel + 12 act = 44)
 #     + torso_velocity (3) + torso_upright (1) + imu (6) + force_torque (24)

@@ -62,6 +62,7 @@ about the mesh path; do not read it as coverage.
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
+from mojo_rl.envs.robots.so_arm100_dims import SO_ARM100_DIMS
 
 
 # --- BEGIN GENERATED XML (tests/robots/so_arm_bake.py) ---
@@ -397,7 +398,7 @@ comptime SO_ARM100_XML = """<mujoco model="so_arm100">
 # --- END GENERATED XML ---
 
 
-comptime _pm = parse_xml(SO_ARM100_XML)
+comptime _pm = SO_ARM100_DIMS
 
 comptime SoArm100Model = ModelDefFromXML[
     xml=SO_ARM100_XML,

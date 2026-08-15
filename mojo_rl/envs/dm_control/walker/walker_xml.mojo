@@ -21,10 +21,11 @@ Two MJCF features this file needs that older ports did not:
 applies — as with pendulum, and unlike cartpole's explicit RK4.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.walker.walker_dims import DM_WALKER_DIMS
 
 
 comptime _walker_body = """
@@ -101,7 +102,7 @@ comptime dm_walker_xml = merge_mjcf(
     dm_visual_xml, dm_skybox_xml, dm_materials_xml, _walker_body
 )
 
-comptime pmw = parse_xml(dm_walker_xml)
+comptime pmw = DM_WALKER_DIMS
 
 # obs = orientations (nbody-1 bodies x [xx, xz]) + height (1) + velocity (nv)
 #     = 7*2 + 1 + 9 = 24

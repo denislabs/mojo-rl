@@ -34,12 +34,15 @@ need both raised. They fail loudly and name themselves, so this is a note for
 whoever adds one, not a latent bug.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
 from .manipulation_reassemble5_xml import reassemble5_xml
+from mojo_rl.envs.dm_control.manipulation_reassemble5_dims import (
+    REASSEMBLE5_DIMS,
+)
 
-comptime pm = parse_xml(reassemble5_xml)
+comptime pm = REASSEMBLE5_DIMS
 
 comptime Reassemble5Model = ModelDefFromXML[
     xml=reassemble5_xml,

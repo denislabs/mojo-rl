@@ -17,10 +17,15 @@ Note `<option ... integrator="RK4">` here, unlike pendulum (which omits the
 attribute and therefore gets MuJoCo's Euler default).
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.cartpole.cartpole_dims import (
+    DM_CARTPOLE1_DIMS,
+    DM_CARTPOLE2_DIMS,
+    DM_CARTPOLE3_DIMS,
+)
 
 
 # --- shared prefix: everything up to the pole chain -------------------------
@@ -135,9 +140,11 @@ comptime dm_cartpole3_xml = merge_mjcf(
     dm_skybox_xml, dm_visual_xml, dm_materials_xml, _cartpole3_body
 )
 
-comptime pm1 = parse_xml(dm_cartpole1_xml)
-comptime pm2 = parse_xml(dm_cartpole2_xml)
-comptime pm3 = parse_xml(dm_cartpole3_xml)
+comptime pm1 = DM_CARTPOLE1_DIMS
+
+comptime pm2 = DM_CARTPOLE2_DIMS
+
+comptime pm3 = DM_CARTPOLE3_DIMS
 
 # obs = cart_position(1) + per-pole (zz, xz) + qvel(nv)
 #     = 1 + 2*n_poles + (1 + n_poles)

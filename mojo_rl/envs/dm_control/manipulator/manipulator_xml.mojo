@@ -113,7 +113,7 @@ at qpos0.
 looks bodies up by name, but `mj_name2id` on the MuJoCo side needs the space.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 from mojo_rl.physics3d.types import ConeType
 
@@ -135,6 +135,12 @@ from ..planar_arm import (
     N_ARM_SITES,
     arm_joint_obs_order,
     touch_site_order,
+)
+from mojo_rl.envs.dm_control.manipulator.manipulator_dims import (
+    DM_MANIPULATOR_BRING_BALL_DIMS,
+    DM_MANIPULATOR_BRING_PEG_DIMS,
+    DM_MANIPULATOR_INSERT_BALL_DIMS,
+    DM_MANIPULATOR_INSERT_PEG_DIMS,
 )
 
 
@@ -494,11 +500,13 @@ comptime dm_manipulator_insert_peg_xml = merge_mjcf(
     + MANIP_TAIL,
 )
 
-comptime mbp = parse_xml(dm_manipulator_bring_ball_xml)
-comptime mbpg = parse_xml(dm_manipulator_bring_peg_xml)
-comptime mib = parse_xml(dm_manipulator_insert_ball_xml)
-comptime mip = parse_xml(dm_manipulator_insert_peg_xml)
+comptime mbp = DM_MANIPULATOR_BRING_BALL_DIMS
 
+comptime mbpg = DM_MANIPULATOR_BRING_PEG_DIMS
+
+comptime mib = DM_MANIPULATOR_INSERT_BALL_DIMS
+
+comptime mip = DM_MANIPULATOR_INSERT_PEG_DIMS
 
 # Legacy names for the bring_ball indices, kept because the task-agnostic
 # spellings above read poorly at the bring_ball call sites that predate them.

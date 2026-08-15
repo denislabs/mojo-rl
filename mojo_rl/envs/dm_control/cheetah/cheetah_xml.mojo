@@ -22,10 +22,11 @@ and cheetah.py passes no `control_timestep`, so one env step is one physics
 step.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.cheetah.cheetah_dims import DM_CHEETAH_DIMS
 
 
 comptime _cheetah_body = """
@@ -105,7 +106,7 @@ comptime dm_cheetah_xml = merge_mjcf(
     dm_skybox_xml, dm_visual_xml, dm_materials_xml, _cheetah_body
 )
 
-comptime pmc = parse_xml(dm_cheetah_xml)
+comptime pmc = DM_CHEETAH_DIMS
 
 # obs = position (qpos[1:], nq-1 = 8) + velocity (nv = 9) = 17
 comptime DMCheetahModel = ModelDefFromXML[

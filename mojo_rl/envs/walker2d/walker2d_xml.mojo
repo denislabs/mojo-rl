@@ -1,4 +1,5 @@
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
+from mojo_rl.envs.walker2d.walker2d_dims import WALKER2D_DIMS
 
 comptime walker2d_xml = """
 <mujoco model="walker2d">
@@ -61,7 +62,7 @@ comptime walker2d_xml = """
 </mujoco>
 """
 
-comptime pm = parse_xml(walker2d_xml)
+comptime pm = WALKER2D_DIMS
 
 comptime Walker2dModel = ModelDefFromXML[
     xml=walker2d_xml,

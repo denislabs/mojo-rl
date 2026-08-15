@@ -10,12 +10,13 @@ Merges modular XML fragments following MuJoCo's <include> semantics:
 Reference: references/Metaworld-master/metaworld/assets/sawyer_xyz/sawyer_reach_v3.xml
 """
 
-from mojo_rl.physics3d.parser import parse_xml, merge_mjcf, ModelDefFromXML
+from mojo_rl.physics3d.parser import merge_mjcf, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
 from .sawyer_scene_xml import sawyer_scene_xml
 from .sawyer_deps_xml import sawyer_deps_xml
 from .sawyer_robot_xml import sawyer_robot_xml
+from mojo_rl.envs.metaworld.sawyer_reach_dims import SAWYER_REACH_DIMS
 
 # Block dependencies (textures, materials, mesh)
 # From: references/Metaworld-master/metaworld/assets/objects/assets/block_dependencies.xml
@@ -100,7 +101,7 @@ comptime sawyer_reach_xml = merge_mjcf(
     sawyer_reach_task_xml,
 )
 
-comptime pm = parse_xml(sawyer_reach_xml)
+comptime pm = SAWYER_REACH_DIMS
 
 comptime SawyerReachModel = ModelDefFromXML[
     xml=sawyer_reach_xml,

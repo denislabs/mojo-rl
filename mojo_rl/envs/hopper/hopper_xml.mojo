@@ -1,4 +1,5 @@
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
+from mojo_rl.envs.hopper.hopper_dims import HOPPER_DIMS
 
 comptime hopper_xml = """
 <mujoco model="hopper">
@@ -51,7 +52,7 @@ comptime hopper_xml = """
 </mujoco>
 """
 
-comptime pm = parse_xml(hopper_xml)
+comptime pm = HOPPER_DIMS
 
 comptime HopperModel = ModelDefFromXML[
     xml=hopper_xml,

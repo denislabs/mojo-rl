@@ -35,10 +35,13 @@ degree->radian conversion must not touch them — see the `<compiler angle>`
 notes in docs/DM_CONTROL_PORT.md.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.point_mass.point_mass_dims import (
+    DM_POINT_MASS_DIMS,
+)
 
 
 comptime _point_mass_body = """
@@ -94,7 +97,7 @@ comptime dm_point_mass_xml = merge_mjcf(
     dm_skybox_xml, dm_visual_xml, dm_materials_xml, _point_mass_body
 )
 
-comptime pmp = parse_xml(dm_point_mass_xml)
+comptime pmp = DM_POINT_MASS_DIMS
 
 # obs = position (qpos, 2) + velocity (qvel, 2) = 4
 comptime DMPointMassModel = ModelDefFromXML[

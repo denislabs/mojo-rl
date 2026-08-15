@@ -1,5 +1,6 @@
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
+from mojo_rl.envs.half_cheetah.half_cheetah_dims import HALF_CHEETAH_DIMS
 
 comptime half_cheetah_xml = """
 <mujoco model="cheetah">
@@ -67,7 +68,7 @@ comptime half_cheetah_xml = """
 """
 
 
-comptime pm = parse_xml(half_cheetah_xml)
+comptime pm = HALF_CHEETAH_DIMS
 
 comptime HalfCheetahModel = ModelDefFromXML[
     xml=half_cheetah_xml,

@@ -1,4 +1,5 @@
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
+from mojo_rl.envs.swimmer.swimmer_dims import SWIMMER_DIMS
 
 # The swimmer.xml uses density=4000 and viscosity=0.1 for fluid dynamics.
 # These are parsed from <option> and applied as inertia-box fluid forces
@@ -44,7 +45,7 @@ comptime swimmer_xml = """
 </mujoco>
 """
 
-comptime pm = parse_xml(swimmer_xml)
+comptime pm = SWIMMER_DIMS
 
 comptime SwimmerModel = ModelDefFromXML[
     xml=swimmer_xml,

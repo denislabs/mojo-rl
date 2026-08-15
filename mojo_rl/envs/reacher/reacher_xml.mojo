@@ -6,7 +6,8 @@ Joints: joint0(hinge), joint1(hinge), target_x(slide), target_y(slide)
 NQ=4, NV=4, NACT=2
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
+from mojo_rl.envs.reacher.reacher_dims import REACHER_DIMS
 
 comptime reacher_xml = """
 <mujoco model="reacher">
@@ -46,7 +47,7 @@ comptime reacher_xml = """
 </mujoco>
 """
 
-comptime pm = parse_xml(reacher_xml)
+comptime pm = REACHER_DIMS
 
 # OBS_DIM=10: [cos(q0), cos(q1), sin(q0), sin(q1), qpos[2:4], qvel[0:2], delta_xy]
 # Formula nq-skip+nv = 4-0+4 = 8 but we need 10 for cos/sin encoding + fingertip delta.

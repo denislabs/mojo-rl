@@ -22,7 +22,8 @@ Joints: 7 arm hinges + 2 object slides + 2 goal slides = 11
 NQ=11, NV=11, NACT=7
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
+from mojo_rl.envs.pusher.pusher_dims import PUSHER_DIMS
 
 comptime pusher_xml = """
 <mujoco model="arm3d">
@@ -103,7 +104,7 @@ comptime pusher_xml = """
 </mujoco>
 """
 
-comptime pm = parse_xml(pusher_xml)
+comptime pm = PUSHER_DIMS
 
 # OBS_DIM=23: [qpos[:7], qvel[:7], tips_arm_xpos(3), object_xpos(3), goal_xpos(3)]
 # Formula nq-skip+nv = 11-0+11 = 22 but we need 23 with body positions.

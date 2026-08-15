@@ -48,6 +48,7 @@ from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.reacher.reacher_dims import DM_REACHER_DIMS
 
 
 comptime _reacher_body_pre = """
@@ -132,7 +133,7 @@ comptime dm_reacher_hard_xml = merge_mjcf(
 # attribute VALUE, so every count `parse_xml` returns — nbody, ngeom, nq, nv,
 # the timestep — is identical by construction. Parsing twice would only pay a
 # second comptime XML parse to learn the same numbers.
-comptime pmr = parse_xml(dm_reacher_xml)
+comptime pmr = DM_REACHER_DIMS
 
 # obs = position (qpos, 2) + to_target (2) + velocity (qvel, 2) = 6
 comptime DMReacherModel = ModelDefFromXML[

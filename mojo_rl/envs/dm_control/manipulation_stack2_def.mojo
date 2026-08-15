@@ -39,12 +39,15 @@ radius drawn at `initialize_episode_mjcf`, and `manipulation_reach_def` for the
 elliptic cone / noslip measurements the whole family shares.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
 from .manipulation_stack2_xml import stack_2_bricks_xml
+from mojo_rl.envs.dm_control.manipulation_stack2_dims import (
+    STACK_2_BRICKS_DIMS,
+)
 
-comptime pm = parse_xml(stack_2_bricks_xml)
+comptime pm = STACK_2_BRICKS_DIMS
 
 comptime Stack2BricksModel = ModelDefFromXML[
     xml=stack_2_bricks_xml,

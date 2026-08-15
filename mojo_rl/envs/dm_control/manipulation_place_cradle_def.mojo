@@ -27,12 +27,15 @@ radius drawn at `initialize_episode_mjcf`, and `manipulation_reach_def` for the
 elliptic cone / noslip measurements every task in this family shares.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
 from .manipulation_place_cradle_xml import place_cradle_xml
+from mojo_rl.envs.dm_control.manipulation_place_cradle_dims import (
+    PLACE_CRADLE_DIMS,
+)
 
-comptime pm = parse_xml(place_cradle_xml)
+comptime pm = PLACE_CRADLE_DIMS
 
 comptime PlaceCradleModel = ModelDefFromXML[
     xml=place_cradle_xml,

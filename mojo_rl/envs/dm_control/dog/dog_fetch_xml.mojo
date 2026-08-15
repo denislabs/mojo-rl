@@ -42,12 +42,13 @@ was written (nbody 63, njnt 75, nq 87, nv 85, ngeom 134, nsite 12, nu 38,
 ntendon 8), by building the same text with these assets in MuJoCo directly.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 from mojo_rl.physics3d.types import ConeType
 
 from ..common_xml import dm_skybox_xml, dm_visual_xml, dm_materials_xml
 from .dog_xml import _DOG_SKIN_ASSETS, DOG_FRAME_SKIP, DOG_MAX_STEPS
+from mojo_rl.envs.dm_control.dog.dog_fetch_dims import DM_DOG_FETCH_DIMS
 
 
 # The flat-colour stand-in for dog.xml's PNG-textured tennis ball. Merged as a
@@ -728,8 +729,7 @@ comptime dm_dog_fetch_xml = merge_mjcf(
     _DOG_FETCH_ASSETS, _DOG_FETCH_BODY,
 )
 
-comptime dfp = parse_xml(dm_dog_fetch_xml)
-
+comptime dfp = DM_DOG_FETCH_DIMS
 
 # --- observation layout ------------------------------------------------------
 #

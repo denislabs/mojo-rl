@@ -65,11 +65,16 @@ scaling is not in the XML length and dog is CHEAPER despite being 3x the text.
 The risk is retired.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 from mojo_rl.physics3d.types import ConeType
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.dog.dog_dims import (
+    DM_DOG_STAND_WALK_DIMS,
+    DM_DOG_TROT_DIMS,
+    DM_DOG_RUN_DIMS,
+)
 
 
 # --- everything before the floor geom -----------------------------------
@@ -780,10 +785,11 @@ comptime dm_dog_run_xml = merge_mjcf(
     _dog_run_body,
 )
 
-comptime dsp = parse_xml(dm_dog_stand_walk_xml)
-comptime dtp = parse_xml(dm_dog_trot_xml)
-comptime drp = parse_xml(dm_dog_run_xml)
+comptime dsp = DM_DOG_STAND_WALK_DIMS
 
+comptime dtp = DM_DOG_TROT_DIMS
+
+comptime drp = DM_DOG_RUN_DIMS
 
 # --- observation layout, transcribed from dog.py::get_observation_components
 #

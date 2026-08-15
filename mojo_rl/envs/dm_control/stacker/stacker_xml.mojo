@@ -82,12 +82,16 @@ the shape of the table.
 looks bodies up by name, but `mj_name2id` on the MuJoCo side needs the space.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 from mojo_rl.physics3d.types import ConeType
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
 from ..planar_arm import NARM_JOINTS, N_ARM_SITES
+from mojo_rl.envs.dm_control.stacker.stacker_dims import (
+    DM_STACKER_2_DIMS,
+    DM_STACKER_4_DIMS,
+)
 
 
 # ── shared segments ─────────────────────────────────────────────────────────
@@ -376,8 +380,9 @@ comptime dm_stacker_4_xml = merge_mjcf(
     + STACK_TAIL,
 )
 
-comptime s2 = parse_xml(dm_stacker_2_xml)
-comptime s4 = parse_xml(dm_stacker_4_xml)
+comptime s2 = DM_STACKER_2_DIMS
+
+comptime s4 = DM_STACKER_4_DIMS
 
 comptime STACK_2_OBS_DIM: Int = stacker_obs_dim(2)
 comptime STACK_4_OBS_DIM: Int = stacker_obs_dim(4)

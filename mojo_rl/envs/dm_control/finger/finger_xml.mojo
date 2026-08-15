@@ -46,11 +46,15 @@ GEOM ORDER, as always: ours is XML text order, MuJoCo's is sorted by body id.
 The parity test pins both.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 from mojo_rl.physics3d.types import ConeType
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.finger.finger_dims import (
+    DM_FINGER_DIMS,
+    DM_FINGER_SPIN_DIMS,
+)
 
 
 comptime _finger_body = """
@@ -142,8 +146,9 @@ comptime dm_finger_spin_xml = merge_mjcf(
     dm_skybox_xml, dm_visual_xml, dm_materials_xml, _finger_body_spin
 )
 
-comptime pmf = parse_xml(dm_finger_xml)
-comptime pmfs = parse_xml(dm_finger_spin_xml)
+comptime pmf = DM_FINGER_DIMS
+
+comptime pmfs = DM_FINGER_SPIN_DIMS
 
 # obs (spin) = position (4) + velocity (3) + touch (2) = 9
 comptime DMFingerSpinModel = ModelDefFromXML[

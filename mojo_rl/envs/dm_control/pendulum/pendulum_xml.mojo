@@ -15,10 +15,11 @@ Notes for anyone diffing against the reference:
   - nq = nv = 1 (single hinge), nu = 1, nbody = 2 (world + pole).
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
+from mojo_rl.envs.dm_control.pendulum.pendulum_dims import DM_PENDULUM_DIMS
 
 
 comptime _pendulum_body_xml = """
@@ -54,7 +55,7 @@ comptime dm_pendulum_xml = merge_mjcf(
     _pendulum_body_xml,
 )
 
-comptime pm = parse_xml(dm_pendulum_xml)
+comptime pm = DM_PENDULUM_DIMS
 
 comptime DMPendulumModel = ModelDefFromXML[
     xml=dm_pendulum_xml,

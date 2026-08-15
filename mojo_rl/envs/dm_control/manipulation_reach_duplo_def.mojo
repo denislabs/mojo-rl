@@ -48,12 +48,15 @@ collision path — is `reach_site_features`' story unchanged; see
 `manipulation_reach_def` for the measurements behind each.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
 from .manipulation_reach_duplo_xml import reach_duplo_xml
+from mojo_rl.envs.dm_control.manipulation_reach_duplo_dims import (
+    REACH_DUPLO_DIMS,
+)
 
-comptime pm = parse_xml(reach_duplo_xml)
+comptime pm = REACH_DUPLO_DIMS
 
 comptime ReachDuploModel = ModelDefFromXML[
     xml=reach_duplo_xml,
