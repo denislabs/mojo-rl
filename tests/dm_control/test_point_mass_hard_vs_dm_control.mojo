@@ -59,6 +59,8 @@ from mojo_rl.physics3d.gpu.constants import (
 from mojo_rl.physics3d.parser.xml_parser import MAX_COMPTIME_TENDON_WRAPS
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
+    MODEL_ACT_TENDON_SIZE,
+    ACTTEN_IDX_STIFFNESS,
     ACT_IDX_GEAR,
     ACT_IDX_TRN_N,
     ACT_IDX_TRN_COEF_0,
@@ -186,6 +188,33 @@ def test_point_mass_hard_model_matches_mujoco() raises:
         var o = a * MODEL_ACTUATOR_SIZE
         trn_n.append(Int(sf.actuators.data[o + ACT_IDX_TRN_N]))
         gears.append(Float64(sf.actuators.data[o + ACT_IDX_GEAR]))
+    # ⚠⚠ THE SPRING GUARD, RELOCATED FROM `point_mass_hard_config`.
+    # It was a `comptime assert` over `_acd.tendon_stiffness`; the data is a
+    # runtime record now and no `comptime assert` can read one, so it lives
+    # here instead of in the engine path. What it protects: `hard` draws the
+    # tendon mixing PER EPISODE into `d.meta`, while the tendon RECORDS keep
+    # the XML's coefs. A tendon with a spring would therefore be sprung
+    # against coefficients the actuation is not using — and on GPU not at all,
+    # since `HAS_CUSTOM_ACTUATION_GPU` replaces `apply_actions_kernel_gpu`
+    # outright. Both are silent: the task trains, and it is the wrong task.
+    for _t in range(DMPointMassModel.MAX_TENDON):
+        assert_true(
+            sf.act_tendons.data[
+                _t * MODEL_ACT_TENDON_SIZE + ACTTEN_IDX_STIFFNESS
+            ]
+            == 0.0,
+            String(
+                "point_mass-hard: tendon ", _t, " grew a SPRING (stiffness ",
+                Float64(
+                    sf.act_tendons.data[
+                        _t * MODEL_ACT_TENDON_SIZE + ACTTEN_IDX_STIFFNESS
+                    ]
+                ),
+                "). Its force would be built from the XML coefs while",
+                " actuation uses the per-episode draw in d.meta.",
+            ),
+        )
+
     var trn_coef = List[Float64]()
     for a in range(NACT):
         for k in range(2):

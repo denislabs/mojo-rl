@@ -46,6 +46,9 @@ from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
+    ACT_IDX_GEAR,
+    ACT_IDX_CTRL_MIN,
+    ACT_IDX_CTRL_MAX,
     MODEL_JOINT_SIZE,
     JOINT_IDX_DOF_ADR,
     MODEL_TENDON_SIZE,
@@ -236,13 +239,11 @@ struct DMPointMassHardConfig(Phyics3dEnvConfig):
         pairing — the parity test pins it by checking each actuator's comptime
         transmission against its tendon's XML coefs.
         """
-        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
-        # indexed at runtime must be materialized. Hoisted here so each array
-        # is copied once per call rather than once per access in the loops.
-        var _m_motor_ctrl_max = materialize[DMPointMassModel._acd.motor_ctrl_max]()
-        var _m_motor_ctrl_min = materialize[DMPointMassModel._acd.motor_ctrl_min]()
-        var _m_motor_gears = materialize[DMPointMassModel._acd.motor_gears]()
-
+        # ⚠ GEAR AND CTRLRANGE COME FROM `m_actuators` NOW, not from three
+        # materialized comptime arrays. Same values, same clamp, one source —
+        # and the hoisting the old code needed (a comptime `Array` cannot be
+        # indexed by a runtime value, so each had to be copied once per call)
+        # is gone with them.
         for i in range(NV):
             d.qfrc.data[i] = Scalar[DTYPE](0)
 
@@ -250,12 +251,20 @@ struct DMPointMassHardConfig(Phyics3dEnvConfig):
         for a in range(nact):
             if a >= len(actions):
                 break
+            var ao = a * MODEL_ACTUATOR_SIZE
             var ctrl = actions[a]
-            if ctrl > _m_motor_ctrl_max[a]:
-                ctrl = _m_motor_ctrl_max[a]
-            elif ctrl < _m_motor_ctrl_min[a]:
-                ctrl = _m_motor_ctrl_min[a]
-            var gear = _m_motor_gears[a]
+            # ⚠ UNCONDITIONAL, matching what this hook has always done.
+            # `ModelDefFromXML.apply_actions` gates its clamp on
+            # `ctrllimited`; point_mass declares `ctrlrange="-1 1"` on both
+            # actuators, so the two agree here — but if this model ever grew an
+            # unlimited actuator the gate would have to come with it.
+            var c_max = Float64(m_actuators[ao + ACT_IDX_CTRL_MAX])
+            var c_min = Float64(m_actuators[ao + ACT_IDX_CTRL_MIN])
+            if ctrl > c_max:
+                ctrl = c_max
+            elif ctrl < c_min:
+                ctrl = c_min
+            var gear = Float64(m_actuators[ao + ACT_IDX_GEAR])
 
             var to = a * MODEL_TENDON_SIZE
             var njnt = Int(m_tendons[to + TENDON_IDX_NUM_JOINTS])
@@ -494,20 +503,18 @@ struct DMPointMassHardConfig(Phyics3dEnvConfig):
         per `<fixed>`, in the same order, and nothing at runtime records that
         pairing. The parity test pins it.
         """
-        # ⚠ The per-episode coefs live in `d.meta`, NOT in `Model.tendons`,
-        # so any OTHER consumer of these tendons would read the stale XML
-        # values. Refuse a model where one exists rather than simulate a lane
-        # that actuates against its own mixing and springs against the XML's.
-        # (At struct scope this would be a `comptime for` outside a function,
-        # which Mojo rejects — hence its home here.)
-        comptime for _t in range(DMPointMassModel._acd.ntendon):
-            comptime assert (
-                DMPointMassModel._acd.tendon_stiffness[_t] == 0.0
-            ), (
-                "point_mass-hard: a tendon grew a SPRING. Its force is built"
-                " from the SHARED Model.tendons, which the per-episode coefs"
-                " in d.meta do not update."
-            )
+        # ⚠⚠ THE "A TENDON GREW A SPRING" GUARD MOVED TO
+        # `test_point_mass_hard_vs_dm_control`, AND THAT IS A WEAKENING.
+        # It was a `comptime assert` over `_acd.tendon_stiffness`; the data is
+        # a runtime record now and no `comptime assert` can read one. This
+        # hook cannot raise and runs per lane per SUBSTEP, so it is the wrong
+        # place for a model-invariant check, and no once-per-build CONFIG hook
+        # receives `SpecFields`. What it guards is still real: the per-episode
+        # coefs live in `d.meta`, NOT in the tendon records, so a spring would
+        # be built from the XML's coefs while actuation used the drawn ones —
+        # and with `HAS_CUSTOM_ACTUATION_GPU` the spring is not applied at all,
+        # because this hook REPLACES `apply_actions_kernel_gpu` entirely.
+        # It is now a gate assertion rather than a build error.
 
         for i in range(NV):
             qfrc[env, i] = Scalar[DTYPE](0)
@@ -515,15 +522,21 @@ struct DMPointMassHardConfig(Phyics3dEnvConfig):
         comptime nact = DMPointMassModel.nact
         comptime for a in range(nact):
             comptime if a < ACTION_DIM:
-                comptime c_min = DMPointMassModel._acd.motor_ctrl_min[a]
-                comptime c_max = DMPointMassModel._acd.motor_ctrl_max[a]
-                comptime gear = DMPointMassModel._acd.motor_gears[a]
+                # ⚠ RUNTIME READS OFF `acts`, the same operand
+                # `apply_actions_kernel_gpu` reads. The `comptime` bindings
+                # these replace were baked literals off `_acd`.
+                var ao = a * MODEL_ACTUATOR_SIZE
+                var c_max = rebind[Scalar[DTYPE]](acts[ao + ACT_IDX_CTRL_MAX])
+                var c_min = rebind[Scalar[DTYPE]](acts[ao + ACT_IDX_CTRL_MIN])
+                var gear = Float64(
+                    rebind[Scalar[DTYPE]](acts[ao + ACT_IDX_GEAR])
+                )
 
                 var ctrl = rebind[Scalar[DTYPE]](actions[env, a])
-                if ctrl > Scalar[DTYPE](c_max):
-                    ctrl = Scalar[DTYPE](c_max)
-                elif ctrl < Scalar[DTYPE](c_min):
-                    ctrl = Scalar[DTYPE](c_min)
+                if ctrl > c_max:
+                    ctrl = c_max
+                elif ctrl < c_min:
+                    ctrl = c_min
 
                 comptime if a < NTENDON_F:
                     var njnt = Int(
