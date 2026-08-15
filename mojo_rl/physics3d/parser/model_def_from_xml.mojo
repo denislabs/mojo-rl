@@ -1251,13 +1251,14 @@ struct ModelDefFromXML[
         # string simply absent — ball_in_cup would become a ball falling past
         # a cup. A <fixed> tendon is exempt: those also ride the comptime
         # transmission/spring path, which needs no records (fish).
-        comptime if Self.MAX_TENDON == 0:
-            comptime if Self.xml.find("<spatial") != -1:
-                raise Error(
-                    "physics3d: model declares a <spatial> tendon but"
-                    " max_tendon=0, so it would be silently dropped. Set"
-                    " max_tendon to the tendon count."
-                )
+        # ⚠ THIS GUARD USED TO BE A COMPTIME `Self.xml.find("<spatial")`,
+        # and it was REDUNDANT. `full_parser` puts spatial tendons into
+        # `fmd.tendons` like every other kind — verified on a spatial-only
+        # fixture — so the runtime `len(fmd.tendons) > MAX_TENDON` check in
+        # `init_fields` already rejects exactly this case, with a message that
+        # names the count. Removed rather than converted: phase 1b needs the
+        # MJCF to have NO comptime readers left, and a redundant one is not
+        # worth reproducing.
 
         # Tendon LIMIT rows are built only on the PYRAMIDAL edge list. The
         # elliptic core keeps its scalar rows in (dof, sign) form to stay
@@ -2878,80 +2879,84 @@ struct ModelDefFromXML[
         the geoms it draws alongside are only those in groups 0-2. See
         `render_body_geoms` for the group rule.
         """
-        comptime if Self.xml.find("<skin") == -1:
+        # ⚠ THE COMPTIME `Self.xml.find("<skin") == -1` GUARD IS GONE. It
+        # elided this whole body at compile time for the models without a
+        # skin, which is every model but dog — but the runtime `st == -1`
+        # check three lines down already returns for exactly those, so the
+        # two were never doing different work. What the comptime version DID
+        # do was read the MJCF at compile time, and phase 1b's whole point is
+        # that nothing may.
+        # ⚠ THE WHOLE ASSET CHAIN IS WALKED AT RUNTIME, from the XML this
+        # struct already carries. `<skin file= material=>` ->
+        # `<material texture=>` -> `<texture file=>` is three attribute
+        # reads, and doing any of them in the comptime interpreter is a
+        # compile failure the moment it hits. See `body_names`.
+        var src = String(Self.xml)
+        var st = src.find("<skin")
+        if st == -1:
             return
-        else:
-            # ⚠ THE WHOLE ASSET CHAIN IS WALKED AT RUNTIME, from the XML this
-            # struct already carries. `<skin file= material=>` ->
-            # `<material texture=>` -> `<texture file=>` is three attribute
-            # reads, and doing any of them in the comptime interpreter is a
-            # compile failure the moment it hits. See `body_names`.
-            var src = String(Self.xml)
-            var st = src.find("<skin")
-            if st == -1:
-                return
-            var se = src.find(">", st)
-            if se == -1:
-                return
+        var se = src.find(">", st)
+        if se == -1:
+            return
 
-            var skin_file = _attr_between(src, st, se, "file")
-            if skin_file.byte_length() == 0:
-                return
-            var skin_mat = _attr_between(src, st, se, "material")
+        var skin_file = _attr_between(src, st, se, "file")
+        if skin_file.byte_length() == 0:
+            return
+        var skin_mat = _attr_between(src, st, se, "material")
 
-            var tex_name = String("")
-            var tex_file = String("")
-            if skin_mat.byte_length() > 0:
-                var want_tex = String("")
-                var mp = 0
+        var tex_name = String("")
+        var tex_file = String("")
+        if skin_mat.byte_length() > 0:
+            var want_tex = String("")
+            var mp = 0
+            while True:
+                var mt = src.find("<material", mp)
+                if mt == -1:
+                    break
+                var me = src.find(">", mt)
+                if me == -1:
+                    break
+                if _attr_between(src, mt, me, "name") == skin_mat:
+                    want_tex = _attr_between(src, mt, me, "texture")
+                    break
+                mp = me + 1
+            if want_tex.byte_length() > 0:
+                var tp = 0
                 while True:
-                    var mt = src.find("<material", mp)
-                    if mt == -1:
+                    var tt = src.find("<texture", tp)
+                    if tt == -1:
                         break
-                    var me = src.find(">", mt)
-                    if me == -1:
+                    var te = src.find(">", tt)
+                    if te == -1:
                         break
-                    if _attr_between(src, mt, me, "name") == skin_mat:
-                        want_tex = _attr_between(src, mt, me, "texture")
+                    if _attr_between(src, tt, te, "name") == want_tex:
+                        tex_name = want_tex
+                        tex_file = _attr_between(src, tt, te, "file")
                         break
-                    mp = me + 1
-                if want_tex.byte_length() > 0:
-                    var tp = 0
-                    while True:
-                        var tt = src.find("<texture", tp)
-                        if tt == -1:
-                            break
-                        var te = src.find(">", tt)
-                        if te == -1:
-                            break
-                        if _attr_between(src, tt, te, "name") == want_tex:
-                            tex_name = want_tex
-                            tex_file = _attr_between(src, tt, te, "file")
-                            break
-                        tp = te + 1
+                    tp = te + 1
 
-            # Flatten the poses `skin_pose` wants: plain float arrays with
-            # (w, x, y, z) quats, which is MuJoCo's order and `_RQuat`'s.
-            var xpos = List[Float32]()
-            var xquat = List[Float32]()
-            for b in range(len(positions)):
-                xpos.append(Float32(positions[b].x))
-                xpos.append(Float32(positions[b].y))
-                xpos.append(Float32(positions[b].z))
-                xquat.append(Float32(quaternions[b].w))
-                xquat.append(Float32(quaternions[b].x))
-                xquat.append(Float32(quaternions[b].y))
-                xquat.append(Float32(quaternions[b].z))
+        # Flatten the poses `skin_pose` wants: plain float arrays with
+        # (w, x, y, z) quats, which is MuJoCo's order and `_RQuat`'s.
+        var xpos = List[Float32]()
+        var xquat = List[Float32]()
+        for b in range(len(positions)):
+            xpos.append(Float32(positions[b].x))
+            xpos.append(Float32(positions[b].y))
+            xpos.append(Float32(positions[b].z))
+            xquat.append(Float32(quaternions[b].w))
+            xquat.append(Float32(quaternions[b].x))
+            xquat.append(Float32(quaternions[b].y))
+            xquat.append(Float32(quaternions[b].z))
 
-            renderer.draw_skin(
-                name=skin_file,
-                skn_path=skin_file,
-                body_names=Self.body_names(),
-                xpos=xpos,
-                xquat=xquat,
-                texture_name=tex_name,
-                texture_path=tex_file,
-            )
+        renderer.draw_skin(
+            name=skin_file,
+            skn_path=skin_file,
+            body_names=Self.body_names(),
+            xpos=xpos,
+            xquat=xquat,
+            texture_name=tex_name,
+            texture_path=tex_file,
+        )
 
     @staticmethod
     def render_sites(
