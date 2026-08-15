@@ -77,9 +77,6 @@ comptime NSITE = 12
 comptime NEXCLUDE = 4
 comptime NMESH_VERTS = 60000
 comptime MAXC = 64
-comptime IFG_MODE = 2
-comptime IGR_MIN = 0
-comptime IGR_MAX = 5
 
 # The six ARM DOFs. Jaco's joints are all hinges in model order: joint_1..6
 # then the hand's finger_1..3, so the arm is dofs 0..5. Asserted below against
@@ -127,7 +124,7 @@ def test_ik_site_matches_dm_control() raises:
     ]()
     build_model_fields_from_flat[
         DTYPE, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-        NMESH_VERTS, IFG_MODE, IGR_MIN, IGR_MAX, -1.0, 0,
+        NMESH_VERTS, 0,
     ](fmd, mf)
     _ = os.chdir(cwd)
 
@@ -380,7 +377,7 @@ def test_set_site_to_xpos_matches_dm_control() raises:
     ]()
     build_model_fields_from_flat[
         DTYPE, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-        NMESH_VERTS, IFG_MODE, IGR_MIN, IGR_MAX, -1.0, 0,
+        NMESH_VERTS, 0,
     ](fmd, mf)
     _ = os.chdir(cwd)
     var d = Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1]()

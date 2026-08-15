@@ -4411,6 +4411,33 @@ xml_in: String) raises -> FlatModelDef:
             var bi_s = _trim(_extract_attr(ctag, "boundinertia"))
             if bi_s.byte_length() > 0:
                 result.boundinertia = _parse_float(bi_s)
+
+            # inertiafromgeom / inertiagrouprange / settotalmass — the three
+            # `<compiler>` build modes. See `FlatModelDef.inertiafromgeom`;
+            # each keeps MuJoCo's default when the attribute is absent, and
+            # ⚠ that default is AUTO for inertiafromgeom, not off.
+            var ifg_s = _trim(_extract_attr(ctag, "inertiafromgeom"))
+            if ifg_s == "true":
+                result.inertiafromgeom = 1
+            elif ifg_s == "false":
+                result.inertiafromgeom = 0
+            elif ifg_s == "auto":
+                result.inertiafromgeom = 2
+
+            var igr_s = _trim(_extract_attr(ctag, "inertiagrouprange"))
+            if igr_s.byte_length() > 0:
+                var igr_parts = List[String]()
+                _split_spaces(igr_s, igr_parts)
+                if len(igr_parts) >= 2:
+                    result.inertiagrouprange_min = _parse_int_str(igr_parts[0])
+                    result.inertiagrouprange_max = _parse_int_str(igr_parts[1])
+
+            # ⚠ ABSENT is -1.0, not 0.0 — `settotalmass="0"` is a legal (if
+            # odd) request and must not read as "not specified".
+            var stm_s = _trim(_extract_attr(ctag, "settotalmass"))
+            if stm_s.byte_length() > 0:
+                result.settotalmass = _parse_float(stm_s)
+
             meshdir = _trim(_extract_attr(ctag, "meshdir"))
             assetdir = _trim(_extract_attr(ctag, "assetdir"))
 

@@ -205,7 +205,6 @@ def test_xml_full_parser() raises:
     build_model_fields_from_flat[
         DType.float64, pm.NV, pm.NBODY, pm.NJOINT, pm.NGEOM,
         0, 0, 0, 0, 0,  # MAX_EQUALITY/MAX_TENDON/NSITE/NEXCLUDE/NMESH_VERTS
-        0, 0, 5, 0.0,  # no <compiler inertiafromgeom> in this inline XML
     ](fmd, mf)
 
     print(
@@ -213,10 +212,23 @@ def test_xml_full_parser() raises:
         Float64(mf.meta.data[MODEL_META_IDX_GRAVITY_Z]),
         " (expected -9.81)",
     )
-    print(
-        "torso body_id1 mass=",
-        Float64(mf.bodies.data[1 * MODEL_BODY_SIZE + BODY_IDX_MASS]),
-        " (expected ~1.0 default)",
+    # ⚠ THIS LINE USED TO PRINT "(expected ~1.0 default)" AND ASSERT NOTHING,
+    # and the value it printed was wrong. The call site above hand-passed
+    # `IFG_MODE = 0` — inertiafromgeom OFF — for an XML that does not mention
+    # the attribute at all, and MuJoCo's default when it is absent is AUTO.
+    # So every body took the 1.0 fallback mass instead of the mass its geoms
+    # imply. Phase 1b reads the mode off `FlatModelDef` and the contradiction
+    # cannot be expressed any more; the number below is MuJoCo's, checked
+    # against `mjModel.body_mass[1]` for this exact XML.
+    var torso_mass = Float64(
+        mf.bodies.data[1 * MODEL_BODY_SIZE + BODY_IDX_MASS]
+    )
+    print("torso body_id1 mass=", torso_mass, " (MuJoCo: 7.05533013836909)")
+    assert_true(
+        abs(torso_mass - 7.05533013836909) < 1e-12,
+        "torso mass "
+        + String(torso_mass)
+        + " != MuJoCo's 7.05533013836909 — inertiafromgeom regressed",
     )
     print(
         "torso pos_z   =",

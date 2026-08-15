@@ -60,9 +60,6 @@ comptime NSITE: Int = 12
 comptime NEXCLUDE: Int = 4
 comptime NMESH_VERTS: Int = 60000
 comptime MAXC: Int = 256
-comptime IFG_MODE: Int = 2
-comptime IGR_MIN: Int = 0
-comptime IGR_MAX: Int = 5
 comptime NDOF: Int = 6
 
 comptime N_POSES: Int = 60
@@ -105,7 +102,7 @@ struct _Fixture:
         ]()
         build_model_fields_from_flat[
             DTYPE, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-            NMESH_VERTS, IFG_MODE, IGR_MIN, IGR_MAX, -1.0, 0,
+            NMESH_VERTS, 0,
         ](fmd, self.mf)
         _ = os.chdir(cwd)
         self.d = Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1]()

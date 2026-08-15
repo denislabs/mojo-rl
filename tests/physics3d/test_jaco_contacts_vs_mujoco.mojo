@@ -114,9 +114,6 @@ comptime NMESH_VERTS = 60000
 # multicontact to emit more without a capacity truncation being mistaken for
 # a detection difference.
 comptime MAXC = 256
-comptime IFG_MODE = 2
-comptime IGR_MIN = 0
-comptime IGR_MAX = 5
 
 comptime N_POSES: Int = 60
 comptime FK_TOL: Float64 = 1e-9
@@ -157,7 +154,7 @@ def test_jaco_contacts_vs_mujoco() raises:
     ]()
     build_model_fields_from_flat[
         DTYPE, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-        NMESH_VERTS, IFG_MODE, IGR_MIN, IGR_MAX, -1.0, 0,
+        NMESH_VERTS, 0,
     ](fmd, mf)
     _ = os.chdir(cwd)
     var d = Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1]()

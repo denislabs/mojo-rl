@@ -113,9 +113,6 @@ from .xml_parser import (
     _xml_nth_joint_limited,
     _xml_nth_joint_range_min,
     _xml_nth_joint_range_max,
-    _xml_compiler_inertiafromgeom,
-    _xml_compiler_settotalmass,
-    _xml_compiler_inertiagrouprange,
     _xml_default_motor_ctrlrange,
     _xml_fixed_tendon_njoints,
     _xml_fixed_tendon_joint_name,
@@ -1504,9 +1501,12 @@ struct ModelDefFromXML[
                 # Reachable and handled: plane pairs. Nothing to reject.
                 break
 
-        comptime ifg_mode = _xml_compiler_inertiafromgeom[Self.xml]()
-        comptime igr = _xml_compiler_inertiagrouprange[Self.xml]()
-        comptime stm = _xml_compiler_settotalmass[Self.xml]()
+        # ⚠ THE THREE `<compiler>` BUILD MODES WERE READ HERE AT COMPTIME,
+        # off `Self.xml`, and passed down as compile-time parameters. They
+        # come off `fmd` now — the parse this function already has in hand.
+        # They were three of the last comptime readers of the MJCF string,
+        # and every one of those pins the model to Mojo source: the comptime
+        # interpreter cannot `open()` a file (§10.2).
         build_model_fields_from_flat[
             DTYPE,
             Self.NV,
@@ -1518,10 +1518,6 @@ struct ModelDefFromXML[
             Self.NSITE,
             Self.NEXCLUDE,
             NMESHV,
-            ifg_mode,
-            igr[0],
-            igr[1],
-            stm,
             Self.NPAIR,
         ](fmd, mf)
 

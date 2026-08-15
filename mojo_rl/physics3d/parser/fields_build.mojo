@@ -394,10 +394,14 @@ def _inertia_from_geoms_staging[
     DTYPE: DType,
     NBODY: Int,
     NGEOM: Int,
-    INERTIA_GROUP_MIN: Int,
-    INERTIA_GROUP_MAX: Int,
-    AUTO_MODE: Bool,
 ](
+    # ⚠ RUNTIME, NOT COMPTIME, since phase 1b. These three came off the raw
+    # MJCF in the comptime interpreter, which is what pinned every model to a
+    # `String` in Mojo source; they ride on `FlatModelDef` now. Making the auto
+    # flag runtime also collapses two instantiations of this function into one.
+    inertia_group_min: Int,
+    inertia_group_max: Int,
+    auto_mode: Bool,
     geoms: List[Scalar[DTYPE]],  # packed [NGEOM * MODEL_GEOM_SIZE] records
     bodies: List[Scalar[DTYPE]],  # packed [NBODY * MODEL_BODY_SIZE] records
     geom_mass: List[Scalar[DTYPE]],  # build-only (-1 = use density*volume)
@@ -421,7 +425,7 @@ def _inertia_from_geoms_staging[
     build staging arrays + packed geom records — arithmetic verbatim from the
     legacy Model-typed routine (deleted at G4)."""
     for body_id in range(1, NBODY):
-        comptime if AUTO_MODE:
+        if auto_mode:
             if body_has_explicit_inertia[body_id]:
                 continue
 
@@ -432,7 +436,7 @@ def _inertia_from_geoms_staging[
         for g in range(NGEOM):
             var go = g * MODEL_GEOM_SIZE
             var ggrp = geom_group[g]
-            if ggrp < INERTIA_GROUP_MIN or ggrp > INERTIA_GROUP_MAX:
+            if ggrp < inertia_group_min or ggrp > inertia_group_max:
                 continue
             if Int(geoms[go + GEOM_IDX_BODY]) == body_id:
                 var gmi0 = _geom_mass_and_inertia[DTYPE](
@@ -511,7 +515,7 @@ def _inertia_from_geoms_staging[
             for g in range(NGEOM):
                 var go = g * MODEL_GEOM_SIZE
                 var ggrp1 = geom_group[g]
-                if ggrp1 < INERTIA_GROUP_MIN or ggrp1 > INERTIA_GROUP_MAX:
+                if ggrp1 < inertia_group_min or ggrp1 > inertia_group_max:
                     continue
                 if Int(geoms[go + GEOM_IDX_BODY]) == body_id:
                     var gmi = _geom_mass_and_inertia[DTYPE](
@@ -571,7 +575,7 @@ def _inertia_from_geoms_staging[
             for g in range(NGEOM):
                 var go = g * MODEL_GEOM_SIZE
                 var ggrp2 = geom_group[g]
-                if ggrp2 < INERTIA_GROUP_MIN or ggrp2 > INERTIA_GROUP_MAX:
+                if ggrp2 < inertia_group_min or ggrp2 > inertia_group_max:
                     continue
                 if Int(geoms[go + GEOM_IDX_BODY]) == body_id:
                     var gmi = _geom_mass_and_inertia[DTYPE](
@@ -607,7 +611,7 @@ def _inertia_from_geoms_staging[
             for g in range(NGEOM):
                 var go = g * MODEL_GEOM_SIZE
                 var ggrp3 = geom_group[g]
-                if ggrp3 < INERTIA_GROUP_MIN or ggrp3 > INERTIA_GROUP_MAX:
+                if ggrp3 < inertia_group_min or ggrp3 > inertia_group_max:
                     continue
                 if Int(geoms[go + GEOM_IDX_BODY]) == body_id:
                     var gmi = _geom_mass_and_inertia[DTYPE](
@@ -688,11 +692,12 @@ def build_model_fields_from_flat[
     NSITE: Int,
     NEXCLUDE: Int,
     NMESH_VERTS: Int,
-    # <compiler> build modes
-    IFG_MODE: Int,  # 0=off, 1=true, 2=auto
-    IGR_MIN: Int,
-    IGR_MAX: Int,
-    SETTOTALMASS: Float64,
+    # ⚠ THE FOUR `<compiler>` BUILD MODES USED TO BE PARAMETERS HERE. They
+    # are gone: phase 1b moved them onto `FlatModelDef`, read from the same
+    # parse that produced everything else this function fills. Hand-passing
+    # them was its own bug source — a call site could state a mode its own XML
+    # contradicts, and one did (`test_xml_full_parser` passed 0 = OFF for an
+    # XML whose ABSENT attribute means MuJoCo's AUTO).
     # Appended rather than grouped with NEXCLUDE — see `fields.Model`.
     NPAIR: Int = 0,
 ](
@@ -1664,28 +1669,12 @@ def build_model_fields_from_flat[
         mf.pairs.data[o + PAIR_IDX_MARGIN] = Scalar[DTYPE](pr.margin)
 
     # ── <compiler inertiafromgeom> + settotalmass (staging mutations) ─────
-    comptime if IFG_MODE == 1:
-        _inertia_from_geoms_staging[
-            DTYPE, NBODY, NGEOM, IGR_MIN, IGR_MAX, False
-        ](
-            mf.geoms.data,
-            mf.bodies.data,
-            geom_mass,
-            geom_group,
-            geom_mesh_vol,
-            geom_mesh_eig,
-            body_has_explicit_inertia,
-            body_mass,
-            body_inv_mass,
-            body_inertia,
-            body_inv_inertia,
-            body_ipos,
-            body_iquat,
-        )
-    comptime if IFG_MODE == 2:
-        _inertia_from_geoms_staging[
-            DTYPE, NBODY, NGEOM, IGR_MIN, IGR_MAX, True
-        ](
+    var ifg_mode = fmd.inertiafromgeom
+    if ifg_mode == 1 or ifg_mode == 2:
+        _inertia_from_geoms_staging[DTYPE, NBODY, NGEOM](
+            fmd.inertiagrouprange_min,
+            fmd.inertiagrouprange_max,
+            ifg_mode == 2,
             mf.geoms.data,
             mf.bodies.data,
             geom_mass,
@@ -1725,21 +1714,24 @@ def build_model_fields_from_flat[
                     body_inertia[i * 3 + k] = bi
                     body_inv_inertia[i * 3 + k] = Scalar[DTYPE](1.0) / bi
 
-    comptime if IFG_MODE > 0:
-        comptime if SETTOTALMASS > 0.0:
-            var total_mass = Scalar[DTYPE](0)
+    # ⚠ `settotalmass` applies ONLY when inertiafromgeom is active, which is
+    # MuJoCo's legacy ordering. dm_control's cheetah relies on it: it declares
+    # `settotalmass="14"` and NO inertiafromgeom, so it takes the AUTO default
+    # and the rescale runs — 21.18 kg -> 14.0, confirmed against the runtime.
+    if ifg_mode > 0 and fmd.settotalmass > 0.0:
+        var total_mass = Scalar[DTYPE](0)
+        for i in range(1, NBODY):
+            total_mass += body_mass[i]
+        if total_mass > Scalar[DTYPE](0):
+            var scale = Scalar[DTYPE](fmd.settotalmass) / total_mass
             for i in range(1, NBODY):
-                total_mass += body_mass[i]
-            if total_mass > Scalar[DTYPE](0):
-                var scale = Scalar[DTYPE](SETTOTALMASS) / total_mass
-                for i in range(1, NBODY):
-                    body_mass[i] *= scale
-                    body_inv_mass[i] = Scalar[DTYPE](1.0) / body_mass[i]
-                    for k in range(3):
-                        body_inertia[i * 3 + k] *= scale
-                        body_inv_inertia[i * 3 + k] = (
-                            Scalar[DTYPE](1.0) / body_inertia[i * 3 + k]
-                        )
+                body_mass[i] *= scale
+                body_inv_mass[i] = Scalar[DTYPE](1.0) / body_mass[i]
+                for k in range(3):
+                    body_inertia[i * 3 + k] *= scale
+                    body_inv_inertia[i * 3 + k] = (
+                        Scalar[DTYPE](1.0) / body_inertia[i * 3 + k]
+                    )
 
     # ── body mass/inertia record write (post ifg/settotalmass) ────────────
     for b in range(len(fmd.bodies) + 1):

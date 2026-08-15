@@ -1625,6 +1625,27 @@ struct FlatModelDef(Movable):
     # ENTIRE mass and inertia from these.
     var boundmass: Float64
     var boundinertia: Float64
+    # `<compiler inertiafromgeom= inertiagrouprange= settotalmass=>`.
+    #
+    # ⚠ THESE WERE READ AT COMPTIME OFF THE RAW XML until phase 1b, by
+    # `_xml_compiler_inertiafromgeom` / `_inertiagrouprange` / `_settotalmass`,
+    # and reached `build_model_fields_from_flat` as compile-time PARAMETERS.
+    # They are here now because 1b's whole point is that nothing may read the
+    # MJCF at compile time — the comptime interpreter cannot `open()` a file,
+    # so every comptime reader pins the model to a `String` in Mojo source.
+    #
+    # ⚠ `inertiafromgeom` DEFAULTS TO AUTO (2), NOT off. MuJoCo derives a
+    # body's mass/inertia from its geoms unless the body carries an explicit
+    # `<inertial>`. Defaulting to 0 gave pendulum ~1/21 of its true inertia
+    # and went unnoticed for months because every Gym-derived XML states the
+    # attribute explicitly and the dm_control suite states nothing
+    # (fixed 2026-07-29 on the comptime side; the same default is kept here).
+    #
+    # ⚠ `settotalmass` is -1.0 when ABSENT, not 0.0 — 0 is a legal request.
+    var inertiafromgeom: Int  # 0=false, 1=true, 2=auto
+    var inertiagrouprange_min: Int
+    var inertiagrouprange_max: Int
+    var settotalmass: Float64  # -1.0 = absent
     # MuJoCo `m->na` — ACTIVATION variables, not `nu`. Derived by
     # `_fill_actuators` as it walks the actuators, exactly as the comptime twin
     # does. Phase 1a.4 turns `na` into a comptime PARAMETER of
@@ -1702,6 +1723,11 @@ struct FlatModelDef(Movable):
     def __init__(out self):
         self.boundmass = 0.0
         self.boundinertia = 0.0
+        # MuJoCo's defaults, not zeroes — see the field declarations.
+        self.inertiafromgeom = 2
+        self.inertiagrouprange_min = 0
+        self.inertiagrouprange_max = 5
+        self.settotalmass = -1.0
         self.bodies = List[BodyData]()
         self.joints = List[JointData]()
         self.geoms = List[GeomData]()

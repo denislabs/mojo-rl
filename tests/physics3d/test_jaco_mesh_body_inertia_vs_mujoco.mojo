@@ -71,9 +71,6 @@ comptime NEXCLUDE = 4
 comptime NMESH_VERTS = 60000
 # `<compiler>` declares no `inertiafromgeom`, so AUTO, and no
 # `inertiagrouprange`, so MuJoCo's default 0..5.
-comptime IFG_MODE = 2
-comptime IGR_MIN = 0
-comptime IGR_MAX = 5
 
 
 def _read(path: String) raises -> String:
@@ -165,10 +162,6 @@ def test_jaco_mesh_body_inertia_vs_mujoco() raises:
         NSITE,
         NEXCLUDE,
         NMESH_VERTS,
-        IFG_MODE,
-        IGR_MIN,
-        IGR_MAX,
-        -1.0,
         0,
     ](fmd, mf)
     _ = os.chdir(cwd)
