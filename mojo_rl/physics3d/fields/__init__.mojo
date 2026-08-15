@@ -11,7 +11,12 @@ at the fields sunset.
 
 from .data import Data
 from .model import Model
-from .spec_fields import SpecFields
+from .spec_fields import (
+    SpecFields,
+    actuator_column,
+    act_tendon_column,
+    joint_limit_column,
+)
 from .dynamics_scratch import DynamicsScratch
 from .contact_scratch import ContactScratch
 from .rk4_scratch import Rk4Scratch

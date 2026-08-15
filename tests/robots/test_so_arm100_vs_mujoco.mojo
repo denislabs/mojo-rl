@@ -48,6 +48,15 @@ from mojo_rl.envs.robots.so_arm100_xml import (
     MOVING_JAW_BODY_IDX,
     TARGET_BODY_IDX,
 )
+from mojo_rl.physics3d.fields import actuator_column
+from mojo_rl.physics3d.gpu.constants import (
+    ACT_IDX_CTRL_MAX,
+    ACT_IDX_CTRL_MIN,
+    ACT_IDX_FORCE_MAX,
+    ACT_IDX_FORCE_MIN,
+    ACT_IDX_KP,
+    ACT_IDX_KV,
+)
 
 comptime NQ = SoArm100Model.NQ
 comptime NU = 6
@@ -149,12 +158,13 @@ def test_actuator_law() raises:
     tolerance is 0.0 — both numbers came from the same XML text.
     """
     var m = _mj()
-    var kp = materialize[SoArm100Model._acd.motor_kp]()
-    var kv = materialize[SoArm100Model._acd.motor_kv]()
-    var fmin = materialize[SoArm100Model._acd.motor_force_min]()
-    var fmax = materialize[SoArm100Model._acd.motor_force_max]()
-    var cmin = materialize[SoArm100Model._acd.motor_ctrl_min]()
-    var cmax = materialize[SoArm100Model._acd.motor_ctrl_max]()
+    var sf = SoArm100Model.make_spec_fields[DType.float64]()
+    var kp = actuator_column(sf, ACT_IDX_KP, NU)
+    var kv = actuator_column(sf, ACT_IDX_KV, NU)
+    var fmin = actuator_column(sf, ACT_IDX_FORCE_MIN, NU)
+    var fmax = actuator_column(sf, ACT_IDX_FORCE_MAX, NU)
+    var cmin = actuator_column(sf, ACT_IDX_CTRL_MIN, NU)
+    var cmax = actuator_column(sf, ACT_IDX_CTRL_MAX, NU)
 
     var worst = 0.0
     for i in range(NU):

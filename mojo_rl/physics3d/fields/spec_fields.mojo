@@ -184,3 +184,56 @@ struct SpecFields[
         self.key_qvel.upload(ctx)
         self.key_ctrl.upload(ctx)
         self.joint_limits.upload(ctx)
+
+
+# =============================================================================
+# Column accessors
+# =============================================================================
+#
+# One record column as a `List[Float64]`. The records are packed and strided,
+# so a caller that wants "every actuator's kp" would otherwise write the
+# `i * MODEL_ACTUATOR_SIZE + ACT_IDX_KP` arithmetic itself at every site — and
+# these exist mostly for the MuJoCo gates, which compare a whole column
+# against `mjModel` and used to read a flat `ComptimeActData` array.
+#
+# ⚠ `Float64` REGARDLESS OF `DTYPE`, deliberately: the caller is comparing
+# against MuJoCo's own float64 values, and widening at the read keeps the
+# comparison honest about what the record actually holds.
+
+
+def actuator_column[
+    DT: DType, NA: Int, NT: Int, NQ: Int, NV: Int, NK: Int, NJ: Int
+](
+    sf: SpecFields[DT, NA, NT, NQ, NV, NK, NJ], col: Int, n: Int
+) raises -> List[Float64]:
+    """`sf.actuators[:n, col]`. `col` is an `ACT_IDX_*`."""
+    var out = List[Float64](capacity=n)
+    for i in range(n):
+        out.append(Float64(sf.actuators.data[i * MODEL_ACTUATOR_SIZE + col]))
+    return out^
+
+
+def act_tendon_column[
+    DT: DType, NA: Int, NT: Int, NQ: Int, NV: Int, NK: Int, NJ: Int
+](
+    sf: SpecFields[DT, NA, NT, NQ, NV, NK, NJ], col: Int, n: Int
+) raises -> List[Float64]:
+    """`sf.act_tendons[:n, col]`. `col` is an `ACTTEN_IDX_*`."""
+    var out = List[Float64](capacity=n)
+    for t in range(n):
+        out.append(
+            Float64(sf.act_tendons.data[t * MODEL_ACT_TENDON_SIZE + col])
+        )
+    return out^
+
+
+def joint_limit_column[
+    DT: DType, NA: Int, NT: Int, NQ: Int, NV: Int, NK: Int, NJ: Int
+](
+    sf: SpecFields[DT, NA, NT, NQ, NV, NK, NJ], col: Int, n: Int
+) raises -> List[Float64]:
+    """`sf.joint_limits[:n, col]`. `col` is a `JLIM_IDX_*`."""
+    var out = List[Float64](capacity=n)
+    for j in range(n):
+        out.append(Float64(sf.joint_limits.data[j * JLIM_SIZE + col]))
+    return out^
