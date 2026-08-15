@@ -65,7 +65,38 @@ from std.math import abs
 from std.testing import assert_true, TestSuite
 
 from mojo_rl.physics3d.parser import parse_xml_full
-from mojo_rl.physics3d.gpu.constants import TENDON_MAX_WRAPS
+from mojo_rl.physics3d.parser.flat_model import FlatModelDef
+from mojo_rl.physics3d.parser.fields_build import build_spec_fields
+from mojo_rl.physics3d.fields import SpecFields
+from mojo_rl.physics3d.gpu.constants import (
+    TENDON_MAX_WRAPS,
+    MODEL_ACTUATOR_SIZE,
+    ACT_IDX_KIND,
+    ACT_IDX_GEAR,
+    ACT_IDX_CTRL_MIN,
+    ACT_IDX_CTRL_MAX,
+    ACT_IDX_CTRL_LIMITED,
+    ACT_IDX_FORCE_MIN,
+    ACT_IDX_FORCE_MAX,
+    ACT_IDX_FORCE_LIMITED,
+    ACT_IDX_KP,
+    ACT_IDX_KV,
+    ACT_IDX_DYN_TAU,
+    ACT_IDX_ACT_ADR,
+    ACT_IDX_TRN_N,
+    ACT_IDX_DOF_ADR,
+    ACT_IDX_TRN_QADR_0,
+    ACT_IDX_TRN_DADR_0,
+    ACT_IDX_TRN_COEF_0,
+    MODEL_ACT_TENDON_SIZE,
+    ACTTEN_IDX_STIFFNESS,
+    ACTTEN_IDX_SPRING_LO,
+    ACTTEN_IDX_SPRING_HI,
+    ACTTEN_IDX_TRN_N,
+    ACTTEN_IDX_TRN_QADR_0,
+    ACTTEN_IDX_TRN_DADR_0,
+    ACTTEN_IDX_TRN_COEF_0,
+)
 
 from mojo_rl.envs.dm_control.cartpole.cartpole_xml import DMCartpole1Model
 from mojo_rl.envs.dm_control.quadruped.quadruped_xml import DMQuadrupedWalkModel
@@ -105,7 +136,10 @@ struct _Report(Copyable, Movable):
     var worst_gear_i: Int
 
 
-def _compare(
+def _compare[
+    NACT_C: Int,
+    NTEN_C: Int,
+](
     name: String,
     nact: Int,
     xml: String,
@@ -133,6 +167,10 @@ def _compare(
     ten_lo: List[Float64],
     ten_hi: List[Float64],
     nten_acd: Int,
+    ten_n: List[Int],
+    ten_tq: List[Int],
+    ten_td: List[Int],
+    ten_tc: List[Float64],
 ) raises -> _Report:
     """Runtime `FlatModelDef.actuators[i]` against the comptime `_acd` arrays."""
     var fmd = parse_xml_full(xml)
@@ -331,7 +369,172 @@ def _compare(
         print("        _acd  : gear", gears[i], " ctrl[", cmin[i],
               ",", cmax[i], "] lim", clim[i], " kind", kinds[i],
               " force[", fmin[i], ",", fmax[i], "] flim", flim[i])
+
+    # ═══ PHASE 1a.2 — the packed TENSORS, against the same `_acd` values ══
+    #
+    # ⚠ THIS IS A SECOND TRANSCRIPTION AND NEEDS ITS OWN GATE. Everything
+    # above proves `FlatModelDef` agrees with `_acd`; it says nothing about
+    # whether `build_spec_fields` copies those records into the right SLOTS.
+    # An off-by-one in the column layout, a field written to the wrong index,
+    # a wrap stride confusion — all invisible to the record diff and all
+    # silently wrong in the engine once 1a.3 repoints the readers.
+    #
+    # ⚠⚠ THE WRAP STRIDES DIFFER AND THAT IS THE EASIEST THING TO GET WRONG
+    # HERE. `_acd` strides by `M._WRAPS`, which COLLAPSES TO 1 on a model with
+    # no tendons; the tensor strides by `TENDON_MAX_WRAPS` = 16 always. On
+    # cartpole those are 1 and 16. Comparing them without converting reads
+    # actuator i+1's data as actuator i's wrap 1.
+    _fields_diff[NACT_C, NTEN_C](
+        name, fmd, n_rt, gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
+        dyn, aadr, dofa, trnn, tq, td_, tc, wraps, kps, kvs,
+        ten_k, ten_lo, ten_hi, nten_acd, ten_n, ten_tq, ten_td, ten_tc,
+    )
     return r^
+
+
+def _fields_diff[
+    NACT_C: Int,
+    NTEN_C: Int,
+](
+    name: String,
+    fmd: FlatModelDef,
+    n_rt: Int,
+    gears: List[Float64],
+    cmin: List[Float64],
+    cmax: List[Float64],
+    clim: List[Int],
+    kinds: List[Int],
+    flim: List[Int],
+    fmin: List[Float64],
+    fmax: List[Float64],
+    dyn: List[Float64],
+    aadr: List[Int],
+    dofa: List[Int],
+    trnn: List[Int],
+    tq: List[Int],
+    td_: List[Int],
+    tc: List[Float64],
+    wraps: Int,
+    kps: List[Float64],
+    kvs: List[Float64],
+    ten_k: List[Float64],
+    ten_lo: List[Float64],
+    ten_hi: List[Float64],
+    nten_acd: Int,
+    ten_n: List[Int],
+    ten_tq: List[Int],
+    ten_td: List[Int],
+    ten_tc: List[Float64],
+) raises:
+    """`SpecFields` tensor slots against the `_acd` values (phase 1a.2)."""
+    if n_rt != NACT_C:
+        # The count assert above already failed and named it; building the
+        # tensors would just raise the parser/dimension error on top and hide
+        # the real message.
+        print("  (skipping tensor diff — actuator count differs)")
+        return
+
+    var sf = SpecFields[DType.float64, NACT_C, NTEN_C]()
+    build_spec_fields[DType.float64, NACT_C, NTEN_C](fmd, sf)
+
+    var n_scalar = 0
+    var n_wrap = 0
+    var first = String("")
+    for i in range(NACT_C):
+        var o = i * MODEL_ACTUATOR_SIZE
+
+        @parameter
+        def chk(slot: Int, want: Float64, field: String):
+            if sf.actuators.data[o + slot] != Scalar[DType.float64](want):
+                n_scalar += 1
+                if first.byte_length() == 0:
+                    first = String(
+                        field, "[", i, "] tensor ",
+                        Float64(sf.actuators.data[o + slot]),
+                        " vs `_acd` ", want,
+                    )
+
+        chk(ACT_IDX_KIND, Float64(kinds[i]), "kind")
+        chk(ACT_IDX_GEAR, gears[i], "gear")
+        chk(ACT_IDX_CTRL_MIN, cmin[i], "ctrl_min")
+        chk(ACT_IDX_CTRL_MAX, cmax[i], "ctrl_max")
+        chk(ACT_IDX_CTRL_LIMITED, Float64(clim[i]), "ctrl_limited")
+        chk(ACT_IDX_FORCE_MIN, fmin[i], "force_min")
+        chk(ACT_IDX_FORCE_MAX, fmax[i], "force_max")
+        chk(ACT_IDX_FORCE_LIMITED, Float64(flim[i]), "force_limited")
+        chk(ACT_IDX_KP, kps[i], "kp")
+        chk(ACT_IDX_KV, kvs[i], "kv")
+        chk(ACT_IDX_DYN_TAU, dyn[i], "dyn_tau")
+        chk(ACT_IDX_ACT_ADR, Float64(aadr[i]), "act_adr")
+        chk(ACT_IDX_TRN_N, Float64(trnn[i]), "trn_n")
+        chk(ACT_IDX_DOF_ADR, Float64(dofa[i]), "dof_adr")
+        # Wraps: `_acd` strides by `wraps`, the tensor by TENDON_MAX_WRAPS.
+        for k in range(trnn[i]):
+            var a_i = i * wraps + k
+            if (
+                sf.actuators.data[o + ACT_IDX_TRN_QADR_0 + k]
+                != Scalar[DType.float64](tq[a_i])
+                or sf.actuators.data[o + ACT_IDX_TRN_DADR_0 + k]
+                != Scalar[DType.float64](td_[a_i])
+                or sf.actuators.data[o + ACT_IDX_TRN_COEF_0 + k]
+                != Scalar[DType.float64](tc[a_i])
+            ):
+                n_wrap += 1
+
+    var n_ten_s = 0
+    var n_ten_w = 0
+    var nt = len(fmd.tendons) if len(fmd.tendons) < nten_acd else nten_acd
+    for t in range(nt):
+        var o = t * MODEL_ACT_TENDON_SIZE
+        if (
+            sf.act_tendons.data[o + ACTTEN_IDX_STIFFNESS]
+            != Scalar[DType.float64](ten_k[t])
+            or sf.act_tendons.data[o + ACTTEN_IDX_SPRING_LO]
+            != Scalar[DType.float64](ten_lo[t])
+            or sf.act_tendons.data[o + ACTTEN_IDX_SPRING_HI]
+            != Scalar[DType.float64](ten_hi[t])
+            or sf.act_tendons.data[o + ACTTEN_IDX_TRN_N]
+            != Scalar[DType.float64](ten_n[t])
+        ):
+            n_ten_s += 1
+        for k in range(ten_n[t]):
+            var a_i = t * wraps + k
+            if (
+                sf.act_tendons.data[o + ACTTEN_IDX_TRN_QADR_0 + k]
+                != Scalar[DType.float64](ten_tq[a_i])
+                or sf.act_tendons.data[o + ACTTEN_IDX_TRN_DADR_0 + k]
+                != Scalar[DType.float64](ten_td[a_i])
+                or sf.act_tendons.data[o + ACTTEN_IDX_TRN_COEF_0 + k]
+                != Scalar[DType.float64](ten_tc[a_i])
+            ):
+                n_ten_w += 1
+
+    # ⚠ NON-VACUITY, the trap that fired twice in 1a.1. A tensor diff over a
+    # model whose actuators have no transmission wraps, or whose tendons have
+    # no springs, reports 0 while testing nothing. Say which.
+    var n_wrapped = 0
+    for i in range(NACT_C):
+        if trnn[i] > 0:
+            n_wrapped += 1
+    print("    TENSORS: scalars =", n_scalar, " wraps =", n_wrap,
+          " tendon rows =", n_ten_s, " tendon wraps =", n_ten_w)
+    print("             (actuators with a transmission:", n_wrapped, "of",
+          NACT_C, "; tendon rows compared:", nt, ")")
+    if n_wrapped == 0:
+        print("  ⚠ no actuator has a transmission — the tensor WRAP slots are"
+              " VACUOUS here")
+    if nt == 0:
+        print("  ⚠ no tendons — the act_tendons tensor is VACUOUS here")
+
+    assert_true(n_scalar == 0,
+        String(name, ": SpecFields scalar slots disagree with `_acd` in ",
+               n_scalar, " — first: ", first))
+    assert_true(n_wrap == 0,
+        String(name, ": SpecFields transmission wraps disagree with `_acd`"
+               " in ", n_wrap))
+    assert_true(n_ten_s == 0 and n_ten_w == 0,
+        String(name, ": SpecFields tendon rows disagree with `_acd` — ",
+               n_ten_s, " scalars / ", n_ten_w, " wraps"))
 
 
 def test_cartpole() raises:
@@ -358,10 +561,19 @@ def test_cartpole() raises:
     var ten_k = List[Float64]()
     var ten_lo = List[Float64]()
     var ten_hi = List[Float64]()
+    var ten_n = List[Int]()
+    var ten_tq = List[Int]()
+    var ten_td = List[Int]()
+    var ten_tc = List[Float64]()
     comptime for ti in range(M._NTEN):
         ten_k.append(materialize[acd.tendon_stiffness[ti]]())
         ten_lo.append(materialize[acd.tendon_spring_lo[ti]]())
         ten_hi.append(materialize[acd.tendon_spring_hi[ti]]())
+        ten_n.append(materialize[acd.tendon_trn_n[ti]]())
+        comptime for wk in range(M._WRAPS):
+            ten_tq.append(materialize[acd.tendon_trn_qadr[ti * M._WRAPS + wk]]())
+            ten_td.append(materialize[acd.tendon_trn_dadr[ti * M._WRAPS + wk]]())
+            ten_tc.append(materialize[acd.tendon_trn_coef[ti * M._WRAPS + wk]]())
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -381,13 +593,14 @@ def test_cartpole() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare(
+    _ = _compare[NACT, M._NTEN](
         "cartpole (1 actuator, no <default> class)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
         dofa, trnn, tq, td_, tc, M._WRAPS,
         kps, kvs, materialize[acd.bad_actuator](),
         ten_k, ten_lo, ten_hi, materialize[acd.ntendon](),
+        ten_n, ten_tq, ten_td, ten_tc,
     )
 
 
@@ -415,10 +628,19 @@ def test_quadruped() raises:
     var ten_k = List[Float64]()
     var ten_lo = List[Float64]()
     var ten_hi = List[Float64]()
+    var ten_n = List[Int]()
+    var ten_tq = List[Int]()
+    var ten_td = List[Int]()
+    var ten_tc = List[Float64]()
     comptime for ti in range(M._NTEN):
         ten_k.append(materialize[acd.tendon_stiffness[ti]]())
         ten_lo.append(materialize[acd.tendon_spring_lo[ti]]())
         ten_hi.append(materialize[acd.tendon_spring_hi[ti]]())
+        ten_n.append(materialize[acd.tendon_trn_n[ti]]())
+        comptime for wk in range(M._WRAPS):
+            ten_tq.append(materialize[acd.tendon_trn_qadr[ti * M._WRAPS + wk]]())
+            ten_td.append(materialize[acd.tendon_trn_dadr[ti * M._WRAPS + wk]]())
+            ten_tc.append(materialize[acd.tendon_trn_coef[ti * M._WRAPS + wk]]())
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -438,13 +660,14 @@ def test_quadruped() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare(
+    _ = _compare[NACT, M._NTEN](
         "quadruped (3 classes / 12 actuators, tendons + dyntype)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
         dofa, trnn, tq, td_, tc, M._WRAPS,
         kps, kvs, materialize[acd.bad_actuator](),
         ten_k, ten_lo, ten_hi, materialize[acd.ntendon](),
+        ten_n, ten_tq, ten_td, ten_tc,
     )
 
 
@@ -472,10 +695,19 @@ def test_dog() raises:
     var ten_k = List[Float64]()
     var ten_lo = List[Float64]()
     var ten_hi = List[Float64]()
+    var ten_n = List[Int]()
+    var ten_tq = List[Int]()
+    var ten_td = List[Int]()
+    var ten_tc = List[Float64]()
     comptime for ti in range(M._NTEN):
         ten_k.append(materialize[acd.tendon_stiffness[ti]]())
         ten_lo.append(materialize[acd.tendon_spring_lo[ti]]())
         ten_hi.append(materialize[acd.tendon_spring_hi[ti]]())
+        ten_n.append(materialize[acd.tendon_trn_n[ti]]())
+        comptime for wk in range(M._WRAPS):
+            ten_tq.append(materialize[acd.tendon_trn_qadr[ti * M._WRAPS + wk]]())
+            ten_td.append(materialize[acd.tendon_trn_dadr[ti * M._WRAPS + wk]]())
+            ten_tc.append(materialize[acd.tendon_trn_coef[ti * M._WRAPS + wk]]())
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -495,13 +727,14 @@ def test_dog() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare(
+    _ = _compare[NACT, M._NTEN](
         "dog stand/walk (24 classes / 38 actuators — the sharp case)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
         dofa, trnn, tq, td_, tc, M._WRAPS,
         kps, kvs, materialize[acd.bad_actuator](),
         ten_k, ten_lo, ten_hi, materialize[acd.ntendon](),
+        ten_n, ten_tq, ten_td, ten_tc,
     )
 
 
@@ -537,10 +770,19 @@ def test_reach_forcerange() raises:
     var ten_k = List[Float64]()
     var ten_lo = List[Float64]()
     var ten_hi = List[Float64]()
+    var ten_n = List[Int]()
+    var ten_tq = List[Int]()
+    var ten_td = List[Int]()
+    var ten_tc = List[Float64]()
     comptime for ti in range(M._NTEN):
         ten_k.append(materialize[acd.tendon_stiffness[ti]]())
         ten_lo.append(materialize[acd.tendon_spring_lo[ti]]())
         ten_hi.append(materialize[acd.tendon_spring_hi[ti]]())
+        ten_n.append(materialize[acd.tendon_trn_n[ti]]())
+        comptime for wk in range(M._WRAPS):
+            ten_tq.append(materialize[acd.tendon_trn_qadr[ti * M._WRAPS + wk]]())
+            ten_td.append(materialize[acd.tendon_trn_dadr[ti * M._WRAPS + wk]]())
+            ten_tc.append(materialize[acd.tendon_trn_coef[ti * M._WRAPS + wk]]())
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -560,13 +802,14 @@ def test_reach_forcerange() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare(
+    _ = _compare[NACT, M._NTEN](
         "jaco reach (3 distinct forceranges — the non-vacuous force case)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
         dofa, trnn, tq, td_, tc, M._WRAPS,
         kps, kvs, materialize[acd.bad_actuator](),
         ten_k, ten_lo, ten_hi, materialize[acd.ntendon](),
+        ten_n, ten_tq, ten_td, ten_tc,
     )
 
 
@@ -606,10 +849,19 @@ def test_fish() raises:
     var ten_k = List[Float64]()
     var ten_lo = List[Float64]()
     var ten_hi = List[Float64]()
+    var ten_n = List[Int]()
+    var ten_tq = List[Int]()
+    var ten_td = List[Int]()
+    var ten_tc = List[Float64]()
     comptime for ti in range(M._NTEN):
         ten_k.append(materialize[acd.tendon_stiffness[ti]]())
         ten_lo.append(materialize[acd.tendon_spring_lo[ti]]())
         ten_hi.append(materialize[acd.tendon_spring_hi[ti]]())
+        ten_n.append(materialize[acd.tendon_trn_n[ti]]())
+        comptime for wk in range(M._WRAPS):
+            ten_tq.append(materialize[acd.tendon_trn_qadr[ti * M._WRAPS + wk]]())
+            ten_td.append(materialize[acd.tendon_trn_dadr[ti * M._WRAPS + wk]]())
+            ten_tc.append(materialize[acd.tendon_trn_coef[ti * M._WRAPS + wk]]())
     comptime for ai in range(NACT):
         gears.append(materialize[acd.motor_gears[ai]]())
         cmin.append(materialize[acd.motor_ctrl_min[ai]]())
@@ -629,13 +881,14 @@ def test_fish() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare(
+    _ = _compare[NACT, M._NTEN](
         "fish swim (the ONLY model with tendon springs)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
         dofa, trnn, tq, td_, tc, M._WRAPS,
         kps, kvs, materialize[acd.bad_actuator](),
         ten_k, ten_lo, ten_hi, materialize[acd.ntendon](),
+        ten_n, ten_tq, ten_td, ten_tc,
     )
 
 

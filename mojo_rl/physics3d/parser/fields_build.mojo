@@ -49,7 +49,7 @@ from mojo_rl.physics3d.constants import (
     GEOM_MESH,
     GEOM_ELLIPSOID,
 )
-from mojo_rl.physics3d.fields import Model
+from mojo_rl.physics3d.fields import Model, SpecFields
 from mojo_rl.physics3d.collision.convex_hull import (
     load_mesh_hull,
     compute_mesh_rbound_at,
@@ -278,6 +278,34 @@ from mojo_rl.physics3d.gpu.constants import (
     SITE_IDX_QUAT_X,
     SITE_IDX_QUAT_Y,
     SITE_IDX_QUAT_Z,
+    MODEL_ACTUATOR_SIZE,
+    ACT_IDX_KIND,
+    ACT_IDX_GEAR,
+    ACT_IDX_CTRL_MIN,
+    ACT_IDX_CTRL_MAX,
+    ACT_IDX_CTRL_LIMITED,
+    ACT_IDX_FORCE_MIN,
+    ACT_IDX_FORCE_MAX,
+    ACT_IDX_FORCE_LIMITED,
+    ACT_IDX_KP,
+    ACT_IDX_KV,
+    ACT_IDX_DYN_TAU,
+    ACT_IDX_ACT_ADR,
+    ACT_IDX_TRN_N,
+    ACT_IDX_DOF_ADR,
+    ACT_IDX_TENDON_ID,
+    ACT_IDX_JOINT_ID,
+    ACT_IDX_TRN_QADR_0,
+    ACT_IDX_TRN_DADR_0,
+    ACT_IDX_TRN_COEF_0,
+    MODEL_ACT_TENDON_SIZE,
+    ACTTEN_IDX_STIFFNESS,
+    ACTTEN_IDX_SPRING_LO,
+    ACTTEN_IDX_SPRING_HI,
+    ACTTEN_IDX_TRN_N,
+    ACTTEN_IDX_TRN_QADR_0,
+    ACTTEN_IDX_TRN_DADR_0,
+    ACTTEN_IDX_TRN_COEF_0,
 )
 from .flat_model import FlatModelDef, _EQ_CONNECT, _EQ_WELD, _EQ_JOINT
 
@@ -1718,3 +1746,140 @@ def build_model_fields_from_flat[
         mf.bodies.data[o + BODY_IDX_IQUAT_Y] = body_iquat[b * 4 + 1]
         mf.bodies.data[o + BODY_IDX_IQUAT_Z] = body_iquat[b * 4 + 2]
         mf.bodies.data[o + BODY_IDX_IQUAT_W] = body_iquat[b * 4 + 3]
+
+
+# =============================================================================
+# Actuation records (phase 1a.2)
+# =============================================================================
+
+
+def build_spec_fields[
+    DTYPE: DType,
+    NACT: Int,
+    NTEN: Int,
+](
+    fmd: FlatModelDef,
+    mut sf: SpecFields[DTYPE, NACT, NTEN],
+) raises:
+    """Fill the actuation record tensors from the parsed `fmd`.
+
+    The runtime twin of what `parse_xml_model_data` produces for the comptime
+    `_acd`, and gated against it field by field while both exist
+    (`tests/physics3d/test_actuator_record_equivalence.mojo`).
+
+    Every value here was already parsed by `full_parser` in phase 1a.1 — this
+    is a transcription into the packed layout, not a second reading of the
+    XML. The one exception is the fixed-tendon transmission, whose qpos/dof
+    ADDRESSES are recovered from the joint list here by the same cumulative
+    sum `_fill_actuator_transmission` uses for actuators; `TendonData` stores
+    wraps as joint IDS because its other consumers want joints.
+
+    Does NOT upload — the caller does, alongside `Model.upload_all`.
+    """
+    var nact = len(fmd.actuators)
+    if nact != NACT:
+        raise Error(
+            String(
+                "physics3d: parser/dimension mismatch on ACTUATORS — declared",
+                " nact=", NACT, ", full_parser found ", nact,
+                ". Actuation is addressed BY ACTUATOR INDEX, so a mismatch",
+                " here drives the wrong dof.",
+            )
+        )
+    # ⚠ `>` NOT `!=`. `NTEN` is `max_tendon`, which every model def passes as a
+    # ROW/RECORD budget and routinely over-declares (it is floored at 1 even
+    # for a model with no tendons at all). Under-declaring is the failure that
+    # matters and `init_fields` already raises on it via
+    # `tendon_count_overflow`; this is the storage-side backstop.
+    if len(fmd.tendons) > NTEN:
+        raise Error(
+            String(
+                "physics3d: this model declares ", len(fmd.tendons),
+                " tendons but max_tendon=", NTEN,
+                ". Pass `max_tendon = <parse>.NTENDON`.",
+            )
+        )
+
+    # Joint qpos/dof addresses: a cumulative sum over `fmd.joints` in XML
+    # order — the same walk `_fill_actuator_transmission` does, and the same
+    # order `_acd`'s joint table uses.
+    var nj = len(fmd.joints)
+    var qadr = List[Int](capacity=nj)
+    var dadr = List[Int](capacity=nj)
+    var q = 0
+    var dd = 0
+    for i in range(nj):
+        qadr.append(q)
+        dadr.append(dd)
+        q += fmd.joints[i].nq
+        dd += fmd.joints[i].nv
+
+    # ── actuators ────────────────────────────────────────────────────────
+    for i in range(nact):
+        var a = fmd.actuators[i]
+        var o = i * MODEL_ACTUATOR_SIZE
+        sf.actuators.data[o + ACT_IDX_KIND] = Scalar[DTYPE](a.kind)
+        sf.actuators.data[o + ACT_IDX_GEAR] = Scalar[DTYPE](a.gear)
+        sf.actuators.data[o + ACT_IDX_CTRL_MIN] = Scalar[DTYPE](a.ctrl_min)
+        sf.actuators.data[o + ACT_IDX_CTRL_MAX] = Scalar[DTYPE](a.ctrl_max)
+        sf.actuators.data[o + ACT_IDX_CTRL_LIMITED] = Scalar[DTYPE](
+            1 if a.is_ctrl_limited else 0
+        )
+        sf.actuators.data[o + ACT_IDX_FORCE_MIN] = Scalar[DTYPE](a.force_min)
+        sf.actuators.data[o + ACT_IDX_FORCE_MAX] = Scalar[DTYPE](a.force_max)
+        sf.actuators.data[o + ACT_IDX_FORCE_LIMITED] = Scalar[DTYPE](
+            1 if a.force_limited else 0
+        )
+        sf.actuators.data[o + ACT_IDX_KP] = Scalar[DTYPE](a.kp)
+        sf.actuators.data[o + ACT_IDX_KV] = Scalar[DTYPE](a.kv)
+        sf.actuators.data[o + ACT_IDX_DYN_TAU] = Scalar[DTYPE](a.dyn_tau)
+        sf.actuators.data[o + ACT_IDX_ACT_ADR] = Scalar[DTYPE](a.act_adr)
+        sf.actuators.data[o + ACT_IDX_TRN_N] = Scalar[DTYPE](a.trn_n)
+        sf.actuators.data[o + ACT_IDX_DOF_ADR] = Scalar[DTYPE](a.dof_adr)
+        sf.actuators.data[o + ACT_IDX_TENDON_ID] = Scalar[DTYPE](a.tendon_id)
+        sf.actuators.data[o + ACT_IDX_JOINT_ID] = Scalar[DTYPE](a.joint_id)
+        # ⚠ ONLY THE FIRST `trn_n` TRIPLES ARE MEANINGFUL, and the rest keep
+        # the -1 the constructor seeded. Copying all `TENDON_MAX_WRAPS` slots
+        # would be harmless for qadr/dadr (still -1 in `fmd`) but would make a
+        # future non-sentinel fill silently readable past `trn_n`.
+        for k in range(a.trn_n):
+            var fb = i * TENDON_MAX_WRAPS + k
+            sf.actuators.data[o + ACT_IDX_TRN_QADR_0 + k] = Scalar[DTYPE](
+                fmd.motor_trn_qadr[fb]
+            )
+            sf.actuators.data[o + ACT_IDX_TRN_DADR_0 + k] = Scalar[DTYPE](
+                fmd.motor_trn_dadr[fb]
+            )
+            sf.actuators.data[o + ACT_IDX_TRN_COEF_0 + k] = Scalar[DTYPE](
+                fmd.motor_trn_coef[fb]
+            )
+
+    # ── fixed-tendon springs ─────────────────────────────────────────────
+    for t in range(len(fmd.tendons)):
+        var td = fmd.tendons[t]
+        var o = t * MODEL_ACT_TENDON_SIZE
+        sf.act_tendons.data[o + ACTTEN_IDX_STIFFNESS] = Scalar[DTYPE](
+            td.stiffness
+        )
+        sf.act_tendons.data[o + ACTTEN_IDX_SPRING_LO] = Scalar[DTYPE](
+            td.spring_lo
+        )
+        sf.act_tendons.data[o + ACTTEN_IDX_SPRING_HI] = Scalar[DTYPE](
+            td.spring_hi
+        )
+        var n = td.num_joints
+        if n > TENDON_MAX_WRAPS:
+            n = TENDON_MAX_WRAPS
+        sf.act_tendons.data[o + ACTTEN_IDX_TRN_N] = Scalar[DTYPE](n)
+        for k in range(n):
+            var jid = td.joint_ids[k]
+            if jid >= 0 and jid < nj:
+                sf.act_tendons.data[
+                    o + ACTTEN_IDX_TRN_QADR_0 + k
+                ] = Scalar[DTYPE](qadr[jid])
+                sf.act_tendons.data[
+                    o + ACTTEN_IDX_TRN_DADR_0 + k
+                ] = Scalar[DTYPE](dadr[jid])
+            sf.act_tendons.data[o + ACTTEN_IDX_TRN_COEF_0 + k] = Scalar[DTYPE](
+                td.coefs[k]
+            )

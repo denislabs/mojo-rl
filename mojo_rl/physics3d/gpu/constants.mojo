@@ -694,6 +694,83 @@ comptime PAIR_IDX_MARGIN: Int = 13
 
 
 # =============================================================================
+# Model Buffer Layout - Actuation (phase 1a.2)
+# =============================================================================
+
+# The runtime replacement for `ComptimeActData`'s actuator arrays — the record
+# layout behind `fields/spec_fields.mojo::SpecFields`. Everything BOTH
+# `ModelDefFromXML.apply_actions` (CPU) and `apply_actions_kernel_gpu` read.
+#
+# ⚠ THESE ARE DELIBERATELY NOT PART OF `fields.Model`. `Model` is the operand
+# bundle the integrator / solver / collision kernels bind; actuation is read by
+# exactly one function per target and by nothing else. Widening `Model` would
+# also have added a fifteenth type parameter to a struct named in 48 files,
+# every one of which would have had to thread `NACT` through to keep compiling.
+#
+# ⚠ THE WRAP STRIDE IS `TENDON_MAX_WRAPS`, SHARED WITH THE TENDON RECORD AND
+# WITH `FlatModelDef.motor_trn_*` (which is indexed `ai * TENDON_MAX_WRAPS + k`
+# already). The comptime twin uses `_WRAPS`, which collapses to 1 on a model
+# with no tendons — so the two strides AGREE ONLY WHEN THE MODEL HAS TENDONS.
+# Anything diffing the two must convert; the equivalence gate does.
+comptime MODEL_ACTUATOR_SIZE: Int = 16 + 3 * TENDON_MAX_WRAPS
+
+comptime ACT_IDX_KIND: Int = 0  # ACT_KIND_*
+comptime ACT_IDX_GEAR: Int = 1
+comptime ACT_IDX_CTRL_MIN: Int = 2
+comptime ACT_IDX_CTRL_MAX: Int = 3
+# ⚠ READ THIS BEFORE READING THE RANGE. MuJoCo's `ctrllimited` defaults to
+# "auto", so an actuator declaring no range is UNLIMITED and the stored range
+# is a (-1, 1) fallback nobody should clamp to.
+comptime ACT_IDX_CTRL_LIMITED: Int = 4
+comptime ACT_IDX_FORCE_MIN: Int = 5
+comptime ACT_IDX_FORCE_MAX: Int = 6
+comptime ACT_IDX_FORCE_LIMITED: Int = 7
+# MuJoCo `gainprm[0]` and `-biasprm[2]`. INDEPENDENT — `<velocity>` happens to
+# set both to K, but `gainprm="5 0 0" biasprm="0 0 -3"` is legal.
+# ⚠ `kp` DEFAULTS TO 1, NOT 0: a plain `<motor>` never writes it and its force
+# is `kp * ctrl`, so a zero here silently disables every bare motor.
+comptime ACT_IDX_KP: Int = 8
+comptime ACT_IDX_KV: Int = 9
+# mjDYN_FILTER: `act_dot = (ctrl - act) / dyn_tau`. `act_adr >= 0` means this
+# actuator owns one activation variable at that index; -1 means none.
+comptime ACT_IDX_DYN_TAU: Int = 10
+comptime ACT_IDX_ACT_ADR: Int = 11
+comptime ACT_IDX_TRN_N: Int = 12  # 0 => no resolvable transmission, skip
+comptime ACT_IDX_DOF_ADR: Int = 13  # the single dof the actuator reports on
+comptime ACT_IDX_TENDON_ID: Int = 14  # -1 unless a `tendon=` transmission
+comptime ACT_IDX_JOINT_ID: Int = 15  # -1 unless a `joint=` transmission
+# The transmission triples, `+ k` for k in [0, TRN_N). A `joint=` actuator is
+# ONE triple with coef 1; a `tendon=` one copies the tendon's whole wrap list.
+comptime ACT_IDX_TRN_QADR_0: Int = 16
+comptime ACT_IDX_TRN_DADR_0: Int = ACT_IDX_TRN_QADR_0 + TENDON_MAX_WRAPS
+comptime ACT_IDX_TRN_COEF_0: Int = ACT_IDX_TRN_QADR_0 + 2 * TENDON_MAX_WRAPS
+
+# The tendon SPRING half of actuation (`engine_passive.c`), kept in its own
+# record rather than folded into `MODEL_TENDON_SIZE`.
+#
+# ⚠ SEPARATE FROM `Model.tendons` ON PURPOSE. That record stores wraps as
+# JOINT IDS (`TENDON_IDX_JOINT_0 + k`) because its consumers — `tendon_limit`,
+# `dynamics/tendon` — want joints. The spring path wants qpos/dof ADDRESSES,
+# and resolving one to the other inside the actuation kernel would mean binding
+# `Model.joints` as a second operand purely to do a lookup the parser already
+# did. Storing the addresses is what the comptime twin does
+# (`tendon_trn_qadr` / `_dadr`) and this mirrors it.
+comptime MODEL_ACT_TENDON_SIZE: Int = 4 + 3 * TENDON_MAX_WRAPS
+
+comptime ACTTEN_IDX_STIFFNESS: Int = 0  # 0 => no spring, skip the row
+# The deadband bounds. ⚠ WHEN `springlength` IS ABSENT BOTH DEFAULT TO the
+# tendon's rest length `sum(coef * joint.ref)`, NOT to zero.
+comptime ACTTEN_IDX_SPRING_LO: Int = 1
+comptime ACTTEN_IDX_SPRING_HI: Int = 2
+comptime ACTTEN_IDX_TRN_N: Int = 3
+comptime ACTTEN_IDX_TRN_QADR_0: Int = 4
+comptime ACTTEN_IDX_TRN_DADR_0: Int = ACTTEN_IDX_TRN_QADR_0 + TENDON_MAX_WRAPS
+comptime ACTTEN_IDX_TRN_COEF_0: Int = (
+    ACTTEN_IDX_TRN_QADR_0 + 2 * TENDON_MAX_WRAPS
+)
+
+
+# =============================================================================
 # Model Buffer Layout - Mesh Collision Hull Data
 # =============================================================================
 
