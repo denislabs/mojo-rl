@@ -393,6 +393,7 @@ def test_insert_ball_receptacle_collides_at_its_mocap_pose() raises:
     The ball's height is SEARCHED downward until MuJoCo finds contacts, so the
     gate cannot go vacuous if the geometry shifts.
     """
+    var sf = MB.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
     var mf = BModel()
     MB.init_fields[DTYPE, 0](ctx, mf)
@@ -423,7 +424,7 @@ def test_insert_ball_receptacle_collides_at_its_mocap_pose() raises:
     oz = best_z
 
     var d = BData()
-    MB.reset_data(d)
+    MB.reset_data(sf, d)
     d.qpos.data[OBJECT_QADR_X] = Scalar[DTYPE](RECEPTACLE_X)
     d.qpos.data[OBJECT_QADR_Z] = Scalar[DTYPE](oz)
     d.qpos.data[OBJECT_QADR_Y] = Scalar[DTYPE](0)
@@ -436,7 +437,6 @@ def test_insert_ball_receptacle_collides_at_its_mocap_pose() raises:
     var act = List[Scalar[DTYPE]]()
     for _ in range(MB.NA if MB.NA > 0 else 1):
         act.append(Scalar[DTYPE](0))
-    var sf = MB.make_spec_fields[DTYPE]()
     MB.apply_actions(sf, d, zero, act)
     integ.step["cpu"](d, mf)
     var our_ncon = Int(d.meta.data[META_IDX_NUM_CONTACTS])
@@ -528,6 +528,7 @@ def test_insert_peg_receptacle_collides_at_its_mocap_pose() raises:
     one of the type pairs the narrow-phase coverage audit found had never
     executed outside its own synthetic gate.
     """
+    var sf = MP.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
     var mf = PModel()
     MP.init_fields[DTYPE, 0](ctx, mf)
@@ -577,7 +578,7 @@ def test_insert_peg_receptacle_collides_at_its_mocap_pose() raises:
     oz = best_z
 
     var d = PData()
-    MP.reset_data(d)
+    MP.reset_data(sf, d)
     d.qpos.data[OBJECT_QADR_X] = Scalar[DTYPE](RECEPTACLE_X)
     d.qpos.data[OBJECT_QADR_Z] = Scalar[DTYPE](oz)
     d.qpos.data[OBJECT_QADR_Y] = Scalar[DTYPE](RECEPTACLE_ANGLE)
@@ -590,7 +591,6 @@ def test_insert_peg_receptacle_collides_at_its_mocap_pose() raises:
     var act = List[Scalar[DTYPE]]()
     for _ in range(MP.NA if MP.NA > 0 else 1):
         act.append(Scalar[DTYPE](0))
-    var sf = MP.make_spec_fields[DTYPE]()
     MP.apply_actions(sf, d, zero, act)
     integ.step["cpu"](d, mf)
     var our_ncon = Int(d.meta.data[META_IDX_NUM_CONTACTS])

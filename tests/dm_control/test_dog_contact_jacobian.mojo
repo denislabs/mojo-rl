@@ -80,6 +80,7 @@ comptime JAC_TOL: Float64 = 1e-12
 
 
 def test_dog_contact_jacobian_matches_mujoco() raises:
+    var sf = M.make_spec_fields[DTYPE]()
     print("--- dog: contact Jacobian rows vs MuJoCo efc_J ---")
     var mujoco = Python.import_module("mujoco")
     var mm = mujoco.MjModel.from_xml_string(
@@ -111,7 +112,7 @@ def test_dog_contact_jacobian_matches_mujoco() raises:
     ]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
     for i in range(NV):

@@ -239,6 +239,7 @@ def _gate[
     mut failures: Int,
 ) raises:
     """Diff our `qfrc` after `apply_actions` against MuJoCo `qfrc_actuator`."""
+    var sf = M.make_spec_fields[DTYPE]()
     comptime Dat = Data[
         DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1
     ]
@@ -251,7 +252,7 @@ def _gate[
     var mf = Mod()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Dat()
-    M.reset_data(d)
+    M.reset_data(sf, d)
     d.qpos.data[0] = Scalar[DTYPE](q0)
     d.qpos.data[1] = Scalar[DTYPE](q1)
     d.qvel.data[0] = Scalar[DTYPE](v0)
@@ -261,7 +262,6 @@ def _gate[
     actions.append(c0)
     actions.append(c1)
     var act = List[Scalar[DTYPE]]()
-    var sf = M.make_spec_fields[DTYPE]()
     M.apply_actions[DTYPE](sf, d, actions, act)
 
     var mujoco = Python.import_module("mujoco")

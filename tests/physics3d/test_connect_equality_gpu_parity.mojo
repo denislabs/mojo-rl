@@ -135,6 +135,7 @@ def _parity[M: ModelDefFromXML, SOLVER: StaticString](
     ctx: DeviceContext, label: String, tol: Float64
 ) raises:
     """Step CPU and GPU side by side, then prove the connect actually ran."""
+    var sf = M.make_spec_fields[DTYPE]()
     var mf = Model[
         DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
         M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0, M.NPAIR,
@@ -155,9 +156,9 @@ def _parity[M: ModelDefFromXML, SOLVER: StaticString](
     var doff = Data[
         DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, BATCH
     ]()
-    M.reset_data[DTYPE](dg)
-    M.reset_data[DTYPE](dc)
-    M.reset_data[DTYPE](doff)
+    M.reset_data[DTYPE](sf, dg)
+    M.reset_data[DTYPE](sf, dc)
+    M.reset_data[DTYPE](sf, doff)
     dg.upload_all(ctx)
     doff.upload_all(ctx)
 

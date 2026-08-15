@@ -154,6 +154,7 @@ def test_mujoco_really_emits_one_row_of_each_kind() raises:
 
 def test_frictionless_contact_matches_mujoco() raises:
     """Our rollout against MuJoCo's, with both contact kinds live."""
+    var sf = M.make_spec_fields[DTYPE]()
     print("--- frictionless: ours vs MuJoCo ---")
     var h = _mj()
     var mujoco = h[0]
@@ -168,7 +169,7 @@ def test_frictionless_contact_matches_mujoco() raises:
     ]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
 
     var sq = md.qpos.flatten().tolist()
     var sv = md.qvel.flatten().tolist()
@@ -245,6 +246,7 @@ def test_frictionless_contact_records_no_tangential_force() raises:
     0.9002` on all three of its frictionless contacts — precisely the model's
     default `friction="0.9"` — where MuJoCo reports exactly 0.
     """
+    var sf = M.make_spec_fields[DTYPE]()
     print("--- frictionless: the contact record ---")
     var h = _mj()
     var mujoco = h[0]
@@ -260,7 +262,7 @@ def test_frictionless_contact_records_no_tangential_force() raises:
     ]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
     var sq = md.qpos.flatten().tolist()
     var sv = md.qvel.flatten().tolist()
     for i in range(M.NQ):

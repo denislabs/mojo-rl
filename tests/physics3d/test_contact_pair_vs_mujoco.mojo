@@ -265,6 +265,7 @@ def _gate[
     the pairing between our list and MuJoCo's positional rather than a
     matching problem — with one contact there is nothing to mis-match.
     """
+    var sf = M.make_spec_fields[DTYPE]()
     comptime Dat = Data[
         DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1
     ]
@@ -277,7 +278,7 @@ def _gate[
     var mf = Mod()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Dat()
-    M.reset_data(d)
+    M.reset_data(sf, d)
     forward_kinematics["cpu"](d, mf)
     if use_sap:
         detect_contacts_sap["cpu"](d, mf)

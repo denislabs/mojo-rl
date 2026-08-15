@@ -804,7 +804,8 @@ def _set_state_and_fk2(
 ) raises:
     """Both engines at the same state, ours stepped once so contacts and
     `site_xpos` are live (the touch entries read post-solve contact forces)."""
-    M2.reset_data(d)
+    var sf = M2.make_spec_fields[DTYPE]()
+    M2.reset_data(sf, d)
     for i in range(NQ2):
         d.qpos.data[i] = Scalar[DTYPE](state[i])
     for i in range(NV2):
@@ -834,7 +835,6 @@ def _set_state_and_fk2(
     var act = List[Scalar[DTYPE]]()
     for _ in range(NA2 if NA2 > 0 else 1):
         act.append(Scalar[DTYPE](0))
-    var sf = M2.make_spec_fields[DTYPE]()
     M2.apply_actions(sf, d, ctrl, act)
     integ.step["cpu"](d, mf)
     # `integ.step` INTEGRATES. `d.contacts` and `d.site_xpos` were computed at
@@ -853,7 +853,8 @@ def _set_state_and_fk4(
     state: List[Float64], ctrl: List[Float64],
     tx: Float64, tz: Float64,
 ) raises:
-    M4.reset_data(d)
+    var sf = M4.make_spec_fields[DTYPE]()
+    M4.reset_data(sf, d)
     for i in range(NQ4):
         d.qpos.data[i] = Scalar[DTYPE](state[i])
     for i in range(NV4):
@@ -878,7 +879,6 @@ def _set_state_and_fk4(
     var act = List[Scalar[DTYPE]]()
     for _ in range(NA4 if NA4 > 0 else 1):
         act.append(Scalar[DTYPE](0))
-    var sf = M4.make_spec_fields[DTYPE]()
     M4.apply_actions(sf, d, ctrl, act)
     integ.step["cpu"](d, mf)
     for i in range(NQ4):
@@ -933,11 +933,12 @@ def _our_qacc2(
     set differs would classify a pose as "equality only" and then measure a
     phantom contact — the classification has to be checked, not assumed.
     """
+    var sf = M2.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
     var mf = Mod2()
     var d = Dat2()
     M2.init_fields[DTYPE, 0](ctx, mf)
-    M2.reset_data(d)
+    M2.reset_data(sf, d)
     for i in range(NQ2):
         d.qpos.data[i] = Scalar[DTYPE](state[i])
     for i in range(NV2):
@@ -947,7 +948,6 @@ def _our_qacc2(
     for _ in range(NA2 if NA2 > 0 else 1):
         act.append(Scalar[DTYPE](0))
     var integ = Integ2()
-    var sf = M2.make_spec_fields[DTYPE]()
     M2.apply_actions(sf, d, ctrl, act)
     integ.step["cpu"](d, mf)
     var out = List[Float64]()

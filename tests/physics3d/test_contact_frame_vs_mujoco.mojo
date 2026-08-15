@@ -281,10 +281,11 @@ def _build() raises -> Mod:
 
 def test_contact_frame_matches_mujoco() raises:
     """Our (t1, t2) against MuJoCo's `contact.frame` on live contacts."""
+    var sf = FM.make_spec_fields[DTYPE]()
     print("--- contact frame vs MuJoCo ---")
     var mf = _build()
     var d = Dat()
-    FM.reset_data(d)
+    FM.reset_data(sf, d)
     forward_kinematics["cpu"](d, mf)
     detect_contacts["cpu"](d, mf)
 

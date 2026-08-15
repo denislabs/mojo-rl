@@ -176,6 +176,7 @@ def test_noslip_is_inert_on_a_converged_solve() raises:
 
 def test_noslip_matches_mujoco() raises:
     """Our rollout against MuJoCo's, both with the pass on."""
+    var sf = M.make_spec_fields[DTYPE]()
     print("--- noslip: ours vs MuJoCo ---")
     var h = _mj()
     var mujoco = h[0]
@@ -190,7 +191,7 @@ def test_noslip_matches_mujoco() raises:
     ]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
 
     # Start from MuJoCo's settled state so the comparison is about the sweep,
     # not about how each side reached the pose.

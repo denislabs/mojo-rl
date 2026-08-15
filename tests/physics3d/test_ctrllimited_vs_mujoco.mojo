@@ -141,6 +141,7 @@ def _mj_qfrc(mujoco: PythonObject, ctrl: Float64) raises -> List[Float64]:
 def test_ctrllimited_flag_matches_mujoco() raises:
     """Our resolved `ctrllimited` against `m.actuator_ctrllimited`, per
     actuator. This is the parse; the two legs below are the consequence."""
+    var sf = M.make_spec_fields[DTYPE]()
     print("=== ctrllimited: the resolved flag vs MuJoCo ===")
     var warnings = Python.import_module("warnings")
     _ = warnings.filterwarnings("ignore")
@@ -158,13 +159,13 @@ def test_ctrllimited_flag_matches_mujoco() raises:
     var mismatches = 0
     for i in range(nu):
         var mj_lim = Int(py=m.actuator_ctrllimited[i]) != 0
-        var our_lim = M.ctrl_limited_at(i)
+        var our_lim = M.ctrl_limited_at[DTYPE](sf, i)
         if mj_lim:
             n_lim += 1
         if mj_lim != our_lim:
             mismatches += 1
         print("   act", i, " MuJoCo limited", mj_lim, " ours", our_lim,
-              "  our range [", M.ctrl_min_at(i), ",", M.ctrl_max_at(i), "]")
+              "  our range [", M.ctrl_min_at[DTYPE](sf, i), ",", M.ctrl_max_at[DTYPE](sf, i), "]")
 
     # Vacuity: the fixture must contain BOTH kinds, or "all limited" and "all
     # unlimited" would both pass.
@@ -190,6 +191,7 @@ def test_apply_actions_cpu_matches_mujoco() raises:
     ⚠ THE OBSERVABLE IS THE FORCE, not the flag. A resolver that got the flag
     right while the clamp stayed unconditional would pass the leg above and
     fail here, which is the split this file exists to close."""
+    var sf = M.make_spec_fields[DTYPE]()
     print("=== ctrllimited: apply_actions (CPU) vs MuJoCo ===")
     var warnings = Python.import_module("warnings")
     _ = warnings.filterwarnings("ignore")
@@ -197,14 +199,13 @@ def test_apply_actions_cpu_matches_mujoco() raises:
     var mj = _mj_qfrc(mujoco, PROBE_CTRL)
 
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
     var actions = List[Float64]()
     for _ in range(M.nact):
         actions.append(PROBE_CTRL)
     var act = List[Scalar[DTYPE]]()
     for _ in range(M.NA_F):
         act.append(Scalar[DTYPE](0))
-    var sf = M.make_spec_fields[DTYPE]()
     M.apply_actions[DTYPE](sf, d, actions, act)
 
     var worst = Float64(0)
@@ -253,20 +254,20 @@ def test_apply_actions_gpu_matches_cpu() raises:
     """
     print("=== ctrllimited: apply_actions_kernel_gpu vs CPU (float32) ===")
     comptime GT = DType.float32
+    var sf = M.make_spec_fields[GT]()
     var ctx = DeviceContext()
     comptime B = 2
     comptime AD = M.nact
 
     var d32 = Data[GT, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[GT](d32)
+    M.reset_data[GT](sf, d32)
     var actions_c = List[Float64]()
     for _ in range(M.nact):
         actions_c.append(PROBE_CTRL)
     var act_c = List[Scalar[GT]]()
     for _ in range(M.NA_F):
         act_c.append(Scalar[GT](0))
-    var sf32 = M.make_spec_fields[GT]()
-    M.apply_actions[GT](sf32, d32, actions_c, act_c)
+    M.apply_actions[GT](sf, d32, actions_c, act_c)
 
     comptime L_QF = Layout.row_major(B, M.NV)
     comptime L_AC = Layout.row_major(B, AD)
@@ -287,7 +288,9 @@ def test_apply_actions_gpu_matches_cpu() raises:
     t_act.n = B * AD
     t_act.upload(ctx)
 
-    var sfg = SpecFields[GT, M.NACT, M.NTEN_F]()
+    var sfg = SpecFields[
+        GT, M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY
+    ]()
     M.init_spec_fields[GT](ctx, sfg)
     M.apply_actions_kernel_gpu[GT, B, AD](
         ctx,

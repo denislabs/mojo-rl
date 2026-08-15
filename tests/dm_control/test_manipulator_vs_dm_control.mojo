@@ -722,11 +722,12 @@ def _our_qacc(
     measure a phantom contact — the classification has to be checked, not
     assumed.
     """
+    var sf = M.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
     var mf = Mod()
     var d = Dat()
     M.init_fields[DTYPE, 0](ctx, mf)
-    M.reset_data(d)
+    M.reset_data(sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](state[i])
     for i in range(NV):
@@ -736,7 +737,6 @@ def _our_qacc(
     for _ in range(NA if NA > 0 else 1):
         act.append(Scalar[DTYPE](0))
     var integ = Integ()
-    var sf = M.make_spec_fields[DTYPE]()
     M.apply_actions(sf, d, ctrl, act)
     integ.step["cpu"](d, mf)
     var out = List[Float64]()
@@ -777,6 +777,7 @@ def test_manipulator_grasp_site_matches_mujoco() raises:
     The physics buckets below place the ball by hardcoded coordinates; this is
     what makes that legitimate rather than a magic number.
     """
+    var sf = M.make_spec_fields[DTYPE]()
     var state = _pose_state(
         0.0, 0.3, -0.6, 0.2, 0.45, 0.0, BALL_FAR_X, BALL_FAR_Z, False
     )
@@ -784,14 +785,13 @@ def test_manipulator_grasp_site_matches_mujoco() raises:
     var mf = Mod()
     var d = Dat()
     M.init_fields[DTYPE, 0](ctx, mf)
-    M.reset_data(d)
+    M.reset_data(sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](state[i])
     var act = List[Scalar[DTYPE]]()
     for _ in range(NA if NA > 0 else 1):
         act.append(Scalar[DTYPE](0))
     var integ = Integ()
-    var sf = M.make_spec_fields[DTYPE]()
     M.apply_actions(sf, d, _zero_ctrl(), act)
     integ.step["cpu"](d, mf)
 
@@ -985,7 +985,8 @@ def _set_state_and_fk(
 ) raises:
     """Both engines at the same state, ours stepped once so contacts and
     `site_xpos` are live (the touch entries read post-solve contact forces)."""
-    M.reset_data(d)
+    var sf = M.make_spec_fields[DTYPE]()
+    M.reset_data(sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](state[i])
     for i in range(NV):
@@ -1017,7 +1018,6 @@ def _set_state_and_fk(
     var act = List[Scalar[DTYPE]]()
     for _ in range(NA if NA > 0 else 1):
         act.append(Scalar[DTYPE](0))
-    var sf = M.make_spec_fields[DTYPE]()
     M.apply_actions(sf, d, ctrl, act)
     integ.step["cpu"](d, mf)
     # `integ.step` INTEGRATES. `d.contacts` and `d.site_xpos` were computed at

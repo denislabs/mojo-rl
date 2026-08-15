@@ -285,11 +285,12 @@ def _build() raises -> Mod:
 
 def test_narrow_phase_pairs_vs_mujoco() raises:
     """Direction invariant + geometry, every pair type in both orderings."""
+    var sf = PM.make_spec_fields[DTYPE]()
     print("--- narrow-phase pair coverage: NGEOM =", NGEOM, " NBODY =", NBODY)
     var ctx = DeviceContext()
     var mf = _build()
     var d = Dat()
-    PM.reset_data(d)
+    PM.reset_data(sf, d)
     forward_kinematics["cpu"](d, mf)
     detect_contacts["cpu"](d, mf)
 
@@ -591,13 +592,14 @@ def test_narrow_phase_pairs_gpu_matches_cpu() raises:
         order, so record indices do not correspond. This fixture has no plane,
         so the BODY_B world convention (0 vs -1) does not enter.
     """
+    var sf = PM.make_spec_fields[DTYPE32]()
     print("--- narrow-phase pair coverage: GPU legs vs the CPU leg")
     var ctx = DeviceContext()
     var mf = Mod32()
     PM.init_fields[DTYPE32, 0](ctx, mf)
 
     var dc = Dat32()
-    PM.reset_data(dc)
+    PM.reset_data(sf, dc)
     forward_kinematics["cpu"](dc, mf)
     detect_contacts["cpu"](dc, mf)
     var n_cpu = Int(dc.meta.data[META_IDX_NUM_CONTACTS])
@@ -609,7 +611,7 @@ def test_narrow_phase_pairs_gpu_matches_cpu() raises:
     )
 
     var dg = Dat32()
-    PM.reset_data(dg)
+    PM.reset_data(sf, dg)
     dg.upload_all(ctx)
     forward_kinematics["gpu"](dg, mf, ctx)
     detect_contacts["gpu"](dg, mf, ctx)
@@ -740,7 +742,7 @@ def test_narrow_phase_pairs_gpu_matches_cpu() raises:
 
     # ---- SAP GPU, matched as SETS by unordered body pair ----
     var ds = Dat32()
-    PM.reset_data(ds)
+    PM.reset_data(sf, ds)
     ds.upload_all(ctx)
     forward_kinematics["gpu"](ds, mf, ctx)
     detect_contacts_sap["gpu"](ds, mf, ctx)

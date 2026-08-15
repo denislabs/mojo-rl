@@ -337,6 +337,7 @@ def test_the_fixture_is_not_vacuous() raises:
 
 def test_pyramidal_weld_matches_mujoco() raises:
     """Per-env PYRAMIDAL Newton, full rollout, against MuJoCo."""
+    var sf = M.make_spec_fields[DTYPE]()
     print("--- weld rows: per-env pyramidal vs MuJoCo ---")
     var ctx = DeviceContext()
     var mf = Model[
@@ -346,7 +347,7 @@ def test_pyramidal_weld_matches_mujoco() raises:
     M.init_fields[DTYPE, 0](ctx, mf)
 
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
 
     var integ = EulerIntegrator[
@@ -429,6 +430,7 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
     kernel had kept the post-pass — or sized `ME` without `6*NEQUALITY`, so
     the rows fell off the end of the edge list — these would diverge.
     """
+    var sf = M.make_spec_fields[DTYPE]()
     print("--- weld rows: blocked kernel vs per-env ---")
     var ctx = DeviceContext()
     var mf = Model[
@@ -441,7 +443,7 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
     # pose would compare them with no contact live, which is the regime where
     # a post-pass and a row agree.
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
     var integ = EulerIntegrator[
         DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
@@ -454,8 +456,8 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
 
     var db = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
     var dp = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](db)
-    M.reset_data[DTYPE](dp)
+    M.reset_data[DTYPE](sf, db)
+    M.reset_data[DTYPE](sf, dp)
     for i in range(M.NQ):
         db.qpos.data[i] = d.qpos.data[i]
         dp.qpos.data[i] = d.qpos.data[i]
@@ -588,6 +590,7 @@ def test_explicit_relpose_is_still_honoured() raises:
     identity rather than being re-derived, which is why the "unset" test is on
     the quaternion rather than on whether the attribute was written.
     """
+    var sf = MX.make_spec_fields[DTYPE]()
     print("--- weld rows: explicit relpose ---")
     var ctx = DeviceContext()
     var mf = Model[
@@ -597,7 +600,7 @@ def test_explicit_relpose_is_still_honoured() raises:
     MX.init_fields[DTYPE, 0](ctx, mf)
 
     var d = Data[DTYPE, MX.NQ, MX.NV, MX.NBODY, MX.MAX_CONTACTS, MX.NSITE, 1]()
-    MX.reset_data[DTYPE](d)
+    MX.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
     var integ = EulerIntegrator[
         DTYPE, MX.NQ, MX.NV, MX.NBODY, MX.NJOINT, MX.MAX_CONTACTS, MX.NGEOM,
@@ -642,6 +645,7 @@ def test_weld_orientation_rows_match_mujoco() raises:
     growth, not the constraint. `efc_J` / `efc_aref` / `efc_D` are exact and
     pose-local, so they say what the rows are.
     """
+    var sf = MTQ1.make_spec_fields[DTYPE]()
     print("--- weld rows vs efc, torquescale = 1 ---")
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
@@ -671,7 +675,7 @@ def test_weld_orientation_rows_match_mujoco() raises:
     var d = Data[
         DTYPE, MTQ1.NQ, MTQ1.NV, MTQ1.NBODY, MTQ1.MAX_CONTACTS, MTQ1.NSITE, 1
     ]()
-    MTQ1.reset_data[DTYPE](d)
+    MTQ1.reset_data[DTYPE](sf, d)
     d.qpos.data[0] = 0.07
     d.qpos.data[1] = -0.02
     d.qpos.data[2] = 0.33
@@ -793,6 +797,7 @@ def test_weld_torquescale_matches_mujoco() raises:
     growth, not the constraint. `efc_J` / `efc_aref` / `efc_D` are exact and
     pose-local, so they say what the rows are.
     """
+    var sf = MTQ5.make_spec_fields[DTYPE]()
     print("--- weld rows vs efc, torquescale = 5 ---")
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
@@ -822,7 +827,7 @@ def test_weld_torquescale_matches_mujoco() raises:
     var d = Data[
         DTYPE, MTQ5.NQ, MTQ5.NV, MTQ5.NBODY, MTQ5.MAX_CONTACTS, MTQ5.NSITE, 1
     ]()
-    MTQ5.reset_data[DTYPE](d)
+    MTQ5.reset_data[DTYPE](sf, d)
     d.qpos.data[0] = 0.07
     d.qpos.data[1] = -0.02
     d.qpos.data[2] = 0.33

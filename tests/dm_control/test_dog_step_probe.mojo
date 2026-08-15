@@ -142,6 +142,7 @@ def _report(
 
 
 def test_dog_step_stages_vs_mujoco() raises:
+    var sf = M.make_spec_fields[DTYPE]()
     print("=== dog: staged single-substep probe ===")
     var mujoco = Python.import_module("mujoco")
     var mm = mujoco.MjModel.from_xml_string(
@@ -187,7 +188,7 @@ def test_dog_step_stages_vs_mujoco() raises:
     ]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
 
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
@@ -299,7 +300,7 @@ def test_dog_step_stages_vs_mujoco() raises:
     # The contacts-disabled run below still carries limit rows, which is why
     # it cannot play this role.
     var d2 = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d2)
+    M.reset_data[DTYPE](sf, d2)
     var dat2 = mujoco.MjData(mm)
     mujoco.mj_resetData(mm, dat2)
     dat2.qpos[2] = Float64(py=dat2.qpos[2]) + 2.0
@@ -342,7 +343,7 @@ def test_dog_step_stages_vs_mujoco() raises:
     # carries joint limits and dry friction, which MuJoCo also keeps under
     # `mjDSBL_CONTACT`, so the two runs bracket the contact solver exactly.
     var d0 = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d0)
+    M.reset_data[DTYPE](sf, d0)
     for i in range(NQ):
         d0.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
     for i in range(NV):
@@ -508,6 +509,7 @@ def test_dog_noslip_ab() raises:
     ⚠ Capture `qacc_constrained` into a `List` immediately after each `step()`:
     one integrator owns one scratch, and the second run overwrites the first.
     """
+    var sf = M.make_spec_fields[DTYPE]()
     print("=== dog: noslip A/B at the settled pose ===")
     var mujoco = Python.import_module("mujoco")
 
@@ -562,7 +564,7 @@ def test_dog_noslip_ab() raises:
     M.init_fields[DTYPE, 0](ctx, mf)
 
     var d4 = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d4)
+    M.reset_data[DTYPE](sf, d4)
     for i in range(NQ):
         d4.qpos.data[i] = Scalar[DTYPE](Float64(py=dat4.qpos[i]))
     for i in range(NV):
@@ -581,7 +583,7 @@ def test_dog_noslip_ab() raises:
         o4.append(Float64(integ4.scratch.qacc_constrained.data[i]))
 
     var d0 = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d0)
+    M.reset_data[DTYPE](sf, d0)
     for i in range(NQ):
         d0.qpos.data[i] = Scalar[DTYPE](Float64(py=dat4.qpos[i]))
     for i in range(NV):
@@ -681,6 +683,7 @@ def test_dog_contact_forces_vs_mujoco() raises:
     unambiguous THIS time is that `qacc` is independently known to be wrong by
     1.73 — so a force mismatch corroborates rather than being the only witness.
     """
+    var sf = M.make_spec_fields[DTYPE]()
     print("=== dog: per-contact forces vs MuJoCo ===")
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
@@ -703,7 +706,7 @@ def test_dog_contact_forces_vs_mujoco() raises:
     ]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
     for i in range(NV):
@@ -784,6 +787,7 @@ def test_dog_contact_params_vs_mujoco() raises:
     ours -> `friction[0]`, `friction[2]`, `friction[3]` rather than comparing
     index for index.
     """
+    var sf = M.make_spec_fields[DTYPE]()
     print("=== dog: mixed contact PARAMETERS vs MuJoCo ===")
     var mujoco = Python.import_module("mujoco")
     var mm = mujoco.MjModel.from_xml_string(
@@ -805,7 +809,7 @@ def test_dog_contact_params_vs_mujoco() raises:
     ]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
     for i in range(NV):
@@ -944,6 +948,7 @@ def test_dog_applied_force_vs_mujoco() raises:
     force on only the actuated hinges would leave the free root untested, and
     the root is where an applied-force convention error would show first.
     """
+    var sf = M.make_spec_fields[DTYPE]()
     print("=== dog: applied force through the solve ===")
     var mujoco = Python.import_module("mujoco")
     var mm = mujoco.MjModel.from_xml_string(
@@ -964,7 +969,7 @@ def test_dog_applied_force_vs_mujoco() raises:
     ]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
     var fmag = 0.0

@@ -157,6 +157,7 @@ comptime MK = _m_k()
 
 
 def _parity[M: ModelDefFromXML](label: String, use_sap: Bool) raises:
+    var sf = M.make_spec_fields[DTYPE]()
     comptime Dat = Data[
         DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1
     ]
@@ -178,7 +179,7 @@ def _parity[M: ModelDefFromXML](label: String, use_sap: Bool) raises:
     )
 
     var dc = Dat()
-    M.reset_data(dc)
+    M.reset_data(sf, dc)
     forward_kinematics["cpu"](dc, mf)
     if use_sap:
         detect_contacts_sap["cpu"](dc, mf)
@@ -186,7 +187,7 @@ def _parity[M: ModelDefFromXML](label: String, use_sap: Bool) raises:
         detect_contacts["cpu"](dc, mf)
 
     var dg = Dat()
-    M.reset_data(dg)
+    M.reset_data(sf, dg)
     dg.upload_all(ctx)
     forward_kinematics["gpu"](dg, mf, ctx)
     if use_sap:

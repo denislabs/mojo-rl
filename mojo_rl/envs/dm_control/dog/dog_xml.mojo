@@ -823,6 +823,9 @@ comptime DMDogStandWalkModel = ModelDefFromXML[
     obs_dim_override=DOG_OBS_DIM,
     obs_qpos_skip=0,
     timestep=dsp.TIMESTEP,
+    # MuJoCo `m->na`: every one of dog's 38 actuators is a filtered
+    # `<general>`, so na == nu here. Asserted in `init_fields`.
+    na = 38,
 ]
 
 comptime DMDogTrotModel = ModelDefFromXML[
@@ -846,6 +849,9 @@ comptime DMDogTrotModel = ModelDefFromXML[
     obs_dim_override=DOG_OBS_DIM,
     obs_qpos_skip=0,
     timestep=dtp.TIMESTEP,
+    # MuJoCo `m->na`: every one of dog's 38 actuators is a filtered
+    # `<general>`, so na == nu here. Asserted in `init_fields`.
+    na = 38,
 ]
 
 comptime DMDogRunModel = ModelDefFromXML[
@@ -869,6 +875,9 @@ comptime DMDogRunModel = ModelDefFromXML[
     obs_dim_override=DOG_OBS_DIM,
     obs_qpos_skip=0,
     timestep=drp.TIMESTEP,
+    # MuJoCo `m->na`: every one of dog's 38 actuators is a filtered
+    # `<general>`, so na == nu here. Asserted in `init_fields`.
+    na = 38,
 ]
 
 

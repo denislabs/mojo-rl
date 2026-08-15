@@ -135,6 +135,7 @@ def test_runtime_parser_sets_weldid_and_the_pair_collides() raises:
     `parse_xml_full`, which had NO reference to `<freejoint>` at all — the
     comptime counter could be fixed on its own and this would still fail.
     """
+    var sf = MD_FJ.make_spec_fields[DTYPE]()
     print("=== runtime parser: weldid, and the contact it gates ===")
     var sys = Python.import_module("sys")
     _ = sys.path.insert(0, "tests/dm_control")
@@ -158,7 +159,7 @@ def test_runtime_parser_sets_weldid_and_the_pair_collides() raises:
         DTYPE, MD_FJ.NQ, MD_FJ.NV, MD_FJ.NBODY, MD_FJ.MAX_CONTACTS,
         MD_FJ.NSITE, 1,
     ]()
-    MD_FJ.reset_data[DTYPE](d)
+    MD_FJ.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
     detect_contacts["cpu"](d, mf)
     var our_ncon = Int(Float64(d.meta.data[META_IDX_NUM_CONTACTS]))

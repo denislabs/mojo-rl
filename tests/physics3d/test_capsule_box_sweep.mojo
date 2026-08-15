@@ -167,6 +167,7 @@ def _build() raises -> Mod:
 
 def test_capsule_box_sweep_vs_mujoco() raises:
     """Depth and normal over NPOSE capsule poses against the same box."""
+    var sf = CBM.make_spec_fields[DTYPE]()
     print("--- capsule/box sweep:", NPOSE, "poses")
     var mf = _build()
     var d = Dat()
@@ -221,7 +222,7 @@ def test_capsule_box_sweep_vs_mujoco() raises:
         # reversed normals that had nothing to do with the primitive, and the
         # tell was that fixing a real defect in the primitive changed almost
         # nothing.
-        CBM.reset_data(d)
+        CBM.reset_data(sf, d)
         d.qpos.data[0] = Scalar[DTYPE](px)
         d.qpos.data[1] = Scalar[DTYPE](py)
         d.qpos.data[2] = Scalar[DTYPE](pz)
@@ -424,6 +425,7 @@ def test_capsule_box_manifold_vs_mujoco() raises:
     `box_capsule_manifold` itself. The record order is MuJoCo's: the point at
     `bestsegmentpos` first, the second point after it.
     """
+    var sf = CBM.make_spec_fields[DTYPE]()
     print("--- capsule/box manifold:", NFIXED, "fixed +", NPOSE, "random")
     var mf = _build()
     var d = Dat()
@@ -483,7 +485,7 @@ def test_capsule_box_manifold_vs_mujoco() raises:
             qz /= qn
             qw /= qn
 
-        CBM.reset_data(d)
+        CBM.reset_data(sf, d)
         d.qpos.data[0] = Scalar[DTYPE](px)
         d.qpos.data[1] = Scalar[DTYPE](py)
         d.qpos.data[2] = Scalar[DTYPE](pz)

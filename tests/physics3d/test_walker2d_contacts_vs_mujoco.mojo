@@ -87,6 +87,7 @@ def _poses() -> List[List[Float64]]:
 
 
 def test_walker2d_contacts_match_mujoco() raises:
+    var sf = Walker2dModel.make_spec_fields[DTYPE]()
     print("--- walker2d contact detection vs MuJoCo ---")
     var mujoco = Python.import_module("mujoco")
     var m = mujoco.MjModel.from_xml_string(materialize[walker2d_xml]())
@@ -106,7 +107,7 @@ def test_walker2d_contacts_match_mujoco() raises:
 
     for e in range(len(poses)):
         var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]()
-        Walker2dModel.reset_data[DTYPE](d)
+        Walker2dModel.reset_data[DTYPE](sf, d)
         for i in range(NQ):
             d.qpos.data[i] = Scalar[DTYPE](poses[e][i])
         forward_kinematics["cpu"](d, mf)

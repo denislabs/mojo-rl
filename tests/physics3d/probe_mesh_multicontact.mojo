@@ -104,6 +104,7 @@ comptime Mod = Model[
 
 
 def main() raises:
+    var sf = PXM.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
     var mf = Mod()
     PXM.init_fields[DTYPE, NMESHV](ctx, mf)
@@ -116,7 +117,7 @@ def main() raises:
     # Exactly aligned, 5 mm of penetration: cube half 0.05 each.
     var pen = 0.005
     var pz = 0.5 + 0.10 - pen
-    PXM.reset_data(d)
+    PXM.reset_data(sf, d)
     d.qpos.data[0] = Scalar[DTYPE](0.0)
     d.qpos.data[1] = Scalar[DTYPE](0.0)
     d.qpos.data[2] = Scalar[DTYPE](pz)

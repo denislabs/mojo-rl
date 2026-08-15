@@ -183,6 +183,7 @@ struct Lcg(Copyable, Movable):
 
 def test_mesh_manifold_cpu_vs_gpu() raises:
     """Same fixture, same poses, CPU vs GPU — records must agree."""
+    var sf = MMM.make_spec_fields[DTYPE]()
     print("--- mesh manifold CPU vs GPU:", NPOSE, "poses x", NGROUP, "groups")
     assert_true(
         MC_ENABLED,
@@ -209,7 +210,7 @@ def test_mesh_manifold_cpu_vs_gpu() raises:
     var multi_poses = 0
 
     for p in range(NPOSE):
-        MMM.reset_data(d)
+        MMM.reset_data(sf, d)
         for g in range(NGROUP):
             var qo = g * 7
             # Regimes 0 and 1 dominate on purpose: they are the ones that reach
@@ -376,6 +377,7 @@ def test_sap_matches_on2_on_mesh_manifolds() raises:
     earlier positional version of this probe reported `worst |d record| = 2.0`
     and sent me looking for a sign bug in the clipper that did not exist.
     """
+    var sf = MMM.make_spec_fields[DTYPE]()
     print("--- SAP vs O(N^2) on mesh manifolds:", NPOSE, "poses")
     var ctx = DeviceContext()
     var mf = Mod()
@@ -390,7 +392,7 @@ def test_sap_matches_on2_on_mesh_manifolds() raises:
     var multi_poses = 0
 
     for p in range(NPOSE):
-        MMM.reset_data(d)
+        MMM.reset_data(sf, d)
         for g in range(NGROUP):
             var qo = g * 7
             var regime = p % 3

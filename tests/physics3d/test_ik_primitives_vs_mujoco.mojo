@@ -171,6 +171,7 @@ def test_quat2vel_matches_mujoco() raises:
 
 def test_integrate_pos_matches_mujoco() raises:
     """Fish — a free joint (7 qpos / 6 qvel) plus hinges."""
+    var sf = M.make_spec_fields[DTYPE]()
     print("--- integrate_pos vs mj_integratePos (fish) ---")
     comptime M = DMFishUprightModel
     comptime NQ: Int = M.NQ
@@ -193,7 +194,7 @@ def test_integrate_pos_matches_mujoco() raises:
     ]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, NQ, NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
 
     comptime L_JNT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
     comptime L_QPOS = Layout.row_major(1, NQ)

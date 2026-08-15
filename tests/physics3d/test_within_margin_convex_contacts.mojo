@@ -98,6 +98,7 @@ def test_contacts_survive_the_whole_margin_band() raises:
     fix did not disturb the penetrating path that `_gjk_intersect`'s
     certificate exists to protect.
     """
+    var sf = MD.make_spec_fields[DTYPE]()
     print("=== convex contacts across the margin band ===")
     var warnings = Python.import_module("warnings")
     _ = warnings.filterwarnings("ignore")
@@ -128,7 +129,7 @@ def test_contacts_survive_the_whole_margin_band() raises:
     for gi in range(len(gaps)):
         var gap = gaps[gi]
         var qz = 0.05 + gap
-        MD.reset_data[DTYPE](d)
+        MD.reset_data[DTYPE](sf, d)
         for i in range(MD.NQ):
             md.qpos[i] = 0.0
             d.qpos.data[i] = 0

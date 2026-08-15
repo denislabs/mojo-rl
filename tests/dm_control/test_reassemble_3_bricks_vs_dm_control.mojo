@@ -685,6 +685,7 @@ def test_reassemble_3_reward_matches_dm_control() raises:
 
 # ── leg 5 ──────────────────────────────────────────────────────────────────
 def test_reassemble_3_build_stack_matches_dm_control() raises:
+    var sf = Reassemble3Model.make_spec_fields[DTYPE]()
     print("=== 5. build_stack vs `bricks._build_stack` ===")
     var refmod = _refmod()
     var env = ENV()
@@ -717,7 +718,7 @@ def test_reassemble_3_build_stack_matches_dm_control() raises:
             # ⚠ `qpos0` FIRST — `_build_stack`'s formula is only correct while
             # the brick it is about to move sits at the ORIGIN. This is the
             # reference's `mj_resetData`.
-            Reassemble3Model.reset_data(env.d)
+            Reassemble3Model.reset_data(sf, env.d)
             build_stack(
                 env.d, env.mf, order, FIXED_BRICK, base_pos, base_quat, flips
             )

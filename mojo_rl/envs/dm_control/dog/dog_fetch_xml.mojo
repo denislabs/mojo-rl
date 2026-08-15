@@ -766,6 +766,8 @@ comptime DMDogFetchModel = ModelDefFromXML[
     # already carry condim 6 on 42 of 128, so this is not new to fetch — it is
     # simply not optional.
     max_condim=dfp.MAX_CONDIM,
+    # MuJoCo `m->na` — see dog_xml.
+    na = 38,
 ]
 
 

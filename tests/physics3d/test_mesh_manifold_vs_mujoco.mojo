@@ -252,6 +252,7 @@ def test_mesh_frames_are_identity() raises:
 
 def test_mesh_manifold_vs_mujoco() raises:
     """Manifold point COUNT and POSITIONS, per group, over NPOSE poses."""
+    var sf = MMM.make_spec_fields[DTYPE]()
     print("--- mesh manifold:", NPOSE, "poses x", NGROUP, "groups")
     var mf = _build()
     var d = Dat()
@@ -279,7 +280,7 @@ def test_mesh_manifold_vs_mujoco() raises:
     var dumped = List[Int](length=NGROUP, fill=0)
 
     for p in range(NPOSE):
-        MMM.reset_data(d)
+        MMM.reset_data(sf, d)
         # One random relative pose per group, all applied in the same pass.
         for g in range(NGROUP):
             var base = Float64(g) * 2.0

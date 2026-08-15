@@ -172,6 +172,7 @@ def test_fixture_matches_the_reference_xml() raises:
 
 def test_limit_solref_is_read_per_joint() raises:
     """qacc under CONTACTS=False, ours vs MuJoCo, on a non-uniform model."""
+    var sf = LM.make_spec_fields[DTYPE]()
     print("--- joint-limit solref/solimp per joint (defect 22) ---")
     var h = _ref()
     var mujoco = h[0]
@@ -220,7 +221,7 @@ def test_limit_solref_is_read_per_joint() raises:
     ]()
     LM.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, LM.NQ, LM.NV, LM.NBODY, LM.MAX_CONTACTS, LM.NSITE, 1]()
-    LM.reset_data[DTYPE](d)
+    LM.reset_data[DTYPE](sf, d)
     d.qpos.data[0] = Scalar[DTYPE](Q0)
     d.qpos.data[1] = Scalar[DTYPE](Q1)
     d.qvel.data[0] = Scalar[DTYPE](V0)
@@ -284,6 +285,7 @@ def test_refsafe_clamp_raises_timeconst_to_two_timesteps() raises:
         MuJoCo   K = 1/(0.99^2 * 0.01^2)   =  10203.04   (efc_KBIP, measured)
         unclamped  1/(0.99^2 * 0.0025^2)   = 163248.65   16x too stiff
     """
+    var sf = CM.make_spec_fields[DTYPE]()
     print("--- REFSAFE clamp: solref[0] >= 2*timestep (defect 23) ---")
     var sys = Python.import_module("sys")
     sys.path.insert(0, TEST_PATH)
@@ -324,7 +326,7 @@ def test_refsafe_clamp_raises_timeconst_to_two_timesteps() raises:
     ]()
     CM.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, CM.NQ, CM.NV, CM.NBODY, CM.MAX_CONTACTS, CM.NSITE, 1]()
-    CM.reset_data[DTYPE](d)
+    CM.reset_data[DTYPE](sf, d)
     d.qpos.data[0] = Scalar[DTYPE](Q0)
     d.qpos.data[1] = Scalar[DTYPE](Q1)
     d.qvel.data[0] = Scalar[DTYPE](V0)

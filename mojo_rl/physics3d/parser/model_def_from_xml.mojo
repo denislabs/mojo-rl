@@ -67,6 +67,13 @@ from mojo_rl.physics3d.gpu.constants import (
     ACTTEN_IDX_TRN_QADR_0,
     ACTTEN_IDX_TRN_DADR_0,
     ACTTEN_IDX_TRN_COEF_0,
+    POSE_IDX_QPOS0_NQ,
+    POSE_IDX_FREE_JOINT_QPOS_ADR,
+    KEY_META_SIZE,
+    KEY_IDX_TIME,
+    KEY_IDX_NQPOS,
+    KEY_IDX_NQVEL,
+    KEY_IDX_NCTRL,
 )
 from mojo_rl.physics3d.joint_types import JNT_FREE, JNT_BALL
 from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, SpecFields
@@ -173,6 +180,24 @@ struct ModelDefFromXML[
     max_condim: Int = 3,
     noslip_iter: Int = 0,
     allow_missing_noslip: Bool = False,
+    # ⚠⚠ APPENDED, AND THEY MUST STAY LAST. Every parameter here is an `Int`
+    # or `Bool`, so inserting one mid-list silently shifts every positional
+    # instantiation — the trap `NPAIR` already documents on `fields.Model`.
+    #
+    # MuJoCo's `m->na` and `m->nkey`. These used to be READ OFF `_acd`
+    # (`comptime NA = Self._acd.na`), which made them expressions the compiler
+    # could not unify against the trait's symbolic `Self.NA` once they entered
+    # a signature — `SpecFields[..., Self.NKEY]` on `ModelDefLike.reset_data`
+    # failed to typecheck with `parse_xml_model_data(xml).nkey` on the
+    # implementation side. That is what forced them to become PARAMETERS, and
+    # it is also what finally lets `_acd` go.
+    #
+    # `parse_xml` does not compute either one, so they are hand-supplied and
+    # `init_fields` asserts them against `FlatModelDef`. The blast radius is
+    # small and measured: `na > 0` only for quadruped (12), dog (38) and
+    # dog_fetch; `nkey > 0` only for so_arm100 (2).
+    na: Int = 0,
+    nkey: Int = 0,
 ](ModelDefLike):
     """ModelDefLike implementation driven entirely from an embedded MJCF XML string.
 
@@ -272,7 +297,7 @@ struct ModelDefFromXML[
     comptime NSITE: Int = Self.nsite
     # MuJoCo `m->na` — activation variables, NOT `nu`. Nonzero only for
     # actuators with a `dyntype`; 0 for every <motor>/<position>.
-    comptime NA: Int = Self._acd.na
+    comptime NA: Int = Self.na
     # Floored at 1 so a model with no activation still has a bindable `act`
     # tensor — a zero-extent operand segfaults.
     comptime NA_F: Int = Self.NA if Self.NA > 0 else 1
@@ -340,6 +365,7 @@ struct ModelDefFromXML[
     # `SpecFields`. In 1a.4 this still reads `_acd`; it becomes a comptime
     # PARAMETER in the same phase, which is what finally lets `_acd` go.
     comptime NKEY: Int = Self.nkey
+    """Number of `<keyframe><key>` entries, in XML order (MuJoCo's `nkey`)."""
 
     # Precomputed rendering data — evaluated once at struct level.
     # Replaces 11 separate parse_xml_full calls that crashed the comptime
@@ -356,6 +382,9 @@ struct ModelDefFromXML[
     def reset_data[
         DTYPE: DType
     ](
+        sf: SpecFields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ],
         mut d: Data[
             DTYPE,
             Self.NQ,
@@ -373,75 +402,101 @@ struct ModelDefFromXML[
         joint quaternion (if any) is set to identity (qw=1) so that FK does
         not degenerate.
         """
-        comptime if Self._acd.nq > 0:
-            # Apply init_qpos from XML custom section.
-            comptime for i in range(Self.NQ):
-                comptime if i < Self._acd.nq:
-                    comptime val = Self._acd.qpos0[i]
-                    d.qpos.data[i] = Scalar[DTYPE](val)
+        # ⚠ `qpos0_nq == 0` MEANS "NO POSE WAS PARSED", NOT "the pose is
+        # zero" — the two want different resets, and the second branch below
+        # is what supplies the free joint's `qw = 1`. This used to be a
+        # `comptime if` on `_acd.nq`; the branch is now a runtime test on a
+        # record, which is the whole point of the phase.
+        var nq0 = Int(sf.pose_meta.data[POSE_IDX_QPOS0_NQ])
+        if nq0 > 0:
+            # Apply init_qpos / the joint refs.
+            for i in range(Self.NQ):
+                if i < nq0:
+                    d.qpos.data[i] = sf.qpos0.data[i]
                 else:
                     d.qpos.data[i] = Scalar[DTYPE](0)
         else:
             # No init_qpos — zero everything, then fix free-joint quaternion.
             for i in range(Self.NQ):
                 d.qpos.data[i] = Scalar[DTYPE](0)
-            comptime if Self._acd.free_joint_qpos_adr >= 0:
+            var fj = Int(sf.pose_meta.data[POSE_IDX_FREE_JOINT_QPOS_ADR])
+            if fj >= 0 and fj + 3 < Self.NQ:
                 # qpos[adr+3] is qw for a free joint (MuJoCo convention:
                 # [tx, ty, tz, qw, qx, qy, qz]).  Set qw=1 for identity.
-                d.qpos.data[Self._acd.free_joint_qpos_adr + 3] = Scalar[
-                    DTYPE
-                ](1)
+                d.qpos.data[fj + 3] = Scalar[DTYPE](1)
         for i in range(Self.NV):
             d.qvel.data[i] = Scalar[DTYPE](0)
             d.qacc.data[i] = Scalar[DTYPE](0)
             d.qfrc.data[i] = Scalar[DTYPE](0)
 
-    comptime nkey: Int = Self._acd.nkey
-    """Number of `<keyframe><key>` entries, in XML order (MuJoCo's `nkey`)."""
 
     # ⚠ THE ROW STRIDE IS `Self._NQ0` / `Self._NACT`, NOT the MAX_COMPTIME_*
     # caps. `_acd` is instantiated with the MODEL's own nq/nact (see `_NQ0`
     # above), so the key arrays are `NKEYS * nq`, not `NKEYS * 128`. Using the
     # cap as a stride reads a wildly out-of-range slot on every model.
+    # ⚠ THE ROW STRIDES ARE `Self.NQ` / `Self.NV` / `Self.NACT` — the tensor's
+    # own shapes, NOT `_acd`'s. The comptime side strides `key_qvel` by `NQ0`
+    # as well (one allocation shape for both key arrays), so the two differ on
+    # any model with nq != nv. `test_pose_key_stride` is the fixture that can
+    # see it; nothing in the model tree can.
     @staticmethod
-    def key_qpos_at(k: Int, i: Int) -> Float64:
+    def key_qpos_at[
+        DTYPE: DType
+    ](sf: SpecFields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ], k: Int, i: Int) -> Float64:
         """`mjModel.key_qpos[k][i]`, falling back to qpos0 when qpos is absent.
         """
-        if k < 0 or k >= Self.nkey or i < 0 or i >= Self._NQ0:
+        if k < 0 or k >= Self.nkey or i < 0 or i >= Self.NQ:
             return 0.0
-        if materialize[Self._acd.key_nqpos]()[k] == 0:
-            return materialize[Self._acd.qpos0]()[i]
-        return materialize[Self._acd.key_qpos]()[k * Self._NQ0 + i]
+        if sf.key_meta.data[k * KEY_META_SIZE + KEY_IDX_NQPOS] == 0:
+            return Float64(sf.qpos0.data[i])
+        return Float64(sf.key_qpos.data[k * Self.NQ + i])
 
     @staticmethod
-    def key_qvel_at(k: Int, i: Int) -> Float64:
+    def key_qvel_at[
+        DTYPE: DType
+    ](sf: SpecFields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ], k: Int, i: Int) -> Float64:
         """`mjModel.key_qvel[k][i]` — zero when absent, as MuJoCo fills it."""
-        if k < 0 or k >= Self.nkey or i < 0 or i >= Self._NQ0:
+        if k < 0 or k >= Self.nkey or i < 0 or i >= Self.NV:
             return 0.0
-        if materialize[Self._acd.key_nqvel]()[k] == 0:
+        if sf.key_meta.data[k * KEY_META_SIZE + KEY_IDX_NQVEL] == 0:
             return 0.0
-        return materialize[Self._acd.key_qvel]()[k * Self._NQ0 + i]
+        return Float64(sf.key_qvel.data[k * Self.NV + i])
 
     @staticmethod
-    def key_ctrl_at(k: Int, i: Int) -> Float64:
+    def key_ctrl_at[
+        DTYPE: DType
+    ](sf: SpecFields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ], k: Int, i: Int) -> Float64:
         """`mjModel.key_ctrl[k][i]` — zero when absent, as MuJoCo fills it."""
-        if k < 0 or k >= Self.nkey or i < 0 or i >= Self._NACT:
+        if k < 0 or k >= Self.nkey or i < 0 or i >= Self.NACT:
             return 0.0
-        if materialize[Self._acd.key_nctrl]()[k] == 0:
+        if sf.key_meta.data[k * KEY_META_SIZE + KEY_IDX_NCTRL] == 0:
             return 0.0
-        return materialize[Self._acd.key_ctrl]()[k * Self._NACT + i]
+        return Float64(sf.key_ctrl.data[k * Self.NACT + i])
 
     @staticmethod
-    def key_time_at(k: Int) -> Float64:
+    def key_time_at[
+        DTYPE: DType
+    ](sf: SpecFields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ], k: Int) -> Float64:
         """`mjModel.key_time[k]`."""
         if k < 0 or k >= Self.nkey:
             return 0.0
-        return materialize[Self._acd.key_time]()[k]
+        return Float64(sf.key_meta.data[k * KEY_META_SIZE + KEY_IDX_TIME])
 
     @staticmethod
     def reset_data_keyframe[
         DTYPE: DType
     ](
+        sf: SpecFields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ],
         mut d: Data[
             DTYPE,
             Self.NQ,
@@ -473,9 +528,9 @@ struct ModelDefFromXML[
         dropping them would leave the actuators commanding zero at t=0.
         """
         for i in range(Self.NQ):
-            d.qpos.data[i] = Scalar[DTYPE](Self.key_qpos_at(k, i))
+            d.qpos.data[i] = Scalar[DTYPE](Self.key_qpos_at[DTYPE](sf, k, i))
         for i in range(Self.NV):
-            d.qvel.data[i] = Scalar[DTYPE](Self.key_qvel_at(k, i))
+            d.qvel.data[i] = Scalar[DTYPE](Self.key_qvel_at[DTYPE](sf, k, i))
             d.qacc.data[i] = Scalar[DTYPE](0)
             d.qfrc.data[i] = Scalar[DTYPE](0)
 
@@ -537,7 +592,11 @@ struct ModelDefFromXML[
                     )
 
     @staticmethod
-    def ctrl_min_at(i: Int) -> Float64:
+    def ctrl_min_at[
+        DTYPE: DType
+    ](sf: SpecFields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ], i: Int) -> Float64:
         """`actuator_ctrlrange[i][0]` — the bound `apply_actions` clamps to.
 
         ⚠ NOT `CTRL_MIN`. That is a single model-wide pair read from a root
@@ -547,17 +606,29 @@ struct ModelDefFromXML[
         """
         if i < 0 or i >= Self.nact:
             return 0.0
-        return materialize[Self._acd.motor_ctrl_min]()[i]
+        return Float64(
+            sf.actuators.data[i * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MIN]
+        )
 
     @staticmethod
-    def ctrl_max_at(i: Int) -> Float64:
+    def ctrl_max_at[
+        DTYPE: DType
+    ](sf: SpecFields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ], i: Int) -> Float64:
         """`actuator_ctrlrange[i][1]`. See `ctrl_min_at`."""
         if i < 0 or i >= Self.nact:
             return 0.0
-        return materialize[Self._acd.motor_ctrl_max]()[i]
+        return Float64(
+            sf.actuators.data[i * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MAX]
+        )
 
     @staticmethod
-    def ctrl_limited_at(i: Int) -> Bool:
+    def ctrl_limited_at[
+        DTYPE: DType
+    ](sf: SpecFields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ], i: Int) -> Bool:
         """`actuator_ctrllimited[i]` — whether the range above is APPLIED.
 
         ⚠ READ THIS BEFORE READING `ctrl_min_at`/`ctrl_max_at`. MuJoCo's
@@ -570,7 +641,10 @@ struct ModelDefFromXML[
         """
         if i < 0 or i >= Self.nact:
             return False
-        return materialize[Self._acd.motor_ctrl_limited]()[i] != 0
+        return (
+            sf.actuators.data[i * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_LIMITED]
+            != 0
+        )
 
     @staticmethod
     def init_spec_fields[
@@ -941,6 +1015,33 @@ struct ModelDefFromXML[
                     len(fmd.geoms), ".",
                 )
             )
+        # ⚠⚠ `na`/`nkey` ARE HAND-SUPPLIED AND NOTHING ELSE CHECKS THEM.
+        # `parse_xml` does not compute either, so they are the one pair of
+        # dimensions with no automatic source — and both fail SILENTLY when
+        # wrong. Too small an `na` leaves a `dyntype` actuator's activation
+        # outside the `act` slab, so `apply_actions` skips the filter and the
+        # servo becomes a direct drive; too small an `nkey` drops keyframes
+        # that `reset_data_keyframe` would then read as qpos0. This is the
+        # staleness assert that makes the defaults safe.
+        if fmd.na != Self.na:
+            raise Error(
+                String(
+                    "physics3d: `na` mismatch — the model def declares na=",
+                    Self.na, " but the XML resolves to ", fmd.na,
+                    ". `na` counts ACTIVATION VARIABLES (actuators with a",
+                    " dyntype), not actuators; pass `na = <that number>` on",
+                    " the ModelDefFromXML declaration.",
+                )
+            )
+        if fmd.nkey != Self.nkey:
+            raise Error(
+                String(
+                    "physics3d: `nkey` mismatch — the model def declares nkey=",
+                    Self.nkey, " but the XML has ", fmd.nkey,
+                    " <keyframe><key> entries. Pass `nkey = <that number>`.",
+                )
+            )
+
         if len(fmd.sites) != Self.NSITE:
             raise Error(
                 String(
@@ -1348,7 +1449,16 @@ struct ModelDefFromXML[
             Self.NSITE,
             1,
         ]()
-        Self.reset_data[DTYPE](d_inv)
+        # ⚠ Built from the `fmd` ALREADY IN HAND — `init_spec_fields` would
+        # re-parse the XML a third time for a value this function has sitting
+        # in a local.
+        var sf_inv = SpecFields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ]()
+        build_spec_fields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ](fmd, sf_inv)
+        Self.reset_data[DTYPE](sf_inv, d_inv)
         var sc_inv = DynamicsScratch[DTYPE, Self.NV, Self.NBODY, 1]()
         compute_invweight0[
             DTYPE,

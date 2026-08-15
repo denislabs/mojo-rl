@@ -393,10 +393,11 @@ def _check(mut d: Dat, mf: Mod, label: String) raises:
 
 def test_oriented_plane_naive_narrow_phase() raises:
     """`detect_contacts` — the all-pairs path."""
+    var sf = PM.make_spec_fields[DTYPE]()
     print("--- oriented plane: detect_contacts ---")
     var mf = _build()
     var d = Dat()
-    PM.reset_data(d)
+    PM.reset_data(sf, d)
     forward_kinematics["cpu"](d, mf)
     detect_contacts["cpu"](d, mf)
     _check(d, mf, String("naive"))
@@ -409,10 +410,11 @@ def test_oriented_plane_sap_broadphase() raises:
     a fix applied to one file and not the other is the shape of the two-parser
     bug this project has hit repeatedly.
     """
+    var sf = PM.make_spec_fields[DTYPE]()
     print("--- oriented plane: detect_contacts_sap ---")
     var mf = _build()
     var d = Dat()
-    PM.reset_data(d)
+    PM.reset_data(sf, d)
     forward_kinematics["cpu"](d, mf)
     detect_contacts_sap["cpu"](d, mf)
     _check(d, mf, String("sap"))

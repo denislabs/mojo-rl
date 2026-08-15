@@ -91,6 +91,9 @@ comptime M = ModelDefFromXML[
     max_contacts=8,
     obs_dim_override=1, obs_qpos_skip=0,
     timestep=pm.TIMESTEP,
+    # MuJoCo `m->nkey`. Hand-supplied since 1a.4(c); `init_fields`
+    # asserts it against the parsed XML.
+    nkey = 2,
 ]
 
 comptime TOL: Float64 = 1e-12
@@ -134,11 +137,15 @@ comptime MM = ModelDefFromXML[
     max_contacts=8,
     obs_dim_override=1, obs_qpos_skip=0,
     timestep=mp.TIMESTEP,
+    # MuJoCo `m->nkey`. Hand-supplied since 1a.4(c); `init_fields`
+    # asserts it against the parsed XML.
+    nkey = 1,
 ]
 
 
 def test_keyframe_tables_match_mujoco() raises:
     """Our recorded keys against `mjModel.key_qpos/qvel/ctrl/time`."""
+    var sf = M.make_spec_fields[DTYPE]()
     print("=== keyframe: tables vs MuJoCo ===")
     var warnings = Python.import_module("warnings")
     _ = warnings.filterwarnings("ignore")
@@ -157,26 +164,26 @@ def test_keyframe_tables_match_mujoco() raises:
     var worst = 0.0
     for k in range(nkey):
         for i in range(Int(py=m.nq)):
-            var d = abs(M.key_qpos_at(k, i) - Float64(py=m.key_qpos[k][i]))
+            var d = abs(M.key_qpos_at[DTYPE](sf, k, i) - Float64(py=m.key_qpos[k][i]))
             if d > worst:
                 worst = d
         for i in range(Int(py=m.nv)):
-            var d = abs(M.key_qvel_at(k, i) - Float64(py=m.key_qvel[k][i]))
+            var d = abs(M.key_qvel_at[DTYPE](sf, k, i) - Float64(py=m.key_qvel[k][i]))
             if d > worst:
                 worst = d
         for i in range(Int(py=m.nu)):
-            var d = abs(M.key_ctrl_at(k, i) - Float64(py=m.key_ctrl[k][i]))
+            var d = abs(M.key_ctrl_at[DTYPE](sf, k, i) - Float64(py=m.key_ctrl[k][i]))
             if d > worst:
                 worst = d
-        var dt = abs(M.key_time_at(k) - Float64(py=m.key_time[k]))
+        var dt = abs(M.key_time_at[DTYPE](sf, k) - Float64(py=m.key_time[k]))
         if dt > worst:
             worst = dt
         print(
             "   key", k,
-            " qpos[0]", M.key_qpos_at(k, 0),
-            " qvel[0]", M.key_qvel_at(k, 0),
-            " ctrl[0]", M.key_ctrl_at(k, 0),
-            " time", M.key_time_at(k),
+            " qpos[0]", M.key_qpos_at[DTYPE](sf, k, 0),
+            " qvel[0]", M.key_qvel_at[DTYPE](sf, k, 0),
+            " ctrl[0]", M.key_ctrl_at[DTYPE](sf, k, 0),
+            " time", M.key_time_at[DTYPE](sf, k),
         )
 
     print("   worst |d| =", worst)
@@ -193,6 +200,7 @@ def test_absent_attributes_follow_mujocos_defaults() raises:
     inherited the model's, would pass the table test above only by accident of
     ordering — so it is asserted against MuJoCo AND against `home` explicitly.
     """
+    var sf = M.make_spec_fields[DTYPE]()
     print("=== keyframe: absent attributes ===")
     var warnings = Python.import_module("warnings")
     _ = warnings.filterwarnings("ignore")
@@ -206,7 +214,7 @@ def test_absent_attributes_follow_mujocos_defaults() raises:
     # proves nothing.
     var home_nonzero = False
     for i in range(Int(py=m.nv)):
-        if abs(M.key_qvel_at(khome, i)) > 1e-9:
+        if abs(M.key_qvel_at[DTYPE](sf, khome, i)) > 1e-9:
             home_nonzero = True
     assert_true(
         home_nonzero,
@@ -216,15 +224,15 @@ def test_absent_attributes_follow_mujocos_defaults() raises:
 
     for i in range(Int(py=m.nv)):
         assert_true(
-            abs(M.key_qvel_at(kpart, i)) <= TOL,
+            abs(M.key_qvel_at[DTYPE](sf, kpart, i)) <= TOL,
             "key 'part' omits qvel; MuJoCo fills zeros but ours returned "
-            + String(M.key_qvel_at(kpart, i)),
+            + String(M.key_qvel_at[DTYPE](sf, kpart, i)),
         )
     for i in range(Int(py=m.nu)):
         assert_true(
-            abs(M.key_ctrl_at(kpart, i)) <= TOL,
+            abs(M.key_ctrl_at[DTYPE](sf, kpart, i)) <= TOL,
             "key 'part' omits ctrl; MuJoCo fills zeros but ours returned "
-            + String(M.key_ctrl_at(kpart, i)),
+            + String(M.key_ctrl_at[DTYPE](sf, kpart, i)),
         )
     print("  PASS")
 
@@ -237,6 +245,7 @@ def test_default_reset_is_qpos0_not_the_keyframe() raises:
     reset "prefer" a declared keyframe — which reads like an improvement — the
     engine silently starts every one of Menagerie's 66 keyframed models from a
     different pose than MuJoCo. This test is what makes that a red build."""
+    var sf = M.make_spec_fields[DTYPE]()
     print("=== keyframe: default reset is NOT the keyframe ===")
     var warnings = Python.import_module("warnings")
     _ = warnings.filterwarnings("ignore")
@@ -246,7 +255,7 @@ def test_default_reset_is_qpos0_not_the_keyframe() raises:
     _ = mujoco.mj_resetData(m, md)
 
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
 
     # Vacuity: the keyframe must actually differ from qpos0, or "we match
     # qpos0" and "we match the keyframe" are the same statement.
@@ -280,6 +289,7 @@ def test_default_reset_is_qpos0_not_the_keyframe() raises:
 
 def test_reset_data_keyframe_matches_mj_resetDataKeyframe() raises:
     """The explicit path, against `mj_resetDataKeyframe`, for BOTH keys."""
+    var sf = M.make_spec_fields[DTYPE]()
     print("=== keyframe: reset_data_keyframe vs mj_resetDataKeyframe ===")
     var warnings = Python.import_module("warnings")
     _ = warnings.filterwarnings("ignore")
@@ -291,7 +301,7 @@ def test_reset_data_keyframe_matches_mj_resetDataKeyframe() raises:
     for k in range(Int(py=m.nkey)):
         _ = mujoco.mj_resetDataKeyframe(m, md, k)
         var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-        M.reset_data_keyframe[DTYPE](d, k)
+        M.reset_data_keyframe[DTYPE](sf, d, k)
         for i in range(Int(py=m.nq)):
             var dd = abs(Float64(d.qpos.data[i]) - Float64(py=md.qpos[i]))
             if dd > worst:
@@ -320,6 +330,7 @@ def test_keyframe_survives_merge_mjcf() raises:
     file passes a single-file fixture straight to the parser and cannot see
     it. This is the fourth section dropped this way, after <tendon>,
     <option>'s <flag> children and <contact>."""
+    var sf = MM.make_spec_fields[DTYPE]()
     print("=== keyframe: survives merge_mjcf ===")
     var warnings = Python.import_module("warnings")
     _ = warnings.filterwarnings("ignore")
@@ -357,15 +368,15 @@ def test_keyframe_survives_merge_mjcf() raises:
 
     var worst = 0.0
     for i in range(Int(py=m.nq)):
-        var d = abs(MM.key_qpos_at(0, i) - Float64(py=m.key_qpos[0][i]))
+        var d = abs(MM.key_qpos_at[DTYPE](sf, 0, i) - Float64(py=m.key_qpos[0][i]))
         if d > worst:
             worst = d
     for i in range(Int(py=m.nu)):
-        var d = abs(MM.key_ctrl_at(0, i) - Float64(py=m.key_ctrl[0][i]))
+        var d = abs(MM.key_ctrl_at[DTYPE](sf, 0, i) - Float64(py=m.key_ctrl[0][i]))
         if d > worst:
             worst = d
-    print("   merged key qpos[0]", MM.key_qpos_at(0, 0),
-          " ctrl[0]", MM.key_ctrl_at(0, 0), " worst |d|", worst)
+    print("   merged key qpos[0]", MM.key_qpos_at[DTYPE](sf, 0, 0),
+          " ctrl[0]", MM.key_ctrl_at[DTYPE](sf, 0, 0), " worst |d|", worst)
     assert_true(worst <= TOL, "merged keyframe differs from MuJoCo by "
                 + String(worst))
     print("  PASS")

@@ -74,11 +74,12 @@ comptime TOL: Float64 = 1e-6
 
 def test_batched_cfrc_ext_matches_cpu() raises:
     """Standing quadruped: four toes loaded, so the gate is not vacuous."""
+    var sf = Mdl.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
     var mf = Mod()
     Mdl.init_fields[DTYPE, 0](ctx, mf)
     var d = Dat()
-    Mdl.reset_data(d)
+    Mdl.reset_data(sf, d)
 
     # Standing on the floor. The height is SEARCHED, not hardcoded — the same
     # thing `test_rne_post_sensors_vs_mujoco::_find_standing_z` does, because
@@ -93,14 +94,13 @@ def test_batched_cfrc_ext_matches_cpu() raises:
         act.append(Scalar[DTYPE](0))
     for i in range(NV):
         d.qfrc.data[i] = Scalar[DTYPE](0)
-    var sf = Mdl.make_spec_fields[DTYPE]()
     Mdl.apply_actions(sf, d, zero, act)
 
     var integ = Integ()
     var ncon = 0
     var z = 0.80
     while z > 0.30:
-        Mdl.reset_data(d)
+        Mdl.reset_data(sf, d)
         d.qpos.data[2] = Scalar[DTYPE](z)
         d.qpos.data[3] = Scalar[DTYPE](1.0)
         for i in range(NV):

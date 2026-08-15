@@ -259,7 +259,7 @@ struct Phyics3dEnv[
 
         # Reference pose + fresh FK products so get_state()/renderer reads
         # are valid before the first reset().
-        Self.MODEL_DEF.reset_data(self.d)
+        Self.MODEL_DEF.reset_data(self.sf, self.d)
         self._sync_mocap_to_fields()
         self._fields_fk()
         Self.CONFIG.pre_step_cpu(self.d, self.prev_x)
@@ -336,7 +336,7 @@ struct Phyics3dEnv[
         # MuJoCo's mj_resetData zeroes `act` along with qpos/qvel.
         for _i in range(len(self.act)):
             self.act[_i] = Scalar[Self.DTYPE](0)
-        Self.MODEL_DEF.reset_data(self.d)
+        Self.MODEL_DEF.reset_data(self.sf, self.d)
         var noise_scale = Self.CONFIG.get_reset_noise()
         if noise_scale > 0.0:
             for i in range(Self.NQ):
@@ -994,11 +994,11 @@ struct Phyics3dEnv[
         a non-uniform model in
         `tests/dm_control/test_per_actuator_action_bounds.mojo`.
         """
-        return Scalar[Self.dtype](Self.MODEL_DEF.ctrl_min_at(i))
+        return Scalar[Self.dtype](Self.MODEL_DEF.ctrl_min_at[Self.DTYPE](self.sf, i))
 
     def action_high_at(self, i: Int) -> Scalar[Self.dtype]:
         """Upper bound of actuator `i`. See `action_low_at`."""
-        return Scalar[Self.dtype](Self.MODEL_DEF.ctrl_max_at(i))
+        return Scalar[Self.dtype](Self.MODEL_DEF.ctrl_max_at[Self.DTYPE](self.sf, i))
 
     # ── BoxContinuousActionEnv ────────────────────────────────────────────
     def step_continuous[

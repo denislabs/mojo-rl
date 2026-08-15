@@ -149,6 +149,7 @@ def test_springref_is_converted_for_hinge_only() raises:
 
 def test_springref_rollout_matches_mujoco() raises:
     """The spring has to actually drive the joint, not just tabulate."""
+    var sf = M.make_spec_fields[DTYPE]()
     print("--- springref: rollout ---")
     var h = _mj()
     var mujoco = h[0]
@@ -163,7 +164,7 @@ def test_springref_rollout_matches_mujoco() raises:
     ]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
 
     var integ = EulerIntegrator[

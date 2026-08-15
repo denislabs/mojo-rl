@@ -433,6 +433,9 @@ comptime SoArm100Model = ModelDefFromXML[
     max_contacts=16,
     obs_dim_override=SO_ARM100_OBS_DIM,
     action_dim_override=6,
+    # MuJoCo `m->nkey`: the `<keyframe>` has 2 `<key>` entries. The only model
+    # in the tree with any. Asserted in `init_fields`.
+    nkey = 2,
 ]
 
 # Body indices, worldbody DFS order with world at 0 — MuJoCo's convention.

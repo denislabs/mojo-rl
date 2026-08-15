@@ -58,22 +58,23 @@ def test_reach_site_features_per_actuator_bounds() raises:
     var nu = Int(py=Python.evaluate("len")(lo))
 
     comptime M = ReachSiteFeaturesModel
+    var sf = M.make_spec_fields[DType.float64]()
     print("  model-wide CTRL_MIN/CTRL_MAX:", M.CTRL_MIN, M.CTRL_MAX)
     var worst = 0.0
     var n_off_scalar = 0
     for a in range(nu):
         var mlo = Float64(py=lo[a])
         var mhi = Float64(py=hi[a])
-        var e0 = abs(M.ctrl_min_at(a) - mlo)
-        var e1 = abs(M.ctrl_max_at(a) - mhi)
+        var e0 = abs(M.ctrl_min_at[DType.float64](sf, a) - mlo)
+        var e1 = abs(M.ctrl_max_at[DType.float64](sf, a) - mhi)
         if e0 > worst:
             worst = e0
         if e1 > worst:
             worst = e1
         if abs(M.CTRL_MIN - mlo) > 1e-9 or abs(M.CTRL_MAX - mhi) > 1e-9:
             n_off_scalar += 1
-        print("    act", a, " ours [", M.ctrl_min_at(a), ",",
-              M.ctrl_max_at(a), "]  spec [", mlo, ",", mhi, "]")
+        print("    act", a, " ours [", M.ctrl_min_at[DType.float64](sf, a), ",",
+              M.ctrl_max_at[DType.float64](sf, a), "]  spec [", mlo, ",", mhi, "]")
     print("  worst |d| vs action_spec:", worst)
     print("  actuators the SCALAR bound gets wrong:", n_off_scalar, "of", nu)
 
@@ -102,14 +103,15 @@ def test_quadruped_per_actuator_bounds() raises:
     var nu = Int(py=Python.evaluate("len")(lo))
 
     comptime M = DMQuadrupedWalkModel
+    var sf = M.make_spec_fields[DType.float64]()
     print("  model-wide CTRL_MIN/CTRL_MAX:", M.CTRL_MIN, M.CTRL_MAX)
     var worst = 0.0
     var n_distinct = 0
     for a in range(nu):
         var mlo = Float64(py=lo[a])
         var mhi = Float64(py=hi[a])
-        var e0 = abs(M.ctrl_min_at(a) - mlo)
-        var e1 = abs(M.ctrl_max_at(a) - mhi)
+        var e0 = abs(M.ctrl_min_at[DType.float64](sf, a) - mlo)
+        var e1 = abs(M.ctrl_max_at[DType.float64](sf, a) - mhi)
         if e0 > worst:
             worst = e0
         if e1 > worst:

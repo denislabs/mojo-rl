@@ -228,6 +228,7 @@ def _check_rows[M: ModelDefFromXML](
     xml: String, label: String, q1: Float64, q2: Float64
 ) raises:
     """Build our single row at a perturbed pose and diff against `efc_*`."""
+    var sf = M.make_spec_fields[DTYPE]()
     var mujoco = Python.import_module("mujoco")
     var m = mujoco.MjModel.from_xml_string(xml)
     var dat = mujoco.MjData(m)
@@ -254,7 +255,7 @@ def _check_rows[M: ModelDefFromXML](
     )
 
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
     d.qpos.data[0] = q1
     d.qpos.data[1] = q2
     for i in range(M.NV):
@@ -361,6 +362,7 @@ def test_single_joint_form_matches_mujoco() raises:
 
 
 def _our_roll[M: ModelDefFromXML]() raises -> Tuple[Float64, Float64]:
+    var sf = M.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
     var mf = Model[
         DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
@@ -368,7 +370,7 @@ def _our_roll[M: ModelDefFromXML]() raises -> Tuple[Float64, Float64]:
     ]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
     var integ = EulerIntegrator[
         DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,

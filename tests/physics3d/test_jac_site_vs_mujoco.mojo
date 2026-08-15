@@ -307,6 +307,7 @@ def test_jac_site_quadruped_fetch() raises:
     world. ⚠ The FETCH variant, not walk: walk is built with
     `walls_and_ball=False`, which deletes the ball (the second free joint) and
     the target site (the only world-welded one), so it covers neither."""
+    var sf = M.make_spec_fields[DTYPE]()
     print("--- quadruped fetch: jac_site vs mj_jacSite ---")
     comptime M = DMQuadrupedFetchModel
     var mujoco = Python.import_module("mujoco")
@@ -325,7 +326,7 @@ def test_jac_site_quadruped_fetch() raises:
     var d = Data[
         DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1
     ]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
 
     _sweep[
         M.NQ, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
@@ -339,6 +340,7 @@ def test_jac_site_quadruped_fetch() raises:
 def test_jac_site_ball_in_cup() raises:
     """SLIDE DOFs — `cdof`'s angular half is identically zero here, so `jacr`
     must come back exactly zero and `jacp` a bare axis."""
+    var sf = M.make_spec_fields[DTYPE]()
     print("--- ball_in_cup: jac_site vs mj_jacSite ---")
     comptime M = DMBallInCupModel
     var mujoco = Python.import_module("mujoco")
@@ -355,7 +357,7 @@ def test_jac_site_ball_in_cup() raises:
     var d = Data[
         DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1
     ]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
 
     _sweep[
         M.NQ, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,

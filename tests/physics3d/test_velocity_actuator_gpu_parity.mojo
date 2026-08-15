@@ -173,6 +173,7 @@ def _gate[
     mut failures: Int,
 ) raises:
     """Run both `apply_actions` paths on the same state and diff `qfrc`."""
+    var sf = M.make_spec_fields[DTYPE]()
     comptime BATCH = 1
     comptime NV = M.NV
     comptime NQ = M.NQ
@@ -192,7 +193,7 @@ def _gate[
     var mf = Mod()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Dat()
-    M.reset_data(d)
+    M.reset_data(sf, d)
     d.qpos.data[0] = Scalar[DTYPE](q0)
     d.qpos.data[1] = Scalar[DTYPE](q1)
     d.qvel.data[0] = Scalar[DTYPE](v0)
@@ -202,7 +203,6 @@ def _gate[
     actions.append(c0)
     actions.append(c1)
     var act_cpu = List[Scalar[DTYPE]]()
-    var sf = M.make_spec_fields[DTYPE]()
     M.apply_actions[DTYPE](sf, d, actions, act_cpu)
 
     # ---- GPU ---------------------------------------------------------------
@@ -231,7 +231,9 @@ def _gate[
     t_qvel.upload(ctx)
     t_actv.upload(ctx)
 
-    var sfg = SpecFields[DTYPE, M.NACT, M.NTEN_F]()
+    var sfg = SpecFields[
+        DTYPE, M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY
+    ]()
     M.init_spec_fields[DTYPE](ctx, sfg)
     M.apply_actions_kernel_gpu[DTYPE, BATCH, NACT](
         ctx,

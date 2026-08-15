@@ -1243,6 +1243,7 @@ comptime KeyStrideModel = ModelDefFromXML[
     max_condim=_kspm.MAX_CONDIM, max_contacts=8,
     obs_dim_override=1, obs_qpos_skip=0,
     timestep=_kspm.TIMESTEP, noslip_iter=_kspm.NOSLIP_ITER,
+    nkey = 2,
 ]
 
 

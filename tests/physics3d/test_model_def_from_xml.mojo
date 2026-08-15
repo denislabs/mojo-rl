@@ -211,9 +211,10 @@ def test_model_def_from_xml() raises:
     # =========================================================================
     # Step 5: reset_data + extract_obs (fields-native hooks; G2)
     # =========================================================================
+    var sf = XmlModel.make_spec_fields[DType.float64]()
     print("=== reset_data + extract_obs ===")
     var d = Data[DType.float64, pm.NQ, pm.NV, pm.NBODY, 10, 0, 1]()
-    XmlModel.reset_data[DType.float64](d)
+    XmlModel.reset_data[DType.float64](sf, d)
     print("reset_data succeeded (qpos=0, qvel=0)")
 
     var obs = List[Scalar[DType.float64]]()
@@ -240,7 +241,6 @@ def test_model_def_from_xml() raises:
     for _ in range(XmlModel.NA if XmlModel.NA > 0 else 1):
         act.append(Scalar[DType.float64](0))
 
-    var sf = XmlModel.make_spec_fields[DType.float64]()
     XmlModel.apply_actions[DType.float64](sf, d, actions, act)
     # bthigh is joint 3 with dof_adr=3
     print("qfrc[3] =", Float64(d.qfrc.data[3]), " (expected 120.0)")

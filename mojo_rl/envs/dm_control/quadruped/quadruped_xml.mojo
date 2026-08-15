@@ -472,6 +472,10 @@ comptime DMQuadrupedWalkModel = ModelDefFromXML[
     obs_dim_override=QUADRUPED_OBS_DIM,
     obs_qpos_skip=0,
     timestep=qwp.TIMESTEP,
+    # MuJoCo `m->na`: 12 `<general dyntype="filter">` servos, one activation
+    # each. Hand-supplied because `parse_xml` does not compute it; `init_fields`
+    # asserts it against the parsed XML.
+    na = 12,
 ]
 
 comptime DMQuadrupedRunModel = ModelDefFromXML[
@@ -485,6 +489,10 @@ comptime DMQuadrupedRunModel = ModelDefFromXML[
     obs_dim_override=QUADRUPED_OBS_DIM,
     obs_qpos_skip=0,
     timestep=qrp.TIMESTEP,
+    # MuJoCo `m->na`: 12 `<general dyntype="filter">` servos, one activation
+    # each. Hand-supplied because `parse_xml` does not compute it; `init_fields`
+    # asserts it against the parsed XML.
+    na = 12,
 ]
 
 
@@ -537,6 +545,10 @@ comptime DMQuadrupedFetchModel = ModelDefFromXML[
     # XML, never hand-written — passing the number by hand is the defect
     # 004fe439 fixed, in a new dress.
     max_condim=qfp.MAX_CONDIM,
+    # MuJoCo `m->na`: 12 `<general dyntype="filter">` servos, one activation
+    # each. Hand-supplied because `parse_xml` does not compute it; `init_fields`
+    # asserts it against the parsed XML.
+    na = 12,
 ]
 
 # ⚠ SITE IDS ARE NOT walk/run's. `<site name="target">` is declared before the

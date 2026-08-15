@@ -652,6 +652,7 @@ def test_reassemble_5_reward_matches_dm_control() raises:
 
 # ── leg 6 ──────────────────────────────────────────────────────────────────
 def test_reassemble_5_build_stack_matches_dm_control() raises:
+    var sf = Reassemble5Model.make_spec_fields[DTYPE]()
     print("=== 6. build_stack vs `bricks._build_stack` ===")
     var refmod = _refmod()
     var env = ENV()
@@ -684,7 +685,7 @@ def test_reassemble_5_build_stack_matches_dm_control() raises:
 
             # ⚠ `qpos0` FIRST — `_build_stack`'s formula is only correct while
             # the brick it is about to move sits at the ORIGIN.
-            Reassemble5Model.reset_data(env.d)
+            Reassemble5Model.reset_data(sf, env.d)
             var order = List[Int]()
             for i in range(N_BRICKS):
                 order.append(sigma[pr[0][i]])

@@ -87,7 +87,26 @@ trait ModelDefLike:
     comptime CTRL_MIN: Float64
     comptime CTRL_MAX: Float64
 
-    # === Components ===
+        # === Actuation records (phases 1a.2 / 1a.4) ===
+    #
+    # `NACT` is MuJoCo's `m->nu`; `NACT_F`/`NTEN_F` are the same numbers
+    # floored at 1, which is the STORAGE capacity. Both are needed and they
+    # are not interchangeable: `build_spec_fields` checks the real count, and
+    # a zero-extent tensor aborts at bind.
+    #
+    # ⚠⚠ DECLARED WITH THE OTHER DIMENSIONS, NOT NEXT TO THE METHODS THAT USE
+    # THEM. These lived beside `apply_actions` and `reset_data` — declared
+    # EARLIER in the trait — could not see them: `Self.NACT` stayed an
+    # unresolved reference on the trait side while the implementation expanded
+    # it to `nact`, and conformance failed with a two-page "no candidates have
+    # type" diff whose real content was one unbound parameter. A trait member
+    # must be declared before the first signature that mentions it.
+    comptime NACT: Int
+    comptime NACT_F: Int
+    comptime NTEN_F: Int
+    comptime NKEY: Int
+
+# === Components ===
     # comptime BODIES: BodiesLike
     # comptime JOINTS: JointsLike
     # comptime GEOMS: GeomsLike
@@ -103,6 +122,9 @@ trait ModelDefLike:
     def reset_data[
         DTYPE: DType
     ](
+        sf: SpecFields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ],
         mut d: Data[
             DTYPE,
             Self.NQ,
@@ -148,17 +170,6 @@ trait ModelDefLike:
     ):
         ...
 
-    # === Actuation records (phase 1a.2) ===
-    #
-    # `NACT` is MuJoCo's `m->nu`; `NACT_F`/`NTEN_F` are the same numbers
-    # floored at 1, which is the STORAGE capacity. Both are needed and they
-    # are not interchangeable: `build_spec_fields` checks the real count, and
-    # a zero-extent tensor aborts at bind.
-    comptime NACT: Int
-    comptime NACT_F: Int
-    comptime NTEN_F: Int
-    comptime NKEY: Int
-
     @staticmethod
     def init_spec_fields[
         DTYPE: DType
@@ -194,7 +205,11 @@ trait ModelDefLike:
         ...
 
     @staticmethod
-    def ctrl_min_at(i: Int) -> Float64:
+    def ctrl_min_at[
+        DTYPE: DType
+    ](sf: SpecFields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ], i: Int) -> Float64:
         """Lower `ctrlrange` bound of actuator `i` — MuJoCo's
         `actuator_ctrlrange[i][0]`, and what `apply_actions` actually clamps
         against.
@@ -207,7 +222,11 @@ trait ModelDefLike:
         ...
 
     @staticmethod
-    def ctrl_max_at(i: Int) -> Float64:
+    def ctrl_max_at[
+        DTYPE: DType
+    ](sf: SpecFields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ], i: Int) -> Float64:
         """Upper `ctrlrange` bound of actuator `i`. See `ctrl_min_at`."""
         ...
 

@@ -222,10 +222,11 @@ def _check(d: Dat, label: String) raises:
 
 def test_contact_solparams_naive() raises:
     """`detect_contacts` — the all-pairs path."""
+    var sf = PM.make_spec_fields[DTYPE]()
     print("--- contact solparams: detect_contacts ---")
     var mf = _build()
     var d = Dat()
-    PM.reset_data(d)
+    PM.reset_data(sf, d)
     forward_kinematics["cpu"](d, mf)
     detect_contacts["cpu"](d, mf)
     _check(d, String("naive"))
@@ -233,10 +234,11 @@ def test_contact_solparams_naive() raises:
 
 def test_contact_solparams_sap() raises:
     """`detect_contacts_sap` — a SEPARATE implementation, in two pair loops."""
+    var sf = PM.make_spec_fields[DTYPE]()
     print("--- contact solparams: detect_contacts_sap ---")
     var mf = _build()
     var d = Dat()
-    PM.reset_data(d)
+    PM.reset_data(sf, d)
     forward_kinematics["cpu"](d, mf)
     detect_contacts_sap["cpu"](d, mf)
     _check(d, String("sap"))

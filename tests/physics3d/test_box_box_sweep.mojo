@@ -145,6 +145,7 @@ def _build() raises -> Mod:
 
 def test_box_box_sweep_vs_mujoco() raises:
     """Separating axis and penetration depth over NPOSE box poses."""
+    var sf = BBM.make_spec_fields[DTYPE]()
     print("--- box/box sweep:", NPOSE, "poses")
     var mf = _build()
     var d = Dat()
@@ -192,7 +193,7 @@ def test_box_box_sweep_vs_mujoco() raises:
 
         # ⚠ Free-joint qpos is (x, y, z, qw, qx, qy, qz) — MuJoCo's order, NOT
         # the (x, y, z, w) order the contact records use.
-        BBM.reset_data(d)
+        BBM.reset_data(sf, d)
         d.qpos.data[0] = Scalar[DTYPE](px)
         d.qpos.data[1] = Scalar[DTYPE](py)
         d.qpos.data[2] = Scalar[DTYPE](pz)

@@ -357,6 +357,7 @@ def _rollout[
     "round-off growing" from "wrong by a little". Step 1 has nothing to
     amplify, so a systematic error in the sweep shows up there at full size.
     """
+    var sf = MD.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
     var mf = Model[
         DTYPE, MD.NV, MD.NBODY, MD.NJOINT, MD.NGEOM, MD.MAX_EQUALITY,
@@ -364,7 +365,7 @@ def _rollout[
     ]()
     MD.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.MAX_CONTACTS, MD.NSITE, 1]()
-    MD.reset_data[DTYPE](d)
+    MD.reset_data[DTYPE](sf, d)
 
     var sq = md.qpos.flatten().tolist()
     var sv = md.qvel.flatten().tolist()

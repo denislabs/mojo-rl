@@ -151,8 +151,9 @@ def _setup(
     cancel the differential Coriolis and servo accelerations, which is both
     well conditioned and what the real task actually does.
     """
+    var sf = Mdl.make_spec_fields[DTYPE]()
     Mdl.init_fields[DTYPE, 0](ctx, mf)
-    Mdl.reset_data(d)
+    Mdl.reset_data(sf, d)
 
     d.qpos.data[2] = Scalar[DTYPE](z)
     # w first, matching the free-joint qpos layout both engines use.

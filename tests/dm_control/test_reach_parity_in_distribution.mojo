@@ -86,6 +86,7 @@ comptime TOL_CONTACT: Float64 = 5e-3
 
 def test_contact_free_dynamics_match_mujoco() raises:
     """The bulk of an episode: no contacts, so no solver."""
+    var sf = MD.make_spec_fields[DTYPE]()
     print("=== contact-free reach dynamics vs MuJoCo ===")
     var sys = Python.import_module("sys")
     _ = sys.path.insert(0, "tests/dm_control")
@@ -108,7 +109,7 @@ def test_contact_free_dynamics_match_mujoco() raises:
     ]()
     MD.init_fields[DTYPE, NMV](ctx, mf)
     var d = Data[DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.MAX_CONTACTS, MD.NSITE, 1]()
-    MD.reset_data[DTYPE](d)
+    MD.reset_data[DTYPE](sf, d)
     var integ = EulerIntegrator[
         DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.NJOINT, MD.MAX_CONTACTS, MD.NGEOM,
         MD.MAX_EQUALITY, MD.MAX_TENDON, MD.NSITE, MD.NEXCLUDE, NMV,
@@ -196,6 +197,7 @@ def test_contact_free_dynamics_match_mujoco() raises:
 
 def test_shallow_contact_parity() raises:
     """Contacts at the depths the task reaches — counts AND dynamics."""
+    var sf = MD.make_spec_fields[DTYPE]()
     print("=== shallow-contact reach parity vs MuJoCo ===")
     var sys = Python.import_module("sys")
     _ = sys.path.insert(0, "tests/dm_control")
@@ -218,7 +220,7 @@ def test_shallow_contact_parity() raises:
     ]()
     MD.init_fields[DTYPE, NMV](ctx, mf)
     var d = Data[DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.MAX_CONTACTS, MD.NSITE, 1]()
-    MD.reset_data[DTYPE](d)
+    MD.reset_data[DTYPE](sf, d)
     var integ = EulerIntegrator[
         DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.NJOINT, MD.MAX_CONTACTS, MD.NGEOM,
         MD.MAX_EQUALITY, MD.MAX_TENDON, MD.NSITE, MD.NEXCLUDE, NMV,

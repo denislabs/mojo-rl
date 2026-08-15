@@ -132,6 +132,7 @@ def _roll[M: ModelDefFromXML, SOLVER: StaticString]() raises -> Float64:
     branch, so with `CONTACTS=False` this returns free fall no matter what the
     solvers do. See the module docstring.
     """
+    var sf = M.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
     var mf = Model[
         DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
@@ -140,7 +141,7 @@ def _roll[M: ModelDefFromXML, SOLVER: StaticString]() raises -> Float64:
     M.init_fields[DTYPE, 0](ctx, mf)
 
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    M.reset_data[DTYPE](d)
+    M.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
 
     var integ = EulerIntegrator[
