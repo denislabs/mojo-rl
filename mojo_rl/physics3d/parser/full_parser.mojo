@@ -1095,6 +1095,29 @@ def _xyaxes_to_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
 
     # Rotation matrix (column-major: col0=X, col1=Y, col2=Z) → quaternion
     # Using standard matrix-to-quaternion (Shepperd method)
+    #
+    # ⚠⚠ THE VECTOR PART WAS NEGATED HERE — this returned the CONJUGATE, i.e.
+    # the INVERSE rotation. The frame's axes are the COLUMNS of R, so
+    # R[i][j] = (axis_j)_i and therefore R[2][1] = y_z (`yz`) while
+    # R[1][2] = z_y (`zy`); the standard qx = (R[2][1] - R[1][2]) is
+    # `yz - zy`, and every branch had the operands the other way round.
+    # Consistently so — which is why it produced a plausible-looking unit
+    # quaternion that simply rotated the wrong way.
+    #
+    # ⚠ THE COMPTIME TWIN WAS FIXED FOR EXACTLY THIS AND THE FIX NEVER
+    # CROSSED. `xml_parser._rcd_xyaxes_to_quat` carries the same comment and
+    # the corrected operand order; this copy kept the bug. Verified against
+    # MuJoCo 3.10.0 on our own merged XML: for all four quadruped and all
+    # five fish cameras, `mjModel.cam_quat` matches the comptime result and
+    # is the conjugate of what this returned.
+    #
+    # ⚠ WHY NO PHYSICS GATE CAUGHT IT: `xyaxes` appears on CAMERAS ONLY —
+    # every occurrence in `mojo_rl/envs/` and in every `.xml` asset is a
+    # `<camera>`. Bodies, geoms and sites reach this through
+    # `_orientation_to_quat` but none of them ever supplies the attribute, so
+    # the wrong branch was never taken by anything the dm_control gates
+    # measure. That makes this a RENDER-ONLY defect today and a silent
+    # physics defect the first time a model orients a body this way.
     var trace = xx + yy + zz
     var qx: Float64
     var qy: Float64
@@ -1104,24 +1127,24 @@ def _xyaxes_to_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     if trace > 0.0:
         var s2 = _sqrt_f64(trace + 1.0) * 2.0  # s2 = 4*qw
         qw = 0.25 * s2
-        qx = (zy - yz) / s2
-        qy = (xz - zx) / s2
-        qz = (yx - xy) / s2
+        qx = (yz - zy) / s2
+        qy = (zx - xz) / s2
+        qz = (xy - yx) / s2
     elif xx > yy and xx > zz:
         var s2 = _sqrt_f64(1.0 + xx - yy - zz) * 2.0  # s2 = 4*qx
-        qw = (zy - yz) / s2
+        qw = (yz - zy) / s2
         qx = 0.25 * s2
         qy = (xy + yx) / s2
         qz = (xz + zx) / s2
     elif yy > zz:
         var s2 = _sqrt_f64(1.0 + yy - xx - zz) * 2.0  # s2 = 4*qy
-        qw = (xz - zx) / s2
+        qw = (zx - xz) / s2
         qx = (xy + yx) / s2
         qy = 0.25 * s2
         qz = (yz + zy) / s2
     else:
         var s2 = _sqrt_f64(1.0 + zz - xx - yy) * 2.0  # s2 = 4*qz
-        qw = (yx - xy) / s2
+        qw = (xy - yx) / s2
         qx = (xz + zx) / s2
         qy = (yz + zy) / s2
         qz = 0.25 * s2
@@ -1191,6 +1214,14 @@ def _fill_assets(
         var rand_s = _extract_attr(tag, "random")
         if rand_s.byte_length() > 0:
             td.random = _parse_float(rand_s)
+
+        # Asset identity. `_find_texture_index_by_name` re-scans `asset_sec`
+        # for these on every material, so they were being read and thrown
+        # away; the render path needs them kept (skybox lookup by name, PNG
+        # load by file). Mirrors `parse_xml_render_data`'s `tex_names` /
+        # `tex_files`, which trims neither.
+        td.name = _extract_attr(tag, "name")
+        td.file = _extract_attr(tag, "file")
 
         result.textures.append(td)
         tex_count += 1
@@ -1897,23 +1928,48 @@ def _parse_one_geom(
 
     # rgba colour: per-geom > default > GeomData fallback (0.7 grey)
     var rgba_s = _extract_attr(tag, "rgba")
-    if rgba_s.byte_length() > 0:
+    if rgba_s.byte_length() == 0 and eff_defaults.geom_rgba_r >= Float64(0):
+        # A class-supplied colour IS the geom's own colour for the purpose of
+        # the material fallback below — same rule as the comptime twin's
+        # `geom_has_rgba`, which is set AFTER the class chain is applied.
+        gd.rgba_r = eff_defaults.geom_rgba_r
+        gd.rgba_g = eff_defaults.geom_rgba_g
+        gd.rgba_b = eff_defaults.geom_rgba_b
+        gd.rgba_a = eff_defaults.geom_rgba_a
+        gd.has_own_rgba = True
+    elif rgba_s.byte_length() > 0:
         var cv = _parse_rgba4(rgba_s)
         gd.rgba_r = cv[0]
         gd.rgba_g = cv[1]
         gd.rgba_b = cv[2]
         gd.rgba_a = cv[3]
-    elif eff_defaults.geom_rgba_r >= Float64(0):
-        gd.rgba_r = eff_defaults.geom_rgba_r
-        gd.rgba_g = eff_defaults.geom_rgba_g
-        gd.rgba_b = eff_defaults.geom_rgba_b
-        gd.rgba_a = eff_defaults.geom_rgba_a
+        gd.has_own_rgba = True
 
-    # material reference — stored as index into materials[]
-    # (index resolved by caller if needed; stored as -1 when absent)
-    # We store the raw name match here via a linear scan of asset_sec
-    # NOTE: asset_sec is not available in _fill_model; material_id
-    # is resolved in a post-pass inside parse_xml_full.
+    # ── material NAME, resolved through the class chain ───────────────────
+    #
+    # ⚠⚠ THIS RESOLUTION USED TO LIVE ENTIRELY IN `_resolve_geom_materials`,
+    # WHICH READS THE GEOM'S OWN TAG AND NOTHING ELSE. dm_control declares the
+    # colour once, in a default block — `<default class="body"><geom
+    # material="self"/></default>` — and every geom that inherits it came out
+    # with `material_id = -1` and `GeomData`'s 0.7 grey fallback.
+    #
+    # Measured over quadruped/fish/ball_in_cup/humanoid/manipulator/walker:
+    # 72 of 88 geoms. That is the SAME defect shape as the 2026-08-03 geom
+    # `type` bug and 1a.1's actuator-class bug — a parser reading an attribute
+    # off the element's own tag and never consulting `<default>`.
+    #
+    # ⚠ AND THE RED CHANNEL HID IT. `<material name="self" rgba=".7 .5 .3 1"/>`
+    # has r = 0.7, which is EXACTLY `GeomData`'s fallback grey, so red agreed
+    # on 71 of the 72 wrong geoms and only green and blue ever disagreed. A
+    # gate sampling one colour channel would have read clean.
+    #
+    # The index still resolves in the post-pass (`asset_sec` is not reachable
+    # here); only the NAME moves, because the name is the part that needs the
+    # class chain.
+    var gmat_s = _extract_attr(tag, "material")
+    if gmat_s.byte_length() == 0:
+        gmat_s = eff_defaults.geom_material_s
+    gd.material_name = gmat_s
 
     return gd
 
@@ -2342,30 +2398,37 @@ def _fill_model(
                 cd.pos_y = pv[1]
                 cd.pos_z = pv[2]
 
-            # Orientation: quat > axisangle > xyaxes
+            # Orientation. ⚠⚠ THIS HANDLED ONLY quat / axisangle / xyaxes AND
+            # DROPPED `zaxis` AND `euler` ON THE FLOOR — a camera declaring
+            # either kept the identity quaternion and looked straight DOWN its
+            # own -Z, i.e. top-down, whatever the model asked for. acrobot and
+            # cartpole use `zaxis="0 -1 0"`; walker's side camera uses
+            # `euler="60 0 0"`. The comptime twin was fixed for exactly this
+            # and the fix never crossed to the runtime parser, which is the
+            # one that survives phase 1a.5.
+            #
+            # Sharing `_orientation_to_quat` — the helper the site and body
+            # paths already use — rather than re-spelling the precedence a
+            # fourth time, so the next attribute is added once.
             var quat_s = _extract_attr(tag, "quat")
-            if quat_s.byte_length() > 0:
-                var qv = _parse_quat(quat_s)
-                cd.quat_x = qv[0]
-                cd.quat_y = qv[1]
-                cd.quat_z = qv[2]
-                cd.quat_w = qv[3]
-            else:
-                var aa_s = _extract_attr(tag, "axisangle")
-                if aa_s.byte_length() > 0:
-                    var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
-                    cd.quat_x = aq[0]
-                    cd.quat_y = aq[1]
-                    cd.quat_z = aq[2]
-                    cd.quat_w = aq[3]
-                else:
-                    var xy_s = _extract_attr(tag, "xyaxes")
-                    if xy_s.byte_length() > 0:
-                        var xq = _xyaxes_to_quat(xy_s)
-                        cd.quat_x = xq[0]
-                        cd.quat_y = xq[1]
-                        cd.quat_z = xq[2]
-                        cd.quat_w = xq[3]
+            var aa_s = _extract_attr(tag, "axisangle")
+            var xy_s = _extract_attr(tag, "xyaxes")
+            var za_s = _extract_attr(tag, "zaxis")
+            var eu_s = _extract_attr(tag, "euler")
+            if (
+                quat_s.byte_length() > 0
+                or aa_s.byte_length() > 0
+                or xy_s.byte_length() > 0
+                or za_s.byte_length() > 0
+                or eu_s.byte_length() > 0
+            ):
+                var cq = _orientation_to_quat(
+                    quat_s, aa_s, xy_s, za_s, eu_s, deg_factor, eulerseq
+                )
+                cd.quat_x = cq[0]
+                cd.quat_y = cq[1]
+                cd.quat_z = cq[2]
+                cd.quat_w = cq[3]
 
             var fovy_s = _extract_attr(tag, "fovy")
             if fovy_s.byte_length() > 0:
@@ -2378,6 +2441,16 @@ def _fill_model(
             var mode_s = _extract_attr(tag, "mode")
             if mode_s.byte_length() > 0:
                 cd.mode = _cam_mode_from_str(mode_s)
+
+            # `target="body"` — only meaningful for targetbody(com), and
+            # resolved here so the per-frame re-aim is pure arithmetic.
+            # ⚠ `_trim` MATCHES THE COMPTIME TWIN (`xml_parser.mojo:4939`).
+            # `_find_body_index_by_name` compares the name literally, so a
+            # stray space returns -1 and the camera silently degrades to
+            # "no target" instead of failing.
+            var tgt_s = _trim(_extract_attr(tag, "target"))
+            if tgt_s.byte_length() > 0:
+                cd.target_body = _find_body_index_by_name(worldbody, tgt_s)
 
             result.cameras.append(cd)
             cam_count += 1
@@ -4106,37 +4179,41 @@ def _fill_pairs(
 
 def _resolve_geom_materials(
 
-    worldbody: String,
     asset_sec: String,
     mut result: FlatModelDef,
 ):
-    """Resolve material="name" on geoms → material index; copy material rgba."""
-    var scan_pos = 0
-    var geom_idx = 0
-    var wlen = worldbody.byte_length()
+    """Resolve material="name" on geoms → material index; copy material rgba.
 
-    while scan_pos < wlen and geom_idx < len(result.geoms):
-        var t = worldbody.find("<geom", scan_pos)
-        if t == -1:
-            break
-        var tag_end = worldbody.find(">", t)
-        if tag_end == -1:
-            break
-        var tag = String(worldbody[byte = t : tag_end + 1])
-        var mat_name = _extract_attr(tag, "material")
-        if mat_name.byte_length() > 0:
-            var mid = _find_material_index_by_name(asset_sec, mat_name)
-            result.geoms[geom_idx].material_id = mid
-            # Only inherit material rgba when the geom has no explicit rgba attr
-            var has_explicit_rgba = _extract_attr(tag, "rgba").byte_length() > 0
-            if not has_explicit_rgba and mid >= 0 and mid < len(result.materials):
-                var md = result.materials[mid]
-                result.geoms[geom_idx].rgba_r = md.rgba_r
-                result.geoms[geom_idx].rgba_g = md.rgba_g
-                result.geoms[geom_idx].rgba_b = md.rgba_b
-                result.geoms[geom_idx].rgba_a = md.rgba_a
-        geom_idx += 1
-        scan_pos = tag_end + 1
+    ⚠ THE NAME COMES OFF THE RECORD, NOT OFF THE TAG. This pass used to
+    re-scan `worldbody` for `<geom` and read `material=` from the tag it
+    found — which skips the `<default>`/`childclass` chain and silently
+    de-coloured 72 of 88 dm_control geoms. `_parse_one_geom` resolves the name
+    with the class chain in scope and leaves it in `material_name`; all that
+    is left here is name → index, which needs `asset_sec` and so cannot
+    happen during the walk.
+
+    Re-scanning also made this pass's geom ordering an independent
+    reimplementation of the DFS that produced `result.geoms` — two walks that
+    had to agree for the indices to line up, with nothing checking they did.
+    """
+    for gi in range(len(result.geoms)):
+        var mat_name = result.geoms[gi].material_name
+        if mat_name.byte_length() == 0:
+            continue
+        var mid = _find_material_index_by_name(asset_sec, mat_name)
+        result.geoms[gi].material_id = mid
+        # The material's colour applies only where neither the geom nor its
+        # class stated one.
+        if (
+            not result.geoms[gi].has_own_rgba
+            and mid >= 0
+            and mid < len(result.materials)
+        ):
+            var md = result.materials[mid]
+            result.geoms[gi].rgba_r = md.rgba_r
+            result.geoms[gi].rgba_g = md.rgba_g
+            result.geoms[gi].rgba_b = md.rgba_b
+            result.geoms[gi].rgba_a = md.rgba_a
 
 
 # =============================================================================
@@ -4414,6 +4491,6 @@ xml_in: String) raises -> FlatModelDef:
     # after the worldbody walk has grouped geoms by body.
     _fill_pairs(contact_sec, worldbody, result)
     # Post-pass: resolve geom material="name" references
-    _resolve_geom_materials(worldbody, asset_sec, result)
+    _resolve_geom_materials(asset_sec, result)
 
     return result^

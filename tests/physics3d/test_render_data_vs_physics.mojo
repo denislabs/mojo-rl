@@ -54,6 +54,9 @@ from mojo_rl.physics3d.parser import (
     parse_xml,
     ModelDefFromXML,
 )
+from mojo_rl.physics3d.parser.flat_model import (
+    TEX_SKYBOX, TEX_2D, TEX_CUBE,
+)
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
@@ -151,6 +154,56 @@ comptime StenStyleModel = ModelDefFromXML[
 ]
 
 
+# ═══ the FILE-BACKED ASSET fixture ══════════════════════════════════════════
+#
+# ⚠⚠ THREE ROWS OF `_check_assets` COMPARED NOTHING ACROSS ALL SIX MODELS,
+# and each was found by a NEGATIVE CONTROL rather than by reading the code:
+#
+#   * `<mesh>` — no dm_control model here declares one. `FamilyTally.report`
+#     printed "compared NOTHING", which is the only reason it was noticed.
+#     The models that do carry mesh assets are dog (162 of them) and the
+#     SO-ARM arms; both are far too heavy to `materialize[_rcd]()` alongside
+#     the others.
+#   * texture `file` — blanking `TextureData.file` in the runtime parser left
+#     the gate GREEN. `file=` appears on ZERO textures in the tree: every
+#     dm_control texture is procedural (`builtin=`), so the PNG path the
+#     renderer's texture loader depends on had no coverage at all.
+#   * texture type `cube` — only `skybox` and `2d` occur, so the third arm of
+#     `_rcd_tex_type_to_runtime` was never taken. That map is the whole reason
+#     the two parsers' texture numbering can be compared, and one third of it
+#     was untested.
+#
+# The files need not exist: `parse_xml_full` records `name=`/`file=` as
+# strings and only `init_fields` loads geometry, which this gate never calls.
+comptime MESH_ASSET_XML = String(
+    """<mujoco model="mesh_assets">
+  <asset>
+    <mesh name="alpha" file="alpha.stl"/>
+    <mesh name="beta" file="sub/beta.obj"/>
+    <texture name="wood" type="cube" file="wood.png"/>
+  </asset>
+  <worldbody>
+    <body name="b" pos="0 0 .1">
+      <freejoint/>
+      <geom name="g" type="sphere" size=".02" mass=".1"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+)
+
+comptime _mapm = parse_xml(MESH_ASSET_XML)
+comptime MeshAssetModel = ModelDefFromXML[
+    xml=MESH_ASSET_XML,
+    nbody=_mapm.NBODY, njoint=_mapm.NJOINT, nq=_mapm.NQ, nv=_mapm.NV,
+    ngeom=_mapm.NGEOM, nact=_mapm.NACT, ntex=_mapm.NTEX, nmat=_mapm.NMAT,
+    nlight=_mapm.NLIGHT, ncam=_mapm.NCAM, nsite=_mapm.NSITE, neq=_mapm.NEQ,
+    nexclude=_mapm.NEXCLUDE, npair=_mapm.NPAIR, max_tendon=_mapm.NTENDON,
+    max_condim=_mapm.MAX_CONDIM, max_contacts=8,
+    obs_dim_override=1, obs_qpos_skip=0,
+    timestep=_mapm.TIMESTEP, noslip_iter=_mapm.NOSLIP_ITER,
+]
+
+
 def _check_visual[MODEL: ModelDefLike](
     name: String, rcd: ComptimeRenderData, xml: String, mut n_fields: Int
 ) raises:
@@ -208,6 +261,302 @@ def _check_visual[MODEL: ModelDefLike](
         name + ": <visual> disagrees between the two parsers in " + String(n))
     assert_true(n_sten == 0,
         name + ": spatial tendon render style disagrees in " + String(n_sten))
+
+
+@fieldwise_init
+struct FamilyTally(Copyable, Movable):
+    """How many rows each render family actually compared, and how many differ.
+
+    ⚠ THE `compared` COUNT IS THE POINT. A family with zero rows reports zero
+    mismatches, which is the same number a correct family reports — the trap
+    that made 1a.1's actuator-group row and 1a.5a's spatial-tendon style row
+    vacuous. This gate prints both and names any family that never ran.
+    """
+
+    var compared: Int
+    var bad: Int
+    # ⚠ WHICH FIELD, not just how many rows. A row-level boolean says "these
+    # two records differ" and leaves you guessing between fifteen fields —
+    # and guessing is how `feedback_measure_before_filing_a_mechanism`
+    # happens. Every failing field name is tallied so the diagnosis is read
+    # off the output instead of inferred.
+    var labels: List[String]
+    var counts: List[Int]
+
+    def __init__(out self):
+        self.compared = 0
+        self.bad = 0
+        self.labels = List[String]()
+        self.counts = List[Int]()
+
+    def note(mut self, label: String):
+        for i in range(len(self.labels)):
+            if self.labels[i] == label:
+                self.counts[i] += 1
+                return
+        self.labels.append(label)
+        self.counts.append(1)
+
+    def add(mut self, ok: Bool):
+        self.compared += 1
+        if not ok:
+            self.bad += 1
+
+    def report(self, family: String):
+        if self.compared == 0:
+            print("      ⚠", family, "family compared NOTHING")
+            return
+        print("   ", family, self.bad, "/", self.compared, "rows differ")
+        for i in range(len(self.labels)):
+            print("        ", self.labels[i], self.counts[i])
+
+
+def _neq(a: Float64, b: Float64) -> Bool:
+    return abs(a - b) > TOL
+
+
+def _rcd_tex_type_to_runtime(t: Int) -> Int:
+    """`_rcd`'s texture-type numbering into `flat_model`'s.
+
+    ⚠⚠ THE TWO PARSERS USE DIFFERENT NUMBERS FOR THE SAME THING, AND NEITHER
+    USES MuJoCo'S. Comptime (`_rcd_tex_type_from_str`): 2d=0, skybox=1,
+    cube=3. Runtime (`flat_model`): skybox=0, 2d=1, cube=2. MuJoCo's
+    `mjtTexture` (mjmodel.h:150): 2d=0, cube=1, skybox=2.
+
+    So `tex_type == 1` means SKYBOX on one side and 2D on the other, and a
+    consumer repointed from `_rcd` to `FlatModelDef` without this map would
+    draw the skybox as a surface texture and vice versa — silently, since both
+    are valid values. Every one of the 13 textures across the six models here
+    "differed" on this row before the map went in, which is what a pure
+    representation mismatch looks like: total, not partial.
+    """
+    if t == 1:
+        return TEX_SKYBOX
+    if t == 3:
+        return TEX_CUBE
+    return TEX_2D
+
+
+def _fchk(mut t: FamilyTally, mut row_ok: Bool, label: String, ok: Bool):
+    """One field of one row. Records WHICH field failed, not just that one did."""
+    if not ok:
+        row_ok = False
+        t.note(label)
+
+
+def _check_assets[MODEL: ModelDefLike](
+    name: String,
+    rcd: ComptimeRenderData,
+    xml: String,
+    mut geom: FamilyTally,
+    mut light: FamilyTally,
+    mut cam: FamilyTally,
+    mut tex: FamilyTally,
+    mut mat: FamilyTally,
+    mut site: FamilyTally,
+    mut mesh: FamilyTally,
+) raises:
+    """Every render family `_check` does not cover: `_rcd` vs `FlatModelDef`.
+
+    ⚠ THIS IS THE 1a.5b PRECONDITION AND IT DID NOT EXIST. `_check` compares
+    geom TYPE/BODY/SIZE/POS and `_check_visual` compares `<visual>` and the
+    tendon style — so lights, cameras, textures, materials, sites, mesh assets
+    and every geom field the RENDERER reads but the PHYSICS does not (rgba,
+    material, group, mesh file, quaternion) had no comparison anywhere. Those
+    are exactly the fields the render hooks are about to be repointed onto,
+    and repointing onto an unvalidated source is how 1a.1's four defects got
+    in: each one was a hand port nobody had diffed.
+
+    Runs off `parse_xml_full` rather than `init_fields`, which is why it can
+    cover many models where `_check` covers one — `_check`'s ceiling is the
+    `Model` construction, not the `materialize`.
+
+    ⚠ COUNT DISAGREEMENT IS ITSELF A FINDING and is reported per family rather
+    than silently min()'d away: `_rcd`'s arrays are CAPPED (32 materials, 16
+    textures, 4 spatial tendons) and a model over a cap loses the overflow
+    without a word — the `<mesh>` cap did exactly that to SO-ARM100.
+    """
+    var fmd = parse_xml_full(xml)
+
+    # ── mesh assets ───────────────────────────────────────────────────────
+    if rcd.nmesh != fmd.num_mesh_assets:
+        mesh.add(False)
+        mesh.note("COUNT")
+        print("      ", name, "MESH ASSET COUNT: _rcd", rcd.nmesh,
+              "vs runtime", fmd.num_mesh_assets)
+    for i in range(min(rcd.nmesh, fmd.num_mesh_assets)):
+        var ok = True
+        _fchk(mesh, ok, "name", rcd.mesh_names[i] == fmd.mesh_asset_names[i])
+        _fchk(mesh, ok, "file", rcd.mesh_files[i] == fmd.mesh_asset_files[i])
+        mesh.add(ok)
+
+    # ── geoms: the fields only the RENDERER reads ─────────────────────────
+    for i in range(min(rcd.ngeom, len(fmd.geoms))):
+        var g = fmd.geoms[i]
+        var ok = True
+        _fchk(geom, ok, "rgba_r", not _neq(rcd.geom_rgba_r[i], g.rgba_r))
+        _fchk(geom, ok, "rgba_g", not _neq(rcd.geom_rgba_g[i], g.rgba_g))
+        _fchk(geom, ok, "rgba_b", not _neq(rcd.geom_rgba_b[i], g.rgba_b))
+        _fchk(geom, ok, "rgba_a", not _neq(rcd.geom_rgba_a[i], g.rgba_a))
+        _fchk(geom, ok, "quat_x", not _neq(rcd.geom_quat_x[i], g.quat_x))
+        _fchk(geom, ok, "quat_y", not _neq(rcd.geom_quat_y[i], g.quat_y))
+        _fchk(geom, ok, "quat_z", not _neq(rcd.geom_quat_z[i], g.quat_z))
+        _fchk(geom, ok, "quat_w", not _neq(rcd.geom_quat_w[i], g.quat_w))
+        _fchk(geom, ok, "material_id",
+              rcd.geom_material_id[i] == g.material_id)
+        # ⚠ `group` IS VISIBILITY. Ignoring it is why dog rendered as a
+        # skeleton — its 162 bone meshes sit in group 5 and its collision
+        # capsules in group 3.
+        _fchk(geom, ok, "group", rcd.geom_group[i] == g.group)
+        # Mesh identity by FILE, not by index: the two sides number meshes in
+        # different spaces (`_rcd` indexes its asset table, `GeomData.mesh_id`
+        # indexes loaded hull data), so comparing the ids would be comparing
+        # two unrelated integers.
+        var r_file = String("")
+        if rcd.geom_mesh_id[i] >= 0:
+            r_file = rcd.mesh_files[rcd.geom_mesh_id[i]]
+        _fchk(geom, ok, "mesh_file", r_file == g.mesh_filename)
+        geom.add(ok)
+
+    # ── lights ────────────────────────────────────────────────────────────
+    if rcd.nlight != len(fmd.lights):
+        light.add(False)
+        light.note("COUNT")
+        print("      ", name, "LIGHT COUNT: _rcd", rcd.nlight,
+              "vs runtime", len(fmd.lights))
+    for i in range(min(rcd.nlight, len(fmd.lights))):
+        var l = fmd.lights[i]
+        var ok = True
+        _fchk(light, ok, "dir_x", not _neq(rcd.light_dir_x[i], l.dir_x))
+        _fchk(light, ok, "dir_y", not _neq(rcd.light_dir_y[i], l.dir_y))
+        _fchk(light, ok, "dir_z", not _neq(rcd.light_dir_z[i], l.dir_z))
+        _fchk(light, ok, "diffuse",
+              not (_neq(rcd.light_diffuse_r[i], l.diffuse_r)
+                   or _neq(rcd.light_diffuse_g[i], l.diffuse_g)
+                   or _neq(rcd.light_diffuse_b[i], l.diffuse_b)))
+        _fchk(light, ok, "specular",
+              not (_neq(rcd.light_specular_r[i], l.specular_r)
+                   or _neq(rcd.light_specular_g[i], l.specular_g)
+                   or _neq(rcd.light_specular_b[i], l.specular_b)))
+        _fchk(light, ok, "ambient",
+              not (_neq(rcd.light_ambient_r[i], l.ambient_r)
+                   or _neq(rcd.light_ambient_g[i], l.ambient_g)
+                   or _neq(rcd.light_ambient_b[i], l.ambient_b)))
+        _fchk(light, ok, "exponent",
+              not _neq(rcd.light_exponent[i], l.exponent))
+        _fchk(light, ok, "directional",
+              rcd.light_directional[i] == l.directional)
+        _fchk(light, ok, "castshadow",
+              rcd.light_castshadow[i] == l.castshadow)
+        light.add(ok)
+
+    # ── cameras ───────────────────────────────────────────────────────────
+    if rcd.ncam != len(fmd.cameras):
+        cam.add(False)
+        cam.note("COUNT")
+        print("      ", name, "CAMERA COUNT: _rcd", rcd.ncam,
+              "vs runtime", len(fmd.cameras))
+    for i in range(min(rcd.ncam, len(fmd.cameras))):
+        var c = fmd.cameras[i]
+        var ok = True
+        _fchk(cam, ok, "pos",
+              not (_neq(rcd.cam_pos_x[i], c.pos_x)
+                   or _neq(rcd.cam_pos_y[i], c.pos_y)
+                   or _neq(rcd.cam_pos_z[i], c.pos_z)))
+        _fchk(cam, ok, "quat",
+              not (_neq(rcd.cam_quat_x[i], c.quat_x)
+                   or _neq(rcd.cam_quat_y[i], c.quat_y)
+                   or _neq(rcd.cam_quat_z[i], c.quat_z)
+                   or _neq(rcd.cam_quat_w[i], c.quat_w)))
+        _fchk(cam, ok, "fovy", not _neq(rcd.cam_fovy[i], c.fovy))
+        _fchk(cam, ok, "mode", rcd.cam_mode[i] == c.mode)
+        _fchk(cam, ok, "target_body",
+              rcd.cam_target_body[i] == c.target_body)
+        cam.add(ok)
+
+    # ── textures ──────────────────────────────────────────────────────────
+    if rcd.ntex != len(fmd.textures):
+        tex.add(False)
+        tex.note("COUNT")
+        print("      ", name, "TEXTURE COUNT: _rcd", rcd.ntex,
+              "vs runtime", len(fmd.textures))
+    for i in range(min(rcd.ntex, len(fmd.textures))):
+        var t = fmd.textures[i]
+        var ok = True
+        _fchk(tex, ok, "tex_type",
+              _rcd_tex_type_to_runtime(rcd.tex_type[i]) == t.tex_type)
+        _fchk(tex, ok, "builtin", rcd.tex_builtin[i] == t.builtin)
+        _fchk(tex, ok, "mark", rcd.tex_mark[i] == t.mark)
+        _fchk(tex, ok, "rgb1",
+              not (_neq(rcd.tex_rgb1_r[i], t.rgb1_r)
+                   or _neq(rcd.tex_rgb1_g[i], t.rgb1_g)
+                   or _neq(rcd.tex_rgb1_b[i], t.rgb1_b)))
+        _fchk(tex, ok, "rgb2",
+              not (_neq(rcd.tex_rgb2_r[i], t.rgb2_r)
+                   or _neq(rcd.tex_rgb2_g[i], t.rgb2_g)
+                   or _neq(rcd.tex_rgb2_b[i], t.rgb2_b)))
+        _fchk(tex, ok, "markrgb",
+              not (_neq(rcd.tex_markrgb_r[i], t.markrgb_r)
+                   or _neq(rcd.tex_markrgb_g[i], t.markrgb_g)
+                   or _neq(rcd.tex_markrgb_b[i], t.markrgb_b)))
+        _fchk(tex, ok, "random", not _neq(rcd.tex_random[i], t.random))
+        _fchk(tex, ok, "name", rcd.tex_names[i] == t.name)
+        _fchk(tex, ok, "file", rcd.tex_files[i] == t.file)
+        tex.add(ok)
+
+    # ── materials ─────────────────────────────────────────────────────────
+    if rcd.nmat != len(fmd.materials):
+        mat.add(False)
+        mat.note("COUNT")
+        print("      ", name, "MATERIAL COUNT: _rcd", rcd.nmat,
+              "vs runtime", len(fmd.materials))
+    for i in range(min(rcd.nmat, len(fmd.materials))):
+        var m = fmd.materials[i]
+        var ok = True
+        _fchk(mat, ok, "rgba",
+              not (_neq(rcd.mat_rgba_r[i], m.rgba_r)
+                   or _neq(rcd.mat_rgba_g[i], m.rgba_g)
+                   or _neq(rcd.mat_rgba_b[i], m.rgba_b)
+                   or _neq(rcd.mat_rgba_a[i], m.rgba_a)))
+        _fchk(mat, ok, "shininess",
+              not _neq(rcd.mat_shininess[i], m.shininess))
+        _fchk(mat, ok, "specular",
+              not _neq(rcd.mat_specular[i], m.specular))
+        _fchk(mat, ok, "reflectance",
+              not _neq(rcd.mat_reflectance[i], m.reflectance))
+        _fchk(mat, ok, "texrepeat",
+              not (_neq(rcd.mat_texrepeat_u[i], m.texrepeat_u)
+                   or _neq(rcd.mat_texrepeat_v[i], m.texrepeat_v)))
+        _fchk(mat, ok, "tex_id", rcd.mat_tex_id[i] == m.tex_id)
+        mat.add(ok)
+
+    # ── sites ─────────────────────────────────────────────────────────────
+    if rcd.nsite != len(fmd.sites):
+        site.add(False)
+        site.note("COUNT")
+        print("      ", name, "SITE COUNT: _rcd", rcd.nsite,
+              "vs runtime", len(fmd.sites))
+    for i in range(min(rcd.nsite, len(fmd.sites))):
+        var s = fmd.sites[i]
+        var ok = True
+        _fchk(site, ok, "body_id", rcd.site_body_id[i] == s.body_id)
+        _fchk(site, ok, "pos",
+              not (_neq(rcd.site_pos_x[i], s.pos_x)
+                   or _neq(rcd.site_pos_y[i], s.pos_y)
+                   or _neq(rcd.site_pos_z[i], s.pos_z)))
+        _fchk(site, ok, "size_0", not _neq(rcd.site_size_0[i], s.size_0))
+        site.add(ok)
+
+    # ⚠ CUMULATIVE — these tallies are threaded through every model, so this
+    # line is a RUNNING total, not this model's own. Deltas between lines are
+    # what a single model contributed.
+    print("  ", name, " geom", geom.bad, "/", geom.compared,
+          " light", light.bad, "/", light.compared,
+          " cam", cam.bad, "/", cam.compared,
+          " tex", tex.bad, "/", tex.compared,
+          " mat", mat.bad, "/", mat.compared,
+          " site", site.bad, "/", site.compared,
+          " mesh", mesh.bad, "/", mesh.compared)
 
 
 def _check[MODEL: ModelDefLike](
@@ -373,6 +722,83 @@ def test_render_data_matches_physics_data() raises:
         "sten-style ", materialize[StenStyleModel._rcd](),
         String(StenStyleModel.xml), n_vis)
     print("  <visual>/sten total mismatches:", n_vis)
+
+    # ── phase 1a.5b: the families NOTHING compared ────────────────────────
+    print("--- render asset families: _rcd vs FlatModelDef ---")
+    var g = FamilyTally()
+    var li = FamilyTally()
+    var ca = FamilyTally()
+    var tx = FamilyTally()
+    var ma = FamilyTally()
+    var si = FamilyTally()
+    var me = FamilyTally()
+
+    @parameter
+    def one[M: ModelDefLike](
+        nm: String, rcd: ComptimeRenderData, x: String
+    ) raises:
+        _check_assets[M](nm, rcd, x, g, li, ca, tx, ma, si, me)
+
+    one[DMQuadrupedWalkModel]("quadruped  ",
+        materialize[DMQuadrupedWalkModel._rcd](),
+        String(DMQuadrupedWalkModel.xml))
+    one[DMFishSwimModel]("fish       ",
+        materialize[DMFishSwimModel._rcd](),
+        String(DMFishSwimModel.xml))
+    one[DMBallInCupModel]("ball_in_cup",
+        materialize[DMBallInCupModel._rcd](),
+        String(DMBallInCupModel.xml))
+    one[DMHumanoidModel]("humanoid   ",
+        materialize[DMHumanoidModel._rcd](),
+        String(DMHumanoidModel.xml))
+    one[DMManipulatorBringBallModel]("manipulator",
+        materialize[DMManipulatorBringBallModel._rcd](),
+        String(DMManipulatorBringBallModel.xml))
+    one[DMWalkerModel]("walker     ",
+        materialize[DMWalkerModel._rcd](),
+        String(DMWalkerModel.xml))
+    # ⚠ THE ONLY MODEL HERE WITH `<mesh>` ASSETS — see the fixture.
+    one[MeshAssetModel]("mesh-asset ",
+        materialize[MeshAssetModel._rcd](),
+        String(MeshAssetModel.xml))
+
+    # ⚠⚠ SITES ARE REPORTED, NOT ASSERTED, AND THE DIRECTION IS VERIFIED.
+    # All 20 differing site rows are the COMPTIME side being wrong; the
+    # runtime side matches MuJoCo 3.10.0 on every one. Checked field by field
+    # against `mjModel.site_pos` / `site_size` / `site_bodyid` loaded from our
+    # own merged XML:
+    #
+    #   * quadruped `toe_*` (4) and humanoid's 7 marker sites — MuJoCo 0.084
+    #     and 0.01; runtime agrees, `_rcd` reports its own 0.005 DEFAULT
+    #     because it reads `size` off the site's tag and never resolves the
+    #     `<default>` class that supplies it.
+    #   * manipulator (7) — same cause for size, plus `pos`: a site declaring
+    #     only `name`/`group` inside `class="hand"` takes `pos=".022 0 -.002"`
+    #     from the class, which `_rcd` leaves at the origin.
+    #   * manipulator `palm_touch` / `pinch` — `_rcd` has the two SWAPPED
+    #     (bodies 5/4 where MuJoCo says 4/5), a DFS ordering bug of its own.
+    #
+    # So this row must NOT be forced to agree: making the runtime match `_rcd`
+    # would be making the surviving parser wrong to match the one being
+    # deleted (`feedback_the_reference_can_be_the_unconverged_one`). It is
+    # printed every run so the number moving is visible, and it goes to zero
+    # when `_rcd` does.
+    var bad = (g.bad + li.bad + ca.bad + tx.bad + ma.bad + me.bad)
+    print("  TOTALS (rows differing / rows compared, then WHICH field):")
+    # ⚠ VACUITY: a family with zero rows reports zero mismatches. `report`
+    # names any family that never ran rather than printing a clean 0.
+    g.report("geom  ")
+    li.report("light ")
+    ca.report("cam   ")
+    tx.report("tex   ")
+    ma.report("mat   ")
+    si.report("site  ")
+    me.report("mesh  ")
+    print("  (sites:", si.bad, "/", si.compared,
+          "differ — comptime-side defects, verified against MuJoCo; see note)")
+    assert_true(bad == 0,
+        "render asset families disagree between the two parsers in "
+        + String(bad) + " rows")
 
 
 def main() raises:

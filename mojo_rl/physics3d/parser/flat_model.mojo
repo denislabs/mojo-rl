@@ -281,6 +281,16 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     var priority: Int  # `<geom priority>`; higher wins ALL contact params
     var mesh_id: Int  # index into mesh hull data (-1 if not mesh geom)
     var mesh_filename: String  # STL filename for mesh geoms ("" if not mesh)
+    # `material="..."` AFTER the `<default>`/`childclass` chain is applied,
+    # and whether the geom (or its class) stated a colour of its own. Both are
+    # parse-time bookkeeping for `_resolve_geom_materials`, which turns the
+    # name into `material_id` and applies the material's colour only where
+    # `has_own_rgba` is False. They live on the record because the class chain
+    # is only in scope during the worldbody walk, and the post-pass that needs
+    # the answer runs long after it. See `_parse_one_geom` for what reading
+    # the tag alone cost.
+    var material_name: String
+    var has_own_rgba: Bool
 
     def __init__(
         out self,
@@ -322,7 +332,11 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         group: Int = 0,
         mesh_id: Int = -1,
         mesh_filename: String = "",
+        material_name: String = "",
+        has_own_rgba: Bool = False,
     ):
+        self.material_name = material_name
+        self.has_own_rgba = has_own_rgba
         self.body_id = body_id
         self.geom_type = geom_type
         self.pos_x = pos_x
@@ -514,6 +528,16 @@ struct TextureData(Copyable, ImplicitlyCopyable, Movable):
     var tex_type: Int  # TEX_SKYBOX / TEX_2D / TEX_CUBE
     var builtin: Int  # TEX_BUILTIN_* — procedural texture pattern
     var mark: Int  # TEX_MARK_* — overlay mark type
+    # `name` / `file` — the ASSET IDENTITY, added in phase 1a.5 because the
+    # render path needs both and neither was recorded here. `<material
+    # texture="grid">` is resolved to a `tex_id` by name at parse time, but
+    # `ModelDefFromXML.get_skybox_colors` and the PNG loader look the texture
+    # up by NAME at render time, and a `file=` texture is loaded from disk —
+    # so dropping these two makes the runtime record unable to drive the
+    # renderer even though every colour field is present. `_rcd.tex_names` /
+    # `tex_files` are what they replace.
+    var name: String
+    var file: String
     var rgb1_r: Float64
     var rgb1_g: Float64
     var rgb1_b: Float64  # primary colour (background / gradient start)
@@ -544,10 +568,14 @@ struct TextureData(Copyable, ImplicitlyCopyable, Movable):
         width: Int = 512,
         height: Int = 512,
         random: Float64 = 0.01,
+        name: String = "",
+        file: String = "",
     ):
         self.tex_type = tex_type
         self.builtin = builtin
         self.mark = mark
+        self.name = name
+        self.file = file
         self.rgb1_r = rgb1_r
         self.rgb1_g = rgb1_g
         self.rgb1_b = rgb1_b
@@ -719,6 +747,12 @@ struct CameraData(Copyable, ImplicitlyCopyable, Movable):
     var fovy: Float64  # vertical field of view in degrees
     var ipd: Float64  # interpupillary distance (stereo)
     var mode: Int  # CAM_MODE_*
+    # Body a `mode="targetbody"` camera aims at, resolved from `target="..."`
+    # at parse time; -1 when it has none. Resolved HERE and not at render time
+    # because the re-aim runs every frame and must not do string work — the
+    # same reason `_rcd.cam_target_body` exists, which this replaces. Without
+    # it a `targetbody` camera has a mode and nothing to point at.
+    var target_body: Int
 
     def __init__(
         out self,
@@ -733,6 +767,7 @@ struct CameraData(Copyable, ImplicitlyCopyable, Movable):
         fovy: Float64 = 45.0,
         ipd: Float64 = 0.068,
         mode: Int = CAM_MODE_FIXED,
+        target_body: Int = -1,
     ):
         self.body_id = body_id
         self.pos_x = pos_x
@@ -745,6 +780,7 @@ struct CameraData(Copyable, ImplicitlyCopyable, Movable):
         self.fovy = fovy
         self.ipd = ipd
         self.mode = mode
+        self.target_body = target_body
 
 
 # =============================================================================

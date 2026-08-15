@@ -3700,9 +3700,15 @@ struct ComptimeRenderData(Copyable, Movable):
         self.tex_names = InlineArray[String, MAX_COMPTIME_TEXTURES](fill=String(""))
         self.tex_files = InlineArray[String, MAX_COMPTIME_TEXTURES](fill=String(""))
         self.tex_mark = InlineArray[Int, MAX_COMPTIME_TEXTURES](fill=0)
-        self.tex_markrgb_r = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=1.0)
-        self.tex_markrgb_g = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=1.0)
-        self.tex_markrgb_b = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=1.0)
+        # ⚠ MuJoCo's default `markrgb` is "0 0 0" (XMLreference.rst:1798),
+        # not white. Latent — every texture in the tree that sets `mark=`
+        # also sets `markrgb=` — but a `mark="cross"` without one would have
+        # drawn WHITE crosses. The runtime `TextureData` had 0 all along;
+        # this was the comptime side disagreeing, found by a fixture because
+        # no model takes the default path.
+        self.tex_markrgb_r = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.0)
+        self.tex_markrgb_g = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.0)
+        self.tex_markrgb_b = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.0)
         self.tex_random = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.01)
 
         self.mat_rgba_r = InlineArray[Float64, MAX_COMPTIME_MATERIALS](fill=1.0)
@@ -3884,9 +3890,15 @@ struct ComptimeRenderData(Copyable, Movable):
         self.tex_names = InlineArray[String, MAX_COMPTIME_TEXTURES](fill=String(""))
         self.tex_files = InlineArray[String, MAX_COMPTIME_TEXTURES](fill=String(""))
         self.tex_mark = InlineArray[Int, MAX_COMPTIME_TEXTURES](fill=0)
-        self.tex_markrgb_r = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=1.0)
-        self.tex_markrgb_g = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=1.0)
-        self.tex_markrgb_b = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=1.0)
+        # ⚠ MuJoCo's default `markrgb` is "0 0 0" (XMLreference.rst:1798),
+        # not white. Latent — every texture in the tree that sets `mark=`
+        # also sets `markrgb=` — but a `mark="cross"` without one would have
+        # drawn WHITE crosses. The runtime `TextureData` had 0 all along;
+        # this was the comptime side disagreeing, found by a fixture because
+        # no model takes the default path.
+        self.tex_markrgb_r = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.0)
+        self.tex_markrgb_g = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.0)
+        self.tex_markrgb_b = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.0)
         self.tex_random = InlineArray[Float64, MAX_COMPTIME_TEXTURES](fill=0.01)
         for i in range(MAX_COMPTIME_TEXTURES):
             self.tex_type[i] = copy.tex_type[i]
