@@ -30,6 +30,18 @@ tests/arcade_games/test_pong_env.mojo
 # core in the physics3d sunset (e6043aca) — the manifest was never updated.
 tests/physics3d/test_fk_fields.mojo
 
+# ── physics3d: the phase-1b model-asset gates ────────────────────────
+# ⚠ `test_model_dims_vs_mujoco` matches the "*_vs_mujoco stays local" rule
+# above by NAME ONLY. That rule exists because references/ is gitignored and
+# absent on CI; this gate needs the `mujoco` PACKAGE (in the pixi cpu env) and
+# nothing from references/. Every mesh and texture the 56 models cite was
+# checked to be present AND git-tracked, so it runs here. Do not drop it for
+# matching the pattern.
+# The two share one dependency set (the 56 model modules), so the second is
+# nearly free once the first is compiled.
+tests/physics3d/test_xml_assets_match_source.mojo
+tests/physics3d/test_model_dims_vs_mujoco.mojo
+
 # NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
 #   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo
 #   pixi run -e apple mojo run -I . tests/envs/test_acrobot_cpu_vs_gpu_trajectory.mojo

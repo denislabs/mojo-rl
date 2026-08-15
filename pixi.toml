@@ -124,6 +124,12 @@ test-smoke = { cmd = "bash scripts/run_tests.sh tests/manifests/smoke.txt", desc
 examples-compile = { cmd = "bash scripts/run_tests.sh --compile-only tests/manifests/examples-compile.txt", description = "Compile-probe the root examples (CI)" }
 test-cpu = { cmd = "bash scripts/run_tests.sh --discover tests --cpu-only", description = "All non-GPU tests (slow)" }
 test-gpu = { cmd = "bash scripts/run_tests.sh --discover tests --gpu-only", description = "All *_gpu.mojo tests (use -e apple|nvidia)" }
+# Model dimensions are GENERATED from the .xml assets via MuJoCo. Editing a
+# VALUE in an asset needs no regeneration; adding or removing an element does,
+# because only that changes a count. Drift is silent — a stale count sizes a
+# slab wrong and the model still builds — so CI checks it on every push.
+gen-dims = { cmd = "python tools/gen_model_dims.py", description = "Regenerate mojo_rl/envs/**/*_dims.mojo from the .xml assets" }
+gen-dims-check = { cmd = "python tools/gen_model_dims.py --check", description = "Fail if any generated *_dims.mojo is stale (CI)" }
 format = { cmd = "mojo format -l 80 ." }
 # Dear ImGui shim for `mojo_rl/render/imgui/` (the ImGui dm_control viewer).
 # Clones ImGui into third_party/ on first run, then rebuilds only when stale.

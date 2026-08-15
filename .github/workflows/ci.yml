@@ -55,6 +55,24 @@ jobs:
       - name: smoke tier
         run: pixi run -e cpu test-smoke
 
+  model-dims:
+    # The comptime model dimensions are GENERATED from the .xml assets through
+    # MuJoCo. A stale generated file is silent by construction: the counts still
+    # compile, they just size the slabs for a model that no longer exists. This
+    # is seconds and needs no Mojo toolchain, so it runs on every push.
+    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.tier == 'smoke')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          environments: cpu
+          cache: true
+          cache-write: false
+      - name: generated dims are up to date
+        run: pixi run -e cpu gen-dims-check
+
   examples-compile:
     if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.tier == 'smoke')
     runs-on: ubuntu-latest
