@@ -27,17 +27,24 @@ the same XML string with the 3.10.0 runtime and reads `actuator_gainprm[0]`
 and `-actuator_biasprm[2]`, which is what our `motor_kp` / `motor_kv` mean.
 Tolerance is 0.0 — both sides parsed the same literal text.
 
-⚠ WHAT IT DOES NOT COVER. Only the COMPTIME parser (`xml_parser`), which is
-where actuators come from; `full_parser` carries no actuator table at all
-(`feedback_physics3d_two_parser_paths`). And only `<position>` — `<velocity>`
-and `<general>` were already 3-way and are re-gated here only as controls.
+⚠ WHAT IT GATES NOW. The RUNTIME parser (`full_parser` -> `FlatModelDef` ->
+`build_spec_fields` -> `SpecFields`), which is where actuators come from since
+phase 1a. This file used to say "only the COMPTIME parser; `full_parser`
+carries no actuator table at all" — that was true when it was written and
+stopped being true at 1a.1, which gave `full_parser` class resolution on the
+actuator path (`224135af`) and taught `<default>` blocks to see `<position>`
+at all. Still only `<position>`; `<velocity>` and `<general>` are re-gated
+here as controls.
 """
 
 from std.math import abs
 from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser.xml_parser import parse_xml_model_data
+from mojo_rl.physics3d.parser import parse_xml_full
+from mojo_rl.physics3d.parser.fields_build import build_spec_fields
+from mojo_rl.physics3d.fields import SpecFields
+from mojo_rl.physics3d.gpu.constants import ACT_IDX_KP, ACT_IDX_KV
 
 
 # ── A: the gain is on the actuator's OWN class, a direct child of <default>.
@@ -131,12 +138,23 @@ comptime X_VELOCITY_CLASS = """<mujoco>
   <actuator><velocity class="vel" name="a" joint="j" ctrlrange="-1 1"/></actuator>
 </mujoco>"""
 
-comptime A = parse_xml_model_data[1, 1, 1, 1, 1](X_OWN_CLASS)
-comptime B = parse_xml_model_data[1, 1, 1, 1, 1](X_GRANDPARENT)
-comptime C = parse_xml_model_data[1, 1, 1, 1, 1](X_ROOT)
-comptime D = parse_xml_model_data[1, 1, 1, 1, 1](X_ELEMENT_WINS)
-comptime E = parse_xml_model_data[1, 1, 1, 1, 1](X_DEFAULTS)
-comptime F = parse_xml_model_data[1, 1, 1, 1, 1](X_VELOCITY_CLASS)
+# ⚠ THE SIX `comptime` PARSES ARE GONE WITH THE COMPTIME PARSER. Each fixture
+# is now read at RUNTIME, once, inside the test that uses it — which is also
+# six fewer comptime-interpreted XML scans in this file's build.
+#
+# Every fixture is one actuator, one joint, one dof, no tendons, no keyframes,
+# so all six record dims are 1. `build_spec_fields` checks the actuator count
+# EXACTLY and the rest as capacities, so a fixture that grew a second actuator
+# would raise here rather than be silently truncated.
+def _gains(xml: String) raises -> Tuple[Float64, Float64]:
+    """`(kp, kv)` of actuator 0, off the records the engine reads."""
+    var fmd = parse_xml_full(xml)
+    var sf = SpecFields[DType.float64, 1, 1, 1, 1, 1, 1]()
+    build_spec_fields[DType.float64, 1, 1, 1, 1, 1, 1](fmd, sf)
+    return (
+        Float64(sf.actuators.data[ACT_IDX_KP]),
+        Float64(sf.actuators.data[ACT_IDX_KV]),
+    )
 
 
 def _check(name: String, xml: String, kp: Float64, kv: Float64) raises:
@@ -164,32 +182,32 @@ def _check(name: String, xml: String, kp: Float64, kv: Float64) raises:
 
 def test_gain_on_own_class() raises:
     """The discriminating case: one class, no nesting. Was kp 1.0."""
-    _check("own-class    ", X_OWN_CLASS,
-           materialize[A.motor_kp]()[0], materialize[A.motor_kv]()[0])
+    var g = _gains(X_OWN_CLASS)
+    _check("own-class    ", X_OWN_CLASS, g[0], g[1])
 
 
 def test_gain_on_grandparent_class() raises:
     """SO-ARM100's shape — the actuator names a nested child of the setter."""
-    _check("grandparent  ", X_GRANDPARENT,
-           materialize[B.motor_kp]()[0], materialize[B.motor_kv]()[0])
+    var g = _gains(X_GRANDPARENT)
+    _check("grandparent  ", X_GRANDPARENT, g[0], g[1])
 
 
 def test_gain_at_root_default() raises:
     """The third level: `<default><position .../></default>`, no class."""
-    _check("root-default ", X_ROOT,
-           materialize[C.motor_kp]()[0], materialize[C.motor_kv]()[0])
+    var g = _gains(X_ROOT)
+    _check("root-default ", X_ROOT, g[0], g[1])
 
 
 def test_element_still_wins_over_class() raises:
     """Precedence, which resolving 3-way could plausibly have inverted."""
-    _check("element-wins ", X_ELEMENT_WINS,
-           materialize[D.motor_kp]()[0], materialize[D.motor_kv]()[0])
+    var g = _gains(X_ELEMENT_WINS)
+    _check("element-wins ", X_ELEMENT_WINS, g[0], g[1])
 
 
 def test_untouched_defaults_are_mujocos() raises:
     """kp 1 / kv 0 when nothing sets them — the fallback must survive."""
-    _check("no-decl      ", X_DEFAULTS,
-           materialize[E.motor_kp]()[0], materialize[E.motor_kv]()[0])
+    var g = _gains(X_DEFAULTS)
+    _check("no-decl      ", X_DEFAULTS, g[0], g[1])
 
 
 def test_velocity_class_still_resolves() raises:
@@ -199,8 +217,8 @@ def test_velocity_class_still_resolves() raises:
     the same number — so this also checks the shared helper did not start
     handing the two branches different answers.
     """
-    _check("velocity-cls ", X_VELOCITY_CLASS,
-           materialize[F.motor_kp]()[0], materialize[F.motor_kv]()[0])
+    var g = _gains(X_VELOCITY_CLASS)
+    _check("velocity-cls ", X_VELOCITY_CLASS, g[0], g[1])
 
 
 def main() raises:
