@@ -32,6 +32,7 @@ from .xml_parser import (
     _trim,
     _parse_float,
     _nth_float,
+    _find_tag,
     _parse_int_str,
     _parse_vec3,
     _parse_quat,
@@ -3308,6 +3309,174 @@ def _default_class_tag(xml: String, cls: String, tag_name: String) -> String:
     return String("")
 
 
+def _fill_qpos0(xml: String, mut result: FlatModelDef) raises:
+    """Initial pose. Mirrors `xml_parser.parse_xml_model_data` (`:4504`,
+    `:4520`, `:4554`) in that order:
+
+      1. each joint's `ref` at its qpos address (`ref_val` is ALREADY
+         deg-converted by `_fill_model`),
+      2. a free joint's enclosing body `pos` into adr..adr+2 — taken here from
+         `JointData.body_id` rather than by re-scanning the worldbody text for
+         the nearest preceding `<body`, which is what the twin does,
+      3. `<custom><numeric name="init_qpos">` OVERRIDING both, and setting
+         `qpos0_nq` to its own length.
+
+    When nothing overrides, `qpos0_nq` is the total qpos width and a free
+    joint gets qw = 1 at adr+3 so FK does not start on a zero quaternion.
+    """
+    var q = 0
+    for i in range(len(result.joints)):
+        q += result.joints[i].nq
+    result.qpos0 = List[Float64](length=q if q > 0 else 1, fill=0.0)
+
+    var adr = 0
+    for i in range(len(result.joints)):
+        var jd = result.joints[i]
+        if jd.jnt_type == JNT_FREE:
+            if result.free_joint_qpos_adr == -1:
+                result.free_joint_qpos_adr = adr
+            # ⚠ `body_id` IS WORLD-INCLUSIVE (`this_body_id = body_count + 1`,
+            # worldbody = 0) while `result.bodies` EXCLUDES the worldbody, so
+            # the list index is `body_id - 1`. Indexing directly put
+            # quadruped's free joint on `hip_front_left` (pos .2 .2 0) instead
+            # of `torso` (pos 0 0 .57) — a plausible-looking pose, one body
+            # off, and nothing but the differential gate would have said so.
+            var b = jd.body_id - 1
+            if b >= 0 and b < len(result.bodies) and adr + 2 < q:
+                result.qpos0[adr + 0] = result.bodies[b].pos_x
+                result.qpos0[adr + 1] = result.bodies[b].pos_y
+                result.qpos0[adr + 2] = result.bodies[b].pos_z
+        elif adr < q:
+            result.qpos0[adr] = jd.ref_val
+        adr += jd.nq
+
+    # <custom><numeric name="init_qpos" data="..."/> overrides everything.
+    var custom_sec = _extract_section(xml, "custom")
+    var found = False
+    if custom_sec.byte_length() > 0:
+        var num_pos = 0
+        while True:
+            var t = custom_sec.find("<numeric", num_pos)
+            if t == -1:
+                break
+            var tag_end = custom_sec.find(">", t)
+            if tag_end == -1:
+                break
+            var tag = String(custom_sec[byte = t : tag_end + 1])
+            if _trim(_extract_attr(tag, "name")) == "init_qpos":
+                var parts = List[String]()
+                _split_spaces(_extract_attr(tag, "data"), parts)
+                var count = len(parts)
+                if count > 64:  # the twin's cap; kept so the two agree
+                    count = 64
+                for i in range(count):
+                    if i < len(result.qpos0):
+                        result.qpos0[i] = _parse_float(parts[i])
+                result.qpos0_nq = count
+                found = True
+                break
+            num_pos = t + 7
+
+    if not found and q > 0:
+        result.qpos0_nq = q
+        # qw = 1 for a free joint's identity quaternion.
+        if result.free_joint_qpos_adr >= 0:
+            var qw = result.free_joint_qpos_adr + 3
+            if qw < len(result.qpos0):
+                result.qpos0[qw] = 1.0
+
+
+def _fill_keyframes(xml: String, mut result: FlatModelDef) raises:
+    """`<keyframe><key time= qpos= qvel= ctrl=>`, mirroring
+    `xml_parser.parse_xml_model_data` (`:4612`).
+
+    ⚠ `act` / `mpos` / `mquat` are REFUSED (code 2), not dropped. A silently
+    ignored `act` would be a wrong actuator state with nothing to notice it.
+    """
+    var kf_sec = _extract_section(xml, "keyframe")
+    if kf_sec.byte_length() == 0:
+        return
+
+    var nq = 0
+    for i in range(len(result.joints)):
+        nq += result.joints[i].nq
+    var nact = len(result.actuators)
+    var stride_q = nq if nq > 0 else 1
+    var stride_c = nact if nact > 0 else 1
+
+    var kpos = 0
+    while True:
+        # ⚠ `_find_tag`, NOT `find`. `"<key"` is a PREFIX of `"<keyframe"`, so
+        # a raw find matches the section's own opening tag and invents a
+        # phantom key — measured on so_arm100: nkey 3 against the twin's 2.
+        # `_find_tag` checks the delimiter after the marker.
+        var t = _find_tag(kf_sec, "<key", kpos)
+        if t == -1:
+            break
+        var tag_end = kf_sec.find(">", t)
+        if tag_end == -1:
+            break
+        var ktag = String(kf_sec[byte = t : tag_end + 1])
+        kpos = tag_end + 1
+
+        if (
+            _trim(_extract_attr(ktag, "act")).byte_length() > 0
+            or _trim(_extract_attr(ktag, "mpos")).byte_length() > 0
+            or _trim(_extract_attr(ktag, "mquat")).byte_length() > 0
+        ):
+            result.bad_keyframe_code = 2
+            break
+
+        result.key_time.append(0.0)
+        result.key_nqpos.append(0)
+        result.key_nqvel.append(0)
+        result.key_nctrl.append(0)
+        for _ in range(stride_q):
+            result.key_qpos.append(0.0)
+            result.key_qvel.append(0.0)
+        for _ in range(stride_c):
+            result.key_ctrl.append(0.0)
+        var k = result.nkey
+        result.nkey += 1
+
+        var ktime = _trim(_extract_attr(ktag, "time"))
+        if ktime.byte_length() > 0:
+            result.key_time[k] = _parse_float(ktime)
+
+        var kq = _trim(_extract_attr(ktag, "qpos"))
+        if kq.byte_length() > 0:
+            var pq = List[String]()
+            _split_spaces(kq, pq)
+            var n = len(pq)
+            if n > stride_q:
+                n = stride_q
+            for i in range(n):
+                result.key_qpos[k * stride_q + i] = _parse_float(pq[i])
+            result.key_nqpos[k] = len(pq)
+
+        var kv = _trim(_extract_attr(ktag, "qvel"))
+        if kv.byte_length() > 0:
+            var pv = List[String]()
+            _split_spaces(kv, pv)
+            var n2 = len(pv)
+            if n2 > stride_q:
+                n2 = stride_q
+            for i in range(n2):
+                result.key_qvel[k * stride_q + i] = _parse_float(pv[i])
+            result.key_nqvel[k] = len(pv)
+
+        var kc = _trim(_extract_attr(ktag, "ctrl"))
+        if kc.byte_length() > 0:
+            var pc = List[String]()
+            _split_spaces(kc, pc)
+            var n3 = len(pc)
+            if n3 > stride_c:
+                n3 = stride_c
+            for i in range(n3):
+                result.key_ctrl[k * stride_c + i] = _parse_float(pc[i])
+            result.key_nctrl[k] = len(pc)
+
+
 def _fill_actuator_transmission(mut result: FlatModelDef):
     """Fill `dof_adr` / `trn_*` once joints AND tendons both exist.
 
@@ -4141,6 +4310,11 @@ xml_in: String) raises -> FlatModelDef:
     # Actuator transmission: needs BOTH joints and tendons, so it runs here
     # rather than inside `_fill_actuators`.
     _fill_actuator_transmission(result)
+
+    # Initial pose and keyframes: both need joints (and keyframes need the
+    # actuator count for the ctrl stride), so they run here.
+    _fill_qpos0(xml, result)
+    _fill_keyframes(xml, result)
     # AFTER the tendons exist — this marks them by name. Note it is NOT
     # gated on NEQ: a tendon equality does not occupy an EqualityData
     # slot (it lives on the tendon record), so quadruped has neq==0 while

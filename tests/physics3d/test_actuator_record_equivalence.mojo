@@ -74,6 +74,9 @@ from mojo_rl.envs.dm_control.manipulation_reach_def import (
     ReachSiteFeaturesModel,
 )
 from mojo_rl.envs.dm_control.fish.fish_xml import DMFishSwimModel
+from mojo_rl.envs.dm_control.finger.finger_xml import DMFingerSpinModel
+from mojo_rl.envs.ant.ant_xml import AntModel
+from mojo_rl.envs.robots.so_arm100_xml import SoArm100Model
 
 
 @fieldwise_init
@@ -633,6 +636,195 @@ def test_fish() raises:
         dofa, trnn, tq, td_, tc, M._WRAPS,
         kps, kvs, materialize[acd.bad_actuator](),
         ten_k, ten_lo, ten_hi, materialize[acd.ntendon](),
+    )
+
+
+def _compare_pose(
+    name: String,
+    xml: String,
+    qpos0: List[Float64],
+    nq_acd: Int,
+    fj_adr: Int,
+    ktime: List[Float64],
+    knqpos: List[Int],
+    kqpos: List[Float64],
+    kctrl: List[Float64],
+    nkey_acd: Int,
+    nq0: Int,
+    nact0: Int,
+) raises:
+    """Model-level records: qpos0 and keyframes.
+
+    Separate from `_compare` because these are per-MODEL, not per-actuator,
+    and threading them through that signature would have made it unreadable
+    for no gain.
+    """
+    var fmd = parse_xml_full(xml)
+    print("---  ", name, "  ---")
+    print("    qpos0_nq: runtime =", fmd.qpos0_nq, " _acd =", nq_acd)
+    print("    free_joint_qpos_adr: runtime =", fmd.free_joint_qpos_adr,
+          " _acd =", fj_adr)
+    print("    nkey: runtime =", fmd.nkey, " _acd =", nkey_acd)
+
+    var n_q = 0
+    var nq_cmp = fmd.qpos0_nq if fmd.qpos0_nq < nq_acd else nq_acd
+    var q_nonzero = False
+    for i in range(nq_cmp):
+        if i < len(fmd.qpos0) and i < len(qpos0):
+            if abs(fmd.qpos0[i] - qpos0[i]) > 0.0:
+                n_q += 1
+            if qpos0[i] != 0.0:
+                q_nonzero = True
+    if n_q > 0:  # kept: a count alone does not show WHICH way it is wrong
+        for i in range(nq_cmp if nq_cmp < 8 else 8):
+            print("        qpos0[", i, "] runtime", fmd.qpos0[i],
+                  " _acd", qpos0[i])
+    print("    qpos0 mismatches =", n_q, " over", nq_cmp,
+          " (any non-zero entry:", q_nonzero, ")")
+    if not q_nonzero and nq_cmp > 0:
+        print("  ⚠ qpos0 is ALL ZERO here — this row is VACUOUS")
+
+    var n_k = 0
+    var k_nonzero = False
+    var nk = fmd.nkey if fmd.nkey < nkey_acd else nkey_acd
+    for k in range(nk):
+        if abs(fmd.key_time[k] - ktime[k]) > 0.0:
+            n_k += 1
+        if fmd.key_nqpos[k] != knqpos[k]:
+            n_k += 1
+        for i in range(nq0):
+            var a = fmd.key_qpos[k * nq0 + i] if k * nq0 + i < len(
+                fmd.key_qpos
+            ) else 0.0
+            var b = kqpos[k * nq0 + i]
+            if abs(a - b) > 0.0:
+                n_k += 1
+            if b != 0.0:
+                k_nonzero = True
+        for i in range(nact0):
+            var a2 = fmd.key_ctrl[k * nact0 + i] if k * nact0 + i < len(
+                fmd.key_ctrl
+            ) else 0.0
+            if abs(a2 - kctrl[k * nact0 + i]) > 0.0:
+                n_k += 1
+    print("    keyframe mismatches =", n_k, " over", nk,
+          "keys (any non-zero key qpos:", k_nonzero, ")")
+    if nkey_acd == 0:
+        print("  ⚠ no <keyframe> here — the keyframe rows are VACUOUS")
+
+    assert_true(fmd.qpos0_nq == nq_acd,
+        String(name, ": qpos0_nq runtime ", fmd.qpos0_nq, " vs `_acd` ",
+               nq_acd))
+    assert_true(fmd.free_joint_qpos_adr == fj_adr,
+        String(name, ": free_joint_qpos_adr runtime ",
+               fmd.free_joint_qpos_adr, " vs `_acd` ", fj_adr))
+    assert_true(n_q == 0, String(name, ": qpos0 disagrees in ", n_q))
+    assert_true(fmd.nkey == nkey_acd,
+        String(name, ": nkey runtime ", fmd.nkey, " vs `_acd` ", nkey_acd))
+    assert_true(n_k == 0, String(name, ": keyframes disagree in ", n_k))
+
+
+def test_pose_finger() raises:
+    comptime M = DMFingerSpinModel
+    comptime acd = materialize[M._acd]()
+    var qp = List[Float64]()
+    comptime for i in range(M._NQ0):
+        qp.append(materialize[acd.qpos0[i]]())
+    var kt = List[Float64]()
+    var knq = List[Int]()
+    comptime for k in range(acd.NKEYS):
+        kt.append(materialize[acd.key_time[k]]())
+        knq.append(materialize[acd.key_nqpos[k]]())
+    var kq = List[Float64]()
+    comptime for i in range(acd.NKEYS * M._NQ0):
+        kq.append(materialize[acd.key_qpos[i]]())
+    var kc = List[Float64]()
+    comptime for i in range(acd.NKEYS * M._NACT):
+        kc.append(materialize[acd.key_ctrl[i]]())
+    _compare_pose(
+        "finger spin (joint ref=-90 -> -pi/2, the deg-conversion case)",
+        String(M.xml), qp, materialize[acd.nq](),
+        materialize[acd.free_joint_qpos_adr](),
+        kt, knq, kq, kc, materialize[acd.nkey](),
+        M._NQ0, M._NACT,
+    )
+
+
+def test_pose_ant() raises:
+    comptime M = AntModel
+    comptime acd = materialize[M._acd]()
+    var qp = List[Float64]()
+    comptime for i in range(M._NQ0):
+        qp.append(materialize[acd.qpos0[i]]())
+    var kt = List[Float64]()
+    var knq = List[Int]()
+    comptime for k in range(acd.NKEYS):
+        kt.append(materialize[acd.key_time[k]]())
+        knq.append(materialize[acd.key_nqpos[k]]())
+    var kq = List[Float64]()
+    comptime for i in range(acd.NKEYS * M._NQ0):
+        kq.append(materialize[acd.key_qpos[i]]())
+    var kc = List[Float64]()
+    comptime for i in range(acd.NKEYS * M._NACT):
+        kc.append(materialize[acd.key_ctrl[i]]())
+    _compare_pose(
+        "ant (<custom> init_qpos OVERRIDES the joint refs)",
+        String(M.xml), qp, materialize[acd.nq](),
+        materialize[acd.free_joint_qpos_adr](),
+        kt, knq, kq, kc, materialize[acd.nkey](),
+        M._NQ0, M._NACT,
+    )
+
+
+def test_pose_so_arm100() raises:
+    comptime M = SoArm100Model
+    comptime acd = materialize[M._acd]()
+    var qp = List[Float64]()
+    comptime for i in range(M._NQ0):
+        qp.append(materialize[acd.qpos0[i]]())
+    var kt = List[Float64]()
+    var knq = List[Int]()
+    comptime for k in range(acd.NKEYS):
+        kt.append(materialize[acd.key_time[k]]())
+        knq.append(materialize[acd.key_nqpos[k]]())
+    var kq = List[Float64]()
+    comptime for i in range(acd.NKEYS * M._NQ0):
+        kq.append(materialize[acd.key_qpos[i]]())
+    var kc = List[Float64]()
+    comptime for i in range(acd.NKEYS * M._NACT):
+        kc.append(materialize[acd.key_ctrl[i]]())
+    _compare_pose(
+        "so_arm100 (the ONLY model with a <keyframe>)",
+        String(M.xml), qp, materialize[acd.nq](),
+        materialize[acd.free_joint_qpos_adr](),
+        kt, knq, kq, kc, materialize[acd.nkey](),
+        M._NQ0, M._NACT,
+    )
+
+
+def test_pose_quadruped_pose() raises:
+    comptime M = DMQuadrupedWalkModel
+    comptime acd = materialize[M._acd]()
+    var qp = List[Float64]()
+    comptime for i in range(M._NQ0):
+        qp.append(materialize[acd.qpos0[i]]())
+    var kt = List[Float64]()
+    var knq = List[Int]()
+    comptime for k in range(acd.NKEYS):
+        kt.append(materialize[acd.key_time[k]]())
+        knq.append(materialize[acd.key_nqpos[k]]())
+    var kq = List[Float64]()
+    comptime for i in range(acd.NKEYS * M._NQ0):
+        kq.append(materialize[acd.key_qpos[i]]())
+    var kc = List[Float64]()
+    comptime for i in range(acd.NKEYS * M._NACT):
+        kc.append(materialize[acd.key_ctrl[i]]())
+    _compare_pose(
+        "quadruped (free joint -> body pos + qw=1)",
+        String(M.xml), qp, materialize[acd.nq](),
+        materialize[acd.free_joint_qpos_adr](),
+        kt, knq, kq, kc, materialize[acd.nkey](),
+        M._NQ0, M._NACT,
     )
 
 

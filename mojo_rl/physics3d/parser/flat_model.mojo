@@ -1577,6 +1577,38 @@ struct FlatModelDef(Movable):
     #   1 biastype not none/affine 3 biasprm[1] not in {-gain, 0}
     var bad_actuator: Int
     var bad_actuator_code: Int
+    # ── qpos0 / initial pose ─────────────────────────────────────────────
+    # Three sources, in this order (`xml_parser.mojo:4504`, `:4520`, `:4554`):
+    #   1. each joint's `ref`, already deg-converted, at its qpos address
+    #   2. a free joint's enclosing body `pos` into adr..adr+2, and qw=1 at
+    #      adr+3 when no explicit init_qpos overrides
+    #   3. `<custom><numeric name="init_qpos" data=...>` OVERRIDING both
+    # `qpos0_nq` mirrors `ComptimeActData.nq`: how many entries are
+    # meaningful, NOT the model's nq. `reset_data` applies them only when > 0.
+    var qpos0: List[Float64]
+    var qpos0_nq: Int
+    var free_joint_qpos_adr: Int
+    # ── <keyframe> ───────────────────────────────────────────────────────
+    # ⚠ RECORDED, NOT APPLIED — `mj_resetData` ignores keyframes and so must
+    # `reset_data` (`feedback_a_keyframe_is_not_a_reset_pose`).
+    # Row strides: `qpos` AND `qvel` both stride by nq (mirroring the twin,
+    # which uses NQ0 for both); `ctrl` strides by nact.
+    # ⚠ A wrong-length attribute is REJECTED, not padded — MuJoCo pads from
+    # the RAW pre-unit-conversion attribute, which is not worth reproducing,
+    # and 145 of 145 Menagerie keyframe attributes are exactly full length.
+    var nkey: Int
+    var key_time: List[Float64]
+    var key_nqpos: List[Int]
+    var key_nqvel: List[Int]
+    var key_nctrl: List[Int]
+    var key_qpos: List[Float64]
+    var key_qvel: List[Float64]
+    var key_ctrl: List[Float64]
+    # 2 = a key carried act/mpos/mquat, which are refused rather than dropped.
+    # ⚠ The twin's code 1 (over MAX_COMPTIME_KEYFRAMES) CANNOT occur here: a
+    # `List` does not truncate. Same reason `MAX_NAMED_DEFAULTS` stopped being
+    # a failure mode.
+    var bad_keyframe_code: Int
     var motor_trn_qadr: List[Int]
     var motor_trn_dadr: List[Int]
     var motor_trn_coef: List[Float64]
@@ -1596,6 +1628,18 @@ struct FlatModelDef(Movable):
         self.na = 0
         self.bad_actuator = -1
         self.bad_actuator_code = -1
+        self.qpos0 = List[Float64]()
+        self.qpos0_nq = 0
+        self.free_joint_qpos_adr = -1
+        self.nkey = 0
+        self.key_time = List[Float64]()
+        self.key_nqpos = List[Int]()
+        self.key_nqvel = List[Int]()
+        self.key_nctrl = List[Int]()
+        self.key_qpos = List[Float64]()
+        self.key_qvel = List[Float64]()
+        self.key_ctrl = List[Float64]()
+        self.bad_keyframe_code = 0
         self.motor_trn_qadr = List[Int]()
         self.motor_trn_dadr = List[Int]()
         self.motor_trn_coef = List[Float64]()
