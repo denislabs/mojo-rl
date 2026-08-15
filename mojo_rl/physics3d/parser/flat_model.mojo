@@ -324,9 +324,20 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         margin: Float64 = 0.0,
         density: Float64 = 1000.0,
         mass: Float64 = -1.0,
-        rgba_r: Float64 = 0.7,
-        rgba_g: Float64 = 0.7,
-        rgba_b: Float64 = 0.7,
+        # ⚠ MuJoCo's geom `rgba` default is "0.5 0.5 0.5 1"
+        # (XMLreference.rst:2632), NOT 0.7 grey. Ours was 0.7, so every geom
+        # carrying neither an `rgba` nor a `material` drew lighter than
+        # MuJoCo draws it. Found by the MuJoCo parity gate in 1a.5c; the
+        # consistency gate could not see it because BOTH our parsers used
+        # 0.7 and agreed.
+        #
+        # ⚠⚠ THIS VALUE IS ALSO A SENTINEL, not just a fallback. MuJoCo
+        # applies a material's colour unless the geom's own rgba DIFFERS FROM
+        # THIS DEFAULT (XMLreference.rst:2623), so `_resolve_geom_materials`
+        # tests against it. Changing it silently changes that rule.
+        rgba_r: Float64 = 0.5,
+        rgba_g: Float64 = 0.5,
+        rgba_b: Float64 = 0.5,
         rgba_a: Float64 = 1.0,
         material_id: Int = -1,
         group: Int = 0,

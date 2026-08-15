@@ -905,12 +905,26 @@ def _geom_type_from_str(s: String) -> Int:
 
 
 def _tex_type_from_str(s: String) -> Int:
+    """`<texture type=>`. ⚠ THE DEFAULT IS `cube`, NOT `2d`.
+
+    MuJoCo's XMLreference.rst:1644 gives `[2d, cube, skybox], "cube"`. Both
+    our parsers returned 2d for an absent `type`, so every texture that does
+    not name one was mistyped — quadruped's `ball` is exactly that
+    (`<texture name="ball" builtin="checker" mark="cross" .../>`), and MuJoCo
+    reports `tex_type = 1` (cube) against our 2d.
+
+    Found by the MuJoCo parity gate in phase 1a.5c, i.e. by the gate written
+    to REPLACE the consistency gate that was about to be deleted with `_rcd`.
+    The consistency gate could never have found it: both parsers had the same
+    wrong default and agreed perfectly
+    (`feedback_a_gate_that_shares_its_reference_implementation_is_blind`).
+    """
     var t = _trim(s)
     if t == "skybox":
         return TEX_SKYBOX
-    elif t == "cube":
-        return TEX_CUBE
-    return TEX_2D  # default
+    elif t == "2d":
+        return TEX_2D
+    return TEX_CUBE
 
 
 def _tex_builtin_from_str(s: String) -> Int:
@@ -4177,6 +4191,20 @@ def _fill_pairs(
         scan_pos = tag_end + 1 if tag_end != -1 else np + 1
 
 
+def _is_default_geom_rgba(g: GeomData) -> Bool:
+    """Is this geom's colour still MuJoCo's `"0.5 0.5 0.5 1"` default?
+
+    MuJoCo decides whether a material's colour applies by comparing against
+    this exact value rather than by remembering whether the user wrote one
+    (XMLreference.rst:2623). Kept as one named predicate so the constant lives
+    beside the rule that reads it.
+    """
+    return (
+        g.rgba_r == 0.5 and g.rgba_g == 0.5
+        and g.rgba_b == 0.5 and g.rgba_a == 1.0
+    )
+
+
 def _resolve_geom_materials(
 
     asset_sec: String,
@@ -4202,10 +4230,17 @@ def _resolve_geom_materials(
             continue
         var mid = _find_material_index_by_name(asset_sec, mat_name)
         result.geoms[gi].material_id = mid
-        # The material's colour applies only where neither the geom nor its
-        # class stated one.
+        # ⚠ MuJoCo'S RULE IS A VALUE TEST, NOT A "WAS IT SPECIFIED" FLAG:
+        # the material's colour applies unless the geom's own rgba DIFFERS
+        # FROM ITS INTERNAL DEFAULT (XMLreference.rst:2623). That is a
+        # different rule from `has_own_rgba`, and the difference is
+        # observable — a geom writing `rgba="0.5 0.5 0.5 1"` explicitly takes
+        # the MATERIAL colour in MuJoCo and would have kept its own here.
+        # `has_own_rgba` stays on the record because `_parse_one_geom` still
+        # needs it to distinguish a class-supplied colour from an absent one
+        # when the class itself sets the default value.
         if (
-            not result.geoms[gi].has_own_rgba
+            _is_default_geom_rgba(result.geoms[gi])
             and mid >= 0
             and mid < len(result.materials)
         ):
