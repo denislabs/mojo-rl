@@ -4308,7 +4308,8 @@ def _fill_visual(xml: String, mut result: FlatModelDef) raises:
 
 
 def parse_xml_full(
-xml_in: String) raises -> FlatModelDef:
+    xml_in: String, base_dir: String = ""
+) raises -> FlatModelDef:
     """Full MJCF parse: returns a populated FlatModelDef.
 
     ⚠ NON-GENERIC since 2026-08-05. It used to take the fourteen dimensions as
@@ -4475,10 +4476,11 @@ xml_in: String) raises -> FlatModelDef:
     #     assetdir="." meshdir="m" -> m/       (meshdir WINS)
     #     absolute meshdir         -> used as-is
     #
-    # ⚠ MuJoCo resolves the directory relative to the MODEL FILE. We parse a
-    # STRING and have no file path, so the base here is the PROCESS CWD. That
-    # is a real difference, stated rather than papered over: every ported model
-    # already uses repo-root-relative paths and is run from the repo root.
+    # ⚠ MuJoCo resolves the directory relative to the MODEL FILE. When this
+    # parser is handed a bare STRING there is no such directory and the base
+    # is the PROCESS CWD — which is what every repo-root-relative ported model
+    # relies on. Pass `base_dir` to get MuJoCo's rule instead; see the block
+    # below `effective_dir`.
     #
     # ⚠ `texturedir` is NOT handled. Textures are renderer-only and no ported
     # model loads one from disk; adding it belongs with whatever first needs it.
@@ -4492,6 +4494,43 @@ xml_in: String) raises -> FlatModelDef:
             # An absolute path ignores meshdir, as MuJoCo does.
             if f.byte_length() > 0 and not f.startswith("/"):
                 result.mesh_asset_files[i] = base + f
+
+    # ── `base_dir`: WHAT A RELATIVE ASSET PATH IS RELATIVE TO ─────────────
+    #
+    # MuJoCo resolves `meshdir` and a bare `file=` against THE DIRECTORY OF
+    # THE MODEL FILE. This parser is handed a STRING, so it historically had
+    # no such directory and fell back to the process CWD — which is why every
+    # ported model carries repo-root-relative paths and why
+    # `mujoco.MjModel.from_xml_path()` CANNOT load our own assets (it looks
+    # beside the .xml and finds nothing). Measured, not assumed:
+    # `from_xml_path('mojo_rl/envs/robots/assets/so_arm100.xml')` raises
+    # "Error opening file 'mojo_rl/envs/robots/assets/so_arm100/Base.stl'".
+    #
+    # `base_dir` supplies that directory. Callers that read the model FROM A
+    # FILE pass its dirname and get MuJoCo's semantics; callers that still
+    # hand over a bare string pass "" and get exactly today's CWD behaviour,
+    # which is why this is inert until a caller opts in.
+    #
+    # ⚠ ABSOLUTE PATHS ESCAPE, at both levels — a `meshdir="/opt/..."` or a
+    # `file="/opt/..."` is used as-is, as MuJoCo does.
+    #
+    # ⚠ TEXTURES ARE PREFIXED HERE TOO, and they get no `meshdir`. MuJoCo
+    # would consult `texturedir` then `assetdir`; neither is handled (no
+    # ported model uses one for a texture), so a texture resolves against the
+    # model directory alone. Adding `texturedir` belongs with whatever first
+    # needs it.
+    if base_dir.byte_length() > 0:
+        var bd = base_dir
+        if not bd.endswith("/"):
+            bd = bd + "/"
+        for i in range(len(result.mesh_asset_files)):
+            var f = result.mesh_asset_files[i]
+            if f.byte_length() > 0 and not f.startswith("/"):
+                result.mesh_asset_files[i] = bd + f
+        for i in range(len(result.textures)):
+            var tf = result.textures[i].file
+            if tf.byte_length() > 0 and not tf.startswith("/"):
+                result.textures[i].file = bd + tf
 
     # Single DFS pass: bodies + joints + geoms + lights + cameras + sites
     _fill_model(worldbody, defaults, named_defaults, result, deg_factor, eulerseq)
