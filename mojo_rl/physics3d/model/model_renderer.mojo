@@ -14,6 +14,7 @@ from mojo_rl.render.light import Light
 from mojo_rl.core import EnvRenderer3D
 
 from . import ModelDefLike
+from ..parser.render_fields import RenderFields
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
@@ -30,6 +31,15 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     Parameters:
         MODEL_DEF: ModelDefLike type defining the model's definition.
     """
+
+    var rf: RenderFields
+    """The model's render records, built ONCE here.
+
+    ⚠ ONCE, NOT PER FRAME. This is what `ModelDefFromXML._rcd` was — data the
+    comptime interpreter produced at build time, so reading it cost nothing at
+    runtime. Now that it comes from `parse_xml_full`, rebuilding it inside
+    `render_frame` would re-parse the whole MJCF every frame. The hooks take
+    it as an argument for exactly this reason."""
 
     var renderer: Renderer3D
     var initialized: Bool
@@ -97,9 +107,12 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         show_fog: Bool = False,
         title: String = String("Model Environment"),
     ) raises:
+        # ⚠ BEFORE ANY HOOK — every one of them reads it.
+        var rf = Self.MODEL_DEF.make_render_fields()
+
         # Setup all cameras from spec (fallback to default if none defined)
-        var cam_list = Self.MODEL_DEF.setup_cameras(width, height)
-        var mode_list = Self.MODEL_DEF.setup_camera_modes()
+        var cam_list = Self.MODEL_DEF.setup_cameras(rf, width, height)
+        var mode_list = Self.MODEL_DEF.setup_camera_modes(rf)
         self.cameras = List[Camera3D]()
         self.camera_modes = List[Int]()
         if len(cam_list) == 0:
@@ -124,10 +137,10 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 else:
                     self.camera_modes.append(0)  # CAM_TRACKCOM fallback
         self.active_camera = 0
-        self.camera_targets = Self.MODEL_DEF.get_camera_target_bodies()
+        self.camera_targets = Self.MODEL_DEF.get_camera_target_bodies(rf)
 
         # Setup all lights from spec (fallback to default if none defined)
-        var lights = Self.MODEL_DEF.setup_lights()
+        var lights = Self.MODEL_DEF.setup_lights(rf)
         if len(lights) == 0:
             # No lights in XML — add default directional light
             lights.append(Light(
@@ -141,7 +154,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             ))
 
         # Read visual settings from model (znear, fog, shadow, headlight)
-        var vis = Self.MODEL_DEF.get_visual_settings()
+        var vis = Self.MODEL_DEF.get_visual_settings(rf)
         var shadow_size = Int(4096)
         var fog_start = Float32(0.0)
         var fog_end = Float32(0.0)
@@ -196,7 +209,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         )
 
         # Configure skybox from GradientTexture (if model defines one)
-        var skybox = Self.MODEL_DEF.get_skybox_colors()
+        var skybox = Self.MODEL_DEF.get_skybox_colors(rf)
         if len(skybox) == 6:
             self.renderer.set_skybox(
                 top_r=Float32(skybox[0]),
@@ -207,7 +220,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 bottom_b=Float32(skybox[5]),
             )
             # `mark="random"` on the same texture — dm_control's night sky.
-            var mark = Self.MODEL_DEF.get_skybox_mark()
+            var mark = Self.MODEL_DEF.get_skybox_mark(rf)
             if len(mark) == 5 and Int(mark[0]) == 3:
                 self.renderer.set_skybox_stars(
                     r=Float32(mark[1]),
@@ -217,7 +230,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 )
 
         # Configure ground appearance from model textures/geom colors
-        var checker = Self.MODEL_DEF.get_checker_colors()
+        var checker = Self.MODEL_DEF.get_checker_colors(rf)
         if len(checker) == 3:
             # Model has a checker texture — use it
             self.renderer.set_ground_checker_colors(
@@ -227,7 +240,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             )
         else:
             # No checker texture — use plane geom's rgba as solid color
-            var ground_rgba = Self.MODEL_DEF.get_ground_rgba()
+            var ground_rgba = Self.MODEL_DEF.get_ground_rgba(rf)
             if len(ground_rgba) == 3:
                 self.renderer.set_ground_solid_color(
                     r=Float32(ground_rgba[0]),
@@ -235,10 +248,12 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                     b=Float32(ground_rgba[2]),
                 )
 
+        self.rf = rf^
         self.step_count = 0
         self.initialized = False
 
     def __init__(out self, *, deinit move: Self):
+        self.rf = move.rf^
         self.renderer = move.renderer^
         self.initialized = move.initialized
         self.follow = move.follow
@@ -469,6 +484,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         # Render ground geoms (planes or fallback grid)
         try:
             Self.MODEL_DEF.render_ground_geoms(
+                self.rf,
                 self.renderer,
                 torso_pos.x,
                 self.follow,
@@ -480,6 +496,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         # Render body-attached geoms
         try:
             Self.MODEL_DEF.render_body_geoms(
+                self.rf,
                 self.renderer,
                 positions,
                 quaternions,
@@ -498,6 +515,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         # want to sit on top of everything solid.
         try:
             Self.MODEL_DEF.render_skin(
+                self.rf,
                 self.renderer, positions, quaternions
             )
         except e:
@@ -507,6 +525,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         # without any record zero of them and the call costs a loop bound.
         try:
             Self.MODEL_DEF.render_spatial_tendons(
+                self.rf,
                 self.renderer, positions, quaternions
             )
         except:
@@ -516,6 +535,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         if self.show_sites:
             try:
                 Self.MODEL_DEF.render_sites(
+                self.rf,
                     self.renderer, positions, quaternions
                 )
             except:

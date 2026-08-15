@@ -95,8 +95,12 @@ from .flat_model import (
     ACT_KIND_GENERAL,
     act_kind_name,
     _GEOM_ELLIPSOID,
+    TEX_SKYBOX,
+    TEX_BUILTIN_GRADIENT,
+    TEX_BUILTIN_CHECKER,
 )
 from .full_parser import parse_xml_full
+from .render_fields import RenderFields, build_render_fields
 from .xml_parser import (
     MAX_COMPTIME_TENDONS,
     MAX_COMPTIME_TENDON_WRAPS,
@@ -2072,26 +2076,26 @@ struct ModelDefFromXML[
     # =========================================================================
 
     @staticmethod
-    def setup_lights() raises -> List[Light]:
+    def setup_lights(rf: RenderFields) raises -> List[Light]:
         """Return Light objects parsed from <light> elements in <worldbody>."""
         # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
         # indexed at runtime must be materialized. Hoisted here so each array
         # is copied once per call rather than once per access in the loops.
-        var _m_light_ambient_b = materialize[Self._rcd.light_ambient_b]()
-        var _m_light_ambient_g = materialize[Self._rcd.light_ambient_g]()
-        var _m_light_ambient_r = materialize[Self._rcd.light_ambient_r]()
-        var _m_light_castshadow = materialize[Self._rcd.light_castshadow]()
-        var _m_light_diffuse_b = materialize[Self._rcd.light_diffuse_b]()
-        var _m_light_diffuse_g = materialize[Self._rcd.light_diffuse_g]()
-        var _m_light_diffuse_r = materialize[Self._rcd.light_diffuse_r]()
-        var _m_light_dir_x = materialize[Self._rcd.light_dir_x]()
-        var _m_light_dir_y = materialize[Self._rcd.light_dir_y]()
-        var _m_light_dir_z = materialize[Self._rcd.light_dir_z]()
-        var _m_light_directional = materialize[Self._rcd.light_directional]()
-        var _m_light_exponent = materialize[Self._rcd.light_exponent]()
-        var _m_light_specular_b = materialize[Self._rcd.light_specular_b]()
-        var _m_light_specular_g = materialize[Self._rcd.light_specular_g]()
-        var _m_light_specular_r = materialize[Self._rcd.light_specular_r]()
+        ref _m_light_ambient_b = rf.light_ambient_b
+        ref _m_light_ambient_g = rf.light_ambient_g
+        ref _m_light_ambient_r = rf.light_ambient_r
+        ref _m_light_castshadow = rf.light_castshadow
+        ref _m_light_diffuse_b = rf.light_diffuse_b
+        ref _m_light_diffuse_g = rf.light_diffuse_g
+        ref _m_light_diffuse_r = rf.light_diffuse_r
+        ref _m_light_dir_x = rf.light_dir_x
+        ref _m_light_dir_y = rf.light_dir_y
+        ref _m_light_dir_z = rf.light_dir_z
+        ref _m_light_directional = rf.light_directional
+        ref _m_light_exponent = rf.light_exponent
+        ref _m_light_specular_b = rf.light_specular_b
+        ref _m_light_specular_g = rf.light_specular_g
+        ref _m_light_specular_r = rf.light_specular_r
 
         var lights = List[Light]()
         for i in range(Self.nlight):
@@ -2131,7 +2135,7 @@ struct ModelDefFromXML[
         return out^
 
     @staticmethod
-    def setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
+    def setup_cameras(rf: RenderFields, width: Int, height: Int) raises -> List[Camera3D]:
         """Return Camera3D objects parsed from <camera> elements in <worldbody>.
 
         ⚠ THE LOOK DIRECTION AND THE UP VECTOR BOTH COME FROM THE CAMERA'S OWN
@@ -2156,14 +2160,14 @@ struct ModelDefFromXML[
         # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
         # indexed at runtime must be materialized. Hoisted here so each array
         # is copied once per call rather than once per access in the loops.
-        var _m_cam_fovy = materialize[Self._rcd.cam_fovy]()
-        var _m_cam_pos_x = materialize[Self._rcd.cam_pos_x]()
-        var _m_cam_pos_y = materialize[Self._rcd.cam_pos_y]()
-        var _m_cam_pos_z = materialize[Self._rcd.cam_pos_z]()
-        var _m_cam_quat_w = materialize[Self._rcd.cam_quat_w]()
-        var _m_cam_quat_x = materialize[Self._rcd.cam_quat_x]()
-        var _m_cam_quat_y = materialize[Self._rcd.cam_quat_y]()
-        var _m_cam_quat_z = materialize[Self._rcd.cam_quat_z]()
+        ref _m_cam_fovy = rf.cam_fovy
+        ref _m_cam_pos_x = rf.cam_pos_x
+        ref _m_cam_pos_y = rf.cam_pos_y
+        ref _m_cam_pos_z = rf.cam_pos_z
+        ref _m_cam_quat_w = rf.cam_quat_w
+        ref _m_cam_quat_x = rf.cam_quat_x
+        ref _m_cam_quat_y = rf.cam_quat_y
+        ref _m_cam_quat_z = rf.cam_quat_z
 
         var cameras = List[Camera3D]()
         for i in range(Self.ncam):
@@ -2193,7 +2197,7 @@ struct ModelDefFromXML[
         return cameras^
 
     @staticmethod
-    def setup_camera_modes() raises -> List[Int]:
+    def setup_camera_modes(rf: RenderFields) raises -> List[Int]:
         """MJCF `mode` -> the renderer's own encoding.
 
         Renderer: 0 = TRACKCOM (translate to follow the torso), 1 = FIXED,
@@ -2208,7 +2212,7 @@ struct ModelDefFromXML[
         # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
         # indexed at runtime must be materialized. Hoisted here so each array
         # is copied once per call rather than once per access in the loops.
-        var _m_cam_mode = materialize[Self._rcd.cam_mode]()
+        ref _m_cam_mode = rf.cam_mode
 
         var modes = List[Int]()
         for i in range(Self.ncam):
@@ -2222,12 +2226,12 @@ struct ModelDefFromXML[
         return modes^
 
     @staticmethod
-    def get_camera_target_bodies() -> List[Int]:
+    def get_camera_target_bodies(rf: RenderFields) -> List[Int]:
         """Body index each camera aims at, or -1. Parallel to `setup_cameras`."""
         # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
         # indexed at runtime must be materialized. Hoisted here so each array
         # is copied once per call rather than once per access in the loops.
-        var _m_cam_target_body = materialize[Self._rcd.cam_target_body]()
+        ref _m_cam_target_body = rf.cam_target_body
 
         var out = List[Int]()
         for i in range(Self.ncam):
@@ -2235,24 +2239,34 @@ struct ModelDefFromXML[
         return out^
 
     @staticmethod
-    def get_skybox_colors() -> List[Float64]:
+    def get_skybox_colors(rf: RenderFields) -> List[Float64]:
         """Return [top_r, top_g, top_b, bottom_r, bottom_g, bottom_b] from the
         first skybox/gradient texture, or an empty list if none exists."""
         # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
         # indexed at runtime must be materialized. Hoisted here so each array
         # is copied once per call rather than once per access in the loops.
-        var _m_tex_builtin = materialize[Self._rcd.tex_builtin]()
-        var _m_tex_rgb1_b = materialize[Self._rcd.tex_rgb1_b]()
-        var _m_tex_rgb1_g = materialize[Self._rcd.tex_rgb1_g]()
-        var _m_tex_rgb1_r = materialize[Self._rcd.tex_rgb1_r]()
-        var _m_tex_rgb2_b = materialize[Self._rcd.tex_rgb2_b]()
-        var _m_tex_rgb2_g = materialize[Self._rcd.tex_rgb2_g]()
-        var _m_tex_rgb2_r = materialize[Self._rcd.tex_rgb2_r]()
-        var _m_tex_type = materialize[Self._rcd.tex_type]()
+        ref _m_tex_builtin = rf.tex_builtin
+        ref _m_tex_rgb1_b = rf.tex_rgb1_b
+        ref _m_tex_rgb1_g = rf.tex_rgb1_g
+        ref _m_tex_rgb1_r = rf.tex_rgb1_r
+        ref _m_tex_rgb2_b = rf.tex_rgb2_b
+        ref _m_tex_rgb2_g = rf.tex_rgb2_g
+        ref _m_tex_rgb2_r = rf.tex_rgb2_r
+        ref _m_tex_type = rf.tex_type
 
         # TEX_SKYBOX=1, TEX_BUILTIN_GRADIENT=1
         for i in range(Self.ntex):
-            if _m_tex_type[i] == 1 or _m_tex_builtin[i] == 1:
+            # ⚠⚠ `== 1` MEANT SKYBOX HERE AND MEANS 2D IN THE RUNTIME
+            # RECORD. The two parsers numbered `tex_type` differently and
+            # NEITHER matched MuJoCo's mjtTexture (2d=0/cube=1/skybox=2):
+            # comptime was 2d=0/skybox=1/cube=3, `flat_model` is
+            # skybox=0/2d=1/cube=2. `RenderFields` carries `flat_model`'s, so
+            # this had to be renamed rather than repointed — a literal 1 here
+            # would now select every 2D texture as the skybox.
+            if (
+                _m_tex_type[i] == TEX_SKYBOX
+                or _m_tex_builtin[i] == TEX_BUILTIN_GRADIENT
+            ):
                 var result = List[Float64]()
                 result.append(_m_tex_rgb1_r[i])
                 result.append(_m_tex_rgb1_g[i])
@@ -2264,7 +2278,7 @@ struct ModelDefFromXML[
         return List[Float64]()
 
     @staticmethod
-    def get_skybox_mark() -> List[Float64]:
+    def get_skybox_mark(rf: RenderFields) -> List[Float64]:
         """Return [kind, r, g, b, density] for the skybox's `mark`, else empty.
 
         Only `mark="random"` (kind 3) means anything to the renderer: MuJoCo
@@ -2278,16 +2292,26 @@ struct ModelDefFromXML[
         # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
         # indexed at runtime must be materialized. Hoisted here so each array
         # is copied once per call rather than once per access in the loops.
-        var _m_tex_builtin = materialize[Self._rcd.tex_builtin]()
-        var _m_tex_mark = materialize[Self._rcd.tex_mark]()
-        var _m_tex_markrgb_b = materialize[Self._rcd.tex_markrgb_b]()
-        var _m_tex_markrgb_g = materialize[Self._rcd.tex_markrgb_g]()
-        var _m_tex_markrgb_r = materialize[Self._rcd.tex_markrgb_r]()
-        var _m_tex_random = materialize[Self._rcd.tex_random]()
-        var _m_tex_type = materialize[Self._rcd.tex_type]()
+        ref _m_tex_builtin = rf.tex_builtin
+        ref _m_tex_mark = rf.tex_mark
+        ref _m_tex_markrgb_b = rf.tex_markrgb_b
+        ref _m_tex_markrgb_g = rf.tex_markrgb_g
+        ref _m_tex_markrgb_r = rf.tex_markrgb_r
+        ref _m_tex_random = rf.tex_random
+        ref _m_tex_type = rf.tex_type
 
         for i in range(Self.ntex):
-            if _m_tex_type[i] == 1 or _m_tex_builtin[i] == 1:
+            # ⚠⚠ `== 1` MEANT SKYBOX HERE AND MEANS 2D IN THE RUNTIME
+            # RECORD. The two parsers numbered `tex_type` differently and
+            # NEITHER matched MuJoCo's mjtTexture (2d=0/cube=1/skybox=2):
+            # comptime was 2d=0/skybox=1/cube=3, `flat_model` is
+            # skybox=0/2d=1/cube=2. `RenderFields` carries `flat_model`'s, so
+            # this had to be renamed rather than repointed — a literal 1 here
+            # would now select every 2D texture as the skybox.
+            if (
+                _m_tex_type[i] == TEX_SKYBOX
+                or _m_tex_builtin[i] == TEX_BUILTIN_GRADIENT
+            ):
                 var result = List[Float64]()
                 result.append(Float64(_m_tex_mark[i]))
                 result.append(_m_tex_markrgb_r[i])
@@ -2298,20 +2322,20 @@ struct ModelDefFromXML[
         return List[Float64]()
 
     @staticmethod
-    def get_checker_colors() -> List[Float64]:
+    def get_checker_colors(rf: RenderFields) -> List[Float64]:
         """Return [r, g, b] of the checker texture's secondary (light square) colour,
         or an empty list if no checker texture is found."""
         # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
         # indexed at runtime must be materialized. Hoisted here so each array
         # is copied once per call rather than once per access in the loops.
-        var _m_tex_builtin = materialize[Self._rcd.tex_builtin]()
-        var _m_tex_rgb2_b = materialize[Self._rcd.tex_rgb2_b]()
-        var _m_tex_rgb2_g = materialize[Self._rcd.tex_rgb2_g]()
-        var _m_tex_rgb2_r = materialize[Self._rcd.tex_rgb2_r]()
+        ref _m_tex_builtin = rf.tex_builtin
+        ref _m_tex_rgb2_b = rf.tex_rgb2_b
+        ref _m_tex_rgb2_g = rf.tex_rgb2_g
+        ref _m_tex_rgb2_r = rf.tex_rgb2_r
 
         # TEX_BUILTIN_CHECKER=2
         for i in range(Self.ntex):
-            if _m_tex_builtin[i] == 2:
+            if _m_tex_builtin[i] == TEX_BUILTIN_CHECKER:
                 var result = List[Float64]()
                 result.append(_m_tex_rgb2_r[i])
                 result.append(_m_tex_rgb2_g[i])
@@ -2320,16 +2344,16 @@ struct ModelDefFromXML[
         return List[Float64]()
 
     @staticmethod
-    def get_ground_rgba() -> List[Float64]:
+    def get_ground_rgba(rf: RenderFields) -> List[Float64]:
         """Return [r, g, b] of the first plane geom's rgba color,
         or empty list if no plane geom exists."""
         # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
         # indexed at runtime must be materialized. Hoisted here so each array
         # is copied once per call rather than once per access in the loops.
-        var _m_geom_rgba_b = materialize[Self._rcd.geom_rgba_b]()
-        var _m_geom_rgba_g = materialize[Self._rcd.geom_rgba_g]()
-        var _m_geom_rgba_r = materialize[Self._rcd.geom_rgba_r]()
-        var _m_geom_type = materialize[Self._rcd.geom_type]()
+        ref _m_geom_rgba_b = rf.geom_rgba_b
+        ref _m_geom_rgba_g = rf.geom_rgba_g
+        ref _m_geom_rgba_r = rf.geom_rgba_r
+        ref _m_geom_type = rf.geom_type
 
         for i in range(Self.NGEOM):
             if _m_geom_type[i] == 0:  # GEOM_PLANE
@@ -2341,21 +2365,22 @@ struct ModelDefFromXML[
         return List[Float64]()
 
     @staticmethod
-    def get_visual_settings() -> List[Float64]:
+    def get_visual_settings(rf: RenderFields) -> List[Float64]:
         """Return [znear, fogstart, fogend, shadowsize, hl_r, hl_g, hl_b, has_headlight]."""
         var result = List[Float64]()
-        result.append(Self._rcd.vis_znear)
-        result.append(Self._rcd.vis_fogstart)
-        result.append(Self._rcd.vis_fogend)
-        result.append(Float64(Self._rcd.vis_shadowsize))
-        result.append(Self._rcd.vis_headlight_ambient_r)
-        result.append(Self._rcd.vis_headlight_ambient_g)
-        result.append(Self._rcd.vis_headlight_ambient_b)
-        result.append(Float64(1.0) if Self._rcd.vis_has_headlight else Float64(0.0))
+        result.append(rf.vis_znear)
+        result.append(rf.vis_fogstart)
+        result.append(rf.vis_fogend)
+        result.append(Float64(rf.vis_shadowsize))
+        result.append(rf.vis_headlight_ambient_r)
+        result.append(rf.vis_headlight_ambient_g)
+        result.append(rf.vis_headlight_ambient_b)
+        result.append(Float64(1.0) if rf.vis_has_headlight else Float64(0.0))
         return result^
 
     @staticmethod
     def render_spatial_tendons(
+        rf: RenderFields,
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
@@ -2380,19 +2405,19 @@ struct ModelDefFromXML[
         # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
         # indexed at runtime must be materialized. Hoisted here so each array
         # is copied once per call rather than once per access in the loops.
-        var _m_site_body_id = materialize[Self._rcd.site_body_id]()
-        var _m_site_pos_x = materialize[Self._rcd.site_pos_x]()
-        var _m_site_pos_y = materialize[Self._rcd.site_pos_y]()
-        var _m_site_pos_z = materialize[Self._rcd.site_pos_z]()
-        var _m_sten_nsite = materialize[Self._rcd.sten_nsite]()
-        var _m_sten_rgba_b = materialize[Self._rcd.sten_rgba_b]()
-        var _m_sten_rgba_g = materialize[Self._rcd.sten_rgba_g]()
-        var _m_sten_rgba_r = materialize[Self._rcd.sten_rgba_r]()
-        var _m_sten_sites = materialize[Self._rcd.sten_sites]()
-        var _m_sten_width = materialize[Self._rcd.sten_width]()
+        ref _m_site_body_id = rf.site_body_id
+        ref _m_site_pos_x = rf.site_pos_x
+        ref _m_site_pos_y = rf.site_pos_y
+        ref _m_site_pos_z = rf.site_pos_z
+        ref _m_sten_nsite = rf.sten_nsite
+        ref _m_sten_rgba_b = rf.sten_rgba_b
+        ref _m_sten_rgba_g = rf.sten_rgba_g
+        ref _m_sten_rgba_r = rf.sten_rgba_r
+        ref _m_sten_sites = rf.sten_sites
+        ref _m_sten_width = rf.sten_width
 
         var base = 0
-        for t in range(Self._rcd.nsten):
+        for t in range(rf.nsten):
             var n = _m_sten_nsite[t]
             var radius = _m_sten_width[t]
             var col = Color(
@@ -2449,7 +2474,18 @@ struct ModelDefFromXML[
             base += n
 
     @staticmethod
+    def make_render_fields() raises -> RenderFields:
+        """`parse_xml_full` → `build_render_fields`, once per renderer.
+
+        The runtime replacement for `comptime _rcd = parse_xml_render_data(
+        Self.xml)`. That ran in the comptime interpreter and cost build time;
+        this runs when a window opens and costs a parse.
+        """
+        return build_render_fields(parse_xml_full(String(Self.xml)))
+
+    @staticmethod
     def render_ground_geoms(
+        rf: RenderFields,
         mut renderer: Renderer3D,
         torso_x: Float64,
         follow: Bool,
@@ -2491,30 +2527,30 @@ struct ModelDefFromXML[
         # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
         # indexed at runtime must be materialized. Hoisted here so each array
         # is copied once per call rather than once per access in the loops.
-        var _m_geom_body_id = materialize[Self._rcd.geom_body_id]()
-        var _m_geom_half_x = materialize[Self._rcd.geom_half_x]()
-        var _m_geom_half_y = materialize[Self._rcd.geom_half_y]()
-        var _m_geom_material_id = materialize[Self._rcd.geom_material_id]()
-        var _m_geom_pos_x = materialize[Self._rcd.geom_pos_x]()
-        var _m_geom_pos_y = materialize[Self._rcd.geom_pos_y]()
-        var _m_geom_pos_z = materialize[Self._rcd.geom_pos_z]()
-        var _m_geom_quat_w = materialize[Self._rcd.geom_quat_w]()
-        var _m_geom_quat_x = materialize[Self._rcd.geom_quat_x]()
-        var _m_geom_quat_y = materialize[Self._rcd.geom_quat_y]()
-        var _m_geom_quat_z = materialize[Self._rcd.geom_quat_z]()
-        var _m_geom_radius = materialize[Self._rcd.geom_radius]()
-        var _m_geom_rgba_a = materialize[Self._rcd.geom_rgba_a]()
-        var _m_geom_rgba_b = materialize[Self._rcd.geom_rgba_b]()
-        var _m_geom_rgba_g = materialize[Self._rcd.geom_rgba_g]()
-        var _m_geom_rgba_r = materialize[Self._rcd.geom_rgba_r]()
-        var _m_geom_type = materialize[Self._rcd.geom_type]()
-        var _m_mat_rgba_a = materialize[Self._rcd.mat_rgba_a]()
-        var _m_mat_rgba_b = materialize[Self._rcd.mat_rgba_b]()
-        var _m_mat_rgba_g = materialize[Self._rcd.mat_rgba_g]()
-        var _m_mat_rgba_r = materialize[Self._rcd.mat_rgba_r]()
-        var _m_mat_tex_id = materialize[Self._rcd.mat_tex_id]()
-        var _m_mat_texrepeat_u = materialize[Self._rcd.mat_texrepeat_u]()
-        var _m_mat_texrepeat_v = materialize[Self._rcd.mat_texrepeat_v]()
+        ref _m_geom_body_id = rf.geom_body_id
+        ref _m_geom_half_x = rf.geom_half_x
+        ref _m_geom_half_y = rf.geom_half_y
+        ref _m_geom_material_id = rf.geom_material_id
+        ref _m_geom_pos_x = rf.geom_pos_x
+        ref _m_geom_pos_y = rf.geom_pos_y
+        ref _m_geom_pos_z = rf.geom_pos_z
+        ref _m_geom_quat_w = rf.geom_quat_w
+        ref _m_geom_quat_x = rf.geom_quat_x
+        ref _m_geom_quat_y = rf.geom_quat_y
+        ref _m_geom_quat_z = rf.geom_quat_z
+        ref _m_geom_radius = rf.geom_radius
+        ref _m_geom_rgba_a = rf.geom_rgba_a
+        ref _m_geom_rgba_b = rf.geom_rgba_b
+        ref _m_geom_rgba_g = rf.geom_rgba_g
+        ref _m_geom_rgba_r = rf.geom_rgba_r
+        ref _m_geom_type = rf.geom_type
+        ref _m_mat_rgba_a = rf.mat_rgba_a
+        ref _m_mat_rgba_b = rf.mat_rgba_b
+        ref _m_mat_rgba_g = rf.mat_rgba_g
+        ref _m_mat_rgba_r = rf.mat_rgba_r
+        ref _m_mat_tex_id = rf.mat_tex_id
+        ref _m_mat_texrepeat_u = rf.mat_texrepeat_u
+        ref _m_mat_texrepeat_v = rf.mat_texrepeat_v
 
         # GEOM_PLANE=0
         var has_plane = False
@@ -2574,13 +2610,16 @@ struct ModelDefFromXML[
                 var mid = _m_geom_material_id[i]
                 if mid >= 0 and mid < Self.nmat:
                     var tex_id = _m_mat_tex_id[mid]
-                    if tex_id >= 0 and tex_id < Self._rcd.ntex:
-                        comptime for ti in range(Self._rcd.ntex):
-                            if tex_id == ti:
-                                comptime _tn: String = Self._rcd.tex_names[ti]
-                                comptime _tf: String = Self._rcd.tex_files[ti]
-                                tex_name = _tn
-                                tex_file = _tf
+                    # ⚠ THIS WAS A `comptime for` OVER EVERY TEXTURE.
+                    # Pulling a String out of `_rcd` needed
+                    # `comptime _tn: String = ...` inside a comptime loop
+                    # comparing `tex_id` to each index, because a comptime
+                    # String STORE does not compile
+                    # (see `has_skin`'s note). `rf.tex_names` is a runtime
+                    # `List[String]`, so the whole scan is one index.
+                    if tex_id >= 0 and tex_id < rf.ntex:
+                        tex_name = rf.tex_names[tex_id]
+                        tex_file = rf.tex_files[tex_id]
                     texrep_u = _m_mat_texrepeat_u[mid]
                     texrep_v = _m_mat_texrepeat_v[mid]
                 renderer.draw_ground_grid(
@@ -2595,6 +2634,7 @@ struct ModelDefFromXML[
 
     @staticmethod
     def render_body_geoms(
+        rf: RenderFields,
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
@@ -2604,35 +2644,35 @@ struct ModelDefFromXML[
         # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
         # indexed at runtime must be materialized. Hoisted here so each array
         # is copied once per call rather than once per access in the loops.
-        var _m_geom_body_id = materialize[Self._rcd.geom_body_id]()
-        var _m_geom_group = materialize[Self._rcd.geom_group]()
-        var _m_geom_half_length = materialize[Self._rcd.geom_half_length]()
-        var _m_geom_half_x = materialize[Self._rcd.geom_half_x]()
-        var _m_geom_half_y = materialize[Self._rcd.geom_half_y]()
-        var _m_geom_half_z = materialize[Self._rcd.geom_half_z]()
-        var _m_geom_material_id = materialize[Self._rcd.geom_material_id]()
-        var _m_geom_mesh_id = materialize[Self._rcd.geom_mesh_id]()
-        var _m_geom_pos_x = materialize[Self._rcd.geom_pos_x]()
-        var _m_geom_pos_y = materialize[Self._rcd.geom_pos_y]()
-        var _m_geom_pos_z = materialize[Self._rcd.geom_pos_z]()
-        var _m_geom_quat_w = materialize[Self._rcd.geom_quat_w]()
-        var _m_geom_quat_x = materialize[Self._rcd.geom_quat_x]()
-        var _m_geom_quat_y = materialize[Self._rcd.geom_quat_y]()
-        var _m_geom_quat_z = materialize[Self._rcd.geom_quat_z]()
-        var _m_geom_radius = materialize[Self._rcd.geom_radius]()
-        var _m_geom_rgba_a = materialize[Self._rcd.geom_rgba_a]()
-        var _m_geom_rgba_b = materialize[Self._rcd.geom_rgba_b]()
-        var _m_geom_rgba_g = materialize[Self._rcd.geom_rgba_g]()
-        var _m_geom_rgba_r = materialize[Self._rcd.geom_rgba_r]()
-        var _m_geom_type = materialize[Self._rcd.geom_type]()
-        var _m_mat_reflectance = materialize[Self._rcd.mat_reflectance]()
-        var _m_mat_rgba_a = materialize[Self._rcd.mat_rgba_a]()
-        var _m_mat_rgba_b = materialize[Self._rcd.mat_rgba_b]()
-        var _m_mat_rgba_g = materialize[Self._rcd.mat_rgba_g]()
-        var _m_mat_rgba_r = materialize[Self._rcd.mat_rgba_r]()
-        var _m_mat_shininess = materialize[Self._rcd.mat_shininess]()
-        var _m_mat_specular = materialize[Self._rcd.mat_specular]()
-        var _m_mat_tex_id = materialize[Self._rcd.mat_tex_id]()
+        ref _m_geom_body_id = rf.geom_body_id
+        ref _m_geom_group = rf.geom_group
+        ref _m_geom_half_length = rf.geom_half_length
+        ref _m_geom_half_x = rf.geom_half_x
+        ref _m_geom_half_y = rf.geom_half_y
+        ref _m_geom_half_z = rf.geom_half_z
+        ref _m_geom_material_id = rf.geom_material_id
+        ref _m_geom_mesh_id = rf.geom_mesh_id
+        ref _m_geom_pos_x = rf.geom_pos_x
+        ref _m_geom_pos_y = rf.geom_pos_y
+        ref _m_geom_pos_z = rf.geom_pos_z
+        ref _m_geom_quat_w = rf.geom_quat_w
+        ref _m_geom_quat_x = rf.geom_quat_x
+        ref _m_geom_quat_y = rf.geom_quat_y
+        ref _m_geom_quat_z = rf.geom_quat_z
+        ref _m_geom_radius = rf.geom_radius
+        ref _m_geom_rgba_a = rf.geom_rgba_a
+        ref _m_geom_rgba_b = rf.geom_rgba_b
+        ref _m_geom_rgba_g = rf.geom_rgba_g
+        ref _m_geom_rgba_r = rf.geom_rgba_r
+        ref _m_geom_type = rf.geom_type
+        ref _m_mat_reflectance = rf.mat_reflectance
+        ref _m_mat_rgba_a = rf.mat_rgba_a
+        ref _m_mat_rgba_b = rf.mat_rgba_b
+        ref _m_mat_rgba_g = rf.mat_rgba_g
+        ref _m_mat_rgba_r = rf.mat_rgba_r
+        ref _m_mat_shininess = rf.mat_shininess
+        ref _m_mat_specular = rf.mat_specular
+        ref _m_mat_tex_id = rf.mat_tex_id
 
         # SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4, MESH=5
         for i in range(Self.NGEOM):
@@ -2698,13 +2738,11 @@ struct ModelDefFromXML[
             var tex_file_str = String("")
             if mid >= 0 and mid < Self.nmat:
                 var tex_id = _m_mat_tex_id[mid]
-                if tex_id >= 0 and tex_id < Self._rcd.ntex:
-                    comptime for ti in range(Self._rcd.ntex):
-                        if tex_id == ti:
-                            comptime _tn: String = Self._rcd.tex_names[ti]
-                            comptime _tf: String = Self._rcd.tex_files[ti]
-                            tex_name_str = _tn
-                            tex_file_str = _tf
+                # Same collapse as in `render_ground_geoms` — one index
+                # where a `comptime for` over every texture used to be.
+                if tex_id >= 0 and tex_id < rf.ntex:
+                    tex_name_str = rf.tex_names[tex_id]
+                    tex_file_str = rf.tex_files[tex_id]
 
             var gt = _m_geom_type[i]
             if gt == 2:  # CAPSULE
@@ -2746,18 +2784,22 @@ struct ModelDefFromXML[
             elif gt == 5:  # MESH
                 var mid2 = _m_geom_mesh_id[i]
                 # Draw mesh with optional texture
-                comptime for mi in range(Self._rcd.nmesh):
-                    if mid2 == mi:
-                        comptime _mn: String = Self._rcd.mesh_names[mi]
-                        comptime _mf: String = Self._rcd.mesh_files[mi]
-                        renderer.draw_mesh(
-                            name=_mn, file_path=_mf,
-                            center=geom_pos, orientation=geom_quat,
-                            color=geom_color, shininess=shininess,
-                            specular=specular, reflectance=reflectance,
-                            texture_name=tex_name_str,
-                            texture_path=tex_file_str,
-                        )
+                # Same collapse again. ⚠ AND THE BOUNDS CHECK IS NEW: the
+                # `comptime for` could only match an index it enumerated, so
+                # a `mesh_id` outside the asset table silently drew NOTHING.
+                # A runtime index would trap instead, which is the better
+                # failure but only if it cannot happen — `build_render_fields`
+                # resolves `geom_mesh_id` by filename against the same table,
+                # so -1 (no mesh) is the only out-of-range value it can hold.
+                if mid2 >= 0 and mid2 < rf.nmesh:
+                    renderer.draw_mesh(
+                        name=rf.mesh_names[mid2], file_path=rf.mesh_files[mid2],
+                        center=geom_pos, orientation=geom_quat,
+                        color=geom_color, shininess=shininess,
+                        specular=specular, reflectance=reflectance,
+                        texture_name=tex_name_str,
+                        texture_path=tex_file_str,
+                    )
 
     @staticmethod
     def has_skin() -> Bool:
@@ -2782,7 +2824,7 @@ struct ModelDefFromXML[
         # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
         # indexed at runtime must be materialized. Hoisted here so each array
         # is copied once per call rather than once per access in the loops.
-        var _m_geom_group = materialize[Self._rcd.geom_group]()
+        ref _m_geom_group = rf.geom_group
 
         return _m_geom_group[i]
 
@@ -2835,6 +2877,7 @@ struct ModelDefFromXML[
 
     @staticmethod
     def render_skin(
+        rf: RenderFields,
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
@@ -2922,6 +2965,7 @@ struct ModelDefFromXML[
 
     @staticmethod
     def render_sites(
+        rf: RenderFields,
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
@@ -2930,11 +2974,11 @@ struct ModelDefFromXML[
         # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
         # indexed at runtime must be materialized. Hoisted here so each array
         # is copied once per call rather than once per access in the loops.
-        var _m_site_body_id = materialize[Self._rcd.site_body_id]()
-        var _m_site_pos_x = materialize[Self._rcd.site_pos_x]()
-        var _m_site_pos_y = materialize[Self._rcd.site_pos_y]()
-        var _m_site_pos_z = materialize[Self._rcd.site_pos_z]()
-        var _m_site_size_0 = materialize[Self._rcd.site_size_0]()
+        ref _m_site_body_id = rf.site_body_id
+        ref _m_site_pos_x = rf.site_pos_x
+        ref _m_site_pos_y = rf.site_pos_y
+        ref _m_site_pos_z = rf.site_pos_z
+        ref _m_site_size_0 = rf.site_size_0
 
         for i in range(Self.NSITE):
             var sbid = _m_site_body_id[i]

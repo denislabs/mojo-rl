@@ -12,6 +12,7 @@ from mojo_rl.render import Renderer3D, Light, Camera3D
 from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
 from ..fields import Model, Data, SpecFields
+from ..parser.render_fields import RenderFields
 from ..gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
@@ -401,7 +402,20 @@ trait ModelDefLike:
         ...
 
     @staticmethod
+    def make_render_fields() raises -> RenderFields:
+        """Build this model's render records. Called ONCE per renderer.
+
+        A factory on the trait rather than `xml` as a trait member: the
+        renderer needs the RECORDS, not the source text, and `ModelDefLike`
+        deliberately exposes dimensions and behaviour rather than the MJCF it
+        came from. It is also the seam phase 1b needs — when the XML moves to
+        a file on disk, this is the one place that changes.
+        """
+        ...
+
+    @staticmethod
     def render_ground_geoms(
+        rf: RenderFields,
         mut renderer: Renderer3D,
         torso_x: Float64,
         follow: Bool,
@@ -411,6 +425,7 @@ trait ModelDefLike:
 
     @staticmethod
     def render_body_geoms(
+        rf: RenderFields,
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
@@ -420,6 +435,7 @@ trait ModelDefLike:
 
     @staticmethod
     def render_spatial_tendons(
+        rf: RenderFields,
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
@@ -430,6 +446,7 @@ trait ModelDefLike:
 
     @staticmethod
     def render_skin(
+        rf: RenderFields,
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
@@ -445,19 +462,19 @@ trait ModelDefLike:
         pass
 
     @staticmethod
-    def setup_lights() raises -> List[Light]:
+    def setup_lights(rf: RenderFields) raises -> List[Light]:
         ...
 
     @staticmethod
-    def setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
+    def setup_cameras(rf: RenderFields, width: Int, height: Int) raises -> List[Camera3D]:
         ...
 
     @staticmethod
-    def setup_camera_modes() raises -> List[Int]:
+    def setup_camera_modes(rf: RenderFields) raises -> List[Int]:
         ...
 
     @staticmethod
-    def get_camera_target_bodies() -> List[Int]:
+    def get_camera_target_bodies(rf: RenderFields) -> List[Int]:
         """Body each camera aims at (mode="targetbody"), or -1 for none.
 
         Defaults to empty: a model definition with no cameras, or one written
@@ -465,11 +482,11 @@ trait ModelDefLike:
         return List[Int]()
 
     @staticmethod
-    def get_skybox_colors() -> List[Float64]:
+    def get_skybox_colors(rf: RenderFields) -> List[Float64]:
         ...
 
     @staticmethod
-    def get_skybox_mark() -> List[Float64]:
+    def get_skybox_mark(rf: RenderFields) -> List[Float64]:
         """[kind, r, g, b, density] for the skybox `mark`, or empty for none.
 
         Defaults to empty so a model definition that predates the starfield
@@ -479,15 +496,15 @@ trait ModelDefLike:
         return List[Float64]()
 
     @staticmethod
-    def get_checker_colors() -> List[Float64]:
+    def get_checker_colors(rf: RenderFields) -> List[Float64]:
         ...
 
     @staticmethod
-    def get_ground_rgba() -> List[Float64]:
+    def get_ground_rgba(rf: RenderFields) -> List[Float64]:
         ...
 
     @staticmethod
-    def get_visual_settings() -> List[Float64]:
+    def get_visual_settings(rf: RenderFields) -> List[Float64]:
         """Return visual settings: [znear, fogstart, fogend, shadowsize,
         headlight_r, headlight_g, headlight_b, has_headlight].
         Empty list = use defaults."""
@@ -495,6 +512,7 @@ trait ModelDefLike:
 
     @staticmethod
     def render_sites(
+        rf: RenderFields,
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
