@@ -48,7 +48,12 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.fields import Model
 from mojo_rl.physics3d.model import ModelDefLike
-from mojo_rl.physics3d.parser import ComptimeRenderData
+from mojo_rl.physics3d.parser import (
+    ComptimeRenderData,
+    parse_xml_full,
+    parse_xml,
+    ModelDefFromXML,
+)
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
@@ -106,6 +111,105 @@ def _type_name(t: Int) -> String:
     return String("?") + String(t)
 
 
+# ═══ the spatial-tendon RENDER STYLE fixture ════════════════════════════════
+#
+# ⚠⚠ NO MODEL IN THE TREE CAN DISCRIMINATE THIS ROW. `<spatial>` appears with
+# a `width` exactly once — ball_in_cup's `width="0.003"` — and 0.003 IS
+# MuJoCo's default, so "parsed it" and "never looked" produce the same number.
+# `rgba` is declared nowhere at all. Measured before this fixture existed:
+# runtime and `_rcd` both reported 0.003 / .5 .5 .5 on every model, which is
+# the vacuous zero the actuator groups kept producing in 1a.1.
+comptime STEN_STYLE_XML = String(
+    """<mujoco model="sten_style">
+  <worldbody>
+    <site name="anchor" pos="0 0 .3" size=".01"/>
+    <body name="ball" pos="0 0 .1">
+      <freejoint/>
+      <geom name="ball" type="sphere" size=".02" mass=".1"/>
+      <site name="tip" pos="0 0 0" size=".01"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="string" width="0.017" rgba=".2 .4 .6 .8">
+      <site site="anchor"/>
+      <site site="tip"/>
+    </spatial>
+  </tendon>
+</mujoco>"""
+)
+
+comptime _stpm = parse_xml(STEN_STYLE_XML)
+comptime StenStyleModel = ModelDefFromXML[
+    xml=STEN_STYLE_XML,
+    nbody=_stpm.NBODY, njoint=_stpm.NJOINT, nq=_stpm.NQ, nv=_stpm.NV,
+    ngeom=_stpm.NGEOM, nact=_stpm.NACT, ntex=_stpm.NTEX, nmat=_stpm.NMAT,
+    nlight=_stpm.NLIGHT, ncam=_stpm.NCAM, nsite=_stpm.NSITE, neq=_stpm.NEQ,
+    nexclude=_stpm.NEXCLUDE, npair=_stpm.NPAIR, max_tendon=_stpm.NTENDON,
+    max_condim=_stpm.MAX_CONDIM, max_contacts=8,
+    obs_dim_override=1, obs_qpos_skip=0,
+    timestep=_stpm.TIMESTEP, noslip_iter=_stpm.NOSLIP_ITER,
+]
+
+
+def _check_visual[MODEL: ModelDefLike](
+    name: String, rcd: ComptimeRenderData, xml: String, mut n_fields: Int
+) raises:
+    """`<visual>` + the spatial-tendon render style: `_rcd` vs `FlatModelDef`.
+
+    Phase 1a.5's differential leg, and it exists only while `_rcd` does —
+    the same instrument 1a.1 used, for the same reason: these twelve fields
+    were hand-ported into a second parser and a hand port is a silent-bug
+    generator unless it is diffed against the thing it replaces.
+    """
+    var fmd = parse_xml_full(xml)
+    var n = 0
+    if fmd.vis_znear != rcd.vis_znear:
+        n += 1
+    if fmd.vis_fogstart != rcd.vis_fogstart:
+        n += 1
+    if fmd.vis_fogend != rcd.vis_fogend:
+        n += 1
+    if fmd.vis_shadowsize != rcd.vis_shadowsize:
+        n += 1
+    if (
+        fmd.vis_headlight_ambient_r != rcd.vis_headlight_ambient_r
+        or fmd.vis_headlight_ambient_g != rcd.vis_headlight_ambient_g
+        or fmd.vis_headlight_ambient_b != rcd.vis_headlight_ambient_b
+        or fmd.vis_has_headlight != rcd.vis_has_headlight
+    ):
+        n += 1
+    var n_sten = 0
+    var style_seen = False
+    var si = 0
+    for ti in range(len(fmd.tendons)):
+        if fmd.tendons[ti].kind != 1:  # spatial only
+            continue
+        var td = fmd.tendons[ti]
+        if (
+            td.render_width != 0.003
+            or td.rgba_r != 0.5 or td.rgba_g != 0.5 or td.rgba_b != 0.5
+        ):
+            style_seen = True
+        if (
+            td.render_width != rcd.sten_width[si]
+            or td.rgba_r != rcd.sten_rgba_r[si]
+            or td.rgba_g != rcd.sten_rgba_g[si]
+            or td.rgba_b != rcd.sten_rgba_b[si]
+        ):
+            n_sten += 1
+        si += 1
+    print("  ", name, " visual mismatches", n, " sten", n_sten,
+          " (spatial tendons:", si, " non-default style:", style_seen, ")")
+    if si > 0 and not style_seen:
+        print("      ⚠ every spatial tendon carries MuJoCo's DEFAULT style —"
+              " this row is VACUOUS here")
+    n_fields += n + n_sten
+    assert_true(n == 0,
+        name + ": <visual> disagrees between the two parsers in " + String(n))
+    assert_true(n_sten == 0,
+        name + ": spatial tendon render style disagrees in " + String(n_sten))
+
+
 def _check[MODEL: ModelDefLike](
     name: String, rcd: ComptimeRenderData, mut n_geoms: Int
 ) raises:
@@ -120,9 +224,19 @@ def _check[MODEL: ModelDefLike](
     not cross into a runtime argument on its own; the same wart bit
     `ModelDefFromXML._acd` in test_quadruped_vs_dm_control.
     """
+    # ⚠⚠ `NPAIR` IS NOT OPTIONAL HERE AND ITS ABSENCE KILLED THIS FILE.
+    # `init_fields` declares its `mf` as `Model[..., NMESHV, Self.NPAIR]`, so
+    # a `Model` built without it is a DIFFERENT TYPE and the call does not
+    # typecheck. This file has not compiled since `Model` gained the
+    # parameter — and by its own docstring it is the ONLY thing comparing the
+    # two parsers' render data, so the render side had no coverage at all
+    # while it sat red. A build failure and a pass look identical to anyone
+    # who is not running it (`feedback_confirm_the_code_under_test_actually
+    # _runs`); `test_dog_actuator_gain` was dead the same way for four months.
     comptime Mod = Model[
         DTYPE, MODEL.NV, MODEL.NBODY, MODEL.NJOINT, MODEL.NGEOM,
         MODEL.MAX_EQUALITY, MODEL.MAX_TENDON, MODEL.NSITE, MODEL.NEXCLUDE, 0,
+        MODEL.NPAIR,
     ]
     var ctx = DeviceContext()
     var mf = Mod()
@@ -242,6 +356,23 @@ def test_render_data_matches_physics_data() raises:
     var total = 0
     _check[DMQuadrupedWalkModel]("quadruped", materialize[DMQuadrupedWalkModel._rcd](), total)
     print("  TOTAL", total, "geoms compared (ONE model — see docstring)")
+
+    # ── phase 1a.5: `<visual>` + spatial-tendon style, the NEW fields ────
+    var n_vis = 0
+    _check_visual[DMFishSwimModel](
+        "fish       ", materialize[DMFishSwimModel._rcd](),
+        String(DMFishSwimModel.xml), n_vis)
+    _check_visual[DMBallInCupModel](
+        "ball_in_cup", materialize[DMBallInCupModel._rcd](),
+        String(DMBallInCupModel.xml), n_vis)
+    _check_visual[DMQuadrupedWalkModel](
+        "quadruped  ", materialize[DMQuadrupedWalkModel._rcd](),
+        String(DMQuadrupedWalkModel.xml), n_vis)
+    # ⚠ THE ONLY MODEL THAT CAN FAIL THE STYLE ROW — see the fixture.
+    _check_visual[StenStyleModel](
+        "sten-style ", materialize[StenStyleModel._rcd](),
+        String(StenStyleModel.xml), n_vis)
+    print("  <visual>/sten total mismatches:", n_vis)
 
 
 def main() raises:

@@ -3720,6 +3720,24 @@ def _fill_tendons(
         td.kind = _TENDON_KIND_SPATIAL if is_spatial else _TENDON_KIND_FIXED
 
         if is_spatial:
+            # `width` / `rgba` are RENDER-ONLY and default to MuJoCo's
+            # (0.003, .5 .5 .5 1) — see `TendonData`. Read off the opening
+            # tag; a `<default><tendon>` class is not resolved here because
+            # the comptime twin did not either, and no model in the tree puts
+            # them in one.
+            var w_s = _trim(_extract_attr(open_tag, "width"))
+            if w_s.byte_length() > 0:
+                td.render_width = _parse_float(w_s)
+            var rgba_s = _trim(_extract_attr(open_tag, "rgba"))
+            if rgba_s.byte_length() > 0:
+                var rp = List[String]()
+                _split_spaces(rgba_s, rp)
+                if len(rp) >= 3:
+                    td.rgba_r = _parse_float(rp[0])
+                    td.rgba_g = _parse_float(rp[1])
+                    td.rgba_b = _parse_float(rp[2])
+                if len(rp) >= 4:
+                    td.rgba_a = _parse_float(rp[3])
             if inner.find("<geom") != -1:
                 raise Error(
                     "physics3d: <spatial> tendon with a wrap <geom> is not"
@@ -4126,6 +4144,57 @@ def _resolve_geom_materials(
 # =============================================================================
 
 
+
+def _fill_visual(xml: String, mut result: FlatModelDef) raises:
+    """`<visual><map>/<quality>/<headlight>` — RENDER ONLY (phase 1a.5).
+
+    Mirrors `xml_parser.parse_xml_render_data`'s block exactly, including that
+    every attribute is OPTIONAL and an absent one leaves MuJoCo's default in
+    place rather than zeroing it.
+
+    ⚠ `vis_has_headlight` is a PRESENCE FLAG, not a colour test.
+    `<headlight ambient="0 0 0"/>` is a real declaration whose value equals the
+    unset default, so the renderer cannot tell "declared black" from "not
+    declared" by looking at the colour.
+    """
+    var visual_sec = _extract_section(xml, "visual")
+    if visual_sec.byte_length() == 0:
+        return
+
+    var map_pos = visual_sec.find("<map")
+    if map_pos != -1:
+        var map_tag = _extract_opening_tag(visual_sec, map_pos)
+        var znear_s = _trim(_extract_attr(map_tag, "znear"))
+        if znear_s.byte_length() > 0:
+            result.vis_znear = _parse_float(znear_s)
+        var fs_s = _trim(_extract_attr(map_tag, "fogstart"))
+        if fs_s.byte_length() > 0:
+            result.vis_fogstart = _parse_float(fs_s)
+        var fe_s = _trim(_extract_attr(map_tag, "fogend"))
+        if fe_s.byte_length() > 0:
+            result.vis_fogend = _parse_float(fe_s)
+
+    var qual_pos = visual_sec.find("<quality")
+    if qual_pos != -1:
+        var qual_tag = _extract_opening_tag(visual_sec, qual_pos)
+        var ss_s = _trim(_extract_attr(qual_tag, "shadowsize"))
+        if ss_s.byte_length() > 0:
+            result.vis_shadowsize = Int(_parse_float(ss_s))
+
+    var hl_pos = visual_sec.find("<headlight")
+    if hl_pos != -1:
+        var hl_tag = _extract_opening_tag(visual_sec, hl_pos)
+        var amb_s = _trim(_extract_attr(hl_tag, "ambient"))
+        if amb_s.byte_length() > 0:
+            var ap = List[String]()
+            _split_spaces(amb_s, ap)
+            if len(ap) >= 3:
+                result.vis_headlight_ambient_r = _parse_float(ap[0])
+                result.vis_headlight_ambient_g = _parse_float(ap[1])
+                result.vis_headlight_ambient_b = _parse_float(ap[2])
+                result.vis_has_headlight = True
+
+
 def parse_xml_full(
 xml_in: String) raises -> FlatModelDef:
     """Full MJCF parse: returns a populated FlatModelDef.
@@ -4333,6 +4402,7 @@ xml_in: String) raises -> FlatModelDef:
     # actuator count for the ctrl stride), so they run here.
     _fill_qpos0(xml, result)
     _fill_keyframes(xml, result)
+    _fill_visual(xml, result)
     # AFTER the tendons exist — this marks them by name. Note it is NOT
     # gated on NEQ: a tendon equality does not occupy an EqualityData
     # slot (it lives on the tendon record), so quadruped has neq==0 while

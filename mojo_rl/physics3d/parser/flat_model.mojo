@@ -845,6 +845,14 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
     # spatial
     var num_sites: Int
     var site_ids: InlineArray[Int, TENDON_MAX_WRAPS]
+    # `<spatial width= rgba=>` — RENDER ONLY, and here because the viewer's
+    # `render_spatial_tendons` read them off the comptime `ComptimeRenderData`
+    # (phase 1a.5). MuJoCo's defaults: width 0.003, rgba .5 .5 .5 1.
+    var render_width: Float64
+    var rgba_r: Float64
+    var rgba_g: Float64
+    var rgba_b: Float64
+    var rgba_a: Float64
 
     # Wraps the XML declared beyond `TENDON_MAX_WRAPS`. Non-zero makes the
     # model build RAISE rather than run a silently truncated tendon — the
@@ -891,6 +899,11 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
         self.spring_lo = copy.spring_lo
         self.spring_hi = copy.spring_hi
         self.num_sites = copy.num_sites
+        self.render_width = copy.render_width
+        self.rgba_r = copy.rgba_r
+        self.rgba_g = copy.rgba_g
+        self.rgba_b = copy.rgba_b
+        self.rgba_a = copy.rgba_a
         self.site_ids = copy.site_ids.copy()
         self.wrap_overflow = copy.wrap_overflow
         self.limited = copy.limited
@@ -923,6 +936,11 @@ struct TendonData(Copyable, ImplicitlyCopyable, Movable):
         self.spring_lo = 0.0
         self.spring_hi = 0.0
         self.num_sites = 0
+        self.render_width = 0.003
+        self.rgba_r = 0.5
+        self.rgba_g = 0.5
+        self.rgba_b = 0.5
+        self.rgba_a = 1.0
         self.site_ids = InlineArray[Int, TENDON_MAX_WRAPS](fill=-1)
         self.wrap_overflow = 0
         self.limited = 0
@@ -1616,6 +1634,22 @@ struct FlatModelDef(Movable):
     # Mesh assets: name → file path mapping.
     var mesh_asset_names: List[String]
     var mesh_asset_files: List[String]
+    # ── `<visual>` (phase 1a.5) ──────────────────────────────────────────
+    #
+    # ⚠ RENDER-ONLY, and absent from this record until 1a.5: the viewer read
+    # them off the comptime `ComptimeRenderData`. Defaults are MuJoCo's, and
+    # `vis_has_headlight` is a PRESENCE FLAG rather than a colour test —
+    # `<headlight ambient="0 0 0"/>` is a real declaration and equals the
+    # unset value.
+    var vis_znear: Float64
+    var vis_fogstart: Float64
+    var vis_fogend: Float64
+    var vis_shadowsize: Int
+    var vis_headlight_ambient_r: Float64
+    var vis_headlight_ambient_g: Float64
+    var vis_headlight_ambient_b: Float64
+    var vis_has_headlight: Bool
+
     var num_mesh_assets: Int
 
     def __init__(out self):
@@ -1663,6 +1697,14 @@ struct FlatModelDef(Movable):
         self.ccd_iterations = MJ_CCD_ITERATIONS
         self.mesh_asset_names = List[String]()
         self.mesh_asset_files = List[String]()
+        self.vis_znear = 0.01
+        self.vis_fogstart = 3.0
+        self.vis_fogend = 10.0
+        self.vis_shadowsize = 4096
+        self.vis_headlight_ambient_r = 0.1
+        self.vis_headlight_ambient_g = 0.1
+        self.vis_headlight_ambient_b = 0.1
+        self.vis_has_headlight = False
         self.num_mesh_assets = 0
 
     # `setup_model` (FlatModelDef -> legacy CPU `Model`) was deleted at the
