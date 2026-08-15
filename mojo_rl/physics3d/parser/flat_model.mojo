@@ -1642,6 +1642,20 @@ struct FlatModelDef(Movable):
     # (fixed 2026-07-29 on the comptime side; the same default is kept here).
     #
     # ⚠ `settotalmass` is -1.0 when ABSENT, not 0.0 — 0 is a legal request.
+    # The ROOT `<default>`'s motor ctrlrange, i.e. what `ModelDefLike`'s
+    # CTRL_MIN / CTRL_MAX advertise as the env's scalar action bounds.
+    #
+    # ⚠⚠ A SUMMARY, NOT THE CLAMP, AND IT LIES ON SOME MODELS — see the note
+    # on `ModelDefLike.CTRL_MIN`. `apply_actions` clamps each actuator to its
+    # OWN range; this pair only sizes the box a policy samples from. It is
+    # reproduced here EXACTLY, wrong models included, because redefining it
+    # changes the action scaling of every shipped env and that is a behaviour
+    # change owed its own before/after — not a ride-along on phase 1b.
+    #
+    # ⚠ Defaults to (-1, 1) when the root default has no actuator tag, which
+    # is what `_xml_default_motor_ctrlrange` returns in the same case.
+    var default_motor_ctrl_min: Float64
+    var default_motor_ctrl_max: Float64
     var inertiafromgeom: Int  # 0=false, 1=true, 2=auto
     var inertiagrouprange_min: Int
     var inertiagrouprange_max: Int
@@ -1723,6 +1737,8 @@ struct FlatModelDef(Movable):
     def __init__(out self):
         self.boundmass = 0.0
         self.boundinertia = 0.0
+        self.default_motor_ctrl_min = -1.0
+        self.default_motor_ctrl_max = 1.0
         # MuJoCo's defaults, not zeroes — see the field declarations.
         self.inertiafromgeom = 2
         self.inertiagrouprange_min = 0

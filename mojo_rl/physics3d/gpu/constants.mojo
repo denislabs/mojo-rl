@@ -282,7 +282,7 @@ comptime JOINT_RANGE_UNLIMITED: Float64 = 1e10
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 31
+comptime MODEL_META_SIZE: Int = 33
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -364,6 +364,22 @@ comptime MODEL_META_IDX_NOSLIP_TOLERANCE: Int = 28
 # next to the geoms they apply to, with no compile-time consumer.
 comptime MODEL_META_IDX_CCD_TOLERANCE: Int = 29
 comptime MODEL_META_IDX_CCD_ITERATIONS: Int = 30
+
+# The ROOT `<default>`'s motor ctrlrange — the scalar action bounds an env
+# advertises through `BoxContinuousActionEnv.action_low/action_high`.
+#
+# ⚠⚠ A SUMMARY, NOT THE CLAMP. `apply_actions` clamps each actuator to its own
+# range; this pair only sizes the box a policy samples from, and it is
+# knowingly wrong on models that set ranges per actuator or per default class
+# (reach_site_features, quadruped). Kept bit-for-bit as it was — see
+# `FlatModelDef.default_motor_ctrl_min`.
+#
+# Here rather than as comptime members of `ModelDefLike` because phase 1b
+# removed the last comptime readers of the MJCF: these were
+# `_xml_default_motor_ctrlrange[Self.xml]()`, and a comptime reader of the XML
+# is exactly what pins a model to a `String` in Mojo source.
+comptime MODEL_META_IDX_CTRL_MIN: Int = 31
+comptime MODEL_META_IDX_CTRL_MAX: Int = 32
 
 # MuJoCo's defaults, used wherever a Model is built without a parser (hand-made
 # fixtures, the GPU env specs) so that those paths behave like the reference

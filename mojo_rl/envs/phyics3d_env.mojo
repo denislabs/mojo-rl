@@ -51,6 +51,8 @@ from mojo_rl.physics3d.joint_types import JNT_FREE
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_META_IDX_CTRL_MIN,
+    MODEL_META_IDX_CTRL_MAX,
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
     MODEL_JOINT_SIZE,
@@ -966,7 +968,7 @@ struct Phyics3dEnv[
         `action_low_at` / `action_high_at` below, and anything that cares
         should use them.
 
-        This returns `MODEL_DEF.CTRL_MIN`, which is read from a ROOT
+        This returns `MODEL_META_IDX_CTRL_MIN`, which is read from a ROOT
         `<default><motor ctrlrange>` and silently falls back to (-1, 1) when a
         model keeps its ranges per actuator or per default class. Measured
         against dm_control's `action_spec`: `reach_site_features` advertises
@@ -983,11 +985,14 @@ struct Phyics3dEnv[
         of every shipped env, which is a behaviour change owed its own
         before/after measurement rather than a quiet ride-along on a bug fix.
         """
-        return Scalar[Self.dtype](Self.MODEL_DEF.CTRL_MIN)
+        # ⚠ Read off the BUILT model, not recomputed. Phase 1b moved this
+        # out of a comptime scan of the MJCF and into `Model.meta`; the value
+        # is unchanged (gated on all 56 models) and costs a tensor read.
+        return Scalar[Self.dtype](self.mf.meta.data[MODEL_META_IDX_CTRL_MIN])
 
     def action_high(self) -> Scalar[Self.dtype]:
         """The upper half of `action_low`'s caveat. Read it."""
-        return Scalar[Self.dtype](Self.MODEL_DEF.CTRL_MAX)
+        return Scalar[Self.dtype](self.mf.meta.data[MODEL_META_IDX_CTRL_MAX])
 
     def action_low_at(self, i: Int) -> Scalar[Self.dtype]:
         """Lower bound of actuator `i` — MuJoCo's `actuator_ctrlrange[i][0]`.

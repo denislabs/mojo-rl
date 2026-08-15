@@ -89,8 +89,18 @@ trait ModelDefLike:
     # contract, and changing THAT changes the action scaling of every shipped
     # env — a behaviour change that needs its own before/after, not a
     # side-effect of a bug fix.
-    comptime CTRL_MIN: Float64
-    comptime CTRL_MAX: Float64
+    # ⚠ NO LONGER HERE. They were `comptime CTRL_MIN/CTRL_MAX: Float64`,
+    # computed by `_xml_default_motor_ctrlrange[Self.xml]()` — the LAST
+    # comptime reader of the MJCF inside `ModelDefFromXML`, and a comptime
+    # reader of the XML is precisely what pins a model to a `String` in Mojo
+    # source (§10.2: the interpreter cannot `open()` a file).
+    #
+    # The values are unchanged, wrong models included. They live in
+    # `Model.meta` at `MODEL_META_IDX_CTRL_MIN` / `_CTRL_MAX` now, written by
+    # `build_model_fields_from_flat` from `FlatModelDef`, and read by
+    # `Phyics3dEnv.action_low/action_high` off the model the env already
+    # holds — no re-parse. Verified identical on all 56 shipped models
+    # (`test_ctrl_range_source`).
 
         # === Actuation records (phases 1a.2 / 1a.4) ===
     #

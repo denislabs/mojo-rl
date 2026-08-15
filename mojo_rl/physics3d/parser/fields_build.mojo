@@ -170,6 +170,8 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_NOSLIP_TOLERANCE,
     MODEL_META_IDX_CCD_TOLERANCE,
     MODEL_META_IDX_CCD_ITERATIONS,
+    MODEL_META_IDX_CTRL_MIN,
+    MODEL_META_IDX_CTRL_MAX,
     MODEL_PAIR_SIZE,
     PAIR_IDX_GEOM1,
     PAIR_IDX_GEOM2,
@@ -725,6 +727,13 @@ def build_model_fields_from_flat[
     mf.meta.data[MODEL_META_IDX_GRAVITY_X] = Scalar[DTYPE](fmd.gravity_x)
     mf.meta.data[MODEL_META_IDX_GRAVITY_Y] = Scalar[DTYPE](fmd.gravity_y)
     mf.meta.data[MODEL_META_IDX_GRAVITY_Z] = Scalar[DTYPE](fmd.gravity_z)
+    # The env's advertised scalar action bounds — see the constant.
+    mf.meta.data[MODEL_META_IDX_CTRL_MIN] = Scalar[DTYPE](
+        fmd.default_motor_ctrl_min
+    )
+    mf.meta.data[MODEL_META_IDX_CTRL_MAX] = Scalar[DTYPE](
+        fmd.default_motor_ctrl_max
+    )
     mf.meta.data[MODEL_META_IDX_TIMESTEP] = Scalar[DTYPE](fmd.timestep)
     mf.meta.data[MODEL_META_IDX_DENSITY] = Scalar[DTYPE](fmd.opt_density)
     mf.meta.data[MODEL_META_IDX_VISCOSITY] = Scalar[DTYPE](fmd.opt_viscosity)

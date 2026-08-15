@@ -113,7 +113,6 @@ from .xml_parser import (
     _xml_nth_joint_limited,
     _xml_nth_joint_range_min,
     _xml_nth_joint_range_max,
-    _xml_default_motor_ctrlrange,
     _xml_fixed_tendon_njoints,
     _xml_fixed_tendon_joint_name,
     _xml_fixed_tendon_coef,
@@ -307,9 +306,6 @@ struct ModelDefFromXML[
     )
     comptime ACTION_DIM: Int = Self.action_dim_override if Self.action_dim_override > 0 else Self.nact
     comptime TIMESTEP: Float64 = Self.timestep
-    comptime _ctrlrange: Tuple[Float64, Float64] = _xml_default_motor_ctrlrange[Self.xml]()
-    comptime CTRL_MIN: Float64 = Self._ctrlrange[0]
-    comptime CTRL_MAX: Float64 = Self._ctrlrange[1]
 
     # ⚠⚠ `_acd` (`ComptimeActData`) LIVED HERE AND IS GONE (phase 1a.4e).
     # It was the model's XML interpreted at struct-elaboration time into ~20
@@ -2445,6 +2441,27 @@ struct ModelDefFromXML[
                     color=col,
                 )
             base += n
+
+    @staticmethod
+    def default_ctrl_range() raises -> Tuple[Float64, Float64]:
+        """The ROOT `<default>`'s motor ctrlrange — the model-wide SUMMARY.
+
+        ⚠ NOT THE CLAMP, and knowingly wrong on models that set their ranges
+        per actuator or per default class. `ctrl_min_at` / `ctrl_max_at` are
+        the per-actuator answer and are what `apply_actions` uses.
+
+        ⚠ RE-PARSES. `Phyics3dEnv.action_low/action_high` do NOT call this —
+        they read `MODEL_META_IDX_CTRL_MIN/_CTRL_MAX` off the model they
+        already hold. This exists for callers that have a model DEF and no
+        built model, which in practice means tests.
+
+        Was `comptime CTRL_MIN/CTRL_MAX` until phase 1b, computed by a
+        comptime scan of the MJCF — the last such scan in this struct, and a
+        comptime reader of the XML is what pins a model to a `String` in Mojo
+        source.
+        """
+        var fmd = parse_xml_full(Self.xml)
+        return (fmd.default_motor_ctrl_min, fmd.default_motor_ctrl_max)
 
     @staticmethod
     def make_render_fields() raises -> RenderFields:

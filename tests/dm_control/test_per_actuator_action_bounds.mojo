@@ -1,7 +1,7 @@
 """Per-actuator action bounds vs dm_control's `action_spec`.
 
 `BoxContinuousActionEnv.action_low/action_high` are SCALARS by contract, and
-`MODEL_DEF.CTRL_MIN/CTRL_MAX` — what they return — come from a ROOT
+`default_ctrl_range()` — what they return — comes from a ROOT
 `<default><motor ctrlrange>`. A model that keeps its ranges per actuator or
 per default class silently gets (-1, 1) instead. `ctrl_min_at`/`ctrl_max_at`
 are the per-actuator answer; this gates them against dm_control's own spec.
@@ -59,7 +59,8 @@ def test_reach_site_features_per_actuator_bounds() raises:
 
     comptime M = ReachSiteFeaturesModel
     var sf = M.make_spec_fields[DType.float64]()
-    print("  model-wide CTRL_MIN/CTRL_MAX:", M.CTRL_MIN, M.CTRL_MAX)
+    var scalar_range = M.default_ctrl_range()
+    print("  model-wide CTRL_MIN/CTRL_MAX:", scalar_range[0], scalar_range[1])
     var worst = 0.0
     var n_off_scalar = 0
     for a in range(nu):
@@ -71,7 +72,9 @@ def test_reach_site_features_per_actuator_bounds() raises:
             worst = e0
         if e1 > worst:
             worst = e1
-        if abs(M.CTRL_MIN - mlo) > 1e-9 or abs(M.CTRL_MAX - mhi) > 1e-9:
+        if abs(scalar_range[0] - mlo) > 1e-9 or abs(
+            scalar_range[1] - mhi
+        ) > 1e-9:
             n_off_scalar += 1
         print("    act", a, " ours [", M.ctrl_min_at[DType.float64](sf, a), ",",
               M.ctrl_max_at[DType.float64](sf, a), "]  spec [", mlo, ",", mhi, "]")
@@ -104,7 +107,8 @@ def test_quadruped_per_actuator_bounds() raises:
 
     comptime M = DMQuadrupedWalkModel
     var sf = M.make_spec_fields[DType.float64]()
-    print("  model-wide CTRL_MIN/CTRL_MAX:", M.CTRL_MIN, M.CTRL_MAX)
+    var scalar_range = M.default_ctrl_range()
+    print("  model-wide CTRL_MIN/CTRL_MAX:", scalar_range[0], scalar_range[1])
     var worst = 0.0
     var n_distinct = 0
     for a in range(nu):

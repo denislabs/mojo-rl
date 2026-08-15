@@ -4390,6 +4390,12 @@ xml_in: String) raises -> FlatModelDef:
     var defaults = defaults_tuple[0]
     var named_defaults = defaults_tuple[1]
 
+    # The ROOT default's motor ctrlrange — `ModelDefLike.CTRL_MIN/CTRL_MAX`.
+    # See `FlatModelDef.default_motor_ctrl_min` for why it is copied verbatim
+    # rather than corrected.
+    result.default_motor_ctrl_min = defaults.motor_ctrl_min
+    result.default_motor_ctrl_max = defaults.motor_ctrl_max
+
     # Compiler angle units (MuJoCo's MJCF default is degree) and euler order.
     var deg_factor = _compiler_deg_factor(xml)
     var eulerseq = String("xyz")

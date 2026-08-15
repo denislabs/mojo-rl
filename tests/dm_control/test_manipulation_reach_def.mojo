@@ -115,15 +115,16 @@ def test_manipulation_reach_def_matches_mujoco() raises:
     )
 
     # ── 4. the actuator control ranges, PER ACTUATOR ────────────────────
-    # ⚠ `M.CTRL_MIN` / `M.CTRL_MAX` are NOT what the clamp uses. They are a
+    # ⚠ `M.default_ctrl_range()` is NOT what the clamp uses. It is a
     # single model-wide pair from `_xml_default_motor_ctrlrange`, which reads
     # only a ROOT `<default><motor ctrlrange>`; `apply_actions` clamps with
     # `_acd.motor_ctrl_min[i]` / `[i]`, resolved three ways (element, then
     # `class=`, then the root default) and for `<velocity>` too. Measuring the
     # model-wide pair and concluding the per-actuator ranges were missing is
     # exactly the mistake this comment exists to stop.
+    var scalar_range = M.default_ctrl_range()
     print("  model-wide CTRL_MIN/CTRL_MAX (NOT the clamp):",
-          M.CTRL_MIN, M.CTRL_MAX)
+          scalar_range[0], scalar_range[1])
     var sf = M.make_spec_fields[DType.float64]()
     var cmin = actuator_column(sf, ACT_IDX_CTRL_MIN, M.nact)
     var cmax = actuator_column(sf, ACT_IDX_CTRL_MAX, M.nact)
