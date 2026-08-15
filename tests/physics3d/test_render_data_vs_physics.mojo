@@ -57,6 +57,7 @@ from mojo_rl.physics3d.parser import (
 from mojo_rl.physics3d.parser.flat_model import (
     TEX_SKYBOX, TEX_2D, TEX_CUBE,
 )
+from mojo_rl.physics3d.parser.render_fields import build_render_fields
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
@@ -559,6 +560,481 @@ def _check_assets[MODEL: ModelDefLike](
           " mesh", mesh.bad, "/", mesh.compared)
 
 
+def _lenchk(mut t: FamilyTally, label: String, want: Int, got: Int):
+    """Row COUNT before row content. A `RenderFields` list that came out short
+    would otherwise be compared over `min(...)` and read clean on the prefix —
+    the silent-truncation shape that cost SO-ARM100 two collision meshes."""
+    if want != got:
+        t.add(False)
+        t.note(label + ".LEN " + String(want) + "!=" + String(got))
+
+
+def _check_render_fields[MODEL: ModelDefLike](
+    name: String, rcd: ComptimeRenderData, xml: String, mut t: FamilyTally
+) raises:
+    """`build_render_fields(parse_xml_full(xml))` against `_rcd`, field by field.
+
+    ⚠ THIS IS THE GATE THAT LICENSES THE REPOINT, and it is a different
+    question from `_check_assets`. That one asks whether `FlatModelDef` agrees
+    with `_rcd`; this asks whether the BUILDER that reshapes `FlatModelDef`
+    into the renderer's layout preserves it. Three mappings in
+    `build_render_fields` are not straight copies — the mesh-asset index (by
+    FILENAME, because the two `mesh_id` spaces are unrelated), the spatial
+    tendon site chain (flat here, per-tendon there) and the texture numbering
+    — and a differential gate over all 95 fields is the only thing that says
+    they are right.
+
+    It exists only while `_rcd` does, and goes with it in 1a.5c.
+    """
+    var rf = build_render_fields(parse_xml_full(xml))
+
+    # ⚠ THE `site_*` FIELDS ARE DELIBERATELY ABSENT FROM THIS COMPARISON.
+    # `_rcd`'s site records are the WRONG ones — verified against MuJoCo
+    # 3.10.0 in `_check_assets`' note — so asserting the builder reproduces
+    # them would be asserting it reproduces a bug. The builder copies
+    # `FlatModelDef`'s sites, which match MuJoCo; that is the behaviour
+    # CHANGE this repoint intentionally makes, and the four `toe_*` capsules
+    # quadruped draws at 0.084 instead of 0.005 are the visible half of it.
+
+    _lenchk(t, "geom_body_id", rcd.ngeom, len(rf.geom_body_id))
+    for i in range(min(rcd.ngeom, len(rf.geom_body_id))):
+        var ok_geom_body_id = True
+        _fchk(t, ok_geom_body_id, "geom_body_id", rcd.geom_body_id[i] == rf.geom_body_id[i])
+        t.add(ok_geom_body_id)
+    _lenchk(t, "geom_type", rcd.ngeom, len(rf.geom_type))
+    for i in range(min(rcd.ngeom, len(rf.geom_type))):
+        var ok_geom_type = True
+        _fchk(t, ok_geom_type, "geom_type", rcd.geom_type[i] == rf.geom_type[i])
+        t.add(ok_geom_type)
+    _lenchk(t, "geom_pos_x", rcd.ngeom, len(rf.geom_pos_x))
+    for i in range(min(rcd.ngeom, len(rf.geom_pos_x))):
+        var ok_geom_pos_x = True
+        _fchk(t, ok_geom_pos_x, "geom_pos_x", not _neq(rcd.geom_pos_x[i], rf.geom_pos_x[i]))
+        t.add(ok_geom_pos_x)
+    _lenchk(t, "geom_pos_y", rcd.ngeom, len(rf.geom_pos_y))
+    for i in range(min(rcd.ngeom, len(rf.geom_pos_y))):
+        var ok_geom_pos_y = True
+        _fchk(t, ok_geom_pos_y, "geom_pos_y", not _neq(rcd.geom_pos_y[i], rf.geom_pos_y[i]))
+        t.add(ok_geom_pos_y)
+    _lenchk(t, "geom_pos_z", rcd.ngeom, len(rf.geom_pos_z))
+    for i in range(min(rcd.ngeom, len(rf.geom_pos_z))):
+        var ok_geom_pos_z = True
+        _fchk(t, ok_geom_pos_z, "geom_pos_z", not _neq(rcd.geom_pos_z[i], rf.geom_pos_z[i]))
+        t.add(ok_geom_pos_z)
+    _lenchk(t, "geom_quat_x", rcd.ngeom, len(rf.geom_quat_x))
+    for i in range(min(rcd.ngeom, len(rf.geom_quat_x))):
+        var ok_geom_quat_x = True
+        _fchk(t, ok_geom_quat_x, "geom_quat_x", not _neq(rcd.geom_quat_x[i], rf.geom_quat_x[i]))
+        t.add(ok_geom_quat_x)
+    _lenchk(t, "geom_quat_y", rcd.ngeom, len(rf.geom_quat_y))
+    for i in range(min(rcd.ngeom, len(rf.geom_quat_y))):
+        var ok_geom_quat_y = True
+        _fchk(t, ok_geom_quat_y, "geom_quat_y", not _neq(rcd.geom_quat_y[i], rf.geom_quat_y[i]))
+        t.add(ok_geom_quat_y)
+    _lenchk(t, "geom_quat_z", rcd.ngeom, len(rf.geom_quat_z))
+    for i in range(min(rcd.ngeom, len(rf.geom_quat_z))):
+        var ok_geom_quat_z = True
+        _fchk(t, ok_geom_quat_z, "geom_quat_z", not _neq(rcd.geom_quat_z[i], rf.geom_quat_z[i]))
+        t.add(ok_geom_quat_z)
+    _lenchk(t, "geom_quat_w", rcd.ngeom, len(rf.geom_quat_w))
+    for i in range(min(rcd.ngeom, len(rf.geom_quat_w))):
+        var ok_geom_quat_w = True
+        _fchk(t, ok_geom_quat_w, "geom_quat_w", not _neq(rcd.geom_quat_w[i], rf.geom_quat_w[i]))
+        t.add(ok_geom_quat_w)
+    _lenchk(t, "geom_radius", rcd.ngeom, len(rf.geom_radius))
+    for i in range(min(rcd.ngeom, len(rf.geom_radius))):
+        var ok_geom_radius = True
+        _fchk(t, ok_geom_radius, "geom_radius", not _neq(rcd.geom_radius[i], rf.geom_radius[i]))
+        t.add(ok_geom_radius)
+    _lenchk(t, "geom_half_length", rcd.ngeom, len(rf.geom_half_length))
+    for i in range(min(rcd.ngeom, len(rf.geom_half_length))):
+        var ok_geom_half_length = True
+        _fchk(t, ok_geom_half_length, "geom_half_length", not _neq(rcd.geom_half_length[i], rf.geom_half_length[i]))
+        t.add(ok_geom_half_length)
+    _lenchk(t, "geom_half_x", rcd.ngeom, len(rf.geom_half_x))
+    for i in range(min(rcd.ngeom, len(rf.geom_half_x))):
+        var ok_geom_half_x = True
+        _fchk(t, ok_geom_half_x, "geom_half_x", not _neq(rcd.geom_half_x[i], rf.geom_half_x[i]))
+        t.add(ok_geom_half_x)
+    _lenchk(t, "geom_half_y", rcd.ngeom, len(rf.geom_half_y))
+    for i in range(min(rcd.ngeom, len(rf.geom_half_y))):
+        var ok_geom_half_y = True
+        _fchk(t, ok_geom_half_y, "geom_half_y", not _neq(rcd.geom_half_y[i], rf.geom_half_y[i]))
+        t.add(ok_geom_half_y)
+    _lenchk(t, "geom_half_z", rcd.ngeom, len(rf.geom_half_z))
+    for i in range(min(rcd.ngeom, len(rf.geom_half_z))):
+        var ok_geom_half_z = True
+        _fchk(t, ok_geom_half_z, "geom_half_z", not _neq(rcd.geom_half_z[i], rf.geom_half_z[i]))
+        t.add(ok_geom_half_z)
+    _lenchk(t, "geom_rgba_r", rcd.ngeom, len(rf.geom_rgba_r))
+    for i in range(min(rcd.ngeom, len(rf.geom_rgba_r))):
+        var ok_geom_rgba_r = True
+        _fchk(t, ok_geom_rgba_r, "geom_rgba_r", not _neq(rcd.geom_rgba_r[i], rf.geom_rgba_r[i]))
+        t.add(ok_geom_rgba_r)
+    _lenchk(t, "geom_rgba_g", rcd.ngeom, len(rf.geom_rgba_g))
+    for i in range(min(rcd.ngeom, len(rf.geom_rgba_g))):
+        var ok_geom_rgba_g = True
+        _fchk(t, ok_geom_rgba_g, "geom_rgba_g", not _neq(rcd.geom_rgba_g[i], rf.geom_rgba_g[i]))
+        t.add(ok_geom_rgba_g)
+    _lenchk(t, "geom_rgba_b", rcd.ngeom, len(rf.geom_rgba_b))
+    for i in range(min(rcd.ngeom, len(rf.geom_rgba_b))):
+        var ok_geom_rgba_b = True
+        _fchk(t, ok_geom_rgba_b, "geom_rgba_b", not _neq(rcd.geom_rgba_b[i], rf.geom_rgba_b[i]))
+        t.add(ok_geom_rgba_b)
+    _lenchk(t, "geom_rgba_a", rcd.ngeom, len(rf.geom_rgba_a))
+    for i in range(min(rcd.ngeom, len(rf.geom_rgba_a))):
+        var ok_geom_rgba_a = True
+        _fchk(t, ok_geom_rgba_a, "geom_rgba_a", not _neq(rcd.geom_rgba_a[i], rf.geom_rgba_a[i]))
+        t.add(ok_geom_rgba_a)
+    _lenchk(t, "geom_material_id", rcd.ngeom, len(rf.geom_material_id))
+    for i in range(min(rcd.ngeom, len(rf.geom_material_id))):
+        var ok_geom_material_id = True
+        _fchk(t, ok_geom_material_id, "geom_material_id", rcd.geom_material_id[i] == rf.geom_material_id[i])
+        t.add(ok_geom_material_id)
+    _lenchk(t, "geom_mesh_id", rcd.ngeom, len(rf.geom_mesh_id))
+    for i in range(min(rcd.ngeom, len(rf.geom_mesh_id))):
+        var ok_geom_mesh_id = True
+        _fchk(t, ok_geom_mesh_id, "geom_mesh_id", rcd.geom_mesh_id[i] == rf.geom_mesh_id[i])
+        t.add(ok_geom_mesh_id)
+    _lenchk(t, "geom_group", rcd.ngeom, len(rf.geom_group))
+    for i in range(min(rcd.ngeom, len(rf.geom_group))):
+        var ok_geom_group = True
+        _fchk(t, ok_geom_group, "geom_group", rcd.geom_group[i] == rf.geom_group[i])
+        t.add(ok_geom_group)
+    _lenchk(t, "mesh_names", rcd.nmesh, len(rf.mesh_names))
+    for i in range(min(rcd.nmesh, len(rf.mesh_names))):
+        var ok_mesh_names = True
+        _fchk(t, ok_mesh_names, "mesh_names", rcd.mesh_names[i] == rf.mesh_names[i])
+        t.add(ok_mesh_names)
+    _lenchk(t, "mesh_files", rcd.nmesh, len(rf.mesh_files))
+    for i in range(min(rcd.nmesh, len(rf.mesh_files))):
+        var ok_mesh_files = True
+        _fchk(t, ok_mesh_files, "mesh_files", rcd.mesh_files[i] == rf.mesh_files[i])
+        t.add(ok_mesh_files)
+    _lenchk(t, "light_dir_x", rcd.nlight, len(rf.light_dir_x))
+    for i in range(min(rcd.nlight, len(rf.light_dir_x))):
+        var ok_light_dir_x = True
+        _fchk(t, ok_light_dir_x, "light_dir_x", not _neq(rcd.light_dir_x[i], rf.light_dir_x[i]))
+        t.add(ok_light_dir_x)
+    _lenchk(t, "light_dir_y", rcd.nlight, len(rf.light_dir_y))
+    for i in range(min(rcd.nlight, len(rf.light_dir_y))):
+        var ok_light_dir_y = True
+        _fchk(t, ok_light_dir_y, "light_dir_y", not _neq(rcd.light_dir_y[i], rf.light_dir_y[i]))
+        t.add(ok_light_dir_y)
+    _lenchk(t, "light_dir_z", rcd.nlight, len(rf.light_dir_z))
+    for i in range(min(rcd.nlight, len(rf.light_dir_z))):
+        var ok_light_dir_z = True
+        _fchk(t, ok_light_dir_z, "light_dir_z", not _neq(rcd.light_dir_z[i], rf.light_dir_z[i]))
+        t.add(ok_light_dir_z)
+    _lenchk(t, "light_diffuse_r", rcd.nlight, len(rf.light_diffuse_r))
+    for i in range(min(rcd.nlight, len(rf.light_diffuse_r))):
+        var ok_light_diffuse_r = True
+        _fchk(t, ok_light_diffuse_r, "light_diffuse_r", not _neq(rcd.light_diffuse_r[i], rf.light_diffuse_r[i]))
+        t.add(ok_light_diffuse_r)
+    _lenchk(t, "light_diffuse_g", rcd.nlight, len(rf.light_diffuse_g))
+    for i in range(min(rcd.nlight, len(rf.light_diffuse_g))):
+        var ok_light_diffuse_g = True
+        _fchk(t, ok_light_diffuse_g, "light_diffuse_g", not _neq(rcd.light_diffuse_g[i], rf.light_diffuse_g[i]))
+        t.add(ok_light_diffuse_g)
+    _lenchk(t, "light_diffuse_b", rcd.nlight, len(rf.light_diffuse_b))
+    for i in range(min(rcd.nlight, len(rf.light_diffuse_b))):
+        var ok_light_diffuse_b = True
+        _fchk(t, ok_light_diffuse_b, "light_diffuse_b", not _neq(rcd.light_diffuse_b[i], rf.light_diffuse_b[i]))
+        t.add(ok_light_diffuse_b)
+    _lenchk(t, "light_specular_r", rcd.nlight, len(rf.light_specular_r))
+    for i in range(min(rcd.nlight, len(rf.light_specular_r))):
+        var ok_light_specular_r = True
+        _fchk(t, ok_light_specular_r, "light_specular_r", not _neq(rcd.light_specular_r[i], rf.light_specular_r[i]))
+        t.add(ok_light_specular_r)
+    _lenchk(t, "light_specular_g", rcd.nlight, len(rf.light_specular_g))
+    for i in range(min(rcd.nlight, len(rf.light_specular_g))):
+        var ok_light_specular_g = True
+        _fchk(t, ok_light_specular_g, "light_specular_g", not _neq(rcd.light_specular_g[i], rf.light_specular_g[i]))
+        t.add(ok_light_specular_g)
+    _lenchk(t, "light_specular_b", rcd.nlight, len(rf.light_specular_b))
+    for i in range(min(rcd.nlight, len(rf.light_specular_b))):
+        var ok_light_specular_b = True
+        _fchk(t, ok_light_specular_b, "light_specular_b", not _neq(rcd.light_specular_b[i], rf.light_specular_b[i]))
+        t.add(ok_light_specular_b)
+    _lenchk(t, "light_ambient_r", rcd.nlight, len(rf.light_ambient_r))
+    for i in range(min(rcd.nlight, len(rf.light_ambient_r))):
+        var ok_light_ambient_r = True
+        _fchk(t, ok_light_ambient_r, "light_ambient_r", not _neq(rcd.light_ambient_r[i], rf.light_ambient_r[i]))
+        t.add(ok_light_ambient_r)
+    _lenchk(t, "light_ambient_g", rcd.nlight, len(rf.light_ambient_g))
+    for i in range(min(rcd.nlight, len(rf.light_ambient_g))):
+        var ok_light_ambient_g = True
+        _fchk(t, ok_light_ambient_g, "light_ambient_g", not _neq(rcd.light_ambient_g[i], rf.light_ambient_g[i]))
+        t.add(ok_light_ambient_g)
+    _lenchk(t, "light_ambient_b", rcd.nlight, len(rf.light_ambient_b))
+    for i in range(min(rcd.nlight, len(rf.light_ambient_b))):
+        var ok_light_ambient_b = True
+        _fchk(t, ok_light_ambient_b, "light_ambient_b", not _neq(rcd.light_ambient_b[i], rf.light_ambient_b[i]))
+        t.add(ok_light_ambient_b)
+    _lenchk(t, "light_directional", rcd.nlight, len(rf.light_directional))
+    for i in range(min(rcd.nlight, len(rf.light_directional))):
+        var ok_light_directional = True
+        _fchk(t, ok_light_directional, "light_directional", rcd.light_directional[i] == rf.light_directional[i])
+        t.add(ok_light_directional)
+    _lenchk(t, "light_castshadow", rcd.nlight, len(rf.light_castshadow))
+    for i in range(min(rcd.nlight, len(rf.light_castshadow))):
+        var ok_light_castshadow = True
+        _fchk(t, ok_light_castshadow, "light_castshadow", rcd.light_castshadow[i] == rf.light_castshadow[i])
+        t.add(ok_light_castshadow)
+    _lenchk(t, "light_exponent", rcd.nlight, len(rf.light_exponent))
+    for i in range(min(rcd.nlight, len(rf.light_exponent))):
+        var ok_light_exponent = True
+        _fchk(t, ok_light_exponent, "light_exponent", not _neq(rcd.light_exponent[i], rf.light_exponent[i]))
+        t.add(ok_light_exponent)
+    _lenchk(t, "cam_pos_x", rcd.ncam, len(rf.cam_pos_x))
+    for i in range(min(rcd.ncam, len(rf.cam_pos_x))):
+        var ok_cam_pos_x = True
+        _fchk(t, ok_cam_pos_x, "cam_pos_x", not _neq(rcd.cam_pos_x[i], rf.cam_pos_x[i]))
+        t.add(ok_cam_pos_x)
+    _lenchk(t, "cam_pos_y", rcd.ncam, len(rf.cam_pos_y))
+    for i in range(min(rcd.ncam, len(rf.cam_pos_y))):
+        var ok_cam_pos_y = True
+        _fchk(t, ok_cam_pos_y, "cam_pos_y", not _neq(rcd.cam_pos_y[i], rf.cam_pos_y[i]))
+        t.add(ok_cam_pos_y)
+    _lenchk(t, "cam_pos_z", rcd.ncam, len(rf.cam_pos_z))
+    for i in range(min(rcd.ncam, len(rf.cam_pos_z))):
+        var ok_cam_pos_z = True
+        _fchk(t, ok_cam_pos_z, "cam_pos_z", not _neq(rcd.cam_pos_z[i], rf.cam_pos_z[i]))
+        t.add(ok_cam_pos_z)
+    _lenchk(t, "cam_quat_x", rcd.ncam, len(rf.cam_quat_x))
+    for i in range(min(rcd.ncam, len(rf.cam_quat_x))):
+        var ok_cam_quat_x = True
+        _fchk(t, ok_cam_quat_x, "cam_quat_x", not _neq(rcd.cam_quat_x[i], rf.cam_quat_x[i]))
+        t.add(ok_cam_quat_x)
+    _lenchk(t, "cam_quat_y", rcd.ncam, len(rf.cam_quat_y))
+    for i in range(min(rcd.ncam, len(rf.cam_quat_y))):
+        var ok_cam_quat_y = True
+        _fchk(t, ok_cam_quat_y, "cam_quat_y", not _neq(rcd.cam_quat_y[i], rf.cam_quat_y[i]))
+        t.add(ok_cam_quat_y)
+    _lenchk(t, "cam_quat_z", rcd.ncam, len(rf.cam_quat_z))
+    for i in range(min(rcd.ncam, len(rf.cam_quat_z))):
+        var ok_cam_quat_z = True
+        _fchk(t, ok_cam_quat_z, "cam_quat_z", not _neq(rcd.cam_quat_z[i], rf.cam_quat_z[i]))
+        t.add(ok_cam_quat_z)
+    _lenchk(t, "cam_quat_w", rcd.ncam, len(rf.cam_quat_w))
+    for i in range(min(rcd.ncam, len(rf.cam_quat_w))):
+        var ok_cam_quat_w = True
+        _fchk(t, ok_cam_quat_w, "cam_quat_w", not _neq(rcd.cam_quat_w[i], rf.cam_quat_w[i]))
+        t.add(ok_cam_quat_w)
+    _lenchk(t, "cam_fovy", rcd.ncam, len(rf.cam_fovy))
+    for i in range(min(rcd.ncam, len(rf.cam_fovy))):
+        var ok_cam_fovy = True
+        _fchk(t, ok_cam_fovy, "cam_fovy", not _neq(rcd.cam_fovy[i], rf.cam_fovy[i]))
+        t.add(ok_cam_fovy)
+    _lenchk(t, "cam_mode", rcd.ncam, len(rf.cam_mode))
+    for i in range(min(rcd.ncam, len(rf.cam_mode))):
+        var ok_cam_mode = True
+        _fchk(t, ok_cam_mode, "cam_mode", rcd.cam_mode[i] == rf.cam_mode[i])
+        t.add(ok_cam_mode)
+    _lenchk(t, "cam_target_body", rcd.ncam, len(rf.cam_target_body))
+    for i in range(min(rcd.ncam, len(rf.cam_target_body))):
+        var ok_cam_target_body = True
+        _fchk(t, ok_cam_target_body, "cam_target_body", rcd.cam_target_body[i] == rf.cam_target_body[i])
+        t.add(ok_cam_target_body)
+    _lenchk(t, "tex_type", rcd.ntex, len(rf.tex_type))
+    for i in range(min(rcd.ntex, len(rf.tex_type))):
+        var ok_tex_type = True
+        _fchk(t, ok_tex_type, "tex_type", _rcd_tex_type_to_runtime(rcd.tex_type[i]) == rf.tex_type[i])
+        t.add(ok_tex_type)
+    _lenchk(t, "tex_builtin", rcd.ntex, len(rf.tex_builtin))
+    for i in range(min(rcd.ntex, len(rf.tex_builtin))):
+        var ok_tex_builtin = True
+        _fchk(t, ok_tex_builtin, "tex_builtin", rcd.tex_builtin[i] == rf.tex_builtin[i])
+        t.add(ok_tex_builtin)
+    _lenchk(t, "tex_rgb1_r", rcd.ntex, len(rf.tex_rgb1_r))
+    for i in range(min(rcd.ntex, len(rf.tex_rgb1_r))):
+        var ok_tex_rgb1_r = True
+        _fchk(t, ok_tex_rgb1_r, "tex_rgb1_r", not _neq(rcd.tex_rgb1_r[i], rf.tex_rgb1_r[i]))
+        t.add(ok_tex_rgb1_r)
+    _lenchk(t, "tex_rgb1_g", rcd.ntex, len(rf.tex_rgb1_g))
+    for i in range(min(rcd.ntex, len(rf.tex_rgb1_g))):
+        var ok_tex_rgb1_g = True
+        _fchk(t, ok_tex_rgb1_g, "tex_rgb1_g", not _neq(rcd.tex_rgb1_g[i], rf.tex_rgb1_g[i]))
+        t.add(ok_tex_rgb1_g)
+    _lenchk(t, "tex_rgb1_b", rcd.ntex, len(rf.tex_rgb1_b))
+    for i in range(min(rcd.ntex, len(rf.tex_rgb1_b))):
+        var ok_tex_rgb1_b = True
+        _fchk(t, ok_tex_rgb1_b, "tex_rgb1_b", not _neq(rcd.tex_rgb1_b[i], rf.tex_rgb1_b[i]))
+        t.add(ok_tex_rgb1_b)
+    _lenchk(t, "tex_rgb2_r", rcd.ntex, len(rf.tex_rgb2_r))
+    for i in range(min(rcd.ntex, len(rf.tex_rgb2_r))):
+        var ok_tex_rgb2_r = True
+        _fchk(t, ok_tex_rgb2_r, "tex_rgb2_r", not _neq(rcd.tex_rgb2_r[i], rf.tex_rgb2_r[i]))
+        t.add(ok_tex_rgb2_r)
+    _lenchk(t, "tex_rgb2_g", rcd.ntex, len(rf.tex_rgb2_g))
+    for i in range(min(rcd.ntex, len(rf.tex_rgb2_g))):
+        var ok_tex_rgb2_g = True
+        _fchk(t, ok_tex_rgb2_g, "tex_rgb2_g", not _neq(rcd.tex_rgb2_g[i], rf.tex_rgb2_g[i]))
+        t.add(ok_tex_rgb2_g)
+    _lenchk(t, "tex_rgb2_b", rcd.ntex, len(rf.tex_rgb2_b))
+    for i in range(min(rcd.ntex, len(rf.tex_rgb2_b))):
+        var ok_tex_rgb2_b = True
+        _fchk(t, ok_tex_rgb2_b, "tex_rgb2_b", not _neq(rcd.tex_rgb2_b[i], rf.tex_rgb2_b[i]))
+        t.add(ok_tex_rgb2_b)
+    _lenchk(t, "tex_names", rcd.ntex, len(rf.tex_names))
+    for i in range(min(rcd.ntex, len(rf.tex_names))):
+        var ok_tex_names = True
+        _fchk(t, ok_tex_names, "tex_names", rcd.tex_names[i] == rf.tex_names[i])
+        t.add(ok_tex_names)
+    _lenchk(t, "tex_files", rcd.ntex, len(rf.tex_files))
+    for i in range(min(rcd.ntex, len(rf.tex_files))):
+        var ok_tex_files = True
+        _fchk(t, ok_tex_files, "tex_files", rcd.tex_files[i] == rf.tex_files[i])
+        t.add(ok_tex_files)
+    _lenchk(t, "tex_mark", rcd.ntex, len(rf.tex_mark))
+    for i in range(min(rcd.ntex, len(rf.tex_mark))):
+        var ok_tex_mark = True
+        _fchk(t, ok_tex_mark, "tex_mark", rcd.tex_mark[i] == rf.tex_mark[i])
+        t.add(ok_tex_mark)
+    _lenchk(t, "tex_markrgb_r", rcd.ntex, len(rf.tex_markrgb_r))
+    for i in range(min(rcd.ntex, len(rf.tex_markrgb_r))):
+        var ok_tex_markrgb_r = True
+        _fchk(t, ok_tex_markrgb_r, "tex_markrgb_r", not _neq(rcd.tex_markrgb_r[i], rf.tex_markrgb_r[i]))
+        t.add(ok_tex_markrgb_r)
+    _lenchk(t, "tex_markrgb_g", rcd.ntex, len(rf.tex_markrgb_g))
+    for i in range(min(rcd.ntex, len(rf.tex_markrgb_g))):
+        var ok_tex_markrgb_g = True
+        _fchk(t, ok_tex_markrgb_g, "tex_markrgb_g", not _neq(rcd.tex_markrgb_g[i], rf.tex_markrgb_g[i]))
+        t.add(ok_tex_markrgb_g)
+    _lenchk(t, "tex_markrgb_b", rcd.ntex, len(rf.tex_markrgb_b))
+    for i in range(min(rcd.ntex, len(rf.tex_markrgb_b))):
+        var ok_tex_markrgb_b = True
+        _fchk(t, ok_tex_markrgb_b, "tex_markrgb_b", not _neq(rcd.tex_markrgb_b[i], rf.tex_markrgb_b[i]))
+        t.add(ok_tex_markrgb_b)
+    _lenchk(t, "tex_random", rcd.ntex, len(rf.tex_random))
+    for i in range(min(rcd.ntex, len(rf.tex_random))):
+        var ok_tex_random = True
+        _fchk(t, ok_tex_random, "tex_random", not _neq(rcd.tex_random[i], rf.tex_random[i]))
+        t.add(ok_tex_random)
+    _lenchk(t, "mat_rgba_r", rcd.nmat, len(rf.mat_rgba_r))
+    for i in range(min(rcd.nmat, len(rf.mat_rgba_r))):
+        var ok_mat_rgba_r = True
+        _fchk(t, ok_mat_rgba_r, "mat_rgba_r", not _neq(rcd.mat_rgba_r[i], rf.mat_rgba_r[i]))
+        t.add(ok_mat_rgba_r)
+    _lenchk(t, "mat_rgba_g", rcd.nmat, len(rf.mat_rgba_g))
+    for i in range(min(rcd.nmat, len(rf.mat_rgba_g))):
+        var ok_mat_rgba_g = True
+        _fchk(t, ok_mat_rgba_g, "mat_rgba_g", not _neq(rcd.mat_rgba_g[i], rf.mat_rgba_g[i]))
+        t.add(ok_mat_rgba_g)
+    _lenchk(t, "mat_rgba_b", rcd.nmat, len(rf.mat_rgba_b))
+    for i in range(min(rcd.nmat, len(rf.mat_rgba_b))):
+        var ok_mat_rgba_b = True
+        _fchk(t, ok_mat_rgba_b, "mat_rgba_b", not _neq(rcd.mat_rgba_b[i], rf.mat_rgba_b[i]))
+        t.add(ok_mat_rgba_b)
+    _lenchk(t, "mat_rgba_a", rcd.nmat, len(rf.mat_rgba_a))
+    for i in range(min(rcd.nmat, len(rf.mat_rgba_a))):
+        var ok_mat_rgba_a = True
+        _fchk(t, ok_mat_rgba_a, "mat_rgba_a", not _neq(rcd.mat_rgba_a[i], rf.mat_rgba_a[i]))
+        t.add(ok_mat_rgba_a)
+    _lenchk(t, "mat_shininess", rcd.nmat, len(rf.mat_shininess))
+    for i in range(min(rcd.nmat, len(rf.mat_shininess))):
+        var ok_mat_shininess = True
+        _fchk(t, ok_mat_shininess, "mat_shininess", not _neq(rcd.mat_shininess[i], rf.mat_shininess[i]))
+        t.add(ok_mat_shininess)
+    _lenchk(t, "mat_specular", rcd.nmat, len(rf.mat_specular))
+    for i in range(min(rcd.nmat, len(rf.mat_specular))):
+        var ok_mat_specular = True
+        _fchk(t, ok_mat_specular, "mat_specular", not _neq(rcd.mat_specular[i], rf.mat_specular[i]))
+        t.add(ok_mat_specular)
+    _lenchk(t, "mat_reflectance", rcd.nmat, len(rf.mat_reflectance))
+    for i in range(min(rcd.nmat, len(rf.mat_reflectance))):
+        var ok_mat_reflectance = True
+        _fchk(t, ok_mat_reflectance, "mat_reflectance", not _neq(rcd.mat_reflectance[i], rf.mat_reflectance[i]))
+        t.add(ok_mat_reflectance)
+    _lenchk(t, "mat_tex_id", rcd.nmat, len(rf.mat_tex_id))
+    for i in range(min(rcd.nmat, len(rf.mat_tex_id))):
+        var ok_mat_tex_id = True
+        _fchk(t, ok_mat_tex_id, "mat_tex_id", rcd.mat_tex_id[i] == rf.mat_tex_id[i])
+        t.add(ok_mat_tex_id)
+    _lenchk(t, "mat_texrepeat_u", rcd.nmat, len(rf.mat_texrepeat_u))
+    for i in range(min(rcd.nmat, len(rf.mat_texrepeat_u))):
+        var ok_mat_texrepeat_u = True
+        _fchk(t, ok_mat_texrepeat_u, "mat_texrepeat_u", not _neq(rcd.mat_texrepeat_u[i], rf.mat_texrepeat_u[i]))
+        t.add(ok_mat_texrepeat_u)
+    _lenchk(t, "mat_texrepeat_v", rcd.nmat, len(rf.mat_texrepeat_v))
+    for i in range(min(rcd.nmat, len(rf.mat_texrepeat_v))):
+        var ok_mat_texrepeat_v = True
+        _fchk(t, ok_mat_texrepeat_v, "mat_texrepeat_v", not _neq(rcd.mat_texrepeat_v[i], rf.mat_texrepeat_v[i]))
+        t.add(ok_mat_texrepeat_v)
+    _lenchk(t, "sten_nsite", rcd.nsten, len(rf.sten_nsite))
+    for i in range(min(rcd.nsten, len(rf.sten_nsite))):
+        var ok_sten_nsite = True
+        _fchk(t, ok_sten_nsite, "sten_nsite", rcd.sten_nsite[i] == rf.sten_nsite[i])
+        t.add(ok_sten_nsite)
+    _lenchk(t, "sten_width", rcd.nsten, len(rf.sten_width))
+    for i in range(min(rcd.nsten, len(rf.sten_width))):
+        var ok_sten_width = True
+        _fchk(t, ok_sten_width, "sten_width", not _neq(rcd.sten_width[i], rf.sten_width[i]))
+        t.add(ok_sten_width)
+    _lenchk(t, "sten_rgba_r", rcd.nsten, len(rf.sten_rgba_r))
+    for i in range(min(rcd.nsten, len(rf.sten_rgba_r))):
+        var ok_sten_rgba_r = True
+        _fchk(t, ok_sten_rgba_r, "sten_rgba_r", not _neq(rcd.sten_rgba_r[i], rf.sten_rgba_r[i]))
+        t.add(ok_sten_rgba_r)
+    _lenchk(t, "sten_rgba_g", rcd.nsten, len(rf.sten_rgba_g))
+    for i in range(min(rcd.nsten, len(rf.sten_rgba_g))):
+        var ok_sten_rgba_g = True
+        _fchk(t, ok_sten_rgba_g, "sten_rgba_g", not _neq(rcd.sten_rgba_g[i], rf.sten_rgba_g[i]))
+        t.add(ok_sten_rgba_g)
+    _lenchk(t, "sten_rgba_b", rcd.nsten, len(rf.sten_rgba_b))
+    for i in range(min(rcd.nsten, len(rf.sten_rgba_b))):
+        var ok_sten_rgba_b = True
+        _fchk(t, ok_sten_rgba_b, "sten_rgba_b", not _neq(rcd.sten_rgba_b[i], rf.sten_rgba_b[i]))
+        t.add(ok_sten_rgba_b)
+    var ok_ntex = True
+    _fchk(t, ok_ntex, "ntex", rcd.ntex == rf.ntex)
+    t.add(ok_ntex)
+    var ok_nmesh = True
+    _fchk(t, ok_nmesh, "nmesh", rcd.nmesh == rf.nmesh)
+    t.add(ok_nmesh)
+    var ok_nsten = True
+    _fchk(t, ok_nsten, "nsten", rcd.nsten == rf.nsten)
+    t.add(ok_nsten)
+    var ok_vis_znear = True
+    _fchk(t, ok_vis_znear, "vis_znear", not _neq(rcd.vis_znear, rf.vis_znear))
+    t.add(ok_vis_znear)
+    var ok_vis_fogstart = True
+    _fchk(t, ok_vis_fogstart, "vis_fogstart", not _neq(rcd.vis_fogstart, rf.vis_fogstart))
+    t.add(ok_vis_fogstart)
+    var ok_vis_fogend = True
+    _fchk(t, ok_vis_fogend, "vis_fogend", not _neq(rcd.vis_fogend, rf.vis_fogend))
+    t.add(ok_vis_fogend)
+    var ok_vis_shadowsize = True
+    _fchk(t, ok_vis_shadowsize, "vis_shadowsize", rcd.vis_shadowsize == rf.vis_shadowsize)
+    t.add(ok_vis_shadowsize)
+    var ok_vis_headlight_ambient_r = True
+    _fchk(t, ok_vis_headlight_ambient_r, "vis_headlight_ambient_r", not _neq(rcd.vis_headlight_ambient_r, rf.vis_headlight_ambient_r))
+    t.add(ok_vis_headlight_ambient_r)
+    var ok_vis_headlight_ambient_g = True
+    _fchk(t, ok_vis_headlight_ambient_g, "vis_headlight_ambient_g", not _neq(rcd.vis_headlight_ambient_g, rf.vis_headlight_ambient_g))
+    t.add(ok_vis_headlight_ambient_g)
+    var ok_vis_headlight_ambient_b = True
+    _fchk(t, ok_vis_headlight_ambient_b, "vis_headlight_ambient_b", not _neq(rcd.vis_headlight_ambient_b, rf.vis_headlight_ambient_b))
+    t.add(ok_vis_headlight_ambient_b)
+    var ok_vis_has_headlight = True
+    _fchk(t, ok_vis_has_headlight, "vis_has_headlight", rcd.vis_has_headlight == rf.vis_has_headlight)
+    t.add(ok_vis_has_headlight)
+
+    # `sten_sites` is the flat chain `_rcd` walks with a cursor; the builder
+    # rebuilds it from each tendon's own `site_ids`, so it is checked here
+    # rather than by the generated block above.
+    var cur = 0
+    for s in range(min(rcd.nsten, len(rf.sten_nsite))):
+        for k in range(rcd.sten_nsite[s]):
+            var ok_chain = True
+            _fchk(t, ok_chain, "sten_sites",
+                  rcd.sten_sites[cur + k] == rf.sten_sites[cur + k])
+            t.add(ok_chain)
+        cur += rcd.sten_nsite[s]
+
+    print("  ", name, " RenderFields mismatches", t.bad, "/", t.compared)
+
+
 def _check[MODEL: ModelDefLike](
     name: String, rcd: ComptimeRenderData, mut n_geoms: Int
 ) raises:
@@ -794,6 +1270,45 @@ def test_render_data_matches_physics_data() raises:
     ma.report("mat   ")
     si.report("site  ")
     me.report("mesh  ")
+    # ── phase 1a.5b: the BUILDER, not just the source ────────────────────
+    print("--- build_render_fields vs _rcd (all 95 fields) ---")
+    var rfl = FamilyTally()
+
+    @parameter
+    def two[M: ModelDefLike](
+        nm: String, rcd: ComptimeRenderData, x: String
+    ) raises:
+        _check_render_fields[M](nm, rcd, x, rfl)
+
+    two[DMQuadrupedWalkModel]("quadruped  ",
+        materialize[DMQuadrupedWalkModel._rcd](),
+        String(DMQuadrupedWalkModel.xml))
+    two[DMFishSwimModel]("fish       ",
+        materialize[DMFishSwimModel._rcd](),
+        String(DMFishSwimModel.xml))
+    two[DMBallInCupModel]("ball_in_cup",
+        materialize[DMBallInCupModel._rcd](),
+        String(DMBallInCupModel.xml))
+    two[DMHumanoidModel]("humanoid   ",
+        materialize[DMHumanoidModel._rcd](),
+        String(DMHumanoidModel.xml))
+    two[DMManipulatorBringBallModel]("manipulator",
+        materialize[DMManipulatorBringBallModel._rcd](),
+        String(DMManipulatorBringBallModel.xml))
+    two[MeshAssetModel]("mesh-asset ",
+        materialize[MeshAssetModel._rcd](),
+        String(MeshAssetModel.xml))
+    two[StenStyleModel]("sten-style ",
+        materialize[StenStyleModel._rcd](),
+        String(StenStyleModel.xml))
+    rfl.report("RenderFields")
+    # ⚠ SITES ARE EXCLUDED HERE TOO, and for the same verified reason as in
+    # `_check_assets`: `_rcd`'s site records are the wrong ones. The builder
+    # copies `FlatModelDef`'s, which match MuJoCo.
+    assert_true(rfl.bad == 0,
+        "build_render_fields disagrees with _rcd in " + String(rfl.bad)
+        + " fields — the repoint is NOT licensed")
+
     print("  (sites:", si.bad, "/", si.compared,
           "differ — comptime-side defects, verified against MuJoCo; see note)")
     assert_true(bad == 0,

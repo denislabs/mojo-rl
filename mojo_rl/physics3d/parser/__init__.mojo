@@ -1,6 +1,7 @@
 """MJCF XML parser for compile-time model dimension extraction and full parsing."""
 
 from .xml_parser import ParsedModel, parse_xml, merge_mjcf, ComptimeRenderData, parse_xml_render_data
+from .render_fields import RenderFields, build_render_fields
 from .flat_model import (
     BodyData,
     JointData,
