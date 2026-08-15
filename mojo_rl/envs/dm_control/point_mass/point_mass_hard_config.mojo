@@ -44,6 +44,8 @@ from std.random.philox import Random as PhiloxRandom
 
 from mojo_rl.physics3d.fields import Data
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_ACTUATOR_SIZE,
+    MODEL_ACT_TENDON_SIZE,
     MODEL_JOINT_SIZE,
     JOINT_IDX_DOF_ADR,
     MODEL_TENDON_SIZE,
@@ -216,6 +218,8 @@ struct DMPointMassHardConfig(Phyics3dEnvConfig):
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
         m_tendons: List[Scalar[DTYPE]],
+        m_actuators: List[Scalar[DTYPE]],
+        m_act_tendons: List[Scalar[DTYPE]],
         actions: List[Float64],
     ) -> Bool:
         """`qfrc[dof] += gear * coef * ctrl`, with `coef` read per episode.
@@ -436,6 +440,7 @@ struct DMPointMassHardConfig(Phyics3dEnvConfig):
         NTENDON_F: Int,
         ACTION_DIM: Int,
         NA_F: Int,
+        NACT_F: Int,
     ](
         qfrc: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
@@ -460,6 +465,14 @@ struct DMPointMassHardConfig(Phyics3dEnvConfig):
         ],
         tendons: LayoutTensor[
             DTYPE, Layout.row_major(NTENDON_F, MODEL_TENDON_SIZE), MutAnyOrigin
+        ],
+        acts: LayoutTensor[
+            DTYPE, Layout.row_major(NACT_F * MODEL_ACTUATOR_SIZE), MutAnyOrigin
+        ],
+        act_tendons: LayoutTensor[
+            DTYPE,
+            Layout.row_major(NTENDON_F * MODEL_ACT_TENDON_SIZE),
+            MutAnyOrigin,
         ],
         env: Int,
     ):

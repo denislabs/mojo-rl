@@ -233,10 +233,13 @@ struct WideResetConfig[
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
         m_tendons: List[Scalar[DTYPE]],
+        m_actuators: List[Scalar[DTYPE]],
+        m_act_tendons: List[Scalar[DTYPE]],
         actions: List[Float64],
     ) -> Bool:
         return Self.BASE.custom_apply_actions_cpu(
-            d, m_bodies, m_joints, m_geoms, m_sites, m_tendons, actions
+            d, m_bodies, m_joints, m_geoms, m_sites, m_tendons,
+            m_actuators, m_act_tendons, actions,
         )
 
     # ── the one hook that differs ────────────────────────────────────────

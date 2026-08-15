@@ -565,6 +565,8 @@ struct Phyics3dEnv[
             self.mf.geoms.data,
             self.mf.sites.data,
             self.mf.tendons.data,
+            self.sf.actuators.data,
+            self.sf.act_tendons.data,
             action_list,
         )
         # Mocap-controlled models (SawyerReach): push the updated mocap target

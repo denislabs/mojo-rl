@@ -631,6 +631,18 @@ struct Phyics3dBatchedEnv[
                 MutAnyOrigin,
             ],
             tendons: LayoutTensor[DT, Self.L_TENDONS_HOOK, MutAnyOrigin],
+            acts: LayoutTensor[
+                DT,
+                Layout.row_major(
+                    Self.MODEL_DEF.NACT_F * MODEL_ACTUATOR_SIZE
+                ),
+                MutAnyOrigin,
+            ],
+            act_tendons: LayoutTensor[
+                DT,
+                Layout.row_major(Self.NTENDON_F * MODEL_ACT_TENDON_SIZE),
+                MutAnyOrigin,
+            ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= Self.N_ENVS:
@@ -638,8 +650,10 @@ struct Phyics3dBatchedEnv[
             Self.CONFIG.custom_apply_actions_gpu[
                 DT, Self.N_ENVS, Self.NQ, Self.NV, Self.NJOINT,
                 Self.NTENDON_F, Self.ACT_DIM, Self.NA_F,
+                Self.MODEL_DEF.NACT_F,
             ](
-                qfrc, actions, qpos, qvel, act, meta, joints, tendons, env
+                qfrc, actions, qpos, qvel, act, meta, joints, tendons,
+                acts, act_tendons, env,
             )
 
         # ⚠ The action view is built HERE rather than passed in: `actions_t`
@@ -666,6 +680,14 @@ struct Phyics3dBatchedEnv[
             self.d.meta.lt["gpu", type_of(self.d).L_META](),
             self.mf.joints.lt["gpu", type_of(self.mf).L_JOINT](),
             self.mf.tendons.lt["gpu", Self.L_TENDONS_HOOK](),
+            self.sf.actuators.lt[
+                "gpu",
+                Layout.row_major(Self.MODEL_DEF.NACT_F * MODEL_ACTUATOR_SIZE),
+            ](),
+            self.sf.act_tendons.lt[
+                "gpu",
+                Layout.row_major(Self.NTENDON_F * MODEL_ACT_TENDON_SIZE),
+            ](),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )

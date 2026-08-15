@@ -215,6 +215,8 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
         m_tendons: List[Scalar[DTYPE]],
+        m_actuators: List[Scalar[DTYPE]],
+        m_act_tendons: List[Scalar[DTYPE]],
         actions: List[Float64],
     ) -> Bool:
         """Apply 4D action as mocap position delta + gripper control."""

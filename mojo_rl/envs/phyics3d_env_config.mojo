@@ -14,6 +14,8 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_ACTUATOR_SIZE,
+    MODEL_ACT_TENDON_SIZE,
     MODEL_GEOM_SIZE,
     MODEL_SITE_SIZE,
     CONTACT_SIZE,
@@ -407,6 +409,8 @@ trait Phyics3dEnvConfig:
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
         m_tendons: List[Scalar[DTYPE]],
+        m_actuators: List[Scalar[DTYPE]],
+        m_act_tendons: List[Scalar[DTYPE]],
         actions: List[Float64],
     ) -> Bool:
         """Apply actions to data. Return True if handled, False for default.
@@ -414,7 +418,16 @@ trait Phyics3dEnvConfig:
         Override for envs that need non-standard action application
         (e.g., mocap position control instead of torque motors, or a
         transmission whose coefficients are randomized per episode and so
-        cannot live in the comptime actuator tables).
+        cannot live in the shared actuator records).
+
+        ⚠ `m_actuators` / `m_act_tendons` ARE `SpecFields`' PACKED RECORDS,
+        added 2026-08-15 with phase 1a.4. Index them
+        `i * MODEL_ACTUATOR_SIZE + ACT_IDX_*` and
+        `t * MODEL_ACT_TENDON_SIZE + ACTTEN_IDX_*`. They are here for the same
+        reason `m_joints` and `m_tendons` are: an override that reimplements
+        actuation needs the gains and ranges, and the alternative was reading
+        them off the comptime `_acd`, which a hook cannot see once the data is
+        runtime.
         Default returns False, which causes Phyics3dEnv.step() to call
         MODEL_DEF.apply_actions() as usual.
 
@@ -442,6 +455,7 @@ trait Phyics3dEnvConfig:
         NTENDON_F: Int,
         ACTION_DIM: Int,
         NA_F: Int,
+        NACT_F: Int,
     ](
         qfrc: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, NV), MutAnyOrigin
@@ -467,6 +481,14 @@ trait Phyics3dEnvConfig:
         tendons: LayoutTensor[
             DTYPE, Layout.row_major(NTENDON_F, MODEL_TENDON_SIZE), MutAnyOrigin
         ],
+        acts: LayoutTensor[
+            DTYPE, Layout.row_major(NACT_F * MODEL_ACTUATOR_SIZE), MutAnyOrigin
+        ],
+        act_tendons: LayoutTensor[
+            DTYPE,
+            Layout.row_major(NTENDON_F * MODEL_ACT_TENDON_SIZE),
+            MutAnyOrigin,
+        ],
         env: Int,
     ):
         """The batched twin of `custom_apply_actions_cpu`, one lane.
@@ -486,6 +508,11 @@ trait Phyics3dEnvConfig:
         `physics3d/gpu/constants.META_IDX_TASK_PARAM_0`). `tendons` and
         `joints` are the RUNTIME records, so a transmission read from them
         follows the model rather than the comptime tables.
+
+        ⚠ `acts` / `act_tendons` ARE `SpecFields`' PACKED RECORDS, added
+        2026-08-15 with phase 1a.4 — the same operands
+        `apply_actions_kernel_gpu` reads, so an override and the default read
+        one source. FLAT, addressed `i * MODEL_ACTUATOR_SIZE + ACT_IDX_*`.
         """
         pass
 
