@@ -58,7 +58,12 @@ struct ParsedModel:
     var NEXCLUDE: Int  # number of <exclude> entries in <contact>
     var NPAIR: Int  # number of <pair> entries in <contact>
     var NTENDON: Int  # number of <fixed> + <spatial> entries in <tendon>
-    var ANGLE_DEG: Bool  # True when <compiler angle="degree"/>
+    # ⚠ NO `ANGLE_DEG`. It was carried here and READ NOWHERE, and it is the
+    # one field `mjModel` does not retain — MuJoCo's compiler converts angles
+    # to radians and discards the unit. Phase 1b generates this struct from
+    # MuJoCo, so a field only our own scanner can produce would have had to be
+    # invented by the generator. Angle units are still resolved where they are
+    # actually needed, by `_compiler_angle_is_deg` at the point of use.
     var TIMESTEP: Float64  # <option timestep="..."/>
     var MAX_CONDIM: Int  # largest `condim=` anywhere in the file (>= 3)
     var NOSLIP_ITER: Int  # <option noslip_iterations="..."/>, 0 = pass off
@@ -82,7 +87,6 @@ struct ParsedModel:
         nexclude: Int = 0,
         npair: Int = 0,
         ntendon: Int = 0,
-        angle_deg: Bool = False,
         timestep: Float64 = 0.01,
         max_condim: Int = 3,
         noslip_iter: Int = 0,
@@ -104,7 +108,6 @@ struct ParsedModel:
         self.NEXCLUDE = nexclude
         self.NPAIR = npair
         self.NTENDON = ntendon
-        self.ANGLE_DEG = angle_deg
         self.TIMESTEP = timestep
         self.MAX_CONDIM = max_condim
         self.NOSLIP_ITER = noslip_iter
@@ -2427,9 +2430,6 @@ def parse_xml(xml: String) -> ParsedModel:
         tendon_sec, "spatial"
     )
 
-    # ---- Compiler angle units -----------------------------------------------
-    var angle_deg = _compiler_angle_is_deg(xml_clean)
-
     # ---- Timestep (<option timestep="..."/>) --------------------------------
     var timestep = Float64(0.002)  # MuJoCo default
     var option_t = xml_clean.find("<option")
@@ -2457,7 +2457,6 @@ def parse_xml(xml: String) -> ParsedModel:
         nexclude,
         npair,
         ntendon,
-        angle_deg,
         timestep,
         _scan_max_condim(xml),
         _scan_noslip_iterations(xml),
