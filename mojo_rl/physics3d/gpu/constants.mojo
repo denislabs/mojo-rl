@@ -769,6 +769,26 @@ comptime ACTTEN_IDX_TRN_COEF_0: Int = (
     ACTTEN_IDX_TRN_QADR_0 + 2 * TENDON_MAX_WRAPS
 )
 
+# --- reference pose + keyframes (phase 1a.4) ---------------------------------
+#
+# `qpos0` itself is a bare `[NQ]` tensor; these are the two scalars that go
+# with it. ⚠ `FREE_JOINT_QPOS_ADR` IS -1 WHEN ABSENT AND ZERO IS A VALID
+# ADDRESS, so the record is seeded rather than left as `alloc` wrote it.
+comptime POSE_META_SIZE: Int = 2
+comptime POSE_IDX_QPOS0_NQ: Int = 0
+comptime POSE_IDX_FREE_JOINT_QPOS_ADR: Int = 1
+
+# One row per `<keyframe><key>`. ⚠ `NQPOS`/`NQVEL`/`NCTRL` ARE PRESENCE FLAGS
+# AS MUCH AS LENGTHS: MuJoCo fills an absent `qpos=` from qpos0 and an absent
+# `qvel=`/`ctrl=` with zero, so `key_qpos_at` must know the attribute was
+# missing rather than read a row of zeros as a real pose. `init_fields`
+# already refuses any length other than the full one.
+comptime KEY_META_SIZE: Int = 4
+comptime KEY_IDX_TIME: Int = 0
+comptime KEY_IDX_NQPOS: Int = 1
+comptime KEY_IDX_NQVEL: Int = 2
+comptime KEY_IDX_NCTRL: Int = 3
+
 
 # =============================================================================
 # Model Buffer Layout - Mesh Collision Hull Data

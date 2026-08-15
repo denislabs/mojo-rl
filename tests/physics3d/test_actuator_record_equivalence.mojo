@@ -93,6 +93,13 @@ from mojo_rl.physics3d.gpu.constants import (
     ACT_IDX_TRN_DADR_0,
     ACT_IDX_TRN_COEF_0,
     MODEL_ACT_TENDON_SIZE,
+    POSE_IDX_QPOS0_NQ,
+    POSE_IDX_FREE_JOINT_QPOS_ADR,
+    KEY_META_SIZE,
+    KEY_IDX_TIME,
+    KEY_IDX_NQPOS,
+    KEY_IDX_NQVEL,
+    KEY_IDX_NCTRL,
     ACTTEN_IDX_STIFFNESS,
     ACTTEN_IDX_SPRING_LO,
     ACTTEN_IDX_SPRING_HI,
@@ -143,6 +150,9 @@ struct _Report(Copyable, Movable):
 def _compare[
     NACT_C: Int,
     NTEN_C: Int,
+    NQ_C: Int,
+    NV_C: Int,
+    NKEY_C: Int,
 ](
     name: String,
     nact: Int,
@@ -388,7 +398,7 @@ def _compare[
     # no tendons; the tensor strides by `TENDON_MAX_WRAPS` = 16 always. On
     # cartpole those are 1 and 16. Comparing them without converting reads
     # actuator i+1's data as actuator i's wrap 1.
-    _fields_diff[NACT_C, NTEN_C](
+    _fields_diff[NACT_C, NTEN_C, NQ_C, NV_C, NKEY_C](
         name, fmd, n_rt, gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, dofa, trnn, tq, td_, tc, wraps, kps, kvs,
         ten_k, ten_lo, ten_hi, nten_acd, ten_n, ten_tq, ten_td, ten_tc,
@@ -399,6 +409,9 @@ def _compare[
 def _fields_diff[
     NACT_C: Int,
     NTEN_C: Int,
+    NQ_C: Int,
+    NV_C: Int,
+    NKEY_C: Int,
 ](
     name: String,
     fmd: FlatModelDef,
@@ -438,8 +451,12 @@ def _fields_diff[
         print("  (skipping tensor diff — actuator count differs)")
         return
 
-    var sf = SpecFields[DType.float64, NACT_C, NTEN_C]()
-    build_spec_fields[DType.float64, NACT_C, NTEN_C](fmd, sf)
+    var sf = SpecFields[
+        DType.float64, NACT_C, NTEN_C, NQ_C, NV_C, NKEY_C
+    ]()
+    build_spec_fields[
+        DType.float64, NACT_C, NTEN_C, NQ_C, NV_C, NKEY_C
+    ](fmd, sf)
 
     var n_scalar = 0
     var n_wrap = 0
@@ -647,7 +664,7 @@ def test_cartpole() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare[NACT, M._NTEN](
+    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
         "cartpole (1 actuator, no <default> class)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
@@ -721,7 +738,7 @@ def test_ctrllimited_matrix() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare[NACT, M._NTEN](
+    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
         "ctrllimited matrix (the `ctrlrange=\"0 0\"` case)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
@@ -788,7 +805,7 @@ def test_quadruped() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare[NACT, M._NTEN](
+    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
         "quadruped (3 classes / 12 actuators, tendons + dyntype)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
@@ -855,7 +872,7 @@ def test_dog() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare[NACT, M._NTEN](
+    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
         "dog stand/walk (24 classes / 38 actuators — the sharp case)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
@@ -930,7 +947,7 @@ def test_reach_forcerange() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare[NACT, M._NTEN](
+    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
         "jaco reach (3 distinct forceranges — the non-vacuous force case)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
@@ -1009,7 +1026,7 @@ def test_fish() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare[NACT, M._NTEN](
+    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
         "fish swim (the ONLY model with tendon springs)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
@@ -1020,7 +1037,13 @@ def test_fish() raises:
     )
 
 
-def _compare_pose(
+def _compare_pose[
+    NACT_C: Int,
+    NTEN_C: Int,
+    NQ_C: Int,
+    NV_C: Int,
+    NKEY_C: Int,
+](
     name: String,
     xml: String,
     qpos0: List[Float64],
@@ -1028,7 +1051,10 @@ def _compare_pose(
     fj_adr: Int,
     ktime: List[Float64],
     knqpos: List[Int],
+    knqvel: List[Int],
+    knctrl: List[Int],
     kqpos: List[Float64],
+    kqvel: List[Float64],
     kctrl: List[Float64],
     nkey_acd: Int,
     nq0: Int,
@@ -1104,6 +1130,121 @@ def _compare_pose(
         String(name, ": nkey runtime ", fmd.nkey, " vs `_acd` ", nkey_acd))
     assert_true(n_k == 0, String(name, ": keyframes disagree in ", n_k))
 
+    # ═══ PHASE 1a.4 — the pose/keyframe TENSORS, same `_acd` values ═══════
+    #
+    # ⚠ WITHOUT THIS THE NEW TENSORS ARE GREEN AND UNTESTED. Everything above
+    # diffs `FlatModelDef` against `_acd`; `build_spec_fields` is a SECOND
+    # transcription and 1a.2's `kp <- kv` negative control is the reason to
+    # believe a column can be wrong while the record is right.
+    var sf = SpecFields[
+        DType.float64, NACT_C, NTEN_C, NQ_C, NV_C, NKEY_C
+    ]()
+    build_spec_fields[
+        DType.float64, NACT_C, NTEN_C, NQ_C, NV_C, NKEY_C
+    ](fmd, sf)
+
+    var n_tq = 0
+    for i in range(nq_cmp):
+        if i < NQ_C and sf.qpos0.data[i] != Scalar[DType.float64](qpos0[i]):
+            n_tq += 1
+    var t_nq = Int(sf.pose_meta.data[POSE_IDX_QPOS0_NQ])
+    var t_fj = Int(sf.pose_meta.data[POSE_IDX_FREE_JOINT_QPOS_ADR])
+
+    var n_tk = 0
+    for k in range(nk):
+        var o = k * KEY_META_SIZE
+        if (
+            sf.key_meta.data[o + KEY_IDX_TIME]
+            != Scalar[DType.float64](ktime[k])
+            or Int(sf.key_meta.data[o + KEY_IDX_NQPOS]) != knqpos[k]
+            or Int(sf.key_meta.data[o + KEY_IDX_NQVEL]) != knqvel[k]
+            or Int(sf.key_meta.data[o + KEY_IDX_NCTRL]) != knctrl[k]
+        ):
+            n_tk += 1
+        for i in range(NQ_C):
+            if sf.key_qpos.data[k * NQ_C + i] != Scalar[DType.float64](
+                kqpos[k * nq0 + i]
+            ):
+                n_tk += 1
+        # ⚠ THE STRIDES DIFFER: `_acd` walks `k * nq0 + i`, the tensor
+        # `k * NV_C + i`. Reading them the same way walks into the next key on
+        # any model with nq != nv — which is every model with a free joint.
+        for i in range(NV_C):
+            if sf.key_qvel.data[k * NV_C + i] != Scalar[DType.float64](
+                kqvel[k * nq0 + i]
+            ):
+                n_tk += 1
+        for i in range(NACT_C):
+            if sf.key_ctrl.data[k * NACT_C + i] != Scalar[DType.float64](
+                kctrl[k * nact0 + i]
+            ):
+                n_tk += 1
+
+    print("    TENSORS: qpos0 =", n_tq, " keyframes =", n_tk,
+          "  pose_meta nq =", t_nq, " free_joint_adr =", t_fj)
+
+    assert_true(n_tq == 0,
+        String(name, ": SpecFields qpos0 disagrees with `_acd` in ", n_tq))
+    assert_true(t_nq == nq_acd and t_fj == fj_adr,
+        String(name, ": SpecFields pose_meta disagrees — nq ", t_nq, " vs ",
+               nq_acd, ", free_joint_adr ", t_fj, " vs ", fj_adr))
+    assert_true(n_tk == 0,
+        String(name, ": SpecFields keyframe rows disagree with `_acd` in ",
+               n_tk))
+
+
+# ═══ The `nq != nv` keyframe fixture — the STRIDE the tree cannot test ═══
+#
+# ⚠⚠ `_acd.key_qvel` STRIDES BY `NQ0`; the `SpecFields` tensor is honestly
+# `[NKEY, NV]` and strides by NV. On every model in this repo that carries a
+# `<keyframe>` — so_arm100, and it is the ONLY one — nq == nv == 6, so the two
+# expressions are the same number and a stride bug is INVISIBLE. Verified:
+# swapping the tensor's stride to NQ leaves all 10 tests green.
+#
+# ⚠ AND TWO KEYS ARE REQUIRED, not one. The strides differ by `k * (nq - nv)`,
+# which is ZERO for k = 0 whatever the dims. so_arm100 has two keys and still
+# could not see it because its dims tie; a free-jointed model with one key
+# would fail for the mirror-image reason.
+#
+# So: a free joint (nq 7 / nv 6) plus a hinge => nq 8, nv 7, and two keys with
+# deliberately distinct qvel values.
+comptime KEYSTRIDE_XML = String(
+    """<mujoco model="keyframe_stride">
+  <option timestep="0.002"/>
+  <worldbody>
+    <body name="root" pos="0 0 .5">
+      <freejoint/>
+      <geom type="sphere" size=".05" mass="1"/>
+      <body name="arm" pos=".1 0 0">
+        <joint name="j" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 .1 0 0" size=".02" mass=".1"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator><motor name="a" joint="j" gear="2" ctrlrange="-1 1"/></actuator>
+  <keyframe>
+    <key name="k0" time="0.25"
+         qpos="0.1 0.2 0.3 0.7071068 0 0.7071068 0 0.4"
+         qvel="1 2 3 4 5 6 7" ctrl="0.5"/>
+    <key name="k1" time="0.75"
+         qpos="-0.1 -0.2 -0.3 1 0 0 0 -0.4"
+         qvel="11 12 13 14 15 16 17" ctrl="-0.5"/>
+  </keyframe>
+</mujoco>"""
+)
+
+comptime _kspm = parse_xml(KEYSTRIDE_XML)
+comptime KeyStrideModel = ModelDefFromXML[
+    xml=KEYSTRIDE_XML,
+    nbody=_kspm.NBODY, njoint=_kspm.NJOINT, nq=_kspm.NQ, nv=_kspm.NV,
+    ngeom=_kspm.NGEOM, nact=_kspm.NACT, ntex=_kspm.NTEX, nmat=_kspm.NMAT,
+    nlight=_kspm.NLIGHT, ncam=_kspm.NCAM, nsite=_kspm.NSITE, neq=_kspm.NEQ,
+    nexclude=_kspm.NEXCLUDE, npair=_kspm.NPAIR, max_tendon=_kspm.NTENDON,
+    max_condim=_kspm.MAX_CONDIM, max_contacts=8,
+    obs_dim_override=1, obs_qpos_skip=0,
+    timestep=_kspm.TIMESTEP, noslip_iter=_kspm.NOSLIP_ITER,
+]
+
 
 def test_pose_finger() raises:
     comptime M = DMFingerSpinModel
@@ -1113,20 +1254,66 @@ def test_pose_finger() raises:
         qp.append(materialize[acd.qpos0[i]]())
     var kt = List[Float64]()
     var knq = List[Int]()
+    var knv = List[Int]()
+    var knc = List[Int]()
     comptime for k in range(acd.NKEYS):
         kt.append(materialize[acd.key_time[k]]())
         knq.append(materialize[acd.key_nqpos[k]]())
+        knv.append(materialize[acd.key_nqvel[k]]())
+        knc.append(materialize[acd.key_nctrl[k]]())
     var kq = List[Float64]()
+    var kv = List[Float64]()
     comptime for i in range(acd.NKEYS * M._NQ0):
         kq.append(materialize[acd.key_qpos[i]]())
+        # ⚠ `_acd.key_qvel` STRIDES BY `_NQ0`, NOT `_NV` — one allocation
+        # shape for both arrays on the comptime side. The tensor is honestly
+        # [NKEY, NV], so the diff below has to convert.
+        kv.append(materialize[acd.key_qvel[i]]())
     var kc = List[Float64]()
     comptime for i in range(acd.NKEYS * M._NACT):
         kc.append(materialize[acd.key_ctrl[i]]())
-    _compare_pose(
+    _compare_pose[M.NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
         "finger spin (joint ref=-90 -> -pi/2, the deg-conversion case)",
         String(M.xml), qp, materialize[acd.nq](),
         materialize[acd.free_joint_qpos_adr](),
-        kt, knq, kq, kc, materialize[acd.nkey](),
+        kt, knq, knv, knc, kq, kv, kc, materialize[acd.nkey](),
+        M._NQ0, M._NACT,
+    )
+
+
+def test_pose_key_stride() raises:
+    """The `nq != nv` + two-keys case, for the key_qvel STRIDE. See the
+    fixture: no model in the tree can distinguish it."""
+    comptime M = KeyStrideModel
+    comptime acd = materialize[M._acd]()
+    var qp = List[Float64]()
+    comptime for i in range(M._NQ0):
+        qp.append(materialize[acd.qpos0[i]]())
+    var kt = List[Float64]()
+    var knq = List[Int]()
+    var knv = List[Int]()
+    var knc = List[Int]()
+    comptime for k in range(acd.NKEYS):
+        kt.append(materialize[acd.key_time[k]]())
+        knq.append(materialize[acd.key_nqpos[k]]())
+        knv.append(materialize[acd.key_nqvel[k]]())
+        knc.append(materialize[acd.key_nctrl[k]]())
+    var kq = List[Float64]()
+    var kv = List[Float64]()
+    comptime for i in range(acd.NKEYS * M._NQ0):
+        kq.append(materialize[acd.key_qpos[i]]())
+        # ⚠ `_acd.key_qvel` STRIDES BY `_NQ0`, NOT `_NV` — one allocation
+        # shape for both arrays on the comptime side. The tensor is honestly
+        # [NKEY, NV], so the diff below has to convert.
+        kv.append(materialize[acd.key_qvel[i]]())
+    var kc = List[Float64]()
+    comptime for i in range(acd.NKEYS * M._NACT):
+        kc.append(materialize[acd.key_ctrl[i]]())
+    _compare_pose[M.NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
+        "keyframe stride (free joint: nq 8 != nv 7, two keys)",
+        String(M.xml), qp, materialize[acd.nq](),
+        materialize[acd.free_joint_qpos_adr](),
+        kt, knq, knv, knc, kq, kv, kc, materialize[acd.nkey](),
         M._NQ0, M._NACT,
     )
 
@@ -1139,20 +1326,29 @@ def test_pose_ant() raises:
         qp.append(materialize[acd.qpos0[i]]())
     var kt = List[Float64]()
     var knq = List[Int]()
+    var knv = List[Int]()
+    var knc = List[Int]()
     comptime for k in range(acd.NKEYS):
         kt.append(materialize[acd.key_time[k]]())
         knq.append(materialize[acd.key_nqpos[k]]())
+        knv.append(materialize[acd.key_nqvel[k]]())
+        knc.append(materialize[acd.key_nctrl[k]]())
     var kq = List[Float64]()
+    var kv = List[Float64]()
     comptime for i in range(acd.NKEYS * M._NQ0):
         kq.append(materialize[acd.key_qpos[i]]())
+        # ⚠ `_acd.key_qvel` STRIDES BY `_NQ0`, NOT `_NV` — one allocation
+        # shape for both arrays on the comptime side. The tensor is honestly
+        # [NKEY, NV], so the diff below has to convert.
+        kv.append(materialize[acd.key_qvel[i]]())
     var kc = List[Float64]()
     comptime for i in range(acd.NKEYS * M._NACT):
         kc.append(materialize[acd.key_ctrl[i]]())
-    _compare_pose(
+    _compare_pose[M.NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
         "ant (<custom> init_qpos OVERRIDES the joint refs)",
         String(M.xml), qp, materialize[acd.nq](),
         materialize[acd.free_joint_qpos_adr](),
-        kt, knq, kq, kc, materialize[acd.nkey](),
+        kt, knq, knv, knc, kq, kv, kc, materialize[acd.nkey](),
         M._NQ0, M._NACT,
     )
 
@@ -1165,20 +1361,29 @@ def test_pose_so_arm100() raises:
         qp.append(materialize[acd.qpos0[i]]())
     var kt = List[Float64]()
     var knq = List[Int]()
+    var knv = List[Int]()
+    var knc = List[Int]()
     comptime for k in range(acd.NKEYS):
         kt.append(materialize[acd.key_time[k]]())
         knq.append(materialize[acd.key_nqpos[k]]())
+        knv.append(materialize[acd.key_nqvel[k]]())
+        knc.append(materialize[acd.key_nctrl[k]]())
     var kq = List[Float64]()
+    var kv = List[Float64]()
     comptime for i in range(acd.NKEYS * M._NQ0):
         kq.append(materialize[acd.key_qpos[i]]())
+        # ⚠ `_acd.key_qvel` STRIDES BY `_NQ0`, NOT `_NV` — one allocation
+        # shape for both arrays on the comptime side. The tensor is honestly
+        # [NKEY, NV], so the diff below has to convert.
+        kv.append(materialize[acd.key_qvel[i]]())
     var kc = List[Float64]()
     comptime for i in range(acd.NKEYS * M._NACT):
         kc.append(materialize[acd.key_ctrl[i]]())
-    _compare_pose(
+    _compare_pose[M.NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
         "so_arm100 (the ONLY model with a <keyframe>)",
         String(M.xml), qp, materialize[acd.nq](),
         materialize[acd.free_joint_qpos_adr](),
-        kt, knq, kq, kc, materialize[acd.nkey](),
+        kt, knq, knv, knc, kq, kv, kc, materialize[acd.nkey](),
         M._NQ0, M._NACT,
     )
 
@@ -1191,20 +1396,29 @@ def test_pose_quadruped_pose() raises:
         qp.append(materialize[acd.qpos0[i]]())
     var kt = List[Float64]()
     var knq = List[Int]()
+    var knv = List[Int]()
+    var knc = List[Int]()
     comptime for k in range(acd.NKEYS):
         kt.append(materialize[acd.key_time[k]]())
         knq.append(materialize[acd.key_nqpos[k]]())
+        knv.append(materialize[acd.key_nqvel[k]]())
+        knc.append(materialize[acd.key_nctrl[k]]())
     var kq = List[Float64]()
+    var kv = List[Float64]()
     comptime for i in range(acd.NKEYS * M._NQ0):
         kq.append(materialize[acd.key_qpos[i]]())
+        # ⚠ `_acd.key_qvel` STRIDES BY `_NQ0`, NOT `_NV` — one allocation
+        # shape for both arrays on the comptime side. The tensor is honestly
+        # [NKEY, NV], so the diff below has to convert.
+        kv.append(materialize[acd.key_qvel[i]]())
     var kc = List[Float64]()
     comptime for i in range(acd.NKEYS * M._NACT):
         kc.append(materialize[acd.key_ctrl[i]]())
-    _compare_pose(
+    _compare_pose[M.NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
         "quadruped (free joint -> body pos + qw=1)",
         String(M.xml), qp, materialize[acd.nq](),
         materialize[acd.free_joint_qpos_adr](),
-        kt, knq, kq, kc, materialize[acd.nkey](),
+        kt, knq, knv, knc, kq, kv, kc, materialize[acd.nkey](),
         M._NQ0, M._NACT,
     )
 

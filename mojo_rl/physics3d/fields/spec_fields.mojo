@@ -1,4 +1,4 @@
-"""Actuation record tensors — the runtime replacement for `_acd` (phase 1a.2).
+"""The runtime replacement for `_acd` (phases 1a.2 / 1a.4).
 
 `ModelDefFromXML._acd` (`ComptimeActData`) is a comptime struct of ~20
 `InlineArray`s that the model's XML is interpreted into at struct-elaboration
@@ -7,13 +7,21 @@ materializes fourteen of those arrays per call, and `apply_actions_kernel_gpu`
 bakes them into the kernel as literals via a comptime-unrolled loop.
 
 `SpecFields` is the same data as packed record tensors, filled by
-`fields_build.build_spec_fields` from the runtime `FlatModelDef`. Two tensors:
+`fields_build.build_spec_fields` from the runtime `FlatModelDef`:
 
     actuators    [NACT, MODEL_ACTUATOR_SIZE]      gains, ranges, transmission
     act_tendons  [NTEN, MODEL_ACT_TENDON_SIZE]    fixed-tendon springs
+    qpos0        [NQ]                             the reference pose
+    pose_meta    [POSE_META_SIZE]                 qpos0_nq, free_joint_qpos_adr
+    key_meta     [NKEY, KEY_META_SIZE]            time + the three lengths
+    key_qpos / key_qvel / key_ctrl                one row per <key>
 
-Column indices are `ACT_IDX_*` / `ACTTEN_IDX_*` in `gpu/constants.mojo`, beside
-every other record layout.
+Column indices are `ACT_IDX_*` / `ACTTEN_IDX_*` / `POSE_IDX_*` / `KEY_IDX_*` in
+`gpu/constants.mojo`, beside every other record layout.
+
+The pose half is not actuation and is here anyway: this struct exists to be
+`_acd`'s runtime replacement, and `_acd` carried both. Splitting them would
+mean two builds, two parses and two arguments at every consumer.
 
 ⚠ WHY NOT A FAMILY ON `fields.Model`. `Model` is the operand bundle the
 integrator, solver and collision kernels bind. Actuation is read by exactly one
@@ -23,10 +31,10 @@ files, and adding a fifteenth parameter would have meant threading `NACT`
 through every one of them to keep them compiling — churn with no bearing on the
 change.
 
-⚠ `NACT`/`NTEN` ARE STILL COMPTIME HERE, and that is not an oversight. Phase
-1a.2 moves the DATA off the comptime interpreter; the DIMS move in 1b. Both are
-floored at 1 so the tensors are always bindable — a zero-extent operand aborts
-at bind (same reason `fields.Model._at_least_one` exists).
+⚠ THE DIMS ARE STILL COMPTIME HERE, and that is not an oversight. Phase 1a
+moves the DATA off the comptime interpreter; the DIMS move in 1b. Each is
+floored at 1 (`*_F`) so the tensors are always bindable — a zero-extent operand
+aborts at bind (same reason `fields.Model._at_least_one` exists).
 """
 
 from max.gpu.host import DeviceContext
@@ -45,17 +53,50 @@ from ..gpu.constants import (
     ACTTEN_IDX_TRN_QADR_0,
     ACTTEN_IDX_TRN_DADR_0,
     TENDON_MAX_WRAPS,
+    POSE_META_SIZE,
+    POSE_IDX_FREE_JOINT_QPOS_ADR,
+    KEY_META_SIZE,
 )
 
 
-struct SpecFields[DTYPE: DType, NACT: Int, NTEN: Int](Movable):
-    """Actuator + fixed-tendon-spring records as two packed tensors."""
+struct SpecFields[
+    DTYPE: DType,
+    NACT: Int,
+    NTEN: Int,
+    # ⚠ APPENDED, AND WITHOUT DEFAULTS ON PURPOSE. A defaulted `NQ = 0` would
+    # give a caller who forgot it a zero-length `qpos0` that reads as an
+    # all-zero reference pose — a legal-looking model that resets to the wrong
+    # place, with nothing to fail. Every construction goes through
+    # `ModelDefFromXML.make_spec_fields` / `init_spec_fields`, which supply
+    # them, so there is no site that WANTS a default.
+    NQ: Int,
+    NV: Int,
+    NKEY: Int,
+](Movable):
+    """The runtime twin of `_acd`: actuation records + the reference pose."""
 
     comptime NACT_F: Int = Self.NACT if Self.NACT > 0 else 1
     comptime NTEN_F: Int = Self.NTEN if Self.NTEN > 0 else 1
+    comptime NQ_F: Int = Self.NQ if Self.NQ > 0 else 1
+    comptime NV_F: Int = Self.NV if Self.NV > 0 else 1
+    comptime NKEY_F: Int = Self.NKEY if Self.NKEY > 0 else 1
 
     var actuators: TensorImpl[Self.DTYPE]  # [NACT, MODEL_ACTUATOR_SIZE]
     var act_tendons: TensorImpl[Self.DTYPE]  # [NTEN, MODEL_ACT_TENDON_SIZE]
+    # Reference pose (`mj_resetData`) and `<keyframe>`
+    # (`mj_resetDataKeyframe`). ⚠ THESE ARE NOT ACTUATION, and they live here
+    # because they are the rest of what `_acd` carried — this struct's job is
+    # to be its runtime replacement, not to be a taxonomy. `qpos0` is indexed
+    # by qpos ADDRESS, so a free joint occupies 7 of its slots and a `<custom>
+    # <numeric name="init_qpos">` overrides the lot; that last case is why it
+    # cannot be folded into `Model.joints[JOINT_IDX_QPOS0]`, which is one
+    # scalar per JOINT.
+    var qpos0: TensorImpl[Self.DTYPE]  # [NQ]
+    var pose_meta: TensorImpl[Self.DTYPE]  # [POSE_META_SIZE]
+    var key_meta: TensorImpl[Self.DTYPE]  # [NKEY, KEY_META_SIZE]
+    var key_qpos: TensorImpl[Self.DTYPE]  # [NKEY, NQ]
+    var key_qvel: TensorImpl[Self.DTYPE]  # [NKEY, NV]
+    var key_ctrl: TensorImpl[Self.DTYPE]  # [NKEY, NACT]
 
     def __init__(out self) raises:
         self.actuators = TensorImpl[Self.DTYPE].alloc(
@@ -63,6 +104,22 @@ struct SpecFields[DTYPE: DType, NACT: Int, NTEN: Int](Movable):
         )
         self.act_tendons = TensorImpl[Self.DTYPE].alloc(
             Self.NTEN_F * MODEL_ACT_TENDON_SIZE
+        )
+        self.qpos0 = TensorImpl[Self.DTYPE].alloc(Self.NQ_F)
+        self.pose_meta = TensorImpl[Self.DTYPE].alloc(POSE_META_SIZE)
+        # -1 = no free joint. Zero is a VALID qpos address (quadruped's free
+        # joint IS at 0), so an unwritten slot would put an identity
+        # quaternion into qpos[3] of a model that has no free joint at all.
+        self.pose_meta.data[POSE_IDX_FREE_JOINT_QPOS_ADR] = Scalar[
+            Self.DTYPE
+        ](-1)
+        self.key_meta = TensorImpl[Self.DTYPE].alloc(
+            Self.NKEY_F * KEY_META_SIZE
+        )
+        self.key_qpos = TensorImpl[Self.DTYPE].alloc(Self.NKEY_F * Self.NQ_F)
+        self.key_qvel = TensorImpl[Self.DTYPE].alloc(Self.NKEY_F * Self.NV_F)
+        self.key_ctrl = TensorImpl[Self.DTYPE].alloc(
+            Self.NKEY_F * Self.NACT_F
         )
         # ⚠⚠ THE SENTINELS ARE -1 AND THE GAIN IS 1, AND THE ZERO `alloc`
         # LEAVES IS WRONG FOR BOTH. `TensorImpl.alloc` DOES zero-fill, so
@@ -107,3 +164,13 @@ struct SpecFields[DTYPE: DType, NACT: Int, NTEN: Int](Movable):
         `Model.upload_all`."""
         self.actuators.upload(ctx)
         self.act_tendons.upload(ctx)
+        # ⚠ The pose/keyframe tensors are CPU-ONLY consumers today
+        # (`reset_data`, `key_*_at`) and are uploaded anyway so a future GPU
+        # reset hook cannot read an empty device buffer. They are a few
+        # hundred bytes.
+        self.qpos0.upload(ctx)
+        self.pose_meta.upload(ctx)
+        self.key_meta.upload(ctx)
+        self.key_qpos.upload(ctx)
+        self.key_qvel.upload(ctx)
+        self.key_ctrl.upload(ctx)

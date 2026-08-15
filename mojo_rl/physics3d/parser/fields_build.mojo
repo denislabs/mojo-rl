@@ -306,6 +306,14 @@ from mojo_rl.physics3d.gpu.constants import (
     ACTTEN_IDX_TRN_QADR_0,
     ACTTEN_IDX_TRN_DADR_0,
     ACTTEN_IDX_TRN_COEF_0,
+    POSE_META_SIZE,
+    POSE_IDX_QPOS0_NQ,
+    POSE_IDX_FREE_JOINT_QPOS_ADR,
+    KEY_META_SIZE,
+    KEY_IDX_TIME,
+    KEY_IDX_NQPOS,
+    KEY_IDX_NQVEL,
+    KEY_IDX_NCTRL,
 )
 from .flat_model import FlatModelDef, _EQ_CONNECT, _EQ_WELD, _EQ_JOINT
 
@@ -1757,11 +1765,14 @@ def build_spec_fields[
     DTYPE: DType,
     NACT: Int,
     NTEN: Int,
+    NQ: Int,
+    NV: Int,
+    NKEY: Int,
 ](
     fmd: FlatModelDef,
-    mut sf: SpecFields[DTYPE, NACT, NTEN],
+    mut sf: SpecFields[DTYPE, NACT, NTEN, NQ, NV, NKEY],
 ) raises:
-    """Fill the actuation record tensors from the parsed `fmd`.
+    """Fill the spec record tensors from the parsed `fmd`.
 
     The runtime twin of what `parse_xml_model_data` produces for the comptime
     `_acd`, and gated against it field by field while both exist
@@ -1883,3 +1894,60 @@ def build_spec_fields[
             sf.act_tendons.data[o + ACTTEN_IDX_TRN_COEF_0 + k] = Scalar[DTYPE](
                 td.coefs[k]
             )
+
+    # ── reference pose (`mj_resetData`) ──────────────────────────────────
+    #
+    # ⚠ `qpos0_nq == 0` MEANS "NO POSE WAS PARSED", NOT "the pose is zero",
+    # and the two need different resets. `reset_data` zeroes qpos and then
+    # sets the free-joint quaternion to identity in that case; writing zeros
+    # here and letting it read them would drop the `qw = 1` and leave a
+    # degenerate quaternion for FK. The flag rides in `pose_meta`.
+    sf.pose_meta.data[POSE_IDX_QPOS0_NQ] = Scalar[DTYPE](fmd.qpos0_nq)
+    sf.pose_meta.data[POSE_IDX_FREE_JOINT_QPOS_ADR] = Scalar[DTYPE](
+        fmd.free_joint_qpos_adr
+    )
+    for i in range(fmd.qpos0_nq):
+        if i < NQ and i < len(fmd.qpos0):
+            sf.qpos0.data[i] = Scalar[DTYPE](fmd.qpos0[i])
+
+    # ── keyframes (`mj_resetDataKeyframe`) ───────────────────────────────
+    if fmd.nkey > NKEY:
+        raise Error(
+            String(
+                "physics3d: this model declares ", fmd.nkey,
+                " <keyframe><key> entries but nkey=", NKEY,
+                " was passed to the model def. Truncating is not safe: a",
+                " caller asking for the dropped key would silently reset to",
+                " qpos0 instead.",
+            )
+        )
+    for k in range(fmd.nkey):
+        var o = k * KEY_META_SIZE
+        sf.key_meta.data[o + KEY_IDX_TIME] = Scalar[DTYPE](fmd.key_time[k])
+        # ⚠ THE LENGTHS ARE PRESENCE FLAGS. MuJoCo fills an absent `qpos=`
+        # from qpos0 and an absent `qvel=`/`ctrl=` with zero, so a reader has
+        # to distinguish "attribute missing" from "attribute of zeros".
+        sf.key_meta.data[o + KEY_IDX_NQPOS] = Scalar[DTYPE](fmd.key_nqpos[k])
+        sf.key_meta.data[o + KEY_IDX_NQVEL] = Scalar[DTYPE](fmd.key_nqvel[k])
+        sf.key_meta.data[o + KEY_IDX_NCTRL] = Scalar[DTYPE](fmd.key_nctrl[k])
+        for i in range(NQ):
+            if k * NQ + i < len(fmd.key_qpos):
+                sf.key_qpos.data[k * NQ + i] = Scalar[DTYPE](
+                    fmd.key_qpos[k * NQ + i]
+                )
+        for i in range(NV):
+            if k * NQ + i < len(fmd.key_qvel):
+                # ⚠ STRIDE `NQ`, NOT `NV`. `FlatModelDef.key_qvel` mirrors the
+                # comptime twin, whose row stride is `NQ0` for BOTH qpos and
+                # qvel (`key_qvel[k * NQ0 + i]`) — one allocation shape for
+                # two arrays. The tensor is honestly `[NKEY, NV]`, so the two
+                # strides differ and reading them the same way walks into the
+                # next key on any model with nq != nv.
+                sf.key_qvel.data[k * NV + i] = Scalar[DTYPE](
+                    fmd.key_qvel[k * NQ + i]
+                )
+        for i in range(NACT):
+            if k * NACT + i < len(fmd.key_ctrl):
+                sf.key_ctrl.data[k * NACT + i] = Scalar[DTYPE](
+                    fmd.key_ctrl[k * NACT + i]
+                )

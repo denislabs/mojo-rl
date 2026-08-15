@@ -3911,7 +3911,34 @@ def parse_xml_model_data[NACT: Int, NJNT: Int, NQ0: Int, NTEN: Int, WRAPS: Int](
     """
     var data = ComptimeActData[NACT, NJNT, NQ0, NTEN, WRAPS]()
 
-    var xml_clean = _strip_xml_comments(xml)
+    # ⚠⚠ `_normalize_freejoint` RUNS HERE TOO, AND IT DID NOT UNTIL
+    # 2026-08-15. `merge_mjcf`, `parse_xml` and `parse_xml_full` all normalize
+    # `<freejoint/>` to `<joint type="free"/>`; THIS entry point did not, and
+    # it is the one that builds `_acd`. The joint scan below tests
+    # `_extract_attr(tag, "type") == "free"` against a tag it never finds, so
+    # for a SINGLE-FILE MJCF (a merged one arrives pre-normalized) the free
+    # joint advanced `qpos_adr` by 1 instead of 7 and
+    # `free_joint_qpos_adr` stayed -1.
+    #
+    # Measured on the ten single-file manipulation models, e.g. lift_brick and
+    # reach_duplo (nq 16):
+    #
+    #     free_joint_qpos_adr   _acd -1   runtime 9
+    #     qpos0_nq              _acd  9   runtime 16
+    #
+    # ⇒ `reset_data` took the `nq > 0` branch with nq = 9, wrote qpos0 for the
+    # arm and ZERO for the brick's 7 free-joint slots — including `qw`, whose
+    # `= 1` fixup is gated on `free_joint_qpos_adr >= 0` and so never ran. A
+    # zero quaternion is degenerate for FK. The gates missed it because every
+    # manipulation test overwrites `qpos` immediately after `reset_data`.
+    #
+    # THE THIRD ENTRY POINT OF THE SAME BUG. See
+    # `feedback_a_normalizer_on_one_entry_point_only`: when a normalizer is
+    # added, every parse entry point needs it, and the way to find them is to
+    # grep the SHARED helper (`_strip_xml_comments`), not the call sites you
+    # remember. `parse_xml_render_data` is the fourth and needs none — it
+    # never scans `<joint`.
+    var xml_clean = _strip_xml_comments(_normalize_freejoint(xml))
 
     # ---- Compiler flags -------------------------------------------------------
     var angle_deg = _compiler_angle_is_deg(xml_clean)

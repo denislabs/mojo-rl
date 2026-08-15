@@ -157,13 +157,16 @@ trait ModelDefLike:
     comptime NACT: Int
     comptime NACT_F: Int
     comptime NTEN_F: Int
+    comptime NKEY: Int
 
     @staticmethod
     def init_spec_fields[
         DTYPE: DType
     ](
         ctx: DeviceContext,
-        mut sf: SpecFields[DTYPE, Self.NACT, Self.NTEN_F],
+        mut sf: SpecFields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ],
     ) raises:
         """Build + upload the actuation record tensors (`SpecFields`), the
         runtime replacement for the comptime `_acd` actuator arrays."""
@@ -173,7 +176,9 @@ trait ModelDefLike:
     def apply_actions[
         DTYPE: DType
     ](
-        sf: SpecFields[DTYPE, Self.NACT, Self.NTEN_F],
+        sf: SpecFields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ],
         mut d: Data[
             DTYPE,
             Self.NQ,

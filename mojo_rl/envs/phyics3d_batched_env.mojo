@@ -184,7 +184,14 @@ struct Phyics3dBatchedEnv[
     # Actuation records (phase 1a.2/1a.3) — the operands
     # `apply_actions_kernel_gpu` reads where it used to read comptime
     # literals. Uploaded once at construction, like `mf`.
-    var sf: SpecFields[DT, Self.MODEL_DEF.NACT, Self.MODEL_DEF.NTEN_F]
+    var sf: SpecFields[
+        DT,
+        Self.MODEL_DEF.NACT,
+        Self.MODEL_DEF.NTEN_F,
+        Self.MODEL_DEF.NQ,
+        Self.MODEL_DEF.NV,
+        Self.MODEL_DEF.NKEY,
+    ]
     # Both integrators are held; the step comptime-dispatches on
     # CONFIG.INTEGRATOR (HalfCheetah/Pusher/MetaWorld = Euler+Newton, the
     # other 9 envs = RK4+Newton). Only the SELECTED one is `prepare_gpu`'d, so

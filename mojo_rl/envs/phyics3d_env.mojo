@@ -190,7 +190,12 @@ struct Phyics3dEnv[
     # call. Static config: built and uploaded once at construction, exactly
     # like `mf`.
     var sf: SpecFields[
-        Self.DTYPE, Self.MODEL_DEF.NACT, Self.MODEL_DEF.NTEN_F
+        Self.DTYPE,
+        Self.MODEL_DEF.NACT,
+        Self.MODEL_DEF.NTEN_F,
+        Self.MODEL_DEF.NQ,
+        Self.MODEL_DEF.NV,
+        Self.MODEL_DEF.NKEY,
     ]
 
     # Renderer (optional; RenderableEnv). Reads the fields FK products

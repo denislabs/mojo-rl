@@ -335,6 +335,11 @@ struct ModelDefFromXML[
     comptime NACT: Int = Self.nact
     comptime NACT_F: Int = Self._NACT
     comptime NTEN_F: Int = Self._NTEN
+    # ⚠ UNFLOORED, like `NACT`: `build_spec_fields` checks the real count
+    # (`fmd.nkey > NKEY` raises), while the STORAGE floors at 1 inside
+    # `SpecFields`. In 1a.4 this still reads `_acd`; it becomes a comptime
+    # PARAMETER in the same phase, which is what finally lets `_acd` go.
+    comptime NKEY: Int = Self.nkey
 
     # Precomputed rendering data — evaluated once at struct level.
     # Replaces 11 separate parse_xml_full calls that crashed the comptime
@@ -572,7 +577,9 @@ struct ModelDefFromXML[
         DTYPE: DType
     ](
         ctx: DeviceContext,
-        mut sf: SpecFields[DTYPE, Self.NACT, Self.NTEN_F],
+        mut sf: SpecFields[
+        DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+    ],
     ) raises:
         """Build + upload the actuation records (phase 1a.2/1a.3).
 
@@ -583,23 +590,31 @@ struct ModelDefFromXML[
         the duplication anyway when `_acd` goes and the two builds merge.
         """
         var fmd = parse_xml_full(Self.xml)
-        build_spec_fields[DTYPE, Self.NACT, Self.NTEN_F](fmd, sf)
+        build_spec_fields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ](fmd, sf)
         sf.upload_all(ctx)
 
     @staticmethod
     def make_spec_fields[
         DTYPE: DType
-    ]() raises -> SpecFields[DTYPE, Self.NACT, Self.NTEN_F]:
+    ]() raises -> SpecFields[
+        DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+    ]:
         """Host-only actuation records — no `DeviceContext`, no upload.
 
         For the CPU `apply_actions` path, which reads `sf.actuators.data`
         directly and has no kernel to feed. It exists mostly so a caller need
-        not spell `SpecFields[DTYPE, M.NACT, M.NTEN_F]` — the parameters are
+        not spell out `SpecFields`' six parameters — they are all
         derivable from the model def and getting them wrong is a type error
         with a page-long message.
         """
-        var sf = SpecFields[DTYPE, Self.NACT, Self.NTEN_F]()
-        build_spec_fields[DTYPE, Self.NACT, Self.NTEN_F](
+        var sf = SpecFields[
+        DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+    ]()
+        build_spec_fields[
+            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        ](
             parse_xml_full(Self.xml), sf
         )
         return sf^
@@ -608,7 +623,9 @@ struct ModelDefFromXML[
     def apply_actions[
         DTYPE: DType
     ](
-        sf: SpecFields[DTYPE, Self.NACT, Self.NTEN_F],
+        sf: SpecFields[
+        DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+    ],
         mut d: Data[
             DTYPE,
             Self.NQ,
