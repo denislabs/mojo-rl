@@ -64,7 +64,11 @@ Run with:
 from std.math import abs
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.parser import parse_xml_full
+from mojo_rl.physics3d.parser import (
+    parse_xml_full,
+    parse_xml,
+    ModelDefFromXML,
+)
 from mojo_rl.physics3d.parser.flat_model import FlatModelDef
 from mojo_rl.physics3d.parser.fields_build import build_spec_fields
 from mojo_rl.physics3d.fields import SpecFields
@@ -537,6 +541,56 @@ def _fields_diff[
                n_ten_s, " scalars / ", n_ten_w, " wraps"))
 
 
+# ═══ The `ctrlrange="0 0"` fixture — added 2026-08-15 AFTER it cost a bug ═══
+#
+# ⚠⚠ THE GATE WAS BLIND HERE AND A REAL DEFECT GOT THROUGH. MuJoCo reads
+# `ctrlrange="0 0"` as the UNDEFINED marker, so such an actuator is UNLIMITED;
+# `_fill_actuators` set `is_ctrl_limited = True` for any present `ctrlrange`,
+# clamped the command to [0, 0], and delivered ZERO FORCE where MuJoCo delivers
+# the full command. Every model in this gate (cartpole, quadruped, dog, jaco,
+# fish) either omits `ctrlrange` or gives a real one — so the mismatch existed
+# on every run and the gate reported 0. `test_ctrllimited_vs_mujoco` caught it
+# instead, at `a5`: dof 5, ours 0.0, MuJoCo 5.0.
+#
+# Mirrors that file's `ctrllimited_matrix` fixture, trimmed to the four cases
+# that take DIFFERENT branches of the resolver. Duplicated rather than imported
+# because a test module is not an importable package here; if one changes, the
+# other must.
+comptime CTRLLIM_XML = String(
+    """<mujoco model="ctrllimited_matrix_gate">
+  <option timestep="0.001" gravity="0 0 0"/>
+  <worldbody>
+    <body name="b0" pos="0 0 0"><joint name="j0" type="hinge" axis="0 0 1"/>
+      <geom type="capsule" fromto="0 0 0 .2 0 0" size=".02" mass="1"/></body>
+    <body name="b1" pos="0 1 0"><joint name="j1" type="hinge" axis="0 0 1"/>
+      <geom type="capsule" fromto="0 0 0 .2 0 0" size=".02" mass="1"/></body>
+    <body name="b2" pos="0 2 0"><joint name="j2" type="hinge" axis="0 0 1"/>
+      <geom type="capsule" fromto="0 0 0 .2 0 0" size=".02" mass="1"/></body>
+    <body name="b3" pos="0 3 0"><joint name="j3" type="hinge" axis="0 0 1"/>
+      <geom type="capsule" fromto="0 0 0 .2 0 0" size=".02" mass="1"/></body>
+  </worldbody>
+  <actuator>
+    <motor name="a0" joint="j0"/>
+    <motor name="a1" joint="j1" ctrlrange="-2 3"/>
+    <motor name="a2" joint="j2" ctrlrange="-1 1" ctrllimited="false"/>
+    <motor name="a3" joint="j3" ctrlrange="0 0"/>
+  </actuator>
+</mujoco>"""
+)
+
+comptime _clpm = parse_xml(CTRLLIM_XML)
+comptime CtrlLimModel = ModelDefFromXML[
+    xml=CTRLLIM_XML,
+    nbody=_clpm.NBODY, njoint=_clpm.NJOINT, nq=_clpm.NQ, nv=_clpm.NV,
+    ngeom=_clpm.NGEOM, nact=_clpm.NACT, ntex=_clpm.NTEX, nmat=_clpm.NMAT,
+    nlight=_clpm.NLIGHT, ncam=_clpm.NCAM, nsite=_clpm.NSITE, neq=_clpm.NEQ,
+    nexclude=_clpm.NEXCLUDE, npair=_clpm.NPAIR, max_tendon=_clpm.NTENDON,
+    max_condim=_clpm.MAX_CONDIM, max_contacts=8,
+    obs_dim_override=1, obs_qpos_skip=0,
+    timestep=_clpm.TIMESTEP, noslip_iter=_clpm.NOSLIP_ITER,
+]
+
+
 def test_cartpole() raises:
     comptime M = DMCartpole1Model
     comptime acd = materialize[M._acd]()
@@ -595,6 +649,80 @@ def test_cartpole() raises:
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
     _ = _compare[NACT, M._NTEN](
         "cartpole (1 actuator, no <default> class)",
+        NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
+        dyn, aadr, materialize[acd.na](),
+        dofa, trnn, tq, td_, tc, M._WRAPS,
+        kps, kvs, materialize[acd.bad_actuator](),
+        ten_k, ten_lo, ten_hi, materialize[acd.ntendon](),
+        ten_n, ten_tq, ten_td, ten_tc,
+    )
+
+
+def test_ctrllimited_matrix() raises:
+    """The `ctrlrange="0 0"` case the gate was blind to — see the fixture.
+
+    ⚠ VACUITY IS THE POINT OF THIS ONE. It is here for `ctrl_limited` alone:
+    four actuators, three of them unlimited for three DIFFERENT reasons (no
+    range, explicit `ctrllimited="false"`, and the degenerate `"0 0"`). The
+    print below says how many differ so the row cannot go flat unnoticed.
+    """
+    comptime M = CtrlLimModel
+    comptime acd = materialize[M._acd]()
+    comptime NACT = M.nact
+    var gears = List[Float64](capacity=NACT)
+    var cmin = List[Float64](capacity=NACT)
+    var cmax = List[Float64](capacity=NACT)
+    var clim = List[Int](capacity=NACT)
+    var kinds = List[Int](capacity=NACT)
+    var flim = List[Int](capacity=NACT)
+    var fmin = List[Float64](capacity=NACT)
+    var fmax = List[Float64](capacity=NACT)
+    var dyn = List[Float64](capacity=NACT)
+    var aadr = List[Int](capacity=NACT)
+    var dofa = List[Int](capacity=NACT)
+    var trnn = List[Int](capacity=NACT)
+    var tq = List[Int]()
+    var td_ = List[Int]()
+    var tc = List[Float64]()
+    var kps = List[Float64](capacity=NACT)
+    var kvs = List[Float64](capacity=NACT)
+    var ten_k = List[Float64]()
+    var ten_lo = List[Float64]()
+    var ten_hi = List[Float64]()
+    var ten_n = List[Int]()
+    var ten_tq = List[Int]()
+    var ten_td = List[Int]()
+    var ten_tc = List[Float64]()
+    comptime for ti in range(M._NTEN):
+        ten_k.append(materialize[acd.tendon_stiffness[ti]]())
+        ten_lo.append(materialize[acd.tendon_spring_lo[ti]]())
+        ten_hi.append(materialize[acd.tendon_spring_hi[ti]]())
+        ten_n.append(materialize[acd.tendon_trn_n[ti]]())
+        comptime for wk in range(M._WRAPS):
+            ten_tq.append(materialize[acd.tendon_trn_qadr[ti * M._WRAPS + wk]]())
+            ten_td.append(materialize[acd.tendon_trn_dadr[ti * M._WRAPS + wk]]())
+            ten_tc.append(materialize[acd.tendon_trn_coef[ti * M._WRAPS + wk]]())
+    comptime for ai in range(NACT):
+        gears.append(materialize[acd.motor_gears[ai]]())
+        cmin.append(materialize[acd.motor_ctrl_min[ai]]())
+        cmax.append(materialize[acd.motor_ctrl_max[ai]]())
+        clim.append(materialize[acd.motor_ctrl_limited[ai]]())
+        kinds.append(materialize[acd.motor_kind[ai]]())
+        flim.append(materialize[acd.motor_force_limited[ai]]())
+        fmin.append(materialize[acd.motor_force_min[ai]]())
+        fmax.append(materialize[acd.motor_force_max[ai]]())
+        dyn.append(materialize[acd.motor_dyn_tau[ai]]())
+        aadr.append(materialize[acd.motor_act_adr[ai]]())
+        dofa.append(materialize[acd.motor_dof_adr[ai]]())
+        trnn.append(materialize[acd.motor_trn_n[ai]]())
+        kps.append(materialize[acd.motor_kp[ai]]())
+        kvs.append(materialize[acd.motor_kv[ai]]())
+        comptime for wk in range(M._WRAPS):
+            tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
+            td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
+            tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
+    _ = _compare[NACT, M._NTEN](
+        "ctrllimited matrix (the `ctrlrange=\"0 0\"` case)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
         dofa, trnn, tq, td_, tc, M._WRAPS,

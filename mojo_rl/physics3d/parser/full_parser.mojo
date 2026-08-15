@@ -2718,22 +2718,40 @@ def _fill_actuators(
             if tname.byte_length() > 0:
                 ad.tendon_id = _tendon_index_by_name(tendon_sec, tname)
 
-        # ctrlrange / ctrllimited
+        # ctrlrange / ctrllimited.
+        #
+        # ⚠⚠ `ctrlrange="0 0"` IS THE UNDEFINED MARKER, NOT A ZERO-WIDTH
+        # RANGE. MuJoCo's `ctrllimited` defaults to "auto" = limited iff a
+        # range was DEFINED, and it reads `"0 0"` as "none supplied" — an
+        # explicit `ctrlrange="0 0"` still reports ctrllimited 0, and the
+        # actuator is unclamped. This branch used to set `is_ctrl_limited =
+        # True` for ANY present `ctrlrange`, so such an actuator was clamped
+        # to [0, 0] and delivered ZERO FORCE where MuJoCo delivers the full
+        # command. Caught by `test_ctrllimited_vs_mujoco`'s `a5` (dof 5: ours
+        # 0.0, MuJoCo 5.0).
+        #
+        # ⚠ The 1a.1/1a.2 differential gates could NOT see this: `_acd` has
+        # the rule and the runtime record did not, but no model in the gate
+        # writes `"0 0"` — the same vacuity that hid `gear`, `force_*` and the
+        # tendon springs. `_apply_forcerange` below is the identical rule for
+        # the twin attribute and was written correctly; this one was not.
         var cr_s = _extract_attr(tag, "ctrlrange")
         if cr_s.byte_length() > 0:
             var cv = _parse_vec3(cr_s)
             ad.ctrl_min = cv[0]
             ad.ctrl_max = cv[1]
-            ad.is_ctrl_limited = True
+            ad.is_ctrl_limited = cv[0] != 0.0 or cv[1] != 0.0
         else:
             ad.ctrl_min = eff.motor_ctrl_min
             ad.ctrl_max = eff.motor_ctrl_max
             ad.is_ctrl_limited = eff.motor_ctrl_limited
 
-        var cl_s = _extract_attr(tag, "ctrllimited")
-        if cl_s == "true":
+        # `"1"`/`"0"` as well as `"true"`/`"false"`, and trimmed — MJCF admits
+        # all four and the comptime twin accepts all four.
+        var cl_s = _trim(_extract_attr(tag, "ctrllimited"))
+        if cl_s == "true" or cl_s == "1":
             ad.is_ctrl_limited = True
-        elif cl_s == "false":
+        elif cl_s == "false" or cl_s == "0":
             ad.is_ctrl_limited = False
 
         # forcerange / forcelimited: start from the class-resolved defaults,

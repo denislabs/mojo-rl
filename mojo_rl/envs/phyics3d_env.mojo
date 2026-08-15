@@ -45,7 +45,7 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, SpecFields
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_auto
 from mojo_rl.physics3d.joint_types import JNT_FREE
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
@@ -185,6 +185,14 @@ struct Phyics3dEnv[
     # needless edge case for the indexing below.
     var act: List[Scalar[Self.DTYPE]]
 
+    # Actuation records (phase 1a.2/1a.3), the runtime replacement for the
+    # comptime `_acd` arrays `apply_actions` used to materialize on every
+    # call. Static config: built and uploaded once at construction, exactly
+    # like `mf`.
+    var sf: SpecFields[
+        Self.DTYPE, Self.MODEL_DEF.NACT, Self.MODEL_DEF.NTEN_F
+    ]
+
     # Renderer (optional; RenderableEnv). Reads the fields FK products
     # (`self.d.xpos`/`xquat`), which the fields step refreshes every frame.
     var _renderer: Optional[
@@ -237,6 +245,8 @@ struct Phyics3dEnv[
         # fields-natively (G1).
         self.mf = type_of(self.mf)()
         Self.MODEL_DEF.init_fields[Self.DTYPE, Self.NMESH_VERTS](ctx, self.mf)
+        self.sf = type_of(self.sf)()
+        Self.MODEL_DEF.init_spec_fields[Self.DTYPE](ctx, self.sf)
 
         self.d = type_of(self.d)()
         self.integ_rk4 = Self.IntegRK4()
@@ -566,7 +576,7 @@ struct Phyics3dEnv[
             # value for the whole control step.
             if not custom_applied:
                 Self.MODEL_DEF.apply_actions(
-                    self.d, action_list, self.act
+                    self.sf, self.d, action_list, self.act
                 )
             try:
                 # CPU target: cannot actually raise (the `raises` on the

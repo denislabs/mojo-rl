@@ -52,7 +52,11 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.fields import Data
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_ACTUATOR_SIZE,
+    MODEL_ACT_TENDON_SIZE,
+)
+from mojo_rl.physics3d.fields import Data, SpecFields
 
 comptime DTYPE = DType.float64
 
@@ -200,7 +204,8 @@ def test_apply_actions_cpu_matches_mujoco() raises:
     var act = List[Scalar[DTYPE]]()
     for _ in range(M.NA_F):
         act.append(Scalar[DTYPE](0))
-    M.apply_actions[DTYPE](d, actions, act)
+    var sf = M.make_spec_fields[DTYPE]()
+    M.apply_actions[DTYPE](sf, d, actions, act)
 
     var worst = Float64(0)
     var n_unclamped = 0
@@ -260,7 +265,8 @@ def test_apply_actions_gpu_matches_cpu() raises:
     var act_c = List[Scalar[GT]]()
     for _ in range(M.NA_F):
         act_c.append(Scalar[GT](0))
-    M.apply_actions[GT](d32, actions_c, act_c)
+    var sf32 = M.make_spec_fields[GT]()
+    M.apply_actions[GT](sf32, d32, actions_c, act_c)
 
     comptime L_QF = Layout.row_major(B, M.NV)
     comptime L_AC = Layout.row_major(B, AD)
@@ -281,6 +287,8 @@ def test_apply_actions_gpu_matches_cpu() raises:
     t_act.n = B * AD
     t_act.upload(ctx)
 
+    var sfg = SpecFields[GT, M.NACT, M.NTEN_F]()
+    M.init_spec_fields[GT](ctx, sfg)
     M.apply_actions_kernel_gpu[GT, B, AD](
         ctx,
         t_qfrc.lt["gpu", L_QF](),
@@ -288,6 +296,12 @@ def test_apply_actions_gpu_matches_cpu() raises:
         t_qpos.lt["gpu", L_QP](),
         t_qvel.lt["gpu", L_QV](),
         t_a.lt["gpu", L_AT](),
+        sfg.actuators.lt[
+            "gpu", Layout.row_major(M.NACT_F * MODEL_ACTUATOR_SIZE)
+        ](),
+        sfg.act_tendons.lt[
+            "gpu", Layout.row_major(M.NTEN_F * MODEL_ACT_TENDON_SIZE)
+        ](),
     )
     ctx.synchronize()
     t_qfrc.download(ctx)

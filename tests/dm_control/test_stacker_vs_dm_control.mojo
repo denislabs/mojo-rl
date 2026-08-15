@@ -834,7 +834,8 @@ def _set_state_and_fk2(
     var act = List[Scalar[DTYPE]]()
     for _ in range(NA2 if NA2 > 0 else 1):
         act.append(Scalar[DTYPE](0))
-    M2.apply_actions(d, ctrl, act)
+    var sf = M2.make_spec_fields[DTYPE]()
+    M2.apply_actions(sf, d, ctrl, act)
     integ.step["cpu"](d, mf)
     # `integ.step` INTEGRATES. `d.contacts` and `d.site_xpos` were computed at
     # the PRE-integration pose, so restoring qpos/qvel here puts every
@@ -877,7 +878,8 @@ def _set_state_and_fk4(
     var act = List[Scalar[DTYPE]]()
     for _ in range(NA4 if NA4 > 0 else 1):
         act.append(Scalar[DTYPE](0))
-    M4.apply_actions(d, ctrl, act)
+    var sf = M4.make_spec_fields[DTYPE]()
+    M4.apply_actions(sf, d, ctrl, act)
     integ.step["cpu"](d, mf)
     for i in range(NQ4):
         d.qpos.data[i] = Scalar[DTYPE](state[i])
@@ -945,7 +947,8 @@ def _our_qacc2(
     for _ in range(NA2 if NA2 > 0 else 1):
         act.append(Scalar[DTYPE](0))
     var integ = Integ2()
-    M2.apply_actions(d, ctrl, act)
+    var sf = M2.make_spec_fields[DTYPE]()
+    M2.apply_actions(sf, d, ctrl, act)
     integ.step["cpu"](d, mf)
     var out = List[Float64]()
     for i in range(NV2):

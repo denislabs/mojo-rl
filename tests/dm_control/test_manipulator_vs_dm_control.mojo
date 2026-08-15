@@ -736,7 +736,8 @@ def _our_qacc(
     for _ in range(NA if NA > 0 else 1):
         act.append(Scalar[DTYPE](0))
     var integ = Integ()
-    M.apply_actions(d, ctrl, act)
+    var sf = M.make_spec_fields[DTYPE]()
+    M.apply_actions(sf, d, ctrl, act)
     integ.step["cpu"](d, mf)
     var out = List[Float64]()
     for i in range(NV):
@@ -790,7 +791,8 @@ def test_manipulator_grasp_site_matches_mujoco() raises:
     for _ in range(NA if NA > 0 else 1):
         act.append(Scalar[DTYPE](0))
     var integ = Integ()
-    M.apply_actions(d, _zero_ctrl(), act)
+    var sf = M.make_spec_fields[DTYPE]()
+    M.apply_actions(sf, d, _zero_ctrl(), act)
     integ.step["cpu"](d, mf)
 
     var mj = _mj_at(state, _zero_ctrl())
@@ -1015,7 +1017,8 @@ def _set_state_and_fk(
     var act = List[Scalar[DTYPE]]()
     for _ in range(NA if NA > 0 else 1):
         act.append(Scalar[DTYPE](0))
-    M.apply_actions(d, ctrl, act)
+    var sf = M.make_spec_fields[DTYPE]()
+    M.apply_actions(sf, d, ctrl, act)
     integ.step["cpu"](d, mf)
     # `integ.step` INTEGRATES. `d.contacts` and `d.site_xpos` were computed at
     # the PRE-integration pose, so restoring qpos/qvel here puts every

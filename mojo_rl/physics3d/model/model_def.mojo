@@ -11,7 +11,8 @@ the legacy CPU `Model`/`Data` build at G4).
 from mojo_rl.render import Renderer3D, Light, Camera3D
 from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
-from ..fields import Model, Data
+from ..fields import Model, Data, SpecFields
+from ..gpu.constants import MODEL_ACTUATOR_SIZE, MODEL_ACT_TENDON_SIZE
 
 # GPU imports
 from max.gpu.host import DeviceContext, DeviceBuffer
@@ -147,10 +148,32 @@ trait ModelDefLike:
     ):
         ...
 
+    # === Actuation records (phase 1a.2) ===
+    #
+    # `NACT` is MuJoCo's `m->nu`; `NACT_F`/`NTEN_F` are the same numbers
+    # floored at 1, which is the STORAGE capacity. Both are needed and they
+    # are not interchangeable: `build_spec_fields` checks the real count, and
+    # a zero-extent tensor aborts at bind.
+    comptime NACT: Int
+    comptime NACT_F: Int
+    comptime NTEN_F: Int
+
+    @staticmethod
+    def init_spec_fields[
+        DTYPE: DType
+    ](
+        ctx: DeviceContext,
+        mut sf: SpecFields[DTYPE, Self.NACT, Self.NTEN_F],
+    ) raises:
+        """Build + upload the actuation record tensors (`SpecFields`), the
+        runtime replacement for the comptime `_acd` actuator arrays."""
+        ...
+
     @staticmethod
     def apply_actions[
         DTYPE: DType
     ](
+        sf: SpecFields[DTYPE, Self.NACT, Self.NTEN_F],
         mut d: Data[
             DTYPE,
             Self.NQ,
@@ -233,8 +256,23 @@ trait ModelDefLike:
         act: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, Self.NA_F), MutAnyOrigin
         ],
+        acts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(Self.NACT_F * MODEL_ACTUATOR_SIZE),
+            MutAnyOrigin,
+        ],
+        act_tendons: LayoutTensor[
+            DTYPE,
+            Layout.row_major(Self.NTEN_F * MODEL_ACT_TENDON_SIZE),
+            MutAnyOrigin,
+        ],
     ) raises:
-        """⚠ `qpos`/`qvel`/`act` added 2026-08-07 with the blocker-G fix. The GPU
+        """⚠ `acts`/`act_tendons` added 2026-08-15 with phase 1a.3. Every
+        actuator value used to be a comptime literal baked into a fully
+        unrolled loop; they are now loads from the SAME `SpecFields` records
+        the CPU `apply_actions` reads, so the two targets cannot drift.
+
+        ⚠ `qpos`/`qvel`/`act` added 2026-08-07 with the blocker-G fix. The GPU
         actuator path used to apply `gear * ctrl` to ONE dof; it now mirrors
         `apply_actions` term for term, which means walking the transmission
         triples and — for position servos and fixed-tendon springs — reading

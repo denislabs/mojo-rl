@@ -30,7 +30,11 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_ACTUATOR_SIZE,
+    MODEL_ACT_TENDON_SIZE,
+)
+from mojo_rl.physics3d.fields import Data, Model, SpecFields
 
 comptime DTYPE = DType.float32
 
@@ -198,7 +202,8 @@ def _gate[
     actions.append(c0)
     actions.append(c1)
     var act_cpu = List[Scalar[DTYPE]]()
-    M.apply_actions[DTYPE](d, actions, act_cpu)
+    var sf = M.make_spec_fields[DTYPE]()
+    M.apply_actions[DTYPE](sf, d, actions, act_cpu)
 
     # ---- GPU ---------------------------------------------------------------
     # Standalone [BATCH, ...] tensors rather than a batched env: the kernel's
@@ -226,6 +231,8 @@ def _gate[
     t_qvel.upload(ctx)
     t_actv.upload(ctx)
 
+    var sfg = SpecFields[DTYPE, M.NACT, M.NTEN_F]()
+    M.init_spec_fields[DTYPE](ctx, sfg)
     M.apply_actions_kernel_gpu[DTYPE, BATCH, NACT](
         ctx,
         t_qfrc.lt["gpu", Layout.row_major(BATCH, NV)](),
@@ -233,6 +240,12 @@ def _gate[
         t_qpos.lt["gpu", Layout.row_major(BATCH, NQ)](),
         t_qvel.lt["gpu", Layout.row_major(BATCH, NV)](),
         t_actv.lt["gpu", Layout.row_major(BATCH, NA_F)](),
+        sfg.actuators.lt[
+            "gpu", Layout.row_major(M.NACT_F * MODEL_ACTUATOR_SIZE)
+        ](),
+        sfg.act_tendons.lt[
+            "gpu", Layout.row_major(M.NTEN_F * MODEL_ACT_TENDON_SIZE)
+        ](),
     )
     ctx.synchronize()
     t_qfrc.download(ctx)

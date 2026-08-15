@@ -64,8 +64,9 @@ struct SpecFields[DTYPE: DType, NACT: Int, NTEN: Int](Movable):
         self.act_tendons = TensorImpl[Self.DTYPE].alloc(
             Self.NTEN_F * MODEL_ACT_TENDON_SIZE
         )
-        # ⚠⚠ THE SENTINELS ARE -1 AND THE GAIN IS 1, AND ZERO IS WRONG FOR
-        # BOTH. `alloc` does not promise zeroed memory, and even if it did:
+        # ⚠⚠ THE SENTINELS ARE -1 AND THE GAIN IS 1, AND THE ZERO `alloc`
+        # LEAVES IS WRONG FOR BOTH. `TensorImpl.alloc` DOES zero-fill, so
+        # unwritten rows are genuinely 0 — which is exactly the problem:
         #   * a zero `act_adr` / `trn_qadr` / `trn_dadr` is a VALID INDEX, so
         #     an unfilled slot would silently read qpos[0] / drive dof 0 /
         #     borrow another actuator's activation rather than be skipped;
@@ -73,6 +74,9 @@ struct SpecFields[DTYPE: DType, NACT: Int, NTEN: Int](Movable):
         #     `force = kp * u` for EVERY kind — so it silently zeroes the
         #     force of every bare `<motor>`. That exact default cost a fix in
         #     1a.1 (`8fa068b5`) when it was 0.0 on `ActuatorData`.
+        # The columns where zero is a legitimate "absent" — `stiffness`,
+        # `trn_n` — are left as `alloc` wrote them and skipped by the readers,
+        # which is what makes iterating the padded `NTEN_F` rows safe.
         # Only the slots the fill does not always write are seeded; the rest
         # are overwritten unconditionally by `build_spec_fields`.
         for i in range(Self.NACT_F):

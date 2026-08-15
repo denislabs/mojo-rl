@@ -307,7 +307,8 @@ def _gate[
     actions.append(c0)
     actions.append(c1)
     var act = List[Scalar[DTYPE]]()
-    M.apply_actions[DTYPE](d, actions, act)
+    var sf = M.make_spec_fields[DTYPE]()
+    M.apply_actions[DTYPE](sf, d, actions, act)
 
     var mujoco = Python.import_module("mujoco")
     var m = mujoco.MjModel.from_xml_string(xml)

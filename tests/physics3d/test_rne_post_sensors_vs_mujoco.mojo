@@ -218,7 +218,8 @@ def _our_step(mut d: Dat, mut mf: Mod, mut integ: Integ) raises:
         act.append(Scalar[DTYPE](0))
     for i in range(NV):
         d.qfrc.data[i] = Scalar[DTYPE](0)
-    Mdl.apply_actions(d, zero_ctrl, act)
+    var sf = Mdl.make_spec_fields[DTYPE]()
+    Mdl.apply_actions(sf, d, zero_ctrl, act)
     integ.step["cpu"](d, mf)
 
 

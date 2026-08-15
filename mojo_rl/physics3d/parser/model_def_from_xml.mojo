@@ -42,14 +42,39 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_DOF_ADR,
     JOINT_IDX_DAMPING,
     JOINT_IDX_STIFFNESS,
+    MODEL_ACTUATOR_SIZE,
+    ACT_IDX_KIND,
+    ACT_IDX_GEAR,
+    ACT_IDX_CTRL_MIN,
+    ACT_IDX_CTRL_MAX,
+    ACT_IDX_CTRL_LIMITED,
+    ACT_IDX_FORCE_MIN,
+    ACT_IDX_FORCE_MAX,
+    ACT_IDX_FORCE_LIMITED,
+    ACT_IDX_KP,
+    ACT_IDX_KV,
+    ACT_IDX_DYN_TAU,
+    ACT_IDX_ACT_ADR,
+    ACT_IDX_TRN_N,
+    ACT_IDX_TRN_QADR_0,
+    ACT_IDX_TRN_DADR_0,
+    ACT_IDX_TRN_COEF_0,
+    MODEL_ACT_TENDON_SIZE,
+    ACTTEN_IDX_STIFFNESS,
+    ACTTEN_IDX_SPRING_LO,
+    ACTTEN_IDX_SPRING_HI,
+    ACTTEN_IDX_TRN_N,
+    ACTTEN_IDX_TRN_QADR_0,
+    ACTTEN_IDX_TRN_DADR_0,
+    ACTTEN_IDX_TRN_COEF_0,
 )
 from mojo_rl.physics3d.joint_types import JNT_FREE, JNT_BALL
-from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch
+from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, SpecFields
 from mojo_rl.physics3d.dynamics.invweight import (
     compute_invweight0,
 )
 from mojo_rl.physics3d.model.model_def import ModelDefLike
-from .fields_build import build_model_fields_from_flat
+from .fields_build import build_model_fields_from_flat, build_spec_fields
 from .flat_model import (
     ACT_KIND_MOTOR,
     ACT_KIND_POSITION,
@@ -296,6 +321,21 @@ struct ModelDefFromXML[
         Self._NACT, Self._NJNT, Self._NQ0, Self._NTEN, Self._WRAPS
     ](Self.xml)
 
+    # Actuation record capacities (phase 1a.2), declared on `ModelDefLike` so
+    # the trait and this implementation spell `SpecFields` and the kernel
+    # operand layouts with the SAME parameter names. A signature that says
+    # `Self.nact` where the trait says `Self.NACT` leaves the compiler
+    # comparing two unmaterialized expressions it will not unify — the same
+    # trap `test_fullinertia_vs_mujoco` documents for `NPAIR`.
+    #
+    # ⚠ `NACT` IS UNFLOORED AND `NACT_F` IS NOT. `build_spec_fields` checks
+    # `len(fmd.actuators) == NACT`, so a model with no actuators must pass 0;
+    # the STORAGE is floored at 1 because a zero-extent operand aborts at
+    # bind. Both numbers are needed and they are not interchangeable.
+    comptime NACT: Int = Self.nact
+    comptime NACT_F: Int = Self._NACT
+    comptime NTEN_F: Int = Self._NTEN
+
     # Precomputed rendering data — evaluated once at struct level.
     # Replaces 11 separate parse_xml_full calls that crashed the comptime
     # interpreter for large (25+ body) models.
@@ -528,9 +568,47 @@ struct ModelDefFromXML[
         return materialize[Self._acd.motor_ctrl_limited]()[i] != 0
 
     @staticmethod
+    def init_spec_fields[
+        DTYPE: DType
+    ](
+        ctx: DeviceContext,
+        mut sf: SpecFields[DTYPE, Self.NACT, Self.NTEN_F],
+    ) raises:
+        """Build + upload the actuation records (phase 1a.2/1a.3).
+
+        ⚠ THIS PARSES THE XML A SECOND TIME — `init_fields` does its own
+        `parse_xml_full`. Measured 2026-08-15: 0.42 ms on cartpole, 8.96 ms on
+        dog, once per env construction. That is cheaper than threading an
+        out-parameter through `init_fields`' 550-line body, and 1a.4 removes
+        the duplication anyway when `_acd` goes and the two builds merge.
+        """
+        var fmd = parse_xml_full(Self.xml)
+        build_spec_fields[DTYPE, Self.NACT, Self.NTEN_F](fmd, sf)
+        sf.upload_all(ctx)
+
+    @staticmethod
+    def make_spec_fields[
+        DTYPE: DType
+    ]() raises -> SpecFields[DTYPE, Self.NACT, Self.NTEN_F]:
+        """Host-only actuation records — no `DeviceContext`, no upload.
+
+        For the CPU `apply_actions` path, which reads `sf.actuators.data`
+        directly and has no kernel to feed. It exists mostly so a caller need
+        not spell `SpecFields[DTYPE, M.NACT, M.NTEN_F]` — the parameters are
+        derivable from the model def and getting them wrong is a type error
+        with a page-long message.
+        """
+        var sf = SpecFields[DTYPE, Self.NACT, Self.NTEN_F]()
+        build_spec_fields[DTYPE, Self.NACT, Self.NTEN_F](
+            parse_xml_full(Self.xml), sf
+        )
+        return sf^
+
+    @staticmethod
     def apply_actions[
         DTYPE: DType
     ](
+        sf: SpecFields[DTYPE, Self.NACT, Self.NTEN_F],
         mut d: Data[
             DTYPE,
             Self.NQ,
@@ -573,44 +651,27 @@ struct ModelDefFromXML[
         which zeroes it, and a CONFIG's `custom_apply_actions_cpu`, which
         returns True and suppresses this method entirely.
         """
-        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
-        # indexed at runtime must be materialized. Hoisted here so each array
-        # is copied once per call rather than once per access in the loops.
-        var _m_motor_act_adr = materialize[Self._acd.motor_act_adr]()
-        var _m_motor_ctrl_max = materialize[Self._acd.motor_ctrl_max]()
-        var _m_motor_force_limited = materialize[
-            Self._acd.motor_force_limited
-        ]()
-        var _m_motor_force_min = materialize[Self._acd.motor_force_min]()
-        var _m_motor_force_max = materialize[Self._acd.motor_force_max]()
-        var _m_motor_ctrl_min = materialize[Self._acd.motor_ctrl_min]()
-        var _m_motor_ctrl_limited = materialize[
-            Self._acd.motor_ctrl_limited
-        ]()
-        var _m_motor_dyn_tau = materialize[Self._acd.motor_dyn_tau]()
-        var _m_motor_gears = materialize[Self._acd.motor_gears]()
-        var _m_motor_kind = materialize[Self._acd.motor_kind]()
-        var _m_motor_kp = materialize[Self._acd.motor_kp]()
-        var _m_motor_kv = materialize[Self._acd.motor_kv]()
-        var _m_motor_trn_coef = materialize[Self._acd.motor_trn_coef]()
-        var _m_motor_trn_dadr = materialize[Self._acd.motor_trn_dadr]()
-        var _m_motor_trn_n = materialize[Self._acd.motor_trn_n]()
-        var _m_motor_trn_qadr = materialize[Self._acd.motor_trn_qadr]()
-        var _m_tendon_spring_hi = materialize[Self._acd.tendon_spring_hi]()
-        var _m_tendon_spring_lo = materialize[Self._acd.tendon_spring_lo]()
-        var _m_tendon_stiffness = materialize[Self._acd.tendon_stiffness]()
-        var _m_tendon_trn_coef = materialize[Self._acd.tendon_trn_coef]()
-        var _m_tendon_trn_dadr = materialize[Self._acd.tendon_trn_dadr]()
-        var _m_tendon_trn_n = materialize[Self._acd.tendon_trn_n]()
-        var _m_tendon_trn_qadr = materialize[Self._acd.tendon_trn_qadr]()
-
+        # ⚠ THE VALUES NOW COME FROM `sf`, NOT FROM `_acd`. This used to
+        # materialize twenty-three comptime `InlineArray`s per call (Mojo 1.0
+        # cannot index one at runtime), which is also why they were hoisted.
+        # `SpecFields` is `List`-backed, so a read is a load and there is
+        # nothing to hoist — but `o`/`to` below are the record base offsets and
+        # every column is `base + IDX`, exactly as the record kernels address
+        # `Model.bodies` / `Model.joints`.
+        #
+        # ⚠⚠ THE ARITHMETIC IS STILL `Float64`, DELIBERATELY. `DTYPE` is
+        # float64 on the CPU env, so every read is exact — but a caller that
+        # instantiated this at float32 would otherwise silently drop the gains
+        # to float32 and move every force. Widening at the load keeps the
+        # chain identical to the `_acd` version term for term.
         for i in range(Self.NV):
             d.qfrc.data[i] = Scalar[DTYPE](0)
 
         for i in range(Self.nact):
             if i >= len(actions):
                 break
-            var n = _m_motor_trn_n[i]
+            var o = i * MODEL_ACTUATOR_SIZE
+            var n = Int(sf.actuators.data[o + ACT_IDX_TRN_N])
             if n == 0:
                 continue
             # Clamp to per-actuator ctrlrange (per-element overrides default),
@@ -624,13 +685,15 @@ struct ModelDefFromXML[
             # and for why no dm_control or Gymnasium model here could reveal it
             # (0 of 254 actuators unlimited) while ToddlerBot is 30 of 30.
             var ctrl = actions[i]
-            if _m_motor_ctrl_limited[i] != 0:
-                if ctrl > _m_motor_ctrl_max[i]:
-                    ctrl = _m_motor_ctrl_max[i]
-                elif ctrl < _m_motor_ctrl_min[i]:
-                    ctrl = _m_motor_ctrl_min[i]
+            if sf.actuators.data[o + ACT_IDX_CTRL_LIMITED] != 0:
+                var c_max = Float64(sf.actuators.data[o + ACT_IDX_CTRL_MAX])
+                var c_min = Float64(sf.actuators.data[o + ACT_IDX_CTRL_MIN])
+                if ctrl > c_max:
+                    ctrl = c_max
+                elif ctrl < c_min:
+                    ctrl = c_min
 
-            var gear = _m_motor_gears[i]
+            var gear = Float64(sf.actuators.data[o + ACT_IDX_GEAR])
 
             # ACTIVATION (MuJoCo `d->act`). `force = gain .* [ctrl/act]`
             # (mj_fwdActuation): an actuator with a `dyntype` feeds its
@@ -643,7 +706,7 @@ struct ModelDefFromXML[
             # of the same step (`actearly` is off here). This function runs
             # ONCE PER SUBSTEP, which is the same cadence, so the two agree
             # step for step.
-            var adr = _m_motor_act_adr[i]
+            var adr = Int(sf.actuators.data[o + ACT_IDX_ACT_ADR])
             var u = ctrl
             if adr >= 0 and adr < len(act):
                 u = Float64(act[adr])
@@ -652,16 +715,24 @@ struct ModelDefFromXML[
             # plain `<motor>`, which never writes it, is `force = ctrl`. A
             # bias-free `<general>` lands here too and its gain is real: dog's
             # actuators are `force = 0.02 * act`.
-            var force = _m_motor_kp[i] * u
+            var kp = Float64(sf.actuators.data[o + ACT_IDX_KP])
+            var force = kp * u
             comptime _POS = ACT_KIND_POSITION
             comptime _VEL = ACT_KIND_VELOCITY
-            if _m_motor_kind[i] == _POS or _m_motor_kind[i] == _VEL:
+            var kind = Int(sf.actuators.data[o + ACT_IDX_KIND])
+            if kind == _POS or kind == _VEL:
                 var length = Float64(0)
                 var vel = Float64(0)
                 for k in range(n):
-                    var qadr = _m_motor_trn_qadr[i * Self._WRAPS + k]
-                    var dadr = _m_motor_trn_dadr[i * Self._WRAPS + k]
-                    var coef = _m_motor_trn_coef[i * Self._WRAPS + k]
+                    var qadr = Int(
+                        sf.actuators.data[o + ACT_IDX_TRN_QADR_0 + k]
+                    )
+                    var dadr = Int(
+                        sf.actuators.data[o + ACT_IDX_TRN_DADR_0 + k]
+                    )
+                    var coef = Float64(
+                        sf.actuators.data[o + ACT_IDX_TRN_COEF_0 + k]
+                    )
                     if qadr >= 0 and qadr < Self.NQ:
                         length += coef * Float64(d.qpos.data[qadr])
                     if dadr >= 0 and dadr < Self.NV:
@@ -680,8 +751,9 @@ struct ModelDefFromXML[
                 # `u`, not `ctrl` — for a dyntype actuator the servo setpoint
                 # is the ACTIVATION, which lags the control. They coincide
                 # only when the actuator has no activation (then u == ctrl).
-                var setpoint = u - length if _m_motor_kind[i] == _POS else u
-                force = _m_motor_kp[i] * setpoint - _m_motor_kv[i] * vel
+                var setpoint = u - length if kind == _POS else u
+                var kv = Float64(sf.actuators.data[o + ACT_IDX_KV])
+                force = kp * setpoint - kv * vel
 
             # `forcerange` (mj_fwdActuation). ⚠ THE CLAMP IS HERE — on the
             # SCALAR force, BEFORE the moment loop below multiplies by
@@ -689,18 +761,22 @@ struct ModelDefFromXML[
             # forcerange="-1 1">` at ctrl 5 gives actuator_force 1, moment 3,
             # qfrc 3. Clamping the accumulated `qfrc` instead would cap this
             # actuator at 1 N·m where MuJoCo delivers 3.
-            if _m_motor_force_limited[i] != 0:
-                if force > _m_motor_force_max[i]:
-                    force = _m_motor_force_max[i]
-                elif force < _m_motor_force_min[i]:
-                    force = _m_motor_force_min[i]
+            if sf.actuators.data[o + ACT_IDX_FORCE_LIMITED] != 0:
+                var f_hi = Float64(sf.actuators.data[o + ACT_IDX_FORCE_MAX])
+                var f_lo = Float64(sf.actuators.data[o + ACT_IDX_FORCE_MIN])
+                if force > f_hi:
+                    force = f_hi
+                elif force < f_lo:
+                    force = f_lo
 
             for k in range(n):
-                var dadr = _m_motor_trn_dadr[i * Self._WRAPS + k]
+                var dadr = Int(sf.actuators.data[o + ACT_IDX_TRN_DADR_0 + k])
                 if dadr < 0 or dadr >= Self.NV:
                     continue
                 d.qfrc.data[dadr] += Scalar[DTYPE](
-                    gear * _m_motor_trn_coef[i * Self._WRAPS + k] * force
+                    gear
+                    * Float64(sf.actuators.data[o + ACT_IDX_TRN_COEF_0 + k])
+                    * force
                 )
 
             # mjDYN_FILTER, integrated by Euler exactly as `nextActivation`
@@ -709,7 +785,7 @@ struct ModelDefFromXML[
             # `ctrl` here is already ctrlrange-clamped, matching MuJoCo, which
             # clamps `d->ctrl` before computing act_dot.
             if adr >= 0 and adr < len(act):
-                var tau = _m_motor_dyn_tau[i]
+                var tau = Float64(sf.actuators.data[o + ACT_IDX_DYN_TAU])
                 if tau < 1e-10:
                     tau = 1e-10  # mjMINVAL guard, as MuJoCo applies
                 act[adr] = Scalar[DTYPE](
@@ -718,23 +794,34 @@ struct ModelDefFromXML[
 
         # Fixed-tendon springs (`engine_passive.c`, tendon-level spring):
         # a DEADBAND on `tendon_lengthspring`, zero inside the band.
-        for t in range(Self._acd.ntendon):
-            var k_spring = _m_tendon_stiffness[t]
+        # ⚠ THE BOUND IS `_NTEN` (the RECORD CAPACITY) WHERE IT USED TO BE
+        # `_acd.ntendon` (the real count). Padding rows are zero-filled by
+        # `TensorImpl.alloc` and `build_spec_fields` never touches them, so
+        # `stiffness == 0` skips them on the first test — the same test that
+        # already skipped every real tendon without a spring. Iterating the
+        # capacity is what lets the count stop being a comptime quantity.
+        for t in range(Self.NTEN_F):
+            var to = t * MODEL_ACT_TENDON_SIZE
+            var k_spring = Float64(sf.act_tendons.data[to + ACTTEN_IDX_STIFFNESS])
             if k_spring == 0.0:
                 continue
-            var n = _m_tendon_trn_n[t]
+            var n = Int(sf.act_tendons.data[to + ACTTEN_IDX_TRN_N])
             if n == 0:
                 continue
             var length = Float64(0)
             for k in range(n):
-                var qadr = _m_tendon_trn_qadr[t * Self._WRAPS + k]
+                var qadr = Int(
+                    sf.act_tendons.data[to + ACTTEN_IDX_TRN_QADR_0 + k]
+                )
                 if qadr >= 0 and qadr < Self.NQ:
                     length += (
-                        _m_tendon_trn_coef[t * Self._WRAPS + k]
+                        Float64(
+                            sf.act_tendons.data[to + ACTTEN_IDX_TRN_COEF_0 + k]
+                        )
                         * Float64(d.qpos.data[qadr])
                     )
-            var lo = _m_tendon_spring_lo[t]
-            var hi = _m_tendon_spring_hi[t]
+            var lo = Float64(sf.act_tendons.data[to + ACTTEN_IDX_SPRING_LO])
+            var hi = Float64(sf.act_tendons.data[to + ACTTEN_IDX_SPRING_HI])
             var frc = Float64(0)
             if length > hi:
                 frc = k_spring * (hi - length)
@@ -743,11 +830,16 @@ struct ModelDefFromXML[
             if frc == 0.0:
                 continue
             for k in range(n):
-                var dadr = _m_tendon_trn_dadr[t * Self._WRAPS + k]
+                var dadr = Int(
+                    sf.act_tendons.data[to + ACTTEN_IDX_TRN_DADR_0 + k]
+                )
                 if dadr < 0 or dadr >= Self.NV:
                     continue
                 d.qfrc.data[dadr] += Scalar[DTYPE](
-                    _m_tendon_trn_coef[t * Self._WRAPS + k] * frc
+                    Float64(
+                        sf.act_tendons.data[to + ACTTEN_IDX_TRN_COEF_0 + k]
+                    )
+                    * frc
                 )
 
     # =========================================================================
@@ -1339,6 +1431,16 @@ struct ModelDefFromXML[
         act: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, Self.NA_F), MutAnyOrigin
         ],
+        acts: LayoutTensor[
+            DTYPE,
+            Layout.row_major(Self.NACT_F * MODEL_ACTUATOR_SIZE),
+            MutAnyOrigin,
+        ],
+        act_tendons: LayoutTensor[
+            DTYPE,
+            Layout.row_major(Self.NTEN_F * MODEL_ACT_TENDON_SIZE),
+            MutAnyOrigin,
+        ],
     ) raises:
         """Generalized forces from the model spec — the GPU mirror of
         `apply_actions` above, term for term.
@@ -1398,6 +1500,16 @@ struct ModelDefFromXML[
             act: LayoutTensor[
                 DTYPE, Layout.row_major(BATCH_SIZE, Self.NA_F), MutAnyOrigin
             ],
+            acts: LayoutTensor[
+                DTYPE,
+                Layout.row_major(Self.NACT_F * MODEL_ACTUATOR_SIZE),
+                MutAnyOrigin,
+            ],
+            act_tendons: LayoutTensor[
+                DTYPE,
+                Layout.row_major(Self.NTEN_F * MODEL_ACT_TENDON_SIZE),
+                MutAnyOrigin,
+            ],
         ):
             var env = Int(block_dim.x * block_idx.x + thread_idx.x)
             if env >= BATCH_SIZE:
@@ -1408,167 +1520,189 @@ struct ModelDefFromXML[
             comptime for i in range(Self.NV):
                 qfrc[env, i] = Scalar[DTYPE](0)
 
-            comptime for act_i in range(Self.nact):
-                comptime n = Self._acd.motor_trn_n[act_i]
-                comptime if n > 0 and act_i < ACTION_DIM:
-                    comptime gear = Self._acd.motor_gears[act_i]
-                    comptime c_min = Self._acd.motor_ctrl_min[act_i]
-                    comptime c_max = Self._acd.motor_ctrl_max[act_i]
-                    comptime c_lim = Self._acd.motor_ctrl_limited[act_i]
-                    comptime kp = Self._acd.motor_kp[act_i]
+            # ⚠⚠ THIS LOOP USED TO BE `comptime for`, WITH EVERY VALUE A
+            # BAKED LITERAL. It now reads `acts` / `act_tendons` — the same
+            # `SpecFields` records the CPU twin reads, so the two cannot drift
+            # apart the way defect #54's two noslip branches did. The wrap
+            # loops HAD to become runtime loops (`n` is a load now), and the
+            # outer one follows: 38 unrolled bodies each containing a runtime
+            # loop is strictly more code than one loop that runs 38 times.
+            for act_i in range(Self.nact):
+                if act_i >= ACTION_DIM:
+                    break
+                var o = act_i * MODEL_ACTUATOR_SIZE
+                var n = Int(rebind[Scalar[DTYPE]](acts[o + ACT_IDX_TRN_N]))
+                if n == 0:
+                    continue
+                var gear = rebind[Scalar[DTYPE]](acts[o + ACT_IDX_GEAR])
 
-                    # ⚠ GATED ON `ctrllimited`, and this is the SECOND site —
-                    # the CPU `apply_actions` above is the other. Both were
-                    # unconditional, so fixing one would have left the two
-                    # targets computing different forces from the same action,
-                    # which is the shape of defect #54 all over again. The
-                    # guard is `comptime`, so an unlimited actuator emits no
-                    # comparison at all rather than a runtime branch.
-                    var ctrl = rebind[Scalar[DTYPE]](actions[env, act_i])
-                    comptime if c_lim != 0:
-                        if ctrl > Scalar[DTYPE](c_max):
-                            ctrl = Scalar[DTYPE](c_max)
-                        elif ctrl < Scalar[DTYPE](c_min):
-                            ctrl = Scalar[DTYPE](c_min)
+                # ⚠ GATED ON `ctrllimited`, and this is the SECOND site — the
+                # CPU `apply_actions` above is the other. Both were once
+                # unconditional, so fixing one would have left the two targets
+                # computing different forces from the same action, which is the
+                # shape of defect #54 all over again.
+                var ctrl = rebind[Scalar[DTYPE]](actions[env, act_i])
+                if acts[o + ACT_IDX_CTRL_LIMITED] != 0:
+                    var c_max = rebind[Scalar[DTYPE]](
+                        acts[o + ACT_IDX_CTRL_MAX]
+                    )
+                    var c_min = rebind[Scalar[DTYPE]](
+                        acts[o + ACT_IDX_CTRL_MIN]
+                    )
+                    if ctrl > c_max:
+                        ctrl = c_max
+                    elif ctrl < c_min:
+                        ctrl = c_min
 
-                    # ACTIVATION (MuJoCo `d->act`): `force = gain .* [ctrl/act]`
-                    # (mj_fwdActuation). An actuator with a `dyntype` feeds its
-                    # ACTIVATION to the gain; a plain one feeds `ctrl`. `u` is
-                    # whichever the gain multiplies.
-                    comptime adr = Self._acd.motor_act_adr[act_i]
-                    var u = ctrl
-                    comptime if adr >= 0 and adr < Self.NA_F:
-                        u = rebind[Scalar[DTYPE]](act[env, adr])
-                    var force = Scalar[DTYPE](kp) * u
+                # ACTIVATION (MuJoCo `d->act`): `force = gain .* [ctrl/act]`
+                # (mj_fwdActuation). An actuator with a `dyntype` feeds its
+                # ACTIVATION to the gain; a plain one feeds `ctrl`. `u` is
+                # whichever the gain multiplies.
+                var adr = Int(rebind[Scalar[DTYPE]](acts[o + ACT_IDX_ACT_ADR]))
+                var u = ctrl
+                if adr >= 0 and adr < Self.NA_F:
+                    u = rebind[Scalar[DTYPE]](act[env, adr])
+                var kp = rebind[Scalar[DTYPE]](acts[o + ACT_IDX_KP])
+                var force = kp * u
 
-                    # The CPU twin's comment explains why POSITION and VELOCITY
-                    # share this block: MuJoCo gives them the same
-                    # gaintype/biastype and they differ only in `biasprm[1]`,
-                    # i.e. in whether `length` is subtracted from the setpoint.
-                    comptime _kind = Self._acd.motor_kind[act_i]
-                    comptime if (
-                        _kind == ACT_KIND_POSITION or _kind == ACT_KIND_VELOCITY
-                    ):
-                        comptime kv = Self._acd.motor_kv[act_i]
-                        var length = Scalar[DTYPE](0)
-                        var vel = Scalar[DTYPE](0)
-                        comptime for k in range(n):
-                            comptime qadr = Self._acd.motor_trn_qadr[
-                                act_i * Self._WRAPS + k
-                            ]
-                            comptime dadr = Self._acd.motor_trn_dadr[
-                                act_i * Self._WRAPS + k
-                            ]
-                            comptime coef = Self._acd.motor_trn_coef[
-                                act_i * Self._WRAPS + k
-                            ]
-                            # `_kind == POSITION` in the guard so a VELOCITY
-                            # actuator does not emit a qpos load it will not
-                            # use — this loop is comptime-unrolled into the
-                            # kernel, so a dead read is a real one.
-                            comptime if (
-                                _kind == ACT_KIND_POSITION
-                                and qadr >= 0
-                                and qadr < Self.NQ
-                            ):
-                                length += Scalar[DTYPE](coef) * rebind[
-                                    Scalar[DTYPE]
-                                ](qpos[env, qadr])
-                            comptime if dadr >= 0 and dadr < Self.NV:
-                                vel += Scalar[DTYPE](coef) * rebind[
-                                    Scalar[DTYPE]
-                                ](qvel[env, dadr])
-                        length *= Scalar[DTYPE](gear)
-                        vel *= Scalar[DTYPE](gear)
-                        # `u`, not `ctrl` — for a dyntype actuator the servo
-                        # setpoint is the ACTIVATION, which lags the control.
-                        # ⚠ VELOCITY does NOT subtract `length`; folding it in
-                        # would add position feedback MuJoCo does not have.
-                        var setpoint = u
-                        comptime if _kind == ACT_KIND_POSITION:
-                            setpoint = u - length
-                        force = (
-                            Scalar[DTYPE](kp) * setpoint
-                            - Scalar[DTYPE](kv) * vel
+                # The CPU twin's comment explains why POSITION and VELOCITY
+                # share this block: MuJoCo gives them the same
+                # gaintype/biastype and they differ only in `biasprm[1]`,
+                # i.e. in whether `length` is subtracted from the setpoint.
+                var kind = Int(rebind[Scalar[DTYPE]](acts[o + ACT_IDX_KIND]))
+                if kind == ACT_KIND_POSITION or kind == ACT_KIND_VELOCITY:
+                    var kv = rebind[Scalar[DTYPE]](acts[o + ACT_IDX_KV])
+                    var length = Scalar[DTYPE](0)
+                    var vel = Scalar[DTYPE](0)
+                    for k in range(n):
+                        var qadr = Int(
+                            rebind[Scalar[DTYPE]](
+                                acts[o + ACT_IDX_TRN_QADR_0 + k]
+                            )
                         )
+                        var dadr = Int(
+                            rebind[Scalar[DTYPE]](
+                                acts[o + ACT_IDX_TRN_DADR_0 + k]
+                            )
+                        )
+                        var coef = rebind[Scalar[DTYPE]](
+                            acts[o + ACT_IDX_TRN_COEF_0 + k]
+                        )
+                        # `kind == POSITION` on the qpos read so a VELOCITY
+                        # actuator does not load a position it will not use.
+                        if (
+                            kind == ACT_KIND_POSITION
+                            and qadr >= 0
+                            and qadr < Self.NQ
+                        ):
+                            length += coef * rebind[Scalar[DTYPE]](
+                                qpos[env, qadr]
+                            )
+                        if dadr >= 0 and dadr < Self.NV:
+                            vel += coef * rebind[Scalar[DTYPE]](
+                                qvel[env, dadr]
+                            )
+                    length *= gear
+                    vel *= gear
+                    # `u`, not `ctrl` — for a dyntype actuator the servo
+                    # setpoint is the ACTIVATION, which lags the control.
+                    # ⚠ VELOCITY does NOT subtract `length`; folding it in
+                    # would add position feedback MuJoCo does not have.
+                    var setpoint = u
+                    if kind == ACT_KIND_POSITION:
+                        setpoint = u - length
+                    force = kp * setpoint - kv * vel
 
-                    # `forcerange` — the CPU twin's comment explains why the
-                    # clamp sits here, on the scalar force, and not on `qfrc`.
-                    comptime if Self._acd.motor_force_limited[act_i] != 0:
-                        comptime f_lo = Self._acd.motor_force_min[act_i]
-                        comptime f_hi = Self._acd.motor_force_max[act_i]
-                        if force > Scalar[DTYPE](f_hi):
-                            force = Scalar[DTYPE](f_hi)
-                        elif force < Scalar[DTYPE](f_lo):
-                            force = Scalar[DTYPE](f_lo)
+                # `forcerange` — the CPU twin's comment explains why the
+                # clamp sits here, on the scalar force, and not on `qfrc`.
+                if acts[o + ACT_IDX_FORCE_LIMITED] != 0:
+                    var f_hi = rebind[Scalar[DTYPE]](
+                        acts[o + ACT_IDX_FORCE_MAX]
+                    )
+                    var f_lo = rebind[Scalar[DTYPE]](
+                        acts[o + ACT_IDX_FORCE_MIN]
+                    )
+                    if force > f_hi:
+                        force = f_hi
+                    elif force < f_lo:
+                        force = f_lo
 
-                    comptime for k in range(n):
-                        comptime dadr = Self._acd.motor_trn_dadr[
-                            act_i * Self._WRAPS + k
-                        ]
-                        comptime coef = Self._acd.motor_trn_coef[
-                            act_i * Self._WRAPS + k
-                        ]
-                        comptime if dadr >= 0 and dadr < Self.NV:
-                            qfrc[env, dadr] = qfrc[env, dadr] + Scalar[DTYPE](
-                                gear * coef
-                            ) * force
+                for k in range(n):
+                    var dadr = Int(
+                        rebind[Scalar[DTYPE]](
+                            acts[o + ACT_IDX_TRN_DADR_0 + k]
+                        )
+                    )
+                    if dadr >= 0 and dadr < Self.NV:
+                        qfrc[env, dadr] = qfrc[env, dadr] + gear * rebind[
+                            Scalar[DTYPE]
+                        ](acts[o + ACT_IDX_TRN_COEF_0 + k]) * force
 
-                    # mjDYN_FILTER, Euler-integrated exactly as
-                    # `nextActivation` does (engine_forward.c:341):
-                    #     act_dot = (ctrl - act) / tau ; act += act_dot * dt
-                    # ⚠ AFTER the force, matching MuJoCo's order —
-                    # `mj_fwdActuation` reads the CURRENT act and `mj_advance`
-                    # advances it at the end of the same step. `ctrl` is
-                    # already ctrlrange-clamped, as MuJoCo clamps `d->ctrl`
-                    # before computing act_dot.
-                    comptime if adr >= 0 and adr < Self.NA_F:
-                        comptime tau_raw = Self._acd.motor_dyn_tau[act_i]
-                        comptime tau = tau_raw if tau_raw >= 1e-10 else 1e-10
-                        act[env, adr] = u + (ctrl - u) / Scalar[DTYPE](
-                            tau
-                        ) * Scalar[DTYPE](Self.TIMESTEP)
+                # mjDYN_FILTER, Euler-integrated exactly as `nextActivation`
+                # does (engine_forward.c:341):
+                #     act_dot = (ctrl - act) / tau ; act += act_dot * dt
+                # ⚠ AFTER the force, matching MuJoCo's order —
+                # `mj_fwdActuation` reads the CURRENT act and `mj_advance`
+                # advances it at the end of the same step. `ctrl` is already
+                # ctrlrange-clamped, as MuJoCo clamps `d->ctrl` before
+                # computing act_dot.
+                if adr >= 0 and adr < Self.NA_F:
+                    var tau = rebind[Scalar[DTYPE]](acts[o + ACT_IDX_DYN_TAU])
+                    if tau < Scalar[DTYPE](1e-10):
+                        tau = Scalar[DTYPE](1e-10)
+                    act[env, adr] = u + (ctrl - u) / tau * Scalar[DTYPE](
+                        Self.TIMESTEP
+                    )
 
             # Fixed-tendon springs, deadbanded on `tendon_lengthspring`.
-            comptime for t in range(Self._acd.ntendon):
-                comptime k_spring = Self._acd.tendon_stiffness[t]
-                comptime nt = Self._acd.tendon_trn_n[t]
-                comptime if k_spring != 0.0 and nt > 0:
-                    comptime lo = Self._acd.tendon_spring_lo[t]
-                    comptime hi = Self._acd.tendon_spring_hi[t]
-                    var tlen = Scalar[DTYPE](0)
-                    comptime for k in range(nt):
-                        comptime qadr = Self._acd.tendon_trn_qadr[
-                            t * Self._WRAPS + k
-                        ]
-                        comptime tcoef = Self._acd.tendon_trn_coef[
-                            t * Self._WRAPS + k
-                        ]
-                        comptime if qadr >= 0 and qadr < Self.NQ:
-                            tlen += Scalar[DTYPE](tcoef) * rebind[
+            # ⚠ BOUND BY THE RECORD CAPACITY, not by `_acd.ntendon` — padding
+            # rows are zero-filled and `stiffness == 0` skips them, exactly as
+            # the CPU twin does.
+            for t in range(Self.NTEN_F):
+                var to = t * MODEL_ACT_TENDON_SIZE
+                var k_spring = rebind[Scalar[DTYPE]](
+                    act_tendons[to + ACTTEN_IDX_STIFFNESS]
+                )
+                if k_spring == Scalar[DTYPE](0):
+                    continue
+                var nt = Int(
+                    rebind[Scalar[DTYPE]](act_tendons[to + ACTTEN_IDX_TRN_N])
+                )
+                if nt == 0:
+                    continue
+                var tlen = Scalar[DTYPE](0)
+                for k in range(nt):
+                    var qadr = Int(
+                        rebind[Scalar[DTYPE]](
+                            act_tendons[to + ACTTEN_IDX_TRN_QADR_0 + k]
+                        )
+                    )
+                    if qadr >= 0 and qadr < Self.NQ:
+                        tlen += rebind[Scalar[DTYPE]](
+                            act_tendons[to + ACTTEN_IDX_TRN_COEF_0 + k]
+                        ) * rebind[Scalar[DTYPE]](qpos[env, qadr])
+                var hi = rebind[Scalar[DTYPE]](
+                    act_tendons[to + ACTTEN_IDX_SPRING_HI]
+                )
+                var lo = rebind[Scalar[DTYPE]](
+                    act_tendons[to + ACTTEN_IDX_SPRING_LO]
+                )
+                var frc = Scalar[DTYPE](0)
+                if tlen > hi:
+                    frc = k_spring * (hi - tlen)
+                elif tlen < lo:
+                    frc = k_spring * (lo - tlen)
+                if frc != Scalar[DTYPE](0):
+                    for k in range(nt):
+                        var dadr = Int(
+                            rebind[Scalar[DTYPE]](
+                                act_tendons[to + ACTTEN_IDX_TRN_DADR_0 + k]
+                            )
+                        )
+                        if dadr >= 0 and dadr < Self.NV:
+                            qfrc[env, dadr] = qfrc[env, dadr] + rebind[
                                 Scalar[DTYPE]
-                            ](qpos[env, qadr])
-                    var frc = Scalar[DTYPE](0)
-                    if tlen > Scalar[DTYPE](hi):
-                        frc = Scalar[DTYPE](k_spring) * (
-                            Scalar[DTYPE](hi) - tlen
-                        )
-                    elif tlen < Scalar[DTYPE](lo):
-                        frc = Scalar[DTYPE](k_spring) * (
-                            Scalar[DTYPE](lo) - tlen
-                        )
-                    if frc != Scalar[DTYPE](0):
-                        comptime for k in range(nt):
-                            comptime dadr = Self._acd.tendon_trn_dadr[
-                                t * Self._WRAPS + k
-                            ]
-                            comptime tcoef = Self._acd.tendon_trn_coef[
-                                t * Self._WRAPS + k
-                            ]
-                            comptime if dadr >= 0 and dadr < Self.NV:
-                                qfrc[env, dadr] = qfrc[
-                                    env, dadr
-                                ] + Scalar[DTYPE](tcoef) * frc
+                            ](act_tendons[to + ACTTEN_IDX_TRN_COEF_0 + k]) * frc
 
         ctx.enqueue_function[apply_kernel](
             qfrc,
@@ -1576,6 +1710,8 @@ struct ModelDefFromXML[
             qpos,
             qvel,
             act,
+            acts,
+            act_tendons,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )

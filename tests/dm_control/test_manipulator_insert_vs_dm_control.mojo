@@ -436,7 +436,8 @@ def test_insert_ball_receptacle_collides_at_its_mocap_pose() raises:
     var act = List[Scalar[DTYPE]]()
     for _ in range(MB.NA if MB.NA > 0 else 1):
         act.append(Scalar[DTYPE](0))
-    MB.apply_actions(d, zero, act)
+    var sf = MB.make_spec_fields[DTYPE]()
+    MB.apply_actions(sf, d, zero, act)
     integ.step["cpu"](d, mf)
     var our_ncon = Int(d.meta.data[META_IDX_NUM_CONTACTS])
     var ours = List[Float64]()
@@ -589,7 +590,8 @@ def test_insert_peg_receptacle_collides_at_its_mocap_pose() raises:
     var act = List[Scalar[DTYPE]]()
     for _ in range(MP.NA if MP.NA > 0 else 1):
         act.append(Scalar[DTYPE](0))
-    MP.apply_actions(d, zero, act)
+    var sf = MP.make_spec_fields[DTYPE]()
+    MP.apply_actions(sf, d, zero, act)
     integ.step["cpu"](d, mf)
     var our_ncon = Int(d.meta.data[META_IDX_NUM_CONTACTS])
     var ours = List[Float64]()

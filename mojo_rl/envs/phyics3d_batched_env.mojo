@@ -44,7 +44,7 @@ from mojo_rl.nn.core.target_storage import require_ctx
 from mojo_rl.deep_agents.training.batched_env import BatchedEnv
 
 from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, SpecFields
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
@@ -55,6 +55,8 @@ from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_auto
 from mojo_rl.physics3d.joint_types import JNT_FREE
 from mojo_rl.physics3d.gpu import compute_cfrc_ext, compute_cvel
 from mojo_rl.physics3d.gpu.constants import (
+    MODEL_ACTUATOR_SIZE,
+    MODEL_ACT_TENDON_SIZE,
     TPB,
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
@@ -179,6 +181,10 @@ struct Phyics3dBatchedEnv[
         0,
         Self.MODEL_DEF.NPAIR,
     ]
+    # Actuation records (phase 1a.2/1a.3) — the operands
+    # `apply_actions_kernel_gpu` reads where it used to read comptime
+    # literals. Uploaded once at construction, like `mf`.
+    var sf: SpecFields[DT, Self.MODEL_DEF.NACT, Self.MODEL_DEF.NTEN_F]
     # Both integrators are held; the step comptime-dispatches on
     # CONFIG.INTEGRATOR (HalfCheetah/Pusher/MetaWorld = Euler+Newton, the
     # other 9 envs = RK4+Newton). Only the SELECTED one is `prepare_gpu`'d, so
@@ -284,6 +290,8 @@ struct Phyics3dBatchedEnv[
         # and reward-curriculum hooks now read those directly.
         self.mf = type_of(self.mf)()
         Self.MODEL_DEF.init_fields[DT, 0](ctx, self.mf)
+        self.sf = type_of(self.sf)()
+        Self.MODEL_DEF.init_spec_fields[DT](ctx, self.sf)
         # Fluid forces (density/viscosity) are handled by the fields
         # integrators' passive seam (Stage A: compute_fluid_forces), so
         # no guard — Swimmer runs on this facade.
@@ -1334,6 +1342,18 @@ struct Phyics3dBatchedEnv[
                             ),
                         ](self._act)
                     ),
+                    self.sf.actuators.lt[
+                        "gpu",
+                        Layout.row_major(
+                            Self.MODEL_DEF.NACT_F * MODEL_ACTUATOR_SIZE
+                        ),
+                    ](),
+                    self.sf.act_tendons.lt[
+                        "gpu",
+                        Layout.row_major(
+                            Self.MODEL_DEF.NTEN_F * MODEL_ACT_TENDON_SIZE
+                        ),
+                    ](),
                 )
             comptime if Self.CONFIG.INTEGRATOR == "euler":
                 self.integ_euler.step["gpu"](self.d, self.mf, ctx)

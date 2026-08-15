@@ -93,7 +93,8 @@ def test_batched_cfrc_ext_matches_cpu() raises:
         act.append(Scalar[DTYPE](0))
     for i in range(NV):
         d.qfrc.data[i] = Scalar[DTYPE](0)
-    Mdl.apply_actions(d, zero, act)
+    var sf = Mdl.make_spec_fields[DTYPE]()
+    Mdl.apply_actions(sf, d, zero, act)
 
     var integ = Integ()
     var ncon = 0
@@ -104,7 +105,7 @@ def test_batched_cfrc_ext_matches_cpu() raises:
         d.qpos.data[3] = Scalar[DTYPE](1.0)
         for i in range(NV):
             d.qfrc.data[i] = Scalar[DTYPE](0)
-        Mdl.apply_actions(d, zero, act)
+        Mdl.apply_actions(sf, d, zero, act)
         integ.step["cpu"](d, mf)
         ncon = Int(d.meta.data[META_IDX_NUM_CONTACTS])
         if ncon > 0:
