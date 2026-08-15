@@ -33,6 +33,18 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_GRAVITY_Z,
 )
 from std.testing import assert_true, TestSuite
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_ACTUATOR_SIZE,
+    ACT_IDX_GEAR,
+    ACT_IDX_DOF_ADR,
+    ACT_IDX_CTRL_MIN,
+    ACT_IDX_CTRL_MAX,
+    JLIM_SIZE,
+    JLIM_IDX_LIMITED,
+    JLIM_IDX_QPOS_ADR,
+    JLIM_IDX_RANGE_MIN,
+    JLIM_IDX_RANGE_MAX,
+)
 
 
 # =============================================================================
@@ -151,36 +163,55 @@ def test_model_def_from_xml() raises:
     # (see `ModelDefFromXML._NACT` and friends). Derive them here the same way
     # production does, so this test exercises the real sizing rule rather than
     # a hand-picked one. half_cheetah has no tendons, so the wrap cap is 1.
-    comptime acd = parse_xml_model_data[
-        pm.NACT, pm.NJOINT, pm.NQ, 1, 1
-    ](half_cheetah_xml)
+    # ⚠ FROM THE RECORDS, not from a hand-instantiated `ComptimeActData`.
+    # This used to call `parse_xml_model_data` directly to exercise "the real
+    # sizing rule"; the real sizing rule is now `SpecFields`' and the values
+    # come from the same build the engine uses.
+    var sf = XmlModel.make_spec_fields[DType.float64]()
 
     # Motor 0 = bthigh, gear=120, dof_adr=3 (3 preceding joints: rootx,rootz,rooty)
-    comptime gear0 = acd.motor_gears[0]
-    comptime dof0 = acd.motor_dof_adr[0]
+    var gear0 = Float64(sf.actuators.data[0 * MODEL_ACTUATOR_SIZE + ACT_IDX_GEAR])
+    var dof0 = Int(sf.actuators.data[0 * MODEL_ACTUATOR_SIZE + ACT_IDX_DOF_ADR])
     print("motor0 gear =", gear0, " (expected 120.0)")
     print("motor0 dof_adr =", dof0, " (expected 3)")
 
     # Motor 5 = ffoot, gear=30, dof_adr=8
-    comptime gear5 = acd.motor_gears[5]
-    comptime dof5 = acd.motor_dof_adr[5]
+    var gear5 = Float64(sf.actuators.data[5 * MODEL_ACTUATOR_SIZE + ACT_IDX_GEAR])
+    var dof5 = Int(sf.actuators.data[5 * MODEL_ACTUATOR_SIZE + ACT_IDX_DOF_ADR])
     print("motor5 gear =", gear5, " (expected 30.0)")
     print("motor5 dof_adr =", dof5, " (expected 8)")
 
     # Joint 0 = rootx: slide, limited=false, qpos_adr=0
-    comptime rootx_limited = acd.joint_is_limited[0]
-    comptime rootx_qpos_adr = acd.joint_qpos_adr[0]
+    var rootx_limited = (
+        sf.joint_limits.data[0 * JLIM_SIZE + JLIM_IDX_LIMITED] != 0
+    )
+    var rootx_qpos_adr = Int(
+        sf.joint_limits.data[0 * JLIM_SIZE + JLIM_IDX_QPOS_ADR]
+    )
     print("rootx limited =", rootx_limited, " (expected False)")
     print("rootx qpos_adr =", rootx_qpos_adr, " (expected 0)")
 
     # Joint 3 = bthigh: hinge, limited=true, range=[-0.52, 1.05], qpos_adr=3
-    comptime bthigh_limited = acd.joint_is_limited[3]
-    comptime bthigh_rmin = acd.joint_range_min[3]
-    comptime bthigh_rmax = acd.joint_range_max[3]
-    comptime bthigh_qpos_adr = acd.joint_qpos_adr[3]
+    var bthigh_limited = (
+        sf.joint_limits.data[3 * JLIM_SIZE + JLIM_IDX_LIMITED] != 0
+    )
+    var bthigh_rmin = Float64(
+        sf.joint_limits.data[3 * JLIM_SIZE + JLIM_IDX_RANGE_MIN]
+    )
+    var bthigh_rmax = Float64(
+        sf.joint_limits.data[3 * JLIM_SIZE + JLIM_IDX_RANGE_MAX]
+    )
+    var bthigh_qpos_adr = Int(
+        sf.joint_limits.data[3 * JLIM_SIZE + JLIM_IDX_QPOS_ADR]
+    )
     print("bthigh limited =", bthigh_limited, " (expected True)")
-    print("bthigh range_min =", bthigh_rmin, " (expected -0.52)")
-    print("bthigh range_max =", bthigh_rmax, " (expected 1.05)")
+    # ⚠ RADIANS. The XML says `range="-0.52 1.05"` with `angle="degree"`, and
+    # both parsers apply the deg->rad conversion — these print -0.0090757 and
+    # 0.0183260. The "(expected -0.52)" text this line used to carry was stale
+    # from before that conversion landed and nothing caught it, because the
+    # ASSERTION is on the post-clamp qpos below, not on the printed bound.
+    print("bthigh range_min =", bthigh_rmin, " (expected -0.0090757 rad)")
+    print("bthigh range_max =", bthigh_rmax, " (expected 0.0183260 rad)")
     print("bthigh qpos_adr =", bthigh_qpos_adr, " (expected 3)")
     print()
 
@@ -211,7 +242,6 @@ def test_model_def_from_xml() raises:
     # =========================================================================
     # Step 5: reset_data + extract_obs (fields-native hooks; G2)
     # =========================================================================
-    var sf = XmlModel.make_spec_fields[DType.float64]()
     print("=== reset_data + extract_obs ===")
     var d = Data[DType.float64, pm.NQ, pm.NV, pm.NBODY, 10, 0, 1]()
     XmlModel.reset_data[DType.float64](sf, d)
@@ -334,14 +364,25 @@ def test_root_default_survives_nested_classes() raises:
         timestep = pm.TIMESTEP,
     ]
 
-    # Bind the elements at comptime. Subscripting a comptime `InlineArray`
-    # inside a runtime expression materializes the WHOLE array, which rc2
-    # rejects (`Array` is no longer `ImplicitlyCopyable`); a scalar element is.
-    comptime GEAR0 = XmlModel._acd.motor_gears[0]
-    comptime CTRL_MIN0 = XmlModel._acd.motor_ctrl_min[0]
-    comptime CTRL_MAX0 = XmlModel._acd.motor_ctrl_max[0]
-    comptime LIMITED0 = XmlModel._acd.joint_is_limited[0]
-    comptime LIMITED1 = XmlModel._acd.joint_is_limited[1]
+    # ⚠ THE `comptime` BINDING IS GONE AND SO IS ITS REASON: a comptime
+    # `InlineArray` could not be subscripted inside a runtime expression
+    # without materializing the whole array. These are tensor reads now.
+    var sfn = XmlModel.make_spec_fields[DType.float64]()
+    var GEAR0 = Float64(
+        sfn.actuators.data[0 * MODEL_ACTUATOR_SIZE + ACT_IDX_GEAR]
+    )
+    var CTRL_MIN0 = Float64(
+        sfn.actuators.data[0 * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MIN]
+    )
+    var CTRL_MAX0 = Float64(
+        sfn.actuators.data[0 * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MAX]
+    )
+    var LIMITED0 = (
+        sfn.joint_limits.data[0 * JLIM_SIZE + JLIM_IDX_LIMITED] != 0
+    )
+    var LIMITED1 = (
+        sfn.joint_limits.data[1 * JLIM_SIZE + JLIM_IDX_LIMITED] != 0
+    )
 
     print("=== nested-default regression ===")
     print("motor gear =", GEAR0, " (expected 0.0005)")

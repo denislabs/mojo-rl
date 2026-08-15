@@ -84,11 +84,23 @@ from mojo_rl.physics3d.gpu.constants import (
     TENDON_KIND_FIXED,
     TENDON_IDX_SOLREF_0, TENDON_IDX_SOLIMP_0,
 )
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_ACTUATOR_SIZE,
+    ACT_IDX_GEAR,
+    ACT_IDX_KP,
+    ACT_IDX_KV,
+    ACT_IDX_CTRL_MIN,
+    ACT_IDX_CTRL_MAX,
+    ACT_IDX_TRN_N,
+    ACT_IDX_DYN_TAU,
+    ACT_IDX_ACT_ADR,
+    ACT_IDX_TRN_DADR_0,
+    ACT_IDX_TRN_COEF_0,
+)
 
 # ⚠ THE WRAP STRIDE IS A CONSTANT, NOT A LITERAL. These tables are
 # `[actuator * MAX_COMPTIME_TENDON_WRAPS + k]`; the cap moved 4 -> 16
 # with defect 17 and a hardcoded 4 here silently reads the wrong slot.
-from mojo_rl.physics3d.parser.xml_parser import MAX_COMPTIME_TENDON_WRAPS
 
 comptime REF_PATH: StaticString = "references/dm_control-main"
 
@@ -1232,7 +1244,7 @@ def test_quadruped_actuator_constants_match_mujoco() raises:
     """The twelve `<general>` position servos with `dyntype="filter"`.
 
     Actuators do NOT live in `fields.Model` — they are compiled into
-    `ModelDefFromXML._acd` by the COMPTIME parser, a separate code path from
+    `SpecFields` by `build_spec_fields`, a separate code path from
     the runtime one every other test here exercises. So this is the only gate
     on that half for quadruped, and the numbers it reads are the ones
     `apply_actions` multiplies:
@@ -1254,7 +1266,7 @@ def test_quadruped_actuator_constants_match_mujoco() raises:
     # in a ten-line probe returned 1000.0 — so the failure looks like a model
     # bug and is not one. One explicit `materialize` gives a real local with a
     # normal lifetime and the reads are stable.
-    var acd = materialize[Mdl._acd]()
+    var sf = Mdl.make_spec_fields[DType.float64]()
 
     var trntype = mj.actuator_trntype.tolist()
     var trnid = mj.actuator_trnid.tolist()
@@ -1275,23 +1287,23 @@ def test_quadruped_actuator_constants_match_mujoco() raises:
     var n_tendon_trn = 0
     for a in range(NU):
         assert_true(
-            abs(acd.motor_gears[a] - Float64(py=gear[a][0]))
+            abs(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_GEAR]) - Float64(py=gear[a][0]))
             <= TOL_MODEL,
             String("actuator_gear mismatch on actuator ") + String(a),
         )
         assert_true(
-            abs(acd.motor_kp[a] - Float64(py=gainprm[a][0]))
+            abs(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_KP]) - Float64(py=gainprm[a][0]))
             <= TOL_MODEL,
             String("gainprm[0] (kp) mismatch on actuator ") + String(a),
         )
         # biasprm = (0, -kp, -kv) for a position servo; ours stores kv.
         assert_true(
-            abs(acd.motor_kv[a] + Float64(py=biasprm[a][2]))
+            abs(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_KV]) + Float64(py=biasprm[a][2]))
             <= TOL_MODEL,
             String("biasprm[2] (kv) mismatch on actuator ") + String(a),
         )
         var bias1 = Float64(py=biasprm[a][1])
-        var kp = acd.motor_kp[a]
+        var kp = Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_KP])
         assert_true(
             abs(bias1 + kp) <= TOL_MODEL,
             String("actuator ") + String(a) + " is not a position servo:"
@@ -1307,26 +1319,26 @@ def test_quadruped_actuator_constants_match_mujoco() raises:
             + String(Int(py=dyntype[a])) + ", not filter (2)",
         )
         assert_true(
-            abs(acd.motor_dyn_tau[a] - Float64(py=dynprm[a][0]))
+            abs(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_DYN_TAU]) - Float64(py=dynprm[a][0]))
             <= TOL_MODEL,
             String("dynprm[0] (filter tau) mismatch on actuator ")
             + String(a),
         )
         assert_true(
-            acd.motor_act_adr[a] == Int(py=actadr[a]),
+            Int(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_ACT_ADR]) == Int(py=actadr[a]),
             String("actuator_actadr mismatch on actuator ") + String(a),
         )
         assert_true(
-            abs(acd.motor_ctrl_min[a] - Float64(py=ctrlrange[a][0]))
+            abs(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MIN]) - Float64(py=ctrlrange[a][0]))
             <= TOL_MODEL
-            and abs(acd.motor_ctrl_max[a] - Float64(py=ctrlrange[a][1]))
+            and abs(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MAX]) - Float64(py=ctrlrange[a][1]))
                 <= TOL_MODEL,
             String("actuator_ctrlrange mismatch on actuator ") + String(a),
         )
 
         # Transmission, as (dof address, coefficient) triples.
         var tt = Int(py=trntype[a])
-        var n = acd.motor_trn_n[a]
+        var n = Int(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_N])
         if tt == 0:  # mjTRN_JOINT
             n_joint_trn += 1
             assert_true(
@@ -1335,12 +1347,12 @@ def test_quadruped_actuator_constants_match_mujoco() raises:
                 + String(n) + " transmission triples",
             )
             assert_true(
-                acd.motor_trn_dadr[a * MAX_COMPTIME_TENDON_WRAPS] == Int(py=jdadr[Int(py=trnid[a][0])]),
+                Int(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_DADR_0 + (0)]) == Int(py=jdadr[Int(py=trnid[a][0])]),
                 String("joint transmission dof mismatch on actuator ")
                 + String(a),
             )
             assert_true(
-                abs(acd.motor_trn_coef[a * MAX_COMPTIME_TENDON_WRAPS] - 1.0) <= TOL_MODEL,
+                abs(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_COEF_0 + (0)]) - 1.0) <= TOL_MODEL,
                 String("joint transmission coef is not 1 on actuator ")
                 + String(a),
             )
@@ -1355,13 +1367,13 @@ def test_quadruped_actuator_constants_match_mujoco() raises:
             )
             for k in range(n):
                 assert_true(
-                    acd.motor_trn_dadr[a * MAX_COMPTIME_TENDON_WRAPS + k]
+                    Int(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_DADR_0 + (k)])
                     == Int(py=jdadr[Int(py=wobj[adr + k])]),
                     String("tendon transmission dof ") + String(k)
                     + " mismatch on actuator " + String(a),
                 )
                 assert_true(
-                    abs(acd.motor_trn_coef[a * MAX_COMPTIME_TENDON_WRAPS + k]
+                    abs(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_COEF_0 + (k)])
                         - Float64(py=wprm[adr + k])) <= TOL_MODEL,
                     String("tendon transmission coef ") + String(k)
                     + " mismatch on actuator " + String(a),
@@ -1374,7 +1386,7 @@ def test_quadruped_actuator_constants_match_mujoco() raises:
             )
 
     assert_true(
-        acd.na == NA,
+        Mdl.NA == NA,
         "the comptime parser and MuJoCo disagree on `na`",
     )
     assert_true(

@@ -73,6 +73,25 @@ from mojo_rl.envs.dm_control.fish.fish_xml import (
     TARGET_GEOM_IDX,
     N_ROOT_QPOS,
 )
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_ACTUATOR_SIZE,
+    MODEL_ACT_TENDON_SIZE,
+    ACT_IDX_GEAR,
+    ACT_IDX_KP,
+    ACT_IDX_KV,
+    ACT_IDX_KIND,
+    ACT_IDX_CTRL_MIN,
+    ACT_IDX_CTRL_MAX,
+    ACT_IDX_TRN_N,
+    ACT_IDX_TRN_QADR_0,
+    ACTTEN_IDX_STIFFNESS,
+    ACTTEN_IDX_SPRING_LO,
+    ACTTEN_IDX_SPRING_HI,
+    ACTTEN_IDX_TRN_N,
+    ACTTEN_IDX_TRN_QADR_0,
+    ACTTEN_IDX_TRN_DADR_0,
+    ACTTEN_IDX_TRN_COEF_0,
+)
 
 # The comptime tendon tables are strided by this, not by a literal.
 
@@ -169,12 +188,13 @@ def test_fish_actuators_are_position_servos() raises:
 
     ⚠ `M._acd` is a COMPTIME struct, and indexing its `InlineArray` fields with
     a RUNTIME loop variable materializes garbage here (an `assert` on
-    `M._acd.motor_kp[i]` read 6.4e-314 while a `print` of the same expression
+    `Float64(sf.actuators.data[(i) * MODEL_ACTUATOR_SIZE + ACT_IDX_KP])` read 6.4e-314 while a `print` of the same expression
     read 0.0005). Every field is copied out through a `comptime for` — a
     compile-time index — before any of it is compared. `apply_actions` is not
     affected: inside the struct, `Self._acd` is a parameter access rather than
     a materialization, which the exact rollout parity confirms.
     """
+    var sf = M.make_spec_fields[DType.float64]()
     var mj = _ref()
     var gainprm = mj.actuator_gainprm.tolist()
     var biasprm = mj.actuator_biasprm.tolist()
@@ -191,13 +211,13 @@ def test_fish_actuators_are_position_servos() raises:
     var trn_n = List[Int]()
 
     comptime for a in range(M.ACTION_DIM):
-        kind.append(materialize[M._acd.motor_kind[a]]())
-        kp.append(materialize[M._acd.motor_kp[a]]())
-        kv.append(materialize[M._acd.motor_kv[a]]())
-        gears.append(materialize[M._acd.motor_gears[a]]())
-        cmin.append(materialize[M._acd.motor_ctrl_min[a]]())
-        cmax.append(materialize[M._acd.motor_ctrl_max[a]]())
-        trn_n.append(materialize[M._acd.motor_trn_n[a]]())
+        kind.append(Int(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_KIND]))
+        kp.append(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_KP]))
+        kv.append(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_KV]))
+        gears.append(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_GEAR]))
+        cmin.append(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MIN]))
+        cmax.append(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MAX]))
+        trn_n.append(Int(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_N]))
 
     var saw_tendon = False
     for i in range(M.ACTION_DIM):
@@ -257,10 +277,11 @@ def test_fish_tendons_match_mujoco() raises:
     just a slightly different fish). Checked against MuJoCo's own
     `tendon_stiffness` / `tendon_lengthspring` / `wrap_*` arrays.
     """
+    var sf = M.make_spec_fields[DType.float64]()
     var mj = _ref()
     var mujoco = Python.import_module("mujoco")
     assert_equal(
-        M._acd.ntendon, Int(py=mj.ntendon),
+        M.MAX_TENDON, Int(py=mj.ntendon),
         "tendon count — 0 here means `merge_mjcf` dropped the section",
     )
 
@@ -288,15 +309,27 @@ def test_fish_tendons_match_mujoco() raises:
     # this loop went out of bounds and the whole gate stopped compiling. That
     # build failure WAS the bug report for a real truncation (see
     # fish_xml.mojo); do not paper over it with a literal again.
-    comptime for a in range(M._NTEN):
-        t_k.append(materialize[M._acd.tendon_stiffness[a]]())
-        t_lo.append(materialize[M._acd.tendon_spring_lo[a]]())
-        t_hi.append(materialize[M._acd.tendon_spring_hi[a]]())
-        t_n.append(materialize[M._acd.tendon_trn_n[a]]())
-    comptime for a in range(M._NTEN * M._WRAPS):
-        t_qadr.append(materialize[M._acd.tendon_trn_qadr[a]]())
-        t_dadr.append(materialize[M._acd.tendon_trn_dadr[a]]())
-        t_coef.append(materialize[M._acd.tendon_trn_coef[a]]())
+    for a in range(M._NTEN):
+        var o = a * MODEL_ACT_TENDON_SIZE
+        t_k.append(Float64(sf.act_tendons.data[o + ACTTEN_IDX_STIFFNESS]))
+        t_lo.append(Float64(sf.act_tendons.data[o + ACTTEN_IDX_SPRING_LO]))
+        t_hi.append(Float64(sf.act_tendons.data[o + ACTTEN_IDX_SPRING_HI]))
+        t_n.append(Int(sf.act_tendons.data[o + ACTTEN_IDX_TRN_N]))
+    # ⚠⚠ THE FLAT INDEX IS `_acd`'s, NOT THE TENSOR'S. `_acd` stores the wraps
+    # as one array strided by `_WRAPS`; the tensor puts them INSIDE each
+    # tendon's record at `ACTTEN_IDX_TRN_*_0 + k`. The lists below keep the
+    # flat `t * _WRAPS + k` shape because that is how the assertions below
+    # index them — so the row and the wrap have to be split back out here.
+    # Reading `a` as a tendon index instead walked off the end of a 2-row
+    # tensor at a = 2 (index 108, valid 0..103).
+    for a in range(M._NTEN * M._WRAPS):
+        var o = (a // M._WRAPS) * MODEL_ACT_TENDON_SIZE
+        var k = a % M._WRAPS
+        t_qadr.append(Int(sf.act_tendons.data[o + ACTTEN_IDX_TRN_QADR_0 + k]))
+        t_dadr.append(Int(sf.act_tendons.data[o + ACTTEN_IDX_TRN_DADR_0 + k]))
+        t_coef.append(
+            Float64(sf.act_tendons.data[o + ACTTEN_IDX_TRN_COEF_0 + k])
+        )
 
     var saw_spring = False
     for t in range(Int(py=mj.ntendon)):
@@ -885,6 +918,7 @@ def test_fish_servo_force_changes_within_a_control_step() raises:
     and asserts that motion is far larger than the parity tolerance. If this
     passes and the parity test fails, the hoist is the reason.
     """
+    var sf = M.make_spec_fields[DType.float64]()
     comptime EnvT = Phyics3dEnv[
         DMFishSwimModel, DMFishSwimConfig, DType.float64, False
     ]
@@ -900,8 +934,8 @@ def test_fish_servo_force_changes_within_a_control_step() raises:
     env.set_state(qs, vs)
 
     # Actuator 0 drives `tail1` (qpos 7) with kp = 5e-4.
-    var qadr = materialize[M._acd.motor_trn_qadr[0]]()
-    var kp = materialize[M._acd.motor_kp[0]]()
+    var qadr = Int(sf.actuators.data[(0) * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_QADR_0])
+    var kp = Float64(sf.actuators.data[(0) * MODEL_ACTUATOR_SIZE + ACT_IDX_KP])
     var ctrl = 0.9
 
     var worst_drift = Float64(0)

@@ -45,7 +45,17 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
 from mojo_rl.envs.dm_control.dog import DMDogStandWalkModel
-from mojo_rl.physics3d.parser.xml_parser import MAX_COMPTIME_TENDON_WRAPS
+from mojo_rl.physics3d.fields import actuator_column
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_ACTUATOR_SIZE,
+    ACT_IDX_GEAR,
+    ACT_IDX_TRN_N,
+    ACT_IDX_TRN_DADR_0,
+    ACT_IDX_TRN_COEF_0,
+    ACT_IDX_DYN_TAU,
+    ACT_IDX_CTRL_MIN,
+    ACT_IDX_CTRL_MAX,
+)
 
 comptime M = DMDogStandWalkModel
 comptime NV = M.NV
@@ -87,8 +97,11 @@ def test_dog_actuator_moments_match_mujoco() raises:
         mom, d.actuator_moment, d.moment_rownnz, d.moment_rowadr, d.moment_colind
     )
 
-    # ⚠ ONE materialize, per §8 — not a read per element.
-    var acd = materialize[M._acd]()
+    # ⚠ THE RECORDS, NOT `_acd`. The wrap stride is `MODEL_ACTUATOR_SIZE`'s
+    # own `ACT_IDX_TRN_*_0 + k`, not `a * MAX_COMPTIME_TENDON_WRAPS + k`:
+    # `_acd`'s stride COLLAPSES TO 1 on a model with no tendons, the tensor's
+    # never does.
+    var sf = M.make_spec_fields[DType.float64]()
 
     var worst = 0.0
     var worst_a = -1
@@ -105,15 +118,15 @@ def test_dog_actuator_moments_match_mujoco() raises:
         var row = List[Float64]()
         for _ in range(nv):
             row.append(0.0)
-        var n = acd.motor_trn_n[a]
-        var gear = acd.motor_gears[a]
+        var n = Int(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_N])
+        var gear = Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_GEAR])
         if n > 1:
             n_tendon_act += 1
         if n > max_wraps:
             max_wraps = n
         for k in range(n):
-            var dadr = acd.motor_trn_dadr[a * MAX_COMPTIME_TENDON_WRAPS + k]
-            var coef = acd.motor_trn_coef[a * MAX_COMPTIME_TENDON_WRAPS + k]
+            var dadr = Int(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_DADR_0 + (k)])
+            var coef = Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_COEF_0 + (k)])
             if dadr >= 0 and dadr < nv:
                 row[dadr] += gear * coef
 
@@ -142,10 +155,10 @@ def test_dog_actuator_moments_match_mujoco() raises:
     # A wrong INDEX and a wrong COEFFICIENT are different defects and the
     # scalar above cannot tell them apart.
     for a in range(nu):
-        var n = acd.motor_trn_n[a]
+        var n = Int(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_N])
         var ours_s = String("")
         for k in range(n):
-            ours_s += String(acd.motor_trn_dadr[a * MAX_COMPTIME_TENDON_WRAPS + k]) + " "
+            ours_s += String(Int(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_DADR_0 + (k)])) + " "
         var mj_s = String("")
         var bad = False
         for j in range(nv):
@@ -154,10 +167,8 @@ def test_dog_actuator_moments_match_mujoco() raises:
         for j in range(nv):
             var got = 0.0
             for k in range(n):
-                if acd.motor_trn_dadr[a * MAX_COMPTIME_TENDON_WRAPS + k] == j:
-                    got += acd.motor_gears[a] * acd.motor_trn_coef[
-                        a * MAX_COMPTIME_TENDON_WRAPS + k
-                    ]
+                if Int(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_DADR_0 + (k)]) == j:
+                    got += Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_GEAR]) * Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_COEF_0 + (k)])
             if abs(got - Float64(py=mom[a][j])) > 1e-9:
                 bad = True
         if bad:
@@ -201,7 +212,7 @@ def test_dog_actuator_dynamics_match_mujoco() raises:
     print("--- dog: actuator dynprm/ctrlrange vs MuJoCo ---")
     var h = _ref()
     var m = h[1]
-    var acd = materialize[M._acd]()
+    var sf = M.make_spec_fields[DType.float64]()
 
     var nu = Int(py=m.nu)
     var worst_tau = 0.0
@@ -213,13 +224,13 @@ def test_dog_actuator_dynamics_match_mujoco() raises:
         var dyntype = Int(py=m.actuator_dyntype[i])
         if dyntype != 0:
             n_filter += 1
-        var e = abs(acd.motor_dyn_tau[i] - tau_mj)
+        var e = abs(Float64(sf.actuators.data[(i) * MODEL_ACTUATOR_SIZE + ACT_IDX_DYN_TAU]) - tau_mj)
         if e > worst_tau:
             worst_tau = e
         var lo = Float64(py=m.actuator_ctrlrange[i][0])
         var hi = Float64(py=m.actuator_ctrlrange[i][1])
-        var el = abs(acd.motor_ctrl_min[i] - lo)
-        var eh = abs(acd.motor_ctrl_max[i] - hi)
+        var el = abs(Float64(sf.actuators.data[(i) * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MIN]) - lo)
+        var eh = abs(Float64(sf.actuators.data[(i) * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MAX]) - hi)
         if el > worst_lo:
             worst_lo = el
         if eh > worst_hi:

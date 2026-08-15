@@ -57,6 +57,12 @@ from mojo_rl.physics3d.gpu.constants import (
 # `[actuator * MAX_COMPTIME_TENDON_WRAPS + k]`; the cap moved 4 -> 16
 # with defect 17 and a hardcoded 4 here silently reads the wrong slot.
 from mojo_rl.physics3d.parser.xml_parser import MAX_COMPTIME_TENDON_WRAPS
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_ACTUATOR_SIZE,
+    ACT_IDX_GEAR,
+    ACT_IDX_TRN_N,
+    ACT_IDX_TRN_COEF_0,
+)
 
 
 comptime Env = DMPointMassHard[DType.float64]
@@ -109,6 +115,7 @@ def test_point_mass_hard_model_matches_mujoco() raises:
     engine would complain if it changed — the mass would simply be driven along
     a transposed basis. Hence pinning it explicitly on both sides.
     """
+    var sf = DMPointMassModel.make_spec_fields[DType.float64]()
     var sys = Python.import_module("sys")
     sys.path.insert(0, REF_PATH)
     var mujoco = Python.import_module("mujoco")
@@ -170,23 +177,24 @@ def test_point_mass_hard_model_matches_mujoco() raises:
                 "our wrap joint order is not (root_x, root_y)",
             )
 
-    # …and our COMPTIME transmission tables agree, which is what `easy` runs on.
-    # `_acd` is comptime: a RUNTIME index would materialize the whole `Array`,
-    # which rc2 refuses. Hoist the elements under comptime indices first.
+    # …and our transmission RECORDS agree, which is what `easy` runs on. The
+    # `comptime for` hoist these loops used to need is gone with `_acd`: a
+    # tensor takes a runtime index.
     var trn_n = List[Int]()
     var gears = List[Float64]()
-    comptime for a in range(NACT):
-        trn_n.append(materialize[DMPointMassModel._acd.motor_trn_n[a]]())
-        gears.append(materialize[DMPointMassModel._acd.motor_gears[a]]())
+    for a in range(NACT):
+        var o = a * MODEL_ACTUATOR_SIZE
+        trn_n.append(Int(sf.actuators.data[o + ACT_IDX_TRN_N]))
+        gears.append(Float64(sf.actuators.data[o + ACT_IDX_GEAR]))
     var trn_coef = List[Float64]()
-    comptime for a in range(NACT):
-        comptime for k in range(2):
+    for a in range(NACT):
+        for k in range(2):
             trn_coef.append(
-                materialize[
-                    DMPointMassModel._acd.motor_trn_coef[
-                        a * MAX_COMPTIME_TENDON_WRAPS + k
+                Float64(
+                    sf.actuators.data[
+                        a * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_COEF_0 + k
                     ]
-                ]()
+                )
             )
 
     for a in range(NACT):

@@ -59,6 +59,8 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
 from mojo_rl.envs.dm_control.dog import DMDogStandWalkModel
+from mojo_rl.physics3d.fields import actuator_column
+from mojo_rl.physics3d.gpu.constants import ACT_IDX_KP, ACT_IDX_GEAR
 
 comptime M = DMDogStandWalkModel
 comptime TEST_PATH = "tests/dm_control"
@@ -74,37 +76,18 @@ def _ref() raises -> PythonObject:
 def test_dog_actuator_gains_match_mujoco() raises:
     print("--- dog: actuator gainprm/dynprm/gear vs MuJoCo ---")
     var m = _ref()
-    # ⚠ ONE materialize, per §8 — not a read per element.
-    comptime acd = materialize[M._acd]()
-
-    # ⚠ A comptime `Array` CANNOT BE INDEXED BY A RUNTIME VALUE. `acd.motor_kp`
-    # is an `Array[Float64, 64]`, which is not `ImplicitlyCopyable`, so
-    # `acd.motor_kp[i]` with a runtime `i` asks the compiler to materialize the
-    # whole array into runtime storage and fails:
-    #
-    #     error: cannot materialize comptime value of type
-    #            'Array[Float64, Int(64)]' to runtime because it is not
-    #            'ImplicitlyCopyable'
-    #
-    # ⚠⚠ THIS FILE DID NOT COMPILE AT ALL FROM THE MOJO 1.0 MIGRATION UNTIL
-    # 2026-08-10, so dog's actuator-gain coverage was silently dead — a build
-    # failure and a pass look identical to anyone who is not running it. It was
-    # found by accident, while using this test as a regression check for an
-    # unrelated change.
-    #
-    # Copy once through a comptime-unrolled loop into runtime lists. A comptime
-    # index alone is NOT enough — `acd.motor_kp[ai]` still tries to materialize
-    # the ARRAY — so each ELEMENT is materialized explicitly, which is what the
-    # compiler's own `materialize[ ]()` hint asks for. `_acd` itself is still
-    # materialized exactly ONCE (into `acd` above), preserving §8's invariant;
-    # what is repeated here is only a scalar read out of that single copy.
+    # ⚠ THE WHOLE `_acd` CEREMONY IS GONE, AND SO IS ITS REASON. This block
+    # used to materialize `M._acd` exactly once and then copy each element
+    # under a COMPTIME index, because a comptime `Array` cannot be indexed by a
+    # runtime value (rc2 dropped `ImplicitlyCopyable` on `Array`) — and that
+    # constraint is why this file silently did not compile at all between the
+    # Mojo 1.0 migration and 2026-08-10, leaving dog's actuator-gain coverage
+    # dead. `SpecFields` is a runtime tensor: a plain loop reads it, and a
+    # build failure can no longer masquerade as a pass.
     comptime NACT = M.nact
-    var kp = List[Float64](capacity=NACT)
-    var gears = List[Float64](capacity=NACT)
-
-    comptime for ai in range(NACT):
-        kp.append(materialize[acd.motor_kp[ai]]())
-        gears.append(materialize[acd.motor_gears[ai]]())
+    var sf = M.make_spec_fields[DType.float64]()
+    var kp = actuator_column(sf, ACT_IDX_KP, NACT)
+    var gears = actuator_column(sf, ACT_IDX_GEAR, NACT)
 
     var nu = Int(py=m.nu)
     print("  nu: ours", M.nact, " MuJoCo", nu)

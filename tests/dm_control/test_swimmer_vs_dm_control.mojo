@@ -87,6 +87,13 @@ from mojo_rl.envs.dm_control.swimmer.swimmer_xml import (
     N_ROOT_DOF,
     TARGET_Z,
 )
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_ACTUATOR_SIZE,
+    ACT_IDX_GEAR,
+    ACT_IDX_CTRL_MIN,
+    ACT_IDX_CTRL_MAX,
+    ACT_IDX_DOF_ADR,
+)
 
 comptime DTYPE = DType.float64
 comptime REF_HELPER_PATH: StaticString = "tests/dm_control"
@@ -385,20 +392,33 @@ def test_swimmer_actuators_match_mujoco() raises:
     var dofadr = mj.actuator_trnid.tolist()
     var jdof = mj.jnt_dofadr.tolist()
 
-    # `M._acd` is a COMPTIME value: indexing it with a RUNTIME `i` asks the
-    # compiler to materialize the whole `Array`, which rc2 refuses (`Array` is
-    # no longer `ImplicitlyCopyable`). Hoist each ELEMENT once, under a
-    # comptime index, into runtime lists — the idiom of
-    # `test_dog_actuator_gain.mojo`.
+    # ⚠ THE `comptime for` IS GONE AND SO IS THE REASON FOR IT. These used to
+    # read `M._acd`, a COMPTIME value whose `Array` fields cannot be indexed by
+    # a runtime `i` (rc2 dropped `ImplicitlyCopyable` on `Array`), so every
+    # element had to be hoisted under a comptime index. `SpecFields` is a
+    # runtime tensor; a plain loop reads it.
+    var sf = M.make_spec_fields[DType.float64]()
     var a_gears = List[Float64]()
     var a_cmin = List[Float64]()
     var a_cmax = List[Float64]()
     var a_dof_adr = List[Int]()
-    comptime for a in range(M.ACTION_DIM):
-        a_gears.append(materialize[M._acd.motor_gears[a]]())
-        a_cmin.append(materialize[M._acd.motor_ctrl_min[a]]())
-        a_cmax.append(materialize[M._acd.motor_ctrl_max[a]]())
-        a_dof_adr.append(materialize[M._acd.motor_dof_adr[a]]())
+    for a in range(M.ACTION_DIM):
+        a_gears.append(
+            Float64(sf.actuators.data[a * MODEL_ACTUATOR_SIZE + ACT_IDX_GEAR])
+        )
+        a_cmin.append(
+            Float64(
+                sf.actuators.data[a * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MIN]
+            )
+        )
+        a_cmax.append(
+            Float64(
+                sf.actuators.data[a * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MAX]
+            )
+        )
+        a_dof_adr.append(
+            Int(sf.actuators.data[a * MODEL_ACTUATOR_SIZE + ACT_IDX_DOF_ADR])
+        )
 
     for i in range(M.ACTION_DIM):
         var ours = a_gears[i]

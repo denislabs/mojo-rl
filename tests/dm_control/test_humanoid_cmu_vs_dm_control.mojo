@@ -105,6 +105,13 @@ from mojo_rl.physics3d.constants import (
     GEOM_BOX,
     GEOM_MESH,
 )
+from mojo_rl.physics3d.gpu.constants import (
+    MODEL_ACTUATOR_SIZE,
+    ACT_IDX_GEAR,
+    ACT_IDX_CTRL_MIN,
+    ACT_IDX_CTRL_MAX,
+    ACT_IDX_TRN_N,
+)
 
 # The PARENT of the `dm_control` package, so `import dm_control.utils.rewards`
 # resolves. Pointing at the package directory itself makes the import fail.
@@ -548,25 +555,25 @@ def test_humanoid_cmu_actuator_constants_match_mujoco() raises:
     """
     print("--- humanoid_CMU: actuator constants (the widened comptime table) ---")
     var m = _mj_from_our_xml()
-    var acd = materialize[DMHumanoidCMUModel._acd]()
+    var sf = DMHumanoidCMUModel.make_spec_fields[DType.float64]()
 
     var worst_gear = 0.0
     var n_unresolved = 0
     var worst_ctrl = 0.0
     for a in range(NACT):
         var dg = abs(
-            Float64(acd.motor_gears[a]) - Float64(py=m.actuator_gear[a][0])
+            Float64(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_GEAR])) - Float64(py=m.actuator_gear[a][0])
         )
         if dg > worst_gear:
             worst_gear = dg
-        if acd.motor_trn_n[a] == 0:
+        if Int(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_TRN_N]) == 0:
             n_unresolved += 1
         var dlo = abs(
-            Float64(acd.motor_ctrl_min[a])
+            Float64(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MIN]))
             - Float64(py=m.actuator_ctrlrange[a][0])
         )
         var dhi = abs(
-            Float64(acd.motor_ctrl_max[a])
+            Float64(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_CTRL_MAX]))
             - Float64(py=m.actuator_ctrlrange[a][1])
         )
         if dlo > worst_ctrl:
@@ -593,10 +600,10 @@ def test_humanoid_cmu_actuator_constants_match_mujoco() raises:
         " stopped covering the truncation it exists for",
     )
     # The gears are not all equal, so a fill-value table cannot pass above.
-    var g0 = Float64(acd.motor_gears[0])
+    var g0 = Float64(Float64(sf.actuators.data[(0) * MODEL_ACTUATOR_SIZE + ACT_IDX_GEAR]))
     var n_diff = 0
     for a in range(NACT):
-        if abs(Float64(acd.motor_gears[a]) - g0) > 1e-9:
+        if abs(Float64(Float64(sf.actuators.data[(a) * MODEL_ACTUATOR_SIZE + ACT_IDX_GEAR])) - g0) > 1e-9:
             n_diff += 1
     assert_true(
         n_diff > 0,

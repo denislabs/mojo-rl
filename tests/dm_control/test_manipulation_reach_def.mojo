@@ -61,6 +61,11 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.envs.dm_control.manipulation_reach_def import (
     ReachSiteFeaturesModel,
 )
+from mojo_rl.physics3d.fields import actuator_column
+from mojo_rl.physics3d.gpu.constants import (
+    ACT_IDX_CTRL_MIN,
+    ACT_IDX_CTRL_MAX,
+)
 
 comptime DTYPE = DType.float64
 comptime M = ReachSiteFeaturesModel
@@ -119,8 +124,9 @@ def test_manipulation_reach_def_matches_mujoco() raises:
     # exactly the mistake this comment exists to stop.
     print("  model-wide CTRL_MIN/CTRL_MAX (NOT the clamp):",
           M.CTRL_MIN, M.CTRL_MAX)
-    var cmin = materialize[M._acd.motor_ctrl_min]()
-    var cmax = materialize[M._acd.motor_ctrl_max]()
+    var sf = M.make_spec_fields[DType.float64]()
+    var cmin = actuator_column(sf, ACT_IDX_CTRL_MIN, M.nact)
+    var cmax = actuator_column(sf, ACT_IDX_CTRL_MAX, M.nact)
     var worst_ctrl = 0.0
     for a in range(Int(py=mm.nu)):
         var mlo = Float64(py=mm.actuator_ctrlrange[a][0])
