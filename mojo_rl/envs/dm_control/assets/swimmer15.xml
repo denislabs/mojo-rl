@@ -1,0 +1,217 @@
+<mujoco model="merged">
+  <option timestep="0.002" density="3000">
+
+    <flag contact="disable"/>
+  
+
+  </option>
+  <visual>
+    <headlight ambient=".4 .4 .4" diffuse=".8 .8 .8" specular="0.1 0.1 0.1"/>
+    <map znear=".01"/>
+    <quality shadowsize="2048"/>
+  </visual>
+  <default>
+
+    <default class="swimmer">
+      <joint type="hinge" pos="0 -.05 0" axis="0 0 1" limited="true" solreflimit=".05 1" solimplimit="0 .8 .1" armature="1e-6"/>
+      <default class="inertial">
+        <geom type="box" size=".001 .05 .01" rgba="0 0 0 0" mass=".01"/>
+      </default>
+      <default class="visual">
+        <geom type="capsule" size=".01" fromto="0 -.05 0 0 .05 0" material="self" mass="0"/>
+      </default>
+      <site size=".01" rgba="0 0 0 0"/>
+    </default>
+    <default class="free">
+      <joint limited="false" stiffness="0" armature="0"/>
+    </default>
+    <motor gear="5e-4" ctrllimited="true" ctrlrange="-1 1"/>
+  
+  </default>
+  <asset>
+
+      <texture name="skybox" type="skybox" builtin="gradient" rgb1=".4 .6 .8" rgb2="0 0 0"
+               width="800" height="800" mark="random" markrgb="1 1 1"/>
+  
+
+    <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="300" height="300" mark="edge" markrgb=".2 .3 .4"/>
+    <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2"/>
+    <material name="self" rgba=".7 .5 .3 1"/>
+    <material name="self_default" rgba=".7 .5 .3 1"/>
+    <material name="self_highlight" rgba="0 .5 .3 1"/>
+    <material name="effector" rgba=".7 .4 .2 1"/>
+    <material name="effector_default" rgba=".7 .4 .2 1"/>
+    <material name="effector_highlight" rgba="0 .5 .3 1"/>
+    <material name="decoration" rgba=".3 .5 .7 1"/>
+    <material name="eye" rgba="0 .2 1 1"/>
+    <material name="target" rgba=".6 .3 .3 1"/>
+    <material name="target_default" rgba=".6 .3 .3 1"/>
+    <material name="target_highlight" rgba=".6 .3 .3 .4"/>
+    <material name="site" rgba=".5 .5 .5 .3"/>
+  
+  </asset>
+  <worldbody>
+
+    <geom name="ground" type="plane" size="2 2 0.1" material="grid"/>
+    <body name="head" pos="0 0 .05" childclass="swimmer">
+      <light name="light_1" diffuse=".8 .8 .8" pos="0 0 1.5"/>
+      <geom name="head" type="ellipsoid" size=".02 .04 .017" pos="0 -.022 0"  material="self" mass="0"/>
+      <geom name="nose" type="sphere" pos="0 -.06 0" size=".004" material="effector" mass="0"/>
+      <geom name="eyes" type="capsule" fromto="-.006 -.054 .005 .006 -.054 .005" size=".004" material="eye" mass="0"/>
+      <camera name="tracking1" pos="0.0 -0.5 1.25" xyaxes="1 0 0 0 1 1" mode="trackcom" fovy="60"/>
+      <camera name="tracking2" pos="-2.25 1.25 0.375" xyaxes="0 -1 0 .3 0 1" mode="trackcom" fovy="60"/>
+      <camera name="eyes" pos="0 -.058 .005" xyaxes="-1 0 0 0 0 1"/>
+      <joint name="rootx" class="free" type="slide" axis="1 0 0" pos="0 -.05 0"/>
+      <joint name="rooty" class="free" type="slide" axis="0 1 0" pos="0 -.05 0"/>
+      <joint name="rootz" class="free" type="hinge" axis="0 0 1" pos="0 -.05 0"/>
+      <geom name="inertial" class="inertial"/>
+      <geom name="visual" class="visual"/>
+      <site name="head"/>
+      <body name="segment_0" pos="0 .1 0">
+        <geom class="visual" name="visual_0"/>
+        <geom class="inertial" name="inertial_0"/>
+        <site name="site_0"/>
+        <joint name="joint_0" range="-24.0 24.0"/>
+        <body name="segment_1" pos="0 .1 0">
+          <geom class="visual" name="visual_1"/>
+          <geom class="inertial" name="inertial_1"/>
+          <site name="site_1"/>
+          <joint name="joint_1" range="-24.0 24.0"/>
+          <body name="segment_2" pos="0 .1 0">
+            <geom class="visual" name="visual_2"/>
+            <geom class="inertial" name="inertial_2"/>
+            <site name="site_2"/>
+            <joint name="joint_2" range="-24.0 24.0"/>
+            <body name="segment_3" pos="0 .1 0">
+              <geom class="visual" name="visual_3"/>
+              <geom class="inertial" name="inertial_3"/>
+              <site name="site_3"/>
+              <joint name="joint_3" range="-24.0 24.0"/>
+              <body name="segment_4" pos="0 .1 0">
+                <geom class="visual" name="visual_4"/>
+                <geom class="inertial" name="inertial_4"/>
+                <site name="site_4"/>
+                <joint name="joint_4" range="-24.0 24.0"/>
+                <body name="segment_5" pos="0 .1 0">
+                  <geom class="visual" name="visual_5"/>
+                  <geom class="inertial" name="inertial_5"/>
+                  <site name="site_5"/>
+                  <joint name="joint_5" range="-24.0 24.0"/>
+                  <body name="segment_6" pos="0 .1 0">
+                    <geom class="visual" name="visual_6"/>
+                    <geom class="inertial" name="inertial_6"/>
+                    <site name="site_6"/>
+                    <joint name="joint_6" range="-24.0 24.0"/>
+                    <body name="segment_7" pos="0 .1 0">
+                      <geom class="visual" name="visual_7"/>
+                      <geom class="inertial" name="inertial_7"/>
+                      <site name="site_7"/>
+                      <joint name="joint_7" range="-24.0 24.0"/>
+                      <body name="segment_8" pos="0 .1 0">
+                        <geom class="visual" name="visual_8"/>
+                        <geom class="inertial" name="inertial_8"/>
+                        <site name="site_8"/>
+                        <joint name="joint_8" range="-24.0 24.0"/>
+                        <body name="segment_9" pos="0 .1 0">
+                          <geom class="visual" name="visual_9"/>
+                          <geom class="inertial" name="inertial_9"/>
+                          <site name="site_9"/>
+                          <joint name="joint_9" range="-24.0 24.0"/>
+                          <body name="segment_10" pos="0 .1 0">
+                            <geom class="visual" name="visual_10"/>
+                            <geom class="inertial" name="inertial_10"/>
+                            <site name="site_10"/>
+                            <joint name="joint_10" range="-24.0 24.0"/>
+                            <body name="segment_11" pos="0 .1 0">
+                              <geom class="visual" name="visual_11"/>
+                              <geom class="inertial" name="inertial_11"/>
+                              <site name="site_11"/>
+                              <joint name="joint_11" range="-24.0 24.0"/>
+                              <body name="segment_12" pos="0 .1 0">
+                                <geom class="visual" name="visual_12"/>
+                                <geom class="inertial" name="inertial_12"/>
+                                <site name="site_12"/>
+                                <joint name="joint_12" range="-24.0 24.0"/>
+                                <body name="segment_13" pos="0 .1 0">
+                                  <geom class="visual" name="visual_13"/>
+                                  <geom class="inertial" name="inertial_13"/>
+                                  <site name="site_13"/>
+                                  <joint name="joint_13" range="-24.0 24.0"/>
+                                </body>
+                              </body>
+                            </body>
+                          </body>
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+    <body name="target" mocap="true" pos="1 1 .05">
+      <geom name="target" type="sphere" size=".1" material="target" mass="0"/>
+    </body>
+    <light name="target_light" diffuse="1 1 1" pos="1 1 1.5"/>
+  
+  </worldbody>
+  <actuator>
+
+    <motor name="motor_0" joint="joint_0"/>
+    <motor name="motor_1" joint="joint_1"/>
+    <motor name="motor_2" joint="joint_2"/>
+    <motor name="motor_3" joint="joint_3"/>
+    <motor name="motor_4" joint="joint_4"/>
+    <motor name="motor_5" joint="joint_5"/>
+    <motor name="motor_6" joint="joint_6"/>
+    <motor name="motor_7" joint="joint_7"/>
+    <motor name="motor_8" joint="joint_8"/>
+    <motor name="motor_9" joint="joint_9"/>
+    <motor name="motor_10" joint="joint_10"/>
+    <motor name="motor_11" joint="joint_11"/>
+    <motor name="motor_12" joint="joint_12"/>
+    <motor name="motor_13" joint="joint_13"/>
+  
+  </actuator>
+  <sensor>
+
+    <framepos name="nose_pos" objtype="geom" objname="nose"/>
+    <framepos name="target_pos" objtype="geom" objname="target"/>
+    <framexaxis name="head_xaxis" objtype="xbody" objname="head"/>
+    <frameyaxis name="head_yaxis" objtype="xbody" objname="head"/>
+    <velocimeter name="head_vel" site="head"/>
+    <gyro name="head_gyro" site="head"/>
+    <velocimeter name="velocimeter_0" site="site_0"/>
+    <gyro name="gyro_0" site="site_0"/>
+    <velocimeter name="velocimeter_1" site="site_1"/>
+    <gyro name="gyro_1" site="site_1"/>
+    <velocimeter name="velocimeter_2" site="site_2"/>
+    <gyro name="gyro_2" site="site_2"/>
+    <velocimeter name="velocimeter_3" site="site_3"/>
+    <gyro name="gyro_3" site="site_3"/>
+    <velocimeter name="velocimeter_4" site="site_4"/>
+    <gyro name="gyro_4" site="site_4"/>
+    <velocimeter name="velocimeter_5" site="site_5"/>
+    <gyro name="gyro_5" site="site_5"/>
+    <velocimeter name="velocimeter_6" site="site_6"/>
+    <gyro name="gyro_6" site="site_6"/>
+    <velocimeter name="velocimeter_7" site="site_7"/>
+    <gyro name="gyro_7" site="site_7"/>
+    <velocimeter name="velocimeter_8" site="site_8"/>
+    <gyro name="gyro_8" site="site_8"/>
+    <velocimeter name="velocimeter_9" site="site_9"/>
+    <gyro name="gyro_9" site="site_9"/>
+    <velocimeter name="velocimeter_10" site="site_10"/>
+    <gyro name="gyro_10" site="site_10"/>
+    <velocimeter name="velocimeter_11" site="site_11"/>
+    <gyro name="gyro_11" site="site_11"/>
+    <velocimeter name="velocimeter_12" site="site_12"/>
+    <gyro name="gyro_12" site="site_12"/>
+    <velocimeter name="velocimeter_13" site="site_13"/>
+    <gyro name="gyro_13" site="site_13"/>
+  
+  </sensor>
+</mujoco>
