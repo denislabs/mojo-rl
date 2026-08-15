@@ -104,13 +104,9 @@ from .render_fields import RenderFields, build_render_fields
 from .xml_parser import (
     MAX_COMPTIME_TENDONS,
     MAX_COMPTIME_TENDON_WRAPS,
-    MAX_COMPTIME_RENDER_GEOMS,
-    MAX_COMPTIME_RENDER_SITES,
     MAX_COMPTIME_ACTUATORS,
     MAX_COMPTIME_JOINTS,
-    MAX_COMPTIME_MATERIALS,
     MAX_COMPTIME_NQ,
-    MAX_COMPTIME_TEXTURES,
     _xml_nth_motor_gear,
     _xml_nth_motor_dof_adr,
     _xml_nth_joint_qpos_adr,
@@ -120,8 +116,6 @@ from .xml_parser import (
     _xml_compiler_inertiafromgeom,
     _xml_compiler_settotalmass,
     _xml_compiler_inertiagrouprange,
-    ComptimeRenderData,
-    parse_xml_render_data,
     _xml_default_motor_ctrlrange,
     _xml_fixed_tendon_njoints,
     _xml_fixed_tendon_joint_name,
@@ -360,7 +354,6 @@ struct ModelDefFromXML[
     # Precomputed rendering data — evaluated once at struct level.
     # Replaces 11 separate parse_xml_full calls that crashed the comptime
     # interpreter for large (25+ body) models.
-    comptime _rcd: ComptimeRenderData = parse_xml_render_data(Self.xml)
 
     # =========================================================================
     # CPU: state hooks (fields-native; G2). The legacy CPU model build
@@ -1157,24 +1150,12 @@ struct ModelDefFromXML[
         # also avoids touching its constructors — adding fields there has
         # tripped the comptime interpreter before ("interpreting memcpy can't
         # get dst memory").
-        if Self.NGEOM > MAX_COMPTIME_RENDER_GEOMS:
-            raise Error(
-                String(
-                    "physics3d: model has ", Self.NGEOM, " geoms but",
-                    " MAX_COMPTIME_RENDER_GEOMS=", MAX_COMPTIME_RENDER_GEOMS,
-                    ". Raise it in xml_parser.mojo; truncating leaves the",
-                    " renderer reading past the end of every geom array.",
-                )
-            )
-        if Self.NSITE > MAX_COMPTIME_RENDER_SITES:
-            raise Error(
-                String(
-                    "physics3d: model has ", Self.NSITE, " sites but",
-                    " MAX_COMPTIME_RENDER_SITES=", MAX_COMPTIME_RENDER_SITES,
-                    ". Raise it in xml_parser.mojo; truncating leaves the",
-                    " renderer reading past the end of every site array.",
-                )
-            )
+        # ⚠ THE RENDER-GEOM AND RENDER-SITE CAPS ARE GONE (phase 1a.5c).
+        # `NGEOM > MAX_COMPTIME_RENDER_GEOMS` and the matching site guard
+        # existed to stop a model overflowing `ComptimeRenderData`'s fixed
+        # `InlineArray`s, which truncated silently and left the renderer
+        # reading past the end. `RenderFields` is `List`-backed and cannot
+        # truncate, so there is nothing left to bound.
 
         # ⚠ A TENDON THAT OUTGREW `TENDON_MAX_WRAPS` MUST NOT BUILD, and
         # this now reads the RUNTIME record's own overflow counter rather than
@@ -1349,18 +1330,14 @@ struct ModelDefFromXML[
         # straight through to the array — point_mass, fish and reacher aborted
         # at the first frame. Anything that survived did so by having every
         # material land under the cap.
-        comptime assert Self.nmat <= MAX_COMPTIME_MATERIALS, (
-            "physics3d: this model has more <material> records than"
-            " MAX_COMPTIME_MATERIALS; raise it in xml_parser.mojo. Leaving it"
-            " is not a cosmetic loss: `mid < nmat` then guards against a count"
-            " larger than the array it indexes."
-        )
-        comptime assert Self.ntex <= MAX_COMPTIME_TEXTURES, (
-            "physics3d: this model has more <texture> records than"
-            " MAX_COMPTIME_TEXTURES; raise it in xml_parser.mojo. Textures past"
-            " the cap are dropped, so materials referencing them fall back to"
-            " flat colour — including the skybox."
-        )
+        # ⚠ THE `<material>` AND `<texture>` CAPS ARE GONE for the same
+        # reason as the geom and site ones above: they bounded
+        # `ComptimeRenderData`'s arrays. Their notes recorded two real
+        # failures — a material index checked against `nmat` while the array
+        # was sized `MAX_COMPTIME_MATERIALS` aborted point_mass, fish and
+        # reacher at the first frame, and textures past the cap were dropped
+        # so the skybox fell back to flat colour. Neither is expressible now:
+        # `RenderFields.mat_*` and `tex_*` are sized by what the model has.
 
         # `<option noslip_iterations>` used to be refused here on an
         # ELLIPTIC-cone model, because `mj_solNoSlip` was implemented for the
