@@ -252,7 +252,7 @@ def test_model_def_from_xml() raises:
     print("=== enforce_limits ===")
     # Set bthigh qpos[3] out of range (2.0 > 1.05), should be clamped to 1.05
     d.qpos.data[3] = Scalar[DType.float64](2.0)
-    XmlModel.enforce_limits[DType.float64](d)
+    XmlModel.enforce_limits[DType.float64](sf, d)
     print(
         "bthigh qpos after clamp =",
         Float64(d.qpos.data[3]),
@@ -261,7 +261,7 @@ def test_model_def_from_xml() raises:
 
     # rootx (joint 0) is not limited, should not be clamped
     d.qpos.data[0] = Scalar[DType.float64](100.0)
-    XmlModel.enforce_limits[DType.float64](d)
+    XmlModel.enforce_limits[DType.float64](sf, d)
     print(
         "rootx qpos after enforce =",
         Float64(d.qpos.data[0]),

@@ -196,6 +196,7 @@ struct Phyics3dEnv[
         Self.MODEL_DEF.NQ,
         Self.MODEL_DEF.NV,
         Self.MODEL_DEF.NKEY,
+        Self.MODEL_DEF.NJOINT,
     ]
 
     # Renderer (optional; RenderableEnv). Reads the fields FK products

@@ -289,7 +289,7 @@ def test_apply_actions_gpu_matches_cpu() raises:
     t_act.upload(ctx)
 
     var sfg = SpecFields[
-        GT, M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY
+        GT, M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY, M.NJOINT
     ]()
     M.init_spec_fields[GT](ctx, sfg)
     M.apply_actions_kernel_gpu[GT, B, AD](

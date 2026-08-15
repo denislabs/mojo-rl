@@ -56,6 +56,7 @@ from ..gpu.constants import (
     POSE_META_SIZE,
     POSE_IDX_FREE_JOINT_QPOS_ADR,
     KEY_META_SIZE,
+    JLIM_SIZE,
 )
 
 
@@ -72,6 +73,7 @@ struct SpecFields[
     NQ: Int,
     NV: Int,
     NKEY: Int,
+    NJOINT: Int,
 ](Movable):
     """The runtime twin of `_acd`: actuation records + the reference pose."""
 
@@ -80,6 +82,7 @@ struct SpecFields[
     comptime NQ_F: Int = Self.NQ if Self.NQ > 0 else 1
     comptime NV_F: Int = Self.NV if Self.NV > 0 else 1
     comptime NKEY_F: Int = Self.NKEY if Self.NKEY > 0 else 1
+    comptime NJOINT_F: Int = Self.NJOINT if Self.NJOINT > 0 else 1
 
     var actuators: TensorImpl[Self.DTYPE]  # [NACT, MODEL_ACTUATOR_SIZE]
     var act_tendons: TensorImpl[Self.DTYPE]  # [NTEN, MODEL_ACT_TENDON_SIZE]
@@ -97,6 +100,9 @@ struct SpecFields[
     var key_qpos: TensorImpl[Self.DTYPE]  # [NKEY, NQ]
     var key_qvel: TensorImpl[Self.DTYPE]  # [NKEY, NV]
     var key_ctrl: TensorImpl[Self.DTYPE]  # [NKEY, NACT]
+    # The `enforce_limits` clamp — see `JLIM_*`. Separate from
+    # `Model.joints`' limit columns because that record has no LIMITED flag.
+    var joint_limits: TensorImpl[Self.DTYPE]  # [NJOINT, JLIM_SIZE]
 
     def __init__(out self) raises:
         self.actuators = TensorImpl[Self.DTYPE].alloc(
@@ -120,6 +126,9 @@ struct SpecFields[
         self.key_qvel = TensorImpl[Self.DTYPE].alloc(Self.NKEY_F * Self.NV_F)
         self.key_ctrl = TensorImpl[Self.DTYPE].alloc(
             Self.NKEY_F * Self.NACT_F
+        )
+        self.joint_limits = TensorImpl[Self.DTYPE].alloc(
+            Self.NJOINT_F * JLIM_SIZE
         )
         # ⚠⚠ THE SENTINELS ARE -1 AND THE GAIN IS 1, AND THE ZERO `alloc`
         # LEAVES IS WRONG FOR BOTH. `TensorImpl.alloc` DOES zero-fill, so
@@ -174,3 +183,4 @@ struct SpecFields[
         self.key_qpos.upload(ctx)
         self.key_qvel.upload(ctx)
         self.key_ctrl.upload(ctx)
+        self.joint_limits.upload(ctx)

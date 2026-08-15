@@ -107,6 +107,11 @@ from mojo_rl.physics3d.gpu.constants import (
     ACTTEN_IDX_TRN_QADR_0,
     ACTTEN_IDX_TRN_DADR_0,
     ACTTEN_IDX_TRN_COEF_0,
+    JLIM_SIZE,
+    JLIM_IDX_LIMITED,
+    JLIM_IDX_QPOS_ADR,
+    JLIM_IDX_RANGE_MIN,
+    JLIM_IDX_RANGE_MAX,
 )
 
 from mojo_rl.envs.dm_control.cartpole.cartpole_xml import DMCartpole1Model
@@ -153,6 +158,7 @@ def _compare[
     NQ_C: Int,
     NV_C: Int,
     NKEY_C: Int,
+    NJOINT_C: Int,
 ](
     name: String,
     nact: Int,
@@ -398,7 +404,7 @@ def _compare[
     # no tendons; the tensor strides by `TENDON_MAX_WRAPS` = 16 always. On
     # cartpole those are 1 and 16. Comparing them without converting reads
     # actuator i+1's data as actuator i's wrap 1.
-    _fields_diff[NACT_C, NTEN_C, NQ_C, NV_C, NKEY_C](
+    _fields_diff[NACT_C, NTEN_C, NQ_C, NV_C, NKEY_C, NJOINT_C](
         name, fmd, n_rt, gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, dofa, trnn, tq, td_, tc, wraps, kps, kvs,
         ten_k, ten_lo, ten_hi, nten_acd, ten_n, ten_tq, ten_td, ten_tc,
@@ -412,6 +418,7 @@ def _fields_diff[
     NQ_C: Int,
     NV_C: Int,
     NKEY_C: Int,
+    NJOINT_C: Int,
 ](
     name: String,
     fmd: FlatModelDef,
@@ -452,10 +459,10 @@ def _fields_diff[
         return
 
     var sf = SpecFields[
-        DType.float64, NACT_C, NTEN_C, NQ_C, NV_C, NKEY_C
+        DType.float64, NACT_C, NTEN_C, NQ_C, NV_C, NKEY_C, NJOINT_C
     ]()
     build_spec_fields[
-        DType.float64, NACT_C, NTEN_C, NQ_C, NV_C, NKEY_C
+        DType.float64, NACT_C, NTEN_C, NQ_C, NV_C, NKEY_C, NJOINT_C
     ](fmd, sf)
 
     var n_scalar = 0
@@ -664,7 +671,7 @@ def test_cartpole() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
+    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY, M.NJOINT](
         "cartpole (1 actuator, no <default> class)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
@@ -738,7 +745,7 @@ def test_ctrllimited_matrix() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
+    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY, M.NJOINT](
         "ctrllimited matrix (the `ctrlrange=\"0 0\"` case)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
@@ -805,7 +812,7 @@ def test_quadruped() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
+    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY, M.NJOINT](
         "quadruped (3 classes / 12 actuators, tendons + dyntype)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
@@ -872,7 +879,7 @@ def test_dog() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
+    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY, M.NJOINT](
         "dog stand/walk (24 classes / 38 actuators — the sharp case)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
@@ -947,7 +954,7 @@ def test_reach_forcerange() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
+    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY, M.NJOINT](
         "jaco reach (3 distinct forceranges — the non-vacuous force case)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
@@ -1026,7 +1033,7 @@ def test_fish() raises:
             tq.append(materialize[acd.motor_trn_qadr[ai * M._WRAPS + wk]]())
             td_.append(materialize[acd.motor_trn_dadr[ai * M._WRAPS + wk]]())
             tc.append(materialize[acd.motor_trn_coef[ai * M._WRAPS + wk]]())
-    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
+    _ = _compare[NACT, M._NTEN, M.NQ, M.NV, M.NKEY, M.NJOINT](
         "fish swim (the ONLY model with tendon springs)",
         NACT, String(M.xml), gears, cmin, cmax, clim, kinds, flim, fmin, fmax,
         dyn, aadr, materialize[acd.na](),
@@ -1043,6 +1050,7 @@ def _compare_pose[
     NQ_C: Int,
     NV_C: Int,
     NKEY_C: Int,
+    NJOINT_C: Int,
 ](
     name: String,
     xml: String,
@@ -1059,6 +1067,10 @@ def _compare_pose[
     nkey_acd: Int,
     nq0: Int,
     nact0: Int,
+    jlim: List[Int],
+    jadr: List[Int],
+    jlo: List[Float64],
+    jhi: List[Float64],
 ) raises:
     """Model-level records: qpos0 and keyframes.
 
@@ -1137,10 +1149,10 @@ def _compare_pose[
     # transcription and 1a.2's `kp <- kv` negative control is the reason to
     # believe a column can be wrong while the record is right.
     var sf = SpecFields[
-        DType.float64, NACT_C, NTEN_C, NQ_C, NV_C, NKEY_C
+        DType.float64, NACT_C, NTEN_C, NQ_C, NV_C, NKEY_C, NJOINT_C
     ]()
     build_spec_fields[
-        DType.float64, NACT_C, NTEN_C, NQ_C, NV_C, NKEY_C
+        DType.float64, NACT_C, NTEN_C, NQ_C, NV_C, NKEY_C, NJOINT_C
     ](fmd, sf)
 
     var n_tq = 0
@@ -1191,6 +1203,68 @@ def _compare_pose[
     assert_true(n_tk == 0,
         String(name, ": SpecFields keyframe rows disagree with `_acd` in ",
                n_tk))
+
+    # ── joint limits (the `enforce_limits` clamp) ────────────────────────
+    #
+    # ⚠⚠ THIS ROW DOES NOT ASSERT AGAINST `_acd`, AND THAT IS THE FINDING.
+    # `_acd`'s joint scan reads `limited`/`range` off the ELEMENT TAG ONLY
+    # (`xml_parser.mojo:4493`) — no `<default class=...>` resolution, the same
+    # gap 1a.1 fixed on the actuator path (`224135af`). Measured here:
+    #
+    #     so_arm100  j0  tensor lim 1 [-1.92, 1.92]   `_acd` lim 0 [0, 0]
+    #     quadruped  17 of 17 joints disagree
+    #     ant         1 of  9,  finger 1 of 3
+    #
+    # so_arm100 keeps EVERY range in a `<default class="Rotation">`-style
+    # block, so `_acd` saw none of them and reported the model unlimited.
+    # `enforce_limits` — the ONLY consumer of those four arrays — therefore
+    # clamped NOTHING on any model whose ranges come from a class. The
+    # runtime side is the correct one and is pinned to MuJoCo elsewhere
+    # (`test_quadruped_body_and_joint_constants_match_mujoco` reports
+    # "limited joints = 16" against `mjModel`).
+    #
+    # ⇒ The `_acd` diff below is PRINTED as a measurement. What is ASSERTED is
+    # the second leg — tensor against the runtime record it is built from —
+    # which is what 1a.2's `kp <- kv` control showed can independently break.
+    var n_jl_acd = 0
+    var n_jl = 0
+    var n_limited = 0
+    for j in range(NJOINT_C):
+        var o = j * JLIM_SIZE
+        if jlim[j] != 0:
+            n_limited += 1
+        if (
+            Int(sf.joint_limits.data[o + JLIM_IDX_LIMITED]) != jlim[j]
+            or Int(sf.joint_limits.data[o + JLIM_IDX_QPOS_ADR]) != jadr[j]
+            or sf.joint_limits.data[o + JLIM_IDX_RANGE_MIN]
+            != Scalar[DType.float64](jlo[j])
+            or sf.joint_limits.data[o + JLIM_IDX_RANGE_MAX]
+            != Scalar[DType.float64](jhi[j])
+        ):
+            n_jl_acd += 1
+        if j < len(fmd.joints):
+            var jd = fmd.joints[j]
+            if (
+                (sf.joint_limits.data[o + JLIM_IDX_LIMITED] != 0)
+                != jd.is_limited
+                or sf.joint_limits.data[o + JLIM_IDX_RANGE_MIN]
+                != Scalar[DType.float64](jd.range_min)
+                or sf.joint_limits.data[o + JLIM_IDX_RANGE_MAX]
+                != Scalar[DType.float64](jd.range_max)
+            ):
+                n_jl += 1
+    var n_lim_rt = 0
+    for j in range(NJOINT_C):
+        if sf.joint_limits.data[j * JLIM_SIZE + JLIM_IDX_LIMITED] != 0:
+            n_lim_rt += 1
+    print("    joint limits: vs record =", n_jl, " of", NJOINT_C,
+          "  (limited: runtime", n_lim_rt, " `_acd`", n_limited,
+          " -> `_acd` disagrees on", n_jl_acd, ")")
+    if n_lim_rt == 0:
+        print("  ⚠ NO joint is limited — the joint_limits rows are VACUOUS")
+    assert_true(n_jl == 0,
+        String(name, ": SpecFields joint_limits disagree with the runtime",
+               " record in ", n_jl))
 
 
 # ═══ The `nq != nv` keyframe fixture — the STRIDE the tree cannot test ═══
@@ -1253,6 +1327,15 @@ def test_pose_finger() raises:
     var qp = List[Float64]()
     comptime for i in range(M._NQ0):
         qp.append(materialize[acd.qpos0[i]]())
+    var jlim = List[Int]()
+    var jadr = List[Int]()
+    var jlo = List[Float64]()
+    var jhi = List[Float64]()
+    comptime for j in range(M._NJNT):
+        jlim.append(1 if materialize[acd.joint_is_limited[j]]() else 0)
+        jadr.append(materialize[acd.joint_qpos_adr[j]]())
+        jlo.append(materialize[acd.joint_range_min[j]]())
+        jhi.append(materialize[acd.joint_range_max[j]]())
     var kt = List[Float64]()
     var knq = List[Int]()
     var knv = List[Int]()
@@ -1273,12 +1356,12 @@ def test_pose_finger() raises:
     var kc = List[Float64]()
     comptime for i in range(acd.NKEYS * M._NACT):
         kc.append(materialize[acd.key_ctrl[i]]())
-    _compare_pose[M.NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
+    _compare_pose[M.NACT, M._NTEN, M.NQ, M.NV, M.NKEY, M.NJOINT](
         "finger spin (joint ref=-90 -> -pi/2, the deg-conversion case)",
         String(M.xml), qp, materialize[acd.nq](),
         materialize[acd.free_joint_qpos_adr](),
         kt, knq, knv, knc, kq, kv, kc, materialize[acd.nkey](),
-        M._NQ0, M._NACT,
+        M._NQ0, M._NACT, jlim, jadr, jlo, jhi,
     )
 
 
@@ -1290,6 +1373,15 @@ def test_pose_key_stride() raises:
     var qp = List[Float64]()
     comptime for i in range(M._NQ0):
         qp.append(materialize[acd.qpos0[i]]())
+    var jlim = List[Int]()
+    var jadr = List[Int]()
+    var jlo = List[Float64]()
+    var jhi = List[Float64]()
+    comptime for j in range(M._NJNT):
+        jlim.append(1 if materialize[acd.joint_is_limited[j]]() else 0)
+        jadr.append(materialize[acd.joint_qpos_adr[j]]())
+        jlo.append(materialize[acd.joint_range_min[j]]())
+        jhi.append(materialize[acd.joint_range_max[j]]())
     var kt = List[Float64]()
     var knq = List[Int]()
     var knv = List[Int]()
@@ -1310,12 +1402,12 @@ def test_pose_key_stride() raises:
     var kc = List[Float64]()
     comptime for i in range(acd.NKEYS * M._NACT):
         kc.append(materialize[acd.key_ctrl[i]]())
-    _compare_pose[M.NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
+    _compare_pose[M.NACT, M._NTEN, M.NQ, M.NV, M.NKEY, M.NJOINT](
         "keyframe stride (free joint: nq 8 != nv 7, two keys)",
         String(M.xml), qp, materialize[acd.nq](),
         materialize[acd.free_joint_qpos_adr](),
         kt, knq, knv, knc, kq, kv, kc, materialize[acd.nkey](),
-        M._NQ0, M._NACT,
+        M._NQ0, M._NACT, jlim, jadr, jlo, jhi,
     )
 
 
@@ -1325,6 +1417,15 @@ def test_pose_ant() raises:
     var qp = List[Float64]()
     comptime for i in range(M._NQ0):
         qp.append(materialize[acd.qpos0[i]]())
+    var jlim = List[Int]()
+    var jadr = List[Int]()
+    var jlo = List[Float64]()
+    var jhi = List[Float64]()
+    comptime for j in range(M._NJNT):
+        jlim.append(1 if materialize[acd.joint_is_limited[j]]() else 0)
+        jadr.append(materialize[acd.joint_qpos_adr[j]]())
+        jlo.append(materialize[acd.joint_range_min[j]]())
+        jhi.append(materialize[acd.joint_range_max[j]]())
     var kt = List[Float64]()
     var knq = List[Int]()
     var knv = List[Int]()
@@ -1345,12 +1446,12 @@ def test_pose_ant() raises:
     var kc = List[Float64]()
     comptime for i in range(acd.NKEYS * M._NACT):
         kc.append(materialize[acd.key_ctrl[i]]())
-    _compare_pose[M.NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
+    _compare_pose[M.NACT, M._NTEN, M.NQ, M.NV, M.NKEY, M.NJOINT](
         "ant (<custom> init_qpos OVERRIDES the joint refs)",
         String(M.xml), qp, materialize[acd.nq](),
         materialize[acd.free_joint_qpos_adr](),
         kt, knq, knv, knc, kq, kv, kc, materialize[acd.nkey](),
-        M._NQ0, M._NACT,
+        M._NQ0, M._NACT, jlim, jadr, jlo, jhi,
     )
 
 
@@ -1360,6 +1461,15 @@ def test_pose_so_arm100() raises:
     var qp = List[Float64]()
     comptime for i in range(M._NQ0):
         qp.append(materialize[acd.qpos0[i]]())
+    var jlim = List[Int]()
+    var jadr = List[Int]()
+    var jlo = List[Float64]()
+    var jhi = List[Float64]()
+    comptime for j in range(M._NJNT):
+        jlim.append(1 if materialize[acd.joint_is_limited[j]]() else 0)
+        jadr.append(materialize[acd.joint_qpos_adr[j]]())
+        jlo.append(materialize[acd.joint_range_min[j]]())
+        jhi.append(materialize[acd.joint_range_max[j]]())
     var kt = List[Float64]()
     var knq = List[Int]()
     var knv = List[Int]()
@@ -1380,12 +1490,12 @@ def test_pose_so_arm100() raises:
     var kc = List[Float64]()
     comptime for i in range(acd.NKEYS * M._NACT):
         kc.append(materialize[acd.key_ctrl[i]]())
-    _compare_pose[M.NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
+    _compare_pose[M.NACT, M._NTEN, M.NQ, M.NV, M.NKEY, M.NJOINT](
         "so_arm100 (the ONLY model with a <keyframe>)",
         String(M.xml), qp, materialize[acd.nq](),
         materialize[acd.free_joint_qpos_adr](),
         kt, knq, knv, knc, kq, kv, kc, materialize[acd.nkey](),
-        M._NQ0, M._NACT,
+        M._NQ0, M._NACT, jlim, jadr, jlo, jhi,
     )
 
 
@@ -1395,6 +1505,15 @@ def test_pose_quadruped_pose() raises:
     var qp = List[Float64]()
     comptime for i in range(M._NQ0):
         qp.append(materialize[acd.qpos0[i]]())
+    var jlim = List[Int]()
+    var jadr = List[Int]()
+    var jlo = List[Float64]()
+    var jhi = List[Float64]()
+    comptime for j in range(M._NJNT):
+        jlim.append(1 if materialize[acd.joint_is_limited[j]]() else 0)
+        jadr.append(materialize[acd.joint_qpos_adr[j]]())
+        jlo.append(materialize[acd.joint_range_min[j]]())
+        jhi.append(materialize[acd.joint_range_max[j]]())
     var kt = List[Float64]()
     var knq = List[Int]()
     var knv = List[Int]()
@@ -1415,12 +1534,12 @@ def test_pose_quadruped_pose() raises:
     var kc = List[Float64]()
     comptime for i in range(acd.NKEYS * M._NACT):
         kc.append(materialize[acd.key_ctrl[i]]())
-    _compare_pose[M.NACT, M._NTEN, M.NQ, M.NV, M.NKEY](
+    _compare_pose[M.NACT, M._NTEN, M.NQ, M.NV, M.NKEY, M.NJOINT](
         "quadruped (free joint -> body pos + qw=1)",
         String(M.xml), qp, materialize[acd.nq](),
         materialize[acd.free_joint_qpos_adr](),
         kt, knq, knv, knc, kq, kv, kc, materialize[acd.nkey](),
-        M._NQ0, M._NACT,
+        M._NQ0, M._NACT, jlim, jadr, jlo, jhi,
     )
 
 

@@ -314,6 +314,11 @@ from mojo_rl.physics3d.gpu.constants import (
     KEY_IDX_NQPOS,
     KEY_IDX_NQVEL,
     KEY_IDX_NCTRL,
+    JLIM_SIZE,
+    JLIM_IDX_LIMITED,
+    JLIM_IDX_QPOS_ADR,
+    JLIM_IDX_RANGE_MIN,
+    JLIM_IDX_RANGE_MAX,
 )
 from .flat_model import FlatModelDef, _EQ_CONNECT, _EQ_WELD, _EQ_JOINT
 
@@ -1768,9 +1773,10 @@ def build_spec_fields[
     NQ: Int,
     NV: Int,
     NKEY: Int,
+    NJOINT: Int,
 ](
     fmd: FlatModelDef,
-    mut sf: SpecFields[DTYPE, NACT, NTEN, NQ, NV, NKEY],
+    mut sf: SpecFields[DTYPE, NACT, NTEN, NQ, NV, NKEY, NJOINT],
 ) raises:
     """Fill the spec record tensors from the parsed `fmd`.
 
@@ -1951,3 +1957,23 @@ def build_spec_fields[
                 sf.key_ctrl.data[k * NACT + i] = Scalar[DTYPE](
                     fmd.key_ctrl[k * NACT + i]
                 )
+
+    # ── joint limits (the `enforce_limits` clamp) ────────────────────────
+    #
+    # ⚠ `qadr` HERE IS THE SAME CUMULATIVE SUM the transmission used, not
+    # `JointData` — the record carries per-joint `nq`/`nv`, never an absolute
+    # address.
+    for j in range(nj):
+        if j >= NJOINT:
+            break
+        var o = j * JLIM_SIZE
+        sf.joint_limits.data[o + JLIM_IDX_LIMITED] = Scalar[DTYPE](
+            1 if fmd.joints[j].is_limited else 0
+        )
+        sf.joint_limits.data[o + JLIM_IDX_QPOS_ADR] = Scalar[DTYPE](qadr[j])
+        sf.joint_limits.data[o + JLIM_IDX_RANGE_MIN] = Scalar[DTYPE](
+            fmd.joints[j].range_min
+        )
+        sf.joint_limits.data[o + JLIM_IDX_RANGE_MAX] = Scalar[DTYPE](
+            fmd.joints[j].range_max
+        )

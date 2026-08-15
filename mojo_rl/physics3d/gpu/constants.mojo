@@ -789,6 +789,21 @@ comptime KEY_IDX_NQPOS: Int = 1
 comptime KEY_IDX_NQVEL: Int = 2
 comptime KEY_IDX_NCTRL: Int = 3
 
+# --- joint limits, for the `enforce_limits` clamp (phase 1a.4) ---------------
+#
+# ⚠ NOT THE SAME THING AS THE SOLVER'S LIMIT ROWS. `Model.joints` carries
+# `JOINT_IDX_RANGE_MIN/MAX` and the per-joint solref/solimp that the
+# CONSTRAINT path uses; this record is the hard clamp `enforce_limits` applies
+# to `qpos` directly, and it needs one thing the joint record does not have: a
+# LIMITED flag. `range_min < range_max` is not that test — MuJoCo spells an
+# unlimited joint BOTH as `[0, 0]` and as `[-1e10, 1e10]`, and the second
+# satisfies it.
+comptime JLIM_SIZE: Int = 4
+comptime JLIM_IDX_LIMITED: Int = 0
+comptime JLIM_IDX_QPOS_ADR: Int = 1
+comptime JLIM_IDX_RANGE_MIN: Int = 2
+comptime JLIM_IDX_RANGE_MAX: Int = 3
+
 
 # =============================================================================
 # Model Buffer Layout - Mesh Collision Hull Data

@@ -232,7 +232,7 @@ def _gate[
     t_actv.upload(ctx)
 
     var sfg = SpecFields[
-        DTYPE, M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY
+        DTYPE, M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY, M.NJOINT
     ]()
     M.init_spec_fields[DTYPE](ctx, sfg)
     M.apply_actions_kernel_gpu[DTYPE, BATCH, NACT](

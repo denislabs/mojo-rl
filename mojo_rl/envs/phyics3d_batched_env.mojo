@@ -57,6 +57,7 @@ from mojo_rl.physics3d.gpu import compute_cfrc_ext, compute_cvel
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
+    POSE_META_SIZE,
     TPB,
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
@@ -191,6 +192,7 @@ struct Phyics3dBatchedEnv[
         Self.MODEL_DEF.NQ,
         Self.MODEL_DEF.NV,
         Self.MODEL_DEF.NKEY,
+        Self.MODEL_DEF.NJOINT,
     ]
     # Both integrators are held; the step comptime-dispatches on
     # CONFIG.INTEGRATOR (HalfCheetah/Pusher/MetaWorld = Euler+Newton, the
@@ -1197,6 +1199,12 @@ struct Phyics3dBatchedEnv[
             geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
             act: LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin],
             seed_arg: Int64,
+            qpos0: LayoutTensor[
+                DT, Layout.row_major(Self.MODEL_DEF.NQ_F), MutAnyOrigin
+            ],
+            pose_meta: LayoutTensor[
+                DT, Layout.row_major(POSE_META_SIZE), MutAnyOrigin
+            ],
         ):
             # Mojo 1.0: `Int`/`UInt` are not `DevicePassable`; the kernel takes
             # a fixed-width `Int64` and re-binds the original name here.
@@ -1206,7 +1214,7 @@ struct Phyics3dBatchedEnv[
                 return
             Self._reset_env_lane(
                 qpos, qvel, qacc, qfrc, meta, joints, mocap_pos,
-                mocap_quat, bodies, geoms, act, i, seed,
+                mocap_quat, bodies, geoms, act, qpos0, pose_meta, i, seed,
             )
             reset_mask[i] = Scalar[DT](1)
 
@@ -1224,6 +1232,12 @@ struct Phyics3dBatchedEnv[
             self.mf.geoms.lt["gpu", Self.L_GEOMS_HOOK](),
             self._act_operand(),
             Int64(rng_seed),
+            self.sf.qpos0.lt[
+                "gpu", Layout.row_major(Self.MODEL_DEF.NQ_F)
+            ](),
+            self.sf.pose_meta.lt[
+                "gpu", Layout.row_major(POSE_META_SIZE)
+            ](),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1525,6 +1539,12 @@ struct Phyics3dBatchedEnv[
             ],
             geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
             act: LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin],
+            qpos0: LayoutTensor[
+                DT, Layout.row_major(Self.MODEL_DEF.NQ_F), MutAnyOrigin
+            ],
+            pose_meta: LayoutTensor[
+                DT, Layout.row_major(POSE_META_SIZE), MutAnyOrigin
+            ],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= Self.N_ENVS:
@@ -1543,6 +1563,8 @@ struct Phyics3dBatchedEnv[
                     bodies,
                     geoms,
                     act,
+                    qpos0,
+                    pose_meta,
                     i,
                     Int(rebind[Scalar[DType.uint64]](counter[0])),
                 )
@@ -1567,6 +1589,12 @@ struct Phyics3dBatchedEnv[
             self.mf.bodies.lt["gpu", type_of(self.mf).L_BODY](),
             self.mf.geoms.lt["gpu", Self.L_GEOMS_HOOK](),
             self._act_operand(),
+            self.sf.qpos0.lt[
+                "gpu", Layout.row_major(Self.MODEL_DEF.NQ_F)
+            ](),
+            self.sf.pose_meta.lt[
+                "gpu", Layout.row_major(POSE_META_SIZE)
+            ](),
             grid_dim=(Self.BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1614,6 +1642,12 @@ struct Phyics3dBatchedEnv[
         ],
         geoms: LayoutTensor[DT, Self.L_GEOMS_HOOK, MutAnyOrigin],
         act: LayoutTensor[DT, Self.L_ACT_HOOK, MutAnyOrigin],
+        qpos0: LayoutTensor[
+            DT, Layout.row_major(Self.MODEL_DEF.NQ_F), MutAnyOrigin
+        ],
+        pose_meta: LayoutTensor[
+            DT, Layout.row_major(POSE_META_SIZE), MutAnyOrigin
+        ],
         env: Int,
         seed: Int,
     ):
@@ -1628,7 +1662,7 @@ struct Phyics3dBatchedEnv[
         sampler ended up testing against a stale cup position."""
         var RESET_NOISE = Scalar[DT](Self.CONFIG.get_reset_noise())
         Self.MODEL_DEF.reset_env_gpu[DT, Self.N_ENVS](
-            qpos, qvel, qacc, qfrc, env, RESET_NOISE, seed
+            qpos, qvel, qacc, qfrc, qpos0, pose_meta, env, RESET_NOISE, seed
         )
         Self.CONFIG.init_qpos_gpu[
             DT, Self.N_ENVS, Self.NQ, Self.NJOINT, Self.NV, Self.NBODY,

@@ -74,6 +74,12 @@ from mojo_rl.physics3d.gpu.constants import (
     KEY_IDX_NQPOS,
     KEY_IDX_NQVEL,
     KEY_IDX_NCTRL,
+    POSE_META_SIZE,
+    JLIM_SIZE,
+    JLIM_IDX_LIMITED,
+    JLIM_IDX_QPOS_ADR,
+    JLIM_IDX_RANGE_MIN,
+    JLIM_IDX_RANGE_MAX,
 )
 from mojo_rl.physics3d.joint_types import JNT_FREE, JNT_BALL
 from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, SpecFields
@@ -366,6 +372,7 @@ struct ModelDefFromXML[
     # PARAMETER in the same phase, which is what finally lets `_acd` go.
     comptime NKEY: Int = Self.nkey
     """Number of `<keyframe><key>` entries, in XML order (MuJoCo's `nkey`)."""
+    comptime NQ_F: Int = Self.nq if Self.nq > 0 else 1
 
     # Precomputed rendering data — evaluated once at struct level.
     # Replaces 11 separate parse_xml_full calls that crashed the comptime
@@ -383,7 +390,13 @@ struct ModelDefFromXML[
         DTYPE: DType
     ](
         sf: SpecFields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ],
         mut d: Data[
             DTYPE,
@@ -443,7 +456,13 @@ struct ModelDefFromXML[
     def key_qpos_at[
         DTYPE: DType
     ](sf: SpecFields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ], k: Int, i: Int) -> Float64:
         """`mjModel.key_qpos[k][i]`, falling back to qpos0 when qpos is absent.
         """
@@ -457,7 +476,13 @@ struct ModelDefFromXML[
     def key_qvel_at[
         DTYPE: DType
     ](sf: SpecFields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ], k: Int, i: Int) -> Float64:
         """`mjModel.key_qvel[k][i]` — zero when absent, as MuJoCo fills it."""
         if k < 0 or k >= Self.nkey or i < 0 or i >= Self.NV:
@@ -470,7 +495,13 @@ struct ModelDefFromXML[
     def key_ctrl_at[
         DTYPE: DType
     ](sf: SpecFields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ], k: Int, i: Int) -> Float64:
         """`mjModel.key_ctrl[k][i]` — zero when absent, as MuJoCo fills it."""
         if k < 0 or k >= Self.nkey or i < 0 or i >= Self.NACT:
@@ -483,7 +514,13 @@ struct ModelDefFromXML[
     def key_time_at[
         DTYPE: DType
     ](sf: SpecFields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ], k: Int) -> Float64:
         """`mjModel.key_time[k]`."""
         if k < 0 or k >= Self.nkey:
@@ -495,7 +532,13 @@ struct ModelDefFromXML[
         DTYPE: DType
     ](
         sf: SpecFields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ],
         mut d: Data[
             DTYPE,
@@ -559,6 +602,15 @@ struct ModelDefFromXML[
     def enforce_limits[
         DTYPE: DType
     ](
+        sf: SpecFields[
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
+        ],
         mut d: Data[
             DTYPE,
             Self.NQ,
@@ -570,32 +622,36 @@ struct ModelDefFromXML[
         ],
     ):
         """Clamp qpos to joint range limits (limited joints only)."""
-        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
-        # indexed at runtime must be materialized. Hoisted here so each array
-        # is copied once per call rather than once per access in the loops.
-        var _m_joint_is_limited = materialize[Self._acd.joint_is_limited]()
-        var _m_joint_qpos_adr = materialize[Self._acd.joint_qpos_adr]()
-        var _m_joint_range_max = materialize[Self._acd.joint_range_max]()
-        var _m_joint_range_min = materialize[Self._acd.joint_range_min]()
-
+        # ⚠ FROM `sf.joint_limits`, NOT from four materialized comptime
+        # arrays. `Model.joints` has the ranges too but no LIMITED flag, and
+        # `range_min < range_max` is not a substitute for one — MuJoCo spells
+        # an unlimited joint both as `[0, 0]` and as `[-1e10, 1e10]`.
         for j in range(Self.NJOINT):
-            if _m_joint_is_limited[j]:
-                var qp_adr = _m_joint_qpos_adr[j]
-                var v = d.qpos.data[qp_adr]
-                if v < Scalar[DTYPE](_m_joint_range_min[j]):
-                    d.qpos.data[qp_adr] = Scalar[DTYPE](
-                        _m_joint_range_min[j]
-                    )
-                elif v > Scalar[DTYPE](_m_joint_range_max[j]):
-                    d.qpos.data[qp_adr] = Scalar[DTYPE](
-                        _m_joint_range_max[j]
-                    )
+            var o = j * JLIM_SIZE
+            if sf.joint_limits.data[o + JLIM_IDX_LIMITED] == 0:
+                continue
+            var qp_adr = Int(sf.joint_limits.data[o + JLIM_IDX_QPOS_ADR])
+            if qp_adr < 0 or qp_adr >= Self.NQ:
+                continue
+            var lo = sf.joint_limits.data[o + JLIM_IDX_RANGE_MIN]
+            var hi = sf.joint_limits.data[o + JLIM_IDX_RANGE_MAX]
+            var v = d.qpos.data[qp_adr]
+            if v < lo:
+                d.qpos.data[qp_adr] = lo
+            elif v > hi:
+                d.qpos.data[qp_adr] = hi
 
     @staticmethod
     def ctrl_min_at[
         DTYPE: DType
     ](sf: SpecFields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ], i: Int) -> Float64:
         """`actuator_ctrlrange[i][0]` — the bound `apply_actions` clamps to.
 
@@ -614,7 +670,13 @@ struct ModelDefFromXML[
     def ctrl_max_at[
         DTYPE: DType
     ](sf: SpecFields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ], i: Int) -> Float64:
         """`actuator_ctrlrange[i][1]`. See `ctrl_min_at`."""
         if i < 0 or i >= Self.nact:
@@ -627,7 +689,13 @@ struct ModelDefFromXML[
     def ctrl_limited_at[
         DTYPE: DType
     ](sf: SpecFields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ], i: Int) -> Bool:
         """`actuator_ctrllimited[i]` — whether the range above is APPLIED.
 
@@ -652,7 +720,13 @@ struct ModelDefFromXML[
     ](
         ctx: DeviceContext,
         mut sf: SpecFields[
-        DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
     ],
     ) raises:
         """Build + upload the actuation records (phase 1a.2/1a.3).
@@ -665,7 +739,13 @@ struct ModelDefFromXML[
         """
         var fmd = parse_xml_full(Self.xml)
         build_spec_fields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ](fmd, sf)
         sf.upload_all(ctx)
 
@@ -673,7 +753,13 @@ struct ModelDefFromXML[
     def make_spec_fields[
         DTYPE: DType
     ]() raises -> SpecFields[
-        DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
     ]:
         """Host-only actuation records — no `DeviceContext`, no upload.
 
@@ -684,10 +770,22 @@ struct ModelDefFromXML[
         with a page-long message.
         """
         var sf = SpecFields[
-        DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
     ]()
         build_spec_fields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ](
             parse_xml_full(Self.xml), sf
         )
@@ -698,7 +796,13 @@ struct ModelDefFromXML[
         DTYPE: DType
     ](
         sf: SpecFields[
-        DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+        DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
     ],
         mut d: Data[
             DTYPE,
@@ -967,11 +1071,6 @@ struct ModelDefFromXML[
         is computed fields-natively (G1) from the reference pose given by the
         fields `reset_data`. The legacy trait-default (setup_model_and_data →
         load_from_model) was deleted at G4."""
-        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
-        # indexed at runtime must be materialized. Hoisted here so each array
-        # is copied once per call rather than once per access in the loops.
-        var _m_motor_trn_n = materialize[Self._acd.motor_trn_n]()
-
         var fmd = parse_xml_full(Self.xml)
 
         # ⚠ THE DIMENSION CHECK THAT REPLACED SILENT TRUNCATION.
@@ -1093,18 +1192,25 @@ struct ModelDefFromXML[
                 )
             )
 
-        comptime _acd_wrap = materialize[Self._acd]()
-        if _acd_wrap.tendon_wrap_overflow > 0:
-            raise Error(
-                String(
-                    "physics3d: a fixed tendon wraps more joints than",
-                    " effective tendon-wrap cap=", Self._WRAPS,
-                    " (overflow ", _acd_wrap.tendon_wrap_overflow,
-                    " on the worst tendon). Raise the cap in xml_parser.mojo;",
-                    " it is NOT safe to truncate — the actuator would drive a",
-                    " subset of the joints and every gate would still pass.",
+        # ⚠ A TENDON THAT OUTGREW `TENDON_MAX_WRAPS` MUST NOT BUILD, and
+        # this now reads the RUNTIME record's own overflow counter rather than
+        # `_acd`'s. Both parsers count the surplus instead of discarding it,
+        # for the reason the original note gives: the wrap loop used to stop
+        # at a bare 4 and write `trn_n = 4`, so a longer tendon looked
+        # complete to every consumer. dm_control's dog wraps 11 and 10 joints
+        # on its tail tendons and drove a third of them.
+        for _t in range(len(fmd.tendons)):
+            if fmd.tendons[_t].wrap_overflow > 0:
+                raise Error(
+                    String(
+                        "physics3d: tendon ", _t, " wraps ",
+                        fmd.tendons[_t].wrap_overflow,
+                        " joints more than TENDON_MAX_WRAPS. Raise it in",
+                        " gpu/constants.mojo; it is NOT safe to truncate —",
+                        " the actuator would drive a subset of the joints and",
+                        " every gate would still pass.",
+                    )
                 )
-            )
 
         # The COUNT of tendons, guarded like their WIDTH above.
         #
@@ -1114,18 +1220,16 @@ struct ModelDefFromXML[
         # truncation the moment it was not (cc7021d0); fish shipped with one of
         # its two tendons dropped for a day. An unset parameter must fail the
         # build, not quietly resize the model.
-        if _acd_wrap.tendon_count_overflow > 0:
+        if len(fmd.tendons) > Self.MAX_TENDON:
             raise Error(
                 String(
-                    "physics3d: this model declares ",
-                    _acd_wrap.tendon_count_overflow + Self._NTEN,
-                    " <fixed> tendons but max_tendon=", Self.max_tendon,
-                    " gives room for ", Self._NTEN,
+                    "physics3d: this model declares ", len(fmd.tendons),
+                    " tendons but max_tendon=", Self.MAX_TENDON,
                     ". Pass `max_tendon = <parse>.NTENDON` on the",
                     " ModelDefFromXML declaration. Truncating is NOT safe: a",
-                    " dropped tendon's actuator resolves to motor_trn_n == 0,",
-                    " which apply_actions skips, so the env builds and runs",
-                    " with that degree of freedom simply inert.",
+                    " dropped tendon's actuator resolves to trn_n == 0, which",
+                    " apply_actions skips, so the env builds and runs with",
+                    " that degree of freedom simply inert.",
                 )
             )
 
@@ -1287,54 +1391,75 @@ struct ModelDefFromXML[
         # parameter's doc entry. Do not add new uses — there is nothing left
         # for it to permit.
 
-        # `<keyframe>` features we do not model, turned into compile errors
-        # the same way. Codes are documented on `bad_keyframe_code`.
-        comptime assert Self._acd.bad_keyframe_code != 1, (
-            "physics3d: this model has more <keyframe><key> entries than"
-            " MAX_COMPTIME_KEYFRAMES; raise it in xml_parser.mojo. Menagerie's"
-            " maximum is 3, so a model over the cap is worth a second look"
-            " before widening it."
-        )
-        comptime assert Self._acd.bad_keyframe_code != 2, (
-            "physics3d: <key act=/mpos=/mquat=> is not modelled. We carry no"
-            " actuator activation state and no mocap pose in a keyframe, and"
-            " applying the key while ignoring those would reset to a DIFFERENT"
-            " state than MuJoCo does. Zero of Menagerie's 147 keyframe"
-            " attributes use any of the three, so this refuses nothing that"
-            " exists today."
-        )
+        # ⚠⚠ THESE FOUR WERE `comptime assert`s AND ARE NOW RUNTIME RAISES,
+        # AND THAT IS A REAL WEAKENING — a model with an unsupported keyframe
+        # or `<general>` shape now BUILDS and fails when the env is
+        # constructed, instead of failing to compile. It is not avoidable:
+        # the data they test moved off the comptime interpreter, which is the
+        # whole point of the phase, and a runtime record cannot be read by a
+        # `comptime assert`.
+        #
+        # What survives is that they still fail LOUDLY and before a single
+        # step, which is what the original notes actually argue for — the
+        # alternative each one guards against is a model that runs and is
+        # quietly wrong. `init_fields` is called from every env constructor
+        # and from every test that builds a model, so nothing reaches physics
+        # without passing here.
+        if fmd.bad_keyframe_code == 2:
+            raise Error(
+                "physics3d: <key act=/mpos=/mquat=> is not modelled. We carry"
+                " no actuator activation state and no mocap pose in a"
+                " keyframe, and applying the key while ignoring those would"
+                " reset to a DIFFERENT state than MuJoCo does. Zero of"
+                " Menagerie's 147 keyframe attributes use any of the three, so"
+                " this refuses nothing that exists today."
+            )
         # ⚠ A wrong-length qpos/qvel/ctrl is caught here rather than padded.
         # MuJoCo pads a SHORT attribute, but from spec-level default state in
-        # RAW units, not from qpos0 — see the note in `parse_xml_model_data`.
-        # 145 of Menagerie's 145 real keyframe attributes are exactly full
-        # length, so nothing depends on reproducing it.
-        comptime for _k in range(Self._acd.nkey):
-            comptime assert (
-                Self._acd.key_nqpos[_k] == 0
-                or Self._acd.key_nqpos[_k] == Self.nq
-            ), (
-                "physics3d: <key qpos=...> has a length other than nq. MuJoCo"
-                " pads a short one from unconverted spec defaults; we refuse"
-                " it instead."
-            )
-            comptime assert (
-                Self._acd.key_nctrl[_k] == 0
-                or Self._acd.key_nctrl[_k] == Self.nact
-            ), "physics3d: <key ctrl=...> has a length other than nu."
-            comptime assert (
-                Self._acd.key_nqvel[_k] == 0
-                or Self._acd.key_nqvel[_k] == Self.nv
-            ), "physics3d: <key qvel=...> has a length other than nv."
+        # RAW units, not from qpos0. 145 of Menagerie's 145 real keyframe
+        # attributes are exactly full length, so nothing depends on it.
+        for _k in range(fmd.nkey):
+            if fmd.key_nqpos[_k] != 0 and fmd.key_nqpos[_k] != Self.nq:
+                raise Error(
+                    String(
+                        "physics3d: <key qpos=...> at key ", _k, " has length ",
+                        fmd.key_nqpos[_k], ", not nq=", Self.nq,
+                        ". MuJoCo pads a short one from unconverted spec"
+                        " defaults; we refuse it instead.",
+                    )
+                )
+            if fmd.key_nctrl[_k] != 0 and fmd.key_nctrl[_k] != Self.nact:
+                raise Error(
+                    String(
+                        "physics3d: <key ctrl=...> at key ", _k,
+                        " has length ", fmd.key_nctrl[_k], ", not nu=",
+                        Self.nact, ".",
+                    )
+                )
+            if fmd.key_nqvel[_k] != 0 and fmd.key_nqvel[_k] != Self.nv:
+                raise Error(
+                    String(
+                        "physics3d: <key qvel=...> at key ", _k,
+                        " has length ", fmd.key_nqvel[_k], ", not nv=",
+                        Self.nv, ".",
+                    )
+                )
 
         # A `<general>` whose gain/bias/dyn shape we do not implement. The
-        # comptime parser cannot raise, so it records the offender and we turn
-        # that into a compile error here. Codes are documented on the field.
-        comptime assert Self._acd.bad_actuator < 0, (
-            "physics3d: <general> actuator with an unsupported gain/bias/dyn"
-            " shape. Supported: gaintype=fixed, biastype=affine, biasprm[0]"
-            " == 0, biasprm[1] == -gainprm[0] (i.e. a position servo), and"
-            " dyntype none|filter. See ComptimeActData.bad_actuator_code."
-        )
+        # parser records the offender rather than raising mid-parse; this is
+        # where it becomes an error. Codes are on `bad_actuator_code`.
+        if fmd.bad_actuator >= 0:
+            raise Error(
+                String(
+                    "physics3d: <general> actuator at index ",
+                    fmd.bad_actuator,
+                    " has an unsupported gain/bias/dyn shape (code ",
+                    fmd.bad_actuator_code,
+                    "). Supported: gaintype=fixed, biastype=affine,"
+                    " biasprm[0] == 0, biasprm[1] == -gainprm[0] (i.e. a"
+                    " position servo), and dyntype none|filter.",
+                )
+            )
 
         # Reject unimplemented actuator transmissions LOUDLY. Building the
         # model anyway would simulate a servo as a torque motor with no error
@@ -1374,7 +1499,7 @@ struct ModelDefFromXML[
                 # check is on the comptime transmission list rather than on
                 # `joint_id`, which a tendon transmission legitimately leaves
                 # at its -1 sentinel.
-                if _m_motor_trn_n[a] == 0:
+                if fmd.actuators[a].trn_n == 0:
                     raise Error(
                         String(
                             "physics3d: actuator index ",
@@ -1453,10 +1578,22 @@ struct ModelDefFromXML[
         # re-parse the XML a third time for a value this function has sitting
         # in a local.
         var sf_inv = SpecFields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ]()
         build_spec_fields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ](fmd, sf_inv)
         Self.reset_data[DTYPE](sf_inv, d_inv)
         var sc_inv = DynamicsScratch[DTYPE, Self.NV, Self.NBODY, 1]()
@@ -1865,11 +2002,22 @@ struct ModelDefFromXML[
         qfrc: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
         ],
+        qpos0: LayoutTensor[
+            DTYPE, Layout.row_major(Self.NQ_F), MutAnyOrigin
+        ],
+        pose_meta: LayoutTensor[
+            DTYPE, Layout.row_major(POSE_META_SIZE), MutAnyOrigin
+        ],
         env: Int,
         noise_scale: Scalar[DTYPE],
         seed: Int,
     ):
-        """Reset a single env with small random noise around qpos0, qvel=0."""
+        """Reset a single env with small random noise around qpos0, qvel=0.
+
+        ⚠ `qpos0`/`pose_meta` added 2026-08-15 with phase 1a.4. The reference
+        pose used to be baked into the kernel as comptime literals off `_acd`;
+        it is now read from the same `SpecFields` records the CPU
+        `reset_data` reads, so the two cannot drift."""
         comptime TOTAL_VALS = Self.NQ + Self.NV
         comptime NUM_BATCHES = (TOTAL_VALS + 3) // 4
 
@@ -1886,20 +2034,23 @@ struct ModelDefFromXML[
             rand_vals[b * 4 + 2] = batch[2]
             rand_vals[b * 4 + 3] = batch[3]
 
+        # ⚠ `qpos0_nq == 0` MEANS "NO POSE WAS PARSED", not "the pose is
+        # zero" — the second branch is what supplies the free joint's
+        # identity `qw`, and reading a row of zeros instead would leave a
+        # degenerate quaternion for FK. Same test as the CPU `reset_data`.
+        var nq0 = Int(rebind[Scalar[DTYPE]](pose_meta[POSE_IDX_QPOS0_NQ]))
+        var fj = Int(
+            rebind[Scalar[DTYPE]](pose_meta[POSE_IDX_FREE_JOINT_QPOS_ADR])
+        )
         comptime for i in range(Self.NQ):
             var noise = Scalar[DTYPE](rand_vals[i] * 2.0 - 1.0) * noise_scale
-            comptime if Self._acd.nq > 0 and i < Self._acd.nq:
-                comptime val = Self._acd.qpos0[i]
-                qpos[env, i] = Scalar[DTYPE](val) + noise
+            if nq0 > 0 and i < nq0:
+                qpos[env, i] = rebind[Scalar[DTYPE]](qpos0[i]) + noise
+            elif fj >= 0 and i == fj + 3:
+                # Free-joint qw: start from identity (1.0) + small noise.
+                qpos[env, i] = Scalar[DTYPE](1) + noise
             else:
-                comptime if (
-                    Self._acd.free_joint_qpos_adr >= 0
-                    and i == Self._acd.free_joint_qpos_adr + 3
-                ):
-                    # Free-joint qw: start from identity (1.0) + small noise.
-                    qpos[env, i] = Scalar[DTYPE](1) + noise
-                else:
-                    qpos[env, i] = noise
+                qpos[env, i] = noise
 
         comptime for i in range(Self.NV):
             var noise = (

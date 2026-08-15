@@ -12,7 +12,11 @@ from mojo_rl.render import Renderer3D, Light, Camera3D
 from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
 from ..fields import Model, Data, SpecFields
-from ..gpu.constants import MODEL_ACTUATOR_SIZE, MODEL_ACT_TENDON_SIZE
+from ..gpu.constants import (
+    MODEL_ACTUATOR_SIZE,
+    MODEL_ACT_TENDON_SIZE,
+    POSE_META_SIZE,
+)
 
 # GPU imports
 from max.gpu.host import DeviceContext, DeviceBuffer
@@ -105,6 +109,9 @@ trait ModelDefLike:
     comptime NACT_F: Int
     comptime NTEN_F: Int
     comptime NKEY: Int
+    # `NQ` floored at 1 — the `qpos0` operand's length. A zero-extent tensor
+    # aborts at bind, so a model with no qpos still gets a 1-element buffer.
+    comptime NQ_F: Int
 
 # === Components ===
     # comptime BODIES: BodiesLike
@@ -123,7 +130,13 @@ trait ModelDefLike:
         DTYPE: DType
     ](
         sf: SpecFields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ],
         mut d: Data[
             DTYPE,
@@ -158,6 +171,15 @@ trait ModelDefLike:
     def enforce_limits[
         DTYPE: DType
     ](
+        sf: SpecFields[
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
+        ],
         mut d: Data[
             DTYPE,
             Self.NQ,
@@ -176,7 +198,13 @@ trait ModelDefLike:
     ](
         ctx: DeviceContext,
         mut sf: SpecFields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ],
     ) raises:
         """Build + upload the actuation record tensors (`SpecFields`), the
@@ -188,7 +216,13 @@ trait ModelDefLike:
         DTYPE: DType
     ](
         sf: SpecFields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ],
         mut d: Data[
             DTYPE,
@@ -208,7 +242,13 @@ trait ModelDefLike:
     def ctrl_min_at[
         DTYPE: DType
     ](sf: SpecFields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ], i: Int) -> Float64:
         """Lower `ctrlrange` bound of actuator `i` — MuJoCo's
         `actuator_ctrlrange[i][0]`, and what `apply_actions` actually clamps
@@ -225,7 +265,13 @@ trait ModelDefLike:
     def ctrl_max_at[
         DTYPE: DType
     ](sf: SpecFields[
-            DTYPE, Self.NACT, Self.NTEN_F, Self.NQ, Self.NV, Self.NKEY
+            DTYPE,
+            Self.NACT,
+            Self.NTEN_F,
+            Self.NQ,
+            Self.NV,
+            Self.NKEY,
+            Self.NJOINT,
         ], i: Int) -> Float64:
         """Upper `ctrlrange` bound of actuator `i`. See `ctrl_min_at`."""
         ...
@@ -321,6 +367,12 @@ trait ModelDefLike:
         ],
         qfrc: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, Self.NV), MutAnyOrigin
+        ],
+        qpos0: LayoutTensor[
+            DTYPE, Layout.row_major(Self.NQ_F), MutAnyOrigin
+        ],
+        pose_meta: LayoutTensor[
+            DTYPE, Layout.row_major(POSE_META_SIZE), MutAnyOrigin
         ],
         env: Int,
         noise_scale: Scalar[DTYPE],
