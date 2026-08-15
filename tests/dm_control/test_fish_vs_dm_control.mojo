@@ -74,6 +74,7 @@ from mojo_rl.envs.dm_control.fish.fish_xml import (
     N_ROOT_QPOS,
 )
 from mojo_rl.physics3d.gpu.constants import (
+    TENDON_MAX_WRAPS,
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
     ACT_IDX_GEAR,
@@ -303,13 +304,15 @@ def test_fish_tendons_match_mujoco() raises:
     var t_dadr = List[Int]()
     var t_coef = List[Float64]()
     # ⚠ THE MODEL'S OWN DIMS, not a global cap. This read `range(8)` and
-    # `8 * MAX_COMPTIME_TENDON_WRAPS` while `_acd`'s tendon arrays were sized
-    # by fixed `MAX_COMPTIME_*` caps. cc7021d0 sized them from the model, and
+    # `8 * MAX_COMPTIME_TENDON_WRAPS` back when the tendon arrays were sized by
+    # fixed `MAX_COMPTIME_*` caps. cc7021d0 sized them from the model, and
     # since fish then declared no `max_tendon` its arrays became length 1 —
     # this loop went out of bounds and the whole gate stopped compiling. That
     # build failure WAS the bug report for a real truncation (see
     # fish_xml.mojo); do not paper over it with a literal again.
-    for a in range(M._NTEN):
+    # (`M._NTEN` / `M._WRAPS` were `_acd`'s sizing helpers and died with it in
+    # 1a.4e; `NTEN_F` is the record capacity and TENDON_MAX_WRAPS the stride.)
+    for a in range(M.NTEN_F):
         var o = a * MODEL_ACT_TENDON_SIZE
         t_k.append(Float64(sf.act_tendons.data[o + ACTTEN_IDX_STIFFNESS]))
         t_lo.append(Float64(sf.act_tendons.data[o + ACTTEN_IDX_SPRING_LO]))
@@ -322,9 +325,9 @@ def test_fish_tendons_match_mujoco() raises:
     # index them — so the row and the wrap have to be split back out here.
     # Reading `a` as a tendon index instead walked off the end of a 2-row
     # tensor at a = 2 (index 108, valid 0..103).
-    for a in range(M._NTEN * M._WRAPS):
-        var o = (a // M._WRAPS) * MODEL_ACT_TENDON_SIZE
-        var k = a % M._WRAPS
+    for a in range(M.NTEN_F * TENDON_MAX_WRAPS):
+        var o = (a // TENDON_MAX_WRAPS) * MODEL_ACT_TENDON_SIZE
+        var k = a % TENDON_MAX_WRAPS
         t_qadr.append(Int(sf.act_tendons.data[o + ACTTEN_IDX_TRN_QADR_0 + k]))
         t_dadr.append(Int(sf.act_tendons.data[o + ACTTEN_IDX_TRN_DADR_0 + k]))
         t_coef.append(
@@ -356,15 +359,15 @@ def test_fish_tendons_match_mujoco() raises:
             var w = Int(py=tadr[t]) + k
             var jnt = Int(py=wobj[w])
             assert_equal(
-                t_dadr[t * M._WRAPS + k], Int(py=jdof[jnt]),
+                t_dadr[t * TENDON_MAX_WRAPS + k], Int(py=jdof[jnt]),
                 "tendon joint dof address",
             )
             assert_equal(
-                t_qadr[t * M._WRAPS + k], Int(py=jqpos[jnt]),
+                t_qadr[t * TENDON_MAX_WRAPS + k], Int(py=jqpos[jnt]),
                 "tendon joint qpos address",
             )
             assert_true(
-                _close(t_coef[t * M._WRAPS + k], Float64(py=wprm[w])),
+                _close(t_coef[t * TENDON_MAX_WRAPS + k], Float64(py=wprm[w])),
                 "tendon coefficient (wrap_prm) — the sign is what makes"
                 " fins_flap antisymmetric and fins_sym symmetric",
             )

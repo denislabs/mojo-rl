@@ -24,7 +24,6 @@ Gymnasium half_cheetah.xml carries `angle="radian"`; this copy dropped it.
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser import parse_xml_full
-from mojo_rl.physics3d.parser.xml_parser import parse_xml_model_data
 from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.gpu.constants import (
@@ -156,11 +155,11 @@ def test_model_def_from_xml() raises:
         return
 
     # =========================================================================
-    # Step 3: parse_xml_model_data — precomputed InlineArray checks
+    # Step 3: the actuation records (`SpecFields`)
     # =========================================================================
-    print("=== parse_xml_model_data checks ===")
+    print("=== actuation record checks ===")
     # `ComptimeActData` is sized from the MODEL's dims, not from global caps
-    # (see `ModelDefFromXML._NACT` and friends). Derive them here the same way
+    # (see `ModelDefFromXML.NACT_F` and friends). Derive them here the same way
     # production does, so this test exercises the real sizing rule rather than
     # a hand-picked one. half_cheetah has no tendons, so the wrap cap is 1.
     # ⚠ FROM THE RECORDS, not from a hand-instantiated `ComptimeActData`.

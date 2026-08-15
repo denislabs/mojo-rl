@@ -116,8 +116,6 @@ from .xml_parser import (
     _xml_compiler_inertiafromgeom,
     _xml_compiler_settotalmass,
     _xml_compiler_inertiagrouprange,
-    ComptimeActData,
-    parse_xml_model_data,
     ComptimeRenderData,
     parse_xml_render_data,
     _xml_default_motor_ctrlrange,
@@ -318,39 +316,18 @@ struct ModelDefFromXML[
     comptime CTRL_MIN: Float64 = Self._ctrlrange[0]
     comptime CTRL_MAX: Float64 = Self._ctrlrange[1]
 
-    # Precomputed XML actuator/joint data — evaluated at struct level by the
-    # regular Mojo interpreter (not the GPU kernel compiler), so String ops work.
-    # GPU kernels access Self._acd.motor_gears[i] etc. with no String operations.
-    # ⚠ SIZED FROM THIS MODEL, NOT FROM A GLOBAL CAP. Every array in
-    # `ComptimeActData` used to be a fixed MAX_COMPTIME_* (64 actuators / 96
-    # joints / 128 nq / 16 tendons x 16 wraps) = ~5056 comptime scalars, so a
-    # 1-actuator cartpole materialized exactly what dog did. `_acd` is forced
-    # by ANY use of this struct -- `NA` reads it, and BOTH facades read `NA`
-    # (`Phyics3dEnv.__init__`, and `Phyics3dBatchedEnv` via `NA_F` at type
-    # elaboration) -- so every binary paid the full cap. That was the fixed
-    # floor under every dm_control build.
+    # ⚠⚠ `_acd` (`ComptimeActData`) LIVED HERE AND IS GONE (phase 1a.4e).
+    # It was the model's XML interpreted at struct-elaboration time into ~20
+    # `InlineArray`s — every actuator value the engine used, the reference
+    # pose, the keyframes and the joint limit tables. All of that is
+    # `SpecFields` now, built at RUNTIME by `build_spec_fields` from
+    # `FlatModelDef`. The `_NACT` / `_NJNT` / `_NQ0` / `_NTEN` / `_WRAPS`
+    # sizing helpers went with it; `NACT_F` / `NTEN_F` / `NQ_F` below are what
+    # size the records.
     #
-    # This cannot truncate what the caps admitted: the four `comptime assert`s
-    # below already prove `nact`/`njoint`/`nq`/`max_tendon` fit, and these ARE
-    # those values. Floored at 1 -- a zero-length InlineArray is not a shape to
-    # hand the comptime interpreter, and most models have no tendons.
-    comptime _NACT: Int = Self.nact if Self.nact > 0 else 1
-    comptime _NJNT: Int = Self.njoint if Self.njoint > 0 else 1
-    comptime _NQ0: Int = Self.nq if Self.nq > 0 else 1
-    comptime _NTEN: Int = Self.max_tendon if Self.max_tendon > 0 else 1
-    # The wrap cap stays GLOBAL for a model that HAS tendons: how many joints a
-    # `<fixed>` wraps is not something `parse_xml` counts, and guessing it low
-    # is the exact silent truncation this cap documents (dog wraps 11; the
-    # bound was once a bare 4). A model with NO tendons cannot reach the tendon
-    # branch at all -- `parse_xml_model_data` writes a joint transmission at
-    # offset 0 only and sets `motor_trn_n = 1` (xml_parser.mojo:3435-3438) --
-    # so it drops the whole 3 x nact x 16 transmission block.
-    comptime _WRAPS: Int = MAX_COMPTIME_TENDON_WRAPS if Self.max_tendon > 0 else 1
-    comptime _acd: ComptimeActData[
-        Self._NACT, Self._NJNT, Self._NQ0, Self._NTEN, Self._WRAPS
-    ] = parse_xml_model_data[
-        Self._NACT, Self._NJNT, Self._NQ0, Self._NTEN, Self._WRAPS
-    ](Self.xml)
+    # ⚠ `na` and `nkey` are PARAMETERS because of this: they were
+    # `Self._acd.na` / `.nkey`, and a member read off an interpreted struct
+    # cannot appear in a trait signature (see the `na`/`nkey` parameter note).
 
     # Actuation record capacities (phase 1a.2), declared on `ModelDefLike` so
     # the trait and this implementation spell `SpecFields` and the kernel
@@ -364,8 +341,10 @@ struct ModelDefFromXML[
     # the STORAGE is floored at 1 because a zero-extent operand aborts at
     # bind. Both numbers are needed and they are not interchangeable.
     comptime NACT: Int = Self.nact
-    comptime NACT_F: Int = Self._NACT
-    comptime NTEN_F: Int = Self._NTEN
+    comptime NACT_F: Int = Self.nact if Self.nact > 0 else 1
+    comptime NTEN_F: Int = (
+        Self.max_tendon if Self.max_tendon > 0 else 1
+    )
     # ⚠ UNFLOORED, like `NACT`: `build_spec_fields` checks the real count
     # (`fmd.nkey > NKEY` raises), while the STORAGE floors at 1 inside
     # `SpecFields`. In 1a.4 this still reads `_acd`; it becomes a comptime
@@ -443,10 +422,11 @@ struct ModelDefFromXML[
             d.qfrc.data[i] = Scalar[DTYPE](0)
 
 
-    # ⚠ THE ROW STRIDE IS `Self._NQ0` / `Self._NACT`, NOT the MAX_COMPTIME_*
-    # caps. `_acd` is instantiated with the MODEL's own nq/nact (see `_NQ0`
-    # above), so the key arrays are `NKEYS * nq`, not `NKEYS * 128`. Using the
-    # cap as a stride reads a wildly out-of-range slot on every model.
+    # ⚠ THE ROW STRIDES ARE `Self.NQ` / `Self.NV` / `Self.NACT` — the tensors'
+    # own shapes. `FlatModelDef.key_qvel` strides by NQ for BOTH key arrays
+    # (one allocation shape), so the two differ on any model with nq != nv;
+    # `test_pose_key_stride` is the fixture that can see it, and nothing in
+    # the model tree can.
     # ⚠ THE ROW STRIDES ARE `Self.NQ` / `Self.NV` / `Self.NACT` — the tensor's
     # own shapes, NOT `_acd`'s. The comptime side strides `key_qvel` by `NQ0`
     # as well (one allocation shape for both key arrays), so the two differ on
@@ -735,7 +715,7 @@ struct ModelDefFromXML[
         `parse_xml_full`. Measured 2026-08-15: 0.42 ms on cartpole, 8.96 ms on
         dog, once per env construction. That is cheaper than threading an
         out-parameter through `init_fields`' 550-line body, and 1a.4 removes
-        the duplication anyway when `_acd` goes and the two builds merge.
+        the duplication; merging the two builds is 1b's business.
         """
         var fmd = parse_xml_full(Self.xml)
         build_spec_fields[
