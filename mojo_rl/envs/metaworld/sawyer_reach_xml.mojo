@@ -24,13 +24,13 @@ comptime sawyer_block_deps_xml = """
 <mujocoinclude>
     <asset>
         <texture name="T_block_wood" type="cube"
-                 file="mojo_rl/envs/metaworld/assets/textures/wood4.png"/>
+                 file="textures/wood4.png"/>
         <material name="block_col" rgba="0.3 0.3 1.0 0.5" shininess="0" specular="0"/>
         <material name="block_wood" texture="T_block_wood" shininess="1"
                   reflectance="0.7" specular="0.5"/>
         <material name="block_red" rgba="0.8 0 0 1" shininess="0.2"
                   reflectance="0.2" specular="0.5"/>
-        <mesh file="mojo_rl/envs/metaworld/assets/meshes/block/block.stl" name="block"/>
+        <mesh file="meshes/block/block.stl" name="block"/>
     </asset>
 
     <default>
@@ -105,6 +105,7 @@ comptime pm = SAWYER_REACH_DIMS
 
 comptime SawyerReachModel = ModelDefFromXML[
     xml=sawyer_reach_xml,
+    xml_path="mojo_rl/envs/metaworld/assets/sawyer_reach.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

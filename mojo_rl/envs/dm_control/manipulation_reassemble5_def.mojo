@@ -46,6 +46,7 @@ comptime pm = REASSEMBLE5_DIMS
 
 comptime Reassemble5Model = ModelDefFromXML[
     xml=reassemble5_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/manipulation/reassemble5.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

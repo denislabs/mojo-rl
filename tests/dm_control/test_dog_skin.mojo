@@ -81,10 +81,14 @@ def test_geom_groups_hide_the_collision_proxy() raises:
     in group 5; MuJoCo shows only 0-2. If the parser missed `group` entirely
     the count below would be zero, and the skeleton would still be on screen.
     """
+    # ⚠ `geom_group_at` TAKES `rf` — it is a render hook like the others. It
+    # did not compile at all between `84d61724` and the phase-1b sweep, and
+    # this file being its only caller is exactly why nothing noticed.
+    var rf = DMDogStandWalkModel.make_render_fields()
     var n_hidden = 0
     var n_shown = 0
-    comptime for i in range(DMDogStandWalkModel.NGEOM):
-        if DMDogStandWalkModel.geom_group_at(i) >= 3:
+    for i in range(DMDogStandWalkModel.NGEOM):
+        if DMDogStandWalkModel.geom_group_at(rf, i) >= 3:
             n_hidden += 1
         else:
             n_shown += 1

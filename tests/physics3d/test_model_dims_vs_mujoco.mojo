@@ -101,7 +101,10 @@ from mojo_rl.envs.dm_control.quadruped.quadruped_xml import (
     dm_quadruped_run_xml,
     dm_quadruped_fetch_xml
 )
-from mojo_rl.envs.dm_control.reacher.reacher_xml import dm_reacher_xml
+from mojo_rl.envs.dm_control.reacher.reacher_xml import (
+    dm_reacher_xml,
+    dm_reacher_hard_xml,
+)
 from mojo_rl.envs.dm_control.stacker.stacker_xml import (
     dm_stacker_2_xml,
     dm_stacker_4_xml
@@ -171,7 +174,10 @@ from mojo_rl.envs.dm_control.quadruped.quadruped_dims import (
     DM_QUADRUPED_RUN_DIMS,
     DM_QUADRUPED_FETCH_DIMS
 )
-from mojo_rl.envs.dm_control.reacher.reacher_dims import DM_REACHER_DIMS
+from mojo_rl.envs.dm_control.reacher.reacher_dims import (
+    DM_REACHER_DIMS,
+    DM_REACHER_HARD_DIMS,
+)
 from mojo_rl.envs.dm_control.stacker.stacker_dims import (
     DM_STACKER_2_DIMS,
     DM_STACKER_4_DIMS
@@ -351,12 +357,21 @@ def _against_mujoco(
     _cmp_i(t, 19, src, name, pm.MAX_CONDIM, mx)
 
 
-def check(mut t: Tally, name: String, xml: String, gen: ParsedModel) raises:
-    """One model: both the scanned and the generated dims, vs `mjModel`."""
+def check(
+    mut t: Tally, name: String, path: String, xml: String, gen: ParsedModel
+) raises:
+    """One model: both the scanned and the generated dims, vs `mjModel`.
+
+    ⚠ MuJoCo loads BY PATH, our scanner from the STRING, and that asymmetry is
+    deliberate. Asset paths inside a model are relative to the MODEL FILE
+    (§10.5 decision 1), so `from_xml_string` cannot resolve sawyer's meshes —
+    it would look beside the CWD. The two sources are byte-identical, which is
+    what `test_xml_assets_match_source` exists to guarantee.
+    """
     var mj = Python.import_module("mujoco")
     # ⚠ NOT wrapped in try/except. A model MuJoCo refuses is a failure of this
     # gate, not a row to skip — a silent skip is how a corpus quietly shrinks.
-    var m = mj.MjModel.from_xml_string(xml)
+    var m = mj.MjModel.from_xml_path(path)
 
     t.models += 1
     t.generated += 1
@@ -365,7 +380,10 @@ def check(mut t: Tally, name: String, xml: String, gen: ParsedModel) raises:
 
 
 def check_scan_only(mut t: Tally, name: String, xml: String) raises:
-    """The fixture, which has no generated twin — it is not a tree model."""
+    """The fixture, which has no generated twin — it is not a tree model.
+
+    Loaded from the STRING because it has no file and cites no assets.
+    """
     var mj = Python.import_module("mujoco")
     var m = mj.MjModel.from_xml_string(xml)
     t.models += 1
@@ -377,62 +395,63 @@ def main() raises:
     print("=== model dims: scanned + generated, both vs MuJoCo ===")
 
     check_scan_only(t, "_FIXTURE", String(_FIXTURE_XML))
-    check(t, "ant_xml", String(ant_xml), materialize[ANT_DIMS]())
-    check(t, "half_cheetah_xml", String(half_cheetah_xml), materialize[HALF_CHEETAH_DIMS]())
-    check(t, "hopper_xml", String(hopper_xml), materialize[HOPPER_DIMS]())
-    check(t, "humanoid_xml", String(humanoid_xml), materialize[HUMANOID_DIMS]())
-    check(t, "humanoid_standup_xml", String(humanoid_standup_xml), materialize[HUMANOID_STANDUP_DIMS]())
-    check(t, "inverted_double_pendulum_xml", String(inverted_double_pendulum_xml), materialize[INVERTED_DOUBLE_PENDULUM_DIMS]())
-    check(t, "inverted_pendulum_xml", String(inverted_pendulum_xml), materialize[INVERTED_PENDULUM_DIMS]())
-    check(t, "pusher_xml", String(pusher_xml), materialize[PUSHER_DIMS]())
-    check(t, "reacher_xml", String(reacher_xml), materialize[REACHER_DIMS]())
-    check(t, "swimmer_xml", String(swimmer_xml), materialize[SWIMMER_DIMS]())
-    check(t, "walker2d_xml", String(walker2d_xml), materialize[WALKER2D_DIMS]())
-    check(t, "sawyer_reach_xml", String(sawyer_reach_xml), materialize[SAWYER_REACH_DIMS]())
-    check(t, "SO_ARM100_XML", String(SO_ARM100_XML), materialize[SO_ARM100_DIMS]())
-    check(t, "SO_ARM101_XML", String(SO_ARM101_XML), materialize[SO_ARM101_DIMS]())
-    check(t, "dm_acrobot_xml", String(dm_acrobot_xml), materialize[DM_ACROBOT_DIMS]())
-    check(t, "dm_ball_in_cup_xml", String(dm_ball_in_cup_xml), materialize[DM_BALL_IN_CUP_DIMS]())
-    check(t, "dm_cartpole1_xml", String(dm_cartpole1_xml), materialize[DM_CARTPOLE1_DIMS]())
-    check(t, "dm_cartpole2_xml", String(dm_cartpole2_xml), materialize[DM_CARTPOLE2_DIMS]())
-    check(t, "dm_cartpole3_xml", String(dm_cartpole3_xml), materialize[DM_CARTPOLE3_DIMS]())
-    check(t, "dm_cheetah_xml", String(dm_cheetah_xml), materialize[DM_CHEETAH_DIMS]())
-    check(t, "dm_finger_xml", String(dm_finger_xml), materialize[DM_FINGER_DIMS]())
-    check(t, "dm_finger_spin_xml", String(dm_finger_spin_xml), materialize[DM_FINGER_SPIN_DIMS]())
-    check(t, "dm_fish_xml", String(dm_fish_xml), materialize[DM_FISH_DIMS]())
-    check(t, "dm_hopper_xml", String(dm_hopper_xml), materialize[DM_HOPPER_DIMS]())
-    check(t, "dm_humanoid_xml", String(dm_humanoid_xml), materialize[DM_HUMANOID_DIMS]())
-    check(t, "dm_humanoid_cmu_xml", String(dm_humanoid_cmu_xml), materialize[DM_HUMANOID_CMU_DIMS]())
-    check(t, "dm_manipulator_bring_ball_xml", String(dm_manipulator_bring_ball_xml), materialize[DM_MANIPULATOR_BRING_BALL_DIMS]())
-    check(t, "dm_manipulator_bring_peg_xml", String(dm_manipulator_bring_peg_xml), materialize[DM_MANIPULATOR_BRING_PEG_DIMS]())
-    check(t, "dm_manipulator_insert_ball_xml", String(dm_manipulator_insert_ball_xml), materialize[DM_MANIPULATOR_INSERT_BALL_DIMS]())
-    check(t, "dm_manipulator_insert_peg_xml", String(dm_manipulator_insert_peg_xml), materialize[DM_MANIPULATOR_INSERT_PEG_DIMS]())
-    check(t, "dm_pendulum_xml", String(dm_pendulum_xml), materialize[DM_PENDULUM_DIMS]())
-    check(t, "dm_point_mass_xml", String(dm_point_mass_xml), materialize[DM_POINT_MASS_DIMS]())
-    check(t, "dm_quadruped_walk_xml", String(dm_quadruped_walk_xml), materialize[DM_QUADRUPED_WALK_DIMS]())
-    check(t, "dm_quadruped_run_xml", String(dm_quadruped_run_xml), materialize[DM_QUADRUPED_RUN_DIMS]())
-    check(t, "dm_quadruped_fetch_xml", String(dm_quadruped_fetch_xml), materialize[DM_QUADRUPED_FETCH_DIMS]())
-    check(t, "dm_reacher_xml", String(dm_reacher_xml), materialize[DM_REACHER_DIMS]())
-    check(t, "dm_stacker_2_xml", String(dm_stacker_2_xml), materialize[DM_STACKER_2_DIMS]())
-    check(t, "dm_stacker_4_xml", String(dm_stacker_4_xml), materialize[DM_STACKER_4_DIMS]())
-    check(t, "dm_swimmer6_xml", String(dm_swimmer6_xml), materialize[DM_SWIMMER6_DIMS]())
-    check(t, "dm_swimmer15_xml", String(dm_swimmer15_xml), materialize[DM_SWIMMER15_DIMS]())
-    check(t, "dm_walker_xml", String(dm_walker_xml), materialize[DM_WALKER_DIMS]())
-    check(t, "lift_large_box_xml", String(lift_large_box_xml), materialize[LIFT_LARGE_BOX_DIMS]())
-    check(t, "place_cradle_xml", String(place_cradle_xml), materialize[PLACE_CRADLE_DIMS]())
-    check(t, "place_brick_xml", String(place_brick_xml), materialize[PLACE_BRICK_DIMS]())
-    check(t, "lift_brick_xml", String(lift_brick_xml), materialize[LIFT_BRICK_DIMS]())
-    check(t, "reassemble5_xml", String(reassemble5_xml), materialize[REASSEMBLE5_DIMS]())
-    check(t, "reach_site_features_xml", String(reach_site_features_xml), materialize[REACH_SITE_FEATURES_DIMS]())
-    check(t, "reach_duplo_xml", String(reach_duplo_xml), materialize[REACH_DUPLO_DIMS]())
-    check(t, "stack_3_bricks_xml", String(stack_3_bricks_xml), materialize[STACK_3_BRICKS_DIMS]())
-    check(t, "stack_3_random_xml", String(stack_3_random_xml), materialize[STACK_3_RANDOM_DIMS]())
-    check(t, "stack_2_bricks_moveable_base_xml", String(stack_2_bricks_moveable_base_xml), materialize[STACK_2_BRICKS_MOVEABLE_BASE_DIMS]())
-    check(t, "stack_2_bricks_xml", String(stack_2_bricks_xml), materialize[STACK_2_BRICKS_DIMS]())
-    check(t, "dm_dog_stand_walk_xml", String(dm_dog_stand_walk_xml), materialize[DM_DOG_STAND_WALK_DIMS]())
-    check(t, "dm_dog_run_xml", String(dm_dog_run_xml), materialize[DM_DOG_RUN_DIMS]())
-    check(t, "dm_dog_trot_xml", String(dm_dog_trot_xml), materialize[DM_DOG_TROT_DIMS]())
-    check(t, "dm_dog_fetch_xml", String(dm_dog_fetch_xml), materialize[DM_DOG_FETCH_DIMS]())
+    check(t, "ant_xml", "mojo_rl/envs/ant/assets/ant.xml", String(ant_xml), materialize[ANT_DIMS]())
+    check(t, "half_cheetah_xml", "mojo_rl/envs/half_cheetah/assets/half_cheetah.xml", String(half_cheetah_xml), materialize[HALF_CHEETAH_DIMS]())
+    check(t, "hopper_xml", "mojo_rl/envs/hopper/assets/hopper.xml", String(hopper_xml), materialize[HOPPER_DIMS]())
+    check(t, "humanoid_xml", "mojo_rl/envs/humanoid/assets/humanoid.xml", String(humanoid_xml), materialize[HUMANOID_DIMS]())
+    check(t, "humanoid_standup_xml", "mojo_rl/envs/humanoid_standup/assets/humanoid_standup.xml", String(humanoid_standup_xml), materialize[HUMANOID_STANDUP_DIMS]())
+    check(t, "inverted_double_pendulum_xml", "mojo_rl/envs/inverted_double_pendulum/assets/inverted_double_pendulum.xml", String(inverted_double_pendulum_xml), materialize[INVERTED_DOUBLE_PENDULUM_DIMS]())
+    check(t, "inverted_pendulum_xml", "mojo_rl/envs/inverted_pendulum/assets/inverted_pendulum.xml", String(inverted_pendulum_xml), materialize[INVERTED_PENDULUM_DIMS]())
+    check(t, "pusher_xml", "mojo_rl/envs/pusher/assets/pusher.xml", String(pusher_xml), materialize[PUSHER_DIMS]())
+    check(t, "reacher_xml", "mojo_rl/envs/reacher/assets/reacher.xml", String(reacher_xml), materialize[REACHER_DIMS]())
+    check(t, "swimmer_xml", "mojo_rl/envs/swimmer/assets/swimmer.xml", String(swimmer_xml), materialize[SWIMMER_DIMS]())
+    check(t, "walker2d_xml", "mojo_rl/envs/walker2d/assets/walker2d.xml", String(walker2d_xml), materialize[WALKER2D_DIMS]())
+    check(t, "sawyer_reach_xml", "mojo_rl/envs/metaworld/assets/sawyer_reach.xml", String(sawyer_reach_xml), materialize[SAWYER_REACH_DIMS]())
+    check(t, "SO_ARM100_XML", "mojo_rl/envs/robots/assets/so_arm100.xml", String(SO_ARM100_XML), materialize[SO_ARM100_DIMS]())
+    check(t, "SO_ARM101_XML", "mojo_rl/envs/robots/assets/so_arm101.xml", String(SO_ARM101_XML), materialize[SO_ARM101_DIMS]())
+    check(t, "dm_acrobot_xml", "mojo_rl/envs/dm_control/assets/acrobot.xml", String(dm_acrobot_xml), materialize[DM_ACROBOT_DIMS]())
+    check(t, "dm_ball_in_cup_xml", "mojo_rl/envs/dm_control/assets/ball_in_cup.xml", String(dm_ball_in_cup_xml), materialize[DM_BALL_IN_CUP_DIMS]())
+    check(t, "dm_cartpole1_xml", "mojo_rl/envs/dm_control/assets/cartpole1.xml", String(dm_cartpole1_xml), materialize[DM_CARTPOLE1_DIMS]())
+    check(t, "dm_cartpole2_xml", "mojo_rl/envs/dm_control/assets/cartpole2.xml", String(dm_cartpole2_xml), materialize[DM_CARTPOLE2_DIMS]())
+    check(t, "dm_cartpole3_xml", "mojo_rl/envs/dm_control/assets/cartpole3.xml", String(dm_cartpole3_xml), materialize[DM_CARTPOLE3_DIMS]())
+    check(t, "dm_cheetah_xml", "mojo_rl/envs/dm_control/assets/cheetah.xml", String(dm_cheetah_xml), materialize[DM_CHEETAH_DIMS]())
+    check(t, "dm_finger_xml", "mojo_rl/envs/dm_control/assets/finger.xml", String(dm_finger_xml), materialize[DM_FINGER_DIMS]())
+    check(t, "dm_finger_spin_xml", "mojo_rl/envs/dm_control/assets/finger_spin.xml", String(dm_finger_spin_xml), materialize[DM_FINGER_SPIN_DIMS]())
+    check(t, "dm_fish_xml", "mojo_rl/envs/dm_control/assets/fish.xml", String(dm_fish_xml), materialize[DM_FISH_DIMS]())
+    check(t, "dm_hopper_xml", "mojo_rl/envs/dm_control/assets/hopper.xml", String(dm_hopper_xml), materialize[DM_HOPPER_DIMS]())
+    check(t, "dm_humanoid_xml", "mojo_rl/envs/dm_control/assets/humanoid.xml", String(dm_humanoid_xml), materialize[DM_HUMANOID_DIMS]())
+    check(t, "dm_humanoid_cmu_xml", "mojo_rl/envs/dm_control/assets/humanoid_cmu.xml", String(dm_humanoid_cmu_xml), materialize[DM_HUMANOID_CMU_DIMS]())
+    check(t, "dm_manipulator_bring_ball_xml", "mojo_rl/envs/dm_control/assets/manipulator_bring_ball.xml", String(dm_manipulator_bring_ball_xml), materialize[DM_MANIPULATOR_BRING_BALL_DIMS]())
+    check(t, "dm_manipulator_bring_peg_xml", "mojo_rl/envs/dm_control/assets/manipulator_bring_peg.xml", String(dm_manipulator_bring_peg_xml), materialize[DM_MANIPULATOR_BRING_PEG_DIMS]())
+    check(t, "dm_manipulator_insert_ball_xml", "mojo_rl/envs/dm_control/assets/manipulator_insert_ball.xml", String(dm_manipulator_insert_ball_xml), materialize[DM_MANIPULATOR_INSERT_BALL_DIMS]())
+    check(t, "dm_manipulator_insert_peg_xml", "mojo_rl/envs/dm_control/assets/manipulator_insert_peg.xml", String(dm_manipulator_insert_peg_xml), materialize[DM_MANIPULATOR_INSERT_PEG_DIMS]())
+    check(t, "dm_pendulum_xml", "mojo_rl/envs/dm_control/assets/pendulum.xml", String(dm_pendulum_xml), materialize[DM_PENDULUM_DIMS]())
+    check(t, "dm_point_mass_xml", "mojo_rl/envs/dm_control/assets/point_mass.xml", String(dm_point_mass_xml), materialize[DM_POINT_MASS_DIMS]())
+    check(t, "dm_quadruped_walk_xml", "mojo_rl/envs/dm_control/assets/quadruped_walk.xml", String(dm_quadruped_walk_xml), materialize[DM_QUADRUPED_WALK_DIMS]())
+    check(t, "dm_quadruped_run_xml", "mojo_rl/envs/dm_control/assets/quadruped_run.xml", String(dm_quadruped_run_xml), materialize[DM_QUADRUPED_RUN_DIMS]())
+    check(t, "dm_quadruped_fetch_xml", "mojo_rl/envs/dm_control/assets/quadruped_fetch.xml", String(dm_quadruped_fetch_xml), materialize[DM_QUADRUPED_FETCH_DIMS]())
+    check(t, "dm_reacher_xml", "mojo_rl/envs/dm_control/assets/reacher.xml", String(dm_reacher_xml), materialize[DM_REACHER_DIMS]())
+    check(t, "dm_reacher_hard_xml", "mojo_rl/envs/dm_control/assets/reacher_hard.xml", String(dm_reacher_hard_xml), materialize[DM_REACHER_HARD_DIMS]())
+    check(t, "dm_stacker_2_xml", "mojo_rl/envs/dm_control/assets/stacker_2.xml", String(dm_stacker_2_xml), materialize[DM_STACKER_2_DIMS]())
+    check(t, "dm_stacker_4_xml", "mojo_rl/envs/dm_control/assets/stacker_4.xml", String(dm_stacker_4_xml), materialize[DM_STACKER_4_DIMS]())
+    check(t, "dm_swimmer6_xml", "mojo_rl/envs/dm_control/assets/swimmer6.xml", String(dm_swimmer6_xml), materialize[DM_SWIMMER6_DIMS]())
+    check(t, "dm_swimmer15_xml", "mojo_rl/envs/dm_control/assets/swimmer15.xml", String(dm_swimmer15_xml), materialize[DM_SWIMMER15_DIMS]())
+    check(t, "dm_walker_xml", "mojo_rl/envs/dm_control/assets/walker.xml", String(dm_walker_xml), materialize[DM_WALKER_DIMS]())
+    check(t, "lift_large_box_xml", "mojo_rl/envs/dm_control/assets/manipulation/lift_large_box.xml", String(lift_large_box_xml), materialize[LIFT_LARGE_BOX_DIMS]())
+    check(t, "place_cradle_xml", "mojo_rl/envs/dm_control/assets/manipulation/place_cradle.xml", String(place_cradle_xml), materialize[PLACE_CRADLE_DIMS]())
+    check(t, "place_brick_xml", "mojo_rl/envs/dm_control/assets/manipulation/place_brick.xml", String(place_brick_xml), materialize[PLACE_BRICK_DIMS]())
+    check(t, "lift_brick_xml", "mojo_rl/envs/dm_control/assets/manipulation/lift_brick.xml", String(lift_brick_xml), materialize[LIFT_BRICK_DIMS]())
+    check(t, "reassemble5_xml", "mojo_rl/envs/dm_control/assets/manipulation/reassemble5.xml", String(reassemble5_xml), materialize[REASSEMBLE5_DIMS]())
+    check(t, "reach_site_features_xml", "mojo_rl/envs/dm_control/assets/manipulation/reach_site_features.xml", String(reach_site_features_xml), materialize[REACH_SITE_FEATURES_DIMS]())
+    check(t, "reach_duplo_xml", "mojo_rl/envs/dm_control/assets/manipulation/reach_duplo.xml", String(reach_duplo_xml), materialize[REACH_DUPLO_DIMS]())
+    check(t, "stack_3_bricks_xml", "mojo_rl/envs/dm_control/assets/manipulation/stack_3_bricks.xml", String(stack_3_bricks_xml), materialize[STACK_3_BRICKS_DIMS]())
+    check(t, "stack_3_random_xml", "mojo_rl/envs/dm_control/assets/manipulation/stack_3_random.xml", String(stack_3_random_xml), materialize[STACK_3_RANDOM_DIMS]())
+    check(t, "stack_2_bricks_moveable_base_xml", "mojo_rl/envs/dm_control/assets/manipulation/stack_2_bricks_moveable_base.xml", String(stack_2_bricks_moveable_base_xml), materialize[STACK_2_BRICKS_MOVEABLE_BASE_DIMS]())
+    check(t, "stack_2_bricks_xml", "mojo_rl/envs/dm_control/assets/manipulation/stack_2_bricks.xml", String(stack_2_bricks_xml), materialize[STACK_2_BRICKS_DIMS]())
+    check(t, "dm_dog_stand_walk_xml", "mojo_rl/envs/dm_control/assets/dog_stand_walk.xml", String(dm_dog_stand_walk_xml), materialize[DM_DOG_STAND_WALK_DIMS]())
+    check(t, "dm_dog_run_xml", "mojo_rl/envs/dm_control/assets/dog_run.xml", String(dm_dog_run_xml), materialize[DM_DOG_RUN_DIMS]())
+    check(t, "dm_dog_trot_xml", "mojo_rl/envs/dm_control/assets/dog_trot.xml", String(dm_dog_trot_xml), materialize[DM_DOG_TROT_DIMS]())
+    check(t, "dm_dog_fetch_xml", "mojo_rl/envs/dm_control/assets/dog_fetch.xml", String(dm_dog_fetch_xml), materialize[DM_DOG_FETCH_DIMS]())
 
     print()
     print("models compared :", t.models, "(of which generated:", t.generated, ")")
@@ -463,15 +482,15 @@ def main() raises:
     print("fields carrying no information:", vacuous, "of", NFIELD)
 
     # 57 models, 56 of which contribute a second (generated) source.
-    assert_true(t.models == 57, "expected 57 models, got " + String(t.models))
+    assert_true(t.models == 58, "expected 58 models, got " + String(t.models))
     assert_true(
-        t.generated == 56,
-        "expected 56 generated dim sets, got " + String(t.generated)
+        t.generated == 57,
+        "expected 57 generated dim sets, got " + String(t.generated)
         + " — a model lost its *_dims.mojo",
     )
     assert_true(
-        t.compared == (57 + 56) * NFIELD,
-        "expected " + String((57 + 56) * NFIELD) + " rows, got "
+        t.compared == (58 + 57) * NFIELD,
+        "expected " + String((58 + 57) * NFIELD) + " rows, got "
         + String(t.compared),
     )
     assert_true(

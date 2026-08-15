@@ -746,6 +746,7 @@ comptime DOG_FETCH_OBS_DIM: Int = 232
 
 comptime DMDogFetchModel = ModelDefFromXML[
     xml=dm_dog_fetch_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/dog_fetch.xml",
     nbody=dfp.NBODY, njoint=dfp.NJOINT, nq=dfp.NQ, nv=dfp.NV,
     ngeom=dfp.NGEOM, nact=dfp.NACT, ntex=dfp.NTEX, nmat=dfp.NMAT,
     nlight=dfp.NLIGHT, ncam=dfp.NCAM, nsite=dfp.NSITE,

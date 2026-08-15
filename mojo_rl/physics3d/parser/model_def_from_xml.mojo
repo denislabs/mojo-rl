@@ -196,6 +196,16 @@ struct ModelDefFromXML[
     # dog_fetch; `nkey > 0` only for so_arm100 (2).
     na: Int = 0,
     nkey: Int = 0,
+    # ⚠ PHASE 1b. The model's MJCF as a FILE — the whole point of the phase.
+    # When non-empty the runtime parse reads this path and asset paths inside
+    # it resolve against its DIRECTORY, which is MuJoCo's rule; when empty the
+    # `xml` parameter above is used and assets resolve against the process CWD,
+    # which is what the tree did before. Both work, so models switch over
+    # without a flag day.
+    #
+    # Appended for the reason the block above gives: inserting mid-list
+    # silently shifts every positional instantiation.
+    xml_path: String = "",
 ](ModelDefLike):
     """ModelDefLike implementation driven entirely from an embedded MJCF XML string.
 
@@ -707,7 +717,7 @@ struct ModelDefFromXML[
         out-parameter through `init_fields`' 550-line body, and 1a.4 removes
         the duplication; merging the two builds is 1b's business.
         """
-        var fmd = parse_xml_full(Self.xml)
+        var fmd = parse_xml_full(Self.xml_text(), Self.asset_base_dir())
         build_spec_fields[
             DTYPE,
             Self.NACT,
@@ -757,7 +767,7 @@ struct ModelDefFromXML[
             Self.NKEY,
             Self.NJOINT,
         ](
-            parse_xml_full(Self.xml), sf
+            parse_xml_full(Self.xml_text(), Self.asset_base_dir()), sf
         )
         return sf^
 
@@ -1041,7 +1051,7 @@ struct ModelDefFromXML[
         is computed fields-natively (G1) from the reference pose given by the
         fields `reset_data`. The legacy trait-default (setup_model_and_data →
         load_from_model) was deleted at G4."""
-        var fmd = parse_xml_full(Self.xml)
+        var fmd = parse_xml_full(Self.xml_text(), Self.asset_base_dir())
 
         # ⚠ THE DIMENSION CHECK THAT REPLACED SILENT TRUNCATION.
         #
@@ -2444,6 +2454,62 @@ struct ModelDefFromXML[
             base += n
 
     @staticmethod
+    def xml_text() raises -> String:
+        """The model's MJCF source — from `xml_path` if set, else `xml`.
+
+        ⚠ READS THE FILE ON EVERY CALL, deliberately not cached. Every caller
+        immediately hands the result to `parse_xml_full`, which is orders of
+        magnitude more work than the read, and a cache would need invalidating
+        the moment the point of this phase — editing a model without a
+        rebuild — is exercised.
+        """
+        comptime if Self.xml_path != "":
+            with open(Self.xml_path, "r") as f:
+                return f.read()
+        else:
+            return String(Self.xml)
+
+    @staticmethod
+    def asset_base_dir() -> String:
+        """The directory relative asset paths resolve against.
+
+        MuJoCo's rule is "the directory of the model file", so this is
+        `dirname(xml_path)`. A model still carrying an embedded string has no
+        file and returns "", which `parse_xml_full` reads as "resolve against
+        the process CWD" — the pre-1b behaviour. See §10.5 decision 1.
+        """
+        comptime if Self.xml_path != "":
+            var p = String(Self.xml_path)
+            var cut = p.rfind("/")
+            if cut <= 0:
+                return String("")
+            return String(p[byte=0:cut])
+        else:
+            return String("")
+
+    @staticmethod
+    def resolve_asset(path: String) -> String:
+        """Join a relative asset path onto `asset_base_dir()`.
+
+        ⚠ `render_skin` NEEDS THIS AND `parse_xml_full` CANNOT DO IT FOR IT.
+        The skin chain — `<skin file= material=>` -> `<material texture=>` ->
+        `<texture file=>` — is walked by string search over the raw MJCF, not
+        through the parsed record, so those two paths bypass the resolution
+        `parse_xml_full` applies to `mesh_asset_files` and `TextureData.file`.
+        Without this they would come out model-file-relative and un-based, and
+        dog's skin would silently fail to load — the one model with a `<skin>`,
+        and nothing gates rendering visually.
+
+        ⚠ Absolute paths escape, as everywhere else.
+        """
+        if path.byte_length() == 0 or path.startswith("/"):
+            return path
+        var base = Self.asset_base_dir()
+        if base.byte_length() == 0:
+            return path
+        return base + "/" + path
+
+    @staticmethod
     def default_ctrl_range() raises -> Tuple[Float64, Float64]:
         """The ROOT `<default>`'s motor ctrlrange — the model-wide SUMMARY.
 
@@ -2461,7 +2527,7 @@ struct ModelDefFromXML[
         comptime reader of the XML is what pins a model to a `String` in Mojo
         source.
         """
-        var fmd = parse_xml_full(Self.xml)
+        var fmd = parse_xml_full(Self.xml_text(), Self.asset_base_dir())
         return (fmd.default_motor_ctrl_min, fmd.default_motor_ctrl_max)
 
     @staticmethod
@@ -2472,7 +2538,9 @@ struct ModelDefFromXML[
         Self.xml)`. That ran in the comptime interpreter and cost build time;
         this runs when a window opens and costs a parse.
         """
-        return build_render_fields(parse_xml_full(String(Self.xml)))
+        return build_render_fields(
+            parse_xml_full(Self.xml_text(), Self.asset_base_dir())
+        )
 
     @staticmethod
     def render_ground_geoms(
@@ -2793,7 +2861,7 @@ struct ModelDefFromXML[
                     )
 
     @staticmethod
-    def has_skin() -> Bool:
+    def has_skin() raises -> Bool:
         """Whether the model declares a `<skin>`.
 
         ⚠ A `find` ON THE XML, NOT A PARSED FLAG. Recording anything about the
@@ -2803,24 +2871,28 @@ struct ModelDefFromXML[
         is not. Comptime-resolvable, so a model without a skin still compiles
         `render_skin` away to nothing.
         """
-        return Self.xml.find("<skin") != -1
+        return Self.xml_text().find("<skin") != -1
 
     @staticmethod
-    def geom_group_at(i: Int) -> Int:
+    def geom_group_at(rf: RenderFields, i: Int) -> Int:
         """MuJoCo's geom `group` for geom `i` — visibility, not a tag.
 
         Exposed so a test can count what `render_body_geoms` will skip; see the
         group note there.
-        """
-        # Mojo 1.0: `Array` is not `ImplicitlyCopyable`, so a comptime array
-        # indexed at runtime must be materialized. Hoisted here so each array
-        # is copied once per call rather than once per access in the loops.
-        ref _m_geom_group = rf.geom_group
 
-        return _m_geom_group[i]
+        ⚠ TAKES `rf` LIKE EVERY OTHER RENDER HOOK, and did not until now. The
+        1a.5 repoint rewrote this body from `materialize[Self._rcd.geom_group]`
+        to `rf.geom_group` without widening the SIGNATURE, so it referenced an
+        `rf` that was never in scope. It did not compile from `84d61724` until
+        this commit, and nothing said so: the only caller is
+        `tests/dm_control/test_dog_skin.mojo`, which was not in the set swept
+        after that repoint. `feedback_confirm_the_code_under_test_actually_runs`
+        — an uncalled generic is uncompiled code.
+        """
+        return rf.geom_group[i]
 
     @staticmethod
-    def body_names() -> List[String]:
+    def body_names() raises -> List[String]:
         """Body names by index (0 = worldbody), parsed from the model XML AT
         RUNTIME.
 
@@ -2840,7 +2912,7 @@ struct ModelDefFromXML[
         ⚠ CALL IT ONCE. It materializes the whole model XML and rescans it;
         `render_skin` does so only on the frame that loads the skin.
         """
-        var src = String(Self.xml)
+        var src = Self.xml_text()
         var out = List[String]()
         out.append(String(""))  # index 0 = worldbody, which has no <body> tag
 
@@ -2891,7 +2963,7 @@ struct ModelDefFromXML[
         # `<material texture=>` -> `<texture file=>` is three attribute
         # reads, and doing any of them in the comptime interpreter is a
         # compile failure the moment it hits. See `body_names`.
-        var src = String(Self.xml)
+        var src = Self.xml_text()
         var st = src.find("<skin")
         if st == -1:
             return
@@ -2899,7 +2971,9 @@ struct ModelDefFromXML[
         if se == -1:
             return
 
-        var skin_file = _attr_between(src, st, se, "file")
+        var skin_file = Self.resolve_asset(
+            _attr_between(src, st, se, "file")
+        )
         if skin_file.byte_length() == 0:
             return
         var skin_mat = _attr_between(src, st, se, "material")
@@ -2931,7 +3005,9 @@ struct ModelDefFromXML[
                         break
                     if _attr_between(src, tt, te, "name") == want_tex:
                         tex_name = want_tex
-                        tex_file = _attr_between(src, tt, te, "file")
+                        tex_file = Self.resolve_asset(
+                            _attr_between(src, tt, te, "file")
+                        )
                         break
                     tp = te + 1
 

@@ -35,6 +35,7 @@ comptime pm = STACK_2_BRICKS_MOVEABLE_BASE_DIMS
 
 comptime Stack2MoveableModel = ModelDefFromXML[
     xml=stack_2_bricks_moveable_base_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/manipulation/stack_2_bricks_moveable_base.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

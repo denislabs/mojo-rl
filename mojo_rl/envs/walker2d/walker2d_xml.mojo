@@ -66,6 +66,7 @@ comptime pm = WALKER2D_DIMS
 
 comptime Walker2dModel = ModelDefFromXML[
     xml=walker2d_xml,
+    xml_path="mojo_rl/envs/walker2d/assets/walker2d.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

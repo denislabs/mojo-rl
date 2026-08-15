@@ -36,6 +36,7 @@ comptime pm = INVERTED_PENDULUM_DIMS
 
 comptime InvertedPendulumModel = ModelDefFromXML[
     xml=inverted_pendulum_xml,
+    xml_path="mojo_rl/envs/inverted_pendulum/assets/inverted_pendulum.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

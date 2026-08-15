@@ -131,6 +131,7 @@ comptime pm = HUMANOID_STANDUP_DIMS
 # Simplified obs: qpos[2:] + qvel (excludes free joint x/y translation).
 comptime HumanoidStandupModel = ModelDefFromXML[
     xml=humanoid_standup_xml,
+    xml_path="mojo_rl/envs/humanoid_standup/assets/humanoid_standup.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

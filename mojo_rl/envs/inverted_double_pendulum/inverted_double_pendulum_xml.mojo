@@ -48,6 +48,7 @@ comptime pm = INVERTED_DOUBLE_PENDULUM_DIMS
 # obs_dim_override=9 enables custom_extract_obs_gpu to write the correct 9D obs.
 comptime InvertedDoublePendulumModel = ModelDefFromXML[
     xml=inverted_double_pendulum_xml,
+    xml_path="mojo_rl/envs/inverted_double_pendulum/assets/inverted_double_pendulum.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

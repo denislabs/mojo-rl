@@ -124,6 +124,7 @@ comptime pm = REACH_SITE_FEATURES_DIMS
 
 comptime ReachSiteFeaturesModel = ModelDefFromXML[
     xml=reach_site_features_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/manipulation/reach_site_features.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

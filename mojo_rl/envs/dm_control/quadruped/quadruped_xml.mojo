@@ -466,6 +466,7 @@ comptime QUADRUPED_OBS_DIM: Int = 78
 
 comptime DMQuadrupedWalkModel = ModelDefFromXML[
     xml=dm_quadruped_walk_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/quadruped_walk.xml",
     nbody=qwp.NBODY, njoint=qwp.NJOINT, nq=qwp.NQ, nv=qwp.NV,
     ngeom=qwp.NGEOM, nact=qwp.NACT, ntex=qwp.NTEX, nmat=qwp.NMAT,
     nlight=qwp.NLIGHT, ncam=qwp.NCAM, nsite=qwp.NSITE,
@@ -484,6 +485,7 @@ comptime DMQuadrupedWalkModel = ModelDefFromXML[
 
 comptime DMQuadrupedRunModel = ModelDefFromXML[
     xml=dm_quadruped_run_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/quadruped_run.xml",
     nbody=qrp.NBODY, njoint=qrp.NJOINT, nq=qrp.NQ, nv=qrp.NV,
     ngeom=qrp.NGEOM, nact=qrp.NACT, ntex=qrp.NTEX, nmat=qrp.NMAT,
     nlight=qrp.NLIGHT, ncam=qrp.NCAM, nsite=qrp.NSITE,
@@ -533,6 +535,7 @@ comptime QUADRUPED_FETCH_OBS_DIM: Int = 90
 
 comptime DMQuadrupedFetchModel = ModelDefFromXML[
     xml=dm_quadruped_fetch_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/quadruped_fetch.xml",
     nbody=qfp.NBODY, njoint=qfp.NJOINT, nq=qfp.NQ, nv=qfp.NV,
     ngeom=qfp.NGEOM, nact=qfp.NACT, ntex=qfp.NTEX, nmat=qfp.NMAT,
     nlight=qfp.NLIGHT, ncam=qfp.NCAM, nsite=qfp.NSITE,

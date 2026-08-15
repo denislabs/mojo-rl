@@ -99,6 +99,7 @@ comptime pm = ANT_DIMS
 
 comptime AntModel = ModelDefFromXML[
     xml=ant_xml,
+    xml_path="mojo_rl/envs/ant/assets/ant.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

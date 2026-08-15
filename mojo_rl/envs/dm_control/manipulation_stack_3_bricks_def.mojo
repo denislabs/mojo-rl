@@ -35,6 +35,7 @@ comptime pm = STACK_3_BRICKS_DIMS
 
 comptime Stack3BricksModel = ModelDefFromXML[
     xml=stack_3_bricks_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/manipulation/stack_3_bricks.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

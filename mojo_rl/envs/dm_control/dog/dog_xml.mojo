@@ -746,9 +746,9 @@ comptime _dog_run_body = _DOG_HEAD + _DOG_FLOOR_RUN + _DOG_TAIL
 comptime _DOG_SKIN_ASSETS = """
 <mujoco>
   <asset>
-    <texture name="skin" type="2d" file="mojo_rl/envs/dm_control/dog/assets/skin_texture.png"/>
+    <texture name="skin" type="2d" file="../dog/assets/skin_texture.png"/>
     <material name="skin" texture="skin"/>
-    <skin name="skin" file="mojo_rl/envs/dm_control/dog/assets/dog_skin.skn" material="skin"/>
+    <skin name="skin" file="../dog/assets/dog_skin.skn" material="skin"/>
   </asset>
 </mujoco>
 """
@@ -810,6 +810,7 @@ comptime _DOG_MAX_CONTACTS: Int = 24
 
 comptime DMDogStandWalkModel = ModelDefFromXML[
     xml=dm_dog_stand_walk_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/dog_stand_walk.xml",
     nbody=dsp.NBODY, njoint=dsp.NJOINT, nq=dsp.NQ, nv=dsp.NV,
     ngeom=dsp.NGEOM, nact=dsp.NACT, ntex=dsp.NTEX, nmat=dsp.NMAT,
     nlight=dsp.NLIGHT, ncam=dsp.NCAM, nsite=dsp.NSITE,
@@ -836,6 +837,7 @@ comptime DMDogStandWalkModel = ModelDefFromXML[
 
 comptime DMDogTrotModel = ModelDefFromXML[
     xml=dm_dog_trot_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/dog_trot.xml",
     nbody=dtp.NBODY, njoint=dtp.NJOINT, nq=dtp.NQ, nv=dtp.NV,
     ngeom=dtp.NGEOM, nact=dtp.NACT, ntex=dtp.NTEX, nmat=dtp.NMAT,
     nlight=dtp.NLIGHT, ncam=dtp.NCAM, nsite=dtp.NSITE,
@@ -862,6 +864,7 @@ comptime DMDogTrotModel = ModelDefFromXML[
 
 comptime DMDogRunModel = ModelDefFromXML[
     xml=dm_dog_run_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/dog_run.xml",
     nbody=drp.NBODY, njoint=drp.NJOINT, nq=drp.NQ, nv=drp.NV,
     ngeom=drp.NGEOM, nact=drp.NACT, ntex=drp.NTEX, nmat=drp.NMAT,
     nlight=drp.NLIGHT, ncam=drp.NCAM, nsite=drp.NSITE,

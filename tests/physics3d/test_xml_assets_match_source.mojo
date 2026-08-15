@@ -72,7 +72,10 @@ from mojo_rl.envs.dm_control.quadruped.quadruped_xml import (
     dm_quadruped_run_xml,
     dm_quadruped_fetch_xml
 )
-from mojo_rl.envs.dm_control.reacher.reacher_xml import dm_reacher_xml
+from mojo_rl.envs.dm_control.reacher.reacher_xml import (
+    dm_reacher_xml,
+    dm_reacher_hard_xml,
+)
 from mojo_rl.envs.dm_control.stacker.stacker_xml import (
     dm_stacker_2_xml,
     dm_stacker_4_xml
@@ -104,7 +107,7 @@ from mojo_rl.envs.dm_control.dog.dog_fetch_xml import dm_dog_fetch_xml
 # The extraction wrote 1_100_474 bytes over 56 files. A run that compares
 # materially less than that is comparing something other than the corpus.
 comptime MIN_TOTAL_BYTES: Int = 1_090_000
-comptime EXPECT_MODELS: Int = 56
+comptime EXPECT_MODELS: Int = 57
 
 
 struct Tally(Copyable, Movable):
@@ -197,6 +200,7 @@ def main() raises:
     check(t, "dm_quadruped_run_xml", "mojo_rl/envs/dm_control/assets/quadruped_run.xml", String(dm_quadruped_run_xml))
     check(t, "dm_quadruped_fetch_xml", "mojo_rl/envs/dm_control/assets/quadruped_fetch.xml", String(dm_quadruped_fetch_xml))
     check(t, "dm_reacher_xml", "mojo_rl/envs/dm_control/assets/reacher.xml", String(dm_reacher_xml))
+    check(t, "dm_reacher_hard_xml", "mojo_rl/envs/dm_control/assets/reacher_hard.xml", String(dm_reacher_hard_xml))
     check(t, "dm_stacker_2_xml", "mojo_rl/envs/dm_control/assets/stacker_2.xml", String(dm_stacker_2_xml))
     check(t, "dm_stacker_4_xml", "mojo_rl/envs/dm_control/assets/stacker_4.xml", String(dm_stacker_4_xml))
     check(t, "dm_swimmer6_xml", "mojo_rl/envs/dm_control/assets/swimmer6.xml", String(dm_swimmer6_xml))

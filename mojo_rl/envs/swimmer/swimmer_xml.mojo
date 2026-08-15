@@ -49,6 +49,7 @@ comptime pm = SWIMMER_DIMS
 
 comptime SwimmerModel = ModelDefFromXML[
     xml=swimmer_xml,
+    xml_path="mojo_rl/envs/swimmer/assets/swimmer.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

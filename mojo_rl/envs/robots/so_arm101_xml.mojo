@@ -80,7 +80,7 @@ comptime SO_ARM101_ROBOT_XML = """<?xml version="1.0" ?>
 <!-- Generated using onshape-to-robot -->
 <!-- Onshape https://cad.onshape.com/documents/7715cc284bb430fe6dab4ffd/w/4fd0791b683777b02f8d975a/e/826c553ede3b7592eb9ca800 -->
 <mujoco model="so101_new_calib">
-  <compiler angle="radian" meshdir="mojo_rl/envs/robots/assets/so_arm101/" autolimits="true"/>
+  <compiler angle="radian" meshdir="so_arm101" autolimits="true"/>
   <default>
     <default class="so101_new_calib">
       <joint damping="1" frictionloss="0.1" armature="0.005"/>
@@ -252,7 +252,7 @@ comptime SO_ARM101_XML = """<?xml version="1.0" ?>
 <!-- Generated using onshape-to-robot -->
 <!-- Onshape https://cad.onshape.com/documents/7715cc284bb430fe6dab4ffd/w/4fd0791b683777b02f8d975a/e/826c553ede3b7592eb9ca800 -->
 <mujoco model="so101_new_calib">
-  <compiler angle="radian" meshdir="mojo_rl/envs/robots/assets/so_arm101/" autolimits="true"/>
+  <compiler angle="radian" meshdir="so_arm101" autolimits="true"/>
   <default>
     <default class="so101_new_calib">
       <joint damping="1" frictionloss="0.1" armature="0.005"/>
@@ -430,6 +430,7 @@ comptime _pm = SO_ARM101_DIMS
 
 comptime SoArm101Model = ModelDefFromXML[
     xml=SO_ARM101_XML,
+    xml_path="mojo_rl/envs/robots/assets/so_arm101.xml",
     nbody=_pm.NBODY,
     njoint=_pm.NJOINT,
     nq=_pm.NQ,

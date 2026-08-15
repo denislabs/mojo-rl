@@ -390,6 +390,7 @@ comptime STACK_4_OBS_DIM: Int = stacker_obs_dim(4)
 
 comptime DMStacker2Model = ModelDefFromXML[
     xml=dm_stacker_2_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/stacker_2.xml",
     nbody=s2.NBODY, njoint=s2.NJOINT, nq=s2.NQ, nv=s2.NV,
     ngeom=s2.NGEOM, nact=s2.NACT, ntex=s2.NTEX, nmat=s2.NMAT,
     nlight=s2.NLIGHT, ncam=s2.NCAM, nsite=s2.NSITE,
@@ -409,6 +410,7 @@ comptime DMStacker2Model = ModelDefFromXML[
 
 comptime DMStacker4Model = ModelDefFromXML[
     xml=dm_stacker_4_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/stacker_4.xml",
     nbody=s4.NBODY, njoint=s4.NJOINT, nq=s4.NQ, nv=s4.NV,
     ngeom=s4.NGEOM, nact=s4.NACT, ntex=s4.NTEX, nmat=s4.NMAT,
     nlight=s4.NLIGHT, ncam=s4.NCAM, nsite=s4.NSITE,

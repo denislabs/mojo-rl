@@ -92,18 +92,18 @@ comptime lift_brick_xml = """
     <texture name="//unnamed_texture_0" type="skybox" builtin="gradient" rgb1="0.40000000000000002 0.59999999999999998 0.80000000000000004" rgb2="0 0 0" width="100" height="100"/>
     <texture name="groundplane" type="2d" builtin="checker" rgb1="0.20000000000000001 0.29999999999999999 0.40000000000000002" rgb2="0.10000000000000001 0.20000000000000001 0.29999999999999999" mark="edge" markrgb="0.80000000000000004 0.80000000000000004 0.80000000000000004" width="300" height="300"/>
     <material name="groundplane" class="/" texture="groundplane" texrepeat="5 5" texuniform="true" reflectance="0.20000000000000001"/>
-    <mesh name="jaco_arm/base" class="jaco_arm/" file="mojo_rl/envs/dm_control/assets/jaco/base-1e944fe900397431c653654e0d1b789a06d4b042.stl"/>
-    <mesh name="jaco_arm/shoulder" class="jaco_arm/" file="mojo_rl/envs/dm_control/assets/jaco/shoulder-18bb5c4a7d504d2480fddb2fac761e001be74279.stl"/>
-    <mesh name="jaco_arm/arm" class="jaco_arm/" file="mojo_rl/envs/dm_control/assets/jaco/arm-702b9dd09b408a7f036def4334ca1c9269db6876.stl"/>
-    <mesh name="jaco_arm/forearm" class="jaco_arm/" file="mojo_rl/envs/dm_control/assets/jaco/forearm-1dddf7597490cfb0a9a62a2946b57b217f5c405e.stl"/>
-    <mesh name="jaco_arm/wrist" class="jaco_arm/" file="mojo_rl/envs/dm_control/assets/jaco/wrist-0f1964ae4d24dabeeed1a58a831491bbb600e69b.stl"/>
+    <mesh name="jaco_arm/base" class="jaco_arm/" file="../jaco/base-1e944fe900397431c653654e0d1b789a06d4b042.stl"/>
+    <mesh name="jaco_arm/shoulder" class="jaco_arm/" file="../jaco/shoulder-18bb5c4a7d504d2480fddb2fac761e001be74279.stl"/>
+    <mesh name="jaco_arm/arm" class="jaco_arm/" file="../jaco/arm-702b9dd09b408a7f036def4334ca1c9269db6876.stl"/>
+    <mesh name="jaco_arm/forearm" class="jaco_arm/" file="../jaco/forearm-1dddf7597490cfb0a9a62a2946b57b217f5c405e.stl"/>
+    <mesh name="jaco_arm/wrist" class="jaco_arm/" file="../jaco/wrist-0f1964ae4d24dabeeed1a58a831491bbb600e69b.stl"/>
     <material name="jaco_arm/dark_gray" class="jaco_arm/" rgba="0.10000000000000001 0.10000000000000001 0.10000000000000001 1"/>
     <material name="jaco_arm/light_gray" class="jaco_arm/" rgba="0.69999999999999996 0.69999999999999996 0.69999999999999996 1"/>
     <material name="jaco_arm/reference_site" class="jaco_arm/" rgba="1 0 0 0.5"/>
-    <mesh name="jaco_arm/jaco_hand/hand_3finger_main" class="jaco_arm/jaco_hand/" file="mojo_rl/envs/dm_control/assets/jaco/hand_3finger_main-3e2e523ce89de5414ac8a2e1f7c5d439d42af25f.stl"/>
-    <mesh name="jaco_arm/jaco_hand/hand_3finger_insert" class="jaco_arm/jaco_hand/" file="mojo_rl/envs/dm_control/assets/jaco/hand_3finger_insert-f9315ec3333e3c3c353496eddb9e137b9e3c3903.stl"/>
-    <mesh name="jaco_arm/jaco_hand/finger_proximal" class="jaco_arm/jaco_hand/" file="mojo_rl/envs/dm_control/assets/jaco/finger_proximal-1060bb281307fcb02d213a019691a38915c86811.stl"/>
-    <mesh name="jaco_arm/jaco_hand/finger_distal" class="jaco_arm/jaco_hand/" file="mojo_rl/envs/dm_control/assets/jaco/finger_distal-45a5d28ff721d9f3c07c1d25506f70a4e59f4293.stl"/>
+    <mesh name="jaco_arm/jaco_hand/hand_3finger_main" class="jaco_arm/jaco_hand/" file="../jaco/hand_3finger_main-3e2e523ce89de5414ac8a2e1f7c5d439d42af25f.stl"/>
+    <mesh name="jaco_arm/jaco_hand/hand_3finger_insert" class="jaco_arm/jaco_hand/" file="../jaco/hand_3finger_insert-f9315ec3333e3c3c353496eddb9e137b9e3c3903.stl"/>
+    <mesh name="jaco_arm/jaco_hand/finger_proximal" class="jaco_arm/jaco_hand/" file="../jaco/finger_proximal-1060bb281307fcb02d213a019691a38915c86811.stl"/>
+    <mesh name="jaco_arm/jaco_hand/finger_distal" class="jaco_arm/jaco_hand/" file="../jaco/finger_distal-45a5d28ff721d9f3c07c1d25506f70a4e59f4293.stl"/>
     <material name="jaco_arm/jaco_hand/dark_gray" class="jaco_arm/jaco_hand/" rgba="0.10000000000000001 0.10000000000000001 0.10000000000000001 1"/>
     <material name="jaco_arm/jaco_hand/light_gray" class="jaco_arm/jaco_hand/" rgba="0.69999999999999996 0.69999999999999996 0.69999999999999996 1"/>
     <material name="jaco_arm/jaco_hand/reference_site" class="jaco_arm/jaco_hand/" rgba="1 0 0 0.5"/>

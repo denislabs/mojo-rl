@@ -36,16 +36,17 @@ generated dims are what the models are built from.
 * MAX_CONDIM is ours file-wide; MuJoCo keeps condim per-geom and per-pair, so
   it is the max over both arrays.
 
-⚠ `from_xml_string`, NOT `from_xml_path`
-----------------------------------------
-The extracted assets carry PROJECT-ROOT-relative `meshdir`, because that is
-what our parser resolves against (CWD). MuJoCo resolves a relative `meshdir`
-against the DIRECTORY OF THE XML FILE, so `from_xml_path` cannot find the
-meshes and raises. Reading the file and handing over the string makes MuJoCo
-resolve against CWD too, which is what the rest of the tree already assumes.
-(That divergence is real and now visible: "meshdir like MuJoCo" would be
-relative to the model file. Changing it breaks every existing meshdir, so it
-is recorded, not silently fixed here.)
+`from_xml_path` — AND THAT IS THE POINT
+---------------------------------------
+This used to have to read the file and pass the STRING, because the extracted
+assets carried project-root-relative `meshdir`/`file=` while MuJoCo resolves
+those against THE DIRECTORY OF THE XML — so `from_xml_path` could not find
+so_arm100's or sawyer's meshes and raised.
+
+§10.5 decision 1 settled that in MuJoCo's favour and the asset paths are now
+model-file-relative, so `from_xml_path` simply works. The generator reading
+our own assets exactly the way any other MuJoCo tool would is the check that
+the decision actually landed: revert the paths and this file stops loading.
 
 USAGE
     pixi run python tools/gen_model_dims.py            # write the files
@@ -103,7 +104,16 @@ MODELS = [
     ("mojo_rl/envs/dm_control/quadruped/quadruped_xml.mojo",
      ["dm_quadruped_walk_xml", "dm_quadruped_run_xml",
       "dm_quadruped_fetch_xml"]),
-    ("mojo_rl/envs/dm_control/reacher/reacher_xml.mojo", ["dm_reacher_xml"]),
+    # ⚠ BOTH REACHERS. `dm_reacher_hard_xml` differs from the easy one in a
+    # single attribute VALUE (the target's radius) and used to borrow the
+    # easy model's `pmr` dims outright, on the stated grounds that every count
+    # is "identical by construction". That is true — checked against
+    # `mjModel`, all 15 counts and the timestep agree — but it made the hard
+    # model invisible to a corpus defined by "who calls parse_xml", which is
+    # how it was missed by the 1b.1 extraction. It carries its own generated
+    # dims now, so the claim is gated instead of asserted in a comment.
+    ("mojo_rl/envs/dm_control/reacher/reacher_xml.mojo",
+     ["dm_reacher_xml", "dm_reacher_hard_xml"]),
     ("mojo_rl/envs/dm_control/stacker/stacker_xml.mojo",
      ["dm_stacker_2_xml", "dm_stacker_4_xml"]),
     ("mojo_rl/envs/dm_control/swimmer/swimmer_xml.mojo",
@@ -170,9 +180,9 @@ def const_name(sym: str) -> str:
 def dims_from_mujoco(xml_path: str) -> dict:
     import mujoco
 
-    # See the module docstring: path-relative meshdir resolution differs.
-    with open(xml_path, "r") as f:
-        m = mujoco.MjModel.from_xml_string(f.read())
+    # See the module docstring: `from_xml_path`, because the assets are
+    # model-file-relative and that is MuJoCo's own resolution rule.
+    m = mujoco.MjModel.from_xml_path(xml_path)
 
     neq_slab = sum(
         1 for i in range(m.neq) if int(m.eq_type[i]) != MJEQ_TENDON

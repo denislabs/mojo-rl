@@ -212,6 +212,7 @@ comptime HUMANOID_PURE_OBS_DIM: Int = 55
 
 comptime DMHumanoidModel = ModelDefFromXML[
     xml=dm_humanoid_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/humanoid.xml",
     nbody=pmh.NBODY, njoint=pmh.NJOINT, nq=pmh.NQ, nv=pmh.NV,
     ngeom=pmh.NGEOM, nact=pmh.NACT, ntex=pmh.NTEX, nmat=pmh.NMAT,
     nlight=pmh.NLIGHT, ncam=pmh.NCAM, nsite=pmh.NSITE,
@@ -222,6 +223,7 @@ comptime DMHumanoidModel = ModelDefFromXML[
 
 comptime DMHumanoidPureModel = ModelDefFromXML[
     xml=dm_humanoid_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/humanoid.xml",
     nbody=pmh.NBODY, njoint=pmh.NJOINT, nq=pmh.NQ, nv=pmh.NV,
     ngeom=pmh.NGEOM, nact=pmh.NACT, ntex=pmh.NTEX, nmat=pmh.NMAT,
     nlight=pmh.NLIGHT, ncam=pmh.NCAM, nsite=pmh.NSITE,

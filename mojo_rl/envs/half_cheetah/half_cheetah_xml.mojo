@@ -72,6 +72,7 @@ comptime pm = HALF_CHEETAH_DIMS
 
 comptime HalfCheetahModel = ModelDefFromXML[
     xml=half_cheetah_xml,
+    xml_path="mojo_rl/envs/half_cheetah/assets/half_cheetah.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

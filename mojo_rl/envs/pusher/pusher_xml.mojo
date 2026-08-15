@@ -110,6 +110,7 @@ comptime pm = PUSHER_DIMS
 # Formula nq-skip+nv = 11-0+11 = 22 but we need 23 with body positions.
 comptime PusherModel = ModelDefFromXML[
     xml=pusher_xml,
+    xml_path="mojo_rl/envs/pusher/assets/pusher.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

@@ -153,6 +153,7 @@ comptime pmfs = DM_FINGER_SPIN_DIMS
 # obs (spin) = position (4) + velocity (3) + touch (2) = 9
 comptime DMFingerSpinModel = ModelDefFromXML[
     xml=dm_finger_spin_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/finger_spin.xml",
     nbody=pmf.NBODY, njoint=pmf.NJOINT, nq=pmf.NQ, nv=pmf.NV,
     ngeom=pmf.NGEOM, nact=pmf.NACT, ntex=pmf.NTEX, nmat=pmf.NMAT,
     nlight=pmf.NLIGHT, ncam=pmf.NCAM, nsite=pmf.NSITE,
@@ -166,6 +167,7 @@ comptime DMFingerSpinModel = ModelDefFromXML[
 #            + dist_to_target (1) = 12
 comptime DMFingerTurnModel = ModelDefFromXML[
     xml=dm_finger_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/finger.xml",
     nbody=pmf.NBODY, njoint=pmf.NJOINT, nq=pmf.NQ, nv=pmf.NV,
     ngeom=pmf.NGEOM, nact=pmf.NACT, ntex=pmf.NTEX, nmat=pmf.NMAT,
     nlight=pmf.NLIGHT, ncam=pmf.NCAM, nsite=pmf.NSITE,

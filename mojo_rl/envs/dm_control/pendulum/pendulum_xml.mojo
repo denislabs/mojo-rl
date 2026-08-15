@@ -59,6 +59,7 @@ comptime pm = DM_PENDULUM_DIMS
 
 comptime DMPendulumModel = ModelDefFromXML[
     xml=dm_pendulum_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/pendulum.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

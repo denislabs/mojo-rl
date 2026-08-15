@@ -60,6 +60,7 @@ comptime pm = REACH_DUPLO_DIMS
 
 comptime ReachDuploModel = ModelDefFromXML[
     xml=reach_duplo_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/manipulation/reach_duplo.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

@@ -56,6 +56,7 @@ comptime pm = HOPPER_DIMS
 
 comptime HopperModel = ModelDefFromXML[
     xml=hopper_xml,
+    xml_path="mojo_rl/envs/hopper/assets/hopper.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

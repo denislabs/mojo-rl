@@ -10,17 +10,17 @@ comptime sawyer_deps_xml = """
     <asset>
         <material name="xyz_col" rgba="0.3 0.3 1.0 0.5" shininess="0" specular="0.5"/>
 
-        <mesh file="mojo_rl/envs/metaworld/assets/meshes/xyz_base/base.stl" name="base"/>
-        <mesh file="mojo_rl/envs/metaworld/assets/meshes/xyz_base/eGripperBase.stl" name="eGripperBase"/>
-        <mesh file="mojo_rl/envs/metaworld/assets/meshes/xyz_base/head.stl" name="head"/>
-        <mesh file="mojo_rl/envs/metaworld/assets/meshes/xyz_base/l0.stl" name="l0"/>
-        <mesh file="mojo_rl/envs/metaworld/assets/meshes/xyz_base/l1.stl" name="l1"/>
-        <mesh file="mojo_rl/envs/metaworld/assets/meshes/xyz_base/l2.stl" name="l2"/>
-        <mesh file="mojo_rl/envs/metaworld/assets/meshes/xyz_base/l3.stl" name="l3"/>
-        <mesh file="mojo_rl/envs/metaworld/assets/meshes/xyz_base/l4.stl" name="l4"/>
-        <mesh file="mojo_rl/envs/metaworld/assets/meshes/xyz_base/l5.stl" name="l5"/>
-        <mesh file="mojo_rl/envs/metaworld/assets/meshes/xyz_base/l6.stl" name="l6"/>
-        <mesh file="mojo_rl/envs/metaworld/assets/meshes/xyz_base/pedestal.stl" name="pedestal"/>
+        <mesh file="meshes/xyz_base/base.stl" name="base"/>
+        <mesh file="meshes/xyz_base/eGripperBase.stl" name="eGripperBase"/>
+        <mesh file="meshes/xyz_base/head.stl" name="head"/>
+        <mesh file="meshes/xyz_base/l0.stl" name="l0"/>
+        <mesh file="meshes/xyz_base/l1.stl" name="l1"/>
+        <mesh file="meshes/xyz_base/l2.stl" name="l2"/>
+        <mesh file="meshes/xyz_base/l3.stl" name="l3"/>
+        <mesh file="meshes/xyz_base/l4.stl" name="l4"/>
+        <mesh file="meshes/xyz_base/l5.stl" name="l5"/>
+        <mesh file="meshes/xyz_base/l6.stl" name="l6"/>
+        <mesh file="meshes/xyz_base/pedestal.stl" name="pedestal"/>
     </asset>
 
     <default>

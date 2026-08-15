@@ -40,6 +40,7 @@ comptime pm = LIFT_LARGE_BOX_DIMS
 
 comptime LiftLargeBoxModel = ModelDefFromXML[
     xml=lift_large_box_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/manipulation/lift_large_box.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

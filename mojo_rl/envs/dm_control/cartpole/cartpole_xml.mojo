@@ -150,6 +150,7 @@ comptime pm3 = DM_CARTPOLE3_DIMS
 #     = 1 + 2*n_poles + (1 + n_poles)
 comptime DMCartpole1Model = ModelDefFromXML[
     xml=dm_cartpole1_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/cartpole1.xml",
     nbody=pm1.NBODY, njoint=pm1.NJOINT, nq=pm1.NQ, nv=pm1.NV,
     ngeom=pm1.NGEOM, nact=pm1.NACT, ntex=pm1.NTEX, nmat=pm1.NMAT,
     nlight=pm1.NLIGHT, ncam=pm1.NCAM, nsite=pm1.NSITE,
@@ -160,6 +161,7 @@ comptime DMCartpole1Model = ModelDefFromXML[
 
 comptime DMCartpole2Model = ModelDefFromXML[
     xml=dm_cartpole2_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/cartpole2.xml",
     nbody=pm2.NBODY, njoint=pm2.NJOINT, nq=pm2.NQ, nv=pm2.NV,
     ngeom=pm2.NGEOM, nact=pm2.NACT, ntex=pm2.NTEX, nmat=pm2.NMAT,
     nlight=pm2.NLIGHT, ncam=pm2.NCAM, nsite=pm2.NSITE,
@@ -170,6 +172,7 @@ comptime DMCartpole2Model = ModelDefFromXML[
 
 comptime DMCartpole3Model = ModelDefFromXML[
     xml=dm_cartpole3_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/cartpole3.xml",
     nbody=pm3.NBODY, njoint=pm3.NJOINT, nq=pm3.NQ, nv=pm3.NV,
     ngeom=pm3.NGEOM, nact=pm3.NACT, ntex=pm3.NTEX, nmat=pm3.NMAT,
     nlight=pm3.NLIGHT, ncam=pm3.NCAM, nsite=pm3.NSITE,

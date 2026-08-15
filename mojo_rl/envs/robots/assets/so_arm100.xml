@@ -1,5 +1,5 @@
 <mujoco model="so_arm100">
-  <compiler angle="radian" meshdir="mojo_rl/envs/robots/assets/so_arm100/"/>
+  <compiler angle="radian" meshdir="so_arm100"/>
 
   <option cone="elliptic" impratio="10"/>
 

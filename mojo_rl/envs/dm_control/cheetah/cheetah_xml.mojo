@@ -111,6 +111,7 @@ comptime pmc = DM_CHEETAH_DIMS
 # obs = position (qpos[1:], nq-1 = 8) + velocity (nv = 9) = 17
 comptime DMCheetahModel = ModelDefFromXML[
     xml=dm_cheetah_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/cheetah.xml",
     nbody=pmc.NBODY, njoint=pmc.NJOINT, nq=pmc.NQ, nv=pmc.NV,
     ngeom=pmc.NGEOM, nact=pmc.NACT, ntex=pmc.NTEX, nmat=pmc.NMAT,
     nlight=pmc.NLIGHT, ncam=pmc.NCAM, nsite=pmc.NSITE,

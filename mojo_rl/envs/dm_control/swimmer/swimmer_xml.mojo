@@ -240,6 +240,7 @@ comptime ps15 = DM_SWIMMER15_DIMS
 # obs = joints (n-1) + to_target (2) + body_velocities (3n)
 comptime DMSwimmer6Model = ModelDefFromXML[
     xml=dm_swimmer6_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/swimmer6.xml",
     nbody = ps6.NBODY, njoint = ps6.NJOINT, nq = ps6.NQ, nv = ps6.NV,
     ngeom = ps6.NGEOM, nact = ps6.NACT, ntex = ps6.NTEX, nmat = ps6.NMAT,
     nlight = ps6.NLIGHT, ncam = ps6.NCAM, nsite = ps6.NSITE,
@@ -250,6 +251,7 @@ comptime DMSwimmer6Model = ModelDefFromXML[
 
 comptime DMSwimmer15Model = ModelDefFromXML[
     xml=dm_swimmer15_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/swimmer15.xml",
     nbody = ps15.NBODY, njoint = ps15.NJOINT, nq = ps15.NQ, nv = ps15.NV,
     ngeom = ps15.NGEOM, nact = ps15.NACT, ntex = ps15.NTEX, nmat = ps15.NMAT,
     nlight = ps15.NLIGHT, ncam = ps15.NCAM, nsite = ps15.NSITE,

@@ -108,6 +108,7 @@ comptime pmw = DM_WALKER_DIMS
 #     = 7*2 + 1 + 9 = 24
 comptime DMWalkerModel = ModelDefFromXML[
     xml=dm_walker_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/walker.xml",
     nbody=pmw.NBODY, njoint=pmw.NJOINT, nq=pmw.NQ, nv=pmw.NV,
     ngeom=pmw.NGEOM, nact=pmw.NACT, ntex=pmw.NTEX, nmat=pmw.NMAT,
     nlight=pmw.NLIGHT, ncam=pmw.NCAM, nsite=pmw.NSITE,

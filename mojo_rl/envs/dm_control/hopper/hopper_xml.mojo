@@ -104,6 +104,7 @@ comptime pmh = DM_HOPPER_DIMS
 # obs = position (qpos[1:], nq-1 = 6) + velocity (nv = 7) + touch (2) = 15
 comptime DMHopperModel = ModelDefFromXML[
     xml=dm_hopper_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/hopper.xml",
     nbody=pmh.NBODY, njoint=pmh.NJOINT, nq=pmh.NQ, nv=pmh.NV,
     ngeom=pmh.NGEOM, nact=pmh.NACT, ntex=pmh.NTEX, nmat=pmh.NMAT,
     nlight=pmh.NLIGHT, ncam=pmh.NCAM, nsite=pmh.NSITE,

@@ -106,6 +106,7 @@ comptime bicp = DM_BALL_IN_CUP_DIMS
 # obs = position (qpos, 4) + velocity (qvel, 4) = 8
 comptime DMBallInCupModel = ModelDefFromXML[
     xml=dm_ball_in_cup_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/ball_in_cup.xml",
     nbody=bicp.NBODY, njoint=bicp.NJOINT, nq=bicp.NQ, nv=bicp.NV,
     ngeom=bicp.NGEOM, nact=bicp.NACT, ntex=bicp.NTEX, nmat=bicp.NMAT,
     nlight=bicp.NLIGHT, ncam=bicp.NCAM, nsite=bicp.NSITE,

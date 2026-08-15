@@ -102,6 +102,7 @@ comptime pmp = DM_POINT_MASS_DIMS
 # obs = position (qpos, 2) + velocity (qvel, 2) = 4
 comptime DMPointMassModel = ModelDefFromXML[
     xml=dm_point_mass_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/point_mass.xml",
     nbody=pmp.NBODY, njoint=pmp.NJOINT, nq=pmp.NQ, nv=pmp.NV,
     ngeom=pmp.NGEOM, nact=pmp.NACT, ntex=pmp.NTEX, nmat=pmp.NMAT,
     nlight=pmp.NLIGHT, ncam=pmp.NCAM, nsite=pmp.NSITE,

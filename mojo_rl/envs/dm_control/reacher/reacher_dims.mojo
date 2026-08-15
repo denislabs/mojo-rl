@@ -35,3 +35,28 @@ comptime DM_REACHER_DIMS = ParsedModel(
     ccd_tol=1e-06,
     ccd_iter=35,
 )
+
+
+# mojo_rl/envs/dm_control/assets/reacher_hard.xml
+comptime DM_REACHER_HARD_DIMS = ParsedModel(
+    nbody=5,
+    njoint=2,
+    nq=2,
+    nv=2,
+    ngeom=10,
+    nact=2,
+    ntex=2,
+    nmat=13,
+    nlight=1,
+    ncam=2,
+    nsite=0,
+    neq=0,
+    nexclude=0,
+    npair=0,
+    ntendon=0,
+    timestep=0.02,
+    max_condim=3,
+    noslip_iter=0,
+    ccd_tol=1e-06,
+    ccd_iter=35,
+)

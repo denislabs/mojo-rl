@@ -53,6 +53,7 @@ comptime pm = REACHER_DIMS
 # Formula nq-skip+nv = 4-0+4 = 8 but we need 10 for cos/sin encoding + fingertip delta.
 comptime ReacherModel = ModelDefFromXML[
     xml=reacher_xml,
+    xml_path="mojo_rl/envs/reacher/assets/reacher.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

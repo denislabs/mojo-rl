@@ -34,6 +34,7 @@ comptime pm = LIFT_BRICK_DIMS
 
 comptime LiftBrickModel = ModelDefFromXML[
     xml=lift_brick_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/manipulation/lift_brick.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

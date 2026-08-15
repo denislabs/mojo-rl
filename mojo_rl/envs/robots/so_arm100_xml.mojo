@@ -67,7 +67,7 @@ from mojo_rl.envs.robots.so_arm100_dims import SO_ARM100_DIMS
 
 # --- BEGIN GENERATED XML (tests/robots/so_arm_bake.py) ---
 comptime SO_ARM100_ROBOT_XML = """<mujoco model="so_arm100">
-  <compiler angle="radian" meshdir="mojo_rl/envs/robots/assets/so_arm100/"/>
+  <compiler angle="radian" meshdir="so_arm100"/>
 
   <option cone="elliptic" impratio="10"/>
 
@@ -230,7 +230,7 @@ comptime SO_ARM100_ROBOT_XML = """<mujoco model="so_arm100">
 """
 
 comptime SO_ARM100_XML = """<mujoco model="so_arm100">
-  <compiler angle="radian" meshdir="mojo_rl/envs/robots/assets/so_arm100/"/>
+  <compiler angle="radian" meshdir="so_arm100"/>
 
   <option cone="elliptic" impratio="10"/>
 
@@ -402,6 +402,7 @@ comptime _pm = SO_ARM100_DIMS
 
 comptime SoArm100Model = ModelDefFromXML[
     xml=SO_ARM100_XML,
+    xml_path="mojo_rl/envs/robots/assets/so_arm100.xml",
     nbody=_pm.NBODY,
     njoint=_pm.NJOINT,
     nq=_pm.NQ,

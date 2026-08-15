@@ -182,9 +182,9 @@
     <material name="site" rgba=".5 .5 .5 .3"/>
   
 
-    <texture name="skin" type="2d" file="mojo_rl/envs/dm_control/dog/assets/skin_texture.png"/>
+    <texture name="skin" type="2d" file="../dog/assets/skin_texture.png"/>
     <material name="skin" texture="skin"/>
-    <skin name="skin" file="mojo_rl/envs/dm_control/dog/assets/dog_skin.skn" material="skin"/>
+    <skin name="skin" file="../dog/assets/dog_skin.skn" material="skin"/>
   
   </asset>
   <worldbody>

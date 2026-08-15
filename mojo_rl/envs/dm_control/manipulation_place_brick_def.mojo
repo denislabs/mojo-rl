@@ -45,6 +45,7 @@ comptime pm = PLACE_BRICK_DIMS
 
 comptime PlaceBrickModel = ModelDefFromXML[
     xml=place_brick_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/manipulation/place_brick.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

@@ -52,6 +52,7 @@ comptime pm = STACK_3_RANDOM_DIMS
 
 comptime Stack3RandomModel = ModelDefFromXML[
     xml=stack_3_random_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/manipulation/stack_3_random.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

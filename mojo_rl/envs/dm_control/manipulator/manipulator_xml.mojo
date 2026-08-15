@@ -521,6 +521,7 @@ comptime BALL_QADR_Y: Int = OBJECT_QADR_Y
 
 comptime DMManipulatorBringBallModel = ModelDefFromXML[
     xml=dm_manipulator_bring_ball_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/manipulator_bring_ball.xml",
     nbody=mbp.NBODY, njoint=mbp.NJOINT, nq=mbp.NQ, nv=mbp.NV,
     ngeom=mbp.NGEOM, nact=mbp.NACT, ntex=mbp.NTEX, nmat=mbp.NMAT,
     nlight=mbp.NLIGHT, ncam=mbp.NCAM, nsite=mbp.NSITE,
@@ -536,6 +537,7 @@ comptime DMManipulatorBringBallModel = ModelDefFromXML[
 
 comptime DMManipulatorBringPegModel = ModelDefFromXML[
     xml=dm_manipulator_bring_peg_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/manipulator_bring_peg.xml",
     nbody=mbpg.NBODY, njoint=mbpg.NJOINT, nq=mbpg.NQ, nv=mbpg.NV,
     ngeom=mbpg.NGEOM, nact=mbpg.NACT, ntex=mbpg.NTEX, nmat=mbpg.NMAT,
     nlight=mbpg.NLIGHT, ncam=mbpg.NCAM, nsite=mbpg.NSITE,
@@ -556,6 +558,7 @@ comptime DMManipulatorBringPegModel = ModelDefFromXML[
 
 comptime DMManipulatorInsertBallModel = ModelDefFromXML[
     xml=dm_manipulator_insert_ball_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/manipulator_insert_ball.xml",
     nbody=mib.NBODY, njoint=mib.NJOINT, nq=mib.NQ, nv=mib.NV,
     ngeom=mib.NGEOM, nact=mib.NACT, ntex=mib.NTEX, nmat=mib.NMAT,
     nlight=mib.NLIGHT, ncam=mib.NCAM, nsite=mib.NSITE,
@@ -571,6 +574,7 @@ comptime DMManipulatorInsertBallModel = ModelDefFromXML[
 
 comptime DMManipulatorInsertPegModel = ModelDefFromXML[
     xml=dm_manipulator_insert_peg_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/manipulator_insert_peg.xml",
     nbody=mip.NBODY, njoint=mip.NJOINT, nq=mip.NQ, nv=mip.NV,
     ngeom=mip.NGEOM, nact=mip.NACT, ntex=mip.NTEX, nmat=mip.NMAT,
     nlight=mip.NLIGHT, ncam=mip.NCAM, nsite=mip.NSITE,

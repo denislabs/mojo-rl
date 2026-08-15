@@ -272,6 +272,7 @@ def _qrot(
 
 def _check(
     name: String,
+    path: String,
     xml: String,
     mut geom: Tally,
     mut light: Tally,
@@ -282,10 +283,26 @@ def _check(
     mut sten: Tally,
     mut vis: Tally,
 ) raises:
-    """One model: `RenderFields` vs `mjModel`, family by family."""
+    """One model: `RenderFields` vs `mjModel`, family by family.
+
+    ⚠ `path` IS THE MODEL FILE, and both sides need it. Asset paths inside a
+    model are relative to that file (§10.5 decision 1), so MuJoCo must load by
+    path and `parse_xml_full` must be told the same base directory — otherwise
+    SO-ARM100's meshes resolve against the CWD and the mesh row, the only one
+    with mesh geoms at all, dies with "Error opening file so_arm100/...".
+    An inline FIXTURE passes "" and keeps the CWD behaviour it was written for.
+    """
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(xml)
-    var rf = build_render_fields(parse_xml_full(xml))
+    var m: PythonObject
+    var base = String("")
+    if path.byte_length() > 0:
+        m = mujoco.MjModel.from_xml_path(path)
+        var cut = path.rfind("/")
+        if cut > 0:
+            base = String(path[byte=0:cut])
+    else:
+        m = mujoco.MjModel.from_xml_string(xml)
+    var rf = build_render_fields(parse_xml_full(xml, base))
 
     # ── geoms ─────────────────────────────────────────────────────────────
     var ngeom = _i(m.ngeom)
@@ -606,31 +623,32 @@ def test_render_fields_match_mujoco() raises:
     var sten = Tally()
     var vis = Tally()
 
-    _check("quadruped  ", String(DMQuadrupedWalkModel.xml),
+    _check("quadruped  ", DMQuadrupedWalkModel.xml_path, DMQuadrupedWalkModel.xml_text(),
            geom, light, cam, mat, site, tex, sten, vis)
-    _check("fish       ", String(DMFishSwimModel.xml),
+    _check("fish       ", DMFishSwimModel.xml_path, DMFishSwimModel.xml_text(),
            geom, light, cam, mat, site, tex, sten, vis)
-    _check("ball_in_cup", String(DMBallInCupModel.xml),
+    _check("ball_in_cup", DMBallInCupModel.xml_path, DMBallInCupModel.xml_text(),
            geom, light, cam, mat, site, tex, sten, vis)
-    _check("humanoid   ", String(DMHumanoidModel.xml),
+    _check("humanoid   ", DMHumanoidModel.xml_path, DMHumanoidModel.xml_text(),
            geom, light, cam, mat, site, tex, sten, vis)
-    _check("manipulator", String(DMManipulatorBringBallModel.xml),
+    _check("manipulator", DMManipulatorBringBallModel.xml_path, DMManipulatorBringBallModel.xml_text(),
            geom, light, cam, mat, site, tex, sten, vis)
-    _check("walker     ", String(DMWalkerModel.xml),
+    _check("walker     ", DMWalkerModel.xml_path, DMWalkerModel.xml_text(),
            geom, light, cam, mat, site, tex, sten, vis)
-    _check("cheetah    ", String(DMCheetahModel.xml),
+    _check("cheetah    ", DMCheetahModel.xml_path, DMCheetahModel.xml_text(),
            geom, light, cam, mat, site, tex, sten, vis)
     # ⚠ THE ONLY ROW THAT CAN FAIL THE TENDON STYLE — see the fixture.
-    _check("sten-style ", STEN_STYLE_XML,
+    _check("sten-style ", "", STEN_STYLE_XML,
            geom, light, cam, mat, site, tex, sten, vis)
     # ⚠ THE ONLY `type="cube"` TEXTURE — the third arm of the type map.
-    _check("cube-tex   ", MESH_ASSET_XML,
+    _check("cube-tex   ", "", MESH_ASSET_XML,
            geom, light, cam, mat, site, tex, sten, vis)
     # ⚠ THE ONLY MODEL HERE WITH MESH GEOMS. Every dm_control domain is
     # primitives-only (dog's 162 meshes are baked out of the port), so
     # without SO-ARM100's 18 mesh assets the `mesh` row above compares
     # nothing but -1 == -1.
-    _check("so_arm100  ", String(SO_ARM100_XML),
+    _check("so_arm100  ", "mojo_rl/envs/robots/assets/so_arm100.xml",
+           String(SO_ARM100_XML),
            geom, light, cam, mat, site, tex, sten, vis)
 
     print("  TOTALS (rows differing / rows compared, then WHICH field):")

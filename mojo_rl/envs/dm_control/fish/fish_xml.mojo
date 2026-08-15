@@ -171,6 +171,7 @@ comptime pf = DM_FISH_DIMS
 # obs (upright) = joint_angles (7) + upright (1) + velocity (13) = 21
 comptime DMFishUprightModel = ModelDefFromXML[
     xml=dm_fish_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/fish.xml",
     nbody = pf.NBODY, njoint = pf.NJOINT, nq = pf.NQ, nv = pf.NV,
     ngeom = pf.NGEOM, nact = pf.NACT, ntex = pf.NTEX, nmat = pf.NMAT,
     nlight = pf.NLIGHT, ncam = pf.NCAM, nsite = pf.NSITE,
@@ -189,6 +190,7 @@ comptime DMFishUprightModel = ModelDefFromXML[
 # obs (swim) = joint_angles (7) + upright (1) + target (3) + velocity (13) = 24
 comptime DMFishSwimModel = ModelDefFromXML[
     xml=dm_fish_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/fish.xml",
     nbody = pf.NBODY, njoint = pf.NJOINT, nq = pf.NQ, nv = pf.NV,
     ngeom = pf.NGEOM, nact = pf.NACT, ntex = pf.NTEX, nmat = pf.NMAT,
     nlight = pf.NLIGHT, ncam = pf.NCAM, nsite = pf.NSITE,

@@ -39,6 +39,7 @@ comptime pm = PLACE_CRADLE_DIMS
 
 comptime PlaceCradleModel = ModelDefFromXML[
     xml=place_cradle_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/manipulation/place_cradle.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

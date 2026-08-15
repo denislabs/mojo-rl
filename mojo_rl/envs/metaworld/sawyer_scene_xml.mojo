@@ -18,11 +18,11 @@ comptime sawyer_scene_xml = """
         <texture type="skybox" builtin="gradient" rgb1="0.50 0.495 0.48"
                  rgb2="0.50 0.495 0.48" width="32" height="32"/>
         <texture name="T_table" type="cube"
-                 file="mojo_rl/envs/metaworld/assets/textures/wood2.png"/>
+                 file="textures/wood2.png"/>
         <texture name="T_floor" type="2d"
-                 file="mojo_rl/envs/metaworld/assets/textures/floor2.png"/>
+                 file="textures/floor2.png"/>
         <texture name="T_wallmetal" type="cube"
-                 file="mojo_rl/envs/metaworld/assets/textures/metal.png"/>
+                 file="textures/metal.png"/>
 
         <material name="basic_floor" texture="T_floor" texrepeat="12 12"
                   shininess="0.3" specular="0.5" reflectance="0.2"/>
@@ -33,9 +33,9 @@ comptime sawyer_scene_xml = """
         <material name="wall_metal" texture="T_wallmetal" shininess="1"
                   reflectance="1" specular="0.5"/>
 
-        <mesh file="mojo_rl/envs/metaworld/assets/meshes/table/tablebody.stl"
+        <mesh file="meshes/table/tablebody.stl"
               name="tablebody" scale="1 1 1"/>
-        <mesh file="mojo_rl/envs/metaworld/assets/meshes/table/tabletop.stl"
+        <mesh file="meshes/table/tabletop.stl"
               name="tabletop" scale="1 1 1"/>
     </asset>
 

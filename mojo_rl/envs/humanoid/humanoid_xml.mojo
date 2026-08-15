@@ -131,6 +131,7 @@ comptime pm = HUMANOID_DIMS
 # This simplified obs uses only position + velocity for GPU training.
 comptime HumanoidModel = ModelDefFromXML[
     xml=humanoid_xml,
+    xml_path="mojo_rl/envs/humanoid/assets/humanoid.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,
     nq=pm.NQ,

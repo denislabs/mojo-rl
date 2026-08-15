@@ -71,6 +71,7 @@ comptime pma = DM_ACROBOT_DIMS
 # obs = orientations (2 bodies x xz, then 2 bodies x zz = 4) + velocity (2) = 6
 comptime DMAcrobotModel = ModelDefFromXML[
     xml=dm_acrobot_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/acrobot.xml",
     nbody=pma.NBODY, njoint=pma.NJOINT, nq=pma.NQ, nv=pma.NV,
     ngeom=pma.NGEOM, nact=pma.NACT, ntex=pma.NTEX, nmat=pma.NMAT,
     nlight=pma.NLIGHT, ncam=pma.NCAM, nsite=pma.NSITE,

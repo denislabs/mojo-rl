@@ -48,7 +48,10 @@ from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 
 from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
-from mojo_rl.envs.dm_control.reacher.reacher_dims import DM_REACHER_DIMS
+from mojo_rl.envs.dm_control.reacher.reacher_dims import (
+    DM_REACHER_DIMS,
+    DM_REACHER_HARD_DIMS,
+)
 
 
 comptime _reacher_body_pre = """
@@ -129,15 +132,21 @@ comptime dm_reacher_hard_xml = merge_mjcf(
     dm_skybox_xml, dm_visual_xml, dm_materials_xml, _reacher_body_hard
 )
 
-# ⚠ PARSED FROM THE EASY XML AND REUSED FOR BOTH. The two differ in one
-# attribute VALUE, so every count `parse_xml` returns — nbody, ngeom, nq, nv,
-# the timestep — is identical by construction. Parsing twice would only pay a
-# second comptime XML parse to learn the same numbers.
+# ⚠ THE HARD MODEL USED TO BORROW `pmr` OUTRIGHT, on the grounds that the two
+# differ in one attribute VALUE so every count is "identical by construction".
+# The claim is TRUE — checked against `mjModel`, all 15 counts and the timestep
+# agree — but sharing it made the hard model invisible to a corpus defined by
+# "who calls parse_xml", which is exactly how phase 1b's extraction missed it.
+# Each reacher carries its own generated dims now, so the claim is GATED
+# rather than asserted in a comment, and it costs nothing: the dims are
+# generated, not parsed.
 comptime pmr = DM_REACHER_DIMS
+comptime pmrh = DM_REACHER_HARD_DIMS
 
 # obs = position (qpos, 2) + to_target (2) + velocity (qvel, 2) = 6
 comptime DMReacherModel = ModelDefFromXML[
     xml=dm_reacher_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/reacher.xml",
     nbody=pmr.NBODY, njoint=pmr.NJOINT, nq=pmr.NQ, nv=pmr.NV,
     ngeom=pmr.NGEOM, nact=pmr.NACT, ntex=pmr.NTEX, nmat=pmr.NMAT,
     nlight=pmr.NLIGHT, ncam=pmr.NCAM, nsite=pmr.NSITE,
@@ -148,12 +157,13 @@ comptime DMReacherModel = ModelDefFromXML[
 
 comptime DMReacherHardModel = ModelDefFromXML[
     xml=dm_reacher_hard_xml,
-    nbody=pmr.NBODY, njoint=pmr.NJOINT, nq=pmr.NQ, nv=pmr.NV,
-    ngeom=pmr.NGEOM, nact=pmr.NACT, ntex=pmr.NTEX, nmat=pmr.NMAT,
-    nlight=pmr.NLIGHT, ncam=pmr.NCAM, nsite=pmr.NSITE,
+    xml_path="mojo_rl/envs/dm_control/assets/reacher_hard.xml",
+    nbody=pmrh.NBODY, njoint=pmrh.NJOINT, nq=pmrh.NQ, nv=pmrh.NV,
+    ngeom=pmrh.NGEOM, nact=pmrh.NACT, ntex=pmrh.NTEX, nmat=pmrh.NMAT,
+    nlight=pmrh.NLIGHT, ncam=pmrh.NCAM, nsite=pmrh.NSITE,
     max_contacts=1,
     obs_dim_override=6,
-    timestep=pmr.TIMESTEP,
+    timestep=pmrh.TIMESTEP,
 ]
 """`hard`'s model — identical but for the target's `.015` radius.
 

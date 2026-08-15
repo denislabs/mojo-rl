@@ -337,6 +337,7 @@ comptime HUMANOID_CMU_OBS_DIM: Int = 137
 
 comptime DMHumanoidCMUModel = ModelDefFromXML[
     xml=dm_humanoid_cmu_xml,
+    xml_path="mojo_rl/envs/dm_control/assets/humanoid_cmu.xml",
     nbody=pmhc.NBODY, njoint=pmhc.NJOINT, nq=pmhc.NQ, nv=pmhc.NV,
     ngeom=pmhc.NGEOM, nact=pmhc.NACT, ntex=pmhc.NTEX, nmat=pmhc.NMAT,
     nlight=pmhc.NLIGHT, ncam=pmhc.NCAM, nsite=pmhc.NSITE,
