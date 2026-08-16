@@ -123,9 +123,7 @@ def _sweep[
     np: PythonObject,
     mm: PythonObject,
     dat: PythonObject,
-    mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
     mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
     want_free: Bool,
     want_slide: Bool,
@@ -314,10 +312,7 @@ def test_jac_site_quadruped_fetch() raises:
     var dat = mujoco.MjData(mm)
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[
         DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1
@@ -345,10 +340,7 @@ def test_jac_site_ball_in_cup() raises:
     var dat = mujoco.MjData(mm)
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[
         DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1

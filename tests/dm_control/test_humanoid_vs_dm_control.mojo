@@ -59,7 +59,7 @@ from mojo_rl.envs.dm_control.humanoid import (
     WALK_SPEED,
     RUN_SPEED,
 )
-from mojo_rl.physics3d.fields import Model
+from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -127,31 +127,9 @@ def _setup() raises -> PythonObject:
     return Python.tuple(mujoco, model, data, tol)
 
 
-def _build_model() raises -> Model[
-    DType.float64,
-    DMHumanoidModel.NV,
-    DMHumanoidModel.NBODY,
-    DMHumanoidModel.NJOINT,
-    DMHumanoidModel.NGEOM,
-    DMHumanoidModel.MAX_EQUALITY,
-    DMHumanoidModel.MAX_TENDON,
-    DMHumanoidModel.NSITE,
-    DMHumanoidModel.NEXCLUDE,
-    0,
-]:
+def _build_model() raises -> Model[DType.float64, Dims[nv=DMHumanoidModel.NV, nbody=DMHumanoidModel.NBODY, njoint=DMHumanoidModel.NJOINT, ngeom=DMHumanoidModel.NGEOM, nequality=DMHumanoidModel.MAX_EQUALITY, ntendon=DMHumanoidModel.MAX_TENDON, nsite=DMHumanoidModel.NSITE, nexclude=DMHumanoidModel.NEXCLUDE, nmesh_verts=0]]:
     var ctx = DeviceContext()
-    var mf = Model[
-        DType.float64,
-        DMHumanoidModel.NV,
-        DMHumanoidModel.NBODY,
-        DMHumanoidModel.NJOINT,
-        DMHumanoidModel.NGEOM,
-        DMHumanoidModel.MAX_EQUALITY,
-        DMHumanoidModel.MAX_TENDON,
-        DMHumanoidModel.NSITE,
-        DMHumanoidModel.NEXCLUDE,
-        0,
-    ]()
+    var mf = Model[DType.float64, Dims[nv=DMHumanoidModel.NV, nbody=DMHumanoidModel.NBODY, njoint=DMHumanoidModel.NJOINT, ngeom=DMHumanoidModel.NGEOM, nequality=DMHumanoidModel.MAX_EQUALITY, ntendon=DMHumanoidModel.MAX_TENDON, nsite=DMHumanoidModel.NSITE, nexclude=DMHumanoidModel.NEXCLUDE, nmesh_verts=0]]()
     DMHumanoidModel.init_fields[DType.float64, 0](ctx, mf)
     return mf^
 

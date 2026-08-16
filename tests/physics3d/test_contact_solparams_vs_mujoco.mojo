@@ -50,7 +50,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
@@ -115,10 +115,7 @@ comptime PM = ModelDefFromXML[
 comptime TOL: Float64 = 1e-12
 
 comptime Dat = Data[DTYPE, PM.NQ, PM.NV, PM.NBODY, PM.MAX_CONTACTS, PM.NSITE, 1]
-comptime Mod = Model[
-    DTYPE, PM.NV, PM.NBODY, PM.NJOINT, PM.NGEOM, PM.MAX_EQUALITY,
-    PM.MAX_TENDON, PM.NSITE, PM.NEXCLUDE, 0,
-]
+comptime Mod = Model[DTYPE, Dims[nv=PM.NV, nbody=PM.NBODY, njoint=PM.NJOINT, ngeom=PM.NGEOM, nequality=PM.MAX_EQUALITY, ntendon=PM.MAX_TENDON, nsite=PM.NSITE, nexclude=PM.NEXCLUDE, nmesh_verts=0]]
 
 
 def _build() raises -> Mod:

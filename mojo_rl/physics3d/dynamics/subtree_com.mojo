@@ -9,7 +9,7 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import Data, Model
+from ..fields import Data, Model, Dims
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -136,19 +136,7 @@ def compute_subtree_com[
     NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: Model[
-        DTYPE,
-        NV,
-        NBODY,
-        NJOINT,
-        NGEOM,
-        NEQUALITY,
-        NTENDON,
-        NSITE,
-        NEXCLUDE,
-        NMESH_VERTS,
-        NPAIR,
-    ],
+    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Subtree CoM from xipos + body masses, both targets, one body."""

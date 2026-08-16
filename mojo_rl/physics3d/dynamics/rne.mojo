@@ -798,19 +798,7 @@ def compute_bias_forces_rne[
     NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: Model[
-        DTYPE,
-        NV,
-        NBODY,
-        NJOINT,
-        NGEOM,
-        NEQUALITY,
-        NTENDON,
-        NSITE,
-        NEXCLUDE,
-        NMESH_VERTS,
-        NPAIR,
-    ],
+    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
     mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:

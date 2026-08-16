@@ -33,7 +33,7 @@ from std.testing import assert_true, TestSuite
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Model, Data
+from mojo_rl.physics3d.fields import Model, Data, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
@@ -105,10 +105,7 @@ def test_springref_is_converted_for_hinge_only() raises:
     var m = h[1]
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
 
     var worst = 0.0
@@ -158,10 +155,7 @@ def test_springref_rollout_matches_mujoco() raises:
     mujoco.mj_resetData(m, md)
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
     M.reset_data[DTYPE](sf, d)

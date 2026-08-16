@@ -48,7 +48,7 @@ from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.fields import Model, Data
+from mojo_rl.physics3d.fields import Model, Data, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.types import ConeType
@@ -215,10 +215,7 @@ def test_limit_solref_is_read_per_joint() raises:
 
     # --- our side ---------------------------------------------------------
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, LM.NV, LM.NBODY, LM.NJOINT, LM.NGEOM, LM.MAX_EQUALITY,
-        LM.MAX_TENDON, LM.NSITE, LM.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=LM.NV, nbody=LM.NBODY, njoint=LM.NJOINT, ngeom=LM.NGEOM, nequality=LM.MAX_EQUALITY, ntendon=LM.MAX_TENDON, nsite=LM.NSITE, nexclude=LM.NEXCLUDE, nmesh_verts=0]]()
     LM.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, LM.NQ, LM.NV, LM.NBODY, LM.MAX_CONTACTS, LM.NSITE, 1]()
     LM.reset_data[DTYPE](sf, d)
@@ -320,10 +317,7 @@ def test_refsafe_clamp_raises_timeconst_to_two_timesteps() raises:
     )
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, CM.NV, CM.NBODY, CM.NJOINT, CM.NGEOM, CM.MAX_EQUALITY,
-        CM.MAX_TENDON, CM.NSITE, CM.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=CM.NV, nbody=CM.NBODY, njoint=CM.NJOINT, ngeom=CM.NGEOM, nequality=CM.MAX_EQUALITY, ntendon=CM.MAX_TENDON, nsite=CM.NSITE, nexclude=CM.NEXCLUDE, nmesh_verts=0]]()
     CM.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, CM.NQ, CM.NV, CM.NBODY, CM.MAX_CONTACTS, CM.NSITE, 1]()
     CM.reset_data[DTYPE](sf, d)

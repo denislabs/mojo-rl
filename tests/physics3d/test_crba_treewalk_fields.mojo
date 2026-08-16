@@ -97,7 +97,7 @@ def test_walker2d_mm() raises:
     print("--- Walker2D treewalk CRBA, BATCH=", W_BATCH, "---")
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, W_NV, W_NBODY, W_NJOINT, W_NGEOM, W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0]()
+    var mf = Model[DTYPE, Dims[nv=W_NV, nbody=W_NBODY, njoint=W_NJOINT, ngeom=W_NGEOM, nequality=W_NEQ, ntendon=W_NTD, nsite=W_NSITE, nexclude=W_NEXCL, nmesh_verts=0]]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Two distinct qpos configs (from the walker2d FK gate).
@@ -171,7 +171,7 @@ def test_ant_mm() raises:
     print("--- Ant treewalk CRBA (FREE joint), BATCH=", A_BATCH, "---")
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, A_NV, A_NBODY, A_NJOINT, A_NGEOM, A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0]()
+    var mf = Model[DTYPE, Dims[nv=A_NV, nbody=A_NBODY, njoint=A_NJOINT, ngeom=A_NGEOM, nequality=A_NEQ, ntendon=A_NTD, nsite=A_NSITE, nexclude=A_NEXCL, nmesh_verts=0]]()
     AntModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Two configs from the legacy ant treewalk gate: default init_qpos and
@@ -333,7 +333,7 @@ def test_rk4_integrator_treewalk() raises:
     )
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, W_NV, W_NBODY, W_NJOINT, W_NGEOM, W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0]()
+    var mf = Model[DTYPE, Dims[nv=W_NV, nbody=W_NBODY, njoint=W_NJOINT, ngeom=W_NGEOM, nequality=W_NEQ, ntendon=W_NTD, nsite=W_NSITE, nexclude=W_NEXCL, nmesh_verts=0]]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Same on-the-floor init as test_rk4_contacts_fields (feet penetrating).

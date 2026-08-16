@@ -54,7 +54,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
-from mojo_rl.physics3d.fields import Model
+from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_TENDON_SIZE,
     TENDON_IDX_NUM_JOINTS,
@@ -114,15 +114,9 @@ comptime M = ModelDefFromXML[
 ]
 
 
-def _build() raises -> Model[
-    DType.float64, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-    M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-]:
+def _build() raises -> Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]:
     var ctx = DeviceContext()
-    var mf = Model[
-        DType.float64, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DType.float64, 0](ctx, mf)
     return mf^
 

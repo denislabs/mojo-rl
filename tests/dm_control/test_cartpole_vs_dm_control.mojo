@@ -30,7 +30,7 @@ from mojo_rl.envs.dm_control.cartpole import (
     DMCartpole2Model,
     DMCartpole3Model,
 )
-from mojo_rl.physics3d.fields import Model
+from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -258,18 +258,7 @@ def test_cartpole_multipole_models_match_mujoco() raises:
     )
     assert_true(Int(py=m2.nq) == DMCartpole2Model.NQ, "2-pole nq mismatch")
 
-    var mf2 = Model[
-        DType.float64,
-        DMCartpole2Model.NV,
-        DMCartpole2Model.NBODY,
-        DMCartpole2Model.NJOINT,
-        DMCartpole2Model.NGEOM,
-        DMCartpole2Model.MAX_EQUALITY,
-        DMCartpole2Model.MAX_TENDON,
-        DMCartpole2Model.NSITE,
-        DMCartpole2Model.NEXCLUDE,
-        0,
-    ]()
+    var mf2 = Model[DType.float64, Dims[nv=DMCartpole2Model.NV, nbody=DMCartpole2Model.NBODY, njoint=DMCartpole2Model.NJOINT, ngeom=DMCartpole2Model.NGEOM, nequality=DMCartpole2Model.MAX_EQUALITY, ntendon=DMCartpole2Model.MAX_TENDON, nsite=DMCartpole2Model.NSITE, nexclude=DMCartpole2Model.NEXCLUDE, nmesh_verts=0]]()
     DMCartpole2Model.init_fields[DType.float64, 0](ctx, mf2)
     worst = _cmp_bodies(mf2.bodies.data, m2, DMCartpole2Model.NBODY, worst)
 
@@ -279,18 +268,7 @@ def test_cartpole_multipole_models_match_mujoco() raises:
         Int(py=m3.nbody) == DMCartpole3Model.NBODY,
         "3-pole nbody mismatch",
     )
-    var mf3 = Model[
-        DType.float64,
-        DMCartpole3Model.NV,
-        DMCartpole3Model.NBODY,
-        DMCartpole3Model.NJOINT,
-        DMCartpole3Model.NGEOM,
-        DMCartpole3Model.MAX_EQUALITY,
-        DMCartpole3Model.MAX_TENDON,
-        DMCartpole3Model.NSITE,
-        DMCartpole3Model.NEXCLUDE,
-        0,
-    ]()
+    var mf3 = Model[DType.float64, Dims[nv=DMCartpole3Model.NV, nbody=DMCartpole3Model.NBODY, njoint=DMCartpole3Model.NJOINT, ngeom=DMCartpole3Model.NGEOM, nequality=DMCartpole3Model.MAX_EQUALITY, ntendon=DMCartpole3Model.MAX_TENDON, nsite=DMCartpole3Model.NSITE, nexclude=DMCartpole3Model.NEXCLUDE, nmesh_verts=0]]()
     DMCartpole3Model.init_fields[DType.float64, 0](ctx, mf3)
     worst = _cmp_bodies(mf3.bodies.data, m3, DMCartpole3Model.NBODY, worst)
 

@@ -56,7 +56,7 @@ from std.python import Python
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.envs.dm_control.manipulation_reach_def import (
     ReachSiteFeaturesModel,
@@ -150,10 +150,7 @@ def test_manipulation_reach_def_matches_mujoco() raises:
 
     # ── 1/3. it builds, and the built model reproduces MuJoCo's FK ───────
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, NMESH_VERTS, M.NPAIR,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=M.NPAIR]]()
     M.init_fields[DTYPE, NMESH_VERTS](ctx, mf)
     var d = Data[
         DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1

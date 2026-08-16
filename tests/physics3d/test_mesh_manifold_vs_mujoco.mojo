@@ -40,7 +40,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.collision.native_multicontact import MC_ENABLED
@@ -156,10 +156,7 @@ def _group_name(g: Int) -> StaticString:
     return "mesh(hex)  x mesh "
 
 comptime Dat = Data[DTYPE, NQ, NV, NBODY, MC, MMM.NSITE, 1]
-comptime Mod = Model[
-    DTYPE, NV, NBODY, MMM.NJOINT, MMM.NGEOM, MMM.MAX_EQUALITY, MMM.MAX_TENDON,
-    MMM.NSITE, MMM.NEXCLUDE, NMESHV,
-]
+comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=MMM.NJOINT, ngeom=MMM.NGEOM, nequality=MMM.MAX_EQUALITY, ntendon=MMM.MAX_TENDON, nsite=MMM.NSITE, nexclude=MMM.NEXCLUDE, nmesh_verts=NMESHV]]
 
 comptime NPOSE: Int = 160
 comptime SPAN: Float64 = 0.055

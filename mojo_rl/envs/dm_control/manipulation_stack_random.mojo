@@ -82,7 +82,7 @@ from std.collections import InlineArray
 from std.math import abs, sqrt
 from std.random import random_float64
 
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     JOINT_IDX_RANGE_MIN,
@@ -433,9 +433,7 @@ def stack_random_reset_full[
     NOSLIP_ITER: Int,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
-    mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     timestep: Float64,
 ) raises:
     """`Stack.initialize_episode` — bricks, grasp (already done), arm.

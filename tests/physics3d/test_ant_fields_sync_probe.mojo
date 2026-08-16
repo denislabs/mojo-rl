@@ -50,7 +50,7 @@ def main() raises:
     )
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     AntModel.init_fields[DTYPE, 0](ctx, mf)
 
     var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()

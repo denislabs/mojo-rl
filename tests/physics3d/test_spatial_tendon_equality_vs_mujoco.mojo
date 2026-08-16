@@ -46,7 +46,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
-from mojo_rl.physics3d.fields import Model, Data
+from mojo_rl.physics3d.fields import Model, Data, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.types import ConeType
@@ -134,10 +134,7 @@ def _roll[M: ModelDefFromXML, SOLVER: StaticString]() raises -> Float64:
     """
     var sf = M.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0, M.NPAIR,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0, npair=M.NPAIR]]()
     M.init_fields[DTYPE, 0](ctx, mf)
 
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
@@ -233,10 +230,7 @@ def test_tendon_length0_matches_mujoco() raises:
     var m = mujoco.MjModel.from_xml_string(materialize[XML]())
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M_ELL.NV, M_ELL.NBODY, M_ELL.NJOINT, M_ELL.NGEOM,
-        M_ELL.MAX_EQUALITY, M_ELL.MAX_TENDON, M_ELL.NSITE, M_ELL.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M_ELL.NV, nbody=M_ELL.NBODY, njoint=M_ELL.NJOINT, ngeom=M_ELL.NGEOM, nequality=M_ELL.MAX_EQUALITY, ntendon=M_ELL.MAX_TENDON, nsite=M_ELL.NSITE, nexclude=M_ELL.NEXCLUDE, nmesh_verts=0]]()
     M_ELL.init_fields[DTYPE, 0](ctx, mf)
 
     var worst = Float64(0)

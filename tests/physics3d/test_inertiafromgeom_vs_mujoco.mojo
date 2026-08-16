@@ -13,7 +13,7 @@ from std.collections import InlineArray
 from std.testing import assert_true, TestSuite
 
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Model
+from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -57,11 +57,7 @@ def test_half_cheetah() raises:
     # Spec-direct fields build — <compiler inertiafromgeom> + settotalmass
     # run inside init_fields (fields_build; G4).
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, HalfCheetahModel.MAX_EQUALITY,
-        HalfCheetahModel.MAX_TENDON, HalfCheetahModel.NSITE,
-        HalfCheetahModel.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=HalfCheetahModel.MAX_EQUALITY, ntendon=HalfCheetahModel.MAX_TENDON, nsite=HalfCheetahModel.NSITE, nexclude=HalfCheetahModel.NEXCLUDE, nmesh_verts=0]]()
     HalfCheetahModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Get MuJoCo reference
@@ -169,10 +165,7 @@ def test_hopper() raises:
     # Spec-direct fields build — <compiler inertiafromgeom> runs inside
     # init_fields (fields_build; G4). Hopper has no settotalmass.
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, HopperModel.MAX_EQUALITY,
-        HopperModel.MAX_TENDON, HopperModel.NSITE, HopperModel.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=HopperModel.MAX_EQUALITY, ntendon=HopperModel.MAX_TENDON, nsite=HopperModel.NSITE, nexclude=HopperModel.NEXCLUDE, nmesh_verts=0]]()
     HopperModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Get MuJoCo reference

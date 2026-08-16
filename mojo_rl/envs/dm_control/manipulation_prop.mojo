@@ -44,7 +44,7 @@ from the same numbers instead of comparing distributions.
 from std.collections import InlineArray
 from std.math import abs, sqrt, sin, cos, pi
 
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
@@ -205,9 +205,7 @@ def place_free_prop[
     MAXC: Int,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
-    mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     prop_body: Int,
     qpos_adr: Int,
     dof_adr: Int,
@@ -288,9 +286,7 @@ def place_fixed_prop[
     MAXC: Int,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
-    mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     frame_body: Int,
     n_bodies: Int,
     ignore_bodies: List[Int],
@@ -422,9 +418,7 @@ def settle_free_props[
     NHOLD: Int,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
-    mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     dof_adrs: List[Int],
     timestep: Float64,
 ) raises -> SettleResult:
@@ -521,9 +515,7 @@ def settle_free_prop[
     NHOLD: Int,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
-    mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     dof_adr: Int,
     timestep: Float64,
 ) raises -> SettleResult:

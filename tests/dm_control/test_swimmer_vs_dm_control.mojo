@@ -39,7 +39,7 @@ from std.math import abs, sin, sqrt
 from max.gpu.host import DeviceContext
 
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv
-from mojo_rl.physics3d.fields import Model
+from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
@@ -178,10 +178,7 @@ def test_swimmer_fluid_option_is_parsed() raises:
     comptime M = DMSwimmer6Model
     var mj = _ref(6)
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
 
     var dens = Float64(mf.meta.data[MODEL_META_IDX_DENSITY])
@@ -212,10 +209,7 @@ def test_swimmer_bodies_match_mujoco() raises:
     comptime M = DMSwimmer6Model
     var mj = _ref(6)
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
 
     var mm = mj.body_mass.tolist()
@@ -278,10 +272,7 @@ def test_swimmer_joints_match_mujoco() raises:
     comptime M = DMSwimmer6Model
     var mj = _ref(6)
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
 
     var jr = mj.jnt_range.tolist()
@@ -591,10 +582,7 @@ def test_swimmer_head_ellipsoid_is_inert() raises:
     )
     # And our own nose geom index, which the observation reads by index.
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var go = NOSE_GEOM_IDX * MODEL_GEOM_SIZE
     var nose_mj = Int(py=mujoco.mj_name2id(mj, mujoco.mjtObj.mjOBJ_GEOM, "nose"))
@@ -632,10 +620,7 @@ def test_swimmer_invweight0_matches_mujoco() raises:
     comptime M = DMSwimmer6Model
     var mj = _ref(6)
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
 
     var biw = mj.body_invweight0.tolist()

@@ -25,7 +25,7 @@ Gymnasium half_cheetah.xml carries `angle="radian"`; this copy dropped it.
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser import parse_xml_full
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_POS_Z,
@@ -224,11 +224,7 @@ def test_model_def_from_xml() raises:
     # =========================================================================
     print("=== fields model build ===")
     var ctx = DeviceContext()
-    var mf = Model[
-        DType.float64, pm.NV, pm.NBODY, pm.NJOINT, pm.NGEOM,
-        XmlModel.MAX_EQUALITY, XmlModel.MAX_TENDON, XmlModel.NSITE,
-        XmlModel.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DType.float64, Dims[nv=pm.NV, nbody=pm.NBODY, njoint=pm.NJOINT, ngeom=pm.NGEOM, nequality=XmlModel.MAX_EQUALITY, ntendon=XmlModel.MAX_TENDON, nsite=XmlModel.NSITE, nexclude=XmlModel.NEXCLUDE, nmesh_verts=0]]()
     XmlModel.init_fields[DType.float64, 0](ctx, mf)
     print("init_fields succeeded")
     print(

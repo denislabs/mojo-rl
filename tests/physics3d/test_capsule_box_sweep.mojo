@@ -55,7 +55,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.gpu.constants import (
@@ -113,10 +113,7 @@ comptime NGEOM: Int = CBM.NGEOM
 comptime MC: Int = CBM.MAX_CONTACTS
 
 comptime Dat = Data[DTYPE, NQ, NV, NBODY, MC, CBM.NSITE, 1]
-comptime Mod = Model[
-    DTYPE, NV, NBODY, CBM.NJOINT, NGEOM, CBM.MAX_EQUALITY, CBM.MAX_TENDON,
-    CBM.NSITE, CBM.NEXCLUDE, 0,
-]
+comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=CBM.NJOINT, ngeom=NGEOM, nequality=CBM.MAX_EQUALITY, ntendon=CBM.MAX_TENDON, nsite=CBM.NSITE, nexclude=CBM.NEXCLUDE, nmesh_verts=0]]
 
 # Number of swept poses. Large enough that the face / edge / corner branches are
 # all hit many times; the coverage assertion below checks that rather than

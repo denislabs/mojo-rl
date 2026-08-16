@@ -57,7 +57,7 @@ from mojo_rl.envs.dm_control.manipulator import (
     SITE_GRASP,
     SITE_PINCH,
 )
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
@@ -188,7 +188,7 @@ def _ref() raises -> PythonObject:
     return builder.model(True, False)
 
 
-comptime Mod = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]
+comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]
 comptime Dat = Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1]
 comptime Integ = EulerIntegrator[
     DTYPE, NQ, NV, NBODY, NJOINT, MAXC, NGEOM, NEQ, NTEN, NSITE,

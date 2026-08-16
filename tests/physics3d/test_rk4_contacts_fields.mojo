@@ -22,7 +22,7 @@ from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
@@ -87,7 +87,7 @@ def main() raises:
     print("--- RK4 WITH CONTACTS fields GOLDEN gate: Walker2D BATCH=", BATCH)
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()

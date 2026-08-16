@@ -15,7 +15,7 @@ from std.math import abs
 from std.collections import InlineArray
 
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -54,10 +54,7 @@ def compare_fk(
 
     # === Our engine (fields; legacy Model/Data FK deleted at G4) ===
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, HopperModel.MAX_EQUALITY,
-        HopperModel.MAX_TENDON, HopperModel.NSITE, HopperModel.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=HopperModel.MAX_EQUALITY, ntendon=HopperModel.MAX_TENDON, nsite=HopperModel.NSITE, nexclude=HopperModel.NEXCLUDE, nmesh_verts=0]]()
     HopperModel.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[
         DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HopperModel.NSITE, 1

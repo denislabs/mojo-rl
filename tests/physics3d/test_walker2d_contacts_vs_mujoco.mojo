@@ -32,7 +32,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.gpu.constants import (
@@ -94,7 +94,7 @@ def test_walker2d_contacts_match_mujoco() raises:
     var md = mujoco.MjData(m)
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     var poses = _poses()

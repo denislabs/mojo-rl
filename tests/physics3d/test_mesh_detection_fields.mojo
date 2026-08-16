@@ -39,7 +39,7 @@ from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -280,9 +280,7 @@ def main() raises:
     var ctx = DeviceContext()
 
     # Fields-native model build (loads STL hulls, NMESHV-padded — Stage B).
-    var mf = Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, 0, NMESHV
-    ]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=0, nmesh_verts=NMESHV]]()
     SawyerReachModel.init_fields[DTYPE, NMESHV](ctx, mf)
 
     # Locate the obj cylinder + mesh-geom bodies for the non-vacuity check.

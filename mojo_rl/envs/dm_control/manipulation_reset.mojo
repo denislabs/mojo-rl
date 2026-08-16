@@ -34,7 +34,7 @@ geom), so it lives here too.
 
 from std.collections import InlineArray
 
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.dynamics.ik_site import set_site_to_xpos
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
@@ -239,9 +239,7 @@ def tool_center_point_initializer[
     NDOF: Int,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
-    mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     site: Int,
     target_positions: List[Scalar[DTYPE]],
     target_quat: InlineArray[Scalar[DTYPE], 4],

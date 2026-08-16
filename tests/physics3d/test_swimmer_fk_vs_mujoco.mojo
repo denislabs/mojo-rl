@@ -23,7 +23,7 @@ from std.math import abs
 from std.collections import InlineArray
 
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -62,10 +62,7 @@ def compare_fk(
 
     # === Our engine (fields; legacy Model/Data FK deleted at G4) ===
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, SwimmerModel.MAX_EQUALITY,
-        SwimmerModel.MAX_TENDON, SwimmerModel.NSITE, SwimmerModel.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=SwimmerModel.MAX_EQUALITY, ntendon=SwimmerModel.MAX_TENDON, nsite=SwimmerModel.NSITE, nexclude=SwimmerModel.NEXCLUDE, nmesh_verts=0]]()
     SwimmerModel.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[
         DTYPE, NQ, NV, NBODY, MAX_CONTACTS, SwimmerModel.NSITE, 1

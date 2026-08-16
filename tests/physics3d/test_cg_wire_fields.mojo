@@ -19,7 +19,7 @@ from std.sys import has_nvidia_gpu_accelerator
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.integrator.implicit import (
@@ -59,10 +59,8 @@ def _init_state(mut d: Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]):
             d.qvel.data[e * NV + i] = qv
 
 
-def _load_model(ctx: DeviceContext) raises -> Model[
-    DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0
-]:
-    var mf = Model[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+def _load_model(ctx: DeviceContext) raises -> Model[DT, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]:
+    var mf = Model[DT, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     Walker2dModel.init_fields[DT, 0](ctx, mf)
     return mf^
 

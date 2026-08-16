@@ -118,31 +118,9 @@ comptime TOL_OBS: Float64 = 1e-13
 comptime TOL_REWARD: Float64 = 0.0  # sparse; must agree exactly
 
 
-def _build_model() raises -> Model[
-    DTYPE,
-    NV,
-    NBODY,
-    NJOINT,
-    NGEOM,
-    DMBallInCupModel.MAX_EQUALITY,
-    NTEN,
-    NSITE,
-    DMBallInCupModel.NEXCLUDE,
-    0,
-]:
+def _build_model() raises -> Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=DMBallInCupModel.MAX_EQUALITY, ntendon=NTEN, nsite=NSITE, nexclude=DMBallInCupModel.NEXCLUDE, nmesh_verts=0]]:
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE,
-        NV,
-        NBODY,
-        NJOINT,
-        NGEOM,
-        DMBallInCupModel.MAX_EQUALITY,
-        NTEN,
-        NSITE,
-        DMBallInCupModel.NEXCLUDE,
-        0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=DMBallInCupModel.MAX_EQUALITY, ntendon=NTEN, nsite=NSITE, nexclude=DMBallInCupModel.NEXCLUDE, nmesh_verts=0]]()
     DMBallInCupModel.init_fields[DTYPE, 0](ctx, mf)
     return mf^
 

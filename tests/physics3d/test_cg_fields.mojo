@@ -91,7 +91,7 @@ def _fields_prep[
     target: StaticString
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
-    mut mf: Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
     mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
@@ -207,10 +207,8 @@ def _init_state(mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]):
             d.qfrc.data[e * NV + i] = qf
 
 
-def _load_model(ctx: DeviceContext) raises -> Model[
-    DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0
-]:
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+def _load_model(ctx: DeviceContext) raises -> Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]:
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
     return mf^
 

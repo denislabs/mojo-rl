@@ -41,7 +41,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -75,10 +75,7 @@ def test_walker2d_body_velocities() raises:
     var model = mj.MjModel.from_xml_path("mojo_rl/envs/walker2d/assets/walker2d.xml")
     var data = mj.MjData(model)
     var ctx = DeviceContext()
-    var mf = Model[
-        DType.float64, M.NV, M.NBODY, M.NJOINT, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DType.float64, 0](ctx, mf)
     var d = Data[
         DType.float64, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1
@@ -130,10 +127,7 @@ def test_hopper_body_velocities() raises:
     var model = mj.MjModel.from_xml_path("mojo_rl/envs/hopper/assets/hopper.xml")
     var data = mj.MjData(model)
     var ctx = DeviceContext()
-    var mf = Model[
-        DType.float64, M.NV, M.NBODY, M.NJOINT, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DType.float64, 0](ctx, mf)
     var d = Data[
         DType.float64, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1
@@ -187,10 +181,7 @@ def test_ant_body_velocities() raises:
     var model = mj.MjModel.from_xml_path("mojo_rl/envs/ant/assets/ant.xml")
     var data = mj.MjData(model)
     var ctx = DeviceContext()
-    var mf = Model[
-        DType.float64, M.NV, M.NBODY, M.NJOINT, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DType.float64, 0](ctx, mf)
     var d = Data[
         DType.float64, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1
@@ -262,10 +253,7 @@ def test_humanoid_body_velocities() raises:
     var model = mj.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/humanoid.xml")
     var data = mj.MjData(model)
     var ctx = DeviceContext()
-    var mf = Model[
-        DType.float64, M.NV, M.NBODY, M.NJOINT, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DType.float64, 0](ctx, mf)
     var d = Data[
         DType.float64, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1

@@ -135,7 +135,7 @@ def test_walker2d() raises:
     print("--- A. Walker2D fields FK + dynamics chain, BATCH=", BATCH, "---")
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     var qcfg = List[List[Float64]]()
@@ -339,7 +339,7 @@ def test_synthetic_sites() raises:
     # tensors (no offset slab, no load_from_slab): worldbody + 1 hinge body,
     # 2 sites. Each record family packs as `record_idx * MODEL_<KIND>_SIZE +
     # <KIND>_IDX_*`; meta is a standalone tensor.
-    var mf = Model[DTYPE, S_NV, S_NBODY, S_NJOINT, 0, 0, 0, S_NSITE]()
+    var mf = Model[DTYPE, Dims[nv=S_NV, nbody=S_NBODY, njoint=S_NJOINT, ngeom=0, nequality=0, ntendon=0, nsite=S_NSITE]]()
     mf.bodies.data[0 * MODEL_BODY_SIZE + BODY_IDX_QUAT_W] = 1.0
     var b1 = 1 * MODEL_BODY_SIZE
     mf.bodies.data[b1 + BODY_IDX_PARENT] = 0.0

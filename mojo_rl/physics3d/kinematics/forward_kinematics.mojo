@@ -30,7 +30,7 @@ from .quat_math import (
     gpu_axis_angle_to_quat,
 )
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
-from ..fields import Data, Model
+from ..fields import Data, Model, Dims
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
@@ -782,19 +782,7 @@ def forward_kinematics[
     NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: Model[
-        DTYPE,
-        NV,
-        NBODY,
-        NJOINT,
-        NGEOM,
-        NEQUALITY,
-        NTENDON,
-        NSITE,
-        NEXCLUDE,
-        NMESH_VERTS,
-        NPAIR,
-    ],
+    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Forward kinematics qpos -> xpos/xquat/xipos (+ site_xpos) over
@@ -1426,19 +1414,7 @@ def compute_body_velocities[
     NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: Model[
-        DTYPE,
-        NV,
-        NBODY,
-        NJOINT,
-        NGEOM,
-        NEQUALITY,
-        NTENDON,
-        NSITE,
-        NEXCLUDE,
-        NMESH_VERTS,
-        NPAIR,
-    ],
+    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Body world velocities qvel -> xvel/xangvel (needs FK products), both

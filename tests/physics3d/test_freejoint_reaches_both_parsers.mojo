@@ -43,7 +43,7 @@ from std.python import Python
 from std.testing import assert_true, TestSuite
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.fields import Model, Data
+from mojo_rl.physics3d.fields import Model, Data, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.gpu.constants import (
@@ -149,11 +149,7 @@ def test_runtime_parser_sets_weldid_and_the_pair_collides() raises:
     var mj_ncon = Int(py=md.ncon)
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, MD_FJ.NV, MD_FJ.NBODY, MD_FJ.NJOINT, MD_FJ.NGEOM,
-        MD_FJ.MAX_EQUALITY, MD_FJ.MAX_TENDON, MD_FJ.NSITE, MD_FJ.NEXCLUDE,
-        NMV, MD_FJ.NPAIR,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=MD_FJ.NV, nbody=MD_FJ.NBODY, njoint=MD_FJ.NJOINT, ngeom=MD_FJ.NGEOM, nequality=MD_FJ.MAX_EQUALITY, ntendon=MD_FJ.MAX_TENDON, nsite=MD_FJ.NSITE, nexclude=MD_FJ.NEXCLUDE, nmesh_verts=NMV, npair=MD_FJ.NPAIR]]()
     MD_FJ.init_fields[DTYPE, NMV](ctx, mf)
     var d = Data[
         DTYPE, MD_FJ.NQ, MD_FJ.NV, MD_FJ.NBODY, MD_FJ.MAX_CONTACTS,

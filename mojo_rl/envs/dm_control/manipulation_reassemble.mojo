@@ -52,7 +52,7 @@ from std.collections import InlineArray
 from std.math import abs, sqrt, sin, cos, pi
 from std.random import random_float64
 
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
@@ -213,9 +213,7 @@ def read_brick_pos[
     MAXC: Int,
 ](
     d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
-    mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
-    ],
+    mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     body: Int,
     qpos_adr: Int,
 ) -> InlineArray[Scalar[DTYPE], 3]:
@@ -249,9 +247,7 @@ def read_brick_quat[
     MAXC: Int,
 ](
     d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
-    mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
-    ],
+    mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     body: Int,
     qpos_adr: Int,
 ) -> InlineArray[Scalar[DTYPE], 4]:
@@ -288,9 +284,7 @@ def write_brick_pos[
     MAXC: Int,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
-    mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     body: Int,
     qpos_adr: Int,
     pos: InlineArray[Scalar[DTYPE], 3],
@@ -330,9 +324,7 @@ def write_brick_quat[
     MAXC: Int,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
-    mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     body: Int,
     qpos_adr: Int,
     quat: InlineArray[Scalar[DTYPE], 4],
@@ -371,9 +363,7 @@ def build_stack[
     MAX_CONTACTS: Int,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
-    mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     order: List[Int],
     fixed_brick: Int,
     base_pos: InlineArray[Scalar[DTYPE], 3],
@@ -655,9 +645,7 @@ def reassemble_reset_full[
     MAX_CONTACTS: Int,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
-    mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     initial: List[Int],
     n_bricks: Int,
     fixed_brick: Int,
@@ -972,9 +960,7 @@ def reassemble_random_reset_full[
     MAX_CONTACTS: Int,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
-    mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV, NPAIR
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     n: Int,
     fixed_brick: Int,
     caller: String,

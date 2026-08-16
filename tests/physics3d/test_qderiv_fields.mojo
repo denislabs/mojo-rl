@@ -56,7 +56,7 @@ def main() raises:
     print("=== Stage-I qderiv parity: Walker2D NV=", NV, " ===")
     var ctx = DeviceContext()
 
-    var mf = Model[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DT, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     Walker2dModel.init_fields[DT, 0](ctx, mf)
 
     var d = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()

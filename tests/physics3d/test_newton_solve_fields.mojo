@@ -169,7 +169,7 @@ def _fields_prep[
     target: StaticString
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
-    mut mf: Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
     mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
@@ -328,7 +328,7 @@ def run_leg[
     print("--- Newton solve leg:", leg, "(BATCH=", BATCH, ")")
 
     # === Model ===
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # === State (walker on the floor; env 1 with one joint past its limit) ===
@@ -458,7 +458,7 @@ def run_cpu_smoke(ctx: DeviceContext) raises:
     """Single-source CPU path smoke: fields-CPU Newton solve close to
     fields-GPU (iterative solver -> loose cross-target tolerance)."""
     print("--- Newton solve fields-CPU vs fields-GPU smoke (ELLIPTIC)")
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()

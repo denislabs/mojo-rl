@@ -321,12 +321,7 @@ struct ImplicitIntegrator[
             Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.MAX_CONTACTS,
             Self.NSITE, Self.BATCH,
         ],
-        mut m: Model[
-            Self.DTYPE, Self.NV, Self.NBODY, Self.NJOINT, Self.NGEOM,
-            Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
-            Self.NMESH_VERTS,
-            Self.NPAIR,
-        ],
+        mut m: Model[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY, njoint=Self.NJOINT, ngeom=Self.NGEOM, nequality=Self.NEQUALITY, ntendon=Self.NTENDON, nsite=Self.NSITE, nexclude=Self.NEXCLUDE, nmesh_verts=Self.NMESH_VERTS, npair=Self.NPAIR]],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         """One full implicit step."""

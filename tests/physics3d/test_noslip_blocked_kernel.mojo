@@ -223,9 +223,7 @@ def _prep[
     target: StaticString
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
-    mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, NMV, NPAIR
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMV, npair=NPAIR]],
     mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
@@ -388,9 +386,7 @@ def _solve[
         max_condim=pc.MAX_CONDIM,
         noslip_iter=NOSLIP,
     ]
-    var mf = Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, NMV, NPAIR
-    ]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMV, npair=NPAIR]]()
     MD.init_fields[DTYPE, NMV](ctx, mf)
     var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     _slam_state[VSCALE](d)

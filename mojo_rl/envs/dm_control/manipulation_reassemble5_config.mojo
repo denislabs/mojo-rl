@@ -27,7 +27,7 @@ observation emits `desired_order` as drawn and the brick blocks through
 twelve slots hold the two orders; four would not have been enough for one.
 """
 
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
 from mojo_rl.envs.dm_control.manipulation_reassemble import (
     append_reassemble_random_obs,
@@ -162,10 +162,7 @@ struct Reassemble5Config(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
     ](
         mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
-        mut mf: Model[
-            DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR,
-        ],
+        mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     ) raises:
         reassemble_random_reset_full[
             DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,

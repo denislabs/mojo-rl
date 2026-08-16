@@ -30,7 +30,7 @@ from std.python import Python
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -55,10 +55,7 @@ def test_subtree_linvel_matches_mujoco() raises:
     var data = mj.MjData(model)
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DType.float64, M.NV, M.NBODY, M.NJOINT, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DType.float64, 0](ctx, mf)
     var d = Data[
         DType.float64, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1

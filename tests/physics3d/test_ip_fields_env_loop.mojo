@@ -24,7 +24,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.envs.phyics3d_obs import extract_obs_qpos_qvel
 from mojo_rl.envs.inverted_pendulum.inverted_pendulum_xml import (
     InvertedPendulumModel,
@@ -75,7 +75,7 @@ def main() raises:
     )
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     IPM.init_fields[DTYPE, 0](ctx, mf)
 
     var pole0 = List[Float64]()

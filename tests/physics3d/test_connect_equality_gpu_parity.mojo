@@ -40,7 +40,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
-from mojo_rl.physics3d.fields import Model, Data
+from mojo_rl.physics3d.fields import Model, Data, Dims
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.gpu.constants import MODEL_META_IDX_NEQUALITY
@@ -136,10 +136,7 @@ def _parity[M: ModelDefFromXML, SOLVER: StaticString](
 ) raises:
     """Step CPU and GPU side by side, then prove the connect actually ran."""
     var sf = M.make_spec_fields[DTYPE]()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0, M.NPAIR,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0, npair=M.NPAIR]]()
     M.init_fields[DTYPE, 0](ctx, mf)
 
     # The equality must have survived serialization — MAX_EQUALITY sizes the

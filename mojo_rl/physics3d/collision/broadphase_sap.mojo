@@ -36,7 +36,7 @@ from ..constants import (
     GEOM_MESH,
     GEOM_ELLIPSOID,
 )
-from ..fields import Data, Model
+from ..fields import Data, Model, Dims
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_GEOM_SIZE,
@@ -1829,19 +1829,7 @@ def detect_contacts_sap[
     NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: Model[
-        DTYPE,
-        NV,
-        NBODY,
-        NJOINT,
-        NGEOM,
-        NEQUALITY,
-        NTENDON,
-        NSITE,
-        NEXCLUDE,
-        NMESH_VERTS,
-        NPAIR,
-    ],
+    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """AABB/SAP broadphase geom contact detection from FK products, both
@@ -1948,19 +1936,7 @@ def detect_contacts_auto[
     NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
-    mut m: Model[
-        DTYPE,
-        NV,
-        NBODY,
-        NJOINT,
-        NGEOM,
-        NEQUALITY,
-        NTENDON,
-        NSITE,
-        NEXCLUDE,
-        NMESH_VERTS,
-        NPAIR,
-    ],
+    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Contact detection with automatic broadphase selection (fields).

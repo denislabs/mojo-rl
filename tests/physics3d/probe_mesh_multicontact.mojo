@@ -20,7 +20,7 @@ from layout import Layout
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.gjk import gjk_epa_witness
 from mojo_rl.physics3d.collision.native_multicontact import (
@@ -97,10 +97,7 @@ comptime MC: Int = PXM.MAX_CONTACTS
 comptime NGEOM: Int = PXM.NGEOM
 
 comptime Dat = Data[DTYPE, NQ, NV, NBODY, MC, PXM.NSITE, 1]
-comptime Mod = Model[
-    DTYPE, NV, NBODY, PXM.NJOINT, NGEOM, PXM.MAX_EQUALITY, PXM.MAX_TENDON,
-    PXM.NSITE, PXM.NEXCLUDE, NMESHV,
-]
+comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=PXM.NJOINT, ngeom=NGEOM, nequality=PXM.MAX_EQUALITY, ntendon=PXM.MAX_TENDON, nsite=PXM.NSITE, nexclude=PXM.NEXCLUDE, nmesh_verts=NMESHV]]
 
 
 def main() raises:

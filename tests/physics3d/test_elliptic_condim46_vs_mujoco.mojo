@@ -95,7 +95,7 @@ from std.testing import assert_true, TestSuite
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Model, Data
+from mojo_rl.physics3d.fields import Model, Data, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from max.gpu.host import DeviceContext
@@ -377,10 +377,7 @@ def _rollout[
     """
     var sf = MD.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, MD.NV, MD.NBODY, MD.NJOINT, MD.NGEOM, MD.MAX_EQUALITY,
-        MD.MAX_TENDON, MD.NSITE, MD.NEXCLUDE, 0, MD.NPAIR,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=MD.NV, nbody=MD.NBODY, njoint=MD.NJOINT, ngeom=MD.NGEOM, nequality=MD.MAX_EQUALITY, ntendon=MD.MAX_TENDON, nsite=MD.NSITE, nexclude=MD.NEXCLUDE, nmesh_verts=0, npair=MD.NPAIR]]()
     MD.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.MAX_CONTACTS, MD.NSITE, 1]()
     MD.reset_data[DTYPE](sf, d)

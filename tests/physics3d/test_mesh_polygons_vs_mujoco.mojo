@@ -29,7 +29,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_MESH_META_SIZE,
     MODEL_MESH_POLY_SIZE,
@@ -84,10 +84,7 @@ comptime MPM = ModelDefFromXML[
 ]
 
 comptime NMESHV: Int = 64
-comptime Mod = Model[
-    DTYPE, MPM.NV, MPM.NBODY, MPM.NJOINT, MPM.NGEOM, MPM.MAX_EQUALITY,
-    MPM.MAX_TENDON, MPM.NSITE, MPM.NEXCLUDE, NMESHV,
-]
+comptime Mod = Model[DTYPE, Dims[nv=MPM.NV, nbody=MPM.NBODY, njoint=MPM.NJOINT, ngeom=MPM.NGEOM, nequality=MPM.MAX_EQUALITY, ntendon=MPM.MAX_TENDON, nsite=MPM.NSITE, nexclude=MPM.NEXCLUDE, nmesh_verts=NMESHV]]
 
 comptime TOL: Float64 = 1e-6
 

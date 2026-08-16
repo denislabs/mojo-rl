@@ -36,7 +36,7 @@ from std.testing import TestSuite
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -321,10 +321,7 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     print("  humanoid NGEOM=", NGEOM_H, " SAP_THRESHOLD=", SAP_THRESHOLD)
     comptime assert NGEOM_H >= SAP_THRESHOLD, "humanoid must route to SAP"
 
-    var mf = Model[
-        DTYPE, NV_H, NBODY_H, NJOINT_H, NGEOM_H, NEQ_H, NTD_H, NSITE_H,
-        NEXCL_H, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=NV_H, nbody=NBODY_H, njoint=NJOINT_H, ngeom=NGEOM_H, nequality=NEQ_H, ntendon=NTD_H, nsite=NSITE_H, nexclude=NEXCL_H, nmesh_verts=0]]()
     HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
 
     var d = Data[DTYPE, NQ_H, NV_H, NBODY_H, MC_H, NSITE_H, BATCH]()
@@ -583,10 +580,7 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
     print("  sawyer NGEOM=", NGEOM_S)
 
     # Fields-native model build (STL hulls, NMESHV_S-padded — Stage B).
-    var mf = Model[
-        DTYPE, NV_S, NBODY_S, NJOINT_S, NGEOM_S, NEQ_S, NTD_S, NSITE_S,
-        0, NMESHV_S,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=NV_S, nbody=NBODY_S, njoint=NJOINT_S, ngeom=NGEOM_S, nequality=NEQ_S, ntendon=NTD_S, nsite=NSITE_S, nexclude=0, nmesh_verts=NMESHV_S]]()
     SawyerReachModel.init_fields[DTYPE, NMESHV_S](ctx, mf)
 
     # Locate the obj cylinder + mesh-geom bodies for the non-vacuity check.
@@ -761,7 +755,7 @@ def _part_c_walker(ctx: DeviceContext) raises:
     print("  walker2d NGEOM=", NGEOM_W)
     comptime assert NGEOM_W < SAP_THRESHOLD, "walker2d must route to O(N^2)"
 
-    var mf = Model[DTYPE, NV_W, NBODY_W, NJOINT_W, NGEOM_W, NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0]()
+    var mf = Model[DTYPE, Dims[nv=NV_W, nbody=NBODY_W, njoint=NJOINT_W, ngeom=NGEOM_W, nequality=NEQ_W, ntendon=NTD_W, nsite=NSITE_W, nexclude=NEXCL_W, nmesh_verts=0]]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Poses from test_contact_detection_fields (floor penetration).

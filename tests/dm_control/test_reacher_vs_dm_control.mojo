@@ -48,7 +48,7 @@ from mojo_rl.envs.dm_control.reacher import (
 )
 from mojo_rl.envs.phyics3d_env import Phyics3dEnv
 from mojo_rl.physics3d.model import ModelDefLike
-from mojo_rl.physics3d.fields import Model
+from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.kinematics.geom_xpos import geom_xpos
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
@@ -120,31 +120,9 @@ def _setup() raises -> PythonObject:
     return Python.tuple(mujoco, model, data, tol)
 
 
-def _build_model() raises -> Model[
-    DType.float64,
-    DMReacherModel.NV,
-    DMReacherModel.NBODY,
-    DMReacherModel.NJOINT,
-    DMReacherModel.NGEOM,
-    DMReacherModel.MAX_EQUALITY,
-    DMReacherModel.MAX_TENDON,
-    DMReacherModel.NSITE,
-    DMReacherModel.NEXCLUDE,
-    0,
-]:
+def _build_model() raises -> Model[DType.float64, Dims[nv=DMReacherModel.NV, nbody=DMReacherModel.NBODY, njoint=DMReacherModel.NJOINT, ngeom=DMReacherModel.NGEOM, nequality=DMReacherModel.MAX_EQUALITY, ntendon=DMReacherModel.MAX_TENDON, nsite=DMReacherModel.NSITE, nexclude=DMReacherModel.NEXCLUDE, nmesh_verts=0]]:
     var ctx = DeviceContext()
-    var mf = Model[
-        DType.float64,
-        DMReacherModel.NV,
-        DMReacherModel.NBODY,
-        DMReacherModel.NJOINT,
-        DMReacherModel.NGEOM,
-        DMReacherModel.MAX_EQUALITY,
-        DMReacherModel.MAX_TENDON,
-        DMReacherModel.NSITE,
-        DMReacherModel.NEXCLUDE,
-        0,
-    ]()
+    var mf = Model[DType.float64, Dims[nv=DMReacherModel.NV, nbody=DMReacherModel.NBODY, njoint=DMReacherModel.NJOINT, ngeom=DMReacherModel.NGEOM, nequality=DMReacherModel.MAX_EQUALITY, ntendon=DMReacherModel.MAX_TENDON, nsite=DMReacherModel.NSITE, nexclude=DMReacherModel.NEXCLUDE, nmesh_verts=0]]()
     DMReacherModel.init_fields[DType.float64, 0](ctx, mf)
     return mf^
 

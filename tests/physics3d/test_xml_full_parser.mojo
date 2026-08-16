@@ -27,7 +27,7 @@ Expected output:
 from mojo_rl.physics3d.parser import ParsedModel, parse_xml
 from mojo_rl.physics3d.parser import FlatModelDef
 from mojo_rl.physics3d.parser import parse_xml_full
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
@@ -194,9 +194,7 @@ def test_xml_full_parser() raises:
     # Step 3: Full round-trip — spec-direct fields build + fields FK (G4)
     # =========================================================================
     print("=== FK round-trip (fields) ===")
-    var mf = Model[
-        DType.float64, pm.NV, pm.NBODY, pm.NJOINT, pm.NGEOM, 0, 0, 0, 0, 0,
-    ]()
+    var mf = Model[DType.float64, Dims[nv=pm.NV, nbody=pm.NBODY, njoint=pm.NJOINT, ngeom=pm.NGEOM, nequality=0, ntendon=0, nsite=0, nexclude=0, nmesh_verts=0]]()
     # ⚠ THE FlatModelDef DIMS ARE GONE from this parameter list — all fourteen.
     # `FlatModelDef` is List-backed since 2026-08-05, so its counts come from
     # the Lists. What remains is the MODEL side, which still sizes

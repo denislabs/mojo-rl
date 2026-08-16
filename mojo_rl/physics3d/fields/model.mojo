@@ -27,6 +27,8 @@ from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 
+from .dims import DimsLike
+
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -59,25 +61,33 @@ def _at_least_one(n: Int) -> Int:
 
 struct Model[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
-    # ⚠ APPENDED, NOT GROUPED WITH `NEXCLUDE`. Every parameter here is an
-    # `Int`, so inserting one mid-list shifts every positional instantiation
-    # silently — `NMESH_VERTS` would take `NPAIR`'s value and mesh collision
-    # would switch itself off across the tree with nothing to compile-error
-    # on. That exact failure has happened here before. New dimensions go on
-    # the END.
-    NPAIR: Int = 0,
+    D: DimsLike,
 ](Movable):
     """Static model config as one packed tensor per record family (13
     tensors). See module docstring."""
+
+    # ⚠ THE POSITIONAL HAZARD THIS STRUCT DOCUMENTED IS GONE.
+    #
+    # The parameter list used to carry a standing warning: every entry was an
+    # `Int`, so inserting one mid-list silently shifted every positional
+    # instantiation — `NMESH_VERTS` would take `NPAIR`'s value and mesh
+    # collision would switch itself off across the tree with nothing to
+    # compile-error on, and the comment recorded that "that exact failure has
+    # happened here before". New dimensions had to go on the END, forever.
+    #
+    # With one `D` there are no positions to shift: a dimension is named, and
+    # the 272 call sites that used to spell 7, 9 or 10 `Int`s in a fixed order
+    # now name none. New dimensions can go anywhere in `DimsLike`.
+    comptime NV = Self.D.NV
+    comptime NBODY = Self.D.NBODY
+    comptime NJOINT = Self.D.NJOINT
+    comptime NGEOM = Self.D.NGEOM
+    comptime NEQUALITY = Self.D.NEQUALITY
+    comptime NTENDON = Self.D.NTENDON
+    comptime NSITE = Self.D.NSITE
+    comptime NEXCLUDE = Self.D.NEXCLUDE
+    comptime NMESH_VERTS = Self.D.NMESH_VERTS
+    comptime NPAIR = Self.D.NPAIR
 
 
     # Record view layouts ([N_ENTITY, RECORD_SIZE] row-major; tails 1-D).

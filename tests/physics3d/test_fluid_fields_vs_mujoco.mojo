@@ -62,7 +62,7 @@ def main() raises:
     var ctx = DeviceContext()
 
     # === Fields model + data ===
-    var mf = Model[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DT, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     SwimmerModel.init_fields[DT, 0](ctx, mf)
 
     var d = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()

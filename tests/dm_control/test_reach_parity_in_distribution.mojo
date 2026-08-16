@@ -50,7 +50,7 @@ from std.math import abs
 from std.python import Python
 from std.testing import assert_true, TestSuite
 
-from mojo_rl.physics3d.fields import Model, Data
+from mojo_rl.physics3d.fields import Model, Data, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
@@ -98,10 +98,7 @@ def test_contact_free_dynamics_match_mujoco() raises:
     var nu = Int(py=m.nu)
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, MD.NV, MD.NBODY, MD.NJOINT, MD.NGEOM, MD.MAX_EQUALITY,
-        MD.MAX_TENDON, MD.NSITE, MD.NEXCLUDE, NMV, MD.NPAIR,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=MD.NV, nbody=MD.NBODY, njoint=MD.NJOINT, ngeom=MD.NGEOM, nequality=MD.MAX_EQUALITY, ntendon=MD.MAX_TENDON, nsite=MD.NSITE, nexclude=MD.NEXCLUDE, nmesh_verts=NMV, npair=MD.NPAIR]]()
     MD.init_fields[DTYPE, NMV](ctx, mf)
     var d = Data[DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.MAX_CONTACTS, MD.NSITE, 1]()
     MD.reset_data[DTYPE](sf, d)
@@ -207,10 +204,7 @@ def test_shallow_contact_parity() raises:
     var nu = Int(py=m.nu)
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, MD.NV, MD.NBODY, MD.NJOINT, MD.NGEOM, MD.MAX_EQUALITY,
-        MD.MAX_TENDON, MD.NSITE, MD.NEXCLUDE, NMV, MD.NPAIR,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=MD.NV, nbody=MD.NBODY, njoint=MD.NJOINT, ngeom=MD.NGEOM, nequality=MD.MAX_EQUALITY, ntendon=MD.MAX_TENDON, nsite=MD.NSITE, nexclude=MD.NEXCLUDE, nmesh_verts=NMV, npair=MD.NPAIR]]()
     MD.init_fields[DTYPE, NMV](ctx, mf)
     var d = Data[DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.MAX_CONTACTS, MD.NSITE, 1]()
     MD.reset_data[DTYPE](sf, d)

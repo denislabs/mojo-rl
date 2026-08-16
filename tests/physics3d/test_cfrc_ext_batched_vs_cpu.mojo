@@ -31,7 +31,7 @@ from std.math import abs
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu import compute_cfrc_ext
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -54,10 +54,7 @@ comptime Integ = EulerIntegrator[
     SOLVER="newton", RNE_POST=True,
 ]
 comptime Dat = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]
-comptime Mod = Model[
-    DTYPE, NV, NBODY, Mdl.NJOINT, Mdl.NGEOM, Mdl.MAX_EQUALITY,
-    Mdl.MAX_TENDON, NSITE, Mdl.NEXCLUDE, 0,
-]
+comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=Mdl.NJOINT, ngeom=Mdl.NGEOM, nequality=Mdl.MAX_EQUALITY, ntendon=Mdl.MAX_TENDON, nsite=NSITE, nexclude=Mdl.NEXCLUDE, nmesh_verts=0]]
 
 # FLOAT32, because the batched path is a Metal kernel and Metal has no float64.
 #

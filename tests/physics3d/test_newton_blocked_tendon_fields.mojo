@@ -136,7 +136,7 @@ def _fields_prep[
     target: StaticString
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
-    mut mf: Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
     mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
@@ -242,7 +242,7 @@ def _fields_prep[
 
 
 def _ten_length(
-    mf: Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
+    mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
     d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
     env: Int,
 ) -> Float64:
@@ -274,7 +274,7 @@ def _seed(mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]):
 def test_blocked_tendon_rows_gpu_vs_cpu() raises:
     """Part A — cooperative GPU vs serial CPU, same prepared state."""
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     DMBallInCupModel.init_fields[DTYPE, 0](ctx, mf)
 
     var dg = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
@@ -346,7 +346,7 @@ def test_blocked_tendon_rows_gpu_vs_cpu() raises:
 
 def test_blocked_matches_per_env_solver() raises:
     """Part B — blocked CPU vs the per-env `solve_newton` CPU path."""
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     var ctx = DeviceContext()
     DMBallInCupModel.init_fields[DTYPE, 0](ctx, mf)
 

@@ -11,7 +11,7 @@ from std.random import seed, random_float64
 from mojo_rl.envs.metaworld import SawyerReach
 from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Model
+from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     GEOM_IDX_TYPE,
@@ -76,10 +76,7 @@ def test_sawyer_no_nan() raises:
     # were unused BECAUSE the capacity was zero, which is what kept mesh geoms
     # from colliding in every env until 2026-08-10.
     var ctx = DeviceContext()
-    var mfd = Model[
-        DType.float64, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 16 * 256,
-    ]()
+    var mfd = Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=16 * 256]]()
     M.init_fields[DType.float64, 16 * 256](ctx, mfd)
     var grip_mesh = Int(
         mfd.geoms.data[27 * MODEL_GEOM_SIZE + GEOM_IDX_MESH_ID]

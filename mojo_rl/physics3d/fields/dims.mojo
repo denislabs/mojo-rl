@@ -7,6 +7,10 @@ Today every container spells its dimensions out one `Int` at a time:
     Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]
     Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE,
           NEXCLUDE, NMESH_VERTS, NPAIR]
+      (^ the BEFORE picture — the converter rewrote this example in place on
+       the `Model` pass, because it matches call sites by bracket structure
+       and cannot tell code from prose. Restored by hand; worth knowing that
+       an automated repoint edits documentation too.)
 
 That is **924 spellings across the tree** and 2 247 dimension parameters, of
 which 1 457 are in `mojo_rl/envs` reward/observation code doing nothing but

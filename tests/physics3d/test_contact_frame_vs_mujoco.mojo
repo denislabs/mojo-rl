@@ -45,7 +45,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.collision.contact_frame import contact_tangent_frame
@@ -207,10 +207,7 @@ comptime TOL_FRAME: Float64 = 1e-12
 comptime TOL_NORMAL: Float64 = 1e-14
 
 comptime Dat = Data[DTYPE, FM.NQ, FM.NV, FM.NBODY, FM.MAX_CONTACTS, FM.NSITE, 1]
-comptime Mod = Model[
-    DTYPE, FM.NV, FM.NBODY, FM.NJOINT, FM.NGEOM, FM.MAX_EQUALITY,
-    FM.MAX_TENDON, FM.NSITE, FM.NEXCLUDE, 0,
-]
+comptime Mod = Model[DTYPE, Dims[nv=FM.NV, nbody=FM.NBODY, njoint=FM.NJOINT, ngeom=FM.NGEOM, nequality=FM.MAX_EQUALITY, ntendon=FM.MAX_TENDON, nsite=FM.NSITE, nexclude=FM.NEXCLUDE, nmesh_verts=0]]
 
 
 def test_default_axis_matches_mju_makeFrame() raises:

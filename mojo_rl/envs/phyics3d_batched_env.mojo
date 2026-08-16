@@ -169,19 +169,7 @@ struct Phyics3dBatchedEnv[
     var d: Data[
         DT, Self.NQ, Self.NV, Self.NBODY, Self.MC, Self.NSITE, Self.N_ENVS
     ]
-    var mf: Model[
-        DT,
-        Self.NV,
-        Self.NBODY,
-        Self.NJOINT,
-        Self.NGEOM,
-        Self.MODEL_DEF.MAX_EQUALITY,
-        Self.MODEL_DEF.MAX_TENDON,
-        Self.NSITE,
-        Self.MODEL_DEF.NEXCLUDE,
-        0,
-        Self.MODEL_DEF.NPAIR,
-    ]
+    var mf: Model[DT, Dims[nv=Self.NV, nbody=Self.NBODY, njoint=Self.NJOINT, ngeom=Self.NGEOM, nequality=Self.MODEL_DEF.MAX_EQUALITY, ntendon=Self.MODEL_DEF.MAX_TENDON, nsite=Self.NSITE, nexclude=Self.MODEL_DEF.NEXCLUDE, nmesh_verts=0, npair=Self.MODEL_DEF.NPAIR]]
     # Actuation records (phase 1a.2/1a.3) — the operands
     # `apply_actions_kernel_gpu` reads where it used to read comptime
     # literals. Uploaded once at construction, like `mf`.

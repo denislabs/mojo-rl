@@ -42,7 +42,7 @@ from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.envs.dm_control.fish import DMFishUprightModel
-from mojo_rl.physics3d.fields import Model, Data
+from mojo_rl.physics3d.fields import Model, Data, Dims
 from mojo_rl.physics3d.kinematics.quat_math import quat2vel
 from mojo_rl.physics3d.kinematics.integrate_pos import integrate_pos
 from mojo_rl.physics3d.gpu.constants import (
@@ -188,10 +188,7 @@ def test_integrate_pos_matches_mujoco() raises:
     assert_true(Int(py=mm.nv) == NV, "nv mismatch")
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, NV, M.NBODY, NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=M.NBODY, njoint=NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, NQ, NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
     M.reset_data[DTYPE](sf, d)

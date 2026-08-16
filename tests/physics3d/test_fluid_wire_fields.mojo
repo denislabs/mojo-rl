@@ -12,7 +12,7 @@ from std.math import abs
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.integrator.implicit import (
@@ -37,10 +37,8 @@ comptime BATCH = 1
 comptime N_STEPS = 3
 
 
-def _load_model(ctx: DeviceContext) raises -> Model[
-    DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0
-]:
-    var mf = Model[DT, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+def _load_model(ctx: DeviceContext) raises -> Model[DT, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]:
+    var mf = Model[DT, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     SwimmerModel.init_fields[DT, 0](ctx, mf)
     return mf^
 

@@ -247,19 +247,7 @@ trait ModelDefLike:
         DTYPE: DType, NMESHV: Int = 0
     ](
         ctx: DeviceContext,
-        mut mf: Model[
-            DTYPE,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.MAX_TENDON,
-            Self.NSITE,
-            Self.NEXCLUDE,
-            NMESHV,
-            Self.NPAIR,
-        ],
+        mut mf: Model[DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY, njoint=Self.NJOINT, ngeom=Self.NGEOM, nequality=Self.MAX_EQUALITY, ntendon=Self.MAX_TENDON, nsite=Self.NSITE, nexclude=Self.NEXCLUDE, nmesh_verts=NMESHV, npair=Self.NPAIR]],
     ) raises:
         """Build the Model record tensors + fields-native invweight0
         and upload. Implemented spec-direct by `ModelDefFromXML`

@@ -44,7 +44,7 @@ from mojo_rl.envs.dm_control.manipulator import (
     DMManipulatorBringBallConfig,
     TARGET_BODY_IDX,
 )
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
@@ -197,22 +197,9 @@ def _ref() raises -> PythonObject:
     return builder.model(False, False)
 
 
-def _build() raises -> Model[
-    DTYPE, NV, NBODY, NJOINT, NGEOM, M.MAX_EQUALITY, NTEN, NSITE, M.NEXCLUDE, 0
-]:
+def _build() raises -> Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=M.MAX_EQUALITY, ntendon=NTEN, nsite=NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]:
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE,
-        NV,
-        NBODY,
-        NJOINT,
-        NGEOM,
-        M.MAX_EQUALITY,
-        NTEN,
-        NSITE,
-        M.NEXCLUDE,
-        0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=M.MAX_EQUALITY, ntendon=NTEN, nsite=NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
     return mf^
 
@@ -656,7 +643,7 @@ comptime Integ = EulerIntegrator[
     NEXCL, 0, M.CONE_TYPE, 1, SOLVER="newton",
 ]
 comptime Dat = Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1]
-comptime Mod = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]
+comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]
 
 # Ball world position when the arm sits at the `C`/`D` pose — the `grasp`
 # site's (x, z). `ball_x`/`ball_z` carry `ref=".4"` matching the body's own

@@ -138,10 +138,7 @@ def compute_invweight0[
     NPAIR: Int = 0,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
-    mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE, NEXCLUDE,
-        NMESH_VERTS, NPAIR,
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
     mut sc: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], 1],
 ) raises:
     """Compute mf.body_invweight0 / mf.dof_invweight0 at qpos0 — see module

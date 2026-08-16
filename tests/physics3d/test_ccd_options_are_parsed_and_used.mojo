@@ -36,7 +36,7 @@ from max.gpu.host import DeviceContext
 from std.testing import assert_true, TestSuite
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.fields import Model
+from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.collision.gjk import gjk_epa
 from mojo_rl.physics3d.constants import GEOM_BOX, GEOM_CYLINDER
@@ -175,20 +175,12 @@ def test_option_reaches_model_meta() raises:
     print("=== ccd options reach model META ===")
     var ctx = DeviceContext()
 
-    var mf_a = Model[
-        DTYPE, MD_D.NV, MD_D.NBODY, MD_D.NJOINT, MD_D.NGEOM,
-        MD_D.MAX_EQUALITY, MD_D.MAX_TENDON, MD_D.NSITE, MD_D.NEXCLUDE, NMV,
-        MD_D.NPAIR,
-    ]()
+    var mf_a = Model[DTYPE, Dims[nv=MD_D.NV, nbody=MD_D.NBODY, njoint=MD_D.NJOINT, ngeom=MD_D.NGEOM, nequality=MD_D.MAX_EQUALITY, ntendon=MD_D.MAX_TENDON, nsite=MD_D.NSITE, nexclude=MD_D.NEXCLUDE, nmesh_verts=NMV, npair=MD_D.NPAIR]]()
     MD_D.init_fields[DTYPE, NMV](ctx, mf_a)
     var tol_a = Float64(mf_a.meta.data[MODEL_META_IDX_CCD_TOLERANCE])
     var itr_a = Float64(mf_a.meta.data[MODEL_META_IDX_CCD_ITERATIONS])
 
-    var mf_b = Model[
-        DTYPE, MD_L.NV, MD_L.NBODY, MD_L.NJOINT, MD_L.NGEOM,
-        MD_L.MAX_EQUALITY, MD_L.MAX_TENDON, MD_L.NSITE, MD_L.NEXCLUDE, NMV,
-        MD_L.NPAIR,
-    ]()
+    var mf_b = Model[DTYPE, Dims[nv=MD_L.NV, nbody=MD_L.NBODY, njoint=MD_L.NJOINT, ngeom=MD_L.NGEOM, nequality=MD_L.MAX_EQUALITY, ntendon=MD_L.MAX_TENDON, nsite=MD_L.NSITE, nexclude=MD_L.NEXCLUDE, nmesh_verts=NMV, npair=MD_L.NPAIR]]()
     MD_L.init_fields[DTYPE, NMV](ctx, mf_b)
     var tol_b = Float64(mf_b.meta.data[MODEL_META_IDX_CCD_TOLERANCE])
     var itr_b = Float64(mf_b.meta.data[MODEL_META_IDX_CCD_ITERATIONS])

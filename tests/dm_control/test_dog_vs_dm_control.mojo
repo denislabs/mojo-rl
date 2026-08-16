@@ -71,7 +71,7 @@ from mojo_rl.envs.dm_control.dog.dog_xml import (
     DOG_FRAME_SKIP,
     dsp,
 )
-from mojo_rl.physics3d.fields import Model
+from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -127,31 +127,9 @@ def _mj_from_our_xml() raises -> PythonObject:
     return mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
 
 
-def _build() raises -> Model[
-    DType.float64,
-    DMDogStandWalkModel.NV,
-    DMDogStandWalkModel.NBODY,
-    DMDogStandWalkModel.NJOINT,
-    DMDogStandWalkModel.NGEOM,
-    DMDogStandWalkModel.MAX_EQUALITY,
-    DMDogStandWalkModel.MAX_TENDON,
-    DMDogStandWalkModel.NSITE,
-    DMDogStandWalkModel.NEXCLUDE,
-    0,
-]:
+def _build() raises -> Model[DType.float64, Dims[nv=DMDogStandWalkModel.NV, nbody=DMDogStandWalkModel.NBODY, njoint=DMDogStandWalkModel.NJOINT, ngeom=DMDogStandWalkModel.NGEOM, nequality=DMDogStandWalkModel.MAX_EQUALITY, ntendon=DMDogStandWalkModel.MAX_TENDON, nsite=DMDogStandWalkModel.NSITE, nexclude=DMDogStandWalkModel.NEXCLUDE, nmesh_verts=0]]:
     var ctx = DeviceContext()
-    var mf = Model[
-        DType.float64,
-        DMDogStandWalkModel.NV,
-        DMDogStandWalkModel.NBODY,
-        DMDogStandWalkModel.NJOINT,
-        DMDogStandWalkModel.NGEOM,
-        DMDogStandWalkModel.MAX_EQUALITY,
-        DMDogStandWalkModel.MAX_TENDON,
-        DMDogStandWalkModel.NSITE,
-        DMDogStandWalkModel.NEXCLUDE,
-        0,
-    ]()
+    var mf = Model[DType.float64, Dims[nv=DMDogStandWalkModel.NV, nbody=DMDogStandWalkModel.NBODY, njoint=DMDogStandWalkModel.NJOINT, ngeom=DMDogStandWalkModel.NGEOM, nequality=DMDogStandWalkModel.MAX_EQUALITY, ntendon=DMDogStandWalkModel.MAX_TENDON, nsite=DMDogStandWalkModel.NSITE, nexclude=DMDogStandWalkModel.NEXCLUDE, nmesh_verts=0]]()
     DMDogStandWalkModel.init_fields[DType.float64, 0](ctx, mf)
     return mf^
 

@@ -39,7 +39,7 @@ from mojo_rl.envs.dm_control.acrobot import (
     TARGET_SITE_IDX,
     TIP_SITE_IDX,
 )
-from mojo_rl.physics3d.fields import Model
+from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -102,31 +102,9 @@ def _setup() raises -> PythonObject:
     return Python.tuple(mujoco, model, data, tol)
 
 
-def _build_model() raises -> Model[
-    DType.float64,
-    DMAcrobotModel.NV,
-    DMAcrobotModel.NBODY,
-    DMAcrobotModel.NJOINT,
-    DMAcrobotModel.NGEOM,
-    DMAcrobotModel.MAX_EQUALITY,
-    DMAcrobotModel.MAX_TENDON,
-    DMAcrobotModel.NSITE,
-    DMAcrobotModel.NEXCLUDE,
-    0,
-]:
+def _build_model() raises -> Model[DType.float64, Dims[nv=DMAcrobotModel.NV, nbody=DMAcrobotModel.NBODY, njoint=DMAcrobotModel.NJOINT, ngeom=DMAcrobotModel.NGEOM, nequality=DMAcrobotModel.MAX_EQUALITY, ntendon=DMAcrobotModel.MAX_TENDON, nsite=DMAcrobotModel.NSITE, nexclude=DMAcrobotModel.NEXCLUDE, nmesh_verts=0]]:
     var ctx = DeviceContext()
-    var mf = Model[
-        DType.float64,
-        DMAcrobotModel.NV,
-        DMAcrobotModel.NBODY,
-        DMAcrobotModel.NJOINT,
-        DMAcrobotModel.NGEOM,
-        DMAcrobotModel.MAX_EQUALITY,
-        DMAcrobotModel.MAX_TENDON,
-        DMAcrobotModel.NSITE,
-        DMAcrobotModel.NEXCLUDE,
-        0,
-    ]()
+    var mf = Model[DType.float64, Dims[nv=DMAcrobotModel.NV, nbody=DMAcrobotModel.NBODY, njoint=DMAcrobotModel.NJOINT, ngeom=DMAcrobotModel.NGEOM, nequality=DMAcrobotModel.MAX_EQUALITY, ntendon=DMAcrobotModel.MAX_TENDON, nsite=DMAcrobotModel.NSITE, nexclude=DMAcrobotModel.NEXCLUDE, nmesh_verts=0]]()
     DMAcrobotModel.init_fields[DType.float64, 0](ctx, mf)
     return mf^
 

@@ -40,7 +40,7 @@ from max.gpu.host import DeviceContext
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_TENDON_SIZE,
@@ -302,10 +302,7 @@ def _humanoid_qpos(e: Int, i: Int) -> Scalar[DTYPE]:
 def _part_a_tendon(ctx: DeviceContext) raises:
     print("--- Part A: Humanoid tendons fields GOLDEN, BATCH=", BATCH)
 
-    var mf = Model[
-        DTYPE, NV_A, NBODY_A, NJOINT_A, NGEOM_A, NEQ_A, NTEN_A, NSITE_A,
-        NEXCL_A, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=NV_A, nbody=NBODY_A, njoint=NJOINT_A, ngeom=NGEOM_A, nequality=NEQ_A, ntendon=NTEN_A, nsite=NSITE_A, nexclude=NEXCL_A, nmesh_verts=0]]()
     HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
 
     # <tendon><fixed> XML parsing was removed from the parser (see
@@ -549,10 +546,7 @@ def _part_b_equality(ctx: DeviceContext) raises:
 
     # Fields-native build — init_fields serializes the weld equality records
     # (Stage B fixed copy_equality_to_buffer, which init_model_gpu never called).
-    var mf = Model[
-        DTYPE, NV_B, NBODY_B, NJOINT_B, NGEOM_B, NEQ_B,
-        WeldTestModel.MAX_TENDON, WeldTestModel.NSITE, WeldTestModel.nexclude, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=NV_B, nbody=NBODY_B, njoint=NJOINT_B, ngeom=NGEOM_B, nequality=NEQ_B, ntendon=WeldTestModel.MAX_TENDON, nsite=WeldTestModel.NSITE, nexclude=WeldTestModel.nexclude, nmesh_verts=0]]()
     WeldTestModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Non-vacuity: init_fields must have serialized the weld (meta + record).

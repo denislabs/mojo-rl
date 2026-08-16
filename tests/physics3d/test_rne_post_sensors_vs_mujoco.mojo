@@ -36,7 +36,7 @@ from std.math import abs, sqrt
 from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.sensors import (
     site_accelerometer,
     site_force_torque,
@@ -66,7 +66,7 @@ comptime Integ = EulerIntegrator[
     NEXCL, 0, Mdl.CONE_TYPE, 1, SOLVER="newton", RNE_POST=True,
 ]
 comptime Dat = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]
-comptime Mod = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]
+comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]
 
 # ⚠ ALL FOUR BOUNDS WERE RE-PINNED 2026-08-03, two to three orders tighter,
 # and the reason is worth reading before loosening any of them again.

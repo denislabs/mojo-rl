@@ -108,19 +108,7 @@ struct Phyics3dEnv[
     comptime NSITE: Int = Self.MODEL_DEF.NSITE
 
     # Fields path (the physics state; hooks read/write it directly)
-    var mf: Model[
-        Self.DTYPE,
-        Self.NV,
-        Self.NBODY,
-        Self.NJOINT,
-        Self.NGEOM,
-        Self.MODEL_DEF.MAX_EQUALITY,
-        Self.MODEL_DEF.MAX_TENDON,
-        Self.NSITE,
-        Self.MODEL_DEF.NEXCLUDE,
-        Self.NMESH_VERTS,
-        Self.MODEL_DEF.NPAIR,
-    ]
+    var mf: Model[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY, njoint=Self.NJOINT, ngeom=Self.NGEOM, nequality=Self.MODEL_DEF.MAX_EQUALITY, ntendon=Self.MODEL_DEF.MAX_TENDON, nsite=Self.NSITE, nexclude=Self.MODEL_DEF.NEXCLUDE, nmesh_verts=Self.NMESH_VERTS, npair=Self.MODEL_DEF.NPAIR]]
     var d: Data[
         Self.DTYPE,
         Self.NQ,

@@ -55,7 +55,7 @@ from mojo_rl.envs.dm_control.manipulator import (
     OBJECT_QADR_Z,
     OBJECT_QADR_Y,
 )
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
@@ -102,10 +102,7 @@ comptime BNJOINT: Int = MB.NJOINT
 comptime BNGEOM: Int = MB.NGEOM  # 25
 comptime BNSITE: Int = MB.NSITE  # 10
 comptime BMAXC: Int = MB.MAX_CONTACTS
-comptime BModel = Model[
-    DTYPE, BNV, BNBODY, BNJOINT, BNGEOM, MB.MAX_EQUALITY, MB.MAX_TENDON,
-    BNSITE, MB.NEXCLUDE, 0,
-]
+comptime BModel = Model[DTYPE, Dims[nv=BNV, nbody=BNBODY, njoint=BNJOINT, ngeom=BNGEOM, nequality=MB.MAX_EQUALITY, ntendon=MB.MAX_TENDON, nsite=BNSITE, nexclude=MB.NEXCLUDE, nmesh_verts=0]]
 comptime BData = Data[DTYPE, BNQ, BNV, BNBODY, BMAXC, BNSITE, 1]
 comptime BInteg = EulerIntegrator[
     DTYPE, BNQ, BNV, BNBODY, BNJOINT, BMAXC, BNGEOM, MB.MAX_EQUALITY,
@@ -121,10 +118,7 @@ comptime PNJOINT: Int = MP.NJOINT
 comptime PNGEOM: Int = MP.NGEOM  # 28
 comptime PNSITE: Int = MP.NSITE  # 17
 comptime PMAXC: Int = MP.MAX_CONTACTS
-comptime PModel = Model[
-    DTYPE, PNV, PNBODY, PNJOINT, PNGEOM, MP.MAX_EQUALITY, MP.MAX_TENDON,
-    PNSITE, MP.NEXCLUDE, 0,
-]
+comptime PModel = Model[DTYPE, Dims[nv=PNV, nbody=PNBODY, njoint=PNJOINT, ngeom=PNGEOM, nequality=MP.MAX_EQUALITY, ntendon=MP.MAX_TENDON, nsite=PNSITE, nexclude=MP.NEXCLUDE, nmesh_verts=0]]
 comptime PData = Data[DTYPE, PNQ, PNV, PNBODY, PMAXC, PNSITE, 1]
 comptime PInteg = EulerIntegrator[
     DTYPE, PNQ, PNV, PNBODY, PNJOINT, PMAXC, PNGEOM, MP.MAX_EQUALITY,

@@ -704,19 +704,7 @@ def build_model_fields_from_flat[
     NPAIR: Int = 0,
 ](
     fmd: FlatModelDef,
-    mut mf: Model[
-        DTYPE,
-        NV,
-        NBODY,
-        NJOINT,
-        NGEOM,
-        MAX_EQUALITY,
-        MAX_TENDON,
-        NSITE,
-        NEXCLUDE,
-        NMESH_VERTS,
-        NPAIR,
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=MAX_EQUALITY, ntendon=MAX_TENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
 ) raises:
     """Fill every `mf` record tensor from the parsed `fmd` — see module
     docstring. Does NOT compute invweight0 and does NOT upload."""

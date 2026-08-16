@@ -54,7 +54,7 @@ from std.math import abs
 from std.collections import InlineArray
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
 from mojo_rl.physics3d.gpu.constants import (
@@ -121,18 +121,14 @@ comptime QVEL_REL_TOL: Float64 = 1e-2
 
 def _build_model(
     ctx: DeviceContext,
-) raises -> Model[
-    DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
-]:
+) raises -> Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]:
     """Offset-free init_fields build, then inject meta NTENDON=2 + the two
     hip-knee tendon records DIRECTLY into the per-field tendon tensor
     (record layout t_i * MODEL_TENDON_SIZE + TENDON_IDX_*) exactly as
     test_equality_tendon_fields Part A does — the parser never emits tendon
     records, so injection is the only way any model carries them. No slab,
     no load_from_slab."""
-    var mf = Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
-    ]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
 
     # right = r_hip_y (joint 6) + r_knee (joint 7); left = l_hip_y (joint 10)
@@ -175,7 +171,7 @@ def _build_model(
 
 
 def _find_elbow_joint(
-    mf: Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0],
+    mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
 ) raises -> Tuple[Int, Int]:
     """Locate the right-elbow joint record (qpos_adr == 20) and return
     (joint index, dof_adr); assert its range is the expected [-90, 50] deg."""

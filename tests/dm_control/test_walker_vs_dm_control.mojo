@@ -37,7 +37,7 @@ from mojo_rl.envs.dm_control.walker import (
     TORSO_BODY_IDX,
     STAND_HEIGHT,
 )
-from mojo_rl.physics3d.fields import Model
+from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -184,18 +184,7 @@ def test_walker_model_matches_mujoco() raises:
     assert_true(Int(py=m.nu) == DMWalkerModel.nact, "nu mismatch")
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DType.float64,
-        DMWalkerModel.NV,
-        DMWalkerModel.NBODY,
-        DMWalkerModel.NJOINT,
-        DMWalkerModel.NGEOM,
-        DMWalkerModel.MAX_EQUALITY,
-        DMWalkerModel.MAX_TENDON,
-        DMWalkerModel.NSITE,
-        DMWalkerModel.NEXCLUDE,
-        0,
-    ]()
+    var mf = Model[DType.float64, Dims[nv=DMWalkerModel.NV, nbody=DMWalkerModel.NBODY, njoint=DMWalkerModel.NJOINT, ngeom=DMWalkerModel.NGEOM, nequality=DMWalkerModel.MAX_EQUALITY, ntendon=DMWalkerModel.MAX_TENDON, nsite=DMWalkerModel.NSITE, nexclude=DMWalkerModel.NEXCLUDE, nmesh_verts=0]]()
     DMWalkerModel.init_fields[DType.float64, 0](ctx, mf)
 
     var worst = 0.0

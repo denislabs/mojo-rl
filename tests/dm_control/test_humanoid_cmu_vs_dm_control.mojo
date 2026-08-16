@@ -78,7 +78,7 @@ from mojo_rl.envs.dm_control.humanoid_cmu import (
     WALK_SPEED,
     RUN_SPEED,
 )
-from mojo_rl.physics3d.fields import Model
+from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.joint_types import JNT_FREE
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
@@ -211,31 +211,9 @@ def _mj_from_our_xml() raises -> PythonObject:
     return mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/humanoid_cmu.xml")
 
 
-def _build() raises -> Model[
-    DType.float64,
-    DMHumanoidCMUModel.NV,
-    DMHumanoidCMUModel.NBODY,
-    DMHumanoidCMUModel.NJOINT,
-    DMHumanoidCMUModel.NGEOM,
-    DMHumanoidCMUModel.MAX_EQUALITY,
-    DMHumanoidCMUModel.MAX_TENDON,
-    DMHumanoidCMUModel.NSITE,
-    DMHumanoidCMUModel.NEXCLUDE,
-    0,
-]:
+def _build() raises -> Model[DType.float64, Dims[nv=DMHumanoidCMUModel.NV, nbody=DMHumanoidCMUModel.NBODY, njoint=DMHumanoidCMUModel.NJOINT, ngeom=DMHumanoidCMUModel.NGEOM, nequality=DMHumanoidCMUModel.MAX_EQUALITY, ntendon=DMHumanoidCMUModel.MAX_TENDON, nsite=DMHumanoidCMUModel.NSITE, nexclude=DMHumanoidCMUModel.NEXCLUDE, nmesh_verts=0]]:
     var ctx = DeviceContext()
-    var mf = Model[
-        DType.float64,
-        DMHumanoidCMUModel.NV,
-        DMHumanoidCMUModel.NBODY,
-        DMHumanoidCMUModel.NJOINT,
-        DMHumanoidCMUModel.NGEOM,
-        DMHumanoidCMUModel.MAX_EQUALITY,
-        DMHumanoidCMUModel.MAX_TENDON,
-        DMHumanoidCMUModel.NSITE,
-        DMHumanoidCMUModel.NEXCLUDE,
-        0,
-    ]()
+    var mf = Model[DType.float64, Dims[nv=DMHumanoidCMUModel.NV, nbody=DMHumanoidCMUModel.NBODY, njoint=DMHumanoidCMUModel.NJOINT, ngeom=DMHumanoidCMUModel.NGEOM, nequality=DMHumanoidCMUModel.MAX_EQUALITY, ntendon=DMHumanoidCMUModel.MAX_TENDON, nsite=DMHumanoidCMUModel.NSITE, nexclude=DMHumanoidCMUModel.NEXCLUDE, nmesh_verts=0]]()
     DMHumanoidCMUModel.init_fields[DType.float64, 0](ctx, mf)
     return mf^
 

@@ -346,10 +346,7 @@ def test_connect_anchor_b_matches_mujoco() raises:
     assert_true(Int(py=m.neq) == 1, "expected exactly one equality")
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, MB.NV, MB.NBODY, MB.NJOINT, MB.NGEOM, MB.MAX_EQUALITY,
-        MB.MAX_TENDON, MB.NSITE, MB.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=MB.NV, nbody=MB.NBODY, njoint=MB.NJOINT, ngeom=MB.NGEOM, nequality=MB.MAX_EQUALITY, ntendon=MB.MAX_TENDON, nsite=MB.NSITE, nexclude=MB.NEXCLUDE, nmesh_verts=0]]()
     MB.init_fields[DTYPE, 0](ctx, mf)
 
     assert_true(
@@ -404,10 +401,7 @@ def test_site_connect_leaves_eq_data_alone() raises:
     """
     print("--- connect: site semantics keeps the site offsets ---")
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, MS.NV, MS.NBODY, MS.NJOINT, MS.NGEOM, MS.MAX_EQUALITY,
-        MS.MAX_TENDON, MS.NSITE, MS.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=MS.NV, nbody=MS.NBODY, njoint=MS.NJOINT, ngeom=MS.NGEOM, nequality=MS.MAX_EQUALITY, ntendon=MS.MAX_TENDON, nsite=MS.NSITE, nexclude=MS.NEXCLUDE, nmesh_verts=0]]()
     MS.init_fields[DTYPE, 0](ctx, mf)
 
     assert_true(
@@ -498,10 +492,7 @@ def _check_rows[M: ModelDefFromXML](xml: String, label: String) raises:
     )
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0, M.NPAIR,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0, npair=M.NPAIR]]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[
         DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1
@@ -647,10 +638,7 @@ def _our_roll[M: ModelDefFromXML]() raises -> Float64:
     """
     var sf = M.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0, M.NPAIR,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0, npair=M.NPAIR]]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
     M.reset_data[DTYPE](sf, d)

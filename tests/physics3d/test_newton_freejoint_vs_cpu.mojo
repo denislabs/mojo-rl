@@ -93,9 +93,7 @@ def _prep[
     NEQ: Int, NTEN: Int, NSITE: Int, NEXCL: Int, target: StaticString,
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
-    mut mf: Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
-    ],
+    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
     mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
@@ -216,9 +214,7 @@ def _validate[MODEL: ModelDefLike](
     print("--- ", name, " (NV=", NV, ") gentle floor contact ---")
     # Offset-free build straight from the compile-time model spec — no slab,
     # no init_model_gpu / load_from_slab.
-    var mf = Model[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
-    ]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     MODEL.init_fields[DTYPE, 0](ctx, mf)
 
     # Gentle pose: torso lowered so feet lightly touch (not deep penetration).

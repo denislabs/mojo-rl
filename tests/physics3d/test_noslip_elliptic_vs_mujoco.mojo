@@ -97,7 +97,7 @@ from std.testing import assert_true, TestSuite
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Model, Data
+from mojo_rl.physics3d.fields import Model, Data, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import MODEL_META_IDX_NOSLIP_TOLERANCE
@@ -279,10 +279,7 @@ def test_noslip_option_reaches_the_model() raises:
     )
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0, M.NPAIR,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0, npair=M.NPAIR]]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var tol = Float64(mf.meta.data[MODEL_META_IDX_NOSLIP_TOLERANCE])
     print("  noslip_tolerance in META =", tol, " (XML says 0)")
@@ -359,10 +356,7 @@ def _rollout[
     """
     var sf = MD.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, MD.NV, MD.NBODY, MD.NJOINT, MD.NGEOM, MD.MAX_EQUALITY,
-        MD.MAX_TENDON, MD.NSITE, MD.NEXCLUDE, 0, MD.NPAIR,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=MD.NV, nbody=MD.NBODY, njoint=MD.NJOINT, ngeom=MD.NGEOM, nequality=MD.MAX_EQUALITY, ntendon=MD.MAX_TENDON, nsite=MD.NSITE, nexclude=MD.NEXCLUDE, nmesh_verts=0, npair=MD.NPAIR]]()
     MD.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.MAX_CONTACTS, MD.NSITE, 1]()
     MD.reset_data[DTYPE](sf, d)

@@ -341,10 +341,7 @@ def test_pyramidal_weld_matches_mujoco() raises:
     var sf = M.make_spec_fields[DTYPE]()
     print("--- weld rows: per-env pyramidal vs MuJoCo ---")
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
 
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
@@ -375,10 +372,7 @@ def test_pyramidal_weld_matches_mujoco() raises:
 
 def _prep(
     mut d: Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1],
-    mut mf: Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ],
+    mut mf: Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]],
     mut sc: DynamicsScratch[DTYPE, Dims[nv=M.NV, nbody=M.NBODY], 1],
 ) raises:
     """Smooth dynamics + detection, up to the constraint seam.
@@ -434,10 +428,7 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
     var sf = M.make_spec_fields[DTYPE]()
     print("--- weld rows: blocked kernel vs per-env ---")
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
 
     # Settle into the COUPLED state first. Comparing two solvers at the reset
@@ -527,10 +518,7 @@ def test_relpose_default_is_derived_from_qpos0() raises:
     var m = mujoco.MjModel.from_xml_string(materialize[XML]())
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
 
     # MuJoCo eq_data for a weld: [anchor(3), relpose_pos(3), relpose_quat(4),
@@ -594,10 +582,7 @@ def test_explicit_relpose_is_still_honoured() raises:
     var sf = MX.make_spec_fields[DTYPE]()
     print("--- weld rows: explicit relpose ---")
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, MX.NV, MX.NBODY, MX.NJOINT, MX.NGEOM, MX.MAX_EQUALITY,
-        MX.MAX_TENDON, MX.NSITE, MX.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=MX.NV, nbody=MX.NBODY, njoint=MX.NJOINT, ngeom=MX.NGEOM, nequality=MX.MAX_EQUALITY, ntendon=MX.MAX_TENDON, nsite=MX.NSITE, nexclude=MX.NEXCLUDE, nmesh_verts=0]]()
     MX.init_fields[DTYPE, 0](ctx, mf)
 
     var d = Data[DTYPE, MX.NQ, MX.NV, MX.NBODY, MX.MAX_CONTACTS, MX.NSITE, 1]()
@@ -668,10 +653,7 @@ def test_weld_orientation_rows_match_mujoco() raises:
     )
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, MTQ1.NV, MTQ1.NBODY, MTQ1.NJOINT, MTQ1.NGEOM, MTQ1.MAX_EQUALITY,
-        MTQ1.MAX_TENDON, MTQ1.NSITE, MTQ1.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=MTQ1.NV, nbody=MTQ1.NBODY, njoint=MTQ1.NJOINT, ngeom=MTQ1.NGEOM, nequality=MTQ1.MAX_EQUALITY, ntendon=MTQ1.MAX_TENDON, nsite=MTQ1.NSITE, nexclude=MTQ1.NEXCLUDE, nmesh_verts=0]]()
     MTQ1.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[
         DTYPE, MTQ1.NQ, MTQ1.NV, MTQ1.NBODY, MTQ1.MAX_CONTACTS, MTQ1.NSITE, 1
@@ -820,10 +802,7 @@ def test_weld_torquescale_matches_mujoco() raises:
     )
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, MTQ5.NV, MTQ5.NBODY, MTQ5.NJOINT, MTQ5.NGEOM, MTQ5.MAX_EQUALITY,
-        MTQ5.MAX_TENDON, MTQ5.NSITE, MTQ5.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=MTQ5.NV, nbody=MTQ5.NBODY, njoint=MTQ5.NJOINT, ngeom=MTQ5.NGEOM, nequality=MTQ5.MAX_EQUALITY, ntendon=MTQ5.MAX_TENDON, nsite=MTQ5.NSITE, nexclude=MTQ5.NEXCLUDE, nmesh_verts=0]]()
     MTQ5.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[
         DTYPE, MTQ5.NQ, MTQ5.NV, MTQ5.NBODY, MTQ5.MAX_CONTACTS, MTQ5.NSITE, 1

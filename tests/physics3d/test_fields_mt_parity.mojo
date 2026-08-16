@@ -99,7 +99,7 @@ def test_walker2d_per_op() raises:
     print("--- A. Walker2D per-op _mt parity, BATCH=", BATCH, "---")
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Pseudo-random qpos/qvel (standard harness pattern; rootz lifted).
@@ -264,10 +264,7 @@ def test_humanoid_fk_bodyvel() raises:
     print("--- B. Humanoid FK/bodyvel _mt parity (NBODY=", H_NBODY, ") ---")
     var ctx = DeviceContext()
 
-    var mf = Model[
-        DTYPE, H_NV, H_NBODY, H_NJOINT, H_NGEOM, H_NEQ, H_NTEN, H_NSITE,
-        H_NEXCL, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=H_NV, nbody=H_NBODY, njoint=H_NJOINT, ngeom=H_NGEOM, nequality=H_NEQ, ntendon=H_NTEN, nsite=H_NSITE, nexclude=H_NEXCL, nmesh_verts=0]]()
     HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
 
     var ds = Data[DTYPE, H_NQ, H_NV, H_NBODY, H_MC, H_NSITE, H_BATCH]()
@@ -326,7 +323,7 @@ def test_rk4_integrator_parallel() raises:
     print("--- C. RK4Integrator PARALLEL_GPU parity WITH CONTACTS ---")
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     var ds = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()

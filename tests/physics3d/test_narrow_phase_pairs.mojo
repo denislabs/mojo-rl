@@ -57,7 +57,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
@@ -243,10 +243,7 @@ comptime TOL_DIST_APPROX: Float64 = 1e-6
 comptime TOL_GPU_MANIFOLD: Float64 = 1e-7
 
 comptime Dat = Data[DTYPE, PM.NQ, PM.NV, NBODY, MC, PM.NSITE, 1]
-comptime Mod = Model[
-    DTYPE, PM.NV, NBODY, PM.NJOINT, NGEOM, PM.MAX_EQUALITY, PM.MAX_TENDON,
-    PM.NSITE, PM.NEXCLUDE, 0,
-]
+comptime Mod = Model[DTYPE, Dims[nv=PM.NV, nbody=NBODY, njoint=PM.NJOINT, ngeom=NGEOM, nequality=PM.MAX_EQUALITY, ntendon=PM.MAX_TENDON, nsite=PM.NSITE, nexclude=PM.NEXCLUDE, nmesh_verts=0]]
 
 # The device legs need their OWN float32 instantiation: this fixture is float64
 # for the MuJoCo comparison, and Metal rejects f64 outright — `air.sin.f64`,
@@ -257,10 +254,7 @@ comptime Mod = Model[
 # path. The MuJoCo anchoring stays on the f64 leg above.
 comptime DTYPE32 = DType.float32
 comptime Dat32 = Data[DTYPE32, PM.NQ, PM.NV, NBODY, MC, PM.NSITE, 1]
-comptime Mod32 = Model[
-    DTYPE32, PM.NV, NBODY, PM.NJOINT, NGEOM, PM.MAX_EQUALITY, PM.MAX_TENDON,
-    PM.NSITE, PM.NEXCLUDE, 0,
-]
+comptime Mod32 = Model[DTYPE32, Dims[nv=PM.NV, nbody=NBODY, njoint=PM.NJOINT, ngeom=NGEOM, nequality=PM.MAX_EQUALITY, ntendon=PM.MAX_TENDON, nsite=PM.NSITE, nexclude=PM.NEXCLUDE, nmesh_verts=0]]
 
 
 def _group_names() -> List[String]:

@@ -35,7 +35,7 @@ from std.math import abs
 from std.collections import InlineArray
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.envs.ant.ant_xml import AntModel
 from mojo_rl.envs.hopper.hopper_xml import HopperModel
@@ -127,10 +127,7 @@ def test_invweight0_vs_mujoco() raises:
     var ctx = DeviceContext()
 
     comptime A = AntModel
-    var mfa = Model[
-        DTYPE, A.NV, A.NBODY, A.NJOINT, A.NGEOM, A.MAX_EQUALITY,
-        A.MAX_TENDON, A.NSITE, A.NEXCLUDE, 0,
-    ]()
+    var mfa = Model[DTYPE, Dims[nv=A.NV, nbody=A.NBODY, njoint=A.NJOINT, ngeom=A.NGEOM, nequality=A.MAX_EQUALITY, ntendon=A.MAX_TENDON, nsite=A.NSITE, nexclude=A.NEXCLUDE, nmesh_verts=0]]()
     A.init_fields[DTYPE, 0](ctx, mfa)
     var dwa = List[Float64]()
     for i in range(A.NV):
@@ -141,10 +138,7 @@ def test_invweight0_vs_mujoco() raises:
     _check_invweights("ant", "mojo_rl/envs/ant/assets/ant.xml", dwa, bwa, A.NV, A.NBODY)
 
     comptime U = HumanoidModel
-    var mfu = Model[
-        DTYPE, U.NV, U.NBODY, U.NJOINT, U.NGEOM, U.MAX_EQUALITY,
-        U.MAX_TENDON, U.NSITE, U.NEXCLUDE, 0,
-    ]()
+    var mfu = Model[DTYPE, Dims[nv=U.NV, nbody=U.NBODY, njoint=U.NJOINT, ngeom=U.NGEOM, nequality=U.MAX_EQUALITY, ntendon=U.MAX_TENDON, nsite=U.NSITE, nexclude=U.NEXCLUDE, nmesh_verts=0]]()
     U.init_fields[DTYPE, 0](ctx, mfu)
     var dwu = List[Float64]()
     for i in range(U.NV):
@@ -155,10 +149,7 @@ def test_invweight0_vs_mujoco() raises:
     _check_invweights("humanoid", "mojo_rl/envs/humanoid/assets/humanoid.xml", dwu, bwu, U.NV, U.NBODY)
 
     comptime H = HopperModel
-    var mfh = Model[
-        DTYPE, H.NV, H.NBODY, H.NJOINT, H.NGEOM, H.MAX_EQUALITY,
-        H.MAX_TENDON, H.NSITE, H.NEXCLUDE, 0,
-    ]()
+    var mfh = Model[DTYPE, Dims[nv=H.NV, nbody=H.NBODY, njoint=H.NJOINT, ngeom=H.NGEOM, nequality=H.MAX_EQUALITY, ntendon=H.MAX_TENDON, nsite=H.NSITE, nexclude=H.NEXCLUDE, nmesh_verts=0]]()
     H.init_fields[DTYPE, 0](ctx, mfh)
     var dwh = List[Float64]()
     for i in range(H.NV):
@@ -179,10 +170,7 @@ def _ant_limits(num_steps: Int, overshoot: Float64) raises:
     var mj_data = mujoco.MjData(mj_model)
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
 
@@ -284,10 +272,7 @@ def test_contacts_vs_mujoco() raises:
     var mj_data = mujoco.MjData(mj_model)
 
     var ctx = DeviceContext()
-    var mf = Model[
-        DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-    ]()
+    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
     var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
 

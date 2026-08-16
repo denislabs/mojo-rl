@@ -36,7 +36,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
@@ -147,9 +147,7 @@ comptime NPOSE: Int = 24
 comptime TOL: Float64 = 1e-4
 
 comptime Dat = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]
-comptime Mod = Model[
-    DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, NMESHV,
-]
+comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV]]
 
 
 def _stack_z(g: Int) -> Float64:

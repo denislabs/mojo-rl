@@ -22,7 +22,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.fields import Data, Model
+from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.envs.ant.ant_xml import AntModel
 
 comptime DTYPE = DType.float64
@@ -98,9 +98,9 @@ def _tumbling_qvel() -> InlineArray[Float64, NV]:
 
 def _make_model(
     ctx: DeviceContext,
-) raises -> Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]:
+) raises -> Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]:
     """Build the model into Model via the model-def init + flattening."""
-    var mf = Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0]()
+    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     AntModel.init_fields[DTYPE, 0](ctx, mf)
     return mf^
 
