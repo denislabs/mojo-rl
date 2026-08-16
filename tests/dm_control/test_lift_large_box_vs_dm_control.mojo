@@ -360,8 +360,7 @@ def test_lift_reward_matches_dm_control() raises:
     # Establish the prop's height at this pose, then sweep the box upward
     # through the whole 30 cm ramp and past the target.
     _ = env.obs_at(qpos, qvel)
-    var base_z = lowest_vertex_z[DTYPE, ENV.NQ, ENV.NV, ENV.NBODY,
-                                 ENV.MAX_CONTACTS, ENV.NSITE](env.d)
+    var base_z = lowest_vertex_z[DTYPE](env.d)
     var target = base_z + DISTANCE_TO_LIFT
     print("  base lowest vertex", base_z, " target_height", target)
 
@@ -453,8 +452,7 @@ def test_lift_reset_matches_dm_control() raises:
             or py_ > PROP_BBOX_UPPER_X + 1e-9
         ):
             prop_out_of_box += 1
-        var lo = lowest_vertex_z[DTYPE, ENV.NQ, ENV.NV, ENV.NBODY,
-                                 ENV.MAX_CONTACTS, ENV.NSITE](env.d)
+        var lo = lowest_vertex_z[DTYPE](env.d)
         if abs(lo) > worst_rest:
             worst_rest = abs(lo)
         if abs(lo) > 1e-3:

@@ -622,9 +622,7 @@ def test_stack_3_random_reset_matches_dm_control() raises:
 
     for r in range(N_RESETS):
         _ = env.reset()
-        var order = read_order[
-            DTYPE, ENV.NQ, ENV.NV, ENV.NBODY, ENV.MAX_CONTACTS, ENV.NSITE
-        ](env.d)
+        var order = read_order[DTYPE](env.d)
         var sigma = sigma_of(order)
 
         # The drawn order must be a permutation.
