@@ -92,15 +92,8 @@ struct DMReacherConfig[TARGET_SIZE: Float64](Phyics3dEnvConfig):
 
     # === CPU: Observation ===
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -109,7 +102,7 @@ struct DMReacherConfig[TARGET_SIZE: Float64](Phyics3dEnvConfig):
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """`Reacher.get_observation`: position, to_target, velocity."""
-        for i in range(NQ):
+        for i in range(D.NQ):
             obs.append(d.qpos.data[i])
 
         # `Physics.finger_to_target` — the XY components only.
@@ -118,7 +111,7 @@ struct DMReacherConfig[TARGET_SIZE: Float64](Phyics3dEnvConfig):
         obs.append(Scalar[DTYPE](tp[0] - fp[0]))
         obs.append(Scalar[DTYPE](tp[1] - fp[1]))
 
-        for i in range(NV):
+        for i in range(D.NV):
             obs.append(d.qvel.data[i])
         return True
 

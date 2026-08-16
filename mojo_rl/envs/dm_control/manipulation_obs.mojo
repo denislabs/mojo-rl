@@ -41,7 +41,7 @@ up as a 3.3e-07 hole in this exact term). See
 from std.collections import InlineArray
 from std.math import sin, cos
 
-from mojo_rl.physics3d.fields import Data, Dims
+from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     JOINT_IDX_AXIS_X,
@@ -149,15 +149,8 @@ def symlog1p(x: Float64) -> Float64:
     return 0.0
 
 
-def append_robot_block[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def append_robot_block[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_bodies: List[Scalar[DTYPE]],
     m_joints: List[Scalar[DTYPE]],
     m_sites: List[Scalar[DTYPE]],
@@ -246,15 +239,8 @@ def append_robot_block[
         obs.append(quat_xmat_elem[DTYPE](qx, qy, qz, qw, k))
 
 
-def append_free_prop_block[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def append_free_prop_block[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_geoms: List[Scalar[DTYPE]],
     geom: Int,
     mut obs: List[Scalar[DTYPE]],
@@ -280,15 +266,8 @@ def append_free_prop_block[
     )
 
 
-def append_free_prop_block_site[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def append_free_prop_block_site[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_sites: List[Scalar[DTYPE]],
     site: Int,
     mut obs: List[Scalar[DTYPE]],
@@ -320,15 +299,8 @@ def append_free_prop_block_site[
     )
 
 
-def append_free_prop_frame[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def append_free_prop_frame[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     body: Int,
     lpx: Scalar[DTYPE],
     lpy: Scalar[DTYPE],

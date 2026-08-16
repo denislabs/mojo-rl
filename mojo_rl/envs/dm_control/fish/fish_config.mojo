@@ -94,10 +94,8 @@ def _standard_normal() -> Float64:
     return sqrt(-2.0 * log(u1)) * cos(2.0 * pi * u2)
 
 
-def _mouth_to_target[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _mouth_to_target[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_geoms: List[Scalar[DTYPE]],
 ) raises -> Tuple[Float64, Float64, Float64]:
     """`Physics.mouth_to_target` — target minus mouth, in the MOUTH's frame.
@@ -119,30 +117,24 @@ def _mouth_to_target[
     return (loc[0], loc[1], loc[2])
 
 
-def _upright[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1]) raises -> Float64:
+def _upright[DTYPE: DType, D: DimsLike](d: Data[DTYPE, D, 1]) raises -> Float64:
     """`Physics.upright` — `xmat['torso', 'zz']`, the torso z-axis projected
     onto the world z-axis. +1 upright, -1 upside down."""
     return xmat_elem(d, TORSO_BODY_IDX, XMAT_ZZ)
 
 
-def _append_shared_obs[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _append_shared_obs[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     mut obs: List[Scalar[DTYPE]],
 ) raises:
     """`joint_angles` then `upright` — the head of both observations."""
-    for q in range(N_ROOT_QPOS, NQ):
+    for q in range(N_ROOT_QPOS, D.NQ):
         obs.append(d.qpos.data[q])
     obs.append(Scalar[DTYPE](_upright(d)))
 
 
-def _append_velocity[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _append_velocity[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     mut obs: List[Scalar[DTYPE]],
 ):
     """`physics.velocity()` — the WHOLE `qvel`, free root included.
@@ -150,7 +142,7 @@ def _append_velocity[
     Note this is `mujoco.Physics.velocity()`, not the `torso_velocity()`
     sensor pair defined next to it in `fish.py`, which no task reads.
     """
-    for v in range(NV):
+    for v in range(D.NV):
         obs.append(d.qvel.data[v])
 
 
@@ -366,15 +358,8 @@ struct DMFishUprightConfig(Phyics3dEnvConfig):
     comptime INTEGRATOR: StaticString = "euler"
 
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -699,15 +684,8 @@ struct DMFishSwimConfig(Phyics3dEnvConfig):
     comptime INTEGRATOR: StaticString = "euler"
 
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],

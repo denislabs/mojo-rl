@@ -119,15 +119,8 @@ struct DMHumanoidConfig[MOVE_SPEED: Float64, PURE_STATE: Bool](
 
     # === CPU: Observation ===
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -138,14 +131,14 @@ struct DMHumanoidConfig[MOVE_SPEED: Float64, PURE_STATE: Bool](
         """`Humanoid.get_observation`, both layouts."""
         comptime if Self.PURE_STATE:
             # position() then velocity() — the whole state, root included.
-            for i in range(NQ):
+            for i in range(D.NQ):
                 obs.append(d.qpos.data[i])
-            for i in range(NV):
+            for i in range(D.NV):
                 obs.append(d.qvel.data[i])
             return True
 
         # joint_angles(): qpos[7:], dropping the free root joint.
-        for i in range(ROOT_QPOS_SIZE, NQ):
+        for i in range(ROOT_QPOS_SIZE, D.NQ):
             obs.append(d.qpos.data[i])
 
         # head_height(): xpos['head', 'z'].
@@ -186,13 +179,13 @@ struct DMHumanoidConfig[MOVE_SPEED: Float64, PURE_STATE: Bool](
         var cx = Float64(0)
         var cy = Float64(0)
         var cz = Float64(0)
-        subtree_linvel(d.xvel.data, m_bodies, NBODY, TORSO_BODY_IDX, cx, cy, cz)
+        subtree_linvel(d.xvel.data, m_bodies, D.NBODY, TORSO_BODY_IDX, cx, cy, cz)
         obs.append(Scalar[DTYPE](cx))
         obs.append(Scalar[DTYPE](cy))
         obs.append(Scalar[DTYPE](cz))
 
         # velocity(): the whole qvel.
-        for i in range(NV):
+        for i in range(D.NV):
             obs.append(d.qvel.data[i])
         return True
 

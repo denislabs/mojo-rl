@@ -62,7 +62,7 @@ from mojo_rl.physics3d.fields import (
     DynamicsScratch,
     ContactScratch,
     Dims,
-)
+ DimsLike,)
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
 from mojo_rl.physics3d.integrator.euler import (
@@ -157,18 +157,15 @@ struct FricCfg(Phyics3dEnvConfig):
     comptime INTEGRATOR: StaticString = "euler"
 
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]], m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]], m_sites: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
-        for i in range(NQ):
+        for i in range(D.NQ):
             obs.append(d.qpos.data[i])
-        for i in range(NV):
+        for i in range(D.NV):
             obs.append(d.qvel.data[i])
         return True
 

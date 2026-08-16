@@ -92,15 +92,8 @@ struct Reassemble3Config(Phyics3dEnvConfig):
 
     # === CPU: Observation ===
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -112,9 +105,7 @@ struct Reassemble3Config(Phyics3dEnvConfig):
             # ⚠ EMPTY `desired_obs` — `randomize_desired_order` is False, so
             # the task observable does not exist and the vector starts with the
             # robot block.
-            append_reassemble_obs[
-                DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-            ](
+            append_reassemble_obs[DTYPE](
                 d, m_bodies, m_joints, m_sites, List[Int](), identity_sigma(),
                 obs,
             )

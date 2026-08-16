@@ -83,10 +83,8 @@ from .dog_fetch_xml import (
 comptime FETCH_BITE_MARGIN: Float64 = 2.0
 
 
-def _head_site_quat[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _head_site_quat[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_sites: List[Scalar[DTYPE]],
 ) raises -> Tuple[Float64, Float64, Float64, Float64]:
     """The `head` site's world quaternion — `xquat[skull] * site_quat`."""
@@ -109,27 +107,23 @@ def _world_to_head(
     return (r[0], r[1], r[2])
 
 
-def _ball_world_pos[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _ball_world_pos[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_geoms: List[Scalar[DTYPE]],
 ) -> Tuple[Float64, Float64, Float64]:
     """`geom_xpos['ball']`."""
-    return geom_xpos[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+    return geom_xpos[DTYPE](
         d, m_geoms, FETCH_GEOM_BALL
     )
 
 
-def _target_world_pos[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _target_world_pos[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_geoms: List[Scalar[DTYPE]],
 ) -> Tuple[Float64, Float64, Float64]:
     """`geom_xpos['target']` — a geom on the WORLD body, so this is its own
     local offset and does not move."""
-    return geom_xpos[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+    return geom_xpos[DTYPE](
         d, m_geoms, FETCH_GEOM_TARGET
     )
 
@@ -145,7 +139,7 @@ def _ball_to_mouth_distance[
     The MEAN of the two bite sites, not the distance to either — a ball
     between the jaws scores better than one touching only the upper lip.
     """
-    var b = _ball_world_pos[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+    var b = _ball_world_pos[DTYPE](
         d, m_geoms
     )
     var total = Float64(0)
@@ -167,10 +161,10 @@ def _ball_to_target_distance[
     m_geoms: List[Scalar[DTYPE]],
 ) -> Float64:
     """`|geom_xpos['ball'] - geom_xpos['target']|`."""
-    var b = _ball_world_pos[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+    var b = _ball_world_pos[DTYPE](
         d, m_geoms
     )
-    var t = _target_world_pos[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+    var t = _target_world_pos[DTYPE](
         d, m_geoms
     )
     var dx = b[0] - t[0]
@@ -304,15 +298,8 @@ struct DMDogFetchConfig(Phyics3dEnvConfig):
         d.qvel.data[FETCH_BALL_DOF_0 + 5] = Scalar[DTYPE](0)
 
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -324,20 +311,14 @@ struct DMDogFetchConfig(Phyics3dEnvConfig):
         try:
             # ⚠ Five arguments, not seven: dog's base observation reads no
             # joint or geom tables.
-            if not _dog_obs_cpu[
-                DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-            ](d, m_bodies, m_sites, act, obs):
+            if not _dog_obs_cpu[DTYPE](d, m_bodies, m_sites, act, obs):
                 return False
 
-            var hq = _head_site_quat[
-                DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-            ](d, m_sites)
+            var hq = _head_site_quat[DTYPE](d, m_sites)
             var hx = Float64(d.site_xpos.data[FETCH_SITE_HEAD * 3 + 0])
             var hy = Float64(d.site_xpos.data[FETCH_SITE_HEAD * 3 + 1])
             var hz = Float64(d.site_xpos.data[FETCH_SITE_HEAD * 3 + 2])
-            var b = _ball_world_pos[
-                DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-            ](d, m_geoms)
+            var b = _ball_world_pos[DTYPE](d, m_geoms)
 
             # --- ball_state: position THEN velocity, both head-frame --------
             var rel = _world_to_head(hq, b[0] - hx, b[1] - hy, b[2] - hz)
@@ -373,9 +354,7 @@ struct DMDogFetchConfig(Phyics3dEnvConfig):
             obs.append(Scalar[DTYPE](rel_v[2]))
 
             # --- target_position --------------------------------------------
-            var t = _target_world_pos[
-                DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-            ](d, m_geoms)
+            var t = _target_world_pos[DTYPE](d, m_geoms)
             var rel_t = _world_to_head(hq, t[0] - hx, t[1] - hy, t[2] - hz)
             obs.append(Scalar[DTYPE](rel_t[0]))
             obs.append(Scalar[DTYPE](rel_t[1]))

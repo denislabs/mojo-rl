@@ -15,7 +15,7 @@ Used by the dm_control ports whose reward is a geom-to-geom distance —
 `point_mass` reads `named.data.geom_xpos[['target', 'pointmass']]`.
 """
 
-from ..fields import Data, Dims
+from ..fields import Data, Dims, DimsLike
 from ..gpu.constants import (
     MODEL_GEOM_SIZE,
     GEOM_IDX_BODY,
@@ -29,15 +29,8 @@ from .quat_math import gpu_quat_rotate
 
 
 @always_inline
-def geom_xpos[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def geom_xpos[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_geoms: List[Scalar[DTYPE]],
     geom: Int,
 ) -> Tuple[Float64, Float64, Float64]:

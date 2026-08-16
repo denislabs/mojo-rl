@@ -150,15 +150,8 @@ def _dist3[
     return sqrt(dx * dx + dy * dy + dz * dz)
 
 
-def append_place_obs[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def append_place_obs[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_bodies: List[Scalar[DTYPE]],
     m_joints: List[Scalar[DTYPE]],
     m_sites: List[Scalar[DTYPE]],
@@ -177,10 +170,10 @@ def append_place_obs[
     frame origin), so reading the body would agree by accident here and stop
     agreeing the moment the site moves.
     """
-    append_robot_block[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+    append_robot_block[DTYPE](
         d, m_bodies, m_joints, m_sites, ROBOT_SITE_BASE, obs
     )
-    append_free_prop_block_site[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+    append_free_prop_block_site[DTYPE](
         d, m_sites, PROP_FRAME_SITE, obs
     )
     for k in range(3):

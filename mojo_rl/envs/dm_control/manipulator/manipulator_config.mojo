@@ -195,15 +195,8 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
 
     # === CPU: Observation ===
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -230,9 +223,7 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
         for k in range(5):
             var f: Float64
             try:
-                f = touch_sphere_site[
-                    DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-                ](d, m_sites, touch_site_order(k), 1.0)
+                f = touch_sphere_site[DTYPE](d, m_sites, touch_site_order(k), 1.0)
             except:
                 # `touch_sphere_site` raises only on an unsupported zone TYPE,
                 # which is a model-construction error and cannot become true
@@ -243,10 +234,10 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
             obs.append(log1p_dt[DTYPE](Scalar[DTYPE](f)))
 
         # hand_pos / object_pos / target_pos — planar poses [x, z, qw, qy].
-        Self._append_2d_pose[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+        Self._append_2d_pose[DTYPE](
             d, HAND_BODY_IDX, obs
         )
-        Self._append_2d_pose[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+        Self._append_2d_pose[DTYPE](
             d, OBJECT_BODY_IDX, obs
         )
 
@@ -255,21 +246,14 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
         obs.append(d.qvel.data[OBJECT_QADR_Z])
         obs.append(d.qvel.data[OBJECT_QADR_Y])
 
-        Self._append_2d_pose[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+        Self._append_2d_pose[DTYPE](
             d, target_body_idx(Self.USE_PEG, Self.INSERT), obs
         )
         return True
 
     @staticmethod
-    def _append_2d_pose[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def _append_2d_pose[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         body: Int,
         mut obs: List[Scalar[DTYPE]],
     ):

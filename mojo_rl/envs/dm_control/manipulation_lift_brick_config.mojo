@@ -195,15 +195,8 @@ struct LiftBrickConfig(Phyics3dEnvConfig):
 
     # === CPU: Observation ===
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -219,12 +212,10 @@ struct LiftBrickConfig(Phyics3dEnvConfig):
         origin; reading the geom entry point would be a small plausible offset
         in `position` and a missing `omega x r` in `linear_velocity`."""
         try:
-            append_robot_block[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+            append_robot_block[DTYPE](
                 d, m_bodies, m_joints, m_sites, ROBOT_SITE_BASE, obs
             )
-            append_free_prop_block_site[
-                DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-            ](d, m_sites, PROP_FRAME_SITE, obs)
+            append_free_prop_block_site[DTYPE](d, m_sites, PROP_FRAME_SITE, obs)
         except:
             return False
         return True

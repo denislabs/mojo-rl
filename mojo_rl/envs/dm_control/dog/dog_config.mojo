@@ -131,10 +131,8 @@ def _randn_pair() -> Tuple[Float64, Float64]:
 
 
 @always_inline
-def _world_to_torso[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _world_to_torso[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     vx: Float64,
     vy: Float64,
     vz: Float64,
@@ -157,10 +155,8 @@ def _world_to_torso[
 
 
 @always_inline
-def _com_velocity_torso_frame[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _com_velocity_torso_frame[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_bodies: List[Scalar[DTYPE]],
     nbody: Int,
 ) -> Tuple[Float64, Float64, Float64]:
@@ -171,7 +167,7 @@ def _com_velocity_torso_frame[
     subtree_linvel[DTYPE](
         d.xvel.data, m_bodies, nbody, DOG_TORSO_BODY_IDX, vx, vy, vz
     )
-    return _world_to_torso[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+    return _world_to_torso[DTYPE](
         d, vx, vy, vz
     )
 
@@ -251,10 +247,8 @@ def _stand_factors[
 
 
 @always_inline
-def _dog_obs_cpu[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _dog_obs_cpu[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_bodies: List[Scalar[DTYPE]],
     m_sites: List[Scalar[DTYPE]],
     act: List[Scalar[DTYPE]],
@@ -290,9 +284,7 @@ def _dog_obs_cpu[
             obs.append(Scalar[DTYPE](xmat_elem(d, zbodies[k], XMAT_ZZ)))
 
         # --- torso_com_velocity --------------------------------------------
-        var cv = _com_velocity_torso_frame[
-            DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-        ](d, m_bodies, NBODY)
+        var cv = _com_velocity_torso_frame[DTYPE](d, m_bodies, D.NBODY)
         obs.append(Scalar[DTYPE](cv[0]))
         obs.append(Scalar[DTYPE](cv[1]))
         obs.append(Scalar[DTYPE](cv[2]))
@@ -1112,15 +1104,8 @@ struct DMDogStandConfig(Phyics3dEnvConfig):
         return True
 
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -1128,7 +1113,7 @@ struct DMDogStandConfig(Phyics3dEnvConfig):
         act: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
-        return _dog_obs_cpu[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+        return _dog_obs_cpu[DTYPE](
             d, m_bodies, m_sites, act, obs
         )
 
@@ -1494,15 +1479,8 @@ struct DMDogMoveConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         return True
 
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -1511,7 +1489,7 @@ struct DMDogMoveConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """`Move` does not override `get_observation_components` either."""
-        return _dog_obs_cpu[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+        return _dog_obs_cpu[DTYPE](
             d, m_bodies, m_sites, act, obs
         )
 
@@ -1540,9 +1518,7 @@ struct DMDogMoveConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
                 DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
             ](d, m_bodies, m_sites)
 
-            var cv = _com_velocity_torso_frame[
-                DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-            ](d, m_bodies, NBODY)
+            var cv = _com_velocity_torso_frame[DTYPE](d, m_bodies, NBODY)
 
             comptime speed_margin = (
                 1.0 if Self.MOVE_SPEED < 1.0 else Self.MOVE_SPEED

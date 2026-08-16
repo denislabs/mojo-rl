@@ -556,15 +556,8 @@ def reassemble_reward[
 # ── the observation ───────────────────────────────────────────────────────
 
 
-def append_reassemble_obs[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def append_reassemble_obs[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_bodies: List[Scalar[DTYPE]],
     m_joints: List[Scalar[DTYPE]],
     m_sites: List[Scalar[DTYPE]],
@@ -591,13 +584,11 @@ def append_reassemble_obs[
     """
     for i in range(len(desired_obs)):
         obs.append(Scalar[DTYPE](desired_obs[i]))
-    append_robot_block[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+    append_robot_block[DTYPE](
         d, m_bodies, m_joints, m_sites, ROBOT_SITE_BASE, obs
     )
     for r in range(len(sigma)):
-        append_free_prop_block_site[
-            DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-        ](d, m_sites, stack_brick_frame_site_of(sigma[r]), obs)
+        append_free_prop_block_site[DTYPE](d, m_sites, stack_brick_frame_site_of(sigma[r]), obs)
 
 
 # ── the reset ─────────────────────────────────────────────────────────────
@@ -775,15 +766,8 @@ def write_reassemble_orders[DTYPE: DType, D: DimsLike](
 
 
 @always_inline
-def read_reassemble_order[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAXC: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1], n: Int, which: Int
+def read_reassemble_order[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1], n: Int, which: Int
 ) -> List[Int]:
     """`which = 0` for `desired_order`, `1` for `initial_order`."""
     var out = List[Int]()
@@ -867,15 +851,8 @@ def reassemble_random_draw_orders[DTYPE: DType, D: DimsLike](
     )
 
 
-def append_reassemble_random_obs[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def append_reassemble_random_obs[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_bodies: List[Scalar[DTYPE]],
     m_joints: List[Scalar[DTYPE]],
     m_sites: List[Scalar[DTYPE]],
@@ -884,14 +861,10 @@ def append_reassemble_random_obs[
     mut obs: List[Scalar[DTYPE]],
 ) raises:
     """`desired_order(n)` + robot(42) + n x brick(13), through `sigma`."""
-    var desired = read_reassemble_order[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-    ](d, n, 0)
-    var initial = read_reassemble_order[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-    ](d, n, 1)
+    var desired = read_reassemble_order[DTYPE](d, n, 0)
+    var initial = read_reassemble_order[DTYPE](d, n, 1)
     var sigma = sigma_of_base(initial[0], n, fixed_brick)
-    append_reassemble_obs[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+    append_reassemble_obs[DTYPE](
         d, m_bodies, m_joints, m_sites, desired, sigma, obs
     )
 
@@ -910,12 +883,8 @@ def reassemble_random_reward[
 ) -> Float64:
     """`Reassemble.get_reward` with the desired order read back through
     `sigma`."""
-    var desired = read_reassemble_order[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-    ](d, n, 0)
-    var initial = read_reassemble_order[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-    ](d, n, 1)
+    var desired = read_reassemble_order[DTYPE](d, n, 0)
+    var initial = read_reassemble_order[DTYPE](d, n, 1)
     var sigma = sigma_of_base(initial[0], n, fixed_brick)
     var phys = List[Int]()
     for i in range(n):
@@ -952,9 +921,7 @@ def reassemble_random_reset_full[
     reference, and `build_stack` writes its pose to the MODEL rather than to
     `qpos`.
     """
-    var initial = read_reassemble_order[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-    ](d, n, 1)
+    var initial = read_reassemble_order[DTYPE](d, n, 1)
     var sigma = sigma_of_base(initial[0], n, fixed_brick)
     var order = List[Int]()
     for i in range(n):

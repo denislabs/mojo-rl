@@ -101,10 +101,8 @@ def _randn_pair() -> InlineArray[Float64, 2]:
 
 
 @always_inline
-def _world_to_torso[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _world_to_torso[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     vx: Float64,
     vy: Float64,
     vz: Float64,
@@ -209,15 +207,8 @@ struct DMQuadrupedFetchConfig(Phyics3dEnvConfig):
             d.qvel.data[FETCH_BALL_DOF_0 + k] = Scalar[DTYPE](0)
 
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -226,10 +217,7 @@ struct DMQuadrupedFetchConfig(Phyics3dEnvConfig):
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """`_common_observations` then `ball_state` then `target_position`."""
-        if not _common_obs_cpu[
-            DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE,
-            FETCH_TORSO_SITE_IDX, FETCH_TOE_SITE_0,
-        ](d, m_bodies, m_joints, m_geoms, m_sites, act, obs):
+        if not _common_obs_cpu[DTYPE, FETCH_TORSO_SITE_IDX, FETCH_TOE_SITE_0](d, m_bodies, m_joints, m_geoms, m_sites, act, obs):
             return False
 
         # --- ball_state: three rows, each rotated into the torso frame ---

@@ -261,15 +261,8 @@ def sigma_of(order: InlineArray[Int, N_BRICKS]) -> InlineArray[Int, N_BRICKS]:
 
 
 @always_inline
-def read_order[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAXC: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]
+def read_order[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1]
 ) -> InlineArray[Int, N_BRICKS]:
     """`desired_order`, as written at reset into `META_IDX_TASK_PARAM_0..2`.
 
@@ -287,15 +280,8 @@ def read_order[
 # ── the four task hooks, parameterised by `n_order` ────────────────────────
 
 
-def append_stack_random_obs[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def append_stack_random_obs[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_bodies: List[Scalar[DTYPE]],
     m_joints: List[Scalar[DTYPE]],
     m_sites: List[Scalar[DTYPE]],
@@ -318,17 +304,15 @@ def append_stack_random_obs[
     observation is per ENTITY, not per stacked brick; `stack_2_of_3` leaves one
     brick out of the ORDER, not out of the scene.
     """
-    var order = read_order[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](d)
+    var order = read_order[DTYPE](d)
     for i in range(n_order):
         obs.append(Scalar[DTYPE](order[i]))
-    append_robot_block[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+    append_robot_block[DTYPE](
         d, m_bodies, m_joints, m_sites, ROBOT_SITE_BASE, obs
     )
     var sigma = sigma_of(order)
     for r in range(N_BRICKS):
-        append_free_prop_block_site[
-            DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-        ](d, m_sites, brick_frame_site_of(sigma[r]), obs)
+        append_free_prop_block_site[DTYPE](d, m_sites, brick_frame_site_of(sigma[r]), obs)
 
 
 def stack_random_reward[
@@ -349,7 +333,7 @@ def stack_random_reward[
     one — not a sum and not the worst. Each pair is the lower brick's STUDS
     against the upper brick's HOLES, through `sigma`.
     """
-    var order = read_order[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](d)
+    var order = read_order[DTYPE](d)
     var sigma = sigma_of(order)
     var total = 0.0
     for i in range(n_order - 1):
@@ -441,7 +425,7 @@ def stack_random_reset_full[
     comptime MAX_ATT: Int = 10
     comptime MAX_SAMP: Int = 10
 
-    var order = read_order[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](d)
+    var order = read_order[DTYPE](d)
     var sigma = sigma_of(order)
 
     var lo_p = InlineArray[Float64, 3](fill=0.0)

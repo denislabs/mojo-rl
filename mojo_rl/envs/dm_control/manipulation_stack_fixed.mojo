@@ -189,15 +189,8 @@ def stack_dof_adr_of(slot: Int) -> Int:
 # ── the task hooks, parameterised by `n_bricks` and `fixed_brick` ──────────
 
 
-def append_stack_fixed_obs[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def append_stack_fixed_obs[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_bodies: List[Scalar[DTYPE]],
     m_joints: List[Scalar[DTYPE]],
     m_sites: List[Scalar[DTYPE]],
@@ -214,13 +207,11 @@ def append_stack_fixed_obs[
     ⚠ AND NO RELABELING. With the order fixed at the identity, reference brick
     `r` IS our brick `r`.
     """
-    append_robot_block[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+    append_robot_block[DTYPE](
         d, m_bodies, m_joints, m_sites, ROBOT_SITE_BASE, obs
     )
     for p in range(n_bricks):
-        append_free_prop_block_site[
-            DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-        ](d, m_sites, stack_brick_frame_site_of(p), obs)
+        append_free_prop_block_site[DTYPE](d, m_sites, stack_brick_frame_site_of(p), obs)
 
 
 def stack_fixed_reward[

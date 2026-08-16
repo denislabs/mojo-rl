@@ -80,15 +80,8 @@ struct DMWalkerConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
 
     # === CPU: Observation ===
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -101,12 +94,12 @@ struct DMWalkerConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         orientations = xmat[1:, ['xx','xz']].ravel() — every body except the
         world, two columns each, so the pairs interleave xx_1, xz_1, xx_2, ...
         """
-        for b in range(1, NBODY):
+        for b in range(1, D.NBODY):
             obs.append(Scalar[DTYPE](xmat_elem(d, b, XMAT_XX)))
             obs.append(Scalar[DTYPE](xmat_elem(d, b, XMAT_XZ)))
         # torso_height = xpos['torso', 'z'] (body frame origin, not the CoM)
         obs.append(d.xpos.data[TORSO_BODY_IDX * 3 + 2])
-        for i in range(NV):
+        for i in range(D.NV):
             obs.append(d.qvel.data[i])
         return True
 

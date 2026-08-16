@@ -106,10 +106,8 @@ comptime CLOSE_TARGET_BOX: Float64 = 0.3
 comptime FAR_TARGET_BOX: Float64 = 2.0
 
 
-def _nose_to_target[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _nose_to_target[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_geoms: List[Scalar[DTYPE]],
 ) raises -> Tuple[Float64, Float64]:
     """`Physics.nose_to_target` — target minus nose, rotated into the head
@@ -143,7 +141,7 @@ def _nose_to_target[
 
     # The target geom sits at its mocap body's origin, so `geom_xpos` is the
     # body's world position.
-    comptime TGT = NBODY - 1
+    comptime TGT = D.NBODY - 1
     var dx = d.xpos.data[TGT * 3 + 0] - nose_x
     var dy = d.xpos.data[TGT * 3 + 1] - nose_y
     var dz = d.xpos.data[TGT * 3 + 2] - nose_z
@@ -226,15 +224,8 @@ struct DMSwimmerConfig(Phyics3dEnvConfig):
     comptime INTEGRATOR: StaticString = "euler"
 
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -245,7 +236,7 @@ struct DMSwimmerConfig(Phyics3dEnvConfig):
         """`Swimmer.get_observation`: joints, to_target, body_velocities."""
         try:
             # `physics.joints()` = `qpos[3:]` — the internal hinges only.
-            for q in range(N_ROOT_DOF, NQ):
+            for q in range(N_ROOT_DOF, D.NQ):
                 obs.append(d.qpos.data[q])
 
             var tt = _nose_to_target(d, m_geoms)
@@ -256,7 +247,7 @@ struct DMSwimmerConfig(Phyics3dEnvConfig):
             # [linear x, linear y, angular z] of that link's own site. Site i
             # is mounted on body i + HEAD_BODY_IDX (head -> site 0, and
             # segment_k -> site k+1), which the parity test pins.
-            comptime N_LINKS = NBODY - 2
+            comptime N_LINKS = D.NBODY - 2
             for k in range(N_LINKS):
                 var body = HEAD_BODY_IDX + k
                 var v = site_frame_velocity[DTYPE](

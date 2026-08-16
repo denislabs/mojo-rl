@@ -44,7 +44,7 @@ from mojo_rl.envs.dm_control.manipulator import (
     DMManipulatorBringBallConfig,
     TARGET_BODY_IDX,
 )
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
@@ -1055,9 +1055,7 @@ def test_manipulator_observation_matches_mujoco() raises:
     var ref_obs = builder.observation(m, dat)
 
     var obs = List[Scalar[DTYPE]]()
-    _ = DMManipulatorBringBallConfig.custom_extract_obs_cpu[
-        DTYPE, NQ, NV, NBODY, MAXC, NSITE
-    ](
+    _ = DMManipulatorBringBallConfig.custom_extract_obs_cpu[DTYPE](
         d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,
         List[Scalar[DTYPE]](), obs,
     )

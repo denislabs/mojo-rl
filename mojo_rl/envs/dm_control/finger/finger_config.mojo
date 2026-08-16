@@ -81,10 +81,8 @@ from ...phyics3d_env_config import Phyics3dEnvConfig
 comptime SPIN_VELOCITY: Float64 = 15.0
 
 
-def _tip_position[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _tip_position[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
 ) -> Tuple[Float64, Float64]:
     """`Physics.tip_position` — (x, z) of the tip site RELATIVE to the spinner.
 
@@ -98,10 +96,8 @@ def _tip_position[
     return (tx - sx, tz - sz)
 
 
-def _target_position[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _target_position[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
 ) -> Tuple[Float64, Float64]:
     """`Physics.target_position` — (x, z) of the target site vs the spinner."""
     var tx = Float64(d.site_xpos.data[TARGET_SITE_IDX * 3 + 0])
@@ -111,10 +107,8 @@ def _target_position[
     return (tx - sx, tz - sz)
 
 
-def _append_shared_obs[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _append_shared_obs[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_sites: List[Scalar[DTYPE]],
     mut obs: List[Scalar[DTYPE]],
 ) raises:
@@ -181,15 +175,8 @@ struct DMFingerSpinConfig(Phyics3dEnvConfig):
     comptime INTEGRATOR: StaticString = "euler"
 
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -259,15 +246,8 @@ struct DMFingerTurnConfig[TARGET_SIZE: Float64](Phyics3dEnvConfig):
     comptime INTEGRATOR: StaticString = "euler"
 
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],

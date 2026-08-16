@@ -21,7 +21,7 @@ keep that from biting at the call site.
 
 from layout import Layout, LayoutTensor
 
-from ..fields import Data, Dims
+from ..fields import Data, Dims, DimsLike
 
 
 # Row-major indices into a flattened 3x3, matching MuJoCo's named columns.
@@ -81,15 +81,8 @@ def quat_xmat_elem[
 
 
 @always_inline
-def xmat_elem[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def xmat_elem[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     body: Int,
     idx: Int,
 ) -> Float64:

@@ -27,7 +27,7 @@ QUATERNION ORDER: `Data.xquat` and the packed geom record are both
 from std.collections import InlineArray
 from layout import Layout, LayoutTensor
 
-from ..fields import Data, Dims
+from ..fields import Data, Dims, DimsLike
 from ..gpu.constants import (
     MODEL_GEOM_SIZE,
     GEOM_IDX_BODY,
@@ -41,15 +41,8 @@ from .xmat import quat_xmat_elem
 
 
 @always_inline
-def geom_xquat[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def geom_xquat[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_geoms: List[Scalar[DTYPE]],
     geom: Int,
 ) -> Tuple[Float64, Float64, Float64, Float64]:

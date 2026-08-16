@@ -57,7 +57,7 @@ from mojo_rl.envs.dm_control.manipulator import (
     SITE_GRASP,
     SITE_PINCH,
 )
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
@@ -1000,7 +1000,7 @@ def test_bring_peg_observation_matches_mujoco() raises:
     var ref_obs = builder.observation(m, dat, True)
 
     var obs = List[Scalar[DTYPE]]()
-    _ = CFG.custom_extract_obs_cpu[DTYPE, NQ, NV, NBODY, MAXC, NSITE](
+    _ = CFG.custom_extract_obs_cpu[DTYPE](
         d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,
         List[Scalar[DTYPE]](), obs,
     )

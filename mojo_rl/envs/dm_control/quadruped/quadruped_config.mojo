@@ -124,17 +124,8 @@ def _upright_reward(zz: Float64) -> Float64:
 
 
 @always_inline
-def _common_obs_cpu[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-    TORSO_SITE: Int,
-    TOE_SITE_0_P: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _common_obs_cpu[DTYPE: DType, TORSO_SITE: Int, TOE_SITE_0_P: Int, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_bodies: List[Scalar[DTYPE]],
     m_joints: List[Scalar[DTYPE]],
     m_geoms: List[Scalar[DTYPE]],
@@ -443,15 +434,8 @@ struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
             d.qpos.data[3 + k] = Scalar[DTYPE](q[k] / n)
 
     @staticmethod
-    def custom_extract_obs_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_extract_obs_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -460,10 +444,7 @@ struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
         """`_common_observations` — the five blocks, in order."""
-        return _common_obs_cpu[
-            DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE,
-            TORSO_SITE_IDX, TOE_SITE_0,
-        ](d, m_bodies, m_joints, m_geoms, m_sites, act, obs)
+        return _common_obs_cpu[DTYPE, TORSO_SITE_IDX, TOE_SITE_0](d, m_bodies, m_joints, m_geoms, m_sites, act, obs)
 
     @staticmethod
     def compute_reward_and_done_cpu[
