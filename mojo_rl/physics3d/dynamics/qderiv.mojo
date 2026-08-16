@@ -24,7 +24,7 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_mul
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from ..fields import Data, Model, DynamicsScratch, ImplicitScratch
+from ..fields import Data, Model, DynamicsScratch, ImplicitScratch, Dims
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -827,7 +827,13 @@ def compute_rne_vel_derivative[
         NPAIR,
     ],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
-    mut iscratch: ImplicitScratch[DTYPE, NV, NBODY, BATCH],
+    # ⚠ `Dims[nv=NV, nbody=NBODY]` rather than a `D: DimsLike` parameter on
+    # this function: the body reads NV/NBODY throughout and every caller
+    # passes them positionally, so taking `D` here would pull those callers
+    # into 1c. Two `Dims[...]` with equal arguments are ONE type, so this
+    # matches whatever the caller built — and when the sweep gives this
+    # function a real `D`, the adapter is deleted, not rewired.
+    mut iscratch: ImplicitScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """`d(qfrc_bias)/d(qvel)` SUBTRACTED into iscratch.qderiv (caller pre-loads

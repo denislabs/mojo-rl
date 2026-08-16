@@ -65,6 +65,7 @@ from ..fields import (
     DynamicsScratch,
     ContactScratch,
     ImplicitScratch,
+    Dims,
 )
 from .euler import (
     _armature_env,
@@ -298,7 +299,11 @@ struct ImplicitIntegrator[
     var cscratch: ContactScratch[
         Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH, Self.JE_WS
     ]
-    var iscratch: ImplicitScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
+    # Scaffolding, same shape as `RK4Integrator.D` — one alias, both spellings
+    # below. It disappears when this integrator takes a real `D` in the sweep.
+    comptime D = Dims[nv = Self.NV, nbody = Self.NBODY]
+
+    var iscratch: ImplicitScratch[Self.DTYPE, Self.D, Self.BATCH]
 
     def __init__(out self) raises:
         self.scratch = DynamicsScratch[
@@ -307,9 +312,7 @@ struct ImplicitIntegrator[
         self.cscratch = ContactScratch[
             Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH, Self.JE_WS
         ]()
-        self.iscratch = ImplicitScratch[
-            Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
-        ]()
+        self.iscratch = ImplicitScratch[Self.DTYPE, Self.D, Self.BATCH]()
 
     def prepare_gpu(mut self, ctx: DeviceContext) raises:
         self.scratch.upload_all(ctx)

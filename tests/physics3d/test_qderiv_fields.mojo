@@ -23,6 +23,7 @@ from mojo_rl.physics3d.fields import (
     Model,
     DynamicsScratch,
     ImplicitScratch,
+    Dims,
 )
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
@@ -69,7 +70,7 @@ def main() raises:
         d.qvel.data[i] = Scalar[DT]((i * 5 + 3) % 7 - 3) * Scalar[DT](0.4)
 
     var sc = DynamicsScratch[DT, NV, NBODY, BATCH]()
-    var isc = ImplicitScratch[DT, NV, NBODY, BATCH]()
+    var isc = ImplicitScratch[DT, Dims[nv=NV, nbody=NBODY], BATCH]()
 
     # ── fields CPU pipeline: FK -> subtree_com -> cdof -> qderiv ──────────
     forward_kinematics[

@@ -23,6 +23,8 @@ from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 
+from .dims import DimsLike
+
 
 @always_inline
 def _pos(n: Int) -> Int:
@@ -31,12 +33,22 @@ def _pos(n: Int) -> Int:
 
 struct ImplicitScratch[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
+    D: DimsLike,
     BATCH: Int = 1,
 ](Movable):
     """RNE-velocity-derivative scratch: one owned tensor per `ws_implicit_*`
-    region (9 tensors)."""
+    region (9 tensors).
+
+    ⚠ Second container on `D` (1c.3). Unlike `Rk4Scratch` it DOES escape into
+    a signature — `qderiv.compute_qderiv`, one site — so that signature is
+    part of this change. It is still spellable with a local `Dims[...]`
+    adapter rather than dragging `compute_qderiv`'s callers along, because
+    `Dims[nv=9, nbody=8]` names one type however it is written.
+    """
+
+    # Body unchanged — see `Rk4Scratch` for why the aliases are here.
+    comptime NV = Self.D.NV
+    comptime NBODY = Self.D.NBODY
 
     var cinert: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*10]
     var cdof_sc: TensorImpl[Self.DTYPE]  # [BATCH, NV*6]
