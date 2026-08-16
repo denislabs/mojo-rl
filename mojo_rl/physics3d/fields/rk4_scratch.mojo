@@ -22,15 +22,35 @@ from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 
+from .dims import DimsLike
+
 
 struct Rk4Scratch[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
+    D: DimsLike,
     BATCH: Int = 1,
 ](Movable):
     """RK4 stage scratch: one owned tensor per legacy `ws_rk4_*` region
-    (the unused legacy A[3] slot is not materialized)."""
+    (the unused legacy A[3] slot is not materialized).
+
+    ⚠ FIRST CONTAINER ON `D` (phase 1c.2), and it was chosen because it is the
+    ONLY one that can go alone: `Rk4Scratch` appears in **zero** function
+    signatures tree-wide — it is a field of `RK4Integrator` and nothing else.
+    Every other container escapes into signatures (`Data` into 311 across 98
+    files), and a provider type must match along the whole call chain —
+    `Dims[nq=NV]` and `ModelDims[MD]` are DIFFERENT TYPES even when every
+    value agrees — so converting those forces the signature sweep with them.
+    §10.4 lists 1c and 2a as separate phases; the type system disagrees.
+    """
+
+    # ⚠ THE BODY BELOW IS UNTOUCHED, DELIBERATELY. Re-pointing `Self.NQ` at
+    # `Self.D.NQ` here means the ~40 uses of `Self.NQ`/`Self.NV` in the
+    # allocation and layout code keep their exact spelling, so the diff is the
+    # parameter list plus these two lines. A container conversion that also
+    # retyped its body would put a transcription error and a dimension error
+    # in the same commit with one gate to catch both.
+    comptime NQ = Self.D.NQ
+    comptime NV = Self.D.NV
 
     comptime L_Q0 = Layout.row_major(Self.BATCH, Self.NQ)
     comptime L_NV = Layout.row_major(Self.BATCH, Self.NV)

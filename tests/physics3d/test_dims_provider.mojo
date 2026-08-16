@@ -34,6 +34,17 @@ comptime G = DM_DOG_STAND_WALK_DIMS          # <- MuJoCo, via the generator
 comptime D = ModelDims[DMDogStandWalkModel]  # <- the thing under test
 
 
+struct _Box[D: DimsLike](Copyable, Movable):
+    """Carries a `DimsLike` in its TYPE so two providers can be compared by
+    assignment — the only way to assert type identity rather than value
+    equality."""
+
+    var tag: Int
+
+    def __init__(out self, t: Int):
+        self.tag = t
+
+
 struct Tally(Copyable, Movable):
     var checks: Int
     var bad: Int
@@ -129,6 +140,42 @@ def main() raises:
     _eq(t, "raw NACT", R.NACT, 13)
     _eq(t, "raw NTEN", R.NTEN, 14)
     _eq(t, "raw NKEY", R.NKEY, 15)
+
+    print()
+    print("=== ModelDims[MD] IS a Dims[...] — the no-flag-day property ===")
+    # ⚠⚠ THE ENTIRE INCREMENTAL PLAN RESTS ON THIS ONE LINE COMPILING.
+    #
+    # Containers convert one at a time only because a container that cannot
+    # yet be handed a real `D` can be spelled with a local `Dims[...]` adapter
+    # (see `RK4Integrator.D`). If `ModelDims` were a distinct struct, every
+    # such adapter would have to flip to `ModelDims` in a SINGLE commit the
+    # moment the env began supplying `D` — two calling conventions at once,
+    # which §6 names as phase 2's #1 risk.
+    #
+    # `_Box[A] -> _Box[B]` only type-checks if A and B are the SAME type, so
+    # this is a compile-time assertion; it cannot be satisfied by a runtime
+    # value comparison and there is nothing here to print a false zero.
+    comptime SPELLED = Dims[
+        nq = DMDogStandWalkModel.NQ,
+        nv = DMDogStandWalkModel.NV,
+        nbody = DMDogStandWalkModel.NBODY,
+        njoint = DMDogStandWalkModel.NJOINT,
+        ngeom = DMDogStandWalkModel.NGEOM,
+        nsite = DMDogStandWalkModel.NSITE,
+        max_contacts = DMDogStandWalkModel.MAX_CONTACTS,
+        nequality = DMDogStandWalkModel.MAX_EQUALITY,
+        ntendon = DMDogStandWalkModel.MAX_TENDON,
+        nexclude = DMDogStandWalkModel.NEXCLUDE,
+        nmesh_verts=0,
+        npair = DMDogStandWalkModel.NPAIR,
+        nact = DMDogStandWalkModel.NACT,
+        nten = DMDogStandWalkModel.NTEN_F,
+        nkey = DMDogStandWalkModel.NKEY,
+    ]
+    var derived = _Box[ModelDims[DMDogStandWalkModel]](1)
+    var spelled: _Box[SPELLED] = derived.copy()
+    t.checks += 1
+    print("  derived and hand-spelled interoperate; tag =", spelled.tag)
 
     print()
     print("checks:", t.checks, " failures:", t.bad)

@@ -70,7 +70,14 @@ from ..solver.cg_solve import solve_cg
 from ..solver.island_pgs_solve import solve_island_pgs
 from ..collision.broadphase_sap import detect_contacts_auto
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
-from ..fields import Data, Model, DynamicsScratch, ContactScratch, Rk4Scratch
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    ContactScratch,
+    Rk4Scratch,
+    Dims,
+)
 from ..gpu.constants import (
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
@@ -430,7 +437,15 @@ struct RK4Integrator[
     on the dense kernel — 12.6× slower on Sawyer (NV=15, NBODY=34)."""
 
     var scratch: DynamicsScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
-    var rk4: Rk4Scratch[Self.DTYPE, Self.NQ, Self.NV, Self.BATCH]
+    # ⚠ ONE alias, used by both spellings below, NOT the expression inlined
+    # twice. `Dims[nq=..., nv=...]` is a TYPE: two textually identical
+    # spellings agree, but the moment they drift they become different types
+    # and the mismatch surfaces as an unreadable parameter diff rather than as
+    # "these two disagree". It is scaffolding — when `RK4Integrator` itself
+    # takes a `D` (the 2a sweep), this line goes and `Self.D` stays.
+    comptime D = Dims[nq=Self.NQ, nv=Self.NV]
+
+    var rk4: Rk4Scratch[Self.DTYPE, Self.D, Self.BATCH]
     # Blocked-Newton Jacobian spill size — 0 unless `Je` overflows threadgroup
     # memory. Computed HERE (not by the caller) because this struct already
     # carries every dimension it depends on, and via `je_budget` so the buffer
@@ -448,7 +463,7 @@ struct RK4Integrator[
         self.scratch = DynamicsScratch[
             Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ]()
-        self.rk4 = Rk4Scratch[Self.DTYPE, Self.NQ, Self.NV, Self.BATCH]()
+        self.rk4 = Rk4Scratch[Self.DTYPE, Self.D, Self.BATCH]()
         self.cscratch = ContactScratch[
             Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH, Self.JE_WS
         ]()

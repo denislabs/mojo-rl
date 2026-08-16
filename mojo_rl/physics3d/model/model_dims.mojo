@@ -37,25 +37,43 @@ NTENDON / NTEN while the model def calls them MAX_* / *_F, so the rename is
 pre-existing and this file is where it stops being retyped at every call site.
 """
 
-from ..fields.dims import DimsLike
+from ..fields.dims import DimsLike, Dims
 from .model_def import ModelDefLike
 
 
-struct ModelDims[MD: ModelDefLike, nmesh_verts: Int = 0](DimsLike):
-    """Every `fields` container's shape, read off one model def."""
+# ⚠⚠ AN ALIAS, NOT A STRUCT — AND THAT IS THE WHOLE POINT.
+#
+# As a `struct ModelDims[...](DimsLike)` this was a DISTINCT TYPE from an
+# equivalent `Dims[nq=..., nv=...]`, even with every value equal. That would
+# have forced a flag day: containers converted with local `Dims[...]` adapters
+# (the only way to convert one at a time — see `Rk4Scratch`) would all have to
+# flip to `ModelDims` in ONE commit the moment the env started supplying `D`,
+# which is exactly the "two incompatible calling conventions and no working
+# engine" failure §6 names as phase 2's #1 risk.
+#
+# As a parameterized alias it EXPANDS to a `Dims[...]`, so
+# `ModelDims[DogModel]` and the hand-spelled `Dims[nq=80, nv=79, ...]` are
+# the same type and interoperate freely. Verified, not assumed
+# (`scratchpad/probe_alias.mojo`): the compiler prints the alias-derived type
+# as `Dims[Int(11), Int(9)]` and assigns a value across the two spellings.
+#
+# ⇒ containers can convert one at a time with adapters, and each adapter
+# disappears silently when its owner gains a real `D`. No flag day.
 
-    comptime NQ = Self.MD.NQ
-    comptime NV = Self.MD.NV
-    comptime NBODY = Self.MD.NBODY
-    comptime NJOINT = Self.MD.NJOINT
-    comptime NGEOM = Self.MD.NGEOM
-    comptime NSITE = Self.MD.NSITE
-    comptime MAX_CONTACTS = Self.MD.MAX_CONTACTS
-    comptime NEQUALITY = Self.MD.MAX_EQUALITY
-    comptime NTENDON = Self.MD.MAX_TENDON
-    comptime NEXCLUDE = Self.MD.NEXCLUDE
-    comptime NMESH_VERTS = Self.nmesh_verts
-    comptime NPAIR = Self.MD.NPAIR
-    comptime NACT = Self.MD.NACT
-    comptime NTEN = Self.MD.NTEN_F
-    comptime NKEY = Self.MD.NKEY
+comptime ModelDims[MD: ModelDefLike, nmesh_verts: Int = 0] = Dims[
+    nq = MD.NQ,
+    nv = MD.NV,
+    nbody = MD.NBODY,
+    njoint = MD.NJOINT,
+    ngeom = MD.NGEOM,
+    nsite = MD.NSITE,
+    max_contacts = MD.MAX_CONTACTS,
+    nequality = MD.MAX_EQUALITY,
+    ntendon = MD.MAX_TENDON,
+    nexclude = MD.NEXCLUDE,
+    nmesh_verts=nmesh_verts,
+    npair = MD.NPAIR,
+    nact = MD.NACT,
+    nten = MD.NTEN_F,
+    nkey = MD.NKEY,
+]
