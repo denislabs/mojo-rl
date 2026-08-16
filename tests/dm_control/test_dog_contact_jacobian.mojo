@@ -49,7 +49,7 @@ from mojo_rl.envs.dm_control.dog import (
 from mojo_rl.physics3d.fields import Model, Data
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.physics3d.constraints.contact_solve import _contact_jacobian_row
+from mojo_rl.physics3d.dynamics.jac_contact_row import _contact_jacobian_row
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,

@@ -74,7 +74,7 @@ from ..types import _max_one, ConeType
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_FREE, JNT_BALL
 from .cholesky import chol_factor_inline, chol_solve_inline
 from .noslip import noslip_pyramidal, noslip_elliptic
-from .elliptic_layout import (
+from ..constraints.elliptic_layout import (
     ell_nt,
     ell_jt,
     ell_end,

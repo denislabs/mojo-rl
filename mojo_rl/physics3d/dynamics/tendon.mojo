@@ -53,7 +53,7 @@ from ..gpu.constants import (
     TENDON_IDX_NUM_SITES,
     TENDON_IDX_SITE_0,
 )
-from ..constraints.contact_solve import _contact_jacobian_row
+from .jac_contact_row import _contact_jacobian_row
 from ..kinematics.quat_math import gpu_quat_rotate
 
 

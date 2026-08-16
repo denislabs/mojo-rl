@@ -193,7 +193,7 @@ from ..gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_CONDIM,
 )
-from .qcqp import mj_qcqp2, mj_qcqp3, mj_qcqp5
+from ..constraints.qcqp import mj_qcqp2, mj_qcqp3, mj_qcqp5
 
 
 # ⚠ These stay `Float64` DELIBERATELY: they are `comptime`, so they never

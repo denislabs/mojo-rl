@@ -35,15 +35,15 @@ from layout import Layout, LayoutTensor
 
 from ..types import _max_one, ConeType
 from ..joint_types import JNT_FREE, JNT_BALL
-from .qcqp import mj_qcqp2, mj_qcqp3, mj_qcqp5
+from ..constraints.qcqp import mj_qcqp2, mj_qcqp3, mj_qcqp5
 from ..constraints.limits import _limits_env
 from ..constraints.friction_dof import _friction_env
 from ..constraints.equality_tendon import (
     _equality_env,
     _tendon_env,
 )
+from ..dynamics.jac_contact_row import _contact_jacobian_row
 from ..constraints.contact_solve import (
-    _contact_jacobian_row,
     _angular_jacobian_row,
     _init_common_normal_ws,
     _precompute_contact_normal,

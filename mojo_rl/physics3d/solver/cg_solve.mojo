@@ -51,7 +51,7 @@ from layout import Layout, LayoutTensor
 
 from ..types import _max_one, ConeType
 from .cholesky import chol_factor_inline, chol_solve_inline
-from .elliptic_layout import (
+from ..constraints.elliptic_layout import (
     ell_jt,
     ell_mu,
     ell_dn,
