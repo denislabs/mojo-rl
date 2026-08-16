@@ -427,12 +427,8 @@ struct ImplicitIntegrator[
             )
 
         # ── LU factor M_hat (+ M^-1 for the constraint solver) ───────────
-        lu_factor[
-            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
-        ](self.scratch, ctx)
-        compute_m_inv_from_lu[
-            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
-        ](self.scratch, ctx)
+        lu_factor[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
+        compute_m_inv_from_lu[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
 
         # ── RNE bias forces ──────────────────────────────────────────────
         compute_bias_forces_rne[
@@ -478,9 +474,7 @@ struct ImplicitIntegrator[
         ](d, m, self.scratch, ctx)
 
         # ── LU solve: qacc_ws = M_hat^-1 fnet ────────────────────────────
-        lu_solve[
-            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
-        ](self.scratch, ctx)
+        lu_solve[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
 
         # ── qacc writeback: qacc + qacc_constrained = qacc_ws ────────────
         comptime if target == "cpu":

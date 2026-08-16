@@ -66,7 +66,7 @@ from layout import Layout
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
-from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, Dims
+from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -513,8 +513,8 @@ def _check_rows[M: ModelDefFromXML](xml: String, label: String) raises:
     compute_subtree_com["cpu"](d, mf, None)
     compute_cdof["cpu"](d, mf, sc, None)
     compute_mass_matrix["cpu"](d, mf, sc, None)
-    ldl_factor["cpu", DTYPE, M.NV, M.NBODY, 1](sc, None)
-    _compute_m_inv["cpu", DTYPE, M.NV, M.NBODY, 1](sc, None)
+    ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
+    _compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
 
     comptime WR = _max_one[6 * M.MAX_EQUALITY]()
     comptime WJ = _max_one[6 * M.MAX_EQUALITY * M.NV]()

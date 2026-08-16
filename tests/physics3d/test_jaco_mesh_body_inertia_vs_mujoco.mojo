@@ -30,7 +30,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
 from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
-from mojo_rl.physics3d.fields import Model, Dims
+from mojo_rl.physics3d.fields import Model, Dims, DimsLike
 from mojo_rl.physics3d.constants import GEOM_MESH
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
@@ -149,19 +149,7 @@ def test_jaco_mesh_body_inertia_vs_mujoco() raises:
 
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=0, ntendon=0, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=0]]()
-    build_model_fields_from_flat[
-        DTYPE,
-        NV,
-        NBODY,
-        NJOINT,
-        NGEOM,
-        0,
-        0,
-        NSITE,
-        NEXCLUDE,
-        NMESH_VERTS,
-        0,
-    ](fmd, mf)
+    build_model_fields_from_flat[DTYPE](fmd, mf)
     _ = os.chdir(cwd)
 
     # How many mesh geoms OUR parser actually resolved — the precondition the

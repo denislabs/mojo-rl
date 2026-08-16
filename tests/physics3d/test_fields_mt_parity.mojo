@@ -18,7 +18,7 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_fields_mt_parity.mojo
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -196,8 +196,8 @@ def test_walker2d_per_op() raises:
     _cmp("walker2d CRBA M", ss.M, sp.M, BATCH * NV * NV)
 
     # 6. LDL factor
-    ldl_factor["gpu", DTYPE, NV, NBODY, BATCH](ss, ctx)
-    ldl_factor["gpu", DTYPE, NV, NBODY, BATCH, PARALLEL=True](sp, ctx)
+    ldl_factor["gpu", DTYPE, BATCH=BATCH](ss, ctx)
+    ldl_factor["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](sp, ctx)
     ss.L.download(ctx)
     ss.D.download(ctx)
     sp.L.download(ctx)
@@ -206,8 +206,8 @@ def test_walker2d_per_op() raises:
     _cmp("walker2d LDL D", ss.D, sp.D, BATCH * NV)
 
     # 7. M^-1 from LDL
-    compute_m_inv["gpu", DTYPE, NV, NBODY, BATCH](ss, ctx)
-    compute_m_inv["gpu", DTYPE, NV, NBODY, BATCH, PARALLEL=True](
+    compute_m_inv["gpu", DTYPE, BATCH=BATCH](ss, ctx)
+    compute_m_inv["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](
         sp, ctx
     )
     ss.m_inv.download(ctx)

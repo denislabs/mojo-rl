@@ -538,14 +538,8 @@ struct RK4Integrator[
                 block_dim=(EU_TPB,),
             )
 
-        ldl_factor[
-            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-        ](self.scratch, ctx)
-        compute_m_inv[
-            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-        ](self.scratch, ctx)
+        ldl_factor[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](self.scratch, ctx)
+        compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](self.scratch, ctx)
         compute_bias_forces_rne[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
@@ -591,9 +585,7 @@ struct RK4Integrator[
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
         ](d, m, self.scratch, ctx)
 
-        ldl_solve[
-            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
-        ](self.scratch, ctx)
+        ldl_solve[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
 
         comptime if target == "cpu":
             var qacc_ws_v = self.scratch.qacc_ws.lt["cpu", L_NV]()

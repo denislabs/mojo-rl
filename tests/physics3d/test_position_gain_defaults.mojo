@@ -150,7 +150,7 @@ def _gains(xml: String) raises -> Tuple[Float64, Float64]:
     """`(kp, kv)` of actuator 0, off the records the engine reads."""
     var fmd = parse_xml_full(xml)
     var sf = SpecFields[DType.float64, Dims[nact=1, nten=1, nq=1, nv=1, nkey=1, njoint=1]]()
-    build_spec_fields[DType.float64, 1, 1, 1, 1, 1, 1](fmd, sf)
+    build_spec_fields[DType.float64](fmd, sf)
     return (
         Float64(sf.actuators.data[ACT_IDX_KP]),
         Float64(sf.actuators.data[ACT_IDX_KV]),

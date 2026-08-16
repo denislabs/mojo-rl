@@ -27,7 +27,7 @@ Expected output:
 from mojo_rl.physics3d.parser import ParsedModel, parse_xml
 from mojo_rl.physics3d.parser import FlatModelDef
 from mojo_rl.physics3d.parser import parse_xml_full
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
@@ -200,10 +200,7 @@ def test_xml_full_parser() raises:
     # the Lists. What remains is the MODEL side, which still sizes
     # `fields.Model`'s tensors: NV/NBODY/NJOINT/NGEOM, then the record
     # capacities, then the `<compiler>` build modes.
-    build_model_fields_from_flat[
-        DType.float64, pm.NV, pm.NBODY, pm.NJOINT, pm.NGEOM,
-        0, 0, 0, 0, 0,  # MAX_EQUALITY/MAX_TENDON/NSITE/NEXCLUDE/NMESH_VERTS
-    ](fmd, mf)
+    build_model_fields_from_flat[DType.float64](fmd, mf)
 
     print(
         "gravity_z     =",

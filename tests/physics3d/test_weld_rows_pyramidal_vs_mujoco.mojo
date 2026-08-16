@@ -396,8 +396,8 @@ def _prep(
     _armature_env[DTYPE, M.NV, M.NJOINT, 1](
         0, joints_v, sc.M.lt["cpu", L_M]()
     )
-    ldl_factor["cpu", DTYPE, M.NV, M.NBODY, 1](sc, None)
-    compute_m_inv["cpu", DTYPE, M.NV, M.NBODY, 1](sc, None)
+    ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
+    compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
     compute_bias_forces_rne["cpu"](d, mf, sc, None)
     _fnet_passive_env[DTYPE, M.NQ, M.NV, M.NJOINT, 1](
         0,
@@ -408,7 +408,7 @@ def _prep(
         sc.bias.lt["cpu", L_NV](),
         sc.fnet.lt["cpu", L_NV](),
     )
-    ldl_solve["cpu", DTYPE, M.NV, M.NBODY, 1](sc, None)
+    ldl_solve["cpu", DTYPE, BATCH=1](sc, None)
     _qacc_writeback_env[DTYPE, M.NV, 1](
         0,
         sc.qacc_ws.lt["cpu", L_NV](),
@@ -673,8 +673,8 @@ def test_weld_orientation_rows_match_mujoco() raises:
     compute_subtree_com["cpu"](d, mf, None)
     compute_cdof["cpu"](d, mf, sc, None)
     compute_mass_matrix["cpu"](d, mf, sc, None)
-    ldl_factor["cpu", DTYPE, MTQ1.NV, MTQ1.NBODY, 1](sc, None)
-    _compute_m_inv["cpu", DTYPE, MTQ1.NV, MTQ1.NBODY, 1](sc, None)
+    ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
+    _compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
 
     comptime WR = _max_one[6 * MTQ1.MAX_EQUALITY]()
     comptime WJ = _max_one[6 * MTQ1.MAX_EQUALITY * MTQ1.NV]()
@@ -820,8 +820,8 @@ def test_weld_torquescale_matches_mujoco() raises:
     compute_subtree_com["cpu"](d, mf, None)
     compute_cdof["cpu"](d, mf, sc, None)
     compute_mass_matrix["cpu"](d, mf, sc, None)
-    ldl_factor["cpu", DTYPE, MTQ5.NV, MTQ5.NBODY, 1](sc, None)
-    _compute_m_inv["cpu", DTYPE, MTQ5.NV, MTQ5.NBODY, 1](sc, None)
+    ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
+    _compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
 
     comptime WR = _max_one[6 * MTQ5.MAX_EQUALITY]()
     comptime WJ = _max_one[6 * MTQ5.MAX_EQUALITY * MTQ5.NV]()

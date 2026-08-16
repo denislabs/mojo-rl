@@ -72,15 +72,8 @@ def geom_xquat[DTYPE: DType, D: DimsLike](
 
 
 @always_inline
-def geom_xmat_elem[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def geom_xmat_elem[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_geoms: List[Scalar[DTYPE]],
     geom: Int,
     idx: Int,

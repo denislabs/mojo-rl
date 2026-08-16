@@ -51,7 +51,7 @@ from std.collections import InlineArray
 from max.gpu.host import DeviceContext
 from layout import Layout
 
-from mojo_rl.physics3d.fields import Model, Data, Dims
+from mojo_rl.physics3d.fields import Model, Data, Dims, DimsLike
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
 from mojo_rl.physics3d.parser.fields_build import build_model_fields_from_flat
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -119,10 +119,7 @@ def test_ik_site_matches_dm_control() raises:
 
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=0, ntendon=0, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=0]]()
-    build_model_fields_from_flat[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-        NMESH_VERTS, 0,
-    ](fmd, mf)
+    build_model_fields_from_flat[DTYPE](fmd, mf)
     _ = os.chdir(cwd)
 
     var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]()
@@ -369,10 +366,7 @@ def test_set_site_to_xpos_matches_dm_control() raises:
     var fmd = parse_xml_full(_read(xml_path))
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=0, ntendon=0, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=0]]()
-    build_model_fields_from_flat[
-        DTYPE, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-        NMESH_VERTS, 0,
-    ](fmd, mf)
+    build_model_fields_from_flat[DTYPE](fmd, mf)
     _ = os.chdir(cwd)
     var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]()
 

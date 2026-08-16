@@ -37,7 +37,7 @@ CPU-only (build-time); no GPU kernels needed.
 
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -222,7 +222,7 @@ def compute_invweight0[
         _mi_sum / Float64(NV) if NV > 0 else Float64(0)
     )
 
-    ldl_factor["cpu", DTYPE, NV, NBODY, 1](sc)
+    ldl_factor["cpu", DTYPE, BATCH=1](sc)
 
     # ── dof->body map (matches legacy :461-476) ──────────────────────────────
     var dof_body = List[Int](length=NV, fill=0)
@@ -399,7 +399,7 @@ def compute_invweight0[
             # legacy compute_body_invweight0 arithmetic bit-for-bit).
             for q in range(NV):
                 sc.fnet.data[q] = J_row[q]
-            ldl_solve["cpu", DTYPE, NV, NBODY, 1](sc)
+            ldl_solve["cpu", DTYPE, BATCH=1](sc)
             var dot_val = Scalar[DTYPE](0)
             for q in range(NV):
                 dot_val += J_row[q] * sc.qacc_ws.data[q]
@@ -432,7 +432,7 @@ def compute_invweight0[
     for dd in range(NV):
         for q in range(NV):
             sc.fnet.data[q] = Scalar[DTYPE](1) if q == dd else Scalar[DTYPE](0)
-        ldl_solve["cpu", DTYPE, NV, NBODY, 1](sc)
+        ldl_solve["cpu", DTYPE, BATCH=1](sc)
         mf.dof_invweight0.data[dd] = sc.qacc_ws.data[dd]
 
     # ── average within each free/ball dof group (engine_setconst.c:199-209) ──
@@ -538,7 +538,7 @@ def compute_invweight0[
 
             for q in range(NV):
                 sc.fnet.data[q] = tJ[q]
-            ldl_solve["cpu", DTYPE, NV, NBODY, 1](sc)
+            ldl_solve["cpu", DTYPE, BATCH=1](sc)
             var iw = Scalar[DTYPE](0)
             for q in range(NV):
                 iw += tJ[q] * sc.qacc_ws.data[q]

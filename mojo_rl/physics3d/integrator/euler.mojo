@@ -52,7 +52,7 @@ from ..dynamics.rne import compute_bias_forces_rne
 from ..dynamics.rne_post import compute_rne_post
 from ..dynamics.fluid_forces import compute_fluid_forces
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
-from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims
+from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims, DimsLike
 from ..gpu.constants import (
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
@@ -494,14 +494,8 @@ struct EulerIntegrator[
                 block_dim=(EU_TPB,),
             )
 
-        ldl_factor[
-            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-        ](self.scratch, ctx)
-        compute_m_inv[
-            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-        ](self.scratch, ctx)
+        ldl_factor[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](self.scratch, ctx)
+        compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](self.scratch, ctx)
         compute_bias_forces_rne[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
@@ -543,9 +537,7 @@ struct EulerIntegrator[
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
         ](d, m, self.scratch, ctx)
 
-        ldl_solve[
-            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
-        ](self.scratch, ctx)
+        ldl_solve[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
 
         comptime if target == "cpu":
             var qacc_ws_v = self.scratch.qacc_ws.lt["cpu", L_NV]()

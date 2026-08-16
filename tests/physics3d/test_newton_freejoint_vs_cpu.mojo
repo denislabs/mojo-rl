@@ -129,8 +129,8 @@ def _prep[
         var M_v = scratch.M.lt["cpu", L_M]()
         for e in range(BATCH):
             _armature_env[DTYPE, NV, NJOINT, BATCH](e, joints_v, M_v)
-        ldl_factor["cpu", DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_m_inv["cpu", DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        ldl_factor["cpu", DTYPE, BATCH=BATCH](scratch, ctx)
+        compute_m_inv["cpu", DTYPE, BATCH=BATCH](scratch, ctx)
         compute_bias_forces_rne[
             "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE,
             NEXCL, 0, BATCH,
@@ -144,7 +144,7 @@ def _prep[
             _fnet_passive_env[DTYPE, NQ, NV, NJOINT, BATCH](
                 e, qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v
             )
-        ldl_solve["cpu", DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        ldl_solve["cpu", DTYPE, BATCH=BATCH](scratch, ctx)
         var qacc_ws_v = scratch.qacc_ws.lt["cpu", L_NV]()
         var qacc_v = d.qacc.lt["cpu", L_NV]()
         var qacc_c_v = scratch.qacc_constrained.lt["cpu", L_NV]()
@@ -159,8 +159,8 @@ def _prep[
             grid_dim=(BATCH,),
             block_dim=(1,),
         )
-        ldl_factor["gpu", DTYPE, NV, NBODY, BATCH](scratch, ctx)
-        compute_m_inv["gpu", DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        ldl_factor["gpu", DTYPE, BATCH=BATCH](scratch, ctx)
+        compute_m_inv["gpu", DTYPE, BATCH=BATCH](scratch, ctx)
         compute_bias_forces_rne[
             "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE,
             NEXCL, 0, BATCH,
@@ -177,7 +177,7 @@ def _prep[
             grid_dim=(BATCH,),
             block_dim=(1,),
         )
-        ldl_solve["gpu", DTYPE, NV, NBODY, BATCH](scratch, ctx)
+        ldl_solve["gpu", DTYPE, BATCH=BATCH](scratch, ctx)
         ctx.value().enqueue_function[_qacc_writeback_kernel[DTYPE, NV, BATCH]](
             scratch.qacc_ws.lt["gpu", L_NV](),
             d.qacc.lt["gpu", L_NV](),

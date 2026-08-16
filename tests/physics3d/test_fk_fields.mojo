@@ -28,7 +28,7 @@ from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.joint_types import JNT_HINGE
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -274,11 +274,11 @@ def test_walker2d() raises:
             scratch.fnet.data[e * NV + i] = f
             scratch_c.fnet.data[e * NV + i] = f
     scratch.fnet.upload(ctx)
-    ldl_factor["gpu", DTYPE, NV, NBODY, BATCH](scratch, ctx)
-    ldl_solve["gpu", DTYPE, NV, NBODY, BATCH](scratch, ctx)
+    ldl_factor["gpu", DTYPE, BATCH=BATCH](scratch, ctx)
+    ldl_solve["gpu", DTYPE, BATCH=BATCH](scratch, ctx)
     scratch.qacc_ws.download(ctx)
-    ldl_factor["cpu", DTYPE, NV, NBODY, BATCH](scratch_c)
-    ldl_solve["cpu", DTYPE, NV, NBODY, BATCH](scratch_c)
+    ldl_factor["cpu", DTYPE, BATCH=BATCH](scratch_c)
+    ldl_solve["cpu", DTYPE, BATCH=BATCH](scratch_c)
     var worst_ld = Float64(0)
     for i in range(BATCH * NV):
         var err = abs(

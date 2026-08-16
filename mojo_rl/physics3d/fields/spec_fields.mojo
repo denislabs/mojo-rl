@@ -212,10 +212,8 @@ struct SpecFields[
 # comparison honest about what the record actually holds.
 
 
-def actuator_column[
-    DT: DType, NA: Int, NT: Int, NQ: Int, NV: Int, NK: Int, NJ: Int
-](
-    sf: SpecFields[DT, Dims[nact=NA, nten=NT, nq=NQ, nv=NV, nkey=NK, njoint=NJ]], col: Int, n: Int
+def actuator_column[DT: DType, D: DimsLike](
+    sf: SpecFields[DT, D], col: Int, n: Int
 ) raises -> List[Float64]:
     """`sf.actuators[:n, col]`. `col` is an `ACT_IDX_*`."""
     var out = List[Float64](capacity=n)
@@ -224,10 +222,8 @@ def actuator_column[
     return out^
 
 
-def act_tendon_column[
-    DT: DType, NA: Int, NT: Int, NQ: Int, NV: Int, NK: Int, NJ: Int
-](
-    sf: SpecFields[DT, Dims[nact=NA, nten=NT, nq=NQ, nv=NV, nkey=NK, njoint=NJ]], col: Int, n: Int
+def act_tendon_column[DT: DType, D: DimsLike](
+    sf: SpecFields[DT, D], col: Int, n: Int
 ) raises -> List[Float64]:
     """`sf.act_tendons[:n, col]`. `col` is an `ACTTEN_IDX_*`."""
     var out = List[Float64](capacity=n)
@@ -238,10 +234,8 @@ def act_tendon_column[
     return out^
 
 
-def joint_limit_column[
-    DT: DType, NA: Int, NT: Int, NQ: Int, NV: Int, NK: Int, NJ: Int
-](
-    sf: SpecFields[DT, Dims[nact=NA, nten=NT, nq=NQ, nv=NV, nkey=NK, njoint=NJ]], col: Int, n: Int
+def joint_limit_column[DT: DType, D: DimsLike](
+    sf: SpecFields[DT, D], col: Int, n: Int
 ) raises -> List[Float64]:
     """`sf.joint_limits[:n, col]`. `col` is a `JLIM_IDX_*`."""
     var out = List[Float64](capacity=n)

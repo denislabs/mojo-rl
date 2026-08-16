@@ -82,7 +82,7 @@ from mojo_rl.physics3d.gpu.constants import (
     JLIM_IDX_RANGE_MAX,
 )
 from mojo_rl.physics3d.joint_types import JNT_FREE, JNT_BALL
-from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, SpecFields, Dims
+from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, SpecFields, Dims, DimsLike
 from mojo_rl.physics3d.dynamics.invweight import (
     compute_invweight0,
 )
@@ -614,15 +614,7 @@ struct ModelDefFromXML[
         the duplication; merging the two builds is 1b's business.
         """
         var fmd = parse_xml_full(Self.xml_text(), Self.asset_base_dir())
-        build_spec_fields[
-            DTYPE,
-            Self.NACT,
-            Self.NTEN_F,
-            Self.NQ,
-            Self.NV,
-            Self.NKEY,
-            Self.NJOINT,
-        ](fmd, sf)
+        build_spec_fields[DTYPE](fmd, sf)
         sf.upload_all(ctx)
 
     @staticmethod
@@ -638,15 +630,7 @@ struct ModelDefFromXML[
         with a page-long message.
         """
         var sf = SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]]()
-        build_spec_fields[
-            DTYPE,
-            Self.NACT,
-            Self.NTEN_F,
-            Self.NQ,
-            Self.NV,
-            Self.NKEY,
-            Self.NJOINT,
-        ](
+        build_spec_fields[DTYPE](
             parse_xml_full(Self.xml_text(), Self.asset_base_dir()), sf
         )
         return sf^
@@ -1366,19 +1350,7 @@ struct ModelDefFromXML[
         # They were three of the last comptime readers of the MJCF string,
         # and every one of those pins the model to Mojo source: the comptime
         # interpreter cannot `open()` a file (§10.2).
-        build_model_fields_from_flat[
-            DTYPE,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.MAX_TENDON,
-            Self.NSITE,
-            Self.NEXCLUDE,
-            NMESHV,
-            Self.NPAIR,
-        ](fmd, mf)
+        build_model_fields_from_flat[DTYPE](fmd, mf)
 
         # Reference pose + fields-native invweight0 (G1).
         var d_inv = Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1]()
@@ -1386,15 +1358,7 @@ struct ModelDefFromXML[
         # re-parse the XML a third time for a value this function has sitting
         # in a local.
         var sf_inv = SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]]()
-        build_spec_fields[
-            DTYPE,
-            Self.NACT,
-            Self.NTEN_F,
-            Self.NQ,
-            Self.NV,
-            Self.NKEY,
-            Self.NJOINT,
-        ](fmd, sf_inv)
+        build_spec_fields[DTYPE](fmd, sf_inv)
         Self.reset_data[DTYPE](sf_inv, d_inv)
         var sc_inv = DynamicsScratch[DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY], 1]()
         compute_invweight0[

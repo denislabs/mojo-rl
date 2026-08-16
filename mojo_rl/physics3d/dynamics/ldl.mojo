@@ -10,7 +10,7 @@ from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import DynamicsScratch, Dims
+from ..fields import DynamicsScratch, Dims, DimsLike
 
 comptime LDL_TPB: Int = 64
 
@@ -177,31 +177,30 @@ def _ldl_solve_fields_kernel[
 def ldl_factor[
     target: StaticString,
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
+    D: DimsLike,
     BATCH: Int = 1,
     PARALLEL: Bool = False,
 ](
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """M -> L, D (owned scratch), both targets, one body. PARALLEL=True
     (GPU only): cooperative per-column kernel, bit-exact vs serial. CPU
     ignores PARALLEL."""
-    comptime L_M = Layout.row_major(BATCH, NV * NV)
-    comptime L_NV = Layout.row_major(BATCH, NV)
+    comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
 
     comptime if target == "cpu":
         var M_v = scratch.M.lt["cpu", L_M]()
         var L_v = scratch.L.lt["cpu", L_M]()
         var D_v = scratch.D.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _ldl_factor_env[DTYPE, NV, BATCH](e, M_v, L_v, D_v)
+            _ldl_factor_env[DTYPE, D.NV, BATCH](e, M_v, L_v, D_v)
     elif PARALLEL:
         var c = ctx.value()
-        comptime MT_T = NV
+        comptime MT_T = D.NV
         c.enqueue_function[
-            _ldl_factor_fields_mt_kernel[DTYPE, NV, BATCH, MT_T]
+            _ldl_factor_fields_mt_kernel[DTYPE, D.NV, BATCH, MT_T]
         ](
             scratch.M.lt["gpu", L_M](),
             scratch.L.lt["gpu", L_M](),
@@ -212,7 +211,7 @@ def ldl_factor[
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LDL_TPB - 1) // LDL_TPB
-        c.enqueue_function[_ldl_factor_fields_kernel[DTYPE, NV, BATCH]](
+        c.enqueue_function[_ldl_factor_fields_kernel[DTYPE, D.NV, BATCH]](
             scratch.M.lt["gpu", L_M](),
             scratch.L.lt["gpu", L_M](),
             scratch.D.lt["gpu", L_NV](),
@@ -221,19 +220,13 @@ def ldl_factor[
         )
 
 
-def ldl_solve[
-    target: StaticString,
-    DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    BATCH: Int = 1,
-](
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
+def ldl_solve[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int = 1](
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """`qacc_ws = M^-1 fnet` via L/D (owned scratch), both targets."""
-    comptime L_M = Layout.row_major(BATCH, NV * NV)
-    comptime L_NV = Layout.row_major(BATCH, NV)
+    comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
 
     comptime if target == "cpu":
         var L_v = scratch.L.lt["cpu", L_M]()
@@ -241,11 +234,11 @@ def ldl_solve[
         var b_v = scratch.fnet.lt["cpu", L_NV]()
         var x_v = scratch.qacc_ws.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _ldl_solve_env[DTYPE, NV, BATCH](e, L_v, D_v, b_v, x_v)
+            _ldl_solve_env[DTYPE, D.NV, BATCH](e, L_v, D_v, b_v, x_v)
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LDL_TPB - 1) // LDL_TPB
-        c.enqueue_function[_ldl_solve_fields_kernel[DTYPE, NV, BATCH]](
+        c.enqueue_function[_ldl_solve_fields_kernel[DTYPE, D.NV, BATCH]](
             scratch.L.lt["gpu", L_M](),
             scratch.D.lt["gpu", L_NV](),
             scratch.fnet.lt["gpu", L_NV](),
@@ -362,30 +355,29 @@ def _m_inv_fields_mt_kernel[
 def compute_m_inv[
     target: StaticString,
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
+    D: DimsLike,
     BATCH: Int = 1,
     PARALLEL: Bool = False,
 ](
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """L, D -> m_inv (owned scratch), both targets, one body. PARALLEL=True
     (GPU only): cooperative column-striped kernel, bit-exact vs serial. CPU
     ignores PARALLEL."""
-    comptime L_M = Layout.row_major(BATCH, NV * NV)
-    comptime L_NV = Layout.row_major(BATCH, NV)
+    comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
 
     comptime if target == "cpu":
         var L_v = scratch.L.lt["cpu", L_M]()
         var D_v = scratch.D.lt["cpu", L_NV]()
         var mi_v = scratch.m_inv.lt["cpu", L_M]()
         for e in range(BATCH):
-            _m_inv_env[DTYPE, NV, BATCH](e, L_v, D_v, mi_v)
+            _m_inv_env[DTYPE, D.NV, BATCH](e, L_v, D_v, mi_v)
     elif PARALLEL:
         var c = ctx.value()
-        comptime MT_T = NV
-        c.enqueue_function[_m_inv_fields_mt_kernel[DTYPE, NV, BATCH, MT_T]](
+        comptime MT_T = D.NV
+        c.enqueue_function[_m_inv_fields_mt_kernel[DTYPE, D.NV, BATCH, MT_T]](
             scratch.L.lt["gpu", L_M](),
             scratch.D.lt["gpu", L_NV](),
             scratch.m_inv.lt["gpu", L_M](),
@@ -395,7 +387,7 @@ def compute_m_inv[
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + LDL_TPB - 1) // LDL_TPB
-        c.enqueue_function[_m_inv_fields_kernel[DTYPE, NV, BATCH]](
+        c.enqueue_function[_m_inv_fields_kernel[DTYPE, D.NV, BATCH]](
             scratch.L.lt["gpu", L_M](),
             scratch.D.lt["gpu", L_NV](),
             scratch.m_inv.lt["gpu", L_M](),
