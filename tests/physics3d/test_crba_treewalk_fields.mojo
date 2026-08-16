@@ -29,7 +29,7 @@ from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -134,7 +134,7 @@ def test_walker2d_mm() raises:
         "gpu", DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM,
         W_NEQ, W_NTD, W_NSITE, W_NEXCL, 0, W_BATCH,
     ](d, mf, ctx)
-    var scratch = DynamicsScratch[DTYPE, W_NV, W_NBODY, W_BATCH]()
+    var scratch = DynamicsScratch[DTYPE, Dims[nv=W_NV, nbody=W_NBODY], W_BATCH]()
     scratch.upload_all(ctx)
     compute_cdof[
         "gpu", DTYPE, W_NQ, W_NV, W_NBODY, W_NJOINT, W_MC, W_NGEOM,
@@ -215,7 +215,7 @@ def test_ant_mm() raises:
         "gpu", DTYPE, A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_NGEOM,
         A_NEQ, A_NTD, A_NSITE, A_NEXCL, 0, A_BATCH,
     ](d, mf, ctx)
-    var scratch = DynamicsScratch[DTYPE, A_NV, A_NBODY, A_BATCH]()
+    var scratch = DynamicsScratch[DTYPE, Dims[nv=A_NV, nbody=A_NBODY], A_BATCH]()
     scratch.upload_all(ctx)
     compute_cdof[
         "gpu", DTYPE, A_NQ, A_NV, A_NBODY, A_NJOINT, A_MC, A_NGEOM,

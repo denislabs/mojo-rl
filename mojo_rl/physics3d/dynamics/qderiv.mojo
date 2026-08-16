@@ -826,7 +826,7 @@ def compute_rne_vel_derivative[
         NMESH_VERTS,
         NPAIR,
     ],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     # ⚠ `Dims[nv=NV, nbody=NBODY]` rather than a `D: DimsLike` parameter on
     # this function: the body reads NV/NBODY throughout and every caller
     # passes them positionally, so taking `D` here would pull those callers

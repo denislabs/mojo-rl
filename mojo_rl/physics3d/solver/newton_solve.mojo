@@ -2365,7 +2365,7 @@ def solve_newton[
         NMESH_VERTS,
         NPAIR,
     ],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     mut cscratch: ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MAX_CONTACTS], BATCH, JE_WS],
     ctx: Optional[DeviceContext] = None,
 ) raises:
@@ -3816,7 +3816,7 @@ def solve_newton_blocked[
         NMESH_VERTS,
         NPAIR,
     ],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     mut cscratch: ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MAX_CONTACTS], BATCH, JE_WS],
     ctx: Optional[DeviceContext] = None,
 ) raises:

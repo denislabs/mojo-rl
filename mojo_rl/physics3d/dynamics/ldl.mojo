@@ -10,7 +10,7 @@ from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import DynamicsScratch
+from ..fields import DynamicsScratch, Dims
 
 comptime LDL_TPB: Int = 64
 
@@ -182,7 +182,7 @@ def ldl_factor[
     BATCH: Int = 1,
     PARALLEL: Bool = False,
 ](
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """M -> L, D (owned scratch), both targets, one body. PARALLEL=True
@@ -228,7 +228,7 @@ def ldl_solve[
     NBODY: Int,
     BATCH: Int = 1,
 ](
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """`qacc_ws = M^-1 fnet` via L/D (owned scratch), both targets."""
@@ -367,7 +367,7 @@ def compute_m_inv[
     BATCH: Int = 1,
     PARALLEL: Bool = False,
 ](
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """L, D -> m_inv (owned scratch), both targets, one body. PARALLEL=True

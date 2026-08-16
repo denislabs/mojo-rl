@@ -22,6 +22,7 @@ from mojo_rl.physics3d.fields import (
     Data,
     Model,
     DynamicsScratch,
+    Dims,
 )
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
@@ -71,7 +72,7 @@ def main() raises:
         d.qvel.data[i] = _qvel(i)
     d.upload_all(ctx)
 
-    var scratch = DynamicsScratch[DT, NV, NBODY, BATCH]()
+    var scratch = DynamicsScratch[DT, Dims[nv=NV, nbody=NBODY], BATCH]()
     scratch.upload_all(ctx)
 
     # Kinematics chain that populates the fluid inputs (GPU).

@@ -28,7 +28,7 @@ from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.joint_types import JNT_HINGE
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -225,9 +225,9 @@ def test_walker2d() raises:
         raise Error("walker2d subtree_com fields-CPU tolerance exceeded")
 
     # 3. cdof.
-    var scratch = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var scratch = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     scratch.upload_all(ctx)
-    var scratch_c = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var scratch_c = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     compute_cdof[
         "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
         NEQ, NTD, NSITE, NEXCL, 0, BATCH,

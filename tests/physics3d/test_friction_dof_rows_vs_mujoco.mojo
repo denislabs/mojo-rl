@@ -316,7 +316,7 @@ def _fields_prep[
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
     mut mf: Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
     """Smooth-dynamics prep + detection, mirroring EulerIntegrator.step
@@ -460,9 +460,9 @@ def test_blocked_friction_rows() raises:
     _seed_fric(dp)
     dg.upload_all(ctx)
 
-    var sg = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var sc = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var sp = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var sg = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
+    var sc = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
+    var sp = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     var cg = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     var cc = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     var cp = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()

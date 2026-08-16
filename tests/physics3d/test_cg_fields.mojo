@@ -92,7 +92,7 @@ def _fields_prep[
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
     mut mf: Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
     """Smooth-dynamics prep + detection, mirroring EulerIntegrator.step
@@ -234,9 +234,9 @@ def part_a(ctx: DeviceContext) raises:
     dN.upload_all(ctx)
     dC.upload_all(ctx)
 
-    var scN = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var scN = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     var csN = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
-    var scC = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var scC = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     var csC = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     scN.upload_all(ctx)
     csN.upload_all(ctx)
@@ -288,9 +288,9 @@ def part_b(ctx: DeviceContext) raises:
     _init_state(dc)
     dg.upload_all(ctx)
 
-    var scg = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var scg = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     var csg = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
-    var scc = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var scc = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     var csc = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     scg.upload_all(ctx)
     csg.upload_all(ctx)

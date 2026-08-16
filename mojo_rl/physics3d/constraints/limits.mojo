@@ -17,7 +17,7 @@ from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..joint_types import JNT_HINGE, JNT_SLIDE
-from ..fields import Data, Model, DynamicsScratch
+from ..fields import Data, Model, DynamicsScratch, Dims
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_JOINT_SIZE,
@@ -333,7 +333,7 @@ def solve_limits[
         NMESH_VERTS,
         NPAIR,
     ],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Detect + solve joint limits into `scratch.qacc_constrained`, both

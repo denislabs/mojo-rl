@@ -20,7 +20,7 @@ from ..kinematics.quat_math import (
     gpu_axis_angle_to_quat,
 )
 from ..joint_types import JNT_FREE, JNT_SLIDE, JNT_HINGE
-from ..fields import Data, Model, DynamicsScratch
+from ..fields import Data, Model, DynamicsScratch, Dims
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -454,7 +454,7 @@ def compute_cdof[
         NMESH_VERTS,
         NPAIR,
     ],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """`cdof` from FK products, both targets, one body. Output goes to the

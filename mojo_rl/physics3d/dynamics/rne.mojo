@@ -17,7 +17,7 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import gpu_quat_mul
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch
+from ..fields import Data, Model, DynamicsScratch, Dims
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -811,7 +811,7 @@ def compute_bias_forces_rne[
         NMESH_VERTS,
         NPAIR,
     ],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """RNE bias forces, both targets, one body. Reads FK products + qvel +

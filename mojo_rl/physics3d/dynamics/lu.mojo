@@ -20,7 +20,7 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import DynamicsScratch
+from ..fields import DynamicsScratch, Dims
 
 comptime LU_TPB: Int = 64
 
@@ -257,7 +257,7 @@ def lu_factor[
     NBODY: Int,
     BATCH: Int = 1,
 ](
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """M -> LU factors in L + pivots in D (owned scratch), both targets."""
@@ -289,7 +289,7 @@ def lu_solve[
     NBODY: Int,
     BATCH: Int = 1,
 ](
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """`qacc_ws = A^-1 fnet` via LU factors in L + pivots in D, both targets."""
@@ -323,7 +323,7 @@ def compute_m_inv_from_lu[
     NBODY: Int,
     BATCH: Int = 1,
 ](
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """LU factors (L) + pivots (D) -> m_inv (owned scratch), both targets."""

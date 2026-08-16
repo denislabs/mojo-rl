@@ -37,7 +37,7 @@ CPU-only (build-time); no GPU kernels needed.
 
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -142,7 +142,7 @@ def compute_invweight0[
         DTYPE, NV, NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE, NEXCLUDE,
         NMESH_VERTS, NPAIR,
     ],
-    mut sc: DynamicsScratch[DTYPE, NV, NBODY, 1],
+    mut sc: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], 1],
 ) raises:
     """Compute mf.body_invweight0 / mf.dof_invweight0 at qpos0 — see module
     docstring. Build-time, single-env (BATCH=1); overwrites `d`."""

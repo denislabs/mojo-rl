@@ -1583,7 +1583,7 @@ def solve_island_pgs[
         NMESH_VERTS,
         NPAIR,
     ],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     mut cscratch: ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MAX_CONTACTS], BATCH, _],
     ctx: Optional[DeviceContext] = None,
 ) raises:

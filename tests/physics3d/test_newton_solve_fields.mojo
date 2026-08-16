@@ -170,7 +170,7 @@ def _fields_prep[
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
     mut mf: Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
     """Smooth-dynamics prep + detection, mirroring EulerIntegrator.step
@@ -384,7 +384,7 @@ def run_leg[
         raise Error("env 1 has no violated joint limit — limit rows vacuous")
     print("  limit rows: env0", nlim0, " env1", nlim1, "(non-vacuous)")
 
-    var scratch = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var scratch = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     var cscratch = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     scratch.upload_all(ctx)
     cscratch.upload_all(ctx)
@@ -481,11 +481,11 @@ def run_cpu_smoke(ctx: DeviceContext) raises:
             dc.qfrc.data[e * NV + i] = qf
     d.upload_all(ctx)
 
-    var scratch = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var scratch = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     var cscratch = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     scratch.upload_all(ctx)
     cscratch.upload_all(ctx)
-    var scratch_c = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var scratch_c = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     var cscratch_c = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
 
     _fields_prep["gpu"](d, mf, scratch, ctx)

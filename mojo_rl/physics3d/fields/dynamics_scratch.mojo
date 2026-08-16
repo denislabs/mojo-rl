@@ -18,16 +18,27 @@ from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 
+from .dims import DimsLike
+
 
 struct DynamicsScratch[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
+    # ⚠ NAMED `DIMS`, NOT `D` LIKE EVERY OTHER CONTAINER, because this struct
+    # already has a FIELD called `D` — the LDL diagonal, `[BATCH, NV]` — and
+    # the two collide in the struct's own scope ("invalid redefinition of
+    # 'D'"). The parameter is passed POSITIONALLY at all 79 call sites, so its
+    # name is invisible outside this file; `scratch.D` is read across the
+    # whole LDL and solver path and renaming THAT would be the wide change.
+    DIMS: DimsLike,
     BATCH: Int = 1,
 ](Movable):
     """Integrator-temps scratch: one owned tensor per array (12 tensors:
     the `integrator_workspace_size` inventory + m_inv for constraint
     solving)."""
+
+    # Body unchanged — see `Rk4Scratch`.
+    comptime NV = Self.DIMS.NV
+    comptime NBODY = Self.DIMS.NBODY
 
     comptime L_CDOF = Layout.row_major(Self.BATCH, Self.NV * 6)
     comptime L_CRB = Layout.row_major(Self.BATCH, Self.NBODY * 10)

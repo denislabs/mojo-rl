@@ -379,7 +379,7 @@ def _prep(
         DTYPE, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
         M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
     ],
-    mut sc: DynamicsScratch[DTYPE, M.NV, M.NBODY, 1],
+    mut sc: DynamicsScratch[DTYPE, Dims[nv=M.NV, nbody=M.NBODY], 1],
 ) raises:
     """Smooth dynamics + detection, up to the constraint seam.
 
@@ -466,8 +466,8 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
         db.qvel.data[i] = d.qvel.data[i]
         dp.qvel.data[i] = d.qvel.data[i]
 
-    var sb = DynamicsScratch[DTYPE, M.NV, M.NBODY, 1]()
-    var sp = DynamicsScratch[DTYPE, M.NV, M.NBODY, 1]()
+    var sb = DynamicsScratch[DTYPE, Dims[nv=M.NV, nbody=M.NBODY], 1]()
+    var sp = DynamicsScratch[DTYPE, Dims[nv=M.NV, nbody=M.NBODY], 1]()
     var cb = ContactScratch[DTYPE, Dims[nv=M.NV, max_contacts=M.MAX_CONTACTS], 1]()
     var cp = ContactScratch[DTYPE, Dims[nv=M.NV, max_contacts=M.MAX_CONTACTS], 1]()
     _prep(db, mf, sb)
@@ -687,7 +687,7 @@ def test_weld_orientation_rows_match_mujoco() raises:
     for i in range(MTQ1.NV):
         d.qvel.data[i] = 0
 
-    var sc = DynamicsScratch[DTYPE, MTQ1.NV, MTQ1.NBODY, 1]()
+    var sc = DynamicsScratch[DTYPE, Dims[nv=MTQ1.NV, nbody=MTQ1.NBODY], 1]()
     forward_kinematics["cpu"](d, mf, None)
     compute_body_velocities["cpu"](d, mf, None)
     compute_subtree_com["cpu"](d, mf, None)
@@ -839,7 +839,7 @@ def test_weld_torquescale_matches_mujoco() raises:
     for i in range(MTQ5.NV):
         d.qvel.data[i] = 0
 
-    var sc = DynamicsScratch[DTYPE, MTQ5.NV, MTQ5.NBODY, 1]()
+    var sc = DynamicsScratch[DTYPE, Dims[nv=MTQ5.NV, nbody=MTQ5.NBODY], 1]()
     forward_kinematics["cpu"](d, mf, None)
     compute_body_velocities["cpu"](d, mf, None)
     compute_subtree_com["cpu"](d, mf, None)

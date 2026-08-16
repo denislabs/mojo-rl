@@ -51,7 +51,7 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import Data, Model, DynamicsScratch
+from ..fields import Data, Model, DynamicsScratch, Dims
 from ..joint_types import JNT_FREE, JNT_BALL
 from ..collision.contact_frame import contact_tangent_frame
 from .rne import (
@@ -465,7 +465,7 @@ def compute_rne_post[
         NEXCLUDE, NMESH_VERTS,
         NPAIR,
     ],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Fill `d.cacc` / `d.cfrc_int` (and `d.cvel` / `d.cfrc_ext`) for the

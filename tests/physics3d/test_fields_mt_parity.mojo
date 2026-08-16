@@ -18,7 +18,7 @@ Run: pixi run -e apple mojo run -I . tests/physics3d/test_fields_mt_parity.mojo
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -119,8 +119,8 @@ def test_walker2d_per_op() raises:
     ds.upload_all(ctx)
     dp.upload_all(ctx)
 
-    var ss = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var sp = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var ss = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
+    var sp = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     ss.upload_all(ctx)
     sp.upload_all(ctx)
 

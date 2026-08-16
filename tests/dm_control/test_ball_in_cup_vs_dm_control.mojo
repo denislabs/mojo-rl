@@ -60,7 +60,7 @@ from mojo_rl.envs.dm_control.ball_in_cup import (
     TARGET_HALF_Z,
     BALL_RADIUS,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
 from mojo_rl.physics3d.dynamics.cdof import compute_cdof
@@ -294,7 +294,7 @@ def test_ball_in_cup_model_matches_mujoco() raises:
     mujoco.mj_forward(m, mj_d)
 
     var d = Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1]()
-    var sc = DynamicsScratch[DTYPE, NV, NBODY, 1]()
+    var sc = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], 1]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](0)
     for i in range(NV):

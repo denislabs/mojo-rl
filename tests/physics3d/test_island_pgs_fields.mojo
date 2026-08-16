@@ -97,7 +97,7 @@ def _fields_prep[
 ](
     mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
     mut mf: Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, 0],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
     """Smooth-dynamics prep + detection up to the constraint seam (copied
@@ -229,9 +229,9 @@ def part_a(ctx: DeviceContext) raises:
     dP.upload_all(ctx)
     dI.upload_all(ctx)
 
-    var scP = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var scP = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     var csP = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
-    var scI = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var scI = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     var csI = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     scP.upload_all(ctx)
     csP.upload_all(ctx)
@@ -285,9 +285,9 @@ def part_b(ctx: DeviceContext) raises:
     _init_state(dc)
     dg.upload_all(ctx)
 
-    var scg = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var scg = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     var csg = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
-    var scc = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var scc = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     var csc = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     scg.upload_all(ctx)
     csg.upload_all(ctx)

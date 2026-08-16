@@ -226,7 +226,7 @@ def _prep[
     mut mf: Model[
         DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTD, NSITE, NEXCL, NMV, NPAIR
     ],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
     """Smooth dynamics + detection, mirroring `EulerIntegrator.step` up to the
@@ -395,7 +395,7 @@ def _solve[
     var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
     _slam_state[VSCALE](d)
 
-    var scratch = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var scratch = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     var cscratch = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
 
     comptime if target == "gpu":

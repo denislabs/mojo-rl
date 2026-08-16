@@ -1456,7 +1456,7 @@ struct ModelDefFromXML[
             Self.NJOINT,
         ](fmd, sf_inv)
         Self.reset_data[DTYPE](sf_inv, d_inv)
-        var sc_inv = DynamicsScratch[DTYPE, Self.NV, Self.NBODY, 1]()
+        var sc_inv = DynamicsScratch[DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY], 1]()
         compute_invweight0[
             DTYPE,
             Self.NQ,

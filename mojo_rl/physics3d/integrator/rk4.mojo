@@ -436,7 +436,7 @@ struct RK4Integrator[
     BOTH TARGETS NOW; it used to be GPU-only, which left every CPU caller
     on the dense kernel — 12.6× slower on Sawyer (NV=15, NBODY=34)."""
 
-    var scratch: DynamicsScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
+    var scratch: DynamicsScratch[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY], Self.BATCH]
     # ⚠ ONE alias, used by both spellings below, NOT the expression inlined
     # twice. `Dims[nq=..., nv=...]` is a TYPE: two textually identical
     # spellings agree, but the moment they drift they become different types
@@ -458,9 +458,7 @@ struct RK4Integrator[
     var cscratch: ContactScratch[Self.DTYPE, Dims[nv=Self.NV, max_contacts=Self.MAX_CONTACTS], Self.BATCH, Self.JE_WS]
 
     def __init__(out self) raises:
-        self.scratch = DynamicsScratch[
-            Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
-        ]()
+        self.scratch = DynamicsScratch[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY], Self.BATCH]()
         self.rk4 = Rk4Scratch[Self.DTYPE, Self.D, Self.BATCH]()
         self.cscratch = ContactScratch[Self.DTYPE, Dims[nv=Self.NV, max_contacts=Self.MAX_CONTACTS], Self.BATCH, Self.JE_WS]()
 

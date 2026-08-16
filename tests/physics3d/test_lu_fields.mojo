@@ -21,7 +21,7 @@ from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout
 
-from mojo_rl.physics3d.fields import DynamicsScratch
+from mojo_rl.physics3d.fields import DynamicsScratch, Dims
 from mojo_rl.physics3d.dynamics.lu import (
     lu_factor,
     lu_solve,
@@ -53,7 +53,7 @@ def main() raises:
     print("=== Stage-I lu parity (NV=", NV, " BATCH=", BATCH, ") ===")
     var ctx = DeviceContext()
 
-    var sc = DynamicsScratch[DT, NV, NBODY, BATCH]()
+    var sc = DynamicsScratch[DT, Dims[nv=NV, nbody=NBODY], BATCH]()
     for e in range(BATCH):
         for i in range(NV):
             for j in range(NV):

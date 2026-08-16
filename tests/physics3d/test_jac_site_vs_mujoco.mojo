@@ -63,7 +63,7 @@ from mojo_rl.envs.dm_control.ball_in_cup import (
 from mojo_rl.envs.dm_control.quadruped import (
     DMQuadrupedFetchModel,
 )
-from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch
+from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
 from mojo_rl.physics3d.dynamics.cdof import compute_cdof
@@ -212,7 +212,7 @@ def _sweep[
         # integrates, so its scratch would describe the POST-step pose while
         # `site_xpos` describes the pre-step one.
         forward_kinematics["cpu"](d, mf)
-        var scratch = DynamicsScratch[DTYPE, NV, NBODY, 1]()
+        var scratch = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], 1]()
         compute_subtree_com["cpu"](d, mf)
         compute_cdof["cpu"](d, mf, scratch)
 

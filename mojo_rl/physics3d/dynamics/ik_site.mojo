@@ -65,7 +65,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.core.tensor import TensorImpl
 
-from ..fields import Data, Model, DynamicsScratch
+from ..fields import Data, Model, DynamicsScratch, Dims
 from ..kinematics.forward_kinematics import forward_kinematics
 from ..kinematics.integrate_pos import integrate_pos
 from ..kinematics.quat_math import quat_mul, quat_conjugate, quat2vel
@@ -212,7 +212,7 @@ def qpos_from_site_pose[
     var mmeta_v = mf.meta.lt["cpu", L_MET]()
     var qpos_v = d.qpos.lt["cpu", L_QPOS]()
 
-    var scratch = DynamicsScratch[DTYPE, NV, NBODY, 1]()
+    var scratch = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], 1]()
     # ⚠ Its own buffer, NOT a borrowed `Data` field. `d.qacc`/`d.qvel` would
     # have done the job and silently clobbered a physics output that the
     # caller has every reason to expect IK left alone.

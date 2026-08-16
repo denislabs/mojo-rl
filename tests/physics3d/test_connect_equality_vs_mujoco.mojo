@@ -66,7 +66,7 @@ from layout import Layout
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
-from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch
+from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -518,7 +518,7 @@ def _check_rows[M: ModelDefFromXML](xml: String, label: String) raises:
     for i in range(M.NV):
         d.qvel.data[i] = 0
 
-    var sc = DynamicsScratch[DTYPE, M.NV, M.NBODY, 1]()
+    var sc = DynamicsScratch[DTYPE, Dims[nv=M.NV, nbody=M.NBODY], 1]()
     forward_kinematics["cpu"](d, mf, None)
     compute_body_velocities["cpu"](d, mf, None)
     compute_subtree_com["cpu"](d, mf, None)

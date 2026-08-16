@@ -286,7 +286,7 @@ struct ImplicitIntegrator[
     EulerIntegrator for the shared FK/CRBA/RNE stages; the LU + qDeriv
     stages are serial per-env."""
 
-    var scratch: DynamicsScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
+    var scratch: DynamicsScratch[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY], Self.BATCH]
     # Blocked-Newton Jacobian spill size — 0 unless `Je` overflows threadgroup
     # memory. Computed HERE (not by the caller) because this struct already
     # carries every dimension it depends on, and via `je_budget` so the buffer
@@ -304,9 +304,7 @@ struct ImplicitIntegrator[
     var iscratch: ImplicitScratch[Self.DTYPE, Self.D, Self.BATCH]
 
     def __init__(out self) raises:
-        self.scratch = DynamicsScratch[
-            Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
-        ]()
+        self.scratch = DynamicsScratch[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY], Self.BATCH]()
         self.cscratch = ContactScratch[Self.DTYPE, Dims[nv=Self.NV, max_contacts=Self.MAX_CONTACTS], Self.BATCH, Self.JE_WS]()
         self.iscratch = ImplicitScratch[Self.DTYPE, Self.D, Self.BATCH]()
 

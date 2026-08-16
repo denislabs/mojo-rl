@@ -408,7 +408,7 @@ struct EulerIntegrator[
     TARGETS NOW; it used to be GPU-only, which left every CPU caller on the
     dense kernel — 12.6× slower on Sawyer (NV=15, NBODY=34)."""
 
-    var scratch: DynamicsScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
+    var scratch: DynamicsScratch[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY], Self.BATCH]
     # Blocked-Newton Jacobian spill size — 0 unless `Je` overflows threadgroup
     # memory. Computed HERE (not by the caller) because this struct already
     # carries every dimension it depends on, and via `je_budget` so the buffer
@@ -421,9 +421,7 @@ struct EulerIntegrator[
     var cscratch: ContactScratch[Self.DTYPE, Dims[nv=Self.NV, max_contacts=Self.MAX_CONTACTS], Self.BATCH, Self.JE_WS]
 
     def __init__(out self) raises:
-        self.scratch = DynamicsScratch[
-            Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
-        ]()
+        self.scratch = DynamicsScratch[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY], Self.BATCH]()
         self.cscratch = ContactScratch[Self.DTYPE, Dims[nv=Self.NV, max_contacts=Self.MAX_CONTACTS], Self.BATCH, Self.JE_WS]()
 
     def prepare_gpu(mut self, ctx: DeviceContext) raises:

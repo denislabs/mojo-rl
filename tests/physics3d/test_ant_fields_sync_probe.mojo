@@ -15,7 +15,7 @@ Run: MODULAR_DEBUG=device-sync-mode pixi run -e nvidia mojo run -I . \
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -62,7 +62,7 @@ def main() raises:
         d.qpos.data[e * NQ + 10] = Scalar[DTYPE](-1.0)  # a hinge
     d.upload_all(ctx)
 
-    var scratch = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var scratch = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     scratch.upload_all(ctx)
 
     print("[1] forward_kinematics (serial) ...")

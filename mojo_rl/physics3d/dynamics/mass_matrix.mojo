@@ -15,7 +15,7 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import gpu_quat_mul
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch
+from ..fields import Data, Model, DynamicsScratch, Dims
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -699,7 +699,7 @@ def compute_mass_matrix[
         NMESH_VERTS,
         NPAIR,
     ],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """CRBA mass matrix from FK products + cdof, both targets, one body.

@@ -96,7 +96,7 @@ def _prep[
     mut mf: Model[
         DTYPE, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0
     ],
-    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
     """Smooth-dynamics prep + auto detection (mirrors the integrator seam)."""
@@ -238,11 +238,11 @@ def _validate[MODEL: ModelDefLike](
             d_c.qfrc.data[e * NV + i] = qf
     d_g.upload_all(ctx)
 
-    var sg = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var sg = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     var cg = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     sg.upload_all(ctx)
     cg.upload_all(ctx)
-    var sc = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
+    var sc = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
     var cc = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
 
     # GPU path (blocked on NVIDIA, per-env on Apple).

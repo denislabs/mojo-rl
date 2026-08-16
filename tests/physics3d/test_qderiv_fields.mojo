@@ -69,7 +69,7 @@ def main() raises:
     for i in range(NV):
         d.qvel.data[i] = Scalar[DT]((i * 5 + 3) % 7 - 3) * Scalar[DT](0.4)
 
-    var sc = DynamicsScratch[DT, NV, NBODY, BATCH]()
+    var sc = DynamicsScratch[DT, Dims[nv=NV, nbody=NBODY], BATCH]()
     var isc = ImplicitScratch[DT, Dims[nv=NV, nbody=NBODY], BATCH]()
 
     # ── fields CPU pipeline: FK -> subtree_com -> cdof -> qderiv ──────────
