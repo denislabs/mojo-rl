@@ -982,43 +982,6 @@ def _detect_contacts_sap_env[
                 ) == 0:
                     continue
 
-            # MuJoCo's full contact-parameter rule, PRIORITY FIRST — shared
-            # with `detect_contacts` so the two paths cannot drift, which is
-            # exactly how the SAP ellipsoid branch went missing. A predefined
-            # pair supplies its own parameters instead, unmixed.
-            var _mx = pair_params[DTYPE, NPAIR](
-                ipair, pairs
-            ) if ipair >= 0 else mix_contact_params[DTYPE](
-                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
-                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_SPIN]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_ROLL]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_0]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_1]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_0]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_1]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_2]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_3]),
-                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_4]),
-                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_PRIORITY])),
-                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_SPIN]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_ROLL]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_0]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_1]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_0]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_1]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_2]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_3]),
-                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_4]),
-            )
-            var cdim = Int(_mx[0])
-            var cf = _mx[1]
-            var cfs = _mx[2]
-            var cfr = _mx[3]
-            var _n0 = num_contacts
             var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
             var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
             # Sum of the two geoms' margins, or the PAIR's own — never both.
@@ -1081,6 +1044,59 @@ def _detect_contacts_sap_env[
                 var sfb = rbound_i + rbound_j + cm
                 if sfx * sfx + sfy * sfy + sfz * sfz > sfb * sfb:
                     continue
+
+            # ⚠⚠ THE CONTACT-PARAMETER MIX RUNS **AFTER** THE SPHERE
+            # REJECT, NOT BEFORE, AND THE ORDER IS THE POINT.
+            # `mix_contact_params` is ~30 tensor reads plus MuJoCo's
+            # priority/max/min rules, and it used to run on every pair that
+            # survived the body/contype filters — 65 per step on SO-ARM100,
+            # of which the bounding-sphere test then rejects all but 2.
+            # Nothing above needs it: the reject reads only the two rbounds
+            # and `cm`, and `cm` comes from the geoms' own margins (or the
+            # pair's), never from the mix. `_n0` moves with it because it is
+            # a snapshot of `num_contacts`, which the reject cannot change.
+            #
+            # ⚠ THIS IS NOT THE HOIST §5.1 MEASURED AT ZERO. That one tried
+            # to compute the per-GEOM decode once per geom; the mix is
+            # per-PAIR and hoisting cannot remove it. Deferring past the
+            # reject removes 97% of the CALLS.
+            # MuJoCo's full contact-parameter rule, PRIORITY FIRST — shared
+            # with `detect_contacts` so the two paths cannot drift, which is
+            # exactly how the SAP ellipsoid branch went missing. A predefined
+            # pair supplies its own parameters instead, unmixed.
+            var _mx = pair_params[DTYPE, NPAIR](
+                ipair, pairs
+            ) if ipair >= 0 else mix_contact_params[DTYPE](
+                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
+                Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_SPIN]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION_ROLL]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_0]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLREF_1]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_0]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_1]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_2]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_3]),
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_SOLIMP_4]),
+                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_PRIORITY])),
+                Int(rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_SPIN]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION_ROLL]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_0]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLREF_1]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_0]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_1]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_2]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_3]),
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_SOLIMP_4]),
+            )
+            var cdim = Int(_mx[0])
+            var cf = _mx[1]
+            var cfs = _mx[2]
+            var cfr = _mx[3]
+            var _n0 = num_contacts
 
             var dist: Scalar[DTYPE] = 1.0
             var cx: Scalar[DTYPE] = 0
