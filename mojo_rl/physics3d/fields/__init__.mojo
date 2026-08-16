@@ -9,6 +9,7 @@ containers. The flat slab era (state slab + model slab + offset tables) ended
 at the fields sunset.
 """
 
+from .dims import DimsLike, Dims
 from .data import Data
 from .model import Model
 from .spec_fields import (
