@@ -41,6 +41,8 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
 
+from .dims import DimsLike
+
 from ..gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
@@ -62,20 +64,29 @@ from ..gpu.constants import (
 
 struct SpecFields[
     DTYPE: DType,
-    NACT: Int,
-    NTEN: Int,
-    # ⚠ APPENDED, AND WITHOUT DEFAULTS ON PURPOSE. A defaulted `NQ = 0` would
-    # give a caller who forgot it a zero-length `qpos0` that reads as an
-    # all-zero reference pose — a legal-looking model that resets to the wrong
-    # place, with nothing to fail. Every construction goes through
-    # `ModelDefFromXML.make_spec_fields` / `init_spec_fields`, which supply
-    # them, so there is no site that WANTS a default.
-    NQ: Int,
-    NV: Int,
-    NKEY: Int,
-    NJOINT: Int,
+    D: DimsLike,
 ](Movable):
     """The runtime twin of `_acd`: actuation records + the reference pose."""
+
+    # ⚠ THE HAZARD THE OLD PARAMETER LIST DOCUMENTED IS NOW STRUCTURAL.
+    #
+    # NQ/NV/NKEY/NJOINT used to be appended positionally and WITHOUT DEFAULTS
+    # on purpose: a defaulted `NQ = 0` would hand a caller who forgot it a
+    # zero-length `qpos0` reading as an all-zero reference pose — a
+    # legal-looking model that resets to the wrong place, with nothing to
+    # fail. That defence depended on every caller counting seven `Int`s in the
+    # right order.
+    #
+    # With one `D` there is no positional list to miscount, and a dimension
+    # that goes missing is a missing KEYWORD on `Dims[...]` rather than a
+    # silent zero. `ModelDims[MD]` supplies all six from the model def, which
+    # is what every real construction wanted anyway.
+    comptime NACT = Self.D.NACT
+    comptime NTEN = Self.D.NTEN
+    comptime NQ = Self.D.NQ
+    comptime NV = Self.D.NV
+    comptime NKEY = Self.D.NKEY
+    comptime NJOINT = Self.D.NJOINT
 
     comptime NACT_F: Int = Self.NACT if Self.NACT > 0 else 1
     comptime NTEN_F: Int = Self.NTEN if Self.NTEN > 0 else 1
@@ -204,7 +215,7 @@ struct SpecFields[
 def actuator_column[
     DT: DType, NA: Int, NT: Int, NQ: Int, NV: Int, NK: Int, NJ: Int
 ](
-    sf: SpecFields[DT, NA, NT, NQ, NV, NK, NJ], col: Int, n: Int
+    sf: SpecFields[DT, Dims[nact=NA, nten=NT, nq=NQ, nv=NV, nkey=NK, njoint=NJ]], col: Int, n: Int
 ) raises -> List[Float64]:
     """`sf.actuators[:n, col]`. `col` is an `ACT_IDX_*`."""
     var out = List[Float64](capacity=n)
@@ -216,7 +227,7 @@ def actuator_column[
 def act_tendon_column[
     DT: DType, NA: Int, NT: Int, NQ: Int, NV: Int, NK: Int, NJ: Int
 ](
-    sf: SpecFields[DT, NA, NT, NQ, NV, NK, NJ], col: Int, n: Int
+    sf: SpecFields[DT, Dims[nact=NA, nten=NT, nq=NQ, nv=NV, nkey=NK, njoint=NJ]], col: Int, n: Int
 ) raises -> List[Float64]:
     """`sf.act_tendons[:n, col]`. `col` is an `ACTTEN_IDX_*`."""
     var out = List[Float64](capacity=n)
@@ -230,7 +241,7 @@ def act_tendon_column[
 def joint_limit_column[
     DT: DType, NA: Int, NT: Int, NQ: Int, NV: Int, NK: Int, NJ: Int
 ](
-    sf: SpecFields[DT, NA, NT, NQ, NV, NK, NJ], col: Int, n: Int
+    sf: SpecFields[DT, Dims[nact=NA, nten=NT, nq=NQ, nv=NV, nkey=NK, njoint=NJ]], col: Int, n: Int
 ) raises -> List[Float64]:
     """`sf.joint_limits[:n, col]`. `col` is a `JLIM_IDX_*`."""
     var out = List[Float64](capacity=n)

@@ -47,7 +47,7 @@ from mojo_rl.physics3d.parser import (
     ModelDefFromXML,
 )
 from mojo_rl.physics3d.parser.fields_build import build_spec_fields
-from mojo_rl.physics3d.fields import SpecFields
+from mojo_rl.physics3d.fields import SpecFields, Dims
 from mojo_rl.physics3d.gpu.constants import (
     TENDON_MAX_WRAPS,
     MODEL_ACTUATOR_SIZE,
@@ -190,7 +190,7 @@ def _diff[
     """Every `SpecFields` slot against the `FlatModelDef` field it was built
     from, plus a non-vacuity report for each group."""
     var fmd = parse_xml_full(xml)
-    var sf = SpecFields[DType.float64, NACT, NTEN, NQ, NV, NKEY, NJOINT]()
+    var sf = SpecFields[DType.float64, Dims[nact=NACT, nten=NTEN, nq=NQ, nv=NV, nkey=NKEY, njoint=NJOINT]]()
     build_spec_fields[DType.float64, NACT, NTEN, NQ, NV, NKEY, NJOINT](
         fmd, sf
     )

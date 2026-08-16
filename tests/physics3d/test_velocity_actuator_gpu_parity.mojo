@@ -34,7 +34,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
 )
-from mojo_rl.physics3d.fields import Data, Model, SpecFields
+from mojo_rl.physics3d.fields import Data, Model, SpecFields, Dims
 
 comptime DTYPE = DType.float32
 
@@ -231,9 +231,7 @@ def _gate[
     t_qvel.upload(ctx)
     t_actv.upload(ctx)
 
-    var sfg = SpecFields[
-        DTYPE, M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY, M.NJOINT
-    ]()
+    var sfg = SpecFields[DTYPE, Dims[nact=M.NACT, nten=M.NTEN_F, nq=M.NQ, nv=M.NV, nkey=M.NKEY, njoint=M.NJOINT]]()
     M.init_spec_fields[DTYPE](ctx, sfg)
     M.apply_actions_kernel_gpu[DTYPE, BATCH, NACT](
         ctx,

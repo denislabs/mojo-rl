@@ -45,7 +45,7 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.fields import Data, Model, SpecFields
+from mojo_rl.physics3d.fields import Data, Model, SpecFields, Dims
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_auto
 from mojo_rl.physics3d.joint_types import JNT_FREE
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
@@ -191,15 +191,7 @@ struct Phyics3dEnv[
     # comptime `_acd` arrays `apply_actions` used to materialize on every
     # call. Static config: built and uploaded once at construction, exactly
     # like `mf`.
-    var sf: SpecFields[
-        Self.DTYPE,
-        Self.MODEL_DEF.NACT,
-        Self.MODEL_DEF.NTEN_F,
-        Self.MODEL_DEF.NQ,
-        Self.MODEL_DEF.NV,
-        Self.MODEL_DEF.NKEY,
-        Self.MODEL_DEF.NJOINT,
-    ]
+    var sf: SpecFields[Self.DTYPE, Dims[nact=Self.MODEL_DEF.NACT, nten=Self.MODEL_DEF.NTEN_F, nq=Self.MODEL_DEF.NQ, nv=Self.MODEL_DEF.NV, nkey=Self.MODEL_DEF.NKEY, njoint=Self.MODEL_DEF.NJOINT]]
 
     # Renderer (optional; RenderableEnv). Reads the fields FK products
     # (`self.d.xpos`/`xquat`), which the fields step refreshes every frame.

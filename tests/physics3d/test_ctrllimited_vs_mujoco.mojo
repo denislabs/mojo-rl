@@ -56,7 +56,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
 )
-from mojo_rl.physics3d.fields import Data, SpecFields
+from mojo_rl.physics3d.fields import Data, SpecFields, Dims
 
 comptime DTYPE = DType.float64
 
@@ -288,9 +288,7 @@ def test_apply_actions_gpu_matches_cpu() raises:
     t_act.n = B * AD
     t_act.upload(ctx)
 
-    var sfg = SpecFields[
-        GT, M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY, M.NJOINT
-    ]()
+    var sfg = SpecFields[GT, Dims[nact=M.NACT, nten=M.NTEN_F, nq=M.NQ, nv=M.NV, nkey=M.NKEY, njoint=M.NJOINT]]()
     M.init_spec_fields[GT](ctx, sfg)
     M.apply_actions_kernel_gpu[GT, B, AD](
         ctx,

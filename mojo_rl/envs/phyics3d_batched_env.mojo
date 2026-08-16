@@ -44,7 +44,7 @@ from mojo_rl.nn.core.target_storage import require_ctx
 from mojo_rl.deep_agents.training.batched_env import BatchedEnv
 
 from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.fields import Data, Model, SpecFields
+from mojo_rl.physics3d.fields import Data, Model, SpecFields, Dims
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
@@ -185,15 +185,7 @@ struct Phyics3dBatchedEnv[
     # Actuation records (phase 1a.2/1a.3) — the operands
     # `apply_actions_kernel_gpu` reads where it used to read comptime
     # literals. Uploaded once at construction, like `mf`.
-    var sf: SpecFields[
-        DT,
-        Self.MODEL_DEF.NACT,
-        Self.MODEL_DEF.NTEN_F,
-        Self.MODEL_DEF.NQ,
-        Self.MODEL_DEF.NV,
-        Self.MODEL_DEF.NKEY,
-        Self.MODEL_DEF.NJOINT,
-    ]
+    var sf: SpecFields[DT, Dims[nact=Self.MODEL_DEF.NACT, nten=Self.MODEL_DEF.NTEN_F, nq=Self.MODEL_DEF.NQ, nv=Self.MODEL_DEF.NV, nkey=Self.MODEL_DEF.NKEY, njoint=Self.MODEL_DEF.NJOINT]]
     # Both integrators are held; the step comptime-dispatches on
     # CONFIG.INTEGRATOR (HalfCheetah/Pusher/MetaWorld = Euler+Newton, the
     # other 9 envs = RK4+Newton). Only the SELECTED one is `prepare_gpu`'d, so

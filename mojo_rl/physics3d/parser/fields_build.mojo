@@ -49,7 +49,7 @@ from mojo_rl.physics3d.constants import (
     GEOM_MESH,
     GEOM_ELLIPSOID,
 )
-from mojo_rl.physics3d.fields import Model, SpecFields
+from mojo_rl.physics3d.fields import Model, SpecFields, Dims
 from mojo_rl.physics3d.collision.convex_hull import (
     load_mesh_hull,
     compute_mesh_rbound_at,
@@ -1777,7 +1777,7 @@ def build_spec_fields[
     NJOINT: Int,
 ](
     fmd: FlatModelDef,
-    mut sf: SpecFields[DTYPE, NACT, NTEN, NQ, NV, NKEY, NJOINT],
+    mut sf: SpecFields[DTYPE, Dims[nact=NACT, nten=NTEN, nq=NQ, nv=NV, nkey=NKEY, njoint=NJOINT]],
 ) raises:
     """Fill the spec record tensors from the parsed `fmd`.
 

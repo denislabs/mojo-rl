@@ -11,7 +11,7 @@ the legacy CPU `Model`/`Data` build at G4).
 from mojo_rl.render import Renderer3D, Light, Camera3D
 from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
-from ..fields import Model, Data, SpecFields
+from ..fields import Model, Data, SpecFields, Dims
 from ..parser.render_fields import RenderFields
 from ..gpu.constants import (
     MODEL_ACTUATOR_SIZE,
@@ -140,15 +140,7 @@ trait ModelDefLike:
     def reset_data[
         DTYPE: DType
     ](
-        sf: SpecFields[
-            DTYPE,
-            Self.NACT,
-            Self.NTEN_F,
-            Self.NQ,
-            Self.NV,
-            Self.NKEY,
-            Self.NJOINT,
-        ],
+        sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
         mut d: Data[
             DTYPE,
             Self.NQ,
@@ -182,15 +174,7 @@ trait ModelDefLike:
     def enforce_limits[
         DTYPE: DType
     ](
-        sf: SpecFields[
-            DTYPE,
-            Self.NACT,
-            Self.NTEN_F,
-            Self.NQ,
-            Self.NV,
-            Self.NKEY,
-            Self.NJOINT,
-        ],
+        sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
         mut d: Data[
             DTYPE,
             Self.NQ,
@@ -208,15 +192,7 @@ trait ModelDefLike:
         DTYPE: DType
     ](
         ctx: DeviceContext,
-        mut sf: SpecFields[
-            DTYPE,
-            Self.NACT,
-            Self.NTEN_F,
-            Self.NQ,
-            Self.NV,
-            Self.NKEY,
-            Self.NJOINT,
-        ],
+        mut sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
     ) raises:
         """Build + upload the actuation record tensors (`SpecFields`), the
         runtime replacement for the comptime `_acd` actuator arrays."""
@@ -226,15 +202,7 @@ trait ModelDefLike:
     def apply_actions[
         DTYPE: DType
     ](
-        sf: SpecFields[
-            DTYPE,
-            Self.NACT,
-            Self.NTEN_F,
-            Self.NQ,
-            Self.NV,
-            Self.NKEY,
-            Self.NJOINT,
-        ],
+        sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
         mut d: Data[
             DTYPE,
             Self.NQ,
@@ -252,15 +220,7 @@ trait ModelDefLike:
     @staticmethod
     def ctrl_min_at[
         DTYPE: DType
-    ](sf: SpecFields[
-            DTYPE,
-            Self.NACT,
-            Self.NTEN_F,
-            Self.NQ,
-            Self.NV,
-            Self.NKEY,
-            Self.NJOINT,
-        ], i: Int) -> Float64:
+    ](sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]], i: Int) -> Float64:
         """Lower `ctrlrange` bound of actuator `i` — MuJoCo's
         `actuator_ctrlrange[i][0]`, and what `apply_actions` actually clamps
         against.
@@ -275,15 +235,7 @@ trait ModelDefLike:
     @staticmethod
     def ctrl_max_at[
         DTYPE: DType
-    ](sf: SpecFields[
-            DTYPE,
-            Self.NACT,
-            Self.NTEN_F,
-            Self.NQ,
-            Self.NV,
-            Self.NKEY,
-            Self.NJOINT,
-        ], i: Int) -> Float64:
+    ](sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]], i: Int) -> Float64:
         """Upper `ctrlrange` bound of actuator `i`. See `ctrl_min_at`."""
         ...
 
