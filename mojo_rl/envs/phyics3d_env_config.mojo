@@ -12,7 +12,7 @@ and termination — no hardcoded assumptions about which joints matter.
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
@@ -150,15 +150,8 @@ trait Phyics3dEnvConfig:
 
     # === CPU: Pre-step hook — save any per-env state before physics ===
     @staticmethod
-    def pre_step_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def pre_step_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         mut prev_x: Scalar[DTYPE],
     ):
         """Save per-env state before physics step.

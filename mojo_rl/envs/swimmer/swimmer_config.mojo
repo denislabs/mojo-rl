@@ -3,7 +3,7 @@
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.fields import Data, Dims
+from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     MODEL_SITE_SIZE,
@@ -37,15 +37,8 @@ struct SwimmerConfig(Phyics3dEnvConfig):
 
     # === CPU: Pre-step hook ===
     @staticmethod
-    def pre_step_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def pre_step_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         mut prev_x: Scalar[DTYPE],
     ):
         prev_x = d.qpos.data[0]  # Save slider1 (x position)

@@ -54,7 +54,7 @@ depends on the drawn pose (quadruped uses it).
 from std.random import random_float64
 from std.math import sqrt
 
-from mojo_rl.physics3d.fields import Data, Dims
+from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 
 from ..phyics3d_env_config import Phyics3dEnvConfig
 
@@ -146,15 +146,8 @@ struct WideResetConfig[
         return Self.BASE.get_reset_noise()
 
     @staticmethod
-    def pre_step_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def pre_step_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         mut prev_x: Scalar[DTYPE],
     ):
         Self.BASE.pre_step_cpu(d, prev_x)
