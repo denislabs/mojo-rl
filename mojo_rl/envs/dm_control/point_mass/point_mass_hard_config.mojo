@@ -42,7 +42,7 @@ from layout import Layout, LayoutTensor
 from std.collections import InlineArray
 from std.random.philox import Random as PhiloxRandom
 
-from mojo_rl.physics3d.fields import Data, Dims
+from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_ACTUATOR_SIZE,
     MODEL_ACT_TENDON_SIZE,
@@ -207,15 +207,8 @@ struct DMPointMassHardConfig(Phyics3dEnvConfig):
 
     # === CPU: Actuation against the RUNTIME tendon records ===
     @staticmethod
-    def custom_apply_actions_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_apply_actions_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -244,7 +237,7 @@ struct DMPointMassHardConfig(Phyics3dEnvConfig):
         # and the hoisting the old code needed (a comptime `Array` cannot be
         # indexed by a runtime value, so each had to be copied once per call)
         # is gone with them.
-        for i in range(NV):
+        for i in range(D.NV):
             d.qfrc.data[i] = Scalar[DTYPE](0)
 
         comptime nact = DMPointMassModel.nact
@@ -274,7 +267,7 @@ struct DMPointMassHardConfig(Phyics3dEnvConfig):
                 var dadr = Int(
                     m_joints[jid * MODEL_JOINT_SIZE + JOINT_IDX_DOF_ADR]
                 )
-                if dadr < 0 or dadr >= NV:
+                if dadr < 0 or dadr >= D.NV:
                     continue
                 d.qfrc.data[dadr] += Scalar[DTYPE](gear * coef * ctrl)
         return True
