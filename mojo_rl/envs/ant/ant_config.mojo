@@ -54,15 +54,8 @@ struct AntConfig(Phyics3dEnvConfig):
 
     # === CPU: Reward + termination ===
     @staticmethod
-    def compute_reward_and_done_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -96,13 +89,13 @@ struct AntConfig(Phyics3dEnvConfig):
 
         # Check for NaN/Inf in state
         if is_healthy:
-            for i in range(NQ):
+            for i in range(D.NQ):
                 var q = d.qpos.data[i]
                 if q != q:  # NaN check
                     is_healthy = False
                     break
             if is_healthy:
-                for i in range(NV):
+                for i in range(D.NV):
                     var v = d.qvel.data[i]
                     if v != v:  # NaN check
                         is_healthy = False

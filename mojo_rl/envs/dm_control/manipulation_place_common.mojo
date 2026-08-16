@@ -180,14 +180,7 @@ def append_place_obs[DTYPE: DType, D: DimsLike](
         obs.append(d.site_xpos.data[SITE_TARGET * 3 + k])
 
 
-def place_reward[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1]) -> Float64:
+def place_reward[DTYPE: DType, D: DimsLike](d: Data[DTYPE, D, 1]) -> Float64:
     """`Place.get_reward` — three `long_tail` terms, and the combination is the
     part that matters.
 

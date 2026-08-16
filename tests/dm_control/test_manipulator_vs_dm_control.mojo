@@ -1124,9 +1124,7 @@ def test_manipulator_reward_matches_mujoco() raises:
         var ref_r = Float64(
             py=Python.import_module("manipulator_ref").reward(mj[1], mj[2])
         )
-        var got = DMManipulatorBringBallConfig.compute_reward_and_done_cpu[
-            DTYPE, NQ, NV, NBODY, MAXC, NSITE
-        ](
+        var got = DMManipulatorBringBallConfig.compute_reward_and_done_cpu[DTYPE](
             d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,
             Scalar[DTYPE](0), _zero_ctrl(), 0, 1,
         )

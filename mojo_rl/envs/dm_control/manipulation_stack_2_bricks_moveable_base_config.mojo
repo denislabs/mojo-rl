@@ -94,15 +94,8 @@ struct Stack2MoveableConfig(Phyics3dEnvConfig):
         return True
 
     @staticmethod
-    def compute_reward_and_done_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -114,9 +107,7 @@ struct Stack2MoveableConfig(Phyics3dEnvConfig):
     ) -> Tuple[Scalar[DTYPE], Bool]:
         return (
             Scalar[DTYPE](
-                stack_fixed_reward[
-                    DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-                ](d, N_BRICKS)
+                stack_fixed_reward[DTYPE](d, N_BRICKS)
             ),
             False,
         )

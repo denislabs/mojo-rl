@@ -142,15 +142,8 @@ struct DMWalkerConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
 
     # === CPU: Reward ===
     @staticmethod
-    def compute_reward_and_done_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -176,7 +169,7 @@ struct DMWalkerConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
             var vy = Float64(0)
             var vz = Float64(0)
             subtree_linvel(
-                d.xvel.data, m_bodies, NBODY, TORSO_BODY_IDX, vx, vy, vz
+                d.xvel.data, m_bodies, D.NBODY, TORSO_BODY_IDX, vx, vy, vz
             )
             var move_reward = tolerance[SIGMOID_LINEAR, 0.5](
                 vx,

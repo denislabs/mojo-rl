@@ -287,15 +287,8 @@ struct DMHumanoidCMUConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
 
     # === CPU: Reward ===
     @staticmethod
-    def compute_reward_and_done_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -339,7 +332,7 @@ struct DMHumanoidCMUConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         var cy = Float64(0)
         var cz = Float64(0)
         subtree_linvel(
-            d.xvel.data, m_bodies, NBODY, THORAX_BODY_IDX, cx, cy, cz
+            d.xvel.data, m_bodies, D.NBODY, THORAX_BODY_IDX, cx, cy, cz
         )
 
         comptime if Self.MOVE_SPEED == 0.0:

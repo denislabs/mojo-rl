@@ -405,15 +405,8 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
 
     # === CPU: Reward ===
     @staticmethod
-    def _site_distance[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def _site_distance[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         s1: Int,
         s2: Int,
     ) -> Float64:
@@ -435,15 +428,8 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
         return tolerance(dist, 0.0, CLOSE, CLOSE * 2.0)
 
     @staticmethod
-    def compute_reward_and_done_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -457,7 +443,7 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
         var s_obj = site_object(Self.USE_PEG)
         var s_tgt = site_target(Self.USE_PEG, Self.INSERT)
         var bring = Self._is_close(
-            Self._site_distance[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+            Self._site_distance[DTYPE](
                 d, s_obj, s_tgt
             )
         )
@@ -465,18 +451,18 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
         var r = bring
         comptime if Self.USE_PEG:
             var grasp = Self._is_close(
-                Self._site_distance[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+                Self._site_distance[DTYPE](
                     d, site_object_grasp(Self.USE_PEG), SITE_GRASP
                 )
             )
             var pinch = Self._is_close(
-                Self._site_distance[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+                Self._site_distance[DTYPE](
                     d, site_object_pinch(Self.USE_PEG), SITE_PINCH
                 )
             )
             var grasping = (grasp + pinch) / 2.0
             var bring_tip = Self._is_close(
-                Self._site_distance[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+                Self._site_distance[DTYPE](
                     d,
                     site_target_tip(Self.USE_PEG, Self.INSERT),
                     site_object_tip(Self.USE_PEG),

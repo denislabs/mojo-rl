@@ -141,15 +141,8 @@ comptime MAX_PROP_ATTEMPTS: Int = 20  # `max_attempts_per_prop`, the default
 
 
 @always_inline
-def _site_dist[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAXC: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
+def _site_dist[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     a: Int,
     b: Int,
 ) -> Float64:
@@ -159,15 +152,8 @@ def _site_dist[
     return sqrt(dx * dx + dy * dy + dz * dz)
 
 
-def min_stud_to_hole_distance[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAXC: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
+def min_stud_to_hole_distance[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     bottom_stud_0: Int,
     top_hole_0: Int,
 ) -> Float64:
@@ -191,12 +177,12 @@ def min_stud_to_hole_distance[
     var ha = top_hole_0 + CORNER_A
     var hb = top_hole_0 + CORNER_B
     var d1 = (
-        _site_dist[DTYPE, NQ, NV, NBODY, MAXC, NSITE](d, sa, ha)
-        + _site_dist[DTYPE, NQ, NV, NBODY, MAXC, NSITE](d, sb, hb)
+        _site_dist[DTYPE](d, sa, ha)
+        + _site_dist[DTYPE](d, sb, hb)
     )
     var d2 = (
-        _site_dist[DTYPE, NQ, NV, NBODY, MAXC, NSITE](d, sb, ha)
-        + _site_dist[DTYPE, NQ, NV, NBODY, MAXC, NSITE](d, sa, hb)
+        _site_dist[DTYPE](d, sb, ha)
+        + _site_dist[DTYPE](d, sa, hb)
     )
     return d1 if d1 < d2 else d2
 
@@ -275,15 +261,8 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
 
     # === CPU: Reward ===
     @staticmethod
-    def compute_reward_and_done_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -303,9 +282,7 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
         Swapping them measures brick 0's holes against brick 1's studs — a
         different, equally plausible number.
         """
-        var dist = min_stud_to_hole_distance[
-            DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-        ](d, BRICK0_STUD_0, BRICK1_HOLE_0)
+        var dist = min_stud_to_hole_distance[DTYPE](d, BRICK0_STUD_0, BRICK1_HOLE_0)
         return (Scalar[DTYPE](pairwise_stacking_reward(dist)), False)
 
     # === CPU: per-episode STATE — the grasp ===============================

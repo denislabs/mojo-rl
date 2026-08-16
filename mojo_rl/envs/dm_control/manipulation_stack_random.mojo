@@ -315,15 +315,8 @@ def append_stack_random_obs[DTYPE: DType, D: DimsLike](
         append_free_prop_block_site[DTYPE](d, m_sites, brick_frame_site_of(sigma[r]), obs)
 
 
-def stack_random_reward[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def stack_random_reward[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     n_order: Int,
 ) -> Float64:
     """`Stack.get_reward` — the MEAN over `n_order - 1` pairs.
@@ -339,9 +332,7 @@ def stack_random_reward[
     for i in range(n_order - 1):
         var bottom = sigma[order[i]]
         var top = sigma[order[i + 1]]
-        var dist = min_stud_to_hole_distance[
-            DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-        ](d, brick_stud_0_of(bottom), brick_hole_0_of(top))
+        var dist = min_stud_to_hole_distance[DTYPE](d, brick_stud_0_of(bottom), brick_hole_0_of(top))
         total += pairwise_stacking_reward(dist)
     return total / Float64(n_order - 1)
 

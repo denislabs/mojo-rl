@@ -214,15 +214,8 @@ def append_stack_fixed_obs[DTYPE: DType, D: DimsLike](
         append_free_prop_block_site[DTYPE](d, m_sites, stack_brick_frame_site_of(p), obs)
 
 
-def stack_fixed_reward[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1], n_bricks: Int
+def stack_fixed_reward[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1], n_bricks: Int
 ) -> Float64:
     """`Stack.get_reward` — the MEAN over `n_bricks - 1` pairs.
 
@@ -236,9 +229,7 @@ def stack_fixed_reward[
     """
     var total = 0.0
     for i in range(n_bricks - 1):
-        var dist = min_stud_to_hole_distance[
-            DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-        ](d, stack_brick_stud_0_of(i), stack_brick_hole_0_of(i + 1))
+        var dist = min_stud_to_hole_distance[DTYPE](d, stack_brick_stud_0_of(i), stack_brick_hole_0_of(i + 1))
         total += pairwise_stacking_reward(dist)
     return total / Float64(n_bricks - 1)
 

@@ -337,15 +337,8 @@ struct DMStackerConfig[N_BOXES: Int](Phyics3dEnvConfig):
 
     # === CPU: Reward ===
     @staticmethod
-    def _site_distance[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def _site_distance[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         s1: Int,
         s2: Int,
     ) -> Float64:
@@ -362,15 +355,8 @@ struct DMStackerConfig[N_BOXES: Int](Phyics3dEnvConfig):
         return sqrt(dx * dx + dy * dy + dz * dz)
 
     @staticmethod
-    def compute_reward_and_done_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -385,17 +371,13 @@ struct DMStackerConfig[N_BOXES: Int](Phyics3dEnvConfig):
 
         var min_d = inf[DType.float64]()
         for i in range(Self.N_BOXES):
-            var dist = Self._site_distance[
-                DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-            ](d, box_site_idx(i), s_tgt)
+            var dist = Self._site_distance[DTYPE](d, box_site_idx(i), s_tgt)
             if dist < min_d:
                 min_d = dist
         # bounds (0, 0): at 1 only at zero distance, decaying immediately.
         var box_is_close = tolerance(min_d, 0.0, 0.0, 2.0 * BOX_SIZE)
 
-        var hand_d = Self._site_distance[
-            DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-        ](d, SITE_GRASP, s_tgt)
+        var hand_d = Self._site_distance[DTYPE](d, SITE_GRASP, s_tgt)
         var hand_is_far = tolerance(hand_d, 0.1, inf[DType.float64](), CLOSE)
 
         # dm_control tasks never terminate early.

@@ -128,10 +128,8 @@ def _target_world_pos[DTYPE: DType, D: DimsLike](
     )
 
 
-def _ball_to_mouth_distance[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _ball_to_mouth_distance[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_geoms: List[Scalar[DTYPE]],
 ) -> Float64:
     """`0.5 * (|ball - upper_bite| + |ball - lower_bite|)`.
@@ -154,10 +152,8 @@ def _ball_to_mouth_distance[
     return 0.5 * total
 
 
-def _ball_to_target_distance[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _ball_to_target_distance[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_geoms: List[Scalar[DTYPE]],
 ) -> Float64:
     """`|geom_xpos['ball'] - geom_xpos['target']|`."""
@@ -173,10 +169,8 @@ def _ball_to_target_distance[
     return sqrt(dx * dx + dy * dy + dz * dz)
 
 
-def _fetch_factors[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _fetch_factors[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_geoms: List[Scalar[DTYPE]],
 ) -> Tuple[Float64, Float64]:
     """`(reach_ball, fetch_ball)` — the two factors `Fetch` adds to `Stand`.
@@ -186,12 +180,8 @@ def _fetch_factors[
     `reach_ball` is squashed into [1/7, 1] and `fetch_ball` into [1/2, 1], so
     neither can zero the product on its own.
     """
-    var mouth = _ball_to_mouth_distance[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-    ](d, m_geoms)
-    var to_target = _ball_to_target_distance[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-    ](d, m_geoms)
+    var mouth = _ball_to_mouth_distance[DTYPE](d, m_geoms)
+    var to_target = _ball_to_target_distance[DTYPE](d, m_geoms)
 
     var reach = Float64(
         tolerance[SIGMOID_RECIPROCAL, DTYPE = DType.float64](
@@ -364,15 +354,8 @@ struct DMDogFetchConfig(Phyics3dEnvConfig):
         return True
 
     @staticmethod
-    def compute_reward_and_done_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -386,12 +369,10 @@ struct DMDogFetchConfig(Phyics3dEnvConfig):
         terminates early."""
         var r: Float64
         try:
-            r = _stand_factors[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+            r = _stand_factors[DTYPE](
                 d, m_bodies, m_sites
             )
-            var f = _fetch_factors[
-                DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-            ](d, m_geoms)
+            var f = _fetch_factors[DTYPE](d, m_geoms)
             r = r * f[0] * f[1]
         except:
             r = 0.0

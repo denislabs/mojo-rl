@@ -128,14 +128,7 @@ comptime DOWN_QUAT_XY: Float64 = 0.70710678118
 
 
 @always_inline
-def lowest_vertex_z[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAXC: Int,
-    NSITE: Int,
-](d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]) -> Float64:
+def lowest_vertex_z[DTYPE: DType, D: DimsLike](d: Data[DTYPE, D, 1]) -> Float64:
     """`Lift._get_height_of_lowest_vertex` — min over the 8 corner sites."""
     var lo = Float64(d.site_xpos.data[VERTEX_SITE_0 * 3 + 2])
     for v in range(1, N_VERTICES):
@@ -187,15 +180,8 @@ struct LiftLargeBoxConfig(Phyics3dEnvConfig):
 
     # === CPU: Reward ===
     @staticmethod
-    def compute_reward_and_done_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -212,7 +198,7 @@ struct LiftLargeBoxConfig(Phyics3dEnvConfig):
         the floor is rather than on where the prop STARTED.
         """
         var target = Float64(d.meta.data[META_IDX_TASK_PARAM_0])
-        var h = lowest_vertex_z[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](d)
+        var h = lowest_vertex_z[DTYPE](d)
         # bounds = (target_height, inf): no upper bound, so lifting further
         # never costs anything.
         return (
@@ -396,7 +382,7 @@ struct LiftLargeBoxConfig(Phyics3dEnvConfig):
         # re-runs forward kinematics and the vertex sites move with it. Reading
         # it before would record the height under a different FK state — the
         # same instant-mismatch that defect 19 was.
-        var h0 = lowest_vertex_z[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](d)
+        var h0 = lowest_vertex_z[DTYPE](d)
         d.meta.data[META_IDX_TASK_PARAM_0] = Scalar[DTYPE](
             DISTANCE_TO_LIFT + h0
         )

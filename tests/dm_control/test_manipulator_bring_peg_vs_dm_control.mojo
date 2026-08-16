@@ -1114,9 +1114,7 @@ def test_bring_peg_reward_matches_mujoco() raises:
         _set_state_and_fk(d, mf, integ, states[k], _zero_ctrl())
         var mj = _mj_at(states[k], _zero_ctrl())
         var ref_r = Float64(py=builder.reward(mj[1], mj[2], True))
-        var got = CFG.compute_reward_and_done_cpu[
-            DTYPE, NQ, NV, NBODY, MAXC, NSITE
-        ](
+        var got = CFG.compute_reward_and_done_cpu[DTYPE](
             d, mf.bodies.data, mf.joints.data, mf.geoms.data, mf.sites.data,
             Scalar[DTYPE](0), _zero_ctrl(), 0, 1,
         )

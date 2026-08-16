@@ -173,10 +173,8 @@ def _com_velocity_torso_frame[DTYPE: DType, D: DimsLike](
 
 
 @always_inline
-def _touch_sum[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _touch_sum[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_sites: List[Scalar[DTYPE]],
 ) raises -> Float64:
     """`touch_sensors().sum()` — palm_L + palm_R + sole_L + sole_R.
@@ -193,10 +191,8 @@ def _touch_sum[
 
 
 @always_inline
-def _stand_factors[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def _stand_factors[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     m_bodies: List[Scalar[DTYPE]],
     m_sites: List[Scalar[DTYPE]],
 ) raises -> Float64:
@@ -239,7 +235,7 @@ def _stand_factors[
         )
 
     var f_touch = tolerance[SIGMOID_LINEAR, 0.9](
-        _touch_sum[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](d, m_sites),
+        _touch_sum[DTYPE](d, m_sites),
         DOG_BODY_WEIGHT, inf[DType.float64](), DOG_BODY_WEIGHT,
     )
 
@@ -1118,15 +1114,8 @@ struct DMDogStandConfig(Phyics3dEnvConfig):
         )
 
     @staticmethod
-    def compute_reward_and_done_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -1139,7 +1128,7 @@ struct DMDogStandConfig(Phyics3dEnvConfig):
         """`np.prod(get_reward_factors())`; never terminates early."""
         var r: Float64
         try:
-            r = _stand_factors[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+            r = _stand_factors[DTYPE](
                 d, m_bodies, m_sites
             )
         except:
@@ -1494,15 +1483,8 @@ struct DMDogMoveConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         )
 
     @staticmethod
-    def compute_reward_and_done_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -1514,11 +1496,9 @@ struct DMDogMoveConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
     ) -> Tuple[Scalar[DTYPE], Bool]:
         var r: Float64
         try:
-            var standing = _stand_factors[
-                DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-            ](d, m_bodies, m_sites)
+            var standing = _stand_factors[DTYPE](d, m_bodies, m_sites)
 
-            var cv = _com_velocity_torso_frame[DTYPE](d, m_bodies, NBODY)
+            var cv = _com_velocity_torso_frame[DTYPE](d, m_bodies, D.NBODY)
 
             comptime speed_margin = (
                 1.0 if Self.MOVE_SPEED < 1.0 else Self.MOVE_SPEED

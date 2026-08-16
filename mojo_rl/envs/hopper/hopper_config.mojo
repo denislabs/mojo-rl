@@ -50,15 +50,8 @@ struct HopperConfig(Phyics3dEnvConfig):
 
     # === CPU: Reward + termination ===
     @staticmethod
-    def compute_reward_and_done_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -95,11 +88,11 @@ struct HopperConfig(Phyics3dEnvConfig):
 
         # healthy_state_range: qpos[2:] and qvel must be in (-100, 100)
         # (matches Gymnasium Hopper-v5 strict inequalities)
-        for k in range(2, NQ):
+        for k in range(2, D.NQ):
             var qp = d.qpos.data[k]
             if qp <= Scalar[DTYPE](-100.0) or qp >= Scalar[DTYPE](100.0):
                 is_healthy = False
-        for k in range(NV):
+        for k in range(D.NV):
             var qv = d.qvel.data[k]
             if qv <= Scalar[DTYPE](-100.0) or qv >= Scalar[DTYPE](100.0):
                 is_healthy = False

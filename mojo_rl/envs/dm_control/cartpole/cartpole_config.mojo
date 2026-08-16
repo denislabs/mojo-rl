@@ -149,15 +149,8 @@ struct DMCartpoleConfig[
 
     # === CPU: Reward ===
     @staticmethod
-    def compute_reward_and_done_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def compute_reward_and_done_cpu[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -210,7 +203,7 @@ struct DMCartpoleConfig[
             # small_velocity = (1 + tolerance(angular_vel, margin=5).min()) / 2
             # angular_vel is qvel[1:] — the hinges, excluding the slider.
             var min_sv = 1.0
-            for i in range(1, NV):
+            for i in range(1, D.NV):
                 var sv = tolerance(Float64(d.qvel.data[i]), 0.0, 0.0, 5.0)
                 if sv < min_sv:
                     min_sv = sv

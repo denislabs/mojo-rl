@@ -522,15 +522,8 @@ def pairwise_stacking_reward_coef(dist: Float64, close_coef: Float64) -> Float64
     return (close_coef * close + 1.0 * clicked) / (close_coef + 1.0)
 
 
-def reassemble_reward[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def reassemble_reward[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     desired: List[Int],
 ) -> Float64:
     """`Reassemble.get_reward` — the mean over the DESIRED adjacent pairs.
@@ -542,9 +535,7 @@ def reassemble_reward[
     var n = len(desired)
     var total = 0.0
     for i in range(n - 1):
-        var dist = min_stud_to_hole_distance[
-            DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-        ](
+        var dist = min_stud_to_hole_distance[DTYPE](
             d,
             stack_brick_stud_0_of(desired[i]),
             stack_brick_hole_0_of(desired[i + 1]),
@@ -869,15 +860,8 @@ def append_reassemble_random_obs[DTYPE: DType, D: DimsLike](
     )
 
 
-def reassemble_random_reward[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def reassemble_random_reward[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     n: Int,
     fixed_brick: Int,
 ) -> Float64:
@@ -889,7 +873,7 @@ def reassemble_random_reward[
     var phys = List[Int]()
     for i in range(n):
         phys.append(sigma[desired[i]])
-    return reassemble_reward[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](d, phys)
+    return reassemble_reward[DTYPE](d, phys)
 
 
 def reassemble_random_reset_full[
