@@ -54,7 +54,7 @@ from ..dynamics.jac_contact_row import _contact_jacobian_row
 from .limits import _limits_env
 from .friction_dof import _friction_env
 from .equality_tendon import _equality_env, _tendon_env
-from ..fields import Data, Model, DynamicsScratch, ContactScratch
+from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_BODY_SIZE,
@@ -2573,7 +2573,7 @@ def solve_contacts[
         NPAIR,
     ],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
-    mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH, _],
+    mut cscratch: ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MAX_CONTACTS], BATCH, _],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """PGS contact solve into `scratch.qacc_constrained` (+ solved forces

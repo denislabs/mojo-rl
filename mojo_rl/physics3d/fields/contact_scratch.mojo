@@ -13,11 +13,12 @@ from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 
+from .dims import DimsLike
+
 
 struct ContactScratch[
     DTYPE: DType,
-    NV: Int,
-    MAX_CONTACTS: Int,
+    D: DimsLike,
     BATCH: Int = 1,
     # Per-env scalars for the blocked-Newton constraint Jacobian spill. 0 (the
     # default) means "Je fits threadgroup memory" and NO buffer is allocated —
@@ -62,6 +63,10 @@ struct ContactScratch[
 
     Total = 15*MC + 2*MC*NV + 66*MC + 10*MC*NV = 81*MC + 12*MC*NV.
     """
+
+    # Body unchanged — see `Rk4Scratch` for why the aliases live here.
+    comptime NV = Self.D.NV
+    comptime MAX_CONTACTS = Self.D.MAX_CONTACTS
 
     comptime MC = Self.MAX_CONTACTS if Self.MAX_CONTACTS > 0 else 1
     comptime SOLVER_WS = 81 * Self.MC + 12 * Self.MC * Self.NV

@@ -74,7 +74,7 @@ from layout import Layout
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.fields import (
-    Data, Model, DynamicsScratch, ContactScratch,
+    Data, Model, DynamicsScratch, ContactScratch, Dims,
 )
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
@@ -396,7 +396,7 @@ def _solve[
     _slam_state[VSCALE](d)
 
     var scratch = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var cscratch = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var cscratch = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
 
     comptime if target == "gpu":
         d.upload_all(ctx)

@@ -78,7 +78,7 @@ from ..constraints.equality_tendon import (
     _equality_env,
     _tendon_env,
 )
-from ..fields import Data, Model, DynamicsScratch, ContactScratch
+from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_BODY_SIZE,
@@ -991,7 +991,7 @@ def solve_cg[
         NPAIR,
     ],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
-    mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH, _],
+    mut cscratch: ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MAX_CONTACTS], BATCH, _],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Primal CG contact solve into `scratch.qacc_constrained` (+ solved

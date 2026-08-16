@@ -52,7 +52,7 @@ from ..dynamics.rne import compute_bias_forces_rne
 from ..dynamics.rne_post import compute_rne_post
 from ..dynamics.fluid_forces import compute_fluid_forces
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
-from ..fields import Data, Model, DynamicsScratch, ContactScratch
+from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims
 from ..gpu.constants import (
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
@@ -418,17 +418,13 @@ struct EulerIntegrator[
         Self.MAX_CONTACTS, Self.MAX_CONDIM,
     ]()
 
-    var cscratch: ContactScratch[
-        Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH, Self.JE_WS
-    ]
+    var cscratch: ContactScratch[Self.DTYPE, Dims[nv=Self.NV, max_contacts=Self.MAX_CONTACTS], Self.BATCH, Self.JE_WS]
 
     def __init__(out self) raises:
         self.scratch = DynamicsScratch[
             Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ]()
-        self.cscratch = ContactScratch[
-            Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH, Self.JE_WS
-        ]()
+        self.cscratch = ContactScratch[Self.DTYPE, Dims[nv=Self.NV, max_contacts=Self.MAX_CONTACTS], Self.BATCH, Self.JE_WS]()
 
     def prepare_gpu(mut self, ctx: DeviceContext) raises:
         """Allocate device buffers for the scratch (once, before stepping)."""

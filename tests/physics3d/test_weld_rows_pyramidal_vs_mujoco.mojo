@@ -50,6 +50,7 @@ from mojo_rl.physics3d.fields import (
     Data,
     DynamicsScratch,
     ContactScratch,
+    Dims,
 )
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
@@ -467,8 +468,8 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
 
     var sb = DynamicsScratch[DTYPE, M.NV, M.NBODY, 1]()
     var sp = DynamicsScratch[DTYPE, M.NV, M.NBODY, 1]()
-    var cb = ContactScratch[DTYPE, M.NV, M.MAX_CONTACTS, 1]()
-    var cp = ContactScratch[DTYPE, M.NV, M.MAX_CONTACTS, 1]()
+    var cb = ContactScratch[DTYPE, Dims[nv=M.NV, max_contacts=M.MAX_CONTACTS], 1]()
+    var cp = ContactScratch[DTYPE, Dims[nv=M.NV, max_contacts=M.MAX_CONTACTS], 1]()
     _prep(db, mf, sb)
     _prep(dp, mf, sp)
 

@@ -29,6 +29,7 @@ from mojo_rl.physics3d.fields import (
     Model,
     DynamicsScratch,
     ContactScratch,
+    Dims,
 )
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.integrator.euler import (
@@ -234,9 +235,9 @@ def part_a(ctx: DeviceContext) raises:
     dC.upload_all(ctx)
 
     var scN = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var csN = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var csN = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     var scC = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var csC = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var csC = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     scN.upload_all(ctx)
     csN.upload_all(ctx)
     scC.upload_all(ctx)
@@ -288,9 +289,9 @@ def part_b(ctx: DeviceContext) raises:
     dg.upload_all(ctx)
 
     var scg = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var csg = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var csg = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     var scc = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var csc = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var csc = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     scg.upload_all(ctx)
     csg.upload_all(ctx)
 

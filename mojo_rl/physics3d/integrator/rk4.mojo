@@ -455,18 +455,14 @@ struct RK4Integrator[
         Self.MAX_CONTACTS, Self.MAX_CONDIM,
     ]()
 
-    var cscratch: ContactScratch[
-        Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH, Self.JE_WS
-    ]
+    var cscratch: ContactScratch[Self.DTYPE, Dims[nv=Self.NV, max_contacts=Self.MAX_CONTACTS], Self.BATCH, Self.JE_WS]
 
     def __init__(out self) raises:
         self.scratch = DynamicsScratch[
             Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ]()
         self.rk4 = Rk4Scratch[Self.DTYPE, Self.D, Self.BATCH]()
-        self.cscratch = ContactScratch[
-            Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH, Self.JE_WS
-        ]()
+        self.cscratch = ContactScratch[Self.DTYPE, Dims[nv=Self.NV, max_contacts=Self.MAX_CONTACTS], Self.BATCH, Self.JE_WS]()
 
     def prepare_gpu(mut self, ctx: DeviceContext) raises:
         """Allocate device buffers for the scratch (once, before stepping)."""

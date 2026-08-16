@@ -32,6 +32,7 @@ from mojo_rl.physics3d.fields import (
     Model,
     DynamicsScratch,
     ContactScratch,
+    Dims,
 )
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
@@ -384,7 +385,7 @@ def run_leg[
     print("  limit rows: env0", nlim0, " env1", nlim1, "(non-vacuous)")
 
     var scratch = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var cscratch = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var cscratch = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     scratch.upload_all(ctx)
     cscratch.upload_all(ctx)
 
@@ -481,11 +482,11 @@ def run_cpu_smoke(ctx: DeviceContext) raises:
     d.upload_all(ctx)
 
     var scratch = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var cscratch = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var cscratch = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     scratch.upload_all(ctx)
     cscratch.upload_all(ctx)
     var scratch_c = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var cscratch_c = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var cscratch_c = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
 
     _fields_prep["gpu"](d, mf, scratch, ctx)
     solve_newton[

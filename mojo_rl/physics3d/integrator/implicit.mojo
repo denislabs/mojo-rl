@@ -296,9 +296,7 @@ struct ImplicitIntegrator[
         Self.MAX_CONTACTS, 3,
     ]()
 
-    var cscratch: ContactScratch[
-        Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH, Self.JE_WS
-    ]
+    var cscratch: ContactScratch[Self.DTYPE, Dims[nv=Self.NV, max_contacts=Self.MAX_CONTACTS], Self.BATCH, Self.JE_WS]
     # Scaffolding, same shape as `RK4Integrator.D` — one alias, both spellings
     # below. It disappears when this integrator takes a real `D` in the sweep.
     comptime D = Dims[nv = Self.NV, nbody = Self.NBODY]
@@ -309,9 +307,7 @@ struct ImplicitIntegrator[
         self.scratch = DynamicsScratch[
             Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ]()
-        self.cscratch = ContactScratch[
-            Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH, Self.JE_WS
-        ]()
+        self.cscratch = ContactScratch[Self.DTYPE, Dims[nv=Self.NV, max_contacts=Self.MAX_CONTACTS], Self.BATCH, Self.JE_WS]()
         self.iscratch = ImplicitScratch[Self.DTYPE, Self.D, Self.BATCH]()
 
     def prepare_gpu(mut self, ctx: DeviceContext) raises:

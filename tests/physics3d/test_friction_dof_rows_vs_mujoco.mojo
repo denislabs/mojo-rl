@@ -61,6 +61,7 @@ from mojo_rl.physics3d.fields import (
     Model,
     DynamicsScratch,
     ContactScratch,
+    Dims,
 )
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.joint_types import JNT_HINGE, JNT_SLIDE
@@ -462,9 +463,9 @@ def test_blocked_friction_rows() raises:
     var sg = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
     var sc = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
     var sp = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var cg = ContactScratch[DTYPE, NV, MC, BATCH]()
-    var cc = ContactScratch[DTYPE, NV, MC, BATCH]()
-    var cp = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var cg = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
+    var cc = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
+    var cp = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     sg.upload_all(ctx)
     cg.upload_all(ctx)
 

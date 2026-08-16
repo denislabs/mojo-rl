@@ -137,7 +137,7 @@ from ..constraints.scalar_rows import (
     DOF_SOLIMP_DMAX,
 )
 from ..constraints.equality_tendon import build_weld_equality_rows
-from ..fields import Data, Model, DynamicsScratch, ContactScratch
+from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_BODY_SIZE,
@@ -2366,7 +2366,7 @@ def solve_newton[
         NPAIR,
     ],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
-    mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH, JE_WS],
+    mut cscratch: ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MAX_CONTACTS], BATCH, JE_WS],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Primal Newton contact solve into `scratch.qacc_constrained` (+ solved
@@ -3817,7 +3817,7 @@ def solve_newton_blocked[
         NPAIR,
     ],
     mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
-    mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH, JE_WS],
+    mut cscratch: ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MAX_CONTACTS], BATCH, JE_WS],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """PYRAMIDAL-only ONE-ENV-PER-BLOCK Newton contact solve (fields port of

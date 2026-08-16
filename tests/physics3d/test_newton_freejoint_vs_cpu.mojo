@@ -33,6 +33,7 @@ from mojo_rl.physics3d.fields import (
     Model,
     DynamicsScratch,
     ContactScratch,
+    Dims,
 )
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.physics3d.types import ConeType
@@ -238,11 +239,11 @@ def _validate[MODEL: ModelDefLike](
     d_g.upload_all(ctx)
 
     var sg = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var cg = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var cg = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
     sg.upload_all(ctx)
     cg.upload_all(ctx)
     var sc = DynamicsScratch[DTYPE, NV, NBODY, BATCH]()
-    var cc = ContactScratch[DTYPE, NV, MC, BATCH]()
+    var cc = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
 
     # GPU path (blocked on NVIDIA, per-env on Apple).
     _prep[NQ, NV, NBODY, NJOINT, NGEOM, MC, NEQ, NTEN, NSITE, NEXCL, "gpu"](
