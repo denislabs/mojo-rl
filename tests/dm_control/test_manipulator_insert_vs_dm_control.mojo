@@ -46,8 +46,6 @@ from max.gpu.host import DeviceContext
 from mojo_rl.envs.dm_control.manipulator import (
     DMManipulatorInsertBallModel as MB,
     DMManipulatorInsertPegModel as MP,
-    dm_manipulator_insert_ball_xml,
-    dm_manipulator_insert_peg_xml,
     target_body_idx,
     receptacle_body_idx,
     site_object,
@@ -344,8 +342,12 @@ def _mj_insert(
     mocap bodies have to be looked up rather than assumed adjacent.
     """
     var mujoco = Python.import_module("mujoco")
-    var xml = dm_manipulator_insert_peg_xml if use_peg else dm_manipulator_insert_ball_xml
-    var m = mujoco.MjModel.from_xml_string(String(xml))
+    var xml = String(
+        "mojo_rl/envs/dm_control/assets/manipulator_insert_peg.xml"
+    ) if use_peg else String(
+        "mojo_rl/envs/dm_control/assets/manipulator_insert_ball.xml"
+    )
+    var m = mujoco.MjModel.from_xml_path(String(xml))
     var dat = mujoco.MjData(m)
     var rb = receptacle_body_idx(use_peg)
     var tb = target_body_idx(use_peg, True)

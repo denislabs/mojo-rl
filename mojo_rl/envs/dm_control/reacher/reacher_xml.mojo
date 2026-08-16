@@ -44,93 +44,13 @@ Here MuJoCo puts `target` (a world geom) at 6, ahead of arm/hand/finger; ours
 puts it at 9, behind them. The parity test pins both.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
-from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
+from mojo_rl.physics3d.parser import ModelDefFromXML
 
-from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
 from mojo_rl.envs.dm_control.reacher.reacher_dims import (
     DM_REACHER_DIMS,
     DM_REACHER_HARD_DIMS,
 )
 
-
-comptime _reacher_body_pre = """
-<mujoco model="two-link planar reacher">
-  <option timestep="0.02">
-    <flag contact="disable"/>
-  </option>
-
-  <default>
-    <joint type="hinge" axis="0 0 1" damping="0.01"/>
-    <motor gear=".05" ctrlrange="-1 1" ctrllimited="true"/>
-  </default>
-
-  <worldbody>
-    <light name="light" pos="0 0 1"/>
-    <camera name="fixed" pos="0 0 .75" quat="1 0 0 0"/>
-    <geom name="ground" type="plane" pos="0 0 0" size=".3 .3 10" material="grid"/>
-    <geom name="wall_x" type="plane" pos="-.3 0 .02" zaxis="1 0 0"  size=".02 .3 .02" material="decoration"/>
-    <geom name="wall_y" type="plane" pos="0 -.3 .02" zaxis="0 1 0"  size=".3 .02 .02" material="decoration"/>
-    <geom name="wall_neg_x" type="plane" pos=".3 0 .02" zaxis="-1 0 0"  size=".02 .3 .02" material="decoration"/>
-    <geom name="wall_neg_y" type="plane" pos="0 .3 .02" zaxis="0 -1 0"  size=".3 .02 .02" material="decoration"/>
-
-    <geom name="root" type="cylinder" fromto="0 0 0 0 0 0.02" size=".011" material="decoration"/>
-    <body name="arm" pos="0 0 .01">
-      <geom name="arm" type="capsule" fromto="0 0 0 0.12 0 0" size=".01" material="self"/>
-      <joint name="shoulder"/>
-      <body name="hand" pos=".12 0 0">
-        <geom name="hand" type="capsule" fromto="0 0 0 0.1 0 0" size=".01" material="self"/>
-        <joint name="wrist" limited="true" range="-160 160"/>
-        <body name="finger" pos=".12 0 0">
-          <camera name="hand" pos="0 0 .2" mode="track"/>
-          <geom name="finger" type="sphere" size=".01" material="effector"/>
-        </body>
-      </body>
-    </body>
-
-    <body name="target" mocap="true" pos="0 0 .01">
-"""
-"""The body, up to the TARGET GEOM — the one line the two tasks differ in.
-`_reacher_body_post` resumes at the line after it."""
-
-
-# ⚠ THE WHOLE LINE IS DUPLICATED, not spliced around the number. Splicing means
-# ending the preceding chunk mid-attribute, right after `size=`, so the opening
-# quote of the value has to reach the string through an escape — and an escaped
-# quote sitting immediately before a triple-quote terminator reads as either the
-# escape or the end of the string depending on how you squint. Two adjacent
-# lines that differ in one number cannot drift unnoticed; a clever splice can.
-comptime _target_geom_easy = """      <geom name="target" material="target" type="sphere" size=".05"/>
-"""
-comptime _target_geom_hard = """      <geom name="target" material="target" type="sphere" size=".015"/>
-"""
-
-
-comptime _reacher_body_post = """    </body>
-  </worldbody>
-
-  <actuator>
-    <motor name="shoulder" joint="shoulder"/>
-    <motor name="wrist" joint="wrist"/>
-  </actuator>
-</mujoco>
-"""
-
-
-comptime _reacher_body = (
-    _reacher_body_pre + _target_geom_easy + _reacher_body_post
-)
-comptime _reacher_body_hard = (
-    _reacher_body_pre + _target_geom_hard + _reacher_body_post
-)
-
-
-comptime dm_reacher_xml = merge_mjcf(
-    dm_skybox_xml, dm_visual_xml, dm_materials_xml, _reacher_body
-)
-comptime dm_reacher_hard_xml = merge_mjcf(
-    dm_skybox_xml, dm_visual_xml, dm_materials_xml, _reacher_body_hard
-)
 
 # ⚠ THE HARD MODEL USED TO BORROW `pmr` OUTRIGHT, on the grounds that the two
 # differ in one attribute VALUE so every count is "identical by construction".
@@ -145,7 +65,6 @@ comptime pmrh = DM_REACHER_HARD_DIMS
 
 # obs = position (qpos, 2) + to_target (2) + velocity (qvel, 2) = 6
 comptime DMReacherModel = ModelDefFromXML[
-    xml=dm_reacher_xml,
     xml_path="mojo_rl/envs/dm_control/assets/reacher.xml",
     nbody=pmr.NBODY, njoint=pmr.NJOINT, nq=pmr.NQ, nv=pmr.NV,
     ngeom=pmr.NGEOM, nact=pmr.NACT, ntex=pmr.NTEX, nmat=pmr.NMAT,
@@ -155,8 +74,22 @@ comptime DMReacherModel = ModelDefFromXML[
     timestep=pmr.TIMESTEP,
 ]
 
+# `hard`'s model — identical but for the target's `.015` radius.
+#
+# ⚠ A SECOND MODEL FOR A PURELY VISUAL DIFFERENCE, which is worth stating
+# plainly because it costs a second comptime model def. The target is INERT
+# (contact is disabled model-wide) and the reward measures against
+# `DMReacherConfig`'s `TARGET_SIZE`, so nothing physical reads this radius —
+# but the RENDERER does, and it reads it at COMPILE TIME
+# (`MODEL_DEF.render_body_geoms`). There is no runtime geom-size path to write
+# instead, which is why `hard` used to draw `easy`'s 5 cm ball: 3.3x too big,
+# and the only visible symptom.
+#
+# The alternative — dm_control's own `initialize_episode` writing
+# `geom_size['target', 0]` per episode — is not available to us for the same
+# reason: our `custom_reset_model_cpu` hook writes the HOST model lists, which
+# the comptime renderer never consults.
 comptime DMReacherHardModel = ModelDefFromXML[
-    xml=dm_reacher_hard_xml,
     xml_path="mojo_rl/envs/dm_control/assets/reacher_hard.xml",
     nbody=pmrh.NBODY, njoint=pmrh.NJOINT, nq=pmrh.NQ, nv=pmrh.NV,
     ngeom=pmrh.NGEOM, nact=pmrh.NACT, ntex=pmrh.NTEX, nmat=pmrh.NMAT,
@@ -165,20 +98,7 @@ comptime DMReacherHardModel = ModelDefFromXML[
     obs_dim_override=6,
     timestep=pmrh.TIMESTEP,
 ]
-"""`hard`'s model — identical but for the target's `.015` radius.
 
-⚠ A SECOND MODEL FOR A PURELY VISUAL DIFFERENCE, which is worth stating plainly
-because it costs a second comptime model def. The target is INERT (contact is
-disabled model-wide) and the reward measures against `DMReacherConfig`'s
-`TARGET_SIZE`, so nothing physical reads this radius — but the RENDERER does,
-and it reads it at COMPILE TIME (`MODEL_DEF.render_body_geoms`). There is no
-runtime geom-size path to write instead, which is why `hard` used to draw
-`easy`'s 5 cm ball: 3.3x too big, and the only visible symptom.
-
-The alternative — dm_control's own `initialize_episode` writing
-`geom_size['target', 0]` per episode — is not available to us for the same
-reason: our `custom_reset_model_cpu` hook writes the HOST model lists, which
-the comptime renderer never consults."""
 
 # Body indices in worldbody DFS order (0 = world). `target` is appended last so
 # the arm chain keeps the reference's own 1..3.

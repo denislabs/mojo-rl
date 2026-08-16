@@ -112,10 +112,9 @@ deleted, because it is the shape of mistake this file is most likely to
 attract again.
 """
 
-from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
+from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
-from .manipulation_reach_xml import reach_site_features_xml
 from mojo_rl.envs.dm_control.manipulation_reach_dims import (
     REACH_SITE_FEATURES_DIMS,
 )
@@ -123,7 +122,6 @@ from mojo_rl.envs.dm_control.manipulation_reach_dims import (
 comptime pm = REACH_SITE_FEATURES_DIMS
 
 comptime ReachSiteFeaturesModel = ModelDefFromXML[
-    xml=reach_site_features_xml,
     xml_path="mojo_rl/envs/dm_control/assets/manipulation/reach_site_features.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,

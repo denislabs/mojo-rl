@@ -132,14 +132,19 @@ def test_model_def_from_xml() raises:
     # Step 2: ModelDefFromXML comptime constants
     # =========================================================================
     # HalfCheetah: obs_qpos_skip=1 → OBS_DIM = 9-1+9 = 17
+    # ⚠ `xml=` BY KEYWORD. The MJCF used to be the FIRST parameter; phase 1b
+    # made it the last (after `xml_path`) because a parameter with a default
+    # cannot precede the required dims. Positional instantiation of the XML no
+    # longer works — which is the trap `NPAIR` documents, seen from the other
+    # side.
     comptime XmlModel = ModelDefFromXML[
-        half_cheetah_xml,
-        pm.NBODY,
-        pm.NJOINT,
-        pm.NQ,
-        pm.NV,
-        pm.NGEOM,
-        pm.NACT,
+        xml=half_cheetah_xml,
+        nbody=pm.NBODY,
+        njoint=pm.NJOINT,
+        nq=pm.NQ,
+        nv=pm.NV,
+        ngeom=pm.NGEOM,
+        nact=pm.NACT,
         max_contacts=10,
         obs_qpos_skip=1,
     ]

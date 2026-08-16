@@ -33,7 +33,6 @@ from mojo_rl.envs.dm_control.acrobot import (
     DMAcrobotSwingup,
     DMAcrobotSwingupSparse,
     DMAcrobotModel,
-    dm_acrobot_xml,
     TARGET_RADIUS,
     UPPER_ARM_BODY_IDX,
     LOWER_ARM_BODY_IDX,
@@ -143,7 +142,7 @@ def test_acrobot_model_matches_mujoco() raises:
     var sys = Python.import_module("sys")
     sys.path.insert(0, REF_PATH)
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(String(dm_acrobot_xml))
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/acrobot.xml")
 
     assert_true(Int(py=m.nbody) == DMAcrobotModel.NBODY, "nbody mismatch")
     assert_true(Int(py=m.njnt) == DMAcrobotModel.NJOINT, "njnt mismatch")

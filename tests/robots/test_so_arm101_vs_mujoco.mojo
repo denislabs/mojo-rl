@@ -45,7 +45,6 @@ from mojo_rl.core.cont_action import ContAction
 from mojo_rl.envs.robots.so_arm101 import SoArm101Reach
 from mojo_rl.envs.robots.so_arm101_xml import (
     SoArm101Model,
-    SO_ARM101_XML,
     MOVING_JAW_BODY_IDX,
     TARGET_BODY_IDX,
 )
@@ -112,7 +111,7 @@ def _ctrl(i: Int) -> Float64:
 
 def _mj() raises -> PythonObject:
     var mujoco = Python.import_module("mujoco")
-    return mujoco.MjModel.from_xml_string(String(SO_ARM101_XML))
+    return mujoco.MjModel.from_xml_path("mojo_rl/envs/robots/assets/so_arm101.xml")
 
 
 def test_model_counts() raises:

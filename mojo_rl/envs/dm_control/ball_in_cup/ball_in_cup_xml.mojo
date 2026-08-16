@@ -35,77 +35,20 @@ tendon limit rows are built on the pyramidal edge list only, and
 """
 
 from mojo_rl.physics3d.parser import ModelDefFromXML
-from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 from mojo_rl.physics3d.types import ConeType
 
-from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
 from mojo_rl.envs.dm_control.ball_in_cup.ball_in_cup_dims import (
     DM_BALL_IN_CUP_DIMS,
 )
 
 
-comptime _ball_in_cup_body = """
-<mujoco model="ball in cup">
-
-  <default>
-    <motor ctrllimited="true" ctrlrange="-1 1" gear="5"/>
-    <default class="cup">
-      <joint type="slide" damping="3" stiffness="20"/>
-      <geom type="capsule" size=".008" material="self"/>
-    </default>
-  </default>
-
-  <worldbody>
-    <light name="light" directional="true" diffuse=".6 .6 .6" pos="0 0 2" specular=".3 .3 .3"/>
-    <geom name="ground" type="plane" pos="0 0 0" size=".6 .2 10" material="grid"/>
-    <camera name="cam0" pos="0 -1 .8" xyaxes="1 0 0 0 1 2"/>
-    <camera name="cam1" pos="0 -1 .4" xyaxes="1 0 0 0 0 1" />
-
-    <body name="cup" pos="0 0 .6" childclass="cup">
-      <joint name="cup_x" axis="1 0 0"/>
-      <joint name="cup_z" axis="0 0 1"/>
-      <geom name="cup_part_0" fromto="-.05 0 0 -.05 0 -.075" />
-      <geom name="cup_part_1" fromto="-.05 0 -.075 -.025 0 -.1" />
-      <geom name="cup_part_2" fromto="-.025 0 -.1 .025 0 -.1" />
-      <geom name="cup_part_3" fromto=".025 0 -.1 .05 0 -.075" />
-      <geom name="cup_part_4" fromto=".05 0 -.075 .05 0 0" />
-      <site name="cup" pos="0 0 -.108" size=".005"/>
-      <site name="target" type="box" pos="0 0 -.05" size=".05 .006 .05" group="4"/>
-    </body>
-
-    <body name="ball" pos="0 0 .2">
-      <joint name="ball_x" type="slide" axis="1 0 0"/>
-      <joint name="ball_z" type="slide" axis="0 0 1"/>
-      <geom name="ball" type="sphere" size=".025" material="effector"/>
-      <site name="ball" size=".005"/>
-    </body>
-  </worldbody>
-
-  <actuator>
-    <motor name="x" joint="cup_x"/>
-    <motor name="z" joint="cup_z"/>
-  </actuator>
-
-  <tendon>
-    <spatial name="string" limited="true" range="0 0.3" width="0.003">
-      <site site="ball"/>
-      <site site="cup"/>
-    </spatial>
-  </tendon>
-
-</mujoco>
-"""
 
 
-comptime dm_ball_in_cup_xml = merge_mjcf(
-    dm_skybox_xml, dm_visual_xml, dm_materials_xml, _ball_in_cup_body
-)
 
 comptime bicp = DM_BALL_IN_CUP_DIMS
 
 # obs = position (qpos, 4) + velocity (qvel, 4) = 8
 comptime DMBallInCupModel = ModelDefFromXML[
-    xml=dm_ball_in_cup_xml,
     xml_path="mojo_rl/envs/dm_control/assets/ball_in_cup.xml",
     nbody=bicp.NBODY, njoint=bicp.NJOINT, nq=bicp.NQ, nv=bicp.NV,
     ngeom=bicp.NGEOM, nact=bicp.NACT, ntex=bicp.NTEX, nmat=bicp.NMAT,

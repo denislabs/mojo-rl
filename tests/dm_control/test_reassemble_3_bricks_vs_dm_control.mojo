@@ -58,9 +58,6 @@ from mojo_rl.envs.dm_control.manipulation_reassemble3_config import (
     initial_order,
     desired_order,
 )
-from mojo_rl.envs.dm_control.manipulation_stack_3_bricks_xml import (
-    stack_3_bricks_xml,
-)
 from mojo_rl.envs.dm_control.manipulation_reassemble import (
     build_stack,
     reassemble_reward,
@@ -336,7 +333,9 @@ def test_reassemble_3_model_and_orders_match_dm_control() raises:
     # contactless, jointless and unobserved, and our port does not build their
     # stack at all.
     var ntables = Int(py=refmod.n_tables_compared())
-    var cmp = refmod.compare_xml_excluding_hint_bricks(stack_3_bricks_xml, TASK)
+    var cmp = refmod.compare_xml_excluding_hint_bricks(
+        "mojo_rl/envs/dm_control/assets/manipulation/stack_3_bricks.xml", TASK
+    )
     var bad = cmp[0]
     var n_hint = Int(py=cmp[1])
     var nbad = Int(py=Python.import_module("builtins").len(bad))

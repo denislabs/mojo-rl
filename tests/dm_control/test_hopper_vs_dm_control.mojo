@@ -55,7 +55,6 @@ from mojo_rl.envs.dm_control.hopper import (
     DMHopperStand,
     DMHopperHop,
     DMHopperModel,
-    dm_hopper_xml,
     TORSO_BODY_IDX,
     FOOT_BODY_IDX,
     TOUCH_TOE_SITE_IDX,
@@ -166,7 +165,7 @@ def test_hopper_model_matches_mujoco() raises:
     var sys = Python.import_module("sys")
     sys.path.insert(0, REF_PATH)
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(String(dm_hopper_xml))
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/hopper.xml")
 
     assert_true(Int(py=m.nbody) == DMHopperModel.NBODY, "nbody mismatch")
     assert_true(Int(py=m.njnt) == DMHopperModel.NJOINT, "njnt mismatch")

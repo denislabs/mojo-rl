@@ -50,7 +50,6 @@ from mojo_rl.envs.dm_control.dog import (
     DMDogStand,
     DMDogWalk,
     DMDogStandWalkModel,
-    dm_dog_stand_walk_xml,
     DOG_OBS_DIM,
     DOG_N_HINGE,
     DOG_HINGE_QPOS_0,
@@ -109,7 +108,7 @@ def _ref_module() raises -> PythonObject:
 
 def _mj() raises -> Tuple[PythonObject, PythonObject, PythonObject]:
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(materialize[dm_dog_stand_walk_xml]())
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
     return (mujoco, m, mujoco.MjData(m))
 
 

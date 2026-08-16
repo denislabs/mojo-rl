@@ -37,7 +37,6 @@ number carried over from a task that never assembles anything.
 from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
-from .manipulation_stack_3_bricks_xml import stack_3_bricks_xml
 from mojo_rl.envs.dm_control.manipulation_stack_3_bricks_dims import (
     STACK_3_BRICKS_DIMS,
 )
@@ -45,7 +44,6 @@ from mojo_rl.envs.dm_control.manipulation_stack_3_bricks_dims import (
 comptime pm = STACK_3_BRICKS_DIMS
 
 comptime Reassemble3Model = ModelDefFromXML[
-    xml=stack_3_bricks_xml,
     xml_path="mojo_rl/envs/dm_control/assets/manipulation/stack_3_bricks.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,

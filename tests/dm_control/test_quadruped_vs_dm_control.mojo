@@ -41,8 +41,6 @@ from mojo_rl.envs.dm_control.quadruped import (
     DMQuadrupedRun,
     DMQuadrupedWalkConfig,
     DMQuadrupedRunConfig,
-    dm_quadruped_walk_xml,
-    dm_quadruped_run_xml,
     DMQuadrupedWalkModel,
     QUADRUPED_OBS_DIM,
     QUADRUPED_WALK_SPEED,
@@ -144,7 +142,7 @@ def _mj(state_qpos: List[Float64], state_qvel: List[Float64]) raises -> Tuple[
     PythonObject, PythonObject, PythonObject
 ]:
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(String(dm_quadruped_walk_xml))
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/quadruped_walk.xml")
     var dat = mujoco.MjData(m)
     for i in range(NQ):
         dat.qpos[i] = state_qpos[i]
@@ -188,7 +186,7 @@ def test_sensor_order_matches_the_observation_layout() raises:
     var sys = Python.import_module("sys")
     sys.path.insert(0, REF_PATH)
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(String(dm_quadruped_walk_xml))
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/quadruped_walk.xml")
 
     assert_true(Int(py=m.nq) == NQ, "nq")
     assert_true(Int(py=m.nv) == NV, "nv")
@@ -522,7 +520,7 @@ def _mj_from_our_xml() raises -> PythonObject:
     because `test_quadruped_xml_compiles_to_the_reference_model` proves that
     string IS the reference model."""
     var mujoco = Python.import_module("mujoco")
-    return mujoco.MjModel.from_xml_string(String(dm_quadruped_walk_xml))
+    return mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/quadruped_walk.xml")
 
 
 def _mj_geom_type(ours: Int) -> Int:
@@ -578,8 +576,9 @@ def test_quadruped_xml_compiles_to_the_reference_model() raises:
 
     for run in range(2):
         var xml = (
-            String(dm_quadruped_run_xml) if run == 1
-            else String(dm_quadruped_walk_xml)
+            String("mojo_rl/envs/dm_control/assets/quadruped_run.xml")
+            if run == 1
+            else String("mojo_rl/envs/dm_control/assets/quadruped_walk.xml")
         )
         var bad = builder.compare_xml_to_reference(xml, run == 1)
         var n = Int(py=Python.import_module("builtins").len(bad))

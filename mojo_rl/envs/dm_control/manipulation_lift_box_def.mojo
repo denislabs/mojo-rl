@@ -31,7 +31,6 @@ mesh collision path — is `reach_site_features`' story unchanged; see
 from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
-from .manipulation_lift_box_xml import lift_large_box_xml
 from mojo_rl.envs.dm_control.manipulation_lift_box_dims import (
     LIFT_LARGE_BOX_DIMS,
 )
@@ -39,7 +38,6 @@ from mojo_rl.envs.dm_control.manipulation_lift_box_dims import (
 comptime pm = LIFT_LARGE_BOX_DIMS
 
 comptime LiftLargeBoxModel = ModelDefFromXML[
-    xml=lift_large_box_xml,
     xml_path="mojo_rl/envs/dm_control/assets/manipulation/lift_large_box.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,

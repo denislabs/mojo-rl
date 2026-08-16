@@ -26,7 +26,6 @@ default formula would truncate.
 from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
-from .manipulation_stack_2_bricks_moveable_base_xml import stack_2_bricks_moveable_base_xml
 from mojo_rl.envs.dm_control.manipulation_stack_2_bricks_moveable_base_dims import (
     STACK_2_BRICKS_MOVEABLE_BASE_DIMS,
 )
@@ -34,7 +33,6 @@ from mojo_rl.envs.dm_control.manipulation_stack_2_bricks_moveable_base_dims impo
 comptime pm = STACK_2_BRICKS_MOVEABLE_BASE_DIMS
 
 comptime Stack2MoveableModel = ModelDefFromXML[
-    xml=stack_2_bricks_moveable_base_xml,
     xml_path="mojo_rl/envs/dm_control/assets/manipulation/stack_2_bricks_moveable_base.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,

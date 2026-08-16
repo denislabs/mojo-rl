@@ -48,7 +48,6 @@ from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
 from mojo_rl.envs.dm_control.finger.finger_xml import (
     DMFingerSpinModel,
     DMFingerTurnModel,
-    dm_finger_xml,
     PROXIMAL_BODY_IDX,
     DISTAL_BODY_IDX,
     SPINNER_BODY_IDX,

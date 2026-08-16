@@ -31,7 +31,6 @@ from max.gpu.host import DeviceContext
 from mojo_rl.envs.dm_control.cheetah import (
     DMCheetahRun,
     DMCheetahModel,
-    dm_cheetah_xml,
     TORSO_BODY_IDX,
     RUN_SPEED,
 )
@@ -159,7 +158,7 @@ def test_cheetah_geom_quats_match_mujoco() raises:
     var sys = Python.import_module("sys")
     sys.path.insert(0, REF_PATH)
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(String(dm_cheetah_xml))
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/cheetah.xml")
     var mf = _build_model()
 
     var worst = 0.0
@@ -193,7 +192,7 @@ def test_cheetah_model_matches_mujoco() raises:
     var sys = Python.import_module("sys")
     sys.path.insert(0, REF_PATH)
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(String(dm_cheetah_xml))
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/cheetah.xml")
 
     assert_true(Int(py=m.nbody) == DMCheetahModel.NBODY, "nbody mismatch")
     assert_true(Int(py=m.njnt) == DMCheetahModel.NJOINT, "njnt mismatch")

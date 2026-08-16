@@ -34,7 +34,6 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.envs.dm_control.quadruped import (
     DMQuadrupedFetch,
-    dm_quadruped_fetch_xml,
     QUADRUPED_FETCH_OBS_DIM,
     FETCH_TARGET_SITE_IDX,
     FETCH_WORKSPACE_SITE_IDX,
@@ -53,7 +52,7 @@ comptime NV: Int = 28
 
 def _mj() raises -> PythonObject:
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(String(dm_quadruped_fetch_xml))
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/quadruped_fetch.xml")
     return Python.tuple(mujoco, m, mujoco.MjData(m))
 
 

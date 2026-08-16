@@ -83,10 +83,8 @@ looks bodies up by name, but `mj_name2id` on the MuJoCo side needs the space.
 """
 
 from mojo_rl.physics3d.parser import ModelDefFromXML
-from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 from mojo_rl.physics3d.types import ConeType
 
-from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
 from ..planar_arm import NARM_JOINTS, N_ARM_SITES
 from mojo_rl.envs.dm_control.stacker.stacker_dims import (
     DM_STACKER_2_DIMS,
@@ -97,208 +95,19 @@ from mojo_rl.envs.dm_control.stacker.stacker_dims import (
 # ── shared segments ─────────────────────────────────────────────────────────
 # Options, defaults, arena and arm — identical in both tasks. Ends with the
 # `<!-- props -->` marker so a box segment concatenates straight on.
-comptime STACK_HEAD = """
-<mujoco model="planar stacker">
-
-  <option timestep="0.001" cone="elliptic"/>
-
-  <default>
-    <geom friction=".7" solimp="0.9 0.97 0.001" solref=".01 1"/>
-    <joint solimplimit="0 0.99 0.01" solreflimit=".005 1"/>
-    <motor ctrllimited="true"/>
-    <tendon width="0.01"/>
-    <site size=".003 .003 .003" material="site" group="3"/>
-
-    <default class="arm">
-      <geom type="capsule" material="self" density="500"/>
-      <joint type="hinge" pos="0 0 0" axis="0 -1 0" limited="true"/>
-      <default class="hand">
-        <joint damping=".5" range="-10 60"/>
-        <geom size=".008"/>
-        <site  type="box" size=".018 .005 .005" pos=".022 0 -.002" euler="0 15 0" group="4"/>
-        <default class="fingertip">
-          <geom type="sphere" size=".008" material="effector"/>
-          <joint damping=".01" stiffness=".01" range="-40 20"/>
-          <site  size=".012 .005 .008" pos=".003 0 .003" group="4" euler="0 0 0"/>
-        </default>
-      </default>
-    </default>
-
-    <default class="object">
-      <geom material="self"/>
-    </default>
-
-    <default class="task">
-      <site rgba="0 0 0 0"/>
-    </default>
-
-    <default class="obstacle">
-      <geom material="decoration" friction="0"/>
-    </default>
-
-    <default class="ghost">
-      <geom material="target" contype="0" conaffinity="0"/>
-    </default>
-  </default>
-
-  <worldbody>
-    <!-- Arena -->
-    <light name="light" directional="true" diffuse=".6 .6 .6" pos="0 0 1" specular=".3 .3 .3"/>
-    <geom name="floor" type="plane" pos="0 0 0" size=".4 .2 10" material="grid"/>
-    <geom name="wall1" type="plane" pos="-.682843 0 .282843" size=".4 .2 10" material="grid" zaxis="1 0 1"/>
-    <geom name="wall2" type="plane" pos=".682843 0 .282843" size=".4 .2 10" material="grid" zaxis="-1 0 1"/>
-    <geom name="background" type="plane" pos="0 .2 .5" size="1 .5 10" zaxis="0 -1 0"/>
-    <camera name="fixed" pos="0 -16 .4" xyaxes="1 0 0 0 0 1" fovy="4"/>
-
-    <!-- Arm -->
-    <geom name="arm_root" type="cylinder" fromto="0 -.022 .4 0 .022 .4" size=".024"
-          material="decoration" contype="0" conaffinity="0"/>
-    <body name="upper_arm" pos="0 0 .4" childclass="arm">
-      <joint name="arm_root" damping="2" limited="false"/>
-      <geom  name="upper_arm"  size=".02" fromto="0 0 0 0 0 .18"/>
-      <body  name="middle_arm" pos="0 0 .18" childclass="arm">
-        <joint name="arm_shoulder" damping="1.5" range="-160 160"/>
-        <geom  name="middle_arm"  size=".017" fromto="0 0 0 0 0 .15"/>
-        <body  name="lower_arm" pos="0 0 .15">
-          <joint name="arm_elbow" damping="1" range="-160 160"/>
-          <geom  name="lower_arm" size=".014" fromto="0 0 0 0 0 .12"/>
-          <body  name="hand" pos="0 0 .12">
-            <joint name="arm_wrist" damping=".5" range="-140 140" />
-            <geom  name="hand" size=".011" fromto="0 0 0 0 0 .03"/>
-            <geom  name="palm1"  fromto="0 0 .03  .03 0 .045" class="hand"/>
-            <geom  name="palm2"  fromto="0 0 .03 -.03 0 .045" class="hand"/>
-            <site  name="grasp" pos="0 0 .065"/>
-            <body  name="pinch site" pos="0 0 .090">
-              <site  name="pinch"/>
-              <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-12 1e-12 1e-12"/>
-              <camera name="hand" pos="0 -.3 0" xyaxes="1 0 0 0 0 1" mode="track"/>
-            </body>
-            <site  name="palm_touch" type="box" group="4" size=".025 .005 .008" pos="0 0 .043"/>
-
-            <body name="thumb" pos=".03 0 .045" euler="0 -90 0" childclass="hand">
-              <joint name="thumb"/>
-              <geom  name="thumb1"  fromto="0 0 0 .02 0 -.01" size=".007"/>
-              <geom  name="thumb2"  fromto=".02 0 -.01 .04 0 -.01" size=".007"/>
-              <site  name="thumb_touch" group="4"/>
-              <body  name="thumbtip" pos=".05 0 -.01" childclass="fingertip">
-                <joint name="thumbtip"/>
-                <geom  name="thumbtip1" pos="-.003 0 0" />
-                <geom  name="thumbtip2" pos=".003 0 0" />
-                <site  name="thumbtip_touch" group="4"/>
-              </body>
-            </body>
-
-            <body name="finger" pos="-.03 0 .045" euler="0 90 180" childclass="hand">
-              <joint name="finger"/>
-              <geom  name="finger1"  fromto="0 0 0 .02 0 -.01" size=".007" />
-              <geom  name="finger2"  fromto=".02 0 -.01 .04 0 -.01" size=".007"/>
-              <site  name="finger_touch"/>
-              <body  name="fingertip" pos=".05 0 -.01" childclass="fingertip">
-                <joint name="fingertip"/>
-                <geom  name="fingertip1" pos="-.003 0 0" />
-                <geom  name="fingertip2" pos=".003 0 0" />
-                <site  name="fingertip_touch"/>
-              </body>
-            </body>
-          </body>
-        </body>
-      </body>
-    </body>
-
-    <!-- props -->
-"""
 
 # The four boxes. Identical apart from name, body `pos` and the matching `ref`
 # on the two slide joints — which is why `ref` is worth reading twice: box0 is
 # at x=.5 with ref=".5", box3 at x=.2 with ref=".2", and a copy-paste that left
 # all four at ".5" would put three boxes' qpos0 in the wrong place without
 # changing where they START.
-comptime STACK_BOX_0 = """
-    <body name="box0" pos=".5 0 .4" childclass="object">
-      <joint name="box0_x" type="slide" axis="1 0 0" ref=".5"/>
-      <joint name="box0_z" type="slide" axis="0 0 1" ref=".4"/>
-      <joint name="box0_y" type="hinge" axis="0 1 0"/>
-      <geom  name="box0" type="box" size=".022 .022 .022" />
-      <site  name="box0" type="sphere"/>
-    </body>
-"""
 
-comptime STACK_BOX_1 = """
-    <body name="box1" pos=".4 0 .4" childclass="object">
-      <joint name="box1_x" type="slide" axis="1 0 0" ref=".4"/>
-      <joint name="box1_z" type="slide" axis="0 0 1" ref=".4"/>
-      <joint name="box1_y" type="hinge" axis="0 1 0"/>
-      <geom  name="box1" type="box" size=".022 .022 .022" />
-      <site  name="box1" type="sphere"/>
-    </body>
-"""
 
-comptime STACK_BOX_2 = """
-    <body name="box2" pos=".3 0 .4" childclass="object">
-      <joint name="box2_x" type="slide" axis="1 0 0" ref=".3"/>
-      <joint name="box2_z" type="slide" axis="0 0 1" ref=".4"/>
-      <joint name="box2_y" type="hinge" axis="0 1 0"/>
-      <geom  name="box2" type="box" size=".022 .022 .022" />
-      <site  name="box2" type="sphere"/>
-    </body>
-"""
 
-comptime STACK_BOX_3 = """
-    <body name="box3" pos=".2 0 .4" childclass="object">
-      <joint name="box3_x" type="slide" axis="1 0 0" ref=".2"/>
-      <joint name="box3_z" type="slide" axis="0 0 1" ref=".4"/>
-      <joint name="box3_y" type="hinge" axis="0 1 0"/>
-      <geom  name="box3" type="box" size=".022 .022 .022" />
-      <site  name="box3" type="sphere"/>
-    </body>
-"""
 
 # `initialize_episode` overwrites x and z every episode; y stays at the .001 the
 # XML gives it, which is what puts the ghost marginally in front of the boxes.
-comptime STACK_TARGET = """
-    <!-- targets -->
-    <body name="target" pos="0 .001 .022" childclass="ghost" mocap="true">
-      <geom  name="target" type="box" size=".022 .022 .022" />
-      <site  name="target" type="sphere"/>
-    </body>
-"""
 
-comptime STACK_TAIL = """
-  </worldbody>
-
-  <tendon>
-    <fixed name="grasp">
-      <joint joint="thumb"  coef=".5"/>
-      <joint joint="finger" coef=".5"/>
-    </fixed>
-    <fixed name="coupling">
-      <joint joint="thumb"  coef="-.5"/>
-      <joint joint="finger" coef=".5"/>
-    </fixed>
-  </tendon>
-
-  <equality>
-    <tendon name="coupling" tendon1="coupling" solimp="0.95 0.99 0.001" solref=".005 .5"/>
-  </equality>
-
-  <sensor>
-    <touch name="palm_touch" site="palm_touch"/>
-    <touch name="finger_touch" site="finger_touch"/>
-    <touch name="thumb_touch" site="thumb_touch"/>
-    <touch name="fingertip_touch" site="fingertip_touch"/>
-    <touch name="thumbtip_touch" site="thumbtip_touch"/>
-  </sensor>
-
-  <actuator>
-    <motor name="root"     joint="arm_root"     ctrlrange="-1 1"  gear="12"/>
-    <motor name="shoulder" joint="arm_shoulder" ctrlrange="-1 1"  gear="8"/>
-    <motor name="elbow"    joint="arm_elbow"    ctrlrange="-1 1"  gear="4"/>
-    <motor name="wrist"    joint="arm_wrist"    ctrlrange="-1 1"  gear="2"/>
-    <motor name="grasp"    tendon="grasp"       ctrlrange="-1 1"  gear="2"/>
-  </actuator>
-
-</mujoco>
-"""
 
 
 # ── indices ─────────────────────────────────────────────────────────────────
@@ -360,25 +169,7 @@ def stacker_obs_dim(n_boxes: Int) -> Int:
 
 # ── the two models ──────────────────────────────────────────────────────────
 
-comptime dm_stacker_2_xml = merge_mjcf(
-    dm_visual_xml,
-    dm_skybox_xml,
-    dm_materials_xml,
-    STACK_HEAD + STACK_BOX_0 + STACK_BOX_1 + STACK_TARGET + STACK_TAIL,
-)
 
-comptime dm_stacker_4_xml = merge_mjcf(
-    dm_visual_xml,
-    dm_skybox_xml,
-    dm_materials_xml,
-    STACK_HEAD
-    + STACK_BOX_0
-    + STACK_BOX_1
-    + STACK_BOX_2
-    + STACK_BOX_3
-    + STACK_TARGET
-    + STACK_TAIL,
-)
 
 comptime s2 = DM_STACKER_2_DIMS
 
@@ -389,7 +180,6 @@ comptime STACK_4_OBS_DIM: Int = stacker_obs_dim(4)
 
 
 comptime DMStacker2Model = ModelDefFromXML[
-    xml=dm_stacker_2_xml,
     xml_path="mojo_rl/envs/dm_control/assets/stacker_2.xml",
     nbody=s2.NBODY, njoint=s2.NJOINT, nq=s2.NQ, nv=s2.NV,
     ngeom=s2.NGEOM, nact=s2.NACT, ntex=s2.NTEX, nmat=s2.NMAT,
@@ -409,7 +199,6 @@ comptime DMStacker2Model = ModelDefFromXML[
 ]
 
 comptime DMStacker4Model = ModelDefFromXML[
-    xml=dm_stacker_4_xml,
     xml_path="mojo_rl/envs/dm_control/assets/stacker_4.xml",
     nbody=s4.NBODY, njoint=s4.NJOINT, nq=s4.NQ, nv=s4.NV,
     ngeom=s4.NGEOM, nact=s4.NACT, ntex=s4.NTEX, nmat=s4.NMAT,

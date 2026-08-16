@@ -34,7 +34,6 @@ from mojo_rl.envs.dm_control.walker import (
     DMWalkerWalk,
     DMWalkerRun,
     DMWalkerModel,
-    dm_walker_xml,
     TORSO_BODY_IDX,
     STAND_HEIGHT,
 )
@@ -175,7 +174,7 @@ def test_walker_model_matches_mujoco() raises:
     var sys = Python.import_module("sys")
     sys.path.insert(0, REF_PATH)
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(String(dm_walker_xml))
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/walker.xml")
 
     assert_true(Int(py=m.nbody) == DMWalkerModel.NBODY, "nbody mismatch")
     assert_true(Int(py=m.njnt) == DMWalkerModel.NJOINT, "njnt mismatch")

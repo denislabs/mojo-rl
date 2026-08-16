@@ -25,7 +25,6 @@ measurements that every task in this family shares.
 from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
-from .manipulation_lift_brick_xml import lift_brick_xml
 from mojo_rl.envs.dm_control.manipulation_lift_brick_dims import (
     LIFT_BRICK_DIMS,
 )
@@ -33,7 +32,6 @@ from mojo_rl.envs.dm_control.manipulation_lift_brick_dims import (
 comptime pm = LIFT_BRICK_DIMS
 
 comptime LiftBrickModel = ModelDefFromXML[
-    xml=lift_brick_xml,
     xml_path="mojo_rl/envs/dm_control/assets/manipulation/lift_brick.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,

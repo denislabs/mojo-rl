@@ -47,12 +47,11 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import (
     compute_body_velocities,
 )
 
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel, walker2d_xml
-from mojo_rl.envs.hopper.hopper_xml import HopperModel, hopper_xml
-from mojo_rl.envs.ant.ant_xml import AntModel, ant_xml
+from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.envs.hopper.hopper_xml import HopperModel
+from mojo_rl.envs.ant.ant_xml import AntModel
 from mojo_rl.envs.dm_control.humanoid.humanoid_xml import (
     DMHumanoidModel,
-    dm_humanoid_xml,
 )
 
 
@@ -73,7 +72,7 @@ def test_walker2d_body_velocities() raises:
     comptime M = Walker2dModel
     var mj = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
-    var model = mj.MjModel.from_xml_string(String(walker2d_xml))
+    var model = mj.MjModel.from_xml_path("mojo_rl/envs/walker2d/assets/walker2d.xml")
     var data = mj.MjData(model)
     var ctx = DeviceContext()
     var mf = Model[
@@ -128,7 +127,7 @@ def test_hopper_body_velocities() raises:
     comptime M = HopperModel
     var mj = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
-    var model = mj.MjModel.from_xml_string(String(hopper_xml))
+    var model = mj.MjModel.from_xml_path("mojo_rl/envs/hopper/assets/hopper.xml")
     var data = mj.MjData(model)
     var ctx = DeviceContext()
     var mf = Model[
@@ -185,7 +184,7 @@ def test_ant_body_velocities() raises:
     comptime M = AntModel
     var mj = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
-    var model = mj.MjModel.from_xml_string(String(ant_xml))
+    var model = mj.MjModel.from_xml_path("mojo_rl/envs/ant/assets/ant.xml")
     var data = mj.MjData(model)
     var ctx = DeviceContext()
     var mf = Model[
@@ -260,7 +259,7 @@ def test_humanoid_body_velocities() raises:
     comptime M = DMHumanoidModel
     var mj = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
-    var model = mj.MjModel.from_xml_string(String(dm_humanoid_xml))
+    var model = mj.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/humanoid.xml")
     var data = mj.MjData(model)
     var ctx = DeviceContext()
     var mf = Model[

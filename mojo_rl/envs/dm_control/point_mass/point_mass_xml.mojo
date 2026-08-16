@@ -36,72 +36,19 @@ notes in docs/DM_CONTROL_PORT.md.
 """
 
 from mojo_rl.physics3d.parser import ModelDefFromXML
-from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 
-from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
 from mojo_rl.envs.dm_control.point_mass.point_mass_dims import (
     DM_POINT_MASS_DIMS,
 )
 
 
-comptime _point_mass_body = """
-<mujoco model="planar point mass">
-  <option timestep="0.02">
-    <flag contact="disable"/>
-  </option>
-
-  <default>
-    <joint type="hinge" axis="0 0 1" limited="true" range="-.29 .29" damping="1"/>
-    <motor gear=".1" ctrlrange="-1 1" ctrllimited="true"/>
-  </default>
-
-  <worldbody>
-    <light name="light" pos="0 0 1"/>
-    <camera name="fixed" pos="0 0 .75" quat="1 0 0 0"/>
-    <geom name="ground" type="plane" pos="0 0 0" size=".3 .3 .1" material="grid"/>
-    <geom name="wall_x" type="plane" pos="-.3 0 .02" zaxis="1 0 0"  size=".02 .3 .02" material="decoration"/>
-    <geom name="wall_y" type="plane" pos="0 -.3 .02" zaxis="0 1 0"  size=".3 .02 .02" material="decoration"/>
-    <geom name="wall_neg_x" type="plane" pos=".3 0 .02" zaxis="-1 0 0"  size=".02 .3 .02" material="decoration"/>
-    <geom name="wall_neg_y" type="plane" pos="0 .3 .02" zaxis="0 -1 0"  size=".3 .02 .02" material="decoration"/>
-
-    <body name="pointmass" pos="0 0 .01">
-      <camera name="cam0" pos="0 -0.3 0.3" xyaxes="1 0 0 0 0.7 0.7"/>
-      <joint name="root_x" type="slide"  pos="0 0 0" axis="1 0 0" />
-      <joint name="root_y" type="slide"  pos="0 0 0" axis="0 1 0" />
-      <geom name="pointmass" type="sphere" size=".01" material="self" mass=".3"/>
-    </body>
-
-    <geom name="target" pos="0 0 .01" material="target" type="sphere" size=".015"/>
-  </worldbody>
-
-  <tendon>
-    <fixed name="t1">
-      <joint joint="root_x" coef="1"/>
-      <joint joint="root_y" coef="0"/>
-    </fixed>
-    <fixed name="t2">
-      <joint joint="root_x" coef="0"/>
-      <joint joint="root_y" coef="1"/>
-    </fixed>
-  </tendon>
-
-  <actuator>
-    <motor name="t1" tendon="t1"/>
-    <motor name="t2" tendon="t2"/>
-  </actuator>
-</mujoco>
-"""
 
 
-comptime dm_point_mass_xml = merge_mjcf(
-    dm_skybox_xml, dm_visual_xml, dm_materials_xml, _point_mass_body
-)
 
 comptime pmp = DM_POINT_MASS_DIMS
 
 # obs = position (qpos, 2) + velocity (qvel, 2) = 4
 comptime DMPointMassModel = ModelDefFromXML[
-    xml=dm_point_mass_xml,
     xml_path="mojo_rl/envs/dm_control/assets/point_mass.xml",
     nbody=pmp.NBODY, njoint=pmp.NJOINT, nq=pmp.NQ, nv=pmp.NV,
     ngeom=pmp.NGEOM, nact=pmp.NACT, ntex=pmp.NTEX, nmat=pmp.NMAT,

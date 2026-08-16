@@ -57,9 +57,6 @@ from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.envs.dm_control.manipulation_reach_def import (
     ReachSiteFeaturesModel as MD,
 )
-from mojo_rl.envs.dm_control.manipulation_reach_xml import (
-    reach_site_features_xml,
-)
 from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
 from max.gpu.host import DeviceContext
 
@@ -96,9 +93,7 @@ def test_contact_free_dynamics_match_mujoco() raises:
     var np = Python.import_module("numpy")
     var refmod = Python.import_module("manipulation_ref")
 
-    var m = mujoco.MjModel.from_xml_string(
-        materialize[reach_site_features_xml]()
-    )
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/manipulation/reach_site_features.xml")
     var md = mujoco.MjData(m)
     var nu = Int(py=m.nu)
 
@@ -207,9 +202,7 @@ def test_shallow_contact_parity() raises:
     var np = Python.import_module("numpy")
     var refmod = Python.import_module("manipulation_ref")
 
-    var m = mujoco.MjModel.from_xml_string(
-        materialize[reach_site_features_xml]()
-    )
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/manipulation/reach_site_features.xml")
     var md = mujoco.MjData(m)
     var nu = Int(py=m.nu)
 

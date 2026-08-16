@@ -319,14 +319,18 @@ def baked_xml_text(floor_size=15, remove_ball=True):
     return bake_xml(make_model_xml(floor_size, remove_ball)).decode()
 
 
-def compare_xml_to_reference(xml_string, floor_size=15, remove_ball=True):
+def compare_xml_to_reference(xml_path, floor_size=15, remove_ball=True):
     """Layer-1 gate: our XML text vs the baked reference, every table."""
     import mujoco
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from mjmodel_diff import diff_models
     ref = model(floor_size, remove_ball)
-    got = mujoco.MjModel.from_xml_string(xml_string)
+    # ⚠ A PATH, NOT XML TEXT. Asset paths inside a model are relative to
+    # the MODEL FILE (docs §10.5 decision 1), so `from_xml_string` cannot
+    # resolve them — it looks beside the CWD and raises on the first mesh
+    # or texture. `from_xml_path` is what our own loader now matches.
+    got = mujoco.MjModel.from_xml_path(xml_path)
     return diff_models(ref, got)
 
 

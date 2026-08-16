@@ -20,9 +20,6 @@ stays descoped; it needs heightfields and rangefinders.
 """
 
 from .quadruped_xml import (
-    dm_quadruped_walk_xml,
-    dm_quadruped_run_xml,
-    dm_quadruped_fetch_xml,
     DMQuadrupedWalkModel,
     DMQuadrupedRunModel,
     DMQuadrupedFetchModel,

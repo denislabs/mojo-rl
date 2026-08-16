@@ -151,7 +151,11 @@ def _attr_between(src: String, lo: Int, hi: Int, attr: String) -> String:
 
 @fieldwise_init
 struct ModelDefFromXML[
-    xml: String,
+    # ⚠ THE MJCF USED TO BE HERE, as `xml: String` — ~1.1 MB of it across 48
+    # source files. Phase 1b moved every reader to runtime and the model to a
+    # file; `xml_path` below is what remains. See §10.2: the comptime
+    # interpreter cannot `open()`, so anything reading the MJCF at compile
+    # time pinned it to a string literal in Mojo source.
     nbody: Int,
     njoint: Int,
     nq: Int,
@@ -196,16 +200,28 @@ struct ModelDefFromXML[
     # dog_fetch; `nkey > 0` only for so_arm100 (2).
     na: Int = 0,
     nkey: Int = 0,
-    # ⚠ PHASE 1b. The model's MJCF as a FILE — the whole point of the phase.
-    # When non-empty the runtime parse reads this path and asset paths inside
-    # it resolve against its DIRECTORY, which is MuJoCo's rule; when empty the
-    # `xml` parameter above is used and assets resolve against the process CWD,
-    # which is what the tree did before. Both work, so models switch over
-    # without a flag day.
+    # ⚠ PHASE 1b. The model's MJCF, as a FILE — the whole point of the phase.
+    # The runtime parse reads this path, and asset paths inside the model
+    # resolve against its DIRECTORY, which is MuJoCo's own rule
+    # (§10.5 decision 1). EVERY SHIPPED MODEL USES THIS.
     #
     # Appended for the reason the block above gives: inserting mid-list
     # silently shifts every positional instantiation.
     xml_path: String = "",
+    # ⚠ INLINE MJCF — FOR FIXTURES, NOT FOR MODELS. Phase 1b moved the 57
+    # shipped models to `.xml` files and deleted ~1.1 MB of embedded MJCF;
+    # this is what remains for the ~78 places that build a MODEL OUT OF A
+    # DOZEN LINES TO TEST ONE RULE. Those are not models — they are fixtures,
+    # they have no assets, and turning each into a file on disk would trade
+    # readable tests for filesystem noise.
+    #
+    # ⚠ Assets inside an inline model resolve against the PROCESS CWD, since
+    # there is no model file to be relative to. Fixtures citing
+    # `references/...` meshes depend on that.
+    #
+    # Exactly one of `xml_path` / `xml` must be set; `xml_text()` raises if
+    # neither is.
+    xml: String = "",
 ](ModelDefLike):
     """ModelDefLike implementation driven entirely from an embedded MJCF XML string.
 
@@ -2455,7 +2471,13 @@ struct ModelDefFromXML[
 
     @staticmethod
     def xml_text() raises -> String:
-        """The model's MJCF source — from `xml_path` if set, else `xml`.
+        """The model's MJCF source — from `xml_path`, else the inline `xml`.
+
+        ⚠ BOTH CARRY DEFAULTS ONLY BECAUSE THEY MUST STAY LAST in the
+        parameter list — inserting mid-list silently shifts every positional
+        instantiation, the trap `NPAIR` already documents. Supplying NEITHER
+        is an error, and raises rather than letting `open("")` produce a
+        mystery.
 
         ⚠ READS THE FILE ON EVERY CALL, deliberately not cached. Every caller
         immediately hands the result to `parse_xml_full`, which is orders of
@@ -2466,26 +2488,31 @@ struct ModelDefFromXML[
         comptime if Self.xml_path != "":
             with open(Self.xml_path, "r") as f:
                 return f.read()
-        else:
+        elif Self.xml != "":
             return String(Self.xml)
+        else:
+            raise Error(
+                "physics3d: this ModelDefFromXML has neither `xml_path` nor"
+                " `xml`. A shipped model wants `xml_path` (the MJCF is a file"
+                " on disk since phase 1b); an inline test fixture wants `xml`."
+            )
 
     @staticmethod
     def asset_base_dir() -> String:
         """The directory relative asset paths resolve against.
 
         MuJoCo's rule is "the directory of the model file", so this is
-        `dirname(xml_path)`. A model still carrying an embedded string has no
-        file and returns "", which `parse_xml_full` reads as "resolve against
-        the process CWD" — the pre-1b behaviour. See §10.5 decision 1.
+        `dirname(xml_path)`. An INLINE fixture has no model file and returns
+        "", which `parse_xml_full` reads as "resolve against the process CWD".
+        See §10.5 decision 1.
         """
-        comptime if Self.xml_path != "":
-            var p = String(Self.xml_path)
-            var cut = p.rfind("/")
-            if cut <= 0:
-                return String("")
-            return String(p[byte=0:cut])
-        else:
+        comptime if Self.xml_path == "":
             return String("")
+        var p = String(Self.xml_path)
+        var cut = p.rfind("/")
+        if cut <= 0:
+            return String("")
+        return String(p[byte=0:cut])
 
     @staticmethod
     def resolve_asset(path: String) -> String:

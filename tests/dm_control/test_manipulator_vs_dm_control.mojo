@@ -42,7 +42,6 @@ from max.gpu.host import DeviceContext
 from mojo_rl.envs.dm_control.manipulator import (
     DMManipulatorBringBallModel as M,
     DMManipulatorBringBallConfig,
-    dm_manipulator_bring_ball_xml,
     TARGET_BODY_IDX,
 )
 from mojo_rl.physics3d.fields import Data, Model
@@ -750,9 +749,7 @@ def _mj_at(
     state: List[Float64], ctrl: List[Float64]
 ) raises -> Tuple[PythonObject, PythonObject, PythonObject]:
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(
-        String(dm_manipulator_bring_ball_xml)
-    )
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/manipulator_bring_ball.xml")
     var dat = mujoco.MjData(m)
     for i in range(NQ):
         dat.qpos[i] = state[i]

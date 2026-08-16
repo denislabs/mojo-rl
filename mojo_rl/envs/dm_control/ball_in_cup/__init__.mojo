@@ -9,7 +9,6 @@ from .ball_in_cup import DMBallInCupCatch, DMBallInCupCatchBatched
 from .ball_in_cup_config import DMBallInCupConfig
 from .ball_in_cup_xml import (
     DMBallInCupModel,
-    dm_ball_in_cup_xml,
     BALL_BODY_IDX,
     CUP_SITE_IDX,
     TARGET_SITE_IDX,

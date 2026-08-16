@@ -14,9 +14,6 @@ runs that proof as its layer 0.
 """
 
 from .dog_xml import (
-    dm_dog_stand_walk_xml,
-    dm_dog_trot_xml,
-    dm_dog_run_xml,
     DMDogStandWalkModel,
     DMDogTrotModel,
     DMDogRunModel,
@@ -64,5 +61,5 @@ from .dog import (
     DMDogTrotBatched,
     DMDogRunBatched,
 )
-from .dog_fetch_xml import DMDogFetchModel, DOG_FETCH_OBS_DIM, dm_dog_fetch_xml
+from .dog_fetch_xml import DMDogFetchModel, DOG_FETCH_OBS_DIM
 from .dog_fetch_config import DMDogFetchConfig

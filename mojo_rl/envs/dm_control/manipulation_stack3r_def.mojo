@@ -43,7 +43,6 @@ from the MODEL, so the default formula (44) would truncate.
 from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
-from .manipulation_stack3r_xml import stack_3_random_xml
 from mojo_rl.envs.dm_control.manipulation_stack3r_dims import (
     STACK_3_RANDOM_DIMS,
 )
@@ -51,7 +50,6 @@ from mojo_rl.envs.dm_control.manipulation_stack3r_dims import (
 comptime pm = STACK_3_RANDOM_DIMS
 
 comptime Stack3RandomModel = ModelDefFromXML[
-    xml=stack_3_random_xml,
     xml_path="mojo_rl/envs/dm_control/assets/manipulation/stack_3_random.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,

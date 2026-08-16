@@ -70,7 +70,6 @@ from mojo_rl.envs.dm_control.humanoid_cmu import (
     DMHumanoidCMUWalk,
     DMHumanoidCMURun,
     DMHumanoidCMUModel,
-    dm_humanoid_cmu_xml,
     HUMANOID_CMU_OBS_DIM,
     THORAX_BODY_IDX,
     HEAD_BODY_IDX,
@@ -209,7 +208,7 @@ def _mj_from_our_xml() raises -> PythonObject:
     model; on its own it would compare our engine against our own parser.
     """
     var mujoco = Python.import_module("mujoco")
-    return mujoco.MjModel.from_xml_string(materialize[dm_humanoid_cmu_xml]())
+    return mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/humanoid_cmu.xml")
 
 
 def _build() raises -> Model[
@@ -264,7 +263,9 @@ def test_humanoid_cmu_xml_matches_reference() raises:
     var refmod = _ref_module()
     var diff = Python.import_module("mjmodel_diff")
 
-    var bad = refmod.compare_xml_to_reference(materialize[dm_humanoid_cmu_xml]())
+    var bad = refmod.compare_xml_to_reference(
+        "mojo_rl/envs/dm_control/assets/humanoid_cmu.xml"
+    )
     var n_bad = Int(py=Python.import_module("builtins").len(bad))
     if n_bad > 0:
         for i in range(n_bad):

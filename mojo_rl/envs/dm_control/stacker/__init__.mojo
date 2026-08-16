@@ -21,8 +21,6 @@ measure the gap instead of assuming its size.
 """
 
 from .stacker_xml import (
-    dm_stacker_2_xml,
-    dm_stacker_4_xml,
     DMStacker2Model,
     DMStacker4Model,
     STACK_2_OBS_DIM,

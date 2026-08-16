@@ -49,8 +49,6 @@ from mojo_rl.envs.dm_control.stacker import (
     DMStacker4Model as M4,
     DMStacker2Config as CFG2,
     DMStacker4Config as CFG4,
-    dm_stacker_2_xml,
-    dm_stacker_4_xml,
     box_body_idx,
     box_site_idx,
     box_vel_qadr,
@@ -760,7 +758,7 @@ def _mj_at2(
     MOCAP id, not body id — hence `body_mocapid`.
     """
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(String(dm_stacker_2_xml))
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/stacker_2.xml")
     var dat = mujoco.MjData(m)
     for i in range(NQ2):
         dat.qpos[i] = state[i]
@@ -781,7 +779,7 @@ def _mj_at4(
     tx: Float64, tz: Float64,
 ) raises -> Tuple[PythonObject, PythonObject, PythonObject]:
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(String(dm_stacker_4_xml))
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/stacker_4.xml")
     var dat = mujoco.MjData(m)
     for i in range(NQ4):
         dat.qpos[i] = state[i]

@@ -44,7 +44,6 @@ from mojo_rl.physics3d.sensors import (
 )
 from mojo_rl.envs.dm_control.quadruped.quadruped_xml import (
     DMQuadrupedWalkModel,
-    dm_quadruped_walk_xml,
 )
 
 comptime DTYPE = DType.float64
@@ -195,7 +194,7 @@ def _setup(
 def _mj_setup(state: List[Float64]) raises -> Tuple[PythonObject, PythonObject,
                                                     PythonObject]:
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(String(dm_quadruped_walk_xml))
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/quadruped_walk.xml")
     var dat = mujoco.MjData(m)
     for i in range(NQ):
         dat.qpos[i] = state[i]
@@ -325,7 +324,7 @@ def _find_standing_z() raises -> Float64:
     by making the "standing" case a second free-flight case.
     """
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(String(dm_quadruped_walk_xml))
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/quadruped_walk.xml")
     var dat = mujoco.MjData(m)
     var z = 0.70
     for _ in range(120):

@@ -33,7 +33,6 @@ from max.gpu.host import DeviceContext
 from mojo_rl.envs.dm_control.point_mass import (
     DMPointMassEasy,
     DMPointMassModel,
-    dm_point_mass_xml,
     POINTMASS_GEOM_IDX,
     TARGET_GEOM_IDX,
     TARGET_SIZE,

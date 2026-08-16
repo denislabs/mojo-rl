@@ -57,9 +57,6 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
 from mojo_rl.envs.dm_control.dog.dog_xml import (
-    dm_dog_stand_walk_xml,
-    dm_dog_trot_xml,
-    dm_dog_run_xml,
     DMDogStandWalkModel,
     DOG_OBS_DIM,
     DOG_N_HINGE,
@@ -127,7 +124,7 @@ def _mj_from_our_xml() raises -> PythonObject:
     model; on its own it would compare our engine against our own parser.
     """
     var mujoco = Python.import_module("mujoco")
-    return mujoco.MjModel.from_xml_string(materialize[dm_dog_stand_walk_xml]())
+    return mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
 
 
 def _build() raises -> Model[
@@ -299,10 +296,12 @@ def test_dog_xml_matches_reference() raises:
 
     var names = ["stand/walk", "trot", "run"]
     var floors = [15, 45, 135]
+    # ⚠ PATHS, NOT XML TEXT — dog's skin texture is model-file-relative,
+    # so `compare_xml_to_reference` loads by path (§10.5 decision 1).
     var xmls = [
-        materialize[dm_dog_stand_walk_xml](),
-        materialize[dm_dog_trot_xml](),
-        materialize[dm_dog_run_xml](),
+        String("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml"),
+        String("mojo_rl/envs/dm_control/assets/dog_trot.xml"),
+        String("mojo_rl/envs/dm_control/assets/dog_run.xml"),
     ]
     for t in range(3):
         var bad = refmod.compare_xml_to_reference(xmls[t], floors[t])
@@ -329,12 +328,8 @@ def test_dog_xml_matches_reference() raises:
 
     # The three floors must actually DIFFER, or the loop above compared one
     # model to itself three times.
-    var m_walk = Python.import_module("mujoco").MjModel.from_xml_string(
-        materialize[dm_dog_stand_walk_xml]()
-    )
-    var m_run = Python.import_module("mujoco").MjModel.from_xml_string(
-        materialize[dm_dog_run_xml]()
-    )
+    var m_walk = Python.import_module("mujoco").MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
+    var m_run = Python.import_module("mujoco").MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_run.xml")
     var floor_walk = Float64(py=m_walk.geom_size[0][0])
     var floor_run = Float64(py=m_run.geom_size[0][0])
     print("  floor half-extent: stand/walk", floor_walk, " run", floor_run)

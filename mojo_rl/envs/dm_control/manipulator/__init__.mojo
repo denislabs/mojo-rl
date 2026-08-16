@@ -24,10 +24,6 @@ ported before them was a `contype=0` decoration or a geomless weld anchor.
 """
 
 from .manipulator_xml import (
-    dm_manipulator_bring_ball_xml,
-    dm_manipulator_bring_peg_xml,
-    dm_manipulator_insert_ball_xml,
-    dm_manipulator_insert_peg_xml,
     DMManipulatorBringBallModel,
     DMManipulatorBringPegModel,
     DMManipulatorInsertBallModel,

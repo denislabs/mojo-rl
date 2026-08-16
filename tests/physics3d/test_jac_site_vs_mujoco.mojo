@@ -59,11 +59,9 @@ from layout import Layout
 
 from mojo_rl.envs.dm_control.ball_in_cup import (
     DMBallInCupModel,
-    dm_ball_in_cup_xml,
 )
 from mojo_rl.envs.dm_control.quadruped import (
     DMQuadrupedFetchModel,
-    dm_quadruped_fetch_xml,
 )
 from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -307,14 +305,12 @@ def test_jac_site_quadruped_fetch() raises:
     world. ⚠ The FETCH variant, not walk: walk is built with
     `walls_and_ball=False`, which deletes the ball (the second free joint) and
     the target site (the only world-welded one), so it covers neither."""
-    var sf = M.make_spec_fields[DTYPE]()
     print("--- quadruped fetch: jac_site vs mj_jacSite ---")
     comptime M = DMQuadrupedFetchModel
+    var sf = M.make_spec_fields[DTYPE]()
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
-    var mm = mujoco.MjModel.from_xml_string(
-        materialize[dm_quadruped_fetch_xml]()
-    )
+    var mm = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/quadruped_fetch.xml")
     var dat = mujoco.MjData(mm)
 
     var ctx = DeviceContext()
@@ -340,12 +336,12 @@ def test_jac_site_quadruped_fetch() raises:
 def test_jac_site_ball_in_cup() raises:
     """SLIDE DOFs — `cdof`'s angular half is identically zero here, so `jacr`
     must come back exactly zero and `jacp` a bare axis."""
-    var sf = M.make_spec_fields[DTYPE]()
     print("--- ball_in_cup: jac_site vs mj_jacSite ---")
     comptime M = DMBallInCupModel
+    var sf = M.make_spec_fields[DTYPE]()
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
-    var mm = mujoco.MjModel.from_xml_string(materialize[dm_ball_in_cup_xml]())
+    var mm = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/ball_in_cup.xml")
     var dat = mujoco.MjData(mm)
 
     var ctx = DeviceContext()

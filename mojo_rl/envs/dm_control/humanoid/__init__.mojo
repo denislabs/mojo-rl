@@ -23,7 +23,6 @@ from .humanoid_config import (
 from .humanoid_xml import (
     DMHumanoidModel,
     DMHumanoidPureModel,
-    dm_humanoid_xml,
     HUMANOID_OBS_DIM,
     HUMANOID_PURE_OBS_DIM,
     TORSO_BODY_IDX,

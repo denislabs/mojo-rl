@@ -29,8 +29,6 @@ from mojo_rl.envs.dm_control.cartpole import (
     DMCartpole1Model,
     DMCartpole2Model,
     DMCartpole3Model,
-    dm_cartpole2_xml,
-    dm_cartpole3_xml,
 )
 from mojo_rl.physics3d.fields import Model
 from mojo_rl.physics3d.gpu.constants import (
@@ -253,7 +251,7 @@ def test_cartpole_multipole_models_match_mujoco() raises:
     var worst = 0.0
 
     # --- 2 poles ---
-    var m2 = mujoco.MjModel.from_xml_string(String(dm_cartpole2_xml))
+    var m2 = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/cartpole2.xml")
     assert_true(
         Int(py=m2.nbody) == DMCartpole2Model.NBODY,
         "2-pole nbody mismatch",
@@ -276,7 +274,7 @@ def test_cartpole_multipole_models_match_mujoco() raises:
     worst = _cmp_bodies(mf2.bodies.data, m2, DMCartpole2Model.NBODY, worst)
 
     # --- 3 poles ---
-    var m3 = mujoco.MjModel.from_xml_string(String(dm_cartpole3_xml))
+    var m3 = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/cartpole3.xml")
     assert_true(
         Int(py=m3.nbody) == DMCartpole3Model.NBODY,
         "3-pole nbody mismatch",

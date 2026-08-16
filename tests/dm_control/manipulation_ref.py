@@ -280,7 +280,11 @@ def compare_xml_to_reference(xml_string_, task_name, seed=0):
     import mujoco
     sys.path.insert(0, _HERE)
     from mjmodel_diff import diff_models
-    ours = mujoco.MjModel.from_xml_string(xml_string_)
+    # ⚠ A PATH, NOT XML TEXT. Asset paths inside a model are relative to
+    # the MODEL FILE (docs §10.5 decision 1), so `from_xml_string` cannot
+    # resolve them — it looks beside the CWD and raises on the first mesh
+    # or texture. `from_xml_path` is what our own loader now matches.
+    ours = mujoco.MjModel.from_xml_path(xml_string_)
     return diff_models(ours, model(task_name, seed=seed))
 
 

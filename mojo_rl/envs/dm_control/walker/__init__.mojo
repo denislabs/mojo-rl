@@ -13,4 +13,4 @@ from .walker import (
     DMWalkerRunBatched,
 )
 from .walker_config import DMWalkerConfig, STAND_HEIGHT
-from .walker_xml import DMWalkerModel, dm_walker_xml, TORSO_BODY_IDX
+from .walker_xml import DMWalkerModel, TORSO_BODY_IDX

@@ -37,7 +37,6 @@ whoever adds one, not a latent bug.
 from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
-from .manipulation_reassemble5_xml import reassemble5_xml
 from mojo_rl.envs.dm_control.manipulation_reassemble5_dims import (
     REASSEMBLE5_DIMS,
 )
@@ -45,7 +44,6 @@ from mojo_rl.envs.dm_control.manipulation_reassemble5_dims import (
 comptime pm = REASSEMBLE5_DIMS
 
 comptime Reassemble5Model = ModelDefFromXML[
-    xml=reassemble5_xml,
     xml_path="mojo_rl/envs/dm_control/assets/manipulation/reassemble5.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,

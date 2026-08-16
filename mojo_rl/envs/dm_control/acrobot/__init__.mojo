@@ -13,7 +13,6 @@ from .acrobot import (
 from .acrobot_config import DMAcrobotConfig, TARGET_RADIUS
 from .acrobot_xml import (
     DMAcrobotModel,
-    dm_acrobot_xml,
     UPPER_ARM_BODY_IDX,
     LOWER_ARM_BODY_IDX,
     TARGET_SITE_IDX,

@@ -23,8 +23,8 @@ blocked on `<inertial fullinertia>` at parse time, which these two arms sidestep
 with a labelled bake (`tests/robots/so_arm_bake.py`).
 """
 
-from .so_arm100_xml import SoArm100Model, SO_ARM100_ROBOT_XML, SO_ARM100_XML
-from .so_arm101_xml import SoArm101Model, SO_ARM101_ROBOT_XML, SO_ARM101_XML
+from .so_arm100_xml import SoArm100Model
+from .so_arm101_xml import SoArm101Model
 from .so_arm_reach_config import SoArmReachConfig
 from .so_arm100 import SoArm100Reach, SoArm100ReachConfig
 from .so_arm101 import SoArm101Reach, SoArm101ReachConfig

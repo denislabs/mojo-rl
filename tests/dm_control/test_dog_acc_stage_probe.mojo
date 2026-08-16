@@ -52,7 +52,6 @@ from max.gpu.host import DeviceContext
 from mojo_rl.envs.dm_control.dog import (
     DMDogStand,
     DMDogStandWalkModel,
-    dm_dog_stand_walk_xml,
 )
 
 comptime DTYPE = DType.float64

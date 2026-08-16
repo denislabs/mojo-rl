@@ -46,6 +46,12 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 
 from mojo_rl.physics3d.parser import parse_xml_full
+
+
+def _read(path: String) raises -> String:
+    """The model's MJCF, from the asset — no embedded copy exists any more."""
+    with open(path, "r") as f:
+        return f.read()
 from mojo_rl.physics3d.parser.render_fields import (
     RenderFields,
     build_render_fields,
@@ -65,7 +71,6 @@ from mojo_rl.envs.dm_control.humanoid import DMHumanoidModel
 from mojo_rl.envs.dm_control.manipulator import DMManipulatorBringBallModel
 from mojo_rl.envs.dm_control.quadruped import DMQuadrupedWalkModel
 from mojo_rl.envs.dm_control.walker import DMWalkerModel
-from mojo_rl.envs.robots.so_arm100_xml import SO_ARM100_XML
 
 # Both sides parse the same text, so anything above rounding is real. The
 # quaternion path is the one place arithmetic happens (xyaxes/euler/zaxis →
@@ -648,7 +653,7 @@ def test_render_fields_match_mujoco() raises:
     # without SO-ARM100's 18 mesh assets the `mesh` row above compares
     # nothing but -1 == -1.
     _check("so_arm100  ", "mojo_rl/envs/robots/assets/so_arm100.xml",
-           String(SO_ARM100_XML),
+           _read("mojo_rl/envs/robots/assets/so_arm100.xml"),
            geom, light, cam, mat, site, tex, sten, vis)
 
     print("  TOTALS (rows differing / rows compared, then WHICH field):")

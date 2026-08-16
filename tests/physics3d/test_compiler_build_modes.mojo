@@ -1,37 +1,41 @@
-"""`<compiler>` build modes: the runtime record vs the comptime scanners.
+"""`<compiler>` build modes — the parse rules, pinned against MuJoCo's defaults.
 
-⚠ DIFFERENTIAL GATE, MEANINGFUL ONLY WHILE BOTH READERS EXIST. Phase 1b moved
-`inertiafromgeom`, `inertiagrouprange` and `settotalmass` off the raw MJCF —
-where they were read in the comptime interpreter by
-`_xml_compiler_inertiafromgeom` / `_inertiagrouprange` / `_settotalmass` — and
-onto `FlatModelDef`, read by `full_parser` in the same pass as everything
-else. Every comptime reader of the XML pins the model to a `String` in Mojo
-source, because the interpreter cannot `open()` a file (§10.2).
+⚠ THIS FILE REPLACED A DIFFERENTIAL GATE, and the replacement is the better
+one. Until phase 1b.5 it compared `full_parser`'s record against the comptime
+scanners (`_xml_compiler_inertiafromgeom` and friends) over 16 shipped models.
+That gate did its job — it proved the switch-over to `FlatModelDef` moved no
+value — and then lost its oracle when the comptime MJCF strings were deleted,
+because a `comptime` scan needs a `comptime` string.
 
-⚠ AND A GATE BETWEEN OUR OWN TWO READERS IS BLIND TO A SHARED WRONG DEFAULT.
-That is not hypothetical here: `inertiafromgeom` DEFAULTS TO AUTO, not off,
-and getting it wrong gave dm_control's pendulum ~1/21 of its true inertia and
-went unnoticed for months. The comptime side was fixed 2026-07-29 and the
-runtime side copies that default deliberately — so if MuJoCo ever disagreed
-with BOTH, this file could not tell.
+⚠⚠ IT WAS ALSO BLIND IN THE WAY THAT MATTERS. Two readers of ours agreeing
+proves nothing about either, and `inertiafromgeom` has exactly that history:
+its default is AUTO, not off, and getting it wrong gave dm_control's pendulum
+~1/21 of its true inertia while both readers agreed perfectly. What is worth
+gating is the RULE against MuJoCo's documented behaviour, which is what this
+file does.
 
-⇒ what actually pins the semantics is the EFFECT, and that is gated elsewhere,
-against MuJoCo rather than against ourselves:
+WHAT IS PINNED — the four rules, each on a fixture that isolates it:
+
+  1. ABSENT means AUTO (2), not off. This is the one that has already cost a
+     real bug, and the one a reader is most likely to "simplify" to 0.
+  2. `true` -> 1, `false` -> 0, `auto` -> 2.
+  3. `inertiagrouprange="lo hi"` parses to (lo, hi); absent is (0, 5).
+  4. `settotalmass` ABSENT is -1.0, not 0.0 — `settotalmass="0"` is a legal
+     request and must not read as "not specified".
+
+⚠ WHAT THIS FILE CANNOT SEE, stated so nobody mistakes it for full coverage:
+MuJoCo does not RETAIN `inertiafromgeom` — the compiler consumes it and only
+the resulting masses survive into `mjModel` — so the flag itself has no
+parity oracle anywhere. What pins the SEMANTICS is the effect, gated
+elsewhere and against MuJoCo:
+
   * `test_xml_full_parser` asserts half-cheetah's torso mass equals
-    `mjModel.body_mass[1]` to 1e-12 — the inertiafromgeom=auto path.
-    ⚠ That assertion is NEW. The line used to print "(expected ~1.0 default)"
-    and assert nothing, and the value it printed was wrong: the call site
-    hand-passed IFG_MODE=0 for an XML that never mentions the attribute.
+    `mjModel.body_mass[1]` to 1e-12 — the inertiafromgeom=auto path, and the
+    assertion that caught a call site passing 0 for an XML that says nothing.
   * `test_jaco_mesh_body_inertia_vs_mujoco` covers the mesh + boundmass path.
-  * the dm_control suites cover settotalmass through cheetah's masses.
-
-This file's job is narrower and worth having anyway: prove the two READERS
-agree on all 56 shipped models, so the switch-over moved no value.
-
-⚠ NON-VACUITY. Only 13 of the 56 models set any of these attributes at all;
-the rest exercise the defaults. Both facts are reported, and the run FAILS if
-the corpus stops containing a model that sets each attribute — otherwise this
-degenerates into 56 comparisons of the same three defaults.
+  * dm_control's cheetah covers `settotalmass` through its masses: it declares
+    `settotalmass="14"` and NO inertiafromgeom, so it takes the AUTO default
+    and the rescale runs — 21.18 kg -> 14.0, confirmed against the runtime.
 
 Run: pixi run mojo run -I . tests/physics3d/test_compiler_build_modes.mojo
 """
@@ -40,157 +44,102 @@ from std.math import abs
 from std.testing import assert_true
 
 from mojo_rl.physics3d.parser import parse_xml_full
-from mojo_rl.physics3d.parser.xml_parser import (
-    _xml_compiler_inertiafromgeom,
-    _xml_compiler_inertiagrouprange,
-    _xml_compiler_settotalmass,
-)
 
-from mojo_rl.envs.ant.ant_xml import ant_xml
-from mojo_rl.envs.half_cheetah.half_cheetah_xml import half_cheetah_xml
-from mojo_rl.envs.hopper.hopper_xml import hopper_xml
-from mojo_rl.envs.humanoid.humanoid_xml import humanoid_xml
-from mojo_rl.envs.humanoid_standup.humanoid_standup_xml import (
-    humanoid_standup_xml,
+
+comptime _BODY = """
+  <worldbody>
+    <body name="b" pos="0 0 1">
+      <joint name="j" type="hinge" axis="0 1 0"/>
+      <geom name="g" type="capsule" size=".05 .2"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+
+comptime _NO_COMPILER_TAG = "<mujoco model=\"none\">" + _BODY
+comptime _EMPTY_COMPILER = (
+    "<mujoco model=\"empty\"><compiler angle=\"radian\"/>" + _BODY
 )
-from mojo_rl.envs.inverted_double_pendulum.inverted_double_pendulum_xml import (
-    inverted_double_pendulum_xml,
+comptime _IFG_TRUE = (
+    "<mujoco model=\"t\"><compiler inertiafromgeom=\"true\"/>" + _BODY
 )
-from mojo_rl.envs.inverted_pendulum.inverted_pendulum_xml import (
-    inverted_pendulum_xml,
+comptime _IFG_FALSE = (
+    "<mujoco model=\"f\"><compiler inertiafromgeom=\"false\"/>" + _BODY
 )
-from mojo_rl.envs.pusher.pusher_xml import pusher_xml
-from mojo_rl.envs.reacher.reacher_xml import reacher_xml
-from mojo_rl.envs.swimmer.swimmer_xml import swimmer_xml
-from mojo_rl.envs.walker2d.walker2d_xml import walker2d_xml
-from mojo_rl.envs.metaworld.sawyer_reach_xml import sawyer_reach_xml
-from mojo_rl.envs.dm_control.cheetah.cheetah_xml import dm_cheetah_xml
-from mojo_rl.envs.dm_control.walker.walker_xml import dm_walker_xml
-from mojo_rl.envs.dm_control.pendulum.pendulum_xml import dm_pendulum_xml
-from mojo_rl.envs.dm_control.quadruped.quadruped_xml import (
-    dm_quadruped_walk_xml,
+comptime _IFG_AUTO = (
+    "<mujoco model=\"a\"><compiler inertiafromgeom=\"auto\"/>" + _BODY
+)
+comptime _IGR = (
+    "<mujoco model=\"igr\"><compiler inertiagrouprange=\"4 5\"/>" + _BODY
+)
+comptime _STM = (
+    "<mujoco model=\"stm\"><compiler settotalmass=\"14\"/>" + _BODY
+)
+comptime _STM_ZERO = (
+    "<mujoco model=\"stm0\"><compiler settotalmass=\"0\"/>" + _BODY
 )
 
 
 struct Tally(Copyable, Movable):
-    var models: Int
-    var rows: Int
+    var checks: Int
     var bad: Int
-    # Non-vacuity: how many models state each attribute EXPLICITLY, i.e. take
-    # a value that is not simply the default this gate would also produce with
-    # the parser deleted.
-    var n_ifg_set: Int
-    var n_igr_set: Int
-    var n_stm_set: Int
 
     def __init__(out self):
-        self.models = 0
-        self.rows = 0
+        self.checks = 0
         self.bad = 0
-        self.n_ifg_set = 0
-        self.n_igr_set = 0
-        self.n_stm_set = 0
 
 
-def check[
-    xml: String
-](mut t: Tally, name: String) raises:
-    """One model: `full_parser`'s record against the comptime scanners."""
-    var fmd = parse_xml_full(String(xml))
-
-    comptime c_ifg = _xml_compiler_inertiafromgeom[xml]()
-    comptime c_igr = _xml_compiler_inertiagrouprange[xml]()
-    comptime c_stm = _xml_compiler_settotalmass[xml]()
-
-    t.models += 1
-    t.rows += 4
-
-    if fmd.inertiafromgeom != c_ifg:
+def _eq_i(mut t: Tally, what: String, got: Int, want: Int) raises:
+    t.checks += 1
+    if got != want:
         t.bad += 1
-        print(
-            "  DIFF", name, ".inertiafromgeom: runtime=",
-            fmd.inertiafromgeom, " comptime=", c_ifg,
-        )
-    if fmd.inertiagrouprange_min != c_igr[0]:
-        t.bad += 1
-        print(
-            "  DIFF", name, ".inertiagrouprange_min: runtime=",
-            fmd.inertiagrouprange_min, " comptime=", c_igr[0],
-        )
-    if fmd.inertiagrouprange_max != c_igr[1]:
-        t.bad += 1
-        print(
-            "  DIFF", name, ".inertiagrouprange_max: runtime=",
-            fmd.inertiagrouprange_max, " comptime=", c_igr[1],
-        )
-    if abs(fmd.settotalmass - c_stm) > 1e-12:
-        t.bad += 1
-        print(
-            "  DIFF", name, ".settotalmass: runtime=",
-            fmd.settotalmass, " comptime=", c_stm,
-        )
+        print("  FAIL", what, ": got", got, " want", want)
 
-    # ⚠ "explicitly set" is judged on the XML TEXT, not on the parsed value —
-    # a model stating `inertiafromgeom="auto"` parses to the same 2 as one
-    # that says nothing, and only the first exercises the read path.
-    if String(xml).find("inertiafromgeom") != -1:
-        t.n_ifg_set += 1
-    if String(xml).find("inertiagrouprange") != -1:
-        t.n_igr_set += 1
-    if String(xml).find("settotalmass") != -1:
-        t.n_stm_set += 1
+
+def _eq_f(mut t: Tally, what: String, got: Float64, want: Float64) raises:
+    t.checks += 1
+    if abs(got - want) > 1e-12:
+        t.bad += 1
+        print("  FAIL", what, ": got", got, " want", want)
 
 
 def main() raises:
     var t = Tally()
-    print("=== <compiler> build modes: runtime record vs comptime scan ===")
+    print("=== <compiler> build modes: the parse rules ===")
 
-    check[ant_xml](t, "ant")
-    check[half_cheetah_xml](t, "half_cheetah")
-    check[hopper_xml](t, "hopper")
-    check[humanoid_xml](t, "humanoid")
-    check[humanoid_standup_xml](t, "humanoid_standup")
-    check[inverted_double_pendulum_xml](t, "inverted_double_pendulum")
-    check[inverted_pendulum_xml](t, "inverted_pendulum")
-    check[pusher_xml](t, "pusher")
-    check[reacher_xml](t, "reacher")
-    check[swimmer_xml](t, "swimmer")
-    check[walker2d_xml](t, "walker2d")
-    check[sawyer_reach_xml](t, "sawyer_reach")
-    check[dm_cheetah_xml](t, "dm_cheetah")
-    check[dm_walker_xml](t, "dm_walker")
-    check[dm_pendulum_xml](t, "dm_pendulum")
-    check[dm_quadruped_walk_xml](t, "dm_quadruped_walk")
+    # ── rule 1: ABSENT means AUTO, at both spellings of absent ───────────
+    var none = parse_xml_full(String(_NO_COMPILER_TAG))
+    var empty = parse_xml_full(String(_EMPTY_COMPILER))
+    _eq_i(t, "no <compiler> tag -> inertiafromgeom", none.inertiafromgeom, 2)
+    _eq_i(t, "<compiler> without the attr", empty.inertiafromgeom, 2)
+
+    # ── rule 2: the three spellings ──────────────────────────────────────
+    _eq_i(t, 'inertiafromgeom="true"',
+          parse_xml_full(String(_IFG_TRUE)).inertiafromgeom, 1)
+    _eq_i(t, 'inertiafromgeom="false"',
+          parse_xml_full(String(_IFG_FALSE)).inertiafromgeom, 0)
+    _eq_i(t, 'inertiafromgeom="auto"',
+          parse_xml_full(String(_IFG_AUTO)).inertiafromgeom, 2)
+
+    # ── rule 3: inertiagrouprange ────────────────────────────────────────
+    var igr = parse_xml_full(String(_IGR))
+    _eq_i(t, 'inertiagrouprange="4 5" min', igr.inertiagrouprange_min, 4)
+    _eq_i(t, 'inertiagrouprange="4 5" max', igr.inertiagrouprange_max, 5)
+    _eq_i(t, "inertiagrouprange absent min", none.inertiagrouprange_min, 0)
+    _eq_i(t, "inertiagrouprange absent max", none.inertiagrouprange_max, 5)
+
+    # ── rule 4: settotalmass, and the -1.0 vs 0.0 distinction ────────────
+    _eq_f(t, 'settotalmass="14"',
+          parse_xml_full(String(_STM)).settotalmass, 14.0)
+    _eq_f(t, "settotalmass absent", none.settotalmass, -1.0)
+    # ⚠ THE ROW THAT MAKES THE SENTINEL MEAN SOMETHING. If absent were 0.0
+    # this would be indistinguishable from an explicit zero.
+    _eq_f(t, 'settotalmass="0" (explicit)',
+          parse_xml_full(String(_STM_ZERO)).settotalmass, 0.0)
 
     print()
-    print("models compared:", t.models)
-    print("rows compared  :", t.rows)
-    print("mismatches     :", t.bad)
-    print()
-    print("--- non-vacuity: models stating each attribute explicitly ---")
-    print("  inertiafromgeom  :", t.n_ifg_set, "of", t.models)
-    print("  inertiagrouprange:", t.n_igr_set, "of", t.models)
-    print("  settotalmass     :", t.n_stm_set, "of", t.models)
-
+    print("checks:", t.checks, " failures:", t.bad)
     assert_true(
-        t.bad == 0,
-        String(t.bad) + " build-mode value(s) differ between the runtime"
-        " record and the comptime scan — see DIFF above",
-    )
-    # Each attribute needs at least one model that actually states it, or its
-    # rows are three copies of a default comparing against itself.
-    assert_true(
-        t.n_ifg_set > 0,
-        "no model states inertiafromgeom — that row is vacuous",
-    )
-    assert_true(
-        t.n_igr_set > 0,
-        "no model states inertiagrouprange — that row is vacuous"
-        " (sawyer_reach is the only one in the tree; do not drop it)",
-    )
-    assert_true(
-        t.n_stm_set > 0,
-        "no model states settotalmass — that row is vacuous",
+        t.bad == 0, String(t.bad) + " <compiler> parse rule(s) wrong"
     )
     print()
     print("PASS")

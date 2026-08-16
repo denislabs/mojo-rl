@@ -42,7 +42,6 @@ elliptic cone / noslip measurements the whole family shares.
 from mojo_rl.physics3d.parser import ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 
-from .manipulation_stack2_xml import stack_2_bricks_xml
 from mojo_rl.envs.dm_control.manipulation_stack2_dims import (
     STACK_2_BRICKS_DIMS,
 )
@@ -50,7 +49,6 @@ from mojo_rl.envs.dm_control.manipulation_stack2_dims import (
 comptime pm = STACK_2_BRICKS_DIMS
 
 comptime Stack2BricksModel = ModelDefFromXML[
-    xml=stack_2_bricks_xml,
     xml_path="mojo_rl/envs/dm_control/assets/manipulation/stack_2_bricks.xml",
     nbody=pm.NBODY,
     njoint=pm.NJOINT,

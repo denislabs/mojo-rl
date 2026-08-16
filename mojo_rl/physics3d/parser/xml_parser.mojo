@@ -1944,6 +1944,15 @@ def _dedupe_last_wins(inner: String) -> String:
 def merge_mjcf(*xmls: String) -> String:
     """Merge multiple MJCF XML strings following MuJoCo <include> semantics.
 
+    ⚠ NOTHING IN THE TREE CALLS THIS ANY MORE. It composed the 34 models that
+    were built from shared fragments, and phase 1b.5 replaced those with flat
+    `.xml` assets on disk. It is kept, rather than deleted, because it is the
+    natural implementation of a real `<include file=...>`: read the included
+    file and merge it, which reproduces today's composition EXACTLY and is the
+    obvious follow-up to the flat assets. If that never happens, delete it —
+    do not let it rot as unreferenced code with a bug history.
+
+
     Singleton tags (<option>, <compiler>): attributes merged, last wins per attr.
     Accumulator tags — inner content concatenated from all inputs:
     <asset>, <default>, <worldbody>, <tendon>, <actuator>, <equality>,

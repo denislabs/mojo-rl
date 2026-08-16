@@ -14,8 +14,6 @@ from .reacher_config import DMReacherConfig
 from .reacher_xml import (
     DMReacherModel,
     DMReacherHardModel,
-    dm_reacher_xml,
-    dm_reacher_hard_xml,
     ARM_BODY_IDX,
     HAND_BODY_IDX,
     FINGER_BODY_IDX,

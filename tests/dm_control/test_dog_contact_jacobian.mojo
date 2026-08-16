@@ -45,7 +45,6 @@ from layout import Layout
 
 from mojo_rl.envs.dm_control.dog import (
     DMDogStandWalkModel,
-    dm_dog_stand_walk_xml,
 )
 from mojo_rl.physics3d.fields import Model, Data
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
@@ -83,9 +82,7 @@ def test_dog_contact_jacobian_matches_mujoco() raises:
     var sf = M.make_spec_fields[DTYPE]()
     print("--- dog: contact Jacobian rows vs MuJoCo efc_J ---")
     var mujoco = Python.import_module("mujoco")
-    var mm = mujoco.MjModel.from_xml_string(
-        materialize[dm_dog_stand_walk_xml]()
-    )
+    var mm = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
     # ⚠ See the module docstring: AUTO would give a SPARSE efc_J here.
     mm.opt.jacobian = 0  # mjJAC_DENSE
     var dat = mujoco.MjData(mm)

@@ -37,9 +37,9 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.fields import Data, Model
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
-from mojo_rl.envs.ant.ant_xml import AntModel, ant_xml
-from mojo_rl.envs.hopper.hopper_xml import HopperModel, hopper_xml
-from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel, humanoid_xml
+from mojo_rl.envs.ant.ant_xml import AntModel
+from mojo_rl.envs.hopper.hopper_xml import HopperModel
+from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
 
 comptime DTYPE = DType.float64
 
@@ -57,7 +57,9 @@ comptime CONTACT_QPOS_TOL: Float64 = 1e-8
 
 def _check_invweights(
     label: String,
-    xml: StaticString,
+    # ⚠ A PATH, NOT XML TEXT — the models are files since phase 1b, and their
+    # assets resolve against the model directory, so MuJoCo must load by path.
+    xml_path: StaticString,
     dof_iw: List[Float64],
     body_iw: List[Float64],
     nv: Int,
@@ -65,7 +67,7 @@ def _check_invweights(
 ) raises:
     """Compare our build-time inverse weights against MuJoCo's own."""
     var mujoco = Python.import_module("mujoco")
-    var mj_model = mujoco.MjModel.from_xml_string(String(xml))
+    var mj_model = mujoco.MjModel.from_xml_path(String(xml_path))
 
     var mj_dof = mj_model.dof_invweight0.flatten().tolist()
     var worst_dof = Float64(0)
@@ -136,7 +138,7 @@ def test_invweight0_vs_mujoco() raises:
     var bwa = List[Float64]()
     for i in range(2 * A.NBODY):
         bwa.append(Float64(mfa.body_invweight0.data[i]))
-    _check_invweights("ant", ant_xml, dwa, bwa, A.NV, A.NBODY)
+    _check_invweights("ant", "mojo_rl/envs/ant/assets/ant.xml", dwa, bwa, A.NV, A.NBODY)
 
     comptime U = HumanoidModel
     var mfu = Model[
@@ -150,7 +152,7 @@ def test_invweight0_vs_mujoco() raises:
     var bwu = List[Float64]()
     for i in range(2 * U.NBODY):
         bwu.append(Float64(mfu.body_invweight0.data[i]))
-    _check_invweights("humanoid", humanoid_xml, dwu, bwu, U.NV, U.NBODY)
+    _check_invweights("humanoid", "mojo_rl/envs/humanoid/assets/humanoid.xml", dwu, bwu, U.NV, U.NBODY)
 
     comptime H = HopperModel
     var mfh = Model[
@@ -164,7 +166,7 @@ def test_invweight0_vs_mujoco() raises:
     var bwh = List[Float64]()
     for i in range(2 * H.NBODY):
         bwh.append(Float64(mfh.body_invweight0.data[i]))
-    _check_invweights("hopper", hopper_xml, dwh, bwh, H.NV, H.NBODY)
+    _check_invweights("hopper", "mojo_rl/envs/hopper/assets/hopper.xml", dwh, bwh, H.NV, H.NBODY)
 
 
 def _ant_limits(num_steps: Int, overshoot: Float64) raises:
@@ -172,7 +174,7 @@ def _ant_limits(num_steps: Int, overshoot: Float64) raises:
     radians past its own upper limit, torso high enough for zero contacts."""
     comptime M = AntModel
     var mujoco = Python.import_module("mujoco")
-    var mj_model = mujoco.MjModel.from_xml_string(String(ant_xml))
+    var mj_model = mujoco.MjModel.from_xml_path("mojo_rl/envs/ant/assets/ant.xml")
     mj_model.opt.integrator = 0
     var mj_data = mujoco.MjData(mj_model)
 
@@ -277,7 +279,7 @@ def test_contacts_vs_mujoco() raises:
     """Active contacts: hopper dropped onto the floor, lockstep vs MuJoCo."""
     comptime M = HopperModel
     var mujoco = Python.import_module("mujoco")
-    var mj_model = mujoco.MjModel.from_xml_string(String(hopper_xml))
+    var mj_model = mujoco.MjModel.from_xml_path("mojo_rl/envs/hopper/assets/hopper.xml")
     mj_model.opt.integrator = 0
     var mj_data = mujoco.MjData(mj_model)
 

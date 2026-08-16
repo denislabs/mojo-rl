@@ -14,8 +14,6 @@ from .swimmer_config import DMSwimmerConfig
 from .swimmer_xml import (
     DMSwimmer6Model,
     DMSwimmer15Model,
-    dm_swimmer6_xml,
-    dm_swimmer15_xml,
     HEAD_BODY_IDX,
     FIRST_SEGMENT_BODY_IDX,
     GROUND_GEOM_IDX,

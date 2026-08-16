@@ -433,7 +433,7 @@ def _diff[
 def test_cartpole() raises:
     comptime M = DMCartpole1Model
     _diff[M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY, M.NJOINT](
-        "cartpole (1 actuator, no <default> class)", String(M.xml)
+        "cartpole (1 actuator, no <default> class)", M.xml_text()
     )
 
 
@@ -441,7 +441,7 @@ def test_ctrllimited_matrix() raises:
     """The `ctrlrange="0 0"` case the gate was blind to — see the fixture."""
     comptime M = CtrlLimModel
     _diff[M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY, M.NJOINT](
-        'ctrllimited matrix (the ctrlrange="0 0" case)', String(M.xml)
+        'ctrllimited matrix (the ctrlrange="0 0" case)', M.xml_text()
     )
 
 
@@ -449,7 +449,7 @@ def test_quadruped() raises:
     comptime M = DMQuadrupedWalkModel
     _diff[M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY, M.NJOINT](
         "quadruped (3 classes / 12 actuators, tendons + dyntype)",
-        String(M.xml),
+        M.xml_text(),
     )
 
 
@@ -457,7 +457,7 @@ def test_dog() raises:
     comptime M = DMDogStandWalkModel
     _diff[M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY, M.NJOINT](
         "dog stand/walk (24 classes / 38 actuators — the sharp case)",
-        String(M.xml),
+        M.xml_text(),
     )
 
 
@@ -465,7 +465,7 @@ def test_reach_forcerange() raises:
     """jaco — the only model with distinct `forcerange`s."""
     comptime M = ReachSiteFeaturesModel
     _diff[M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY, M.NJOINT](
-        "jaco reach (3 distinct forceranges)", String(M.xml)
+        "jaco reach (3 distinct forceranges)", M.xml_text()
     )
 
 
@@ -473,7 +473,7 @@ def test_fish() raises:
     """fish — the only model in the tree with a tendon SPRING."""
     comptime M = DMFishSwimModel
     _diff[M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY, M.NJOINT](
-        "fish swim (the ONLY model with tendon springs)", String(M.xml)
+        "fish swim (the ONLY model with tendon springs)", M.xml_text()
     )
 
 
@@ -481,7 +481,7 @@ def test_pose_finger() raises:
     """finger — joint `ref="-90"`, the deg->rad case."""
     comptime M = DMFingerSpinModel
     _diff[M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY, M.NJOINT](
-        "finger spin (joint ref=-90 -> -pi/2)", String(M.xml)
+        "finger spin (joint ref=-90 -> -pi/2)", M.xml_text()
     )
 
 
@@ -489,7 +489,7 @@ def test_pose_key_stride() raises:
     """The `nq != nv` + two-keys case, for the key_qvel STRIDE."""
     comptime M = KeyStrideModel
     _diff[M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY, M.NJOINT](
-        "keyframe stride (free joint: nq 8 != nv 7, two keys)", String(M.xml)
+        "keyframe stride (free joint: nq 8 != nv 7, two keys)", M.xml_text()
     )
 
 
@@ -497,7 +497,7 @@ def test_pose_ant() raises:
     """ant — `<custom><numeric init_qpos>` overrides the joint refs."""
     comptime M = AntModel
     _diff[M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY, M.NJOINT](
-        "ant (<custom> init_qpos)", String(M.xml)
+        "ant (<custom> init_qpos)", M.xml_text()
     )
 
 
@@ -505,7 +505,7 @@ def test_pose_so_arm100() raises:
     """so_arm100 — the only model in the tree with a `<keyframe>`."""
     comptime M = SoArm100Model
     _diff[M.NACT, M.NTEN_F, M.NQ, M.NV, M.NKEY, M.NJOINT](
-        "so_arm100 (the ONLY model with a <keyframe>)", String(M.xml)
+        "so_arm100 (the ONLY model with a <keyframe>)", M.xml_text()
     )
 
 

@@ -49,7 +49,7 @@ from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
 )
-from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel, walker2d_xml
+from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 
 comptime DTYPE = DType.float32
 comptime NQ = Walker2dModel.NQ
@@ -90,7 +90,7 @@ def test_walker2d_contacts_match_mujoco() raises:
     var sf = Walker2dModel.make_spec_fields[DTYPE]()
     print("--- walker2d contact detection vs MuJoCo ---")
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(materialize[walker2d_xml]())
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/walker2d/assets/walker2d.xml")
     var md = mujoco.MjData(m)
 
     var ctx = DeviceContext()

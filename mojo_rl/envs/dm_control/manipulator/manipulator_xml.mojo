@@ -114,10 +114,8 @@ looks bodies up by name, but `mj_name2id` on the MuJoCo side needs the space.
 """
 
 from mojo_rl.physics3d.parser import ModelDefFromXML
-from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 from mojo_rl.physics3d.types import ConeType
 
-from ..common_xml import dm_visual_xml, dm_skybox_xml, dm_materials_xml
 
 # The arm's index tables are SHARED with `stacker`, whose arm is this one
 # verbatim. Re-exported from here so the names this module has always published
@@ -147,225 +145,17 @@ from mojo_rl.envs.dm_control.manipulator.manipulator_dims import (
 # ── shared segments ─────────────────────────────────────────────────────────
 # Options, defaults, arena and arm — identical in all four tasks. Ends with the
 # `<!-- props -->` marker so a prop segment concatenates straight on.
-comptime MANIP_HEAD = """
-<mujoco model="planar manipulator">
 
-  <option timestep="0.001" cone="elliptic"/>
 
-  <default>
-    <geom friction=".7" solimp="0.9 0.97 0.001" solref=".005 1"/>
-    <joint solimplimit="0 0.99 0.01" solreflimit=".005 1"/>
-    <motor ctrllimited="true"/>
-    <tendon width="0.01"/>
-    <site size=".003 .003 .003" material="site" group="3"/>
-
-    <default class="arm">
-      <geom type="capsule" material="self" density="500"/>
-      <joint type="hinge" pos="0 0 0" axis="0 -1 0" limited="true"/>
-      <default class="hand">
-        <joint damping=".5" range="-10 60"/>
-        <geom size=".008"/>
-        <site  type="box" size=".018 .005 .005" pos=".022 0 -.002" euler="0 15 0" group="4"/>
-        <default class="fingertip">
-          <geom type="sphere" size=".008" material="effector"/>
-          <joint damping=".01" stiffness=".01" range="-40 20"/>
-          <site  size=".012 .005 .008" pos=".003 0 .003" group="4" euler="0 0 0"/>
-        </default>
-      </default>
-    </default>
-
-    <default class="object">
-      <geom material="self"/>
-    </default>
-
-    <default class="task">
-      <site rgba="0 0 0 0"/>
-    </default>
-
-    <default class="obstacle">
-      <geom material="decoration" friction="0"/>
-    </default>
-
-    <default class="ghost">
-      <geom material="target" contype="0" conaffinity="0"/>
-    </default>
-  </default>
-
-  <worldbody>
-    <!-- Arena -->
-    <light name="light" directional="true" diffuse=".6 .6 .6" pos="0 0 1" specular=".3 .3 .3"/>
-    <geom name="floor" type="plane" pos="0 0 0" size=".4 .2 10" material="grid"/>
-    <geom name="wall1" type="plane" pos="-.682843 0 .282843" size=".4 .2 10" material="grid" zaxis="1 0 1"/>
-    <geom name="wall2" type="plane" pos=".682843 0 .282843" size=".4 .2 10" material="grid" zaxis="-1 0 1"/>
-    <geom name="background" type="plane" pos="0 .2 .5" size="1 .5 10" zaxis="0 -1 0"/>
-    <camera name="fixed" pos="0 -16 .4" xyaxes="1 0 0 0 0 1" fovy="4"/>
-
-    <!-- Arm -->
-    <geom name="arm_root" type="cylinder" fromto="0 -.022 .4 0 .022 .4" size=".024"
-          material="decoration" contype="0" conaffinity="0"/>
-    <body name="upper_arm" pos="0 0 .4" childclass="arm">
-      <joint name="arm_root" damping="2" limited="false"/>
-      <geom  name="upper_arm"  size=".02" fromto="0 0 0 0 0 .18"/>
-      <body  name="middle_arm" pos="0 0 .18" childclass="arm">
-        <joint name="arm_shoulder" damping="1.5" range="-160 160"/>
-        <geom  name="middle_arm"  size=".017" fromto="0 0 0 0 0 .15"/>
-        <body  name="lower_arm" pos="0 0 .15">
-          <joint name="arm_elbow" damping="1" range="-160 160"/>
-          <geom  name="lower_arm" size=".014" fromto="0 0 0 0 0 .12"/>
-          <body  name="hand" pos="0 0 .12">
-            <joint name="arm_wrist" damping=".5" range="-140 140" />
-            <geom  name="hand" size=".011" fromto="0 0 0 0 0 .03"/>
-            <geom  name="palm1"  fromto="0 0 .03  .03 0 .045" class="hand"/>
-            <geom  name="palm2"  fromto="0 0 .03 -.03 0 .045" class="hand"/>
-            <site  name="grasp" pos="0 0 .065"/>
-            <body  name="pinch site" pos="0 0 .090">
-              <site  name="pinch"/>
-              <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-12 1e-12 1e-12"/>
-              <camera name="hand" pos="0 -.3 0" xyaxes="1 0 0 0 0 1" mode="track"/>
-            </body>
-            <site  name="palm_touch" type="box" group="4" size=".025 .005 .008" pos="0 0 .043"/>
-
-            <body name="thumb" pos=".03 0 .045" euler="0 -90 0" childclass="hand">
-              <joint name="thumb"/>
-              <geom  name="thumb1"  fromto="0 0 0 .02 0 -.01" size=".007"/>
-              <geom  name="thumb2"  fromto=".02 0 -.01 .04 0 -.01" size=".007"/>
-              <site  name="thumb_touch" group="4"/>
-              <body  name="thumbtip" pos=".05 0 -.01" childclass="fingertip">
-                <joint name="thumbtip"/>
-                <geom  name="thumbtip1" pos="-.003 0 0" />
-                <geom  name="thumbtip2" pos=".003 0 0" />
-                <site  name="thumbtip_touch" group="4"/>
-              </body>
-            </body>
-
-            <body name="finger" pos="-.03 0 .045" euler="0 90 180" childclass="hand">
-              <joint name="finger"/>
-              <geom  name="finger1"  fromto="0 0 0 .02 0 -.01" size=".007" />
-              <geom  name="finger2"  fromto=".02 0 -.01 .04 0 -.01" size=".007"/>
-              <site  name="finger_touch"/>
-              <body  name="fingertip" pos=".05 0 -.01" childclass="fingertip">
-                <joint name="fingertip"/>
-                <geom  name="fingertip1" pos="-.003 0 0" />
-                <geom  name="fingertip2" pos=".003 0 0" />
-                <site  name="fingertip_touch"/>
-              </body>
-            </body>
-          </body>
-        </body>
-      </body>
-    </body>
-
-    <!-- props -->
-"""
-
-comptime MANIP_PROP_BALL = """
-    <body name="ball" pos=".4 0 .4" childclass="object">
-      <joint name="ball_x" type="slide" axis="1 0 0" ref=".4"/>
-      <joint name="ball_z" type="slide" axis="0 0 1" ref=".4"/>
-      <joint name="ball_y" type="hinge" axis="0 1 0"/>
-      <geom  name="ball" type="sphere" size=".022" />
-      <site  name="ball" type="sphere"/>
-    </body>
-"""
-
-comptime MANIP_PROP_PEG = """
-    <body name="peg" pos="-.4 0 .4" childclass="object">
-      <joint name="peg_x" type="slide" axis="1 0 0" ref="-.4"/>
-      <joint name="peg_z" type="slide" axis="0 0 1" ref=".4"/>
-      <joint name="peg_y" type="hinge" axis="0 1 0"/>
-      <geom name="blade" type="capsule" size=".005" fromto="0 0 -.013 0 0 -.113"/>
-      <geom name="guard" type="capsule" size=".005" fromto="-.017 0 -.043 .017 0 -.043"/>
-      <body name="pommel" pos="0 0 -.013">
-        <geom name="pommel" type="sphere" size=".009"/>
-      </body>
-      <site name="peg" type="box" pos="0 0 -.063"/>
-      <site name="peg_pinch" type="box" pos="0 0 -.025"/>
-      <site name="peg_grasp" type="box" pos="0 0 0"/>
-      <site name="peg_tip"   type="box" pos="0 0 -.113"/>
-    </body>
-"""
 
 # Receptacles. `euler` here is only the DEFAULT pose: both are mocap bodies, so
 # `custom_reset_cpu` overwrites `mocap_quat` every episode with
 # `uniform(-pi/3, pi/3)` about y, exactly as `initialize_episode` overwrites
 # `model.body_quat`.
-comptime MANIP_RECEPTACLE_SLOT = """
-    <body name="slot" pos="-.405 0 .2" euler="0 20 0" childclass="obstacle" mocap="true">
-      <geom name="slot_0" type="box" pos="-.0252 0 -.083" size=".0198 .01 .035"/>
-      <geom name="slot_1" type="box" pos=" .0252 0 -.083" size=".0198 .01 .035"/>
-      <geom name="slot_2" type="box" pos="  0   0 -.138" size=".045 .01 .02"/>
-      <site name="slot" type="box" pos="0 0 0"/>
-      <site name="slot_end" type="box" pos="0 0 -.05"/>
-    </body>
-"""
 
-comptime MANIP_RECEPTACLE_CUP = """
-    <body name="cup" pos=".3 0 .4" euler="0 -15 0" childclass="obstacle" mocap="true">
-      <geom name="cup_0" type="capsule" size=".008" fromto="-.03 0 .06 -.03 0 -.015" />
-      <geom name="cup_1" type="capsule" size=".008" fromto="-.03 0 -.015 0 0 -.04" />
-      <geom name="cup_2" type="capsule" size=".008" fromto="0 0 -.04 .03 0 -.015" />
-      <geom name="cup_3" type="capsule" size=".008" fromto=".03 0 -.015 .03 0 .06" />
-      <site name="cup" size=".005"/>
-    </body>
-"""
 
-comptime MANIP_TARGET_BALL = """
-    <!-- targets -->
-    <body name="target_ball" pos=".4 .001 .4" childclass="ghost" mocap="true">
-      <geom  name="target_ball" type="sphere" size=".02" />
-      <site  name="target_ball" type="sphere"/>
-    </body>
-"""
 
-comptime MANIP_TARGET_PEG = """
-    <!-- targets -->
-    <body name="target_peg" pos="-.2 .001 .4" childclass="ghost" mocap="true">
-      <geom name="target_blade" type="capsule" size=".005" fromto="0 0 -.013 0 0 -.113"/>
-      <geom name="target_guard" type="capsule" size=".005" fromto="-.017 0 -.043 .017 0 -.043"/>
-      <geom name="target_pommel" type="sphere" size=".009" pos="0 0 -.013"/>
-      <site name="target_peg" type="box" pos="0 0 -.063"/>
-      <site name="target_peg_pinch" type="box" pos="0 0 -.025"/>
-      <site name="target_peg_grasp" type="box" pos="0 0 0"/>
-      <site name="target_peg_tip"   type="box" pos="0 0 -.113"/>
-    </body>
-"""
 
-comptime MANIP_TAIL = """
-  </worldbody>
-
-  <tendon>
-    <fixed name="grasp">
-      <joint joint="thumb"  coef=".5"/>
-      <joint joint="finger" coef=".5"/>
-    </fixed>
-    <fixed name="coupling">
-      <joint joint="thumb"  coef="-.5"/>
-      <joint joint="finger" coef=".5"/>
-    </fixed>
-  </tendon>
-
-  <equality>
-    <tendon name="coupling" tendon1="coupling" solimp="0.95 0.99 0.001" solref=".005 .5"/>
-  </equality>
-
-  <sensor>
-    <touch name="palm_touch" site="palm_touch"/>
-    <touch name="finger_touch" site="finger_touch"/>
-    <touch name="thumb_touch" site="thumb_touch"/>
-    <touch name="fingertip_touch" site="fingertip_touch"/>
-    <touch name="thumbtip_touch" site="thumbtip_touch"/>
-  </sensor>
-
-  <actuator>
-    <motor name="root"     joint="arm_root"     ctrlrange="-1 1"  gear="12"/>
-    <motor name="shoulder" joint="arm_shoulder" ctrlrange="-1 1"  gear="8"/>
-    <motor name="elbow"    joint="arm_elbow"    ctrlrange="-1 1"  gear="4"/>
-    <motor name="wrist"    joint="arm_wrist"    ctrlrange="-1 1"  gear="2"/>
-    <motor name="grasp"    tendon="grasp"       ctrlrange="-1 1"  gear="2"/>
-  </actuator>
-
-</mujoco>
-"""
 
 
 # ── shared indices (identical in all four variants) ─────────────────────────
@@ -464,41 +254,9 @@ def site_target_tip(use_peg: Bool, insert: Bool) -> Int:
 
 # ── the four models ─────────────────────────────────────────────────────────
 
-comptime dm_manipulator_bring_ball_xml = merge_mjcf(
-    dm_visual_xml,
-    dm_skybox_xml,
-    dm_materials_xml,
-    MANIP_HEAD + MANIP_PROP_BALL + MANIP_TARGET_BALL + MANIP_TAIL,
-)
 
-comptime dm_manipulator_bring_peg_xml = merge_mjcf(
-    dm_visual_xml,
-    dm_skybox_xml,
-    dm_materials_xml,
-    MANIP_HEAD + MANIP_PROP_PEG + MANIP_TARGET_PEG + MANIP_TAIL,
-)
 
-comptime dm_manipulator_insert_ball_xml = merge_mjcf(
-    dm_visual_xml,
-    dm_skybox_xml,
-    dm_materials_xml,
-    MANIP_HEAD
-    + MANIP_PROP_BALL
-    + MANIP_RECEPTACLE_CUP
-    + MANIP_TARGET_BALL
-    + MANIP_TAIL,
-)
 
-comptime dm_manipulator_insert_peg_xml = merge_mjcf(
-    dm_visual_xml,
-    dm_skybox_xml,
-    dm_materials_xml,
-    MANIP_HEAD
-    + MANIP_PROP_PEG
-    + MANIP_RECEPTACLE_SLOT
-    + MANIP_TARGET_PEG
-    + MANIP_TAIL,
-)
 
 comptime mbp = DM_MANIPULATOR_BRING_BALL_DIMS
 
@@ -520,7 +278,6 @@ comptime BALL_QADR_Y: Int = OBJECT_QADR_Y
 
 
 comptime DMManipulatorBringBallModel = ModelDefFromXML[
-    xml=dm_manipulator_bring_ball_xml,
     xml_path="mojo_rl/envs/dm_control/assets/manipulator_bring_ball.xml",
     nbody=mbp.NBODY, njoint=mbp.NJOINT, nq=mbp.NQ, nv=mbp.NV,
     ngeom=mbp.NGEOM, nact=mbp.NACT, ntex=mbp.NTEX, nmat=mbp.NMAT,
@@ -536,7 +293,6 @@ comptime DMManipulatorBringBallModel = ModelDefFromXML[
 ]
 
 comptime DMManipulatorBringPegModel = ModelDefFromXML[
-    xml=dm_manipulator_bring_peg_xml,
     xml_path="mojo_rl/envs/dm_control/assets/manipulator_bring_peg.xml",
     nbody=mbpg.NBODY, njoint=mbpg.NJOINT, nq=mbpg.NQ, nv=mbpg.NV,
     ngeom=mbpg.NGEOM, nact=mbpg.NACT, ntex=mbpg.NTEX, nmat=mbpg.NMAT,
@@ -557,7 +313,6 @@ comptime DMManipulatorBringPegModel = ModelDefFromXML[
 ]
 
 comptime DMManipulatorInsertBallModel = ModelDefFromXML[
-    xml=dm_manipulator_insert_ball_xml,
     xml_path="mojo_rl/envs/dm_control/assets/manipulator_insert_ball.xml",
     nbody=mib.NBODY, njoint=mib.NJOINT, nq=mib.NQ, nv=mib.NV,
     ngeom=mib.NGEOM, nact=mib.NACT, ntex=mib.NTEX, nmat=mib.NMAT,
@@ -573,7 +328,6 @@ comptime DMManipulatorInsertBallModel = ModelDefFromXML[
 ]
 
 comptime DMManipulatorInsertPegModel = ModelDefFromXML[
-    xml=dm_manipulator_insert_peg_xml,
     xml_path="mojo_rl/envs/dm_control/assets/manipulator_insert_peg.xml",
     nbody=mip.NBODY, njoint=mip.NJOINT, nq=mip.NQ, nv=mip.NV,
     ngeom=mip.NGEOM, nact=mip.NACT, ntex=mip.NTEX, nmat=mip.NMAT,

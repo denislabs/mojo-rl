@@ -14,7 +14,6 @@ from .fish_config import DMFishUprightConfig, DMFishSwimConfig, SWIM_RADII
 from .fish_xml import (
     DMFishUprightModel,
     DMFishSwimModel,
-    dm_fish_xml,
     TORSO_BODY_IDX,
     TARGET_BODY_IDX,
     MOUTH_GEOM_IDX,

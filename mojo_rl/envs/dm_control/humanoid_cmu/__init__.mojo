@@ -27,7 +27,6 @@ from .humanoid_cmu_config import (
 )
 from .humanoid_cmu_xml import (
     DMHumanoidCMUModel,
-    dm_humanoid_cmu_xml,
     HUMANOID_CMU_OBS_DIM,
     THORAX_BODY_IDX,
     HEAD_BODY_IDX,

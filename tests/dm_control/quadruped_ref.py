@@ -163,7 +163,7 @@ def compare_xml_to_reference(xml_string, run=False):
     from mjmodel_diff import diff_models
 
     return diff_models(model(run=run),
-                       mujoco.MjModel.from_xml_string(xml_string))
+                       mujoco.MjModel.from_xml_path(xml_string))
 
 
 def n_tables_compared():

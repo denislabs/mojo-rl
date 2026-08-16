@@ -41,7 +41,7 @@ from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 from layout import Layout
 
-from mojo_rl.envs.dm_control.fish import DMFishUprightModel, dm_fish_xml
+from mojo_rl.envs.dm_control.fish import DMFishUprightModel
 from mojo_rl.physics3d.fields import Model, Data
 from mojo_rl.physics3d.kinematics.quat_math import quat2vel
 from mojo_rl.physics3d.kinematics.integrate_pos import integrate_pos
@@ -171,17 +171,17 @@ def test_quat2vel_matches_mujoco() raises:
 
 def test_integrate_pos_matches_mujoco() raises:
     """Fish — a free joint (7 qpos / 6 qvel) plus hinges."""
-    var sf = M.make_spec_fields[DTYPE]()
     print("--- integrate_pos vs mj_integratePos (fish) ---")
     comptime M = DMFishUprightModel
     comptime NQ: Int = M.NQ
     comptime NV: Int = M.NV
     comptime NJOINT: Int = M.NJOINT
+    var sf = M.make_spec_fields[DTYPE]()
 
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
     var rng = np.random.default_rng(7)
-    var mm = mujoco.MjModel.from_xml_string(materialize[dm_fish_xml]())
+    var mm = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/fish.xml")
     var dat = mujoco.MjData(mm)
 
     assert_true(Int(py=mm.nq) == NQ, "nq mismatch")

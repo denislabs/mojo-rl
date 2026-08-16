@@ -47,7 +47,6 @@ from max.gpu.host import DeviceContext
 from mojo_rl.envs.dm_control.manipulator import (
     DMManipulatorBringPegModel as M,
     DMManipulatorBringPegConfig as CFG,
-    dm_manipulator_bring_peg_xml,
     target_body_idx,
     site_object,
     site_object_pinch,
@@ -584,7 +583,7 @@ def _mj_at(
     so feeding both engines the identical model isolates the SOLVER.
     """
     var mujoco = Python.import_module("mujoco")
-    var m = mujoco.MjModel.from_xml_string(String(dm_manipulator_bring_peg_xml))
+    var m = mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/manipulator_bring_peg.xml")
     var dat = mujoco.MjData(m)
     for i in range(NQ):
         dat.qpos[i] = state[i]
