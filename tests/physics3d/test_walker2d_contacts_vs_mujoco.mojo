@@ -106,7 +106,7 @@ def test_walker2d_contacts_match_mujoco() raises:
     var pair_mismatch = 0
 
     for e in range(len(poses)):
-        var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]()
+        var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], 1]()
         Walker2dModel.reset_data[DTYPE](sf, d)
         for i in range(NQ):
             d.qpos.data[i] = Scalar[DTYPE](poses[e][i])

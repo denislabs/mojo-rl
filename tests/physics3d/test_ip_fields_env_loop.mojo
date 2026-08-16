@@ -82,7 +82,7 @@ def main() raises:
     pole0.append(0.05)
     pole0.append(-0.12)
 
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     for e in range(BATCH):
         d.qpos.data[e * NQ + 1] = Scalar[DTYPE](pole0[e])
     d.upload_all(ctx)
@@ -154,7 +154,7 @@ def main() raises:
         print("  PASS: fields-GPU matches golden fingerprint")
 
     # --- independent CPU oracle: fields-CPU closed loop == fields-GPU ---
-    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dc = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     for e in range(BATCH):
         dc.qpos.data[e * NQ + 1] = Scalar[DTYPE](pole0[e])
     var integ_c = EulerIntegrator[

@@ -52,7 +52,7 @@ def main() raises:
     var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     # LOW pose so the humanoid is in ground contact — exercises SAP + the
     # Newton contact solve (the path a falling humanoid hits during training).
     for e in range(BATCH):

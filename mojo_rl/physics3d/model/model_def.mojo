@@ -141,15 +141,7 @@ trait ModelDefLike:
         DTYPE: DType
     ](
         sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
-        mut d: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-            1,
-        ],
+        mut d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
     ):
         ...
 
@@ -157,15 +149,7 @@ trait ModelDefLike:
     def extract_obs[
         DTYPE: DType
     ](
-        d: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-            1,
-        ],
+        d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
         mut obs: List[Scalar[DTYPE]],
     ):
         ...
@@ -175,15 +159,7 @@ trait ModelDefLike:
         DTYPE: DType
     ](
         sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
-        mut d: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-            1,
-        ],
+        mut d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
     ):
         ...
 
@@ -203,15 +179,7 @@ trait ModelDefLike:
         DTYPE: DType
     ](
         sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
-        mut d: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-            1,
-        ],
+        mut d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
         actions: List[Float64],
         mut act: List[Scalar[DTYPE]],
     ):

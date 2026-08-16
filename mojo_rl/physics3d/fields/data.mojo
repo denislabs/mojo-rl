@@ -28,20 +28,28 @@ from layout import Layout
 
 from mojo_rl.nn.core.tensor import TensorImpl
 
+from .dims import DimsLike
+
 from ..gpu.constants import CONTACT_SIZE, METADATA_SIZE
 
 
 struct Data[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int = 0,
+    D: DimsLike,
     BATCH: Int = 1,
 ](Movable):
     """Batched per-field simulation state (the 17 regions of the flat state
     slab, one owned tensor each). See module docstring."""
+
+    # Body unchanged — see `Rk4Scratch`. `Data` is named in 98 files and 311
+    # of its spellings are in SIGNATURES, so keeping every `Self.NQ`/`Self.NV`
+    # in the allocation and layout code spelled as it was is what holds this
+    # to a mechanical change.
+    comptime NQ = Self.D.NQ
+    comptime NV = Self.D.NV
+    comptime NBODY = Self.D.NBODY
+    comptime MAX_CONTACTS = Self.D.MAX_CONTACTS
+    comptime NSITE = Self.D.NSITE
 
     # Per-field view layouts ([BATCH, F] row-major).
     comptime L_QPOS = Layout.row_major(Self.BATCH, Self.NQ)

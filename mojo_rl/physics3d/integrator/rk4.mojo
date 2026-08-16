@@ -472,10 +472,7 @@ struct RK4Integrator[
         target: StaticString
     ](
         mut self,
-        mut d: Data[
-            Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.MAX_CONTACTS,
-            Self.NSITE, Self.BATCH,
-        ],
+        mut d: Data[Self.DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], Self.BATCH],
         mut m: Model[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY, njoint=Self.NJOINT, ngeom=Self.NGEOM, nequality=Self.NEQUALITY, ntendon=Self.NTENDON, nsite=Self.NSITE, nexclude=Self.NEXCLUDE, nmesh_verts=Self.NMESH_VERTS, npair=Self.NPAIR]],
         ctx: Optional[DeviceContext],
     ) raises:
@@ -622,10 +619,7 @@ struct RK4Integrator[
     ](
         mut self,
         dt: Scalar[Self.DTYPE],
-        mut d: Data[
-            Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.MAX_CONTACTS,
-            Self.NSITE, Self.BATCH,
-        ],
+        mut d: Data[Self.DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], Self.BATCH],
         mut m: Model[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY, njoint=Self.NJOINT, ngeom=Self.NGEOM, nequality=Self.NEQUALITY, ntendon=Self.NTENDON, nsite=Self.NSITE, nexclude=Self.NEXCLUDE, nmesh_verts=Self.NMESH_VERTS, npair=Self.NPAIR]],
         ctx: Optional[DeviceContext],
     ) raises:
@@ -681,10 +675,7 @@ struct RK4Integrator[
         target: StaticString, CONTACTS: Bool = True
     ](
         mut self,
-        mut d: Data[
-            Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.MAX_CONTACTS,
-            Self.NSITE, Self.BATCH,
-        ],
+        mut d: Data[Self.DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], Self.BATCH],
         mut m: Model[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY, njoint=Self.NJOINT, ngeom=Self.NGEOM, nequality=Self.NEQUALITY, ntendon=Self.NTENDON, nsite=Self.NSITE, nexclude=Self.NEXCLUDE, nmesh_verts=Self.NMESH_VERTS, npair=Self.NPAIR]],
         ctx: Optional[DeviceContext] = None,
     ) raises:

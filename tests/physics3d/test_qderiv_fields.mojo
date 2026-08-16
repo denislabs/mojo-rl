@@ -59,7 +59,7 @@ def main() raises:
     var mf = Model[DT, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     Walker2dModel.init_fields[DT, 0](ctx, mf)
 
-    var d = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     # Standing-ish pose + nonzero velocities so Coriolis/centrifugal is active.
     d.qpos.data[1] = 1.25  # rootz
     d.qpos.data[3] = -0.3

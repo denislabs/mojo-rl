@@ -150,7 +150,7 @@ def _qpos_for_env(e: Int) -> List[Float64]:
 
 def _fp_check(
     label: String,
-    d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
     gold_ncon: Int,
     gold_con: Float64,
     gold_sol: Float64,
@@ -209,7 +209,7 @@ def _fp_check(
 
 def _assert_plane_mesh_contact(
     label: String,
-    d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
     obj_body: Int,
     expected_body_b: Int,
 ) raises:
@@ -309,7 +309,7 @@ def main() raises:
         raise Error("tetra mesh_meta did not reach Model")
 
     # ================= Leg 1: O(N^2) detection ==========================
-    var d_a = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d_a = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     for e in range(BATCH):
         var q = _qpos_for_env(e)
         for i in range(NQ):
@@ -345,7 +345,7 @@ def main() raises:
     print("  [ O(N^2) ] PASS: plane-mesh record present (BODY_B=0, DIST<0)")
 
     # ================= Leg 2: SAP detection =============================
-    var d_b = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d_b = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     for e in range(BATCH):
         var q = _qpos_for_env(e)
         for i in range(NQ):

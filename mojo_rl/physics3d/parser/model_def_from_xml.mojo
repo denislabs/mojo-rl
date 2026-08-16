@@ -385,15 +385,7 @@ struct ModelDefFromXML[
         DTYPE: DType
     ](
         sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
-        mut d: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-            1,
-        ],
+        mut d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
     ):
         """Reset qpos to initial pose, zero qvel/qacc/qfrc.
 
@@ -488,15 +480,7 @@ struct ModelDefFromXML[
         DTYPE: DType
     ](
         sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
-        mut d: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-            1,
-        ],
+        mut d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
         k: Int,
     ):
         """`mj_resetDataKeyframe(m, d, k)` — reset to keyframe `k`.
@@ -529,15 +513,7 @@ struct ModelDefFromXML[
     def extract_obs[
         DTYPE: DType
     ](
-        d: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-            1,
-        ],
+        d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
         mut obs: List[Scalar[DTYPE]],
     ):
         """Extract observation: qpos[obs_qpos_skip:] followed by qvel[:]."""
@@ -551,15 +527,7 @@ struct ModelDefFromXML[
         DTYPE: DType
     ](
         sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
-        mut d: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-            1,
-        ],
+        mut d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
     ):
         """Clamp qpos to joint range limits (limited joints only)."""
         # ⚠ FROM `sf.joint_limits`, NOT from four materialized comptime
@@ -688,15 +656,7 @@ struct ModelDefFromXML[
         DTYPE: DType
     ](
         sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
-        mut d: Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-            1,
-        ],
+        mut d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
         actions: List[Float64],
         mut act: List[Scalar[DTYPE]],
     ):
@@ -1421,15 +1381,7 @@ struct ModelDefFromXML[
         ](fmd, mf)
 
         # Reference pose + fields-native invweight0 (G1).
-        var d_inv = Data[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.MAX_CONTACTS,
-            Self.NSITE,
-            1,
-        ]()
+        var d_inv = Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1]()
         # ⚠ Built from the `fmd` ALREADY IN HAND — `init_spec_fields` would
         # re-parse the XML a third time for a value this function has sitting
         # in a local.

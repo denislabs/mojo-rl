@@ -117,7 +117,7 @@ def _compare_vs_mujoco(
     var mf = _make_model(ctx)
 
     # Fields path (f64, CPU target, BATCH=1).
-    var d = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):
@@ -200,7 +200,7 @@ def test_fields_euler_active_limits_golden() raises:
     var ctx = DeviceContext()
     var mf = _make_model(ctx)
 
-    var d = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):

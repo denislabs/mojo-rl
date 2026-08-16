@@ -243,7 +243,7 @@ def test_model_def_from_xml() raises:
     # Step 5: reset_data + extract_obs (fields-native hooks; G2)
     # =========================================================================
     print("=== reset_data + extract_obs ===")
-    var d = Data[DType.float64, pm.NQ, pm.NV, pm.NBODY, 10, 0, 1]()
+    var d = Data[DType.float64, Dims[nq=pm.NQ, nv=pm.NV, nbody=pm.NBODY, max_contacts=10, nsite=0], 1]()
     XmlModel.reset_data[DType.float64](sf, d)
     print("reset_data succeeded (qpos=0, qvel=0)")
 

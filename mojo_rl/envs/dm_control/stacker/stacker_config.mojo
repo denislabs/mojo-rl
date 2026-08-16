@@ -88,7 +88,7 @@ from std.random import random_float64
 from std.math import sin, cos, sqrt, log, pi, inf
 from ..dtype_math import log1p_dt
 
-from mojo_rl.physics3d.fields import Data
+from mojo_rl.physics3d.fields import Data, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     JOINT_IDX_RANGE_MIN,
@@ -175,7 +175,7 @@ struct DMStackerConfig[N_BOXES: Int](Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -242,7 +242,7 @@ struct DMStackerConfig[N_BOXES: Int](Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         body: Int,
         mut obs: List[Scalar[DTYPE]],
     ):
@@ -266,7 +266,7 @@ struct DMStackerConfig[N_BOXES: Int](Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -368,7 +368,7 @@ struct DMStackerConfig[N_BOXES: Int](Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         s1: Int,
         s2: Int,
     ) -> Float64:
@@ -393,7 +393,7 @@ struct DMStackerConfig[N_BOXES: Int](Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],

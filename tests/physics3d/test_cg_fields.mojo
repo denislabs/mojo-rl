@@ -90,7 +90,7 @@ comptime BATCH = 2
 def _fields_prep[
     target: StaticString
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
     mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
@@ -190,7 +190,7 @@ def _fields_prep[
     ](d, mf, ctx)
 
 
-def _init_state(mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]):
+def _init_state(mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]):
     """Fallen Walker2D (feet penetrating the floor) — deterministic."""
     for e in range(BATCH):
         for i in range(NQ):
@@ -213,7 +213,7 @@ def _load_model(ctx: DeviceContext) raises -> Model[DTYPE, Dims[nv=NV, nbody=NBO
     return mf^
 
 
-def _ncon(mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]) -> Int:
+def _ncon(mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]) -> Int:
     var n = 0
     for e in range(BATCH):
         n += Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])
@@ -225,8 +225,8 @@ def part_a(ctx: DeviceContext) raises:
     var mf = _load_model(ctx)
 
     # Independent Newton + CG data/scratch, identical initial state.
-    var dN = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dC = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dN = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dC = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     _init_state(dN)
     _init_state(dC)
     dN.upload_all(ctx)
@@ -280,8 +280,8 @@ def part_b(ctx: DeviceContext) raises:
     print("--- Part B: fields-CPU CG vs fields-GPU CG (ELLIPTIC)")
     var mf = _load_model(ctx)
 
-    var dg = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dg = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dc = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     _init_state(dg)
     _init_state(dc)
     dg.upload_all(ctx)

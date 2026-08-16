@@ -119,7 +119,7 @@ def test_walker2d_mm() raises:
     q2[8] = -0.6
     qcfg.append(q2^)
 
-    var d = Data[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, W_NSITE, W_BATCH]()
+    var d = Data[DTYPE, Dims[nq=W_NQ, nv=W_NV, nbody=W_NBODY, max_contacts=W_MC, nsite=W_NSITE], W_BATCH]()
     for e in range(W_BATCH):
         for i in range(W_NQ):
             d.qpos.data[e * W_NQ + i] = Scalar[DTYPE](qcfg[e][i])
@@ -201,7 +201,7 @@ def test_ant_mm() raises:
     q2[14] = 0.4
     qcfg.append(q2^)
 
-    var d = Data[DTYPE, A_NQ, A_NV, A_NBODY, A_MC, A_NSITE, A_BATCH]()
+    var d = Data[DTYPE, Dims[nq=A_NQ, nv=A_NV, nbody=A_NBODY, max_contacts=A_MC, nsite=A_NSITE], A_BATCH]()
     for e in range(A_BATCH):
         for i in range(A_NQ):
             d.qpos.data[e * A_NQ + i] = Scalar[DTYPE](qcfg[e][i])
@@ -337,8 +337,8 @@ def test_rk4_integrator_treewalk() raises:
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Same on-the-floor init as test_rk4_contacts_fields (feet penetrating).
-    var d_dn = Data[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, W_NSITE, W_BATCH]()
-    var d_tw = Data[DTYPE, W_NQ, W_NV, W_NBODY, W_MC, W_NSITE, W_BATCH]()
+    var d_dn = Data[DTYPE, Dims[nq=W_NQ, nv=W_NV, nbody=W_NBODY, max_contacts=W_MC, nsite=W_NSITE], W_BATCH]()
+    var d_tw = Data[DTYPE, Dims[nq=W_NQ, nv=W_NV, nbody=W_NBODY, max_contacts=W_MC, nsite=W_NSITE], W_BATCH]()
     for e in range(W_BATCH):
         for i in range(W_NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0

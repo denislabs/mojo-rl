@@ -159,8 +159,8 @@ def test_walker2d() raises:
     q3[8] = -0.6
     qcfg.append(q3^)
 
-    var d = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]()
-    var dc = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH]()
+    var dc = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             d.qpos.data[e * NQ + i] = Scalar[DTYPE](qcfg[e][i])
@@ -366,8 +366,8 @@ def test_synthetic_sites() raises:
     angles.append(0.7)
     angles.append(-1.2)
 
-    var d = Data[DTYPE, S_NQ, S_NV, S_NBODY, S_MC, S_NSITE, S_BATCH]()
-    var dc = Data[DTYPE, S_NQ, S_NV, S_NBODY, S_MC, S_NSITE, S_BATCH]()
+    var d = Data[DTYPE, Dims[nq=S_NQ, nv=S_NV, nbody=S_NBODY, max_contacts=S_MC, nsite=S_NSITE], S_BATCH]()
+    var dc = Data[DTYPE, Dims[nq=S_NQ, nv=S_NV, nbody=S_NBODY, max_contacts=S_MC, nsite=S_NSITE], S_BATCH]()
     for e in range(S_BATCH):
         d.qpos.data[e * S_NQ + 0] = Scalar[DTYPE](angles[e])
         dc.qpos.data[e * S_NQ + 0] = Scalar[DTYPE](angles[e])

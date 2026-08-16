@@ -43,7 +43,7 @@ from layout import Layout, LayoutTensor
 from std.collections import InlineArray
 from std.random.philox import Random as PhiloxRandom
 
-from mojo_rl.physics3d.fields import Data
+from mojo_rl.physics3d.fields import Data, Dims
 from mojo_rl.physics3d.kinematics.xmat import xmat_elem, xmat_elem_gpu, XMAT_ZZ
 from mojo_rl.physics3d.kinematics.geom_xpos import geom_xpos, geom_xpos_gpu
 from mojo_rl.physics3d.kinematics.geom_xmat import geom_xquat, geom_xquat_gpu
@@ -97,7 +97,7 @@ def _standard_normal() -> Float64:
 def _mouth_to_target[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_geoms: List[Scalar[DTYPE]],
 ) raises -> Tuple[Float64, Float64, Float64]:
     """`Physics.mouth_to_target` — target minus mouth, in the MOUTH's frame.
@@ -121,7 +121,7 @@ def _mouth_to_target[
 
 def _upright[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]) raises -> Float64:
+](d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1]) raises -> Float64:
     """`Physics.upright` — `xmat['torso', 'zz']`, the torso z-axis projected
     onto the world z-axis. +1 upright, -1 upside down."""
     return xmat_elem(d, TORSO_BODY_IDX, XMAT_ZZ)
@@ -130,7 +130,7 @@ def _upright[
 def _append_shared_obs[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     mut obs: List[Scalar[DTYPE]],
 ) raises:
     """`joint_angles` then `upright` — the head of both observations."""
@@ -142,7 +142,7 @@ def _append_shared_obs[
 def _append_velocity[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     mut obs: List[Scalar[DTYPE]],
 ):
     """`physics.velocity()` — the WHOLE `qvel`, free root included.
@@ -156,7 +156,7 @@ def _append_velocity[
 
 def _reset_pose[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]):
+](mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1]):
     """The half of `initialize_episode` both tasks share.
 
     A uniform random root orientation, then every internal joint uniform in
@@ -376,7 +376,7 @@ struct DMFishUprightConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -401,7 +401,7 @@ struct DMFishUprightConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -423,7 +423,7 @@ struct DMFishUprightConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -716,7 +716,7 @@ struct DMFishSwimConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -745,7 +745,7 @@ struct DMFishSwimConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -780,7 +780,7 @@ struct DMFishSwimConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],

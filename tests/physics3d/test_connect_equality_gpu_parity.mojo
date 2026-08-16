@@ -148,11 +148,9 @@ def _parity[M: ModelDefFromXML, SOLVER: StaticString](
         " serialized and this leg would be vacuous",
     )
 
-    var dg = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, BATCH]()
-    var dc = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, BATCH]()
-    var doff = Data[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, BATCH
-    ]()
+    var dg = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], BATCH]()
+    var dc = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], BATCH]()
+    var doff = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], BATCH]()
     M.reset_data[DTYPE](sf, dg)
     M.reset_data[DTYPE](sf, dc)
     M.reset_data[DTYPE](sf, doff)

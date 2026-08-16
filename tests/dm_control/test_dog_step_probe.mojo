@@ -181,7 +181,7 @@ def test_dog_step_stages_vs_mujoco() raises:
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
     M.reset_data[DTYPE](sf, d)
 
     for i in range(NQ):
@@ -293,7 +293,7 @@ def test_dog_step_stages_vs_mujoco() raises:
     # this is the mass matrix + passive forces + LDL solve and nothing else.
     # The contacts-disabled run below still carries limit rows, which is why
     # it cannot play this role.
-    var d2 = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    var d2 = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
     M.reset_data[DTYPE](sf, d2)
     var dat2 = mujoco.MjData(mm)
     mujoco.mj_resetData(mm, dat2)
@@ -336,7 +336,7 @@ def test_dog_step_stages_vs_mujoco() raises:
     # disabled on BOTH sides and compare the one surviving output. This still
     # carries joint limits and dry friction, which MuJoCo also keeps under
     # `mjDSBL_CONTACT`, so the two runs bracket the contact solver exactly.
-    var d0 = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    var d0 = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
     M.reset_data[DTYPE](sf, d0)
     for i in range(NQ):
         d0.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
@@ -548,7 +548,7 @@ def test_dog_noslip_ab() raises:
     var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
 
-    var d4 = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    var d4 = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
     M.reset_data[DTYPE](sf, d4)
     for i in range(NQ):
         d4.qpos.data[i] = Scalar[DTYPE](Float64(py=dat4.qpos[i]))
@@ -567,7 +567,7 @@ def test_dog_noslip_ab() raises:
     for i in range(NV):
         o4.append(Float64(integ4.scratch.qacc_constrained.data[i]))
 
-    var d0 = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    var d0 = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
     M.reset_data[DTYPE](sf, d0)
     for i in range(NQ):
         d0.qpos.data[i] = Scalar[DTYPE](Float64(py=dat4.qpos[i]))
@@ -685,7 +685,7 @@ def test_dog_contact_forces_vs_mujoco() raises:
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
     M.reset_data[DTYPE](sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
@@ -783,7 +783,7 @@ def test_dog_contact_params_vs_mujoco() raises:
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
     M.reset_data[DTYPE](sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
@@ -938,7 +938,7 @@ def test_dog_applied_force_vs_mujoco() raises:
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
     M.reset_data[DTYPE](sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))

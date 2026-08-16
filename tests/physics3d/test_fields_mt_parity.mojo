@@ -103,8 +103,8 @@ def test_walker2d_per_op() raises:
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Pseudo-random qpos/qvel (standard harness pattern; rootz lifted).
-    var ds = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dp = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var ds = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dp = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -267,8 +267,8 @@ def test_humanoid_fk_bodyvel() raises:
     var mf = Model[DTYPE, Dims[nv=H_NV, nbody=H_NBODY, njoint=H_NJOINT, ngeom=H_NGEOM, nequality=H_NEQ, ntendon=H_NTEN, nsite=H_NSITE, nexclude=H_NEXCL, nmesh_verts=0]]()
     HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var ds = Data[DTYPE, H_NQ, H_NV, H_NBODY, H_MC, H_NSITE, H_BATCH]()
-    var dp = Data[DTYPE, H_NQ, H_NV, H_NBODY, H_MC, H_NSITE, H_BATCH]()
+    var ds = Data[DTYPE, Dims[nq=H_NQ, nv=H_NV, nbody=H_NBODY, max_contacts=H_MC, nsite=H_NSITE], H_BATCH]()
+    var dp = Data[DTYPE, Dims[nq=H_NQ, nv=H_NV, nbody=H_NBODY, max_contacts=H_MC, nsite=H_NSITE], H_BATCH]()
     for e in range(H_BATCH):
         for i in range(H_NQ):
             var qp = _humanoid_qpos(e, i)
@@ -326,8 +326,8 @@ def test_rk4_integrator_parallel() raises:
     var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var ds = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dp = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var ds = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dp = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0

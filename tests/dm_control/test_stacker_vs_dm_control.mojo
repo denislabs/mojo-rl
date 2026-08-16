@@ -205,14 +205,14 @@ def _ref(n_boxes: Int) raises -> PythonObject:
 
 
 comptime Mod2 = Model[DTYPE, Dims[nv=NV2, nbody=NBODY2, njoint=NJOINT2, ngeom=NGEOM2, nequality=NEQ2, ntendon=NTEN2, nsite=NSITE2, nexclude=NEXCL2, nmesh_verts=0]]
-comptime Dat2 = Data[DTYPE, NQ2, NV2, NBODY2, MAXC2, NSITE2, 1]
+comptime Dat2 = Data[DTYPE, Dims[nq=NQ2, nv=NV2, nbody=NBODY2, max_contacts=MAXC2, nsite=NSITE2], 1]
 comptime Integ2 = EulerIntegrator[
     DTYPE, NQ2, NV2, NBODY2, NJOINT2, MAXC2, NGEOM2, NEQ2, NTEN2, NSITE2,
     NEXCL2, 0, M2.CONE_TYPE, 1, SOLVER="newton",
 ]
 
 comptime Mod4 = Model[DTYPE, Dims[nv=NV4, nbody=NBODY4, njoint=NJOINT4, ngeom=NGEOM4, nequality=NEQ4, ntendon=NTEN4, nsite=NSITE4, nexclude=NEXCL4, nmesh_verts=0]]
-comptime Dat4 = Data[DTYPE, NQ4, NV4, NBODY4, MAXC4, NSITE4, 1]
+comptime Dat4 = Data[DTYPE, Dims[nq=NQ4, nv=NV4, nbody=NBODY4, max_contacts=MAXC4, nsite=NSITE4], 1]
 comptime Integ4 = EulerIntegrator[
     DTYPE, NQ4, NV4, NBODY4, NJOINT4, MAXC4, NGEOM4, NEQ4, NTEN4, NSITE4,
     NEXCL4, 0, M4.CONE_TYPE, 1, SOLVER="newton",

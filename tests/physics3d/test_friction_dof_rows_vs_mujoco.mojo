@@ -161,7 +161,7 @@ struct FricCfg(Phyics3dEnvConfig):
         DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]], m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]], m_sites: List[Scalar[DTYPE]],
         mut obs: List[Scalar[DTYPE]],
@@ -177,7 +177,7 @@ struct FricCfg(Phyics3dEnvConfig):
         DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]], m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]], m_sites: List[Scalar[DTYPE]],
         prev_x: Scalar[DTYPE], actions: List[Float64], step_count: Int,
@@ -314,7 +314,7 @@ comptime REL_TOL: Float64 = 1e-4
 def _fields_prep[
     target: StaticString
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
     mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
@@ -420,7 +420,7 @@ def _fields_prep[
 
 
 
-def _seed_fric(mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]):
+def _seed_fric(mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]):
     """Box resting ON the ground with a lateral velocity, so the friction row
     and the contact are BOTH live — the regime the blocked kernel never saw."""
     for e in range(BATCH):
@@ -452,9 +452,9 @@ def test_blocked_friction_rows() raises:
             "our model has NO frictionloss — the friction rows are vacuous"
         )
 
-    var dg = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dp = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dg = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dc = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dp = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     _seed_fric(dg)
     _seed_fric(dc)
     _seed_fric(dp)

@@ -52,7 +52,7 @@ from std.collections import InlineArray
 from layout import Layout, LayoutTensor
 from std.random.philox import Random as PhiloxRandom
 
-from mojo_rl.physics3d.fields import Data
+from mojo_rl.physics3d.fields import Data, Dims
 from mojo_rl.physics3d.sensors.frame_vel import (
     site_frame_velocity,
     site_frame_velocity_gpu,
@@ -109,7 +109,7 @@ comptime FAR_TARGET_BOX: Float64 = 2.0
 def _nose_to_target[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_geoms: List[Scalar[DTYPE]],
 ) raises -> Tuple[Float64, Float64]:
     """`Physics.nose_to_target` — target minus nose, rotated into the head
@@ -234,7 +234,7 @@ struct DMSwimmerConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -285,7 +285,7 @@ struct DMSwimmerConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -342,7 +342,7 @@ struct DMSwimmerConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],

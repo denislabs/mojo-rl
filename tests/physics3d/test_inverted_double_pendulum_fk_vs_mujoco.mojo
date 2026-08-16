@@ -65,9 +65,7 @@ def compare_fk(
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=InvertedDoublePendulumModel.MAX_EQUALITY, ntendon=InvertedDoublePendulumModel.MAX_TENDON, nsite=InvertedDoublePendulumModel.NSITE, nexclude=InvertedDoublePendulumModel.NEXCLUDE, nmesh_verts=0]]()
     InvertedDoublePendulumModel.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, InvertedDoublePendulumModel.NSITE, 1
-    ]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=InvertedDoublePendulumModel.NSITE], 1]()
 
     # Set qpos
     for i in range(NQ):

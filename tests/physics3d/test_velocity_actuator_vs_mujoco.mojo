@@ -285,9 +285,7 @@ def _gate[
     origin would pass with the length term wrongly included.
     """
     var sf = M.make_spec_fields[DTYPE]()
-    comptime Dat = Data[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1
-    ]
+    comptime Dat = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]
     comptime Mod = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0, npair=M.NPAIR]]
 
     var ctx = DeviceContext()

@@ -69,7 +69,7 @@ def main() raises:
     var mf = Model[DT, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     Walker2dModel.init_fields[DT, 0](ctx, mf)
 
-    var d = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     for i in range(NQ):
         d.qpos.data[i] = _init_qpos(i)
     for i in range(NV):
@@ -100,7 +100,7 @@ def main() raises:
     for i in range(NV):
         vcpu[i] = d.qvel.data[i]
 
-    var dg = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dg = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     for i in range(NQ):
         dg.qpos.data[i] = _init_qpos(i)
     for i in range(NV):

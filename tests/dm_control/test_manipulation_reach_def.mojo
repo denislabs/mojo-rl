@@ -152,9 +152,7 @@ def test_manipulation_reach_def_matches_mujoco() raises:
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=M.NPAIR]]()
     M.init_fields[DTYPE, NMESH_VERTS](ctx, mf)
-    var d = Data[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1
-    ]()
+    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
 
     for i in range(M.NQ):
         var qv = 0.11 * Float64(i + 1) - 0.4

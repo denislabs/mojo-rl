@@ -151,10 +151,7 @@ def test_runtime_parser_sets_weldid_and_the_pair_collides() raises:
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=MD_FJ.NV, nbody=MD_FJ.NBODY, njoint=MD_FJ.NJOINT, ngeom=MD_FJ.NGEOM, nequality=MD_FJ.MAX_EQUALITY, ntendon=MD_FJ.MAX_TENDON, nsite=MD_FJ.NSITE, nexclude=MD_FJ.NEXCLUDE, nmesh_verts=NMV, npair=MD_FJ.NPAIR]]()
     MD_FJ.init_fields[DTYPE, NMV](ctx, mf)
-    var d = Data[
-        DTYPE, MD_FJ.NQ, MD_FJ.NV, MD_FJ.NBODY, MD_FJ.MAX_CONTACTS,
-        MD_FJ.NSITE, 1,
-    ]()
+    var d = Data[DTYPE, Dims[nq=MD_FJ.NQ, nv=MD_FJ.NV, nbody=MD_FJ.NBODY, max_contacts=MD_FJ.MAX_CONTACTS, nsite=MD_FJ.NSITE], 1]()
     MD_FJ.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
     detect_contacts["cpu"](d, mf)

@@ -53,7 +53,7 @@ def main() raises:
     var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     AntModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     # nonzero free-joint translation + torso quat + a couple joint angles
     for e in range(BATCH):
         d.qpos.data[e * NQ + 2] = Scalar[DTYPE](0.55)  # free z

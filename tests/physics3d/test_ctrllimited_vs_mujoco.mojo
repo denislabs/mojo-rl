@@ -198,7 +198,7 @@ def test_apply_actions_cpu_matches_mujoco() raises:
     var mujoco = Python.import_module("mujoco")
     var mj = _mj_qfrc(mujoco, PROBE_CTRL)
 
-    var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
     M.reset_data[DTYPE](sf, d)
     var actions = List[Float64]()
     for _ in range(M.nact):
@@ -259,7 +259,7 @@ def test_apply_actions_gpu_matches_cpu() raises:
     comptime B = 2
     comptime AD = M.nact
 
-    var d32 = Data[GT, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    var d32 = Data[GT, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
     M.reset_data[GT](sf, d32)
     var actions_c = List[Float64]()
     for _ in range(M.nact):

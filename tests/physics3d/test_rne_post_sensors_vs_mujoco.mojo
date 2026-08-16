@@ -65,7 +65,7 @@ comptime Integ = EulerIntegrator[
     DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQ, NTEN, NSITE,
     NEXCL, 0, Mdl.CONE_TYPE, 1, SOLVER="newton", RNE_POST=True,
 ]
-comptime Dat = Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]
+comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1]
 comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]
 
 # ⚠ ALL FOUR BOUNDS WERE RE-PINNED 2026-08-03, two to three orders tighter,

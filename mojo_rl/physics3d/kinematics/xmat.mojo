@@ -21,7 +21,7 @@ keep that from biting at the call site.
 
 from layout import Layout, LayoutTensor
 
-from ..fields import Data
+from ..fields import Data, Dims
 
 
 # Row-major indices into a flattened 3x3, matching MuJoCo's named columns.
@@ -89,7 +89,7 @@ def xmat_elem[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     body: Int,
     idx: Int,
 ) -> Float64:

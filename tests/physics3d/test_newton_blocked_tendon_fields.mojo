@@ -135,7 +135,7 @@ comptime REL_TOL: Float64 = 1e-4
 def _fields_prep[
     target: StaticString
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
     mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
@@ -243,7 +243,7 @@ def _fields_prep[
 
 def _ten_length(
     mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
-    d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
     env: Int,
 ) -> Float64:
     """Straight-line ball-site to cup-site distance, from FK output."""
@@ -256,7 +256,7 @@ def _ten_length(
     return (dx * dx + dz * dz) ** 0.5
 
 
-def _seed(mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]):
+def _seed(mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]):
     for e in range(BATCH):
         d.qpos.data[e * NQ + 0] = Scalar[DTYPE](0.02 * Float64(e))
         d.qpos.data[e * NQ + 1] = Scalar[DTYPE](0.0)
@@ -277,8 +277,8 @@ def test_blocked_tendon_rows_gpu_vs_cpu() raises:
     var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
     DMBallInCupModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var dg = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dg = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dc = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     _seed(dg)
     _seed(dc)
     dg.upload_all(ctx)
@@ -350,8 +350,8 @@ def test_blocked_matches_per_env_solver() raises:
     var ctx = DeviceContext()
     DMBallInCupModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var db = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dp = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var db = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dp = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     _seed(db)
     _seed(dp)
 

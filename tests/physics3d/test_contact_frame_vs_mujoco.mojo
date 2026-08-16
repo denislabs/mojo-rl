@@ -206,7 +206,7 @@ comptime TOL_FRAME: Float64 = 1e-12
 # exact: worst normal error 4.44e-16, worst t1 4.44e-16, worst t2 1.11e-16.
 comptime TOL_NORMAL: Float64 = 1e-14
 
-comptime Dat = Data[DTYPE, FM.NQ, FM.NV, FM.NBODY, FM.MAX_CONTACTS, FM.NSITE, 1]
+comptime Dat = Data[DTYPE, Dims[nq=FM.NQ, nv=FM.NV, nbody=FM.NBODY, max_contacts=FM.MAX_CONTACTS, nsite=FM.NSITE], 1]
 comptime Mod = Model[DTYPE, Dims[nv=FM.NV, nbody=FM.NBODY, njoint=FM.NJOINT, ngeom=FM.NGEOM, nequality=FM.MAX_EQUALITY, ntendon=FM.MAX_TENDON, nsite=FM.NSITE, nexclude=FM.NEXCLUDE, nmesh_verts=0]]
 
 

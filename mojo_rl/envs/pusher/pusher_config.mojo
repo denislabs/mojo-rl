@@ -11,7 +11,7 @@ from std.math import sqrt
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.fields import Data
+from mojo_rl.physics3d.fields import Data, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     MODEL_SITE_SIZE,
@@ -61,7 +61,7 @@ struct PusherConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         mut prev_x: Scalar[DTYPE],
     ):
         pass  # No pre-step state needed for Pusher
@@ -75,7 +75,7 @@ struct PusherConfig(Phyics3dEnvConfig):
         NBODY: Int,
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
-    ](mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]):
+    ](mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1]):
         # Fix goal position: set goal slide joints to 0 (stays at XML body pos)
         # Goal joints are at indices 9 and 10 (goal_slidey, goal_slidex)
         d.qpos.data[9] = Scalar[DTYPE](0)
@@ -97,7 +97,7 @@ struct PusherConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -137,7 +137,7 @@ struct PusherConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],

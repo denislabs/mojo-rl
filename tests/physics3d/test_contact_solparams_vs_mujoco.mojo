@@ -114,7 +114,7 @@ comptime PM = ModelDefFromXML[
 # these are rounding budgets.
 comptime TOL: Float64 = 1e-12
 
-comptime Dat = Data[DTYPE, PM.NQ, PM.NV, PM.NBODY, PM.MAX_CONTACTS, PM.NSITE, 1]
+comptime Dat = Data[DTYPE, Dims[nq=PM.NQ, nv=PM.NV, nbody=PM.NBODY, max_contacts=PM.MAX_CONTACTS, nsite=PM.NSITE], 1]
 comptime Mod = Model[DTYPE, Dims[nv=PM.NV, nbody=PM.NBODY, njoint=PM.NJOINT, ngeom=PM.NGEOM, nequality=PM.MAX_EQUALITY, ntendon=PM.MAX_TENDON, nsite=PM.NSITE, nexclude=PM.NEXCLUDE, nmesh_verts=0]]
 
 

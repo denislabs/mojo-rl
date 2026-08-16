@@ -53,7 +53,7 @@ comptime Integ = EulerIntegrator[
     Mdl.MAX_TENDON, NSITE, Mdl.NEXCLUDE, 0, Mdl.CONE_TYPE, 1,
     SOLVER="newton", RNE_POST=True,
 ]
-comptime Dat = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]
+comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], 1]
 comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=Mdl.NJOINT, ngeom=Mdl.NGEOM, nequality=Mdl.MAX_EQUALITY, ntendon=Mdl.MAX_TENDON, nsite=NSITE, nexclude=Mdl.NEXCLUDE, nmesh_verts=0]]
 
 # FLOAT32, because the batched path is a Metal kernel and Metal has no float64.

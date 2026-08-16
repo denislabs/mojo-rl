@@ -107,7 +107,7 @@ comptime NV: Int = BBM.NV
 comptime NBODY: Int = BBM.NBODY
 comptime MC: Int = BBM.MAX_CONTACTS
 
-comptime Dat = Data[DTYPE, NQ, NV, NBODY, MC, BBM.NSITE, 1]
+comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=BBM.NSITE], 1]
 comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=BBM.NJOINT, ngeom=BBM.NGEOM, nequality=BBM.MAX_EQUALITY, ntendon=BBM.MAX_TENDON, nsite=BBM.NSITE, nexclude=BBM.NEXCLUDE, nmesh_verts=0]]
 
 comptime NPOSE: Int = 400

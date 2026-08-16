@@ -54,7 +54,7 @@ from std.math import log, sqrt, cos, sin, pi, inf
 from std.random import random_float64
 from std.collections import InlineArray
 
-from mojo_rl.physics3d.fields import Data
+from mojo_rl.physics3d.fields import Data, Dims
 from mojo_rl.physics3d.kinematics.xmat import xmat_elem, XMAT_ZX, XMAT_ZY, XMAT_ZZ
 from mojo_rl.physics3d.sensors.frame_vel import (
     site_frame_velocity,
@@ -134,7 +134,7 @@ def _randn_pair() -> Tuple[Float64, Float64]:
 def _world_to_torso[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     vx: Float64,
     vy: Float64,
     vz: Float64,
@@ -160,7 +160,7 @@ def _world_to_torso[
 def _com_velocity_torso_frame[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_bodies: List[Scalar[DTYPE]],
     nbody: Int,
 ) -> Tuple[Float64, Float64, Float64]:
@@ -180,7 +180,7 @@ def _com_velocity_torso_frame[
 def _touch_sum[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_sites: List[Scalar[DTYPE]],
 ) raises -> Float64:
     """`touch_sensors().sum()` — palm_L + palm_R + sole_L + sole_R.
@@ -200,7 +200,7 @@ def _touch_sum[
 def _stand_factors[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_bodies: List[Scalar[DTYPE]],
     m_sites: List[Scalar[DTYPE]],
 ) raises -> Float64:
@@ -254,7 +254,7 @@ def _stand_factors[
 def _dog_obs_cpu[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_bodies: List[Scalar[DTYPE]],
     m_sites: List[Scalar[DTYPE]],
     act: List[Scalar[DTYPE]],
@@ -703,7 +703,7 @@ def _dog_obs_gpu[
 @always_inline
 def _dog_reset_cpu[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]):
+](mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1]):
     """`Stand.initialize_episode`, minus the `data.act` draw.
 
         azimuth     = uniform(0, 2*pi)
@@ -871,7 +871,7 @@ struct DMDogStandConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -1129,7 +1129,7 @@ struct DMDogStandConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -1150,7 +1150,7 @@ struct DMDogStandConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -1215,7 +1215,7 @@ struct DMDogMoveConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -1518,7 +1518,7 @@ struct DMDogMoveConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -1540,7 +1540,7 @@ struct DMDogMoveConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],

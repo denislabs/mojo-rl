@@ -44,7 +44,7 @@ comptime BATCH = 2
 comptime N_STEPS = 3
 
 
-def _init_state(mut d: Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]):
+def _init_state(mut d: Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]):
     """Fallen Walker2D (feet penetrating the floor)."""
     for e in range(BATCH):
         for i in range(NQ):
@@ -69,8 +69,8 @@ def part_a(ctx: DeviceContext) raises:
     print("--- Part A: Euler SOLVER='cg' vs 'newton' (", N_STEPS, "steps)")
     var mf = _load_model(ctx)
 
-    var dN = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dC = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dN = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dC = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     _init_state(dN)
     _init_state(dC)
     dN.upload_all(ctx)
@@ -124,8 +124,8 @@ def part_b(ctx: DeviceContext) raises:
     print("--- Part B: Implicit + RK4 SOLVER='cg' compile + step (finite)")
     var mf = _load_model(ctx)
 
-    var dImp = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dRk4 = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dImp = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dRk4 = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     _init_state(dImp)
     _init_state(dRk4)
     dImp.upload_all(ctx)

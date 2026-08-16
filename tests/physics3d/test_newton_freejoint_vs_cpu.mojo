@@ -92,7 +92,7 @@ def _prep[
     NQ: Int, NV: Int, NBODY: Int, NJOINT: Int, NGEOM: Int, MC: Int,
     NEQ: Int, NTEN: Int, NSITE: Int, NEXCL: Int, target: StaticString,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
     mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
@@ -218,8 +218,8 @@ def _validate[MODEL: ModelDefLike](
     MODEL.init_fields[DTYPE, 0](ctx, mf)
 
     # Gentle pose: torso lowered so feet lightly touch (not deep penetration).
-    var d_g = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var d_c = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d_g = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var d_c = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     for e in range(BATCH):
         d_g.qpos.data[e * NQ + 2] = Scalar[DTYPE](torso_z + 0.01 * Float64(e))
         d_g.qpos.data[e * NQ + 3] = Scalar[DTYPE](1.0)  # quat w

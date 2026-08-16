@@ -76,7 +76,7 @@ def _read(path: String) raises -> String:
 struct _Fixture:
     """Jaco model + data + the reference handles every test here needs."""
 
-    var d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1]
+    var d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]
     var mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=0, ntendon=0, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=0]]
     var body_class: InlineArray[Int, NBODY]
 
@@ -100,7 +100,7 @@ struct _Fixture:
             NMESH_VERTS, 0,
         ](fmd, self.mf)
         _ = os.chdir(cwd)
-        self.d = Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1]()
+        self.d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]()
 
         var cls = refmod.body_classes_reference()
         self.body_class = InlineArray[Int, NBODY](fill=BODY_FIXED)

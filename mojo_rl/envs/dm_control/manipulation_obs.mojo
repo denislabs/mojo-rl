@@ -41,7 +41,7 @@ up as a 3.3e-07 hole in this exact term). See
 from std.collections import InlineArray
 from std.math import sin, cos
 
-from mojo_rl.physics3d.fields import Data
+from mojo_rl.physics3d.fields import Data, Dims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     JOINT_IDX_AXIS_X,
@@ -157,7 +157,7 @@ def append_robot_block[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_bodies: List[Scalar[DTYPE]],
     m_joints: List[Scalar[DTYPE]],
     m_sites: List[Scalar[DTYPE]],
@@ -254,7 +254,7 @@ def append_free_prop_block[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_geoms: List[Scalar[DTYPE]],
     geom: Int,
     mut obs: List[Scalar[DTYPE]],
@@ -288,7 +288,7 @@ def append_free_prop_block_site[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_sites: List[Scalar[DTYPE]],
     site: Int,
     mut obs: List[Scalar[DTYPE]],
@@ -328,7 +328,7 @@ def append_free_prop_frame[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     body: Int,
     lpx: Scalar[DTYPE],
     lpy: Scalar[DTYPE],

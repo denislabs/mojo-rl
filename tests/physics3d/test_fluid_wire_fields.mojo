@@ -43,8 +43,8 @@ def _load_model(ctx: DeviceContext) raises -> Model[DT, Dims[nv=NV, nbody=NBODY,
     return mf^
 
 
-def _fresh_data() raises -> Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]:
-    var d = Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]()
+def _fresh_data() raises -> Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]:
+    var d = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DT]((i * 3) % 5 - 2) / 20.0
     for i in range(NV):
@@ -53,7 +53,7 @@ def _fresh_data() raises -> Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH]:
 
 
 def _check_finite(
-    mut d: Data[DT, NQ, NV, NBODY, MC, NSITE, BATCH], ctx: DeviceContext, name: String
+    mut d: Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH], ctx: DeviceContext, name: String
 ) raises:
     d.qpos.download(ctx)
     d.qvel.download(ctx)

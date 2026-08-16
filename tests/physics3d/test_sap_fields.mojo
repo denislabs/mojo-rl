@@ -324,7 +324,7 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     var mf = Model[DTYPE, Dims[nv=NV_H, nbody=NBODY_H, njoint=NJOINT_H, ngeom=NGEOM_H, nequality=NEQ_H, ntendon=NTD_H, nsite=NSITE_H, nexclude=NEXCL_H, nmesh_verts=0]]()
     HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
 
-    var d = Data[DTYPE, NQ_H, NV_H, NBODY_H, MC_H, NSITE_H, BATCH]()
+    var d = Data[DTYPE, Dims[nq=NQ_H, nv=NV_H, nbody=NBODY_H, max_contacts=MC_H, nsite=NSITE_H], BATCH]()
     for e in range(BATCH):
         for i in range(NQ_H):
             d.qpos.data[e * NQ_H + i] = _humanoid_qpos(e, i)
@@ -417,7 +417,7 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
         raise Error("no sweep-emitted body-body contact — sweep leg vacuous")
 
     # Fields CPU vs fields GPU.
-    var dc = Data[DTYPE, NQ_H, NV_H, NBODY_H, MC_H, NSITE_H, BATCH]()
+    var dc = Data[DTYPE, Dims[nq=NQ_H, nv=NV_H, nbody=NBODY_H, max_contacts=MC_H, nsite=NSITE_H], BATCH]()
     for e in range(BATCH):
         for i in range(NQ_H):
             dc.qpos.data[e * NQ_H + i] = _humanoid_qpos(e, i)
@@ -467,7 +467,7 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     # world normalized to 0) + pos/dist within 1e-4. Same-type body-body
     # pairs may be visited with operands swapped by the sweep (pos then
     # differs at float rounding level), hence the tolerance.
-    var dn = Data[DTYPE, NQ_H, NV_H, NBODY_H, MC_H, NSITE_H, BATCH]()
+    var dn = Data[DTYPE, Dims[nq=NQ_H, nv=NV_H, nbody=NBODY_H, max_contacts=MC_H, nsite=NSITE_H], BATCH]()
     for e in range(BATCH):
         for i in range(NQ_H):
             dn.qpos.data[e * NQ_H + i] = _humanoid_qpos(e, i)
@@ -538,7 +538,7 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     print("  PASS: fields-SAP == fields-O(N^2) as contact SETS")
 
     # ── Auto dispatcher: humanoid must route to SAP (bit-equal).
-    var da = Data[DTYPE, NQ_H, NV_H, NBODY_H, MC_H, NSITE_H, BATCH]()
+    var da = Data[DTYPE, Dims[nq=NQ_H, nv=NV_H, nbody=NBODY_H, max_contacts=MC_H, nsite=NSITE_H], BATCH]()
     for e in range(BATCH):
         for i in range(NQ_H):
             da.qpos.data[e * NQ_H + i] = _humanoid_qpos(e, i)
@@ -632,7 +632,7 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
         q[15] = 0.0
         qcfg.append(q^)
 
-    var d = Data[DTYPE, NQ_S, NV_S, NBODY_S, MC_S, NSITE_S, BATCH]()
+    var d = Data[DTYPE, Dims[nq=NQ_S, nv=NV_S, nbody=NBODY_S, max_contacts=MC_S, nsite=NSITE_S], BATCH]()
     for e in range(BATCH):
         for i in range(NQ_S):
             d.qpos.data[e * NQ_S + i] = Scalar[DTYPE](qcfg[e][i])
@@ -771,8 +771,8 @@ def _part_c_walker(ctx: DeviceContext) raises:
     q1[7] = -0.9
     qcfg.append(q1^)
 
-    var d1 = Data[DTYPE, NQ_W, NV_W, NBODY_W, MC_W, NSITE_W, BATCH]()
-    var d2 = Data[DTYPE, NQ_W, NV_W, NBODY_W, MC_W, NSITE_W, BATCH]()
+    var d1 = Data[DTYPE, Dims[nq=NQ_W, nv=NV_W, nbody=NBODY_W, max_contacts=MC_W, nsite=NSITE_W], BATCH]()
+    var d2 = Data[DTYPE, Dims[nq=NQ_W, nv=NV_W, nbody=NBODY_W, max_contacts=MC_W, nsite=NSITE_W], BATCH]()
     for e in range(BATCH):
         for i in range(NQ_W):
             d1.qpos.data[e * NQ_W + i] = Scalar[DTYPE](qcfg[e][i])

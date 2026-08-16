@@ -49,7 +49,7 @@ sensor rather than an error.
 from std.math import sqrt
 from layout import Layout, LayoutTensor
 
-from ..fields import Data
+from ..fields import Data, Dims
 from ..constants import GEOM_SPHERE, GEOM_ELLIPSOID, GEOM_BOX
 from ..kinematics.quat_math import gpu_quat_mul, gpu_quat_rotate
 from ..gpu.constants import (
@@ -86,7 +86,7 @@ def touch_sphere_site[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_sites: List[Scalar[DTYPE]],
     site: Int,
     scale: Float64,

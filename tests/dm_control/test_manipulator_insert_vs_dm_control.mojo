@@ -103,7 +103,7 @@ comptime BNGEOM: Int = MB.NGEOM  # 25
 comptime BNSITE: Int = MB.NSITE  # 10
 comptime BMAXC: Int = MB.MAX_CONTACTS
 comptime BModel = Model[DTYPE, Dims[nv=BNV, nbody=BNBODY, njoint=BNJOINT, ngeom=BNGEOM, nequality=MB.MAX_EQUALITY, ntendon=MB.MAX_TENDON, nsite=BNSITE, nexclude=MB.NEXCLUDE, nmesh_verts=0]]
-comptime BData = Data[DTYPE, BNQ, BNV, BNBODY, BMAXC, BNSITE, 1]
+comptime BData = Data[DTYPE, Dims[nq=BNQ, nv=BNV, nbody=BNBODY, max_contacts=BMAXC, nsite=BNSITE], 1]
 comptime BInteg = EulerIntegrator[
     DTYPE, BNQ, BNV, BNBODY, BNJOINT, BMAXC, BNGEOM, MB.MAX_EQUALITY,
     MB.MAX_TENDON, BNSITE, MB.NEXCLUDE, 0, MB.CONE_TYPE, 1, SOLVER="newton",
@@ -119,7 +119,7 @@ comptime PNGEOM: Int = MP.NGEOM  # 28
 comptime PNSITE: Int = MP.NSITE  # 17
 comptime PMAXC: Int = MP.MAX_CONTACTS
 comptime PModel = Model[DTYPE, Dims[nv=PNV, nbody=PNBODY, njoint=PNJOINT, ngeom=PNGEOM, nequality=MP.MAX_EQUALITY, ntendon=MP.MAX_TENDON, nsite=PNSITE, nexclude=MP.NEXCLUDE, nmesh_verts=0]]
-comptime PData = Data[DTYPE, PNQ, PNV, PNBODY, PMAXC, PNSITE, 1]
+comptime PData = Data[DTYPE, Dims[nq=PNQ, nv=PNV, nbody=PNBODY, max_contacts=PMAXC, nsite=PNSITE], 1]
 comptime PInteg = EulerIntegrator[
     DTYPE, PNQ, PNV, PNBODY, PNJOINT, PMAXC, PNGEOM, MP.MAX_EQUALITY,
     MP.MAX_TENDON, PNSITE, MP.NEXCLUDE, 0, MP.CONE_TYPE, 1, SOLVER="newton",
@@ -489,7 +489,7 @@ def _pose_mocap_peg(mut d: PData):
 def _set_mocap[
     NQ: Int, NV: Int, NBODY: Int, MAXC: Int, NSITE: Int
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
     body: Int,
     x: Float64, y: Float64, z: Float64, angle: Float64,
 ):

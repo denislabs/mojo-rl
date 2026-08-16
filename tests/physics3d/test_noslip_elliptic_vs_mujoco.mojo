@@ -358,7 +358,7 @@ def _rollout[
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=MD.NV, nbody=MD.NBODY, njoint=MD.NJOINT, ngeom=MD.NGEOM, nequality=MD.MAX_EQUALITY, ntendon=MD.MAX_TENDON, nsite=MD.NSITE, nexclude=MD.NEXCLUDE, nmesh_verts=0, npair=MD.NPAIR]]()
     MD.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.MAX_CONTACTS, MD.NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=MD.NQ, nv=MD.NV, nbody=MD.NBODY, max_contacts=MD.MAX_CONTACTS, nsite=MD.NSITE], 1]()
     MD.reset_data[DTYPE](sf, d)
 
     var sq = md.qpos.flatten().tolist()

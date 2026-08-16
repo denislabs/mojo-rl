@@ -71,9 +71,7 @@ def compare_fk(
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=HumanoidModel.MAX_EQUALITY, ntendon=HumanoidModel.MAX_TENDON, nsite=HumanoidModel.NSITE, nexclude=HumanoidModel.NEXCLUDE, nmesh_verts=0]]()
     HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HumanoidModel.NSITE, 1
-    ]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=HumanoidModel.NSITE], 1]()
 
     # Set qpos
     for i in range(NQ):

@@ -189,7 +189,7 @@ def _ref() raises -> PythonObject:
 
 
 comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]
-comptime Dat = Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1]
+comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]
 comptime Integ = EulerIntegrator[
     DTYPE, NQ, NV, NBODY, NJOINT, MAXC, NGEOM, NEQ, NTEN, NSITE,
     NEXCL, 0, M.CONE_TYPE, 1, SOLVER="newton",

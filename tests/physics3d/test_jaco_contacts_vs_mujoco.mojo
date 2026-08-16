@@ -154,7 +154,7 @@ def test_jaco_contacts_vs_mujoco() raises:
         NMESH_VERTS, 0,
     ](fmd, mf)
     _ = os.chdir(cwd)
-    var d = Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]()
 
     assert_true(Int(py=mm.ngeom) == NGEOM, "ngeom mismatch")
     assert_true(Int(py=mm.nbody) == NBODY, "nbody mismatch")

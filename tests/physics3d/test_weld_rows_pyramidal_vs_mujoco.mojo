@@ -344,7 +344,7 @@ def test_pyramidal_weld_matches_mujoco() raises:
     var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
     M.init_fields[DTYPE, 0](ctx, mf)
 
-    var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
     M.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
 
@@ -371,7 +371,7 @@ def test_pyramidal_weld_matches_mujoco() raises:
 
 
 def _prep(
-    mut d: Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1],
     mut mf: Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]],
     mut sc: DynamicsScratch[DTYPE, Dims[nv=M.NV, nbody=M.NBODY], 1],
 ) raises:
@@ -434,7 +434,7 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
     # Settle into the COUPLED state first. Comparing two solvers at the reset
     # pose would compare them with no contact live, which is the regime where
     # a post-pass and a row agree.
-    var d = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
     M.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
     var integ = EulerIntegrator[
@@ -446,8 +446,8 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
     for _ in range(NSTEPS):
         integ.step["cpu", CONTACTS=True](d, mf)
 
-    var db = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
-    var dp = Data[DTYPE, M.NQ, M.NV, M.NBODY, M.MAX_CONTACTS, M.NSITE, 1]()
+    var db = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var dp = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
     M.reset_data[DTYPE](sf, db)
     M.reset_data[DTYPE](sf, dp)
     for i in range(M.NQ):
@@ -585,7 +585,7 @@ def test_explicit_relpose_is_still_honoured() raises:
     var mf = Model[DTYPE, Dims[nv=MX.NV, nbody=MX.NBODY, njoint=MX.NJOINT, ngeom=MX.NGEOM, nequality=MX.MAX_EQUALITY, ntendon=MX.MAX_TENDON, nsite=MX.NSITE, nexclude=MX.NEXCLUDE, nmesh_verts=0]]()
     MX.init_fields[DTYPE, 0](ctx, mf)
 
-    var d = Data[DTYPE, MX.NQ, MX.NV, MX.NBODY, MX.MAX_CONTACTS, MX.NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=MX.NQ, nv=MX.NV, nbody=MX.NBODY, max_contacts=MX.MAX_CONTACTS, nsite=MX.NSITE], 1]()
     MX.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
     var integ = EulerIntegrator[
@@ -655,9 +655,7 @@ def test_weld_orientation_rows_match_mujoco() raises:
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=MTQ1.NV, nbody=MTQ1.NBODY, njoint=MTQ1.NJOINT, ngeom=MTQ1.NGEOM, nequality=MTQ1.MAX_EQUALITY, ntendon=MTQ1.MAX_TENDON, nsite=MTQ1.NSITE, nexclude=MTQ1.NEXCLUDE, nmesh_verts=0]]()
     MTQ1.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[
-        DTYPE, MTQ1.NQ, MTQ1.NV, MTQ1.NBODY, MTQ1.MAX_CONTACTS, MTQ1.NSITE, 1
-    ]()
+    var d = Data[DTYPE, Dims[nq=MTQ1.NQ, nv=MTQ1.NV, nbody=MTQ1.NBODY, max_contacts=MTQ1.MAX_CONTACTS, nsite=MTQ1.NSITE], 1]()
     MTQ1.reset_data[DTYPE](sf, d)
     d.qpos.data[0] = 0.07
     d.qpos.data[1] = -0.02
@@ -804,9 +802,7 @@ def test_weld_torquescale_matches_mujoco() raises:
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=MTQ5.NV, nbody=MTQ5.NBODY, njoint=MTQ5.NJOINT, ngeom=MTQ5.NGEOM, nequality=MTQ5.MAX_EQUALITY, ntendon=MTQ5.MAX_TENDON, nsite=MTQ5.NSITE, nexclude=MTQ5.NEXCLUDE, nmesh_verts=0]]()
     MTQ5.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[
-        DTYPE, MTQ5.NQ, MTQ5.NV, MTQ5.NBODY, MTQ5.MAX_CONTACTS, MTQ5.NSITE, 1
-    ]()
+    var d = Data[DTYPE, Dims[nq=MTQ5.NQ, nv=MTQ5.NV, nbody=MTQ5.NBODY, max_contacts=MTQ5.MAX_CONTACTS, nsite=MTQ5.NSITE], 1]()
     MTQ5.reset_data[DTYPE](sf, d)
     d.qpos.data[0] = 0.07
     d.qpos.data[1] = -0.02

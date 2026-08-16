@@ -4,13 +4,18 @@ WHAT THIS IS FOR (phase 1c, docs §5.1/§11.1)
 
 Today every container spells its dimensions out one `Int` at a time:
 
-    Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH]
-    Model[DTYPE, NV, NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE,
-          NEXCLUDE, NMESH_VERTS, NPAIR]
-      (^ the BEFORE picture — the converter rewrote this example in place on
-       the `Model` pass, because it matches call sites by bracket structure
-       and cannot tell code from prose. Restored by hand; worth knowing that
-       an automated repoint edits documentation too.)
+    Data <DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH>
+    Model <DTYPE, NV, NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE,
+           NEXCLUDE, NMESH_VERTS, NPAIR>
+
+⚠ THE ANGLE BRACKETS ABOVE ARE DELIBERATE. Written in real syntax, this
+"before" picture is indistinguishable from a call site: the repoint tool
+matches by BRACKET STRUCTURE and cannot tell code from prose, so it rewrote
+this example on the `Model` pass and again on the `Data` pass. It also
+MANGLED the equivalent example in `parser/full_parser.mojo`, mapping
+`nv=pm.NQ` / `nbody=pm.NV`, because that one listed arguments in an order
+that never matched the real signature. Documentation is part of a scripted
+edit's blast radius.
 
 That is **924 spellings across the tree** and 2 247 dimension parameters, of
 which 1 457 are in `mojo_rl/envs` reward/observation code doing nothing but

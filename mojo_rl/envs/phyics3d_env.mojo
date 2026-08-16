@@ -109,15 +109,7 @@ struct Phyics3dEnv[
 
     # Fields path (the physics state; hooks read/write it directly)
     var mf: Model[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY, njoint=Self.NJOINT, ngeom=Self.NGEOM, nequality=Self.MODEL_DEF.MAX_EQUALITY, ntendon=Self.MODEL_DEF.MAX_TENDON, nsite=Self.NSITE, nexclude=Self.MODEL_DEF.NEXCLUDE, nmesh_verts=Self.NMESH_VERTS, npair=Self.MODEL_DEF.NPAIR]]
-    var d: Data[
-        Self.DTYPE,
-        Self.NQ,
-        Self.NV,
-        Self.NBODY,
-        Self.MAX_CONTACTS,
-        Self.NSITE,
-        1,
-    ]
+    var d: Data[Self.DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1]
     # Both integrators are held (host scratch only on the CPU path — cheap);
     # the step comptime-dispatches on CONFIG.INTEGRATOR. HalfCheetah/Pusher/
     # MetaWorld configure Euler+Newton; the other 9 envs use RK4+Newton.

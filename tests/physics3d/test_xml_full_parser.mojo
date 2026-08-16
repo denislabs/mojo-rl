@@ -234,7 +234,7 @@ def test_xml_full_parser() raises:
         " (expected 0.7)",
     )
 
-    var d = Data[DType.float64, pm.NQ, pm.NV, pm.NBODY, 10, 0, 1]()
+    var d = Data[DType.float64, Dims[nq=pm.NQ, nv=pm.NV, nbody=pm.NBODY, max_contacts=10, nsite=0], 1]()
     forward_kinematics[
         "cpu", DType.float64, pm.NQ, pm.NV, pm.NBODY, pm.NJOINT, 10, pm.NGEOM,
         0, 0, 0, 0, 0, 1,

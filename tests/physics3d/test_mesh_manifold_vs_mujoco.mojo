@@ -155,7 +155,7 @@ def _group_name(g: Int) -> StaticString:
         return "mesh(hex)  x box  "
     return "mesh(hex)  x mesh "
 
-comptime Dat = Data[DTYPE, NQ, NV, NBODY, MC, MMM.NSITE, 1]
+comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=MMM.NSITE], 1]
 comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=MMM.NJOINT, ngeom=MMM.NGEOM, nequality=MMM.MAX_EQUALITY, ntendon=MMM.MAX_TENDON, nsite=MMM.NSITE, nexclude=MMM.NEXCLUDE, nmesh_verts=NMESHV]]
 
 comptime NPOSE: Int = 160

@@ -100,7 +100,7 @@ def test_contact_free_dynamics_match_mujoco() raises:
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=MD.NV, nbody=MD.NBODY, njoint=MD.NJOINT, ngeom=MD.NGEOM, nequality=MD.MAX_EQUALITY, ntendon=MD.MAX_TENDON, nsite=MD.NSITE, nexclude=MD.NEXCLUDE, nmesh_verts=NMV, npair=MD.NPAIR]]()
     MD.init_fields[DTYPE, NMV](ctx, mf)
-    var d = Data[DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.MAX_CONTACTS, MD.NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=MD.NQ, nv=MD.NV, nbody=MD.NBODY, max_contacts=MD.MAX_CONTACTS, nsite=MD.NSITE], 1]()
     MD.reset_data[DTYPE](sf, d)
     var integ = EulerIntegrator[
         DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.NJOINT, MD.MAX_CONTACTS, MD.NGEOM,
@@ -206,7 +206,7 @@ def test_shallow_contact_parity() raises:
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=MD.NV, nbody=MD.NBODY, njoint=MD.NJOINT, ngeom=MD.NGEOM, nequality=MD.MAX_EQUALITY, ntendon=MD.MAX_TENDON, nsite=MD.NSITE, nexclude=MD.NEXCLUDE, nmesh_verts=NMV, npair=MD.NPAIR]]()
     MD.init_fields[DTYPE, NMV](ctx, mf)
-    var d = Data[DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.MAX_CONTACTS, MD.NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=MD.NQ, nv=MD.NV, nbody=MD.NBODY, max_contacts=MD.MAX_CONTACTS, nsite=MD.NSITE], 1]()
     MD.reset_data[DTYPE](sf, d)
     var integ = EulerIntegrator[
         DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.NJOINT, MD.MAX_CONTACTS, MD.NGEOM,

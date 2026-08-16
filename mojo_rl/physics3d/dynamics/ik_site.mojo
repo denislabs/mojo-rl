@@ -168,7 +168,7 @@ def qpos_from_site_pose[
     MAXC: Int,
     NDOF: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     site: Int,
     target_pos: InlineArray[Scalar[DTYPE], 3],
@@ -430,7 +430,7 @@ def set_site_to_xpos[
     MAXC: Int,
     NDOF: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     site: Int,
     target_pos: InlineArray[Scalar[DTYPE], 3],

@@ -166,9 +166,7 @@ struct Phyics3dBatchedEnv[
     )
 
     # Fields path (the actual physics state)
-    var d: Data[
-        DT, Self.NQ, Self.NV, Self.NBODY, Self.MC, Self.NSITE, Self.N_ENVS
-    ]
+    var d: Data[DT, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MC, nsite=Self.NSITE], Self.N_ENVS]
     var mf: Model[DT, Dims[nv=Self.NV, nbody=Self.NBODY, njoint=Self.NJOINT, ngeom=Self.NGEOM, nequality=Self.MODEL_DEF.MAX_EQUALITY, ntendon=Self.MODEL_DEF.MAX_TENDON, nsite=Self.NSITE, nexclude=Self.MODEL_DEF.NEXCLUDE, nmesh_verts=0, npair=Self.MODEL_DEF.NPAIR]]
     # Actuation records (phase 1a.2/1a.3) — the operands
     # `apply_actions_kernel_gpu` reads where it used to read comptime

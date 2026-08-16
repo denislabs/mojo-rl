@@ -96,7 +96,7 @@ comptime NBODY: Int = PXM.NBODY
 comptime MC: Int = PXM.MAX_CONTACTS
 comptime NGEOM: Int = PXM.NGEOM
 
-comptime Dat = Data[DTYPE, NQ, NV, NBODY, MC, PXM.NSITE, 1]
+comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=PXM.NSITE], 1]
 comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=PXM.NJOINT, ngeom=NGEOM, nequality=PXM.MAX_EQUALITY, ntendon=PXM.MAX_TENDON, nsite=PXM.NSITE, nexclude=PXM.NEXCLUDE, nmesh_verts=NMESHV]]
 
 

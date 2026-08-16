@@ -150,7 +150,7 @@ comptime TOL_DIST: Float64 = 1e-12
 comptime TOL_NORMAL: Float64 = 1e-12
 comptime TOL_POS: Float64 = 1e-9
 
-comptime Dat = Data[DTYPE, PM.NQ, PM.NV, NBODY, MC, PM.NSITE, 1]
+comptime Dat = Data[DTYPE, Dims[nq=PM.NQ, nv=PM.NV, nbody=NBODY, max_contacts=MC, nsite=PM.NSITE], 1]
 comptime Mod = Model[DTYPE, Dims[nv=PM.NV, nbody=NBODY, njoint=PM.NJOINT, ngeom=NGEOM, nequality=PM.MAX_EQUALITY, ntendon=PM.MAX_TENDON, nsite=PM.NSITE, nexclude=PM.NEXCLUDE, nmesh_verts=0]]
 
 

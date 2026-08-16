@@ -271,7 +271,7 @@ def test_ball_in_cup_model_matches_mujoco() raises:
     var mj_d = mujoco.MjData(m)
     mujoco.mj_forward(m, mj_d)
 
-    var d = Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]()
     var sc = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], 1]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](0)

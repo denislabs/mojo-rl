@@ -328,7 +328,7 @@ def main() raises:
         q[12] = 1.0
         qcfg.append(q^)
 
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             d.qpos.data[e * NQ + i] = Scalar[DTYPE](qcfg[e][i])
@@ -568,7 +568,7 @@ def main() raises:
     print("  PASS: mesh manifold spans both contact features")
 
     # --- fields-CPU vs fields-GPU records (fed GPU FK products) ---
-    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dc = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     d.xpos.download(ctx)
     d.xquat.download(ctx)
     for i in range(BATCH * NBODY * 3):

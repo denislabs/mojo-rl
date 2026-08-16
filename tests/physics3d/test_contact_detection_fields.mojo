@@ -82,7 +82,7 @@ def main() raises:
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
 
     # Poses: env0 slight floor penetration; env1 heavy penetration + bent legs.
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     var qcfg = List[List[Float64]]()
     var q0 = List[Float64](length=NQ, fill=0.0)
     q0[1] = 1.18  # rootz slightly below standing -> feet penetrate
@@ -143,7 +143,7 @@ def main() raises:
         print("  PASS: fields-GPU matches golden fingerprint")
 
     # --- independent CPU oracle: fields-CPU == fields-GPU (count + records) ---
-    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dc = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             dc.qpos.data[e * NQ + i] = Scalar[DTYPE](qcfg[e][i])

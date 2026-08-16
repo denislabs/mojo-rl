@@ -222,7 +222,7 @@ comptime MAX_GAP_FRACTION: Float64 = 0.02
 def _prep[
     target: StaticString
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMV, npair=NPAIR]],
     mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
@@ -328,7 +328,7 @@ def _prep[
 
 def _slam_state[
     VSCALE: Int
-](mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]):
+](mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]):
     """Chain driven INTO the floor while sliding sideways, at `VSCALE`% of the
     velocities below (so 100 is a 40 m/s slam).
 
@@ -388,7 +388,7 @@ def _solve[
     ]
     var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMV, npair=NPAIR]]()
     MD.init_fields[DTYPE, NMV](ctx, mf)
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     _slam_state[VSCALE](d)
 
     var scratch = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()

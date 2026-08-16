@@ -146,7 +146,7 @@ comptime NPOSE: Int = 24
 # float64 residuals are ~1e-16, so anything here is float32 noise, not physics.
 comptime TOL: Float64 = 1e-4
 
-comptime Dat = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]
+comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]
 comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV]]
 
 

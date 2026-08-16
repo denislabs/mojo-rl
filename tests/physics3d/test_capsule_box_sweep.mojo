@@ -112,7 +112,7 @@ comptime NBODY: Int = CBM.NBODY
 comptime NGEOM: Int = CBM.NGEOM
 comptime MC: Int = CBM.MAX_CONTACTS
 
-comptime Dat = Data[DTYPE, NQ, NV, NBODY, MC, CBM.NSITE, 1]
+comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=CBM.NSITE], 1]
 comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=CBM.NJOINT, ngeom=NGEOM, nequality=CBM.MAX_EQUALITY, ntendon=CBM.MAX_TENDON, nsite=CBM.NSITE, nexclude=CBM.NEXCLUDE, nmesh_verts=0]]
 
 # Number of swept poses. Large enough that the face / edge / corner branches are

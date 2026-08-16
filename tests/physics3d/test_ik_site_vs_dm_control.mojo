@@ -125,7 +125,7 @@ def test_ik_site_matches_dm_control() raises:
     ](fmd, mf)
     _ = os.chdir(cwd)
 
-    var d = Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]()
 
     # ── the arm DOF set, from the reference rather than from belief ──────
     var arm_names = refmod.arm_joint_names()
@@ -374,7 +374,7 @@ def test_set_site_to_xpos_matches_dm_control() raises:
         NMESH_VERTS, 0,
     ](fmd, mf)
     _ = os.chdir(cwd)
-    var d = Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]()
 
     # Locate our index for the TCP site by position, as above.
     for i in range(NQ):

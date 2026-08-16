@@ -97,7 +97,7 @@ def set_free_prop_pose[
     MAXC: Int,
     NSITE: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
     qpos_adr: Int,
     dof_adr: Int,
     pos: InlineArray[Scalar[DTYPE], 3],
@@ -127,7 +127,7 @@ def set_free_prop_pose[
 def prop_has_penetrating_contact[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAXC: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
     prop_body: Int,
     ignore_bodies: List[Int],
 ) -> Bool:
@@ -204,7 +204,7 @@ def place_free_prop[
     NPAIR: Int,
     MAXC: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     prop_body: Int,
     qpos_adr: Int,
@@ -285,7 +285,7 @@ def place_fixed_prop[
     NPAIR: Int,
     MAXC: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     frame_body: Int,
     n_bodies: Int,
@@ -417,7 +417,7 @@ def settle_free_props[
     NOSLIP_ITER: Int,
     NHOLD: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     dof_adrs: List[Int],
     timestep: Float64,
@@ -514,7 +514,7 @@ def settle_free_prop[
     NOSLIP_ITER: Int,
     NHOLD: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     dof_adr: Int,
     timestep: Float64,

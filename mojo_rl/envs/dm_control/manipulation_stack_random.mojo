@@ -269,7 +269,7 @@ def read_order[
     MAXC: Int,
     NSITE: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1]
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]
 ) -> InlineArray[Int, N_BRICKS]:
     """`desired_order`, as written at reset into `META_IDX_TASK_PARAM_0..2`.
 
@@ -295,7 +295,7 @@ def append_stack_random_obs[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_bodies: List[Scalar[DTYPE]],
     m_joints: List[Scalar[DTYPE]],
     m_sites: List[Scalar[DTYPE]],
@@ -339,7 +339,7 @@ def stack_random_reward[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     n_order: Int,
 ) -> Float64:
     """`Stack.get_reward` — the MEAN over `n_order - 1` pairs.
@@ -370,7 +370,7 @@ def stack_random_set_grasp_and_order[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_joints: List[Scalar[DTYPE]],
     n_order: Int,
 ) raises:
@@ -432,7 +432,7 @@ def stack_random_reset_full[
     MAX_CONDIM: Int,
     NOSLIP_ITER: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     timestep: Float64,
 ) raises:

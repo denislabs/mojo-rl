@@ -349,9 +349,9 @@ def _part_a_tendon(ctx: DeviceContext) raises:
     if Int(mf.meta.data[MODEL_META_IDX_NTENDON]) != 2:
         raise Error("part A vacuous: model meta NTENDON != 2")
 
-    var d = Data[DTYPE, NQ_A, NV_A, NBODY_A, MC_A, NSITE_A, BATCH]()
-    var dc = Data[DTYPE, NQ_A, NV_A, NBODY_A, MC_A, NSITE_A, BATCH]()
-    var d_off = Data[DTYPE, NQ_A, NV_A, NBODY_A, MC_A, NSITE_A, BATCH]()
+    var d = Data[DTYPE, Dims[nq=NQ_A, nv=NV_A, nbody=NBODY_A, max_contacts=MC_A, nsite=NSITE_A], BATCH]()
+    var dc = Data[DTYPE, Dims[nq=NQ_A, nv=NV_A, nbody=NBODY_A, max_contacts=MC_A, nsite=NSITE_A], BATCH]()
+    var d_off = Data[DTYPE, Dims[nq=NQ_A, nv=NV_A, nbody=NBODY_A, max_contacts=MC_A, nsite=NSITE_A], BATCH]()
     for e in range(BATCH):
         for i in range(NQ_A):
             var qp = _humanoid_qpos(e, i)
@@ -553,9 +553,9 @@ def _part_b_equality(ctx: DeviceContext) raises:
     if Int(mf.meta.data[MODEL_META_IDX_NEQUALITY]) != 1:
         raise Error("part B vacuous: model meta NEQUALITY != 1")
 
-    var d = Data[DTYPE, NQ_B, NV_B, NBODY_B, MC_B, 0, BATCH]()
-    var dc = Data[DTYPE, NQ_B, NV_B, NBODY_B, MC_B, 0, BATCH]()
-    var d_off = Data[DTYPE, NQ_B, NV_B, NBODY_B, MC_B, 0, BATCH]()
+    var d = Data[DTYPE, Dims[nq=NQ_B, nv=NV_B, nbody=NBODY_B, max_contacts=MC_B, nsite=0], BATCH]()
+    var dc = Data[DTYPE, Dims[nq=NQ_B, nv=NV_B, nbody=NBODY_B, max_contacts=MC_B, nsite=0], BATCH]()
+    var d_off = Data[DTYPE, Dims[nq=NQ_B, nv=NV_B, nbody=NBODY_B, max_contacts=MC_B, nsite=0], BATCH]()
     for e in range(BATCH):
         for i in range(NQ_B):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 50.0

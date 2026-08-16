@@ -212,7 +212,7 @@ def read_brick_pos[
     NPAIR: Int,
     MAXC: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
     mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     body: Int,
     qpos_adr: Int,
@@ -246,7 +246,7 @@ def read_brick_quat[
     NPAIR: Int,
     MAXC: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
     mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     body: Int,
     qpos_adr: Int,
@@ -283,7 +283,7 @@ def write_brick_pos[
     NPAIR: Int,
     MAXC: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     body: Int,
     qpos_adr: Int,
@@ -323,7 +323,7 @@ def write_brick_quat[
     NPAIR: Int,
     MAXC: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     body: Int,
     qpos_adr: Int,
@@ -362,7 +362,7 @@ def build_stack[
     NPAIR: Int,
     MAX_CONTACTS: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     order: List[Int],
     fixed_brick: Int,
@@ -530,7 +530,7 @@ def reassemble_reward[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     desired: List[Int],
 ) -> Float64:
     """`Reassemble.get_reward` — the mean over the DESIRED adjacent pairs.
@@ -564,7 +564,7 @@ def append_reassemble_obs[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_bodies: List[Scalar[DTYPE]],
     m_joints: List[Scalar[DTYPE]],
     m_sites: List[Scalar[DTYPE]],
@@ -611,7 +611,7 @@ def reassemble_set_grasp[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_joints: List[Scalar[DTYPE]],
 ) raises:
     """`set_grasp` — ONE draw broadcast to all three fingers."""
@@ -644,7 +644,7 @@ def reassemble_reset_full[
     NPAIR: Int,
     MAX_CONTACTS: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     initial: List[Int],
     n_bricks: Int,
@@ -769,7 +769,7 @@ def write_reassemble_orders[
     MAXC: Int,
     NSITE: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
     desired: List[Int],
     initial: List[Int],
 ):
@@ -797,7 +797,7 @@ def read_reassemble_order[
     MAXC: Int,
     NSITE: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAXC, NSITE, 1], n: Int, which: Int
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1], n: Int, which: Int
 ) -> List[Int]:
     """`which = 0` for `desired_order`, `1` for `initial_order`."""
     var out = List[Int]()
@@ -815,7 +815,7 @@ def reassemble_random_draw_orders[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_joints: List[Scalar[DTYPE]],
     n: Int,
 ) raises:
@@ -896,7 +896,7 @@ def append_reassemble_random_obs[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_bodies: List[Scalar[DTYPE]],
     m_joints: List[Scalar[DTYPE]],
     m_sites: List[Scalar[DTYPE]],
@@ -925,7 +925,7 @@ def reassemble_random_reward[
     MAX_CONTACTS: Int,
     NSITE: Int,
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     n: Int,
     fixed_brick: Int,
 ) -> Float64:
@@ -959,7 +959,7 @@ def reassemble_random_reset_full[
     NPAIR: Int,
     MAX_CONTACTS: Int,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
     n: Int,
     fixed_brick: Int,

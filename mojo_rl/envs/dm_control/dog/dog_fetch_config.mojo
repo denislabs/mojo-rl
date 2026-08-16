@@ -40,7 +40,7 @@ Run the task with:
 from std.math import abs, sqrt, sin, cos, pi
 from std.random import random_float64
 
-from ....physics3d.fields import Data
+from ....physics3d.fields import Data, Dims
 from ....physics3d.kinematics.geom_xpos import geom_xpos
 from ....physics3d.kinematics.site_frame import site_world_quat_list
 from ....physics3d.kinematics.quat_math import quat_rotate_inverse
@@ -86,7 +86,7 @@ comptime FETCH_BITE_MARGIN: Float64 = 2.0
 def _head_site_quat[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_sites: List[Scalar[DTYPE]],
 ) raises -> Tuple[Float64, Float64, Float64, Float64]:
     """The `head` site's world quaternion — `xquat[skull] * site_quat`."""
@@ -112,7 +112,7 @@ def _world_to_head(
 def _ball_world_pos[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_geoms: List[Scalar[DTYPE]],
 ) -> Tuple[Float64, Float64, Float64]:
     """`geom_xpos['ball']`."""
@@ -124,7 +124,7 @@ def _ball_world_pos[
 def _target_world_pos[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_geoms: List[Scalar[DTYPE]],
 ) -> Tuple[Float64, Float64, Float64]:
     """`geom_xpos['target']` — a geom on the WORLD body, so this is its own
@@ -137,7 +137,7 @@ def _target_world_pos[
 def _ball_to_mouth_distance[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_geoms: List[Scalar[DTYPE]],
 ) -> Float64:
     """`0.5 * (|ball - upper_bite| + |ball - lower_bite|)`.
@@ -163,7 +163,7 @@ def _ball_to_mouth_distance[
 def _ball_to_target_distance[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_geoms: List[Scalar[DTYPE]],
 ) -> Float64:
     """`|geom_xpos['ball'] - geom_xpos['target']|`."""
@@ -182,7 +182,7 @@ def _ball_to_target_distance[
 def _fetch_factors[
     DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
 ](
-    d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     m_geoms: List[Scalar[DTYPE]],
 ) -> Tuple[Float64, Float64]:
     """`(reach_ball, fetch_ball)` — the two factors `Fetch` adds to `Stand`.
@@ -253,7 +253,7 @@ struct DMDogFetchConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -319,7 +319,7 @@ struct DMDogFetchConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -400,7 +400,7 @@ struct DMDogFetchConfig(Phyics3dEnvConfig):
         MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
-        d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+        d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],

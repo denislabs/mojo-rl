@@ -67,9 +67,7 @@ def compare_fk(
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=Walker2dModel.MAX_EQUALITY, ntendon=Walker2dModel.MAX_TENDON, nsite=Walker2dModel.NSITE, nexclude=Walker2dModel.NEXCLUDE, nmesh_verts=0]]()
     Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, Walker2dModel.NSITE, 1
-    ]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=Walker2dModel.NSITE], 1]()
 
     # Set qpos
     for i in range(NQ):

@@ -277,7 +277,7 @@ def _compare_vs_mujoco(num_steps: Int) raises:
     )
 
     # ── Fields path (f64, CPU, BATCH=1, RK4 + Newton like the legacy gate).
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], 1]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):
@@ -404,8 +404,8 @@ def test_limit_off_rerun_differs() raises:
 
     var qpos_init = _pose_qpos()
     var qvel_init = _pose_qvel()
-    var d_on = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]()
-    var d_off = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, 1]()
+    var d_on = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], 1]()
+    var d_off = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], 1]()
     for i in range(NQ):
         d_on.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
         d_off.qpos.data[i] = Scalar[DTYPE](qpos_init[i])

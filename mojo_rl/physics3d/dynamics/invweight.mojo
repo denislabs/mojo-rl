@@ -137,7 +137,7 @@ def compute_invweight0[
     # Appended, not grouped with NEXCLUDE — see `fields.Model`.
     NPAIR: Int = 0,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
     mut sc: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], 1],
 ) raises:

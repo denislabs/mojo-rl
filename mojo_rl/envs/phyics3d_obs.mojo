@@ -16,7 +16,7 @@ from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data
+from mojo_rl.physics3d.fields import Data, Dims
 
 comptime OBS_TPB: Int = 64
 
@@ -79,7 +79,7 @@ def extract_obs_qpos_qvel[
     OBS_QPOS_SKIP: Int = 0,
     BATCH: Int = 1,
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH],
     mut obs: TensorImpl[DTYPE],
     ctx: Optional[DeviceContext] = None,
 ) raises:

@@ -60,9 +60,7 @@ def compare_fk(
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=AntModel.MAX_EQUALITY, ntendon=AntModel.MAX_TENDON, nsite=AntModel.NSITE, nexclude=AntModel.NEXCLUDE, nmesh_verts=0]]()
     AntModel.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, AntModel.NSITE, 1
-    ]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=AntModel.NSITE], 1]()
 
     # Set qpos
     for i in range(NQ):

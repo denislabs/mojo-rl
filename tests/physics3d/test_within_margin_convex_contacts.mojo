@@ -110,7 +110,7 @@ def test_contacts_survive_the_whole_margin_band() raises:
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=MD.NV, nbody=MD.NBODY, njoint=MD.NJOINT, ngeom=MD.NGEOM, nequality=MD.MAX_EQUALITY, ntendon=MD.MAX_TENDON, nsite=MD.NSITE, nexclude=MD.NEXCLUDE, nmesh_verts=NMV, npair=MD.NPAIR]]()
     MD.init_fields[DTYPE, NMV](ctx, mf)
-    var d = Data[DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.MAX_CONTACTS, MD.NSITE, 1]()
+    var d = Data[DTYPE, Dims[nq=MD.NQ, nv=MD.NV, nbody=MD.NBODY, max_contacts=MD.MAX_CONTACTS, nsite=MD.NSITE], 1]()
 
     # Box top face z = 0.03; cylinder half-length 0.02 on a +z axis, so its
     # bottom face is at qz - 0.02 and the gap is qz - 0.05.

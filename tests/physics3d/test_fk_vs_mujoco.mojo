@@ -54,9 +54,7 @@ def compare_fk(
     var ctx = DeviceContext()
     var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=HalfCheetahModel.MAX_EQUALITY, ntendon=HalfCheetahModel.MAX_TENDON, nsite=HalfCheetahModel.NSITE, nexclude=HalfCheetahModel.NEXCLUDE, nmesh_verts=0]]()
     HalfCheetahModel.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[
-        DTYPE, NQ, NV, NBODY, MAX_CONTACTS, HalfCheetahModel.NSITE, 1
-    ]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=HalfCheetahModel.NSITE], 1]()
 
     # Set qpos
     for i in range(NQ):

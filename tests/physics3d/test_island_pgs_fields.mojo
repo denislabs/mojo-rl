@@ -95,7 +95,7 @@ comptime BATCH = 2
 def _fields_prep[
     target: StaticString
 ](
-    mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH],
+    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
     mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
     mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
     ctx: Optional[DeviceContext],
@@ -194,7 +194,7 @@ def _fields_prep[
     ](d, mf, ctx)
 
 
-def _init_state(mut d: Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]):
+def _init_state(mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]):
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -220,8 +220,8 @@ def part_a(ctx: DeviceContext) raises:
     print("--- Part A: fields-GPU IslandPGS vs fields-GPU PGS (ELLIPTIC)")
     var mf = _load_model(ctx)
 
-    var dP = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dI = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dP = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dI = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     _init_state(dP)
     _init_state(dI)
     dP.upload_all(ctx)
@@ -277,8 +277,8 @@ def part_b(ctx: DeviceContext) raises:
     print("--- Part B: fields-CPU IslandPGS vs fields-GPU IslandPGS")
     var mf = _load_model(ctx)
 
-    var dg = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
-    var dc = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var dg = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dc = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     _init_state(dg)
     _init_state(dc)
     dg.upload_all(ctx)
@@ -319,7 +319,7 @@ def part_b(ctx: DeviceContext) raises:
 def part_c(ctx: DeviceContext) raises:
     print("--- Part C: EulerIntegrator[SOLVER='island'] step (finite)")
     var mf = _load_model(ctx)
-    var d = Data[DTYPE, NQ, NV, NBODY, MC, NSITE, BATCH]()
+    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
     _init_state(d)
     d.upload_all(ctx)
 
