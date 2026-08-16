@@ -96,7 +96,7 @@ from std.random import random_float64
 from std.math import sin, cos, sqrt, log, pi
 from ..dtype_math import log1p_dt
 
-from mojo_rl.physics3d.fields import Data, Dims
+from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     JOINT_IDX_RANGE_MIN,
@@ -285,15 +285,8 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
 
     # === CPU: Reset ===
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -345,7 +338,7 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
         var ta = -a_half + random_float64() * (2.0 * a_half)
 
         var tb = target_body_idx(Self.USE_PEG, Self.INSERT)
-        Self._set_mocap_2d[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+        Self._set_mocap_2d[DTYPE, D](
             d, tb, tx, 0.001, tz, ta
         )
 
@@ -354,7 +347,7 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
             # `y` left at the XML value (0 for both `cup` and `slot`) — the
             # target's own y is .001 so the ghost renders in front, and the
             # receptacle has no such offset.
-            Self._set_mocap_2d[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+            Self._set_mocap_2d[DTYPE, D](
                 d, receptacle_body_idx(Self.USE_PEG), tx, 0.0, tz, ta
             )
 
@@ -403,15 +396,8 @@ struct DMManipulatorConfig[USE_PEG: Bool, INSERT: Bool](Phyics3dEnvConfig):
         d.qvel.data[OBJECT_QADR_X] = Scalar[DTYPE](vx)
 
     @staticmethod
-    def _set_mocap_2d[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def _set_mocap_2d[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         body: Int,
         x: Float64,
         y: Float64,

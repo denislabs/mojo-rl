@@ -61,14 +61,7 @@ struct PusherConfig(Phyics3dEnvConfig):
 
     # === CPU: Custom reset — set goal joints to 0 (fixed position) ===
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1]):
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](mut d: Data[DTYPE, D, 1]):
         # Fix goal position: set goal slide joints to 0 (stays at XML body pos)
         # Goal joints are at indices 9 and 10 (goal_slidey, goal_slidex)
         d.qpos.data[9] = Scalar[DTYPE](0)

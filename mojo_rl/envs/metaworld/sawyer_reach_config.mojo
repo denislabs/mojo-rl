@@ -136,15 +136,8 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
 
     # === CPU: Custom reset — set mocap position + warmup arm ===
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],

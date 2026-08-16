@@ -82,7 +82,7 @@ from std.collections import InlineArray
 from std.math import abs, sqrt
 from std.random import random_float64
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     JOINT_IDX_RANGE_MIN,
@@ -362,15 +362,8 @@ def stack_random_reward[
     return total / Float64(n_order - 1)
 
 
-def stack_random_set_grasp_and_order[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def stack_random_set_grasp_and_order[DTYPE: DType, D: DimsLike](
+    mut d: Data[DTYPE, D, 1],
     m_joints: List[Scalar[DTYPE]],
     n_order: Int,
 ) raises:

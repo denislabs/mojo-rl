@@ -52,7 +52,7 @@ from std.collections import InlineArray
 from std.math import abs, sqrt, sin, cos, pi
 from std.random import random_float64
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
@@ -603,15 +603,8 @@ def append_reassemble_obs[
 # ── the reset ─────────────────────────────────────────────────────────────
 
 
-def reassemble_set_grasp[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def reassemble_set_grasp[DTYPE: DType, D: DimsLike](
+    mut d: Data[DTYPE, D, 1],
     m_joints: List[Scalar[DTYPE]],
 ) raises:
     """`set_grasp` — ONE draw broadcast to all three fingers."""
@@ -761,15 +754,8 @@ def sigma_of_base(base: Int, n: Int, fixed_brick: Int) -> List[Int]:
 
 
 @always_inline
-def write_reassemble_orders[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAXC: Int,
-    NSITE: Int,
-](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
+def write_reassemble_orders[DTYPE: DType, D: DimsLike](
+    mut d: Data[DTYPE, D, 1],
     desired: List[Int],
     initial: List[Int],
 ):
@@ -807,15 +793,8 @@ def read_reassemble_order[
     return out^
 
 
-def reassemble_random_draw_orders[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAX_CONTACTS: Int,
-    NSITE: Int,
-](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+def reassemble_random_draw_orders[DTYPE: DType, D: DimsLike](
+    mut d: Data[DTYPE, D, 1],
     m_joints: List[Scalar[DTYPE]],
     n: Int,
 ) raises:
@@ -883,7 +862,7 @@ def reassemble_random_draw_orders[
         desired[i] = desired[j]
         desired[j] = t
 
-    write_reassemble_orders[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](
+    write_reassemble_orders[DTYPE, D](
         d, desired, initial
     )
 

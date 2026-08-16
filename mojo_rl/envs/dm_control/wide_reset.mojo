@@ -230,15 +230,8 @@ struct WideResetConfig[
 
     # ── the one hook that differs ────────────────────────────────────────
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -272,13 +265,13 @@ struct WideResetConfig[
             " QVEL_SCALE."
         )
         comptime if Self.HEIGHT_ENABLED:
-            if Self.ROOT_Z_ADR < NQ:
+            if Self.ROOT_Z_ADR < D.NQ:
                 d.qpos.data[Self.ROOT_Z_ADR] = Scalar[DTYPE](
                     Self.Z_LO + random_float64() * (Self.Z_HI - Self.Z_LO)
                 )
 
         comptime if Self.QVEL_SCALE > 0.0:
-            for i in range(NV):
+            for i in range(D.NV):
                 d.qvel.data[i] = Scalar[DTYPE](
                     (random_float64() * 2.0 - 1.0) * Self.QVEL_SCALE
                 )

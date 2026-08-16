@@ -112,7 +112,7 @@ from std.collections import InlineArray
 from std.math import sin, cos, sqrt, abs
 from std.random import random_float64
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     JOINT_IDX_AXIS_X,
@@ -341,15 +341,8 @@ struct ReachSiteFeaturesConfig(Phyics3dEnvConfig):
 
     # === CPU: per-episode STATE — the grasp ================================
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],

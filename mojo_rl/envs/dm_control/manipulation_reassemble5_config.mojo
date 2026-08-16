@@ -27,7 +27,7 @@ observation emits `desired_order` as drawn and the brick blocks through
 twelve slots hold the two orders; four would not have been enough for one.
 """
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
 from mojo_rl.envs.dm_control.manipulation_reassemble import (
     append_reassemble_random_obs,
@@ -123,24 +123,15 @@ struct Reassemble5Config(Phyics3dEnvConfig):
 
     # === CPU: per-episode STATE — the grasp and the two order draws ========
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
     ):
         try:
-            reassemble_random_draw_orders[
-                DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-            ](d, m_joints, N_BRICKS)
+            reassemble_random_draw_orders[DTYPE, D](d, m_joints, N_BRICKS)
         except:
             pass
 

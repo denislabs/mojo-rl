@@ -43,7 +43,7 @@ from layout import Layout, LayoutTensor
 from std.collections import InlineArray
 from std.random.philox import Random as PhiloxRandom
 
-from mojo_rl.physics3d.fields import Data, Dims
+from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.xmat import xmat_elem, xmat_elem_gpu, XMAT_ZZ
 from mojo_rl.physics3d.kinematics.geom_xpos import geom_xpos, geom_xpos_gpu
 from mojo_rl.physics3d.kinematics.geom_xmat import geom_xquat, geom_xquat_gpu
@@ -154,9 +154,7 @@ def _append_velocity[
         obs.append(d.qvel.data[v])
 
 
-def _reset_pose[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1]):
+def _reset_pose[DTYPE: DType, D: DimsLike](mut d: Data[DTYPE, D, 1]):
     """The half of `initialize_episode` both tasks share.
 
     A uniform random root orientation, then every internal joint uniform in
@@ -181,7 +179,7 @@ def _reset_pose[
     d.qpos.data[FREE_QUAT_ADR + 2] = Scalar[DTYPE](qy / n)
     d.qpos.data[FREE_QUAT_ADR + 3] = Scalar[DTYPE](qz / n)
 
-    for q in range(N_ROOT_QPOS, NQ):
+    for q in range(N_ROOT_QPOS, D.NQ):
         d.qpos.data[q] = Scalar[DTYPE](
             -JOINT_INIT_SPREAD + random_float64() * 2.0 * JOINT_INIT_SPREAD
         )
@@ -393,15 +391,8 @@ struct DMFishUprightConfig(Phyics3dEnvConfig):
         return True
 
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -737,15 +728,8 @@ struct DMFishSwimConfig(Phyics3dEnvConfig):
         return True
 
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],

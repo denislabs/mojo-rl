@@ -40,7 +40,7 @@ Run the task with:
 from std.math import abs, sqrt, sin, cos, pi
 from std.random import random_float64
 
-from ....physics3d.fields import Data, Dims
+from ....physics3d.fields import Data, Dims, DimsLike
 from ....physics3d.kinematics.geom_xpos import geom_xpos
 from ....physics3d.kinematics.site_frame import site_world_quat_list
 from ....physics3d.kinematics.quat_math import quat_rotate_inverse
@@ -245,15 +245,8 @@ struct DMDogFetchConfig(Phyics3dEnvConfig):
         return 0.0
 
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -273,7 +266,7 @@ struct DMDogFetchConfig(Phyics3dEnvConfig):
         """
         # ⚠ Takes only `d` — the yaw draw and the three root velocities need
         # no model tables. Stand's own `custom_reset_cpu` passes the same.
-        _dog_reset_cpu[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](d)
+        _dog_reset_cpu[DTYPE, D](d)
 
         var azimuth = 2.0 * pi * random_float64()
         var sa = sin(azimuth)

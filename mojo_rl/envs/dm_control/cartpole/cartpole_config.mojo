@@ -21,7 +21,7 @@ from std.math import pi, log, sqrt, cos
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.fields import Data, Dims
+from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.xmat import (
     xmat_elem,
     xmat_elem_gpu,
@@ -127,15 +127,8 @@ struct DMCartpoleConfig[
 
     # === CPU: Reset ===
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -146,19 +139,19 @@ struct DMCartpoleConfig[
             # Cart centred, first pole pointing down, deeper poles jittered.
             d.qpos.data[0] = Scalar[DTYPE](0.01 * _randn())
             d.qpos.data[1] = Scalar[DTYPE](pi + 0.01 * _randn())
-            for i in range(2, NQ):
+            for i in range(2, D.NQ):
                 d.qpos.data[i] = Scalar[DTYPE](0.1 * _randn())
         else:
             # Cart anywhere on the slider, poles near vertical.
             d.qpos.data[0] = Scalar[DTYPE](
                 (random_float64() * 2.0 - 1.0) * 0.1
             )
-            for i in range(1, NQ):
+            for i in range(1, D.NQ):
                 d.qpos.data[i] = Scalar[DTYPE](
                     (random_float64() * 2.0 - 1.0) * 0.034
                 )
         # Small random velocity in both modes, to break symmetry.
-        for i in range(NV):
+        for i in range(D.NV):
             d.qvel.data[i] = Scalar[DTYPE](0.01 * _randn())
 
     # === CPU: Reward ===

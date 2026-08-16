@@ -31,7 +31,7 @@ BYTE-FOR-BYTE.
 
 """
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.envs.phyics3d_env_config import Phyics3dEnvConfig
 from mojo_rl.envs.dm_control.manipulation_stack_random import (
     append_stack_random_obs,
@@ -120,24 +120,15 @@ struct Stack2of3Config(Phyics3dEnvConfig):
 
     # === CPU: per-episode STATE — the grasp and the order draw ============
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
     ):
         try:
-            stack_random_set_grasp_and_order[
-                DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE
-            ](d, m_joints, TARGET_HEIGHT)
+            stack_random_set_grasp_and_order[DTYPE, D](d, m_joints, TARGET_HEIGHT)
         except:
             pass
 

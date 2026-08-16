@@ -26,7 +26,7 @@ from std.math import sqrt, abs
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.fields import Data, Dims
+from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_GEOM_SIZE,
     MODEL_BODY_SIZE,
@@ -115,15 +115,8 @@ struct DMBallInCupConfig(Phyics3dEnvConfig):
 
     # === CPU: Reset ===
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],

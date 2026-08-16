@@ -42,7 +42,7 @@ be DELETED rather than kept alongside it.
 from std.random import random_float64
 from std.math import pi, sqrt, sin, cos
 
-from mojo_rl.physics3d.fields import Data, Dims
+from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_JOINT_SIZE,
     JOINT_IDX_QPOS_ADR,
@@ -198,15 +198,8 @@ struct SoArmReachConfig[
 
     # === CPU: Reset ===
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
@@ -223,7 +216,7 @@ struct SoArmReachConfig[
         for j in range(njoint):
             var base = j * MODEL_JOINT_SIZE
             var adr = Int(m_joints[base + JOINT_IDX_QPOS_ADR])
-            if adr < 0 or adr >= NQ:
+            if adr < 0 or adr >= D.NQ:
                 continue
             var lo = Float64(m_joints[base + JOINT_IDX_RANGE_MIN])
             var hi = Float64(m_joints[base + JOINT_IDX_RANGE_MAX])
@@ -240,7 +233,7 @@ struct SoArmReachConfig[
             if hi < 1e9 and q > hi:
                 q = hi
             d.qpos.data[adr] = Scalar[DTYPE](q)
-        for i in range(NV):
+        for i in range(D.NV):
             d.qvel.data[i] = Scalar[DTYPE](0)
 
         # Target: uniform in the arm's azimuth cone, in an elevation band, in

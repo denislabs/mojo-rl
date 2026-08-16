@@ -54,7 +54,7 @@ from std.math import log, sqrt, cos, sin, pi, inf
 from std.random import random_float64
 from std.collections import InlineArray
 
-from mojo_rl.physics3d.fields import Data, Dims
+from mojo_rl.physics3d.fields import Data, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.xmat import xmat_elem, XMAT_ZX, XMAT_ZY, XMAT_ZZ
 from mojo_rl.physics3d.sensors.frame_vel import (
     site_frame_velocity,
@@ -701,9 +701,7 @@ def _dog_obs_gpu[
 
 
 @always_inline
-def _dog_reset_cpu[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int
-](mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1]):
+def _dog_reset_cpu[DTYPE: DType, D: DimsLike](mut d: Data[DTYPE, D, 1]):
     """`Stand.initialize_episode`, minus the `data.act` draw.
 
         azimuth     = uniform(0, 2*pi)
@@ -863,21 +861,14 @@ struct DMDogStandConfig(Phyics3dEnvConfig):
         return 0.0
 
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
     ):
-        _dog_reset_cpu[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](d)
+        _dog_reset_cpu[DTYPE, D](d)
 
     # ── GPU hooks ────────────────────────────────────────────────────────
 
@@ -1207,22 +1198,15 @@ struct DMDogMoveConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         return 0.0
 
     @staticmethod
-    def custom_reset_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        MAX_CONTACTS: Int,
-        NSITE: Int = 0,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
+    def custom_reset_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
         m_bodies: List[Scalar[DTYPE]],
         m_joints: List[Scalar[DTYPE]],
         m_geoms: List[Scalar[DTYPE]],
         m_sites: List[Scalar[DTYPE]],
     ):
         """`Move` does not override `initialize_episode` — this is `Stand`'s."""
-        _dog_reset_cpu[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE](d)
+        _dog_reset_cpu[DTYPE, D](d)
 
     # ── GPU hooks ────────────────────────────────────────────────────────
 
