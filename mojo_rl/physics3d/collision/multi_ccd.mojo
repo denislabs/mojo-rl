@@ -132,6 +132,7 @@ from .gjk import gjk_epa
 from ..gpu.constants import MJ_CCD_TOLERANCE, MJ_CCD_ITERATIONS
 
 # `mjc_Convex`'s two constants, named as MuJoCo names them.
+from ..fields import DimsLike
 comptime MULTICCD_RELATIVE_TOLERANCE: Float64 = 1e-3
 comptime MULTICCD_PERTURBATION_ANGLE: Float64 = 1e-3
 
@@ -192,8 +193,10 @@ def multi_ccd_pair_supported(gi_type: Int, gj_type: Int) -> Bool:
 
 @always_inline
 def _convex_pair_single[
-    DTYPE: DType, NMESH_VERTS: Int
-](
+    DTYPE: DType,
+    L_MESH_VERTS: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout](
     gi_type: Int,
     pi_x: Scalar[DTYPE], pi_y: Scalar[DTYPE], pi_z: Scalar[DTYPE],
     qi_x: Scalar[DTYPE], qi_y: Scalar[DTYPE], qi_z: Scalar[DTYPE],
@@ -201,13 +204,13 @@ def _convex_pair_single[
     ri: Scalar[DTYPE], hli: Scalar[DTYPE],
     hxi: Scalar[DTYPE], hyi: Scalar[DTYPE], hzi: Scalar[DTYPE],
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     mesh_vert_edgeadr: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
     ],
     mesh_edges: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_EDGES, MutAnyOrigin
     ],
     va1: Int, mnv1: Int,
     gj_type: Int,
@@ -288,7 +291,7 @@ def _convex_pair_single[
         # `cylinder_box` needed two because the primitive is asymmetric in its
         # operands, but the convex query is symmetric and returns `gi -> gj`
         # either way.
-        var r = gjk_epa[DTYPE, NMESH_VERTS](
+        var r = gjk_epa[DTYPE](
             gi_type,
             pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
             ri, hli, hxi, hyi, hzi,
@@ -313,7 +316,7 @@ def _convex_pair_single[
         # condition is written as the dispatch writes it so the two read the
         # same, and `gjk_epa` is symmetric and returns `gi -> gj` regardless of
         # ordering, so there is no negation and no second branch.
-        var r = gjk_epa[DTYPE, NMESH_VERTS](
+        var r = gjk_epa[DTYPE](
             gi_type,
             pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
             ri, hli, hxi, hyi, hzi,
@@ -439,8 +442,12 @@ def _rotate_pose_about[
 
 @always_inline
 def multi_ccd_extra_contacts[
-    DTYPE: DType, MAX_CONTACTS: Int, BATCH: Int, NMESH_VERTS: Int
-](
+    DTYPE: DType,
+    D: DimsLike,
+    L_MESH_VERTS: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout,
+    L_CONTACTS: Layout](
     env: Int,
     body_a: Int,
     body_b: Int,
@@ -461,14 +468,15 @@ def multi_ccd_extra_contacts[
     hxj: Scalar[DTYPE], hyj: Scalar[DTYPE], hzj: Scalar[DTYPE],
     rbound_j: Scalar[DTYPE],
     va2: Int, mnv2: Int,
+    dims: D,
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     mesh_vert_edgeadr: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
     ],
     mesh_edges: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_EDGES, MutAnyOrigin
     ],
     c0x: Scalar[DTYPE], c0y: Scalar[DTYPE], c0z: Scalar[DTYPE],
     n0x: Scalar[DTYPE], n0y: Scalar[DTYPE], n0z: Scalar[DTYPE],
@@ -479,7 +487,7 @@ def multi_ccd_extra_contacts[
     contact_friction_roll: Scalar[DTYPE],
     contact_condim: Int,
     contacts: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
@@ -498,6 +506,7 @@ def multi_ccd_extra_contacts[
     contact there is nothing to perturb about, and with a manifold already in
     hand the extra points are redundant.
     """
+    var max_contacts = dims.get_max_contacts()
     var written = 0
 
     # `mjc_Convex`: tolerance scales with the SMALLER bounding radius, so a
@@ -516,7 +525,7 @@ def multi_ccd_extra_contacts[
         var axz = axes[2] if axis_id == 0 else axes[5]
 
         for angle_id in range(2):
-            if num_contacts >= MAX_CONTACTS:
+            if num_contacts >= max_contacts:
                 return written
             var angle = -ang if angle_id == 0 else ang
 
@@ -549,7 +558,7 @@ def multi_ccd_extra_contacts[
                 pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
             )
 
-            var r = _convex_pair_single[DTYPE, NMESH_VERTS](
+            var r = _convex_pair_single[DTYPE](
                 gi_type,
                 pi[0], pi[1], pi[2], pi[3], pi[4], pi[5], pi[6],
                 ri, hli, hxi, hyi, hzi,

@@ -32,7 +32,7 @@ from ..constants import (
     GEOM_MESH,
     GEOM_ELLIPSOID,
 )
-from ..fields import Data, Model, Dims, DimsLike
+from ..fields import Data, Model, Dims, DimsLike, AsStatic
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_GEOM_SIZE,
@@ -164,20 +164,20 @@ comptime CD_TPB: Int = 64
 @always_inline
 def _geom_world_pos[
     DTYPE: DType,
-    NBODY: Int,
-    NGEOM: Int,
-    BATCH: Int,
+    L_GEOMS: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
 ](
     env: Int,
     g: Int,
     geoms: LayoutTensor[
-        DTYPE, Layout.row_major(NGEOM, MODEL_GEOM_SIZE), MutAnyOrigin
+        DTYPE, L_GEOMS, MutAnyOrigin
     ],
     xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     mut out_px: Scalar[DTYPE],
     mut out_py: Scalar[DTYPE],
@@ -250,13 +250,16 @@ comptime TOLPLANEMESH: Float64 = 0.3
 @always_inline
 def _plane_mesh_contacts[
     DTYPE: DType,
-    MAX_CONTACTS: Int,
-    NGEOM: Int,
-    NMESH_VERTS: Int,
-    BATCH: Int,
     BODY_B: Int,
     MARGIN_IN_DIST: Bool,
     WRITE_INCLUDEMARGIN: Bool,
+    D: DimsLike,
+    L_GEOMS: Layout,
+    L_MESH_META: Layout,
+    L_MESH_VERTS: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout,
+    L_CONTACTS: Layout,
 ](
     env: Int,
     g: Int,
@@ -281,25 +284,26 @@ def _plane_mesh_contacts[
     contact_friction_spin: Scalar[DTYPE],
     contact_friction_roll: Scalar[DTYPE],
     contact_condim: Int,
+    dims: D,
     geoms: LayoutTensor[
-        DTYPE, Layout.row_major(NGEOM, MODEL_GEOM_SIZE), MutAnyOrigin
+        DTYPE, L_GEOMS, MutAnyOrigin
     ],
     mesh_meta: LayoutTensor[
         DTYPE,
-        Layout.row_major(MAX_GPU_MESHES, MODEL_MESH_META_SIZE),
+        L_MESH_META,
         MutAnyOrigin,
     ],
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     mesh_vert_edgeadr: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
     ],
     mesh_edges: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_EDGES, MutAnyOrigin
     ],
     contacts: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
@@ -406,6 +410,7 @@ def _plane_mesh_contacts[
     lives in `qh_triangulate`'s diagonals and in the facet order
     `vertex->neighbors` happens to hold.
     """
+    var max_contacts = dims.get_max_contacts()
     var pn = plane_world_normal[DTYPE](plq_x, plq_y, plq_z, plq_w)
     var m_id = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_MESH_ID]))
     if m_id < 0:
@@ -453,7 +458,7 @@ def _plane_mesh_contacts[
         q_x, q_y, q_z, q_w,
         Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](-1),
     )
-    var hc = hillclimb_support_index[DTYPE, NMESH_VERTS](
+    var hc = hillclimb_support_index[DTYPE](
         ld[0], ld[1], ld[2],
         mesh_verts, mesh_vert_edgeadr, mesh_edges,
         pm_vadr, pm_vnum, -1,
@@ -548,7 +553,7 @@ def _plane_mesh_contacts[
 
     # ── emit ─────────────────────────────────────────────────────────────
     for k in range(nsel):
-        if num_contacts >= MAX_CONTACTS:
+        if num_contacts >= max_contacts:
             break
         var dist_v = sel_h[k]
         var c_off = num_contacts * CONTACT_SIZE
@@ -587,18 +592,20 @@ def _plane_mesh_contacts[
 
 @always_inline
 def pair_body_filtered[
-    DTYPE: DType, NBODY: Int, NEXCLUDE: Int
-](
+    DTYPE: DType,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_EXCLUDES: Layout](
     gi_body: Int,
     gj_body: Int,
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
     excludes: LayoutTensor[
-        DTYPE, Layout.row_major(NEXCLUDE, 2), MutAnyOrigin
+        DTYPE, L_EXCLUDES, MutAnyOrigin
     ],
 ) -> Bool:
     """MuJoCo's body-pair filter. True = DISCARD the pair.
@@ -675,15 +682,18 @@ def pair_body_filtered[
 
 @always_inline
 def find_predefined_pair[
-    DTYPE: DType, NPAIR: Int
-](
+    DTYPE: DType,
+    D: DimsLike,
+    L_PAIRS: Layout,
+    L_MMETA: Layout](
     gi: Int,
     gj: Int,
+    dims: D,
     pairs: LayoutTensor[
-        DTYPE, Layout.row_major(NPAIR, MODEL_PAIR_SIZE), MutAnyOrigin
+        DTYPE, L_PAIRS, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
 ) -> Int:
     """Index of the `<contact><pair>` covering geoms (gi, gj), or -1.
@@ -708,13 +718,14 @@ def find_predefined_pair[
     MuJoCo would have merged — and it drops the signature bookkeeping the
     interleaved merge loop needs. `npair` is a handful of records.
     """
+    var npair = dims.get_npair()
     # Clamped to the COMPTIME capacity, not trusted from the meta slot.
     # `build_model_fields_from_flat` raises when the two disagree, so this
     # cannot silently truncate — it is here so that a Model built by some
-    # other path can never walk off the end of a `[NPAIR, ...]` tensor.
+    # other path can never walk off the end of a `[npair, ...]` tensor.
     var n_pair = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NPAIR]))
-    if n_pair > NPAIR:
-        n_pair = NPAIR
+    if n_pair > npair:
+        n_pair = npair
     for p in range(n_pair):
         var p1 = Int(rebind[Scalar[DTYPE]](pairs[p, PAIR_IDX_GEOM1]))
         var p2 = Int(rebind[Scalar[DTYPE]](pairs[p, PAIR_IDX_GEOM2]))
@@ -725,11 +736,11 @@ def find_predefined_pair[
 
 @always_inline
 def pair_params[
-    DTYPE: DType, NPAIR: Int
-](
+    DTYPE: DType,
+    L_PAIRS: Layout](
     ipair: Int,
     pairs: LayoutTensor[
-        DTYPE, Layout.row_major(NPAIR, MODEL_PAIR_SIZE), MutAnyOrigin
+        DTYPE, L_PAIRS, MutAnyOrigin
     ],
 ) -> InlineArray[Scalar[DTYPE], 12]:
     """A predefined pair's parameters, in `mix_contact_params`' layout.
@@ -866,8 +877,9 @@ def mix_contact_params[
 
 def _plane_cylinder_contacts[
     DTYPE: DType,
-    MAX_CONTACTS: Int,
     BATCH: Int,
+    D: DimsLike,
+    L_CONTACTS: Layout,
 ](
     env: Int,
     g_body: Int,
@@ -894,8 +906,9 @@ def _plane_cylinder_contacts[
     contact_friction_roll: Scalar[DTYPE],
     contact_condim: Int,
     world_body: Int,
+    dims: D,
     contacts: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
@@ -939,6 +952,7 @@ def _plane_cylinder_contacts[
     swept against the MuJoCo runtime over 400 random poses — 272 contacting,
     557 points, 0 count mismatches, dist 2.1e-17, position 5.6e-17.
     """
+    var max_contacts = dims.get_max_contacts()
     var pn = plane_world_normal[DTYPE](plq_x, plq_y, plq_z, plq_w)
     comptime MINVAL = Scalar[DTYPE](1e-15)
 
@@ -990,9 +1004,9 @@ def _plane_cylinder_contacts[
 
     # Point 1 — near-cap rim. Its rejection ends the routine.
     var d1 = dist0 + prjaxis + prjvec
-    if d1 > contact_margin or num_contacts >= MAX_CONTACTS:
+    if d1 > contact_margin or num_contacts >= max_contacts:
         return
-    _emit_plane_contact[DTYPE, MAX_CONTACTS, BATCH](
+    _emit_plane_contact[DTYPE](
         env, g_body, p_x + vx + ax, p_y + vy + ay,
         p_z + vz + az - d1 * Scalar[DTYPE](0.5), d1,
         plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w, pn,
@@ -1003,8 +1017,8 @@ def _plane_cylinder_contacts[
 
     # Point 2 — far-cap rim, same radial direction.
     var d2 = dist0 - prjaxis + prjvec
-    if d2 <= contact_margin and num_contacts < MAX_CONTACTS:
-        _emit_plane_contact[DTYPE, MAX_CONTACTS, BATCH](
+    if d2 <= contact_margin and num_contacts < max_contacts:
+        _emit_plane_contact[DTYPE](
             env, g_body, p_x + vx - ax, p_y + vy - ay,
             p_z + vz - az - d2 * Scalar[DTYPE](0.5), d2,
             plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w, pn,
@@ -1041,16 +1055,16 @@ def _plane_cylinder_contacts[
         var bx = ax - vx * Scalar[DTYPE](0.5)
         var by = ay - vy * Scalar[DTYPE](0.5)
         var bz = az - vz * Scalar[DTYPE](0.5) - d3 * Scalar[DTYPE](0.5)
-        if num_contacts < MAX_CONTACTS:
-            _emit_plane_contact[DTYPE, MAX_CONTACTS, BATCH](
+        if num_contacts < max_contacts:
+            _emit_plane_contact[DTYPE](
                 env, g_body, p_x + w1x + bx, p_y + w1y + by, p_z + w1z + bz,
                 d3, plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w, pn,
                 contact_margin, contact_friction, contact_friction_spin,
                 contact_friction_roll, contact_condim, world_body,
                 contacts, num_contacts,
             )
-        if num_contacts < MAX_CONTACTS:
-            _emit_plane_contact[DTYPE, MAX_CONTACTS, BATCH](
+        if num_contacts < max_contacts:
+            _emit_plane_contact[DTYPE](
                 env, g_body, p_x - w1x + bx, p_y - w1y + by, p_z - w1z + bz,
                 d3, plp_x, plp_y, plp_z, plq_x, plq_y, plq_z, plq_w, pn,
                 contact_margin, contact_friction, contact_friction_spin,
@@ -1061,8 +1075,7 @@ def _plane_cylinder_contacts[
 
 def _emit_plane_contact[
     DTYPE: DType,
-    MAX_CONTACTS: Int,
-    BATCH: Int,
+    L_CONTACTS: Layout,
 ](
     env: Int,
     g_body: Int,
@@ -1085,7 +1098,7 @@ def _emit_plane_contact[
     contact_condim: Int,
     world_body: Int,
     contacts: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
@@ -1121,8 +1134,8 @@ def _emit_plane_contact[
 
 def _plane_box_contacts[
     DTYPE: DType,
-    MAX_CONTACTS: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_CONTACTS: Layout,
 ](
     env: Int,
     g_body: Int,
@@ -1150,8 +1163,9 @@ def _plane_box_contacts[
     contact_friction_roll: Scalar[DTYPE],
     contact_condim: Int,
     world_body: Int,
+    dims: D,
     contacts: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
@@ -1180,10 +1194,11 @@ def _plane_box_contacts[
     qualify: MuJoCo keeps the first four in `i = 0..7` with x = i&1, y = i&2,
     z = i&4, so this loop matches that order rather than sorting by depth.
     """
+    var max_contacts = dims.get_max_contacts()
     var pn = plane_world_normal[DTYPE](plq_x, plq_y, plq_z, plq_w)
     var cnt = 0
     for i in range(8):
-        if num_contacts >= MAX_CONTACTS or cnt >= 4:
+        if num_contacts >= max_contacts or cnt >= 4:
             break
         var vx = hx if (i & 1) != 0 else -hx
         var vy = hy if (i & 2) != 0 else -hy
@@ -1233,8 +1248,8 @@ def _plane_box_contacts[
 @always_inline
 def _capsule_box_contacts[
     DTYPE: DType,
-    MAX_CONTACTS: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_CONTACTS: Layout,
 ](
     env: Int,
     body_a: Int,
@@ -1265,8 +1280,9 @@ def _capsule_box_contacts[
     contact_friction_spin: Scalar[DTYPE],
     contact_friction_roll: Scalar[DTYPE],
     contact_condim: Int,
+    dims: D,
     contacts: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
@@ -1287,6 +1303,7 @@ def _capsule_box_contacts[
     single-point branches this replaces encoded the same thing as `nx = r[4]`
     versus `nx = -r[4]` followed by the shared emit's unconditional negation.
     """
+    var max_contacts = dims.get_max_contacts()
     var cb_dist = InlineArray[Scalar[DTYPE], CB_MAX_POINTS](
         fill=Scalar[DTYPE](0)
     )
@@ -1309,7 +1326,7 @@ def _capsule_box_contacts[
 
     var written = 0
     for c in range(n_cb):
-        if num_contacts >= MAX_CONTACTS:
+        if num_contacts >= max_contacts:
             break
         if cb_dist[c] >= contact_margin:
             continue
@@ -1342,8 +1359,8 @@ def _capsule_box_contacts[
 @always_inline
 def _box_box_contacts[
     DTYPE: DType,
-    MAX_CONTACTS: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_CONTACTS: Layout,
 ](
     env: Int,
     body_a: Int,
@@ -1373,8 +1390,9 @@ def _box_box_contacts[
     contact_friction_spin: Scalar[DTYPE],
     contact_friction_roll: Scalar[DTYPE],
     contact_condim: Int,
+    dims: D,
     contacts: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
@@ -1390,6 +1408,7 @@ def _box_box_contacts[
     `box_box_manifold` for the port and for why it came from MuJoCo 3.6.0
     rather than from `references/mujoco-3.3.6/`.
     """
+    var max_contacts = dims.get_max_contacts()
     var n_bb = 0
     var bb_dist = InlineArray[Scalar[DTYPE], BB_MAX_POINTS](
         fill=Scalar[DTYPE](0)
@@ -1411,7 +1430,7 @@ def _box_box_contacts[
         return code
 
     for c in range(n_bb):
-        if num_contacts >= MAX_CONTACTS:
+        if num_contacts >= max_contacts:
             break
         if bb_dist[c] >= contact_margin:
             continue
@@ -1447,15 +1466,14 @@ def _box_box_contacts[
 @always_inline
 def _fill_pair_solparams[
     DTYPE: DType,
-    MAX_CONTACTS: Int,
-    BATCH: Int,
+    L_CONTACTS: Layout,
 ](
     env: Int,
     n0: Int,
     n1: Int,
     mx: InlineArray[Scalar[DTYPE], 12],
     contacts: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
 ):
@@ -1487,78 +1505,95 @@ def _fill_pair_solparams[
 
 def _detect_contacts_env[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int,
-    NEXCLUDE: Int,
-    NMESH_VERTS: Int,
     BATCH: Int,
-    # Appended rather than grouped with NEXCLUDE — see `fields.Model`.
-    NPAIR: Int,
+    D: DimsLike,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_GEOMS: Layout,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_EXCLUDES: Layout,
+    L_PAIRS: Layout,
+    L_MESH_META: Layout,
+    L_MESH_VERTS: Layout,
+    L_MESH_POLYS: Layout,
+    L_MESH_POLYVERT: Layout,
+    L_MESH_VERT_POLYMAP: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout,
+    L_CONTACTS: Layout,
+    L_SMETA: Layout,
 ](
     env: Int,
+    dims: D,
     xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     geoms: LayoutTensor[
-        DTYPE, Layout.row_major(NGEOM, MODEL_GEOM_SIZE), MutAnyOrigin
+        DTYPE, L_GEOMS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
     excludes: LayoutTensor[
-        DTYPE, Layout.row_major(NEXCLUDE, 2), MutAnyOrigin
+        DTYPE, L_EXCLUDES, MutAnyOrigin
     ],
     pairs: LayoutTensor[
-        DTYPE, Layout.row_major(NPAIR, MODEL_PAIR_SIZE), MutAnyOrigin
+        DTYPE, L_PAIRS, MutAnyOrigin
     ],
     mesh_meta: LayoutTensor[
         DTYPE,
-        Layout.row_major(MAX_GPU_MESHES, MODEL_MESH_META_SIZE),
+        L_MESH_META,
         MutAnyOrigin,
     ],
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     mesh_polys: LayoutTensor[
         DTYPE,
-        Layout.row_major(mesh_max_poly(NMESH_VERTS), MODEL_MESH_POLY_SIZE),
+        L_MESH_POLYS,
         MutAnyOrigin,
     ],
     mesh_polyvert: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_polyvert(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_POLYVERT, MutAnyOrigin
     ],
     mesh_polymap: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_polyvert(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_POLYVERT, MutAnyOrigin
     ],
     mesh_vert_polymap: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 2), MutAnyOrigin
+        DTYPE, L_MESH_VERT_POLYMAP, MutAnyOrigin
     ],
     mesh_vert_edgeadr: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
     ],
     mesh_edges: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_EDGES, MutAnyOrigin
     ],
     contacts: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
     smeta: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+        DTYPE, L_SMETA, MutAnyOrigin
     ],
 ):
     """Unified contact detection for one env (verbatim from
-    detect_contacts_gpu; mesh branches compiled in iff NMESH_VERTS > 0)."""
+    detect_contacts_gpu; mesh branches compiled in iff nmesh_verts > 0)."""
+    var nq = dims.get_nq()
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
+    var max_contacts = dims.get_max_contacts()
+    var ngeom = dims.get_ngeom()
+    var nexclude = dims.get_nexclude()
+    var nmesh_verts = dims.get_nmesh_verts()
+    var npair = dims.get_npair()
     # `mjModel.opt.ccd_tolerance` / `.ccd_iterations` — EPA's stopping rule,
     # read from model META rather than hardcoded in `gjk.mojo`. Seeded to
     # MuJoCo's defaults by `Model.__init__` and overwritten from `<option>` by
@@ -1574,7 +1609,7 @@ def _detect_contacts_env[
         ccd_iter = MJ_CCD_ITERATIONS
     var num_contacts = 0
 
-    for gi in range(NGEOM):
+    for gi in range(ngeom):
         var gi_type = Int(
             rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_TYPE])
         )
@@ -1587,8 +1622,8 @@ def _detect_contacts_env[
         var gi_conaffinity = Int(
             rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONAFFINITY])
         )
-        for gj in range(gi + 1, NGEOM):
-            if num_contacts >= MAX_CONTACTS:
+        for gj in range(gi + 1, ngeom):
+            if num_contacts >= max_contacts:
                 smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](
                     num_contacts
                 )
@@ -1609,8 +1644,8 @@ def _detect_contacts_env[
             # ⚠ ONE bypass is not enough. Implementing only the mask skip
             # would still lose every pair between geoms on the same body or on
             # a welded parent/child, which is a normal thing to declare.
-            var ipair = find_predefined_pair[DTYPE, NPAIR](
-                gi, gj, pairs, mmeta
+            var ipair = find_predefined_pair[DTYPE](
+                gi, gj, dims, pairs, mmeta
             )
             if ipair < 0:
                 if gi_type == GEOM_PLANE and gj_body == 0:
@@ -1619,7 +1654,7 @@ def _detect_contacts_env[
                     continue
                 # MuJoCo's body-pair filter — weld, weld-parent and exclude.
                 # See `pair_body_filtered`; shared with BOTH SAP loops.
-                if pair_body_filtered[DTYPE, NBODY, NEXCLUDE](
+                if pair_body_filtered[DTYPE](
                     gi_body, gj_body, bodies, mmeta, excludes
                 ):
                     continue
@@ -1653,7 +1688,7 @@ def _detect_contacts_env[
             var qi_y: Scalar[DTYPE] = 0
             var qi_z: Scalar[DTYPE] = 0
             var qi_w: Scalar[DTYPE] = 1
-            _geom_world_pos[DTYPE, NBODY, NGEOM, BATCH](
+            _geom_world_pos[DTYPE](
                 env,
                 gi,
                 geoms,
@@ -1674,7 +1709,7 @@ def _detect_contacts_env[
             var qj_y: Scalar[DTYPE] = 0
             var qj_z: Scalar[DTYPE] = 0
             var qj_w: Scalar[DTYPE] = 1
-            _geom_world_pos[DTYPE, NBODY, NGEOM, BATCH](
+            _geom_world_pos[DTYPE](
                 env,
                 gj,
                 geoms,
@@ -1741,7 +1776,7 @@ def _detect_contacts_env[
             # A PREDEFINED PAIR IS NOT MIXED AT ALL — it supplies its own
             # condim/friction/solref/solimp wholesale, and `priority` never
             # enters. `mj_collideGeoms` branches on `ipair` for exactly this.
-            var _mx = pair_params[DTYPE, NPAIR](
+            var _mx = pair_params[DTYPE](
                 ipair, pairs
             ) if ipair >= 0 else mix_contact_params[DTYPE](
                 Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
@@ -1862,7 +1897,7 @@ def _detect_contacts_env[
                     var e1_y = fp_y + hlj * axis_w[1]
                     var e1_z = fp_z + hlj * axis_w[2]
                     var dist1 = e1_z - rj - ground_z
-                    if dist1 < contact_margin and num_contacts < MAX_CONTACTS:
+                    if dist1 < contact_margin and num_contacts < max_contacts:
                         var c_off = num_contacts * CONTACT_SIZE
                         contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
                             DTYPE
@@ -1912,7 +1947,7 @@ def _detect_contacts_env[
                     var e2_y = fp_y - hlj * axis_w[1]
                     var e2_z = fp_z - hlj * axis_w[2]
                     var dist2 = e2_z - rj - ground_z
-                    if dist2 < contact_margin and num_contacts < MAX_CONTACTS:
+                    if dist2 < contact_margin and num_contacts < max_contacts:
                         var c_off = num_contacts * CONTACT_SIZE
                         contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
                             DTYPE
@@ -1961,7 +1996,7 @@ def _detect_contacts_env[
                     # Up to FOUR points — two rim, two triangle — not
                     # one. See `_plane_cylinder_contacts`; a cylinder on
                     # its flat face needs a support polygon or it tips.
-                    _plane_cylinder_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                    _plane_cylinder_contacts[DTYPE, BATCH](
                         env,
                         gj_body,
                         fp_x, fp_y, fp_z,
@@ -1977,12 +2012,13 @@ def _detect_contacts_env[
                         contact_friction_roll,
                         contact_condim,
                         0,
+                        dims,
                         contacts,
                         num_contacts,
                     )
                 elif gj_type == GEOM_SPHERE:
                     var dist = fp_z - rj - ground_z
-                    if dist < contact_margin and num_contacts < MAX_CONTACTS:
+                    if dist < contact_margin and num_contacts < max_contacts:
                         var c_off = num_contacts * CONTACT_SIZE
                         contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
                             DTYPE
@@ -2032,7 +2068,7 @@ def _detect_contacts_env[
                         ground_z,
                     )
                     var dist = ep[0]
-                    if dist < contact_margin and num_contacts < MAX_CONTACTS:
+                    if dist < contact_margin and num_contacts < max_contacts:
                         var c_off = num_contacts * CONTACT_SIZE
                         contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
                             DTYPE
@@ -2070,7 +2106,7 @@ def _detect_contacts_env[
                 elif gj_type == GEOM_BOX:
                     # Up to FOUR corners, not one — see
                     # `_plane_box_contacts` and task #42.
-                    _plane_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                    _plane_box_contacts[DTYPE](
                         env,
                         gj_body,
                         fp_x, fp_y, fp_z,
@@ -2085,16 +2121,16 @@ def _detect_contacts_env[
                         contact_friction_roll,
                         contact_condim,
                         0,
+                        dims,
                         contacts,
                         num_contacts,
                     )
                 elif gj_type == GEOM_MESH:
                     # Plane-mesh: scan hull vertices below plane
-                    comptime if NMESH_VERTS > 0:
+                    comptime if D.CAP_NMESH_VERTS > 0:
                         _plane_mesh_contacts[
-                            DTYPE, MAX_CONTACTS, NGEOM, NMESH_VERTS, BATCH,
-                            0, False, True,
-                        ](
+                            DTYPE,
+                            0, False, True](
                             env,
                             gj,
                             gj_body,
@@ -2113,6 +2149,7 @@ def _detect_contacts_env[
                             contact_friction_spin,
                             contact_friction_roll,
                             contact_condim,
+                            dims,
                             geoms,
                             mesh_meta,
                             mesh_verts,
@@ -2121,7 +2158,7 @@ def _detect_contacts_env[
                             contacts,
                             num_contacts,
                         )
-                _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
                 )
                 continue
@@ -2197,7 +2234,7 @@ def _detect_contacts_env[
                     var e1_y = fp_y + hli * axis_w[1]
                     var e1_z = fp_z + hli * axis_w[2]
                     var dist1 = e1_z - ri - ground_z
-                    if dist1 < contact_margin and num_contacts < MAX_CONTACTS:
+                    if dist1 < contact_margin and num_contacts < max_contacts:
                         var c_off = num_contacts * CONTACT_SIZE
                         contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
                             DTYPE
@@ -2247,7 +2284,7 @@ def _detect_contacts_env[
                     var e2_y = fp_y - hli * axis_w[1]
                     var e2_z = fp_z - hli * axis_w[2]
                     var dist2 = e2_z - ri - ground_z
-                    if dist2 < contact_margin and num_contacts < MAX_CONTACTS:
+                    if dist2 < contact_margin and num_contacts < max_contacts:
                         var c_off = num_contacts * CONTACT_SIZE
                         contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
                             DTYPE
@@ -2296,7 +2333,7 @@ def _detect_contacts_env[
                     # Up to FOUR points — two rim, two triangle — not
                     # one. See `_plane_cylinder_contacts`; a cylinder on
                     # its flat face needs a support polygon or it tips.
-                    _plane_cylinder_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                    _plane_cylinder_contacts[DTYPE, BATCH](
                         env,
                         gi_body,
                         fp_x, fp_y, fp_z,
@@ -2312,12 +2349,13 @@ def _detect_contacts_env[
                         contact_friction_roll,
                         contact_condim,
                         0,
+                        dims,
                         contacts,
                         num_contacts,
                     )
                 elif gi_type == GEOM_SPHERE:
                     var dist = fp_z - ri - ground_z
-                    if dist < contact_margin and num_contacts < MAX_CONTACTS:
+                    if dist < contact_margin and num_contacts < max_contacts:
                         var c_off = num_contacts * CONTACT_SIZE
                         contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
                             DTYPE
@@ -2363,7 +2401,7 @@ def _detect_contacts_env[
                         ground_z,
                     )
                     var dist = ep[0]
-                    if dist < contact_margin and num_contacts < MAX_CONTACTS:
+                    if dist < contact_margin and num_contacts < max_contacts:
                         var c_off = num_contacts * CONTACT_SIZE
                         contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[
                             DTYPE
@@ -2401,7 +2439,7 @@ def _detect_contacts_env[
                 elif gi_type == GEOM_BOX:
                     # Up to FOUR corners, not one — see
                     # `_plane_box_contacts` and task #42.
-                    _plane_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                    _plane_box_contacts[DTYPE](
                         env,
                         gi_body,
                         fp_x, fp_y, fp_z,
@@ -2416,15 +2454,15 @@ def _detect_contacts_env[
                         contact_friction_roll,
                         contact_condim,
                         0,
+                        dims,
                         contacts,
                         num_contacts,
                     )
                 elif gi_type == GEOM_MESH:
-                    comptime if NMESH_VERTS > 0:
+                    comptime if D.CAP_NMESH_VERTS > 0:
                         _plane_mesh_contacts[
-                            DTYPE, MAX_CONTACTS, NGEOM, NMESH_VERTS, BATCH,
-                            0, False, True,
-                        ](
+                            DTYPE,
+                            0, False, True](
                             env,
                             gi,
                             gi_body,
@@ -2443,6 +2481,7 @@ def _detect_contacts_env[
                             contact_friction_spin,
                             contact_friction_roll,
                             contact_condim,
+                            dims,
                             geoms,
                             mesh_meta,
                             mesh_verts,
@@ -2451,7 +2490,7 @@ def _detect_contacts_env[
                             contacts,
                             num_contacts,
                         )
-                _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
                 )
                 continue
@@ -2618,7 +2657,7 @@ def _detect_contacts_env[
             elif gi_type == GEOM_BOX and gj_type == GEOM_CAPSULE:
                 # A capsule along a box face is a two-point manifold — see
                 # `_capsule_box_contacts`, which writes its own records.
-                _ = _capsule_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                _ = _capsule_box_contacts[DTYPE](
                     env, gi_body, gj_body,
                     pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
                     pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
@@ -2628,14 +2667,14 @@ def _detect_contacts_env[
                     contact_friction_spin,
                     contact_friction_roll,
                     contact_condim,
-                    contacts, num_contacts,
+                    dims, contacts, num_contacts,
                 )
-                _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
                 )
                 continue
             elif gi_type == GEOM_CAPSULE and gj_type == GEOM_BOX:
-                _ = _capsule_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                _ = _capsule_box_contacts[DTYPE](
                     env, gi_body, gj_body,
                     pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
                     pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
@@ -2645,9 +2684,9 @@ def _detect_contacts_env[
                     contact_friction_spin,
                     contact_friction_roll,
                     contact_condim,
-                    contacts, num_contacts,
+                    dims, contacts, num_contacts,
                 )
-                _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
                 )
                 continue
@@ -2656,7 +2695,7 @@ def _detect_contacts_env[
                 # `_box_box_contacts`. It writes its own records and this
                 # branch is done; only a SEPARATED pair (code -1) falls through
                 # to `box_box`, which then rejects it too.
-                var code = _box_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                var code = _box_box_contacts[DTYPE](
                     env,
                     gi_body,
                     gj_body,
@@ -2667,11 +2706,12 @@ def _detect_contacts_env[
                     contact_friction_spin,
                     contact_friction_roll,
                     contact_condim,
+                    dims,
                     contacts,
                     num_contacts,
                 )
                 if code >= 0:
-                    _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                    _fill_pair_solparams[DTYPE](
                         env, _n0, num_contacts, _mx, contacts
                     )
                     continue
@@ -2809,7 +2849,7 @@ def _detect_contacts_env[
                 # One branch for both orderings: `cylinder_box` needed two
                 # because the primitive is asymmetric in its operands, but the
                 # convex query is symmetric and returns `gi -> gj` either way.
-                var r = gjk_epa[DTYPE, NMESH_VERTS](
+                var r = gjk_epa[DTYPE](
                     gi_type,
                     pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
                     ri, hli, hxi, hyi, hzi,
@@ -2830,7 +2870,7 @@ def _detect_contacts_env[
 
             # GJK/EPA fallback for any pair involving a mesh geom
             elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:
-                comptime if NMESH_VERTS > 0:
+                comptime if D.CAP_NMESH_VERTS > 0:
                     # Read mesh IDs from geom data
                     var mi_id = Int(
                         rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MESH_ID])
@@ -2868,7 +2908,7 @@ def _detect_contacts_env[
                         fill=Scalar[DTYPE](0)
                     )
                     var wf_ok = 0
-                    var result = gjk_epa_witness[DTYPE, NMESH_VERTS](
+                    var result = gjk_epa_witness[DTYPE](
                         gi_type,
                         pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
                         ri, hli, hxi, hyi, hzi,
@@ -2897,7 +2937,7 @@ def _detect_contacts_env[
                         mc_pair
                         and wf_ok == 1
                         and dist < contact_margin
-                        and num_contacts < MAX_CONTACTS
+                        and num_contacts < max_contacts
                     ):
                         var pa1 = 0
                         var pn1 = 0
@@ -2955,13 +2995,7 @@ def _detect_contacts_env[
                         var mcn = 0
                         if mc_swap:
                             mcn = native_multicontact_contacts[
-                                DTYPE,
-                                NMESH_VERTS,
-                                mesh_max_poly(NMESH_VERTS),
-                                mesh_max_polyvert(NMESH_VERTS),
-                                MAX_CONTACTS,
-                                BATCH,
-                            ](
+                                DTYPE](
                                 env, body_a, body_b,
                                 gj_type,
                                 pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
@@ -2969,6 +3003,7 @@ def _detect_contacts_env[
                                 gi_type,
                                 pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
                                 hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
+                                dims,
                                 mesh_verts, mesh_polys, mesh_polyvert,
                                 mesh_polymap, mesh_vert_polymap,
                                 wf2, wf1, wxs,
@@ -2983,13 +3018,7 @@ def _detect_contacts_env[
                             )
                         else:
                             mcn = native_multicontact_contacts[
-                                DTYPE,
-                                NMESH_VERTS,
-                                mesh_max_poly(NMESH_VERTS),
-                                mesh_max_polyvert(NMESH_VERTS),
-                                MAX_CONTACTS,
-                                BATCH,
-                            ](
+                                DTYPE](
                                 env, body_a, body_b,
                                 gi_type,
                                 pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
@@ -2997,6 +3026,7 @@ def _detect_contacts_env[
                                 gj_type,
                                 pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
                                 hxj, hyj, hzj, rbound_j, va2, mnv2, pa2, pn2,
+                                dims,
                                 mesh_verts, mesh_polys, mesh_polyvert,
                                 mesh_polymap, mesh_vert_polymap,
                                 wf1, wf2, wxx,
@@ -3015,16 +3045,15 @@ def _detect_contacts_env[
                         # fifth row on top of a four-row face.
                         if mcn > 0:
                             _fill_pair_solparams[
-                                DTYPE, MAX_CONTACTS, BATCH
-                            ](env, _n0, num_contacts, _mx, contacts)
+                                DTYPE](env, _n0, num_contacts, _mx, contacts)
                             continue
                 else:
-                    _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                    _fill_pair_solparams[DTYPE](
                         env, _n0, num_contacts, _mx, contacts
                     )
                     continue
 
-            if dist < contact_margin and num_contacts < MAX_CONTACTS:
+            if dist < contact_margin and num_contacts < max_contacts:
                 # The `gi -> gj` normal, captured BEFORE the emit negates it in
                 # place — `multi_ccd_extra_contacts` re-runs the same query and
                 # so works in the same convention the branches above produced.
@@ -3089,8 +3118,7 @@ def _detect_contacts_env[
                 # had, deliberately. See collision/multi_ccd.mojo.
                 if multi_ccd_pair_supported(gi_type, gj_type):
                     _ = multi_ccd_extra_contacts[
-                        DTYPE, MAX_CONTACTS, BATCH, NMESH_VERTS
-                    ](
+                        DTYPE](
                         env, body_a, body_b, mccd_first,
                         gi_type,
                         pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
@@ -3098,6 +3126,7 @@ def _detect_contacts_env[
                         gj_type,
                         pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
                         rj, hlj, hxj, hyj, hzj, rbound_j, va2, mnv2,
+                        dims,
                         mesh_verts,
                         mesh_vert_edgeadr,
                         mesh_edges,
@@ -3113,7 +3142,7 @@ def _detect_contacts_env[
                         ccd_tol, ccd_iter, contact_margin,
                     )
 
-            _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+            _fill_pair_solparams[DTYPE](
                 env, _n0, num_contacts, _mx, contacts
             )
 
@@ -3194,11 +3223,8 @@ def _detect_contacts_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _detect_contacts_env[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEXCLUDE,
-        NMESH_VERTS, BATCH, NPAIR,
-    ](
-        env, xpos, xquat, geoms, bodies, mmeta, excludes, pairs, mesh_meta,
+    _detect_contacts_env[DTYPE, BATCH](
+        env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR](), xpos, xquat, geoms, bodies, mmeta, excludes, pairs, mesh_meta,
         mesh_verts, mesh_polys, mesh_polyvert, mesh_polymap,
         mesh_vert_polymap, mesh_vert_edgeadr, mesh_edges, contacts, smeta,
     )
@@ -3258,11 +3284,8 @@ def detect_contacts[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int 
         var contacts_v = d.contacts.lt["cpu", L_CONTACTS]()
         var smeta_v = d.meta.lt["cpu", L_SMETA]()
         for e in range(BATCH):
-            _detect_contacts_env[
-                DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, D.MAX_CONTACTS, D.NGEOM,
-                D.NEXCLUDE, D.NMESH_VERTS, BATCH, D.NPAIR,
-            ](
-                e, xpos_v, xquat_v, geoms_v, bodies_v, mmeta_v,
+            _detect_contacts_env[DTYPE, BATCH](
+                e, AsStatic[D](), xpos_v, xquat_v, geoms_v, bodies_v, mmeta_v,
                 excludes_v, pairs_v, mesh_meta_v, mesh_verts_v, mesh_polys_v,
                 mesh_polyvert_v, mesh_polymap_v, mesh_vert_polymap_v,
                 mesh_vert_edgeadr_v, mesh_edges_v,

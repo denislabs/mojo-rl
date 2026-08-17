@@ -199,7 +199,7 @@ def test_flat_face_query_reports_exact_gap() raises:
     var mv = _plate(0.0)
     var _ng = _no_graph_G()
     var _ne = _no_edges_G()
-    var result = gjk_epa[DT, NMV](
+    var result = gjk_epa[DT](
         GEOM_CYLINDER,
         0.0, 0.0, 0.72,
         0.0, 0.0, 0.0, 1.0,

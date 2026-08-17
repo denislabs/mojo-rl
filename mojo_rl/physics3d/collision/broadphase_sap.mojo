@@ -36,7 +36,7 @@ from ..constants import (
     GEOM_MESH,
     GEOM_ELLIPSOID,
 )
-from ..fields import Data, Model, Dims, DimsLike
+from ..fields import Data, Model, Dims, DimsLike, AsStatic
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_GEOM_SIZE,
@@ -220,93 +220,110 @@ def _aabb_half_extents[
 @always_inline
 def _detect_contacts_sap_env[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int,
-    NEXCLUDE: Int,
-    NMESH_VERTS: Int,
     BATCH: Int,
-    # Appended rather than grouped with NEXCLUDE — see `fields.Model`.
-    NPAIR: Int,
+    D: DimsLike,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_GEOMS: Layout,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_EXCLUDES: Layout,
+    L_PAIRS: Layout,
+    L_MESH_META: Layout,
+    L_MESH_VERTS: Layout,
+    L_MESH_POLYS: Layout,
+    L_MESH_POLYVERT: Layout,
+    L_MESH_VERT_POLYMAP: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout,
+    L_CONTACTS: Layout,
+    L_SMETA: Layout,
 ](
     env: Int,
+    dims: D,
     xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     geoms: LayoutTensor[
-        DTYPE, Layout.row_major(NGEOM, MODEL_GEOM_SIZE), MutAnyOrigin
+        DTYPE, L_GEOMS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
     excludes: LayoutTensor[
-        DTYPE, Layout.row_major(NEXCLUDE, 2), MutAnyOrigin
+        DTYPE, L_EXCLUDES, MutAnyOrigin
     ],
     pairs: LayoutTensor[
-        DTYPE, Layout.row_major(NPAIR, MODEL_PAIR_SIZE), MutAnyOrigin
+        DTYPE, L_PAIRS, MutAnyOrigin
     ],
     mesh_meta: LayoutTensor[
         DTYPE,
-        Layout.row_major(MAX_GPU_MESHES, MODEL_MESH_META_SIZE),
+        L_MESH_META,
         MutAnyOrigin,
     ],
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     mesh_polys: LayoutTensor[
         DTYPE,
-        Layout.row_major(mesh_max_poly(NMESH_VERTS), MODEL_MESH_POLY_SIZE),
+        L_MESH_POLYS,
         MutAnyOrigin,
     ],
     mesh_polyvert: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_polyvert(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_POLYVERT, MutAnyOrigin
     ],
     mesh_polymap: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_polyvert(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_POLYVERT, MutAnyOrigin
     ],
     mesh_vert_polymap: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 2), MutAnyOrigin
+        DTYPE, L_MESH_VERT_POLYMAP, MutAnyOrigin
     ],
     mesh_vert_edgeadr: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
     ],
     mesh_edges: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_EDGES, MutAnyOrigin
     ],
     contacts: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
     smeta: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+        DTYPE, L_SMETA, MutAnyOrigin
     ],
 ):
     """AABB/SAP broadphase contact detection for one env (verbatim from
-    detect_contacts_sap_gpu; mesh branches compiled in iff NMESH_VERTS > 0).
+    detect_contacts_sap_gpu; mesh branches compiled in iff nmesh_verts > 0).
     """
+    var nq = dims.get_nq()
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
+    var max_contacts = dims.get_max_contacts()
+    var ngeom = dims.get_ngeom()
+    var nexclude = dims.get_nexclude()
+    var nmesh_verts = dims.get_nmesh_verts()
+    var npair = dims.get_npair()
     var num_contacts = 0
 
     # ------------------------------------------------------------------
-    # 1. Precompute world positions for all NGEOM geoms.
+    # 1. Precompute world positions for all ngeom geoms.
     # ------------------------------------------------------------------
-    var wpx = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
-    var wpy = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
-    var wpz = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
-    var wqx = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
-    var wqy = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
-    var wqz = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
-    var wqw = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
+    var wpx = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
+    var wpy = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
+    var wpz = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
+    var wqx = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
+    var wqy = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
+    var wqz = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
+    var wqw = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
 
-    for g in range(NGEOM):
+    for g in range(ngeom):
         var px: Scalar[DTYPE] = 0
         var py: Scalar[DTYPE] = 0
         var pz: Scalar[DTYPE] = 0
@@ -314,7 +331,7 @@ def _detect_contacts_sap_env[
         var qy: Scalar[DTYPE] = 0
         var qz: Scalar[DTYPE] = 0
         var qw: Scalar[DTYPE] = 1
-        _geom_world_pos[DTYPE, NBODY, NGEOM, BATCH](
+        _geom_world_pos[DTYPE](
             env, g, geoms, xpos, xquat, px, py, pz, qx, qy, qz, qw
         )
         wpx[g] = px
@@ -328,14 +345,14 @@ def _detect_contacts_sap_env[
     # ------------------------------------------------------------------
     # 2. Compute AABBs for non-plane geoms.
     # ------------------------------------------------------------------
-    var aabb_min_x = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
-    var aabb_max_x = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
-    var aabb_min_y = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
-    var aabb_max_y = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
-    var aabb_min_z = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
-    var aabb_max_z = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
+    var aabb_min_x = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
+    var aabb_max_x = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
+    var aabb_min_y = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
+    var aabb_max_y = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
+    var aabb_min_z = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
+    var aabb_max_z = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
 
-    for g in range(NGEOM):
+    for g in range(ngeom):
         var gt = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_TYPE]))
         if gt == GEOM_PLANE:
             continue
@@ -379,8 +396,8 @@ def _detect_contacts_sap_env[
     )
     if ccd_iter < 1:
         ccd_iter = MJ_CCD_ITERATIONS
-    if n_pair_aabb > NPAIR:
-        n_pair_aabb = NPAIR
+    if n_pair_aabb > npair:
+        n_pair_aabb = npair
     for p in range(n_pair_aabb):
         var pm = rebind[Scalar[DTYPE]](pairs[p, PAIR_IDX_MARGIN])
         if pm <= Scalar[DTYPE](0):
@@ -405,7 +422,7 @@ def _detect_contacts_sap_env[
     # ------------------------------------------------------------------
     # 3. Plane vs non-plane pairs.
     # ------------------------------------------------------------------
-    for gi in range(NGEOM):
+    for gi in range(ngeom):
         var gi_type = Int(
             rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_TYPE])
         )
@@ -436,8 +453,8 @@ def _detect_contacts_sap_env[
         var plq_w = wqw[gi]
         var pn = plane_world_normal[DTYPE](plq_x, plq_y, plq_z, plq_w)
 
-        for gj in range(NGEOM):
-            if num_contacts >= MAX_CONTACTS:
+        for gj in range(ngeom):
+            if num_contacts >= max_contacts:
                 smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](
                     num_contacts
                 )
@@ -455,8 +472,8 @@ def _detect_contacts_sap_env[
             # thing to declare (it is the ONLY form ToddlerBot's scene files
             # use), and the world plane's body is 0, so without this the
             # `gj_body == 0` skip and the weld test would drop it.
-            var ipair = find_predefined_pair[DTYPE, NPAIR](
-                gi, gj, pairs, mmeta
+            var ipair = find_predefined_pair[DTYPE](
+                gi, gj, dims, pairs, mmeta
             )
             if ipair < 0:
                 if gj_body == 0:
@@ -468,7 +485,7 @@ def _detect_contacts_sap_env[
                 # world, so every static geom was colliding with the ground
                 # here while the O(N^2) path correctly emitted nothing. See
                 # `pair_body_filtered`.
-                if pair_body_filtered[DTYPE, NBODY, NEXCLUDE](
+                if pair_body_filtered[DTYPE](
                     gi_body, gj_body, bodies, mmeta, excludes
                 ):
                     continue
@@ -487,7 +504,7 @@ def _detect_contacts_sap_env[
             # with `detect_contacts` so the two paths cannot drift, which is
             # exactly how the SAP ellipsoid branch went missing. A predefined
             # pair supplies its own parameters instead, unmixed.
-            var _mx = pair_params[DTYPE, NPAIR](
+            var _mx = pair_params[DTYPE](
                 ipair, pairs
             ) if ipair >= 0 else mix_contact_params[DTYPE](
                 Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
@@ -587,7 +604,7 @@ def _detect_contacts_sap_env[
 
             if gj_type == GEOM_SPHERE:
                 var dist = pj_z - rj - ground_z
-                if dist < cm and num_contacts < MAX_CONTACTS:
+                if dist < cm and num_contacts < max_contacts:
                     var c_off = num_contacts * CONTACT_SIZE
                     contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                         gj_body
@@ -639,7 +656,7 @@ def _detect_contacts_sap_env[
                 var e1_y = pj_y + hlj * axis_w[1]
                 var e1_z = pj_z + hlj * axis_w[2]
                 var dist1 = e1_z - rj - ground_z
-                if dist1 < cm and num_contacts < MAX_CONTACTS:
+                if dist1 < cm and num_contacts < max_contacts:
                     var c_off = num_contacts * CONTACT_SIZE
                     contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                         gj_body
@@ -674,7 +691,7 @@ def _detect_contacts_sap_env[
                 var e2_y = pj_y - hlj * axis_w[1]
                 var e2_z = pj_z - hlj * axis_w[2]
                 var dist2 = e2_z - rj - ground_z
-                if dist2 < cm and num_contacts < MAX_CONTACTS:
+                if dist2 < cm and num_contacts < max_contacts:
                     var c_off = num_contacts * CONTACT_SIZE
                     contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                         gj_body
@@ -711,7 +728,7 @@ def _detect_contacts_sap_env[
                 # See `_plane_cylinder_contacts` in contact_detection.mojo;
                 # shared with the naive path so the two cannot drift, which
                 # is exactly how the ellipsoid branch below went missing.
-                _plane_cylinder_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                _plane_cylinder_contacts[DTYPE, BATCH](
                     env,
                     gj_body,
                     pj_x, pj_y, pj_z,
@@ -727,6 +744,7 @@ def _detect_contacts_sap_env[
                     cfr,
                     cdim,
                     -1,
+                    dims,
                     contacts,
                     num_contacts,
                 )
@@ -736,7 +754,7 @@ def _detect_contacts_sap_env[
                 # `broadphase_sap.mojo` contained no mention of ELLIPSOID at
                 # all, so every ellipsoid geom was INVISIBLE TO COLLISION in
                 # any model that takes the SAP path — `detect_contacts_auto`
-                # switches to SAP at NGEOM >= 16, and nothing warns.
+                # switches to SAP at ngeom >= 16, and nothing warns.
                 #
                 # Shipped and silently wrong at the time of the fix:
                 #   quadruped     26 geoms, SAP, ellipsoid = `torso`
@@ -769,7 +787,7 @@ def _detect_contacts_sap_env[
                     ground_z,
                 )
                 var diste = epe[0]
-                if diste < cm and num_contacts < MAX_CONTACTS:
+                if diste < cm and num_contacts < max_contacts:
                     var c_off = num_contacts * CONTACT_SIZE
                     contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
                         gj_body
@@ -807,7 +825,7 @@ def _detect_contacts_sap_env[
                 # Up to FOUR corners, not one — see `_plane_box_contacts` and
                 # task #42. ⚠ This path writes -1 for the world body where
                 # `detect_contacts` writes 0, hence the explicit argument.
-                _plane_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                _plane_box_contacts[DTYPE](
                     env,
                     gj_body,
                     pj_x, pj_y, pj_z,
@@ -822,6 +840,7 @@ def _detect_contacts_sap_env[
                     cfr,
                     cdim,
                     -1,
+                    dims,
                     contacts,
                     num_contacts,
                 )
@@ -839,11 +858,10 @@ def _detect_contacts_sap_env[
                 # has no INCLUDEMARGIN slot (see the module docstring). Those
                 # are gated bit-exactly elsewhere, so they are passed as
                 # parameters rather than quietly aligned with the other path.
-                comptime if NMESH_VERTS > 0:
+                comptime if D.CAP_NMESH_VERTS > 0:
                     _plane_mesh_contacts[
-                        DTYPE, MAX_CONTACTS, NGEOM, NMESH_VERTS, BATCH,
-                        -1, True, False,
-                    ](
+                        DTYPE,
+                        -1, True, False](
                         env,
                         gj,
                         gj_body,
@@ -857,6 +875,7 @@ def _detect_contacts_sap_env[
                         cfs,
                         cfr,
                         cdim,
+                        dims,
                         geoms,
                         mesh_meta,
                         mesh_verts,
@@ -866,7 +885,7 @@ def _detect_contacts_sap_env[
                         num_contacts,
                     )
 
-            _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+            _fill_pair_solparams[DTYPE](
                 env, _n0, num_contacts, _mx, contacts
             )
 
@@ -875,9 +894,9 @@ def _detect_contacts_sap_env[
     # ------------------------------------------------------------------
 
     # 4a. Build SAP index list.
-    var sap_idx = InlineArray[Int, NGEOM](uninitialized=True)
+    var sap_idx = InlineArray[Int, D.CAP_NGEOM](uninitialized=True)
     var sap_n = 0
-    for g in range(NGEOM):
+    for g in range(ngeom):
         var gt = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_TYPE]))
         if gt != GEOM_PLANE:
             sap_idx[sap_n] = g
@@ -926,7 +945,7 @@ def _detect_contacts_sap_env[
         var rbound_i = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_RBOUND])
 
         for j in range(i + 1, sap_n):
-            if num_contacts >= MAX_CONTACTS:
+            if num_contacts >= max_contacts:
                 smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](
                     num_contacts
                 )
@@ -959,15 +978,15 @@ def _detect_contacts_sap_env[
             # where they are built: MuJoCo collides predefined pairs outside
             # the broadphase entirely, so a pair must not be prunable by a
             # bound that ignores its margin.
-            var ipair = find_predefined_pair[DTYPE, NPAIR](
-                gi, gj, pairs, mmeta
+            var ipair = find_predefined_pair[DTYPE](
+                gi, gj, dims, pairs, mmeta
             )
             if ipair < 0:
                 # MuJoCo's body-pair filter — weld, weld-parent and exclude.
                 # See `pair_body_filtered`; shared with the O(N^2) loop and
                 # the plane loop above, which had no body filter at all
                 # (defect 24).
-                if pair_body_filtered[DTYPE, NBODY, NEXCLUDE](
+                if pair_body_filtered[DTYPE](
                     gi_body, gj_body, bodies, mmeta, excludes
                 ):
                     continue
@@ -1010,7 +1029,7 @@ def _detect_contacts_sap_env[
             # applies the test inside `mj_collideGeoms`, which sits DOWNSTREAM
             # of whichever broadphase produced the pair, so it covers every
             # candidate. Ours lived only in `contact_detection.mojo`, so every
-            # model big enough to take the SAP branch (`NGEOM >= 16` — which is
+            # model big enough to take the SAP branch (`ngeom >= 16` — which is
             # every interesting one) sent pairs into GJK that MuJoCo rejects
             # with three subtractions. The AABB tests above do NOT subsume it:
             # a sweep overlap on inflated world AABBs is far weaker than the
@@ -1064,7 +1083,7 @@ def _detect_contacts_sap_env[
             # with `detect_contacts` so the two paths cannot drift, which is
             # exactly how the SAP ellipsoid branch went missing. A predefined
             # pair supplies its own parameters instead, unmixed.
-            var _mx = pair_params[DTYPE, NPAIR](
+            var _mx = pair_params[DTYPE](
                 ipair, pairs
             ) if ipair >= 0 else mix_contact_params[DTYPE](
                 Int(rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_PRIORITY])),
@@ -1270,28 +1289,28 @@ def _detect_contacts_sap_env[
             elif gi_type == GEOM_BOX and gj_type == GEOM_CAPSULE:
                 # A capsule along a box face is a two-point manifold — see
                 # `_capsule_box_contacts`, which writes its own records.
-                _ = _capsule_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                _ = _capsule_box_contacts[DTYPE](
                     env, gi_body, gj_body,
                     pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi,
                     pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
                     Scalar[DTYPE](-1),
                     cm, cf, cfs, cfr, cdim,
-                    contacts, num_contacts,
+                    dims, contacts, num_contacts,
                 )
-                _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
                 )
                 continue
             elif gi_type == GEOM_CAPSULE and gj_type == GEOM_BOX:
-                _ = _capsule_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                _ = _capsule_box_contacts[DTYPE](
                     env, gi_body, gj_body,
                     pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj,
                     pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
                     Scalar[DTYPE](1),
                     cm, cf, cfs, cfr, cdim,
-                    contacts, num_contacts,
+                    dims, contacts, num_contacts,
                 )
-                _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                _fill_pair_solparams[DTYPE](
                     env, _n0, num_contacts, _mx, contacts
                 )
                 continue
@@ -1300,7 +1319,7 @@ def _detect_contacts_sap_env[
                 # `_box_box_contacts`. It writes its own records and this
                 # branch is done; only a SEPARATED pair (code -1) falls through
                 # to `box_box`, which then rejects it too.
-                var code = _box_box_contacts[DTYPE, MAX_CONTACTS, BATCH](
+                var code = _box_box_contacts[DTYPE](
                     env,
                     gi_body,
                     gj_body,
@@ -1311,11 +1330,12 @@ def _detect_contacts_sap_env[
                     cfs,
                     cfr,
                     cdim,
+                    dims,
                     contacts,
                     num_contacts,
                 )
                 if code >= 0:
-                    _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                    _fill_pair_solparams[DTYPE](
                         env, _n0, num_contacts, _mx, contacts
                     )
                     continue
@@ -1453,7 +1473,7 @@ def _detect_contacts_sap_env[
                 # One branch for both orderings: `cylinder_box` needed two
                 # because the primitive is asymmetric in its operands, but the
                 # convex query is symmetric and returns `gi -> gj` either way.
-                var r = gjk_epa[DTYPE, NMESH_VERTS](
+                var r = gjk_epa[DTYPE](
                     gi_type,
                     pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
                     ri, hli, hxi, hyi, hzi,
@@ -1474,7 +1494,7 @@ def _detect_contacts_sap_env[
 
             # GJK/EPA fallback for any pair involving a mesh geom
             elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:
-                comptime if NMESH_VERTS > 0:
+                comptime if D.CAP_NMESH_VERTS > 0:
                     # Read mesh IDs from geom data
                     var mi_id = Int(
                         rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MESH_ID])
@@ -1514,7 +1534,7 @@ def _detect_contacts_sap_env[
                         fill=Scalar[DTYPE](0)
                     )
                     var wf_ok = 0
-                    var result = gjk_epa_witness[DTYPE, NMESH_VERTS](
+                    var result = gjk_epa_witness[DTYPE](
                         gi_type,
                         pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
                         ri, hli, hxi, hyi, hzi,
@@ -1544,7 +1564,7 @@ def _detect_contacts_sap_env[
                         mc_pair
                         and wf_ok == 1
                         and dist < cm
-                        and num_contacts < MAX_CONTACTS
+                        and num_contacts < max_contacts
                     ):
                         var pa1 = 0
                         var pn1 = 0
@@ -1587,11 +1607,7 @@ def _detect_contacts_sap_env[
                         var mcn = 0
                         if mc_swap:
                             mcn = native_multicontact_contacts[
-                                DTYPE, NMESH_VERTS,
-                                mesh_max_poly(NMESH_VERTS),
-                                mesh_max_polyvert(NMESH_VERTS),
-                                MAX_CONTACTS, BATCH,
-                            ](
+                                DTYPE](
                                 env, body_a, body_b,
                                 gj_type,
                                 pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
@@ -1599,6 +1615,7 @@ def _detect_contacts_sap_env[
                                 gi_type,
                                 pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
                                 hxi, hyi, hzi, rbound_i, va1, mnv1, pa1, pn1,
+                                dims,
                                 mesh_verts, mesh_polys, mesh_polyvert,
                                 mesh_polymap, mesh_vert_polymap,
                                 wf2, wf1, wxs,
@@ -1608,11 +1625,7 @@ def _detect_contacts_sap_env[
                             )
                         else:
                             mcn = native_multicontact_contacts[
-                                DTYPE, NMESH_VERTS,
-                                mesh_max_poly(NMESH_VERTS),
-                                mesh_max_polyvert(NMESH_VERTS),
-                                MAX_CONTACTS, BATCH,
-                            ](
+                                DTYPE](
                                 env, body_a, body_b,
                                 gi_type,
                                 pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
@@ -1620,6 +1633,7 @@ def _detect_contacts_sap_env[
                                 gj_type,
                                 pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
                                 hxj, hyj, hzj, rbound_j, va2, mnv2, pa2, pn2,
+                                dims,
                                 mesh_verts, mesh_polys, mesh_polyvert,
                                 mesh_polymap, mesh_vert_polymap,
                                 wf1, wf2, wxx,
@@ -1630,16 +1644,15 @@ def _detect_contacts_sap_env[
                         # The manifold REPLACES the single point.
                         if mcn > 0:
                             _fill_pair_solparams[
-                                DTYPE, MAX_CONTACTS, BATCH
-                            ](env, _n0, num_contacts, _mx, contacts)
+                                DTYPE](env, _n0, num_contacts, _mx, contacts)
                             continue
                 else:
-                    _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+                    _fill_pair_solparams[DTYPE](
                         env, _n0, num_contacts, _mx, contacts
                     )
                     continue
 
-            if dist < cm and num_contacts < MAX_CONTACTS:
+            if dist < cm and num_contacts < max_contacts:
                 # The `gi -> gj` normal, captured BEFORE the emit negates it in
                 # place — see the identical capture in `contact_detection.mojo`.
                 var mccd_nx = nx
@@ -1691,7 +1704,7 @@ def _detect_contacts_sap_env[
                 #
                 # ⚠⚠ THIS FILE IS THE SECOND NARROW PHASE. `contact_detection`
                 # carries the same dispatch and the same emit, and SAP takes
-                # over at NGEOM >= SAP_THRESHOLD — so patching only the other
+                # over at ngeom >= SAP_THRESHOLD — so patching only the other
                 # one would have left every LARGE model (dog, quadruped: the
                 # exact models this was found on) with single-point cylinder
                 # contacts while the small-model gate went green. That is the
@@ -1700,8 +1713,7 @@ def _detect_contacts_sap_env[
                 # later". The two must move together.
                 if multi_ccd_pair_supported(gi_type, gj_type):
                     _ = multi_ccd_extra_contacts[
-                        DTYPE, MAX_CONTACTS, BATCH, NMESH_VERTS
-                    ](
+                        DTYPE](
                         env, body_a, body_b, mccd_first,
                         gi_type,
                         pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
@@ -1709,6 +1721,7 @@ def _detect_contacts_sap_env[
                         gj_type,
                         pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
                         rj, hlj, hxj, hyj, hzj, rbound_j, va2, mnv2,
+                        dims,
                         mesh_verts,
                         mesh_vert_edgeadr,
                         mesh_edges,
@@ -1720,7 +1733,7 @@ def _detect_contacts_sap_env[
                         ccd_tol, ccd_iter, cm,
                     )
 
-            _fill_pair_solparams[DTYPE, MAX_CONTACTS, BATCH](
+            _fill_pair_solparams[DTYPE](
                 env, _n0, num_contacts, _mx, contacts
             )
 
@@ -1801,11 +1814,8 @@ def _detect_contacts_sap_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _detect_contacts_sap_env[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEXCLUDE,
-        NMESH_VERTS, BATCH, NPAIR,
-    ](
-        env, xpos, xquat, geoms, bodies, mmeta, excludes, pairs, mesh_meta,
+    _detect_contacts_sap_env[DTYPE, BATCH](
+        env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR](), xpos, xquat, geoms, bodies, mmeta, excludes, pairs, mesh_meta,
         mesh_verts, mesh_polys, mesh_polyvert, mesh_polymap,
         mesh_vert_polymap, mesh_vert_edgeadr, mesh_edges, contacts, smeta,
     )
@@ -1866,11 +1876,8 @@ def detect_contacts_sap[
         var contacts_v = d.contacts.lt["cpu", L_CONTACTS]()
         var smeta_v = d.meta.lt["cpu", L_SMETA]()
         for e in range(BATCH):
-            _detect_contacts_sap_env[
-                DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, D.MAX_CONTACTS, D.NGEOM,
-                D.NEXCLUDE, D.NMESH_VERTS, BATCH, D.NPAIR,
-            ](
-                e, xpos_v, xquat_v, geoms_v, bodies_v, mmeta_v,
+            _detect_contacts_sap_env[DTYPE, BATCH](
+                e, AsStatic[D](), xpos_v, xquat_v, geoms_v, bodies_v, mmeta_v,
                 excludes_v, pairs_v, mesh_meta_v, mesh_verts_v, mesh_polys_v,
                 mesh_polyvert_v, mesh_polymap_v, mesh_vert_polymap_v,
                 mesh_vert_edgeadr_v, mesh_edges_v,

@@ -604,7 +604,7 @@ def _epa() raises -> Tuple[Float64, Float64, Float64, Float64]:
     var mv = _hull()
     var _ng = _no_graph_H()
     var _ne = _no_edges_H()
-    var r = gjk_epa[DT, NV_HULL](
+    var r = gjk_epa[DT](
         GEOM_CYLINDER,
         Scalar[DT](CYL_PX), Scalar[DT](CYL_PY), Scalar[DT](CYL_PZ),
         Scalar[DT](CYL_QX), Scalar[DT](CYL_QY), Scalar[DT](CYL_QZ),

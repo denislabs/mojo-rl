@@ -70,6 +70,7 @@ from ..gpu.constants import (
     MESH_POLY_IDX_NY,
     MESH_POLY_IDX_NZ,
 )
+from ..fields import DimsLike
 
 # `mjFACE_TOL` / `mjEDGE_TOL` (`engine_collision_gjk.h:40`). FACE_TOL is a
 # cosine — two face normals count as opposed when their dot is below
@@ -214,11 +215,11 @@ def _box_corner_index[
 
 @always_inline
 def _mesh_vertex_index[
-    DTYPE: DType, NMESH_VERTS: Int
-](
+    DTYPE: DType,
+    L_MESH_VERTS: Layout](
     lx: Scalar[DTYPE], ly: Scalar[DTYPE], lz: Scalar[DTYPE],
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     vert_adr: Int, num_verts: Int,
 ) -> Int:
@@ -894,19 +895,21 @@ def _box_face[
 
 @always_inline
 def _mesh_normals[
-    DTYPE: DType, NMESH_VERTS: Int, NMESH_POLY: Int, NMESH_POLYVERT: Int
-](
+    DTYPE: DType,
+    L_MESH_POLYS: Layout,
+    L_MESH_POLYMAP: Layout,
+    L_MESH_VERT_POLYMAP: Layout](
     dim: Int, v1i: Int, v2i: Int, v3i: Int,
     qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE], qw: Scalar[DTYPE],
     vert_adr: Int, poly_adr: Int,
     mesh_polys: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_POLY, MODEL_MESH_POLY_SIZE), MutAnyOrigin
+        DTYPE, L_MESH_POLYS, MutAnyOrigin
     ],
     mesh_polymap: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_POLYVERT), MutAnyOrigin
+        DTYPE, L_MESH_POLYMAP, MutAnyOrigin
     ],
     mesh_vert_polymap: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 2), MutAnyOrigin
+        DTYPE, L_MESH_VERT_POLYMAP, MutAnyOrigin
     ],
     mut n: InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3],
     mut idx: InlineArray[Int, MC_MAX_DEG],
@@ -1010,8 +1013,11 @@ def _mesh_normals[
 
 @always_inline
 def _mesh_edge_normals[
-    DTYPE: DType, NMESH_VERTS: Int, NMESH_POLY: Int, NMESH_POLYVERT: Int
-](
+    DTYPE: DType,
+    L_MESH_VERTS: Layout,
+    L_MESH_POLYS: Layout,
+    L_MESH_POLYVERT: Layout,
+    L_MESH_VERT_POLYMAP: Layout](
     dim: Int,
     v1x: Scalar[DTYPE], v1y: Scalar[DTYPE], v1z: Scalar[DTYPE],
     v2x: Scalar[DTYPE], v2y: Scalar[DTYPE], v2z: Scalar[DTYPE],
@@ -1020,19 +1026,19 @@ def _mesh_edge_normals[
     qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE], qw: Scalar[DTYPE],
     vert_adr: Int, poly_adr: Int,
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     mesh_polys: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_POLY, MODEL_MESH_POLY_SIZE), MutAnyOrigin
+        DTYPE, L_MESH_POLYS, MutAnyOrigin
     ],
     mesh_polyvert: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_POLYVERT), MutAnyOrigin
+        DTYPE, L_MESH_POLYVERT, MutAnyOrigin
     ],
     mesh_polymap: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_POLYVERT), MutAnyOrigin
+        DTYPE, L_MESH_POLYVERT, MutAnyOrigin
     ],
     mesh_vert_polymap: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 2), MutAnyOrigin
+        DTYPE, L_MESH_VERT_POLYMAP, MutAnyOrigin
     ],
     mut n: InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3],
     mut endverts: InlineArray[Scalar[DTYPE], MC_MAX_DEG * 3],
@@ -1115,20 +1121,22 @@ def _mesh_edge_normals[
 
 @always_inline
 def _mesh_face[
-    DTYPE: DType, NMESH_VERTS: Int, NMESH_POLY: Int, NMESH_POLYVERT: Int
-](
+    DTYPE: DType,
+    L_MESH_VERTS: Layout,
+    L_MESH_POLYS: Layout,
+    L_MESH_POLYVERT: Layout](
     face_id: Int,
     gx: Scalar[DTYPE], gy: Scalar[DTYPE], gz: Scalar[DTYPE],
     qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE], qw: Scalar[DTYPE],
     vert_adr: Int, poly_adr: Int,
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     mesh_polys: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_POLY, MODEL_MESH_POLY_SIZE), MutAnyOrigin
+        DTYPE, L_MESH_POLYS, MutAnyOrigin
     ],
     mesh_polyvert: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_POLYVERT), MutAnyOrigin
+        DTYPE, L_MESH_POLYVERT, MutAnyOrigin
     ],
     mut face: InlineArray[Scalar[DTYPE], MC_MAX_POLYVERT * 3],
 ) -> Int:
@@ -1210,11 +1218,12 @@ def _aligned_face_edge[
 
 def native_multicontact_contacts[
     DTYPE: DType,
-    NMESH_VERTS: Int,
-    NMESH_POLY: Int,
-    NMESH_POLYVERT: Int,
-    MAX_CONTACTS: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_MESH_VERTS: Layout,
+    L_MESH_POLYS: Layout,
+    L_MESH_POLYVERT: Layout,
+    L_MESH_VERT_POLYMAP: Layout,
+    L_CONTACTS: Layout,
 ](
     env: Int, body_a: Int, body_b: Int,
     gi_type: Int,
@@ -1229,20 +1238,21 @@ def native_multicontact_contacts[
     qjw: Scalar[DTYPE],
     hxj: Scalar[DTYPE], hyj: Scalar[DTYPE], hzj: Scalar[DTYPE],
     rbound_j: Scalar[DTYPE], va2: Int, mnv2: Int, pa2: Int, pn2: Int,
+    dims: D,
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     mesh_polys: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_POLY, MODEL_MESH_POLY_SIZE), MutAnyOrigin
+        DTYPE, L_MESH_POLYS, MutAnyOrigin
     ],
     mesh_polyvert: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_POLYVERT), MutAnyOrigin
+        DTYPE, L_MESH_POLYVERT, MutAnyOrigin
     ],
     mesh_polymap: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_POLYVERT), MutAnyOrigin
+        DTYPE, L_MESH_POLYVERT, MutAnyOrigin
     ],
     mesh_vert_polymap: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 2), MutAnyOrigin
+        DTYPE, L_MESH_VERT_POLYMAP, MutAnyOrigin
     ],
     wf1: InlineArray[Scalar[DTYPE], 9],
     wf2: InlineArray[Scalar[DTYPE], 9],
@@ -1255,7 +1265,7 @@ def native_multicontact_contacts[
     contact_condim: Int,
     flip_normal: Bool,
     contacts: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        DTYPE, L_CONTACTS,
         MutAnyOrigin,
     ],
     mut num_contacts: Int,
@@ -1284,6 +1294,7 @@ def native_multicontact_contacts[
     When the caller swaps, the manifold normal comes out as `obj2 -> obj1`,
     which is `gi -> gj`; the record wants `body_b -> body_a`, so it is negated.
     """
+    var max_contacts = dims.get_max_contacts()
     # A mesh with no polygons (a degenerate hull) is skipped, as MuJoCo skips
     # `!obj->data.mesh.mesh_polynum`.
     if gi_type == GEOM_MESH and pn1 <= 0:
@@ -1336,13 +1347,13 @@ def native_multicontact_contacts[
         i1b = _box_corner_index[DTYPE](l1b[0], l1b[1], l1b[2])
         i1c = _box_corner_index[DTYPE](l1c[0], l1c[1], l1c[2])
     else:
-        i1a = _mesh_vertex_index[DTYPE, NMESH_VERTS](
+        i1a = _mesh_vertex_index[DTYPE](
             l1a[0], l1a[1], l1a[2], mesh_verts, va1, mnv1
         )
-        i1b = _mesh_vertex_index[DTYPE, NMESH_VERTS](
+        i1b = _mesh_vertex_index[DTYPE](
             l1b[0], l1b[1], l1b[2], mesh_verts, va1, mnv1
         )
-        i1c = _mesh_vertex_index[DTYPE, NMESH_VERTS](
+        i1c = _mesh_vertex_index[DTYPE](
             l1c[0], l1c[1], l1c[2], mesh_verts, va1, mnv1
         )
         if i1a < 0 or i1b < 0 or i1c < 0:
@@ -1357,13 +1368,13 @@ def native_multicontact_contacts[
         i2b = _box_corner_index[DTYPE](l2b[0], l2b[1], l2b[2])
         i2c = _box_corner_index[DTYPE](l2c[0], l2c[1], l2c[2])
     else:
-        i2a = _mesh_vertex_index[DTYPE, NMESH_VERTS](
+        i2a = _mesh_vertex_index[DTYPE](
             l2a[0], l2a[1], l2a[2], mesh_verts, va2, mnv2
         )
-        i2b = _mesh_vertex_index[DTYPE, NMESH_VERTS](
+        i2b = _mesh_vertex_index[DTYPE](
             l2b[0], l2b[1], l2b[2], mesh_verts, va2, mnv2
         )
-        i2c = _mesh_vertex_index[DTYPE, NMESH_VERTS](
+        i2c = _mesh_vertex_index[DTYPE](
             l2c[0], l2c[1], l2c[2], mesh_verts, va2, mnv2
         )
         if i2a < 0 or i2b < 0 or i2c < 0:
@@ -1390,7 +1401,7 @@ def native_multicontact_contacts[
             -dirx, -diry, -dirz, n1, idx1,
         )
     elif gi_type == GEOM_MESH:
-        nn1 = _mesh_normals[DTYPE, NMESH_VERTS, NMESH_POLY, NMESH_POLYVERT](
+        nn1 = _mesh_normals[DTYPE](
             nface1, i1a, i1b, i1c, qix, qiy, qiz, qiw, va1, pa1,
             mesh_polys, mesh_polymap, mesh_vert_polymap, n1, idx1,
         )
@@ -1401,7 +1412,7 @@ def native_multicontact_contacts[
             dirx, diry, dirz, n2, idx2,
         )
     elif gj_type == GEOM_MESH:
-        nn2 = _mesh_normals[DTYPE, NMESH_VERTS, NMESH_POLY, NMESH_POLYVERT](
+        nn2 = _mesh_normals[DTYPE](
             nface2, i2a, i2b, i2c, qjx, qjy, qjz, qjw, va2, pa2,
             mesh_polys, mesh_polymap, mesh_vert_polymap, n2, idx2,
         )
@@ -1433,8 +1444,7 @@ def native_multicontact_contacts[
                 )
             elif gi_type == GEOM_MESH:
                 nn1 = _mesh_edge_normals[
-                    DTYPE, NMESH_VERTS, NMESH_POLY, NMESH_POLYVERT
-                ](
+                    DTYPE](
                     nface1, a1x, a1y, a1z, b1x, b1y, b1z, i1a,
                     pix, piy, piz, qix, qiy, qiz, qiw, va1, pa1,
                     mesh_verts, mesh_polys, mesh_polyvert, mesh_polymap,
@@ -1453,8 +1463,7 @@ def native_multicontact_contacts[
                 )
             elif gj_type == GEOM_MESH:
                 nn2 = _mesh_edge_normals[
-                    DTYPE, NMESH_VERTS, NMESH_POLY, NMESH_POLYVERT
-                ](
+                    DTYPE](
                     nface2, a2x, a2y, a2z, b2x, b2y, b2z, i2a,
                     pjx, pjy, pjz, qjx, qjy, qjz, qjw, va2, pa2,
                     mesh_verts, mesh_polys, mesh_polyvert, mesh_polymap,
@@ -1491,7 +1500,7 @@ def native_multicontact_contacts[
                 ind, pix, piy, piz, qix, qiy, qiz, qiw, hxi, hyi, hzi, face1
             )
         elif gi_type == GEOM_MESH:
-            nf1 = _mesh_face[DTYPE, NMESH_VERTS, NMESH_POLY, NMESH_POLYVERT](
+            nf1 = _mesh_face[DTYPE](
                 ind, pix, piy, piz, qix, qiy, qiz, qiw, va1, pa1,
                 mesh_verts, mesh_polys, mesh_polyvert, face1,
             )
@@ -1511,7 +1520,7 @@ def native_multicontact_contacts[
                 hxj, hyj, hzj, face2,
             )
         elif gj_type == GEOM_MESH:
-            nf2 = _mesh_face[DTYPE, NMESH_VERTS, NMESH_POLY, NMESH_POLYVERT](
+            nf2 = _mesh_face[DTYPE](
                 idx2[rj], pjx, pjy, pjz, qjx, qjy, qjz, qjw, va2, pa2,
                 mesh_verts, mesh_polys, mesh_polyvert, face2,
             )
@@ -1585,7 +1594,7 @@ def native_multicontact_contacts[
 
     var written = 0
     for k in range(nx_out):
-        if num_contacts >= MAX_CONTACTS:
+        if num_contacts >= max_contacts:
             break
         var off = num_contacts * CONTACT_SIZE
         contacts[env, off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](body_a)

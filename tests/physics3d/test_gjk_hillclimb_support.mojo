@@ -152,11 +152,11 @@ def _check(name: String, path: String) raises:
         # separately below, where a carried seed is the point.
         var w_cold = -1
         var w_none = -1
-        var hc = _support_mesh[D, NV](
+        var hc = _support_mesh[D](
             dx, dy, z, px, py, pz, qx, qy, qz, qw,
             verts, eadr, edges, 0, nverts, w_cold,
         )
-        var sc = _support_mesh[D, NV](
+        var sc = _support_mesh[D](
             dx, dy, z, px, py, pz, qx, qy, qz, qw,
             verts, no_graph, edges, 0, nverts, w_none,
         )
@@ -205,12 +205,12 @@ def _check(name: String, path: String) raises:
         var dx = r * cos(phi)
         var dy = r * sin(phi)
 
-        var hw = _support_mesh[D, NV](
+        var hw = _support_mesh[D](
             dx, dy, z, px, py, pz, qx, qy, qz, qw,
             verts, eadr, edges, 0, nverts, warm,
         )
         var w_none = -1
-        var sc = _support_mesh[D, NV](
+        var sc = _support_mesh[D](
             dx, dy, z, px, py, pz, qx, qy, qz, qw,
             verts, no_graph, edges, 0, nverts, w_none,
         )
@@ -249,7 +249,7 @@ def _check(name: String, path: String) raises:
         var phi = Scalar[D](k) * Scalar[D](2.399963229728653)
         var dx = r * cos(phi)
         var dy = r * sin(phi)
-        var hp = _support_mesh[D, NV](
+        var hp = _support_mesh[D](
             dx, dy, z, idq, idq, idq, idq, idq, idq, Scalar[D](1),
             verts, eadr, edges, 0, nverts, carried,
         )
@@ -292,14 +292,14 @@ def _check(name: String, path: String) raises:
     var sdy = Scalar[D](-0.55708601)
     var sdz = Scalar[D](0.74278135)
     var w_ref = -1
-    var scan_pt = _support_mesh[D, NV](
+    var scan_pt = _support_mesh[D](
         sdx, sdy, sdz, idq, idq, idq, idq, idq, idq, Scalar[D](1),
         verts, no_graph, edges, 0, nverts, w_ref,
     )
     var vref = scan_pt[0] * sdx + scan_pt[1] * sdy + scan_pt[2] * sdz
     for i in range(len(seeds)):
         var seed = seeds[i]
-        var got = _support_mesh[D, NV](
+        var got = _support_mesh[D](
             sdx, sdy, sdz, idq, idq, idq, idq, idq, idq, Scalar[D](1),
             verts, eadr, edges, 0, nverts, seed,
         )
@@ -381,7 +381,7 @@ def test_below_hillclimb_min_uses_the_scan() raises:
         ebuf.unsafe_ptr().as_unsafe_any_origin().unsafe_mut_cast[True]()
     )
     var w = -1
-    var s = _support_mesh[D, NV](
+    var s = _support_mesh[D](
         Scalar[D](0), Scalar[D](0), Scalar[D](1),
         Scalar[D](0), Scalar[D](0), Scalar[D](0),
         Scalar[D](0), Scalar[D](0), Scalar[D](0), Scalar[D](1),

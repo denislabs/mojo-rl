@@ -63,7 +63,7 @@ def test_box_box_separated() raises:
     var mv = _mv_tensor(List[Float64]())
     var _ng = _no_graph()
     var _ne = _no_edges()
-    var result = gjk_epa[DType.float64, NMV](
+    var result = gjk_epa[DType.float64](
         GEOM_BOX,
         0.0, 0.0, 2.0,  # box1 at z=2
         0.0, 0.0, 0.0, 1.0,  # identity quat
@@ -90,7 +90,7 @@ def test_box_box_overlapping() raises:
     var mv = _mv_tensor(List[Float64]())
     var _ng = _no_graph()
     var _ne = _no_edges()
-    var result = gjk_epa[DType.float64, NMV](
+    var result = gjk_epa[DType.float64](
         GEOM_BOX,
         0.0, 0.0, 0.3,  # box1 at z=0.3
         0.0, 0.0, 0.0, 1.0,
@@ -129,7 +129,7 @@ def test_sphere_mesh_separated() raises:
     var _ng = _no_graph()
 
     var _ne = _no_edges()
-    var result = gjk_epa[DType.float64, NMV](
+    var result = gjk_epa[DType.float64](
         GEOM_SPHERE,
         0.0, 0.0, 3.0,  # sphere at z=3
         0.0, 0.0, 0.0, 1.0,
@@ -171,7 +171,7 @@ def test_mesh_box_sawyer_case() raises:
     var _ne = _no_edges()
     # Mesh geom: body_pos = (0, 0.6, 0.2), geom_local_offset = (0, 0, 0.03)
     # World pos ≈ (0, 0.6, 0.23)
-    var result = gjk_epa[DType.float64, NMV](
+    var result = gjk_epa[DType.float64](
         GEOM_MESH,
         0.0, 0.6, 0.23,  # mesh world pos
         0.0, 0.0, 0.0, 1.0,  # identity quat
@@ -216,7 +216,7 @@ def test_mesh_box_touching() raises:
 
     var _ne = _no_edges()
     # Mesh at z=0.02 (bottom at z=0.0 = box top)
-    var result = gjk_epa[DType.float64, NMV](
+    var result = gjk_epa[DType.float64](
         GEOM_MESH,
         0.0, 0.0, 0.02,  # mesh at z=0.02
         0.0, 0.0, 0.0, 1.0,
@@ -258,7 +258,7 @@ def test_mesh_box_rotated() raises:
     var _ne = _no_edges()
     # Mesh at z=0.23 with 90° rotation (quat = [0.707, 0, 0, 0.707])
     var sq2 = 0.7071067811865476
-    var result = gjk_epa[DType.float64, NMV](
+    var result = gjk_epa[DType.float64](
         GEOM_MESH,
         0.0, 0.6, 0.23,
         sq2, 0.0, 0.0, sq2,  # 90° rotation around X
@@ -299,7 +299,7 @@ def test_mesh_box_asymmetric() raises:
 
     var _ne = _no_edges()
     # Very large box (table: 1.4m × 0.8m × 0.92m)
-    var result = gjk_epa[DType.float64, NMV](
+    var result = gjk_epa[DType.float64](
         GEOM_MESH,
         0.0, 0.6, 0.23,
         0.0, 0.0, 0.0, 1.0,
@@ -348,7 +348,7 @@ def test_mesh_box_actual_sawyer() raises:
     # But _geom_world_pos also composes quaternions...
     # Let me use the approximate world position
     var sq2 = 0.7071067811865476
-    var result = gjk_epa[DType.float64, NMV](
+    var result = gjk_epa[DType.float64](
         GEOM_MESH,
         0.0, 0.57, 0.2,  # approximate world pos after rotation
         sq2, 0.0, 0.0, sq2,  # body 23 quat: 90° around X
@@ -469,7 +469,7 @@ def test_exact_sawyer_runtime() raises:
     print("  mesh world pos:", wx, wy, wz)
     print("  mesh world quat:", bqx, bqy, bqz, bqw)
 
-    var result = gjk_epa[DType.float64, NMV](
+    var result = gjk_epa[DType.float64](
         GEOM_MESH,
         wx, wy, wz,
         bqx, bqy, bqz, bqw,

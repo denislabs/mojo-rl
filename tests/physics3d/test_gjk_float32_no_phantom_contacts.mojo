@@ -122,7 +122,7 @@ def _sweep[D: DType]() raises -> List[Float64]:
         var ang = 6.2831853 * t
         var qw = Scalar[D](cos(ang * 0.5))
         var qz = Scalar[D](sin(ang * 0.5))
-        var r = gjk_epa[D, NV](
+        var r = gjk_epa[D](
             GEOM_MESH, z, z, z, z, z, z, one, z, z, z, z, z,
             verts, eadr, edges, mva[0], mvn[0],
             GEOM_MESH, gx, Scalar[D](0.01), Scalar[D](-0.02), z, z, qz, qw,

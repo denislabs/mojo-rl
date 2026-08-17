@@ -238,7 +238,7 @@ def test_epa_actually_consumes_the_tolerance() raises:
     var out = InlineArray[Float64, 8](fill=0.0)
     for i in range(2):
         var tol = 1e-6 if i == 0 else 2e-2
-        var r = gjk_epa[DTYPE, NMV_EPA](
+        var r = gjk_epa[DTYPE](
             GEOM_BOX,
             Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),
             Scalar[DTYPE](0), Scalar[DTYPE](0), Scalar[DTYPE](0),

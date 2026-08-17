@@ -20,7 +20,7 @@ from layout import Layout
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, AsStatic
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.gjk import gjk_epa_witness
 from mojo_rl.physics3d.model.model_dims import ModelDims
@@ -221,7 +221,7 @@ def main() raises:
     var wf_ok = 0
     var z = Scalar[DTYPE](0)
     var one = Scalar[DTYPE](1)
-    var r = gjk_epa_witness[DTYPE, NMESHV](
+    var r = gjk_epa_witness[DTYPE](
         gi_type,
         Scalar[DTYPE](pix), Scalar[DTYPE](piy), Scalar[DTYPE](piz),
         z, z, z, one,
@@ -242,9 +242,7 @@ def main() raises:
 
     var nc = 0
     var got = native_multicontact_contacts[
-        DTYPE, NMESHV, mesh_max_poly(NMESHV), mesh_max_polyvert(NMESHV),
-        MC, 1,
-    ](
+        DTYPE](
         0, bi, bj,
         gi_type,
         Scalar[DTYPE](pix), Scalar[DTYPE](piy), Scalar[DTYPE](piz),
@@ -252,6 +250,7 @@ def main() raises:
         gj_type,
         Scalar[DTYPE](pjx), Scalar[DTYPE](pjy), Scalar[DTYPE](pjz),
         z, z, z, one, z, z, z, rb_j, va2, mnv2, pa2, pn2,
+        AsStatic[MD](),
         mesh_verts_v, mesh_polys_v, mesh_pv_v, mesh_pm_v, mesh_vpm_v,
         wf1, wf2, wxx,
         r[0],

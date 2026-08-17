@@ -280,19 +280,21 @@ comptime _HILLCLIMB_MIN: Int = 10
 @always_inline
 def hillclimb_support_index[
     DTYPE: DType,
-    NMESH_VERTS: Int,
+    L_MESH_VERTS: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout,
 ](
     ld_x: Scalar[DTYPE],
     ld_y: Scalar[DTYPE],
     ld_z: Scalar[DTYPE],
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     mesh_vert_edgeadr: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
     ],
     mesh_edges: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_EDGES, MutAnyOrigin
     ],
     vert_adr: Int,
     num_verts: Int,
@@ -373,7 +375,9 @@ def hillclimb_support_index[
 @always_inline
 def _support_mesh[
     DTYPE: DType,
-    NMESH_VERTS: Int,
+    L_MESH_VERTS: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout,
 ](
     dir_x: Scalar[DTYPE],
     dir_y: Scalar[DTYPE],
@@ -386,13 +390,13 @@ def _support_mesh[
     qz: Scalar[DTYPE],
     qw: Scalar[DTYPE],
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     mesh_vert_edgeadr: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
     ],
     mesh_edges: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_EDGES, MutAnyOrigin
     ],
     vert_adr: Int,
     num_verts: Int,
@@ -481,7 +485,7 @@ def _support_mesh[
     var best_y: Scalar[DTYPE] = 0
     var best_z: Scalar[DTYPE] = 0
 
-    var imax = hillclimb_support_index[DTYPE, NMESH_VERTS](
+    var imax = hillclimb_support_index[DTYPE](
         ld_x, ld_y, ld_z,
         mesh_verts, mesh_vert_edgeadr, mesh_edges,
         vert_adr, num_verts, warm,
@@ -519,7 +523,9 @@ def _support_mesh[
 @always_inline
 def _support[
     DTYPE: DType,
-    NMESH_VERTS: Int,
+    L_MESH_VERTS: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout,
 ](
     geom_type: Int,
     pos_x: Scalar[DTYPE],
@@ -535,13 +541,13 @@ def _support[
     half_y: Scalar[DTYPE],
     half_z: Scalar[DTYPE],
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     mesh_vert_edgeadr: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
     ],
     mesh_edges: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_EDGES, MutAnyOrigin
     ],
     vert_adr: Int,
     mesh_num_verts: Int,
@@ -607,7 +613,7 @@ def _support[
             half_length,
         )
     elif geom_type == GEOM_MESH:
-        return _support_mesh[DTYPE, NMESH_VERTS](
+        return _support_mesh[DTYPE](
             dir_x,
             dir_y,
             dir_z,
@@ -635,7 +641,9 @@ def _support[
 @always_inline
 def _minkowski_support[
     DTYPE: DType,
-    NMESH_VERTS: Int,
+    L_MESH_VERTS: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout,
 ](
     type1: Int,
     p1x: Scalar[DTYPE],
@@ -651,13 +659,13 @@ def _minkowski_support[
     hy1: Scalar[DTYPE],
     hz1: Scalar[DTYPE],
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     mesh_vert_edgeadr: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
     ],
     mesh_edges: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_EDGES, MutAnyOrigin
     ],
     va1: Int,
     mnv1: Int,
@@ -692,7 +700,7 @@ def _minkowski_support[
     Scalar[DTYPE],
     Scalar[DTYPE],
 ]:
-    var s1 = _support[DTYPE, NMESH_VERTS](
+    var s1 = _support[DTYPE](
         type1,
         p1x,
         p1y,
@@ -716,7 +724,7 @@ def _minkowski_support[
         dir_z,
         warm1,
     )
-    var s2 = _support[DTYPE, NMESH_VERTS](
+    var s2 = _support[DTYPE](
         type2,
         p2x,
         p2y,
@@ -755,7 +763,9 @@ def _minkowski_support[
 
 def _gjk_intersect[
     DTYPE: DType,
-    NMESH_VERTS: Int,
+    L_MESH_VERTS: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout,
 ](
     mut simplex: InlineArray[Scalar[DTYPE], 36],
     type1: Int,
@@ -765,13 +775,13 @@ def _gjk_intersect[
     r1: Scalar[DTYPE], hl1: Scalar[DTYPE],
     hx1: Scalar[DTYPE], hy1: Scalar[DTYPE], hz1: Scalar[DTYPE],
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     mesh_vert_edgeadr: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
     ],
     mesh_edges: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_EDGES, MutAnyOrigin
     ],
     va1: Int, mnv1: Int,
     type2: Int,
@@ -927,7 +937,7 @@ def _gjk_intersect[
             ny = f3[2]
             nz = f3[3]
 
-        var w = _minkowski_support[DTYPE, NMESH_VERTS](
+        var w = _minkowski_support[DTYPE](
             type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
             r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
@@ -961,7 +971,9 @@ def _gjk_intersect[
 
 def gjk_epa_witness[
     DTYPE: DType,
-    NMESH_VERTS: Int,
+    L_MESH_VERTS: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout,
 ](
     type1: Int,
     p1x: Scalar[DTYPE],
@@ -977,13 +989,13 @@ def gjk_epa_witness[
     hy1: Scalar[DTYPE],
     hz1: Scalar[DTYPE],
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     mesh_vert_edgeadr: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
     ],
     mesh_edges: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_EDGES, MutAnyOrigin
     ],
     va1: Int,
     mnv1: Int,
@@ -1081,7 +1093,7 @@ def gjk_epa_witness[
     dy /= dlen
     dz /= dlen
 
-    var s = _minkowski_support[DTYPE, NMESH_VERTS](
+    var s = _minkowski_support[DTYPE](
         type1,
         p1x,
         p1y,
@@ -1146,7 +1158,7 @@ def gjk_epa_witness[
         var ndy = -vy * inv_vlen
         var ndz = -vz * inv_vlen
 
-        var sn = _minkowski_support[DTYPE, NMESH_VERTS](
+        var sn = _minkowski_support[DTYPE](
             type1,
             p1x,
             p1y,
@@ -1270,7 +1282,7 @@ def gjk_epa_witness[
         # does not contain the origin, which is the single root cause behind
         # three failed attempts to use EPA on penetrating primitives.
         if nsimplex == 4:
-            var gi = _gjk_intersect[DTYPE, NMESH_VERTS](
+            var gi = _gjk_intersect[DTYPE](
                 simplex,
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
                 r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
@@ -1475,7 +1487,7 @@ def gjk_epa_witness[
             tnx /= tln
             tny /= tln
             tnz /= tln
-            var sp4 = _minkowski_support[DTYPE, NMESH_VERTS](
+            var sp4 = _minkowski_support[DTYPE](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
                 r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
@@ -1483,7 +1495,7 @@ def gjk_epa_witness[
                 tnx, tny, tnz,
                 warm1, warm2,
             )
-            var sp5 = _minkowski_support[DTYPE, NMESH_VERTS](
+            var sp5 = _minkowski_support[DTYPE](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
                 r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
@@ -1546,7 +1558,7 @@ def gjk_epa_witness[
                 sdz = Scalar[DTYPE](1)
             else:
                 sdz = Scalar[DTYPE](-1)
-            var sp = _minkowski_support[DTYPE, NMESH_VERTS](
+            var sp = _minkowski_support[DTYPE](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
                 r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
@@ -1612,7 +1624,7 @@ def gjk_epa_witness[
             break
 
         # support along that normal; converged when it adds no depth
-        var w = _minkowski_support[DTYPE, NMESH_VERTS](
+        var w = _minkowski_support[DTYPE](
             type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
             r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
@@ -1756,7 +1768,7 @@ def gjk_epa_witness[
                 dxx = Scalar[DTYPE](0); dyy = Scalar[DTYPE](0); dzz = Scalar[DTYPE](1)
             elif ax == 5:
                 dxx = Scalar[DTYPE](0); dyy = Scalar[DTYPE](0); dzz = Scalar[DTYPE](-1)
-            var sw = _minkowski_support[DTYPE, NMESH_VERTS](
+            var sw = _minkowski_support[DTYPE](
                 type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
                 r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
                 type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
@@ -1934,7 +1946,7 @@ def gjk_epa_witness[
             dzz = Scalar[DTYPE](1)
         else:
             dzz = Scalar[DTYPE](-1)
-        var sw = _minkowski_support[DTYPE, NMESH_VERTS](
+        var sw = _minkowski_support[DTYPE](
             type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
             r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
@@ -1952,7 +1964,7 @@ def gjk_epa_witness[
         # Degenerate seed: EPA never ran, so fall back to the estimate that
         # shipped before it existed. Wrong depth, but it KEEPS the contact,
         # which is strictly the prior behaviour rather than a new regression.
-        var s_fwd = _minkowski_support[DTYPE, NMESH_VERTS](
+        var s_fwd = _minkowski_support[DTYPE](
             type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
             r1, hl1, hx1, hy1, hz1, mesh_verts, mesh_vert_edgeadr, mesh_edges, va1, mnv1,
             type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
@@ -1988,7 +2000,9 @@ def gjk_epa_witness[
 @always_inline
 def gjk_epa[
     DTYPE: DType,
-    NMESH_VERTS: Int,
+    L_MESH_VERTS: Layout,
+    L_MESH_VERT_EDGEADR: Layout,
+    L_MESH_EDGES: Layout,
 ](
     type1: Int,
     p1x: Scalar[DTYPE], p1y: Scalar[DTYPE], p1z: Scalar[DTYPE],
@@ -1997,13 +2011,13 @@ def gjk_epa[
     r1: Scalar[DTYPE], hl1: Scalar[DTYPE],
     hx1: Scalar[DTYPE], hy1: Scalar[DTYPE], hz1: Scalar[DTYPE],
     mesh_verts: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+        DTYPE, L_MESH_VERTS, MutAnyOrigin
     ],
     mesh_vert_edgeadr: LayoutTensor[
-        DTYPE, Layout.row_major(NMESH_VERTS), MutAnyOrigin
+        DTYPE, L_MESH_VERT_EDGEADR, MutAnyOrigin
     ],
     mesh_edges: LayoutTensor[
-        DTYPE, Layout.row_major(mesh_max_edge(NMESH_VERTS)), MutAnyOrigin
+        DTYPE, L_MESH_EDGES, MutAnyOrigin
     ],
     va1: Int, mnv1: Int,
     type2: Int,
@@ -2037,7 +2051,7 @@ def gjk_epa[
     var wf2 = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     var wx = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
     var wf_ok = 0
-    return gjk_epa_witness[DTYPE, NMESH_VERTS](
+    return gjk_epa_witness[DTYPE](
         type1,
         p1x, p1y, p1z, q1x, q1y, q1z, q1w,
         r1, hl1, hx1, hy1, hz1,
