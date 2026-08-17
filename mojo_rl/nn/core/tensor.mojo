@@ -10,7 +10,7 @@ the GPU path is the kernel-arg `MutAnyOrigin` (the GPU ABI).
 """
 
 from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from layout import Layout, LayoutTensor
+from layout import Layout, LayoutTensor, RuntimeLayout
 
 from mojo_rl.nn.constants import DT
 
@@ -182,9 +182,33 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & Deinitable):
         else:
             comptime assert False, "target must be 'cpu' or 'gpu'"
 
+    def lt_dyn[
+        target: StaticString, layout: Layout
+    ](mut self, rl: RuntimeLayout[layout]) -> LayoutTensor[
+        Self.dt, layout, MutAnyOrigin
+    ]:
+        """The same view, shaped at RUN TIME — `layout` carries UNKNOWN
+        extents and `rl` carries the real ones.
+
+        This is `lt`'s counterpart for physics3d's dynamic leg (assessment
+        §12.4): one kernel body serves a comptime `Layout.row_major(BATCH,
+        NV*NV)` from the GPU path and a `Layout.row_major[2]()` + this from
+        the CPU path, because `LM: Layout` accepts both. Same origin-linking
+        ctor as `lt` — no `.unsafe_ptr()`, so the borrow is not severed."""
+        comptime if target == "cpu":
+            return LayoutTensor[Self.dt, layout, MutAnyOrigin](self.data, rl)
+        elif target == "gpu":
+            return LayoutTensor[Self.dt, layout, MutAnyOrigin](
+                self.dev.value(), rl
+            )
+        else:
+            comptime assert False, "target must be 'cpu' or 'gpu'"
+
     def lt_at[
         target: StaticString, layout: Layout
-    ](mut self, offset: Int) raises -> LayoutTensor[Self.dt, layout, MutAnyOrigin]:
+    ](mut self, offset: Int) raises -> LayoutTensor[
+        Self.dt, layout, MutAnyOrigin
+    ]:
         """Typed GPU view at element `offset` into the device buffer — a
         stacked-ensemble / per-step sub-view — WITHOUT `.unsafe_ptr()`. The
         sanctioned replacement for

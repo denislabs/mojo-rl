@@ -31,19 +31,21 @@ would take `NPAIR`'s value and mesh collision would switch itself off tree-
 wide), and its comment says the failure "has happened here before". One
 named provider makes that class of bug unspellable.
 
-WHY THE TRAIT IS *COMPTIME-ONLY* IN 1c
+THE RUNTIME ACCESSORS ARRIVED IN 2b.0
 
-§5.1 designs `DimsLike` with runtime accessors (`fn nv(self) -> Int`) so a
-dynamic leg can exist. **Those are deliberately absent here.** Phase 1c moves
-the containers onto a named provider and changes NO code generation: every
-member below is a `comptime Int`, so the static leg is bit-identical by
-construction and 1c is gatable bit-exact. The runtime accessors arrive in 2b
-with the dynamic leg, which is where they first have a caller.
+Through phase 1c and 2a this trait was comptime-ONLY: every member was a
+`comptime Int`, which is what made those phases gatable bit-exact. §5.1's
+runtime accessors were held back until they had a caller, and 2b.0 is where
+they got one — see `DimsLike`'s own docstring for the three families the
+trait now carries, and `tests/physics3d/test_dyn_dims_ldl.mojo` for the
+kernel that runs on both.
 
-Validated already: §10.6 read the arm64 asm and found `StaticDims.nv()`
-byte-identical to a comptime parameter; §10.8 measured the trait free on Metal
-(1.0005-1.0036x). The design question is closed on both backends — what is
-open is the sweep, not the mechanism.
+The static leg is unchanged by their arrival, and that is checked rather than
+asserted: §10.6 read the arm64 asm and found the static accessor
+byte-identical to a comptime parameter, and 2b.0 re-read it against THIS
+trait (`scratchpad/p2b/asm_static.mojo` — 67 instructions each, the loop
+bound the immediate `#27` in both, with a dynamic third arm at 174 as the
+negative control). §10.8 measured the trait free on Metal (1.0005-1.0036x).
 
 ⚠ `BATCH` IS NOT A DIMENSION AND IS NOT HERE. It is the env batch size,
 orthogonal to the model, and it stays a separate container parameter. Likewise
@@ -59,7 +61,7 @@ leaf.
 """
 
 
-trait DimsLike:
+trait DimsLike(Copyable, Movable):
     """Every model dimension the `fields` containers are shaped by.
 
     ⚠ ONE PROVIDER CARRIES ALL OF THEM even though no single container uses
@@ -68,6 +70,37 @@ trait DimsLike:
     would have to pick the right one; carrying the union means every container
     takes the same `D` and the model's dimensions are named once per env.
     Unused members cost nothing: they are comptime `Int`s.
+
+    THREE FAMILIES, AND THE DIFFERENCE IS THE WHOLE POINT OF 2b
+    ==========================================================
+
+    * `NQ`, `NV`, … — the **comptime exact** dimension. Every shipped call
+      site reads these today. On a DYNAMIC provider they do not exist as
+      values and are POISONED (see `DynDims`), so a site left unconverted
+      fails loudly instead of silently sizing itself to zero.
+    * `CAP_NQ`, `CAP_NV`, … — the **comptime cap**. This is what stack
+      scratch is sized by (`InlineArray[T, D.CAP_NV]`). On a static provider
+      cap == exact, so today's allocations are byte-identical; on a dynamic
+      one it is the bound the model may not exceed.
+    * `get_nq()`, `get_nv()`, … — the **runtime** dimension: loop bounds and
+      strides. §10.6 read the arm64 asm and found the static implementation
+      byte-identical to a comptime parameter, and §10.8 measured the trait
+      free on Metal (1.0005-1.0036x).
+
+    ⚠ THE ACCESSORS ARE `get_nv()` AND NOT `nv()` BECAUSE OF A NAME
+    COLLISION, not a style preference. `Dims` spells its parameters in
+    lowercase (`Dims[nq=3, nv=3]`) and its members in uppercase, because a
+    struct parameter does NOT satisfy a `comptime` trait member — the
+    explicit `comptime NQ = Self.nq` lines below are load-bearing. That
+    leaves `nv` taken by the parameter, and a method may not share a name
+    with one ("invalid redefinition of 'nv' … cannot overload with this
+    non-function definition"). The prefix earns its keep anyway: `D.NV` and
+    `dims.get_nv()` are the two sides of this migration, and they should not
+    look alike at a glance.
+
+    ⚠ `CAP_`, NOT §5.1's `MAX_`, because `MAX_CONTACTS` is itself a
+    dimension and `MAX_MAX_CONTACTS` is not a name anyone should have to
+    read.
     """
 
     comptime NQ: Int
@@ -85,6 +118,67 @@ trait DimsLike:
     comptime NACT: Int
     comptime NTEN: Int
     comptime NKEY: Int
+
+    comptime CAP_NQ: Int
+    comptime CAP_NV: Int
+    comptime CAP_NBODY: Int
+    comptime CAP_NJOINT: Int
+    comptime CAP_NGEOM: Int
+    comptime CAP_NSITE: Int
+    comptime CAP_MAX_CONTACTS: Int
+    comptime CAP_NEQUALITY: Int
+    comptime CAP_NTENDON: Int
+    comptime CAP_NEXCLUDE: Int
+    comptime CAP_NMESH_VERTS: Int
+    comptime CAP_NPAIR: Int
+    comptime CAP_NACT: Int
+    comptime CAP_NTEN: Int
+    comptime CAP_NKEY: Int
+
+    def get_nq(self) -> Int:
+        ...
+
+    def get_nv(self) -> Int:
+        ...
+
+    def get_nbody(self) -> Int:
+        ...
+
+    def get_njoint(self) -> Int:
+        ...
+
+    def get_ngeom(self) -> Int:
+        ...
+
+    def get_nsite(self) -> Int:
+        ...
+
+    def get_max_contacts(self) -> Int:
+        ...
+
+    def get_nequality(self) -> Int:
+        ...
+
+    def get_ntendon(self) -> Int:
+        ...
+
+    def get_nexclude(self) -> Int:
+        ...
+
+    def get_nmesh_verts(self) -> Int:
+        ...
+
+    def get_npair(self) -> Int:
+        ...
+
+    def get_nact(self) -> Int:
+        ...
+
+    def get_nten(self) -> Int:
+        ...
+
+    def get_nkey(self) -> Int:
+        ...
 
 
 struct Dims[
@@ -133,3 +227,346 @@ struct Dims[
     comptime NACT = Self.nact
     comptime NTEN = Self.nten
     comptime NKEY = Self.nkey
+
+    # Cap == exact. Every `InlineArray[T, D.CAP_NV]` on the static leg is
+    # therefore the allocation that ships today, to the byte.
+    comptime CAP_NQ = Self.nq
+    comptime CAP_NV = Self.nv
+    comptime CAP_NBODY = Self.nbody
+    comptime CAP_NJOINT = Self.njoint
+    comptime CAP_NGEOM = Self.ngeom
+    comptime CAP_NSITE = Self.nsite
+    comptime CAP_MAX_CONTACTS = Self.max_contacts
+    comptime CAP_NEQUALITY = Self.nequality
+    comptime CAP_NTENDON = Self.ntendon
+    comptime CAP_NEXCLUDE = Self.nexclude
+    comptime CAP_NMESH_VERTS = Self.nmesh_verts
+    comptime CAP_NPAIR = Self.npair
+    comptime CAP_NACT = Self.nact
+    comptime CAP_NTEN = Self.nten
+    comptime CAP_NKEY = Self.nkey
+
+    def __init__(out self):
+        """Stateless: every dimension is a parameter. Exists only so a
+        provider can be PASSED to a kernel — `_ldl_solve_env(env, dims, ...)`
+        — which is what lets one body serve both legs."""
+        pass
+
+    @always_inline
+    def get_nq(self) -> Int:
+        return Self.nq
+
+    @always_inline
+    def get_nv(self) -> Int:
+        return Self.nv
+
+    @always_inline
+    def get_nbody(self) -> Int:
+        return Self.nbody
+
+    @always_inline
+    def get_njoint(self) -> Int:
+        return Self.njoint
+
+    @always_inline
+    def get_ngeom(self) -> Int:
+        return Self.ngeom
+
+    @always_inline
+    def get_nsite(self) -> Int:
+        return Self.nsite
+
+    @always_inline
+    def get_max_contacts(self) -> Int:
+        return Self.max_contacts
+
+    @always_inline
+    def get_nequality(self) -> Int:
+        return Self.nequality
+
+    @always_inline
+    def get_ntendon(self) -> Int:
+        return Self.ntendon
+
+    @always_inline
+    def get_nexclude(self) -> Int:
+        return Self.nexclude
+
+    @always_inline
+    def get_nmesh_verts(self) -> Int:
+        return Self.nmesh_verts
+
+    @always_inline
+    def get_npair(self) -> Int:
+        return Self.npair
+
+    @always_inline
+    def get_nact(self) -> Int:
+        return Self.nact
+
+    @always_inline
+    def get_nten(self) -> Int:
+        return Self.nten
+
+    @always_inline
+    def get_nkey(self) -> Int:
+        return Self.nkey
+
+
+comptime AsStatic[D: DimsLike] = Dims[
+    nq=D.NQ,
+    nv=D.NV,
+    nbody=D.NBODY,
+    njoint=D.NJOINT,
+    ngeom=D.NGEOM,
+    nsite=D.NSITE,
+    max_contacts=D.MAX_CONTACTS,
+    nequality=D.NEQUALITY,
+    ntendon=D.NTENDON,
+    nexclude=D.NEXCLUDE,
+    nmesh_verts=D.NMESH_VERTS,
+    npair=D.NPAIR,
+    nact=D.NACT,
+    nten=D.NTEN,
+    nkey=D.NKEY,
+]
+"""A VALUE of the provider `D`, for a caller that only has it as a parameter.
+
+The converted kernels take `dims: D` as an argument, but a dispatcher holds
+`D` as a comptime TYPE and has no value to pass. `D()` will not do — the
+trait cannot require a default constructor, because `DynDims` has nothing to
+default to (all-zero dimensions are precisely the silent failure `DIM_POISON`
+exists to prevent). So the static leg re-spells its provider instead.
+
+`Dims` is nominal and `ModelDims[MD]` expands to a `Dims[...]`, so
+`AsStatic[D]` IS `D` for every provider that has comptime dimensions — no
+conversion, no second type. And for one that does NOT, it expands to
+`Dims[nq=-1, ...]`, which is the loud failure a dispatcher still on the
+static leg should get if a dynamic provider reaches it.
+
+⚠ ENUMERATED FROM THE TRAIT, NOT FROM WHAT ANY CALLER SPELLS. Phase 2a lost
+seventeen tests to a union built from the members that happened to appear at
+a site; `nact`/`nten`/`nkey` are named by no `Data` or `Model` spelling and
+defaulted silently to 0.
+"""
+
+
+comptime DIM_POISON: Int = -1
+"""What a DYNAMIC provider answers when asked for a COMPTIME dimension.
+
+⚠ IT IS NOT ZERO, AND THAT IS THE ENTIRE DESIGN. A missing dimension that
+defaults to 0 type-checks, allocates an empty tensor and fails four calls
+later as "index 0 is out of bounds, valid range is 0 to -1" — this tree lost
+seventeen tests to exactly that in phase 2a, all with the same message and
+none pointing at a changed line. A negative dimension cannot be allocated and
+cannot be a loop bound, so a site that reads `D.NV` off a dynamic provider —
+i.e. a site the sweep has not converted yet — dies AT the unconverted site.
+"""
+
+
+struct DynDims[
+    cap_nq: Int = 0,
+    cap_nv: Int = 0,
+    cap_nbody: Int = 0,
+    cap_njoint: Int = 0,
+    cap_ngeom: Int = 0,
+    cap_nsite: Int = 0,
+    cap_max_contacts: Int = 0,
+    cap_nequality: Int = 0,
+    cap_ntendon: Int = 0,
+    cap_nexclude: Int = 0,
+    cap_nmesh_verts: Int = 0,
+    cap_npair: Int = 0,
+    cap_nact: Int = 0,
+    cap_nten: Int = 0,
+    cap_nkey: Int = 0,
+](DimsLike):
+    """Dimensions carried as RUNTIME state, bounded by comptime caps.
+
+    This is the provider that makes one compiled body serve many models: the
+    caps size the stack scratch (and so must bound every model the binary
+    will ever load), while the loop bounds and strides come from the fields.
+
+    ⚠ THE CAPS ARE A PROMISE THE CALLER MAKES. `__init__` checks it —
+    silently truncating to the cap would corrupt the physics, and reading past
+    it would corrupt memory, so a model larger than the binary was built for
+    has to be a loud failure at construction.
+
+    ⚠⚠ ITS COMPTIME MEMBERS ARE POISON, NOT VALUES. See `DIM_POISON`.
+    """
+
+    var _nq: Int
+    var _nv: Int
+    var _nbody: Int
+    var _njoint: Int
+    var _ngeom: Int
+    var _nsite: Int
+    var _max_contacts: Int
+    var _nequality: Int
+    var _ntendon: Int
+    var _nexclude: Int
+    var _nmesh_verts: Int
+    var _npair: Int
+    var _nact: Int
+    var _nten: Int
+    var _nkey: Int
+
+    comptime NQ = DIM_POISON
+    comptime NV = DIM_POISON
+    comptime NBODY = DIM_POISON
+    comptime NJOINT = DIM_POISON
+    comptime NGEOM = DIM_POISON
+    comptime NSITE = DIM_POISON
+    comptime MAX_CONTACTS = DIM_POISON
+    comptime NEQUALITY = DIM_POISON
+    comptime NTENDON = DIM_POISON
+    comptime NEXCLUDE = DIM_POISON
+    comptime NMESH_VERTS = DIM_POISON
+    comptime NPAIR = DIM_POISON
+    comptime NACT = DIM_POISON
+    comptime NTEN = DIM_POISON
+    comptime NKEY = DIM_POISON
+
+    comptime CAP_NQ = Self.cap_nq
+    comptime CAP_NV = Self.cap_nv
+    comptime CAP_NBODY = Self.cap_nbody
+    comptime CAP_NJOINT = Self.cap_njoint
+    comptime CAP_NGEOM = Self.cap_ngeom
+    comptime CAP_NSITE = Self.cap_nsite
+    comptime CAP_MAX_CONTACTS = Self.cap_max_contacts
+    comptime CAP_NEQUALITY = Self.cap_nequality
+    comptime CAP_NTENDON = Self.cap_ntendon
+    comptime CAP_NEXCLUDE = Self.cap_nexclude
+    comptime CAP_NMESH_VERTS = Self.cap_nmesh_verts
+    comptime CAP_NPAIR = Self.cap_npair
+    comptime CAP_NACT = Self.cap_nact
+    comptime CAP_NTEN = Self.cap_nten
+    comptime CAP_NKEY = Self.cap_nkey
+
+    def __init__(
+        out self,
+        *,
+        nq: Int = 0,
+        nv: Int = 0,
+        nbody: Int = 0,
+        njoint: Int = 0,
+        ngeom: Int = 0,
+        nsite: Int = 0,
+        max_contacts: Int = 0,
+        nequality: Int = 0,
+        ntendon: Int = 0,
+        nexclude: Int = 0,
+        nmesh_verts: Int = 0,
+        npair: Int = 0,
+        nact: Int = 0,
+        nten: Int = 0,
+        nkey: Int = 0,
+    ) raises:
+        """Keyword-only, for the reason `Dims`'s docstring gives: fifteen
+        `Int`s in a row is the positional hazard this type exists to kill."""
+        self._nq = nq
+        self._nv = nv
+        self._nbody = nbody
+        self._njoint = njoint
+        self._ngeom = ngeom
+        self._nsite = nsite
+        self._max_contacts = max_contacts
+        self._nequality = nequality
+        self._ntendon = ntendon
+        self._nexclude = nexclude
+        self._nmesh_verts = nmesh_verts
+        self._npair = npair
+        self._nact = nact
+        self._nten = nten
+        self._nkey = nkey
+        _check_cap["nq", Self.cap_nq](nq)
+        _check_cap["nv", Self.cap_nv](nv)
+        _check_cap["nbody", Self.cap_nbody](nbody)
+        _check_cap["njoint", Self.cap_njoint](njoint)
+        _check_cap["ngeom", Self.cap_ngeom](ngeom)
+        _check_cap["nsite", Self.cap_nsite](nsite)
+        _check_cap["max_contacts", Self.cap_max_contacts](max_contacts)
+        _check_cap["nequality", Self.cap_nequality](nequality)
+        _check_cap["ntendon", Self.cap_ntendon](ntendon)
+        _check_cap["nexclude", Self.cap_nexclude](nexclude)
+        _check_cap["nmesh_verts", Self.cap_nmesh_verts](nmesh_verts)
+        _check_cap["npair", Self.cap_npair](npair)
+        _check_cap["nact", Self.cap_nact](nact)
+        _check_cap["nten", Self.cap_nten](nten)
+        _check_cap["nkey", Self.cap_nkey](nkey)
+
+    @always_inline
+    def get_nq(self) -> Int:
+        return self._nq
+
+    @always_inline
+    def get_nv(self) -> Int:
+        return self._nv
+
+    @always_inline
+    def get_nbody(self) -> Int:
+        return self._nbody
+
+    @always_inline
+    def get_njoint(self) -> Int:
+        return self._njoint
+
+    @always_inline
+    def get_ngeom(self) -> Int:
+        return self._ngeom
+
+    @always_inline
+    def get_nsite(self) -> Int:
+        return self._nsite
+
+    @always_inline
+    def get_max_contacts(self) -> Int:
+        return self._max_contacts
+
+    @always_inline
+    def get_nequality(self) -> Int:
+        return self._nequality
+
+    @always_inline
+    def get_ntendon(self) -> Int:
+        return self._ntendon
+
+    @always_inline
+    def get_nexclude(self) -> Int:
+        return self._nexclude
+
+    @always_inline
+    def get_nmesh_verts(self) -> Int:
+        return self._nmesh_verts
+
+    @always_inline
+    def get_npair(self) -> Int:
+        return self._npair
+
+    @always_inline
+    def get_nact(self) -> Int:
+        return self._nact
+
+    @always_inline
+    def get_nten(self) -> Int:
+        return self._nten
+
+    @always_inline
+    def get_nkey(self) -> Int:
+        return self._nkey
+
+
+@always_inline
+def _check_cap[name: StaticString, cap: Int](n: Int) raises:
+    if n > cap:
+        raise Error(
+            String("physics3d: model ")
+            + String(name)
+            + "="
+            + String(n)
+            + " exceeds the binary's cap of "
+            + String(cap)
+            + " — raise DynDims[cap_"
+            + String(name)
+            + "=...] and rebuild"
+        )

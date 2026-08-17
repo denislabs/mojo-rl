@@ -233,8 +233,8 @@ def _finalize_env[
                 M[env, (dof_adr + d) * NV + (dof_adr + d)] += dt * damp
 
     # Step 3+4: re-factor M_hat, solve qacc_final = M_hat^{-1} * rhs
-    _ldl_factor_env[DTYPE, NV, BATCH](env, M, L, D)
-    _ldl_solve_env[DTYPE, NV, BATCH](env, L, D, fnet, qacc_ws)
+    _ldl_factor_env(env, Dims[nv=NV](), M, L, D)
+    _ldl_solve_env(env, Dims[nv=NV](), L, D, fnet, qacc_ws)
 
     # Step 5: v_new = v_old + dt * qacc_final (NaN guard + clamp)
     for i in range(NV):
