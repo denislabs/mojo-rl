@@ -231,8 +231,7 @@ def _island_pgs_solve_env[
     # === Initialize workspace (legacy: parallel, one thread per slot) ===
     for contact_tid in range(MC):
         _init_common_normal_ws[
-            DTYPE, NV, MAX_CONTACTS, BATCH, SOLVER_WS
-        ](env, contact_tid, solver)
+            DTYPE](env, contact_tid, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), solver)
         # Init friction workspace for this contact slot
         for d in range(5):
             solver[env, ws_lf + d * MC + contact_tid] = 0
@@ -313,11 +312,11 @@ def _island_pgs_solve_env[
     # contact slot; internal `contact_tid < nc` guard kept in the helper) ===
     for contact_tid in range(MC):
         _precompute_contact_normal[
-            DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, BATCH, SOLVER_WS
-        ](
+            DTYPE, V_SIZE](
             env,
             contact_tid,
             nc,
+            Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](),
             qvel,
             subtree_com,
             contacts,
@@ -395,8 +394,8 @@ def _island_pgs_solve_env[
     if num_islands > MAX_ISLANDS:
         num_islands = MAX_ISLANDS
 
-    _warmstart_normals[DTYPE, NV, MAX_CONTACTS, BATCH, SOLVER_WS](
-        env, nc, qacc_constrained, solver
+    _warmstart_normals[DTYPE](
+        env, nc, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qacc_constrained, solver
     )
 
     # PGS normal iterations (acceleration-level) with per-island early
@@ -457,14 +456,14 @@ def _island_pgs_solve_env[
     # Joint limits — legacy position (between the normal PGS and the
     # friction phase), legacy iteration count (PGS_ITERATIONS, not the
     # Newton path's 50).
-    _limits_env[DTYPE, NQ, NV, NJOINT, BATCH, PGS_ITERATIONS](
-        env, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
+    _limits_env[DTYPE, PGS_ITERATIONS](
+        env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
         qacc_constrained,
     )
     # Dry-friction dof rows (MuJoCo mjCNSTR_FRICTION_DOF), solved
     # beside the limit rows. No-op for a model with no frictionloss.
-    _friction_env[DTYPE, NQ, NV, NJOINT, BATCH, PGS_ITERATIONS](
-        env, qvel, joints,
+    _friction_env[DTYPE, PGS_ITERATIONS](
+        env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, joints,
         rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_TIMESTEP]),
         dof_invweight0, m_inv, qacc_constrained
     )
@@ -474,10 +473,8 @@ def _island_pgs_solve_env[
     # this call-site gate matches bit-identically for NEQUALITY == 0).
     comptime if NEQUALITY > 0:
         _equality_env[
-            DTYPE, NQ, NV, NBODY, NJOINT, NEQUALITY, V_SIZE,
-            BATCH, PGS_ITERATIONS,
-        ](
-            env, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+            DTYPE, V_SIZE, PGS_ITERATIONS](
+            env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
             equality, body_invweight0, dof_invweight0, cdof,
             m_inv, qacc_constrained,
         )
@@ -486,10 +483,9 @@ def _island_pgs_solve_env[
     # (`comptime if MAX_TENDON > 0` in PGSSolver.solve_gpu).
     comptime if NTENDON > 0:
         _tendon_env[
-            DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
-            PGS_ITERATIONS,
-        ](
-            env, qpos, qvel, joints, mmeta, tendons, sites, bodies,
+            DTYPE, BATCH,
+            PGS_ITERATIONS](
+            env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, joints, mmeta, tendons, sites, bodies,
             subtree_com, cdof, xpos, xquat, m_inv, qacc_constrained,
         )
 
@@ -616,8 +612,7 @@ def _island_pgs_solve_env[
                         )
                     else:
                         _angular_jacobian_row[
-                            DTYPE, NV, NBODY, NJOINT, V_SIZE, BATCH
-                        ](
+                            DTYPE, V_SIZE](
                             env,
                             joints,
                             bodies,

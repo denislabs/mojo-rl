@@ -240,8 +240,7 @@ def _cg_solve_env[
     # === Initialize workspace (legacy: parallel, one thread per slot) ===
     for contact_tid in range(MC):
         _init_common_normal_ws[
-            DTYPE, NV, MAX_CONTACTS, BATCH, SOLVER_WS
-        ](env, contact_tid, solver)
+            DTYPE](env, contact_tid, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), solver)
         for d in range(NV):
             solver[env, ws_Jt1_idx + contact_tid * NV + d] = 0
             solver[env, ws_Jt2_idx + contact_tid * NV + d] = 0
@@ -315,11 +314,11 @@ def _cg_solve_env[
     # === PHASE 1: normal precompute (shared with Newton) ===
     for contact_tid in range(MC):
         _precompute_contact_normal[
-            DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, BATCH, SOLVER_WS
-        ](
+            DTYPE, V_SIZE](
             env,
             contact_tid,
             nc,
+            Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](),
             qvel,
             subtree_com,
             contacts,
@@ -344,19 +343,11 @@ def _cg_solve_env[
     for contact_tid in range(nc):
         _precompute_contact_friction[
             DTYPE,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            V_SIZE,
-            BATCH,
-            SOLVER_WS,
-            CONE_TYPE,
-            CG_MAX_CONDIM,
-        ](
+            V_SIZE, CONE_TYPE=CONE_TYPE, MAX_CONDIM=CG_MAX_CONDIM](
             env,
             contact_tid,
             nc,
+            Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](),
             qvel,
             subtree_com,
             contacts,
@@ -431,8 +422,8 @@ def _cg_solve_env[
     var sr_R = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
     var sr_bias = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
     var sr_floss = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
-    var ns = build_scalar_rows[DTYPE, NQ, NV, NJOINT, BATCH, MAXS](
-        env, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
+    var ns = build_scalar_rows[DTYPE, MAXS](
+        env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
         sr_dof, sr_kind, sr_sign, sr_D, sr_R, sr_bias, sr_floss,
     )
     var sr_jar = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
@@ -847,20 +838,17 @@ def _cg_solve_env[
 
     comptime if NEQUALITY > 0:
         _equality_env[
-            DTYPE, NQ, NV, NBODY, NJOINT, NEQUALITY, V_SIZE,
-            BATCH, SOLVER_ITER_GPU,
-        ](
-            env, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+            DTYPE, V_SIZE, SOLVER_ITER_GPU](
+            env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
             equality, body_invweight0, dof_invweight0, cdof,
             m_inv, qacc_constrained,
         )
 
     comptime if NTENDON > 0:
         _tendon_env[
-            DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
-            SOLVER_ITER_GPU,
-        ](
-            env, qpos, qvel, joints, mmeta, tendons, sites, bodies,
+            DTYPE, BATCH,
+            SOLVER_ITER_GPU](
+            env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, joints, mmeta, tendons, sites, bodies,
             subtree_com, cdof, xpos, xquat, m_inv, qacc_constrained,
         )
 

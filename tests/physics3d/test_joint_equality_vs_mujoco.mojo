@@ -38,7 +38,7 @@ from layout import Layout
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
-from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, Dims, DimsLike
+from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, Dims, DimsLike, AsStatic
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -306,9 +306,9 @@ def _check_rows[M: ModelDefFromXML](
     comptime L_MI = Layout.row_major(1, M.NV * M.NV)
 
     var n = build_weld_equality_rows[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_EQUALITY, M.NV, 1, WR, WJ,
-    ](
+        DTYPE, M.NV, WR, WJ](
         0,
+        AsStatic[MD](),
         d.qpos.lt["cpu", L_NQ](),
         d.qvel.lt["cpu", L_NV](),
         d.xpos.lt["cpu", L_B3](),

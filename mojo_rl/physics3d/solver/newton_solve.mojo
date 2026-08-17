@@ -555,8 +555,7 @@ def _newton_solve_env[
     comptime NZ = 2 * NT if CONE_TYPE == ConeType.PYRAMIDAL else NT
     for contact_tid in range(MC):
         _init_common_normal_ws[
-            DTYPE, NV, MAX_CONTACTS, BATCH, SOLVER_WS
-        ](env, contact_tid, solver)
+            DTYPE](env, contact_tid, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), solver)
         # Zero primal workspace for this contact slot
         for t in range(NZ):
             for d in range(NV):
@@ -633,11 +632,11 @@ def _newton_solve_env[
     # contact slot; internal `contact_tid < nc` guard kept in the helper) ===
     for contact_tid in range(MC):
         _precompute_contact_normal[
-            DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, BATCH, SOLVER_WS
-        ](
+            DTYPE, V_SIZE](
             env,
             contact_tid,
             nc,
+            Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](),
             qvel,
             subtree_com,
             contacts,
@@ -663,19 +662,11 @@ def _newton_solve_env[
     for contact_tid in range(nc):
         _precompute_contact_friction[
             DTYPE,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            V_SIZE,
-            BATCH,
-            SOLVER_WS,
-            CONE_TYPE,
-            MAX_CONDIM,
-        ](
+            V_SIZE, CONE_TYPE=CONE_TYPE, MAX_CONDIM=MAX_CONDIM](
             env,
             contact_tid,
             nc,
+            Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](),
             qvel,
             subtree_com,
             contacts,
@@ -1003,9 +994,9 @@ def _newton_solve_env[
         # is a row here rather than a post-pass.
         comptime if NTENDON > 0:
             build_tendon_limit_rows[
-                DTYPE, NV, NBODY, NJOINT, NSITE, NTENDON, V_SIZE, ME, BATCH
+                DTYPE, V_SIZE, ME, BATCH
             ](
-                env, qvel, tendons, sites, bodies, joints, mmeta,
+                env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, tendons, sites, bodies, joints, mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
                 Je, De, bias_e, num_edges,
             )
@@ -1017,10 +1008,9 @@ def _newton_solve_env[
         # constraints/tendon_limit.build_tendon_equality_rows.
         comptime if NTENDON > 0:
             build_tendon_equality_rows[
-                DTYPE, NQ, NV, NBODY, NJOINT, NSITE, NTENDON, V_SIZE, ME,
-                BATCH,
-            ](
-                env, qpos, qvel, tendons, sites, bodies, joints, mmeta,
+                DTYPE, V_SIZE, ME,
+                BATCH](
+                env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, tendons, sites, bodies, joints, mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
                 Je, De, bias_e, kind_e, num_edges,
             )
@@ -1051,9 +1041,9 @@ def _newton_solve_env[
                 fill=Scalar[DTYPE](0)
             )
             var n_w = build_weld_equality_rows[
-                DTYPE, NQ, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH, WR, WJ
+                DTYPE, V_SIZE, WR, WJ
             ](
-                env, qpos, qvel, xpos, xquat, subtree_com, joints, bodies,
+                env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, joints, bodies,
                 mmeta, equality, body_invweight0, dof_invweight0, cdof, m_inv,
                 w_K, w_bias, w_D, w_J, w_MinvJ,
             )
@@ -1557,8 +1547,8 @@ def _newton_solve_env[
     var sr_R = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
     var sr_bias = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
     var sr_floss = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
-    var ns = build_scalar_rows[DTYPE, NQ, NV, NJOINT, BATCH, MAXS](
-        env, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
+    var ns = build_scalar_rows[DTYPE, MAXS](
+        env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
         sr_dof, sr_kind, sr_sign, sr_D, sr_R, sr_bias, sr_floss,
     )
     var sr_jar = InlineArray[Scalar[DTYPE], MAXS](fill=Scalar[DTYPE](0))
@@ -1600,9 +1590,9 @@ def _newton_solve_env[
     var neq_rows = 0
     comptime if NTENDON > 0:
         build_tendon_equality_rows[
-            DTYPE, NQ, NV, NBODY, NJOINT, NSITE, NTENDON, V_SIZE, MAXEQ, BATCH
+            DTYPE, V_SIZE, MAXEQ, BATCH
         ](
-            env, qpos, qvel, tendons, sites, bodies, joints, mmeta,
+            env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, tendons, sites, bodies, joints, mmeta,
             subtree_com, cdof, xpos, xquat, m_inv,
             eq_J, eq_D, eq_bias, eq_kind, neq_rows,
         )
@@ -1617,9 +1607,9 @@ def _newton_solve_env[
         var we_J = InlineArray[Scalar[DTYPE], EQJ](fill=Scalar[DTYPE](0))
         var we_MinvJ = InlineArray[Scalar[DTYPE], EQJ](fill=Scalar[DTYPE](0))
         var nwe = build_weld_equality_rows[
-            DTYPE, NQ, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH, EQR, EQJ
+            DTYPE, V_SIZE, EQR, EQJ
         ](
-            env, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+            env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
             equality, body_invweight0, dof_invweight0, cdof, m_inv,
             we_K, we_bias, we_D, we_J, we_MinvJ,
         )
@@ -2610,8 +2600,7 @@ def _newton_blocked_fields_kernel[
     # === PARALLEL: Initialize common normal workspace (one thread/contact) ===
     if valid_env:
         _init_common_normal_ws[
-            DTYPE, NV, MAX_CONTACTS, BATCH, SOLVER_WS
-        ](env, contact_tid, solver)
+            DTYPE](env, contact_tid, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), solver)
         if contact_tid < MC:
             # ⚠ ALL `2*(dim-1)` EDGE BLOCKS, not the four this used to zero.
             # The producer re-zeros every edge of a non-penetrating contact
@@ -2684,9 +2673,8 @@ def _newton_blocked_fields_kernel[
     # === PARALLEL PHASE 1: each thread precomputes one contact's normal data ==
     if valid_env:
         _precompute_contact_normal[
-            DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, BATCH, SOLVER_WS
-        ](
-            env, contact_tid, nc, qvel, subtree_com, contacts, joints, bodies,
+            DTYPE, V_SIZE](
+            env, contact_tid, nc, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, subtree_com, contacts, joints, bodies,
             mmeta, body_invweight0, cdof, m_inv, qacc_constrained, solver,
             K_spring, B_damp, si_dmin, si_dmax, si_width, si_midpoint,
             si_power,
@@ -2697,10 +2685,8 @@ def _newton_blocked_fields_kernel[
     # === PARALLEL PHASE 2: tangent frame + friction data ===
     if valid_env and contact_tid < nc:
         _precompute_contact_friction[
-            DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, BATCH, SOLVER_WS,
-            CONE_TYPE, MAX_CONDIM,
-        ](
-            env, contact_tid, nc, qvel, subtree_com, contacts, joints, bodies,
+            DTYPE, V_SIZE, CONE_TYPE=CONE_TYPE, MAX_CONDIM=MAX_CONDIM](
+            env, contact_tid, nc, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, subtree_com, contacts, joints, bodies,
             mmeta, cdof, solver, B_damp, impratio, K_spring,
         )
 
@@ -3200,10 +3186,9 @@ def _newton_blocked_fields_kernel[
             )
             var t_n = 0
             build_tendon_limit_rows[
-                DTYPE, NV, NBODY, NJOINT, NSITE, NTENDON, V_SIZE, MAX_TLIM,
-                BATCH,
-            ](
-                env, qvel, tendons, sites, bodies, joints, mmeta,
+                DTYPE, V_SIZE, MAX_TLIM,
+                BATCH](
+                env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qvel, tendons, sites, bodies, joints, mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
                 t_je, t_de, t_bias, t_n,
             )
@@ -3230,10 +3215,9 @@ def _newton_blocked_fields_kernel[
             var q_kind = InlineArray[Int, MAX_TEQ](fill=SROW_EQ_BILATERAL)
             var q_n = 0
             build_tendon_equality_rows[
-                DTYPE, NQ, NV, NBODY, NJOINT, NSITE, NTENDON, V_SIZE, MAX_TEQ,
-                BATCH,
-            ](
-                env, qpos, qvel, tendons, sites, bodies, joints, mmeta,
+                DTYPE, V_SIZE, MAX_TEQ,
+                BATCH](
+                env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, tendons, sites, bodies, joints, mmeta,
                 subtree_com, cdof, xpos, xquat, m_inv,
                 q_je, q_de, q_bias, q_kind, q_n,
             )
@@ -3267,9 +3251,9 @@ def _newton_blocked_fields_kernel[
                 fill=Scalar[DTYPE](0)
             )
             var n_w = build_weld_equality_rows[
-                DTYPE, NQ, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH, WR, WJ
+                DTYPE, V_SIZE, WR, WJ
             ](
-                env, qpos, qvel, xpos, xquat, subtree_com, joints, bodies,
+                env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, joints, bodies,
                 mmeta, equality, body_invweight0, dof_invweight0, cdof, m_inv,
                 w_K, w_bias, w_D, w_J, w_MinvJ,
             )

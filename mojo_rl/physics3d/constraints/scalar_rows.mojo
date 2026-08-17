@@ -102,6 +102,7 @@ from .constraint_data import (
     solref_spring_damper,
     refsafe_timeconst,
 )
+from ..fields import DimsLike
 
 comptime SROW_LIMIT: Int = 0
 comptime SROW_FRICTION: Int = 1
@@ -212,23 +213,27 @@ def _clamp_imp[DTYPE: DType](v: Scalar[DTYPE]) -> Scalar[DTYPE]:
 @always_inline
 def build_scalar_rows[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NJOINT: Int,
-    BATCH: Int,
     MAXS: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_JOINTS: Layout,
+    L_MMETA: Layout,
+    L_DOF_INVWEIGHT0: Layout,
+    L_M_INV: Layout,
 ](
     env: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
-    dof_invweight0: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
-    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    dof_invweight0: LayoutTensor[DTYPE, L_DOF_INVWEIGHT0, MutAnyOrigin],
+    m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
     mut sr_dof: InlineArray[Int, MAXS],
     mut sr_kind: InlineArray[Int, MAXS],
     mut sr_sign: InlineArray[Scalar[DTYPE], MAXS],
@@ -245,6 +250,8 @@ def build_scalar_rows[
     folding them into the ELLIPTIC path does not perturb pyramidal goldens.
     Friction rows reproduce `constraints/friction_dof.mojo`.
     """
+    var nv = dims.get_nv()
+    var njoint = dims.get_njoint()
     var n = 0
 
     # ---- joint limits -----------------------------------------------------
@@ -262,7 +269,7 @@ def build_scalar_rows[
     var li_mid_def = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLIMP_LIMIT_3])
     var li_pow_def = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLIMP_LIMIT_4])
 
-    for j in range(NJOINT):
+    for j in range(njoint):
         var jtype = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         if jtype != JNT_HINGE and jtype != JNT_SLIDE:
             continue
@@ -344,7 +351,7 @@ def build_scalar_rows[
             if imp < Scalar[DTYPE](1e-6):
                 imp = Scalar[DTYPE](1e-6)
 
-            var K_diag = rebind[Scalar[DTYPE]](m_inv[env, dof * NV + dof])
+            var K_diag = rebind[Scalar[DTYPE]](m_inv[env, dof * nv + dof])
             if K_diag < Scalar[DTYPE](1e-10):
                 K_diag = Scalar[DTYPE](1e-10)
             var diag = rebind[Scalar[DTYPE]](dof_invweight0[dof])
@@ -383,7 +390,7 @@ def build_scalar_rows[
     )
     var f_B = Scalar[DTYPE](2.0) / (f_dmax * f_tc)
 
-    for j in range(NJOINT):
+    for j in range(njoint):
         var floss = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_FRICTIONLOSS])
         if floss <= Scalar[DTYPE](0):
             continue
@@ -398,7 +405,7 @@ def build_scalar_rows[
             if n >= MAXS:
                 break
             var dof = dof_adr + k
-            var K_diag = rebind[Scalar[DTYPE]](m_inv[env, dof * NV + dof])
+            var K_diag = rebind[Scalar[DTYPE]](m_inv[env, dof * nv + dof])
             if K_diag < Scalar[DTYPE](1e-10):
                 K_diag = Scalar[DTYPE](1e-10)
             var diag = rebind[Scalar[DTYPE]](dof_invweight0[dof])

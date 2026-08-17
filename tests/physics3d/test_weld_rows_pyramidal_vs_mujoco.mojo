@@ -46,6 +46,7 @@ from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 from mojo_rl.physics3d.fields import (
+    AsStatic,
     Model,
     Data,
     DynamicsScratch,
@@ -680,10 +681,10 @@ def test_weld_orientation_rows_match_mujoco() raises:
     comptime L_MI = Layout.row_major(1, MTQ1.NV * MTQ1.NV)
 
     var n = build_weld_equality_rows[
-        DTYPE, MTQ1.NQ, MTQ1.NV, MTQ1.NBODY, MTQ1.NJOINT, MTQ1.MAX_EQUALITY,
-        MTQ1.NV, 1, WR, WJ,
-    ](
+        DTYPE,
+        MTQ1.NV, WR, WJ](
         0,
+        AsStatic[MD_3](),
         d.qpos.lt["cpu", L_NQ](),
         d.qvel.lt["cpu", L_NV](),
         d.xpos.lt["cpu", L_B3](),
@@ -827,10 +828,10 @@ def test_weld_torquescale_matches_mujoco() raises:
     comptime L_MI = Layout.row_major(1, MTQ5.NV * MTQ5.NV)
 
     var n = build_weld_equality_rows[
-        DTYPE, MTQ5.NQ, MTQ5.NV, MTQ5.NBODY, MTQ5.NJOINT, MTQ5.MAX_EQUALITY,
-        MTQ5.NV, 1, WR, WJ,
-    ](
+        DTYPE,
+        MTQ5.NV, WR, WJ](
         0,
+        AsStatic[MD_4](),
         d.qpos.lt["cpu", L_NQ](),
         d.qvel.lt["cpu", L_NV](),
         d.xpos.lt["cpu", L_B3](),

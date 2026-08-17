@@ -84,7 +84,7 @@ from ..dynamics.tendon import spatial_tendon_length_jac
 from .scalar_rows import SROW_EQ_BILATERAL
 
 # How many (joint, coef) pairs a fixed tendon stores.
-from ..fields import Dims
+from ..fields import Dims, DimsLike
 #
 # ⚠ WAS A LOCAL `4`, ON THE REASONING THAT REUSING `TENDON_MAX_SITES` WOULD BE
 # COINCIDENTAL. The reasoning was sound and the outcome was not: the cap ended
@@ -144,39 +144,46 @@ def _solimp[
 
 def build_tendon_limit_rows[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NSITE: Int,
-    NTENDON: Int,
     V_SIZE: Int,
     ME: Int,
     BATCH: Int,
+    D: DimsLike,
+    L_QVEL: Layout,
+    L_TENDONS: Layout,
+    L_SITES: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_MMETA: Layout,
+    L_SUBTREE_COM: Layout,
+    L_CDOF: Layout,
+    L_XQUAT: Layout,
+    L_M_INV: Layout,
 ](
     env: Int,
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     tendons: LayoutTensor[
-        DTYPE, Layout.row_major(NTENDON, MODEL_TENDON_SIZE), MutAnyOrigin
+        DTYPE, L_TENDONS, MutAnyOrigin
     ],
     sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+        DTYPE, L_SITES, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    mmeta: LayoutTensor[DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin],
+    mmeta: LayoutTensor[DTYPE, L_MMETA, MutAnyOrigin],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_SUBTREE_COM, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
-    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_SUBTREE_COM, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
-    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
     mut Je: InlineArray[Scalar[DTYPE], ME * V_SIZE],
     mut De: InlineArray[Scalar[DTYPE], ME],
     mut bias_e: InlineArray[Scalar[DTYPE], ME],
@@ -187,14 +194,19 @@ def build_tendon_limit_rows[
     Rows are ONE-SIDED (force >= 0), so the caller leaves `kind_e` at
     SROW_LIMIT and `R_e`/`floss_e` at 0, exactly as it does for joint limits.
     """
-    comptime if NTENDON == 0:
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
+    var nsite = dims.get_nsite()
+    var ntendon = dims.get_ntendon()
+    comptime if D.CAP_NTENDON == 0:
         return
 
     var nten = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NTENDON]))
     if nten == 0:
         return
-    if nten > NTENDON:
-        nten = NTENDON
+    if nten > ntendon:
+        nten = ntendon
 
     var tJ = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
 
@@ -209,7 +221,7 @@ def build_tendon_limit_rows[
             ten_len = spatial_tendon_length_jac[
                 DTYPE, V_SIZE, BATCH
             ](
-                env, t, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, nsite=NSITE, ntendon=NTENDON](), tendons, sites, bodies, joints, mmeta,
+                env, t, dims, tendons, sites, bodies, joints, mmeta,
                 subtree_com,
                 cdof, xpos, xquat, tJ,
             )
@@ -221,17 +233,17 @@ def build_tendon_limit_rows[
 
         # --- ten_J . qvel --------------------------------------------------
         var ten_vel = Scalar[DTYPE](0)
-        for i in range(NV):
+        for i in range(nv):
             ten_vel += tJ[i] * rebind[Scalar[DTYPE]](qvel[env, i])
 
         # --- K = J M^-1 J^T at the CURRENT pose ----------------------------
         var K_t = Scalar[DTYPE](0)
-        for a in range(NV):
+        for a in range(nv):
             if tJ[a] == Scalar[DTYPE](0):
                 continue
             var acc = Scalar[DTYPE](0)
-            for b in range(NV):
-                acc += rebind[Scalar[DTYPE]](m_inv[env, a * NV + b]) * tJ[b]
+            for b in range(nv):
+                acc += rebind[Scalar[DTYPE]](m_inv[env, a * nv + b]) * tJ[b]
             K_t += tJ[a] * acc
         if K_t < Scalar[DTYPE](1e-10):
             K_t = Scalar[DTYPE](1e-10)
@@ -275,8 +287,8 @@ def build_tendon_limit_rows[
             if R < Scalar[DTYPE](1e-14):
                 R = Scalar[DTYPE](1e-14)
 
-            for i in range(NV):
-                Je[num_edges * NV + i] = sign * tJ[i]
+            for i in range(nv):
+                Je[num_edges * nv + i] = sign * tJ[i]
 
             # Same inv_K round-trip the joint-limit rows use, so both kinds of
             # limit land on bit-identical D for identical (K, R).
@@ -291,41 +303,48 @@ def build_tendon_limit_rows[
 
 def build_tendon_equality_rows[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NSITE: Int,
-    NTENDON: Int,
     V_SIZE: Int,
     ME: Int,
     BATCH: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_TENDONS: Layout,
+    L_SITES: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_MMETA: Layout,
+    L_SUBTREE_COM: Layout,
+    L_CDOF: Layout,
+    L_XQUAT: Layout,
+    L_M_INV: Layout,
 ](
     env: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     tendons: LayoutTensor[
-        DTYPE, Layout.row_major(NTENDON, MODEL_TENDON_SIZE), MutAnyOrigin
+        DTYPE, L_TENDONS, MutAnyOrigin
     ],
     sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+        DTYPE, L_SITES, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    mmeta: LayoutTensor[DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin],
+    mmeta: LayoutTensor[DTYPE, L_MMETA, MutAnyOrigin],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_SUBTREE_COM, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
-    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_SUBTREE_COM, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
-    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
     mut Je: InlineArray[Scalar[DTYPE], ME * V_SIZE],
     mut De: InlineArray[Scalar[DTYPE], ME],
     mut bias_e: InlineArray[Scalar[DTYPE], ME],
@@ -371,14 +390,20 @@ def build_tendon_equality_rows[
     only the length and its moment arm differ, and `spatial_tendon_length_jac`
     already computes those for the limit builder above.
     """
-    comptime if NTENDON == 0:
+    var nq = dims.get_nq()
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
+    var nsite = dims.get_nsite()
+    var ntendon = dims.get_ntendon()
+    comptime if D.CAP_NTENDON == 0:
         return
 
     var nten = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NTENDON]))
     if nten == 0:
         return
-    if nten > NTENDON:
-        nten = NTENDON
+    if nten > ntendon:
+        nten = ntendon
 
     var eqJ = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
 
@@ -389,8 +414,8 @@ def build_tendon_equality_rows[
             break
 
         # --- length, rate and moment arm, per kind -------------------------
-        for i in range(NV):
-            Je[num_edges * NV + i] = Scalar[DTYPE](0)
+        for i in range(nv):
+            Je[num_edges * nv + i] = Scalar[DTYPE](0)
         var ten_len = Scalar[DTYPE](0)
 
         if (
@@ -403,12 +428,12 @@ def build_tendon_equality_rows[
             ten_len = spatial_tendon_length_jac[
                 DTYPE, V_SIZE, BATCH
             ](
-                env, t, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, nsite=NSITE, ntendon=NTENDON](), tendons, sites, bodies, joints, mmeta,
+                env, t, dims, tendons, sites, bodies, joints, mmeta,
                 subtree_com,
                 cdof, xpos, xquat, eqJ,
             )
-            for i in range(NV):
-                Je[num_edges * NV + i] = eqJ[i]
+            for i in range(nv):
+                Je[num_edges * nv + i] = eqJ[i]
         else:
             var njnt = Int(
                 rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_NUM_JOINTS])
@@ -419,7 +444,7 @@ def build_tendon_equality_rows[
                 var j = Int(
                     rebind[Scalar[DTYPE]](tendons[t, TENDON_IDX_JOINT_0 + k])
                 )
-                if j < 0 or j >= NJOINT:
+                if j < 0 or j >= njoint:
                     continue
                 var coef = rebind[Scalar[DTYPE]](
                     tendons[t, TENDON_IDX_COEF_0 + k]
@@ -431,30 +456,30 @@ def build_tendon_equality_rows[
                     rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR])
                 )
                 ten_len += coef * rebind[Scalar[DTYPE]](qpos[env, qadr])
-                Je[num_edges * NV + dadr] = (
-                    Je[num_edges * NV + dadr] + coef
+                Je[num_edges * nv + dadr] = (
+                    Je[num_edges * nv + dadr] + coef
                 )
 
         # `ten_vel` comes off the ASSEMBLED row rather than being accumulated
         # alongside it, so the two kinds share one expression. Identical for a
         # fixed tendon, which had `J[dof] = coef` by construction.
         var ten_vel = Scalar[DTYPE](0)
-        for i in range(NV):
-            ten_vel += Je[num_edges * NV + i] * rebind[Scalar[DTYPE]](
+        for i in range(nv):
+            ten_vel += Je[num_edges * nv + i] * rebind[Scalar[DTYPE]](
                 qvel[env, i]
             )
 
         # --- K = J M^-1 J^T at the CURRENT pose ----------------------------
         var K_t = Scalar[DTYPE](0)
-        for a in range(NV):
-            var Ja = Je[num_edges * NV + a]
+        for a in range(nv):
+            var Ja = Je[num_edges * nv + a]
             if Ja == Scalar[DTYPE](0):
                 continue
             var acc = Scalar[DTYPE](0)
-            for b in range(NV):
+            for b in range(nv):
                 acc += (
-                    rebind[Scalar[DTYPE]](m_inv[env, a * NV + b])
-                    * Je[num_edges * NV + b]
+                    rebind[Scalar[DTYPE]](m_inv[env, a * nv + b])
+                    * Je[num_edges * nv + b]
                 )
             K_t += Ja * acc
         if K_t < Scalar[DTYPE](1e-10):

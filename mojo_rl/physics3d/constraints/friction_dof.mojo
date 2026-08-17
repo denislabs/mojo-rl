@@ -57,7 +57,7 @@ from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
 from .constraint_data import refsafe_timeconst
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
@@ -90,29 +90,33 @@ def _max_one[N: Int]() -> Int:
 @always_inline
 def _friction_env[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NJOINT: Int,
-    BATCH: Int,
     NUM_ITERATIONS: Int,
+    D: DimsLike,
+    L_QVEL: Layout,
+    L_JOINTS: Layout,
+    L_DOF_INVWEIGHT0: Layout,
+    L_M_INV: Layout,
 ](
     env: Int,
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     # ⚠ REFSAFE needs the timestep, and `_friction_env` has no `meta`.
     # Passed as a scalar rather than threading the whole meta tensor: the
     # only thing this row type needs from the model options is `2*dt`.
     timestep: Scalar[DTYPE],
-    dof_invweight0: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
-    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    dof_invweight0: LayoutTensor[DTYPE, L_DOF_INVWEIGHT0, MutAnyOrigin],
+    m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
     qacc_constrained: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+        DTYPE, L_QVEL, MutAnyOrigin
     ],
 ):
     """Build + PGS-solve one friction row per frictional dof, for one env."""
-    comptime MAX_FRIC = _max_one[NV]()
+    var nv = dims.get_nv()
+    var njoint = dims.get_njoint()
+    comptime MAX_FRIC = _max_one[D.CAP_NV]()
 
     var fric_dof = InlineArray[Int, MAX_FRIC](uninitialized=True)
     var fric_loss = InlineArray[Scalar[DTYPE], MAX_FRIC](uninitialized=True)
@@ -132,7 +136,7 @@ def _friction_env[
     # DOF; we store it per JOINT, so a free/ball joint's value expands across
     # its dofs exactly as damping and stiffness already do in `_fnet_passive`.
     var num_fric = 0
-    for j in range(NJOINT):
+    for j in range(njoint):
         var floss = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_FRICTIONLOSS])
         if floss <= Scalar[DTYPE](0):
             continue
@@ -149,7 +153,7 @@ def _friction_env[
             var dof = dof_adr + d
             fric_dof[num_fric] = dof
             fric_loss[num_fric] = floss
-            var kd = rebind[Scalar[DTYPE]](m_inv[env, dof * NV + dof])
+            var kd = rebind[Scalar[DTYPE]](m_inv[env, dof * nv + dof])
             if kd < Scalar[DTYPE](1e-10):
                 kd = Scalar[DTYPE](1e-10)
             K_fric[num_fric] = kd
@@ -181,7 +185,7 @@ def _friction_env[
     )
     var B_damp = Scalar[DTYPE](2.0) / (dmax * f_tc)
 
-    comptime MINVJ_FRIC_SIZE = _max_one[NV * NV]()
+    comptime MINVJ_FRIC_SIZE = _max_one[D.CAP_NV * D.CAP_NV]()
     var fric_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_FRIC_SIZE](
         uninitialized=True
     )
@@ -194,9 +198,9 @@ def _friction_env[
             diag = K_fric[f]  # Fallback, as in limits.mojo
         var R_f = (Scalar[DTYPE](1.0) - imp) / imp * diag
         fric_inv_K[f] = Scalar[DTYPE](1.0) / (K_fric[f] + R_f)
-        for i in range(NV):
-            fric_MinvJ[f * NV + i] = rebind[Scalar[DTYPE]](
-                m_inv[env, i * NV + dof]
+        for i in range(nv):
+            fric_MinvJ[f * nv + i] = rebind[Scalar[DTYPE]](
+                m_inv[env, i * nv + dof]
             )
 
     # PGS iterations (acceleration-level), identical in shape to the limit
@@ -223,8 +227,8 @@ def _friction_env[
             var abs_d = abs(actual)
             if abs_d > max_delta:
                 max_delta = abs_d
-            for i in range(NV):
-                qacc_constrained[env, i] += fric_MinvJ[f * NV + i] * actual
+            for i in range(nv):
+                qacc_constrained[env, i] += fric_MinvJ[f * nv + i] * actual
         if max_delta < Scalar[DTYPE](1e-4):
             break
 
@@ -254,8 +258,8 @@ def _friction_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _friction_env[DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS](
-        env, qvel, joints, timestep, dof_invweight0, m_inv, qacc_constrained
+    _friction_env[DTYPE, NUM_ITERATIONS](
+        env, Dims[nq=NQ, nv=NV, njoint=NJOINT](), qvel, joints, timestep, dof_invweight0, m_inv, qacc_constrained
     )
 
 
@@ -293,8 +297,8 @@ def solve_friction[
         var mi_v = scratch.m_inv.lt["cpu", L_M]()
         var qc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _friction_env[DTYPE, D.NQ, D.NV, D.NJOINT, BATCH, NUM_ITERATIONS](
-                e, qvel_v, joints_v, ts_v, dw_v, mi_v, qc_v
+            _friction_env[DTYPE, NUM_ITERATIONS](
+                e, AsStatic[D](), qvel_v, joints_v, ts_v, dw_v, mi_v, qc_v
             )
     else:
         var c = ctx.value()

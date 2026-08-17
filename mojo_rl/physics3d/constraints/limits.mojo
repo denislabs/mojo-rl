@@ -17,7 +17,7 @@ from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..joint_types import JNT_HINGE, JNT_SLIDE
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_JOINT_SIZE,
@@ -53,28 +53,34 @@ def _max_one[N: Int]() -> Int:
 @always_inline
 def _limits_env[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NJOINT: Int,
-    BATCH: Int,
     NUM_ITERATIONS: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_JOINTS: Layout,
+    L_META: Layout,
+    L_DOF_INVWEIGHT0: Layout,
+    L_M_INV: Layout,
 ](
     env: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    meta: LayoutTensor[DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin],
-    dof_invweight0: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
-    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    meta: LayoutTensor[DTYPE, L_META, MutAnyOrigin],
+    dof_invweight0: LayoutTensor[DTYPE, L_DOF_INVWEIGHT0, MutAnyOrigin],
+    m_inv: LayoutTensor[DTYPE, L_M_INV, MutAnyOrigin],
     qacc_constrained: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+        DTYPE, L_QVEL, MutAnyOrigin
     ],
 ):
     """Detect + PGS-solve active joint limits for one env (verbatim from
     detect_and_solve_limits_gpu)."""
-    comptime MAX_LIMITS = _max_one[2 * NJOINT]()
+    var nv = dims.get_nv()
+    var njoint = dims.get_njoint()
+    comptime MAX_LIMITS = _max_one[2 * D.CAP_NJOINT]()
 
     var limit_dof = InlineArray[Int, MAX_LIMITS](uninitialized=True)
     # ⚠ THE OWNING JOINT, because solref/solimp are PER-JOINT (defect 22).
@@ -103,7 +109,7 @@ def _limits_env[
         lambda_limit[i] = Scalar[DTYPE](0)
 
     var num_limits = 0
-    for j in range(NJOINT):
+    for j in range(njoint):
         var jtype = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         if jtype != JNT_HINGE and jtype != JNT_SLIDE:
             continue
@@ -123,7 +129,7 @@ def _limits_env[
             limit_sign[num_limits] = Scalar[DTYPE](1)
             limit_dist_arr[num_limits] = dist_lo
             K_limit[num_limits] = rebind[Scalar[DTYPE]](
-                m_inv[env, dof * NV + dof]
+                m_inv[env, dof * nv + dof]
             )
             if K_limit[num_limits] < Scalar[DTYPE](1e-10):
                 K_limit[num_limits] = Scalar[DTYPE](1e-10)
@@ -135,7 +141,7 @@ def _limits_env[
             limit_sign[num_limits] = Scalar[DTYPE](-1)
             limit_dist_arr[num_limits] = dist_hi
             K_limit[num_limits] = rebind[Scalar[DTYPE]](
-                m_inv[env, dof * NV + dof]
+                m_inv[env, dof * nv + dof]
             )
             if K_limit[num_limits] < Scalar[DTYPE](1e-10):
                 K_limit[num_limits] = Scalar[DTYPE](1e-10)
@@ -149,7 +155,7 @@ def _limits_env[
 
     var lim_bias = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
     var lim_inv_K = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-    comptime MINVJ_LIM_SIZE = _max_one[2 * NJOINT * NV]()
+    comptime MINVJ_LIM_SIZE = _max_one[2 * D.CAP_NJOINT * D.CAP_NV]()
     var lim_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_LIM_SIZE](
         uninitialized=True
     )
@@ -243,9 +249,9 @@ def _limits_env[
         lim_inv_K[l] = Scalar[DTYPE](1.0) / (K_limit[l] + R_lim)
         var ldof = limit_dof[l]
         var lsign = limit_sign[l]
-        for i in range(NV):
-            lim_MinvJ[l * NV + i] = (
-                rebind[Scalar[DTYPE]](m_inv[env, i * NV + ldof]) * lsign
+        for i in range(nv):
+            lim_MinvJ[l * nv + i] = (
+                rebind[Scalar[DTYPE]](m_inv[env, i * nv + ldof]) * lsign
             )
 
     # PGS iterations (acceleration-level)
@@ -266,8 +272,8 @@ def _limits_env[
             var abs_l = abs(actual_l)
             if abs_l > max_lim_delta:
                 max_lim_delta = abs_l
-            for i in range(NV):
-                qacc_constrained[env, i] += lim_MinvJ[l * NV + i] * actual_l
+            for i in range(nv):
+                qacc_constrained[env, i] += lim_MinvJ[l * nv + i] * actual_l
         if max_lim_delta < Scalar[DTYPE](1e-4):
             break
 
@@ -295,8 +301,8 @@ def _limits_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _limits_env[DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS](
-        env, qpos, qvel, joints, meta, dof_invweight0, m_inv, qacc_constrained
+    _limits_env[DTYPE, NUM_ITERATIONS](
+        env, Dims[nq=NQ, nv=NV, njoint=NJOINT](), qpos, qvel, joints, meta, dof_invweight0, m_inv, qacc_constrained
     )
 
 
@@ -333,8 +339,8 @@ def solve_limits[
         var mi_v = scratch.m_inv.lt["cpu", L_M]()
         var qc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _limits_env[DTYPE, D.NQ, D.NV, D.NJOINT, BATCH, NUM_ITERATIONS](
-                e, qpos_v, qvel_v, joints_v, meta_v, dw_v, mi_v, qc_v
+            _limits_env[DTYPE, NUM_ITERATIONS](
+                e, AsStatic[D](), qpos_v, qvel_v, joints_v, meta_v, dw_v, mi_v, qc_v
             )
     else:
         var c = ctx.value()

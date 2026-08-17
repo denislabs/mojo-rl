@@ -118,7 +118,7 @@ from ..dynamics.tendon import spatial_tendon_length_jac
 
 
 # =============================================================================
-from ..fields import Dims
+from ..fields import Dims, DimsLike
 # Weld / angular Jacobian rows (ports of dynamics/jacobian.mojo GPU rows)
 # =============================================================================
 
@@ -126,26 +126,27 @@ from ..fields import Dims
 @always_inline
 def _weld_jacobian_row[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
     V_SIZE: Int,
-    BATCH: Int,
+    L_SUBTREE_COM: Layout,
+    L_JOINTS: Layout,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_CDOF: Layout,
 ](
     env: Int,
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_SUBTREE_COM, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     body_a: Int,
     body_b: Int,
     pos_a_x: Scalar[DTYPE],
@@ -274,23 +275,23 @@ def _weld_jacobian_row[
 @always_inline
 def _angular_jacobian_row_eq[
     DTYPE: DType,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
     V_SIZE: Int,
-    BATCH: Int,
+    L_JOINTS: Layout,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_CDOF: Layout,
 ](
     env: Int,
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     contact_body_a: Int,
     contact_body_b: Int,
     dir_x: Scalar[DTYPE],
@@ -389,49 +390,57 @@ def _angular_jacobian_row_eq[
 @always_inline
 def build_weld_equality_rows[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NEQUALITY: Int,
     V_SIZE: Int,
-    BATCH: Int,
     MAX_EQ_ROWS: Int,
     MINVJ_EQ_SIZE: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_JOINTS: Layout,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_EQUALITY: Layout,
+    L_BODY_INVWEIGHT0: Layout,
+    L_DOF_INVWEIGHT0: Layout,
+    L_CDOF: Layout,
+    L_M_INV: Layout,
 ](
     env: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
     equality: LayoutTensor[
-        DTYPE, Layout.row_major(NEQUALITY, MODEL_EQ_SIZE), MutAnyOrigin
+        DTYPE, L_EQUALITY, MutAnyOrigin
     ],
     body_invweight0: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
+        DTYPE, L_BODY_INVWEIGHT0, MutAnyOrigin
     ],
     dof_invweight0: LayoutTensor[
-        DTYPE, Layout.row_major(NV), MutAnyOrigin
+        DTYPE, L_DOF_INVWEIGHT0, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     m_inv: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin
+        DTYPE, L_M_INV, MutAnyOrigin
     ],
     mut eq_K: InlineArray[Scalar[DTYPE], MAX_EQ_ROWS],
     mut eq_bias: InlineArray[Scalar[DTYPE], MAX_EQ_ROWS],
@@ -447,14 +456,18 @@ def build_weld_equality_rows[
     bit-identical by construction rather than by review.
     """
 
-    comptime if NEQUALITY == 0:
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
+    var nequality = dims.get_nequality()
+    comptime if D.CAP_NEQUALITY == 0:
         return 0
 
     var neq = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NEQUALITY]))
     if neq == 0:
         return 0
-    if neq > NEQUALITY:
-        neq = NEQUALITY
+    if neq > nequality:
+        neq = nequality
 
     var J_row = InlineArray[Scalar[DTYPE], V_SIZE](fill=Scalar[DTYPE](0))
     var num_eq_rows = 0
@@ -537,12 +550,12 @@ def build_weld_equality_rows[
         if eq_type == EQ_JOINT:
             if num_eq_rows >= MAX_EQ_ROWS:
                 break
-            if body_a < 0 or body_a >= NJOINT:
+            if body_a < 0 or body_a >= njoint:
                 continue
             var jdadr1 = Int(
                 rebind[Scalar[DTYPE]](joints[body_a, JOINT_IDX_DOF_ADR])
             )
-            if jdadr1 < 0 or jdadr1 >= NV:
+            if jdadr1 < 0 or jdadr1 >= nv:
                 continue
 
             var p0 = rebind[Scalar[DTYPE]](equality[eq_i, EQ_IDX_ANCHOR_AX])
@@ -565,7 +578,7 @@ def build_weld_equality_rows[
             J_row[jdadr1] = Scalar[DTYPE](1)
             var jdA = rebind[Scalar[DTYPE]](dof_invweight0[jdadr1])
 
-            if body_b >= 0 and body_b < NJOINT:
+            if body_b >= 0 and body_b < njoint:
                 var jqadr2 = Int(
                     rebind[Scalar[DTYPE]](joints[body_b, JOINT_IDX_QPOS_ADR])
                 )
@@ -584,7 +597,7 @@ def build_weld_equality_rows[
                     + Scalar[DTYPE](3) * p3 * jd2
                     + Scalar[DTYPE](4) * p4 * jd2 * jdif
                 )
-                if jdadr2 >= 0 and jdadr2 < NV:
+                if jdadr2 >= 0 and jdadr2 < nv:
                     J_row[jdadr2] = J_row[jdadr2] - jderiv
                     jdA += rebind[Scalar[DTYPE]](dof_invweight0[jdadr2])
 
@@ -620,15 +633,15 @@ def build_weld_equality_rows[
 
             var jk = Scalar[DTYPE](0)
             var jv = Scalar[DTYPE](0)
-            for i in range(NV):
-                eq_J[num_eq_rows * NV + i] = J_row[i]
+            for i in range(nv):
+                eq_J[num_eq_rows * nv + i] = J_row[i]
                 var jmij = Scalar[DTYPE](0)
-                for k2 in range(NV):
+                for k2 in range(nv):
                     jmij += (
-                        rebind[Scalar[DTYPE]](m_inv[env, i * NV + k2])
+                        rebind[Scalar[DTYPE]](m_inv[env, i * nv + k2])
                         * J_row[k2]
                     )
-                eq_MinvJ[num_eq_rows * NV + i] = jmij
+                eq_MinvJ[num_eq_rows * nv + i] = jmij
                 jk += J_row[i] * jmij
                 jv += J_row[i] * rebind[Scalar[DTYPE]](qvel[env, i])
             if jk < Scalar[DTYPE](1e-10):
@@ -827,7 +840,7 @@ def build_weld_equality_rows[
             # MuJoCo applies `eq_data[10]` twice — to the residual
             # (`mju_scl3(cpos+3, quat2+1, torquescale)`,
             # engine_core_constraint.c:701) and to the rotational Jacobian
-            # (`mju_scl(jac[0]+3*NV, ..., torquescale, 3*NV)`, :721) — so it
+            # (`mju_scl(jac[0]+3*nv, ..., torquescale, 3*nv)`, :721) — so it
             # scales the whole rotational half of the weld, not just its error.
             # Both are needed: scaling only the residual changes the target
             # without changing the row's effective stiffness, which is a
@@ -898,8 +911,7 @@ def build_weld_equality_rows[
             for i in range(V_SIZE):
                 J_row[i] = 0
             _weld_jacobian_row[
-                DTYPE, NV, NBODY, NJOINT, V_SIZE, BATCH
-            ](
+                DTYPE, V_SIZE](
                 env,
                 subtree_com,
                 joints,
@@ -923,17 +935,17 @@ def build_weld_equality_rows[
             # Compute K = J @ M_inv @ J^T, store J and MinvJ
             var k: Scalar[DTYPE] = 0
             var v_n: Scalar[DTYPE] = 0
-            for i in range(NV):
-                eq_J[num_eq_rows * NV + i] = J_row[i]
+            for i in range(nv):
+                eq_J[num_eq_rows * nv + i] = J_row[i]
                 var mi_j_sum: Scalar[DTYPE] = 0
-                for j_idx in range(NV):
+                for j_idx in range(nv):
                     mi_j_sum += (
                         rebind[Scalar[DTYPE]](
-                            m_inv[env, i * NV + j_idx]
+                            m_inv[env, i * nv + j_idx]
                         )
                         * J_row[j_idx]
                     )
-                eq_MinvJ[num_eq_rows * NV + i] = mi_j_sum
+                eq_MinvJ[num_eq_rows * nv + i] = mi_j_sum
                 k += J_row[i] * mi_j_sum
                 v_n += J_row[i] * rebind[Scalar[DTYPE]](
                     qvel[env, i]
@@ -960,9 +972,9 @@ def build_weld_equality_rows[
             # body_invweight0 — see the ⚠ below for why this no longer goes
             # through `_legacy_invw_read`.
             var diag_eq: Scalar[DTYPE] = 0
-            if body_a > 0 and body_a < NBODY:
+            if body_a > 0 and body_a < nbody:
                 diag_eq += rebind[Scalar[DTYPE]](body_invweight0[body_a, 0])
-            if body_b > 0 and body_b < NBODY:
+            if body_b > 0 and body_b < nbody:
                 diag_eq += rebind[Scalar[DTYPE]](body_invweight0[body_b, 0])
             if diag_eq < Scalar[DTYPE](1e-10):
                 diag_eq = rebind[Scalar[DTYPE]](k)
@@ -1000,8 +1012,8 @@ def build_weld_equality_rows[
             if num_eq_rows + 3 > MAX_EQ_ROWS:
                 continue
             for r in range(3):
-                for i in range(NV):
-                    eq_J[(num_eq_rows + r) * NV + i] = Scalar[DTYPE](0)
+                for i in range(nv):
+                    eq_J[(num_eq_rows + r) * nv + i] = Scalar[DTYPE](0)
 
             var n_j = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NJOINT]))
             for j_idx in range(n_j):
@@ -1082,28 +1094,28 @@ def build_weld_equality_rows[
                         qrel[0], qrel[1], qrel[2], qrel[3],
                     )
                     var half_ts = Scalar[DTYPE](0.5) * ts
-                    eq_J[(num_eq_rows + 0) * NV + dof_i] = half_ts * q3[0]
-                    eq_J[(num_eq_rows + 1) * NV + dof_i] = half_ts * q3[1]
-                    eq_J[(num_eq_rows + 2) * NV + dof_i] = half_ts * q3[2]
+                    eq_J[(num_eq_rows + 0) * nv + dof_i] = half_ts * q3[0]
+                    eq_J[(num_eq_rows + 1) * nv + dof_i] = half_ts * q3[1]
+                    eq_J[(num_eq_rows + 2) * nv + dof_i] = half_ts * q3[2]
 
             for d in range(3):
-                for i in range(NV):
-                    J_row[i] = eq_J[num_eq_rows * NV + i]
+                for i in range(nv):
+                    J_row[i] = eq_J[num_eq_rows * nv + i]
 
                 # K, store J and MinvJ
                 var k: Scalar[DTYPE] = 0
                 var v_n: Scalar[DTYPE] = 0
-                for i in range(NV):
-                    eq_J[num_eq_rows * NV + i] = J_row[i]
+                for i in range(nv):
+                    eq_J[num_eq_rows * nv + i] = J_row[i]
                     var mi_j_sum: Scalar[DTYPE] = 0
-                    for j_idx in range(NV):
+                    for j_idx in range(nv):
                         mi_j_sum += (
                             rebind[Scalar[DTYPE]](
-                                m_inv[env, i * NV + j_idx]
+                                m_inv[env, i * nv + j_idx]
                             )
                             * J_row[j_idx]
                         )
-                    eq_MinvJ[num_eq_rows * NV + i] = mi_j_sum
+                    eq_MinvJ[num_eq_rows * nv + i] = mi_j_sum
                     k += J_row[i] * mi_j_sum
                     v_n += J_row[i] * rebind[Scalar[DTYPE]](
                         qvel[env, i]
@@ -1125,11 +1137,11 @@ def build_weld_equality_rows[
                 # engine_core_constraint.c:1461. Same direct read as the
                 # translation rows above.
                 var diag_rot: Scalar[DTYPE] = 0
-                if body_a > 0 and body_a < NBODY:
+                if body_a > 0 and body_a < nbody:
                     diag_rot += rebind[Scalar[DTYPE]](
                         body_invweight0[body_a, 1]
                     )
-                if body_b > 0 and body_b < NBODY:
+                if body_b > 0 and body_b < nbody:
                     diag_rot += rebind[Scalar[DTYPE]](
                         body_invweight0[body_b, 1]
                     )
@@ -1148,51 +1160,59 @@ def build_weld_equality_rows[
 @always_inline
 def _equality_env[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NEQUALITY: Int,
     V_SIZE: Int,
-    BATCH: Int,
     NUM_ITERATIONS: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_JOINTS: Layout,
+    L_BODIES: Layout,
+    L_MMETA: Layout,
+    L_EQUALITY: Layout,
+    L_BODY_INVWEIGHT0: Layout,
+    L_DOF_INVWEIGHT0: Layout,
+    L_CDOF: Layout,
+    L_M_INV: Layout,
 ](
     env: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
     equality: LayoutTensor[
-        DTYPE, Layout.row_major(NEQUALITY, MODEL_EQ_SIZE), MutAnyOrigin
+        DTYPE, L_EQUALITY, MutAnyOrigin
     ],
     body_invweight0: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
+        DTYPE, L_BODY_INVWEIGHT0, MutAnyOrigin
     ],
     dof_invweight0: LayoutTensor[
-        DTYPE, Layout.row_major(NV), MutAnyOrigin
+        DTYPE, L_DOF_INVWEIGHT0, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
     m_inv: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin
+        DTYPE, L_M_INV, MutAnyOrigin
     ],
     qacc_constrained: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+        DTYPE, L_QVEL, MutAnyOrigin
     ],
 ):
     """Build and solve equality constraints (connect + weld) for one env.
@@ -1210,11 +1230,12 @@ def _equality_env[
     """
 
 
-    comptime if NEQUALITY == 0:
+    var nv = dims.get_nv()
+    comptime if D.CAP_NEQUALITY == 0:
         return
 
-    comptime MAX_EQ_ROWS = _max_one[6 * NEQUALITY]()
-    comptime MINVJ_EQ_SIZE = _max_one[6 * NEQUALITY * NV]()
+    comptime MAX_EQ_ROWS = _max_one[6 * D.CAP_NEQUALITY]()
+    comptime MINVJ_EQ_SIZE = _max_one[6 * D.CAP_NEQUALITY * D.CAP_NV]()
 
     var eq_K = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](fill=Scalar[DTYPE](1))
     var eq_bias = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](
@@ -1232,10 +1253,9 @@ def _equality_env[
     )
 
     var num_eq_rows = build_weld_equality_rows[
-        DTYPE, NQ, NV, NBODY, NJOINT, NEQUALITY, V_SIZE, BATCH,
-        MAX_EQ_ROWS, MINVJ_EQ_SIZE,
-    ](
-        env, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+        DTYPE, V_SIZE,
+        MAX_EQ_ROWS, MINVJ_EQ_SIZE](
+        env, dims, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
         equality, body_invweight0, dof_invweight0, cdof, m_inv,
         eq_K, eq_bias, eq_inv_K_imp, eq_J, eq_MinvJ,
     )
@@ -1249,8 +1269,8 @@ def _equality_env[
         for r in range(num_eq_rows):
             # a_eq = J @ qacc
             var a_eq: Scalar[DTYPE] = 0
-            for i in range(NV):
-                a_eq += eq_J[r * NV + i] * rebind[Scalar[DTYPE]](
+            for i in range(nv):
+                a_eq += eq_J[r * nv + i] * rebind[Scalar[DTYPE]](
                     qacc_constrained[env, i]
                 )
 
@@ -1265,10 +1285,10 @@ def _equality_env[
             if abs_d > max_delta:
                 max_delta = abs_d
             # qacc += MinvJ * delta
-            for i in range(NV):
+            for i in range(nv):
                 qacc_constrained[env, i] = (
                     rebind[Scalar[DTYPE]](qacc_constrained[env, i])
-                    + eq_MinvJ[r * NV + i] * actual
+                    + eq_MinvJ[r * nv + i] * actual
                 )
 
         if max_delta < Scalar[DTYPE](1e-4):
@@ -1283,46 +1303,53 @@ def _equality_env[
 @always_inline
 def _tendon_env[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NTENDON: Int,
-    NSITE: Int,
     BATCH: Int,
     NUM_ITERATIONS: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_JOINTS: Layout,
+    L_MMETA: Layout,
+    L_TENDONS: Layout,
+    L_SITES: Layout,
+    L_BODIES: Layout,
+    L_SUBTREE_COM: Layout,
+    L_CDOF: Layout,
+    L_XQUAT: Layout,
+    L_M_INV: Layout,
 ](
     env: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     mmeta: LayoutTensor[
-        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+        DTYPE, L_MMETA, MutAnyOrigin
     ],
     tendons: LayoutTensor[
-        DTYPE, Layout.row_major(NTENDON, MODEL_TENDON_SIZE), MutAnyOrigin
+        DTYPE, L_TENDONS, MutAnyOrigin
     ],
     sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+        DTYPE, L_SITES, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     subtree_com: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_SUBTREE_COM, MutAnyOrigin
     ],
-    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
-    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, L_CDOF, MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_SUBTREE_COM, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     m_inv: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin
+        DTYPE, L_M_INV, MutAnyOrigin
     ],
     qacc_constrained: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+        DTYPE, L_QVEL, MutAnyOrigin
     ],
 ):
     """Build and solve `<equality><tendon>` rows for one env, as a POST-PASS.
@@ -1348,7 +1375,13 @@ def _tendon_env[
     `TENDON_IDX_INVWEIGHT0`.
     """
 
-    comptime if NTENDON == 0:
+    var nq = dims.get_nq()
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
+    var ntendon = dims.get_ntendon()
+    var nsite = dims.get_nsite()
+    comptime if D.CAP_NTENDON == 0:
         return
 
     # Read number of tendons from model metadata
@@ -1357,12 +1390,12 @@ def _tendon_env[
     )
     if nten == 0:
         return
-    if nten > NTENDON:
-        nten = NTENDON
+    if nten > ntendon:
+        nten = ntendon
 
     # One bilateral row per tendon
-    comptime MAX_TEN_ROWS = _max_one[NTENDON]()
-    comptime MINVJ_TEN_SIZE = _max_one[NTENDON * NV]()
+    comptime MAX_TEN_ROWS = _max_one[D.CAP_NTENDON]()
+    comptime MINVJ_TEN_SIZE = _max_one[D.CAP_NTENDON * D.CAP_NV]()
 
     var ten_K = InlineArray[Scalar[DTYPE], MAX_TEN_ROWS](fill=Scalar[DTYPE](1))
     var ten_bias = InlineArray[Scalar[DTYPE], MAX_TEN_ROWS](
@@ -1438,8 +1471,8 @@ def _tendon_env[
         var ten_length: Scalar[DTYPE] = 0
         var r = num_ten_rows
 
-        for i in range(NV):
-            ten_J[r * NV + i] = Scalar[DTYPE](0)
+        for i in range(nv):
+            ten_J[r * nv + i] = Scalar[DTYPE](0)
 
         if (
             Int(rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_KIND]))
@@ -1448,18 +1481,18 @@ def _tendon_env[
             # The site polyline and its dense moment arm. `sp_J` is the one
             # per-thread buffer this branch costs; see the Metal local-memory
             # warning above before adding a second.
-            var sp_J = InlineArray[Scalar[DTYPE], _max_one[NV]()](
+            var sp_J = InlineArray[Scalar[DTYPE], _max_one[D.CAP_NV]()](
                 fill=Scalar[DTYPE](0)
             )
             ten_length = spatial_tendon_length_jac[
-                DTYPE, _max_one[NV](), BATCH
+                DTYPE, _max_one[D.CAP_NV](), BATCH
             ](
-                env, t_i, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, ntendon=NTENDON, nsite=NSITE](), tendons, sites, bodies, joints, mmeta,
+                env, t_i, dims, tendons, sites, bodies, joints, mmeta,
                 subtree_com,
                 cdof, xpos, xquat, sp_J,
             )
-            for i in range(NV):
-                ten_J[r * NV + i] = sp_J[i]
+            for i in range(nv):
+                ten_J[r * nv + i] = sp_J[i]
         else:
             var num_joints = Int(
                 rebind[Scalar[DTYPE]](tendons[t_i, TENDON_IDX_NUM_JOINTS])
@@ -1472,7 +1505,7 @@ def _tendon_env[
                         tendons[t_i, TENDON_IDX_JOINT_0 + ji]
                     )
                 )
-                if jnt_idx < 0 or jnt_idx >= NJOINT:
+                if jnt_idx < 0 or jnt_idx >= njoint:
                     continue
                 # Read joint's qpos_adr and dof_adr from the joint records
                 var qpos_adr = Int(
@@ -1491,13 +1524,13 @@ def _tendon_env[
                 # the same joint twice kept only the last coefficient instead
                 # of their sum. No model in the tree does that, and
                 # `build_tendon_equality_rows` already accumulated.
-                ten_J[r * NV + dof_adr] = ten_J[r * NV + dof_adr] + c
+                ten_J[r * nv + dof_adr] = ten_J[r * nv + dof_adr] + c
 
         # Off the ASSEMBLED row, so both kinds share one expression — and
         # identical to the old per-wrap accumulation for a fixed tendon.
         var ten_vel: Scalar[DTYPE] = 0
-        for i in range(NV):
-            ten_vel += ten_J[r * NV + i] * rebind[Scalar[DTYPE]](
+        for i in range(nv):
+            ten_vel += ten_J[r * nv + i] * rebind[Scalar[DTYPE]](
                 qvel[env, i]
             )
 
@@ -1506,17 +1539,17 @@ def _tendon_env[
 
         # Compute K = J @ M_inv @ J^T and MinvJ
         var k: Scalar[DTYPE] = 0
-        for i in range(NV):
+        for i in range(nv):
             var mi_j_sum: Scalar[DTYPE] = 0
-            for j_idx in range(NV):
+            for j_idx in range(nv):
                 mi_j_sum += (
                     rebind[Scalar[DTYPE]](
-                        m_inv[env, i * NV + j_idx]
+                        m_inv[env, i * nv + j_idx]
                     )
-                    * ten_J[r * NV + j_idx]
+                    * ten_J[r * nv + j_idx]
                 )
-            ten_MinvJ[r * NV + i] = mi_j_sum
-            k += ten_J[r * NV + i] * mi_j_sum
+            ten_MinvJ[r * nv + i] = mi_j_sum
+            k += ten_J[r * nv + i] * mi_j_sum
 
         if k < Scalar[DTYPE](1e-10):
             k = Scalar[DTYPE](1e-10)
@@ -1633,8 +1666,8 @@ def _tendon_env[
         for r in range(num_ten_rows):
             # a_ten = J @ qacc
             var a_ten: Scalar[DTYPE] = 0
-            for i in range(NV):
-                a_ten += ten_J[r * NV + i] * rebind[Scalar[DTYPE]](
+            for i in range(nv):
+                a_ten += ten_J[r * nv + i] * rebind[Scalar[DTYPE]](
                     qacc_constrained[env, i]
                 )
 
@@ -1649,10 +1682,10 @@ def _tendon_env[
             if abs_d > max_delta:
                 max_delta = abs_d
             # qacc += MinvJ * delta
-            for i in range(NV):
+            for i in range(nv):
                 qacc_constrained[env, i] = (
                     rebind[Scalar[DTYPE]](qacc_constrained[env, i])
-                    + ten_MinvJ[r * NV + i] * actual
+                    + ten_MinvJ[r * nv + i] * actual
                 )
 
         if max_delta < Scalar[DTYPE](1e-4):
