@@ -83,7 +83,10 @@ from ..fields import (
     ContactScratch,
     Rk4Scratch,
     Dims,
- DimsLike,)
+    DimsLike,
+    DYN2,
+    rl2,
+)
 from ..gpu.constants import (
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
@@ -491,8 +494,11 @@ struct RK4Integrator[
         # 6b. Armature ONLY (no implicit damping for RK4) — shared env body
         # with Euler (legacy step 6b is byte-identical in both kernels).
         comptime if target == "cpu":
-            var joints_v = m.joints.lt["cpu", L_JOINT]()
-            var M_v = self.scratch.M.lt["cpu", L_M]()
+            var dm = d.dims
+            var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+            var rl_M = rl2(Self.BATCH, dm.get_nv() * dm.get_nv())
+            var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+            var M_v = self.scratch.M.lt_dyn["cpu", DYN2](rl_M)
             for e in range(Self.BATCH):
                 _armature_env[
                     Self.DTYPE](e, AsStatic[Self.D](), joints_v, M_v)
@@ -514,12 +520,16 @@ struct RK4Integrator[
         # (shared env body with Euler; legacy RK4 steps 9/9b are
         # byte-identical to Euler's).
         comptime if target == "cpu":
-            var qpos_v = d.qpos.lt["cpu", L_QPOS]()
-            var qvel_v = d.qvel.lt["cpu", L_NV]()
-            var qfrc_v = d.qfrc.lt["cpu", L_NV]()
-            var joints_v2 = m.joints.lt["cpu", L_JOINT]()
-            var bias_v = self.scratch.bias.lt["cpu", L_NV]()
-            var fnet_v = self.scratch.fnet.lt["cpu", L_NV]()
+            var dm = d.dims
+            var rl_QPOS = rl2(Self.BATCH, dm.get_nq())
+            var rl_NV = rl2(Self.BATCH, dm.get_nv())
+            var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+            var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
+            var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+            var qfrc_v = d.qfrc.lt_dyn["cpu", DYN2](rl_NV)
+            var joints_v2 = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+            var bias_v = self.scratch.bias.lt_dyn["cpu", DYN2](rl_NV)
+            var fnet_v = self.scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _fnet_passive_env[
                     Self.DTYPE](e, AsStatic[Self.D](), qpos_v, qvel_v, qfrc_v, joints_v2, bias_v, fnet_v)
@@ -546,9 +556,11 @@ struct RK4Integrator[
         ldl_solve[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
 
         comptime if target == "cpu":
-            var qacc_ws_v = self.scratch.qacc_ws.lt["cpu", L_NV]()
-            var qacc_v = d.qacc.lt["cpu", L_NV]()
-            var qacc_c_v = self.scratch.qacc_constrained.lt["cpu", L_NV]()
+            var dm = d.dims
+            var rl_NV = rl2(Self.BATCH, dm.get_nv())
+            var qacc_ws_v = self.scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV)
+            var qacc_v = d.qacc.lt_dyn["cpu", DYN2](rl_NV)
+            var qacc_c_v = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _qacc_writeback_env[Self.DTYPE](
                     e, AsStatic[Self.D](), qacc_ws_v, qacc_v, qacc_c_v
@@ -579,17 +591,21 @@ struct RK4Integrator[
         comptime BLOCKS = (Self.BATCH + EU_TPB - 1) // EU_TPB
 
         comptime if target == "cpu":
-            var joints_v = m.joints.lt["cpu", L_JOINT]()
-            var qpos_v = d.qpos.lt["cpu", L_QPOS]()
-            var qvel_v = d.qvel.lt["cpu", L_NV]()
-            var qacc_c_v = self.scratch.qacc_constrained.lt["cpu", L_NV]()
-            var q0_v = self.rk4.q0.lt["cpu", L_QPOS]()
-            var v0_v = self.rk4.v0.lt["cpu", L_NV]()
-            var A0_v = self.rk4.A0.lt["cpu", L_NV]()
-            var A1_v = self.rk4.A1.lt["cpu", L_NV]()
-            var A2_v = self.rk4.A2.lt["cpu", L_NV]()
-            var C1_v = self.rk4.C1.lt["cpu", L_NV]()
-            var C2_v = self.rk4.C2.lt["cpu", L_NV]()
+            var dm = d.dims
+            var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+            var rl_QPOS = rl2(Self.BATCH, dm.get_nq())
+            var rl_NV = rl2(Self.BATCH, dm.get_nv())
+            var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+            var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
+            var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+            var qacc_c_v = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
+            var q0_v = self.rk4.q0.lt_dyn["cpu", DYN2](rl_QPOS)
+            var v0_v = self.rk4.v0.lt_dyn["cpu", DYN2](rl_NV)
+            var A0_v = self.rk4.A0.lt_dyn["cpu", DYN2](rl_NV)
+            var A1_v = self.rk4.A1.lt_dyn["cpu", DYN2](rl_NV)
+            var A2_v = self.rk4.A2.lt_dyn["cpu", DYN2](rl_NV)
+            var C1_v = self.rk4.C1.lt_dyn["cpu", DYN2](rl_NV)
+            var C2_v = self.rk4.C2.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _rk4_stage_setup_env[
                     Self.DTYPE,
@@ -670,18 +686,22 @@ struct RK4Integrator[
         comptime BLOCKS = (Self.BATCH + EU_TPB - 1) // EU_TPB
 
         comptime if target == "cpu":
-            var joints_v = m.joints.lt["cpu", L_JOINT]()
-            var qpos_v = d.qpos.lt["cpu", L_QPOS]()
-            var qvel_v = d.qvel.lt["cpu", L_NV]()
-            var qacc_v = d.qacc.lt["cpu", L_NV]()
-            var qacc_c_v = self.scratch.qacc_constrained.lt["cpu", L_NV]()
-            var q0_v = self.rk4.q0.lt["cpu", L_QPOS]()
-            var v0_v = self.rk4.v0.lt["cpu", L_NV]()
-            var A0_v = self.rk4.A0.lt["cpu", L_NV]()
-            var A1_v = self.rk4.A1.lt["cpu", L_NV]()
-            var A2_v = self.rk4.A2.lt["cpu", L_NV]()
-            var C1_v = self.rk4.C1.lt["cpu", L_NV]()
-            var C2_v = self.rk4.C2.lt["cpu", L_NV]()
+            var dm = d.dims
+            var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+            var rl_QPOS = rl2(Self.BATCH, dm.get_nq())
+            var rl_NV = rl2(Self.BATCH, dm.get_nv())
+            var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+            var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
+            var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+            var qacc_v = d.qacc.lt_dyn["cpu", DYN2](rl_NV)
+            var qacc_c_v = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
+            var q0_v = self.rk4.q0.lt_dyn["cpu", DYN2](rl_QPOS)
+            var v0_v = self.rk4.v0.lt_dyn["cpu", DYN2](rl_NV)
+            var A0_v = self.rk4.A0.lt_dyn["cpu", DYN2](rl_NV)
+            var A1_v = self.rk4.A1.lt_dyn["cpu", DYN2](rl_NV)
+            var A2_v = self.rk4.A2.lt_dyn["cpu", DYN2](rl_NV)
+            var C1_v = self.rk4.C1.lt_dyn["cpu", DYN2](rl_NV)
+            var C2_v = self.rk4.C2.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _rk4_combine_env[
                     Self.DTYPE](

@@ -73,7 +73,10 @@ from ..fields import (
     ContactScratch,
     ImplicitScratch,
     Dims,
- DimsLike,)
+    DimsLike,
+    DYN2,
+    rl2,
+)
 from .euler import (
     _armature_env,
     _armature_kernel,
@@ -343,8 +346,11 @@ struct ImplicitIntegrator[
 
         # ── armature: M diag += armature ─────────────────────────────────
         comptime if target == "cpu":
-            var joints_v = m.joints.lt["cpu", L_JOINT]()
-            var M_v = self.scratch.M.lt["cpu", L_M]()
+            var dm = d.dims
+            var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+            var rl_M = rl2(Self.BATCH, dm.get_nv() * dm.get_nv())
+            var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+            var M_v = self.scratch.M.lt_dyn["cpu", DYN2](rl_M)
             for e in range(Self.BATCH):
                 _armature_env[
                     Self.DTYPE](e, AsStatic[Self.D](), joints_v, M_v)
@@ -360,8 +366,11 @@ struct ImplicitIntegrator[
 
         # ── qDeriv = damping diagonal, then subtract RNE velocity deriv ──
         comptime if target == "cpu":
-            var joints_v = m.joints.lt["cpu", L_JOINT]()
-            var qd_v = self.iscratch.qderiv.lt["cpu", L_M]()
+            var dm = d.dims
+            var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+            var rl_M = rl2(Self.BATCH, dm.get_nv() * dm.get_nv())
+            var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+            var qd_v = self.iscratch.qderiv.lt_dyn["cpu", DYN2](rl_M)
             for e in range(Self.BATCH):
                 _qderiv_damping_env[
                     Self.DTYPE](e, AsStatic[Self.D](), joints_v, njoint, qd_v)
@@ -381,8 +390,10 @@ struct ImplicitIntegrator[
 
         # ── M_hat = M - dt * qDeriv ──────────────────────────────────────
         comptime if target == "cpu":
-            var M_v = self.scratch.M.lt["cpu", L_M]()
-            var qd_v = self.iscratch.qderiv.lt["cpu", L_M]()
+            var dm = d.dims
+            var rl_M = rl2(Self.BATCH, dm.get_nv() * dm.get_nv())
+            var M_v = self.scratch.M.lt_dyn["cpu", DYN2](rl_M)
+            var qd_v = self.iscratch.qderiv.lt_dyn["cpu", DYN2](rl_M)
             for e in range(Self.BATCH):
                 _msub_qderiv_env[Self.DTYPE](
                     e, dt, AsStatic[Self.D](), M_v, qd_v
@@ -407,12 +418,16 @@ struct ImplicitIntegrator[
 
         # ── fnet = qfrc - bias - damping*qvel - stiffness - friction ─────
         comptime if target == "cpu":
-            var qpos_v = d.qpos.lt["cpu", L_QPOS]()
-            var qvel_v = d.qvel.lt["cpu", L_NV]()
-            var qfrc_v = d.qfrc.lt["cpu", L_NV]()
-            var joints_v = m.joints.lt["cpu", L_JOINT]()
-            var bias_v = self.scratch.bias.lt["cpu", L_NV]()
-            var fnet_v = self.scratch.fnet.lt["cpu", L_NV]()
+            var dm = d.dims
+            var rl_QPOS = rl2(Self.BATCH, dm.get_nq())
+            var rl_NV = rl2(Self.BATCH, dm.get_nv())
+            var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+            var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
+            var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+            var qfrc_v = d.qfrc.lt_dyn["cpu", DYN2](rl_NV)
+            var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+            var bias_v = self.scratch.bias.lt_dyn["cpu", DYN2](rl_NV)
+            var fnet_v = self.scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _fnet_passive_env[
                     Self.DTYPE](e, AsStatic[Self.D](), qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v)
@@ -440,9 +455,11 @@ struct ImplicitIntegrator[
 
         # ── qacc writeback: qacc + qacc_constrained = qacc_ws ────────────
         comptime if target == "cpu":
-            var qacc_ws_v = self.scratch.qacc_ws.lt["cpu", L_NV]()
-            var qacc_v = d.qacc.lt["cpu", L_NV]()
-            var qacc_c_v = self.scratch.qacc_constrained.lt["cpu", L_NV]()
+            var dm = d.dims
+            var rl_NV = rl2(Self.BATCH, dm.get_nv())
+            var qacc_ws_v = self.scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV)
+            var qacc_v = d.qacc.lt_dyn["cpu", DYN2](rl_NV)
+            var qacc_c_v = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _qacc_writeback_env[Self.DTYPE](
                     e, AsStatic[Self.D](), qacc_ws_v, qacc_v, qacc_c_v
@@ -485,11 +502,15 @@ struct ImplicitIntegrator[
 
         # ── implicit finalize: v += dt*qacc ; integrate qpos ─────────────
         comptime if target == "cpu":
-            var qpos_v = d.qpos.lt["cpu", L_QPOS]()
-            var qvel_v = d.qvel.lt["cpu", L_NV]()
-            var qacc_v = d.qacc.lt["cpu", L_NV]()
-            var joints_v = m.joints.lt["cpu", L_JOINT]()
-            var qacc_c_v = self.scratch.qacc_constrained.lt["cpu", L_NV]()
+            var dm = d.dims
+            var rl_QPOS = rl2(Self.BATCH, dm.get_nq())
+            var rl_NV = rl2(Self.BATCH, dm.get_nv())
+            var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+            var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
+            var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+            var qacc_v = d.qacc.lt_dyn["cpu", DYN2](rl_NV)
+            var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+            var qacc_c_v = self.scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
             for e in range(Self.BATCH):
                 _implicit_finalize_env[
                     Self.DTYPE](e, dt, AsStatic[Self.D](), qpos_v, qvel_v, qacc_v, joints_v, qacc_c_v)
