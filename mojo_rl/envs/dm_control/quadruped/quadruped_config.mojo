@@ -320,7 +320,7 @@ def _common_obs_gpu[
         k += 1
 
     # --- torso_upright: xmat['torso', 'zz'] --------------------------------
-    obs[env, k] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY](
+    obs[env, k] = xmat_elem_gpu[DTYPE](
         xquat, env, TORSO_BODY_IDX, XMAT_ZZ
     )
     k += 1
@@ -764,7 +764,7 @@ struct DMQuadrupedConfig[DESIRED_SPEED: Float64](Phyics3dEnvConfig):
         timestep: Scalar[DTYPE],
     ) -> Tuple[Scalar[DTYPE], Bool]:
         """`Move.get_reward` — upright x move, never terminates early."""
-        var zz = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY](
+        var zz = xmat_elem_gpu[DTYPE](
             xquat, env, TORSO_BODY_IDX, XMAT_ZZ
         )
         # `_upright_reward` in DTYPE: bound [1, inf), margin 2,

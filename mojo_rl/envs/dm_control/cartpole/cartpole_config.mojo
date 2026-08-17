@@ -310,10 +310,10 @@ struct DMCartpoleConfig[
         obs[env, 0] = qpos[env, 0]  # cart_position (the slider)
         for p in range(Self.N_POLES):
             var b = FIRST_POLE_BODY_IDX + p
-            obs[env, 1 + 2 * p] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            obs[env, 1 + 2 * p] = xmat_elem_gpu[DTYPE](
                 xquat, env, b, XMAT_ZZ
             )
-            obs[env, 2 + 2 * p] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            obs[env, 2 + 2 * p] = xmat_elem_gpu[DTYPE](
                 xquat, env, b, XMAT_XZ
             )
         for i in range(NV_F):
@@ -430,7 +430,7 @@ struct DMCartpoleConfig[
                 angle_in_bounds *= tolerance[
                     SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE
                 ](
-                    xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+                    xmat_elem_gpu[DTYPE](
                         xquat, env, FIRST_POLE_BODY_IDX + p, XMAT_ZZ
                     ),
                     Scalar[DTYPE](ANGLE_COSINE_LO),
@@ -443,7 +443,7 @@ struct DMCartpoleConfig[
             var upright_sum = Scalar[DTYPE](0.0)
             for p in range(Self.N_POLES):
                 upright_sum += (
-                    xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+                    xmat_elem_gpu[DTYPE](
                         xquat, env, FIRST_POLE_BODY_IDX + p, XMAT_ZZ
                     )
                     + ONE

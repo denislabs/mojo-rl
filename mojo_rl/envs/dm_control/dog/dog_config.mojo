@@ -441,7 +441,7 @@ def _stand_factors_gpu[
     uprights[1] = DOG_TORSO_BODY_IDX
     uprights[2] = DOG_PELVIS_BODY_IDX
     for k in range(3):
-        var zz = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY](
+        var zz = xmat_elem_gpu[DTYPE](
             xquat, env, uprights[k], XMAT_ZZ
         )
         f_upright *= tolerance[SIGMOID_LINEAR, 0.0, DTYPE](
@@ -581,15 +581,15 @@ def _dog_obs_gpu[
     zbodies[1] = DOG_TORSO_BODY_IDX
     zbodies[2] = DOG_PELVIS_BODY_IDX
     for b in range(3):
-        obs[env, k] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY](
+        obs[env, k] = xmat_elem_gpu[DTYPE](
             xquat, env, zbodies[b], XMAT_ZX
         )
         k += 1
-        obs[env, k] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY](
+        obs[env, k] = xmat_elem_gpu[DTYPE](
             xquat, env, zbodies[b], XMAT_ZY
         )
         k += 1
-        obs[env, k] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY](
+        obs[env, k] = xmat_elem_gpu[DTYPE](
             xquat, env, zbodies[b], XMAT_ZZ
         )
         k += 1
@@ -605,7 +605,7 @@ def _dog_obs_gpu[
     )
     var r = InlineArray[Scalar[DTYPE], 9](fill=Scalar[DTYPE](0))
     for j in range(9):
-        r[j] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY](
+        r[j] = xmat_elem_gpu[DTYPE](
             xquat, env, DOG_TORSO_BODY_IDX, j
         )
     obs[env, k] = vx * r[0] + vy * r[3] + vz * r[6]
@@ -1352,15 +1352,15 @@ struct DMDogMoveConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         # kernel. See the warning in `_stand_factors_gpu`.
         var fwd_v = (
             vx
-            * xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY](
+            * xmat_elem_gpu[DTYPE](
                 xquat, env, DOG_TORSO_BODY_IDX, 0
             )
             + vy
-            * xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY](
+            * xmat_elem_gpu[DTYPE](
                 xquat, env, DOG_TORSO_BODY_IDX, 3
             )
             + vz
-            * xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY](
+            * xmat_elem_gpu[DTYPE](
                 xquat, env, DOG_TORSO_BODY_IDX, 6
             )
         )

@@ -206,13 +206,13 @@ def _mouth_to_target_gpu[
     the fromto rotation (90 degrees for this geom) and would still produce a
     plausible-looking 3-vector.
     """
-    var mouth = geom_xpos_gpu[DTYPE, BATCH_SIZE, NBODY, NGEOM_F](
+    var mouth = geom_xpos_gpu[DTYPE](
         xpos, xquat, geoms, env, MOUTH_GEOM_IDX
     )
-    var target = geom_xpos_gpu[DTYPE, BATCH_SIZE, NBODY, NGEOM_F](
+    var target = geom_xpos_gpu[DTYPE](
         xpos, xquat, geoms, env, TARGET_GEOM_IDX
     )
-    var q = geom_xquat_gpu[DTYPE, BATCH_SIZE, NBODY, NGEOM_F](
+    var q = geom_xquat_gpu[DTYPE](
         xquat, geoms, env, MOUTH_GEOM_IDX
     )
     var loc = quat_rotate_inverse[DTYPE](
@@ -297,7 +297,7 @@ def _upright_gpu[
     env: Int,
 ) -> Scalar[DTYPE]:
     """`Physics.upright` — `xmat['torso', 'zz']`."""
-    return xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY](
+    return xmat_elem_gpu[DTYPE](
         xquat, env, TORSO_BODY_IDX, XMAT_ZZ
     )
 

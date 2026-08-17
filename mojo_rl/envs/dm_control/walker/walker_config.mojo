@@ -282,10 +282,10 @@ struct DMWalkerConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         """
         var k = 0
         for b in range(1, NBODY_F):
-            obs[env, k] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            obs[env, k] = xmat_elem_gpu[DTYPE](
                 xquat, env, b, XMAT_XX
             )
-            obs[env, k + 1] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            obs[env, k + 1] = xmat_elem_gpu[DTYPE](
                 xquat, env, b, XMAT_XZ
             )
             k += 2
@@ -403,7 +403,7 @@ struct DMWalkerConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         )
         var upright = (
             ONE
-            + xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+            + xmat_elem_gpu[DTYPE](
                 xquat, env, TORSO_BODY_IDX, XMAT_ZZ
             )
         ) / Scalar[DTYPE](2.0)

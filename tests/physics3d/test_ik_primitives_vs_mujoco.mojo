@@ -42,7 +42,7 @@ from max.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.envs.dm_control.fish import DMFishUprightModel
-from mojo_rl.physics3d.fields import Model, Data, Dims
+from mojo_rl.physics3d.fields import Model, Data, Dims, AsStatic
 from mojo_rl.physics3d.kinematics.quat_math import quat2vel
 from mojo_rl.physics3d.kinematics.integrate_pos import integrate_pos
 from mojo_rl.physics3d.gpu.constants import (
@@ -259,8 +259,8 @@ def test_integrate_pos_matches_mujoco() raises:
             d.qvel.data[i] = Scalar[DTYPE](Float64(py=dat.qvel[i]))
 
         mujoco.mj_integratePos(mm, dat.qpos, dat.qvel, dt)
-        integrate_pos[DTYPE, NQ, NV, NJOINT, 1](
-            0, qpos_v, qvel_v, joints_v, Scalar[DTYPE](dt)
+        integrate_pos(
+            0, AsStatic[MD](), qpos_v, qvel_v, joints_v, Scalar[DTYPE](dt)
         )
 
         for i in range(NQ):

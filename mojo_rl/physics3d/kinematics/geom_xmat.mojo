@@ -86,15 +86,14 @@ def geom_xmat_elem[DTYPE: DType, D: DimsLike](
 @always_inline
 def geom_xquat_gpu[
     DTYPE: DType,
-    BATCH_SIZE: Int,
-    NBODY: Int,
-    NGEOM_F: Int,
+    L_XQUAT: Layout,
+    L_GEOMS: Layout,
 ](
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     geoms: LayoutTensor[
-        DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        DTYPE, L_GEOMS, MutAnyOrigin
     ],
     env: Int,
     geom: Int,

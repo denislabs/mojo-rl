@@ -384,10 +384,10 @@ struct DMPointMassConfig(Phyics3dEnvConfig):
         """`PointMass.get_reward` — mirrors `compute_reward_and_done_cpu`."""
         comptime ONE = Scalar[DTYPE](1.0)
         comptime ZERO = Scalar[DTYPE](0.0)
-        var tp = geom_xpos_gpu[DTYPE, BATCH_SIZE, NBODY_F, NGEOM_F](
+        var tp = geom_xpos_gpu[DTYPE](
             xpos, xquat, geoms, env, TARGET_GEOM_IDX
         )
-        var mp = geom_xpos_gpu[DTYPE, BATCH_SIZE, NBODY_F, NGEOM_F](
+        var mp = geom_xpos_gpu[DTYPE](
             xpos, xquat, geoms, env, POINTMASS_GEOM_IDX
         )
         var dx = tp[0] - mp[0]

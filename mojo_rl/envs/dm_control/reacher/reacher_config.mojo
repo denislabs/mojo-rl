@@ -295,10 +295,10 @@ struct DMReacherConfig[TARGET_SIZE: Float64](Phyics3dEnvConfig):
         """`Reacher.get_observation`: whole qpos, finger->target XY, qvel."""
         for i in range(NQ_F):
             obs[env, i] = qpos[env, i]
-        var tp = geom_xpos_gpu[DTYPE, BATCH_SIZE, NBODY_F, NGEOM_F](
+        var tp = geom_xpos_gpu[DTYPE](
             xpos, xquat, geoms, env, TARGET_GEOM_IDX
         )
-        var fp = geom_xpos_gpu[DTYPE, BATCH_SIZE, NBODY_F, NGEOM_F](
+        var fp = geom_xpos_gpu[DTYPE](
             xpos, xquat, geoms, env, FINGER_GEOM_IDX
         )
         obs[env, NQ_F] = tp[0] - fp[0]
@@ -399,10 +399,10 @@ struct DMReacherConfig[TARGET_SIZE: Float64](Phyics3dEnvConfig):
         timestep: Scalar[DTYPE],
     ) -> Tuple[Scalar[DTYPE], Bool]:
         """`Reacher.get_reward` — a HARD indicator (margin 0): exactly 0 or 1."""
-        var tp = geom_xpos_gpu[DTYPE, BATCH_SIZE, NBODY_F, NGEOM_F](
+        var tp = geom_xpos_gpu[DTYPE](
             xpos, xquat, geoms, env, TARGET_GEOM_IDX
         )
-        var fp = geom_xpos_gpu[DTYPE, BATCH_SIZE, NBODY_F, NGEOM_F](
+        var fp = geom_xpos_gpu[DTYPE](
             xpos, xquat, geoms, env, FINGER_GEOM_IDX
         )
         var dx = tp[0] - fp[0]

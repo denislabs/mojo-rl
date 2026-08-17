@@ -69,18 +69,18 @@ def geom_xpos[DTYPE: DType, D: DimsLike](
 @always_inline
 def geom_xpos_gpu[
     DTYPE: DType,
-    BATCH_SIZE: Int,
-    NBODY: Int,
-    NGEOM_F: Int,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_GEOMS: Layout,
 ](
     xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     geoms: LayoutTensor[
-        DTYPE, Layout.row_major(NGEOM_F, MODEL_GEOM_SIZE), MutAnyOrigin
+        DTYPE, L_GEOMS, MutAnyOrigin
     ],
     env: Int,
     geom: Int,

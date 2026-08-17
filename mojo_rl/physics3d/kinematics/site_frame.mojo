@@ -37,17 +37,16 @@ from .quat_math import gpu_quat_mul
 @always_inline
 def site_world_quat[
     DTYPE: DType,
-    NBODY: Int,
-    NSITE: Int,
-    BATCH: Int,
+    L_SITES: Layout,
+    L_XQUAT: Layout,
 ](
     env: Int,
     site_idx: Int,
     sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+        DTYPE, L_SITES, MutAnyOrigin
     ],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
 ) -> InlineArray[Scalar[DTYPE], 4]:
     """`xquat[site_body] * site_quat` as (x, y, z, w) — MuJoCo's `site_xmat`.

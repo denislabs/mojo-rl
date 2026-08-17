@@ -249,16 +249,16 @@ struct DMAcrobotConfig[SPARSE: Bool](Phyics3dEnvConfig):
         vertical()))` and each half is a two-body slice, so the order is
         (xz upper, xz lower, zz upper, zz lower) — NOT (xz, zz) per body.
         """
-        obs[env, 0] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        obs[env, 0] = xmat_elem_gpu[DTYPE](
             xquat, env, UPPER_ARM_BODY_IDX, XMAT_XZ
         )
-        obs[env, 1] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        obs[env, 1] = xmat_elem_gpu[DTYPE](
             xquat, env, LOWER_ARM_BODY_IDX, XMAT_XZ
         )
-        obs[env, 2] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        obs[env, 2] = xmat_elem_gpu[DTYPE](
             xquat, env, UPPER_ARM_BODY_IDX, XMAT_ZZ
         )
-        obs[env, 3] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        obs[env, 3] = xmat_elem_gpu[DTYPE](
             xquat, env, LOWER_ARM_BODY_IDX, XMAT_ZZ
         )
         obs[env, 4] = qvel[env, 0]

@@ -30,7 +30,7 @@ from .quat_math import (
     gpu_axis_angle_to_quat,
 )
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
-from ..fields import Data, Model, Dims, DimsLike
+from ..fields import Data, Model, Dims, DimsLike, AsStatic
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
@@ -70,31 +70,35 @@ comptime FK_TPB: Int = 64
 @always_inline
 def _fk_body[
     DTYPE: DType,
-    NQ: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
 ](
     env: Int,
     body: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
 ):
     """One body's world pose from its parent (arithmetic verbatim from
     `fk_body_gpu`; only the addressing is per-field). Requires the parent's
     pose already written (topological order)."""
+    var njoint = dims.get_njoint()
     # Mocap body: world pose is an EXTERNAL input, preset into xpos/xquat/xipos
     # before the step (facade `_sync_mocap_to_fields`). Skip the parent-chain FK
     # so the target persists across substeps — verbatim semantics of the legacy
@@ -124,7 +128,7 @@ def _fk_body[
 
     # Count joints for this body
     var has_joint = False
-    for j in range(NJOINT):
+    for j in range(njoint):
         var joint_body = Int(
             rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])
         )
@@ -215,7 +219,7 @@ def _fk_body[
         cur_qz = pre_q[2]
         cur_qw = pre_q[3]
 
-        for j in range(NJOINT):
+        for j in range(njoint):
             var joint_body = Int(
                 rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])
             )
@@ -433,28 +437,34 @@ def _fk_body[
 @always_inline
 def _fk_env[
     DTYPE: DType,
-    NQ: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
 ](
     env: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
 ):
     """Full FK for one env: worldbody identity + topological body walk."""
+    var nq = dims.get_nq()
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
     xpos[env, 0] = Scalar[DTYPE](0)
     xpos[env, 1] = Scalar[DTYPE](0)
     xpos[env, 2] = Scalar[DTYPE](0)
@@ -466,34 +476,39 @@ def _fk_env[
     xipos[env, 1] = Scalar[DTYPE](0)
     xipos[env, 2] = Scalar[DTYPE](0)
 
-    for body in range(1, NBODY):
-        _fk_body[DTYPE, NQ, NBODY, NJOINT, BATCH](
-            env, body, qpos, bodies, joints, xpos, xquat, xipos
+    for body in range(1, nbody):
+        _fk_body[DTYPE](
+            env, body, dims, qpos, bodies, joints, xpos, xquat, xipos
         )
 
 
 @always_inline
 def _fk_sites[
     DTYPE: DType,
-    NBODY: Int,
-    NSITE: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_SITES: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_SITE_XPOS: Layout,
 ](
     env: Int,
+    dims: D,
     sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+        DTYPE, L_SITES, MutAnyOrigin
     ],
-    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     site_xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NSITE * 3), MutAnyOrigin
+        DTYPE, L_SITE_XPOS, MutAnyOrigin
     ],
 ):
     """site_xpos = xpos[body] + rotate(site_pos, xquat[body])."""
-    for site_idx in range(NSITE):
-        _fk_site[DTYPE, NBODY, NSITE, BATCH](
+    var nbody = dims.get_nbody()
+    var nsite = dims.get_nsite()
+    for site_idx in range(nsite):
+        _fk_site[DTYPE](
             env, site_idx, sites, xpos, xquat, site_xpos
         )
 
@@ -501,21 +516,22 @@ def _fk_sites[
 @always_inline
 def _fk_site[
     DTYPE: DType,
-    NBODY: Int,
-    NSITE: Int,
-    BATCH: Int,
+    L_SITES: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_SITE_XPOS: Layout,
 ](
     env: Int,
     site_idx: Int,
     sites: LayoutTensor[
-        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+        DTYPE, L_SITES, MutAnyOrigin
     ],
-    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     site_xpos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NSITE * 3), MutAnyOrigin
+        DTYPE, L_SITE_XPOS, MutAnyOrigin
     ],
 ):
     """One site's world position (extracted verbatim from the
@@ -567,8 +583,8 @@ def _fk_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _fk_env[DTYPE, NQ, NBODY, NJOINT, BATCH](
-        env, qpos, bodies, joints, xpos, xquat, xipos
+    _fk_env[DTYPE](
+        env, Dims[nq=NQ, nbody=NBODY, njoint=NJOINT](), qpos, bodies, joints, xpos, xquat, xipos
     )
 
 
@@ -604,11 +620,11 @@ def _fk_fields_sites_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _fk_env[DTYPE, NQ, NBODY, NJOINT, BATCH](
-        env, qpos, bodies, joints, xpos, xquat, xipos
+    _fk_env[DTYPE](
+        env, Dims[nq=NQ, nbody=NBODY, njoint=NJOINT, nsite=NSITE](), qpos, bodies, joints, xpos, xquat, xipos
     )
-    _fk_sites[DTYPE, NBODY, NSITE, BATCH](
-        env, sites, xpos, xquat, site_xpos
+    _fk_sites[DTYPE](
+        env, Dims[nq=NQ, nbody=NBODY, njoint=NJOINT, nsite=NSITE](), sites, xpos, xquat, site_xpos
     )
 
 
@@ -627,36 +643,48 @@ def _fk_fields_sites_kernel[
 @always_inline
 def _fk_env_mt[
     DTYPE: DType,
-    NQ: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
     N_THREADS: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
 ](
     env: Int,
     tid: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
 ):
     """Level-parallel FK for one env (all block threads must call this —
     it contains barriers)."""
+    var nq = dims.get_nq()
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
     # Body tree depth (level): model-only reads, identical in every thread
     # -> identical max_level -> identical barrier count.
-    var level = InlineArray[Int, NBODY](fill=0)
+    # ⚠ THE CAP, NOT THE RUNTIME DIM. `InlineArray`'s length is a comptime
+    # parameter — `nbody` here is a `var` and the compiler rejects it outright
+    # ("cannot use a dynamic value in a parameter list"). This is the case
+    # §5.1 introduced `CAP_*` for: the stack buffer is sized by the bound and
+    # only `nbody` of it is ever touched. On a static provider CAP == exact,
+    # so the allocation is byte-identical to what shipped.
+    var level = InlineArray[Int, D.CAP_NBODY](fill=0)
     var max_level = 0
-    for b in range(1, NBODY):
+    for b in range(1, nbody):
         var p = Int(rebind[Scalar[DTYPE]](bodies[b, BODY_IDX_PARENT]))
         level[b] = level[p] + 1
         if level[b] > max_level:
@@ -678,10 +706,10 @@ def _fk_env_mt[
 
     # Process bodies level by level; within a level, stripe across threads.
     for lvl in range(1, max_level + 1):
-        for body in range(1 + tid, NBODY, N_THREADS):
+        for body in range(1 + tid, nbody, N_THREADS):
             if level[body] == lvl:
-                _fk_body[DTYPE, NQ, NBODY, NJOINT, BATCH](
-                    env, body, qpos, bodies, joints, xpos, xquat, xipos
+                _fk_body[DTYPE](
+                    env, body, dims, qpos, bodies, joints, xpos, xquat, xipos
                 )
         barrier()
 
@@ -711,8 +739,8 @@ def _fk_fields_mt_kernel[
 ):
     var env = Int(block_idx.x)
     var tid = Int(thread_idx.x)
-    _fk_env_mt[DTYPE, NQ, NBODY, NJOINT, BATCH, N_THREADS](
-        env, tid, qpos, bodies, joints, xpos, xquat, xipos
+    _fk_env_mt[DTYPE, N_THREADS](
+        env, tid, Dims[nq=NQ, nbody=NBODY, njoint=NJOINT](), qpos, bodies, joints, xpos, xquat, xipos
     )
 
 
@@ -748,15 +776,15 @@ def _fk_fields_sites_mt_kernel[
 ):
     var env = Int(block_idx.x)
     var tid = Int(thread_idx.x)
-    _fk_env_mt[DTYPE, NQ, NBODY, NJOINT, BATCH, N_THREADS](
-        env, tid, qpos, bodies, joints, xpos, xquat, xipos
+    _fk_env_mt[DTYPE, N_THREADS](
+        env, tid, Dims[nq=NQ, nbody=NBODY, njoint=NJOINT, nsite=NSITE](), qpos, bodies, joints, xpos, xquat, xipos
     )
     # Body poses published by the level loop's final barrier; sites are
     # independent per site -> stripe across threads (same `_fk_site`
     # helper as the serial kernel; no legacy sites-mt exists, the legacy mt
     # runs NSITE=0 only — striping independent writes stays bit-exact).
     for site_idx in range(tid, NSITE, N_THREADS):
-        _fk_site[DTYPE, NBODY, NSITE, BATCH](
+        _fk_site[DTYPE](
             env, site_idx, sites, xpos, xquat, site_xpos
         )
 
@@ -794,8 +822,8 @@ def forward_kinematics[
         var xquat_v = d.xquat.lt["cpu", L_XQUAT]()
         var xipos_v = d.xipos.lt["cpu", L_XPOS]()
         for e in range(BATCH):
-            _fk_env[DTYPE, D.NQ, D.NBODY, D.NJOINT, BATCH](
-                e, qpos_v, bodies_v, joints_v, xpos_v, xquat_v, xipos_v
+            _fk_env[DTYPE](
+                e, AsStatic[D](), qpos_v, bodies_v, joints_v, xpos_v, xquat_v, xipos_v
             )
         comptime if D.NSITE > 0:
             comptime L_SITE_REC = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
@@ -803,8 +831,8 @@ def forward_kinematics[
             var sites_v = m.sites.lt["cpu", L_SITE_REC]()
             var sitex_v = d.site_xpos.lt["cpu", L_SITE_X]()
             for e in range(BATCH):
-                _fk_sites[DTYPE, D.NBODY, D.NSITE, BATCH](
-                    e, sites_v, xpos_v, xquat_v, sitex_v
+                _fk_sites[DTYPE](
+                    e, AsStatic[D](), sites_v, xpos_v, xquat_v, sitex_v
                 )
     elif PARALLEL:
         # Cooperative within-env schedule (legacy STEP_THREADS = NV).
@@ -887,32 +915,35 @@ def forward_kinematics[
 @always_inline
 def _vel_body[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
 ](
     env: Int,
     body: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    xvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xvel: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
     xangvel: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
 ):
     """One body's world velocity from its parent. Requires the parent's
@@ -926,6 +957,7 @@ def _vel_body[
     `dynamics/cdof.mojo`, which needs the identical walk to place `cdof`).
     Keep the three in step.
     """
+    var njoint = dims.get_njoint()
     var parent = Int(rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_PARENT]))
 
     var vx = rebind[Scalar[DTYPE]](xvel[env, parent * 3 + 0])
@@ -1007,7 +1039,7 @@ def _vel_body[
     var cur_qz = pre_q[2]
     var cur_qw = pre_q[3]
 
-    for j in range(NJOINT):
+    for j in range(njoint):
         var joint_body = Int(
             rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])
         )
@@ -1240,34 +1272,41 @@ def _vel_body[
 @always_inline
 def _body_velocities_env[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_QVEL: Layout,
+    L_XPOS: Layout,
+    L_XQUAT: Layout,
+    L_BODIES: Layout,
+    L_JOINTS: Layout,
 ](
     env: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
-    xpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, L_QVEL, MutAnyOrigin],
+    xpos: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     xipos: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
     bodies: LayoutTensor[
-        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+        DTYPE, L_BODIES, MutAnyOrigin
     ],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
-    xvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xvel: LayoutTensor[DTYPE, L_XPOS, MutAnyOrigin],
     xangvel: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+        DTYPE, L_XPOS, MutAnyOrigin
     ],
 ):
-    for body in range(NBODY):
+    var nq = dims.get_nq()
+    var nv = dims.get_nv()
+    var nbody = dims.get_nbody()
+    var njoint = dims.get_njoint()
+    for body in range(nbody):
         xvel[env, body * 3 + 0] = Scalar[DTYPE](0)
         xvel[env, body * 3 + 1] = Scalar[DTYPE](0)
         xvel[env, body * 3 + 2] = Scalar[DTYPE](0)
@@ -1275,9 +1314,9 @@ def _body_velocities_env[
         xangvel[env, body * 3 + 1] = Scalar[DTYPE](0)
         xangvel[env, body * 3 + 2] = Scalar[DTYPE](0)
 
-    for body in range(1, NBODY):
-        _vel_body[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
-            env, body, qpos, qvel, xpos, xquat, xipos, bodies, joints, xvel,
+    for body in range(1, nbody):
+        _vel_body[DTYPE](
+            env, body, dims, qpos, qvel, xpos, xquat, xipos, bodies, joints, xvel,
             xangvel,
         )
 
@@ -1313,8 +1352,8 @@ def _body_velocities_fields_kernel[
     var env = Int(block_dim.x * block_idx.x + thread_idx.x)
     if env >= BATCH:
         return
-    _body_velocities_env[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
-        env, qpos, qvel, xpos, xquat, xipos, bodies, joints, xvel, xangvel
+    _body_velocities_env[DTYPE](
+        env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT](), qpos, qvel, xpos, xquat, xipos, bodies, joints, xvel, xangvel
     )
 
 
@@ -1377,8 +1416,8 @@ def _body_velocities_fields_mt_kernel[
     for lvl in range(1, max_level + 1):
         for body in range(1 + tid, NBODY, N_THREADS):
             if level[body] == lvl:
-                _vel_body[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
-                    env, body, qpos, qvel, xpos, xquat, xipos, bodies, joints,
+                _vel_body[DTYPE](
+                    env, body, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT](), qpos, qvel, xpos, xquat, xipos, bodies, joints,
                     xvel, xangvel,
                 )
         barrier()
@@ -1418,8 +1457,8 @@ def compute_body_velocities[
         var xvel_v = d.xvel.lt["cpu", L_B3]()
         var xangvel_v = d.xangvel.lt["cpu", L_B3]()
         for e in range(BATCH):
-            _body_velocities_env[DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, BATCH](
-                e, qpos_v, qvel_v, xpos_v, xquat_v, xipos_v, bodies_v,
+            _body_velocities_env[DTYPE](
+                e, AsStatic[D](), qpos_v, qvel_v, xpos_v, xquat_v, xipos_v, bodies_v,
                 joints_v, xvel_v, xangvel_v,
             )
     elif PARALLEL:

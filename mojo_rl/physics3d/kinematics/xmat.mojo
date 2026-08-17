@@ -100,11 +100,10 @@ def xmat_elem[DTYPE: DType, D: DimsLike](
 @always_inline
 def xmat_elem_gpu[
     DTYPE: DType,
-    BATCH_SIZE: Int,
-    NBODY: Int,
+    L_XQUAT: Layout,
 ](
     xquat: LayoutTensor[
-        DTYPE, Layout.row_major(BATCH_SIZE, NBODY * 4), MutAnyOrigin
+        DTYPE, L_XQUAT, MutAnyOrigin
     ],
     env: Int,
     body: Int,

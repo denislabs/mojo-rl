@@ -457,31 +457,31 @@ struct DMHumanoidConfig[MOVE_SPEED: Float64, PURE_STATE: Bool](
         var tx = rebind[Scalar[DTYPE]](xpos[env, TORSO_BODY_IDX * 3 + 0])
         var ty = rebind[Scalar[DTYPE]](xpos[env, TORSO_BODY_IDX * 3 + 1])
         var tz = rebind[Scalar[DTYPE]](xpos[env, TORSO_BODY_IDX * 3 + 2])
-        var r00 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r00 = xmat_elem_gpu[DTYPE](
             xquat, env, TORSO_BODY_IDX, XMAT_XX
         )
-        var r01 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r01 = xmat_elem_gpu[DTYPE](
             xquat, env, TORSO_BODY_IDX, XMAT_XY
         )
-        var r02 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r02 = xmat_elem_gpu[DTYPE](
             xquat, env, TORSO_BODY_IDX, XMAT_XZ
         )
-        var r10 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r10 = xmat_elem_gpu[DTYPE](
             xquat, env, TORSO_BODY_IDX, XMAT_YX
         )
-        var r11 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r11 = xmat_elem_gpu[DTYPE](
             xquat, env, TORSO_BODY_IDX, XMAT_YY
         )
-        var r12 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r12 = xmat_elem_gpu[DTYPE](
             xquat, env, TORSO_BODY_IDX, XMAT_YZ
         )
-        var r20 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r20 = xmat_elem_gpu[DTYPE](
             xquat, env, TORSO_BODY_IDX, XMAT_ZX
         )
-        var r21 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r21 = xmat_elem_gpu[DTYPE](
             xquat, env, TORSO_BODY_IDX, XMAT_ZY
         )
-        var r22 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r22 = xmat_elem_gpu[DTYPE](
             xquat, env, TORSO_BODY_IDX, XMAT_ZZ
         )
         # ⚠ The ORDER is left_hand, left_foot, right_hand, right_foot — the
@@ -634,7 +634,7 @@ struct DMHumanoidConfig[MOVE_SPEED: Float64, PURE_STATE: Bool](
             inf[DTYPE](),
             Scalar[DTYPE](STAND_HEIGHT / 4.0),
         )
-        var upright_z = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var upright_z = xmat_elem_gpu[DTYPE](
             xquat, env, TORSO_BODY_IDX, XMAT_ZZ
         )
         var upright = tolerance[SIGMOID_LINEAR, 0.0, DTYPE](

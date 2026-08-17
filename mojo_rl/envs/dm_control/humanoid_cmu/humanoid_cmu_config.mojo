@@ -471,31 +471,31 @@ struct DMHumanoidCMUConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         var tx = rebind[Scalar[DTYPE]](xpos[env, THORAX_BODY_IDX * 3 + 0])
         var ty = rebind[Scalar[DTYPE]](xpos[env, THORAX_BODY_IDX * 3 + 1])
         var tz = rebind[Scalar[DTYPE]](xpos[env, THORAX_BODY_IDX * 3 + 2])
-        var r00 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r00 = xmat_elem_gpu[DTYPE](
             xquat, env, THORAX_BODY_IDX, XMAT_XX
         )
-        var r01 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r01 = xmat_elem_gpu[DTYPE](
             xquat, env, THORAX_BODY_IDX, XMAT_XY
         )
-        var r02 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r02 = xmat_elem_gpu[DTYPE](
             xquat, env, THORAX_BODY_IDX, XMAT_XZ
         )
-        var r10 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r10 = xmat_elem_gpu[DTYPE](
             xquat, env, THORAX_BODY_IDX, XMAT_YX
         )
-        var r11 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r11 = xmat_elem_gpu[DTYPE](
             xquat, env, THORAX_BODY_IDX, XMAT_YY
         )
-        var r12 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r12 = xmat_elem_gpu[DTYPE](
             xquat, env, THORAX_BODY_IDX, XMAT_YZ
         )
-        var r20 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r20 = xmat_elem_gpu[DTYPE](
             xquat, env, THORAX_BODY_IDX, XMAT_ZX
         )
-        var r21 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r21 = xmat_elem_gpu[DTYPE](
             xquat, env, THORAX_BODY_IDX, XMAT_ZY
         )
-        var r22 = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var r22 = xmat_elem_gpu[DTYPE](
             xquat, env, THORAX_BODY_IDX, XMAT_ZZ
         )
         # Order: left_hand, left_foot, right_hand, right_foot. Must stay in
@@ -645,7 +645,7 @@ struct DMHumanoidCMUConfig[MOVE_SPEED: Float64](Phyics3dEnvConfig):
         )
         # ⚠⚠ ZY, not ZZ. `thorax_upright()` differs from humanoid's
         # `torso_upright()` here and nowhere else in the reward.
-        var upright_zy = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var upright_zy = xmat_elem_gpu[DTYPE](
             xquat, env, THORAX_BODY_IDX, XMAT_ZY
         )
         var upright = tolerance[SIGMOID_LINEAR, 0.0, DTYPE](

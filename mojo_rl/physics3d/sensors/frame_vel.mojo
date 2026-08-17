@@ -226,7 +226,7 @@ def site_frame_velocity_gpu[
     )
 
     # R_site is the SITE's world frame, `xquat[body] * site_quat`.
-    var sq = site_world_quat[DTYPE, NBODY, NSITE_F, BATCH_SIZE](
+    var sq = site_world_quat[DTYPE](
         env, site, sites, xquat
     )
     var vl = quat_rotate_inverse[DTYPE](sq[0], sq[1], sq[2], sq[3], vx, vy, vz)

@@ -223,10 +223,10 @@ struct DMPendulumConfig(Phyics3dEnvConfig):
         env: Int,
     ) -> Bool:
         """`SwingUp.get_observation` — mirrors `custom_extract_obs_cpu`."""
-        obs[env, 0] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        obs[env, 0] = xmat_elem_gpu[DTYPE](
             xquat, env, POLE_BODY_IDX, XMAT_ZZ
         )
-        obs[env, 1] = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        obs[env, 1] = xmat_elem_gpu[DTYPE](
             xquat, env, POLE_BODY_IDX, XMAT_XZ
         )
         obs[env, 2] = qvel[env, 0]
@@ -329,7 +329,7 @@ struct DMPendulumConfig(Phyics3dEnvConfig):
         `margin` is 0, so this is a hard indicator and the float32 arithmetic
         can only differ from the CPU path within ~1e-7 of the bound itself.
         """
-        var pole_vertical = xmat_elem_gpu[DTYPE, BATCH_SIZE, NBODY_F](
+        var pole_vertical = xmat_elem_gpu[DTYPE](
             xquat, env, POLE_BODY_IDX, XMAT_ZZ
         )
         var r = tolerance[SIGMOID_GAUSSIAN, DEFAULT_VALUE_AT_MARGIN, DTYPE](

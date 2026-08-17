@@ -32,6 +32,7 @@ known to be right. Anything relying on it must gate it first.
 from layout import Layout, LayoutTensor
 
 from .quat_math import quat_integrate
+from ..fields import DimsLike
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
 from ..gpu.constants import (
     MODEL_JOINT_SIZE,
@@ -44,16 +45,17 @@ from ..gpu.constants import (
 @always_inline
 def integrate_pos[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NJOINT: Int,
-    BATCH: Int,
+    D: DimsLike,
+    L_QPOS: Layout,
+    L_DQ: Layout,
+    L_JOINTS: Layout,
 ](
     env: Int,
-    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
-    dq: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    dims: D,
+    qpos: LayoutTensor[DTYPE, L_QPOS, MutAnyOrigin],
+    dq: LayoutTensor[DTYPE, L_DQ, MutAnyOrigin],
     joints: LayoutTensor[
-        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+        DTYPE, L_JOINTS, MutAnyOrigin
     ],
     dt: Scalar[DTYPE],
 ):
@@ -62,7 +64,8 @@ def integrate_pos[
     `dq` is indexed in velocity space (nv), `qpos` in position space (nq); the
     two differ wherever a joint has a quaternion.
     """
-    for j in range(NJOINT):
+    var njoint = dims.get_njoint()
+    for j in range(njoint):
         var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
         var padr = Int(
             rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_QPOS_ADR])

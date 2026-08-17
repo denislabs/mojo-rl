@@ -338,7 +338,7 @@ def site_accelerometer_gpu[
         d[0], d[1], d[2], False,
     )
 
-    var sq = site_world_quat[DTYPE, NBODY, NSITE_F, BATCH_SIZE](
+    var sq = site_world_quat[DTYPE](
         env, site, sites, xquat
     )
     # Rotate into the site frame BEFORE the correction — MuJoCo builds both
@@ -409,7 +409,7 @@ def site_force_torque_gpu[
         d[0], d[1], d[2], True,
     )
 
-    var sq = site_world_quat[DTYPE, NBODY, NSITE_F, BATCH_SIZE](
+    var sq = site_world_quat[DTYPE](
         env, site, sites, xquat
     )
     var trq = quat_rotate_inverse[DTYPE](

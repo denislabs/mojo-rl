@@ -65,7 +65,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.core.tensor import TensorImpl
 
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
 from ..kinematics.forward_kinematics import forward_kinematics
 from ..kinematics.integrate_pos import integrate_pos
 from ..kinematics.quat_math import quat_mul, quat_conjugate, quat2vel
@@ -336,8 +336,8 @@ def qpos_from_site_pose[
         for a in range(NDOF):
             update_nv[0, dof_idx[a]] = upd[a]
 
-        integrate_pos[DTYPE, D.NQ, D.NV, D.NJOINT, 1](
-            0, qpos_v, update_nv, joints_v, Scalar[DTYPE](1)
+        integrate_pos[DTYPE](
+            0, AsStatic[D](), qpos_v, update_nv, joints_v, Scalar[DTYPE](1)
         )
         forward_kinematics["cpu"](d, mf)
 
