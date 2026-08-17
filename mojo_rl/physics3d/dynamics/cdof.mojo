@@ -20,7 +20,16 @@ from ..kinematics.quat_math import (
     gpu_axis_angle_to_quat,
 )
 from ..joint_types import JNT_FREE, JNT_SLIDE, JNT_HINGE
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    DYN2,
+    rl2,
+)
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -455,13 +464,20 @@ def compute_cdof[
     comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
 
     comptime if target == "cpu":
-        var qpos_v = d.qpos.lt["cpu", L_QPOS]()
-        var xpos_v = d.xpos.lt["cpu", L_B3]()
-        var xquat_v = d.xquat.lt["cpu", L_B4]()
-        var stcom_v = d.subtree_com.lt["cpu", L_B3]()
-        var bodies_v = m.bodies.lt["cpu", L_BODY]()
-        var joints_v = m.joints.lt["cpu", L_JOINT]()
-        var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
+        var dm = d.dims
+        var rl_QPOS = rl2(BATCH, dm.get_nq())
+        var rl_B3 = rl2(BATCH, dm.get_nbody() * 3)
+        var rl_B4 = rl2(BATCH, dm.get_nbody() * 4)
+        var rl_BODY = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+        var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var rl_CDOF = rl2(BATCH, dm.get_nv() * 6)
+        var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
+        var xpos_v = d.xpos.lt_dyn["cpu", DYN2](rl_B3)
+        var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4)
+        var stcom_v = d.subtree_com.lt_dyn["cpu", DYN2](rl_B3)
+        var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
+        var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+        var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
         for e in range(BATCH):
             _cdof_env[DTYPE](
                 e, AsStatic[D](), qpos_v, xpos_v, xquat_v, stcom_v, bodies_v, joints_v, cdof_v

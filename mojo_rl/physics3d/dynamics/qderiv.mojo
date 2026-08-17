@@ -24,7 +24,19 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_mul
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from ..fields import Data, Model, DynamicsScratch, ImplicitScratch, Dims, DimsLike, AsStatic, Scratch, cap
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    ImplicitScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    Scratch,
+    cap,
+    DYN2,
+    rl2,
+)
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -852,21 +864,33 @@ def compute_rne_vel_derivative[
     comptime L_QD = Layout.row_major(BATCH, D.NV * D.NV)
 
     comptime if target == "cpu":
-        var bodies_v = m.bodies.lt["cpu", L_BODY]()
-        var joints_v = m.joints.lt["cpu", L_JOINT]()
-        var xipos_v = d.xipos.lt["cpu", L_B3]()
-        var xquat_v = d.xquat.lt["cpu", L_B4]()
-        var qvel_v = d.qvel.lt["cpu", L_NV]()
-        var cdof_v = scratch.cdof.lt["cpu", L_NV6]()
-        var cinert_v = iscratch.cinert.lt["cpu", L_B10]()
-        var cdof_sc_v = iscratch.cdof_sc.lt["cpu", L_NV6]()
-        var cvel_sc_v = iscratch.cvel_sc.lt["cpu", L_B6]()
-        var cdof_dot_v = iscratch.cdof_dot.lt["cpu", L_NV6]()
-        var dcvel_v = iscratch.dcvel.lt["cpu", L_DCVEL]()
-        var dcdofdot_v = iscratch.dcdofdot.lt["cpu", L_DCDOF]()
-        var dcacc_v = iscratch.dcacc.lt["cpu", L_DCVEL]()
-        var dcfrcbody_v = iscratch.dcfrcbody.lt["cpu", L_DCVEL]()
-        var qderiv_v = iscratch.qderiv.lt["cpu", L_QD]()
+        var dm = d.dims
+        var rl_BODY = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+        var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var rl_B3 = rl2(BATCH, dm.get_nbody() * 3)
+        var rl_B4 = rl2(BATCH, dm.get_nbody() * 4)
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var rl_NV6 = rl2(BATCH, dm.get_nv() * 6)
+        var rl_B10 = rl2(BATCH, dm.get_nbody() * 10)
+        var rl_B6 = rl2(BATCH, dm.get_nbody() * 6)
+        var rl_DCVEL = rl2(BATCH, dm.get_nbody() * 6 * dm.get_nv())
+        var rl_DCDOF = rl2(BATCH, dm.get_nv() * 6 * dm.get_nv())
+        var rl_QD = rl2(BATCH, dm.get_nv() * dm.get_nv())
+        var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
+        var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+        var xipos_v = d.xipos.lt_dyn["cpu", DYN2](rl_B3)
+        var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4)
+        var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+        var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_NV6)
+        var cinert_v = iscratch.cinert.lt_dyn["cpu", DYN2](rl_B10)
+        var cdof_sc_v = iscratch.cdof_sc.lt_dyn["cpu", DYN2](rl_NV6)
+        var cvel_sc_v = iscratch.cvel_sc.lt_dyn["cpu", DYN2](rl_B6)
+        var cdof_dot_v = iscratch.cdof_dot.lt_dyn["cpu", DYN2](rl_NV6)
+        var dcvel_v = iscratch.dcvel.lt_dyn["cpu", DYN2](rl_DCVEL)
+        var dcdofdot_v = iscratch.dcdofdot.lt_dyn["cpu", DYN2](rl_DCDOF)
+        var dcacc_v = iscratch.dcacc.lt_dyn["cpu", DYN2](rl_DCVEL)
+        var dcfrcbody_v = iscratch.dcfrcbody.lt_dyn["cpu", DYN2](rl_DCVEL)
+        var qderiv_v = iscratch.qderiv.lt_dyn["cpu", DYN2](rl_QD)
         for e in range(BATCH):
             _rne_vel_derivative_env[DTYPE](
                 e, njoint, AsStatic[D](), bodies_v, joints_v, xipos_v, xquat_v, qvel_v,

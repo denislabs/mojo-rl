@@ -17,7 +17,20 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import gpu_quat_mul
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic, Scratch, cap
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    Scratch,
+    cap,
+    DYN1,
+    DYN2,
+    rl1,
+    rl2,
+)
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -834,18 +847,28 @@ def compute_bias_forces_rne[
     comptime L_B6 = Layout.row_major(BATCH, D.NBODY * 6)
 
     comptime if target == "cpu":
-        var qvel_v = d.qvel.lt["cpu", L_NV]()
-        var xquat_v = d.xquat.lt["cpu", L_B4]()
-        var xipos_v = d.xipos.lt["cpu", L_B3]()
-        var stcom_v = d.subtree_com.lt["cpu", L_B3]()
-        var bodies_v = m.bodies.lt["cpu", L_BODY]()
-        var joints_v = m.joints.lt["cpu", L_JOINT]()
-        var meta_v = m.meta.lt["cpu", L_META]()
-        var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
-        var crb_v = scratch.crb.lt["cpu", L_CRB]()
-        var cacc_v = scratch.rne_cacc.lt["cpu", L_B6]()
-        var cfrc_v = scratch.rne_cfrc.lt["cpu", L_B6]()
-        var bias_v = scratch.bias.lt["cpu", L_NV]()
+        var dm = d.dims
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var rl_B4 = rl2(BATCH, dm.get_nbody() * 4)
+        var rl_B3 = rl2(BATCH, dm.get_nbody() * 3)
+        var rl_BODY = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+        var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var rl_META = rl1(MODEL_META_SIZE)
+        var rl_CDOF = rl2(BATCH, dm.get_nv() * 6)
+        var rl_CRB = rl2(BATCH, dm.get_nbody() * 10)
+        var rl_B6 = rl2(BATCH, dm.get_nbody() * 6)
+        var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+        var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4)
+        var xipos_v = d.xipos.lt_dyn["cpu", DYN2](rl_B3)
+        var stcom_v = d.subtree_com.lt_dyn["cpu", DYN2](rl_B3)
+        var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
+        var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+        var meta_v = m.meta.lt_dyn["cpu", DYN1](rl_META)
+        var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
+        var crb_v = scratch.crb.lt_dyn["cpu", DYN2](rl_CRB)
+        var cacc_v = scratch.rne_cacc.lt_dyn["cpu", DYN2](rl_B6)
+        var cfrc_v = scratch.rne_cfrc.lt_dyn["cpu", DYN2](rl_B6)
+        var bias_v = scratch.bias.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
             _rne_env[DTYPE](
                 e, AsStatic[D](), qvel_v, xquat_v, xipos_v, stcom_v, bodies_v, joints_v,

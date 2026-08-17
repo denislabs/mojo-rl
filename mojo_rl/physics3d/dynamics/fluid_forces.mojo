@@ -30,7 +30,18 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_rotate
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    DYN1,
+    DYN2,
+    rl1,
+    rl2,
+)
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -326,16 +337,24 @@ def compute_fluid_forces[
     comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
 
     comptime if target == "cpu":
-        var xvel_v = d.xvel.lt["cpu", L_B3]()
-        var xangvel_v = d.xangvel.lt["cpu", L_B3]()
-        var xquat_v = d.xquat.lt["cpu", L_B4]()
-        var xipos_v = d.xipos.lt["cpu", L_B3]()
-        var stcom_v = d.subtree_com.lt["cpu", L_B3]()
-        var bodies_v = m.bodies.lt["cpu", L_BODY]()
-        var joints_v = m.joints.lt["cpu", L_JOINT]()
-        var meta_v = m.meta.lt["cpu", L_META]()
-        var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
-        var fnet_v = scratch.fnet.lt["cpu", L_NV]()
+        var dm = d.dims
+        var rl_B3 = rl2(BATCH, dm.get_nbody() * 3)
+        var rl_B4 = rl2(BATCH, dm.get_nbody() * 4)
+        var rl_BODY = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+        var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var rl_META = rl1(MODEL_META_SIZE)
+        var rl_CDOF = rl2(BATCH, dm.get_nv() * 6)
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var xvel_v = d.xvel.lt_dyn["cpu", DYN2](rl_B3)
+        var xangvel_v = d.xangvel.lt_dyn["cpu", DYN2](rl_B3)
+        var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4)
+        var xipos_v = d.xipos.lt_dyn["cpu", DYN2](rl_B3)
+        var stcom_v = d.subtree_com.lt_dyn["cpu", DYN2](rl_B3)
+        var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
+        var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+        var meta_v = m.meta.lt_dyn["cpu", DYN1](rl_META)
+        var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
+        var fnet_v = scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
             _fluid_forces_env[DTYPE](
                 e, AsStatic[D](), xvel_v, xangvel_v, xquat_v, xipos_v, stcom_v, bodies_v,

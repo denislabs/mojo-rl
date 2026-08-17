@@ -20,7 +20,16 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import DynamicsScratch, Dims, DimsLike, AsStatic, Scratch, cap
+from ..fields import (
+    DynamicsScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    Scratch,
+    cap,
+    DYN2,
+    rl2,
+)
 
 comptime LU_TPB: Int = 64
 
@@ -266,9 +275,12 @@ def lu_factor[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int = 1](
     comptime L_NV = Layout.row_major(BATCH, D.NV)
 
     comptime if target == "cpu":
-        var M_v = scratch.M.lt["cpu", L_M]()
-        var L_v = scratch.L.lt["cpu", L_M]()
-        var D_v = scratch.D.lt["cpu", L_NV]()
+        var dm = scratch.dims
+        var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var M_v = scratch.M.lt_dyn["cpu", DYN2](rl_M)
+        var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
+        var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
             _lu_factor_env[DTYPE](e, AsStatic[D](), M_v, L_v, D_v)
     else:
@@ -292,10 +304,13 @@ def lu_solve[target: StaticString, DTYPE: DType, D: DimsLike, BATCH: Int = 1](
     comptime L_NV = Layout.row_major(BATCH, D.NV)
 
     comptime if target == "cpu":
-        var L_v = scratch.L.lt["cpu", L_M]()
-        var D_v = scratch.D.lt["cpu", L_NV]()
-        var b_v = scratch.fnet.lt["cpu", L_NV]()
-        var x_v = scratch.qacc_ws.lt["cpu", L_NV]()
+        var dm = scratch.dims
+        var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
+        var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
+        var b_v = scratch.fnet.lt_dyn["cpu", DYN2](rl_NV)
+        var x_v = scratch.qacc_ws.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
             _lu_solve_env[DTYPE](e, AsStatic[D](), L_v, D_v, b_v, x_v)
     else:
@@ -325,9 +340,12 @@ def compute_m_inv_from_lu[
     comptime L_NV = Layout.row_major(BATCH, D.NV)
 
     comptime if target == "cpu":
-        var L_v = scratch.L.lt["cpu", L_M]()
-        var D_v = scratch.D.lt["cpu", L_NV]()
-        var mi_v = scratch.m_inv.lt["cpu", L_M]()
+        var dm = scratch.dims
+        var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var L_v = scratch.L.lt_dyn["cpu", DYN2](rl_M)
+        var D_v = scratch.D.lt_dyn["cpu", DYN2](rl_NV)
+        var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
         for e in range(BATCH):
             _lu_m_inv_env[DTYPE](e, AsStatic[D](), L_v, D_v, mi_v)
     else:

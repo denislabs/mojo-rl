@@ -37,7 +37,19 @@ CPU-only (build-time); no GPU kernels needed.
 
 from layout import Layout, LayoutTensor
 
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic, Scratch
+from mojo_rl.physics3d.fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    Scratch,
+    DYN1,
+    DYN2,
+    rl1,
+    rl2,
+)
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -452,24 +464,25 @@ def compute_invweight0[
     # first tendon with a nonzero rest length would have been welded to zero.
     # This is the same pose the invweights use, which is what qpos0 means.
     comptime if D.NTENDON > 0:
-        comptime L_META = Layout.row_major(MODEL_META_SIZE)
-        comptime L_TEN = Layout.row_major(D.NTENDON, MODEL_TENDON_SIZE)
-        comptime L_SITE = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
-        comptime L_BODY_V = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
-        comptime L_JOINT_V = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
-        comptime L_B3_V = Layout.row_major(1, D.NBODY * 3)
-        comptime L_B4_V = Layout.row_major(1, D.NBODY * 4)
-        comptime L_CDOF_V = Layout.row_major(1, D.NV * 6)
+        var dm = d.dims
+        var rl_META = rl1(MODEL_META_SIZE)
+        var rl_TEN = rl2(dm.get_ntendon(), MODEL_TENDON_SIZE)
+        var rl_SITE = rl2(dm.get_nsite(), MODEL_SITE_SIZE)
+        var rl_BODY_V = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+        var rl_JOINT_V = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var rl_B3_V = rl2(1, dm.get_nbody() * 3)
+        var rl_B4_V = rl2(1, dm.get_nbody() * 4)
+        var rl_CDOF_V = rl2(1, dm.get_nv() * 6)
 
-        var meta_v = mf.meta.lt["cpu", L_META]()
-        var ten_v = mf.tendons.lt["cpu", L_TEN]()
-        var site_v = mf.sites.lt["cpu", L_SITE]()
-        var bodies_v = mf.bodies.lt["cpu", L_BODY_V]()
-        var joints_v = mf.joints.lt["cpu", L_JOINT_V]()
-        var stcom_v = d.subtree_com.lt["cpu", L_B3_V]()
-        var xpos_v = d.xpos.lt["cpu", L_B3_V]()
-        var xquat_v = d.xquat.lt["cpu", L_B4_V]()
-        var cdof_v = sc.cdof.lt["cpu", L_CDOF_V]()
+        var meta_v = mf.meta.lt_dyn["cpu", DYN1](rl_META)
+        var ten_v = mf.tendons.lt_dyn["cpu", DYN2](rl_TEN)
+        var site_v = mf.sites.lt_dyn["cpu", DYN2](rl_SITE)
+        var bodies_v = mf.bodies.lt_dyn["cpu", DYN2](rl_BODY_V)
+        var joints_v = mf.joints.lt_dyn["cpu", DYN2](rl_JOINT_V)
+        var stcom_v = d.subtree_com.lt_dyn["cpu", DYN2](rl_B3_V)
+        var xpos_v = d.xpos.lt_dyn["cpu", DYN2](rl_B3_V)
+        var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4_V)
+        var cdof_v = sc.cdof.lt_dyn["cpu", DYN2](rl_CDOF_V)
 
         var tJ = Scratch[Scalar[DTYPE], D.NV](D.NV, fill=Scalar[DTYPE](0))
         for t in range(D.NTENDON):

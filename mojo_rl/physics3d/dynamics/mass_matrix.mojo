@@ -24,6 +24,8 @@ from ..fields import (
     AsStatic,
     Scratch,
     cap,
+    DYN2,
+    rl2,
 )
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
@@ -747,13 +749,20 @@ def compute_mass_matrix[
     comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
 
     comptime if target == "cpu":
-        var xquat_v = d.xquat.lt["cpu", L_B4]()
-        var xipos_v = d.xipos.lt["cpu", L_B3]()
-        var stcom_v = d.subtree_com.lt["cpu", L_B3]()
-        var bodies_v = m.bodies.lt["cpu", L_BODY]()
-        var joints_v = m.joints.lt["cpu", L_JOINT]()
-        var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
-        var M_v = scratch.M.lt["cpu", L_M]()
+        var dm = d.dims
+        var rl_B4 = rl2(BATCH, dm.get_nbody() * 4)
+        var rl_B3 = rl2(BATCH, dm.get_nbody() * 3)
+        var rl_BODY = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+        var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var rl_CDOF = rl2(BATCH, dm.get_nv() * 6)
+        var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
+        var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4)
+        var xipos_v = d.xipos.lt_dyn["cpu", DYN2](rl_B3)
+        var stcom_v = d.subtree_com.lt_dyn["cpu", DYN2](rl_B3)
+        var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
+        var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+        var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
+        var M_v = scratch.M.lt_dyn["cpu", DYN2](rl_M)
         comptime if TREEWALK:
             for e in range(BATCH):
                 _mm_treewalk_env[DTYPE, 1, False](

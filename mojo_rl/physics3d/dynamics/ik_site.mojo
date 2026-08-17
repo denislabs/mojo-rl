@@ -65,7 +65,18 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.core.tensor import TensorImpl
 
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    DYN1,
+    DYN2,
+    rl1,
+    rl2,
+)
 from ..fields.scratch import Scratch, cap
 from ..kinematics.forward_kinematics import forward_kinematics
 from ..kinematics.integrate_pos import integrate_pos
@@ -186,45 +197,47 @@ def qpos_from_site_pose[
     else is held. See the module docstring — this is not an optimisation, it
     is what keeps the normal matrix full rank.
     """
-    comptime L_QPOS = Layout.row_major(1, D.NQ)
-    comptime L_NV = Layout.row_major(1, D.NV)
-    comptime L_NB3 = Layout.row_major(1, D.NBODY * 3)
-    comptime L_JNT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
-    comptime L_BOD = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
-    comptime L_MET = Layout.row_major(MODEL_META_SIZE)
-    comptime L_CDOF = Layout.row_major(1, D.NV * 6)
-    comptime L_SITE = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
-    comptime L_SX = Layout.row_major(1, D.NSITE * 3)
+    var dm = d.dims
+    var nv = dm.get_nv()
+    var rl_QPOS = rl2(1, dm.get_nq())
+    var rl_NV = rl2(1, nv)
+    var rl_NB3 = rl2(1, dm.get_nbody() * 3)
+    var rl_JNT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+    var rl_BOD = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+    var rl_MET = rl1(MODEL_META_SIZE)
+    var rl_CDOF = rl2(1, nv * 6)
+    var rl_SITE = rl2(dm.get_nsite(), MODEL_SITE_SIZE)
+    var rl_SX = rl2(1, dm.get_nsite() * 3)
 
-    var joints_v = mf.joints.lt["cpu", L_JNT]()
-    var bodies_v = mf.bodies.lt["cpu", L_BOD]()
-    var sites_v = mf.sites.lt["cpu", L_SITE]()
-    var mmeta_v = mf.meta.lt["cpu", L_MET]()
-    var qpos_v = d.qpos.lt["cpu", L_QPOS]()
+    var joints_v = mf.joints.lt_dyn["cpu", DYN2](rl_JNT)
+    var bodies_v = mf.bodies.lt_dyn["cpu", DYN2](rl_BOD)
+    var sites_v = mf.sites.lt_dyn["cpu", DYN2](rl_SITE)
+    var mmeta_v = mf.meta.lt_dyn["cpu", DYN1](rl_MET)
+    var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
 
     var scratch = DynamicsScratch[DTYPE, D, 1]()
     # ⚠ Its own buffer, NOT a borrowed `Data` field. `d.qacc`/`d.qvel` would
     # have done the job and silently clobbered a physics output that the
     # caller has every reason to expect IK left alone.
-    var update_t = TensorImpl[DTYPE].alloc(D.NV)
-    var update_nv = update_t.lt["cpu", L_NV]()
+    var update_t = TensorImpl[DTYPE].alloc(nv)
+    var update_nv = update_t.lt_dyn["cpu", DYN2](rl_NV)
 
     var site_body = Int(rebind[Scalar[DTYPE]](sites_v[site, SITE_IDX_BODY]))
 
     var err = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
-    # ⚠ STATIC-LEG ONLY, AND DELIBERATELY SO. `qpos_from_site_pose` has `D`
-    # as a TYPE parameter with no `dims` VALUE, and `DimsLike` cannot require a
-    # default constructor (`DynDims` has nothing to default), so there is no
-    # runtime dimension to read here. That is consistent today because every
-    # caller is static anyway: `Data`/`Model` still size themselves from
-    # `comptime NQ = Self.D.NQ`, which is `DIM_POISON` on a dynamic provider.
-    # When the CONTAINERS move to runtime dims, this needs a `dims: D`
-    # argument threaded from its callers — it is not done by the sweep.
+    # ⚠ THE CAP STAYS COMPTIME, THE LENGTH DOES NOT. `cap[D.NV]()` picks the
+    # CONTAINER (stack on a static provider, heap on a dynamic one) and is 0
+    # exactly when there is no comptime dimension; `3 * nv` is the LIVE
+    # length. §15.2: `Scratch` keeps both legs, and merging them costs 2.48x.
+    #
+    # (This function carried a "STATIC-LEG ONLY" note until 3a. It was true:
+    # `D` was a type with no `dims` VALUE anywhere in scope. `Data` now
+    # carries the provider, so `d.dims` supplies it with nothing threaded.)
     var jp = Scratch[Scalar[DTYPE], 3 * cap[D.NV]()](
-        3 * D.NV, fill=Scalar[DTYPE](0)
+        3 * nv, fill=Scalar[DTYPE](0)
     )
     var jr = Scratch[Scalar[DTYPE], 3 * cap[D.NV]()](
-        3 * D.NV, fill=Scalar[DTYPE](0)
+        3 * nv, fill=Scalar[DTYPE](0)
     )
     var hess = InlineArray[Scalar[DTYPE], NDOF * NDOF](fill=Scalar[DTYPE](0))
     var grad = InlineArray[Scalar[DTYPE], NDOF](fill=Scalar[DTYPE](0))
@@ -293,12 +306,12 @@ def qpos_from_site_pose[
 
         compute_subtree_com["cpu"](d, mf)
         compute_cdof["cpu"](d, mf, scratch)
-        var subtree_v = d.subtree_com.lt["cpu", L_NB3]()
-        var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
-        var sxpos_v = d.site_xpos.lt["cpu", L_SX]()
+        var subtree_v = d.subtree_com.lt_dyn["cpu", DYN2](rl_NB3)
+        var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
+        var sxpos_v = d.site_xpos.lt_dyn["cpu", DYN2](rl_SX)
         jac_site[DTYPE, cap[D.NV]()](
             0, subtree_v, joints_v, bodies_v, mmeta_v, cdof_v,
-            sites_v, sxpos_v, site, jp, jr, D.NV,
+            sites_v, sxpos_v, site, jp, jr, nv,
         )
 
         # `jac_joints` — the 6 x NDOF slice. Rows 0-2 translational, 3-5
@@ -312,18 +325,18 @@ def qpos_from_site_pose[
             var g = Scalar[DTYPE](0)
             for r in range(3):
                 if use_pos:
-                    g += jp[r * D.NV + ca] * err[r]
+                    g += jp[r * nv + ca] * err[r]
                 if use_quat:
-                    g += jr[r * D.NV + ca] * err[3 + r]
+                    g += jr[r * nv + ca] * err[3 + r]
             grad[a] = g
             for b in range(NDOF):
                 var cb = dof_idx[b]
                 var h = Scalar[DTYPE](0)
                 for r in range(3):
                     if use_pos:
-                        h += jp[r * D.NV + ca] * jp[r * D.NV + cb]
+                        h += jp[r * nv + ca] * jp[r * nv + cb]
                     if use_quat:
-                        h += jr[r * D.NV + ca] * jr[r * D.NV + cb]
+                        h += jr[r * nv + ca] * jr[r * nv + cb]
                 hess[a * NDOF + b] = h
             hess[a * NDOF + a] += Scalar[DTYPE](reg)
 
@@ -344,13 +357,13 @@ def qpos_from_site_pose[
             for a in range(NDOF):
                 upd[a] *= sc
 
-        for i in range(D.NV):
+        for i in range(nv):
             update_nv[0, i] = Scalar[DTYPE](0)
         for a in range(NDOF):
             update_nv[0, dof_idx[a]] = upd[a]
 
         integrate_pos[DTYPE](
-            0, AsStatic[D](), qpos_v, update_nv, joints_v, Scalar[DTYPE](1)
+            0, dm, qpos_v, update_nv, joints_v, Scalar[DTYPE](1)
         )
         forward_kinematics["cpu"](d, mf)
 

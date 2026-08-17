@@ -51,7 +51,20 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic, Scratch, cap
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    Scratch,
+    cap,
+    DYN1,
+    DYN2,
+    rl1,
+    rl2,
+)
 from ..joint_types import JNT_FREE, JNT_BALL
 from ..collision.contact_frame import contact_tangent_frame
 from .rne import (
@@ -491,22 +504,34 @@ def compute_rne_post[
     comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
 
     comptime if target == "cpu":
-        var qvel_v = d.qvel.lt["cpu", L_NV]()
-        var qacc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
-        var xquat_v = d.xquat.lt["cpu", L_B4]()
-        var xipos_v = d.xipos.lt["cpu", L_B3]()
-        var stcom_v = d.subtree_com.lt["cpu", L_B3]()
-        var con_v = d.contacts.lt["cpu", L_CON]()
-        var dmeta_v = d.meta.lt["cpu", L_DMETA]()
-        var bodies_v = m.bodies.lt["cpu", L_BODY]()
-        var joints_v = m.joints.lt["cpu", L_JOINT]()
-        var mmeta_v = m.meta.lt["cpu", L_MMETA]()
-        var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
-        var crb_v = scratch.crb.lt["cpu", L_B10]()
-        var cvel_v = d.cvel.lt["cpu", L_B6]()
-        var cacc_v = d.cacc.lt["cpu", L_B6]()
-        var cfrc_ext_v = d.cfrc_ext.lt["cpu", L_B6]()
-        var cfrc_int_v = d.cfrc_int.lt["cpu", L_B6]()
+        var dm = d.dims
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var rl_B4 = rl2(BATCH, dm.get_nbody() * 4)
+        var rl_B3 = rl2(BATCH, dm.get_nbody() * 3)
+        var rl_CON = rl2(BATCH, dm.get_max_contacts() * CONTACT_SIZE)
+        var rl_DMETA = rl2(BATCH, METADATA_SIZE)
+        var rl_BODY = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+        var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var rl_MMETA = rl1(MODEL_META_SIZE)
+        var rl_CDOF = rl2(BATCH, dm.get_nv() * 6)
+        var rl_B10 = rl2(BATCH, dm.get_nbody() * 10)
+        var rl_B6 = rl2(BATCH, dm.get_nbody() * 6)
+        var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+        var qacc_v = scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
+        var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4)
+        var xipos_v = d.xipos.lt_dyn["cpu", DYN2](rl_B3)
+        var stcom_v = d.subtree_com.lt_dyn["cpu", DYN2](rl_B3)
+        var con_v = d.contacts.lt_dyn["cpu", DYN2](rl_CON)
+        var dmeta_v = d.meta.lt_dyn["cpu", DYN2](rl_DMETA)
+        var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
+        var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+        var mmeta_v = m.meta.lt_dyn["cpu", DYN1](rl_MMETA)
+        var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
+        var crb_v = scratch.crb.lt_dyn["cpu", DYN2](rl_B10)
+        var cvel_v = d.cvel.lt_dyn["cpu", DYN2](rl_B6)
+        var cacc_v = d.cacc.lt_dyn["cpu", DYN2](rl_B6)
+        var cfrc_ext_v = d.cfrc_ext.lt_dyn["cpu", DYN2](rl_B6)
+        var cfrc_int_v = d.cfrc_int.lt_dyn["cpu", DYN2](rl_B6)
         for e in range(BATCH):
             _rne_post_env[DTYPE](
                 e, AsStatic[D](), qvel_v, qacc_v, xquat_v, xipos_v, stcom_v, con_v, dmeta_v,

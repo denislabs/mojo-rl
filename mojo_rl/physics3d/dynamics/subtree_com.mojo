@@ -9,7 +9,17 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import Data, Model, Dims, DimsLike, AsStatic, Scratch, cap
+from ..fields import (
+    Data,
+    Model,
+    Dims,
+    DimsLike,
+    AsStatic,
+    Scratch,
+    cap,
+    DYN2,
+    rl2,
+)
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -137,9 +147,12 @@ def compute_subtree_com[
     comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
 
     comptime if target == "cpu":
-        var bodies_v = m.bodies.lt["cpu", L_BODY]()
-        var xipos_v = d.xipos.lt["cpu", L_B3]()
-        var stcom_v = d.subtree_com.lt["cpu", L_B3]()
+        var dm = d.dims
+        var rl_BODY = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+        var rl_B3 = rl2(BATCH, dm.get_nbody() * 3)
+        var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
+        var xipos_v = d.xipos.lt_dyn["cpu", DYN2](rl_B3)
+        var stcom_v = d.subtree_com.lt_dyn["cpu", DYN2](rl_B3)
         for e in range(BATCH):
             _subtree_com_env[DTYPE](
                 e, AsStatic[D](), bodies_v, xipos_v, stcom_v
