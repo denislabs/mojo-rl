@@ -118,7 +118,42 @@ struct Data[
     var mocap_pos: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*3]
     var mocap_quat: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*4]
 
+    # ⚠ THE PROVIDER AS A VALUE, not just as the type parameter `D` (3a).
+    #
+    # A dispatcher holds `D` as a comptime TYPE and has no value to build a
+    # `RuntimeLayout` from; `AsStatic[D]()` re-spells one, but only on the
+    # static leg — on a dynamic provider it expands to `Dims[nq=-1, …]`. The
+    # dimensions of a runtime model are runtime DATA, so they have to be
+    # STORED, and the container that owns the buffers is where they belong.
+    # Every dispatcher already takes `d`, so `d.dims` reaches essentially all
+    # of them without threading 206 arguments (§15.3).
+    #
+    # Costs nothing on the static leg: `Dims` is stateless, so this field is
+    # zero-size and `dm.get_nv()` folds to the same immediate a comptime
+    # parameter would (§10.6 read the asm).
+    var dims: Self.D
+
     def __init__(out self) raises:
+        """The shipped constructor — dimensions from the comptime provider.
+
+        ⚠ RAISES ON A DYNAMIC PROVIDER, deliberately. See
+        `DimsLike.comptime_value`: `DynDims` has no comptime value, so this
+        fails at construction naming the fix rather than allocating nothing.
+        """
+        self = Self(Self.D.comptime_value())
+
+    def __init__(out self, dims: Self.D) raises:
+        """Dimensions passed in — the dynamic leg's constructor.
+
+        ⚠ ALLOCATION STILL READS THE COMPTIME `Self.NQ`/`Self.NV`/… below.
+        That is 3b's half of item 3 and is NOT done here: on a dynamic
+        provider those are `DIM_POISON` and the allocation is negative. This
+        constructor exists so 3a can put the provider in place — and be
+        gated — without also rewriting every `alloc`. Until 3b lands, the
+        only thing a dynamic `Data` can serve is a caller that supplies its
+        own buffers.
+        """
+        self.dims = dims
         comptime B = Self.BATCH
         self.qpos = TensorImpl[Self.DTYPE].alloc(B * Self.NQ)
         self.qvel = TensorImpl[Self.DTYPE].alloc(B * Self.NV)

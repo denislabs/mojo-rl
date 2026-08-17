@@ -60,7 +60,20 @@ struct ImplicitScratch[
     var dcfrcbody: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*6*NV]
     var qderiv: TensorImpl[Self.DTYPE]  # [BATCH, NV*NV]
 
+    # The provider as a VALUE (3a). See the same field on `Data`; six
+    # dispatchers (`ldl_*`, `lu_*`, `compute_m_inv*`) take this container and
+    # nothing else, so this is where their runtime layouts get their extents.
+    var dims: Self.D
+
     def __init__(out self) raises:
+        """Dimensions from the comptime provider; raises on a dynamic one.
+        See `DimsLike.comptime_value`."""
+        self = Self(Self.D.comptime_value())
+
+    def __init__(out self, dims: Self.D) raises:
+        """Dimensions passed in. ⚠ The allocations below still read the
+        comptime `Self.NV`/`Self.NBODY`/… — that is 3b, not 3a."""
+        self.dims = dims
         comptime B = Self.BATCH
         self.cinert = TensorImpl[Self.DTYPE].alloc(_pos(B * Self.NBODY * 10))
         self.cdof_sc = TensorImpl[Self.DTYPE].alloc(_pos(B * Self.NV * 6))

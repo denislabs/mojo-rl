@@ -145,7 +145,21 @@ struct Model[
     var mesh_vert_edgeadr: TensorImpl[Self.DTYPE]  # [NMESH_VERTS]
     var mesh_edges: TensorImpl[Self.DTYPE]  # [NMESH_EDGE_SLOTS(NMESH_VERTS)]
 
+    # The provider as a VALUE (3a) — see the same field on `Data` for why a
+    # dispatcher cannot synthesize one and why storing it costs the static
+    # leg nothing.
+    var dims: Self.D
+
     def __init__(out self) raises:
+        """Dimensions from the comptime provider; raises on a dynamic one.
+        See `DimsLike.comptime_value`."""
+        self = Self(Self.D.comptime_value())
+
+    def __init__(out self, dims: Self.D) raises:
+        """Dimensions passed in. ⚠ The allocations below still read the
+        comptime `Self.NBODY`/`Self.NV`/… — that is 3b, not 3a; see the twin
+        constructor on `Data`."""
+        self.dims = dims
         self.bodies = TensorImpl[Self.DTYPE].alloc(
             Self.NBODY * MODEL_BODY_SIZE
         )

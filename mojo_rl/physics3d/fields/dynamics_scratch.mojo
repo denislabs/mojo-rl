@@ -59,7 +59,22 @@ struct DynamicsScratch[
     var rne_cfrc: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*6]
     var m_inv: TensorImpl[Self.DTYPE]  # [BATCH, NV*NV] (constraint solving)
 
+    # The provider as a VALUE (3a). ⚠ `Self.DIMS`, not `Self.D` — this
+    # struct's `D` is the LDL DIAGONAL FIELD (see the parameter's own
+    # comment above). See the same field on `Data`; six
+    # dispatchers (`ldl_*`, `lu_*`, `compute_m_inv*`) take this container and
+    # nothing else, so this is where their runtime layouts get their extents.
+    var dims: Self.DIMS
+
     def __init__(out self) raises:
+        """Dimensions from the comptime provider; raises on a dynamic one.
+        See `DimsLike.comptime_value`."""
+        self = Self(Self.DIMS.comptime_value())
+
+    def __init__(out self, dims: Self.DIMS) raises:
+        """Dimensions passed in. ⚠ The allocations below still read the
+        comptime `Self.NV`/`Self.NBODY`/… — that is 3b, not 3a."""
+        self.dims = dims
         comptime B = Self.BATCH
         self.cdof = TensorImpl[Self.DTYPE].alloc(B * Self.NV * 6)
         self.crb = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 10)

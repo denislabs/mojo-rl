@@ -61,8 +61,14 @@ leaf.
 """
 
 
-trait DimsLike(Copyable, Movable):
+trait DimsLike(Copyable, Movable, ImplicitlyCopyable, Deinitable):
     """Every model dimension the `fields` containers are shaped by.
+
+    ⚠ `ImplicitlyCopyable & Deinitable` ARE THERE SO A CONTAINER CAN STORE ONE
+    (`var dims: D` in `Data`/`Model`, phase 3a). A struct field must be
+    `Deinitable`, and `self.dims = dims` must copy without a `.copy()` the
+    call sites would have to spell. Both providers are plain value types, so
+    conformance is synthesized and nothing about the static leg changes.
 
     ⚠ ONE PROVIDER CARRIES ALL OF THEM even though no single container uses
     all — `Rk4Scratch` wants NQ/NV, `Model` wants ten others. A per-container
@@ -142,6 +148,28 @@ trait DimsLike(Copyable, Movable):
     comptime CAP_NACT: Int
     comptime CAP_NTEN: Int
     comptime CAP_NKEY: Int
+
+    @staticmethod
+    def comptime_value() raises -> Self:
+        """The provider as a VALUE, when the caller has only the TYPE.
+
+        ⚠ THIS IS `AsStatic[D]()`'s JOB MOVED ONTO THE TRAIT, and it exists
+        for exactly one caller: a container's NULLARY constructor. `Data[…, D,
+        …]()` has to fill `var dims: D` and has nothing to fill it from, and
+        `D()` is not spellable because the trait cannot require a default
+        constructor (see `AsStatic`).
+
+        ⚠⚠ IT RAISES ON A DYNAMIC PROVIDER, AND THAT IS THE POINT. `DynDims`
+        has no comptime value — an all-zero default is the silent failure
+        `DIM_POISON` exists to prevent. So a `Data[…, DynDims, …]()` built
+        without dimensions fails AT CONSTRUCTION with a message naming the
+        fix, instead of allocating nothing and dying four calls away. Build
+        those with the explicit `Data(dims)` constructor.
+
+        The static leg never reaches the raise: `Dims` is stateless, so this
+        is `Self()` and folds away.
+        """
+        ...
 
     def get_nq(self) -> Int:
         ...
@@ -259,6 +287,11 @@ struct Dims[
         provider can be PASSED to a kernel — `_ldl_solve_env(env, dims, ...)`
         — which is what lets one body serve both legs."""
         pass
+
+    @staticmethod
+    def comptime_value() raises -> Self:
+        """Stateless, so the value is free. See `DimsLike.comptime_value`."""
+        return Self()
 
     @always_inline
     def get_nq(self) -> Int:
@@ -483,6 +516,18 @@ struct DynDims(DimsLike):
         self._nact = nact
         self._nten = nten
         self._nkey = nkey
+
+    @staticmethod
+    def comptime_value() raises -> Self:
+        """⚠ ALWAYS RAISES. There is no comptime value here to return — that
+        is what makes this the dynamic provider. See
+        `DimsLike.comptime_value`; the raise is the loud half of the same
+        design that makes `DIM_POISON` negative."""
+        raise Error(
+            "DynDims has no comptime value: a physics3d container on the"
+            " dynamic leg must be constructed WITH its dimensions, e.g."
+            " Data[DTYPE, DynDims, BATCH](dims), not Data[...]()."
+        )
 
     @always_inline
     def get_nq(self) -> Int:
