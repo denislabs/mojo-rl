@@ -38,7 +38,7 @@ from layout import Layout
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
-from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, Dims, DimsLike, AsStatic
+from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, Dims, DimsLike, AsStatic, Scratch, cap
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -284,13 +284,13 @@ def _check_rows[M: ModelDefFromXML](
     ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
     _compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
 
-    comptime WR = _max_one[6 * M.MAX_EQUALITY]()
-    comptime WJ = _max_one[6 * M.MAX_EQUALITY * M.NV]()
-    var w_K = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](1))
-    var w_bias = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
-    var w_D = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
-    var w_J = InlineArray[Scalar[DTYPE], WJ](fill=Scalar[DTYPE](0))
-    var w_MinvJ = InlineArray[Scalar[DTYPE], WJ](fill=Scalar[DTYPE](0))
+    comptime WR = 6 * cap[M.MAX_EQUALITY]()
+    comptime WJ = 6 * cap[M.MAX_EQUALITY]() * cap[M.NV]()
+    var w_K = Scratch[Scalar[DTYPE], WR](6 * M.MAX_EQUALITY, Scalar[DTYPE](1))
+    var w_bias = Scratch[Scalar[DTYPE], WR](6 * M.MAX_EQUALITY, Scalar[DTYPE](0))
+    var w_D = Scratch[Scalar[DTYPE], WR](6 * M.MAX_EQUALITY, Scalar[DTYPE](0))
+    var w_J = Scratch[Scalar[DTYPE], WJ](6 * M.MAX_EQUALITY * M.NV, Scalar[DTYPE](0))
+    var w_MinvJ = Scratch[Scalar[DTYPE], WJ](6 * M.MAX_EQUALITY * M.NV, Scalar[DTYPE](0))
 
     comptime L_B3 = Layout.row_major(1, M.NBODY * 3)
     comptime L_B4 = Layout.row_major(1, M.NBODY * 4)
@@ -305,8 +305,7 @@ def _check_rows[M: ModelDefFromXML](
     comptime L_CD = Layout.row_major(1, M.NV * 6)
     comptime L_MI = Layout.row_major(1, M.NV * M.NV)
 
-    var n = build_weld_equality_rows[
-        DTYPE, M.NV, WR, WJ](
+    var n = build_weld_equality_rows[DTYPE, M.NV](
         0,
         AsStatic[MD](),
         d.qpos.lt["cpu", L_NQ](),

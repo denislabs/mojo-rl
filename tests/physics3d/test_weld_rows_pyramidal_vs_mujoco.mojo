@@ -47,12 +47,13 @@ from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 from mojo_rl.physics3d.fields import (
     AsStatic,
-    AsStatic,
     Model,
     Data,
     DynamicsScratch,
     ContactScratch,
     Dims,
+    Scratch,
+    cap,
 )
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
@@ -662,13 +663,13 @@ def test_weld_orientation_rows_match_mujoco() raises:
     ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
     _compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
 
-    comptime WR = _max_one[6 * MTQ1.MAX_EQUALITY]()
-    comptime WJ = _max_one[6 * MTQ1.MAX_EQUALITY * MTQ1.NV]()
-    var w_K = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](1))
-    var w_bias = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
-    var w_D = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
-    var w_J = InlineArray[Scalar[DTYPE], WJ](fill=Scalar[DTYPE](0))
-    var w_MinvJ = InlineArray[Scalar[DTYPE], WJ](fill=Scalar[DTYPE](0))
+    comptime WR = 6 * cap[MTQ1.MAX_EQUALITY]()
+    comptime WJ = 6 * cap[MTQ1.MAX_EQUALITY]() * cap[MTQ1.NV]()
+    var w_K = Scratch[Scalar[DTYPE], WR](6 * MTQ1.MAX_EQUALITY, Scalar[DTYPE](1))
+    var w_bias = Scratch[Scalar[DTYPE], WR](6 * MTQ1.MAX_EQUALITY, Scalar[DTYPE](0))
+    var w_D = Scratch[Scalar[DTYPE], WR](6 * MTQ1.MAX_EQUALITY, Scalar[DTYPE](0))
+    var w_J = Scratch[Scalar[DTYPE], WJ](6 * MTQ1.MAX_EQUALITY * MTQ1.NV, Scalar[DTYPE](0))
+    var w_MinvJ = Scratch[Scalar[DTYPE], WJ](6 * MTQ1.MAX_EQUALITY * MTQ1.NV, Scalar[DTYPE](0))
 
     comptime L_B3 = Layout.row_major(1, MTQ1.NBODY * 3)
     comptime L_B4 = Layout.row_major(1, MTQ1.NBODY * 4)
@@ -683,9 +684,7 @@ def test_weld_orientation_rows_match_mujoco() raises:
     comptime L_CD = Layout.row_major(1, MTQ1.NV * 6)
     comptime L_MI = Layout.row_major(1, MTQ1.NV * MTQ1.NV)
 
-    var n = build_weld_equality_rows[
-        DTYPE,
-        MTQ1.NV, WR, WJ](
+    var n = build_weld_equality_rows[DTYPE, MTQ1.NV](
         0,
         AsStatic[MD_3](),
         d.qpos.lt["cpu", L_NQ](),
@@ -809,13 +808,13 @@ def test_weld_torquescale_matches_mujoco() raises:
     ldl_factor["cpu", DTYPE, BATCH=1](sc, None)
     _compute_m_inv["cpu", DTYPE, BATCH=1](sc, None)
 
-    comptime WR = _max_one[6 * MTQ5.MAX_EQUALITY]()
-    comptime WJ = _max_one[6 * MTQ5.MAX_EQUALITY * MTQ5.NV]()
-    var w_K = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](1))
-    var w_bias = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
-    var w_D = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
-    var w_J = InlineArray[Scalar[DTYPE], WJ](fill=Scalar[DTYPE](0))
-    var w_MinvJ = InlineArray[Scalar[DTYPE], WJ](fill=Scalar[DTYPE](0))
+    comptime WR = 6 * cap[MTQ5.MAX_EQUALITY]()
+    comptime WJ = 6 * cap[MTQ5.MAX_EQUALITY]() * cap[MTQ5.NV]()
+    var w_K = Scratch[Scalar[DTYPE], WR](6 * MTQ5.MAX_EQUALITY, Scalar[DTYPE](1))
+    var w_bias = Scratch[Scalar[DTYPE], WR](6 * MTQ5.MAX_EQUALITY, Scalar[DTYPE](0))
+    var w_D = Scratch[Scalar[DTYPE], WR](6 * MTQ5.MAX_EQUALITY, Scalar[DTYPE](0))
+    var w_J = Scratch[Scalar[DTYPE], WJ](6 * MTQ5.MAX_EQUALITY * MTQ5.NV, Scalar[DTYPE](0))
+    var w_MinvJ = Scratch[Scalar[DTYPE], WJ](6 * MTQ5.MAX_EQUALITY * MTQ5.NV, Scalar[DTYPE](0))
 
     comptime L_B3 = Layout.row_major(1, MTQ5.NBODY * 3)
     comptime L_B4 = Layout.row_major(1, MTQ5.NBODY * 4)
@@ -830,9 +829,7 @@ def test_weld_torquescale_matches_mujoco() raises:
     comptime L_CD = Layout.row_major(1, MTQ5.NV * 6)
     comptime L_MI = Layout.row_major(1, MTQ5.NV * MTQ5.NV)
 
-    var n = build_weld_equality_rows[
-        DTYPE,
-        MTQ5.NV, WR, WJ](
+    var n = build_weld_equality_rows[DTYPE, MTQ5.NV](
         0,
         AsStatic[MD_4](),
         d.qpos.lt["cpu", L_NQ](),

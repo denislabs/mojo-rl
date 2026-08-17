@@ -137,7 +137,7 @@ from ..constraints.scalar_rows import (
     DOF_SOLIMP_DMAX,
 )
 from ..constraints.equality_tendon import build_weld_equality_rows
-from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims, DimsLike, AsStatic
+from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims, DimsLike, AsStatic, Scratch, cap
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_BODY_SIZE,
@@ -1059,18 +1059,17 @@ def _newton_solve_env[
         # exactly like an iteration-budget problem while being nothing of the
         # kind.
         comptime if D.CAP_NEQUALITY > 0:
-            comptime WR = _max_one[6 * D.CAP_NEQUALITY]()
-            comptime WJ = _max_one[6 * D.CAP_NEQUALITY * D.CAP_NV]()
-            var w_K = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](1))
-            var w_bias = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
-            var w_D = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
-            var w_J = InlineArray[Scalar[DTYPE], WJ](fill=Scalar[DTYPE](0))
-            var w_MinvJ = InlineArray[Scalar[DTYPE], WJ](
-                fill=Scalar[DTYPE](0)
+            comptime WR = 6 * cap[D.NEQUALITY]()
+            comptime WJ = 6 * cap[D.NEQUALITY]() * cap[D.NV]()
+            var w_rows = 6 * nequality
+            var w_K = Scratch[Scalar[DTYPE], WR](w_rows, Scalar[DTYPE](1))
+            var w_bias = Scratch[Scalar[DTYPE], WR](w_rows, Scalar[DTYPE](0))
+            var w_D = Scratch[Scalar[DTYPE], WR](w_rows, Scalar[DTYPE](0))
+            var w_J = Scratch[Scalar[DTYPE], WJ](w_rows * nv, Scalar[DTYPE](0))
+            var w_MinvJ = Scratch[Scalar[DTYPE], WJ](
+                w_rows * nv, Scalar[DTYPE](0)
             )
-            var n_w = build_weld_equality_rows[
-                DTYPE, V_SIZE, WR, WJ
-            ](
+            var n_w = build_weld_equality_rows[DTYPE, V_SIZE](
                 env, dims, qpos, qvel, xpos, xquat, subtree_com, joints, bodies,
                 mmeta, equality, body_invweight0, dof_invweight0, cdof, m_inv,
                 w_K, w_bias, w_D, w_J, w_MinvJ,
@@ -1628,16 +1627,15 @@ def _newton_solve_env[
 
     # === connect/weld EQUALITY rows (dense J) — defect 29a ===
     comptime if D.CAP_NEQUALITY > 0:
-        comptime EQR = _max_one[6 * D.CAP_NEQUALITY]()
-        comptime EQJ = _max_one[6 * D.CAP_NEQUALITY * D.CAP_NV]()
-        var we_K = InlineArray[Scalar[DTYPE], EQR](fill=Scalar[DTYPE](1))
-        var we_bias = InlineArray[Scalar[DTYPE], EQR](fill=Scalar[DTYPE](0))
-        var we_D = InlineArray[Scalar[DTYPE], EQR](fill=Scalar[DTYPE](0))
-        var we_J = InlineArray[Scalar[DTYPE], EQJ](fill=Scalar[DTYPE](0))
-        var we_MinvJ = InlineArray[Scalar[DTYPE], EQJ](fill=Scalar[DTYPE](0))
-        var nwe = build_weld_equality_rows[
-            DTYPE, V_SIZE, EQR, EQJ
-        ](
+        comptime EQR = 6 * cap[D.NEQUALITY]()
+        comptime EQJ = 6 * cap[D.NEQUALITY]() * cap[D.NV]()
+        var we_rows = 6 * nequality
+        var we_K = Scratch[Scalar[DTYPE], EQR](we_rows, Scalar[DTYPE](1))
+        var we_bias = Scratch[Scalar[DTYPE], EQR](we_rows, Scalar[DTYPE](0))
+        var we_D = Scratch[Scalar[DTYPE], EQR](we_rows, Scalar[DTYPE](0))
+        var we_J = Scratch[Scalar[DTYPE], EQJ](we_rows * nv, Scalar[DTYPE](0))
+        var we_MinvJ = Scratch[Scalar[DTYPE], EQJ](we_rows * nv, Scalar[DTYPE](0))
+        var nwe = build_weld_equality_rows[DTYPE, V_SIZE](
             env, dims, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
             equality, body_invweight0, dof_invweight0, cdof, m_inv,
             we_K, we_bias, we_D, we_J, we_MinvJ,
@@ -3247,18 +3245,16 @@ def _newton_blocked_fields_kernel[
         # exactly the tens-of-KB local-memory blowout this cooperative kernel
         # exists to avoid; the tendon-limit rows made that mistake first.
         comptime if NEQUALITY > 0:
-            comptime WR = _max_one[6 * NEQUALITY]()
-            comptime WJ = _max_one[6 * NEQUALITY * NV]()
-            var w_K = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](1))
-            var w_bias = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
-            var w_D = InlineArray[Scalar[DTYPE], WR](fill=Scalar[DTYPE](0))
-            var w_J = InlineArray[Scalar[DTYPE], WJ](fill=Scalar[DTYPE](0))
-            var w_MinvJ = InlineArray[Scalar[DTYPE], WJ](
-                fill=Scalar[DTYPE](0)
+            comptime WR = 6 * cap[NEQUALITY]()
+            comptime WJ = 6 * cap[NEQUALITY]() * cap[NV]()
+            var w_K = Scratch[Scalar[DTYPE], WR](6 * NEQUALITY, Scalar[DTYPE](1))
+            var w_bias = Scratch[Scalar[DTYPE], WR](6 * NEQUALITY, Scalar[DTYPE](0))
+            var w_D = Scratch[Scalar[DTYPE], WR](6 * NEQUALITY, Scalar[DTYPE](0))
+            var w_J = Scratch[Scalar[DTYPE], WJ](6 * NEQUALITY * NV, Scalar[DTYPE](0))
+            var w_MinvJ = Scratch[Scalar[DTYPE], WJ](
+                6 * NEQUALITY * NV, Scalar[DTYPE](0)
             )
-            var n_w = build_weld_equality_rows[
-                DTYPE, V_SIZE, WR, WJ
-            ](
+            var n_w = build_weld_equality_rows[DTYPE, V_SIZE](
                 env, Dims[nq=NQ, nv=NV, nbody=NBODY, njoint=NJOINT, max_contacts=MAX_CONTACTS, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE](), qpos, qvel, xpos, xquat, subtree_com, joints, bodies,
                 mmeta, equality, body_invweight0, dof_invweight0, cdof, m_inv,
                 w_K, w_bias, w_D, w_J, w_MinvJ,

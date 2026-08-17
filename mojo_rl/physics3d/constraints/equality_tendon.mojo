@@ -118,7 +118,7 @@ from ..dynamics.tendon import spatial_tendon_length_jac
 
 
 # =============================================================================
-from ..fields import Dims, DimsLike
+from ..fields import Dims, DimsLike, Scratch, cap
 # Weld / angular Jacobian rows (ports of dynamics/jacobian.mojo GPU rows)
 # =============================================================================
 
@@ -391,8 +391,8 @@ def _angular_jacobian_row_eq[
 def build_weld_equality_rows[
     DTYPE: DType,
     V_SIZE: Int,
-    MAX_EQ_ROWS: Int,
-    MINVJ_EQ_SIZE: Int,
+    EQ_CAP: Int,
+    EQJ_CAP: Int,
     D: DimsLike,
     L_QPOS: Layout,
     L_QVEL: Layout,
@@ -442,11 +442,11 @@ def build_weld_equality_rows[
     m_inv: LayoutTensor[
         DTYPE, L_M_INV, MutAnyOrigin
     ],
-    mut eq_K: InlineArray[Scalar[DTYPE], MAX_EQ_ROWS],
-    mut eq_bias: InlineArray[Scalar[DTYPE], MAX_EQ_ROWS],
-    mut eq_inv_K_imp: InlineArray[Scalar[DTYPE], MAX_EQ_ROWS],
-    mut eq_J: InlineArray[Scalar[DTYPE], MINVJ_EQ_SIZE],
-    mut eq_MinvJ: InlineArray[Scalar[DTYPE], MINVJ_EQ_SIZE],
+    mut eq_K: Scratch[Scalar[DTYPE], EQ_CAP],
+    mut eq_bias: Scratch[Scalar[DTYPE], EQ_CAP],
+    mut eq_inv_K_imp: Scratch[Scalar[DTYPE], EQ_CAP],
+    mut eq_J: Scratch[Scalar[DTYPE], EQJ_CAP],
+    mut eq_MinvJ: Scratch[Scalar[DTYPE], EQJ_CAP],
 ) -> Int:
     """Build the connect/weld equality ROWS — J, bias, K and 1/(K+R). NO SOLVE.
 
@@ -460,7 +460,11 @@ def build_weld_equality_rows[
     var nbody = dims.get_nbody()
     var njoint = dims.get_njoint()
     var nequality = dims.get_nequality()
-    comptime if D.CAP_NEQUALITY == 0:
+    # The row budget is 6 per equality (weld); this is the live bound the
+    # `num_eq_rows >= max_eq_rows` guards below compare against. It is NOT
+    # `EQ_CAP`, which is 0 on a dynamic provider.
+    var max_eq_rows = 6 * nequality
+    if nequality == 0:
         return 0
 
     var neq = Int(rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NEQUALITY]))
@@ -548,7 +552,7 @@ def build_weld_equality_rows[
         # diagApprox for a joint equality is `dof_invweight0` summed over the
         # one or two dofs (engine_core_constraint.c, mj_diagApprox).
         if eq_type == EQ_JOINT:
-            if num_eq_rows >= MAX_EQ_ROWS:
+            if num_eq_rows >= max_eq_rows:
                 break
             if body_a < 0 or body_a >= njoint:
                 continue
@@ -900,7 +904,7 @@ def build_weld_equality_rows[
 
 
         for d in range(3):
-            if num_eq_rows >= MAX_EQ_ROWS:
+            if num_eq_rows >= max_eq_rows:
                 break
             var dx = dirs[d * 3 + 0]
             var dy = dirs[d * 3 + 1]
@@ -1009,7 +1013,7 @@ def build_weld_equality_rows[
             # Written straight into `eq_J` rather than through a staging row:
             # the three rows share one pass over the joints, and a per-row
             # buffer would be a fourth V_SIZE array in a Metal-compiled kernel.
-            if num_eq_rows + 3 > MAX_EQ_ROWS:
+            if num_eq_rows + 3 > max_eq_rows:
                 continue
             for r in range(3):
                 for i in range(nv):
@@ -1231,30 +1235,22 @@ def _equality_env[
 
 
     var nv = dims.get_nv()
-    comptime if D.CAP_NEQUALITY == 0:
+    var nequality = dims.get_nequality()
+    if nequality == 0:
         return
 
-    comptime MAX_EQ_ROWS = _max_one[6 * D.CAP_NEQUALITY]()
-    comptime MINVJ_EQ_SIZE = _max_one[6 * D.CAP_NEQUALITY * D.CAP_NV]()
+    comptime EQ_CAP = 6 * cap[D.NEQUALITY]()
+    comptime EQJ_CAP = 6 * cap[D.NEQUALITY]() * cap[D.NV]()
+    var eq_rows = 6 * nequality
 
-    var eq_K = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](fill=Scalar[DTYPE](1))
-    var eq_bias = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](
-        fill=Scalar[DTYPE](0)
-    )
-    var eq_inv_K_imp = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](
-        fill=Scalar[DTYPE](0)
-    )
-    var eq_lambda = InlineArray[Scalar[DTYPE], MAX_EQ_ROWS](
-        fill=Scalar[DTYPE](0)
-    )
-    var eq_J = InlineArray[Scalar[DTYPE], MINVJ_EQ_SIZE](fill=Scalar[DTYPE](0))
-    var eq_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_EQ_SIZE](
-        fill=Scalar[DTYPE](0)
-    )
+    var eq_K = Scratch[Scalar[DTYPE], EQ_CAP](eq_rows, Scalar[DTYPE](1))
+    var eq_bias = Scratch[Scalar[DTYPE], EQ_CAP](eq_rows, Scalar[DTYPE](0))
+    var eq_inv_K_imp = Scratch[Scalar[DTYPE], EQ_CAP](eq_rows, Scalar[DTYPE](0))
+    var eq_lambda = Scratch[Scalar[DTYPE], EQ_CAP](eq_rows, Scalar[DTYPE](0))
+    var eq_J = Scratch[Scalar[DTYPE], EQJ_CAP](eq_rows * nv, Scalar[DTYPE](0))
+    var eq_MinvJ = Scratch[Scalar[DTYPE], EQJ_CAP](eq_rows * nv, Scalar[DTYPE](0))
 
-    var num_eq_rows = build_weld_equality_rows[
-        DTYPE, V_SIZE,
-        MAX_EQ_ROWS, MINVJ_EQ_SIZE](
+    var num_eq_rows = build_weld_equality_rows[DTYPE, V_SIZE](
         env, dims, qpos, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
         equality, body_invweight0, dof_invweight0, cdof, m_inv,
         eq_K, eq_bias, eq_inv_K_imp, eq_J, eq_MinvJ,
@@ -1394,30 +1390,20 @@ def _tendon_env[
         nten = ntendon
 
     # One bilateral row per tendon
-    comptime MAX_TEN_ROWS = _max_one[D.CAP_NTENDON]()
-    comptime MINVJ_TEN_SIZE = _max_one[D.CAP_NTENDON * D.CAP_NV]()
+    comptime TEN_CAP = cap[D.NTENDON]()
+    comptime TENJ_CAP = cap[D.NTENDON]() * cap[D.NV]()
 
-    var ten_K = InlineArray[Scalar[DTYPE], MAX_TEN_ROWS](fill=Scalar[DTYPE](1))
-    var ten_bias = InlineArray[Scalar[DTYPE], MAX_TEN_ROWS](
-        fill=Scalar[DTYPE](0)
-    )
-    var ten_inv_K_imp = InlineArray[Scalar[DTYPE], MAX_TEN_ROWS](
-        fill=Scalar[DTYPE](0)
-    )
-    var ten_lambda = InlineArray[Scalar[DTYPE], MAX_TEN_ROWS](
-        fill=Scalar[DTYPE](0)
-    )
-    var ten_J = InlineArray[Scalar[DTYPE], MINVJ_TEN_SIZE](
-        fill=Scalar[DTYPE](0)
-    )
-    var ten_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_TEN_SIZE](
-        fill=Scalar[DTYPE](0)
-    )
+    var ten_K = Scratch[Scalar[DTYPE], TEN_CAP](ntendon, Scalar[DTYPE](1))
+    var ten_bias = Scratch[Scalar[DTYPE], TEN_CAP](ntendon, Scalar[DTYPE](0))
+    var ten_inv_K_imp = Scratch[Scalar[DTYPE], TEN_CAP](ntendon, Scalar[DTYPE](0))
+    var ten_lambda = Scratch[Scalar[DTYPE], TEN_CAP](ntendon, Scalar[DTYPE](0))
+    var ten_J = Scratch[Scalar[DTYPE], TENJ_CAP](ntendon * nv, Scalar[DTYPE](0))
+    var ten_MinvJ = Scratch[Scalar[DTYPE], TENJ_CAP](ntendon * nv, Scalar[DTYPE](0))
 
     var num_ten_rows = 0
 
     for t_i in range(nten):
-        if num_ten_rows >= MAX_TEN_ROWS:
+        if num_ten_rows >= ntendon:
             break
 
         # A <tendon> DECLARATION is not a constraint. This pass imposes a

@@ -36,7 +36,7 @@ from ..constants import (
     GEOM_MESH,
     GEOM_ELLIPSOID,
 )
-from ..fields import Data, Model, Dims, DimsLike, AsStatic
+from ..fields import Data, Model, Dims, DimsLike, AsStatic, Scratch, cap
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_GEOM_SIZE,
@@ -315,13 +315,13 @@ def _detect_contacts_sap_env[
     # ------------------------------------------------------------------
     # 1. Precompute world positions for all ngeom geoms.
     # ------------------------------------------------------------------
-    var wpx = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
-    var wpy = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
-    var wpz = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
-    var wqx = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
-    var wqy = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
-    var wqz = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
-    var wqw = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
+    var wpx = Scratch[Scalar[DTYPE], cap[D.NGEOM]()](ngeom, uninitialized=0)
+    var wpy = Scratch[Scalar[DTYPE], cap[D.NGEOM]()](ngeom, uninitialized=0)
+    var wpz = Scratch[Scalar[DTYPE], cap[D.NGEOM]()](ngeom, uninitialized=0)
+    var wqx = Scratch[Scalar[DTYPE], cap[D.NGEOM]()](ngeom, uninitialized=0)
+    var wqy = Scratch[Scalar[DTYPE], cap[D.NGEOM]()](ngeom, uninitialized=0)
+    var wqz = Scratch[Scalar[DTYPE], cap[D.NGEOM]()](ngeom, uninitialized=0)
+    var wqw = Scratch[Scalar[DTYPE], cap[D.NGEOM]()](ngeom, uninitialized=0)
 
     for g in range(ngeom):
         var px: Scalar[DTYPE] = 0
@@ -345,12 +345,12 @@ def _detect_contacts_sap_env[
     # ------------------------------------------------------------------
     # 2. Compute AABBs for non-plane geoms.
     # ------------------------------------------------------------------
-    var aabb_min_x = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
-    var aabb_max_x = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
-    var aabb_min_y = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
-    var aabb_max_y = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
-    var aabb_min_z = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
-    var aabb_max_z = InlineArray[Scalar[DTYPE], D.CAP_NGEOM](uninitialized=True)
+    var aabb_min_x = Scratch[Scalar[DTYPE], cap[D.NGEOM]()](ngeom, uninitialized=0)
+    var aabb_max_x = Scratch[Scalar[DTYPE], cap[D.NGEOM]()](ngeom, uninitialized=0)
+    var aabb_min_y = Scratch[Scalar[DTYPE], cap[D.NGEOM]()](ngeom, uninitialized=0)
+    var aabb_max_y = Scratch[Scalar[DTYPE], cap[D.NGEOM]()](ngeom, uninitialized=0)
+    var aabb_min_z = Scratch[Scalar[DTYPE], cap[D.NGEOM]()](ngeom, uninitialized=0)
+    var aabb_max_z = Scratch[Scalar[DTYPE], cap[D.NGEOM]()](ngeom, uninitialized=0)
 
     for g in range(ngeom):
         var gt = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_TYPE]))
@@ -894,7 +894,7 @@ def _detect_contacts_sap_env[
     # ------------------------------------------------------------------
 
     # 4a. Build SAP index list.
-    var sap_idx = InlineArray[Int, D.CAP_NGEOM](uninitialized=True)
+    var sap_idx = Scratch[Int, cap[D.NGEOM]()](ngeom, uninitialized=0)
     var sap_n = 0
     for g in range(ngeom):
         var gt = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_TYPE]))

@@ -57,7 +57,7 @@ from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic, Scratch, cap
 from .constraint_data import refsafe_timeconst
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
@@ -116,15 +116,15 @@ def _friction_env[
     """Build + PGS-solve one friction row per frictional dof, for one env."""
     var nv = dims.get_nv()
     var njoint = dims.get_njoint()
-    comptime MAX_FRIC = _max_one[D.CAP_NV]()
+    comptime FRIC_CAP = cap[D.NV]()
 
-    var fric_dof = InlineArray[Int, MAX_FRIC](uninitialized=True)
-    var fric_loss = InlineArray[Scalar[DTYPE], MAX_FRIC](uninitialized=True)
-    var K_fric = InlineArray[Scalar[DTYPE], MAX_FRIC](uninitialized=True)
-    var lambda_fric = InlineArray[Scalar[DTYPE], MAX_FRIC](uninitialized=True)
-    var fric_bias = InlineArray[Scalar[DTYPE], MAX_FRIC](uninitialized=True)
-    var fric_inv_K = InlineArray[Scalar[DTYPE], MAX_FRIC](uninitialized=True)
-    for i in range(MAX_FRIC):
+    var fric_dof = Scratch[Int, FRIC_CAP](nv, uninitialized=0)
+    var fric_loss = Scratch[Scalar[DTYPE], FRIC_CAP](nv, uninitialized=0)
+    var K_fric = Scratch[Scalar[DTYPE], FRIC_CAP](nv, uninitialized=0)
+    var lambda_fric = Scratch[Scalar[DTYPE], FRIC_CAP](nv, uninitialized=0)
+    var fric_bias = Scratch[Scalar[DTYPE], FRIC_CAP](nv, uninitialized=0)
+    var fric_inv_K = Scratch[Scalar[DTYPE], FRIC_CAP](nv, uninitialized=0)
+    for i in range(nv):
         fric_dof[i] = 0
         fric_loss[i] = Scalar[DTYPE](0)
         K_fric[i] = Scalar[DTYPE](1)
@@ -148,7 +148,7 @@ def _friction_env[
         elif jtype == JNT_BALL:
             nd = 3
         for d in range(nd):
-            if num_fric >= MAX_FRIC:
+            if num_fric >= nv:
                 break
             var dof = dof_adr + d
             fric_dof[num_fric] = dof
@@ -185,9 +185,9 @@ def _friction_env[
     )
     var B_damp = Scalar[DTYPE](2.0) / (dmax * f_tc)
 
-    comptime MINVJ_FRIC_SIZE = _max_one[D.CAP_NV * D.CAP_NV]()
-    var fric_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_FRIC_SIZE](
-        uninitialized=True
+    comptime MINVJ_FRIC_CAP = cap[D.NV]() * cap[D.NV]()
+    var fric_MinvJ = Scratch[Scalar[DTYPE], MINVJ_FRIC_CAP](
+        nv * nv, uninitialized=0
     )
     for f in range(num_fric):
         var dof = fric_dof[f]

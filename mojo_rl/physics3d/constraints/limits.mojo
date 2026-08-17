@@ -17,7 +17,7 @@ from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..joint_types import JNT_HINGE, JNT_SLIDE
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic, Scratch, cap
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_JOINT_SIZE,
@@ -80,9 +80,9 @@ def _limits_env[
     detect_and_solve_limits_gpu)."""
     var nv = dims.get_nv()
     var njoint = dims.get_njoint()
-    comptime MAX_LIMITS = _max_one[2 * D.CAP_NJOINT]()
+    comptime LIM_CAP = 2 * cap[D.NJOINT]()
 
-    var limit_dof = InlineArray[Int, MAX_LIMITS](uninitialized=True)
+    var limit_dof = Scratch[Int, LIM_CAP](2 * njoint, uninitialized=0)
     # ⚠ THE OWNING JOINT, because solref/solimp are PER-JOINT (defect 22).
     # These used to come from `meta`, which `fields_build` filled from JOINT 0
     # for the whole model on the assumption of "uniform joint solimp across all
@@ -91,16 +91,16 @@ def _limits_env[
     # one joint whose parameters were broadcast is the only one that can never
     # form a limit row. It carried the model defaults [0.02 1], making every
     # limit 3.68x too soft (K 2770.08 where MuJoCo's efc_KBIP reads 10203.04).
-    var limit_jnt = InlineArray[Int, MAX_LIMITS](uninitialized=True)
-    var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-    var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](
-        uninitialized=True
+    var limit_jnt = Scratch[Int, LIM_CAP](2 * njoint, uninitialized=0)
+    var limit_sign = Scratch[Scalar[DTYPE], LIM_CAP](2 * njoint, uninitialized=0)
+    var limit_dist_arr = Scratch[Scalar[DTYPE], LIM_CAP](
+        2 * njoint, uninitialized=0
     )
-    var K_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-    var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](
-        uninitialized=True
+    var K_limit = Scratch[Scalar[DTYPE], LIM_CAP](2 * njoint, uninitialized=0)
+    var lambda_limit = Scratch[Scalar[DTYPE], LIM_CAP](
+        2 * njoint, uninitialized=0
     )
-    for i in range(MAX_LIMITS):
+    for i in range(2 * njoint):
         limit_dof[i] = 0
         limit_jnt[i] = 0
         limit_sign[i] = Scalar[DTYPE](0)
@@ -123,7 +123,7 @@ def _limits_env[
             continue
         var pos = rebind[Scalar[DTYPE]](qpos[env, qpos_adr])
         var dist_lo = pos - rmin
-        if dist_lo < Scalar[DTYPE](0) and num_limits < MAX_LIMITS:
+        if dist_lo < Scalar[DTYPE](0) and num_limits < 2 * njoint:
             limit_dof[num_limits] = dof
             limit_jnt[num_limits] = j
             limit_sign[num_limits] = Scalar[DTYPE](1)
@@ -135,7 +135,7 @@ def _limits_env[
                 K_limit[num_limits] = Scalar[DTYPE](1e-10)
             num_limits += 1
         var dist_hi = rmax - pos
-        if dist_hi < Scalar[DTYPE](0) and num_limits < MAX_LIMITS:
+        if dist_hi < Scalar[DTYPE](0) and num_limits < 2 * njoint:
             limit_dof[num_limits] = dof
             limit_jnt[num_limits] = j
             limit_sign[num_limits] = Scalar[DTYPE](-1)
@@ -153,11 +153,11 @@ def _limits_env[
     comptime MJ_MINIMP = Scalar[DTYPE](0.0001)
     comptime MJ_MAXIMP = Scalar[DTYPE](0.9999)
 
-    var lim_bias = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-    var lim_inv_K = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
-    comptime MINVJ_LIM_SIZE = _max_one[2 * D.CAP_NJOINT * D.CAP_NV]()
-    var lim_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_LIM_SIZE](
-        uninitialized=True
+    var lim_bias = Scratch[Scalar[DTYPE], LIM_CAP](2 * njoint, uninitialized=0)
+    var lim_inv_K = Scratch[Scalar[DTYPE], LIM_CAP](2 * njoint, uninitialized=0)
+    comptime MINVJ_LIM_CAP = 2 * cap[D.NJOINT]() * cap[D.NV]()
+    var lim_MinvJ = Scratch[Scalar[DTYPE], MINVJ_LIM_CAP](
+        2 * njoint * nv, uninitialized=0
     )
     for l in range(num_limits):
         # PER-ROW solref/solimp, read from the joint that OWNS this row
