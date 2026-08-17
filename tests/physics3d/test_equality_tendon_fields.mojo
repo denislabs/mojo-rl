@@ -262,6 +262,23 @@ comptime CONE_A = HumanoidModel.CONE_TYPE
 comptime NEQ_A = HumanoidModel.MAX_EQUALITY  # 0
 comptime NSITE_A = HumanoidModel.NSITE  # 0
 comptime NEXCL_A = HumanoidModel.nexclude  # 0
+comptime MD = Dims[
+    nq=NQ_A,
+    nv=NV_A,
+    nbody=NBODY_A,
+    njoint=NJOINT_A,
+    ngeom=NGEOM_A,
+    nsite=NSITE_A,
+    max_contacts=MC_A,
+    nequality=NEQ_A,
+    ntendon=NTEN_A,
+    nexclude=NEXCL_A,
+    nmesh_verts=0,
+    npair=HumanoidModel.NPAIR,
+    nact=HumanoidModel.NACT,
+    nten=HumanoidModel.NTEN_F,
+    nkey=HumanoidModel.NKEY,
+]
 comptime N_STEPS_A = 2
 
 
@@ -302,8 +319,8 @@ def _humanoid_qpos(e: Int, i: Int) -> Scalar[DTYPE]:
 def _part_a_tendon(ctx: DeviceContext) raises:
     print("--- Part A: Humanoid tendons fields GOLDEN, BATCH=", BATCH)
 
-    var mf = Model[DTYPE, Dims[nv=NV_A, nbody=NBODY_A, njoint=NJOINT_A, ngeom=NGEOM_A, nequality=NEQ_A, ntendon=NTEN_A, nsite=NSITE_A, nexclude=NEXCL_A, nmesh_verts=0]]()
-    HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    HumanoidModel.init_fields[DTYPE](ctx, mf)
 
     # <tendon><fixed> XML parsing was removed from the parser (see
     # model_def_from_xml.mojo), so no XML model carries tendon records —
@@ -349,9 +366,9 @@ def _part_a_tendon(ctx: DeviceContext) raises:
     if Int(mf.meta.data[MODEL_META_IDX_NTENDON]) != 2:
         raise Error("part A vacuous: model meta NTENDON != 2")
 
-    var d = Data[DTYPE, Dims[nq=NQ_A, nv=NV_A, nbody=NBODY_A, max_contacts=MC_A, nsite=NSITE_A], BATCH]()
-    var dc = Data[DTYPE, Dims[nq=NQ_A, nv=NV_A, nbody=NBODY_A, max_contacts=MC_A, nsite=NSITE_A], BATCH]()
-    var d_off = Data[DTYPE, Dims[nq=NQ_A, nv=NV_A, nbody=NBODY_A, max_contacts=MC_A, nsite=NSITE_A], BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
+    var dc = Data[DTYPE, MD, BATCH]()
+    var d_off = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_A):
             var qp = _humanoid_qpos(e, i)
@@ -369,15 +386,9 @@ def _part_a_tendon(ctx: DeviceContext) raises:
             d_off.qfrc.data[e * NV_A + i] = qf
     d.upload_all(ctx)
 
-    var integ = EulerIntegrator[
-        DTYPE, NQ_A, NV_A, NBODY_A, NJOINT_A, MC_A, NGEOM_A, NEQ_A, NTEN_A,
-        NSITE_A, NEXCL_A, 0, CONE_A, BATCH,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, CONE_A, BATCH]()
     integ.prepare_gpu(ctx)
-    var integ_c = EulerIntegrator[
-        DTYPE, NQ_A, NV_A, NBODY_A, NJOINT_A, MC_A, NGEOM_A, NEQ_A, NTEN_A,
-        NSITE_A, NEXCL_A, 0, CONE_A, BATCH,
-    ]()
+    var integ_c = EulerIntegrator[DTYPE, MD, CONE_A, BATCH]()
 
     var qvel_step0 = List[Scalar[DTYPE]](capacity=BATCH * NV_A)
     for _ in range(BATCH * NV_A):
@@ -540,22 +551,39 @@ comptime CONE_B = WeldTestModel.CONE_TYPE
 comptime N_STEPS_B = 3
 
 
+comptime MD_2 = Dims[
+    nq=NQ_B,
+    nv=NV_B,
+    nbody=NBODY_B,
+    njoint=NJOINT_B,
+    ngeom=NGEOM_B,
+    nsite=WeldTestModel.NSITE,
+    max_contacts=MC_B,
+    nequality=NEQ_B,
+    ntendon=WeldTestModel.MAX_TENDON,
+    nexclude=WeldTestModel.nexclude,
+    nmesh_verts=0,
+    npair=WeldTestModel.NPAIR,
+    nact=WeldTestModel.NACT,
+    nten=WeldTestModel.NTEN_F,
+    nkey=WeldTestModel.NKEY,
+]
 def _part_b_equality(ctx: DeviceContext) raises:
     print("--- Part B: synthetic weld equality fields GOLDEN,")
     print("    BATCH=", BATCH)
 
     # Fields-native build — init_fields serializes the weld equality records
     # (Stage B fixed copy_equality_to_buffer, which init_model_gpu never called).
-    var mf = Model[DTYPE, Dims[nv=NV_B, nbody=NBODY_B, njoint=NJOINT_B, ngeom=NGEOM_B, nequality=NEQ_B, ntendon=WeldTestModel.MAX_TENDON, nsite=WeldTestModel.NSITE, nexclude=WeldTestModel.nexclude, nmesh_verts=0]]()
-    WeldTestModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD_2]()
+    WeldTestModel.init_fields[DTYPE](ctx, mf)
 
     # Non-vacuity: init_fields must have serialized the weld (meta + record).
     if Int(mf.meta.data[MODEL_META_IDX_NEQUALITY]) != 1:
         raise Error("part B vacuous: model meta NEQUALITY != 1")
 
-    var d = Data[DTYPE, Dims[nq=NQ_B, nv=NV_B, nbody=NBODY_B, max_contacts=MC_B, nsite=0], BATCH]()
-    var dc = Data[DTYPE, Dims[nq=NQ_B, nv=NV_B, nbody=NBODY_B, max_contacts=MC_B, nsite=0], BATCH]()
-    var d_off = Data[DTYPE, Dims[nq=NQ_B, nv=NV_B, nbody=NBODY_B, max_contacts=MC_B, nsite=0], BATCH]()
+    var d = Data[DTYPE, MD_2, BATCH]()
+    var dc = Data[DTYPE, MD_2, BATCH]()
+    var d_off = Data[DTYPE, MD_2, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_B):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 50.0
@@ -573,15 +601,9 @@ def _part_b_equality(ctx: DeviceContext) raises:
             d_off.qfrc.data[e * NV_B + i] = qf
     d.upload_all(ctx)
 
-    var integ = EulerIntegrator[
-        DTYPE, NQ_B, NV_B, NBODY_B, NJOINT_B, MC_B, NGEOM_B, NEQ_B, 0, 0, 0,
-        0, CONE_B, BATCH,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD_2, CONE_B, BATCH]()
     integ.prepare_gpu(ctx)
-    var integ_c = EulerIntegrator[
-        DTYPE, NQ_B, NV_B, NBODY_B, NJOINT_B, MC_B, NGEOM_B, NEQ_B, 0, 0, 0,
-        0, CONE_B, BATCH,
-    ]()
+    var integ_c = EulerIntegrator[DTYPE, MD_2, CONE_B, BATCH]()
 
     var qvel_step0 = List[Scalar[DTYPE]](capacity=BATCH * NV_B)
     for _ in range(BATCH * NV_B):

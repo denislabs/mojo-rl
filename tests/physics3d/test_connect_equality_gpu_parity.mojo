@@ -135,9 +135,26 @@ def _parity[M: ModelDefFromXML, SOLVER: StaticString](
     ctx: DeviceContext, label: String, tol: Float64
 ) raises:
     """Step CPU and GPU side by side, then prove the connect actually ran."""
+    comptime MD = Dims[
+        nq=M.NQ,
+        nv=M.NV,
+        nbody=M.NBODY,
+        njoint=M.NJOINT,
+        ngeom=M.NGEOM,
+        nsite=M.NSITE,
+        max_contacts=M.MAX_CONTACTS,
+        nequality=M.MAX_EQUALITY,
+        ntendon=M.MAX_TENDON,
+        nexclude=M.NEXCLUDE,
+        nmesh_verts=0,
+        npair=M.NPAIR,
+        nact=M.NACT,
+        nten=M.NTEN_F,
+        nkey=M.NKEY,
+    ]
     var sf = M.make_spec_fields[DTYPE]()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0, npair=M.NPAIR]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
     # The equality must have survived serialization — MAX_EQUALITY sizes the
     # slab and meta carries the count. Zero here and everything below is a
@@ -148,30 +165,18 @@ def _parity[M: ModelDefFromXML, SOLVER: StaticString](
         " serialized and this leg would be vacuous",
     )
 
-    var dg = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], BATCH]()
-    var dc = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], BATCH]()
-    var doff = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], BATCH]()
+    var dg = Data[DTYPE, MD, BATCH]()
+    var dc = Data[DTYPE, MD, BATCH]()
+    var doff = Data[DTYPE, MD, BATCH]()
     M.reset_data[DTYPE](sf, dg)
     M.reset_data[DTYPE](sf, dc)
     M.reset_data[DTYPE](sf, doff)
     dg.upload_all(ctx)
     doff.upload_all(ctx)
 
-    var ig = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, BATCH, SOLVER=SOLVER,
-        MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER,
-        NPAIR = M.NPAIR,
-    ]()
+    var ig = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, BATCH, SOLVER=SOLVER, MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER]()
     ig.prepare_gpu(ctx)
-    var ic = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, BATCH, SOLVER=SOLVER,
-        MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER,
-        NPAIR = M.NPAIR,
-    ]()
+    var ic = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, BATCH, SOLVER=SOLVER, MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER]()
 
     # Step-0 GPU qvel, kept for the non-vacuity comparison below.
     var qvel0 = List[Scalar[DTYPE]](capacity=BATCH * M.NV)

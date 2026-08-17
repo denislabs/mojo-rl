@@ -38,6 +38,9 @@ from mojo_rl.physics3d.gpu.constants import (
     BODY_IDX_IXX,
 )
 from max.gpu.host import DeviceContext
+from mojo_rl.physics3d.model.model_dims import ModelDims
+comptime MD_2 = ModelDims[DMCartpole3Model]
+comptime MD = ModelDims[DMCartpole2Model]
 
 
 comptime EnvDense = DMCartpoleSwingup[DType.float64]
@@ -258,8 +261,8 @@ def test_cartpole_multipole_models_match_mujoco() raises:
     )
     assert_true(Int(py=m2.nq) == DMCartpole2Model.NQ, "2-pole nq mismatch")
 
-    var mf2 = Model[DType.float64, Dims[nv=DMCartpole2Model.NV, nbody=DMCartpole2Model.NBODY, njoint=DMCartpole2Model.NJOINT, ngeom=DMCartpole2Model.NGEOM, nequality=DMCartpole2Model.MAX_EQUALITY, ntendon=DMCartpole2Model.MAX_TENDON, nsite=DMCartpole2Model.NSITE, nexclude=DMCartpole2Model.NEXCLUDE, nmesh_verts=0]]()
-    DMCartpole2Model.init_fields[DType.float64, 0](ctx, mf2)
+    var mf2 = Model[DType.float64, MD]()
+    DMCartpole2Model.init_fields[DType.float64](ctx, mf2)
     worst = _cmp_bodies(mf2.bodies.data, m2, DMCartpole2Model.NBODY, worst)
 
     # --- 3 poles ---
@@ -268,8 +271,8 @@ def test_cartpole_multipole_models_match_mujoco() raises:
         Int(py=m3.nbody) == DMCartpole3Model.NBODY,
         "3-pole nbody mismatch",
     )
-    var mf3 = Model[DType.float64, Dims[nv=DMCartpole3Model.NV, nbody=DMCartpole3Model.NBODY, njoint=DMCartpole3Model.NJOINT, ngeom=DMCartpole3Model.NGEOM, nequality=DMCartpole3Model.MAX_EQUALITY, ntendon=DMCartpole3Model.MAX_TENDON, nsite=DMCartpole3Model.NSITE, nexclude=DMCartpole3Model.NEXCLUDE, nmesh_verts=0]]()
-    DMCartpole3Model.init_fields[DType.float64, 0](ctx, mf3)
+    var mf3 = Model[DType.float64, MD_2]()
+    DMCartpole3Model.init_fields[DType.float64](ctx, mf3)
     worst = _cmp_bodies(mf3.bodies.data, m3, DMCartpole3Model.NBODY, worst)
 
     print("cartpole 2/3-pole model build: max |d(mass,ipos,inertia)| =", worst)

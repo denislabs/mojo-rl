@@ -42,6 +42,7 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_SPRINGREF,
 )
 from max.gpu.host import DeviceContext
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 
 comptime DTYPE = DType.float64
@@ -84,6 +85,7 @@ comptime M = ModelDefFromXML[
     max_condim=pp.MAX_CONDIM,
     noslip_iter=pp.NOSLIP_ITER,
 ]
+comptime MD = ModelDims[M]
 
 comptime N_STEPS: Int = 400
 # Gravity is off and both sides run identical float64 arithmetic from an
@@ -105,8 +107,8 @@ def test_springref_is_converted_for_hinge_only() raises:
     var m = h[1]
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
     var worst = 0.0
     for j in range(M.NJOINT):
@@ -155,18 +157,13 @@ def test_springref_rollout_matches_mujoco() raises:
     mujoco.mj_resetData(m, md)
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
 
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER]()
 
     var worst_q = 0.0
     var worst_v = 0.0

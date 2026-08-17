@@ -77,6 +77,20 @@ comptime NSITE = 12
 comptime NEXCLUDE = 4
 comptime NMESH_VERTS = 60000
 comptime MAXC = 64
+comptime MD = Dims[
+    nq=NQ,
+    nv=NV,
+    nbody=NBODY,
+    njoint=NJOINT,
+    ngeom=NGEOM,
+    nsite=NSITE,
+    max_contacts=MAXC,
+    nequality=0,
+    ntendon=0,
+    nexclude=NEXCLUDE,
+    nmesh_verts=NMESH_VERTS,
+    npair=0,
+]
 
 # The six ARM DOFs. Jaco's joints are all hinges in model order: joint_1..6
 # then the hand's finger_1..3, so the arm is dofs 0..5. Asserted below against
@@ -118,11 +132,11 @@ def test_ik_site_matches_dm_control() raises:
     var fmd = parse_xml_full(_read(xml_path))
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=0, ntendon=0, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=0]]()
+    var mf = Model[DTYPE, MD]()
     build_model_fields_from_flat[DTYPE](fmd, mf)
     _ = os.chdir(cwd)
 
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]()
+    var d = Data[DTYPE, MD, 1]()
 
     # ── the arm DOF set, from the reference rather than from belief ──────
     var arm_names = refmod.arm_joint_names()
@@ -262,10 +276,7 @@ def test_ik_site_matches_dm_control() raises:
         for k in range(3):
             tp[k] = Scalar[DTYPE](Float64(py=tgt[k]))
 
-        var res = qpos_from_site_pose[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-            NMESH_VERTS, 0, MAXC, NDOF,
-        ](d, mf, our_tcp, tp, down, dof_idx)
+        var res = qpos_from_site_pose[DTYPE, NDOF](d, mf, our_tcp, tp, down, dof_idx)
 
         assert_true(
             not res.rank_deficient,
@@ -365,10 +376,10 @@ def test_set_site_to_xpos_matches_dm_control() raises:
     var dat = mujoco.MjData(mm)
     var fmd = parse_xml_full(_read(xml_path))
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=0, ntendon=0, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=0]]()
+    var mf = Model[DTYPE, MD]()
     build_model_fields_from_flat[DTYPE](fmd, mf)
     _ = os.chdir(cwd)
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]()
+    var d = Data[DTYPE, MD, 1]()
 
     # Locate our index for the TCP site by position, as above.
     for i in range(NQ):
@@ -463,10 +474,7 @@ def test_set_site_to_xpos_matches_dm_control() raises:
         for k in range(3):
             tp[k] = Scalar[DTYPE](Float64(py=tgt[k]))
 
-        var sres = set_site_to_xpos[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-            NMESH_VERTS, 0, MAXC, NDOF,
-        ](
+        var sres = set_site_to_xpos[DTYPE, NDOF](
             d, mf, our_tcp, tp, down, dof_idx, qpos_adr, lower, upper,
             retry, MAX_ATT,
         )

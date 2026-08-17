@@ -54,6 +54,7 @@ from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE, CONTACT_IDX_DIST, META_IDX_NUM_CONTACTS,
 )
 from max.gpu.host import DeviceContext
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 comptime NMV: Int = 64
@@ -82,6 +83,7 @@ comptime MD = ModelDefFromXML[
     max_condim=PM.MAX_CONDIM, max_equality=1, max_contacts=16,
     timestep=PM.TIMESTEP,
 ]
+comptime MD_2 = ModelDims[MD, 64]
 
 # Distances agree with MuJoCo to ~2.8e-8 across the band; MuJoCo's own values
 # carry that much because its support functions are margin-inflated and
@@ -108,9 +110,9 @@ def test_contacts_survive_the_whole_margin_band() raises:
     var md = mujoco.MjData(m)
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=MD.NV, nbody=MD.NBODY, njoint=MD.NJOINT, ngeom=MD.NGEOM, nequality=MD.MAX_EQUALITY, ntendon=MD.MAX_TENDON, nsite=MD.NSITE, nexclude=MD.NEXCLUDE, nmesh_verts=NMV, npair=MD.NPAIR]]()
-    MD.init_fields[DTYPE, NMV](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=MD.NQ, nv=MD.NV, nbody=MD.NBODY, max_contacts=MD.MAX_CONTACTS, nsite=MD.NSITE], 1]()
+    var mf = Model[DTYPE, MD_2]()
+    MD.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD_2, 1]()
 
     # Box top face z = 0.03; cylinder half-length 0.02 on a +z axis, so its
     # bottom face is at qz - 0.02 and the gap is qz - 0.05.

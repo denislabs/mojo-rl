@@ -44,7 +44,7 @@ from the same numbers instead of comparing distributions.
 from std.collections import InlineArray
 from std.math import abs, sqrt, sin, cos, pi
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
@@ -89,15 +89,8 @@ def uniform_z_rotation[
     return out^
 
 
-def set_free_prop_pose[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    MAXC: Int,
-    NSITE: Int,
-](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
+def set_free_prop_pose[DTYPE: DType, D: DimsLike](
+    mut d: Data[DTYPE, D, 1],
     qpos_adr: Int,
     dof_adr: Int,
     pos: InlineArray[Scalar[DTYPE], 3],
@@ -124,10 +117,8 @@ def set_free_prop_pose[
         d.qvel.data[dof_adr + k] = Scalar[DTYPE](0)
 
 
-def prop_has_penetrating_contact[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAXC: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
+def prop_has_penetrating_contact[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
     prop_body: Int,
     ignore_bodies: List[Int],
 ) -> Bool:
@@ -189,23 +180,9 @@ struct PropPlaceResult(Copyable, Movable):
     var attempts: Int
 
 
-def place_free_prop[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
-    NPAIR: Int,
-    MAXC: Int,
-](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+def place_free_prop[DTYPE: DType, D: DimsLike](
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     prop_body: Int,
     qpos_adr: Int,
     dof_adr: Int,
@@ -254,7 +231,7 @@ def place_free_prop[
             pos[k] = poses[a * 7 + k]
         for k in range(4):
             quat[k] = poses[a * 7 + 3 + k]
-        set_free_prop_pose[DTYPE, NQ, NV, NBODY, MAXC, NSITE](
+        set_free_prop_pose[DTYPE](
             d, qpos_adr, dof_adr, pos, quat
         )
         if ignore_collisions:
@@ -263,30 +240,14 @@ def place_free_prop[
         # new pose results in collisions".
         forward_kinematics["cpu"](d, mf)
         detect_contacts["cpu"](d, mf)
-        if not prop_has_penetrating_contact[
-            DTYPE, NQ, NV, NBODY, MAXC, NSITE
-        ](d, prop_body, ignore_bodies):
+        if not prop_has_penetrating_contact[DTYPE](d, prop_body, ignore_bodies):
             return PropPlaceResult(True, a + 1)
     return PropPlaceResult(False, n)
 
 
-def place_fixed_prop[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
-    NPAIR: Int,
-    MAXC: Int,
-](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+def place_fixed_prop[DTYPE: DType, D: DimsLike](
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     frame_body: Int,
     n_bodies: Int,
     ignore_bodies: List[Int],
@@ -391,19 +352,8 @@ struct SettleResult(Copyable, Movable):
 
 
 def settle_free_props[
+
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
-    NPAIR: Int,
-    MAXC: Int,
     # ⚠ FROM THE TASK'S MODEL DEF, NOT DEFAULTED. `MAX_CONDIM` and
     # `NOSLIP_ITER` both have a default that silently disables the feature (3
     # and 0), so a settle run with the defaults is a DIFFERENT PHYSICS from the
@@ -416,9 +366,11 @@ def settle_free_props[
     MAX_CONDIM: Int,
     NOSLIP_ITER: Int,
     NHOLD: Int,
+
+    D: DimsLike,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     dof_adrs: List[Int],
     timestep: Float64,
 ) raises -> SettleResult:
@@ -458,15 +410,14 @@ def settle_free_props[
         hold_qvel[i] = Float64(d.qvel.data[i])
 
     var integ = EulerIntegrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAXC, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-        NMESHV,
+        DTYPE,
+        D,
         CONE,
         1,
         # `RNE_POST` is off here alone — the settle takes no observation.
         RNE_POST=False,
         MAX_CONDIM=MAX_CONDIM,
         NOSLIP_ITER=NOSLIP_ITER,
-        NPAIR=NPAIR,
     ]()
     var max_steps = Int(SETTLE_MAX_TIME / timestep)
     var mv = 0.0
@@ -497,25 +448,14 @@ def settle_free_props[
 
 def settle_free_prop[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
-    NPAIR: Int,
-    MAXC: Int,
     CONE: Int,
     MAX_CONDIM: Int,
     NOSLIP_ITER: Int,
     NHOLD: Int,
+    D: DimsLike,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     dof_adr: Int,
     timestep: Float64,
 ) raises -> SettleResult:
@@ -523,7 +463,4 @@ def settle_free_prop[
     free prop read better this way, and it keeps their call sites unchanged."""
     var adrs = List[Int]()
     adrs.append(dof_adr)
-    return settle_free_props[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV,
-        NPAIR, MAXC, CONE, MAX_CONDIM, NOSLIP_ITER, NHOLD,
-    ](d, mf, adrs, timestep)
+    return settle_free_props[DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, NHOLD](d, mf, adrs, timestep)

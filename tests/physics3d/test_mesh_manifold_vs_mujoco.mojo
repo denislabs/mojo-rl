@@ -44,6 +44,7 @@ from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.collision.native_multicontact import MC_ENABLED
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
     META_IDX_NUM_CONTACTS,
@@ -140,6 +141,7 @@ comptime MC: Int = MMM.MAX_CONTACTS
 # cube (8) + hex (12); padded so a fixture edit does not silently truncate a
 # hull — `fields_build` treats an over-run as a hard error, not a warning.
 comptime NMESHV: Int = 64
+comptime MD = ModelDims[MMM, 64]
 
 comptime NGROUP: Int = 5
 
@@ -155,8 +157,8 @@ def _group_name(g: Int) -> StaticString:
         return "mesh(hex)  x box  "
     return "mesh(hex)  x mesh "
 
-comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=MMM.NSITE], 1]
-comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=MMM.NJOINT, ngeom=MMM.NGEOM, nequality=MMM.MAX_EQUALITY, ntendon=MMM.MAX_TENDON, nsite=MMM.NSITE, nexclude=MMM.NEXCLUDE, nmesh_verts=NMESHV]]
+comptime Dat = Data[DTYPE, MD, 1]
+comptime Mod = Model[DTYPE, MD]
 
 comptime NPOSE: Int = 160
 comptime SPAN: Float64 = 0.055
@@ -207,7 +209,7 @@ struct Lcg(Copyable, Movable):
 def _build() raises -> Mod:
     var ctx = DeviceContext()
     var mf = Mod()
-    MMM.init_fields[DTYPE, NMESHV](ctx, mf)
+    MMM.init_fields[DTYPE](ctx, mf)
     return mf^
 
 

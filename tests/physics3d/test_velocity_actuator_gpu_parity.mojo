@@ -173,6 +173,23 @@ def _gate[
     mut failures: Int,
 ) raises:
     """Run both `apply_actions` paths on the same state and diff `qfrc`."""
+    comptime MD = Dims[
+        nq=M.NQ,
+        nv=M.NV,
+        nbody=M.NBODY,
+        njoint=M.NJOINT,
+        ngeom=M.NGEOM,
+        nsite=M.NSITE,
+        max_contacts=M.MAX_CONTACTS,
+        nequality=M.MAX_EQUALITY,
+        ntendon=M.MAX_TENDON,
+        nexclude=M.NEXCLUDE,
+        nmesh_verts=0,
+        npair=M.NPAIR,
+        nact=M.NACT,
+        nten=M.NTEN_F,
+        nkey=M.NKEY,
+    ]
     var sf = M.make_spec_fields[DTYPE]()
     comptime BATCH = 1
     comptime NV = M.NV
@@ -183,10 +200,10 @@ def _gate[
     var ctx = DeviceContext()
 
     # ---- CPU reference -----------------------------------------------------
-    comptime Dat = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]
-    comptime Mod = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0, npair=M.NPAIR]]
+    comptime Dat = Data[DTYPE, MD, 1]
+    comptime Mod = Model[DTYPE, MD]
     var mf = Mod()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    M.init_fields[DTYPE](ctx, mf)
     var d = Dat()
     M.reset_data(sf, d)
     d.qpos.data[0] = Scalar[DTYPE](q0)
@@ -226,7 +243,7 @@ def _gate[
     t_qvel.upload(ctx)
     t_actv.upload(ctx)
 
-    var sfg = SpecFields[DTYPE, Dims[nact=M.NACT, nten=M.NTEN_F, nq=M.NQ, nv=M.NV, nkey=M.NKEY, njoint=M.NJOINT]]()
+    var sfg = SpecFields[DTYPE, MD]()
     M.init_spec_fields[DTYPE](ctx, sfg)
     M.apply_actions_kernel_gpu[DTYPE, BATCH, NACT](
         ctx,

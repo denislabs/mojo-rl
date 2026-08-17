@@ -50,6 +50,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE, BODY_IDX_WELDID, META_IDX_NUM_CONTACTS,
 )
 from max.gpu.host import DeviceContext
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 comptime NMV: Int = 64
@@ -95,6 +96,7 @@ comptime MD_FJ = ModelDefFromXML[
     max_tendon=PM_FJ.NTENDON, max_condim=PM_FJ.MAX_CONDIM, max_equality=1,
     max_contacts=16, timestep=PM_FJ.TIMESTEP,
 ]
+comptime MD = ModelDims[MD_FJ, 64]
 
 
 def test_comptime_parser_understands_freejoint() raises:
@@ -149,9 +151,9 @@ def test_runtime_parser_sets_weldid_and_the_pair_collides() raises:
     var mj_ncon = Int(py=md.ncon)
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=MD_FJ.NV, nbody=MD_FJ.NBODY, njoint=MD_FJ.NJOINT, ngeom=MD_FJ.NGEOM, nequality=MD_FJ.MAX_EQUALITY, ntendon=MD_FJ.MAX_TENDON, nsite=MD_FJ.NSITE, nexclude=MD_FJ.NEXCLUDE, nmesh_verts=NMV, npair=MD_FJ.NPAIR]]()
-    MD_FJ.init_fields[DTYPE, NMV](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=MD_FJ.NQ, nv=MD_FJ.NV, nbody=MD_FJ.NBODY, max_contacts=MD_FJ.MAX_CONTACTS, nsite=MD_FJ.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    MD_FJ.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
     MD_FJ.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
     detect_contacts["cpu"](d, mf)

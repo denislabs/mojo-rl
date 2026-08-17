@@ -104,6 +104,19 @@ def test_xml_full_parser() raises:
     # Step 1: Dimension check
     # =========================================================================
     comptime pm = parse_xml(half_cheetah_xml)
+    comptime MD = Dims[
+        nq=pm.NQ,
+        nv=pm.NV,
+        nbody=pm.NBODY,
+        njoint=pm.NJOINT,
+        ngeom=pm.NGEOM,
+        nsite=0,
+        max_contacts=10,
+        nequality=0,
+        ntendon=0,
+        nexclude=0,
+        nmesh_verts=0,
+    ]
     print("=== Dimensions ===")
     print("NBODY  =", pm.NBODY, " (expected 8)")
     print("NJOINT =", pm.NJOINT, " (expected 9)")
@@ -194,7 +207,7 @@ def test_xml_full_parser() raises:
     # Step 3: Full round-trip — spec-direct fields build + fields FK (G4)
     # =========================================================================
     print("=== FK round-trip (fields) ===")
-    var mf = Model[DType.float64, Dims[nv=pm.NV, nbody=pm.NBODY, njoint=pm.NJOINT, ngeom=pm.NGEOM, nequality=0, ntendon=0, nsite=0, nexclude=0, nmesh_verts=0]]()
+    var mf = Model[DType.float64, MD]()
     # ⚠ THE FlatModelDef DIMS ARE GONE from this parameter list — all fourteen.
     # `FlatModelDef` is List-backed since 2026-08-05, so its counts come from
     # the Lists. What remains is the MODEL side, which still sizes
@@ -231,11 +244,8 @@ def test_xml_full_parser() raises:
         " (expected 0.7)",
     )
 
-    var d = Data[DType.float64, Dims[nq=pm.NQ, nv=pm.NV, nbody=pm.NBODY, max_contacts=10, nsite=0], 1]()
-    forward_kinematics[
-        "cpu", DType.float64, pm.NQ, pm.NV, pm.NBODY, pm.NJOINT, 10, pm.NGEOM,
-        0, 0, 0, 0, 0, 1,
-    ](d, mf, None)
+    var d = Data[DType.float64, MD, 1]()
+    forward_kinematics["cpu", DType.float64, BATCH=1](d, mf, None)
     print("FK completed")
     print(
         "torso xpos_z  =",

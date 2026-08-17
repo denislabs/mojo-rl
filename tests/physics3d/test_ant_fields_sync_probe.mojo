@@ -15,7 +15,7 @@ Run: MODULAR_DEBUG=device-sync-mode pixi run -e nvidia mojo run -I . \
 from max.gpu.host import DeviceContext
 
 from mojo_rl.nn.core.tensor import TensorImpl
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -27,6 +27,7 @@ from mojo_rl.physics3d.dynamics.mass_matrix import (
     compute_mass_matrix,
 )
 from mojo_rl.envs.ant.ant_xml import AntModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32  # match the gate (Metal is fragile on float64)
 comptime NQ = AntModel.NQ  # 15
@@ -39,6 +40,7 @@ comptime NEQ = AntModel.MAX_EQUALITY
 comptime NTD = AntModel.MAX_TENDON
 comptime NSITE = AntModel.NSITE
 comptime NEXCL = AntModel.NEXCLUDE
+comptime MD = ModelDims[AntModel]
 comptime BATCH = 2
 
 
@@ -50,10 +52,10 @@ def main() raises:
     )
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
-    AntModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    AntModel.init_fields[DTYPE](ctx, mf)
 
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
     # nonzero free-joint translation + torso quat + a couple joint angles
     for e in range(BATCH):
         d.qpos.data[e * NQ + 2] = Scalar[DTYPE](0.55)  # free z
@@ -62,60 +64,42 @@ def main() raises:
         d.qpos.data[e * NQ + 10] = Scalar[DTYPE](-1.0)  # a hinge
     d.upload_all(ctx)
 
-    var scratch = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
+    var scratch = DynamicsScratch[DTYPE, MD, BATCH]()
     scratch.upload_all(ctx)
 
     print("[1] forward_kinematics (serial) ...")
-    forward_kinematics[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, ctx)
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH](d, mf, ctx)
     ctx.synchronize()
     print("    [1] FK ok")
 
     print("[2] compute_subtree_com (serial) ...")
-    compute_subtree_com[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, ctx)
+    compute_subtree_com["gpu", DTYPE, BATCH=BATCH](d, mf, ctx)
     ctx.synchronize()
     print("    [2] subtree_com ok")
 
     print("[3] compute_cdof (serial) ...")
-    compute_cdof[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, scratch, ctx)
+    compute_cdof["gpu", DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
     ctx.synchronize()
     print("    [3] cdof ok")
 
     print("[4] compute_mass_matrix PARALLEL=True (dense _mt) ...")
-    compute_mass_matrix[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-        PARALLEL=True,
-    ](d, mf, scratch, ctx)
+    compute_mass_matrix["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](d, mf, scratch, ctx)
     ctx.synchronize()
     print("    [4] dense mass matrix (_mt) ok")
 
     print("[5] compute_mass_matrix PARALLEL=True TREEWALK=True ...")
-    compute_mass_matrix[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-        PARALLEL=True, TREEWALK=True,
-    ](d, mf, scratch, ctx)
+    compute_mass_matrix["gpu", DTYPE, BATCH=BATCH, PARALLEL=True, TREEWALK=True](d, mf, scratch, ctx)
     ctx.synchronize()
     print("    [5] treewalk mass matrix (_mt) ok")
 
     # Also exercise the PARALLEL FK / cdof (the humanoid *training* config).
     print("[6] forward_kinematics PARALLEL=True (_mt) ...")
-    forward_kinematics[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-        PARALLEL=True,
-    ](d, mf, ctx)
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](d, mf, ctx)
     ctx.synchronize()
     print("    [6] FK _mt ok")
 
     print("[7] compute_cdof PARALLEL=True (_mt) ...")
-    compute_cdof[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-        PARALLEL=True,
-    ](d, mf, scratch, ctx)
+    compute_cdof["gpu", DTYPE, BATCH=BATCH, PARALLEL=True](d, mf, scratch, ctx)
     ctx.synchronize()
     print("    [7] cdof _mt ok")
 

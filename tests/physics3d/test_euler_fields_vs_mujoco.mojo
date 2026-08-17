@@ -24,6 +24,7 @@ from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.envs.ant.ant_xml import AntModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 comptime NQ = AntModel.NQ  # 15
@@ -36,6 +37,7 @@ comptime NSITE = AntModel.NSITE
 comptime NEQ = AntModel.MAX_EQUALITY
 comptime NTEN = AntModel.MAX_TENDON
 comptime NEXCL = AntModel.NEXCLUDE
+comptime MD = ModelDims[AntModel]
 
 # ⚠ These were inherited from the legacy free-joint gate at 1e-4 / 5e-3 —
 # NINE orders of magnitude looser than what the path actually achieves, so
@@ -98,10 +100,10 @@ def _tumbling_qvel() -> InlineArray[Float64, NV]:
 
 def _make_model(
     ctx: DeviceContext,
-) raises -> Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]:
+) raises -> Model[DTYPE, MD]:
     """Build the model into Model via the model-def init + flattening."""
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
-    AntModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    AntModel.init_fields[DTYPE](ctx, mf)
     return mf^
 
 
@@ -117,15 +119,12 @@ def _compare_vs_mujoco(
     var mf = _make_model(ctx)
 
     # Fields path (f64, CPU target, BATCH=1).
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1]()
+    var d = Data[DTYPE, MD, 1]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):
         d.qvel.data[i] = Scalar[DTYPE](qvel_init[i])
-    var integ = EulerIntegrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQ, NTEN, NSITE,
-        0, 0, BATCH=1,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, BATCH=1]()
     for _ in range(num_steps):
         for i in range(NV):
             d.qfrc.data[i] = Scalar[DTYPE](0)
@@ -200,15 +199,12 @@ def test_fields_euler_active_limits_golden() raises:
     var ctx = DeviceContext()
     var mf = _make_model(ctx)
 
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1]()
+    var d = Data[DTYPE, MD, 1]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):
         d.qvel.data[i] = Scalar[DTYPE](qvel_init[i])
-    var integ = EulerIntegrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQ, NTEN, NSITE,
-        0, 0, BATCH=1,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, BATCH=1]()
     for _ in range(10):
         for i in range(NV):
             d.qfrc.data[i] = Scalar[DTYPE](0)

@@ -37,6 +37,7 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.sensors import (
     site_accelerometer,
     site_force_torque,
@@ -59,14 +60,12 @@ comptime MAX_CONTACTS = Mdl.MAX_CONTACTS
 comptime NEQ = Mdl.MAX_EQUALITY
 comptime NTEN = Mdl.MAX_TENDON
 comptime NEXCL = Mdl.NEXCLUDE
+comptime MD = ModelDims[Mdl]
 comptime NA = Mdl.NA
 
-comptime Integ = EulerIntegrator[
-    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQ, NTEN, NSITE,
-    NEXCL, 0, Mdl.CONE_TYPE, 1, SOLVER="newton", RNE_POST=True,
-]
-comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1]
-comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]
+comptime Integ = EulerIntegrator[DTYPE, MD, Mdl.CONE_TYPE, 1, SOLVER="newton", RNE_POST=True]
+comptime Dat = Data[DTYPE, MD, 1]
+comptime Mod = Model[DTYPE, MD]
 
 # ⚠ ALL FOUR BOUNDS WERE RE-PINNED 2026-08-03, two to three orders tighter,
 # and the reason is worth reading before loosening any of them again.
@@ -151,7 +150,7 @@ def _setup(
     well conditioned and what the real task actually does.
     """
     var sf = Mdl.make_spec_fields[DTYPE]()
-    Mdl.init_fields[DTYPE, 0](ctx, mf)
+    Mdl.init_fields[DTYPE](ctx, mf)
     Mdl.reset_data(sf, d)
 
     d.qpos.data[2] = Scalar[DTYPE](z)

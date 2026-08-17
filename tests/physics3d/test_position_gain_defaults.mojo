@@ -45,6 +45,7 @@ from mojo_rl.physics3d.parser import parse_xml_full
 from mojo_rl.physics3d.parser.fields_build import build_spec_fields
 from mojo_rl.physics3d.fields import SpecFields, Dims
 from mojo_rl.physics3d.gpu.constants import ACT_IDX_KP, ACT_IDX_KV
+comptime MD = Dims[nq=1, nv=1, njoint=1, nact=1, nten=1, nkey=1]
 
 
 # ── A: the gain is on the actuator's OWN class, a direct child of <default>.
@@ -149,7 +150,7 @@ comptime X_VELOCITY_CLASS = """<mujoco>
 def _gains(xml: String) raises -> Tuple[Float64, Float64]:
     """`(kp, kv)` of actuator 0, off the records the engine reads."""
     var fmd = parse_xml_full(xml)
-    var sf = SpecFields[DType.float64, Dims[nact=1, nten=1, nq=1, nv=1, nkey=1, njoint=1]]()
+    var sf = SpecFields[DType.float64, MD]()
     build_spec_fields[DType.float64](fmd, sf)
     return (
         Float64(sf.actuators.data[ACT_IDX_KP]),

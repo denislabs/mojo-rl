@@ -363,23 +363,9 @@ struct ReachSiteFeaturesConfig(Phyics3dEnvConfig):
 
     # === CPU: the TCP initializer — needs the whole Model =================
     @staticmethod
-    def custom_reset_full_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        NGEOM: Int,
-        NEQ: Int,
-        NTEN: Int,
-        NSITE: Int,
-        NEXCL: Int,
-        NMESHV: Int,
-        NPAIR: Int,
-        MAX_CONTACTS: Int,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
-        mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+    def custom_reset_full_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
+        mut mf: Model[DTYPE, D],
     ) raises:
         """`self._tcp_initializer(physics, random_state)` — the middle
         statement of `Reach.initialize_episode`.
@@ -485,17 +471,14 @@ struct ReachSiteFeaturesConfig(Phyics3dEnvConfig):
         down[0] = Scalar[DTYPE](DOWN_QUAT_XY)
         down[1] = Scalar[DTYPE](DOWN_QUAT_XY)
 
-        var body_class = InlineArray[Int, NBODY](fill=BODY_FIXED)
-        for b in range(NBODY):
+        var body_class = InlineArray[Int, D.NBODY](fill=BODY_FIXED)
+        for b in range(D.NBODY):
             if b >= 2 and b <= 8:
                 body_class[b] = BODY_ARM
             elif b >= 10:
                 body_class[b] = BODY_HAND
 
-        var res = tool_center_point_initializer[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAX_CONTACTS, N_ARM,
-        ](
+        var res = tool_center_point_initializer[DTYPE, N_ARM](
             d, mf, SITE_PINCH, targets, down, dof_idx, qpos_adr,
             lower, upper, retry, body_class, False, MAX_ATT, MAX_SAMP,
         )

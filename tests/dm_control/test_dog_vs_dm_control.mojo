@@ -92,6 +92,8 @@ from mojo_rl.physics3d.gpu.constants import (
 )
 from mojo_rl.physics3d.joint_types import JNT_FREE
 from max.gpu.host import DeviceContext
+from mojo_rl.physics3d.model.model_dims import ModelDims
+comptime MD = ModelDims[DMDogStandWalkModel]
 
 
 comptime TEST_PATH = "tests/dm_control"
@@ -127,10 +129,10 @@ def _mj_from_our_xml() raises -> PythonObject:
     return mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/dog_stand_walk.xml")
 
 
-def _build() raises -> Model[DType.float64, Dims[nv=DMDogStandWalkModel.NV, nbody=DMDogStandWalkModel.NBODY, njoint=DMDogStandWalkModel.NJOINT, ngeom=DMDogStandWalkModel.NGEOM, nequality=DMDogStandWalkModel.MAX_EQUALITY, ntendon=DMDogStandWalkModel.MAX_TENDON, nsite=DMDogStandWalkModel.NSITE, nexclude=DMDogStandWalkModel.NEXCLUDE, nmesh_verts=0]]:
+def _build() raises -> Model[DType.float64, MD]:
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=DMDogStandWalkModel.NV, nbody=DMDogStandWalkModel.NBODY, njoint=DMDogStandWalkModel.NJOINT, ngeom=DMDogStandWalkModel.NGEOM, nequality=DMDogStandWalkModel.MAX_EQUALITY, ntendon=DMDogStandWalkModel.MAX_TENDON, nsite=DMDogStandWalkModel.NSITE, nexclude=DMDogStandWalkModel.NEXCLUDE, nmesh_verts=0]]()
-    DMDogStandWalkModel.init_fields[DType.float64, 0](ctx, mf)
+    var mf = Model[DType.float64, MD]()
+    DMDogStandWalkModel.init_fields[DType.float64](ctx, mf)
     return mf^
 
 

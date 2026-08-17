@@ -382,26 +382,17 @@ def stack_random_set_grasp_and_order[DTYPE: DType, D: DimsLike](
 
 
 def stack_random_reset_full[
+
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
-    NPAIR: Int,
-    MAX_CONTACTS: Int,
     # ⚠ From the task's model def, never defaulted — see `settle_free_props`.
     CONE: Int,
     MAX_CONDIM: Int,
     NOSLIP_ITER: Int,
+
+    D: DimsLike,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     timestep: Float64,
 ) raises:
     """`Stack.initialize_episode` — bricks, grasp (already done), arm.
@@ -447,10 +438,7 @@ def stack_random_reset_full[
                 poses.append(pq[k])
 
         if phys == FIXED_BRICK:
-            var rf = place_fixed_prop[
-                DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE,
-                NEXCL, NMESHV, NPAIR, MAX_CONTACTS,
-            ](
+            var rf = place_fixed_prop[DTYPE](
                 d, mf, brick_body_of(phys), 1, ignore, poses,
                 MAX_PROP_ATTEMPTS,
             )
@@ -462,10 +450,7 @@ def stack_random_reset_full[
                 )
         else:
             var slot = free_slot_of(phys)
-            var rr = place_free_prop[
-                DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE,
-                NEXCL, NMESHV, NPAIR, MAX_CONTACTS,
-            ](
+            var rr = place_free_prop[DTYPE](
                 d, mf, brick_body_of(phys), brick_qpos_adr_of(slot),
                 brick_dof_adr_of(slot), poses, ignore, False,
                 MAX_PROP_ATTEMPTS,
@@ -484,11 +469,7 @@ def stack_random_reset_full[
     var dofs = List[Int]()
     for p in range(N_BRICKS - 1):
         dofs.append(brick_dof_adr_of(p))
-    _ = settle_free_props[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-        NMESHV, NPAIR, MAX_CONTACTS, CONE, MAX_CONDIM, NOSLIP_ITER,
-        N_ARM + N_HAND,
-    ](d, mf, dofs, timestep)
+    _ = settle_free_props[DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, N_ARM + N_HAND](d, mf, dofs, timestep)
 
     var dof_idx = InlineArray[Int, N_ARM](fill=0)
     var qpos_adr = InlineArray[Int, N_ARM](fill=0)
@@ -540,8 +521,8 @@ def stack_random_reset_full[
     # body's top-level body carries a freejoint, and in OUR model that is a
     # fixed fact: `FIXED_BRICK` never has one. The relabeling moves which
     # LOGICAL brick sits there, not which physical one is welded.
-    var body_class = InlineArray[Int, NBODY](fill=BODY_FIXED)
-    for b in range(NBODY):
+    var body_class = InlineArray[Int, D.NBODY](fill=BODY_FIXED)
+    for b in range(D.NBODY):
         if b >= 2 and b <= 8:
             body_class[b] = BODY_ARM
         elif b >= 10 and b <= 16:
@@ -550,10 +531,7 @@ def stack_random_reset_full[
         if phys != FIXED_BRICK:
             body_class[brick_body_of(phys)] = BODY_FREE
 
-    var res = tool_center_point_initializer[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-        NMESHV, NPAIR, MAX_CONTACTS, N_ARM,
-    ](
+    var res = tool_center_point_initializer[DTYPE, N_ARM](
         d, mf, SITE_PINCH, targets, down, dof_idx, qpos_adr,
         lower, upper, retry, body_class, False, MAX_ATT, MAX_SAMP,
     )

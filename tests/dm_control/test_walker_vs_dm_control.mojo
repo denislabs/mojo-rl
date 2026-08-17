@@ -38,12 +38,14 @@ from mojo_rl.envs.dm_control.walker import (
     STAND_HEIGHT,
 )
 from mojo_rl.physics3d.fields import Model, Dims
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
     BODY_IDX_IPOS_X,
     BODY_IDX_IXX,
 )
+comptime MD = ModelDims[DMWalkerModel]
 
 
 comptime EnvStand = DMWalkerStand[DType.float64]
@@ -184,8 +186,8 @@ def test_walker_model_matches_mujoco() raises:
     assert_true(Int(py=m.nu) == DMWalkerModel.nact, "nu mismatch")
 
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=DMWalkerModel.NV, nbody=DMWalkerModel.NBODY, njoint=DMWalkerModel.NJOINT, ngeom=DMWalkerModel.NGEOM, nequality=DMWalkerModel.MAX_EQUALITY, ntendon=DMWalkerModel.MAX_TENDON, nsite=DMWalkerModel.NSITE, nexclude=DMWalkerModel.NEXCLUDE, nmesh_verts=0]]()
-    DMWalkerModel.init_fields[DType.float64, 0](ctx, mf)
+    var mf = Model[DType.float64, MD]()
+    DMWalkerModel.init_fields[DType.float64](ctx, mf)
 
     var worst = 0.0
     for b in range(NBODY):

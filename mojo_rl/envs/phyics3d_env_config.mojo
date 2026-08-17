@@ -241,23 +241,9 @@ trait Phyics3dEnvConfig:
 
     # === CPU: Reset hook with the FULL model (kinematics + collision) ===
     @staticmethod
-    def custom_reset_full_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        NGEOM: Int,
-        NEQ: Int,
-        NTEN: Int,
-        NSITE: Int,
-        NEXCL: Int,
-        NMESHV: Int,
-        NPAIR: Int,
-        MAX_CONTACTS: Int,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
-        mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+    def custom_reset_full_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
+        mut mf: Model[DTYPE, D],
     ) raises:
         """Reset logic that needs the whole `Model`. Default: no-op.
 

@@ -59,9 +59,11 @@ from mojo_rl.envs.dm_control.manipulation_reach_def import (
 )
 from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
 from max.gpu.host import DeviceContext
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 comptime NMV: Int = 8000
+comptime MD_2 = ModelDims[MD, 8000]
 
 # The band a real rollout reaches. Measured under random control across 5
 # episodes x 200 dm_control steps: deepest 0.55 mm, at most 2 simultaneous
@@ -98,17 +100,11 @@ def test_contact_free_dynamics_match_mujoco() raises:
     var nu = Int(py=m.nu)
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=MD.NV, nbody=MD.NBODY, njoint=MD.NJOINT, ngeom=MD.NGEOM, nequality=MD.MAX_EQUALITY, ntendon=MD.MAX_TENDON, nsite=MD.NSITE, nexclude=MD.NEXCLUDE, nmesh_verts=NMV, npair=MD.NPAIR]]()
-    MD.init_fields[DTYPE, NMV](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=MD.NQ, nv=MD.NV, nbody=MD.NBODY, max_contacts=MD.MAX_CONTACTS, nsite=MD.NSITE], 1]()
+    var mf = Model[DTYPE, MD_2]()
+    MD.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD_2, 1]()
     MD.reset_data[DTYPE](sf, d)
-    var integ = EulerIntegrator[
-        DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.NJOINT, MD.MAX_CONTACTS, MD.NGEOM,
-        MD.MAX_EQUALITY, MD.MAX_TENDON, MD.NSITE, MD.NEXCLUDE, NMV,
-        MD.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM=MD.MAX_CONDIM, NOSLIP_ITER=MD.NOSLIP_ITER,
-        NPAIR=MD.NPAIR,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD_2, MD.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=MD.MAX_CONDIM, NOSLIP_ITER=MD.NOSLIP_ITER]()
 
     var lo = refmod.arm_joint_bounds()[0]
     var hi = refmod.arm_joint_bounds()[1]
@@ -204,17 +200,11 @@ def test_shallow_contact_parity() raises:
     var nu = Int(py=m.nu)
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=MD.NV, nbody=MD.NBODY, njoint=MD.NJOINT, ngeom=MD.NGEOM, nequality=MD.MAX_EQUALITY, ntendon=MD.MAX_TENDON, nsite=MD.NSITE, nexclude=MD.NEXCLUDE, nmesh_verts=NMV, npair=MD.NPAIR]]()
-    MD.init_fields[DTYPE, NMV](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=MD.NQ, nv=MD.NV, nbody=MD.NBODY, max_contacts=MD.MAX_CONTACTS, nsite=MD.NSITE], 1]()
+    var mf = Model[DTYPE, MD_2]()
+    MD.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD_2, 1]()
     MD.reset_data[DTYPE](sf, d)
-    var integ = EulerIntegrator[
-        DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.NJOINT, MD.MAX_CONTACTS, MD.NGEOM,
-        MD.MAX_EQUALITY, MD.MAX_TENDON, MD.NSITE, MD.NEXCLUDE, NMV,
-        MD.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM=MD.MAX_CONDIM, NOSLIP_ITER=MD.NOSLIP_ITER,
-        NPAIR=MD.NPAIR,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD_2, MD.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=MD.MAX_CONDIM, NOSLIP_ITER=MD.NOSLIP_ITER]()
 
     var lo = refmod.arm_joint_bounds()[0]
     var hi = refmod.arm_joint_bounds()[1]

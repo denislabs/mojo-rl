@@ -30,6 +30,7 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_RBOUND,
 )
 from mojo_rl.core import ContAction
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 
 def test_sawyer_no_nan() raises:
@@ -47,6 +48,7 @@ def test_sawyer_no_nan() raises:
     # Mesh collision diagnostics from the env's Model records (the
     # legacy CPU Model build was deleted at G4).
     comptime M = SawyerReachModel
+    comptime MD = ModelDims[M, 16*256]
     for m in range(16):
         var vnum = Int(env.mf.mesh_meta.data[m * 2 + 1])
         if vnum > 0:
@@ -76,8 +78,8 @@ def test_sawyer_no_nan() raises:
     # were unused BECAUSE the capacity was zero, which is what kept mesh geoms
     # from colliding in every env until 2026-08-10.
     var ctx = DeviceContext()
-    var mfd = Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=16 * 256]]()
-    M.init_fields[DType.float64, 16 * 256](ctx, mfd)
+    var mfd = Model[DType.float64, MD]()
+    M.init_fields[DType.float64](ctx, mfd)
     var grip_mesh = Int(
         mfd.geoms.data[27 * MODEL_GEOM_SIZE + GEOM_IDX_MESH_ID]
     )

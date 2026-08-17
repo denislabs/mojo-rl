@@ -34,7 +34,7 @@ from mojo_rl.physics3d.fields import (
     DynamicsScratch,
     ContactScratch,
     Dims,
-)
+ DimsLike,)
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.integrator.euler import (
@@ -88,60 +88,39 @@ comptime CONE_T = ConeType.PYRAMIDAL  # forces the blocked branch on NVIDIA
 comptime INCLUDE_HUMANOID = False
 
 
-def _prep[
-    NQ: Int, NV: Int, NBODY: Int, NJOINT: Int, NGEOM: Int, MC: Int,
-    NEQ: Int, NTEN: Int, NSITE: Int, NEXCL: Int, target: StaticString,
-](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
+def _prep[target: StaticString, D: DimsLike](
+    mut d: Data[DTYPE, D, BATCH],
+    mut mf: Model[DTYPE, D],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
     """Smooth-dynamics prep + auto detection (mirrors the integrator seam)."""
-    forward_kinematics[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE,
-        NEXCL, 0, BATCH,
-    ](d, mf, ctx)
-    compute_body_velocities[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE,
-        NEXCL, 0, BATCH,
-    ](d, mf, ctx)
-    compute_subtree_com[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE,
-        NEXCL, 0, BATCH,
-    ](d, mf, ctx)
-    compute_cdof[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE,
-        NEXCL, 0, BATCH,
-    ](d, mf, scratch, ctx)
-    compute_mass_matrix[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE,
-        NEXCL, 0, BATCH,
-    ](d, mf, scratch, ctx)
+    forward_kinematics[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_body_velocities[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_subtree_com[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_cdof[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
+    compute_mass_matrix[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
 
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
-    comptime L_M = Layout.row_major(BATCH, NV * NV)
-    comptime L_NV = Layout.row_major(BATCH, NV)
-    comptime L_QPOS = Layout.row_major(BATCH, NQ)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
+    comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_QPOS = Layout.row_major(BATCH, D.NQ)
 
     comptime if target == "cpu":
         var joints_v = mf.joints.lt["cpu", L_JOINT]()
         var M_v = scratch.M.lt["cpu", L_M]()
         for e in range(BATCH):
-            _armature_env[DTYPE, NV, NJOINT, BATCH](e, joints_v, M_v)
+            _armature_env[DTYPE, D.NV, D.NJOINT, BATCH](e, joints_v, M_v)
         ldl_factor["cpu", DTYPE, BATCH=BATCH](scratch, ctx)
         compute_m_inv["cpu", DTYPE, BATCH=BATCH](scratch, ctx)
-        compute_bias_forces_rne[
-            "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE,
-            NEXCL, 0, BATCH,
-        ](d, mf, scratch, ctx)
+        compute_bias_forces_rne["cpu", DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
         var qvel_v = d.qvel.lt["cpu", L_NV]()
         var qfrc_v = d.qfrc.lt["cpu", L_NV]()
         var bias_v = scratch.bias.lt["cpu", L_NV]()
         var fnet_v = scratch.fnet.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _fnet_passive_env[DTYPE, NQ, NV, NJOINT, BATCH](
+            _fnet_passive_env[DTYPE, D.NQ, D.NV, D.NJOINT, BATCH](
                 e, qpos_v, qvel_v, qfrc_v, joints_v, bias_v, fnet_v
             )
         ldl_solve["cpu", DTYPE, BATCH=BATCH](scratch, ctx)
@@ -149,11 +128,11 @@ def _prep[
         var qacc_v = d.qacc.lt["cpu", L_NV]()
         var qacc_c_v = scratch.qacc_constrained.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _qacc_writeback_env[DTYPE, NV, BATCH](
+            _qacc_writeback_env[DTYPE, D.NV, BATCH](
                 e, qacc_ws_v, qacc_v, qacc_c_v
             )
     else:
-        ctx.value().enqueue_function[_armature_kernel[DTYPE, NV, NJOINT, BATCH]](
+        ctx.value().enqueue_function[_armature_kernel[DTYPE, D.NV, D.NJOINT, BATCH]](
             mf.joints.lt["gpu", L_JOINT](),
             scratch.M.lt["gpu", L_M](),
             grid_dim=(BATCH,),
@@ -161,12 +140,9 @@ def _prep[
         )
         ldl_factor["gpu", DTYPE, BATCH=BATCH](scratch, ctx)
         compute_m_inv["gpu", DTYPE, BATCH=BATCH](scratch, ctx)
-        compute_bias_forces_rne[
-            "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE,
-            NEXCL, 0, BATCH,
-        ](d, mf, scratch, ctx)
+        compute_bias_forces_rne["gpu", DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         ctx.value().enqueue_function[
-            _fnet_passive_kernel[DTYPE, NQ, NV, NJOINT, BATCH]
+            _fnet_passive_kernel[DTYPE, D.NQ, D.NV, D.NJOINT, BATCH]
         ](
             d.qpos.lt["gpu", L_QPOS](),
             d.qvel.lt["gpu", L_NV](),
@@ -178,7 +154,7 @@ def _prep[
             block_dim=(1,),
         )
         ldl_solve["gpu", DTYPE, BATCH=BATCH](scratch, ctx)
-        ctx.value().enqueue_function[_qacc_writeback_kernel[DTYPE, NV, BATCH]](
+        ctx.value().enqueue_function[_qacc_writeback_kernel[DTYPE, D.NV, BATCH]](
             scratch.qacc_ws.lt["gpu", L_NV](),
             d.qacc.lt["gpu", L_NV](),
             scratch.qacc_constrained.lt["gpu", L_NV](),
@@ -186,10 +162,7 @@ def _prep[
             block_dim=(1,),
         )
 
-    detect_contacts[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE,
-        NEXCL, 0, BATCH,
-    ](d, mf, ctx)
+    detect_contacts[target, DTYPE, BATCH=BATCH](d, mf, ctx)
 
 
 def _validate[MODEL: ModelDefLike](
@@ -211,15 +184,28 @@ def _validate[MODEL: ModelDefLike](
     comptime NTEN = MODEL.MAX_TENDON
     comptime NSITE = MODEL.NSITE
     comptime NEXCL = MODEL.NEXCLUDE
+    comptime MD = Dims[
+        nq=NQ,
+        nv=NV,
+        nbody=NBODY,
+        njoint=NJOINT,
+        ngeom=NGEOM,
+        nsite=NSITE,
+        max_contacts=MC,
+        nequality=NEQ,
+        ntendon=NTEN,
+        nexclude=NEXCL,
+        nmesh_verts=0,
+    ]
     print("--- ", name, " (NV=", NV, ") gentle floor contact ---")
     # Offset-free build straight from the compile-time model spec — no slab,
     # no init_model_gpu / load_from_slab.
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
-    MODEL.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    MODEL.init_fields[DTYPE](ctx, mf)
 
     # Gentle pose: torso lowered so feet lightly touch (not deep penetration).
-    var d_g = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
-    var d_c = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var d_g = Data[DTYPE, MD, BATCH]()
+    var d_c = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         d_g.qpos.data[e * NQ + 2] = Scalar[DTYPE](torso_z + 0.01 * Float64(e))
         d_g.qpos.data[e * NQ + 3] = Scalar[DTYPE](1.0)  # quat w
@@ -234,30 +220,24 @@ def _validate[MODEL: ModelDefLike](
             d_c.qfrc.data[e * NV + i] = qf
     d_g.upload_all(ctx)
 
-    var sg = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
-    var cg = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
+    var sg = DynamicsScratch[DTYPE, MD, BATCH]()
+    var cg = ContactScratch[DTYPE, MD, BATCH]()
     sg.upload_all(ctx)
     cg.upload_all(ctx)
-    var sc = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
-    var cc = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
+    var sc = DynamicsScratch[DTYPE, MD, BATCH]()
+    var cc = ContactScratch[DTYPE, MD, BATCH]()
 
     # GPU path (blocked on NVIDIA, per-env on Apple).
-    _prep[NQ, NV, NBODY, NJOINT, NGEOM, MC, NEQ, NTEN, NSITE, NEXCL, "gpu"](
+    _prep["gpu"](
         d_g, mf, sg, ctx
     )
-    solve_newton[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE,
-        NEXCL, 0, CONE_T, BATCH,
-    ](d_g, mf, sg, cg, ctx)
+    solve_newton["gpu", DTYPE, CONE_TYPE=CONE_T, BATCH=BATCH](d_g, mf, sg, cg, ctx)
 
     # CPU oracle (per-env).
-    _prep[NQ, NV, NBODY, NJOINT, NGEOM, MC, NEQ, NTEN, NSITE, NEXCL, "cpu"](
+    _prep["cpu"](
         d_c, mf, sc, None
     )
-    solve_newton[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE,
-        NEXCL, 0, CONE_T, BATCH,
-    ](d_c, mf, sc, cc, None)
+    solve_newton["cpu", DTYPE, CONE_TYPE=CONE_T, BATCH=BATCH](d_c, mf, sc, cc, None)
 
     sg.qacc_constrained.download(ctx)
     d_g.meta.download(ctx)

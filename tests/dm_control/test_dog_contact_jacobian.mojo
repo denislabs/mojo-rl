@@ -50,6 +50,7 @@ from mojo_rl.physics3d.fields import Model, Data, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.dynamics.jac_contact_row import _contact_jacobian_row
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
@@ -69,6 +70,7 @@ from mojo_rl.physics3d.gpu.constants import (
 
 comptime DTYPE = DType.float64
 comptime M = DMDogStandWalkModel
+comptime MD = ModelDims[M]
 comptime NQ = M.NQ
 comptime NV = M.NV
 comptime N_SETTLE: Int = 400
@@ -103,9 +105,9 @@ def test_dog_contact_jacobian_matches_mujoco() raises:
     )
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
@@ -118,12 +120,7 @@ def test_dog_contact_jacobian_matches_mujoco() raises:
     # are computed at the top of `step`, before anything integrates), and
     # `_finalize_env` does not touch either — unlike `M`, `L`, `D`, `fnet` and
     # `qacc_ws`, which it reuses. Same survivor set as the staged probe.
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER]()
     integ.step["cpu"](d, mf)
 
     comptime L_NB3 = Layout.row_major(1, M.NBODY * 3)

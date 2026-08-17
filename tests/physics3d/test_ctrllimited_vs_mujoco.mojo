@@ -57,6 +57,7 @@ from mojo_rl.physics3d.gpu.constants import (
     MODEL_ACT_TENDON_SIZE,
 )
 from mojo_rl.physics3d.fields import Data, SpecFields, Dims
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 
@@ -108,6 +109,7 @@ comptime M = ModelDefFromXML[
     timestep=pm.TIMESTEP,
     noslip_iter=pm.NOSLIP_ITER,
 ]
+comptime MD = ModelDims[M]
 
 # `ctrl` well outside every range in the fixture, so the clamp — if it fires —
 # is unmistakable. The pre-fix answers were [1, 1, 3, 1, 1, 0]: four of six
@@ -198,7 +200,7 @@ def test_apply_actions_cpu_matches_mujoco() raises:
     var mujoco = Python.import_module("mujoco")
     var mj = _mj_qfrc(mujoco, PROBE_CTRL)
 
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
     var actions = List[Float64]()
     for _ in range(M.nact):
@@ -259,7 +261,7 @@ def test_apply_actions_gpu_matches_cpu() raises:
     comptime B = 2
     comptime AD = M.nact
 
-    var d32 = Data[GT, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var d32 = Data[GT, MD, 1]()
     M.reset_data[GT](sf, d32)
     var actions_c = List[Float64]()
     for _ in range(M.nact):
@@ -288,7 +290,7 @@ def test_apply_actions_gpu_matches_cpu() raises:
     t_act.n = B * AD
     t_act.upload(ctx)
 
-    var sfg = SpecFields[GT, Dims[nact=M.NACT, nten=M.NTEN_F, nq=M.NQ, nv=M.NV, nkey=M.NKEY, njoint=M.NJOINT]]()
+    var sfg = SpecFields[GT, MD]()
     M.init_spec_fields[GT](ctx, sfg)
     M.apply_actions_kernel_gpu[GT, B, AD](
         ctx,

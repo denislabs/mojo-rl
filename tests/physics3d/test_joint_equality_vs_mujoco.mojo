@@ -228,6 +228,23 @@ def _check_rows[M: ModelDefFromXML](
     xml: String, label: String, q1: Float64, q2: Float64
 ) raises:
     """Build our single row at a perturbed pose and diff against `efc_*`."""
+    comptime MD = Dims[
+        nq=M.NQ,
+        nv=M.NV,
+        nbody=M.NBODY,
+        njoint=M.NJOINT,
+        ngeom=M.NGEOM,
+        nsite=M.NSITE,
+        max_contacts=M.MAX_CONTACTS,
+        nequality=M.MAX_EQUALITY,
+        ntendon=M.MAX_TENDON,
+        nexclude=M.NEXCLUDE,
+        nmesh_verts=0,
+        npair=M.NPAIR,
+        nact=M.NACT,
+        nten=M.NTEN_F,
+        nkey=M.NKEY,
+    ]
     var sf = M.make_spec_fields[DTYPE]()
     var mujoco = Python.import_module("mujoco")
     var m = mujoco.MjModel.from_xml_string(xml)
@@ -238,8 +255,8 @@ def _check_rows[M: ModelDefFromXML](
     assert_true(Int(py=dat.nefc) == 1, label + ": expected 1 efc row")
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0, npair=M.NPAIR]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
     assert_true(
         M.MAX_EQUALITY == 1,
         label + ": MAX_EQUALITY is not 1 — the equality slab is unsized and"
@@ -251,14 +268,14 @@ def _check_rows[M: ModelDefFromXML](
         label + ": our EQ_IDX_TYPE does not match MuJoCo's eq_type",
     )
 
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
     d.qpos.data[0] = q1
     d.qpos.data[1] = q2
     for i in range(M.NV):
         d.qvel.data[i] = 0
 
-    var sc = DynamicsScratch[DTYPE, Dims[nv=M.NV, nbody=M.NBODY], 1]()
+    var sc = DynamicsScratch[DTYPE, MD, 1]()
     forward_kinematics["cpu"](d, mf, None)
     compute_body_velocities["cpu"](d, mf, None)
     compute_subtree_com["cpu"](d, mf, None)
@@ -359,23 +376,31 @@ def test_single_joint_form_matches_mujoco() raises:
 
 
 def _our_roll[M: ModelDefFromXML]() raises -> Tuple[Float64, Float64]:
+    comptime MD_2 = Dims[
+        nq=M.NQ,
+        nv=M.NV,
+        nbody=M.NBODY,
+        njoint=M.NJOINT,
+        ngeom=M.NGEOM,
+        nsite=M.NSITE,
+        max_contacts=M.MAX_CONTACTS,
+        nequality=M.MAX_EQUALITY,
+        ntendon=M.MAX_TENDON,
+        nexclude=M.NEXCLUDE,
+        nmesh_verts=0,
+        npair=M.NPAIR,
+        nact=M.NACT,
+        nten=M.NTEN_F,
+        nkey=M.NKEY,
+    ]
     var sf = M.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0, npair=M.NPAIR]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD_2]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD_2, 1]()
     M.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER,
-        # By keyword: `NPAIR` is the LAST integrator parameter, not a
-        # neighbour of `NEXCLUDE`, so a positional slot here would land in
-        # `CONE_TYPE`.
-        NPAIR = M.NPAIR,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD_2, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER]()
     # ⚠ CONTACTS=True is load-bearing: the constraint seam only runs on that
     # branch, so with CONTACTS=False this returns the uncoupled answer no
     # matter what the solvers do.

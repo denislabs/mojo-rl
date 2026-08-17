@@ -62,6 +62,7 @@ from mojo_rl.envs.dm_control.manipulation_reach_def import (
     ReachSiteFeaturesModel,
 )
 from mojo_rl.physics3d.fields import actuator_column
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     ACT_IDX_CTRL_MIN,
     ACT_IDX_CTRL_MAX,
@@ -70,6 +71,7 @@ from mojo_rl.physics3d.gpu.constants import (
 comptime DTYPE = DType.float64
 comptime M = ReachSiteFeaturesModel
 comptime NMESH_VERTS: Int = 60000
+comptime MD = ModelDims[M, 60000]
 comptime FK_TOL: Float64 = 1e-9
 
 
@@ -150,9 +152,9 @@ def test_manipulation_reach_def_matches_mujoco() raises:
 
     # ── 1/3. it builds, and the built model reproduces MuJoCo's FK ───────
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=M.NPAIR]]()
-    M.init_fields[DTYPE, NMESH_VERTS](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
 
     for i in range(M.NQ):
         var qv = 0.11 * Float64(i + 1) - 0.4

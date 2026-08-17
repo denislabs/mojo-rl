@@ -36,6 +36,7 @@ from mojo_rl.physics3d.dynamics.fluid_forces import (
     compute_fluid_forces,
 )
 from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DT = DType.float32
 comptime NQ = SwimmerModel.NQ
@@ -48,6 +49,7 @@ comptime NEQ = SwimmerModel.MAX_EQUALITY
 comptime NTD = SwimmerModel.MAX_TENDON
 comptime NSITE = SwimmerModel.NSITE
 comptime NEXCL = SwimmerModel.NEXCLUDE
+comptime MD = ModelDims[SwimmerModel]
 comptime CONE = SwimmerModel.CONE_TYPE
 comptime BATCH = 1
 
@@ -62,40 +64,30 @@ def main() raises:
     var ctx = DeviceContext()
 
     # === Fields model + data ===
-    var mf = Model[DT, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
-    SwimmerModel.init_fields[DT, 0](ctx, mf)
+    var mf = Model[DT, MD]()
+    SwimmerModel.init_fields[DT](ctx, mf)
 
-    var d = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var d = Data[DT, MD, BATCH]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DT]((i * 3) % 5 - 2) / 20.0
     for i in range(NV):
         d.qvel.data[i] = _qvel(i)
     d.upload_all(ctx)
 
-    var scratch = DynamicsScratch[DT, Dims[nv=NV, nbody=NBODY], BATCH]()
+    var scratch = DynamicsScratch[DT, MD, BATCH]()
     scratch.upload_all(ctx)
 
     # Kinematics chain that populates the fluid inputs (GPU).
-    forward_kinematics[
-        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, ctx)
-    compute_body_velocities[
-        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, ctx)
-    compute_subtree_com[
-        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, ctx)
-    compute_cdof[
-        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, scratch, ctx)
+    forward_kinematics["gpu", DT, BATCH=BATCH](d, mf, ctx)
+    compute_body_velocities["gpu", DT, BATCH=BATCH](d, mf, ctx)
+    compute_subtree_com["gpu", DT, BATCH=BATCH](d, mf, ctx)
+    compute_cdof["gpu", DT, BATCH=BATCH](d, mf, scratch, ctx)
 
     # Zero fnet, apply fluid (GPU).
     for i in range(NV):
         scratch.fnet.data[i] = 0
     scratch.fnet.upload(ctx)
-    compute_fluid_forces[
-        "gpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, scratch, ctx)
+    compute_fluid_forces["gpu", DT, BATCH=BATCH](d, mf, scratch, ctx)
     scratch.fnet.download(ctx)
 
     # Download the kinematic inputs so the legacy routine sees identical values.
@@ -126,9 +118,7 @@ def main() raises:
     # === Part B: fields-CPU vs fields-GPU ===
     for i in range(NV):
         scratch.fnet.data[i] = 0
-    compute_fluid_forces[
-        "cpu", DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, BATCH,
-    ](d, mf, scratch, None)
+    compute_fluid_forces["cpu", DT, BATCH=BATCH](d, mf, scratch, None)
     var worst_b = Float64(0)
     for i in range(NV):
         var c = Float64(scratch.fnet.data[i])

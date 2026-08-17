@@ -41,7 +41,7 @@ from std.python import Python, PythonObject
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -50,6 +50,7 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import (
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 from mojo_rl.envs.hopper.hopper_xml import HopperModel
 from mojo_rl.envs.ant.ant_xml import AntModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.envs.dm_control.humanoid.humanoid_xml import (
     DMHumanoidModel,
 )
@@ -70,14 +71,15 @@ def _report(label: String, worst_v: Float64, worst_w: Float64) raises:
 
 def test_walker2d_body_velocities() raises:
     comptime M = Walker2dModel
+    comptime MD = ModelDims[M]
     var mj = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
     var model = mj.MjModel.from_xml_path("mojo_rl/envs/walker2d/assets/walker2d.xml")
     var data = mj.MjData(model)
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DType.float64, 0](ctx, mf)
-    var d = Data[DType.float64, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DType.float64, MD]()
+    M.init_fields[DType.float64](ctx, mf)
+    var d = Data[DType.float64, MD, 1]()
     var wv = Float64(0)
     var ww = Float64(0)
     var res = np.zeros(6)
@@ -92,16 +94,8 @@ def test_walker2d_body_velocities() raises:
             d.qvel.data[i] = v
             data.qvel[i] = v
         mj.mj_forward(model, data)
-        forward_kinematics[
-            "cpu", DType.float64, M.NQ, M.NV, M.NBODY, M.NJOINT,
-            M.MAX_CONTACTS, M.NGEOM, M.MAX_EQUALITY, M.MAX_TENDON,
-            M.NSITE, M.NEXCLUDE, 0, 1,
-        ](d, mf, None)
-        compute_body_velocities[
-            "cpu", DType.float64, M.NQ, M.NV, M.NBODY, M.NJOINT,
-            M.MAX_CONTACTS, M.NGEOM, M.MAX_EQUALITY, M.MAX_TENDON,
-            M.NSITE, M.NEXCLUDE, 0, 1,
-        ](d, mf, None)
+        forward_kinematics["cpu", DType.float64, BATCH=1](d, mf, None)
+        compute_body_velocities["cpu", DType.float64, BATCH=1](d, mf, None)
         for b in range(M.NBODY):
             mj.mj_objectVelocity(model, data, mj.mjtObj.mjOBJ_BODY, b, res, 0)
             for k in range(3):
@@ -120,14 +114,15 @@ def test_walker2d_body_velocities() raises:
 
 def test_hopper_body_velocities() raises:
     comptime M = HopperModel
+    comptime MD_2 = ModelDims[M]
     var mj = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
     var model = mj.MjModel.from_xml_path("mojo_rl/envs/hopper/assets/hopper.xml")
     var data = mj.MjData(model)
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DType.float64, 0](ctx, mf)
-    var d = Data[DType.float64, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DType.float64, MD_2]()
+    M.init_fields[DType.float64](ctx, mf)
+    var d = Data[DType.float64, MD_2, 1]()
     var wv = Float64(0)
     var ww = Float64(0)
     var res = np.zeros(6)
@@ -142,16 +137,8 @@ def test_hopper_body_velocities() raises:
             d.qvel.data[i] = v
             data.qvel[i] = v
         mj.mj_forward(model, data)
-        forward_kinematics[
-            "cpu", DType.float64, M.NQ, M.NV, M.NBODY, M.NJOINT,
-            M.MAX_CONTACTS, M.NGEOM, M.MAX_EQUALITY, M.MAX_TENDON,
-            M.NSITE, M.NEXCLUDE, 0, 1,
-        ](d, mf, None)
-        compute_body_velocities[
-            "cpu", DType.float64, M.NQ, M.NV, M.NBODY, M.NJOINT,
-            M.MAX_CONTACTS, M.NGEOM, M.MAX_EQUALITY, M.MAX_TENDON,
-            M.NSITE, M.NEXCLUDE, 0, 1,
-        ](d, mf, None)
+        forward_kinematics["cpu", DType.float64, BATCH=1](d, mf, None)
+        compute_body_velocities["cpu", DType.float64, BATCH=1](d, mf, None)
         for b in range(M.NBODY):
             mj.mj_objectVelocity(model, data, mj.mjtObj.mjOBJ_BODY, b, res, 0)
             for k in range(3):
@@ -172,14 +159,15 @@ def test_ant_body_velocities() raises:
     """Ant has a FREE-joint root, so this covers the free branch (which
     overwrites v/w outright) as well as the hinge chain below it."""
     comptime M = AntModel
+    comptime MD_3 = ModelDims[M]
     var mj = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
     var model = mj.MjModel.from_xml_path("mojo_rl/envs/ant/assets/ant.xml")
     var data = mj.MjData(model)
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DType.float64, 0](ctx, mf)
-    var d = Data[DType.float64, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DType.float64, MD_3]()
+    M.init_fields[DType.float64](ctx, mf)
+    var d = Data[DType.float64, MD_3, 1]()
     var wv = Float64(0)
     var ww = Float64(0)
     var res = np.zeros(6)
@@ -209,16 +197,8 @@ def test_ant_body_velocities() raises:
             d.qvel.data[i] = v
             data.qvel[i] = v
         mj.mj_forward(model, data)
-        forward_kinematics[
-            "cpu", DType.float64, M.NQ, M.NV, M.NBODY, M.NJOINT,
-            M.MAX_CONTACTS, M.NGEOM, M.MAX_EQUALITY, M.MAX_TENDON,
-            M.NSITE, M.NEXCLUDE, 0, 1,
-        ](d, mf, None)
-        compute_body_velocities[
-            "cpu", DType.float64, M.NQ, M.NV, M.NBODY, M.NJOINT,
-            M.MAX_CONTACTS, M.NGEOM, M.MAX_EQUALITY, M.MAX_TENDON,
-            M.NSITE, M.NEXCLUDE, 0, 1,
-        ](d, mf, None)
+        forward_kinematics["cpu", DType.float64, BATCH=1](d, mf, None)
+        compute_body_velocities["cpu", DType.float64, BATCH=1](d, mf, None)
         for b in range(M.NBODY):
             mj.mj_objectVelocity(model, data, mj.mjtObj.mjOBJ_BODY, b, res, 0)
             for k in range(3):
@@ -242,14 +222,15 @@ def test_humanoid_body_velocities() raises:
     model here whose joint axes need the running frame — with the parent
     quat it is out by ~0.4 rad/s on the middle joint of a triple."""
     comptime M = DMHumanoidModel
+    comptime MD_4 = ModelDims[M]
     var mj = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
     var model = mj.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/humanoid.xml")
     var data = mj.MjData(model)
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DType.float64, 0](ctx, mf)
-    var d = Data[DType.float64, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DType.float64, MD_4]()
+    M.init_fields[DType.float64](ctx, mf)
+    var d = Data[DType.float64, MD_4, 1]()
     var wv = Float64(0)
     var ww = Float64(0)
     var res = np.zeros(6)
@@ -280,16 +261,8 @@ def test_humanoid_body_velocities() raises:
             d.qvel.data[i] = v
             data.qvel[i] = v
         mj.mj_forward(model, data)
-        forward_kinematics[
-            "cpu", DType.float64, M.NQ, M.NV, M.NBODY, M.NJOINT,
-            M.MAX_CONTACTS, M.NGEOM, M.MAX_EQUALITY, M.MAX_TENDON,
-            M.NSITE, M.NEXCLUDE, 0, 1,
-        ](d, mf, None)
-        compute_body_velocities[
-            "cpu", DType.float64, M.NQ, M.NV, M.NBODY, M.NJOINT,
-            M.MAX_CONTACTS, M.NGEOM, M.MAX_EQUALITY, M.MAX_TENDON,
-            M.NSITE, M.NEXCLUDE, 0, 1,
-        ](d, mf, None)
+        forward_kinematics["cpu", DType.float64, BATCH=1](d, mf, None)
+        compute_body_velocities["cpu", DType.float64, BATCH=1](d, mf, None)
         for b in range(M.NBODY):
             mj.mj_objectVelocity(model, data, mj.mjtObj.mjOBJ_BODY, b, res, 0)
             for k in range(3):

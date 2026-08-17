@@ -20,7 +20,7 @@ from ..kinematics.quat_math import (
     gpu_axis_angle_to_quat,
 )
 from ..joint_types import JNT_FREE, JNT_SLIDE, JNT_HINGE
-from ..fields import Data, Model, DynamicsScratch, Dims
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -422,38 +422,28 @@ def _cdof_fields_mt_kernel[
 
 
 def compute_cdof[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     BATCH: Int = 1,
     PARALLEL: Bool = False,
     # Appended, not grouped with NEXCLUDE — see `fields.Model`.
-    NPAIR: Int = 0,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH],
-    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """`cdof` from FK products, both targets, one body. Output goes to the
     owned `scratch.cdof` tensor. PARALLEL=True (GPU only): cooperative
     flat-parallel kernel, bit-exact vs serial. CPU ignores PARALLEL."""
-    comptime L_QPOS = Layout.row_major(BATCH, NQ)
-    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
-    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
-    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
-    comptime L_CDOF = Layout.row_major(BATCH, NV * 6)
+    comptime L_QPOS = Layout.row_major(BATCH, D.NQ)
+    comptime L_B3 = Layout.row_major(BATCH, D.NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, D.NBODY * 4)
+    comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
+    comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
 
     comptime if target == "cpu":
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
@@ -464,14 +454,14 @@ def compute_cdof[
         var joints_v = m.joints.lt["cpu", L_JOINT]()
         var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
         for e in range(BATCH):
-            _cdof_env[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
+            _cdof_env[DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, BATCH](
                 e, qpos_v, xpos_v, xquat_v, stcom_v, bodies_v, joints_v, cdof_v
             )
     elif PARALLEL:
         var c = ctx.value()
-        comptime MT_T = NV
+        comptime MT_T = D.NV
         c.enqueue_function[
-            _cdof_fields_mt_kernel[DTYPE, NQ, NV, NBODY, NJOINT, BATCH, MT_T]
+            _cdof_fields_mt_kernel[DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, BATCH, MT_T]
         ](
             d.qpos.lt["gpu", L_QPOS](),
             d.xpos.lt["gpu", L_B3](),
@@ -487,7 +477,7 @@ def compute_cdof[
         var c = ctx.value()
         comptime BLOCKS = (BATCH + CDOF_TPB - 1) // CDOF_TPB
         c.enqueue_function[
-            _cdof_fields_kernel[DTYPE, NQ, NV, NBODY, NJOINT, BATCH]
+            _cdof_fields_kernel[DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, BATCH]
         ](
             d.qpos.lt["gpu", L_QPOS](),
             d.xpos.lt["gpu", L_B3](),

@@ -373,17 +373,7 @@ def _finalize_kernel[
 # ── the stateful integrator ───────────────────────────────────────────────
 struct EulerIntegrator[
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     BATCH: Int = 1,
     SOLVER: StaticString = "pgs",
@@ -392,10 +382,6 @@ struct EulerIntegrator[
     RNE_POST: Bool = False,
     MAX_CONDIM: Int = 3,
     NOSLIP_ITER: Int = 0,
-    # ⚠ APPENDED, NOT GROUPED WITH `NEXCLUDE`. These are all `Int`, so a
-    # mid-list insertion silently shifts every positional instantiation
-    # in `mojo_rl/envs/` — see the same note on `fields.Model`.
-    NPAIR: Int = 0,
 ](Movable):
     """Owns its scratch; steps contact-free dynamics on either target. See
     module docstring for what is deliberately not yet ported.
@@ -408,21 +394,21 @@ struct EulerIntegrator[
     TARGETS NOW; it used to be GPU-only, which left every CPU caller on the
     dense kernel — 12.6× slower on Sawyer (NV=15, NBODY=34)."""
 
-    var scratch: DynamicsScratch[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY], Self.BATCH]
+    var scratch: DynamicsScratch[Self.DTYPE, Self.D, Self.BATCH]
     # Blocked-Newton Jacobian spill size — 0 unless `Je` overflows threadgroup
     # memory. Computed HERE (not by the caller) because this struct already
     # carries every dimension it depends on, and via `je_budget` so the buffer
     # and the kernel that indexes it cannot drift apart.
     comptime JE_WS = je_ws_size[
-        Self.DTYPE, Self.NV, Self.NJOINT, Self.NTENDON, Self.NEQUALITY,
-        Self.MAX_CONTACTS, Self.MAX_CONDIM,
+        Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.D.NTENDON, Self.D.NEQUALITY,
+        Self.D.MAX_CONTACTS, Self.MAX_CONDIM,
     ]()
 
-    var cscratch: ContactScratch[Self.DTYPE, Dims[nv=Self.NV, max_contacts=Self.MAX_CONTACTS], Self.BATCH, Self.JE_WS]
+    var cscratch: ContactScratch[Self.DTYPE, Self.D, Self.BATCH, Self.JE_WS]
 
     def __init__(out self) raises:
-        self.scratch = DynamicsScratch[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY], Self.BATCH]()
-        self.cscratch = ContactScratch[Self.DTYPE, Dims[nv=Self.NV, max_contacts=Self.MAX_CONTACTS], Self.BATCH, Self.JE_WS]()
+        self.scratch = DynamicsScratch[Self.DTYPE, Self.D, Self.BATCH]()
+        self.cscratch = ContactScratch[Self.DTYPE, Self.D, Self.BATCH, Self.JE_WS]()
 
     def prepare_gpu(mut self, ctx: DeviceContext) raises:
         """Allocate device buffers for the scratch (once, before stepping)."""
@@ -433,48 +419,23 @@ struct EulerIntegrator[
         target: StaticString, CONTACTS: Bool = True
     ](
         mut self,
-        mut d: Data[Self.DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], Self.BATCH],
-        mut m: Model[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY, njoint=Self.NJOINT, ngeom=Self.NGEOM, nequality=Self.NEQUALITY, ntendon=Self.NTENDON, nsite=Self.NSITE, nexclude=Self.NEXCLUDE, nmesh_verts=Self.NMESH_VERTS, npair=Self.NPAIR]],
+        mut d: Data[Self.DTYPE, Self.D, Self.BATCH],
+        mut m: Model[Self.DTYPE, Self.D],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         """One full contact-free Euler step."""
         var dt = m.meta.data[MODEL_META_IDX_TIMESTEP]
 
-        forward_kinematics[
-            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
-            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-        ](d, m, ctx)
-        compute_body_velocities[
-            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
-            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-        ](d, m, ctx)
-        compute_subtree_com[
-            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
-            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
-        ](d, m, ctx)
-        compute_cdof[
-            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
-            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-        ](d, m, self.scratch, ctx)
-        compute_mass_matrix[
-            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
-            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-            TREEWALK = Self.CRBA_TREEWALK,
-        ](d, m, self.scratch, ctx)
+        forward_kinematics[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, ctx)
+        compute_body_velocities[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, ctx)
+        compute_subtree_com[target, Self.DTYPE, BATCH=Self.BATCH](d, m, ctx)
+        compute_cdof[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, self.scratch, ctx)
+        compute_mass_matrix[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU, TREEWALK = Self.CRBA_TREEWALK](d, m, self.scratch, ctx)
 
-        comptime L_JOINT = Layout.row_major(Self.NJOINT, MODEL_JOINT_SIZE)
-        comptime L_M = Layout.row_major(Self.BATCH, Self.NV * Self.NV)
-        comptime L_NV = Layout.row_major(Self.BATCH, Self.NV)
-        comptime L_QPOS = Layout.row_major(Self.BATCH, Self.NQ)
+        comptime L_JOINT = Layout.row_major(Self.D.NJOINT, MODEL_JOINT_SIZE)
+        comptime L_M = Layout.row_major(Self.BATCH, Self.D.NV * Self.D.NV)
+        comptime L_NV = Layout.row_major(Self.BATCH, Self.D.NV)
+        comptime L_QPOS = Layout.row_major(Self.BATCH, Self.D.NQ)
         comptime BLOCKS = (Self.BATCH + EU_TPB - 1) // EU_TPB
 
         comptime if target == "cpu":
@@ -482,11 +443,11 @@ struct EulerIntegrator[
             var M_v = self.scratch.M.lt["cpu", L_M]()
             for e in range(Self.BATCH):
                 _armature_env[
-                    Self.DTYPE, Self.NV, Self.NJOINT, Self.BATCH
+                    Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.BATCH
                 ](e, joints_v, M_v)
         else:
             ctx.value().enqueue_function[
-                _armature_kernel[Self.DTYPE, Self.NV, Self.NJOINT, Self.BATCH]
+                _armature_kernel[Self.DTYPE, Self.D.NV, Self.D.NJOINT, Self.BATCH]
             ](
                 m.joints.lt["gpu", L_JOINT](),
                 self.scratch.M.lt["gpu", L_M](),
@@ -496,12 +457,7 @@ struct EulerIntegrator[
 
         ldl_factor[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](self.scratch, ctx)
         compute_m_inv[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](self.scratch, ctx)
-        compute_bias_forces_rne[
-            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
-            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
-            PARALLEL = Self.PARALLEL_GPU,
-        ](d, m, self.scratch, ctx)
+        compute_bias_forces_rne[target, Self.DTYPE, BATCH=Self.BATCH, PARALLEL = Self.PARALLEL_GPU](d, m, self.scratch, ctx)
 
         comptime if target == "cpu":
             var qpos_v = d.qpos.lt["cpu", L_QPOS]()
@@ -512,12 +468,12 @@ struct EulerIntegrator[
             var fnet_v = self.scratch.fnet.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
                 _fnet_passive_env[
-                    Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH
+                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH
                 ](e, qpos_v, qvel_v, qfrc_v, joints_v2, bias_v, fnet_v)
         else:
             ctx.value().enqueue_function[
                 _fnet_passive_kernel[
-                    Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH
+                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH
                 ]
             ](
                 d.qpos.lt["gpu", L_QPOS](),
@@ -531,11 +487,7 @@ struct EulerIntegrator[
             )
 
         # 8c. Fluid drag into fnet (no-op unless meta density/viscosity > 0).
-        compute_fluid_forces[
-            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
-            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
-        ](d, m, self.scratch, ctx)
+        compute_fluid_forces[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
 
         ldl_solve[target, Self.DTYPE, BATCH=Self.BATCH](self.scratch, ctx)
 
@@ -544,12 +496,12 @@ struct EulerIntegrator[
             var qacc_v = d.qacc.lt["cpu", L_NV]()
             var qacc_c_v = self.scratch.qacc_constrained.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
-                _qacc_writeback_env[Self.DTYPE, Self.NV, Self.BATCH](
+                _qacc_writeback_env[Self.DTYPE, Self.D.NV, Self.BATCH](
                     e, qacc_ws_v, qacc_v, qacc_c_v
                 )
         else:
             ctx.value().enqueue_function[
-                _qacc_writeback_kernel[Self.DTYPE, Self.NV, Self.BATCH]
+                _qacc_writeback_kernel[Self.DTYPE, Self.D.NV, Self.BATCH]
             ](
                 self.scratch.qacc_ws.lt["gpu", L_NV](),
                 d.qacc.lt["gpu", L_NV](),
@@ -568,12 +520,7 @@ struct EulerIntegrator[
             # Auto broadphase = legacy production (SAP for NGEOM >= 16,
             # O(N^2) otherwise; same routing as the legacy step kernel's
             # detect_contacts_auto_gpu call).
-            detect_contacts_auto[
-                target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
-                Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
-                Self.BATCH,
-            ](d, m, ctx)
+            detect_contacts_auto[target, Self.DTYPE, BATCH=Self.BATCH](d, m, ctx)
             comptime assert (
                 Self.SOLVER == "pgs"
                 or Self.SOLVER == "newton"
@@ -584,57 +531,21 @@ struct EulerIntegrator[
                 " or 'island'"
             )
             comptime if Self.SOLVER == "newton":
-                solve_newton[
-                    target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                    Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
-                    Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
-                    Self.NMESH_VERTS, Self.CONE_TYPE, Self.BATCH,
-                    MAX_CONDIM=Self.MAX_CONDIM,
-                    NOSLIP_ITER=Self.NOSLIP_ITER,
-                    JE_WS=Self.JE_WS,
-                ](d, m, self.scratch, self.cscratch, ctx)
+                solve_newton[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH, MAX_CONDIM=Self.MAX_CONDIM, NOSLIP_ITER=Self.NOSLIP_ITER, JE_WS=Self.JE_WS](d, m, self.scratch, self.cscratch, ctx)
             else:
                 comptime if Self.SOLVER == "cg":
-                    solve_cg[
-                        target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                        Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
-                        Self.NEQUALITY, Self.NTENDON, Self.NSITE,
-                        Self.NEXCLUDE, Self.NMESH_VERTS, Self.CONE_TYPE,
-                        Self.BATCH,
-                    ](d, m, self.scratch, self.cscratch, ctx)
+                    solve_cg[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
                 else:
                     comptime if Self.SOLVER == "island":
-                        solve_island_pgs[
-                            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                            Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
-                            Self.NEQUALITY, Self.NTENDON, Self.NSITE,
-                            Self.NEXCLUDE, Self.NMESH_VERTS, Self.CONE_TYPE,
-                            Self.BATCH,
-                        ](d, m, self.scratch, self.cscratch, ctx)
+                        solve_island_pgs[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
                     else:
-                        solve_contacts[
-                            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                            Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
-                            Self.NEQUALITY, Self.NTENDON, Self.NSITE,
-                            Self.NEXCLUDE, Self.NMESH_VERTS, Self.CONE_TYPE,
-                            Self.BATCH,
-                        ](d, m, self.scratch, self.cscratch, ctx)
+                        solve_contacts[target, Self.DTYPE, CONE_TYPE=Self.CONE_TYPE, BATCH=Self.BATCH](d, m, self.scratch, self.cscratch, ctx)
         else:
-            solve_limits[
-                target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
-                Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
-                Self.BATCH,
-            ](d, m, self.scratch, ctx)
+            solve_limits[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
             # Dry-friction dof rows. With CONTACTS=False no solver runs, so
             # this is the only place they can be applied; with contacts the
             # solvers call `_friction_env` themselves beside their limit rows.
-            solve_friction[
-                target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
-                Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
-                Self.BATCH,
-            ](d, m, self.scratch, ctx)
+            solve_friction[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
 
         # `mj_sensorAcc` sits exactly here in MuJoCo: after fwdConstraint,
         # before the integrator. Every input the stage needs (FK products,
@@ -642,12 +553,7 @@ struct EulerIntegrator[
         # point and stale one line later — `_finalize_env` overwrites
         # d.qacc with the implicit-damping re-solve and moves qpos/qvel on.
         comptime if Self.RNE_POST:
-            compute_rne_post[
-                target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
-                Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
-                Self.BATCH,
-            ](d, m, self.scratch, ctx)
+            compute_rne_post[target, Self.DTYPE, BATCH=Self.BATCH](d, m, self.scratch, ctx)
 
             # ⚠ AND THE FK PRODUCTS THAT GO WITH THEM — defect 19.
             #
@@ -666,8 +572,8 @@ struct EulerIntegrator[
             # the inputs are frozen instead, at the same instant and under the
             # same `RNE_POST` gate that writes `cacc`. A model without the
             # stage pays nothing.
-            comptime N_SITE_ACC = Self.BATCH * Self.NSITE * 3
-            comptime N_QUAT_ACC = Self.BATCH * Self.NBODY * 4
+            comptime N_SITE_ACC = Self.BATCH * Self.D.NSITE * 3
+            comptime N_QUAT_ACC = Self.BATCH * Self.D.NBODY * 4
             comptime if target == "cpu":
                 comptime if N_SITE_ACC > 0:
                     for i in range(N_SITE_ACC):
@@ -716,7 +622,7 @@ struct EulerIntegrator[
             var qacc_c_v3 = self.scratch.qacc_constrained.lt["cpu", L_NV]()
             for e in range(Self.BATCH):
                 _finalize_env[
-                    Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH
+                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH
                 ](
                     e, dt, qpos_v3, qvel_v3, qacc_v3, joints_v3, M_v3, L_v3,
                     D_v3, fnet_v3, qacc_ws_v3, qacc_c_v3,
@@ -724,7 +630,7 @@ struct EulerIntegrator[
         else:
             ctx.value().enqueue_function[
                 _finalize_kernel[
-                    Self.DTYPE, Self.NQ, Self.NV, Self.NJOINT, Self.BATCH
+                    Self.DTYPE, Self.D.NQ, Self.D.NV, Self.D.NJOINT, Self.BATCH
                 ]
             ](
                 dt,

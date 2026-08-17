@@ -137,7 +137,7 @@ from ..constraints.scalar_rows import (
     DOF_SOLIMP_DMAX,
 )
 from ..constraints.equality_tendon import build_weld_equality_rows
-from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims
+from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims, DimsLike
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_BODY_SIZE,
@@ -2328,19 +2328,10 @@ def _newton_solve_fields_kernel[
 
 
 def solve_newton[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     BATCH: Int = 1,
     MAX_CONDIM: Int = 3,
@@ -2349,12 +2340,11 @@ def solve_newton[
     # from `je_budget.je_ws_size` via the integrator — never computed here.
     JE_WS: Int = 0,
     # Appended, not grouped with NEXCLUDE — see `fields.Model`.
-    NPAIR: Int = 0,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH],
-    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
-    mut cscratch: ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MAX_CONTACTS], BATCH, JE_WS],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
+    mut cscratch: ContactScratch[DTYPE, D, BATCH, JE_WS],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Primal Newton contact solve into `scratch.qacc_constrained` (+ solved
@@ -2370,27 +2360,27 @@ def solve_newton[
     Newton uses a PREFIX (35*MC + 6*MC*NV) of the PGS-sized
     `cscratch.solver` tensor (81*MC + 12*MC*NV) — no separate scratch.
     """
-    comptime MC = _max_one[MAX_CONTACTS]()
-    comptime SOLVER_WS = 81 * MC + 12 * MC * NV
+    comptime MC = _max_one[D.MAX_CONTACTS]()
+    comptime SOLVER_WS = 81 * MC + 12 * MC * D.NV
 
-    comptime L_NV = Layout.row_major(BATCH, NV)
-    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
-    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
-    comptime L_CON = Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_B3 = Layout.row_major(BATCH, D.NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, D.NBODY * 4)
+    comptime L_CON = Layout.row_major(BATCH, D.MAX_CONTACTS * CONTACT_SIZE)
     comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
-    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
+    comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
     comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
-    comptime L_EQ = Layout.row_major(NEQUALITY, MODEL_EQ_SIZE)
-    comptime L_TEN = Layout.row_major(NTENDON, MODEL_TENDON_SIZE)
-    comptime L_SITE = Layout.row_major(NSITE, MODEL_SITE_SIZE)
-    comptime L_BW = Layout.row_major(NBODY, 2)
-    comptime L_CDOF = Layout.row_major(BATCH, NV * 6)
-    comptime L_M = Layout.row_major(BATCH, NV * NV)
+    comptime L_EQ = Layout.row_major(D.NEQUALITY, MODEL_EQ_SIZE)
+    comptime L_TEN = Layout.row_major(D.NTENDON, MODEL_TENDON_SIZE)
+    comptime L_SITE = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
+    comptime L_BW = Layout.row_major(D.NBODY, 2)
+    comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
+    comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
     comptime L_SOLVER = Layout.row_major(BATCH, SOLVER_WS)
 
-    comptime L_QPOS = Layout.row_major(BATCH, NQ)
-    comptime L_DW = Layout.row_major(NV)
+    comptime L_QPOS = Layout.row_major(BATCH, D.NQ)
+    comptime L_DW = Layout.row_major(D.NV)
 
     comptime if target == "cpu":
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
@@ -2416,15 +2406,15 @@ def solve_newton[
         for e in range(BATCH):
             _newton_solve_env[
                 DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                NGEOM,
-                NEQUALITY,
-                NTENDON,
-                NSITE,
+                D.NQ,
+                D.NV,
+                D.NBODY,
+                D.NJOINT,
+                D.MAX_CONTACTS,
+                D.NGEOM,
+                D.NEQUALITY,
+                D.NTENDON,
+                D.NSITE,
                 CONE_TYPE,
                 BATCH,
                 SOLVER_WS,
@@ -2446,14 +2436,7 @@ def solve_newton[
         var used_blocked = False
         comptime if CONE_TYPE == ConeType.PYRAMIDAL:
             if has_nvidia_gpu_accelerator():
-                solve_newton_blocked[
-                    "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-                    NEQUALITY, NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, CONE_TYPE,
-                    BATCH,
-                    MAX_CONDIM=MAX_CONDIM,
-                    NOSLIP_ITER=NOSLIP_ITER,
-                    JE_WS=JE_WS,
-                ](d, m, scratch, cscratch, ctx)
+                solve_newton_blocked["gpu", DTYPE, CONE_TYPE=CONE_TYPE, BATCH=BATCH, MAX_CONDIM=MAX_CONDIM, NOSLIP_ITER=NOSLIP_ITER, JE_WS=JE_WS](d, m, scratch, cscratch, ctx)
                 used_blocked = True
         if not used_blocked:
             var c = ctx.value()
@@ -2461,15 +2444,15 @@ def solve_newton[
             c.enqueue_function[
                 _newton_solve_fields_kernel[
                     DTYPE,
-                    NQ,
-                    NV,
-                    NBODY,
-                    NJOINT,
-                    MAX_CONTACTS,
-                    NGEOM,
-                    NEQUALITY,
-                    NTENDON,
-                    NSITE,
+                    D.NQ,
+                    D.NV,
+                    D.NBODY,
+                    D.NJOINT,
+                    D.MAX_CONTACTS,
+                    D.NGEOM,
+                    D.NEQUALITY,
+                    D.NTENDON,
+                    D.NSITE,
                     CONE_TYPE,
                     BATCH,
                     SOLVER_WS,
@@ -3767,19 +3750,10 @@ def _newton_blocked_fields_kernel[
 
 
 def solve_newton_blocked[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     CONE_TYPE: Int = ConeType.PYRAMIDAL,
     BATCH: Int = 1,
     MAX_CONDIM: Int = 3,
@@ -3788,12 +3762,11 @@ def solve_newton_blocked[
     # from `je_budget.je_ws_size` via the integrator — never computed here.
     JE_WS: Int = 0,
     # Appended, not grouped with NEXCLUDE — see `fields.Model`.
-    NPAIR: Int = 0,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH],
-    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
-    mut cscratch: ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MAX_CONTACTS], BATCH, JE_WS],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
+    mut cscratch: ContactScratch[DTYPE, D, BATCH, JE_WS],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """PYRAMIDAL-only ONE-ENV-PER-BLOCK Newton contact solve (fields port of
@@ -3805,31 +3778,31 @@ def solve_newton_blocked[
     launch is meaningful; the CPU branch falls back to the single-source per-env
     body (`_newton_solve_env`, identical PYRAMIDAL math) for parity.
     """
-    comptime MC = _max_one[MAX_CONTACTS]()
-    comptime SOLVER_WS = 81 * MC + 12 * MC * NV
+    comptime MC = _max_one[D.MAX_CONTACTS]()
+    comptime SOLVER_WS = 81 * MC + 12 * MC * D.NV
 
-    comptime L_NV = Layout.row_major(BATCH, NV)
-    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
-    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
-    comptime L_CON = Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_B3 = Layout.row_major(BATCH, D.NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, D.NBODY * 4)
+    comptime L_CON = Layout.row_major(BATCH, D.MAX_CONTACTS * CONTACT_SIZE)
     comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
-    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
+    comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
     comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
-    comptime L_EQ = Layout.row_major(NEQUALITY, MODEL_EQ_SIZE)
-    comptime L_TEN = Layout.row_major(NTENDON, MODEL_TENDON_SIZE)
-    comptime L_SITE = Layout.row_major(NSITE, MODEL_SITE_SIZE)
-    comptime L_BW = Layout.row_major(NBODY, 2)
-    comptime L_CDOF = Layout.row_major(BATCH, NV * 6)
-    comptime L_M = Layout.row_major(BATCH, NV * NV)
+    comptime L_EQ = Layout.row_major(D.NEQUALITY, MODEL_EQ_SIZE)
+    comptime L_TEN = Layout.row_major(D.NTENDON, MODEL_TENDON_SIZE)
+    comptime L_SITE = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
+    comptime L_BW = Layout.row_major(D.NBODY, 2)
+    comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
+    comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
     comptime L_SOLVER = Layout.row_major(BATCH, SOLVER_WS)
 
     # ⚠ FLOORED AT 1 to match ContactScratch.JE_ELEMS — a zero-extent
     # operand segfaults instead of being an empty tensor.
     comptime JE_ELEMS = JE_WS if JE_WS > 0 else 1
     comptime L_JE_WS = Layout.row_major(BATCH, JE_ELEMS)
-    comptime L_QPOS = Layout.row_major(BATCH, NQ)
-    comptime L_DW = Layout.row_major(NV)
+    comptime L_QPOS = Layout.row_major(BATCH, D.NQ)
+    comptime L_DW = Layout.row_major(D.NV)
 
     comptime if target == "cpu":
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
@@ -3854,8 +3827,8 @@ def solve_newton_blocked[
         var sol_v = cscratch.solver.lt["cpu", L_SOLVER]()
         for e in range(BATCH):
             _newton_solve_env[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
-                NTENDON, NSITE, CONE_TYPE, BATCH, SOLVER_WS,
+                DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, D.MAX_CONTACTS, D.NGEOM, D.NEQUALITY,
+                D.NTENDON, D.NSITE, CONE_TYPE, BATCH, SOLVER_WS,
  MAX_CONDIM,
  NOSLIP_ITER,
             ](
@@ -3867,8 +3840,8 @@ def solve_newton_blocked[
         var c = ctx.value()
         c.enqueue_function[
             _newton_blocked_fields_kernel[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
-                NTENDON, NSITE, CONE_TYPE, BATCH, SOLVER_WS,
+                DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, D.MAX_CONTACTS, D.NGEOM, D.NEQUALITY,
+                D.NTENDON, D.NSITE, CONE_TYPE, BATCH, SOLVER_WS,
                 MAX_CONDIM,
                 NOSLIP_ITER,
                 JE_WS,

@@ -39,6 +39,7 @@ from mojo_rl.envs.dm_control.point_mass import (
 )
 from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.kinematics.geom_xpos import geom_xpos
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -49,6 +50,7 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_BODY,
     GEOM_IDX_POS_Z,
 )
+comptime MD = ModelDims[DMPointMassModel]
 
 
 comptime Env = DMPointMassEasy[DType.float64]
@@ -105,10 +107,10 @@ def _setup() raises -> PythonObject:
     return Python.tuple(mujoco, model, data, tol)
 
 
-def _build_model() raises -> Model[DType.float64, Dims[nv=DMPointMassModel.NV, nbody=DMPointMassModel.NBODY, njoint=DMPointMassModel.NJOINT, ngeom=DMPointMassModel.NGEOM, nequality=DMPointMassModel.MAX_EQUALITY, ntendon=DMPointMassModel.MAX_TENDON, nsite=DMPointMassModel.NSITE, nexclude=DMPointMassModel.NEXCLUDE, nmesh_verts=0]]:
+def _build_model() raises -> Model[DType.float64, MD]:
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=DMPointMassModel.NV, nbody=DMPointMassModel.NBODY, njoint=DMPointMassModel.NJOINT, ngeom=DMPointMassModel.NGEOM, nequality=DMPointMassModel.MAX_EQUALITY, ntendon=DMPointMassModel.MAX_TENDON, nsite=DMPointMassModel.NSITE, nexclude=DMPointMassModel.NEXCLUDE, nmesh_verts=0]]()
-    DMPointMassModel.init_fields[DType.float64, 0](ctx, mf)
+    var mf = Model[DType.float64, MD]()
+    DMPointMassModel.init_fields[DType.float64](ctx, mf)
     return mf^
 
 

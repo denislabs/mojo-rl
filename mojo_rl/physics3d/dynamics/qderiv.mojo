@@ -24,7 +24,7 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_mul
 from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
-from ..fields import Data, Model, DynamicsScratch, ImplicitScratch, Dims
+from ..fields import Data, Model, DynamicsScratch, ImplicitScratch, Dims, DimsLike
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -803,33 +803,24 @@ def _rne_vel_derivative_fields_kernel[
 
 
 def compute_rne_vel_derivative[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int,
-    NEQUALITY: Int,
-    NTENDON: Int,
-    NSITE: Int,
-    NEXCLUDE: Int,
-    NMESH_VERTS: Int,
     BATCH: Int,
     # Appended, not grouped with NEXCLUDE — see `fields.Model`.
-    NPAIR: Int = 0,
+
+    D: DimsLike,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH],
-    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     # ⚠ `Dims[nv=NV, nbody=NBODY]` rather than a `D: DimsLike` parameter on
     # this function: the body reads NV/NBODY throughout and every caller
     # passes them positionally, so taking `D` here would pull those callers
     # into 1c. Two `Dims[...]` with equal arguments are ONE type, so this
     # matches whatever the caller built — and when the sweep gives this
     # function a real `D`, the adapter is deleted, not rewired.
-    mut iscratch: ImplicitScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
+    mut iscratch: ImplicitScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """`d(qfrc_bias)/d(qvel)` SUBTRACTED into iscratch.qderiv (caller pre-loads
@@ -837,17 +828,17 @@ def compute_rne_vel_derivative[
     scratch.cdof; both targets. NJOINT>0 required (njoint read from meta)."""
     var njoint = Int(m.meta.data[MODEL_META_IDX_NJOINT])
 
-    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
-    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
-    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
-    comptime L_NV = Layout.row_major(BATCH, NV)
-    comptime L_NV6 = Layout.row_major(BATCH, NV * 6)
-    comptime L_B10 = Layout.row_major(BATCH, NBODY * 10)
-    comptime L_B6 = Layout.row_major(BATCH, NBODY * 6)
-    comptime L_DCVEL = Layout.row_major(BATCH, NBODY * 6 * NV)
-    comptime L_DCDOF = Layout.row_major(BATCH, NV * 6 * NV)
-    comptime L_QD = Layout.row_major(BATCH, NV * NV)
+    comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
+    comptime L_B3 = Layout.row_major(BATCH, D.NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, D.NBODY * 4)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_NV6 = Layout.row_major(BATCH, D.NV * 6)
+    comptime L_B10 = Layout.row_major(BATCH, D.NBODY * 10)
+    comptime L_B6 = Layout.row_major(BATCH, D.NBODY * 6)
+    comptime L_DCVEL = Layout.row_major(BATCH, D.NBODY * 6 * D.NV)
+    comptime L_DCDOF = Layout.row_major(BATCH, D.NV * 6 * D.NV)
+    comptime L_QD = Layout.row_major(BATCH, D.NV * D.NV)
 
     comptime if target == "cpu":
         var bodies_v = m.bodies.lt["cpu", L_BODY]()
@@ -866,7 +857,7 @@ def compute_rne_vel_derivative[
         var dcfrcbody_v = iscratch.dcfrcbody.lt["cpu", L_DCVEL]()
         var qderiv_v = iscratch.qderiv.lt["cpu", L_QD]()
         for e in range(BATCH):
-            _rne_vel_derivative_env[DTYPE, NV, NBODY, NJOINT, BATCH](
+            _rne_vel_derivative_env[DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH](
                 e, njoint, bodies_v, joints_v, xipos_v, xquat_v, qvel_v,
                 cdof_v, cinert_v, cdof_sc_v, cvel_sc_v, cdof_dot_v, dcvel_v,
                 dcdofdot_v, dcacc_v, dcfrcbody_v, qderiv_v,
@@ -876,7 +867,7 @@ def compute_rne_vel_derivative[
         comptime BLOCKS = (BATCH + QD_TPB - 1) // QD_TPB
         c.enqueue_function[
             _rne_vel_derivative_fields_kernel[
-                DTYPE, NV, NBODY, NJOINT, BATCH
+                DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH
             ]
         ](
             Int64(njoint),

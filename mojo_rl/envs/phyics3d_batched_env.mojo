@@ -44,7 +44,7 @@ from mojo_rl.nn.core.target_storage import require_ctx
 from mojo_rl.deep_agents.training.batched_env import BatchedEnv
 
 from mojo_rl.physics3d.model.model_def import ModelDefLike
-from mojo_rl.physics3d.fields import Data, Model, SpecFields, Dims
+from mojo_rl.physics3d.fields import Data, Model, SpecFields, Dims, DimsLike
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
@@ -74,6 +74,7 @@ from mojo_rl.physics3d.gpu.constants import (
 )
 
 from .phyics3d_env_config import Phyics3dEnvConfig
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -121,6 +122,11 @@ struct Phyics3dBatchedEnv[
     comptime ACT_DIM: Int = Self.MODEL_DEF.ACTION_DIM
 
     comptime NQ: Int = Self.MODEL_DEF.NQ
+
+    # ⚠ ONE PROVIDER. `nmesh_verts` stays 0 — the batched path has never run
+    # mesh collision, and `ModelDims` defaults it to 0, so this is the same
+    # model it always built.
+    comptime MD = ModelDims[Self.MODEL_DEF]
     comptime NV: Int = Self.MODEL_DEF.NV
     comptime NBODY: Int = Self.MODEL_DEF.NBODY
     comptime NJOINT: Int = Self.MODEL_DEF.NJOINT
@@ -166,28 +172,22 @@ struct Phyics3dBatchedEnv[
     )
 
     # Fields path (the actual physics state)
-    var d: Data[DT, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MC, nsite=Self.NSITE], Self.N_ENVS]
-    var mf: Model[DT, Dims[nv=Self.NV, nbody=Self.NBODY, njoint=Self.NJOINT, ngeom=Self.NGEOM, nequality=Self.MODEL_DEF.MAX_EQUALITY, ntendon=Self.MODEL_DEF.MAX_TENDON, nsite=Self.NSITE, nexclude=Self.MODEL_DEF.NEXCLUDE, nmesh_verts=0, npair=Self.MODEL_DEF.NPAIR]]
+    var d: Data[DT, Self.MD, Self.N_ENVS]
+    var mf: Model[DT, Self.MD]
     # Actuation records (phase 1a.2/1a.3) — the operands
     # `apply_actions_kernel_gpu` reads where it used to read comptime
     # literals. Uploaded once at construction, like `mf`.
-    var sf: SpecFields[DT, Dims[nact=Self.MODEL_DEF.NACT, nten=Self.MODEL_DEF.NTEN_F, nq=Self.MODEL_DEF.NQ, nv=Self.MODEL_DEF.NV, nkey=Self.MODEL_DEF.NKEY, njoint=Self.MODEL_DEF.NJOINT]]
+    var sf: SpecFields[DT, Self.MD]
     # Both integrators are held; the step comptime-dispatches on
     # CONFIG.INTEGRATOR (HalfCheetah/Pusher/MetaWorld = Euler+Newton, the
     # other 9 envs = RK4+Newton). Only the SELECTED one is `prepare_gpu`'d, so
     # the unused one allocates NO device memory.
     comptime IntegRK4 = RK4Integrator[
-        DT, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MC, Self.NGEOM,
-        Self.MODEL_DEF.MAX_EQUALITY, Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
-        Self.MODEL_DEF.NEXCLUDE, 0, Self.MODEL_DEF.CONE_TYPE, Self.N_ENVS,
+        DT, Self.MD, Self.MODEL_DEF.CONE_TYPE, Self.N_ENVS,
         SOLVER = Self.SOLVER, PARALLEL_GPU = Self.PARALLEL_GPU,
         CRBA_TREEWALK = Self.CRBA_TREEWALK,
         MAX_CONDIM = Self.MODEL_DEF.MAX_CONDIM,
         NOSLIP_ITER = Self.MODEL_DEF.NOSLIP_ITER,
-        # By KEYWORD — `NPAIR` is the LAST integrator parameter, not a
-        # neighbour of `NEXCLUDE`. Same forwarding argument as MAX_CONDIM
-        # below: the default silently disables the feature.
-        NPAIR = Self.MODEL_DEF.NPAIR,
     ]
     # ⚠⚠ MAX_CONDIM AND NOSLIP_ITER MUST COME FROM THE MODEL, NOT THE DEFAULT.
     # Both were previously left unpassed, so every batched env silently ran
@@ -206,15 +206,12 @@ struct Phyics3dBatchedEnv[
     # Passing the model's own values is a NO-OP for every currently-gated env
     # (all are condim 3 / noslip 0) and correct for the ones that are not.
     comptime IntegEuler = EulerIntegrator[
-        DT, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MC, Self.NGEOM,
-        Self.MODEL_DEF.MAX_EQUALITY, Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
-        Self.MODEL_DEF.NEXCLUDE, 0, Self.MODEL_DEF.CONE_TYPE, Self.N_ENVS,
+        DT, Self.MD, Self.MODEL_DEF.CONE_TYPE, Self.N_ENVS,
         SOLVER = Self.SOLVER, PARALLEL_GPU = Self.PARALLEL_GPU,
         CRBA_TREEWALK = Self.CRBA_TREEWALK,
         RNE_POST = Self.CONFIG.RNE_POST,
         MAX_CONDIM = Self.MODEL_DEF.MAX_CONDIM,
         NOSLIP_ITER = Self.MODEL_DEF.NOSLIP_ITER,
-        NPAIR = Self.MODEL_DEF.NPAIR,
     ]
     var integ_rk4: Self.IntegRK4
     var integ_euler: Self.IntegEuler
@@ -276,7 +273,7 @@ struct Phyics3dBatchedEnv[
         # tensor (bodies/joints/meta/curriculum/…) — the reset FK, cfrc_ext,
         # and reward-curriculum hooks now read those directly.
         self.mf = type_of(self.mf)()
-        Self.MODEL_DEF.init_fields[DT, 0](ctx, self.mf)
+        Self.MODEL_DEF.init_fields[DT](ctx, self.mf)
         self.sf = type_of(self.sf)()
         Self.MODEL_DEF.init_spec_fields[DT](ctx, self.sf)
         # Fluid forces (density/viscosity) are handled by the fields
@@ -548,13 +545,7 @@ struct Phyics3dBatchedEnv[
                 block_dim=(TPB,),
             )
             self._run_fields_fk(c)
-            detect_contacts_auto[
-                "gpu", DT, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-                Self.MC, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
-                Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
-                Self.MODEL_DEF.NEXCLUDE, 0, Self.N_ENVS,
-                NPAIR = Self.MODEL_DEF.NPAIR,
-            ](self.d, self.mf, c)
+            detect_contacts_auto["gpu", DT, BATCH=Self.N_ENVS](self.d, self.mf, c)
             c.enqueue_function[settle_kernel](
                 self.d.meta.lt["gpu", type_of(self.d).L_META](),
                 done_t,
@@ -742,24 +733,14 @@ struct Phyics3dBatchedEnv[
         """Fields FK over the whole batch (mf -> Data xpos/xquat/xipos
         [+ site_xpos]). Replaces the legacy slab `forward_kinematics_gpu` in
         the reset paths so reset no longer reads the model slab."""
-        forward_kinematics[
-            "gpu", DT, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MC,
-            Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
-            Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0,
-            Self.N_ENVS, NPAIR = Self.MODEL_DEF.NPAIR,
-        ](self.d, self.mf, c)
+        forward_kinematics["gpu", DT, BATCH=Self.N_ENVS](self.d, self.mf, c)
 
     def _run_fields_vel(mut self, c: DeviceContext) raises:
         """Body world velocities (xvel/xangvel) over the batch, from the
         current qvel. Companion to `_run_fields_fk` — the integrators compute
         these mid-step, so hooks reading them after integration need a
         refresh. Mirrors `Phyics3dEnv._fields_vel`."""
-        compute_body_velocities[
-            "gpu", DT, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, Self.MC,
-            Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
-            Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE, 0,
-            Self.N_ENVS, NPAIR = Self.MODEL_DEF.NPAIR,
-        ](self.d, self.mf, c)
+        compute_body_velocities["gpu", DT, BATCH=Self.N_ENVS](self.d, self.mf, c)
 
     # ── hook kernels (legacy Phyics3dEnv GPU code, verbatim) ──────────
 

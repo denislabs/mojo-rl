@@ -40,6 +40,7 @@ from mojo_rl.envs.dm_control.acrobot import (
     TIP_SITE_IDX,
 )
 from mojo_rl.physics3d.fields import Model, Dims
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -49,6 +50,7 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_CONTYPE,
     GEOM_IDX_CONAFFINITY,
 )
+comptime MD = ModelDims[DMAcrobotModel]
 
 
 comptime Env = DMAcrobotSwingup[DType.float64]
@@ -102,10 +104,10 @@ def _setup() raises -> PythonObject:
     return Python.tuple(mujoco, model, data, tol)
 
 
-def _build_model() raises -> Model[DType.float64, Dims[nv=DMAcrobotModel.NV, nbody=DMAcrobotModel.NBODY, njoint=DMAcrobotModel.NJOINT, ngeom=DMAcrobotModel.NGEOM, nequality=DMAcrobotModel.MAX_EQUALITY, ntendon=DMAcrobotModel.MAX_TENDON, nsite=DMAcrobotModel.NSITE, nexclude=DMAcrobotModel.NEXCLUDE, nmesh_verts=0]]:
+def _build_model() raises -> Model[DType.float64, MD]:
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=DMAcrobotModel.NV, nbody=DMAcrobotModel.NBODY, njoint=DMAcrobotModel.NJOINT, ngeom=DMAcrobotModel.NGEOM, nequality=DMAcrobotModel.MAX_EQUALITY, ntendon=DMAcrobotModel.MAX_TENDON, nsite=DMAcrobotModel.NSITE, nexclude=DMAcrobotModel.NEXCLUDE, nmesh_verts=0]]()
-    DMAcrobotModel.init_fields[DType.float64, 0](ctx, mf)
+    var mf = Model[DType.float64, MD]()
+    DMAcrobotModel.init_fields[DType.float64](ctx, mf)
     return mf^
 
 

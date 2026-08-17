@@ -40,6 +40,7 @@ from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.collision.gjk import gjk_epa
 from mojo_rl.physics3d.constants import GEOM_BOX, GEOM_CYLINDER
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     mesh_max_edge,
     MODEL_META_IDX_CCD_TOLERANCE,
@@ -132,6 +133,7 @@ comptime MD_D = ModelDefFromXML[
     max_tendon=PM_D.NTENDON, max_condim=PM_D.MAX_CONDIM,
     max_equality=1, max_contacts=32, timestep=PM_D.TIMESTEP,
 ]
+comptime MD = ModelDims[MD_D, 4096]
 comptime MD_L = ModelDefFromXML[
     xml=XML_LOOSE, nbody=PM_L.NBODY, njoint=PM_L.NJOINT, nq=PM_L.NQ,
     nv=PM_L.NV, ngeom=PM_L.NGEOM, nact=PM_L.NACT, ntex=PM_L.NTEX,
@@ -140,6 +142,7 @@ comptime MD_L = ModelDefFromXML[
     max_tendon=PM_L.NTENDON, max_condim=PM_L.MAX_CONDIM,
     max_equality=1, max_contacts=32, timestep=PM_L.TIMESTEP,
 ]
+comptime MD_2 = ModelDims[MD_L, 4096]
 
 
 def test_comptime_parser_reads_the_option() raises:
@@ -175,13 +178,13 @@ def test_option_reaches_model_meta() raises:
     print("=== ccd options reach model META ===")
     var ctx = DeviceContext()
 
-    var mf_a = Model[DTYPE, Dims[nv=MD_D.NV, nbody=MD_D.NBODY, njoint=MD_D.NJOINT, ngeom=MD_D.NGEOM, nequality=MD_D.MAX_EQUALITY, ntendon=MD_D.MAX_TENDON, nsite=MD_D.NSITE, nexclude=MD_D.NEXCLUDE, nmesh_verts=NMV, npair=MD_D.NPAIR]]()
-    MD_D.init_fields[DTYPE, NMV](ctx, mf_a)
+    var mf_a = Model[DTYPE, MD]()
+    MD_D.init_fields[DTYPE](ctx, mf_a)
     var tol_a = Float64(mf_a.meta.data[MODEL_META_IDX_CCD_TOLERANCE])
     var itr_a = Float64(mf_a.meta.data[MODEL_META_IDX_CCD_ITERATIONS])
 
-    var mf_b = Model[DTYPE, Dims[nv=MD_L.NV, nbody=MD_L.NBODY, njoint=MD_L.NJOINT, ngeom=MD_L.NGEOM, nequality=MD_L.MAX_EQUALITY, ntendon=MD_L.MAX_TENDON, nsite=MD_L.NSITE, nexclude=MD_L.NEXCLUDE, nmesh_verts=NMV, npair=MD_L.NPAIR]]()
-    MD_L.init_fields[DTYPE, NMV](ctx, mf_b)
+    var mf_b = Model[DTYPE, MD_2]()
+    MD_L.init_fields[DTYPE](ctx, mf_b)
     var tol_b = Float64(mf_b.meta.data[MODEL_META_IDX_CCD_TOLERANCE])
     var itr_b = Float64(mf_b.meta.data[MODEL_META_IDX_CCD_ITERATIONS])
 

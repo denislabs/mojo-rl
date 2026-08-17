@@ -61,6 +61,7 @@ from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.collision.multi_ccd import (
     MULTICCD_PERTURBATION_ANGLE,
 )
@@ -216,6 +217,7 @@ comptime PM = ModelDefFromXML[
 comptime NGEOM = PM.NGEOM
 comptime NBODY = PM.NBODY
 comptime MC = PM.MAX_CONTACTS
+comptime MD = ModelDims[PM]
 comptime NGROUPS = 14
 
 # Gates set from the measured worst case with headroom. Measured 2026-08-01:
@@ -242,8 +244,8 @@ comptime TOL_DIST_APPROX: Float64 = 1e-6
 # device noise without ever readmitting a branch-level divergence.
 comptime TOL_GPU_MANIFOLD: Float64 = 1e-7
 
-comptime Dat = Data[DTYPE, Dims[nq=PM.NQ, nv=PM.NV, nbody=NBODY, max_contacts=MC, nsite=PM.NSITE], 1]
-comptime Mod = Model[DTYPE, Dims[nv=PM.NV, nbody=NBODY, njoint=PM.NJOINT, ngeom=NGEOM, nequality=PM.MAX_EQUALITY, ntendon=PM.MAX_TENDON, nsite=PM.NSITE, nexclude=PM.NEXCLUDE, nmesh_verts=0]]
+comptime Dat = Data[DTYPE, MD, 1]
+comptime Mod = Model[DTYPE, MD]
 
 # The device legs need their OWN float32 instantiation: this fixture is float64
 # for the MuJoCo comparison, and Metal rejects f64 outright — `air.sin.f64`,
@@ -253,8 +255,8 @@ comptime Mod = Model[DTYPE, Dims[nv=PM.NV, nbody=NBODY, njoint=PM.NJOINT, ngeom=
 # so the two are required to be bit-exact, and any difference is the device
 # path. The MuJoCo anchoring stays on the f64 leg above.
 comptime DTYPE32 = DType.float32
-comptime Dat32 = Data[DTYPE32, Dims[nq=PM.NQ, nv=PM.NV, nbody=NBODY, max_contacts=MC, nsite=PM.NSITE], 1]
-comptime Mod32 = Model[DTYPE32, Dims[nv=PM.NV, nbody=NBODY, njoint=PM.NJOINT, ngeom=NGEOM, nequality=PM.MAX_EQUALITY, ntendon=PM.MAX_TENDON, nsite=PM.NSITE, nexclude=PM.NEXCLUDE, nmesh_verts=0]]
+comptime Dat32 = Data[DTYPE32, MD, 1]
+comptime Mod32 = Model[DTYPE32, MD]
 
 
 def _group_names() -> List[String]:
@@ -273,7 +275,7 @@ def _group_names() -> List[String]:
 def _build() raises -> Mod:
     var ctx = DeviceContext()
     var mf = Mod()
-    PM.init_fields[DTYPE, 0](ctx, mf)
+    PM.init_fields[DTYPE](ctx, mf)
     return mf^
 
 
@@ -590,7 +592,7 @@ def test_narrow_phase_pairs_gpu_matches_cpu() raises:
     print("--- narrow-phase pair coverage: GPU legs vs the CPU leg")
     var ctx = DeviceContext()
     var mf = Mod32()
-    PM.init_fields[DTYPE32, 0](ctx, mf)
+    PM.init_fields[DTYPE32](ctx, mf)
 
     var dc = Dat32()
     PM.reset_data(sf, dc)

@@ -35,6 +35,7 @@ from mojo_rl.envs.dm_control.cheetah import (
     RUN_SPEED,
 )
 from mojo_rl.physics3d.fields import Model, Dims
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -46,6 +47,7 @@ from mojo_rl.physics3d.gpu.constants import (
     GEOM_IDX_QUAT_Z,
     GEOM_IDX_QUAT_W,
 )
+comptime MD = ModelDims[DMCheetahModel]
 
 
 comptime Env = DMCheetahRun[DType.float64]
@@ -116,10 +118,10 @@ def _ref_reward(tol: PythonObject, speed: Float64) raises -> Float64:
     )
 
 
-def _build_model() raises -> Model[DType.float64, Dims[nv=DMCheetahModel.NV, nbody=DMCheetahModel.NBODY, njoint=DMCheetahModel.NJOINT, ngeom=DMCheetahModel.NGEOM, nequality=DMCheetahModel.MAX_EQUALITY, ntendon=DMCheetahModel.MAX_TENDON, nsite=DMCheetahModel.NSITE, nexclude=DMCheetahModel.NEXCLUDE, nmesh_verts=0]]:
+def _build_model() raises -> Model[DType.float64, MD]:
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=DMCheetahModel.NV, nbody=DMCheetahModel.NBODY, njoint=DMCheetahModel.NJOINT, ngeom=DMCheetahModel.NGEOM, nequality=DMCheetahModel.MAX_EQUALITY, ntendon=DMCheetahModel.MAX_TENDON, nsite=DMCheetahModel.NSITE, nexclude=DMCheetahModel.NEXCLUDE, nmesh_verts=0]]()
-    DMCheetahModel.init_fields[DType.float64, 0](ctx, mf)
+    var mf = Model[DType.float64, MD]()
+    DMCheetahModel.init_fields[DType.float64](ctx, mf)
     return mf^
 
 

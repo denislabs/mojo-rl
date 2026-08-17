@@ -40,6 +40,7 @@ from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.envs.ant.ant_xml import AntModel
 from mojo_rl.envs.hopper.hopper_xml import HopperModel
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 
@@ -127,8 +128,9 @@ def test_invweight0_vs_mujoco() raises:
     var ctx = DeviceContext()
 
     comptime A = AntModel
-    var mfa = Model[DTYPE, Dims[nv=A.NV, nbody=A.NBODY, njoint=A.NJOINT, ngeom=A.NGEOM, nequality=A.MAX_EQUALITY, ntendon=A.MAX_TENDON, nsite=A.NSITE, nexclude=A.NEXCLUDE, nmesh_verts=0]]()
-    A.init_fields[DTYPE, 0](ctx, mfa)
+    comptime MD = ModelDims[A]
+    var mfa = Model[DTYPE, MD]()
+    A.init_fields[DTYPE](ctx, mfa)
     var dwa = List[Float64]()
     for i in range(A.NV):
         dwa.append(Float64(mfa.dof_invweight0.data[i]))
@@ -138,8 +140,9 @@ def test_invweight0_vs_mujoco() raises:
     _check_invweights("ant", "mojo_rl/envs/ant/assets/ant.xml", dwa, bwa, A.NV, A.NBODY)
 
     comptime U = HumanoidModel
-    var mfu = Model[DTYPE, Dims[nv=U.NV, nbody=U.NBODY, njoint=U.NJOINT, ngeom=U.NGEOM, nequality=U.MAX_EQUALITY, ntendon=U.MAX_TENDON, nsite=U.NSITE, nexclude=U.NEXCLUDE, nmesh_verts=0]]()
-    U.init_fields[DTYPE, 0](ctx, mfu)
+    comptime MD_2 = ModelDims[U]
+    var mfu = Model[DTYPE, MD_2]()
+    U.init_fields[DTYPE](ctx, mfu)
     var dwu = List[Float64]()
     for i in range(U.NV):
         dwu.append(Float64(mfu.dof_invweight0.data[i]))
@@ -149,8 +152,9 @@ def test_invweight0_vs_mujoco() raises:
     _check_invweights("humanoid", "mojo_rl/envs/humanoid/assets/humanoid.xml", dwu, bwu, U.NV, U.NBODY)
 
     comptime H = HopperModel
-    var mfh = Model[DTYPE, Dims[nv=H.NV, nbody=H.NBODY, njoint=H.NJOINT, ngeom=H.NGEOM, nequality=H.MAX_EQUALITY, ntendon=H.MAX_TENDON, nsite=H.NSITE, nexclude=H.NEXCLUDE, nmesh_verts=0]]()
-    H.init_fields[DTYPE, 0](ctx, mfh)
+    comptime MD_3 = ModelDims[H]
+    var mfh = Model[DTYPE, MD_3]()
+    H.init_fields[DTYPE](ctx, mfh)
     var dwh = List[Float64]()
     for i in range(H.NV):
         dwh.append(Float64(mfh.dof_invweight0.data[i]))
@@ -164,15 +168,16 @@ def _ant_limits(num_steps: Int, overshoot: Float64) raises:
     """Lockstep ant vs MuJoCo with every limited ankle parked `overshoot`
     radians past its own upper limit, torso high enough for zero contacts."""
     comptime M = AntModel
+    comptime MD_4 = ModelDims[M]
     var mujoco = Python.import_module("mujoco")
     var mj_model = mujoco.MjModel.from_xml_path("mojo_rl/envs/ant/assets/ant.xml")
     mj_model.opt.integrator = 0
     var mj_data = mujoco.MjData(mj_model)
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD_4]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD_4, 1]()
 
     var q = InlineArray[Float64, M.NQ](fill=0.0)
     q[2] = 2.0  # torso high — contact-free, so limits are the ONLY rows
@@ -200,11 +205,7 @@ def _ant_limits(num_steps: Int, overshoot: Float64) raises:
         d.qvel.data[i] = Scalar[DTYPE](v[i])
         mj_data.qvel[i] = v[i]
 
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD_4, M.CONE_TYPE, 1, SOLVER="newton"]()
 
     var worst_q = Float64(0)
     var worst_v = Float64(0)
@@ -270,11 +271,12 @@ def test_contacts_vs_mujoco() raises:
     var mj_model = mujoco.MjModel.from_xml_path("mojo_rl/envs/hopper/assets/hopper.xml")
     mj_model.opt.integrator = 0
     var mj_data = mujoco.MjData(mj_model)
+    comptime MD_5 = ModelDims[M]
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD_5]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD_5, 1]()
 
     # z=0.95 puts the foot on the floor immediately; from the 1.25 rest height
     # it never lands inside the step budget and the case goes vacuous.
@@ -287,11 +289,7 @@ def test_contacts_vs_mujoco() raises:
         d.qvel.data[i] = Scalar[DTYPE](0)
         mj_data.qvel[i] = 0.0
 
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD_5, M.CONE_TYPE, 1, SOLVER="newton"]()
 
     var worst_q = Float64(0)
     var worst_v = Float64(0)

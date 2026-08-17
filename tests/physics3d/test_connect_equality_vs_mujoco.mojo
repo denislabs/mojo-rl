@@ -229,7 +229,41 @@ def _model_site() -> ModelDefFromXML[
 
 
 comptime MB = _model_body()
+comptime MD = Dims[
+    nq=MB.NQ,
+    nv=MB.NV,
+    nbody=MB.NBODY,
+    njoint=MB.NJOINT,
+    ngeom=MB.NGEOM,
+    nsite=MB.NSITE,
+    max_contacts=MB.MAX_CONTACTS,
+    nequality=MB.MAX_EQUALITY,
+    ntendon=MB.MAX_TENDON,
+    nexclude=MB.NEXCLUDE,
+    nmesh_verts=0,
+    npair=MB.NPAIR,
+    nact=MB.NACT,
+    nten=MB.NTEN_F,
+    nkey=MB.NKEY,
+]
 comptime MS = _model_site()
+comptime MD_2 = Dims[
+    nq=MS.NQ,
+    nv=MS.NV,
+    nbody=MS.NBODY,
+    njoint=MS.NJOINT,
+    ngeom=MS.NGEOM,
+    nsite=MS.NSITE,
+    max_contacts=MS.MAX_CONTACTS,
+    nequality=MS.MAX_EQUALITY,
+    ntendon=MS.MAX_TENDON,
+    nexclude=MS.NEXCLUDE,
+    nmesh_verts=0,
+    npair=MS.NPAIR,
+    nact=MS.NACT,
+    nten=MS.NTEN_F,
+    nkey=MS.NKEY,
+]
 
 
 # =============================================================================
@@ -346,8 +380,8 @@ def test_connect_anchor_b_matches_mujoco() raises:
     assert_true(Int(py=m.neq) == 1, "expected exactly one equality")
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=MB.NV, nbody=MB.NBODY, njoint=MB.NJOINT, ngeom=MB.NGEOM, nequality=MB.MAX_EQUALITY, ntendon=MB.MAX_TENDON, nsite=MB.NSITE, nexclude=MB.NEXCLUDE, nmesh_verts=0]]()
-    MB.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    MB.init_fields[DTYPE](ctx, mf)
 
     assert_true(
         MB.MAX_EQUALITY == 1,
@@ -401,8 +435,8 @@ def test_site_connect_leaves_eq_data_alone() raises:
     """
     print("--- connect: site semantics keeps the site offsets ---")
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=MS.NV, nbody=MS.NBODY, njoint=MS.NJOINT, ngeom=MS.NGEOM, nequality=MS.MAX_EQUALITY, ntendon=MS.MAX_TENDON, nsite=MS.NSITE, nexclude=MS.NEXCLUDE, nmesh_verts=0]]()
-    MS.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD_2]()
+    MS.init_fields[DTYPE](ctx, mf)
 
     assert_true(
         Int(mf.equality.data[EQ_IDX_OBJTYPE]) == 1,
@@ -468,6 +502,23 @@ def test_site_connect_leaves_eq_data_alone() raises:
 
 def _check_rows[M: ModelDefFromXML](xml: String, label: String) raises:
     """Build our 3 connect rows at a perturbed pose and diff vs `efc_*`."""
+    comptime MD_3 = Dims[
+        nq=M.NQ,
+        nv=M.NV,
+        nbody=M.NBODY,
+        njoint=M.NJOINT,
+        ngeom=M.NGEOM,
+        nsite=M.NSITE,
+        max_contacts=M.MAX_CONTACTS,
+        nequality=M.MAX_EQUALITY,
+        ntendon=M.MAX_TENDON,
+        nexclude=M.NEXCLUDE,
+        nmesh_verts=0,
+        npair=M.NPAIR,
+        nact=M.NACT,
+        nten=M.NTEN_F,
+        nkey=M.NKEY,
+    ]
     var sf = M.make_spec_fields[DTYPE]()
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
@@ -492,9 +543,9 @@ def _check_rows[M: ModelDefFromXML](xml: String, label: String) raises:
     )
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0, npair=M.NPAIR]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD_3]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD_3, 1]()
     M.reset_data[DTYPE](sf, d)
     d.qpos.data[0] = 0.21
     d.qpos.data[1] = 0.44
@@ -507,7 +558,7 @@ def _check_rows[M: ModelDefFromXML](xml: String, label: String) raises:
     for i in range(M.NV):
         d.qvel.data[i] = 0
 
-    var sc = DynamicsScratch[DTYPE, Dims[nv=M.NV, nbody=M.NBODY], 1]()
+    var sc = DynamicsScratch[DTYPE, MD_3, 1]()
     forward_kinematics["cpu"](d, mf, None)
     compute_body_velocities["cpu"](d, mf, None)
     compute_subtree_com["cpu"](d, mf, None)
@@ -634,24 +685,32 @@ def _our_roll[M: ModelDefFromXML]() raises -> Float64:
     branch, so with `CONTACTS=False` this returns free fall no matter what the
     solvers do.
     """
+    comptime MD_4 = Dims[
+        nq=M.NQ,
+        nv=M.NV,
+        nbody=M.NBODY,
+        njoint=M.NJOINT,
+        ngeom=M.NGEOM,
+        nsite=M.NSITE,
+        max_contacts=M.MAX_CONTACTS,
+        nequality=M.MAX_EQUALITY,
+        ntendon=M.MAX_TENDON,
+        nexclude=M.NEXCLUDE,
+        nmesh_verts=0,
+        npair=M.NPAIR,
+        nact=M.NACT,
+        nten=M.NTEN_F,
+        nkey=M.NKEY,
+    ]
     var sf = M.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0, npair=M.NPAIR]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD_4]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD_4, 1]()
     M.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
 
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER,
-        # By keyword: `NPAIR` is the LAST integrator parameter, not a
-        # neighbour of `NEXCLUDE`, so a positional slot here would land in
-        # `CONE_TYPE`.
-        NPAIR = M.NPAIR,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD_4, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER]()
     for _ in range(NSTEPS_ROLL):
         integ.step["cpu", CONTACTS=True](d, mf)
     return Float64(d.qpos.data[3])

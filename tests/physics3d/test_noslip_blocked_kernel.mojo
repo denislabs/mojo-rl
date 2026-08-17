@@ -98,6 +98,7 @@ from mojo_rl.physics3d.integrator.euler import (
 )
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.solver.newton_solve import solve_newton_blocked
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     METADATA_SIZE,
@@ -198,6 +199,7 @@ comptime NTD = M_ON.MAX_TENDON
 comptime NSITE = M_ON.NSITE
 comptime NEXCL = M_ON.NEXCLUDE
 comptime NPAIR = M_ON.NPAIR
+comptime MD_2 = ModelDims[M_ON]
 
 # The pass must move `qacc` by at least this, relatively, or the fixture is not
 # exercising it and the parity leg below would be vacuous.
@@ -222,35 +224,20 @@ comptime MAX_GAP_FRACTION: Float64 = 0.02
 def _prep[
     target: StaticString
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMV, npair=NPAIR]],
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
+    mut d: Data[DTYPE, MD_2, BATCH],
+    mut mf: Model[DTYPE, MD_2],
+    mut scratch: DynamicsScratch[DTYPE, MD_2, BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
     """Smooth dynamics + detection, mirroring `EulerIntegrator.step` up to the
     constraint seam. Order is verbatim from
     `test_newton_blocked_fields._fields_prep` — the solver reads `M`, `m_inv`,
     `qacc_constrained` and `d.contacts`, and all four come from here."""
-    forward_kinematics[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        NEXCL, NMV, BATCH=BATCH, NPAIR=NPAIR,
-    ](d, mf, ctx)
-    compute_body_velocities[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        NEXCL, NMV, BATCH=BATCH, NPAIR=NPAIR,
-    ](d, mf, ctx)
-    compute_subtree_com[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        NEXCL, NMV, BATCH=BATCH, NPAIR=NPAIR,
-    ](d, mf, ctx)
-    compute_cdof[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        NEXCL, NMV, BATCH=BATCH, NPAIR=NPAIR,
-    ](d, mf, scratch, ctx)
-    compute_mass_matrix[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        NEXCL, NMV, BATCH=BATCH, NPAIR=NPAIR,
-    ](d, mf, scratch, ctx)
+    forward_kinematics[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_body_velocities[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_subtree_com[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_cdof[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
+    compute_mass_matrix[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
 
     comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
     comptime L_M = Layout.row_major(BATCH, NV * NV)
@@ -264,10 +251,7 @@ def _prep[
             _armature_env[DTYPE, NV, NJOINT, BATCH](e, joints_v, M_v)
         ldl_factor[target, DTYPE, BATCH=BATCH](scratch, ctx)
         compute_m_inv[target, DTYPE, BATCH=BATCH](scratch, ctx)
-        compute_bias_forces_rne[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-            NEXCL, NMV, BATCH=BATCH, NPAIR=NPAIR,
-        ](d, mf, scratch, ctx)
+        compute_bias_forces_rne[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
         var qvel_v = d.qvel.lt["cpu", L_NV]()
         var qfrc_v = d.qfrc.lt["cpu", L_NV]()
@@ -295,10 +279,7 @@ def _prep[
         )
         ldl_factor[target, DTYPE, BATCH=BATCH](scratch, ctx)
         compute_m_inv[target, DTYPE, BATCH=BATCH](scratch, ctx)
-        compute_bias_forces_rne[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-            NEXCL, NMV, BATCH=BATCH, NPAIR=NPAIR,
-        ](d, mf, scratch, ctx)
+        compute_bias_forces_rne[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         ctx.value().enqueue_function[
             _fnet_passive_kernel[DTYPE, NQ, NV, NJOINT, BATCH]
         ](
@@ -320,15 +301,12 @@ def _prep[
             grid_dim=(BATCH,), block_dim=(1,),
         )
 
-    detect_contacts[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        NEXCL, NMV, BATCH=BATCH, NPAIR=NPAIR,
-    ](d, mf, ctx)
+    detect_contacts[target, DTYPE, BATCH=BATCH](d, mf, ctx)
 
 
 def _slam_state[
     VSCALE: Int
-](mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]):
+](mut d: Data[DTYPE, MD_2, BATCH]):
     """Chain driven INTO the floor while sliding sideways, at `VSCALE`% of the
     velocities below (so 100 is a 40 m/s slam).
 
@@ -386,38 +364,26 @@ def _solve[
         max_condim=pc.MAX_CONDIM,
         noslip_iter=NOSLIP,
     ]
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMV, npair=NPAIR]]()
-    MD.init_fields[DTYPE, NMV](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var mf = Model[DTYPE, MD_2]()
+    MD.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD_2, BATCH]()
     _slam_state[VSCALE](d)
 
-    var scratch = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
-    var cscratch = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
+    var scratch = DynamicsScratch[DTYPE, MD_2, BATCH]()
+    var cscratch = ContactScratch[DTYPE, MD_2, BATCH]()
 
     comptime if target == "gpu":
         d.upload_all(ctx)
         scratch.upload_all(ctx)
         cscratch.upload_all(ctx)
         _prep["gpu"](d, mf, scratch, ctx)
-        solve_newton_blocked[
-            "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-            NEXCL, NMV, ConeType.PYRAMIDAL, BATCH,
-            MAX_CONDIM = MD.MAX_CONDIM,
-            NOSLIP_ITER = MD.NOSLIP_ITER,
-            NPAIR=NPAIR,
-        ](d, mf, scratch, cscratch, ctx)
+        solve_newton_blocked["gpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH, MAX_CONDIM = MD.MAX_CONDIM, NOSLIP_ITER = MD.NOSLIP_ITER](d, mf, scratch, cscratch, ctx)
         scratch.qacc_constrained.download(ctx)
         d.meta.download(ctx)
         d.contacts.download(ctx)
     else:
         _prep["cpu"](d, mf, scratch, None)
-        solve_newton_blocked[
-            "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-            NEXCL, NMV, ConeType.PYRAMIDAL, BATCH,
-            MAX_CONDIM = MD.MAX_CONDIM,
-            NOSLIP_ITER = MD.NOSLIP_ITER,
-            NPAIR=NPAIR,
-        ](d, mf, scratch, cscratch, None)
+        solve_newton_blocked["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH, MAX_CONDIM = MD.MAX_CONDIM, NOSLIP_ITER = MD.NOSLIP_ITER](d, mf, scratch, cscratch, None)
 
     var ncon = Int(d.meta.data[META_IDX_NUM_CONTACTS])
     if ncon == 0:

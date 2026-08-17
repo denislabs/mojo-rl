@@ -30,6 +30,7 @@ from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_MESH_META_SIZE,
     MODEL_MESH_POLY_SIZE,
@@ -84,7 +85,8 @@ comptime MPM = ModelDefFromXML[
 ]
 
 comptime NMESHV: Int = 64
-comptime Mod = Model[DTYPE, Dims[nv=MPM.NV, nbody=MPM.NBODY, njoint=MPM.NJOINT, ngeom=MPM.NGEOM, nequality=MPM.MAX_EQUALITY, ntendon=MPM.MAX_TENDON, nsite=MPM.NSITE, nexclude=MPM.NEXCLUDE, nmesh_verts=NMESHV]]
+comptime MD = ModelDims[MPM, 64]
+comptime Mod = Model[DTYPE, MD]
 
 comptime TOL: Float64 = 1e-6
 
@@ -92,7 +94,7 @@ comptime TOL: Float64 = 1e-6
 def test_mesh_polygons_vs_mujoco() raises:
     var ctx = DeviceContext()
     var mf = Mod()
-    MPM.init_fields[DTYPE, NMESHV](ctx, mf)
+    MPM.init_fields[DTYPE](ctx, mf)
 
     var mujoco = Python.import_module("mujoco")
     var m = mujoco.MjModel.from_xml_string(String(MP_XML))

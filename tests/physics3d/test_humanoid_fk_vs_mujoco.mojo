@@ -27,11 +27,12 @@ from std.math import abs
 from std.collections import InlineArray
 
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 
 # =============================================================================
@@ -45,6 +46,7 @@ comptime NBODY = HumanoidModel.NBODY  # 14
 comptime NJOINT = HumanoidModel.NJOINT  # 18 (1 free + 17 hinge)
 comptime NGEOM = HumanoidModel.NGEOM  # 18
 comptime MAX_CONTACTS = HumanoidModel.MAX_CONTACTS  # 50
+comptime MD = ModelDims[HumanoidModel]
 
 # Tolerance for comparison (float64).
 # Humanoid uses 5e-6 instead of the usual 1e-6 because lwaist has a body-level
@@ -69,20 +71,16 @@ def compare_fk(
 
     # === Our engine (fields; legacy Model/Data FK deleted at G4) ===
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=HumanoidModel.MAX_EQUALITY, ntendon=HumanoidModel.MAX_TENDON, nsite=HumanoidModel.NSITE, nexclude=HumanoidModel.NEXCLUDE, nmesh_verts=0]]()
-    HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=HumanoidModel.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    HumanoidModel.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
 
     # Set qpos
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_values[i])
 
     # Run our FK (fields, CPU)
-    forward_kinematics[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        HumanoidModel.MAX_EQUALITY, HumanoidModel.MAX_TENDON, HumanoidModel.NSITE,
-        HumanoidModel.NEXCLUDE, 0, 1,
-    ](d, mf, None)
+    forward_kinematics["cpu", DTYPE, BATCH=1](d, mf, None)
 
     # === MuJoCo reference via Python ===
     var mujoco = Python.import_module("mujoco")

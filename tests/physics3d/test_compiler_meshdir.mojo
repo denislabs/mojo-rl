@@ -39,6 +39,7 @@ from max.gpu.host import DeviceContext
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.gpu.constants import GEOM_IDX_RBOUND
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 # A tiny real hull: 8 vertices, 684 bytes. Big enough to be a mesh, small
 # enough that the fixture costs nothing.
@@ -105,6 +106,10 @@ comptime M4 = ModelDefFromXML[xml=X_FULLPATH, nbody=p4.NBODY, njoint=p4.NJOINT,
     nexclude=p4.NEXCLUDE, npair=p4.NPAIR, timestep=p4.TIMESTEP]
 
 comptime NMV = 64
+comptime MD_4 = ModelDims[M4, 64]
+comptime MD_3 = ModelDims[M3, 64]
+comptime MD_2 = ModelDims[M2, 64]
+comptime MD = ModelDims[M1, 64]
 
 
 def _mj_rbound(xml: String) raises -> Float64:
@@ -127,16 +132,16 @@ def _check(name: String, xml: String, ours: Float64) raises:
 def test_meshdir_resolves() raises:
     """The case that was broken: `meshdir` + a bare `file=`."""
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=M1.NV, nbody=M1.NBODY, njoint=M1.NJOINT, ngeom=M1.NGEOM, nequality=M1.MAX_EQUALITY, ntendon=M1.MAX_TENDON, nsite=M1.NSITE, nexclude=M1.NEXCLUDE, nmesh_verts=NMV, npair=M1.NPAIR]]()
-    M1.init_fields[DType.float64, NMV](ctx, mf)
+    var mf = Model[DType.float64, MD]()
+    M1.init_fields[DType.float64](ctx, mf)
     _check("meshdir      ", X_MESHDIR, Float64(mf.geoms.data[GEOM_IDX_RBOUND]))
 
 
 def test_assetdir_is_the_fallback() raises:
     """`assetdir` alone stands in for `meshdir` — measured on 3.10.0."""
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=M2.NV, nbody=M2.NBODY, njoint=M2.NJOINT, ngeom=M2.NGEOM, nequality=M2.MAX_EQUALITY, ntendon=M2.MAX_TENDON, nsite=M2.NSITE, nexclude=M2.NEXCLUDE, nmesh_verts=NMV, npair=M2.NPAIR]]()
-    M2.init_fields[DType.float64, NMV](ctx, mf)
+    var mf = Model[DType.float64, MD_2]()
+    M2.init_fields[DType.float64](ctx, mf)
     _check("assetdir     ", X_ASSETDIR, Float64(mf.geoms.data[GEOM_IDX_RBOUND]))
 
 
@@ -144,8 +149,8 @@ def test_meshdir_wins_over_assetdir() raises:
     """Precedence. `assetdir="."` cannot find the file, so an inverted
     precedence fails loudly rather than coincidentally passing."""
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=M3.NV, nbody=M3.NBODY, njoint=M3.NJOINT, ngeom=M3.NGEOM, nequality=M3.MAX_EQUALITY, ntendon=M3.MAX_TENDON, nsite=M3.NSITE, nexclude=M3.NEXCLUDE, nmesh_verts=NMV, npair=M3.NPAIR]]()
-    M3.init_fields[DType.float64, NMV](ctx, mf)
+    var mf = Model[DType.float64, MD_3]()
+    M3.init_fields[DType.float64](ctx, mf)
     _check("both (meshdir)", X_BOTH, Float64(mf.geoms.data[GEOM_IDX_RBOUND]))
 
 
@@ -156,8 +161,8 @@ def test_full_path_still_works() raises:
     fix must not start prefixing something already complete.
     """
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=M4.NV, nbody=M4.NBODY, njoint=M4.NJOINT, ngeom=M4.NGEOM, nequality=M4.MAX_EQUALITY, ntendon=M4.MAX_TENDON, nsite=M4.NSITE, nexclude=M4.NEXCLUDE, nmesh_verts=NMV, npair=M4.NPAIR]]()
-    M4.init_fields[DType.float64, NMV](ctx, mf)
+    var mf = Model[DType.float64, MD_4]()
+    M4.init_fields[DType.float64](ctx, mf)
     _check("full path    ", X_FULLPATH, Float64(mf.geoms.data[GEOM_IDX_RBOUND]))
 
 

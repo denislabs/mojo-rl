@@ -34,7 +34,7 @@ geom), so it lives here too.
 
 from std.collections import InlineArray
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.dynamics.ik_site import set_site_to_xpos
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
@@ -65,11 +65,9 @@ comptime BODY_FREE: Int = 2  # external, under a top-level body WITH a freejoint
 comptime BODY_FIXED: Int = 3  # external without one — INCLUDING the world
 
 
-def has_relevant_collisions[
-    DTYPE: DType, NQ: Int, NV: Int, NBODY: Int, MAXC: Int, NSITE: Int
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
-    body_class: InlineArray[Int, NBODY],
+def has_relevant_collisions[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
+    body_class: InlineArray[Int, D.NBODY],
 ) -> Bool:
     """`tcp_initializer.py::ToolCenterPointInitializer._has_relevant_collisions`.
 
@@ -120,7 +118,7 @@ def has_relevant_collisions[
             ba = 0
         if bb < 0:
             bb = 0
-        if ba >= NBODY or bb >= NBODY:
+        if ba >= D.NBODY or bb >= D.NBODY:
             continue
         var ca = body_class[ba]
         var cb = body_class[bb]
@@ -221,25 +219,16 @@ struct TCPInitResult(Copyable, Movable):
 
 
 def tool_center_point_initializer[
+
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
     # See `ik_site.set_site_to_xpos` — a literal `0` here restricts CALLERS,
     # not models.
-    NPAIR: Int,
-    MAXC: Int,
     NDOF: Int,
+
+    D: DimsLike,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     site: Int,
     target_positions: List[Scalar[DTYPE]],
     target_quat: InlineArray[Scalar[DTYPE], 4],
@@ -248,7 +237,7 @@ def tool_center_point_initializer[
     lower: InlineArray[Float64, NDOF],
     upper: InlineArray[Float64, NDOF],
     retry_poses: List[Scalar[DTYPE]],
-    body_class: InlineArray[Int, NBODY],
+    body_class: InlineArray[Int, D.NBODY],
     ignore_collisions: Bool = False,
     max_ik_attempts: Int = 10,
     max_rejection_samples: Int = 10,
@@ -303,10 +292,7 @@ def tool_center_point_initializer[
         for k in range(3):
             target_pos[k] = target_positions[s * 3 + k]
 
-        var res = set_site_to_xpos[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAXC, NDOF,
-        ](
+        var res = set_site_to_xpos[DTYPE, NDOF](
             d, mf, site, target_pos, target_quat, dof_idx, qpos_adr,
             lower, upper, retry_poses, max_ik_attempts, s * per_sample,
         )
@@ -316,9 +302,7 @@ def tool_center_point_initializer[
             detect_contacts["cpu"](d, mf)
             var bad = False
             if not ignore_collisions:
-                bad = has_relevant_collisions[
-                    DTYPE, NQ, NV, NBODY, MAXC, NSITE
-                ](d, body_class)
+                bad = has_relevant_collisions[DTYPE](d, body_class)
             if not bad:
                 return TCPInitResult(
                     True, s + 1, ik_failures, collision_rejections

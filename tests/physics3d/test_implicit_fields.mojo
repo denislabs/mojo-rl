@@ -35,6 +35,23 @@ comptime NEQ = Walker2dModel.MAX_EQUALITY
 comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.nexclude
+comptime MD = Dims[
+    nq=NQ,
+    nv=NV,
+    nbody=NBODY,
+    njoint=NJOINT,
+    ngeom=NGEOM,
+    nsite=NSITE,
+    max_contacts=MC,
+    nequality=NEQ,
+    ntendon=NTD,
+    nexclude=NEXCL,
+    nmesh_verts=0,
+    npair=Walker2dModel.NPAIR,
+    nact=Walker2dModel.NACT,
+    nten=Walker2dModel.NTEN_F,
+    nkey=Walker2dModel.NKEY,
+]
 comptime BATCH = 1
 comptime N_STEPS = 3
 
@@ -66,20 +83,17 @@ def main() raises:
     print("=== Stage-I ImplicitIntegrator self-consistency: Walker2D ===")
     var ctx = DeviceContext()
 
-    var mf = Model[DT, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
-    Walker2dModel.init_fields[DT, 0](ctx, mf)
+    var mf = Model[DT, MD]()
+    Walker2dModel.init_fields[DT](ctx, mf)
 
-    var d = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var d = Data[DT, MD, BATCH]()
     for i in range(NQ):
         d.qpos.data[i] = _init_qpos(i)
     for i in range(NV):
         d.qvel.data[i] = _init_qvel(i)
     # qfrc stays 0 → pure passive dynamics.
 
-    var integ = ImplicitIntegrator[
-        DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE,
-        BATCH, SOLVER="pgs",
-    ]()
+    var integ = ImplicitIntegrator[DT, MD, CONE, BATCH, SOLVER="pgs"]()
 
     for _step in range(N_STEPS):
         integ.step["cpu", False](d, mf)
@@ -100,7 +114,7 @@ def main() raises:
     for i in range(NV):
         vcpu[i] = d.qvel.data[i]
 
-    var dg = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dg = Data[DT, MD, BATCH]()
     for i in range(NQ):
         dg.qpos.data[i] = _init_qpos(i)
     for i in range(NV):

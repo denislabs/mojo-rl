@@ -65,6 +65,7 @@ from mojo_rl.envs.dm_control.hopper import (
 from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.sensors.touch import touch_sphere_site
 from mojo_rl.physics3d.constants import GEOM_SPHERE
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -79,6 +80,7 @@ from mojo_rl.physics3d.gpu.constants import (
     SITE_IDX_POS_Z,
     META_IDX_NUM_CONTACTS,
 )
+comptime MD = ModelDims[DMHopperModel]
 
 
 comptime Env = DMHopperStand[DType.float64]
@@ -131,10 +133,10 @@ def _setup() raises -> PythonObject:
     return Python.tuple(mujoco, model, data)
 
 
-def _build_model() raises -> Model[DType.float64, Dims[nv=DMHopperModel.NV, nbody=DMHopperModel.NBODY, njoint=DMHopperModel.NJOINT, ngeom=DMHopperModel.NGEOM, nequality=DMHopperModel.MAX_EQUALITY, ntendon=DMHopperModel.MAX_TENDON, nsite=DMHopperModel.NSITE, nexclude=DMHopperModel.NEXCLUDE, nmesh_verts=0]]:
+def _build_model() raises -> Model[DType.float64, MD]:
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=DMHopperModel.NV, nbody=DMHopperModel.NBODY, njoint=DMHopperModel.NJOINT, ngeom=DMHopperModel.NGEOM, nequality=DMHopperModel.MAX_EQUALITY, ntendon=DMHopperModel.MAX_TENDON, nsite=DMHopperModel.NSITE, nexclude=DMHopperModel.NEXCLUDE, nmesh_verts=0]]()
-    DMHopperModel.init_fields[DType.float64, 0](ctx, mf)
+    var mf = Model[DType.float64, MD]()
+    DMHopperModel.init_fields[DType.float64](ctx, mf)
     return mf^
 
 

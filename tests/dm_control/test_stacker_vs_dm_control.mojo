@@ -61,6 +61,7 @@ from mojo_rl.envs.dm_control.stacker import (
 from mojo_rl.envs.dm_control.planar_arm import arm_joint_obs_order
 from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_NUM_CONTACTS,
     CONTACT_SIZE,
@@ -111,6 +112,7 @@ comptime NTEN2: Int = M2.MAX_TENDON  # 2
 comptime MAXC2: Int = M2.MAX_CONTACTS
 comptime NEQ2: Int = M2.MAX_EQUALITY
 comptime NEXCL2: Int = M2.NEXCLUDE
+comptime MD = ModelDims[M2]
 comptime NA2: Int = M2.NA
 
 # ── stack_4 ─────────────────────────────────────────────────────────────────
@@ -125,6 +127,7 @@ comptime NTEN4: Int = M4.MAX_TENDON  # 2
 comptime MAXC4: Int = M4.MAX_CONTACTS
 comptime NEQ4: Int = M4.MAX_EQUALITY
 comptime NEXCL4: Int = M4.NEXCLUDE
+comptime MD_2 = ModelDims[M4]
 comptime NA4: Int = M4.NA
 
 # Model constants are exact rational arithmetic on both sides up to the inertia
@@ -204,32 +207,26 @@ def _ref(n_boxes: Int) raises -> PythonObject:
     return builder.model(n_boxes)
 
 
-comptime Mod2 = Model[DTYPE, Dims[nv=NV2, nbody=NBODY2, njoint=NJOINT2, ngeom=NGEOM2, nequality=NEQ2, ntendon=NTEN2, nsite=NSITE2, nexclude=NEXCL2, nmesh_verts=0]]
-comptime Dat2 = Data[DTYPE, Dims[nq=NQ2, nv=NV2, nbody=NBODY2, max_contacts=MAXC2, nsite=NSITE2], 1]
-comptime Integ2 = EulerIntegrator[
-    DTYPE, NQ2, NV2, NBODY2, NJOINT2, MAXC2, NGEOM2, NEQ2, NTEN2, NSITE2,
-    NEXCL2, 0, M2.CONE_TYPE, 1, SOLVER="newton",
-]
+comptime Mod2 = Model[DTYPE, MD]
+comptime Dat2 = Data[DTYPE, MD, 1]
+comptime Integ2 = EulerIntegrator[DTYPE, MD, M2.CONE_TYPE, 1, SOLVER="newton"]
 
-comptime Mod4 = Model[DTYPE, Dims[nv=NV4, nbody=NBODY4, njoint=NJOINT4, ngeom=NGEOM4, nequality=NEQ4, ntendon=NTEN4, nsite=NSITE4, nexclude=NEXCL4, nmesh_verts=0]]
-comptime Dat4 = Data[DTYPE, Dims[nq=NQ4, nv=NV4, nbody=NBODY4, max_contacts=MAXC4, nsite=NSITE4], 1]
-comptime Integ4 = EulerIntegrator[
-    DTYPE, NQ4, NV4, NBODY4, NJOINT4, MAXC4, NGEOM4, NEQ4, NTEN4, NSITE4,
-    NEXCL4, 0, M4.CONE_TYPE, 1, SOLVER="newton",
-]
+comptime Mod4 = Model[DTYPE, MD_2]
+comptime Dat4 = Data[DTYPE, MD_2, 1]
+comptime Integ4 = EulerIntegrator[DTYPE, MD_2, M4.CONE_TYPE, 1, SOLVER="newton"]
 
 
 def _build2() raises -> Mod2:
     var ctx = DeviceContext()
     var mf = Mod2()
-    M2.init_fields[DTYPE, 0](ctx, mf)
+    M2.init_fields[DTYPE](ctx, mf)
     return mf^
 
 
 def _build4() raises -> Mod4:
     var ctx = DeviceContext()
     var mf = Mod4()
-    M4.init_fields[DTYPE, 0](ctx, mf)
+    M4.init_fields[DTYPE](ctx, mf)
     return mf^
 
 
@@ -931,7 +928,7 @@ def _our_qacc2(
     var ctx = DeviceContext()
     var mf = Mod2()
     var d = Dat2()
-    M2.init_fields[DTYPE, 0](ctx, mf)
+    M2.init_fields[DTYPE](ctx, mf)
     M2.reset_data(sf, d)
     for i in range(NQ2):
         d.qpos.data[i] = Scalar[DTYPE](state[i])

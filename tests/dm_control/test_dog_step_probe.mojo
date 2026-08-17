@@ -51,6 +51,7 @@ from mojo_rl.envs.dm_control.dog import (
 from mojo_rl.physics3d.fields import Model, Data, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
     CONTACT_IDX_CONDIM,
@@ -84,6 +85,7 @@ from mojo_rl.physics3d.gpu.constants import (
 
 comptime DTYPE = DType.float64
 comptime M = DMDogStandWalkModel
+comptime MD = ModelDims[M]
 comptime NQ = M.NQ
 comptime NV = M.NV
 comptime MC = M.MAX_CONTACTS
@@ -179,9 +181,9 @@ def test_dog_step_stages_vs_mujoco() raises:
 
     # --- our side, one substep from the same state -----------------------
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
 
     for i in range(NQ):
@@ -191,12 +193,7 @@ def test_dog_step_stages_vs_mujoco() raises:
         d.qfrc.data[i] = Scalar[DTYPE](0)
     forward_kinematics["cpu"](d, mf)
 
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER]()
     integ.step["cpu"](d, mf)
 
     # ⚠ CAPTURE IMMEDIATELY. One `EulerIntegrator` owns one scratch, so the
@@ -293,7 +290,7 @@ def test_dog_step_stages_vs_mujoco() raises:
     # this is the mass matrix + passive forces + LDL solve and nothing else.
     # The contacts-disabled run below still carries limit rows, which is why
     # it cannot play this role.
-    var d2 = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var d2 = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d2)
     var dat2 = mujoco.MjData(mm)
     mujoco.mj_resetData(mm, dat2)
@@ -336,7 +333,7 @@ def test_dog_step_stages_vs_mujoco() raises:
     # disabled on BOTH sides and compare the one surviving output. This still
     # carries joint limits and dry friction, which MuJoCo also keeps under
     # `mjDSBL_CONTACT`, so the two runs bracket the contact solver exactly.
-    var d0 = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var d0 = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d0)
     for i in range(NQ):
         d0.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
@@ -545,10 +542,10 @@ def test_dog_noslip_ab() raises:
 
     # --- our two runs, same state, differing only in NOSLIP_ITER -----------
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
-    var d4 = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var d4 = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d4)
     for i in range(NQ):
         d4.qpos.data[i] = Scalar[DTYPE](Float64(py=dat4.qpos[i]))
@@ -556,18 +553,13 @@ def test_dog_noslip_ab() raises:
         d4.qvel.data[i] = Scalar[DTYPE](Float64(py=dat4.qvel[i]))
         d4.qfrc.data[i] = Scalar[DTYPE](0)
     forward_kinematics["cpu"](d4, mf)
-    var integ4 = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER,
-    ]()
+    var integ4 = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER]()
     integ4.step["cpu"](d4, mf)
     var o4 = List[Float64]()
     for i in range(NV):
         o4.append(Float64(integ4.scratch.qacc_constrained.data[i]))
 
-    var d0 = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var d0 = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d0)
     for i in range(NQ):
         d0.qpos.data[i] = Scalar[DTYPE](Float64(py=dat4.qpos[i]))
@@ -575,12 +567,7 @@ def test_dog_noslip_ab() raises:
         d0.qvel.data[i] = Scalar[DTYPE](Float64(py=dat4.qvel[i]))
         d0.qfrc.data[i] = Scalar[DTYPE](0)
     forward_kinematics["cpu"](d0, mf)
-    var integ0 = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=0,
-    ]()
+    var integ0 = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=0]()
     integ0.step["cpu"](d0, mf)
     var o0 = List[Float64]()
     for i in range(NV):
@@ -683,9 +670,9 @@ def test_dog_contact_forces_vs_mujoco() raises:
     mujoco.mj_forward(mm, dat)
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
@@ -693,12 +680,7 @@ def test_dog_contact_forces_vs_mujoco() raises:
         d.qvel.data[i] = Scalar[DTYPE](Float64(py=dat.qvel[i]))
         d.qfrc.data[i] = Scalar[DTYPE](0)
     forward_kinematics["cpu"](d, mf)
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER]()
     integ.step["cpu"](d, mf)
 
     var nc = Int(py=dat.ncon)
@@ -781,9 +763,9 @@ def test_dog_contact_params_vs_mujoco() raises:
     mujoco.mj_forward(mm, dat)
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
@@ -791,12 +773,7 @@ def test_dog_contact_params_vs_mujoco() raises:
         d.qvel.data[i] = Scalar[DTYPE](Float64(py=dat.qvel[i]))
         d.qfrc.data[i] = Scalar[DTYPE](0)
     forward_kinematics["cpu"](d, mf)
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER]()
     integ.step["cpu"](d, mf)
 
     var nc = Int(py=dat.ncon)
@@ -936,9 +913,9 @@ def test_dog_applied_force_vs_mujoco() raises:
         dat.act[k] = 0.0
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
@@ -952,12 +929,7 @@ def test_dog_applied_force_vs_mujoco() raises:
             fmag = abs(f)
     mujoco.mj_forward(mm, dat)
     forward_kinematics["cpu"](d, mf)
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER]()
     integ.step["cpu"](d, mf)
 
     var qacc = List[Float64]()

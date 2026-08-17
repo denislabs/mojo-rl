@@ -36,7 +36,7 @@ from std.testing import TestSuite
 
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -71,6 +71,7 @@ from mojo_rl.physics3d.gpu.constants import (
 from mojo_rl.envs.humanoid.humanoid_xml import HumanoidModel
 from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 comptime BATCH = 2
@@ -256,6 +257,23 @@ comptime NEQ_H = HumanoidModel.MAX_EQUALITY  # 0
 comptime NTD_H = HumanoidModel.MAX_TENDON  # 2
 comptime NSITE_H = HumanoidModel.NSITE  # 0
 comptime NEXCL_H = HumanoidModel.nexclude  # 0
+comptime MD = Dims[
+    nq=NQ_H,
+    nv=NV_H,
+    nbody=NBODY_H,
+    njoint=NJOINT_H,
+    ngeom=NGEOM_H,
+    nsite=NSITE_H,
+    max_contacts=MC_H,
+    nequality=NEQ_H,
+    ntendon=NTD_H,
+    nexclude=NEXCL_H,
+    nmesh_verts=0,
+    npair=HumanoidModel.NPAIR,
+    nact=HumanoidModel.NACT,
+    nten=HumanoidModel.NTEN_F,
+    nkey=HumanoidModel.NKEY,
+]
 
 # ── Sawyer (Part B) ──────────────────────────────────────────────────────
 comptime NQ_S = SawyerReachModel.NQ
@@ -271,6 +289,23 @@ comptime MC_S = SawyerReachModel.MAX_CONTACTS
 # kept (sawyer's twelve meshes go ~648 -> ~5.6k vertices), and
 # `fields_build` TRUNCATES past this cap — silently, until now.
 comptime NMESHV_S = MAX_GPU_MESHES * 512
+comptime MD_2 = Dims[
+    nq=NQ_S,
+    nv=NV_S,
+    nbody=NBODY_S,
+    njoint=NJOINT_S,
+    ngeom=NGEOM_S,
+    nsite=NSITE_S,
+    max_contacts=MC_S,
+    nequality=NEQ_S,
+    ntendon=NTD_S,
+    nexclude=0,
+    nmesh_verts=NMESHV_S,
+    npair=SawyerReachModel.NPAIR,
+    nact=SawyerReachModel.NACT,
+    nten=SawyerReachModel.NTEN_F,
+    nkey=SawyerReachModel.NKEY,
+]
 
 # ── Walker2d (Part C) ────────────────────────────────────────────────────
 comptime NQ_W = Walker2dModel.NQ
@@ -283,6 +318,7 @@ comptime NEQ_W = Walker2dModel.MAX_EQUALITY
 comptime NTD_W = Walker2dModel.MAX_TENDON
 comptime NSITE_W = Walker2dModel.NSITE
 comptime NEXCL_W = Walker2dModel.NEXCLUDE
+comptime MD_3 = ModelDims[Walker2dModel]
 
 
 def _humanoid_qpos(e: Int, i: Int) -> Scalar[DTYPE]:
@@ -321,24 +357,18 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     print("  humanoid NGEOM=", NGEOM_H, " SAP_THRESHOLD=", SAP_THRESHOLD)
     comptime assert NGEOM_H >= SAP_THRESHOLD, "humanoid must route to SAP"
 
-    var mf = Model[DTYPE, Dims[nv=NV_H, nbody=NBODY_H, njoint=NJOINT_H, ngeom=NGEOM_H, nequality=NEQ_H, ntendon=NTD_H, nsite=NSITE_H, nexclude=NEXCL_H, nmesh_verts=0]]()
-    HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    HumanoidModel.init_fields[DTYPE](ctx, mf)
 
-    var d = Data[DTYPE, Dims[nq=NQ_H, nv=NV_H, nbody=NBODY_H, max_contacts=MC_H, nsite=NSITE_H], BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_H):
             d.qpos.data[e * NQ_H + i] = _humanoid_qpos(e, i)
     d.upload_all(ctx)
 
     # Fields: FK + SAP detection.
-    forward_kinematics[
-        "gpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
-        NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
-    ](d, mf, ctx)
-    detect_contacts_sap[
-        "gpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
-        NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
-    ](d, mf, ctx)
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH](d, mf, ctx)
+    detect_contacts_sap["gpu", DTYPE, BATCH=BATCH](d, mf, ctx)
     d.contacts.download(ctx)
     d.meta.download(ctx)
 
@@ -417,18 +447,12 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
         raise Error("no sweep-emitted body-body contact — sweep leg vacuous")
 
     # Fields CPU vs fields GPU.
-    var dc = Data[DTYPE, Dims[nq=NQ_H, nv=NV_H, nbody=NBODY_H, max_contacts=MC_H, nsite=NSITE_H], BATCH]()
+    var dc = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_H):
             dc.qpos.data[e * NQ_H + i] = _humanoid_qpos(e, i)
-    forward_kinematics[
-        "cpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
-        NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
-    ](dc, mf)
-    detect_contacts_sap[
-        "cpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
-        NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
-    ](dc, mf)
+    forward_kinematics["cpu", DTYPE, BATCH=BATCH](dc, mf)
+    detect_contacts_sap["cpu", DTYPE, BATCH=BATCH](dc, mf)
     var worst = Float64(0)
     for e in range(BATCH):
         var nc_g = Int(
@@ -467,19 +491,13 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     # world normalized to 0) + pos/dist within 1e-4. Same-type body-body
     # pairs may be visited with operands swapped by the sweep (pos then
     # differs at float rounding level), hence the tolerance.
-    var dn = Data[DTYPE, Dims[nq=NQ_H, nv=NV_H, nbody=NBODY_H, max_contacts=MC_H, nsite=NSITE_H], BATCH]()
+    var dn = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_H):
             dn.qpos.data[e * NQ_H + i] = _humanoid_qpos(e, i)
     dn.upload_all(ctx)
-    forward_kinematics[
-        "gpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
-        NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
-    ](dn, mf, ctx)
-    detect_contacts[
-        "gpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
-        NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
-    ](dn, mf, ctx)
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH](dn, mf, ctx)
+    detect_contacts["gpu", DTYPE, BATCH=BATCH](dn, mf, ctx)
     dn.contacts.download(ctx)
     dn.meta.download(ctx)
     for e in range(BATCH):
@@ -538,19 +556,13 @@ def _part_a_humanoid(ctx: DeviceContext) raises:
     print("  PASS: fields-SAP == fields-O(N^2) as contact SETS")
 
     # ── Auto dispatcher: humanoid must route to SAP (bit-equal).
-    var da = Data[DTYPE, Dims[nq=NQ_H, nv=NV_H, nbody=NBODY_H, max_contacts=MC_H, nsite=NSITE_H], BATCH]()
+    var da = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_H):
             da.qpos.data[e * NQ_H + i] = _humanoid_qpos(e, i)
     da.upload_all(ctx)
-    forward_kinematics[
-        "gpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
-        NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
-    ](da, mf, ctx)
-    detect_contacts_auto[
-        "gpu", DTYPE, NQ_H, NV_H, NBODY_H, NJOINT_H, MC_H, NGEOM_H,
-        NEQ_H, NTD_H, NSITE_H, NEXCL_H, 0, BATCH,
-    ](da, mf, ctx)
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH](da, mf, ctx)
+    detect_contacts_auto["gpu", DTYPE, BATCH=BATCH](da, mf, ctx)
     da.contacts.download(ctx)
     da.meta.download(ctx)
     for e in range(BATCH):
@@ -580,8 +592,8 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
     print("  sawyer NGEOM=", NGEOM_S)
 
     # Fields-native model build (STL hulls, NMESHV_S-padded — Stage B).
-    var mf = Model[DTYPE, Dims[nv=NV_S, nbody=NBODY_S, njoint=NJOINT_S, ngeom=NGEOM_S, nequality=NEQ_S, ntendon=NTD_S, nsite=NSITE_S, nexclude=0, nmesh_verts=NMESHV_S]]()
-    SawyerReachModel.init_fields[DTYPE, NMESHV_S](ctx, mf)
+    var mf = Model[DTYPE, MD_2]()
+    SawyerReachModel.init_fields[DTYPE](ctx, mf)
 
     # Locate the obj cylinder + mesh-geom bodies for the non-vacuity check.
     var obj_body = -1
@@ -632,21 +644,15 @@ def _part_b_sawyer(ctx: DeviceContext) raises:
         q[15] = 0.0
         qcfg.append(q^)
 
-    var d = Data[DTYPE, Dims[nq=NQ_S, nv=NV_S, nbody=NBODY_S, max_contacts=MC_S, nsite=NSITE_S], BATCH]()
+    var d = Data[DTYPE, MD_2, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_S):
             d.qpos.data[e * NQ_S + i] = Scalar[DTYPE](qcfg[e][i])
     d.upload_all(ctx)
 
     # Fields: FK + SAP detection.
-    forward_kinematics[
-        "gpu", DTYPE, NQ_S, NV_S, NBODY_S, NJOINT_S, MC_S, NGEOM_S,
-        NEQ_S, NTD_S, NSITE_S, 0, NMESHV_S, BATCH,
-    ](d, mf, ctx)
-    detect_contacts_sap[
-        "gpu", DTYPE, NQ_S, NV_S, NBODY_S, NJOINT_S, MC_S, NGEOM_S,
-        NEQ_S, NTD_S, NSITE_S, 0, NMESHV_S, BATCH,
-    ](d, mf, ctx)
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH](d, mf, ctx)
+    detect_contacts_sap["gpu", DTYPE, BATCH=BATCH](d, mf, ctx)
     d.contacts.download(ctx)
     d.meta.download(ctx)
 
@@ -755,8 +761,8 @@ def _part_c_walker(ctx: DeviceContext) raises:
     print("  walker2d NGEOM=", NGEOM_W)
     comptime assert NGEOM_W < SAP_THRESHOLD, "walker2d must route to O(N^2)"
 
-    var mf = Model[DTYPE, Dims[nv=NV_W, nbody=NBODY_W, njoint=NJOINT_W, ngeom=NGEOM_W, nequality=NEQ_W, ntendon=NTD_W, nsite=NSITE_W, nexclude=NEXCL_W, nmesh_verts=0]]()
-    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD_3]()
+    Walker2dModel.init_fields[DTYPE](ctx, mf)
 
     # Poses from test_contact_detection_fields (floor penetration).
     var qcfg = List[List[Float64]]()
@@ -771,8 +777,8 @@ def _part_c_walker(ctx: DeviceContext) raises:
     q1[7] = -0.9
     qcfg.append(q1^)
 
-    var d1 = Data[DTYPE, Dims[nq=NQ_W, nv=NV_W, nbody=NBODY_W, max_contacts=MC_W, nsite=NSITE_W], BATCH]()
-    var d2 = Data[DTYPE, Dims[nq=NQ_W, nv=NV_W, nbody=NBODY_W, max_contacts=MC_W, nsite=NSITE_W], BATCH]()
+    var d1 = Data[DTYPE, MD_3, BATCH]()
+    var d2 = Data[DTYPE, MD_3, BATCH]()
     for e in range(BATCH):
         for i in range(NQ_W):
             d1.qpos.data[e * NQ_W + i] = Scalar[DTYPE](qcfg[e][i])
@@ -780,22 +786,10 @@ def _part_c_walker(ctx: DeviceContext) raises:
     d1.upload_all(ctx)
     d2.upload_all(ctx)
 
-    forward_kinematics[
-        "gpu", DTYPE, NQ_W, NV_W, NBODY_W, NJOINT_W, MC_W, NGEOM_W,
-        NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0, BATCH,
-    ](d1, mf, ctx)
-    detect_contacts[
-        "gpu", DTYPE, NQ_W, NV_W, NBODY_W, NJOINT_W, MC_W, NGEOM_W,
-        NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0, BATCH,
-    ](d1, mf, ctx)
-    forward_kinematics[
-        "gpu", DTYPE, NQ_W, NV_W, NBODY_W, NJOINT_W, MC_W, NGEOM_W,
-        NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0, BATCH,
-    ](d2, mf, ctx)
-    detect_contacts_auto[
-        "gpu", DTYPE, NQ_W, NV_W, NBODY_W, NJOINT_W, MC_W, NGEOM_W,
-        NEQ_W, NTD_W, NSITE_W, NEXCL_W, 0, BATCH,
-    ](d2, mf, ctx)
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH](d1, mf, ctx)
+    detect_contacts["gpu", DTYPE, BATCH=BATCH](d1, mf, ctx)
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH](d2, mf, ctx)
+    detect_contacts_auto["gpu", DTYPE, BATCH=BATCH](d2, mf, ctx)
     d1.contacts.download(ctx)
     d1.meta.download(ctx)
     d2.contacts.download(ctx)

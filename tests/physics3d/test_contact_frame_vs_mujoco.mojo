@@ -49,6 +49,7 @@ from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.collision.contact_frame import contact_tangent_frame
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
     META_IDX_NUM_CONTACTS,
@@ -185,6 +186,7 @@ comptime FM = ModelDefFromXML[
     obs_qpos_skip=0,
     timestep=fp.TIMESTEP,
 ]
+comptime MD = ModelDims[FM]
 
 comptime NGROUPS: Int = 8
 comptime N_HINT_GROUPS: Int = 1  # g7 — plane/capsule is the only writer
@@ -206,8 +208,8 @@ comptime TOL_FRAME: Float64 = 1e-12
 # exact: worst normal error 4.44e-16, worst t1 4.44e-16, worst t2 1.11e-16.
 comptime TOL_NORMAL: Float64 = 1e-14
 
-comptime Dat = Data[DTYPE, Dims[nq=FM.NQ, nv=FM.NV, nbody=FM.NBODY, max_contacts=FM.MAX_CONTACTS, nsite=FM.NSITE], 1]
-comptime Mod = Model[DTYPE, Dims[nv=FM.NV, nbody=FM.NBODY, njoint=FM.NJOINT, ngeom=FM.NGEOM, nequality=FM.MAX_EQUALITY, ntendon=FM.MAX_TENDON, nsite=FM.NSITE, nexclude=FM.NEXCLUDE, nmesh_verts=0]]
+comptime Dat = Data[DTYPE, MD, 1]
+comptime Mod = Model[DTYPE, MD]
 
 
 def test_default_axis_matches_mju_makeFrame() raises:
@@ -272,7 +274,7 @@ def test_default_axis_matches_mju_makeFrame() raises:
 def _build() raises -> Mod:
     var ctx = DeviceContext()
     var mf = Mod()
-    FM.init_fields[DTYPE, 0](ctx, mf)
+    FM.init_fields[DTYPE](ctx, mf)
     return mf^
 
 

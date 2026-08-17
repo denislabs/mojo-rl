@@ -9,7 +9,7 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import Data, Model, Dims
+from ..fields import Data, Model, Dims, DimsLike
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -118,43 +118,33 @@ def _subtree_com_fields_kernel[
 
 
 def compute_subtree_com[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     BATCH: Int = 1,
     # Appended, not grouped with NEXCLUDE — see `fields.Model`.
-    NPAIR: Int = 0,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH],
-    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Subtree CoM from xipos + body masses, both targets, one body."""
-    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
-    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
+    comptime L_B3 = Layout.row_major(BATCH, D.NBODY * 3)
+    comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
 
     comptime if target == "cpu":
         var bodies_v = m.bodies.lt["cpu", L_BODY]()
         var xipos_v = d.xipos.lt["cpu", L_B3]()
         var stcom_v = d.subtree_com.lt["cpu", L_B3]()
         for e in range(BATCH):
-            _subtree_com_env[DTYPE, NBODY, BATCH](
+            _subtree_com_env[DTYPE, D.NBODY, BATCH](
                 e, bodies_v, xipos_v, stcom_v
             )
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + STCOM_TPB - 1) // STCOM_TPB
-        c.enqueue_function[_subtree_com_fields_kernel[DTYPE, NBODY, BATCH]](
+        c.enqueue_function[_subtree_com_fields_kernel[DTYPE, D.NBODY, BATCH]](
             m.bodies.lt["gpu", L_BODY](),
             d.xipos.lt["gpu", L_B3](),
             d.subtree_com.lt["gpu", L_B3](),

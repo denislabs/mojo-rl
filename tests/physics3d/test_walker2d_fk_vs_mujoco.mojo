@@ -27,11 +27,12 @@ from std.math import abs
 from std.collections import InlineArray
 
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 
 # =============================================================================
@@ -45,6 +46,7 @@ comptime NBODY = Walker2dModel.NBODY  # 8
 comptime NJOINT = Walker2dModel.NJOINT  # 9
 comptime NGEOM = Walker2dModel.NGEOM  # 8
 comptime MAX_CONTACTS = Walker2dModel.MAX_CONTACTS  # 20
+comptime MD = ModelDims[Walker2dModel]
 
 # Tolerance for comparison (float64)
 comptime POS_TOL: Float64 = 1e-6
@@ -65,20 +67,16 @@ def compare_fk(
 
     # === Our engine (fields; legacy Model/Data FK deleted at G4) ===
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=Walker2dModel.MAX_EQUALITY, ntendon=Walker2dModel.MAX_TENDON, nsite=Walker2dModel.NSITE, nexclude=Walker2dModel.NEXCLUDE, nmesh_verts=0]]()
-    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=Walker2dModel.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    Walker2dModel.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
 
     # Set qpos
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_values[i])
 
     # Run our FK (fields, CPU)
-    forward_kinematics[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        Walker2dModel.MAX_EQUALITY, Walker2dModel.MAX_TENDON, Walker2dModel.NSITE,
-        Walker2dModel.NEXCLUDE, 0, 1,
-    ](d, mf, None)
+    forward_kinematics["cpu", DTYPE, BATCH=1](d, mf, None)
 
     # === MuJoCo reference via Python ===
     var mujoco = Python.import_module("mujoco")

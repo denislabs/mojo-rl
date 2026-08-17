@@ -176,6 +176,23 @@ def test_integrate_pos_matches_mujoco() raises:
     comptime NQ: Int = M.NQ
     comptime NV: Int = M.NV
     comptime NJOINT: Int = M.NJOINT
+    comptime MD = Dims[
+        nq=NQ,
+        nv=NV,
+        nbody=M.NBODY,
+        njoint=NJOINT,
+        ngeom=M.NGEOM,
+        nsite=M.NSITE,
+        max_contacts=M.MAX_CONTACTS,
+        nequality=M.MAX_EQUALITY,
+        ntendon=M.MAX_TENDON,
+        nexclude=M.NEXCLUDE,
+        nmesh_verts=0,
+        npair=M.NPAIR,
+        nact=M.NACT,
+        nten=M.NTEN_F,
+        nkey=M.NKEY,
+    ]
     var sf = M.make_spec_fields[DTYPE]()
 
     var mujoco = Python.import_module("mujoco")
@@ -188,9 +205,9 @@ def test_integrate_pos_matches_mujoco() raises:
     assert_true(Int(py=mm.nv) == NV, "nv mismatch")
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=M.NBODY, njoint=NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
 
     comptime L_JNT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)

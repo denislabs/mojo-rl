@@ -259,23 +259,9 @@ struct ReachDuploConfig(Phyics3dEnvConfig):
 
     # === CPU: the TCP initializer, then the prop placer and its settle ====
     @staticmethod
-    def custom_reset_full_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        NGEOM: Int,
-        NEQ: Int,
-        NTEN: Int,
-        NSITE: Int,
-        NEXCL: Int,
-        NMESHV: Int,
-        NPAIR: Int,
-        MAX_CONTACTS: Int,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
-        mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+    def custom_reset_full_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
+        mut mf: Model[DTYPE, D],
     ) raises:
         """`Reach.initialize_episode`'s second and third statements.
 
@@ -341,8 +327,8 @@ struct ReachDuploConfig(Phyics3dEnvConfig):
         # resting against one is not a bad initial pose. Note the prop is still
         # at qpos0 (the origin) when this runs, because `Reach` places the arm
         # FIRST; labelling it FIXED would reject arm poses over the origin.
-        var body_class = InlineArray[Int, NBODY](fill=BODY_FIXED)
-        for b in range(NBODY):
+        var body_class = InlineArray[Int, D.NBODY](fill=BODY_FIXED)
+        for b in range(D.NBODY):
             if b >= 2 and b <= 8:
                 body_class[b] = BODY_ARM
             elif b >= 10 and b <= 16:
@@ -350,10 +336,7 @@ struct ReachDuploConfig(Phyics3dEnvConfig):
             elif b == PROP_BODY:
                 body_class[b] = BODY_FREE
 
-        var res = tool_center_point_initializer[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAX_CONTACTS, N_ARM,
-        ](
+        var res = tool_center_point_initializer[DTYPE, N_ARM](
             d, mf, SITE_PINCH, targets, down, dof_idx, qpos_adr,
             lower, upper, retry, body_class, False, MAX_ATT, MAX_SAMP,
         )
@@ -392,10 +375,7 @@ struct ReachDuploConfig(Phyics3dEnvConfig):
             for k in range(4):
                 poses.append(pquat[k])
 
-        var pres = place_free_prop[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAX_CONTACTS,
-        ](
+        var pres = place_free_prop[DTYPE](
             d, mf, PROP_BODY, PROP_QPOS_ADR, PROP_DOF_ADR, poses,
             List[Int](), False, MAX_PROP_ATTEMPTS,
         )
@@ -407,11 +387,4 @@ struct ReachDuploConfig(Phyics3dEnvConfig):
             )
 
         # ── 3. settle it, with the robot held static ────────────────────
-        _ = settle_free_prop[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAX_CONTACTS,
-            ReachDuploModel.CONE_TYPE,
-            ReachDuploModel.MAX_CONDIM,
-            ReachDuploModel.NOSLIP_ITER,
-            N_ARM + N_HAND,
-        ](d, mf, PROP_DOF_ADR, Self.get_timestep())
+        _ = settle_free_prop[DTYPE, ReachDuploModel.CONE_TYPE, ReachDuploModel.MAX_CONDIM, ReachDuploModel.NOSLIP_ITER, N_ARM + N_HAND](d, mf, PROP_DOF_ADR, Self.get_timestep())

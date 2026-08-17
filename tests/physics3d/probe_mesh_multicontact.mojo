@@ -23,6 +23,7 @@ from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.gjk import gjk_epa_witness
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.collision.native_multicontact import (
     native_multicontact_contacts,
 )
@@ -95,16 +96,17 @@ comptime NV: Int = PXM.NV
 comptime NBODY: Int = PXM.NBODY
 comptime MC: Int = PXM.MAX_CONTACTS
 comptime NGEOM: Int = PXM.NGEOM
+comptime MD = ModelDims[PXM, 32]
 
-comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=PXM.NSITE], 1]
-comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=PXM.NJOINT, ngeom=NGEOM, nequality=PXM.MAX_EQUALITY, ntendon=PXM.MAX_TENDON, nsite=PXM.NSITE, nexclude=PXM.NEXCLUDE, nmesh_verts=NMESHV]]
+comptime Dat = Data[DTYPE, MD, 1]
+comptime Mod = Model[DTYPE, MD]
 
 
 def main() raises:
     var sf = PXM.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
     var mf = Mod()
-    PXM.init_fields[DTYPE, NMESHV](ctx, mf)
+    PXM.init_fields[DTYPE](ctx, mf)
     var d = Dat()
 
     var mujoco = Python.import_module("mujoco")

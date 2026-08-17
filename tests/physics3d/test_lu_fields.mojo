@@ -31,6 +31,7 @@ from mojo_rl.physics3d.dynamics.lu import (
 comptime DT = DType.float32
 comptime NV = 6
 comptime NBODY = 2
+comptime MD = Dims[nv=NV, nbody=NBODY]
 comptime BATCH = 2
 comptime M_SIZE = NV * NV
 comptime V_SIZE = NV
@@ -53,7 +54,7 @@ def main() raises:
     print("=== Stage-I lu parity (NV=", NV, " BATCH=", BATCH, ") ===")
     var ctx = DeviceContext()
 
-    var sc = DynamicsScratch[DT, Dims[nv=NV, nbody=NBODY], BATCH]()
+    var sc = DynamicsScratch[DT, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NV):
             for j in range(NV):

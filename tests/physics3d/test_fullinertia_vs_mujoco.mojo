@@ -56,6 +56,7 @@ from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.full_parser import parse_xml_full
 from mojo_rl.physics3d.fields.model import Model
 from mojo_rl.physics3d.fields.dims import Dims
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -148,6 +149,7 @@ comptime M = ModelDefFromXML[
     obs_dim_override=1, obs_qpos_skip=0,
     timestep=pm.TIMESTEP,
 ]
+comptime MD_2 = ModelDims[M]
 
 # ⚠ Read into module-level comptime Ints before they reach a type parameter.
 # Spelling `M.NPAIR` directly in the `Model` type folds it to `Int(0)` on one
@@ -163,6 +165,7 @@ comptime NEQ = M.MAX_EQUALITY
 comptime NTD = M.MAX_TENDON
 comptime NSITE = M.NSITE
 comptime NEXCL = M.NEXCLUDE
+comptime MD = ModelDims[M]
 
 # ⚠ NOT a placeholder. See the header: 1e-6 would pass an independently
 # correct eigensolver that disagrees with MuJoCo's frame in the 7th digit,
@@ -183,10 +186,10 @@ def _body_names() -> List[String]:
 # unmaterialized expression `parse_xml(XML).NPAIR`, which it will not unify.
 
 
-def _build_model() raises -> Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]:
+def _build_model() raises -> Model[DTYPE, MD]:
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD_2]()
+    M.init_fields[DTYPE](ctx, mf)
     return mf^
 
 

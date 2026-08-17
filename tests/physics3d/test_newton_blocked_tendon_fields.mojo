@@ -103,6 +103,7 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_RANGE_MAX,
 )
 from mojo_rl.envs.dm_control.ball_in_cup import DMBallInCupModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 comptime NQ = DMBallInCupModel.NQ
@@ -115,6 +116,7 @@ comptime NEQ = DMBallInCupModel.MAX_EQUALITY
 comptime NTD = DMBallInCupModel.MAX_TENDON
 comptime NSITE = DMBallInCupModel.NSITE
 comptime NEXCL = DMBallInCupModel.NEXCLUDE
+comptime MD = ModelDims[DMBallInCupModel]
 comptime BATCH = 2
 
 # qpos = [cup_x, cup_z, ball_x, ball_z]; the tendon spans ball site -> cup site
@@ -135,33 +137,18 @@ comptime REL_TOL: Float64 = 1e-4
 def _fields_prep[
     target: StaticString
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
+    mut d: Data[DTYPE, MD, BATCH],
+    mut mf: Model[DTYPE, MD],
+    mut scratch: DynamicsScratch[DTYPE, MD, BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
     """Smooth-dynamics prep + detection, mirroring EulerIntegrator.step
     up to the constraint seam (order verbatim)."""
-    forward_kinematics[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, ctx)
-    compute_body_velocities[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, ctx)
-    compute_subtree_com[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, ctx)
-    compute_cdof[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, scratch, ctx)
-    compute_mass_matrix[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, scratch, ctx)
+    forward_kinematics[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_body_velocities[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_subtree_com[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_cdof[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
+    compute_mass_matrix[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
 
     comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
     comptime L_M = Layout.row_major(BATCH, NV * NV)
@@ -175,10 +162,7 @@ def _fields_prep[
             _armature_env[DTYPE, NV, NJOINT, BATCH](e, joints_v, M_v)
         ldl_factor[target, DTYPE, BATCH=BATCH](scratch, ctx)
         compute_m_inv[target, DTYPE, BATCH=BATCH](scratch, ctx)
-        compute_bias_forces_rne[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-            BATCH,
-        ](d, mf, scratch, ctx)
+        compute_bias_forces_rne[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
         var qvel_v = d.qvel.lt["cpu", L_NV]()
         var qfrc_v = d.qfrc.lt["cpu", L_NV]()
@@ -207,10 +191,7 @@ def _fields_prep[
         )
         ldl_factor[target, DTYPE, BATCH=BATCH](scratch, ctx)
         compute_m_inv[target, DTYPE, BATCH=BATCH](scratch, ctx)
-        compute_bias_forces_rne[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-            BATCH,
-        ](d, mf, scratch, ctx)
+        compute_bias_forces_rne[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         ctx.value().enqueue_function[
             _fnet_passive_kernel[DTYPE, NQ, NV, NJOINT, BATCH]
         ](
@@ -234,16 +215,13 @@ def _fields_prep[
             block_dim=(1,),
         )
 
-    detect_contacts[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, ctx)
+    detect_contacts[target, DTYPE, BATCH=BATCH](d, mf, ctx)
 
 
 
 def _ten_length(
-    mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
+    mf: Model[DTYPE, MD],
+    d: Data[DTYPE, MD, BATCH],
     env: Int,
 ) -> Float64:
     """Straight-line ball-site to cup-site distance, from FK output."""
@@ -256,7 +234,7 @@ def _ten_length(
     return (dx * dx + dz * dz) ** 0.5
 
 
-def _seed(mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]):
+def _seed(mut d: Data[DTYPE, MD, BATCH]):
     for e in range(BATCH):
         d.qpos.data[e * NQ + 0] = Scalar[DTYPE](0.02 * Float64(e))
         d.qpos.data[e * NQ + 1] = Scalar[DTYPE](0.0)
@@ -274,19 +252,19 @@ def _seed(mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, ns
 def test_blocked_tendon_rows_gpu_vs_cpu() raises:
     """Part A — cooperative GPU vs serial CPU, same prepared state."""
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
-    DMBallInCupModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    DMBallInCupModel.init_fields[DTYPE](ctx, mf)
 
-    var dg = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
-    var dc = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dg = Data[DTYPE, MD, BATCH]()
+    var dc = Data[DTYPE, MD, BATCH]()
     _seed(dg)
     _seed(dc)
     dg.upload_all(ctx)
 
-    var sg = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
-    var sc = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
-    var cg = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
-    var cc = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
+    var sg = DynamicsScratch[DTYPE, MD, BATCH]()
+    var sc = DynamicsScratch[DTYPE, MD, BATCH]()
+    var cg = ContactScratch[DTYPE, MD, BATCH]()
+    var cc = ContactScratch[DTYPE, MD, BATCH]()
     sg.upload_all(ctx)
     cg.upload_all(ctx)
 
@@ -314,14 +292,8 @@ def test_blocked_tendon_rows_gpu_vs_cpu() raises:
             " is about"
         )
 
-    solve_newton_blocked[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        NEXCL, 0, ConeType.PYRAMIDAL, BATCH,
-    ](dg, mf, sg, cg, ctx)
-    solve_newton_blocked[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        NEXCL, 0, ConeType.PYRAMIDAL, BATCH,
-    ](dc, mf, sc, cc, None)
+    solve_newton_blocked["gpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH](dg, mf, sg, cg, ctx)
+    solve_newton_blocked["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH](dc, mf, sc, cc, None)
 
     sg.qacc_constrained.download(ctx)
     var worst = Float64(0)
@@ -346,31 +318,25 @@ def test_blocked_tendon_rows_gpu_vs_cpu() raises:
 
 def test_blocked_matches_per_env_solver() raises:
     """Part B — blocked CPU vs the per-env `solve_newton` CPU path."""
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
+    var mf = Model[DTYPE, MD]()
     var ctx = DeviceContext()
-    DMBallInCupModel.init_fields[DTYPE, 0](ctx, mf)
+    DMBallInCupModel.init_fields[DTYPE](ctx, mf)
 
-    var db = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
-    var dp = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var db = Data[DTYPE, MD, BATCH]()
+    var dp = Data[DTYPE, MD, BATCH]()
     _seed(db)
     _seed(dp)
 
-    var sb = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
-    var sp = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
-    var cb = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
-    var cp = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
+    var sb = DynamicsScratch[DTYPE, MD, BATCH]()
+    var sp = DynamicsScratch[DTYPE, MD, BATCH]()
+    var cb = ContactScratch[DTYPE, MD, BATCH]()
+    var cp = ContactScratch[DTYPE, MD, BATCH]()
 
     _fields_prep["cpu"](db, mf, sb, None)
     _fields_prep["cpu"](dp, mf, sp, None)
 
-    solve_newton_blocked[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        NEXCL, 0, ConeType.PYRAMIDAL, BATCH,
-    ](db, mf, sb, cb, None)
-    solve_newton[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        NEXCL, 0, ConeType.PYRAMIDAL, BATCH,
-    ](dp, mf, sp, cp, None)
+    solve_newton_blocked["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH](db, mf, sb, cb, None)
+    solve_newton["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=BATCH](dp, mf, sp, cp, None)
 
     var worst = Float64(0)
     for k in range(BATCH * NV):

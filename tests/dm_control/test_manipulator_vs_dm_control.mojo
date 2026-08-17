@@ -46,6 +46,7 @@ from mojo_rl.envs.dm_control.manipulator import (
 )
 from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -197,10 +198,10 @@ def _ref() raises -> PythonObject:
     return builder.model(False, False)
 
 
-def _build() raises -> Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=M.MAX_EQUALITY, ntendon=NTEN, nsite=NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]:
+def _build() raises -> Model[DTYPE, MD]:
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=M.MAX_EQUALITY, ntendon=NTEN, nsite=NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
     return mf^
 
 
@@ -636,14 +637,12 @@ def test_manipulator_invweight0_matches_mujoco() raises:
 comptime MAXC: Int = M.MAX_CONTACTS
 comptime NEQ: Int = M.MAX_EQUALITY
 comptime NEXCL: Int = M.NEXCLUDE
+comptime MD = ModelDims[M]
 comptime NA: Int = M.NA
 
-comptime Integ = EulerIntegrator[
-    DTYPE, NQ, NV, NBODY, NJOINT, MAXC, NGEOM, NEQ, NTEN, NSITE,
-    NEXCL, 0, M.CONE_TYPE, 1, SOLVER="newton",
-]
-comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]
-comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]
+comptime Integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton"]
+comptime Dat = Data[DTYPE, MD, 1]
+comptime Mod = Model[DTYPE, MD]
 
 # Ball world position when the arm sits at the `C`/`D` pose — the `grasp`
 # site's (x, z). `ball_x`/`ball_z` carry `ref=".4"` matching the body's own
@@ -712,7 +711,7 @@ def _our_qacc(
     var ctx = DeviceContext()
     var mf = Mod()
     var d = Dat()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    M.init_fields[DTYPE](ctx, mf)
     M.reset_data(sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](state[i])
@@ -768,7 +767,7 @@ def test_manipulator_grasp_site_matches_mujoco() raises:
     var ctx = DeviceContext()
     var mf = Mod()
     var d = Dat()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    M.init_fields[DTYPE](ctx, mf)
     M.reset_data(sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](state[i])

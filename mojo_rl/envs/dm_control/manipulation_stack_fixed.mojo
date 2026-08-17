@@ -253,23 +253,9 @@ def stack_fixed_set_grasp[DTYPE: DType, D: DimsLike](
     set_grasp[DTYPE, N_HAND](d.qpos.data, qadr, rmin, rmax, factors)
 
 
-def brick_tcp_initializer[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
-    NPAIR: Int,
-    MAX_CONTACTS: Int,
-](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+def brick_tcp_initializer[DTYPE: DType, D: DimsLike](
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     n_bricks: Int,
     fixed_brick: Int,
     caller: String,
@@ -349,8 +335,8 @@ def brick_tcp_initializer[
     down[0] = Scalar[DTYPE](DOWN_QUAT_XY)
     down[1] = Scalar[DTYPE](DOWN_QUAT_XY)
 
-    var body_class = InlineArray[Int, NBODY](fill=BODY_FIXED)
-    for b in range(NBODY):
+    var body_class = InlineArray[Int, D.NBODY](fill=BODY_FIXED)
+    for b in range(D.NBODY):
         if b >= 2 and b <= 8:
             body_class[b] = BODY_ARM
         elif b >= 10 and b <= 16:
@@ -359,10 +345,7 @@ def brick_tcp_initializer[
         if p != fixed_brick:
             body_class[stack_brick_body_of(p)] = BODY_FREE
 
-    var res = tool_center_point_initializer[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-        NMESHV, NPAIR, MAX_CONTACTS, N_ARM,
-    ](
+    var res = tool_center_point_initializer[DTYPE, N_ARM](
         d, mf, SITE_PINCH, targets, down, dof_idx, qpos_adr,
         lower, upper, retry, body_class, False, MAX_ATT, MAX_SAMP,
     )
@@ -380,26 +363,17 @@ def brick_tcp_initializer[
 
 
 def stack_fixed_reset_full[
+
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
-    NPAIR: Int,
-    MAX_CONTACTS: Int,
     # ⚠ From the task's model def, never defaulted — see `settle_free_props`.
     CONE: Int,
     MAX_CONDIM: Int,
     NOSLIP_ITER: Int,
+
+    D: DimsLike,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     n_bricks: Int,
     fixed_brick: Int,
     timestep: Float64,
@@ -441,10 +415,7 @@ def stack_fixed_reset_full[
                 poses.append(pq[k])
 
         if p == fixed_brick:
-            var rf = place_fixed_prop[
-                DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE,
-                NEXCL, NMESHV, NPAIR, MAX_CONTACTS,
-            ](
+            var rf = place_fixed_prop[DTYPE](
                 d, mf, stack_brick_body_of(p), 1, ignore, poses,
                 MAX_PROP_ATTEMPTS,
             )
@@ -456,10 +427,7 @@ def stack_fixed_reset_full[
                 )
         else:
             var slot = stack_free_slot_of(p, fixed_brick)
-            var rr = place_free_prop[
-                DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE,
-                NEXCL, NMESHV, NPAIR, MAX_CONTACTS,
-            ](
+            var rr = place_free_prop[DTYPE](
                 d, mf, stack_brick_body_of(p), stack_qpos_adr_of(slot),
                 stack_dof_adr_of(slot), poses, ignore, False,
                 MAX_PROP_ATTEMPTS,
@@ -479,14 +447,7 @@ def stack_fixed_reset_full[
     var n_free = n_bricks if fixed_brick < 0 else n_bricks - 1
     for s in range(n_free):
         dofs.append(stack_dof_adr_of(s))
-    _ = settle_free_props[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-        NMESHV, NPAIR, MAX_CONTACTS, CONE, MAX_CONDIM, NOSLIP_ITER,
-        N_ARM + N_HAND,
-    ](d, mf, dofs, timestep)
+    _ = settle_free_props[DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, N_ARM + N_HAND](d, mf, dofs, timestep)
 
     # ── the TCP initializer ─────────────────────────────────────────────
-    brick_tcp_initializer[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-        NMESHV, NPAIR, MAX_CONTACTS,
-    ](d, mf, n_bricks, fixed_brick, "stack")
+    brick_tcp_initializer[DTYPE](d, mf, n_bricks, fixed_brick, "stack")

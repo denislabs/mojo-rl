@@ -60,6 +60,20 @@ comptime NSITE: Int = 12
 comptime NEXCLUDE: Int = 4
 comptime NMESH_VERTS: Int = 60000
 comptime MAXC: Int = 256
+comptime MD = Dims[
+    nq=NQ,
+    nv=NV,
+    nbody=NBODY,
+    njoint=NJOINT,
+    ngeom=NGEOM,
+    nsite=NSITE,
+    max_contacts=MAXC,
+    nequality=0,
+    ntendon=0,
+    nexclude=NEXCLUDE,
+    nmesh_verts=NMESH_VERTS,
+    npair=0,
+]
 comptime NDOF: Int = 6
 
 comptime N_POSES: Int = 60
@@ -76,8 +90,8 @@ def _read(path: String) raises -> String:
 struct _Fixture:
     """Jaco model + data + the reference handles every test here needs."""
 
-    var d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]
-    var mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=0, ntendon=0, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=0]]
+    var d: Data[DTYPE, MD, 1]
+    var mf: Model[DTYPE, MD]
     var body_class: InlineArray[Int, NBODY]
 
     def __init__(out self) raises:
@@ -94,10 +108,10 @@ struct _Fixture:
         var cwd = String(os.getcwd())
         _ = os.chdir(tmp)
         var fmd = parse_xml_full(_read(xml_path))
-        self.mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=0, ntendon=0, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=0]]()
+        self.mf = Model[DTYPE, MD]()
         build_model_fields_from_flat[DTYPE](fmd, self.mf)
         _ = os.chdir(cwd)
-        self.d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]()
+        self.d = Data[DTYPE, MD, 1]()
 
         var cls = refmod.body_classes_reference()
         self.body_class = InlineArray[Int, NBODY](fill=BODY_FIXED)
@@ -170,9 +184,7 @@ def test_has_relevant_collisions_matches_dm_control() raises:
 
         forward_kinematics["cpu"](fx.d, fx.mf)
         detect_contacts["cpu"](fx.d, fx.mf)
-        var ours = has_relevant_collisions[
-            DTYPE, NQ, NV, NBODY, MAXC, NSITE
-        ](fx.d, fx.body_class)
+        var ours = has_relevant_collisions[DTYPE](fx.d, fx.body_class)
 
         var rr = refmod.has_relevant_collisions_at(qpy)
         var theirs = Bool(py=rr[0])
@@ -295,10 +307,7 @@ def test_tcp_initializer_rejection_loop() raises:
         bad_targets.append(Scalar[DTYPE](0.02 * Float64(s) - 0.05))
         bad_targets.append(Scalar[DTYPE](0.0))
         bad_targets.append(Scalar[DTYPE](-0.25))
-    var rbad = tool_center_point_initializer[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-        NMESH_VERTS, 0, MAXC, NDOF,
-    ](
+    var rbad = tool_center_point_initializer[DTYPE, NDOF](
         fx.d, fx.mf, our_tcp, bad_targets, down, dof_idx, qpos_adr,
         lower, upper, retry, fx.body_class, False, MAX_ATT, MAX_SAMP,
     )
@@ -337,10 +346,7 @@ def test_tcp_initializer_rejection_loop() raises:
         good_targets.append(Scalar[DTYPE](0.0))
         good_targets.append(Scalar[DTYPE](0.0))
         good_targets.append(Scalar[DTYPE](0.36 + 0.01 * Float64(s)))
-    var rgood = tool_center_point_initializer[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-        NMESH_VERTS, 0, MAXC, NDOF,
-    ](
+    var rgood = tool_center_point_initializer[DTYPE, NDOF](
         fx.d, fx.mf, our_tcp, good_targets, down, dof_idx, qpos_adr,
         lower, upper, retry, fx.body_class, False, MAX_ATT, MAX_SAMP,
     )
@@ -369,7 +375,7 @@ def test_tcp_initializer_rejection_loop() raises:
         " away",
     )
     assert_true(
-        not has_relevant_collisions[DTYPE, NQ, NV, NBODY, MAXC, NSITE](
+        not has_relevant_collisions[DTYPE](
             fx.d, fx.body_class
         ),
         "the pose left in `d` on acceptance is in relevant collision — the"
@@ -382,10 +388,7 @@ def test_tcp_initializer_rejection_loop() raises:
     # this must now get further.
     for i in range(NQ):
         fx.d.qpos.data[i] = Scalar[DTYPE](entry[i])
-    var rign = tool_center_point_initializer[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-        NMESH_VERTS, 0, MAXC, NDOF,
-    ](
+    var rign = tool_center_point_initializer[DTYPE, NDOF](
         fx.d, fx.mf, our_tcp, bad_targets, down, dof_idx, qpos_adr,
         lower, upper, retry, fx.body_class, True, MAX_ATT, MAX_SAMP,
     )
@@ -425,10 +428,7 @@ def test_tcp_initializer_rejection_loop() raises:
         mixed.append(Scalar[DTYPE](0.0))
         mixed.append(Scalar[DTYPE](0.0))
         mixed.append(Scalar[DTYPE](0.36 + 0.01 * Float64(s)))
-    var rmix = tool_center_point_initializer[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-        NMESH_VERTS, 0, MAXC, NDOF,
-    ](
+    var rmix = tool_center_point_initializer[DTYPE, NDOF](
         fx.d, fx.mf, our_tcp, mixed, down, dof_idx, qpos_adr,
         lower, upper, retry, fx.body_class, False, MAX_ATT, MAX_SAMP,
     )
@@ -447,7 +447,7 @@ def test_tcp_initializer_rejection_loop() raises:
         "the rejected samples were not all counted as collisions",
     )
     assert_true(
-        not has_relevant_collisions[DTYPE, NQ, NV, NBODY, MAXC, NSITE](
+        not has_relevant_collisions[DTYPE](
             fx.d, fx.body_class
         ),
         "the pose accepted after a rejection is in relevant collision",
@@ -464,10 +464,7 @@ def test_tcp_initializer_rejection_loop() raises:
         far.append(Scalar[DTYPE](5.0 + Float64(s)))
         far.append(Scalar[DTYPE](5.0))
         far.append(Scalar[DTYPE](5.0))
-    var rfar = tool_center_point_initializer[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, 0, 0, NSITE, NEXCLUDE,
-        NMESH_VERTS, 0, MAXC, NDOF,
-    ](
+    var rfar = tool_center_point_initializer[DTYPE, NDOF](
         fx.d, fx.mf, our_tcp, far, down, dof_idx, qpos_adr,
         lower, upper, retry, fx.body_class, False, MAX_ATT, MAX_SAMP,
     )

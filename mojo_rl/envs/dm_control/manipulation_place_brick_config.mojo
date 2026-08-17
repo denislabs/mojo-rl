@@ -107,28 +107,8 @@ struct PlaceBrickConfig(Phyics3dEnvConfig):
 
     # === CPU: pedestal, then arm, then brick ==============================
     @staticmethod
-    def custom_reset_full_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        NGEOM: Int,
-        NEQ: Int,
-        NTEN: Int,
-        NSITE: Int,
-        NEXCL: Int,
-        NMESHV: Int,
-        NPAIR: Int,
-        MAX_CONTACTS: Int,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
-        mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+    def custom_reset_full_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
+        mut mf: Model[DTYPE, D],
     ) raises:
-        place_reset_full[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAX_CONTACTS,
-            PlaceBrickModel.CONE_TYPE,
-            PlaceBrickModel.MAX_CONDIM,
-            PlaceBrickModel.NOSLIP_ITER,
-        ](d, mf, Self.get_timestep())
+        place_reset_full[DTYPE, PlaceBrickModel.CONE_TYPE, PlaceBrickModel.MAX_CONDIM, PlaceBrickModel.NOSLIP_ITER](d, mf, Self.get_timestep())

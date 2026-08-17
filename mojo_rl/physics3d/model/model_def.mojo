@@ -11,7 +11,7 @@ the legacy CPU `Model`/`Data` build at G4).
 from mojo_rl.render import Renderer3D, Light, Camera3D
 from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
 
-from ..fields import Model, Data, SpecFields, Dims
+from ..fields import Model, Data, SpecFields, Dims, DimsLike
 from ..parser.render_fields import RenderFields
 from ..gpu.constants import (
     MODEL_ACTUATOR_SIZE,
@@ -137,58 +137,46 @@ trait ModelDefLike:
 
     # === CPU: state hooks (fields-native; G2) ===
     @staticmethod
-    def reset_data[
-        DTYPE: DType
-    ](
-        sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
-        mut d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
+    def reset_data[DTYPE: DType, D: DimsLike, D2: DimsLike](
+        sf: SpecFields[DTYPE, D],
+        mut d: Data[DTYPE, D2, 1],
     ):
         ...
 
     @staticmethod
-    def extract_obs[
-        DTYPE: DType
-    ](
-        d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
+    def extract_obs[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         mut obs: List[Scalar[DTYPE]],
     ):
         ...
 
     @staticmethod
-    def enforce_limits[
-        DTYPE: DType
-    ](
-        sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
-        mut d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
+    def enforce_limits[DTYPE: DType, D: DimsLike, D2: DimsLike](
+        sf: SpecFields[DTYPE, D],
+        mut d: Data[DTYPE, D2, 1],
     ):
         ...
 
     @staticmethod
-    def init_spec_fields[
-        DTYPE: DType
-    ](
+    def init_spec_fields[DTYPE: DType, D: DimsLike](
         ctx: DeviceContext,
-        mut sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
+        mut sf: SpecFields[DTYPE, D],
     ) raises:
         """Build + upload the actuation record tensors (`SpecFields`), the
         runtime replacement for the comptime `_acd` actuator arrays."""
         ...
 
     @staticmethod
-    def apply_actions[
-        DTYPE: DType
-    ](
-        sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
-        mut d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
+    def apply_actions[DTYPE: DType, D: DimsLike, D2: DimsLike](
+        sf: SpecFields[DTYPE, D],
+        mut d: Data[DTYPE, D2, 1],
         actions: List[Float64],
         mut act: List[Scalar[DTYPE]],
     ):
         ...
 
     @staticmethod
-    def ctrl_min_at[
-        DTYPE: DType
-    ](sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]], i: Int) -> Float64:
+    def ctrl_min_at[DTYPE: DType, D: DimsLike](sf: SpecFields[DTYPE, D], i: Int) -> Float64:
         """Lower `ctrlrange` bound of actuator `i` — MuJoCo's
         `actuator_ctrlrange[i][0]`, and what `apply_actions` actually clamps
         against.
@@ -201,9 +189,7 @@ trait ModelDefLike:
         ...
 
     @staticmethod
-    def ctrl_max_at[
-        DTYPE: DType
-    ](sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]], i: Int) -> Float64:
+    def ctrl_max_at[DTYPE: DType, D: DimsLike](sf: SpecFields[DTYPE, D], i: Int) -> Float64:
         """Upper `ctrlrange` bound of actuator `i`. See `ctrl_min_at`."""
         ...
 
@@ -211,11 +197,9 @@ trait ModelDefLike:
 
     # === Fields-native model build (spec-direct; G4) ===
     @staticmethod
-    def init_fields[
-        DTYPE: DType, NMESHV: Int = 0
-    ](
+    def init_fields[DTYPE: DType, D: DimsLike](
         ctx: DeviceContext,
-        mut mf: Model[DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY, njoint=Self.NJOINT, ngeom=Self.NGEOM, nequality=Self.MAX_EQUALITY, ntendon=Self.MAX_TENDON, nsite=Self.NSITE, nexclude=Self.NEXCLUDE, nmesh_verts=NMESHV, npair=Self.NPAIR]],
+        mut mf: Model[DTYPE, D],
     ) raises:
         """Build the Model record tensors + fields-native invweight0
         and upload. Implemented spec-direct by `ModelDefFromXML`

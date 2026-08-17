@@ -122,24 +122,15 @@ from .tendon import spatial_tendon_length_jac
 
 
 def compute_invweight0[
+
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
     # Appended, not grouped with NEXCLUDE — see `fields.Model`.
-    NPAIR: Int = 0,
+
+    D: DimsLike,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
-    mut sc: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], 1],
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
+    mut sc: DynamicsScratch[DTYPE, D, 1],
 ) raises:
     """Compute mf.body_invweight0 / mf.dof_invweight0 at qpos0 — see module
     docstring. Build-time, single-env (BATCH=1); overwrites `d`."""
@@ -150,9 +141,9 @@ def compute_invweight0[
     # <custom><numeric name="init_qpos"> parks its ankles at ±1 rad — and M is
     # configuration-dependent, so seeding from the reset pose skews every
     # inverse weight (ant: 0.75% on the hinges, 32% on the free root).
-    for i in range(NQ):
+    for i in range(D.NQ):
         d.qpos.data[i] = Scalar[DTYPE](0)
-    for j in range(NJOINT):
+    for j in range(D.NJOINT):
         var jo = j * MODEL_JOINT_SIZE
         var jt = Int(mf.joints.data[jo + JOINT_IDX_TYPE])
         var qadr = Int(mf.joints.data[jo + JOINT_IDX_QPOS_ADR])
@@ -172,29 +163,17 @@ def compute_invweight0[
             d.qpos.data[qadr] = Scalar[DTYPE](1)  # identity (w, x, y, z)
         else:
             d.qpos.data[qadr] = mf.joints.data[jo + JOINT_IDX_QPOS0]
-    for i in range(NV):
+    for i in range(D.NV):
         d.qvel.data[i] = Scalar[DTYPE](0)
 
     # ── fields pipeline: FK -> subtree_com -> cdof -> CRBA -> +armature -> LDL -> M^-1
-    forward_kinematics[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
-        NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1, NPAIR=NPAIR,
-    ](d, mf, None)
-    compute_subtree_com[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
-        NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1, NPAIR=NPAIR,
-    ](d, mf, None)
-    compute_cdof[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
-        NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1, NPAIR=NPAIR,
-    ](d, mf, sc, None)
-    compute_mass_matrix[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQUALITY,
-        NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, 1, NPAIR=NPAIR,
-    ](d, mf, sc, None)
+    forward_kinematics["cpu", DTYPE, BATCH=1](d, mf, None)
+    compute_subtree_com["cpu", DTYPE, BATCH=1](d, mf, None)
+    compute_cdof["cpu", DTYPE, BATCH=1](d, mf, sc, None)
+    compute_mass_matrix["cpu", DTYPE, BATCH=1](d, mf, sc, None)
 
     # Add armature to the diagonal (matches legacy mass_matrix.mojo:447-457).
-    for j in range(NJOINT):
+    for j in range(D.NJOINT):
         var jo = j * MODEL_JOINT_SIZE
         var jtype = Int(mf.joints.data[jo + JOINT_IDX_TYPE])
         var dof_adr = Int(mf.joints.data[jo + JOINT_IDX_DOF_ADR])
@@ -205,7 +184,7 @@ def compute_invweight0[
         elif jtype == JNT_BALL:
             ndof = 3
         for dd in range(ndof):
-            sc.M.data[(dof_adr + dd) * NV + (dof_adr + dd)] += arm
+            sc.M.data[(dof_adr + dd) * D.NV + (dof_adr + dd)] += arm
 
     # ── stat.meaninertia, and it MUST be read here ──────────────────────────
     # `ldl_factor` overwrites `sc.M` IN PLACE on the very next line, so after
@@ -216,17 +195,17 @@ def compute_invweight0[
     # Consumed only by `mj_solNoSlip`'s convergence test — see
     # `MODEL_META_IDX_MEANINERTIA`.
     var _mi_sum = Float64(0)
-    for i in range(NV):
-        _mi_sum += Float64(sc.M.data[i * NV + i])
+    for i in range(D.NV):
+        _mi_sum += Float64(sc.M.data[i * D.NV + i])
     mf.meta.data[MODEL_META_IDX_MEANINERTIA] = Scalar[DTYPE](
-        _mi_sum / Float64(NV) if NV > 0 else Float64(0)
+        _mi_sum / Float64(D.NV) if D.NV > 0 else Float64(0)
     )
 
     ldl_factor["cpu", DTYPE, BATCH=1](sc)
 
     # ── dof->body map (matches legacy :461-476) ──────────────────────────────
-    var dof_body = List[Int](length=NV, fill=0)
-    for j in range(NJOINT):
+    var dof_body = List[Int](length=D.NV, fill=0)
+    for j in range(D.NJOINT):
         var jo = j * MODEL_JOINT_SIZE
         var jtype = Int(mf.joints.data[jo + JOINT_IDX_TYPE])
         var body = Int(mf.joints.data[jo + JOINT_IDX_BODY_ID])
@@ -267,17 +246,17 @@ def compute_invweight0[
     # out at 10.1859 against MuJoCo's 15.2789 — exactly 2/3 — making every
     # ball contact 1.5x too soft. Same failure shape as bug 20, on the other
     # half of the same function, and hidden for the same reason.
-    var body_dofnum = List[Int](length=NBODY, fill=0)
-    var body_is_parent = List[Bool](length=NBODY, fill=False)
-    for i in range(NBODY):
+    var body_dofnum = List[Int](length=D.NBODY, fill=0)
+    var body_is_parent = List[Bool](length=D.NBODY, fill=False)
+    for i in range(D.NBODY):
         var par = Int(mf.bodies.data[i * MODEL_BODY_SIZE + BODY_IDX_PARENT])
         if par > 0:
             body_is_parent[par] = True
-    for dd in range(NV):
+    for dd in range(D.NV):
         body_dofnum[dof_body[dd]] += 1
 
-    var simple2 = List[Bool](length=NBODY, fill=False)
-    for i in range(1, NBODY):
+    var simple2 = List[Bool](length=D.NBODY, fill=False)
+    for i in range(1, D.NBODY):
         if body_dofnum[i] == 0 or body_is_parent[i]:
             continue
         var bo = i * MODEL_BODY_SIZE
@@ -305,7 +284,7 @@ def compute_invweight0[
             continue
         # every joint an axis-aligned SLIDE through the body origin.
         var ok = True
-        for j in range(NJOINT):
+        for j in range(D.NJOINT):
             var jo = j * MODEL_JOINT_SIZE
             if Int(mf.joints.data[jo + JOINT_IDX_BODY_ID]) != i:
                 continue
@@ -333,7 +312,7 @@ def compute_invweight0[
             simple2[i] = True
 
     # ── per-body invweight0 via A = J M^-1 J^T diagonal (legacy :482-586) ─────
-    for i in range(NBODY):
+    for i in range(D.NBODY):
         if simple2[i]:
             var mass = mf.bodies.data[i * MODEL_BODY_SIZE + BODY_IDX_MASS]
             if mass < Scalar[DTYPE](1e-15):
@@ -347,8 +326,8 @@ def compute_invweight0[
 
         var A_diag = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
         for k in range(6):
-            var J_row = List[Scalar[DTYPE]](length=NV, fill=Scalar[DTYPE](0))
-            for dd in range(NV):
+            var J_row = List[Scalar[DTYPE]](length=D.NV, fill=Scalar[DTYPE](0))
+            for dd in range(D.NV):
                 var b = dof_body[dd]
                 # Does DOF dd affect body i (dd's body == i or an ancestor)?
                 var affects = b == i
@@ -397,11 +376,11 @@ def compute_invweight0[
 
             # A[k,k] = J_row . M^-1 . J_row via a direct LDL solve (matches
             # legacy compute_body_invweight0 arithmetic bit-for-bit).
-            for q in range(NV):
+            for q in range(D.NV):
                 sc.fnet.data[q] = J_row[q]
             ldl_solve["cpu", DTYPE, BATCH=1](sc)
             var dot_val = Scalar[DTYPE](0)
-            for q in range(NV):
+            for q in range(D.NV):
                 dot_val += J_row[q] * sc.qacc_ws.data[q]
             A_diag[k] = dot_val
 
@@ -429,8 +408,8 @@ def compute_invweight0[
         mf.body_invweight0.data[2 * i + 1] = rot
 
     # ── dof_invweight0[d] = (M^-1)[d,d] via solve M x = e_d (legacy :588-601) ─
-    for dd in range(NV):
-        for q in range(NV):
+    for dd in range(D.NV):
+        for q in range(D.NV):
             sc.fnet.data[q] = Scalar[DTYPE](1) if q == dd else Scalar[DTYPE](0)
         ldl_solve["cpu", DTYPE, BATCH=1](sc)
         mf.dof_invweight0.data[dd] = sc.qacc_ws.data[dd]
@@ -440,7 +419,7 @@ def compute_invweight0[
     # its 3 rotation dofs (a ball joint: one across its 3), so the weight is
     # axis-independent.  Skipping this leaves per-axis values MuJoCo never
     # produces — 32% off on ant's free root even at the correct pose.
-    for j in range(NJOINT):
+    for j in range(D.NJOINT):
         var jo = j * MODEL_JOINT_SIZE
         var jt = Int(mf.joints.data[jo + JOINT_IDX_TYPE])
         var dadr = Int(mf.joints.data[jo + JOINT_IDX_DOF_ADR])
@@ -472,15 +451,15 @@ def compute_invweight0[
     # default was accidentally right on the only models that read it. The
     # first tendon with a nonzero rest length would have been welded to zero.
     # This is the same pose the invweights use, which is what qpos0 means.
-    comptime if NTENDON > 0:
+    comptime if D.NTENDON > 0:
         comptime L_META = Layout.row_major(MODEL_META_SIZE)
-        comptime L_TEN = Layout.row_major(NTENDON, MODEL_TENDON_SIZE)
-        comptime L_SITE = Layout.row_major(NSITE, MODEL_SITE_SIZE)
-        comptime L_BODY_V = Layout.row_major(NBODY, MODEL_BODY_SIZE)
-        comptime L_JOINT_V = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
-        comptime L_B3_V = Layout.row_major(1, NBODY * 3)
-        comptime L_B4_V = Layout.row_major(1, NBODY * 4)
-        comptime L_CDOF_V = Layout.row_major(1, NV * 6)
+        comptime L_TEN = Layout.row_major(D.NTENDON, MODEL_TENDON_SIZE)
+        comptime L_SITE = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
+        comptime L_BODY_V = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
+        comptime L_JOINT_V = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
+        comptime L_B3_V = Layout.row_major(1, D.NBODY * 3)
+        comptime L_B4_V = Layout.row_major(1, D.NBODY * 4)
+        comptime L_CDOF_V = Layout.row_major(1, D.NV * 6)
 
         var meta_v = mf.meta.lt["cpu", L_META]()
         var ten_v = mf.tendons.lt["cpu", L_TEN]()
@@ -492,20 +471,20 @@ def compute_invweight0[
         var xquat_v = d.xquat.lt["cpu", L_B4_V]()
         var cdof_v = sc.cdof.lt["cpu", L_CDOF_V]()
 
-        var tJ = InlineArray[Scalar[DTYPE], NV](fill=Scalar[DTYPE](0))
-        for t in range(NTENDON):
+        var tJ = InlineArray[Scalar[DTYPE], D.NV](fill=Scalar[DTYPE](0))
+        for t in range(D.NTENDON):
             var kind = Int(mf.tendons.data[t * MODEL_TENDON_SIZE + TENDON_IDX_KIND])
             var len0 = Scalar[DTYPE](0)
             if kind == TENDON_KIND_SPATIAL:
                 len0 = spatial_tendon_length_jac[
-                    DTYPE, NV, NBODY, NJOINT, NSITE, NTENDON, NV, 1
+                    DTYPE, D.NV, D.NBODY, D.NJOINT, D.NSITE, D.NTENDON, D.NV, 1
                 ](
                     0, t, ten_v, site_v, bodies_v, joints_v, meta_v,
                     stcom_v, cdof_v, xpos_v, xquat_v, tJ,
                 )
             else:
                 # Fixed tendon: J[dof_adr(j)] = coef_j, length = sum coef*qpos0.
-                for i in range(NV):
+                for i in range(D.NV):
                     tJ[i] = Scalar[DTYPE](0)
                 var nj = Int(
                     mf.tendons.data[t * MODEL_TENDON_SIZE + TENDON_IDX_NUM_JOINTS]
@@ -516,7 +495,7 @@ def compute_invweight0[
                             t * MODEL_TENDON_SIZE + TENDON_IDX_JOINT_0 + k
                         ]
                     )
-                    if jid < 0 or jid >= NJOINT:
+                    if jid < 0 or jid >= D.NJOINT:
                         continue
                     var dadr = Int(
                         mf.joints.data[jid * MODEL_JOINT_SIZE + JOINT_IDX_DOF_ADR]
@@ -536,11 +515,11 @@ def compute_invweight0[
                 t * MODEL_TENDON_SIZE + TENDON_IDX_LENGTH_REF
             ] = len0
 
-            for q in range(NV):
+            for q in range(D.NV):
                 sc.fnet.data[q] = tJ[q]
             ldl_solve["cpu", DTYPE, BATCH=1](sc)
             var iw = Scalar[DTYPE](0)
-            for q in range(NV):
+            for q in range(D.NV):
                 iw += tJ[q] * sc.qacc_ws.data[q]
             mf.tendons.data[
                 t * MODEL_TENDON_SIZE + TENDON_IDX_INVWEIGHT0
@@ -591,8 +570,8 @@ def compute_invweight0[
     # connect and reads `site_xpos` instead; we store the site offsets in the
     # anchor slots (see `_fill_equality`), so deriving would overwrite site2's
     # offset with a value MuJoCo never computes.
-    comptime if NEQUALITY > 0:
-        for e in range(NEQUALITY):
+    comptime if D.NEQUALITY > 0:
+        for e in range(D.NEQUALITY):
             var eo = e * MODEL_EQ_SIZE
             if Int(mf.equality.data[eo + EQ_IDX_TYPE]) != EQ_CONNECT:
                 continue
@@ -601,7 +580,7 @@ def compute_invweight0[
 
             var cba = Int(mf.equality.data[eo + EQ_IDX_BODY_A])
             var cbb = Int(mf.equality.data[eo + EQ_IDX_BODY_B])
-            if cba < 0 or cba >= NBODY or cbb < 0 or cbb >= NBODY:
+            if cba < 0 or cba >= D.NBODY or cbb < 0 or cbb >= D.NBODY:
                 continue
 
             # world anchor = xpos[b1] + R(xquat[b1]) * anchor_a
@@ -635,8 +614,8 @@ def compute_invweight0[
             mf.equality.data[eo + EQ_IDX_ANCHOR_BY] = ab[1]
             mf.equality.data[eo + EQ_IDX_ANCHOR_BZ] = ab[2]
 
-    comptime if NEQUALITY > 0:
-        for e in range(NEQUALITY):
+    comptime if D.NEQUALITY > 0:
+        for e in range(D.NEQUALITY):
             var eo = e * MODEL_EQ_SIZE
             if Int(mf.equality.data[eo + EQ_IDX_TYPE]) != EQ_WELD:
                 continue
@@ -653,7 +632,7 @@ def compute_invweight0[
 
             var ba = Int(mf.equality.data[eo + EQ_IDX_BODY_A])
             var bb = Int(mf.equality.data[eo + EQ_IDX_BODY_B])
-            if ba < 0 or ba >= NBODY or bb < 0 or bb >= NBODY:
+            if ba < 0 or ba >= D.NBODY or bb < 0 or bb >= D.NBODY:
                 continue
 
             var qa = quat_conjugate[DTYPE](

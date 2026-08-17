@@ -37,6 +37,7 @@ from std.testing import assert_true, TestSuite
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.fields import Model, Dims
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_IDX_NEXCLUDE,
     MODEL_META_IDX_NEQUALITY,
@@ -70,6 +71,7 @@ comptime TRUTHFUL = ModelDefFromXML[
     nexclude=pm.NEXCLUDE, npair=pm.NPAIR, max_equality=12, max_tendon=2,
     timestep=pm.TIMESTEP,
 ]
+comptime MD = ModelDims[TRUTHFUL]
 
 # ⚠ Only ONE dimension is wrong in each of these. With two wrong at once the
 # first raise masks the second, and a guard that never fires looks like a guard
@@ -81,6 +83,7 @@ comptime SHORT_EQUALITY = ModelDefFromXML[
     nexclude=pm.NEXCLUDE, npair=pm.NPAIR, max_equality=1, max_tendon=2,
     timestep=pm.TIMESTEP,
 ]
+comptime MD_2 = ModelDims[SHORT_EQUALITY]
 
 comptime SHORT_TENDON = ModelDefFromXML[
     xml=X, nbody=pm.NBODY, njoint=pm.NJOINT, nq=pm.NQ, nv=pm.NV,
@@ -89,6 +92,7 @@ comptime SHORT_TENDON = ModelDefFromXML[
     nexclude=pm.NEXCLUDE, npair=pm.NPAIR, max_equality=12, max_tendon=1,
     timestep=pm.TIMESTEP,
 ]
+comptime MD_3 = ModelDims[SHORT_TENDON]
 
 comptime SHORT_EXCLUDE = ModelDefFromXML[
     xml=X, nbody=pm.NBODY, njoint=pm.NJOINT, nq=pm.NQ, nv=pm.NV,
@@ -97,6 +101,7 @@ comptime SHORT_EXCLUDE = ModelDefFromXML[
     nexclude=0, npair=pm.NPAIR, max_equality=12, max_tendon=2,
     timestep=pm.TIMESTEP,
 ]
+comptime MD_4 = ModelDims[SHORT_EXCLUDE]
 
 
 def test_truthful_dims_build() raises:
@@ -107,8 +112,8 @@ def test_truthful_dims_build() raises:
     what would have shown the truncation had anyone looked.
     """
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=TRUTHFUL.NV, nbody=TRUTHFUL.NBODY, njoint=TRUTHFUL.NJOINT, ngeom=TRUTHFUL.NGEOM, nequality=TRUTHFUL.MAX_EQUALITY, ntendon=TRUTHFUL.MAX_TENDON, nsite=TRUTHFUL.NSITE, nexclude=TRUTHFUL.NEXCLUDE, nmesh_verts=0, npair=TRUTHFUL.NPAIR]]()
-    TRUTHFUL.init_fields[DType.float64, 0](ctx, mf)
+    var mf = Model[DType.float64, MD]()
+    TRUTHFUL.init_fields[DType.float64](ctx, mf)
     var neq = Int(mf.meta.data[MODEL_META_IDX_NEQUALITY])
     var nten = Int(mf.meta.data[MODEL_META_IDX_NTENDON])
     var nexc = Int(mf.meta.data[MODEL_META_IDX_NEXCLUDE])
@@ -128,8 +133,8 @@ def test_short_max_equality_raises() raises:
     var ctx = DeviceContext()
     var raised = False
     try:
-        var mf = Model[DType.float64, Dims[nv=SHORT_EQUALITY.NV, nbody=SHORT_EQUALITY.NBODY, njoint=SHORT_EQUALITY.NJOINT, ngeom=SHORT_EQUALITY.NGEOM, nequality=SHORT_EQUALITY.MAX_EQUALITY, ntendon=SHORT_EQUALITY.MAX_TENDON, nsite=SHORT_EQUALITY.NSITE, nexclude=SHORT_EQUALITY.NEXCLUDE, nmesh_verts=0, npair=SHORT_EQUALITY.NPAIR]]()
-        SHORT_EQUALITY.init_fields[DType.float64, 0](ctx, mf)
+        var mf = Model[DType.float64, MD_2]()
+        SHORT_EQUALITY.init_fields[DType.float64](ctx, mf)
     except e:
         raised = True
         print("  max_equality=1 for 2 equalities raised:", e)
@@ -150,8 +155,8 @@ def test_short_max_tendon_raises() raises:
     var ctx = DeviceContext()
     var raised = False
     try:
-        var mf = Model[DType.float64, Dims[nv=SHORT_TENDON.NV, nbody=SHORT_TENDON.NBODY, njoint=SHORT_TENDON.NJOINT, ngeom=SHORT_TENDON.NGEOM, nequality=SHORT_TENDON.MAX_EQUALITY, ntendon=SHORT_TENDON.MAX_TENDON, nsite=SHORT_TENDON.NSITE, nexclude=SHORT_TENDON.NEXCLUDE, nmesh_verts=0, npair=SHORT_TENDON.NPAIR]]()
-        SHORT_TENDON.init_fields[DType.float64, 0](ctx, mf)
+        var mf = Model[DType.float64, MD_3]()
+        SHORT_TENDON.init_fields[DType.float64](ctx, mf)
     except e:
         raised = True
         print("  max_tendon=1 for 2 tendons raised:", e)
@@ -164,8 +169,8 @@ def test_short_nexclude_raises() raises:
     var ctx = DeviceContext()
     var raised = False
     try:
-        var mf = Model[DType.float64, Dims[nv=SHORT_EXCLUDE.NV, nbody=SHORT_EXCLUDE.NBODY, njoint=SHORT_EXCLUDE.NJOINT, ngeom=SHORT_EXCLUDE.NGEOM, nequality=SHORT_EXCLUDE.MAX_EQUALITY, ntendon=SHORT_EXCLUDE.MAX_TENDON, nsite=SHORT_EXCLUDE.NSITE, nexclude=SHORT_EXCLUDE.NEXCLUDE, nmesh_verts=0, npair=SHORT_EXCLUDE.NPAIR]]()
-        SHORT_EXCLUDE.init_fields[DType.float64, 0](ctx, mf)
+        var mf = Model[DType.float64, MD_4]()
+        SHORT_EXCLUDE.init_fields[DType.float64](ctx, mf)
     except e:
         raised = True
         print("  nexclude=0 for 1 exclude raised:", e)

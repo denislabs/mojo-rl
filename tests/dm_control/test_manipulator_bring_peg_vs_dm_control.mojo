@@ -59,6 +59,7 @@ from mojo_rl.envs.dm_control.manipulator import (
 )
 from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -104,6 +105,7 @@ comptime NTEN: Int = M.MAX_TENDON  # 2
 comptime MAXC: Int = M.MAX_CONTACTS
 comptime NEQ: Int = M.MAX_EQUALITY
 comptime NEXCL: Int = M.NEXCLUDE
+comptime MD = ModelDims[M]
 comptime NA: Int = M.NA
 
 comptime USE_PEG: Bool = True
@@ -188,18 +190,15 @@ def _ref() raises -> PythonObject:
     return builder.model(True, False)
 
 
-comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]
-comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]
-comptime Integ = EulerIntegrator[
-    DTYPE, NQ, NV, NBODY, NJOINT, MAXC, NGEOM, NEQ, NTEN, NSITE,
-    NEXCL, 0, M.CONE_TYPE, 1, SOLVER="newton",
-]
+comptime Mod = Model[DTYPE, MD]
+comptime Dat = Data[DTYPE, MD, 1]
+comptime Integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton"]
 
 
 def _build() raises -> Mod:
     var ctx = DeviceContext()
     var mf = Mod()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    M.init_fields[DTYPE](ctx, mf)
     return mf^
 
 
@@ -719,7 +718,7 @@ def _our_qacc(
     var ctx = DeviceContext()
     var mf = Mod()
     var d = Dat()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    M.init_fields[DTYPE](ctx, mf)
     M.reset_data(sf, d)
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](state[i])

@@ -39,6 +39,7 @@ from mojo_rl.envs.dm_control.quadruped.quadruped_xml import (
     DMQuadrupedWalkModel as Mdl,
 )
 from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 
 comptime DTYPE = DType.float32
@@ -47,14 +48,11 @@ comptime NV = Mdl.NV
 comptime NBODY = Mdl.NBODY
 comptime MC = Mdl.MAX_CONTACTS
 comptime NSITE = Mdl.NSITE
+comptime MD = ModelDims[Mdl]
 
-comptime Integ = EulerIntegrator[
-    DTYPE, NQ, NV, NBODY, Mdl.NJOINT, MC, Mdl.NGEOM, Mdl.MAX_EQUALITY,
-    Mdl.MAX_TENDON, NSITE, Mdl.NEXCLUDE, 0, Mdl.CONE_TYPE, 1,
-    SOLVER="newton", RNE_POST=True,
-]
-comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], 1]
-comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=Mdl.NJOINT, ngeom=Mdl.NGEOM, nequality=Mdl.MAX_EQUALITY, ntendon=Mdl.MAX_TENDON, nsite=NSITE, nexclude=Mdl.NEXCLUDE, nmesh_verts=0]]
+comptime Integ = EulerIntegrator[DTYPE, MD, Mdl.CONE_TYPE, 1, SOLVER="newton", RNE_POST=True]
+comptime Dat = Data[DTYPE, MD, 1]
+comptime Mod = Model[DTYPE, MD]
 
 # FLOAT32, because the batched path is a Metal kernel and Metal has no float64.
 #
@@ -74,7 +72,7 @@ def test_batched_cfrc_ext_matches_cpu() raises:
     var sf = Mdl.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
     var mf = Mod()
-    Mdl.init_fields[DTYPE, 0](ctx, mf)
+    Mdl.init_fields[DTYPE](ctx, mf)
     var d = Dat()
     Mdl.reset_data(sf, d)
 

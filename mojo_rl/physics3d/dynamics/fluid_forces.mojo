@@ -30,7 +30,7 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_rotate
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch, Dims
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -294,39 +294,29 @@ def _fluid_forces_fields_kernel[
 
 
 def compute_fluid_forces[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     BATCH: Int = 1,
     # Appended, not grouped with NEXCLUDE — see `fields.Model`.
-    NPAIR: Int = 0,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH],
-    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Accumulate inertia-box fluid drag into `scratch.fnet`, both targets, one
     body. No-op when meta density and viscosity are both zero (early-out inside
     the env helper). Call in the passive seam after fnet assembly, before the
     LDL solve."""
-    comptime L_NV = Layout.row_major(BATCH, NV)
-    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
-    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
-    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_B3 = Layout.row_major(BATCH, D.NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, D.NBODY * 4)
+    comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
     comptime L_META = Layout.row_major(MODEL_META_SIZE)
-    comptime L_CDOF = Layout.row_major(BATCH, NV * 6)
+    comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
 
     comptime if target == "cpu":
         var xvel_v = d.xvel.lt["cpu", L_B3]()
@@ -340,7 +330,7 @@ def compute_fluid_forces[
         var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
         var fnet_v = scratch.fnet.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _fluid_forces_env[DTYPE, NV, NBODY, NJOINT, BATCH](
+            _fluid_forces_env[DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH](
                 e, xvel_v, xangvel_v, xquat_v, xipos_v, stcom_v, bodies_v,
                 joints_v, meta_v, cdof_v, fnet_v,
             )
@@ -348,7 +338,7 @@ def compute_fluid_forces[
         var c = ctx.value()
         comptime BLOCKS = (BATCH + FLUID_TPB - 1) // FLUID_TPB
         c.enqueue_function[
-            _fluid_forces_fields_kernel[DTYPE, NV, NBODY, NJOINT, BATCH]
+            _fluid_forces_fields_kernel[DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH]
         ](
             d.xvel.lt["gpu", L_B3](),
             d.xangvel.lt["gpu", L_B3](),

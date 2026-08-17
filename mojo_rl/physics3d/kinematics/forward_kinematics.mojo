@@ -30,7 +30,7 @@ from .quat_math import (
     gpu_axis_angle_to_quat,
 )
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
-from ..fields import Data, Model, Dims
+from ..fields import Data, Model, Dims, DimsLike
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
@@ -763,26 +763,16 @@ def _fk_fields_sites_mt_kernel[
 
 # ── Public single-source dispatcher ───────────────────────────────────────
 def forward_kinematics[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     BATCH: Int = 1,
     PARALLEL: Bool = False,
     # Appended, not grouped with NEXCLUDE — see `fields.Model`.
-    NPAIR: Int = 0,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH],
-    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Forward kinematics qpos -> xpos/xquat/xipos (+ site_xpos) over
@@ -790,11 +780,11 @@ def forward_kinematics[
     with PARALLEL=True — one block per env with NV cooperating threads
     (level-parallel, bit-exact vs the serial kernel). CPU ignores
     PARALLEL."""
-    comptime L_QPOS = Layout.row_major(BATCH, NQ)
-    comptime L_XPOS = Layout.row_major(BATCH, NBODY * 3)
-    comptime L_XQUAT = Layout.row_major(BATCH, NBODY * 4)
-    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
+    comptime L_QPOS = Layout.row_major(BATCH, D.NQ)
+    comptime L_XPOS = Layout.row_major(BATCH, D.NBODY * 3)
+    comptime L_XQUAT = Layout.row_major(BATCH, D.NBODY * 4)
+    comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
 
     comptime if target == "cpu":
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
@@ -804,28 +794,28 @@ def forward_kinematics[
         var xquat_v = d.xquat.lt["cpu", L_XQUAT]()
         var xipos_v = d.xipos.lt["cpu", L_XPOS]()
         for e in range(BATCH):
-            _fk_env[DTYPE, NQ, NBODY, NJOINT, BATCH](
+            _fk_env[DTYPE, D.NQ, D.NBODY, D.NJOINT, BATCH](
                 e, qpos_v, bodies_v, joints_v, xpos_v, xquat_v, xipos_v
             )
-        comptime if NSITE > 0:
-            comptime L_SITE_REC = Layout.row_major(NSITE, MODEL_SITE_SIZE)
-            comptime L_SITE_X = Layout.row_major(BATCH, NSITE * 3)
+        comptime if D.NSITE > 0:
+            comptime L_SITE_REC = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
+            comptime L_SITE_X = Layout.row_major(BATCH, D.NSITE * 3)
             var sites_v = m.sites.lt["cpu", L_SITE_REC]()
             var sitex_v = d.site_xpos.lt["cpu", L_SITE_X]()
             for e in range(BATCH):
-                _fk_sites[DTYPE, NBODY, NSITE, BATCH](
+                _fk_sites[DTYPE, D.NBODY, D.NSITE, BATCH](
                     e, sites_v, xpos_v, xquat_v, sitex_v
                 )
     elif PARALLEL:
         # Cooperative within-env schedule (legacy STEP_THREADS = NV).
         var c = ctx.value()
-        comptime MT_T = NV
-        comptime if NSITE > 0:
-            comptime L_SITE_REC = Layout.row_major(NSITE, MODEL_SITE_SIZE)
-            comptime L_SITE_X = Layout.row_major(BATCH, NSITE * 3)
+        comptime MT_T = D.NV
+        comptime if D.NSITE > 0:
+            comptime L_SITE_REC = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
+            comptime L_SITE_X = Layout.row_major(BATCH, D.NSITE * 3)
             c.enqueue_function[
                 _fk_fields_sites_mt_kernel[
-                    DTYPE, NQ, NBODY, NJOINT, NSITE, BATCH, MT_T
+                    DTYPE, D.NQ, D.NBODY, D.NJOINT, D.NSITE, BATCH, MT_T
                 ]
             ](
                 d.qpos.lt["gpu", L_QPOS](),
@@ -841,7 +831,7 @@ def forward_kinematics[
             )
         else:
             c.enqueue_function[
-                _fk_fields_mt_kernel[DTYPE, NQ, NBODY, NJOINT, BATCH, MT_T]
+                _fk_fields_mt_kernel[DTYPE, D.NQ, D.NBODY, D.NJOINT, BATCH, MT_T]
             ](
                 d.qpos.lt["gpu", L_QPOS](),
                 m.bodies.lt["gpu", L_BODY](),
@@ -855,11 +845,11 @@ def forward_kinematics[
     else:
         var c = ctx.value()
         comptime BLOCKS = (BATCH + FK_TPB - 1) // FK_TPB
-        comptime if NSITE > 0:
-            comptime L_SITE_REC = Layout.row_major(NSITE, MODEL_SITE_SIZE)
-            comptime L_SITE_X = Layout.row_major(BATCH, NSITE * 3)
+        comptime if D.NSITE > 0:
+            comptime L_SITE_REC = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
+            comptime L_SITE_X = Layout.row_major(BATCH, D.NSITE * 3)
             c.enqueue_function[
-                _fk_fields_sites_kernel[DTYPE, NQ, NBODY, NJOINT, NSITE, BATCH]
+                _fk_fields_sites_kernel[DTYPE, D.NQ, D.NBODY, D.NJOINT, D.NSITE, BATCH]
             ](
                 d.qpos.lt["gpu", L_QPOS](),
                 m.bodies.lt["gpu", L_BODY](),
@@ -874,7 +864,7 @@ def forward_kinematics[
             )
         else:
             c.enqueue_function[
-                _fk_fields_kernel[DTYPE, NQ, NBODY, NJOINT, BATCH]
+                _fk_fields_kernel[DTYPE, D.NQ, D.NBODY, D.NJOINT, BATCH]
             ](
                 d.qpos.lt["gpu", L_QPOS](),
                 m.bodies.lt["gpu", L_BODY](),
@@ -1395,37 +1385,27 @@ def _body_velocities_fields_mt_kernel[
 
 
 def compute_body_velocities[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     BATCH: Int = 1,
     PARALLEL: Bool = False,
     # Appended, not grouped with NEXCLUDE — see `fields.Model`.
-    NPAIR: Int = 0,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH],
-    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Body world velocities qvel -> xvel/xangvel (needs FK products), both
     targets, one body. PARALLEL=True (GPU only): level-parallel cooperative
     kernel, bit-exact vs serial. CPU ignores PARALLEL."""
-    comptime L_NQ = Layout.row_major(BATCH, NQ)
-    comptime L_NV = Layout.row_major(BATCH, NV)
-    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
-    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
-    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
+    comptime L_NQ = Layout.row_major(BATCH, D.NQ)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_B3 = Layout.row_major(BATCH, D.NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, D.NBODY * 4)
+    comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
 
     comptime if target == "cpu":
         var qpos_v = d.qpos.lt["cpu", L_NQ]()
@@ -1438,16 +1418,16 @@ def compute_body_velocities[
         var xvel_v = d.xvel.lt["cpu", L_B3]()
         var xangvel_v = d.xangvel.lt["cpu", L_B3]()
         for e in range(BATCH):
-            _body_velocities_env[DTYPE, NQ, NV, NBODY, NJOINT, BATCH](
+            _body_velocities_env[DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, BATCH](
                 e, qpos_v, qvel_v, xpos_v, xquat_v, xipos_v, bodies_v,
                 joints_v, xvel_v, xangvel_v,
             )
     elif PARALLEL:
         var c = ctx.value()
-        comptime MT_T = NV
+        comptime MT_T = D.NV
         c.enqueue_function[
             _body_velocities_fields_mt_kernel[
-                DTYPE, NQ, NV, NBODY, NJOINT, BATCH, MT_T
+                DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, BATCH, MT_T
             ]
         ](
             d.qpos.lt["gpu", L_NQ](),
@@ -1466,7 +1446,7 @@ def compute_body_velocities[
         var c = ctx.value()
         comptime BLOCKS = (BATCH + FK_TPB - 1) // FK_TPB
         c.enqueue_function[
-            _body_velocities_fields_kernel[DTYPE, NQ, NV, NBODY, NJOINT, BATCH]
+            _body_velocities_fields_kernel[DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, BATCH]
         ](
             d.qpos.lt["gpu", L_NQ](),
             d.qvel.lt["gpu", L_NV](),

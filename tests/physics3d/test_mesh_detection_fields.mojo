@@ -39,7 +39,7 @@ from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -84,6 +84,23 @@ comptime BATCH = 2
 # kept (sawyer's twelve meshes go ~648 -> ~5.6k vertices), and
 # `fields_build` TRUNCATES past this cap — silently, until now.
 comptime NMESHV = MAX_GPU_MESHES * 512
+comptime MD = Dims[
+    nq=NQ,
+    nv=NV,
+    nbody=NBODY,
+    njoint=NJOINT,
+    ngeom=NGEOM,
+    nsite=NSITE,
+    max_contacts=MC,
+    nequality=NEQ,
+    ntendon=NTD,
+    nexclude=0,
+    nmesh_verts=NMESHV,
+    npair=SawyerReachModel.NPAIR,
+    nact=SawyerReachModel.NACT,
+    nten=SawyerReachModel.NTEN_F,
+    nkey=SawyerReachModel.NKEY,
+]
 
 # --- GOLDEN fingerprints (regenerated after the flat-simplex fix) ------------
 comptime HARVEST = False  # True => print fingerprints + skip asserts (regen)
@@ -280,8 +297,8 @@ def main() raises:
     var ctx = DeviceContext()
 
     # Fields-native model build (loads STL hulls, NMESHV-padded — Stage B).
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=0, nmesh_verts=NMESHV]]()
-    SawyerReachModel.init_fields[DTYPE, NMESHV](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    SawyerReachModel.init_fields[DTYPE](ctx, mf)
 
     # Locate the obj cylinder + mesh-geom bodies for the non-vacuity check.
     var obj_body = -1
@@ -328,21 +345,15 @@ def main() raises:
         q[12] = 1.0
         qcfg.append(q^)
 
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             d.qpos.data[e * NQ + i] = Scalar[DTYPE](qcfg[e][i])
     d.upload_all(ctx)
 
     # Fields GPU: FK + detection.
-    forward_kinematics[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        0, NMESHV, BATCH,
-    ](d, mf, ctx)
-    detect_contacts[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        0, NMESHV, BATCH,
-    ](d, mf, ctx)
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH](d, mf, ctx)
+    detect_contacts["gpu", DTYPE, BATCH=BATCH](d, mf, ctx)
     d.contacts.download(ctx)
     d.meta.download(ctx)
 
@@ -568,17 +579,14 @@ def main() raises:
     print("  PASS: mesh manifold spans both contact features")
 
     # --- fields-CPU vs fields-GPU records (fed GPU FK products) ---
-    var dc = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dc = Data[DTYPE, MD, BATCH]()
     d.xpos.download(ctx)
     d.xquat.download(ctx)
     for i in range(BATCH * NBODY * 3):
         dc.xpos.data[i] = d.xpos.data[i]
     for i in range(BATCH * NBODY * 4):
         dc.xquat.data[i] = d.xquat.data[i]
-    detect_contacts[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        0, NMESHV, BATCH,
-    ](dc, mf)
+    detect_contacts["cpu", DTYPE, BATCH=BATCH](dc, mf)
     var worst = Float64(0)
     for e in range(BATCH):
         var nc_g = Int(d.meta.data[e * METADATA_SIZE + META_IDX_NUM_CONTACTS])

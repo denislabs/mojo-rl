@@ -313,23 +313,9 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
 
     # === CPU: both bricks, then the settle, then the arm ==================
     @staticmethod
-    def custom_reset_full_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        NGEOM: Int,
-        NEQ: Int,
-        NTEN: Int,
-        NSITE: Int,
-        NEXCL: Int,
-        NMESHV: Int,
-        NPAIR: Int,
-        MAX_CONTACTS: Int,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
-        mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+    def custom_reset_full_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
+        mut mf: Model[DTYPE, D],
     ) raises:
         """`Stack.initialize_episode` — bricks, grasp (already done), arm.
 
@@ -364,10 +350,7 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
                 poses0.append(pq[k])
         var ignore1 = List[Int]()
         ignore1.append(BRICK1_BODY)
-        var r0 = place_fixed_prop[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAX_CONTACTS,
-        ](d, mf, BRICK0_BODY, 1, ignore1, poses0, MAX_PROP_ATTEMPTS)
+        var r0 = place_fixed_prop[DTYPE](d, mf, BRICK0_BODY, 1, ignore1, poses0, MAX_PROP_ATTEMPTS)
         if not r0.success:
             raise Error(
                 "stack_2_bricks: the base brick found no clear pose in "
@@ -387,10 +370,7 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
                 poses1.append(pp[k])
             for k in range(4):
                 poses1.append(pq[k])
-        var r1 = place_free_prop[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAX_CONTACTS,
-        ](
+        var r1 = place_free_prop[DTYPE](
             d, mf, BRICK1_BODY, BRICK1_QPOS_ADR, BRICK1_DOF_ADR, poses1,
             List[Int](), False, MAX_PROP_ATTEMPTS,
         )
@@ -404,14 +384,7 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
         # ── 3. settle. ⚠ Only brick 1 can move: brick 0 has no joint at all,
         # so the isolator's "hold everything but the props" reduces to holding
         # the robot's nine.
-        _ = settle_free_prop[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAX_CONTACTS,
-            Stack2BricksModel.CONE_TYPE,
-            Stack2BricksModel.MAX_CONDIM,
-            Stack2BricksModel.NOSLIP_ITER,
-            N_ARM + N_HAND,
-        ](d, mf, BRICK1_DOF_ADR, Self.get_timestep())
+        _ = settle_free_prop[DTYPE, Stack2BricksModel.CONE_TYPE, Stack2BricksModel.MAX_CONDIM, Stack2BricksModel.NOSLIP_ITER, N_ARM + N_HAND](d, mf, BRICK1_DOF_ADR, Self.get_timestep())
 
         # ── 4. the TCP initializer ──────────────────────────────────────
         var dof_idx = InlineArray[Int, N_ARM](fill=0)
@@ -469,8 +442,8 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
         #
         # ⚠ THE HINT BRICKS (18, 20) STAY `BODY_FIXED`, which is harmless only
         # because they are contactless and so can never appear in a contact.
-        var body_class = InlineArray[Int, NBODY](fill=BODY_FIXED)
-        for b in range(NBODY):
+        var body_class = InlineArray[Int, D.NBODY](fill=BODY_FIXED)
+        for b in range(D.NBODY):
             if b >= 2 and b <= 8:
                 body_class[b] = BODY_ARM
             elif b >= 10 and b <= 16:
@@ -478,10 +451,7 @@ struct Stack2BricksConfig(Phyics3dEnvConfig):
             elif b == BRICK1_BODY:
                 body_class[b] = BODY_FREE
 
-        var res = tool_center_point_initializer[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAX_CONTACTS, N_ARM,
-        ](
+        var res = tool_center_point_initializer[DTYPE, N_ARM](
             d, mf, SITE_PINCH, targets, down, dof_idx, qpos_adr,
             lower, upper, retry, body_class, False, MAX_ATT, MAX_SAMP,
         )

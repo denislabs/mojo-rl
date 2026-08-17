@@ -52,6 +52,7 @@ from mojo_rl.physics3d.gpu.constants import (
     CONTACT_IDX_FORCE_T2,
 )
 from max.gpu.host import DeviceContext
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 
 comptime DTYPE = DType.float64
@@ -87,6 +88,7 @@ comptime M = ModelDefFromXML[
     max_condim=pp.MAX_CONDIM,
     noslip_iter=pp.NOSLIP_ITER,
 ]
+comptime MD = ModelDims[M]
 
 comptime N_SETTLE: Int = 200
 comptime N_STEPS: Int = 60
@@ -163,9 +165,9 @@ def test_frictionless_contact_matches_mujoco() raises:
     _settle(mujoco, m, md)
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
 
     var sq = md.qpos.flatten().tolist()
@@ -176,12 +178,7 @@ def test_frictionless_contact_matches_mujoco() raises:
         d.qvel.data[i] = Scalar[DTYPE](Float64(py=sv[i]))
     forward_kinematics["cpu"](d, mf)
 
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER]()
 
     var worst_q = 0.0
     var worst_v = 0.0
@@ -253,9 +250,9 @@ def test_frictionless_contact_records_no_tangential_force() raises:
     _settle(mujoco, m, md)
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
     var sq = md.qpos.flatten().tolist()
     var sv = md.qvel.flatten().tolist()
@@ -265,12 +262,7 @@ def test_frictionless_contact_records_no_tangential_force() raises:
         d.qvel.data[i] = Scalar[DTYPE](Float64(py=sv[i]))
         d.qfrc.data[i] = Scalar[DTYPE](0)
     forward_kinematics["cpu"](d, mf)
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=M.MAX_CONDIM, NOSLIP_ITER=M.NOSLIP_ITER]()
     integ.step["cpu"](d, mf)
     mujoco.mj_forward(m, md)
 

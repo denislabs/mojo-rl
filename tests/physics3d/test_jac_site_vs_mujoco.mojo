@@ -63,7 +63,7 @@ from mojo_rl.envs.dm_control.ball_in_cup import (
 from mojo_rl.envs.dm_control.quadruped import (
     DMQuadrupedFetchModel,
 )
-from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, Dims
+from mojo_rl.physics3d.fields import Model, Data, DynamicsScratch, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
 from mojo_rl.physics3d.dynamics.cdof import compute_cdof
@@ -78,6 +78,7 @@ from mojo_rl.physics3d.gpu.constants import (
     SITE_IDX_BODY,
 )
 from mojo_rl.physics3d.joint_types import JNT_FREE, JNT_SLIDE
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 
@@ -106,40 +107,29 @@ def _pose(p: Int, i: Int) -> Float64:
     )
 
 
-def _sweep[
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    MAXC: Int,
-](
+def _sweep[D: DimsLike](
     label: String,
     mujoco: PythonObject,
     np: PythonObject,
     mm: PythonObject,
     dat: PythonObject,
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
+    mut mf: Model[DTYPE, D],
+    mut d: Data[DTYPE, D, 1],
     want_free: Bool,
     want_slide: Bool,
     want_world_site: Bool,
 ) raises:
     """Precondition-check one model, then compare every site at every pose."""
-    assert_true(Int(py=mm.nv) == NV, label + ": nv mismatch")
-    assert_true(Int(py=mm.nsite) == NSITE, label + ": nsite mismatch")
+    assert_true(Int(py=mm.nv) == D.NV, label + ": nv mismatch")
+    assert_true(Int(py=mm.nsite) == D.NSITE, label + ": nsite mismatch")
 
-    comptime L_NB3 = Layout.row_major(1, NBODY * 3)
-    comptime L_JNT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
-    comptime L_BOD = Layout.row_major(NBODY, MODEL_BODY_SIZE)
+    comptime L_NB3 = Layout.row_major(1, D.NBODY * 3)
+    comptime L_JNT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
+    comptime L_BOD = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
     comptime L_MET = Layout.row_major(MODEL_META_SIZE)
-    comptime L_CDOF = Layout.row_major(1, NV * 6)
-    comptime L_SITE = Layout.row_major(NSITE, MODEL_SITE_SIZE)
-    comptime L_SX = Layout.row_major(1, NSITE * 3)
+    comptime L_CDOF = Layout.row_major(1, D.NV * 6)
+    comptime L_SITE = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
+    comptime L_SX = Layout.row_major(1, D.NSITE * 3)
 
     var bodies_v = mf.bodies.lt["cpu", L_BOD]()
     var joints_v = mf.joints.lt["cpu", L_JNT]()
@@ -149,19 +139,19 @@ def _sweep[
     # ── preconditions: this model really does carry what it is here for ──
     var n_free = 0
     var n_slide = 0
-    for j in range(NJOINT):
+    for j in range(D.NJOINT):
         var jt = Int(rebind[Scalar[DTYPE]](joints_v[j, JOINT_IDX_TYPE]))
         if jt == JNT_FREE:
             n_free += 1
         elif jt == JNT_SLIDE:
             n_slide += 1
     var n_world_site = 0
-    for s in range(NSITE):
+    for s in range(D.NSITE):
         var sb = Int(rebind[Scalar[DTYPE]](sites_v[s, SITE_IDX_BODY]))
         if Int(rebind[Scalar[DTYPE]](bodies_v[sb, BODY_IDX_WELDID])) == 0:
             n_world_site += 1
     print(
-        "  [" + label + "] nv", NV, " nsite", NSITE,
+        "  [" + label + "] nv", D.NV, " nsite", D.NSITE,
         " free", n_free, " slide", n_slide, " world-welded sites",
         n_world_site,
     )
@@ -192,25 +182,25 @@ def _sweep[
     var n_zero_blocks = 0
 
     for p in range(N_POSES):
-        for i in range(NQ):
+        for i in range(D.NQ):
             dat.qpos[i] = _pose(p, i)
-        for i in range(NV):
+        for i in range(D.NV):
             dat.qvel[i] = 0.0
         # Free-joint quaternions must be unit, or MuJoCo renormalises and its
         # qpos then describes a different pose than the one we mirror in.
         mujoco.mj_normalizeQuat(mm, dat.qpos)
         mujoco.mj_forward(mm, dat)
 
-        for i in range(NQ):
+        for i in range(D.NQ):
             d.qpos.data[i] = Scalar[DTYPE](Float64(py=dat.qpos[i]))
-        for i in range(NV):
+        for i in range(D.NV):
             d.qvel.data[i] = Scalar[DTYPE](0)
 
         # FK -> subtree_com -> cdof, explicitly. NOT via `step`: `step`
         # integrates, so its scratch would describe the POST-step pose while
         # `site_xpos` describes the pre-step one.
         forward_kinematics["cpu"](d, mf)
-        var scratch = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], 1]()
+        var scratch = DynamicsScratch[DTYPE, D, 1]()
         compute_subtree_com["cpu"](d, mf)
         compute_cdof["cpu"](d, mf, scratch)
 
@@ -218,7 +208,7 @@ def _sweep[
         var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
         var sxpos_v = d.site_xpos.lt["cpu", L_SX]()
 
-        for s in range(NSITE):
+        for s in range(D.NSITE):
             var dp = 0.0
             for k in range(3):
                 var e = abs(
@@ -234,21 +224,21 @@ def _sweep[
                 " Jacobians below would be of two different points",
             )
 
-            var jp = InlineArray[Scalar[DTYPE], 3 * NV](fill=Scalar[DTYPE](0))
-            var jr = InlineArray[Scalar[DTYPE], 3 * NV](fill=Scalar[DTYPE](0))
-            jac_site[DTYPE, NV, NBODY, NJOINT, NSITE, 1](
+            var jp = InlineArray[Scalar[DTYPE], 3 * D.NV](fill=Scalar[DTYPE](0))
+            var jr = InlineArray[Scalar[DTYPE], 3 * D.NV](fill=Scalar[DTYPE](0))
+            jac_site[DTYPE, D.NV, D.NBODY, D.NJOINT, D.NSITE, 1](
                 0, subtree_v, joints_v, bodies_v, mmeta_v, cdof_v,
                 sites_v, sxpos_v, s, jp, jr,
             )
 
-            var mjp = np.zeros(3 * NV).reshape(3, NV)
-            var mjr = np.zeros(3 * NV).reshape(3, NV)
+            var mjp = np.zeros(3 * D.NV).reshape(3, D.NV)
+            var mjr = np.zeros(3 * D.NV).reshape(3, D.NV)
             mujoco.mj_jacSite(mm, dat, mjp, mjr, s)
             var fp = mjp.flatten().tolist()
             var fr = mjr.flatten().tolist()
 
             var all_zero = True
-            for k in range(3 * NV):
+            for k in range(3 * D.NV):
                 var mp = Float64(py=fp[k])
                 var mr = Float64(py=fr[k])
                 if mp != 0.0 or mr != 0.0:
@@ -276,7 +266,7 @@ def _sweep[
     )
 
     assert_true(
-        n_checked == N_POSES * NSITE,
+        n_checked == N_POSES * D.NSITE,
         label + ": not every site-pose was compared — the loop fell through",
     )
     if want_world_site:
@@ -305,6 +295,7 @@ def test_jac_site_quadruped_fetch() raises:
     the target site (the only world-welded one), so it covers neither."""
     print("--- quadruped fetch: jac_site vs mj_jacSite ---")
     comptime M = DMQuadrupedFetchModel
+    comptime MD = ModelDims[M]
     var sf = M.make_spec_fields[DTYPE]()
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
@@ -312,15 +303,12 @@ def test_jac_site_quadruped_fetch() raises:
     var dat = mujoco.MjData(mm)
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
 
-    _sweep[
-        M.NQ, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, M.MAX_CONTACTS,
-    ](
+    _sweep(
         "quadruped_fetch", mujoco, np, mm, dat, mf, d,
         want_free=True, want_slide=False, want_world_site=True,
     )
@@ -331,6 +319,7 @@ def test_jac_site_ball_in_cup() raises:
     must come back exactly zero and `jacp` a bare axis."""
     print("--- ball_in_cup: jac_site vs mj_jacSite ---")
     comptime M = DMBallInCupModel
+    comptime MD_2 = ModelDims[M]
     var sf = M.make_spec_fields[DTYPE]()
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
@@ -338,15 +327,12 @@ def test_jac_site_ball_in_cup() raises:
     var dat = mujoco.MjData(mm)
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD_2]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD_2, 1]()
     M.reset_data[DTYPE](sf, d)
 
-    _sweep[
-        M.NQ, M.NV, M.NBODY, M.NJOINT, M.NGEOM, M.MAX_EQUALITY,
-        M.MAX_TENDON, M.NSITE, M.NEXCLUDE, M.MAX_CONTACTS,
-    ](
+    _sweep(
         "ball_in_cup", mujoco, np, mm, dat, mf, d,
         want_free=False, want_slide=True, want_world_site=False,
     )

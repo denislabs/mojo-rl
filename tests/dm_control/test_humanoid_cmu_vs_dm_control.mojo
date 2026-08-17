@@ -80,6 +80,7 @@ from mojo_rl.envs.dm_control.humanoid_cmu import (
 )
 from mojo_rl.physics3d.fields import Model, Dims
 from mojo_rl.physics3d.joint_types import JNT_FREE
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MASS,
@@ -111,6 +112,7 @@ from mojo_rl.physics3d.gpu.constants import (
     ACT_IDX_CTRL_MAX,
     ACT_IDX_TRN_N,
 )
+comptime MD = ModelDims[DMHumanoidCMUModel]
 
 # The PARENT of the `dm_control` package, so `import dm_control.utils.rewards`
 # resolves. Pointing at the package directory itself makes the import fail.
@@ -211,10 +213,10 @@ def _mj_from_our_xml() raises -> PythonObject:
     return mujoco.MjModel.from_xml_path("mojo_rl/envs/dm_control/assets/humanoid_cmu.xml")
 
 
-def _build() raises -> Model[DType.float64, Dims[nv=DMHumanoidCMUModel.NV, nbody=DMHumanoidCMUModel.NBODY, njoint=DMHumanoidCMUModel.NJOINT, ngeom=DMHumanoidCMUModel.NGEOM, nequality=DMHumanoidCMUModel.MAX_EQUALITY, ntendon=DMHumanoidCMUModel.MAX_TENDON, nsite=DMHumanoidCMUModel.NSITE, nexclude=DMHumanoidCMUModel.NEXCLUDE, nmesh_verts=0]]:
+def _build() raises -> Model[DType.float64, MD]:
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=DMHumanoidCMUModel.NV, nbody=DMHumanoidCMUModel.NBODY, njoint=DMHumanoidCMUModel.NJOINT, ngeom=DMHumanoidCMUModel.NGEOM, nequality=DMHumanoidCMUModel.MAX_EQUALITY, ntendon=DMHumanoidCMUModel.MAX_TENDON, nsite=DMHumanoidCMUModel.NSITE, nexclude=DMHumanoidCMUModel.NEXCLUDE, nmesh_verts=0]]()
-    DMHumanoidCMUModel.init_fields[DType.float64, 0](ctx, mf)
+    var mf = Model[DType.float64, MD]()
+    DMHumanoidCMUModel.init_fields[DType.float64](ctx, mf)
     return mf^
 
 

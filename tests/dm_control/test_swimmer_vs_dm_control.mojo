@@ -79,6 +79,7 @@ from mojo_rl.physics3d.gpu.constants import (
 
 from mojo_rl.envs.dm_control.rewards import tolerance, SIGMOID_LONG_TAIL
 from mojo_rl.envs.dm_control.swimmer.swimmer_config import DMSwimmerConfig
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.envs.dm_control.swimmer.swimmer_xml import (
     DMSwimmer6Model,
     DMSwimmer15Model,
@@ -176,10 +177,11 @@ def test_swimmer15_counts() raises:
 def test_swimmer_fluid_option_is_parsed() raises:
     """`<option density="3000">` — without it the domain has no locomotion."""
     comptime M = DMSwimmer6Model
+    comptime MD = ModelDims[M]
     var mj = _ref(6)
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
     var dens = Float64(mf.meta.data[MODEL_META_IDX_DENSITY])
     var visc = Float64(mf.meta.data[MODEL_META_IDX_VISCOSITY])
@@ -207,10 +209,11 @@ def test_swimmer_bodies_match_mujoco() raises:
     it is for a box-inertia swimmer — asserted here rather than assumed.
     """
     comptime M = DMSwimmer6Model
+    comptime MD_2 = ModelDims[M]
     var mj = _ref(6)
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD_2]()
+    M.init_fields[DTYPE](ctx, mf)
 
     var mm = mj.body_mass.tolist()
     var mi = mj.body_inertia.tolist()
@@ -270,10 +273,11 @@ def test_swimmer_joints_match_mujoco() raises:
     truncated `<default>` scan used to mark them limited with a (0, 0) range.
     """
     comptime M = DMSwimmer6Model
+    comptime MD_3 = ModelDims[M]
     var mj = _ref(6)
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD_3]()
+    M.init_fields[DTYPE](ctx, mf)
 
     var jr = mj.jnt_range.tolist()
     var jlim = mj.jnt_limited.tolist()
@@ -558,6 +562,7 @@ def test_swimmer_head_ellipsoid_is_inert() raises:
     `init_fields` raises if a collidable ellipsoid ever appears).
     """
     comptime M = DMSwimmer6Model
+    comptime MD_4 = ModelDims[M]
     var mj = _ref(6)
     var mujoco = Python.import_module("mujoco")
     var gid = Int(py=mujoco.mj_name2id(mj, mujoco.mjtObj.mjOBJ_GEOM, "head"))
@@ -582,8 +587,8 @@ def test_swimmer_head_ellipsoid_is_inert() raises:
     )
     # And our own nose geom index, which the observation reads by index.
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD_4]()
+    M.init_fields[DTYPE](ctx, mf)
     var go = NOSE_GEOM_IDX * MODEL_GEOM_SIZE
     var nose_mj = Int(py=mujoco.mj_name2id(mj, mujoco.mjtObj.mjOBJ_GEOM, "nose"))
     var nose_pos = mj.geom_pos.tolist()
@@ -618,10 +623,11 @@ def test_swimmer_invweight0_matches_mujoco() raises:
     on all of them with no symptom until something constrains something.
     """
     comptime M = DMSwimmer6Model
+    comptime MD_5 = ModelDims[M]
     var mj = _ref(6)
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD_5]()
+    M.init_fields[DTYPE](ctx, mf)
 
     var biw = mj.body_invweight0.tolist()
     var diw = mj.dof_invweight0.tolist()

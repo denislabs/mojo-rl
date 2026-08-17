@@ -55,8 +55,9 @@ from mojo_rl.envs.dm_control.manipulator import (
     OBJECT_QADR_Z,
     OBJECT_QADR_Y,
 )
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_GEOM_SIZE,
@@ -102,12 +103,10 @@ comptime BNJOINT: Int = MB.NJOINT
 comptime BNGEOM: Int = MB.NGEOM  # 25
 comptime BNSITE: Int = MB.NSITE  # 10
 comptime BMAXC: Int = MB.MAX_CONTACTS
-comptime BModel = Model[DTYPE, Dims[nv=BNV, nbody=BNBODY, njoint=BNJOINT, ngeom=BNGEOM, nequality=MB.MAX_EQUALITY, ntendon=MB.MAX_TENDON, nsite=BNSITE, nexclude=MB.NEXCLUDE, nmesh_verts=0]]
-comptime BData = Data[DTYPE, Dims[nq=BNQ, nv=BNV, nbody=BNBODY, max_contacts=BMAXC, nsite=BNSITE], 1]
-comptime BInteg = EulerIntegrator[
-    DTYPE, BNQ, BNV, BNBODY, BNJOINT, BMAXC, BNGEOM, MB.MAX_EQUALITY,
-    MB.MAX_TENDON, BNSITE, MB.NEXCLUDE, 0, MB.CONE_TYPE, 1, SOLVER="newton",
-]
+comptime MD = ModelDims[MB]
+comptime BModel = Model[DTYPE, MD]
+comptime BData = Data[DTYPE, MD, 1]
+comptime BInteg = EulerIntegrator[DTYPE, MD, MB.CONE_TYPE, 1, SOLVER="newton"]
 
 # ── insert_peg ──────────────────────────────────────────────────────────────
 
@@ -118,12 +117,10 @@ comptime PNJOINT: Int = MP.NJOINT
 comptime PNGEOM: Int = MP.NGEOM  # 28
 comptime PNSITE: Int = MP.NSITE  # 17
 comptime PMAXC: Int = MP.MAX_CONTACTS
-comptime PModel = Model[DTYPE, Dims[nv=PNV, nbody=PNBODY, njoint=PNJOINT, ngeom=PNGEOM, nequality=MP.MAX_EQUALITY, ntendon=MP.MAX_TENDON, nsite=PNSITE, nexclude=MP.NEXCLUDE, nmesh_verts=0]]
-comptime PData = Data[DTYPE, Dims[nq=PNQ, nv=PNV, nbody=PNBODY, max_contacts=PMAXC, nsite=PNSITE], 1]
-comptime PInteg = EulerIntegrator[
-    DTYPE, PNQ, PNV, PNBODY, PNJOINT, PMAXC, PNGEOM, MP.MAX_EQUALITY,
-    MP.MAX_TENDON, PNSITE, MP.NEXCLUDE, 0, MP.CONE_TYPE, 1, SOLVER="newton",
-]
+comptime PModel = Model[DTYPE, MD_2]
+comptime PData = Data[DTYPE, MD_2, 1]
+comptime PInteg = EulerIntegrator[DTYPE, MD_2, MP.CONE_TYPE, 1, SOLVER="newton"]
+comptime MD_2 = ModelDims[MP]
 
 
 def _check_names(
@@ -187,7 +184,7 @@ def test_insert_ball_model_matches_mujoco() raises:
 
     var ctx = DeviceContext()
     var mf = BModel()
-    MB.init_fields[DTYPE, 0](ctx, mf)
+    MB.init_fields[DTYPE](ctx, mf)
     var bref = mj.body_parentid.tolist()
     for b in range(BNBODY):
         assert_true(
@@ -261,7 +258,7 @@ def test_insert_peg_model_matches_mujoco() raises:
 
     var ctx = DeviceContext()
     var mf = PModel()
-    MP.init_fields[DTYPE, 0](ctx, mf)
+    MP.init_fields[DTYPE](ctx, mf)
     var gref = mj.geom_bodyid.tolist()
     for g in range(PNGEOM):
         assert_true(
@@ -392,7 +389,7 @@ def test_insert_ball_receptacle_collides_at_its_mocap_pose() raises:
     var sf = MB.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
     var mf = BModel()
-    MB.init_fields[DTYPE, 0](ctx, mf)
+    MB.init_fields[DTYPE](ctx, mf)
     var integ = BInteg()
 
     # Scan the whole band and take the DEEPEST engagement, not the first
@@ -465,31 +462,29 @@ def test_insert_ball_receptacle_collides_at_its_mocap_pose() raises:
 
 def _pose_mocap_ball(mut d: BData):
     """Write both mocap poses and preset the world poses FK skips."""
-    _set_mocap[BNQ, BNV, BNBODY, BMAXC, BNSITE](
+    _set_mocap(
         d, receptacle_body_idx(False),
         RECEPTACLE_X, 0.0, RECEPTACLE_Z, RECEPTACLE_ANGLE,
     )
-    _set_mocap[BNQ, BNV, BNBODY, BMAXC, BNSITE](
+    _set_mocap(
         d, target_body_idx(False, True),
         TARGET_PARK_X, 0.001, TARGET_PARK_Z, 0.0,
     )
 
 
 def _pose_mocap_peg(mut d: PData):
-    _set_mocap[PNQ, PNV, PNBODY, PMAXC, PNSITE](
+    _set_mocap(
         d, receptacle_body_idx(True),
         RECEPTACLE_X, 0.0, RECEPTACLE_Z, RECEPTACLE_ANGLE,
     )
-    _set_mocap[PNQ, PNV, PNBODY, PMAXC, PNSITE](
+    _set_mocap(
         d, target_body_idx(True, True),
         TARGET_PARK_X, 0.001, TARGET_PARK_Z, 0.0,
     )
 
 
-def _set_mocap[
-    NQ: Int, NV: Int, NBODY: Int, MAXC: Int, NSITE: Int
-](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
+def _set_mocap[D: DimsLike](
+    mut d: Data[DTYPE, D, 1],
     body: Int,
     x: Float64, y: Float64, z: Float64, angle: Float64,
 ):
@@ -527,7 +522,7 @@ def test_insert_peg_receptacle_collides_at_its_mocap_pose() raises:
     var sf = MP.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
     var mf = PModel()
-    MP.init_fields[DTYPE, 0](ctx, mf)
+    MP.init_fields[DTYPE](ctx, mf)
     var integ = PInteg()
 
     # Scan for the pose with the most MuJoCo contacts at a PHYSICAL depth.

@@ -74,6 +74,7 @@ from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 
 comptime DTYPE = DType.float64
@@ -104,6 +105,7 @@ comptime M = ModelDefFromXML[
     timestep=pp.TIMESTEP,
     max_condim=pp.MAX_CONDIM,
 ]
+comptime MD = ModelDims[M]
 
 comptime N_SETTLE: Int = 300
 comptime N_STEPS: Int = 40
@@ -189,9 +191,9 @@ def test_rolling_friction_matches_mujoco() raises:
     var settled = _settled(mujoco, m, md)
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
 
     for i in range(M.NQ):
         d.qpos.data[i] = Scalar[DTYPE](Float64(py=settled[i]))
@@ -214,11 +216,7 @@ def test_rolling_friction_matches_mujoco() raises:
         "parse_xml did not pick up condim=6 from the XML (got "
         + String(M.MAX_CONDIM) + ") — the pyramid would be sized for 4 edges",
     )
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=M.MAX_CONDIM,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=M.MAX_CONDIM]()
 
     var worst_q = Float64(0)
     var worst_v = Float64(0)

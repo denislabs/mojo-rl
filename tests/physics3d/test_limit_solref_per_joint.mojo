@@ -52,6 +52,7 @@ from mojo_rl.physics3d.fields import Model, Data, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.types import ConeType
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 comptime TEST_PATH = "tests/physics3d"
@@ -90,6 +91,7 @@ comptime LM = ModelDefFromXML[
     obs_qpos_skip=0,
     timestep=lp.TIMESTEP,
 ]
+comptime MD = ModelDims[LM]
 
 # ── Defect 23 fixture: solreflimit BELOW 2*timestep ──────────────────────────
 # Same model, solreflimit 0.0025 against timestep 0.005 (2*dt = 0.01). MuJoCo
@@ -129,6 +131,7 @@ comptime CM = ModelDefFromXML[
     obs_qpos_skip=0,
     timestep=cp.TIMESTEP,
 ]
+comptime MD_2 = ModelDims[CM]
 
 comptime NQ = LM.NQ
 comptime NV = LM.NV
@@ -215,9 +218,9 @@ def test_limit_solref_is_read_per_joint() raises:
 
     # --- our side ---------------------------------------------------------
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=LM.NV, nbody=LM.NBODY, njoint=LM.NJOINT, ngeom=LM.NGEOM, nequality=LM.MAX_EQUALITY, ntendon=LM.MAX_TENDON, nsite=LM.NSITE, nexclude=LM.NEXCLUDE, nmesh_verts=0]]()
-    LM.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=LM.NQ, nv=LM.NV, nbody=LM.NBODY, max_contacts=LM.MAX_CONTACTS, nsite=LM.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    LM.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
     LM.reset_data[DTYPE](sf, d)
     d.qpos.data[0] = Scalar[DTYPE](Q0)
     d.qpos.data[1] = Scalar[DTYPE](Q1)
@@ -227,12 +230,7 @@ def test_limit_solref_is_read_per_joint() raises:
         d.qfrc.data[i] = Scalar[DTYPE](0)
     forward_kinematics["cpu"](d, mf)
 
-    var integ = EulerIntegrator[
-        DTYPE, LM.NQ, LM.NV, LM.NBODY, LM.NJOINT, LM.MAX_CONTACTS, LM.NGEOM,
-        LM.MAX_EQUALITY, LM.MAX_TENDON, LM.NSITE, LM.NEXCLUDE, 0,
-        LM.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM=LM.MAX_CONDIM, NOSLIP_ITER=LM.NOSLIP_ITER,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, LM.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=LM.MAX_CONDIM, NOSLIP_ITER=LM.NOSLIP_ITER]()
     # ⚠ CONTACTS=False reaches `solve_limits`, the path this defect lived on.
     integ.step["cpu", CONTACTS=False](d, mf)
 
@@ -317,9 +315,9 @@ def test_refsafe_clamp_raises_timeconst_to_two_timesteps() raises:
     )
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=CM.NV, nbody=CM.NBODY, njoint=CM.NJOINT, ngeom=CM.NGEOM, nequality=CM.MAX_EQUALITY, ntendon=CM.MAX_TENDON, nsite=CM.NSITE, nexclude=CM.NEXCLUDE, nmesh_verts=0]]()
-    CM.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=CM.NQ, nv=CM.NV, nbody=CM.NBODY, max_contacts=CM.MAX_CONTACTS, nsite=CM.NSITE], 1]()
+    var mf = Model[DTYPE, MD_2]()
+    CM.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD_2, 1]()
     CM.reset_data[DTYPE](sf, d)
     d.qpos.data[0] = Scalar[DTYPE](Q0)
     d.qpos.data[1] = Scalar[DTYPE](Q1)
@@ -329,12 +327,7 @@ def test_refsafe_clamp_raises_timeconst_to_two_timesteps() raises:
         d.qfrc.data[i] = Scalar[DTYPE](0)
     forward_kinematics["cpu"](d, mf)
 
-    var integ = EulerIntegrator[
-        DTYPE, CM.NQ, CM.NV, CM.NBODY, CM.NJOINT, CM.MAX_CONTACTS, CM.NGEOM,
-        CM.MAX_EQUALITY, CM.MAX_TENDON, CM.NSITE, CM.NEXCLUDE, 0,
-        CM.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM=CM.MAX_CONDIM, NOSLIP_ITER=CM.NOSLIP_ITER,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD_2, CM.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=CM.MAX_CONDIM, NOSLIP_ITER=CM.NOSLIP_ITER]()
     integ.step["cpu", CONTACTS=False](d, mf)
 
     var worst = Float64(0)

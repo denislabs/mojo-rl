@@ -98,6 +98,7 @@ from mojo_rl.physics3d.gpu.constants import (
 )
 from mojo_rl.physics3d.types import ConeType
 from layout import Layout
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 comptime NSTEPS = 600
@@ -146,6 +147,7 @@ comptime M = ModelDefFromXML[
     nexclude = pm.NEXCLUDE,
     timestep = pm.TIMESTEP,
 ]
+comptime MD = ModelDims[M]
 
 # The SAME model with `relpose` written out by hand. MuJoCo derives
 # `(0, 0, -0.3, 1, 0, 0, 0)` for the model above, so these two are physically
@@ -184,6 +186,7 @@ comptime MX = ModelDefFromXML[
     neq = pmx.NEQ, max_equality = pmx.NEQ, nexclude = pmx.NEXCLUDE,
     timestep = pmx.TIMESTEP,
 ]
+comptime MD_2 = ModelDims[MX]
 
 
 # ── torque specimen: an OFFSET MASS on a welded body, NO CONTACTS ────────────
@@ -243,6 +246,7 @@ comptime MTQ1 = ModelDefFromXML[
     neq = pq1.NEQ, max_equality = pq1.NEQ, nexclude = pq1.NEXCLUDE,
     timestep = pq1.TIMESTEP,
 ]
+comptime MD_3 = ModelDims[MTQ1]
 comptime MTQ5 = ModelDefFromXML[
     xml=XML_TQ5,
     nbody = pq5.NBODY, njoint = pq5.NJOINT, nq = pq5.NQ, nv = pq5.NV,
@@ -253,6 +257,7 @@ comptime MTQ5 = ModelDefFromXML[
     neq = pq5.NEQ, max_equality = pq5.NEQ, nexclude = pq5.NEXCLUDE,
     timestep = pq5.TIMESTEP,
 ]
+comptime MD_4 = ModelDims[MTQ5]
 
 
 # qpos = [arm(7), obj(7)]; z is index 2 of each free joint.
@@ -341,19 +346,14 @@ def test_pyramidal_weld_matches_mujoco() raises:
     var sf = M.make_spec_fields[DTYPE]()
     print("--- weld rows: per-env pyramidal vs MuJoCo ---")
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
 
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER]()
     for _ in range(NSTEPS):
         integ.step["cpu", CONTACTS=True](d, mf)
 
@@ -371,9 +371,9 @@ def test_pyramidal_weld_matches_mujoco() raises:
 
 
 def _prep(
-    mut d: Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]],
-    mut sc: DynamicsScratch[DTYPE, Dims[nv=M.NV, nbody=M.NBODY], 1],
+    mut d: Data[DTYPE, MD, 1],
+    mut mf: Model[DTYPE, MD],
+    mut sc: DynamicsScratch[DTYPE, MD, 1],
 ) raises:
     """Smooth dynamics + detection, up to the constraint seam.
 
@@ -428,26 +428,21 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
     var sf = M.make_spec_fields[DTYPE]()
     print("--- weld rows: blocked kernel vs per-env ---")
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
     # Settle into the COUPLED state first. Comparing two solvers at the reset
     # pose would compare them with no contact live, which is the regime where
     # a post-pass and a row agree.
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER]()
     for _ in range(NSTEPS):
         integ.step["cpu", CONTACTS=True](d, mf)
 
-    var db = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
-    var dp = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var db = Data[DTYPE, MD, 1]()
+    var dp = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, db)
     M.reset_data[DTYPE](sf, dp)
     for i in range(M.NQ):
@@ -457,10 +452,10 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
         db.qvel.data[i] = d.qvel.data[i]
         dp.qvel.data[i] = d.qvel.data[i]
 
-    var sb = DynamicsScratch[DTYPE, Dims[nv=M.NV, nbody=M.NBODY], 1]()
-    var sp = DynamicsScratch[DTYPE, Dims[nv=M.NV, nbody=M.NBODY], 1]()
-    var cb = ContactScratch[DTYPE, Dims[nv=M.NV, max_contacts=M.MAX_CONTACTS], 1]()
-    var cp = ContactScratch[DTYPE, Dims[nv=M.NV, max_contacts=M.MAX_CONTACTS], 1]()
+    var sb = DynamicsScratch[DTYPE, MD, 1]()
+    var sp = DynamicsScratch[DTYPE, MD, 1]()
+    var cb = ContactScratch[DTYPE, MD, 1]()
+    var cp = ContactScratch[DTYPE, MD, 1]()
     _prep(db, mf, sb)
     _prep(dp, mf, sp)
 
@@ -473,16 +468,8 @@ def test_blocked_kernel_builds_the_same_weld_rows() raises:
         " agree, so this comparison would pass with the bug present",
     )
 
-    solve_newton_blocked[
-        "cpu", DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        ConeType.PYRAMIDAL, 1,
-    ](db, mf, sb, cb, None)
-    solve_newton[
-        "cpu", DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        ConeType.PYRAMIDAL, 1,
-    ](dp, mf, sp, cp, None)
+    solve_newton_blocked["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=1](db, mf, sb, cb, None)
+    solve_newton["cpu", DTYPE, CONE_TYPE=ConeType.PYRAMIDAL, BATCH=1](dp, mf, sp, cp, None)
 
     var worst = Float64(0)
     for i in range(M.NV):
@@ -518,8 +505,8 @@ def test_relpose_default_is_derived_from_qpos0() raises:
     var m = mujoco.MjModel.from_xml_string(materialize[XML]())
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
     # MuJoCo eq_data for a weld: [anchor(3), relpose_pos(3), relpose_quat(4),
     # torquescale]. `mj_equalityAnchors` anchors body1 at relpose_pos, which is
@@ -582,18 +569,13 @@ def test_explicit_relpose_is_still_honoured() raises:
     var sf = MX.make_spec_fields[DTYPE]()
     print("--- weld rows: explicit relpose ---")
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=MX.NV, nbody=MX.NBODY, njoint=MX.NJOINT, ngeom=MX.NGEOM, nequality=MX.MAX_EQUALITY, ntendon=MX.MAX_TENDON, nsite=MX.NSITE, nexclude=MX.NEXCLUDE, nmesh_verts=0]]()
-    MX.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD_2]()
+    MX.init_fields[DTYPE](ctx, mf)
 
-    var d = Data[DTYPE, Dims[nq=MX.NQ, nv=MX.NV, nbody=MX.NBODY, max_contacts=MX.MAX_CONTACTS, nsite=MX.NSITE], 1]()
+    var d = Data[DTYPE, MD_2, 1]()
     MX.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
-    var integ = EulerIntegrator[
-        DTYPE, MX.NQ, MX.NV, MX.NBODY, MX.NJOINT, MX.MAX_CONTACTS, MX.NGEOM,
-        MX.MAX_EQUALITY, MX.MAX_TENDON, MX.NSITE, MX.NEXCLUDE, 0,
-        MX.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM = MX.MAX_CONDIM, NOSLIP_ITER = MX.NOSLIP_ITER,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD_2, MX.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM = MX.MAX_CONDIM, NOSLIP_ITER = MX.NOSLIP_ITER]()
     for _ in range(NSTEPS):
         integ.step["cpu", CONTACTS=True](d, mf)
 
@@ -653,9 +635,9 @@ def test_weld_orientation_rows_match_mujoco() raises:
     )
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=MTQ1.NV, nbody=MTQ1.NBODY, njoint=MTQ1.NJOINT, ngeom=MTQ1.NGEOM, nequality=MTQ1.MAX_EQUALITY, ntendon=MTQ1.MAX_TENDON, nsite=MTQ1.NSITE, nexclude=MTQ1.NEXCLUDE, nmesh_verts=0]]()
-    MTQ1.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=MTQ1.NQ, nv=MTQ1.NV, nbody=MTQ1.NBODY, max_contacts=MTQ1.MAX_CONTACTS, nsite=MTQ1.NSITE], 1]()
+    var mf = Model[DTYPE, MD_3]()
+    MTQ1.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD_3, 1]()
     MTQ1.reset_data[DTYPE](sf, d)
     d.qpos.data[0] = 0.07
     d.qpos.data[1] = -0.02
@@ -667,7 +649,7 @@ def test_weld_orientation_rows_match_mujoco() raises:
     for i in range(MTQ1.NV):
         d.qvel.data[i] = 0
 
-    var sc = DynamicsScratch[DTYPE, Dims[nv=MTQ1.NV, nbody=MTQ1.NBODY], 1]()
+    var sc = DynamicsScratch[DTYPE, MD_3, 1]()
     forward_kinematics["cpu"](d, mf, None)
     compute_body_velocities["cpu"](d, mf, None)
     compute_subtree_com["cpu"](d, mf, None)
@@ -800,9 +782,9 @@ def test_weld_torquescale_matches_mujoco() raises:
     )
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=MTQ5.NV, nbody=MTQ5.NBODY, njoint=MTQ5.NJOINT, ngeom=MTQ5.NGEOM, nequality=MTQ5.MAX_EQUALITY, ntendon=MTQ5.MAX_TENDON, nsite=MTQ5.NSITE, nexclude=MTQ5.NEXCLUDE, nmesh_verts=0]]()
-    MTQ5.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=MTQ5.NQ, nv=MTQ5.NV, nbody=MTQ5.NBODY, max_contacts=MTQ5.MAX_CONTACTS, nsite=MTQ5.NSITE], 1]()
+    var mf = Model[DTYPE, MD_4]()
+    MTQ5.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD_4, 1]()
     MTQ5.reset_data[DTYPE](sf, d)
     d.qpos.data[0] = 0.07
     d.qpos.data[1] = -0.02
@@ -814,7 +796,7 @@ def test_weld_torquescale_matches_mujoco() raises:
     for i in range(MTQ5.NV):
         d.qvel.data[i] = 0
 
-    var sc = DynamicsScratch[DTYPE, Dims[nv=MTQ5.NV, nbody=MTQ5.NBODY], 1]()
+    var sc = DynamicsScratch[DTYPE, MD_4, 1]()
     forward_kinematics["cpu"](d, mf, None)
     compute_body_velocities["cpu"](d, mf, None)
     compute_subtree_com["cpu"](d, mf, None)

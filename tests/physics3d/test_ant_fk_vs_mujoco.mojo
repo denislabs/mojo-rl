@@ -20,11 +20,12 @@ from std.math import abs
 from std.collections import InlineArray
 
 from max.gpu.host import DeviceContext
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
 from mojo_rl.envs.ant.ant_xml import AntModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 
 # =============================================================================
@@ -38,6 +39,7 @@ comptime NBODY = AntModel.NBODY  # 14 (worldbody + torso + 4 legs × 3 bodies)
 comptime NJOINT = AntModel.NJOINT  # 9 (1 free + 8 hinge)
 comptime NGEOM = AntModel.NGEOM
 comptime MAX_CONTACTS = AntModel.MAX_CONTACTS  # 40
+comptime MD = ModelDims[AntModel]
 
 # Tolerance for comparison (float64)
 comptime POS_TOL: Float64 = 1e-6
@@ -58,20 +60,16 @@ def compare_fk(
 
     # === Our engine (fields; legacy Model/Data FK deleted at G4) ===
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=AntModel.MAX_EQUALITY, ntendon=AntModel.MAX_TENDON, nsite=AntModel.NSITE, nexclude=AntModel.NEXCLUDE, nmesh_verts=0]]()
-    AntModel.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=AntModel.NSITE], 1]()
+    var mf = Model[DTYPE, MD]()
+    AntModel.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD, 1]()
 
     # Set qpos
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_values[i])
 
     # Run our FK (fields, CPU)
-    forward_kinematics[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        AntModel.MAX_EQUALITY, AntModel.MAX_TENDON, AntModel.NSITE,
-        AntModel.NEXCLUDE, 0, 1,
-    ](d, mf, None)
+    forward_kinematics["cpu", DTYPE, BATCH=1](d, mf, None)
 
     # === MuJoCo reference via Python ===
     var mujoco = Python.import_module("mujoco")

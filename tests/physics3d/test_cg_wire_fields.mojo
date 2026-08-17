@@ -27,6 +27,7 @@ from mojo_rl.physics3d.integrator.implicit import (
 )
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DT = DType.float32
 comptime NQ = Walker2dModel.NQ
@@ -39,12 +40,13 @@ comptime NEQ = Walker2dModel.MAX_EQUALITY
 comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
+comptime MD = ModelDims[Walker2dModel]
 comptime CONE = ConeType.ELLIPTIC
 comptime BATCH = 2
 comptime N_STEPS = 3
 
 
-def _init_state(mut d: Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]):
+def _init_state(mut d: Data[DT, MD, BATCH]):
     """Fallen Walker2D (feet penetrating the floor)."""
     for e in range(BATCH):
         for i in range(NQ):
@@ -59,9 +61,9 @@ def _init_state(mut d: Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC,
             d.qvel.data[e * NV + i] = qv
 
 
-def _load_model(ctx: DeviceContext) raises -> Model[DT, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]:
-    var mf = Model[DT, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
-    Walker2dModel.init_fields[DT, 0](ctx, mf)
+def _load_model(ctx: DeviceContext) raises -> Model[DT, MD]:
+    var mf = Model[DT, MD]()
+    Walker2dModel.init_fields[DT](ctx, mf)
     return mf^
 
 
@@ -69,21 +71,15 @@ def part_a(ctx: DeviceContext) raises:
     print("--- Part A: Euler SOLVER='cg' vs 'newton' (", N_STEPS, "steps)")
     var mf = _load_model(ctx)
 
-    var dN = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
-    var dC = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dN = Data[DT, MD, BATCH]()
+    var dC = Data[DT, MD, BATCH]()
     _init_state(dN)
     _init_state(dC)
     dN.upload_all(ctx)
     dC.upload_all(ctx)
 
-    var integN = EulerIntegrator[
-        DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
-        SOLVER="newton",
-    ]()
-    var integC = EulerIntegrator[
-        DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
-        SOLVER="cg",
-    ]()
+    var integN = EulerIntegrator[DT, MD, CONE, BATCH, SOLVER="newton"]()
+    var integC = EulerIntegrator[DT, MD, CONE, BATCH, SOLVER="cg"]()
     integN.prepare_gpu(ctx)
     integC.prepare_gpu(ctx)
 
@@ -124,21 +120,15 @@ def part_b(ctx: DeviceContext) raises:
     print("--- Part B: Implicit + RK4 SOLVER='cg' compile + step (finite)")
     var mf = _load_model(ctx)
 
-    var dImp = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
-    var dRk4 = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var dImp = Data[DT, MD, BATCH]()
+    var dRk4 = Data[DT, MD, BATCH]()
     _init_state(dImp)
     _init_state(dRk4)
     dImp.upload_all(ctx)
     dRk4.upload_all(ctx)
 
-    var integImp = ImplicitIntegrator[
-        DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
-        SOLVER="cg",
-    ]()
-    var integRk4 = RK4Integrator[
-        DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
-        SOLVER="cg",
-    ]()
+    var integImp = ImplicitIntegrator[DT, MD, CONE, BATCH, SOLVER="cg"]()
+    var integRk4 = RK4Integrator[DT, MD, CONE, BATCH, SOLVER="cg"]()
     integImp.prepare_gpu(ctx)
     integRk4.prepare_gpu(ctx)
 

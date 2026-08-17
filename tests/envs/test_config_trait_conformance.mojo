@@ -91,19 +91,29 @@ from mojo_rl.envs.walker2d.walker2d_config import Walker2dConfig
 
 comptime N_CONFIGS: Int = 52
 comptime DT = DType.float64
-comptime PD = Dims[nq=1, nv=1, nbody=1, max_contacts=1, nsite=1]
-comptime PM = Dims[
+comptime PD = Dims[
+    nq=1,
     nv=1,
     nbody=1,
     njoint=1,
     ngeom=1,
+    nsite=1,
+    max_contacts=1,
     nequality=1,
     ntendon=1,
-    nsite=1,
     nexclude=1,
     nmesh_verts=1,
     npair=1,
+    nact=1,
+    nten=1,
+    nkey=1,
 ]
+"""⚠ ONE PROVIDER NOW — `custom_reset_full_cpu` LANDED (2a.6b). It used to take
+twelve loose dims and spell its `Data` and its `Model` from overlapping SUBSETS
+of them, so this file needed two providers and the hook could be handed a
+`Data` and a `Model` describing DIFFERENT MODELS without complaint. It takes
+one `D` now, and a single `Dims` with every field set is what type-checks —
+that collapse IS the phase working."""
 
 
 @always_inline
@@ -118,7 +128,7 @@ def _conform[C: Phyics3dEnvConfig](never: Bool) raises -> Int:
     point — and never entered.
     """
     var d = Data[DT, PD, 1]()
-    var m = Model[DT, PM]()
+    var m = Model[DT, PD]()
     var empty = List[Scalar[DT]]()
     var acts = List[Float64]()
     var obs = List[Scalar[DT]]()

@@ -36,11 +36,12 @@ from max.gpu.host import DeviceContext
 
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.types import ConeType
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
 from mojo_rl.physics3d.collision.native_multicontact import MC_ENABLED
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
     METADATA_SIZE,
@@ -137,6 +138,7 @@ comptime NSITE: Int = MMM.NSITE
 comptime NEXCL: Int = MMM.NEXCLUDE
 comptime MC: Int = MMM.MAX_CONTACTS
 comptime NMESHV: Int = 64
+comptime MD = ModelDims[MMM, 64]
 comptime BATCH: Int = 1
 
 comptime NGROUP: Int = 5
@@ -146,8 +148,8 @@ comptime NPOSE: Int = 24
 # float64 residuals are ~1e-16, so anything here is float32 noise, not physics.
 comptime TOL: Float64 = 1e-4
 
-comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]
-comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV]]
+comptime Dat = Data[DTYPE, MD, BATCH]
+comptime Mod = Model[DTYPE, MD]
 
 
 def _stack_z(g: Int) -> Float64:
@@ -191,7 +193,7 @@ def test_mesh_manifold_cpu_vs_gpu() raises:
 
     var ctx = DeviceContext()
     var mf = Mod()
-    MMM.init_fields[DTYPE, NMESHV](ctx, mf)
+    MMM.init_fields[DTYPE](ctx, mf)
     var d = Dat()
     var rng = Lcg(0x9E3779B97F4A7C15)
 
@@ -265,14 +267,8 @@ def test_mesh_manifold_cpu_vs_gpu() raises:
         # ---- GPU, same qpos. `upload_all` pushes the pose that the CPU leg
         # just ran on, so the two legs cannot silently diverge on their input.
         d.upload_all(ctx)
-        forward_kinematics[
-            "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-            NEXCL, NMESHV, BATCH,
-        ](d, mf, ctx)
-        detect_contacts[
-            "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-            NEXCL, NMESHV, BATCH,
-        ](d, mf, ctx)
+        forward_kinematics["gpu", DTYPE, BATCH=BATCH](d, mf, ctx)
+        detect_contacts["gpu", DTYPE, BATCH=BATCH](d, mf, ctx)
         d.contacts.download(ctx)
         d.meta.download(ctx)
         var ncg = Int(d.meta.data[META_IDX_NUM_CONTACTS])
@@ -379,7 +375,7 @@ def test_sap_matches_on2_on_mesh_manifolds() raises:
     print("--- SAP vs O(N^2) on mesh manifolds:", NPOSE, "poses")
     var ctx = DeviceContext()
     var mf = Mod()
-    MMM.init_fields[DTYPE, NMESHV](ctx, mf)
+    MMM.init_fields[DTYPE](ctx, mf)
     var d = Dat()
     var rng = Lcg(0x9E3779B97F4A7C15)
 

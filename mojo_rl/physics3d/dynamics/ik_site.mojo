@@ -65,7 +65,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.core.tensor import TensorImpl
 
-from ..fields import Data, Model, DynamicsScratch, Dims
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike
 from ..kinematics.forward_kinematics import forward_kinematics
 from ..kinematics.integrate_pos import integrate_pos
 from ..kinematics.quat_math import quat_mul, quat_conjugate, quat2vel
@@ -145,17 +145,8 @@ def _solve_spd[
 
 
 def qpos_from_site_pose[
+
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
     # ⚠ NPAIR WAS A HARDCODED `0` HERE, AND THAT IS NOT THE SAME AS "no pairs".
     # A model def built by `parse_xml` carries NPAIR as the SYMBOLIC
     # `parse_xml(XML).NPAIR`, which the compiler will not unify with the
@@ -164,12 +155,12 @@ def qpos_from_site_pose[
     # CALLERS could compile — and it locked out every env going through
     # `Phyics3dEnv`, whose `Model` type comes from the model def. The gate
     # that exercised this code passed `0` explicitly and could not see it.
-    NPAIR: Int,
-    MAXC: Int,
     NDOF: Int,
+
+    D: DimsLike,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     site: Int,
     target_pos: InlineArray[Scalar[DTYPE], 3],
     target_quat: InlineArray[Scalar[DTYPE], 4],
@@ -194,15 +185,15 @@ def qpos_from_site_pose[
     else is held. See the module docstring — this is not an optimisation, it
     is what keeps the normal matrix full rank.
     """
-    comptime L_QPOS = Layout.row_major(1, NQ)
-    comptime L_NV = Layout.row_major(1, NV)
-    comptime L_NB3 = Layout.row_major(1, NBODY * 3)
-    comptime L_JNT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
-    comptime L_BOD = Layout.row_major(NBODY, MODEL_BODY_SIZE)
+    comptime L_QPOS = Layout.row_major(1, D.NQ)
+    comptime L_NV = Layout.row_major(1, D.NV)
+    comptime L_NB3 = Layout.row_major(1, D.NBODY * 3)
+    comptime L_JNT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
+    comptime L_BOD = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
     comptime L_MET = Layout.row_major(MODEL_META_SIZE)
-    comptime L_CDOF = Layout.row_major(1, NV * 6)
-    comptime L_SITE = Layout.row_major(NSITE, MODEL_SITE_SIZE)
-    comptime L_SX = Layout.row_major(1, NSITE * 3)
+    comptime L_CDOF = Layout.row_major(1, D.NV * 6)
+    comptime L_SITE = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
+    comptime L_SX = Layout.row_major(1, D.NSITE * 3)
 
     var joints_v = mf.joints.lt["cpu", L_JNT]()
     var bodies_v = mf.bodies.lt["cpu", L_BOD]()
@@ -210,18 +201,18 @@ def qpos_from_site_pose[
     var mmeta_v = mf.meta.lt["cpu", L_MET]()
     var qpos_v = d.qpos.lt["cpu", L_QPOS]()
 
-    var scratch = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], 1]()
+    var scratch = DynamicsScratch[DTYPE, D, 1]()
     # ⚠ Its own buffer, NOT a borrowed `Data` field. `d.qacc`/`d.qvel` would
     # have done the job and silently clobbered a physics output that the
     # caller has every reason to expect IK left alone.
-    var update_t = TensorImpl[DTYPE].alloc(NV)
+    var update_t = TensorImpl[DTYPE].alloc(D.NV)
     var update_nv = update_t.lt["cpu", L_NV]()
 
     var site_body = Int(rebind[Scalar[DTYPE]](sites_v[site, SITE_IDX_BODY]))
 
     var err = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
-    var jp = InlineArray[Scalar[DTYPE], 3 * NV](fill=Scalar[DTYPE](0))
-    var jr = InlineArray[Scalar[DTYPE], 3 * NV](fill=Scalar[DTYPE](0))
+    var jp = InlineArray[Scalar[DTYPE], 3 * D.NV](fill=Scalar[DTYPE](0))
+    var jr = InlineArray[Scalar[DTYPE], 3 * D.NV](fill=Scalar[DTYPE](0))
     var hess = InlineArray[Scalar[DTYPE], NDOF * NDOF](fill=Scalar[DTYPE](0))
     var grad = InlineArray[Scalar[DTYPE], NDOF](fill=Scalar[DTYPE](0))
     var upd = InlineArray[Scalar[DTYPE], NDOF](fill=Scalar[DTYPE](0))
@@ -292,7 +283,7 @@ def qpos_from_site_pose[
         var subtree_v = d.subtree_com.lt["cpu", L_NB3]()
         var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
         var sxpos_v = d.site_xpos.lt["cpu", L_SX]()
-        jac_site[DTYPE, NV, NBODY, NJOINT, NSITE, 1](
+        jac_site[DTYPE, D.NV, D.NBODY, D.NJOINT, D.NSITE, 1](
             0, subtree_v, joints_v, bodies_v, mmeta_v, cdof_v,
             sites_v, sxpos_v, site, jp, jr,
         )
@@ -308,18 +299,18 @@ def qpos_from_site_pose[
             var g = Scalar[DTYPE](0)
             for r in range(3):
                 if use_pos:
-                    g += jp[r * NV + ca] * err[r]
+                    g += jp[r * D.NV + ca] * err[r]
                 if use_quat:
-                    g += jr[r * NV + ca] * err[3 + r]
+                    g += jr[r * D.NV + ca] * err[3 + r]
             grad[a] = g
             for b in range(NDOF):
                 var cb = dof_idx[b]
                 var h = Scalar[DTYPE](0)
                 for r in range(3):
                     if use_pos:
-                        h += jp[r * NV + ca] * jp[r * NV + cb]
+                        h += jp[r * D.NV + ca] * jp[r * D.NV + cb]
                     if use_quat:
-                        h += jr[r * NV + ca] * jr[r * NV + cb]
+                        h += jr[r * D.NV + ca] * jr[r * D.NV + cb]
                 hess[a * NDOF + b] = h
             hess[a * NDOF + a] += Scalar[DTYPE](reg)
 
@@ -340,12 +331,12 @@ def qpos_from_site_pose[
             for a in range(NDOF):
                 upd[a] *= sc
 
-        for i in range(NV):
+        for i in range(D.NV):
             update_nv[0, i] = Scalar[DTYPE](0)
         for a in range(NDOF):
             update_nv[0, dof_idx[a]] = upd[a]
 
-        integrate_pos[DTYPE, NQ, NV, NJOINT, 1](
+        integrate_pos[DTYPE, D.NQ, D.NV, D.NJOINT, 1](
             0, qpos_v, update_nv, joints_v, Scalar[DTYPE](1)
         )
         forward_kinematics["cpu"](d, mf)
@@ -407,17 +398,8 @@ def canonicalize_arm_joints[
 
 
 def set_site_to_xpos[
+
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
     # ⚠ NPAIR WAS A HARDCODED `0` HERE, AND THAT IS NOT THE SAME AS "no pairs".
     # A model def built by `parse_xml` carries NPAIR as the SYMBOLIC
     # `parse_xml(XML).NPAIR`, which the compiler will not unify with the
@@ -426,12 +408,12 @@ def set_site_to_xpos[
     # CALLERS could compile — and it locked out every env going through
     # `Phyics3dEnv`, whose `Model` type comes from the model def. The gate
     # that exercised this code passed `0` explicitly and could not see it.
-    NPAIR: Int,
-    MAXC: Int,
     NDOF: Int,
+
+    D: DimsLike,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     site: Int,
     target_pos: InlineArray[Scalar[DTYPE], 3],
     target_quat: InlineArray[Scalar[DTYPE], 4],
@@ -473,14 +455,11 @@ def set_site_to_xpos[
     var attempts = 0
     for attempt in range(max_ik_attempts):
         attempts = attempt + 1
-        var res = qpos_from_site_pose[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAXC, NDOF,
-        ](d, mf, site, target_pos, target_quat, dof_idx)
+        var res = qpos_from_site_pose[DTYPE, NDOF](d, mf, site, target_pos, target_quat, dof_idx)
         success = res.success
 
         if success:
-            success = canonicalize_arm_joints[DTYPE, NQ, NDOF](
+            success = canonicalize_arm_joints[DTYPE, D.NQ, NDOF](
                 d.qpos.data, qpos_adr, lower, upper
             )
 

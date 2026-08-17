@@ -51,7 +51,7 @@ from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from ..fields import Data, Model, DynamicsScratch, Dims
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike
 from ..joint_types import JNT_FREE, JNT_BALL
 from ..collision.contact_frame import contact_tangent_frame
 from .rne import (
@@ -442,43 +442,33 @@ def _rne_post_kernel[
 
 
 def compute_rne_post[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     BATCH: Int = 1,
     # Appended, not grouped with NEXCLUDE — see `fields.Model`.
-    NPAIR: Int = 0,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH],
-    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Fill `d.cacc` / `d.cfrc_int` (and `d.cvel` / `d.cfrc_ext`) for the
     CURRENT state. Run between the constraint solve and the integration —
     that is where MuJoCo's `mj_sensorAcc` sits, and the FK products, the
     contact forces and `scratch.qacc_constrained` are all valid there."""
-    comptime L_NV = Layout.row_major(BATCH, NV)
-    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
-    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
-    comptime L_B6 = Layout.row_major(BATCH, NBODY * 6)
-    comptime L_B10 = Layout.row_major(BATCH, NBODY * 10)
-    comptime L_CON = Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_B3 = Layout.row_major(BATCH, D.NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, D.NBODY * 4)
+    comptime L_B6 = Layout.row_major(BATCH, D.NBODY * 6)
+    comptime L_B10 = Layout.row_major(BATCH, D.NBODY * 10)
+    comptime L_CON = Layout.row_major(BATCH, D.MAX_CONTACTS * CONTACT_SIZE)
     comptime L_DMETA = Layout.row_major(BATCH, METADATA_SIZE)
-    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
+    comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
     comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
-    comptime L_CDOF = Layout.row_major(BATCH, NV * 6)
+    comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
 
     comptime if target == "cpu":
         var qvel_v = d.qvel.lt["cpu", L_NV]()
@@ -498,7 +488,7 @@ def compute_rne_post[
         var cfrc_ext_v = d.cfrc_ext.lt["cpu", L_B6]()
         var cfrc_int_v = d.cfrc_int.lt["cpu", L_B6]()
         for e in range(BATCH):
-            _rne_post_env[DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH](
+            _rne_post_env[DTYPE, D.NV, D.NBODY, D.NJOINT, D.MAX_CONTACTS, BATCH](
                 e, qvel_v, qacc_v, xquat_v, xipos_v, stcom_v, con_v, dmeta_v,
                 bodies_v, joints_v, mmeta_v, cdof_v, crb_v, cvel_v, cacc_v,
                 cfrc_ext_v, cfrc_int_v,
@@ -508,7 +498,7 @@ def compute_rne_post[
         comptime BLOCKS = (BATCH + RNE_POST_TPB - 1) // RNE_POST_TPB
         c.enqueue_function[
             _rne_post_kernel[
-                DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH
+                DTYPE, D.NV, D.NBODY, D.NJOINT, D.MAX_CONTACTS, BATCH
             ]
         ](
             d.qvel.lt["gpu", L_NV](),

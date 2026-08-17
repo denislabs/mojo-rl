@@ -30,7 +30,7 @@ from std.python import Python
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
@@ -38,9 +38,11 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import (
 from mojo_rl.physics3d.sensors.subtree import subtree_linvel
 
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 
 comptime M = Walker2dModel
+comptime MD = ModelDims[M]
 # Inherits the engine's own xvel agreement with MuJoCo (~1.2e-10 on
 # walker2d, see test_body_velocities_vs_mujoco), so this bound tracks that
 # one rather than the sensor's arithmetic — which is exact to 4.4e-16 when
@@ -55,9 +57,9 @@ def test_subtree_linvel_matches_mujoco() raises:
     var data = mj.MjData(model)
 
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DType.float64, 0](ctx, mf)
-    var d = Data[DType.float64, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var mf = Model[DType.float64, MD]()
+    M.init_fields[DType.float64](ctx, mf)
+    var d = Data[DType.float64, MD, 1]()
 
     var worst = Float64(0)
 
@@ -76,17 +78,9 @@ def test_subtree_linvel_matches_mujoco() raises:
         mj.mj_forward(model, data)
         mj.mj_subtreeVel(model, data)
 
-        forward_kinematics[
-            "cpu", DType.float64, M.NQ, M.NV, M.NBODY, M.NJOINT,
-            M.MAX_CONTACTS, M.NGEOM, M.MAX_EQUALITY, M.MAX_TENDON,
-            M.NSITE, M.NEXCLUDE, 0, 1,
-        ](d, mf, None)
+        forward_kinematics["cpu", DType.float64, BATCH=1](d, mf, None)
 
-        compute_body_velocities[
-            "cpu", DType.float64, M.NQ, M.NV, M.NBODY, M.NJOINT,
-            M.MAX_CONTACTS, M.NGEOM, M.MAX_EQUALITY, M.MAX_TENDON,
-            M.NSITE, M.NEXCLUDE, 0, 1,
-        ](d, mf, None)
+        compute_body_velocities["cpu", DType.float64, BATCH=1](d, mf, None)
 
         for b in range(M.NBODY):
             var vx = Float64(0)

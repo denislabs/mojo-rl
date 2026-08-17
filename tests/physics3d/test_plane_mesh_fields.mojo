@@ -24,7 +24,7 @@ from max.gpu.host import DeviceContext
 from std.sys import has_nvidia_gpu_accelerator
 
 from mojo_rl.physics3d.constants import GEOM_MESH, GEOM_CYLINDER
-from mojo_rl.physics3d.fields import Data, Model, Dims
+from mojo_rl.physics3d.fields import Data, Model, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
 )
@@ -71,6 +71,23 @@ comptime BATCH = 2
 # kept (sawyer's twelve meshes go ~648 -> ~5.6k vertices), and
 # `fields_build` TRUNCATES past this cap — silently, until now.
 comptime NMESHV = MAX_GPU_MESHES * 512
+comptime MD = Dims[
+    nq=NQ,
+    nv=NV,
+    nbody=NBODY,
+    njoint=NJOINT,
+    ngeom=NGEOM,
+    nsite=NSITE,
+    max_contacts=MC,
+    nequality=NEQ,
+    ntendon=NTD,
+    nexclude=0,
+    nmesh_verts=NMESHV,
+    npair=SawyerReachModel.NPAIR,
+    nact=SawyerReachModel.NACT,
+    nten=SawyerReachModel.NTEN_F,
+    nkey=SawyerReachModel.NKEY,
+]
 
 comptime OBJ_Z_ENV0: Float64 = -0.900  # vertex dist = -0.017
 comptime OBJ_Z_ENV1: Float64 = -0.912  # vertex dist = -0.029
@@ -150,7 +167,7 @@ def _qpos_for_env(e: Int) -> List[Float64]:
 
 def _fp_check(
     label: String,
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
+    d: Data[DTYPE, MD, BATCH],
     gold_ncon: Int,
     gold_con: Float64,
     gold_sol: Float64,
@@ -209,7 +226,7 @@ def _fp_check(
 
 def _assert_plane_mesh_contact(
     label: String,
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
+    d: Data[DTYPE, MD, BATCH],
     obj_body: Int,
     expected_body_b: Int,
 ) raises:
@@ -238,8 +255,8 @@ def main() raises:
     var ctx = DeviceContext()
 
     # Fields-native build (loads STL hulls, NMESHV-padded — Stage B).
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=0, nmesh_verts=NMESHV]]()
-    SawyerReachModel.init_fields[DTYPE, NMESHV](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    SawyerReachModel.init_fields[DTYPE](ctx, mf)
 
     # STL mesh counts from the packed mesh_meta (vertadr, nverts) pairs.
     var n_stl_meshes = 0
@@ -309,20 +326,14 @@ def main() raises:
         raise Error("tetra mesh_meta did not reach Model")
 
     # ================= Leg 1: O(N^2) detection ==========================
-    var d_a = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var d_a = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         var q = _qpos_for_env(e)
         for i in range(NQ):
             d_a.qpos.data[e * NQ + i] = Scalar[DTYPE](q[i])
     d_a.upload_all(ctx)
-    forward_kinematics[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        0, NMESHV, BATCH,
-    ](d_a, mf, ctx)
-    detect_contacts[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        0, NMESHV, BATCH,
-    ](d_a, mf, ctx)
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH](d_a, mf, ctx)
+    detect_contacts["gpu", DTYPE, BATCH=BATCH](d_a, mf, ctx)
     d_a.contacts.download(ctx)
     d_a.meta.download(ctx)
     _fp_check("O(N^2)", d_a, GOLD_NCON_A, GOLD_CON_A, GOLD_SOL_A)
@@ -345,20 +356,14 @@ def main() raises:
     print("  [ O(N^2) ] PASS: plane-mesh record present (BODY_B=0, DIST<0)")
 
     # ================= Leg 2: SAP detection =============================
-    var d_b = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var d_b = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         var q = _qpos_for_env(e)
         for i in range(NQ):
             d_b.qpos.data[e * NQ + i] = Scalar[DTYPE](q[i])
     d_b.upload_all(ctx)
-    forward_kinematics[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        0, NMESHV, BATCH,
-    ](d_b, mf, ctx)
-    detect_contacts_sap[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE,
-        0, NMESHV, BATCH,
-    ](d_b, mf, ctx)
+    forward_kinematics["gpu", DTYPE, BATCH=BATCH](d_b, mf, ctx)
+    detect_contacts_sap["gpu", DTYPE, BATCH=BATCH](d_b, mf, ctx)
     d_b.contacts.download(ctx)
     d_b.meta.download(ctx)
     _fp_check("SAP", d_b, GOLD_NCON_B, GOLD_CON_B, GOLD_SOL_B)

@@ -15,7 +15,7 @@ from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import gpu_quat_mul
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch, Dims
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
@@ -666,28 +666,18 @@ def _mass_matrix_fields_kernel[
 
 
 def compute_mass_matrix[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     BATCH: Int = 1,
     PARALLEL: Bool = False,
     TREEWALK: Bool = False,
     # Appended, not grouped with NEXCLUDE — see `fields.Model`.
-    NPAIR: Int = 0,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH],
-    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """CRBA mass matrix from FK products + cdof, both targets, one body.
@@ -708,12 +698,12 @@ def compute_mass_matrix[
     the dense kernel — the viewer, every test and every single-env rollout.
     The requirement was never real: the cooperative kernel's only
     parallelism is two strided loops, and N_THREADS=1 collapses them."""
-    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
-    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
-    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
-    comptime L_CDOF = Layout.row_major(BATCH, NV * 6)
-    comptime L_M = Layout.row_major(BATCH, NV * NV)
+    comptime L_B3 = Layout.row_major(BATCH, D.NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, D.NBODY * 4)
+    comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
+    comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
+    comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
 
     comptime if target == "cpu":
         var xquat_v = d.xquat.lt["cpu", L_B4]()
@@ -725,22 +715,22 @@ def compute_mass_matrix[
         var M_v = scratch.M.lt["cpu", L_M]()
         comptime if TREEWALK:
             for e in range(BATCH):
-                _mm_treewalk_env[DTYPE, NV, NBODY, NJOINT, BATCH, 1, False](
+                _mm_treewalk_env[DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH, 1, False](
                     e, 0,
                     xquat_v, xipos_v, stcom_v, bodies_v, joints_v, cdof_v, M_v,
                 )
         else:
             for e in range(BATCH):
-                _mass_matrix_env[DTYPE, NV, NBODY, NJOINT, BATCH](
+                _mass_matrix_env[DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH](
                     e, xquat_v, xipos_v, stcom_v, bodies_v, joints_v, cdof_v,
                     M_v,
                 )
     elif PARALLEL and TREEWALK:
         var c = ctx.value()
-        comptime MT_T = NV
+        comptime MT_T = D.NV
         c.enqueue_function[
             _mass_matrix_treewalk_fields_mt_kernel[
-                DTYPE, NV, NBODY, NJOINT, BATCH, MT_T
+                DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH, MT_T
             ]
         ](
             d.xquat.lt["gpu", L_B4](),
@@ -755,10 +745,10 @@ def compute_mass_matrix[
         )
     elif PARALLEL:
         var c = ctx.value()
-        comptime MT_T = NV
+        comptime MT_T = D.NV
         c.enqueue_function[
             _mass_matrix_fields_mt_kernel[
-                DTYPE, NV, NBODY, NJOINT, BATCH, MT_T
+                DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH, MT_T
             ]
         ](
             d.xquat.lt["gpu", L_B4](),
@@ -775,7 +765,7 @@ def compute_mass_matrix[
         var c = ctx.value()
         comptime BLOCKS = (BATCH + MM_TPB - 1) // MM_TPB
         c.enqueue_function[
-            _mass_matrix_fields_kernel[DTYPE, NV, NBODY, NJOINT, BATCH]
+            _mass_matrix_fields_kernel[DTYPE, D.NV, D.NBODY, D.NJOINT, BATCH]
         ](
             d.xquat.lt["gpu", L_B4](),
             d.xipos.lt["gpu", L_B3](),

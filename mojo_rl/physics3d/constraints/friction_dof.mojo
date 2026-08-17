@@ -57,7 +57,7 @@ from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch, Dims
+from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike
 from .constraint_data import refsafe_timeconst
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
@@ -260,36 +260,26 @@ def _friction_fields_kernel[
 
 
 def solve_friction[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     BATCH: Int = 1,
     NUM_ITERATIONS: Int = 50,
     # Appended, not grouped with NEXCLUDE — see `fields.Model`.
-    NPAIR: Int = 0,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH],
-    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Solve dry-friction dof rows into `scratch.qacc_constrained`, both
     targets. Mirrors `solve_limits`; used on the CONTACTS=False path, where no
     solver runs and would otherwise call `_friction_env` itself."""
-    comptime L_NV = Layout.row_major(BATCH, NV)
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
-    comptime L_DW = Layout.row_major(NV)
-    comptime L_M = Layout.row_major(BATCH, NV * NV)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
+    comptime L_DW = Layout.row_major(D.NV)
+    comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
 
     # REFSAFE (defect 23): the friction rows use the HARDCODED default
     # timeconst, and MuJoCo clamps that to 2*timestep like any other. Read once
@@ -303,7 +293,7 @@ def solve_friction[
         var mi_v = scratch.m_inv.lt["cpu", L_M]()
         var qc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
         for e in range(BATCH):
-            _friction_env[DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS](
+            _friction_env[DTYPE, D.NQ, D.NV, D.NJOINT, BATCH, NUM_ITERATIONS](
                 e, qvel_v, joints_v, ts_v, dw_v, mi_v, qc_v
             )
     else:
@@ -311,7 +301,7 @@ def solve_friction[
         comptime BLOCKS = (BATCH + FRIC_TPB - 1) // FRIC_TPB
         c.enqueue_function[
             _friction_fields_kernel[
-                DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS
+                DTYPE, D.NQ, D.NV, D.NJOINT, BATCH, NUM_ITERATIONS
             ]
         ](
             d.qvel.lt["gpu", L_NV](),

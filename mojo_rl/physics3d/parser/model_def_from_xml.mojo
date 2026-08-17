@@ -101,6 +101,7 @@ from .flat_model import (
 )
 from .full_parser import parse_xml_full
 from .render_fields import RenderFields, build_render_fields
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from .xml_parser import (
     MAX_COMPTIME_TENDONS,
     MAX_COMPTIME_TENDON_WRAPS,
@@ -381,11 +382,9 @@ struct ModelDefFromXML[
     # =========================================================================
 
     @staticmethod
-    def reset_data[
-        DTYPE: DType
-    ](
-        sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
-        mut d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
+    def reset_data[DTYPE: DType, D: DimsLike, D2: DimsLike](
+        sf: SpecFields[DTYPE, D],
+        mut d: Data[DTYPE, D2, 1],
     ):
         """Reset qpos to initial pose, zero qvel/qacc/qfrc.
 
@@ -433,9 +432,7 @@ struct ModelDefFromXML[
     # any model with nq != nv. `test_pose_key_stride` is the fixture that can
     # see it; nothing in the model tree can.
     @staticmethod
-    def key_qpos_at[
-        DTYPE: DType
-    ](sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]], k: Int, i: Int) -> Float64:
+    def key_qpos_at[DTYPE: DType, D: DimsLike](sf: SpecFields[DTYPE, D], k: Int, i: Int) -> Float64:
         """`mjModel.key_qpos[k][i]`, falling back to qpos0 when qpos is absent.
         """
         if k < 0 or k >= Self.nkey or i < 0 or i >= Self.NQ:
@@ -445,9 +442,7 @@ struct ModelDefFromXML[
         return Float64(sf.key_qpos.data[k * Self.NQ + i])
 
     @staticmethod
-    def key_qvel_at[
-        DTYPE: DType
-    ](sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]], k: Int, i: Int) -> Float64:
+    def key_qvel_at[DTYPE: DType, D: DimsLike](sf: SpecFields[DTYPE, D], k: Int, i: Int) -> Float64:
         """`mjModel.key_qvel[k][i]` — zero when absent, as MuJoCo fills it."""
         if k < 0 or k >= Self.nkey or i < 0 or i >= Self.NV:
             return 0.0
@@ -456,9 +451,7 @@ struct ModelDefFromXML[
         return Float64(sf.key_qvel.data[k * Self.NV + i])
 
     @staticmethod
-    def key_ctrl_at[
-        DTYPE: DType
-    ](sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]], k: Int, i: Int) -> Float64:
+    def key_ctrl_at[DTYPE: DType, D: DimsLike](sf: SpecFields[DTYPE, D], k: Int, i: Int) -> Float64:
         """`mjModel.key_ctrl[k][i]` — zero when absent, as MuJoCo fills it."""
         if k < 0 or k >= Self.nkey or i < 0 or i >= Self.NACT:
             return 0.0
@@ -467,20 +460,16 @@ struct ModelDefFromXML[
         return Float64(sf.key_ctrl.data[k * Self.NACT + i])
 
     @staticmethod
-    def key_time_at[
-        DTYPE: DType
-    ](sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]], k: Int) -> Float64:
+    def key_time_at[DTYPE: DType, D: DimsLike](sf: SpecFields[DTYPE, D], k: Int) -> Float64:
         """`mjModel.key_time[k]`."""
         if k < 0 or k >= Self.nkey:
             return 0.0
         return Float64(sf.key_meta.data[k * KEY_META_SIZE + KEY_IDX_TIME])
 
     @staticmethod
-    def reset_data_keyframe[
-        DTYPE: DType
-    ](
-        sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
-        mut d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
+    def reset_data_keyframe[DTYPE: DType, D: DimsLike, D2: DimsLike](
+        sf: SpecFields[DTYPE, D],
+        mut d: Data[DTYPE, D2, 1],
         k: Int,
     ):
         """`mj_resetDataKeyframe(m, d, k)` — reset to keyframe `k`.
@@ -510,10 +499,8 @@ struct ModelDefFromXML[
             d.qfrc.data[i] = Scalar[DTYPE](0)
 
     @staticmethod
-    def extract_obs[
-        DTYPE: DType
-    ](
-        d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
+    def extract_obs[DTYPE: DType, D: DimsLike](
+        d: Data[DTYPE, D, 1],
         mut obs: List[Scalar[DTYPE]],
     ):
         """Extract observation: qpos[obs_qpos_skip:] followed by qvel[:]."""
@@ -523,11 +510,9 @@ struct ModelDefFromXML[
             obs.append(d.qvel.data[i])
 
     @staticmethod
-    def enforce_limits[
-        DTYPE: DType
-    ](
-        sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
-        mut d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
+    def enforce_limits[DTYPE: DType, D: DimsLike, D2: DimsLike](
+        sf: SpecFields[DTYPE, D],
+        mut d: Data[DTYPE, D2, 1],
     ):
         """Clamp qpos to joint range limits (limited joints only)."""
         # ⚠ FROM `sf.joint_limits`, NOT from four materialized comptime
@@ -550,9 +535,7 @@ struct ModelDefFromXML[
                 d.qpos.data[qp_adr] = hi
 
     @staticmethod
-    def ctrl_min_at[
-        DTYPE: DType
-    ](sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]], i: Int) -> Float64:
+    def ctrl_min_at[DTYPE: DType, D: DimsLike](sf: SpecFields[DTYPE, D], i: Int) -> Float64:
         """`actuator_ctrlrange[i][0]` — the bound `apply_actions` clamps to.
 
         ⚠ NOT `CTRL_MIN`. That is a single model-wide pair read from a root
@@ -567,9 +550,7 @@ struct ModelDefFromXML[
         )
 
     @staticmethod
-    def ctrl_max_at[
-        DTYPE: DType
-    ](sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]], i: Int) -> Float64:
+    def ctrl_max_at[DTYPE: DType, D: DimsLike](sf: SpecFields[DTYPE, D], i: Int) -> Float64:
         """`actuator_ctrlrange[i][1]`. See `ctrl_min_at`."""
         if i < 0 or i >= Self.nact:
             return 0.0
@@ -578,9 +559,7 @@ struct ModelDefFromXML[
         )
 
     @staticmethod
-    def ctrl_limited_at[
-        DTYPE: DType
-    ](sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]], i: Int) -> Bool:
+    def ctrl_limited_at[DTYPE: DType, D: DimsLike](sf: SpecFields[DTYPE, D], i: Int) -> Bool:
         """`actuator_ctrllimited[i]` — whether the range above is APPLIED.
 
         ⚠ READ THIS BEFORE READING `ctrl_min_at`/`ctrl_max_at`. MuJoCo's
@@ -599,11 +578,9 @@ struct ModelDefFromXML[
         )
 
     @staticmethod
-    def init_spec_fields[
-        DTYPE: DType
-    ](
+    def init_spec_fields[DTYPE: DType, D: DimsLike](
         ctx: DeviceContext,
-        mut sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
+        mut sf: SpecFields[DTYPE, D],
     ) raises:
         """Build + upload the actuation records (phase 1a.2/1a.3).
 
@@ -618,9 +595,7 @@ struct ModelDefFromXML[
         sf.upload_all(ctx)
 
     @staticmethod
-    def make_spec_fields[
-        DTYPE: DType
-    ]() raises -> SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]]:
+    def make_spec_fields[DTYPE: DType, D: DimsLike = ModelDims[Self]]() raises -> SpecFields[DTYPE, ModelDims[Self]]:
         """Host-only actuation records — no `DeviceContext`, no upload.
 
         For the CPU `apply_actions` path, which reads `sf.actuators.data`
@@ -629,18 +604,16 @@ struct ModelDefFromXML[
         derivable from the model def and getting them wrong is a type error
         with a page-long message.
         """
-        var sf = SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]]()
+        var sf = SpecFields[DTYPE, ModelDims[Self]]()
         build_spec_fields[DTYPE](
             parse_xml_full(Self.xml_text(), Self.asset_base_dir()), sf
         )
         return sf^
 
     @staticmethod
-    def apply_actions[
-        DTYPE: DType
-    ](
-        sf: SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]],
-        mut d: Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1],
+    def apply_actions[DTYPE: DType, D: DimsLike, D2: DimsLike](
+        sf: SpecFields[DTYPE, D],
+        mut d: Data[DTYPE, D2, 1],
         actions: List[Float64],
         mut act: List[Scalar[DTYPE]],
     ):
@@ -874,11 +847,9 @@ struct ModelDefFromXML[
     # =========================================================================
 
     @staticmethod
-    def init_fields[
-        DTYPE: DType, NMESHV: Int = 0
-    ](
+    def init_fields[DTYPE: DType, D: DimsLike](
         ctx: DeviceContext,
-        mut mf: Model[DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY, njoint=Self.NJOINT, ngeom=Self.NGEOM, nequality=Self.MAX_EQUALITY, ntendon=Self.MAX_TENDON, nsite=Self.NSITE, nexclude=Self.NEXCLUDE, nmesh_verts=NMESHV, npair=Self.NPAIR]],
+        mut mf: Model[DTYPE, D],
     ) raises:
         """Spec-direct fields model build (G4): parse the XML into a
         FlatModelDef and write the packed record tensors DIRECTLY
@@ -1353,28 +1324,15 @@ struct ModelDefFromXML[
         build_model_fields_from_flat[DTYPE](fmd, mf)
 
         # Reference pose + fields-native invweight0 (G1).
-        var d_inv = Data[DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1]()
+        var d_inv = Data[DTYPE, D, 1]()
         # ⚠ Built from the `fmd` ALREADY IN HAND — `init_spec_fields` would
         # re-parse the XML a third time for a value this function has sitting
         # in a local.
-        var sf_inv = SpecFields[DTYPE, Dims[nact=Self.NACT, nten=Self.NTEN_F, nq=Self.NQ, nv=Self.NV, nkey=Self.NKEY, njoint=Self.NJOINT]]()
+        var sf_inv = SpecFields[DTYPE, ModelDims[Self]]()
         build_spec_fields[DTYPE](fmd, sf_inv)
         Self.reset_data[DTYPE](sf_inv, d_inv)
-        var sc_inv = DynamicsScratch[DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY], 1]()
-        compute_invweight0[
-            DTYPE,
-            Self.NQ,
-            Self.NV,
-            Self.NBODY,
-            Self.NJOINT,
-            Self.MAX_CONTACTS,
-            Self.NGEOM,
-            Self.MAX_EQUALITY,
-            Self.MAX_TENDON,
-            Self.NSITE,
-            Self.NEXCLUDE,
-            NMESHV,
-        ](d_inv, mf, sc_inv)
+        var sc_inv = DynamicsScratch[DTYPE, D, 1]()
+        compute_invweight0[DTYPE](d_inv, mf, sc_inv)
 
         # ── AutoSpringDamper (mjCModel::AutoSpringDamper, user_model.cc:2369)
         #

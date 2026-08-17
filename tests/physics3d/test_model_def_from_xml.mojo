@@ -148,6 +148,19 @@ def test_model_def_from_xml() raises:
         max_contacts=10,
         obs_qpos_skip=1,
     ]
+    comptime MD = Dims[
+        nq=pm.NQ,
+        nv=pm.NV,
+        nbody=pm.NBODY,
+        njoint=pm.NJOINT,
+        ngeom=pm.NGEOM,
+        nsite=XmlModel.NSITE,
+        max_contacts=10,
+        nequality=XmlModel.MAX_EQUALITY,
+        ntendon=XmlModel.MAX_TENDON,
+        nexclude=XmlModel.NEXCLUDE,
+        nmesh_verts=0,
+    ]
 
     print("=== ModelDefFromXML comptime constants ===")
     print("OBS_DIM    =", XmlModel.OBS_DIM, " (expected 17)")
@@ -224,8 +237,8 @@ def test_model_def_from_xml() raises:
     # =========================================================================
     print("=== fields model build ===")
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=pm.NV, nbody=pm.NBODY, njoint=pm.NJOINT, ngeom=pm.NGEOM, nequality=XmlModel.MAX_EQUALITY, ntendon=XmlModel.MAX_TENDON, nsite=XmlModel.NSITE, nexclude=XmlModel.NEXCLUDE, nmesh_verts=0]]()
-    XmlModel.init_fields[DType.float64, 0](ctx, mf)
+    var mf = Model[DType.float64, MD]()
+    XmlModel.init_fields[DType.float64](ctx, mf)
     print("init_fields succeeded")
     print(
         "gravity_z     =",
@@ -243,7 +256,7 @@ def test_model_def_from_xml() raises:
     # Step 5: reset_data + extract_obs (fields-native hooks; G2)
     # =========================================================================
     print("=== reset_data + extract_obs ===")
-    var d = Data[DType.float64, Dims[nq=pm.NQ, nv=pm.NV, nbody=pm.NBODY, max_contacts=10, nsite=0], 1]()
+    var d = Data[DType.float64, MD, 1]()
     XmlModel.reset_data[DType.float64](sf, d)
     print("reset_data succeeded (qpos=0, qvel=0)")
 

@@ -79,6 +79,7 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_RANGE_MAX,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 comptime NQ = Walker2dModel.NQ
@@ -91,6 +92,7 @@ comptime NEQ = Walker2dModel.MAX_EQUALITY
 comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
+comptime MD = ModelDims[Walker2dModel]
 comptime BATCH = 2
 comptime N_ROUNDS = 3
 
@@ -168,33 +170,18 @@ def _check(name: String, got: Float64, gold: Float64) raises:
 def _fields_prep[
     target: StaticString
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
+    mut d: Data[DTYPE, MD, BATCH],
+    mut mf: Model[DTYPE, MD],
+    mut scratch: DynamicsScratch[DTYPE, MD, BATCH],
     ctx: Optional[DeviceContext],
 ) raises:
     """Smooth-dynamics prep + detection, mirroring EulerIntegrator.step
     up to the constraint seam (order verbatim)."""
-    forward_kinematics[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, ctx)
-    compute_body_velocities[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, ctx)
-    compute_subtree_com[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, ctx)
-    compute_cdof[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, scratch, ctx)
-    compute_mass_matrix[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, scratch, ctx)
+    forward_kinematics[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_body_velocities[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_subtree_com[target, DTYPE, BATCH=BATCH](d, mf, ctx)
+    compute_cdof[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
+    compute_mass_matrix[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
 
     comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
     comptime L_M = Layout.row_major(BATCH, NV * NV)
@@ -208,10 +195,7 @@ def _fields_prep[
             _armature_env[DTYPE, NV, NJOINT, BATCH](e, joints_v, M_v)
         ldl_factor[target, DTYPE, BATCH=BATCH](scratch, ctx)
         compute_m_inv[target, DTYPE, BATCH=BATCH](scratch, ctx)
-        compute_bias_forces_rne[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-            BATCH,
-        ](d, mf, scratch, ctx)
+        compute_bias_forces_rne[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
         var qvel_v = d.qvel.lt["cpu", L_NV]()
         var qfrc_v = d.qfrc.lt["cpu", L_NV]()
@@ -240,10 +224,7 @@ def _fields_prep[
         )
         ldl_factor[target, DTYPE, BATCH=BATCH](scratch, ctx)
         compute_m_inv[target, DTYPE, BATCH=BATCH](scratch, ctx)
-        compute_bias_forces_rne[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-            BATCH,
-        ](d, mf, scratch, ctx)
+        compute_bias_forces_rne[target, DTYPE, BATCH=BATCH](d, mf, scratch, ctx)
         ctx.value().enqueue_function[
             _fnet_passive_kernel[DTYPE, NQ, NV, NJOINT, BATCH]
         ](
@@ -267,10 +248,7 @@ def _fields_prep[
             block_dim=(1,),
         )
 
-    detect_contacts[
-        target, DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        BATCH,
-    ](d, mf, ctx)
+    detect_contacts[target, DTYPE, BATCH=BATCH](d, mf, ctx)
 
 
 def _find_limited_joint(
@@ -328,11 +306,11 @@ def run_leg[
     print("--- Newton solve leg:", leg, "(BATCH=", BATCH, ")")
 
     # === Model ===
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
-    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    Walker2dModel.init_fields[DTYPE](ctx, mf)
 
     # === State (walker on the floor; env 1 with one joint past its limit) ===
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
     var lim = _find_limited_joint(mf.joints.data)
     var lim_qpos_adr = lim[0]
     var lim_rmax = lim[1]
@@ -384,18 +362,15 @@ def run_leg[
         raise Error("env 1 has no violated joint limit — limit rows vacuous")
     print("  limit rows: env0", nlim0, " env1", nlim1, "(non-vacuous)")
 
-    var scratch = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
-    var cscratch = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
+    var scratch = DynamicsScratch[DTYPE, MD, BATCH]()
+    var cscratch = ContactScratch[DTYPE, MD, BATCH]()
     scratch.upload_all(ctx)
     cscratch.upload_all(ctx)
 
     var ncon_total = 0
     for rnd in range(N_ROUNDS):
         _fields_prep["gpu"](d, mf, scratch, ctx)
-        solve_newton[
-            "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-            CONE_T, BATCH,
-        ](d, mf, scratch, cscratch, ctx)
+        solve_newton["gpu", DTYPE, CONE_TYPE=CONE_T, BATCH=BATCH](d, mf, scratch, cscratch, ctx)
 
         d.meta.download(ctx)
         var ncon_rnd = 0
@@ -458,11 +433,11 @@ def run_cpu_smoke(ctx: DeviceContext) raises:
     """Single-source CPU path smoke: fields-CPU Newton solve close to
     fields-GPU (iterative solver -> loose cross-target tolerance)."""
     print("--- Newton solve fields-CPU vs fields-GPU smoke (ELLIPTIC)")
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
-    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    Walker2dModel.init_fields[DTYPE](ctx, mf)
 
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
-    var dc = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
+    var dc = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 5 + i * 3) % 5 - 2) / 40.0
@@ -481,23 +456,17 @@ def run_cpu_smoke(ctx: DeviceContext) raises:
             dc.qfrc.data[e * NV + i] = qf
     d.upload_all(ctx)
 
-    var scratch = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
-    var cscratch = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
+    var scratch = DynamicsScratch[DTYPE, MD, BATCH]()
+    var cscratch = ContactScratch[DTYPE, MD, BATCH]()
     scratch.upload_all(ctx)
     cscratch.upload_all(ctx)
-    var scratch_c = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH]()
-    var cscratch_c = ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MC], BATCH]()
+    var scratch_c = DynamicsScratch[DTYPE, MD, BATCH]()
+    var cscratch_c = ContactScratch[DTYPE, MD, BATCH]()
 
     _fields_prep["gpu"](d, mf, scratch, ctx)
-    solve_newton[
-        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        ConeType.ELLIPTIC, BATCH,
-    ](d, mf, scratch, cscratch, ctx)
+    solve_newton["gpu", DTYPE, CONE_TYPE=ConeType.ELLIPTIC, BATCH=BATCH](d, mf, scratch, cscratch, ctx)
     _fields_prep["cpu"](dc, mf, scratch_c, None)
-    solve_newton[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0,
-        ConeType.ELLIPTIC, BATCH,
-    ](dc, mf, scratch_c, cscratch_c, None)
+    solve_newton["cpu", DTYPE, CONE_TYPE=ConeType.ELLIPTIC, BATCH=BATCH](dc, mf, scratch_c, cscratch_c, None)
 
     scratch.qacc_constrained.download(ctx)
     var worst = Float64(0)

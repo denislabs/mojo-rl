@@ -69,6 +69,18 @@ comptime NEXCLUDE = 4
 # 9 hulls; generous so a capacity truncation cannot be mistaken for a numeric
 # error (`fields_build` PRINTS on overflow and carries on — see §22).
 comptime NMESH_VERTS = 60000
+comptime MD = Dims[
+    nv=NV,
+    nbody=NBODY,
+    njoint=NJOINT,
+    ngeom=NGEOM,
+    nsite=NSITE,
+    nequality=0,
+    ntendon=0,
+    nexclude=NEXCLUDE,
+    nmesh_verts=NMESH_VERTS,
+    npair=0,
+]
 # `<compiler>` declares no `inertiafromgeom`, so AUTO, and no
 # `inertiagrouprange`, so MuJoCo's default 0..5.
 
@@ -148,7 +160,7 @@ def test_jaco_mesh_body_inertia_vs_mujoco() raises:
         )
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=0, ntendon=0, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=0]]()
+    var mf = Model[DTYPE, MD]()
     build_model_fields_from_flat[DTYPE](fmd, mf)
     _ = os.chdir(cwd)
 

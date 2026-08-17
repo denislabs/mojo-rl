@@ -45,7 +45,7 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.fields import Data, Model, SpecFields, Dims
+from mojo_rl.physics3d.fields import Data, Model, SpecFields, Dims, DimsLike
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_auto
 from mojo_rl.physics3d.joint_types import JNT_FREE
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
@@ -63,6 +63,7 @@ from mojo_rl.physics3d.gpu.constants import (
 from mojo_rl.nn.core.tensor import TensorImpl
 
 from .phyics3d_env_config import Phyics3dEnvConfig
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 
 struct Phyics3dEnv[
@@ -107,23 +108,23 @@ struct Phyics3dEnv[
     comptime NGEOM: Int = Self.MODEL_DEF.NGEOM
     comptime NSITE: Int = Self.MODEL_DEF.NSITE
 
+    # ⚠ ONE PROVIDER FOR THE WHOLE ENV. `ModelDims` reads all fifteen
+    # dimensions off the model def; `nmesh_verts` is the one that does NOT
+    # come from the MJCF (whether a model's meshes are COLLIDABLE is an env
+    # decision), so the config supplies it — and it now travels INSIDE the
+    # provider, where the "geoms with no geometry" failure cannot reach it.
+    comptime MD = ModelDims[Self.MODEL_DEF, Self.NMESH_VERTS]
+
     # Fields path (the physics state; hooks read/write it directly)
-    var mf: Model[Self.DTYPE, Dims[nv=Self.NV, nbody=Self.NBODY, njoint=Self.NJOINT, ngeom=Self.NGEOM, nequality=Self.MODEL_DEF.MAX_EQUALITY, ntendon=Self.MODEL_DEF.MAX_TENDON, nsite=Self.NSITE, nexclude=Self.MODEL_DEF.NEXCLUDE, nmesh_verts=Self.NMESH_VERTS, npair=Self.MODEL_DEF.NPAIR]]
-    var d: Data[Self.DTYPE, Dims[nq=Self.NQ, nv=Self.NV, nbody=Self.NBODY, max_contacts=Self.MAX_CONTACTS, nsite=Self.NSITE], 1]
+    var mf: Model[Self.DTYPE, Self.MD]
+    var d: Data[Self.DTYPE, Self.MD, 1]
     # Both integrators are held (host scratch only on the CPU path — cheap);
     # the step comptime-dispatches on CONFIG.INTEGRATOR. HalfCheetah/Pusher/
     # MetaWorld configure Euler+Newton; the other 9 envs use RK4+Newton.
     comptime IntegRK4 = RK4Integrator[
-        Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-        Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
-        Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE,
-        Self.NMESH_VERTS,
+        Self.DTYPE, Self.MD,
         Self.MODEL_DEF.CONE_TYPE, 1, SOLVER = Self.SOLVER,
         CRBA_TREEWALK = True,
-        # Forwarded for the same reason `MAX_CONDIM` is (see below): the
-        # default silently disables the feature. By KEYWORD because `NPAIR`
-        # is the last integrator parameter, not a neighbour of `NEXCLUDE`.
-        NPAIR = Self.MODEL_DEF.NPAIR,
     ]
     # ⚠ `MAX_CONDIM` AND `NOSLIP_ITER` MUST BE FORWARDED FROM THE MODEL DEF.
     # Both default to a value that silently disables the feature (3 and 0), and
@@ -139,16 +140,12 @@ struct Phyics3dEnv[
     # `Phyics3dEnv`. A gate that bypasses the production path proves the
     # production path works only by coincidence.
     comptime IntegEuler = EulerIntegrator[
-        Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-        Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
-        Self.MODEL_DEF.MAX_TENDON, Self.NSITE, Self.MODEL_DEF.NEXCLUDE,
-        Self.NMESH_VERTS,
+        Self.DTYPE, Self.MD,
         Self.MODEL_DEF.CONE_TYPE, 1, SOLVER = Self.SOLVER,
         CRBA_TREEWALK = True,
         RNE_POST = Self.CONFIG.RNE_POST,
         MAX_CONDIM = Self.MODEL_DEF.MAX_CONDIM,
         NOSLIP_ITER = Self.MODEL_DEF.NOSLIP_ITER,
-        NPAIR = Self.MODEL_DEF.NPAIR,
     ]
     var integ_rk4: Self.IntegRK4
     var integ_euler: Self.IntegEuler
@@ -171,7 +168,7 @@ struct Phyics3dEnv[
     # comptime `_acd` arrays `apply_actions` used to materialize on every
     # call. Static config: built and uploaded once at construction, exactly
     # like `mf`.
-    var sf: SpecFields[Self.DTYPE, Dims[nact=Self.MODEL_DEF.NACT, nten=Self.MODEL_DEF.NTEN_F, nq=Self.MODEL_DEF.NQ, nv=Self.MODEL_DEF.NV, nkey=Self.MODEL_DEF.NKEY, njoint=Self.MODEL_DEF.NJOINT]]
+    var sf: SpecFields[Self.DTYPE, Self.MD]
 
     # Renderer (optional; RenderableEnv). Reads the fields FK products
     # (`self.d.xpos`/`xquat`), which the fields step refreshes every frame.
@@ -224,7 +221,7 @@ struct Phyics3dEnv[
         # every record tensor via load_from_model and computes invweight0
         # fields-natively (G1).
         self.mf = type_of(self.mf)()
-        Self.MODEL_DEF.init_fields[Self.DTYPE, Self.NMESH_VERTS](ctx, self.mf)
+        Self.MODEL_DEF.init_fields[Self.DTYPE](ctx, self.mf)
         self.sf = type_of(self.sf)()
         Self.MODEL_DEF.init_spec_fields[Self.DTYPE](ctx, self.sf)
 
@@ -249,13 +246,7 @@ struct Phyics3dEnv[
         try:
             # CPU target: cannot actually raise (the `raises` exists for the
             # GPU branch's ctx handling).
-            forward_kinematics[
-                "cpu", Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-                Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
-                Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
-                Self.MODEL_DEF.NEXCLUDE, Self.NMESH_VERTS, 1,
-                NPAIR = Self.MODEL_DEF.NPAIR,
-            ](self.d, self.mf, None)
+            forward_kinematics["cpu", Self.DTYPE, BATCH=1](self.d, self.mf, None)
         except e:
             print("Phyics3dEnv._fields_fk: FK error:", e)
 
@@ -266,13 +257,7 @@ struct Phyics3dEnv[
         hooks that read them need a refresh once integration has finished.
         Only runs under CONFIG.SYNC_FK_AFTER_STEP."""
         try:
-            compute_body_velocities[
-                "cpu", Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-                Self.MAX_CONTACTS, Self.NGEOM, Self.MODEL_DEF.MAX_EQUALITY,
-                Self.MODEL_DEF.MAX_TENDON, Self.NSITE,
-                Self.MODEL_DEF.NEXCLUDE, Self.NMESH_VERTS, 1,
-                NPAIR = Self.MODEL_DEF.NPAIR,
-            ](self.d, self.mf, None)
+            compute_body_velocities["cpu", Self.DTYPE, BATCH=1](self.d, self.mf, None)
         except e:
             print("Phyics3dEnv._fields_vel: velocity error:", e)
 
@@ -409,13 +394,7 @@ struct Phyics3dEnv[
             self.d.qpos.data[zadr] = Scalar[Self.dtype](0.01 * Float64(attempt))
             self._fields_fk()
             try:
-                detect_contacts_auto[
-                    "cpu", Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
-                    Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
-                    Self.MODEL_DEF.MAX_EQUALITY, Self.MODEL_DEF.MAX_TENDON,
-                    Self.NSITE, Self.MODEL_DEF.NEXCLUDE, Self.NMESH_VERTS, 1,
-                    NPAIR = Self.MODEL_DEF.NPAIR,
-                ](self.d, self.mf, None)
+                detect_contacts_auto["cpu", Self.DTYPE, BATCH=1](self.d, self.mf, None)
             except:
                 return
             if Int(self.d.meta.data[META_IDX_NUM_CONTACTS]) == 0:

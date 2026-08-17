@@ -60,11 +60,12 @@ from mojo_rl.envs.dm_control.ball_in_cup import (
     TARGET_HALF_Z,
     BALL_RADIUS,
 )
-from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims
+from mojo_rl.physics3d.fields import Data, Model, DynamicsScratch, Dims, DimsLike
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.dynamics.subtree_com import compute_subtree_com
 from mojo_rl.physics3d.dynamics.cdof import compute_cdof
 from mojo_rl.physics3d.dynamics.tendon import spatial_tendon_length_jac
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_META_SIZE,
     MODEL_BODY_SIZE,
@@ -103,6 +104,7 @@ comptime NJOINT: Int = DMBallInCupModel.NJOINT  # 4
 comptime NTEN: Int = DMBallInCupModel.MAX_TENDON  # 1
 comptime NACT: Int = DMBallInCupModel.nact  # 2
 comptime MAXC: Int = DMBallInCupModel.MAX_CONTACTS
+comptime MD = ModelDims[DMBallInCupModel]
 comptime FRAME_SKIP: Int = 10
 
 comptime N_STEPS: Int = 150
@@ -118,10 +120,10 @@ comptime TOL_OBS: Float64 = 1e-13
 comptime TOL_REWARD: Float64 = 0.0  # sparse; must agree exactly
 
 
-def _build_model() raises -> Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=DMBallInCupModel.MAX_EQUALITY, ntendon=NTEN, nsite=NSITE, nexclude=DMBallInCupModel.NEXCLUDE, nmesh_verts=0]]:
+def _build_model() raises -> Model[DTYPE, MD]:
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=DMBallInCupModel.MAX_EQUALITY, ntendon=NTEN, nsite=NSITE, nexclude=DMBallInCupModel.NEXCLUDE, nmesh_verts=0]]()
-    DMBallInCupModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    DMBallInCupModel.init_fields[DTYPE](ctx, mf)
     return mf^
 
 
@@ -271,27 +273,15 @@ def test_ball_in_cup_model_matches_mujoco() raises:
     var mj_d = mujoco.MjData(m)
     mujoco.mj_forward(m, mj_d)
 
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]()
-    var sc = DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], 1]()
+    var d = Data[DTYPE, MD, 1]()
+    var sc = DynamicsScratch[DTYPE, MD, 1]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](0)
     for i in range(NV):
         d.qvel.data[i] = Scalar[DTYPE](0)
-    forward_kinematics[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAXC, NGEOM,
-        DMBallInCupModel.MAX_EQUALITY, NTEN, NSITE,
-        DMBallInCupModel.NEXCLUDE, 0, 1,
-    ](d, mf, None)
-    compute_subtree_com[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAXC, NGEOM,
-        DMBallInCupModel.MAX_EQUALITY, NTEN, NSITE,
-        DMBallInCupModel.NEXCLUDE, 0, 1,
-    ](d, mf, None)
-    compute_cdof[
-        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAXC, NGEOM,
-        DMBallInCupModel.MAX_EQUALITY, NTEN, NSITE,
-        DMBallInCupModel.NEXCLUDE, 0, 1,
-    ](d, mf, sc, None)
+    forward_kinematics["cpu", DTYPE, BATCH=1](d, mf, None)
+    compute_subtree_com["cpu", DTYPE, BATCH=1](d, mf, None)
+    compute_cdof["cpu", DTYPE, BATCH=1](d, mf, sc, None)
 
     # site_xpos, which the tendon is routed through.
     var worst_site = 0.0

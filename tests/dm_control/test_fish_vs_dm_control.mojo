@@ -59,6 +59,7 @@ from mojo_rl.physics3d.gpu.constants import (
 from mojo_rl.physics3d.parser.flat_model import ACT_KIND_POSITION
 
 from mojo_rl.envs.dm_control.rewards import tolerance
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.envs.dm_control.fish.fish_config import (
     DMFishUprightConfig,
     DMFishSwimConfig,
@@ -102,6 +103,7 @@ comptime REF_XML: StaticString = (
 )
 
 comptime M = DMFishSwimModel  # same model as upright; they differ only in obs
+comptime MD = ModelDims[M]
 comptime MODEL_TOL: Float64 = 1e-13
 
 comptime FRAME_SKIP_F: Int = 10
@@ -393,8 +395,8 @@ def test_fish_geom_frames_match_mujoco() raises:
     var mj = _ref()
     var mujoco = Python.import_module("mujoco")
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
     var names = _geom_names()
     var gq = mj.geom_quat.tolist()
@@ -491,8 +493,8 @@ def test_fish_bodies_and_options_match_mujoco() raises:
     """
     var mj = _ref()
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
     var dens = Float64(mf.meta.data[MODEL_META_IDX_DENSITY])
     var gz = Float64(mf.meta.data[MODEL_META_IDX_GRAVITY_Z])
@@ -545,8 +547,8 @@ def test_fish_constraint_disable_is_reproduced() raises:
     """
     var mj = _ref()
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
     var jlim = mj.jnt_limited.tolist()
     var mj_damp = mj.dof_damping.tolist()
@@ -608,8 +610,8 @@ def test_fish_invweight0_matches_mujoco() raises:
     """
     var mj = _ref()
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
     var biw = mj.body_invweight0.tolist()
     var diw = mj.dof_invweight0.tolist()

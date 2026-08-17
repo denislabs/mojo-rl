@@ -102,6 +102,7 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import MODEL_META_IDX_NOSLIP_TOLERANCE
 from max.gpu.host import DeviceContext
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 
 comptime DTYPE = DType.float64
@@ -149,6 +150,7 @@ comptime M = ModelDefFromXML[
     max_condim=pc.MAX_CONDIM,
     noslip_iter=pc.NOSLIP_ITER,
 ]
+comptime MD_2 = ModelDims[M]
 
 # ⚠ IDENTICAL TO `M` EXCEPT `noslip_iter=0`. This is the control: it is what
 # the engine did before the pass existed on the elliptic path, and the test
@@ -279,8 +281,8 @@ def test_noslip_option_reaches_the_model() raises:
     )
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0, npair=M.NPAIR]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD_2]()
+    M.init_fields[DTYPE](ctx, mf)
     var tol = Float64(mf.meta.data[MODEL_META_IDX_NOSLIP_TOLERANCE])
     print("  noslip_tolerance in META =", tol, " (XML says 0)")
     # ⚠ The check is `== 0.0`, and 0 is the VALUE, not "unset". A consumer that
@@ -354,11 +356,28 @@ def _rollout[
     "round-off growing" from "wrong by a little". Step 1 has nothing to
     amplify, so a systematic error in the sweep shows up there at full size.
     """
+    comptime MD_3 = Dims[
+        nq=MD.NQ,
+        nv=MD.NV,
+        nbody=MD.NBODY,
+        njoint=MD.NJOINT,
+        ngeom=MD.NGEOM,
+        nsite=MD.NSITE,
+        max_contacts=MD.MAX_CONTACTS,
+        nequality=MD.MAX_EQUALITY,
+        ntendon=MD.MAX_TENDON,
+        nexclude=MD.NEXCLUDE,
+        nmesh_verts=0,
+        npair=MD.NPAIR,
+        nact=MD.NACT,
+        nten=MD.NTEN_F,
+        nkey=MD.NKEY,
+    ]
     var sf = MD.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=MD.NV, nbody=MD.NBODY, njoint=MD.NJOINT, ngeom=MD.NGEOM, nequality=MD.MAX_EQUALITY, ntendon=MD.MAX_TENDON, nsite=MD.NSITE, nexclude=MD.NEXCLUDE, nmesh_verts=0, npair=MD.NPAIR]]()
-    MD.init_fields[DTYPE, 0](ctx, mf)
-    var d = Data[DTYPE, Dims[nq=MD.NQ, nv=MD.NV, nbody=MD.NBODY, max_contacts=MD.MAX_CONTACTS, nsite=MD.NSITE], 1]()
+    var mf = Model[DTYPE, MD_3]()
+    MD.init_fields[DTYPE](ctx, mf)
+    var d = Data[DTYPE, MD_3, 1]()
     MD.reset_data[DTYPE](sf, d)
 
     var sq = md.qpos.flatten().tolist()
@@ -369,13 +388,7 @@ def _rollout[
         d.qvel.data[i] = Scalar[DTYPE](Float64(py=sv[i]))
     forward_kinematics["cpu"](d, mf)
 
-    var integ = EulerIntegrator[
-        DTYPE, MD.NQ, MD.NV, MD.NBODY, MD.NJOINT, MD.MAX_CONTACTS, MD.NGEOM,
-        MD.MAX_EQUALITY, MD.MAX_TENDON, MD.NSITE, MD.NEXCLUDE, 0,
-        MD.CONE_TYPE, 1, SOLVER="newton",
-        MAX_CONDIM=MD.MAX_CONDIM, NOSLIP_ITER=MD.NOSLIP_ITER,
-        NPAIR=MD.NPAIR,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD_3, MD.CONE_TYPE, 1, SOLVER="newton", MAX_CONDIM=MD.MAX_CONDIM, NOSLIP_ITER=MD.NOSLIP_ITER]()
 
     var worst_q = 0.0
     var worst_v = 0.0

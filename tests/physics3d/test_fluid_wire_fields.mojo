@@ -20,6 +20,7 @@ from mojo_rl.physics3d.integrator.implicit import (
 )
 from mojo_rl.physics3d.integrator.rk4 import RK4Integrator
 from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DT = DType.float32
 comptime NQ = SwimmerModel.NQ
@@ -32,19 +33,20 @@ comptime NEQ = SwimmerModel.MAX_EQUALITY
 comptime NTD = SwimmerModel.MAX_TENDON
 comptime NSITE = SwimmerModel.NSITE
 comptime NEXCL = SwimmerModel.NEXCLUDE
+comptime MD = ModelDims[SwimmerModel]
 comptime CONE = SwimmerModel.CONE_TYPE
 comptime BATCH = 1
 comptime N_STEPS = 3
 
 
-def _load_model(ctx: DeviceContext) raises -> Model[DT, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]:
-    var mf = Model[DT, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
-    SwimmerModel.init_fields[DT, 0](ctx, mf)
+def _load_model(ctx: DeviceContext) raises -> Model[DT, MD]:
+    var mf = Model[DT, MD]()
+    SwimmerModel.init_fields[DT](ctx, mf)
     return mf^
 
 
-def _fresh_data() raises -> Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]:
-    var d = Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH]()
+def _fresh_data() raises -> Data[DT, MD, BATCH]:
+    var d = Data[DT, MD, BATCH]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DT]((i * 3) % 5 - 2) / 20.0
     for i in range(NV):
@@ -53,7 +55,7 @@ def _fresh_data() raises -> Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contact
 
 
 def _check_finite(
-    mut d: Data[DT, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], BATCH], ctx: DeviceContext, name: String
+    mut d: Data[DT, MD, BATCH], ctx: DeviceContext, name: String
 ) raises:
     d.qpos.download(ctx)
     d.qvel.download(ctx)
@@ -75,9 +77,7 @@ def main() raises:
     # Euler
     var dE = _fresh_data()
     dE.upload_all(ctx)
-    var integE = EulerIntegrator[
-        DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
-    ]()
+    var integE = EulerIntegrator[DT, MD, CONE, BATCH]()
     integE.prepare_gpu(ctx)
     for _s in range(N_STEPS):
         integE.step["gpu", False](dE, mf, ctx)
@@ -87,9 +87,7 @@ def main() raises:
     # Implicit
     var dI = _fresh_data()
     dI.upload_all(ctx)
-    var integI = ImplicitIntegrator[
-        DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
-    ]()
+    var integI = ImplicitIntegrator[DT, MD, CONE, BATCH]()
     integI.prepare_gpu(ctx)
     for _s in range(N_STEPS):
         integI.step["gpu", False](dI, mf, ctx)
@@ -99,9 +97,7 @@ def main() raises:
     # RK4 (Swimmer's native integrator)
     var dR = _fresh_data()
     dR.upload_all(ctx)
-    var integR = RK4Integrator[
-        DT, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTD, NSITE, NEXCL, 0, CONE, BATCH,
-    ]()
+    var integR = RK4Integrator[DT, MD, CONE, BATCH]()
     integR.prepare_gpu(ctx)
     for _s in range(N_STEPS):
         integR.step["gpu", False](dR, mf, ctx)

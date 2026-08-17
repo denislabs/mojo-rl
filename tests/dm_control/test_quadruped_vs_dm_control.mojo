@@ -50,6 +50,7 @@ from mojo_rl.envs.dm_control.quadruped import (
     HINGE_DOF_0,
 )
 from mojo_rl.physics3d.fields import Model, Dims
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.constants import (
     GEOM_PLANE, GEOM_SPHERE, GEOM_CAPSULE, GEOM_BOX, GEOM_CYLINDER,
     GEOM_MESH, GEOM_ELLIPSOID,
@@ -486,10 +487,11 @@ def test_reset_draws_a_unit_quaternion_and_clears_the_floor() raises:
 # it without noticing.
 
 comptime Mdl = DMQuadrupedWalkModel
+comptime MD = ModelDims[Mdl]
 # Parameterised from the model def, not from the literals above — the two are
 # tied together by `test_quadruped_dims_match_the_model_def`, and `init_fields`
 # will not accept a `Model` whose parameters it did not compute.
-comptime Mod = Model[DType.float64, Dims[nv=Mdl.NV, nbody=Mdl.NBODY, njoint=Mdl.NJOINT, ngeom=Mdl.NGEOM, nequality=Mdl.MAX_EQUALITY, ntendon=Mdl.MAX_TENDON, nsite=Mdl.NSITE, nexclude=Mdl.NEXCLUDE, nmesh_verts=0]]
+comptime Mod = Model[DType.float64, MD]
 
 # Relative bound on every model constant. These are PARSED, not computed, so
 # anything above rounding is a real divergence; `invweight0` is the exception
@@ -508,7 +510,7 @@ comptime INVWEIGHT_TOL: Float64 = 1e-13
 def _build() raises -> Mod:
     var ctx = DeviceContext()
     var mf = Mod()
-    Mdl.init_fields[DType.float64, 0](ctx, mf)
+    Mdl.init_fields[DType.float64](ctx, mf)
     return mf^
 
 

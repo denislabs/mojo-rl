@@ -50,6 +50,7 @@ from mojo_rl.physics3d.gpu.constants import (
     METADATA_SIZE,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 comptime NQ = Walker2dModel.NQ
@@ -62,6 +63,7 @@ comptime NEQ = Walker2dModel.MAX_EQUALITY
 comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
+comptime MD = ModelDims[Walker2dModel]
 
 # float32 FK on positions of order 1. Measured, then budgeted an order above.
 comptime POS_TOL: Float64 = 1e-5
@@ -94,8 +96,8 @@ def test_walker2d_contacts_match_mujoco() raises:
     var md = mujoco.MjData(m)
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
-    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    Walker2dModel.init_fields[DTYPE](ctx, mf)
 
     var poses = _poses()
     var total_ours = 0
@@ -106,7 +108,7 @@ def test_walker2d_contacts_match_mujoco() raises:
     var pair_mismatch = 0
 
     for e in range(len(poses)):
-        var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], 1]()
+        var d = Data[DTYPE, MD, 1]()
         Walker2dModel.reset_data[DTYPE](sf, d)
         for i in range(NQ):
             d.qpos.data[i] = Scalar[DTYPE](poses[e][i])

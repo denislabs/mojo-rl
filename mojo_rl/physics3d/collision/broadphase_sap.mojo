@@ -36,7 +36,7 @@ from ..constants import (
     GEOM_MESH,
     GEOM_ELLIPSOID,
 )
-from ..fields import Data, Model, Dims
+from ..fields import Data, Model, Dims, DimsLike
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_GEOM_SIZE,
@@ -1814,46 +1814,35 @@ def _detect_contacts_sap_fields_kernel[
 def detect_contacts_sap[
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     BATCH: Int = 1,
-    NPAIR: Int = 0,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH],
-    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """AABB/SAP broadphase geom contact detection from FK products, both
     targets, one body. Reads `d.xpos`/`d.xquat` + geom/body/meta/exclude/mesh
     records; writes `d.contacts` + the ncon slot of `d.meta`."""
-    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
-    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
-    comptime L_GEOM = Layout.row_major(NGEOM, MODEL_GEOM_SIZE)
-    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
+    comptime L_B3 = Layout.row_major(BATCH, D.NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, D.NBODY * 4)
+    comptime L_GEOM = Layout.row_major(D.NGEOM, MODEL_GEOM_SIZE)
+    comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
     comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
-    comptime L_EXCLUDE = Layout.row_major(NEXCLUDE, 2)
-    comptime L_PAIR = Layout.row_major(NPAIR, MODEL_PAIR_SIZE)
+    comptime L_EXCLUDE = Layout.row_major(D.NEXCLUDE, 2)
+    comptime L_PAIR = Layout.row_major(D.NPAIR, MODEL_PAIR_SIZE)
     comptime L_MESH_META = Layout.row_major(
         MAX_GPU_MESHES, MODEL_MESH_META_SIZE
     )
-    comptime L_MESH_VERT = Layout.row_major(NMESH_VERTS, 3)
+    comptime L_MESH_VERT = Layout.row_major(D.NMESH_VERTS, 3)
     comptime L_MESH_POLY = Layout.row_major(
-        mesh_max_poly(NMESH_VERTS), MODEL_MESH_POLY_SIZE
+        mesh_max_poly(D.NMESH_VERTS), MODEL_MESH_POLY_SIZE
     )
-    comptime L_MESH_POLYVERT = Layout.row_major(mesh_max_polyvert(NMESH_VERTS))
-    comptime L_MESH_VPMAP = Layout.row_major(NMESH_VERTS, 2)
-    comptime L_MESH_VEADR = Layout.row_major(NMESH_VERTS)
-    comptime L_MESH_EDGE = Layout.row_major(mesh_max_edge(NMESH_VERTS))
-    comptime L_CONTACTS = Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE)
+    comptime L_MESH_POLYVERT = Layout.row_major(mesh_max_polyvert(D.NMESH_VERTS))
+    comptime L_MESH_VPMAP = Layout.row_major(D.NMESH_VERTS, 2)
+    comptime L_MESH_VEADR = Layout.row_major(D.NMESH_VERTS)
+    comptime L_MESH_EDGE = Layout.row_major(mesh_max_edge(D.NMESH_VERTS))
+    comptime L_CONTACTS = Layout.row_major(BATCH, D.MAX_CONTACTS * CONTACT_SIZE)
     comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
 
     comptime if target == "cpu":
@@ -1878,8 +1867,8 @@ def detect_contacts_sap[
         var smeta_v = d.meta.lt["cpu", L_SMETA]()
         for e in range(BATCH):
             _detect_contacts_sap_env[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-                NEXCLUDE, NMESH_VERTS, BATCH, NPAIR,
+                DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, D.MAX_CONTACTS, D.NGEOM,
+                D.NEXCLUDE, D.NMESH_VERTS, BATCH, D.NPAIR,
             ](
                 e, xpos_v, xquat_v, geoms_v, bodies_v, mmeta_v,
                 excludes_v, pairs_v, mesh_meta_v, mesh_verts_v, mesh_polys_v,
@@ -1892,8 +1881,8 @@ def detect_contacts_sap[
         comptime BLOCKS = (BATCH + SAP_TPB - 1) // SAP_TPB
         c.enqueue_function[
             _detect_contacts_sap_fields_kernel[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-                NEXCLUDE, NMESH_VERTS, BATCH, NPAIR,
+                DTYPE, D.NQ, D.NV, D.NBODY, D.NJOINT, D.MAX_CONTACTS, D.NGEOM,
+                D.NEXCLUDE, D.NMESH_VERTS, BATCH, D.NPAIR,
             ]
         ](
             d.xpos.lt["gpu", L_B3](),
@@ -1921,22 +1910,11 @@ def detect_contacts_sap[
 def detect_contacts_auto[
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     BATCH: Int = 1,
-    NPAIR: Int = 0,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH],
-    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Contact detection with automatic broadphase selection (fields).
@@ -1947,13 +1925,7 @@ def detect_contacts_auto[
     the O(N^2) path — do not swap this into a bit-exact-gated pipeline
     without re-baselining."""
 
-    comptime if NGEOM >= SAP_THRESHOLD:
-        detect_contacts_sap[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            NEQUALITY, NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, BATCH, NPAIR,
-        ](d, m, ctx)
+    comptime if D.NGEOM >= SAP_THRESHOLD:
+        detect_contacts_sap[target, DTYPE, BATCH=BATCH](d, m, ctx)
     else:
-        detect_contacts[
-            target, DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            NEQUALITY, NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, BATCH, NPAIR,
-        ](d, m, ctx)
+        detect_contacts[target, DTYPE, BATCH=BATCH](d, m, ctx)

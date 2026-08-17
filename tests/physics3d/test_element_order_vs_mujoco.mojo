@@ -62,6 +62,7 @@ from mojo_rl.physics3d.gpu.constants import (
     SITE_IDX_SIZE_0,
 )
 from mojo_rl.physics3d.types import ConeType
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 
 comptime _RAW = """
@@ -102,14 +103,15 @@ comptime M = ModelDefFromXML[
     nexclude=pm.NEXCLUDE,
     timestep=pm.TIMESTEP,
 ]
+comptime MD = ModelDims[M]
 
 comptime TOL = 1e-12
 
 
-def _build() raises -> Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]:
+def _build() raises -> Model[DType.float64, MD]:
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DType.float64, 0](ctx, mf)
+    var mf = Model[DType.float64, MD]()
+    M.init_fields[DType.float64](ctx, mf)
     return mf^
 
 

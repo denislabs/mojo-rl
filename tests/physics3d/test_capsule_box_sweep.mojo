@@ -58,6 +58,7 @@ from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
     META_IDX_NUM_CONTACTS,
@@ -111,9 +112,10 @@ comptime NV: Int = CBM.NV
 comptime NBODY: Int = CBM.NBODY
 comptime NGEOM: Int = CBM.NGEOM
 comptime MC: Int = CBM.MAX_CONTACTS
+comptime MD = ModelDims[CBM]
 
-comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=CBM.NSITE], 1]
-comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=CBM.NJOINT, ngeom=NGEOM, nequality=CBM.MAX_EQUALITY, ntendon=CBM.MAX_TENDON, nsite=CBM.NSITE, nexclude=CBM.NEXCLUDE, nmesh_verts=0]]
+comptime Dat = Data[DTYPE, MD, 1]
+comptime Mod = Model[DTYPE, MD]
 
 # Number of swept poses. Large enough that the face / edge / corner branches are
 # all hit many times; the coverage assertion below checks that rather than
@@ -158,7 +160,7 @@ struct Lcg(Copyable, Movable):
 def _build() raises -> Mod:
     var ctx = DeviceContext()
     var mf = Mod()
-    CBM.init_fields[DTYPE, 0](ctx, mf)
+    CBM.init_fields[DTYPE](ctx, mf)
     return mf^
 
 

@@ -43,6 +43,7 @@ from std.testing import assert_true, TestSuite
 from mojo_rl.physics3d.parser import parse_xml, ModelDefFromXML
 from mojo_rl.physics3d.parser.xml_parser import merge_mjcf
 from mojo_rl.physics3d.fields import Data, Dims
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float64
 
@@ -95,6 +96,7 @@ comptime M = ModelDefFromXML[
     # asserts it against the parsed XML.
     nkey = 2,
 ]
+comptime MD = ModelDims[M]
 
 comptime TOL: Float64 = 1e-12
 
@@ -254,7 +256,7 @@ def test_default_reset_is_qpos0_not_the_keyframe() raises:
     var md = mujoco.MjData(m)
     _ = mujoco.mj_resetData(m, md)
 
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
 
     # Vacuity: the keyframe must actually differ from qpos0, or "we match
@@ -300,7 +302,7 @@ def test_reset_data_keyframe_matches_mj_resetDataKeyframe() raises:
     var worst = 0.0
     for k in range(Int(py=m.nkey)):
         _ = mujoco.mj_resetDataKeyframe(m, md, k)
-        var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+        var d = Data[DTYPE, MD, 1]()
         M.reset_data_keyframe[DTYPE](sf, d, k)
         for i in range(Int(py=m.nq)):
             var dd = abs(Float64(d.qpos.data[i]) - Float64(py=md.qpos[i]))

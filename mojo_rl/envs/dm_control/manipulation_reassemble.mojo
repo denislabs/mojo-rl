@@ -197,23 +197,9 @@ def quat_integrate_z_pi[
 
 
 @always_inline
-def read_brick_pos[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
-    NPAIR: Int,
-    MAXC: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
-    mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+def read_brick_pos[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
+    mf: Model[DTYPE, D],
     body: Int,
     qpos_adr: Int,
 ) -> InlineArray[Scalar[DTYPE], 3]:
@@ -231,23 +217,9 @@ def read_brick_pos[
 
 
 @always_inline
-def read_brick_quat[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
-    NPAIR: Int,
-    MAXC: Int,
-](
-    d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
-    mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+def read_brick_quat[DTYPE: DType, D: DimsLike](
+    d: Data[DTYPE, D, 1],
+    mf: Model[DTYPE, D],
     body: Int,
     qpos_adr: Int,
 ) -> InlineArray[Scalar[DTYPE], 4]:
@@ -268,23 +240,9 @@ def read_brick_quat[
 
 
 @always_inline
-def write_brick_pos[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
-    NPAIR: Int,
-    MAXC: Int,
-](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+def write_brick_pos[DTYPE: DType, D: DimsLike](
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     body: Int,
     qpos_adr: Int,
     pos: InlineArray[Scalar[DTYPE], 3],
@@ -308,23 +266,9 @@ def write_brick_pos[
 
 
 @always_inline
-def write_brick_quat[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
-    NPAIR: Int,
-    MAXC: Int,
-](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+def write_brick_quat[DTYPE: DType, D: DimsLike](
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     body: Int,
     qpos_adr: Int,
     quat: InlineArray[Scalar[DTYPE], 4],
@@ -347,23 +291,9 @@ def write_brick_quat[
 # ── `_build_stack` ────────────────────────────────────────────────────────
 
 
-def build_stack[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
-    NPAIR: Int,
-    MAX_CONTACTS: Int,
-](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+def build_stack[DTYPE: DType, D: DimsLike](
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     order: List[Int],
     fixed_brick: Int,
     base_pos: InlineArray[Scalar[DTYPE], 3],
@@ -410,14 +340,8 @@ def build_stack[
     var base_slot = stack_free_slot_of(base, fixed_brick)
     if base_slot >= 0:
         base_adr = stack_qpos_adr_of(base_slot)
-    write_brick_pos[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-        NMESHV, NPAIR, MAX_CONTACTS,
-    ](d, mf, stack_brick_body_of(base), base_adr, base_pos)
-    write_brick_quat[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-        NMESHV, NPAIR, MAX_CONTACTS,
-    ](d, mf, stack_brick_body_of(base), base_adr, base_quat)
+    write_brick_pos[DTYPE](d, mf, stack_brick_body_of(base), base_adr, base_pos)
+    write_brick_quat[DTYPE](d, mf, stack_brick_body_of(base), base_adr, base_quat)
     forward_kinematics["cpu"](d, mf)
 
     for i in range(n - 1):
@@ -439,10 +363,7 @@ def build_stack[
         var bottom_adr = -1
         if bottom_slot >= 0:
             bottom_adr = stack_qpos_adr_of(bottom_slot)
-        var q = read_brick_quat[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAX_CONTACTS,
-        ](d, mf, stack_brick_body_of(bottom), bottom_adr)
+        var q = read_brick_quat[DTYPE](d, mf, stack_brick_body_of(bottom), bottom_adr)
 
         # `hole_idx = (-1, -1)` on a flip and `(0, 0)` otherwise — the two
         # CORNER holes, `CORNER_B` and `CORNER_A`.
@@ -451,16 +372,10 @@ def build_stack[
             q = quat_integrate_z_pi[DTYPE](q)
             hole = stack_brick_hole_0_of(top) + CORNER_B
 
-        write_brick_quat[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAX_CONTACTS,
-        ](d, mf, stack_brick_body_of(top), top_adr, q)
+        write_brick_quat[DTYPE](d, mf, stack_brick_body_of(top), top_adr, q)
         forward_kinematics["cpu"](d, mf)
 
-        var at = read_brick_pos[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAX_CONTACTS,
-        ](d, mf, stack_brick_body_of(top), top_adr)
+        var at = read_brick_pos[DTYPE](d, mf, stack_brick_body_of(top), top_adr)
         for k in range(3):
             if abs(Float64(at[k])) > BUILD_ORIGIN_TOL:
                 raise Error(
@@ -484,10 +399,7 @@ def build_stack[
         top_pos[2] = Scalar[DTYPE](
             stud_z - Float64(d.site_xpos.data[hole * 3 + 2])
         )
-        write_brick_pos[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAX_CONTACTS,
-        ](d, mf, stack_brick_body_of(top), top_adr, top_pos)
+        write_brick_pos[DTYPE](d, mf, stack_brick_body_of(top), top_adr, top_pos)
         forward_kinematics["cpu"](d, mf)
 
 
@@ -604,23 +516,9 @@ def reassemble_set_grasp[DTYPE: DType, D: DimsLike](
     set_grasp[DTYPE, N_HAND](d.qpos.data, qadr, rmin, rmax, factors)
 
 
-def reassemble_reset_full[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
-    NPAIR: Int,
-    MAX_CONTACTS: Int,
-](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+def reassemble_reset_full[DTYPE: DType, D: DimsLike](
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     initial: List[Int],
     n_bricks: Int,
     fixed_brick: Int,
@@ -672,15 +570,9 @@ def reassemble_reset_full[
         # `random_state.rand() < 0.5`.
         flips.append(random_float64() < 0.5)
 
-    build_stack[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-        NMESHV, NPAIR, MAX_CONTACTS,
-    ](d, mf, initial, fixed_brick, base_pos, base_quat, flips)
+    build_stack[DTYPE](d, mf, initial, fixed_brick, base_pos, base_quat, flips)
 
-    brick_tcp_initializer[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-        NMESHV, NPAIR, MAX_CONTACTS,
-    ](d, mf, n_bricks, fixed_brick, caller)
+    brick_tcp_initializer[DTYPE](d, mf, n_bricks, fixed_brick, caller)
 
 
 # ── the relabeling, for `reassemble_5_bricks_random_order` ────────────────
@@ -876,23 +768,9 @@ def reassemble_random_reward[DTYPE: DType, D: DimsLike](
     return reassemble_reward[DTYPE](d, phys)
 
 
-def reassemble_random_reset_full[
-    DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
-    NPAIR: Int,
-    MAX_CONTACTS: Int,
-](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+def reassemble_random_reset_full[DTYPE: DType, D: DimsLike](
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     n: Int,
     fixed_brick: Int,
     caller: String,
@@ -910,7 +788,4 @@ def reassemble_random_reset_full[
     var order = List[Int]()
     for i in range(n):
         order.append(sigma[initial[i]])
-    reassemble_reset_full[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-        NMESHV, NPAIR, MAX_CONTACTS,
-    ](d, mf, order, n, fixed_brick, caller)
+    reassemble_reset_full[DTYPE](d, mf, order, n, fixed_brick, caller)

@@ -4,6 +4,7 @@ from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext
 from mojo_rl.envs.metaworld.sawyer_reach_xml import SawyerReachModel, pm
 from mojo_rl.physics3d.fields import Model, Dims
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
@@ -52,9 +53,10 @@ def test_sawyer_reach_dimensions() raises:
     print("\n=== Model Setup Test (spec-direct fields build; G4) ===")
     comptime DTYPE = DType.float64
     comptime M = SawyerReachModel
+    comptime MD = ModelDims[M, 16*256]
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=16 * 256]]()
-    M.init_fields[DTYPE, 16 * 256](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
     print("Model built successfully!")
     print("Gravity Z:", mf.meta.data[MODEL_META_IDX_GRAVITY_Z])

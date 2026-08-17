@@ -55,7 +55,7 @@ from ..constraints.constraint_data import solref_spring_damper
 
 comptime MAX_ISLANDS: Int = 64
 comptime ISLAND_CONVERGE_EPS: Float64 = 1e-6
-from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims
+from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims, DimsLike
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_BODY_SIZE,
@@ -1551,55 +1551,45 @@ def _island_pgs_solve_fields_kernel[
 
 
 def solve_island_pgs[
+
     target: StaticString,
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    MAX_CONTACTS: Int,
-    NGEOM: Int = 0,
-    NEQUALITY: Int = 0,
-    NTENDON: Int = 0,
-    NSITE: Int = 0,
-    NEXCLUDE: Int = 0,
-    NMESH_VERTS: Int = 0,
+    D: DimsLike,
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     BATCH: Int = 1,
     # Appended, not grouped with NEXCLUDE — see `fields.Model`.
-    NPAIR: Int = 0,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH],
-    mut m: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQUALITY, ntendon=NTENDON, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=NPAIR]],
-    mut scratch: DynamicsScratch[DTYPE, Dims[nv=NV, nbody=NBODY], BATCH],
-    mut cscratch: ContactScratch[DTYPE, Dims[nv=NV, max_contacts=MAX_CONTACTS], BATCH, _],
+    mut d: Data[DTYPE, D, BATCH],
+    mut m: Model[DTYPE, D],
+    mut scratch: DynamicsScratch[DTYPE, D, BATCH],
+    mut cscratch: ContactScratch[DTYPE, D, BATCH, _],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """PGS contact solve into `scratch.qacc_constrained` (+ solved forces
     back into `d.contacts` for warm-starting), both targets, one body.
     Joint limits, equality constraints, and fixed tendons run INSIDE at the
     legacy position (between the normal and friction phases)."""
-    comptime MC = _max_one[MAX_CONTACTS]()
-    comptime SOLVER_WS = 81 * MC + 12 * MC * NV
+    comptime MC = _max_one[D.MAX_CONTACTS]()
+    comptime SOLVER_WS = 81 * MC + 12 * MC * D.NV
 
-    comptime L_NV = Layout.row_major(BATCH, NV)
-    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
-    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
-    comptime L_CON = Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE)
+    comptime L_NV = Layout.row_major(BATCH, D.NV)
+    comptime L_B3 = Layout.row_major(BATCH, D.NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, D.NBODY * 4)
+    comptime L_CON = Layout.row_major(BATCH, D.MAX_CONTACTS * CONTACT_SIZE)
     comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
-    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
-    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
+    comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
+    comptime L_BODY = Layout.row_major(D.NBODY, MODEL_BODY_SIZE)
     comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
-    comptime L_EQ = Layout.row_major(NEQUALITY, MODEL_EQ_SIZE)
-    comptime L_TEN = Layout.row_major(NTENDON, MODEL_TENDON_SIZE)
-    comptime L_SITE = Layout.row_major(NSITE, MODEL_SITE_SIZE)
-    comptime L_BW = Layout.row_major(NBODY, 2)
-    comptime L_CDOF = Layout.row_major(BATCH, NV * 6)
-    comptime L_M = Layout.row_major(BATCH, NV * NV)
+    comptime L_EQ = Layout.row_major(D.NEQUALITY, MODEL_EQ_SIZE)
+    comptime L_TEN = Layout.row_major(D.NTENDON, MODEL_TENDON_SIZE)
+    comptime L_SITE = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
+    comptime L_BW = Layout.row_major(D.NBODY, 2)
+    comptime L_CDOF = Layout.row_major(BATCH, D.NV * 6)
+    comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
     comptime L_SOLVER = Layout.row_major(BATCH, SOLVER_WS)
 
-    comptime L_QPOS = Layout.row_major(BATCH, NQ)
-    comptime L_DW = Layout.row_major(NV)
+    comptime L_QPOS = Layout.row_major(BATCH, D.NQ)
+    comptime L_DW = Layout.row_major(D.NV)
 
     comptime if target == "cpu":
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
@@ -1624,15 +1614,15 @@ def solve_island_pgs[
         for e in range(BATCH):
             _island_pgs_solve_env[
                 DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                NGEOM,
-                NEQUALITY,
-                NTENDON,
-                NSITE,
+                D.NQ,
+                D.NV,
+                D.NBODY,
+                D.NJOINT,
+                D.MAX_CONTACTS,
+                D.NGEOM,
+                D.NEQUALITY,
+                D.NTENDON,
+                D.NSITE,
                 CONE_TYPE,
                 BATCH,
                 SOLVER_WS,
@@ -1647,15 +1637,15 @@ def solve_island_pgs[
         c.enqueue_function[
             _island_pgs_solve_fields_kernel[
                 DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                NGEOM,
-                NEQUALITY,
-                NTENDON,
-                NSITE,
+                D.NQ,
+                D.NV,
+                D.NBODY,
+                D.NJOINT,
+                D.MAX_CONTACTS,
+                D.NGEOM,
+                D.NEQUALITY,
+                D.NTENDON,
+                D.NSITE,
                 CONE_TYPE,
                 BATCH,
                 SOLVER_WS,

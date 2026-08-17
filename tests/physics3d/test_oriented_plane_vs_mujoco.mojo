@@ -69,6 +69,7 @@ from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
 from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.gpu.constants import (
     CONTACT_SIZE,
     META_IDX_NUM_CONTACTS,
@@ -140,6 +141,7 @@ comptime PM = ModelDefFromXML[
 comptime NGEOM = PM.NGEOM
 comptime NBODY = PM.NBODY
 comptime MC = PM.MAX_CONTACTS
+comptime MD = ModelDims[PM]
 
 # Every geom penetrates by exactly this, by construction.
 comptime DEPTH: Float64 = 0.005
@@ -150,8 +152,8 @@ comptime TOL_DIST: Float64 = 1e-12
 comptime TOL_NORMAL: Float64 = 1e-12
 comptime TOL_POS: Float64 = 1e-9
 
-comptime Dat = Data[DTYPE, Dims[nq=PM.NQ, nv=PM.NV, nbody=NBODY, max_contacts=MC, nsite=PM.NSITE], 1]
-comptime Mod = Model[DTYPE, Dims[nv=PM.NV, nbody=NBODY, njoint=PM.NJOINT, ngeom=NGEOM, nequality=PM.MAX_EQUALITY, ntendon=PM.MAX_TENDON, nsite=PM.NSITE, nexclude=PM.NEXCLUDE, nmesh_verts=0]]
+comptime Dat = Data[DTYPE, MD, 1]
+comptime Mod = Model[DTYPE, MD]
 
 
 def _names() -> List[String]:
@@ -164,7 +166,7 @@ def _names() -> List[String]:
 def _build() raises -> Mod:
     var ctx = DeviceContext()
     var mf = Mod()
-    PM.init_fields[DTYPE, 0](ctx, mf)
+    PM.init_fields[DTYPE](ctx, mf)
     return mf^
 
 

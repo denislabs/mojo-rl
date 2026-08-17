@@ -114,6 +114,20 @@ comptime NMESH_VERTS = 60000
 # multicontact to emit more without a capacity truncation being mistaken for
 # a detection difference.
 comptime MAXC = 256
+comptime MD = Dims[
+    nq=NQ,
+    nv=NV,
+    nbody=NBODY,
+    njoint=NJOINT,
+    ngeom=NGEOM,
+    nsite=NSITE,
+    max_contacts=MAXC,
+    nequality=0,
+    ntendon=0,
+    nexclude=NEXCLUDE,
+    nmesh_verts=NMESH_VERTS,
+    npair=0,
+]
 
 comptime N_POSES: Int = 60
 comptime FK_TOL: Float64 = 1e-9
@@ -148,10 +162,10 @@ def test_jaco_contacts_vs_mujoco() raises:
     var fmd = parse_xml_full(_read(xml_path))
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=0, ntendon=0, nsite=NSITE, nexclude=NEXCLUDE, nmesh_verts=NMESH_VERTS, npair=0]]()
+    var mf = Model[DTYPE, MD]()
     build_model_fields_from_flat[DTYPE](fmd, mf)
     _ = os.chdir(cwd)
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAXC, nsite=NSITE], 1]()
+    var d = Data[DTYPE, MD, 1]()
 
     assert_true(Int(py=mm.ngeom) == NGEOM, "ngeom mismatch")
     assert_true(Int(py=mm.nbody) == NBODY, "nbody mismatch")

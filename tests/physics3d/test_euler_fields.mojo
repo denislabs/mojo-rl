@@ -25,6 +25,7 @@ from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.integrator.euler import EulerIntegrator
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
+from mojo_rl.physics3d.model.model_dims import ModelDims
 
 comptime DTYPE = DType.float32
 comptime NQ = Walker2dModel.NQ
@@ -37,6 +38,7 @@ comptime NEQ = Walker2dModel.MAX_EQUALITY
 comptime NTD = Walker2dModel.MAX_TENDON
 comptime NSITE = Walker2dModel.NSITE
 comptime NEXCL = Walker2dModel.NEXCLUDE
+comptime MD = ModelDims[Walker2dModel]
 comptime BATCH = 3
 comptime N_STEPS = 3
 
@@ -70,11 +72,11 @@ def main() raises:
     print("--- Euler full-step GOLDEN gate: walker2d BATCH=", BATCH)
     var ctx = DeviceContext()
 
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTD, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
-    Walker2dModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    Walker2dModel.init_fields[DTYPE](ctx, mf)
 
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH]()
-    var dc = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], BATCH]()
+    var d = Data[DTYPE, MD, BATCH]()
+    var dc = Data[DTYPE, MD, BATCH]()
     for e in range(BATCH):
         for i in range(NQ):
             var qp = Scalar[DTYPE]((e * 7 + i * 3) % 5 - 2) / 20.0
@@ -91,15 +93,9 @@ def main() raises:
             dc.qfrc.data[e * NV + i] = qf
     d.upload_all(ctx)
 
-    var integ = EulerIntegrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        NEQ, NTD, NSITE, NEXCL, 0, BATCH=BATCH,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, BATCH=BATCH]()
     integ.prepare_gpu(ctx)
-    var integ_c = EulerIntegrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        NEQ, NTD, NSITE, NEXCL, 0, BATCH=BATCH,
-    ]()
+    var integ_c = EulerIntegrator[DTYPE, MD, BATCH=BATCH]()
 
     for step in range(N_STEPS):
         integ.step["gpu", False](d, mf, ctx)  # CONTACTS=False: unconstrained

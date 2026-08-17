@@ -52,13 +52,30 @@ def test_half_cheetah() raises:
     comptime NBODY = HalfCheetahModel.NBODY
     comptime NJOINT = HalfCheetahModel.NJOINT
     comptime NGEOM = HalfCheetahModel.NGEOM
+    comptime MD = Dims[
+        nq=HalfCheetahModel.NQ,
+        nv=NV,
+        nbody=NBODY,
+        njoint=NJOINT,
+        ngeom=NGEOM,
+        nsite=HalfCheetahModel.NSITE,
+        max_contacts=HalfCheetahModel.MAX_CONTACTS,
+        nequality=HalfCheetahModel.MAX_EQUALITY,
+        ntendon=HalfCheetahModel.MAX_TENDON,
+        nexclude=HalfCheetahModel.NEXCLUDE,
+        nmesh_verts=0,
+        npair=HalfCheetahModel.NPAIR,
+        nact=HalfCheetahModel.NACT,
+        nten=HalfCheetahModel.NTEN_F,
+        nkey=HalfCheetahModel.NKEY,
+    ]
     comptime MAX_CONTACTS = HalfCheetahConfig.MAX_CONTACTS
 
     # Spec-direct fields build — <compiler inertiafromgeom> + settotalmass
     # run inside init_fields (fields_build; G4).
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=HalfCheetahModel.MAX_EQUALITY, ntendon=HalfCheetahModel.MAX_TENDON, nsite=HalfCheetahModel.NSITE, nexclude=HalfCheetahModel.NEXCLUDE, nmesh_verts=0]]()
-    HalfCheetahModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    HalfCheetahModel.init_fields[DTYPE](ctx, mf)
 
     # Get MuJoCo reference
     var mujoco = Python.import_module("mujoco")
@@ -161,12 +178,29 @@ def test_hopper() raises:
     comptime NBODY = HopperModel.NBODY
     comptime NJOINT = HopperModel.NJOINT
     comptime NGEOM = HopperModel.NGEOM
+    comptime MD_2 = Dims[
+        nq=HopperModel.NQ,
+        nv=NV,
+        nbody=NBODY,
+        njoint=NJOINT,
+        ngeom=NGEOM,
+        nsite=HopperModel.NSITE,
+        max_contacts=HopperModel.MAX_CONTACTS,
+        nequality=HopperModel.MAX_EQUALITY,
+        ntendon=HopperModel.MAX_TENDON,
+        nexclude=HopperModel.NEXCLUDE,
+        nmesh_verts=0,
+        npair=HopperModel.NPAIR,
+        nact=HopperModel.NACT,
+        nten=HopperModel.NTEN_F,
+        nkey=HopperModel.NKEY,
+    ]
 
     # Spec-direct fields build — <compiler inertiafromgeom> runs inside
     # init_fields (fields_build; G4). Hopper has no settotalmass.
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=HopperModel.MAX_EQUALITY, ntendon=HopperModel.MAX_TENDON, nsite=HopperModel.NSITE, nexclude=HopperModel.NEXCLUDE, nmesh_verts=0]]()
-    HopperModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD_2]()
+    HopperModel.init_fields[DTYPE](ctx, mf)
 
     # Get MuJoCo reference
     var mujoco = Python.import_module("mujoco")

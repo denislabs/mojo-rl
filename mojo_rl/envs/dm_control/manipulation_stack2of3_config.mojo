@@ -116,28 +116,8 @@ struct Stack2of3Config(Phyics3dEnvConfig):
 
     # === CPU: the three bricks, the settle, then the arm ==================
     @staticmethod
-    def custom_reset_full_cpu[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        NGEOM: Int,
-        NEQ: Int,
-        NTEN: Int,
-        NSITE: Int,
-        NEXCL: Int,
-        NMESHV: Int,
-        NPAIR: Int,
-        MAX_CONTACTS: Int,
-    ](
-        mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
-        mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+    def custom_reset_full_cpu[DTYPE: DType, D: DimsLike](
+        mut d: Data[DTYPE, D, 1],
+        mut mf: Model[DTYPE, D],
     ) raises:
-        stack_random_reset_full[
-            DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-            NMESHV, NPAIR, MAX_CONTACTS,
-            Stack2of3Model.CONE_TYPE,
-            Stack2of3Model.MAX_CONDIM,
-            Stack2of3Model.NOSLIP_ITER,
-        ](d, mf, Self.get_timestep())
+        stack_random_reset_full[DTYPE, Stack2of3Model.CONE_TYPE, Stack2of3Model.MAX_CONDIM, Stack2of3Model.NOSLIP_ITER](d, mf, Self.get_timestep())

@@ -239,13 +239,30 @@ def _gate[
     mut failures: Int,
 ) raises:
     """Diff our `qfrc` after `apply_actions` against MuJoCo `qfrc_actuator`."""
+    comptime MD = Dims[
+        nq=M.NQ,
+        nv=M.NV,
+        nbody=M.NBODY,
+        njoint=M.NJOINT,
+        ngeom=M.NGEOM,
+        nsite=M.NSITE,
+        max_contacts=M.MAX_CONTACTS,
+        nequality=M.MAX_EQUALITY,
+        ntendon=M.MAX_TENDON,
+        nexclude=M.NEXCLUDE,
+        nmesh_verts=0,
+        npair=M.NPAIR,
+        nact=M.NACT,
+        nten=M.NTEN_F,
+        nkey=M.NKEY,
+    ]
     var sf = M.make_spec_fields[DTYPE]()
-    comptime Dat = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]
-    comptime Mod = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0, npair=M.NPAIR]]
+    comptime Dat = Data[DTYPE, MD, 1]
+    comptime Mod = Model[DTYPE, MD]
 
     var ctx = DeviceContext()
     var mf = Mod()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    M.init_fields[DTYPE](ctx, mf)
     var d = Dat()
     M.reset_data(sf, d)
     d.qpos.data[0] = Scalar[DTYPE](q0)

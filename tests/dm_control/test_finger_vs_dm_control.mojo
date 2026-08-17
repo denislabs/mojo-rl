@@ -45,6 +45,7 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_QPOS0,
 )
 from mojo_rl.physics3d.gpu.constants import META_IDX_NUM_CONTACTS
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.envs.dm_control.finger.finger_xml import (
     DMFingerSpinModel,
     DMFingerTurnModel,
@@ -55,6 +56,8 @@ from mojo_rl.envs.dm_control.finger.finger_xml import (
     SPINNER_RADIUS,
     TARGET_Z,
 )
+comptime MD_3 = ModelDims[DMFingerTurnModel]
+comptime MD_2 = ModelDims[DMFingerSpinModel]
 
 comptime DTYPE = DType.float64
 comptime REF_XML: StaticString = (
@@ -63,6 +66,7 @@ comptime REF_XML: StaticString = (
 comptime REF_PATH: StaticString = "references/dm_control-main"
 
 comptime M = DMFingerTurnModel  # verbatim reference; spin differs by design
+comptime MD = ModelDims[M]
 comptime MODEL_TOL: Float64 = 1e-14
 
 # Rollout gate parameters. `_CONTROL_TIMESTEP` .02 over a .01 physics step.
@@ -142,8 +146,8 @@ def test_finger_joints_match() raises:
     """
     var mj = _ref()
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
     var jr = mj.jnt_range.tolist()
     var mj_qpos0 = mj.qpos0.tolist()
@@ -213,8 +217,8 @@ def test_finger_bodies_match() raises:
     """Masses and diagonal inertias, and the mocap target being inert."""
     var mj = _ref()
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
     var mj_mass = mj.body_mass.tolist()
     var mj_inertia = mj.body_inertia.tolist()
@@ -304,10 +308,10 @@ def test_spin_model_differs_only_in_hinge_damping() raises:
     other joint identical.
     """
     var ctx = DeviceContext()
-    var spin = Model[DTYPE, Dims[nv=DMFingerSpinModel.NV, nbody=DMFingerSpinModel.NBODY, njoint=DMFingerSpinModel.NJOINT, ngeom=DMFingerSpinModel.NGEOM, nequality=DMFingerSpinModel.MAX_EQUALITY, ntendon=DMFingerSpinModel.MAX_TENDON, nsite=DMFingerSpinModel.NSITE, nexclude=DMFingerSpinModel.NEXCLUDE, nmesh_verts=0]]()
-    DMFingerSpinModel.init_fields[DTYPE, 0](ctx, spin)
-    var turn = Model[DTYPE, Dims[nv=DMFingerTurnModel.NV, nbody=DMFingerTurnModel.NBODY, njoint=DMFingerTurnModel.NJOINT, ngeom=DMFingerTurnModel.NGEOM, nequality=DMFingerTurnModel.MAX_EQUALITY, ntendon=DMFingerTurnModel.MAX_TENDON, nsite=DMFingerTurnModel.NSITE, nexclude=DMFingerTurnModel.NEXCLUDE, nmesh_verts=0]]()
-    DMFingerTurnModel.init_fields[DTYPE, 0](ctx, turn)
+    var spin = Model[DTYPE, MD_2]()
+    DMFingerSpinModel.init_fields[DTYPE](ctx, spin)
+    var turn = Model[DTYPE, MD_3]()
+    DMFingerTurnModel.init_fields[DTYPE](ctx, turn)
 
     # Joint 2 is `hinge` (XML order: proximal, distal, hinge).
     var hs = Float64(spin.joints.data[2 * MODEL_JOINT_SIZE + JOINT_IDX_DAMPING])
@@ -399,8 +403,8 @@ def test_finger_invweight0_matches_mujoco() raises:
     """
     var mj = _ref()
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
     var biw = mj.body_invweight0.tolist()
     var diw = mj.dof_invweight0.tolist()

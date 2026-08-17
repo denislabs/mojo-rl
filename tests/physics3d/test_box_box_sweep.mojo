@@ -53,6 +53,7 @@ from mojo_rl.physics3d.types import ConeType
 from mojo_rl.physics3d.fields import Data, Model, Dims
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts
+from mojo_rl.physics3d.model.model_dims import ModelDims
 from mojo_rl.physics3d.collision.collision_primitives import (
     box_box_manifold,
     BB_MAX_POINTS,
@@ -106,9 +107,10 @@ comptime NQ: Int = BBM.NQ
 comptime NV: Int = BBM.NV
 comptime NBODY: Int = BBM.NBODY
 comptime MC: Int = BBM.MAX_CONTACTS
+comptime MD = ModelDims[BBM]
 
-comptime Dat = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=BBM.NSITE], 1]
-comptime Mod = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=BBM.NJOINT, ngeom=BBM.NGEOM, nequality=BBM.MAX_EQUALITY, ntendon=BBM.MAX_TENDON, nsite=BBM.NSITE, nexclude=BBM.NEXCLUDE, nmesh_verts=0]]
+comptime Dat = Data[DTYPE, MD, 1]
+comptime Mod = Model[DTYPE, MD]
 
 comptime NPOSE: Int = 400
 comptime SPAN: Float64 = 0.075
@@ -136,7 +138,7 @@ struct Lcg(Copyable, Movable):
 def _build() raises -> Mod:
     var ctx = DeviceContext()
     var mf = Mod()
-    BBM.init_fields[DTYPE, 0](ctx, mf)
+    BBM.init_fields[DTYPE](ctx, mf)
     return mf^
 
 

@@ -122,6 +122,23 @@ def _model_def[cone: Int]() -> ModelDefFromXML[
 
 
 comptime M_ELL = _model_def[ConeType.ELLIPTIC]()
+comptime MD_2 = Dims[
+    nq=M_ELL.NQ,
+    nv=M_ELL.NV,
+    nbody=M_ELL.NBODY,
+    njoint=M_ELL.NJOINT,
+    ngeom=M_ELL.NGEOM,
+    nsite=M_ELL.NSITE,
+    max_contacts=M_ELL.MAX_CONTACTS,
+    nequality=M_ELL.MAX_EQUALITY,
+    ntendon=M_ELL.MAX_TENDON,
+    nexclude=M_ELL.NEXCLUDE,
+    nmesh_verts=0,
+    npair=M_ELL.NPAIR,
+    nact=M_ELL.NACT,
+    nten=M_ELL.NTEN_F,
+    nkey=M_ELL.NKEY,
+]
 comptime M_PYR = _model_def[ConeType.PYRAMIDAL]()
 
 
@@ -132,22 +149,33 @@ def _roll[M: ModelDefFromXML, SOLVER: StaticString]() raises -> Float64:
     branch, so with `CONTACTS=False` this returns free fall no matter what the
     solvers do. See the module docstring.
     """
+    comptime MD = Dims[
+        nq=M.NQ,
+        nv=M.NV,
+        nbody=M.NBODY,
+        njoint=M.NJOINT,
+        ngeom=M.NGEOM,
+        nsite=M.NSITE,
+        max_contacts=M.MAX_CONTACTS,
+        nequality=M.MAX_EQUALITY,
+        ntendon=M.MAX_TENDON,
+        nexclude=M.NEXCLUDE,
+        nmesh_verts=0,
+        npair=M.NPAIR,
+        nact=M.NACT,
+        nten=M.NTEN_F,
+        nkey=M.NKEY,
+    ]
     var sf = M.make_spec_fields[DTYPE]()
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M.NV, nbody=M.NBODY, njoint=M.NJOINT, ngeom=M.NGEOM, nequality=M.MAX_EQUALITY, ntendon=M.MAX_TENDON, nsite=M.NSITE, nexclude=M.NEXCLUDE, nmesh_verts=0, npair=M.NPAIR]]()
-    M.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    M.init_fields[DTYPE](ctx, mf)
 
-    var d = Data[DTYPE, Dims[nq=M.NQ, nv=M.NV, nbody=M.NBODY, max_contacts=M.MAX_CONTACTS, nsite=M.NSITE], 1]()
+    var d = Data[DTYPE, MD, 1]()
     M.reset_data[DTYPE](sf, d)
     forward_kinematics["cpu"](d, mf)
 
-    var integ = EulerIntegrator[
-        DTYPE, M.NQ, M.NV, M.NBODY, M.NJOINT, M.MAX_CONTACTS, M.NGEOM,
-        M.MAX_EQUALITY, M.MAX_TENDON, M.NSITE, M.NEXCLUDE, 0,
-        M.CONE_TYPE, 1, SOLVER=SOLVER,
-        MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER,
-        NPAIR = M.NPAIR,
-    ]()
+    var integ = EulerIntegrator[DTYPE, MD, M.CONE_TYPE, 1, SOLVER=SOLVER, MAX_CONDIM = M.MAX_CONDIM, NOSLIP_ITER = M.NOSLIP_ITER]()
     for _ in range(NSTEPS):
         integ.step["cpu", CONTACTS=True](d, mf)
     return Float64(d.qpos.data[0])
@@ -230,8 +258,8 @@ def test_tendon_length0_matches_mujoco() raises:
     var m = mujoco.MjModel.from_xml_string(materialize[XML]())
 
     var ctx = DeviceContext()
-    var mf = Model[DTYPE, Dims[nv=M_ELL.NV, nbody=M_ELL.NBODY, njoint=M_ELL.NJOINT, ngeom=M_ELL.NGEOM, nequality=M_ELL.MAX_EQUALITY, ntendon=M_ELL.MAX_TENDON, nsite=M_ELL.NSITE, nexclude=M_ELL.NEXCLUDE, nmesh_verts=0]]()
-    M_ELL.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD_2]()
+    M_ELL.init_fields[DTYPE](ctx, mf)
 
     var worst = Float64(0)
     for t in range(M_ELL.MAX_TENDON):

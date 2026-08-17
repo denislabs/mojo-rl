@@ -100,6 +100,23 @@ comptime NEQ = HumanoidModel.MAX_EQUALITY  # 0
 comptime NTEN = HumanoidModel.MAX_TENDON  # 2
 comptime NSITE = HumanoidModel.NSITE  # 0
 comptime NEXCL = HumanoidModel.nexclude  # 0
+comptime MD = Dims[
+    nq=NQ,
+    nv=NV,
+    nbody=NBODY,
+    njoint=NJOINT,
+    ngeom=NGEOM,
+    nsite=NSITE,
+    max_contacts=MC,
+    nequality=NEQ,
+    ntendon=NTEN,
+    nexclude=NEXCL,
+    nmesh_verts=0,
+    npair=HumanoidModel.NPAIR,
+    nact=HumanoidModel.NACT,
+    nten=HumanoidModel.NTEN_F,
+    nkey=HumanoidModel.NKEY,
+]
 comptime CONE = HumanoidModel.CONE_TYPE
 
 # Tendon length at the test pose (hip_y=0, knee=-0.15; L = -hip_y + knee):
@@ -121,15 +138,15 @@ comptime QVEL_REL_TOL: Float64 = 1e-2
 
 def _build_model(
     ctx: DeviceContext,
-) raises -> Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]:
+) raises -> Model[DTYPE, MD]:
     """Offset-free init_fields build, then inject meta NTENDON=2 + the two
     hip-knee tendon records DIRECTLY into the per-field tendon tensor
     (record layout t_i * MODEL_TENDON_SIZE + TENDON_IDX_*) exactly as
     test_equality_tendon_fields Part A does — the parser never emits tendon
     records, so injection is the only way any model carries them. No slab,
     no load_from_slab."""
-    var mf = Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]]()
-    HumanoidModel.init_fields[DTYPE, 0](ctx, mf)
+    var mf = Model[DTYPE, MD]()
+    HumanoidModel.init_fields[DTYPE](ctx, mf)
 
     # right = r_hip_y (joint 6) + r_knee (joint 7); left = l_hip_y (joint 10)
     # + l_knee (joint 11); coef -1 * hip_y + 1 * knee, MuJoCo-default
@@ -171,7 +188,7 @@ def _build_model(
 
 
 def _find_elbow_joint(
-    mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=0]],
+    mf: Model[DTYPE, MD],
 ) raises -> Tuple[Int, Int]:
     """Locate the right-elbow joint record (qpos_adr == 20) and return
     (joint index, dof_adr); assert its range is the expected [-90, 50] deg."""
@@ -277,17 +294,12 @@ def _compare_vs_mujoco(num_steps: Int) raises:
     )
 
     # ── Fields path (f64, CPU, BATCH=1, RK4 + Newton like the legacy gate).
-    var d = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], 1]()
+    var d = Data[DTYPE, MD, 1]()
     for i in range(NQ):
         d.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
     for i in range(NV):
         d.qvel.data[i] = Scalar[DTYPE](qvel_init[i])
-    var integ = RK4Integrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
-        CONE,
-        BATCH=1,
-        SOLVER="newton",
-    ]()
+    var integ = RK4Integrator[DTYPE, MD, CONE, BATCH=1, SOLVER="newton"]()
     for _ in range(num_steps):
         for i in range(NV):
             d.qfrc.data[i] = Scalar[DTYPE](0)
@@ -404,8 +416,8 @@ def test_limit_off_rerun_differs() raises:
 
     var qpos_init = _pose_qpos()
     var qvel_init = _pose_qvel()
-    var d_on = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], 1]()
-    var d_off = Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MC, nsite=NSITE], 1]()
+    var d_on = Data[DTYPE, MD, 1]()
+    var d_off = Data[DTYPE, MD, 1]()
     for i in range(NQ):
         d_on.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
         d_off.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
@@ -414,18 +426,8 @@ def test_limit_off_rerun_differs() raises:
         d_off.qvel.data[i] = Scalar[DTYPE](qvel_init[i])
         d_on.qfrc.data[i] = Scalar[DTYPE](0)
         d_off.qfrc.data[i] = Scalar[DTYPE](0)
-    var integ_on = RK4Integrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
-        CONE,
-        BATCH=1,
-        SOLVER="newton",
-    ]()
-    var integ_off = RK4Integrator[
-        DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, NEXCL, 0,
-        CONE,
-        BATCH=1,
-        SOLVER="newton",
-    ]()
+    var integ_on = RK4Integrator[DTYPE, MD, CONE, BATCH=1, SOLVER="newton"]()
+    var integ_off = RK4Integrator[DTYPE, MD, CONE, BATCH=1, SOLVER="newton"]()
     integ_on.step["cpu"](d_on, mf)
     integ_off.step["cpu"](d_off, mf_off)
     var ndiff = 0

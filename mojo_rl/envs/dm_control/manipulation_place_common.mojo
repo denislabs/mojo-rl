@@ -273,26 +273,17 @@ def place_set_grasp[DTYPE: DType, D: DimsLike](
 
 
 def place_reset_full[
+
     DTYPE: DType,
-    NQ: Int,
-    NV: Int,
-    NBODY: Int,
-    NJOINT: Int,
-    NGEOM: Int,
-    NEQ: Int,
-    NTEN: Int,
-    NSITE: Int,
-    NEXCL: Int,
-    NMESHV: Int,
-    NPAIR: Int,
-    MAX_CONTACTS: Int,
     # ⚠ From the task's model def, never defaulted — see `settle_free_prop`.
     CONE: Int,
     MAX_CONDIM: Int,
     NOSLIP_ITER: Int,
+
+    D: DimsLike,
 ](
-    mut d: Data[DTYPE, Dims[nq=NQ, nv=NV, nbody=NBODY, max_contacts=MAX_CONTACTS, nsite=NSITE], 1],
-    mut mf: Model[DTYPE, Dims[nv=NV, nbody=NBODY, njoint=NJOINT, ngeom=NGEOM, nequality=NEQ, ntendon=NTEN, nsite=NSITE, nexclude=NEXCL, nmesh_verts=NMESHV, npair=NPAIR]],
+    mut d: Data[DTYPE, D, 1],
+    mut mf: Model[DTYPE, D],
     timestep: Float64,
 ) raises:
     """`Place.initialize_episode`'s first, third and fourth statements.
@@ -331,10 +322,7 @@ def place_reset_full[
         ped_poses.append(Scalar[DTYPE](0))
         ped_poses.append(Scalar[DTYPE](0))
         ped_poses.append(Scalar[DTYPE](1))
-    var gres = place_fixed_prop[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL, NMESHV,
-        NPAIR, MAX_CONTACTS,
-    ](
+    var gres = place_fixed_prop[DTYPE](
         d, mf, PEDESTAL_BODY, PEDESTAL_N_BODIES, ignore, ped_poses,
         MAX_PEDESTAL_ATTEMPTS,
     )
@@ -400,8 +388,8 @@ def place_reset_full[
     # So an arm pose resting against the pedestal is REJECTED and one resting
     # against the brick is not. Labelling them the same way either rejects most
     # of the workspace or accepts poses through the pillar.
-    var body_class = InlineArray[Int, NBODY](fill=BODY_FIXED)
-    for b in range(NBODY):
+    var body_class = InlineArray[Int, D.NBODY](fill=BODY_FIXED)
+    for b in range(D.NBODY):
         if b >= 2 and b <= 8:
             body_class[b] = BODY_ARM
         elif b >= 10 and b <= 16:
@@ -409,10 +397,7 @@ def place_reset_full[
         elif b == PROP_BODY:
             body_class[b] = BODY_FREE
 
-    var res = tool_center_point_initializer[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-        NMESHV, NPAIR, MAX_CONTACTS, N_ARM,
-    ](
+    var res = tool_center_point_initializer[DTYPE, N_ARM](
         d, mf, SITE_PINCH, targets, down, dof_idx, qpos_adr,
         lower, upper, retry, body_class, False, MAX_ATT, MAX_SAMP,
     )
@@ -448,10 +433,7 @@ def place_reset_full[
         for k in range(4):
             poses.append(pquat[k])
 
-    var pres = place_free_prop[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-        NMESHV, NPAIR, MAX_CONTACTS,
-    ](
+    var pres = place_free_prop[DTYPE](
         d, mf, PROP_BODY, PROP_QPOS_ADR, PROP_DOF_ADR, poses,
         List[Int](), False, MAX_PROP_ATTEMPTS,
     )
@@ -463,8 +445,4 @@ def place_reset_full[
         )
 
     # ── 4. settle it, with the robot held static ────────────────────────
-    _ = settle_free_prop[
-        DTYPE, NQ, NV, NBODY, NJOINT, NGEOM, NEQ, NTEN, NSITE, NEXCL,
-        NMESHV, NPAIR, MAX_CONTACTS,
-        CONE, MAX_CONDIM, NOSLIP_ITER, N_ARM + N_HAND,
-    ](d, mf, PROP_DOF_ADR, timestep)
+    _ = settle_free_prop[DTYPE, CONE, MAX_CONDIM, NOSLIP_ITER, N_ARM + N_HAND](d, mf, PROP_DOF_ADR, timestep)

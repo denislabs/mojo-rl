@@ -74,6 +74,8 @@ from mojo_rl.physics3d.gpu.constants import (
     JOINT_IDX_DAMPING,
 )
 from mojo_rl.physics3d.joint_types import JNT_FREE
+from mojo_rl.physics3d.model.model_dims import ModelDims
+comptime MD = ModelDims[DMHumanoidModel]
 
 
 comptime EnvStand = DMHumanoidStand[DType.float64]
@@ -127,10 +129,10 @@ def _setup() raises -> PythonObject:
     return Python.tuple(mujoco, model, data, tol)
 
 
-def _build_model() raises -> Model[DType.float64, Dims[nv=DMHumanoidModel.NV, nbody=DMHumanoidModel.NBODY, njoint=DMHumanoidModel.NJOINT, ngeom=DMHumanoidModel.NGEOM, nequality=DMHumanoidModel.MAX_EQUALITY, ntendon=DMHumanoidModel.MAX_TENDON, nsite=DMHumanoidModel.NSITE, nexclude=DMHumanoidModel.NEXCLUDE, nmesh_verts=0]]:
+def _build_model() raises -> Model[DType.float64, MD]:
     var ctx = DeviceContext()
-    var mf = Model[DType.float64, Dims[nv=DMHumanoidModel.NV, nbody=DMHumanoidModel.NBODY, njoint=DMHumanoidModel.NJOINT, ngeom=DMHumanoidModel.NGEOM, nequality=DMHumanoidModel.MAX_EQUALITY, ntendon=DMHumanoidModel.MAX_TENDON, nsite=DMHumanoidModel.NSITE, nexclude=DMHumanoidModel.NEXCLUDE, nmesh_verts=0]]()
-    DMHumanoidModel.init_fields[DType.float64, 0](ctx, mf)
+    var mf = Model[DType.float64, MD]()
+    DMHumanoidModel.init_fields[DType.float64](ctx, mf)
     return mf^
 
 
