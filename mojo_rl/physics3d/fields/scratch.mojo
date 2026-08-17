@@ -42,14 +42,20 @@ through multiplication only if it is 0.
 
 Convert a dimension to a cap with `cap[]`, never by reading `D.NV` directly.
 
-## What this deletes
+## What this deleted (DONE — §10.5 decision 2 is resolved)
 
-The comptime `CAP_*` family on `DimsLike` existed for exactly one purpose —
-to size stack scratch on the dynamic leg — and §10.7 removed that purpose.
-Once every site here is converted, `DynDims` needs no `cap_*` parameters and
-no `_check_cap`, so **there is no bound on model size at all** and the studio
-can load an arbitrary MJCF. That was §10.5's open decision 2 and it resolves
-in the same commit as the last converted site.
+`DynDims` used to take fifteen `cap_*` parameters and check them at
+construction, because the caps were meant to size stack scratch on the
+dynamic leg. §10.7 removed that purpose, so the parameters and `_check_cap`
+are **gone**: a binary is no longer built for a maximum model, and the studio
+can load an arbitrary MJCF. `test_dyn_dims_ldl` demonstrates it on a
+100000-dof provider rather than asserting it.
+
+⚠ THE `CAP_*` FAMILY ITSELF STAYS, and must not be merged into `NV`/`NQ`/… .
+It is now simply *which container* `Scratch` picks — exact on a static
+provider, 0 on a dynamic one. The two families poison differently and both
+directions are load-bearing; see `DimsLike`'s docstring, and the pair of
+checks in `test_dyn_dims_ldl` section D that exist to stop the merge.
 """
 
 from .dims import DIM_POISON

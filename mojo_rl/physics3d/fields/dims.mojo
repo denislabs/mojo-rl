@@ -78,10 +78,18 @@ trait DimsLike(Copyable, Movable):
       site reads these today. On a DYNAMIC provider they do not exist as
       values and are POISONED (see `DynDims`), so a site left unconverted
       fails loudly instead of silently sizing itself to zero.
-    * `CAP_NQ`, `CAP_NV`, … — the **comptime cap**. This is what stack
-      scratch is sized by (`InlineArray[T, D.CAP_NV]`). On a static provider
-      cap == exact, so today's allocations are byte-identical; on a dynamic
-      one it is the bound the model may not exceed.
+    * `CAP_NQ`, `CAP_NV`, … — the **scratch cap**, i.e. which CONTAINER a
+      `Scratch[T, CAP]` picks. On a static provider cap == exact, so its
+      allocations stay byte-identical stack arrays; on a dynamic provider it
+      is **0**, which selects the heap. It is no longer a bound the model may
+      not exceed — see `DynDims` on why the caps were removed.
+
+      ⚠ THIS FAMILY POISONS TO 0 WHILE `NV` POISONS TO -1, and the difference
+      is load-bearing in both directions. Caps get MULTIPLIED (`ME * V_CAP`,
+      `NV * NV`, `3 * NBODY`) and only 0 survives a product as 0; -1 would
+      give `cap[(-1) * (-1)] == cap[1]`, selecting the STATIC leg with a
+      one-element array. Meanwhile `NV` must stay negative so an UNCONVERTED
+      site dies where it stands. Do not merge the two families.
     * `get_nq()`, `get_nv()`, … — the **runtime** dimension: loop bounds and
       strides. §10.6 read the arm64 asm and found the static implementation
       byte-identical to a comptime parameter, and §10.8 measured the trait
@@ -364,35 +372,31 @@ i.e. a site the sweep has not converted yet — dies AT the unconverted site.
 """
 
 
-struct DynDims[
-    cap_nq: Int = 0,
-    cap_nv: Int = 0,
-    cap_nbody: Int = 0,
-    cap_njoint: Int = 0,
-    cap_ngeom: Int = 0,
-    cap_nsite: Int = 0,
-    cap_max_contacts: Int = 0,
-    cap_nequality: Int = 0,
-    cap_ntendon: Int = 0,
-    cap_nexclude: Int = 0,
-    cap_nmesh_verts: Int = 0,
-    cap_npair: Int = 0,
-    cap_nact: Int = 0,
-    cap_nten: Int = 0,
-    cap_nkey: Int = 0,
-](DimsLike):
-    """Dimensions carried as RUNTIME state, bounded by comptime caps.
+struct DynDims(DimsLike):
+    """Dimensions carried as RUNTIME state. NO BOUND ON MODEL SIZE.
 
-    This is the provider that makes one compiled body serve many models: the
-    caps size the stack scratch (and so must bound every model the binary
-    will ever load), while the loop bounds and strides come from the fields.
+    This is the provider that makes one compiled body serve many models: every
+    loop bound and stride comes from the fields below.
 
-    ⚠ THE CAPS ARE A PROMISE THE CALLER MAKES. `__init__` checks it —
-    silently truncating to the cap would corrupt the physics, and reading past
-    it would corrupt memory, so a model larger than the binary was built for
-    has to be a loud failure at construction.
+    ## Why there are no longer any caps (§10.5 decision 2, resolved)
 
-    ⚠⚠ ITS COMPTIME MEMBERS ARE POISON, NOT VALUES. See `DIM_POISON`.
+    This type used to take fifteen `cap_*` parameters and check them at
+    construction, because §4.2 planned to keep the per-call scratch on the
+    STACK with a fixed cap. §10.7 built that and refuted it: a fixed-cap
+    `InlineArray` under a RUNTIME bound is 1.13-1.18x *worse* than the heap
+    `List` it was meant to beat, because the cost is the runtime bound, not
+    the cap size. `Scratch` therefore sends this leg to the heap (`CAP == 0`),
+    and a cap that sizes nothing is a promise with nothing behind it.
+
+    ⇒ **A binary is no longer built for a maximum model.** Any MJCF loads,
+    however large, and there is no `raise` at construction to get wrong.
+
+    ⚠⚠ ITS COMPTIME MEMBERS ARE POISON, NOT VALUES. See `DIM_POISON`. Note
+    the two families poison DIFFERENTLY and both directions matter: `NV` is
+    -1 so an unconverted site dies AT the site, while `CAP_NV` is 0 so that
+    products of caps (`ME * V_CAP`, `NV * NV`) stay 0 and keep selecting the
+    heap. With -1, `cap[D.NV * D.NV]` would be `cap[1]` — the static leg with
+    a one-element array, silently overrun.
     """
 
     var _nq: Int
@@ -427,21 +431,21 @@ struct DynDims[
     comptime NTEN = DIM_POISON
     comptime NKEY = DIM_POISON
 
-    comptime CAP_NQ = Self.cap_nq
-    comptime CAP_NV = Self.cap_nv
-    comptime CAP_NBODY = Self.cap_nbody
-    comptime CAP_NJOINT = Self.cap_njoint
-    comptime CAP_NGEOM = Self.cap_ngeom
-    comptime CAP_NSITE = Self.cap_nsite
-    comptime CAP_MAX_CONTACTS = Self.cap_max_contacts
-    comptime CAP_NEQUALITY = Self.cap_nequality
-    comptime CAP_NTENDON = Self.cap_ntendon
-    comptime CAP_NEXCLUDE = Self.cap_nexclude
-    comptime CAP_NMESH_VERTS = Self.cap_nmesh_verts
-    comptime CAP_NPAIR = Self.cap_npair
-    comptime CAP_NACT = Self.cap_nact
-    comptime CAP_NTEN = Self.cap_nten
-    comptime CAP_NKEY = Self.cap_nkey
+    comptime CAP_NQ = 0
+    comptime CAP_NV = 0
+    comptime CAP_NBODY = 0
+    comptime CAP_NJOINT = 0
+    comptime CAP_NGEOM = 0
+    comptime CAP_NSITE = 0
+    comptime CAP_MAX_CONTACTS = 0
+    comptime CAP_NEQUALITY = 0
+    comptime CAP_NTENDON = 0
+    comptime CAP_NEXCLUDE = 0
+    comptime CAP_NMESH_VERTS = 0
+    comptime CAP_NPAIR = 0
+    comptime CAP_NACT = 0
+    comptime CAP_NTEN = 0
+    comptime CAP_NKEY = 0
 
     def __init__(
         out self,
@@ -461,7 +465,7 @@ struct DynDims[
         nact: Int = 0,
         nten: Int = 0,
         nkey: Int = 0,
-    ) raises:
+    ):
         """Keyword-only, for the reason `Dims`'s docstring gives: fifteen
         `Int`s in a row is the positional hazard this type exists to kill."""
         self._nq = nq
@@ -479,21 +483,6 @@ struct DynDims[
         self._nact = nact
         self._nten = nten
         self._nkey = nkey
-        _check_cap["nq", Self.cap_nq](nq)
-        _check_cap["nv", Self.cap_nv](nv)
-        _check_cap["nbody", Self.cap_nbody](nbody)
-        _check_cap["njoint", Self.cap_njoint](njoint)
-        _check_cap["ngeom", Self.cap_ngeom](ngeom)
-        _check_cap["nsite", Self.cap_nsite](nsite)
-        _check_cap["max_contacts", Self.cap_max_contacts](max_contacts)
-        _check_cap["nequality", Self.cap_nequality](nequality)
-        _check_cap["ntendon", Self.cap_ntendon](ntendon)
-        _check_cap["nexclude", Self.cap_nexclude](nexclude)
-        _check_cap["nmesh_verts", Self.cap_nmesh_verts](nmesh_verts)
-        _check_cap["npair", Self.cap_npair](npair)
-        _check_cap["nact", Self.cap_nact](nact)
-        _check_cap["nten", Self.cap_nten](nten)
-        _check_cap["nkey", Self.cap_nkey](nkey)
 
     @always_inline
     def get_nq(self) -> Int:
@@ -556,17 +545,3 @@ struct DynDims[
         return self._nkey
 
 
-@always_inline
-def _check_cap[name: StaticString, cap: Int](n: Int) raises:
-    if n > cap:
-        raise Error(
-            String("physics3d: model ")
-            + String(name)
-            + "="
-            + String(n)
-            + " exceeds the binary's cap of "
-            + String(cap)
-            + " — raise DynDims[cap_"
-            + String(name)
-            + "=...] and rebuild"
-        )

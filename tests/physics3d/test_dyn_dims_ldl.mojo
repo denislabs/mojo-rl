@@ -20,9 +20,10 @@ expensive to discover at declaration ninety:
 pass if the compiler quietly specialised the "dynamic" arm on a constant —
 which is exactly how the §12.3 layout probe first returned a meaningless
 1.000 (the comptime aliases were being folded into the "dynamic" function).
-So the dynamic arm here runs NV=7 and NV=5 through the same
-`DynDims[cap_nv=16]` type, and the two answers must differ from each other
-while each matches its own static counterpart.
+So the dynamic arm here runs NV=7 and NV=5 through the same `DynDims`
+type, and the two answers must differ from each other while each matches its
+own static counterpart. `DynDims` now takes NO parameters at all, which makes
+the claim sharper than it was: there is not even a cap left to specialise on.
 
 Tolerance: f64 throughout, and the comparison is against a static arm that
 runs the SAME source lines. §4.4 warns the dynamic leg cannot be assumed
@@ -37,11 +38,11 @@ from layout import Layout, LayoutTensor, RuntimeLayout
 from mojo_rl.nn.core.tensor import TensorImpl
 from mojo_rl.physics3d.fields import Dims, DynDims
 from mojo_rl.physics3d.fields.dims import DIM_POISON
+from mojo_rl.physics3d.fields.scratch import Scratch
 from mojo_rl.physics3d.dynamics.ldl import _ldl_factor_env, _ldl_solve_env
 
 comptime DT = DType.float64
 comptime DYN2 = Layout.row_major[2]()
-comptime CAP = 16
 comptime BATCH = 2
 
 
@@ -143,7 +144,7 @@ def solve_dynamic(nv: Int) raises -> List[Float64]:
     var D_v = D.lt_dyn["cpu", DYN2](rl_v)
     var b_v = b.lt_dyn["cpu", DYN2](rl_v)
     var x_v = x.lt_dyn["cpu", DYN2](rl_v)
-    var dims = DynDims[cap_nv=CAP](nv=nv)
+    var dims = DynDims(nv=nv)
     for e in range(BATCH):
         _ldl_factor_env(e, dims, M_v, L_v, D_v)
         _ldl_solve_env(e, dims, L_v, D_v, b_v, x_v)
@@ -221,21 +222,34 @@ def main() raises:
     )
 
     print("\n=== D. the comptime members of a dynamic provider are POISON ===")
-    t.check(
-        "DynDims.NV is the poison value", DynDims[cap_nv=CAP].NV == DIM_POISON
-    )
+    t.check("DynDims.NV is the poison value", DynDims.NV == DIM_POISON)
     t.check("poison is negative, not zero", DIM_POISON < 0)
-    t.check("the cap is a real value", DynDims[cap_nv=CAP].CAP_NV == CAP)
 
-    print("\n=== E. a model larger than the cap is refused, loudly ===")
-    var raised = False
-    try:
-        var too_big = DynDims[cap_nv=4](nv=9)
-        print("  cap check did NOT fire, nv =", too_big.get_nv())
-    except e:
-        raised = True
-        print("  raised:", e)
-    t.check("nv > cap raises at construction", raised)
+    # ⚠ THE TWO FAMILIES POISON DIFFERENTLY, AND BOTH DIRECTIONS ARE
+    # LOAD-BEARING. `NV` is -1 so an unconverted site dies at the site;
+    # `CAP_NV` is 0 so that PRODUCTS of caps stay 0 and keep selecting the
+    # heap. This pair of checks is what stops someone merging them.
+    t.check("the scratch cap poisons to ZERO", DynDims.CAP_NV == 0)
+    t.check(
+        "a PRODUCT of caps stays zero (it would be 1 with -1)",
+        DynDims.CAP_NV * DynDims.CAP_NV == 0,
+    )
+    t.check(
+        "and so selects the HEAP leg, not a one-element stack array",
+        not Scratch[Float64, DynDims.CAP_NV * DynDims.CAP_NV].STATIC,
+    )
+
+    print("\n=== E. there is NO cap: any model size constructs ===")
+    # This section used to assert that `DynDims[cap_nv=4](nv=9)` RAISES.
+    # §10.7 removed the reason for the cap to exist (a fixed-cap stack array
+    # is slower than the heap it was meant to beat), so the parameter and its
+    # construction-time check are gone and a binary is no longer built for a
+    # maximum model. The replacement claim is the one that now matters: a
+    # model far larger than any cap this test ever used still works.
+    var huge = DynDims(nv=100000)
+    t.check("a model of 100000 dofs constructs", huge.get_nv() == 100000)
+    var huge_out = solve_dynamic(23)
+    t.check("and the dynamic arm still solves", len(huge_out) == BATCH * 23)
 
     print("\nchecks:", t.checks, " failures:", t.failures)
     if t.failures == 0:
