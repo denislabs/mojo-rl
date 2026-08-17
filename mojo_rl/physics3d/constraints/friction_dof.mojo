@@ -57,7 +57,20 @@ from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..joint_types import JNT_FREE, JNT_BALL
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic, Scratch, cap
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    Scratch,
+    cap,
+    DYN1,
+    DYN2,
+    rl1,
+    rl2,
+)
 from .constraint_data import refsafe_timeconst
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
@@ -291,11 +304,16 @@ def solve_friction[
     var ts_v = m.meta.data[MODEL_META_IDX_TIMESTEP]
 
     comptime if target == "cpu":
-        var qvel_v = d.qvel.lt["cpu", L_NV]()
-        var joints_v = m.joints.lt["cpu", L_JOINT]()
-        var dw_v = m.dof_invweight0.lt["cpu", L_DW]()
-        var mi_v = scratch.m_inv.lt["cpu", L_M]()
-        var qc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
+        var dm = d.dims
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var rl_DW = rl1(dm.get_nv())
+        var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
+        var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+        var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+        var dw_v = m.dof_invweight0.lt_dyn["cpu", DYN1](rl_DW)
+        var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
+        var qc_v = scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
             _friction_env[DTYPE, NUM_ITERATIONS](
                 e, AsStatic[D](), qvel_v, joints_v, ts_v, dw_v, mi_v, qc_v

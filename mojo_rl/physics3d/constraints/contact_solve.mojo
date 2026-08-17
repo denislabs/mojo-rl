@@ -54,7 +54,19 @@ from ..dynamics.jac_contact_row import _contact_jacobian_row
 from .limits import _limits_env
 from .friction_dof import _friction_env
 from .equality_tendon import _equality_env, _tendon_env
-from ..fields import Data, Model, DynamicsScratch, ContactScratch, Dims, DimsLike, AsStatic
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    ContactScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    DYN1,
+    DYN2,
+    rl1,
+    rl2,
+)
 from ..fields.scratch import Scratch, cap
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
@@ -2647,25 +2659,43 @@ def solve_contacts[
     comptime L_DW = Layout.row_major(D.NV)
 
     comptime if target == "cpu":
-        var qpos_v = d.qpos.lt["cpu", L_QPOS]()
-        var qvel_v = d.qvel.lt["cpu", L_NV]()
-        var xpos_v = d.xpos.lt["cpu", L_B3]()
-        var xquat_v = d.xquat.lt["cpu", L_B4]()
-        var stcom_v = d.subtree_com.lt["cpu", L_B3]()
-        var con_v = d.contacts.lt["cpu", L_CON]()
-        var smeta_v = d.meta.lt["cpu", L_SMETA]()
-        var joints_v = m.joints.lt["cpu", L_JOINT]()
-        var bodies_v = m.bodies.lt["cpu", L_BODY]()
-        var mmeta_v = m.meta.lt["cpu", L_MMETA]()
-        var eq_v = m.equality.lt["cpu", L_EQ]()
-        var ten_v = m.tendons.lt["cpu", L_TEN]()
-        var site_v = m.sites.lt["cpu", L_SITE]()
-        var bw_v = m.body_invweight0.lt["cpu", L_BW]()
-        var dw_v = m.dof_invweight0.lt["cpu", L_DW]()
-        var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
-        var mi_v = scratch.m_inv.lt["cpu", L_M]()
-        var qc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
-        var sol_v = cscratch.solver.lt["cpu", L_SOLVER]()
+        var dm = d.dims
+        var rl_QPOS = rl2(BATCH, dm.get_nq())
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var rl_B3 = rl2(BATCH, dm.get_nbody() * 3)
+        var rl_B4 = rl2(BATCH, dm.get_nbody() * 4)
+        var rl_CON = rl2(BATCH, dm.get_max_contacts() * CONTACT_SIZE)
+        var rl_SMETA = rl2(BATCH, METADATA_SIZE)
+        var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var rl_BODY = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+        var rl_MMETA = rl1(MODEL_META_SIZE)
+        var rl_EQ = rl2(dm.get_nequality(), MODEL_EQ_SIZE)
+        var rl_TEN = rl2(dm.get_ntendon(), MODEL_TENDON_SIZE)
+        var rl_SITE = rl2(dm.get_nsite(), MODEL_SITE_SIZE)
+        var rl_BW = rl2(dm.get_nbody(), 2)
+        var rl_DW = rl1(dm.get_nv())
+        var rl_CDOF = rl2(BATCH, dm.get_nv() * 6)
+        var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
+        var rl_SOLVER = rl2(BATCH, SOLVER_WS)
+        var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
+        var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+        var xpos_v = d.xpos.lt_dyn["cpu", DYN2](rl_B3)
+        var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4)
+        var stcom_v = d.subtree_com.lt_dyn["cpu", DYN2](rl_B3)
+        var con_v = d.contacts.lt_dyn["cpu", DYN2](rl_CON)
+        var smeta_v = d.meta.lt_dyn["cpu", DYN2](rl_SMETA)
+        var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+        var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
+        var mmeta_v = m.meta.lt_dyn["cpu", DYN1](rl_MMETA)
+        var eq_v = m.equality.lt_dyn["cpu", DYN2](rl_EQ)
+        var ten_v = m.tendons.lt_dyn["cpu", DYN2](rl_TEN)
+        var site_v = m.sites.lt_dyn["cpu", DYN2](rl_SITE)
+        var bw_v = m.body_invweight0.lt_dyn["cpu", DYN2](rl_BW)
+        var dw_v = m.dof_invweight0.lt_dyn["cpu", DYN1](rl_DW)
+        var cdof_v = scratch.cdof.lt_dyn["cpu", DYN2](rl_CDOF)
+        var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
+        var qc_v = scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
+        var sol_v = cscratch.solver.lt_dyn["cpu", DYN2](rl_SOLVER)
         for e in range(BATCH):
             _contact_solve_env[
                 DTYPE,

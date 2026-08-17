@@ -36,7 +36,19 @@ from ..constants import (
     GEOM_MESH,
     GEOM_ELLIPSOID,
 )
-from ..fields import Data, Model, Dims, DimsLike, AsStatic, Scratch, cap
+from ..fields import (
+    Data,
+    Model,
+    Dims,
+    DimsLike,
+    AsStatic,
+    Scratch,
+    cap,
+    DYN1,
+    DYN2,
+    rl1,
+    rl2,
+)
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_GEOM_SIZE,
@@ -1856,25 +1868,41 @@ def detect_contacts_sap[
     comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
 
     comptime if target == "cpu":
-        var xpos_v = d.xpos.lt["cpu", L_B3]()
-        var xquat_v = d.xquat.lt["cpu", L_B4]()
-        var geoms_v = m.geoms.lt["cpu", L_GEOM]()
-        var bodies_v = m.bodies.lt["cpu", L_BODY]()
-        var mmeta_v = m.meta.lt["cpu", L_MMETA]()
-        var excludes_v = m.excludes.lt["cpu", L_EXCLUDE]()
-        var pairs_v = m.pairs.lt["cpu", L_PAIR]()
-        var mesh_meta_v = m.mesh_meta.lt["cpu", L_MESH_META]()
-        var mesh_verts_v = m.mesh_verts.lt["cpu", L_MESH_VERT]()
-        var mesh_polys_v = m.mesh_polys.lt["cpu", L_MESH_POLY]()
-        var mesh_polyvert_v = m.mesh_polyvert.lt["cpu", L_MESH_POLYVERT]()
-        var mesh_polymap_v = m.mesh_polymap.lt["cpu", L_MESH_POLYVERT]()
-        var mesh_vert_polymap_v = m.mesh_vert_polymap.lt["cpu", L_MESH_VPMAP]()
+        var dm = d.dims
+        var rl_B3 = rl2(BATCH, dm.get_nbody() * 3)
+        var rl_B4 = rl2(BATCH, dm.get_nbody() * 4)
+        var rl_GEOM = rl2(dm.get_ngeom(), MODEL_GEOM_SIZE)
+        var rl_BODY = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+        var rl_MMETA = rl1(MODEL_META_SIZE)
+        var rl_EXCLUDE = rl2(dm.get_nexclude(), 2)
+        var rl_PAIR = rl2(dm.get_npair(), MODEL_PAIR_SIZE)
+        var rl_MESH_META = rl2(MAX_GPU_MESHES, MODEL_MESH_META_SIZE)
+        var rl_MESH_VERT = rl2(dm.get_nmesh_verts(), 3)
+        var rl_MESH_POLY = rl2(mesh_max_poly(dm.get_nmesh_verts()), MODEL_MESH_POLY_SIZE)
+        var rl_MESH_POLYVERT = rl1(mesh_max_polyvert(dm.get_nmesh_verts()))
+        var rl_MESH_VPMAP = rl2(dm.get_nmesh_verts(), 2)
+        var rl_MESH_EDGE = rl1(mesh_max_edge(dm.get_nmesh_verts()))
+        var rl_CONTACTS = rl2(BATCH, dm.get_max_contacts() * CONTACT_SIZE)
+        var rl_SMETA = rl2(BATCH, METADATA_SIZE)
+        var xpos_v = d.xpos.lt_dyn["cpu", DYN2](rl_B3)
+        var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4)
+        var geoms_v = m.geoms.lt_dyn["cpu", DYN2](rl_GEOM)
+        var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
+        var mmeta_v = m.meta.lt_dyn["cpu", DYN1](rl_MMETA)
+        var excludes_v = m.excludes.lt_dyn["cpu", DYN2](rl_EXCLUDE)
+        var pairs_v = m.pairs.lt_dyn["cpu", DYN2](rl_PAIR)
+        var mesh_meta_v = m.mesh_meta.lt_dyn["cpu", DYN2](rl_MESH_META)
+        var mesh_verts_v = m.mesh_verts.lt_dyn["cpu", DYN2](rl_MESH_VERT)
+        var mesh_polys_v = m.mesh_polys.lt_dyn["cpu", DYN2](rl_MESH_POLY)
+        var mesh_polyvert_v = m.mesh_polyvert.lt_dyn["cpu", DYN1](rl_MESH_POLYVERT)
+        var mesh_polymap_v = m.mesh_polymap.lt_dyn["cpu", DYN1](rl_MESH_POLYVERT)
+        var mesh_vert_polymap_v = m.mesh_vert_polymap.lt_dyn["cpu", DYN2](rl_MESH_VPMAP)
         var mesh_vert_edgeadr_v = m.mesh_vert_edgeadr.lt[
             "cpu", L_MESH_VEADR
         ]()
-        var mesh_edges_v = m.mesh_edges.lt["cpu", L_MESH_EDGE]()
-        var contacts_v = d.contacts.lt["cpu", L_CONTACTS]()
-        var smeta_v = d.meta.lt["cpu", L_SMETA]()
+        var mesh_edges_v = m.mesh_edges.lt_dyn["cpu", DYN1](rl_MESH_EDGE)
+        var contacts_v = d.contacts.lt_dyn["cpu", DYN2](rl_CONTACTS)
+        var smeta_v = d.meta.lt_dyn["cpu", DYN2](rl_SMETA)
         for e in range(BATCH):
             _detect_contacts_sap_env[DTYPE, BATCH](
                 e, AsStatic[D](), xpos_v, xquat_v, geoms_v, bodies_v, mmeta_v,

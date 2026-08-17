@@ -17,7 +17,20 @@ from max.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..joint_types import JNT_HINGE, JNT_SLIDE
-from ..fields import Data, Model, DynamicsScratch, Dims, DimsLike, AsStatic, Scratch, cap
+from ..fields import (
+    Data,
+    Model,
+    DynamicsScratch,
+    Dims,
+    DimsLike,
+    AsStatic,
+    Scratch,
+    cap,
+    DYN1,
+    DYN2,
+    rl1,
+    rl2,
+)
 from ..gpu.constants import (
     MODEL_META_IDX_TIMESTEP,
     MODEL_JOINT_SIZE,
@@ -331,13 +344,20 @@ def solve_limits[
     comptime L_M = Layout.row_major(BATCH, D.NV * D.NV)
 
     comptime if target == "cpu":
-        var qpos_v = d.qpos.lt["cpu", L_QPOS]()
-        var qvel_v = d.qvel.lt["cpu", L_NV]()
-        var joints_v = m.joints.lt["cpu", L_JOINT]()
-        var meta_v = m.meta.lt["cpu", L_META]()
-        var dw_v = m.dof_invweight0.lt["cpu", L_DW]()
-        var mi_v = scratch.m_inv.lt["cpu", L_M]()
-        var qc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
+        var dm = d.dims
+        var rl_QPOS = rl2(BATCH, dm.get_nq())
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var rl_META = rl1(MODEL_META_SIZE)
+        var rl_DW = rl1(dm.get_nv())
+        var rl_M = rl2(BATCH, dm.get_nv() * dm.get_nv())
+        var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
+        var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+        var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+        var meta_v = m.meta.lt_dyn["cpu", DYN1](rl_META)
+        var dw_v = m.dof_invweight0.lt_dyn["cpu", DYN1](rl_DW)
+        var mi_v = scratch.m_inv.lt_dyn["cpu", DYN2](rl_M)
+        var qc_v = scratch.qacc_constrained.lt_dyn["cpu", DYN2](rl_NV)
         for e in range(BATCH):
             _limits_env[DTYPE, NUM_ITERATIONS](
                 e, AsStatic[D](), qpos_v, qvel_v, joints_v, meta_v, dw_v, mi_v, qc_v

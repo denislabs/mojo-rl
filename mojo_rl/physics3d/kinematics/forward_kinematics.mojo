@@ -30,7 +30,17 @@ from .quat_math import (
     gpu_axis_angle_to_quat,
 )
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_SLIDE, JNT_HINGE
-from ..fields import Data, Model, Dims, DimsLike, AsStatic, Scratch, cap
+from ..fields import (
+    Data,
+    Model,
+    Dims,
+    DimsLike,
+    AsStatic,
+    Scratch,
+    cap,
+    DYN2,
+    rl2,
+)
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     BODY_IDX_MOCAP,
@@ -814,21 +824,27 @@ def forward_kinematics[
     comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
 
     comptime if target == "cpu":
-        var qpos_v = d.qpos.lt["cpu", L_QPOS]()
-        var bodies_v = m.bodies.lt["cpu", L_BODY]()
-        var joints_v = m.joints.lt["cpu", L_JOINT]()
-        var xpos_v = d.xpos.lt["cpu", L_XPOS]()
-        var xquat_v = d.xquat.lt["cpu", L_XQUAT]()
-        var xipos_v = d.xipos.lt["cpu", L_XPOS]()
+        var dm = d.dims
+        var rl_QPOS = rl2(BATCH, dm.get_nq())
+        var rl_BODY = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+        var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var rl_XPOS = rl2(BATCH, dm.get_nbody() * 3)
+        var rl_XQUAT = rl2(BATCH, dm.get_nbody() * 4)
+        var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_QPOS)
+        var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
+        var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+        var xpos_v = d.xpos.lt_dyn["cpu", DYN2](rl_XPOS)
+        var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_XQUAT)
+        var xipos_v = d.xipos.lt_dyn["cpu", DYN2](rl_XPOS)
         for e in range(BATCH):
             _fk_env[DTYPE](
                 e, AsStatic[D](), qpos_v, bodies_v, joints_v, xpos_v, xquat_v, xipos_v
             )
         comptime if D.NSITE > 0:
-            comptime L_SITE_REC = Layout.row_major(D.NSITE, MODEL_SITE_SIZE)
-            comptime L_SITE_X = Layout.row_major(BATCH, D.NSITE * 3)
-            var sites_v = m.sites.lt["cpu", L_SITE_REC]()
-            var sitex_v = d.site_xpos.lt["cpu", L_SITE_X]()
+            var rl_SITE_REC = rl2(dm.get_nsite(), MODEL_SITE_SIZE)
+            var rl_SITE_X = rl2(BATCH, dm.get_nsite() * 3)
+            var sites_v = m.sites.lt_dyn["cpu", DYN2](rl_SITE_REC)
+            var sitex_v = d.site_xpos.lt_dyn["cpu", DYN2](rl_SITE_X)
             for e in range(BATCH):
                 _fk_sites[DTYPE](
                     e, AsStatic[D](), sites_v, xpos_v, xquat_v, sitex_v
@@ -1446,15 +1462,22 @@ def compute_body_velocities[
     comptime L_JOINT = Layout.row_major(D.NJOINT, MODEL_JOINT_SIZE)
 
     comptime if target == "cpu":
-        var qpos_v = d.qpos.lt["cpu", L_NQ]()
-        var qvel_v = d.qvel.lt["cpu", L_NV]()
-        var xpos_v = d.xpos.lt["cpu", L_B3]()
-        var xquat_v = d.xquat.lt["cpu", L_B4]()
-        var xipos_v = d.xipos.lt["cpu", L_B3]()
-        var bodies_v = m.bodies.lt["cpu", L_BODY]()
-        var joints_v = m.joints.lt["cpu", L_JOINT]()
-        var xvel_v = d.xvel.lt["cpu", L_B3]()
-        var xangvel_v = d.xangvel.lt["cpu", L_B3]()
+        var dm = d.dims
+        var rl_NQ = rl2(BATCH, dm.get_nq())
+        var rl_NV = rl2(BATCH, dm.get_nv())
+        var rl_B3 = rl2(BATCH, dm.get_nbody() * 3)
+        var rl_B4 = rl2(BATCH, dm.get_nbody() * 4)
+        var rl_BODY = rl2(dm.get_nbody(), MODEL_BODY_SIZE)
+        var rl_JOINT = rl2(dm.get_njoint(), MODEL_JOINT_SIZE)
+        var qpos_v = d.qpos.lt_dyn["cpu", DYN2](rl_NQ)
+        var qvel_v = d.qvel.lt_dyn["cpu", DYN2](rl_NV)
+        var xpos_v = d.xpos.lt_dyn["cpu", DYN2](rl_B3)
+        var xquat_v = d.xquat.lt_dyn["cpu", DYN2](rl_B4)
+        var xipos_v = d.xipos.lt_dyn["cpu", DYN2](rl_B3)
+        var bodies_v = m.bodies.lt_dyn["cpu", DYN2](rl_BODY)
+        var joints_v = m.joints.lt_dyn["cpu", DYN2](rl_JOINT)
+        var xvel_v = d.xvel.lt_dyn["cpu", DYN2](rl_B3)
+        var xangvel_v = d.xangvel.lt_dyn["cpu", DYN2](rl_B3)
         for e in range(BATCH):
             _body_velocities_env[DTYPE](
                 e, AsStatic[D](), qpos_v, qvel_v, xpos_v, xquat_v, xipos_v, bodies_v,
